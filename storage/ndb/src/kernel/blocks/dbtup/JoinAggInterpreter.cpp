@@ -30,6 +30,7 @@
 #include "signaldata/TransIdAI.hpp"
 #include "include/my_byteorder.h"
 #include "JoinAggInterpreter.hpp"
+#include "DbtupJitGlue.hpp"
 #include "InterpreterCommonOp.hpp"
 #include "util/require.h"
 #include "decimal.h"
@@ -757,6 +758,106 @@ void JoinAggInterpreter::cacheMultiLeafAggOps(const LeafProgram* leaves,
 /*
  * ProcessRec for join aggregation — includes linked attribute resolution
  */
+
+/* Phase 5F-2: shared linked-attr capture — see JoinAggInterpreter.hpp.
+ * Extracted verbatim from ProcessRec's kOpLoadCol linked branch so the
+ * interpreter and the JIT facades share one walk + one metadata
+ * resolution. load_program_offset < 0 skips the offset-keyed
+ * LoadColumnMeta fallback (the JIT has no program offset; that rare
+ * path degrades to the per-row interpreter fallback instead). */
+Int32 JoinAggInterpreter::readLinkedAttrIntoBuf(
+    Uint32 position, Int64 load_program_offset,
+    AttributeHeader **out_header, Uint32 *out_w0, Uint32 *out_w1) {
+  if (m_linked_attr_data == nullptr) {
+    return ZAGG_OTHER_ERROR;
+  }
+  const Uint32* p = m_linked_attr_data;
+  const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
+  Uint32 pos_count = 0;
+  while (p < p_end) {
+    if (pos_count == position) break;
+    p += 2;
+    p += 1 + AttributeHeader::getDataSize(*p);
+    pos_count++;
+  }
+  if (p + 2 >= p_end) {
+    g_eventLogger->debug("JoinAggInterpreter::readLinkedAttrIntoBuf "
+        "ZAGG_OTHER_ERROR: linked position %u not found in buffer "
+        "(linked_len=%u)", position, m_linked_attr_len);
+    return ZAGG_OTHER_ERROR;
+  }
+  Uint32 linked_word0 = p[0];
+  Uint32 linked_word1 = p[1];
+  bool resolved = CteLinkedAttr::isCteMarker(linked_word0);
+  if (!resolved) {
+    const Uint32 linked_attr_id =
+        AttributeHeader(p[2]).getAttributeId();
+    const ColumnMeta *column_meta =
+        findColumnMeta(linked_word0, linked_word1, linked_attr_id);
+    if (column_meta != nullptr) {
+      linked_word0 = CteLinkedAttr::encodeWord0(column_meta->typeId,
+                                                column_meta->maxBytes);
+      linked_word1 = CteLinkedAttr::encodeWord1(column_meta->csNumber);
+      resolved = true;
+    } else if (load_program_offset >= 0) {
+      const LoadColumnMeta *meta =
+          findLoadColumnMeta((Uint32)load_program_offset);
+      if (meta != nullptr) {
+        linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
+                                                  meta->maxBytes);
+        linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
+        resolved = true;
+      }
+    }
+    if (!resolved) {
+      return ZAGG_OTHER_ERROR;
+    }
+  }
+  p += 2;
+  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+  memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
+  *out_header = reinterpret_cast<AttributeHeader*>(
+      m_attr_read_buf + m_attr_read_pos);
+  *out_w0 = linked_word0;
+  *out_w1 = linked_word1;
+  return 0;
+}
+
+/* Phase 5F-2: linked sibling of AggInterpreterBase::jitMinMaxStringCol
+ * — the type and charset come from the resolved linked metadata words
+ * instead of the local table descriptor; everything downstream is the
+ * same protected load + public minMaxString kernel (which mutates the
+ * AggResItem directly, so the JIT glue's writeback-mask discipline is
+ * unchanged). */
+Int32 JoinAggInterpreter::jitMinMaxStringLinked(
+    Dbtup::KeyReqStruct *req_struct, Uint32 position, Uint32 agg_index,
+    bool is_max, AggResItem *agg_res_ptr) {
+  constexpr Uint32 kScratchReg = kRegTotal - 1;
+  AttributeHeader *header = nullptr;
+  Uint32 w0 = 0;
+  Uint32 w1 = 0;
+  m_attr_read_pos = 0;
+  Int32 ret = readLinkedAttrIntoBuf(position, /*load_program_offset=*/-1,
+                                    &header, &w0, &w1);
+  if (ret != 0) {
+    return ret;
+  }
+  const DataType type = CteLinkedAttr::decodeTypeId(w0);
+  if (type != NDB_TYPE_CHAR && type != NDB_TYPE_VARCHAR &&
+      type != NDB_TYPE_LONGVARCHAR) {
+    return ZAGG_COL_TYPE_UNSUPPORTED;
+  }
+  Uint32 exec_pos_dummy = 0;
+  Int32 lret = loadColumnTypedFromBuf(
+      type, /*is_unsigned=*/false, kScratchReg, header,
+      /*attrDescriptor=*/nullptr, /*linked_cte_attr=*/true, w0, w1,
+      req_struct, exec_pos_dummy, "JitMinMaxStrLinked");
+  if (lret != 0) {
+    return lret;
+  }
+  return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
+}
+
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id,
@@ -951,6 +1052,91 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = m_agg_results + m_acc_offset;
   }
 
+  /* Phase 4 RONDB-1056: JIT path.
+   *
+   * Bypass the interpreter loop entirely when a JIT'd entry is
+   * cached. Phase 8 GROUP BY lift: grouped programs dispatch too —
+   * the group prologue above has already resolved agg_res_ptr to this
+   * row's group record, so the JIT'd program runs against the right
+   * slots (per-group SQL-NULL semantics come from the glue's
+   * value_updated writeback). Multi-leaf (Phase 6-3): every leaf
+   * compiles independently, and the per-row leaf switch installs the
+   * CURRENT leaf's entry and accumulator count alongside m_prog and
+   * m_acc_offset, so shifted layouts dispatch with matching code.
+   *
+   * The dispatch glue (in DbtupJitGlue.cpp) handles JitState
+   * setup, accumulator copy in/out, and helper-context wiring.
+   * Per-program decision; the branch predictor folds it after
+   * a couple of iterations.
+   *
+   * NULL-EXTENDED ROWS NEVER DISPATCH (5C-3 verification fix, latent
+   * since the outer-join merge): processNullExtendedRow calls in with
+   * block_tup == req_struct == nullptr and m_null_local_columns set —
+   * there is no local tuple, and only the interpreter loop's
+   * kOpLoadCol knows to synthesize NULL AttributeHeaders for it. The
+   * JIT has no representation of that mode (its load helpers read a
+   * real row via req_struct — the unguarded m_linked_attr_data write
+   * below segfaulted on nullptr), and processNullExtendedRow may also
+   * have switched m_prog to a DIFFERENT leaf program than the one
+   * m_jit_entry was compiled from. Run such rows on the interpreter —
+   * the same convention as the per-row fallback. (No 4060 exemption
+   * needed: block_tup is nullptr here, which the 4060 check below
+   * already skips.) */
+  if (m_jit_entry != nullptr && !m_null_local_columns) {
+    /* Make this row's linked-attribute buffer visible to the JIT
+     * cold-call helpers (ndb_jit_h_read_linked_to_mem reads it via
+     * req_struct->m_linked_attr_data). The interpreter path sets these
+     * around interpreterAggEmbedded; the JIT path must do the same or
+     * every READ_LINKED_TO_MEM sees a NULL buffer (→ all rows treated
+     * as linked-NULL). */
+    req_struct->m_linked_attr_data = m_linked_attr_data;
+    req_struct->m_linked_attr_len = m_linked_attr_len;
+    /* Phase 6-3 multi-leaf: agg_res_ptr is ALREADY the leaf's slice
+     * (the group prologue added m_acc_offset), the compiled code uses
+     * leaf-LOCAL accumulator indices, and m_jit_leaf_n_agg is the
+     * leaf's own count — m_n_agg_results holds the COMBINED total in
+     * multi-leaf mode and would run the glue's copy/writeback loops
+     * past the leaf's slice (and past the group record for the last
+     * leaf). The interpreter re-run on a per-row fallback uses the
+     * same offset pointer with the same leaf-local indices. */
+    const Uint32 jit_n_agg =
+        (m_jit_leaf_n_agg != 0) ? m_jit_leaf_n_agg : m_n_agg_results;
+    int jit_rc = dbtup_jit_invoke(this, block_tup, req_struct,
+                                  m_jit_entry, agg_res_ptr,
+                                  jit_n_agg, this);
+    req_struct->m_linked_attr_data = nullptr;
+    req_struct->m_linked_attr_len = 0;
+    if (jit_rc != NDB_JIT_ROW_FALLBACK) {
+      m_processed_rows++;
+      return jit_rc;
+    }
+    /* Phase 5A per-row fallback: the row hit a condition the JIT can't
+     * represent (NULL column value) — its JIT run was discarded (no
+     * writeback). Fall through and run THIS ROW on the interpreter
+     * loop below (which re-sets the linked-attr fields itself and
+     * counts m_processed_rows). */
+  }
+
+#ifdef ERROR_INSERT
+  /* ERROR_INSERT 4060: makes JIT-fallback fatal. The MTR test
+   * sets it before queries that MUST run on the JIT path; if
+   * admission rejected the program (or m_jit_entry isn't set
+   * for any other reason), we abort here instead of silently
+   * falling through to the interpreter. Lets a test confirm
+   * "did this query actually JIT?" without needing a separate
+   * stats counter. Compiled out in release builds. */
+  if (block_tup != nullptr && block_tup->jit_error_inserted(4060)) {
+    g_eventLogger->error(
+        "ERROR_INSERT 4060: aggregation program reached the "
+        "interpreter loop instead of the JIT path "
+        "(m_jit_entry=%p, m_n_gb_cols=%u). Aborting per test "
+        "directive - the failing program was expected to admit "
+        "+ compile.",
+        m_jit_entry, m_n_gb_cols);
+    abort();
+  }
+#endif
+
   Uint32 value;
   DataType type;
   bool is_unsigned;
@@ -986,53 +1172,14 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         linked_cte_attr = false;
         Uint32 col_id_raw = value & 0x0000FFFF;
         if ((col_id_raw & 0x8000) != 0 && m_linked_attr_data != nullptr) {
+          /* Phase 5F-2: the walk + metadata resolution is shared with
+           * the JIT facades (readLinkedAttrIntoBuf) — zero drift. */
           Uint32 position = col_id_raw & 0x7FFF;
-          const Uint32* p = m_linked_attr_data;
-          const Uint32* p_end = m_linked_attr_data + m_linked_attr_len;
-          Uint32 pos_count = 0;
-          while (p < p_end) {
-            if (pos_count == position) break;
-            p += 2;
-            p += 1 + AttributeHeader::getDataSize(*p);
-            pos_count++;
-          }
-          if (p + 2 >= p_end) {
-            g_eventLogger->debug("JoinAggInterpreter::ProcessRec ZAGG_OTHER_ERROR: "
-                "kOpLoadCol linked position %u not found in buffer "
-                "(linked_len=%u)", position, m_linked_attr_len);
-            return ZAGG_OTHER_ERROR;
-          }
-          linked_word0 = p[0];
-          linked_word1 = p[1];
-          linked_cte_attr = CteLinkedAttr::isCteMarker(linked_word0);
-          if (!linked_cte_attr) {
-            const Uint32 linked_attr_id =
-                AttributeHeader(p[2]).getAttributeId();
-            const ColumnMeta *column_meta =
-                findColumnMeta(linked_word0, linked_word1, linked_attr_id);
-            if (column_meta != nullptr) {
-              linked_word0 = CteLinkedAttr::encodeWord0(column_meta->typeId,
-                                                        column_meta->maxBytes);
-              linked_word1 = CteLinkedAttr::encodeWord1(column_meta->csNumber);
-              linked_cte_attr = true;
-            } else {
-              const LoadColumnMeta *meta =
-                  findLoadColumnMeta(load_program_offset);
-              if (meta != nullptr) {
-                linked_word0 = CteLinkedAttr::encodeWord0(meta->typeId,
-                                                          meta->maxBytes);
-                linked_word1 = CteLinkedAttr::encodeWord1(meta->csNumber);
-                linked_cte_attr = true;
-              }
-            }
-            if (!linked_cte_attr) {
-              return ZAGG_OTHER_ERROR;
-            }
-          }
-          p += 2;
-          Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-          memcpy(m_attr_read_buf + m_attr_read_pos, p, words * sizeof(Uint32));
-          header = reinterpret_cast<AttributeHeader*>(m_attr_read_buf + m_attr_read_pos);
+          Int32 lrret = readLinkedAttrIntoBuf(
+              position, (Int64)load_program_offset,
+              &header, &linked_word0, &linked_word1);
+          if (lrret != 0) return lrret;
+          linked_cte_attr = true;
           attrDescriptor = nullptr;
         } else if (m_null_local_columns) {
           AttributeHeader null_ah(col_id_raw, 0);
@@ -1111,6 +1258,15 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         req_struct->m_linked_attr_data = nullptr;
         req_struct->m_linked_attr_len = 0;
 
+        /* EXIT_REFUSE with a filter error code surfaces as
+         * INTERPRETER_FILTER_REJECT: the row is filtered out, so stop
+         * processing this row's aggregation program — identical to a
+         * STOP_PROGRAM skip_offset. Any other negative rc is a genuine
+         * interpreter error. */
+        if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+          exec_pos = m_prog_len;
+          break;
+        }
         if (rc < 0) return ZAGG_EMBEDDED_INTERP_ERROR;
 
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
@@ -1161,12 +1317,28 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
 
   // Switch to leaf program under mutex protection.
   // For single-leaf queries, leaf is nullptr — no switch needed.
+  // Phase 6-3: the leaf's JIT entry and accumulator count switch WITH
+  // the program — running leaf 0's compiled code against leaf N's
+  // m_acc_offset layout would silently corrupt accumulators, which is
+  // why the old compile gate (m_num_leaves == 1) existed. Every
+  // multi-leaf row passes a non-null leaf (handleJoinAggRow decodes
+  // leafIndex from the encoded state key), so the entry is always the
+  // current leaf's.
   if (leaf != nullptr) {
     thrjam(jamBuf);
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
     m_acc_offset = leaf->m_acc_offset;
+    m_jit_entry = leaf->m_jit_entry;
+    /* ronsql_jit item 15: a single-leaf program's JIT'd kOpAvg writes
+     * its COUNT into the hidden slots Init appended after the header's
+     * count, so the dispatch/writeback count must include them; in
+     * multi-leaf mode (m_agg_ops_cached) the hidden slots sit beyond
+     * the COMBINED total and kOpAvg is not lowered — keep the leaf's
+     * own slice count. */
+    m_jit_leaf_n_agg = leaf->m_n_agg_results +
+                       (m_agg_ops_cached ? 0 : m_n_hidden_slots);
   }
 
   m_linked_attr_data = linked_attr_data;
@@ -1897,6 +2069,12 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
     m_acc_offset = leaf->m_acc_offset;
+    /* Phase 6-3: keep the JIT fields in sync with the program even
+     * here — this row never dispatches (m_null_local_columns), but a
+     * stale entry must not survive into any future dispatch path. */
+    m_jit_entry = leaf->m_jit_entry;
+    m_jit_leaf_n_agg = leaf->m_n_agg_results +
+                       (m_agg_ops_cached ? 0 : m_n_hidden_slots);  /* item 15 */
   }
 
   m_linked_attr_data = linked_attr_data;

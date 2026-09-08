@@ -27,6 +27,7 @@ package shell
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -48,6 +49,17 @@ const (
 	tpchOrdersBase    = 1500000
 	tpchLineitemBase  = 6000000 // ~4 per order average
 )
+
+// tpchScaled returns base rows scaled by a (possibly fractional) scale
+// factor: SF 0.1 loads a tenth of every scaled table (region/nation stay
+// fixed), handy for quick benchmark runs. Never below one row.
+func tpchScaled(base int, sf float64) int {
+	n := int(math.Round(float64(base) * sf))
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
 
 // TPC-H reference data
 var tpchRegions = []string{"AFRICA", "AMERICA", "ASIA", "EUROPE", "MIDDLE EAST"}
@@ -83,21 +95,21 @@ var tpchBrands = []string{"Brand#11", "Brand#12", "Brand#13", "Brand#14", "Brand
 // TPCHTableInfo contains information about a TPC-H table to load
 type TPCHTableInfo struct {
 	Name      string
-	RowCount  func(sf int) int
-	Generator func(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation
+	RowCount  func(sf float64) int
+	Generator func(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation
 }
 
 // GetTPCHTables returns the list of TPC-H tables in dependency order
 func GetTPCHTables() []TPCHTableInfo {
 	return []TPCHTableInfo{
-		{Name: "region", RowCount: func(sf int) int { return tpchRegionCount }, Generator: generateRegionRows},
-		{Name: "nation", RowCount: func(sf int) int { return tpchNationCount }, Generator: generateNationRows},
-		{Name: "supplier", RowCount: func(sf int) int { return tpchSupplierBase * sf }, Generator: generateSupplierRows},
-		{Name: "customer", RowCount: func(sf int) int { return tpchCustomerBase * sf }, Generator: generateCustomerRows},
-		{Name: "part", RowCount: func(sf int) int { return tpchPartBase * sf }, Generator: generatePartRows},
-		{Name: "partsupp", RowCount: func(sf int) int { return tpchPartsuppBase * sf }, Generator: generatePartsuppRows},
-		{Name: "orders", RowCount: func(sf int) int { return tpchOrdersBase * sf }, Generator: generateOrdersRows},
-		{Name: "lineitem", RowCount: func(sf int) int { return tpchLineitemBase * sf }, Generator: generateLineitemRows},
+		{Name: "region", RowCount: func(sf float64) int { return tpchRegionCount }, Generator: generateRegionRows},
+		{Name: "nation", RowCount: func(sf float64) int { return tpchNationCount }, Generator: generateNationRows},
+		{Name: "supplier", RowCount: func(sf float64) int { return tpchScaled(tpchSupplierBase, sf) }, Generator: generateSupplierRows},
+		{Name: "customer", RowCount: func(sf float64) int { return tpchScaled(tpchCustomerBase, sf) }, Generator: generateCustomerRows},
+		{Name: "part", RowCount: func(sf float64) int { return tpchScaled(tpchPartBase, sf) }, Generator: generatePartRows},
+		{Name: "partsupp", RowCount: func(sf float64) int { return tpchScaled(tpchPartsuppBase, sf) }, Generator: generatePartsuppRows},
+		{Name: "orders", RowCount: func(sf float64) int { return tpchScaled(tpchOrdersBase, sf) }, Generator: generateOrdersRows},
+		{Name: "lineitem", RowCount: func(sf float64) int { return tpchScaled(tpchLineitemBase, sf) }, Generator: generateLineitemRows},
 	}
 }
 
@@ -205,7 +217,7 @@ var tpchTableDDL = map[string]string{
 
 // Row generators for each TPC-H table
 
-func generateRegionRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generateRegionRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
 	for i := startRow; i < endRow && i < tpchRegionCount; i++ {
 		op := dsl.BatchWriteOperation{
@@ -227,7 +239,7 @@ func generateRegionRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.Batc
 	return ops
 }
 
-func generateNationRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generateNationRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
 	for i := startRow; i < endRow && i < tpchNationCount; i++ {
 		op := dsl.BatchWriteOperation{
@@ -250,7 +262,7 @@ func generateNationRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.Batc
 	return ops
 }
 
-func generateSupplierRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generateSupplierRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
 	for i := startRow; i < endRow; i++ {
 		suppKey := i + 1
@@ -277,7 +289,7 @@ func generateSupplierRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.Ba
 	return ops
 }
 
-func generateCustomerRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generateCustomerRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
 	for i := startRow; i < endRow; i++ {
 		custKey := i + 1
@@ -305,7 +317,7 @@ func generateCustomerRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.Ba
 	return ops
 }
 
-func generatePartRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generatePartRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
 	for i := startRow; i < endRow; i++ {
 		partKey := i + 1
@@ -334,9 +346,9 @@ func generatePartRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchW
 	return ops
 }
 
-func generatePartsuppRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generatePartsuppRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
-	supplierCount := tpchSupplierBase * sf
+	supplierCount := tpchScaled(tpchSupplierBase, sf)
 	if supplierCount == 0 {
 		supplierCount = 1
 	}
@@ -367,9 +379,9 @@ func generatePartsuppRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.Ba
 	return ops
 }
 
-func generateOrdersRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generateOrdersRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
-	customerCount := tpchCustomerBase * sf
+	customerCount := tpchScaled(tpchCustomerBase, sf)
 	if customerCount == 0 {
 		customerCount = 1
 	}
@@ -408,11 +420,11 @@ func generateOrdersRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.Batc
 	return ops
 }
 
-func generateLineitemRows(sf int, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
+func generateLineitemRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.BatchWriteOperation {
 	var ops []dsl.BatchWriteOperation
-	orderCount := tpchOrdersBase * sf
-	partCount := tpchPartBase * sf
-	supplierCount := tpchSupplierBase * sf
+	orderCount := tpchScaled(tpchOrdersBase, sf)
+	partCount := tpchScaled(tpchPartBase, sf)
+	supplierCount := tpchScaled(tpchSupplierBase, sf)
 	if orderCount == 0 {
 		orderCount = 1
 	}
@@ -549,7 +561,7 @@ func generatePartName(rng *rand.Rand) string {
 }
 
 // runLoadTPCH loads TPC-H data using the batchwrite endpoint
-func (s *Shell) runLoadTPCH(scaleFactor int, numThreads int, batchSize int) error {
+func (s *Shell) runLoadTPCH(scaleFactor float64, numThreads int, batchSize int) error {
 	if s.mysqlClient == nil {
 		return fmt.Errorf("MySQL not connected. Cannot create TPC-H tables.")
 	}
@@ -566,7 +578,7 @@ func (s *Shell) runLoadTPCH(scaleFactor int, numThreads int, batchSize int) erro
 	}
 
 	fmt.Println()
-	fmt.Println(ui.Info(fmt.Sprintf("Loading TPC-H data with scale factor %d", scaleFactor)))
+	fmt.Println(ui.Info(fmt.Sprintf("Loading TPC-H data with scale factor %g", scaleFactor)))
 	fmt.Println(ui.Info(fmt.Sprintf("Total rows to load: %d", totalRows)))
 	fmt.Println(ui.Info(fmt.Sprintf("Using %d threads, batch size %d", numThreads, batchSize)))
 	fmt.Println()
@@ -626,7 +638,7 @@ func (s *Shell) runLoadTPCH(scaleFactor int, numThreads int, batchSize int) erro
 }
 
 // loadTPCHTable loads a single TPC-H table using multiple threads
-func (s *Shell) loadTPCHTable(table TPCHTableInfo, scaleFactor int, numThreads int, batchSize int, totalRowsLoaded *int64) error {
+func (s *Shell) loadTPCHTable(table TPCHTableInfo, scaleFactor float64, numThreads int, batchSize int, totalRowsLoaded *int64) error {
 	rowCount := table.RowCount(scaleFactor)
 	if rowCount == 0 {
 		return nil

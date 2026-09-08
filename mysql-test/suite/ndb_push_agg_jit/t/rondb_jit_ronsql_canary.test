@@ -1,0 +1,325 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 5E-1 — RonSQL generic-arithmetic canary.
+#
+# RonSQL emits the GENERIC arithmetic opcodes (kOpPlus/kOpMinus/
+# kOpMul/kOpDiv via NdbAggregator::Add etc.). The data node's
+# OptimizeProgramBuffer rewrites those to the typed kOp*Bigint/
+# kOp*Double forms BEFORE compilation whenever both operand types
+# are statically known — so Q1-Q5 are PIPELINE REGRESSION canaries
+# (optimizer + bridge together; nothing ever ran RonSQL under 4060
+# before). The optimizer types DECIMAL loads as UNDEFINED, so
+# DECIMAL arithmetic reaches the bridge GENERIC — Q7/Q8 exercise the
+# NEW 5E-1 lowering: the bridge's own 5G decimal typing (I64/F64 by
+# scale) lets the generic case lower what the optimizer could not.
+#
+# The mysqld planner never pushes these shapes at all, so each query
+# runs FIRST through mysqld (server-side compute = ground truth) and
+# THEN through ronsql_cli under ERROR_INSERT 4060 (abort on any JIT
+# fallback) with an ndbinfo compile-counter delta — the two outputs
+# must show the same VALUES (formatting may differ for decimals:
+# mysqld prints exact DECIMAL scale, RonSQL prints compact doubles).
+#
+# Requires a build with generated stencils (regen-stencils).
+
+if (!$RONSQL_CLI) {
+  --skip Test needs the ronsql_cli binary
+}
+
+--echo ############################################################
+--echo # RONDB-1056 RonSQL generic-arithmetic JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk  INT PRIMARY KEY,
+  grp INT NOT NULL,
+  a   BIGINT NOT NULL,
+  b   BIGINT NOT NULL,
+  d   DOUBLE NOT NULL,
+  e   DOUBLE NOT NULL,
+  u   BIGINT UNSIGNED NOT NULL,
+  i   INT NOT NULL
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 1, 10, 3, 1.5, 0.5, 100, 7),
+  (2, 1, 20, 4, 2.5, 0.5, 200, 8),
+  (3, 2, 30, 5, 4.0, 2.0, 300, 9),
+  (4, 2, 40, 6, 6.0, 4.0, 400, 10);
+
+--echo # Q1: integer +,-,* chains. mysqld baseline, then RonSQL
+--echo #     must-JIT.
+SELECT SUM(a + b) AS s1, SUM(a * b - a) AS s2 FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(a + b) AS s1, SUM(a * b - a) AS s2 FROM t1;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+
+--echo # Q2: double +,* and the all-double generic '/'.
+SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+
+--echo # Q3: unsigned column + non-negative constant (u64 + NNC).
+SELECT SUM(u + 1) AS s FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(u + 1) AS s FROM t1;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+
+--echo # Q4: narrow INT columns through RonSQL (5H + 5E-1 composition).
+SELECT SUM(i + i) AS s FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(i + i) AS s FROM t1;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+
+--echo # Q5: grouped RonSQL arithmetic (TEXT_NOHEADER piped through
+--echo #     sort for deterministic group order).
+--sorted_result
+SELECT grp, SUM(a + b) AS s FROM t1 GROUP BY grp;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test --output-format TEXT_NOHEADER -e "SELECT grp, SUM(a + b) AS s FROM t1 GROUP BY grp;" | sort
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+
+--echo # Q6: mixed int/double operands — the Phase 5I conversion cold
+--echo #     call (formerly this canary's whole-program-fallback
+--echo #     negative control). Must-JIT now.
+SELECT SUM(a + d) AS s FROM t1;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(a + d) AS s FROM t1;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q6_jit_compiled;
+
+DROP TABLE t1;
+
+--echo # Q7: DECIMAL(9,2) arithmetic — the NEW 5E-1 lowering (generic
+--echo #     kOpMul over F64-tracked decimal loads; the optimizer
+--echo #     leaves DECIMAL operands untyped).
+CREATE TABLE td (
+  pk INT PRIMARY KEY,
+  p  DECIMAL(9,2) NOT NULL,
+  q  DECIMAL(9,2) NOT NULL,
+  s0 DECIMAL(9,0) NOT NULL,
+  t0 DECIMAL(9,0) NOT NULL
+) ENGINE=NDB;
+INSERT INTO td VALUES
+  (1, 1.50, 2.00, 10, 3),
+  (2, 2.50, 4.00, 20, 4);
+SELECT SUM(p * q) AS s FROM td;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(p * q) AS s FROM td;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+
+--echo # Q8: scale-0 DECIMAL arithmetic lands in the checked signed
+--echo #     integer track.
+SELECT SUM(s0 + t0) AS s FROM td;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(s0 + t0) AS s FROM td;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q8_jit_compiled;
+
+DROP TABLE td;
+
+--echo # Q9: integer DIV and % through RonSQL (Phase 5E-2) — must-JIT.
+CREATE TABLE tdm (
+  pk INT PRIMARY KEY,
+  a  BIGINT NOT NULL,
+  b  BIGINT NOT NULL,
+  u  BIGINT UNSIGNED NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdm VALUES
+  (1, 10, 3, 100),
+  (2, 20, 4, 200),
+  (3, 30, 5, 300),
+  (4, 40, 6, 400);
+SELECT SUM(a DIV b) AS s1, SUM(a % b) AS s2 FROM tdm;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(a DIV b) AS s1, SUM(a % b) AS s2 FROM tdm;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q9_jit_compiled;
+
+--echo # Q10: NEGATIVE operands — TRUNCATING division (-7 DIV 2 = -3,
+--echo #      not floor's -4) and remainder sign follows the DIVIDEND.
+CREATE TABLE tneg (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tneg VALUES
+  (1, -7, 2), (2, 9, -4), (3, -9, -4), (4, 10, 3);
+SELECT MIN(x DIV y) AS d1, MAX(x DIV y) AS d2,
+       MIN(x % y) AS m1, MAX(x % y) AS m2 FROM tneg;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT MIN(x DIV y) AS d1, MAX(x DIV y) AS d2, MIN(x % y) AS m1, MAX(x % y) AS m2 FROM tneg;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q10_jit_compiled;
+DROP TABLE tneg;
+
+--echo # Q11: unsigned DIV/% with constant divisors (u64 + NNC).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(u DIV 3) AS s1, SUM(u % 7) AS s2 FROM tdm;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT SUM(u DIV 3) AS s1, SUM(u % 7) AS s2 FROM tdm;
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q11_jit_compiled;
+DROP TABLE tdm;
+
+--echo # Q12: DIVISION BY ZERO rows — SQL NULL per row (the stencils
+--echo #      take the per-row fallback; SUM skips, COUNT drops them).
+--echo #      Correctness-only: per-row fallbacks cannot sit under 4060.
+CREATE TABLE tz (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tz VALUES (1, 10, 2), (2, 9, 0), (3, 7, 3);
+--disable_warnings
+SELECT SUM(x DIV y) AS s1, SUM(x % y) AS s2, COUNT(x DIV y) AS c FROM tz;
+--enable_warnings
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x DIV y) AS s1, SUM(x % y) AS s2, COUNT(x DIV y) AS c FROM tz;"
+DROP TABLE tz;
+
+--echo # Q13: INT64_MIN DIV -1 — the overflow exit. Both engines error;
+--echo #      under 4060 the RonSQL error proves it came from the JIT's
+--echo #      overflow exit, not a fallback.
+CREATE TABLE tovf (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tovf VALUES (1, -9223372036854775808, -1);
+--disable_result_log
+--error ER_DATA_OUT_OF_RANGE
+SELECT SUM(x DIV y) FROM tovf;
+--enable_result_log
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--error 1
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x DIV y) AS s FROM tovf;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q13_jit_compiled;
+DROP TABLE tovf;
+
+--echo # Q14: GENERIC '/' over integer columns (Phase 5E-3 conversion
+--echo #      cold call) — must-JIT; values exact in binary.
+CREATE TABLE tgd (
+  pk INT PRIMARY KEY,
+  a  BIGINT NOT NULL,
+  b  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgd VALUES (1, 10, 4), (2, 9, 2), (3, 30, 8);
+SELECT SUM(a / b) AS s FROM tgd;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(a / b) AS s FROM tgd;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q14_jit_compiled;
+
+--echo # Q15: '/' edge rows — correctness-only (per-row fallbacks):
+--echo #      zero divisor -> SQL NULL row; a magnitude past 2^53 ->
+--echo #      the kernel's precision guard errors the query (mysqld
+--echo #      has no such guard and returns a value — an intentional
+--echo #      engine difference, so only RonSQL's behavior is probed).
+CREATE TABLE tgz (
+  pk INT PRIMARY KEY,
+  x  BIGINT NOT NULL,
+  y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgz VALUES (1, 10, 4), (2, 9, 0), (3, 30, 8);
+--disable_warnings
+SELECT SUM(x / y) AS s, COUNT(x / y) AS c FROM tgz;
+--enable_warnings
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x / y) AS s, COUNT(x / y) AS c FROM tgz;"
+INSERT INTO tgz VALUES (4, 9007199254740993, 1);
+--error 1
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(x / y) AS s FROM tgz;"
+DROP TABLE tgz;
+DROP TABLE tgd;
+
+--echo # Q16: TEMPORAL MIN/MAX (Phase 5K) — DATE / YEAR / DATETIME(3) /
+--echo #      TIME(3) ride the u64 track as packed values (unsigned
+--echo #      order = chronological order); RonSQL decodes for display,
+--echo #      mysqld computes server-side (it never pushes temporals).
+CREATE TABLE ttmp (
+  pk INT PRIMARY KEY,
+  d  DATE NOT NULL,
+  y  YEAR NOT NULL,
+  dt DATETIME(3) NOT NULL,
+  tm TIME(3) NOT NULL,
+  ts TIMESTAMP(3) NOT NULL
+) ENGINE=NDB;
+INSERT INTO ttmp VALUES
+  (1, '2026-01-15', 1999, '2026-01-15 10:30:00.500', '10:30:00.500', '2026-01-15 10:30:00.500'),
+  (2, '2026-03-20', 2026, '2026-01-15 10:30:00.250', '09:15:00.000', '2026-01-15 10:30:00.250'),
+  (3, '2025-12-31', 2004, '2025-06-01 00:00:00.000', '23:59:59.999', '2025-06-01 00:00:00.000');
+SELECT MIN(d) AS d1, MAX(d) AS d2, MIN(y) AS y1, MAX(y) AS y2 FROM ttmp;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT MIN(d) AS d1, MAX(d) AS d2, MIN(y) AS y1, MAX(y) AS y2 FROM ttmp;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q16_jit_compiled;
+
+--echo # Q17: DATETIME(3) and TIME(3) — the big-endian memcmp-packed
+--echo #      *2 formats (6-bit wide type ids on the wire).
+SELECT MIN(dt) AS dt1, MAX(dt) AS dt2, MIN(tm) AS t1, MAX(tm) AS t2 FROM ttmp;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT MIN(dt) AS dt1, MAX(dt) AS dt2, MIN(tm) AS t1, MAX(tm) AS t2 FROM ttmp;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q17_jit_compiled;
+
+--echo # Q18: TIMESTAMP(3) — compile/counter probe only (RonSQL
+--echo #      displays UTC while mysqld uses the session timezone, so
+--echo #      the outputs are not comparable; values are checked by
+--echo #      the epoch ordering being absolute).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--disable_result_log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT MIN(ts) AS s1, MAX(ts) AS s2 FROM ttmp;"
+--enable_result_log
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q18_jit_compiled;
+DROP TABLE ttmp;
+
+--echo # Q19: DOUBLE DIV and DOUBLE % — the Phase 5L conversion cold
+--echo #      call (trunc-DIV lands a SIGNED BIGINT result; fmod stays
+--echo #      double). Values exact in binary.
+CREATE TABLE tdd (
+  pk INT PRIMARY KEY,
+  d  DOUBLE NOT NULL,
+  e  DOUBLE NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdd VALUES (1, 1.5, 0.5), (2, 2.5, 0.5), (3, 4.0, 2.0), (4, 6.0, 4.0);
+SELECT SUM(d DIV 2) AS s1, SUM(d % e) AS s2 FROM tdd;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(d DIV 2) AS s1, SUM(d % e) AS s2 FROM tdd;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q19_jit_compiled;
+
+--echo # Q20: negative trunc-DIV — toward-zero, not floor.
+SELECT SUM((0 - d) DIV 2) AS s FROM tdd;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM((0 - d) DIV 2) AS s FROM tdd;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q20_jit_compiled;
+DROP TABLE tdd;
+
+--remove_file $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log

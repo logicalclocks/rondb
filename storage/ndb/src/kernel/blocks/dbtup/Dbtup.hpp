@@ -314,6 +314,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #endif
 
 class Dbtux;
+class AggInterpreterBase;
 class AggInterpreter;
 class JoinAggInterpreter;
 struct Register;
@@ -321,6 +322,7 @@ struct Register;
 class Dbtup : public SimulatedBlock {
   friend class DbtupProxy;
   friend class Suma;
+  friend class AggInterpreterBase;
   friend class AggInterpreter;
   friend class JoinAggInterpreter;
   friend class VecSearchInterpreter;
@@ -1731,12 +1733,46 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint8 copyOverwrite;
     Uint8 copyOverwriteLen;
     bool  copyAttrinfoCalled;    // Set true after first copyAttrinfo call
+
+    /* RONDB-1056 Phase 7: JIT-compiled scan-filter cache.
+     * m_jit_filter_state is a tri-state (0 = untried, 1 = compiled,
+     * 2 = ineligible): UNTRIED until the first interpreted scan setup
+     * attempts a compile, then COMPILED (entry valid) or INELIGIBLE.
+     * The entry is compiled once per prepared scan program and reused
+     * by every scan that shares this stored procedure; the per-scan
+     * fast pointer is copied onto Dblqh::ScanRecord at setup.  Both
+     * fields are reset when a record is (re)initialised for a new scan
+     * procedure so a pooled record can never run a stale program's
+     * compiled filter.
+     *
+     * m_jit_filter_reject_code holds the program's EXIT_REFUSE code
+     * (theInstruction >> 16, captured at compile), so the per-row reject
+     * path can TUPKEY_abort with the program's actual code rather than a
+     * hardcoded one. It is a 16-bit field in the wire format.
+     *
+     * Field order: the Uint8 + Uint16 join the existing byte cluster above
+     * and the 8-byte pointer follows, so the pointer's alignment padding is
+     * not duplicated. */
+    Uint8 m_jit_filter_state;
+    Uint16 m_jit_filter_reject_code;
+    void* m_jit_filter_entry;    // JitEntry, or nullptr
+    /* RONDB-1056 Phase 8: opaque program-reuse-cache handle (NjpEntry*)
+     * for the compiled filter. Held for this stored procedure's life and
+     * released in deleteScanProcedure, dropping the cache refcount (the
+     * code-memory slot is freed when the last holder releases). Adjacent
+     * to m_jit_filter_entry so the two pointers share alignment. */
+    void* m_jit_filter_cache_handle;  // NjpEntry*, or nullptr
     union {
       Uint32 nextPool;
       Uint32 nextList;
     };
     Uint32 prevList;
   };
+  /* RONDB-1056 Phase 7: storedProc::m_jit_filter_state values. */
+  static constexpr Uint8 JIT_FILTER_UNTRIED = 0;
+  static constexpr Uint8 JIT_FILTER_COMPILED = 1;
+  static constexpr Uint8 JIT_FILTER_INELIGIBLE = 2;
+
   typedef Ptr<storedProc> StoredProcPtr;
   typedef TransientPool<storedProc> StoredProc_pool;
   static constexpr Uint32 DBTUP_STORED_PROCEDURE_TRANSIENT_POOL_INDEX = 1;
@@ -3292,6 +3328,63 @@ public:
                              Uint32 *tmpArea, Uint32 tmpAreaSz,
                              const Register *aggRegisters);
 
+  /* RONDB-1056 Phase 7: public forwarder to the private
+   * readSingleAttribute fast path, callable from the DbtupJitGlue
+   * cold-call helpers (free functions, not friends).  Used by the
+   * scan-filter JIT path, which has no AggInterpreter to route
+   * through.  Same contract as readSingleAttribute: returns words
+   * written (>= 1) or a negative error code. */
+  int readSingleAttributeForJit(KeyReqStruct *req_struct, Uint32 attrId,
+                                Uint32 *outBuf, Uint32 maxWords) {
+    return readSingleAttribute(req_struct, attrId, outBuf, maxWords);
+  }
+
+  /* ronsql_jit item 13: NULL-ness of a local column for the JIT's
+   * presence-only load (COUNT over a string column needs only "is it
+   * NULL"). Same fast path, but into the block's coutBuffer — sized for
+   * any attribute and free on the JIT path (it is the interpreter's
+   * tmpArea; evalBranchColForJit uses it the same way) — so no caller
+   * buffer can be too small for a wide CHAR / VARCHAR / LONGVARCHAR
+   * (readSingleAttribute fails the read past max_read).
+   * Returns 1 = NULL, 0 = non-NULL, <0 = error code. */
+  int readAttributeIsNullForJit(KeyReqStruct *req_struct, Uint32 attrId) {
+    const int rc = readSingleAttribute(
+        req_struct, attrId, coutBuffer,
+        (Uint32)(sizeof(coutBuffer) / sizeof(coutBuffer[0])));
+    if (unlikely(rc < 0)) return rc;
+    return AttributeHeader(coutBuffer[0]).isNULL() ? 1 : 0;
+  }
+
+  /* RONDB-1056 Phase 7: evaluate a column-vs-value scan-filter branch for
+   * the JIT cold-call helper — BRANCH_ATTR_OP_ARG (vs an inline literal),
+   * BRANCH_ATTR_OP_PARAM (vs a parameter), and BRANCH_ATTR_OP_ATTR (vs a 2nd
+   * column). `inst` points at the instruction's
+   * word 0 in the program buffer (word0 = opcode|nulls|cond|branch_offset,
+   * word1 = attrId|argLen|paramNo); `param_buf` is the subroutine/param
+   * region (only dereferenced for OP_PARAM; may be nullptr otherwise). Reads
+   * the column, compares against the operand via the type's NdbSqlUtil
+   * compare, and applies the same NULL-semantics + condition mapping as the
+   * interpreter's handleBranchAttrOp. Returns 1 to take the branch, 0 to
+   * fall through, or a negative error code (read failure / missing param /
+   * unsupported type or condition) which the caller treats as fatal. */
+  int evalBranchColForJit(KeyReqStruct *req_struct, const Uint32 *inst,
+                          const Uint32 *param_buf);
+
+  /* ronsql_jit slice 2 item 5: JIT evaluation of BRANCH_MEM_OP_ARG /
+   * BRANCH_MEM_OP_ARG_INLINE_TYPE — compares the cheapMemory[0] value
+   * (pre-loaded by READ_LINKED_TO_MEM) against the instruction's
+   * inline literal, dispatching the two layouts on the opcode in
+   * inst[0]. Same return convention as evalBranchColForJit; negative
+   * (stale schema, bad charset, no comparator) means the caller
+   * should fall the row back to the interpreter. */
+  int evalBranchMemForJit(const Uint32 *inst);
+
+  /* ronsql_jit slice 2 item 6: raw heap-memory (cheapMemory) read for
+   * OP_READ_MEM_TO_REG. width 1/2/4 zero-extends; width 8 reads raw
+   * bits (Int64 semantics). The caller (bridge) bounds-checked the
+   * constant offset against MAX_HEAP_OFFSET at compile time. */
+  Uint64 readCheapMemForJit(Uint32 byte_off, Uint32 width);
+
 private:
 
   const Uint32 *lookupInterpreterParameter(Uint32 paramNo,
@@ -3424,6 +3517,49 @@ private:
     }
     return -(int)req_struct->errorCode;
   }
+
+  /* Walk req_struct->m_linked_attr_data, find the Nth entry, and
+   * copy AttributeHeader + data into `dest` (typically
+   * cheapMemory[0]). Linked-buffer format per entry:
+   *   [tableId, schemaVersion, AttrHeader, data...]
+   *
+   * Defensive against malformed input: validates each entry's
+   * header word and payload length is within `linked_len`, and
+   * the destination copy is bounded by `dest_words`. On any
+   * malformation (truncated entry, out-of-range position, oversized
+   * payload, null buffer), writes a NULL AttributeHeader at dest[0]
+   * and returns. dest_words must be ≥ 1 for the NULL-AH fallback
+   * to be safe.
+   *
+   * Used by both the NDB interpreter's handleReadLinkedToMem and
+   * the JIT helper ndb_jit_h_read_linked_to_mem so the two paths
+   * share one source of truth. */
+  static void readLinkedToMemBuffer(const Uint32 *linked,
+                                     Uint32 linked_len,
+                                     Uint32 position,
+                                     Uint32 *dest,
+                                     Uint32 dest_words);
+
+#ifdef ERROR_INSERT
+  /* Wrapper around ERROR_INSERTED so external collaborators
+   * (notably JoinAggInterpreter, which is friend but not a
+   * block) can probe cerrorInsert without macro-scope tricks.
+   * Only defined in ERROR_INSERT builds — release callers must
+   * guard their use accordingly. */
+  bool jit_error_inserted(Uint32 code) const {
+    return ERROR_INSERTED(code);
+  }
+
+  Uint32 jit_error_insert_extra() const {
+    return ERROR_INSERT_EXTRA;
+  }
+#endif
+
+  // Read only PK attributes, without AttributeHeader.
+  // Optinally xfrm'ing the key in preparation for hash
+  int readKeyAttributes(KeyReqStruct *req_struct, const Uint32 *inBuffer,
+                        Uint32 inBufLen, Uint32 *outBuffer, Uint32 TmaxRead,
+                        bool xfrmFlag);
 
   int setInputParameters(KeyReqStruct *req_struct,
                          Uint32 *inBuffer,

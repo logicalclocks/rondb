@@ -1,0 +1,6 @@
+# RONDB-1056 JIT benchmark — the JIT arm (this suite pins
+# CompiledInterpreter=ON). Same body as ndb_push_agg/t/jit_bench.test:
+# suite/ndb_push_agg/include/jit_bench_body.inc; driver:
+# claude_files/compiled_interpreter/jit_bench_off_vs_on.py. Not a census
+# mirror — no fallback-delta pin (perf only, out of census scope).
+--source suite/ndb_push_agg/include/jit_bench_body.inc

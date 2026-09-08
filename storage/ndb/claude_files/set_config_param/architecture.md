@@ -20,8 +20,10 @@ MGM Server (Services.cpp -> MgmtSrvr.cpp)
   -> Waits for CONF/REF responses
        |
 Data Node CMVMI (Cmvmi.cpp)
-  1. Updates ConfigValues (for ndbinfo reporting)
-  2. Dispatches to appropriate block via switch(configKey)
+  1. Dispatches to appropriate block via switch(configKey)
+     (a case may reject the value with SetConfigParamRef and return)
+  2. Updates ConfigValues (for ndbinfo reporting), keeping the entry's
+     stored type (Uint32 or Uint64)
   3. Sends SetConfigParamConf back to MgmtSrvr
 ```
 
@@ -31,5 +33,5 @@ The signal infrastructure (`SetConfigParam`) is **already implemented** and gene
 
 - **Uint64 encoding**: Values are split into two Uint32 signal words (high/low). This is handled automatically by the signal infrastructure. The Cmvmi handler reconstructs with `(Uint64(high) << 32) | Uint64(low)`.
 - **ALL support**: When nodeId is 0, `MgmtSrvr::set_config_param_request()` sends to all data nodes. The `executeForAll()` function in CommandInterpreter routes "ALL SET ..." as a single call with nodeId=0.
-- **ndbinfo update**: Cmvmi updates ConfigValues before dispatching to the target block. The `config_values` table in ndbinfo reads from these values, so it reflects changes immediately.
+- **ndbinfo update**: Cmvmi updates ConfigValues after dispatching to the target block (so a rejected value is never recorded). The `config_values` table in ndbinfo reads from these values, so it reflects changes immediately.
 - **Two-phase update**: Step 1 persists to management server config (survives restarts). Step 2 applies to running nodes immediately. If step 2 fails, the config is still saved and takes effect on next restart.

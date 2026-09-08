@@ -1,0 +1,127 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+===== Prepare table for encoding tests for datatype VARCHAR(50) =====
+CREATE TABLE encoding_test (
+title     CHAR(50)    CHARACTER SET latin1  NOT NULL,
+t_greek   VARCHAR(50) CHARACTER SET greek   NOT NULL,
+t_latin1  VARCHAR(50) CHARACTER SET latin1  NOT NULL,
+t_utf16   VARCHAR(50) CHARACTER SET utf16   NOT NULL,
+t_utf8mb4 VARCHAR(50) CHARACTER SET utf8mb4 NOT NULL,
+PRIMARY KEY USING HASH (title)) ENGINE=NDB;
+INSERT INTO encoding_test VALUES
+('1. Basic characters',
+'ABCabc', 'ABCabc', 'ABCabc', 'ABCabc'),
+('2. Swedish characters',
+'(unsupported)', 'XYZÅÄÖxyzåäö_', 'XYZÅÄÖxyzåäö_', 'XYZÅÄÖxyzåäö_'),
+('3. Greek characters',
+'ΑΒΓαβγ_', '(unsupported)', 'ΑΒΓαβγ_', 'ΑΒΓαβγ_'),
+('4. Spaces and suffix trimming',
+'   spaces   ', '   spaces   ', '   spaces   ', '   spaces   '),
+('5. Escaped characters',
+'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/',
+    'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/',
+    'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/',
+'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/'),
+  ('6. Control characters',
+    0x01021e1f7f81, 0x01021e1f7f81, 0x00010002001e001f007f0081, 0x01021e1f7fc281);
+===== Test encoding in JSON mode =====
+{"data":
+[{"title":"1. Basic characters","t_greek":"ABCabc","t_latin1":"ABCabc","t_utf16":"ABCabc","t_utf8mb4":"ABCabc","count(*)":1}
+,{"title":"2. Swedish characters","t_greek":"(unsupported)","t_latin1":"XYZÅÄÖxyzåäö_","t_utf16":"XYZÅÄÖxyzåäö_","t_utf8mb4":"XYZÅÄÖxyzåäö_","count(*)":1}
+,{"title":"3. Greek characters","t_greek":"ΑΒΓαβγ_","t_latin1":"(unsupported)","t_utf16":"ΑΒΓαβγ_","t_utf8mb4":"ΑΒΓαβγ_","count(*)":1}
+,{"title":"4. Spaces and suffix trimming","t_greek":"   spaces   ","t_latin1":"   spaces   ","t_utf16":"   spaces   ","t_utf8mb4":"   spaces   ","count(*)":1}
+,{"title":"5. Escaped characters","t_greek":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","t_latin1":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","t_utf16":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","t_utf8mb4":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","count(*)":1}
+,{"title":"6. Control characters","t_greek":"\u0001\u0002\u001e\u001f\u007f\u0081","t_latin1":"\u0001\u0002\u001e\u001f\u007f\u0081","t_utf16":"\u0001\u0002\u001e\u001f\u007f\u0081","t_utf8mb4":"\u0001\u0002\u001e\u001f\u007f\u0081","count(*)":1}
+]
+}
+
+===== Test encoding in TSV mode =====
+== Query ==
+SELECT title
+, t_greek
+, t_latin1
+, t_utf16
+, t_utf8mb4
+, count(*)
+FROM encoding_test
+GROUP BY title
+, t_greek
+, t_latin1
+, t_utf16
+, t_utf8mb4
+;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+Cleanup
+DROP TABLE encoding_test;
+===== Prepare table for encoding tests for datatype CHAR(50) =====
+CREATE TABLE encoding_test (
+title     CHAR(50)    CHARACTER SET latin1  NOT NULL,
+t_greek   CHAR(50)    CHARACTER SET greek   NOT NULL,
+t_latin1  CHAR(50)    CHARACTER SET latin1  NOT NULL,
+t_utf16   CHAR(50)    CHARACTER SET utf16   NOT NULL,
+t_utf8mb4 CHAR(50)    CHARACTER SET utf8mb4 NOT NULL,
+PRIMARY KEY USING HASH (title)) ENGINE=NDB;
+INSERT INTO encoding_test VALUES
+('1. Basic characters',
+'ABCabc', 'ABCabc', 'ABCabc', 'ABCabc'),
+('2. Swedish characters',
+'(unsupported)', 'XYZÅÄÖxyzåäö_', 'XYZÅÄÖxyzåäö_', 'XYZÅÄÖxyzåäö_'),
+('3. Greek characters',
+'ΑΒΓαβγ_', '(unsupported)', 'ΑΒΓαβγ_', 'ΑΒΓαβγ_'),
+('4. Spaces and suffix trimming',
+'   spaces   ', '   spaces   ', '   spaces   ', '   spaces   '),
+('5. Escaped characters',
+'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/',
+    'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/',
+    'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/',
+'NUL\0 SQ\' DQ\" BS\b NL\n CR\r TA\t SUB\Z BS\\ S/'),
+  ('6. Control characters',
+    0x01021e1f7f81, 0x01021e1f7f81, 0x00010002001e001f007f0081, 0x01021e1f7fc281);
+===== Test encoding in JSON mode =====
+{"data":
+[{"title":"1. Basic characters","t_greek":"ABCabc","t_latin1":"ABCabc","t_utf16":"ABCabc","t_utf8mb4":"ABCabc","count(*)":1}
+,{"title":"2. Swedish characters","t_greek":"(unsupported)","t_latin1":"XYZÅÄÖxyzåäö_","t_utf16":"XYZÅÄÖxyzåäö_","t_utf8mb4":"XYZÅÄÖxyzåäö_","count(*)":1}
+,{"title":"3. Greek characters","t_greek":"ΑΒΓαβγ_","t_latin1":"(unsupported)","t_utf16":"ΑΒΓαβγ_","t_utf8mb4":"ΑΒΓαβγ_","count(*)":1}
+,{"title":"4. Spaces and suffix trimming","t_greek":"   spaces","t_latin1":"   spaces","t_utf16":"   spaces","t_utf8mb4":"   spaces","count(*)":1}
+,{"title":"5. Escaped characters","t_greek":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","t_latin1":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","t_utf16":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","t_utf8mb4":"NUL\u0000 SQ' DQ\" BS\b NL\n CR\r TA\t SUB\u001a BS\\ S/","count(*)":1}
+,{"title":"6. Control characters","t_greek":"\u0001\u0002\u001e\u001f\u007f\u0081","t_latin1":"\u0001\u0002\u001e\u001f\u007f\u0081","t_utf16":"\u0001\u0002\u001e\u001f\u007f\u0081","t_utf8mb4":"\u0001\u0002\u001e\u001f\u007f\u0081","count(*)":1}
+]
+}
+
+===== Test encoding in TSV mode =====
+== Query ==
+SELECT title
+, t_greek
+, t_latin1
+, t_utf16
+, t_utf8mb4
+, count(*)
+FROM encoding_test
+GROUP BY title
+, t_greek
+, t_latin1
+, t_utf16
+, t_utf8mb4
+;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+Cleanup
+DROP TABLE encoding_test;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_encoding_jit_fallback_delta;
+ronsql_encoding_jit_fallback_delta
+0

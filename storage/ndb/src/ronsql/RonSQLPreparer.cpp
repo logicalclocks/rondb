@@ -7305,6 +7305,11 @@ RonSQLPreparer::execute()
     }
 
     NdbAggregator aggregator(m_main_scope.table);
+    /* RonSQL queries are re-sent verbatim across requests (dashboards,
+     * RDRS endpoints), so mark the program reusable: the data node pins
+     * its JIT-compiled form in the reuse cache and re-executions skip
+     * recompilation (RONDB-1056 Phase 8 Slice 4). */
+    aggregator.set_reusable_program(true);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
     STAT_TS(m_conf.phase_stats, s_scandef_start);
@@ -8339,6 +8344,11 @@ RonSQLPreparer::execute_join()
                 "was not built.");
   }
   NdbAggregator singleAgg(agg_leaf_table);
+  /* Same reusable marking as the standalone path. The join-agg compile
+   * path (DblqhProxy) has no program-reuse cache today and ignores the
+   * bit, but the intent — RonSQL re-sends this program — is a property
+   * of the statement, not the execution path. */
+  singleAgg.set_reusable_program(true);
 
   if (m_has_select_subqueries && plan.num_agg_leaves > 0) {
     require_run(m_main_scope.resolved_columns != NULL,

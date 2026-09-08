@@ -20,6 +20,17 @@
 
 All paths are relative to `storage/ndb/`.
 
+## Runtime-Settable Parameters (MGM client `SET`)
+
+| Parameter | Key | Type | Runtime dispatch in the data node |
+|-----------|-----|------|-----------------------------------|
+| `MaxDiskWriteSpeed` | `CFG_DB_MAX_DISK_WRITE_SPEED` (639) | CI_INT64 | `SET_CONFIG_PARAM_REQ` -> Cmvmi -> `DUMP BackupMaxWriteSpeed64` to BACKUP |
+| `EnableProactiveDeadlockDetection` | `CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION` (708) | CI_BOOL | client sends `DUMP DumpStateOrd::DeadlockDetection` per node (DBTC/DBACC) |
+| `RdmaLogLevel` | `CFG_RDMA_LOG_LEVEL` (533) | CI_INT | client sends `DUMP 103020` (`CmvmiSetRdmaLogLevel`) per node |
+| `CompiledInterpreter` | `CFG_DB_COMPILED_INTERPRETER` (709) | CI_ENUM `OFF`/`AUTO`/`ON` = 0/1/2 | `SET_CONFIG_PARAM_REQ` -> Cmvmi -> `dbtup_jit_set_mode()` (RONDB-1056 JIT mode word, consulted at every compile decision; already compiled programs stay cached) |
+
+`ndb_mgm -e "ALL SET CompiledInterpreter OFF"` / `"1 SET CompiledInterpreter on"` / `"ALL SET CompiledInterpreter 2"` — enum names are case-insensitive, numbers accepted. MTR: `mysql-test/suite/ndb/t/ndb_set_compiled_interpreter.test` (the others: `ndb_config_set.test`).
+
 ## Files That Do NOT Need Changes for New Parameters
 
 These files contain the generic signal infrastructure and are already complete:
@@ -41,3 +52,20 @@ These files contain the generic signal infrastructure and are already complete:
 4. `SELECT config_value FROM ndbinfo.config_values WHERE config_param = <key>` — shows new value
 5. Invalid value rejected with helpful error message
 6. Value persists across management server restart (config saved)
+
+### CompiledInterpreter — default and platform rule (2026-09-08)
+
+- Config default is **OFF** (`ConfigInfo.cpp`; was AUTO during RONDB-1056
+  development). AUTO / ON enable the JIT.
+- AUTO / ON are accepted **only on x86_64 and aarch64 data nodes** — the
+  CPUs with a stencil backend (`dbtup/jit/ndb_jit_platform.h`,
+  `NDB_JIT_HAVE_BACKEND`). Elsewhere (RISC-V next): the node refuses to
+  START with AUTO/ON in its config (`DblqhProxy::execREAD_CONFIG_REQ`,
+  NDBD_EXIT_INVALID_CONFIG with a message naming the fix), and a runtime
+  `SET CompiledInterpreter AUTO|ON` is rejected by CMVMI with
+  SET_CONFIG_PARAM_REF (the MGM client prints a note). OFF-only on other
+  CPUs; `dbtup_jit_enabled()` is compiled to `false` there.
+- The JIT tree still BUILDS on such CPUs: `jit1.c` takes
+  `stencils_none.h` and `jit1_compile()` fails with ENOTSUP; the host
+  tests under `test/jit_proto` are skipped by CMake. macOS x86_64 keeps
+  its pre-existing exclusion (no backend, JIT libraries not built).

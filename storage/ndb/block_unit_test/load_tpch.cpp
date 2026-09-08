@@ -354,6 +354,14 @@ createTables(MYSQL *conn)
   if (sqlExecTimed(conn, "CREATE INDEX lineitem_suppkey",
     "CREATE INDEX idx_lineitem_suppkey ON tpch_lineitem (l_suppkey)"
     ) != 0) return -1;
+  /* partsupp's PK starts with ps_partkey, so a plain mysqld join that
+   * walks supplier -> partsupp (bench_q2_ndbapi's SQL cross-check, which
+   * runs without pushdown aggregation) had to scan partsupp once per
+   * supplier — ~68 s per iteration at sf 0.05. The NDB API benches scan
+   * partsupp as the join root and are unaffected. */
+  if (sqlExecTimed(conn, "CREATE INDEX partsupp_suppkey",
+    "CREATE INDEX idx_partsupp_suppkey ON tpch_partsupp (ps_suppkey)"
+    ) != 0) return -1;
 
   return 0;
 }

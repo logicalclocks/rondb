@@ -1,6 +1,14 @@
 # Aggregation as a Query-Tree Node — Alternative Plan
 
-**Status: PLAN / INVESTIGATION (not yet implemented).** Alternative to the
+**Status: PLAN / INVESTIGATION (not yet implemented).**
+
+> **Compiled-interpreter coordination (RONDB-1056, Phase 6-6):** a
+> `QN_AGGREGATE` TreeNode relocates exactly the row-dispatch site the
+> JIT hooks (`handleJoinAggRow` → `JoinAggInterpreter::ProcessRec`).
+> The compile hook and dispatch gate must move with it; the
+> conformance suites (`ndb_push_agg` OFF / `ndb_push_agg_jit` ON /
+> `ronsql_cte_jit_census` must-JIT) are the acceptance gate. See
+> "Compiled Interpreter Touchpoints" in this directory's CLAUDE.md. Alternative to the
 feed mechanism in `local_execution_mode_plan.md` §4.2/§4.3 (its Phase 3).
 The LOCAL syntax, flag transport, and placement phases of that plan (Phases
 0-2) are unaffected by this choice — this document decides *how rows reach

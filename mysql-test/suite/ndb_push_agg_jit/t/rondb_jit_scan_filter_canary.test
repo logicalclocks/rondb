@@ -1,0 +1,145 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+# RONDB-1056 Phase 7 — SCAN_FRAGREQ scan-filter JIT canary.
+#
+# A pushed-down WHERE filter (IS [NOT] NULL) is JIT-compiled once at
+# scan setup (PushdownInterpreterFactory path is for aggregation; the
+# plain-filter path compiles in Dbtup::scanCopyAttrinfo and caches the
+# entry on the stored procedure) and run natively per row in
+# Dbtup::interpreterStartLab instead of interpreterNextLab.
+#
+# ERROR_INSERT 4060 makes interpreter fallback fatal for any scan that
+# carries a WHERE filter, so the SELECTs below must run through the JIT
+# path. The non-error-insert query (Q3) is a JIT-on differential of Q1.
+
+--echo ############################################################
+--echo # RONDB-1056 scan-filter JIT canary
+--echo ############################################################
+
+CREATE TABLE t1 (
+  pk BIGINT NOT NULL,
+  v  BIGINT,
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES
+  (1, 10), (2, NULL), (3, 30), (4, NULL), (5, 50);
+
+--echo # Q1: WHERE v IS NOT NULL must JIT (filter rejects the NULL rows).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q2: WHERE v IS NULL must JIT (filter keeps the NULL rows).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk FROM t1 WHERE v IS NULL;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q3: differential — same filter without the error insert matches Q1.
+--sorted_result
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+
+--echo # Q4: WHERE v > 25 must JIT (BRANCH_ATTR_OP_ARG, integer GT literal).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, v FROM t1 WHERE v > 25;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q5: WHERE v = 30 must JIT (BRANCH_ATTR_OP_ARG, integer EQ literal).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, v FROM t1 WHERE v = 30;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q6: differential — same comparison without the error insert matches Q4.
+--sorted_result
+SELECT pk, v FROM t1 WHERE v > 25;
+
+--echo # Q7: WHERE v > ? (bound parameter) must JIT (BRANCH_ATTR_OP_PARAM —
+--echo #     the ndbcluster handler pushes a non-const param via cmp_param).
+PREPARE pstmt FROM 'SELECT pk, v FROM t1 WHERE v > ?';
+SET @lim = 25;
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+EXECUTE pstmt USING @lim;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+DEALLOCATE PREPARE pstmt;
+
+--echo # Q8: WHERE pk < v (column vs column) must JIT (BRANCH_ATTR_OP_ATTR).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, v FROM t1 WHERE pk < v;
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q9: differential — same col-vs-col comparison without the error insert.
+--sorted_result
+SELECT pk, v FROM t1 WHERE pk < v;
+
+DROP TABLE t1;
+
+--echo ############################################################
+--echo # String (VARCHAR) comparison predicates
+--echo ############################################################
+CREATE TABLE t2 (
+  pk BIGINT NOT NULL,
+  s  VARCHAR(32),
+  PRIMARY KEY (pk)
+) ENGINE=NDB;
+
+INSERT INTO t2 VALUES
+  (1, 'apple'), (2, NULL), (3, 'cherry'), (4, 'date'), (5, 'cherry');
+
+--echo # Q10: WHERE s = 'cherry' (VARCHAR literal) must JIT — string compare
+--echo #      via the column's charset, read into the large coutBuffer.
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q11: WHERE s < 'cherry' (VARCHAR range) must JIT.
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s < 'cherry';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q12: differential — same string filter without the error insert.
+--sorted_result
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+
+--echo # Q13: WHERE s LIKE 'ch%' must JIT (ronsql_jit item 12: BRANCH_ATTR_OP_ARG
+--echo #      LIKE / NOT_LIKE through the type's m_like comparator).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q14: WHERE s NOT LIKE 'ch%' must JIT; the NULL row (pk 2) must NOT
+--echo #      appear — a NULL operand is "no match" for NOT LIKE as well.
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s NOT LIKE 'ch%';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q15: WHERE s LIKE '%e' must JIT (leading wildcard — no range, pure filter).
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE '%e';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q16: WHERE s LIKE 'CH%' must JIT and match case-insensitively — the
+--echo #      column collation's wildcmp drives both engines.
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE 'CH%';
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log
+
+--echo # Q17: differential — Q13's LIKE filter without the error insert.
+--sorted_result
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+
+DROP TABLE t2;
+
+--remove_file $MYSQL_TMP_DIR/rondb_jit_scan_filter_canary_mgm.log

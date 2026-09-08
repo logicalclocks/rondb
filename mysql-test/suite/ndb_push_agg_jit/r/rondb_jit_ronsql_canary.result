@@ -1,0 +1,310 @@
+############################################################
+# RONDB-1056 RonSQL generic-arithmetic JIT canary
+############################################################
+CREATE TABLE t1 (
+pk  INT PRIMARY KEY,
+grp INT NOT NULL,
+a   BIGINT NOT NULL,
+b   BIGINT NOT NULL,
+d   DOUBLE NOT NULL,
+e   DOUBLE NOT NULL,
+u   BIGINT UNSIGNED NOT NULL,
+i   INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 10, 3, 1.5, 0.5, 100, 7),
+(2, 1, 20, 4, 2.5, 0.5, 200, 8),
+(3, 2, 30, 5, 4.0, 2.0, 300, 9),
+(4, 2, 40, 6, 6.0, 4.0, 400, 10);
+# Q1: integer +,-,* chains. mysqld baseline, then RonSQL
+#     must-JIT.
+SELECT SUM(a + b) AS s1, SUM(a * b - a) AS s2 FROM t1;
+s1	s2
+118	400
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+118	400
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: double +,* and the all-double generic '/'.
+SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;
+s1	s2	s3
+21	34	11.5
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2	s3
+21	34	11.5
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: unsigned column + non-negative constant (u64 + NNC).
+SELECT SUM(u + 1) AS s FROM t1;
+s
+1004
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+1004
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+# Q4: narrow INT columns through RonSQL (5H + 5E-1 composition).
+SELECT SUM(i + i) AS s FROM t1;
+s
+68
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+68
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
+# Q5: grouped RonSQL arithmetic (TEXT_NOHEADER piped through
+#     sort for deterministic group order).
+SELECT grp, SUM(a + b) AS s FROM t1 GROUP BY grp;
+grp	s
+1	37
+2	81
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+1	37
+2	81
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q5_jit_compiled;
+q5_jit_compiled
+1
+# Q6: mixed int/double operands — the Phase 5I conversion cold
+#     call (formerly this canary's whole-program-fallback
+#     negative control). Must-JIT now.
+SELECT SUM(a + d) AS s FROM t1;
+s
+114
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+114
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q6_jit_compiled;
+q6_jit_compiled
+1
+DROP TABLE t1;
+# Q7: DECIMAL(9,2) arithmetic — the NEW 5E-1 lowering (generic
+#     kOpMul over F64-tracked decimal loads; the optimizer
+#     leaves DECIMAL operands untyped).
+CREATE TABLE td (
+pk INT PRIMARY KEY,
+p  DECIMAL(9,2) NOT NULL,
+q  DECIMAL(9,2) NOT NULL,
+s0 DECIMAL(9,0) NOT NULL,
+t0 DECIMAL(9,0) NOT NULL
+) ENGINE=NDB;
+INSERT INTO td VALUES
+(1, 1.50, 2.00, 10, 3),
+(2, 2.50, 4.00, 20, 4);
+SELECT SUM(p * q) AS s FROM td;
+s
+13.0000
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+13
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+q7_jit_compiled
+1
+# Q8: scale-0 DECIMAL arithmetic lands in the checked signed
+#     integer track.
+SELECT SUM(s0 + t0) AS s FROM td;
+s
+37
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+37
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q8_jit_compiled;
+q8_jit_compiled
+1
+DROP TABLE td;
+# Q9: integer DIV and % through RonSQL (Phase 5E-2) — must-JIT.
+CREATE TABLE tdm (
+pk INT PRIMARY KEY,
+a  BIGINT NOT NULL,
+b  BIGINT NOT NULL,
+u  BIGINT UNSIGNED NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdm VALUES
+(1, 10, 3, 100),
+(2, 20, 4, 200),
+(3, 30, 5, 300),
+(4, 40, 6, 400);
+SELECT SUM(a DIV b) AS s1, SUM(a % b) AS s2 FROM tdm;
+s1	s2
+20	5
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+20	5
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q9_jit_compiled;
+q9_jit_compiled
+1
+# Q10: NEGATIVE operands — TRUNCATING division (-7 DIV 2 = -3,
+#      not floor's -4) and remainder sign follows the DIVIDEND.
+CREATE TABLE tneg (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tneg VALUES
+(1, -7, 2), (2, 9, -4), (3, -9, -4), (4, 10, 3);
+SELECT MIN(x DIV y) AS d1, MAX(x DIV y) AS d2,
+MIN(x % y) AS m1, MAX(x % y) AS m2 FROM tneg;
+d1	d2	m1	m2
+-3	3	-1	1
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+d1	d2	m1	m2
+-3	3	-1	1
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q10_jit_compiled;
+q10_jit_compiled
+1
+DROP TABLE tneg;
+# Q11: unsigned DIV/% with constant divisors (u64 + NNC).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+332	13
+SELECT SUM(u DIV 3) AS s1, SUM(u % 7) AS s2 FROM tdm;
+s1	s2
+332	13
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q11_jit_compiled;
+q11_jit_compiled
+1
+DROP TABLE tdm;
+# Q12: DIVISION BY ZERO rows — SQL NULL per row (the stencils
+#      take the per-row fallback; SUM skips, COUNT drops them).
+#      Correctness-only: per-row fallbacks cannot sit under 4060.
+CREATE TABLE tz (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tz VALUES (1, 10, 2), (2, 9, 0), (3, 7, 3);
+SELECT SUM(x DIV y) AS s1, SUM(x % y) AS s2, COUNT(x DIV y) AS c FROM tz;
+s1	s2	c
+7	1	2
+s1	s2	c
+7	1	2
+DROP TABLE tz;
+# Q13: INT64_MIN DIV -1 — the overflow exit. Both engines error;
+#      under 4060 the RonSQL error proves it came from the JIT's
+#      overflow exit, not a fallback.
+CREATE TABLE tovf (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tovf VALUES (1, -9223372036854775808, -1);
+SELECT SUM(x DIV y) FROM tovf;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q13_jit_compiled;
+q13_jit_compiled
+1
+DROP TABLE tovf;
+# Q14: GENERIC '/' over integer columns (Phase 5E-3 conversion
+#      cold call) — must-JIT; values exact in binary.
+CREATE TABLE tgd (
+pk INT PRIMARY KEY,
+a  BIGINT NOT NULL,
+b  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgd VALUES (1, 10, 4), (2, 9, 2), (3, 30, 8);
+SELECT SUM(a / b) AS s FROM tgd;
+s
+10.7500
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+10.75
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q14_jit_compiled;
+q14_jit_compiled
+1
+# Q15: '/' edge rows — correctness-only (per-row fallbacks):
+#      zero divisor -> SQL NULL row; a magnitude past 2^53 ->
+#      the kernel's precision guard errors the query (mysqld
+#      has no such guard and returns a value — an intentional
+#      engine difference, so only RonSQL's behavior is probed).
+CREATE TABLE tgz (
+pk INT PRIMARY KEY,
+x  BIGINT NOT NULL,
+y  BIGINT NOT NULL
+) ENGINE=NDB;
+INSERT INTO tgz VALUES (1, 10, 4), (2, 9, 0), (3, 30, 8);
+SELECT SUM(x / y) AS s, COUNT(x / y) AS c FROM tgz;
+s	c
+6.2500	2
+s	c
+6.25	2
+INSERT INTO tgz VALUES (4, 9007199254740993, 1);
+DROP TABLE tgz;
+DROP TABLE tgd;
+# Q16: TEMPORAL MIN/MAX (Phase 5K) — DATE / YEAR / DATETIME(3) /
+#      TIME(3) ride the u64 track as packed values (unsigned
+#      order = chronological order); RonSQL decodes for display,
+#      mysqld computes server-side (it never pushes temporals).
+CREATE TABLE ttmp (
+pk INT PRIMARY KEY,
+d  DATE NOT NULL,
+y  YEAR NOT NULL,
+dt DATETIME(3) NOT NULL,
+tm TIME(3) NOT NULL,
+ts TIMESTAMP(3) NOT NULL
+) ENGINE=NDB;
+INSERT INTO ttmp VALUES
+(1, '2026-01-15', 1999, '2026-01-15 10:30:00.500', '10:30:00.500', '2026-01-15 10:30:00.500'),
+(2, '2026-03-20', 2026, '2026-01-15 10:30:00.250', '09:15:00.000', '2026-01-15 10:30:00.250'),
+(3, '2025-12-31', 2004, '2025-06-01 00:00:00.000', '23:59:59.999', '2025-06-01 00:00:00.000');
+SELECT MIN(d) AS d1, MAX(d) AS d2, MIN(y) AS y1, MAX(y) AS y2 FROM ttmp;
+d1	d2	y1	y2
+2025-12-31	2026-03-20	1999	2026
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+d1	d2	y1	y2
+2025-12-31	2026-03-20	1999	2026
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q16_jit_compiled;
+q16_jit_compiled
+1
+# Q17: DATETIME(3) and TIME(3) — the big-endian memcmp-packed
+#      *2 formats (6-bit wide type ids on the wire).
+SELECT MIN(dt) AS dt1, MAX(dt) AS dt2, MIN(tm) AS t1, MAX(tm) AS t2 FROM ttmp;
+dt1	dt2	t1	t2
+2025-06-01 00:00:00.000	2026-01-15 10:30:00.500	09:15:00.000	23:59:59.999
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+dt1	dt2	t1	t2
+2025-06-01 00:00:00.000	2026-01-15 10:30:00.500	09:15:00.000	23:59:59.999
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q17_jit_compiled;
+q17_jit_compiled
+1
+# Q18: TIMESTAMP(3) — compile/counter probe only (RonSQL
+#      displays UTC while mysqld uses the session timezone, so
+#      the outputs are not comparable; values are checked by
+#      the epoch ordering being absolute).
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q18_jit_compiled;
+q18_jit_compiled
+1
+DROP TABLE ttmp;
+# Q19: DOUBLE DIV and DOUBLE % — the Phase 5L conversion cold
+#      call (trunc-DIV lands a SIGNED BIGINT result; fmod stays
+#      double). Values exact in binary.
+CREATE TABLE tdd (
+pk INT PRIMARY KEY,
+d  DOUBLE NOT NULL,
+e  DOUBLE NOT NULL
+) ENGINE=NDB;
+INSERT INTO tdd VALUES (1, 1.5, 0.5), (2, 2.5, 0.5), (3, 4.0, 2.0), (4, 6.0, 4.0);
+SELECT SUM(d DIV 2) AS s1, SUM(d % e) AS s2 FROM tdd;
+s1	s2
+6	2
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s1	s2
+6	2
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q19_jit_compiled;
+q19_jit_compiled
+1
+# Q20: negative trunc-DIV — toward-zero, not floor.
+SELECT SUM((0 - d) DIV 2) AS s FROM tdd;
+s
+-6
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+-6
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q20_jit_compiled;
+q20_jit_compiled
+1
+DROP TABLE tdd;

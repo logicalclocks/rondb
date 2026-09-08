@@ -49,4 +49,6 @@ IF(WITH_NDB_TEST)
   ADD_SUBDIRECTORY(ndbapi)
   ADD_SUBDIRECTORY(run-test)
   ADD_SUBDIRECTORY(crund)
+  # RONDB-1056 Phase 0 standalone JIT-arena test binaries.
+  ADD_SUBDIRECTORY(jit_proto)
 ENDIF(WITH_NDB_TEST)

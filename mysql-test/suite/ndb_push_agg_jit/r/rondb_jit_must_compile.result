@@ -1,0 +1,33 @@
+############################################################
+# RONDB-1056 JIT must-compile canary
+############################################################
+CREATE TABLE t1 (
+pk    BIGINT NOT NULL,
+c1    BIGINT NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+CREATE TABLE t2 (
+pk    BIGINT NOT NULL,
+c2    BIGINT NOT NULL,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50);
+INSERT INTO t2 VALUES (1, 100), (2, 200), (3, 300), (4, 400), (5, 500);
+SET ndb_join_pushdown_aggregate=ON;
+# Q1: SUM over one child column must compile and run through JIT.
+SELECT SUM(t2.c2)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+SUM(t2.c2)
+1500
+# Q2: SUM over child-local bigint plus must compile and run through JIT.
+SELECT SUM(t2.c2 + t2.pk)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+SUM(t2.c2 + t2.pk)
+1515
+# Q3: SUM over child-local plus, minus and mul must compile and run through JIT.
+SELECT SUM(t2.c2 - t2.pk + t2.pk * 0)
+FROM t1 JOIN t2 ON t2.pk = t1.pk;
+SUM(t2.c2 - t2.pk + t2.pk * 0)
+1485
+DROP TABLE t2;
+DROP TABLE t1;

@@ -1,0 +1,2482 @@
+/*
+ * Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License, version 2.0,
+ * as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License, version 2.0, for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
+ */
+
+#include "DbtupJitGlue.hpp"
+#include "AggInterpreterBase.hpp"
+#include "JoinAggInterpreter.hpp"
+#include "AggInterpreter.hpp"   /* for AlignedType / IsUnsigned helpers */
+
+#include <ndb_global.h>
+#include <my_byteorder.h>      /* sint8korr / sint4korr / ... */
+#include <AttributeDescriptor.hpp>  /* column type decode for READ_ATTR */
+#include <CteLinkedAttr.hpp>        /* linked-attr metadata words (5F-2) */
+
+#include <atomic>              /* observability counters */
+#include <cmath>               /* std::isfinite (div_conv helper) */
+#include <cstdlib>             /* malloc / free for cache products */
+#include <cstddef>              /* offsetof (targeted JitState init) */
+#include <cstring>
+#include <cerrno>              /* compile-failure detail in the census */
+#include <ctime>               /* rate-limited fallback logging */
+
+#ifndef _WIN32
+#include <pthread.h>           /* pthread_once for the crash-handler install */
+#include <signal.h>            /* sigaction (JIT-CRASH interposer) */
+#include <unistd.h>            /* write() from the signal handler */
+#if defined(__linux__)
+#include <ucontext.h>          /* faulting-PC extraction */
+#elif defined(__APPLE__)
+#include <sys/ucontext.h>
+#endif
+#endif /* !_WIN32 */
+
+extern "C" {
+#include "jit/ndb_jit_bridge.h"   /* ndb_jit_bridge_translate_scan_filter */
+#include "jit/jit_progcache.h"    /* program-reuse cache (Phase 8 Slice 3) */
+#include "jit/ndb_jit_platform.h" /* NDB_JIT_HAVE_BACKEND */
+}
+
+#ifndef ZAGG_MATH_OVERFLOW
+#define ZAGG_MATH_OVERFLOW 1860
+#endif
+
+/* ------------------------------------------------------------------ */
+/* RONDB-1056 Phase 8 — CompiledInterpreter config gate.              */
+/*                                                                    */
+/* Node-global JIT mode from the CompiledInterpreter config param. Set */
+/* at config read (DblqhProxy::execREAD_CONFIG_REQ, before any         */
+/* scan/aggregation traffic) and again from the CMVMI thread whenever  */
+/* the MGM client runs `SET CompiledInterpreter <OFF|AUTO|ON>`         */
+/* (Cmvmi::execSET_CONFIG_PARAM_REQ), while the LDM threads read it on */
+/* every compile decision. A relaxed atomic word (the same idiom as    */
+/* the counters below) makes that cross-thread write well-defined at   */
+/* no cost. No ordering is needed because the mode is consulted ONLY   */
+/* at compile-decision time: an in-flight compile may still see the    */
+/* old value (benign — one more or one less JIT program), and there is */
+/* no pointer or lifetime consequence since programs already compiled  */
+/* stay valid in the program cache and keep executing. OFF routes new  */
+/* executions to the interpreter without evicting the cache; a later   */
+/* ON resumes cache hits. Defaults to enabled (AUTO) so a compile      */
+/* before config read (none expected) still works. 0 is OFF            */
+/* (NDB_COMPILED_INTERPRETER_OFF); AUTO/ON are enabled.                */
+static std::atomic<Uint32> g_jit_mode{1 /* NDB_COMPILED_INTERPRETER_AUTO */};
+
+bool dbtup_jit_platform_supported() {
+  return NDB_JIT_HAVE_BACKEND != 0;
+}
+
+void dbtup_jit_set_mode(Uint32 mode) {
+#if !NDB_JIT_HAVE_BACKEND
+  /* No backend on this CPU: OFF is the only mode. The callers
+   * (DblqhProxy at config read, Cmvmi at SET) reject AUTO/ON before
+   * getting here; this clamp is the last line of defence. */
+  mode = NDB_COMPILED_INTERPRETER_OFF;
+#endif
+  g_jit_mode.store(mode, std::memory_order_relaxed);
+}
+
+bool dbtup_jit_enabled() {
+#if !NDB_JIT_HAVE_BACKEND
+  return false;
+#else
+  return g_jit_mode.load(std::memory_order_relaxed) != 0 /* != OFF */;
+#endif
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 8 — observability counters (ndbinfo.jit) + fallback logging. */
+/* ------------------------------------------------------------------ */
+
+/* rows_executed is bumped once per row on the JIT execution hot path,
+ * so it must not be one shared atomic — a contended fetch_add across
+ * LDM threads would cost a real slice of the ~11 ns/row JIT budget.
+ * Each thread claims a cache-line-padded slot on first use and does a
+ * plain load+store (single writer per slot, no RMW); the stats reader
+ * sums every slot. The slot claim wraps at NJT_MAX_ROW_SLOTS — two
+ * threads sharing a slot after a wrap can lose increments, which is
+ * stats-grade acceptable (real thread counts never approach the cap). */
+struct alignas(64) JitRowSlot {
+  std::atomic<Uint64> rows{0};
+};
+static constexpr unsigned NJT_MAX_ROW_SLOTS = 256;
+static JitRowSlot g_jit_row_slots[NJT_MAX_ROW_SLOTS];
+static std::atomic<unsigned> g_jit_row_slot_next{0};
+
+static inline void jit_count_row() {
+  static thread_local unsigned slot =
+      g_jit_row_slot_next.fetch_add(1, std::memory_order_relaxed) %
+      NJT_MAX_ROW_SLOTS;
+  JitRowSlot &js = g_jit_row_slots[slot];
+  js.rows.store(js.rows.load(std::memory_order_relaxed) + 1,
+                std::memory_order_relaxed);
+}
+
+/* Compile-frequency counters — plain relaxed atomics are fine here. */
+static std::atomic<Uint64> g_jit_fallback_count{0};
+static std::atomic<Uint64> g_jit_compile_ns_total{0};
+
+/* Rate limit for the production fallback log line. Implicit scans
+ * (e.g. the EXIT_OK_LAST table-stats scan) fall back deliberately on
+ * every occurrence, so an unthrottled log would flood the cluster log. */
+static constexpr time_t NJT_FALLBACK_LOG_PERIOD_S = 10;
+static std::atomic<time_t> g_jit_fallback_last_log{0};
+
+/* RONDB-1056 ronsql_jit slice 2 — the fallback BREAKDOWN.
+ *
+ * The single rate-limited log line loses the (site, reason, opcode)
+ * multiplicity that reject attribution needs: a suite run produces
+ * hundreds of rejects but a handful of log lines, and the census
+ * pins count totals per test, not per family. This table keeps exact
+ * per-(site, reason, opcode) counts since node start:
+ *  - the FIRST occurrence of a distinct triple always logs
+ *    immediately ("NEW fallback family"), unthrottled — every
+ *    distinct reject family is guaranteed visible in every node's
+ *    log regardless of rate limiting or parallel MTR workers;
+ *  - the 10 s rate-limited line now prints the WHOLE table, so any
+ *    later line carries the complete cumulative breakdown.
+ * Attribution after any suite run: grep "JIT fallback" over the
+ * workers' ndbd logs. Cold path — a plain mutex is fine. */
+struct JitFallbackFamily {
+  const char *site;    /* interned literal from the call sites */
+  int         reason;
+  Uint32      detail;
+  Uint32      first_word;   /* offending word of the FIRST sighting */
+  Uint64      count;
+};
+static constexpr unsigned NJT_FALLBACK_FAMILIES = 48;
+static JitFallbackFamily g_jit_fallback_families[NJT_FALLBACK_FAMILIES];
+static unsigned g_jit_fallback_n_families = 0;
+static Uint64 g_jit_fallback_overflow = 0;
+static pthread_mutex_t g_jit_fallback_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void jit_fallback_log_breakdown(Uint64 total) {
+  /* Caller holds g_jit_fallback_mtx. One line per family keeps each
+   * line well under the event logger's limit. */
+  g_eventLogger->info(
+      "RONDB-1056 JIT fallback totals: %llu since node start, "
+      "%u distinct families%s:",
+      (unsigned long long)total, g_jit_fallback_n_families,
+      g_jit_fallback_overflow ? " (family table overflowed)" : "");
+  for (unsigned i = 0; i < g_jit_fallback_n_families; i++) {
+    const JitFallbackFamily &f = g_jit_fallback_families[i];
+    g_eventLogger->info(
+        "RONDB-1056 JIT fallback family: %s reason=%d detail=%u "
+        "first_word=%u count=%llu",
+        f.site, f.reason, f.detail, f.first_word,
+        (unsigned long long)f.count);
+  }
+}
+
+void dbtup_jit_note_fallback(const char *path, int reason, Uint32 detail,
+                             Uint32 word, const Uint32 *prog,
+                             Uint32 prog_len) {
+  const Uint64 n =
+      g_jit_fallback_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+  pthread_mutex_lock(&g_jit_fallback_mtx);
+  bool is_new = true;
+  for (unsigned i = 0; i < g_jit_fallback_n_families; i++) {
+    JitFallbackFamily &f = g_jit_fallback_families[i];
+    /* Site strings are string literals at every call site — pointer
+     * compare would work, but strcmp keeps this robust if a caller
+     * ever builds one. */
+    if (f.reason == reason && f.detail == detail &&
+        std::strcmp(f.site, path) == 0) {
+      f.count++;
+      is_new = false;
+      break;
+    }
+  }
+  if (is_new) {
+    if (g_jit_fallback_n_families < NJT_FALLBACK_FAMILIES) {
+      JitFallbackFamily &f =
+          g_jit_fallback_families[g_jit_fallback_n_families++];
+      f.site = path;
+      f.reason = reason;
+      f.detail = detail;
+      f.first_word = word;
+      f.count = 1;
+    } else {
+      g_jit_fallback_overflow++;
+    }
+    /* First sighting of a distinct family always logs, unthrottled. */
+    g_eventLogger->info(
+        "RONDB-1056 JIT fallback NEW family: %s rejected (reason=%d "
+        "detail=%u word=%u) — the program runs on the interpreter. "
+        "%llu JIT fallbacks since node start.",
+        path, reason, (unsigned)detail, (unsigned)word,
+        (unsigned long long)n);
+    /* ronsql_jit slice 2 item 9: ground truth for the harvest — dump
+     * up to 16 program words centred on the offending word, once per
+     * family. Clamped to the buffer; every remaining family becomes
+     * self-diagnosing without a debug build. */
+    if (prog != nullptr && prog_len != 0) {
+      Uint32 lo = (word > 8 && word < prog_len) ? word - 8 : 0;
+      if (lo >= prog_len) lo = 0;
+      Uint32 hi = lo + 16 <= prog_len ? lo + 16 : prog_len;
+      char dump[16 * 9 + 1];
+      Uint32 off = 0;
+      for (Uint32 w = lo; w < hi && off + 10 < sizeof(dump); w++) {
+        off += (Uint32)snprintf(dump + off, sizeof(dump) - off,
+                                "%08x ", (unsigned)prog[w]);
+      }
+      dump[off] = 0;
+      g_eventLogger->info(
+          "RONDB-1056 JIT fallback NEW family dump: words[%u..%u) of "
+          "%u: %s", (unsigned)lo, (unsigned)hi, (unsigned)prog_len,
+          dump);
+    }
+    pthread_mutex_unlock(&g_jit_fallback_mtx);
+    return;
+  }
+
+  const time_t now = time(nullptr);
+  time_t last = g_jit_fallback_last_log.load(std::memory_order_relaxed);
+  if (now - last >= NJT_FALLBACK_LOG_PERIOD_S &&
+      g_jit_fallback_last_log.compare_exchange_strong(
+          last, now, std::memory_order_relaxed)) {
+    jit_fallback_log_breakdown(n);
+  }
+  pthread_mutex_unlock(&g_jit_fallback_mtx);
+}
+
+void dbtup_jit_note_compile_ns(Uint64 ns) {
+  g_jit_compile_ns_total.fetch_add(ns, std::memory_order_relaxed);
+}
+
+#ifdef ERROR_INSERT
+static bool dbtup_jit_trace_start(AggInterpreterBase *agg,
+                                  Dbtup *block_tup,
+                                  Uint32 *row_no,
+                                  Uint32 *limit) {
+  if (agg == nullptr ||
+      !agg->jitTraceEnabledForJit(block_tup, limit)) {
+    return false;
+  }
+  Uint64 processed = agg->processed_rows();
+  Uint32 current = processed > ~Uint32(0)
+                     ? ~Uint32(0)
+                     : static_cast<Uint32>(processed);
+  if (current > *limit) {
+    return false;
+  }
+  *row_no = current;
+  return true;
+}
+
+static void dbtup_jit_trace_accs(const char *stage,
+                                 Uint32 row_no,
+                                 const int64_t *accs,
+                                 Uint32 n_accs) {
+  for (Uint32 i = 0; i < n_accs; i++) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u %s acc[%u]=%lld",
+        row_no, stage, i, (long long)accs[i]);
+  }
+}
+#endif
+
+/* ------------------------------------------------------------------ */
+/* Cold-call helpers.                                                 */
+/* ------------------------------------------------------------------ */
+
+/* jit_load_col_read — Phase 5F-2 shared read prologue for every
+ * column-load helper. LOCAL columns read via readSingleAttributeForJit
+ * with the declared type from the table descriptor; LINKED columns
+ * (bit 15 of col_id — join aggregation's parent-table / CTE
+ * attributes) read via the JoinAggInterpreter's linked-buffer walk,
+ * with the type from the resolved CTE metadata word. On success
+ * *out_header / *out_data / *out_type are set (local data lives in
+ * the caller's read_buf; linked data in the interpreter's
+ * m_attr_read_buf). Nonzero = read or metadata failure — the caller
+ * takes its fallback path (a linked col on a non-join dispatch lands
+ * here too: ctx->join_agg is null). */
+static int jit_load_col_read(dbtup_jit_call_ctx *ctx, uint32_t col_id,
+                             Uint32 *read_buf, Uint32 read_buf_words,
+                             AttributeHeader **out_header,
+                             const char **out_data, Uint32 *out_type) {
+  if ((col_id & 0x8000u) != 0) {
+    Uint32 w0 = 0;
+    Uint32 w1 = 0;
+    AttributeHeader *header = nullptr;
+    if (ctx->join_agg == nullptr ||
+        ctx->join_agg->jitReadLinkedAttr(col_id & 0x7FFFu, &header,
+                                         &w0, &w1) != 0) {
+      return -1;
+    }
+    *out_header = header;
+    *out_data = reinterpret_cast<const char *>(
+        reinterpret_cast<Uint32 *>(header) + 1);
+    *out_type = CteLinkedAttr::decodeTypeId(w0);
+    return 0;
+  }
+  /* CTE-consumer safety (Phase 6-1): consumer feeds
+   * (Dblqh::cteLookupAggFeed / cteScanAggFeed) dispatch with a
+   * synthetic KeyReqStruct whose tablePtrP is deliberately null —
+   * there is no scanned tuple behind the virtual row, only the
+   * linked buffer. The interpreter's kOpLoadCol arm aborts such a
+   * local read cleanly with ZAGG_OTHER_ERROR; return the fallback
+   * here so the interpreter re-run raises exactly that error
+   * instead of this prologue dereferencing the null table pointer
+   * (readSingleAttributeForJit and the descriptor lookup below both
+   * would). */
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    return -1;
+  }
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, col_id, read_buf, read_buf_words);
+  if (ret < 0) {
+    return ret;
+  }
+  *out_header = reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  *out_data = reinterpret_cast<const char *>(&read_buf[1]);
+  Uint32 type_id = NDB_TYPE_UNDEFINED;
+  if (likely(col_id < ctx->req_struct->tablePtrP->m_no_of_attributes)) {
+    const Uint32 attrDesc1 =
+        ctx->req_struct->tablePtrP->tabDescriptor[col_id * ZAD_SIZE];
+    type_id = AttributeDescriptor::getType(attrDesc1);
+  }
+  *out_type = type_id;
+  return 0;
+}
+
+/* jit_col_presence — ronsql_jit item 13: presence-only column read for
+ * the COUNT-over-string fusion (NDB_JIT_COL_PRESENCE_FLAG, see
+ * ndb_jit_bridge.h). Linked columns keep the shared prologue (the linked
+ * walk hands back the header, no size limit); local columns go through
+ * Dbtup::readAttributeIsNullForJit into the block's full-size coutBuffer
+ * — a 4-word stack buffer would fail readSingleAttribute's max_read for
+ * any real string. Returns 1 = NULL, 0 = non-NULL, <0 = read failure
+ * (incl. the CTE-consumer null tablePtrP, per Phase 6-1). */
+static int jit_col_presence(dbtup_jit_call_ctx *ctx, uint32_t col_id) {
+  if ((col_id & 0x8000u) != 0) {
+    Uint32 w0 = 0;
+    Uint32 w1 = 0;
+    AttributeHeader *header = nullptr;
+    if (ctx->join_agg == nullptr ||
+        ctx->join_agg->jitReadLinkedAttr(col_id & 0x7FFFu, &header,
+                                         &w0, &w1) != 0) {
+      return -1;
+    }
+    return header->isNULL() ? 1 : 0;
+  }
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    return -1;
+  }
+  return ctx->block_tup->readAttributeIsNullForJit(ctx->req_struct, col_id);
+}
+
+extern "C" void
+ndb_jit_h_load_col(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  /* Admission guarantees ctx is set. If it isn't, the dispatch path
+   * is broken — fail fast. ndbrequire requires a JAM context only
+   * available inside blocks, so we use direct null-checks + abort
+   * here. ctx->agg is NOT required: the scan-filter path
+   * (dbtup_jit_invoke_scan_filter) leaves it null and reaches the row
+   * through block_tup + req_struct, same as the aggregation path. */
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  if (unlikely((col_id & NDB_JIT_COL_PRESENCE_FLAG) != 0)) {
+    /* ronsql_jit item 13: presence-only load. NULL takes the same
+     * per-row fallback as a NULL value below (the NB form is the one
+     * that stays native on NULL); a read failure likewise. */
+    const int nul =
+        jit_col_presence(ctx, col_id & ~NDB_JIT_COL_PRESENCE_FLAG);
+    s->regs_i64[dst_reg] = 0;
+    if (nul != 0) {
+      s->row_fallback = 1;
+    }
+    return;
+  }
+
+  /* Read buffer: 1 word AttributeHeader + up to 2 words (8 bytes)
+   * for a BIGINT. 4 words gives breathing room for alignment.
+   * The shared prologue routes linked columns (bit 15) through the
+   * JoinAggInterpreter's buffer walk instead. */
+  Uint32 read_buf[4];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    /* Read / linked-metadata failure — interpreter fallback gives the
+     * exact error handling. (Pre-5A this abort()ed.) */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (header->isNULL()) {
+    /* NULL column value. The bridge cannot see nullability (it only
+     * sees bytecode) and the SQL planner pushes aggregation over
+     * nullable columns, so this is a NORMAL runtime condition — not an
+     * admission bug. JIT registers have no null tracking until Phase
+     * 5D, so flag the row: the glue discards this row's JIT run and
+     * the caller re-runs it on the interpreter, whose register null
+     * flags give the exact semantics (SUM/COUNT null-skip,
+     * ZREGISTER_INIT_ERROR on null comparisons). Pre-5A this
+     * abort()ed — a production crash for SUM(nullable_col) with any
+     * NULL row. */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  /* Decode by the column's DECLARED type, mirroring the interpreter's
+   * handleReadAttrIntoReg descriptor inspection. This matters because
+   * the embedded READ_ATTR wire format carries no type: decoding an
+   * INT column's 4-byte cell as 8 bytes reads a garbage high word (the
+   * 5A join-CASE all-ELSE bug). The outer kOpLoadCol path is only
+   * admitted for declared-BIGINT programs, so it always lands in the
+   * BIGINT case below — behaviour unchanged.
+   *
+   * Types the signed-i64 register model cannot represent exactly take
+   * the per-row interpreter fallback: BIGUNSIGNED (values >= 2^63
+   * would misorder under the hot stencils' signed compare), FLOAT /
+   * DOUBLE (until Phase 5C), strings, and pseudo columns. Narrower
+   * unsigned ints zero-extend to non-negative i64 and compare
+   * correctly. */
+  Int64 value;
+  switch (type_id) {
+    case NDB_TYPE_TINYINT:
+      value = (Int64)*reinterpret_cast<const Int8 *>(data);
+      break;
+    case NDB_TYPE_TINYUNSIGNED:
+      value = (Int64)(Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLINT:
+      value = (Int64)(Int16)sint2korr(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      value = (Int64)(Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMINT:
+      value = (Int64)sint3korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      value = (Int64)(Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_INT:
+      value = (Int64)sint4korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      value = (Int64)(Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGINT:
+      value = (Int64)sint8korr(data);
+      break;
+    default:
+      /* Not representable in the signed-i64 register model — re-run
+       * the row on the interpreter (typed registers there handle it). */
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  s->regs_i64[dst_reg] = value;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col col=%u dst=r%u "
+        "value=%lld",
+        ctx->trace_row_no, col_id, dst_reg,
+        (long long)s->regs_i64[dst_reg]);
+  }
+#endif
+}
+
+/* ndb_jit_h_load_col_f64 — Phase 5C-2 cold-call load for declared
+ * FLOAT/DOUBLE columns (OP_LOAD_COL_NDB_F64). Same read path as
+ * ndb_jit_h_load_col; the double's BIT PATTERN is stored into
+ * regs_i64[dst_reg] (f64 values live bit-cast in the i64 register
+ * file — the f64 stencils reinterpret on use). FLOAT promotes to
+ * double, mirroring the interpreter's floatget load. NULL values and
+ * any declared type other than FLOAT/DOUBLE (the bridge admits by the
+ * wire type, so a mismatch here means the program no longer matches
+ * the schema) take the per-row interpreter fallback. */
+extern "C" void
+ndb_jit_h_load_col_f64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_f64: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  /* 1 word AttributeHeader + 8 bytes for a DOUBLE. */
+  Uint32 read_buf[4];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (header->isNULL()) {
+    /* Same per-row fallback as the i64 load — registers have no null
+     * tracking until Phase 5D. */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  double value;
+  switch (type_id) {
+    case NDB_TYPE_FLOAT:
+      value = (double)floatget(reinterpret_cast<const uchar *>(data));
+      break;
+    case NDB_TYPE_DOUBLE:
+      value = doubleget(reinterpret_cast<const uchar *>(data));
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  s->regs_i64[dst_reg] = bits;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col_f64 col=%u dst=r%u "
+        "value=%f",
+        ctx->trace_row_no, col_id, dst_reg, value);
+  }
+#endif
+}
+
+/* ndb_jit_h_load_col_nb — Phase 5D-1 NULL-BRANCHING load
+ * (OP_LOAD_COL_NDB_NB). Decodes exactly like ndb_jit_h_load_col, but
+ * a NULL column value RETURNS 1 — the stencil then takes its branch,
+ * skipping the loaded register's whole consumer chain (the
+ * interpreter kernels' null-skip), so NULL rows stay on the JIT
+ * instead of the per-row fallback. Read errors and declared types
+ * the signed-i64 model cannot represent keep the row_fallback
+ * defense (return 0 — the blob continues, the glue discards the
+ * row). */
+extern "C" int
+ndb_jit_h_load_col_nb(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_nb: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  if (unlikely((col_id & NDB_JIT_COL_PRESENCE_FLAG) != 0)) {
+    /* ronsql_jit item 13: presence-only load — NULL takes the null
+     * branch (COUNT's null-skip, still native); a read failure keeps
+     * the row_fallback defense. */
+    const int nul =
+        jit_col_presence(ctx, col_id & ~NDB_JIT_COL_PRESENCE_FLAG);
+    s->regs_i64[dst_reg] = 0;
+    if (unlikely(nul < 0)) {
+      s->row_fallback = 1;
+      return 0;
+    }
+#ifdef ERROR_INSERT
+    if (ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=load_col_nb col=%u dst=r%u "
+          "presence-only null=%d",
+          ctx->trace_row_no, col_id & ~NDB_JIT_COL_PRESENCE_FLAG,
+          dst_reg, nul);
+    }
+#endif
+    return nul;
+  }
+
+  Uint32 read_buf[4];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+  if (header->isNULL()) {
+    /* The whole point: take the null branch, stay on the JIT. */
+    s->regs_i64[dst_reg] = 0;
+#ifdef ERROR_INSERT
+    if (ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=load_col_nb col=%u dst=r%u "
+          "NULL -> branch",
+          ctx->trace_row_no, col_id, dst_reg);
+    }
+#endif
+    return 1;
+  }
+
+  Int64 value;
+  switch (type_id) {
+    case NDB_TYPE_TINYINT:
+      value = (Int64)*reinterpret_cast<const Int8 *>(data);
+      break;
+    case NDB_TYPE_TINYUNSIGNED:
+      value = (Int64)(Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLINT:
+      value = (Int64)(Int16)sint2korr(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      value = (Int64)(Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMINT:
+      value = (Int64)sint3korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      value = (Int64)(Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_INT:
+      value = (Int64)sint4korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      value = (Int64)(Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGINT:
+      value = (Int64)sint8korr(data);
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return 0;
+  }
+  s->regs_i64[dst_reg] = value;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col_nb col=%u dst=r%u "
+        "value=%lld",
+        ctx->trace_row_no, col_id, dst_reg,
+        (long long)s->regs_i64[dst_reg]);
+  }
+#endif
+  return 0;
+}
+
+/* ndb_jit_h_load_col_f64_nb / _u64_nb — Phase 5D-2 null-branching
+ * siblings of the f64/u64 loads: NULL returns 1 (the stencil takes
+ * its branch, skipping the consumer chain); read errors and
+ * unexpected declared types keep the row_fallback defense. */
+extern "C" int
+ndb_jit_h_load_col_f64_nb(JitState *s, uint32_t col_id,
+                          uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_f64_nb: JitState.ctx is malformed "
+        "(col_id=%u)", col_id);
+    abort();
+  }
+
+  Uint32 read_buf[4];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+  if (header->isNULL()) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+  double value;
+  switch (type_id) {
+    case NDB_TYPE_FLOAT:
+      value = (double)floatget(reinterpret_cast<const uchar *>(data));
+      break;
+    case NDB_TYPE_DOUBLE:
+      value = doubleget(reinterpret_cast<const uchar *>(data));
+      break;
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return 0;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  s->regs_i64[dst_reg] = bits;
+  return 0;
+}
+
+extern "C" int
+ndb_jit_h_load_col_u64_nb(JitState *s, uint32_t col_id,
+                          uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_u64_nb: JitState.ctx is malformed "
+        "(col_id=%u)", col_id);
+    abort();
+  }
+
+  Uint32 read_buf[4];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return 0;
+  }
+  if (header->isNULL()) {
+    s->regs_i64[dst_reg] = 0;
+    return 1;
+  }
+  /* Narrow-int admission: same unsigned-width decode as the void
+   * sibling — the bridge routes every unsigned width here. */
+  Uint64 uval;
+  switch (type_id) {
+    case NDB_TYPE_TINYUNSIGNED:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      uval = (Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      uval = (Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGUNSIGNED:
+      uval = uint8korr(data);
+      break;
+    case NDB_TYPE_DATE:
+      /* 3-byte little-endian packed (year<<9)|(month<<5)|day. */
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_YEAR:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIMESTAMP2: {
+      /* MySQL's memcmp-comparable packed binary, big-endian — fold
+       * the column's exact byte count MSB-first so the unsigned
+       * compare reproduces memcmp order (== chronological order),
+       * exactly the interpreter's loadColumnTypedFromBuf arm. */
+      const unsigned char *src =
+          reinterpret_cast<const unsigned char *>(data);
+      const Uint32 nbytes = header->getByteSize();
+      uval = 0;
+      for (Uint32 i = 0; i < nbytes; i++) {
+        uval = (uval << 8) | (Uint64)src[i];
+      }
+      break;
+    }
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return 0;
+  }
+  s->regs_i64[dst_reg] = (Int64)uval;
+  return 0;
+}
+
+/* ndb_jit_h_load_col_dec — Phase 5G cold-call load for DECIMAL /
+ * DECIMALUNSIGNED columns (OP_LOAD_COL_NDB_DEC). Mirrors the
+ * interpreter's kOpLoadCol DECIMAL path: bin2decimal with the
+ * precision/scale from pinfo ((is_unsigned << 15) | (precision << 8)
+ * | scale, packed by the bridge from the instruction's decimal_info
+ * word), then decimal2double (scale > 0 — DOUBLE track) or
+ * decimal2longlong / decimal2ulonglong (scale == 0 — BIGINT track).
+ * NULL values and EVERY error path (read failure, declared-type
+ * drift, parse/convert errors, negative value in an unsigned column)
+ * take the per-row interpreter fallback — the interpreter re-runs
+ * the row and produces its exact ZAGG_DECIMAL_* error where one is
+ * due. */
+extern "C" void
+ndb_jit_h_load_col_dec(JitState *s, uint32_t col_id, uint32_t dst_reg,
+                       uint32_t pinfo) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_dec: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  const bool     dec_uns   = (pinfo & 0x8000u) != 0;
+  const int      precision = (int)((pinfo >> 8) & 0x7Fu);
+  const int      scale     = (int)(pinfo & 0xFFu);
+
+  /* 1 word AttributeHeader + up to decimal_bin_size(65, 30) ≈ 30
+   * bytes of packed decimal. 16 words is comfortably enough. */
+  Uint32 read_buf[16];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (header->isNULL()) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (type_id != (dec_uns ? (Uint32)NDB_TYPE_DECIMALUNSIGNED
+                          : (Uint32)NDB_TYPE_DECIMAL)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  decimal_digit_t dec_buf[AggInterpreterBase::AGG_DECIMAL_BUFF_LENGTH];
+  decimal_t dec;
+  dec.buf = dec_buf;
+  dec.len = AggInterpreterBase::AGG_DECIMAL_BUFF_LENGTH;
+  if (bin2decimal(reinterpret_cast<const uchar *>(data),
+                  &dec, precision, scale) != E_DEC_OK) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (dec_uns && dec.sign) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  if (scale != 0) {
+    double dval;
+    if (decimal2double(&dec, &dval) != E_DEC_OK) {
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+    }
+    Int64 bits;
+    std::memcpy(&bits, &dval, sizeof(bits));
+    s->regs_i64[dst_reg] = bits;
+  } else if (dec_uns) {
+    ulonglong uval;
+    if (decimal2ulonglong(&dec, &uval) != E_DEC_OK) {
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+    }
+    s->regs_i64[dst_reg] = (Int64)uval;
+  } else {
+    longlong lval;
+    if (decimal2longlong(&dec, &lval) != E_DEC_OK) {
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+    }
+    s->regs_i64[dst_reg] = (Int64)lval;
+  }
+}
+
+/* ndb_jit_h_minmax_str — Phase 5F-1 FUSED string MIN/MAX
+ * (OP_MINMAX_STR_NDB). One call covers load + collation compare +
+ * winner-buffer update by delegating to
+ * AggInterpreterBase::jitMinMaxStringCol (exact interpreter-kernel
+ * reuse — charsets, StringResult sidecar, AGG_CHAR wire format and
+ * the eviction/API pipeline all come with it). packed =
+ * (is_max << 8) | agg_index. The kernel mutates the AggResItem
+ * directly and this helper never touches value_updated, so the glue's
+ * masked writeback leaves string slots alone. NULL column values are
+ * the kernel's skip (return 0 — no fallback of any kind); kernel
+ * errors (alloc failure etc.) take the per-row fallback so the
+ * interpreter re-runs the row and surfaces the exact ZAGG error. */
+extern "C" void
+ndb_jit_h_minmax_str(JitState *s, uint32_t col_id, uint32_t packed) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->agg == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr ||
+      ctx->agg_res_ptr == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_minmax_str: JitState.ctx is malformed (col_id=%u) — "
+        "fused string ops are aggregation-only",
+        col_id);
+    abort();
+  }
+  const Uint32 agg_index = packed & 0xFFu;
+  const bool   is_max    = (packed & 0x100u) != 0;
+  Int32 ret;
+  if ((col_id & 0x8000u) != 0) {
+    /* Phase 5F-2: LINKED string column (parent-table / CTE). The
+     * JoinAggInterpreter facade walks the linked buffer, resolves
+     * the CTE metadata (type + charset), and runs the same protected
+     * load + public minMaxString kernel. A linked column on a
+     * non-join dispatch has no buffer — per-row fallback. */
+    if (ctx->join_agg == nullptr) {
+      s->row_fallback = 1;
+      return;
+    }
+    ret = ctx->join_agg->jitMinMaxStringLinked(
+        ctx->req_struct, col_id & 0x7FFFu, agg_index, is_max,
+        ctx->agg_res_ptr);
+  } else {
+    /* CTE-consumer safety (Phase 6-1): a LOCAL string column needs
+     * the local tuple — absent on a consumer feed's virtual row
+     * (tablePtrP deliberately null). Per-row fallback. */
+    if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+      s->row_fallback = 1;
+      return;
+    }
+    ret = ctx->agg->jitMinMaxStringCol(
+        ctx->block_tup, ctx->req_struct, col_id, agg_index, is_max,
+        ctx->agg_res_ptr);
+  }
+  if (ret != 0) {
+    s->row_fallback = 1;
+  }
+}
+
+/* jit_div_conv_operand — one operand's int→double conversion for
+ * ndb_jit_h_div_conv, mirroring RegDivReg(is_div_int=false)'s BIGINT
+ * arm exactly: unsigned magnitudes above 2^53-1 and signed values
+ * outside ±2^53 refuse (the kernel's precision guard → the caller
+ * takes the per-row fallback and the interpreter re-run raises
+ * ZAGG_MATH_OVERFLOW); in-range values cast like the kernel (the
+ * signed cast — identical to the unsigned one below 2^53). */
+static bool jit_div_conv_operand(Int64 raw, bool is_f64, bool is_u64,
+                                 double *out) {
+  if (is_f64) {
+    double d;
+    std::memcpy(&d, &raw, sizeof(d));
+    *out = d;
+    return true;
+  }
+  if (is_u64) {
+    if ((Uint64)raw > ((1ull << 53) - 1)) {
+      return false;
+    }
+  } else if (raw >= 0 ? raw > (Int64)((1ull << 53) - 1)
+                      : raw < -(Int64)(1ull << 53)) {
+    return false;
+  }
+  *out = static_cast<double>(raw);
+  return true;
+}
+
+/* ndb_jit_h_div_conv — Phase 5E-3 cold call for OP_DIV_CONV_F64:
+ * GENERIC '/' with at least one integer-track operand. packed =
+ * (flags << 8) | (dst << 4) | src, flags per bytecode1.h. Pure
+ * register math — no ctx needed. Every edge (±2^53 conversion
+ * guard, divisor 0 → SQL NULL result, non-finite quotient) takes
+ * the per-row fallback; the interpreter re-run reproduces the exact
+ * NULL or ZAGG_MATH_OVERFLOW. */
+extern "C" void
+ndb_jit_h_div_conv(JitState *s, uint32_t packed) {
+  const uint32_t src   = packed & 0xFu;
+  const uint32_t dst   = (packed >> 4) & 0xFu;
+  const uint32_t flags = (packed >> 8) & 0xFu;
+  double v0, v1;
+  if (!jit_div_conv_operand(s->regs_i64[dst],
+                            (flags & 0x1u) != 0, (flags & 0x2u) != 0,
+                            &v0) ||
+      !jit_div_conv_operand(s->regs_i64[src],
+                            (flags & 0x4u) != 0, (flags & 0x8u) != 0,
+                            &v1) ||
+      v1 == 0.0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  const double res = v0 / v1;
+  if (!std::isfinite(res)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &res, sizeof(bits));
+  s->regs_i64[dst] = bits;
+}
+
+/* ndb_jit_h_arith_conv — Phase 5I cold call for OP_ARITH_CONV_F64:
+ * GENERIC plus/minus/mul with MIXED int/double operands. packed =
+ * (op_sel << 12) | (flags << 8) | (dst << 4) | src. Mirrors
+ * Reg{Plus,Minus,Mul}Reg's double arm exactly: integer operands
+ * convert with a PLAIN cast (signed or unsigned per the flags — the
+ * kernels have NO ±2^53 guard here, unlike division), then the op,
+ * then isfinite — non-finite is the kernel's ZAGG_MATH_OVERFLOW,
+ * reproduced via the per-row fallback. Pure register math, no ctx. */
+extern "C" void
+ndb_jit_h_arith_conv(JitState *s, uint32_t packed) {
+  const uint32_t src   = packed & 0xFu;
+  const uint32_t dst   = (packed >> 4) & 0xFu;
+  const uint32_t flags = (packed >> 8) & 0xFu;
+  const uint32_t sel   = (packed >> 12) & 0x3u;
+  double v0;
+  double v1;
+  {
+    const Int64 raw = s->regs_i64[dst];
+    if ((flags & 0x1u) != 0) {
+      std::memcpy(&v0, &raw, sizeof(v0));
+    } else if ((flags & 0x2u) != 0) {
+      v0 = static_cast<double>((Uint64)raw);
+    } else {
+      v0 = static_cast<double>(raw);
+    }
+  }
+  {
+    const Int64 raw = s->regs_i64[src];
+    if ((flags & 0x4u) != 0) {
+      std::memcpy(&v1, &raw, sizeof(v1));
+    } else if ((flags & 0x8u) != 0) {
+      v1 = static_cast<double>((Uint64)raw);
+    } else {
+      v1 = static_cast<double>(raw);
+    }
+  }
+  const double res = (sel == 0u) ? v0 + v1
+                   : (sel == 1u) ? v0 - v1
+                                 : v0 * v1;
+  if (!std::isfinite(res)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  Int64 bits;
+  std::memcpy(&bits, &res, sizeof(bits));
+  s->regs_i64[dst] = bits;
+}
+
+/* ndb_jit_h_divmod_conv — Phase 5L cold call for OP_DIVMOD_CONV:
+ * DIV/MOD with a DOUBLE-track operand. packed =
+ * (sel << 12) | (flags << 8) | (dst << 4) | src; sel 0 = truncating
+ * DIV (RegDivReg's is_div_int double arm), sel 1 = fmod (RegModReg's
+ * double arm). Operands convert with the kernels' plain casts.
+ * Edges — divisor 0 (NULL result), non-finite quotient
+ * (ZAGG_MATH_OVERFLOW), truncated quotient outside int64 — take the
+ * per-row fallback; the interpreter re-run defines them exactly. */
+extern "C" void
+ndb_jit_h_divmod_conv(JitState *s, uint32_t packed) {
+  const uint32_t src   = packed & 0xFu;
+  const uint32_t dst   = (packed >> 4) & 0xFu;
+  const uint32_t flags = (packed >> 8) & 0xFu;
+  const uint32_t sel   = (packed >> 12) & 0x3u;
+  double v0;
+  double v1;
+  {
+    const Int64 raw = s->regs_i64[dst];
+    if ((flags & 0x1u) != 0) {
+      std::memcpy(&v0, &raw, sizeof(v0));
+    } else if ((flags & 0x2u) != 0) {
+      v0 = static_cast<double>((Uint64)raw);
+    } else {
+      v0 = static_cast<double>(raw);
+    }
+  }
+  {
+    const Int64 raw = s->regs_i64[src];
+    if ((flags & 0x4u) != 0) {
+      std::memcpy(&v1, &raw, sizeof(v1));
+    } else if ((flags & 0x8u) != 0) {
+      v1 = static_cast<double>((Uint64)raw);
+    } else {
+      v1 = static_cast<double>(raw);
+    }
+  }
+  if (v1 == 0.0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  if (sel == 1u) {
+    /* fmod of finite operands is finite — no further checks. */
+    const double res = std::fmod(v0, v1);
+    Int64 bits;
+    std::memcpy(&bits, &res, sizeof(bits));
+    s->regs_i64[dst] = bits;
+    return;
+  }
+  const double res = v0 / v1;
+  if (!std::isfinite(res)) {
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  const double truncated =
+      (res > 0.0) ? std::floor(res) : (res < 0.0) ? std::ceil(res) : 0.0;
+  if (truncated < -9223372036854775808.0 ||
+      truncated >= 9223372036854775808.0) {
+    /* Outside int64 — the double->int conversion would be
+     * implementation-defined; let the interpreter's kernel define
+     * the row instead. */
+    s->row_fallback = 1;
+    s->regs_i64[dst] = 0;
+    return;
+  }
+  s->regs_i64[dst] = static_cast<Int64>(truncated);
+}
+
+/* ndb_jit_h_load_col_u64 — Phase 5C-3 cold-call load for declared
+ * unsigned-integer columns (OP_LOAD_COL_NDB_U64). The u64 value's bits
+ * are stored into regs_i64[dst_reg]; the u64 consumer stencils
+ * (SUM_U64_CHECKED, MIN/MAX_U64) reinterpret them unsigned. Kept
+ * separate from the signed helper so a schema drift cannot feed u64
+ * bits (which misorder under signed compares for values >= 2^63) into
+ * a signed-contract site: only a descriptor-unsigned column loads
+ * here; anything else takes the per-row fallback. Narrow-int
+ * admission: TINY/SMALL/MEDIUM/UNSIGNED zero-extend, mirroring the
+ * interpreter's loadColumnTypedFromBuf arms — the bridge routes every
+ * unsigned width here so the u64 kernels' unsigned accumulation and
+ * is_unsigned result metadata match the interpreter exactly. */
+extern "C" void
+ndb_jit_h_load_col_u64(JitState *s, uint32_t col_id, uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_col_u64: JitState.ctx is malformed (col_id=%u)",
+        col_id);
+    abort();
+  }
+
+  /* 1 word AttributeHeader + 8 bytes for a BIGUNSIGNED. */
+  Uint32 read_buf[4];
+  AttributeHeader *header;
+  const char *data;
+  Uint32 type_id;
+  if (jit_load_col_read(ctx, col_id, read_buf,
+                        sizeof(read_buf) / sizeof(Uint32),
+                        &header, &data, &type_id) != 0) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  if (header->isNULL()) {
+    /* Same per-row fallback as the other loads — registers have no
+     * null tracking until Phase 5D. */
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  Uint64 uval;
+  switch (type_id) {
+    case NDB_TYPE_TINYUNSIGNED:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      uval = (Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      uval = (Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGUNSIGNED:
+      uval = uint8korr(data);
+      break;
+    case NDB_TYPE_DATE:
+      /* 3-byte little-endian packed (year<<9)|(month<<5)|day. */
+      uval = (Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_YEAR:
+      uval = (Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_TIME2:
+    case NDB_TYPE_DATETIME2:
+    case NDB_TYPE_TIMESTAMP2: {
+      /* MySQL's memcmp-comparable packed binary, big-endian — fold
+       * the column's exact byte count MSB-first so the unsigned
+       * compare reproduces memcmp order (== chronological order),
+       * exactly the interpreter's loadColumnTypedFromBuf arm. */
+      const unsigned char *src =
+          reinterpret_cast<const unsigned char *>(data);
+      const Uint32 nbytes = header->getByteSize();
+      uval = 0;
+      for (Uint32 i = 0; i < nbytes; i++) {
+        uval = (uval << 8) | (Uint64)src[i];
+      }
+      break;
+    }
+    default:
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  s->regs_i64[dst_reg] = (Int64)uval;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_col_u64 col=%u dst=r%u "
+        "value=%llu",
+        ctx->trace_row_no, col_id, dst_reg,
+        (unsigned long long)(Uint64)s->regs_i64[dst_reg]);
+  }
+#endif
+}
+
+/* ndb_jit_h_branch_attr_null — Phase 5.0 cold-call branch helper.
+ *
+ * Used by both op_branch_attr_eq_null (want_null=1) and
+ * op_branch_attr_ne_null (want_null=0). Reads the column's
+ * AttributeHeader via the same readAttributeForJit path as
+ * ndb_jit_h_load_col, checks isNULL(), and returns:
+ *   1 → take the branch (e.g., for IS NULL: column is null AND
+ *       want_null=1, so the embedded EXIT_REFUSE landing pad —
+ *       sorry actually the semantics are flipped: see the bridge
+ *       — `WHERE c IS NULL` emits BRANCH_ATTR_NE_NULL +offset to
+ *       EXIT_REFUSE, so taking the branch here means rejecting
+ *       the row).
+ *   0 → fall through.
+ *
+ * Lifetime: ctx is stack-local in dbtup_jit_invoke; this helper
+ * runs synchronously inside that invocation, so ctx is always
+ * valid. */
+extern "C" int
+ndb_jit_h_branch_attr_null(JitState *s,
+                            uint32_t attr_id,
+                            uint32_t want_null) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  /* ctx->agg is NOT required — see ndb_jit_h_load_col. The scan-filter
+   * path leaves agg null and reads through block_tup + req_struct. */
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_null: JitState.ctx is malformed "
+        "(attr_id=%u)", attr_id);
+    abort();
+  }
+
+  /* CTE-consumer safety (Phase 6-1): no local tuple behind a
+   * consumer feed's virtual row (tablePtrP deliberately null, see
+   * jit_load_col_read). Discard this row's JIT run — the interpreter
+   * re-run surfaces the clean ZAGG error. Scan filters always carry
+   * a real tuple, so this cannot fire on that path (and its invoke
+   * fail-fasts if it ever does). */
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    s->row_fallback = 1;
+    return 0;
+  }
+
+  /* Read just the AttributeHeader; the value bytes that follow
+   * don't matter for a null check. 4 words still gives breathing
+   * room for the readAttributes path's worst-case header
+   * size. */
+  Uint32 read_buf[4];
+  int ret = ctx->block_tup->readSingleAttributeForJit(
+      ctx->req_struct, attr_id, read_buf,
+      sizeof(read_buf) / sizeof(Uint32));
+  if (ret < 0) {
+    /* Column read failed — same Phase 4 policy: panic. Phase 5+
+     * wires this into JoinAggInterpreter's error path so a row
+     * can be skipped cleanly. */
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_null: readAttributes failed for "
+        "attr_id=%u (rc=%d)", attr_id, ret);
+    abort();
+  }
+
+  AttributeHeader *header =
+      reinterpret_cast<AttributeHeader *>(&read_buf[0]);
+  bool is_null = header->isNULL();
+  int take_branch = (is_null == (want_null != 0)) ? 1 : 0;
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_attr_null attr=%u "
+        "want_null=%u is_null=%u take=%u",
+        ctx->trace_row_no, attr_id, want_null, is_null ? 1 : 0,
+        take_branch);
+  }
+#endif
+  return take_branch;
+}
+
+/* ndb_jit_h_branch_attr_op_arg — Phase 7 cold-call branch helper for
+ * BRANCH_ATTR_OP_ARG (WHERE col <op> literal). The whole instruction is
+ * read from the program buffer: ctx->prog_buf + inst_word_off points at the
+ * instruction's word 0, and Dbtup::evalBranchColForJit decodes it
+ * (cond / nulls / attrId / inline literal), reads the column, and compares
+ * via the type's NdbSqlUtil comparator — mirroring the interpreter's
+ * handleBranchAttrOp. Returns 1 to take the branch, 0 to fall through. */
+extern "C" int
+ndb_jit_h_branch_attr_op_arg(JitState *s, uint32_t inst_word_off) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr ||
+      ctx->req_struct == nullptr || ctx->prog_buf == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_attr_op_arg: JitState.ctx is malformed "
+        "(inst_word_off=%u)", inst_word_off);
+    abort();
+  }
+  /* CTE-consumer safety (Phase 6-1): evalBranchColForJit reads the
+   * column from the local tuple — impossible on a consumer feed's
+   * virtual row (tablePtrP deliberately null). Per-row fallback, as
+   * in ndb_jit_h_branch_attr_null above. */
+  if (unlikely(ctx->req_struct->tablePtrP == nullptr)) {
+    s->row_fallback = 1;
+    return 0;
+  }
+  int rc = ctx->block_tup->evalBranchColForJit(
+      ctx->req_struct, ctx->prog_buf + inst_word_off, ctx->param_buf);
+  if (unlikely(rc < 0)) {
+    /* Kernel-eval error: the interpreter's handleBranchAttrOp returns
+     * this same negative and its loop TUPKEY_aborts with -rc. ronsql_jit
+     * item 12 made this reachable in production — a LIKE pushed on a
+     * column type without an m_like comparator is error 40, a
+     * client-visible error, not a node crash (the NDB API does not
+     * guard branch_col_like; RonSQL does not either). Record the code
+     * and raise the per-row fallback: aggregation paths replay the row
+     * on the interpreter (same error there); dbtup_jit_invoke_scan_filter
+     * hands the code to interpreterStartLab for the TUPKEY_abort. */
+    ctx->error_code = -rc;
+    s->row_fallback = 1;
+    return 0;
+  }
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_attr_op_arg off=%u take=%d",
+        ctx->trace_row_no, inst_word_off, rc);
+  }
+#endif
+  return rc;
+}
+
+/* ndb_jit_h_read_linked_to_mem — Phase 5.1a cold-call helper.
+ *
+ * Used by op_load_linked_to_mem to populate
+ * ctx->block_tup->cheapMemory[0] from the row's linked-attr buffer
+ * at the patched position. Delegates to Dbtup::readLinkedToMemBuffer
+ * so the buffer-walk logic is shared one-to-one with NDB's
+ * interpreter READ_LINKED_TO_MEM handler — no drift risk. */
+extern "C" void
+ndb_jit_h_read_linked_to_mem(JitState *s, uint32_t position) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->join_agg == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_read_linked_to_mem: JitState.ctx is malformed "
+        "(position=%u)", position);
+    abort();
+  }
+  /* Routes through JoinAggInterpreter::readLinkedToMemForJit since
+   * Dbtup::cheapMemory is private — JoinAggInterpreter is friend of
+   * Dbtup so it can reach the buffer + the static walk routine. */
+  JoinAggInterpreter *join_agg = ctx->join_agg;
+  join_agg->readLinkedToMemForJit(ctx->block_tup, ctx->req_struct,
+                                  position);
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    AttributeHeader ah(join_agg->cheapMemoryHeaderForJit(ctx->block_tup));
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=read_linked_to_mem "
+        "position=%u is_null=%u bytes=%u",
+        ctx->trace_row_no, position, ah.isNULL() ? 1 : 0,
+        ah.getByteSize());
+  }
+#endif
+}
+
+/* ndb_jit_h_branch_linked_null — Phase 5.1a cold-call branch helper.
+ *
+ * Returns 1 to take the branch, 0 to fall through. Both
+ * op_branch_linked_eq_null (want_null=1) and op_branch_linked_ne_null
+ * (want_null=0) share this helper. Inspects the AttributeHeader at
+ * cheapMemory[0] which a preceding op_load_linked_to_mem populated. */
+extern "C" int
+ndb_jit_h_branch_linked_null(JitState *s, uint32_t want_null) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->join_agg == nullptr ||
+      ctx->block_tup == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_linked_null: JitState.ctx is malformed");
+    abort();
+  }
+  JoinAggInterpreter *join_agg = ctx->join_agg;
+  AttributeHeader ah(join_agg->cheapMemoryHeaderForJit(ctx->block_tup));
+  bool is_null = ah.isNULL();
+  int take_branch = (is_null == (want_null != 0)) ? 1 : 0;
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_linked_null "
+        "want_null=%u is_null=%u take=%u",
+        ctx->trace_row_no, want_null, is_null ? 1 : 0,
+        take_branch);
+  }
+#endif
+  return take_branch;
+}
+
+
+/* ndb_jit_h_load_linked_col — ronsql_jit slice 2 item 4 cold-call
+ * helper for OP_LOAD_LINKED_COL (embedded READ_LINKED_COLUMN_TO_REG,
+ * op 44).
+ *
+ * Mirrors the interpreter's handleReadLinkedColumnToReg one-to-one:
+ * walks req_struct->m_linked_attr_data (per-entry layout: tableId,
+ * schemaVersion, AttrHeader, data) to the packed position and decodes
+ * the value BY THE PACKED NDB TYPE into s->regs_i64[dst_reg].
+ *
+ * NULL / missing buffer / out-of-range position: where the
+ * interpreter sets the register's NULL_INDICATOR (so the program's
+ * BRANCH_REG_EQ/NE_NULL guards fire), JIT registers carry no null
+ * state and the bridge FOLDS those guards — so the row takes the
+ * per-row interpreter fallback instead, which replays the exact null
+ * path. Completing rows therefore never hold NULL (the 5D
+ * invariant). The bridge admits only types exact in signed i64
+ * (signed widths sign-extend, narrow unsigned zero-extend); the
+ * default arm is defensive only. */
+extern "C" void
+ndb_jit_h_load_linked_col(JitState *s, uint32_t pos_type,
+                          uint32_t dst_reg) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr ||
+      ctx->block_tup == nullptr || ctx->req_struct == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_load_linked_col: JitState.ctx is malformed "
+        "(pos_type=0x%x)", pos_type);
+    abort();
+  }
+  const Uint32 position = pos_type >> 8;
+  const Uint32 type_id  = pos_type & 0xFF;
+
+  const Uint32 *linked = ctx->req_struct->m_linked_attr_data;
+  const Uint32 linked_len = ctx->req_struct->m_linked_attr_len;
+  const Uint32 *p = linked;
+  const Uint32 *p_end = linked + linked_len;
+  if (linked != nullptr) {
+    Uint32 pos_count = 0;
+    while (p < p_end) {
+      if (pos_count == position) break;
+      p += 2;  /* skip tableId, schemaVersion */
+      p += 1 + AttributeHeader::getDataSize(*p);
+      pos_count++;
+    }
+  }
+  if (linked == nullptr || p >= p_end) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+  p += 2;  /* skip tableId, schemaVersion */
+  AttributeHeader ah(*p);
+  if (ah.isNULL()) {
+    s->row_fallback = 1;
+    s->regs_i64[dst_reg] = 0;
+    return;
+  }
+
+  const char *data = reinterpret_cast<const char *>(p + 1);
+  Int64 value;
+  switch (type_id) {
+    case NDB_TYPE_TINYINT:
+      value = (Int64)*reinterpret_cast<const Int8 *>(data);
+      break;
+    case NDB_TYPE_TINYUNSIGNED:
+      value = (Int64)(Uint64)*reinterpret_cast<const Uint8 *>(data);
+      break;
+    case NDB_TYPE_SMALLINT:
+      value = (Int64)(Int16)sint2korr(data);
+      break;
+    case NDB_TYPE_SMALLUNSIGNED:
+      value = (Int64)(Uint64)uint2korr(data);
+      break;
+    case NDB_TYPE_MEDIUMINT:
+      value = (Int64)sint3korr(data);
+      break;
+    case NDB_TYPE_MEDIUMUNSIGNED:
+      value = (Int64)(Uint64)uint3korr(data);
+      break;
+    case NDB_TYPE_INT:
+      value = (Int64)sint4korr(data);
+      break;
+    case NDB_TYPE_UNSIGNED:
+      value = (Int64)(Uint64)uint4korr(data);
+      break;
+    case NDB_TYPE_BIGINT:
+      value = (Int64)sint8korr(data);
+      break;
+    /* GL Part B (2026-09-03): BIGUNSIGNED — the raw 8 bytes, exactly as
+     * handleReadLinkedColumnToReg's memcpy into val_uint64; the bridge
+     * marks the dst U64 so the typed compare takes the unsigned arm. */
+    case NDB_TYPE_BIGUNSIGNED:
+      value = (Int64)uint8korr(data);
+      break;
+    /* GL Part A (2026-09-01): float family — store the double's BIT
+     * pattern (F64 lives bit-cast in regs_i64; the bridge marked the
+     * dst F64 so consumers take the OP_BRANCH_F64 arm). FLOAT widens
+     * to double first, mirroring the interpreter's
+     * handleReadLinkedColumnToReg. */
+    case NDB_TYPE_FLOAT: {
+      double dval = (double)floatget(reinterpret_cast<const uchar *>(data));
+      std::memcpy(&value, &dval, sizeof(value));
+      break;
+    }
+    case NDB_TYPE_DOUBLE: {
+      double dval = doubleget(reinterpret_cast<const uchar *>(data));
+      std::memcpy(&value, &dval, sizeof(value));
+      break;
+    }
+    default:
+      /* Not admitted by the bridge — defensive. */
+      s->row_fallback = 1;
+      s->regs_i64[dst_reg] = 0;
+      return;
+  }
+  s->regs_i64[dst_reg] = value;
+
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=load_linked_col pos=%u "
+        "type=%u dst=r%u value=%lld",
+        ctx->trace_row_no, position, type_id, dst_reg,
+        (long long)s->regs_i64[dst_reg]);
+  }
+#endif
+}
+
+
+/* ndb_jit_h_branch_mem_op_arg — ronsql_jit slice 2 item 5 cold-call
+ * branch helper for BRANCH_MEM_OP_ARG / BRANCH_MEM_OP_ARG_INLINE_TYPE
+ * (the CTE-filter compare of a cheapMemory[0] value — pre-loaded by
+ * READ_LINKED_TO_MEM — against an inline literal). The whole
+ * instruction is read from ctx->prog_buf + inst_word_off and
+ * Dbtup::evalBranchMemForJit dispatches the two layouts on its
+ * opcode. Unlike branch_attr_op_arg there is NO tablePtrP
+ * requirement — these ops never read the local tuple (that is their
+ * whole point: CTE consumer virtual rows have no real table).
+ * Returns 1 to take the branch, 0 to fall through; a negative eval
+ * (stale schema version, unknown charset, no comparator) takes the
+ * per-row fallback — the interpreter re-run produces the exact
+ * error handling. */
+extern "C" int
+ndb_jit_h_branch_mem_op_arg(JitState *s, uint32_t inst_word_off) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr ||
+      ctx->prog_buf == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_branch_mem_op_arg: JitState.ctx is malformed "
+        "(inst_word_off=%u)", inst_word_off);
+    abort();
+  }
+  int rc = ctx->block_tup->evalBranchMemForJit(ctx->prog_buf +
+                                               inst_word_off);
+  if (unlikely(rc < 0)) {
+    s->row_fallback = 1;
+    return 0;
+  }
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=branch_mem_op_arg off=%u take=%d",
+        ctx->trace_row_no, inst_word_off, rc);
+  }
+#endif
+  return rc;
+}
+
+
+/* ndb_jit_h_branch_f64 — ronsql_jit slice 2 item 6 cold-call TYPED
+ * compare (OP_BRANCH_F64; the op kind keeps its name — the stencil is
+ * just this call + branch). arg: bits 0-3 condition, bit 4 left-is-
+ * double-bits, bit 5 right-is-double-bits, bit 6 left-is-u64 (GL Part
+ * B), bit 7 right-is-u64, bits 8-11 left reg, bits 12-15 right reg.
+ * This is the interpreter's compareTypedRegs lattice verbatim: any
+ * double side → double compare (an int side converts signed or
+ * unsigned per its flag); else both u64 → unsigned compare; both
+ * signed → signed compare; mixed → a negative signed operand is
+ * strictly less than any unsigned, otherwise unsigned compare (both
+ * fit). Unflagged int registers are non-negative-or-signed i64 by the
+ * admission rules. NaN compares "equal" in both engines (l<r and l>r
+ * both false). Returns 1 to take the branch, 0 to fall through. */
+extern "C" int
+ndb_jit_h_branch_f64(JitState *s, uint32_t arg) {
+  const uint32_t a = (arg >> 8) & 0xFu;
+  const uint32_t b = (arg >> 12) & 0xFu;
+  const int64_t abits = s->regs_i64[a];
+  const int64_t bbits = s->regs_i64[b];
+  const bool l_f64 = (arg & 0x10u) != 0;
+  const bool r_f64 = (arg & 0x20u) != 0;
+  const bool l_u64 = (arg & 0x40u) != 0;
+  const bool r_u64 = (arg & 0x80u) != 0;
+  int res;
+  double l = 0.0;
+  double r = 0.0;
+  if (l_f64 || r_f64) {
+    if (l_f64) {
+      std::memcpy(&l, &abits, sizeof(l));
+    } else {
+      l = l_u64 ? (double)(uint64_t)abits : (double)abits;
+    }
+    if (r_f64) {
+      std::memcpy(&r, &bbits, sizeof(r));
+    } else {
+      r = r_u64 ? (double)(uint64_t)bbits : (double)bbits;
+    }
+    res = (l < r) ? -1 : (l > r) ? 1 : 0;
+  } else if (l_u64 == r_u64) {
+    if (l_u64) {
+      const uint64_t lu = (uint64_t)abits;
+      const uint64_t ru = (uint64_t)bbits;
+      res = (lu < ru) ? -1 : (lu > ru) ? 1 : 0;
+    } else {
+      res = (abits < bbits) ? -1 : (abits > bbits) ? 1 : 0;
+    }
+  } else if (l_u64) {
+    if (bbits < 0) {
+      res = 1;
+    } else {
+      const uint64_t lu = (uint64_t)abits;
+      const uint64_t ru = (uint64_t)bbits;
+      res = (lu < ru) ? -1 : (lu > ru) ? 1 : 0;
+    }
+  } else {
+    if (abits < 0) {
+      res = -1;
+    } else {
+      const uint64_t lu = (uint64_t)abits;
+      const uint64_t ru = (uint64_t)bbits;
+      res = (lu < ru) ? -1 : (lu > ru) ? 1 : 0;
+    }
+  }
+  int take;
+  switch (arg & 0xFu) {
+    case 0:  take = (res == 0); break;   /* EQ */
+    case 1:  take = (res != 0); break;   /* NE */
+    case 2:  take = (res <  0); break;   /* LT */
+    case 3:  take = (res <= 0); break;   /* LE */
+    case 4:  take = (res >  0); break;   /* GT */
+    default: take = (res >= 0); break;   /* GE */
+  }
+#ifdef ERROR_INSERT
+  {
+    dbtup_jit_call_ctx *ctx =
+        static_cast<dbtup_jit_call_ctx *>(s->ctx);
+    if (ctx != nullptr && ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=branch_f64 arg=0x%x "
+          "l=%f r=%f res=%d take=%d",
+          ctx->trace_row_no, arg, l, r, res, take);
+    }
+  }
+#endif
+  return take;
+}
+
+/* ndb_jit_h_read_mem_to_reg — ronsql_jit slice 2 item 6 cold-call
+ * heap-memory read (OP_READ_MEM_TO_REG; embedded ops 49-52). The
+ * bridge bounds-checked the constant offset at compile time, so the
+ * read is unconditional; Dbtup::readCheapMemForJit zero-extends
+ * 1/2/4-byte widths and reads 8 bytes raw, mirroring the
+ * interpreter's handleRead*MemToReg family. wd packs
+ * (width_code << 8) | dst_slot. */
+extern "C" void
+ndb_jit_h_read_mem_to_reg(JitState *s, uint32_t mem_off, uint32_t wd) {
+  dbtup_jit_call_ctx *ctx =
+      static_cast<dbtup_jit_call_ctx *>(s->ctx);
+  if (ctx == nullptr || ctx->block_tup == nullptr) {
+    g_eventLogger->error(
+        "ndb_jit_h_read_mem_to_reg: JitState.ctx is malformed "
+        "(mem_off=%u)", mem_off);
+    abort();
+  }
+  const uint32_t width_code = (wd >> 8) & 0x3u;
+  const uint32_t dst = wd & 0xFFu;
+  s->regs_i64[dst] = (int64_t)ctx->block_tup->readCheapMemForJit(
+      mem_off, 1u << width_code);
+#ifdef ERROR_INSERT
+  if (ctx->trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u helper=read_mem_to_reg off=%u "
+        "width=%u dst=r%u value=%lld",
+        ctx->trace_row_no, mem_off, 1u << width_code, dst,
+        (long long)s->regs_i64[dst]);
+  }
+#endif
+}
+
+
+/* ndb_jit_h_arith_fb — ronsql_jit slice 2 item 7 cold-call embedded
+ * WHERE arithmetic (OP_ARITH_FB). arg: bits 0-3 src2, 4-7 src1,
+ * 8-11 dst, 12-13 code (0 add, 1 sub, 2 mul). Signed-i64 math;
+ * returns 1 (exit the program, row_fallback set) on overflow, or on
+ * a negative SUB result — the interpreter dispatches on the
+ * registers' runtime signedness tags and errors on UNSIGNED
+ * underflow, which the bridge cannot rule out statically, so the
+ * ambiguous case replays on the interpreter for the exact
+ * semantics. Returns 0 to continue. */
+extern "C" int
+ndb_jit_h_arith_fb(JitState *s, uint32_t arg) {
+  const uint32_t src2 = arg & 0xFu;
+  const uint32_t src1 = (arg >> 4) & 0xFu;
+  const uint32_t dst  = (arg >> 8) & 0xFu;
+  const uint32_t code = (arg >> 12) & 0x3u;
+  const int64_t l = s->regs_i64[src1];
+  const int64_t r = s->regs_i64[src2];
+  int64_t res;
+  bool ovf;
+  switch (code) {
+    case 0:
+      ovf = __builtin_add_overflow(l, r, &res);
+      break;
+    case 1:
+      ovf = __builtin_sub_overflow(l, r, &res);
+      if (!ovf && res < 0) {
+        ovf = true;   /* possible unsigned underflow — replay */
+      }
+      break;
+    default:
+      ovf = __builtin_mul_overflow(l, r, &res);
+      break;
+  }
+  if (unlikely(ovf)) {
+    s->row_fallback = 1;
+    return 1;
+  }
+  s->regs_i64[dst] = res;
+#ifdef ERROR_INSERT
+  {
+    dbtup_jit_call_ctx *ctx =
+        static_cast<dbtup_jit_call_ctx *>(s->ctx);
+    if (ctx != nullptr && ctx->trace_enabled) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u helper=arith_fb code=%u "
+          "l=%lld r=%lld res=%lld",
+          ctx->trace_row_no, code, (long long)l, (long long)r,
+          (long long)res);
+    }
+  }
+#endif
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Helper registration.                                               */
+/* ------------------------------------------------------------------ */
+
+extern "C" void dbtup_jit_register_helpers(void) {
+  /* The cast through (void(*)(void)) is safe — the helper-registry
+   * stores generic JitHelperFn pointers and the engine's
+   * HK_COLDCALL patcher only uses the function's address, not its
+   * signature. The stencil source's extern declarations are what
+   * enforce the call ABI at codegen time.
+   *
+   * item 9: registration failures are startup bugs (table cap,
+   * duplicate name with a different fn) — fail FAST instead of
+   * shipping a JIT that ENOENTs at compile time (the silent-drop
+   * mode cost items 5-7 their runtime effect). */
+#define J1_REG(name, fn)                                                \
+  do {                                                                  \
+    if (jit1_register_helper((name),                                    \
+                             reinterpret_cast<JitHelperFn>(fn)) != 0) { \
+      g_eventLogger->error(                                             \
+          "dbtup_jit_register_helpers: registering %s failed "          \
+          "(errno=%d) — raise J1_MAX_HELPERS", (name), errno);          \
+      abort();                                                          \
+    }                                                                   \
+  } while (0)
+  J1_REG("ndb_jit_h_load_col", &ndb_jit_h_load_col);
+  J1_REG("ndb_jit_h_load_col_f64", &ndb_jit_h_load_col_f64);
+  J1_REG("ndb_jit_h_load_col_u64", &ndb_jit_h_load_col_u64);
+  J1_REG("ndb_jit_h_load_col_nb", &ndb_jit_h_load_col_nb);
+  J1_REG("ndb_jit_h_load_col_f64_nb", &ndb_jit_h_load_col_f64_nb);
+  J1_REG("ndb_jit_h_load_col_u64_nb", &ndb_jit_h_load_col_u64_nb);
+  J1_REG("ndb_jit_h_load_col_dec", &ndb_jit_h_load_col_dec);
+  J1_REG("ndb_jit_h_div_conv", &ndb_jit_h_div_conv);
+  J1_REG("ndb_jit_h_arith_conv", &ndb_jit_h_arith_conv);
+  J1_REG("ndb_jit_h_divmod_conv", &ndb_jit_h_divmod_conv);
+  J1_REG("ndb_jit_h_minmax_str", &ndb_jit_h_minmax_str);
+  J1_REG("ndb_jit_h_branch_attr_null", &ndb_jit_h_branch_attr_null);
+  J1_REG("ndb_jit_h_branch_attr_op_arg", &ndb_jit_h_branch_attr_op_arg);
+  J1_REG("ndb_jit_h_read_linked_to_mem", &ndb_jit_h_read_linked_to_mem);
+  J1_REG("ndb_jit_h_branch_linked_null", &ndb_jit_h_branch_linked_null);
+  J1_REG("ndb_jit_h_load_linked_col", &ndb_jit_h_load_linked_col);
+  J1_REG("ndb_jit_h_branch_mem_op_arg", &ndb_jit_h_branch_mem_op_arg);
+  J1_REG("ndb_jit_h_branch_f64", &ndb_jit_h_branch_f64);
+  J1_REG("ndb_jit_h_read_mem_to_reg", &ndb_jit_h_read_mem_to_reg);
+  J1_REG("ndb_jit_h_arith_fb", &ndb_jit_h_arith_fb);
+#undef J1_REG
+}
+
+/* ------------------------------------------------------------------ */
+/* Per-row dispatch.                                                  */
+/* ------------------------------------------------------------------ */
+
+Int32 dbtup_jit_invoke(AggInterpreterBase *agg,
+                       Dbtup *block_tup,
+                       Dbtup::KeyReqStruct *req_struct,
+                       JitEntry            entry_fn,
+                       AggResItem         *agg_res_ptr,
+                       Uint32              n_agg_results,
+                       JoinAggInterpreter *join_agg) {
+  /* Build the per-row context on the stack. JitState.ctx points
+   * at this; helpers consult it during the JIT'd code's execution
+   * and never retain pointers into it. */
+  dbtup_jit_call_ctx ctx;
+  ctx.agg        = agg;
+  ctx.join_agg   = join_agg;
+  ctx.block_tup  = block_tup;
+  ctx.req_struct = req_struct;
+  /* String-CASE unblock: embedded BRANCH_ATTR_OP_ARG ops carry their
+   * instruction-word offset relative to the program past the GROUP BY
+   * metadata — point prog_buf there so the helper can read the
+   * condition words. Aggregation programs never carry OP_PARAM (the
+   * kernel validator's whitelist excludes it), so param_buf stays
+   * null. */
+  ctx.prog_buf   = agg->agg_program() + agg->agg_prog_start_pos();
+  ctx.param_buf  = nullptr;
+  ctx.agg_res_ptr = agg_res_ptr;
+  ctx.error_code = 0;
+#ifdef ERROR_INSERT
+  ctx.trace_enabled = dbtup_jit_trace_start(agg, block_tup,
+                                            &ctx.trace_row_no,
+                                            &ctx.trace_limit);
+#endif
+
+  jit_count_row();
+
+  JitState s;
+  /* Targeted init (ronsql_jit slice 2): zero only the scalar prefix
+   * (registers + flags + pointers — everything before acc_i64 in the
+   * restructured layout) plus the USED prefix of the acc-indexed
+   * arrays below. At BC_MAX_ACCS=32 a full-struct memset costs
+   * ~1.4 KB per row; real programs touch only n_agg_results slots.
+   * Slots >= n_agg_results hold stack garbage — the writeback loops
+   * never read them, and a program can only reference them if its
+   * header lied about n_agg_results (the interpreter would corrupt
+   * group records on such a program, so the exposure is shared, not
+   * new). */
+  std::memset(&s, 0, offsetof(JitState, acc_i64));
+  s.ctx = &ctx;
+
+  /* Read accumulators into s.acc_i64 and zero this row's flag slots.
+   *
+   * Phase 5B: value_initialized tells the MIN/MAX stencils whether the
+   * accumulator holds a real value (the interpreter's first-row-
+   * initialize check on AggResItem::type) — a fresh slot's copy-in
+   * value of 0 must never win a comparison. Per row: the grouped path
+   * points agg_res_ptr at a different group record each row. */
+  if (n_agg_results > BC_MAX_ACCS) n_agg_results = BC_MAX_ACCS;
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    s.acc_i64[i] = agg_res_ptr[i].value.val_int64;
+    s.value_updated[i] = 0;
+    s.value_unsigned[i] = 0;
+    s.value_double[i] = 0;
+    s.value_initialized[i] =
+        (agg_res_ptr[i].type != NDB_TYPE_UNDEFINED &&
+         !agg_res_ptr[i].is_null) ? 1 : 0;
+  }
+
+#ifdef ERROR_INSERT
+  if (ctx.trace_enabled) {
+    g_eventLogger->info(
+        "ERROR_INSERT 4063: row=%u/%u jit invoke entry=%p "
+        "n_agg_results=%u",
+        ctx.trace_row_no, ctx.trace_limit,
+        reinterpret_cast<void *>(entry_fn), n_agg_results);
+    dbtup_jit_trace_accs("before", ctx.trace_row_no,
+                         s.acc_i64, n_agg_results);
+  }
+#endif
+
+  /* Run the JIT'd program. */
+  entry_fn(&s);
+
+  if (s.row_fallback != 0) {
+    /* A helper hit a condition the JIT can't represent (NULL column
+     * value). Discard everything from this run — no writeback — and
+     * tell the caller to re-run the row on the interpreter. */
+    return NDB_JIT_ROW_FALLBACK;
+  }
+  if (s.row_overflowed != 0) {
+    return ZAGG_MATH_OVERFLOW;
+  }
+
+#ifdef ERROR_INSERT
+  if (ctx.trace_enabled) {
+    dbtup_jit_trace_accs("after", ctx.trace_row_no,
+                         s.acc_i64, n_agg_results);
+    for (Uint32 i = 0; i < BC_MAX_REGS; i++) {
+      g_eventLogger->info(
+          "ERROR_INSERT 4063: row=%u after reg[%u]=%lld",
+          ctx.trace_row_no, i, (long long)s.regs_i64[i]);
+    }
+  }
+#endif
+
+  /* Write accumulators back only for aggregate results updated by this
+   * row. Rejected rows leave NULL metadata intact for SUM/MIN/MAX
+   * semantics over an empty input. value_unsigned mirrors the
+   * interpreter's per-kernel result signedness: COUNT produces an
+   * unsigned BIGINT (Count() inits is_unsigned=true and asserts it),
+   * SUM a signed one. */
+  for (Uint32 i = 0; i < n_agg_results; i++) {
+    if (s.value_updated[i] != 0) {
+      if (s.value_double[i] != 0) {
+        /* Phase 5C-2: a double accumulator (SUM/MIN/MAX_F64). The
+         * acc slot holds the double's bit pattern. */
+        agg_res_ptr[i].type        = NDB_TYPE_DOUBLE;
+        agg_res_ptr[i].is_unsigned = false;
+        agg_res_ptr[i].is_null     = false;
+        std::memcpy(&agg_res_ptr[i].value.val_double, &s.acc_i64[i],
+                    sizeof(double));
+      } else {
+        agg_res_ptr[i].type        = NDB_TYPE_BIGINT;
+        agg_res_ptr[i].is_unsigned = (s.value_unsigned[i] != 0);
+        agg_res_ptr[i].is_null     = false;
+        agg_res_ptr[i].value.val_int64 = s.acc_i64[i];
+      }
+    }
+  }
+
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 7/8 — scan-filter compile (reuse cache) + per-row invoke.    */
+/* ------------------------------------------------------------------ */
+
+/* A compiled scan filter's product carried by the reuse cache: the
+ * jit1 handle (freed on eviction) plus the program's EXIT_REFUSE reject
+ * code, which the per-row reject path needs on every use (hit or miss). */
+struct ScanFilterProduct {
+  Jit1Prog *jp;
+  Uint32    reject_code;
+};
+
+/* Reuse-cache compile callback (a cache MISS). Translates the NDB
+ * scan-filter wire format and compiles into the code-memory manager.
+ * The bridge admits only the supported subset (BRANCH_ATTR_* /
+ * comparison predicates / EXIT_OK / EXIT_REFUSE); anything else returns
+ * != JIT_BRIDGE_OK and we refuse (-1) so the scan stays on the
+ * interpreter. Returns 0 and fills *out on success. */
+static int scan_filter_compile_cb(void *ctx, const uint8_t *key,
+                                  uint32_t key_len, NdbJitProgItem *out) {
+  (void)ctx;
+  const Uint32 *prog = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 n_words = key_len / (Uint32)sizeof(Uint32);
+  Program p;
+  JitBridgeError berr;
+  Uint32 reject_code = 0;
+  JitBridgeReason brc = ndb_jit_bridge_translate_scan_filter(
+      prog, n_words, &p, &berr, &reject_code);
+  if (brc != JIT_BRIDGE_OK) {
+    dbtup_jit_note_fallback("scan-filter bridge", (int)brc,
+                            berr.offending_op, berr.offending_word,
+                            prog, n_words);
+    return -1;
+  }
+  Jit1Timing jt;
+  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
+  if (jp == nullptr) {
+    if (errno == ENOMEM) {
+      /* Code memory full: not a fallback yet — the cache evicts its
+       * idle (retained) programs and retries once; the caller notes the
+       * fallback only if the retry fails too. */
+      return NJP_COMPILE_NOMEM;
+    }
+    dbtup_jit_note_fallback("scan-filter compile",
+                            (int)jit1_last_admit_error()->reason,
+                            (Uint32)errno, 0, prog, n_words);
+    return NJP_COMPILE_REFUSE;
+  }
+  dbtup_jit_note_compile_ns(jt.total_ns);
+  ScanFilterProduct *sfp =
+      static_cast<ScanFilterProduct *>(malloc(sizeof(ScanFilterProduct)));
+  if (sfp == nullptr) {
+    jit1_free(jp);
+    dbtup_jit_note_fallback("scan-filter product-alloc", 0, 0, 0,
+                            nullptr, 0);
+    return -1;
+  }
+  sfp->jp = jp;
+  sfp->reject_code = reject_code;
+  out->entry_fn = reinterpret_cast<void *>(jit1_entry(jp));
+  out->user = sfp;
+  return 0;
+}
+
+/* Reuse-cache destroy callback (last release of an entry): free the
+ * compiled blob's code-memory slot and the product. */
+static void scan_filter_destroy_cb(void *ctx, NdbJitProgItem *item) {
+  (void)ctx;
+  ScanFilterProduct *sfp = static_cast<ScanFilterProduct *>(item->user);
+  if (sfp != nullptr) {
+    jit1_free(sfp->jp);
+    free(sfp);
+  }
+}
+
+/* Node-global scan-filter reuse cache. Lazily created; C++11 magic-static
+ * init is thread-safe across LDM threads. Never destroyed (node-lived),
+ * matching the code-memory manager. */
+static NdbJitProgCache *scan_filter_cache() {
+  static NdbJitProgCache *cache = ndb_jit_progcache_create(
+      scan_filter_compile_cb, scan_filter_destroy_cb, /*cb_ctx=*/nullptr);
+  return cache;
+}
+
+void *dbtup_jit_compile_scan_filter(const Uint32 *filter_prog,
+                                    Uint32        n_words,
+                                    Uint32       *out_reject_code,
+                                    void        **out_cache_handle) {
+  if (out_reject_code != nullptr) {
+    *out_reject_code = 0;
+  }
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = nullptr;
+  }
+  if (!dbtup_jit_enabled()) {
+    return nullptr;   /* CompiledInterpreter=OFF -> run on the interpreter */
+  }
+  dbtup_jit_install_crash_handler();
+  if (filter_prog == nullptr || n_words == 0) {
+    return nullptr;
+  }
+  NdbJitProgCache *cache = scan_filter_cache();
+  if (cache == nullptr) {
+    return nullptr;
+  }
+
+  /* Acquire the compiled form, keyed on the exact bytecode words. On a
+   * hit this bumps the refcount and returns the shared blob; on a miss
+   * scan_filter_compile_cb translates + compiles. nullptr => not
+   * JIT-eligible / OOM => caller runs the interpreter. */
+  NdbJitProgItem item;
+  int rc = NJP_COMPILE_OK;
+  NjpEntry *handle = ndb_jit_progcache_acquire_ex(
+      cache, reinterpret_cast<const uint8_t *>(filter_prog),
+      n_words * (Uint32)sizeof(Uint32), /*pinned=*/0, &item, &rc);
+  if (handle == nullptr) {
+    if (rc == NJP_COMPILE_NOMEM) {
+      /* Still no code memory after the cache gave its idle programs
+       * back: this program runs on the interpreter. */
+      dbtup_jit_note_fallback("scan-filter code-memory full", 0, ENOMEM, 0,
+                              filter_prog, n_words);
+    }
+    return nullptr;
+  }
+
+  const ScanFilterProduct *sfp =
+      static_cast<const ScanFilterProduct *>(item.user);
+  if (out_reject_code != nullptr) {
+    *out_reject_code = sfp->reject_code;
+  }
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = handle;
+  }
+  return item.entry_fn;
+}
+
+void dbtup_jit_release_scan_filter(void *cache_handle) {
+  if (cache_handle == nullptr) {
+    return;
+  }
+  ndb_jit_progcache_release(scan_filter_cache(),
+                            static_cast<NjpEntry *>(cache_handle));
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 8 Slice 3c — standalone aggregation reuse cache.             */
+/* ------------------------------------------------------------------ */
+
+/* Agg programs need no per-row reject code, so the product is just the
+ * jit1 handle (freed on eviction). */
+static int agg_compile_cb(void *ctx, const uint8_t *key, uint32_t key_len,
+                          NdbJitProgItem *out) {
+  (void)ctx;
+  /* ronsql_jit item 15: the key is the bytecode words followed by ONE
+   * trailing word = n_visible_results (see dbtup_jit_compile_agg). */
+  const Uint32 *prog = reinterpret_cast<const Uint32 *>(key);
+  const Uint32 n_key_words = key_len / (Uint32)sizeof(Uint32);
+  if (unlikely(n_key_words < 2)) {
+    return -1;
+  }
+  const Uint32 n_words = n_key_words - 1;
+  const Uint32 n_visible = prog[n_words];
+  Program p;
+  JitBridgeError berr;
+  JitBridgeReason brc =
+      ndb_jit_bridge_translate_ex(prog, n_words, n_visible, &p, &berr);
+  if (brc != JIT_BRIDGE_OK) {
+    dbtup_jit_note_fallback("aggregation bridge", (int)brc,
+                            berr.offending_op, berr.offending_word,
+                            prog, n_words);
+    return -1;
+  }
+  Jit1Timing jt;
+  Jit1Prog *jp = jit1_compile(ndb_jit_codemem_global(), &p, &jt);
+  if (jp == nullptr) {
+    if (errno == ENOMEM) {
+      return NJP_COMPILE_NOMEM;   /* see scan_filter_compile_cb */
+    }
+    dbtup_jit_note_fallback("aggregation compile",
+                            (int)jit1_last_admit_error()->reason,
+                            (Uint32)errno, 0, prog, n_words);
+    return NJP_COMPILE_REFUSE;
+  }
+  dbtup_jit_note_compile_ns(jt.total_ns);
+  out->entry_fn = reinterpret_cast<void *>(jit1_entry(jp));
+  out->user = jp;   /* Jit1Prog* directly; jit1_free on destroy */
+  return 0;
+}
+
+static void agg_destroy_cb(void *ctx, NdbJitProgItem *item) {
+  (void)ctx;
+  jit1_free(static_cast<Jit1Prog *>(item->user));
+}
+
+/* Node-global aggregation reuse cache (separate from the scan-filter
+ * cache — different bytecode format). Lazy magic-static init; node-lived. */
+static NdbJitProgCache *agg_cache() {
+  static NdbJitProgCache *cache = ndb_jit_progcache_create(
+      agg_compile_cb, agg_destroy_cb, /*cb_ctx=*/nullptr);
+  return cache;
+}
+
+void *dbtup_jit_compile_agg(const Uint32 *agg_prog, Uint32 n_words,
+                            void **out_cache_handle, bool pinned,
+                            Uint32 n_visible_results) {
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = nullptr;
+  }
+  if (!dbtup_jit_enabled()) {
+    return nullptr;   /* CompiledInterpreter=OFF -> run on the interpreter */
+  }
+  dbtup_jit_install_crash_handler();
+  if (agg_prog == nullptr || n_words == 0) {
+    return nullptr;
+  }
+  NdbJitProgCache *cache = agg_cache();
+  if (cache == nullptr) {
+    return nullptr;
+  }
+  /* Phase 8 Slice 4: `pinned` comes from the program's
+   * AGG_PROG_FLAG_REUSABLE header bit (RonSQL / prepared statements).
+   * A pinned entry is retained at refcount 0, so the next execution of
+   * the identical program is a cache hit instead of a recompile; the
+   * cache upgrades an existing entry to pinned and never downgrades.
+   * Bounded by the code-memory cap: on OOM new compiles fail and fall
+   * back (a memory-pressure sweep is future work). */
+  /* ronsql_jit item 15: the cache key is the bytecode plus ONE trailing
+   * word carrying n_visible_results — two identical instruction streams
+   * with different visible counts would place kOpAvg's hidden COUNT
+   * slot differently, so they must not share a blob. Cold path (one
+   * allocation per compile attempt); OOM = interpreter fallback. */
+  Uint32 *key = static_cast<Uint32 *>(malloc((n_words + 1) * sizeof(Uint32)));
+  if (key == nullptr) {
+    return nullptr;
+  }
+  std::memcpy(key, agg_prog, n_words * sizeof(Uint32));
+  key[n_words] = n_visible_results;
+  NdbJitProgItem item;
+  int rc = NJP_COMPILE_OK;
+  NjpEntry *handle = ndb_jit_progcache_acquire_ex(
+      cache, reinterpret_cast<const uint8_t *>(key),
+      (n_words + 1) * (Uint32)sizeof(Uint32), pinned ? 1 : 0, &item, &rc);
+  free(key);
+  if (handle == nullptr) {
+    if (rc == NJP_COMPILE_NOMEM) {
+      dbtup_jit_note_fallback("aggregation code-memory full", 0, ENOMEM, 0,
+                              agg_prog, n_words);
+    }
+    return nullptr;
+  }
+  if (out_cache_handle != nullptr) {
+    *out_cache_handle = handle;
+  }
+  return item.entry_fn;
+}
+
+void dbtup_jit_release_agg(void *cache_handle) {
+  if (cache_handle == nullptr) {
+    return;
+  }
+  ndb_jit_progcache_release(agg_cache(),
+                            static_cast<NjpEntry *>(cache_handle));
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 8 — node-global JIT statistics (NDBINFO).                    */
+/* ------------------------------------------------------------------ */
+
+void dbtup_jit_get_stats(NdbJitStats *out) {
+  if (out == nullptr) {
+    return;
+  }
+  NdbJitCodeMem *mem = ndb_jit_codemem_global();
+  out->code_reserved_bytes = ndb_jit_codemem_reserved_bytes(mem);
+  out->code_used_bytes = ndb_jit_codemem_inuse_bytes(mem);
+  out->code_slots_live = ndb_jit_codemem_live_slots(mem);
+
+  /* Sum across both reuse caches (scan filters + aggregation). */
+  NdbJitProgCache *sf = scan_filter_cache();
+  NdbJitProgCache *ag = agg_cache();
+  out->programs_compiled = ndb_jit_progcache_compile_count(sf) +
+                           ndb_jit_progcache_compile_count(ag);
+  out->programs_reused = ndb_jit_progcache_hit_count(sf) +
+                         ndb_jit_progcache_hit_count(ag);
+  out->programs_cached = ndb_jit_progcache_live_count(sf) +
+                         ndb_jit_progcache_live_count(ag);
+
+  out->programs_fallback =
+      g_jit_fallback_count.load(std::memory_order_relaxed);
+  out->compile_ns_total =
+      g_jit_compile_ns_total.load(std::memory_order_relaxed);
+  Uint64 rows = 0;
+  for (unsigned i = 0; i < NJT_MAX_ROW_SLOTS; i++) {
+    rows += g_jit_row_slots[i].rows.load(std::memory_order_relaxed);
+  }
+  out->rows_executed = rows;
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 8 — crash diagnosis (SIGSEGV interposer + DUMP).             */
+/*                                                                    */
+/* JIT'd code has no symbols: a fault inside a blob lands at a bare   */
+/* PC that neither the stacktrace printer nor gdb can name. The        */
+/* interposer below catches the fatal signal FIRST, maps the faulting  */
+/* PC through jit1_describe_pc (lock-free over the live-program        */
+/* registry), logs the JIT-CRASH line, and then chains to whatever     */
+/* handler ndbd installed at startup (handler_error -> ErrorReporter)  */
+/* so the node's normal crash path is unchanged. Installed lazily at   */
+/* the first JIT compile: a node running CompiledInterpreter=OFF (or   */
+/* one that never compiles) never touches signal handling at all —     */
+/* and catchsigs() runs long before any query traffic, so the previous */
+/* action we capture is always ndbd's own handler.                     */
+/* ------------------------------------------------------------------ */
+
+#ifndef _WIN32
+
+static const int g_jit_crash_signals[] = {SIGSEGV, SIGBUS, SIGILL, SIGFPE};
+static const int g_n_jit_crash_signals =
+    (int)(sizeof(g_jit_crash_signals) / sizeof(g_jit_crash_signals[0]));
+static struct sigaction g_jit_prev_action[
+    sizeof(g_jit_crash_signals) / sizeof(g_jit_crash_signals[0])];
+
+/* Faulting instruction pointer from the ucontext the kernel hands an
+ * SA_SIGINFO handler. Per-platform; nullptr where unknown (the handler
+ * then just chains without a JIT-CRASH line). */
+static const void *jit_crash_pc_from_ucontext(void *uctx) {
+  if (uctx == nullptr) {
+    return nullptr;
+  }
+#if defined(__linux__) && defined(__x86_64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+  return reinterpret_cast<const void *>(uc->uc_mcontext.gregs[REG_RIP]);
+#elif defined(__linux__) && defined(__aarch64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+  return reinterpret_cast<const void *>(uc->uc_mcontext.pc);
+#elif defined(__APPLE__) && defined(__x86_64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+  return reinterpret_cast<const void *>(uc->uc_mcontext->__ss.__rip);
+#elif defined(__APPLE__) && defined(__aarch64__)
+  const ucontext_t *uc = static_cast<const ucontext_t *>(uctx);
+#if defined(arm_thread_state64_get_pc)
+  return reinterpret_cast<const void *>(
+      arm_thread_state64_get_pc(uc->uc_mcontext->__ss));
+#else
+  return reinterpret_cast<const void *>(uc->uc_mcontext->__ss.__pc);
+#endif
+#else
+  return nullptr;
+#endif
+}
+
+extern "C" void dbtup_jit_crash_handler(int signum, siginfo_t *info,
+                                        void *uctx) {
+  char line[256];
+  const void *pc = jit_crash_pc_from_ucontext(uctx);
+  if (pc != nullptr && jit1_describe_pc(pc, line, sizeof(line))) {
+    /* Raw write first (async-signal-safe), then the event logger so the
+     * line reaches the cluster log. The logger is not signal-safe, but
+     * ndbd's own handler_error logs from this context too and the
+     * process is going down either way — the write() already saved the
+     * diagnosis if the logger deadlocks. */
+    ssize_t wr = write(STDERR_FILENO, line, std::strlen(line));
+    wr = write(STDERR_FILENO, "\n", 1);
+    (void)wr;
+    g_eventLogger->error("%s", line);
+  }
+
+  /* Chain to the previously installed handler (ndbd's handler_error),
+   * preserving the node's normal crash path exactly. */
+  const struct sigaction *prev = nullptr;
+  for (int i = 0; i < g_n_jit_crash_signals; i++) {
+    if (g_jit_crash_signals[i] == signum) {
+      prev = &g_jit_prev_action[i];
+      break;
+    }
+  }
+  if (prev != nullptr && (prev->sa_flags & SA_SIGINFO) != 0 &&
+      prev->sa_sigaction != nullptr) {
+    prev->sa_sigaction(signum, info, uctx);
+    return;
+  }
+  if (prev != nullptr && (prev->sa_flags & SA_SIGINFO) == 0 &&
+      prev->sa_handler != SIG_DFL && prev->sa_handler != SIG_IGN) {
+    prev->sa_handler(signum);
+    return;
+  }
+  /* No previous handler: restore the default action and re-raise so the
+   * OS produces the normal termination/core. */
+  signal(signum, SIG_DFL);
+  raise(signum);
+}
+
+static void dbtup_jit_install_crash_handler_once(void) {
+  for (int i = 0; i < g_n_jit_crash_signals; i++) {
+    struct sigaction sa;
+    std::memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = dbtup_jit_crash_handler;
+    sa.sa_flags = SA_SIGINFO;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(g_jit_crash_signals[i], &sa, &g_jit_prev_action[i]) != 0) {
+      /* Install failed for this signal — treat "previous" as default so
+       * a fault still terminates via re-raise. */
+      std::memset(&g_jit_prev_action[i], 0, sizeof(g_jit_prev_action[i]));
+    }
+  }
+}
+
+void dbtup_jit_install_crash_handler() {
+  static pthread_once_t once = PTHREAD_ONCE_INIT;
+  pthread_once(&once, dbtup_jit_install_crash_handler_once);
+}
+
+#else /* _WIN32 */
+
+void dbtup_jit_install_crash_handler() {}
+
+#endif /* !_WIN32 */
+
+static void jit_dump_emit_line(void *arg, const char *line) {
+  (void)arg;
+  g_eventLogger->info("%s", line);
+}
+
+void dbtup_jit_dump_programs() {
+  jit1_registry_dump(jit_dump_emit_line, nullptr);
+}
+
+bool dbtup_jit_invoke_scan_filter(Dbtup *block_tup,
+                                  Dbtup::KeyReqStruct *req_struct,
+                                  JitEntry             entry_fn,
+                                  const Uint32        *prog_buf,
+                                  const Uint32        *param_buf,
+                                  int                 *out_error) {
+  *out_error = 0;
+  /* Per-row context: no aggregation instance. The cold-call helpers
+   * (ndb_jit_h_load_col / ndb_jit_h_branch_attr_null /
+   * ndb_jit_h_branch_attr_op_arg) reach the row through
+   * block_tup->readSingleAttributeForJit, so agg / join_agg stay null.
+   * prog_buf is the exec-region base so the OP_ARG helper can read the
+   * instruction + its inline literal by offset. */
+  dbtup_jit_call_ctx ctx;
+  ctx.agg        = nullptr;
+  ctx.join_agg   = nullptr;
+  ctx.block_tup  = block_tup;
+  ctx.req_struct = req_struct;
+  ctx.prog_buf   = prog_buf;
+  ctx.param_buf  = param_buf;
+  ctx.agg_res_ptr = nullptr;   /* scan filters have no aggregate slots */
+  ctx.error_code = 0;
+#ifdef ERROR_INSERT
+  ctx.trace_enabled = false;   /* 4063 row trace is aggregation-only for now */
+  ctx.trace_row_no  = 0;
+  ctx.trace_limit   = 0;
+#endif
+
+  jit_count_row();
+
+  JitState s;
+  /* Scan filters touch registers and the per-row flags only — the
+   * acc-indexed arrays are aggregation state no admitted filter
+   * program references, so zeroing the scalar prefix suffices
+   * (ronsql_jit slice 2 targeted init). */
+  std::memset(&s, 0, offsetof(JitState, acc_i64));
+  s.ctx = &ctx;
+
+  entry_fn(&s);
+
+  if (unlikely(s.row_fallback != 0)) {
+    if (ctx.error_code != 0) {
+      /* ronsql_jit item 12: a helper's kernel eval failed (e.g. LIKE on
+       * a type with no comparator = 40). There is no verdict; the
+       * caller TUPKEY_aborts with the code — the interpreter's exact
+       * disposition for the same program. */
+      *out_error = ctx.error_code;
+      return false;
+    }
+    /* No per-row fallback exists on the scan-filter path (fallback is
+     * per-program, at compile time), and the admitted helpers only set
+     * this flag for a null tablePtrP — impossible for a real scanned
+     * tuple. If it fires, a helper contract broke: fail fast rather
+     * than guess an accept/reject verdict (either guess silently
+     * corrupts results). */
+    g_eventLogger->error(
+        "dbtup_jit_invoke_scan_filter: unexpected row_fallback");
+    abort();
+  }
+  /* A scan filter keeps the row unless OP_FILTER_REJECT_EXIT set the
+   * reject flag. The admitted NULL-branch subset performs no
+   * arithmetic, so row_overflowed cannot legitimately be set here;
+   * treat any unexpected overflow defensively as "reject" so a
+   * miscompiled program can never leak a row past the filter. */
+  if (s.row_overflowed != 0) {
+    return false;
+  }
+  return s.row_filter_rejected == 0;
+}

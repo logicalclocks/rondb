@@ -746,6 +746,9 @@ class Dblqh : public SimulatedBlock {
       m_agg_n_res_recs(0),
       m_agg_interpreter(nullptr),
       m_vs_interpreter(nullptr),
+      m_jit_filter_entry(nullptr),
+      m_jit_filter_reject_code(0),
+      m_jit_filter_ineligible(0),
       m_join_agg_state_key(RNIL),
       m_join_agg_evict_rows(0),
       m_rows_examined(0),
@@ -897,6 +900,21 @@ class Dblqh : public SimulatedBlock {
                              // to the TC, which could cause incorrect aggregation result.
     AggInterpreter* m_agg_interpreter;
     VecSearchInterpreter* m_vs_interpreter;
+    /* RONDB-1056 Phase 7: per-scan fast pointer to the JIT-compiled
+     * scan filter (a JitEntry), copied from the stored procedure at
+     * scan setup. nullptr means run the interpreter. Kept as void* so
+     * the JIT engine types don't leak into Dblqh.hpp, mirroring how
+     * m_agg_interpreter forward-declares its type.
+     * m_jit_filter_reject_code is the program's EXIT_REFUSE code (also
+     * copied from the stored procedure); the per-row reject path
+     * TUPKEY_aborts with it so the JIT matches the interpreter.
+     * m_jit_filter_ineligible is set when the bridge deliberately
+     * rejected this scan's filter (e.g. EXIT_OK_LAST table-stats scans),
+     * so ERROR_INSERT 4060 treats the interpreter fallback as expected
+     * rather than a wiring failure. */
+    void* m_jit_filter_entry;
+    Uint16 m_jit_filter_reject_code;
+    Uint8 m_jit_filter_ineligible;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch

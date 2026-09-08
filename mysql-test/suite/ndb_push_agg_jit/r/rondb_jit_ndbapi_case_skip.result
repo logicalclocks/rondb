@@ -1,0 +1,10 @@
+Running rondb_jit_ndbapi_case_skip
+=== testJoinAggJit ===
+Connect string: #
+MySQL port: #
+
+Test 6: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)
+
+All tests PASSED
+PASSED
+DROP DATABASE IF EXISTS test_db;

@@ -29,6 +29,10 @@
 #include "NdbAggregationCommon.hpp"
 #include "util/require.h"
 
+/* Phase 8 RONDB-1056: standalone agg compiles go through the reuse cache
+ * (DbtupJitGlue), which owns the bridge-translate + jit1_compile path. */
+#include "DbtupJitGlue.hpp"
+
 void PushdownInterpreter::Destruct(PushdownInterpreter* ptr) {
   if (ptr == nullptr) {
     return;
@@ -275,6 +279,31 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
                                               thread_id);
     require(result.agg->Init(prog));
     require(result.agg->OptimizeProgram());
+    /* Phase 8 Slice 3c: JIT-compile the per-row aggregation. The
+     * GROUP BY gate lift (Phase 8 #5) compiles grouped programs too —
+     * the compiled region starts at agg_prog_start_pos, past the
+     * GROUP BY metadata, so grouping never appears in the blob (the
+     * group prologue in ProcessRec resolves the row's accumulator
+     * slots before dispatch). Acquire from the node-global agg reuse
+     * cache (identical instruction streams share one blob — sound
+     * even across different GROUP BY column sets); the handle is
+     * released in ~AggInterpreterBase. */
+    {
+      const Uint32 *agg_prog = result.agg->agg_program();
+      const Uint32 bc_off = result.agg->agg_prog_start_pos();
+      if (bc_off < prog_len) {
+        void *handle = nullptr;
+        void *entry = dbtup_jit_compile_agg(agg_prog + bc_off,
+                                            prog_len - bc_off, &handle,
+                                            result.agg->prog_reusable(),
+                                            /*n_visible_results=*/
+                                            NDB_JIT_NO_AVG_SLOTS);
+        if (entry != nullptr) {
+          result.agg->setJitEntry(reinterpret_cast<JitEntry>(entry));
+          result.agg->setJitCacheHandle(handle);
+        }
+      }
+    }
   } else {
     result.vs = new(page_ptr) VecSearchInterpreter(prog_len, table_id, frag_id,
                                                    thread_id);

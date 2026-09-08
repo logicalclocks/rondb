@@ -50,6 +50,7 @@
 #include "JoinAggInterpreter.hpp"
 #include "PushdownInterpreter.hpp"
 #include "VecSearchInterpreter.hpp"
+#include "DbtupJitGlue.hpp"   /* Phase 7: scan-filter compile/invoke glue */
 #include "dblqh/JoinAggregationState.hpp"
 #include "my_time.h"
 #include "my_systime.h"
@@ -1058,14 +1059,120 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
         ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
         Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
 
-        auto result = PushdownInterpreterFactory::Create(
+        PushdownCreateResult result = PushdownInterpreterFactory::Create(
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
             prepare_fragptr.p->fragmentId,
             getThreadId());
         ndbrequire(result.agg != nullptr || result.vs != nullptr);
+#ifdef ERROR_INSERT
+        /* ronsql_jit slice 3 — ERROR_INSERT 4064 "strict JIT compile":
+         * a PROGRAM-LEVEL compile reject (bridge reject or engine
+         * compile failure — anything that left m_jit_entry null for a
+         * program with a compilable region) is fatal. Unlike 4060
+         * this tolerates per-row fallbacks, so whole suites can arm
+         * it. Scan filters are out of scope by design (the SQL
+         * planner legitimately pushes non-JIT-able filters); the
+         * join-agg path's twin is DBLQH's 5120 (Cmvmi routes `all
+         * error` by range: 4xxx DBTUP, 5xxx DBLQH — arm both with
+         * two consecutive mgm commands). */
+        if (ERROR_INSERTED(4064) && result.agg != nullptr &&
+            result.agg->agg_prog_start_pos() < proc_len &&
+            result.agg->jitEntry() == nullptr) {
+          g_eventLogger->error(
+              "ERROR_INSERT 4064: aggregation program did not JIT-"
+              "compile (prog_len=%u start_pos=%u). Aborting per test "
+              "directive - strict compile is armed.",
+              proc_len, result.agg->agg_prog_start_pos());
+          ndbabort();
+        }
+#endif
         scan_rec_ptr->m_agg_interpreter = result.agg;
         scan_rec_ptr->m_vs_interpreter = result.vs;
+      } else if (!scan_rec_ptr->m_has_pushdown) {
+        /* RONDB-1056 Phase 7: JIT-compile a plain scan WHERE filter (the
+         * RexecRegionLen exec region of the interpreted scan program).
+         * Compiled once per stored procedure (cached on it), then the
+         * per-scan fast pointer is copied onto the scan record for the
+         * per-row dispatch in interpreterStartLab. Pushdown
+         * aggregation/vector scans keep their own JIT path above. */
+        if (storedPtr.p->m_jit_filter_state == JIT_FILTER_UNTRIED) {
+          jam();
+          /* Decide once; default to INELIGIBLE and only upgrade on a
+           * successful compile, so we never re-attempt per batch. */
+          storedPtr.p->m_jit_filter_state = JIT_FILTER_INELIGIBLE;
+          const Uint32 *cache = storedPtr.p->cachedLinearAttrInfo;
+          if (cache != nullptr) {
+            const Uint32 rinit = cache[0];   // RinitReadLen
+            const Uint32 rexec = cache[1];   // RexecRegionLen (the filter)
+            const Uint32 rfupd = cache[2];   // RfinalUpdateLen
+            /* v1 eligibility: a read filter with no final-update region
+             * (i.e. not an interpreted UPDATE). A final-read region
+             * (RfinalRLen, projection) is fine — it runs after the filter
+             * via the normal readAttributes path with RinstructionCounter
+             * advanced past the exec region. A subroutine/param region
+             * (RsubLen, cache[4]) is also fine: it holds BRANCH_ATTR_OP_PARAM
+             * parameters, resolved at runtime by the helper. Real
+             * subroutines would require a CALL in the exec region, which the
+             * bridge rejects (unknown opcode) — so an admitted exec region
+             * never references subroutines, only params. The exec region
+             * always begins at word (5 + RinitReadLen); the input-param
+             * offset cancels out (see interpreterStartLab's
+             * RinstructionCounter arithmetic). */
+            /* The 1-word EXIT_OK_LAST program (NdbIndexStat sample
+             * scans, NdbDictionaryImpl listEvents) is INELIGIBLE, not a
+             * fallback: it accepts every row and closes the scan — there
+             * is no per-row filtering work for the JIT to speed up, so
+             * attempting (and bridge-rejecting) it would only pollute the
+             * programs_fallback counter, once per fragment's storedProc.
+             * Found by the Phase 6-0 CTE census: an index-stat auto-update
+             * landing inside a counter bracket added 16 phantom fallbacks.
+             * A LONGER program containing EXIT_OK_LAST still reaches the
+             * bridge and counts its reject — that is a real Phase 7
+             * coverage gap, not counter noise. */
+            const bool trivial_exit_last =
+                (rexec == 1 &&
+                 (Uint64(5) + rinit) < storedPtr.p->cachedLinearLen &&
+                 cache[5 + rinit] == Interpreter::EXIT_OK_LAST);
+            if (rexec > 0 && rfupd == 0 && !trivial_exit_last &&
+                (Uint64(5) + rinit + rexec) <= storedPtr.p->cachedLinearLen) {
+              Uint32 reject_code = 0;
+              void *cache_handle = nullptr;
+              void *entry = dbtup_jit_compile_scan_filter(
+                  &cache[5 + rinit], rexec, &reject_code, &cache_handle);
+              if (entry != nullptr) {
+                jam();
+                storedPtr.p->m_jit_filter_entry = entry;
+                storedPtr.p->m_jit_filter_cache_handle = cache_handle;
+                /* The program's EXIT_REFUSE code (theInstruction >> 16,
+                 * captured by the bridge). If the filter had no reject path
+                 * the bridge returns 0, which is unused (no row rejects). */
+                storedPtr.p->m_jit_filter_reject_code = (Uint16)reject_code;
+                storedPtr.p->m_jit_filter_state = JIT_FILTER_COMPILED;
+              }
+            }
+          }
+        }
+        /* Publish onto the scan record: reset first (a pooled ScanRecord
+         * reused via init_release_scanrec must never keep a previous
+         * scan's entry — the blob it points at is freed when that scan's
+         * stored procedure dies), then either install the compiled entry
+         * or mark the interpreter fallback as deliberate so ERROR_INSERT
+         * 4060 doesn't abort on an ineligible or bridge-rejected filter
+         * (e.g. the 1-word EXIT_OK_LAST table-stats scan, which is
+         * classified ineligible above without reaching the bridge). */
+        scan_rec_ptr->m_jit_filter_entry = nullptr;
+        scan_rec_ptr->m_jit_filter_reject_code = 0;
+        if (storedPtr.p->m_jit_filter_state == JIT_FILTER_COMPILED) {
+          jam();
+          scan_rec_ptr->m_jit_filter_entry = storedPtr.p->m_jit_filter_entry;
+          scan_rec_ptr->m_jit_filter_reject_code =
+              storedPtr.p->m_jit_filter_reject_code;
+          scan_rec_ptr->m_jit_filter_ineligible = 0;
+        } else {
+          jam();
+          scan_rec_ptr->m_jit_filter_ineligible = 1;
+        }
       }
     }
   } else {
@@ -1074,6 +1181,85 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
   }
 
   return totalLen;
+}
+
+/* Phase 5.1a: shared linked-attr buffer walk used by both the NDB
+ * interpreter's READ_LINKED_TO_MEM handler and the JIT cold-call
+ * helper ndb_jit_h_read_linked_to_mem. Single source of truth so
+ * the two paths can't drift on the buffer layout.
+ *
+ * Hardened against malformed input: every header dereference is
+ * preceded by a bounds check; the final payload copy is bounded
+ * by both source extent and destination capacity. Any failure
+ * writes a NULL AttributeHeader and returns — same observable
+ * behavior as a missing entry. */
+void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
+                                    Uint32 linked_len,
+                                    Uint32 position,
+                                    Uint32 *dest,
+                                    Uint32 dest_words) {
+  /* Helper: write a NULL AttributeHeader at dest[0] if there's
+   * room, and return. Caller is expected to provide dest_words ≥ 1
+   * so this branch is always safe in the well-behaved case;
+   * defensively skip the write if not. */
+  auto write_null_ah = [&]() {
+    if (likely(dest_words >= 1)) {
+      AttributeHeader null_ah(0, 0);
+      dest[0] = null_ah.m_value;
+    }
+  };
+
+  if (unlikely(linked == nullptr)) {
+    write_null_ah();
+    return;
+  }
+
+  const Uint32 *p = linked;
+  const Uint32 *p_end = linked + linked_len;
+  Uint32 pos_count = 0;
+  /* Skip-loop walks past entries 0..position-1. Each entry is
+   * { tableId, schemaVersion, AttrHeader, data... } — minimum 3
+   * words. Validate p+2 is in-range BEFORE dereferencing *(p+2)
+   * for the AttrHeader-derived size. */
+  while (pos_count < position) {
+    if (unlikely(p + 2 >= p_end)) {
+      /* Truncated entry — no AttrHeader word to read. */
+      write_null_ah();
+      return;
+    }
+    Uint32 entry_words = 2 + 1 + AttributeHeader::getDataSize(p[2]);
+    if (unlikely(entry_words < 3) ||
+        unlikely(p + entry_words > p_end)) {
+      /* Underflowed (impossible with the +3 base, but defensive
+       * against signed-arith assumptions) or entry payload runs
+       * past the buffer. */
+      write_null_ah();
+      return;
+    }
+    p += entry_words;
+    pos_count++;
+  }
+
+  /* p now points at the requested entry's tableId. Validate the
+   * AttrHeader is in-range. */
+  if (unlikely(p + 2 >= p_end)) {
+    write_null_ah();
+    return;
+  }
+
+  /* Skip tableId + schemaVersion. The remaining bytes are
+   * { AttrHeader, data... }. */
+  p += 2;
+  Uint32 words = 1 + AttributeHeader::getDataSize(*p);
+  if (unlikely(words < 1) ||
+      unlikely(p + words > p_end) ||
+      unlikely(words > dest_words)) {
+    /* Source overrun OR destination overflow. Either is a
+     * caller / data bug — fail closed with NULL AH. */
+    write_null_ah();
+    return;
+  }
+  memcpy(dest, p, words * sizeof(Uint32));
 }
 
 void Dbtup::nextAttrInfoParam(Uint32 storedProcId) {
@@ -5481,6 +5667,308 @@ retry:
   return 0;
 }
 
+/* RONDB-1056 Phase 7: shared evaluate for a column-vs-value scan-filter
+ * branch — BRANCH_ATTR_OP_ARG (vs an inline literal), BRANCH_ATTR_OP_PARAM
+ * (vs a parameter in the subroutine region), and BRANCH_ATTR_OP_ATTR (vs a
+ * 2nd column of the same row) — called from the JIT cold-call helper
+ * ndb_jit_h_branch_attr_op_arg. `inst` points at word 0 of the
+ * instruction in the program buffer; `param_buf` is the subroutine/param
+ * region (only used for OP_PARAM; may be nullptr otherwise). This mirrors
+ * InterpreterContext::handleBranchAttrOp (DbtupExecQuery.cpp ~8826) — same
+ * descriptor walk, same NdbSqlUtil compare, same NULL-semantics and
+ * condition mapping — so the JIT and interpreter agree bit-for-bit. The byte
+ * comparison itself is NDB's own sqlType.m_cmp (no re-implementation, no
+ * drift); only the small operand-resolution + null/cond glue is duplicated.
+ * Returns 1 = take branch, 0 = fall through, <0 = -(error code) — the
+ * same negative the interpreter's handler returns, which its loop turns
+ * into TUPKEY_abort(-rc); the JIT helper routes it the same way. */
+int Dbtup::evalBranchColForJit(KeyReqStruct *req_struct,
+                               const Uint32 *inst,
+                               const Uint32 *param_buf) {
+  const Uint32 w0 = inst[0];                 // opcode | nulls | cond | offset
+  const Uint32 w1 = inst[1];                 // (attrId << 16) | argLen|paramNo
+  const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
+  const Uint32 opCode = Interpreter::getOpCode(w0) % OVERFLOW_OPCODE;
+
+  /* Read the column value into the block's large coutBuffer rather than a
+   * small stack buffer. coutBuffer is the interpreter's tmpArea — free on
+   * the JIT path (a drop-in for interpreterNextLab, which is skipped) and
+   * sized for any attribute, so a wide string/VARCHAR column can't overflow.
+   * The first half holds the 1st column; the OP_ATTR 2nd column uses the
+   * second half (from ATTR_BUF_CAP). The read buffer holds the
+   * AttributeHeader (word 0) then the value bytes. */
+  const Uint32 ATTR_BUF_CAP = ZATTR_BUFFER_SIZE / 2;
+  Uint32 *const read_buf = coutBuffer;
+  int rc = readSingleAttribute(req_struct, attrId, read_buf, ATTR_BUF_CAP);
+  if (unlikely(rc < 0)) {
+    return rc;
+  }
+  const AttributeHeader ah(read_buf[0]);
+
+  /* Type + charset from the table descriptor (mirrors handleBranchAttrOp). */
+  const Uint32 *attrDescriptor =
+      req_struct->tablePtrP->tabDescriptor + (attrId * ZAD_SIZE);
+  const Uint32 TattrDesc1 = attrDescriptor[0];
+  const Uint32 TattrDesc2 = attrDescriptor[1];
+  const Uint32 typeId = AttributeDescriptor::getType(TattrDesc1);
+  const CHARSET_INFO *cs = nullptr;
+  if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+    const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+    cs = req_struct->tablePtrP->charsetArray[pos];
+  }
+  const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+
+  const char *s1 = (const char *)&read_buf[1];
+  Uint32 attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+  if (unlikely(typeId == NDB_TYPE_BIT)) {
+    attrLen = (AttributeDescriptor::getArraySize(TattrDesc1) + 7) / 8;
+  }
+
+  /* 2nd operand: an inline literal (OP_ARG), a parameter from the
+   * subroutine/param region (OP_PARAM), or another column of the same row
+   * (OP_ATTR). Each mirrors the corresponding arm of handleBranchAttrOp.
+   * For OP_ATTR the 2nd column is read into coutBuffer's second half. */
+  Uint32 argLen;
+  const char *s2;
+  if (opCode == Interpreter::BRANCH_ATTR_OP_ARG) {
+    argLen = Interpreter::getBranchCol_Len(w1);   // byte size of the literal
+    s2 = (const char *)&inst[2];                  // inline, after word 1
+  } else if (opCode == Interpreter::BRANCH_ATTR_OP_PARAM) {
+    /* w1 low 16 = paramNo; value lives in the subroutine/param region. */
+    const Uint32 paramNo = Interpreter::getBranchCol_ParamNo(w1);
+    if (unlikely(param_buf == nullptr)) {
+      return -99;
+    }
+    const Uint32 *paramPtr = lookupInterpreterParameter(paramNo, param_buf);
+    if (unlikely(paramPtr == nullptr)) {
+      return -99;  // matches handleBranchAttrOp's missing-param path
+    }
+    argLen = AttributeHeader::getByteSize(*paramPtr);
+    s2 = (const char *)(paramPtr + 1);
+  } else {
+    /* BRANCH_ATTR_OP_ATTR: w1 low 16 = the 2nd column's attrId; read it
+     * from the same row. A NULL 2nd column makes argLen 0 (r2_null), exactly
+     * as handleBranchAttrOp leaves it; otherwise argLen is the 2nd column's
+     * declared size from its descriptor (the comparator + charset still come
+     * from the 1st column). */
+    const Uint32 attr2Id = Interpreter::getBranchCol_AttrId2(w1);
+    Uint32 *const read_buf2 = &coutBuffer[ATTR_BUF_CAP];   // 2nd half
+    int rc2 = readSingleAttribute(req_struct, attr2Id, read_buf2,
+                                  ATTR_BUF_CAP);
+    if (unlikely(rc2 < 0)) {
+      return rc2;
+    }
+    const AttributeHeader ah2(read_buf2[0]);
+    if (ah2.isNULL()) {
+      argLen = 0;        // r2_null
+      s2 = nullptr;      // not dereferenced when r2_null
+    } else {
+      const Uint32 *attr2Desc =
+          req_struct->tablePtrP->tabDescriptor + (attr2Id * ZAD_SIZE);
+      const Uint32 Tattr2Desc1 = attr2Desc[0];
+      const Uint32 type2Id = AttributeDescriptor::getType(Tattr2Desc1);
+      argLen = AttributeDescriptor::getSizeInBytes(Tattr2Desc1);
+      if (unlikely(type2Id == NDB_TYPE_BIT)) {
+        argLen = (AttributeDescriptor::getArraySize(Tattr2Desc1) + 7) / 8;
+      }
+      s2 = (const char *)&read_buf2[1];
+    }
+  }
+
+  const bool r1_null = ah.isNULL();
+  const bool r2_null = (argLen == 0);
+  if (r1_null || r2_null) {
+    const Uint32 nulls = Interpreter::getNullSemantics(w0);
+    if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+      return 1;  // take the branch
+    }
+    if (nulls == Interpreter::IF_NULL_CONTINUE) {
+      return 0;  // fall through
+    }
+    /* NULL_CMP_EQUAL: fall into the comparison with res1 derived below. */
+  }
+
+  const Uint32 cond = Interpreter::getBinaryCondition(w0);
+  int res1;
+  if (cond <= Interpreter::GE) {
+    if (r1_null || r2_null) {
+      res1 = (r1_null && r2_null) ? 0 : (r1_null ? -1 : 1);
+    } else {
+      if (unlikely(sqlType.m_cmp == nullptr)) {
+        return -40;  // type has no comparator (matches interpreter)
+      }
+      res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+    }
+  } else if (cond == Interpreter::LIKE || cond == Interpreter::NOT_LIKE) {
+    /* ronsql_jit item 12: LIKE / NOT LIKE — handleBranchAttrOp's arm
+     * verbatim. Under NULL_CMP_EQUAL semantics a NULL operand is a
+     * "match" only when BOTH are NULL (res1 0) and otherwise -1, which
+     * neither LIKE (== 0) nor NOT_LIKE (== 1) takes; a real pair goes
+     * through the type's own m_like (NdbSqlUtil likeChar / likeVarchar
+     * / likeLongvarchar + the binary siblings — the column charset's
+     * wildcmp). A type without m_like (numeric columns — the NDB API
+     * does not guard branch_col_like; mysqld's pushdown does, RonSQL's
+     * does not) is error 40, exactly as on the interpreter. */
+    if (r1_null || r2_null) {
+      res1 = (r1_null && r2_null) ? 0 : -1;
+    } else {
+      if (unlikely(sqlType.m_like == nullptr)) {
+        return -40;  // type has no LIKE comparator (matches interpreter)
+      }
+      res1 = (*sqlType.m_like)(cs, s1, attrLen, s2, argLen);
+    }
+  } else {
+    return -40;  // AND_*_MASK conditions are not JIT-admitted
+  }
+
+  switch ((Interpreter::BinaryCondition)cond) {
+    case Interpreter::EQ: return (res1 == 0) ? 1 : 0;
+    case Interpreter::NE: return (res1 != 0) ? 1 : 0;
+    case Interpreter::LT: return (res1 > 0) ? 1 : 0;   // inverted, per cmp
+    case Interpreter::LE: return (res1 >= 0) ? 1 : 0;
+    case Interpreter::GT: return (res1 < 0) ? 1 : 0;
+    case Interpreter::GE: return (res1 <= 0) ? 1 : 0;
+    case Interpreter::LIKE:     return (res1 == 0) ? 1 : 0;
+    case Interpreter::NOT_LIKE: return (res1 == 1) ? 1 : 0;
+    default:
+      return -40;  // mask conditions (unreachable: rejected above)
+  }
+}
+
+int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
+  const Uint32 w0 = inst[0];
+  const Uint32 w1 = inst[1];
+  const Uint32 opCode = Interpreter::getOpCode(w0) % OVERFLOW_OPCODE;
+
+  /* The compared value sits in cheapMemory[0] (AttrHeader + payload),
+   * put there by the preceding READ_LINKED_TO_MEM — the JIT lowers
+   * that op too, so the buffer is populated exactly as on the
+   * interpreter path. */
+  const Uint32 *memData = (const Uint32 *)&cheapMemory[0];
+  const AttributeHeader ah(memData[0]);
+  const char *s1 = (const char *)&memData[1];
+
+  Uint32 typeId;
+  Uint32 attrLen;
+  Uint32 argLen;
+  const CHARSET_INFO *cs = nullptr;
+  const char *s2;
+  if (opCode == Interpreter::BRANCH_MEM_OP_ARG) {
+    /* [w0, w1 attrId|argLen, w2 tableId, w3 schemaVer, data...] —
+     * type/charset from the PARENT table's descriptor, validated
+     * exactly like handleBranchMemOpArg (existence, DEFINED status,
+     * schemaVersion via DBLQH). */
+    const Uint32 attrId = Interpreter::getBranchCol_AttrId(w1);
+    argLen = Interpreter::getBranchCol_Len(w1);
+    const Uint32 tableId = inst[2];
+    const Uint32 schemaVersion = inst[3];
+    if (unlikely(tablerec == nullptr || tableId >= cnoOfTablerec)) {
+      return -40;
+    }
+    Tablerec *parentTablePtrP = &tablerec[tableId];
+    if (unlikely(parentTablePtrP->tableStatus != DEFINED)) {
+      return -40;
+    }
+    if (unlikely(c_lqh->tablerec == nullptr ||
+                 tableId >= c_lqh->ctabrecFileSize ||
+                 c_lqh->tablerec[tableId].schemaVersion != schemaVersion)) {
+      return -40;
+    }
+    if (unlikely(attrId >= parentTablePtrP->m_no_of_attributes)) {
+      return -ZATTRIBUTE_ID_ERROR;
+    }
+    const Uint32 *attrDescriptor =
+        parentTablePtrP->tabDescriptor + (attrId * ZAD_SIZE);
+    const Uint32 TattrDesc1 = attrDescriptor[0];
+    const Uint32 TattrDesc2 = attrDescriptor[1];
+    typeId = AttributeDescriptor::getType(TattrDesc1);
+    if (AttributeOffset::getCharsetFlag(TattrDesc2)) {
+      const Uint32 pos = AttributeOffset::getCharsetPos(TattrDesc2);
+      cs = parentTablePtrP->charsetArray[pos];
+    }
+    attrLen = AttributeDescriptor::getSizeInBytes(TattrDesc1);
+    s2 = (const char *)&inst[4];
+  } else {
+    /* BRANCH_MEM_OP_ARG_INLINE_TYPE:
+     * [w0, w1 typeId|argLen, w2 colSize<<16|csNumber, data...]. */
+    typeId = Interpreter::getBranchCol_AttrId(w1);
+    argLen = Interpreter::getBranchCol_Len(w1);
+    const Uint32 meta = inst[2];
+    attrLen = (meta >> 16) & 0xFFFF;
+    const Uint32 csNumber = meta & 0xFFFF;
+    if (csNumber != 0) {
+      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
+        return -40;
+      }
+      cs = all_charsets[csNumber];
+      if (unlikely(cs == nullptr)) {
+        return -40;
+      }
+    }
+    s2 = (const char *)&inst[3];
+  }
+
+  const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(typeId);
+  const bool r1_null = ah.isNULL();
+  const bool r2_null = (argLen == 0);
+  if (r1_null || r2_null) {
+    const Uint32 nulls = Interpreter::getNullSemantics(w0);
+    if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+      return 1;  // take the branch
+    }
+    if (nulls == Interpreter::IF_NULL_CONTINUE) {
+      return 0;  // fall through
+    }
+    /* NULL_CMP_EQUAL: fall into the comparison with res1 below. */
+  }
+
+  const Uint32 cond = Interpreter::getBinaryCondition(w0);
+  int res1;
+  if (r1_null || r2_null) {
+    res1 = (r1_null && r2_null) ? 0 : (r1_null ? -1 : 1);
+  } else {
+    if (unlikely(sqlType.m_cmp == nullptr)) {
+      return -40;
+    }
+    res1 = (*sqlType.m_cmp)(cs, s1, attrLen, s2, argLen);
+  }
+
+  switch ((Interpreter::BinaryCondition)cond) {
+    case Interpreter::EQ: return (res1 == 0) ? 1 : 0;
+    case Interpreter::NE: return (res1 != 0) ? 1 : 0;
+    case Interpreter::LT: return (res1 > 0) ? 1 : 0;   // inverted, per cmp
+    case Interpreter::LE: return (res1 >= 0) ? 1 : 0;
+    case Interpreter::GT: return (res1 < 0) ? 1 : 0;
+    case Interpreter::GE: return (res1 <= 0) ? 1 : 0;
+    default:
+      return -40;  // LIKE / mask conditions are not JIT-admitted
+  }
+}
+
+Uint64 Dbtup::readCheapMemForJit(Uint32 byte_off, Uint32 width) {
+  const char *base = (const char *)&cheapMemory[0];
+  switch (width) {
+    case 1: {
+      return (Uint64)*(const Uint8 *)(base + byte_off);
+    }
+    case 2: {
+      Uint16 v16;
+      memcpy(&v16, base + byte_off, 2);
+      return (Uint64)v16;
+    }
+    case 4: {
+      Uint32 v32;
+      memcpy(&v32, base + byte_off, 4);
+      return (Uint64)v32;
+    }
+    default: {
+      Uint64 v64;
+      memcpy(&v64, base + byte_off, 8);
+      return v64;
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- */
 /* ---------------------------------------------------------------- */
 /* ----------------- INTERPRETED EXECUTION  ----------------------- */
@@ -5620,26 +6108,102 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
       // a register-based virtual machine which can read and write attributes
       // to and from registers.
       /* ---------------------------------------------------------------- */
-      Uint32 RsubPC= RinstructionCounter + RexecRegionLen
-        + RfinalUpdateLen + RfinalRLen;
-      TnoDataRW= interpreterNextLab(signal,
-          req_struct,
-          &cinBuffer[RinstructionCounter],
-          RexecRegionLen,
-          &cinBuffer[RsubPC],
-          RsubLen,
-          &coutBuffer[0],
-          sizeof(coutBuffer) / 4);
-      if (TnoDataRW != -1)
-      {
+      /* RONDB-1056 Phase 7: if this scan's WHERE filter was JIT-compiled
+       * at scan setup, run the native filter instead of the interpreter.
+       * A compiled entry is published on the scan record only for a pure
+       * read filter (no final update/read, no subroutine) that the bridge
+       * admitted, so the RexecRegionLen region is the whole program. */
+      void *jit_filter = nullptr;
+      Dblqh::ScanRecord *scan_rec_ptr = nullptr;
+      if (req_struct->scan_rec != nullptr) {
+        scan_rec_ptr =
+            reinterpret_cast<Dblqh::ScanRecord *>(req_struct->scan_rec);
+        jit_filter = scan_rec_ptr->m_jit_filter_entry;
+      }
+#ifdef ERROR_INSERT
+      /* ERROR_INSERT 4060: make interpreter fallback fatal for the
+       * scan-filter canary. The canary only runs JIT-eligible filters
+       * under 4060, so reaching the interpreter for a scan here means the
+       * filter failed to compile or wire up — abort, matching the
+       * aggregation 4060 contract. m_jit_filter_ineligible exempts scans
+       * whose filter the bridge deliberately rejected (interpreter
+       * fallback is their contract) — mysqld issues such scans on its
+       * own (the EXIT_OK_LAST table-stats scan), so they can appear
+       * under 4060 without being part of the canary's queries. */
+      if (jit_filter == nullptr &&
+          req_struct->scan_rec != nullptr &&
+          !scan_rec_ptr->m_jit_filter_ineligible &&
+          jit_error_inserted(4060)) {
+        g_eventLogger->error(
+            "ERROR_INSERT 4060: scan filter (RexecRegionLen=%u) reached the "
+            "interpreter instead of the JIT path. Aborting per test directive "
+            "- the filter was expected to compile.",
+            RexecRegionLen);
+        abort();
+      }
+#endif
+      if (jit_filter != nullptr) {
         jamDebug();
-        RinstructionCounter += RexecRegionLen;
+        /* prog_buf = the exec region (the filter program); the helper reads
+         * its instruction + inline literal by the bridge-recorded offset.
+         * param_buf = the subroutine/param region, where BRANCH_ATTR_OP_PARAM
+         * parameters live (lookupInterpreterParameter reads its [0] length).
+         * It sits after the read/exec/final-update/final-read regions —
+         * RfinalUpdateLen is 0 for an admitted filter, but include it so the
+         * offset matches interpreterNextLab's RsubPC exactly. */
+        const Uint32 RsubPC = RinstructionCounter + RexecRegionLen +
+                              RfinalUpdateLen + RfinalRLen;
+        int jit_error = 0;
+        bool accepted = dbtup_jit_invoke_scan_filter(
+            this, req_struct, reinterpret_cast<JitEntry>(jit_filter),
+            &cinBuffer[RinstructionCounter], &cinBuffer[RsubPC],
+            &jit_error);
+        if (unlikely(jit_error != 0)) {
+          jam();
+          /* A cold-call helper hit a kernel-eval error (ronsql_jit item
+           * 12 made this reachable: LIKE pushed on a column type with no
+           * comparator = 40). Same disposition interpreterNextLab gives
+           * a negative handler return: TUPKEY_abort with the code. */
+          return TUPKEY_abort(req_struct, jit_error);
+        }
+        if (accepted) {
+          jamDebug();
+          RinstructionCounter += RexecRegionLen;
+        } else {
+          jamDebug();
+          /* Row rejected by the JIT filter — same disposition as the
+           * interpreter's EXIT_REFUSE for a scan: TUPKEY_abort with the
+           * program's own refuse code, which the bridge captured from the
+           * EXIT_REFUSE instruction (theInstruction >> 16) and copied onto
+           * the scan record. Using the program's actual code (rather than a
+           * hardcoded one) makes the JIT reject behave exactly like the
+           * interpreter — the LQH scan layer (scanTupkeyRefLab) decides
+           * skip-row vs abort-scan from this code (626/899 => skip). */
+          return TUPKEY_abort(req_struct,
+                              scan_rec_ptr->m_jit_filter_reject_code);
+        }
       } else {
-        jamDebug();
-        /**
-         * TUPKEY REF is sent from within interpreter
-         */
-        return -1;
+        Uint32 RsubPC= RinstructionCounter + RexecRegionLen
+          + RfinalUpdateLen + RfinalRLen;
+        TnoDataRW= interpreterNextLab(signal,
+            req_struct,
+            &cinBuffer[RinstructionCounter],
+            RexecRegionLen,
+            &cinBuffer[RsubPC],
+            RsubLen,
+            &coutBuffer[0],
+            sizeof(coutBuffer) / 4);
+        if (TnoDataRW != -1)
+        {
+          jamDebug();
+          RinstructionCounter += RexecRegionLen;
+        } else {
+          jamDebug();
+          /**
+           * TUPKEY REF is sent from within interpreter
+           */
+          return -1;
+        }
       }
     }
 
@@ -7411,43 +7975,23 @@ struct Dbtup::InterpreterContext {
   }
 
   /* READ_LINKED_TO_MEM — read a linked (parent-table) column value from
-   * req_struct->m_linked_attr_data into cheapMemory[0]. Format of the
-   * linked buffer: [tableId, schemaVersion, AttrHeader, data...] per entry.
-   * Position (bits 16..23) selects the Nth entry. If linked data is
-   * unavailable or out-of-bounds, writes a NULL AttributeHeader at offset 0. */
+   * req_struct->m_linked_attr_data into cheapMemory[0]. The actual
+   * buffer walk lives in Dbtup::readLinkedToMemBuffer (see Dbtup.hpp)
+   * so the JIT cold-call helper ndb_jit_h_read_linked_to_mem can
+   * share it — single source of truth for both paths. */
   static inline int handleReadLinkedToMem(InterpreterContext& ctx) {
     ctx.RnoOfInstructions += 3;
     Uint32 position = (ctx.theInstruction >> 16) & 0xFF;
-
-    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
-    Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
-    Uint32* memory_ptr = (Uint32*)&ctx.TheapMemoryChar[0];
-
-    if (unlikely(linked == nullptr)) {
-      AttributeHeader null_ah(0, 0);
-      memory_ptr[0] = null_ah.m_value;
-      return INTERP_CONTINUE;
-    }
-
-    const Uint32* p = linked;
-    const Uint32* p_end = linked + linked_len;
-    Uint32 pos_count = 0;
-    while (p < p_end) {
-      if (pos_count == position) break;
-      p += 2;  // skip tableId, schemaVersion
-      p += 1 + AttributeHeader::getDataSize(*p);
-      pos_count++;
-    }
-    if (unlikely(p >= p_end)) {
-      AttributeHeader null_ah(0, 0);
-      memory_ptr[0] = null_ah.m_value;
-      return INTERP_CONTINUE;
-    }
-
-    // Skip tableId and schemaVersion, copy AttrHeader + data
-    p += 2;
-    Uint32 words = 1 + AttributeHeader::getDataSize(*p);
-    memcpy(memory_ptr, p, words * sizeof(Uint32));
+    /* Destination capacity = ZATTR_BUFFER_SIZE Uint32 words.
+     * TheapMemoryChar points at &cheapMemory[0] which is sized
+     * ZATTR_BUFFER_SIZE + 16; the +16 is structural padding so
+     * the conservative bound for caller-visible writes is
+     * ZATTR_BUFFER_SIZE. */
+    Dbtup::readLinkedToMemBuffer(ctx.req_struct->m_linked_attr_data,
+                                  ctx.req_struct->m_linked_attr_len,
+                                  position,
+                                  (Uint32*)&ctx.TheapMemoryChar[0],
+                                  ZATTR_BUFFER_SIZE);
     return INTERP_CONTINUE;
   }
 
@@ -10076,6 +10620,24 @@ struct Dbtup::InterpreterContext {
     return Dbtup::INTERPRETER_FILTER_REJECT;
   }
 
+  /* EXIT_REFUSE in aggregation-embedded mode.  The instruction's upper
+   * 16 bits carry a client error code (NdbInterpretedCode convention):
+   * 626, 899, or anything in [6000,6999] mean "this row should be
+   * filtered out, not an error" (see NdbInterpretedCode::interpret_exit_nok,
+   * which defaults to 626).  Such codes return INTERPRETER_FILTER_REJECT
+   * so ProcessRec drops the row from the aggregation.  Any other code is
+   * a genuine interpreter error and aborts the aggregation, mirroring the
+   * main interpreter's handleExitRefuse. */
+  static inline int handleExitRefuseAgg(InterpreterContext& ctx) {
+    const Uint32 code = ctx.theInstruction >> 16;
+    if (code == 0 || code == 626 || code == 899 ||
+        (code >= 6000 && code <= 6999)) {
+      return Dbtup::INTERPRETER_FILTER_REJECT;
+    }
+    ctx.tup->terrorCode = code;
+    return -1;
+  }
+
   /* Unsupported instruction in CTE filter mode: the instruction
    * depends on real-tuple state (operPtrP / tablePtrP / readAttributes).
    * Return a clean error without touching tuple state. */
@@ -10306,7 +10868,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  16  BRANCH_GT_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGtRegReg,
   /*  17  BRANCH_GE_REG_REG       */ &Dbtup::InterpreterContext::handleBranchGeRegReg,
   /*  18  EXIT_OK                 */ &Dbtup::InterpreterContext::handleExitOk,
-  /*  19  EXIT_REFUSE             */ nullptr,
+  /*  19  EXIT_REFUSE             */ &Dbtup::InterpreterContext::handleExitRefuseAgg,
   /*  20  CALL                    */ nullptr,  /* termination proof */
   /*  21  RETURN                  */ nullptr,  /* termination proof */
   /*  22  EXIT_OK_LAST            */ nullptr,
@@ -10328,8 +10890,8 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  38  BRANCH_MEM_OP_ARG       */ &Dbtup::InterpreterContext::handleBranchMemOpArg,
   /*  39  READ_LINKED_TO_MEM      */ &Dbtup::InterpreterContext::handleReadLinkedToMem,
   /*  40  BRANCH_MEM_OP_ARG_INLINE_TYPE */ &Dbtup::InterpreterContext::handleBranchMemOpArgInlineType,
-  /*  41  BRANCH_LINKED_EQ_NULL   */ nullptr,
-  /*  42  BRANCH_LINKED_NE_NULL   */ nullptr,
+  /*  41  BRANCH_LINKED_EQ_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedEqNull,
+  /*  42  BRANCH_LINKED_NE_NULL   */ &Dbtup::InterpreterContext::handleBranchLinkedNeNull,
   /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
   /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
   /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,

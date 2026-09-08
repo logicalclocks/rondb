@@ -193,6 +193,8 @@ class DumpStateOrd {
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,
     TupCheckCopyTupleCount = 2382,
+    // RONDB-1056: log every live JIT-compiled interpreter program
+    TupDumpJitPrograms = 2383,
 
     AccDumpOneScanRec = 2400,
     AccDumpAllScanRec = 2401,

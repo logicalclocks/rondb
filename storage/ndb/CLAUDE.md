@@ -9,6 +9,7 @@ Detailed documentation is organized by topic in `claude_files/`. Read the releva
 | SET Config Param | `claude_files/set_config_param/` | Adding runtime-settable config parameters via the MGM client SET command |
 | Data Node Security | `claude_files/data_node_security/` | Hardening data nodes against malicious NDB protocol messages |
 | TTL / Error 899 rowid | `claude_files/ttl_899_rowid/` | TTL "leftover rowid" investigation: purge is replica-safe, but rowid-less ZINSERT_TTL/ZWRITE forwarding silently amplifies replica divergence into permanent 899; test plan + hardening proposal |
+| Compiled Interpreter | `claude_files/compiled_interpreter/` | RONDB-1056 copy-and-patch JIT for pushed-down interpreted programs (aggregation + scan filters); start at `STATUS_AND_NEXT_STEPS.md` |
 
 ### set_config_param
 

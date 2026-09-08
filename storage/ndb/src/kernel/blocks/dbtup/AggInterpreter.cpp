@@ -33,6 +33,7 @@
 #include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"
 #include <NdbSqlUtil.hpp>
 #include <Interpreter.hpp>
 
@@ -244,6 +245,45 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     agg_res_ptr = m_agg_results;
   }
 
+  /* Phase 6.5 RONDB-1056: standalone pushed aggregation JIT path.
+   * This is the same scalar-aggregation dispatch shape used by
+   * JoinAggInterpreter once setup has published a compiled entry.
+   *
+   * Phase 8 GROUP BY lift: grouped programs dispatch too. The group
+   * prologue above has already resolved agg_res_ptr to this row's
+   * group record (hash find/insert, fresh-group init), so the JIT'd
+   * accumulator/filter program runs against the right slots; the
+   * glue's value_updated/value_unsigned writeback preserves per-group
+   * SQL-NULL and COUNT-unsignedness semantics. */
+  if (m_jit_entry != nullptr) {
+    Int32 jit_rc = dbtup_jit_invoke(this, block_tup, req_struct,
+                                    m_jit_entry, agg_res_ptr,
+                                    m_n_agg_results);
+    if (jit_rc != NDB_JIT_ROW_FALLBACK) {
+      m_processed_rows++;
+      return jit_rc;
+    }
+    /* Phase 5A per-row fallback: the row hit a condition the JIT can't
+     * represent (NULL column value) — its JIT run was discarded (no
+     * writeback). Fall through and run THIS ROW on the interpreter
+     * loop below, which counts m_processed_rows itself. */
+  }
+
+#ifdef ERROR_INSERT
+  /* ERROR_INSERT 4060: makes JIT fallback fatal for canaries that
+   * expect a standalone aggregation program to admit and compile. */
+  if (block_tup != nullptr && block_tup->jit_error_inserted(4060)) {
+    g_eventLogger->error(
+        "ERROR_INSERT 4060: standalone aggregation program reached "
+        "the interpreter loop instead of the JIT path "
+        "(m_jit_entry=%p, m_n_gb_cols=%u). Aborting per test "
+        "directive - the failing program was expected to admit "
+        "+ compile.",
+        m_jit_entry, m_n_gb_cols);
+    abort();
+  }
+#endif
+
   Uint32 value;
   DataType type;
   bool is_unsigned;
@@ -329,6 +369,15 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
         req_struct->no_exec_instructions = saved_instr_count;
 
+        /* EXIT_REFUSE with a filter error code surfaces as
+         * INTERPRETER_FILTER_REJECT: the row is filtered out, so stop
+         * processing this row's aggregation program — identical to a
+         * STOP_PROGRAM skip_offset. Any other negative rc is a genuine
+         * interpreter error. */
+        if (rc == Dbtup::INTERPRETER_FILTER_REJECT) {
+          exec_pos = m_prog_len;
+          break;
+        }
         if (rc < 0) {
           return ZAGG_EMBEDDED_INTERP_ERROR;
         }

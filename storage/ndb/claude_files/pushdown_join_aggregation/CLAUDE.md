@@ -131,6 +131,61 @@ pushed down to data nodes so intermediate results don't round-trip to the API.
 - `where_filter_analysis.md` — WHERE filter + pushed aggregation bug analysis (3 bugs, AccessPath tree shapes, condition push pipeline)
 - `where_filter_analysis.html` — Visual version with SVG diagrams
 
+### Compiled Interpreter (RONDB-1056) Touchpoints
+
+The copy-and-patch JIT for pushed-down interpreted programs
+(`storage/ndb/claude_files/compiled_interpreter/`) hooks into this
+machinery at fixed points. **If you move or redesign any of these
+sites, the JIT hook moves with them** — and the standing conformance
+suites (`ndb_push_agg` = interpreter arm with CompiledInterpreter=OFF,
+`ndb_push_agg_jit` = JIT arm with ON, plus the must-JIT
+`ronsql_cte_jit_census` under ERROR_INSERT 4060) are the acceptance
+gate for any such change.
+
+- **Compile hook**: `DblqhProxy::execJOIN_AGG_SETUP_REQ` — after
+  `OptimizeProgramBuffer`, EVERY leaf's bytecode is acquired from the
+  node-global agg reuse cache (`dbtup_jit_compile_agg`, keyed on the
+  bytecode words; `AGG_PROG_FLAG_REUSABLE` = pinned). The handle
+  lives in `LeafProgram.m_jit_cache_handle`, released at JOIN_AGG
+  teardown via `dbtup_jit_release_agg`.
+- **Dispatch gate**: `JoinAggInterpreter::ProcessRec` — dispatches
+  when `m_jit_entry != nullptr && !m_null_local_columns`. The per-row
+  leaf switch in `processRecWithLinkedAttrs` installs the CURRENT
+  leaf's entry and accumulator count alongside `m_prog`/`m_acc_offset`
+  (multi-leaf/star runs native since Phase 6-3). The standalone path
+  (`AggInterpreter::ProcessRec`) and the SCAN_FRAGREQ scan-filter
+  path have their own hooks (see `DbtupJitGlue.hpp`).
+- **Rules the JIT relies on**:
+  - Outer-join NULL-extended rows never dispatch (null `block_tup`;
+    only the interpreter synthesizes NULL loads for a missing tuple).
+  - CTE consumer feeds carry a null `tablePtrP` — the JIT helpers
+    per-row-fallback on any local-column access (armor since 6-1).
+  - CTE aggregate-slot markers must encode unsignedness
+    (`emitCteLinkedAggSlot` promotes BIGINT + is_unsigned to
+    BIGUNSIGNED — the Phase 6-2 fix; RonSQL's virt-table widening is
+    the contract).
+  - A per-row fallback (row re-run on the interpreter) is normal and
+    invisible to counters; ERROR_INSERT 4060 makes ANY interpreter-
+    loop entry fatal, 5119/5120 are the compile-time dump/fatal
+    probes (per leaf).
+- **Plans that move these sites** (`local_execution_mode_plan.md`,
+  `aggregation_treenode_alternative_plan.md`) carry coordination
+  notes — whoever implements them must carry the compile hook and
+  dispatch gate along and re-run the conformance suites.
+- **Upcoming bytecode** (AVG, DECIMAL precision, expression GROUP BY,
+  post-aggregation expressions — `next_steps.md` phases 15-20): the
+  JIT bridge must either learn each new opcode or reject it cleanly
+  (unknown opcodes already reject → whole-program interpreter
+  fallback, counted in `ndbinfo.jit.programs_fallback` and pinned by
+  the per-test fallback-delta baselines in `ndb_push_agg_jit`).
+  Census probes should be added when they land.
+- **Known interpreter-side hazard flagged by the JIT work**: the
+  string sidecar `m_string_results[]` is indexed by the instruction's
+  leaf-LOCAL `agg_index` while accumulator slots use the
+  `m_acc_offset` base — a multi-leaf program with string MIN/MAX on
+  leaf > 0 would collide sidecar slots between leaves (interpreter
+  and JIT alike; the JIT shares the kernels).
+
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf
 - `DblqhProxy.cpp` — Routes setup/complete/release signals; manages JoinAggregationState pool

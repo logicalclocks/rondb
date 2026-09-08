@@ -42,6 +42,7 @@
 #include <signaldata/TupKey.hpp>
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"
 #include "util/require.h"
 
 #include <IntrusiveList.hpp>
@@ -262,6 +263,11 @@ Dbtup::Dbtup(Block_context& ctx,
   c_transient_pools[DBTUP_SCAN_OPERATION_TRANSIENT_POOL_INDEX] = &c_scanOpPool;
   static_assert(c_transient_pool_count == 4);
   c_transient_pools_shrinking.clear();
+
+  /* RONDB-1056: register JIT cold-call helpers (idempotent). Compiled
+   * programs live in the node-global code-memory manager (Phase 8); this
+   * block no longer owns a per-instance JIT arena. */
+  dbtup_jit_register_helpers();
 }  // Dbtup::Dbtup()
 
 Dbtup::~Dbtup() {

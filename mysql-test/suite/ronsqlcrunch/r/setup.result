@@ -1,0 +1,4 @@
+# Verify cluster is running
+SELECT 1;
+1
+1

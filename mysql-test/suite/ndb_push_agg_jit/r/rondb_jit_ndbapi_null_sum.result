@@ -1,0 +1,10 @@
+Running rondb_jit_ndbapi_null_sum
+=== testJoinAggJit ===
+Connect string: #
+MySQL port: #
+
+Test 2: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)
+
+All tests PASSED
+PASSED
+DROP DATABASE IF EXISTS test_db;

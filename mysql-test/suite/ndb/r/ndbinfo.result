@@ -104,9 +104,10 @@ table_id	table_name	comment
 56	rdma_transporters	RDMA transporter statistics (rows only for RDMA links)
 57	security_violations	Static catalog of data node security violation types (data node security)
 58	security_violation_counts	Per-violation-type strike counters (data node security)
+59	jit	RONDB-1056 JIT code-memory and program-reuse statistics (one row per data node)
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
-59
+60
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -165,6 +166,7 @@ table_id	table_name	comment
 56	rdma_transporters	RDMA transporter statistics (rows only for RDMA links)
 57	security_violations	Static catalog of data node security violation types (data node security)
 58	security_violation_counts	Per-violation-type strike counters (data node security)
+59	jit	RONDB-1056 JIT code-memory and program-reuse statistics (one row per data node)
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -209,6 +211,7 @@ table_id	table_name
 17	frag_mem_use
 20	frag_operations
 43	hwinfo
+59	jit
 6	logbuffers
 5	logspaces
 15	membership
@@ -337,6 +340,7 @@ table_id
 56
 57
 58
+59
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only

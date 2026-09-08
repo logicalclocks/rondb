@@ -656,13 +656,15 @@ testSumGroupBy(Ndb *ndb, MYSQL *conn,
 /* ------------------------------------------------------------------ */
 
 static int
-testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
+testCountSumInternal(Ndb *ndb, MYSQL *conn, Int64 expectedCount,
+                     Int64 expectedSum, const char *testName,
+                     const char *okSuffix)
 {
-  printf("Test 2: COUNT(*), SUM(amount) ... ");
+  printf("%s ... ", testName);
   fflush(stdout);
 
   /* First verify expected results via MySQL */
-  if (verifyScalarWithMysql(conn, "Test 2",
+  if (verifyScalarWithMysql(conn, testName,
         "SELECT COUNT(*), SUM(amount) FROM jagg_parent "
         "JOIN jagg_child ON jagg_child.parent_id = jagg_parent.id",
         {expectedCount, expectedSum}) != 0) {
@@ -670,7 +672,9 @@ testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
     return -1;
   }
 
-  const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(PARENT_TABLE);
+  dict->invalidateTable(CHILD_TABLE);
   const NdbDictionary::Table *parentTab = dict->getTable(PARENT_TABLE);
   const NdbDictionary::Table *childTab = dict->getTable(CHILD_TABLE);
   if (parentTab == nullptr || childTab == nullptr) {
@@ -789,10 +793,21 @@ testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
     return -1;
   }
 
-  printf("OK (count=%lld, sum=%lld)\n",
-         (long long)actualCount, (long long)actualSum);
+  printf("OK %s\n", okSuffix);
   return 0;
 }
+
+static int
+testCountSum(Ndb *ndb, MYSQL *conn, Int64 expectedCount, Int64 expectedSum)
+{
+  char okSuffix[64];
+  snprintf(okSuffix, sizeof(okSuffix), "(count=%lld, sum=%lld)",
+           (long long)expectedCount, (long long)expectedSum);
+  return testCountSumInternal(ndb, conn, expectedCount, expectedSum,
+                              "Test 2: COUNT(*), SUM(amount)",
+                              okSuffix);
+}
+
 
 /* ------------------------------------------------------------------ */
 /* Test 3: Multiple groups with SUM and COUNT                          */
@@ -5869,6 +5884,12 @@ fakeOkLineForErrorInsertTest(int testNum)
     case 19: return "Test 19: Multi-fragment + eviction 5126 (2000 rows, 16 frags) ... OK (20 groups, multi-fragment eviction merge verified)";
     case 20: return "Test 20: SETUP_REF error handling (ERROR_INSERT 5125) ... OK (SETUP_REF handled, cleanup verified)";
     case 22: return "Test 22: COMPLETE_REF error handling (ERROR_INSERT 5124) ... OK (COMPLETE_REF handled, cleanup verified)";
+    case 23: return "Test 23: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
+    case 24: return "Test 24: JIT must compile SUM local attr ... OK (sum=1500, JIT required)";
+    case 25: return "Test 25: JIT all-rejected SUM returns NULL ... OK (sum=NULL, JIT required)";
+    case 26: return "Test 26: JIT linked NULL filter ... OK (sum=900, JIT required)";
+    case 28: return "Test 28: JIT compiles SUM of column id > 255 ... OK (sum=1500, col_id=260, JIT required)";
+    case 29: return "Test 29: JIT CASE skip offset ... OK (dummy=NULL, amount=900, JIT required)";
     default: return nullptr;
   }
 }
@@ -6329,7 +6350,6 @@ int main(int argc, char **argv)
           }
           dropTest18Tables(conn);
         }
-
         /* Test 24: aggregate lookup-rooted query def rejected */
         if (shouldRun(24)) {
           if (createTestTables(conn) == 0) {
@@ -6339,7 +6359,6 @@ int main(int argc, char **argv)
           }
           dropTestTables(conn);
         }
-
         mysql_close(conn);
       }
     }

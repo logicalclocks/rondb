@@ -49,6 +49,7 @@
 #include "include/my_byteorder.h"
 #include "AggInterpreterBase.hpp"
 #include "Dbtup.hpp"
+#include "DbtupJitGlue.hpp"   /* dbtup_jit_release_agg (Phase 8 Slice 3c) */
 #include "InterpreterCommonOp.hpp"
 #include "util/require.h"
 #include "decimal.h"
@@ -519,8 +520,14 @@ void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
     *compatible = false;
     return;
   }
-  assert((prog[3] & 0x80000000) == 0);
-  assert(prog[3] == 0);
+  /* prog[3]: flags word. Bit 0 (AGG_PROG_FLAG_REUSABLE) marks a program
+   * the client re-sends across executions (RonSQL / prepared
+   * statements) — the JIT compile then pins the blob in the reuse
+   * cache (Phase 8 Slice 4). Bit 31 is the vector-search type marker
+   * and never set here (DetectType routes those before Init). All
+   * other bits reserved-zero. */
+  m_prog_reusable = (prog[3] & AGG_PROG_FLAG_REUSABLE) != 0;
+  assert((prog[3] & ~(Uint32)AGG_PROG_FLAG_REUSABLE) == 0);
 
   assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
   assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
@@ -651,11 +658,14 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       case Interpreter::BRANCH_GT_REG_REG:
       case Interpreter::BRANCH_GE_REG_REG:
       case Interpreter::EXIT_OK:
+      case Interpreter::EXIT_REFUSE:
       case Interpreter::BRANCH_ATTR_OP_ARG:
       case Interpreter::BRANCH_MEM_OP_ARG:
       case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::BRANCH_LINKED_EQ_NULL:
+      case Interpreter::BRANCH_LINKED_NE_NULL:
       case Interpreter::READ_LINKED_TO_MEM:
       case Interpreter::READ_UINT8_MEM_TO_REG:
       case Interpreter::READ_UINT16_MEM_TO_REG:
@@ -688,6 +698,8 @@ bool AggInterpreterBase::validateEmbeddedProgram(
       case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
       case Interpreter::BRANCH_ATTR_EQ_NULL:
       case Interpreter::BRANCH_ATTR_NE_NULL:
+      case Interpreter::BRANCH_LINKED_EQ_NULL:
+      case Interpreter::BRANCH_LINKED_NE_NULL:
         is_branch = true;
         break;
       default:
@@ -1736,6 +1748,43 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
     lc_ndbd_pool_free(old_buf);
   }
   return 0;
+}
+
+Int32 AggInterpreterBase::jitMinMaxStringCol(
+    Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
+    Uint32 col_id, Uint32 agg_index, bool is_max,
+    AggResItem* agg_res_ptr) {
+  /* Scratch register for the capture — see the header comment. */
+  constexpr Uint32 kScratchReg = kRegTotal - 1;
+
+  if (unlikely(col_id >= req_struct->tablePtrP->m_no_of_attributes)) {
+    return ZAGG_OTHER_ERROR;
+  }
+  m_attr_read_pos = 0;
+  int ret = block_tup->readSingleAttributeForJit(
+      req_struct, col_id, m_attr_read_buf, g_attr_read_buf_len_);
+  if (ret < 0) {
+    return -ret;
+  }
+  AttributeHeader* header =
+      reinterpret_cast<AttributeHeader*>(&m_attr_read_buf[0]);
+  const Uint32* attrDescriptor =
+      req_struct->tablePtrP->tabDescriptor + (col_id * ZAD_SIZE);
+  const DataType type = AttributeDescriptor::getType(attrDescriptor[0]);
+  if (type != NDB_TYPE_CHAR && type != NDB_TYPE_VARCHAR &&
+      type != NDB_TYPE_LONGVARCHAR) {
+    /* Schema drift — the bridge admitted by the wire's declared type. */
+    return ZAGG_COL_TYPE_UNSUPPORTED;
+  }
+  Uint32 exec_pos_dummy = 0;
+  Int32 lret = loadColumnTypedFromBuf(
+      type, /*is_unsigned=*/false, kScratchReg, header, attrDescriptor,
+      /*linked_cte_attr=*/false, /*linked_word0=*/0, /*linked_word1=*/0,
+      req_struct, exec_pos_dummy, "JitMinMaxStr");
+  if (lret != 0) {
+    return lret;
+  }
+  return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
 }
 
 /*
@@ -2904,10 +2953,21 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
 AggInterpreterBase::~AggInterpreterBase() {
   ndbrequire(m_gb_map == nullptr || m_gb_map->empty());
   ndbrequire(m_chunks == nullptr);
+
   /* m_string_results may be present; O(1).  release_string_results' scalar
    * slot walk is bounded by m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also
    * O(1).  D26: m_xfrm_buf removed (group-key hash uses a per-LDM-thread
    * Dbtup scratch), so nothing to free for it. */
+
+  /* RONDB-1056 Phase 8: release an OWNED standalone agg program back to
+   * the reuse cache (drops its refcount; the code-memory slot is freed
+   * when the last holder releases). nullptr for join aggregation (the
+   * proxy owns the leaf program) — a no-op, so no double free. */
+  dbtup_jit_release_agg(m_jit_cache_handle);
+  m_jit_cache_handle = nullptr;
+  /* m_string_results / m_xfrm_buf may be present; both are O(1).
+   * release_string_results' scalar slot walk is bounded by
+   * m_n_agg_results ≤ MAX_AGG_N_RESULTS = 256, also O(1). */
   release_string_results();
   if (m_load_column_meta != nullptr) {
     lc_ndbd_pool_free(m_load_column_meta);

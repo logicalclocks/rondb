@@ -1,0 +1,11 @@
+# Enable Rondis in the ronsqlcrunch RDRS server (creates the Rondis
+# tables through mysqld.1.1 at startup):
+#
+#   ./mtr --suite=ronsqlcrunch setup --start-and-exit \
+#         --defaults-extra-file=suite/ronsqlcrunch/rondis.cnf
+#
+# mtr allows one --defaults-extra-file; to combine with cpubind.cnf
+# concatenate the two files (the driver does this for --rondis).
+[rdrs.1.1]
+enable-rondis=true
+config-json-template=suite/ronsqlcrunch/rdrs_rondis_config_template.json

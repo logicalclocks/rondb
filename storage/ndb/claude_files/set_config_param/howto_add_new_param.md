@@ -6,7 +6,7 @@ Only **2 files** need changes (the signal plumbing is already in place).
 
 File: `storage/ndb/src/kernel/blocks/cmvmi/Cmvmi.cpp`
 
-In `Cmvmi::execSET_CONFIG_PARAM_REQ()`, add a new case to the `switch (configKey)` block. The case must apply the runtime effect by sending a signal to the appropriate block.
+In `Cmvmi::execSET_CONFIG_PARAM_REQ()`, add a new case to the `switch (configKey)` block. The case must apply the runtime effect by sending a signal to the appropriate block (or, for a node-global word such as the RONDB-1056 JIT mode, by calling its setter directly — see `case CFG_DB_COMPILED_INTERPRETER`, which validates the enum range and calls `dbtup_jit_set_mode()`).
 
 ```cpp
 switch (configKey)
@@ -32,7 +32,9 @@ default:
 }
 ```
 
-The ConfigValues update (for ndbinfo) happens automatically before the switch — no per-parameter code needed for that.
+The ConfigValues update (for ndbinfo) happens automatically after the switch — no per-parameter code needed for that. It writes the value back with the entry's stored type (`Uint32` for CI_INT/CI_BOOL/CI_ENUM, `Uint64` for CI_INT64; `ConfigSection::set` rejects a type change), so 32-bit parameters work without special handling.
+
+A case that rejects the value should send `SET_CONFIG_PARAM_REF` (`SetConfigParamRef`, the mgm server maps any REF to error 5070) and `return` from inside the switch, which skips the ConfigValues update so ndbinfo never shows a value that was not applied — `case CFG_DB_COMPILED_INTERPRETER` is the example.
 
 If no runtime dispatch is needed (config only takes effect after restart), you can add an empty case with a log message.
 
@@ -69,4 +71,6 @@ else if (native_strcasecmp(param_name, "YourParamName") == 0)
 
 **d)** Update the `helpTextSet` string to list the new parameter.
 
-**e)** Update the error message in `executeSet()` that lists supported parameters.
+**e)** Update the error message in `executeSet()` that lists supported parameters (three occurrences), and the matching `Supported parameters:` lines in `mysql-test/suite/ndb/r/ndb_config_set.result`.
+
+**f)** Add MTR coverage: extend `mysql-test/suite/ndb/t/ndb_config_set.test` (checks the value through `ndbinfo.config_values` by parameter id), or a dedicated test when the runtime effect needs more setup (`ndb_set_compiled_interpreter.test` asserts the JIT effect via `ndbinfo.jit`).

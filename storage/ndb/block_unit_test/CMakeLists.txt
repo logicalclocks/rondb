@@ -60,6 +60,8 @@ NDB_ADD_EXECUTABLE(bench_q9_dbtc bench_q9_dbtc.cpp NDBTEST NDBCLIENT MYSQLCLIENT
 # testJoinAggNdbApi needs NdbQueryBuilder.hpp from src/ndbapi
 INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/storage/ndb/src/ndbapi)
 NDB_ADD_EXECUTABLE(testJoinAggNdbApi testJoinAggNdbApi.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
+# RONDB-1056 JIT canaries split out of testJoinAggNdbApi (suite ndb_push_agg_jit)
+NDB_ADD_EXECUTABLE(testJoinAggJit testJoinAggJit.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(testCteNdbApi testCteNdbApi.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(testCteNdbApiFilter testCteNdbApiFilter.cpp NDBTEST NDBCLIENT MYSQLCLIENT)
 NDB_ADD_EXECUTABLE(testCteNdbApiOuterJoin testCteNdbApiOuterJoin.cpp NDBTEST NDBCLIENT MYSQLCLIENT)

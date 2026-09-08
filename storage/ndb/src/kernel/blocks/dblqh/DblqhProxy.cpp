@@ -28,6 +28,11 @@
 #include "JoinAggregationState.hpp"
 #include "dbtup/JoinAggInterpreter.hpp"
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include "dbtup/DbtupJitGlue.hpp"
+#include <ndbd_exit_codes.h>   /* NDBD_EXIT_INVALID_CONFIG */
+#include <BaseString.hpp>
+#include "dbtup/jit/jit1.h"
+#include "dbtup/jit/ndb_jit_bridge.h"
 
 // Static definition for node failure counter
 std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
@@ -66,6 +71,30 @@ std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
 #define AGGT(arglist) do { } while (0)
 #endif
 
+/* Phase 4 RONDB-1056: log JIT compile / reject reasons. Mirror of
+ * DEBUG_STAR_AGG — gated on the same VM_TRACE/ERROR_INSERT envelope
+ * by sharing the umbrella define. */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+#define DEBUG_JIT 1
+#endif
+
+#ifdef DEBUG_JIT
+#define DEB_JIT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#define DEB_JIT_IF(cond, arglist) \
+  do {                            \
+    if (cond) g_eventLogger->info arglist; \
+  } while (0)
+#else
+#define DEB_JIT(arglist) do { } while (0)
+#define DEB_JIT_IF(cond, arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_JIT
+static void ndb_jit_event_logger(void *, const char *line) {
+  g_eventLogger->info("%s", line);
+}
+#endif
+
 #ifdef DEBUG_EXEC_SR
 #define DEB_EXEC_SR(arglist)     \
   do {                           \
@@ -83,6 +112,13 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
   m_lcp_started = false;
   m_outstanding_wait_lcp = 0;
   m_outstanding_start_node_lcp_req = 0;
+
+  /* Register all RONDB-1056 cold-call helpers with the JIT engine.
+   * Idempotent: if multiple DblqhProxy instances ever exist (e.g.,
+   * tests), re-registering the same helpers is a no-op. Compiled
+   * programs live in the node-global code-memory manager (Phase 8) —
+   * this block no longer owns a per-proxy JIT arena. */
+  dbtup_jit_register_helpers();
 
   // GSN_CREATE_TAB_REQ
   addRecSignal(GSN_CREATE_TAB_REQ, &DblqhProxy::execCREATE_TAB_REQ);
@@ -220,7 +256,12 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
                &DblqhProxy::execCONTINUEB);
 }
 
-DblqhProxy::~DblqhProxy() {}
+DblqhProxy::~DblqhProxy() {
+  /* RONDB-1056: nothing JIT to tear down here. Compiled leaf programs
+   * are reuse-cache entries released at JOIN_AGG teardown
+   * (dbtup_jit_release_agg, Phase 6-4) and the code memory they use
+   * belongs to the node-global manager, not this block. */
+}
 
 SimulatedBlock *DblqhProxy::newWorker(Uint32 instanceNo) {
   return new Dblqh(m_ctx, instanceNo, DBLQH);
@@ -270,6 +311,28 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_JOIN_AGG_STATE_POOL_SIZE,
                             &joinAggPoolSize);
   initJoinAggStatePool(joinAggPoolSize);
+
+  /* RONDB-1056 Phase 8: CompiledInterpreter (JIT) mode. Node-global; set
+   * here once (before any scan/aggregation traffic) and consulted at every
+   * JIT compile site. Default OFF (2026-09-08) if unset. AUTO / ON are
+   * only valid on CPUs with a stencil backend (x86_64, aarch64): on any
+   * other architecture the node refuses to start with such a config
+   * rather than silently running the interpreter — the operator must
+   * set CompiledInterpreter=OFF for that node. */
+  Uint32 jitMode = NDB_COMPILED_INTERPRETER_OFF;
+  ndb_mgm_get_int_parameter(p, CFG_DB_COMPILED_INTERPRETER, &jitMode);
+  if (jitMode != NDB_COMPILED_INTERPRETER_OFF &&
+      !dbtup_jit_platform_supported()) {
+    char buf[256];
+    BaseString::snprintf(buf, sizeof(buf),
+                         "CompiledInterpreter=%s is not supported on this "
+                         "CPU architecture (no JIT backend; only x86_64 and "
+                         "aarch64 have one). Set CompiledInterpreter=OFF "
+                         "for this node.",
+                         jitMode == NDB_COMPILED_INTERPRETER_ON ? "ON" : "AUTO");
+    progError(__LINE__, NDBD_EXIT_INVALID_CONFIG, buf);
+  }
+  dbtup_jit_set_mode(jitMode);
 
   backREAD_CONFIG_REQ(signal);
 }
@@ -2310,6 +2373,15 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         lc_ndbd_pool_free(state->m_column_meta_buf);
       }
       if (state->m_leaf_programs != nullptr) {
+        /* RONDB-1056 Phase 6-4: release each leaf's reuse-cache handle
+         * before freeing the descriptor array. An unpinned entry at
+         * refcount 0 is destroyed (blob back to the code-memory
+         * manager); a pinned one stays cached. Release of nullptr is a
+         * no-op, so uncompiled leaves are fine. */
+        for (Uint32 i = 0; i < state->m_num_leaves; i++) {
+          dbtup_jit_release_agg(state->m_leaf_programs[i].m_jit_cache_handle);
+          state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
+        }
         lc_ndbd_pool_free(state->m_leaf_programs);
       }
       if (state->m_receiverIds != nullptr) {
@@ -2627,14 +2699,54 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       Uint32 progLen;
       Uint32 *progStart;
       if (pos == 0 && numLeaves == 1) {
-        // Old flat format: entire section is the program
-        progLen = totalWords;
+        /* Old flat format. The program's OWN header word 0 is
+         * (0x0721 << 16) | progLen — use THAT length, not the
+         * section size: a CTE consumer feed's section carries
+         * trailing data after the program, and the interpreter
+         * (which re-reads the header / ends every row via the
+         * embedded STOP-or-skip) never touches it, but the JIT
+         * bridge walks [start_pos, m_agg_program_len) at compile
+         * time — with the section size it marched past the program
+         * into the trailing words (out-of-bounds reads, then a
+         * garbage-guided MALFORMED reject at positions like 65546).
+         * ronsql_jit slice 2 item 8. */
+        progLen = word0 & 0xFFFF;
+        if (unlikely(progLen < 8 || progLen > totalWords)) {
+          jam();
+          lc_ndbd_pool_free(allProgsBuf);
+          state->m_all_programs_buf = nullptr;
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key);
+          return;
+        }
         progStart = allProgsBuf;
         pos = totalWords;
       } else {
         progLen = allProgsBuf[pos++];
+        /* New format: per-leaf lengths are explicit — bound them to
+         * the section so a malformed frame can never walk out of the
+         * copied buffer (same hardening rationale as above). */
+        if (unlikely(progLen < 8 || progLen > totalWords - pos)) {
+          jam();
+          lc_ndbd_pool_free(allProgsBuf);
+          state->m_all_programs_buf = nullptr;
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key);
+          return;
+        }
         progStart = &allProgsBuf[pos];
         pos += progLen;
+        /* item 9 post-mortem: do NOT override progLen with the
+         * program header's word-0 length here. For filter-carrying
+         * leaves the FRAME length is the execution length (base
+         * program + appended cross-table filter); truncating to the
+         * header length cut the filter off the interpreter path
+         * (rows aggregated unfiltered — the M11 wrong-result). The
+         * r4/d28 census family this override chased was actually the
+         * WRITE_INTERPRETER_OUTPUT STOP_PROGRAM sentinel, fixed in
+         * the bridge (BR_CASE_JUMP_STOP). */
       }
 
       // Read n_agg_results and n_gb_cols from program header word 1
@@ -2647,6 +2759,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_leaf_programs[i].m_acc_offset = accOffset;
       state->m_leaf_programs[i].m_n_agg_results = leafNAggResults;
       state->m_leaf_programs[i].m_agg_prog_start_pos = 8 + leafNGBCols;
+      /* JIT result fields default to nullptr; the actual
+       * compile attempt happens further down, after
+       * OptimizeProgramBuffer has type-specialised the bytecode. */
+      state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
+      state->m_leaf_programs[i].m_jit_entry = nullptr;
       DEB_STAR_AGG(("STAR_AGG SETUP: leaf[%u] progLen=%u n_gb=%u "
                     "n_agg=%u acc_off=%u prog_start=%u",
                     i, progLen, leafNGBCols, leafNAggResults,
@@ -2761,6 +2878,222 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         lp.m_agg_program, lp.m_agg_program_len, lp.m_agg_prog_start_pos);
   }
 
+  /* Phase 4 RONDB-1056: JIT compile attempt.
+   *
+   * Run for single-leaf programs only: only m_leaf_programs[0] is
+   * ever compiled (multi-leaf/star is Phase 6-3, which must also make
+   * the per-row leaf switch in processRecWithLinkedAttrs select the
+   * current leaf's entry — the interpreter holds a single
+   * m_jit_entry). A failed attempt (bridge or admission reject)
+   * leaves m_jit_entry == nullptr so the JoinAggInterpreter runs the
+   * interpreter loop on every row. The decision is per-program at
+   * setup; no per-row re-evaluation downstream.
+   *
+   * Bytecode handed to the bridge starts at lp.m_agg_program +
+   * lp.m_agg_prog_start_pos (header words 0..7+n_gb_cols precede
+   * the actual aggregation instructions). */
+#ifdef ERROR_INSERT
+  /* 5127/5120, NOT the DBTUP-side 4xxx inserts: Cmvmi::execTAMPER_ORD
+   * routes `all error N` by number range (4000-4999 -> DBTUP,
+   * 5000-5999 -> DBLQH), so a 4xxx insert can never arm this block's
+   * ERROR_INSERTED. The proxy's compile-time diagnostics:
+   *   5127 = dump program + translation at JOIN_AGG_SETUP compile
+   *          (DEBUG_JIT builds only)
+   *   5120 = compile failure is fatal (abort with the reject reason).
+   *          ronsql_jit slice 3 lifted this out of DEBUG_JIT: the
+   *          suite-wide strict arming (paired with DBTUP's 4064)
+   *          must work on every ERROR_INSERT build. */
+  const bool fatal_compile_failure = ERROR_INSERTED(5120);
+#else
+  const bool fatal_compile_failure = false;
+#endif
+#ifdef DEBUG_JIT
+#ifdef ERROR_INSERT
+  const bool dump_jit_program = ERROR_INSERTED(5127);
+#else
+  const bool dump_jit_program = false;
+#endif
+  const bool log_jit_decision = dump_jit_program || fatal_compile_failure;
+#endif
+  if (dbtup_jit_enabled()) {
+    jam();
+    /* First JIT activity on this node may be a join-agg compile — make
+     * sure the JIT-CRASH signal interposer is installed (idempotent). */
+    dbtup_jit_install_crash_handler();
+    /* Phase 6-3: EVERY leaf compiles independently — the per-row leaf
+     * switch in processRecWithLinkedAttrs installs the current leaf's
+     * entry and accumulator count, so a leaf that fails admission
+     * leaves only ITS OWN entry null (that leaf's rows run the
+     * interpreter; the others stay native). Under ERROR_INSERT 5120
+     * any leaf's bridge/compile reject is fatal — the old "skip
+     * multi-leaf entirely" arm is gone. */
+    for (Uint32 jit_leaf = 0; jit_leaf < state->m_num_leaves; jit_leaf++) {
+      LeafProgram &lp = state->m_leaf_programs[jit_leaf];
+      Uint32 bc_off = lp.m_agg_prog_start_pos;
+      if (bc_off < lp.m_agg_program_len) {
+        Uint32 bc_words = lp.m_agg_program_len - bc_off;
+  #ifdef DEBUG_JIT
+        if (dump_jit_program) {
+          g_eventLogger->info("[RONDB-1056] ERROR_INSERT 5127: "
+                              "dumping JIT setup for key=%u leaf=%u",
+                              key, jit_leaf);
+          ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
+                                    lp.m_agg_program + bc_off, bc_words,
+                                    ndb_jit_event_logger, nullptr);
+        }
+  #endif
+        /* ronsql_jit item 15: kOpAvg's hidden COUNT slot is placed at
+         * n_visible_results + ordinal — the LeafProgram's header count
+         * (Init later grows the interpreter's own count). Single-leaf
+         * only: in multi-leaf mode the hidden slots sit beyond the
+         * COMBINED total, past the leaf's slice. */
+        const Uint32 n_vis = (state->m_num_leaves == 1)
+                                 ? lp.m_n_agg_results
+                                 : NDB_JIT_NO_AVG_SLOTS;
+        Program p;
+        JitBridgeError berr;
+        /*
+         * Two-stage compiler pipeline:
+         *
+         * 1. ndb_jit_bridge_translate() understands NDB aggregation bytecode
+         *    (kOp* word encoding, embedded normal-interpreter blocks, NDB-side
+         *    admission/reject reasons) and lowers it into the normalized
+         *    internal Program/Op[] form used by the JIT engine.
+         *
+         * 2. jit1_compile() is deliberately NDB-agnostic. It validates the
+         *    normalized Program, copies machine-code stencils, patches operand
+         *    holes, seals executable memory, and returns a callable entry point.
+         *
+         * The stencils copied by jit1_compile() are generated offline:
+         *
+         *   a. stencils_src.c is compiled to ordinary object code using the
+         *      pinned upstream clang version.
+         *   b. extract_stencils reads that object file, extracts each op_*
+         *      function's machine-code bytes and patch holes, and writes the
+         *      checked-in stencils_x86_64.h / stencils_arm64.h headers.
+         *   c. Normal ndbd builds include those generated headers. At setup
+         *      time jit1_compile() uses copy-and-patch on the checked-in byte
+         *      arrays; it does not invoke clang or the extractor.
+         *
+         * Phase 6-4: on a cache MISS both stages run inside the agg
+         * reuse cache's compile callback (dbtup_jit_compile_agg below);
+         * on a HIT neither runs. The translate right here is the
+         * DIAGNOSTIC pass: it keeps the bridge-reject fallback site
+         * ("join-agg bridge"), the 5127 dump and the 5120 fatal detail
+         * exactly as before — a bridge-rejected program never reaches
+         * the cache (negative results are not cached), and for accepted
+         * programs this linear pass costs microseconds per setup.
+         */
+        JitBridgeReason brc =
+            ndb_jit_bridge_translate_ex(lp.m_agg_program + bc_off,
+                                         bc_words, n_vis, &p, &berr);
+        if (brc == JIT_BRIDGE_OK) {
+  #ifdef DEBUG_JIT
+          if (dump_jit_program) {
+            ndb_jit_bridge_dump_program(&p, ndb_jit_event_logger, nullptr);
+          }
+  #endif
+          /* Phase 6-4: acquire from the node-global agg reuse cache,
+           * keyed on the exact bytecode words. Hit → shared blob
+           * (refcount bump, counts programs_reused). Miss → the cache
+           * callback translates + compiles (counts programs_compiled +
+           * compile_ns_total). Released per leaf at JOIN_AGG teardown
+           * via dbtup_jit_release_agg; a PINNED entry — the program
+           * carried AGG_PROG_FLAG_REUSABLE (RonSQL / prepared
+           * statements, prog[3] bit 0) — survives release at refcount
+           * 0, so the next execution of the identical program (e.g. a
+           * re-sent CTE stage) hits instead of recompiling. */
+          const bool jit_pinned =
+              (lp.m_agg_program[3] & AGG_PROG_FLAG_REUSABLE) != 0;
+          void *cache_handle = nullptr;
+          void *entry = dbtup_jit_compile_agg(lp.m_agg_program + bc_off,
+                                              bc_words, &cache_handle,
+                                              jit_pinned, n_vis);
+          if (entry != nullptr) {
+            lp.m_jit_cache_handle = cache_handle;
+            lp.m_jit_entry = reinterpret_cast<JitEntry>(entry);
+            DEB_JIT_IF(log_jit_decision,
+                       ("[RONDB-1056] JIT ready key=%u "
+                        "leaf %u (%u bytecode words, cached%s)",
+                        key, jit_leaf, bc_words,
+                        jit_pinned ? ", pinned" : ""));
+          } else {
+            /* Admission reject or code-memory OOM inside the cache's
+             * compile callback, which already counted the fallback
+             * (site "aggregation compile"). jit1_last_admit_error() is
+             * fresh: the callback ran on THIS thread and its translate
+             * succeeded (ours just did), so the failure was
+             * jit1_compile's. On a pure OOM the admit error may carry
+             * an earlier reject — test-only diagnostics, acceptable. */
+            const Jit1AdmitError *aerr = jit1_last_admit_error();
+            DEB_JIT_IF(log_jit_decision,
+                       ("[RONDB-1056] JIT admission rejected key=%u "
+                        "leaf=%u reason=%d pc=%u target=%u kind=%u (%s) - "
+                        "interpreter fallback",
+                        key, jit_leaf, (int)aerr->reason,
+                        (unsigned)aerr->offending_pc,
+                        (unsigned)aerr->offending_target,
+                        (unsigned)aerr->offending_kind,
+                        ndb_jit_bridge_jit_op_name(aerr->offending_kind)));
+            if (fatal_compile_failure) {
+              g_eventLogger->error(
+                  "ERROR_INSERT 5120: JIT admission rejected key=%u "
+                  "leaf=%u reason=%d pc=%u target=%u kind=%u (%s). Aborting.",
+                  key, jit_leaf, (int)aerr->reason,
+                  (unsigned)aerr->offending_pc,
+                  (unsigned)aerr->offending_target,
+                  (unsigned)aerr->offending_kind,
+                  ndb_jit_bridge_jit_op_name(aerr->offending_kind));
+              abort();
+            }
+          }
+        } else {
+          dbtup_jit_note_fallback("join-agg bridge", (int)brc,
+                                  berr.offending_op, berr.offending_word,
+                                  lp.m_agg_program + bc_off, bc_words);
+          Uint32 ow = (berr.offending_word < bc_words)
+                         ? (lp.m_agg_program + bc_off)[berr.offending_word]
+                         : 0u;
+          DEB_JIT_IF(log_jit_decision,
+                     ("[RONDB-1056] JIT bridge rejected key=%u "
+                      "leaf=%u reason=%d (%s) word=%u op=%u (%s) value=0x%08x "
+                      "- interpreter fallback",
+                      key, jit_leaf, (int)brc,
+                      ndb_jit_bridge_reason_name(brc),
+                      (unsigned)berr.offending_word,
+                      (unsigned)berr.offending_op,
+                      ndb_jit_bridge_agg_op_name(berr.offending_op),
+                      ow));
+          if (fatal_compile_failure) {
+  #ifdef DEBUG_JIT
+            if (!dump_jit_program) {
+              ndb_jit_bridge_dump_input(lp.m_agg_program, bc_off,
+                                        lp.m_agg_program + bc_off, bc_words,
+                                        ndb_jit_event_logger, nullptr);
+            }
+  #endif
+            g_eventLogger->error(
+                "ERROR_INSERT 5120: JIT bridge rejected key=%u "
+                "leaf=%u reason=%d (%s) word=%u op=%u (%s) value=0x%08x. "
+                "Aborting.",
+                key, jit_leaf, (int)brc, ndb_jit_bridge_reason_name(brc),
+                (unsigned)berr.offending_word,
+                (unsigned)berr.offending_op,
+                ndb_jit_bridge_agg_op_name(berr.offending_op),
+                ow);
+            abort();
+          }
+        }
+      } else if (fatal_compile_failure) {
+        g_eventLogger->error(
+            "ERROR_INSERT 5120: JIT setup found no aggregation bytecode "
+            "for key=%u leaf=%u (start=%u len=%u). Aborting.",
+            key, jit_leaf, (unsigned)bc_off, (unsigned)lp.m_agg_program_len);
+        abort();
+      }
+    }
+  }
+
   // Allocate JoinAggInterpreter(s) based on strategy.
   // Init with leaf 0's program; for multi-leaf, override accumulator count.
   const LeafProgram &leaf0 = state->m_leaf_programs[0];
@@ -2800,6 +3133,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       }
     }
     interp->initChunkAllocator(getThreadId(), budget_pages, available_pages);
+    /* Phase 4: pass the cached JIT entry to the interpreter so
+     * ProcessRec can dispatch via the JIT path. nullptr is the
+     * normal interpreter-only case. */
+    interp->setJitEntry(leaf0.m_jit_entry);
+    state->m_agg_interpreter = interp;
   } else {
     jam();
     Uint32 num_threads = state->m_num_threads;
@@ -2855,6 +3193,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       }
       interp->initChunkAllocator(getThreadId(), per_thread_budget,
                                    available_pages);
+      /* Phase 4: pass the cached JIT entry. All MUTEX_FREE
+       * interpreters share leaf0's compiled blob (or fall back
+       * uniformly when m_jit_entry is nullptr). */
+      interp->setJitEntry(leaf0.m_jit_entry);
+      arr[i] = interp;
     }
   }
 
@@ -2923,6 +3266,15 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
       state->m_column_meta_len = 0;
     }
     if (state->m_leaf_programs != nullptr) {
+      /* RONDB-1056 Phase 6-4: release each leaf's reuse-cache handle
+       * before freeing the descriptor array. All workers have finished
+       * by the RELEASE phase, so no row is executing the blob; the loop
+       * runs before m_num_leaves is zeroed. Unpinned entries die at
+       * refcount 0; pinned ones stay cached for the next execution. */
+      for (Uint32 i = 0; i < state->m_num_leaves; i++) {
+        dbtup_jit_release_agg(state->m_leaf_programs[i].m_jit_cache_handle);
+        state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
+      }
       lc_ndbd_pool_free(state->m_leaf_programs);
       state->m_leaf_programs = nullptr;
       state->m_num_leaves = 0;

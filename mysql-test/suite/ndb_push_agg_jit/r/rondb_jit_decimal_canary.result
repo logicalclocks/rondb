@@ -1,0 +1,61 @@
+############################################################
+# RONDB-1056 DECIMAL JIT canary
+############################################################
+CREATE TABLE t1 (
+pk  BIGINT NOT NULL,
+grp BIGINT NOT NULL,
+d90 DECIMAL(9,0) NOT NULL,
+d92 DECIMAL(9,2) NOT NULL,
+du  DECIMAL(20,0) UNSIGNED NOT NULL,
+dn  DECIMAL(9,2),
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 10, 1.25, 4611686018427387905, 1.50),
+(2, 1, 20, 2.50, 4611686018427387905, NULL),
+(3, 2, 30, 3.25, 4611686018427387905, 2.25),
+(4, 2, 40, 4.00, 0,                   NULL);
+SET ndb_pushdown_aggregate=ON;
+# Q1: scale-0 DECIMAL — BIGINT track — must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(d90), MIN(d90), MAX(d90) FROM t1;
+SUM(d90)	MIN(d90)	MAX(d90)
+100	10	40
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
+q1_jit_compiled
+1
+# Q2: scale-2 DECIMAL — DOUBLE track — must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(d92), MIN(d92), MAX(d92) FROM t1;
+SUM(d92)	MIN(d92)	MAX(d92)
+11.00	1.25	4.00
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
+q2_jit_compiled
+1
+# Q3: DECIMAL(20,0) UNSIGNED — u64 track — must JIT; the sum
+#     crosses 2^63 (3 x (2^62 + 1)), exercising the u64 sum and
+#     the RONDB-733 unsigned consumption fix end to end.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT SUM(du) FROM t1;
+SUM(du)
+13835058055282163715
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q3_jit_compiled;
+q3_jit_compiled
+1
+# Q4: grouped scale-2 DECIMAL must JIT.
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+SELECT grp, SUM(d92) FROM t1 GROUP BY grp;
+grp	SUM(d92)
+1	3.75
+2	7.25
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
+q4_jit_compiled
+1
+# Q5: nullable DECIMAL differential — NULL values take the
+#     per-row interpreter fallback in this first cut (no
+#     null-branching DECIMAL load yet), so no 4060 here; the
+#     values are the assertion.
+SELECT SUM(dn), COUNT(dn) FROM t1;
+SUM(dn)	COUNT(dn)
+3.75	2
+DROP TABLE t1;

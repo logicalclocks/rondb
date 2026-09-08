@@ -27,14 +27,28 @@ Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
 4041: Force intermittent group eviction in join aggregation (every ~7 rows)
-Next DBTUP 4042
+4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
+      scan filter with a compilable region (Dbtup / AggInterpreter /
+      JoinAggInterpreter; deliberate-fallback canaries are exempt)
+4063: RONDB-1056 JIT per-row trace of the cold-call helpers (DBTUP; rate-limited)
+4064: RONDB-1056 JIT strict compile for the non-join aggregation path: a
+      program whose compilable region did not JIT-compile aborts the node;
+      per-row fallbacks never trip it (suite-wide strict arming, paired
+      with DBLQH 5120)
+Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
 5124: Simulate JOIN_AGG_COMPLETE_REF state-not-found in Dblqh
 5125: Simulate JOIN_AGG_SETUP_REF allocation failure in DblqhProxy
 5126: Force join aggregation group eviction by limiting maxGroups to 3 (DblqhProxy)
-Next DBLQH 5127
+5120: RONDB-1056 JIT strict compile for the join-agg path (DblqhProxy): a
+      per-leaf compile failure at JOIN_AGG_SETUP is fatal (suite-wide strict
+      arming, paired with DBTUP 4064)
+5127: RONDB-1056 JIT: dump program + translation at JOIN_AGG_SETUP compile
+      (DblqhProxy; DEBUG_JIT builds only). Was 5119 until the TTL replica-
+      rowid work took 5119.
+Next DBLQH 5128
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

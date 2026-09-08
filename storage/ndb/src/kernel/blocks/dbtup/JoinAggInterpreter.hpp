@@ -84,6 +84,89 @@ class JoinAggInterpreter : public AggInterpreterBase {
 
   bool Init(const Uint32* prog);
 
+  /* Phase 4 RONDB-1056: JIT entry-pointer caching.
+   *
+   * Set once by DblqhProxy::execJOIN_AGG_SETUP_REQ after the JIT
+   * compile, before the interpreter starts processing rows.
+   * ProcessRec dispatches via this when m_n_gb_cols == 0.
+   * Default-null = interpreter path. */
+  void setJitEntry(JitEntry e) { m_jit_entry = e; }
+
+  /* Phase 4 cold-call helper bridge: exposes readSingleAttribute to
+   * DbtupJitGlue via the friend access JoinAggInterpreter has on
+   * Dbtup. Reads the AttributeHeader + raw column bytes into
+   * `read_buf`; caller decodes per the column's type.
+   *
+   * Returns the same value as Dbtup::readSingleAttribute — words
+   * written on success, negative on failure. */
+  int readAttributeForJit(Dbtup *block_tup,
+                           Dbtup::KeyReqStruct *req_struct,
+                           Uint32 col_id,
+                           Uint32 *read_buf,
+                           Uint32 buf_words) {
+    return block_tup->readSingleAttribute(req_struct, col_id,
+                                           read_buf, buf_words);
+  }
+
+  /* Phase 5.1a: friend-accessor wrappers for Dbtup's cheapMemory.
+   * JoinAggInterpreter is friend of Dbtup so we can reach the
+   * private buffer + the static helper readLinkedToMemBuffer.
+   * The JIT helpers call these via ctx->agg->... (using the same
+   * null-this convention Phase 4 established for
+   * readAttributeForJit). */
+  void readLinkedToMemForJit(Dbtup *block_tup,
+                              Dbtup::KeyReqStruct *req_struct,
+                              Uint32 position) {
+    /* Destination capacity = ZATTR_BUFFER_SIZE words. cheapMemory
+     * is sized ZATTR_BUFFER_SIZE + 16; the +16 is structural
+     * padding so the conservative bound matches the interpreter
+     * caller in DbtupExecQuery.cpp. */
+    Dbtup::readLinkedToMemBuffer(req_struct->m_linked_attr_data,
+                                  req_struct->m_linked_attr_len,
+                                  position,
+                                  &block_tup->cheapMemory[0],
+                                  ZATTR_BUFFER_SIZE);
+  }
+
+  Uint32 cheapMemoryHeaderForJit(Dbtup *block_tup) {
+    return block_tup->cheapMemory[0];
+  }
+
+  /* Phase 5F-2: JIT facades for LINKED column loads.
+   * jitReadLinkedAttr walks the current row's linked buffer to
+   * `position`, resolves the typed CTE metadata words, and copies
+   * [AttributeHeader][data] into m_attr_read_buf (the JIT load
+   * helpers then decode from there with the type from *out_w0).
+   * Returns 0 on success; nonzero -> the helper takes the per-row
+   * fallback. jitMinMaxStringLinked is the linked sibling of
+   * AggInterpreterBase::jitMinMaxStringCol — same protected load +
+   * public minMaxString kernel, metadata from the linked words. */
+  Int32 jitReadLinkedAttr(Uint32 position, AttributeHeader **out_header,
+                          Uint32 *out_w0, Uint32 *out_w1) {
+    m_attr_read_pos = 0;
+    return readLinkedAttrIntoBuf(position, /*load_program_offset=*/-1,
+                                 out_header, out_w0, out_w1);
+  }
+  Int32 jitMinMaxStringLinked(Dbtup::KeyReqStruct *req_struct,
+                              Uint32 position, Uint32 agg_index,
+                              bool is_max, AggResItem *agg_res_ptr);
+
+#ifdef ERROR_INSERT
+  bool jitTraceEnabledForJit(Dbtup *block_tup,
+                             Uint32 *trace_limit) const {
+    if (block_tup == nullptr ||
+        !block_tup->jit_error_inserted(4063)) {
+      return false;
+    }
+    Uint32 limit = block_tup->jit_error_insert_extra();
+    if (limit == 0) {
+      limit = 16;
+    }
+    *trace_limit = limit;
+    return true;
+  }
+#endif
+
   Int32 processRecWithLinkedAttrs(
       Dbtup* block_tup,
       Dbtup::KeyReqStruct* req_struct,
@@ -195,6 +278,15 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * CTE_LOOKUP_REQ and cross-node hash routing fail to find the group.
    */
   void setCteMode(bool v) { m_cte_mode = v; }
+
+  /* Phase 6-3: the CURRENT leaf's accumulator count for the JIT
+   * dispatch. 0 = single-leaf (use m_n_agg_results, which the
+   * multi-leaf setup overrides to the COMBINED total via
+   * setTotalAggResults — passing that into dbtup_jit_invoke would
+   * read/write past the leaf's slice of the group record). Set by
+   * the per-row leaf switch alongside m_prog/m_acc_offset/
+   * m_jit_entry. */
+  Uint32 m_jit_leaf_n_agg = 0;
 
   /**
    * Multi-leaf aggregation support.
@@ -308,6 +400,16 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 
   // Linked attribute buffer for join aggregation
+  /* Phase 5F-2: shared linked-attr capture used by ProcessRec's
+   * kOpLoadCol arm AND the JIT facades — walk to `position`, resolve
+   * the CTE metadata words (inline marker, ColumnMeta by attr id, or
+   * — only when load_program_offset >= 0 — the offset-keyed
+   * LoadColumnMeta fallback), copy [header][data] into
+   * m_attr_read_buf at m_attr_read_pos. */
+  Int32 readLinkedAttrIntoBuf(Uint32 position, Int64 load_program_offset,
+                              AttributeHeader **out_header,
+                              Uint32 *out_w0, Uint32 *out_w1);
+
   const Uint32* m_linked_attr_data;// Points to current row's linked attrs
   Uint32 m_linked_attr_len;        // Current length in words
   bool m_null_local_columns;       // When true, local column read NULL

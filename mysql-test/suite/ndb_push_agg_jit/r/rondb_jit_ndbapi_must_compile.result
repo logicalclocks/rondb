@@ -1,0 +1,10 @@
+Running rondb_jit_ndbapi_must_compile
+=== testJoinAggJit ===
+Connect string: #
+MySQL port: #
+
+Test 1: JIT must compile SUM local attr ... OK (sum=1500, JIT required)
+
+All tests PASSED
+PASSED
+DROP DATABASE IF EXISTS test_db;

@@ -28,6 +28,7 @@ package shell
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -625,13 +626,13 @@ func (s *Shell) executeInternal(line string) error {
 			return fmt.Errorf("MySQL not connected. Cannot run load_tpch (needed to create tables).")
 		}
 		// Parse scale factor, thread count, and batch size
-		scaleFactor := 1   // default: 1 dataset
+		scaleFactor := 1.0 // default: 1 dataset (fractions allowed, e.g. 0.1)
 		numThreads := 4    // default: 4 threads
 		batchSize := 100   // default: 100 rows per batch
 		if len(parts) > 1 {
-			sf, err := strconv.Atoi(parts[1])
-			if err != nil || sf <= 0 {
-				return fmt.Errorf("invalid scale factor: %s (use a positive integer, e.g., 1, 10, 100)", parts[1])
+			sf, err := strconv.ParseFloat(parts[1], 64)
+			if err != nil || sf <= 0 || math.IsInf(sf, 0) || math.IsNaN(sf) {
+				return fmt.Errorf("invalid scale factor: %s (use a positive number, e.g., 0.1, 1, 10)", parts[1])
 			}
 			scaleFactor = sf
 		}
@@ -4266,7 +4267,7 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .bench_rdrs_cont [T] [N] [R] [W] [S] Continuous benchmark for S seconds
 
   TPC-H data loading:
-    .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, T=threads, B=batch size)
+    .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, fractions ok e.g. 0.1; T=threads, B=batch size)
     .drop_tpch                           Drop all TPC-H tables and database
 
   Analytics benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):

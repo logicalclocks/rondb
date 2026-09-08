@@ -32,6 +32,13 @@
 #include "Dbtup.hpp"             // Dbtup::KeyReqStruct (nested) — needed by initGBTypes
 #include "decimal.h"
 
+/* Phase 4 RONDB-1056: forward-declare the JIT engine's per-row
+ * entry-pointer typedef so AggInterpreterBase can hold one without
+ * pulling jit1.h transitively. The .cpp pulls jit1.h for the real
+ * definition. */
+struct JitState;
+typedef void (*JitEntry)(JitState *);
+
 /* ATTR_READ_BUF_WORD_SIZE retired in Step 3 Cand-C.  The scratch
  * buffer that used to live inline at this size is now an LDM-thread-
  * scoped Uint32 m_agg_attr_read_buf[MAX_TUPLE_SIZE_IN_WORDS] on the
@@ -132,7 +139,7 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_attr_read_buf(nullptr), m_prog_buf(nullptr),
       m_gb_cols_buf(nullptr), m_agg_results_buf(nullptr),
       m_gb_map_buf(nullptr), m_buf_block(nullptr),
-      m_tearing_down(false),
+      m_tearing_down(false), m_prog_reusable(false),
       m_chunks(nullptr), m_chunks_tail(nullptr),
       m_current_chunk(nullptr), m_total_chunk_bytes(0),
       m_memory_budget(0), m_budget_increment(0),
@@ -215,6 +222,10 @@ class AggInterpreterBase : public PushdownInterpreter {
   static constexpr Uint16 AVG_NO_HIDDEN = 0xFFFF;
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* prog[3] AGG_PROG_FLAG_REUSABLE — the client re-sends this program
+   * across executions (RonSQL); the JIT compile pins its blob in the
+   * reuse cache (Phase 8 Slice 4). */
+  bool prog_reusable() const { return m_prog_reusable; }
 
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
@@ -283,6 +294,19 @@ class AggInterpreterBase : public PushdownInterpreter {
    * caller. */
   Int32 minMaxString(Uint32 reg_index, Uint32 agg_index,
                      AggResItem* agg_res_ptr, bool is_max);
+  /* Phase 5F-1 (RONDB-1056 JIT): fused string MIN/MAX for one row —
+   * reads the column into the per-LDM attr scratch, runs the
+   * protected load path into a scratch register (the JIT dispatch
+   * never runs the interpreter loop, so clobbering a register is
+   * harmless; minMaxString copies the payload before returning), then
+   * the minMaxString kernel above. Called from the JIT cold-call
+   * helper ndb_jit_h_minmax_str via the base-class pointer (works for
+   * both subclasses). Returns 0 or a positive ZAGG_* error; NULL
+   * column values return 0 (the kernel's skip). */
+  Int32 jitMinMaxStringCol(Dbtup* block_tup,
+                           Dbtup::KeyReqStruct* req_struct,
+                           Uint32 col_id, Uint32 agg_index, bool is_max,
+                           AggResItem* agg_res_ptr);
   void freeGroupStringSlots(AggResItem* slots);
   /* Step 3a-A: walk m_agg_results (scalar) + every group in m_gb_map,
    * freeing per-(group, slot) string winner buffers, then free the
@@ -294,6 +318,48 @@ class AggInterpreterBase : public PushdownInterpreter {
   Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
   bool hasStringSlots() const { return m_string_results != nullptr; }
   const StringResult* string_results() const { return m_string_results; }
+
+  /* Phase 6.5 RONDB-1056: shared JIT hooks for both aggregation
+   * interpreters. Join aggregation and standalone pushed aggregation
+   * use the same per-row dispatch glue once their setup path has
+   * published a compiled entry. */
+  void setJitEntry(JitEntry e) { m_jit_entry = e; }
+  /* ronsql_jit slice 3: lets the ERROR_INSERT 4064 strict-compile
+   * check see whether the program actually compiled. */
+  JitEntry jitEntry() const { return m_jit_entry; }
+  /* Phase 8 RONDB-1056: opaque reuse-cache handle (NjpEntry*) for a
+   * standalone aggregation program this interpreter OWNS. Set by
+   * PushdownInterpreterFactory::Create; released in ~AggInterpreterBase.
+   * Stays nullptr for join aggregation, where the proxy owns the leaf
+   * program and m_jit_entry is a borrowed pointer (no double free). */
+  void setJitCacheHandle(void *h) { m_jit_cache_handle = h; }
+  const Uint32* agg_program() const { return m_prog; }
+  Uint32 agg_prog_start_pos() const { return m_agg_prog_start_pos; }
+
+  int readAttributeForJit(Dbtup *block_tup,
+                          Dbtup::KeyReqStruct *req_struct,
+                          Uint32 col_id,
+                          Uint32 *read_buf,
+                          Uint32 buf_words) {
+    return block_tup->readSingleAttribute(req_struct, col_id,
+                                          read_buf, buf_words);
+  }
+
+#ifdef ERROR_INSERT
+  bool jitTraceEnabledForJit(Dbtup *block_tup,
+                             Uint32 *trace_limit) const {
+    if (block_tup == nullptr ||
+        !block_tup->jit_error_inserted(4063)) {
+      return false;
+    }
+    Uint32 limit = block_tup->jit_error_insert_extra();
+    if (limit == 0) {
+      limit = 16;
+    }
+    *trace_limit = limit;
+    return true;
+  }
+#endif
 
  protected:
 
@@ -419,10 +485,23 @@ class AggInterpreterBase : public PushdownInterpreter {
   static Int32 MinDouble(const Register& a, AggResItem* res, bool print);
   static Int32 Count(const Register& a, AggResItem* res, bool print);
 
+  /* Phase 4 RONDB-1056: cached JIT entry pointer. nullptr means
+   * fall-through to the interpreter loop (the path before this
+   * field existed). Set by DblqhProxy via setJitEntry(); read
+   * once at the top of ProcessRec. */
+  JitEntry m_jit_entry = nullptr;
+
+  /* Phase 8 RONDB-1056: reuse-cache handle for an OWNED standalone agg
+   * program (nullptr otherwise — see setJitCacheHandle). Released in
+   * ~AggInterpreterBase via dbtup_jit_release_agg. */
+  void *m_jit_cache_handle = nullptr;
+
   /* Fields lifted from the subclasses in Step 1.2 to support the shared
-   * OptimizeProgram.  Total sizeof is unchanged — same fields, moved up
-   * the class hierarchy — so both static_asserts on subclass sizeof
-   * still hold. */
+   * OptimizeProgram — same fields, moved up the class hierarchy.  (The
+   * old "sizeof(subclass) <= MEM_CHUNK_SIZE" static_asserts were removed
+   * in Step 3a-B when the big inline buffers moved out to an externally
+   * carved, right-sized m_buf_block; the placement-new'd object header is
+   * now only a few hundred bytes, well under the 32 KB chunk.) */
   Uint32* m_prog;
   Uint32 m_agg_prog_start_pos;
 
@@ -579,6 +658,9 @@ class AggInterpreterBase : public PushdownInterpreter {
    * read by callers / asserts.  Drives the CONTINUEB-driven release
    * path described above on the public interface. */
   bool m_tearing_down;
+  /* prog[3] bit 0 (AGG_PROG_FLAG_REUSABLE), parsed in
+   * peekProgramHeader — see prog_reusable(). */
+  bool m_prog_reusable;
 
   /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
    * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;

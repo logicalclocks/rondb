@@ -1,0 +1,117 @@
+############################################################
+# RONDB-1056 scan-filter JIT canary
+############################################################
+CREATE TABLE t1 (
+pk BIGINT NOT NULL,
+v  BIGINT,
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 10), (2, NULL), (3, 30), (4, NULL), (5, 50);
+# Q1: WHERE v IS NOT NULL must JIT (filter rejects the NULL rows).
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+pk	v
+1	10
+3	30
+5	50
+# Q2: WHERE v IS NULL must JIT (filter keeps the NULL rows).
+SELECT pk FROM t1 WHERE v IS NULL;
+pk
+2
+4
+# Q3: differential — same filter without the error insert matches Q1.
+SELECT pk, v FROM t1 WHERE v IS NOT NULL;
+pk	v
+1	10
+3	30
+5	50
+# Q4: WHERE v > 25 must JIT (BRANCH_ATTR_OP_ARG, integer GT literal).
+SELECT pk, v FROM t1 WHERE v > 25;
+pk	v
+3	30
+5	50
+# Q5: WHERE v = 30 must JIT (BRANCH_ATTR_OP_ARG, integer EQ literal).
+SELECT pk, v FROM t1 WHERE v = 30;
+pk	v
+3	30
+# Q6: differential — same comparison without the error insert matches Q4.
+SELECT pk, v FROM t1 WHERE v > 25;
+pk	v
+3	30
+5	50
+# Q7: WHERE v > ? (bound parameter) must JIT (BRANCH_ATTR_OP_PARAM —
+#     the ndbcluster handler pushes a non-const param via cmp_param).
+PREPARE pstmt FROM 'SELECT pk, v FROM t1 WHERE v > ?';
+SET @lim = 25;
+EXECUTE pstmt USING @lim;
+pk	v
+3	30
+5	50
+DEALLOCATE PREPARE pstmt;
+# Q8: WHERE pk < v (column vs column) must JIT (BRANCH_ATTR_OP_ATTR).
+SELECT pk, v FROM t1 WHERE pk < v;
+pk	v
+1	10
+3	30
+5	50
+# Q9: differential — same col-vs-col comparison without the error insert.
+SELECT pk, v FROM t1 WHERE pk < v;
+pk	v
+1	10
+3	30
+5	50
+DROP TABLE t1;
+############################################################
+# String (VARCHAR) comparison predicates
+############################################################
+CREATE TABLE t2 (
+pk BIGINT NOT NULL,
+s  VARCHAR(32),
+PRIMARY KEY (pk)
+) ENGINE=NDB;
+INSERT INTO t2 VALUES
+(1, 'apple'), (2, NULL), (3, 'cherry'), (4, 'date'), (5, 'cherry');
+# Q10: WHERE s = 'cherry' (VARCHAR literal) must JIT — string compare
+#      via the column's charset, read into the large coutBuffer.
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+pk	s
+3	cherry
+5	cherry
+# Q11: WHERE s < 'cherry' (VARCHAR range) must JIT.
+SELECT pk, s FROM t2 WHERE s < 'cherry';
+pk	s
+1	apple
+# Q12: differential — same string filter without the error insert.
+SELECT pk, s FROM t2 WHERE s = 'cherry';
+pk	s
+3	cherry
+5	cherry
+# Q13: WHERE s LIKE 'ch%' must JIT (ronsql_jit item 12: BRANCH_ATTR_OP_ARG
+#      LIKE / NOT_LIKE through the type's m_like comparator).
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+pk	s
+3	cherry
+5	cherry
+# Q14: WHERE s NOT LIKE 'ch%' must JIT; the NULL row (pk 2) must NOT
+#      appear — a NULL operand is "no match" for NOT LIKE as well.
+SELECT pk, s FROM t2 WHERE s NOT LIKE 'ch%';
+pk	s
+1	apple
+4	date
+# Q15: WHERE s LIKE '%e' must JIT (leading wildcard — no range, pure filter).
+SELECT pk, s FROM t2 WHERE s LIKE '%e';
+pk	s
+1	apple
+4	date
+# Q16: WHERE s LIKE 'CH%' must JIT and match case-insensitively — the
+#      column collation's wildcmp drives both engines.
+SELECT pk, s FROM t2 WHERE s LIKE 'CH%';
+pk	s
+3	cherry
+5	cherry
+# Q17: differential — Q13's LIKE filter without the error insert.
+SELECT pk, s FROM t2 WHERE s LIKE 'ch%';
+pk	s
+3	cherry
+5	cherry
+DROP TABLE t2;

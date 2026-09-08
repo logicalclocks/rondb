@@ -1,0 +1,4 @@
+# RONDB-1056 JIT benchmark — the INTERPRETER arm (this suite pins
+# CompiledInterpreter=OFF). Body + parameters: include/jit_bench_body.inc;
+# driver: claude_files/compiled_interpreter/jit_bench_off_vs_on.py.
+--source suite/ndb_push_agg/include/jit_bench_body.inc

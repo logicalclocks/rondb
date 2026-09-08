@@ -19900,6 +19900,22 @@ emitCteLinkedAggSlot(const JoinAggInterpreter *interp,
                      Uint32 maxWords) {
   Uint32 typeId = item.type;
   if (typeId == NDB_TYPE_UNDEFINED) typeId = NDB_TYPE_BIGINT;
+  /* RONDB-1056 Phase 6-2: AggResItem carries unsignedness as a
+   * SEPARATE flag (type stays NDB_TYPE_BIGINT) — encode it into the
+   * marker type, or every consumer misreads the slot as signed.
+   * RonSQL's virt table already widens unsigned aggregates to
+   * Bigunsigned, so the consumer program's wire type says
+   * Bigunsigned; a BIGINT marker made (a) the JIT's u64 load helper
+   * take the per-row fallback on EVERY consumer row (found by the
+   * must-JIT CTE census under ERROR_INSERT 4060 — invisible to all
+   * counters, results still correct via the interpreter re-run), and
+   * (b) the interpreter consumer tag the register SIGNED, silently
+   * misordering MIN/MAX and misreading SUM for values >= 2^63
+   * (latent — test data never crosses it; same defect class as the
+   * RONDB-733 unsigned pushdown fix). */
+  if (typeId == NDB_TYPE_BIGINT && item.is_unsigned) {
+    typeId = NDB_TYPE_BIGUNSIGNED;
+  }
 
   if (isStringAggType(typeId) && !item.is_null) {
     const StringResult *stringResults = interp->string_results();
@@ -25828,6 +25844,13 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
   scanPtr->m_agg_curr_batch_size_rows = 0;
   scanPtr->m_agg_curr_batch_size_bytes = 0;
   scanPtr->m_agg_n_res_recs = 0;
+  /* RONDB-1056 Phase 7: the JIT scan-filter fields must not survive
+   * into the next scan that reuses this record — the entry is a
+   * borrowed pointer whose code slot is freed when its stored
+   * procedure dies (progcache release at deleteScanProcedure). */
+  scanPtr->m_jit_filter_entry = nullptr;
+  scanPtr->m_jit_filter_reject_code = 0;
+  scanPtr->m_jit_filter_ineligible = 0;
   /*
    * Pushdown interpreter release was moved up to releaseScanrec
    * (Step 4 normal-scan path also needs it before
@@ -27107,6 +27130,9 @@ void Dblqh::execCOPY_FRAGREQ(Signal *signal) {
     scanPtr->m_join_agg_state_key = RNIL;
     scanPtr->m_vs_interpreter = nullptr;
     scanPtr->m_agg_interpreter = nullptr;
+    scanPtr->m_jit_filter_entry = nullptr;
+    scanPtr->m_jit_filter_reject_code = 0;
+    scanPtr->m_jit_filter_ineligible = 0;
     scanPtr->m_join_agg_evict_rows = 0;
     scanPtr->m_rows_examined = 0;
     m_scan_direct_count = ZMAX_SCAN_DIRECT_COUNT - 6;

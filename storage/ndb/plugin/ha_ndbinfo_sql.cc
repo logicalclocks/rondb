@@ -413,6 +413,10 @@ static struct view {
     {"ndbinfo", "index_stats",
      "SELECT * "
      "FROM `ndbinfo`.`ndb$index_stats`"},
+    /* RONDB-1056: JIT code-memory + program-reuse statistics */
+    {"ndbinfo", "jit",
+     "SELECT * "
+     "FROM `ndbinfo`.`ndb$jit`"},
     {"ndbinfo", "locks_per_fragment",
      "SELECT name.fq_name, parent_name.fq_name AS parent_fq_name, "
      "types.type_name AS type, table_id, node_id, block_instance, "

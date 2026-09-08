@@ -1,0 +1,31 @@
+# Example CPU-binding file for the ronsqlcrunch suite (Linux: taskset).
+# Append it to the configuration like this:
+#   $> mtr --suite=ronsqlcrunch setup --start-and-exit \
+#          --defaults-extra-file=suite/ronsqlcrunch/cpubind.cnf
+#
+# Every process is bound as a whole (taskset -c <list> <exe> ...); the
+# data nodes then spread their threads over the set with
+# AutomaticThreadConfig (keep NumCPUs in my.cnf equal to the set size).
+# Uncomment and edit the lists for your machine. Keep the benchmark
+# client (rondb-cli, bound by the driver's --client-cpus) and RDRS away
+# from the data node CPUs so client cost does not pollute data node
+# timings.
+
+[cluster_config.ndbd.1.1]
+#cpubind=0-3
+
+[cluster_config.ndbd.2.1]
+#cpubind=4-7
+
+[mysqld.1.1]
+#cpubind=8-11
+
+[mysqld.2.1]
+#cpubind=8-11
+
+[rdrs.1.1]
+#cpubind=12-15
+
+# The mysqltest client (only used by mtr itself here)
+[mysqltest]
+#cpubind=16-19

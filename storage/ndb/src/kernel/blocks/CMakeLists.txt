@@ -50,6 +50,29 @@ if(WITH_SIMSIMD)
   list(APPEND NDBBLOCKS_LINK_LIBS simsimd::simsimd)
 endif()
 
+# RONDB-1056: link the JIT engine + bridge into ndbblocks so the blocks
+# can call jit1_compile / ndb_jit_bridge_translate and acquire/release
+# compiled programs. ndb_jit_arena is the executable-memory substrate
+# under the node-global code-memory manager (jit_codemem lives in it);
+# blocks no longer create per-instance arenas. The libraries are pure C
+# with no NDB dependencies; on macOS x86_64 they're excluded from the JIT
+# directory's CMakeLists.txt, in which case the variables below are
+# undefined and the corresponding link entries are no-ops.
+IF(TARGET ndb_jit1)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit1)
+ENDIF()
+IF(TARGET ndb_jit_bridge)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_bridge)
+ENDIF()
+IF(TARGET ndb_jit_arena)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_arena)
+ENDIF()
+# RONDB-1056 Phase 8: program-reuse cache (DbtupJitGlue acquires/releases
+# compiled scan filters through it).
+IF(TARGET ndb_jit_progcache)
+  list(APPEND NDBBLOCKS_LINK_LIBS ndb_jit_progcache)
+ENDIF()
+
 ADD_STATIC_LIBRARY(ndbblocks
   LocalProxy.cpp
   PgmanProxy.cpp
@@ -110,6 +133,7 @@ ADD_STATIC_LIBRARY(ndbblocks
   dbtup/AggInterpreterBase.cpp
   dbtup/AggInterpreter.cpp
   dbtup/JoinAggInterpreter.cpp
+  dbtup/DbtupJitGlue.cpp
   dbtup/PushdownInterpreter.cpp
   dbtup/VecSearchInterpreter.cpp
   dbtux/Dbqtux.cpp

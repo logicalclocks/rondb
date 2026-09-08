@@ -1,0 +1,29 @@
+--source include/have_ndb.inc
+
+# ronsqlcrunch benchmark cluster
+# ==============================
+#
+# Starts the benchmark cluster of suite/ronsqlcrunch/my.cnf (2 ndbmtd,
+# 2 mysqld, RDRS with RonSQL) and leaves it running:
+#
+#   ./mtr --suite=ronsqlcrunch setup --start-and-exit \
+#         [--defaults-extra-file=suite/ronsqlcrunch/cpubind.cnf]
+#
+# mtr prints the mysqld port and "rdrs.1.1  RDRS port N". Then either
+# drive the whole matrix with
+#
+#   python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py
+#
+# or by hand:
+#
+#   <build>/runtime_output_directory/rondb --mysql-port <port> \
+#         --rdrs-port <N> --no-rondis
+#   .load_tpch 1 8 200
+#   .bench_ronsql all 1 10
+#   .bench_sql all 1 10
+#   ndb_mgm -e "ALL SET CompiledInterpreter OFF"   # then rerun
+#
+# As a plain MTR test it only verifies that the cluster came up.
+
+--echo # Verify cluster is running
+SELECT 1;
