@@ -436,6 +436,47 @@ SELECT o2.o_orderkey
 FROM orders AS o2, s
 WHERE o2.o_orderdate < s.d|
 
+--echo
+--echo === sc-20: string watermark (MIN(varchar) scalar vs real VARCHAR) ===
+# String col-vs-col on the CTE output (cte_output_string_colvscol_plan.md
+# S3/S4): both sides VARCHAR(12) same charset — one
+# BRANCH_LINKED_OP_LINKED with the charset-aware kernel compare, real
+# side riding an I.26 linked projection.
+let $QUERY=
+WITH s AS (SELECT MIN(c_mktsegment) AS m FROM customer
+           WHERE c_nationkey = 3)
+SELECT c2.c_custkey
+FROM customer AS c2, s
+WHERE c2.c_mktsegment > s.m AND c2.c_custkey < 30;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MIN(c_mktsegment) AS m FROM customer
+           WHERE c_nationkey = 3)
+SELECT c2.c_custkey
+FROM customer AS c2, s
+WHERE c2.c_mktsegment > s.m AND c2.c_custkey < 30|
+
+--echo
+--echo === sc-21: string watermark over EMPTY scalar input (NULL rejects all rows) ===
+# MIN over an empty set is NULL; every comparison with it is UNKNOWN,
+# so the query returns no rows — matching MySQL.  Pins the explicit
+# NULL guards ahead of the string branch.
+let $QUERY=
+WITH s AS (SELECT MIN(c_mktsegment) AS m FROM customer
+           WHERE c_custkey = -1)
+SELECT c2.c_custkey
+FROM customer AS c2, s
+WHERE c2.c_mktsegment > s.m;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MIN(c_mktsegment) AS m FROM customer
+           WHERE c_custkey = -1)
+SELECT c2.c_custkey
+FROM customer AS c2, s
+WHERE c2.c_mktsegment > s.m|
+
 DELIMITER ;|
 
 --echo
@@ -463,5 +504,13 @@ DELIMITER ;|
 # message.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders) SELECT cu.c_custkey FROM customer AS cu, s WHERE cu.c_acctbal > s.m;' 2>&1
+
+--echo
+--echo === sc-P5 (rejection): string operand vs integer scalar output ===
+# A string real column against a numeric CTE output is neither a
+# typed-register pair nor a string pair — the string arm rejects it
+# with the string-vs-non-string message.
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(o_orderkey) AS m FROM orders) SELECT cu.c_custkey FROM customer AS cu, s WHERE cu.c_mktsegment > s.m;' 2>&1
 
 --source suite/ronsql_cte/include/cte_drop.inc

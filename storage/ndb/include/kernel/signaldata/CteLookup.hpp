@@ -73,16 +73,33 @@ struct CteLookupReq {
   // (anti-join semantics).  Not set for pass-through (non-aggregate)
   // requests — those keep REF-on-miss and the API's NULL-fill.
   static constexpr Uint32 CTE_LOOKUP_OUTER_CHAIN_FLAG = 0x4;
+  // G2b probe-result cache (cte_single_group_plan.md): DBSPJ sets this
+  // on the FIRST eligible probe of a single-row / single-group CTE
+  // whose result rows go to the API (row-delivery leaf).  DBLQH then
+  // DUAL-SHIPS the API-bound payload: the normal FLUSH_AI to the API
+  // plus a copy attached as section 0 of CTE_LOOKUP_CONF, prefixed
+  // with the flush destination ([fRef, fData, payload words...]), so
+  // DBSPJ can serve later byte-identical-key probes from its cache by
+  // impersonating the API delivery with a patched correlation.
+  static constexpr Uint32 CTE_LOOKUP_CACHE_FILL_FLAG = 0x8;
 };
 
 /**
  * CTE_LOOKUP_CONF — lookup succeeded, result row already sent as TRANSID_AI.
+ *
+ * Optional section 0 (G2b, only when CTE_LOOKUP_CACHE_FILL_FLAG was set
+ * on the request and the result went to the API): the API-bound payload
+ * prefixed with its flush destination — [fRef, fData, payload words...].
  */
 struct CteLookupConf {
   Uint32 senderRef;       // DBLQH block reference
   Uint32 senderData;      // TreeNode pointer (echo back)
+  Uint32 correlation;     // Echo of CteLookupReq::correlation — lets DBSPJ
+                          // attribute the CONF to a specific probe (the
+                          // G2a/G2b cache fill; REF always carried it).
 
-  static constexpr Uint32 SignalLength = 2;
+  static constexpr Uint32 SignalLength = 3;
+  enum { RowSectionNum = 0 };
 };
 
 /**

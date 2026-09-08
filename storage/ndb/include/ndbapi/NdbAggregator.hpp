@@ -341,6 +341,17 @@ class NdbAggregator {
   bool Max(Uint32 agg_id, Uint32 reg_id);
   bool Min(Uint32 agg_id, Uint32 reg_id);
   bool Count(Uint32 agg_id, Uint32 reg_id);
+  /* AVG(x): one visible DOUBLE result slot; the kernel carries a
+   * hidden SUM/COUNT pair through merge + CTE redistribute and divides
+   * on the owner at CTE_READY (count == 0 => NULL).  CTE aggregators
+   * only in v1 — see cte_avg_plan.md. */
+  bool Avg(Uint32 agg_id, Uint32 reg_id);
+  /* ORDER BY / LIMIT trailer for CTE aggregation programs: the owner
+   * node selects the top-Limit(n) groups under the OrderBy spec after
+   * the CTE redistribute (cte_orderby_limit_plan.md).  Declarative —
+   * no per-row cost. */
+  bool OrderBy(Uint32 idx, bool is_agg_result, bool descending);
+  bool Limit(Uint32 n);
 
   bool GroupBy(const char* name);
   bool GroupBy(Int32 col_id);

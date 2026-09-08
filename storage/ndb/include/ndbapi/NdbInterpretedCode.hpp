@@ -992,6 +992,47 @@ class NdbInterpretedCode {
                               const void *val, Uint32 len, Uint32 label);
 
   /*
+   * branch_linked_linked_*: compare TWO linked-buffer entries (by
+   * position) — the column-vs-column counterpart of
+   * branch_linked_inline_*.  Used by CTE filter mode for string
+   * comparisons between two CTE outputs, or between a linked ancestor
+   * projection and a CTE output.
+   *
+   * Both sides share one typeId and csNumber (same-type, same-charset
+   * pairs only — the caller enforces this); per-side sizes allow
+   * differing declared lengths (e.g. MIN over CHAR(8) vs MAX over
+   * CHAR(12)).  Size/charset conventions are exactly those of
+   * branch_linked_inline_* above.  The kernel additionally clamps each
+   * size to the entry's actual payload, and a NULL entry (or a
+   * position beyond the buffer) follows the unknown-value semantics.
+   *
+   * Emits a single 4-word BRANCH_LINKED_OP_LINKED instruction — no
+   * READ_LINKED_TO_MEM prelude; the kernel reads both entries
+   * directly by position.
+   *
+   * Inequality semantics follow the project-wide inverted convention
+   * (branch_linked_linked_le branches when L >= R, etc.).
+   */
+  int branch_linked_linked_eq(Uint32 posL, Uint32 posR, Uint32 typeId,
+                              Uint32 csNumber, Uint32 columnSizeL,
+                              Uint32 columnSizeR, Uint32 label);
+  int branch_linked_linked_ne(Uint32 posL, Uint32 posR, Uint32 typeId,
+                              Uint32 csNumber, Uint32 columnSizeL,
+                              Uint32 columnSizeR, Uint32 label);
+  int branch_linked_linked_lt(Uint32 posL, Uint32 posR, Uint32 typeId,
+                              Uint32 csNumber, Uint32 columnSizeL,
+                              Uint32 columnSizeR, Uint32 label);
+  int branch_linked_linked_le(Uint32 posL, Uint32 posR, Uint32 typeId,
+                              Uint32 csNumber, Uint32 columnSizeL,
+                              Uint32 columnSizeR, Uint32 label);
+  int branch_linked_linked_gt(Uint32 posL, Uint32 posR, Uint32 typeId,
+                              Uint32 csNumber, Uint32 columnSizeL,
+                              Uint32 columnSizeR, Uint32 label);
+  int branch_linked_linked_ge(Uint32 posL, Uint32 posR, Uint32 typeId,
+                              Uint32 csNumber, Uint32 columnSizeL,
+                              Uint32 columnSizeR, Uint32 label);
+
+  /*
    * branch_linked_isnull / branch_linked_isnotnull: branch based on
    * the AttributeHeader.isNULL() flag of the linked column at
    * `position` in the linked-attr buffer.  Used by CTE filter mode
@@ -1507,6 +1548,10 @@ class NdbInterpretedCode {
                                Uint32 typeId, Uint32 columnSizeBytes,
                                Uint32 csNumber, const void *val,
                                Uint32 len, Uint32 label);
+  int branch_linked_linked_val(Uint32 branch_type, Uint32 posL,
+                               Uint32 posR, Uint32 typeId,
+                               Uint32 csNumber, Uint32 columnSizeL,
+                               Uint32 columnSizeR, Uint32 label);
   int branch_col_param(Uint32 branch_type, Uint32 attrId, Uint32 paramId,
                        Uint32 label);
   int getInfo(Uint32 number, CodeMetaInfo &info) const;

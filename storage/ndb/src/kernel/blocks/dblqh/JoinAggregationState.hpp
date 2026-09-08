@@ -236,6 +236,19 @@ struct JoinAggregationState {
   Uint32 m_cte_index;                       // CTE index from SETUP_REQ (RNIL for main agg)
   NdbNodeBitmask m_cte_nodes_finalized;     // Bitmask of nodes that sent FINAL_REP
                                             // (prevents duplicate FINAL from same node)
+  bool m_cte_limit;                         // ORDER BY / LIMIT CTE
+                                            // (cte_orderby_limit_plan.md):
+                                            // constant-owner redistribute +
+                                            // owner-side top-N truncation.
+  bool m_cte_single_group;                  // Single-group CTE
+                                            // (cte_single_group_plan.md):
+                                            // every GROUP BY column
+                                            // equality-bound to a constant, so
+                                            // at most ONE group (with real
+                                            // aggregate slots); constant-owner
+                                            // redistribute; >1 group at any
+                                            // merge point is a classification
+                                            // violation and aborts the CTE.
 
   // CTE node distribution (set at SETUP, immutable after)
   Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time

@@ -76,6 +76,14 @@ CLASS
     " 0 = unlimited. Currently enforced on the /ronsql endpoint, whose"
     " responses can grow with the query's result set; a capped query fails"
     " with a clear error instead of exhausting server memory.")
+ CM(Uint32, schemaCacheTTLSecs, SchemaCacheTTLSecs, 10,
+    "Seconds before a cached per-table index list (the RonSQL schema"
+    " cache) is refreshed from the NDB dictionary. The refresh is what"
+    " makes newly CREATED indexes visible to a warm RDRS: index creation"
+    " does not bump the base table's schema version, so version checks"
+    " alone never detect them (drops self-heal via schema errors)."
+    " 0 = never expire (refresh only on schema-version change or"
+    " schema-error invalidation).")
  CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
  CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,

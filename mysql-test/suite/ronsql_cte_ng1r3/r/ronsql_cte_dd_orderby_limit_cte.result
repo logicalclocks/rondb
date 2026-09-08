@@ -1,0 +1,536 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== obc-1: ORDER BY SUM alias DESC LIMIT 3, pass-through main ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC LIMIT 3)
+SELECT k FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC LIMIT 3)
+SELECT k FROM t|
+k
+298
+299
+300
+
+=== obc-2: ORDER BY SUM alias ASC LIMIT 4, join-agg main ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s LIMIT 4)
+SELECT COUNT(*) AS c, SUM(t.s) AS ts
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s LIMIT 4)
+SELECT COUNT(*) AS c, SUM(t.s) AS ts
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey|
+c	ts
+4	161108.50
+
+=== obc-3: ORDER BY GROUP-BY key DESC LIMIT 5, join-agg main ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k DESC LIMIT 5)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k DESC LIMIT 5)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey|
+c	sn
+5	25
+
+=== obc-4: VARCHAR GROUP-BY key DESC LIMIT 2, pass-through main ===
+== Query ==
+WITH t AS (SELECT c_mktsegment AS seg, COUNT(*) AS n
+FROM customer GROUP BY c_mktsegment ORDER BY seg DESC LIMIT 2)
+SELECT seg, n FROM t;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT c_mktsegment AS seg, COUNT(*) AS n
+FROM customer GROUP BY c_mktsegment ORDER BY seg DESC LIMIT 2)
+SELECT seg, n FROM t|
+seg	n
+HOUSEHOLD	60
+MACHINERY	60
+
+=== obc-5: tied first key + unique tie-breaker, LIMIT 7 ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_custkey ORDER BY sp DESC, k LIMIT 7)
+SELECT k FROM t;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_custkey ORDER BY sp DESC, k LIMIT 7)
+SELECT k FROM t|
+k
+14
+19
+24
+29
+34
+4
+9
+
+=== obc-6: ORDER BY AVG alias DESC LIMIT 4 ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a
+FROM orders GROUP BY o_custkey ORDER BY a DESC LIMIT 4)
+SELECT k FROM t;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a
+FROM orders GROUP BY o_custkey ORDER BY a DESC LIMIT 4)
+SELECT k FROM t|
+k
+297
+298
+299
+300
+
+=== obc-7: ORDER BY MIN(DATE) alias ASC LIMIT 3 ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, MIN(o_orderdate) AS d
+FROM orders GROUP BY o_custkey ORDER BY d LIMIT 3)
+SELECT k, d FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, MIN(o_orderdate) AS d
+FROM orders GROUP BY o_custkey ORDER BY d LIMIT 3)
+SELECT k, d FROM t|
+k	d
+1	1995-01-02
+100	1995-01-01
+101	1995-01-02
+
+=== obc-8: LEFT JOIN over a top-10 CTE ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC LIMIT 10)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu LEFT JOIN t ON t.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC LIMIT 10)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu LEFT JOIN t ON t.k = cu.c_custkey|
+c	sn
+300	50
+
+=== obc-9: i26 watermark filter over a LIMIT CTE ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 100)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey
+WHERE cu.c_custkey > t.sp;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_shippriority) AS sp
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 100)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey
+WHERE cu.c_custkey > t.sp|
+c
+90
+
+=== obc-10: re-aggregation main GROUP BY over a LIMIT CTE join ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 50)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey
+GROUP BY cu.c_nationkey;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 50)
+SELECT cu.c_nationkey AS nk, COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey
+GROUP BY cu.c_nationkey|
+nk	c	sn
+0	2	10
+1	2	10
+10	2	10
+11	2	10
+12	2	10
+13	2	10
+14	2	10
+15	2	10
+16	2	10
+17	2	10
+18	2	10
+19	2	10
+2	2	10
+20	2	10
+21	2	10
+22	2	10
+23	2	10
+24	2	10
+3	2	10
+4	2	10
+5	2	10
+6	2	10
+7	2	10
+8	2	10
+9	2	10
+
+=== obc-11: chained CTE grouping over a LIMIT CTE ===
+== Query ==
+WITH a AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC LIMIT 20),
+b AS (SELECT k, SUM(s) AS t2 FROM a GROUP BY k)
+SELECT COUNT(*) AS c, SUM(b.t2) AS tt
+FROM customer AS cu JOIN b ON b.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC LIMIT 20),
+b AS (SELECT k, SUM(s) AS t2 FROM a GROUP BY k)
+SELECT COUNT(*) AS c, SUM(b.t2) AS tt
+FROM customer AS cu JOIN b ON b.k = cu.c_custkey|
+c	tt
+20	1190598.50
+
+=== obc-12: LIMIT without ORDER BY, invariant aggregates ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey LIMIT 10)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey LIMIT 10)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn FROM t|
+c	sn
+10	50
+
+=== obc-13: LIMIT 0, INNER join: empty ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 0)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 0)
+SELECT COUNT(*) AS c
+FROM customer AS cu JOIN t ON t.k = cu.c_custkey|
+c
+0
+
+=== obc-14: LIMIT 0, LEFT JOIN: all NULL-extended ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 0)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu LEFT JOIN t ON t.k = cu.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k LIMIT 0)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn
+FROM customer AS cu LEFT JOIN t ON t.k = cu.c_custkey|
+c	sn
+300	NULL
+
+=== obc-15: LIMIT 500 > 300 groups: full set (fast path) ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k DESC LIMIT 500)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n
+FROM orders GROUP BY o_custkey ORDER BY k DESC LIMIT 500)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn FROM t|
+c	sn
+300	1500
+
+=== obc-16: ORDER BY without LIMIT: accepted no-op ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s
+FROM orders GROUP BY o_custkey ORDER BY s DESC)
+SELECT COUNT(*) AS c, SUM(t.n) AS sn FROM t|
+c	sn
+300	1500
+
+=== obc-17: qualified GROUP BY + bare-column-name ORDER BY ===
+== Query ==
+WITH t AS (SELECT o.o_custkey AS k, SUM(o.o_totalprice) AS s
+FROM orders AS o GROUP BY o.o_custkey
+ORDER BY o_custkey DESC LIMIT 3)
+SELECT k FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o.o_custkey AS k, SUM(o.o_totalprice) AS s
+FROM orders AS o GROUP BY o.o_custkey
+ORDER BY o_custkey DESC LIMIT 3)
+SELECT k FROM t|
+k
+298
+299
+300
+
+=== obc-18: bare GROUP BY + qualified ORDER BY ===
+== Query ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders AS o GROUP BY o_custkey
+ORDER BY o.o_custkey LIMIT 3)
+SELECT k FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT o_custkey AS k, SUM(o_totalprice) AS s
+FROM orders AS o GROUP BY o_custkey
+ORDER BY o.o_custkey LIMIT 3)
+SELECT k FROM t|
+k
+1
+2
+3
+
+=== obc-19: single-row body + ORDER BY DESC LIMIT 1 ===
+== Query ==
+WITH r AS (SELECT o_custkey AS a, o_totalprice AS p
+FROM orders WHERE o_orderkey = 77 ORDER BY p DESC LIMIT 1)
+SELECT c.c_custkey, r.p
+FROM customer AS c JOIN r ON r.a = c.c_custkey;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH r AS (SELECT o_custkey AS a, o_totalprice AS p
+FROM orders WHERE o_orderkey = 77 ORDER BY p DESC LIMIT 1)
+SELECT c.c_custkey, r.p
+FROM customer AS c JOIN r ON r.a = c.c_custkey|
+c_custkey	p
+77	1029.49
+
+=== obc-20: single-row body + LIMIT 0: comma probe drops all ===
+== Query ==
+WITH r AS (SELECT o_custkey AS a
+FROM orders WHERE o_orderkey = 77 LIMIT 0)
+SELECT COUNT(*) AS c FROM customer AS c2, r;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH r AS (SELECT o_custkey AS a
+FROM orders WHERE o_orderkey = 77 LIMIT 0)
+SELECT COUNT(*) AS c FROM customer AS c2, r|
+c
+0
+
+=== obc-21: scalar body + ORDER BY / LIMIT 1: validated no-op ===
+== Query ==
+WITH m AS (SELECT MAX(o_orderkey) AS mx FROM orders
+ORDER BY mx DESC LIMIT 1)
+SELECT COUNT(*) AS c FROM orders AS o2, m
+WHERE o2.o_orderkey < m.mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH m AS (SELECT MAX(o_orderkey) AS mx FROM orders
+ORDER BY mx DESC LIMIT 1)
+SELECT COUNT(*) AS c FROM orders AS o2, m
+WHERE o2.o_orderkey < m.mx|
+c
+1499
+
+=== obc-P1 (rejection): non-output ORDER BY column ===
+ORDER BY column 'o_totalprice' in CTE body 't' must be one of the body's output columns.
+Error handling: RPE
+ronsql_cli caught exception: CTE body ORDER BY column is not a body output.
+
+=== obc-P2 (rejection): string MIN/MAX output as ORDER BY key ===
+ORDER BY over string MIN/MAX output 'm' in CTE body 't' is not yet supported.
+Error handling: RPE
+ronsql_cli caught exception: CTE body ORDER BY over a string MIN/MAX output.
+
+=== obc-P3 (rejection): LIMIT 0 on a scalar body ===
+LIMIT 0 in scalar aggregate CTE body 'm' is not supported (use a WHERE clause that matches no rows instead).
+Error handling: RPE
+ronsql_cli caught exception: LIMIT 0 on a scalar CTE body.
+
+=== obc-P4 (rejection): 9 ORDER BY entries (kernel max is 8) ===
+ORDER BY in CTE body 't' has 9 columns; at most 8 are supported.
+Error handling: RPE
+ronsql_cli caught exception: Too many ORDER BY columns in CTE body.
+
+=== obc-P5 (rejection): LIMIT above the 26-bit immediate ===
+LIMIT 67108864 in CTE body 't' exceeds the supported maximum (67108863).
+Error handling: RPE
+ronsql_cli caught exception: CTE body LIMIT value too large.
+
+=== obc-P6 (syntax): OFFSET is not in the grammar ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey ORDER BY k LIMIT 5 OFFSET 2) SELECT COUNT(*) AS c FROM customer AS cu JOIN t ON t.k = cu.c_custkey;
+!                                                                                                   ^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== obc-P7 (syntax): LIMIT x,y comma form is not in the grammar ===
+Syntax error in SQL statement: Unexpected at this point
+> WITH t AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders GROUP BY o_custkey ORDER BY k LIMIT 2,5) SELECT COUNT(*) AS c FROM customer AS cu JOIN t ON t.k = cu.c_custkey;
+!                                                                                                  ^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.

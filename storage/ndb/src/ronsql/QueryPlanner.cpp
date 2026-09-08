@@ -30,10 +30,11 @@
 
 /**
  * Helper: get the index list for a table, using the schema cache if available.
- * Returns the cached index vector, or populates fallback_list via dict->listIndexes()
- * and returns nullptr (caller must use fallback_list).
+ * Returns the cached index vector (a shared_ptr that stays valid across
+ * concurrent cache refreshes), or populates fallback_list via
+ * dict->listIndexes() and returns nullptr (caller must use fallback_list).
  */
-static const std::vector<RdrsSchemaCache::CachedIndex>*
+static RdrsSchemaCache::IndexListPtr
 getIndexList(const NdbDictionary::Dictionary *dict,
              const NdbDictionary::Table *table,
              RdrsSchemaCache *cache,
@@ -553,7 +554,7 @@ QueryPlanner::findUniqueIndex(const NdbDictionary::Dictionary *dict,
                               const char *database)
 {
   NdbDictionary::Dictionary::List fallback_list;
-  const auto* cached = getIndexList(dict, table, cache, database, fallback_list);
+  const auto cached = getIndexList(dict, table, cache, database, fallback_list);
 
   if (cached != nullptr) {
     // Use cached index names
@@ -620,7 +621,7 @@ QueryPlanner::findOrderedIndex(const NdbDictionary::Dictionary *dict,
                                const char *database)
 {
   NdbDictionary::Dictionary::List fallback_list;
-  const auto* cached = getIndexList(dict, table, cache, database, fallback_list);
+  const auto cached = getIndexList(dict, table, cache, database, fallback_list);
 
   // Lambda to check one index by name
   auto checkIndex = [&](const char* idx_name) -> const NdbDictionary::Index* {
@@ -672,7 +673,7 @@ QueryPlanner::collectOrderedIndexCandidates(
     std::vector<const NdbDictionary::Index*> &out)
 {
   NdbDictionary::Dictionary::List fallback_list;
-  const auto* cached = getIndexList(dict, table, cache, database, fallback_list);
+  const auto cached = getIndexList(dict, table, cache, database, fallback_list);
 
   // Same predicate as findOrderedIndex's checkIndex.
   auto checkIndex = [&](const char* idx_name) -> const NdbDictionary::Index* {

@@ -990,21 +990,23 @@ CREATE TABLE cvc (
   m2  DECIMAL(10,2) NOT NULL,
   n1  INT NULL,
   n2  INT NULL,
+  w1  CHAR(8) CHARACTER SET latin1 NOT NULL,
+  w2  CHAR(8) CHARACTER SET utf8mb4 NOT NULL,
   PRIMARY KEY USING HASH (pk)
 ) ENGINE=NDB;
 INSERT INTO cvc VALUES
-  ( 1, 1, 1, 2, 'alpha', 'beta',  '2024-01-01', '2024-06-01', 10.50, 20.25,    1,    2),
-  ( 2, 1, 2, 2, 'beta',  'beta',  '2024-06-01', '2024-06-01', 20.25, 20.25, NULL,    2),
-  ( 3, 1, 3, 1, 'gamma', 'beta',  '2024-12-31', '2024-06-01', 30.00, 20.25,    3, NULL),
-  ( 4, 2, 5, 9, 'delta', 'omega', '2023-05-15', '2025-05-15',  5.05, 99.99, NULL, NULL),
-  ( 5, 2, 9, 5, 'omega', 'delta', '2025-05-15', '2023-05-15', 99.99,  5.05,    5,    4),
-  ( 6, 2, 7, 7, 'kappa', 'kappa', '2024-02-29', '2024-02-29', 42.42, 42.42,    6,    6),
-  ( 7, 3, 0, 1, 'aa',    'ab',    '2020-01-01', '2020-01-02',  0.01,  0.02, NULL,    1),
-  ( 8, 3, 1, 0, 'ab',    'aa',    '2020-01-02', '2020-01-01',  0.02,  0.01,    8, NULL),
-  ( 9, 3, 4, 8, 'mid',   'midz',  '2022-07-04', '2022-07-05', 12.34, 12.35,    9,   10),
-  (10, 3, 8, 4, 'midz',  'mid',   '2022-07-05', '2022-07-04', 12.35, 12.34,   10,    9),
-  (11, 1, 6, 6, 'same',  'same',  '2021-03-03', '2021-03-03',  7.77,  7.77,   11,   11),
-  (12, 2, 2, 9, 'aaa',   'zzz',   '2019-09-09', '2026-09-01',  1.00,  2.00,   12, NULL);
+  ( 1, 1, 1, 2, 'alpha', 'beta',  '2024-01-01', '2024-06-01', 10.50, 20.25,    1,    2, 'lat', 'utf'),
+  ( 2, 1, 2, 2, 'beta',  'beta',  '2024-06-01', '2024-06-01', 20.25, 20.25, NULL,    2, 'lbt', 'uat'),
+  ( 3, 1, 3, 1, 'gamma', 'beta',  '2024-12-31', '2024-06-01', 30.00, 20.25,    3, NULL, 'lct', 'ubt'),
+  ( 4, 2, 5, 9, 'delta', 'omega', '2023-05-15', '2025-05-15',  5.05, 99.99, NULL, NULL, 'ldt', 'uct'),
+  ( 5, 2, 9, 5, 'omega', 'delta', '2025-05-15', '2023-05-15', 99.99,  5.05,    5,    4, 'let', 'udt'),
+  ( 6, 2, 7, 7, 'kappa', 'kappa', '2024-02-29', '2024-02-29', 42.42, 42.42,    6,    6, 'lft', 'uet'),
+  ( 7, 3, 0, 1, 'aa',    'ab',    '2020-01-01', '2020-01-02',  0.01,  0.02, NULL,    1, 'lgt', 'uft'),
+  ( 8, 3, 1, 0, 'ab',    'aa',    '2020-01-02', '2020-01-01',  0.02,  0.01,    8, NULL, 'lht', 'ugt'),
+  ( 9, 3, 4, 8, 'mid',   'midz',  '2022-07-04', '2022-07-05', 12.34, 12.35,    9,   10, 'lit', 'uht'),
+  (10, 3, 8, 4, 'midz',  'mid',   '2022-07-05', '2022-07-04', 12.35, 12.34,   10,    9, 'ljt', 'uit'),
+  (11, 1, 6, 6, 'same',  'same',  '2021-03-03', '2021-03-03',  7.77,  7.77,   11,   11, 'lkt', 'ujt'),
+  (12, 2, 2, 9, 'aaa',   'zzz',   '2019-09-09', '2026-09-01',  1.00,  2.00,   12, NULL, 'llt', 'ukt');
 --enable_warnings
 --enable_query_log
 
@@ -1183,6 +1185,197 @@ SELECT f.g, f.n FROM f|
 --echo === filter-P4 (rejection): pair on a non-root op of a join body ===
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH j AS (SELECT o_custkey AS k, COUNT(*) AS n FROM orders JOIN lineitem ON l_orderkey = o_orderkey WHERE l_quantity < l_partkey GROUP BY o_custkey) SELECT j.k, SUM(j.n) FROM customer AS c JOIN j ON j.k = c.c_custkey GROUP BY j.k;' 2>&1
+
+# =====================================================================
+# Group 9 — string col-vs-col on CTE OUTPUTS in the main WHERE
+# (cte_output_string_colvscol_plan.md S4).  Same-type same-charset
+# CHAR / VARCHAR pairs emit one BRANCH_LINKED_OP_LINKED (opcode 46)
+# comparing two linked-buffer entries with the charset-aware kernel
+# compare; NULL guards reject UNKNOWN.  filter-P8..P10 pin the three
+# string-specific rejections (string-vs-non-string, CHAR-vs-VARCHAR
+# mix, charset mismatch).  Reuses the Group 8 local table cvc, whose
+# v1/v2 CHAR(8) pair (table charset) and w1/w2 explicit-charset
+# columns exist for exactly these cases.
+# =====================================================================
+
+--echo
+--echo === filter-40: CHAR(1) MIN vs MAX outputs of one CTE (mn < mx) ===
+let $QUERY=
+WITH st AS (
+  SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT st.k, COUNT(*)
+FROM customer AS c JOIN st ON st.k = c.c_custkey
+WHERE st.mn < st.mx
+GROUP BY st.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH st AS (
+  SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx
+  FROM orders GROUP BY o_custkey)
+SELECT st.k, COUNT(*)
+FROM customer AS c JOIN st ON st.k = c.c_custkey
+WHERE st.mn < st.mx
+GROUP BY st.k|
+
+--echo
+--echo === filter-41: VARCHAR(12) MIN vs MAX outputs (mn <> mx) ===
+let $QUERY=
+WITH seg AS (
+  SELECT c_nationkey AS k, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx
+  FROM customer GROUP BY c_nationkey)
+SELECT seg.k, COUNT(*)
+FROM nation AS na JOIN seg ON seg.k = na.n_nationkey
+WHERE seg.mn <> seg.mx
+GROUP BY seg.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH seg AS (
+  SELECT c_nationkey AS k, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx
+  FROM customer GROUP BY c_nationkey)
+SELECT seg.k, COUNT(*)
+FROM nation AS na JOIN seg ON seg.k = na.n_nationkey
+WHERE seg.mn <> seg.mx
+GROUP BY seg.k|
+
+--echo
+--echo === filter-42: cross-column CHAR(8) pair, differing per group (MIN(v1) < MIN(v2)) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b
+GROUP BY f.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b
+GROUP BY f.g|
+
+--echo
+--echo === filter-42b: equality on the same pair (MIN(v1) = MIN(v2)) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a = f.b
+GROUP BY f.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a = f.b
+GROUP BY f.g|
+
+--echo
+--echo === filter-43: GROUP BY string passthrough vs string aggregate (a <= mx) ===
+let $QUERY=
+WITH f AS (
+  SELECT v1 AS a, MAX(v2) AS mx, COUNT(*) AS n
+  FROM cvc GROUP BY v1)
+SELECT f.a, SUM(f.n)
+FROM cvc AS c JOIN f ON f.a = c.v1
+WHERE f.a <= f.mx
+GROUP BY f.a;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT v1 AS a, MAX(v2) AS mx, COUNT(*) AS n
+  FROM cvc GROUP BY v1)
+SELECT f.a, SUM(f.n)
+FROM cvc AS c JOIN f ON f.a = c.v1
+WHERE f.a <= f.mx
+GROUP BY f.a|
+
+--echo
+--echo === filter-44: string col-vs-col inside OR/DNF ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b OR f.g = 3
+GROUP BY f.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b OR f.g = 3
+GROUP BY f.g|
+
+--echo
+--echo === filter-45: pass-through CTE_SCAN root with string col-vs-col filter ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MAX(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, f.n FROM f WHERE f.a < f.b;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, MIN(v1) AS a, MAX(v2) AS b, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, f.n FROM f WHERE f.a < f.b|
+
+--echo
+--echo === filter-46: utf8mb4 CHAR pair (multibyte-charset compare, ASCII values) ===
+let $QUERY=
+WITH f AS (
+  SELECT grp AS g, MIN(w2) AS mn, MAX(w2) AS mx, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.mn < f.mx
+GROUP BY f.g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH f AS (
+  SELECT grp AS g, MIN(w2) AS mn, MAX(w2) AS mx, COUNT(*) AS n
+  FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.mn < f.mx
+GROUP BY f.g|
+
+# --- String-specific rejection probes. ---
+
+--echo
+--echo === filter-P8 (rejection): string output vs integer output ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH f AS (SELECT grp AS g, MIN(v1) AS a, MAX(b) AS mb, COUNT(*) AS n FROM cvc GROUP BY grp) SELECT f.g, SUM(f.n) FROM cvc AS c JOIN f ON f.g = c.grp WHERE f.a < f.mb GROUP BY f.g;' 2>&1
+
+--echo
+--echo === filter-P9 (rejection): CHAR output vs VARCHAR output ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH p AS (SELECT p_size AS k, MIN(p_brand) AS b, MAX(p_name) AS nm, COUNT(*) AS n FROM part GROUP BY p_size) SELECT p.k, SUM(p.n) FROM part AS pa JOIN p ON p.k = pa.p_size WHERE p.b < p.nm GROUP BY p.k;' 2>&1
+
+--echo
+--echo === filter-P10 (rejection): charset mismatch (latin1 vs utf8mb4) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH f AS (SELECT grp AS g, MIN(w1) AS a, MAX(w2) AS b, COUNT(*) AS n FROM cvc GROUP BY grp) SELECT f.g, SUM(f.n) FROM cvc AS c JOIN f ON f.g = c.grp WHERE f.a < f.b GROUP BY f.g;' 2>&1
 
 DELIMITER ;|
 

@@ -8511,6 +8511,123 @@ struct Dbtup::InterpreterContext {
     return INTERP_CONTINUE;
   }
 
+  /* Walk the linked-attr buffer to the entry at `position` and return
+   * a pointer to its AttributeHeader word, or nullptr when the buffer
+   * is absent or the position lies beyond it.  Same walk as
+   * handleReadLinkedColumnToReg (per-entry layout: tableId,
+   * schemaVersion, AttrHeader, data). */
+  static inline const Uint32* lookupLinkedEntry(InterpreterContext& ctx,
+                                                Uint32 position) {
+    const Uint32* linked = ctx.req_struct->m_linked_attr_data;
+    const Uint32 linked_len = ctx.req_struct->m_linked_attr_len;
+    if (unlikely(linked == nullptr)) return nullptr;
+    const Uint32* p = linked;
+    const Uint32* p_end = linked + linked_len;
+    Uint32 pos_count = 0;
+    while (p < p_end) {
+      if (pos_count == position) break;
+      p += 2; /* skip tableId, schemaVersion */
+      p += 1 + AttributeHeader::getDataSize(*p);
+      pos_count++;
+    }
+    if (unlikely(p >= p_end)) return nullptr;
+    return p + 2; /* skip tableId, schemaVersion -> AttrHeader word */
+  }
+
+  /* BRANCH_LINKED_OP_LINKED — compare two linked-buffer entries by
+   * position with inline type metadata (string col-vs-col in CTE
+   * filter mode).  Compare core mirrors handleBranchMemOpArgInlineType;
+   * operand sourcing mirrors handleReadLinkedColumnToReg. */
+  static inline int handleBranchLinkedOpLinked(InterpreterContext& ctx) {
+    thrjamDebug(ctx.tup->jamBuffer());
+    const Uint32 posWord  = ctx.TcurrentProgram[ctx.TprogramCounter];
+    const Uint32 typeWord = ctx.TcurrentProgram[ctx.TprogramCounter + 1];
+    const Uint32 sizeWord = ctx.TcurrentProgram[ctx.TprogramCounter + 2];
+    const Uint32 posL     = (posWord >> 16) & 0xFFFF;
+    const Uint32 posR     = posWord & 0xFFFF;
+    const Uint32 typeId   = (typeWord >> 16) & 0xFFFF;
+    const Uint32 csNumber = typeWord & 0xFFFF;
+    Uint32 sizeL          = (sizeWord >> 16) & 0xFFFF;
+    Uint32 sizeR          = sizeWord & 0xFFFF;
+    /* Operand words after word 0: positions, type|cs, sizes. */
+    constexpr Uint32 operandWords = 3;
+
+    const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(typeId);
+    if (unlikely(sqlType.m_cmp == 0)) {
+      thrjam(ctx.tup->jamBuffer());
+      return -40;
+    }
+
+    const CHARSET_INFO* cs = nullptr;
+    if (csNumber != 0) {
+      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+      cs = all_charsets[csNumber];
+      if (unlikely(cs == nullptr)) {
+        thrjam(ctx.tup->jamBuffer());
+        return -40;
+      }
+    }
+
+    const Uint32* ahWordL = lookupLinkedEntry(ctx, posL);
+    const Uint32* ahWordR = lookupLinkedEntry(ctx, posR);
+    const bool l_null =
+        (ahWordL == nullptr) || AttributeHeader(*ahWordL).isNULL();
+    const bool r_null =
+        (ahWordR == nullptr) || AttributeHeader(*ahWordR).isNULL();
+
+    if (l_null || r_null) {
+      const Uint32 nullSemantics =
+          Interpreter::getNullSemantics(ctx.theInstruction);
+      if (nullSemantics == Interpreter::IF_NULL_BREAK_OUT) {
+        ctx.TprogramCounter =
+            ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+        return INTERP_CONTINUE;
+      }
+      if (nullSemantics == Interpreter::IF_NULL_CONTINUE) {
+        ctx.TprogramCounter += operandWords;
+        return INTERP_CONTINUE;
+      }
+    }
+
+    const Uint32 cond = Interpreter::getBinaryCondition(ctx.theInstruction);
+    int res1;
+    if (l_null || r_null) {
+      res1 = (l_null && r_null) ? 0 : l_null ? -1 : 1;
+    } else {
+      const AttributeHeader ahL(*ahWordL);
+      const AttributeHeader ahR(*ahWordR);
+      const char* s1 = reinterpret_cast<const char*>(ahWordL + 1);
+      const char* s2 = reinterpret_cast<const char*>(ahWordR + 1);
+      /* Clamp to the entries' actual payload sizes so malformed size
+       * words cannot read past the linked buffer. */
+      if (sizeL > ahL.getByteSize()) sizeL = ahL.getByteSize();
+      if (sizeR > ahR.getByteSize()) sizeR = ahR.getByteSize();
+      res1 = (*sqlType.m_cmp)(cs, s1, sizeL, s2, sizeR);
+    }
+
+    bool res = false;
+    switch (cond) {
+      case Interpreter::EQ: res = (res1 == 0); break;
+      case Interpreter::NE: res = (res1 != 0); break;
+      case Interpreter::LT: res = (res1 > 0); break;   // inverted
+      case Interpreter::LE: res = (res1 >= 0); break;
+      case Interpreter::GT: res = (res1 < 0); break;
+      case Interpreter::GE: res = (res1 <= 0); break;
+      default: break;
+    }
+
+    if (res) {
+      ctx.TprogramCounter =
+          ctx.tup->brancher(ctx.theInstruction, ctx.TprogramCounter);
+    } else {
+      ctx.TprogramCounter += operandWords;
+    }
+    return INTERP_CONTINUE;
+  }
+
   /* WRITE_ATTR_FROM_REG — write register value to tuple attribute */
   static inline int handleWriteAttrFromReg(InterpreterContext& ctx) {
     ctx.RnoOfInstructions += 3;  // A bit heavier instruction
@@ -10060,7 +10177,7 @@ s_cte_filter_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  43  READ_AGG_REG_TO_REG     */ nullptr,
   /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
   /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,
-  /*  46  (unused)                */ nullptr,
+  /*  46  BRANCH_LINKED_OP_LINKED */ &Dbtup::InterpreterContext::handleBranchLinkedOpLinked,
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
   /*  48  READ_ATTR_TO_MEM        */ nullptr,
   /*  49  READ_UINT8_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8MemToReg,
@@ -10216,7 +10333,7 @@ s_agg_interp_handlers[INTERP_HANDLER_TABLE_SIZE] = {
   /*  43  READ_AGG_REG_TO_REG     */ &Dbtup::InterpreterContext::handleReadAggRegToReg,
   /*  44  READ_LINKED_COLUMN_TO_REG */ &Dbtup::InterpreterContext::handleReadLinkedColumnToReg,
   /*  45  LOAD_DOUBLE_CONST       */ &Dbtup::InterpreterContext::handleLoadDoubleConst,
-  /*  46  (unused)                */ nullptr,
+  /*  46  BRANCH_LINKED_OP_LINKED */ nullptr,  /* CTE-filter-only op */
   /*  47  READ_PARTIAL_ATTR_TO_MEM*/ nullptr,
   /*  48  READ_ATTR_TO_MEM        */ nullptr,
   /*  49  READ_UINT8_MEM_TO_REG   */ &Dbtup::InterpreterContext::handleReadUint8MemToReg,
@@ -10691,6 +10808,9 @@ int Dbtup::interpreterNextLab(Signal* signal,
           break;
         case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE:
           INTERP_DISPATCH(handleBranchMemOpArgInlineType);
+          break;
+        case Interpreter::BRANCH_LINKED_OP_LINKED:
+          INTERP_DISPATCH(handleBranchLinkedOpLinked);
           break;
 
         case Interpreter::BRANCH_ATTR_EQ_NULL:

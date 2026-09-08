@@ -122,6 +122,8 @@ class AggInterpreterBase : public PushdownInterpreter {
     : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
       m_prog(nullptr), m_agg_prog_start_pos(0),
       m_n_agg_results(0), m_agg_results(nullptr),
+      m_n_visible_results(0), m_n_hidden_slots(0),
+      m_avg_hidden_map(nullptr), m_avg_finalized(false),
       m_string_results(nullptr), m_current_thread_id(0),
       m_cur_pos(0), m_attr_read_pos(0),
       m_processed_rows(0), m_result_size(0),
@@ -205,6 +207,12 @@ class AggInterpreterBase : public PushdownInterpreter {
   Uint32 val_len() const { return m_n_agg_results * sizeof(AggResItem); }
   Uint32 n_gb_cols() const { return m_n_gb_cols; }
   Uint32 n_agg_results() const { return m_n_agg_results; }
+  /* Visible (program-header) slot count — excludes hidden AVG-count
+   * companions.  CTE emission paths deliver exactly these. */
+  Uint32 n_visible_results() const { return m_n_visible_results; }
+  /* kOpAvg: sentinel for "visible slot has no hidden COUNT companion"
+   * in the avg-hidden map (public — file-static helpers use it). */
+  static constexpr Uint16 AVG_NO_HIDDEN = 0xFFFF;
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
 
@@ -424,6 +432,23 @@ class AggInterpreterBase : public PushdownInterpreter {
    * Init / ProcessRec decimal paths.  Same total sizeof as before. */
   Uint32 m_n_agg_results;
   AggResItem* m_agg_results;
+
+  /* kOpAvg support (cte_avg_plan.md).  m_n_agg_results counts the
+   * TOTAL slots (visible + hidden AVG-count companions) so the group
+   * record layout, merges, redistribute serialization and teardown all
+   * cover the hidden slots automatically.  m_n_visible_results is the
+   * program header's count — what CTE emission paths deliver.
+   * m_avg_hidden_map maps a visible dst slot to its hidden COUNT
+   * companion (AVG_NO_HIDDEN = none); allocated by
+   * JoinAggInterpreter::Init in the buf-block tail, stays nullptr on
+   * AggInterpreter (which rejects kOpAvg).  m_avg_finalized makes the
+   * owner-side finalize divide idempotent.  (AVG_NO_HIDDEN itself is
+   * declared public, above the accessors.) */
+  Uint32 m_n_visible_results;
+  Uint32 m_n_hidden_slots;
+  Uint16* m_avg_hidden_map;
+  bool m_avg_finalized;
+
   Register m_registers[kRegTotal];
 
   // Phase I.6 (F.2-K.4a): per-register string scratch.  When a

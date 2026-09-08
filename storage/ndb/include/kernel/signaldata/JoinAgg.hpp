@@ -46,6 +46,15 @@ struct JoinAggSetupReq {
   // with CTE_MODE_FLAG.  ORed into concurrencyStrategy like
   // CTE_MODE_FLAG; decoders must mask it out of the strategy compare.
   static constexpr Uint32 CTE_SINGLE_ROW_FLAG = 0x40000000;
+  /* cte_orderby_limit_plan.md: constant-owner redistribution + owner-side
+   * top-N truncation (spec rides the aggregation program trailer). */
+  static constexpr Uint32 CTE_LIMIT_FLAG = 0x20000000;
+  /* cte_single_group_plan.md: every GROUP BY column is equality-bound to
+   * a constant in the body WHERE, so at most ONE group exists (with real
+   * aggregate slots, unlike CTE_SINGLE_ROW).  Constant-owner
+   * redistribution; more than one group at any merge point is a
+   * classification violation and aborts the CTE. */
+  static constexpr Uint32 CTE_SINGLE_GROUP_FLAG = 0x10000000;
 
   Uint32 senderRef;
   Uint32 senderData;

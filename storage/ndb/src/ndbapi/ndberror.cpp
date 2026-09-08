@@ -481,6 +481,8 @@ ErrorBundle ErrorCodes[] = {
   { 1268, DMEC, IE, "CTE lookup filter execution error" },
   { 1269, DMEC, IE, "CTE aggregation feed targets its source CTE state" },
   { 1270, DMEC, IE, "CTE join aggregation scan received an unexpected intermediate batch boundary" },
+  { 1272, DMEC, IE, "Single-row CTE materialized more than one row" },
+  { 1273, DMEC, IE, "Single-group CTE materialized more than one group" },
 
   /**
    * Application error

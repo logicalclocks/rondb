@@ -60,7 +60,8 @@
 #   P4 PK bound to a column-containing expression -> enforcement
 #      message (constant-side check)
 #   P5 expression output in the body -> existing rejection
-#   P6 ORDER BY inside the body still rejected (obl message)
+#   P6 body ORDER BY without LIMIT: accepted no-op since the L4
+#      ORDER BY / LIMIT support (was a rejection pin)
 #   P7 duplicate output columns (FROM-root consumer): falls through to
 #      analyze_ctes' "must contain at least one aggregate function."
 #      (first pin of that message)
@@ -582,8 +583,11 @@ DELIMITER ;|
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_custkey + 1 AS k FROM orders WHERE o_orderkey = 77) SELECT c.c_custkey FROM customer AS c JOIN r ON r.k = c.c_custkey;' 2>&1
 
 --echo
---echo === srb-P6 (rejection): ORDER BY inside the body still rejected ===
---error 1
+--echo === srb-P6 (now accepted): body ORDER BY is a validated no-op ===
+# Since cte_orderby_limit_plan.md L4: ORDER BY without LIMIT on a
+# (<= 1-row) body is accepted and dropped — the SET is unchanged and
+# derived-table order is unspecified in MySQL too.  Body ORDER BY +
+# LIMIT coverage lives in ronsql_cte_dd_orderby_limit_cte (obc-19/20).
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_custkey AS k FROM orders WHERE o_orderkey = 77 ORDER BY o_custkey) SELECT c.c_custkey FROM customer AS c JOIN r ON r.k = c.c_custkey;' 2>&1
 
 --echo

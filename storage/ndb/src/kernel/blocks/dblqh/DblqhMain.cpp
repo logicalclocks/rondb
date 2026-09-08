@@ -189,11 +189,20 @@
 #define DEB_JOIN_AGG(arglist) do { } while (0)
 #endif
 
-/* TEMPORARY fs_batch phase-timing probes (RonSQL vs MySQL comparison).
- * Unconditionally enabled, also in release builds — grep "AGGT" in the
- * node out-logs and diff the logger's own µs timestamps.
- * Remove all AGGT sites when the investigation is done. */
+/* fs_batch phase-timing probes (RonSQL vs MySQL comparison), DISABLED:
+ * the investigation shipped as the x-ronsql-phases header, and the
+ * per-scan g_eventLogger->info calls polluted production logs and
+ * benchmark timings.  Re-enable by uncommenting DEBUG_AGGT (debug
+ * builds only, per the DEB_XXX house pattern).
+ */
+#if (defined(VM_TRACE) || defined(ERROR_INSERT))
+//#define DEBUG_AGGT 1
+#endif
+#ifdef DEBUG_AGGT
 #define AGGT(arglist) do { g_eventLogger->info arglist ; } while (0)
+#else
+#define AGGT(arglist) do { } while (0)
+#endif
 
 #ifdef DEBUG_JOIN_AGG_REDIST_VERBOSE
 #define DEB_JOIN_AGG_REDIST_VERBOSE(arglist) \
@@ -1130,6 +1139,18 @@ void Dblqh::execCONTINUEB(Signal *signal) {
   {
     jam();
     continueRedistQueueDrain(signal, data0);
+    return;
+  }
+  case ZCONTINUE_CTE_AVG_FINALIZE:
+  {
+    jam();
+    continueCteAvgFinalize(signal, data0);
+    return;
+  }
+  case ZCONTINUE_CTE_LIMIT_FINALIZE:
+  {
+    jam();
+    continueCteLimitFinalize(signal, data0);
     return;
   }
   case ZCONTINUE_AGG_INTERP_TEARDOWN:
@@ -19513,7 +19534,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
        * multi-node flow checks at redistribute entry and owner-side
        * in checkCteReady; this arm bypasses both, so check here
        * before the state becomes consumable. */
-      if (state->m_cte_single_row) {
+      if (state->m_cte_single_row || state->m_cte_single_group) {
         JoinGBHashTable *gb_map = interp->gb_map_mutable();
         if (gb_map != nullptr && gb_map->size() > 1) {
           jam();
@@ -19523,7 +19544,9 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
           ref->senderRef = reference();
           ref->senderData = senderData;
           ref->requestId = requestId;
-          ref->errorCode = ZCTE_SINGLE_ROW_VIOLATION;
+          ref->errorCode = state->m_cte_single_row
+                               ? ZCTE_SINGLE_ROW_VIOLATION
+                               : ZCTE_SINGLE_GROUP_VIOLATION;
           ref->errorLine = __LINE__;
           sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
                      signal, JoinAggCompleteRef::SignalLength, JBB);
@@ -19532,18 +19555,21 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       }
       DEB_CTE(("(%u) CTE COMPLETE: single node — skip redistribution",
                instance()));
-      AGGT(("AGGT(%u) DBLQH CTE_READY (single node) key=%u",
-            instance(), aggStateKey));
-      state->m_state.store(JoinAggregationState::CTE_READY);
-      JoinAggCompleteConf *conf =
-        (JoinAggCompleteConf *)signal->getDataPtrSend();
-      conf->senderRef = reference();
-      conf->senderData = senderData;
-      conf->requestId = requestId;
-      conf->numResultRows = 0;
-      conf->resultBytes = 0;
-      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
-                 signal, JoinAggCompleteConf::SignalLength, JBB);
+      /* cte_avg_plan.md: route the single-node completion through
+       * checkCteReady instead of transitioning to CTE_READY inline.
+       * With one participating node the per-node FINAL_REP loop is a
+       * no-op, so checkCteReady degenerates to exactly the transition
+       * + CONF this arm used to do — PLUS the kOpAvg finalize divide
+       * (with its CONTINUEB slicing for large group counts), which the
+       * inline transition silently bypassed (Test 25's first run:
+       * unfinalized BIGINT sums read as doubles reject every filter
+       * row).  The sender info rides the same state fields the
+       * multi-node path uses. */
+      state->m_cte_complete_senderRef = senderRef;
+      state->m_cte_complete_senderData = senderData;
+      state->m_cte_complete_requestId = requestId;
+      state->m_cte_redistribution_done = true;
+      checkCteReady(signal, state);
     } else {
       /* Multi-node — save sender info, drain queue, verify nodes, redistribute */
       jam();
@@ -20004,7 +20030,10 @@ void Dblqh::buildCteLinkedBuffer(const JoinAggInterpreter *interp,
                                  Uint32 attrInfoLen,
                                  Uint32 *outBuf, Uint32 *lenOut) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
-  const Uint32 n_agg_results = interp->n_agg_results();
+  /* Visible slots only — hidden AVG-count companions (cte_avg_plan.md)
+   * sit after the visible slots in the group record and never leave
+   * the aggregation state. */
+  const Uint32 n_agg_results = interp->n_visible_results();
   Uint32 linkedPos = 0;
 
   /* Step 1: Prepend parent linked columns from AttrInfo subroutine section.
@@ -20260,6 +20289,7 @@ retry_agg:
   CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = req.senderData;
+  conf->correlation = req.correlation;
   sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
              signal, CteLookupConf::SignalLength, JBB);
 }
@@ -20296,6 +20326,37 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
       }
 
       if (outPos > 0) {
+        /* G2b probe-result cache: mirror the API-bound payload into the
+         * caller's capture section, destination-prefixed.  Best-effort:
+         * on append failure, or on a SECOND flush (the served replay
+         * re-sends the capture as ONE TRANSID_AI, so only a
+         * single-flush payload is replayable), drop the capture and
+         * keep serving the probe normally. */
+        if (params.captureSectionPtrI != nullptr) {
+          jam();
+          bool capOk = true;
+          if (*params.captureSectionPtrI == RNIL) {
+            Uint32 dest[2] = { fRef, fData };
+            capOk = appendToSection(*params.captureSectionPtrI, dest, 2);
+            if (capOk) {
+              capOk = appendToSection(*params.captureSectionPtrI,
+                                      outBuf, outPos);
+            }
+          } else {
+            /* Second FLUSH_AI in one emit: not replayable. */
+            capOk = false;
+          }
+          if (unlikely(!capOk)) {
+            jam();
+            if (*params.captureSectionPtrI != RNIL) {
+              releaseSection(*params.captureSectionPtrI);
+              *params.captureSectionPtrI = RNIL;
+            }
+            /* Disable further capture for this emit. */
+            const_cast<CteOutputParams &>(params).captureSectionPtrI =
+                nullptr;
+          }
+        }
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
         transIdAI->connectPtr = fData;
         transIdAI->transId[0] = params.transId[0];
@@ -20429,7 +20490,8 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                                  const char *groupData,
                                  const Uint32 *cinBuf, Uint32 attrInfoLen) {
   const Uint32 n_gb_cols = interp->n_gb_cols();
-  const Uint32 n_agg_results = interp->n_agg_results();
+  /* Visible slots only — hidden AVG-count companions never emit. */
+  const Uint32 n_agg_results = interp->n_visible_results();
   /* groupData == nullptr is the outer-chain NULL-row emit (big-07 fix):
    * every virtual-column read produces NULL, only CORR_FACTOR reads
    * carry data — the row exists solely to drive the chained next op
@@ -20467,6 +20529,16 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
   params.correlation = req.correlation;
   params.corrRootRcvr = req.resultData;
   params.useFlushAiFromFinalR = true;
+  /* G2b probe-result cache: on the flagged fill probe of a
+   * row-delivery lookup, mirror the API-bound payload into a section
+   * to attach on the CONF (destination-prefixed) so DBSPJ can serve
+   * later byte-identical-key probes locally. */
+  Uint32 captureSecI = RNIL;
+  if ((req.flags & CteLookupReq::CTE_LOOKUP_CACHE_FILL_FLAG) &&
+      req.joinAggStateKey == RNIL && groupData != nullptr) {
+    jam();
+    params.captureSectionPtrI = &captureSecI;
+  }
 
   Uint32 *outBuf = cevictBuffer;
   const Uint32 *finalR = &cinBuf[finalRStart];
@@ -20478,6 +20550,10 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                                     accumulators, outBuf);
   if (outPos < 0) {
     jam();
+    if (captureSecI != RNIL) {
+      jam();
+      releaseSection(captureSecI);
+    }
     sendCteLookupRef(signal, req.senderRef, req.senderData,
                      ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
     return;
@@ -20500,13 +20576,25 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
                TransIdAI::HeaderLength, JBB, lsp, 1);
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x",
-           instance(), req.senderRef, req.senderData));
+  DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x "
+           "captureSecI=0x%x",
+           instance(), req.senderRef, req.senderData, captureSecI));
   CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
   conf->senderRef = reference();
   conf->senderData = req.senderData;
-  sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
-             signal, CteLookupConf::SignalLength, JBB);
+  conf->correlation = req.correlation;
+  if (captureSecI != RNIL) {
+    jam();
+    /* G2b: attach the destination-prefixed API payload copy. */
+    SectionHandle handle(this);
+    getSection(handle.m_ptr[CteLookupConf::RowSectionNum], captureSecI);
+    handle.m_cnt = 1;
+    sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+               signal, CteLookupConf::SignalLength, JBB, &handle);
+  } else {
+    sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
+               signal, CteLookupConf::SignalLength, JBB);
+  }
 }
 
 /**
@@ -20947,6 +21035,8 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * forward the request there instead of returning NOT_FOUND. */
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
     if ((req.flags & CteLookupReq::CTE_LOOKUP_ROUTE_FLAG) &&
+        !state->m_cte_single_row && !state->m_cte_limit &&
+        !state->m_cte_single_group &&
         state->m_cte_num_nodes > 1 &&
         routeCteLookup(signal, state, interp,
                        keyBuf, keySection.sz,
@@ -21018,6 +21108,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
       conf->senderRef = reference();
       conf->senderData = req.senderData;
+      conf->correlation = req.correlation;
       sendSignal(req.senderRef, GSN_CTE_LOOKUP_CONF,
                  signal, CteLookupConf::SignalLength, JBB);
       return;
@@ -21450,7 +21541,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
   if (gb_map != nullptr && !gb_map->empty()) {
     jam();
     const Uint32 n_gb_cols = interp->n_gb_cols();
-    const Uint32 n_agg_results = interp->n_agg_results();
+    /* Visible slots only — hidden AVG-count companions never emit. */
+    const Uint32 n_agg_results = interp->n_visible_results();
 
     /* Resume from saved iterator position (O(1)) */
     Uint32 groupIdx = scanState->groupsSent;
@@ -21597,7 +21689,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
      * picks the single emitter — see Phase I.17.
      */
     jam();
-    const Uint32 n_agg_results = interp->n_agg_results();
+    /* Visible slots only — hidden AVG-count companions never emit. */
+    const Uint32 n_agg_results = interp->n_visible_results();
     const AggResItem *accumulators = interp->agg_results();
     Uint32 *outBuf = cevictBuffer;
 
@@ -21929,6 +22022,10 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
 /* ------------------------------------------------------------------ */
 
 static const Uint32 REDIST_GROUPS_PER_BATCH = 256;
+/* kOpAvg finalize divide: groups per CONTINUEB slice.  The divide is
+ * cheap (no serialization), so a larger batch than redistribute is
+ * fine while still bounding each real-time slice. */
+static const Uint32 ZCTE_AVG_FINALIZE_BATCH = 1024;
 static const Uint32 REDIST_MAX_BATCH_BYTES = 64 * 1024;
 
 /**
@@ -22180,9 +22277,16 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
    * first entry only — the map can only shrink across CONTINUEB
    * re-entries.  The cross-node case (several nodes each holding one
    * row) is caught by the owner-side check in checkCteReady. */
-  if (state->m_cte_single_row && gb_map->size() > 1) {
+  if ((state->m_cte_single_row || state->m_cte_single_group) &&
+      gb_map->size() > 1) {
     jam();
-    abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
+    /* Single-group CTEs (cte_single_group_plan.md) share the contract:
+     * all rows carry the same equality-bound GROUP BY key, so each
+     * node's merged state holds at most one group too. */
+    abortCteRedistribution(signal, state,
+                           state->m_cte_single_row
+                               ? ZCTE_SINGLE_ROW_VIOLATION
+                               : ZCTE_SINGLE_GROUP_VIOLATION);
     return;
   }
 
@@ -22211,10 +22315,18 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
        * live at a key-independent location every consumer can route
        * to. */
       Uint32 ownerNode;
-      if (state->m_cte_single_row) {
+      if (state->m_cte_single_row || state->m_cte_limit ||
+          state->m_cte_single_group) {
         jam();
+        /* Single-row, ORDER BY/LIMIT AND single-group CTEs use the
+         * constant DBTC-node owner: for LIMIT, every group must land
+         * on ONE node so the owner can select the top-N under the
+         * ORDER BY spec once all partials have merged
+         * (cte_orderby_limit_plan.md); for single-group, the one
+         * group's per-node partials merge there without hashing
+         * (cte_single_group_plan.md). */
         ownerNode = refToNode(state->m_senderRef);
-        DEB_CTE(("(%u) CTE REDIST: single-row owner=%u (DBTC node) "
+        DEB_CTE(("(%u) CTE REDIST: constant owner=%u (DBTC node) "
                  "keyLen=%u %s", instance(), ownerNode, keyLen,
                  ownerNode == ownNodeId ? "LOCAL" : "REMOTE"));
       } else {
@@ -22735,6 +22847,76 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
  * loudly and the originating path can be removed; the silent return is
  * the production-build safety net.  See cte_filter_phase_l.md.
  */
+/* CONTINUEB slice driver for the kOpAvg finalize divide
+ * (cte_avg_plan.md).  Runs on the owner instance between the
+ * FINAL_REP barrier and the CTE_READY transition; each slice divides
+ * a bounded batch of groups, and completion re-invokes checkCteReady,
+ * which now sees avgFinalized() and performs the transition.  A
+ * missing state means the CTE was aborted/released mid-chain — drop. */
+void Dblqh::continueCteAvgFinalize(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    return;
+  }
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  if (interp == nullptr) {
+    jam();
+    return;
+  }
+  if (!interp->finalizeAvgSlotsSlice(ZCTE_AVG_FINALIZE_BATCH)) {
+    jam();
+    signal->theData[0] = ZCONTINUE_CTE_AVG_FINALIZE;
+    signal->theData[1] = aggStateKey;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+  jam();
+  checkCteReady(signal, state);
+}
+
+/* CONTINUEB slice driver for the ORDER BY / LIMIT truncation
+ * (cte_orderby_limit_plan.md) — same shape as the AVG chain: each
+ * slice advances the bounded top-N selection or the erase walk, and
+ * completion re-invokes checkCteReady, which sees limitFinalized()
+ * and performs the CTE_READY transition. */
+void Dblqh::continueCteLimitFinalize(Signal *signal, Uint32 aggStateKey) {
+  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state == nullptr) {
+    jam();
+    return;
+  }
+  if (state->m_state.load() == JoinAggregationState::CTE_READY) {
+    jam();
+    return;
+  }
+  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
+  if (interp == nullptr) {
+    jam();
+    return;
+  }
+  const int rc = interp->finalizeLimitSlice(ZCTE_AVG_FINALIZE_BATCH,
+                                            instance());
+  if (rc < 0) {
+    jam();
+    abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_ALLOC_FAILED);
+    return;
+  }
+  if (rc == 0) {
+    jam();
+    signal->theData[0] = ZCONTINUE_CTE_LIMIT_FINALIZE;
+    signal->theData[1] = aggStateKey;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    return;
+  }
+  jam();
+  checkCteReady(signal, state);
+}
+
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   /* Phase L (E.1): all callers — continueJoinAggRedistribute,
    * execJOIN_AGG_FINAL_REP — are already pinned to the owner LDM, so
@@ -22781,14 +22963,92 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
    * its FINAL_REP on the same signal path, and in CTE_REDISTRIBUTING
    * they merge directly (no queue).  API-controlled input, so fail
    * the query cleanly. */
-  if (state->m_cte_single_row) {
+  if (state->m_cte_single_row || state->m_cte_single_group) {
     JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
     JoinGBHashTable *gb_map =
         (interp != nullptr) ? interp->gb_map_mutable() : nullptr;
     if (gb_map != nullptr && gb_map->size() > 1) {
       jam();
-      abortCteRedistribution(signal, state, ZCTE_SINGLE_ROW_VIOLATION);
+      abortCteRedistribution(signal, state,
+                             state->m_cte_single_row
+                                 ? ZCTE_SINGLE_ROW_VIOLATION
+                                 : ZCTE_SINGLE_GROUP_VIOLATION);
       return;
+    }
+  }
+
+  /* kOpAvg finalize divide (cte_avg_plan.md): every node's SUM/COUNT
+   * contributions are merged into the owner's result interpreter by
+   * now (REDISTRIBUTE_REQs precede each sender's FINAL_REP on the same
+   * signal path), so this is the single window where AVG pairs become
+   * their final DOUBLE values — before CTE_READY makes the groups
+   * visible to probes, scans and linked loads.
+   *
+   * The group hash can hold millions of groups, so the walk is sliced
+   * via CONTINUEB (ZCONTINUE_CTE_AVG_FINALIZE): each slice divides a
+   * bounded batch and continueCteAvgFinalize re-calls checkCteReady
+   * when the walk completes.  Safe across real-time breaks: the hash
+   * table is immutable in this window and the chain stays on the
+   * owner instance.  While a chain is in flight, a re-entrant
+   * checkCteReady (e.g. a duplicate FINAL_REP) returns and lets the
+   * chain finish. */
+  {
+    JoinAggInterpreter *avgInterp = getJoinAggResultInterpreter(state);
+    if (avgInterp != nullptr && avgInterp->hasAvgSlots() &&
+        !avgInterp->avgFinalized()) {
+      if (avgInterp->avgFinalizing()) {
+        jam();
+        /* A finalize chain is already running; it will re-invoke
+         * checkCteReady on completion. */
+        return;
+      }
+      jam();
+      if (!avgInterp->finalizeAvgSlotsSlice(ZCTE_AVG_FINALIZE_BATCH)) {
+        jam();
+        signal->theData[0] = ZCONTINUE_CTE_AVG_FINALIZE;
+        signal->theData[1] = state->m_key;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+      /* Walk completed within the first slice — fall through. */
+    }
+  }
+
+  /* ORDER BY / LIMIT truncation (cte_orderby_limit_plan.md): after
+   * the FINAL_REP barrier every per-node partial has merged, so
+   * aggregate-ordered ranks are final; and the AVG divide above has
+   * run, so AVG-ordered specs compare finished DOUBLEs.  The owner
+   * selects the top-N and erases the rest, CONTINUEB-sliced like the
+   * AVG walk (ZCONTINUE_CTE_LIMIT_FINALIZE).  Non-owner nodes hold no
+   * groups (constant-owner redistribution) and skip this trivially. */
+  {
+    JoinAggInterpreter *limInterp = getJoinAggResultInterpreter(state);
+    if (limInterp != nullptr && limInterp->hasLimit() &&
+        !limInterp->limitFinalized()) {
+      if (limInterp->limitFinalizing()) {
+        jam();
+        /* A truncation chain is already running; it will re-invoke
+         * checkCteReady on completion. */
+        return;
+      }
+      jam();
+      const int rc =
+          limInterp->finalizeLimitSlice(ZCTE_AVG_FINALIZE_BATCH,
+                                        instance());
+      if (rc < 0) {
+        jam();
+        abortCteRedistribution(signal, state,
+                               ZJOIN_AGG_STATE_ALLOC_FAILED);
+        return;
+      }
+      if (rc == 0) {
+        jam();
+        signal->theData[0] = ZCONTINUE_CTE_LIMIT_FINALIZE;
+        signal->theData[1] = state->m_key;
+        sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+        return;
+      }
+      /* Completed within the first slice — fall through. */
     }
   }
 

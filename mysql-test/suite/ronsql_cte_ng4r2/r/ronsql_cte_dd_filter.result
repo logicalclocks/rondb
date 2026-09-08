@@ -7693,3 +7693,245 @@ Syntax error in SQL statement: Unexpected at this point
 !                                                                                         ^
 Error handling: RPE
 ronsql_cli caught exception: Syntax error.
+
+=== filter-40: CHAR(1) MIN vs MAX outputs of one CTE (mn < mx) ===
+== Query ==
+WITH st AS (
+SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT st.k, COUNT(*)
+FROM customer AS c JOIN st ON st.k = c.c_custkey
+WHERE st.mn < st.mx
+GROUP BY st.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH st AS (
+SELECT o_custkey AS k, MIN(o_orderstatus) AS mn, MAX(o_orderstatus) AS mx
+FROM orders GROUP BY o_custkey)
+SELECT st.k, COUNT(*)
+FROM customer AS c JOIN st ON st.k = c.c_custkey
+WHERE st.mn < st.mx
+GROUP BY st.k|
+k	COUNT(*)
+
+=== filter-41: VARCHAR(12) MIN vs MAX outputs (mn <> mx) ===
+== Query ==
+WITH seg AS (
+SELECT c_nationkey AS k, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx
+FROM customer GROUP BY c_nationkey)
+SELECT seg.k, COUNT(*)
+FROM nation AS na JOIN seg ON seg.k = na.n_nationkey
+WHERE seg.mn <> seg.mx
+GROUP BY seg.k;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH seg AS (
+SELECT c_nationkey AS k, MIN(c_mktsegment) AS mn, MAX(c_mktsegment) AS mx
+FROM customer GROUP BY c_nationkey)
+SELECT seg.k, COUNT(*)
+FROM nation AS na JOIN seg ON seg.k = na.n_nationkey
+WHERE seg.mn <> seg.mx
+GROUP BY seg.k|
+k	COUNT(*)
+
+=== filter-42: cross-column CHAR(8) pair, differing per group (MIN(v1) < MIN(v2)) ===
+== Query ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b
+GROUP BY f.g;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b
+GROUP BY f.g|
+g	SUM(f.n)
+1	16
+2	16
+
+=== filter-42b: equality on the same pair (MIN(v1) = MIN(v2)) ===
+== Query ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a = f.b
+GROUP BY f.g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a = f.b
+GROUP BY f.g|
+g	SUM(f.n)
+3	16
+
+=== filter-43: GROUP BY string passthrough vs string aggregate (a <= mx) ===
+== Query ==
+WITH f AS (
+SELECT v1 AS a, MAX(v2) AS mx, COUNT(*) AS n
+FROM cvc GROUP BY v1)
+SELECT f.a, SUM(f.n)
+FROM cvc AS c JOIN f ON f.a = c.v1
+WHERE f.a <= f.mx
+GROUP BY f.a;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH f AS (
+SELECT v1 AS a, MAX(v2) AS mx, COUNT(*) AS n
+FROM cvc GROUP BY v1)
+SELECT f.a, SUM(f.n)
+FROM cvc AS c JOIN f ON f.a = c.v1
+WHERE f.a <= f.mx
+GROUP BY f.a|
+a	SUM(f.n)
+aa	1
+aaa	1
+alpha	1
+beta	1
+delta	1
+kappa	1
+mid	1
+same	1
+
+=== filter-44: string col-vs-col inside OR/DNF ===
+== Query ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b OR f.g = 3
+GROUP BY f.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MIN(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.a < f.b OR f.g = 3
+GROUP BY f.g|
+g	SUM(f.n)
+1	16
+2	16
+3	16
+
+=== filter-45: pass-through CTE_SCAN root with string col-vs-col filter ===
+== Query ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MAX(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, f.n FROM f WHERE f.a < f.b;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH f AS (
+SELECT grp AS g, MIN(v1) AS a, MAX(v2) AS b, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, f.n FROM f WHERE f.a < f.b|
+g	n
+1	4
+2	4
+3	4
+
+=== filter-46: utf8mb4 CHAR pair (multibyte-charset compare, ASCII values) ===
+== Query ==
+WITH f AS (
+SELECT grp AS g, MIN(w2) AS mn, MAX(w2) AS mx, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.mn < f.mx
+GROUP BY f.g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH f AS (
+SELECT grp AS g, MIN(w2) AS mn, MAX(w2) AS mx, COUNT(*) AS n
+FROM cvc GROUP BY grp)
+SELECT f.g, SUM(f.n)
+FROM cvc AS c JOIN f ON f.g = c.grp
+WHERE f.mn < f.mx
+GROUP BY f.g|
+g	SUM(f.n)
+1	16
+2	16
+3	16
+
+=== filter-P8 (rejection): string output vs integer output ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: cannot compare a string operand against a non-string operand — cast one side or compare against a constant.
+
+=== filter-P9 (rejection): CHAR output vs VARCHAR output ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: string operands must both be the same string type (CHAR vs VARCHAR mixes are not yet supported) — cast one side or compare against a constant.
+
+=== filter-P10 (rejection): charset mismatch (latin1 vs utf8mb4) ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: string operands must share one character set.

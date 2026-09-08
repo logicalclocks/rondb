@@ -1,37 +1,25 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
-=== obl-1: CTE body with ORDER BY (no LIMIT) — permanent rejection ===
-ORDER BY inside CTE body 'sums' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
-Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
-
-=== obl-2: CTE body with LIMIT (no ORDER BY) — permanent rejection ===
-LIMIT inside CTE body 'sums' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
-Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
-
-=== obl-3: CTE body with ORDER BY + LIMIT — permanent rejection ===
-ORDER BY and LIMIT inside CTE body 'sums' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
-Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
+=== obl-1..3: RETIRED — CTE-body ORDER BY / LIMIT is now supported ===
+=== (cte_orderby_limit_plan.md; see ronsql_cte_dd_orderby_limit_cte) ===
 
 === obl-4: scalar subquery with LIMIT — permanent rejection ===
-LIMIT inside a scalar subquery is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
+LIMIT inside a scalar subquery is not supported. It is only supported at the main SELECT level and in CTE bodies; accepting it here would silently ignore it, changing results compared to MySQL.
 Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
+ronsql_cli caught exception: ORDER BY / LIMIT in a subquery is not supported.
 
 === obl-5: IN subquery with ORDER BY + LIMIT — permanent rejection ===
-ORDER BY and LIMIT inside an IN subquery is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
+ORDER BY and LIMIT inside an IN subquery is not supported. It is only supported at the main SELECT level and in CTE bodies; accepting it here would silently ignore it, changing results compared to MySQL.
 Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
+ronsql_cli caught exception: ORDER BY / LIMIT in a subquery is not supported.
 
 === obl-6: EXISTS subquery with LIMIT — permanent rejection ===
-LIMIT inside an EXISTS subquery is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
+LIMIT inside an EXISTS subquery is not supported. It is only supported at the main SELECT level and in CTE bodies; accepting it here would silently ignore it, changing results compared to MySQL.
 Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
+ronsql_cli caught exception: ORDER BY / LIMIT in a subquery is not supported.
 
 === obl-7: SELECT-list subquery with LIMIT — permanent rejection ===
-LIMIT inside a SELECT-list subquery is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
+LIMIT inside a SELECT-list subquery is not supported. It is only supported at the main SELECT level and in CTE bodies; accepting it here would silently ignore it, changing results compared to MySQL.
 Error handling: RPE
-ronsql_cli caught exception: ORDER BY / LIMIT in a CTE body or subquery is not supported.
+ronsql_cli caught exception: ORDER BY / LIMIT in a subquery is not supported.

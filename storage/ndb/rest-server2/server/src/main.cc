@@ -451,7 +451,7 @@ int main(int argc, char *argv[]) {
     start_fs_cache();
     g_did_start_fs_cache = true;
 
-    start_schema_cache();
+    start_schema_cache(globalConfigs.internal.schemaCacheTTLSecs);
 
     // Initialize Prometheus Metrics
     rdrs_metrics::initMetrics();

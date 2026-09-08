@@ -1994,6 +1994,100 @@ int NdbInterpretedCode::branch_linked_inline_ge(
                                   val, len, label);
 }
 
+/* BRANCH_LINKED_OP_LINKED — compare two linked-buffer entries by
+ * position with inline type metadata (string column-vs-column in CTE
+ * filter mode).  Single 4-word instruction; no READ_LINKED_TO_MEM
+ * prelude — the kernel reads both entries directly.  Word layout in
+ * Interpreter.hpp at the opcode declaration. */
+int NdbInterpretedCode::branch_linked_linked_val(
+    Uint32 branch_type, Uint32 posL, Uint32 posR,
+    Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  DBUG_ENTER("NdbInterpretedCode::branch_linked_linked_val");
+
+  const Interpreter::BinaryCondition cond =
+      static_cast<Interpreter::BinaryCondition>(branch_type);
+
+  /* Same type rejections as branch_linked_inline_val: BLOB / TEXT
+   * never; DECIMAL until precision / scale ride inline. */
+  const auto coltype =
+      static_cast<NdbDictionary::Column::Type>(typeId);
+  if (unlikely(coltype == NdbDictionary::Column::Blob ||
+               coltype == NdbDictionary::Column::Text ||
+               coltype == NdbDictionary::Column::Decimal ||
+               coltype == NdbDictionary::Column::Decimalunsigned)) {
+    DBUG_RETURN(error(QRY_OPERAND_HAS_WRONG_TYPE));
+  }
+  if (unlikely(posL > 0xFFFF || posR > 0xFFFF)) {
+    DBUG_RETURN(error(QRY_OPERAND_HAS_WRONG_TYPE));
+  }
+  if (unlikely(columnSizeL == 0 || columnSizeL > 0xFFFF ||
+               columnSizeR == 0 || columnSizeR > 0xFFFF)) {
+    DBUG_RETURN(error(QRY_OPERAND_HAS_WRONG_TYPE));
+  }
+  if (unlikely(typeId > 0xFFFF || csNumber > 0xFFFF)) {
+    DBUG_RETURN(error(QRY_OPERAND_HAS_WRONG_TYPE));
+  }
+
+  Interpreter::NullSemantics nulls = Interpreter::NULL_CMP_EQUAL;
+  if (m_unknown_action == BranchIfUnknown)
+    nulls = Interpreter::IF_NULL_BREAK_OUT;
+  else if (m_unknown_action == ContinueIfUnknown)
+    nulls = Interpreter::IF_NULL_CONTINUE;
+
+  if (add_branch(Interpreter::BranchLinkedLinked(cond, nulls), label) != 0)
+    DBUG_RETURN(-1);
+  if (add1(Interpreter::BranchLinkedLinked_2(posL, posR)) != 0)
+    DBUG_RETURN(-1);
+  if (add1((typeId << 16) | csNumber) != 0) DBUG_RETURN(-1);
+  if (add1((columnSizeL << 16) | columnSizeR) != 0) DBUG_RETURN(-1);
+
+  DBUG_RETURN(0);
+}
+
+int NdbInterpretedCode::branch_linked_linked_eq(
+    Uint32 posL, Uint32 posR, Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  return branch_linked_linked_val(Interpreter::EQ, posL, posR, typeId,
+                                  csNumber, columnSizeL, columnSizeR,
+                                  label);
+}
+int NdbInterpretedCode::branch_linked_linked_ne(
+    Uint32 posL, Uint32 posR, Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  return branch_linked_linked_val(Interpreter::NE, posL, posR, typeId,
+                                  csNumber, columnSizeL, columnSizeR,
+                                  label);
+}
+int NdbInterpretedCode::branch_linked_linked_lt(
+    Uint32 posL, Uint32 posR, Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  return branch_linked_linked_val(Interpreter::LT, posL, posR, typeId,
+                                  csNumber, columnSizeL, columnSizeR,
+                                  label);
+}
+int NdbInterpretedCode::branch_linked_linked_le(
+    Uint32 posL, Uint32 posR, Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  return branch_linked_linked_val(Interpreter::LE, posL, posR, typeId,
+                                  csNumber, columnSizeL, columnSizeR,
+                                  label);
+}
+int NdbInterpretedCode::branch_linked_linked_gt(
+    Uint32 posL, Uint32 posR, Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  return branch_linked_linked_val(Interpreter::GT, posL, posR, typeId,
+                                  csNumber, columnSizeL, columnSizeR,
+                                  label);
+}
+int NdbInterpretedCode::branch_linked_linked_ge(
+    Uint32 posL, Uint32 posR, Uint32 typeId, Uint32 csNumber,
+    Uint32 columnSizeL, Uint32 columnSizeR, Uint32 label) {
+  return branch_linked_linked_val(Interpreter::GE, posL, posR, typeId,
+                                  csNumber, columnSizeL, columnSizeR,
+                                  label);
+}
+
 /* Branch when linked column at `position` IS NULL.
  *
  * Emits:

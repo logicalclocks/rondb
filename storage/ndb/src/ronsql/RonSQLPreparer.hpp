@@ -711,13 +711,39 @@ private:
   void analyze_subqueries();
   void analyze_subqueries_ce(ConditionalExpression* ce);
   void analyze_select_subqueries();
-  // ORDER BY / LIMIT are parsed on every SELECT body but only the main
-  // SELECT's are ever applied (ResultPrinter).  Reject them everywhere
-  // else at prepare time instead of silently ignoring them (wrong
-  // results vs MySQL) — see ronsql_orderby_limit_plan.md Phase 0.
+  // ORDER BY / LIMIT are parsed on every SELECT body.  The main SELECT's
+  // are applied by ResultPrinter, and CTE bodies apply them in the kernel
+  // (cte_orderby_limit_plan.md: single-owner redistribution + top-N at
+  // the finalize barrier).  Subqueries would still silently ignore them
+  // (wrong results vs MySQL), so those arms keep the prepare-time
+  // rejection — see ronsql_orderby_limit_plan.md Phase 0.
   void reject_ignored_orderby_limit(const SelectStatement* stmt,
                                     const char* what,
                                     const char* name);
+  // CTE-body ORDER BY / LIMIT (cte_orderby_limit_plan.md L4):
+  // analyze-time shape gate + alias conversion, then emit-time
+  // resolution to kernel OrderBy/Limit trailer words.
+  void analyze_cte_body_orderby_limit(CteDefinition* cte);
+  void resolve_cte_body_orderby_aliases(SelectStatement* stmt);
+  bool emit_cte_orderby_limit(QueryScope& scope, CteDefinition* cte,
+                              NdbAggregator* cteAgg);
+  // Single-group CTE classification (cte_single_group_plan.md G3):
+  // every GROUP BY column equality-bound to a constant in the body
+  // WHERE => at most one group => defineCte(CTE_SINGLE_GROUP).
+  bool is_single_group_cte_body(QueryScope& scope,
+                                const SelectStatement* stmt);
+  bool where_binds_column_to_const(
+      struct ConditionalExpression* ce, QueryScope& scope,
+      const QueryScope::ResolvedColumnRef& target);
+  struct ConditionalExpression* find_const_equality_for(
+      struct ConditionalExpression* ce, QueryScope& scope,
+      const QueryScope::ResolvedColumnRef& target);
+  // COUNT(*) fragment-stats shortcut
+  // (ronsql_count_star_shortcut_plan.md W1): answer
+  // SELECT COUNT(*) FROM t (no WHERE/GROUP BY/HAVING) from the
+  // per-fragment ROW_COUNT pseudo-column instead of scanning.
+  bool is_count_star_only_query();
+  void execute_count_star_shortcut();
   void merge_same_table_subqueries();
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();

@@ -71,6 +71,15 @@ class GBHashTable {
   static const Uint32 KEY_LEN_OFFSET = 2 * sizeof(char*);
   static const Uint32 OVERHEAD = 24;
 
+  /* Key length of a group record given its DATA pointer (the pointer
+   * past the link header, as stored in iterators and candidate lists).
+   * Used by the ORDER BY/LIMIT finalize's comparator, which holds only
+   * data pointers (cte_orderby_limit_plan.md). */
+  static Uint32 dataKeyLen(const char* data_ptr) {
+    return *reinterpret_cast<const Uint32*>(
+        data_ptr - OVERHEAD + KEY_LEN_OFFSET);
+  }
+
   class Iterator {
     friend class GBHashTable;
     GBHashTable* m_ht;
@@ -168,11 +177,25 @@ class GBHashTable {
 
   /**
    * Construct an iterator at a saved position (bucket + raw pointer).
-   * Used for CTE scan resume — the hash table must be immutable between
-   * the save and restore. Does not support eraseAndNext() since
-   * m_prev_link is not reconstructed.
+   * Used for CTE scan / AVG-finalize / LIMIT-finalize resume — the
+   * entry at `raw` must still be live in `bucket`'s chain (nothing may
+   * erase IT between save and restore; erasing OTHER entries is fine).
+   * m_prev_link is reconstructed by walking the bucket chain, so the
+   * resumed iterator supports eraseAndNext() — the CTE LIMIT
+   * truncation resumes mid-bucket and erases (a nullptr prev_link here
+   * segfaulted on the first resumed erase slice; found by
+   * ronsql_large_cte Q6 at 100k groups).  If `raw` is not found in the
+   * chain the iterator falls back to a read-only one (prev_link
+   * nullptr), preserving the old behavior.
    */
   Iterator iteratorAt(Uint32 bucket, char* raw) {
+    char** prev = &m_buckets[bucket];
+    while (*prev != nullptr) {
+      if (*prev == raw) {
+        return Iterator(this, bucket, prev, raw);
+      }
+      prev = &hashNext(*prev);
+    }
     return Iterator(this, bucket, nullptr, raw);
   }
 

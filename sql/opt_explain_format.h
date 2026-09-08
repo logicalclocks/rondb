@@ -642,7 +642,10 @@ class Explain_format {
   */
   virtual std::string ExplainJsonToString(Json_object *json [[maybe_unused]]) {
     assert(false);
-    return nullptr;
+    /* Constructing std::string from nullptr is undefined behavior (the
+       const char* constructor is nonnull, hence -Wnonnull) — in a
+       release build this guard path must return an empty string. */
+    return {};
   }
 };
 

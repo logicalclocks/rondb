@@ -64,15 +64,22 @@ struct CteStartMainReq {
 /**
  * CTE_PHASE_COMPLETE_REP — DBSPJ → DBTC
  *
- * Sent when all CTE scans for a specific execution phase have completed
- * on this DBSPJ instance.  DBTC tracks these per phase; when all
- * instances report for a phase, DBTC redistributes that phase's CTEs
- * and either advances to the next phase or starts the main query.
+ * DAG scheduler (cte_dag_scheduler_plan.md): sent once per CTE per
+ * DBSPJ worker when THAT CTE's materialization subtree has finished
+ * locally (its scans inactive at a request quiescence point).  DBTC
+ * counts reps per (handle, cteId); when every live worker has
+ * reported a CTE, that CTE alone is redistributed
+ * (JOIN_AGG_COMPLETE_REQs) — independent CTEs keep scanning
+ * concurrently.
+ *
+ * (The "PHASE" in the GSN/struct names is historical — the original
+ * scheduler ran CTEs in depth-derived phase waves.  Scheduling is now
+ * purely dependency-mask driven; there are no phases.)
  */
 struct CtePhaseCompleteRep {
   Uint32 senderRef;     // DBSPJ block reference
   Uint32 senderData;    // ScanFragRec.i in DBTC (echoed from SCAN_FRAGREQ)
-  Uint32 phase;         // Which CTE phase completed
+  Uint32 cteId;         // Which CTE completed its local scans
   Uint32 transId1;
   Uint32 transId2;
 
@@ -82,16 +89,19 @@ struct CtePhaseCompleteRep {
 /**
  * CTE_PHASE_START_REQ — DBTC → DBSPJ
  *
- * Sent after a CTE phase's hash tables are redistributed and READY.
- * Tells DBSPJ to transition that phase's CTEs to CTE_READY and start
- * the next phase's CTE scans.
+ * DAG scheduler: per-CTE READY broadcast.  Sent when CTE `cteId` has
+ * been redistributed cluster-wide (all its JOIN_AGG_COMPLETE_CONFs
+ * received).  DBSPJ marks that CTE READY and starts every
+ * not-yet-started CTE whose full dependency mask is now satisfied.
+ * Not sent for the last CTE (CTE_START_MAIN_REQ marks all READY) or
+ * for a CTE no other CTE depends on.
  */
 struct CtePhaseStartReq {
   Uint32 senderRef;     // DBTC block reference
   Uint32 senderData;    // ScanFragRec.i (for DBSPJ hash lookup)
   Uint32 transId1;
   Uint32 transId2;
-  Uint32 phase;         // Which CTE phase to start
+  Uint32 cteId;         // Which CTE is READY
 
   static constexpr Uint32 SignalLength = 5;
 };

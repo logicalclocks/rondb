@@ -376,6 +376,8 @@ class FsReadWriteReq;
 #define ZCONTINUE_CTE_REDIST_DRAIN 49
 #define ZCONTINUE_CTE_SCAN_AGG_FEED 50
 #define ZCONTINUE_AGG_INTERP_TEARDOWN 51
+#define ZCONTINUE_CTE_AVG_FINALIZE 52
+#define ZCONTINUE_CTE_LIMIT_FINALIZE 53
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -524,6 +526,11 @@ class FsReadWriteReq;
 /* 1270 = ZCTE_AGG_BATCH_PROTOCOL_ERROR (Dbtc.hpp); 1271 reserved
  * (local_execution_mode_plan.md ZLOCAL_AGG_REMOTE_READ). */
 #define ZCTE_SINGLE_ROW_VIOLATION          1272
+/* cte_single_group_plan.md: a CTE flagged CTE_SINGLE_GROUP (every
+ * GROUP BY column equality-bound to a constant) produced more than one
+ * group — a classification violation; API-controlled input, so the
+ * query fails cleanly. */
+#define ZCTE_SINGLE_GROUP_VIOLATION        1273
 
 /**
  * @class dblqh
@@ -3481,6 +3488,13 @@ private:
     Uint32 correlation;     // CORR_FACTOR32/64 tuple correlation value
     Uint32 corrRootRcvr;    // CORR_FACTOR64 root receiver ID
     bool useFlushAiFromFinalR;  // true: read flushRef/Data from finalR section
+    /* G2b probe-result cache: when non-null, every FLUSH_AI payload
+     * sent to the API is ALSO appended to this section (prefixed with
+     * [fRef, fData] on first append), so the caller can attach the
+     * API-bound copy to CTE_LOOKUP_CONF for DBSPJ-side caching.
+     * Append failure clears the section and disables further capture
+     * (the probe still succeeds — caching is best-effort). */
+    Uint32 *captureSectionPtrI = nullptr;
   };
   Int32 emitCteGroupOutput(Signal* signal,
                            const CteOutputParams &params,
@@ -3533,6 +3547,8 @@ private:
   void execJOIN_AGG_FINAL_REP(Signal* signal);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
+  void continueCteAvgFinalize(Signal* signal, Uint32 aggStateKey);
+  void continueCteLimitFinalize(Signal* signal, Uint32 aggStateKey);
   void continueAggInterpTeardown(Signal* signal, AggInterpreter* interp);
   void processRedistQueue(Signal* signal, JoinAggregationState* state,
                           Uint32 aggStateKey);

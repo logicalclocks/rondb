@@ -18,8 +18,10 @@
 #
 # ENVELOPE: the main SELECT must AGGREGATE (scalar aggregate or GROUP BY
 # + aggregates) — projection-only shapes still reject ORDER BY / LIMIT at
-# the parse gate (plan Phases 2-3), and CTE-body / subquery ORDER BY /
-# LIMIT is permanently rejected (Phase 0, ronsql_cte_dd_orderby_limit_reject).
+# the parse gate (plan Phases 2-3).  Subquery ORDER BY / LIMIT is
+# permanently rejected (Phase 0, ronsql_cte_dd_orderby_limit_reject);
+# CTE-BODY ORDER BY / LIMIT is kernel-applied since
+# cte_orderby_limit_plan.md L4 (family ronsql_cte_dd_orderby_limit_cte).
 # ORDER BY targets must be GROUP BY columns or aggregate output aliases;
 # LIMIT is a single non-negative integer (no OFFSET).
 #
