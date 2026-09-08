@@ -1,7 +1,8 @@
 # RONDB-1121 — Feature-Store RonSQL Test & Benchmark Framework: Master Plan
 
-**Status: P0 (this document), P1 (`shape_catalog.md`, draft v1) and
-P2 (`data_model.md`, v1) complete — 2026-09-08. Engine gaps found by
+**Status: P0 (this document), P1 (`shape_catalog.md`, draft v1),
+P2 (`data_model.md`, v1) and P3 (`framework_design.md`, v1) complete —
+2026-09-08. Engine gaps found by
 the framework (e.g. R1) are handled in a separate tree; this framework
 records them and moves on. Nothing has been built yet. No cluster was started and no
 build or test was run while writing this plan.
@@ -381,7 +382,7 @@ starts. Estimated effort is for one engineer (or one agent session).
   pick meaningful keys/thresholds without computing expected values.
 - Effort: 1 day.
 
-### P3 — Framework design (`framework_design.md`)
+### P3 — Framework design (`framework_design.md`) — DONE (v1)
 
 - Go package layout: `fsq/spec` (types mirroring `TrainingDatasetJoin`,
   `Featuregroup`, `FeatureGroupFeatureDTO`, filters, aggSpec JSON),

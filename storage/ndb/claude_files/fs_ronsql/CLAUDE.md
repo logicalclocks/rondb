@@ -11,7 +11,11 @@ Hopsworks Feature Store online-serving builder generates.
   twins, client post-processing, gates, engine-support status.
 - `data_model.md` — P2: feature groups, DDL rules, closed-form data
   formulas, key classes, row counts per scale factor, loaders.
-- Later: `framework_design.md` (P3),
+- `framework_design.md` — P3: Go package layout under
+  `tools/rondb-cli/internal/fsq`, spec model, emitter-port contract,
+  binding, executors, canonicalization, vector folds, CLI surface,
+  MTR contract, unit-test matrix.
+- Later:
   `random_generator.md` (P4), `benchmarks.md` (P5), `phase_e<N>.md`.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.
