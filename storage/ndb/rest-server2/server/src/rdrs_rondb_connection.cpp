@@ -64,7 +64,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
   this->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
   ndbConnection = nullptr;
-  m_connect_count_at_connect = 0;
+  m_connect_count_last_healthy = 0;
   reconnectionThread = nullptr;
 
   magic = expectedMagic;
@@ -88,6 +88,12 @@ RS_Status RDRSRonDBConnection::Connect() {
     require(ndbConnection == nullptr);
     int retCode = 0;
     ndbConnection = new Ndb_cluster_connection(connection_string, m_node_id);
+    /* Baseline for IsStranded(), taken before anything can move it: after
+     * wait_until_ready() returns, the ClusterMgr thread may already have
+     * lost the last data node and bumped the counter, and a baseline read
+     * then would absorb that loss - CONNECTED with no reachable node and
+     * equal counters, which is the stranded state made undetectable. */
+    m_connect_count_last_healthy = ndbConnection->get_connect_count();
     retCode = ndbConnection->connect(connection_retries,
                                      connection_retry_delay_in_sec,
                                      0);
@@ -115,10 +121,6 @@ RS_Status RDRSRonDBConnection::Connect() {
       NdbMutex_Unlock(connectionMutex);
       return status;
     }
-    /* Baseline for IsStranded(): a later full loss of data nodes moves
-     * this counter. Read while still holding connectionMutex, so it
-     * belongs to this ndbConnection and no other. */
-    m_connect_count_at_connect = ndbConnection->get_connect_count();
     NdbMutex_Unlock(connectionMutex);
   }
   {
@@ -345,17 +347,25 @@ bool RDRSRonDBConnection::IsStranded() {
     if (likely(NdbMutex_Trylock(connectionMutex) == 0)) {
       bool stranded = false;
       if (likely(ndbConnection != nullptr)) {
-        /* Both halves matter. The moved counter alone says the last node
-         * was lost at some point; if the dictionary cache happened to be
-         * empty then, the NDB API reconnected by itself and get_no_ready()
-         * is positive again. A zero count alone says nothing is reachable
-         * right now, which a partial outage in progress can also show for
-         * a moment - and get_no_ready() has no node-group awareness, so it
-         * cannot tell those apart. Together they are exactly the parked
-         * state: every node lost, and still none back. */
-        stranded =
-          ndbConnection->get_connect_count() != m_connect_count_at_connect &&
-          ndbConnection->get_no_ready() <= 0;
+        const Uint32 connect_count = ndbConnection->get_connect_count();
+        if (ndbConnection->get_no_ready() > 0) {
+          /* Reachable nodes: whatever losses the counter records are
+           * behind us - either none happened, or the dictionary cache was
+           * empty at the time and the NDB API reconnected by itself. Move
+           * the baseline up so that recovered loss is not remembered as a
+           * mismatch and later misread, during some transient zero-ready
+           * moment of a partial outage, as a reason to tear down a
+           * connection that is fine. */
+          m_connect_count_last_healthy = connect_count;
+        } else {
+          /* Nothing reachable. On its own that cannot tell a partial outage
+           * in progress (which the NDB API rides out) from a total one -
+           * get_no_ready() has no node-group awareness. The counter can: it
+           * moves only when the last node is lost. Moved since we last saw
+           * a healthy node, and still nothing back, is exactly the parked
+           * state. */
+          stranded = connect_count != m_connect_count_last_healthy;
+        }
       }
       NdbMutex_Unlock(connectionMutex);
       return stranded;
