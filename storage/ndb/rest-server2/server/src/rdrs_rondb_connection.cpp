@@ -64,6 +64,7 @@ RDRSRonDBConnection::RDRSRonDBConnection(const char *connection_string,
   this->connection_retry_delay_in_sec = connection_retry_delay_in_sec;
 
   ndbConnection = nullptr;
+  m_connect_count_at_connect = 0;
   reconnectionThread = nullptr;
 
   magic = expectedMagic;
@@ -114,6 +115,10 @@ RS_Status RDRSRonDBConnection::Connect() {
       NdbMutex_Unlock(connectionMutex);
       return status;
     }
+    /* Baseline for IsStranded(): a later full loss of data nodes moves
+     * this counter. Read while still holding connectionMutex, so it
+     * belongs to this ndbConnection and no other. */
+    m_connect_count_at_connect = ndbConnection->get_connect_count();
     NdbMutex_Unlock(connectionMutex);
   }
   {
@@ -312,6 +317,52 @@ int RDRSRonDBConnection::GetNumReadyDataNodes() {
     "connectionMutex busy for " +
     std::to_string(READY_NODES_TRYLOCK_ATTEMPTS) + " ms.");
   return 0;
+}
+
+bool RDRSRonDBConnection::IsStranded() {
+  {
+    NdbMutex_Lock(connectionInfoMutex);
+    const bool going_away = stats.is_shutdown || stats.is_shutting_down;
+    const bool reconnecting = stats.is_reconnection_in_progress;
+    const bool connected = stats.connection_state == CONNECTED;
+    NdbMutex_Unlock(connectionInfoMutex);
+    if (going_away || reconnecting) {
+      return false;
+    }
+    if (!connected) {
+      /* DISCONNECTED with no reconnection running: the previous attempt's
+       * Connect() failed and cleared is_reconnection_in_progress. The same
+       * state makes GetNdbObject() start a fresh attempt on the next
+       * request; on an idle server this is the only place that will. */
+      return true;
+    }
+  }
+  /* Same try-lock discipline as GetNumReadyDataNodes() - connectionMutex
+   * is held for tens of seconds only during a rebuild, which the state
+   * check above has already excluded - but the opposite default when it
+   * loses: a busy connection is not a stranded one. */
+  for (Uint32 attempt = 0; attempt < READY_NODES_TRYLOCK_ATTEMPTS; attempt++) {
+    if (likely(NdbMutex_Trylock(connectionMutex) == 0)) {
+      bool stranded = false;
+      if (likely(ndbConnection != nullptr)) {
+        /* Both halves matter. The moved counter alone says the last node
+         * was lost at some point; if the dictionary cache happened to be
+         * empty then, the NDB API reconnected by itself and get_no_ready()
+         * is positive again. A zero count alone says nothing is reachable
+         * right now, which a partial outage in progress can also show for
+         * a moment - and get_no_ready() has no node-group awareness, so it
+         * cannot tell those apart. Together they are exactly the parked
+         * state: every node lost, and still none back. */
+        stranded =
+          ndbConnection->get_connect_count() != m_connect_count_at_connect &&
+          ndbConnection->get_no_ready() <= 0;
+      }
+      NdbMutex_Unlock(connectionMutex);
+      return stranded;
+    }
+    NdbSleep_MilliSleep(1);
+  }
+  return false;
 }
 
 void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {

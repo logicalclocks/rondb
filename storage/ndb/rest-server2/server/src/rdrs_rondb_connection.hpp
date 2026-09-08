@@ -51,6 +51,11 @@ class RDRSRonDBConnection {
   RonDB_Stats stats;
 
   Ndb_cluster_connection *ndbConnection;
+  /* Ndb_cluster_connection::get_connect_count() as of the last successful
+   * Connect(). The NDB API bumps that counter exactly when this API node
+   * loses its last data node, so a value that has moved is the event that
+   * strands the connection. See IsStranded(). */
+  Uint32 m_connect_count_at_connect;
   char *connection_string;
   Uint32 m_node_id;
   Uint32 connection_retries;
@@ -127,6 +132,23 @@ class RDRSRonDBConnection {
    * usable cluster connection at all.
    */
   int GetNumReadyDataNodes();
+
+  /**
+   * Whether this connection needs a full reconnection that nothing is yet
+   * running. True when a previous reconnection attempt failed and was
+   * abandoned, or when the NDB API has lost every data node since the
+   * last successful Connect() and still reaches none: losing the last node
+   * parks the NDB API in CS_waiting_for_clean_cache, where it will not
+   * reconnect on its own while this process holds Ndb objects, so only
+   * Reconnect() recovers it. A partial outage - some data node still
+   * reachable - is not stranded: the NDB API recovers from that by itself,
+   * and rebuilding would tear down a working connection.
+   *
+   * Unlike GetNumReadyDataNodes(), an unreadable state answers false: this
+   * feeds a watchdog, and for a watchdog a spurious rebuild is the
+   * expensive mistake.
+   */
+  bool IsStranded();
 
   /**
    * Callback invoked whenever a reconnection starts (any connection).
