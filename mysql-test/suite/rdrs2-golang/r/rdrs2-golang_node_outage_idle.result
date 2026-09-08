@@ -1,0 +1,17 @@
+# Create the row the data-path assertions read
+CREATE DATABASE rdrs_outage;
+CREATE TABLE rdrs_outage.t1 (id INT PRIMARY KEY, val INT) ENGINE=NDBCLUSTER;
+INSERT INTO rdrs_outage.t1 VALUES (1, 42);
+# Wait for REST server to report healthy and serve the row
+health: up
+data: row served before outage
+# Stop all data nodes
+# The outage must surface as 503 without any request driving it
+health: down during outage
+# Restart all data nodes
+# An idle REST server must recover on its own - no pokes here
+health: recovered while idle
+# And the data path must work once it reports healthy
+data: row served after recovery
+# Cleanup
+DROP DATABASE rdrs_outage;

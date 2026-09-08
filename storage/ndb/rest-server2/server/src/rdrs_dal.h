@@ -98,6 +98,14 @@ typedef struct RonDB_Stats {
 RS_Status init(unsigned numThreads, unsigned int num_data_connections);
 
 /**
+ * Start the reconnection watchdog. Call once, after every connection has
+ * been added: losing every data node strands the NDB API until a full
+ * reconnection runs, and the watchdog is what runs it on a server that is
+ * not serving requests.
+ */
+RS_Status start_reconnect_watchdog();
+
+/**
  * Connect to RonDB Cluster
  */
 RS_Status add_data_connection(const char *connection_string,
