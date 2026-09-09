@@ -2442,6 +2442,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
   const Uint32 cteIndex = req->cteIndex;
+  /* RONDB-1120 P2c hardening: the identity keys on the sequence
+   * queryTag, never on the recyclable senderData (scanPtr.i).
+   * Defensive fallback for a short signal from an out-of-tree
+   * sender. */
+  const Uint32 queryTag =
+      (signal->getLength() >= JoinAggSetupReq::SignalLength)
+          ? req->queryTag : senderData;
 
   CRASH_INSERTION(5121);  // Crash node on SETUP_REQ for join agg NF testing
 
@@ -2521,6 +2528,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_transid[0] = req->transid[0];
   state->m_transid[1] = req->transid[1];
   state->m_senderData = senderData;
+  state->m_queryTag = queryTag;
   state->m_requestId = requestId;
   state->m_senderRef = senderRef;
 
@@ -3258,7 +3266,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * entry survives the duplicate case. */
   Uint32 jaWaiters = RNIL;
   const JoinAggIdentityInsertResult idRes = joinAggIdentityInsert(
-      state->m_transid, state->m_senderData, state->m_cte_index, key,
+      state->m_transid, state->m_queryTag, state->m_cte_index, key,
       &jaWaiters);
   if (unlikely(idRes != JAI_INSERT_OK)) {
     jam();
@@ -3266,7 +3274,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         "DblqhProxy: JoinAgg identity insert failed (%s): "
         "transid=(0x%x,0x%x) queryTag=%u cteId=%u key=%u",
         (idRes == JAI_INSERT_DUPLICATE) ? "duplicate" : "no memory",
-        state->m_transid[0], state->m_transid[1], state->m_senderData,
+        state->m_transid[0], state->m_transid[1], state->m_queryTag,
         state->m_cte_index, key);
     /* Duplicate identity indicates a bug (queryTag collision or a
      * missed removal) — crash debug builds; memory exhaustion is a
@@ -3344,14 +3352,14 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
 #ifdef VM_TRACE
     {
       const Uint32 lookedUp = joinAggIdentityLookup(
-          state->m_transid, state->m_senderData, state->m_cte_index);
+          state->m_transid, state->m_queryTag, state->m_cte_index);
       /* Node-failure cleanup can send duplicate RELEASEs — a missing
        * entry (RNIL) is legal; a DIFFERENT live key for this identity
        * is not. */
       ndbassert(lookedUp == aggStateKey || lookedUp == RNIL);
     }
 #endif
-    joinAggIdentityRemove(state->m_transid, state->m_senderData,
+    joinAggIdentityRemove(state->m_transid, state->m_queryTag,
                           state->m_cte_index, aggStateKey);
     // Free aggregation program buffer(s)
     if (state->m_all_programs_buf != nullptr) {

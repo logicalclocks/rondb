@@ -31,7 +31,7 @@
 #define JAM_FILE_ID 571
 
 struct JoinAggSetupReq {
-  static constexpr Uint32 SignalLength = 12;
+  static constexpr Uint32 SignalLength = 13;
   static constexpr Uint32 AggProgramSectionNum = 0;
   static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 ColumnMetaSectionNum = 2;
@@ -68,6 +68,16 @@ struct JoinAggSetupReq {
   Uint32 routeRef;
   Uint32 cteIndex;  // CTE index (0..MAX_CTES-1) or RNIL for main aggregation.
                      // Echoed back in SETUP_CONF/REF so DBTC can route the response.
+  Uint32 queryTag;  // RONDB-1120 P2c hardening: the identity queryTag —
+                     // a per-DBTC-instance sequence (16-bit wrapping),
+                     // NOT the recyclable scanPtr.i.  With fire-and-forget
+                     // RELEASE, back-to-back scans in one transaction
+                     // reuse scanPtr.i while the previous query's identity
+                     // entry may still await its RELEASE processing; a
+                     // sequence tag makes (transid, queryTag) collisions
+                     // impossible within any realistic window.  senderData
+                     // stays scanPtr.i for CONF/REF routing.  Direct-DBLQH
+                     // block tests mirror their senderData here.
   // Long section 0: Aggregation program
   // Long section 1: Receiver IDs for hash-partitioned aggregation results
 };

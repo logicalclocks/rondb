@@ -6298,7 +6298,7 @@ void SimulatedBlock::releaseJoinAggState(Uint32 key) {
    * paths that bypass execJOIN_AGG_RELEASE_REQ (e.g. setup-failure
    * cleanup).  Idempotent — the normal path already removed the
    * entry at RELEASE processing time. */
-  joinAggIdentityRemove(ptr.p->m_transid, ptr.p->m_senderData,
+  joinAggIdentityRemove(ptr.p->m_transid, ptr.p->m_queryTag,
                         ptr.p->m_cte_index, key);
   ptr.p->~JoinAggregationState();
   s_joinAggStatePool.release(ptr);

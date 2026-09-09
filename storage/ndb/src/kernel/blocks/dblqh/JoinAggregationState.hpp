@@ -169,7 +169,10 @@ struct JoinAggregationState {
   // Identification (immutable after creation)
   //------------------------------------------------------------------
   Uint32 m_transid[2];           // Transaction ID
-  Uint32 m_senderData;           // SPJ request identifier
+  Uint32 m_senderData;           // SPJ request identifier (CONF routing)
+  Uint32 m_queryTag;             // Identity tag (JoinAggSetupReq::queryTag)
+                                 // — key for joinAggIdentity{Insert,
+                                 // Lookup,Remove}, NOT m_senderData
   Uint32 m_requestId;            // Unique request ID for this aggregation
   BlockReference m_senderRef;    // DBTC block reference
   BlockReference m_apiRef;       // API block reference for results
@@ -398,6 +401,7 @@ struct JoinAggregationState {
   JoinAggregationState() :
     nextPool(RNIL),
     m_senderData(RNIL),
+    m_queryTag(RNIL),
     m_requestId(0),
     m_senderRef(0),
     m_apiRef(0),

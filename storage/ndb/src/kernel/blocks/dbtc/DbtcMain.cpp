@@ -17499,6 +17499,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
   scanptr.p->m_aggNodesOutstanding = 0;
+  scanptr.p->m_joinAggQueryTag = RNIL;
   scanptr.p->m_aggMainCompleteDeferred = false;
   scanptr.p->m_cteCompleteDeferredMask = 0;
   scanptr.p->m_joinAggNodes = nullptr;
@@ -30988,6 +30989,10 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                 scanptr.p->m_numCtes));
   AGGT(("AGGT(%u) SETUP send scanPtr=%u numCtes=%u",
         instance(), scanptr.i, scanptr.p->m_numCtes));
+  /* RONDB-1120 P2c hardening: one sequence queryTag per query — the
+   * identity key on every node (SETUP_REQ field + aggKeys section +
+   * identWords), never the recyclable scanptr.i. */
+  scanptr.p->m_joinAggQueryTag = (c_joinAggQueryTagCounter++) & 0xFFFF;
   scanptr.p->m_joinAggNodes->m_aggNodes.clear();
   scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
   scanptr.p->m_aggNodesOutstanding = 0;
@@ -31019,6 +31024,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       req->resultData = scanptr.p->m_aggReceiverId;
       req->routeRef = reference();
       req->cteIndex = RNIL;  // Main aggregation, not a CTE
+      req->queryTag = scanptr.p->m_joinAggQueryTag;
 
       SectionHandle handle(this);
       Uint32 aggPtrI = RNIL;
@@ -31135,6 +31141,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         req->resultData = scanptr.p->m_aggReceiverId;
         req->routeRef = reference();
         req->cteIndex = c;  // CTE index so CONF handler can route response
+        req->queryTag = scanptr.p->m_joinAggQueryTag;
 
         SectionHandle handle(this);
         Uint32 aggPtrI = RNIL;
@@ -31394,7 +31401,7 @@ bool Dbtc::buildAggKeysSection(Signal *signal, ScanRecordPtr scanptr) {
   }
   Uint32 idx = 0;
   keyData[idx++] = QUERY_TAG_MARKER;
-  keyData[idx++] = scanptr.i;
+  keyData[idx++] = scanptr.p->m_joinAggQueryTag;
   NdbNodeBitmask nodes = scanptr.p->m_joinAggNodes->m_aggNodes;
   for (Uint32 nid = nodes.find_first();
        nid != NdbNodeBitmask::NotFound;

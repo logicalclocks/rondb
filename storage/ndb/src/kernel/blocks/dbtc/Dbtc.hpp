@@ -2169,6 +2169,8 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     Uint32 m_aggResultRows;  // Total main aggregate rows reported by DBLQH
     Uint32 m_aggNodesOutstanding;
+    Uint32 m_joinAggQueryTag;      // Identity tag for this query's SETUPs
+                                   // (sequence, NOT scanptr.i)
     bool m_joinAgg;
     bool m_hasMainAggProgram;      // True if main query has an agg program
     bool m_aggPhaseFailed;         // Error received during current agg phase
@@ -3257,6 +3259,14 @@ class Dbtc : public SimulatedBlock {
 
   BlockReference cndbcntrblockref;
   BlockInstance cspjInstanceRR;  // SPJ instance round-robin counter
+  /* RONDB-1120 P2c hardening: per-instance sequence for the JoinAgg
+   * identity queryTag (16-bit wrapping — the identWord packs 16 bits).
+   * scanPtr.i recycles immediately and RELEASE is fire-and-forget, so
+   * back-to-back scans in one transaction could alias a stale identity
+   * entry; the sequence makes that impossible within any realistic
+   * window.  A transaction is bound to one TC instance, so per-instance
+   * uniqueness suffices. */
+  Uint32 c_joinAggQueryTagCounter;
 
   Uint16 csignalKey;
   Uint16 csystemnodes;
