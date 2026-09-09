@@ -183,14 +183,40 @@ func Compare(ref, got *exec.Result, opt Options) Report {
 		rep.HeaderOnly = true
 	}
 	kinds := make([]kind, len(ref.Columns))
+	hasFloat := false
 	for i := range kinds {
 		if i < len(ref.Types) {
 			kinds[i] = kindOf(ref.Types[i])
+			hasFloat = hasFloat || kinds[i] == kFloat
 		}
 	}
 	if len(ref.Rows) != len(got.Rows) {
 		rep.Reason = fmt.Sprintf("row count %d vs %d", len(ref.Rows), len(got.Rows))
 		rep.Diff = rowDiff(ref.Rows, got.Rows, kinds, opt)
+		return rep
+	}
+	if !opt.Ordered && hasFloat {
+		missing, extra := matchUnorderedRows(ref.Rows, got.Rows, kinds, opt.Tolerance)
+		if len(missing) != 0 || len(extra) != 0 {
+			rep.Reason = fmt.Sprintf("unordered rows differ: %d missing, %d extra", len(missing), len(extra))
+			var diff strings.Builder
+			lines := 0
+			for _, side := range []struct {
+				sign string
+				rows [][]exec.Cell
+			}{{"-", missing}, {"+", extra}} {
+				for _, row := range side.rows {
+					if lines == 20 {
+						break
+					}
+					fmt.Fprintf(&diff, "%s %s\n", side.sign, rowText(row))
+					lines++
+				}
+			}
+			rep.Diff = diff.String()
+			return rep
+		}
+		rep.Equal = true
 		return rep
 	}
 	refRows, gotRows := ref.Rows, got.Rows
@@ -218,6 +244,98 @@ func Compare(ref, got *exec.Result, opt Options) Report {
 	}
 	rep.Equal = true
 	return rep
+}
+
+// nonFloatKey partitions candidates by cells that require exact canonical
+// equality. Length prefixes and a separate NULL tag avoid key collisions.
+func nonFloatKey(row []exec.Cell, kinds []kind) string {
+	var b strings.Builder
+	for i, k := range kinds {
+		if k == kFloat {
+			continue
+		}
+		if row[i].Null {
+			b.WriteString("N;")
+		} else {
+			value := canonical(row[i], k)
+			fmt.Fprintf(&b, "%d:%s", len(value), value)
+		}
+	}
+	return b.String()
+}
+
+// matchUnorderedRows finds a maximum one-to-one matching using cellsEqual.
+// Float tolerance is not transitive: neither sorting nor greedy matching
+// suffices. An augmenting path can move an earlier match to another row.
+// Inputs are read-only; every row occurrence can be consumed only once.
+func matchUnorderedRows(ref, got [][]exec.Cell, kinds []kind, tol float64) (missing, extra [][]exec.Cell) {
+	groups := map[string][]int{}
+	for j, row := range got {
+		if len(row) == len(kinds) {
+			key := nonFloatKey(row, kinds)
+			groups[key] = append(groups[key], j)
+		}
+	}
+	edges := make([][]int, len(ref))
+	for i, row := range ref {
+		if len(row) != len(kinds) {
+			continue
+		}
+		for _, j := range groups[nonFloatKey(row, kinds)] {
+			equal := true
+			for c, k := range kinds {
+				if !cellsEqual(row[c], got[j][c], k, tol) {
+					equal = false
+					break
+				}
+			}
+			if equal {
+				edges[i] = append(edges[i], j)
+			}
+		}
+	}
+	owner := make([]int, len(got))
+	for j := range owner {
+		owner[j] = -1
+	}
+	var augment func(int, []bool) bool
+	augment = func(i int, seen []bool) bool {
+		// Prefer a free row to avoid long reassignment chains for duplicates.
+		for _, j := range edges[i] {
+			if !seen[j] && owner[j] == -1 {
+				owner[j] = i
+				return true
+			}
+		}
+		for _, j := range edges[i] {
+			if seen[j] {
+				continue
+			}
+			seen[j] = true
+			if augment(owner[j], seen) {
+				owner[j] = i
+				return true
+			}
+		}
+		return false
+	}
+	for i := range ref {
+		augment(i, make([]bool, len(got)))
+	}
+	matched := make([]bool, len(ref))
+	for j, i := range owner {
+		if i == -1 {
+			extra = append(extra, got[j])
+		} else {
+			matched[i] = true
+		}
+	}
+	for i, row := range ref {
+		if !matched[i] {
+			missing = append(missing, row)
+		}
+	}
+	return missing, extra
 }
 
 func sortedRows(rows [][]exec.Cell, kinds []kind) [][]exec.Cell {

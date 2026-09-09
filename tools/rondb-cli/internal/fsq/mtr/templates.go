@@ -114,7 +114,7 @@ func RenderTemplatesTest(cs []cases.Case, db string) string {
 			if c.ExpectReject != nil {
 				out := fmt.Sprintf("$MYSQL_TMP_DIR/rej_%s_%d.out", fileID(c.ID), i)
 				fmt.Fprintf(&b, "# expected clean rejection (%s): %s\n", c.ExpectReject.Finding, c.ExpectReject.Pattern)
-				fmt.Fprintf(&b, "--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D %s --execute-file $QUERY_FILE > %s 2>&1 || true\n", db, out)
+				fmt.Fprintf(&b, "--error 1\n--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D %s --execute-file $QUERY_FILE > %s 2>&1\n", db, out)
 				fmt.Fprintf(&b, "--exec grep -qF '%s' %s\n--remove_file %s\n--remove_file $QUERY_FILE\n", c.ExpectReject.Pattern, out, out)
 				continue
 			}

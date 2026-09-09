@@ -26,6 +26,8 @@
 package canon
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/exec"
@@ -95,5 +97,94 @@ func TestCompareOrderAndHeaders(t *testing.T) {
 	}
 	if r := Compare(ref, res(nil, nil), Options{}); r.Equal {
 		t.Error("rows vs an empty result must fail")
+	}
+}
+
+func TestCompareFloatMultiset(t *testing.T) {
+	cols := []string{"f", "s"}
+	types := []string{"DOUBLE", "VARCHAR"}
+	ref := res(cols, types,
+		[]exec.Cell{cell("1"), cell("a")},
+		[]exec.Cell{cell("1"), cell("b")})
+	got := res(cols, nil,
+		[]exec.Cell{cell("0.9999999995"), cell("b")},
+		[]exec.Cell{cell("1.0000000005"), cell("a")})
+	wantRef := res(cols, types,
+		[]exec.Cell{cell("1"), cell("a")},
+		[]exec.Cell{cell("1"), cell("b")})
+	wantGot := res(cols, nil,
+		[]exec.Cell{cell("0.9999999995"), cell("b")},
+		[]exec.Cell{cell("1.0000000005"), cell("a")})
+	if r := Compare(ref, got, Options{}); !r.Equal {
+		t.Fatalf("tolerant multiset must match: %s\n%s", r.Reason, r.Diff)
+	}
+	if !reflect.DeepEqual(ref, wantRef) || !reflect.DeepEqual(got, wantGot) {
+		t.Fatal("comparison must not mutate input results")
+	}
+	if r := Compare(ref, got, Options{Ordered: true}); r.Equal {
+		t.Fatal("ordered comparison must still detect reordered rows")
+	}
+	if r := Compare(ref, got, Options{Tolerance: 1e-12}); r.Equal {
+		t.Fatal("a tighter tolerance must reject these differences")
+	}
+}
+
+func TestCompareFloatReassignment(t *testing.T) {
+	// The first reference can match either actual row, but the second
+	// can match only 1. A greedy first match must be reassigned.
+	for _, typ := range []string{"FLOAT", "DOUBLE"} {
+		ref := res([]string{"f"}, []string{typ},
+			[]exec.Cell{cell("1.00000000075")}, []exec.Cell{cell("1")})
+		for _, got := range []*exec.Result{
+			res([]string{"f"}, nil, []exec.Cell{cell("1")}, []exec.Cell{cell("1.0000000015")}),
+			res([]string{"f"}, nil, []exec.Cell{cell("1.0000000015")}, []exec.Cell{cell("1")}),
+		} {
+			if r := Compare(ref, got, Options{}); !r.Equal {
+				t.Fatalf("%s needs one-to-one reassignment: %s", typ, r.Diff)
+			}
+		}
+	}
+}
+
+func TestCompareFloatMultiplicityAndDiff(t *testing.T) {
+	ref := res([]string{"f"}, []string{"DOUBLE"},
+		[]exec.Cell{cell("1")}, []exec.Cell{cell("1")})
+	good := res([]string{"f"}, nil,
+		[]exec.Cell{cell("1.0000000005")}, []exec.Cell{cell("0.9999999995")})
+	if r := Compare(ref, good, Options{}); !r.Equal {
+		t.Fatal("two matching occurrences must pass")
+	}
+	bad := res([]string{"f"}, nil,
+		[]exec.Cell{cell("1.0000000005")}, []exec.Cell{cell("2")})
+	r := Compare(ref, bad, Options{})
+	if r.Equal || !strings.Contains(r.Diff, "- 1\n") || !strings.Contains(r.Diff, "+ 2\n") {
+		t.Fatalf("duplicate counts must be preserved: %+v", r)
+	}
+	if strings.Contains(r.Diff, "1.0000000005") {
+		t.Fatal("a row already matched within tolerance must not appear in the diff")
+	}
+}
+
+func TestCompareFloatExactColumns(t *testing.T) {
+	cols := []string{"f", "d", "ts", "s"}
+	ref := res(cols, []string{"DOUBLE", "DECIMAL", "TIMESTAMP", "VARCHAR"},
+		[]exec.Cell{cell("1"), cell("10.50"), cell("2026-05-01 12:00:00.000"), null})
+	got := res(cols, nil,
+		[]exec.Cell{cell("1.0000000005"), cell("10.5"), cell("2026-05-01 12:00:00"), null})
+	if r := Compare(ref, got, Options{}); !r.Equal {
+		t.Fatalf("exact-column grouping must preserve canonical equality: %s", r.Diff)
+	}
+	got.Rows[0][3] = cell("NULL")
+	if r := Compare(ref, got, Options{}); r.Equal {
+		t.Fatal("SQL NULL must differ from the string NULL")
+	}
+	got.Rows[0][3] = null
+	got.Rows[0][1] = cell("10.5000000001")
+	if r := Compare(ref, got, Options{}); r.Equal {
+		t.Fatal("float tolerance must not apply to DECIMAL")
+	}
+	got.Rows[0] = got.Rows[0][:1]
+	if r := Compare(ref, got, Options{}); r.Equal {
+		t.Fatal("a malformed row width must fail")
 	}
 }

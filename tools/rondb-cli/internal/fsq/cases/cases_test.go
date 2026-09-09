@@ -26,10 +26,13 @@
 package cases
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/bind"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/data"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/emit"
 )
 
 func TestEnumerate(t *testing.T) {
@@ -102,7 +105,11 @@ func TestBoundText(t *testing.T) {
 	if s := byID["S6-cte-k21"].Statements[0].RonSQL; !strings.HasPrefix(s, "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5)") {
 		t.Errorf("S6 CTE template: %s", s)
 	}
-	if m := byID["S6-cte-k21"].Statements[0].MySQL; !strings.Contains(m, "WHERE hopsworks_collect_rank <= 5") || !strings.Contains(m, "`test`.`transactions_1`") {
+	collect := byID["S6-cte-k21"]
+	if len(collect.Groups) != 1 || collect.Groups[0].MySQL == nil {
+		t.Fatal("collect production MySQL twin is missing")
+	}
+	if m := *collect.Groups[0].MySQL; !strings.Contains(m, "WHERE hopsworks_collect_rank <= 5") || !strings.Contains(m, "`test`.`transactions_1`") {
 		t.Errorf("collect MySQL twin binding: %s", m)
 	}
 	if s := byID["S9-a4-EUR-w90d"].Statements[0].RonSQL; !strings.Contains(s, "WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` >= '2026-03-03 00:00:00';") {
@@ -122,5 +129,133 @@ func TestBoundText(t *testing.T) {
 	}
 	if byID["S6-cte-k21"].ExpectReject == nil || byID["EDGE-F1-string-reuse"].Hazard != "F1" {
 		t.Error("expectation table wiring")
+	}
+}
+
+func TestEdgeShapeAssociations(t *testing.T) {
+	all, err := Enumerate(Config{DB: "test", Scale: data.NewScale(0.01)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edges := 0
+	foundBinary := false
+	for _, c := range all {
+		if c.Shape != "EDGE" {
+			continue
+		}
+		edges++
+		if len(c.RelatedShapes) == 0 || !c.MatchesShapes(map[string]bool{"EDGE": true}) {
+			t.Fatalf("%s must retain EDGE and have serving-shape associations", c.ID)
+		}
+		for _, shape := range c.RelatedShapes {
+			if !c.MatchesShapes(map[string]bool{shape: true}) {
+				t.Fatalf("%s is not selectable through %s", c.ID, shape)
+			}
+		}
+		if c.ID == "EDGE-comp-binary" {
+			foundBinary = true
+			if !c.MatchesShapes(map[string]bool{"S7": true}) || !c.MatchesShapes(map[string]bool{"S8": true}) {
+				t.Fatal("binary projection must contribute to S7 and S8")
+			}
+		}
+	}
+	if !foundBinary || edges != len(edgeShapes) {
+		t.Fatal("edge associations and enumerated cases have drifted")
+	}
+	c := Case{Shape: "EDGE", RelatedShapes: []string{"S7", "S8", "S7", "EDGE"}}
+	if got := strings.Join(c.Shapes(), ","); got != "EDGE,S7,S8" {
+		t.Fatalf("shape associations must be unique and stable: %s", got)
+	}
+	if !c.MatchesShapes(nil) || c.MatchesShapes(map[string]bool{}) ||
+		c.MatchesShapes(map[string]bool{"S1": true}) {
+		t.Fatal("all, empty and unrelated selections must retain their meaning")
+	}
+	b := &builder{}
+	b.add(Case{ID: "EDGE-unmapped", Shape: "EDGE"})
+	if len(b.errs) != 1 || len(b.out) != 0 {
+		t.Fatal("new edge probes must not silently omit their shape association")
+	}
+}
+
+func TestBoundStatementGroups(t *testing.T) {
+	all, err := Enumerate(Config{DB: "test", Scale: data.NewScale(0.01)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snowflakes := 0
+	for _, c := range all {
+		if c.Origin != "hopsworks" {
+			continue
+		}
+		var flattened []Statement
+		for _, group := range c.Groups {
+			if group.MySQL == nil || group.DTO.QueryOnline == nil {
+				t.Fatalf("%s lost its production MySQL counterpart", c.ID)
+			}
+			if bind.Count(*group.MySQL) != 0 {
+				t.Fatalf("%s has an unbound MySQL marker", c.ID)
+			}
+			flattened = append(flattened, group.Statements...)
+			if c.ID == "S7-2hop-k21" || c.ID == "S8-chains-k21" {
+				if len(group.DTO.SnowflakeTemplates) == 0 {
+					continue
+				}
+				snowflakes++
+				wantCount, wantJoin := 1, "INNER JOIN"
+				if c.ID == "S8-chains-k21" {
+					wantCount, wantJoin = 2, "LEFT JOIN"
+				}
+				if len(group.Statements) != wantCount || !strings.Contains(*group.MySQL, wantJoin) {
+					t.Fatalf("%s lost its grouped snowflake relationship: %+v", c.ID, group)
+				}
+			}
+		}
+		if !reflect.DeepEqual(flattened, c.Statements) {
+			t.Fatalf("%s changed the flattened L1/MTR statements", c.ID)
+		}
+	}
+	if snowflakes != 2 {
+		t.Fatal("missing single-template or per-chain snowflake group")
+	}
+}
+
+func TestBindStatementTwinPresenceAndErrors(t *testing.T) {
+	b := &builder{cfg: Config{Now: data.FSNow}}
+	keys := keyVals{"k": bind.Scalar("21")}
+	for _, kind := range []string{"aggregate", "snowflake", "mysql-only"} {
+		t.Run(kind, func(t *testing.T) {
+			dto := emit.Statement{
+				PreparedStatementIndex:      7,
+				PreparedStatementParameters: []emit.Param{{Name: "k", Index: 1}},
+				QueryOnline:                 strp("SELECT ? AS k"),
+				Prefix:                      strp("p_"),
+			}
+			switch kind {
+			case "aggregate":
+				dto.QueryRonsql = strp("SELECT ? AS k;")
+			case "snowflake":
+				dto.SnowflakeTemplates = []string{"SELECT ? AS k;", "SELECT ? AS other;"}
+			}
+			group, err := b.bindStatement(dto, keys)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if group.MySQL == nil || *group.MySQL != "SELECT 21 AS k" ||
+				!reflect.DeepEqual(group.DTO, dto) {
+				t.Fatal("binding must retain the DTO metadata and production query")
+			}
+			if len(group.Statements) != dto.TemplateCount() {
+				t.Fatal("the group must retain all RonSQL templates, including zero")
+			}
+			dto.QueryOnline = strp("SELECT ? AS k, ? AS missing")
+			if _, err := b.bindStatement(dto, keys); err == nil || !strings.Contains(err.Error(), "mysql queryOnline (DTO 7)") {
+				t.Fatalf("MySQL binding failure must be reported: %v", err)
+			}
+			dto.QueryOnline = nil
+			group, err = b.bindStatement(dto, keys)
+			if err != nil || group.MySQL != nil {
+				t.Fatal("an absent MySQL query must remain explicit, never fall back to RonSQL")
+			}
+		})
 	}
 }

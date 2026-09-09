@@ -270,7 +270,8 @@ SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SU
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
 # expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out 2>&1 || true
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out 2>&1
 --exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out
 --remove_file $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out
 --remove_file $QUERY_FILE
@@ -294,7 +295,8 @@ SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` W
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
 # expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out 2>&1 || true
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out 2>&1
 --exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out
 --remove_file $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out
 --remove_file $QUERY_FILE
@@ -318,7 +320,8 @@ SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` W
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
 # expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out 2>&1 || true
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out 2>&1
 --exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out
 --remove_file $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out
 --remove_file $QUERY_FILE
@@ -950,7 +953,8 @@ SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1
 SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;
 EOF
 # expected clean rejection (F6): arithmetic operation results overflow
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out 2>&1 || true
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out 2>&1
 --exec grep -qF 'arithmetic operation results overflow' $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out
 --remove_file $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out
 --remove_file $QUERY_FILE
@@ -1106,7 +1110,8 @@ WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_p
 WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
 EOF
 # expected clean rejection (F7): Unsupported column type
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out 2>&1 || true
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out 2>&1
 --exec grep -qF 'Unsupported column type' $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out
 --remove_file $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out
 --remove_file $QUERY_FILE

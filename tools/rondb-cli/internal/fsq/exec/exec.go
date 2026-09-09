@@ -336,23 +336,47 @@ func jsonErrDetail(body []byte, err error) string {
 }
 
 func ParseJSONData(body []byte) ([]string, [][]Cell, error) {
-	dec := json.NewDecoder(bytes.NewReader(body))
+	// Validate the whole document before extracting rows. Token decoding
+	// alone can otherwise accept a truncated wrapper or trailing garbage.
+	// RawMessage preserves numeric tokens and SyntaxError offsets (F9).
+	var document json.RawMessage
+	if err := json.Unmarshal(body, &document); err != nil {
+		return nil, nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(document))
 	dec.UseNumber()
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, nil, err
 	}
 	if tok == json.Delim('{') {
-		// {"data": [...]} — skip to the array
-		for {
-			t, err := dec.Token()
+		// Only a top-level data member carries rows; metadata may contain
+		// the string "data" or nested members with that name.
+		var data json.RawMessage
+		for dec.More() {
+			key, err := dec.Token()
 			if err != nil {
 				return nil, nil, err
 			}
-			if key, ok := t.(string); ok && key == "data" {
-				break
+			var value json.RawMessage
+			if err := dec.Decode(&value); err != nil {
+				return nil, nil, err
+			}
+			if key == "data" {
+				if data != nil {
+					return nil, nil, fmt.Errorf("duplicate data member")
+				}
+				data = value
 			}
 		}
+		if _, err := dec.Token(); err != nil { // '}'
+			return nil, nil, err
+		}
+		if data == nil {
+			return nil, nil, fmt.Errorf("missing top-level data member")
+		}
+		dec = json.NewDecoder(bytes.NewReader(data))
+		dec.UseNumber()
 		tok, err = dec.Token()
 		if err != nil {
 			return nil, nil, err
@@ -570,6 +594,11 @@ func (c *CLI) run(ctx context.Context, sqlText, format, explain string) (stdout,
 	runErr := cmd.Run()
 	latency = time.Since(start)
 	if runErr != nil {
+		// CommandContext kills the child on cancellation. Preserve the
+		// inner context error before interpreting that signal as a crash.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return out.String(), errb.String(), -1, false, latency, ctxErr
+		}
 		var ee *oexec.ExitError
 		if errors.As(runErr, &ee) {
 			if ee.ProcessState != nil && ee.ProcessState.ExitCode() < 0 {
@@ -584,13 +613,13 @@ func (c *CLI) run(ctx context.Context, sqlText, format, explain string) (stdout,
 
 func (c *CLI) Query(ctx context.Context, sqlText string) Response {
 	stdout, stderr, exit, signaled, latency, err := c.run(ctx, sqlText, "JSON", "")
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			return Response{Outcome: Timeout, Message: err.Error()}
-		}
-		return Response{Outcome: Error, Message: err.Error()}
-	}
 	res := &Result{Raw: stdout, Latency: latency}
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Response{Outcome: Timeout, Message: err.Error(), Result: res}
+		}
+		return Response{Outcome: Error, Message: err.Error(), Result: res}
+	}
 	switch {
 	case signaled:
 		return Response{Outcome: Crash, Message: strings.TrimSpace(stdout + "\n" + stderr), Result: res}

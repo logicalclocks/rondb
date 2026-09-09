@@ -45,15 +45,26 @@ import (
 
 // Expect is a known engine outcome for a statement.
 type Expect struct {
-	Finding string // ledger id, e.g. "F0"
-	Pattern string // substring of the RonSQL error (rejections) or note (wrong results)
+	Finding string      // ledger id, e.g. "F0"
+	Pattern string      // substring of the RonSQL error (rejections) or note (wrong results)
+	Wrong   *WrongValue // exact single-row mismatch; nil grants no wrong-result exemption
+	// UnquotedTemporal lists the only output columns eligible for F9 matching.
+	UnquotedTemporal []string
 }
 
 // Statement is one bound statement of a case.
 type Statement struct {
 	Label  string
 	RonSQL string // the text run on RonSQL and, for L1, on MySQL
-	MySQL  string // production MySQL twin (E4); empty when identical to RonSQL
+}
+
+// StatementGroup preserves one emitted DTO and its bound query family.
+// Several RonSQL templates can correspond to one production MySQL query.
+// A MySQL-only DTO is retained with an empty Statements slice.
+type StatementGroup struct {
+	DTO        emit.Statement // original, unbound metadata; treat as read-only
+	MySQL      *string        // bound queryOnline; nil means absent, never a fallback
+	Statements []Statement    // bound RonSQL templates, in DTO order
 }
 
 // Case is one verification case.
@@ -64,6 +75,7 @@ type Case struct {
 	Note         string
 	Origin       string // "hopsworks" (emitter port) | "framework" (target/edge shape)
 	Statements   []Statement
+	Groups       []StatementGroup
 	Ordered      bool
 	ExpectReject *Expect
 	KnownWrong   *Expect
@@ -76,6 +88,36 @@ type Case struct {
 	// Canon selects the MTR-side canonicalization applied to both engines'
 	// TEXT output before the diff: "" (byte-strict) or CanonNumeric.
 	Canon string
+	// RelatedShapes associates edge probes with serving-shape checks.
+	// Shape remains the primary label (EDGE) used by the MTR fixtures.
+	RelatedShapes []string
+}
+
+// Shapes returns each associated shape once, with the primary label first.
+func (c Case) Shapes() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, shape := range append([]string{c.Shape}, c.RelatedShapes...) {
+		if shape != "" && !seen[shape] {
+			out = append(out, shape)
+			seen[shape] = true
+		}
+	}
+	return out
+}
+
+// MatchesShapes selects the primary label or any related serving shape.
+// A nil selection means all cases; selecting several shapes never repeats a case.
+func (c Case) MatchesShapes(selected map[string]bool) bool {
+	if selected == nil {
+		return true
+	}
+	for _, shape := range c.Shapes() {
+		if selected[shape] {
+			return true
+		}
+	}
+	return false
 }
 
 // CanonNumeric strips trailing fractional zeros on both sides (RonSQL prints
@@ -194,15 +236,15 @@ func (b *builder) keyArg(fg spec.FeatureGroup, name string, values []interface{}
 	return bind.List(lits)
 }
 
-// bindStatement renders the RonSQL template(s) and the MySQL twin of one
-// DTO with the given key values; the window marker gets Now - window and
-// the MySQL collect cap gets N.
-func (b *builder) bindStatement(st emit.Statement, keys keyVals) ([]Statement, error) {
+// bindStatement retains one DTO and binds both query families. Window
+// markers use Now - window; the MySQL collect cap gets N.
+func (b *builder) bindStatement(st emit.Statement, keys keyVals) (StatementGroup, error) {
+	group := StatementGroup{DTO: st}
 	var args []bind.Arg
 	for _, p := range st.PreparedStatementParameters {
 		a, ok := keys[p.Name]
 		if !ok {
-			return nil, fmt.Errorf("no value for parameter %s", p.Name)
+			return StatementGroup{}, fmt.Errorf("no value for parameter %s", p.Name)
 		}
 		args = append(args, a)
 	}
@@ -210,38 +252,43 @@ func (b *builder) bindStatement(st emit.Statement, keys keyVals) ([]Statement, e
 	if st.AggregateWindow != nil {
 		ronArgs = append(ronArgs, bind.Scalar(bind.Timestamp(b.cfg.Now.Add(-time.Duration(*st.AggregateWindow)*time.Second))))
 	}
-	var out []Statement
+	if st.QueryOnline != nil {
+		mysqlArgs := append([]bind.Arg(nil), ronArgs...)
+		if st.CollectN != nil {
+			mysqlArgs = append(mysqlArgs, bind.Scalar(bind.Int(int64(*st.CollectN))))
+		}
+		twin, err := bind.Bind(*st.QueryOnline, mysqlArgs)
+		if err != nil {
+			return StatementGroup{}, fmt.Errorf("mysql queryOnline (DTO %d): %w", st.PreparedStatementIndex, err)
+		}
+		group.MySQL = &twin
+	}
 	if st.QueryRonsql != nil {
 		r, err := bind.Bind(*st.QueryRonsql, ronArgs)
 		if err != nil {
-			return nil, fmt.Errorf("ronsql: %w", err)
+			return StatementGroup{}, fmt.Errorf("ronsql: %w", err)
 		}
-		twin := ""
-		if st.QueryOnline != nil {
-			mArgs := append([]bind.Arg(nil), args...)
-			if st.AggregateWindow != nil {
-				mArgs = append(mArgs, ronArgs[len(ronArgs)-1])
-			}
-			if st.CollectN != nil {
-				mArgs = append(mArgs, bind.Scalar(bind.Int(int64(*st.CollectN))))
-			}
-			if m, err := bind.Bind(*st.QueryOnline, mArgs); err == nil {
-				twin = m
-			}
-		}
-		out = append(out, Statement{Label: "ronsql", RonSQL: r, MySQL: twin})
+		group.Statements = append(group.Statements, Statement{Label: "ronsql", RonSQL: r})
 	}
 	for i, t := range st.SnowflakeTemplates {
 		r, err := bind.Bind(t, args)
 		if err != nil {
-			return nil, fmt.Errorf("snowflake template %d: %w", i, err)
+			return StatementGroup{}, fmt.Errorf("snowflake template %d: %w", i, err)
 		}
-		out = append(out, Statement{Label: fmt.Sprintf("snowflake[%d]", i), RonSQL: r})
+		group.Statements = append(group.Statements, Statement{Label: fmt.Sprintf("snowflake[%d]", i), RonSQL: r})
 	}
-	return out, nil
+	return group, nil
 }
 
 func (b *builder) add(c Case) {
+	if c.Shape == "EDGE" {
+		shapes, ok := edgeShapes[c.ID]
+		if !ok || len(shapes) == 0 {
+			b.fail(c.ID, fmt.Errorf("edge case has no serving-shape association"))
+			return
+		}
+		c.RelatedShapes = append([]string(nil), shapes...)
+	}
 	if c.Canon == "" && b.needsNumericCanon(c) {
 		c.Canon = CanonNumeric
 	}
@@ -295,7 +342,8 @@ func (b *builder) emitCase(id, shape, mode, note string, v *spec.View, keys keyV
 			b.fail(id, err)
 			return
 		}
-		c.Statements = append(c.Statements, bound...)
+		c.Groups = append(c.Groups, bound)
+		c.Statements = append(c.Statements, bound.Statements...)
 	}
 	if len(c.Statements) == 0 {
 		b.fail(id, fmt.Errorf("no RonSQL statement emitted"))
@@ -488,16 +536,22 @@ func (b *builder) snowflakeStatement(depth int, c int64) string {
 	cust := b.fg(data.TCustomers)
 	sts, err := emit.Build(b.snowflakeView("s8b-src", depth, spec.JoinInner, false))
 	if err != nil {
+		b.fail(fmt.Sprintf("S8b-k%d", c), err)
 		return ""
 	}
 	for _, st := range sts {
 		if len(st.SnowflakeTemplates) > 0 {
 			bound, err := b.bindStatement(st, keyVals{"customer_id": b.keyArg(cust, "customer_id", ints(c))})
-			if err == nil && len(bound) > 0 {
-				return bound[0].RonSQL
+			if err != nil {
+				b.fail(fmt.Sprintf("S8b-k%d", c), err)
+				return ""
+			}
+			if len(bound.Statements) > 0 {
+				return bound.Statements[0].RonSQL
 			}
 		}
 	}
+	b.fail(fmt.Sprintf("S8b-k%d", c), fmt.Errorf("no bound snowflake template"))
 	return ""
 }
 
@@ -554,6 +608,39 @@ func sanitize(s string) string {
 }
 
 // ---- edge fixtures (data_model.md §11) --------------------------------------------
+
+// Explicit associations for shared edge primitives, not replacements for
+// emitted-shape cases. Direct collect probes do not replace the S6 CTE tests.
+var edgeShapes = map[string][]string{
+	"EDGE-null-ints":              {"S1"},
+	"EDGE-null-decimal":           {"S1"},
+	"EDGE-null-greatest":          {"S1", "S5"},
+	"EDGE-null-string-adjacent":   {"S1"},
+	"EDGE-null-avg":               {"S1"},
+	"EDGE-all-null":               {"S1"},
+	"EDGE-float-exact":            {"S1"},
+	"EDGE-float-rounding":         {"S1"},
+	"EDGE-date-range":             {"S1", "S4"},
+	"EDGE-big-safe":               {"S1"},
+	"EDGE-big-limits":             {"S1"},
+	"EDGE-decimal-large":          {"S1"},
+	"EDGE-big-overflow":           {"S1"},
+	"EDGE-str-in-list":            {"S10"},
+	"EDGE-str-null-vs-NULL":       {"S10"},
+	"EDGE-str-escapes":            {"S10"},
+	"EDGE-str-collation":          {"S4", "S10"},
+	"EDGE-ts3-cutoff":             {"S2"},
+	"EDGE-ts6-cutoff":             {"S2"},
+	"EDGE-ts0-batch":              {"S2", "S3"},
+	"EDGE-seq-order":              {"S6", "S6b"},
+	"EDGE-seq-boundary":           {"S6", "S6b"},
+	"EDGE-comp-hop":               {"S7", "S8", "S9"},
+	"EDGE-comp-swapped":           {"S7", "S8", "S9"},
+	"EDGE-comp-batch":             {"S7", "S8", "S9"},
+	"EDGE-comp-binary":            {"S7", "S8"},
+	"EDGE-F1-string-reuse":        {"S1"},
+	"EDGE-F1-string-reuse-nonull": {"S1"},
+}
 
 func (b *builder) edgeCases() {
 	e := func(id, note, sql string, ordered bool, expect, wrong *Expect, hazard string) {

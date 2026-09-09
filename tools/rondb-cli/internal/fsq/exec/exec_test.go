@@ -26,8 +26,14 @@
 package exec
 
 import (
+	"context"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseJSONData(t *testing.T) {
@@ -60,6 +66,41 @@ func TestParseJSONData(t *testing.T) {
 	}
 }
 
+func TestParseJSONDataEnvelope(t *testing.T) {
+	for _, body := range []string{
+		`{"data":[{"n":1}]`,
+		`{"data":[]} garbage`,
+		`[{"n":1}] {}`,
+		`{"data":[],"data":[{"n":1}]}`,
+		`{"metadata":{"data":[]}}`,
+		`{"metadata":"data"}`,
+		`{"data":null}`,
+		`{"data":{}}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			if _, _, err := ParseJSONData([]byte(body)); err == nil {
+				t.Fatal("invalid result envelope must be rejected")
+			}
+		})
+	}
+	for _, body := range []string{
+		`{"metadata":"data","data":[{"n":9007199254740993}],"extra":true}`,
+		`{"metadata":{"data":[]},"data":[{"n":9007199254740993}]}`,
+		` [{"n":9007199254740993}] `,
+	} {
+		t.Run(body, func(t *testing.T) {
+			cols, rows, err := ParseJSONData([]byte(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cols) != 1 || cols[0] != "n" || len(rows) != 1 ||
+				len(rows[0]) != 1 || rows[0][0].Null || rows[0][0].Text != "9007199254740993" {
+				t.Fatalf("numeric token changed: cols=%v rows=%+v", cols, rows)
+			}
+		})
+	}
+}
+
 func TestClassify(t *testing.T) {
 	if o, _ := Classify(http.StatusOK, ""); o != OK {
 		t.Error("200")
@@ -81,5 +122,80 @@ func TestClassify(t *testing.T) {
 	}
 	if h := ParseTextHeader("a\tb\n1\t2\n"); len(h) != 2 || h[1] != "b" {
 		t.Errorf("header %v", h)
+	}
+}
+
+func testCLI(t *testing.T, script string, timeout time.Duration) *CLI {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("CLI subprocess fixtures require a POSIX shell")
+	}
+	path := filepath.Join(t.TempDir(), "ronsql_cli")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return NewCLI(path, "", "test", timeout)
+}
+
+func TestCLIQueryDeadlines(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		cliTimeout  time.Duration
+		parentLimit time.Duration
+	}{
+		{"internal", 100 * time.Millisecond, 0},
+		{"parent", 30 * time.Second, 100 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// exec replaces the shell, leaving no descendant holding pipes
+			// open after CommandContext kills the process.
+			cli := testCLI(t, "exec sleep 30", tc.cliTimeout)
+			ctx := context.Background()
+			if tc.parentLimit > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.parentLimit)
+				defer cancel()
+			}
+			r := cli.Query(ctx, "SELECT 1;")
+			if r.Outcome != Timeout || !strings.Contains(r.Message, context.DeadlineExceeded.Error()) {
+				t.Fatalf("deadline must report TIMEOUT, got %+v", r)
+			}
+			if r.Result == nil || r.Result.Latency <= 0 {
+				t.Fatal("timeout must preserve result diagnostics")
+			}
+			if tc.parentLimit == 0 && ctx.Err() != nil {
+				t.Fatal("the internal deadline must not cancel the caller context")
+			}
+		})
+	}
+}
+
+func TestCLIQueryCancellation(t *testing.T) {
+	cli := testCLI(t, "exec sleep 30", 30*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	r := cli.Query(ctx, "SELECT 1;")
+	if r.Outcome != Error || !strings.Contains(r.Message, context.Canceled.Error()) {
+		t.Fatalf("cancellation must not be classified as CRASH or TIMEOUT: %+v", r)
+	}
+}
+
+func TestCLIQueryExitClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name, script string
+		want         Outcome
+	}{
+		{"success", `printf '[{"n":1}]'`, OK},
+		{"reject", "exit 1", CleanReject},
+		{"retryable", "exit 3", Retryable},
+		{"other-error", "exit 2", Error},
+		{"signal", "kill -KILL $$", Crash},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cli := testCLI(t, tc.script, 30*time.Second)
+			if r := cli.Query(context.Background(), "SELECT 1;"); r.Outcome != tc.want {
+				t.Fatalf("outcome=%s, want %s: %s", r.Outcome, tc.want, r.Message)
+			}
+		})
 	}
 }

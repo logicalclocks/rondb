@@ -24,8 +24,10 @@ outcomes), `HAZARD-SKIPPED`.
 ## 2. Deviations / notes
 
 - L1 compares the RonSQL statement text against the same text on MySQL.
-  The MySQL production twins are bound (`Statement.MySQL`) but only
-  consumed by E4.
+  After the E3 review, `Case.Groups` preserves each original DTO and its
+  bound production MySQL query alongside zero or more RonSQL templates.
+  MySQL-only DTOs are retained and missing twins are explicit. L1/MTR
+  still use the flattened RonSQL statements; E4 will consume the groups.
 - The requirements manifest of the review (A7) is present in a first
   form: every case carries its shape id and the SHAPE lines classify
   SUPPORTED / UNSUPPORTED / FAILED; `--requirements` strict mode is E8.

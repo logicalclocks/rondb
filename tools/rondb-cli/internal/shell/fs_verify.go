@@ -52,6 +52,7 @@ import (
 type caseResult struct {
 	ID        string            `json:"id"`
 	Shape     string            `json:"shape"`
+	Shapes    []string          `json:"shapes"`
 	Mode      string            `json:"mode"`
 	Status    string            `json:"status"`
 	LatencyMS float64           `json:"latencyMs"`
@@ -66,7 +67,7 @@ type caseResult struct {
 
 func isFailure(status string) bool {
 	switch status {
-	case "REJECT(expected)", "KNOWN-WRONG", "KNOWN-ERROR", "HEADER-ONLY", "SKIP", "HAZARD-SKIPPED":
+	case "REJECT(expected)", "REJECT(allowed)", "KNOWN-WRONG", "KNOWN-ERROR", "HEADER-ONLY", "SKIP", "HAZARD-SKIPPED":
 		return false
 	}
 	return !strings.HasPrefix(status, "PASS")
@@ -149,7 +150,7 @@ func (s *Shell) fsEngines(o verifyOpts) (*exec.MySQL, *exec.RDRS, *exec.CLI, err
 
 // runCase executes one case on one engine pair and classifies it.
 func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o verifyOpts) caseResult {
-	res := caseResult{ID: c.ID, Shape: c.Shape, Mode: c.Mode, Status: "PASS"}
+	res := caseResult{ID: c.ID, Shape: c.Shape, Shapes: c.Shapes(), Mode: c.Mode, Status: "PASS"}
 	if c.Hazard != "" && !o.includeHazards {
 		res.Status, res.Message = "HAZARD-SKIPPED", c.Hazard
 		return res
@@ -179,7 +180,8 @@ func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o
 			res.Rows = len(mysqlResp.Result.Rows)
 			if !rep.Equal {
 				res.Diff = rep.Diff
-				if c.KnownWrong != nil {
+				if c.KnownWrong.MatchesWrong(mysqlResp.Result, ronResp.Result,
+					canon.Options{Ordered: c.Ordered, Tolerance: o.tolerance}) {
 					res.Status, res.Message = "KNOWN-WRONG", c.KnownWrong.Finding+": "+rep.Reason
 					return res
 				}
@@ -216,7 +218,8 @@ func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o
 					res.Raw = res.Raw[:4096] + "…"
 				}
 			}
-			if ronResp.Outcome == exec.Error && c.KnownError != nil && strings.Contains(ronResp.Message, c.KnownError.Pattern) {
+			if c.KnownError.MatchesError(mysqlResp.Result, ronResp,
+				canon.Options{Ordered: c.Ordered, Tolerance: o.tolerance}) {
 				res.Status, res.Message = "KNOWN-ERROR", c.KnownError.Finding+": "+res.Message
 			}
 			return res
@@ -268,7 +271,7 @@ func (s *Shell) runFSVerify(args []string) error {
 		if o.caseID != "" && c.ID != o.caseID {
 			continue
 		}
-		if o.shapes != nil && !o.shapes[c.Shape] {
+		if !c.MatchesShapes(o.shapes) {
 			continue
 		}
 		selected = append(selected, c)
@@ -321,7 +324,7 @@ func (s *Shell) runFSVerify(args []string) error {
 		return engineErr
 	}
 	counts := map[string]int{}
-	byShape := map[string][]string{}
+	byShape := statusesByShape(results, o.shapes)
 	for _, r := range results {
 		line := fmt.Sprintf("CASE %s %s %s %s %.1f", r.ID, r.Shape, r.Mode, r.Status, r.LatencyMS)
 		if r.Message != "" {
@@ -334,7 +337,6 @@ func (s *Shell) runFSVerify(args []string) error {
 			fmt.Print(indent(r.Diff))
 		}
 		counts[r.Status]++
-		byShape[r.Shape] = append(byShape[r.Shape], r.Status)
 	}
 	var keys []string
 	for k := range counts {
@@ -363,7 +365,7 @@ func (s *Shell) runFSVerify(args []string) error {
 			return err
 		}
 		for _, r := range results {
-			if !isFailure(r.Status) && r.Status != "KNOWN-WRONG" && r.Status != "KNOWN-ERROR" {
+			if !isFailure(r.Status) && r.Status != "KNOWN-WRONG" && r.Status != "KNOWN-ERROR" && r.Status != "REJECT(allowed)" {
 				continue
 			}
 			base := filepath.Join(o.dumpDir, r.ID)
@@ -387,6 +389,20 @@ func (s *Shell) runFSVerify(args []string) error {
 	return nil
 }
 
+// statusesByShape includes edge evidence without changing global case counts.
+// With --shape, report only requested shapes, not partially selected relatives.
+func statusesByShape(results []caseResult, selected map[string]bool) map[string][]string {
+	out := map[string][]string{}
+	for _, r := range results {
+		for _, shape := range r.Shapes {
+			if selected == nil || selected[shape] {
+				out[shape] = append(out[shape], r.Status)
+			}
+		}
+	}
+	return out
+}
+
 // shapeStatus reports SUPPORTED / UNSUPPORTED / FAILED per shape
 // (framework_design.md §9, requirements report).
 func shapeStatus(statuses []string) string {
@@ -395,7 +411,7 @@ func shapeStatus(statuses []string) string {
 		switch {
 		case isFailure(st):
 			return "FAILED"
-		case st == "REJECT(expected)" || st == "KNOWN-WRONG" || st == "KNOWN-ERROR" || st == "HAZARD-SKIPPED":
+		case st == "REJECT(expected)" || st == "REJECT(allowed)" || st == "KNOWN-WRONG" || st == "KNOWN-ERROR" || st == "HAZARD-SKIPPED":
 			out = "UNSUPPORTED"
 		}
 	}
@@ -422,13 +438,20 @@ func (s *Shell) runFSShow(args []string) error {
 		return err
 	}
 	id, shape := a.str("case", ""), a.str("shape", "")
+	var shapes map[string]bool
+	if shape != "" {
+		shapes = map[string]bool{shape: true}
+	}
 	n := 0
 	for _, c := range all {
-		if (id != "" && c.ID != id) || (shape != "" && c.Shape != shape) {
+		if (id != "" && c.ID != id) || !c.MatchesShapes(shapes) {
 			continue
 		}
 		n++
 		fmt.Printf("=== %s: %s %s [%s] — %s\n", c.ID, c.Shape, c.Mode, c.Origin, c.Note)
+		if len(c.RelatedShapes) > 0 {
+			fmt.Printf("    related shapes: %s\n", strings.Join(c.RelatedShapes, ", "))
+		}
 		if c.ExpectReject != nil {
 			fmt.Printf("    expected rejection %s: %s\n", c.ExpectReject.Finding, c.ExpectReject.Pattern)
 		}
@@ -440,9 +463,14 @@ func (s *Shell) runFSShow(args []string) error {
 		}
 		for _, st := range c.Statements {
 			fmt.Printf("    [%s] %s\n", st.Label, st.RonSQL)
-			if st.MySQL != "" {
-				fmt.Printf("    [mysql twin] %s\n", strings.ReplaceAll(st.MySQL, "\n", " "))
+		}
+		for _, group := range c.Groups {
+			twin := "<absent>"
+			if group.MySQL != nil {
+				twin = strings.ReplaceAll(*group.MySQL, "\n", " ")
 			}
+			fmt.Printf("    [production MySQL, DTO %d, %d RonSQL templates] %s\n",
+				group.DTO.PreparedStatementIndex, len(group.Statements), twin)
 		}
 	}
 	if n == 0 {
