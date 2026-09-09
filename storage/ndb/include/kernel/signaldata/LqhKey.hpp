@@ -114,9 +114,12 @@ class LqhKeyReq {
   static void setJoinAggFlag(UintR &scanData, UintR val);
   static Uint8 getOuterJoinAggFlag(const UintR &scanData);
   static void setOuterJoinAggFlag(UintR &scanData, UintR val);
-  /* RONDB-1120 P1: ONE identity word (packIdentWord) follows the
-   * aggStateKey variableData word — identity resolution in DBLQH.
-   * DBSPJ-only. */
+  /* RONDB-1120 P3: when set, the single JoinAgg variableData word is
+   * the IDENTITY word (packIdentWord) — no aggStateKey travels on the
+   * wire; DBLQH resolves (transid, queryTag, cteId) node-locally and
+   * re-applies the leaf index.  When clear, the word is the raw
+   * aggStateKey (direct-DBLQH block tests / benches, which gate on
+   * their own SETUP_CONF).  DBSPJ-only. */
   static Uint8 getJoinAggIdentityFlag(const UintR &scanData);
   static void setJoinAggIdentityFlag(UintR &scanData, UintR val);
 

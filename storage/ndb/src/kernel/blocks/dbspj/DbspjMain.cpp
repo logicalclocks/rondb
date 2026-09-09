@@ -9179,39 +9179,43 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     Uint32 nodeId = refToNode(ref);
     LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
     const Uint32 cteId = treeNodePtr.p->m_cteId;
-    const Uint32 max_nodes = MAX_NDB_NODES;
-    Uint32 cteIdx = RNIL;
-    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
-      if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
-        cteIdx = i;
-        break;
-      }
-    }
-    ndbrequire(cteIdx != RNIL);
-    ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
-    Uint32 cteAggKey =
-        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
-    req->variableData[var_index + 4] = cteAggKey;
     agg_extra = 1;
-    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
       jam();
-      /* RONDB-1120 P1: identity word — CTE-feed lookups use the raw
-       * base key (leaf 0). */
+      /* RONDB-1120 P3: the identity word REPLACES the wire key —
+       * DBLQH resolves the CTE state by (transid, queryTag, cteId)
+       * with the raw base key (leaf 0), parking until the local
+       * SETUP processes. */
       LqhKeyReq::setJoinAggIdentityFlag(req->attrLen, 1);
-      req->variableData[var_index + 5] =
+      req->variableData[var_index + 4] =
           JoinAggregationState::packIdentWord(
               requestPtr.p->m_joinAggQueryTag, cteId, 0);
-      agg_extra = 2;
+    } else {
+      jam();
+      /* Legacy keyed form (no queryTag — unreachable from same-version
+       * DBTC; kept for robustness). */
+      const Uint32 max_nodes = MAX_NDB_NODES;
+      Uint32 cteIdx = RNIL;
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+          cteIdx = i;
+          break;
+        }
+      }
+      ndbrequire(cteIdx != RNIL);
+      ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+      req->variableData[var_index + 4] =
+          requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
     }
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_AGGREGATE_LEAF",
       instance(), treeNodePtr.p->m_node_no));
     /**
-     * Main query aggregate leaf: aggStateKey from m_aggStateKeys
-     * with multi-leaf star-schema encoding.
-     * aggStateKey is placed at var_index + 4, which assumes DBLQH's
-     * nextPos walk over variableData arrives here after:
+     * Main query aggregate leaf.  The single JoinAgg word (identity
+     * word, or raw aggStateKey in the legacy keyed form) is placed at
+     * var_index + 4, which assumes DBLQH's nextPos walk over
+     * variableData arrives here after:
      *   ApplicationAddressFlag=1 (2 words) + CorrFactorFlag=1 (2 words).
      */
     ndbassert(LqhKeyReq::getSameClientAndTcFlag(req->requestInfo) == 0);
@@ -9226,33 +9230,32 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       jam();
       LqhKeyReq::setOuterJoinAggFlag(req->attrLen, 1);
     }
-    Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
     Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-    /* RONDB-1120 P2c: pre-CONF the key is RNIL — send RNIL verbatim
-     * (encodeAggStateKey would mangle it into a non-RNIL garbage
-     * key); DBLQH resolves by the identity word, parking until the
-     * local SETUP processes. */
-    Uint32 encodedKey = (baseKey == RNIL)
-        ? RNIL
-        : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
-    req->variableData[var_index + 4] = encodedKey;
-    DEB_STAR_AGG(("(%u)DBPSJ STAR_AGG lookup_send: node=%u leafIdx=%u "
-                  "baseKey=%u encodedKey=0x%08x nodeId=%u",
-                  instance(),
-                  treeNodePtr.p->m_node_no,
-                  leafIdx,
-                  baseKey,
-                  encodedKey,
-                  nodeId));
     agg_extra = 1;
-    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
       jam();
-      /* RONDB-1120 P1: identity word — main aggregation. */
+      /* RONDB-1120 P3: identity word replaces the wire key — main
+       * aggregation, leafIdx re-encoded by DBLQH after resolution. */
       LqhKeyReq::setJoinAggIdentityFlag(req->attrLen, 1);
-      req->variableData[var_index + 5] =
+      req->variableData[var_index + 4] =
           JoinAggregationState::packIdentWord(
               requestPtr.p->m_joinAggQueryTag, RNIL, leafIdx);
-      agg_extra = 2;
+    } else {
+      jam();
+      /* Legacy keyed form. */
+      Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+      Uint32 encodedKey = (baseKey == RNIL)
+          ? RNIL
+          : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+      req->variableData[var_index + 4] = encodedKey;
+      DEB_STAR_AGG(("(%u)DBPSJ STAR_AGG lookup_send: node=%u leafIdx=%u "
+                    "baseKey=%u encodedKey=0x%08x nodeId=%u",
+                    instance(),
+                    treeNodePtr.p->m_node_no,
+                    leafIdx,
+                    baseKey,
+                    encodedKey,
+                    nodeId));
     }
   }
 
@@ -13204,21 +13207,20 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
      */
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
-    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
       jam();
-      /* RONDB-1120 P1: + identity word */
+      /* RONDB-1120 P3: the identity word REPLACES the key word —
+       * still exactly one agg word. */
       ScanFragReq::setJoinAggIdentityFlag(req->requestInfo, 1);
-      agg_extra += 1;
     }
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
-    if (requestPtr.p->m_joinAggQueryTag <= 0xFFFF) {
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
       jam();
-      /* RONDB-1120 P1: + identity word */
+      /* RONDB-1120 P3: identity word replaces the key word. */
       ScanFragReq::setJoinAggIdentityFlag(req->requestInfo, 1);
-      agg_extra += 1;
     }
     if (!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
       jam();
@@ -13520,49 +13522,54 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           }
           ndbrequire(cteIdx != RNIL);
           ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
-          Uint32 cteAggKey =
-              requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
           Uint32 vpos = var_index + 2;
-          req->variableData[vpos++] = cteAggKey;
           if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
             jam();
-            /* RONDB-1120 P1: identity word — CTE body scans feed the
-             * CTE's state with the raw base key (leaf 0). */
+            /* RONDB-1120 P3: the identity word REPLACES the wire key
+             * — CTE body scans feed the CTE's state with the raw base
+             * key (leaf 0), resolved node-locally by DBLQH. */
             req->variableData[vpos++] =
                 JoinAggregationState::packIdentWord(
                     requestPtr.p->m_joinAggQueryTag, cteId, 0);
+          } else {
+            jam();
+            /* Legacy keyed form (no queryTag). */
+            req->variableData[vpos++] =
+                requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
           }
           DEB_CTE(("(%u) Send SCAN_FRAGREQ from node: %u with T_CTE_SCAN",
             instance(), treeNodePtr.p->m_node_no));
         } else {
           jam();
           ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
-          Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
           Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-          /* RONDB-1120 P2c: RNIL passes through un-encoded — the
-           * identity word is authoritative in DBLQH (see the
-           * lookup_send twin). */
-          Uint32 scanEncodedKey = (baseKey == RNIL)
-              ? RNIL
-              : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
           Uint32 vpos = var_index + 2;
-          req->variableData[vpos++] = scanEncodedKey;
           if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
             jam();
-            /* RONDB-1120 P1: identity word — main aggregation. */
+            /* RONDB-1120 P3: identity word replaces the wire key —
+             * main aggregation, leafIdx re-encoded by DBLQH. */
             req->variableData[vpos++] =
                 JoinAggregationState::packIdentWord(
                     requestPtr.p->m_joinAggQueryTag, RNIL, leafIdx);
+          } else {
+            jam();
+            /* Legacy keyed form. */
+            Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+            Uint32 scanEncodedKey = (baseKey == RNIL)
+                ? RNIL
+                : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+            req->variableData[vpos++] = scanEncodedKey;
+            DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u,"
+                          " node=%u leafIdx=%u baseKey=%u encodedKey=0x%08x"
+                          " nodeId=%u",
+                          instance(),
+                          requestPtr.i,
+                          treeNodePtr.p->m_node_no,
+                          leafIdx,
+                          baseKey,
+                          scanEncodedKey,
+                          nodeId));
           }
-          DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u, node=%u"
-                        " leafIdx=%u baseKey=%u encodedKey=0x%08x nodeId=%u",
-                        instance(),
-                        requestPtr.i,
-                        treeNodePtr.p->m_node_no,
-                        leafIdx,
-                        baseKey,
-                        scanEncodedKey,
-                        nodeId));
           if (ScanFragReq::getOuterJoinAggFlag(req->requestInfo)) {
             jam();
             req->variableData[vpos++] = data.m_agg_range_cnt;

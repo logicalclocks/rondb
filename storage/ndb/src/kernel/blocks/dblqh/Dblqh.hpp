@@ -3733,8 +3733,6 @@ private:
       Signal *signal, Uint32 gsn, Uint32 sigLen, Uint32 identWord,
       TcConnectionrecPtr tcConnectptr, Uint32 *keyOut,
       bool keepRecOnResolve, Uint32 *parkRecIOut);
-  Uint32 jaiResolveConsumerKey(const Uint32 *transid, Uint32 identWord,
-                               Uint32 wireKey);
   void joinAggParkSweep(Signal *signal);
   void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
   Uint32 initScanrec(const class ScanFragReq *,

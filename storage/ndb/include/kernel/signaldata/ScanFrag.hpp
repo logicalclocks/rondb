@@ -176,7 +176,9 @@ class ScanFragReq {
    * JoinAggregationState::packIdentWord — queryTag/cteId/leafIdx;
    * transid comes from the signal) follows the aggStateKey word,
    * letting DBLQH resolve the shared JoinAggregationState by
-   * identity.  Set only by DBSPJ; direct-DBLQH block tests / benches
+   * identity.  RONDB-1120 P3: when set, the single JoinAgg
+   * variableData word IS the identity word — no aggStateKey on the
+   * wire.  Set only by DBSPJ; direct-DBLQH block tests / benches
    * keep the pool-key-only form (they gate on their own
    * SETUP_CONF). */
   static void setJoinAggIdentityFlag(Uint32 &requestInfo, Uint32 val);

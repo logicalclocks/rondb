@@ -1,9 +1,9 @@
 # RONDB-1120: overlapping JOIN_AGG_SETUP with query execution
 
-**Status: P0 + P1 + P2a + P2b + P2c IMPLEMENTED (September 2026,
-P2c pending user build + block suites + full ronsql regression +
-benchmarks — P2c is the behavior change: execution overlaps the SETUP
-round); P3 planned.  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
+**Status: P0 + P1 + P2a + P2b + P2c + queryTag hardening + P3
+IMPLEMENTED (September 2026; P2c validated — block suites + full
+ronsql regression + parallel testCteDbtc repro green; hardening + P3
+pending user build + regression; benchmarks pending).  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
 execution immediately, letting LQHKEYREQ / SCAN_FRAGREQ (and the CTE
 probe/scan signals) find the JoinAggregationState by identity instead
 of by the pool keys returned in SETUP_CONF.**
@@ -19,6 +19,56 @@ DBSPJ's post-READY needs (CTE probe keys / owners riding the per-CTE
 READY broadcast + CTE_START_MAIN_REQ, dual with the section keys for
 verification); **P2c** = flip the gate + the H2 COMPLETE-boundary
 straggler wait + ERROR_INSERTs + benchmarks.
+
+P3 outcome notes (feed signals carry the identity word ONLY):
+- The JoinAggIdentityFlag now means "the single JoinAgg variableData
+  word IS the identity word" — the aggStateKey no longer travels on
+  LQHKEYREQ / SCAN_FRAGREQ feeds (it was RNIL under P2c anyway for
+  everything sent pre-carrier, and non-CTE queries never learned keys
+  in DBSPJ at all).  Flag clear = the word is the raw aggStateKey —
+  the direct-DBLQH block tests' form, unchanged.
+- DBSPJ: all four feed-emission arms (lookup CTE-feed / lookup
+  main-leaf / scanFrag CTE-body / scanFrag main-leaf) emit one word:
+  the identity word when the queryTag is known (always, from a
+  same-version DBTC), else the legacy keyed word.  agg_extra drops
+  back to 1 — the P1 word growth nets to ZERO (the plan's 25-word
+  budget concern is closed).
+- DBLQH: the LQHKEYREQ arm and initScanrec read the identity word at
+  the position the key used to occupy and resolve/park; the P1
+  dual-mode cross-checker `jaiResolveConsumerKey` is deleted (its
+  validation job is done — P0-P2c ran it green under full load).
+- JOIN_AGG_NULL_ROW_REQ keeps both fixed fields (aggStateKey +
+  identWord) — it is fixed-length, so there is no word to win; the
+  wire key remains a fast path when the P2b carrier filled it.
+- CTE_LOOKUP_REQ / CTE_SCAN_REQ stay key-addressed (post-READY
+  consumers of the P2b carriers) — they are not feed signals.
+
+queryTag sequence hardening (post-P2c follow-up, shipped):
+- The identity queryTag was DBTC's scanptr.i — recycled immediately on
+  scan close.  With fire-and-forget RELEASE, back-to-back scans in ONE
+  transaction (same transid) could re-register (transid, queryTag)
+  while the previous query's identity entry still awaited its RELEASE
+  processing on some node — an early feed of the new query could then
+  resolve to the STALE state (wrong results / feeding a tearing-down
+  interpreter).  Pre-P2c the CONF gate made the window unreachable;
+  the overlap made it real (found by inspection during the testCteDbtc
+  triage; that failure itself was the test's collector race).
+- Fix: `Dbtc::c_joinAggQueryTagCounter`, a per-instance 16-bit
+  wrapping sequence (a transaction binds to one TC instance, so
+  per-instance uniqueness suffices; a collision would need 65536
+  same-transid queries inside a stale entry's microsecond lifetime).
+  Carried in the new `JoinAggSetupReq::queryTag` field (SignalLength
+  12 → 13) and emitted after QUERY_TAG_MARKER in the aggKeys section;
+  `senderData` stays scanptr.i for CONF/REF routing.
+- `JoinAggregationState::m_queryTag` is the stored identity key —
+  every joinAggIdentity{Insert,Lookup,Remove} site (proxy insert,
+  RELEASE processing, the releaseJoinAggState safety net) keys on it,
+  never on m_senderData.  Proxy falls back to senderData for a short
+  signal (defensive; no in-tree sender).
+- The 7 direct-DBLQH block tests (testJoinAgg, testCaseAgg,
+  benchJoinAgg, bench_q12_tpch, testCteLookup, testCtePhase6,
+  testStarJoinAgg) mirror their senderData into queryTag — they wait
+  for RELEASE_CONF between queries, so reuse is safe there.
 
 P2c outcome notes (the gate flip — the latency win):
 - DBTC `sendDihGetNodesLab` tail: `sendJoinAggSetupReqs` (now bool —
