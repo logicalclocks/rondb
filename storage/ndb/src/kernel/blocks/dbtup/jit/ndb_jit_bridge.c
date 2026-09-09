@@ -2770,6 +2770,17 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
    * the dst's previous flag (conservative). */
   uint8_t reg_u64_pack[BC_MAX_REGS];
   memset(reg_u64_pack, 0, sizeof(reg_u64_pack));
+  /* ronsql_jit item 16 (2026-09-09): the column a BR_REG_STR register
+   * was loaded from (0xFFFF = none), so a kOpMin / kOpMax / kOpCount
+   * that reads the register LATER in the program — after other loads
+   * and aggregates, RonSQL's `COUNT(s), SUM(i), MAX(s)` shape — lowers
+   * to the same fused op the adjacent-consumer path emits (every fused
+   * string op re-reads the column from the row, so its position does
+   * not matter). Set by the string kOpLoadCol, propagated by kOpMov;
+   * any other write to the register changes its type away from STR,
+   * which is the redefinition check. */
+  uint16_t reg_str_col[BC_MAX_REGS];
+  for (uint8_t r = 0; r < BC_MAX_REGS; r++) reg_str_col[r] = 0xFFFFu;
 #define BR_REQUIRE_F64(r)                                          \
   do {                                                             \
     if (reg_type[(r)] != BR_REG_F64) {                             \
@@ -3058,9 +3069,12 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
            * reader of the register, and MINMAX (which re-reads the
            * column itself and handles NULL in its kernel) is not a
            * reader, so it must not sit between the load and a COUNT.
-           * Any other consumer (or none) keeps the whole-program
-           * fallback. The register is poisoned (BR_REG_STR) so nothing
-           * else can read it. */
+           * Consumers that come LATER in the program (item 16: after
+           * other loads / aggregates) are lowered where they occur by
+           * the kOpCount and generic kOpMin/kOpMax handlers, from the
+           * column recorded in reg_str_col — so a load with no
+           * adjacent consumer emits nothing here. The register is
+           * poisoned (BR_REG_STR): any other reader still rejects. */
           if ((col_index & NDB_JIT_COL_PRESENCE_FLAG) != 0) {
             set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
             return JIT_BRIDGE_UNSUPPORTED_OP;
@@ -3082,10 +3096,6 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
             }
             if (cop == BR_kOpCount) n_count++; else n_minmax++;
             look++;
-          }
-          if (n_count == 0 && n_minmax == 0) {
-            set_err(out_err, JIT_BRIDGE_UNSUPPORTED_OP, this_pos, op);
-            return JIT_BRIDGE_UNSUPPORTED_OP;
           }
           uint32_t end = look;
           if (n_count != 0) {
@@ -3143,6 +3153,7 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
           reg_type[reg_index] = BR_REG_STR;
           reg_u63_safe[reg_index] = 0;
           reg_u64_pack[reg_index] = 0;
+          reg_str_col[reg_index] = col_index;
           pos = end;
           break;
         }
@@ -3248,6 +3259,7 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
         reg_type[dst] = reg_type[src];
         reg_u63_safe[dst] = reg_u63_safe[src];
         reg_u64_pack[dst] = reg_u64_pack[src];
+        reg_str_col[dst] = reg_str_col[src];
         pos += 1;
         break;
       }
@@ -3673,6 +3685,27 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
         }
+        if (reg_type[reg_index] == BR_REG_STR) {
+          /* item 16: deferred COUNT of a string register — its own
+           * presence load right before it (nb_convert_loads turns the
+           * pair into the null-branching form that skips ONLY this
+           * COUNT; the ops in between the original load and here must
+           * run on a NULL string). */
+          if (reg_str_col[reg_index] == 0xFFFFu) {
+            set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+            return JIT_BRIDGE_TYPE_MISMATCH;
+          }
+          if (!emit_op(out_prog, OP_LOAD_COL_NDB, reg_index, 0,
+                       (uint16_t)(reg_str_col[reg_index] |
+                                  NDB_JIT_COL_PRESENCE_FLAG), 0) ||
+              !emit_op(out_prog, OP_COUNT_BIGINT,
+                       (uint8_t)agg_index, reg_index, agg_index, 0)) {
+            set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          pos += 1;
+          break;
+        }
         /* NO type check on the register: the COUNT stencil never reads
          * its bits (acc += 1; the interpreter's null-register skip is
          * covered by the non-null load contract), so any register type
@@ -3755,6 +3788,26 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
         if (reg_index >= BC_EMB_REG_BASE || agg_index >= BC_MAX_ACCS) {
           set_err(out_err, JIT_BRIDGE_REG_OUT_OF_RANGE, this_pos, op);
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        if (reg_type[reg_index] == BR_REG_STR &&
+            (op == BR_kOpMin || op == BR_kOpMax)) {
+          /* item 16: deferred string MIN/MAX — the same fused op the
+           * adjacent-consumer path emits (jitMinMaxStringCol re-reads
+           * the column and handles NULL itself). */
+          if (reg_str_col[reg_index] == 0xFFFFu) {
+            set_err(out_err, JIT_BRIDGE_TYPE_MISMATCH, this_pos, op);
+            return JIT_BRIDGE_TYPE_MISMATCH;
+          }
+          BR_CLAIM_ACC_FAMILY(agg_index, BR_ACC_STR);
+          uint16_t packed = (uint16_t)(
+              ((op == BR_kOpMax) ? 0x100u : 0u) | agg_index);
+          if (!emit_op(out_prog, OP_MINMAX_STR_NDB, (uint8_t)agg_index,
+                       reg_str_col[reg_index], packed, 0)) {
+            set_err(out_err, JIT_BRIDGE_PROG_TOO_LARGE, this_pos, op);
+            return JIT_BRIDGE_PROG_TOO_LARGE;
+          }
+          pos += 1;
+          break;
         }
         uint8_t out_kind;
         uint8_t fam;

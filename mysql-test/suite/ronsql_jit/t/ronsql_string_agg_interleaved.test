@@ -2,14 +2,19 @@
 # active (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
 # differential. Test logic lives ONLY in the sourced original.
 #
-# PIN-ONLY (no jit_strict_arm.inc): the "string agg, numeric agg, string
-# MIN/MAX on the same register" shape is a KNOWN bridge reject — the
-# fused string-load lowering only takes CONSECUTIVE consumers, and the
-# later kOpMax on the poisoned BR_REG_STR register is a
-# TYPE_MISMATCH reject (whole program runs on the interpreter). That is
-# the safe outcome; the crash this test guards against was in the
-# interpreter. Lowering non-adjacent string consumers is a backlog item
-# (ronsql_jit_plan.md). Re-record the pin deliberately when it moves.
+# PIN-ONLY (no jit_strict_arm.inc). The "string agg, numeric agg, string
+# MIN/MAX on the same register" shape used to be a bridge reject (the
+# fused string-load lowering took only CONSECUTIVE consumers; recorded
+# pin 100). ronsql_jit item 16 (2026-09-09) lowers non-adjacent string
+# consumers where they occur, so the pin is 0 now. Before item 16 the
+# MAX/SUM/COUNT(s_val) query also returned a WRONG count under ON (a bare
+# COUNT on the string register counted NULL rows: 4 instead of 2), and
+# the first recording of this mirror baked that into its "== Diff =="
+# block — a non-empty diff block in a recorded result is a JIT wrong
+# result, never an expectation. The crash this test
+# guards against was in the interpreter (both arms exercise it: the
+# interpreter directly under OFF, and any per-row fallback under ON).
+# Re-record the pin deliberately when it moves.
 SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 --source suite/ronsql/t/ronsql_string_agg_interleaved.test
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)

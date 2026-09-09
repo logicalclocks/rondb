@@ -495,7 +495,7 @@ The program for post-processing and output has 8 instructions.
 
 ===== FORCE INDEX on the CTE-body root =====
 CTE definitions:
-  CTE[0] agg2 — source: pt2
+  CTE[0] agg2 — source: pt2 [single-group body]
     Outputs: g, cnt
     GROUP BY: col_0
     Body root: INDEX_SCAN using idx_pt2_grp

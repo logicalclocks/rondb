@@ -34,9 +34,18 @@ is a bridge TYPE_MISMATCH reject (non-adjacent string consumer), so the
 interpreter ran it. Tests: `ronsql/t/ronsql_string_agg_interleaved` (+ jit
 mirror, pin-only; recorded pin = 100 fallbacks: the four reject-shape
 queries x three engines x fragments, each compile attempt counted). Both
-green 2026-09-09. Backlog: lower non-adjacent string consumers in the
-bridge — a 100-fallback pin on ten queries says this shape is common
-enough to matter for feature-store SELECT lists.
+green 2026-09-09. Follow-up DONE the same day (item 16, see
+ronsql_jit_plan.md): the bridge lowers non-adjacent string consumers
+(deferred MIN/MAX/COUNT on a BR_REG_STR register via `reg_str_col`); the
+mirror pin dropped 100 → 0; bridge_tests T84a-g + coldcall_tests T35 added.
+Item 16 also FIXED A WRONG RESULT: the generic kOpCount path had no type
+check, so a deferred `COUNT(s_val)` on the poisoned string register
+compiled to a bare COUNT that counted NULL rows (4 instead of 2 for
+`MAX(s_val), SUM(i1), COUNT(s_val)` on entity 1). The mirror's first
+recording had baked that 4 into its "== Diff ==" block, so the corrected
+run looked like a failure; the recorded file is fixed. Rule: a non-empty
+"== Diff ==" block in a recorded `ronsql_jit` result is a wrong JIT
+result, never an expectation.
 
 **2026-09-08 — CompiledInterpreter default OFF + platform gate (built, NOT
 yet run).** For the 26.10 merge: the config default is now OFF
