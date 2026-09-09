@@ -96,6 +96,32 @@ What to look at in the recorded `r/ronsql_fs_smoke.result`:
 - `MaxNoOfConcurrentOperations` / "Out of operation records": a chunk is
   too large; lower `MTROptions.TargetRows` (4000) and regenerate.
 
+## 4b. E1 follow-up (2026-09-09, review A2/A4/A5)
+
+Implements `data_model.md` §11 / §11.1:
+
+- `internal/fsq/data/edge.go`: seven fixed-row edge tables (nullable type
+  mix, big integers and decimals, strings, timestamp ticks, explicit
+  collect order column, composite-key snowflake parent/child with
+  binary/complex projections), named entity constants, checksums.
+- `TableGen.Fixed`: literal-row tables render as `INSERT … VALUES` in the
+  MTR include and load through the same tuples in `.fs_load`.
+- `SQLString` escapes backslash, NUL, tab, newline and carriage return.
+- `edge_test.go`: row counts, safe/limit sums, escaping, collation-unique
+  keys, timestamp ticks, reversed sequence entity, checksum/schema
+  wiring, MTR rendering of fixed tables.
+- Smoke test: `SHOW CREATE TABLE` for `edge_ts_1` / `edge_child_1` and
+  22 recorded `PROBE EDGE-*` compares (NULL propagation, AVG, all-NULL,
+  exact and rounding floats, DATE bounds, big integers incl. the overflow
+  probe, quoting / IN lists / NULL-vs-'NULL' / escapes / collation,
+  TIMESTAMP(3)/(6) cutoff single and batch, explicit-order collect,
+  composite hop incl. swapped binding, batch with dangling/NULL hops,
+  VARBINARY projection).
+
+Verification is the same as §3 (regenerate the includes, re-record the
+smoke test). The `.fs_load` idempotence check now also covers the edge
+tables.
+
 ## 5. Results
 
 _(to be filled in after the run: go test output, MTR outcome, the

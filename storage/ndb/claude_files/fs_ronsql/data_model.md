@@ -531,3 +531,25 @@ about the already-written E1 code. Existing bulk formulas stay stable.
 E3/E4 deterministic cases must cover every applicable fixture/operation;
 E6 samples them with a nonzero weight and reports coverage. Random
 sampling alone does not satisfy these requirements.
+
+### 11.1 Implementation (E1 follow-up, 2026-09-09)
+
+`tools/rondb-cli/internal/fsq/data/edge.go` holds the fixtures as literal
+Go rows; both loaders emit the same tuples with `INSERT … VALUES`
+(`TableGen.Fixed`), so the two paths cannot diverge, and
+`EdgeChecksums()` joins the bulk checksums in `Checksums()`. Entity ids
+are named constants. String literals now escape backslash, NUL, tab,
+newline and carriage return (`SQLString`).
+
+| table | rows | entities / keys | covers |
+|---|---|---|---|
+| `edge_hist_1` PK `(entity_id, event_time)`; FLOAT, DOUBLE, DATE, nullable INT ×3, DECIMAL(18,2), string, BIGINT | 20 | 1 mixed-NULL (4), 2 all-NULL (3), 3 exact dyadic floats + leap days (3), 4 rounding-sensitive floats (5), 5 DATE spread to 9999-12-31 (5), 6 empty | COUNT(*) vs COUNT(col), SUM/AVG/MIN/MAX and GREATEST/LEAST null propagation, float exactness, DATE bounds |
+| `edge_big_1` PK `(entity_id, seq)`; BIGINT, DECIMAL(18,2), DOUBLE | 9 | 1 around 2^53 (SUM = 2^54 − 1), 2 ±(2^63 − 1) and 0 (SUM = 0), 3 overflow probe (2^63 − 1 + 1) | exact large integers, large DECIMAL, deliberate overflow kept separate |
+| `edge_str_1` PK `s_key VARCHAR(100)` | 19 | `O'Brien`, `NULL` (value SQL NULL), `null-string` (value `'NULL'`), `` (empty key), `empty-value`, case pair, accent pair (in the value column: keys are collation-unique), `日本語`, emoji value, 100 × `a`, 100 × `λ`, backslash / tab / newline values, `it's`, IN-list keys | quoting in keys and IN lists, NULL vs `'NULL'` vs `''`, collation, UTF-8, boundary length, escape decoding |
+| `edge_ts_1` PK `(entity_id, seq)`; TIMESTAMP, TIMESTAMP(3), TIMESTAMP(6) | 6 | entities 1, 2: one tick before / at / after the cutoff `2026-05-01 12:00:00` per precision; 3 empty | inclusive `>=` at the cutoff, single and batch |
+| `edge_seq_1` PK `(entity_id, sequence_no)`; event_time not in the key | 11 | 1: 7 rows (N boundaries 7 / 8), 2: 1 row, 3: empty, 4: 3 rows with event_time in REVERSE of sequence_no | collect with an explicit order column distinct from event time |
+| `edge_child_1` PK `(ck1, ck2)`; label, `payload` binary → VARBINARY, weight | 4 | (1,2) A, (2,1) B, (3,3) C (NULL payload), (5,5) D | composite child PK, binary projection |
+| `edge_parent_1` PK `parent_id`; FK `ck1`, `ck2`; `tags` array → VARBINARY | 6 | 1 → (1,2), 2 → (2,1) (swapped binding selects A), 3 → (2,2) dangling, 4 → (NULL,1), 5 → (3,3), 6 → (5,5) | two-column hop, swap sensitivity, NULL / dangling hops, complex projection |
+
+The smoke test carries one recorded probe per row of this table
+(`PROBE EDGE-*`); E3 turns them into requirement cases.

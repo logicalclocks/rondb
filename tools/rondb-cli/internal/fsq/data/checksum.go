@@ -139,6 +139,7 @@ func Checksums(sc Scale, hashTwin bool) []Checksum {
 		}
 	}
 	out = append(out, bal, hist)
+	out = append(out, EdgeChecksums()...)
 	return out
 }
 

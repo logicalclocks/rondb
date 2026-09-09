@@ -47,6 +47,10 @@ type TableGen struct {
 	Mean float64
 	// HashTwin marks the optional transactions_hash_1 copy.
 	HashTwin bool
+	// Fixed marks a small literal-row table (data_model.md §11): Rows emits
+	// every row for the single pseudo entity 1 and Select is nil; both
+	// loaders insert the same tuples with INSERT ... VALUES.
+	Fixed bool
 	// Rows renders every row of entity e as a SQL value tuple "(v1, v2, ...)".
 	Rows func(sc Scale, e int64, emit func(tuple string))
 	// Select renders the SELECT part of the MTR INSERT ... SELECT for the
@@ -339,5 +343,6 @@ func Tables() []TableGen {
 				"WHERE a.n BETWEEN %d AND %d", lo, hi)
 		},
 	})
+	out = append(out, EdgeTables()...)
 	return out
 }

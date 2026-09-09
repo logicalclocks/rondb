@@ -86,7 +86,7 @@ func txFeatures(key spec.Feature) []spec.Feature {
 func Schema() []spec.FeatureGroup {
 	bigKey := spec.Feature{Name: "customer_id", Type: "bigint", Primary: true}
 	strKey := spec.Feature{Name: "customer_key", Type: "string", Primary: true}
-	return []spec.FeatureGroup{
+	fgs := []spec.FeatureGroup{
 		{
 			Name: "countries", Version: 1, FeaturestoreID: 1,
 			Features: []spec.Feature{
@@ -180,6 +180,8 @@ func Schema() []spec.FeatureGroup {
 			},
 		},
 	}
+	fgs = append(fgs, EdgeSchema()...)
+	return fgs
 }
 
 // SchemaMap returns the feature groups keyed by table name.

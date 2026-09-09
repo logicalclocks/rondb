@@ -220,6 +220,217 @@ EOF
 --sorted_result
 SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` >= '2026-03-03 00:00:00'|
 
+# ---- edge fixtures (data_model.md §11), recorded probes ---------------------
+
+--echo
+--echo === EDGE: DDL round-trip of TIMESTAMP(6) and VARBINARY columns ===
+SHOW CREATE TABLE edge_ts_1|
+SHOW CREATE TABLE edge_child_1|
+
+--echo
+--echo === PROBE EDGE-NULL-A: mixed-NULL group, COUNT(*) vs COUNT(col), null propagation in GREATEST/LEAST ===
+let $QUERY=
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===
+let $QUERY=
+SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-NULL-C: all-NULL group ===
+let $QUERY=
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MIN(`s_val`) AS `s_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MIN(`s_val`) AS `s_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 2|
+
+--echo
+--echo === PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max ===
+let $QUERY=
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3|
+
+--echo
+--echo === PROBE EDGE-FLOAT-B: rounding-sensitive floats (FLOAT binary32, non-dyadic doubles) ===
+let $QUERY=
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
+
+--echo
+--echo === PROBE EDGE-DATE: DATE spread up to 9999-12-31 ===
+let $QUERY=
+SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01';|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01'|
+
+--echo
+--echo === PROBE EDGE-BIG-A: exact BIGINT around 2^53 (SUM = 2^54 - 1) ===
+let $QUERY=
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`f_exact`) AS `fe_sum` FROM `edge_big_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`f_exact`) AS `fe_sum` FROM `edge_big_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-BIG-B: signed limits (SUM = 0) and large DECIMAL(18,2) ===
+let $QUERY=
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2|
+
+--echo
+--echo === PROBE EDGE-BIG-C: deliberate BIGINT SUM overflow (MySQL widens to DECIMAL) ===
+let $QUERY=
+SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3|
+
+--echo
+--echo === PROBE EDGE-STR-A: apostrophe key, IN list with empty / literal-NULL / multibyte keys ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_edge_str_a.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a')|
+
+--echo
+--echo === PROBE EDGE-STR-B: SQL NULL vs the string 'NULL' vs '' in TEXT output (A3: TEXT cannot tell them apart) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_edge_str_b.sql
+--write_file $QUERY_FILE
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('NULL', 'null-string', 'empty-value') ORDER BY `n`;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('NULL', 'null-string', 'empty-value') ORDER BY `n`|
+
+--echo
+--echo === PROBE EDGE-STR-C: backslash / tab / newline values, 100-char keys, UTF-8 4-byte value ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_edge_str_c.sql
+--write_file $QUERY_FILE
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('backslash', 'tab', 'newline', 'emoji-value') ORDER BY `n`;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('backslash', 'tab', 'newline', 'emoji-value') ORDER BY `n`|
+
+--echo
+--echo === PROBE EDGE-STR-D: case and accent pairs under the server collation (= and MIN/MAX) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_edge_str_d.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `cnt`, MIN(`s_val`) AS `v_min`, MAX(`s_val`) AS `v_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt`, MIN(`s_val`) AS `v_min`, MAX(`s_val`) AS `v_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa'|
+
+--echo
+--echo === PROBE EDGE-TS-A: TIMESTAMP(3) and (6) inclusive >= at the cutoff (expect 2 of 3 rows) ===
+let $QUERY=
+SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000';|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000'|
+
+let $QUERY=
+SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` >= '2026-05-01 12:00:00.000000';|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` >= '2026-05-01 12:00:00.000000'|
+
+--echo
+--echo === PROBE EDGE-TS-B: batch window at the cutoff (entities 1, 2, 3 empty) ===
+let $QUERY=
+SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` >= '2026-05-01 12:00:00' GROUP BY `entity_id`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` >= '2026-05-01 12:00:00' GROUP BY `entity_id`|
+
+--echo
+--echo === PROBE EDGE-SEQ-A: collect with an explicit sequence_no order column (reversed event_time), direct form ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT `entity_id`, `sequence_no`, `event_time`, `payload`, `amount` FROM `edge_seq_1` WHERE `entity_id` = 4 ORDER BY `sequence_no` DESC LIMIT 2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT `entity_id`, `sequence_no`, `event_time`, `payload`, `amount` FROM `edge_seq_1` WHERE `entity_id` = 4 ORDER BY `sequence_no` DESC LIMIT 2|
+
+--echo
+--echo === PROBE EDGE-SEQ-B: N boundary (7 rows, LIMIT 8) ascending ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT `entity_id`, `sequence_no`, `payload` FROM `edge_seq_1` WHERE `entity_id` = 1 ORDER BY `sequence_no` ASC LIMIT 8;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT `entity_id`, `sequence_no`, `payload` FROM `edge_seq_1` WHERE `entity_id` = 1 ORDER BY `sequence_no` ASC LIMIT 8|
+
+--echo
+--echo === PROBE EDGE-COMP-A: composite child-PK hop with two conditions (parent 2 -> child B) ===
+let $QUERY=
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
+
+--echo
+--echo === PROBE EDGE-COMP-B: swapped binding selects a different child (parent 2 with ck1<->ck2 -> child A) ===
+let $QUERY=
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`|
+
+--echo
+--echo === PROBE EDGE-COMP-C: batch over dangling (3), NULL hop (4) and matches (1, 5, 6) ===
+let $QUERY=
+WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
+
+--echo
+--echo === PROBE EDGE-COMP-D: VARBINARY projection through the snowflake template (A2: emitted by Hopsworks; engine support recorded) ===
+let $QUERY=
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
+
 DELIMITER ;|
 
 --echo

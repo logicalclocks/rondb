@@ -177,6 +177,14 @@ func RenderDataInc(o MTROptions) (string, error) {
 		if t.HashTwin && !o.HashTwin {
 			continue
 		}
+		if t.Fixed {
+			var tuples []string
+			t.Rows(sc, 1, func(tuple string) { tuples = append(tuples, tuple) })
+			fmt.Fprintf(&b, "# --- %s: %d fixed rows (data_model.md §11) ---\n", t.Table, len(tuples))
+			fmt.Fprintf(&b, "INSERT INTO `%s`.`%s` %s VALUES\n%s;\n\n", o.DB, t.Table, t.ColumnList(),
+				strings.Join(tuples, ",\n"))
+			continue
+		}
 		n := t.Entities(sc)
 		chunk := t.ChunkEntities(o.TargetRows)
 		fmt.Fprintf(&b, "# --- %s: %d entities, ~%g rows each, %d entities per statement ---\n",

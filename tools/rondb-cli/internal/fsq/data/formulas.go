@@ -390,16 +390,30 @@ func FormatTimestamp(t time.Time) string { return t.UTC().Format("2006-01-02 15:
 // FormatTimestamp3 renders t as 'YYYY-MM-DD HH:MM:SS.fff' (UTC).
 func FormatTimestamp3(t time.Time) string { return t.UTC().Format("2006-01-02 15:04:05.000") }
 
-// SQLString quotes s as a SQL string literal (” doubling; the alphabet has
-// no backslashes or control characters).
+// SQLString quotes s as a MySQL string literal: quotes are doubled and
+// backslash, NUL, tab, newline and carriage return are backslash-escaped
+// (MySQL default sql_mode, without NO_BACKSLASH_ESCAPES).  Other bytes,
+// including multibyte UTF-8, pass through unchanged.
 func SQLString(s string) string {
 	var b []byte
 	b = append(b, '\'')
 	for i := 0; i < len(s); i++ {
-		if s[i] == '\'' {
-			b = append(b, '\'')
+		switch s[i] {
+		case '\'':
+			b = append(b, '\'', '\'')
+		case '\\':
+			b = append(b, '\\', '\\')
+		case 0:
+			b = append(b, '\\', '0')
+		case '\t':
+			b = append(b, '\\', 't')
+		case '\n':
+			b = append(b, '\\', 'n')
+		case '\r':
+			b = append(b, '\\', 'r')
+		default:
+			b = append(b, s[i])
 		}
-		b = append(b, s[i])
 	}
 	b = append(b, '\'')
 	return string(b)
