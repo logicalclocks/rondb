@@ -142,5 +142,52 @@ tables.
   S2 because `ronsql_compare.inc`'s `let $QUERY=` path cannot carry a
   quoted literal (shell single-quote breakage, documented in the CTE
   authoring guide); six cases were converted to the `QUERY_FILE` form and
-  a HEX pin of the UTF-8 keys was added. Re-record pending.
+  a HEX pin of the UTF-8 keys was added.
+- 2026-09-09 second `--record` run: every shape probe **green with empty
+  diffs** — S2 (7 rows, bound inclusive), S6b ordered (5-row and 300-row
+  entities), S3 batch IN + GROUP BY, S7 1-hop / 2-hop / batch (NULL and
+  dangling hops dropped identically), S8b `LEFT JOIN` hops from the CTE
+  (NULL country kept), S10 string keys incl. the collation-insensitive
+  match (20 rows for `'cust-00000010'` on both engines), S4 mixed-case
+  category filter (100 rows on both), hash-only PK twin, `sessions_1`
+  TIMESTAMP(3) window, S9 composite key + window. **S6 CTE form: clean
+  rejection** `Non-aggregating CTE body is not a single-row key lookup`
+  (finding F0 = risk R1, expected). **PROBE EDGE-NULL-A crashed RDRS**:
+  `NdbSqlUtil.cpp:501 require((lb + m1 <= n1 && lb + m2 <= n2)) failed`
+  in `cmpLongvarchar`, signal 6 (finding F1, OPEN, ledger
+  `suite/ronsql_fs/findings/smoke.md`); the run stopped there, so the
+  remaining edge probes are unrecorded. The probe was split (A1 integer
+  aggregates, A2 DECIMAL, A3 GREATEST/LEAST enabled; the string aggregate
+  disabled as `# NEXT-PHASE F1`) and `tools/probe_cli.sh` +
+  `tools/edge_null_a.sql` were added to isolate the crash through
+  `ronsql_cli`, one process per statement.
+- 2026-09-09 F1 isolation through `ronsql_cli` (3 rounds, 39
+  statements): every single aggregate passes; the crash needs a string
+  MIN/MAX that is not first in a list of ≥ 9 distinct column loads
+  (GREATEST/LEAST and DECIMAL are innocent). Root cause read from the
+  kernel: the per-opcode `m_attr_read_pos = 0` in `AggInterpreter.cpp:305`
+  (and `JoinAggInterpreter.cpp:1162`) lets any later column load overwrite
+  the bytes a string register points at before its MIN/MAX runs; the
+  RonSQL compiler's register allocator (`REGS 8`) separates load and
+  MIN/MAX only from nine distinct loads on. Details and the suggested fix
+  in `suite/ronsql_fs/findings/smoke.md` F1.
+- Correction after round 3/4 (48 statements in total): register pressure
+  is NOT the trigger. The trigger is a string column aggregated twice with
+  another column load in between (`COUNT(s_val) … MAX(s_val)`): the
+  compiler deduplicates the load, the reused register points at bytes the
+  later load overwrote. Minimal repro `SELECT COUNT(s_val), SUM(i1),
+  MAX(s_val) FROM edge_hist_1 WHERE entity_id = 1;` (client abort); the
+  NULL-free entity 3 variant crashed **both data nodes** (kernel-side
+  compare). Adjacent string aggregates (`MAX(s_val), MIN(s_val)`) and
+  MIN/MAX-first lists are safe and re-enabled in the smoke test.
+- 2026-09-09 third `--record` run (fresh cluster): the whole test recorded;
+  the verify run differed only in probe EDGE-STR-D (MIN/MAX over
+  collation-equal strings is unspecified → F8, probe fixed). Recorded
+  findings: F2 DECIMAL MIN/MAX scale drop, F3 AVG(DOUBLE) four decimals,
+  F4 FLOAT MAX display, **F5 DECIMAL(18,2) precision loss (wrong value)**,
+  F6 BIGINT SUM overflow → clean error 1860, F7 VARBINARY pass-through
+  rejection (emitted shape, engine gap). Everything else green, including
+  the composite-hop swap sensitivity, TIMESTAMP(3)/(6) cutoffs, explicit
+  collect order column and the UTF-8 round trip. Re-record needed once
+  more for the STR-D change.
 - `.fs_load 0.1`: _(pending)_

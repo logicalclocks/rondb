@@ -1,0 +1,51 @@
+# Findings — ronsql_fs smoke test (E1)
+
+Format follows `suite/ronsql_cte/findings/_discovery_log.md`. Symptom:
+ERROR = clean RonSQL permanent error; HANG; WRONG = values differ from
+MySQL; CRASH = RDRS or data node died. Disposition: OPEN / EXPECTED
+(rejection listed in the expectation table) / FIXED / HOPSWORKS /
+FRAMEWORK.
+
+| # | Family | Shape | Symptom | Repro (minimal) | Disposition |
+|---|--------|-------|---------|-----------------|-------------|
+| F0 | collect (S6) | Hopsworks CTE-form collect: non-aggregating CTE body over a partial key with ORDER BY / LIMIT, projection-only main | ERROR: `Non-aggregating CTE body is not a single-row key lookup.` (message explains the single-row-lookup rule) | `WITH t AS (SELECT customer_id, event_time, amount, category FROM transactions_1 WHERE customer_id = 21 ORDER BY event_time DESC LIMIT 5) SELECT customer_id, event_time, amount, category FROM t;` | EXPECTED (risk R1, plan §2.3). The direct single-table form S6b is green on the same data. Engine work tracked in the engine tree. |
+| F1 | string MIN/MAX after a reused string load | A string column (`VARCHAR(100)` utf8mb4 = Longvarchar; any string type by construction) aggregated **twice** in one statement — e.g. `COUNT(col)` or `MIN(col)` first, `MAX(col)` later — with at least one other column load between the two. Single table, PK-prefix range or full scan; NULLs irrelevant | **CRASH**, two forms of the same defect: (a) client abort in RDRS / `ronsql_cli` when the API merges per-fragment partials (`NdbSqlUtil.cpp:501: require((lb + m1 <= n1 && lb + m2 <= n2)) failed` in `cmpLongvarchar`, signal 6); (b) **DATA NODE crash** when the kernel compares two rows itself (`minMaxString` → `(*sqlType.m_cmp)` → the same `require` in the LDM thread; `ndb_2_error.log` then `ndb_1_error.log` one second later after the API retried on the surviving replica: Error 6000, `Signal 6 received`, `ndbd.cpp`, thr 3, trace `ndb_{1,2}_trace.log.1_t3` = SCAN_FRAGREQ → DBTUP → aggregation interpreter). **Root cause (source):** `AggInterpreter::ProcessRec` resets `m_attr_read_pos = 0` at the top of *every* opcode (`storage/ndb/src/kernel/blocks/dbtup/AggInterpreter.cpp:305`; identical in `JoinAggInterpreter.cpp:1162`), so every `kOpLoadCol` reads into `m_attr_read_buf[0]`. A string load captures a pointer into that buffer (`loadColumnTypedFromBuf`, `AggInterpreterBase.cpp:462`) and advances the position to protect it, but the reset at the next opcode discards the advance. The RonSQL compiler deduplicates identical expressions (`AggregationAPICompiler::new_expr`, dedup loop), so the second aggregate over the same column reuses the register instead of re-loading: the register's pointer now refers to bytes the intervening load overwrote, while its captured length is the old one. `minMaxString` copies/compares mismatched bytes; whether the require fires in the kernel or in the API depends on which side performs the first non-NULL comparison. When the overwriting bytes happen to form a plausible length prefix, no require fires and the aggregate is silently **wrong**. Suggested fix (engine tree): reset `m_attr_read_pos` once per row before the program loop (after the GROUP BY key read) instead of per opcode, or copy string bytes into a per-register buffer at load time; both interpreters. | Confirmed by `tools/probe_cli.sh` rounds 1–4 (`tools/edge_null_a{,2,3,4}.sql`): `SELECT COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 1;` → client abort; `SELECT MIN(s_val), SUM(i1), MAX(s_val) … entity_id = 1` → client abort; `SELECT COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 3;` (no NULLs) → **both data nodes down**. Passing controls: `COUNT(s_val), MAX(s_val)` (no load in between), `MAX(s_val), SUM(i1), COUNT(s_val)` (MIN/MAX first), `MAX(s_val), MIN(s_val)`, nine distinct-column loads with one string aggregate last. Bulk-data form (predicted, not executed — cluster was already down): `SELECT MIN(category), SUM(amount), MAX(category) FROM transactions_1 WHERE customer_id = 31;` | OPEN — engine tree (kernel + CTE/join interpreter). Smoke test: string MIN/MAX probes are enabled only where the string column is aggregated once or adjacently; the combined EDGE-NULL-A statement stays `# NEXT-PHASE F1`. Expectation table: no row (crash, not rejection). E3 adds the WRONG-RESULT case for this shape; E6/E7 generators must not emit it until FIXED (hazard list). |
+| F2 | DECIMAL formatting | `MIN`/`MAX` over `DECIMAL(18,2)` with a whole-cent value | WRONG (formatting): RonSQL `10.5` vs MySQL `10.50`; `SUM` keeps the scale (`7.25`) | `SELECT MIN(dec_val), MAX(dec_val), SUM(dec_val) FROM edge_hist_1 WHERE entity_id = 1;` | OPEN — same class as CTE finding D15 (DECIMAL MIN/MAX drops scale). Values equal; the Go canonicalizer compares DECIMAL exactly (`framework_design.md` §7), MTR TEXT compare records the diff. |
+| F3 | AVG formatting | `AVG` over a DOUBLE column | WRONG (formatting): RonSQL `0.5000` vs MySQL `0.5` (AVG over `INT` prints `17.5000` on both) | `SELECT AVG(i2), AVG(f_double) FROM edge_hist_1 WHERE entity_id = 1;` | OPEN — RonSQL formats AVG with four decimals regardless of the input type. Tolerance compare in the Go canonicalizer; MTR records the diff. |
+| F4 | FLOAT display | `MAX` over a `FLOAT` column | WRONG (formatting): RonSQL prints the exact binary32 value `123456.7890625`, MySQL prints `123457` (FLOAT display precision); `SUM(FLOAT)` agrees on both (`123457.38906261639`) | `SELECT MAX(f_float) FROM edge_hist_1 WHERE entity_id = 4;` | OPEN — value identical; display rule differs. |
+| F5 | DECIMAL(18,2) precision | `MAX`/`SUM` over `DECIMAL(18,2)` values whose cents exceed 2^53 | **WRONG VALUE**: `MAX(dec_big)` RonSQL `1000000000000000` vs MySQL `999999999999999.99`; `SUM` RonSQL `0` vs `0.00` (formatting) | `SELECT SUM(dec_big), MAX(dec_big) FROM edge_big_1 WHERE entity_id = 2;` | OPEN — engine tree: DECIMAL scale > 0 takes the DOUBLE path (`cte_test_authoring_guide.md`: "scale>0 → double"), so 17 significant digits are lost. Hopsworks feature groups with `decimal(18,2)` money columns are affected. E3 requirement case. |
+| F6 | BIGINT SUM overflow | `SUM` over BIGINT exceeding 2^63−1 | ERROR: `NDB Permanent error 1860, Application error: arithmetic operation results overflow`; MySQL widens to DECIMAL (`9223372036854775808`) | `SELECT SUM(big_val) FROM edge_big_1 WHERE entity_id = 3;` | EXPECTED — deliberate overflow probe; clean rejection. Add to the expectation table as `CLEAN-REJECT` (message `arithmetic operation results overflow`). |
+| F7 | VARBINARY projection | Snowflake template projecting a `VARBINARY(100)` child column (Hopsworks emits this for `array`/`binary` features, review A2) | ERROR: `Unsupported column type (17) in pass-through result.`; MySQL returns the bytes | `WITH b AS (SELECT ck1, ck2, COUNT(*) AS hw_cnt FROM edge_parent_1 WHERE parent_id = 1 GROUP BY ck1, ck2) SELECT j2.label AS c_label, j2.payload AS c_payload FROM b JOIN edge_child_1 AS j2 ON j2.ck1 = b.ck1 AND j2.ck2 = b.ck2;` | OPEN — engine support gap for an emitted shape (requirement A2: UNSUPPORTED, not gated). Expectation table row `CLEAN-REJECT` until the pass-through printer supports binary types. |
+| F8 | framework | Probe `EDGE-STR-D` used `MIN`/`MAX` over strings that are equal under `utf8mb4_0900_ai_ci` (`case` = `CASE`, `Asa` = `Åsa`) | FLAKY: the representative of a collation-equal set is unspecified; record run and verify run differed (`case` vs `CASE`) | — | FRAMEWORK, fixed: the probe now checks `COUNT` and `SUM(n)`; generators must not compare MIN/MAX over collation-equal string sets (canonicalizer rule for E3). |
+
+## Green in smoke runs 2 and 3 (2026-09-09), recorded with empty diffs
+
+S1 point aggregate incl. `MAX(GREATEST)` / `MAX(LEAST)` fold and the
+empty entity; S2 7-day window inclusive at the bound; S6b direct collect
+(ordered compare, 5-row and 300-row entities); S3 batch `IN` + `GROUP BY`
+(missing and empty keys dropped on both engines); S7 snowflake 1-hop,
+2-hop and batch (NULL and dangling hops dropped); S8b `LEFT JOIN` hops
+from the CTE (NULL country preserved as NULL); S10 string key incl. the
+case-insensitive match of `'cust-00000010'` against `CUST-00000010`
+(RonSQL follows the utf8mb4_0900_ai_ci collation like MySQL); S4
+`category = 'grocery'` matching both `grocery` and `Grocery` rows (same);
+S1 on the hash-only PK twin; S2 on `sessions_1` with `TIMESTAMP(3)`; S9
+composite key + window on `balance_hist_1`.
+
+Run 3 additions (edge fixtures), empty diffs: COUNT(*) vs COUNT(col) and
+integer aggregates over the mixed-NULL and all-NULL groups; GREATEST/LEAST
+NULL propagation (`MAX(GREATEST(i1,i2,i3)) = 25`, `MIN(LEAST(...)) = 5`:
+rows with a NULL operand drop out on both engines); adjacent string
+MIN/MAX (`Beta` / `alpha`); exact dyadic floats and DATE min/max; DATE
+range to `9999-12-31`; BIGINT around 2^53 (`SUM = 2^54 − 1`) and at the
+signed limits; quoting in an IN list with the apostrophe, empty,
+literal-`NULL` and multibyte keys; SQL NULL / string `'NULL'` / `''` rows
+(both engines print `NULL` for the first two in TEXT: the A3 argument for
+JSON output); backslash, tab, newline and 4-byte UTF-8 values printed
+identically; TIMESTAMP(3) and (6) `>=` inclusive at the cutoff, single and
+batch; collect ordered by an explicit `sequence_no` that disagrees with
+event time; N-boundary collect; composite child-PK hop, its swapped
+binding selecting the other child, and the batch with dangling / NULL hops
+dropped on both engines. The mysqltest UTF-8 round trip is exact
+(`日本語` = `E697A5E69CACE8AA9E`, 3 chars / 9 bytes; 100 × `λ` = 200
+bytes).

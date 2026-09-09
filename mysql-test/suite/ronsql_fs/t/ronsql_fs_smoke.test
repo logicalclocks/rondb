@@ -236,13 +236,48 @@ SHOW CREATE TABLE edge_ts_1|
 SHOW CREATE TABLE edge_child_1|
 
 --echo
---echo === PROBE EDGE-NULL-A: mixed-NULL group, COUNT(*) vs COUNT(col), null propagation in GREATEST/LEAST ===
+--echo === PROBE EDGE-NULL-A1: mixed-NULL group, COUNT(*) vs COUNT(col), integer aggregates ===
 let $QUERY=
-SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max` FROM `edge_hist_1` WHERE `entity_id` = 1;|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-NULL-A2: mixed-NULL group, DECIMAL(18,2) MIN/MAX ===
+let $QUERY=
+SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-NULL-A3: mixed-NULL group, GREATEST/LEAST null propagation ===
+let $QUERY=
+SELECT MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-NULL-A4: mixed-NULL group, string MIN/MAX (aggregated adjacently: safe, see F1) ===
+let $QUERY=
+SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+# NEXT-PHASE F1 (suite/ronsql_fs/findings/smoke.md): a string column
+# aggregated twice with another column load in between (here COUNT(s_val)
+# ... MAX(s_val)) crashes RDRS or a DATA NODE: the kernel resets the
+# attribute read position per opcode, so the reused string register points
+# at overwritten bytes.  Disabled until fixed in the engine tree.
+#   SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+#   SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;
 
 --echo
 --echo === PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===
@@ -256,11 +291,11 @@ SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHE
 --echo
 --echo === PROBE EDGE-NULL-C: all-NULL group ===
 let $QUERY=
-SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MIN(`s_val`) AS `s_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 2;|
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2;|
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MIN(`s_val`) AS `s_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 2|
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2|
 
 --echo
 --echo === PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max ===
@@ -357,15 +392,16 @@ EOF
 SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('backslash', 'tab', 'newline', 'emoji-value') ORDER BY `n`|
 
 --echo
---echo === PROBE EDGE-STR-D: case and accent pairs under the server collation (= and MIN/MAX) ===
+--echo === PROBE EDGE-STR-D: case and accent pairs match under utf8mb4_0900_ai_ci ===
+--echo === (no string MIN/MAX here: the representative of collation-equal strings is unspecified, F8) ===
 --let QUERY_FILE=$MYSQL_TMP_DIR/q_edge_str_d.sql
 --write_file $QUERY_FILE
-SELECT COUNT(*) AS `cnt`, MIN(`s_val`) AS `v_min`, MAX(`s_val`) AS `v_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa';
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`n`) AS `n_min`, MAX(`n`) AS `n_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa';
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT COUNT(*) AS `cnt`, MIN(`s_val`) AS `v_min`, MAX(`s_val`) AS `v_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa'|
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`n`) AS `n_min`, MAX(`n`) AS `n_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa'|
 
 --echo
 --echo === PROBE EDGE-TS-A: TIMESTAMP(3) and (6) inclusive >= at the cutoff (expect 2 of 3 rows) ===
