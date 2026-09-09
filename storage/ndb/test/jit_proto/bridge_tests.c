@@ -2555,23 +2555,29 @@ static void test_str_mixed_program(void) {
 /* T59d: a string load whose consumer is NOT Min/Max/Count keeps the
  * whole-program fallback (the planner never emits string Sum through
  * this path). Count was the original consumer here until ronsql_jit
- * item 13 admitted it (presence-only load, pinned by T80a-c). */
+ * item 13 admitted it (presence-only load, pinned by T80a-c). Since
+ * item 16 the load itself emits nothing (consumers may come later), so
+ * the reject moves to the Sum: TYPE_MISMATCH on the BR_REG_STR
+ * register at word 1. */
 static void test_str_non_minmax_consumer_reject(void) {
   uint32_t prog[2] = {
     enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
     enc_sum(/*reg=*/0, /*agg=*/0),
   };
   assert_rejected("T59d str_non_minmax_consumer_reject", prog, 2,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpLoadCol);
+                  JIT_BRIDGE_TYPE_MISMATCH, 1, kOpSumBigint);
 }
 
-/* T59e: a dangling string load (no consumer at all) rejects. */
+/* T59e: a dangling string load (no consumer at all) is accepted since
+ * item 16 — it emits nothing; the program is the tail EXIT alone. */
 static void test_str_dangling_load_reject(void) {
+  const char *name = "T59e str_dangling_load_emits_nothing";
   uint32_t prog[1] = {
     enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
   };
-  assert_rejected("T59e str_dangling_load_reject", prog, 1,
-                  JIT_BRIDGE_UNSUPPORTED_OP, 0, kOpLoadCol);
+  Program p;
+  if (!expect_accepted(name, prog, 1, &p, /*expected_n_ops=*/1)) return;
+  mark_pass(name);
 }
 
 /* ------------------------------------------------------------------ */
@@ -5084,6 +5090,154 @@ static void test_avg_slot_bounds(void) {
                      JIT_BRIDGE_REG_OUT_OF_RANGE, 2, kOpAvg);
 }
 
+/* ---- ronsql_jit item 16: non-adjacent string consumers (2026-09-09) ---- */
+
+/* T84a: COUNT(s), SUM(i), MAX(s) — RonSQL's feature-store SELECT-list
+ * shape. The MAX reads the string register after another load and an
+ * aggregate; it lowers to the fused MINMAX where it occurs. */
+static void test_str_deferred_max_after_numeric(void) {
+  const char *name = "T84a str_deferred_max_after_numeric";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_count(/*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/1),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]LOAD_NB(presence) [1]COUNT [2]LOAD_NB(int) [3]SUM_CHECKED
+   * [4]MINMAX_STR(max agg2) [5]EXIT [6]OVF. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 0, "b", p.ops[0].b, 3u | 0x4000u)) return;
+  if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind, OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_SUM_BIGINT_CHECKED)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 4, "b", p.ops[4].b, 3)) return;
+  if (!expect_op_field(name, &p, 4, "c", p.ops[4].c, 0x100u | 2u)) return;
+  mark_pass(name);
+}
+
+/* T84b: MIN(s), SUM(i), MAX(s) — an adjacent consumer AND a deferred one. */
+static void test_str_adjacent_then_deferred(void) {
+  const char *name = "T84b str_adjacent_then_deferred";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_LONGVARCHAR, /*reg=*/0, /*col=*/9),
+    enc_agg(kOpMin, /*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/1),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]MINMAX_STR(min agg0) [1]LOAD_NB [2]SUM_CHECKED [3]MINMAX_STR(max agg2)
+   * [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 0)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 3, "b", p.ops[3].b, 9)) return;
+  if (!expect_op_field(name, &p, 3, "c", p.ops[3].c, 0x100u | 2u)) return;
+  mark_pass(name);
+}
+
+/* T84c: MAX(s), SUM(i), COUNT(s) — a deferred COUNT gets its own presence
+ * load right before it, null-branching over just that COUNT. Before item
+ * 16 the generic kOpCount handler emitted a bare OP_COUNT_BIGINT for the
+ * poisoned string register (no type check, no presence load), which
+ * counted NULL rows — the ronsql_string_agg_interleaved mirror recorded
+ * cnt_s 4 instead of 2 for exactly this query. */
+static void test_str_deferred_count(void) {
+  const char *name = "T84c str_deferred_count";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/1),
+    enc_count(/*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]MINMAX_STR [1]LOAD_NB(int) [2]SUM_CHECKED [3]LOAD_NB(presence, c=5)
+   * [4]COUNT(agg2) [5]EXIT [6]OVF. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/7)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_LOAD_COL_NDB_NB)) return;
+  if (!expect_op_field(name, &p, 3, "b", p.ops[3].b, 3u | 0x4000u)) return;
+  if (!expect_op_field(name, &p, 3, "c", p.ops[3].c, 5)) return;
+  if (!expect_op_field(name, &p, 4, "kind", p.ops[4].kind, OP_COUNT_BIGINT)) return;
+  if (!expect_op_field(name, &p, 4, "a", p.ops[4].a, 2)) return;
+  mark_pass(name);
+}
+
+/* T84d: a string load with NO adjacent consumer used to reject; now it
+ * emits nothing and the later MAX carries the column. */
+static void test_str_load_without_adjacent_consumer(void) {
+  const char *name = "T84d str_load_without_adjacent_consumer";
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/1),
+  };
+  Program p;
+  /* [0]LOAD_NB(int) [1]SUM_CHECKED [2]MINMAX_STR(max agg1) [3]EXIT [4]OVF. */
+  if (!expect_accepted(name, prog, 4, &p, /*expected_n_ops=*/5)) return;
+  if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind, OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 2, "b", p.ops[2].b, 3)) return;
+  mark_pass(name);
+}
+
+/* T84e: kOpMov carries the string column to the copy. */
+static void test_str_mov_propagates_column(void) {
+  const char *name = "T84e str_mov_propagates_column";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_2reg(kOpMov, /*dst=*/1, /*src=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/2, /*col=*/1),
+    enc_sum(/*reg=*/2, /*agg=*/0),
+    enc_agg(kOpMax, /*reg=*/1, /*agg=*/1),
+  };
+  Program p;
+  /* [0]MOV [1]LOAD_NB [2]SUM_CHECKED [3]MINMAX_STR(b=3) [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind, OP_MINMAX_STR_NDB)) return;
+  if (!expect_op_field(name, &p, 3, "b", p.ops[3].b, 3)) return;
+  mark_pass(name);
+}
+
+/* T84f: any OTHER reader of a string register still rejects the program. */
+static void test_str_deferred_sum_still_rejects(void) {
+  uint32_t prog[4] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/1, /*col=*/1),
+    enc_sum(/*reg=*/1, /*agg=*/0),
+    enc_sum(/*reg=*/0, /*agg=*/1),
+  };
+  assert_rejected("T84f str_deferred_sum_still_rejects", prog, 4,
+                  JIT_BRIDGE_TYPE_MISMATCH, /*word=*/3, kOpSumBigint);
+}
+
+/* T84g: redefining the register with an integer load ends the string
+ * association — the later MAX is an integer MAX on the new value. */
+static void test_str_register_redefined(void) {
+  const char *name = "T84g str_register_redefined";
+  uint32_t prog[5] = {
+    enc_load_col(NDB_TYPE_VARCHAR, /*reg=*/0, /*col=*/3),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/0),
+    enc_load_col(NDB_TYPE_BIGINT, /*reg=*/0, /*col=*/1),
+    enc_sum(/*reg=*/0, /*agg=*/1),
+    enc_agg(kOpMax, /*reg=*/0, /*agg=*/2),
+  };
+  Program p;
+  /* [0]MINMAX_STR [1]LOAD_NB(int r0) [2]SUM_CHECKED [3]<int max> [4]EXIT [5]OVF. */
+  if (!expect_accepted(name, prog, 5, &p, /*expected_n_ops=*/6)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_MINMAX_STR_NDB)) return;
+  if (p.ops[3].kind == OP_MINMAX_STR_NDB) {
+    mark_fail(name, "op[3] is a string MINMAX; the register was redefined as BIGINT");
+    return;
+  }
+  mark_pass(name);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -5274,6 +5428,13 @@ int main(void) {
   test_case_arm_negative_const_rejects();
   test_str_count_presence_load();
   test_str_count_and_min();
+  test_str_deferred_max_after_numeric();
+  test_str_adjacent_then_deferred();
+  test_str_deferred_count();
+  test_str_load_without_adjacent_consumer();
+  test_str_mov_propagates_column();
+  test_str_deferred_sum_still_rejects();
+  test_str_register_redefined();
   test_str_max_then_count();
   test_u64_gl_fast_path();
   test_u64_linked_compare();

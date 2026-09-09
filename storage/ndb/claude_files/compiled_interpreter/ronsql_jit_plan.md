@@ -2012,3 +2012,53 @@ the body). Not JIT-related; a dbtc-bench harness item for later.
 4. Linux: `./mtr --suite=ndb_push_agg_jit,ronsql_jit,ronsql_cte_jit
    --parallel=10 --force` once (never run there before), then the sf
    0.2 bench again — all 13 benches must PASS under ON.
+
+### Item 16 — DONE (2026-09-09; bridge_tests + mirror green): non-adjacent string consumers, and a wrong-result fix
+
+RonSQL's feature-store SELECT lists put a string aggregate, then numeric
+ones, then another string MIN/MAX on the SAME register:
+`Load s→r0; Count(r0); Load i→r1; Sum(r1); Max(r0)`. The Phase 5F-1
+string-load fusion only took CONSECUTIVE consumers; the later `Max(r0)`
+hit the poisoned BR_REG_STR register in the generic handler and rejected
+the whole program (TYPE_MISMATCH) — 100 fallbacks on the ten queries of
+`ronsql_string_agg_interleaved` (and the interpreter crash of the same
+day was the fallback path).
+
+**Wrong result hidden in the same corpus.** The generic `kOpCount`
+handler deliberately skips the register type check ("the COUNT stencil
+never reads its bits; the null skip comes from the load's null branch").
+That contract does not hold for a BR_REG_STR register: the fused string
+load emits no register write and no null branch, so `Load s→r0; Max(r0);
+Load i→r1; Sum(r1); Count(r0)` compiled to a bare `OP_COUNT_BIGINT` that
+counted NULL rows. The mirror recorded the symptom as if it were the
+expectation (`cnt_s` 4 instead of 2 on entity 1, inside the compare
+include's "== Diff ==" block), which is why the first item-16 run "failed"
+— the run was right and the recorded file was wrong. The recorded result
+is corrected; the deferred COUNT now always gets its own presence load
+(a string register with no known column is a TYPE_MISMATCH reject).
+Lesson for the mirror suite: a non-empty "== Diff ==" block in a recorded
+`ronsql_jit` result is a wrong JIT result, never an expectation —
+re-recording must be reviewed line by line.
+
+Because every fused string op re-reads the column from the row
+(jitMinMaxStringCol / the presence load), a consumer's position in the
+program does not matter as long as the register was not redefined. The
+bridge now keeps `reg_str_col[r]` (the column a BR_REG_STR register was
+loaded from; set by the string kOpLoadCol, propagated by kOpMov) and
+lowers a later `kOpMin`/`kOpMax` on such a register to the same
+`OP_MINMAX_STR_NDB` where it occurs, and a later `kOpCount` to its own
+presence load + `OP_COUNT_BIGINT` (so nb_convert_loads null-skips ONLY
+that COUNT — the ops in between must run on a NULL string). A string
+load with no adjacent consumer no longer rejects (it emits nothing).
+Redefinition needs no extra tracking: any other write changes the
+register's type away from STR. Any other reader (a `Sum` of a string
+register) still rejects.
+
+Tests: bridge_tests T84a-g (deferred MAX after numeric, adjacent +
+deferred, deferred COUNT with its own presence load and null-branch
+target, load without adjacent consumer, kOpMov propagation, Sum still
+rejects, redefinition ends the association); coldcall_tests T35 runs the
+exact 7-op deferred-COUNT program through jit1 and the real stencils over
+the four NULL combinations (COUNT 2, SUM 100, no fallback). The
+`ronsql_string_agg_interleaved` mirror pin drops 100 → 0 and its "== Diff
+==" block for the MAX/SUM/COUNT query is empty again.

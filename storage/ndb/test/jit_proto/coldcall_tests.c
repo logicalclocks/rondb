@@ -73,6 +73,9 @@ typedef struct {
   uint32_t nb_null;
   /* Phase 5G: last pinfo seen by mock_load_col_dec. */
   uint32_t last_pinfo;
+  /* T35: when nonzero, ONLY this col_id reads as NULL in the NB mock
+   * (nb_null is then ignored) — per-column NULL shapes. */
+  uint32_t nb_null_col;
 } MockCtx;
 
 /* Mock-A: writes col_id * 10 into dst_reg, bumps call counter. */
@@ -1151,7 +1154,10 @@ static int mock_load_col_nb(JitState *s, uint32_t col_id,
   ctx->n_calls++;
   ctx->last_col_id = col_id;
   ctx->last_dst_reg = dst_reg;
-  if (ctx->nb_null) {
+  const int is_null = (ctx->nb_null_col != 0)
+                          ? (col_id == ctx->nb_null_col)
+                          : (ctx->nb_null != 0);
+  if (is_null) {
     s->regs_i64[dst_reg] = 0;
     return 1;
   }
@@ -1885,6 +1891,101 @@ static void test_u64_mul_overflow(void) {
   ndb_jit_codemem_destroy(arena);
 }
 
+/* T35: ronsql_jit item 16 — the exact Program the bridge emits for
+ * MAX(s_val), SUM(i1), COUNT(s_val) (deferred COUNT: its presence load
+ * sits AFTER the numeric load, and the numeric load's null branch
+ * targets that presence load):
+ *   [0] MINMAX_STR   acc0 <- col 9 (cold call, touches no register)
+ *   [1] NB int load  r1 <- col 5,           NULL -> pc 3
+ *   [2] SUM_CHECKED  acc1 += r1             (ovf -> pc 6)
+ *   [3] NB presence  r0 <- col 9|0x4000,    NULL -> pc 5
+ *   [4] COUNT        acc2 += 1
+ *   [5] EXIT  [6] OVERFLOW_EXIT
+ * Rows model edge_hist_1 entity 1 plus the two mixed cases:
+ *   a: s non-null, i non-null  -> COUNT +1, SUM +50 (col 5 -> 50)
+ *   b: s NULL,     i NULL      -> nothing
+ *   c: s NULL,     i non-null  -> SUM +50
+ *   d: s non-null, i NULL      -> COUNT +1
+ * Expect acc1 == 100, acc2 == 2, three helper calls per row. Before
+ * item 16 the bridge lowered this COUNT as a bare OP_COUNT_BIGINT on
+ * the poisoned string register (no presence load, no null branch), so
+ * every row counted (cnt_s 4 instead of 2 on edge_hist_1 entity 1);
+ * this pins the execution side of the presence-load shape. */
+static void test_deferred_count_after_minmax(void) {
+  const char *name = "T35 deferred_count_after_minmax";
+  Program p;
+  memset(&p, 0, sizeof(p));
+  p.n_ops = 7;
+  p.ops[0] = (Op){ .kind = OP_MINMAX_STR_NDB, .a = 0, .b = 9, .c = 0x100 };
+  p.ops[1] = (Op){ .kind = OP_LOAD_COL_NDB_NB, .a = 1, .b = 5, .c = 3 };
+  p.ops[2] = (Op){ .kind = OP_SUM_BIGINT_CHECKED,
+                   .a = 1, .b = 1, .c = 1, .d = 6 };
+  p.ops[3] = (Op){ .kind = OP_LOAD_COL_NDB_NB, .a = 0,
+                   .b = (uint16_t)(9u | 0x4000u), .c = 5 };
+  p.ops[4] = (Op){ .kind = OP_COUNT_BIGINT, .a = 2, .b = 0, .c = 2 };
+  p.ops[5] = (Op){ .kind = OP_EXIT };
+  p.ops[6] = (Op){ .kind = OP_OVERFLOW_EXIT };
+
+  NdbJitCodeMem *arena = ndb_jit_codemem_create(0);
+  Jit1Prog *jp = jit1_compile(arena, &p, NULL);
+  if (jp == NULL) {
+    mark_fail(name, "jit1_compile failed (errno=%d)", errno);
+    ndb_jit_codemem_destroy(arena);
+    return;
+  }
+  JitEntry entry = jit1_entry(jp);
+
+  MockCtx ctx;
+  memset(&ctx, 0, sizeof(ctx));
+  JitState s;
+  memset(&s, 0, sizeof(s));
+  s.ctx = &ctx;
+
+  static const struct { uint32_t all_null; uint32_t null_col; } rows[4] = {
+    { 0, 0 },                       /* a */
+    { 1, 0 },                       /* b */
+    { 0, 9u | 0x4000u },            /* c: only the string is NULL */
+    { 0, 5 },                       /* d: only the int is NULL */
+  };
+  for (int i = 0; i < 4; ++i) {
+    memset(s.regs_i64, 0, sizeof(s.regs_i64));
+    memset(s.value_updated, 0, sizeof(s.value_updated));
+    memset(s.value_unsigned, 0, sizeof(s.value_unsigned));
+    s.row_fallback = 0;
+    s.row_overflowed = 0;
+    ctx.nb_null = rows[i].all_null;
+    ctx.nb_null_col = rows[i].null_col;
+    uint32_t calls_before = ctx.n_calls;
+    entry(&s);
+    if (s.row_fallback != 0 || s.row_overflowed != 0) {
+      mark_fail(name, "row %d: fallback=%u overflowed=%u, want 0/0",
+                i, s.row_fallback, s.row_overflowed);
+      jit1_free(jp);
+      ndb_jit_codemem_destroy(arena);
+      return;
+    }
+    if (ctx.n_calls - calls_before != 3) {
+      mark_fail(name, "row %d: %u helper calls, want 3 "
+                "(minmax + int load + presence load)",
+                i, ctx.n_calls - calls_before);
+      jit1_free(jp);
+      ndb_jit_codemem_destroy(arena);
+      return;
+    }
+  }
+  if (s.acc_i64[1] != 100 || s.acc_i64[2] != 2) {
+    mark_fail(name, "acc1(SUM)=%lld acc2(COUNT)=%lld, want 100/2",
+              (long long)s.acc_i64[1], (long long)s.acc_i64[2]);
+  } else if (s.value_updated[0] != 0) {
+    mark_fail(name, "value_updated[0]=%" PRIu64 " (string slot), want 0",
+              s.value_updated[0]);
+  } else {
+    mark_pass(name);
+  }
+  jit1_free(jp);
+  ndb_jit_codemem_destroy(arena);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — coldcall_tests\n");
   printf("===================================\n");
@@ -1953,6 +2054,7 @@ int main(void) {
   test_div_conv_coldcall();
   test_arith_conv_coldcall();
   test_divmod_conv_coldcall();
+  test_deferred_count_after_minmax();
 
   printf("\ncoldcall_tests: %d/%d passed\n", n_pass, n_pass + n_fail);
   return n_fail == 0 ? 0 : 1;

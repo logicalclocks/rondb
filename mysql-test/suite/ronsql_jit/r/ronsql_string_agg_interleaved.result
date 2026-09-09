@@ -49,12 +49,6 @@ SELECT MAX(s_val) AS s_max, SUM(i1) AS i1_sum, COUNT(s_val) AS cnt_s FROM edge_h
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- s_max	i1_sum	cnt_s
--Beta	15	2
-+Beta	15	4
 ==========
 
 
@@ -123,4 +117,4 @@ DROP TABLE edge_hist_1;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_string_agg_interleaved_jit_fallback_delta;
 ronsql_string_agg_interleaved_jit_fallback_delta
-100
+0
