@@ -310,7 +310,11 @@ Rows are compared as sorted multisets unless the case is
 Production output names and column counts must match exactly; an alias
 mismatch fails even when row values match. For explicitly designated
 envelope cases only, `--relaxed-headers` permits informational
-`HEADER-ONLY`. Preserve output schema checks for zero-row results.
+`HEADER-ONLY`. Output names of a zero-row result cannot be checked:
+RonSQL's JSON form of an empty result is `{"data":[]}` with no column
+list and its TEXT form has no header line, so two empty results compare
+equal with an informational note (E3 run 3); a non-empty result against
+an empty one, or an empty result with a different header, still fails.
 
 `Diff(a, b) DiffReport` produces a unified diff of the canonical TSVs
 (same look as `ronsql_compare.inc` output) for the dump directory.
@@ -412,7 +416,7 @@ Output contract (stable for MTR, `--quiet` suppresses everything
 else):
 
 ```
-CASE <id> <shape> <mode> PASS|FAIL|REJECT|REJECT(expected)|GATED|SKIP|HEADER-ONLY <latency_ms> [<engine> <message>]
+CASE <id> <shape> <mode> PASS|FAIL|REJECT|REJECT(expected)|KNOWN-WRONG|KNOWN-ERROR|GATED|SKIP|HEADER-ONLY <latency_ms> [<engine> <message>]
 SUMMARY cases=<n> pass=<n> fail=<n> reject=<n> expected_reject=<n> gated=<n> skip=<n> header_only=<n>
 ```
 In regression mode, exit code 0 iff `fail = 0` and unexpected `reject = 0` (`--allow-reject`
@@ -437,6 +441,11 @@ and the diff. `--dump-dir` writes `<id>.sql`, `<id>.mysql.tsv`,
   `QUERY_FILE` form; EXPLAIN pins through `ronsql_explain.inc`; row
   pins through `ronsql_phase_rows.inc`. Both files are also generated
   by `.fs_emit_mtr` from `cases` (subset flagged `MTR: true`).
+  Cases whose statements use `AVG` or touch a DECIMAL / DOUBLE / FLOAT
+  column carry `Canon: CanonNumeric` (set by the case builder from the
+  schema) and compare through the include's `$canonicalization_script`
+  sed hook with trailing fractional zeros stripped on both sides
+  (formatting findings F2/F3); everything else is byte-strict.
 - `t/ronsql_fs_vectors.test` (E4), `t/ronsql_fs_fuzz_spec.test` (E6),
   `t/ronsql_fs_fuzz_env.test` (E7): drive the binary:
   ```

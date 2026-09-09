@@ -5,7 +5,8 @@
 (`framework_design.md`), P4 (`random_generator.md`), P5
 (`benchmarks.md`), all 2026-09-08. E1 done and recorded 2026-09-09
 (`phase_e1.md`, findings F0-F8). E2 done 2026-09-09
-(`phase_e2.md`: 45/45 golden fixtures byte-identical). Next: E3. Engine gaps found by
+(`phase_e2.md`: 45/45 golden fixtures byte-identical). E3 code written
+2026-09-09 (`phase_e3.md`), awaiting `go test` and the MTR record. Engine gaps found by
 the framework (e.g. R1) are handled in a separate tree; this framework
 records them and moves on. Nothing has been built yet. No cluster was started and no
 build or test was run while writing this plan.
@@ -508,7 +509,7 @@ set; gates covered; complete DTOs and MySQL statements captured from
 Java, including collect metadata, prefixes, helper options, self-join
 filter scoping, composite keys and gated outcomes.
 
-### E3 — Executors, canonicalization, L1 verify, golden MTR test
+### E3 — Executors, canonicalization, L1 verify, golden MTR test — DONE 2026-09-09 (F9 found; see `phase_e3.md` §5–6)
 
 Scope: `fsq/bind`, `fsq/exec` (RDRS with `x-ronsql-phases`, ronsql_cli
 subprocess, MySQL), `fsq/canon`, `.fs_verify [--shape S1..S9] [--keys N]

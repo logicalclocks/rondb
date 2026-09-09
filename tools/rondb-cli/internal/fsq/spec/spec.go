@@ -88,7 +88,10 @@ type FeatureGroup struct {
 	TTL *int64 `json:"ttl,omitempty"`
 	// OnlineConfig is the OnlineConfigDTO used by the DDL port.
 	OnlineConfig OnlineConfig `json:"onlineConfig,omitempty"`
-	Features     []Feature    `json:"features"`
+	// OnlineDB overrides the online database name (the real database the
+	// statements run against); empty means the golden-dumper convention.
+	OnlineDB string    `json:"onlineDatabase,omitempty"`
+	Features []Feature `json:"features"`
 }
 
 // TableName is the online table name: <name>_<version>
@@ -105,6 +108,9 @@ func (fg FeatureGroup) OnlineEnabled() bool { return fg.Online == nil || *fg.Onl
 // Real deployments use the project name; the test framework only needs
 // consistency between the spec and the emitted templates.
 func (fg FeatureGroup) OnlineDatabase() string {
+	if fg.OnlineDB != "" {
+		return fg.OnlineDB
+	}
 	return fmt.Sprintf("golden_%d_fs", fg.FeaturestoreID)
 }
 

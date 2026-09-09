@@ -26,6 +26,9 @@ Hopsworks Feature Store online-serving builder generates.
   results.
 - `phase_e2.md` — E2: spec/view model (= golden fixture input), definition
   validators, emitter port, Calcite-shaped MySQL twins, golden conformance test.
+- `phase_e3.md` — E3: binder, engines (RDRS JSON / MySQL / ronsql_cli),
+  typed canonicalizer, case matrix + expectation table, `.fs_verify`,
+  generated `ronsql_fs_templates.test`.
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

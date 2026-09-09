@@ -74,7 +74,8 @@ func parseFSArgs(args []string) fsArgs {
 // Switches never take a value.
 func isFSSwitch(name string) bool {
 	switch name {
-	case "hash-twin", "no-hash-twin", "verify", "quiet":
+	case "hash-twin", "no-hash-twin", "verify", "quiet", "cases", "all", "vectors",
+		"include-hazards", "allow-reject", "relaxed-headers":
 		return true
 	}
 	return false
@@ -112,6 +113,10 @@ func (s *Shell) executeFS(cmd string, args []string) error {
 		return s.runFSEmitMTR(args)
 	case "fs_schema":
 		return s.runFSSchema(args)
+	case "fs_verify":
+		return s.runFSVerify(args)
+	case "fs_show":
+		return s.runFSShow(args)
 	}
 	return fmt.Errorf("unknown command .%s", cmd)
 }
@@ -261,6 +266,13 @@ func (s *Shell) runFSEmitMTR(args []string) error {
 	}
 	fmt.Println(ui.Info(fmt.Sprintf("sf=%g: E=%d customers, %d rows in total, hash twin=%v, database `%s`",
 		sf, o.Scale.E, rows, o.HashTwin, o.DB)))
+	if a.has("cases") {
+		path, err := emitTemplatesTest(dir, o.DB, sf)
+		if err != nil {
+			return err
+		}
+		fmt.Println(ui.Success("wrote " + path))
+	}
 	return nil
 }
 

@@ -65,6 +65,11 @@ var rootCmd = &cobra.Command{
 	Use:   "rondb",
 	Short: "RonDB CLI",
 	Long:  "RonDB CLI - Rondis commands. SQL queries. One database.",
+	// A failed command (e.g. -e ".fs_verify" with failing cases) reports
+	// its error once, without the flag list; flag errors keep the usage
+	// text through SetFlagErrorFunc in init.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Prompt for password if -p flag is used
 		if promptPass {
@@ -197,6 +202,9 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	rootCmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		return fmt.Errorf("%w\n\n%s", err, c.UsageString())
+	})
 	rootCmd.PersistentFlags().StringVar(&host, "host", "localhost", "RonDB host (sets both MySQL and RDRS hosts)")
 	rootCmd.PersistentFlags().StringVar(&mysqlHost, "mysql-host", "", "MySQL host (overrides --host)")
 	rootCmd.PersistentFlags().StringVar(&rdrsHost, "rdrs-host", "", "RDRS/REST API host (overrides --host)")

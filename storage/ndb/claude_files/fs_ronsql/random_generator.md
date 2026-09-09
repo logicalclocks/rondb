@@ -75,8 +75,12 @@ HTTP 429; malformed request/database is HTTP 400.
 
 Production alias/schema differences are failures. Only explicitly
 designated envelope cases may use `--relaxed-headers` and informational
-`HEADER-ONLY`. Preserve nullness and exact numeric tokens through the
-typed executor; apply the requirements-mode rules in the framework
+`HEADER-ONLY`; a zero-row result has no RonSQL column list (JSON or
+TEXT), so two empty results are equal by construction. Until F9 is
+fixed, generated `MIN`/`MAX` over a DATE/TIMESTAMP column yields an
+unparsable JSON body: match it through the expectation table
+(`KNOWN-ERROR`), do not count it as a crash or a wrong result. Preserve
+nullness and exact numeric tokens through the typed executor; apply the requirements-mode rules in the framework
 design separately from regression/discovery allowances.
 
 ---
