@@ -1,0 +1,42 @@
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--echo String aggregate register lifetime across an interleaved numeric load
+--echo (data node crash in NdbSqlUtil::cmpLongvarchar, 2026-09-09).
+--echo The interpreter keeps a loaded string as a POINTER into the shared
+--echo attribute read buffer until kOpMin/kOpMax consumes it; the opcode loop
+--echo used to rewind the buffer to 0 on every opcode, so a numeric load in
+--echo between overwrote the string and the later MAX compared a clobbered
+--echo length prefix. Needs a two-byte prefix column (VARCHAR(100) utf8mb4),
+--echo a string aggregate, then a numeric one, then a string MIN/MAX.
+--echo Entity 1: mixed NULLs (alpha, NULL, Beta, NULL); entity 3: no NULLs
+--echo (the kernel compares two rows itself); entity 2: all NULL; 6: no rows.
+
+CREATE TABLE edge_hist_1 (entity_id BIGINT, event_time TIMESTAMP, f_float FLOAT, f_double DOUBLE, d_date DATE, i1 INT, i2 INT, i3 INT, dec_val DECIMAL(18,2), s_val VARCHAR(100), big_val BIGINT, PRIMARY KEY (entity_id, event_time)) ENGINE=NDB COMMENT='NDB_TABLE=READ_BACKUP=1';
+INSERT INTO edge_hist_1 VALUES (1, '2026-05-27 19:00:00', 1.5, 0.25, '2026-01-15', 10, NULL, 30, 10.50, 'alpha', 1), (1, '2026-05-27 18:00:00', 2.5, 0.5, '2026-02-15', NULL, 20, NULL, NULL, NULL, 2), (1, '2026-05-27 17:00:00', NULL, 0.75, NULL, 5, 15, 25, -3.25, 'Beta', 3), (1, '2026-05-27 16:00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 4), (2, '2026-05-23 15:00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0), (2, '2026-05-23 14:00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0), (2, '2026-05-23 13:00:00', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0), (3, '2026-05-19 11:00:00', 0.5, 1024.5, '2024-02-29', 1, 2, 3, 1.01, 'x', 100), (3, '2026-05-19 10:00:00', 1.25, -0.125, '2000-02-29', 4, 5, 6, 2.02, 'y', 200), (3, '2026-05-19 09:00:00', 2, 3.75, '1970-01-01', 7, 8, 9, 3.03, 'z', 300);
+
+--let $QUERY=SELECT COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 1;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT COUNT(s_val) AS cnt_s, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 1;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT MIN(s_val) AS s_min, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 1;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT MAX(s_val) AS s_max, SUM(i1) AS i1_sum, COUNT(s_val) AS cnt_s FROM edge_hist_1 WHERE entity_id = 1;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT MAX(s_val) AS s_max, MIN(s_val) AS s_min FROM edge_hist_1 WHERE entity_id = 1;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 3;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT MIN(s_val) AS s_min, SUM(big_val) AS big_sum, MAX(s_val) AS s_max, SUM(i2) AS i2_sum, MIN(s_val) AS s_min2 FROM edge_hist_1 WHERE entity_id = 3;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 2;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 WHERE entity_id = 6;
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY=SELECT entity_id, COUNT(s_val) AS cnt_s, SUM(i1) AS i1_sum, MAX(s_val) AS s_max FROM edge_hist_1 GROUP BY entity_id;
+--source suite/ronsql/include/ronsql_compare.inc
+
+DROP TABLE edge_hist_1;

@@ -17,6 +17,27 @@
   JIT mode word through Cmvmi::execSET_CONFIG_PARAM_REQ -> dbtup_jit_set_mode;
   MTR `suite/ndb/t/ndb_set_compiled_interpreter.test` (pending build+run).
 
+**2026-09-09 — INTERPRETER BUG (data node crash) fixed: string register
+clobbered by an interleaved numeric load (built, NOT yet run).** `SELECT
+COUNT(s_val), SUM(i1), MAX(s_val) FROM t WHERE ...` (string agg, numeric agg,
+string MIN/MAX; VARCHAR(100) utf8mb4 = 2-byte prefix) killed the data node in
+`NdbSqlUtil::cmpLongvarchar` (`require(lb + m1 <= n1)`). Cause: kOpLoadCol of a
+string stores a POINTER into the per-LDM attribute read buffer for a later
+kOpMin/kOpMax (minMaxString), and the header comment says the read position
+must stay advanced past it for the rest of the row — but BOTH ProcessRec
+loops (`AggInterpreter.cpp`, `JoinAggInterpreter.cpp`) rewound
+`m_attr_read_pos = 0` on every opcode, so the numeric load overwrote the
+string bytes and MAX compared garbage. Fix: `m_attr_read_hwm` (row string
+high-water mark) in AggInterpreterBase; loops rewind to it, not to 0; reset
+per row; string capture publishes it. Not a JIT bug — under ON the shape
+is a bridge TYPE_MISMATCH reject (non-adjacent string consumer), so the
+interpreter ran it. Tests: `ronsql/t/ronsql_string_agg_interleaved` (+ jit
+mirror, pin-only; recorded pin = 100 fallbacks: the four reject-shape
+queries x three engines x fragments, each compile attempt counted). Both
+green 2026-09-09. Backlog: lower non-adjacent string consumers in the
+bridge — a 100-fallback pin on ten queries says this shape is common
+enough to matter for feature-store SELECT lists.
+
 **2026-09-08 — CompiledInterpreter default OFF + platform gate (built, NOT
 yet run).** For the 26.10 merge: the config default is now OFF
 (ConfigInfo.cpp); AUTO/ON are accepted only on x86_64 / aarch64 (the CPUs

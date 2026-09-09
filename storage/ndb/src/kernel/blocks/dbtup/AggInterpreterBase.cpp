@@ -468,11 +468,14 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
       sr.charset = cs;
       m_registers[reg_index].value.val_int64 = 0;
       /* Advance m_attr_read_pos past the AttributeHeader + string bytes
-       * so the next kOpLoadCol doesn't overwrite the captured ptr.
-       * Numeric paths leave m_attr_read_pos at 0 (they extract into the
-       * register's 8-byte union and the buffer is then disposable);
-       * strings need the buffer to stay live until kOpMax / kOpMin runs
-       * minMaxString. */
+       * and publish it as the row's high-water mark: the ProcessRec
+       * loops rewind m_attr_read_pos to m_attr_read_hwm (NOT to 0) on
+       * every opcode, so a later numeric kOpLoadCol in the same row
+       * reads above the captured string instead of over it. Numeric
+       * loads extract into the register's 8-byte union and never move
+       * the mark; strings need their bytes live until kOpMax / kOpMin
+       * runs minMaxString. Before 2026-09-09 the loops rewound to 0
+       * and `COUNT(s), SUM(i), MAX(s)` compared a clobbered prefix. */
       const Uint32 string_bytes = prefix + payload_len;
       const Uint32 words_consumed = 1 /*AttributeHeader*/ +
                                     ((string_bytes + 3) >> 2);
@@ -486,6 +489,7 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
         return ZAGG_OTHER_ERROR;
       }
       m_attr_read_pos += words_consumed;
+      m_attr_read_hwm = m_attr_read_pos;
       return 0;
     }
     default:
@@ -546,7 +550,8 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
   memcpy(m_prog, prog, m_prog_len * sizeof(Uint32));
   /* m_attr_read_buf is now the Dbtup-instance scratch buffer
    * (Step 3 Cand-C); ProcessRec binds it on entry.  No init-time
-   * memset needed — m_attr_read_pos resets on each opcode iteration. */
+   * memset needed — m_attr_read_pos rewinds on each opcode iteration
+   * (to the row's string high-water mark, see m_attr_read_hwm). */
   memset(m_decimal_buf, 0, sizeof(Int32) * AGG_DECIMAL_BUFF_LENGTH);
   m_decimal.buf = m_decimal_buf;
   m_decimal.len = AGG_DECIMAL_BUFF_LENGTH;

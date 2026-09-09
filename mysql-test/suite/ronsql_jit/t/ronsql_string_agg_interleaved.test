@@ -1,0 +1,16 @@
+# Mirror of suite/ronsql/t/ronsql_string_agg_interleaved.test with the JIT
+# active (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
+# differential. Test logic lives ONLY in the sourced original.
+#
+# PIN-ONLY (no jit_strict_arm.inc): the "string agg, numeric agg, string
+# MIN/MAX on the same register" shape is a KNOWN bridge reject — the
+# fused string-load lowering only takes CONSECUTIVE consumers, and the
+# later kOpMax on the poisoned BR_REG_STR register is a
+# TYPE_MISMATCH reject (whole program runs on the interpreter). That is
+# the safe outcome; the crash this test guards against was in the
+# interpreter. Lowering non-adjacent string consumers is a backlog item
+# (ronsql_jit_plan.md). Re-record the pin deliberately when it moves.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql/t/ronsql_string_agg_interleaved.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ronsql_string_agg_interleaved_jit_fallback_delta;
