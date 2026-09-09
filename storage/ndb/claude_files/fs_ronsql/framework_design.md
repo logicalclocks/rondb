@@ -81,7 +81,7 @@ type Join struct {
     FG string                        // FeatureGroup name_version reference
     Prefix string
     Conditions []JoinCondition       // {LeftFeature, RightFeature}
-    Features []TDFeature             // {Name, Index, Label, InferenceHelper, TrainingHelper}
+    Features []TDFeature             // {Name, Type, Index, Label, InferenceHelper, TrainingHelper}; Type preserves persisted collect struct schema
     AggSpec map[string][]string      // insertion-ordered (kept as ordered slice internally)
     AggWindow *int64
     CollectN *int; CollectOrderBy string; CollectAscending bool
@@ -101,6 +101,15 @@ window > 0, TIMESTAMP event time last in PK, window ≤ 100 y and ≤ TTL,
 online history-layout guard. It returns a typed `GateError{Code,
 Message}` with the Hopsworks `RESTCodes` name so tests can assert the
 exact gate.
+
+Also port `QueryController.convertCollect` (:741-843): N > 0,
+configured maximum N and N × selected-feature count, explicit/default
+order-column resolution, column existence, at least one value field,
+online complex/binary value-field rejection, and the last-PK-column
+layout with a nonempty entity prefix. Include aggregate/collect mutual
+exclusion. Validation settings are explicit fixture inputs; cover both
+sides of each limit. An explicit collect order column need not be the
+FG event time or a TIMESTAMP.
 
 Type classification helpers (`IsIntegerType`, `IsNumericType`,
 `IsComplexType`, `BaseType`) are ported verbatim, including the
@@ -148,8 +157,9 @@ Divergences that are *not* ported (documented in `emit/doc.go`):
   fields) is ported exactly.
 - Persistence / EJB lookups (`featuregroupController.getFeatures`,
   `trainingDatasetController.resolveCollectSources`) — replaced by the
-  spec: collect struct fields = the join's selected features in index
-  order.
+  spec: retain and parse the persisted collect array<struct<...>> type,
+  including field names, types and order. SQL projection sources are
+  PKs plus struct fields; the output struct schema is a separate list.
 - `getOfflineFeaturestoreDbName` — unused by RonSQL templates.
 
 Gate outcomes are values, not panics: a suppressed template is an
@@ -158,9 +168,13 @@ exceptions become `GateError`.
 
 Golden conformance (`emit/golden_test.go`): every file in
 `testdata/hopsworks_golden/` is `{name, fgs, view, options, expected:
-{queryRonsql, snowflakeTemplates, queryOnline (aggregate twin only),
-aggregateWindow, aggregateFeatureNames, parameters}}`; the test asserts
-byte equality. Seed set, transcribed from `TestPreparedStatementBuilder.java`:
+{statements[], gateOrException}, validationSettings}`. Capture the complete
+ordered statement set and every relevant DTO field: SQL variants,
+database, index, prefix, parameters, aggregate metadata, collect name,
+N, order/direction, source fields, filter metadata and snowflake marker.
+Capture persisted collect field types/order alongside the DTOs.
+RonSQL text and DTOs must match exactly. Seed set, transcribed from
+`TestPreparedStatementBuilder.java`:
 
 | fixture | source assertion |
 |---|---|
@@ -172,9 +186,16 @@ byte equality. Seed set, transcribed from `TestPreparedStatementBuilder.java`:
 | `snowflake_gates.json` | :615-636 (RIGHT → null, partial key → null) |
 | `collect_desc.json` | :652-653 |
 
-Later fixtures come from a Java dumper (`HopsworksGoldenDump`, a JUnit
-utility in the Hopsworks tree using the same reflection pattern);
-until it exists every fixture file carries `"source": "transcribed"`.
+Java-generated fixtures are required before E2 is complete.
+`HopsworksGoldenDump` exercises the complete builder entry paths with
+fixture-backed dependencies; private-emitter fixtures remain supplemental.
+Record the Hopsworks commit and provenance. Transcribed fixtures carry
+`"source": "transcribed"` and cannot establish conformance.
+Cover prefixes, helper/label options, self-join filter scoping,
+composite keys, collect metadata and all gate outcomes. Check in the
+captured Calcite MySQL statements: E4 executes these as independent
+references against the reconstructed twins and RonSQL vector path.
+No Java runtime or Maven build is required by MTR.
 
 ---
 
@@ -223,7 +244,7 @@ type Engine interface {
     Probe(ctx) error                                           // cheap liveness check
 }
 type Result struct {
-    Header []string; Rows [][]string        // TSV as delivered (NULL spelled "NULL")
+    Header []string; Rows [][]Cell          // Cell{Value string; Null bool}; numeric text stays exact
     Raw string; Latency time.Duration
     Phases map[string]int64                 // x-ronsql-phases (RDRS only), incl. rows
     Explain string                          // when opt.Explain
@@ -232,7 +253,7 @@ type Outcome int // OK, CleanReject, Retryable, Timeout, Crash, Error
 ```
 
 - **RDRS** (`rdrs.go`): `POST /<APIVersion>/ronsql` with
-  `{query, database, outputFormat:"TEXT", explainMode:"ALLOW"|"FORCE"}`
+  `{query, database, outputFormat:"JSON", explainMode:"ALLOW"|"FORCE"}`
   through `client.RestClient.PostWithHeader` (header
   `x-ronsql-phases`); per-request timeout from `--timeout`. RDRS
   answers every RonSQL error with HTTP 500 and a text body
@@ -243,14 +264,20 @@ type Outcome int // OK, CleanReject, Retryable, Timeout, Crash, Error
   or database validation error (`Error`); anything else → `Error`; a
   transport failure or timeout followed by a failed `Probe()` →
   `Crash`. The classification table lives in `random_generator.md` §3.
+- Decode JSON preserving nullness, string values and numeric tokens
+  (`json.Number`, never a float64 intermediate for integer/decimal
+  cells). Preserve/check output aliases, reject duplicate object keys,
+  and validate empty-result output schema with a companion metadata or
+  EXPLAIN check. TEXT remains a separate formatting check.
 - **CLI** (`cli.go`): `ronsql_cli --connect-string C -D db
-  --output-format TEXT --execute-file f`; exit code 1 → `CleanReject`,
+  --output-format JSON --execute-file f`; exit code 1 → `CleanReject`,
   3 → `Retryable`. Off by default for join shapes (dictionary-cache
   caveat) and enabled with `--engines rdrs,cli,mysql`.
 - **MySQL** (`mysql.go`): one `sql.DB` per worker with `SET time_zone
   = '+00:00'` and `USE <db>` at connect; text-protocol values (`[]byte`)
-  are used verbatim, `nil` → `NULL`, exactly as
-  `rest-server2/…/ronsqltpch/handler_test.go:239-247`. `EXPLAIN` for
+  retain exact value bytes and `nil` sets `Cell.Null`; never convert it
+  to the string "NULL". Decode RonSQL string escapes before comparing
+  with these bytes. `EXPLAIN` for
   MySQL is `EXPLAIN FORMAT=TREE` (informational only).
 - Worker pools: `--threads N` for `.fs_verify` and the fuzzers; each
   worker owns one instance of every engine.
@@ -267,18 +294,19 @@ Rules, applied per cell before comparison:
 
 | type | rule |
 |---|---|
-| NULL | both engines print `NULL`; compared literally |
+| NULL | compare explicit nullness; SQL NULL differs from string `NULL`, empty string and missing |
 | integers | exact string compare after stripping a leading `+` |
 | DECIMAL | parse with `math/big.Rat`; equal iff exact (`12.3` = `12.30`) |
-| DOUBLE / FLOAT | parse; equal iff `|a-b| ≤ tol·max(|a|,|b|)`, `tol` default `1e-9` (`--tolerance`); data is dyadic so `0` also works and is used in strict mode |
+| DOUBLE / FLOAT | parse; equal iff `|a-b| ≤ tol·max(|a|,|b|)`, `tol` default `1e-9` (`--tolerance`); use zero tolerance only for fixtures whose operation is known exact |
 | TIMESTAMP / DATETIME | strip trailing `.000…`; then exact |
 | DATE / strings | exact bytes (no case folding: a collation divergence must surface) |
 
 Rows are compared as sorted multisets unless the case is
 `Ordered` (S6b, any ORDER BY shape), in which case order matters.
-Headers are compared textually after trimming backticks and
-whitespace; a header mismatch with equal row bodies is reported as
-`HEADER-ONLY` (a naming difference, not a data difference).
+Production output names and column counts must match exactly; an alias
+mismatch fails even when row values match. For explicitly designated
+envelope cases only, `--relaxed-headers` permits informational
+`HEADER-ONLY`. Preserve output schema checks for zero-row results.
 
 `Diff(a, b) DiffReport` produces a unified diff of the canonical TSVs
 (same look as `ronsql_compare.inc` output) for the dump directory.
@@ -293,7 +321,7 @@ documented client folds to each side and compare the assembled
 per-entity vectors.
 
 ```go
-type Vector map[string]Cell            // feature name → Cell{Value string; Null, Missing bool; Array []map[string]string}
+type Vector map[string]VectorCell      // feature name → {Value string; Null, Missing bool; Array []Vector}; retain struct field order/types separately
 func FoldRonsql(st Statement, res map[string]Result, keys []Value) map[EntityKey]Vector
 func FoldMysql (st Statement, res Result,           keys []Value) map[EntityKey]Vector
 func Compare(a, b map[EntityKey]Vector, policy Policy) []Mismatch   // Policy.MissingEqualsNull
@@ -306,8 +334,12 @@ Folds (from the DTO comments and the ported code):
   `AggregateFeatureNames`.
 - collect: rows sorted by `CollectOrderBy` (newest first, oldest first
   when `CollectAscending`), folded into one array feature
-  `CollectFeatureName` whose elements carry `CollectSourceFeatures`
-  minus the PKs; MySQL rows come from the window statement.
+  `CollectFeatureName` whose elements carry exactly the persisted
+  struct fields in schema order, including `CollectOrderBy` even when
+  it belongs to the PK. Exclude only projection-only serving keys and
+  the MySQL rank helper. Preserve field types/nullness and apply the
+  declared feature prefix. Check asc/desc, empty arrays and independently
+  specified expected arrays; two identical folds are not sufficient.
 - snowflake: per template, overlay projected columns by output alias;
   a chain with no row leaves its features `Missing`; batch rows are
   keyed by the projected root PK. MySQL LEFT JOIN yields NULL cells;
@@ -341,6 +373,22 @@ known engine gap (e.g. S6 CTE form, R1) reports `REJECT(expected)` and
 does not fail the run; the table is the only place such knowledge
 lives and it is cross-referenced to the ledger.
 
+A versioned requirements manifest maps builder branches, gates, DTO
+contracts and the edge cases in `data_model.md` §11 to mandatory case
+IDs and required L1/L2/golden evidence. Include emitted binary/complex
+snowflake projections and composite child hops even when unsupported.
+Report each requirement as SUPPORTED, UNSUPPORTED, HOPSWORKS-GATED or
+UNTESTED; missing fixtures, skipped cases and absent evidence cannot
+count as supported. Native future shapes do not replace emitted ones.
+
+`.fs_verify --requirements --all --vectors` runs the complete manifest.
+It fails for unsupported/untested required emitted cases, incorrect
+gates, alias/schema/value mismatches or missing Java conformance.
+Known-rejection allowances apply only to regression/discovery runs and
+cannot override requirements mode. Report engine/Hopsworks commits,
+configuration and fixture provenance; correct Hopsworks gates are
+reported separately, not counted as RonSQL-supported statements.
+
 ---
 
 ## 10. CLI surface (`internal/shell/fs.go`)
@@ -352,7 +400,7 @@ lives and it is cross-referenced to the ledger.
 | `.fs_emit_mtr <dir> [--sf 0.01]` | write `fs_schema.inc`, `fs_data.inc`, `fs_drop.inc`, `body_templates.inc` |
 | `.fs_show <case\|shape> [--batch]` | print the spec, RonSQL templates, MySQL twins, parameters |
 | `.fs_explain <case>` | RonSQL EXPLAIN (FORCE) and MySQL EXPLAIN side by side |
-| `.fs_verify [--all \| --shape S1,S3 \| --case ID] [--db D] [--sf 0.01] [--engines rdrs,mysql] [--vectors] [--threads N] [--timeout 30s] [--tolerance 1e-9] [--now FS_NOW] [--dump-dir P] [--json P] [--quiet]` | run cases: L1 (default) and L2 (`--vectors`) |
+| `.fs_verify [--requirements] [--all \| --shape S1,S3 \| --case ID] [--db D] [--sf 0.01] [--engines rdrs,mysql] [--vectors] [--threads N] [--timeout 30s] [--tolerance 1e-9] [--now FS_NOW] [--dump-dir P] [--json P] [--quiet]` | run cases: L1 (default) and L2 (`--vectors`) |
 | `.fs_fuzz spec\|envelope --seed S --count N [--db D] [--sf] [--timeout] [--dump-dir] [--ledger P] [--shrink] [--quiet]` | E6/E7 |
 | `.bench_ronsql fs_hw_* / .bench_sql fs_hw_*` | registry entries generated from `cases` (E5) |
 
@@ -363,7 +411,7 @@ else):
 CASE <id> <shape> <mode> PASS|FAIL|REJECT|REJECT(expected)|GATED|SKIP|HEADER-ONLY <latency_ms> [<engine> <message>]
 SUMMARY cases=<n> pass=<n> fail=<n> reject=<n> expected_reject=<n> gated=<n> skip=<n> header_only=<n>
 ```
-Exit code 0 iff `fail = 0` and unexpected `reject = 0` (`--allow-reject`
+In regression mode, exit code 0 iff `fail = 0` and unexpected `reject = 0` (`--allow-reject`
 downgrades unexpected rejects to a warning during discovery). `--json`
 writes the same per case with the bound SQL, both raw outputs, phases,
 and the diff. `--dump-dir` writes `<id>.sql`, `<id>.mysql.tsv`,

@@ -58,12 +58,12 @@ statement from `fsq/mysqltwin`.
 | `fs_hw_snow1_batch100` | S7 batch | CTE selects `customer_id, region_id`, `WHERE customer_id IN ({KEYS:100}) GROUP BY customer_id, region_id`, projection adds `b.customer_id AS customer_id` | KEYS:100 | ≤ 100 |
 | `fs_hw_snow2_left_chain` | S8 | the per-chain template for the `countries` node (two INNER hops, one projection) | KEY | ≤ 1 |
 | `fs_hw_snow2_left_single` | S8b | same as `fs_hw_snow2_point` with `LEFT JOIN` hops | KEY | 1 |
-| `fs_hw_snow1_twin` / `fs_hw_snow2_twin` | S7 twin | MySQL `SELECT … FROM customers_1 AS fg0 LEFT JOIN regions_1 AS j2 … WHERE fg0.customer_id = {KEY}` | KEY | 1 |
+| `fs_hw_snow1_twin` / `fs_hw_snow2_twin` | S7 twin | MySQL `SELECT … FROM customers_1 AS fg0 INNER JOIN regions_1 AS j2 … WHERE fg0.customer_id = {KEY}`; all hops INNER | KEY | ≤ 1 |
 | `fs_hw_strkey_point` | S10 | `fs_hw_agg_point` over `transactions_str_1` with `customer_key = {SKEY}` | SKEY | 1 |
 | `fs_hw_strkey_batch100` | S10+S3 | batch 100 over string keys | SKEYS:100 | ≤ 100 |
 | `fs_hw_composite_point` | S9 | `SELECT COUNT(*) AS count, SUM(delta) AS delta_sum FROM balance_hist_1 WHERE account_id = {ACCT} AND currency = {CUR} AND event_time >= {NOW-90d};` | ACCT, CUR, NOW-90d | 1 |
 | `fs_hw_hash_point` | S1 on hash-only PK | `fs_hw_agg_point` over `transactions_hash_1` | KEY | 1 |
-| `fs_hw_sessions_window1h` | S2, TIMESTAMP(3) + ttl index | `SELECT COUNT(*) AS count, SUM(duration) AS duration_sum FROM sessions_1 WHERE customer_id = {KEY} AND event_time >= {NOW-1h};` | KEY, NOW-1h | 1 |
+| `fs_hw_sessions_window2h` | S2, TIMESTAMP(3) + ttl index | `SELECT COUNT(*) AS count, SUM(duration) AS duration_sum FROM sessions_1 WHERE customer_id = {KEY} AND event_time >= {NOW-2h};` | KEY, NOW-2h | 1 |
 
 Twenty-five entries. Names are stable identifiers (the shape ids in
 `shape_catalog.md` are the cross-reference); the exact SQL is whatever
@@ -83,16 +83,27 @@ driven by the case's parameter list:
 |---|---|---|
 | `{KEY}` | random integer entity key in `[1, maxKey]` | existing; `KeySQL = "SELECT MAX(customer_id) FROM fs_bench.customers_1"`, `KeyDefault` from `sf` |
 | `{KEYS:n}` | `n` distinct random keys, comma-separated | new |
-| `{SKEY}` | the string key of a random customer, rendered by `fsq/data` (`'cust-00000042'` or `'CUST-…'` for every 10th) | new |
+| `{SKEY}` | a customer in the target string-history domain `1..E/10`, rendered by `fsq/data`; explicit miss cases separate | new |
 | `{SKEYS:n}` | list of `n` | new |
 | `{ACCT}`, `{CUR}` | random account and one of its currencies (`1 + a mod 3` choices) | new |
-| `{NOW-7d}` | TIMESTAMP literal `FS_NOW − 7 days` (also `1h`, `30d`, `90d`) | new; `--now` overrides `FS_NOW` |
+| `{NOW-7d}` | TIMESTAMP literal `FS_NOW − 7 days` (also `1h`, `2h`, `30d`, `90d`) | new; `--now` overrides `FS_NOW` |
 
 Keys are drawn uniformly, so about 1/16 of point reads hit a customer
 with no rows and 1/16 hit a 300-row customer; the mix is intentional
 (it is what serving sees) and the per-request `rows` phase counter
 makes the distribution visible. `--key-class` (E5 stretch) restricts
 draws to one class for micro-benchmarks.
+
+A case declares its target-table key domain; batch resolvers use that
+same domain and reject requests for more distinct keys than it holds.
+Use identical seeded key sequences for paired engine/twin runs.
+Before timing, verify representative hit/miss results and expected
+matched-row counts, not just scalar aggregate output rows. The 2h
+sessions window includes the newest 90-minute-old row for nonempty
+entities; the old 1h window matched no generated sessions.
+S7 comparisons use INNER twins. Comparing the full S8 chain set with
+a LEFT twin requires a vector-read benchmark; timing one chain cannot
+stand in for that comparison.
 
 ---
 
@@ -123,12 +134,16 @@ draws to one class for micro-benchmarks.
 cd <build>/mysql-test
 ./mtr --suite=ronsqlcrunch setup --start-and-exit [--defaults-extra-file=suite/ronsqlcrunch/cpubind.cnf]
 <build>/runtime_output_directory/rondb --mysql-port <MASTER_MYPORT> --rdrs-port <RDRS port> --no-rondis
-.fs_load 1 8 500                # ≈ 5.4 M rows, ≈ 0.85 GB per data node
+.fs_load 1 8 500 --hash-twin    # include the table required by fs_hw_hash_point
 .bench_ronsql fs_hw 1 200       # 1 thread × 200 requests per query
 .bench_sql fs_hw 1 200
 ```
 `.fs_load` is idempotent (`CREATE … IF NOT EXISTS`, skips tables whose
 checksum already matches) so repeated matrix runs do not reload.
+Every benchmark declares required tables; check these before timing.
+A requested case with missing prerequisites is an error, not a timing
+sample. At sf 3 omit hash_point explicitly, as the hash twin does not
+fit the planned memory budget.
 
 ---
 
@@ -139,7 +154,9 @@ checksum already matches) so repeated matrix runs do not reload.
   unchanged.
 - `--load tpch|fs|both` (default `tpch` for backward compatibility):
   `fs` runs `.fs_load <sf> <load-threads> <load-batch>` instead of
-  `.load_tpch`; `--sf` applies to whichever is loaded.
+  `.load_tpch`; `--sf` applies to whichever is loaded. The selected
+  case prerequisites determine whether `--hash-twin` is needed;
+  reject incompatible scale/memory selections before loading.
 - Report sections A–F apply unchanged (compiler OFF/ON per engine,
   RonSQL vs MySQL, phase breakdown, mysqld NDB-API wait split,
   `ndbinfo.jit` deltas, thread scaling). One extra derived column for
@@ -164,7 +181,7 @@ change:
 | `fs_hw_collect5/50` | pass-through, `ORDER BY: index order (SF_OrderBy | SF_Descending …)`, `rows=N` |
 | `fs_hw_snow*` | `[ROOT] CTE_SCAN b`, `[INNER] PK_LOOKUP regions_1 AS j2`, `[INNER] PK_LOOKUP countries_1 AS j3` |
 | `fs_hw_hash_point` | table scan with filter (no ordered index) — the point of the entry |
-| `fs_hw_sessions_window1h` | which index serves the bound: PK ordered (`customer_id, event_time`) rather than `ttl_index(event_time)` |
+| `fs_hw_sessions_window2h` | which index serves the bound: PK ordered (`customer_id, event_time`) rather than `ttl_index(event_time)` |
 
 ---
 

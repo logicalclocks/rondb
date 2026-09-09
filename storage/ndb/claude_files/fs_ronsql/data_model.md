@@ -80,7 +80,7 @@ are what a Hopsworks user declares; online types follow `getOnlineType`
 | `credit_score` | int | INT | | GREATEST/LEAST operand |
 | `credit` | decimal(12,2) | DECIMAL(12,2) | | DECIMAL aggregate formatting |
 | `signup_ts` | timestamp | TIMESTAMP | | not the event time; unique per customer |
-| `tags` | array<string> | VARBINARY(100) | | complex type: never selected by the spec generator, E7 probe only |
+| `tags` | array<string> | VARBINARY(100) | | required snowflake projection variant; online collect rejects complex value fields |
 
 Indexes: `idx_region_id` (secondary, so the reverse hop
 `regions → customers` is joinable). Event time: none. PK index: default
@@ -307,14 +307,17 @@ CONCAT('Merchant ', m)`.
 
 ### 5.4 Strings and collation
 
-Alphabet: ASCII letters, digits, space, `-`, `#`. No quotes, no
-backslashes, no control characters (Hopsworks refuses those in
-literals anyway). Mixed-case pairs (`grocery`/`Grocery`,
+The bulk-data alphabet is ASCII letters, digits, space, `-`, `#`.
+Mandatory edge fixtures (§11) additionally contain apostrophes, UTF-8,
+empty strings, literal "NULL", backslashes and control characters.
+Hopsworks accepts and doubles apostrophes; its filter renderer refuses
+backslashes/control characters, which does not prohibit stored values.
+Mixed-case pairs (`grocery`/`Grocery`,
 `travel`/`Travel`, `web`/`WEB`, `cust-`/`CUST-`) are deliberate:
 MySQL compares them equal under `utf8mb4_0900_ai_ci`; whether RonSQL's
 `=`, `LIKE`, `GROUP BY`, `MIN/MAX` agree is recorded in E3 (a
 divergence is a ledger entry, and possibly a Hopsworks gate on string
-filters). No non-ASCII data in v1; a UTF-8 probe FG can be added later.
+filters). UTF-8 coverage is mandatory in §11.
 
 ---
 
@@ -472,8 +475,9 @@ carries both. Global invariants (documented for authors):
 `type` is the offline type (drives both the DDL port and the
 definition-time gates: integer/numeric/complex classification), and
 `onlineType` overrides it (`sessions_1.event_time: "timestamp(3)"`).
-`complex: true` is a framework-only hint that keeps the spec generator
-from selecting the feature.
+`complex: true` is a type-classification hint, not a blanket generator
+exclusion. Apply the actual Hopsworks gate for each operation; retain
+legal complex/binary projections and COUNT cases in production coverage.
 
 ---
 
@@ -490,3 +494,40 @@ from selecting the feature.
    loader.
 5. The mixed-case collation behaviour (§5.4) on RonSQL vs MySQL — a
    data-model fact, not a shape fact, so it is settled here first.
+
+---
+
+## 11. Mandatory edge fixtures (E1 follow-up, review A2/A4/A5)
+
+Add a small fixed dataset alongside the bulk tables, at every scale.
+Its rows/checksums and key classes must be shared by both loaders.
+These are requirements for the E1 follow-up before E3, not a claim
+about the already-written E1 code. Existing bulk formulas stay stable.
+
+- A history FG with FLOAT, DATE, nullable integer pairs/triples,
+  nullable DECIMAL and string values. Include mixed-NULL and all-NULL
+  groups; distinguish COUNT(*) from COUNT(col), and exercise SUM/AVG/
+  MIN/MAX and GREATEST/LEAST null propagation.
+- Exact BIGINT values around 2^53 and near signed limits, and large
+  DECIMAL(18,2) values; choose non-overflowing aggregates for required
+  success cases. Separate deliberate overflow probes. Include both
+  exactly representable floats and rounding-sensitive finite values.
+- Strings: `O'Brien`, literal `NULL`, empty string, case/accent pairs,
+  multibyte UTF-8 and 100-character boundaries. Test quoting in keys,
+  IN lists and filters. Store backslash/tab/newline values for result
+  decoding; assert the actual filter-renderer rejection where applicable.
+- TIMESTAMP(3)/(6) rows exactly at a fixed window cutoff and one
+  representable tick before/after it; verify inclusive >= filtering
+  for both single and batch queries.
+- A collect FG with PK (entity_id, sequence_no BIGINT) and an explicit
+  sequence_no order column distinct from event time. Preserve it as
+  the first collected struct field; cover N boundaries, asc/desc and
+  entity misses.
+- A snowflake parent with two FK columns and a child with a composite
+  PK, plus nested complex/binary projections. Include NULL/dangling
+  hops and bindings whose swapped components select a different row.
+  Partial-key gate cases must omit a real component of this child PK.
+
+E3/E4 deterministic cases must cover every applicable fixture/operation;
+E6 samples them with a nonzero weight and reports coverage. Random
+sampling alone does not satisfy these requirements.

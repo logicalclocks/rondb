@@ -207,7 +207,9 @@ fixtures are regenerated and the diff shows exactly what moved. Until
 the Java dumper exists (it needs a Hopsworks Maven build), the fixtures
 are hand-transcribed from `TestPreparedStatementBuilder.java`
 (assertions at :403, :431-440, :533-544, :589-599, :652) and marked as
-such.
+such. Transcribed fixtures are bootstrap material only: E2 completion
+requires Java-generated full-statement/DTO fixtures pinned to the
+Hopsworks commit, as specified in `framework_design.md` §3.
 
 ### D3 — Data model: a synthetic Hopsworks-shaped online feature store
 
@@ -224,12 +226,14 @@ design in P2; the initial table set is listed in §4 P2.
 
 - **L1 — same-text differential.** The identical statement text (after
   `?` substitution) runs on MySQL (same NDB tables, `time_zone='+00:00'`)
-  and on RonSQL through RDRS `/ronsql` (TEXT output) and optionally
-  `ronsql_cli`; sorted TSV compare with type-aware canonicalization
+  and on RonSQL through RDRS `/ronsql` (JSON output preserving NULL
+  and numeric tokens) and optionally `ronsql_cli`; typed multiset
+  comparison with type-aware canonicalization
   (DOUBLE/FLOAT relative tolerance, DECIMAL scale normalization,
-  TIMESTAMP fraction normalization, NULL spelling). This is the
-  `ronsql_compare.inc` contract, re-implemented natively in Go for the
-  CLI paths and reused verbatim for MTR.
+  TIMESTAMP fraction normalization, explicit nullness). Production
+  aliases must match exactly. Existing TEXT/TSV MTR checks remain
+  supplemental formatting checks; they cannot establish NULL/string
+  equivalence. See `framework_design.md` §§6-7.
 - **L2 — vector-level equivalence.** For a feature-view spec the
   framework emits the RonSQL template set *and* the MySQL serving
   statement(s) (`applyMysqlAggregate` twin; the `ROW_NUMBER() OVER
@@ -330,6 +334,27 @@ phases; regression thresholds recorded in `benchmarks.md`.
 ```
 
 ---
+
+## 3.1 Review requirements (2026-09-09)
+
+These eight requirements amend P0-P5. Existing E1 code needs a data
+follow-up before E3; no amendment is considered implemented or verified
+merely because it appears here. The user runs all builds and tests.
+
+| ID | Required correction | Completion evidence |
+|---|---|---|
+| A1 | Preserve persisted collect struct fields, including the order column | E2 fixtures and E4 independent expected arrays, asc/desc and empty results |
+| A2 | Include currently emitted complex/binary snowflake projections | E3/E6 cases classified as supported or unsupported; collect rejection checked separately |
+| A3 | Preserve typed NULL and require production aliases | E3 NULL versus string-NULL and alias-mismatch checks; exact large numeric tokens |
+| A4 | Port all collect definition gates and explicit order columns | E2 boundary fixtures; E6 valid and named-invalid cases |
+| A5 | Add deterministic type, literal, NULL, time-boundary and composite-hop fixtures | E1 follow-up checksums; E3/E4 mandatory cases and E6 sampling |
+| A6 | Require Java-generated complete builder fixtures | E2 statement/DTO conformance and E4 comparisons using captured MySQL SQL |
+| A7 | Separate regression success from requirements acceptance | E3 requirement manifest/report; E8 strict acceptance with no unsupported or untested required cases |
+| A8 | Correct benchmark semantics, key domains and prerequisites | E5 untimed correctness/workload checks before recording comparable timings |
+
+Engine fixes remain in the engine tree. A known rejection can keep the
+regression suite green but leaves its production requirement unsupported.
+S6b or S8b success cannot satisfy a requirement for emitted S6 or S8.
 
 ## 4. Planning phases
 
@@ -470,14 +495,17 @@ Scope: `fsq/spec`, `fsq/emit` (all three emitters, `aggregateOutputs`,
 prefixes, all gates), `fsq/mysqltwin` (`applyMysqlAggregate`, collect
 wrapper, scan wrapper, snowflake join chain). Unit tests: the
 transcribed golden fixtures from `TestPreparedStatementBuilder.java`
-plus table-driven gate tests. Optional (Hopsworks repo): `HopsworksGoldenDump`
-JUnit utility producing the fixture JSON.
+plus table-driven aggregate and collect gate tests. Required for E2
+completion: Java-generated full builder fixtures (`HopsworksGoldenDump`
+in the Hopsworks tree); checked-in JSON avoids a Java MTR dependency.
 Verification:
 ```
 cd tools/rondb-cli && go test ./internal/fsq/...
 ```
 Exit: every catalog shape reproduced byte-identically for the fixture
-set; gates covered.
+set; gates covered; complete DTOs and MySQL statements captured from
+Java, including collect metadata, prefixes, helper options, self-join
+filter scoping, composite keys and gated outcomes.
 
 ### E3 — Executors, canonicalization, L1 verify, golden MTR test
 
@@ -560,7 +588,11 @@ mirror (`ronsql_fs_jit` with fallback-delta pins), flake controls
 a `refresh` script for golden fixtures, and a one-page "how to add a
 shape" guide.
 Exit: `./mtr --suite=ronsql_fs,ronsql_fs_jit,ronsql_fs_ng2r2` green ×3
-runs.
+runs, plus `.fs_verify --requirements --all --vectors` on the required
+topology/JIT matrix. Every required emitted case must pass L1/L2 and
+Java conformance; missing evidence and known engine gaps prevent
+requirements acceptance. The report records both engine and Hopsworks
+commits, configuration, fixture provenance and per-requirement status.
 
 ---
 

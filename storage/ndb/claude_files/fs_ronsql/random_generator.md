@@ -53,7 +53,8 @@ Both share the runner (§2), the outcome classifier (§3), the shrinker
 
 RDRS behaviour (from `rest-server2/server/src/ronsql_ctrl.cpp` and
 `db_operations/ronsql/ronsql_operation.cpp`): a successful statement
-is HTTP 200 with the TSV body; **every RonSQL error is HTTP 500** with
+is HTTP 200 with the selected output format (JSON for typed correctness
+checks, TEXT for supplemental formatting); **every RonSQL error is HTTP 500** with
 a text body — `Caught exception: <message>` for a
 `RonSQLPermanentError`, `Caught RonSQLRetryableError after 10
 attempts: <message>` when retries are exhausted; rate limiting is
@@ -72,8 +73,11 @@ HTTP 429; malformed request/database is HTTP 400.
 | `GATED` | spec-level only: the ported Hopsworks gate suppressed the template; asserted against the expected gate | success |
 | `SKIP` | result too large, or construct excluded by flags | neutral |
 
-Header-only differences are reported as `HEADER-ONLY` and count as
-success unless `--strict-headers`.
+Production alias/schema differences are failures. Only explicitly
+designated envelope cases may use `--relaxed-headers` and informational
+`HEADER-ONLY`. Preserve nullness and exact numeric tokens through the
+typed executor; apply the requirements-mode rules in the framework
+design separately from regression/discovery allowances.
 
 ---
 
@@ -108,9 +112,12 @@ success unless `--strict-headers`.
    definition-time `GateError`. Window: none 40 %, 1 h / 24 h / 7 d /
    30 d / 90 d otherwise; 5 % use a window on an FG without event time
    (gate).
-6. **Collect** (for collect nodes): `N ∈ {1, 5, 50}`, order column =
-   event time, `collectAscending` 50 %. Struct fields = 1–4 of the FG's
-   features.
+6. **Collect** (for collect nodes): ordinary `N ∈ {1, 5, 50}`, plus
+   configured N/width boundary cases and named invalid specs. Choose
+   either the default event time or a valid explicit order column
+   from the edge fixtures; `collectAscending` 50 %. Preserve persisted
+   struct field types/order and include at least one valid value field.
+   Exercise every collect gate from the shape catalog.
 7. **Filters**: 0 (50 %), 1 (30 %), 2–3 AND leaves (17 %), one OR
    node (3 %, expect the `COLLECT_UNSUPPORTED_ONLINE_FILTER` gate on
    collect/aggregate FGs). Leaf = feature × condition (`= <> > >= < <=
@@ -129,6 +136,12 @@ success unless `--strict-headers`.
     `featureVectorWithInferenceHelpers` each 10 % (they change the
     selected feature sets; a few features are flagged helper/label
     at random).
+
+The edge FGs in `data_model.md` §11 participate in sampling, including
+full/partial composite child hops and legal complex/binary snowflake
+projections. Apply operation-specific Hopsworks gates, not blanket
+complex-type exclusions. Mandatory deterministic coverage is tracked
+independently of random hit counts.
 
 ### 4.2 What is checked per case
 

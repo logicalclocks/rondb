@@ -270,12 +270,32 @@ All shapes with a `VARCHAR(100)` entity key (`customers_str_1`):
 quoting, `''` doubling, IN lists of strings, GROUP BY on a string
 key, collation-sensitive equality.
 
+### Required variants within existing shape IDs (review A1-A5)
+
+- S6: explicit non-event-time order column; preserve the persisted
+  struct's order field even when it is in the PK; exact field schema,
+  prefix, asc/desc order, NULL values and empty-array behavior.
+- S7/S8: projected complex/binary fields are current builder output,
+  not E7-only probes. There is no corresponding snowflake type gate;
+  this tree's pass-through printer rejects VARBINARY. Record an engine
+  support gap and retain mandatory production cases.
+- S7/S8/S9: full composite child-PK hops, permuted condition order,
+  repeated/missing key components, composite root bindings and misses.
+- S1-S10: applicable type/literal/boundary fixtures from
+  `data_model.md` §11, with separate support evidence per variant.
+
 ## 2. Gate matrix (Hopsworks-side, must be reproduced by the port)
 
 | Gate | Where | Effect |
 |---|---|---|
 | Batch + composite entity key | `applyRonsqlAggregate` :489, `buildRonsqlSnowflakeTemplates` :976 | no RonSQL template |
 | Collect batch | `buildDTO` :686 | no RonSQL template |
+| Collect N ≤ 0 or no value fields | `QueryController.convertCollect` :741-843 | `COLLECT_INVALID_N` |
+| Collect exceeds configured N / N × selected-width limit | same | `COLLECT_N_TOO_LARGE` / `COLLECT_TOO_WIDE` |
+| No explicit/default collect order column | same | `COLLECT_NO_ORDER_BY` |
+| Order column absent or online PK not (entity..., order) | same | `COLLECT_NO_SERVABLE_INDEX` |
+| Online collect selects complex/binary value fields | same | `COLLECT_INVALID_N`; does not imply a snowflake projection gate |
+| Aggregate combined with collect | `QueryController.convertAggregate` | `AGGREGATE_WITH_COLLECT` |
 | Filter tree contains OR | `conjunctiveFilterConditions` :711 | exception for collect/aggregate FGs |
 | Filter leaf not renderable (op, feature-vs-feature, unknown feature, unsafe literal, boolean) | `renderRonsqlCondition` :723 | exception `COLLECT_UNSUPPORTED_ONLINE_FILTER` |
 | Snowflake + filters on collect/aggregate FGs | `createSnowflakePreparedStatementDTOS` :818 | exception |
