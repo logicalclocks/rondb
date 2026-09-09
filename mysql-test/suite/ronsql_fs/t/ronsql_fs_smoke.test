@@ -16,6 +16,10 @@
 # is RECORDED in the .result file, not asserted.  E3 turns the green ones
 # strict and moves the rejected ones to the expectation table.
 #
+# Queries that contain a quoted literal use the QUERY_FILE form: the
+# `let $QUERY=` path of ronsql_compare.inc passes the text through a
+# shell single-quoted argument and breaks on embedded quotes.
+#
 # Both includes are generated; regenerate with
 #   rondb --no-mysql --no-rdrs --no-rondis \
 #         -e ".fs_emit_mtr mysql-test/suite/ronsql_fs/include --sf 0.01 --db test"
@@ -75,8 +79,10 @@ SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`am
 --echo
 --echo === S2: windowed aggregate, customer 111 (daily rows), 7-day window bound inclusive ===
 --echo === (FS_NOW = 2026-06-01 00:00:00; rows i=1..7 are exactly 1..7 days old -> 7 rows) ===
-let $QUERY=
-SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum`, MIN(`event_time`) AS `event_time_min`, MAX(`event_time`) AS `event_time_max` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` >= '2026-05-25 00:00:00';|
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_lit_1.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum`, MIN(`event_time`) AS `event_time_min`, MAX(`event_time`) AS `event_time_max` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` >= '2026-05-25 00:00:00';
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -202,8 +208,10 @@ SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `tr
 
 --echo
 --echo === PROBE S2 on sessions_1: TIMESTAMP(3) event time, 1-hour window, customer 3 ===
-let $QUERY=
-SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum`, MAX(`event_time`) AS `event_time_max` FROM `sessions_1` WHERE `customer_id` = 3 AND `event_time` >= '2026-05-31 22:00:00';|
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_lit_2.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum`, MAX(`event_time`) AS `event_time_max` FROM `sessions_1` WHERE `customer_id` = 3 AND `event_time` >= '2026-05-31 22:00:00';
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -274,8 +282,10 @@ SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) A
 
 --echo
 --echo === PROBE EDGE-DATE: DATE spread up to 9999-12-31 ===
-let $QUERY=
-SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01';|
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_lit_3.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01';
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -307,6 +317,11 @@ SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;|
 --echo == Expected result ==
 --sorted_result
 SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3|
+
+--echo
+--echo === EDGE: stored bytes of the UTF-8 keys (utf8mb4 round trip through mysqltest) ===
+SELECT `n`, HEX(`s_key`) AS `key_hex`, CHAR_LENGTH(`s_key`) AS `chars`, LENGTH(`s_key`) AS `bytes` FROM `edge_str_1` WHERE `n` IN (10, 13) ORDER BY `n`|
+SELECT `n`, HEX(`s_val`) AS `val_hex` FROM `edge_str_1` WHERE `n` IN (9, 11, 14, 15, 16) ORDER BY `n`|
 
 --echo
 --echo === PROBE EDGE-STR-A: apostrophe key, IN list with empty / literal-NULL / multibyte keys ===
@@ -354,15 +369,19 @@ SELECT COUNT(*) AS `cnt`, MIN(`s_val`) AS `v_min`, MAX(`s_val`) AS `v_max` FROM 
 
 --echo
 --echo === PROBE EDGE-TS-A: TIMESTAMP(3) and (6) inclusive >= at the cutoff (expect 2 of 3 rows) ===
-let $QUERY=
-SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000';|
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_lit_4.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000';
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
 SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000'|
 
-let $QUERY=
-SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` >= '2026-05-01 12:00:00.000000';|
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_lit_5.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` >= '2026-05-01 12:00:00.000000';
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -370,8 +389,10 @@ SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entit
 
 --echo
 --echo === PROBE EDGE-TS-B: batch window at the cutoff (entities 1, 2, 3 empty) ===
-let $QUERY=
-SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` >= '2026-05-01 12:00:00' GROUP BY `entity_id`;|
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_lit_6.sql
+--write_file $QUERY_FILE
+SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` >= '2026-05-01 12:00:00' GROUP BY `entity_id`;
+EOF
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result

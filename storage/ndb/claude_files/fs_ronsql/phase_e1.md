@@ -124,6 +124,23 @@ tables.
 
 ## 5. Results
 
-_(to be filled in after the run: go test output, MTR outcome, the
-`== Diff ==` content of every probe, timings of the include load and of
-`.fs_load 0.1`)_
+- 2026-09-09 `go test ./internal/fsq/...` (Go 1.24 toolchain via
+  GOTOOLCHAIN=auto): `ok internal/fsq/data 0.503s`, `ok internal/fsq/ddl
+  0.259s`, `spec` has no tests. First compile of the E1 + follow-up code;
+  no source changes were needed.
+- 2026-09-09 `.fs_emit_mtr … --sf 0.01 --db test`: `fs_data.inc` 27 819 B,
+  `fs_schema.inc` 5 644 B, `fs_drop.inc` 1 240 B; 89 617 rows.
+- 2026-09-09 first `--record` run (cluster up in 43 s): the include loaded
+  and **every checksum passed** (SQL formulas = Go formulas); row counts as
+  predicted (transactions 35 756, sessions 6 625, balances 1 001,
+  balance_hist 3 597, customers with tx 938); the Hopsworks DDL
+  round-trips (`STORAGE MEMORY` kept as `/*!50606 STORAGE MEMORY */`,
+  `COMMENT='NDB_TABLE=TTL=3153600000@event_time,READ_BACKUP=1'`,
+  `PRIMARY KEY … USING HASH`, `timestamp(3)`; server default
+  `utf8mb4_0900_ai_ci`). S1 (300 rows, GREATEST/LEAST fold) and S1 on an
+  empty entity: **empty diffs** (RonSQL = MySQL). The run then failed at
+  S2 because `ronsql_compare.inc`'s `let $QUERY=` path cannot carry a
+  quoted literal (shell single-quote breakage, documented in the CTE
+  authoring guide); six cases were converted to the `QUERY_FILE` form and
+  a HEX pin of the UTF-8 keys was added. Re-record pending.
+- `.fs_load 0.1`: _(pending)_
