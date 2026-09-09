@@ -21,6 +21,9 @@ Hopsworks Feature Store online-serving builder generates.
 - `benchmarks.md` — P5: the `fs_hw` registry entries generated from the
   emitter, placeholder scheme, runners, matrix-driver changes, plan pins,
   results and regression rule.
+- `phase_e1.md` — E1: schema/DDL port, data formulas, loaders, `.fs_*`
+  commands, `ronsql_fs` suite and smoke test; verification commands and
+  results.
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

@@ -1,0 +1,25 @@
+{
+  "PIDFile": "@pid-file",
+  "REST": {
+    "ServerIP": "@bind-address",
+    "ServerPort": @port
+  },
+  "RonDB": {
+      "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+  },
+  "Security": {
+    "InsecureAllowAll": @InsecureAllowAll,
+    "TLS": {
+      "EnableTLS": false,
+      "RequireAndVerifyClientCert": false
+    },
+    "APIKey": {
+      "UseHopsworksAPIKeys": @UseHopsworksAPIKeys
+    }
+  },
+  "Log": {
+    "Level": "INFO",
+    "LogQueries": true
+  }
+}

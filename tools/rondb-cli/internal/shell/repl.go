@@ -618,6 +618,8 @@ func (s *Shell) executeInternal(line string) error {
 			return err
 		}
 		return s.runLoadRDRS(numThreads, numOps, rowsPerOp)
+	case "fs_load", "fs_drop", "fs_emit_mtr", "fs_schema":
+		return s.executeFS(cmd, parts[1:])
 	case "load_tpch":
 		if s.restClient == nil {
 			return fmt.Errorf("REST API not connected. Cannot run load_tpch.")
@@ -4270,6 +4272,13 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, fractions ok e.g. 0.1; T=threads, B=batch size)
     .drop_tpch                           Drop all TPC-H tables and database
 
+  Feature-store test framework (RONDB-1121, Hopsworks-shaped tables):
+    .fs_load [SF] [T] [B] [--db D]       Create and load the feature-store data set (SF=scale factor, default 1
+                                         = 100k customers / ~5.4M rows; T=threads; B=rows per INSERT; --db default fs_bench)
+    .fs_drop [--db D]                    Drop the feature-store database
+    .fs_emit_mtr <dir> [--sf 0.01]       Write the MTR includes (fs_schema/fs_data/fs_drop.inc) for suite ronsql_fs
+    .fs_schema [--db D] [--hash-twin]    Print the Hopsworks online DDL of the feature-store tables
+
   Analytics benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):
     .bench_ronsql                        List available RonSQL benchmark queries
     .bench_ronsql <name> [T] [N]         Run named query T threads × N requests (default 1×10)
@@ -4592,6 +4601,10 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".load_rdrs"),
 		readline.PcItem(".load_tpch"),
 		readline.PcItem(".drop_tpch"),
+		readline.PcItem(".fs_load"),
+		readline.PcItem(".fs_drop"),
+		readline.PcItem(".fs_emit_mtr"),
+		readline.PcItem(".fs_schema"),
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
 		readline.PcItem(".bench_ronsql", ronsqlBenchCompletions()...),

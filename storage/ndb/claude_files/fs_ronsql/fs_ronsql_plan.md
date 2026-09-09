@@ -3,7 +3,8 @@
 **Status: planning track complete — P0 (this document), P1
 (`shape_catalog.md`, draft v1), P2 (`data_model.md`), P3
 (`framework_design.md`), P4 (`random_generator.md`), P5
-(`benchmarks.md`), all 2026-09-08. Next: E1. Engine gaps found by
+(`benchmarks.md`), all 2026-09-08. E1 code written 2026-09-09
+(`phase_e1.md`), awaiting build + MTR run. Engine gaps found by
 the framework (e.g. R1) are handled in a separate tree; this framework
 records them and moves on. Nothing has been built yet. No cluster was started and no
 build or test was run while writing this plan.
@@ -433,7 +434,7 @@ starts. Estimated effort is for one engineer (or one agent session).
 Dependencies: E1 → E2 → E3 → {E4, E5, E6} → E7 → E8. E5 can start as
 soon as E1 (data) and E2 (emitter) exist.
 
-### E1 — Schema, data, and the R1 probe
+### E1 — Schema, data, and the R1 probe — CODE WRITTEN (see `phase_e1.md`)
 
 Scope:
 - `fsq/ddl`: port of `buildCreateStatement` + `getOnlineType` (Go),

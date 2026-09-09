@@ -1,0 +1,227 @@
+# ronsql_fs_smoke — execution phase E1 of the feature-store RonSQL test
+# framework (RONDB-1121, storage/ndb/claude_files/fs_ronsql/).
+#
+# Creates the Hopsworks-shaped feature-group tables with the exact online
+# DDL Hopsworks emits (include/fs_schema.inc), loads the deterministic data
+# set at scale factor 0.01 (include/fs_data.inc, ~90k rows, checksummed
+# against the Go formulas at load time), and runs one statement per
+# shape of shape_catalog.md through the MySQL-vs-RonSQL differential
+# harness (suite/ronsql/include/ronsql_compare.inc).
+#
+# Strictness: the single-table shapes (S1, S2, S6b) are asserted
+# ($strict_diff=yes).  The shapes whose engine support this phase is meant
+# to DISCOVER (S3 batch IN, S6 CTE-form collect = risk R1, S7 snowflake,
+# S8b LEFT snowflake, string keys, hash-only PK, TIMESTAMP(3), composite
+# keys) run with $strict_diff unset: the diff (or the RonSQL error text)
+# is RECORDED in the .result file, not asserted.  E3 turns the green ones
+# strict and moves the rejected ones to the expectation table.
+#
+# Both includes are generated; regenerate with
+#   rondb --no-mysql --no-rdrs --no-rondis \
+#         -e ".fs_emit_mtr mysql-test/suite/ronsql_fs/include --sf 0.01 --db test"
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Join shapes: ronsql_cli does not refresh its NDB dictionary cache for
+# joins, so compare the mysql client against RDRS only (CTE-suite convention).
+--let $suppress_ronsql_cli=yes
+
+--echo === Create and load the feature-store data set (sf 0.01) ===
+--source suite/ronsql_fs/include/fs_schema.inc
+--source suite/ronsql_fs/include/fs_data.inc
+
+--echo
+--echo === Row counts ===
+SELECT COUNT(*) AS customers FROM customers_1;
+SELECT COUNT(*) AS transactions FROM transactions_1;
+SELECT COUNT(*) AS transactions_hash FROM transactions_hash_1;
+SELECT COUNT(*) AS sessions FROM sessions_1;
+SELECT COUNT(*) AS balances FROM balances_1;
+SELECT COUNT(*) AS balance_hist FROM balance_hist_1;
+SELECT COUNT(DISTINCT customer_id) AS customers_with_tx FROM transactions_1;
+
+--echo
+--echo === Hopsworks DDL round-trip: TIMESTAMP(3), TTL comment, hash-only PK ===
+SHOW CREATE TABLE sessions_1;
+SHOW CREATE TABLE transactions_hash_1;
+
+DELIMITER |;
+
+--let $strict_diff=yes
+
+--echo
+--echo === S1: aggregate point read (customer 31: 300 rows), GREATEST fold ===
+let $QUERY=
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31|
+
+--echo
+--echo === S1: aggregate point read, customer with no rows (16) ===
+let $QUERY=
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`amount`) AS `amount_max` FROM `transactions_1` WHERE `customer_id` = 16;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`amount`) AS `amount_max` FROM `transactions_1` WHERE `customer_id` = 16|
+
+--echo
+--echo === S2: windowed aggregate, customer 111 (daily rows), 7-day window bound inclusive ===
+--echo === (FS_NOW = 2026-06-01 00:00:00; rows i=1..7 are exactly 1..7 days old -> 7 rows) ===
+let $QUERY=
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum`, MIN(`event_time`) AS `event_time_min`, MAX(`event_time`) AS `event_time_max` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` >= '2026-05-25 00:00:00';|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum`, MIN(`event_time`) AS `event_time_min`, MAX(`event_time`) AS `event_time_max` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` >= '2026-05-25 00:00:00'|
+
+--echo
+--echo === S6b: collect last-5, direct form, customer 21 (exactly 5 rows), ordered compare ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5|
+
+--echo
+--echo === S6b: collect last-5, direct form, customer 31 (300 rows), ordered compare ===
+--let $skip_sort=yes
+let $QUERY=
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5|
+
+# ---- discovery probes: recorded, not asserted ------------------------------
+--let $strict_diff=
+
+--echo
+--echo === PROBE S3: batch aggregate, IN list + GROUP BY (keys 16 none, 17 one, 20 five, 31 max, 1001 missing) ===
+let $QUERY=
+SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 1001) GROUP BY `customer_id`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 1001) GROUP BY `customer_id`|
+
+--echo
+--echo === PROBE S6 (risk R1): collect last-5, Hopsworks CTE form, customer 21 ===
+let $QUERY=
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
+
+--echo
+--echo === PROBE S7: snowflake 1-hop, Hopsworks template, customer 21 (region 22) ===
+let $QUERY=
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`|
+
+--echo
+--echo === PROBE S7: snowflake 2-hop, Hopsworks template, customer 21 (region 22 -> country 22) ===
+let $QUERY=
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`|
+
+--echo
+--echo === PROBE S7: snowflake 1-hop, batch form, keys 21 / 13 (NULL region) / 29 (dangling region) ===
+let $QUERY=
+WITH `b` AS (SELECT `customer_id`, `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` IN (21, 13, 29) GROUP BY `customer_id`, `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `b`.`customer_id` AS `customer_id` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `customer_id`, `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` IN (21, 13, 29) GROUP BY `customer_id`, `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `b`.`customer_id` AS `customer_id` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`|
+
+--echo
+--echo === PROBE S8b: snowflake 2-hop with LEFT JOIN hops, customer 16 (region 17 -> NULL country) ===
+let $QUERY=
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` LEFT JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` LEFT JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` LEFT JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` LEFT JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`|
+
+--echo
+--echo === PROBE S10: string entity key, aggregate point read (cust-00000021) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_s10.sql
+--write_file $QUERY_FILE
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000021';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000021'|
+
+--echo
+--echo === PROBE S10 (collation): lower-case literal against the upper-case key CUST-00000010 ===
+--echo === (MySQL utf8mb4_0900_ai_ci matches case-insensitively; RonSQL behaviour recorded here) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_s10b.sql
+--write_file $QUERY_FILE
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000010';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000010'|
+
+--echo
+--echo === PROBE S4 (collation): string filter 'grocery' against mixed-case rows, customer 31 ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_s4.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` = 'grocery';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` = 'grocery'|
+
+--echo
+--echo === PROBE S1 on the hash-only PK twin (no ordered index: table scan on both engines) ===
+let $QUERY=
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_hash_1` WHERE `customer_id` = 31;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_hash_1` WHERE `customer_id` = 31|
+
+--echo
+--echo === PROBE S2 on sessions_1: TIMESTAMP(3) event time, 1-hour window, customer 3 ===
+let $QUERY=
+SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum`, MAX(`event_time`) AS `event_time_max` FROM `sessions_1` WHERE `customer_id` = 3 AND `event_time` >= '2026-05-31 22:00:00';|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum`, MAX(`event_time`) AS `event_time_max` FROM `sessions_1` WHERE `customer_id` = 3 AND `event_time` >= '2026-05-31 22:00:00'|
+
+--echo
+--echo === PROBE S9: composite entity key + window on balance_hist_1 (account 4, currency EUR) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_s9.sql
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` >= '2026-03-03 00:00:00';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` >= '2026-03-03 00:00:00'|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+--source suite/ronsql_fs/include/fs_drop.inc
