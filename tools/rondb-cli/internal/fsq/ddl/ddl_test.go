@@ -60,7 +60,7 @@ func TestOnlineType(t *testing.T) {
 func historyFG() spec.FeatureGroup {
 	return spec.FeatureGroup{
 		Name: "transactions", Version: 1, EventTime: "event_time",
-		Online: spec.OnlineConfig{SecondaryIndexes: [][]string{{"merchant_id"}}},
+		OnlineConfig: spec.OnlineConfig{SecondaryIndexes: [][]string{{"merchant_id"}}},
 		Features: []spec.Feature{
 			{Name: "customer_id", Type: "bigint", Primary: true},
 			{Name: "event_time", Type: "timestamp", Primary: true},
@@ -92,7 +92,7 @@ func TestBuildCreateStatement_HashPK_TTL_Tablespace_Default(t *testing.T) {
 	def := "0"
 	fg := spec.FeatureGroup{
 		Name: "sessions", Version: 2, EventTime: "event_time", TTL: &ttl,
-		Online: spec.OnlineConfig{PrimaryKeyIndexType: "hash", TableSpace: "ts_1",
+		OnlineConfig: spec.OnlineConfig{PrimaryKeyIndexType: "hash", TableSpace: "ts_1",
 			SecondaryIndexes: [][]string{{"device", "pages"}}},
 		Features: []spec.Feature{
 			{Name: "customer_id", Type: "bigint", Primary: true},
@@ -122,7 +122,7 @@ func TestBuildCreateStatement_StringDefaultAndExistingComments(t *testing.T) {
 	def := "n/a"
 	fg := spec.FeatureGroup{
 		Name: "dim", Version: 1,
-		Online: spec.OnlineConfig{Comments: []string{"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM"}},
+		OnlineConfig: spec.OnlineConfig{Comments: []string{"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM"}},
 		Features: []spec.Feature{
 			{Name: "id", Type: "int", Primary: true},
 			{Name: "label", Type: "string", DefaultValue: &def},
@@ -141,12 +141,12 @@ func TestBuildCreateStatement_StringDefaultAndExistingComments(t *testing.T) {
 
 func TestBuildCreateStatement_Errors(t *testing.T) {
 	fg := historyFG()
-	fg.Online.PrimaryKeyIndexType = "BTREE"
+	fg.OnlineConfig.PrimaryKeyIndexType = "BTREE"
 	if _, err := BuildCreateStatement("db", fg); err == nil {
 		t.Error("expected error for invalid primaryKeyIndexType")
 	}
 	fg = historyFG()
-	fg.Online.SecondaryIndexes = [][]string{{"no_such_column"}}
+	fg.OnlineConfig.SecondaryIndexes = [][]string{{"no_such_column"}}
 	if _, err := BuildCreateStatement("db", fg); err == nil {
 		t.Error("expected error for unknown secondary index column")
 	}
@@ -158,7 +158,7 @@ func TestBuildCreateStatement_Errors(t *testing.T) {
 }
 
 func TestComments(t *testing.T) {
-	fg := spec.FeatureGroup{Online: spec.OnlineConfig{Comments: []string{"NDB_TABLE=READ_BACKUP=0"}}}
+	fg := spec.FeatureGroup{OnlineConfig: spec.OnlineConfig{Comments: []string{"NDB_TABLE=READ_BACKUP=0"}}}
 	if got := Comments(fg); len(got) != 1 || got[0] != "NDB_TABLE=READ_BACKUP=0" {
 		t.Errorf("READ_BACKUP already present must be kept as is, got %v", got)
 	}

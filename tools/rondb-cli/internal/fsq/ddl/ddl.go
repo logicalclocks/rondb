@@ -115,7 +115,7 @@ func ttlComment(fg spec.FeatureGroup) string {
 // followed by ensureReadBackupComment (:920-942).  The result is what
 // buildCreateStatement joins with "," into COMMENT='...'.
 func Comments(fg spec.FeatureGroup) []string {
-	comments := append([]string(nil), fg.Online.Comments...)
+	comments := append([]string(nil), fg.OnlineConfig.Comments...)
 	contains := func(sub string) bool {
 		for _, c := range comments {
 			if strings.Contains(c, sub) {
@@ -161,7 +161,7 @@ func validateNoOfflineOnlyKeyColumns(fg spec.FeatureGroup) error {
 	if fg.EventTime != "" && offlineOnly[fg.EventTime] {
 		return fmt.Errorf("event_time column %q is offline_only", fg.EventTime)
 	}
-	for _, idx := range fg.Online.SecondaryIndexes {
+	for _, idx := range fg.OnlineConfig.SecondaryIndexes {
 		for _, col := range idx {
 			if offlineOnly[col] {
 				return fmt.Errorf("secondary index column %q is offline_only", col)
@@ -174,7 +174,7 @@ func validateNoOfflineOnlyKeyColumns(fg spec.FeatureGroup) error {
 // validateSecondaryIndexes ports validateSecondaryIndexes: every column must
 // exist and must not be a TEXT/BLOB type.
 func validateSecondaryIndexes(fg spec.FeatureGroup, onlineTypes map[string]string) error {
-	for _, idx := range fg.Online.SecondaryIndexes {
+	for _, idx := range fg.OnlineConfig.SecondaryIndexes {
 		if len(idx) == 0 {
 			return fmt.Errorf("empty secondary index")
 		}
@@ -197,7 +197,7 @@ func BuildCreateStatement(db string, fg spec.FeatureGroup) (string, error) {
 	if err := validateNoOfflineOnlyKeyColumns(fg); err != nil {
 		return "", err
 	}
-	pkClause, err := pkIndexClause(fg.Online)
+	pkClause, err := pkIndexClause(fg.OnlineConfig)
 	if err != nil {
 		return "", err
 	}
@@ -252,11 +252,11 @@ func BuildCreateStatement(db string, fg spec.FeatureGroup) (string, error) {
 		b.WriteString(", KEY `ttl_index`(`" + fg.EventTime + "`)")
 	}
 
-	if len(fg.Online.SecondaryIndexes) > 0 {
+	if len(fg.OnlineConfig.SecondaryIndexes) > 0 {
 		if err := validateSecondaryIndexes(fg, onlineTypes); err != nil {
 			return "", err
 		}
-		for _, idx := range fg.Online.SecondaryIndexes {
+		for _, idx := range fg.OnlineConfig.SecondaryIndexes {
 			b.WriteString(", KEY `idx_" + strings.Join(idx, "_") + "`(`")
 			b.WriteString(strings.Join(idx, "`,`"))
 			b.WriteString("`)")
@@ -267,8 +267,8 @@ func BuildCreateStatement(db string, fg spec.FeatureGroup) (string, error) {
 	b.WriteString("ENGINE=ndbcluster")
 	b.WriteString(" ")
 	b.WriteString("COMMENT='" + strings.Join(Comments(fg), ",") + "'")
-	if fg.Online.TableSpace != "" {
-		b.WriteString("/*!50100 TABLESPACE `" + fg.Online.TableSpace + "` STORAGE DISK */")
+	if fg.OnlineConfig.TableSpace != "" {
+		b.WriteString("/*!50100 TABLESPACE `" + fg.OnlineConfig.TableSpace + "` STORAGE DISK */")
 	}
 	return b.String(), nil
 }

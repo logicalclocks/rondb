@@ -3,8 +3,9 @@
 **Status: planning track complete — P0 (this document), P1
 (`shape_catalog.md`, draft v1), P2 (`data_model.md`), P3
 (`framework_design.md`), P4 (`random_generator.md`), P5
-(`benchmarks.md`), all 2026-09-08. E1 code written 2026-09-09
-(`phase_e1.md`), awaiting build + MTR run. Engine gaps found by
+(`benchmarks.md`), all 2026-09-08. E1 done and recorded 2026-09-09
+(`phase_e1.md`, findings F0-F8). E2 done 2026-09-09
+(`phase_e2.md`: 45/45 golden fixtures byte-identical). Next: E3. Engine gaps found by
 the framework (e.g. R1) are handled in a separate tree; this framework
 records them and moves on. Nothing has been built yet. No cluster was started and no
 build or test was run while writing this plan.
@@ -459,7 +460,7 @@ starts. Estimated effort is for one engineer (or one agent session).
 Dependencies: E1 → E2 → E3 → {E4, E5, E6} → E7 → E8. E5 can start as
 soon as E1 (data) and E2 (emitter) exist.
 
-### E1 — Schema, data, and the R1 probe — CODE WRITTEN (see `phase_e1.md`)
+### E1 — Schema, data, and the R1 probe — DONE (see `phase_e1.md`)
 
 Scope:
 - `fsq/ddl`: port of `buildCreateStatement` + `getOnlineType` (Go),
@@ -487,7 +488,7 @@ cd <build>/mysql-test && ./mtr --suite=ronsql_fs ronsql_fs_smoke --record   # fi
 Exit: smoke test green; R1 outcome recorded in `phase_e1.md` and the
 catalog updated (S6 status); decision taken on the collect shape.
 
-### E2 — Spec model and emitter port with golden conformance
+### E2 — Spec model and emitter port with golden conformance — DONE (see `phase_e2.md`)
 
 Scope: `fsq/spec`, `fsq/emit` (all three emitters, `aggregateOutputs`,
 `renderRonsqlCondition`, `renderRonsqlLiteral`, `conjunctiveFilterConditions`,

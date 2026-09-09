@@ -53,6 +53,10 @@ does. Every package is unit-testable without a cluster except `exec`
 
 ## 2. Spec model (`fsq/spec`)
 
+> E2 note: the spec format is the input half of a Hopsworks golden fixture
+> (`HopsworksGoldenDump.CaseSpec`); `spec.View` unmarshals fixtures directly.
+> The type sketch below predates that and is superseded by `spec/view.go`.
+
 Go types mirror the Hopsworks entities the emitters read, with the
 same names so the port can be reviewed side by side. JSON tags make
 every spec writable by hand (MTR authors, fuzz dumps).

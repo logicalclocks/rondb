@@ -69,22 +69,26 @@ type OnlineConfig struct {
 	TableSpace          string     `json:"tableSpace,omitempty"`
 }
 
-// FeatureGroup mirrors Featuregroup plus its feature list.
+// FeatureGroup mirrors Featuregroup plus its feature list.  The JSON
+// shape is the "fgs" entry of a Hopsworks golden fixture
+// (HopsworksGoldenDump.Group), so fixtures unmarshal directly.
 type FeatureGroup struct {
+	// ID is the Featuregroup id (fixture "id"); joins and filters refer to it.
+	ID      int    `json:"id,omitempty"`
 	Name    string `json:"name"`
 	Version int    `json:"version"`
 	// FeaturestoreID identifies the feature store (project); snowflake
 	// templates require every feature group of a subtree to share it.
 	FeaturestoreID int `json:"featurestoreId,omitempty"`
-	// NotOnline marks a feature group that is not online enabled (the
-	// Hopsworks builders refuse such feature groups).  The zero value is
-	// "online enabled", which is what hand-written specs expect.
-	NotOnline bool   `json:"notOnline,omitempty"`
+	// Online is Featuregroup.onlineEnabled; nil means true, so hand-written
+	// specs can omit it.
+	Online    *bool  `json:"online,omitempty"`
 	EventTime string `json:"eventTime,omitempty"`
 	// TTL in seconds; nil or 0 means TTL disabled.
-	TTL      *int64       `json:"ttl,omitempty"`
-	Online   OnlineConfig `json:"online"`
-	Features []Feature    `json:"features"`
+	TTL *int64 `json:"ttl,omitempty"`
+	// OnlineConfig is the OnlineConfigDTO used by the DDL port.
+	OnlineConfig OnlineConfig `json:"onlineConfig,omitempty"`
+	Features     []Feature    `json:"features"`
 }
 
 // TableName is the online table name: <name>_<version>
@@ -94,7 +98,15 @@ func (fg FeatureGroup) TableName() string {
 }
 
 // OnlineEnabled reports Featuregroup.isOnlineEnabled().
-func (fg FeatureGroup) OnlineEnabled() bool { return !fg.NotOnline }
+func (fg FeatureGroup) OnlineEnabled() bool { return fg.Online == nil || *fg.Online }
+
+// OnlineDatabase is the online feature-store database of the feature
+// group's project as the golden dumper mocks it: "golden_<featurestoreId>_fs".
+// Real deployments use the project name; the test framework only needs
+// consistency between the spec and the emitted templates.
+func (fg FeatureGroup) OnlineDatabase() string {
+	return fmt.Sprintf("golden_%d_fs", fg.FeaturestoreID)
+}
 
 // TTLEnabled reports Featuregroup.isTtlEnabled().
 func (fg FeatureGroup) TTLEnabled() bool { return fg.TTL != nil && *fg.TTL > 0 }

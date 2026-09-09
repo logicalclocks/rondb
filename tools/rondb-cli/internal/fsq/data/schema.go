@@ -115,13 +115,13 @@ func Schema() []spec.FeatureGroup {
 		},
 		{
 			Name: "customers", Version: 1, FeaturestoreID: 1,
-			Online:   spec.OnlineConfig{SecondaryIndexes: [][]string{{"region_id"}}},
-			Features: customerFeatures(bigKey),
+			OnlineConfig: spec.OnlineConfig{SecondaryIndexes: [][]string{{"region_id"}}},
+			Features:     customerFeatures(bigKey),
 		},
 		{
 			Name: "customers_str", Version: 1, FeaturestoreID: 1,
-			Online:   spec.OnlineConfig{SecondaryIndexes: [][]string{{"region_id"}}},
-			Features: customerFeatures(strKey),
+			OnlineConfig: spec.OnlineConfig{SecondaryIndexes: [][]string{{"region_id"}}},
+			Features:     customerFeatures(strKey),
 		},
 		{
 			Name: "profiles", Version: 1, FeaturestoreID: 1,
@@ -133,19 +133,19 @@ func Schema() []spec.FeatureGroup {
 		},
 		{
 			Name: "transactions", Version: 1, FeaturestoreID: 1, EventTime: "event_time",
-			Online:   spec.OnlineConfig{SecondaryIndexes: [][]string{{"merchant_id"}}},
-			Features: txFeatures(bigKey),
+			OnlineConfig: spec.OnlineConfig{SecondaryIndexes: [][]string{{"merchant_id"}}},
+			Features:     txFeatures(bigKey),
 		},
 		{
 			Name: "transactions_hash", Version: 1, FeaturestoreID: 1, EventTime: "event_time",
-			Online: spec.OnlineConfig{PrimaryKeyIndexType: "HASH",
+			OnlineConfig: spec.OnlineConfig{PrimaryKeyIndexType: "HASH",
 				SecondaryIndexes: [][]string{{"merchant_id"}}},
 			Features: txFeatures(bigKey),
 		},
 		{
 			Name: "transactions_str", Version: 1, FeaturestoreID: 1, EventTime: "event_time",
-			Online:   spec.OnlineConfig{SecondaryIndexes: [][]string{{"merchant_id"}}},
-			Features: txFeatures(strKey),
+			OnlineConfig: spec.OnlineConfig{SecondaryIndexes: [][]string{{"merchant_id"}}},
+			Features:     txFeatures(strKey),
 		},
 		{
 			Name: "sessions", Version: 1, FeaturestoreID: 1, EventTime: "event_time",
