@@ -2232,6 +2232,16 @@ class Dbtc : public SimulatedBlock {
     JoinAggNodeState **m_cteAggNodeState;  // nullptr when m_numCtes == 0
     Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
 
+    /* RONDB-1120 P2c (H2, joinagg_setup_overlap_plan.md): execution
+     * overlaps the SETUP round, so a COMPLETE boundary (all root
+     * fragments done / all workers reported a CTE's local scans done)
+     * can be reached while SETUP_CONFs are still in flight.  COMPLETE
+     * addressing needs the CONF-returned keys + owner instances, so
+     * the trigger is recorded here and flushed by the SETUP handler
+     * when the last CONF arrives (joinAggSetupRoundDone). */
+    bool m_aggMainCompleteDeferred;
+    Uint64 m_cteCompleteDeferredMask;  // bit c = CTE c's redistribute deferred
+
     // CTE COMPLETE coordination (Step 3)
     CteScanFragHandle_list::Head m_cteScanFragHandles;
     Uint32 m_cteScanReportsExpected;  // Live DBSPJ workers (report threshold
@@ -2696,7 +2706,32 @@ class Dbtc : public SimulatedBlock {
   void send_close_scan(Signal*, ScanFragRecPtr, const ApiConnectRecordPtr);
   void close_scan_req(Signal*, ScanRecordPtr, bool received_req, ApiConnectRecordPtr apiConnectptr);
   void close_scan_req_send_conf(Signal*, ScanRecordPtr, ApiConnectRecordPtr apiConnectptr);
-  void sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
+  /* Returns false when the setup round cannot proceed to fragment
+   * scans: nothing could be sent (scan already aborted here) or a
+   * partial-send failure was recorded (scan stays in
+   * WAIT_JOIN_AGG_SETUP; the trickling responses drive the abort). */
+  bool sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
+  /* RONDB-1120 P2c: build the pre-CONF aggKeys section for the root
+   * SCAN_FRAGREQs — full structure (queryTag block, main node list,
+   * CTE metadata blocks) with all aggStateKey / ownerInstance words
+   * RNIL; consumers resolve by identity, the P2b READY/START_MAIN
+   * carriers deliver the real keys.  Returns false on alloc failure
+   * (scan aborted here). */
+  bool buildAggKeysSection(Signal *, ScanRecordPtr);
+  /* True while JOIN_AGG_SETUP_CONF/REFs are still in flight. */
+  bool joinAggSetupResponsesOutstanding(const ScanRecord *scanP) const {
+    return (scanP->m_aggNodesOutstanding + scanP->m_cteSetupOutstanding) > 0;
+  }
+  /* Shared completion tail for the SETUP round (CONF + REF handlers):
+   * resolve a recorded failure (running scans via scanError, gated
+   * scans via the release/abort round) or flush the H2-deferred
+   * COMPLETE triggers. */
+  void joinAggSetupRoundDone(Signal *, ScanRecordPtr);
+  /* RONDB-1120 P2c: a SETUP_CONF dropped as stale announces a state
+   * DBTC will never release through the scan (its key was unknown at
+   * teardown) — reclaim it with a keyed fire-and-forget RELEASE. */
+  void sendStaleSetupReclaim(Signal *, Uint32 senderRef, Uint32 senderData,
+                             Uint32 requestId, Uint32 aggStateKey);
   Uint32 findJoinAggHeartbeatScanFrag(ScanRecordPtr, Uint32 nodeId);
   void sendJoinAggCompleteReqs(Signal *, ScanRecordPtr);
   void sendJoinAggScanTabConf(Signal *,

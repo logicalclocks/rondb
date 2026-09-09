@@ -1,8 +1,9 @@
 # RONDB-1120: overlapping JOIN_AGG_SETUP with query execution
 
-**Status: P0 + P1 + P2a + P2b IMPLEMENTED (September 2026, pending
-user build + block suites + full ronsql regression — zero behavior
-change expected while the gate holds); P2c + P3 planned.  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
+**Status: P0 + P1 + P2a + P2b + P2c IMPLEMENTED (September 2026,
+P2c pending user build + block suites + full ronsql regression +
+benchmarks — P2c is the behavior change: execution overlaps the SETUP
+round); P3 planned.  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
 execution immediately, letting LQHKEYREQ / SCAN_FRAGREQ (and the CTE
 probe/scan signals) find the JoinAggregationState by identity instead
 of by the pool keys returned in SETUP_CONF.**
@@ -18,6 +19,73 @@ DBSPJ's post-READY needs (CTE probe keys / owners riding the per-CTE
 READY broadcast + CTE_START_MAIN_REQ, dual with the section keys for
 verification); **P2c** = flip the gate + the H2 COMPLETE-boundary
 straggler wait + ERROR_INSERTs + benchmarks.
+
+P2c outcome notes (the gate flip — the latency win):
+- DBTC `sendDihGetNodesLab` tail: `sendJoinAggSetupReqs` (now bool —
+  false = aborted here or held gated by a partial-send failure, which
+  keeps the pre-P2c WAIT_JOIN_AGG_SETUP resolution) is followed
+  immediately by `buildAggKeysSection` (the CONF-handler section build
+  extracted and moved pre-CONF: identical structure, every key/owner
+  word RNIL) and `sendFragScansLab`.  The SETUP_CONF/REF handlers
+  share `joinAggSetupRoundDone`: a recorded failure aborts via
+  `scanError` when RUNNING (standard running-scan close; the close's
+  `releaseJoinAggResources` skips RNIL keys) or the old release/abort
+  round when still gated; success flushes the H2 deferrals.
+- RNIL key discipline: DBTC's main + per-CTE `m_aggStateKeys[]` are
+  RNIL-initialized (key 0 is a VALID pool key — releasing a zeroed
+  slot would free an innocent state).  Every RELEASE sender
+  (`releaseJoinAggResources` both loops, `sendJoinAggReleaseReqs`)
+  skips RNIL-keyed nodes; the states those nodes announce in
+  still-in-flight CONFs are reclaimed by the three stale-CONF drop
+  arms in `execJOIN_AGG_SETUP_CONF` via `sendStaleSetupReclaim` (keyed
+  fire-and-forget RELEASE back to the announcing proxy — the state is
+  provably live since nobody else ever learned the key).
+- H2: `sendScanTabConf`'s all-fragments-done transition and the
+  per-CTE `sendCteCompleteReqsForCte` trigger defer
+  (`m_aggMainCompleteDeferred` / `m_cteCompleteDeferredMask`) while
+  `joinAggSetupResponsesOutstanding`; `joinAggSetupRoundDone` flushes
+  CTE redistributes first (re-validating the scan record between
+  sends), then the main COMPLETE round.
+- SETUP_REF accounting fixed: the REF always carried `cteIndex` but
+  DBTC decremented the MAIN counter for CTE REFs (latent underflow /
+  premature-abort bug, live once REFs can race a running query);
+  DblqhProxy now echoes the REQ's cteIndex (was hardcoded RNIL) and
+  `execJOIN_AGG_SETUP_REF` branches on it.  The completion check uses
+  BOTH counters (was main-only).  `cteAggResponsesOutstanding` counts
+  `m_cteSetupOutstanding` (close deferral on CTE-only queries).
+- Node failure during the round: `handleJoinAggNodeFailure` fakes a
+  SETUP_REF for the main pending bit AND one per pending CTE on the
+  failed node (states WAIT_JOIN_AGG_SETUP or RUNNING; pending CTE
+  indexes collected before the first fake since any fake can complete
+  the round and release the scan — the REF handler re-validates).
+- DBSPJ: the two main-leaf feed arms guard
+  `encodeAggStateKey(RNIL, leafIdx)` (which would mangle RNIL into a
+  live-looking key) and send wire key RNIL — DBLQH's P1/P2a identity
+  arms resolve/park; the CTE-feed arms pass the raw RNIL through.
+  Non-CTE queries never learn keys in DBSPJ at all (no P2b carrier) —
+  identity is authoritative for their feeds end-to-end.  The
+  post-READY feed-target encodes (`cte_lookup_send` /
+  `cte_scan_start`) gained `ndbrequire(baseKey != RNIL)` carrier-bug
+  tripwires.  The P2b READY broadcast now carries ALL blocks (main +
+  every CTE, not just the newly-READY one): a dependent CTE started
+  by the broadcast needs its own keys for its subtree's feed targets
+  (CTE_SCAN_REQ / CTE_LOOKUP have no identity fallback).
+- JOIN_AGG_NULL_ROW_REQ (outer-join NULL-row injection, always
+  own-node) was deterministically broken under the flip — it read the
+  main key mid-scan with no identity fallback (RNIL forever on
+  non-CTE queries).  Fixed as the third parked GSN: the signal gains
+  `identWord` (SignalLength 6 → 7, no version gate — alpha), the
+  DBLQH impl resolves by identity and parks on miss (same
+  resolve-or-park + destRef discipline; flush re-executes the
+  handler, the sweeper answers JOIN_AGG_NULL_ROW_REF →  DBSPJ abort).
+- ERROR_INSERT 5127 (DblqhProxy): holds ONE SETUP_REQ back 20 ms
+  (clear-on-first) — consumers park and flush on their original query
+  threads, and any COMPLETE boundary reached meanwhile exercises the
+  H2 deferral.  EI 5125 (immediate SETUP_REF) now exercises
+  REF-while-RUNNING + the park sweeper.
+- P2b dual-mode leftovers now live-by-design: the SCAN_FRAGREQ
+  section pre-fills RNIL, so the P2b parser's main-block assert
+  accepts RNIL as the prior value (CTE assert already did).
 
 P2b outcome notes (key/owner transport on the enabling signals, dual
 while gated):

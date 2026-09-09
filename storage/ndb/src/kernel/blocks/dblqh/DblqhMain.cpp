@@ -9421,9 +9421,26 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
         "(%u)DBLQH JoinAgg park sweep aborts parked %s: "
         "transid=(0x%x,0x%x) queryTag=%u cteId=%u",
         instance(),
-        (rec->m_gsn == GSN_LQHKEYREQ) ? "LQHKEYREQ" : "SCAN_FRAGREQ",
+        (rec->m_gsn == GSN_LQHKEYREQ)
+            ? "LQHKEYREQ"
+            : (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ)
+                  ? "JOIN_AGG_NULL_ROW_REQ"
+                  : "SCAN_FRAGREQ",
         transid[0], transid[1], queryTag, cteId);
-    if (rec->m_gsn == GSN_LQHKEYREQ) {
+    if (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
+      const JoinAggNullRowReq *req =
+          reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
+      JoinAggNullRowRef *const ref =
+          (JoinAggNullRowRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->aggStateKey = req->aggStateKey;
+      ref->requestPtrI = req->requestPtrI;
+      ref->treeNodePtrI = req->treeNodePtrI;
+      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorLine = __LINE__;
+      sendSignal(rec->m_senderRef, GSN_JOIN_AGG_NULL_ROW_REF, signal,
+                 JoinAggNullRowRef::SignalLength, JBB);
+    } else if (rec->m_gsn == GSN_LQHKEYREQ) {
       const LqhKeyReq *req =
           reinterpret_cast<const LqhKeyReq *>(rec->m_theData);
       LqhKeyRef *const ref = (LqhKeyRef *)signal->getDataPtrSend();
@@ -9471,6 +9488,9 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
   if (gsn == GSN_LQHKEYREQ) {
     jam();
     execLQHKEYREQ(signal);
+  } else if (gsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
+    jam();
+    execJOIN_AGG_NULL_ROW_REQ(signal);
   } else {
     jam();
     execSCAN_FRAGREQ(signal);
@@ -19650,13 +19670,78 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     (const JoinAggNullRowReq *)signal->getDataPtr();
 
   const Uint32 senderRef = req->senderRef;
-  const Uint32 aggStateKey = req->aggStateKey;
+  Uint32 aggStateKey = req->aggStateKey;
   const Uint32 requestPtrI = req->requestPtrI;
   const Uint32 treeNodePtrI = req->treeNodePtrI;
+  const Uint32 identWord =
+      (signal->getLength() >= JoinAggNullRowReq::SignalLength)
+          ? req->identWord : RNIL;
 
   SectionHandle handle(this, signal);
 
-  JoinAggregationState *state = getJoinAggState(aggStateKey);
+  JoinAggregationState *state =
+      (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
+  if (state == nullptr && identWord != RNIL) {
+    jam();
+    /* RONDB-1120 P2c: the wire key is RNIL (or stale) under the
+     * un-gated SETUP round — resolve the local main-agg state by
+     * identity; on a miss, park this signal like the LQHKEYREQ /
+     * SCAN_FRAGREQ feeds and let the SETUP flush (or the 10 ms
+     * sweeper REF) re-drive it. */
+    const Uint32 transid[2] = { req->transId[0], req->transId[1] };
+    const Uint32 queryTag =
+        JoinAggregationState::identWordQueryTag(identWord);
+    const Uint32 cteId = JoinAggregationState::identWordCteId(identWord);
+    const Uint32 parkRecI = joinAggSeizeParkRec();
+    if (likely(parkRecI != RNIL)) {
+      jam();
+      JoinAggParkRec *const rec = joinAggGetParkRec(parkRecI);
+      rec->m_gsn = GSN_JOIN_AGG_NULL_ROW_REQ;
+      rec->m_sigLen = signal->getLength();
+      rec->m_senderRef = signal->senderBlockRef();
+      rec->m_destRef = numberToRef(signal->header.theReceiversBlockNumber,
+                                   getOwnNodeId());
+      ndbrequire(rec->m_sigLen <= NDB_ARRAY_SIZE(rec->m_theData));
+      memcpy(rec->m_theData, signal->getDataPtr(),
+             rec->m_sigLen * sizeof(Uint32));
+      rec->m_noOfSections = handle.m_cnt;
+      for (Uint32 k = 0; k < handle.m_cnt; k++) {
+        rec->m_sections[k] = handle.m_ptr[k].i;
+      }
+      const Uint32 savedSections = handle.m_cnt;
+      handle.clear();
+      Uint32 keyOut = RNIL;
+      const SimulatedBlock::JoinAggResolveOrParkResult res =
+          joinAggIdentityResolveOrPark(transid, queryTag, cteId,
+                                       parkRecI, &keyOut);
+      if (res == SimulatedBlock::JAI_ROP_PARKED ||
+          res == SimulatedBlock::JAI_ROP_PARKED_NEW) {
+        jam();
+        if (res == SimulatedBlock::JAI_ROP_PARKED_NEW) {
+          jam();
+          signal->theData[0] = ZCONTINUE_JOIN_AGG_PARK_SWEEP;
+          signal->theData[1] = transid[0];
+          signal->theData[2] = transid[1];
+          signal->theData[3] = queryTag;
+          signal->theData[4] = cteId;
+          sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
+        }
+        return;  // parked — no REF; flush or sweeper finishes this
+      }
+      /* RESOLVED or FAILED: reclaim the sections + park record and
+       * continue inline (FAILED falls through to the REF below). */
+      for (Uint32 k = 0; k < savedSections; k++) {
+        getSection(handle.m_ptr[k], rec->m_sections[k]);
+      }
+      handle.m_cnt = savedSections;
+      joinAggFreeParkRec(parkRecI);
+      if (res == SimulatedBlock::JAI_ROP_RESOLVED) {
+        jam();
+        aggStateKey = keyOut;
+        state = getJoinAggState(keyOut);
+      }
+    }
+  }
   if (unlikely(state == nullptr)) {
     jam();
     releaseSections(handle);

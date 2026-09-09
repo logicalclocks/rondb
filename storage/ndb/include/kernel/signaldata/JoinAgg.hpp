@@ -183,12 +183,19 @@ struct JoinAggNodeFailRep {
 // DBSPJ → DblqhProxy: inject a null-extended row for outer join aggregation
 // when DBSPJ skips LQHKEYREQ because the key is NULL.
 struct JoinAggNullRowReq {
-  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 SignalLength = 7;
   Uint32 senderRef;
   Uint32 aggStateKey;
   Uint32 transId[2];
   Uint32 requestPtrI;   // DBSPJ request pointer (for routing CONF back)
   Uint32 treeNodePtrI;  // DBSPJ tree node pointer
+  Uint32 identWord;     // RONDB-1120 P2c: packIdentWord(queryTag, RNIL, 0)
+                        // or RNIL.  Under the un-gated SETUP round the
+                        // wire aggStateKey can be RNIL (non-CTE queries
+                        // never learn keys in DBSPJ) — DBLQH resolves
+                        // the local main-agg state by identity
+                        // (transId + identWord) and parks until the
+                        // local SETUP processes.
   // Long section 0: linked_attr_data (parent column values with table metadata)
 };
 

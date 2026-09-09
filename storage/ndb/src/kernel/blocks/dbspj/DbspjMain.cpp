@@ -7146,6 +7146,10 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         // Main query: feed into main aggregation
         baseKey = requestPtr.p->m_aggStateKeys[targetNodeId];
       }
+      /* P2c: this path runs post-READY / post-START_MAIN, after the
+       * P2b carriers installed real keys — RNIL here means a carrier
+       * bug (encode would mangle it into a live-looking key). */
+      ndbrequire(baseKey != RNIL);
       Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
       joinAggStateKey =
           JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
@@ -8124,6 +8128,8 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       // Main query aggregate leaf: feed into main aggregation.
       baseKey = requestPtr.p->m_aggStateKeys[targetNodeId];
     }
+    /* P2c: post-READY path — see the cte_lookup_send twin. */
+    ndbrequire(baseKey != RNIL);
     Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
     joinAggStateKey =
         JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
@@ -8635,8 +8641,11 @@ void Dbspj::parseJoinAggKeySection(SectionHandle &handle,
       ndbrequire(reader.getWord(&owner));
       ndbrequire(nodeId < max_nodes);
       if (blockCteId == CteStartMainReq::KEYS_CTE_ID_MAIN) {
+        /* P2c: the SCAN_FRAGREQ section pre-fills RNIL (key-less);
+         * dual-era equality still checked when a real key was set. */
         ndbassert(!requestPtr.p->m_aggNodes.get(nodeId) ||
-                  requestPtr.p->m_aggStateKeys[nodeId] == aggKey);
+                  requestPtr.p->m_aggStateKeys[nodeId] == aggKey ||
+                  requestPtr.p->m_aggStateKeys[nodeId] == RNIL);
         requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
         requestPtr.p->m_aggNodes.set(nodeId);
       } else {
@@ -9219,8 +9228,13 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     }
     Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
     Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-    Uint32 encodedKey =
-        JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+    /* RONDB-1120 P2c: pre-CONF the key is RNIL — send RNIL verbatim
+     * (encodeAggStateKey would mangle it into a non-RNIL garbage
+     * key); DBLQH resolves by the identity word, parking until the
+     * local SETUP processes. */
+    Uint32 encodedKey = (baseKey == RNIL)
+        ? RNIL
+        : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
     req->variableData[var_index + 4] = encodedKey;
     DEB_STAR_AGG(("(%u)DBPSJ STAR_AGG lookup_send: node=%u leafIdx=%u "
                   "baseKey=%u encodedKey=0x%08x nodeId=%u",
@@ -10759,6 +10773,15 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   req->transId[1] = requestPtr.p->m_transId[1];
   req->requestPtrI = requestPtr.i;
   req->treeNodePtrI = treeNodePtr.i;
+  /* RONDB-1120 P2c: identity word — the wire key above can be RNIL
+   * while the SETUP round is in flight (and stays RNIL for non-CTE
+   * queries, which have no P2b key carrier); DBLQH resolves the local
+   * main-agg state by identity, parking until the local SETUP
+   * processes. */
+  req->identWord = (requestPtr.p->m_joinAggQueryTag <= 0xFFFF)
+      ? JoinAggregationState::packIdentWord(
+            requestPtr.p->m_joinAggQueryTag, RNIL, 0)
+      : RNIL;
 
   SectionHandle handle(this);
   if (linkedPtrI != RNIL) {
@@ -13516,8 +13539,12 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
           Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
           Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-          Uint32 scanEncodedKey =
-              JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+          /* RONDB-1120 P2c: RNIL passes through un-encoded — the
+           * identity word is authoritative in DBLQH (see the
+           * lookup_send twin). */
+          Uint32 scanEncodedKey = (baseKey == RNIL)
+              ? RNIL
+              : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
           Uint32 vpos = var_index + 2;
           req->variableData[vpos++] = scanEncodedKey;
           if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
