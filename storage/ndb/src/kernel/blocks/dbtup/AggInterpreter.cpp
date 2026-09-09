@@ -298,11 +298,16 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
+  /* New row: no string register points into m_attr_read_buf yet. */
+  m_attr_read_hwm = 0;
   while (exec_pos < m_prog_len) {
     value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
     int ret = 0;
-    m_attr_read_pos = 0;
+    /* Rewind to the string high-water mark, not to 0: a string loaded
+     * earlier in this row still points into the buffer below the mark
+     * (m_attr_read_hwm, AggInterpreterBase.hpp). */
+    m_attr_read_pos = m_attr_read_hwm;
     AttributeHeader* header = nullptr;
 
     switch (op) {

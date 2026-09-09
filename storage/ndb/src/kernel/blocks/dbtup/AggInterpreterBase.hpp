@@ -132,7 +132,7 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_n_visible_results(0), m_n_hidden_slots(0),
       m_avg_hidden_map(nullptr), m_avg_finalized(false),
       m_string_results(nullptr), m_current_thread_id(0),
-      m_cur_pos(0), m_attr_read_pos(0),
+      m_cur_pos(0), m_attr_read_pos(0), m_attr_read_hwm(0),
       m_processed_rows(0), m_result_size(0),
       m_n_gb_cols(0), m_gb_cols(nullptr),
       m_gb_map(nullptr), m_n_groups(0),
@@ -562,6 +562,16 @@ class AggInterpreterBase : public PushdownInterpreter {
    * a zero-behavior-change consolidation. */
   Uint32 m_cur_pos;          // program-counter during Init parsing
   Uint32 m_attr_read_pos;    // position in m_attr_read_buf during GB key read
+  /* Words of m_attr_read_buf owned by string registers captured so far
+   * in the current row (kOpLoadCol of CHAR/VARCHAR/LONGVARCHAR stores a
+   * POINTER into the buffer, consumed later by kOpMin/kOpMax via
+   * minMaxString). Every opcode iteration rewinds m_attr_read_pos to
+   * this high-water mark, not to 0, so a numeric load that follows a
+   * string load cannot overwrite the bytes the string register still
+   * points at. Reset to 0 at the start of each row. Fix for the
+   * "COUNT(s), SUM(i), MAX(s)" data node crash (cmpLongvarchar
+   * length require on a clobbered prefix), 2026-09-09. */
+  Uint32 m_attr_read_hwm;
   Uint64 m_processed_rows;   // rows seen by ProcessRec
   Uint32 m_result_size;      // bytes accumulated since last drain — drives
                              // the per-batch streaming flush
