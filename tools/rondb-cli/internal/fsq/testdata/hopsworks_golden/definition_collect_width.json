@@ -1,0 +1,97 @@
+{
+  "name": "definition_collect_width",
+  "fgs": [
+    {
+      "id": 1,
+      "name": "events",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": "event_time",
+      "ttl": null,
+      "features": [
+        {
+          "name": "entity_id",
+          "type": "bigint",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "event_time",
+          "type": "timestamp",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "amount",
+          "type": "bigint",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "fee",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "tags",
+          "type": "array<string>",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    }
+  ],
+  "joins": [],
+  "filters": [],
+  "options": {
+    "batch": false,
+    "inferenceHelpers": false,
+    "logging": false,
+    "vectorWithHelpers": false
+  },
+  "definition": {
+    "fg": 1,
+    "sourceFeatures": [
+      "amount",
+      "fee",
+      "category"
+    ],
+    "collectN": 50,
+    "orderBy": null,
+    "ascending": false,
+    "aggregate": null,
+    "window": null
+  },
+  "trainingDataset": false,
+  "maxCollectN": 50,
+  "maxCollectCells": 100,
+  "expectedTemplates": 1,
+  "expectedError": "COLLECT_TOO_WIDE",
+  "schemaVersion": 1,
+  "source": "java-generated",
+  "provenance": {
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "trackedWorktreeDirty": true,
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "javaVersion": "21.0.12.1",
+    "timezone": "UTC",
+    "locale": "en-US"
+  },
+  "inputSha256": "e4b80afe5c851558b1ea001b51c8faa52c02ffa2afd85fdfea15e9f41e58ae08",
+  "expected": {
+    "gateOrException": {
+      "code": "COLLECT_TOO_WIDE",
+      "userMessage": "collect=50 over 3 selected features = 150 collected cells per row, exceeding the maximum (100)",
+      "developerMessage": null
+    }
+  }
+}
