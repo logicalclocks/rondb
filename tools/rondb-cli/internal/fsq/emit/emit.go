@@ -208,7 +208,7 @@ type filterLeaf struct {
 }
 
 func (b *builder) createServingPreparedStatementDTOS(joins []spec.Join, filterConditions []spec.Filter, filtersNil bool) ([]Statement, error) {
-	var out []Statement
+	out := make([]Statement, 0, len(joins))
 	for _, join := range joins {
 		fg := b.fgs[join.FG]
 		if !fg.OnlineEnabled() {
@@ -435,6 +435,38 @@ func structFieldName(field string) string {
 	return strings.TrimSpace(field)
 }
 
+// resolveAggregateSources mirrors TrainingDatasetController's selected-output
+// recovery. Unlike the star path, only requested outputs contribute sources.
+func resolveAggregateSources(join spec.Join, fg spec.FeatureGroup, name string) ([]string, error) {
+	for _, entry := range join.Aggregate {
+		for _, fn := range entry.Fns {
+			output := strings.ReplaceAll(entry.Key, ",", "_") + "_" + fn
+			if entry.Key == "*" {
+				output = "count"
+			}
+			if name != output {
+				continue
+			}
+			if entry.Key == "*" {
+				for _, f := range fg.Features {
+					if f.Primary {
+						return []string{f.Name}, nil
+					}
+				}
+				return nil, spec.Gate(spec.CodeAggregateInvalid,
+					"COUNT(*) requires the feature group to have a primary key")
+			}
+			parts := strings.Split(entry.Key, ",")
+			// Java String.split removes trailing empty fields.
+			for len(parts) > 0 && parts[len(parts)-1] == "" {
+				parts = parts[:len(parts)-1]
+			}
+			return parts, nil
+		}
+	}
+	return nil, nil
+}
+
 // aggregateSourceFeatures :384-402.
 func aggregateSourceFeatures(aggSpec spec.AggSpec, fgf *fgFeatures, pks []*feature) []*feature {
 	var sources []*feature
@@ -600,6 +632,11 @@ func (b *builder) buildDTO(q *query, bindKeys []*feature, fgID, statementIndex i
 	if len(bindKeys) == 0 {
 		return Statement{}, fmt.Errorf("INTERNAL: statement without bind keys (Java throws IndexOutOfBoundsException)")
 	}
+	// Java mutates these same feature objects before rendering projections,
+	// default expressions and extra filters; RonSQL filters were captured earlier.
+	for _, k := range bindKeys {
+		k.Type = "parameter"
+	}
 	params := make([]Param, 0, len(bindKeys))
 	for i, k := range bindKeys {
 		params = append(params, Param{Name: k.Name, Index: i + 1})
@@ -617,7 +654,8 @@ func (b *builder) buildDTO(q *query, bindKeys []*feature, fgID, statementIndex i
 		if f.Prefix != nil {
 			out = *f.Prefix + f.Name
 		}
-		cs = append(cs, mysqltwin.Col{Alias: a, Name: f.Name, Out: out})
+		cs = append(cs, mysqltwin.Col{Alias: a, Name: f.Name, Out: out,
+			Type: f.Type, DefaultValue: f.DefaultValue})
 	}
 	keyNames := make([]string, len(bindKeys))
 	for i, k := range bindKeys {
@@ -627,10 +665,19 @@ func (b *builder) buildDTO(q *query, bindKeys []*feature, fgID, statementIndex i
 	if q.nested != nil {
 		rootAlias = q.nested.root.Alias
 	}
-	where := mysqltwin.KeyWhere(rootAlias, keyNames, batch)
+	keyColumns := make([]mysqltwin.Col, len(bindKeys))
+	for i, k := range bindKeys {
+		keyColumns[i] = mysqltwin.Col{Alias: rootAlias, Name: k.Name, Type: k.Type, DefaultValue: k.DefaultValue}
+	}
+	where := mysqltwin.KeyWhere(keyColumns, batch)
 	for _, lf := range extraFilters {
-		where += " AND `" + rootAlias + "`.`" + lf.feature.Name + "` " + mysqltwin.Operator(lf.condition) + " " +
-			mysqltwin.Literal(lf.value, lf.feature.Type)
+		value, err := mysqltwin.Literal(lf.value, lf.feature.Type)
+		if err != nil {
+			return Statement{}, fmt.Errorf("filter on %s.%s: %w", q.table(), lf.feature.Name, err)
+		}
+		col := mysqltwin.Col{Alias: rootAlias, Name: lf.feature.Name,
+			Type: lf.feature.Type, DefaultValue: lf.feature.DefaultValue}
+		where += " AND " + col.Expression() + " " + mysqltwin.Operator(lf.condition) + " " + value
 	}
 	t := mysqltwin.Table{DB: q.project, Name: q.table(), Alias: alias}
 	var sql string
@@ -904,27 +951,56 @@ func (b *builder) nestedQueryOf(root spec.Join, childJoins []spec.Join, rootPKs 
 		aliasOf[cj.Index] = fmt.Sprintf("fg%d", i)
 	}
 	var features []*feature
-	addFeatures := func(cj spec.Join) {
+	addFeatures := func(cj spec.Join) error {
 		fg := b.fgs[cj.FG]
 		fgf := b.featuresOf(fg, cj.Prefix)
+		// Java de-duplicates aggregate sources by join id and source name,
+		// not across self-joins, nor across ordinary/collect selections.
+		aggregateSourcesAdded := map[string]bool{}
 		for _, tdf := range getTrainingDatasetFeatures(b.opt.InferenceHelpers, b.opt.Logging || b.opt.VectorWithHelpers, cj) {
-			f := fgf.get(tdf.Name)
-			if f != nil {
+			names, err := resolveAggregateSources(cj, fg, tdf.Name)
+			if err != nil {
+				return err
+			}
+			if names != nil {
+				selected := make([]string, 0, len(names))
+				for _, name := range names {
+					if !aggregateSourcesAdded[name] {
+						aggregateSourcesAdded[name] = true
+						selected = append(selected, name)
+					}
+				}
+				names = selected
+			} else {
+				names = resolveCollectSources(cj, fg, tdf)
+				if names == nil {
+					names = []string{tdf.Name}
+				}
+			}
+			for _, name := range names {
+				f := fgf.get(name)
+				if f == nil {
+					return spec.Gate(spec.CodeFeatureDoesNotExist,
+						"Feature: %s not found in feature group: %s", name, fg.Name)
+				}
 				cp := *f
 				cp.Alias = aliasOf[cj.Index]
 				features = append(features, &cp)
-			} else {
-				features = append(features, nil)
 			}
 		}
+		return nil
 	}
 	for _, cj := range childJoins {
 		if cj.Index == root.Index {
 			continue
 		}
-		addFeatures(cj)
+		if err := addFeatures(cj); err != nil {
+			return nil, err
+		}
 	}
-	addFeatures(root)
+	if err := addFeatures(root); err != nil {
+		return nil, err
+	}
 	if b.opt.Batch {
 		for _, pk := range rootPKs {
 			cp := *pk

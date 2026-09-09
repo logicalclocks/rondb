@@ -26,10 +26,13 @@
 package emit
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -41,11 +44,12 @@ import (
 // exporter's assertions and the captured expected output.
 type fixture struct {
 	spec.View
-	ExpectedTemplates *int            `json:"expectedTemplates"`
-	ExpectedError     *string         `json:"expectedError"`
-	SchemaVersion     int             `json:"schemaVersion"`
-	Source            string          `json:"source"`
-	Expected          json.RawMessage `json:"expected"`
+	ExpectedTemplates *int                   `json:"expectedTemplates"`
+	ExpectedError     *string                `json:"expectedError"`
+	SchemaVersion     int                    `json:"schemaVersion"`
+	Source            string                 `json:"source"`
+	Provenance        map[string]interface{} `json:"provenance"`
+	Expected          json.RawMessage        `json:"expected"`
 }
 
 type gateOrException struct {
@@ -54,32 +58,94 @@ type gateOrException struct {
 	Developer   *string `json:"developerMessage"`
 }
 
+type fixtureManifest struct {
+	SchemaVersion int                    `json:"schemaVersion"`
+	Provenance    map[string]interface{} `json:"provenance"`
+	Files         map[string]string      `json:"files"`
+}
+
+var fixtureFilename = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*\.json$`)
+var commitHash = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
 func loadFixtures(t *testing.T) map[string]fixture {
 	t.Helper()
-	dir := filepath.Join("..", "testdata", "hopsworks_golden")
-	paths, err := filepath.Glob(filepath.Join(dir, "*.json"))
-	if err != nil || len(paths) == 0 {
-		t.Skipf("no golden fixtures under %s", dir)
+	out, err := readFixtures(filepath.Join("..", "testdata", "hopsworks_golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// readFixtures fails closed: the manifest is the corpus inventory, not an
+// optional report. Dirty provenance is allowed, but never silently rewritten.
+func readFixtures(dir string) (map[string]fixture, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read golden manifest: %w", err)
+	}
+	var manifest fixtureManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return nil, fmt.Errorf("decode golden manifest: %w", err)
+	}
+	if manifest.SchemaVersion != 1 || len(manifest.Files) == 0 {
+		return nil, fmt.Errorf("golden manifest must have schemaVersion 1 and a nonempty file inventory")
+	}
+	ref, _ := manifest.Provenance["hopsworksCommit"].(string)
+	if !commitHash.MatchString(ref) || !strings.HasPrefix(ref, HopsworksRef) {
+		return nil, fmt.Errorf("golden manifest commit %q does not match emitter reference %s", ref, HopsworksRef)
+	}
+	for name := range manifest.Files {
+		if !fixtureFilename.MatchString(name) || name == "manifest.json" {
+			return nil, fmt.Errorf("unsafe golden fixture filename %q", name)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("read golden directory: %w", err)
 	}
 	out := map[string]fixture{}
-	for _, p := range paths {
-		if filepath.Base(p) == "manifest.json" {
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == "manifest.json" || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		raw, err := os.ReadFile(p)
+		hash, listed := manifest.Files[name]
+		if !listed || !entry.Type().IsRegular() {
+			return nil, fmt.Errorf("unlisted or non-regular golden fixture %s", name)
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			t.Fatal(err)
+			return nil, fmt.Errorf("read golden fixture %s: %w", name, err)
+		}
+		if fmt.Sprintf("%x", sha256.Sum256(raw)) != hash {
+			return nil, fmt.Errorf("golden fixture %s: SHA-256 mismatch", name)
 		}
 		var f fixture
 		if err := json.Unmarshal(raw, &f); err != nil {
-			t.Fatalf("%s: %v", p, err)
+			return nil, fmt.Errorf("decode golden fixture %s: %w", name, err)
 		}
-		if f.SchemaVersion != 1 {
-			t.Fatalf("%s: unsupported fixture schemaVersion %d", p, f.SchemaVersion)
+		if f.SchemaVersion != 1 || f.Source != "java-generated" {
+			return nil, fmt.Errorf("golden fixture %s must have schemaVersion 1 and source java-generated", name)
 		}
-		out[strings.TrimSuffix(filepath.Base(p), ".json")] = f
+		if !reflect.DeepEqual(f.Provenance, manifest.Provenance) {
+			return nil, fmt.Errorf("golden fixture %s: provenance differs from manifest", name)
+		}
+		stem := strings.TrimSuffix(name, ".json")
+		if f.Name != stem {
+			return nil, fmt.Errorf("golden fixture %s: input name %q differs from filename", name, f.Name)
+		}
+		var expected map[string]interface{}
+		if err := json.Unmarshal(f.Expected, &expected); err != nil || len(expected) == 0 {
+			return nil, fmt.Errorf("golden fixture %s: missing or invalid expected object", name)
+		}
+		out[stem] = f
 	}
-	return out
+	for name := range manifest.Files {
+		if _, ok := out[strings.TrimSuffix(name, ".json")]; !ok {
+			return nil, fmt.Errorf("missing golden fixture %s", name)
+		}
+	}
+	return out, nil
 }
 
 // normalize round-trips a value through JSON so that maps, slices and
@@ -97,9 +163,9 @@ func normalize(t *testing.T, v interface{}) interface{} {
 	return out
 }
 
-// diffObjects reports, per statement and field, where got differs from want.
-func diffObjects(t *testing.T, name string, got, want interface{}) {
-	t.Helper()
+// objectDiffs is diagnostic only; the caller fails independently whenever
+// DeepEqual is false. Presence is significant even when a value is JSON null.
+func objectDiffs(name string, got, want interface{}) []string {
 	gm, gok := got.(map[string]interface{})
 	wm, wok := want.(map[string]interface{})
 	if gok && wok {
@@ -115,34 +181,49 @@ func diffObjects(t *testing.T, name string, got, want interface{}) {
 			sorted = append(sorted, k)
 		}
 		sort.Strings(sorted)
+		var differences []string
 		for _, k := range sorted {
-			if !reflect.DeepEqual(gm[k], wm[k]) {
-				diffObjects(t, name+"."+k, gm[k], wm[k])
+			gv, gp := gm[k]
+			wv, wp := wm[k]
+			if gp != wp {
+				differences = append(differences, fmt.Sprintf("%s.%s: field presence got=%t want=%t", name, k, gp, wp))
+			} else if !reflect.DeepEqual(gv, wv) {
+				differences = append(differences, objectDiffs(name+"."+k, gv, wv)...)
 			}
 		}
-		return
+		return differences
 	}
 	ga, gok := got.([]interface{})
 	wa, wok := want.([]interface{})
 	if gok && wok && len(ga) == len(wa) {
+		var differences []string
 		for i := range ga {
 			if !reflect.DeepEqual(ga[i], wa[i]) {
-				diffObjects(t, name+"["+string(rune('0'+i))+"]", ga[i], wa[i])
+				differences = append(differences, objectDiffs(fmt.Sprintf("%s[%d]", name, i), ga[i], wa[i])...)
 			}
 		}
-		return
+		return differences
+	}
+	if reflect.DeepEqual(got, want) {
+		return nil
 	}
 	gj, _ := json.Marshal(got)
 	wj, _ := json.Marshal(want)
-	t.Errorf("%s:\n   got: %s\n  want: %s", name, gj, wj)
+	return []string{fmt.Sprintf("%s:\n   got: %s\n  want: %s", name, gj, wj)}
 }
 
 // TestGoldenConformance runs every Hopsworks golden fixture through the
 // port and compares the complete statement set (or the named gate) with
 // what the Java builder produced.
 func TestGoldenConformance(t *testing.T) {
-	for name, f := range loadFixtures(t) {
-		f := f
+	fixtures := loadFixtures(t)
+	names := make([]string, 0, len(fixtures))
+	for name := range fixtures {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		f := fixtures[name]
 		t.Run(name, func(t *testing.T) {
 			var want map[string]interface{}
 			if err := json.Unmarshal(f.Expected, &want); err != nil {
@@ -195,9 +276,12 @@ func TestGoldenConformance(t *testing.T) {
 					t.Errorf("no gate raised; fixture expects %s", *f.ExpectedError)
 				}
 			}
-			gotN := normalize(t, got)
-			if !reflect.DeepEqual(gotN, normalize(t, want)) {
-				diffObjects(t, name, gotN, normalize(t, want))
+			gotN, wantN := normalize(t, got), normalize(t, want)
+			if !reflect.DeepEqual(gotN, wantN) {
+				t.Errorf("%s: complete expected object differs", name)
+				for _, difference := range objectDiffs(name, gotN, wantN) {
+					t.Log(difference)
+				}
 			}
 		})
 	}

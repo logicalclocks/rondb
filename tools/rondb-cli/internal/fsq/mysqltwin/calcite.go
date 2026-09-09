@@ -36,6 +36,8 @@
 package mysqltwin
 
 import (
+	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/spec"
@@ -53,11 +55,29 @@ func (t Table) String() string {
 // Col is a projected column: `alias`.`name` AS `out`.
 type Col struct {
 	Alias, Name, Out string
+	Type             string
+	DefaultValue     *string
+}
+
+// Expression mirrors ConstructorController.generateFeature/caseWhenDefault.
+// Defaults are SQL expressions except for the exact offline type "string".
+func (c Col) Expression() string {
+	ref := "`" + c.Alias + "`.`" + c.Name + "`"
+	if c.DefaultValue == nil {
+		return ref
+	}
+	value := *c.DefaultValue
+	if strings.EqualFold(c.Type, "string") {
+		value = quote(value)
+	}
+	return "CASE WHEN " + ref + " IS NULL THEN " + value + " ELSE " + ref + " END"
 }
 
 func (c Col) String() string {
-	return "`" + c.Alias + "`.`" + c.Name + "` AS `" + c.Out + "`"
+	return c.Expression() + " AS `" + c.Out + "`"
 }
+
+func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
 func cols(cs []Col) string {
 	parts := make([]string, len(cs))
@@ -67,37 +87,59 @@ func cols(cs []Col) string {
 	return strings.Join(parts, ", ")
 }
 
-// KeyWhere renders the entity-key predicate: `a`.`k` = ? [AND ...] for a
-// single read, `a`.`k` IN ? for a batch on one key, and (`a`.`k1`, `a`.`k2`)
-// IN ? for a batch on a composite key.  The composite batch form is not
-// covered by a fixture yet.
-func KeyWhere(alias string, keys []string, batch bool) string {
-	if batch {
-		if len(keys) == 1 {
-			return "`" + alias + "`.`" + keys[0] + "` IN ?"
-		}
-		quoted := make([]string, len(keys))
-		for i, k := range keys {
-			quoted[i] = "`" + alias + "`.`" + k + "`"
-		}
-		return "(" + strings.Join(quoted, ", ") + ") IN ?"
-	}
+// KeyWhere renders the entity-key predicates, including default expressions.
+// buildDTO has already changed bind-key types to "parameter", as Java does.
+func KeyWhere(keys []Col, batch bool) string {
 	parts := make([]string, len(keys))
 	for i, k := range keys {
-		parts[i] = "`" + alias + "`.`" + k + "` = ?"
+		parts[i] = k.Expression()
+		if !batch {
+			parts[i] += " = ?"
+		}
 	}
-	return strings.Join(parts, " AND ")
+	if !batch {
+		return strings.Join(parts, " AND ")
+	}
+	if len(parts) == 1 {
+		return parts[0] + " IN ?"
+	}
+	return "(" + strings.Join(parts, ", ") + ") IN ?"
 }
 
-// Literal renders a feature-view filter value as Calcite would for the
-// feature's type: bare for numeric types, single-quoted with ” doubling
-// otherwise.  Not covered by a fixture (filters attach to collect and
-// aggregate feature groups, whose MySQL statements are string-built).
-func Literal(value, featureType string) string {
-	if spec.IsNumericType(featureType) {
-		return value
+// These match the DateString/TimestampString constructors in the pinned
+// Calcite 1.32.1 jar, not Go time parsing (which has different validation).
+var dateLiteral = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}$`)
+var timestampLiteral = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]*[1-9])?$`)
+
+// Literal mirrors FilterController.getSQLNode and the MySQL dialect's
+// date/time rendering. Collect's queryOnline and queryOnlineScan use it;
+// applyMysqlAggregate deliberately uses the separately rendered RonSQL filter.
+func Literal(value, featureType string) (string, error) {
+	switch strings.ToLower(featureType) {
+	case "string":
+		return quote(value), nil
+	case "date":
+		if !dateLiteral.MatchString(value) || value[:4] == "0000" ||
+			value[5:7] < "01" || value[5:7] > "12" || value[8:10] < "01" || value[8:10] > "31" {
+			return "", fmt.Errorf("invalid Calcite DATE literal %q", value)
+		}
+		return "DATE " + quote(value), nil
+	case "timestamp":
+		if !timestampLiteral.MatchString(value) {
+			return "", fmt.Errorf("invalid Calcite TIMESTAMP literal %q", value)
+		}
+		// SqlTimestampLiteral(precision=3) truncates, never rounds up, and
+		// pads the fractional part to exactly three digits.
+		fraction := ""
+		if len(value) > 19 {
+			fraction = value[20:]
+		}
+		fraction = (fraction + "000")[:3]
+		return "TIMESTAMP " + quote(value[:19]+"."+fraction), nil
+	default:
+		// Numeric and prepared-statement types become bare SqlIdentifiers.
+		return value, nil
 	}
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
 // Operator maps a SqlCondition to its SQL operator.

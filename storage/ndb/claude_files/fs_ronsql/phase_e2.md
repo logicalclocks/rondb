@@ -1,7 +1,7 @@
 # E2 — Spec model, emitter port, golden conformance (2026-09-09)
 
-**Status: DONE 2026-09-09 — all 45 Hopsworks golden fixtures byte-identical
-(see §5).**
+**Status: initial 45-fixture run recorded; post-E3 E2 review corrections
+await user-run verification (see §6).**
 
 ## 1. Contract: the Hopsworks golden fixtures
 
@@ -49,10 +49,11 @@ text.
 
 ## 4. Known gaps and deviations (before the run)
 
-- Calcite forms not covered by any fixture are best-effort: batch point
-  reads on a composite key (`(fg0.k1, fg0.k2) IN ?`), filter literals on
-  non-aggregate statements, `FULL`/`CROSS` join keywords. A fixture
-  covering them would settle the text.
+- Calcite forms not covered by any fixture remain outside Java-golden
+  conformance evidence: composite batch point reads, collect filter
+  literals and default expressions, synthesized selections in nested
+  queries, and `FULL`/`CROSS` join keywords. Source-derived regressions
+  now cover the review corrections below; Java exports are still needed.
 - Two `AGGREGATE_INVALID` messages embed a Java `HashSet.toString()` of
   the allowed functions; their element order is a guess
   (`[sum, min, max, avg, count]`, `[least, greatest]`) until a fixture
@@ -81,3 +82,37 @@ text.
 - Requirement A6 (Java-generated complete builder fixtures pinned to the
   Hopsworks commit) is met for the initial corpus; the §4 gaps remain
   fixture-less until the corpus grows.
+
+## 6. E2 review corrections on top of E3
+
+Base: `e2e47d21a46`. E3 left the emitter, MySQL renderer and golden
+tests unchanged, so all six review findings remained. Its `OnlineDB`
+override is preserved.
+
+- Structural inequality fails the golden test independently of the
+  diagnostic traversal. Missing fields differ from explicit JSON null.
+- The manifest is mandatory and nonempty. Every listed fixture must
+  exist and match its SHA-256; extra JSON files, non-Java sources,
+  inconsistent provenance and emitter-reference mismatches fail.
+  The imported dirty provenance remains valid and is not rewritten.
+- Nested selections resolve aggregate outputs and persisted collect
+  structs to their source columns, with aggregate-source deduplication
+  scoped to the join and named errors for nonexistent source fields.
+- MySQL projections and filters preserve feature default expressions.
+  Bind-key type mutation follows Java; RonSQL text remains independent.
+- Collect MySQL filters use typed DATE/TIMESTAMP literals. The pinned
+  Calcite 1.32.1 timestamp renderer truncates to milliseconds and pads
+  to three digits; RonSQL retains Hopsworks' separately rendered literal.
+- An empty successful statement set serializes as `[]`, not `null`.
+
+The new Go regressions are source-derived unit cases, **not** newly
+captured Java goldens. The 45 imported fixtures and their manifest are
+unchanged. No build or test has been run for this correction patch.
+
+User verification: rerun `go test ./internal/fsq/...` from
+`tools/rondb-cli`, including E3's cases/binding tests. Before claiming
+expanded Java conformance, extend `HopsworksGoldenDump` with nested
+aggregate/collect, default-value metadata, temporal collect filters and
+empty helper selections; run it in Hopsworks and review/import its new
+manifest and fixtures. Align `HopsworksRef` deliberately when the
+reference Hopsworks commit changes. Do not synthesize expected JSON in Go.
