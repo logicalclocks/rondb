@@ -17127,7 +17127,14 @@ void Dblqh::handleCteNodeFailure(Signal *signal, Uint32 nodeId,
     }
   }
 
-  handleCteScanNodeFailure(signal, nodeId, 0);
+  // Queue the next phase behind this worker's existing JBB continuations.
+  // In particular, states marked in the last bucket batch may still have
+  // a merge/redistribution/finalize continuation queued. Let it observe
+  // NODE_FAIL_ABORT and stop before NF completion permits proxy release.
+  signal->theData[0] = ZCONTINUE_CTE_SCAN_NODE_FAILURE;
+  signal->theData[1] = nodeId;
+  signal->theData[2] = 0;
+  sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
 }
 
 void Dblqh::handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
