@@ -3569,7 +3569,8 @@ private:
                                   Uint32 ownerNode,
                                   Uint32 senderAggStateKey);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
-                      Uint32 errorCode, SectionHandle *handle = nullptr);
+                      Uint32 errorCode, SectionHandle *handle = nullptr,
+                      Uint32 numRowsToSpj = 0);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_CONF(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_REF(Signal* signal);

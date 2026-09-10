@@ -190,12 +190,14 @@ struct CteScanReq {
 struct CteScanConf {
   Uint32 senderRef;       // DBLQH block reference
   Uint32 senderData;      // TreeNode pointer (echoed from REQ)
-  Uint32 numRows;         // Number of groups sent as TRANSID_AI in this batch
+  Uint32 numRows;         // Number of groups emitted or fed in this batch
   Uint32 flags;           // Flags (EndOfData)
   Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL when EndOfData;
                           // echo back as CteScanReq::scanIterI on continuation)
 
-  static constexpr Uint32 SignalLength = 5;
+  Uint32 numRowsToSpj;    // TRANSID_AI rows sent to the requesting DBSPJ
+
+  static constexpr Uint32 SignalLength = 6;
   enum { EndOfData = 0x1 };
 };
 
@@ -203,8 +205,9 @@ struct CteScanRef {
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 errorCode;
+  Uint32 numRowsToSpj;    // TRANSID_AI rows sent before this error
 
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 4;
 };
 
 #endif  // NDB_CTE_SCAN_HPP

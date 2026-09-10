@@ -21290,7 +21290,7 @@ void Dblqh::sendCteLookupRef(Signal *signal, Uint32 senderRef,
 
 void Dblqh::sendCteScanRef(Signal *signal, Uint32 senderRef,
                             Uint32 senderData, Uint32 errorCode,
-                            SectionHandle *handle) {
+                            SectionHandle *handle, Uint32 numRowsToSpj) {
   if (handle != nullptr) {
     jam();
     releaseSections(*handle);
@@ -21300,6 +21300,7 @@ void Dblqh::sendCteScanRef(Signal *signal, Uint32 senderRef,
   ref->senderRef = reference();
   ref->senderData = senderData;
   ref->errorCode = errorCode;
+  ref->numRowsToSpj = numRowsToSpj;
   sendSignal(senderRef, GSN_CTE_SCAN_REF,
              signal, CteScanRef::SignalLength, JBB);
 }
@@ -22064,6 +22065,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
   conf->senderRef = reference();
   conf->senderData = senderData;
   conf->numRows = groupsSent;
+  conf->numRowsToSpj = 0;
   conf->flags = CteScanConf::EndOfData;
   conf->scanIterI = RNIL;
   sendSignal(senderRef, GSN_CTE_SCAN_CONF,
@@ -22139,6 +22141,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
 
   auto *gb_map = interp->gb_map_mutable();
   Uint32 numRowsSent = 0;
+  Uint32 numRowsToSpj = 0;
   bool endOfData = true;
 
   if (gb_map != nullptr && !gb_map->empty()) {
@@ -22186,7 +22189,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
          * more CONFs driving the normal release path. */
         releaseCteScanIterState(scanIterI);
         sendCteScanRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_FILTER_ERROR);
+                       ZCTE_LOOKUP_FILTER_ERROR, nullptr, numRowsToSpj);
         return;
       }
 
@@ -22222,6 +22225,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
           lsp[0].sz = (Uint32)outPos;
           sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                      TransIdAI::HeaderLength, JBB, lsp, 1);
+          numRowsToSpj++;
         }
       } else {
         /* Legacy path (no AttrInfo section): emit raw key + agg columns +
@@ -22256,7 +22260,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
           jam();
           releaseCteScanIterState(scanIterI);
           sendCteScanRef(signal, req.senderRef, req.senderData,
-                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
           return;
         }
 
@@ -22270,6 +22274,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         lsp[0].sz = outPos;
         sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                    TransIdAI::HeaderLength, JBB, lsp, 1);
+        numRowsToSpj++;
       }
 
       numRowsSent++;
@@ -22306,7 +22311,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       jam();
       releaseCteScanIterState(scanIterI);
       sendCteScanRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_FILTER_ERROR);
+                     ZCTE_LOOKUP_FILTER_ERROR, nullptr, numRowsToSpj);
       return;
     }
     if (fr == CTE_FILTER_REJECT) {
@@ -22341,6 +22346,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         lsp[0].sz = (Uint32)outPos;
         sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                    TransIdAI::HeaderLength, JBB, lsp, 1);
+        numRowsToSpj++;
       }
     } else {
       /* Legacy path: emit agg columns + CORR_FACTOR32 */
@@ -22358,7 +22364,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         jam();
         releaseCteScanIterState(scanIterI);
         sendCteScanRef(signal, req.senderRef, req.senderData,
-                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
         return;
       }
       AttributeHeader::init(&outBuf[outPos],
@@ -22376,6 +22382,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       lsp[0].sz = outPos;
       sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
                  TransIdAI::HeaderLength, JBB, lsp, 1);
+      numRowsToSpj++;
     }
     numRowsSent = 1;
     scanState->groupsSent = 1;
@@ -22386,6 +22393,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
   conf->senderRef = reference();
   conf->senderData = req.senderData;
   conf->numRows = numRowsSent;
+  conf->numRowsToSpj = numRowsToSpj;
   if (endOfData) {
     jam();
     conf->flags = CteScanConf::EndOfData;
@@ -22408,7 +22416,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       if (unlikely(!c_cteScanIterStatePool.seize(ptr))) {
         jam();
         sendCteScanRef(signal, req.senderRef, req.senderData,
-                       ZJOIN_AGG_STATE_ALLOC_FAILED);
+                       ZJOIN_AGG_STATE_ALLOC_FAILED, nullptr, numRowsToSpj);
         return;
       }
     }
@@ -22477,6 +22485,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
     conf->senderRef = reference();
     conf->senderData = req.senderData;
     conf->numRows = 0;
+    conf->numRowsToSpj = 0;
     conf->flags = CteScanConf::EndOfData;
     conf->scanIterI = RNIL;
     sendSignal(req.senderRef, GSN_CTE_SCAN_CONF, signal,

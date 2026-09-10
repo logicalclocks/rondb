@@ -705,9 +705,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteId;           // Source CTE to scan
     Uint32 m_numResultCols;   // GROUP BY + aggregate result columns
     Uint32 m_aggStateKey;     // DBLQH aggStateKey for the source CTE
-    Uint32 m_outstanding;     // Outstanding CTE_SCAN_REQ (0 or 1)
-    Uint32 m_rowsReceived;    // TRANSID_AI signals received so far
-    Uint32 m_rowsExpecting;   // Rows from CTE_SCAN_CONF numRows
+    Uint32 m_outstanding;     // Source batches awaiting reply and/or rows
     Uint32 m_batchSize;       // Max groups per batch
     bool m_endOfData;         // All groups sent by DBLQH
     Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
@@ -727,15 +725,15 @@ class Dbspj : public SimulatedBlock {
      * (O(1) hash-bucket resume instead of restarting from bucket 0).
      * Slots are compact: m_numNodeSlots in [0, MAX_CTE_SCAN_NODE_SLOTS]. */
     struct NodeSlot {
-      Uint32 m_sourceNodeId;   // DBLQH nodeId this slot tracks
       Uint32 m_ownerInstance;  // DBLQH instance that owns scanIterI
-      Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
-                               // first REQ and after EndOfData CONF
-      bool m_endOfData;        // Final CONF seen from this node
-      bool m_close_pending;    // Set by cte_scan_abort on slots with an
-                               // in-flight REQ; the CONF handler fires
-                               // a close REQ for the CONF's scanIterI
-                               // when RS_ABORTING is observed.
+      Uint32 m_scanIterI;      // RNIL before first CONF and after EndOfData
+      Uint16 m_sourceNodeId;   // DBLQH nodeId this slot tracks
+      Int16 m_rowsOutstanding; // Declared rows minus received rows;
+                               // negative before CONF/REF, bounded by 256
+      bool m_endOfData;
+      bool m_close_pending;   // Close after the current batch drains
+      bool m_confPending;     // Awaiting CONF/REF for this batch
+      bool m_batchPending;    // One request obligation until reply AND rows
     };
     /* Single-node scans use slot[0]; m_cteScanAllNodes fan-out uses
      * one slot per participating node.  Sized to cover every possible
@@ -743,6 +741,7 @@ class Dbspj : public SimulatedBlock {
     static constexpr Uint32 MAX_CTE_SCAN_NODE_SLOTS = ABS_MAX_NDB_NODES;
     NodeSlot m_nodeSlots[MAX_CTE_SCAN_NODE_SLOTS];
     Uint32 m_numNodeSlots;
+    NdbNodeBitmask m_nodes;   // Topology captured before CTE execution
 
     /* Per-column inline type info (2 words/col, encoded per
      * CteLinkedAttr.hpp).  Same role as CteLookupData::m_virtTypeInfo
@@ -2015,6 +2014,11 @@ class Dbspj : public SimulatedBlock {
                         const QueryNodeParameters *);
   void cte_scan_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_scan_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_scan_finishBatch(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                            CteScanData::NodeSlot &);
+  bool cte_scan_checkComplete(Ptr<Request>, Ptr<TreeNode>);
+  Uint32 cte_scan_execNODE_FAILREP(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                                  NdbNodeBitmask);
   void cte_scan_execSCAN_NEXTREQ(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void execCTE_SCAN_CONF(Signal *);
   void execCTE_SCAN_REF(Signal *);
@@ -2054,6 +2058,9 @@ class Dbspj : public SimulatedBlock {
    * first for cache friendliness. */
   void maybeResumeCongestedNodes(Signal *signal, Ptr<Request> requestPtr,
                                  Ptr<TreeNode> treeNodePtr);
+
+  CteScanData::NodeSlot *cte_scan_findNodeSlot(
+      CteScanData &data, Uint32 sourceNodeId);
 
   /* Return the NodeSlot for sourceNodeId, allocating a new one if
    * none exists.  Returns nullptr if all slots are in use (should
