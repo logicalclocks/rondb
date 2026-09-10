@@ -19770,24 +19770,23 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
 
 /**
  * Check if the DBTC node that owns this aggregation has died.
- * If so, no RELEASE_REQ will ever arrive — send a fire-and-forget
- * release to the proxy and return true to stop processing.
+ * If so, stop the local continuation and leave reclamation to the
+ * node-failure completion path.
  */
-bool Dblqh::checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
+bool Dblqh::checkJoinAggNodeFailed(Signal*, Uint32 aggStateKey,
                                    Uint32 senderRef) {
   if (!getNodeInfo(refToNode(senderRef)).m_connected) {
     jam();
-    JoinAggReleaseReq *req =
-        (JoinAggReleaseReq *)signal->getDataPtrSend();
-    req->senderRef = reference();
-    req->senderData = 0;
-    req->requestId = 0;
-    req->transid[0] = 0;
-    req->transid[1] = 0;
-    req->aggStateKey = aggStateKey;
-    req->noReply = 1;
-    sendSignal(DBLQH_REF, GSN_JOIN_AGG_RELEASE_REQ, signal,
-               JoinAggReleaseReq::SignalLength, JBB);
+    // Stop this continuation, but do not release shared state while
+    // other workers may still use it. JOIN_AGG_NODE_FAIL_REP performs
+    // reclamation after node-failure cleanup has completed.
+    JoinAggregationState *state = getJoinAggState(aggStateKey);
+    // The key travels in signal data; make sure the slot has not been
+    // recycled for another coordinator's query before marking it.
+    if (state != nullptr &&
+        refToNode(state->m_senderRef) == refToNode(senderRef)) {
+      state->m_state.store(JoinAggregationState::NODE_FAIL_ABORT);
+    }
     return true;
   }
   return false;

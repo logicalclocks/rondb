@@ -158,7 +158,8 @@ struct JoinAggregationState {
     SENDING_RESULTS = 4,     // Sending results to API
     COMPLETED = 5,           // All results sent
     ERROR = 6,
-    ABORTING = 7,
+                             // 7 retired (ABORTING was never stored); value
+                             // kept unused so numeric state dumps stay stable
     WAITING_SEND_CONF = 8,   // Paused at batch limit, waiting for SEND_CONF
     NODE_FAIL_ABORT = 9,     // DBTC node failed, scans closed, awaiting release
     CTE_REDISTRIBUTING = 10, // Sending groups to hash-owner nodes
