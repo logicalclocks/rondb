@@ -1205,8 +1205,8 @@ void Dblqh::execCONTINUEB(Signal *signal) {
         ((uintptr_t)signal->theData[7] << 32));
     /* CONTINUEB can't carry sections.  The filter (if any) is
      * retained in a CteScanIterState pool record whose i-value is
-     * carried through theData[9]; cteScanAggFeed resolves it at the
-     * top of the function, so we pass nullptr for cinBuf. */
+     * carried through theData[9]. Every agg feed has such a record,
+     * including unfiltered feeds, so failure cleanup can wait for it. */
     cteScanAggFeed(signal,
                    signal->theData[1],   // aggStateKey
                    signal->theData[2],   // senderRef
@@ -1215,8 +1215,7 @@ void Dblqh::execCONTINUEB(Signal *signal) {
                    signal->theData[5],   // iterBucket
                    rawPtr,               // iterRaw
                    signal->theData[8],   // groupsSent
-                   nullptr, 0,           // cinBuf, attrInfoLen
-                   signal->theData[9]);  // aggFeedStateI (RNIL if none)
+                   signal->theData[9]);  // aggFeedStateI
     if (m_is_query_block) {
       jamDebug();
       reset_query_thread_access();
@@ -17132,10 +17131,11 @@ void Dblqh::handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
     const Uint32 found =
         c_cteScanIterStatePool.getUncheckedPtrs(&startPtrI, &ptr, 1);
     if (found == 0 || !Magic::check_ptr(ptr.p)) continue;
-    if (ptr.p->senderNodeId != nodeId) continue;
+    if (ptr.p->senderNodeId != nodeId &&
+        !(ptr.p->aggFeed && ptr.p->coordinatorNodeId == nodeId)) continue;
     if (ptr.p->aggFeed) {
       // The queued local continuation still owns this record. Let it
-      // observe ZNODE_DOWN and release it, then revisit this position.
+      // observe the failed requester/coordinator and release the record.
       startPtrI = ptr.i;
       break;
     }
@@ -21808,9 +21808,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                             Uint32 senderRef, Uint32 senderData,
                             Uint32 joinAggStateKey,
                             Uint32 iterBucket, const char *iterRaw,
-                            Uint32 groupsSent,
-                            const Uint32 *cinBuf, Uint32 attrInfoLen,
-                            Uint32 aggFeedStateI) {
+                            Uint32 groupsSent, Uint32 aggFeedStateI) {
   HostRecordPtr hostPtr;
   hostPtr.i = refToNode(senderRef);
   ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
@@ -21822,26 +21820,28 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     return;
   }
 
+  Ptr<CteScanIterState> feedPtr;
+  feedPtr.i = aggFeedStateI;
+  ndbrequire(c_cteScanIterStatePool.getValidPtr(feedPtr));
+  ndbrequire(feedPtr.p->aggFeed);
+  hostPtr.i = feedPtr.p->coordinatorNodeId;
+  ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
+  if (unlikely(hostPtr.p->nodestatus == ZNODE_DOWN)) {
+    jam();
+    // DBSPJ is alive and still needs its terminal reply. Stop before
+    // accessing either interpreter; NF cleanup waits for this release.
+    releaseCteScanIterState(aggFeedStateI);
+    sendCteScanRef(signal, senderRef, senderData, ZNODEFAIL_BEFORE_COMMIT);
+    return;
+  }
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
-  /* Resolve filter program: when aggFeedStateI is set (any batch after
-   * the first, or the first batch if the caller seized state up
-   * front), its cinBufCopy is the authoritative filter source.  On a
-   * first call without state (no filter or filter couldn't be seized
-   * for overflow reasons), use the passed-in cinBuf. */
-  const Uint32 *effCinBuf = cinBuf;
-  Uint32 effAttrInfoLen = attrInfoLen;
-  if (aggFeedStateI != RNIL) {
-    jam();
-    Ptr<CteScanIterState> ptr;
-    ptr.i = aggFeedStateI;
-    ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
-    effCinBuf = ptr.p->cinBuf();
-    effAttrInfoLen = ptr.p->attrInfoLen;
-  }
+  const Uint32 *effCinBuf = feedPtr.p->cinBuf();
+  const Uint32 effAttrInfoLen = feedPtr.p->attrInfoLen;
 
   const Uint32 targetBaseKey =
       JoinAggregationState::decodeBaseKey(joinAggStateKey);
@@ -21982,8 +21982,8 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
        * is always owned by an immediately queued continuation. Every
        * exit from this function must either release aggFeedStateI or
        * re-queue like this. handleCteScanNodeFailure relies on it: it
-       * revisits an aggFeed record of a failed requester until the
-       * continuation observes ZNODE_DOWN and releases it, and defers
+       * revisits an aggFeed record of a failed requester or coordinator
+       * until the continuation observes ZNODE_DOWN and releases it, deferring
        * node-failure completion until then. */
       jam();
       const char *rawPtr = iter.raw();
@@ -22187,6 +22187,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     localState.attrInfoLen = 0;          // emit path doesn't cache filter
     localState.cinBufOverflow = nullptr;
     localState.senderNodeId = refToNode(req.senderRef);
+    localState.coordinatorNodeId = 0;
     localState.aggFeed = false;
   }
   CteScanIterState *scanState = &localState;
@@ -22633,63 +22634,47 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
-  /* Aggregation feed path: scanned groups feed into another interpreter.
-   * If the client attached a non-trivial filter program, seize a
-   * CteScanIterState to copy it into — CONTINUEB self-signals can't
-   * carry sections, so the server needs its own retained copy that
-   * survives across batches.  Filter programs that exceed
-   * CTE_SCAN_FILTER_INLINE_WORDS spill into a lc_ndbd_pool_malloc'd
-   * overflow buffer; allocation failures fall back to first-batch-only
-   * filtering (logged via DEB_CTE). */
+  /* Every aggregation feed needs a pool record, even without a filter:
+   * node-failure cleanup uses it to wait for queued local continuations.
+   * Keep the filter here as well so every continuation applies it. */
   if (req.joinAggStateKey != RNIL) {
     jam();
-    Uint32 aggFeedStateI = RNIL;
-    if (attrInfoLen >= 5 && cinBuf[1] > 1) {
+    const Uint32 filterLen =
+        (attrInfoLen >= 5 && cinBuf[1] > 1) ? attrInfoLen : 0;
+    Ptr<CteScanIterState> ptr;
+    if (unlikely(!c_cteScanIterStatePool.seize(ptr))) {
       jam();
-      Ptr<CteScanIterState> ptr;
-      if (likely(c_cteScanIterStatePool.seize(ptr))) {
-        ptr.p->iterBucket = 0;
-        ptr.p->iterRaw = nullptr;
-        ptr.p->groupsSent = 0;
-        ptr.p->attrInfoLen = attrInfoLen;
-        ptr.p->cinBufOverflow = nullptr;
-        ptr.p->senderNodeId = refToNode(req.senderRef);
-        ptr.p->aggFeed = true;
-        if (attrInfoLen <= CTE_SCAN_FILTER_INLINE_WORDS) {
-          memcpy(ptr.p->cinBufInline, cinBuf, attrInfoLen * sizeof(Uint32));
-        } else {
-          jam();
-          Uint32 *overflow = (Uint32 *)lc_ndbd_pool_malloc(
-              attrInfoLen * sizeof(Uint32), RG_QUERY_MEMORY,
-              getThreadId(), false);
-          if (overflow != nullptr) {
-            memcpy(overflow, cinBuf, attrInfoLen * sizeof(Uint32));
-            ptr.p->cinBufOverflow = overflow;
-          } else {
-            /* Overflow allocation failed — release the state and fall
-             * back to first-batch-only filtering by passing cinBuf
-             * inline.  Logged so we can spot it in production. */
-            jam();
-            DEB_CTE(("(%u) CTE_SCAN filter overflow alloc failed, "
-                     "falling back to first-batch filter only "
-                     "(filterLen=%u)",
-                     instance(), attrInfoLen));
-            c_cteScanIterStatePool.release(ptr);
-            ptr.i = RNIL;
-          }
-        }
-        aggFeedStateI = ptr.i;
-      } else {
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZJOIN_AGG_STATE_ALLOC_FAILED);
+      return;
+    }
+    ptr.p->iterBucket = 0;
+    ptr.p->iterRaw = nullptr;
+    ptr.p->groupsSent = 0;
+    ptr.p->attrInfoLen = filterLen;
+    ptr.p->cinBufOverflow = nullptr;
+    ptr.p->senderNodeId = refToNode(req.senderRef);
+    ptr.p->coordinatorNodeId = refToNode(state->m_senderRef);
+    ptr.p->aggFeed = true;
+    if (filterLen <= CTE_SCAN_FILTER_INLINE_WORDS) {
+      memcpy(ptr.p->cinBufInline, cinBuf, filterLen * sizeof(Uint32));
+    } else {
+      jam();
+      Uint32 *overflow = (Uint32 *)lc_ndbd_pool_malloc(
+          filterLen * sizeof(Uint32), RG_QUERY_MEMORY,
+          getThreadId(), false);
+      if (unlikely(overflow == nullptr)) {
         jam();
-        DEB_CTE(("(%u) CTE_SCAN filter state seize failed, "
-                 "falling back to first-batch filter only", instance()));
+        releaseCteScanIterState(ptr.i);
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZJOIN_AGG_STATE_ALLOC_FAILED);
+        return;
       }
+      memcpy(overflow, cinBuf, filterLen * sizeof(Uint32));
+      ptr.p->cinBufOverflow = overflow;
     }
     cteScanAggFeed(signal, req.aggStateKey, req.senderRef, req.senderData,
-                   req.joinAggStateKey,
-                   0, nullptr, 0,
-                   attrInfoLen > 0 ? cinBuf : nullptr, attrInfoLen,
-                   aggFeedStateI);
+                   req.joinAggStateKey, 0, nullptr, 0, ptr.i);
     return;
   }
 

@@ -3540,11 +3540,6 @@ private:
                         SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
   void cteScanReqImpl(Signal* signal);
-  /* cinBuf + attrInfoLen carry the AttrInfo section needed to run a
-   * CTE filter program per group.  On the initial CTE_SCAN_REQ the
-   * caller passes the AttrInfo bound into the incoming signal; on a
-   * CONTINUEB resumption within the agg-feed path they are
-   * (nullptr, 0) — see runCteFilter's short-circuit. */
   /* Release a CteScanIterState pool record and, if populated, free
    * the cinBufOverflow filter buffer allocated via lc_ndbd_pool_malloc.
    * Safe to call with stateI == RNIL (no-op). */
@@ -3554,9 +3549,7 @@ private:
                       Uint32 senderRef, Uint32 senderData,
                       Uint32 joinAggStateKey,
                       Uint32 iterBucket, const char *iterRaw,
-                      Uint32 groupsSent,
-                      const Uint32 *cinBuf, Uint32 attrInfoLen,
-                      Uint32 aggFeedStateI);
+                      Uint32 groupsSent, Uint32 aggFeedStateI);
   void cteScanEmitResults(Signal* signal, const CteScanReq &req,
                           JoinAggInterpreter *interp,
                           const Uint32 *finalR, Uint32 finalRLen,
@@ -5426,6 +5419,7 @@ public:
     Uint32 *cinBufOverflow;  // nullptr if attrInfoLen fits inline
     Uint32  nextPool;
     Uint16  senderNodeId;    // Requesting DBSPJ node, for failure cleanup
+    Uint16  coordinatorNodeId; // DBTC node for agg-feed scans; otherwise 0
     bool    aggFeed;         // Owned by a local continuation, not DBSPJ
 
     const Uint32 *cinBuf() const {
