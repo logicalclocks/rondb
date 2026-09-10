@@ -6214,8 +6214,8 @@ const Dbspj::OpInfo Dbspj::g_CteLookupOpInfo = {
     0,                          // parent_batch_cleanup
     0,                          // execSCAN_NEXTREQ
     0,                          // complete
-    0,                          // abort
-    0,                          // execNODE_FAILREP
+    &Dbspj::cte_lookup_abort,
+    &Dbspj::cte_lookup_execNODE_FAILREP,
     &Dbspj::cte_lookup_cleanup,
     &Dbspj::cte_lookup_checkNode,
     &Dbspj::cte_lookup_dumpNode};
@@ -6272,6 +6272,9 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_numResultCols = numResultCols;
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
+    treeNodePtr.p->m_cteLookup_data.m_nodes = c_alive_nodes;
+    memset(treeNodePtr.p->m_cteLookup_data.m_nodeOutstanding, 0,
+           MAX_NDB_NODES * sizeof(Uint32));
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
     treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
@@ -6544,19 +6547,80 @@ void Dbspj::cte_lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
            requestPtr.p->m_outstanding,
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
            requestPtr.p->m_completed_tree_nodes.rep.data[0]));
-  ndbassert(requestPtr.p->m_outstanding >= cnt);
-  requestPtr.p->m_outstanding -= cnt;
-
-  ndbassert(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
-
+  cte_lookup_countReplies(requestPtr, treeNodePtr,
+                           refToNode(signal->getSendersBlockRef()), cnt);
   maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
+}
+
+void Dbspj::cte_lookup_countReplies(Ptr<Request> requestPtr,
+                                     Ptr<TreeNode> treeNodePtr,
+                                     Uint32 nodeId, Uint32 cnt) {
+  CteLookupData &data = treeNodePtr.p->m_cteLookup_data;
+  ndbrequire(nodeId < MAX_NDB_NODES);
+  const Uint32 outstanding = data.m_nodeOutstanding[nodeId];
+  ndbrequire(outstanding >= cnt);
+  ndbrequire(data.m_outstanding >= cnt);
+  ndbrequire(requestPtr.p->m_outstanding >= cnt);
+  data.m_nodeOutstanding[nodeId] = outstanding - cnt;
+  data.m_outstanding -= cnt;
+  requestPtr.p->m_outstanding -= cnt;
+  cte_lookup_checkComplete(requestPtr, treeNodePtr);
+}
+
+void Dbspj::cte_lookup_checkComplete(Ptr<Request> requestPtr,
+                                      Ptr<TreeNode> treeNodePtr) {
+  if (treeNodePtr.p->m_cteLookup_data.m_outstanding != 0) return;
+  requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+  if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+    jam();
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    ndbrequire(requestPtr.p->m_cnt_active > 0);
+    DEC_CNT_ACTIVE(requestPtr.p, "cte_lookup_checkComplete",
+                   treeNodePtr.p->m_node_no);
+  }
+}
+
+void Dbspj::cte_lookup_abort(Signal *, Ptr<Request> requestPtr,
+                               Ptr<TreeNode> treeNodePtr) {
+  jam();
+  treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
+  // Replies from live nodes must still drain before completion.
+  cte_lookup_checkComplete(requestPtr, treeNodePtr);
+}
+
+Uint32 Dbspj::cte_lookup_execNODE_FAILREP(Signal *,
+                                          Ptr<Request> requestPtr,
+                                          Ptr<TreeNode> treeNodePtr,
+                                          NdbNodeBitmask mask) {
+  CteLookupData &data = treeNodePtr.p->m_cteLookup_data;
+  // Drain every failed node we charged, not only the build-time
+  // topology: an owner that was connected but not yet included when
+  // this node was built is absent from m_nodes yet may hold probes.
+  Uint32 drained = 0;
+  Uint32 node = 0;
+  while ((node = mask.find(node + 1)) != NdbNodeBitmask::NotFound) {
+    const Uint32 cnt = data.m_nodeOutstanding[node];
+    if (cnt != 0) {
+      jam();
+      // NODE_FAILREP guarantees no further replies from this node.
+      cte_lookup_countReplies(requestPtr, treeNodePtr, node, cnt);
+      drained++;
+    }
+  }
+  // Also abort between probes: the materialized CTE's ownership was
+  // established before this failure and cannot be rehashed in place.
+  // nodeFail() performs abort + checkBatchComplete after the callbacks.
+  mask.bitAND(data.m_nodes);
+  if (drained == 0 && mask.isclear()) return 0;
+  jam();
+  return 1;
 }
 
 void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr,
                             const RowPtr &rowRef) {
   jam();
+  if (requestPtr.p->m_state & Request::RS_ABORTING) return;
   const Uint32 cteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
   DEB_CTE(("(%u) cte_lookup_parent_row: node=%u cteId=%u",
            instance(), treeNodePtr.p->m_node_no, cteId));
@@ -6703,6 +6767,15 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr,
                              const RowPtr &rowRef) {
   jam();
+  if (requestPtr.p->m_state & Request::RS_ABORTING) return;
+  NdbNodeBitmask failed = treeNodePtr.p->m_cteLookup_data.m_nodes;
+  failed.bitANDC(c_alive_nodes);
+  if (!failed.isclear()) {
+    // The request sweep may not have reached us yet. Do not hash
+    // against the rebuilt node list or serve a cached result.
+    abort(signal, requestPtr, DbspjErr::NodeFailure);
+    return;
+  }
   DEB_CTE(("(%u) cte_lookup_send: node=%u cteId=%u",
            instance(), treeNodePtr.p->m_node_no,
            treeNodePtr.p->m_cteLookup_data.m_cteId));
@@ -6905,6 +6978,13 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
          * per-fragment MIN), which is wrong on multi-node topologies. */
         targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
+    }
+    // Same predicate as buildDataNodeList: a connected but not yet
+    // included node is a legitimate owner, a disconnected one is not.
+    if (unlikely(!getNodeInfo(targetNodeId).m_connected)) {
+      jam();
+      err = DbspjErr::NodeFailure;
+      break;
     }
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
@@ -7287,6 +7367,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
     requestPtr.p->m_outstanding += cnt;
     treeNodePtr.p->m_cteLookup_data.m_outstanding += cnt;
+    treeNodePtr.p->m_cteLookup_data.m_nodeOutstanding[targetNodeId] += cnt;
     DEB_CTE(("(%u) cte_lookup_send: outstanding after: req=%u node=%u",
              instance(), requestPtr.p->m_outstanding,
              treeNodePtr.p->m_cteLookup_data.m_outstanding));
@@ -7329,11 +7410,13 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
            requestPtr.p->m_outstanding));
 
-  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding--;
-
-  ndbrequire(requestPtr.p->m_outstanding > 0);
-  requestPtr.p->m_outstanding--;
+  cte_lookup_countReplies(requestPtr, treeNodePtr,
+                           refToNode(signal->getSendersBlockRef()), 1);
+  if (requestPtr.p->m_state & Request::RS_ABORTING) {
+    releaseSections(handle);
+    checkBatchComplete(signal, requestPtr);
+    return;
+  }
 
   /* G2a/G2b probe-outcome cache: attribute the CONF to the fill probe
    * via the echoed correlation.  With a dual-shipped row section the
@@ -7375,19 +7458,6 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   }
   /* Release any section not stolen by the cache fill above. */
   releaseSections(handle);
-
-  // Mark node complete when all CTE_LOOKUP responses received.
-  // cte_lookup_send cleared the bit; restore it when done.
-  if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
-      jam();
-      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-      ndbrequire(requestPtr.p->m_cnt_active > 0);
-      DEC_CNT_ACTIVE(requestPtr.p, "execCTE_LOOKUP_CONF",
-                     treeNodePtr.p->m_node_no);
-    }
-  }
 
   // Count FLUSH_AI result sent to API — same as lookup_countSignal does
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
@@ -7470,27 +7540,15 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0,
            refCorrelation));
 
-  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
+  cte_lookup_countReplies(requestPtr, treeNodePtr,
+                           refToNode(signal->getSendersBlockRef()), cnt);
 
-  ndbrequire(requestPtr.p->m_outstanding >= cnt);
-  requestPtr.p->m_outstanding -= cnt;
-
-  if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
-      jam();
-      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-      ndbrequire(requestPtr.p->m_cnt_active > 0);
-      DEC_CNT_ACTIVE(requestPtr.p, "execCTE_LOOKUP_REF",
-                     treeNodePtr.p->m_node_no);
-    }
-  }
-
-  if (errorCode != CteLookupRef::GROUP_NOT_FOUND) {
+  if (errorCode != CteLookupRef::GROUP_NOT_FOUND ||
+      (requestPtr.p->m_state & Request::RS_ABORTING)) {
     jam();
-    // Internal error — abort the request
+    // Drain live-node replies during abort without injecting NULL rows.
     abort(signal, requestPtr, errorCode);
+    checkBatchComplete(signal, requestPtr);
     return;
   }
 
@@ -7563,6 +7621,8 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
     if (unlikely(err != 0)) {
       jam();
       abort(signal, requestPtr, err);
+      // This REF may have been the last outstanding reply.
+      checkBatchComplete(signal, requestPtr);
       return;
     }
   }

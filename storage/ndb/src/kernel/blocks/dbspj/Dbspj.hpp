@@ -681,6 +681,10 @@ class Dbspj : public SimulatedBlock {
      * normalization.  0 = none declared. */
     Uint32 m_numKeyPositions;
     Uint32 m_keyPositions[QN_CteLookupNode::MaxKeyPositions];
+    // Keep the topology used by this query: a node failure invalidates
+    // CTE ownership even when no lookup currently awaits a reply.
+    NdbNodeBitmask m_nodes;
+    Uint32 m_nodeOutstanding[ABS_MAX_NDB_NODES];
   };
 
   /**
@@ -1975,6 +1979,12 @@ class Dbspj : public SimulatedBlock {
                           const QueryNodeParameters *);
   void cte_lookup_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_lookup_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_lookup_countReplies(Ptr<Request>, Ptr<TreeNode>, Uint32 nodeId,
+                               Uint32 cnt);
+  void cte_lookup_checkComplete(Ptr<Request>, Ptr<TreeNode>);
+  void cte_lookup_abort(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 cte_lookup_execNODE_FAILREP(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                                     NdbNodeBitmask);
   void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
   Uint64 cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
                              Uint32, Uint32);
