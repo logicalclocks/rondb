@@ -10844,6 +10844,7 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   req->transId[1] = requestPtr.p->m_transId[1];
   req->requestPtrI = requestPtr.i;
   req->treeNodePtrI = treeNodePtr.i;
+  req->coordinatorRef = requestPtr.p->m_senderRef;
   /* RONDB-1120 P2c: identity word — the wire key above can be RNIL
    * while the SETUP round is in flight (and stays RNIL for non-CTE
    * queries, which have no P2b key carrier); DBLQH resolves the local

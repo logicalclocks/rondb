@@ -19904,6 +19904,8 @@ Dblqh::joinAggResolveOrParkGeneric(Signal *signal, Uint32 gsn,
 }
 
 void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
+  // DBSPJ sends this signal only to local workers, including parked replay.
+  ndbrequire(signal->getLength() >= JoinAggNullRowReq::SignalLength);
   const JoinAggNullRowReq *req =
     (const JoinAggNullRowReq *)signal->getDataPtr();
 
@@ -19911,9 +19913,26 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
   Uint32 aggStateKey = req->aggStateKey;
   const Uint32 requestPtrI = req->requestPtrI;
   const Uint32 treeNodePtrI = req->treeNodePtrI;
-  const Uint32 identWord =
-      (signal->getLength() >= JoinAggNullRowReq::SignalLength)
-          ? req->identWord : RNIL;
+  const Uint32 identWord = req->identWord;
+
+  // The local DBSPJ or a parked replay may outlive the coordinator.
+  // Reject before resolving or dereferencing shared aggregation state.
+  if (unlikely(isJoinAggCoordinatorFailed(req->coordinatorRef))) {
+    jam();
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    JoinAggNullRowRef *ref =
+        (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF, signal,
+               JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
 
   JoinAggregationState *state =
       (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
