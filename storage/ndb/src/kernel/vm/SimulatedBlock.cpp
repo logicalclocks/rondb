@@ -6533,6 +6533,34 @@ Uint32 SimulatedBlock::joinAggIdentityLookup(const Uint32 *transid,
   return result;
 }
 
+Uint32 SimulatedBlock::joinAggVisitStates(
+    Uint32 bucket, void (*visitor)(JoinAggregationState *, void *),
+    void *context) {
+  require(s_jaiEntries != nullptr);
+  const Uint32 totalBuckets = JAI_PARTITIONS * JAI_BUCKETS_PER_PART;
+  require(bucket < totalBuckets);
+  const Uint32 end = (bucket + 64 < totalBuckets)
+                        ? bucket + 64 : totalBuckets;
+  for (; bucket < end; bucket++) {
+    JoinAggIdentityPartition &part =
+        s_jaiPartitions[bucket / JAI_BUCKETS_PER_PART];
+    NdbMutex_Lock(part.m_mutex);
+    // Finish each bucket under the mutex; no entry cursor survives a yield.
+    for (Uint32 i = part.m_buckets[bucket % JAI_BUCKETS_PER_PART];
+         i != RNIL; i = jaiEntry(i).m_next) {
+      const Uint32 key = jaiEntry(i).m_aggStateKey;
+      if (key != RNIL) {
+        JoinAggregationState *state = getJoinAggState(key);
+        require(state != nullptr);
+        // RELEASE must remove the identity before touching the state.
+        visitor(state, context);
+      }
+    }
+    NdbMutex_Unlock(part.m_mutex);
+  }
+  return bucket == totalBuckets ? RNIL : bucket;
+}
+
 Uint32 SimulatedBlock::joinAggSeizeParkRec() {
   require(s_jaiParkRecs != nullptr);
   Uint32 i;

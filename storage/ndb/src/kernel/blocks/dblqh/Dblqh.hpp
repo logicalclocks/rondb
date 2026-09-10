@@ -382,6 +382,7 @@ class FsReadWriteReq;
  * ZCONTINUE_JOIN_AGG_FLUSH_PARKED (55) live in
  * JoinAggregationState.hpp — DblqhProxy sends the flush tag to Dblqh
  * instances, and this define region is DBLQH_C-guarded. */
+#define ZCONTINUE_CTE_NODE_FAILURE 56
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -5631,6 +5632,9 @@ private:
   void send_handle_tc_failed_scans(Signal *signal,
                                    NodeId nodeId,
                                    Uint32 startPtrI);
+  void handleCteNodeFailure(Signal *signal, Uint32 nodeId, Uint32 bucket);
+  void abortCteOnNodeFailure(Signal *signal, JoinAggregationState *state,
+                             Uint32 nodeId);
 
   /* Frag lock checks */
   bool have_frag_scan_access() const;

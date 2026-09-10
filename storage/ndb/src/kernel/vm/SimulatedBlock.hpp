@@ -2408,6 +2408,12 @@ public:
                                       Uint32 cteId);
   static void joinAggIdentityRemove(const Uint32 *transid, Uint32 queryTag,
                                     Uint32 cteId, Uint32 aggStateKey);
+  // Visit published states under their identity partition mutex.
+  // The visitor must not call identity helpers or retain the pointer.
+  // Start at bucket 0; resume at the returned bucket until RNIL.
+  static Uint32 joinAggVisitStates(
+      Uint32 bucket, void (*visitor)(JoinAggregationState *, void *),
+      void *context);
 
   //------------------------------------------------------------------
   // RONDB-1120 P2: waiter-queue parking (plan 2.2).  A consumer

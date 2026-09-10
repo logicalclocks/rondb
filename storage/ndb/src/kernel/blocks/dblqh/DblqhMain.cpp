@@ -1135,6 +1135,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueJoinAggRedistribute(signal, data0);
     return;
   }
+  case ZCONTINUE_CTE_NODE_FAILURE:
+  {
+    jam();
+    handleCteNodeFailure(signal, data0, data1);
+    return;
+  }
   case ZCONTINUE_CTE_REDIST_DRAIN:
   {
     jam();
@@ -17017,18 +17023,9 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
     }
     else if (startPtrI == RNIL)
     {
-      /**
-       * Finished scanning all operations. All scans referencing agg
-       * states owned by the failed DBTC node have received close
-       * requests on this query block. The actual release of agg
-       * states happens later via JOIN_AGG_NODE_FAIL_REP sent from
-       * DBDIH to DblqhProxy after ALL blocks complete node failure
-       * handling — this ensures no thread is still accessing them.
-       */
-      /* Perform block-level ndbd failure handling */
-      Callback cb = { safe_cast(&Dblqh::ndbdFailBlockCleanupCallback),
-                      nodeId };
-      simBlockNodeFailure(signal, nodeId, cb);
+      /* Also wake CTE protocol waits before reporting node-failure
+       * completion. They need not have an ordinary scan record. */
+      handleCteNodeFailure(signal, nodeId, 0);
       return;
     }
     else
@@ -17089,6 +17086,64 @@ Dblqh::handle_tc_failed_scans(Signal *signal,
     }
   }
   send_handle_tc_failed_scans(signal, nodeId, startPtrI);
+}
+
+void Dblqh::handleCteNodeFailure(Signal *signal, Uint32 nodeId,
+                                  Uint32 bucket) {
+  jam();
+  if (!m_is_query_block) {
+    struct Context {
+      Dblqh *block;
+      Signal *signal;
+      Uint32 nodeId;
+    } context = {this, signal, nodeId};
+    const Uint32 next = joinAggVisitStates(
+        bucket,
+        [](JoinAggregationState *state, void *arg) {
+          Context *ctx = static_cast<Context *>(arg);
+          ctx->block->abortCteOnNodeFailure(ctx->signal, state, ctx->nodeId);
+        },
+        &context);
+    if (next != RNIL) {
+      signal->theData[0] = ZCONTINUE_CTE_NODE_FAILURE;
+      signal->theData[1] = nodeId;
+      signal->theData[2] = next;
+      sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+      return;
+    }
+  }
+
+  Callback cb = {safe_cast(&Dblqh::ndbdFailBlockCleanupCallback), nodeId};
+  simBlockNodeFailure(signal, nodeId, cb);
+}
+
+void Dblqh::abortCteOnNodeFailure(Signal *signal,
+                                   JoinAggregationState *state,
+                                   Uint32 nodeId) {
+  if (!state->m_cte_mode || state->m_owner_instance != instance()) {
+    return;
+  }
+  const Uint32 tcNode = refToNode(state->m_senderRef);
+  // Coordinator-death reclamation is handled separately.
+  if (tcNode == nodeId || !getNodeInfo(tcNode).m_connected) {
+    return;
+  }
+  const JoinAggregationState::State phase = state->m_state.load();
+  if (phase != JoinAggregationState::SETUP_COMPLETE &&
+      phase != JoinAggregationState::FINALIZING &&
+      phase != JoinAggregationState::SENDING_RESULTS &&
+      phase != JoinAggregationState::CTE_REDISTRIBUTING) {
+    return;
+  }
+  for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+    if (state->m_cte_node_list[i] == nodeId) {
+      jam();
+      // Every surviving owner processes NODE_FAILREP; no peer broadcast
+      // is needed. COMPLETE may already be pending or arrive later.
+      abortCteRedistribution(signal, state, ZNODEFAIL_BEFORE_COMMIT, false);
+      return;
+    }
+  }
 }
 
 void Dblqh::ndbdFailBlockCleanupCallback(Signal *signal, Uint32 failedNodeId,
@@ -19636,6 +19691,20 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
           ? req->heartbeatScanFragPtrI
           : RNIL;
   state->m_cte_complete_last_hb_time = NDB_TICKS();
+  if (state->m_cte_mode) {
+    // A state published after the failure sweep passed its bucket
+    // must not start waiting on a node already declared failed here.
+    for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+      HostRecordPtr hostPtr;
+      hostPtr.i = state->m_cte_node_list[i];
+      ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
+      if (hostPtr.p->nodestatus == ZNODE_DOWN) {
+        jam();
+        abortCteRedistribution(signal, state, ZNODEFAIL_BEFORE_COMMIT, false);
+        return;
+      }
+    }
+  }
   state->m_state.store(JoinAggregationState::FINALIZING);
 
   /*
@@ -20030,6 +20099,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         if (gb_map != nullptr && gb_map->size() > 1) {
           jam();
           state->m_state.store(JoinAggregationState::ERROR);
+          state->m_cte_complete_reply_sent = true;
           JoinAggCompleteRef *ref =
             (JoinAggCompleteRef *)signal->getDataPtrSend();
           ref->senderRef = reference();
@@ -22662,6 +22732,10 @@ void Dblqh::abortCteRedistribution(Signal *signal,
   if (state->m_cte_complete_senderRef == 0) {
     return;  // COMPLETE_REQ will report the failure when it arrives.
   }
+  if (state->m_cte_complete_reply_sent) {
+    return;
+  }
+  state->m_cte_complete_reply_sent = true;
   JoinAggCompleteRef *ref =
     (JoinAggCompleteRef *)signal->getDataPtrSend();
   ref->senderRef = reference();
@@ -23846,6 +23920,8 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   AGGT(("AGGT(%u) DBLQH CTE_READY key=%u",
         instance(), state->m_key));
   state->m_state.store(JoinAggregationState::CTE_READY);
+  ndbrequire(!state->m_cte_complete_reply_sent);
+  state->m_cte_complete_reply_sent = true;
 
   JoinAggCompleteConf *conf =
     (JoinAggCompleteConf *)signal->getDataPtrSend();

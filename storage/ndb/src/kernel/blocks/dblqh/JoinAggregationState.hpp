@@ -369,6 +369,7 @@ struct JoinAggregationState {
   Uint32 m_redist_queue_count;
 
   // Sender info saved from COMPLETE_REQ for sending COMPLETE_CONF after redistribution
+  bool m_cte_complete_reply_sent;
   Uint32 m_cte_complete_senderRef;
   Uint32 m_cte_complete_senderData;
   Uint32 m_cte_complete_requestId;
@@ -451,6 +452,7 @@ struct JoinAggregationState {
     m_redist_queue_head(nullptr),
     m_redist_queue_tail(nullptr),
     m_redist_queue_count(0),
+    m_cte_complete_reply_sent(false),
     m_cte_complete_senderRef(0),
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),

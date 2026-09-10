@@ -2585,6 +2585,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
            sizeof(state->m_cte_remote_ownerInstances));
     state->m_cte_waiting_conf = false;
     state->m_cte_redist_batch_bytes = 0;
+    /* ArrayPool::seize skips the constructor: a stale true here would
+     * suppress the COMPLETE_REF in abortCteRedistribution and trip the
+     * ndbrequire in checkCteReady for the next occupant of this slot. */
+    state->m_cte_complete_reply_sent = false;
     state->m_cte_complete_senderRef = 0;
     state->m_cte_complete_senderData = 0;
     state->m_cte_complete_requestId = 0;
