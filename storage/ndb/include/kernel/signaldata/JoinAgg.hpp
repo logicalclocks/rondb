@@ -156,8 +156,8 @@ struct JoinAggReleaseReq {
   static constexpr Uint32 SignalLength = 7;
   Uint32 senderRef;
   Uint32 senderData;
-  Uint32 requestId;
-  Uint32 transid[2];
+  Uint32 requestId;  // Original JOIN_AGG_SETUP_REQ requestId
+  Uint32 transid[2]; // Zero for stale-SETUP reclaim; requestId still checked
   Uint32 aggStateKey;
   Uint32 noReply;  // If set, DBLQH will not send RELEASE_CONF
 };

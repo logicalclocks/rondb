@@ -30811,7 +30811,7 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
             (JoinAggReleaseReq *)signal->getDataPtrSend();
         req->senderRef = reference();
         req->senderData = scanPtr.i;
-        req->requestId = scanPtr.p->scanApiRec;
+        req->requestId = scanPtr.p->m_joinAggSetupRequestId;
         req->transid[0] = apiPtr.p->transid[0];
         req->transid[1] = apiPtr.p->transid[1];
         req->aggStateKey = aggNodes->m_aggStateKeys[nodeId];
@@ -30861,7 +30861,7 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
               (JoinAggReleaseReq *)signal->getDataPtrSend();
           req->senderRef = reference();
           req->senderData = scanPtr.i;
-          req->requestId = scanPtr.p->scanApiRec;
+          req->requestId = scanPtr.p->m_joinAggSetupRequestId;
           req->transid[0] = apiPtr.p->transid[0];
           req->transid[1] = apiPtr.p->transid[1];
           req->aggStateKey = cteNodes->m_aggStateKeys[nodeId];
@@ -30962,7 +30962,7 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
         (JoinAggReleaseConf *)signal->getDataPtrSend();
     conf->senderRef = failedRef;
     conf->senderData = scanptr.i;
-    conf->requestId = scanptr.p->scanApiRec;
+    conf->requestId = scanptr.p->m_joinAggSetupRequestId;
     sendSignal(reference(), GSN_JOIN_AGG_RELEASE_CONF, signal,
                JoinAggReleaseConf::SignalLength, JBB);
   }
@@ -31896,7 +31896,8 @@ void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
   scanptr.i = conf->senderData;
   if (unlikely(!scanRecordPool.getValidPtr(scanptr) ||
                scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_RELEASE ||
-               scanptr.p->m_joinAggNodes == nullptr)) {
+               scanptr.p->m_joinAggNodes == nullptr ||
+               conf->requestId != scanptr.p->m_joinAggSetupRequestId)) {
     jam();
     return;
   }
@@ -32813,7 +32814,7 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
         (JoinAggReleaseReq *)signal->getDataPtrSend();
     req->senderRef = reference();
     req->senderData = scanptr.i;
-    req->requestId = scanptr.p->scanApiRec;
+    req->requestId = scanptr.p->m_joinAggSetupRequestId;
     req->transid[0] = apiPtr.p->transid[0];
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];

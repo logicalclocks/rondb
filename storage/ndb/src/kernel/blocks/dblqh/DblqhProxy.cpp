@@ -3352,6 +3352,18 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   CRASH_INSERTION(5123);  // Crash node on RELEASE_REQ for join agg NF testing
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state != nullptr &&
+      (state->m_requestId != requestId ||
+       (senderRef != reference() && state->m_senderRef != senderRef) ||
+       ((req->transid[0] != 0 || req->transid[1] != 0) &&
+        (state->m_transid[0] != req->transid[0] ||
+         state->m_transid[1] != req->transid[1])))) {
+    jam();
+    // The pool slot belongs to another query. Stale-SETUP reclaim has
+    // no transaction id, but must still match coordinator and SETUP id.
+    // Treat a mismatch as already released and acknowledge if requested.
+    state = nullptr;
+  }
   if (state != nullptr && state->m_release_started) {
     jam();
     // Teardown already owns this record. Still send CONF if requested,
@@ -3494,9 +3506,10 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
           (JoinAggReleaseReq *)signal->getDataPtrSend();
       req->senderRef = reference();
       req->senderData = 0;
-      req->requestId = 0;
-      req->transid[0] = 0;
-      req->transid[1] = 0;
+      // Snapshot the identity before queueing this local release.
+      req->requestId = state->m_requestId;
+      req->transid[0] = state->m_transid[0];
+      req->transid[1] = state->m_transid[1];
       req->aggStateKey = k;
       req->noReply = 1;
       sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
