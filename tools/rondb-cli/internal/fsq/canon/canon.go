@@ -108,6 +108,17 @@ func canonical(c exec.Cell, k kind) string {
 	return c.Text
 }
 
+// CellsEqual compares two cells under the canonicalization of the MySQL type
+// name dbType (DECIMAL exact, DOUBLE/FLOAT with relative tolerance tol,
+// TIMESTAMP with trailing fractional zeros ignored, else exact text);
+// tol 0 selects the default 1e-9.  Exported for the vector oracle.
+func CellsEqual(a, b exec.Cell, dbType string, tol float64) bool {
+	if tol == 0 {
+		tol = 1e-9
+	}
+	return cellsEqual(a, b, kindOf(dbType), tol)
+}
+
 func cellsEqual(a, b exec.Cell, k kind, tol float64) bool {
 	if a.Null || b.Null {
 		return a.Null && b.Null

@@ -142,9 +142,9 @@ type builder struct {
 	errs []error
 }
 
-// Enumerate returns the case matrix for the configuration, deterministic
-// for a given scale factor.
-func Enumerate(cfg Config) ([]Case, error) {
+// newBuilder prepares the feature groups (ids assigned, online database
+// set) and the fractional-column set of the data set.
+func newBuilder(cfg Config) *builder {
 	if cfg.Now.IsZero() {
 		cfg.Now = data.FSNow
 	}
@@ -163,6 +163,13 @@ func Enumerate(cfg Config) ([]Case, error) {
 			}
 		}
 	}
+	return b
+}
+
+// Enumerate returns the case matrix for the configuration, deterministic
+// for a given scale factor.
+func Enumerate(cfg Config) ([]Case, error) {
+	b := newBuilder(cfg)
 	b.aggregateCases()
 	b.filterCases()
 	b.collectCases()
@@ -559,11 +566,7 @@ func (b *builder) snowflakeStatement(depth int, c int64) string {
 
 func (b *builder) compositeAndStringCases() {
 	hist := b.fg(data.TBalanceHist)
-	agg := spec.AggSpec{{Key: "*", Fns: []string{"count"}}, {Key: "delta", Fns: []string{"sum", "min", "max"}}}
-	histView := func(name string, window *int64, batch bool) *spec.View {
-		j := spec.Join{Index: 0, Parent: 0, FG: hist.ID, Type: spec.JoinInner, Prefix: strp("b_"), Aggregate: agg, Window: window, Features: aggOutputs(agg)}
-		return b.view(name, []spec.FeatureGroup{hist}, []spec.Join{j}, nil, spec.Options{Batch: batch})
-	}
+	histView := b.histView
 	for _, k := range []struct {
 		a    int64
 		cur  string
@@ -576,10 +579,7 @@ func (b *builder) compositeAndStringCases() {
 		histView("s9w", i64p(90*86400), false), keyVals{"account_id": b.keyArg(hist, "account_id", ints(4)), "currency": b.keyArg(hist, "currency", []interface{}{"EUR"})}, false, nil, true)
 
 	str := b.fg(data.TTxStr)
-	strView := func(name string, batch bool) *spec.View {
-		j := spec.Join{Index: 0, Parent: 0, FG: str.ID, Type: spec.JoinInner, Prefix: strp("s_"), Aggregate: txAgg, Features: aggOutputs(txAgg)}
-		return b.view(name, []spec.FeatureGroup{str}, []spec.Join{j}, nil, spec.Options{Batch: batch})
-	}
+	strView := b.strView
 	for _, k := range []struct {
 		key  string
 		note string

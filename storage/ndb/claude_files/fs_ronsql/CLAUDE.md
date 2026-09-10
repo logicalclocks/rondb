@@ -29,6 +29,9 @@ Hopsworks Feature Store online-serving builder generates.
 - `phase_e3.md` — E3: binder, engines (RDRS JSON / MySQL / ronsql_cli),
   typed canonicalizer, case matrix + expectation table, `.fs_verify`,
   generated `ronsql_fs_templates.test`.
+- `phase_e4.md` — E4: vector oracle (`fsq/vector` folds + policy compare),
+  spec catalog with seeded keys and data-model expectations, `.fs_verify --vectors`,
+  `t/ronsql_fs_vectors.test`
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

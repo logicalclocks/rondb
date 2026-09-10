@@ -246,7 +246,11 @@ func firstLine(s string) string {
 //	[--threads N] [--timeout 30s] [--tolerance 1e-9] [--now TS] [--include-hazards]
 //	[--allow-reject] [--relaxed-headers] [--dump-dir P] [--json P] [--quiet]
 func (s *Shell) runFSVerify(args []string) error {
-	o, err := parseVerifyOpts(parseFSArgs(args))
+	a := parseFSArgs(args)
+	if a.has("vectors") {
+		return s.runFSVectors(a)
+	}
+	o, err := parseVerifyOpts(a)
 	if err != nil {
 		return err
 	}

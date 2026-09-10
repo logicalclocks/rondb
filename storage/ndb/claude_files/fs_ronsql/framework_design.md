@@ -355,6 +355,17 @@ Folds (from the DTO comments and the ported code):
   equal and the report lists them as `LEFT-MISS` informational lines.
 - point read: verbatim.
 
+E4 implementation notes (`phase_e4.md` §2): vector feature names are
+the feature-view names (prefix applied to RonSQL aggregate outputs after
+the fetch, MySQL aliases as emitted, `<prefix><collectFeatureName>` for
+the array with unprefixed struct fields inside); batch rows are keyed by
+the unprefixed parameter columns on RonSQL and the prefixed aliases on
+MySQL; snowflake root features (served by the pk-read path, in no
+template) are reported as `not-served`, not compared; the compared set
+is the union of template-served features plus declared outputs; the
+data-model expectations of `cases/expect.go` check the MySQL fold
+independently (`EXPECT-FAIL`), restricted to the modelled features.
+
 ---
 
 ## 9. Case matrix (`fsq/cases`)

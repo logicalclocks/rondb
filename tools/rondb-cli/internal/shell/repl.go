@@ -4280,6 +4280,7 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .fs_schema [--db D] [--hash-twin]    Print the Hopsworks online DDL of the feature-store tables
     .fs_show [--case ID|--shape S]       Print the bound statements of the case matrix (Hopsworks shapes S1-S10, edge cases)
     .fs_verify [--shape S1,S3|--case ID] Run the case matrix on MySQL and RonSQL (RDRS) and compare typed results
+    .fs_verify --vectors [--seed N --count M] Vector-level (L2) comparison of every serving spec over sampled entity keys
                                          (--db test --sf 0.01 --threads 4 --timeout 30s --include-hazards --allow-reject --json P --dump-dir P)
     .fs_emit_mtr <dir> --cases           Also write suite/ronsql_fs/t/ronsql_fs_templates.test from the case matrix
 

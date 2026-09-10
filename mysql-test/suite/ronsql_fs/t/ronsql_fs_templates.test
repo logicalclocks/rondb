@@ -6,6 +6,8 @@
 # mysql client and RonSQL via suite/ronsql/include/ronsql_compare.inc.
 # Known engine rejections are asserted through ronsql_cli; known wrong
 # results are recorded non-strictly; hazards (crashes) are commented out.
+# Statements with AVG or DECIMAL/DOUBLE/FLOAT values compare with trailing
+# fractional zeros stripped on both sides (formatting findings F2/F3).
 # Findings: suite/ronsql_fs/findings/smoke.md.
 
 --source include/have_ndb.inc
@@ -78,6 +80,8 @@ SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS 
 SELECT AVG(`amount`) AS `amount_avg`, SUM(`amount`) AS `amount_sum`, AVG(`score`) AS `score_avg`, SUM(`score`) AS `score_sum`, MIN(`score`) AS `score_min`, MAX(`score`) AS `score_max` FROM `transactions_1` WHERE `customer_id` = 31;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -90,6 +94,8 @@ SELECT AVG(`amount`) AS `amount_avg`, SUM(`amount`) AS `amount_sum`, AVG(`score`
 SELECT SUM(`amount_dec`) AS `amount_dec_sum`, MIN(`amount_dec`) AS `amount_dec_min`, MAX(`amount_dec`) AS `amount_dec_max` FROM `transactions_1` WHERE `customer_id` = 31;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -819,6 +825,8 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`
 SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -855,6 +863,8 @@ SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE
 SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -867,6 +877,8 @@ SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHE
 SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -879,6 +891,8 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MA
 SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -892,6 +906,8 @@ SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) A
 EOF
 # known wrong result (F4): FLOAT display precision — recorded, not asserted
 --let $strict_diff=
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -916,6 +932,8 @@ SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FRO
 SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`f_exact`) AS `fe_sum` FROM `edge_big_1` WHERE `entity_id` = 1;
 EOF
 --let $strict_diff=yes
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
@@ -941,6 +959,8 @@ SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1
 EOF
 # known wrong result (F5): DECIMAL precision loss — recorded, not asserted
 --let $strict_diff=
+# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
+--let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result

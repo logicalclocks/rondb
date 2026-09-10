@@ -68,7 +68,22 @@ func TestTemplatesGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := RenderTemplatesTest(cs, "test"); got != string(want) {
-		t.Fatal("checked-in ronsql_fs_templates.test differs from the case renderer; regenerate with .fs_emit_mtr --cases")
+	got := RenderTemplatesTest(cs, "test")
+	if got == string(want) {
+		return
 	}
+	gotLines, wantLines := strings.Split(got, "\n"), strings.Split(string(want), "\n")
+	for i := 0; i < len(gotLines) || i < len(wantLines); i++ {
+		var g, w string
+		if i < len(gotLines) {
+			g = gotLines[i]
+		}
+		if i < len(wantLines) {
+			w = wantLines[i]
+		}
+		if g != w {
+			t.Fatalf("checked-in ronsql_fs_templates.test differs from the case renderer at line %d; regenerate with .fs_emit_mtr --cases\n  file:     %s\n  renderer: %s", i+1, w, g)
+		}
+	}
+	t.Fatalf("checked-in ronsql_fs_templates.test differs from the case renderer (%d vs %d lines); regenerate with .fs_emit_mtr --cases", len(wantLines), len(gotLines))
 }

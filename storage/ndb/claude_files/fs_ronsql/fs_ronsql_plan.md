@@ -529,7 +529,7 @@ Exit: all supported shapes green under `$strict_diff=yes`; unsupported
 ones recorded as rejection-asserts or `# NEXT-PHASE` probes with a
 findings entry.
 
-### E4 — L2 vector-level equivalence
+### E4 — L2 vector-level equivalence — DONE 2026-09-10 (22 specs green, `ronsql_fs_vectors` recorded; see `phase_e4.md`)
 
 Scope: `fsq/vector`: client-side folds for both paths (collect sort +
 fold to array, snowflake overlay per chain with LEFT miss semantics,
