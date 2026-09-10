@@ -2509,6 +2509,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_max_batch_rows = 0;
   state->m_state.store(JoinAggregationState::IDLE);
   state->m_error_code = 0;
+  state->m_release_started = false;
   state->m_agg_interpreter = nullptr;
   state->m_per_thread_interpreters = nullptr;
   state->m_num_leaves = 0;
@@ -3351,8 +3352,15 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   CRASH_INSERTION(5123);  // Crash node on RELEASE_REQ for join agg NF testing
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state != nullptr && state->m_release_started) {
+    jam();
+    // Teardown already owns this record. Still send CONF if requested,
+    // but do not start another continuation chain for the same key.
+    state = nullptr;
+  }
   if (state != nullptr) {
     jam();
+    state->m_release_started = true;
     /* RONDB-1120 P0: unregister the identity at RELEASE processing
      * time — NOT at the end of the CONTINUEB-sliced teardown — so a
      * back-to-back query on the same transaction can re-register
@@ -3468,6 +3476,8 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
     JoinAggregationState *state = getJoinAggState(k);
     if (state == nullptr) continue;
     if (refToNode(state->m_senderRef) != failedNodeId) continue;
+    // An earlier RELEASE already owns teardown, including pool release.
+    if (state->m_release_started) continue;
     const JoinAggregationState::State aggState = state->m_state.load();
     /* CTE owners mark NODE_FAIL_ABORT in their node-failure sweep,
      * including paused redistribution and ready states. Other aggregation

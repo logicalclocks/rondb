@@ -396,6 +396,9 @@ struct JoinAggregationState {
   std::atomic<State> m_state;
   Uint32 m_error_code;           // Error code if m_state == ERROR
 
+  // DblqhProxy only: one teardown chain per allocated pool record.
+  bool m_release_started;
+
   //------------------------------------------------------------------
   // Key-based access — pool index assigned at seize time
   //------------------------------------------------------------------
@@ -464,6 +467,7 @@ struct JoinAggregationState {
     m_cteScan_iterRaw(nullptr),
     m_state(IDLE),
     m_error_code(0),
+    m_release_started(false),
     m_key(RNIL),
     m_creation_time(0),
     m_last_activity_time(0)
