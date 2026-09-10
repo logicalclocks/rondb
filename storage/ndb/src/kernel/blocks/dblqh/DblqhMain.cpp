@@ -9414,6 +9414,9 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
       ref->senderNodeId = getOwnNodeId();
       ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
       ref->senderAggStateKey = req->senderAggStateKey;
+      ref->identWord = req->identWord;
+      ref->transid[0] = req->transid[0];
+      ref->transid[1] = req->transid[1];
       sendSignal(rec->m_senderRef, GSN_JOIN_AGG_REDISTRIBUTE_REF, signal,
                  JoinAggRedistributeRef::SignalLength, JBB);
     } else if (rec->m_gsn == GSN_JOIN_AGG_FINAL_REP) {
@@ -23310,10 +23313,15 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     jam();
     return;
   }
+  ndbrequire(signal->getLength() >= JoinAggRedistributeReq::SignalLength);
 
   const JoinAggRedistributeReq *req =
     (const JoinAggRedistributeReq *)signal->getDataPtr();
   Uint32 aggStateKey = req->aggStateKey;
+  /* Capture the identity words now: the REF constructions below write
+   * through getDataPtrSend(), which aliases this request buffer. */
+  const Uint32 reqIdentWord = req->identWord;
+  const Uint32 reqTransid[2] = { req->transid[0], req->transid[1] };
   /* D25: echo the sender's own state key back in the CONF/REF so the sender
    * resumes the correct state (it looks the state up by this key, not ours). */
   const Uint32 senderAggStateKey = req->senderAggStateKey;
@@ -23325,10 +23333,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
    * owner-forward the signal-header sender is the forwarding
    * instance, not the source owner LDM. */
   const BlockReference replyRef =
-      (signal->getLength() >= JoinAggRedistributeReq::SignalLength &&
-       req->senderRef != 0)
-          ? req->senderRef
-          : signal->getSendersBlockRef();
+      (req->senderRef != 0) ? req->senderRef : signal->getSendersBlockRef();
 
   const Uint32 senderNodeId = refToNode(replyRef);
   ndbrequire(senderNodeId < ABS_MAX_NDB_NODES);
@@ -23339,9 +23344,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
      * destination's key was unknown when DBTC built the COMPLETE keys
      * section (its SETUP_CONF still in flight).  Resolve node-locally;
      * park on a miss (bounded by the RI_NEED_CONF flow control). */
-    const Uint32 identWord =
-        (signal->getLength() >= JoinAggRedistributeReq::SignalLength)
-            ? req->identWord : RNIL;
+    const Uint32 identWord = reqIdentWord;
     if (likely(identWord != RNIL)) {
       const Uint32 transid[2] = { req->transid[0], req->transid[1] };
       const Uint32 base = joinAggIdentityLookup(
@@ -23376,6 +23379,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
           ref->senderNodeId = getOwnNodeId();
           ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
           ref->senderAggStateKey = senderAggStateKey;
+          ref->identWord = reqIdentWord;
+          ref->transid[0] = reqTransid[0];
+          ref->transid[1] = reqTransid[1];
           sendSignal(replyRef,
                      GSN_JOIN_AGG_REDISTRIBUTE_REF, signal,
                      JoinAggRedistributeRef::SignalLength, JBB);
@@ -23389,11 +23395,31 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
 
   JoinAggregationState *state =
       (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
-  if (unlikely(state == nullptr)) {
+  // A surviving peer may send after our local coordinator-failure cleanup.
+  // Validate the identity even for a known key, before owner forwarding.
+  if (unlikely(state == nullptr ||
+               state->m_transid[0] != reqTransid[0] ||
+               state->m_transid[1] != reqTransid[1] ||
+               JoinAggregationState::packIdentWord(
+                   state->m_queryTag, state->m_cte_index, 0) != reqIdentWord)) {
     jam();
+    // The state is gone or the pool slot belongs to another query. Answer
+    // with a REF so a live sender fails fast instead of waiting for a CONF;
+    // the sender validates its own state against the echoed identity.
     SectionHandle handle(this, signal);
     releaseSections(handle);
-    return;  /* State gone — query already aborted */
+    JoinAggRedistributeRef *ref =
+      (JoinAggRedistributeRef *)signal->getDataPtrSend();
+    ref->aggStateKey = aggStateKey;
+    ref->senderNodeId = getOwnNodeId();
+    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->senderAggStateKey = senderAggStateKey;
+    ref->identWord = reqIdentWord;
+    ref->transid[0] = reqTransid[0];
+    ref->transid[1] = reqTransid[1];
+    sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
+               signal, JoinAggRedistributeRef::SignalLength, JBB);
+    return;
   }
 
   /* Phase L (E.1): senders address REDISTRIBUTE_REQ to the
@@ -23460,6 +23486,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     ref->senderNodeId = getOwnNodeId();
     ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
     ref->senderAggStateKey = senderAggStateKey;  // D25
+    ref->identWord = reqIdentWord;
+    ref->transid[0] = reqTransid[0];
+    ref->transid[1] = reqTransid[1];
     sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
@@ -23488,6 +23517,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       ref->senderNodeId = getOwnNodeId();
       ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
       ref->senderAggStateKey = senderAggStateKey;  // D25
+      ref->identWord = reqIdentWord;
+      ref->transid[0] = reqTransid[0];
+      ref->transid[1] = reqTransid[1];
       sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
                  signal, JoinAggRedistributeRef::SignalLength, JBB);
       return;
@@ -23529,6 +23561,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     ref->senderNodeId = getOwnNodeId();
     ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
     ref->senderAggStateKey = senderAggStateKey;  // D25
+    ref->identWord = reqIdentWord;
+    ref->transid[0] = reqTransid[0];
+    ref->transid[1] = reqTransid[1];
     sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
@@ -23575,6 +23610,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
  */
 void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
   jamEntry();
+  ndbrequire(signal->getLength() >= JoinAggRedistributeRef::SignalLength);
   const JoinAggRedistributeRef *ref =
     (const JoinAggRedistributeRef *)signal->getDataPtr();
   /* D25: abort the SENDER's state (echoed back), not ref->aggStateKey which is
@@ -23582,7 +23618,13 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
   const Uint32 aggStateKey = ref->senderAggStateKey;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (unlikely(state == nullptr)) {
+  /* The key addresses our pool slot, which may have been recycled since
+   * the REQ went out. Only abort the state the REQ was sent for. */
+  if (unlikely(state == nullptr ||
+               state->m_transid[0] != ref->transid[0] ||
+               state->m_transid[1] != ref->transid[1] ||
+               JoinAggregationState::packIdentWord(
+                   state->m_queryTag, state->m_cte_index, 0) != ref->identWord)) {
     jam();
     return;
   }
@@ -23777,7 +23819,13 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
 
   JoinAggregationState *state =
       (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
-  if (unlikely(state == nullptr)) {
+  // FINAL_REP from a surviving peer must not finalize or abort a new
+  // occupant of the old query's pool slot, including after forwarding.
+  if (unlikely(state == nullptr ||
+               state->m_transid[0] != rep->transid[0] ||
+               state->m_transid[1] != rep->transid[1] ||
+               JoinAggregationState::packIdentWord(
+                   state->m_queryTag, state->m_cte_index, 0) != rep->identWord)) {
     jam();
     return;
   }

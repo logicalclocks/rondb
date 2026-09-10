@@ -295,12 +295,15 @@ struct JoinAggRedistributeConf {
  * redistribution and send COMPLETE_REF.
  */
 struct JoinAggRedistributeRef {
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 7;
   Uint32 aggStateKey;
   Uint32 senderNodeId;
   Uint32 errorCode;
   Uint32 senderAggStateKey; // Echoed from the REQ; the redistributing sender's
                             // own state to resume/abort (D25 fix).
+  Uint32 identWord;         // Echoed from the REQ: the sender validates the
+  Uint32 transid[2];        // state behind senderAggStateKey against these
+                            // before aborting it (the slot may be recycled).
 };
 
 /**
