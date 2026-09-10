@@ -1194,6 +1194,7 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId,
    * state->m_owner_instance == instance().  Multi-LDM nodes can pick
    * any instance via (aggStateKey % workers) + 1. */
   Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
+  req->identWord = RNIL;  /* keyed form — no identity (RONDB-1120 P4) */
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 
@@ -3650,6 +3651,7 @@ testCompleteRefError(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   req->maxBatchRows = 100;
 
   Uint16 recBlock = numberToBlock(DBLQH, 1);
+  req->identWord = RNIL;  /* keyed form — no identity (RONDB-1120 P4) */
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 

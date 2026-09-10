@@ -317,6 +317,11 @@ struct JoinAggregationState {
   // never sends to remote DBLQHs.
   Uint32 m_cte_remote_ownerInstances[ABS_MAX_NDB_NODES];
 
+  // Owner-LDM counters: sent per destination, applied/expected per source.
+  // Expected counts arrive in FINAL_REP; queued rows count only after merge.
+  Uint64 m_cte_redist_sent[ABS_MAX_NDB_NODES];
+  Uint64 m_cte_redist_applied[ABS_MAX_NDB_NODES];
+  Uint64 m_cte_redist_expected[ABS_MAX_NDB_NODES];
   bool m_cte_redistribution_done;           // This node finished sending
   bool m_cte_scalar_shipped;                // Scalar (no GROUP BY) CTE: this
                                             // node shipped its local
@@ -355,7 +360,9 @@ struct JoinAggregationState {
     RedistQueueEntry *next;
     Uint32 keyLen;        // Key length in bytes
     Uint32 valueLen;      // Accumulator data length in bytes
-    Uint32 data[1];       // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
+    Uint32 senderNodeId;  // Credit this source only after merging the entry
+    // Variable: key_data followed by value_data, each padded to whole words.
+    alignas(8) Uint32 data[1];
   };
   RedistQueueEntry *m_redist_queue_head;
   RedistQueueEntry *m_redist_queue_tail;

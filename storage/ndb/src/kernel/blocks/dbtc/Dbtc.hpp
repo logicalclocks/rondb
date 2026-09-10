@@ -2168,7 +2168,8 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_aggKeysSectionPtrI;
     Uint32 m_aggReceiverId;  // API-side NdbReceiver ID for agg results
     Uint32 m_aggResultRows;  // Total main aggregate rows reported by DBLQH
-    Uint32 m_aggNodesOutstanding;
+    Uint32 m_aggReleaseOutstanding;  // Waited RELEASE replies only
+    Uint32 m_joinAggSetupRequestId;  // Full sequence echoed by SETUP replies
     Uint32 m_joinAggQueryTag;      // Identity tag for this query's SETUPs
                                    // (sequence, NOT scanptr.i)
     bool m_joinAgg;
@@ -2200,7 +2201,8 @@ class Dbtc : public SimulatedBlock {
      */
     struct JoinAggNodeState {
       NdbNodeBitmask m_aggNodes;
-      NdbNodeBitmask m_aggNodesPending;
+      NdbNodeBitmask m_setupNodesPending;
+      NdbNodeBitmask m_releaseNodesPending;
       Uint32 *m_aggOwnerInstances;  // Points into tail buffer:
                                     //   &m_aggStateKeys[maxNodes]
       Uint32 m_aggStateKeys[];  // Flexible array member, sized at allocation
@@ -2232,17 +2234,24 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_ctesReadyCount;        // popcount of m_cteReadyMask
     CteInfo *m_cteInfos;            // nullptr when m_numCtes == 0
     JoinAggNodeState **m_cteAggNodeState;  // nullptr when m_numCtes == 0
-    Uint32 m_cteSetupOutstanding;    // SETUP_CONFs still pending for CTEs
+    Uint32 m_aggSetupOutstanding;    // SETUP replies for main + all CTEs
+    enum JoinAggSetupState {
+      AGG_SETUP_NOT_STARTED,
+      AGG_SETUP_IN_FLIGHT,
+      AGG_SETUP_DONE,
+      AGG_SETUP_CANCELLED
+    } m_aggSetupState;
 
-    /* RONDB-1120 P2c (H2, joinagg_setup_overlap_plan.md): execution
-     * overlaps the SETUP round, so a COMPLETE boundary (all root
-     * fragments done / all workers reported a CTE's local scans done)
-     * can be reached while SETUP_CONFs are still in flight.  COMPLETE
-     * addressing needs the CONF-returned keys + owner instances, so
-     * the trigger is recorded here and flushed by the SETUP handler
-     * when the last CONF arrives (joinAggSetupRoundDone). */
-    bool m_aggMainCompleteDeferred;
-    Uint64 m_cteCompleteDeferredMask;  // bit c = CTE c's redistribute deferred
+    /* RONDB-1120 P4 (H2 remnant, joinagg_setup_overlap_plan.md): the
+     * COMPLETE boundaries no longer wait for SETUP_CONFs (per-node
+     * identity-addressed hybrid), but the READY transition still does
+     * — the P2b key/owner carriers built at READY / START_MAIN need
+     * every CONF.  cteMarkReady defers here; joinAggSetupRoundDone
+     * replays the deferred bits when the last CONF arrives.  Trips
+     * only under ERROR_INSERT / extreme starvation: by
+     * redistribute-CONF time the SETUP CONFs have virtually always
+     * arrived. */
+    Uint64 m_cteReadyDeferredMask;  // bit c = cteMarkReady(c) deferred
 
     // CTE COMPLETE coordination (Step 3)
     CteScanFragHandle_list::Head m_cteScanFragHandles;
@@ -2720,14 +2729,27 @@ class Dbtc : public SimulatedBlock {
    * carriers deliver the real keys.  Returns false on alloc failure
    * (scan aborted here). */
   bool buildAggKeysSection(Signal *, ScanRecordPtr);
-  /* True while JOIN_AGG_SETUP_CONF/REFs are still in flight. */
+  /* Cancelled SETUP replies are cleanup only and cannot hold up close. */
   bool joinAggSetupResponsesOutstanding(const ScanRecord *scanP) const {
-    return (scanP->m_aggNodesOutstanding + scanP->m_cteSetupOutstanding) > 0;
+    return scanP->m_aggSetupState == ScanRecord::AGG_SETUP_IN_FLIGHT &&
+           scanP->m_aggSetupOutstanding != 0;
   }
-  /* Shared completion tail for the SETUP round (CONF + REF handlers):
-   * resolve a recorded failure (running scans via scanError, gated
-   * scans via the release/abort round) or flush the H2-deferred
-   * COMPLETE triggers. */
+  void cancelJoinAggSetup(ScanRecord *scanP) {
+    if (scanP->m_joinAgg) {
+      scanP->m_aggSetupState = ScanRecord::AGG_SETUP_CANCELLED;
+      scanP->m_cteReadyDeferredMask = 0;
+    }
+  }
+  void recordJoinAggError(ScanRecord *scanP, Uint32 errorCode) {
+    scanP->m_aggPhaseFailed = true;
+    if (scanP->m_aggErrorCode == 0) {
+      scanP->m_aggErrorCode = errorCode;
+    }
+  }
+  bool joinAggCompleteResponsesOutstanding(ScanRecordPtr);
+  void tryAbortJoinAgg(Signal *, ScanRecordPtr);
+  /* Finish SETUP independently of scanState; replay deferred READY
+   * transitions on success, or abort after active COMPLETE work drains. */
   void joinAggSetupRoundDone(Signal *, ScanRecordPtr);
   /* RONDB-1120 P2c: a SETUP_CONF dropped as stale announces a state
    * DBTC will never release through the scan (its key was unknown at
@@ -3259,8 +3281,9 @@ class Dbtc : public SimulatedBlock {
 
   BlockReference cndbcntrblockref;
   BlockInstance cspjInstanceRR;  // SPJ instance round-robin counter
-  /* RONDB-1120 P2c hardening: per-instance sequence for the JoinAgg
-   * identity queryTag (16-bit wrapping — the identWord packs 16 bits).
+  /* Per-instance 32-bit SETUP request sequence. The identity queryTag
+   * uses its low 16 bits; SETUP replies echo the full request sequence
+   * so a delayed reply cannot attach to a recently reused scan slot.
    * scanPtr.i recycles immediately and RELEASE is fire-and-forget, so
    * back-to-back scans in one transaction could alias a stale identity
    * entry; the sequence makes that impossible within any realistic

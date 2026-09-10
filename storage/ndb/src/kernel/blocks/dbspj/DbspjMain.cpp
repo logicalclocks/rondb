@@ -3664,9 +3664,11 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
   /**
    * CTE phase: current phase's CTE scans completed on this DBSPJ instance.
    * Report to DBTC and wait for CTE_PHASE_START_REQ or CTE_START_MAIN_REQ.
-   * Do NOT proceed with normal batch completion.
+   * Aborting requests must reach normal completion below so they
+   * reply to TC and release their workers instead of waiting for READY.
    */
-  if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
+  if ((requestPtr.p->m_bits & Request::RT_CTE_PHASE) != 0 &&
+      (requestPtr.p->m_state & Request::RS_ABORTING) == 0) {
     jam();
     /**
      * DAG scheduler (cte_dag_scheduler_plan.md): this is a request
@@ -8681,8 +8683,13 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
   if (unlikely(!m_scan_request_hash.find(requestPtr, key))) {
     jam();
     releaseSections(handle);
-    ndbrequire(false);
-    return;
+    return;  // Worker may have been released by an earlier abort.
+  }
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0 ||
+      requestPtr.p->m_state == Request::RS_ABORTED) {
+    jam();
+    releaseSections(handle);
+    return;  // Late READY must not restart an aborting worker.
   }
 
   /* RONDB-1120 P2b: install this CTE's key/owner block before the
@@ -8764,8 +8771,13 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   if (unlikely(!m_scan_request_hash.find(requestPtr, key))) {
     jam();
     releaseSections(handle);
-    ndbrequire(false);
-    return;
+    return;  // Worker may have been released by an earlier abort.
+  }
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0 ||
+      requestPtr.p->m_state == Request::RS_ABORTED) {
+    jam();
+    releaseSections(handle);
+    return;  // Late READY must not restart an aborting worker.
   }
 
   /* RONDB-1120 P2b: install the main + all-CTE key/owner blocks

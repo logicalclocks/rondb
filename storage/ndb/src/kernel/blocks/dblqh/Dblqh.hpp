@@ -3582,7 +3582,7 @@ private:
                           Uint32 aggStateKey);
   void checkCteReady(Signal* signal, JoinAggregationState* state);
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
-                               Uint32 errorCode);
+                               Uint32 errorCode, bool notifyPeers = true);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
@@ -3733,6 +3733,9 @@ private:
       Signal *signal, Uint32 gsn, Uint32 sigLen, Uint32 identWord,
       TcConnectionrecPtr tcConnectptr, Uint32 *keyOut,
       bool keepRecOnResolve, Uint32 *parkRecIOut);
+  SimulatedBlock::JoinAggResolveOrParkResult joinAggResolveOrParkGeneric(
+      Signal *signal, Uint32 gsn, const Uint32 *transid, Uint32 identWord,
+      Uint32 *keyOut);
   void joinAggParkSweep(Signal *signal);
   void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
   Uint32 initScanrec(const class ScanFragReq *,

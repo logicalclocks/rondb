@@ -1,9 +1,9 @@
 # RONDB-1120: overlapping JOIN_AGG_SETUP with query execution
 
-**Status: P0 + P1 + P2a + P2b + P2c + queryTag hardening + P3
-IMPLEMENTED (September 2026; P2c validated — block suites + full
-ronsql regression + parallel testCteDbtc repro green; hardening + P3
-pending user build + regression; benchmarks pending).  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
+**Status: P0 + P1 + P2a + P2b + P2c + queryTag hardening + P3 + P4
+IMPLEMENTED (September 2026; through P3 validated — block suites +
+full ronsql regression + parallel testCteDbtc repro green; P4 pending
+user build + regression + fs_point/fs_floor re-measurement).  Idea: send JOIN_AGG_SETUP_REQ to the nodes and start query
 execution immediately, letting LQHKEYREQ / SCAN_FRAGREQ (and the CTE
 probe/scan signals) find the JoinAggregationState by identity instead
 of by the pool keys returned in SETUP_CONF.**
@@ -19,6 +19,59 @@ DBSPJ's post-READY needs (CTE probe keys / owners riding the per-CTE
 READY broadcast + CTE_START_MAIN_REQ, dual with the section keys for
 verification); **P2c** = flip the gate + the H2 COMPLETE-boundary
 straggler wait + ERROR_INSERTs + benchmarks.
+
+P4 outcome notes (identity-addressed COMPLETE plane — the fs_point
+win):
+- Motivation: P2c removed the SETUP round from in FRONT of the scan,
+  but H2 kept its END as the COMPLETE barrier — so for point-shaped
+  queries (scan of a few µs) the ~90 µs exchange stayed fully on the
+  critical path and fs_point/fs_floor measured no change.  P4 sends
+  the COMPLETE plane immediately at the completion triggers, per-node
+  HYBRID (maintainer direction): a node whose SETUP_CONF has arrived
+  keeps the exact pre-P4 keyed owner-direct form; only un-CONFed
+  nodes get the identity-addressed form.
+- Identity form = aggStateKey RNIL + identWord (+ transid where the
+  signal lacked it), sent to LDM instance 1 on the target node; the
+  receiver resolves node-locally, rewrites the key into the signal,
+  and self-routes to the owner LDM (COMPLETE already had the
+  owner-forward; REDISTRIBUTE_REQ / FINAL_REP's owner ndbasserts are
+  now real forwards).  Signals grown: JoinAggCompleteReq 8→9
+  (identWord), JoinAggRedistributeReq 5→9 (identWord + transid +
+  senderRef — replies must target an explicit reply-to ref, since an
+  owner-forward makes the signal-header sender the forwarding
+  instance), JoinAggFinalRep 2→5 (identWord + transid).
+- Resolve-on-miss parks: shared `joinAggResolveOrParkGeneric` (raw
+  signal, sections moved to the park record; RESOLVED/FAILED hand
+  them back) — the NULL_ROW feed is refactored onto it; COMPLETE /
+  REDISTRIBUTE / FINAL_REP are parked GSNs 4-6.  Bounds: one COMPLETE
+  per state, redistribute bounded by the RI_NEED_CONF flow control,
+  one FINAL_REP per source node.  Sweep answers COMPLETE_REF /
+  REDISTRIBUTE_REF; FINAL_REP has no REF (fire-and-forget — the query
+  dies via the others + DBTC heartbeats).  Park-pool exhaustion
+  (FAILED) REFs immediately (FINAL_REP: loud log).
+- The CTE COMPLETE keys section now legitimately carries
+  [node, RNIL, 0] triples for un-CONFed peers; every
+  m_cte_remote_aggKeys consumer branches: keyed direct send when the
+  entry is real, identity form to instance 1 when RNIL (group +
+  scalar redistribute, FINAL_REP; the debug-only routeCteLookup
+  treats RNIL as local NOT_FOUND).
+- H2 shrinks to a remnant at cteMarkReady: the READY broadcast /
+  START_MAIN still build the P2b key/owner carriers, so the READY
+  transition alone defers on outstanding CONFs
+  (m_cteReadyDeferredMask, replayed by joinAggSetupRoundDone).  By
+  redistribute-CONF time the SETUP CONFs have virtually always
+  arrived — this trips only under ERROR_INSERT / extreme starvation.
+  m_aggMainCompleteDeferred is deleted (the main COMPLETE has no
+  post-CONF key consumer; RELEASE keeps the RNIL-skip + stale-CONF
+  reclaim discipline).
+- ERROR_INSERT 8310 (DBTC): delays ONE SETUP_CONF's processing 20 ms
+  (clear-on-first) — deterministically exercises every identity form
+  + the cteMarkReady remnant without park timing.
+- Watch item: a SETUP_REF completing the round while the main
+  COMPLETE is in flight (WAIT_JOIN_AGG_COMPLETE) takes the gated
+  release/abort arm with COMPLETE replies racing in — the Phase L
+  record-id drop discipline covers the replies, but the interleaving
+  is new; covered by EI 5125+8310 combinations.
 
 P3 outcome notes (feed signals carry the identity word ONLY):
 - The JoinAggIdentityFlag now means "the single JoinAgg variableData

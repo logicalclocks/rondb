@@ -85,12 +85,20 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_TRANSID_AI 1
 #define DEBUG_CTE 1
+#define DEBUG_JOIN_AGG_PARK 1
 #endif
 
 #ifdef DEBUG_CTE
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CTE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_PARK
+#define DEB_JOIN_AGG_PARK(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG_PARK(arglist) do { } while (0)
 #endif
 
 //
@@ -6355,11 +6363,13 @@ static JoinAggIdentityEntry *s_jaiEntries = nullptr;
 static Uint32 s_jaiFreeHead = RNIL;
 static NdbMutex *s_jaiFreeMutex = nullptr;
 
-/* RONDB-1120 P2: park-record pool (parking is rare — the setup wins
- * the per-link FIFO and the consumer path is several hops longer, so
- * a small pool suffices; exhaustion falls back to the consumer's
- * error path).  Free list shares s_jaiFreeMutex with the entries. */
-static constexpr Uint32 JAI_MAX_PARK = 64;
+/* RONDB-1120: each early consumer signal needs its own park record.
+ * A single scan batch can issue more than 64 aggregation lookups
+ * while the proxy is still constructing the state.  Allow bursts
+ * across workers and queries with a bounded pool (~2.1 MiB per node,
+ * excluding the detached sections).  Exhaustion still takes the
+ * consumer's error path.  Free list shares s_jaiFreeMutex. */
+static constexpr Uint32 JAI_MAX_PARK = 16384;
 static SimulatedBlock::JoinAggParkRec *s_jaiParkRecs = nullptr;
 static Uint32 s_jaiParkFreeHead = RNIL;
 
@@ -6532,6 +6542,10 @@ Uint32 SimulatedBlock::joinAggSeizeParkRec() {
     s_jaiParkFreeHead = s_jaiParkRecs[i].m_next;
   }
   NdbMutex_Unlock(s_jaiFreeMutex);
+  if (unlikely(i == RNIL)) {
+    DEB_JOIN_AGG_PARK(("JoinAgg park pool exhausted: capacity=%u",
+                      JAI_MAX_PARK));
+  }
   return i;
 }
 

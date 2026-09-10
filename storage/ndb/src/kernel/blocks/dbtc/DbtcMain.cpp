@@ -33,6 +33,7 @@
 #include <RefConvert.hpp>
 #include <cstring>
 #include "Dbtc.hpp"
+#include "../dblqh/JoinAggregationState.hpp"
 
 #include <signaldata/Abort.hpp>
 #include <signaldata/AbortAll.hpp>
@@ -17498,10 +17499,10 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_hasMainAggProgram = false;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
-  scanptr.p->m_aggNodesOutstanding = 0;
+  scanptr.p->m_aggReleaseOutstanding = 0;
+  scanptr.p->m_joinAggSetupRequestId = RNIL;
   scanptr.p->m_joinAggQueryTag = RNIL;
-  scanptr.p->m_aggMainCompleteDeferred = false;
-  scanptr.p->m_cteCompleteDeferredMask = 0;
+  scanptr.p->m_cteReadyDeferredMask = 0;
   scanptr.p->m_joinAggNodes = nullptr;
   scanptr.p->m_fragsPerWorker = 1;
   if (ScanTabReq::getJoinAggFlag(ri)) {
@@ -17515,7 +17516,8 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_cteStartedMask = 0;
   scanptr.p->m_cteReadyMask = 0;
   scanptr.p->m_ctesReadyCount = 0;
-  scanptr.p->m_cteSetupOutstanding = 0;
+  scanptr.p->m_aggSetupOutstanding = 0;
+  scanptr.p->m_aggSetupState = ScanRecord::AGG_SETUP_NOT_STARTED;
   scanptr.p->m_cteScanReportsExpected = 0;
   scanptr.p->m_cteInfos = nullptr;
   scanptr.p->m_cteAggNodeState = nullptr;
@@ -19057,6 +19059,10 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
 
   ndbrequire(scanP->scanState == ScanRecord::RUNNING ||
              scanP->scanState == ScanRecord::WAIT_CTE_COMPLETE);
+  if (scanP->m_joinAgg) {
+    recordJoinAggError(scanP, errorCode);
+    errorCode = scanP->m_aggErrorCode;
+  }
 
   /**
    * Read the API-fail state before closing: the close can run all the way
@@ -19747,10 +19753,7 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
   if (aggWaitState) {
     if (likely(cteAggResponsesOutstanding(scanPtr))) {
       jam();
-      if (!scanPtr.p->m_aggPhaseFailed) {
-        scanPtr.p->m_aggPhaseFailed = true;
-        scanPtr.p->m_aggErrorCode = ZSCAN_LQH_ERROR;
-      }
+      recordJoinAggError(scanPtr.p, ZSCAN_LQH_ERROR);
       return;
     }
     /**
@@ -19774,11 +19777,12 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
       g_eventLogger->info(
           "(%u)DBTC close_scan_req: closing JoinAgg scanPtr.i=%u in wait "
           "state %u with no outstanding responses (numCtes=%u ready=%u "
-          "workers=%u aggNodesOutstanding=%u)",
+          "workers=%u setupOutstanding=%u releaseOutstanding=%u)",
           instance(), scanPtr.i, (Uint32)old, scanPtr.p->m_numCtes,
           scanPtr.p->m_ctesReadyCount,
           scanPtr.p->m_cteScanReportsExpected,
-          scanPtr.p->m_aggNodesOutstanding);
+          scanPtr.p->m_aggSetupOutstanding,
+          scanPtr.p->m_aggReleaseOutstanding);
     } else {
       DEB_JOIN_AGG(("(%u)DBTC close_scan_req: closing CTE scanPtr.i=%u, all "
                     "workers retired (ready=%u/%u workers=%u)",
@@ -19796,6 +19800,8 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
     scanPtr.p->scanState = old;
     return;  // Will continue on execDI_FCOUNTCONF
   }
+
+  cancelJoinAggSetup(scanP);
 
   /**
    * Queue         : Action
@@ -20205,6 +20211,22 @@ void Dbtc::retireCteScanFragHandle(ScanRecordPtr scanptr,
   }
 }
 
+/* COMPLETE has its own records and can overlap the SETUP round. */
+bool Dbtc::joinAggCompleteResponsesOutstanding(ScanRecordPtr scanPtr) {
+  for (Uint32 i = scanPtr.p->m_aggRecordsHead; i != RNIL;) {
+    AggCompleteRecordPtr rec;
+    rec.i = i;
+    ndbrequire(getValidAggCompleteRecord(rec));
+    if (rec.p->m_state == AggCompleteRecord::REC_WAIT_COMPLETE &&
+        rec.p->m_outstanding != 0) {
+      jam();
+      return true;
+    }
+    i = rec.p->m_nextI;
+  }
+  return false;
+}
+
 /**
  * True while some CTE / join-aggregation response can still arrive for
  * this scan.
@@ -20219,24 +20241,18 @@ void Dbtc::retireCteScanFragHandle(ScanRecordPtr scanptr,
  * failure handling blocks API_FAILCONF until QMGR kills the node.
  */
 bool Dbtc::cteAggResponsesOutstanding(ScanRecordPtr scanPtr) {
-  if (scanPtr.p->m_aggNodesOutstanding > 0 ||
-      scanPtr.p->m_cteSetupOutstanding > 0) {
+  if (scanPtr.p->m_aggReleaseOutstanding > 0 ||
+      joinAggSetupResponsesOutstanding(scanPtr.p)) {
     jam();
-    /* JOIN_AGG_{SETUP,COMPLETE,RELEASE}_{CONF,REF} still in flight
-     * (P2c: CTE setups have their own counter and can be the only
-     * thing outstanding on a CTE-only query). */
+    return true;  // SETUP or waited RELEASE replies.
+  }
+  if (joinAggCompleteResponsesOutstanding(scanPtr)) {
     return true;
   }
-  /**
-   * A scan report or KIND_CTE COMPLETE reply can only come while a
-   * worker handle is still registered, so an empty handle list means
-   * nothing is outstanding however the counters happen to read.
-   * While the CTE stage is active (some CTE not yet redistributed
-   * cluster-wide) with live handles, responses can still arrive —
-   * per-CTE scan reports for scanning CTEs and JOIN_AGG_COMPLETE
-   * replies for redistributing ones.
-   */
-  if (cteStageActive(scanPtr.p) &&
+  /* On failure, close workers even if they are waiting for READY.
+   * SETUP and active COMPLETE replies have already drained above. */
+  if (scanPtr.p->m_aggErrorCode == 0 &&
+      cteStageActive(scanPtr.p) &&
       !scanPtr.p->m_cteScanFragHandles.isEmpty()) {
     jam();
     return true;
@@ -20777,18 +20793,16 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
   if (scanPtr.p->m_delivered_scan_frags.isEmpty() &&
       scanPtr.p->m_running_scan_frags.isEmpty()) {
     jam();
+    if (scanPtr.p->m_joinAgg && scanPtr.p->m_aggErrorCode != 0) {
+      jam();
+      scanPtr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
+      if (!joinAggCompleteResponsesOutstanding(scanPtr)) {
+        sendJoinAggReleaseReqs(signal, scanPtr);
+      }
+      return;
+    }
     if (scanPtr.p->m_joinAgg && !scanPtr.p->m_joinAggNodes->m_aggNodes.isclear()) {
       jam();
-      if (unlikely(joinAggSetupResponsesOutstanding(scanPtr.p))) {
-        jam();
-        /* RONDB-1120 P2c (H2): every root fragment finished but some
-         * SETUP_CONF is still in flight — COMPLETE addressing needs
-         * the CONF-returned keys and owner instances.  Defer; the
-         * last CONF replays this transition
-         * (joinAggSetupRoundDone). */
-        scanPtr.p->m_aggMainCompleteDeferred = true;
-        return;
-      }
 #ifdef DEBUG_JOIN_AGG_TRACE
       DEB_JOIN_AGG(("(%u)DBTC sendScanTabConf EndOfData check:"
                      " m_joinAgg=%u m_aggNodes.isclear=%u scanState=%u"
@@ -20800,8 +20814,6 @@ void Dbtc::sendScanTabConf(Signal *signal, const ScanRecordPtr scanPtr,
                      scanPtr.i));
 #endif
       scanPtr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
-      scanPtr.p->m_aggPhaseFailed = false;
-      scanPtr.p->m_aggErrorCode = 0;
       sendJoinAggCompleteReqs(signal, scanPtr);
       return;
     }
@@ -30752,6 +30764,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
  * to free agg states on remaining data nodes.
  */
 void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
+  cancelJoinAggSetup(scanPtr.p);
   if (scanPtr.p->m_aggProgramPtrI != RNIL) {
     releaseSection(scanPtr.p->m_aggProgramPtrI);
     scanPtr.p->m_aggProgramPtrI = RNIL;
@@ -30884,101 +30897,80 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
  */
 bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
                                     Uint32 failedNodeId) {
-  const ScanRecord::ScanState state = scanptr.p->scanState;
+  const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
+  bool involved = false;
 
-  /* RONDB-1120 P2c: the SETUP round overlaps RUNNING scans, and CTE
-   * setups track their own pending masks — fake a SETUP_REF for every
-   * pending setup on the failed node so the round's accounting always
-   * completes.  Collect the pending CTE indexes FIRST: each fake can
-   * finish the round and release the scan record (the REF handler
-   * re-validates via getValidPtr, so later fakes drop as stale). */
-  if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-       state == ScanRecord::RUNNING) &&
-      joinAggSetupResponsesOutstanding(scanptr.p)) {
-    const bool mainPending =
-        scanptr.p->m_joinAggNodes->m_aggNodesPending.get(failedNodeId);
-    Uint32 pendingCtes[64];
-    Uint32 numPendingCtes = 0;
-    for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
-      auto *cteNodes = scanptr.p->m_cteAggNodeState[c];
-      if (cteNodes != nullptr &&
-          cteNodes->m_aggNodesPending.get(failedNodeId)) {
-        ndbrequire(numPendingCtes < NDB_ARRAY_SIZE(pendingCtes));
-        pendingCtes[numPendingCtes++] = c;
-      }
-    }
-    if (mainPending || numPendingCtes > 0) {
+  /* Main SETUP and every CTE SETUP have independent pending bits.
+   * Queue replies: executing a handler inline could release scanptr
+   * while this loop, or the node-failure caller, still uses it. */
+  for (Uint32 c = 0; c <= scanptr.p->m_numCtes; c++) {
+    const bool main = (c == scanptr.p->m_numCtes);
+    auto *nodes = main ? scanptr.p->m_joinAggNodes
+                      : scanptr.p->m_cteAggNodeState[c];
+    if (nodes == nullptr) continue;
+    involved |= nodes->m_aggNodes.get(failedNodeId);
+    if (nodes->m_setupNodesPending.get(failedNodeId)) {
       jam();
-      const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
-      const Uint32 scanPtrI = scanptr.i;
-      if (mainPending) {
-        jam();
-        JoinAggSetupRef *ref =
-            (JoinAggSetupRef *)signal->getDataPtrSend();
-        ref->senderRef = failedRef;
-        ref->senderData = scanPtrI;
-        ref->requestId = 0;
-        ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-        ref->errorLine = __LINE__;
-        ref->cteIndex = RNIL;
-        execJOIN_AGG_SETUP_REF(signal);
-      }
-      for (Uint32 k = 0; k < numPendingCtes; k++) {
-        jam();
-        JoinAggSetupRef *ref =
-            (JoinAggSetupRef *)signal->getDataPtrSend();
-        ref->senderRef = failedRef;
-        ref->senderData = scanPtrI;
-        ref->requestId = 0;
-        ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-        ref->errorLine = __LINE__;
-        ref->cteIndex = pendingCtes[k];
-        execJOIN_AGG_SETUP_REF(signal);
-      }
-      return true;
+      involved = true;
+      JoinAggSetupRef *ref =
+          (JoinAggSetupRef *)signal->getDataPtrSend();
+      ref->senderRef = failedRef;
+      ref->senderData = scanptr.i;
+      ref->requestId = scanptr.p->m_joinAggSetupRequestId;
+      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+      ref->errorLine = __LINE__;
+      ref->cteIndex = main ? RNIL : c;
+      sendSignal(reference(), GSN_JOIN_AGG_SETUP_REF, signal,
+                 JoinAggSetupRef::SignalLength, JBB);
     }
   }
 
-  if ((state == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
-       state == ScanRecord::WAIT_JOIN_AGG_RELEASE) &&
-      scanptr.p->m_joinAggNodes->m_aggNodesPending.get(failedNodeId)) {
-    jam();
-    const Uint32 failedRef = numberToRef(DBLQH, failedNodeId);
-    if (state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) {
+  /* A node may owe COMPLETE replies for several independent CTEs.
+   * Each synthetic REF must carry that interaction's record id. */
+  for (Uint32 i = scanptr.p->m_aggRecordsHead; i != RNIL;) {
+    AggCompleteRecordPtr rec;
+    rec.i = i;
+    ndbrequire(getValidAggCompleteRecord(rec));
+    if (rec.p->m_state == AggCompleteRecord::REC_WAIT_COMPLETE &&
+        rec.p->m_aggNodesPending.get(failedNodeId)) {
       jam();
+      involved = true;
       JoinAggCompleteRef *ref =
           (JoinAggCompleteRef *)signal->getDataPtrSend();
       ref->senderRef = failedRef;
       ref->senderData = scanptr.i;
+      ref->requestId = makeAggCompleteRequestId(rec.i);
       ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-      execJOIN_AGG_COMPLETE_REF(signal);
-    } else {
-      jam();
-      JoinAggReleaseConf *conf =
-          (JoinAggReleaseConf *)signal->getDataPtrSend();
-      conf->senderRef = failedRef;
-      conf->senderData = scanptr.i;
-      execJOIN_AGG_RELEASE_CONF(signal);
+      ref->errorLine = __LINE__;
+      sendSignal(reference(), GSN_JOIN_AGG_COMPLETE_REF, signal,
+                 JoinAggCompleteRef::SignalLength, JBB);
     }
-    return true;
+    i = rec.p->m_nextI;
+  }
 
-  } else if ((state == ScanRecord::WAIT_JOIN_AGG_SETUP ||
-              state == ScanRecord::WAIT_JOIN_AGG_COMPLETE) &&
-             scanptr.p->m_joinAggNodes->m_aggNodes.get(failedNodeId)) {
+  if (scanptr.p->m_joinAggNodes != nullptr &&
+      scanptr.p->m_joinAggNodes->m_releaseNodesPending.get(failedNodeId)) {
     jam();
-    /**
-     * Node already responded but is now dead — its aggregation
-     * state is lost. Must abort even though we're not waiting
-     * for its response. Remove from aggNodes and set failure.
-     */
-    scanptr.p->m_joinAggNodes->m_aggNodes.clear(failedNodeId);
-    if (!scanptr.p->m_aggPhaseFailed) {
-      scanptr.p->m_aggPhaseFailed = true;
+    involved = true;
+    JoinAggReleaseConf *conf =
+        (JoinAggReleaseConf *)signal->getDataPtrSend();
+    conf->senderRef = failedRef;
+    conf->senderData = scanptr.i;
+    conf->requestId = scanptr.p->scanApiRec;
+    sendSignal(reference(), GSN_JOIN_AGG_RELEASE_CONF, signal,
+               JoinAggReleaseConf::SignalLength, JBB);
+  }
+
+  if (involved &&
+      scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_RELEASE &&
+      scanptr.p->scanState != ScanRecord::CLOSING_SCAN) {
+    jam();
+    scanptr.p->m_aggPhaseFailed = true;
+    if (scanptr.p->m_aggErrorCode == 0) {
       scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
     }
-    return true;
   }
-  return false;
+  return involved;
 }
 
 bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
@@ -30992,16 +30984,19 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
   /* RONDB-1120 P2c hardening: one sequence queryTag per query — the
    * identity key on every node (SETUP_REQ field + aggKeys section +
    * identWords), never the recyclable scanptr.i. */
-  scanptr.p->m_joinAggQueryTag = (c_joinAggQueryTagCounter++) & 0xFFFF;
+  scanptr.p->m_joinAggSetupRequestId = c_joinAggQueryTagCounter++;
+  scanptr.p->m_joinAggQueryTag =
+      scanptr.p->m_joinAggSetupRequestId & 0xFFFF;
   scanptr.p->m_joinAggNodes->m_aggNodes.clear();
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
-  scanptr.p->m_aggNodesOutstanding = 0;
-  scanptr.p->m_cteSetupOutstanding = 0;
+  scanptr.p->m_joinAggNodes->m_setupNodesPending.clear();
+  scanptr.p->m_joinAggNodes->m_releaseNodesPending.clear();
+  scanptr.p->m_aggReleaseOutstanding = 0;
+  scanptr.p->m_aggSetupOutstanding = 0;
+  scanptr.p->m_aggSetupState = ScanRecord::AGG_SETUP_IN_FLIGHT;
   scanptr.p->m_aggPhaseFailed = false;
   scanptr.p->m_aggErrorCode = 0;
-  /* RONDB-1120 P2c (H2): no COMPLETE boundary deferred yet. */
-  scanptr.p->m_aggMainCompleteDeferred = false;
-  scanptr.p->m_cteCompleteDeferredMask = 0;
+  /* RONDB-1120 P4 (H2 remnant): no READY transition deferred yet. */
+  scanptr.p->m_cteReadyDeferredMask = 0;
 
   /* Main query aggregation setup — only if a main agg program exists.
    * CTE-only queries (no main aggregation) skip this loop. */
@@ -31014,7 +31009,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
       req->senderRef = reference();
       req->senderData = scanptr.i;
-      req->requestId = scanptr.p->scanApiRec;
+      req->requestId = scanptr.p->m_joinAggSetupRequestId;
       req->transid[0] = apiConnectptr.p->transid[0];
       req->transid[1] = apiConnectptr.p->transid[1];
       req->tableId = scanptr.p->scanTableref;
@@ -31042,8 +31037,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         if (unlikely(!appendToSection(metaPtrI, scanptr.p->m_aggColumnMeta,
                                       scanptr.p->m_aggColumnMetaLen))) {
           jam();
-          scanptr.p->m_aggPhaseFailed = true;
-          scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+          recordJoinAggError(scanptr.p, ZGET_ATTRBUF_ERROR);
           releaseSections(handle);
           break;
         }
@@ -31067,8 +31061,8 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
                  JoinAggSetupReq::SignalLength, JBB, &handle);
       scanptr.p->m_joinAggNodes->m_aggNodes.set(nodeId);
-      scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
-      scanptr.p->m_aggNodesOutstanding++;
+      scanptr.p->m_joinAggNodes->m_setupNodesPending.set(nodeId);
+      scanptr.p->m_aggSetupOutstanding++;
     }
   }
 
@@ -31087,12 +31081,12 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                               getThreadId(), true);
       if (unlikely(cteNodes == nullptr)) {
         jam();
-        scanptr.p->m_aggPhaseFailed = true;
-        scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+        recordJoinAggError(scanptr.p, ZGET_ATTRBUF_ERROR);
         break;
       }
       cteNodes->m_aggNodes.clear();
-      cteNodes->m_aggNodesPending.clear();
+      cteNodes->m_setupNodesPending.clear();
+      cteNodes->m_releaseNodesPending.clear();
       cteNodes->m_aggOwnerInstances = &cteNodes->m_aggStateKeys[maxNodes];
       /* Keys RNIL until this CTE's SETUP_CONF (P2c: RELEASE senders
        * skip RNIL); owners 0 (only read post-CONF). */
@@ -31126,7 +31120,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
         req->senderRef = reference();
         req->senderData = scanptr.i;
-        req->requestId = scanptr.p->scanApiRec;
+        req->requestId = scanptr.p->m_joinAggSetupRequestId;
         req->transid[0] = apiConnectptr.p->transid[0];
         req->transid[1] = apiConnectptr.p->transid[1];
         req->tableId = scanptr.p->m_cteInfos[c].tableId;
@@ -31162,8 +31156,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
                                         scanptr.p->m_cteInfos[c].columnMeta,
                                         scanptr.p->m_cteInfos[c].columnMetaLen))) {
             jam();
-            scanptr.p->m_aggPhaseFailed = true;
-            scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+            recordJoinAggError(scanptr.p, ZGET_ATTRBUF_ERROR);
             releaseSections(handle);
             break;
           }
@@ -31176,14 +31169,13 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         sendSignal(ref, GSN_JOIN_AGG_SETUP_REQ, signal,
                    JoinAggSetupReq::SignalLength, JBB, &handle);
         cteNodes->m_aggNodes.set(nodeId);
-        cteNodes->m_aggNodesPending.set(nodeId);
-        scanptr.p->m_cteSetupOutstanding++;
+        cteNodes->m_setupNodesPending.set(nodeId);
+        scanptr.p->m_aggSetupOutstanding++;
       }
     }
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0 &&
-      scanptr.p->m_cteSetupOutstanding == 0) {
+  if (!joinAggSetupResponsesOutstanding(scanptr.p)) {
     jam();
     abortScanLab(signal, scanptr, ZGET_DATAREC_ERROR, true, apiConnectptr);
     return false;
@@ -31253,6 +31245,22 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   const JoinAggSetupConf *conf =
       (const JoinAggSetupConf *)signal->getDataPtr();
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(8310)) {
+    jam();
+    /* RONDB-1120 P4 test hook: delay ONE SETUP_CONF's processing by
+     * 20 ms so a COMPLETE boundary fires while that node's key is
+     * still unknown — deterministically exercises the
+     * identity-addressed COMPLETE / redistribute / FINAL_REP forms
+     * and the cteMarkReady H2-remnant deferral.  Clear-on-first so
+     * the re-arrival processes normally. */
+    CLEAR_ERROR_INSERT_VALUE;
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_CONF, signal, 20,
+                        signal->getLength());
+    return;
+  }
+#endif
+
   ScanRecordPtr scanptr;
   scanptr.i = conf->senderData;
 
@@ -31272,23 +31280,21 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
                           conf->requestId, conf->aggStateKey);
     return;
   }
-  if (unlikely(scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_SETUP &&
-               scanptr.p->scanState != ScanRecord::RUNNING)) {
-    jam();
-    DEB_JOIN_AGG(("(%u)DBTC drop SETUP_CONF: scanPtr.i=%u state=%u",
-                  instance(), scanptr.i, (Uint32)scanptr.p->scanState));
-    /* P2c: scan is closing/releasing and never stored this key (the
-     * map entry stays RNIL and release senders skip it) — reclaim. */
-    sendStaleSetupReclaim(signal, conf->senderRef, conf->senderData,
-                          conf->requestId, conf->aggStateKey);
-    return;
-  }
   if (unlikely(!scanptr.p->m_joinAgg || scanptr.p->m_joinAggNodes == nullptr)) {
     jam();
     DEB_JOIN_AGG(("(%u)DBTC drop SETUP_CONF: scanPtr.i=%u not JoinAgg",
                   instance(), scanptr.i));
     /* P2c: the scan slot was reused by a non-JoinAgg scan — the CONF
      * is stale-for-reused-record; reclaim its state. */
+    sendStaleSetupReclaim(signal, conf->senderRef, conf->senderData,
+                          conf->requestId, conf->aggStateKey);
+    return;
+  }
+
+  if (unlikely(conf->requestId != scanptr.p->m_joinAggSetupRequestId)) {
+    jam();
+    /* This slot belongs to a newer query. Its teardown cannot reclaim
+     * the state announced by the old query's delayed confirmation. */
     sendStaleSetupReclaim(signal, conf->senderRef, conf->senderData,
                           conf->requestId, conf->aggStateKey);
     return;
@@ -31304,6 +31310,27 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   const Uint32 nodeId = refToNode(conf->senderRef);
   const Uint32 cteIndex = conf->cteIndex;
 
+  ndbrequire(nodeId < MAX_NDB_NODES);
+  ndbrequire(cteIndex == RNIL || cteIndex < scanptr.p->m_numCtes);
+  auto *setupNodes = (cteIndex == RNIL)
+      ? scanptr.p->m_joinAggNodes
+      : scanptr.p->m_cteAggNodeState[cteIndex];
+  ndbrequire(setupNodes != nullptr);
+  if (unlikely(!setupNodes->m_setupNodesPending.get(nodeId))) {
+    jam();
+    return;  // Duplicate response; do not change accounting or live keys.
+  }
+  ndbrequire(scanptr.p->m_aggSetupOutstanding > 0);
+  if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED) {
+    jam();
+    setupNodes->m_setupNodesPending.clear(nodeId);
+    scanptr.p->m_aggSetupOutstanding--;
+    sendStaleSetupReclaim(signal, conf->senderRef, conf->senderData,
+                          conf->requestId, conf->aggStateKey);
+    return;
+  }
+  ndbrequire(scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_IN_FLIGHT);
+
   if (cteIndex != RNIL) {
     /* CTE SETUP_CONF — store aggStateKey + owner instance in per-CTE
      * node state.  Phase L (E.1): owner instance is the LDM worker on
@@ -31315,17 +31342,17 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     ndbrequire(cteNodes != nullptr);
     cteNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
     cteNodes->m_aggOwnerInstances[nodeId] = conf->ownerInstance;
-    cteNodes->m_aggNodesPending.clear(nodeId);
-    scanptr.p->m_cteSetupOutstanding--;
+    cteNodes->m_setupNodesPending.clear(nodeId);
+    scanptr.p->m_aggSetupOutstanding--;
 
     /* Release CTE agg program section once all nodes received it */
     if (scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI != RNIL &&
-        cteNodes->m_aggNodesPending.isclear()) {
+        cteNodes->m_setupNodesPending.isclear()) {
       releaseSection(scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI);
       scanptr.p->m_cteInfos[cteIndex].aggProgramPtrI = RNIL;
     }
     if (scanptr.p->m_cteInfos[cteIndex].columnMeta != nullptr &&
-        cteNodes->m_aggNodesPending.isclear()) {
+        cteNodes->m_setupNodesPending.isclear()) {
       lc_ndbd_pool_free(scanptr.p->m_cteInfos[cteIndex].columnMeta);
       scanptr.p->m_cteInfos[cteIndex].columnMeta = nullptr;
       scanptr.p->m_cteInfos[cteIndex].columnMetaLen = 0;
@@ -31338,8 +31365,8 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
     scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId] =
         conf->ownerInstance;
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-    scanptr.p->m_aggNodesOutstanding--;
+    scanptr.p->m_joinAggNodes->m_setupNodesPending.clear(nodeId);
+    scanptr.p->m_aggSetupOutstanding--;
 
     /**
      * The agg program has been sent to all data nodes and is no longer
@@ -31358,8 +31385,7 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   }
 
   /* Check if ALL setup responses received (main + all CTEs) */
-  if (scanptr.p->m_aggNodesOutstanding == 0 &&
-      scanptr.p->m_cteSetupOutstanding == 0) {
+  if (!joinAggSetupResponsesOutstanding(scanptr.p)) {
     jam();
     joinAggSetupRoundDone(signal, scanptr);
   }
@@ -31473,73 +31499,66 @@ bool Dbtc::buildAggKeysSection(Signal *signal, ScanRecordPtr scanptr) {
   return true;
 }
 
-/**
- * RONDB-1120 P2c: shared completion tail of the SETUP round, run when
- * the last SETUP_CONF/REF arrives.  A recorded failure aborts —
- * through scanError for a RUNNING scan (fragment scans overlap the
- * round now; the standard close releases every CONFed state and the
- * park sweeper aborts consumers on failed nodes), or through the
- * pre-P2c release/abort round when the scan never left
- * WAIT_JOIN_AGG_SETUP (partial-send failure).  On success the
- * H2-deferred COMPLETE boundaries are flushed: per-CTE redistributes
- * first, then the main aggregation COMPLETE round.
- */
+/* Do not release aggregation state while COMPLETE is still using it.
+ * Failed CTEs close their workers directly once these replies drain;
+ * starting the main query to provoke another error is unsafe before
+ * SETUP has supplied its keys. */
+void Dbtc::tryAbortJoinAgg(Signal *signal, ScanRecordPtr scanptr) {
+  if (scanptr.p->m_aggSetupState != ScanRecord::AGG_SETUP_DONE ||
+      scanptr.p->m_aggErrorCode == 0 ||
+      joinAggCompleteResponsesOutstanding(scanptr)) {
+    return;
+  }
+  if (scanptr.p->scanState == ScanRecord::RUNNING ||
+      scanptr.p->scanState == ScanRecord::WAIT_CTE_COMPLETE) {
+    jam();
+    if (scanptr.p->m_close_scan_req) {
+      ApiConnectRecordPtr apiPtr;
+      apiPtr.i = scanptr.p->scanApiRec;
+      c_apiConnectRecordPool.getPtr(apiPtr);
+      close_scan_req(signal, scanptr, false, apiPtr);
+    } else {
+      scanError(signal, scanptr, scanptr.p->m_aggErrorCode);
+    }
+    return;
+  }
+  if (scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+      scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE) {
+    jam();
+    sendJoinAggReleaseReqs(signal, scanptr);
+  }
+}
+
+/* Finish SETUP once, independently of the scan's execution phase. */
 void Dbtc::joinAggSetupRoundDone(Signal *signal, ScanRecordPtr scanptr) {
   AGGT(("AGGT(%u) SETUP complete scanPtr=%u",
         instance(), scanptr.i));
 
-  if (scanptr.p->m_aggPhaseFailed) {
+  ndbrequire(scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_IN_FLIGHT);
+  ndbrequire(scanptr.p->m_aggSetupOutstanding == 0);
+  scanptr.p->m_aggSetupState = ScanRecord::AGG_SETUP_DONE;
+  if (scanptr.p->m_aggErrorCode != 0) {
     jam();
-    /**
-     * Some nodes sent REF during setup. Release state on nodes that
-     * confirmed successfully, then abort.
-     */
-    scanptr.p->m_aggPhaseFailed = false;
-    Uint32 errorCode = scanptr.p->m_aggErrorCode;
-
-    if (scanptr.p->scanState == ScanRecord::RUNNING) {
-      jam();
-      scanError(signal, scanptr, errorCode);
-      return;
-    }
-    if (!scanptr.p->m_joinAggNodes->m_aggNodes.isclear()) {
-      jam();
-      sendJoinAggReleaseReqs(signal, scanptr);
-    } else {
-      jam();
-      ApiConnectRecordPtr apiConnectptr;
-      apiConnectptr.i = scanptr.p->scanApiRec;
-      c_apiConnectRecordPool.getPtr(apiConnectptr);
-      abortScanLab(signal, scanptr, errorCode, true, apiConnectptr);
-    }
+    scanptr.p->m_cteReadyDeferredMask = 0;
+    tryAbortJoinAgg(signal, scanptr);
     return;
   }
 
-  /* H2 flush: deferred per-CTE redistributes.  Each send can fail and
-   * abort the scan, so re-validate the record between sends. */
-  Uint64 deferred = scanptr.p->m_cteCompleteDeferredMask;
-  scanptr.p->m_cteCompleteDeferredMask = 0;
+  /* RONDB-1120 P4: flush READY transitions deferred by the H2
+   * remnant in cteMarkReady (the P2b key/owner carriers need every
+   * CONF).  Each replay can cascade into broadcasts / START_MAIN, so
+   * re-validate the record between calls. */
+  Uint64 deferred = scanptr.p->m_cteReadyDeferredMask;
+  scanptr.p->m_cteReadyDeferredMask = 0;
   for (Uint32 c = 0; deferred != 0 && c < 64; c++) {
     if ((deferred & (Uint64(1) << c)) == 0) continue;
     deferred &= ~(Uint64(1) << c);
     jam();
-    sendCteCompleteReqsForCte(signal, scanptr, c);
+    cteMarkReady(signal, scanptr, c);
     if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
       jam();
       return;
     }
-  }
-
-  /* H2 flush: deferred main COMPLETE round (the sendScanTabConf
-   * all-fragments-done transition, replayed now that every key +
-   * owner instance is known). */
-  if (scanptr.p->m_aggMainCompleteDeferred) {
-    jam();
-    scanptr.p->m_aggMainCompleteDeferred = false;
-    scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_COMPLETE;
-    scanptr.p->m_aggPhaseFailed = false;
-    scanptr.p->m_aggErrorCode = 0;
-    sendJoinAggCompleteReqs(signal, scanptr);
   }
 }
 
@@ -31583,9 +31602,7 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
                   instance(), ref->senderData));
     return;
   }
-  if (unlikely((scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_SETUP &&
-                scanptr.p->scanState != ScanRecord::RUNNING) ||
-               !scanptr.p->m_joinAgg ||
+  if (unlikely(!scanptr.p->m_joinAgg ||
                scanptr.p->m_joinAggNodes == nullptr)) {
     jam();
     DEB_JOIN_AGG(("(%u)DBTC drop SETUP_REF: scanPtr.i=%u state=%u",
@@ -31593,8 +31610,25 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
     return;
   }
 
+  if (unlikely(ref->requestId != scanptr.p->m_joinAggSetupRequestId)) {
+    jam();
+    return;  // Delayed failure for a previous query in this scan slot.
+  }
+
   const Uint32 nodeId = refToNode(ref->senderRef);
   const Uint32 cteIndex = ref->cteIndex;
+
+  ndbrequire(nodeId < MAX_NDB_NODES);
+  ndbrequire(cteIndex == RNIL || cteIndex < scanptr.p->m_numCtes);
+  const auto *setupNodes = (cteIndex == RNIL)
+      ? scanptr.p->m_joinAggNodes
+      : scanptr.p->m_cteAggNodeState[cteIndex];
+  ndbrequire(setupNodes != nullptr);
+  if (unlikely(!setupNodes->m_setupNodesPending.get(nodeId))) {
+    jam();
+    return;  // Duplicate response; do not change accounting or live keys.
+  }
+  ndbrequire(scanptr.p->m_aggSetupOutstanding > 0);
   if (cteIndex != RNIL) {
     /* RONDB-1120 P2c: CTE setup REF — account against the CTE's own
      * node state + counter (previously mis-accounted against the
@@ -31604,27 +31638,23 @@ void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {
     auto *cteNodes = scanptr.p->m_cteAggNodeState[cteIndex];
     ndbrequire(cteNodes != nullptr);
     cteNodes->m_aggNodes.clear(nodeId);
-    cteNodes->m_aggNodesPending.clear(nodeId);
-    scanptr.p->m_cteSetupOutstanding--;
+    cteNodes->m_setupNodesPending.clear(nodeId);
+    scanptr.p->m_aggSetupOutstanding--;
   } else {
     jam();
     scanptr.p->m_joinAggNodes->m_aggNodes.clear(nodeId);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-    scanptr.p->m_aggNodesOutstanding--;
+    scanptr.p->m_joinAggNodes->m_setupNodesPending.clear(nodeId);
+    scanptr.p->m_aggSetupOutstanding--;
   }
 
-  /**
-   * Don't abort immediately — wait for all outstanding SETUP responses.
-   * Record the first error and abort after the last response arrives.
-   */
-  if (!scanptr.p->m_aggPhaseFailed) {
+  if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED) {
     jam();
-    scanptr.p->m_aggPhaseFailed = true;
-    scanptr.p->m_aggErrorCode = ref->errorCode;
+    return;  // Cleanup response; never restart or abort a closing scan.
   }
+  ndbrequire(scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_IN_FLIGHT);
+  recordJoinAggError(scanptr.p, ref->errorCode);
 
-  if (scanptr.p->m_aggNodesOutstanding == 0 &&
-      scanptr.p->m_cteSetupOutstanding == 0) {
+  if (!joinAggSetupResponsesOutstanding(scanptr.p)) {
     jam();
     joinAggSetupRoundDone(signal, scanptr);
   }
@@ -31704,16 +31734,14 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   rec.p->m_aggNodesPending.clear(senderNodeId);
   ndbrequire(rec.p->m_outstanding > 0);
   rec.p->m_outstanding--;
-  /* Phase L commit 5: m_cteCompleteOutstanding retired (replaced by
-   * per-record state).  Main-aggregation legacy
-   * counters (m_aggNodesOutstanding / m_aggNodesPending) are still
-   * mirrored here so the deferred node-failure path keeps a consistent
-   * view; they are reset by sendJoinAggReleaseReqs before reuse. */
+  if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED) {
+    jam();
+    if (rec.p->m_outstanding == 0)
+      rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
+    return;
+  }
   if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
-    ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
     scanptr.p->m_aggResultRows += conf->numResultRows;
-    scanptr.p->m_aggNodesOutstanding--;
   }
 
   DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_COMPLETE_CONF: recI=%u kind=%u "
@@ -31727,10 +31755,9 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
   rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
     jam();
-    if (scanptr.p->m_aggPhaseFailed) {
-      jam();
-      scanptr.p->m_aggPhaseFailed = false;
-      // TODO: propagate CTE error to API
+    if (scanptr.p->m_aggErrorCode != 0) {
+      tryAbortJoinAgg(signal, scanptr);
+      return;
     }
     /* DAG scheduler: this CTE is now redistributed cluster-wide —
      * mark it READY, broadcast to workers so dependents can start,
@@ -31738,10 +31765,6 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
     cteMarkReady(signal, scanptr, rec.p->m_cteIndex);
   } else {
     jam();
-    if (scanptr.p->m_aggPhaseFailed) {
-      jam();
-      scanptr.p->m_aggPhaseFailed = false;
-    }
     ApiConnectRecordPtr apiConnectptr;
     apiConnectptr.i = scanptr.p->scanApiRec;
     c_apiConnectRecordPool.getPtr(apiConnectptr);
@@ -31773,6 +31796,7 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
      * triggers execCLOSE_SCAN_REP, finalizing the scan workers; the
      * agg conf above only sets the aggregate receiver's expected-row
      * accounting), so the two confs now go out back-to-back. */
+    cancelJoinAggSetup(scanptr.p);
     scanptr.p->scanState = ScanRecord::CLOSING_SCAN;
     scanptr.p->m_close_scan_req = true;
     close_scan_req_send_conf(signal, scanptr, apiConnectptr);
@@ -31832,21 +31856,13 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   rec.p->m_outstanding--;
   if (rec.p->m_errorCode == 0) rec.p->m_errorCode = ref->errorCode;
 
-  /* Phase L commit 5: same as the CONF path — m_cteCompleteOutstanding
-   * is retired; main-aggregation legacy counters keep their mirror
-   * write for the deferred node-failure path.  Note we still do NOT
-   * clear nodeId from m_aggNodes — RELEASE_REQ must reach the node
-   * because SETUP succeeded there. */
-  if (rec.p->m_kind == AggCompleteRecord::KIND_MAIN) {
-    ndbrequire(scanptr.p->m_aggNodesOutstanding > 0);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(senderNodeId);
-    scanptr.p->m_aggNodesOutstanding--;
-  }
-  if (!scanptr.p->m_aggPhaseFailed) {
+  if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED) {
     jam();
-    scanptr.p->m_aggPhaseFailed = true;
-    scanptr.p->m_aggErrorCode = ref->errorCode;
+    if (rec.p->m_outstanding == 0)
+      rec.p->m_state = AggCompleteRecord::REC_FAILED;
+    return;
   }
+  recordJoinAggError(scanptr.p, ref->errorCode);
 
   DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_COMPLETE_REF: recI=%u kind=%u "
                 "nodeId=%u outstanding=%u err=%u",
@@ -31858,23 +31874,9 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   rec.p->m_state = AggCompleteRecord::REC_FAILED;
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
     jam();
-    /* DAG scheduler: a CTE's redistribute failed.  Mirror the old
-     * behavior — skip any remaining CTE work (no dependents are
-     * started) and start the main query so it reports the error
-     * (probes against never-redistributed CTEs fail with
-     * STATE_NOT_READY). */
-    scanptr.p->m_aggPhaseFailed = false;
-    if (cteStageActive(scanptr.p)) {
-      jam();
-      const Uint32 n = scanptr.p->m_numCtes;
-      scanptr.p->m_cteReadyMask =
-          (n >= 64) ? ~Uint64(0) : ((Uint64(1) << n) - 1);
-      scanptr.p->m_ctesReadyCount = n;
-      sendCteStartMainReqs(signal, scanptr);
-    }
+    tryAbortJoinAgg(signal, scanptr);
   } else {
     jam();
-    scanptr.p->m_aggPhaseFailed = false;
     sendJoinAggReleaseReqs(signal, scanptr);
   }
 }
@@ -31886,21 +31888,30 @@ void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
 
   ScanRecordPtr scanptr;
   scanptr.i = conf->senderData;
-  scanRecordPool.getPtr(scanptr);
+  if (unlikely(!scanRecordPool.getValidPtr(scanptr) ||
+               scanptr.p->scanState != ScanRecord::WAIT_JOIN_AGG_RELEASE ||
+               scanptr.p->m_joinAggNodes == nullptr)) {
+    jam();
+    return;
+  }
 
   DEB_JOIN_AGG(("(%u)DBTC execJOIN_AGG_RELEASE_CONF: "
                 "scanPtr.i=%u nodeId=%u outstanding=%u",
                 instance(), scanptr.i,
                 refToNode(conf->senderRef),
-                scanptr.p->m_aggNodesOutstanding));
+                scanptr.p->m_aggReleaseOutstanding));
 
-  ndbrequire(scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_RELEASE);
+  const Uint32 nodeId = refToNode(conf->senderRef);
+  if (unlikely(nodeId >= MAX_NDB_NODES ||
+               !scanptr.p->m_joinAggNodes->m_releaseNodesPending.get(nodeId))) {
+    jam();
+    return;  // Duplicate response.
+  }
+  scanptr.p->m_joinAggNodes->m_releaseNodesPending.clear(nodeId);
+  ndbrequire(scanptr.p->m_aggReleaseOutstanding > 0);
+  scanptr.p->m_aggReleaseOutstanding--;
 
-  Uint32 nodeId = refToNode(conf->senderRef);
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear(nodeId);
-  scanptr.p->m_aggNodesOutstanding--;
-
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  if (scanptr.p->m_aggReleaseOutstanding == 0) {
     jam();
     joinAggAbortAfterRelease(signal, scanptr);
   }
@@ -32129,29 +32140,9 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
     AGGT(("AGGT(%u) CTE cteId=%u scans complete scanPtr=%u",
           instance(), cteId, scanptr.i));
 
-    if (scanptr.p->m_aggPhaseFailed) {
+    if (scanptr.p->m_aggErrorCode != 0) {
       jam();
-      /**
-       * A worker failed during the CTE stage (SCAN_FRAGREF, node
-       * failure or fragment timeout) and its handle was retired, so
-       * the surviving workers can now complete a report count.  The
-       * CTE result is incomplete - release the aggregation state the
-       * healthy nodes built and abort, rather than redistributing and
-       * answering from a partial CTE.
-       */
-      scanptr.p->m_aggPhaseFailed = false;
-      Uint32 errorCode = scanptr.p->m_aggErrorCode;
-
-      if (!scanptr.p->m_joinAggNodes->m_aggNodes.isclear()) {
-        jam();
-        sendJoinAggReleaseReqs(signal, scanptr);
-      } else {
-        jam();
-        ApiConnectRecordPtr apiConnectptr;
-        apiConnectptr.i = scanptr.p->scanApiRec;
-        c_apiConnectRecordPool.getPtr(apiConnectptr);
-        abortScanLab(signal, scanptr, errorCode, true, apiConnectptr);
-      }
+      tryAbortJoinAgg(signal, scanptr);
       return;
     }
 
@@ -32160,14 +32151,9 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
      * Independent CTEs keep scanning; the scan record stays RUNNING
      * (scans and redistributes overlap under the DAG scheduler).
      */
-    if (unlikely(joinAggSetupResponsesOutstanding(scanptr.p))) {
-      jam();
-      /* RONDB-1120 P2c (H2): redistribute addressing needs every
-       * CONF-returned key + owner — defer until the SETUP round
-       * completes (joinAggSetupRoundDone flushes the mask). */
-      scanptr.p->m_cteCompleteDeferredMask |= (Uint64(1) << cteId);
-      return;
-    }
+    /* RONDB-1120 P4: send immediately — nodes whose SETUP_CONF has
+     * not arrived get the identity-addressed form (per-node hybrid in
+     * sendCteCompleteReqsForCte). */
     sendCteCompleteReqsForCte(signal, scanptr, cteId);
   }
 }
@@ -32245,7 +32231,6 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
     if (cteNodes == nullptr) break;
 
     NdbNodeBitmask nodes = cteNodes->m_aggNodes;
-    cteNodes->m_aggNodesPending.clear();
 
     /* Build per-node aggStateKey + owner-instance map.  Used by:
      *   - CTE_LOOKUP forwarding (aggKey)
@@ -32275,8 +32260,7 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
     AggCompleteRecordPtr cteRec;
     if (unlikely(!seizeAggCompleteRecord(cteRec, scanptr))) {
       jam();
-      scanptr.p->m_aggPhaseFailed = true;
-      scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+      recordJoinAggError(scanptr.p, ZGET_ATTRBUF_ERROR);
       break;
     }
     cteRec.p->m_kind = AggCompleteRecord::KIND_CTE;
@@ -32290,8 +32274,7 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
         jam();
         cteNodes->m_aggNodes.clear(nodeId);
         if (!scanptr.p->m_aggPhaseFailed) {
-          scanptr.p->m_aggPhaseFailed = true;
-          scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
+          recordJoinAggError(scanptr.p, ZNODEFAIL_BEFORE_COMMIT);
         }
         continue;
       }
@@ -32316,25 +32299,35 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
       req->maxBatchRows = 256;
       req->heartbeatScanFragPtrI =
           findJoinAggHeartbeatScanFrag(scanptr, nodeId);
+      req->identWord = JoinAggregationState::packIdentWord(
+          scanptr.p->m_joinAggQueryTag, c, 0);
       DEB_JOIN_AGG(("(%u) send JOIN_AGG_COMPLETE_REQ aggKey=%u node=%u "
                     "recI=%u",
         instance(), cteNodes->m_aggStateKeys[nodeId], nodeId, cteRec.i));
 
       /* Phase L (E.1): route every CTE COMPLETE_REQ to the LDM owner
-       * returned in JOIN_AGG_SETUP_CONF.  Owner is per-node, computed
-       * at SETUP from (aggStateKey % lqhWorkersOnNode) + 1.  Replaces
-       * the previous round-robin-on-local-node + V_QUERY fallback so
-       * concurrent multi-LDM access of the aggregation state is
-       * impossible by construction.  See cte_filter_phase_l.md. */
-      const Uint32 owner = cteNodes->m_aggOwnerInstances[nodeId];
-      ndbrequire(owner > 0);
-      const BlockReference ref = numberToRef(DBLQH, owner, nodeId);
+       * returned in JOIN_AGG_SETUP_CONF, so concurrent multi-LDM
+       * access of the aggregation state is impossible by
+       * construction.  RONDB-1120 P4: when that node's SETUP_CONF has
+       * not arrived yet (key RNIL), send the identity-addressed form
+       * to LDM instance 1 — the receiver resolves node-locally (or
+       * parks until its SETUP processes) and self-routes to the
+       * owner. */
+      BlockReference ref;
+      if (likely(cteNodes->m_aggStateKeys[nodeId] != RNIL)) {
+        jam();
+        const Uint32 owner = cteNodes->m_aggOwnerInstances[nodeId];
+        ndbrequire(owner > 0);
+        ref = numberToRef(DBLQH, owner, nodeId);
+      } else {
+        jam();
+        ref = numberToRef(DBLQH, 1, nodeId);
+      }
       LinearSectionPtr lsp[1];
       lsp[0].p = aggKeysBuf;
       lsp[0].sz = aggKeysLen;
       sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                  JoinAggCompleteReq::SignalLength, JBB, lsp, 1);
-      cteNodes->m_aggNodesPending.set(nodeId);
     }
     if (cteRec.p->m_outstanding == 0) {
       /* No reachable nodes for this CTE — record is dead-on-arrival.
@@ -32347,10 +32340,8 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
     return;
   } while (0);
 
-  /* No aggregation state for this CTE (or record seize failed) —
-   * nothing to redistribute; mark it READY so scheduling proceeds
-   * (any seize failure left m_aggPhaseFailed set for the abort
-   * paths, mirroring the old per-phase leniency). */
+  /* Nothing to redistribute. cteMarkReady aborts on a recorded
+   * failure; otherwise it advances the scheduler. */
   jam();
   cteMarkReady(signal, scanptr, c);
 }
@@ -32366,6 +32357,24 @@ void Dbtc::cteMarkReady(Signal *signal, ScanRecordPtr scanptr,
                         Uint32 cteId) {
   ndbrequire(cteId < scanptr.p->m_numCtes && cteId < 64);
   const Uint64 bit = Uint64(1) << cteId;
+  if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED ||
+      scanptr.p->m_aggErrorCode != 0) {
+    jam();
+    tryAbortJoinAgg(signal, scanptr);
+    return;
+  }
+  if (unlikely(joinAggSetupResponsesOutstanding(scanptr.p))) {
+    jam();
+    /* RONDB-1120 P4 (H2 remnant): READY broadcasting / START_MAIN
+     * carry the P2b key/owner blocks, which need every SETUP_CONF.
+     * Under P4 the redistribute already overlapped the CONF round, so
+     * waiting HERE costs nothing on the critical path — and by
+     * redistribute-CONF time the CONFs have virtually always arrived
+     * (this trips only in ERROR_INSERT / extreme-starvation runs).
+     * joinAggSetupRoundDone replays cteMarkReady per deferred bit. */
+    scanptr.p->m_cteReadyDeferredMask |= bit;
+    return;
+  }
   if (unlikely(scanptr.p->m_cteReadyMask & bit)) {
     jam();  // duplicate completion — idempotent
     return;
@@ -32557,6 +32566,8 @@ void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
  * to READY and starts the main query root node.
  */
 void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
+  ndbrequire(scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_DONE);
+  ndbrequire(scanptr.p->m_aggErrorCode == 0);
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);
@@ -32617,8 +32628,6 @@ void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
 void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   AGGT(("AGGT(%u) MAIN COMPLETE send scanPtr=%u",
         instance(), scanptr.i));
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
-  scanptr.p->m_aggNodesOutstanding = 0;
 
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
@@ -32636,8 +32645,7 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   AggCompleteRecordPtr mainRec;
   if (unlikely(!seizeAggCompleteRecord(mainRec, scanptr))) {
     jam();
-    scanptr.p->m_aggPhaseFailed = true;
-    scanptr.p->m_aggErrorCode = ZGET_ATTRBUF_ERROR;
+    recordJoinAggError(scanptr.p, ZGET_ATTRBUF_ERROR);
     sendJoinAggReleaseReqs(signal, scanptr);
     return;
   }
@@ -32658,8 +32666,7 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
        */
       scanptr.p->m_joinAggNodes->m_aggNodes.clear(nodeId);
       if (!scanptr.p->m_aggPhaseFailed) {
-        scanptr.p->m_aggPhaseFailed = true;
-        scanptr.p->m_aggErrorCode = ZNODEFAIL_BEFORE_COMMIT;
+        recordJoinAggError(scanptr.p, ZNODEFAIL_BEFORE_COMMIT);
       }
       continue;
     }
@@ -32682,6 +32689,8 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->maxBatchRows = 256;
     req->heartbeatScanFragPtrI =
         findJoinAggHeartbeatScanFrag(scanptr, nodeId);
+    req->identWord = JoinAggregationState::packIdentWord(
+        scanptr.p->m_joinAggQueryTag, RNIL, 0);
     DEB_JOIN_AGG(("(%u)DBTC send JOIN_AGG_COMPLETE_REQ: "
                   "nodeId=%u aggStateKey=%u scanPtr.i=%u recI=%u",
                   instance(), nodeId,
@@ -32689,20 +32698,26 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
 
     /* Phase L (E.1): main aggregation routes to the LDM owner returned
      * in JOIN_AGG_SETUP_CONF, same rule as the CTE COMPLETE path.
-     * Eliminates the previous round-robin / V_QUERY fallback that let
-     * stale or duplicate signals land on a different LDM than the one
-     * holding the aggregation state. */
-    const Uint32 owner =
-        scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId];
-    ndbrequire(owner > 0);
-    const BlockReference ref = numberToRef(DBLQH, owner, nodeId);
+     * RONDB-1120 P4: when that node's SETUP_CONF has not arrived yet
+     * (key RNIL), send the identity-addressed form to LDM instance 1
+     * — the receiver resolves node-locally (or parks) and self-routes
+     * to the owner. */
+    BlockReference ref;
+    if (likely(scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId] != RNIL)) {
+      jam();
+      const Uint32 owner =
+          scanptr.p->m_joinAggNodes->m_aggOwnerInstances[nodeId];
+      ndbrequire(owner > 0);
+      ref = numberToRef(DBLQH, owner, nodeId);
+    } else {
+      jam();
+      ref = numberToRef(DBLQH, 1, nodeId);
+    }
     sendSignal(ref, GSN_JOIN_AGG_COMPLETE_REQ, signal,
                JoinAggCompleteReq::SignalLength, JBB);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
-    scanptr.p->m_aggNodesOutstanding++;
   }
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  if (mainRec.p->m_outstanding == 0) {
     jam();
     /**
      * All nodes were dead or removed. Go directly to release/abort.
@@ -32760,9 +32775,10 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
   DEB_JOIN_AGG(("(%u)DBTC sendJoinAggReleaseReqs: "
                 "scanPtr.i=%u",
                 instance(), scanptr.i));
+  cancelJoinAggSetup(scanptr.p);
   scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_RELEASE;
-  scanptr.p->m_joinAggNodes->m_aggNodesPending.clear();
-  scanptr.p->m_aggNodesOutstanding = 0;
+  scanptr.p->m_joinAggNodes->m_releaseNodesPending.clear();
+  scanptr.p->m_aggReleaseOutstanding = 0;
 
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
@@ -32803,12 +32819,12 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
     Uint32 ref = numberToRef(DBLQH, nodeId);
     sendSignal(ref, GSN_JOIN_AGG_RELEASE_REQ, signal,
                JoinAggReleaseReq::SignalLength, JBB);
-    scanptr.p->m_joinAggNodes->m_aggNodesPending.set(nodeId);
-    scanptr.p->m_aggNodesOutstanding++;
+    scanptr.p->m_joinAggNodes->m_releaseNodesPending.set(nodeId);
+    scanptr.p->m_aggReleaseOutstanding++;
   }
   scanptr.p->m_joinAggNodes->m_aggNodes.clear();
 
-  if (scanptr.p->m_aggNodesOutstanding == 0) {
+  if (scanptr.p->m_aggReleaseOutstanding == 0) {
     jam();
     /**
      * No RELEASE_REQs sent (all nodes dead or none to release).

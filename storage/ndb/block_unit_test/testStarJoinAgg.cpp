@@ -912,6 +912,7 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId,
    * aggStateKey's state, not instance 1.  Owner came back in
    * SETUP_CONF; reproduce it here. */
   Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
+  req->identWord = RNIL;  /* keyed form — no identity (RONDB-1120 P4) */
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 

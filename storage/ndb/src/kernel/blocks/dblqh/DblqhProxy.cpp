@@ -2619,6 +2619,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_node_fail_count =
         JoinAggregationState::s_node_fail_count.load();
     state->m_cte_nodes_finalized.clear();
+    memset(state->m_cte_redist_sent, 0, sizeof(state->m_cte_redist_sent));
+    memset(state->m_cte_redist_applied, 0, sizeof(state->m_cte_redist_applied));
+    memset(state->m_cte_redist_expected, 0, sizeof(state->m_cte_redist_expected));
   }
 
   // Expected operations
@@ -2749,7 +2752,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           state->m_all_programs_buf = nullptr;
           releaseSections(handle);
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key);
+                              DbspjErr::InvalidRequest, __LINE__, key,
+                              cteIndex);
           return;
         }
         progStart = allProgsBuf;
@@ -2765,7 +2769,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           state->m_all_programs_buf = nullptr;
           releaseSections(handle);
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key);
+                              DbspjErr::InvalidRequest, __LINE__, key,
+                              cteIndex);
           return;
         }
         progStart = &allProgsBuf[pos];

@@ -111,14 +111,22 @@ struct JoinAggSetupRef {
 };
 
 struct JoinAggCompleteReq {
-  static constexpr Uint32 SignalLength = 8;
+  static constexpr Uint32 SignalLength = 9;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 transid[2];
-  Uint32 aggStateKey;
+  Uint32 aggStateKey;     // RNIL = identity-addressed (RONDB-1120 P4):
+                          // that node's SETUP_CONF had not arrived at
+                          // send time; DBLQH resolves identWord +
+                          // transid node-locally (parking until the
+                          // local SETUP processes) and self-routes to
+                          // the owner LDM.
   Uint32 maxBatchRows;
   Uint32 heartbeatScanFragPtrI;
+  Uint32 identWord;       // packIdentWord(queryTag, cteId, 0) — always
+                          // set by 26.x DBTC; consumed when
+                          // aggStateKey == RNIL.
 
   // Optional section: per-node aggStateKeys for CTE lookup forwarding.
   // Format: [nodeId1, aggKey1, ownerInstance1, ...] triples.
@@ -240,13 +248,28 @@ struct JoinAggNullRowRef {
  * Long section 1: accumulator_data (AggResItem array)
  */
 struct JoinAggRedistributeReq {
-  static constexpr Uint32 SignalLength = 5;
+  static constexpr Uint32 SignalLength = 9;
   Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
+                          // — RNIL = identity-addressed (RONDB-1120 P4:
+                          // the destination's key was unknown when DBTC
+                          // built the COMPLETE keys section); receiver
+                          // resolves identWord + transid locally and
+                          // self-routes to its owner LDM.
   Uint32 senderAggStateKey; // Sender's own state, echoed in CONF/REF so the
                             // sender resumes the correct state (D25 fix).
   Uint32 keyLen;          // Group key length in bytes
   Uint32 valueLen;        // Accumulator data length in bytes
   Uint32 requestInfo;     // Flags (RI_NEED_CONF)
+  Uint32 identWord;       // packIdentWord(queryTag, cteId, 0)
+  Uint32 transid[2];      // For the identity resolution above (the
+                          // redistribute signals carried no transid
+                          // before P4)
+  Uint32 senderRef;       // Reply-to for CONF/REF.  RONDB-1120 P4: an
+                          // identity-addressed REQ may be
+                          // owner-FORWARDED on the target node, which
+                          // makes the signal-header sender the
+                          // forwarding instance — replies must go to
+                          // this explicit ref instead.
 
   enum { KeySectionNum = 0, ValueSectionNum = 1 };
   enum RequestInfoBits { RI_NEED_CONF = 0x1 };
@@ -282,13 +305,23 @@ struct JoinAggRedistributeRef {
 /**
  * JOIN_AGG_FINAL_REP — fire-and-forget report that a node has finished
  * sending all its REDISTRIBUTE_REQ messages for a CTE materialization.
- * When all participating nodes have sent FINAL_REP, the CTE transitions
- * to CTE_READY and can serve CTE_LOOKUP_REQ.
+ * Each destination waits for FINAL_REP from every peer AND merges all
+ * REDISTRIBUTE_REQs declared by those reports before becoming CTE_READY.
+ * Parking and owner forwarding may deliver FINAL_REP before earlier rows.
+ * A nonzero errorCode aborts the peer's redistribution instead of waiting
+ * for rows or FINALs that the failing node will never send.
  */
 struct JoinAggFinalRep {
-  static constexpr Uint32 SignalLength = 2;
-  Uint32 aggStateKey;     // JoinAggregationState pool index
+  static constexpr Uint32 SignalLength = 8;
+  Uint32 aggStateKey;     // JoinAggregationState pool index — RNIL =
+                          // identity-addressed (RONDB-1120 P4), see
+                          // JoinAggRedistributeReq::aggStateKey
   Uint32 senderNodeId;    // Which node finished redistribution
+  Uint32 identWord;       // packIdentWord(queryTag, cteId, 0)
+  Uint32 transid[2];
+  Uint32 redistributeCountLo; // Number of logical REDISTRIBUTE_REQs sent
+  Uint32 redistributeCountHi; // to THIS destination, low/high 32 bits
+  Uint32 errorCode;           // Zero on success; counts ignored on failure
 };
 
 #undef JAM_FILE_ID
