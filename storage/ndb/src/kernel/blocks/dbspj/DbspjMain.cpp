@@ -10941,7 +10941,10 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
          TreeNode::T_NULL_ROW_DEFERRED_RESTART)) {
       jam();
       treeNodePtr.p->m_bits &= ~TreeNode::T_NULL_ROW_DEFERRED_RESTART;
-      scanFrag_parent_batch_complete(signal, requestPtr, treeNodePtr);
+      if ((requestPtr.p->m_state & Request::RS_ABORTING) == 0) {
+        jam();
+        scanFrag_parent_batch_complete(signal, requestPtr, treeNodePtr);
+      }
     }
 
     /**
@@ -10971,7 +10974,8 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
  * execJOIN_AGG_NULL_ROW_REF
  *
  * DBLQH failed to process the null-extended row (e.g. aggregate state
- * not found or invalid signal format). Abort the request.
+ * not found or invalid signal format). Abort the request and retire the
+ * expected reply, just as for CONF, so abort cleanup can complete.
  */
 void Dbspj::execJOIN_AGG_NULL_ROW_REF(Signal *signal) {
   jamEntry();
@@ -10982,7 +10986,31 @@ void Dbspj::execJOIN_AGG_NULL_ROW_REF(Signal *signal) {
   requestPtr.i = ref->requestPtrI;
   m_request_pool.getPtr(requestPtr);
 
+  Ptr<TreeNode> treeNodePtr;
+  treeNodePtr.i = ref->treeNodePtrI;
+  m_treenode_pool.getPtr(treeNodePtr);
+  const Uint32 Tnode = refToNode(signal->getSendersBlockRef());
+
+  // Abort first so counting the reply cannot resume congested operations.
   abort(signal, requestPtr, ref->errorCode);
+
+  if (treeNodePtr.p->isLookup()) {
+    jam();
+    lookup_countSignal(signal, requestPtr, treeNodePtr, 1);
+  } else {
+    jam();
+    ndbassert(requestPtr.p->m_lookup_node_data[Tnode] >= 1);
+    requestPtr.p->m_lookup_node_data[Tnode] -= 1;
+    ndbassert(requestPtr.p->m_outstanding >= 1);
+    requestPtr.p->m_outstanding -= 1;
+
+    ScanFragData &sfData = treeNodePtr.p->m_scanFrag_data;
+    ndbassert(sfData.m_null_row_outstanding >= 1);
+    sfData.m_null_row_outstanding -= 1;
+    jamDataDebug(sfData.m_null_row_outstanding);
+    treeNodePtr.p->m_bits &= ~TreeNode::T_NULL_ROW_DEFERRED_RESTART;
+  }
+  checkBatchComplete(signal, requestPtr);
 }
 
 Uint32 Dbspj::lookup_execNODE_FAILREP(Signal *signal, Ptr<Request> requestPtr,
