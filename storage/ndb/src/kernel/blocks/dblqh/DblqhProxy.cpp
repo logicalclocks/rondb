@@ -3469,13 +3469,10 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
     if (state == nullptr) continue;
     if (refToNode(state->m_senderRef) != failedNodeId) continue;
     const JoinAggregationState::State aggState = state->m_state.load();
-    /* Phases with no local continuation, or whose continuation has
-     * already retired itself: FINALIZING / SENDING_RESULTS self-mark
-     * NODE_FAIL_ABORT in checkJoinAggNodeFailed and CTE_REDISTRIBUTING
-     * reaches ERROR through the node-fail counter check.  CTE_READY is
-     * a materialized CTE being probed - nothing local runs against it,
-     * and without a scan referencing it nothing else would ever mark
-     * it, so it must be reclaimed here. */
+    /* CTE owners mark NODE_FAIL_ABORT in their node-failure sweep,
+     * including paused redistribution and ready states. Other aggregation
+     * continuations mark it in checkJoinAggNodeFailed. Reclaim these and
+     * the remaining inactive phases only after local failure cleanup. */
     if (aggState == JoinAggregationState::NODE_FAIL_ABORT ||
         aggState == JoinAggregationState::SETUP_COMPLETE ||
         aggState == JoinAggregationState::COMPLETED ||

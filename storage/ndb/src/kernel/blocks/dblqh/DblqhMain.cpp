@@ -17160,8 +17160,15 @@ void Dblqh::abortCteOnNodeFailure(Signal *signal,
     return;
   }
   const Uint32 tcNode = refToNode(state->m_senderRef);
-  // Coordinator-death reclamation is handled separately.
-  if (tcNode == nodeId || !getNodeInfo(tcNode).m_connected) {
+  if (tcNode == nodeId) {
+    jam();
+    // A paused redistribution has no continuation to notice the failure.
+    // Stop all CTE phases here; the proxy releases the shared state after
+    // local node-failure cleanup has completed.
+    state->m_state.store(JoinAggregationState::NODE_FAIL_ABORT);
+    return;
+  }
+  if (!getNodeInfo(tcNode).m_connected) {
     return;
   }
   const JoinAggregationState::State phase = state->m_state.load();
@@ -20199,9 +20206,13 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
       /* Drain queued groups that arrived during finalization */
       processRedistQueue(signal, state, aggStateKey);
-      if (state->m_state.load() == JoinAggregationState::ERROR) {
+      if (state->m_state.load() == JoinAggregationState::ERROR ||
+          state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
         jam();
-        return;  /* processRedistQueue hit an error */
+        /* processRedistQueue hit an error, or the scan sweep on another
+         * worker marked coordinator death meanwhile; abortCteRedistribution
+         * keeps that marker, so do not overwrite it with CTE_REDISTRIBUTING. */
+        return;
       }
 
       state->m_state.store(JoinAggregationState::CTE_REDISTRIBUTING);
@@ -22802,6 +22813,11 @@ void Dblqh::abortCteRedistribution(Signal *signal,
                                     JoinAggregationState *state,
                                     Uint32 errorCode, bool notifyPeers) {
   jam();
+  if (state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+    // A surviving peer may still reply while deferred release is pending.
+    // Keep the coordinator-failure marker and leave cleanup to the proxy.
+    return;
+  }
   const bool firstError =
       state->m_state.load() != JoinAggregationState::ERROR;
   if (state->m_error_code == 0) {
