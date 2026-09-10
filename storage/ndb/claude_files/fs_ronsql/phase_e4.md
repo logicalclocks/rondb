@@ -1,8 +1,8 @@
 # E4 — L2 vector-level equivalence (2026-09-10)
 
-**Status: L2 implemented; six review corrections applied, user verification
-pending. A6 captured Java SQL corpus regression passed; unit-test confirmation
-and A6 MTR coverage remain pending; see §§6–7.**
+**Status: A6 corpus regression, Go unit tests and single/repeated A6 MTR
+runs passed (user-confirmed). The earlier L1/L2 MTR review reruns remain
+unconfirmed; see §§6–7. Known engine defects and E8 acceptance remain open.**
 
 Sections 1 and 5 describe the initial commit `12f397e589f` and its recorded
 results. Those results do not verify the subsequent review corrections.
@@ -186,7 +186,8 @@ without re-recording.  Next: E5 (benchmarks).
 
 ## 6. Review corrections and remaining evidence (2026-09-10)
 
-Applied corrections (not yet built or tested after review):
+Applied corrections (Go unit tests now user-confirmed; earlier L1/L2 MTR
+review reruns remain unconfirmed):
 
 1. Limit missing-versus-NULL acceptance to LEFT snowflake comparisons,
    validate declared columns, and compare the explicit MySQL model strictly.
@@ -206,16 +207,17 @@ Applied corrections (not yet built or tested after review):
 
 Next evidence to collect:
 
-- [ ] User-run verification in §3, including the new shell runner tests.
+- [x] User confirmed `go test ./internal/fsq/... ./internal/shell` passed.
+- [ ] Confirm the §3 `ronsql_fs_templates` and `ronsql_fs_vectors` MTR
+  reruns after the review corrections. The new A6 MTR test is separate.
   Agent checks remain read-only patch/report inspection and
-  `git diff --check`; user-run A6 cluster evidence is recorded in §7.
-  No successful post-fix full unit-test or MTR output has been supplied.
+  `git diff --check`; user-run A6 evidence is recorded in §7.
 - [x] A6 implementation: `.fs_verify --golden` executes captured Java
   `queryOnline` against fixture-backed data and compares the Go MySQL twin
   and RonSQL vectors using identical keys/time; reports retain provenance.
 - [x] A6 cluster execution evidence: single-fixture and full-corpus
   user runs completed; the full run passes with F0/F7 expected rejections.
-  Unit-test confirmation and automated regression coverage remain in §7.
+  Unit tests and single/repeated A6 MTR runs also passed; see §7.
 
 These are tracked in `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
 Known engine defects remain separate tasks. Discovery/regression success
@@ -225,8 +227,8 @@ acceptance; E8 remains deferred.
 ## 7. A6 implementation and user verification
 
 The twelve A6 implementation patches and follow-up fixes are applied.
-The user-built runner has passed the cluster regression below; a successful
-post-fix full unit-test run has not yet been reported.
+The user confirmed the cluster regression below, the post-fix Go unit tests,
+and single/repeated A6 MTR runs passed.
 The implementation adds manifest-checked capture loading, typed DTO
 binding, deterministic fixture data and ownership-scoped loading/cleanup,
 captured-Java versus Go-MySQL comparison, RonSQL vector comparison, serial
@@ -282,24 +284,39 @@ the exporter-source and tracked-diff hashes remain in the report.
   F7: single/1, single/2 and single/9 still reject binary output.
 
 This establishes A6 discovery/regression evidence for the captured corpus,
-not full Hopsworks support. No successful post-fix full unit-test run or
-new A6 MTR run is claimed.
+not full Hopsworks support.
+
+### User-confirmed unit and MTR verification (2026-09-10)
+
+The user confirmed all three commands passed after the final fixes:
+
+- `go test ./internal/fsq/... ./internal/shell`
+- `./mtr --suite=ronsql_fs ronsql_fs_golden`
+- `./mtr --suite=ronsql_fs --repeat=2 ronsql_fs_golden`
+
+The MTR test compares the corpus summary with its checked-in baseline and
+independently queries MySQL for zero remaining `golden_1_fs`/`golden_2_fs`
+databases. The repeated run also exercises fresh report directories and
+fixture recreation. This confirmation does not cover the separate earlier
+`ronsql_fs_templates`/`ronsql_fs_vectors` review reruns.
+The agent did not execute builds or tests.
 
 Remaining evidence and follow-up:
 
-- [ ] User: run `go test ./internal/fsq/... ./internal/shell` from
-  `tools/rondb-cli`, rebuild the CLI, and perform the §3 E4 regression checks.
+- [x] User: rebuild the CLI and run the fsq/shell Go unit tests.
+- [ ] Confirm the separate §3 L1/L2 MTR review reruns.
 - [x] User: run `aggregate_single`, then the complete golden corpus.
 - [x] Inspect both comparison outcomes, rejection/untested counts,
   selected versus attempted fixtures, and recorded cleanup errors.
-- [ ] Preserve the JSON artifacts durably. Record CLI/server binary revisions
-  with subsequent runs and independently confirm fixture database cleanup.
+- [ ] Preserve the JSON artifacts durably and record CLI/server binary
+  revisions with subsequent runs.
+- [x] Independently confirm fixture database cleanup through the MTR query.
 - [x] Add `ronsql_fs_golden` MTR regression coverage for the captured corpus.
-  The proposed baseline uses the observed CLI summary above and expects
-  zero remaining fixture databases; it has not yet been verified by MTR.
-- [ ] User: rebuild, then run and repeat the new MTR test without recording
-  over the baseline first. Engine defects remain separate tasks in
-  `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
+  The observed-summary baseline and zero-database check are user-verified.
+- [x] User: run the new MTR test once and with `--repeat=2`.
+
+Engine defects remain separate tasks in
+`mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
 
 From `debug_build/mysql-test`:
 

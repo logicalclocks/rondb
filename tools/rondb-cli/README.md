@@ -307,8 +307,8 @@ Forced termination cannot guarantee cleanup.
 
 A6 does not execute `queryOnlineScan` or the Hopsworks pk-read fallback and
 does not establish E8 requirements acceptance. The first full user-run corpus
-regression passed on 2026-09-10; unit-test confirmation and A6 MTR coverage
-remain pending. For results and remaining verification, see
+regression passed on 2026-09-10. The user also confirmed the Go unit tests
+and single/repeated A6 MTR runs passed. For results and remaining coverage, see
 [the E4 plan](../../storage/ndb/claude_files/fs_ronsql/phase_e4.md#7-a6-implementation-and-user-verification)
 and [the deferred-work list](../../mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md).
 

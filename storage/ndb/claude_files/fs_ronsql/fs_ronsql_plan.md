@@ -536,13 +536,15 @@ fold to array, snowflake overlay per chain with LEFT miss semantics,
 batch GROUP BY defaults, prefix application, window literal from one
 UTC reference), `.fs_verify --vectors`, `t/ronsql_fs_vectors.test`.
 The initial run recorded 21 passing specs and one expected F0 rejection.
-Six subsequent review corrections are applied but await user-run builds
-and tests. The A6 runner (`.fs_verify --golden`) is now implemented,
+Six subsequent review corrections are applied and Go unit tests passed;
+the earlier L1/L2 MTR review reruns remain unconfirmed.
+The A6 runner (`.fs_verify --golden`) is now implemented,
 including captured Java MySQL execution, matching fixture data and
 provenance-bearing comparison reports. The user-run A6 corpus regression
 passed: 45 fixtures, 183 MySQL passes, 125 RonSQL passes, 15 expected
-F0/F7 rejections and 43 RonSQL-untested requests. Unit-test confirmation
-and repeatable A6 cluster/MTR coverage remain pending; see `phase_e4.md` §7.
+F0/F7 rejections and 43 RonSQL-untested requests. The user also confirmed
+the Go unit tests and single/repeated A6 MTR runs passed, including fixture
+database cleanup; see `phase_e4.md` §7.
 The original `--vectors` mode still uses reconstructed queries and
 independent data-model expectations.
 

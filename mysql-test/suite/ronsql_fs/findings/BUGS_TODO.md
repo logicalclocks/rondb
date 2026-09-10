@@ -40,10 +40,10 @@ F8 was a framework fixture issue and is already fixed.
   that adding cli to --engines executes an additional comparison.
 - [x] E4: implement vector-level comparison (--vectors) using bound DTO
   groups, reconstructed MySQL queries and independent data-model vectors.
-  The six review corrections are applied; their verification is pending.
-- [ ] E4 review verification (user-run): rebuild the CLI, run the fsq
-  and shell unit tests, then verify ronsql_fs_templates and
-  ronsql_fs_vectors against their existing recorded results.
+  The six review corrections are applied; Go unit tests passed.
+- [ ] E4 review verification (user-run): confirm ronsql_fs_templates and
+  ronsql_fs_vectors against their existing recorded results after review.
+  Passing A6 MTR runs do not replace these separate L1/L2 tests.
 - [x] A6 implementation: --golden runs captured Java queryOnline against
   matching fixture data, compares the Go MySQL twin and RonSQL vectors,
   and retains shared keys/time, provenance and comparison reports.
@@ -52,15 +52,18 @@ F8 was a framework fixture issue and is already fixed.
   15 expected rejections (12 F0, 3 F7) and 43 RonSQL-untested requests.
   No setup/cleanup errors or remaining owned databases were reported.
   Evidence and the empty-result F7 caveat are in phase_e4.md §7.
-- [ ] A6 verification follow-up: confirm the post-fix full unit-test run,
-  preserve report artifacts, record binary revisions on subsequent runs,
-  and independently confirm fixture database cleanup.
+- [x] A6 Go unit tests: user confirmed the post-fix
+  go test ./internal/fsq/... ./internal/shell run passed.
+- [x] A6 cleanup verification: the passing MTR test independently checked
+  zero remaining fixture databases.
+- [ ] Evidence retention: preserve report artifacts and record binary
+  revisions on subsequent runs.
 - [x] A6 automation implementation: ronsql_fs_golden runs --golden,
   retains uniquely named report directories, compares the observed summary
   baseline and checks both fixture databases are gone.
-- [ ] A6 automation verification (user-run): run ronsql_fs_golden, then
-  --repeat=2 without re-recording first; retain logs before another MTR
-  invocation clears them. The MTR baseline is not yet verified.
+- [x] A6 automation verification (user-confirmed, 2026-09-10):
+  ronsql_fs_golden passed both once and with --repeat=2.
+  Retain needed logs before another MTR invocation clears them.
 - [ ] Track coverage of MySQL-only/point-read fallback and queryOnlineScan
   separately: --golden compares MySQL-only DTOs on both MySQL paths, but
   neither golden nor vector mode executes the pk-read fallback or scan

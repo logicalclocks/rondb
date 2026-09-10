@@ -378,9 +378,9 @@ mismatches. The six review corrections await user verification. A separate
 (§3 / A6), Go MySQL twin comparison and RonSQL vector comparison against
 matching fixture data with shared keys/time and retained Java provenance.
 Its first full user-run corpus regression passed with F0/F7 expected
-rejections and MySQL-only coverage reported separately. Unit-test confirmation
-and A6 cluster/MTR automation remain pending, as recorded in
-`phase_e4.md` §§6–7 and
+rejections and MySQL-only coverage reported separately. The user confirmed
+Go unit tests and single/repeated A6 MTR runs passed. Earlier L1/L2 MTR
+review reruns remain unconfirmed, as recorded in `phase_e4.md` §§6–7 and
 `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
 
 ---
