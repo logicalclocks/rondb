@@ -1153,6 +1153,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueRedistQueueDrain(signal, data0);
     return;
   }
+  case ZCONTINUE_FREE_CTE_REDIST_PAGES:
+  {
+    jam();
+    continueFreeCteRedistPages(signal);
+    return;
+  }
   case ZCONTINUE_CTE_AVG_FINALIZE:
   {
     jam();
@@ -22802,14 +22808,17 @@ redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId) {
 static const Uint32 REDIST_PAGES_PER_FREE_BATCH = 256;
 
 /**
- * freeRedistPagesBatch — free up to REDIST_PAGES_PER_FREE_BATCH pages.
- * Returns true if all pages have been freed, false if more remain.
- * Caller is responsible for scheduling CONTINUEB to the proxy block
- * if more pages remain.
+ * Free a detached redistribution page list in bounded batches.
+ * This chain owns only the pages; it must never look up or release an
+ * aggregation state. The state may be released while this chain runs.
+ * CONTINUEB words 1 and 2 carry the page pointer, high word first.
  */
-static bool
-freeRedistPagesBatch(JoinAggregationState *state) {
-  auto *page = state->m_redist_page_head;
+void Dblqh::continueFreeCteRedistPages(Signal *signal) {
+  jam();
+  const Uint64 ptrValue = (Uint64(signal->theData[1]) << 32) |
+                          Uint64(signal->theData[2]);
+  auto *page = reinterpret_cast<JoinAggregationState::RedistPage *>(
+      static_cast<uintptr_t>(ptrValue));
   Uint32 count = 0;
   while (page != nullptr && count < REDIST_PAGES_PER_FREE_BATCH) {
     auto *next = page->next;
@@ -22817,14 +22826,15 @@ freeRedistPagesBatch(JoinAggregationState *state) {
     page = next;
     count++;
   }
-  state->m_redist_page_head = page;
-
-  if (page == nullptr) {
-    state->m_redist_page_ptr = nullptr;
-    state->m_redist_page_remaining = 0;
-    return true;
+  if (page != nullptr) {
+    jam();
+    const Uint64 nextPtr =
+        static_cast<Uint64>(reinterpret_cast<uintptr_t>(page));
+    signal->theData[0] = ZCONTINUE_FREE_CTE_REDIST_PAGES;
+    signal->theData[1] = static_cast<Uint32>(nextPtr >> 32);
+    signal->theData[2] = static_cast<Uint32>(nextPtr);
+    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
   }
-  return false;
 }
 
 /**
@@ -23697,16 +23707,24 @@ void Dblqh::processRedistQueue(Signal *signal,
     }
   }
 
-  /* Queue fully drained — free pages in batches */
+  /* Queue fully drained — detach its pages before starting cleanup.
+   * The proxy's page-free chain also releases the aggregation state;
+   * this live query needs a separate chain that owns only the pages. */
   state->m_redist_queue_head = nullptr;
   state->m_redist_queue_tail = nullptr;
   state->m_redist_queue_count = 0;
-  if (!freeRedistPagesBatch(state)) {
-    /* More pages remain — delegate to proxy block */
+  auto *pages = state->m_redist_page_head;
+  state->m_redist_page_head = nullptr;
+  state->m_redist_page_ptr = nullptr;
+  state->m_redist_page_remaining = 0;
+  if (pages != nullptr) {
     jam();
-    signal->theData[0] = ZCONTINUE_FREE_REDIST_PAGES;
-    signal->theData[1] = aggStateKey;
-    sendSignal(DBLQH_REF, GSN_CONTINUEB, signal, 2, JBB);
+    const Uint64 ptrValue =
+        static_cast<Uint64>(reinterpret_cast<uintptr_t>(pages));
+    signal->theData[0] = ZCONTINUE_FREE_CTE_REDIST_PAGES;
+    signal->theData[1] = static_cast<Uint32>(ptrValue >> 32);
+    signal->theData[2] = static_cast<Uint32>(ptrValue);
+    continueFreeCteRedistPages(signal);
   }
   checkCteReady(signal, state);
 }

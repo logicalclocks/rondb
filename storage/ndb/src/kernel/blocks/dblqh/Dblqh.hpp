@@ -384,6 +384,7 @@ class FsReadWriteReq;
  * instances, and this define region is DBLQH_C-guarded. */
 #define ZCONTINUE_CTE_NODE_FAILURE 56
 #define ZCONTINUE_CTE_SCAN_NODE_FAILURE 57
+#define ZCONTINUE_FREE_CTE_REDIST_PAGES 58
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -3571,6 +3572,7 @@ private:
   void execJOIN_AGG_FINAL_REP(Signal* signal);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
+  void continueFreeCteRedistPages(Signal* signal);
   void continueCteAvgFinalize(Signal* signal, Uint32 aggStateKey);
   void continueCteLimitFinalize(Signal* signal, Uint32 aggStateKey);
   void continueAggInterpTeardown(Signal* signal, AggInterpreter* interp);
