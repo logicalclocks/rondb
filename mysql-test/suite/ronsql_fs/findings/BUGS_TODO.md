@@ -55,8 +55,12 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] A6 verification follow-up: confirm the post-fix full unit-test run,
   preserve report artifacts, record binary revisions on subsequent runs,
   and independently confirm fixture database cleanup.
-- [ ] A6 automation: add repeatable cluster/MTR coverage using first-run
-  evidence. Existing vector MTR coverage does not invoke --golden.
+- [x] A6 automation implementation: ronsql_fs_golden runs --golden,
+  retains uniquely named report directories, compares the observed summary
+  baseline and checks both fixture databases are gone.
+- [ ] A6 automation verification (user-run): run ronsql_fs_golden, then
+  --repeat=2 without re-recording first; retain logs before another MTR
+  invocation clears them. The MTR baseline is not yet verified.
 - [ ] Track coverage of MySQL-only/point-read fallback and queryOnlineScan
   separately: --golden compares MySQL-only DTOs on both MySQL paths, but
   neither golden nor vector mode executes the pk-read fallback or scan

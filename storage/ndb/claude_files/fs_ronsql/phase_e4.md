@@ -294,10 +294,29 @@ Remaining evidence and follow-up:
   selected versus attempted fixtures, and recorded cleanup errors.
 - [ ] Preserve the JSON artifacts durably. Record CLI/server binary revisions
   with subsequent runs and independently confirm fixture database cleanup.
-- [ ] Add repeatable A6 cluster/MTR regression coverage using this first-run
-  evidence; the existing `ronsql_fs_vectors` test exercises reconstructed
-  queries, not this new command. Engine defects remain separate tasks in
+- [x] Add `ronsql_fs_golden` MTR regression coverage for the captured corpus.
+  The proposed baseline uses the observed CLI summary above and expects
+  zero remaining fixture databases; it has not yet been verified by MTR.
+- [ ] User: rebuild, then run and repeat the new MTR test without recording
+  over the baseline first. Engine defects remain separate tasks in
   `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
+
+From `debug_build/mysql-test`:
+
+```bash
+./mtr --suite=ronsql_fs ronsql_fs_golden
+./mtr --suite=ronsql_fs --repeat=2 ronsql_fs_golden
+```
+
+The test locates the source corpus through `MYSQL_TEST_DIR` and uses the
+suite's MySQL/no-key RDRS endpoints. It requires a source checkout and a
+non-Windows host for the corpus symlink. Each invocation keeps its JSON in
+a fresh `log/ronsql_fs_golden-*/report.json` directory under that worker's
+MTR vardir, preventing overwrite on repeat. MTR may clear these logs on a
+later invocation: archive needed reports before starting another run.
+The test never pre-drops or cleans up leaked fixture databases itself.
+Its `.result` pins coverage counts, not just exit status; engine support
+improvements or corpus changes require reviewing the baseline differences.
 
 Known F0 collect and narrowly matched F7 binary rejections may be non-failing;
 `--allow-reject` extends that only to clean rejections. Malformed JSON and
