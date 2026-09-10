@@ -26,9 +26,11 @@
 package cases
 
 import (
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/bind"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/data"
@@ -255,6 +257,153 @@ func TestBindStatementTwinPresenceAndErrors(t *testing.T) {
 			group, err = b.bindStatement(dto, keys)
 			if err != nil || group.MySQL != nil {
 				t.Fatal("an absent MySQL query must remain explicit, never fall back to RonSQL")
+			}
+		})
+	}
+}
+
+func TestBindCapturedDTOs(t *testing.T) {
+	fixtures, err := emit.LoadGoldenFixtures(filepath.Join("..", "testdata", "hopsworks_golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, f := range fixtures {
+		t.Run(name, func(t *testing.T) {
+			out, err := f.CapturedOutput()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Kind != emit.GoldenStatements {
+				return // Gates and definition checks have no statements to bind.
+			}
+			for _, dto := range out.Statements {
+				for _, count := range []int{1, 2} {
+					if count == 2 && !f.Options.Batch {
+						continue
+					}
+					keys := make([]DTOKey, count)
+					for i := range keys {
+						keys[i] = DTOKey{}
+						for _, p := range dto.PreparedStatementParameters {
+							typ := ""
+							for _, fg := range f.FGs {
+								if fg.ID == dto.FeatureGroupID {
+									if feature, ok := fg.Feature(p.Name); ok {
+										typ = feature.Type
+									}
+								}
+							}
+							if typ == "" {
+								t.Fatalf("no feature type for parameter %s", p.Name)
+							}
+							value := bind.Int(int64(7 + i))
+							if p.Name == "currency" {
+								value = []string{"EUR", "USD"}[i]
+							}
+							keys[i][p.Name] = bind.Scalar(bind.LiteralFor(typ, value))
+						}
+					}
+					group, err := BindDTO(dto, keys, f.Options.Batch, data.FSNow)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(group.DTO, dto) || len(group.Statements) != dto.TemplateCount() {
+						t.Fatal("binding changed metadata or dropped a template")
+					}
+					if (group.MySQL == nil) != (dto.QueryOnline == nil) {
+						t.Fatal("binding changed MySQL query presence")
+					}
+					if group.MySQL != nil && bind.Count(*group.MySQL) != 0 {
+						t.Fatal("unbound MySQL marker")
+					}
+					if dto.CollectN != nil && group.MySQL != nil &&
+						!strings.Contains(*group.MySQL, "hopsworks_collect_rank <= "+bind.Int(int64(*dto.CollectN))) {
+						t.Fatal("captured collect cap was not bound")
+					}
+					for _, st := range group.Statements {
+						if bind.Count(st.RonSQL) != 0 {
+							t.Fatal("unbound RonSQL marker")
+						}
+					}
+					if name == "aggregate_composite_batch" && count == 2 &&
+						!strings.Contains(*group.MySQL, "IN ((7, 'EUR'), (8, 'USD'))") {
+						t.Fatalf("composite pairs lost: %s", *group.MySQL)
+					}
+					if name == "collect_batch_gated" && count == 1 &&
+						!strings.Contains(*group.MySQL, "IN (7)") {
+						t.Fatalf("singleton batch lost its list: %s", *group.MySQL)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestBindDTOParameterOrderAndTime(t *testing.T) {
+	dto := emit.Statement{
+		PreparedStatementParameters: []emit.Param{{Name: "b", Index: 2}, {Name: "a", Index: 1}},
+		QueryOnline:                 strp("SELECT ? AS a, ? AS b, ? AS cutoff"),
+		QueryRonsql:                 strp("SELECT ? AS a, ? AS b, ? AS cutoff"),
+		AggregateWindow:             i64p(3600),
+	}
+	now := time.Date(2026, 6, 1, 2, 0, 0, 0, time.FixedZone("UTC+2", 7200))
+	keys := []DTOKey{{"a": bind.Scalar("7"), "b": bind.Scalar(bind.Str("O'Brien?"))}}
+	group, err := BindDTO(dto, keys, false, now)
+	want := "SELECT 7 AS a, 'O''Brien?' AS b, '2026-05-31 23:00:00' AS cutoff"
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *group.MySQL != want || group.Statements[0].RonSQL != want || !reflect.DeepEqual(group.DTO, dto) {
+		t.Fatalf("parameter order, shared UTC cutoff or DTO changed: %+v", group)
+	}
+}
+
+func TestBindDTOInvalid(t *testing.T) {
+	t.Run("empty-batch", func(t *testing.T) {
+		dto := emit.Statement{PreparedStatementParameters: []emit.Param{{Name: "a", Index: 1}}}
+		if _, err := BindDTO(dto, nil, true, data.FSNow); err == nil || !strings.Contains(err.Error(), "nonempty batch") {
+			t.Fatalf("empty batch must be rejected: %v", err)
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		change func(*emit.Statement, *[]DTOKey, *time.Time)
+	}{
+		{"empty-keys", func(_ *emit.Statement, k *[]DTOKey, _ *time.Time) { *k = nil }},
+		{"multiple-single-keys", func(_ *emit.Statement, k *[]DTOKey, _ *time.Time) { *k = append(*k, (*k)[0]) }},
+		{"missing-key", func(_ *emit.Statement, k *[]DTOKey, _ *time.Time) { delete((*k)[0], "a") }},
+		{"list-key", func(_ *emit.Statement, k *[]DTOKey, _ *time.Time) { (*k)[0]["a"] = bind.List([]string{"7"}) }},
+		{"empty-literal", func(_ *emit.Statement, k *[]DTOKey, _ *time.Time) { (*k)[0]["a"] = bind.Scalar("") }},
+		{"no-parameters", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.PreparedStatementParameters = nil }},
+		{"zero-index", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.PreparedStatementParameters[0].Index = 0 }},
+		{"large-index", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.PreparedStatementParameters[0].Index = 3 }},
+		{"duplicate-index", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) {
+			s.PreparedStatementParameters = append(s.PreparedStatementParameters, emit.Param{Name: "b", Index: 1})
+		}},
+		{"duplicate-name", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) {
+			s.PreparedStatementParameters = append(s.PreparedStatementParameters, emit.Param{Name: "a", Index: 2})
+		}},
+		{"empty-name", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.PreparedStatementParameters[0].Name = "" }},
+		{"missing-time", func(s *emit.Statement, _ *[]DTOKey, n *time.Time) { s.AggregateWindow = i64p(3600); *n = time.Time{} }},
+		{"negative-window", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.AggregateWindow = i64p(-1) }},
+		{"overflow-window", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.AggregateWindow = i64p(1<<63 - 1) }},
+		{"zero-collect", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.CollectN = intp(0) }},
+		{"mysql-markers", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.QueryOnline = strp("SELECT ?, ?") }},
+		{"ronsql-markers", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.QueryRonsql = strp("SELECT ?, ?") }},
+		{"snowflake-markers", func(s *emit.Statement, _ *[]DTOKey, _ *time.Time) { s.SnowflakeTemplates = []string{"SELECT ?, ?"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dto := emit.Statement{PreparedStatementIndex: 7,
+				PreparedStatementParameters: []emit.Param{{Name: "a", Index: 1}},
+				QueryOnline:                 strp("SELECT ?"), QueryRonsql: strp("SELECT ?")}
+			keys, batch, now := []DTOKey{{"a": bind.Scalar("7")}}, false, data.FSNow
+			tc.change(&dto, &keys, &now)
+			group, err := BindDTO(dto, keys, batch, now)
+			if err == nil || !strings.Contains(err.Error(), "DTO 7") {
+				t.Fatalf("wanted a DTO-specific error, got %v", err)
+			}
+			if !reflect.DeepEqual(group, StatementGroup{}) {
+				t.Fatalf("error returned a partial group: %+v", group)
 			}
 		})
 	}

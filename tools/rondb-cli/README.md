@@ -223,6 +223,95 @@ rondb version      # Print version
 rondb --help       # Show usage
 ```
 
+### Hopsworks golden-query verification (A6)
+
+The permanent RonDB-side runner consumes the committed JSON corpus produced by
+the Java `HopsworksGoldenDump` utility in the Hopsworks tree. Java/Maven is not
+needed to run it. This is separate from `.fs_verify --vectors`: it executes
+captured Java `queryOnline` SQL, compares the reconstructed Go MySQL query with
+that reference, and compares Go RonSQL vectors with the captured MySQL result.
+
+Use a disposable RonDB cluster with MySQL and RDRS pointing at the same data.
+The MySQL account needs CREATE/DROP DATABASE, CREATE TABLE, INSERT and SELECT
+permissions; RDRS must be authorized to query the fixture databases. Known
+engine defects can still cause errors or crashes; an all-green run is not
+assumed.
+
+The runner creates and drops the captured `golden_<featurestore-id>_fs`
+databases, one fixture at a time. Existing databases are refused, never reused
+or removed. Do not run golden jobs concurrently against the same cluster or
+modify their databases while a job is running. It loads its own small,
+versioned data set; do not use `.fs_load` for this mode.
+
+From `tools/rondb-cli`, after building `rondb`:
+
+```bash
+# Start with one serving fixture. Adjust hosts, ports and authentication.
+./rondb --host localhost --mysql-port 3306 --rdrs-port 4406 --no-rondis \
+  -e ".fs_verify --golden internal/fsq/testdata/hopsworks_golden --fixture aggregate_single --json /tmp/a6-single-001.json"
+
+# Run the complete corpus, using a different new report filename.
+./rondb --host localhost --mysql-port 3306 --rdrs-port 4406 --no-rondis \
+  -e ".fs_verify --golden internal/fsq/testdata/hopsworks_golden --json /tmp/a6-corpus-001.json --quiet"
+```
+
+Use `--mysql-host` and `--rdrs-host` for separate endpoints,
+`RONDB_MYSQL_USER` / `RONDB_MYSQL_PASSWORD` for MySQL credentials and
+`RONDB_RDRS_API_KEY` for RDRS authentication. TLS uses the normal CLI flags
+`--tls` or `--rdrs-tls`. Do not disable MySQL or RDRS for a full comparison.
+
+Golden-mode options (inside the `-e` command):
+
+- `--golden DIR --json NEW_FILE` are required. The entire corpus manifest,
+  file inventory and hashes are checked even when selecting one fixture.
+  The report's parent directory must already exist. Existing report files
+  and paths inside the corpus (including directory symlink aliases) are refused.
+- `--fixture NAME` selects the exact fixture name, without `.json`.
+- `--timeout 30s` bounds setup, connection/probe operations and each query;
+  it is not a whole-run deadline. `--cleanup-timeout 30s` gives cleanup a
+  separate deadline, including after cancellation.
+- `--tolerance 1e-9` controls floating-point comparison tolerance.
+- `--allow-reject` permits unexpected clean SQL rejections, reported
+  separately. It never accepts malformed JSON, transport errors or mismatches.
+- `--quiet` suppresses successful details, not failures or the summary.
+  Vector-mode options such as `--db`, `--seed`, `--count` and `--threads`
+  are not accepted; captured database names, deterministic keys and the
+  fixed data clock are used.
+
+The JSON report records selected fixtures and Java provenance, data version
+and UTC reference time, bound SQL and query outcomes, both comparisons,
+and setup/cleanup errors. After a started run it is written even when checks
+fail; input/configuration failures before execution may produce no report.
+An interrupted process or write failure can leave an empty or partial report;
+use a new filename on retry.
+
+Read `SUMMARY golden` as coverage counts, not a requirements certificate:
+MySQL passes, RonSQL passes, rejections and untested requests are separate.
+Definition/gate fixtures and empty statement sets run no SQL. DTOs without
+RonSQL templates still compare both MySQL queries and report RonSQL UNTESTED.
+A fixture can therefore pass without establishing RonSQL support.
+Collect templates recognize the narrow existing F0 rejection; snowflake_binary
+DTO 1 recognizes the observed F7 type-17 pass-through rejection. LEFT
+missing-versus-NULL equivalence applies only to all-LEFT descendant subtrees.
+Other failures remain errors. A failing or stopped/incomplete corpus run
+returns nonzero with `-e`; a classification-only run may return zero but
+explicitly reports no successful SQL comparisons.
+
+On Ctrl-C/SIGTERM, the runner attempts bounded cleanup. Setup uncertainty,
+connection-close failures or cleanup failures stop further fixtures.
+Inspect `errors` and `remainingDatabases` in the report before retrying.
+A failed CREATE may have succeeded on the server without acknowledgement;
+that database is not claimed and may not appear in `remainingDatabases`.
+Inspect the named database manually; never delete databases by a broad prefix.
+Forced termination cannot guarantee cleanup.
+
+A6 does not execute `queryOnlineScan` or the Hopsworks pk-read fallback and
+does not establish E8 requirements acceptance. The first full user-run corpus
+regression passed on 2026-09-10; unit-test confirmation and A6 MTR coverage
+remain pending. For results and remaining verification, see
+[the E4 plan](../../storage/ndb/claude_files/fs_ronsql/phase_e4.md#7-a6-implementation-and-user-verification)
+and [the deferred-work list](../../mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md).
+
 ### Benchmarks
 
 rondb-cli includes built-in benchmarks for Rondis, SQL, and REST API (RDRS). Use `.help internal` to see all benchmark commands.

@@ -1,11 +1,12 @@
 # E4 — L2 vector-level equivalence (2026-09-10)
 
 **Status: L2 implemented; six review corrections applied, user verification
-pending. Captured Java SQL execution (A6) remains open; see §6.**
+pending. A6 captured Java SQL corpus regression passed; unit-test confirmation
+and A6 MTR coverage remain pending; see §§6–7.**
 
 Sections 1 and 5 describe the initial commit `12f397e589f` and its recorded
 results. Those results do not verify the subsequent review corrections.
-Sections 2–4 and 6 describe the revised behavior and remaining work.
+Sections 2–4 and 6–7 describe the revised behavior and remaining work.
 
 ## 1. Initial implementation (12f397e589f)
 
@@ -206,15 +207,102 @@ Applied corrections (not yet built or tested after review):
 Next evidence to collect:
 
 - [ ] User-run verification in §3, including the new shell runner tests.
-  Only patch-content checks and `git diff --check` have been performed
-  during this review; no new build, unit-test or MTR success is claimed.
-- [ ] A6: execute captured Java `queryOnline` SQL against matching
-  fixture-backed data and compare it with the reconstructed MySQL twin
-  and RonSQL vector path, with identical keys/time and fixture provenance.
-  Current E4 executes reconstructed queries; E2 golden conformance and
-  independent data-model expectations do not complete this requirement.
+  Agent checks remain read-only patch/report inspection and
+  `git diff --check`; user-run A6 cluster evidence is recorded in §7.
+  No successful post-fix full unit-test or MTR output has been supplied.
+- [x] A6 implementation: `.fs_verify --golden` executes captured Java
+  `queryOnline` against fixture-backed data and compares the Go MySQL twin
+  and RonSQL vectors using identical keys/time; reports retain provenance.
+- [x] A6 cluster execution evidence: single-fixture and full-corpus
+  user runs completed; the full run passes with F0/F7 expected rejections.
+  Unit-test confirmation and automated regression coverage remain in §7.
 
 These are tracked in `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
 Known engine defects remain separate tasks. Discovery/regression success
 for supported checks does not establish full Hopsworks requirements
 acceptance; E8 remains deferred.
+
+## 7. A6 implementation and user verification
+
+The twelve A6 implementation patches and follow-up fixes are applied.
+The user-built runner has passed the cluster regression below; a successful
+post-fix full unit-test run has not yet been reported.
+The implementation adds manifest-checked capture loading, typed DTO
+binding, deterministic fixture data and ownership-scoped loading/cleanup,
+captured-Java versus Go-MySQL comparison, RonSQL vector comparison, serial
+orchestration, live adapters, and `.fs_verify --golden` with JSON reporting.
+The existing `--vectors` mode and its independent data-model oracle remain
+separate; the A6 oracle is the captured Java MySQL execution result.
+
+Data version `a6-v1` uses `2026-06-01T00:00:00Z` and fixed keys covering
+present/absent entities, window boundaries, NULLs, string keys and composite
+pairs. Batch DTOs retain batch syntax for both singleton and combined key
+requests. SQL is bound, not rewritten to rename captured databases.
+Fixtures run serially against their own matching data; existing databases
+are refused and only successfully created databases are owned for cleanup.
+
+Follow the [CLI run guide](../../../../tools/rondb-cli/README.md#hopsworks-golden-query-verification-a6).
+Use a disposable cluster, a new report path outside the corpus, and actual
+MySQL/RDRS ports (the examples use 3306/4406; MTR ports can differ).
+
+### User-run cluster evidence (2026-09-10)
+
+The initial `aggregate_single` run passed all four requests on both paths.
+The first full run reproduced the existing F7 binary-projection rejection.
+A narrowly scoped F7 expectation was added; the later CMake
+`CONFIGURE_DEPENDS` fix made newly added Go sources participate in rebuilds.
+The rebuilt client then produced:
+
+```text
+SUMMARY golden selected=45 attempted=45 failed=0 mysql-pass=183 ronsql-pass=125 ronsql-rejected=15 ronsql-untested=43
+```
+
+Evidence: user-run `debug_build/bin/rondb`, MySQL port 13001 and no-key
+RDRS port 13005, report `/tmp/a6-corpus-003.json`. The report was inspected
+read-only; its SHA-256 is
+`c757dc9646d837704740c9ed08f238828f71c201c0533befe89f35574d7891d7`.
+This is a local artifact, not a committed report; preserve it outside
+temporary storage before treating this record as durable evidence.
+CLI/server binary revisions were not captured.
+
+The report uses schema 1, data `a6-v1`, tolerance `1e-9` and
+`allowReject=false`. Java provenance identifies Hopsworks commit
+`f85a653bcafd1058b4da5c31daf31de43f818bbf` with a dirty tracked worktree;
+the exporter-source and tracked-diff hashes remain in the report.
+
+- 27 statement fixtures ran 183 requests; all Java/Go MySQL comparisons passed.
+- 18 fixtures were non-execution classifications: 14 gates and 4 definitions.
+- 125 RonSQL requests passed; 15 were expected rejections (12 F0, 3 F7).
+- 43 requests had no RonSQL template: both MySQL queries were compared,
+  but RonSQL remained UNTESTED.
+- No stop flags, setup/cleanup errors or remaining owned databases were
+  recorded. This is report evidence, not an independent database inventory.
+- Seven binary-fixture requests returned no RonSQL rows and were labelled
+  `PASS(was-expected-reject)`. These empty-result comparisons do not retire
+  F7: single/1, single/2 and single/9 still reject binary output.
+
+This establishes A6 discovery/regression evidence for the captured corpus,
+not full Hopsworks support. No successful post-fix full unit-test run or
+new A6 MTR run is claimed.
+
+Remaining evidence and follow-up:
+
+- [ ] User: run `go test ./internal/fsq/... ./internal/shell` from
+  `tools/rondb-cli`, rebuild the CLI, and perform the §3 E4 regression checks.
+- [x] User: run `aggregate_single`, then the complete golden corpus.
+- [x] Inspect both comparison outcomes, rejection/untested counts,
+  selected versus attempted fixtures, and recorded cleanup errors.
+- [ ] Preserve the JSON artifacts durably. Record CLI/server binary revisions
+  with subsequent runs and independently confirm fixture database cleanup.
+- [ ] Add repeatable A6 cluster/MTR regression coverage using this first-run
+  evidence; the existing `ronsql_fs_vectors` test exercises reconstructed
+  queries, not this new command. Engine defects remain separate tasks in
+  `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
+
+Known F0 collect and narrowly matched F7 binary rejections may be non-failing;
+`--allow-reject` extends that only to clean rejections. Malformed JSON and
+other errors still fail A6.
+MySQL-only DTOs are compared on MySQL but remain RonSQL UNTESTED; definition
+and gate captures provide classification, not execution evidence.
+`queryOnlineScan`, pk-read fallback execution and full E8 acceptance remain
+outside this command. Old E4 results in §5 do not verify these new paths.

@@ -243,10 +243,78 @@ func (b *builder) keyArg(fg spec.FeatureGroup, name string, values []interface{}
 	return bind.List(lits)
 }
 
+// DTOKey holds pre-rendered scalar literals by parameter name. Extra names
+// are allowed so one key can serve several DTOs with different parameters.
+type DTOKey map[string]bind.Arg
+
+// BindDTO binds captured or reconstructed queryOnline and RonSQL templates
+// without rebuilding SQL or changing the DTO. Parameter indexes are 1-based.
+// Single requests contain exactly one key; batches contain one or more keys
+// and use one list marker, including tuple lists for composite entity keys.
+// QueryOnlineScan remains unbound in DTO; it is not part of this L2 path.
+// now must be explicit for windowed statements so both references use the
+// same cutoff. Callers must render key literals according to feature types.
+func BindDTO(st emit.Statement, keys []DTOKey, batch bool, now time.Time) (StatementGroup, error) {
+	fail := func(reason string) (StatementGroup, error) {
+		return StatementGroup{}, fmt.Errorf("DTO %d: %s", st.PreparedStatementIndex, reason)
+	}
+	if len(keys) == 0 || (!batch && len(keys) != 1) {
+		return fail("need one key for a single request or a nonempty batch")
+	}
+	if len(st.PreparedStatementParameters) == 0 {
+		return fail("no entity-key parameters")
+	}
+	names := make([]string, len(st.PreparedStatementParameters))
+	seen := map[string]bool{}
+	for _, p := range st.PreparedStatementParameters {
+		if p.Name == "" || seen[p.Name] || p.Index < 1 || p.Index > len(names) || names[p.Index-1] != "" {
+			return fail("parameter names must be unique and indexes must cover 1..N exactly once")
+		}
+		names[p.Index-1], seen[p.Name] = p.Name, true
+	}
+	if st.AggregateWindow != nil {
+		seconds := *st.AggregateWindow
+		if now.IsZero() || seconds < 0 || seconds > int64((1<<63-1)/int64(time.Second)) {
+			return fail("window needs an explicit reference time and a nonnegative duration that fits time.Duration")
+		}
+	}
+	if st.CollectN != nil && *st.CollectN <= 0 {
+		return fail("collect limit must be positive")
+	}
+	var args []bind.Arg
+	var values []string
+	for row, key := range keys {
+		literals := make([]string, len(names))
+		for i, name := range names {
+			a, ok := key[name]
+			if !ok || a.IsList || strings.TrimSpace(a.Literal) == "" {
+				return fail(fmt.Sprintf("key %d parameter %s needs a scalar literal", row, name))
+			}
+			literals[i] = a.Literal
+		}
+		if !batch {
+			for _, literal := range literals {
+				args = append(args, bind.Scalar(literal))
+			}
+		} else if len(literals) == 1 {
+			values = append(values, literals[0])
+		} else {
+			values = append(values, "("+strings.Join(literals, ", ")+")")
+		}
+	}
+	if batch {
+		args = []bind.Arg{bind.List(values)}
+	}
+	group, err := bindStatementArgs(st, args, now)
+	if err != nil {
+		return StatementGroup{}, fmt.Errorf("DTO %d: %w", st.PreparedStatementIndex, err)
+	}
+	return group, nil
+}
+
 // bindStatement retains one DTO and binds both query families. Window
 // markers use Now - window; the MySQL collect cap gets N.
 func (b *builder) bindStatement(st emit.Statement, keys keyVals) (StatementGroup, error) {
-	group := StatementGroup{DTO: st}
 	var args []bind.Arg
 	for _, p := range st.PreparedStatementParameters {
 		a, ok := keys[p.Name]
@@ -255,9 +323,15 @@ func (b *builder) bindStatement(st emit.Statement, keys keyVals) (StatementGroup
 		}
 		args = append(args, a)
 	}
+	return bindStatementArgs(st, args, b.cfg.Now)
+}
+
+// bindStatementArgs is shared by the existing case builder and A6 binding.
+func bindStatementArgs(st emit.Statement, args []bind.Arg, now time.Time) (StatementGroup, error) {
+	group := StatementGroup{DTO: st}
 	ronArgs := append([]bind.Arg(nil), args...)
 	if st.AggregateWindow != nil {
-		ronArgs = append(ronArgs, bind.Scalar(bind.Timestamp(b.cfg.Now.Add(-time.Duration(*st.AggregateWindow)*time.Second))))
+		ronArgs = append(ronArgs, bind.Scalar(bind.Timestamp(now.Add(-time.Duration(*st.AggregateWindow)*time.Second))))
 	}
 	if st.QueryOnline != nil {
 		mysqlArgs := append([]bind.Arg(nil), ronArgs...)

@@ -20,6 +20,10 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] F6: decide BIGINT SUM overflow behavior relative to MySQL widening;
   retain the explicit expected-rejection probe meanwhile.
 - [ ] F7: support emitted VARBINARY/complex snowflake projections.
+  The user-run A6 corpus reproduced the type-17 pass-through rejection
+  for snowflake_binary DTO 1, single/1, single/2 and single/9; all ten
+  MySQL twin comparisons passed. Golden mode recognizes only that DTO's
+  named type-17 rejection as REJECT(expected); binary support remains open.
 - [ ] F9: quote temporal MIN/MAX values in JSON output. Malformed JSON
   must be decoded as an error, never a successful result. The known F9
   cases may report non-failing KNOWN-ERROR only when quoting their named
@@ -40,14 +44,23 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] E4 review verification (user-run): rebuild the CLI, run the fsq
   and shell unit tests, then verify ronsql_fs_templates and
   ronsql_fs_vectors against their existing recorded results.
-- [ ] A6: execute captured Java queryOnline SQL from the Hopsworks golden
-  fixtures against matching fixture data, and compare with both the
-  reconstructed MySQL twin and the RonSQL vector path. Use the same
-  keys/time and retain fixture provenance. E2 DTO conformance and the
-  current data-model oracle do not replace this execution evidence.
+- [x] A6 implementation: --golden runs captured Java queryOnline against
+  matching fixture data, compares the Go MySQL twin and RonSQL vectors,
+  and retains shared keys/time, provenance and comparison reports.
+- [x] A6 cluster regression (user-run, 2026-09-10): all 45 fixtures
+  processed, zero failures; 183 MySQL passes, 125 RonSQL passes,
+  15 expected rejections (12 F0, 3 F7) and 43 RonSQL-untested requests.
+  No setup/cleanup errors or remaining owned databases were reported.
+  Evidence and the empty-result F7 caveat are in phase_e4.md §7.
+- [ ] A6 verification follow-up: confirm the post-fix full unit-test run,
+  preserve report artifacts, record binary revisions on subsequent runs,
+  and independently confirm fixture database cleanup.
+- [ ] A6 automation: add repeatable cluster/MTR coverage using first-run
+  evidence. Existing vector MTR coverage does not invoke --golden.
 - [ ] Track coverage of MySQL-only/point-read fallback and queryOnlineScan
-  separately: vector mode skips MySQL-only groups and does not execute
-  the scan twin. A skip does not establish why Hopsworks gated a template.
+  separately: --golden compares MySQL-only DTOs on both MySQL paths, but
+  neither golden nor vector mode executes the pk-read fallback or scan
+  twin. Absent templates do not establish why Hopsworks gated them.
 - [ ] E8: implement requirements mode (--requirements). This flag still
   adds no checks; successful selected L1 or L2 regression checks do not
   establish full Hopsworks requirements acceptance.

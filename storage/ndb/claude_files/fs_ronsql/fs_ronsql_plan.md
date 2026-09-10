@@ -529,7 +529,7 @@ Exit: all supported shapes green under `$strict_diff=yes`; unsupported
 ones recorded as rejection-asserts or `# NEXT-PHASE` probes with a
 findings entry.
 
-### E4 — L2 vector-level equivalence — implemented; review verification and A6 pending (see `phase_e4.md` §6)
+### E4 — L2 vector-level equivalence — implemented; A6 corpus regression passed, verification follow-up pending (see `phase_e4.md` §§6–7)
 
 Scope: `fsq/vector`: client-side folds for both paths (collect sort +
 fold to array, snowflake overlay per chain with LEFT miss semantics,
@@ -537,8 +537,14 @@ batch GROUP BY defaults, prefix application, window literal from one
 UTC reference), `.fs_verify --vectors`, `t/ronsql_fs_vectors.test`.
 The initial run recorded 21 passing specs and one expected F0 rejection.
 Six subsequent review corrections are applied but await user-run builds
-and tests. A6 still requires execution of the captured Java MySQL SQL;
-current L2 runs use reconstructed queries and data-model expectations.
+and tests. The A6 runner (`.fs_verify --golden`) is now implemented,
+including captured Java MySQL execution, matching fixture data and
+provenance-bearing comparison reports. The user-run A6 corpus regression
+passed: 45 fixtures, 183 MySQL passes, 125 RonSQL passes, 15 expected
+F0/F7 rejections and 43 RonSQL-untested requests. Unit-test confirmation
+and repeatable A6 cluster/MTR coverage remain pending; see `phase_e4.md` §7.
+The original `--vectors` mode still uses reconstructed queries and
+independent data-model expectations.
 
 Regression exit: supported specs agree over ≥ 100 keys; known rejections
 and untested coverage remain separately reported and may be non-failing.

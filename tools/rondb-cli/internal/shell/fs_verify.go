@@ -247,6 +247,9 @@ func firstLine(s string) string {
 //	[--allow-reject] [--relaxed-headers] [--dump-dir P] [--json P] [--quiet]
 func (s *Shell) runFSVerify(args []string) error {
 	a := parseFSArgs(args)
+	if a.has("golden") {
+		return s.runFSGolden(a)
+	}
 	if a.has("vectors") {
 		return s.runFSVectors(a)
 	}

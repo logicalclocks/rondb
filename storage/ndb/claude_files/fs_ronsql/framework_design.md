@@ -373,9 +373,14 @@ keys are fold errors; overlays across separate snowflake templates remain
 valid. MySQL-only groups are counted as skipped, missing references fail,
 and zero-comparison coverage is non-failing UNTESTED, never SUPPORTED.
 --allow-reject accepts only clean rejections and cannot override earlier
-mismatches. The six review corrections await user verification; executing
-captured Java MySQL SQL (§3 / A6) remains pending, as recorded in
-`phase_e4.md` §6 and
+mismatches. The six review corrections await user verification. A separate
+`.fs_verify --golden` runner now implements captured Java MySQL execution
+(§3 / A6), Go MySQL twin comparison and RonSQL vector comparison against
+matching fixture data with shared keys/time and retained Java provenance.
+Its first full user-run corpus regression passed with F0/F7 expected
+rejections and MySQL-only coverage reported separately. Unit-test confirmation
+and A6 cluster/MTR automation remain pending, as recorded in
+`phase_e4.md` §§6–7 and
 `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
 
 ---

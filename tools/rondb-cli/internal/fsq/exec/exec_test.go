@@ -27,7 +27,9 @@ package exec
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -197,5 +199,40 @@ func TestCLIQueryExitClassification(t *testing.T) {
 				t.Fatalf("outcome=%s, want %s: %s", r.Outcome, tc.want, r.Message)
 			}
 		})
+	}
+}
+
+func TestMySQLConnectionSettings(t *testing.T) {
+	cfg := MySQLConfig{Host: "oracle", Port: 3307, User: "tester", Password: "pw", Database: "golden_1_fs"}
+	for _, explicit := range []bool{false, true} {
+		if explicit {
+			cfg.Charset, cfg.SQLMode = "utf8mb4", "STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION"
+		}
+		dsn := mysqlDSN(cfg)
+		if !strings.HasPrefix(dsn, "tester:pw@tcp(oracle:3307)/golden_1_fs?") {
+			t.Fatal("connection target changed")
+		}
+		params, err := url.ParseQuery(strings.SplitN(dsn, "?", 2)[1])
+		if err != nil || params.Get("time_zone") != "'+00:00'" {
+			t.Fatalf("missing UTC session setting: %v", err)
+		}
+		if explicit {
+			if params.Get("charset") != "utf8mb4" ||
+				params.Get("sql_mode") != "'STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION'" {
+				t.Fatal("explicit session settings lost")
+			}
+		} else if params.Has("charset") || params.Has("sql_mode") {
+			t.Fatal("legacy connection defaults changed")
+		}
+	}
+}
+
+func TestOpenMySQLAlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// OpenMySQL must return before parsing a DSN or attempting a connection.
+	engine, err := OpenMySQL(ctx, MySQLConfig{Host: "not-used.invalid", Port: 1})
+	if engine != nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("engine=%v error=%v", engine, err)
 	}
 }

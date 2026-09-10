@@ -458,27 +458,57 @@ type MySQL struct {
 
 var tlsOnce sync.Once
 
-// NewMySQL opens one connection with time_zone='+00:00' (RonSQL is UTC only).
+// MySQLConfig specifies one oracle connection. Empty Charset/SQLMode retain
+// server/driver defaults; time_zone is always UTC, including on reconnect.
+type MySQLConfig struct {
+	Host, User, Password string
+	Port                 int
+	TLS                  bool
+	Database             string
+	Charset, SQLMode     string
+}
+
+// NewMySQL preserves the existing constructor and its connection defaults.
 func NewMySQL(host string, port int, user, password string, useTLS bool, database string) (*MySQL, error) {
+	return OpenMySQL(context.Background(), MySQLConfig{
+		Host: host, Port: port, User: user, Password: password, TLS: useTLS, Database: database,
+	})
+}
+
+// OpenMySQL honors cancellation during connection setup. Session settings
+// belong in the DSN so a replacement connection receives the same settings.
+func OpenMySQL(ctx context.Context, cfg MySQLConfig) (*MySQL, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("mysql", mysqlDSN(cfg))
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return &MySQL{db: db, database: cfg.Database}, nil
+}
+
+func mysqlDSN(cfg MySQLConfig) string {
 	params := url.Values{}
 	params.Set("time_zone", "'+00:00'")
-	if useTLS {
+	if cfg.Charset != "" {
+		params.Set("charset", cfg.Charset)
+	}
+	if cfg.SQLMode != "" {
+		params.Set("sql_mode", "'"+strings.ReplaceAll(cfg.SQLMode, "'", "''")+"'")
+	}
+	if cfg.TLS {
 		tlsOnce.Do(func() {
 			_ = mysql.RegisterTLSConfig("fsqexec", &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})
 		})
 		params.Set("tls", "fsqexec")
 	}
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?%s", user, password, host, port, database, params.Encode())
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(1)
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return &MySQL{db: db, database: database}, nil
+	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?%s", cfg.User, cfg.Password, cfg.Host, cfg.Port, cfg.Database, params.Encode())
 }
 
 func (m *MySQL) Name() string { return "mysql" }

@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -64,7 +65,7 @@ func TestObjectDiffs(t *testing.T) {
 
 // Synthetic documents below test corpus integrity, not SQL conformance.
 // They never enter testdata/hopsworks_golden or masquerade as captured SQL.
-func TestReadFixturesIntegrity(t *testing.T) {
+func TestLoadGoldenFixturesIntegrity(t *testing.T) {
 	update := func(field string, value interface{}) func(*fixtureManifest, map[string][]byte) {
 		return func(m *fixtureManifest, files map[string][]byte) {
 			var doc map[string]interface{}
@@ -146,7 +147,7 @@ func TestReadFixturesIntegrity(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := readFixtures(dir)
+			got, err := LoadGoldenFixtures(dir)
 			if tc.errorText != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.errorText) {
 					t.Fatalf("got error %v; want %q", err, tc.errorText)
@@ -157,8 +158,100 @@ func TestReadFixturesIntegrity(t *testing.T) {
 		})
 	}
 	t.Run("missing-directory", func(t *testing.T) {
-		if _, err := readFixtures(filepath.Join(t.TempDir(), "absent")); err == nil {
+		if _, err := LoadGoldenFixtures(filepath.Join(t.TempDir(), "absent")); err == nil {
 			t.Fatal("missing corpus must fail, not skip")
+		}
+	})
+}
+
+func TestGoldenCapturedOutput(t *testing.T) {
+	for name, f := range loadFixtures(t) {
+		t.Run(name, func(t *testing.T) {
+			before := string(f.Expected)
+			out, err := f.CapturedOutput()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var expected map[string]interface{}
+			if err := json.Unmarshal(f.Expected, &expected); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case f.ExpectedError != nil:
+				if out.Kind != GoldenGate || out.Exception == nil || out.Statements != nil {
+					t.Fatalf("not a gate result: %+v", out)
+				}
+				if !reflect.DeepEqual(normalize(t, out.Exception), expected["gateOrException"]) {
+					t.Fatal("captured exception changed")
+				}
+			case f.Definition != nil:
+				if out.Kind != GoldenDefinition || out.Exception != nil || out.Statements != nil {
+					t.Fatalf("not a definition-only result: %+v", out)
+				}
+			default:
+				if out.Kind != GoldenStatements || out.Exception != nil {
+					t.Fatalf("not a statement result: %+v", out)
+				}
+				if !reflect.DeepEqual(normalize(t, out.Statements), expected["statements"]) {
+					t.Fatal("captured DTO fields, order or SQL changed")
+				}
+				// An unusable emitter input must not affect the capture.
+				f.FGs, f.Joins = nil, nil
+				again, err := f.CapturedOutput()
+				if err != nil || !reflect.DeepEqual(out, again) {
+					t.Fatalf("decoding depends on emitter input: %v", err)
+				}
+			}
+			if string(f.Expected) != before {
+				t.Fatal("decoding rewrote captured JSON")
+			}
+		})
+	}
+}
+
+func TestGoldenCapturedOutputInvalid(t *testing.T) {
+	fixtures := loadFixtures(t)
+	for _, tc := range []struct {
+		name, fixture, expected, errorText string
+	}{
+		{"invalid-json", "aggregate_single", "{", "expected object"},
+		{"null-output", "aggregate_single", "null", "expected object"},
+		{"array-output", "aggregate_single", "[]", "expected object"},
+		{"empty-output", "aggregate_single", "{}", "expected object"},
+		{"missing-gate", "aggregate_single", `{"statements":[]}`, "missing gateOrException"},
+		{"invalid-gate", "aggregate_single", `{"gateOrException":true}`, "invalid gateOrException"},
+		{"empty-gate-code", "aggregate_single", `{"gateOrException":{}}`, "empty code"},
+		{"unexpected-gate", "aggregate_single", `{"gateOrException":{"code":"unexpected"}}`, "differs from expectedError"},
+		{"wrong-gate", "filter_or_rejected", `{"gateOrException":{"code":"wrong"}}`, "differs from expectedError"},
+		{"missing-rejection", "filter_or_rejected", `{"gateOrException":null,"statements":[]}`, "expectedError is set"},
+		{"gate-and-statements", "filter_or_rejected", `{"gateOrException":{"code":"COLLECT_UNSUPPORTED_ONLINE_FILTER"},"statements":[]}`, "must not coexist"},
+		{"definition-and-statements", "definition_collect_valid", `{"gateOrException":null,"statements":[]}`, "definition-only"},
+		{"missing-statements", "aggregate_single", `{"gateOrException":null}`, "missing captured statements"},
+		{"null-statements", "aggregate_single", `{"gateOrException":null,"statements":null}`, "array, not null"},
+		{"object-statements", "aggregate_single", `{"gateOrException":null,"statements":{}}`, "invalid captured statements"},
+		{"null-statement", "aggregate_single", `{"gateOrException":null,"statements":[null]}`, "statement 0 is null"},
+		{"invalid-sql-type", "aggregate_single", `{"gateOrException":null,"statements":[{"queryOnline":5}]}`, "invalid captured statements"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := fixtures[tc.fixture]
+			f.Expected = json.RawMessage(tc.expected)
+			out, err := f.CapturedOutput()
+			if err == nil || !strings.Contains(err.Error(), tc.errorText) ||
+				!strings.Contains(err.Error(), f.Name) {
+				t.Fatalf("got %+v, error %v; want %q with fixture name", out, err, tc.errorText)
+			}
+			if out.Kind != "" || out.Statements != nil || out.Exception != nil {
+				t.Fatalf("error returned a usable partial output: %+v", out)
+			}
+		})
+	}
+	t.Run("empty-array-is-not-a-gate", func(t *testing.T) {
+		f := fixtures["aggregate_single"]
+		f.Expected = json.RawMessage(`{"gateOrException":null,"statements":[]}`)
+		out, err := f.CapturedOutput()
+		if err != nil || out.Kind != GoldenStatements || out.Statements == nil ||
+			len(out.Statements) != 0 || out.Exception != nil {
+			t.Fatalf("empty statement array was misclassified: %+v, %v", out, err)
 		}
 	})
 }

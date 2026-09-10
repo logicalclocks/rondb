@@ -42,8 +42,9 @@ if(GO_EXECUTABLE)
   set(RONDB_CLI_BINARY "${CMAKE_CURRENT_BINARY_DIR}/rondb")
   set(RONDB_CLI_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
-  # Collect all Go source files for dependency tracking
+  # Track Go source changes, including files added or removed after configuration.
   file(GLOB_RECURSE RONDB_CLI_GO_SOURCES
+    CONFIGURE_DEPENDS
     "${RONDB_CLI_SOURCE_DIR}/*.go"
     "${RONDB_CLI_SOURCE_DIR}/go.mod"
     "${RONDB_CLI_SOURCE_DIR}/go.sum"

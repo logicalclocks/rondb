@@ -26,31 +26,15 @@
 package emit
 
 import (
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"sort"
-	"strings"
 	"testing"
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/spec"
 )
-
-// fixture is one Hopsworks golden document: the spec.View input plus the
-// exporter's assertions and the captured expected output.
-type fixture struct {
-	spec.View
-	ExpectedTemplates *int                   `json:"expectedTemplates"`
-	ExpectedError     *string                `json:"expectedError"`
-	SchemaVersion     int                    `json:"schemaVersion"`
-	Source            string                 `json:"source"`
-	Provenance        map[string]interface{} `json:"provenance"`
-	Expected          json.RawMessage        `json:"expected"`
-}
 
 type gateOrException struct {
 	Code        string  `json:"code"`
@@ -58,94 +42,13 @@ type gateOrException struct {
 	Developer   *string `json:"developerMessage"`
 }
 
-type fixtureManifest struct {
-	SchemaVersion int                    `json:"schemaVersion"`
-	Provenance    map[string]interface{} `json:"provenance"`
-	Files         map[string]string      `json:"files"`
-}
-
-var fixtureFilename = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*\.json$`)
-var commitHash = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
-func loadFixtures(t *testing.T) map[string]fixture {
+func loadFixtures(t *testing.T) map[string]GoldenFixture {
 	t.Helper()
-	out, err := readFixtures(filepath.Join("..", "testdata", "hopsworks_golden"))
+	out, err := LoadGoldenFixtures(filepath.Join("..", "testdata", "hopsworks_golden"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return out
-}
-
-// readFixtures fails closed: the manifest is the corpus inventory, not an
-// optional report. Dirty provenance is allowed, but never silently rewritten.
-func readFixtures(dir string) (map[string]fixture, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
-	if err != nil {
-		return nil, fmt.Errorf("read golden manifest: %w", err)
-	}
-	var manifest fixtureManifest
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return nil, fmt.Errorf("decode golden manifest: %w", err)
-	}
-	if manifest.SchemaVersion != 1 || len(manifest.Files) == 0 {
-		return nil, fmt.Errorf("golden manifest must have schemaVersion 1 and a nonempty file inventory")
-	}
-	ref, _ := manifest.Provenance["hopsworksCommit"].(string)
-	if !commitHash.MatchString(ref) || !strings.HasPrefix(ref, HopsworksRef) {
-		return nil, fmt.Errorf("golden manifest commit %q does not match emitter reference %s", ref, HopsworksRef)
-	}
-	for name := range manifest.Files {
-		if !fixtureFilename.MatchString(name) || name == "manifest.json" {
-			return nil, fmt.Errorf("unsafe golden fixture filename %q", name)
-		}
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("read golden directory: %w", err)
-	}
-	out := map[string]fixture{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == "manifest.json" || !strings.HasSuffix(name, ".json") {
-			continue
-		}
-		hash, listed := manifest.Files[name]
-		if !listed || !entry.Type().IsRegular() {
-			return nil, fmt.Errorf("unlisted or non-regular golden fixture %s", name)
-		}
-		raw, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return nil, fmt.Errorf("read golden fixture %s: %w", name, err)
-		}
-		if fmt.Sprintf("%x", sha256.Sum256(raw)) != hash {
-			return nil, fmt.Errorf("golden fixture %s: SHA-256 mismatch", name)
-		}
-		var f fixture
-		if err := json.Unmarshal(raw, &f); err != nil {
-			return nil, fmt.Errorf("decode golden fixture %s: %w", name, err)
-		}
-		if f.SchemaVersion != 1 || f.Source != "java-generated" {
-			return nil, fmt.Errorf("golden fixture %s must have schemaVersion 1 and source java-generated", name)
-		}
-		if !reflect.DeepEqual(f.Provenance, manifest.Provenance) {
-			return nil, fmt.Errorf("golden fixture %s: provenance differs from manifest", name)
-		}
-		stem := strings.TrimSuffix(name, ".json")
-		if f.Name != stem {
-			return nil, fmt.Errorf("golden fixture %s: input name %q differs from filename", name, f.Name)
-		}
-		var expected map[string]interface{}
-		if err := json.Unmarshal(f.Expected, &expected); err != nil || len(expected) == 0 {
-			return nil, fmt.Errorf("golden fixture %s: missing or invalid expected object", name)
-		}
-		out[stem] = f
-	}
-	for name := range manifest.Files {
-		if _, ok := out[strings.TrimSuffix(name, ".json")]; !ok {
-			return nil, fmt.Errorf("missing golden fixture %s", name)
-		}
-	}
-	return out, nil
 }
 
 // normalize round-trips a value through JSON so that maps, slices and
