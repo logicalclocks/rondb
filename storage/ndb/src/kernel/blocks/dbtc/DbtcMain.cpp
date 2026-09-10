@@ -13196,10 +13196,16 @@ void Dbtc::checkScanActiveInFailedLqh(Signal *signal, Uint32 scanPtrI,
     if (found) {
       jam();
       /**
-       * For join-agg phases the error is handled above. For normal
-       * scan fragment failures, scanError handles the abort.
+       * For join-agg phases the error is handled above. For a RUNNING
+       * scan, scanError handles the abort. For a CLOSING_SCAN scan,
+       * scanError only rechecks close completion: no close reply can
+       * arrive from the failed workers removed above, just as when
+       * SCAN_FRAGCONF retires a worker during close. Either way this
+       * may release scanptr; only the saved pool cursor may be used
+       * afterwards.
        */
-      if (scanptr.p->scanState == ScanRecord::RUNNING) {
+      if (scanptr.p->scanState == ScanRecord::RUNNING ||
+          scanptr.p->scanState == ScanRecord::CLOSING_SCAN) {
         jam();
         scanError(signal, scanptr, ZSCAN_LQH_ERROR);
       }
