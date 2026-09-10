@@ -1141,6 +1141,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     handleCteNodeFailure(signal, data0, data1);
     return;
   }
+  case ZCONTINUE_CTE_SCAN_NODE_FAILURE:
+  {
+    jam();
+    handleCteScanNodeFailure(signal, data0, data1);
+    return;
+  }
   case ZCONTINUE_CTE_REDIST_DRAIN:
   {
     jam();
@@ -17113,6 +17119,36 @@ void Dblqh::handleCteNodeFailure(Signal *signal, Uint32 nodeId,
     }
   }
 
+  handleCteScanNodeFailure(signal, nodeId, 0);
+}
+
+void Dblqh::handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
+                                      Uint32 startPtrI) {
+  jam();
+  // Each LDM/query worker owns its iterator pool. Paused CTE scans
+  // have no TcConnectionrec and must be visited separately.
+  for (Uint32 i = 0; i < 100 && startPtrI != RNIL; i++) {
+    Ptr<CteScanIterState> ptr;
+    const Uint32 found =
+        c_cteScanIterStatePool.getUncheckedPtrs(&startPtrI, &ptr, 1);
+    if (found == 0 || !Magic::check_ptr(ptr.p)) continue;
+    if (ptr.p->senderNodeId != nodeId) continue;
+    if (ptr.p->aggFeed) {
+      // The queued local continuation still owns this record. Let it
+      // observe ZNODE_DOWN and release it, then revisit this position.
+      startPtrI = ptr.i;
+      break;
+    }
+    releaseCteScanIterState(ptr.i);
+  }
+  if (startPtrI != RNIL) {
+    signal->theData[0] = ZCONTINUE_CTE_SCAN_NODE_FAILURE;
+    signal->theData[1] = nodeId;
+    signal->theData[2] = startPtrI;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+    return;
+  }
+
   Callback cb = {safe_cast(&Dblqh::ndbdFailBlockCleanupCallback), nodeId};
   simBlockNodeFailure(signal, nodeId, cb);
 }
@@ -21776,6 +21812,17 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                             Uint32 groupsSent,
                             const Uint32 *cinBuf, Uint32 attrInfoLen,
                             Uint32 aggFeedStateI) {
+  HostRecordPtr hostPtr;
+  hostPtr.i = refToNode(senderRef);
+  ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
+  if (unlikely(hostPtr.p->nodestatus == ZNODE_DOWN)) {
+    jam();
+    // NODE_FAILREP does not cancel local CONTINUEB signals. Stop before
+    // touching the source/target hash tables and release our filter.
+    releaseCteScanIterState(aggFeedStateI);
+    return;
+  }
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   ndbrequire(state != nullptr);
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
@@ -21930,7 +21977,15 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     if (!endOfData && iter.valid()) {
       /* Yield — schedule continuation via CONTINUEB.
        * All scan state is carried in signal data so the CTE hash table
-       * remains read-only (multiple DBSPJ instances may scan concurrently). */
+       * remains read-only (multiple DBSPJ instances may scan concurrently).
+       *
+       * Ownership invariant: between signals an aggFeed CteScanIterState
+       * is always owned by an immediately queued continuation. Every
+       * exit from this function must either release aggFeedStateI or
+       * re-queue like this. handleCteScanNodeFailure relies on it: it
+       * revisits an aggFeed record of a failed requester until the
+       * continuation observes ZNODE_DOWN and releases it, and defers
+       * node-failure completion until then. */
       jam();
       const char *rawPtr = iter.raw();
       signal->theData[0] = ZCONTINUE_CTE_SCAN_AGG_FEED;
@@ -22123,12 +22178,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     jam();
     Ptr<CteScanIterState> ptr;
     ptr.i = scanIterI;
-    if (unlikely(!c_cteScanIterStatePool.getValidPtr(ptr))) {
-      jam();
-      sendCteScanRef(signal, req.senderRef, req.senderData,
-                     ZJOIN_AGG_STATE_NOT_FOUND);
-      return;
-    }
+    // cteScanReqImpl validated the token before calling us.
+    ndbrequire(c_cteScanIterStatePool.getValidPtr(ptr));
     localState = *ptr.p;
   } else {
     localState.iterBucket = 0;
@@ -22136,6 +22187,8 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     localState.groupsSent = 0;
     localState.attrInfoLen = 0;          // emit path doesn't cache filter
     localState.cinBufOverflow = nullptr;
+    localState.senderNodeId = refToNode(req.senderRef);
+    localState.aggFeed = false;
   }
   CteScanIterState *scanState = &localState;
 
@@ -22466,6 +22519,25 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
    * We copy the AttrInfo section into a local buffer before releasing. */
   SectionHandle handle(this, signal);
 
+  /* Extract scanIterI while signal is still intact.
+   * First CTE_SCAN_REQ (SignalLength=9) has no scanIterI field. */
+  const Uint32 scanIterI =
+      (signal->getLength() >= CteScanReq::SignalLengthContinue)
+      ? req.scanIterI : RNIL;
+
+  if (scanIterI != RNIL) {
+    Ptr<CteScanIterState> ptr;
+    ptr.i = scanIterI;
+    if (unlikely(!c_cteScanIterStatePool.getValidPtr(ptr) ||
+                 ptr.p->aggFeed ||
+                 ptr.p->senderNodeId != refToNode(req.senderRef))) {
+      jam();
+      sendCteScanRef(signal, req.senderRef, req.senderData,
+                     ZJOIN_AGG_STATE_NOT_FOUND, &handle);
+      return;
+    }
+  }
+
   /* Close REQ: DBSPJ is aborting or closing the scan and asks DBLQH to
    * free the pool record for req.scanIterI.  Runs before any
    * JoinAggregationState lookups so a dying request can still clean
@@ -22496,6 +22568,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
   JoinAggregationState *state = getJoinAggState(req.aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
+    releaseCteScanIterState(scanIterI);
     sendCteScanRef(signal, req.senderRef, req.senderData,
                    ZJOIN_AGG_STATE_NOT_FOUND, &handle);
     return;
@@ -22503,6 +22576,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
 
   if (unlikely(state->m_state.load() != JoinAggregationState::CTE_READY)) {
     jam();
+    releaseCteScanIterState(scanIterI);
     sendCteScanRef(signal, req.senderRef, req.senderData,
                    ZCTE_LOOKUP_STATE_NOT_READY, &handle);
     return;
@@ -22517,6 +22591,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
   if (handle.getSection(attrInfoSection, CteScanReq::AttrInfoSectionNum)) {
     if (unlikely(attrInfoSection.sz > ZATTR_BUFFER_SIZE)) {
       jam();
+      releaseCteScanIterState(scanIterI);
       sendCteScanRef(signal, req.senderRef, req.senderData,
                      ZATTRINFO_TOO_LARGE, &handle);
       return;
@@ -22579,6 +22654,8 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
         ptr.p->groupsSent = 0;
         ptr.p->attrInfoLen = attrInfoLen;
         ptr.p->cinBufOverflow = nullptr;
+        ptr.p->senderNodeId = refToNode(req.senderRef);
+        ptr.p->aggFeed = true;
         if (attrInfoLen <= CTE_SCAN_FILTER_INLINE_WORDS) {
           memcpy(ptr.p->cinBufInline, cinBuf, attrInfoLen * sizeof(Uint32));
         } else {
@@ -22616,12 +22693,6 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
                    aggFeedStateI);
     return;
   }
-
-  /* Extract scanIterI while signal is still intact.
-   * First CTE_SCAN_REQ (SignalLength=9) has no scanIterI field. */
-  const Uint32 scanIterI =
-      (signal->getLength() >= CteScanReq::SignalLengthContinue)
-      ? req.scanIterI : RNIL;
 
   /* Non-agg path: emit groups as TRANSID_AI to API/DBSPJ */
   cteScanEmitResults(signal, req, interp, finalR, finalRLen,

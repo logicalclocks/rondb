@@ -383,6 +383,7 @@ class FsReadWriteReq;
  * JoinAggregationState.hpp — DblqhProxy sends the flush tag to Dblqh
  * instances, and this define region is DBLQH_C-guarded. */
 #define ZCONTINUE_CTE_NODE_FAILURE 56
+#define ZCONTINUE_CTE_SCAN_NODE_FAILURE 57
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -5424,6 +5425,8 @@ public:
     Uint32  cinBufInline[CTE_SCAN_FILTER_INLINE_WORDS];
     Uint32 *cinBufOverflow;  // nullptr if attrInfoLen fits inline
     Uint32  nextPool;
+    Uint16  senderNodeId;    // Requesting DBSPJ node, for failure cleanup
+    bool    aggFeed;         // Owned by a local continuation, not DBSPJ
 
     const Uint32 *cinBuf() const {
       return cinBufOverflow != nullptr ? cinBufOverflow : cinBufInline;
@@ -5634,6 +5637,8 @@ private:
                                    NodeId nodeId,
                                    Uint32 startPtrI);
   void handleCteNodeFailure(Signal *signal, Uint32 nodeId, Uint32 bucket);
+  void handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
+                                Uint32 startPtrI);
   void abortCteOnNodeFailure(Signal *signal, JoinAggregationState *state,
                              Uint32 nodeId);
 
