@@ -282,11 +282,13 @@ struct JoinAggRedistributeReq {
  * REDISTRIBUTE_REQ of the batch, providing flow control.
  */
 struct JoinAggRedistributeConf {
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 6;
   Uint32 aggStateKey;
   Uint32 senderNodeId;    // Node that processed the group(s)
   Uint32 senderAggStateKey; // Echoed from the REQ; the redistributing sender's
                             // own state to resume (D25 fix).
+  Uint32 identWord;         // Echoed from the REQ: validate the state behind
+  Uint32 transid[2];        // senderAggStateKey before resuming redistribution.
 };
 
 /**

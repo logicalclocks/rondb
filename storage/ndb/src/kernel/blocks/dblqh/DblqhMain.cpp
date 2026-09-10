@@ -23318,7 +23318,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   const JoinAggRedistributeReq *req =
     (const JoinAggRedistributeReq *)signal->getDataPtr();
   Uint32 aggStateKey = req->aggStateKey;
-  /* Capture the identity words now: the REF constructions below write
+  /* Capture the identity words now: the CONF/REF constructions below write
    * through getDataPtrSend(), which aliases this request buffer. */
   const Uint32 reqIdentWord = req->identWord;
   const Uint32 reqTransid[2] = { req->transid[0], req->transid[1] };
@@ -23472,6 +23472,9 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     conf->aggStateKey = aggStateKey;
     conf->senderNodeId = getOwnNodeId();
     conf->senderAggStateKey = senderAggStateKey;  // D25
+    conf->identWord = reqIdentWord;
+    conf->transid[0] = reqTransid[0];
+    conf->transid[1] = reqTransid[1];
     sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_CONF,
                signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
@@ -23584,6 +23587,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
  */
 void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
   jamEntry();
+  ndbrequire(signal->getLength() >= JoinAggRedistributeConf::SignalLength);
   const JoinAggRedistributeConf *conf =
     (const JoinAggRedistributeConf *)signal->getDataPtr();
   /* D25: resume the SENDER's state (echoed back), not conf->aggStateKey which
@@ -23592,7 +23596,12 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_CONF(Signal *signal) {
   const Uint32 aggStateKey = conf->senderAggStateKey;
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (unlikely(state == nullptr)) {
+  // A CONF from a surviving peer must not resume a recycled pool slot.
+  if (unlikely(state == nullptr ||
+               state->m_transid[0] != conf->transid[0] ||
+               state->m_transid[1] != conf->transid[1] ||
+               JoinAggregationState::packIdentWord(
+                   state->m_queryTag, state->m_cte_index, 0) != conf->identWord)) {
     jam();
     return;
   }
