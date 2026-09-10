@@ -215,7 +215,7 @@ func TestSnowflakeOverlayAndPolicy(t *testing.T) {
 		t.Errorf("policy off: %+v", rep.Mismatches)
 	}
 	// INNER: both sides drop the row entirely.
-	roni, _ := FoldRonsql(p, []*exec.Result{res(nil, nil)}, keys)
+	roni, _ := FoldRonsql(p, []*exec.Result{res(nil, nil), res(nil, nil)}, keys)
 	myi, _ := FoldMysql(p, res([]string{"r_region_name"}, nil), keys)
 	// Every served alias is compared and missing on both sides.
 	if rep := Compare(p, myi, roni, keys, nil, Policy{}, nil); len(rep.Mismatches) != 0 || rep.Compared != 4 {
@@ -224,11 +224,15 @@ func TestSnowflakeOverlayAndPolicy(t *testing.T) {
 	// Batch: rows keyed by the appended root key on RonSQL, the prefixed key on MySQL.
 	pb := PlanFor(dto, true, nil)
 	bkeys := []Key{{"21"}, {"13"}}
-	ronb, err := FoldRonsql(pb, []*exec.Result{res([]string{"r_region_name", "customer_id"}, nil, row("Region 22", "21"))}, bkeys)
+	ronb, err := FoldRonsql(pb, []*exec.Result{
+		res([]string{"r_region_name", "r_population", "customer_id"}, nil, row("Region 22", "271590", "21")),
+		res([]string{"c_country_name", "c_continent", "customer_id"}, nil, row("Country 22", "Europe", "21")),
+	}, bkeys)
 	if err != nil {
 		t.Fatal(err)
 	}
-	myb, err := FoldMysql(pb, res([]string{"r_region_name", "p_customer_id"}, nil, row("Region 22", "21")), bkeys)
+	myb, err := FoldMysql(pb, res([]string{"r_region_name", "r_population", "c_country_name", "c_continent", "p_customer_id"}, nil,
+		row("Region 22", "271590", "Country 22", "Europe", "21")), bkeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,5 +247,163 @@ func TestSnowflakeOverlayAndPolicy(t *testing.T) {
 	exp := Vectors{"16": {"r_region_name": {Text: "Region 17"}}}
 	if rep := Compare(p, exp, my, keys, nil, Policy{MissingEqualsNull: true}, map[string]bool{"r_region_name": true}); len(rep.Mismatches) != 0 || rep.Compared != 1 {
 		t.Errorf("only: %+v", rep)
+	}
+}
+
+func TestMissingNullAllowanceIsSnowflakeOnly(t *testing.T) {
+	keys := []Key{{"16"}}
+	ref := Vectors{"16": {"tx_amount_sum": {Null: true}}}
+	got := Vectors{"16": {}}
+	p := PlanFor(aggDTO("tx_", false), false, nil)
+	if rep := Compare(p, ref, got, keys, nil, Policy{MissingEqualsNull: true}, map[string]bool{"tx_amount_sum": true}); len(rep.Mismatches) != 1 || rep.LeftMiss != 0 {
+		t.Fatalf("missing aggregate output must fail: %+v", rep)
+	}
+	p = Plan{Kind: Collect, Prefix: "tx_", CollectFeature: "tx_collect", Fields: []string{"amount"}}
+	ref = Vectors{"16": {"tx_collect": {Array: []Element{{Values: []Cell{{Null: true}}}}}}}
+	got = Vectors{"16": {"tx_collect": {Array: []Element{{Values: []Cell{{Missing: true}}}}}}}
+	if rep := Compare(p, ref, got, keys, nil, Policy{MissingEqualsNull: true}, nil); len(rep.Mismatches) != 1 || rep.LeftMiss != 0 {
+		t.Fatalf("missing collect field must fail: %+v", rep)
+	}
+}
+
+func TestReturnedRowsRequireDeclaredColumns(t *testing.T) {
+	keys := []Key{{"16"}}
+	p := PlanFor(aggDTO("tx_", false), false, nil)
+	if _, err := FoldRonsql(p, []*exec.Result{res([]string{"count", "amount_count"}, nil, row("0", "0"))}, keys); err == nil {
+		t.Fatal("a returned aggregate row must include its NULL output columns")
+	}
+	if _, err := FoldMysql(p, res([]string{"tx_count", "tx_amount_count"}, nil, row("0", "0")), keys); err == nil {
+		t.Fatal("the MySQL aggregate row must include its NULL output columns")
+	}
+	p = PlanFor(emit.Statement{Prefix: strp("tx_"), CollectN: intp(5), CollectFeatureName: strp("events"),
+		CollectOrderBy: strp("event_time")}, false, []string{"event_time", "amount"})
+	if _, err := FoldRonsql(p, []*exec.Result{res([]string{"event_time"}, nil, row("2026-06-01 00:00:00"))}, keys); err == nil {
+		t.Fatal("a returned collect row must include every struct field")
+	}
+	if _, err := FoldMysql(p, res([]string{"tx_event_time"}, nil, row("2026-06-01 00:00:00")), keys); err == nil {
+		t.Fatal("the MySQL collect row must include every struct field")
+	}
+	p = PlanFor(emit.Statement{SnowflakeTemplates: []string{
+		"SELECT x AS `r_name`, y AS `r_population` FROM child;",
+	}}, false, nil)
+	if _, err := FoldRonsql(p, []*exec.Result{res([]string{"r_name"}, nil, row("\x00"))}, keys); err == nil {
+		t.Fatal("a returned LEFT-chain row missing a column is not a chain miss")
+	}
+	if _, err := FoldMysql(p, res([]string{"r_name"}, nil, row("\x00")), keys); err == nil {
+		t.Fatal("a returned MySQL LEFT row must include all declared hop columns")
+	}
+	for _, results := range [][]*exec.Result{nil, {nil}} {
+		if _, err := FoldRonsql(p, results, keys); err == nil {
+			t.Fatal("a missing template result is not an executed chain with zero rows")
+		}
+	}
+	got, err := FoldRonsql(p, []*exec.Result{res(nil, nil)}, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := FoldMysql(p, res([]string{"r_name", "r_population"}, nil, row("\x00", "\x00")), keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep := Compare(p, ref, got, keys, nil, Policy{MissingEqualsNull: true}, nil); len(rep.Mismatches) != 0 || rep.LeftMiss != 2 {
+		t.Fatalf("an executed LEFT-chain miss remains allowed: %+v", rep)
+	}
+	if rep := Compare(p, ref, got, keys, nil, Policy{}, nil); len(rep.Mismatches) != 2 {
+		t.Fatalf("INNER and data-model comparisons remain strict: %+v", rep)
+	}
+	if rep := Compare(p, got, ref, keys, nil, Policy{MissingEqualsNull: true}, nil); len(rep.Mismatches) != 2 {
+		t.Fatalf("the allowance must not accept a spurious RonSQL NULL row: %+v", rep)
+	}
+}
+
+func TestFoldEntityRowValidation(t *testing.T) {
+	for _, engine := range []string{"mysql", "ronsql"} {
+		t.Run(engine, func(t *testing.T) {
+			for _, tc := range []struct {
+				name  string
+				batch bool
+				rows  [][]exec.Cell
+				err   string
+			}{
+				{"single", false, [][]exec.Cell{row("1")}, ""},
+				{"single-duplicate", false, [][]exec.Cell{row("1"), row("1")}, "duplicate entity key"},
+				{"single-wrong-then-correct", false, [][]exec.Cell{row("9"), row("1")}, "duplicate entity key"},
+				{"batch", true, [][]exec.Cell{row("21", "1"), row("13", "2")}, ""},
+				{"batch-missing-row", true, [][]exec.Cell{row("21", "1")}, ""},
+				{"empty-batch", true, nil, ""},
+				{"batch-duplicate", true, [][]exec.Cell{row("21", "1"), row("21", "1")}, "duplicate entity key"},
+				{"batch-wrong-then-correct", true, [][]exec.Cell{row("21", "9"), row("21", "1")}, "duplicate entity key"},
+				{"batch-extra-entity", true, [][]exec.Cell{row("21", "1"), row("999", "2")}, "unrequested entity key"},
+				{"batch-null-key", true, [][]exec.Cell{row("\x00", "1")}, "NULL key column"},
+				{"batch-short-row", true, [][]exec.Cell{row("21")}, "cells for"},
+				{"batch-wide-row", true, [][]exec.Cell{row("21", "1", "extra")}, "cells for"},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					p := PlanFor(emit.Statement{
+						Prefix:                      strp("tx_"),
+						AggregateFeatureNames:       []string{"tx_count"},
+						PreparedStatementParameters: []emit.Param{{Name: "customer_id", Index: 1}},
+					}, tc.batch, nil)
+					keys := []Key{{"21"}}
+					prefix := ""
+					if engine == "mysql" {
+						prefix = "tx_"
+					}
+					columns := []string{prefix + "count"}
+					if tc.batch {
+						keys = append(keys, Key{"13"})
+						columns = append([]string{prefix + "customer_id"}, columns...)
+					}
+					if tc.rows == nil {
+						columns = nil // an empty RonSQL result has no header
+					}
+					r := res(columns, nil, tc.rows...)
+					var got Vectors
+					var err error
+					if engine == "mysql" {
+						got, err = FoldMysql(p, r, keys)
+					} else {
+						got, err = FoldRonsql(p, []*exec.Result{r}, keys)
+					}
+					if tc.err != "" {
+						if err == nil || !strings.Contains(err.Error(), tc.err) || got != nil {
+							t.Fatalf("fold=%v err=%v, want %q and no vector", got, err, tc.err)
+						}
+						return
+					}
+					if err != nil || len(got) != len(keys) {
+						t.Fatalf("valid rows rejected: vectors=%v err=%v", got, err)
+					}
+					if tc.name == "batch-missing-row" || tc.name == "empty-batch" {
+						if got["13"]["tx_count"].Text != "0" {
+							t.Fatal("absent batch entities must retain their aggregate defaults")
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestSnowflakeEntityValidationIsPerTemplate(t *testing.T) {
+	p := PlanFor(emit.Statement{
+		PreparedStatementParameters: []emit.Param{{Name: "id", Index: 1}},
+		SnowflakeTemplates: []string{
+			"SELECT r AS `r_value`, id AS `id` FROM regions;",
+			"SELECT c AS `c_value`, id AS `id` FROM countries;",
+		},
+	}, true, nil)
+	keys := []Key{{"21"}}
+	results := []*exec.Result{
+		res([]string{"r_value", "id"}, nil, row("Region", "21")),
+		res([]string{"c_value", "id"}, nil, row("Country", "21")),
+	}
+	got, err := FoldRonsql(p, results, keys)
+	if err != nil || len(got["21"]) != 2 || got["21"]["r_value"].Text != "Region" || got["21"]["c_value"].Text != "Country" {
+		t.Fatalf("separate templates must still overlay the same entity: %v, %v", got, err)
+	}
+	results[0].Rows = append(results[0].Rows, row("Region", "21"))
+	if got, err := FoldRonsql(p, results, keys); err == nil || !strings.Contains(err.Error(), "duplicate entity key") || got != nil {
+		t.Fatalf("duplicate within one chain must fail: %v, %v", got, err)
 	}
 }

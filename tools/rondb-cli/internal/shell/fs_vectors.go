@@ -60,6 +60,8 @@ type specResult struct {
 	Keys             int      `json:"keys"`
 	Units            int      `json:"units"`
 	Compared         int      `json:"compared"`
+	MySQLOnlyGroups  int      `json:"mysqlOnlyGroups"`
+	UncomparedGroups int      `json:"uncomparedGroups"`
 	LeftMiss         int      `json:"leftMiss"`
 	NotServed        []string `json:"notServed,omitempty"`
 	Mismatches       int      `json:"mismatches"`
@@ -167,6 +169,12 @@ func (s *Shell) runFSVectors(a fsArgs) error {
 	byShape := map[string][]string{}
 	for _, r := range results {
 		line := fmt.Sprintf("SPEC %s %s %s keys=%d units=%d compared=%d left-miss=%d", r.ID, r.Shape, r.Status, r.Keys, r.Units, r.Compared, r.LeftMiss)
+		if r.MySQLOnlyGroups > 0 {
+			line += fmt.Sprintf(" mysql-only-groups=%d", r.MySQLOnlyGroups)
+		}
+		if r.UncomparedGroups > 0 {
+			line += fmt.Sprintf(" uncompared-groups=%d", r.UncomparedGroups)
+		}
 		if len(r.NotServed) > 0 {
 			line += " not-served=" + strings.Join(r.NotServed, ",")
 		}
@@ -235,12 +243,35 @@ func (s *Shell) runFSVectors(a fsArgs) error {
 	return nil
 }
 
+// vectorQuerier is the execution surface needed by the spec runner.
+type vectorQuerier interface {
+	Query(context.Context, string) exec.Response
+}
+
+// setMismatchStatus gives observed mismatches precedence over non-failing
+// outcomes. Keep the first mismatch's statements and details intact.
+func (r *specResult) setMismatchStatus() bool {
+	switch {
+	case r.Mismatches > 0:
+		r.Status, r.Message = "FAIL", fmt.Sprintf("%d vector mismatch(es)", r.Mismatches)
+	case r.ExpectMismatches > 0:
+		r.Status, r.Message = "EXPECT-FAIL", fmt.Sprintf("%d data-model mismatch(es) on the MySQL path", r.ExpectMismatches)
+	default:
+		return false
+	}
+	return true
+}
+
 // runSpec executes one spec over its sampled keys.
-func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS, o vectorOpts) specResult {
+func runSpec(ctx context.Context, sp *cases.Spec, my, rd vectorQuerier, o vectorOpts) specResult {
 	res := specResult{ID: sp.ID, Shape: sp.Shape, Status: "PASS"}
-	keys := sp.SampleKeys(o.seed, o.count)
+	keys, err := sp.SampleKeys(o.seed, o.count)
+	if err != nil {
+		res.Status, res.Message = "SAMPLE-ERROR", err.Error()
+		return res
+	}
 	res.Keys = len(keys)
-	pol := vector.Policy{MissingEqualsNull: true, Tolerance: o.tolerance}
+	modelPolicy := vector.Policy{Tolerance: o.tolerance}
 	notServed := map[string]bool{}
 	expected := sp.ExpectedFeatures()
 	var only map[string]bool
@@ -251,6 +282,11 @@ func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS,
 		}
 	}
 	fail := func(status, message string, statements ...string) specResult {
+		res.NotServed = sortedNames(notServed)
+		if !isFailure(status) && res.setMismatchStatus() {
+			res.Message += "; stopped after " + status + ": " + message
+			return res
+		}
 		res.Status, res.Message, res.Statements = status, message, statements
 		return res
 	}
@@ -261,11 +297,21 @@ func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS,
 			return fail("BIND-ERROR", err.Error())
 		}
 		for _, g := range groups {
-			if g.MySQL == nil || len(g.Statements) == 0 {
-				// A MySQL-only DTO (no RonSQL template) has no vector to compare.
+			if g.MySQL == nil {
+				var statements []string
+				for _, st := range g.Statements {
+					statements = append(statements, st.RonSQL)
+				}
+				return fail("REFERENCE-ERROR", fmt.Sprintf("DTO %d lacks its production MySQL query",
+					g.DTO.PreparedStatementIndex), statements...)
+			}
+			if len(g.Statements) == 0 {
+				// No RonSQL evidence: this may be a point read or a gated DTO.
+				res.MySQLOnlyGroups++
 				continue
 			}
 			plan := sp.Plan(g.DTO)
+			pol := vector.Policy{MissingEqualsNull: sp.Left && plan.Kind == vector.Snowflake, Tolerance: o.tolerance}
 			statements := []string{*g.MySQL}
 			myResp := my.Query(ctx, *g.MySQL)
 			if myResp.Outcome != exec.OK {
@@ -285,6 +331,9 @@ func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS,
 					if sp.ExpectReject != nil && strings.Contains(rr.Message, sp.ExpectReject.Pattern) {
 						return fail("REJECT(expected)", sp.ExpectReject.Finding, statements...)
 					}
+					if o.allowReject {
+						return fail("REJECT(allowed)", firstLine(rr.Message), statements...)
+					}
 					return fail("REJECT", firstLine(rr.Message), statements...)
 				default:
 					return fail(rr.Outcome.String(), firstLine(rr.Message), statements...)
@@ -300,6 +349,9 @@ func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS,
 				return fail("FOLD-ERROR", "ronsql: "+err.Error(), statements...)
 			}
 			rep := vector.Compare(plan, refV, gotV, unit, types, pol, nil)
+			if rep.Compared == 0 {
+				res.UncomparedGroups++
+			}
 			res.Compared += rep.Compared
 			res.LeftMiss += rep.LeftMiss
 			for _, f := range rep.NotServed {
@@ -323,7 +375,7 @@ func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS,
 						expV[k.Text()] = v
 					}
 				}
-				erep := vector.Compare(plan, expV, refV, unit, types, pol, only)
+				erep := vector.Compare(plan, expV, refV, unit, types, modelPolicy, only)
 				if len(erep.Mismatches) > 0 {
 					if res.Mismatches == 0 && res.ExpectMismatches == 0 {
 						res.Statements = statements
@@ -339,11 +391,14 @@ func runSpec(ctx context.Context, sp *cases.Spec, my *exec.MySQL, rd *exec.RDRS,
 		}
 	}
 	res.NotServed = sortedNames(notServed)
+	if res.setMismatchStatus() {
+		return res
+	}
 	switch {
-	case res.Mismatches > 0:
-		res.Status, res.Message = "FAIL", fmt.Sprintf("%d vector mismatch(es)", res.Mismatches)
-	case res.ExpectMismatches > 0:
-		res.Status, res.Message = "EXPECT-FAIL", fmt.Sprintf("%d data-model mismatch(es) on the MySQL path", res.ExpectMismatches)
+	case res.Compared == 0:
+		res.Status, res.Message = "UNTESTED", "no vector cells compared"
+	case res.UncomparedGroups > 0:
+		res.Status, res.Message = "UNTESTED", fmt.Sprintf("%d executable DTO group(s) compared no vector cells", res.UncomparedGroups)
 	case sp.ExpectReject != nil:
 		res.Status, res.Message = "PASS(was-expected-reject)", sp.ExpectReject.Finding+" no longer rejects"
 	}

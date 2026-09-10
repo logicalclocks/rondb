@@ -34,22 +34,40 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] Optional ronsql_cli execution: the adapter exists, but .fs_verify
   currently compares MySQL with RonSQL through RDRS only. Do not claim
   that adding cli to --engines executes an additional comparison.
-- [ ] E4: implement vector-level comparison (--vectors), consuming
-  Case.Groups: each retains the original DTO, its bound production MySQL
-  query (nil if absent), and its zero or more bound RonSQL templates.
-  MySQL-only DTOs are retained; missing queries are not RonSQL fallbacks.
-- [ ] E8: implement requirements mode (--requirements). For now these
-  flags add no checks; a successful run establishes only L1 regression
-  results, not full Hopsworks requirements acceptance.
+- [x] E4: implement vector-level comparison (--vectors) using bound DTO
+  groups, reconstructed MySQL queries and independent data-model vectors.
+  The six review corrections are applied; their verification is pending.
+- [ ] E4 review verification (user-run): rebuild the CLI, run the fsq
+  and shell unit tests, then verify ronsql_fs_templates and
+  ronsql_fs_vectors against their existing recorded results.
+- [ ] A6: execute captured Java queryOnline SQL from the Hopsworks golden
+  fixtures against matching fixture data, and compare with both the
+  reconstructed MySQL twin and the RonSQL vector path. Use the same
+  keys/time and retain fixture provenance. E2 DTO conformance and the
+  current data-model oracle do not replace this execution evidence.
+- [ ] Track coverage of MySQL-only/point-read fallback and queryOnlineScan
+  separately: vector mode skips MySQL-only groups and does not execute
+  the scan twin. A skip does not establish why Hopsworks gated a template.
+- [ ] E8: implement requirements mode (--requirements). This flag still
+  adds no checks; successful selected L1 or L2 regression checks do not
+  establish full Hopsworks requirements acceptance.
 - [ ] Report deferred modes explicitly when requested without making
   their absence fail otherwise successful regression runs.
 
 ## Shape reporting
 
-Edge probes retain their EDGE label and SQL, but also contribute to the
+In L1, edge probes retain their EDGE label and SQL, but also contribute to the
 serving shapes listed in their explicit associations. --shape selection
 includes those probes once; JSON results expose the associations as shapes.
 SHAPE summaries describe the selected checks, not complete requirements
 acceptance. Known defects and skipped hazards remain non-failing but mark
 their associated shapes UNSUPPORTED. Direct collect probes do not replace
 the emitted S6 CTE cases; E8 acceptance remains deferred.
+
+In vector mode, skipped MySQL-only groups are counted. A spec with no
+compared cells, or an executable group with no compared cells, is UNTESTED
+(non-failing), never SUPPORTED. Missing MySQL references are errors.
+--allow-reject permits only clean rejections, reported as REJECT(allowed)
+and UNSUPPORTED; malformed JSON and other errors remain failures, as do
+earlier vector or data-model mismatches. LEFT-MISS applies only to missing
+RonSQL snowflake chains against explicit MySQL NULLs.

@@ -186,6 +186,9 @@ func (b *builder) strView(name string, batch bool) *spec.View {
 
 // ---- keys ------------------------------------------------------------------------
 
+// Bound duplicate draws before completing the sample in domain order.
+const maxSampleDuplicates = 1024
+
 // customerIDs samples count customer ids: two of every key class first
 // (empty / one-row / max-row history, day-bound and hourly spacing, NULL and
 // dangling region and country hops, upper-case string key, missing ids),
@@ -206,16 +209,40 @@ func customerIDs(sc data.Scale, rng *rand.Rand, count int) []int64 {
 			add(c)
 		}
 	}
-	for len(out) < count {
+	for duplicates := 0; len(out) < count && duplicates < maxSampleDuplicates; {
+		n := len(out)
 		add(rng.Int63n(sc.E) + 1)
+		if len(out) == n {
+			duplicates++
+		} else {
+			duplicates = 0
+		}
+	}
+	for c := int64(1); len(out) < count && c <= sc.E; c++ {
+		add(c)
 	}
 	return out
 }
 
-// SampleKeys returns at least count entity keys for the spec.
-func (s *Spec) SampleKeys(seed int64, count int) []vector.Key {
-	rng := rand.New(rand.NewSource(seed))
+// SampleKeys returns at least count entity keys for the spec. Counts must
+// fit the base sampling domain, including its two explicit missing-key
+// probes. Mandatory class representatives and single-string spelling probes
+// may increase the returned count. Random draws fall back to domain order
+// after repeated duplicates, so valid requests always terminate.
+func (s *Spec) SampleKeys(seed int64, count int) ([]vector.Key, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("%s: sample count must be positive, got %d", s.ID, count)
+	}
 	sc := s.b.cfg.Scale
+	capacity := uint64(sc.E) + 2
+	if s.Family == "hist" {
+		capacity = uint64(sc.A)*uint64(len(data.Currencies)) + 2
+	}
+	if uint64(count) > capacity {
+		return nil, fmt.Errorf("%s: sample count %d exceeds %d unique base keys at sf=%g; reduce --count or increase --sf",
+			s.ID, count, capacity, sc.SF)
+	}
+	rng := rand.New(rand.NewSource(seed))
 	var out []vector.Key
 	switch s.Family {
 	case "hist":
@@ -235,8 +262,22 @@ func (s *Spec) SampleKeys(seed int64, count int) []vector.Key {
 		}
 		add(4, "GBP")
 		add(sc.A+1, "EUR")
-		for len(out) < count {
+		for duplicates := 0; len(out) < count && duplicates < maxSampleDuplicates; {
+			n := len(out)
 			add(rng.Int63n(sc.A)+1, data.Currencies[rng.Intn(len(data.Currencies))])
+			if len(out) == n {
+				duplicates++
+			} else {
+				duplicates = 0
+			}
+		}
+		for account := int64(1); len(out) < count && account <= sc.A; account++ {
+			for _, cur := range data.Currencies {
+				if len(out) >= count {
+					break
+				}
+				add(account, cur)
+			}
 		}
 	case "stragg":
 		for _, c := range customerIDs(sc, rng, count) {
@@ -252,7 +293,7 @@ func (s *Spec) SampleKeys(seed int64, count int) []vector.Key {
 			out = append(out, vector.Key{strconv.FormatInt(c, 10)})
 		}
 	}
-	return out
+	return out, nil
 }
 
 // Units groups the keys into execution units: one per key for single

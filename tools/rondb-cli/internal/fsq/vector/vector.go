@@ -113,6 +113,9 @@ type Plan struct {
 	Outputs      []string
 	CountOutputs map[string]bool
 
+	// Snowflake: required projection aliases for each template, in DTO order.
+	TemplateOutputs [][]string
+
 	// Collect: the prefixed array feature, the unprefixed order column, the
 	// client sort direction and the persisted struct fields in schema order.
 	CollectFeature string
@@ -160,13 +163,18 @@ func PlanFor(dto emit.Statement, batch bool, structFields []string) Plan {
 		// (already prefixed); a chain that returns no row still counts.
 		seen := map[string]bool{}
 		for _, t := range dto.SnowflakeTemplates {
+			var outputs []string
 			for _, a := range templateAliases(t) {
-				if a == "hw_cnt" || (batch && len(p.Params) > 0 && a == p.Params[0]) || seen[a] {
+				if a == "hw_cnt" || (batch && len(p.Params) > 0 && a == p.Params[0]) {
 					continue
 				}
-				seen[a] = true
-				p.Outputs = append(p.Outputs, a)
+				outputs = append(outputs, a)
+				if !seen[a] {
+					seen[a] = true
+					p.Outputs = append(p.Outputs, a)
+				}
 			}
+			p.TemplateOutputs = append(p.TemplateOutputs, outputs)
 		}
 	default:
 		p.Kind = PointRead
@@ -229,6 +237,9 @@ func FoldRonsql(p Plan, results []*exec.Result, keys []Key) (Vectors, error) {
 	switch p.Kind {
 	case Aggregate:
 		if len(results) > 0 {
+			if err := requireColumns(results[0], p.Outputs, p.Prefix); err != nil {
+				return nil, err
+			}
 			if err := foldRows(p, results[0], keys, p.Params, p.Prefix, out); err != nil {
 				return nil, err
 			}
@@ -245,7 +256,13 @@ func FoldRonsql(p Plan, results []*exec.Result, keys []Key) (Vectors, error) {
 			out[keys[0].Text()] = Vector{p.CollectFeature: c}
 		}
 	case Snowflake:
-		for _, res := range results {
+		if len(results) != len(p.TemplateOutputs) {
+			return nil, fmt.Errorf("snowflake result count %d, want %d", len(results), len(p.TemplateOutputs))
+		}
+		for i, res := range results {
+			if err := requireColumns(res, p.TemplateOutputs[i], ""); err != nil {
+				return nil, fmt.Errorf("snowflake template %d: %w", i, err)
+			}
 			if err := foldRows(p, res, keys, p.Params, "", out); err != nil {
 				return nil, err
 			}
@@ -259,8 +276,8 @@ func FoldRonsql(p Plan, results []*exec.Result, keys []Key) (Vectors, error) {
 // carry the rank helper, LEFT JOIN misses are NULL cells.
 func FoldMysql(p Plan, res *exec.Result, keys []Key) (Vectors, error) {
 	out := Vectors{}
-	if res == nil {
-		return out, nil
+	if err := requireColumns(res, p.Outputs, ""); err != nil {
+		return nil, err
 	}
 	keyCols := make([]string, len(p.Params))
 	for i, prm := range p.Params {
@@ -290,13 +307,45 @@ func FoldMysql(p Plan, res *exec.Result, keys []Key) (Vectors, error) {
 	return out, nil
 }
 
+// requireColumns distinguishes an empty result (JSON has no header) from a
+// returned row missing a declared feature. outPrefix is applied after a
+// RonSQL aggregate fetch, so remove it when checking the raw column names.
+func requireColumns(res *exec.Result, outputs []string, outPrefix string) error {
+	if res == nil {
+		return fmt.Errorf("missing result")
+	}
+	if len(res.Rows) == 0 {
+		return nil
+	}
+	for _, output := range outputs {
+		col := strings.TrimPrefix(output, outPrefix)
+		if indexOf(res.Columns, col) < 0 {
+			return fmt.Errorf("result lacks the output column %q (columns %v)", col, res.Columns)
+		}
+	}
+	return nil
+}
+
 // foldRows overlays every row onto the vector of its entity: in a batch the
 // key is read from keyCols, otherwise the rows belong to keys[0].  Output
-// names get outPrefix applied; key columns are not features.
+// names get outPrefix applied; key columns are not features. Each result
+// must contain at most one row per requested entity. Duplicate detection is
+// local to this call, so separate snowflake templates can still overlay.
 func foldRows(p Plan, res *exec.Result, keys []Key, keyCols []string, outPrefix string, out Vectors) error {
 	if res == nil {
 		return nil
 	}
+	if !p.Batch && len(keys) != 1 {
+		return fmt.Errorf("single-entity result requires exactly one requested key, got %d", len(keys))
+	}
+	if p.Batch && len(keyCols) == 0 {
+		return fmt.Errorf("batch result has no declared key columns")
+	}
+	requested := map[string]bool{}
+	for _, key := range keys {
+		requested[key.Text()] = true
+	}
+	seen := map[string]bool{}
 	var keyIdx []int
 	isKey := map[int]bool{}
 	if p.Batch {
@@ -312,24 +361,37 @@ func foldRows(p Plan, res *exec.Result, keys []Key, keyCols []string, outPrefix 
 			isKey[i] = true
 		}
 	}
-	for _, row := range res.Rows {
+	for rowIndex, row := range res.Rows {
+		if len(row) != len(res.Columns) {
+			return fmt.Errorf("row %d has %d cells for %d columns", rowIndex, len(row), len(res.Columns))
+		}
 		var kt string
 		if p.Batch {
 			k := make(Key, len(keyIdx))
 			for i, idx := range keyIdx {
+				if row[idx].Null {
+					return fmt.Errorf("row %d has NULL key column %q", rowIndex, keyCols[i])
+				}
 				k[i] = row[idx].Text
 			}
 			kt = k.Text()
-		} else if len(keys) > 0 {
+		} else {
 			kt = keys[0].Text()
 		}
+		if !requested[kt] {
+			return fmt.Errorf("row %d has unrequested entity key %q", rowIndex, kt)
+		}
+		if seen[kt] {
+			return fmt.Errorf("result contains duplicate entity key %q", kt)
+		}
+		seen[kt] = true
 		v := out[kt]
 		if v == nil {
 			v = Vector{}
 			out[kt] = v
 		}
 		for i, col := range res.Columns {
-			if isKey[i] || i >= len(row) {
+			if isKey[i] {
 				continue
 			}
 			v[outPrefix+col] = cellOf(row[i])
@@ -368,6 +430,9 @@ func foldCollect(p Plan, res *exec.Result, colPrefix string) (Cell, error) {
 	fieldIdx := make([]int, len(p.Fields))
 	for i, f := range p.Fields {
 		fieldIdx[i] = indexOf(res.Columns, colPrefix+f)
+		if fieldIdx[i] < 0 && len(res.Rows) > 0 {
+			return Cell{}, fmt.Errorf("collect result lacks the field %q (columns %v)", colPrefix+f, res.Columns)
+		}
 	}
 	rows := append([][]exec.Cell(nil), res.Rows...)
 	if orderIdx >= 0 {
@@ -410,9 +475,9 @@ func lessCell(a, b exec.Cell) bool {
 
 // Policy controls the comparison.
 type Policy struct {
-	// MissingEqualsNull accepts a feature missing on one side against a
-	// NULL cell on the other (a LEFT-chain miss: RonSQL's inner CTE_LOOKUP
-	// drops the chain row, MySQL's LEFT JOIN yields NULLs); counted as LeftMiss.
+	// MissingEqualsNull is enabled only for LEFT snowflake comparisons.
+	// It accepts a chain with no row against MySQL's NULL cells, counted as
+	// LeftMiss. Folds reject returned rows that lack declared columns.
 	MissingEqualsNull bool
 	Tolerance         float64 // DOUBLE/FLOAT relative tolerance (canon default when 0)
 }
@@ -486,11 +551,7 @@ func cellsMatch(p Plan, f string, a Cell, aok bool, b Cell, bok bool, types map[
 	case amiss && bmiss:
 		return true, false
 	case amiss || bmiss:
-		present := a
-		if amiss {
-			present = b
-		}
-		if pol.MissingEqualsNull && present.Null && present.Array == nil {
+		if p.Kind == Snowflake && pol.MissingEqualsNull && !amiss && bmiss && a.Null && a.Array == nil {
 			return true, true
 		}
 		return false, false

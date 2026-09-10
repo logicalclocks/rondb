@@ -26,6 +26,8 @@
 package cases
 
 import (
+	"math/rand"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -71,7 +73,10 @@ func TestSpecsCatalog(t *testing.T) {
 func TestSampleKeysClasses(t *testing.T) {
 	specs := specsByID(t)
 	sc := data.NewScale(0.01)
-	keys := specs["V-S1-agg"].SampleKeys(1, 120)
+	keys, err := specs["V-S1-agg"].SampleKeys(1, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(keys) < 120 {
 		t.Fatalf("%d keys", len(keys))
 	}
@@ -87,17 +92,23 @@ func TestSampleKeysClasses(t *testing.T) {
 			t.Errorf("key class representative %s missing", want)
 		}
 	}
-	if k2 := specs["V-S1-agg"].SampleKeys(1, 120); k2[len(k2)-1].Text() != keys[len(keys)-1].Text() {
+	if k2, err := specs["V-S1-agg"].SampleKeys(1, 120); err != nil || !reflect.DeepEqual(k2, keys) {
 		t.Error("sampling must be deterministic for a seed")
 	}
 	if len(specs["V-S3-agg-b10"].Units(keys)) != (len(keys)+9)/10 {
 		t.Error("batch units of 10")
 	}
-	hk := specs["V-S9-hist"].SampleKeys(1, 120)
+	hk, err := specs["V-S9-hist"].SampleKeys(1, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(hk) < 120 || len(hk[0]) != 2 || hk[0][1] != "USD" {
 		t.Errorf("hist keys: %d, first %v", len(hk), hk[0])
 	}
-	sk := specs["V-S10-str"].SampleKeys(1, 120)
+	sk, err := specs["V-S10-str"].SampleKeys(1, 120)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !strings.HasPrefix(sk[0][0], "cust-") && !strings.HasPrefix(sk[0][0], "CUST-") {
 		t.Errorf("string keys: %v", sk[0])
 	}
@@ -191,8 +202,14 @@ func TestExpectedVectors(t *testing.T) {
 	if s, _ := specs["V-S7-inner-2hop"].Expected(vector.Key{"16"}); len(s) != 0 {
 		t.Errorf("INNER with a NULL country drops the row: %+v", s)
 	}
-	if s, _ := specs["V-S8-left-2hop"].Expected(vector.Key{"16"}); s["r_region_name"].Text != "Region 17" || len(s) != 2 {
+	if s, _ := specs["V-S8-left-2hop"].Expected(vector.Key{"16"}); s["r_region_name"].Text != "Region 17" || len(s) != 4 || !s["c_country_name"].Null || !s["c_continent"].Null {
 		t.Errorf("LEFT with a NULL country keeps the region chain: %+v", s)
+	}
+	if s, _ := specs["V-S8-left-2hop"].Expected(vector.Key{"13"}); len(s) != 4 || !s["r_region_name"].Null || !s["r_population"].Null || !s["c_country_name"].Null || !s["c_continent"].Null {
+		t.Errorf("LEFT with a NULL region must expect explicit NULLs: %+v", s)
+	}
+	if s, _ := specs["V-S8-left-2hop"].Expected(vector.Key{"1001"}); len(s) != 0 {
+		t.Errorf("missing root entity must still expect no row: %+v", s)
 	}
 	if s, _ := specs["V-S7-inner-1hop"].Expected(vector.Key{"16"}); s["r_region_name"].Text != "Region 17" {
 		t.Errorf("1-hop: %+v", s)
@@ -214,5 +231,80 @@ func TestExpectedVectors(t *testing.T) {
 	}
 	if s, _ := specs["V-S10-str"].Expected(vector.Key{"O'Brien"}); s["s_count"].Text != "0" {
 		t.Errorf("string key O'Brien: %+v", s)
+	}
+}
+
+func TestSampleKeysDomainBounds(t *testing.T) {
+	sc := data.NewScale(0.00016) // 16 customers, 8 accounts
+	specs, err := Specs(Config{DB: "test", Scale: sc})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sp := range specs {
+		t.Run(sp.ID, func(t *testing.T) {
+			capacity := int(sc.E) + 2
+			if sp.Family == "hist" {
+				capacity = int(sc.A)*len(data.Currencies) + 2
+			}
+			for _, count := range []int{0, -1, capacity + 1, 120} {
+				if keys, err := sp.SampleKeys(1, count); err == nil || keys != nil {
+					t.Fatalf("count %d must fail before sampling: keys=%v err=%v", count, keys, err)
+				}
+			}
+			keys, err := sp.SampleKeys(1, capacity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := capacity
+			if sp.Family == "stragg" && sp.Batch == 0 {
+				want += 2 // lower-case spelling and O'Brien probes
+			}
+			seen := map[string]bool{}
+			for _, key := range keys {
+				if seen[key.Text()] {
+					t.Fatalf("duplicate key %v", key)
+				}
+				seen[key.Text()] = true
+			}
+			if len(keys) != want {
+				t.Fatalf("full-domain sample has %d keys, want %d", len(keys), want)
+			}
+			if again, err := sp.SampleKeys(1, capacity); err != nil || !reflect.DeepEqual(keys, again) {
+				t.Fatal("full-domain sampling must be deterministic")
+			}
+		})
+	}
+}
+
+type repeatedSampleSource struct{ draws int }
+
+func (s *repeatedSampleSource) Seed(int64) { s.draws = 0 }
+
+func (s *repeatedSampleSource) Int63() int64 {
+	s.draws++
+	if s.draws > 2*maxSampleDuplicates {
+		panic("sampler did not stop drawing duplicate keys")
+	}
+	return 0
+}
+
+func TestCustomerSampleDuplicateFallback(t *testing.T) {
+	sc := data.NewScale(0.00016)
+	source := &repeatedSampleSource{}
+	keys := customerIDs(sc, rand.New(source), int(sc.E)+2)
+	seen := map[int64]bool{}
+	for _, key := range keys {
+		seen[key] = true
+	}
+	if len(keys) != int(sc.E)+2 || len(seen) != len(keys) {
+		t.Fatalf("fallback must fill the unique domain: %v", keys)
+	}
+	for key := int64(1); key <= sc.E+2; key++ {
+		if !seen[key] {
+			t.Fatalf("fallback omitted key %d", key)
+		}
+	}
+	if source.draws != maxSampleDuplicates {
+		t.Fatalf("duplicate draws=%d, want %d", source.draws, maxSampleDuplicates)
 	}
 }

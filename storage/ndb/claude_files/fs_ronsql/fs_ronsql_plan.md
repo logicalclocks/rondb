@@ -529,13 +529,22 @@ Exit: all supported shapes green under `$strict_diff=yes`; unsupported
 ones recorded as rejection-asserts or `# NEXT-PHASE` probes with a
 findings entry.
 
-### E4 — L2 vector-level equivalence — DONE 2026-09-10 (22 specs green, `ronsql_fs_vectors` recorded; see `phase_e4.md`)
+### E4 — L2 vector-level equivalence — implemented; review verification and A6 pending (see `phase_e4.md` §6)
 
 Scope: `fsq/vector`: client-side folds for both paths (collect sort +
 fold to array, snowflake overlay per chain with LEFT miss semantics,
 batch GROUP BY defaults, prefix application, window literal from one
 UTC reference), `.fs_verify --vectors`, `t/ronsql_fs_vectors.test`.
-Exit: vectors identical for every spec in the catalog over ≥ 100 keys
+The initial run recorded 21 passing specs and one expected F0 rejection.
+Six subsequent review corrections are applied but await user-run builds
+and tests. A6 still requires execution of the captured Java MySQL SQL;
+current L2 runs use reconstructed queries and data-model expectations.
+
+Regression exit: supported specs agree over ≥ 100 keys; known rejections
+and untested coverage remain separately reported and may be non-failing.
+Full E4 conformance evidence must also include the A6 execution comparison.
+
+Target: vectors identical for supported specs in the catalog over ≥ 100 keys
 including miss/NULL-hop entities; any semantic divergence between the
 RonSQL template path and the MySQL path documented (these are Hopsworks
 issues, not engine issues, and go to the ledger with a `hopsworks`

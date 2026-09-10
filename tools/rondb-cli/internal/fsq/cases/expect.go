@@ -28,9 +28,9 @@ package cases
 // Data-model expectations of the vector oracle: the vector a spec must
 // serve for a key, computed from the data formulas (data_model.md §5)
 // rather than from either engine, so that two identical folds are not the
-// only evidence.  Missing features stand for "no row" (INNER miss, LEFT
-// chain miss, unknown entity); the comparison policy accepts MySQL's NULL
-// cells for them.
+// only evidence. Missing features stand for no MySQL row (INNER miss or
+// unknown entity); LEFT-hop misses on an existing entity are explicit NULL
+// cells, so the MySQL fold can be checked without a missing-equals-NULL policy.
 
 import (
 	"strconv"
@@ -242,9 +242,14 @@ func (s *Spec) Expected(key vector.Key) (vector.Vector, bool) {
 		if c < 1 || c > sc.E {
 			return v, true
 		}
+		if s.Left {
+			for _, f := range s.ExpectedFeatures() {
+				v[f] = vector.Cell{Null: true}
+			}
+		}
 		r := data.RegionOf(c)
 		if !r.Valid || r.V > data.RegionCount {
-			return v, true // NULL or dangling region: no chain row (LEFT: NULLs on MySQL)
+			return v, true // LEFT: NULL hop columns; INNER: no row
 		}
 		region := data.RegionRow(r.V)
 		v["r_region_name"], v["r_population"] = text(region.Name), text(itoa(region.Population))
@@ -254,7 +259,7 @@ func (s *Spec) Expected(key vector.Key) (vector.Vector, bool) {
 		k := region.CountryID
 		if !k.Valid || k.V > data.CountryCount {
 			if s.Left {
-				return v, true // the region chain still serves; the country chain has no row
+				return v, true // region features remain; country columns are NULL
 			}
 			return vector.Vector{}, true // INNER: the combined template drops the whole row
 		}

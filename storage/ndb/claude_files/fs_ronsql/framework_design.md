@@ -351,8 +351,10 @@ Folds (from the DTO comments and the ported code):
 - snowflake: per template, overlay projected columns by output alias;
   a chain with no row leaves its features `Missing`; batch rows are
   keyed by the projected root PK. MySQL LEFT JOIN yields NULL cells;
-  the `MissingEqualsNull` policy (default on) makes those compare
-  equal and the report lists them as `LEFT-MISS` informational lines.
+  `MissingEqualsNull` is enabled only for LEFT snowflake comparisons
+  and accepts MySQL NULL against a missing RonSQL chain, not the reverse.
+  Returned rows must contain their declared columns. Accepted misses are
+  counted as `left-miss`; missing aggregate/collect fields remain errors.
 - point read: verbatim.
 
 E4 implementation notes (`phase_e4.md` §2): vector feature names are
@@ -365,6 +367,16 @@ template) are reported as `not-served`, not compared; the compared set
 is the union of template-served features plus declared outputs; the
 data-model expectations of `cases/expect.go` check the MySQL fold
 independently (`EXPECT-FAIL`), restricted to the modelled features.
+They expect explicit NULLs for LEFT-hop misses and use strict missingness.
+Duplicate entity rows within one template and unrequested/NULL batch
+keys are fold errors; overlays across separate snowflake templates remain
+valid. MySQL-only groups are counted as skipped, missing references fail,
+and zero-comparison coverage is non-failing UNTESTED, never SUPPORTED.
+--allow-reject accepts only clean rejections and cannot override earlier
+mismatches. The six review corrections await user verification; executing
+captured Java MySQL SQL (§3 / A6) remains pending, as recorded in
+`phase_e4.md` §6 and
+`mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
 
 ---
 

@@ -67,7 +67,7 @@ type caseResult struct {
 
 func isFailure(status string) bool {
 	switch status {
-	case "REJECT(expected)", "REJECT(allowed)", "KNOWN-WRONG", "KNOWN-ERROR", "HEADER-ONLY", "SKIP", "HAZARD-SKIPPED":
+	case "REJECT(expected)", "REJECT(allowed)", "KNOWN-WRONG", "KNOWN-ERROR", "HEADER-ONLY", "SKIP", "HAZARD-SKIPPED", "UNTESTED":
 		return false
 	}
 	return !strings.HasPrefix(status, "PASS")
@@ -417,6 +417,8 @@ func shapeStatus(statuses []string) string {
 			return "FAILED"
 		case st == "REJECT(expected)" || st == "REJECT(allowed)" || st == "KNOWN-WRONG" || st == "KNOWN-ERROR" || st == "HAZARD-SKIPPED":
 			out = "UNSUPPORTED"
+		case st == "UNTESTED" && out == "SUPPORTED":
+			out = "UNTESTED"
 		}
 	}
 	return out

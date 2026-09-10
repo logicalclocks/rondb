@@ -1,9 +1,13 @@
 # E4 — L2 vector-level equivalence (2026-09-10)
 
-**Status: DONE 2026-09-10 — unit tests green, interactive run 22/22 as
-predicted, `ronsql_fs_vectors` recorded and verified (see §5).**
+**Status: L2 implemented; six review corrections applied, user verification
+pending. Captured Java SQL execution (A6) remains open; see §6.**
 
-## 1. What was built
+Sections 1 and 5 describe the initial commit `12f397e589f` and its recorded
+results. Those results do not verify the subsequent review corrections.
+Sections 2–4 and 6 describe the revised behavior and remaining work.
+
+## 1. Initial implementation (12f397e589f)
 
 | Piece | Content |
 |---|---|
@@ -32,9 +36,12 @@ predicted, `ronsql_fs_vectors` recorded and verified (see §5).**
 - INNER vs LEFT: with INNER templates a miss anywhere drops the whole
   row on both engines (both sides Missing); with LEFT per-chain
   templates RonSQL leaves the missed chain's features Missing while
-  MySQL's LEFT JOIN yields NULLs — accepted by `MissingEqualsNull` and
-  counted per cell as `left-miss` (the R6 semantic of the shape
-  catalog, a Hopsworks contract, not an engine difference).
+  MySQL's LEFT JOIN yields NULLs. Only this direction is accepted by
+  `MissingEqualsNull`, enabled only for LEFT snowflake comparisons and
+  counted per cell as `left-miss`. Returned rows must contain their
+  declared columns; missing aggregate/collect fields are not LEFT misses.
+  The independent MySQL model expects explicit NULLs for LEFT-hop misses
+  and is compared strictly; a missing root entity still expects no row.
 - Zero-row results carry no column list on RonSQL (E3 run 3), so a
   collect over an empty history folds to an empty array on both sides
   and an INNER miss to no features; the comparison does not need the
@@ -43,8 +50,11 @@ predicted, `ronsql_fs_vectors` recorded and verified (see §5).**
   the run reports `PASS(was-expected-reject)` the day the engine accepts
   it; the folds are exercised through the S6b direct form.
 - MySQL-only DTOs (composite batch aggregate, plain point reads) have no
-  RonSQL vector and are skipped inside a spec; `queryOnlineScan` (the
-  `LIMIT` twin) is not folded in E4.
+  RonSQL vector and are counted as skipped groups inside a spec. Missing
+  MySQL queries are `REFERENCE-ERROR`, not skips. A spec with no compared
+  cells, or an executable group with no compared cells, is `UNTESTED`
+  and non-failing, never `SUPPORTED`. The reason for gating is not inferred
+  from an absent template. `queryOnlineScan` is not folded in E4.
 - The spec-level key sampler is shared with E6 (`SampleKeys`), which will
   draw random specs and reuse `Bind` / `Plan` / `Expected`.
 
@@ -53,7 +63,7 @@ predicted, `ronsql_fs_vectors` recorded and verified (see §5).**
 ```
 # unit tests (no cluster)
 cd /Users/mikael/mysql_trees/rondb_1121_fs_ronsql/tools/rondb-cli
-go test ./internal/fsq/...
+go test ./internal/fsq/... ./internal/shell
 
 # build the CLI
 cd /Users/mikael/mysql_trees/rondb_1121_fs_ronsql/debug_build && make rondb-cli
@@ -66,13 +76,12 @@ cd /Users/mikael/mysql_trees/rondb_1121_fs_ronsql/debug_build/mysql-test
 ../runtime_output_directory/rondb --mysql-port 13001 --rdrs-port 13005 --no-rondis \
     -e ".fs_verify --vectors --db test --sf 0.01 --seed 1 --count 120 --json /tmp/fs_vectors.json --dump-dir /tmp/fs_vectors"
 
-# record and verify the MTR driver test
-./mtr --suite=ronsql_fs ronsql_fs_vectors --record
-./mtr --suite=ronsql_fs ronsql_fs_vectors
+# verify existing recorded output after the review corrections
+./mtr --suite=ronsql_fs ronsql_fs_templates ronsql_fs_vectors
 ```
 
-Expected: 22 SPEC lines, `V-S6-cte-n5 REJECT(expected) F0`, every other
-spec `PASS` with `left-miss` > 0 only on the S8 specs and `not-served`
+Expected after rebuilding (not yet reverified): 22 SPEC lines,
+`V-S6-cte-n5 REJECT(expected) F0`, every other spec `PASS` with `left-miss` > 0 only on the S8 specs and `not-served`
 listing the root features on the S7/S8 specs;
 `SUMMARY vectors specs=22 pass=21 reject(expected)=1`; SHAPE S6
 UNSUPPORTED, the rest SUPPORTED.
@@ -86,11 +95,23 @@ UNSUPPORTED, the rest SUPPORTED.
 - `EXPECT-FAIL`: the MySQL path disagrees with the data formulas — the
   formula port in `expect.go` or the data set (`.fs_load` checksum) is
   wrong before the engine is suspected.
-- `FOLD-ERROR … lacks the key column`: a batch statement whose key
-  alias differs from `<prefix><param>`; the emitter output changed.
+- `FOLD-ERROR`: missing declared output/key columns, malformed
+  aggregate/snowflake row widths, NULL/unrequested batch keys, duplicate entity rows within one
+  template, or other invalid fold input. Separate snowflake templates
+  may still overlay the same entity; collect arrays retain multiple rows.
 - `BIND-ERROR`: a key literal the binder cannot type.
+- `SAMPLE-ERROR`: count exceeds the finite base key domain or is invalid;
+  no queries are issued for that spec. Reduce count or use matching data
+  at a larger scale.
+- `REFERENCE-ERROR`: a DTO lacks its production MySQL query.
+- `UNTESTED`: no L2 evidence for all or part of a spec; inspect the
+  `mysql-only-groups` and `uncompared-groups` counters. JSON names are
+  `mysqlOnlyGroups` and `uncomparedGroups`; counts are across execution units.
+- `REJECT(allowed)`: an unexpected clean rejection accepted under
+  `--allow-reject`; non-failing but unsupported. This flag never excuses
+  malformed JSON, other execution errors, or earlier mismatches.
 
-## 5. Results
+## 5. Initial results (before review corrections)
 
 ### `go test` run 1 (2026-09-10)
 
@@ -134,10 +155,10 @@ Per spec (from `--json`):
 | V-S10-str | 122 | 122 | 1098 | 0 | — | 151 |
 | V-S10-str-b10 | 120 | 12 | 1080 | 0 | — | 64 |
 
-Reading: every aggregate, collect, snowflake and composite/string spec
-serves identical vectors on the RonSQL template path and the MySQL path
-for all sampled entities, and the MySQL path agrees with the data-model
-expectation (no `EXPECT-FAIL`).  The 102 `left-miss` cells of the two S8
+Reading: the 21 passing specs reported identical vectors on the RonSQL
+template path and the MySQL path for their sampled entities, and the
+MySQL path agreed with the data-model expectation (no `EXPECT-FAIL`).
+The 102 `left-miss` cells of the two S8
 specs are the NULL / dangling region hops (all four features) and the
 NULL / dangling country hops (two features) of the sampled keys: RonSQL's
 per-chain templates leave them missing, MySQL's LEFT JOIN yields NULL —
@@ -146,10 +167,10 @@ mismatch.  The `not-served` root features (`p_age`, `p_tier`) are what
 Hopsworks reads through the pk-read path.  Batch specs cost about a
 tenth of the single-statement specs in RDRS time.
 
-E4 exit criterion met: vectors identical for every spec of the catalog
-over ≥ 120 keys including the miss / NULL-hop entities; the only
-semantic divergence (missing vs NULL on LEFT chains) is documented as a
-Hopsworks contract.
+Initial regression result: 21 specs passed over ≥ 120 keys, while the
+S6 CTE spec stopped at its expected F0 rejection without a vector
+comparison. This is not evidence for the later review corrections or
+the outstanding captured Java SQL execution requirement (A6).
 
 ### MTR — `ronsql_fs_vectors --record` then verify (2026-09-10): PASS
 
@@ -161,3 +182,39 @@ spec makes the driver exit non-zero and the test fail.  The regenerated
 `ronsql_fs_templates.test` (20 lines restored: the F2/F3 header and the
 nine canonicalization blocks) was verified against its recorded result
 without re-recording.  Next: E5 (benchmarks).
+
+## 6. Review corrections and remaining evidence (2026-09-10)
+
+Applied corrections (not yet built or tested after review):
+
+1. Limit missing-versus-NULL acceptance to LEFT snowflake comparisons,
+   validate declared columns, and compare the explicit MySQL model strictly.
+2. Preserve earlier vector/data-model failures and their evidence when a
+   later unit returns an expected or allowed rejection.
+3. Return sampling errors for impossible counts. The base capacities are
+   E + 2 customer keys and 3A + 2 account/currency keys; single-string
+   spelling probes remain additional. After 1024 consecutive duplicate
+   draws, fill in domain order. Normal seeded sampling is unchanged.
+4. Report missing references as errors and zero-comparison coverage as
+   non-failing UNTESTED; count MySQL-only and uncompared executable groups.
+5. Reject duplicate entity rows within one result and unrequested/NULL
+   batch keys before folding; validate aggregate/snowflake row widths and
+   retain cross-template snowflake overlays and empty-set aggregate defaults.
+6. Honor --allow-reject only for clean rejections. Known rejections keep
+   their finding ID; errors and previously observed mismatches still fail.
+
+Next evidence to collect:
+
+- [ ] User-run verification in §3, including the new shell runner tests.
+  Only patch-content checks and `git diff --check` have been performed
+  during this review; no new build, unit-test or MTR success is claimed.
+- [ ] A6: execute captured Java `queryOnline` SQL against matching
+  fixture-backed data and compare it with the reconstructed MySQL twin
+  and RonSQL vector path, with identical keys/time and fixture provenance.
+  Current E4 executes reconstructed queries; E2 golden conformance and
+  independent data-model expectations do not complete this requirement.
+
+These are tracked in `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`.
+Known engine defects remain separate tasks. Discovery/regression success
+for supported checks does not establish full Hopsworks requirements
+acceptance; E8 remains deferred.
