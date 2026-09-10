@@ -8039,6 +8039,7 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
   req->resultRef = data.m_api_resultRef;
   req->resultData = requestPtr.p->m_rootResultData;
   req->joinAggStateKey = joinAggStateKey;
+  req->coordinatorRef = requestPtr.p->m_senderRef;
   req->scanIterI = scanIterI;
 
   /* Attach AttrInfo section (with FLUSH_AI + user projection) when
@@ -8529,6 +8530,7 @@ void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
   req->resultRef = 0;
   req->resultData = 0;
   req->joinAggStateKey = RNIL;
+  req->coordinatorRef = requestPtr.p->m_senderRef;
   req->scanIterI = scanIterI;
   req->flags = CteScanReq::CloseFlag;
 

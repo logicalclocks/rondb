@@ -3579,6 +3579,7 @@ private:
   void checkCteReady(Signal* signal, JoinAggregationState* state);
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
                                Uint32 errorCode, bool notifyPeers = true);
+  bool isJoinAggCoordinatorFailed(Uint32 coordinatorRef);
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
@@ -5419,7 +5420,7 @@ public:
     Uint32 *cinBufOverflow;  // nullptr if attrInfoLen fits inline
     Uint32  nextPool;
     Uint16  senderNodeId;    // Requesting DBSPJ node, for failure cleanup
-    Uint16  coordinatorNodeId; // DBTC node for agg-feed scans; otherwise 0
+    Uint16  coordinatorNodeId; // DBTC coordinator node; 0 for non-DBTC callers
     bool    aggFeed;         // Owned by a local continuation, not DBSPJ
 
     const Uint32 *cinBuf() const {

@@ -129,11 +129,11 @@ struct CtePhaseStartReq {
  * CTE_SCAN_REQ — DBSPJ → DBLQH
  *
  * Scan groups from a materialized CTE hash table.  On the first call
- * (SignalLength=9), DBLQH sends up to batchSize groups as TRANSID_AI
+ * (SignalLength=10), DBLQH sends up to batchSize groups as TRANSID_AI
  * (AttributeHeader-encoded GROUP BY keys + aggregate results +
  * CORR_FACTOR), followed by CTE_SCAN_CONF.
  *
- * On subsequent calls (SignalLengthContinue=10, scanIterI from CONF),
+ * On subsequent calls (SignalLengthContinue=11, scanIterI from CONF),
  * DBLQH resumes from the saved pool-based iterator position.
  *
  * Used by QN_CTE_SCAN nodes when a CTE reads from an earlier CTE.
@@ -170,19 +170,20 @@ struct CteScanReq {
                           // API and DBSPJ.  Used when scanCte is the root
                           // of a CTE subtree that aggregates the scanned
                           // groups (CTE 2 reads from CTE 1).
+  Uint32 coordinatorRef;  // DBTC reference, checked before accessing CTE state
   Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL on first batch;
                           // echoed from CONF on continuation)
   Uint32 flags;           // CloseFlag (DBSPJ → DBLQH "release this scanIterI
-                          // and discard, no CONF expected"). Only read when
+                          // and reply with EndOfData CONF"). Only read when
                           // signal length >= SignalLengthClose.
 
   /* First CTE_SCAN_REQ uses SignalLength (no scanIterI, no flags).
    * Continuation requests use SignalLengthContinue (with scanIterI).
    * Close requests use SignalLengthClose (with scanIterI + flags) and
-   * DBLQH silently releases the pool record — no TRANSID_AI, no CONF. */
-  static constexpr Uint32 SignalLength = 9;
-  static constexpr Uint32 SignalLengthContinue = 10;
-  static constexpr Uint32 SignalLengthClose = 11;
+   * DBLQH releases the pool record and replies with EndOfData CONF. */
+  static constexpr Uint32 SignalLength = 10;
+  static constexpr Uint32 SignalLengthContinue = 11;
+  static constexpr Uint32 SignalLengthClose = 12;
   enum { AttrInfoSectionNum = 0 };
   enum Flags { CloseFlag = 0x1 };
 };

@@ -19768,6 +19768,23 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
                        senderRef, senderData, requestId);
 }
 
+/* Node id of a DBTC coordinator reference, 0 for any other block.
+ * Direct API callers (block unit tests) use their own reference; their
+ * records are never tied to node failure and must not index hostRecord. */
+static inline Uint32 joinAggCoordinatorNodeId(Uint32 coordinatorRef) {
+  return refToMain(coordinatorRef) == DBTC ? refToNode(coordinatorRef) : 0;
+}
+
+bool Dblqh::isJoinAggCoordinatorFailed(Uint32 coordinatorRef) {
+  // Direct API callers may use their own reference. NODE_FAILREP
+  // applies to DBTC coordinators, which DBSPJ carries in the request.
+  if (refToMain(coordinatorRef) != DBTC) return false;
+  HostRecordPtr hostPtr;
+  hostPtr.i = refToNode(coordinatorRef);
+  ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
+  return hostPtr.p->nodestatus == ZNODE_DOWN;
+}
+
 /**
  * Check if the DBTC node that owns this aggregation has died.
  * If so, stop the local continuation and leave reclamation to the
@@ -21495,6 +21512,15 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
    * We copy the section data into local buffers before releasing. */
   SectionHandle handle(this, signal);
 
+  // DBSPJ may still be alive after its DBTC coordinator fails.
+  // Check the request's coordinator before dereferencing shared state.
+  if (unlikely(isJoinAggCoordinatorFailed(req.routeRef))) {
+    jam();
+    sendCteLookupRef(signal, req.senderRef, req.senderData,
+                     ZNODEFAIL_BEFORE_COMMIT, req.correlation, &handle);
+    return;
+  }
+
   JoinAggregationState *state = getJoinAggState(req.aggStateKey);
   if (unlikely(state == nullptr)) {
     jam();
@@ -21824,15 +21850,18 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
   feedPtr.i = aggFeedStateI;
   ndbrequire(c_cteScanIterStatePool.getValidPtr(feedPtr));
   ndbrequire(feedPtr.p->aggFeed);
-  hostPtr.i = feedPtr.p->coordinatorNodeId;
-  ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
-  if (unlikely(hostPtr.p->nodestatus == ZNODE_DOWN)) {
-    jam();
-    // DBSPJ is alive and still needs its terminal reply. Stop before
-    // accessing either interpreter; NF cleanup waits for this release.
-    releaseCteScanIterState(aggFeedStateI);
-    sendCteScanRef(signal, senderRef, senderData, ZNODEFAIL_BEFORE_COMMIT);
-    return;
+  if (feedPtr.p->coordinatorNodeId != 0) {  // 0: non-DBTC caller
+    hostPtr.i = feedPtr.p->coordinatorNodeId;
+    ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
+    if (unlikely(hostPtr.p->nodestatus == ZNODE_DOWN)) {
+      jam();
+      // DBSPJ is alive and still needs its terminal reply. Stop before
+      // accessing either interpreter; NF cleanup waits for this release.
+      releaseCteScanIterState(aggFeedStateI);
+      sendCteScanRef(signal, senderRef, senderData,
+                     ZNODEFAIL_BEFORE_COMMIT);
+      return;
+    }
   }
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
@@ -22187,7 +22216,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     localState.attrInfoLen = 0;          // emit path doesn't cache filter
     localState.cinBufOverflow = nullptr;
     localState.senderNodeId = refToNode(req.senderRef);
-    localState.coordinatorNodeId = 0;
+    localState.coordinatorNodeId = joinAggCoordinatorNodeId(req.coordinatorRef);
     localState.aggFeed = false;
   }
   CteScanIterState *scanState = &localState;
@@ -22520,7 +22549,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
   SectionHandle handle(this, signal);
 
   /* Extract scanIterI while signal is still intact.
-   * First CTE_SCAN_REQ (SignalLength=9) has no scanIterI field. */
+   * First CTE_SCAN_REQ (SignalLength=10) has no scanIterI field. */
   const Uint32 scanIterI =
       (signal->getLength() >= CteScanReq::SignalLengthContinue)
       ? req.scanIterI : RNIL;
@@ -22562,6 +22591,16 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
     conf->scanIterI = RNIL;
     sendSignal(req.senderRef, GSN_CTE_SCAN_CONF, signal,
                CteScanConf::SignalLength, JBB);
+    return;
+  }
+
+  // Close above remains valid even after coordinator failure: it
+  // releases only the worker-local iterator, without touching CTE state.
+  if (unlikely(isJoinAggCoordinatorFailed(req.coordinatorRef))) {
+    jam();
+    releaseCteScanIterState(scanIterI);
+    sendCteScanRef(signal, req.senderRef, req.senderData,
+                   ZNODEFAIL_BEFORE_COMMIT, &handle);
     return;
   }
 
@@ -22654,7 +22693,7 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
     ptr.p->attrInfoLen = filterLen;
     ptr.p->cinBufOverflow = nullptr;
     ptr.p->senderNodeId = refToNode(req.senderRef);
-    ptr.p->coordinatorNodeId = refToNode(state->m_senderRef);
+    ptr.p->coordinatorNodeId = joinAggCoordinatorNodeId(req.coordinatorRef);
     ptr.p->aggFeed = true;
     if (filterLen <= CTE_SCAN_FILTER_INLINE_WORDS) {
       memcpy(ptr.p->cinBufInline, cinBuf, filterLen * sizeof(Uint32));

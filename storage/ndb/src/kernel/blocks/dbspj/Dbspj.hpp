@@ -2027,8 +2027,8 @@ class Dbspj : public SimulatedBlock {
   void cte_scan_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
 
   /* Build and send a CTE_SCAN_REQ to the DBLQH on sourceNodeId.
-   * scanIterI == RNIL produces a first REQ (SignalLength = 9); any
-   * other value produces a continuation (SignalLengthContinue = 10)
+   * scanIterI == RNIL produces a first REQ (SignalLength = 10); any
+   * other value produces a continuation (SignalLengthContinue = 11)
    * that echoes the scanIterI from a prior CTE_SCAN_CONF.  Duplicates
    * the AttrInfo section so the caller's copy is preserved for the
    * next batch.  Increments data.m_outstanding on success. */
