@@ -3397,6 +3397,21 @@ int MgmtSrvr::insertError(int nodeId, int errorNo, Uint32 *extra) {
   return res;
 }
 
+/**
+ * Wait roughly millis milliseconds while still draining signals for ss.
+ * Used to back off between retries of a request that the kernel answered
+ * with a "busy, try again" reference.
+ */
+static void wait_for_backoff(SignalSender &ss, Uint32 millis) {
+  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  Uint64 elapsed = 0;
+  do {
+    /* Discards whatever arrives; the request is re-sent by the caller */
+    ss.waitFor((Uint32)(millis - elapsed));
+    elapsed = NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+  } while (elapsed < millis);
+}
+
 int MgmtSrvr::startSchemaTrans(SignalSender &ss, NodeId &out_nodeId,
                                Uint32 transId, Uint32 &out_transKey) {
   SimpleSignal ssig;
@@ -3412,6 +3427,20 @@ int MgmtSrvr::startSchemaTrans(SignalSender &ss, NodeId &out_nodeId,
   req->requestInfo = 0;
 
   NodeId nodeId = ss.get_an_alive_node();
+
+  /**
+   * Only one schema transaction can be ongoing at a time, so a client
+   * that arrives while another one is running is told to retry
+   * (SchemaTransBeginRef::Busy). Retrying immediately makes the
+   * management server spin against DBDICT at signal speed (tens of
+   * thousands of SCHEMA_TRANS_BEGIN_REQ per second), which starves the
+   * very DICT block that is executing the transaction we are waiting
+   * for; with DictTrace on it also floods the cluster log. Back off
+   * between the retries instead and give up after a bounded time.
+   */
+  const Uint32 backoffMillis = 100;
+  const Uint64 maxBusyWaitMillis = 120000;
+  const NDB_TICKS startTicks = NdbTick_getCurrentTicks();
 
 retry:
   if (ss.get_node_alive(nodeId) == false) {
@@ -3440,10 +3469,18 @@ retry:
         switch (ref->errorCode) {
           case SchemaTransBeginRef::NotMaster:
             nodeId = ref->masterNodeId;
-            // Fall-through
-          case SchemaTransBeginRef::Busy:
-          case SchemaTransBeginRef::BusyWithNR:
             goto retry;
+          case SchemaTransBeginRef::Busy:
+          case SchemaTransBeginRef::BusyWithNR: {
+            const NDB_TICKS now = NdbTick_getCurrentTicks();
+            if (NdbTick_Elapsed(startTicks, now).milliSec() >
+                maxBusyWaitMillis) {
+              return ref->errorCode;
+            }
+            /* Back off before retrying, see comment above 'retry:' */
+            wait_for_backoff(ss, backoffMillis);
+            goto retry;
+          }
           default:
             return ref->errorCode;
         }

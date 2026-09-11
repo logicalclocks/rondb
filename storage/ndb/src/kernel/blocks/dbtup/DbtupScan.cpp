@@ -1226,11 +1226,13 @@ Uint32 Dbtup::handle_lcp_skip_page(ScanOp &scan, Local_key key, Page *page) {
    * For ALL ROWS pages the rows should be skipped for LCP, we clear
    * the LCP skip flag on page in this case to speed up skipping.
    *
-   * We need to keep track of the state Get_next_page_mm when checking
-   * if a rowid is part of the remaining lcp set. If we do a real-time
-   * break right after setting Get_next_page_mm we need to move the
-   * page number forward one step since we have actually completed the
-   * current page number.
+   * We need to keep track of the states Get_next_page_mm and
+   * Get_next_page when checking if a rowid is part of the remaining
+   * lcp set, see is_rowid_in_remaining_lcp_set. If we do a real-time
+   * break right after setting either of them we have actually completed
+   * the current page number. Get_next_page is set at the end of a page
+   * in scanNext and the loop count pause can break there before it is
+   * converted to Get_next_page_mm.
    */
   scan.m_last_seen = __LINE__;
   pos.m_get = ScanPos::Get_next_page_mm;

@@ -2284,6 +2284,13 @@ int runTestArbitratorGateNotReady(NDBT_Context *ctx, NDBT_Step *step) {
   NDBT_Workingdir wd("test_mgmd");  // temporary working directory
   BaseString cfg_path = path(wd.path(), "config.ini", nullptr);
   Properties config = ConfigFactory::create();
+  /**
+   * ConfigFactory disables the arbitrator startup gate in all testMgmd
+   * configs with ArbitrationRankWait=0.  This test exercises the gate,
+   * so restore the default wait for the (never started) data node.
+   */
+  CHECK(ConfigFactory::put(config, "ndbd", 2, "ArbitrationRankWait",
+                           Uint32(60000)));
   CHECK(ConfigFactory::write_config_ini(config, cfg_path.c_str()));
 
   Mgmd mgmd(1);

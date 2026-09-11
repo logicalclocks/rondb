@@ -347,12 +347,27 @@ bool Dbtup::is_rowid_in_remaining_lcp_set(
     case Dbtup::ScanOp::Next: {
       ndbrequire(key1.m_page_no == key2.m_page_no);
       ndbrequire(!key2.isNull());
-      if (op.m_scanPos.m_get == ScanPos::Get_next_page_mm) {
+      if (op.m_scanPos.m_get == ScanPos::Get_next_page_mm ||
+          op.m_scanPos.m_get == ScanPos::Get_next_page) {
         jam();
         /**
-         * We got a real-time break while switching to a new page.
-         * In this case we can skip the page since it is already
-         * LCP:ed.
+         * We got a real-time break after completing the current page.
+         * Either while switching to the next page (Get_next_page_mm),
+         * or at the loop count pause in scanNext taken right after the
+         * scan found no more tuples on the page (Get_next_page, which is
+         * only converted to Get_next_page_mm when the scan resumes).
+         *
+         * In both states the page is already LCP:ed. This must also hold
+         * for the page level checks made with page index ZNIL from
+         * releaseFragPage and handle_lcp_skip_bit. Row level checks get
+         * the same answer from the page index comparison below, but for
+         * page index ZNIL that comparison says "not yet scanned". With
+         * Get_next_page missing here releaseFragPage planted the
+         * LCP_SCANNED_BIT on a page the scan never revisits, the bit
+         * leaked into the next LCP scan of the fragment and made it skip
+         * a live page (rows missing from a full LCP, caught by the row
+         * count check in Backup::lcp_write_ctl_file) or skip a free or
+         * changed page in a partial LCP (silently wrong restore).
          */
         return false;
       }
