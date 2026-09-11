@@ -94,6 +94,13 @@ RS_Status RonDBConnection::init_rondb_connection(RonDB &rondbDataCluster,
         drogon::HttpStatusCode::k200OK) {
     return ret;
   }
+  /* Last: the watchdog dereferences the connections on every tick, so it
+   * must not start before all of them exist. */
+  ret = start_reconnect_watchdog();
+  if (static_cast<drogon::HttpStatusCode>(ret.http_code) !=
+        drogon::HttpStatusCode::k200OK) {
+    return ret;
+  }
   return CRS_Status::SUCCESS.status;
 }
 
