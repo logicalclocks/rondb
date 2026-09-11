@@ -18483,13 +18483,22 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
     if (ERROR_INSERTED(5034)) {
       CLEAR_ERROR_INSERT_VALUE;
     }
-    if (ERROR_INSERTED(5135) &&
-        scanptr.p->m_join_agg_state_key != RNIL) {
+    if (ERROR_INSERTED(5135)) {
       jam();
-      /* Test hook: swallow ONE close of a join-agg / CTE scan so DBTC
-       * keeps a close reply owed by this node (its CLOSING_SCAN window
-       * for a node kill). */
+      /* Test hook: swallow ONE scan close so the requester (DBSPJ, and
+       * through it DBTC) keeps a close reply owed by this node: the
+       * CLOSING_SCAN window for a node kill. Any scan qualifies; the
+       * root scan of a pushed join carries no aggregation key itself.
+       * Leave the scan exactly as if the close had never arrived: not
+       * marked busy for TC, and with the fragment access this signal
+       * took released again (checkInitGlobalVariables requires every
+       * signal to return unlocked). */
       CLEAR_ERROR_INSERT_VALUE;
+      g_eventLogger->info(
+          "DBLQH %u: error insert 5135 swallowed a scan close (scanPtr.i=%u)",
+          instance(), scanptr.i);
+      scanptr.p->scanTcWaiting = 0;
+      release_frag_access(prim_tab_fragptr.p);
       return;
     }
     /**

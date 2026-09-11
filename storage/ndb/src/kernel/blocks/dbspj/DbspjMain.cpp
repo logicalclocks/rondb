@@ -5106,6 +5106,22 @@ void Dbspj::execSCAN_NEXTREQ(Signal *signal) {
             req->requestInfo))  // Requested close scan
     {
       jam();
+      if (ERROR_INSERTED(17533)) {
+        jam();
+        /* Test hook (NF-1): swallow ONE close from DBTC so that this
+         * worker owes DBTC its close reply, which leaves DBTC in
+         * CLOSING_SCAN with a reply owed by this node; the test then
+         * kills the node. The request is left exactly as it was before
+         * the close arrived (waiting for a SCAN_NEXTREQ), so the node
+         * kill, or a later real close, cleans it up. */
+        CLEAR_ERROR_INSERT_VALUE;
+        requestPtr.p->m_state = state;
+        g_eventLogger->info(
+            "DBSPJ %u: error insert 17533 swallowed the close of request %u "
+            "(transid 0x%x 0x%x)",
+            instance(), requestPtr.i, req->transId1, req->transId2);
+        return;
+      }
       abort(signal, requestPtr, 0);  // Stop query, no error
       break;
     }

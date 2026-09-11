@@ -49,6 +49,7 @@
 #include "../../src/ndbapi/NdbInfo.hpp"
 #include "../../src/ndbapi/NdbQueryBuilder.hpp"
 #include "../../src/ndbapi/NdbQueryOperation.hpp"
+#include <CteQueryUtil.hpp>
 #include "../../src/ndbapi/NdbDictionaryImpl.hpp"
 #include "my_sys.h"
 #include "mysql/strings/m_ctype.h"
@@ -12095,6 +12096,271 @@ int runLcpScannedBitFinish(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/* ------------------------------------------------------------------------
+ * RONDB-1120 CTE node-failure cases (node_failure_test_plan.md, section 4).
+ *
+ * Shared fixtures: a CTE source table and its projection descriptor
+ * (CteQueryUtil), and a leak-check pass over the DUMP codes that crash a
+ * node if any join-agg record survived (I4 in the plan).
+ * ------------------------------------------------------------------------ */
+/* Enough rows that the aggregate is non-trivial and that, with the 64-row
+ * main scan batch NF-1 uses, every fragment scan spans many batches, so a
+ * close after the first batch always finds scans to close on every node. */
+static const Uint32 CTE_NF_ROWS = 32768;
+static const Uint32 CTE_NF_GROUPS = 64;
+static const Uint32 CTE_NF_ITERATIONS = 3;
+
+static int runCteNfCreateTables(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  if (CteQueryUtil::createTables(ndb) != 0) {
+    g_err << "CteQueryUtil::createTables failed: "
+          << ndb->getDictionary()->getNdbError().message << endl;
+    return NDBT_FAILED;
+  }
+  if (CteQueryUtil::loadTable(ndb, CTE_NF_ROWS, CTE_NF_GROUPS) != 0) {
+    g_err << "CteQueryUtil::loadTable failed" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+static int runCteNfDropTables(NDBT_Context *ctx, NDBT_Step *step) {
+  CteQueryUtil::dropTables(GETNDB(step));
+  return NDBT_OK;
+}
+
+/* Run every leak-check DUMP on every node. Each crashes its node on a
+ * leak, so a cluster that is still fully started afterwards is the pass. */
+static int runCteNfLeakDumps(NdbRestarter &restarter) {
+  const int codes[] = {DumpStateOrd::LqhDumpJoinAggStates,
+                       DumpStateOrd::LqhDumpCteIterStates,
+                       DumpStateOrd::LqhDumpJoinAggIdentity,
+                       DumpStateOrd::TcDumpJoinAggRecords,
+                       DumpStateOrd::SpjDumpRequests};
+  for (unsigned i = 0; i < NDB_ARRAY_SIZE(codes); i++) {
+    int dump[] = {codes[i]};
+    if (restarter.dumpStateAllNodes(dump, 1) != 0) {
+      g_err << "dumpStateAllNodes(" << codes[i] << ") failed" << endl;
+      return NDBT_FAILED;
+    }
+  }
+  NdbSleep_MilliSleep(1000);
+  if (restarter.waitClusterStarted(30) != 0) {
+    g_err << "A leak-check DUMP (2361/2362/2363/2560/2650) crashed a node: "
+          << "join-agg records leaked" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+/* Run the clean LookupMain query and check it returns every source row
+ * (one result row per main scan row). A second attempt after a pause
+ * separates a transient post-restart effect from a persistent one. */
+static int runCteNfCheckQuery(Ndb *ndb, const char *when) {
+  for (int attempt = 0; attempt < 2; attempt++) {
+    CteQueryUtil::Options clean;
+    CteQueryUtil::Result res;
+    const int rc = CteQueryUtil::runQuery(ndb, clean, res);
+    if (rc == 0 && res.rows == CTE_NF_ROWS) return NDBT_OK;
+    g_err << when << ": CTE query attempt " << attempt << " rc=" << rc
+          << " failedAt=" << res.failedAt << " ndbError=" << res.ndbError
+          << " rows=" << res.rows << " expected " << CTE_NF_ROWS << endl;
+    NdbSleep_SecSleep(5);
+  }
+  return NDBT_FAILED;
+}
+
+/* Poll a context property with a deadline, so a regression shows up as a
+ * failure with a message instead of a step blocked until max-time. */
+static bool cteNfWaitProperty(NDBT_Context *ctx, const char *name,
+                              Uint32 value, Uint32 timeoutSec) {
+  for (Uint32 waited = 0; waited < timeoutSec * 10; waited++) {
+    if (ctx->getProperty(name, (Uint32)0) == value) return true;
+    if (ctx->isTestStopped()) return false;
+    NdbSleep_MilliSleep(100);
+  }
+  return false;
+}
+
+/*
+ * NF-1 CteCloseOwedByFailedNode (commit c7faa193ac2).
+ *
+ * The API closes a CTE scan after its first batch. Error insert 17533 on
+ * the victim makes every DBSPJ worker there swallow the close DBTC sends
+ * it, so DBTC sits in CLOSING_SCAN with close replies owed by the victim.
+ * Killing the victim must let DBTC complete the close through
+ * checkScanActiveInFailedLqh: the API's close returns, and no join-agg
+ * record leaks. Before the fix the close never returned.
+ *
+ * The main scan runs with a 64-row batch so that every worker is still
+ * mid-scan, and so is sent a close, when the first row reaches the API.
+ * The window is judged by ordering: the killer publishes CteNfKillIssued
+ * right before it issues the kill, 300 ms after the hook ran. A close
+ * that returned before that flag was set completed on its own (nothing
+ * was swallowed); one that returned after it was held until the node
+ * failure. Both hooks log to the node's out log when they fire.
+ */
+struct CteCloseOwedArgs {
+  NDBT_Context *ctx;
+  NdbRestarter *restarter;
+  Uint32 iter;
+};
+
+static bool cteCloseOwedBeforeClose(void *arg, Uint32 tcNodeId) {
+  CteCloseOwedArgs *a = (CteCloseOwedArgs *)arg;
+  /* Victim: a data node other than the transaction coordinator, so the
+   * owed reply belongs to a worker on the killed node rather than to
+   * the coordinator itself (a different scenario). */
+  int victim = -1;
+  for (int i = 0; i < a->restarter->getNumDbNodes(); i++) {
+    const int n = a->restarter->getDbNodeId(i);
+    if ((Uint32)n != tcNodeId) {
+      victim = n;
+      break;
+    }
+  }
+  if (victim < 0) {
+    g_err << "No data node other than TC node " << tcNodeId << endl;
+    return false;
+  }
+  if (a->restarter->insertErrorInNode(victim, 17533) != 0) {
+    g_err << "insertErrorInNode(" << victim << ", 17533) failed" << endl;
+    return false;
+  }
+  a->ctx->setProperty("CteNfVictim", (Uint32)victim);
+  a->ctx->setProperty("CteNfCloseSent", a->iter + 1);
+  return true;
+}
+
+static int runCteCloseOwedQuery(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] CteCloseOwedByFailedNode needs >= 2 data nodes"
+          << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+  /* Baseline: the query shape and the row accounting must be right on a
+   * healthy cluster before any failure is injected. */
+  if (runCteNfCheckQuery(ndb, "Baseline") != NDBT_OK) {
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  Uint32 windowHits = 0;
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    CteCloseOwedArgs args = {ctx, &restarter, iter};
+    CteQueryUtil::Options opt;
+    opt.shape = CteQueryUtil::LookupMain;
+    opt.closeAfterFirstBatch = true;
+    opt.mainBatchRows = 64;
+    opt.beforeClose = cteCloseOwedBeforeClose;
+    opt.arg = &args;
+    CteQueryUtil::Result res;
+    g_err << "=== CteCloseOwedByFailedNode iteration " << iter << " ==="
+          << endl;
+    /* Blocks inside query->close() until DBTC has processed the victim's
+     * failure; the killer step provides that failure. */
+    const int rc = CteQueryUtil::runQuery(ndb, opt, res);
+    if (rc == -2) {
+      g_err << "Query build/hook failed at " << res.failedAt << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (ctx->getProperty("CteNfCloseSent", (Uint32)0) != iter + 1) {
+      g_err << "The close hook never ran (rows=" << res.rows
+            << ", rc=" << rc << "): the scan finished before the close"
+            << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* The window was hit only if the kill was issued before the close
+     * returned. The killer publishes CteNfKillIssued right before the
+     * kill, 300 ms after the hook ran; an unswallowed close returns long
+     * before that. */
+    if (ctx->getProperty("CteNfKillIssued", (Uint32)0) == iter + 1) {
+      windowHits++;
+      g_err << "Close held until the node failure: returned after "
+            << res.closeMillis << " ms (rc=" << rc
+            << ", ndbError=" << res.ndbError << ")" << endl;
+    } else {
+      g_err << "Window missed: the close returned on its own after "
+            << res.closeMillis << " ms, before the kill was issued (rc="
+            << rc << ", rows=" << res.rows << ")" << endl;
+    }
+    ctx->setProperty("CteNfQueryDone", iter + 1);
+    ctx->getPropertyWait("CteNfRestarted", iter + 1);
+    if (ctx->isTestStopped()) return NDBT_FAILED;
+  }
+  if (windowHits == 0) {
+    g_err << "The CLOSING_SCAN window was never hit in " << CTE_NF_ITERATIONS
+          << " iterations" << endl;
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  g_err << "Window hit in " << windowHits << " of " << CTE_NF_ITERATIONS
+        << " iterations" << endl;
+  /* I5: the same query succeeds after recovery with the full row count.
+   * A shortfall here with no error means CTE lookups were routed to the
+   * wrong owner after the node rejoined (stale owner list). */
+  if (runCteNfCheckQuery(ndb, "Post-recovery") != NDBT_OK) {
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  ctx->stopTest();
+  return NDBT_OK;
+}
+
+static int runCteCloseOwedKiller(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) return NDBT_OK;
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    ctx->getPropertyWait("CteNfCloseSent", iter + 1);
+    if (ctx->isTestStopped()) return NDBT_OK;
+    /* Let the close travel DBTC -> DBSPJ -> the swallowing worker. */
+    NdbSleep_MilliSleep(300);
+    int victim = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+    /* Published before the kill so the query step can tell a close that
+     * was held until the failure from one that returned on its own. */
+    ctx->setProperty("CteNfKillIssued", iter + 1);
+    g_err << "Killing victim node " << victim
+          << " while DBTC waits for its close reply" << endl;
+    if (restarter.restartOneDbNode(victim, /* initial */ false,
+                                   /* nostart */ true,
+                                   /* abort */ true) != 0) {
+      g_err << "restartOneDbNode(" << victim << ") failed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (restarter.waitNodesNoStart(&victim, 1) != 0) {
+      g_err << "waitNodesNoStart(" << victim << ") failed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I1: the API close must complete once DBTC handled the failure. */
+    if (!cteNfWaitProperty(ctx, "CteNfQueryDone", iter + 1, 120)) {
+      g_err << "The API close did not complete within 120 s of the node "
+            << "failure: DBTC left the scan in CLOSING_SCAN "
+            << "(regression of c7faa193ac2)" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (restarter.startNodes(&victim, 1) != 0 ||
+        restarter.waitClusterStarted(180) != 0) {
+      g_err << "Victim " << victim << " did not rejoin" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I4 */
+    if (runCteNfLeakDumps(restarter) != NDBT_OK) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("CteNfRestarted", iter + 1);
+  }
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testNodeRestart);
 TESTCASE("NoLoad",
          "Test that one node at a time can be stopped and then restarted "
@@ -12974,6 +13240,16 @@ TESTCASE("JoinAggErrorInsert",
   INITIALIZER(runLoadTable);
   STEP(runJoinAggErrorInsert);
   FINALIZER(runClearTable);
+}
+TESTCASE("CteCloseOwedByFailedNode",
+         "RONDB-1120 NF-1: the API closes a CTE scan while error insert "
+         "17533 makes the victim's DBSPJ workers swallow it; killing the "
+         "victim must complete the close through DBTC's CLOSING_SCAN "
+         "recheck (c7faa193ac2) and leave no join-agg record behind") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteCloseOwedQuery);
+  STEP(runCteCloseOwedKiller);
+  FINALIZER(runCteNfDropTables);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",
          "Check that a node that dies while starting can re-allocate its "

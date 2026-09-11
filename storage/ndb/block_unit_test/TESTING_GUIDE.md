@@ -227,7 +227,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5132 | DBLQH `joinAggNullRowReqImpl` | ONE null-row injection REFed | yes |
 | 5133 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute delayed 200 ms while set | no |
 | 5134 | DBLQH `redistAlloc` | 512-byte redistribution pages while set | no |
-| 5135 | DBLQH `execSCAN_NEXTREQ` | ONE close of a join-agg / CTE scan swallowed | yes |
+| 5135 | DBLQH `execSCAN_NEXTREQ` | ONE scan close swallowed (arm right before the close; logs when it fires) | yes |
 | 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
@@ -237,6 +237,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 5 s (stale reclaim) | yes |
 | 17532 | DBSPJ `cte_scan_sendReq` | crash when a second CTE scan batch is requested | no (crash) |
+| 17533 | DBSPJ `execSCAN_NEXTREQ` | ONE close from DBTC swallowed, request left waiting (arm right before the close; logs when it fires) | yes |
 
 Leak-check DUMP codes (each crashes the node on a leak, so run them at the
 end of a test with `NdbRestarter::dumpStateAllNodes`):

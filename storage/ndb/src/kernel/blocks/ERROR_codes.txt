@@ -48,11 +48,26 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5127: RONDB-1056 JIT: dump program + translation at JOIN_AGG_SETUP compile
       (DblqhProxy; DEBUG_JIT builds only). Was 5119 until the TTL replica-
       rowid work took 5119.
-Next DBLQH 5128
+5128: Drop ONE CTE_SCAN_CONF after its rows were sent (cteScanEmitResults,
+      cleared after use)
+5129: Answer ONE CTE scan continuation with CTE_SCAN_REF 1251, token
+      released (cteScanReqImpl, cleared after use)
+5130: Aggregation feed handles one group per continuation round while set
+5131: Hold ONE CTE lookup 50 ms via a delayed signal to self (cleared after use)
+5132: REF ONE null-row injection (joinAggNullRowReqImpl, cleared after use)
+5133: Delay every inbound JOIN_AGG_REDISTRIBUTE_REQ 200 ms while set
+5134: redistAlloc uses 512-byte redistribution pages while set
+5135: Swallow ONE SCAN_NEXTREQ(close) in execSCAN_NEXTREQ, scan left as if
+      the close never arrived (cleared after use, logs when it fires)
+5136: Duplicate ONE JOIN_AGG_RELEASE_REQ to self (DblqhProxy, cleared after use)
+5137: Teardown releases one group per round while set (DblqhProxy)
+5138: Hold every JOIN_AGG_SETUP_REQ until cleared (DblqhProxy)
+5139: Drop ONE JOIN_AGG_SETUP_REQ, no reply (DblqhProxy, cleared after use)
+Next DBLQH 5140
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
-Next DBTC 8310 (RonDB)
+Next DBTC 8314 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -63,7 +78,7 @@ Next DBTUX 12011
 Next SUMA 13063
 Next LGMAN 15002
 Next TSMAN 16002
-Next DBSPJ 17124
+Next DBSPJ 17534 (17530-17533 RonDB CTE)
 Next TRIX 18004
 Next DBUTIL 19002
 
@@ -568,6 +583,10 @@ DBTC node failure take over testing (RonDB)
       redone take over and duplicate CONF at the other nodes (case 1),
       insert on a non-master survivor to provoke a lost CONF that only
       the master take over rebroadcast can resolve (case 2).
+8311: Send ONE JOIN_AGG_COMPLETE_REQ with aggStateKey RNIL (cleared after use)
+8312: Crash after the JOIN_AGG_RELEASE_REQs have been sent
+      (sendJoinAggReleaseReqs / releaseJoinAggResources)
+8313: Delay ONE JOIN_AGG_SETUP_CONF 5 s, stale-reclaim path (cleared after use)
 
 
 TRPMAN
@@ -991,3 +1010,11 @@ DBUTIL
 -------
 19000: fail UTIL_PREPARE_REQ with PREPARE_SEIZE_ERROR
 19001: crash in UTIL_PREPARE_REQ if preparedOperationPool or runningPrepares pool is exhausted
+
+DBSPJ (RonDB CTE / join aggregation)
+------------------------------------
+17532: Crash the local node in cte_scan_sendReq once a second CTE scan
+       batch is requested (paused sources on the requester side)
+17533: Swallow ONE SCAN_NEXTREQ(close) from DBTC in execSCAN_NEXTREQ, the
+       request left waiting (cleared after use, logs when it fires): the
+       worker owes DBTC its close reply until this node is killed (NF-1)

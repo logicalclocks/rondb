@@ -19,7 +19,7 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 
 | Item | Count | Where |
 |---|---|---|
-| New error inserts | 14 (DBLQH 5128-5139, DBTC 8311-8313, DBSPJ 17532) | kernel blocks |
+| New error inserts | 15 (DBLQH 5128-5139, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
 | New DUMP codes (leak checks) | 4 (LQH 2362-2363, TC 2560, SPJ new handler + 1 code) | kernel blocks |
 | NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
@@ -127,7 +127,18 @@ node, so DBSPJ's per-source slot lookup fails. DBSPJ state-machine
 transitions are therefore driven through DBLQH error inserts against a
 real cluster, not by injecting CONF/REF from the test.
 
-### 2.3 Layer C - MTR (`mysql-test/suite/ronsql_cte*`)
+### 2.3 Layer C - MTR (`mysql-test/suite/ronsql_cte*` and the new `suite/ndb_cte`)
+
+Every NDBT case also gets a one-file MTR wrapper in the new suite
+`mysql-test/suite/ndb_cte` (same cluster config as suite `ndb`, kept
+separate so that suite does not grow further), so a case runs as
+`./mtr --suite=ndb_cte <file>` with MTR owning the cluster. The wrapper
+follows `suite/ndb/t/ndb_lcp_scanned_bit_churn.test`, not
+`run_ndbapitest.inc`: in this tree a table created through the NDB API
+crashes a live mysqld, so both mysqlds are shut down around the NDBT run
+and the API-side tables are dropped before they restart. The wrapper
+needs `include/have_ndb_debug.inc` for the error inserts. The RonSQL-driven files below
+stay in `ronsql_cte*`.
 
 `ronsql_cte` runs 2 data nodes, NoOfReplicas=2; `ronsql_cte_ng2r2` runs 4.
 Queries go through RonSQL (rdrs). Data-node control idioms already used
@@ -198,6 +209,7 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | drop ONE SETUP_CONF for good (not 20 ms) | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
 | 17532 | DBSPJ `cte_scan_sendReq` | after sending, crash-insert the local node once the second batch is requested | multi-batch CTE scan with paused sources on the requester side |
+| 17533 | DBSPJ `execSCAN_NEXTREQ`, close from DBTC | swallow the close once, request left waiting (logs when it fires) | DBTC CLOSING_SCAN with a worker's close reply owed: kill this node (NF-1) |
 
 Effort: 1.5 days including guide entries.
 
@@ -235,7 +247,7 @@ node other than the TC master when possible, and skips otherwise.
 
 | ID | Case name | Window (insert) | Victim | Primary invariant beyond I1-I5 |
 |---|---|---|---|---|
-| NF-1 | `CteCloseOwedByFailedNode` | 5135 on W: one close reply swallowed | W | DBTC ScanRecord leaves CLOSING_SCAN; API receives EndOfData; `TcDumpJoinAggRecords` clean (`c7faa193ac2`) |
+| NF-1 | `CteCloseOwedByFailedNode` | 17533 on W: DBTC's close swallowed by every DBSPJ worker there | W | DBTC ScanRecord leaves CLOSING_SCAN; API receives EndOfData; `TcDumpJoinAggRecords` clean (`c7faa193ac2`) |
 | NF-2 | `CtePeerDiesDuringRedistribute` | 5133 on P: sender paused on CONF | P | survivors' CTE states go ERROR / NODE_FAIL_ABORT via identity sweep; COMPLETE_REF reaches DBTC exactly once (`55e99285ebb`) |
 | NF-3 | `CteLookupTargetDies` | 5131 on P: lookup reply held | P | DBSPJ drains `m_nodeOutstanding[P]`; request completes with 286 (`6c7fa88dcaa`) |
 | NF-4 | `CteScanSourceDiesMidBatch` | 5128 on P: rows sent, CONF dropped | P | slot retired by `cte_scan_execNODE_FAILREP`; request completes; 2362 clean on survivors (`f718b5be5d6`) |
@@ -378,6 +390,8 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 
 | File | Phase | What it does |
 |---|---|---|
+| `cte_nodefail_close.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCloseOwedByFailedNode T1` (NF-1) - **done** |
+| `cte_nodefail_<case>.test` (suite `ndb_cte`) | 1-3 | one wrapper per further NDBT case (NF-2 .. NF-12, PK-8), same pattern |
 | `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |
 | `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline |
@@ -436,7 +450,15 @@ independent once Phase 0 is in and can be split between people.
 
 ---
 
-## 11. Risks and open points
+## 11. Findings ledger (bugs the new tests exposed)
+
+| ID | Found by | Symptom | Cause | Status |
+|---|---|---|---|---|
+| F-1 | NF-1 post-recovery check (2026-09-11) | After a data node rejoined, a CTE lookup query returned 3108 of 4096 rows with no error | DBSPJ's ordered data-node list (`m_dataNodeList`) is rebuilt only at STTOR and NODE_FAILREP, never when a node reconnects or is included, while DBLQH builds each query's owner list from the connected nodes at SETUP; both map owner = hash % count, so a surviving SPJ with a one-entry list sent every probe to itself and the groups owned by the rejoined node missed silently | fixed: DBSPJ rebuilds the list on demand in `cte_scan_start`, `cte_scan_build`, `cte_lookup_build` and on INCL_NODEREQ; follow-up: derive both sides' owner list from DBTC's per-node key table so the mapping cannot depend on connection timing |
+| F-2 | NF-1 first run | Node crashed in `checkInitGlobalVariables` (fragment lock held) | test hook 5135 returned from SCAN_NEXTREQ without `release_frag_access` | fixed in the hook |
+| F-3 | NF-1 third run | Every iteration reported "window missed" with rc=0, whether or not the close had been held | two test defects: (a) the killer published the kill only after `waitNodesNoStart`, so a close completed by DBTC's node-failure handling was checked before the flag existed; (b) the swallow sat in DBLQH, where it depends on the victim's LQH scan being mid-batch when the close arrives, and it left no trace when it fired | fixed: the killer publishes `CteNfKillIssued` before issuing the kill and the close is timed (`Result::closeMillis`); the swallow moved to DBSPJ `execSCAN_NEXTREQ` (17533) where every worker on the victim holds DBTC's close regardless of LQH state; the main scan runs with a 64-row batch so no worker has finished at the first row; both hooks log when they fire |
+
+## 12. Risks and open points
 
 - **Timing windows.** Peer-failure windows depend on a paused
   redistribution or held reply; the inserts in §3.1 make them
