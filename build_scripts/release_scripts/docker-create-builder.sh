@@ -21,7 +21,7 @@ Example: ./docker-create-builder.sh -s ../.. -f ../../Dockerfile.ubuntu22 -j 20
       Path to RonDB source code
 -f    <string> (optional)
       Name (not path) of the Dockerfile
-      Default: Dockerfile.oraclelinux7 (amd64 builds)
+      Default: Dockerfile.oraclelinux9 (amd64 builds)
 -n    <string> (optional)
       Docker image name
       Default: "rondb-build-dependencies"
@@ -43,7 +43,7 @@ if [[ "${?}" -ne 0 ]]; then
 fi
 
 # Defaults
-DOCKERFILE="Dockerfile.oraclelinux8"
+DOCKERFILE="Dockerfile.oraclelinux9"
 CORES=1
 BUILD_VOLUME_NAME="rondb-bin"
 

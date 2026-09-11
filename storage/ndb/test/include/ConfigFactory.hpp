@@ -87,6 +87,8 @@ struct ConfigFactory {
        * selection" until cold start detection lifts the gate after 3
        * seconds, making every test that issues a command directly
        * after starting a mgmd racy.
+       * Tests that exercise the gate itself override this with
+       * put(config, "ndbd", nodeId, "ArbitrationRankWait", ...).
        */
       node_settings.put("ArbitrationRankWait", Uint32(0));
       /**
@@ -129,8 +131,9 @@ struct ConfigFactory {
     // Get a copy of the section to modify
     if (!config.getCopy(section, section_no, &p)) return false;
 
-    // Add new key,value pair to section copy
-    if (!p->put(key, value)) {
+    // Add key,value pair to section copy, replacing any value that
+    // create() already set for the key
+    if (!p->put(key, value, true)) {
       delete p;
       return false;
     }

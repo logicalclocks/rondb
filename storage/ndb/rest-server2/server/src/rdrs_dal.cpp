@@ -89,6 +89,11 @@ RS_Status init(unsigned int numThreads, unsigned int num_data_connections) {
   return RS_OK;
 }
 
+RS_Status start_reconnect_watchdog() {
+  rdrsRonDBConnectionPool->StartReconnectWatchdog();
+  return RS_OK;
+}
+
 RS_Status add_data_connection(const char *connection_string,
                               unsigned int connection_pool_size,
                               unsigned int *node_ids,

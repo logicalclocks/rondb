@@ -11,8 +11,8 @@ FROM ubuntu:22.04 as rondb-build-dependencies
 ARG TARGETARCH
 
 ARG CMAKE_VERSION=3.25.1
-ARG OPEN_SSL_VERSION=3.0.14
-ARG GO_VERSION=1.26.1
+ARG OPEN_SSL_VERSION=3.5.8
+ARG GO_VERSION=1.27.0
 ARG PROMETHEUS_CPP_VERSION=1.3.0
 
 # Default build threads to 1; max is defined in Docker config (run `nproc` in Docker container)

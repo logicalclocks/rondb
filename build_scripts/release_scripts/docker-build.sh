@@ -23,7 +23,7 @@ Example: ./docker-build.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20
       Path to directory of resulting RonDB binaries
       If this is omitted then the binaries reside in the container
 -f=Dockerfile
-      Name of the Dockerfile; Default: Dockerfile.oraclelinux7 (amd64 builds)
+      Name of the Dockerfile; Default: Dockerfile.oraclelinux9 (amd64 builds)
 -n=name
       Optional Docker image name
       Default is "rondb-build-dependencies"
@@ -46,7 +46,7 @@ if [[ "${?}" -ne 0 ]]; then
 fi
 
 # Defaults
-DOCKERFILE="Dockerfile.oraclelinux7"
+DOCKERFILE="Dockerfile.oraclelinux9"
 CORES=1
 RELEASE_BUILD=
 DEPLOY=
