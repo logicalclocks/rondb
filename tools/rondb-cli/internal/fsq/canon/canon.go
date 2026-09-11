@@ -108,6 +108,30 @@ func canonical(c exec.Cell, k kind) string {
 	return c.Text
 }
 
+// AvgTolerance is the absolute tolerance applied to AVG outputs: RonSQL
+// prints AVG with four decimals whatever the input type (F3), MySQL with
+// six for DECIMAL and INT inputs, so an inexact mean differs in text by
+// up to half a unit in the fourth decimal.
+const AvgTolerance = 1e-4
+
+// IsAvgColumn recognizes a Hopsworks AVG output by its alias (<source>_avg).
+func IsAvgColumn(name string) bool { return name == "avg" || strings.HasSuffix(name, "_avg") }
+
+// CellsEqualCol is CellsEqual with the F3 allowance for AVG columns:
+// numeric texts within AvgTolerance compare equal.
+func CellsEqualCol(col string, a, b exec.Cell, dbType string, tol float64) bool {
+	if IsAvgColumn(col) && !a.Null && !b.Null {
+		ra, oka := new(big.Rat).SetString(a.Text)
+		rb, okb := new(big.Rat).SetString(b.Text)
+		if oka && okb {
+			d := new(big.Rat).Sub(ra, rb)
+			d.Abs(d)
+			return d.Cmp(big.NewRat(1, 10000)) <= 0
+		}
+	}
+	return CellsEqual(a, b, dbType, tol)
+}
+
 // CellsEqual compares two cells under the canonicalization of the MySQL type
 // name dbType (DECIMAL exact, DOUBLE/FLOAT with relative tolerance tol,
 // TIMESTAMP with trailing fractional zeros ignored, else exact text);
@@ -242,11 +266,15 @@ func Compare(ref, got *exec.Result, opt Options) Report {
 			return rep
 		}
 		for c := range refRows[i] {
-			if !cellsEqual(refRows[i][c], gotRows[i][c], kinds[c], opt.Tolerance) {
-				col := ""
-				if c < len(ref.Columns) {
-					col = ref.Columns[c]
-				}
+			col := ""
+			if c < len(ref.Columns) {
+				col = ref.Columns[c]
+			}
+			equal := cellsEqual(refRows[i][c], gotRows[i][c], kinds[c], opt.Tolerance)
+			if !equal && IsAvgColumn(col) {
+				equal = CellsEqualCol(col, refRows[i][c], gotRows[i][c], "", opt.Tolerance)
+			}
+			if !equal {
 				rep.Reason = fmt.Sprintf("column %q differs", col)
 				rep.Diff = rowDiff(ref.Rows, got.Rows, kinds, opt)
 				return rep

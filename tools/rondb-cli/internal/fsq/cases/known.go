@@ -56,6 +56,10 @@ var Known = map[string]*Expect{
 	// default): the body is not JSON.  Verify-only (Case.KnownError).
 	"F9": {Finding: "F9", Pattern: "malformed JSON result",
 		UnquotedTemporal: []string{"d_min", "d_max", "ts3_min", "ts6_min", "ts0_min"}},
+	// A snowflake template whose CTE body is keyed by a VARCHAR entity key
+	// returns no rows through CTE_SCAN although the body alone returns its
+	// group (E6, findings/spec_fuzz.md).  Detected structurally by the fuzzer.
+	"F14": {Finding: "F14", Pattern: "snowflake CTE body keyed by a VARCHAR entity key returns no rows"},
 }
 
 // WrongValue pins the observed mismatch of a single-row fixture. All

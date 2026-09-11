@@ -98,6 +98,23 @@ func TestCompareOrderAndHeaders(t *testing.T) {
 	if r := Compare(ref, res(nil, nil), Options{}); r.Equal {
 		t.Error("rows vs an empty result must fail")
 	}
+	// F3: AVG outputs compare within half a unit of the fourth decimal.
+	avgRef := res([]string{"amount_dec_avg", "amount_sum"}, []string{"DECIMAL", "DECIMAL"}, []exec.Cell{cell("299.716667"), cell("899.15")})
+	avgGot := res([]string{"amount_dec_avg", "amount_sum"}, nil, []exec.Cell{cell("299.7167"), cell("899.15")})
+	if r := Compare(avgRef, avgGot, Options{}); !r.Equal {
+		t.Errorf("AVG tolerance: %+v", r)
+	}
+	avgFar := res([]string{"amount_dec_avg", "amount_sum"}, nil, []exec.Cell{cell("299.7169"), cell("899.15")})
+	if r := Compare(avgRef, avgFar, Options{}); r.Equal {
+		t.Error("AVG tolerance must not accept a difference above 1e-4")
+	}
+	sumFar := res([]string{"amount_dec_avg", "amount_sum"}, nil, []exec.Cell{cell("299.7167"), cell("899.1501")})
+	if r := Compare(avgRef, sumFar, Options{}); r.Equal {
+		t.Error("the allowance applies to AVG columns only")
+	}
+	if !IsAvgColumn("tx_amount_avg") || IsAvgColumn("average") {
+		t.Error("IsAvgColumn")
+	}
 }
 
 func TestCompareFloatMultiset(t *testing.T) {

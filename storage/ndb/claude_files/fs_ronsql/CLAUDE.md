@@ -34,6 +34,8 @@ Hopsworks Feature Store online-serving builder generates.
   `t/ronsql_fs_vectors.test`; §7 the A6 golden runner (`.fs_verify --golden`)
 - `phase_e5.md` — E5: the `fs_hw` benchmark registry generated from the emitter,
   placeholder resolver, `.bench_ronsql fs_hw`, matrix driver `--queries fs_hw --load fs`
+- `phase_e6.md` — E6: spec-level fuzzer (`fsq/fuzz`: seeded sampler with emitter
+  expectations, shrinker), `.fs_fuzz spec|show|replay`, `t/ronsql_fs_fuzz_spec.test`
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

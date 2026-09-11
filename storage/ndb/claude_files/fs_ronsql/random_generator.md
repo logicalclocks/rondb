@@ -1,7 +1,8 @@
 # Random query generator design (P4, v1 — 2026-09-08)
 
-**Status: design complete, nothing built.** Consumed by E6 (spec-level
-generator) and E7 (envelope-level generator). Builds on
+**Status: E6 (spec-level generator) built 2026-09-11 — `fsq/fuzz`,
+`.fs_fuzz spec|show|replay`, `t/ronsql_fs_fuzz_spec.test`, see
+`phase_e6.md`; E7 (envelope-level generator) not built.** Builds on
 `framework_design.md` (§6 executors, §7 canonicalization, §8 vector
 oracle, §10 CLI) and `data_model.md` (§6 key classes).
 

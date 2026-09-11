@@ -579,7 +579,7 @@ func cellsMatch(p Plan, f string, a Cell, aok bool, b Cell, bok bool, types map[
 		}
 		return true, leftMiss
 	}
-	return canon.CellsEqual(exec.Cell{Null: a.Null, Text: a.Text}, exec.Cell{Null: b.Null, Text: b.Text}, types[f], pol.Tolerance), false
+	return canon.CellsEqualCol(f, exec.Cell{Null: a.Null, Text: a.Text}, exec.Cell{Null: b.Null, Text: b.Text}, types[f], pol.Tolerance), false
 }
 
 // Render prints a cell for a report line.

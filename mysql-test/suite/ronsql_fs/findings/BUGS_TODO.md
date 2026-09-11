@@ -41,6 +41,9 @@ F8 was a framework fixture issue and is already fixed.
   Index ranges per key needed; the fs_hw plan pins record the table scan as observed.
 - [ ] F13 (bench.md): snowflake point reads cost ~350 µs of CTE_SCAN round trips over the
   2–3 PK reads MySQL does (483–525 µs vs 120–172 µs).
+- [ ] F14 (spec_fuzz.md): a snowflake CTE body keyed by a VARCHAR entity key
+  returns no rows through CTE_SCAN (`customers_str_1` root); the body alone and
+  the integer-keyed twin work. Found by the E6 fuzzer, seed 1.
 - [ ] HTTP status: distinguish invalid SQL/syntax from server failures
   instead of returning HTTP 500 for these client errors. Preserve the
   current permanent-error classification until the protocol is changed.

@@ -117,6 +117,8 @@ func (s *Shell) executeFS(cmd string, args []string) error {
 		return s.runFSVerify(args)
 	case "fs_show":
 		return s.runFSShow(args)
+	case "fs_fuzz":
+		return s.runFSFuzz(args)
 	}
 	return fmt.Errorf("unknown command .%s", cmd)
 }

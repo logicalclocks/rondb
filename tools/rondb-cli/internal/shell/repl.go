@@ -618,7 +618,7 @@ func (s *Shell) executeInternal(line string) error {
 			return err
 		}
 		return s.runLoadRDRS(numThreads, numOps, rowsPerOp)
-	case "fs_load", "fs_drop", "fs_emit_mtr", "fs_schema", "fs_verify", "fs_show":
+	case "fs_load", "fs_drop", "fs_emit_mtr", "fs_schema", "fs_verify", "fs_show", "fs_fuzz":
 		return s.executeFS(cmd, parts[1:])
 	case "load_tpch":
 		if s.restClient == nil {
@@ -4285,6 +4285,11 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .fs_verify --golden DIR --json NEW_FILE  Run Java-captured SQL, Go MySQL twins and RonSQL; creates/drops isolated golden databases
                                          [--fixture NAME --timeout 30s --cleanup-timeout 30s --tolerance 1e-9 --allow-reject --quiet]
     .fs_emit_mtr <dir> --cases           Also write suite/ronsql_fs/t/ronsql_fs_templates.test from the case matrix
+    .fs_fuzz spec --seed S --count N     Spec-level fuzzer: seeded feature-view specs through the emitter gates, L1 on both
+                                         engines (--vectors adds L2; --direct-collect runs the S6b form; --shrink; --dump-dir P;
+                                         --json P; --ledger P --allow-known; --max-rows 10000; --db test --sf 0.01 --threads 4)
+    .fs_fuzz show --seed S --index I     Print one generated case and its bound statements without running it
+    .fs_fuzz replay --file results.json  Re-run the cases of a previous run (after an engine fix)
 
   Analytics benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):
     .bench_ronsql                        List available RonSQL benchmark queries
@@ -4616,6 +4621,7 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".fs_schema"),
 		readline.PcItem(".fs_show"),
 		readline.PcItem(".fs_verify"),
+		readline.PcItem(".fs_fuzz"),
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
 		readline.PcItem(".bench_ronsql", ronsqlBenchCompletions()...),

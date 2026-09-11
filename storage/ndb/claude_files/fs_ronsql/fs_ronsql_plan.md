@@ -576,7 +576,7 @@ Exit: report produced; the RDRS schema-cache overhead (~400 µs
 `listIndexes` per request, see `ronsql_bench_matrix.md`) called out
 separately from engine time.
 
-### E6 — Spec-level random generator
+### E6 — Spec-level random generator — DONE 2026-09-11 (1 200 cases, zero unclassified failures, F14 found; see `phase_e6.md`)
 
 Scope: `fsq/fuzz/spec`: seeded spec sampler within the definition-time
 gates, run through emit → bind → L1 (+ L2 when `--vectors`), outcome
