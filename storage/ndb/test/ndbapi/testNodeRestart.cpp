@@ -12373,6 +12373,41 @@ static int runCteCloseOwedKiller(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/* A subscription to the management server's INFO events (the interface
+ * testLcp uses) that waits for a marker the kernel emits with infoEvent.
+ * Open it before the action that produces the marker. */
+struct CteNfEventListener {
+  NdbSocket socket;
+  ~CteNfEventListener() {
+    if (socket.is_valid()) socket.close();
+  }
+  bool open(NdbRestarter &restarter) {
+    int filter[] = {2, NDB_MGM_EVENT_CATEGORY_INFO, 0};
+    socket = ndb_mgm_listen_event_internal(restarter.handle, filter, 0, true);
+    return socket.is_valid();
+  }
+  /* True when a line containing `needle` arrived within timeoutMs. */
+  bool waitFor(NDBT_Context *ctx, const char *needle, Uint32 timeoutMs,
+               BaseString *matchedLine = nullptr) {
+    SocketInputStream input(socket, 100);
+    const Uint64 start = NdbTick_CurrentMillisecond();
+    char line[1024] = {};
+    while (!ctx->isTestStopped() &&
+           NdbTick_CurrentMillisecond() - start < timeoutMs) {
+      input.reset_timeout();
+      if (input.gets(line, sizeof(line)) == nullptr) {
+        g_err << "Failed to read management events" << endl;
+        return false;
+      }
+      if (strstr(line, needle) != nullptr) {
+        if (matchedLine != nullptr) matchedLine->assign(line);
+        return true;
+      }
+    }
+    return false;
+  }
+};
+
 /*
  * Held-signal cases (NF-2, NF-3): an error insert on a peer holds one
  * kind of inbound signal, 200 ms at a time, until that node is killed,
@@ -12527,16 +12562,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) return NDBT_OK;
   for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
-    struct EventSocketGuard {
-      NdbSocket socket;
-      ~EventSocketGuard() {
-        if (socket.is_valid()) socket.close();
-      }
-    } guard;
-    int filter[] = {2, NDB_MGM_EVENT_CATEGORY_INFO, 0};
-    guard.socket =
-        ndb_mgm_listen_event_internal(restarter.handle, filter, 0, true);
-    if (!guard.socket.is_valid()) {
+    CteNfEventListener events;
+    if (!events.open(restarter)) {
       g_err << "Failed to subscribe to hold events" << endl;
       ctx->stopTest();
       return NDBT_FAILED;
@@ -12549,28 +12576,11 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       return NDBT_OK;
     }
     int victim = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+    /* Match the complete marker, including node and iteration. */
     BaseString expected;
     expected.assfmt("[%s node=%u iteration=%u]", hold.eventTag,
                     (Uint32)victim, iter + 1);
-    SocketInputStream input(guard.socket, 100);
-    const Uint64 start = NdbTick_CurrentMillisecond();
-    bool held = false;
-    char line[1024] = {};
-    while (!ctx->isTestStopped() &&
-           NdbTick_CurrentMillisecond() - start < 30000) {
-      input.reset_timeout();
-      if (input.gets(line, sizeof(line)) == nullptr) {
-        g_err << "Failed to read hold events" << endl;
-        ctx->stopTest();
-        return NDBT_FAILED;
-      }
-      /* Match the complete marker, including node and iteration, in
-       * the management event text (the same interface testLcp uses). */
-      if (strstr(line, expected.c_str()) != nullptr) {
-        held = true;
-        break;
-      }
-    }
+    const bool held = events.waitFor(ctx, expected.c_str(), 30000);
     if (!held || ctx->isTestStopped()) {
       g_err << "No " << hold.eventTag << " event from victim " << victim
             << " for iteration " << iter << endl;
@@ -12699,18 +12709,8 @@ static int runCteLookupTargetKiller(NDBT_Context *ctx, NDBT_Step *step) {
  * has no such owner; use ndb_cte_ng2r2 and skip if its placement offers
  * no qualifying owner either.
  */
-static int cteNfPickRemoteScanSource(Ndb *ndb, NdbRestarter &restarter,
-                                     Uint32 tcNodeId) {
-  /* ScanRoot uses this registered table for fragment routing; the
-   * source-table fallback applies only to synthetic virtual tables. */
-  const NdbDictionary::Table *tab =
-      ndb->getDictionary()->getTable(CteQueryUtil::VIRT_TABLE);
-  if (tab == nullptr) {
-    g_err << "getTable(" << CteQueryUtil::VIRT_TABLE << ") failed" << endl;
-    return -1;
-  }
-  /* Owners: the data nodes in ascending id order (DBTC's SETUP set). */
-  Uint32 owners[ABS_MAX_NDB_NODES];
+/* Owners: the data nodes in ascending id order (DBTC's SETUP set). */
+static Uint32 cteNfOwnerList(NdbRestarter &restarter, Uint32 *owners) {
   Uint32 numOwners = 0;
   for (int i = 0; i < restarter.getNumDbNodes(); i++) {
     const Uint32 n = (Uint32)restarter.getDbNodeId(i);
@@ -12722,6 +12722,21 @@ static int cteNfPickRemoteScanSource(Ndb *ndb, NdbRestarter &restarter,
     owners[pos] = n;
     numOwners++;
   }
+  return numOwners;
+}
+
+static int cteNfPickRemoteScanSource(Ndb *ndb, NdbRestarter &restarter,
+                                     Uint32 tcNodeId) {
+  /* ScanRoot uses this registered table for fragment routing; the
+   * source-table fallback applies only to synthetic virtual tables. */
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(CteQueryUtil::VIRT_TABLE);
+  if (tab == nullptr) {
+    g_err << "getTable(" << CteQueryUtil::VIRT_TABLE << ") failed" << endl;
+    return -1;
+  }
+  Uint32 owners[ABS_MAX_NDB_NODES];
+  const Uint32 numOwners = cteNfOwnerList(restarter, owners);
   const Uint32 frags = tab->getFragmentCount();
   for (Uint32 k = 0; k < numOwners && k < frags; k++) {
     if (owners[k] == tcNodeId) continue;
@@ -12756,6 +12771,224 @@ static int runCteScanSourceQuery(NDBT_Context *ctx, NDBT_Step *step) {
 
 static int runCteScanSourceKiller(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldKiller(ctx, step, CTE_NF4_HOLD);
+}
+
+/*
+ * NF-5 CteRequesterDiesPausedScan (commit c3ce0732890).
+ *
+ * Load one group per row so remote scans need multiple batches. Keep
+ * the ScanRoot query open after its first row. Error insert 5143 on a
+ * source reports the actual requester when it saves a scan iterator;
+ * rows and CONF are delivered normally. Wait for this marker before
+ * killing the requester, then require handleCteScanNodeFailure to report
+ * reclaiming its paused iterators. Before the fix these records, which
+ * have no TcConnectionrec, survived the node failure.
+ *
+ * Choose a source outside its routing fragment's replica set, with the
+ * coordinator also outside that set. Every possible requester is then
+ * remote and safe to kill. The marker identifies which replica actually
+ * runs the scan, independently of dynamic primary or read-backup routing.
+ * Skip when placement offers no qualifying fragment.
+ */
+static int cteNfPickPausedScanSource(Ndb *ndb, NdbRestarter &restarter,
+                                        Uint32 tcNodeId) {
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(CteQueryUtil::VIRT_TABLE);
+  if (tab == nullptr) {
+    g_err << "getTable(" << CteQueryUtil::VIRT_TABLE << ") failed" << endl;
+    return -1;
+  }
+  Uint32 owners[ABS_MAX_NDB_NODES];
+  const Uint32 numOwners = cteNfOwnerList(restarter, owners);
+  const Uint32 frags = tab->getFragmentCount();
+  for (Uint32 k = 0; k < numOwners && k < frags; k++) {
+    Uint32 replicas[4];
+    const Uint32 numReplicas =
+        tab->getFragmentNodes(k, replicas, NDB_ARRAY_SIZE(replicas));
+    if (numReplicas == 0 || numReplicas > NDB_ARRAY_SIZE(replicas)) continue;
+    bool ownerOrTcIsReplica = false;
+    for (Uint32 r = 0; r < numReplicas; r++) {
+      if (replicas[r] == owners[k] || replicas[r] == tcNodeId)
+        ownerOrTcIsReplica = true;
+    }
+    if (ownerOrTcIsReplica) continue;
+    g_err << "Remote CTE scan source " << owners[k]
+          << " for root fragment " << k << " of "
+          << CteQueryUtil::VIRT_TABLE << endl;
+    return (int)owners[k];
+  }
+  g_err << "No root fragment of " << CteQueryUtil::VIRT_TABLE
+        << " has both its owner and the coordinator outside its replica "
+        << "set on this topology" << endl;
+  return -1;
+}
+
+struct CteNf5Args {
+  NDBT_Context *ctx;
+  NdbRestarter *restarter;
+  Ndb *ndb;
+  Uint32 iter;
+  CteNfEventListener *events;
+  int source;
+  int victim;
+};
+
+static bool cteNf5BeforeExecute(void *arg, Uint32 tcNodeId) {
+  CteNf5Args *a = (CteNf5Args *)arg;
+  a->source = cteNfPickPausedScanSource(a->ndb, *a->restarter, tcNodeId);
+  if (a->source < 0) {
+    a->ctx->setProperty("CteNfSkip", a->iter + 1);
+    return true;
+  }
+  if (!a->events->open(*a->restarter)) {
+    g_err << "Failed to subscribe to management events" << endl;
+    return false;
+  }
+  if (a->restarter->insertError2InNode(a->source, 5143, a->iter + 1) != 0) {
+    g_err << "Failed to arm paused-scan marker on " << a->source << endl;
+    return false;
+  }
+  return true;
+}
+
+static bool cteNf5BeforeClose(void *arg, Uint32 tcNodeId) {
+  CteNf5Args *a = (CteNf5Args *)arg;
+  if (a->source < 0) return true;  // skipping: close the unharmed query
+  BaseString expected, line;
+  expected.assfmt("[CTE_NF5_SCAN_PAUSED node=%u iteration=%u requester=",
+                  (Uint32)a->source, a->iter + 1);
+  if (!a->events->waitFor(a->ctx, expected.c_str(), 30000, &line)) {
+    g_err << "No paused-scan marker from source " << a->source << endl;
+    return false;
+  }
+  Uint32 source = 0, iteration = 0, requester = 0;
+  const char *marker = strstr(line.c_str(), expected.c_str());
+  if (marker == nullptr ||
+      sscanf(marker,
+             "[CTE_NF5_SCAN_PAUSED node=%u iteration=%u requester=%u]",
+             &source, &iteration, &requester) != 3 ||
+      source != (Uint32)a->source || iteration != a->iter + 1 ||
+      requester == 0 || requester == source || requester == tcNodeId) {
+    g_err << "Invalid paused-scan marker: " << line.c_str() << endl;
+    return false;
+  }
+  a->victim = (int)requester;
+  g_err << "Killing requester node " << a->victim
+        << " with its CTE scans paused between batches" << endl;
+  if (a->restarter->restartOneDbNode(a->victim, /* initial */ false,
+                                     /* nostart */ true,
+                                     /* abort */ true) != 0) {
+    g_err << "restartOneDbNode(" << a->victim << ") failed" << endl;
+    return false;
+  }
+  a->ctx->setProperty("CteNfKilled", a->iter + 1);
+  /* Require cleanup on the source that reported the paused scan. */
+  BaseString needle;
+  needle.assfmt("[CTE_SCAN_ITER_RELEASED node=%u failed=%u count=",
+                (Uint32)a->source, (Uint32)a->victim);
+  if (a->events->waitFor(a->ctx, needle.c_str(), 30000)) {
+    a->ctx->setProperty("CteNfReleased", a->iter + 1);
+  }
+  if (a->restarter->waitNodesNoStart(&a->victim, 1) != 0) {
+    g_err << "waitNodesNoStart(" << a->victim << ") failed" << endl;
+    return false;
+  }
+  return true;
+}
+
+static int runCteRequesterPausedScan(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] CteRequesterDiesPausedScan needs >= 2 data nodes"
+          << endl;
+    return NDBT_OK;
+  }
+  /* ScanRoot returns one row per populated group. */
+  const Uint32 groups = ctx->getProperty("CteNfGroups", CTE_NF_GROUPS);
+  const Uint32 expectedRows = groups < CTE_NF_ROWS ? groups : CTE_NF_ROWS;
+  if (runCteNfCheckQuery(ndb, "Baseline", CteQueryUtil::ScanRoot,
+                         expectedRows) != NDBT_OK)
+    return NDBT_FAILED;
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    CteNfEventListener events;
+    CteNf5Args args = {ctx, &restarter, ndb, iter, &events, -1, -1};
+    CteQueryUtil::Options opt;
+    opt.shape = CteQueryUtil::ScanRoot;
+    opt.closeAfterFirstBatch = true;
+    opt.beforeExecute = cteNf5BeforeExecute;
+    opt.beforeClose = cteNf5BeforeClose;
+    opt.arg = &args;
+    CteQueryUtil::Result res;
+    g_err << "=== CteRequesterDiesPausedScan iteration " << iter << " ==="
+          << endl;
+    const int rc = CteQueryUtil::runQuery(ndb, opt, res);
+    /* The source survives; clear its hook on success and failure paths. */
+    if (args.source >= 0 &&
+        restarter.insertErrorInNode(args.source, 0) != 0) {
+      g_err << "Failed to clear paused-scan marker on " << args.source << endl;
+      return NDBT_FAILED;
+    }
+    if (ctx->getProperty("CteNfSkip", (Uint32)0) == iter + 1) {
+      g_err << "[SKIPPED] CteRequesterDiesPausedScan: no victim on this "
+            << "topology (see above)" << endl;
+      return NDBT_OK;
+    }
+    if (rc == -2) {
+      g_err << "Query build/hook failed at " << res.failedAt << endl;
+      return NDBT_FAILED;
+    }
+    if (ctx->getProperty("CteNfKilled", (Uint32)0) != iter + 1) {
+      g_err << "The query ended before its first row was held (rc=" << rc
+            << ", ndbError=" << res.ndbError << ", rows=" << res.rows
+            << "): no paused scan to kill into" << endl;
+      return NDBT_FAILED;
+    }
+    g_err << "Query closed after the requester failure in "
+          << res.closeMillis << " ms (rc=" << rc
+          << ", ndbError=" << res.ndbError
+          << ", closeError=" << res.closeError << ")" << endl;
+    /* I2, I3 */
+    if (restarter.startNodes(&args.victim, 1) != 0 ||
+        restarter.waitClusterStarted(180) != 0) {
+      g_err << "Victim " << args.victim << " did not rejoin" << endl;
+      return NDBT_FAILED;
+    }
+    /* I1: reject timeout-driven completion, including a timeout while
+     * draining the current batch that closeTcCursor subsequently clears.
+     * Check after restoring the victim so failure leaves it running.
+     * The normal API close wait is at least 360 s; the reduced protocol
+     * timeout debug flag lowers it to 6 s. Stay below either wait. */
+    Uint32 closeLimitMillis = 30000;
+    DBUG_EXECUTE_IF("ndb_reduced_api_protocol_timeout",
+                   { closeLimitMillis = 5000; });
+    const bool expectedCloseError =
+        res.closeError == 0 || res.closeError == 286 ||
+        res.closeError == DbspjErr::NodeFailure ||
+        res.closeError == 4028;  // NDB API: node failure caused abort
+    if (rc != 0 || !expectedCloseError ||
+        res.closeMillis >= closeLimitMillis) {
+      g_err << "Close did not complete cleanly within " << closeLimitMillis
+            << " ms (rc=" << rc << ", closeError=" << res.closeError
+            << ", closeMillis=" << res.closeMillis << ")" << endl;
+      return NDBT_FAILED;
+    }
+    /* The source that reported the paused scan must reclaim records
+     * for the failed requester through node-failure cleanup. */
+    if (ctx->getProperty("CteNfReleased", (Uint32)0) != iter + 1) {
+      g_err << "No source reported CTE_SCAN_ITER_RELEASED for node "
+            << args.victim << " on source " << args.source << endl;
+      return NDBT_FAILED;
+    }
+    /* I4: 2362 on the sources - the iterator records held for the dead
+     * requester's paused continuations must be gone. */
+    if (runCteNfLeakDumps(restarter) != NDBT_OK) return NDBT_FAILED;
+  }
+  /* I5 */
+  if (runCteNfCheckQuery(ndb, "Post-recovery", CteQueryUtil::ScanRoot,
+                         expectedRows) != NDBT_OK)
+    return NDBT_FAILED;
+  return NDBT_OK;
 }
 
 NDBT_TESTSUITE(testNodeRestart);
@@ -13682,6 +13915,18 @@ TESTCASE("CteScanSourceDiesMidBatch",
   INITIALIZER(runCteNfCreateTables);
   STEP(runCteScanSourceQuery);
   STEP(runCteScanSourceKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteRequesterDiesPausedScan",
+         "RONDB-1120 NF-5: the API holds a scanCte query after its first "
+         "row; source marker 5143 identifies a paused remote scan and its "
+         "requester. Killing that requester must release the iterator "
+         "records on the source (c3ce0732890) and leave the pools clean. "
+         "Skips when no safe remote requester can be selected") {
+  /* More groups per node than one CTE scan batch, so scans pause. */
+  TC_PROPERTY("CteNfGroups", CTE_NF_ROWS);
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteRequesterPausedScan);
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",

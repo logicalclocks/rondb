@@ -87,10 +87,11 @@ struct Result {
   Uint64 queryMillis;  // wall time from execute() to the end of fetching
   Uint64 closeMillis;  // wall time spent in NdbQuery::close()
   int ndbError;      // NDB error code on a runtime failure
+  int closeError;    // NDB error observed after explicit query close
   const char *failedAt;
   Result()
       : tcNodeId(0), rows(0), queryMillis(0), closeMillis(0), ndbError(0),
-        failedAt("") {}
+        closeError(0), failedAt("") {}
 };
 
 static inline void dropTables(Ndb *ndb) {
@@ -339,6 +340,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   query->close();
   res.closeMillis =
       NdbTick_Elapsed(closeStart, NdbTick_getCurrentTicks()).milliSec();
+  res.closeError = query->getNdbError().code;
   trans->close();
   queryDef->destroy();
   return rc;

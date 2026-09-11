@@ -1,0 +1,97 @@
+# RONDB-1120 NF-5: the requester of a remote CTE scan fails while that
+# scan is paused between batches at its source.
+# Run with: ./mtr --suite=ndb_cte_ng2r2 cte_nodefail_requester_paused
+#
+# Runs the CteRequesterDiesPausedScan case from the testNodeRestart NDBT
+# program (storage/ndb/test/ndbapi/testNodeRestart.cpp, plan
+# storage/ndb/claude_files/pushdown_join_aggregation/node_failure_test_plan.md).
+#
+# The fixture has one group per row, more than one CTE scan batch. The
+# API holds a scanCte query after its first row. Error insert 5143 reports
+# a saved iterator and its actual remote requester, leaving rows and CONF
+# delivery intact. Choose a source with both itself and the coordinator
+# outside its routing fragment's replica set; skip if none qualifies.
+# Wait for the source's CTE_NF5_SCAN_PAUSED marker, kill its requester,
+# and require CTE_SCAN_ITER_RELEASED from that same source. Then close
+# the query, clear the hook, restart the requester, run the join-agg leak
+# DUMPs (2361, 2362, 2363, 2560, 2650; 2362 covers commit c3ce0732890),
+# and re-run the query for the full row count. Three iterations.
+#
+# On a 2-node cluster every worker scans its own node's partition and the
+# case skips, so it lives in this 4-node suite.
+#
+# The source hook requires error-insert capable ndbmtd binaries.
+# The testNodeRestart binary is only present in WITH_NDB_TEST builds.
+#
+# On failure the program's output is in $NDB_TOOLS_OUTPUT (var/tmp) of the
+# saved test directory.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its tables (TEST_DB.T1 and the CTE fixtures
+# TEST_DB.cte_nf_src / cte_nf_virtual) directly via the NDB API. Tables
+# created outside of the MySQL Server crash the MySQL Server, so both
+# MySQL Servers are shut down while the NDBT case runs and started again
+# after the NDBT tables have been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # NF-5: kill the requester of a CTE scan paused between batches
+--exec $TEST_NODE_RESTART -n CteRequesterDiesPausedScan T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops T1 and the case's finalizer drops the CTE
+# fixtures when the case completes cleanly; a missing table is not an
+# error here.
+--echo "[dropping NDBT test tables]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_src >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_virtual >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # CteRequesterDiesPausedScan passed

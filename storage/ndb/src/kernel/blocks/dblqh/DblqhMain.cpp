@@ -17142,6 +17142,7 @@ void Dblqh::handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
   jam();
   // Each LDM/query worker owns its iterator pool. Paused CTE scans
   // have no TcConnectionrec and must be visited separately.
+  Uint32 released = 0;
   for (Uint32 i = 0; i < 100 && startPtrI != RNIL; i++) {
     Ptr<CteScanIterState> ptr;
     const Uint32 found =
@@ -17156,6 +17157,14 @@ void Dblqh::handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
       break;
     }
     releaseCteScanIterState(ptr.i);
+    released++;
+  }
+  if (released > 0) {
+    jam();
+    /* Cluster-log evidence that paused CTE scans of the failed requester
+     * were reclaimed here; the NF-5 test waits for this line. */
+    infoEvent("[CTE_SCAN_ITER_RELEASED node=%u failed=%u count=%u]",
+              getOwnNodeId(), nodeId, released);
   }
   if (startPtrI != RNIL) {
     signal->theData[0] = ZCONTINUE_CTE_SCAN_NODE_FAILURE;
@@ -22623,6 +22632,16 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     }
     *ptr.p = localState;
     conf->scanIterI = ptr.i;
+  }
+  if (ERROR_INSERTED(5143) && !endOfData &&
+      refToNode(req.senderRef) != getOwnNodeId()) {
+    jam();
+#ifdef ERROR_INSERT
+    /* NF-5: a saved iterator now identifies an actual remote requester.
+     * Deliver the CONF normally; the API holds the query between batches. */
+    infoEvent("[CTE_NF5_SCAN_PAUSED node=%u iteration=%u requester=%u]",
+              getOwnNodeId(), c_error_insert_extra, refToNode(req.senderRef));
+#endif
   }
   if (ERROR_INSERTED(5128)) {
     jam();

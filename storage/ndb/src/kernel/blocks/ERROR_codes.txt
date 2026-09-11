@@ -79,7 +79,12 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       "[CTE_NF4_CONF_HELD node=<node> iteration=<extra>]" (extra is the
       test iteration, its top bit marks the event as sent). NF-4 waits for
       this event before killing the source node.
-Next DBLQH 5143
+5143: In cteScanEmitResults, report a saved iterator for a remote requester:
+      "[CTE_NF5_SCAN_PAUSED node=<node> iteration=<extra> requester=<node>]".
+      Rows and CONF are delivered normally. NF-5 waits for this event to
+      identify the requester before killing it. Clear on the surviving
+      source after the query closes.
+Next DBLQH 5144
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
