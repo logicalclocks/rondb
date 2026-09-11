@@ -2414,6 +2414,10 @@ public:
   static Uint32 joinAggVisitStates(
       Uint32 bucket, void (*visitor)(JoinAggregationState *, void *),
       void *context);
+  // Leak check for DUMP 2363: identity entries, how many of them are
+  // placeholders (SETUP never arrived), and park records in use.
+  static void joinAggIdentityStats(Uint32 *entries, Uint32 *placeholders,
+                                   Uint32 *parkRecsInUse);
 
   //------------------------------------------------------------------
   // RONDB-1120 P2: waiter-queue parking (plan 2.2).  A consumer

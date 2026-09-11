@@ -18483,6 +18483,15 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
     if (ERROR_INSERTED(5034)) {
       CLEAR_ERROR_INSERT_VALUE;
     }
+    if (ERROR_INSERTED(5135) &&
+        scanptr.p->m_join_agg_state_key != RNIL) {
+      jam();
+      /* Test hook: swallow ONE close of a join-agg / CTE scan so DBTC
+       * keeps a close reply owed by this node (its CLOSING_SCAN window
+       * for a node kill). */
+      CLEAR_ERROR_INSERT_VALUE;
+      return;
+    }
     /**
      * We need no special handling of continous scan when closing the
      * scan, scanState is the current state of the scan.
@@ -19944,6 +19953,25 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     ref->requestPtrI = requestPtrI;
     ref->treeNodePtrI = treeNodePtrI;
     ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+    ref->errorLine = __LINE__;
+    sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF, signal,
+               JoinAggNullRowRef::SignalLength, JBB);
+    return;
+  }
+
+  if (ERROR_INSERTED(5132)) {
+    jam();
+    /* Test hook: REF ONE null-row injection so DBSPJ takes
+     * execJOIN_AGG_NULL_ROW_REF with the reply still outstanding. */
+    CLEAR_ERROR_INSERT_VALUE;
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    JoinAggNullRowRef *ref = (JoinAggNullRowRef *)signal->getDataPtrSend();
+    ref->senderRef = reference();
+    ref->aggStateKey = aggStateKey;
+    ref->requestPtrI = requestPtrI;
+    ref->treeNodePtrI = treeNodePtrI;
+    ref->errorCode = ZJOIN_AGG_INTERPRETER_ERROR;
     ref->errorLine = __LINE__;
     sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF, signal,
                JoinAggNullRowRef::SignalLength, JBB);
@@ -21558,6 +21586,16 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
    * We copy the section data into local buffers before releasing. */
   SectionHandle handle(this, signal);
 
+  if (ERROR_INSERTED(5131)) {
+    jam();
+    /* Test hook: hold ONE lookup 50 ms so its reply is in flight when a
+     * test kills the target node or closes the request. */
+    CLEAR_ERROR_INSERT_VALUE;
+    sendSignalWithDelay(reference(), GSN_CTE_LOOKUP_REQ, signal, 50,
+                        signal->getLength(), &handle);
+    return;
+  }
+
   // DBSPJ may still be alive after its DBTC coordinator fails.
   // Check the request's coordinator before dereferencing shared state.
   if (unlikely(isJoinAggCoordinatorFailed(req.routeRef))) {
@@ -21962,7 +22000,10 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
         : gb_map->iteratorAt(iterBucket, const_cast<char *>(iterRaw));
 
     for (; iter.valid(); gb_map->next(iter)) {
-      if (rowsThisBatch >= CTE_SCAN_AGG_FEED_BATCH) {
+      /* Test hook 5130: one group per round widens the continuation
+       * window for requester / coordinator node-kill tests. */
+      if (rowsThisBatch >= (ERROR_INSERTED(5130) ? 1
+                                                 : CTE_SCAN_AGG_FEED_BATCH)) {
         jam();
         endOfData = false;
         break;
@@ -22551,6 +22592,15 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     *ptr.p = localState;
     conf->scanIterI = ptr.i;
   }
+  if (ERROR_INSERTED(5128)) {
+    jam();
+    /* Test hook: the batch's rows went out, now swallow this CONF once.
+     * The requesting DBSPJ holds rows without a reply; killing this node
+     * then drives cte_scan_execNODE_FAILREP, and any iterator record is
+     * returned by handleCteScanNodeFailure. */
+    CLEAR_ERROR_INSERT_VALUE;
+    return;
+  }
   sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
 }
@@ -22640,6 +22690,17 @@ void Dblqh::cteScanReqImpl(Signal *signal) {
     return;
   }
 
+  if (scanIterI != RNIL && ERROR_INSERTED(5129)) {
+    jam();
+    /* Test hook: fail ONE continuation with its token released, the way
+     * a lost state is reported, so DBSPJ takes the REF path with the rows
+     * of earlier batches already counted. */
+    CLEAR_ERROR_INSERT_VALUE;
+    releaseCteScanIterState(scanIterI);
+    sendCteScanRef(signal, req.senderRef, req.senderData,
+                   ZJOIN_AGG_STATE_NOT_FOUND, &handle);
+    return;
+  }
   // Close above remains valid even after coordinator failure: it
   // releases only the worker-local iterator, without touching CTE state.
   if (unlikely(isJoinAggCoordinatorFailed(req.coordinatorRef))) {
@@ -22786,11 +22847,12 @@ static const Uint32 REDIST_MAX_BATCH_BYTES = 64 * 1024;
  * Returns nullptr on allocation failure.
  */
 static void *
-redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId) {
+redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId,
+            Uint32 pageSize) {
   /* Align to 8 bytes for safe struct access */
   bytes = (bytes + 7) & ~7u;
   if (bytes > state->m_redist_page_remaining) {
-    Uint32 pageBytes = JoinAggregationState::REDIST_PAGE_SIZE;
+    Uint32 pageBytes = pageSize;
     if (bytes + sizeof(JoinAggregationState::RedistPage) > pageBytes) {
       /* Oversized entry — allocate exact page */
       pageBytes = bytes + sizeof(JoinAggregationState::RedistPage);
@@ -23332,6 +23394,19 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   }
   ndbrequire(signal->getLength() >= JoinAggRedistributeReq::SignalLength);
 
+  if (ERROR_INSERTED(5133) && signal->getSendersBlockRef() != reference()) {
+    jam();
+    /* Test hook: hold every inbound redistribute request 200 ms while
+     * set (once per request: the re-delivered copy arrives from
+     * ourselves). The sender's flow-control CONF is delayed by the same
+     * amount, keeping it paused in CTE_REDISTRIBUTING for node-kill
+     * tests. */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                        200, signal->getLength(), &handle);
+    return;
+  }
+
   const JoinAggRedistributeReq *req =
     (const JoinAggRedistributeReq *)signal->getDataPtr();
   Uint32 aggStateKey = req->aggStateKey;
@@ -23526,7 +23601,11 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                         sizeof(Uint32) +  /* subtract data[1] placeholder */
                         (keyWords + valWords) * sizeof(Uint32);
     auto *entry = (JoinAggregationState::RedistQueueEntry *)
-        redistAlloc(state, allocBytes, getThreadId());
+        redistAlloc(state, allocBytes, getThreadId(),
+                    /* Test hook 5134: tiny pages so a drain leaves more
+                     * than one free batch behind. */
+                    ERROR_INSERTED(5134)
+                        ? 512 : JoinAggregationState::REDIST_PAGE_SIZE);
     if (unlikely(entry == nullptr)) {
       jam();
       abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
@@ -42627,6 +42706,49 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
                             state->m_senderRef);
         ndbabort();
       }
+    }
+    return;
+  }
+  if (signal->theData[0] == DumpStateOrd::LqhDumpCteIterStates) {
+    jam();
+    /**
+     * Verify this worker holds no CTE scan iterator record. Every
+     * requester close, EndOfData reply, error exit and the node-failure
+     * sweep must have returned them. Crashes on a leak so autotest sees
+     * it (same discipline as LqhDumpJoinAggStates).
+     */
+    Uint32 leaked = 0;
+    Uint32 i = 0;
+    Ptr<CteScanIterState> ptr;
+    while (i != RNIL) {
+      if (c_cteScanIterStatePool.getUncheckedPtrs(&i, &ptr, 1) == 0) {
+        continue;
+      }
+      if (!Magic::check_ptr(ptr.p)) continue;
+      g_eventLogger->info("DUMP 2362: leaked CteScanIterState i=%u "
+                          "senderNode=%u coordinatorNode=%u aggFeed=%u",
+                          ptr.i, ptr.p->senderNodeId,
+                          ptr.p->coordinatorNodeId, ptr.p->aggFeed);
+      leaked++;
+    }
+    if (leaked != 0) ndbabort();
+    return;
+  }
+  if (signal->theData[0] == DumpStateOrd::LqhDumpJoinAggIdentity) {
+    jam();
+    /**
+     * The identity table and the park pool are node-global; check them
+     * once, from instance 1. Placeholders are entries whose SETUP never
+     * arrived; park records are consumer signals waiting for it.
+     */
+    if (instance() != 1) return;
+    Uint32 entries = 0, placeholders = 0, parked = 0;
+    joinAggIdentityStats(&entries, &placeholders, &parked);
+    if (entries != 0 || parked != 0) {
+      g_eventLogger->info("DUMP 2363: leaked join-agg identity: entries=%u "
+                          "placeholders=%u parkRecs=%u",
+                          entries, placeholders, parked);
+      ndbabort();
     }
     return;
   }

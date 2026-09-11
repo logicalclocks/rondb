@@ -63,6 +63,7 @@
 #include <Bitmask.hpp>
 #include <EventLogger.hpp>
 #include <signaldata/NodeFailRep.hpp>
+#include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ReadNodesConf.hpp>
 #include <signaldata/SignalDroppedRep.hpp>
 #include <util/rondb_hash.hpp>
@@ -1155,6 +1156,38 @@ void Dbspj::nodeFail_checkRequests(Signal *signal) {
     sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB, lsptr, 1);
   } else if (type == 2) {
     jam();
+  }
+}
+
+/**
+ * DUMP_STATE_ORD: leak checks for autotest (see DumpStateOrd.hpp).
+ */
+void Dbspj::execDUMP_STATE_ORD(Signal *signal) {
+  jamEntry();
+  if (signal->theData[0] == DumpStateOrd::SpjDumpRequests) {
+    jam();
+    /**
+     * Verify no request survives on this instance: every scan and lookup
+     * request must have completed or been cleaned up after an abort,
+     * including those aborted by node failure. Crashes on a leak so
+     * autotest sees it (same discipline as LqhDumpJoinAggStates).
+     */
+    Uint32 leaked = 0;
+    Request_hash *hashes[2] = {&m_scan_request_hash, &m_lookup_request_hash};
+    for (Uint32 h = 0; h < 2; h++) {
+      Request_iterator iter;
+      for (bool ok = hashes[h]->first(iter); ok && !iter.curr.isNull();
+           ok = hashes[h]->next(iter)) {
+        g_eventLogger->info("DUMP 2650: leaked DBSPJ request i=%u state=0x%x "
+                            "outstanding=%u cnt_active=%u bits=0x%x",
+                            iter.curr.i, iter.curr.p->m_state,
+                            iter.curr.p->m_outstanding,
+                            iter.curr.p->m_cnt_active, iter.curr.p->m_bits);
+        leaked++;
+      }
+    }
+    if (leaked != 0) ndbabort();
+    return;
   }
 }
 
@@ -8065,6 +8098,11 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
   const Uint32 length =
       (scanIterI == RNIL) ? CteScanReq::SignalLength
                           : CteScanReq::SignalLengthContinue;
+  if (scanIterI != RNIL) {
+    /* Test hook: the requester dies as it asks for its second batch,
+     * leaving every source paused with a live iterator token. */
+    CRASH_INSERTION(17532);
+  }
   ndbrequire(ownerInstance > 0);
   Uint32 ref = numberToRef(DBLQH, ownerInstance, sourceNodeId);
   sendSignal(ref, GSN_CTE_SCAN_REQ, signal, length, JBB,

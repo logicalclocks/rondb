@@ -22535,6 +22535,44 @@ void Dbtc::execDUMP_STATE_ORD(Signal *signal) {
     RSS_AP_SNAPSHOT_CHECK(c_cacheRecordPool);
   }
 
+  if (arg == DumpStateOrd::TcDumpJoinAggRecords) {
+    jam();
+    /**
+     * Verify no join-agg bookkeeping survives on this instance:
+     * completion records, CTE scan-fragment handles, and no scan parked
+     * in a join-agg wait state or in CLOSING_SCAN. Crashes on a leak so
+     * autotest sees it (same discipline as LqhDumpJoinAggStates).
+     */
+    Uint32 leaked = 0;
+    if (c_aggCompleteRecordPool.getUsed() != 0) {
+      g_eventLogger->info("DUMP 2560: leaked AggCompleteRecords=%u",
+                          c_aggCompleteRecordPool.getUsed());
+      leaked++;
+    }
+    if (c_cteScanFragHandlePool.getUsed() != 0) {
+      g_eventLogger->info("DUMP 2560: leaked CteScanFragHandles=%u",
+                          c_cteScanFragHandlePool.getUsed());
+      leaked++;
+    }
+    Uint32 i = 0;
+    ScanRecordPtr scanptr;
+    while (i != RNIL) {
+      if (scanRecordPool.getUncheckedPtrs(&i, &scanptr, 1) == 0) continue;
+      if (!Magic::match(scanptr.p->m_magic, ScanRecord::TYPE_ID)) continue;
+      if (scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_SETUP ||
+          scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_COMPLETE ||
+          scanptr.p->scanState == ScanRecord::WAIT_JOIN_AGG_RELEASE ||
+          scanptr.p->scanState == ScanRecord::CLOSING_SCAN ||
+          scanptr.p->m_joinAgg) {
+        g_eventLogger->info("DUMP 2560: scanPtr.i=%u state=%u joinAgg=%u",
+                            scanptr.i, (Uint32)scanptr.p->scanState,
+                            (Uint32)scanptr.p->m_joinAgg);
+        leaked++;
+      }
+    }
+    if (leaked != 0) ndbabort();
+    return;
+  }
   if (arg == DumpStateOrd::TcDumpPoolLevels) {
     /**
      * DUMP 2555 1
@@ -30884,6 +30922,8 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
     scanPtr.p->m_cteAggNodeState = nullptr;  // same allocation block
   }
   scanPtr.p->m_numCtes = 0;
+  /* Test hook: the coordinator dies with its RELEASE_REQs in flight. */
+  CRASH_INSERTION(8312);
 }
 
 /**
@@ -31262,6 +31302,16 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
      * the re-arrival processes normally. */
     CLEAR_ERROR_INSERT_VALUE;
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_CONF, signal, 20,
+                        signal->getLength());
+    return;
+  }
+  if (ERROR_INSERTED(8313)) {
+    jam();
+    /* Test hook: delay ONE SETUP_CONF 5 s. A test that aborts the query
+     * inside that window makes the CONF stale on arrival and drives
+     * sendStaleSetupReclaim (keyed release with a zero transid). */
+    CLEAR_ERROR_INSERT_VALUE;
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_CONF, signal, 5000,
                         signal->getLength());
     return;
   }
@@ -32693,6 +32743,13 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
     req->transid[0] = apiPtr.p->transid[0];
     req->transid[1] = apiPtr.p->transid[1];
     req->aggStateKey = scanptr.p->m_joinAggNodes->m_aggStateKeys[nodeId];
+    if (ERROR_INSERTED(8311)) {
+      jam();
+      /* Test hook: address ONE COMPLETE by identity although the key is
+       * known, exercising DBLQH's resolve-or-park path on arrival. */
+      CLEAR_ERROR_INSERT_VALUE;
+      req->aggStateKey = RNIL;
+    }
     req->maxBatchRows = 256;
     req->heartbeatScanFragPtrI =
         findJoinAggHeartbeatScanFrag(scanptr, nodeId);
@@ -32839,6 +32896,8 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
      */
     joinAggAbortAfterRelease(signal, scanptr);
   }
+  /* Test hook: the coordinator dies with its RELEASE_REQs in flight. */
+  CRASH_INSERTION(8312);
 }
 
 /**

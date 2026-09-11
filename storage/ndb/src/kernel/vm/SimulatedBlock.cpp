@@ -6561,6 +6561,33 @@ Uint32 SimulatedBlock::joinAggVisitStates(
   return bucket == totalBuckets ? RNIL : bucket;
 }
 
+void SimulatedBlock::joinAggIdentityStats(Uint32 *entries,
+                                          Uint32 *placeholders,
+                                          Uint32 *parkRecsInUse) {
+  *entries = 0;
+  *placeholders = 0;
+  *parkRecsInUse = 0;
+  if (s_jaiEntries == nullptr) return;
+  for (Uint32 p = 0; p < JAI_PARTITIONS; p++) {
+    JoinAggIdentityPartition &part = s_jaiPartitions[p];
+    NdbMutex_Lock(part.m_mutex);
+    for (Uint32 b = 0; b < JAI_BUCKETS_PER_PART; b++) {
+      for (Uint32 i = part.m_buckets[b]; i != RNIL; i = jaiEntry(i).m_next) {
+        (*entries)++;
+        if (jaiEntry(i).m_aggStateKey == RNIL) (*placeholders)++;
+      }
+    }
+    NdbMutex_Unlock(part.m_mutex);
+  }
+  Uint32 freeRecs = 0;
+  NdbMutex_Lock(s_jaiFreeMutex);
+  for (Uint32 i = s_jaiParkFreeHead; i != RNIL; i = s_jaiParkRecs[i].m_next) {
+    freeRecs++;
+  }
+  NdbMutex_Unlock(s_jaiFreeMutex);
+  *parkRecsInUse = JAI_MAX_PARK - freeRecs;
+}
+
 Uint32 SimulatedBlock::joinAggSeizeParkRec() {
   require(s_jaiParkRecs != nullptr);
   Uint32 i;

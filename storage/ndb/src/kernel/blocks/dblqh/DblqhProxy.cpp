@@ -2467,6 +2467,26 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                         JoinAggSetupReq::SignalLength, &handle);
     return;
   }
+  if (ERROR_INSERTED(5138)) {
+    jam();
+    /* Test hook: hold EVERY SETUP_REQ back, 20 ms at a time, until the
+     * insert is cleared. Consumers park on the placeholder, the 10 ms
+     * sweeper fires, and node kills while parked become deterministic. */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
+  if (ERROR_INSERTED(5139)) {
+    jam();
+    /* Test hook: lose ONE SETUP_REQ for good (no CONF, no REF). A
+     * placeholder created by racing consumers is never filled, so the
+     * sweeper answers every parked signal with STATE_NOT_FOUND. */
+    CLEAR_ERROR_INSERT_VALUE;
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    return;
+  }
 #endif
 
 #ifdef ERROR_INSERT
@@ -3351,6 +3371,16 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
 
   CRASH_INSERTION(5123);  // Crash node on RELEASE_REQ for join agg NF testing
 
+  if (ERROR_INSERTED(5136)) {
+    jam();
+    /* Test hook: queue an exact duplicate of this release behind it. The
+     * duplicate must find m_release_started set, start no second teardown
+     * chain, and still CONF when a reply was requested. */
+    CLEAR_ERROR_INSERT_VALUE;
+    sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
+               JoinAggReleaseReq::SignalLength, JBB);
+  }
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state != nullptr &&
       (state->m_requestId != requestId ||
@@ -3614,7 +3644,8 @@ DblqhProxy::continueJoinAggTeardown(Signal *signal, Uint32 aggStateKey) {
   if (state->m_agg_interpreter != nullptr) {
     jam();
     JoinAggInterpreter *interp = state->m_agg_interpreter;
-    if (!interp->tearDownChunk(JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+    if (!interp->tearDownChunk(ERROR_INSERTED(5137)
+                                   ? 1 : JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
       jam();
       signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
       signal->theData[1] = aggStateKey;
@@ -3638,7 +3669,8 @@ DblqhProxy::continueJoinAggTeardown(Signal *signal, Uint32 aggStateKey) {
       JoinAggInterpreter *interp = state->m_per_thread_interpreters[i];
       if (interp == nullptr) continue;
       jam();
-      if (!interp->tearDownChunk(JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+      if (!interp->tearDownChunk(ERROR_INSERTED(5137)
+                                   ? 1 : JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
         jam();
         signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
         signal->theData[1] = aggStateKey;

@@ -213,6 +213,38 @@ Long sections:
   Use `NdbRestarter::insertErrorInAllNodes(5090)` before test,
   `insertErrorInAllNodes(0)` after.
 
+Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
+
+| Code | Block | Effect | "once" clears itself |
+|---|---|---|---|
+| 5121 / 5122 / 5123 | Proxy / DBLQH / Proxy | crash node on SETUP_REQ / COMPLETE_REQ / RELEASE_REQ | no (crash) |
+| 5124 / 5125 | DBLQH / Proxy | COMPLETE_REF once / SETUP_REF once | yes |
+| 5127 | Proxy | hold ONE SETUP_REQ 20 ms (feeds park) | yes |
+| 5128 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF swallowed once | yes |
+| 5129 | DBLQH `cteScanReqImpl` | ONE continuation answered CTE_SCAN_REF(1251), token released | yes |
+| 5130 | DBLQH `cteScanAggFeed` | one group per continuation round while set | no |
+| 5131 | DBLQH `cteLookupReqImpl` | hold ONE lookup 50 ms | yes |
+| 5132 | DBLQH `joinAggNullRowReqImpl` | ONE null-row injection REFed | yes |
+| 5133 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute delayed 200 ms while set | no |
+| 5134 | DBLQH `redistAlloc` | 512-byte redistribution pages while set | no |
+| 5135 | DBLQH `execSCAN_NEXTREQ` | ONE close of a join-agg / CTE scan swallowed | yes |
+| 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
+| 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
+| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
+| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE SETUP_REQ dropped (no reply) | yes |
+| 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
+| 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
+| 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
+| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 5 s (stale reclaim) | yes |
+| 17532 | DBSPJ `cte_scan_sendReq` | crash when a second CTE scan batch is requested | no (crash) |
+
+Leak-check DUMP codes (each crashes the node on a leak, so run them at the
+end of a test with `NdbRestarter::dumpStateAllNodes`):
+2361 join-agg states, 2362 CTE scan iterator records (per worker),
+2363 identity table + park records, 2560 DBTC completion records / CTE
+scan-fragment handles / scans left in a join-agg or closing state,
+2650 DBSPJ requests.
+
 ## Building
 
 ```bash
