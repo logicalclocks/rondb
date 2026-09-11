@@ -130,6 +130,19 @@ ScanFragReq::setJoinAggFlag(requestInfo, 1);
 scanReq->requestInfo = requestInfo;
 ```
 
+### JoinAggSetupReq from a block test
+
+`JoinAggSetupReq::SignalLength` includes `setupNodes`
+(`NdbNodeBitmask::Size` words): the data nodes DBTC set the query up on,
+which every DBLQH turns into its CTE owner list (RONDB-1120, see
+`claude_files/pushdown_join_aggregation/cte_owner_list.md`). A block test
+that sends SETUP_REQ itself can either fill `setupNodes` with the
+connected data nodes and send `SignalLength`, or send `SignalLength_v1`
+(13 words), in which case DblqhProxy builds the list from its own view of
+the connected data nodes. Use one form for all nodes of a query, or the
+owner lists differ. With the full length, a listed node the receiver is
+not connected to is answered with JOIN_AGG_SETUP_REF error 286.
+
 ### AttrInfo / Aggregation Programs
 
 Aggregation programs follow the NdbAggregator wire format:

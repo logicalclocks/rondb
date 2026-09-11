@@ -2447,7 +2447,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * Defensive fallback for a short signal from an out-of-tree
    * sender. */
   const Uint32 queryTag =
-      (signal->getLength() >= JoinAggSetupReq::SignalLength)
+      (signal->getLength() >= JoinAggSetupReq::SignalLength_v1)
           ? req->queryTag : senderData;
 
   CRASH_INSERTION(5121);  // Crash node on SETUP_REQ for join agg NF testing
@@ -2464,7 +2464,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
-                        JoinAggSetupReq::SignalLength, &handle);
+                        signal->getLength(), &handle);
     return;
   }
   if (ERROR_INSERTED(5138)) {
@@ -2503,6 +2503,52 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   AGGT(("AGGT(%u) PROXY SETUP recv cteIndex=%u",
         instance(), req->cteIndex));
+
+  /* RONDB-1120: the CTE owner list is DBTC's SETUP target set
+   * (req->setupNodes, DBTC's snapshot of connected data nodes),
+   * the same set DBSPJ reads per CTE from the aggKeys section, so every
+   * node maps owner = hash % count over one list.  Check it before any
+   * state is seized: a listed node this node cannot reach would leave
+   * its redistribute / FINAL_REP traffic undeliverable, so answer with
+   * the node-failure code and let the API retry instead of building a
+   * state that can only stall. */
+  const bool cteModeReq =
+      (req->concurrencyStrategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
+  const bool haveSetupNodes =
+      signal->getLength() >= JoinAggSetupReq::SignalLength;
+  NdbNodeBitmask setupNodes;
+  if (haveSetupNodes) {
+    jam();
+    setupNodes.assign(NdbNodeBitmask::Size, req->setupNodes);
+    if (cteModeReq) {
+      jam();
+      if (unlikely(setupNodes.isclear())) {
+        jam();
+        SectionHandle handle(this, signal);
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, RNIL,
+                            cteIndex);
+        return;
+      }
+      for (Uint32 nodeId = setupNodes.find_first();
+           nodeId != NdbNodeBitmask::NotFound;
+           nodeId = setupNodes.find_next(nodeId + 1)) {
+        if (unlikely(nodeId >= MAX_NDB_NODES ||
+                     !getNodeInfo(nodeId).m_connected ||
+                     getNodeInfo(nodeId).m_type != NodeInfo::DB)) {
+          jam();
+          jamLine(nodeId);
+          SectionHandle handle(this, signal);
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              ZNODEFAIL_BEFORE_COMMIT, __LINE__, RNIL,
+                              cteIndex);
+          return;
+        }
+      }
+    }
+  }
   // Seize a JoinAggregationState record from the static pool
   Uint32 key = seizeJoinAggState();
   if (key == RNIL) {
@@ -2630,15 +2676,34 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_num_nodes = 0;
     state->m_cte_redistribution_done = false;
     state->m_cte_scalar_shipped = false;
-    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
-      jamDebug();
-      jamDataDebug(i);
-      if (getNodeInfo(i).m_connected &&
-          getNodeInfo(i).m_type == NodeInfo::DB) {
+    if (haveSetupNodes) {
+      jam();
+      /* DBTC's set, checked above, in ascending node order: the order
+       * every DBLQH and every DBSPJ worker use for owner = hash % count. */
+      for (Uint32 i = setupNodes.find_first();
+           i != NdbNodeBitmask::NotFound;
+           i = setupNodes.find_next(i + 1)) {
         jamDebug();
         jamDataDebug(i);
+        ndbrequire(state->m_cte_num_nodes <
+                   NDB_ARRAY_SIZE(state->m_cte_node_list));
         state->m_cte_node_list[state->m_cte_num_nodes] = i;
         state->m_cte_num_nodes++;
+      }
+    } else {
+      jam();
+      /* Legacy-length request (block unit tests driving DBLQH directly,
+       * no DBTC to decide the set): this node's connected data nodes. */
+      for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+        jamDebug();
+        jamDataDebug(i);
+        if (getNodeInfo(i).m_connected &&
+            getNodeInfo(i).m_type == NodeInfo::DB) {
+          jamDebug();
+          jamDataDebug(i);
+          state->m_cte_node_list[state->m_cte_num_nodes] = i;
+          state->m_cte_num_nodes++;
+        }
       }
     }
     state->m_cte_node_fail_count =

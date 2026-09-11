@@ -1560,6 +1560,19 @@ class Dbspj : public SimulatedBlock {
      */
     Uint32 *m_cteAggStateKeys;
     Uint32 *m_cteAggOwnerInstances;
+    /**
+     * Per-CTE owner list (RONDB-1120): DBTC's SETUP target set for that
+     * CTE in ascending node order, from the aggKeys section.  Flat
+     * array [cteIndex * MAX_NDB_NODES + k] with m_cteOwnerCount[cteIndex]
+     * entries, m_numCteKeyBlocks CTE blocks; lives in the
+     * m_cteAggStateKeys allocation.  DBLQH builds the same list from
+     * JoinAggSetupReq::setupNodes, so owner = hash % count agrees
+     * cluster-wide by construction; virtual CTE fragment K scans the
+     * K-th owner.
+     */
+    Uint32 *m_cteOwnerNodes;
+    Uint32 *m_cteOwnerCount;
+    Uint32 m_numCteKeyBlocks;
 
     ArenaHead m_arena;
 
@@ -1717,11 +1730,19 @@ class Dbspj : public SimulatedBlock {
 
   NdbNodeBitmask c_alive_nodes;
 
-  // Sorted list of data node IDs — used for CTE hash-based routing.
-  // Built in execSTTOR phase 4, updated in execNODE_FAILREP.
-  Uint32 m_dataNodeList[ABS_MAX_NDB_NODES];
-  Uint32 m_numDataNodes;
-  void buildDataNodeList();
+  /* The owner list of CTE 'cteIdx' in a request (Request::m_cteOwnerNodes):
+   * DBTC's SETUP target set, the list every DBLQH routes over too. */
+  Uint32 cteOwnerCount(const Request *req, Uint32 cteIdx) const {
+    ndbrequire(req->m_cteOwnerCount != nullptr &&
+               cteIdx < req->m_numCteKeyBlocks);
+    return req->m_cteOwnerCount[cteIdx];
+  }
+  Uint32 cteOwnerNode(const Request *req, Uint32 cteIdx, Uint32 k) const {
+    ndbrequire(k < cteOwnerCount(req, cteIdx));
+    return req->m_cteOwnerNodes[cteIdx * MAX_NDB_NODES + k];
+  }
+  void cteOwnerNodes(const Request *req, Uint32 cteIdx,
+                     NdbNodeBitmask &mask) const;
 
   void do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);

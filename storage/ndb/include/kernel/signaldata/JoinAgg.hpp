@@ -27,11 +27,17 @@
 #define JOIN_AGG_HPP
 
 #include "SignalData.hpp"
+#include <NodeBitmask.hpp>
 
 #define JAM_FILE_ID 571
 
 struct JoinAggSetupReq {
-  static constexpr Uint32 SignalLength = 13;
+  /* Length before setupNodes was added (RONDB-1120).  A request of this
+   * length carries no node set and the receiver falls back to its own
+   * view of the connected data nodes; only block unit tests that drive
+   * DBLQH directly, with no DBTC to decide the set, still send it. */
+  static constexpr Uint32 SignalLength_v1 = 13;
+  static constexpr Uint32 SignalLength = 13 + NdbNodeBitmask::Size;
   static constexpr Uint32 AggProgramSectionNum = 0;
   static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 ColumnMetaSectionNum = 2;
@@ -78,6 +84,14 @@ struct JoinAggSetupReq {
                      // impossible within any realistic window.  senderData
                      // stays scanPtr.i for CONF/REF routing.  Direct-DBLQH
                      // block tests mirror their senderData here.
+  /* RONDB-1120: the data nodes DBTC set this query up on, one SETUP_REQ
+   * each - its snapshot of connected data nodes.  In CTE mode
+   * every node builds its owner list from this set in ascending node
+   * order, so CTE group ownership (owner = hash % count) is decided
+   * once, by DBTC, instead of by each node's view of which peers were
+   * connected when its SETUP arrived.  DBSPJ takes the same set per CTE
+   * from the aggKeys section DBTC attaches to the root SCAN_FRAGREQ. */
+  Uint32 setupNodes[NdbNodeBitmask::Size];
   // Long section 0: Aggregation program
   // Long section 1: Receiver IDs for hash-partitioned aggregation results
 };

@@ -798,13 +798,11 @@ void Dbspj::execREAD_CONFIG_REQ(Signal *signal) {
 
 static Uint32 f_STTOR_REF = 0;
 
-void Dbspj::buildDataNodeList() {
-  m_numDataNodes = 0;
-  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
-    if (getNodeInfo(i).m_connected &&
-        getNodeInfo(i).m_type == NodeInfo::DB) {
-      m_dataNodeList[m_numDataNodes++] = i;
-    }
+void Dbspj::cteOwnerNodes(const Request *req, Uint32 cteIdx,
+                          NdbNodeBitmask &mask) const {
+  const Uint32 cnt = cteOwnerCount(req, cteIdx);
+  for (Uint32 k = 0; k < cnt; k++) {
+    mask.set(cteOwnerNode(req, cteIdx, k));
   }
 }
 
@@ -822,7 +820,6 @@ void Dbspj::execSTTOR(Signal *signal) {
     signal->theData[1] = 0;  // 0 -> ... and sample usage statistics
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 2);
     c_tc = (Dbtc *)globalData.getBlock(DBTC, instance());
-    m_numDataNodes = 0;
   }
 
   if (tphase == 4) {
@@ -831,11 +828,6 @@ void Dbspj::execSTTOR(Signal *signal) {
     signal->theData[0] = reference();
     sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
     return;
-  }
-
-  if (tphase == 7) {
-    jam();
-    buildDataNodeList();
   }
 
   sendSTTORRY(signal);
@@ -1002,10 +994,6 @@ void Dbspj::execINCL_NODEREQ(Signal *signal) {
 
   ndbrequire(!c_alive_nodes.get(nodeId));
   c_alive_nodes.set(nodeId);
-  /* A rejoined node is a CTE owner again: refresh the ordered data-node
-   * list so lookup routing and scan fan-out agree with the list DBLQH
-   * builds per query from the connected nodes (see cte_scan_start). */
-  buildDataNodeList();
 
   signal->theData[0] = nodeId;
   signal->theData[1] = reference();
@@ -1032,7 +1020,6 @@ void Dbspj::execNODE_FAILREP(Signal *signal) {
   failed.assign(NdbNodeBitmask::Size, rep->theNodes);
 
   c_alive_nodes.bitANDC(failed);
-  buildDataNodeList();
 
   /* Clean up possibly fragmented signals being received or sent */
   for (Uint32 node = 1; node < MAX_NDB_NODES; node++) {
@@ -1355,6 +1342,9 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_cteAggOwnerInstances = nullptr;
+  requestP->m_cteOwnerNodes = nullptr;
+  requestP->m_cteOwnerCount = nullptr;
+  requestP->m_numCteKeyBlocks = 0;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -1749,7 +1739,9 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteScanAllNodes = (cteFlags & 0x1) != 0;
 
         const Uint32 max_nodes = MAX_NDB_NODES;
-        const size_t alloc_size = 2 * numCtes * max_nodes * sizeof(Uint32);
+        /* keys | owner instances | owner node lists | owner counts */
+        const size_t alloc_size =
+            (3 * numCtes * max_nodes + numCtes) * sizeof(Uint32);
         void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
                                         getThreadId(), true);
         if (unlikely(mem == nullptr)) {
@@ -1760,6 +1752,11 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
         requestPtr.p->m_cteAggOwnerInstances =
             requestPtr.p->m_cteAggStateKeys + numCtes * max_nodes;
+        requestPtr.p->m_cteOwnerNodes =
+            requestPtr.p->m_cteAggOwnerInstances + numCtes * max_nodes;
+        requestPtr.p->m_cteOwnerCount =
+            requestPtr.p->m_cteOwnerNodes + numCtes * max_nodes;
+        requestPtr.p->m_numCteKeyBlocks = numCtes;
 
         for (Uint32 c = 0; c < numCtes; c++) {
           Uint32 cteId, perCteFlags, cteNodeCount;
@@ -1779,12 +1776,22 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
           m.depMask = depMask;
           m.flags = perCteFlags;
 
+          /* The per-CTE node list is DBTC's SETUP target set for this
+           * CTE (m_aggNodes), written in ascending node order: the owner
+           * list, indexed by the CTE's position c (== its cteId, DBTC
+           * writes the blocks in cteId order). */
+          ndbrequire(cteNodeCount <= max_nodes);
+          requestPtr.p->m_cteOwnerCount[c] = cteNodeCount;
           for (Uint32 n = 0; n < cteNodeCount; n++) {
             Uint32 nodeId, cteAggKey, ownerInstance;
             ndbrequire(reader.getWord(&nodeId));
             ndbrequire(reader.getWord(&cteAggKey));
             ndbrequire(reader.getWord(&ownerInstance));
             ndbrequire(nodeId < max_nodes);
+            ndbrequire(n == 0 ||
+                       nodeId > requestPtr.p->m_cteOwnerNodes[c * max_nodes +
+                                                              n - 1]);
+            requestPtr.p->m_cteOwnerNodes[c * max_nodes + n] = nodeId;
             requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
             requestPtr.p->m_cteAggOwnerInstances[c * max_nodes + nodeId] =
                 ownerInstance;
@@ -1911,6 +1918,9 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_cteAggOwnerInstances = nullptr;
+  requestP->m_cteOwnerNodes = nullptr;
+  requestP->m_cteOwnerCount = nullptr;
+  requestP->m_numCteKeyBlocks = 0;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -4672,6 +4682,9 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     lc_ndbd_pool_free(requestPtr.p->m_cteAggStateKeys);
     requestPtr.p->m_cteAggStateKeys = nullptr;
     requestPtr.p->m_cteAggOwnerInstances = nullptr;
+    requestPtr.p->m_cteOwnerNodes = nullptr;
+    requestPtr.p->m_cteOwnerCount = nullptr;
+    requestPtr.p->m_numCteKeyBlocks = 0;
   }
   if (requestPtr.p->m_cteContexts != nullptr) {
     /* Release any cached CTE probe-cache sections */
@@ -6305,6 +6318,8 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_primaryTableId = 0;
     treeNodePtr.p->m_schemaVersion = 0;
     treeNodePtr.p->m_info = &g_CteLookupOpInfo;
+    /* cleanup_common() can run after any subsequent build failure. */
+    treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
     // T_EXPECT_TRANSID_AI is set by parseDA if it adds CORR_FACTOR32
     // to the AttrInfo (depends on INNER_JOIN / linked attributes).
     // Do NOT set it unconditionally here.
@@ -6325,20 +6340,23 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_numResultCols = numResultCols;
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
-    // Same topology as cte_scan_build: alive nodes plus every connected
-    // data node, so both CTE nodes abort under identical failures. The
-    // list also routes the probes (owner = hash % count), so refresh it
-    // per request to match DBLQH's per-query owner list.
-    buildDataNodeList();
-    treeNodePtr.p->m_cteLookup_data.m_nodes = c_alive_nodes;
-    for (Uint32 i = 0; i < m_numDataNodes; i++) {
-      treeNodePtr.p->m_cteLookup_data.m_nodes.set(m_dataNodeList[i]);
+    /* Same topology as cte_scan_build: the alive nodes plus this CTE's
+     * owner set (DBTC's SETUP targets from the aggKeys section, indexed
+     * by cteId), so both CTE nodes abort under identical failures.  A
+     * CTE node without that section has no owners to route to. */
+    if (unlikely(requestPtr.p->m_cteOwnerNodes == nullptr ||
+                 node->cteId >= requestPtr.p->m_numCteKeyBlocks)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
     }
+    treeNodePtr.p->m_cteLookup_data.m_nodes = c_alive_nodes;
+    cteOwnerNodes(requestPtr.p, node->cteId,
+                  treeNodePtr.p->m_cteLookup_data.m_nodes);
     memset(treeNodePtr.p->m_cteLookup_data.m_nodeOutstanding, 0,
            MAX_NDB_NODES * sizeof(Uint32));
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
-    treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
     treeNodePtr.p->m_cteLookup_data.m_numKeyPositions = numKeyPositions;
     DEB_CTE(("(%u) cte_lookup_build: node=%u resultRef=0x%x resultData=0x%x "
              "rootResultData=0x%x",
@@ -6856,6 +6874,9 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
     ndbrequire(cteIdx != RNIL);
+    /* This CTE's owner list: DBTC's SETUP target set, the list every
+     * DBLQH hashes over (JoinAggSetupReq::setupNodes). */
+    const Uint32 numOwners = cteOwnerCount(requestPtr.p, cteIdx);
     const bool singleRowCte =
         (requestPtr.p->m_cteContexts[cteIdx].m_flags &
          QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
@@ -6955,7 +6976,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
        * from the QueryTree subset-key list — replacing the sequential
        * GROUP BY normalization — and write the stamped buffer back so
        * DBLQH's compare arm reads the positions off the wire. */
-      if (m_numDataNodes > 1) {
+      if (numOwners > 1) {
         jam();
         targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
@@ -6986,7 +7007,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         }
         writeToSection(keyInfoPtrI, 0, keyBuf, keyPtr.sz);
       }
-    } else if (m_numDataNodes > 1) {
+    } else if (numOwners > 1) {
       jam();
       const Uint32 localCteAggKey =
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + getOwnNodeId()];
@@ -7025,8 +7046,8 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           const Uint64 h = cte_lookup_hash_key(
               localCteInterp, reinterpret_cast<const char *>(keyBuf),
               keyLenBytes, nGbCols);
-          const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
-          targetNodeId = m_dataNodeList[ownerIdx];
+          const Uint32 ownerIdx = static_cast<Uint32>(h) % numOwners;
+          targetNodeId = cteOwnerNode(requestPtr.p, cteIdx, ownerIdx);
         }
       } else {
         jam();
@@ -7040,8 +7061,8 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
     }
-    // Same predicate as buildDataNodeList: a connected but not yet
-    // included node is a legitimate owner, a disconnected one is not.
+    /* An owner this node cannot reach: abort the query rather than
+     * route the probe elsewhere - no other node holds those groups. */
     if (unlikely(!getNodeInfo(targetNodeId).m_connected)) {
       jam();
       err = DbspjErr::NodeFailure;
@@ -7919,6 +7940,8 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_primaryTableId = 0;
     treeNodePtr.p->m_schemaVersion = 0;
     treeNodePtr.p->m_info = &g_CteScanOpInfo;
+    /* cleanup_common() can run after any subsequent build failure. */
+    treeNodePtr.p->m_cteScan_data.m_virtTypeInfo = nullptr;
     treeNodePtr.p->m_bits |= TreeNode::T_ATTR_INTERPRETED;
     treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
 
@@ -7933,11 +7956,15 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     data.m_aggStateKey = RNIL;  /* Resolved at start from m_cteAggStateKeys */
     data.m_outstanding = 0;
     data.m_numNodeSlots = 0;
-    buildDataNodeList();  // see cte_scan_start
-    data.m_nodes = c_alive_nodes;
-    for (Uint32 i = 0; i < m_numDataNodes; i++) {
-      data.m_nodes.set(m_dataNodeList[i]);
+    /* Alive nodes plus this CTE's owner set (see cte_lookup_build). */
+    if (unlikely(requestPtr.p->m_cteOwnerNodes == nullptr ||
+                 node->cteId >= requestPtr.p->m_numCteKeyBlocks)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
     }
+    data.m_nodes = c_alive_nodes;
+    cteOwnerNodes(requestPtr.p, node->cteId, data.m_nodes);
     /* Derive batch size from the originating SCAN_FRAGREQ's
      * batch_size_rows so SCAN_NEXTREQ-driven resumption in
      * cte_scan_execSCAN_NEXTREQ honours the API-requested pacing.
@@ -7974,7 +8001,6 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
      * for a different fragment captures its own API ref here. */
     data.m_api_resultRef = ctx.m_resultRef;
     data.m_joinAggStateKey = RNIL;  /* Computed at start when T_AGG_LEAF */
-    data.m_virtTypeInfo = nullptr;
 
     treeNodePtr.p->m_batch_size = data.m_batchSize;
 
@@ -8143,10 +8169,10 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr) {
   jam();
   DEB_CTE(("(%u) cte_scan_start: node=%u cteId=%u rootFragId=%u "
-           "numDataNodes=%u RT_CTE_PHASE=%d m_cteId=%u",
+           "RT_CTE_PHASE=%d m_cteId=%u",
            instance(), treeNodePtr.p->m_node_no,
            treeNodePtr.p->m_cteScan_data.m_cteId,
-           requestPtr.p->m_rootFragId, m_numDataNodes,
+           requestPtr.p->m_rootFragId,
            !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
            treeNodePtr.p->m_cteId));
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
@@ -8226,14 +8252,12 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * only one LDM instance per node should read from them.  Real
    * table scans (scanFrag_start) are different: each LDM instance
    * scans its own local fragment partition. */
-  /* DBLQH hashes CTE groups over the data nodes connected when the
-   * query's SETUP arrived, in ascending node order (DblqhProxy
-   * execJOIN_AGG_SETUP_REQ). Route from the same view: rebuild the list
-   * now instead of trusting a copy last refreshed at startup or at a
-   * node failure, which would miss a node that rejoined since and send
-   * every probe and scan to the wrong owner (silent missing rows). */
-  buildDataNodeList();
-  ndbrequire(m_numDataNodes > 0);
+  /* The CTE's owner list is DBTC's SETUP target set in ascending node
+   * order (aggKeys section); DBLQH builds the same list from
+   * JoinAggSetupReq::setupNodes, so virtual fragment K is the K-th
+   * owner on every node. */
+  const Uint32 numOwners = cteOwnerCount(requestPtr.p, cteIdx);
+  ndbrequire(numOwners > 0);
   /* This virtual-fragment -> data-node mapping keys on the request's
    * single m_rootFragId and assumes exactly one root fragment per
    * request: a fragsPerWorker > 1 bundle would make the set of
@@ -8243,11 +8267,11 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * CTE_SCAN (scanCte) operation — only CTE_LOOKUP-probed CTEs may
    * bundle.  Tripwire: */
   ndbassert(requestPtr.p->m_rootFragCnt <= 1);
-  if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
+  if (requestPtr.p->m_rootFragId >= numOwners) {
     jam();
     DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
-             "numDataNodes=%u node=%u",
-             instance(), requestPtr.p->m_rootFragId, m_numDataNodes,
+             "numOwners=%u node=%u",
+             instance(), requestPtr.p->m_rootFragId, numOwners,
              treeNodePtr.p->m_node_no));
     /* Force completion without sending any REQ.  No per-REQ bump was
      * made, so nothing to decrement from requestPtr.m_outstanding. */
@@ -8264,10 +8288,9 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     return;
   }
 
-  /* rootFragId < m_numDataNodes — map the fragment to the data node
-   * whose local CTE partition we must scan. m_dataNodeList[K] is the
-   * nodeId of the K-th connected DB node. */
-  targetNodeId = m_dataNodeList[requestPtr.p->m_rootFragId];
+  /* rootFragId < numOwners: the fragment maps to the data node whose
+   * local CTE partition we must scan, the rootFragId-th owner. */
+  targetNodeId = cteOwnerNode(requestPtr.p, cteIdx, requestPtr.p->m_rootFragId);
 
   /* Determine joinAggStateKey: when scanCte is an aggregate leaf,
    * the scanned groups feed into a JoinAggInterpreter (typically the
@@ -8308,7 +8331,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     jam();
     /* Common case: per-fragment scan (instances >= nodes).
      * Send one CTE_SCAN_REQ to the DBLQH owning rootFragId's partition
-     * (targetNodeId = m_dataNodeList[rootFragId]); may be remote. */
+     * (targetNodeId = the rootFragId-th owner); may be remote. */
     data.m_aggStateKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
     const Uint32 ownerInstance =
@@ -8327,10 +8350,10 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     /* Uncommon case: instances < nodes.  Send CTE_SCAN_REQ to ALL
      * nodes that have CTE state.  The m_cteScan_active guard in DBLQH
      * ensures each node's partition is scanned at most once. */
-    for (Uint32 nodeId = 1; nodeId < max_nodes; nodeId++) {
-      Uint32 aggKey =
+    for (Uint32 k = 0; k < numOwners; k++) {
+      const Uint32 nodeId = cteOwnerNode(requestPtr.p, cteIdx, k);
+      const Uint32 aggKey =
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
-      if (aggKey == 0) continue;  /* No CTE state on this node */
       const Uint32 ownerInstance =
           requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + nodeId];
       ndbrequire(ownerInstance > 0);

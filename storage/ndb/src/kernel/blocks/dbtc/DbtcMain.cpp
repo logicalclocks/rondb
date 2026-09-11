@@ -31044,14 +31044,33 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
   /* RONDB-1120 P4 (H2 remnant): no READY transition deferred yet. */
   scanptr.p->m_cteReadyDeferredMask = 0;
 
+  /* The query's node set, decided once here.  Every SETUP_REQ carries
+   * it (JoinAggSetupReq::setupNodes) and buildAggKeysSection hands
+   * DBSPJ the same set per CTE, so DBLQH and DBSPJ derive identical
+   * owner lists: owner = hash % count over this set in ascending node
+   * order.  Preserve the connected-data-node SETUP target set:
+   * recovered nodes can serve queries in start phase 110 before
+   * NDBCNTR includes them in c_startedNodeSet.  Always include the
+   * own node, the constant owner of single-row / LIMIT CTEs. */
+  NdbNodeBitmask setupNodes;
+  setupNodes.clear();
+  for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
+    if (getNodeInfo(nodeId).m_connected &&
+        getNodeInfo(nodeId).m_type == NodeInfo::DB) {
+      jam();
+      jamLine(nodeId);
+      setupNodes.set(nodeId);
+    }
+  }
+  setupNodes.set(getOwnNodeId());
+
   /* Main query aggregation setup — only if a main agg program exists.
    * CTE-only queries (no main aggregation) skip this loop. */
   if (scanptr.p->m_aggProgramPtrI != RNIL) {
     jam();
-    for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
-      if (!getNodeInfo(nodeId).m_connected) continue;
-      if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
-
+    for (Uint32 nodeId = setupNodes.find_first();
+         nodeId != NdbNodeBitmask::NotFound;
+         nodeId = setupNodes.find_next(nodeId + 1)) {
       JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
       req->senderRef = reference();
       req->senderData = scanptr.i;
@@ -31066,6 +31085,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
       req->routeRef = reference();
       req->cteIndex = RNIL;  // Main aggregation, not a CTE
       req->queryTag = scanptr.p->m_joinAggQueryTag;
+      setupNodes.copyto(NdbNodeBitmask::Size, req->setupNodes);
 
       SectionHandle handle(this);
       Uint32 aggPtrI = RNIL;
@@ -31159,10 +31179,9 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
           (scanptr.p->m_cteInfos[c].m_flags &
            QN_CteSubtreeNode::CTE_SINGLE_GROUP) != 0;
 
-      for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
-        if (!getNodeInfo(nodeId).m_connected) continue;
-        if (getNodeInfo(nodeId).m_type != NodeInfo::DB) continue;
-
+      for (Uint32 nodeId = setupNodes.find_first();
+           nodeId != NdbNodeBitmask::NotFound;
+           nodeId = setupNodes.find_next(nodeId + 1)) {
         JoinAggSetupReq *req = (JoinAggSetupReq *)signal->getDataPtrSend();
         req->senderRef = reference();
         req->senderData = scanptr.i;
@@ -31182,6 +31201,7 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
         req->routeRef = reference();
         req->cteIndex = c;  // CTE index so CONF handler can route response
         req->queryTag = scanptr.p->m_joinAggQueryTag;
+        setupNodes.copyto(NdbNodeBitmask::Size, req->setupNodes);
 
         SectionHandle handle(this);
         Uint32 aggPtrI = RNIL;

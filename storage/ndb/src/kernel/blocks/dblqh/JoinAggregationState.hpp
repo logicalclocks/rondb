@@ -296,9 +296,11 @@ struct JoinAggregationState {
                                             // merge point is a classification
                                             // violation and aborts the CTE.
 
-  // CTE node distribution (set at SETUP, immutable after)
-  Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
-  Uint32 m_cte_num_nodes;                   // Number of live data nodes
+  // CTE node distribution (set at SETUP, immutable after): DBTC's SETUP
+  // target set (JoinAggSetupReq::setupNodes) in ascending node order,
+  // the list DBSPJ also routes over; owner = hash % m_cte_num_nodes.
+  Uint32 m_cte_node_list[MAX_DATA_NODE_ID];
+  Uint32 m_cte_num_nodes;
   Uint32 m_cte_remote_aggKeys[ABS_MAX_NDB_NODES]; // Per-node aggStateKeys (indexed by nodeId)
 
   // Phase L (E.1): owning LDM instance on this node for every signal

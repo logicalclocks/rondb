@@ -883,8 +883,9 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
   /* RONDB-1120: identity tag — mirrors senderData (this test waits
    * for RELEASE_CONF between queries, so reuse is safe). */
   req->queryTag = req->senderData;
+  /* Direct DBLQH sender: use the receiver's connected-node list. */
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
-           JoinAggSetupReq::SignalLength);
+           JoinAggSetupReq::SignalLength_v1);
   Uint32 receiverId = FAKE_SENDER_DATA;
   ssig.header.m_noOfSections = columnMeta.empty() ? 2 : 3;
   ssig.ptr[0].p = aggProgram.data();

@@ -424,8 +424,9 @@ sendSetupReq(
   /* RONDB-1120: identity tag — mirrors senderData (this test waits
    * for RELEASE_CONF between queries, so reuse is safe). */
   req->queryTag = req->senderData;
+  /* Direct DBLQH sender: use the receiver's connected-node list. */
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
-           JoinAggSetupReq::SignalLength);
+           JoinAggSetupReq::SignalLength_v1);
   const std::vector<Uint32> metadata = buildJoinAggMetadata(aggProg, meta);
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = const_cast<Uint32*>(aggProg.data());
