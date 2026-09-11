@@ -1002,6 +1002,10 @@ void Dbspj::execINCL_NODEREQ(Signal *signal) {
 
   ndbrequire(!c_alive_nodes.get(nodeId));
   c_alive_nodes.set(nodeId);
+  /* A rejoined node is a CTE owner again: refresh the ordered data-node
+   * list so lookup routing and scan fan-out agree with the list DBLQH
+   * builds per query from the connected nodes (see cte_scan_start). */
+  buildDataNodeList();
 
   signal->theData[0] = nodeId;
   signal->theData[1] = reference();
@@ -6306,7 +6310,10 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
     // Same topology as cte_scan_build: alive nodes plus every connected
-    // data node, so both CTE nodes abort under identical failures.
+    // data node, so both CTE nodes abort under identical failures. The
+    // list also routes the probes (owner = hash % count), so refresh it
+    // per request to match DBLQH's per-query owner list.
+    buildDataNodeList();
     treeNodePtr.p->m_cteLookup_data.m_nodes = c_alive_nodes;
     for (Uint32 i = 0; i < m_numDataNodes; i++) {
       treeNodePtr.p->m_cteLookup_data.m_nodes.set(m_dataNodeList[i]);
@@ -7910,6 +7917,7 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     data.m_aggStateKey = RNIL;  /* Resolved at start from m_cteAggStateKeys */
     data.m_outstanding = 0;
     data.m_numNodeSlots = 0;
+    buildDataNodeList();  // see cte_scan_start
     data.m_nodes = c_alive_nodes;
     for (Uint32 i = 0; i < m_numDataNodes; i++) {
       data.m_nodes.set(m_dataNodeList[i]);
@@ -8202,6 +8210,13 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * only one LDM instance per node should read from them.  Real
    * table scans (scanFrag_start) are different: each LDM instance
    * scans its own local fragment partition. */
+  /* DBLQH hashes CTE groups over the data nodes connected when the
+   * query's SETUP arrived, in ascending node order (DblqhProxy
+   * execJOIN_AGG_SETUP_REQ). Route from the same view: rebuild the list
+   * now instead of trusting a copy last refreshed at startup or at a
+   * node failure, which would miss a node that rejoined since and send
+   * every probe and scan to the wrong owner (silent missing rows). */
+  buildDataNodeList();
   ndbrequire(m_numDataNodes > 0);
   /* This virtual-fragment -> data-node mapping keys on the request's
    * single m_rootFragId and assumes exactly one root fragment per
