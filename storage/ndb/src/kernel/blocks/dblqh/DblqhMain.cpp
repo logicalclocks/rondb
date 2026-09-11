@@ -21968,6 +21968,10 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     // NODE_FAILREP does not cancel local CONTINUEB signals. Stop before
     // touching the source/target hash tables and release our filter.
     releaseCteScanIterState(aggFeedStateI);
+    /* Cluster-log evidence that the feed ended on the requester's failure
+     * without a reply; the NF-6 test waits for this line. */
+    infoEvent("[CTE_AGG_FEED_ABANDONED node=%u failed=%u]",
+              getOwnNodeId(), refToNode(senderRef));
     return;
   }
 
@@ -21987,6 +21991,38 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                      ZNODEFAIL_BEFORE_COMMIT);
       return;
     }
+  }
+
+  if (ERROR_INSERTED(5144)) {
+    jam();
+    /* Test hook (NF-6, NF-7): hold every aggregation feed between rounds,
+     * 20 ms at a time, until the insert is cleared, re-queuing the
+     * continuation exactly as the yield below does so the aggFeed record
+     * stays owned. Both node-down checks above run first, so once the
+     * requester or the coordinator has failed the feed ends the normal
+     * way. The first held round of a remote requester emits the event the
+     * test waits for (extra = test iteration, top bit = event sent). */
+#ifdef ERROR_INSERT
+    constexpr Uint32 eventSent = 0x80000000;
+    if (refToNode(senderRef) != getOwnNodeId() &&
+        (c_error_insert_extra & eventSent) == 0) {
+      infoEvent("[CTE_NF6_FEED_HELD node=%u iteration=%u requester=%u]",
+                getOwnNodeId(), c_error_insert_extra, refToNode(senderRef));
+      c_error_insert_extra |= eventSent;
+    }
+#endif
+    signal->theData[0] = ZCONTINUE_CTE_SCAN_AGG_FEED;
+    signal->theData[1] = aggStateKey;
+    signal->theData[2] = senderRef;
+    signal->theData[3] = senderData;
+    signal->theData[4] = joinAggStateKey;
+    signal->theData[5] = iterBucket;
+    signal->theData[6] = (Uint32)(uintptr_t)iterRaw;
+    signal->theData[7] = (Uint32)((uintptr_t)iterRaw >> 32);
+    signal->theData[8] = groupsSent;
+    signal->theData[9] = aggFeedStateI;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 10);
+    return;
   }
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);

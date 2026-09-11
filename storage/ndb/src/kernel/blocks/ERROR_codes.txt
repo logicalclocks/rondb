@@ -84,7 +84,15 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       Rows and CONF are delivered normally. NF-5 waits for this event to
       identify the requester before killing it. Clear on the surviving
       source after the query closes.
-Next DBLQH 5144
+5144: Hold EVERY aggregation feed continuation (cteScanAggFeed) between
+      rounds, 20 ms at a time, until cleared; the requester / coordinator
+      down checks still run first. The first held round of a remote
+      requester emits InfoEvent
+      "[CTE_NF6_FEED_HELD node=<node> iteration=<extra> requester=<node>]"
+      once per instance (extra is the test iteration, its top bit marks the
+      event as sent). NF-6 kills the named requester and clears the insert
+      on the source afterwards.
+Next DBLQH 5145
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

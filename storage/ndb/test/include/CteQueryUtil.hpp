@@ -36,6 +36,11 @@
  *               Every source row joins its own group: expect `rows` rows.
  *   ScanRoot    CTE0 as above; main = scanCte(CTE0) -> rows to the API.
  *               Expect `groups` rows.
+ *   FeedChain   CTE0 as above; CTE1 = GROUP BY grp, SUM(total) over
+ *               scanCte(CTE0), so each source node feeds its CTE0
+ *               partition into its CTE1 state with the aggregation feed
+ *               continuation; main = scan cte_nf_src -> lookupCte(CTE1).
+ *               Expect `rows` rows.
  *
  * The runner calls an optional hook once the transaction coordinator
  * is known and before execute(), so a test can arm an error insert on
@@ -61,7 +66,7 @@ namespace CteQueryUtil {
 static const char *const SRC_TABLE = "cte_nf_src";
 static const char *const VIRT_TABLE = "cte_nf_virtual";
 
-enum Shape { LookupMain = 0, ScanRoot = 1 };
+enum Shape { LookupMain = 0, ScanRoot = 1, FeedChain = 2 };
 
 struct Options {
   Shape shape;
@@ -183,6 +188,21 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     return -2;
   }
 
+  /* FeedChain's CTE 1: GROUP BY grp, SUM(total) over the CTE 0 rows the
+   * CTE scan feeds (linked columns of the virtual table). */
+  NdbAggregator chainAgg(virtTab);
+  if (opt.shape == FeedChain) {
+    const NdbDictionary::Column *grpCol = virtTab->getColumn("grp");
+    const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+    if (grpCol == nullptr || totalCol == nullptr ||
+        !chainAgg.GroupByLinked(0, grpCol) ||
+        !chainAgg.LoadLinkedColumn(1, 0, totalCol) ||
+        !chainAgg.Sum(0, 0) || !chainAgg.Finalize()) {
+      res.failedAt = "chainAgg";
+      return -2;
+    }
+  }
+
   NdbQueryBuilder *qb = NdbQueryBuilder::create();
   if (qb == nullptr) {
     res.failedAt = "NdbQueryBuilder::create";
@@ -218,8 +238,32 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     return -2;
   }
 
+  /* FeedChain's CTE 1: a CTE scan of CTE 0 as the aggregate leaf. */
+  Uint32 mainCteId = 0;
+  if (opt.shape == FeedChain) {
+    if (qb->beginCteSubtree(1) == nullptr) {
+      res.failedAt = "beginCteSubtree 1";
+      qb->destroy();
+      return -2;
+    }
+    NdbQueryOptions feedOpts;
+    feedOpts.setAggregation(chainAgg);
+    if (qb->scanCte(0, 2, virtTab, &feedOpts) == nullptr) {
+      res.failedAt = "cte1 scanCte";
+      qb->destroy();
+      return -2;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(1, virtTab, chainAgg, /* depMask */ 1) != 0) {
+      res.failedAt = "defineCte 1";
+      qb->destroy();
+      return -2;
+    }
+    mainCteId = 1;
+  }
+
   /* Main query. */
-  if (opt.shape == LookupMain) {
+  if (opt.shape == LookupMain || opt.shape == FeedChain) {
     const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
     if (mainScanOp == nullptr) {
       res.failedAt = "main scanTable";
@@ -230,7 +274,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
                                        nullptr};
     NdbQueryOptions lookupOpts;
     lookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-    if (qb->lookupCte(0, 2, virtTab, cteKey, &lookupOpts) == nullptr) {
+    if (qb->lookupCte(mainCteId, 2, virtTab, cteKey, &lookupOpts) == nullptr) {
       res.failedAt = "lookupCte";
       qb->destroy();
       return -2;
@@ -268,7 +312,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   }
   /* Register the projected columns so the main rows are fetched. */
   const Uint32 nOps = queryDef->getNoOfOperations();
-  if (opt.shape == LookupMain) {
+  if (opt.shape == LookupMain || opt.shape == FeedChain) {
     NdbQueryOperation *mainOp = query->getQueryOperation(nOps - 2);
     NdbQueryOperation *lookupOp = query->getQueryOperation(nOps - 1);
     if (mainOp != nullptr) {

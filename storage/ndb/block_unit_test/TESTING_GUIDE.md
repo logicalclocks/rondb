@@ -249,6 +249,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance | no |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
 | 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |
+| 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_NF6_FEED_HELD event per instance naming the remote requester | no |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
