@@ -21604,6 +21604,29 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
                         signal->getLength(), &handle);
     return;
   }
+  if (ERROR_INSERTED(5141)) {
+    jam();
+    /* Test hook (NF-3): hold EVERY inbound CTE lookup, 200 ms at a time,
+     * until the insert is cleared - the re-delivered copy is held again.
+     * The requesting DBSPJ workers keep their probes charged to this
+     * node (m_nodeOutstanding) for as long as the test needs to kill it.
+     * The first remote request seen by this instance emits the event the
+     * test waits for; the extra error-insert value carries the test
+     * iteration, and its top bit records that the event went out. */
+#ifdef ERROR_INSERT
+    constexpr Uint32 eventSent = 0x80000000;
+    if (signal->getSendersBlockRef() != reference() &&
+        refToNode(req.senderRef) != getOwnNodeId() &&
+        (c_error_insert_extra & eventSent) == 0) {
+      infoEvent("[CTE_NF3_LOOKUP_HELD node=%u iteration=%u]",
+                getOwnNodeId(), c_error_insert_extra);
+      c_error_insert_extra |= eventSent;
+    }
+#endif
+    sendSignalWithDelay(reference(), GSN_CTE_LOOKUP_REQ, signal, 200,
+                        signal->getLength(), &handle);
+    return;
+  }
 
   // DBSPJ may still be alive after its DBTC coordinator fails.
   // Check the request's coordinator before dereferencing shared state.

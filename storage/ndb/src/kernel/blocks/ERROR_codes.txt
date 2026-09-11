@@ -68,7 +68,12 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       "[CTE_NF2_CONF_HELD node=<node> iteration=<extra>]" on first arrival;
       extra is the test iteration.
       NF-2 waits for this event before killing the peer.
-Next DBLQH 5141
+5141: Hold EVERY inbound CTE_LOOKUP_REQ, 200 ms at a time, until cleared. The
+      first remote request held by an instance emits InfoEvent
+      "[CTE_NF3_LOOKUP_HELD node=<node> iteration=<extra>]" (once per
+      instance; extra is the test iteration, its top bit marks the event
+      as sent). NF-3 waits for this event before killing the peer.
+Next DBLQH 5142
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
