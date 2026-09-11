@@ -178,6 +178,8 @@ func (s *Shell) runFSFuzz(args []string) error {
 			ids = append(ids, fuzzCaseID{o.seed, i})
 		}
 		return s.runFuzzCases(g, ids, o)
+	case "envelope":
+		return s.runFSFuzzEnvelope(a, o)
 	case "replay":
 		file := a.str("file", "")
 		if file == "" {
@@ -200,7 +202,7 @@ func (s *Shell) runFSFuzz(args []string) error {
 		}
 		return s.runFuzzCases(g, ids, o)
 	}
-	return fmt.Errorf("unknown .fs_fuzz subcommand %s (spec | show | replay)", a.pos[0])
+	return fmt.Errorf("unknown .fs_fuzz subcommand %s (spec | envelope | show | replay)", a.pos[0])
 }
 
 type fuzzCaseID struct {
@@ -485,6 +487,10 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 			ordered := strings.Contains(sqlText, " ORDER BY ")
 			myResp := my.Query(ctx, sqlText)
 			if myResp.Outcome != exec.OK {
+				if clusterDown(myResp.Message) {
+					res.Status, res.Message = "CRASH", "cluster down (MySQL): "+firstLine(myResp.Message)
+					return res
+				}
 				worst("MYSQL-ERROR", firstLine(myResp.Message))
 				allOK = false
 				continue
@@ -606,6 +612,22 @@ func fuzzStructFields(c fuzz.Case, d emit.Statement) []string {
 		}
 	}
 	return nil
+}
+
+func data_scale(sf float64) data.Scale { return data.NewScale(sf) }
+
+// clusterDown recognizes a MySQL error that means the data nodes are gone
+// (a crash brought them down): every later statement fails the same way, so
+// the run must stop and report the crash rather than a cascade of
+// MYSQL-ERROR lines.  NDB 4009 is "No data node(s) available"; 4035/2006/2013
+// are connection loss.
+func clusterDown(message string) bool {
+	for _, marker := range []string{"No data node", "error 4009", "Error 4009", " 4009 ", "Cluster Failure", "MySQL server has gone away", "Lost connection", "error 4035"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (o fuzzOpts) nowOr() time.Time {

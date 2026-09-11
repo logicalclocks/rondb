@@ -586,7 +586,7 @@ ledger `suite/ronsql_fs/findings/spec_fuzz.md`.
 Exit: 10k cases at MTR scale with zero unclassified failures, or every
 failure filed in the ledger with a minimal repro.
 
-### E7 — Envelope-level random generator
+### E7 — Envelope-level random generator — DONE 2026-09-11 (1 200 cases green, `ronsql_fs_fuzz_env` recorded; F14–F19 in `findings/envelope_fuzz.md`; see `phase_e7.md`)
 
 Scope: `fsq/fuzz/envelope`: RonSQL AST sampler over the FS schema with
 probe productions; L3 classification table; `t/ronsql_fs_fuzz_env.test`;

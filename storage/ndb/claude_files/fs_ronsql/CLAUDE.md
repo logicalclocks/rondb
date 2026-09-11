@@ -36,6 +36,9 @@ Hopsworks Feature Store online-serving builder generates.
   placeholder resolver, `.bench_ronsql fs_hw`, matrix driver `--queries fs_hw --load fs`
 - `phase_e6.md` — E6: spec-level fuzzer (`fsq/fuzz`: seeded sampler with emitter
   expectations, shrinker), `.fs_fuzz spec|show|replay`, `t/ronsql_fs_fuzz_spec.test`
+- `phase_e7.md` — E7: envelope-level fuzzer (`fuzz/envelope.go` productions + expectation
+  table, `fuzz/hazards.go` discovery-log translations), `.fs_fuzz envelope`,
+  `t/ronsql_fs_fuzz_env.test`
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

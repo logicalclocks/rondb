@@ -2,7 +2,9 @@
 
 **Status: E6 (spec-level generator) built 2026-09-11 — `fsq/fuzz`,
 `.fs_fuzz spec|show|replay`, `t/ronsql_fs_fuzz_spec.test`, see
-`phase_e6.md`; E7 (envelope-level generator) not built.** Builds on
+`phase_e6.md`; E7 (envelope-level generator) built 2026-09-11 —
+`fuzz/envelope.go`, `fuzz/hazards.go`, `.fs_fuzz envelope`,
+`t/ronsql_fs_fuzz_env.test`, see `phase_e7.md`.** Builds on
 `framework_design.md` (§6 executors, §7 canonicalization, §8 vector
 oracle, §10 CLI) and `data_model.md` (§6 key classes).
 

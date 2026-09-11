@@ -44,6 +44,21 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] F14 (spec_fuzz.md): a snowflake CTE body keyed by a VARCHAR entity key
   returns no rows through CTE_SCAN (`customers_str_1` root); the body alone and
   the integer-keyed twin work. Found by the E6 fuzzer, seed 1.
+- [ ] F15 (envelope_fuzz.md): data node crash in DBSPJ `sendJoinAggNullRow` /
+  `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
+  LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope
+  fuzzer, seed 1; isolate with `--threads 1`. Pushdown join aggregation (RONDB-733).
+- [ ] F18 (envelope_fuzz.md): a partial-key CTE lookup now runs (was rejected)
+  and returns the wrong row count. Silent correctness regression. E7 fuzzer, seed 2.
+- [ ] F19 (envelope_fuzz.md): CTE_SCAN as an outer-join child now runs (was
+  rejected) with a divergent result. E7 fuzzer, seed 2.
+- [ ] F17 (envelope_fuzz.md): HAVING + ORDER BY (aggregate alias) + LIMIT →
+  internal error `Got record with fewer aggregates than expected. Please report a
+  bug.`; plain HAVING rejects cleanly. Found by the E7 envelope fuzzer.
+- [ ] F16 (envelope_fuzz.md): AVG over a VARCHAR column reports the generic
+  `Failed writing aggregation program. Please report a bug.` instead of the
+  specific `AVG over string columns is not supported.` guard (which fires for
+  temporal AVG). Found by the E7 envelope fuzzer. Functionally a clean reject.
 - [ ] HTTP status: distinguish invalid SQL/syntax from server failures
   instead of returning HTTP 500 for these client errors. Preserve the
   current permanent-error classification until the protocol is changed.

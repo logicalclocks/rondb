@@ -4288,6 +4288,9 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .fs_fuzz spec --seed S --count N     Spec-level fuzzer: seeded feature-view specs through the emitter gates, L1 on both
                                          engines (--vectors adds L2; --direct-collect runs the S6b form; --shrink; --dump-dir P;
                                          --json P; --ledger P --allow-known; --max-rows 10000; --db test --sf 0.01 --threads 4)
+    .fs_fuzz envelope --seed S --count N Envelope-level fuzzer: RonSQL statements beyond the Hopsworks shapes (CTE per FG,
+                                         LEFT chains, IN lists, filters, HAVING/ORDER BY, probes) classified against the
+                                         expectation table; --include-hazards runs the discovery-log hazards; --only p1,p2
     .fs_fuzz show --seed S --index I     Print one generated case and its bound statements without running it
     .fs_fuzz replay --file results.json  Re-run the cases of a previous run (after an engine fix)
 
