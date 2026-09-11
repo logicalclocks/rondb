@@ -39,6 +39,22 @@ resolved limit (see §5–6).  The `--include-hazards` run remains optional
   `REJECT-UNEXPECTED` (a new table row or an engine finding).
 - Hazards are not shrunk and never run by default; a `PASS(hazard)`
   is the signal to flip the discovery-log row to FIXED.
+- **Stale-binary root cause and fix (`tools/rondb-cli/CMakeLists.txt`).**
+  Three E7 runs went against a binary older than the source: MTR runs
+  `runtime_output_directory/rondb`, and that copy was produced by an
+  `add_custom_command(OUTPUT … DEPENDS <file(GLOB … CONFIGURE_DEPENDS)>)`
+  plus a POST_BUILD `copy_if_different`.  Make judged staleness from a
+  source list snapshotted at configure time: a Go file added after
+  configuration was only noticed when `cmake_check_build_system` re-ran
+  the glob (top-level make targets only), and the copy fired only when
+  make thought the target was out of date.  Now `rondb-cli` is an
+  always-run `add_custom_target` whose commands are `go build` (compilation
+  is cached; an unchanged build only relinks from cached archives, a few
+  seconds, and yields byte-identical output), `make_directory`, and
+  `copy_if_different` into `runtime_output_directory`.  Every `make` / `make rondb-cli` therefore
+  yields a binary that matches the tree, and the file MTR runs is the one
+  just built; `copy_if_different` keeps its timestamp stable when nothing
+  changed.
 
 ## 3. Verification (user-run)
 
