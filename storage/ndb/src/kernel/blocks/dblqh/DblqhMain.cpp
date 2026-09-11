@@ -22633,6 +22633,24 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
     CLEAR_ERROR_INSERT_VALUE;
     return;
   }
+  if (ERROR_INSERTED(5142) && refToNode(req.senderRef) != getOwnNodeId()) {
+    jam();
+    /* Test hook (NF-4): the batch's rows went out; swallow the CONF of
+     * every REMOTE requester while set, so a DBSPJ worker on another
+     * node holds this node's rows without a reply until this node is
+     * killed. Local requesters are answered: the kill needs a survivor
+     * with a slot to retire. The first swallow emits the event the test
+     * waits for (extra = test iteration, top bit = event sent). */
+#ifdef ERROR_INSERT
+    constexpr Uint32 eventSent = 0x80000000;
+    if ((c_error_insert_extra & eventSent) == 0) {
+      infoEvent("[CTE_NF4_CONF_HELD node=%u iteration=%u]",
+                getOwnNodeId(), c_error_insert_extra);
+      c_error_insert_extra |= eventSent;
+    }
+#endif
+    return;
+  }
   sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
 }

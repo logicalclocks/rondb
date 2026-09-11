@@ -73,7 +73,13 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       "[CTE_NF3_LOOKUP_HELD node=<node> iteration=<extra>]" (once per
       instance; extra is the test iteration, its top bit marks the event
       as sent). NF-3 waits for this event before killing the peer.
-Next DBLQH 5142
+5142: In cteScanEmitResults, after a batch's rows went out, swallow the
+      CTE_SCAN_CONF of every REMOTE requester while set (local requesters
+      are answered). The first swallow emits InfoEvent
+      "[CTE_NF4_CONF_HELD node=<node> iteration=<extra>]" (extra is the
+      test iteration, its top bit marks the event as sent). NF-4 waits for
+      this event before killing the source node.
+Next DBLQH 5143
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

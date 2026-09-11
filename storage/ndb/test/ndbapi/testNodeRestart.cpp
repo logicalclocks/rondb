@@ -12157,18 +12157,22 @@ static int runCteNfLeakDumps(NdbRestarter &restarter) {
   return NDBT_OK;
 }
 
-/* Run the clean LookupMain query and check it returns every source row
- * (one result row per main scan row). A second attempt after a pause
- * separates a transient post-restart effect from a persistent one. */
-static int runCteNfCheckQuery(Ndb *ndb, const char *when) {
+/* Run the clean query with the case's shape and expected row count.
+ * A second attempt after a pause separates a transient post-restart
+ * effect from a persistent one. */
+static int runCteNfCheckQuery(
+    Ndb *ndb, const char *when,
+    CteQueryUtil::Shape shape = CteQueryUtil::LookupMain,
+    Uint32 expectedRows = CTE_NF_ROWS) {
   for (int attempt = 0; attempt < 2; attempt++) {
     CteQueryUtil::Options clean;
+    clean.shape = shape;
     CteQueryUtil::Result res;
     const int rc = CteQueryUtil::runQuery(ndb, clean, res);
-    if (rc == 0 && res.rows == CTE_NF_ROWS) return NDBT_OK;
+    if (rc == 0 && res.rows == expectedRows) return NDBT_OK;
     g_err << when << ": CTE query attempt " << attempt << " rc=" << rc
           << " failedAt=" << res.failedAt << " ndbError=" << res.ndbError
-          << " rows=" << res.rows << " expected " << CTE_NF_ROWS << endl;
+          << " rows=" << res.rows << " expected " << expectedRows << endl;
     NdbSleep_SecSleep(5);
   }
   return NDBT_FAILED;
@@ -12380,27 +12384,47 @@ static int runCteCloseOwedKiller(NDBT_Context *ctx, NDBT_Step *step) {
  * The query must then fail with a node-failure error, 286 from DBTC /
  * DBLQH or DBSPJ NodeFailure 20016. A TC or API timeout, or a return
  * before the confirmed hold and kill, fails the case.
+ *
+ * The victim is chosen per iteration by the case's picker once the
+ * coordinator is known. A picker that finds no victim on the running
+ * topology (-1) makes the case skip: the iteration's query runs
+ * unarmed and the case ends with NDBT_OK and a [SKIPPED] line.
  */
 struct CteNfHoldCase {
   const char *name;      // NDBT case name
   Uint32 insert;         // error insert armed on the victim, extra = iteration
   const char *eventTag;  // marker the hook emits when it holds a remote request
   const char *hangHint;  // what a query that never completes means
+  CteQueryUtil::Shape shape;  // query shape that exercises the held signal
+  int (*pickVictim)(Ndb *ndb, NdbRestarter &restarter, Uint32 tcNodeId);
 };
 
 struct CteNfHoldArgs {
   NDBT_Context *ctx;
   NdbRestarter *restarter;
+  Ndb *ndb;
   const CteNfHoldCase *hold;
   Uint32 iter;
 };
 
-static bool cteNfHoldBeforeExecute(void *arg, Uint32 tcNodeId) {
-  CteNfHoldArgs *a = (CteNfHoldArgs *)arg;
-  const int victim = cteNfPickVictim(*a->restarter, tcNodeId);
+/* Picker for the peer cases: any data node but the coordinator. */
+static int cteNfPickPeer(Ndb *, NdbRestarter &restarter, Uint32 tcNodeId) {
+  const int victim = cteNfPickVictim(restarter, tcNodeId);
   if (victim < 0) {
     g_err << "No data node other than TC node " << tcNodeId << endl;
-    return false;
+  }
+  return victim;
+}
+
+static bool cteNfHoldBeforeExecute(void *arg, Uint32 tcNodeId) {
+  CteNfHoldArgs *a = (CteNfHoldArgs *)arg;
+  const int victim = a->hold->pickVictim(a->ndb, *a->restarter, tcNodeId);
+  if (victim < 0) {
+    /* Nothing to kill on this topology: let the query run unarmed and
+     * have both steps end the case as skipped. */
+    a->ctx->setProperty("CteNfSkip", a->iter + 1);
+    a->ctx->setProperty("CteNfArmed", a->iter + 1);
+    return true;
   }
   if (!cteNfWaitProperty(a->ctx, "CteNfListening", a->iter + 1, 30)) {
     g_err << "Hold event listener was not ready within 30 s" << endl;
@@ -12426,14 +12450,22 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
     ctx->stopTest();
     return NDBT_OK;
   }
-  if (runCteNfCheckQuery(ndb, "Baseline") != NDBT_OK) {
+  /* LookupMain returns one row per source row; ScanRoot returns one
+   * per populated group. loadTable assigns grp = i % groups. */
+  const Uint32 groups = ctx->getProperty("CteNfGroups", CTE_NF_GROUPS);
+  const Uint32 expectedRows =
+      hold.shape == CteQueryUtil::ScanRoot && groups < CTE_NF_ROWS
+          ? groups
+          : CTE_NF_ROWS;
+  if (runCteNfCheckQuery(ndb, "Baseline", hold.shape, expectedRows) !=
+      NDBT_OK) {
     ctx->stopTest();
     return NDBT_FAILED;
   }
   for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
-    CteNfHoldArgs args = {ctx, &restarter, &hold, iter};
+    CteNfHoldArgs args = {ctx, &restarter, ndb, &hold, iter};
     CteQueryUtil::Options opt;
-    opt.shape = CteQueryUtil::LookupMain;
+    opt.shape = hold.shape;
     opt.beforeExecute = cteNfHoldBeforeExecute;
     opt.arg = &args;
     CteQueryUtil::Result res;
@@ -12445,6 +12477,12 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
       g_err << "Query build/hook failed at " << res.failedAt << endl;
       ctx->stopTest();
       return NDBT_FAILED;
+    }
+    if (ctx->getProperty("CteNfSkip", (Uint32)0) == iter + 1) {
+      g_err << "[SKIPPED] " << hold.name
+            << ": no victim on this topology (see above)" << endl;
+      ctx->stopTest();
+      return NDBT_OK;
     }
     if (ctx->getProperty("CteNfHeld", (Uint32)0) != iter + 1 ||
         ctx->getProperty("CteNfKillIssued", (Uint32)0) != iter + 1) {
@@ -12475,7 +12513,8 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
     if (ctx->isTestStopped()) return NDBT_FAILED;
   }
   /* I5 */
-  if (runCteNfCheckQuery(ndb, "Post-recovery") != NDBT_OK) {
+  if (runCteNfCheckQuery(ndb, "Post-recovery", hold.shape, expectedRows) !=
+      NDBT_OK) {
     ctx->stopTest();
     return NDBT_FAILED;
   }
@@ -12505,6 +12544,10 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     ctx->setProperty("CteNfListening", iter + 1);
     ctx->getPropertyWait("CteNfArmed", iter + 1);
     if (ctx->isTestStopped()) return NDBT_OK;
+    if (ctx->getProperty("CteNfSkip", (Uint32)0) == iter + 1) {
+      /* The query step reports the skip and ends the case. */
+      return NDBT_OK;
+    }
     int victim = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
     BaseString expected;
     expected.assfmt("[%s node=%u iteration=%u]", hold.eventTag,
@@ -12594,7 +12637,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
 static const CteNfHoldCase CTE_NF2_HOLD = {
     "CtePeerDiesDuringRedistribute", 5140, "CTE_NF2_CONF_HELD",
     "the survivors' CTE states never answered COMPLETE (regression of "
-    "55e99285ebb)"};
+    "55e99285ebb)",
+    CteQueryUtil::LookupMain, cteNfPickPeer};
 
 static int runCtePeerRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF2_HOLD);
@@ -12621,7 +12665,8 @@ static int runCtePeerRedistKiller(NDBT_Context *ctx, NDBT_Step *step) {
 static const CteNfHoldCase CTE_NF3_HOLD = {
     "CteLookupTargetDies", 5141, "CTE_NF3_LOOKUP_HELD",
     "DBSPJ never drained the probes outstanding to the failed node "
-    "(regression of 6c7fa88dcaa)"};
+    "(regression of 6c7fa88dcaa)",
+    CteQueryUtil::LookupMain, cteNfPickPeer};
 
 static int runCteLookupTargetQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF3_HOLD);
@@ -12629,6 +12674,88 @@ static int runCteLookupTargetQuery(NDBT_Context *ctx, NDBT_Step *step) {
 
 static int runCteLookupTargetKiller(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldKiller(ctx, step, CTE_NF3_HOLD);
+}
+
+/*
+ * NF-4 CteScanSourceDiesMidBatch (commit f718b5be5d6).
+ *
+ * With a scanCte main query (ScanRoot), the DBSPJ worker for root
+ * fragment K of the registered cte_nf_virtual table scans the CTE
+ * partition of the K-th owner (the data nodes in ascending id order)
+ * with CTE_SCAN_REQ. The worker runs on a replica of that fragment.
+ * Error insert 5142 on the
+ * victim lets each batch's rows go out but swallows the CTE_SCAN_CONF
+ * of every remote requester, so a worker on another node holds the
+ * rows of a source it will never hear from again. Killing the victim
+ * there must make cte_scan_execNODE_FAILREP retire that source's slot
+ * and let the request complete with a node-failure error; the iterator
+ * records the survivors held for the victim's own scans are returned
+ * by handleCteScanNodeFailure (2362 clean). Before the fix the slot's
+ * obligation was never dropped and the batch hung.
+ *
+ * Choose an owner outside the routing fragment's entire replica set,
+ * excluding the coordinator. Its requester then survives regardless of
+ * dynamic primary selection or read-backup routing. The 2-node suite
+ * has no such owner; use ndb_cte_ng2r2 and skip if its placement offers
+ * no qualifying owner either.
+ */
+static int cteNfPickRemoteScanSource(Ndb *ndb, NdbRestarter &restarter,
+                                     Uint32 tcNodeId) {
+  /* ScanRoot uses this registered table for fragment routing; the
+   * source-table fallback applies only to synthetic virtual tables. */
+  const NdbDictionary::Table *tab =
+      ndb->getDictionary()->getTable(CteQueryUtil::VIRT_TABLE);
+  if (tab == nullptr) {
+    g_err << "getTable(" << CteQueryUtil::VIRT_TABLE << ") failed" << endl;
+    return -1;
+  }
+  /* Owners: the data nodes in ascending id order (DBTC's SETUP set). */
+  Uint32 owners[ABS_MAX_NDB_NODES];
+  Uint32 numOwners = 0;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const Uint32 n = (Uint32)restarter.getDbNodeId(i);
+    Uint32 pos = numOwners;
+    while (pos > 0 && owners[pos - 1] > n) {
+      owners[pos] = owners[pos - 1];
+      pos--;
+    }
+    owners[pos] = n;
+    numOwners++;
+  }
+  const Uint32 frags = tab->getFragmentCount();
+  for (Uint32 k = 0; k < numOwners && k < frags; k++) {
+    if (owners[k] == tcNodeId) continue;
+    Uint32 replicas[4];
+    const Uint32 numReplicas =
+        tab->getFragmentNodes(k, replicas, NDB_ARRAY_SIZE(replicas));
+    if (numReplicas == 0 || numReplicas > NDB_ARRAY_SIZE(replicas)) continue;
+    bool ownerIsReplica = false;
+    for (Uint32 r = 0; r < numReplicas; r++) {
+      if (replicas[r] == owners[k]) ownerIsReplica = true;
+    }
+    if (ownerIsReplica) continue;
+    g_err << "Remote CTE scan: owner node " << owners[k]
+          << " is outside the replica set of root fragment " << k
+          << " of " << CteQueryUtil::VIRT_TABLE << endl;
+    return (int)owners[k];
+  }
+  g_err << "No CTE owner outside its routing fragment's replica set "
+        << "and distinct from the coordinator on this topology" << endl;
+  return -1;
+}
+
+static const CteNfHoldCase CTE_NF4_HOLD = {
+    "CteScanSourceDiesMidBatch", 5142, "CTE_NF4_CONF_HELD",
+    "DBSPJ never retired the CTE scan slot of the failed source "
+    "(regression of f718b5be5d6)",
+    CteQueryUtil::ScanRoot, cteNfPickRemoteScanSource};
+
+static int runCteScanSourceQuery(NDBT_Context *ctx, NDBT_Step *step) {
+  return runCteNfHoldQuery(ctx, step, CTE_NF4_HOLD);
+}
+
+static int runCteScanSourceKiller(NDBT_Context *ctx, NDBT_Step *step) {
+  return runCteNfHoldKiller(ctx, step, CTE_NF4_HOLD);
 }
 
 NDBT_TESTSUITE(testNodeRestart);
@@ -13543,6 +13670,18 @@ TESTCASE("CteLookupTargetDies",
   INITIALIZER(runCteNfCreateTables);
   STEP(runCteLookupTargetQuery);
   STEP(runCteLookupTargetKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteScanSourceDiesMidBatch",
+         "RONDB-1120 NF-4: error insert 5142 lets a CTE scan source send a "
+         "batch's rows but swallows the CONF to remote DBSPJ workers; "
+         "killing the source must retire its slot in the workers "
+         "(f718b5be5d6), fail the query with a node-failure error and "
+         "leave the iterator pools clean. Skips when no owner outside "
+         "its routing fragment's replica set can be selected") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteScanSourceQuery);
+  STEP(runCteScanSourceKiller);
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",
