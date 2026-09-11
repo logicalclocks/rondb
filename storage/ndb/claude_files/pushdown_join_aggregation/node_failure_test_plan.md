@@ -19,7 +19,7 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 
 | Item | Count | Where |
 |---|---|---|
-| New error inserts | 15 (DBLQH 5128-5139, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
+| New error inserts | 16 (DBLQH 5128-5140, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
 | New DUMP codes (leak checks) | 4 (LQH 2362-2363, TC 2560, SPJ new handler + 1 code) | kernel blocks |
 | NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
@@ -205,6 +205,7 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5137 | Proxy `continueJoinAggTeardown` | `JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH` = 1 while set | long teardown chain overlapping NF reclaim / duplicate release |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | hold EVERY SETUP_REQ until cleared (not 20 ms) | all consumers park; sweeper (10 ms) fires; node kills while parked |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | drop the SETUP_REQ once (no CONF, no REF) | placeholder never filled: sweeper REF path for every parked GSN |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold every inbound redistribute request, 200 ms at a time, until cleared | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2) |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | send COMPLETE_REQ with aggStateKey RNIL for one node even if the key is known | identity-addressed COMPLETE parks or resolves |
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | drop ONE SETUP_CONF for good (not 20 ms) | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
@@ -248,7 +249,7 @@ node other than the TC master when possible, and skips otherwise.
 | ID | Case name | Window (insert) | Victim | Primary invariant beyond I1-I5 |
 |---|---|---|---|---|
 | NF-1 | `CteCloseOwedByFailedNode` | 17533 on W: DBTC's close swallowed by every DBSPJ worker there | W | DBTC ScanRecord leaves CLOSING_SCAN; API receives EndOfData; `TcDumpJoinAggRecords` clean (`c7faa193ac2`) |
-| NF-2 | `CtePeerDiesDuringRedistribute` | 5133 on P: sender paused on CONF | P | survivors' CTE states go ERROR / NODE_FAIL_ABORT via identity sweep; COMPLETE_REF reaches DBTC exactly once (`55e99285ebb`) |
+| NF-2 | `CtePeerDiesDuringRedistribute` | 5140 on P: every inbound redistribute held, the senders paused on its CONF | P | survivors' CTE states go ERROR / NODE_FAIL_ABORT via identity sweep; COMPLETE_REF reaches DBTC exactly once (`55e99285ebb`) |
 | NF-3 | `CteLookupTargetDies` | 5131 on P: lookup reply held | P | DBSPJ drains `m_nodeOutstanding[P]`; request completes with 286 (`6c7fa88dcaa`) |
 | NF-4 | `CteScanSourceDiesMidBatch` | 5128 on P: rows sent, CONF dropped | P | slot retired by `cte_scan_execNODE_FAILREP`; request completes; 2362 clean on survivors (`f718b5be5d6`) |
 | NF-5 | `CteRequesterDiesPausedScan` | small batch size so the scan pauses between batches | R | iterator records for R released by `handleCteScanNodeFailure`; 2362 clean (`c3ce0732890`) |
@@ -259,6 +260,14 @@ node other than the TC master when possible, and skips otherwise.
 | NF-10 | `CoordinatorDiesReleaseInFlight` | 8312 on C | C (crash insert) | no double teardown on survivors (`b30c78c0be0`); 2361 clean |
 | NF-11 | `CteRequesterDiesParked` | 5138 on P, kill R while its consumers are parked | R | sweeper REFs go to a dead node harmlessly; placeholders cleaned; 2363 clean |
 | NF-12 | `CteCoordinatorDiesParked` | 5138 on P, kill C | C | parked NULL_ROW / COMPLETE replay hits the coordinator check and REFs; 2363 clean (`5efa38683b1`) |
+
+NF-2 uses one distinct group per source row to cross the 64 KiB
+redistribution flow-control threshold. Its killer subscribes before the
+query is armed and waits for the victim's `CTE_NF2_CONF_HELD` InfoEvent
+matching its node and iteration, emitted only for a held remote
+`RI_NEED_CONF` request. It then
+kills the victim immediately. Only errors 286 and 20016 pass; TC and API
+timeouts fail the test. A missing hold event fails without issuing the kill.
 
 Each case runs 3 iterations to shake timing. Registration in
 `daily-basic--01-tests.txt` next to the existing `JoinAggNodeRestart`
@@ -310,6 +319,8 @@ SCAN_TABREF and result rows):
 | TD-4 | RELEASE with wrong senderRef (another SignalSender) | ignored + CONF |
 | TD-5 | RELEASE with zero transid and correct requestId (stale-reclaim form) | accepted |
 | TD-6 | 5136 (proxy re-sends to itself) | exactly one teardown; 2361 clean |
+| TD-7 | SETUP_REQ (full length) whose `setupNodes` lists a node id that is not a connected data node | JOIN_AGG_SETUP_REF 286, no state seized; 2361 unchanged (`cte_owner_list.md`) |
+| TD-8 | SETUP_REQ of `SignalLength_v1` (13 words) | accepted; owner list = the receiver's connected data nodes (block-test fallback) |
 
 ### 5.4 Identity validation on keyed peer signals (`testCteProtocol`, hand-built signals)
 
@@ -319,8 +330,6 @@ keys from SETUP_CONF, then send forged signals to the owner instance:
 | ID | Signal | Forgery | Expected |
 |---|---|---|---|
 | ID-1 | REDISTRIBUTE_REQ | wrong identWord, valid key | dropped, REF(1251) to the test; the real query still completes |
-| TD-7 | SETUP_REQ (full length) whose `setupNodes` lists a node id that is not a connected data node | JOIN_AGG_SETUP_REF 286, no state seized; 2361 unchanged (`cte_owner_list.md`) |
-| TD-8 | SETUP_REQ of `SignalLength_v1` (13 words) | accepted; owner list = the receiver's connected data nodes (block-test fallback) |
 | ID-2 | REDISTRIBUTE_CONF | wrong transid | ignored; sender (real) unaffected |
 | ID-3 | REDISTRIBUTE_REF | wrong identWord | ignored; no abort of the real state |
 | ID-4 | FINAL_REP | wrong identWord | ignored; owner does not finalize early |
@@ -393,6 +402,7 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | File | Phase | What it does |
 |---|---|---|
 | `cte_nodefail_close.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCloseOwedByFailedNode T1` (NF-1) - **done** |
+| `cte_nodefail_peer_redist.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CtePeerDiesDuringRedistribute T1` (NF-2) - **done** |
 | `cte_nodefail_<case>.test` (suite `ndb_cte`) | 1-3 | one wrapper per further NDBT case (NF-2 .. NF-12, PK-8), same pattern |
 | `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |

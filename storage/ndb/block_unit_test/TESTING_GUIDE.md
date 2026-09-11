@@ -245,6 +245,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE SETUP_REQ dropped (no reply) | yes |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute held, 200 ms at a time, until cleared | no |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |

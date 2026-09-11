@@ -1,9 +1,9 @@
 "[shutting down mysqld 1]"
 "[shutting down mysqld 2]"
-# NF-1: kill the node owing DBTC the last close reply (error insert 17533)
+# NF-2: kill a CTE peer holding every redistribute request (error insert 5140)
 "[dropping NDBT test tables]"
 "[starting mysqld 1]"
 # restart
 "[starting mysqld 2]"
 # restart
-# CteCloseOwedByFailedNode passed
+# CtePeerDiesDuringRedistribute passed

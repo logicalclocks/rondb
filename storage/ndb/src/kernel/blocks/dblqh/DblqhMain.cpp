@@ -23403,6 +23403,32 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   }
   ndbrequire(signal->getLength() >= JoinAggRedistributeReq::SignalLength);
 
+  if (ERROR_INSERTED(5140)) {
+    jam();
+    /* Test hook (NF-2): hold EVERY inbound redistribute request, 200 ms
+     * at a time, until the insert is cleared - the re-delivered copy is
+     * held again. Every sender stays paused in CTE_REDISTRIBUTING
+     * waiting for this node's CONF for as long as the test needs to
+     * kill this node. Logged once per request, on first arrival. */
+    if (signal->getSendersBlockRef() != reference()) {
+      g_eventLogger->info(
+          "DBLQH %u: error insert 5140 holds a redistribute request from "
+          "node %u", instance(), refToNode(signal->getSendersBlockRef()));
+      const JoinAggRedistributeReq *req =
+          reinterpret_cast<const JoinAggRedistributeReq *>(signal->getDataPtr());
+      if ((req->requestInfo & JoinAggRedistributeReq::RI_NEED_CONF) != 0 &&
+          refToNode(req->senderRef) != getOwnNodeId()) {
+        /* Observable handshake: a remote owner is paused on our CONF.
+         * The extra error-insert value identifies the test iteration. */
+        infoEvent("[CTE_NF2_CONF_HELD node=%u iteration=%u]",
+                  getOwnNodeId(), ERROR_INSERT_EXTRA);
+      }
+    }
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                        200, signal->getLength(), &handle);
+    return;
+  }
   if (ERROR_INSERTED(5133) && signal->getSendersBlockRef() != reference()) {
     jam();
     /* Test hook: hold every inbound redistribute request 200 ms while

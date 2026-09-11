@@ -63,7 +63,12 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5137: Teardown releases one group per round while set (DblqhProxy)
 5138: Hold every JOIN_AGG_SETUP_REQ until cleared (DblqhProxy)
 5139: Drop ONE JOIN_AGG_SETUP_REQ, no reply (DblqhProxy, cleared after use)
-Next DBLQH 5140
+5140: Hold EVERY inbound JOIN_AGG_REDISTRIBUTE_REQ, 200 ms at a time, until
+      cleared. A remote RI_NEED_CONF request emits InfoEvent
+      "[CTE_NF2_CONF_HELD node=<node> iteration=<extra>]" on first arrival;
+      extra is the test iteration.
+      NF-2 waits for this event before killing the peer.
+Next DBLQH 5141
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

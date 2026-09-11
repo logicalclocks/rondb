@@ -31,6 +31,7 @@
 #include <ndb_rand.h>
 #include <Bitmask.hpp>
 #include <HugoTransactions.hpp>
+#include <InputStream.hpp>
 #include <NDBT.hpp>
 #include <NDBT_Test.hpp>
 #include <NdbConfig.hpp>
@@ -44,6 +45,7 @@
 #include <cstring>
 #include <NdbAggregator.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
+#include <signaldata/DbspjErr.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/SchemaTrans.hpp>
 #include "../../src/ndbapi/NdbInfo.hpp"
@@ -51,6 +53,7 @@
 #include "../../src/ndbapi/NdbQueryOperation.hpp"
 #include <CteQueryUtil.hpp>
 #include "../../src/ndbapi/NdbDictionaryImpl.hpp"
+#include "mgmapi_internal.h"
 #include "my_sys.h"
 #include "mysql/strings/m_ctype.h"
 #include "util/ndb_barrier.h"
@@ -12117,7 +12120,8 @@ static int runCteNfCreateTables(NDBT_Context *ctx, NDBT_Step *step) {
           << ndb->getDictionary()->getNdbError().message << endl;
     return NDBT_FAILED;
   }
-  if (CteQueryUtil::loadTable(ndb, CTE_NF_ROWS, CTE_NF_GROUPS) != 0) {
+  const Uint32 groups = ctx->getProperty("CteNfGroups", CTE_NF_GROUPS);
+  if (CteQueryUtil::loadTable(ndb, CTE_NF_ROWS, groups) != 0) {
     g_err << "CteQueryUtil::loadTable failed" << endl;
     return NDBT_FAILED;
   }
@@ -12182,6 +12186,17 @@ static bool cteNfWaitProperty(NDBT_Context *ctx, const char *name,
   return false;
 }
 
+/* The victim of a peer / worker case: a data node other than the
+ * transaction coordinator, so the coordinator's own state is among the
+ * survivors.  Returns -1 on a single-node cluster. */
+static int cteNfPickVictim(NdbRestarter &restarter, Uint32 tcNodeId) {
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const int n = restarter.getDbNodeId(i);
+    if ((Uint32)n != tcNodeId) return n;
+  }
+  return -1;
+}
+
 /*
  * NF-1 CteCloseOwedByFailedNode (commit c7faa193ac2).
  *
@@ -12211,14 +12226,7 @@ static bool cteCloseOwedBeforeClose(void *arg, Uint32 tcNodeId) {
   /* Victim: a data node other than the transaction coordinator, so the
    * owed reply belongs to a worker on the killed node rather than to
    * the coordinator itself (a different scenario). */
-  int victim = -1;
-  for (int i = 0; i < a->restarter->getNumDbNodes(); i++) {
-    const int n = a->restarter->getDbNodeId(i);
-    if ((Uint32)n != tcNodeId) {
-      victim = n;
-      break;
-    }
-  }
+  const int victim = cteNfPickVictim(*a->restarter, tcNodeId);
   if (victim < 0) {
     g_err << "No data node other than TC node " << tcNodeId << endl;
     return false;
@@ -12342,6 +12350,212 @@ static int runCteCloseOwedKiller(NDBT_Context *ctx, NDBT_Step *step) {
       g_err << "The API close did not complete within 120 s of the node "
             << "failure: DBTC left the scan in CLOSING_SCAN "
             << "(regression of c7faa193ac2)" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (restarter.startNodes(&victim, 1) != 0 ||
+        restarter.waitClusterStarted(180) != 0) {
+      g_err << "Victim " << victim << " did not rejoin" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I4 */
+    if (runCteNfLeakDumps(restarter) != NDBT_OK) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("CteNfRestarted", iter + 1);
+  }
+  return NDBT_OK;
+}
+
+/*
+ * NF-2 CtePeerDiesDuringRedistribute (commit 55e99285ebb).
+ *
+ * Error insert 5140 on the victim holds every inbound
+ * JOIN_AGG_REDISTRIBUTE_REQ, so once the CTE body scans are done every
+ * other node's CTE state sits in CTE_REDISTRIBUTING waiting for the
+ * victim's flow-control CONF and the query cannot reach CTE_READY.
+ * Killing the victim there must fail the survivors' states through the
+ * identity-table sweep (ERROR / NODE_FAIL_ABORT), answer DBTC's
+ * COMPLETE_REQ exactly once with a REF, and so fail the query with an
+ * error at the API. Before the fix DBTC never got its COMPLETE reply
+ * and the query hung; a duplicate REF was the other defect.
+ *
+ * NF-2 uses distinct groups to cross the 64 KiB redistribution
+ * flow-control threshold. The killer subscribes before the query is
+ * armed, then waits for the victim's CTE_NF2_CONF_HELD event for this
+ * iteration. The hook emits it only for a held RI_NEED_CONF request:
+ * at least one surviving owner is paused on the victim's CONF.
+ * Kill immediately on that event, before DBTC's timeout can end the
+ * query. A timeout or any error other than the expected node-failure
+ * errors fails the test, even if it arrives after the kill was issued.
+ */
+
+struct CtePeerRedistArgs {
+  NDBT_Context *ctx;
+  NdbRestarter *restarter;
+  Uint32 iter;
+};
+
+static bool ctePeerRedistBeforeExecute(void *arg, Uint32 tcNodeId) {
+  CtePeerRedistArgs *a = (CtePeerRedistArgs *)arg;
+  const int victim = cteNfPickVictim(*a->restarter, tcNodeId);
+  if (victim < 0) {
+    g_err << "No data node other than TC node " << tcNodeId << endl;
+    return false;
+  }
+  if (!cteNfWaitProperty(a->ctx, "CteNfListening", a->iter + 1, 30)) {
+    g_err << "Redistribution event listener was not ready within 30 s" << endl;
+    return false;
+  }
+  if (a->restarter->insertError2InNode(victim, 5140, a->iter + 1) != 0) {
+    g_err << "insertError2InNode(" << victim << ", 5140) failed" << endl;
+    return false;
+  }
+  a->ctx->setProperty("CteNfVictim", (Uint32)victim);
+  a->ctx->setProperty("CteNfArmed", a->iter + 1);
+  return true;
+}
+
+static int runCtePeerRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] CtePeerDiesDuringRedistribute needs >= 2 data nodes"
+          << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+  if (runCteNfCheckQuery(ndb, "Baseline") != NDBT_OK) {
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    CtePeerRedistArgs args = {ctx, &restarter, iter};
+    CteQueryUtil::Options opt;
+    opt.shape = CteQueryUtil::LookupMain;
+    opt.beforeExecute = ctePeerRedistBeforeExecute;
+    opt.arg = &args;
+    CteQueryUtil::Result res;
+    g_err << "=== CtePeerDiesDuringRedistribute iteration " << iter << " ==="
+          << endl;
+    /* Blocks in execute() / nextResult() until the survivors' COMPLETE_REF
+     * lets DBTC fail the query; the killer step provides the failure. */
+    const int rc = CteQueryUtil::runQuery(ndb, opt, res);
+    if (rc == -2) {
+      g_err << "Query build/hook failed at " << res.failedAt << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (ctx->getProperty("CteNfRedistHeld", (Uint32)0) != iter + 1 ||
+        ctx->getProperty("CteNfKillIssued", (Uint32)0) != iter + 1) {
+      g_err << "The query returned before the confirmed hold and kill, after "
+            << res.queryMillis << " ms (rc=" << rc
+            << ", ndbError=" << res.ndbError << ", rows=" << res.rows
+            << "): either error insert 5140 did not hold the "
+            << "redistribution or the query failed on its own" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I1: accept only node-failure reports from DBTC/DBLQH (286) or
+     * DBSPJ. In particular, TC timeouts and API receive error 4008 must
+     * not make a hung COMPLETE protocol pass. */
+    if (rc != -1 ||
+        (res.ndbError != 286 && res.ndbError != DbspjErr::NodeFailure)) {
+      g_err << "Expected a node-failure error after the peer failure "
+            << "(rc=" << rc << ", ndbError=" << res.ndbError
+            << ", rows=" << res.rows << ")" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    g_err << "Query failed as required after the peer failure: error "
+          << res.ndbError << " at " << res.failedAt << " after "
+          << res.queryMillis << " ms" << endl;
+    ctx->setProperty("CteNfQueryDone", iter + 1);
+    ctx->getPropertyWait("CteNfRestarted", iter + 1);
+    if (ctx->isTestStopped()) return NDBT_FAILED;
+  }
+  /* I5 */
+  if (runCteNfCheckQuery(ndb, "Post-recovery") != NDBT_OK) {
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  ctx->stopTest();
+  return NDBT_OK;
+}
+
+static int runCtePeerRedistKiller(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) return NDBT_OK;
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    struct EventSocketGuard {
+      NdbSocket socket;
+      ~EventSocketGuard() {
+        if (socket.is_valid()) socket.close();
+      }
+    } guard;
+    int filter[] = {2, NDB_MGM_EVENT_CATEGORY_INFO, 0};
+    guard.socket =
+        ndb_mgm_listen_event_internal(restarter.handle, filter, 0, true);
+    if (!guard.socket.is_valid()) {
+      g_err << "Failed to subscribe to redistribution hold events" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("CteNfListening", iter + 1);
+    ctx->getPropertyWait("CteNfArmed", iter + 1);
+    if (ctx->isTestStopped()) return NDBT_OK;
+    int victim = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+    BaseString expected;
+    expected.assfmt("[CTE_NF2_CONF_HELD node=%u iteration=%u]",
+                    (Uint32)victim, iter + 1);
+    SocketInputStream input(guard.socket, 100);
+    const Uint64 start = NdbTick_CurrentMillisecond();
+    bool held = false;
+    char line[1024] = {};
+    while (!ctx->isTestStopped() &&
+           NdbTick_CurrentMillisecond() - start < 30000) {
+      input.reset_timeout();
+      if (input.gets(line, sizeof(line)) == nullptr) {
+        g_err << "Failed to read redistribution hold events" << endl;
+        ctx->stopTest();
+        return NDBT_FAILED;
+      }
+      /* Match the complete marker, including node and iteration, in
+       * the management event text (the same interface testLcp uses). */
+      if (strstr(line, expected.c_str()) != nullptr) {
+        held = true;
+        break;
+      }
+    }
+    if (!held || ctx->isTestStopped()) {
+      g_err << "No confirmed RI_NEED_CONF hold on victim " << victim
+            << " for iteration " << iter << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("CteNfRedistHeld", iter + 1);
+    ctx->setProperty("CteNfKillIssued", iter + 1);
+    g_err << "Killing peer node " << victim
+          << " while the survivors wait for its redistribute CONF" << endl;
+    if (restarter.restartOneDbNode(victim, /* initial */ false,
+                                   /* nostart */ true,
+                                   /* abort */ true) != 0) {
+      g_err << "restartOneDbNode(" << victim << ") failed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (restarter.waitNodesNoStart(&victim, 1) != 0) {
+      g_err << "waitNodesNoStart(" << victim << ") failed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I1: DBTC must get its COMPLETE reply and fail the query. */
+    if (!cteNfWaitProperty(ctx, "CteNfQueryDone", iter + 1, 120)) {
+      g_err << "The query did not complete within 120 s of the peer "
+            << "failure: the survivors' CTE states never answered "
+            << "COMPLETE (regression of 55e99285ebb)" << endl;
       ctx->stopTest();
       return NDBT_FAILED;
     }
@@ -13249,6 +13463,19 @@ TESTCASE("CteCloseOwedByFailedNode",
   INITIALIZER(runCteNfCreateTables);
   STEP(runCteCloseOwedQuery);
   STEP(runCteCloseOwedKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CtePeerDiesDuringRedistribute",
+         "RONDB-1120 NF-2: error insert 5140 holds every redistribute "
+         "request at a CTE peer so the other nodes wait for its CONF; "
+         "killing the peer must fail the survivors' states through the "
+         "identity sweep, answer DBTC's COMPLETE exactly once "
+         "(55e99285ebb) and fail the query, leaving no record behind") {
+  /* Enough distinct groups to require a flow-control CONF. */
+  TC_PROPERTY("CteNfGroups", CTE_NF_ROWS);
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCtePeerRedistQuery);
+  STEP(runCtePeerRedistKiller);
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",

@@ -37,9 +37,11 @@
  *   ScanRoot    CTE0 as above; main = scanCte(CTE0) -> rows to the API.
  *               Expect `groups` rows.
  *
- * The runner can stop after the first delivered row and close the
- * query, calling a hook first so a test can arm an error insert and
- * publish the transaction coordinator before the close goes out.  It
+ * The runner calls an optional hook once the transaction coordinator
+ * is known and before execute(), so a test can arm an error insert on
+ * another node for the whole query.  It can also stop after the first
+ * delivered row and close the query, calling a second hook right
+ * before the close goes out (the CLOSING_SCAN cases).  It
  * reports how long the close took, and can run the main scan with a
  * small batch so that every fragment is still mid-scan (and so has a
  * close to answer) when the first row reaches the API.
@@ -67,23 +69,28 @@ struct Options {
   /* Called right before the close when closeAfterFirstBatch is set.
    * Return false to report a failure instead of closing. */
   bool (*beforeClose)(void *arg, Uint32 tcNodeId);
+  /* Called after startTransaction() and before execute(), with the
+   * transaction coordinator's node id.  Return false to fail the run. */
+  bool (*beforeExecute)(void *arg, Uint32 tcNodeId);
   void *arg;
   /* Batch rows for the main scan of LookupMain (0 = API default).  Must
    * be at least the source table's fragment count. */
   Uint32 mainBatchRows;
   Options()
       : shape(LookupMain), closeAfterFirstBatch(false), beforeClose(nullptr),
-        arg(nullptr), mainBatchRows(0) {}
+        beforeExecute(nullptr), arg(nullptr), mainBatchRows(0) {}
 };
 
 struct Result {
   Uint32 tcNodeId;   // transaction coordinator after execute()
   Uint64 rows;       // rows fetched before completion or close
+  Uint64 queryMillis;  // wall time from execute() to the end of fetching
   Uint64 closeMillis;  // wall time spent in NdbQuery::close()
   int ndbError;      // NDB error code on a runtime failure
   const char *failedAt;
   Result()
-      : tcNodeId(0), rows(0), closeMillis(0), ndbError(0), failedAt("") {}
+      : tcNodeId(0), rows(0), queryMillis(0), closeMillis(0), ndbError(0),
+        failedAt("") {}
 };
 
 static inline void dropTables(Ndb *ndb) {
@@ -286,16 +293,28 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     }
   }
 
+  /* The coordinator is chosen at startTransaction(); publish it before
+   * the query goes out so a hook can pick a victim among the others. */
+  res.tcNodeId = trans->getConnectedNodeId();
+  if (opt.beforeExecute != nullptr &&
+      !opt.beforeExecute(opt.arg, res.tcNodeId)) {
+    res.failedAt = "beforeExecute";
+    trans->close();
+    queryDef->destroy();
+    return -2;
+  }
+  const NDB_TICKS execStart = NdbTick_getCurrentTicks();
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
     res.failedAt = "execute";
     res.ndbError = trans->getNdbError().code != 0
                        ? trans->getNdbError().code
                        : query->getNdbError().code;
+    res.queryMillis =
+        NdbTick_Elapsed(execStart, NdbTick_getCurrentTicks()).milliSec();
     trans->close();
     queryDef->destroy();
     return -1;
   }
-  res.tcNodeId = trans->getConnectedNodeId();
 
   int rc = 0;
   NdbQuery::NextResultOutcome outcome;
@@ -303,6 +322,8 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     res.rows++;
     if (opt.closeAfterFirstBatch) break;
   }
+  res.queryMillis =
+      NdbTick_Elapsed(execStart, NdbTick_getCurrentTicks()).milliSec();
   if (opt.closeAfterFirstBatch && outcome == NdbQuery::NextResult_gotRow) {
     if (opt.beforeClose != nullptr && !opt.beforeClose(opt.arg, res.tcNodeId)) {
       res.failedAt = "beforeClose";
