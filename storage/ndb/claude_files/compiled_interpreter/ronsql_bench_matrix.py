@@ -371,6 +371,7 @@ class Driver:
         self.results = []
         self.case_times = []
         self.n_cache = {}
+        self.cluster_down = None   # message once the cluster stopped answering (a mysqld crash ends the matrix)
         os.makedirs(os.path.join(a.out, 'cases'), exist_ok=True)
 
     # -- rondb-cli --------------------------------------------------------
@@ -417,12 +418,21 @@ class Driver:
         sel = self.a.queries
         if sel in ('all', ''):
             return pairs
-        cats = {'fs': lambda n: n.startswith('fs_'),
+        cats = {'fs': lambda n: n.startswith('fs_') and not n.startswith('fs_hw_'),
+                'fs_hw': lambda n: n.startswith('fs_hw_'),
                 'offline_fs': lambda n: n.startswith('offline_fs_'),
                 'tpch_cte': lambda n: n.startswith('tpch_q') and not n.endswith('_official'),
                 'tpch_official': lambda n: n.startswith('tpch_q') and n in [p['sql'] for p in pairs if p['mysql_only']]}
         if sel in cats:
-            return [p for p in pairs if cats[sel](p['name'])]
+            chosen = [p for p in pairs if cats[sel](p['name'])]
+            if sel == 'fs_hw' and not self.fs_hash_twin():
+                # transactions_hash_1 is loaded only with --hash-twin (default at sf <= 0.1):
+                # a case with a missing prerequisite is an error, not a timing sample.
+                skipped = [p['name'] for p in chosen if p['name'] == 'fs_hw_hash_point']
+                if skipped:
+                    log('%s == %s needs the hash twin (.fs_load --hash-twin): skipped' % (ts(), ', '.join(skipped)))
+                chosen = [p for p in chosen if p['name'] != 'fs_hw_hash_point']
+            return chosen
         wanted = set(sel.split(','))
         chosen = [p for p in pairs if p['name'] in wanted or p['sql'] in wanted]
         missing = wanted - {p['name'] for p in chosen} - {p['sql'] for p in chosen}
@@ -430,8 +440,63 @@ class Driver:
             raise RuntimeError('unknown queries: %s' % ', '.join(sorted(missing)))
         return chosen
 
+    def fs_hash_twin(self):
+        """Whether fs_bench.transactions_hash_1 is (or will be) loaded."""
+        if self.a.no_hash_twin:
+            return False
+        sf = self.a.fs_sf if self.a.fs_sf is not None else self.a.sf
+        if self.a.hash_twin or sf <= 0.1:
+            return True
+        try:
+            return bool(self.cl.sql("SHOW TABLES LIKE 'transactions_hash_1'", db='fs_bench'))
+        except RuntimeError:
+            return False
+
     # -- load ---------------------------------------------------------------
     EXPECTED_LINEITEM_PER_SF = 6000000
+    FS_CUSTOMERS_PER_SF = 100000   # = data.NewScale(sf).E (minimum 16)
+
+    def ensure_data(self):
+        if self.a.load in ('tpch', 'both'):
+            self.ensure_loaded()
+        if self.a.load in ('fs', 'both'):
+            self.ensure_fs_loaded()
+
+    def ensure_fs_loaded(self):
+        """Load the feature-store data set (RONDB-1121, fs_hw queries) with
+        .fs_load, which is idempotent: tables whose checksum already matches
+        are skipped and every table is verified against the data formulas."""
+        sf = self.a.fs_sf if self.a.fs_sf is not None else self.a.sf
+        want = max(16, int(round(self.FS_CUSTOMERS_PER_SF * sf)))
+        have = 0
+        try:
+            have = int(self.cl.sql('SELECT COUNT(*) FROM fs_bench.customers_1')[0][0])
+        except RuntimeError:
+            pass
+        if self.a.no_load:
+            log('%s == --no-load: fs_bench.customers_1 has %d rows (want %d for sf %g)' % (ts(), have, want, sf))
+            return
+        twin = '--hash-twin' if self.a.hash_twin else ('--no-hash-twin' if self.a.no_hash_twin else '')
+        if have == want:
+            log('%s == fs_bench has %d customers for sf %g: .fs_load verifies checksums and skips loaded tables' % (ts(), have, sf))
+        elif have:
+            raise RuntimeError('fs_bench has %d customers, want %d for sf %g: drop it (.fs_drop) or pass --fs-sf' % (have, want, sf))
+        else:
+            log('%s == loading feature-store data sf=%g (%d threads, batch %d)' % (ts(), sf, self.a.load_threads, self.a.load_batch))
+        t0 = time.time()
+        rc, lines = self.cli('.fs_load %g %d %d --db fs_bench %s' % (sf, self.a.load_threads, self.a.load_batch, twin),
+                             line_cb=lambda l: log('   | ' + l) if l.strip() else None)
+        if rc != 0 or not any('All checksums match' in l for l in lines):
+            raise RuntimeError('.fs_load failed (rc=%d)' % rc)
+        log('   fs load/verify took %.0fs' % (time.time() - t0))
+        self.analyze_fs()
+
+    def analyze_fs(self):
+        t0 = time.time()
+        tables = [r[0] for r in self.cl.sql('SHOW TABLES', db='fs_bench')]
+        if tables:
+            self.cl.sql('ANALYZE TABLE ' + ', '.join('fs_bench.' + t for t in tables))
+        log('%s == ANALYZE TABLE on %d fs_bench tables (%.1fs)' % (ts(), len(tables), time.time() - t0))
 
     def ensure_loaded(self):
         want = int(round(self.EXPECTED_LINEITEM_PER_SF * self.a.sf))   # = tpchScaled() in tpch.go
@@ -484,7 +549,7 @@ class Driver:
                             'assuming it already runs with %s' % mode)
             else:
                 self.cl.start(mode)
-            self.ensure_loaded()
+            self.ensure_data()
             return
         if self.a.toggle in ('auto', 'set') and self.cl.set_supported is not False:
             if self.cl.try_set_mode(mode):
@@ -501,7 +566,7 @@ class Driver:
             raise RuntimeError('cannot switch to %s on a --no-start cluster without SET support' % mode)
         self.cl.stop()
         self.cl.start(mode)
-        self.ensure_loaded()
+        self.ensure_data()
 
     # -- one case -----------------------------------------------------------
     def requests_for(self, engine, q, arm, threads):
@@ -574,14 +639,29 @@ class Driver:
             if m:
                 r['bench_s'] = float(m.group(1))
         r['ok'] = rc == 0 and 'qps' in r and r.get('errors', 1) == 0
+        ex, pr = r['phases'].get('execute', {}).get('avg_ms'), r['phases'].get('prepare', {}).get('avg_ms')
+        if engine == 'ronsql' and r.get('avg_ms') is not None and ex is not None and pr is not None:
+            # RDRS HTTP handling + JSON/TSV printing + network + client: what is
+            # not engine time (benchmarks.md §1.4; includes the schema-cache gap
+            # only when it is outside the measured phases).
+            r['client_overhead_ms'] = r['avg_ms'] - ex - pr
         if not r['ok']:
             err = [l for l in lines if 'error' in l.lower() or 'fail' in l.lower()]
             r['error'] = (err[-1] if err else 'rc=%d, no result line' % rc)[:300]
-        jit1 = self.cl.jit_counters()
-        r['jit_delta'] = {k: jit1.get(k, 0) - jit0.get(k, 0) for k in JIT_COLS}
-        if st0 is not None:
-            st1 = self.cl.mysqld_status()
-            r['mysqld_delta'] = {k: st1.get(k, 0) - st0.get(k, 0) for k in MYSQLD_STATUS}
+        try:
+            jit1 = self.cl.jit_counters()
+            r['jit_delta'] = {k: jit1.get(k, 0) - jit0.get(k, 0) for k in JIT_COLS}
+            if st0 is not None:
+                st1 = self.cl.mysqld_status()
+                r['mysqld_delta'] = {k: st1.get(k, 0) - st0.get(k, 0) for k in MYSQLD_STATUS}
+        except RuntimeError as e:
+            # The server stopped answering after the case: a crash (the error
+            # log of mysqld / the data nodes has the stack). Record it on the
+            # case and let the main loop end the matrix with a report.
+            r['ok'] = False
+            r['error'] = 'cluster unreachable after the case (%s): %s' % (r['error'] or 'no client error', str(e).splitlines()[-1][:200])
+            r['jit_delta'] = {k: 0 for k in JIT_COLS}
+            self.cluster_down = r['error']
         return r
 
     def run_case(self, idx, total, arm, engine, q, threads, rep=0):
@@ -710,6 +790,11 @@ class Driver:
                         log('%s ===== compiler arm %s =====' % (ts(), arm))
                 idx += 1
                 self.run_case(idx, total, arm, eng, q, threads, rep)
+                if self.cluster_down:
+                    log('%s == %s' % (ts(), self.cluster_down))
+                    log('   the matrix stops here: %d of %d cases not run; see <build>/mysql-test/var/log/mysqld.1.1.err and the ndbd logs'
+                        % (total - idx, total))
+                    break
         except KeyboardInterrupt:
             log('\n%s == interrupted' % ts())
         finally:
@@ -917,6 +1002,35 @@ class Driver:
                                    + ''.join(' %s |' % ('%.0f' % v if v is not None else '-') for v in qps)
                                    + ' %s |' % fmt_ratio(qps[-1], qps[0]))
             out.append('')
+
+        # G. Hopsworks serving path: RonSQL template vs the MySQL production twin
+        # fs_hw_X_twin pairs with fs_hw_X or fs_hw_X_point (snow1_twin <-> snow1_point).
+        ran = {r['query'] for r in R}
+        twins = []
+        for qn in qnames:
+            for tw in (qn + '_twin', qn.replace('_point', '') + '_twin'):
+                if tw in ran and tw != qn:
+                    twins.append((qn, tw))
+                    break
+        meng = [e for e in a.engines if e.startswith('mysqld')]
+        if twins and 'ronsql' in a.engines and meng:
+            out.append('## G. Hopsworks serving path: RonSQL template vs MySQL production twin (avg latency; ratio = twin / ronsql, >1 = RonSQL path faster)')
+            out.append('')
+            out.append('template = the Hopsworks RonSQL statement on RonSQL; same text = that statement on the MySQL server; '
+                       'twin = the production MySQL statement Hopsworks runs on the SQL path (ROW_NUMBER window / nested join).')
+            out.append('')
+            out.append('| entry | threads | compiler | ronsql template |' + ''.join(' %s same text | %s twin | twin/ronsql |' % (e, e) for e in meng))
+            out.append('|---|---:|---|---:|' + '---:|---:|---:|' * len(meng))
+            for qn, tw in twins:
+                for threads in a.threads:
+                    for arm in arms:
+                        rs = get(qn, 'ronsql', arm, threads, 'avg_ms')
+                        row = '| %s | %d | %s | %s |' % (qn, threads, arm, fmt_ms(rs))
+                        for eng in meng:
+                            same, tt = get(qn, eng, arm, threads, 'avg_ms'), get(tw, eng, arm, threads, 'avg_ms')
+                            row += ' %s | %s | %s |' % (fmt_ms(same), fmt_ms(tt), fmt_ratio(tt, rs))
+                        out.append(row)
+            out.append('')
         return '\n'.join(out)
 
 
@@ -954,7 +1068,12 @@ def parse_args():
     ap.add_argument('--mysql-sock')
     ap.add_argument('--rdrs-port', type=int)
     ap.add_argument('--connectstring')
-    ap.add_argument('--no-load', action='store_true', help='do not load TPC-H (already loaded)')
+    ap.add_argument('--no-load', action='store_true', help='do not load data (already loaded)')
+    ap.add_argument('--load', choices=['tpch', 'fs', 'both'],
+                    help='data set(s) to load: tpch (default), fs (feature-store data set for --queries fs_hw; default when --queries fs_hw), both')
+    ap.add_argument('--fs-sf', type=float, help='feature-store scale factor for .fs_load (default: --sf)')
+    ap.add_argument('--hash-twin', action='store_true', help='.fs_load --hash-twin (transactions_hash_1 for fs_hw_hash_point; default at sf <= 0.1)')
+    ap.add_argument('--no-hash-twin', action='store_true', help='.fs_load --no-hash-twin')
     ap.add_argument('--keep-cluster', action='store_true', help='leave the cluster running at the end')
     ap.add_argument('--stop', action='store_true', help='only stop the cluster of <build> (after --keep-cluster)')
     ap.add_argument('--report-only', action='store_true', help='only regenerate <out>/report.md from <out>/results.json')
@@ -986,6 +1105,8 @@ def parse_args():
 
 def main():
     a = parse_args()
+    if a.load is None:
+        a.load = 'fs' if a.queries == 'fs_hw' else 'tpch'
     os.makedirs(a.out, exist_ok=True)
     if a.report_only:
         with open(os.path.join(a.out, 'results.json')) as f:

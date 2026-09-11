@@ -4290,6 +4290,8 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .bench_ronsql                        List available RonSQL benchmark queries
     .bench_ronsql <name> [T] [N]         Run named query T threads × N requests (default 1×10)
     .bench_ronsql all [T] [N]            Run all RonSQL benchmark queries sequentially
+    .bench_ronsql fs_hw [T] [N]          Run the Hopsworks serving-shape benchmarks (database fs_bench: .fs_load first);
+                                         .bench_sql fs_hw runs them, and the MySQL production twins, on the MySQL server
     .bench_sql <name> [T] [N]            Run the same named queries via the MySQL server
                                          (comparative baseline; also tpch_q* official
                                          TPC-H and ORDER BY/LIMIT fs queries)

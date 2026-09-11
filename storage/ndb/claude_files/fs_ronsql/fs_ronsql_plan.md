@@ -558,7 +558,7 @@ RonSQL template path and the MySQL path documented (these are Hopsworks
 issues, not engine issues, and go to the ledger with a `hopsworks`
 tag).
 
-### E5 — Benchmarks
+### E5 — Benchmarks — DONE 2026-09-11: complete matrix in `benchmarks.md` §8 (point shapes at parity, collect faster than the twin, snowflake 3–4× and batch IN lists 200–1000× slower: F12/F13; F10/F11 on the pushed mysqld arm; see `phase_e5.md`)
 
 Scope: `fs_hw` registry entries generated from the emitter (a Go test
 asserts the registry equals the emitter output), MySQL twins,

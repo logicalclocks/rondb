@@ -29,6 +29,18 @@ F8 was a framework fixture issue and is already fixed.
   cases may report non-failing KNOWN-ERROR only when quoting their named
   temporal fields restores valid JSON that fully agrees with MySQL.
   The original malformed response remains an error and is retained.
+- [ ] F10 (bench.md): mysqld crashes (`NdbSqlUtil::likeLongvarchar` require in the
+  ordered-scan sorted merge) on a pushed aggregate with a VARCHAR GROUP BY key and
+  an IN list (`fs_hw_strkey_batch100`, pushdown ON). Run the fs_hw matrix with
+  `--engines ronsql,mysqld_nopush` until fixed.
+- [ ] F11 (bench.md): pushed point aggregates fail with NDB error 4120 'Scan already
+  complete' (`fs_hw_agg_point`, `_filter`, `strkey_point` at sf 1); unpushed and the
+  windowed / GREATEST variants work.
+- [ ] F12 (bench.md): RonSQL executes `IN (k1..kn)` as a table scan with an OR filter:
+  S3 batch serving is 200–1000× slower than MySQL (204 ms for 10 keys, 4.4 s for 1000).
+  Index ranges per key needed; the fs_hw plan pins record the table scan as observed.
+- [ ] F13 (bench.md): snowflake point reads cost ~350 µs of CTE_SCAN round trips over the
+  2–3 PK reads MySQL does (483–525 µs vs 120–172 µs).
 - [ ] HTTP status: distinguish invalid SQL/syntax from server failures
   instead of returning HTTP 500 for these client errors. Preserve the
   current permanent-error classification until the protocol is changed.

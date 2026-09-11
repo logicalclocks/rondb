@@ -31,7 +31,9 @@ Hopsworks Feature Store online-serving builder generates.
   generated `ronsql_fs_templates.test`.
 - `phase_e4.md` — E4: vector oracle (`fsq/vector` folds + policy compare),
   spec catalog with seeded keys and data-model expectations, `.fs_verify --vectors`,
-  `t/ronsql_fs_vectors.test`
+  `t/ronsql_fs_vectors.test`; §7 the A6 golden runner (`.fs_verify --golden`)
+- `phase_e5.md` — E5: the `fs_hw` benchmark registry generated from the emitter,
+  placeholder resolver, `.bench_ronsql fs_hw`, matrix driver `--queries fs_hw --load fs`
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.
