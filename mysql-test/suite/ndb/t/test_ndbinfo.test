@@ -3,3 +3,10 @@
 let NDBAPITEST_NAME=testNdbinfo;
 --source suite/ndb/include/run_ndbapitest.inc
 
+# testNdbinfo creates and drops tables in the NDB database TEST_DB from
+# NdbApi. When the metadata change monitor happens to see one of them,
+# the mysqld creates the database TEST_DB and never removes it, making
+# check-testcase fail. Drop it if it was created.
+--disable_warnings
+DROP DATABASE IF EXISTS TEST_DB;
+--enable_warnings

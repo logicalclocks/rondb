@@ -18,6 +18,7 @@
 package testutils
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -49,9 +50,28 @@ func connectMgmd() (*mgmclient.Client, error) {
 	return mgmclient.Connect(conf.RonDB.GenerateMgmdConnectString())
 }
 
-// SetOrAlterRateLimitUser creates the USER rate limit entity for the given
-// identity, or updates it if it already exists (e.g. from a previous test
-// run against the same cluster).
+// withMgmd runs fn on a fresh management server connection. One connection
+// per command: a command that hits the client deadline leaves its late reply
+// on the connection, which then cannot carry another command.
+func withMgmd(fn func(*mgmclient.Client) error) error {
+	mgm, err := connectMgmd()
+	if err != nil {
+		return err
+	}
+	defer mgm.Close()
+	return fn(mgm)
+}
+
+// SetOrAlterRateLimitUser updates the USER rate limit entity for the given
+// identity, or creates it if it does not exist yet.
+//
+// Alter is tried first even though "set or alter" reads the other way round:
+// every mgm command here is a schema transaction, DICT runs one of those at a
+// time, and by the time any test changes a limit the entity has already been
+// provisioned by ProvisionDefaultRateLimitUsers. Creating first would
+// therefore mean a doomed CREATE (error 721, object already exists) plus an
+// ALTER on every single change - two serialised schema transactions where one
+// suffices, which is what makes these calls slow while the cluster is busy.
 func SetOrAlterRateLimitUser(identity string, ratePerSec uint32) error {
 	client, err := connectMgmd()
 	if err != nil {
@@ -59,21 +79,118 @@ func SetOrAlterRateLimitUser(identity string, ratePerSec uint32) error {
 	}
 	defer client.Close()
 	limits := mgmclient.UserLimits{RatePerSec: ratePerSec}
+	alterErr := client.AlterUser(identity, limits)
+	if alterErr == nil {
+		return nil
+	}
+	// Only fall back to a create when the management server actually
+	// rejected the alter. After a transport error (deadline exceeded) the
+	// alter may still be queued server side, and a create issued on top of
+	// it would just add another schema transaction to that queue.
+	var cmdErr *mgmclient.CommandError
+	if !errors.As(alterErr, &cmdErr) {
+		return alterErr
+	}
 	if setErr := client.SetUser(identity, limits); setErr != nil {
-		if alterErr := client.AlterUser(identity, limits); alterErr != nil {
-			return fmt.Errorf("set user failed: %v; alter user failed: %w",
-				setErr, alterErr)
-		}
+		return fmt.Errorf("alter user failed: %v; set user failed: %w",
+			alterErr, setErr)
 	}
 	return nil
 }
 
 // ProvisionDefaultRateLimitUsers gives the default test API key a high
 // rate limit so that every test tags its transactions with a resolvable
-// identity. Idempotent; called from InitialiseTesting.
+// identity. Idempotent; called from InitialiseTesting. Like setRateLimit it
+// only returns once the limit reads back, so a slow cluster at startup
+// cannot leave the provisioning in flight under the first tests.
 func ProvisionDefaultRateLimitUsers() error {
-	return SetOrAlterRateLimitUser(APIKeyPrefix(HOPSWORKS_TEST_API_KEY),
-		HIGH_RATE_LIMIT)
+	identity := APIKeyPrefix(HOPSWORKS_TEST_API_KEY)
+	changeErr := SetOrAlterRateLimitUser(identity, HIGH_RATE_LIMIT)
+	if err := waitForRateLimit(identity, HIGH_RATE_LIMIT); err != nil {
+		return errors.Join(changeErr, err)
+	}
+	return nil
+}
+
+// rateLimitLandingTimeout bounds how long the helpers wait for a limit
+// change to become visible through "get user". A command that hit the
+// client deadline may still be queued in the management server, which keeps
+// retrying for the DICT schema transaction lock for up to 120 s before it
+// gives up; mgmclient.CallTimeout already exceeds that, so a second window
+// of the same length only has to absorb a transaction whose execution phase
+// is itself pathologically slow.
+const rateLimitLandingTimeout = mgmclient.CallTimeout
+
+const rateLimitPollInterval = 500 * time.Millisecond
+
+// pollRateLimitUser calls check with the identity's current USER entity (or
+// the "get user" error) every rateLimitPollInterval until check returns nil
+// or rateLimitLandingTimeout elapses. The polling connection is separate
+// from the one that issued the change: that one may have timed out and must
+// not be reused, and "get user" is a plain DICT lookup that is answered
+// while schema transactions are queued.
+func pollRateLimitUser(identity string,
+	check func(*mgmclient.UserInfo, error) error) error {
+	client, err := connectMgmd()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	deadline := time.Now().Add(rateLimitLandingTimeout)
+	for {
+		info, getErr := client.GetUser(identity)
+		var cmdErr *mgmclient.CommandError
+		if getErr != nil && !errors.As(getErr, &cmdErr) {
+			return getErr // transport error: the connection is gone
+		}
+		err := check(info, getErr)
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("after %v: %w", rateLimitLandingTimeout, err)
+		}
+		time.Sleep(rateLimitPollInterval)
+	}
+}
+
+// waitForRateLimit waits until the identity's USER entity reads ratePerSec.
+func waitForRateLimit(identity string, ratePerSec uint32) error {
+	err := pollRateLimitUser(identity,
+		func(info *mgmclient.UserInfo, getErr error) error {
+			if getErr != nil {
+				return getErr
+			}
+			if info.Limits.RatePerSec != ratePerSec {
+				return fmt.Errorf("rate limit is %d, want %d",
+					info.Limits.RatePerSec, ratePerSec)
+			}
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("rate limit of %q did not reach %d: %w",
+			identity, ratePerSec, err)
+	}
+	return nil
+}
+
+// waitForRateLimitUserGone waits until "get user" reports no such user.
+func waitForRateLimitUserGone(identity string) error {
+	err := pollRateLimitUser(identity,
+		func(info *mgmclient.UserInfo, getErr error) error {
+			if getErr == nil {
+				return fmt.Errorf("user still exists with rate limit %d",
+					info.Limits.RatePerSec)
+			}
+			if !mgmclient.IsNoSuchUser(getErr) {
+				return getErr
+			}
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("user %q was not dropped: %w", identity, err)
+	}
+	return nil
 }
 
 // ---- Rate limit test harness (RONDB-978) --------------------------------
@@ -141,10 +258,36 @@ func SkipIfRateLimitsDisabled(t *testing.T) {
 	}
 }
 
+// setRateLimit changes the identity's rate limit and returns once the
+// management server reports the new value back, so that no limit change is
+// left in flight when the helper returns.
+//
+// A mgm command that hits the client deadline is not cancelled by it: the
+// management server keeps waiting for the DICT schema transaction lock and
+// applies the change whenever DICT gets to it. Treating that timeout as a
+// failure would leave the change in flight, where it could land after the
+// deferred restoreHighRateLimit and leave the identity throttled for every
+// later test in the package, or, the other way round, a stale restore could
+// overwrite the next test's low limit. So on an error the helper waits for
+// the requested value to land, bounded by rateLimitLandingTimeout, and only
+// a value that never arrives fails the test.
+//
+// The read-back cannot tell a still-queued command apart from an earlier one
+// that set the same value. With mgmclient.CallTimeout above the management
+// server's 120 s lock wait, a timed-out command has by then either been
+// applied or abandoned unless its execution phase alone took over a minute,
+// which the polling window then absorbs.
 func setRateLimit(t *testing.T, ratePerSec uint32) {
 	t.Helper()
-	if err := SetOrAlterRateLimitUser(rateLimitIdentity(), ratePerSec); err != nil {
-		t.Fatalf("failed to set rate limit to %d: %v", ratePerSec, err)
+	identity := rateLimitIdentity()
+	changeErr := SetOrAlterRateLimitUser(identity, ratePerSec)
+	if changeErr != nil {
+		t.Logf("rate limit change to %d returned %v; waiting for it to land",
+			ratePerSec, changeErr)
+	}
+	if err := waitForRateLimit(identity, ratePerSec); err != nil {
+		t.Fatalf("failed to set rate limit to %d: %v", ratePerSec,
+			errors.Join(changeErr, err))
 	}
 }
 
@@ -285,15 +428,21 @@ func RunUserCreatedAfterStartRateLimitTest(t *testing.T,
 	client := setupBurstHttpClient(t)
 	defer restoreHighRateLimit(t)
 
-	mgm, err := connectMgmd()
-	if err != nil {
-		t.Fatalf("failed to connect to mgmd: %v", err)
-	}
-	defer mgm.Close()
-
+	// As in setRateLimit, each mgm command is confirmed through "get user"
+	// before the test goes on: a command that hits the client deadline is
+	// still applied later by the management server, and only the confirmed
+	// state can be reasoned about.
 	identity := rateLimitIdentity()
-	if err := mgm.DropUser(identity); err != nil {
-		t.Fatalf("failed to drop user %q: %v", identity, err)
+	dropErr := withMgmd(func(mgm *mgmclient.Client) error {
+		return mgm.DropUser(identity)
+	})
+	if dropErr != nil {
+		t.Logf("drop user %q returned %v; waiting for it to land",
+			identity, dropErr)
+	}
+	if err := waitForRateLimitUserGone(identity); err != nil {
+		t.Fatalf("failed to drop user %q: %v", identity,
+			errors.Join(dropErr, err))
 	}
 	time.Sleep(rateLimitSettleTime) // DROP_DATABASE_REP propagation
 
@@ -307,8 +456,20 @@ func RunUserCreatedAfterStartRateLimitTest(t *testing.T,
 	// the entity was just dropped, so this is a fresh create, announced to
 	// the running server only by CREATE_DATABASE_REP.
 	limits := mgmclient.UserLimits{RatePerSec: rateLimitLowRate}
-	if err := mgm.SetUser(identity, limits); err != nil {
-		t.Fatalf("failed to re-create user %q: %v", identity, err)
+	createErr := withMgmd(func(mgm *mgmclient.Client) error {
+		return mgm.SetUser(identity, limits)
+	})
+	var cmdErr *mgmclient.CommandError
+	if errors.As(createErr, &cmdErr) {
+		t.Fatalf("failed to re-create user %q: %v", identity, createErr)
+	}
+	if createErr != nil {
+		t.Logf("set user %q returned %v; waiting for it to land",
+			identity, createErr)
+	}
+	if err := waitForRateLimit(identity, rateLimitLowRate); err != nil {
+		t.Fatalf("failed to re-create user %q: %v", identity,
+			errors.Join(createErr, err))
 	}
 	created := time.Now()
 	time.Sleep(rateLimitSettleTime)
