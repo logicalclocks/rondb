@@ -598,7 +598,7 @@ lists up to 1000, string keys, filters on hop tables, HAVING, ORDER BY
 Exit: same criterion as E6; each new engine finding cross-referenced to
 `_discovery_log.md` conventions.
 
-### E8 — Hardening and CI
+### E8 — Hardening and CI — CODE COMPLETE 2026-09-11; exit (×3 green) blocked by engine finding F20, see `phase_e8.md`
 
 Scope: topology mirrors (`ronsql_fs_ng2r2`, `ronsql_fs_ng4r2`), JIT
 mirror (`ronsql_fs_jit` with fallback-delta pins), flake controls

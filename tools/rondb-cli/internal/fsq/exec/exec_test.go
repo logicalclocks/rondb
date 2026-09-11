@@ -236,3 +236,19 @@ func TestOpenMySQLAlreadyCancelled(t *testing.T) {
 		t.Fatalf("engine=%v error=%v", engine, err)
 	}
 }
+
+// TestClassifyTransientNDB: the NDB dictionary-stale conditions RDRS
+// reports as permanent RonSQL errors are retried (E8 flake control).
+func TestClassifyTransientNDB(t *testing.T) {
+	for _, body := range []string{
+		"Caught exception: Schema cache for table not up to date.",
+		"Caught exception: NDB error 241: Invalid schema object version",
+	} {
+		if out, _ := Classify(500, body); out != Retryable {
+			t.Errorf("%q: %s, want RETRY-EXHAUSTED class", body, out)
+		}
+	}
+	if out, _ := Classify(500, "Caught exception: Table not found."); out != CleanReject {
+		t.Errorf("a permanent error must stay CLEAN-REJECT: %s", out)
+	}
+}

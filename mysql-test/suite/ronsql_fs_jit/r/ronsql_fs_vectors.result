@@ -1,0 +1,23 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Create and load the feature-store data set ===
+
+=== L2 vector oracle: every catalog spec, seed 1, 120 keys per spec ===
+SUMMARY vectors specs=22 pass=21 reject(expected)=1
+SHAPE S1 SUPPORTED
+SHAPE S10 SUPPORTED
+SHAPE S2 SUPPORTED
+SHAPE S3 SUPPORTED
+SHAPE S4 SUPPORTED
+SHAPE S6 UNSUPPORTED
+SHAPE S6b SUPPORTED
+SHAPE S7 SUPPORTED
+SHAPE S8 SUPPORTED
+SHAPE S9 SUPPORTED
+
+=== Cleanup ===
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_fs_vectors_jit_fallback_delta;
+ronsql_fs_vectors_jit_fallback_delta
+0

@@ -278,6 +278,9 @@ func (s *Shell) runFuzzCases(g *fuzz.Gen, ids []fuzzCaseID, o fuzzOpts) error {
 		fmt.Println(ui.Info(fmt.Sprintf(".fs_fuzz spec: %d cases, seed=%d db=%s sf=%g threads=%d timeout=%v vectors=%v direct-collect=%v shrink=%v",
 			len(ids), o.seed, o.db, o.sf, o.threads, o.timeout, o.vectors, o.directCollect, o.shrink)))
 	}
+	if err := s.fsWarmRDRS(o.verifyOpts); err != nil {
+		return err
+	}
 	threads := o.threads
 	if threads > len(ids) {
 		threads = len(ids)

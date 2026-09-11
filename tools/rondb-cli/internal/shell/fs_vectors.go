@@ -130,6 +130,9 @@ func (s *Shell) runFSVectors(a fsArgs) error {
 		fmt.Println(ui.Info(fmt.Sprintf(".fs_verify --vectors: %d specs, db=%s sf=%g now=%s seed=%d count=%d threads=%d timeout=%v",
 			len(selected), o.db, o.sf, now.UTC().Format(time.RFC3339), o.seed, o.count, o.threads, o.timeout)))
 	}
+	if err := s.fsWarmRDRS(o.verifyOpts); err != nil {
+		return err
+	}
 	threads := o.threads
 	if threads > len(selected) {
 		threads = len(selected)

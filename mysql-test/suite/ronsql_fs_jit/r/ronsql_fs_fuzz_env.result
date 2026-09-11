@@ -1,0 +1,13 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Create and load the feature-store data set ===
+
+=== Envelope-level fuzz: seed 1, 200 cases, hazards off ===
+SUMMARY fuzz-envelope seed=1 cases=200 clean-reject=25 known-error=3 known-wrong=10 pass=162
+
+=== Cleanup ===
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_fs_fuzz_env_jit_fallback_delta;
+ronsql_fs_fuzz_env_jit_fallback_delta
+280

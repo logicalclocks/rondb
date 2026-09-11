@@ -39,6 +39,10 @@ Hopsworks Feature Store online-serving builder generates.
 - `phase_e7.md` — E7: envelope-level fuzzer (`fuzz/envelope.go` productions + expectation
   table, `fuzz/hazards.go` discovery-log translations), `.fs_fuzz envelope`,
   `t/ronsql_fs_fuzz_env.test`
+- `phase_e8.md` — E8: requirements manifest (`cases/requirements.go`) and
+  `.fs_verify --requirements` acceptance report, `emit.ConformFixture`, mirror suites
+  `ronsql_fs_ng2r2` / `ronsql_fs_ng4r2` / `ronsql_fs_jit`, `scripts/refresh_golden_fixtures.sh`
+- `adding_a_shape.md` — the one-page guide for adding a statement shape end to end
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

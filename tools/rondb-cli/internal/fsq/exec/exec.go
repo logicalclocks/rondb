@@ -202,10 +202,21 @@ func ParsePhases(header string) map[string]int64 {
 	return out
 }
 
+// transientNDBErrors are NDB dictionary conditions RDRS reports as a
+// permanent RonSQL error although they clear on the next attempt: right
+// after DDL the RDRS NDB API dictionary cache can lag (MTR runs create the
+// tables moments before the first request; E8 flake control).
+var transientNDBErrors = []string{
+	"Schema cache for table not up to date",
+	"Invalid schema object version",
+	"Table definition has changed",
+}
+
 // Classify maps an RDRS response to an outcome (ronsql_ctrl.cpp /
 // ronsql_operation.cpp: every RonSQL error is HTTP 500 with a text body;
 // "Caught exception:" = permanent, "RonSQLRetryableError" = retryable;
-// 429 = rate limited; 400 = request validation).
+// 429 = rate limited; 400 = request validation).  Transient NDB dictionary
+// errors classify as Retryable whatever the body's framing.
 func Classify(status int, body string) (Outcome, string) {
 	msg := strings.TrimSpace(body)
 	switch {
@@ -215,6 +226,8 @@ func Classify(status int, body string) (Outcome, string) {
 		return Retryable, msg
 	case status == http.StatusInternalServerError && strings.Contains(msg, "RonSQLRetryableError"):
 		return Retryable, msg
+	case status == http.StatusInternalServerError && isTransientNDB(msg):
+		return Retryable, msg
 	case status == http.StatusInternalServerError && strings.Contains(msg, "Caught exception:"):
 		return CleanReject, msg
 	default:
@@ -222,8 +235,17 @@ func Classify(status int, body string) (Outcome, string) {
 	}
 }
 
+func isTransientNDB(msg string) bool {
+	for _, p := range transientNDBErrors {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *RDRS) Query(ctx context.Context, sqlText string) Response {
-	const attempts = 3
+	const attempts = 4
 	var last Response
 	for i := 0; i < attempts; i++ {
 		status, body, phases, latency, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "JSON"})
@@ -251,7 +273,12 @@ func (r *RDRS) Query(ctx context.Context, sqlText string) Response {
 		if outcome != Retryable {
 			return last
 		}
-		time.Sleep(50 * time.Millisecond)
+		// back off longer for a dictionary refresh than for a plain retry
+		delay := 50 * time.Millisecond
+		if isTransientNDB(msg) {
+			delay = 250 * time.Millisecond * time.Duration(i+1)
+		}
+		time.Sleep(delay)
 	}
 	return last
 }

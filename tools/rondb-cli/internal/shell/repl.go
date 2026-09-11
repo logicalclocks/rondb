@@ -4282,6 +4282,10 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .fs_verify [--shape S1,S3|--case ID] Run the case matrix on MySQL and RonSQL (RDRS) and compare typed results
     .fs_verify --vectors [--seed N --count M] Vector-level (L2) comparison of every serving spec over sampled entity keys
                                          (--db test --sf 0.01 --threads 4 --timeout 30s --include-hazards --allow-reject --json P --dump-dir P)
+    .fs_verify --requirements [--all] [--vectors]  Strict acceptance: the versioned requirements manifest (L1 cases, L2 specs
+                                         with --vectors, in-process Java conformance); SUPPORTED / UNSUPPORTED / HOPSWORKS-GATED /
+                                         UNTESTED / FAILED per requirement; refuses --allow-reject; --req R-S1,R-S7 --fixtures DIR
+                                         --engine-commit H --label TEXT --json P
     .fs_verify --golden DIR --json NEW_FILE  Run Java-captured SQL, Go MySQL twins and RonSQL; creates/drops isolated golden databases
                                          [--fixture NAME --timeout 30s --cleanup-timeout 30s --tolerance 1e-9 --allow-reject --quiet]
     .fs_emit_mtr <dir> --cases           Also write suite/ronsql_fs/t/ronsql_fs_templates.test from the case matrix

@@ -247,6 +247,9 @@ func firstLine(s string) string {
 //	[--allow-reject] [--relaxed-headers] [--dump-dir P] [--json P] [--quiet]
 func (s *Shell) runFSVerify(args []string) error {
 	a := parseFSArgs(args)
+	if a.has("requirements") {
+		return s.runFSRequirements(a)
+	}
 	if a.has("golden") {
 		return s.runFSGolden(a)
 	}
@@ -289,6 +292,9 @@ func (s *Shell) runFSVerify(args []string) error {
 	if !o.quiet {
 		fmt.Println(ui.Info(fmt.Sprintf(".fs_verify: %d cases, db=%s sf=%g now=%s threads=%d timeout=%v tolerance=%g",
 			len(selected), o.db, o.sf, now.UTC().Format(time.RFC3339), o.threads, o.timeout, o.tolerance)))
+	}
+	if err := s.fsWarmRDRS(o); err != nil {
+		return err
 	}
 	threads := o.threads
 	if threads > len(selected) {

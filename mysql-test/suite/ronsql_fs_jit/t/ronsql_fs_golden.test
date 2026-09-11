@@ -1,0 +1,17 @@
+# Mirror of suite/ronsql_fs/t/ronsql_fs_golden.test with the JIT active
+# (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
+# differential for the feature-store corpus (RONDB-1121 E8).  Test logic
+# lives ONLY in the sourced original.
+#
+# The recorded fallback delta below is the coverage pin for this test:
+# every JIT program reject it causes (aggregation, scan filter — one count
+# per compile attempt) is counted.  A change in EITHER direction is a
+# coverage change: investigate, then re-record deliberately.  Once the
+# delta is 0, bracket the --source with
+#   --source suite/ronsql_cte_jit/include/jit_strict_arm.inc
+#   --source suite/ronsql_cte_jit/include/jit_strict_disarm.inc
+# so a program that stops compiling fails the test instead of falling back.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_fs/t/ronsql_fs_golden.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ronsql_fs_golden_jit_fallback_delta;

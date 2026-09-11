@@ -85,6 +85,9 @@ func (s *Shell) runFSFuzzEnvelope(a fsArgs, o fuzzOpts) error {
 		fmt.Println(ui.Info(fmt.Sprintf(".fs_fuzz envelope: %d cases, seed=%d db=%s sf=%g threads=%d timeout=%v hazards=%v",
 			len(cs), o.seed, o.db, o.sf, o.threads, o.timeout, hazards)))
 	}
+	if err := s.fsWarmRDRS(o.verifyOpts); err != nil {
+		return err
+	}
 	results := make([]fuzzResult, len(cs))
 	threads := o.threads
 	if threads > len(cs) {

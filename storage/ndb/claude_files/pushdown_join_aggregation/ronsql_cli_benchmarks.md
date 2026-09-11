@@ -142,7 +142,11 @@ loaded by `.fs_load`, generated at init from the feature-store emitter
 `internal/fsq/cases/testdata/fs_hw_registry.golden`).  `.bench_ronsql
 fs_hw` / `.bench_sql fs_hw` run the category; `all` includes it only when
 `fs_bench` exists.  Design, placeholders, plan pins and results:
-`storage/ndb/claude_files/fs_ronsql/benchmarks.md`.
+`storage/ndb/claude_files/fs_ronsql/benchmarks.md`.  The same framework carries the
+correctness side: the case matrix (`.fs_verify`), vectors (`--vectors`),
+the Java corpus (`--golden`), the fuzzers (`.fs_fuzz spec|envelope`) and
+the requirements acceptance report (`.fs_verify --requirements`); see
+`storage/ndb/claude_files/fs_ronsql/CLAUDE.md` for the index.
 
 RonSQL-capable queries respect the RonSQL CTE envelope (see
 `cte_test_authoring_guide.md`): aggregating main SELECT, complete-key CTE

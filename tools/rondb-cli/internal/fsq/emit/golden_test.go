@@ -32,8 +32,6 @@ import (
 	"reflect"
 	"sort"
 	"testing"
-
-	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/spec"
 )
 
 type gateOrException struct {
@@ -128,65 +126,21 @@ func TestGoldenConformance(t *testing.T) {
 	for _, name := range names {
 		f := fixtures[name]
 		t.Run(name, func(t *testing.T) {
-			var want map[string]interface{}
-			if err := json.Unmarshal(f.Expected, &want); err != nil {
-				t.Fatal(err)
+			res := ConformFixture(name, f)
+			if res.Err != nil {
+				t.Fatalf("unexpected error: %v", res.Err)
 			}
-			got := map[string]interface{}{}
-			var gateErr *spec.GateError
-			if f.Definition != nil {
-				res, err := spec.ValidateDefinition(&f.View)
-				if err != nil {
-					if ge, ok := err.(*spec.GateError); ok {
-						gateErr = ge
-					} else {
-						t.Fatalf("unexpected error: %v", err)
-					}
-				} else {
-					for k, v := range normalize(t, res).(map[string]interface{}) {
-						got[k] = v
-					}
-				}
-			} else {
-				statements, err := Build(&f.View)
-				if err != nil {
-					if ge, ok := err.(*spec.GateError); ok {
-						gateErr = ge
-					} else {
-						t.Fatalf("unexpected error: %v", err)
-					}
-				} else {
-					got["statements"] = normalize(t, statements)
-					if f.ExpectedTemplates != nil {
-						n := 0
-						for _, s := range statements {
-							n += s.TemplateCount()
-						}
-						if n != *f.ExpectedTemplates {
-							t.Errorf("template count %d, fixture expects %d", n, *f.ExpectedTemplates)
-						}
-					}
-				}
+			for _, difference := range res.Diffs {
+				t.Error(difference)
 			}
-			if gateErr != nil {
-				got["gateOrException"] = normalize(t, gateOrException{Code: gateErr.Code, UserMessage: gateErr.Message})
-				if f.ExpectedError == nil || *f.ExpectedError != gateErr.Code {
-					t.Errorf("gate %s (%s); fixture expects error %v", gateErr.Code, gateErr.Message, f.ExpectedError)
-				}
-			} else {
-				got["gateOrException"] = nil
-				if f.ExpectedError != nil {
-					t.Errorf("no gate raised; fixture expects %s", *f.ExpectedError)
-				}
-			}
-			gotN, wantN := normalize(t, got), normalize(t, want)
-			if !reflect.DeepEqual(gotN, wantN) {
-				t.Errorf("%s: complete expected object differs", name)
-				for _, difference := range objectDiffs(name, gotN, wantN) {
-					t.Log(difference)
-				}
+			if f.ExpectedError != nil && res.Gate != *f.ExpectedError {
+				t.Errorf("gate %q, fixture expects %s", res.Gate, *f.ExpectedError)
 			}
 		})
+	}
+	// the shared helpers keep their unit semantics
+	if d := objectDiffs("x", map[string]interface{}{"a": 1.0}, map[string]interface{}{"a": 2.0}); len(d) != 1 {
+		t.Errorf("objectDiffs: %v", d)
 	}
 }
 

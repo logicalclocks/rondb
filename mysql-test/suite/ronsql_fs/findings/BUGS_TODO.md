@@ -48,6 +48,14 @@ F8 was a framework fixture issue and is already fixed.
   `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
   LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope
   fuzzer, seed 1; isolate with `--threads 1`. Pushdown join aggregation (RONDB-733).
+- [ ] F20 (envelope_fuzz.md): RDRS crashes in the NDB API dictionary cache's
+  stale-incarnation machinery from RONDB-1092 (#1013, 59b3b3cbdf1): (a) SIGSEGV
+  in `NdbDictionaryImpl::getIndex` (NdbDictionaryImpl.hpp:1606, null cached
+  entry) and (b) abort in `GlobalDictCache::release` (DictCache.cpp:413) via
+  `releaseStaleTableReferences` from the RDRS connection pool. Coincides with
+  the RDRS FS-cache thread's failing periodic getTable(hopsworks.feature_view).
+  Intermittent on every ronsql_fs* MTR test after CREATE TABLE; not JIT-related.
+  Blocks the E8 "×3 green" exit until fixed in the engine tree.
 - [ ] F18 (envelope_fuzz.md): a partial-key CTE lookup now runs (was rejected)
   and returns the wrong row count. Silent correctness regression. E7 fuzzer, seed 2.
 - [ ] F19 (envelope_fuzz.md): CTE_SCAN as an outer-join child now runs (was
