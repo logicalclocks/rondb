@@ -48,14 +48,22 @@ F8 was a framework fixture issue and is already fixed.
   `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
   LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope
   fuzzer, seed 1; isolate with `--threads 1`. Pushdown join aggregation (RONDB-733).
-- [ ] F20 (envelope_fuzz.md): RDRS crashes in the NDB API dictionary cache's
-  stale-incarnation machinery from RONDB-1092 (#1013, 59b3b3cbdf1): (a) SIGSEGV
-  in `NdbDictionaryImpl::getIndex` (NdbDictionaryImpl.hpp:1606, null cached
-  entry) and (b) abort in `GlobalDictCache::release` (DictCache.cpp:413) via
-  `releaseStaleTableReferences` from the RDRS connection pool. Coincides with
-  the RDRS FS-cache thread's failing periodic getTable(hopsworks.feature_view).
-  Intermittent on every ronsql_fs* MTR test after CREATE TABLE; not JIT-related.
-  Blocks the E8 "×3 green" exit until fixed in the engine tree.
+- [ ] F22 (smoke.md): BIGINT SUM overflow is detected only inside a fragment's
+  aggregation; the API-side merge (`aggMergeSum`) adds partials unchecked, so the
+  probe errors (1860) on 1–2 node groups but returns the wrapped -2^63 on ng4r2.
+  KNOWN for now (expectation table F22 next to F6): overflow handling gets a
+  general overhaul as a separate task. Found by the E8 ng4r2 mirror.
+- [ ] F21 (smoke.md): SUM over DECIMAL(18,2) is topology-dependent on RonSQL
+  (`6.0600000000000005` on 2 node groups vs `6.06` on 1; MySQL exact) — the F5
+  DOUBLE path combines per-fragment partial sums in topology order. Found by the
+  E8 ng2r2 mirror of the smoke test's recorded section.
+- [x] F20 (envelope_fuzz.md): RDRS crashes from a reference-count bug in the
+  RONDB-1092 parking machinery — a by-pointer invalidateTable/invalidateIndex of
+  a parked object dropped the newer incarnation's entry by name and released the
+  parked reference twice. FIXED 2026-09-12: `NdbDictionaryImpl::
+  detach_local_reference` (+ null guards in getIndex / park_stale_object);
+  regression `testDict -n InvalidateParkedByPointer` OK; fs suites green ×3.
+  Still worth a run: the batchpkread Go suite (TestUnloadSchema) under ASAN.
 - [ ] F18 (envelope_fuzz.md): a partial-key CTE lookup now runs (was rejected)
   and returns the wrong row count. Silent correctness regression. E7 fuzzer, seed 2.
 - [ ] F19 (envelope_fuzz.md): CTE_SCAN as an outer-join child now runs (was

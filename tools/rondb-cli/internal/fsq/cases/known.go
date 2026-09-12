@@ -48,8 +48,15 @@ var Known = map[string]*Expect{
 	// DECIMAL(18,2) beyond 2^53 cents loses precision on RonSQL's DOUBLE path.
 	"F5": {Finding: "F5", Pattern: "DECIMAL precision loss",
 		Wrong: &WrongValue{Column: "dec_max", MySQL: "999999999999999.99", RonSQL: "1000000000000000"}},
-	// BIGINT SUM overflow is a clean NDB error (MySQL widens to DECIMAL).
+	// BIGINT SUM overflow is a clean NDB error (MySQL widens to DECIMAL) - when
+	// the overflow happens inside one fragment's aggregation.
 	"F6": {Finding: "F6", Pattern: "arithmetic operation results overflow"},
+	// When the overflowing rows sit in different fragments (more node groups),
+	// the API-side merge (aggMergeSum) adds the partials unchecked and the
+	// query returns the wrapped value instead of error 1860: 2^63-1 + 1 -> -2^63
+	// (E8 topology mirror ng4r2).  Known until the overflow-handling overhaul.
+	"F22": {Finding: "F22", Pattern: "BIGINT SUM overflow undetected at the cross-fragment merge (topology-dependent)",
+		Wrong: &WrongValue{Column: "big_sum", MySQL: "9223372036854775808", RonSQL: "-9223372036854775808"}},
 	// VARBINARY cannot be projected by the pass-through printer.
 	"F7": {Finding: "F7", Pattern: "Unsupported column type"},
 	// MIN/MAX over a DATE/TIMESTAMP column is unquoted in JSON output (RDRS

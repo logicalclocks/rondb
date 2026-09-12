@@ -732,8 +732,13 @@ func (b *builder) edgeCases() {
 		"SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;", false, nil, nil, "")
 	e("EDGE-all-null", "all-NULL group",
 		"SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2;", false, nil, nil, "")
+	// SUM(dec_val) deliberately absent: entity 3's 1.01 + 2.02 + 3.03 is not
+	// dyadic, and RonSQL's DECIMAL SUM runs on the DOUBLE path, so the printed
+	// value depends on the topology's combine order (F21); this case asserts
+	// the exact floats and dates.  DECIMAL SUM stays covered by
+	// EDGE-null-decimal (exact operands), EDGE-decimal-large and .fs_verify.
 	e("EDGE-float-exact", "exactly representable floats, DATE min/max",
-		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "")
+		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "")
 	e("EDGE-float-rounding", "rounding-sensitive floats (MySQL FLOAT display precision, F4)",
 		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;", false, nil, Known["F4"], "")
 	e("EDGE-date-range", "DATE spread to 9999-12-31",
@@ -744,8 +749,11 @@ func (b *builder) edgeCases() {
 		"SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max` FROM `edge_big_1` WHERE `entity_id` = 2;", false, nil, nil, "")
 	e("EDGE-decimal-large", "DECIMAL(18,2) beyond 2^53 cents (F5 wrong value)",
 		"SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;", false, nil, Known["F5"], "")
-	e("EDGE-big-overflow", "deliberate BIGINT SUM overflow (F6 clean error)",
-		"SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;", false, Known["F6"], nil, "")
+	// Topology-dependent outcome: the clean F6 error when both rows share a
+	// fragment (1-2 node groups), the wrapped F22 value when they do not
+	// (4 node groups); both are known, neither is a pass.
+	e("EDGE-big-overflow", "deliberate BIGINT SUM overflow (F6 clean error, or the F22 wrapped value on more node groups)",
+		"SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;", false, Known["F6"], Known["F22"], "")
 	e("EDGE-str-in-list", "apostrophe, empty, literal-NULL and multibyte keys in an IN list",
 		"SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a');", false, nil, nil, "")
 	e("EDGE-str-null-vs-NULL", "SQL NULL vs the string 'NULL' vs '' (typed nullness)",

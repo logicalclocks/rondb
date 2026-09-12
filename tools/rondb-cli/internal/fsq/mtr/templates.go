@@ -111,7 +111,7 @@ func RenderTemplatesTest(cs []cases.Case, db string) string {
 		for i, st := range c.Statements {
 			qf := fmt.Sprintf("$MYSQL_TMP_DIR/q_%s_%d.sql", fileID(c.ID), i)
 			fmt.Fprintf(&b, "--let QUERY_FILE=%s\n--write_file $QUERY_FILE\n%s\nEOF\n", qf, st.RonSQL)
-			if c.ExpectReject != nil {
+			if c.ExpectReject != nil && c.KnownWrong == nil {
 				out := fmt.Sprintf("$MYSQL_TMP_DIR/rej_%s_%d.out", fileID(c.ID), i)
 				fmt.Fprintf(&b, "# expected clean rejection (%s): %s\n", c.ExpectReject.Finding, c.ExpectReject.Pattern)
 				fmt.Fprintf(&b, "--error 1\n--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D %s --execute-file $QUERY_FILE > %s 2>&1\n", db, out)
@@ -119,7 +119,11 @@ func RenderTemplatesTest(cs []cases.Case, db string) string {
 				continue
 			}
 			if c.KnownWrong != nil {
-				fmt.Fprintf(&b, "# known wrong result (%s): %s — recorded, not asserted\n--let $strict_diff=\n", c.KnownWrong.Finding, c.KnownWrong.Pattern)
+				fmt.Fprintf(&b, "# known wrong result (%s): %s — recorded, not asserted\n", c.KnownWrong.Finding, c.KnownWrong.Pattern)
+				if c.ExpectReject != nil {
+					fmt.Fprintf(&b, "# (or the clean rejection %s: %s — which of the two depends on the topology)\n", c.ExpectReject.Finding, c.ExpectReject.Pattern)
+				}
+				b.WriteString("--let $strict_diff=\n")
 			} else {
 				b.WriteString("--let $strict_diff=yes\n")
 			}

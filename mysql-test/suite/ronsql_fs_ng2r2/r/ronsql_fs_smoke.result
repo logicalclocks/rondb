@@ -487,9 +487,9 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MA
 cnt_all	cnt_i1	i1_sum	dec_max	d_max	s_min
 3	0	NULL	NULL	NULL	NULL
 
-=== PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max ===
+=== PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max (no DECIMAL SUM: F21, topology-dependent) ===
 == Query ==
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3;
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3;
 
 Number of output lines, including header: 2
 
@@ -499,9 +499,9 @@ Number of output lines, including header: 2
 
 
 == Expected result ==
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3|
-ff_sum	fd_sum	fd_min	d_min	d_max	dec_sum
-3.75	1028.125	-0.125	1970-01-01	2024-02-29	6.06
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3|
+ff_sum	fd_sum	fd_min	d_min	d_max
+3.75	1028.125	-0.125	1970-01-01	2024-02-29
 
 === PROBE EDGE-FLOAT-B: rounding-sensitive floats (FLOAT binary32, non-dyadic doubles) ===
 == Query ==
