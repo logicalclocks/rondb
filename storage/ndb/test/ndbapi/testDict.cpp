@@ -11124,6 +11124,127 @@ int runIndexStatNF(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+
+/*
+ * RONDB-1121 F20 / RONDB-1092 follow-up: a by-pointer invalidateTable /
+ * invalidateIndex must release the reference that backs THAT pointer.
+ * Since RONDB-1092 a stale local entry is parked (not released inline) when
+ * getTable()/getIndex() finds it Invalid, and a newer incarnation is cached
+ * under the same internal name.  Before the fix, invalidating the parked
+ * pointer dropped the local entry by name (destroying the newer entry and
+ * leaking its reference) and released the parked reference, which
+ * releaseStaleTableReferences() then released again - deleting the object
+ * under other Ndbs (RDRS crashes in getIndex / GlobalDictCache::release).
+ *
+ * Sequence, two Ndb objects A and B on one cluster connection:
+ *   A: tA  = getTable(T)                   (A's local entry -> object X)
+ *   B: getTable(T); invalidateTable(T)     (marks X Invalid globally)
+ *   A: tA2 = getTable(T)                   (parks X, caches incarnation Y)
+ *   A: invalidateTable(tA)   <- by pointer, the PARKED object
+ *   A: tA3 = getTable(T)     must be tA2: Y's entry survived (pre-fix: a
+ *                            refetch, different pointer)
+ *   B: getTable(T) still works, then the same dance for an ordered index.
+ */
+int runInvalidateParkedByPointer(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndbA = GETNDB(step);
+  NdbDictionary::Dictionary *dA = ndbA->getDictionary();
+  NdbDictionary::Table tab = *ctx->getTab();
+  char buf[256];
+  BaseString::snprintf(buf, sizeof(buf), "%s_parked", tab.getName());
+  tab.setName(buf);
+  dA->dropTable(tab.getName());
+  if (dA->createTable(tab) != 0) {
+    g_err << "createTable: " << dA->getNdbError() << endl;
+    return NDBT_FAILED;
+  }
+  NdbDictionary::Index idx;
+  BaseString::snprintf(buf, sizeof(buf), "%s_pidx", tab.getName());
+  idx.setName(buf);
+  idx.setType(NdbDictionary::Index::OrderedIndex);
+  idx.setTable(tab.getName());
+  idx.setStoredIndex(false);
+  for (Uint32 i = 0; i < (Uint32)tab.getNoOfColumns(); i++) {
+    const NdbDictionary::Column *col = tab.getColumn(i);
+    if (col->getPrimaryKey()) idx.addIndexColumn(col->getName());
+  }
+  if (dA->createIndex(idx) != 0) {
+    g_err << "createIndex: " << dA->getNdbError() << endl;
+    dA->dropTable(tab.getName());
+    return NDBT_FAILED;
+  }
+
+  Ndb *ndbB = new Ndb(&ctx->m_cluster_connection, ndbA->getDatabaseName());
+  if (ndbB == NULL || ndbB->init() != 0) {
+    g_err << "second Ndb init failed" << endl;
+    delete ndbB;
+    dA->dropIndex(idx.getName(), tab.getName());
+    dA->dropTable(tab.getName());
+    return NDBT_FAILED;
+  }
+  NdbDictionary::Dictionary *dB = ndbB->getDictionary();
+  int result = NDBT_OK;
+#define PARKED_CHECK(cond, what)                                    \
+  do {                                                              \
+    if (!(cond)) {                                                  \
+      g_err << "line " << __LINE__ << ": " << what << endl;        \
+      result = NDBT_FAILED;                                         \
+      goto done;                                                    \
+    }                                                               \
+  } while (0)
+
+  {
+    // ---- table ----
+    const NdbDictionary::Table *tA = dA->getTable(tab.getName());
+    PARKED_CHECK(tA != NULL, "A getTable #1: " << dA->getNdbError());
+    PARKED_CHECK(dB->getTable(tab.getName()) != NULL,
+                 "B getTable: " << dB->getNdbError());
+    dB->invalidateTable(tab.getName());  // by name: marks the shared object
+    const NdbDictionary::Table *tA2 = dA->getTable(tab.getName());
+    PARKED_CHECK(tA2 != NULL, "A getTable #2: " << dA->getNdbError());
+    PARKED_CHECK(tA2 != tA, "A did not refresh the invalidated table");
+    PARKED_CHECK(tA2->getObjectStatus() == NdbDictionary::Object::Retrieved,
+                 "A's refreshed table is not Retrieved");
+    dA->invalidateTable(tA);  // by pointer: the PARKED object
+    const NdbDictionary::Table *tA3 = dA->getTable(tab.getName());
+    PARKED_CHECK(tA3 != NULL, "A getTable #3: " << dA->getNdbError());
+    PARKED_CHECK(tA3 == tA2,
+                 "by-pointer invalidate of the parked table destroyed the "
+                 "current incarnation's cache entry");
+    const NdbDictionary::Table *tB = dB->getTable(tab.getName());
+    PARKED_CHECK(tB != NULL && tB->getObjectStatus() == NdbDictionary::Object::Retrieved,
+                 "B cannot use the table after A's by-pointer invalidate");
+
+    // ---- index (the RonSQL path) ----
+    const NdbDictionary::Index *iA = dA->getIndex(idx.getName(), tab.getName());
+    PARKED_CHECK(iA != NULL, "A getIndex #1: " << dA->getNdbError());
+    PARKED_CHECK(dB->getIndex(idx.getName(), tab.getName()) != NULL,
+                 "B getIndex: " << dB->getNdbError());
+    dB->invalidateIndex(idx.getName(), tab.getName());  // by name
+    const NdbDictionary::Index *iA2 = dA->getIndex(idx.getName(), tab.getName());
+    PARKED_CHECK(iA2 != NULL, "A getIndex #2: " << dA->getNdbError());
+    PARKED_CHECK(iA2 != iA, "A did not refresh the invalidated index");
+    dA->invalidateIndex(iA);  // by pointer: the PARKED index object
+    const NdbDictionary::Index *iA3 = dA->getIndex(idx.getName(), tab.getName());
+    PARKED_CHECK(iA3 != NULL, "A getIndex #3: " << dA->getNdbError());
+    PARKED_CHECK(iA3 == iA2,
+                 "by-pointer invalidate of the parked index destroyed the "
+                 "current incarnation's cache entry");
+    PARKED_CHECK(dB->getIndex(idx.getName(), tab.getName()) != NULL,
+                 "B cannot use the index after A's by-pointer invalidate");
+    // (tA / iA are released and freed at this point: a by-pointer invalidate
+    // takes a live pointer, as it always did; repeated invalidation goes by
+    // name, which is what RonSQL does on its way out.)
+  }
+done:
+#undef PARKED_CHECK
+  // Destroying B releases its references; A's parked references are
+  // released with A. Neither may abort or double-free.
+  delete ndbB;
+  dA->dropIndex(idx.getName(), tab.getName());
+  dA->dropTable(tab.getName());
+  return result;
+}
+
 NDBT_TESTSUITE(testDict);
 TESTCASE("testDropDDObjects",
          "* 1. start cluster\n"
@@ -11572,6 +11693,12 @@ TESTCASE("IndexStatNodeFailures",
   FINALIZER(runDropTheTable);
 }
 
+TESTCASE("InvalidateParkedByPointer",
+         "RONDB-1121 F20: by-pointer invalidateTable/invalidateIndex of a "
+         "parked (RONDB-1092) dictionary object releases exactly its own "
+         "reference and leaves the current incarnation cached") {
+  INITIALIZER(runInvalidateParkedByPointer);
+}
 NDBT_TESTSUITE_END(testDict)
 
 int main(int argc, const char **argv) {
