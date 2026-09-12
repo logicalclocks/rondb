@@ -592,7 +592,8 @@ class DblqhProxy : public LocalProxy {
   void execJOIN_AGG_SETUP_REQ(Signal*);
   void sendJoinAggSetupRef(Signal*, Uint32 senderRef, Uint32 senderData,
                            Uint32 requestId, Uint32 errorCode,
-                           Uint32 errorLine, Uint32 aggStateKey);
+                           Uint32 errorLine, Uint32 aggStateKey,
+                           Uint32 cteIndex);
   void execJOIN_AGG_RELEASE_REQ(Signal*);
   void execJOIN_AGG_NODE_FAIL_REP(Signal*);
 

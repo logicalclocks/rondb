@@ -59,6 +59,20 @@ struct CteStartMainReq {
   Uint32 transId2;
 
   static constexpr Uint32 SignalLength = 4;
+
+  /* RONDB-1120 P2b: optional section 0 — aggregation key/owner
+   * transport (joinagg_setup_overlap_plan.md).  Once execution stops
+   * gating on SETUP_CONF the SCAN_FRAGREQ aggKeys section can no
+   * longer carry keys (built pre-CONF), so DBSPJ's post-READY
+   * consumers (CTE probe routing, feed wire keys) learn them from
+   * the enabling signals instead.  Format: repeated blocks of
+   *   [cteId (0xFFFFFFFF = main aggregation), count,
+   *    count x (nodeId, aggStateKey, ownerInstance)]
+   * CTE_START_MAIN_REQ carries the main block + every CTE's block;
+   * each CTE_PHASE_START_REQ (READY broadcast) carries that one
+   * CTE's block. */
+  enum { KeysSectionNum = 0 };
+  static constexpr Uint32 KEYS_CTE_ID_MAIN = 0xFFFFFFFF;
 };
 
 /**
@@ -104,17 +118,22 @@ struct CtePhaseStartReq {
   Uint32 cteId;         // Which CTE is READY
 
   static constexpr Uint32 SignalLength = 5;
+
+  /* RONDB-1120 P2b: optional section 0 — this CTE's per-node
+   * [nodeId, aggStateKey, ownerInstance] block; format shared with
+   * CteStartMainReq::KeysSectionNum. */
+  enum { KeysSectionNum = 0 };
 };
 
 /**
  * CTE_SCAN_REQ — DBSPJ → DBLQH
  *
  * Scan groups from a materialized CTE hash table.  On the first call
- * (SignalLength=9), DBLQH sends up to batchSize groups as TRANSID_AI
+ * (SignalLength=10), DBLQH sends up to batchSize groups as TRANSID_AI
  * (AttributeHeader-encoded GROUP BY keys + aggregate results +
  * CORR_FACTOR), followed by CTE_SCAN_CONF.
  *
- * On subsequent calls (SignalLengthContinue=10, scanIterI from CONF),
+ * On subsequent calls (SignalLengthContinue=11, scanIterI from CONF),
  * DBLQH resumes from the saved pool-based iterator position.
  *
  * Used by QN_CTE_SCAN nodes when a CTE reads from an earlier CTE.
@@ -151,19 +170,20 @@ struct CteScanReq {
                           // API and DBSPJ.  Used when scanCte is the root
                           // of a CTE subtree that aggregates the scanned
                           // groups (CTE 2 reads from CTE 1).
+  Uint32 coordinatorRef;  // DBTC reference, checked before accessing CTE state
   Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL on first batch;
                           // echoed from CONF on continuation)
   Uint32 flags;           // CloseFlag (DBSPJ → DBLQH "release this scanIterI
-                          // and discard, no CONF expected"). Only read when
+                          // and reply with EndOfData CONF"). Only read when
                           // signal length >= SignalLengthClose.
 
   /* First CTE_SCAN_REQ uses SignalLength (no scanIterI, no flags).
    * Continuation requests use SignalLengthContinue (with scanIterI).
    * Close requests use SignalLengthClose (with scanIterI + flags) and
-   * DBLQH silently releases the pool record — no TRANSID_AI, no CONF. */
-  static constexpr Uint32 SignalLength = 9;
-  static constexpr Uint32 SignalLengthContinue = 10;
-  static constexpr Uint32 SignalLengthClose = 11;
+   * DBLQH releases the pool record and replies with EndOfData CONF. */
+  static constexpr Uint32 SignalLength = 10;
+  static constexpr Uint32 SignalLengthContinue = 11;
+  static constexpr Uint32 SignalLengthClose = 12;
   enum { AttrInfoSectionNum = 0 };
   enum Flags { CloseFlag = 0x1 };
 };
@@ -171,12 +191,14 @@ struct CteScanReq {
 struct CteScanConf {
   Uint32 senderRef;       // DBLQH block reference
   Uint32 senderData;      // TreeNode pointer (echoed from REQ)
-  Uint32 numRows;         // Number of groups sent as TRANSID_AI in this batch
+  Uint32 numRows;         // Number of groups emitted or fed in this batch
   Uint32 flags;           // Flags (EndOfData)
   Uint32 scanIterI;       // CteScanIterState pool i-value (RNIL when EndOfData;
                           // echo back as CteScanReq::scanIterI on continuation)
 
-  static constexpr Uint32 SignalLength = 5;
+  Uint32 numRowsToSpj;    // TRANSID_AI rows sent to the requesting DBSPJ
+
+  static constexpr Uint32 SignalLength = 6;
   enum { EndOfData = 0x1 };
 };
 
@@ -184,8 +206,9 @@ struct CteScanRef {
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 errorCode;
+  Uint32 numRowsToSpj;    // TRANSID_AI rows sent before this error
 
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 4;
 };
 
 #endif  // NDB_CTE_SCAN_HPP

@@ -421,8 +421,12 @@ sendSetupReq(
   req->routeRef = ss.getOwnRef();
   req->cteIndex = RNIL;
 
+  /* RONDB-1120: identity tag — mirrors senderData (this test waits
+   * for RELEASE_CONF between queries, so reuse is safe). */
+  req->queryTag = req->senderData;
+  /* Direct DBLQH sender: use the receiver's connected-node list. */
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
-           JoinAggSetupReq::SignalLength);
+           JoinAggSetupReq::SignalLength_v1);
   const std::vector<Uint32> metadata = buildJoinAggMetadata(aggProg, meta);
   ssig.header.m_noOfSections = 3;
   ssig.ptr[0].p = const_cast<Uint32*>(aggProg.data());
@@ -548,6 +552,7 @@ sendCompleteReq(
   }
 
   Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
+  req->identWord = RNIL;  /* keyed form — no identity (RONDB-1120 P4) */
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
   ssig.header.m_noOfSections = 1;

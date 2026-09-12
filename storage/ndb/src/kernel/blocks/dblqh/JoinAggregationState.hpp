@@ -126,6 +126,14 @@ struct LeafProgram {
  *   Bits 31..24: leaf index (0..255)
  *   Bits 23..0:  base state key (pool index)
  */
+/* RONDB-1120 P2: Dblqh CONTINUEB tags for the waiter-queue parking
+ * (joinagg_setup_overlap_plan.md 2.2).  Shared here because
+ * DblqhProxy sends the flush tag to Dblqh instances while Dblqh.hpp's
+ * Z-define region is DBLQH_C-guarded.  Values continue Dblqh.hpp's
+ * ZCONTINUE_* numbering (53 = ZCONTINUE_CTE_LIMIT_FINALIZE). */
+#define ZCONTINUE_JOIN_AGG_PARK_SWEEP 54
+#define ZCONTINUE_JOIN_AGG_FLUSH_PARKED 55
+
 struct JoinAggregationState {
   //------------------------------------------------------------------
   // ArrayPool free-list link
@@ -150,7 +158,8 @@ struct JoinAggregationState {
     SENDING_RESULTS = 4,     // Sending results to API
     COMPLETED = 5,           // All results sent
     ERROR = 6,
-    ABORTING = 7,
+                             // 7 retired (ABORTING was never stored); value
+                             // kept unused so numeric state dumps stay stable
     WAITING_SEND_CONF = 8,   // Paused at batch limit, waiting for SEND_CONF
     NODE_FAIL_ABORT = 9,     // DBTC node failed, scans closed, awaiting release
     CTE_REDISTRIBUTING = 10, // Sending groups to hash-owner nodes
@@ -161,7 +170,10 @@ struct JoinAggregationState {
   // Identification (immutable after creation)
   //------------------------------------------------------------------
   Uint32 m_transid[2];           // Transaction ID
-  Uint32 m_senderData;           // SPJ request identifier
+  Uint32 m_senderData;           // SPJ request identifier (CONF routing)
+  Uint32 m_queryTag;             // Identity tag (JoinAggSetupReq::queryTag)
+                                 // — key for joinAggIdentity{Insert,
+                                 // Lookup,Remove}, NOT m_senderData
   Uint32 m_requestId;            // Unique request ID for this aggregation
   BlockReference m_senderRef;    // DBTC block reference
   BlockReference m_apiRef;       // API block reference for results
@@ -284,9 +296,11 @@ struct JoinAggregationState {
                                             // merge point is a classification
                                             // violation and aborts the CTE.
 
-  // CTE node distribution (set at SETUP, immutable after)
-  Uint32 m_cte_node_list[MAX_DATA_NODE_ID]; // Live data node IDs at setup time
-  Uint32 m_cte_num_nodes;                   // Number of live data nodes
+  // CTE node distribution (set at SETUP, immutable after): DBTC's SETUP
+  // target set (JoinAggSetupReq::setupNodes) in ascending node order,
+  // the list DBSPJ also routes over; owner = hash % m_cte_num_nodes.
+  Uint32 m_cte_node_list[MAX_DATA_NODE_ID];
+  Uint32 m_cte_num_nodes;
   Uint32 m_cte_remote_aggKeys[ABS_MAX_NDB_NODES]; // Per-node aggStateKeys (indexed by nodeId)
 
   // Phase L (E.1): owning LDM instance on this node for every signal
@@ -306,6 +320,11 @@ struct JoinAggregationState {
   // never sends to remote DBLQHs.
   Uint32 m_cte_remote_ownerInstances[ABS_MAX_NDB_NODES];
 
+  // Owner-LDM counters: sent per destination, applied/expected per source.
+  // Expected counts arrive in FINAL_REP; queued rows count only after merge.
+  Uint64 m_cte_redist_sent[ABS_MAX_NDB_NODES];
+  Uint64 m_cte_redist_applied[ABS_MAX_NDB_NODES];
+  Uint64 m_cte_redist_expected[ABS_MAX_NDB_NODES];
   bool m_cte_redistribution_done;           // This node finished sending
   bool m_cte_scalar_shipped;                // Scalar (no GROUP BY) CTE: this
                                             // node shipped its local
@@ -344,13 +363,16 @@ struct JoinAggregationState {
     RedistQueueEntry *next;
     Uint32 keyLen;        // Key length in bytes
     Uint32 valueLen;      // Accumulator data length in bytes
-    Uint32 data[1];       // Variable: [key_data (keyLen bytes)] [value_data (valueLen bytes)]
+    Uint32 senderNodeId;  // Credit this source only after merging the entry
+    // Variable: key_data followed by value_data, each padded to whole words.
+    alignas(8) Uint32 data[1];
   };
   RedistQueueEntry *m_redist_queue_head;
   RedistQueueEntry *m_redist_queue_tail;
   Uint32 m_redist_queue_count;
 
   // Sender info saved from COMPLETE_REQ for sending COMPLETE_CONF after redistribution
+  bool m_cte_complete_reply_sent;
   Uint32 m_cte_complete_senderRef;
   Uint32 m_cte_complete_senderData;
   Uint32 m_cte_complete_requestId;
@@ -376,6 +398,9 @@ struct JoinAggregationState {
   std::atomic<State> m_state;
   Uint32 m_error_code;           // Error code if m_state == ERROR
 
+  // DblqhProxy only: one teardown chain per allocated pool record.
+  bool m_release_started;
+
   //------------------------------------------------------------------
   // Key-based access — pool index assigned at seize time
   //------------------------------------------------------------------
@@ -390,6 +415,7 @@ struct JoinAggregationState {
   JoinAggregationState() :
     nextPool(RNIL),
     m_senderData(RNIL),
+    m_queryTag(RNIL),
     m_requestId(0),
     m_senderRef(0),
     m_apiRef(0),
@@ -432,6 +458,7 @@ struct JoinAggregationState {
     m_redist_queue_head(nullptr),
     m_redist_queue_tail(nullptr),
     m_redist_queue_count(0),
+    m_cte_complete_reply_sent(false),
     m_cte_complete_senderRef(0),
     m_cte_complete_senderData(0),
     m_cte_complete_requestId(0),
@@ -442,6 +469,7 @@ struct JoinAggregationState {
     m_cteScan_iterRaw(nullptr),
     m_state(IDLE),
     m_error_code(0),
+    m_release_started(false),
     m_key(RNIL),
     m_creation_time(0),
     m_last_activity_time(0)
@@ -462,6 +490,27 @@ struct JoinAggregationState {
   static Uint32 encodeAggStateKey(Uint32 baseKey, Uint32 leafIndex) {
     return (leafIndex << 24) | (baseKey & 0x00FFFFFF);
   }
+  /* RONDB-1120 P1: the consumer identity word — ONE variableData word
+   * carrying everything the identity lookup needs beyond the transid
+   * (which the signals already have):
+   *   [0:15]  queryTag  (DBTC scan record index; the TC scan pool is
+   *                      config-capped far below 64k)
+   *   [16:22] cteId     (0x7F = main aggregation / RNIL)
+   *   [23:30] leafIdx   (8 bits, same width as encodeAggStateKey's)
+   *   [31]    spare
+   */
+  static constexpr Uint32 IDENT_CTE_MAIN = 0x7F;
+  static Uint32 packIdentWord(Uint32 queryTag, Uint32 cteId,
+                              Uint32 leafIdx) {
+    const Uint32 cte7 = (cteId == RNIL) ? IDENT_CTE_MAIN : cteId;
+    return (queryTag & 0xFFFF) | (cte7 << 16) | ((leafIdx & 0xFF) << 23);
+  }
+  static Uint32 identWordQueryTag(Uint32 w) { return w & 0xFFFF; }
+  static Uint32 identWordCteId(Uint32 w) {
+    const Uint32 c = (w >> 16) & 0x7F;
+    return (c == IDENT_CTE_MAIN) ? RNIL : c;
+  }
+  static Uint32 identWordLeafIdx(Uint32 w) { return (w >> 23) & 0xFF; }
   static Uint32 decodeBaseKey(Uint32 aggStateKey) {
     return aggStateKey & 0x00FFFFFF;
   }

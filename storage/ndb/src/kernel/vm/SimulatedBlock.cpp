@@ -58,6 +58,7 @@
 #include <signaldata/Sync.hpp>
 #include <signaldata/TransIdAI.hpp>
 #include <kernel/ViolationType.hpp>
+#include <NdbMutex.h>
 #include "LongSignal.hpp"
 #include "SimulatedBlock.hpp"
 #include "ndbd_malloc.hpp"
@@ -84,12 +85,20 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_TRANSID_AI 1
 #define DEBUG_CTE 1
+#define DEBUG_JOIN_AGG_PARK 1
 #endif
 
 #ifdef DEBUG_CTE
 #define DEB_CTE(arglist) do { g_eventLogger->info arglist ; } while (0)
 #else
 #define DEB_CTE(arglist) do { } while (0)
+#endif
+
+#ifdef DEBUG_JOIN_AGG_PARK
+#define DEB_JOIN_AGG_PARK(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_JOIN_AGG_PARK(arglist) do { } while (0)
 #endif
 
 //
@@ -6293,12 +6302,460 @@ void SimulatedBlock::releaseJoinAggState(Uint32 key) {
   ptr.i = key;
   s_joinAggStatePool.getPtr(ptr);
   DEB_CTE(("releaseJoinAggState(%u, 0x%p)", ptr.i, ptr.p));
+  /* RONDB-1120 P0: safety-net identity unregistration for release
+   * paths that bypass execJOIN_AGG_RELEASE_REQ (e.g. setup-failure
+   * cleanup).  Idempotent — the normal path already removed the
+   * entry at RELEASE processing time. */
+  joinAggIdentityRemove(ptr.p->m_transid, ptr.p->m_queryTag,
+                        ptr.p->m_cte_index, key);
   ptr.p->~JoinAggregationState();
   s_joinAggStatePool.release(ptr);
 }
 
 Uint32 SimulatedBlock::getJoinAggStatePoolSize() {
   return s_joinAggStatePoolSize;
+}
+
+/**
+ * JoinAgg identity hash (RONDB-1120, joinagg_setup_overlap_plan.md).
+ *
+ * Maps identity = (transid[2], queryTag, cteId) -> aggStateKey.
+ * Partitioned by transid with one mutex per partition (the
+ * maintainer's concurrency model, plan 2.2): the DblqhProxy thread
+ * inserts/removes at SETUP/RELEASE processing; LDM threads look up at
+ * consumer attach (P1+).  The partition mutex hand-off is the
+ * happens-before edge that publishes the proxy-constructed
+ * JoinAggregationState to consumer threads once execution no longer
+ * chains from SETUP_CONF (P2).
+ *
+ * Entries come from one shared free list under its own mutex
+ * (free-list traffic is per-query, not hot; a per-partition split
+ * could be exhausted by transid skew).  m_aggStateKey == RNIL and
+ * m_waiterHead are reserved for the P2 placeholder/waiter-queue
+ * machinery — in P0 every entry is inserted fully resolved.
+ */
+struct JoinAggIdentityEntry {
+  Uint32 m_transid[2];
+  Uint32 m_queryTag;     // JoinAggSetupReq::senderData (TC scan record id)
+  Uint32 m_cteId;        // JoinAggSetupReq::cteIndex (RNIL = main agg)
+  Uint32 m_aggStateKey;  // resolved state; RNIL = placeholder (P2)
+  Uint32 m_waiterHead;   // P2: parked-request queue head (RNIL in P0)
+  Uint32 m_next;         // bucket chain / free list link (entry index)
+};
+
+static constexpr Uint32 JAI_PARTITIONS = 32;          // power of two
+static constexpr Uint32 JAI_BUCKETS_PER_PART = 1024;  // power of two
+
+/* All entries are allocated up front (~500 kB per node): the array
+ * never moves, so partition-mutex readers can dereference entries
+ * without any interaction with the free-mutex allocator.  Exhaustion
+ * (more live identities than entries) is a proper setup failure —
+ * JAI_INSERT_NO_MEMORY -> JOIN_AGG_SETUP_REF. */
+static constexpr Uint32 JAI_MAX_ENTRIES = 16384;
+
+struct JoinAggIdentityPartition {
+  NdbMutex *m_mutex;
+  Uint32 m_buckets[JAI_BUCKETS_PER_PART];  // entry index or RNIL
+};
+
+static JoinAggIdentityPartition s_jaiPartitions[JAI_PARTITIONS];
+static JoinAggIdentityEntry *s_jaiEntries = nullptr;
+static Uint32 s_jaiFreeHead = RNIL;
+static NdbMutex *s_jaiFreeMutex = nullptr;
+
+/* RONDB-1120: each early consumer signal needs its own park record.
+ * A single scan batch can issue more than 64 aggregation lookups
+ * while the proxy is still constructing the state.  Allow bursts
+ * across workers and queries with a bounded pool (~2.1 MiB per node,
+ * excluding the detached sections).  Exhaustion still takes the
+ * consumer's error path.  Free list shares s_jaiFreeMutex. */
+static constexpr Uint32 JAI_MAX_PARK = 16384;
+static SimulatedBlock::JoinAggParkRec *s_jaiParkRecs = nullptr;
+static Uint32 s_jaiParkFreeHead = RNIL;
+
+static inline JoinAggIdentityEntry &jaiEntry(Uint32 i) {
+  return s_jaiEntries[i];
+}
+
+/* One hash function serves both the partition and the bucket choice:
+ * disjoint bit ranges of the same value (low 5 bits -> partition,
+ * next 10 bits -> bucket). */
+static inline Uint32 jaiHash(const Uint32 *transid, Uint32 queryTag,
+                             Uint32 cteId) {
+  Uint32 h = transid[0] * 0x9E3779B1;
+  h ^= transid[1] + 0x9E3779B9 + (h << 6) + (h >> 2);
+  h ^= queryTag + 0x85EBCA6B + (h << 6) + (h >> 2);
+  h ^= cteId + 0xC2B2AE35 + (h << 6) + (h >> 2);
+  return h;
+}
+
+static inline Uint32 jaiPartitionOf(Uint32 hash) {
+  return hash & (JAI_PARTITIONS - 1);
+}
+
+static inline Uint32 jaiBucketOf(Uint32 hash) {
+  return (hash >> 5) & (JAI_BUCKETS_PER_PART - 1);
+}
+
+static inline bool jaiMatches(const JoinAggIdentityEntry &e,
+                              const Uint32 *transid, Uint32 queryTag,
+                              Uint32 cteId) {
+  return e.m_transid[0] == transid[0] && e.m_transid[1] == transid[1] &&
+         e.m_queryTag == queryTag && e.m_cteId == cteId;
+}
+
+void SimulatedBlock::initJoinAggIdentityHash() {
+  require(s_jaiEntries == nullptr);
+  s_jaiEntries = new JoinAggIdentityEntry[JAI_MAX_ENTRIES];
+  for (Uint32 i = 0; i < JAI_MAX_ENTRIES; i++) {
+    s_jaiEntries[i].m_next = (i + 1 < JAI_MAX_ENTRIES) ? (i + 1) : RNIL;
+  }
+  s_jaiFreeHead = 0;
+  s_jaiParkRecs = new JoinAggParkRec[JAI_MAX_PARK];
+  for (Uint32 i = 0; i < JAI_MAX_PARK; i++) {
+    s_jaiParkRecs[i].m_next = (i + 1 < JAI_MAX_PARK) ? (i + 1) : RNIL;
+  }
+  s_jaiParkFreeHead = 0;
+  s_jaiFreeMutex = NdbMutex_Create();
+  require(s_jaiFreeMutex != nullptr);
+  for (Uint32 p = 0; p < JAI_PARTITIONS; p++) {
+    s_jaiPartitions[p].m_mutex = NdbMutex_Create();
+    require(s_jaiPartitions[p].m_mutex != nullptr);
+    for (Uint32 b = 0; b < JAI_BUCKETS_PER_PART; b++) {
+      s_jaiPartitions[p].m_buckets[b] = RNIL;
+    }
+  }
+}
+
+SimulatedBlock::JoinAggIdentityInsertResult
+SimulatedBlock::joinAggIdentityInsert(const Uint32 *transid,
+                                      Uint32 queryTag, Uint32 cteId,
+                                      Uint32 aggStateKey,
+                                      Uint32 *waitersOut) {
+  require(s_jaiEntries != nullptr);
+  if (waitersOut != nullptr) {
+    *waitersOut = RNIL;
+  }
+  /* Pre-allocate an entry OUTSIDE the partition mutex so the two
+   * mutexes never nest; rolled back below if the identity turns out
+   * to be present already (a P2 consumer placeholder, or a genuine
+   * duplicate). */
+  Uint32 entryI;
+  NdbMutex_Lock(s_jaiFreeMutex);
+  entryI = s_jaiFreeHead;
+  if (likely(entryI != RNIL)) {
+    s_jaiFreeHead = jaiEntry(entryI).m_next;
+  }
+  NdbMutex_Unlock(s_jaiFreeMutex);
+  if (unlikely(entryI == RNIL)) {
+    /* All JAI_MAX_ENTRIES identities live — refuse the setup. */
+    return JAI_INSERT_NO_MEMORY;
+  }
+
+  JoinAggIdentityEntry &e = jaiEntry(entryI);
+  e.m_transid[0] = transid[0];
+  e.m_transid[1] = transid[1];
+  e.m_queryTag = queryTag;
+  e.m_cteId = cteId;
+  e.m_aggStateKey = aggStateKey;
+  e.m_waiterHead = RNIL;
+
+  const Uint32 hash = jaiHash(transid, queryTag, cteId);
+  JoinAggIdentityPartition &part = s_jaiPartitions[jaiPartitionOf(hash)];
+  const Uint32 bucket = jaiBucketOf(hash);
+  bool rollback = false;
+  JoinAggIdentityInsertResult res = JAI_INSERT_OK;
+  NdbMutex_Lock(part.m_mutex);
+  Uint32 foundI = RNIL;
+  for (Uint32 i = part.m_buckets[bucket]; i != RNIL;
+       i = jaiEntry(i).m_next) {
+    if (jaiMatches(jaiEntry(i), transid, queryTag, cteId)) {
+      foundI = i;
+      break;
+    }
+  }
+  if (unlikely(foundI != RNIL)) {
+    JoinAggIdentityEntry &f = jaiEntry(foundI);
+    rollback = true;  // the pre-allocated entry is not needed
+    if (f.m_aggStateKey == RNIL) {
+      /* P2 contract (plan 2.2): a consumer (LQHKEYREQ /
+       * SCAN_FRAGREQ) that raced ahead of SETUP inserted a
+       * PLACEHOLDER with a queue of parked requests.  Fill it in
+       * place and hand the waiter queue back for re-dispatch.
+       * (P0 never creates placeholders, so this arm is dormant
+       * until the consumer side lands.) */
+      f.m_aggStateKey = aggStateKey;
+      /* A filled placeholder with waiters but no waitersOut would
+       * leak the parked sections and hang the consumers for good —
+       * hard invariant (require: ndbassert needs a block object). */
+      require(f.m_waiterHead == RNIL || waitersOut != nullptr);
+      if (waitersOut != nullptr) {
+        *waitersOut = f.m_waiterHead;
+      }
+      f.m_waiterHead = RNIL;
+      res = JAI_INSERT_OK;
+    } else {
+      /* Two LIVE states with one identity would be a
+       * queryTag-collision bug (or a missed removal). */
+      res = JAI_INSERT_DUPLICATE;
+    }
+  } else {
+    e.m_next = part.m_buckets[bucket];
+    part.m_buckets[bucket] = entryI;
+  }
+  NdbMutex_Unlock(part.m_mutex);
+
+  if (unlikely(rollback)) {
+    NdbMutex_Lock(s_jaiFreeMutex);
+    jaiEntry(entryI).m_next = s_jaiFreeHead;
+    s_jaiFreeHead = entryI;
+    NdbMutex_Unlock(s_jaiFreeMutex);
+  }
+  return res;
+}
+
+Uint32 SimulatedBlock::joinAggIdentityLookup(const Uint32 *transid,
+                                             Uint32 queryTag, Uint32 cteId) {
+  require(s_jaiEntries != nullptr);
+  const Uint32 hash = jaiHash(transid, queryTag, cteId);
+  JoinAggIdentityPartition &part = s_jaiPartitions[jaiPartitionOf(hash)];
+  const Uint32 bucket = jaiBucketOf(hash);
+  Uint32 result = RNIL;
+  NdbMutex_Lock(part.m_mutex);
+  for (Uint32 i = part.m_buckets[bucket]; i != RNIL;
+       i = jaiEntry(i).m_next) {
+    if (jaiMatches(jaiEntry(i), transid, queryTag, cteId)) {
+      result = jaiEntry(i).m_aggStateKey;
+      break;
+    }
+  }
+  NdbMutex_Unlock(part.m_mutex);
+  return result;
+}
+
+Uint32 SimulatedBlock::joinAggVisitStates(
+    Uint32 bucket, void (*visitor)(JoinAggregationState *, void *),
+    void *context) {
+  require(s_jaiEntries != nullptr);
+  const Uint32 totalBuckets = JAI_PARTITIONS * JAI_BUCKETS_PER_PART;
+  require(bucket < totalBuckets);
+  const Uint32 end = (bucket + 64 < totalBuckets)
+                        ? bucket + 64 : totalBuckets;
+  for (; bucket < end; bucket++) {
+    JoinAggIdentityPartition &part =
+        s_jaiPartitions[bucket / JAI_BUCKETS_PER_PART];
+    NdbMutex_Lock(part.m_mutex);
+    // Finish each bucket under the mutex; no entry cursor survives a yield.
+    for (Uint32 i = part.m_buckets[bucket % JAI_BUCKETS_PER_PART];
+         i != RNIL; i = jaiEntry(i).m_next) {
+      const Uint32 key = jaiEntry(i).m_aggStateKey;
+      if (key != RNIL) {
+        JoinAggregationState *state = getJoinAggState(key);
+        require(state != nullptr);
+        // RELEASE must remove the identity before touching the state.
+        visitor(state, context);
+      }
+    }
+    NdbMutex_Unlock(part.m_mutex);
+  }
+  return bucket == totalBuckets ? RNIL : bucket;
+}
+
+void SimulatedBlock::joinAggIdentityStats(Uint32 *entries,
+                                          Uint32 *placeholders,
+                                          Uint32 *parkRecsInUse) {
+  *entries = 0;
+  *placeholders = 0;
+  *parkRecsInUse = 0;
+  if (s_jaiEntries == nullptr) return;
+  for (Uint32 p = 0; p < JAI_PARTITIONS; p++) {
+    JoinAggIdentityPartition &part = s_jaiPartitions[p];
+    NdbMutex_Lock(part.m_mutex);
+    for (Uint32 b = 0; b < JAI_BUCKETS_PER_PART; b++) {
+      for (Uint32 i = part.m_buckets[b]; i != RNIL; i = jaiEntry(i).m_next) {
+        (*entries)++;
+        if (jaiEntry(i).m_aggStateKey == RNIL) (*placeholders)++;
+      }
+    }
+    NdbMutex_Unlock(part.m_mutex);
+  }
+  Uint32 freeRecs = 0;
+  NdbMutex_Lock(s_jaiFreeMutex);
+  for (Uint32 i = s_jaiParkFreeHead; i != RNIL; i = s_jaiParkRecs[i].m_next) {
+    freeRecs++;
+  }
+  NdbMutex_Unlock(s_jaiFreeMutex);
+  *parkRecsInUse = JAI_MAX_PARK - freeRecs;
+}
+
+Uint32 SimulatedBlock::joinAggSeizeParkRec() {
+  require(s_jaiParkRecs != nullptr);
+  Uint32 i;
+  NdbMutex_Lock(s_jaiFreeMutex);
+  i = s_jaiParkFreeHead;
+  if (likely(i != RNIL)) {
+    s_jaiParkFreeHead = s_jaiParkRecs[i].m_next;
+  }
+  NdbMutex_Unlock(s_jaiFreeMutex);
+  if (unlikely(i == RNIL)) {
+    DEB_JOIN_AGG_PARK(("JoinAgg park pool exhausted: capacity=%u",
+                      JAI_MAX_PARK));
+  }
+  return i;
+}
+
+SimulatedBlock::JoinAggParkRec *SimulatedBlock::joinAggGetParkRec(Uint32 i) {
+  require(s_jaiParkRecs != nullptr && i < JAI_MAX_PARK);
+  return &s_jaiParkRecs[i];
+}
+
+void SimulatedBlock::joinAggFreeParkRec(Uint32 i) {
+  require(s_jaiParkRecs != nullptr && i < JAI_MAX_PARK);
+  NdbMutex_Lock(s_jaiFreeMutex);
+  s_jaiParkRecs[i].m_next = s_jaiParkFreeHead;
+  s_jaiParkFreeHead = i;
+  NdbMutex_Unlock(s_jaiFreeMutex);
+}
+
+SimulatedBlock::JoinAggResolveOrParkResult
+SimulatedBlock::joinAggIdentityResolveOrPark(const Uint32 *transid,
+                                             Uint32 queryTag, Uint32 cteId,
+                                             Uint32 parkRecI,
+                                             Uint32 *keyOut) {
+  require(s_jaiEntries != nullptr && parkRecI < JAI_MAX_PARK);
+  *keyOut = RNIL;
+  /* Speculatively take an entry for a possible new placeholder —
+   * OUTSIDE the partition mutex so the mutexes never nest; rolled
+   * back below if unused. */
+  Uint32 entryI;
+  NdbMutex_Lock(s_jaiFreeMutex);
+  entryI = s_jaiFreeHead;
+  if (likely(entryI != RNIL)) {
+    s_jaiFreeHead = jaiEntry(entryI).m_next;
+  }
+  NdbMutex_Unlock(s_jaiFreeMutex);
+
+  const Uint32 hash = jaiHash(transid, queryTag, cteId);
+  JoinAggIdentityPartition &part = s_jaiPartitions[jaiPartitionOf(hash)];
+  const Uint32 bucket = jaiBucketOf(hash);
+  JoinAggResolveOrParkResult res = JAI_ROP_FAILED;
+  bool entryUsed = false;
+  NdbMutex_Lock(part.m_mutex);
+  Uint32 foundI = RNIL;
+  for (Uint32 i = part.m_buckets[bucket]; i != RNIL;
+       i = jaiEntry(i).m_next) {
+    if (jaiMatches(jaiEntry(i), transid, queryTag, cteId)) {
+      foundI = i;
+      break;
+    }
+  }
+  if (foundI != RNIL) {
+    JoinAggIdentityEntry &f = jaiEntry(foundI);
+    if (f.m_aggStateKey != RNIL) {
+      /* SETUP won the race between the caller's failed lookup and
+       * this call — resolve, do not park. */
+      *keyOut = f.m_aggStateKey;
+      res = JAI_ROP_RESOLVED;
+    } else {
+      s_jaiParkRecs[parkRecI].m_next = f.m_waiterHead;
+      f.m_waiterHead = parkRecI;
+      res = JAI_ROP_PARKED;
+    }
+  } else if (entryI != RNIL) {
+    JoinAggIdentityEntry &e = jaiEntry(entryI);
+    e.m_transid[0] = transid[0];
+    e.m_transid[1] = transid[1];
+    e.m_queryTag = queryTag;
+    e.m_cteId = cteId;
+    e.m_aggStateKey = RNIL;  // placeholder
+    s_jaiParkRecs[parkRecI].m_next = RNIL;
+    e.m_waiterHead = parkRecI;
+    e.m_next = part.m_buckets[bucket];
+    part.m_buckets[bucket] = entryI;
+    entryUsed = true;
+    res = JAI_ROP_PARKED_NEW;
+  }
+  NdbMutex_Unlock(part.m_mutex);
+
+  if (entryI != RNIL && !entryUsed) {
+    NdbMutex_Lock(s_jaiFreeMutex);
+    jaiEntry(entryI).m_next = s_jaiFreeHead;
+    s_jaiFreeHead = entryI;
+    NdbMutex_Unlock(s_jaiFreeMutex);
+  }
+  return res;
+}
+
+Uint32 SimulatedBlock::joinAggIdentitySweep(const Uint32 *transid,
+                                            Uint32 queryTag, Uint32 cteId) {
+  require(s_jaiEntries != nullptr);
+  const Uint32 hash = jaiHash(transid, queryTag, cteId);
+  JoinAggIdentityPartition &part = s_jaiPartitions[jaiPartitionOf(hash)];
+  const Uint32 bucket = jaiBucketOf(hash);
+  Uint32 waiters = RNIL;
+  Uint32 removedI = RNIL;
+  NdbMutex_Lock(part.m_mutex);
+  Uint32 *link = &part.m_buckets[bucket];
+  for (Uint32 i = *link; i != RNIL; i = *link) {
+    JoinAggIdentityEntry &e = jaiEntry(i);
+    if (jaiMatches(e, transid, queryTag, cteId)) {
+      if (e.m_aggStateKey == RNIL) {
+        /* Still an unfilled placeholder — SETUP never arrived
+         * (SETUP_REF / lost).  Detach the waiters for abort and
+         * remove the placeholder; a later request inserts a fresh
+         * one with its own sweeper. */
+        waiters = e.m_waiterHead;
+        e.m_waiterHead = RNIL;
+        *link = e.m_next;
+        removedI = i;
+      }
+      break;
+    }
+    link = &e.m_next;
+  }
+  NdbMutex_Unlock(part.m_mutex);
+  if (removedI != RNIL) {
+    NdbMutex_Lock(s_jaiFreeMutex);
+    jaiEntry(removedI).m_next = s_jaiFreeHead;
+    s_jaiFreeHead = removedI;
+    NdbMutex_Unlock(s_jaiFreeMutex);
+  }
+  return waiters;
+}
+
+void SimulatedBlock::joinAggIdentityRemove(const Uint32 *transid,
+                                           Uint32 queryTag, Uint32 cteId,
+                                           Uint32 aggStateKey) {
+  if (s_jaiEntries == nullptr) {
+    return;  // hash never initialized (non-data-node contexts)
+  }
+  const Uint32 hash = jaiHash(transid, queryTag, cteId);
+  JoinAggIdentityPartition &part = s_jaiPartitions[jaiPartitionOf(hash)];
+  const Uint32 bucket = jaiBucketOf(hash);
+  Uint32 removedI = RNIL;
+  NdbMutex_Lock(part.m_mutex);
+  Uint32 *link = &part.m_buckets[bucket];
+  for (Uint32 i = *link; i != RNIL; i = *link) {
+    JoinAggIdentityEntry &e = jaiEntry(i);
+    if (jaiMatches(e, transid, queryTag, cteId)) {
+      /* Only remove the entry that maps to the expected state — an
+       * identity re-registered by a back-to-back query must not be
+       * torn down by a stale duplicate release of the old one. */
+      if (e.m_aggStateKey == aggStateKey) {
+        *link = e.m_next;
+        removedI = i;
+      }
+      break;
+    }
+    link = &e.m_next;
+  }
+  NdbMutex_Unlock(part.m_mutex);
+  if (removedI != RNIL) {
+    NdbMutex_Lock(s_jaiFreeMutex);
+    jaiEntry(removedI).m_next = s_jaiFreeHead;
+    s_jaiFreeHead = removedI;
+    NdbMutex_Unlock(s_jaiFreeMutex);
+  }
 }
 
 #if defined(USE_INIT_GLOBAL_VARIABLES)

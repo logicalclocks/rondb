@@ -63,6 +63,7 @@
 #include <Bitmask.hpp>
 #include <EventLogger.hpp>
 #include <signaldata/NodeFailRep.hpp>
+#include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/ReadNodesConf.hpp>
 #include <signaldata/SignalDroppedRep.hpp>
 #include <util/rondb_hash.hpp>
@@ -797,13 +798,11 @@ void Dbspj::execREAD_CONFIG_REQ(Signal *signal) {
 
 static Uint32 f_STTOR_REF = 0;
 
-void Dbspj::buildDataNodeList() {
-  m_numDataNodes = 0;
-  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
-    if (getNodeInfo(i).m_connected &&
-        getNodeInfo(i).m_type == NodeInfo::DB) {
-      m_dataNodeList[m_numDataNodes++] = i;
-    }
+void Dbspj::cteOwnerNodes(const Request *req, Uint32 cteIdx,
+                          NdbNodeBitmask &mask) const {
+  const Uint32 cnt = cteOwnerCount(req, cteIdx);
+  for (Uint32 k = 0; k < cnt; k++) {
+    mask.set(cteOwnerNode(req, cteIdx, k));
   }
 }
 
@@ -821,7 +820,6 @@ void Dbspj::execSTTOR(Signal *signal) {
     signal->theData[1] = 0;  // 0 -> ... and sample usage statistics
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 1000, 2);
     c_tc = (Dbtc *)globalData.getBlock(DBTC, instance());
-    m_numDataNodes = 0;
   }
 
   if (tphase == 4) {
@@ -830,11 +828,6 @@ void Dbspj::execSTTOR(Signal *signal) {
     signal->theData[0] = reference();
     sendSignal(NDBCNTR_REF, GSN_READ_NODESREQ, signal, 1, JBB);
     return;
-  }
-
-  if (tphase == 7) {
-    jam();
-    buildDataNodeList();
   }
 
   sendSTTORRY(signal);
@@ -1027,7 +1020,6 @@ void Dbspj::execNODE_FAILREP(Signal *signal) {
   failed.assign(NdbNodeBitmask::Size, rep->theNodes);
 
   c_alive_nodes.bitANDC(failed);
-  buildDataNodeList();
 
   /* Clean up possibly fragmented signals being received or sent */
   for (Uint32 node = 1; node < MAX_NDB_NODES; node++) {
@@ -1155,6 +1147,38 @@ void Dbspj::nodeFail_checkRequests(Signal *signal) {
     sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB, lsptr, 1);
   } else if (type == 2) {
     jam();
+  }
+}
+
+/**
+ * DUMP_STATE_ORD: leak checks for autotest (see DumpStateOrd.hpp).
+ */
+void Dbspj::execDUMP_STATE_ORD(Signal *signal) {
+  jamEntry();
+  if (signal->theData[0] == DumpStateOrd::SpjDumpRequests) {
+    jam();
+    /**
+     * Verify no request survives on this instance: every scan and lookup
+     * request must have completed or been cleaned up after an abort,
+     * including those aborted by node failure. Crashes on a leak so
+     * autotest sees it (same discipline as LqhDumpJoinAggStates).
+     */
+    Uint32 leaked = 0;
+    Request_hash *hashes[2] = {&m_scan_request_hash, &m_lookup_request_hash};
+    for (Uint32 h = 0; h < 2; h++) {
+      Request_iterator iter;
+      for (bool ok = hashes[h]->first(iter); ok && !iter.curr.isNull();
+           ok = hashes[h]->next(iter)) {
+        g_eventLogger->info("DUMP 2650: leaked DBSPJ request i=%u state=0x%x "
+                            "outstanding=%u cnt_active=%u bits=0x%x",
+                            iter.curr.i, iter.curr.p->m_state,
+                            iter.curr.p->m_outstanding,
+                            iter.curr.p->m_cnt_active, iter.curr.p->m_bits);
+        leaked++;
+      }
+    }
+    if (leaked != 0) ndbabort();
+    return;
   }
 }
 
@@ -1313,10 +1337,14 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
   requestP->m_cteScansComplete = 0;
+  requestP->m_joinAggQueryTag = RNIL;
   requestP->m_cteScanAllNodes = false;
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_cteAggOwnerInstances = nullptr;
+  requestP->m_cteOwnerNodes = nullptr;
+  requestP->m_cteOwnerCount = nullptr;
+  requestP->m_numCteKeyBlocks = 0;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -1646,11 +1674,31 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       }
 
       /**
+       * RONDB-1120 P1: optional leading [QUERY_TAG_MARKER, queryTag]
+       * block — DBTC's per-query discriminator for identity-based
+       * JoinAggregationState resolution in DBLQH.
+       */
+      static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+      static constexpr Uint32 QUERY_TAG_MARKER = 0xCCEE0001;
+      Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
+      {
+        Uint32 peekTag;
+        if (totalWords >= 2 && reader.peekWord(&peekTag) &&
+            peekTag == QUERY_TAG_MARKER) {
+          jam();
+          Uint32 marker, tag;
+          ndbrequire(reader.getWord(&marker));
+          ndbrequire(reader.getWord(&tag));
+          requestPtr.p->m_joinAggQueryTag = tag;
+          totalWords -= 2;
+          DEB_CTE(("(%u) JoinAgg queryTag=%u", instance(), tag));
+        }
+      }
+
+      /**
        * Read main aggregation [nodeId, aggStateKey] pairs until we hit
        * CTE_KEYS_MARKER or exhaust the section.
        */
-      static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-      const Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
       Uint32 wordsRead = 0;
       while (wordsRead + 2 <= totalWords) {
         Uint32 word0;
@@ -1691,7 +1739,9 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteScanAllNodes = (cteFlags & 0x1) != 0;
 
         const Uint32 max_nodes = MAX_NDB_NODES;
-        const size_t alloc_size = 2 * numCtes * max_nodes * sizeof(Uint32);
+        /* keys | owner instances | owner node lists | owner counts */
+        const size_t alloc_size =
+            (3 * numCtes * max_nodes + numCtes) * sizeof(Uint32);
         void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
                                         getThreadId(), true);
         if (unlikely(mem == nullptr)) {
@@ -1702,6 +1752,11 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
         requestPtr.p->m_cteAggOwnerInstances =
             requestPtr.p->m_cteAggStateKeys + numCtes * max_nodes;
+        requestPtr.p->m_cteOwnerNodes =
+            requestPtr.p->m_cteAggOwnerInstances + numCtes * max_nodes;
+        requestPtr.p->m_cteOwnerCount =
+            requestPtr.p->m_cteOwnerNodes + numCtes * max_nodes;
+        requestPtr.p->m_numCteKeyBlocks = numCtes;
 
         for (Uint32 c = 0; c < numCtes; c++) {
           Uint32 cteId, perCteFlags, cteNodeCount;
@@ -1721,12 +1776,22 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
           m.depMask = depMask;
           m.flags = perCteFlags;
 
+          /* The per-CTE node list is DBTC's SETUP target set for this
+           * CTE (m_aggNodes), written in ascending node order: the owner
+           * list, indexed by the CTE's position c (== its cteId, DBTC
+           * writes the blocks in cteId order). */
+          ndbrequire(cteNodeCount <= max_nodes);
+          requestPtr.p->m_cteOwnerCount[c] = cteNodeCount;
           for (Uint32 n = 0; n < cteNodeCount; n++) {
             Uint32 nodeId, cteAggKey, ownerInstance;
             ndbrequire(reader.getWord(&nodeId));
             ndbrequire(reader.getWord(&cteAggKey));
             ndbrequire(reader.getWord(&ownerInstance));
             ndbrequire(nodeId < max_nodes);
+            ndbrequire(n == 0 ||
+                       nodeId > requestPtr.p->m_cteOwnerNodes[c * max_nodes +
+                                                              n - 1]);
+            requestPtr.p->m_cteOwnerNodes[c * max_nodes + n] = nodeId;
             requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
             requestPtr.p->m_cteAggOwnerInstances[c * max_nodes + nodeId] =
                 ownerInstance;
@@ -1848,10 +1913,14 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_numCtes = 0;
   requestP->m_ctesReady = 0;
   requestP->m_cteScansComplete = 0;
+  requestP->m_joinAggQueryTag = RNIL;
   requestP->m_cteScanAllNodes = false;
   requestP->m_cteContexts = nullptr;
   requestP->m_cteAggStateKeys = nullptr;
   requestP->m_cteAggOwnerInstances = nullptr;
+  requestP->m_cteOwnerNodes = nullptr;
+  requestP->m_cteOwnerCount = nullptr;
+  requestP->m_numCteKeyBlocks = 0;
   requestP->m_active_tree_nodes.clear();
   requestP->m_completed_tree_nodes.set();
   requestP->m_suspended_tree_nodes.clear();
@@ -3642,9 +3711,11 @@ void Dbspj::batchComplete(Signal *signal, Ptr<Request> requestPtr) {
   /**
    * CTE phase: current phase's CTE scans completed on this DBSPJ instance.
    * Report to DBTC and wait for CTE_PHASE_START_REQ or CTE_START_MAIN_REQ.
-   * Do NOT proceed with normal batch completion.
+   * Aborting requests must reach normal completion below so they
+   * reply to TC and release their workers instead of waiting for READY.
    */
-  if (requestPtr.p->m_bits & Request::RT_CTE_PHASE) {
+  if ((requestPtr.p->m_bits & Request::RT_CTE_PHASE) != 0 &&
+      (requestPtr.p->m_state & Request::RS_ABORTING) == 0) {
     jam();
     /**
      * DAG scheduler (cte_dag_scheduler_plan.md): this is a request
@@ -4611,6 +4682,9 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     lc_ndbd_pool_free(requestPtr.p->m_cteAggStateKeys);
     requestPtr.p->m_cteAggStateKeys = nullptr;
     requestPtr.p->m_cteAggOwnerInstances = nullptr;
+    requestPtr.p->m_cteOwnerNodes = nullptr;
+    requestPtr.p->m_cteOwnerCount = nullptr;
+    requestPtr.p->m_numCteKeyBlocks = 0;
   }
   if (requestPtr.p->m_cteContexts != nullptr) {
     /* Release any cached CTE probe-cache sections */
@@ -5045,6 +5119,22 @@ void Dbspj::execSCAN_NEXTREQ(Signal *signal) {
             req->requestInfo))  // Requested close scan
     {
       jam();
+      if (ERROR_INSERTED(17533)) {
+        jam();
+        /* Test hook (NF-1): swallow ONE close from DBTC so that this
+         * worker owes DBTC its close reply, which leaves DBTC in
+         * CLOSING_SCAN with a reply owed by this node; the test then
+         * kills the node. The request is left exactly as it was before
+         * the close arrived (waiting for a SCAN_NEXTREQ), so the node
+         * kill, or a later real close, cleans it up. */
+        CLEAR_ERROR_INSERT_VALUE;
+        requestPtr.p->m_state = state;
+        g_eventLogger->info(
+            "DBSPJ %u: error insert 17533 swallowed the close of request %u "
+            "(transid 0x%x 0x%x)",
+            instance(), requestPtr.i, req->transId1, req->transId2);
+        return;
+      }
       abort(signal, requestPtr, 0);  // Stop query, no error
       break;
     }
@@ -6190,8 +6280,8 @@ const Dbspj::OpInfo Dbspj::g_CteLookupOpInfo = {
     0,                          // parent_batch_cleanup
     0,                          // execSCAN_NEXTREQ
     0,                          // complete
-    0,                          // abort
-    0,                          // execNODE_FAILREP
+    &Dbspj::cte_lookup_abort,
+    &Dbspj::cte_lookup_execNODE_FAILREP,
     &Dbspj::cte_lookup_cleanup,
     &Dbspj::cte_lookup_checkNode,
     &Dbspj::cte_lookup_dumpNode};
@@ -6228,6 +6318,8 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_primaryTableId = 0;
     treeNodePtr.p->m_schemaVersion = 0;
     treeNodePtr.p->m_info = &g_CteLookupOpInfo;
+    /* cleanup_common() can run after any subsequent build failure. */
+    treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
     // T_EXPECT_TRANSID_AI is set by parseDA if it adds CORR_FACTOR32
     // to the AttrInfo (depends on INNER_JOIN / linked attributes).
     // Do NOT set it unconditionally here.
@@ -6248,9 +6340,23 @@ Uint32 Dbspj::cte_lookup_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_cteLookup_data.m_numResultCols = numResultCols;
     treeNodePtr.p->m_cteLookup_data.m_outstanding = 0;
     treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
+    /* Same topology as cte_scan_build: the alive nodes plus this CTE's
+     * owner set (DBTC's SETUP targets from the aggKeys section, indexed
+     * by cteId), so both CTE nodes abort under identical failures.  A
+     * CTE node without that section has no owners to route to. */
+    if (unlikely(requestPtr.p->m_cteOwnerNodes == nullptr ||
+                 node->cteId >= requestPtr.p->m_numCteKeyBlocks)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
+    }
+    treeNodePtr.p->m_cteLookup_data.m_nodes = c_alive_nodes;
+    cteOwnerNodes(requestPtr.p, node->cteId,
+                  treeNodePtr.p->m_cteLookup_data.m_nodes);
+    memset(treeNodePtr.p->m_cteLookup_data.m_nodeOutstanding, 0,
+           MAX_NDB_NODES * sizeof(Uint32));
     treeNodePtr.p->m_cteLookup_data.m_api_resultRef = ctx.m_resultRef;
     treeNodePtr.p->m_cteLookup_data.m_api_resultData = ctx.m_resultData;
-    treeNodePtr.p->m_cteLookup_data.m_virtTypeInfo = nullptr;
     treeNodePtr.p->m_cteLookup_data.m_numKeyPositions = numKeyPositions;
     DEB_CTE(("(%u) cte_lookup_build: node=%u resultRef=0x%x resultData=0x%x "
              "rootResultData=0x%x",
@@ -6520,19 +6626,80 @@ void Dbspj::cte_lookup_countSignal(Signal *signal, Ptr<Request> requestPtr,
            requestPtr.p->m_outstanding,
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
            requestPtr.p->m_completed_tree_nodes.rep.data[0]));
-  ndbassert(requestPtr.p->m_outstanding >= cnt);
-  requestPtr.p->m_outstanding -= cnt;
-
-  ndbassert(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
-
+  cte_lookup_countReplies(requestPtr, treeNodePtr,
+                           refToNode(signal->getSendersBlockRef()), cnt);
   maybeResumeCongestedNodes(signal, requestPtr, treeNodePtr);
+}
+
+void Dbspj::cte_lookup_countReplies(Ptr<Request> requestPtr,
+                                     Ptr<TreeNode> treeNodePtr,
+                                     Uint32 nodeId, Uint32 cnt) {
+  CteLookupData &data = treeNodePtr.p->m_cteLookup_data;
+  ndbrequire(nodeId < MAX_NDB_NODES);
+  const Uint32 outstanding = data.m_nodeOutstanding[nodeId];
+  ndbrequire(outstanding >= cnt);
+  ndbrequire(data.m_outstanding >= cnt);
+  ndbrequire(requestPtr.p->m_outstanding >= cnt);
+  data.m_nodeOutstanding[nodeId] = outstanding - cnt;
+  data.m_outstanding -= cnt;
+  requestPtr.p->m_outstanding -= cnt;
+  cte_lookup_checkComplete(requestPtr, treeNodePtr);
+}
+
+void Dbspj::cte_lookup_checkComplete(Ptr<Request> requestPtr,
+                                      Ptr<TreeNode> treeNodePtr) {
+  if (treeNodePtr.p->m_cteLookup_data.m_outstanding != 0) return;
+  requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+  if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
+    jam();
+    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+    ndbrequire(requestPtr.p->m_cnt_active > 0);
+    DEC_CNT_ACTIVE(requestPtr.p, "cte_lookup_checkComplete",
+                   treeNodePtr.p->m_node_no);
+  }
+}
+
+void Dbspj::cte_lookup_abort(Signal *, Ptr<Request> requestPtr,
+                               Ptr<TreeNode> treeNodePtr) {
+  jam();
+  treeNodePtr.p->m_cteLookup_data.m_pendingCount = 0;
+  // Replies from live nodes must still drain before completion.
+  cte_lookup_checkComplete(requestPtr, treeNodePtr);
+}
+
+Uint32 Dbspj::cte_lookup_execNODE_FAILREP(Signal *,
+                                          Ptr<Request> requestPtr,
+                                          Ptr<TreeNode> treeNodePtr,
+                                          NdbNodeBitmask mask) {
+  CteLookupData &data = treeNodePtr.p->m_cteLookup_data;
+  // Drain every failed node we charged, not only the build-time
+  // topology: an owner that was connected but not yet included when
+  // this node was built is absent from m_nodes yet may hold probes.
+  Uint32 drained = 0;
+  Uint32 node = 0;
+  while ((node = mask.find(node + 1)) != NdbNodeBitmask::NotFound) {
+    const Uint32 cnt = data.m_nodeOutstanding[node];
+    if (cnt != 0) {
+      jam();
+      // NODE_FAILREP guarantees no further replies from this node.
+      cte_lookup_countReplies(requestPtr, treeNodePtr, node, cnt);
+      drained++;
+    }
+  }
+  // Also abort between probes: the materialized CTE's ownership was
+  // established before this failure and cannot be rehashed in place.
+  // nodeFail() performs abort + checkBatchComplete after the callbacks.
+  mask.bitAND(data.m_nodes);
+  if (drained == 0 && mask.isclear()) return 0;
+  jam();
+  return 1;
 }
 
 void Dbspj::cte_lookup_parent_row(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr,
                             const RowPtr &rowRef) {
   jam();
+  if (requestPtr.p->m_state & Request::RS_ABORTING) return;
   const Uint32 cteId = treeNodePtr.p->m_cteLookup_data.m_cteId;
   DEB_CTE(("(%u) cte_lookup_parent_row: node=%u cteId=%u",
            instance(), treeNodePtr.p->m_node_no, cteId));
@@ -6679,6 +6846,15 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
                              Ptr<TreeNode> treeNodePtr,
                              const RowPtr &rowRef) {
   jam();
+  if (requestPtr.p->m_state & Request::RS_ABORTING) return;
+  NdbNodeBitmask failed = treeNodePtr.p->m_cteLookup_data.m_nodes;
+  failed.bitANDC(c_alive_nodes);
+  if (!failed.isclear()) {
+    // The request sweep may not have reached us yet. Do not hash
+    // against the rebuilt node list or serve a cached result.
+    abort(signal, requestPtr, DbspjErr::NodeFailure);
+    return;
+  }
   DEB_CTE(("(%u) cte_lookup_send: node=%u cteId=%u",
            instance(), treeNodePtr.p->m_node_no,
            treeNodePtr.p->m_cteLookup_data.m_cteId));
@@ -6698,6 +6874,9 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
     }
     ndbrequire(cteIdx != RNIL);
+    /* This CTE's owner list: DBTC's SETUP target set, the list every
+     * DBLQH hashes over (JoinAggSetupReq::setupNodes). */
+    const Uint32 numOwners = cteOwnerCount(requestPtr.p, cteIdx);
     const bool singleRowCte =
         (requestPtr.p->m_cteContexts[cteIdx].m_flags &
          QN_CteSubtreeNode::CTE_SINGLE_ROW) != 0;
@@ -6797,7 +6976,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
        * from the QueryTree subset-key list — replacing the sequential
        * GROUP BY normalization — and write the stamped buffer back so
        * DBLQH's compare arm reads the positions off the wire. */
-      if (m_numDataNodes > 1) {
+      if (numOwners > 1) {
         jam();
         targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
@@ -6828,7 +7007,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         }
         writeToSection(keyInfoPtrI, 0, keyBuf, keyPtr.sz);
       }
-    } else if (m_numDataNodes > 1) {
+    } else if (numOwners > 1) {
       jam();
       const Uint32 localCteAggKey =
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + getOwnNodeId()];
@@ -6867,8 +7046,8 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
           const Uint64 h = cte_lookup_hash_key(
               localCteInterp, reinterpret_cast<const char *>(keyBuf),
               keyLenBytes, nGbCols);
-          const Uint32 ownerIdx = static_cast<Uint32>(h) % m_numDataNodes;
-          targetNodeId = m_dataNodeList[ownerIdx];
+          const Uint32 ownerIdx = static_cast<Uint32>(h) % numOwners;
+          targetNodeId = cteOwnerNode(requestPtr.p, cteIdx, ownerIdx);
         }
       } else {
         jam();
@@ -6881,6 +7060,13 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
          * per-fragment MIN), which is wrong on multi-node topologies. */
         targetNodeId = refToNode(requestPtr.p->m_senderRef);
       }
+    }
+    /* An owner this node cannot reach: abort the query rather than
+     * route the probe elsewhere - no other node holds those groups. */
+    if (unlikely(!getNodeInfo(targetNodeId).m_connected)) {
+      jam();
+      err = DbspjErr::NodeFailure;
+      break;
     }
     Uint32 targetAggKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
@@ -7124,6 +7310,10 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         // Main query: feed into main aggregation
         baseKey = requestPtr.p->m_aggStateKeys[targetNodeId];
       }
+      /* P2c: this path runs post-READY / post-START_MAIN, after the
+       * P2b carriers installed real keys — RNIL here means a carrier
+       * bug (encode would mangle it into a live-looking key). */
+      ndbrequire(baseKey != RNIL);
       Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
       joinAggStateKey =
           JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
@@ -7259,6 +7449,7 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
     requestPtr.p->m_completed_tree_nodes.clear(treeNodePtr.p->m_node_no);
     requestPtr.p->m_outstanding += cnt;
     treeNodePtr.p->m_cteLookup_data.m_outstanding += cnt;
+    treeNodePtr.p->m_cteLookup_data.m_nodeOutstanding[targetNodeId] += cnt;
     DEB_CTE(("(%u) cte_lookup_send: outstanding after: req=%u node=%u",
              instance(), requestPtr.p->m_outstanding,
              treeNodePtr.p->m_cteLookup_data.m_outstanding));
@@ -7301,11 +7492,13 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
            treeNodePtr.p->m_cteLookup_data.m_outstanding,
            requestPtr.p->m_outstanding));
 
-  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding > 0);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding--;
-
-  ndbrequire(requestPtr.p->m_outstanding > 0);
-  requestPtr.p->m_outstanding--;
+  cte_lookup_countReplies(requestPtr, treeNodePtr,
+                           refToNode(signal->getSendersBlockRef()), 1);
+  if (requestPtr.p->m_state & Request::RS_ABORTING) {
+    releaseSections(handle);
+    checkBatchComplete(signal, requestPtr);
+    return;
+  }
 
   /* G2a/G2b probe-outcome cache: attribute the CONF to the fill probe
    * via the echoed correlation.  With a dual-shipped row section the
@@ -7347,19 +7540,6 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
   }
   /* Release any section not stolen by the cache fill above. */
   releaseSections(handle);
-
-  // Mark node complete when all CTE_LOOKUP responses received.
-  // cte_lookup_send cleared the bit; restore it when done.
-  if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
-      jam();
-      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-      ndbrequire(requestPtr.p->m_cnt_active > 0);
-      DEC_CNT_ACTIVE(requestPtr.p, "execCTE_LOOKUP_CONF",
-                     treeNodePtr.p->m_node_no);
-    }
-  }
 
   // Count FLUSH_AI result sent to API — same as lookup_countSignal does
   // for regular lookups (T_USER_PROJECTION → m_rows++). Without this,
@@ -7442,27 +7622,15 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0,
            refCorrelation));
 
-  ndbrequire(treeNodePtr.p->m_cteLookup_data.m_outstanding >= cnt);
-  treeNodePtr.p->m_cteLookup_data.m_outstanding -= cnt;
+  cte_lookup_countReplies(requestPtr, treeNodePtr,
+                           refToNode(signal->getSendersBlockRef()), cnt);
 
-  ndbrequire(requestPtr.p->m_outstanding >= cnt);
-  requestPtr.p->m_outstanding -= cnt;
-
-  if (treeNodePtr.p->m_cteLookup_data.m_outstanding == 0) {
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-    if (treeNodePtr.p->m_state == TreeNode::TN_ACTIVE) {
-      jam();
-      treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-      ndbrequire(requestPtr.p->m_cnt_active > 0);
-      DEC_CNT_ACTIVE(requestPtr.p, "execCTE_LOOKUP_REF",
-                     treeNodePtr.p->m_node_no);
-    }
-  }
-
-  if (errorCode != CteLookupRef::GROUP_NOT_FOUND) {
+  if (errorCode != CteLookupRef::GROUP_NOT_FOUND ||
+      (requestPtr.p->m_state & Request::RS_ABORTING)) {
     jam();
-    // Internal error — abort the request
+    // Drain live-node replies during abort without injecting NULL rows.
     abort(signal, requestPtr, errorCode);
+    checkBatchComplete(signal, requestPtr);
     return;
   }
 
@@ -7535,6 +7703,8 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
     if (unlikely(err != 0)) {
       jam();
       abort(signal, requestPtr, err);
+      // This REF may have been the last outstanding reply.
+      checkBatchComplete(signal, requestPtr);
       return;
     }
   }
@@ -7732,7 +7902,7 @@ const Dbspj::OpInfo Dbspj::g_CteScanOpInfo = {
     &Dbspj::cte_scan_execSCAN_NEXTREQ,
     0,                              // complete
     &Dbspj::cte_scan_abort,
-    0,                              // execNODE_FAILREP
+    &Dbspj::cte_scan_execNODE_FAILREP,
     &Dbspj::cte_scan_cleanup,
     &Dbspj::cte_scan_checkNode,
     &Dbspj::cte_scan_dumpNode};
@@ -7770,6 +7940,8 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     treeNodePtr.p->m_primaryTableId = 0;
     treeNodePtr.p->m_schemaVersion = 0;
     treeNodePtr.p->m_info = &g_CteScanOpInfo;
+    /* cleanup_common() can run after any subsequent build failure. */
+    treeNodePtr.p->m_cteScan_data.m_virtTypeInfo = nullptr;
     treeNodePtr.p->m_bits |= TreeNode::T_ATTR_INTERPRETED;
     treeNodePtr.p->m_bits |= TreeNode::T_ONE_SHOT;
 
@@ -7783,8 +7955,16 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
     data.m_numResultCols = node->numResultCols;
     data.m_aggStateKey = RNIL;  /* Resolved at start from m_cteAggStateKeys */
     data.m_outstanding = 0;
-    data.m_rowsReceived = 0;
-    data.m_rowsExpecting = 0;
+    data.m_numNodeSlots = 0;
+    /* Alive nodes plus this CTE's owner set (see cte_lookup_build). */
+    if (unlikely(requestPtr.p->m_cteOwnerNodes == nullptr ||
+                 node->cteId >= requestPtr.p->m_numCteKeyBlocks)) {
+      jam();
+      err = DbspjErr::InvalidTreeNodeSpecification;
+      break;
+    }
+    data.m_nodes = c_alive_nodes;
+    cteOwnerNodes(requestPtr.p, node->cteId, data.m_nodes);
     /* Derive batch size from the originating SCAN_FRAGREQ's
      * batch_size_rows so SCAN_NEXTREQ-driven resumption in
      * cte_scan_execSCAN_NEXTREQ honours the API-requested pacing.
@@ -7821,7 +8001,6 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
      * for a different fragment captures its own API ref here. */
     data.m_api_resultRef = ctx.m_resultRef;
     data.m_joinAggStateKey = RNIL;  /* Computed at start when T_AGG_LEAF */
-    data.m_virtTypeInfo = nullptr;
 
     treeNodePtr.p->m_batch_size = data.m_batchSize;
 
@@ -7882,21 +8061,32 @@ Uint32 Dbspj::cte_scan_build(Build_context &ctx, Ptr<Request> requestPtr,
 }
 
 Dbspj::CteScanData::NodeSlot *
-Dbspj::cte_scan_findOrAddNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
+Dbspj::cte_scan_findNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
   for (Uint32 i = 0; i < data.m_numNodeSlots; i++) {
     if (data.m_nodeSlots[i].m_sourceNodeId == sourceNodeId) {
       return &data.m_nodeSlots[i];
     }
   }
+  return nullptr;
+}
+
+Dbspj::CteScanData::NodeSlot *
+Dbspj::cte_scan_findOrAddNodeSlot(CteScanData &data, Uint32 sourceNodeId) {
+  CteScanData::NodeSlot *slot = cte_scan_findNodeSlot(data, sourceNodeId);
+  if (slot != nullptr) return slot;
   if (unlikely(data.m_numNodeSlots >= CteScanData::MAX_CTE_SCAN_NODE_SLOTS)) {
     return nullptr;
   }
-  CteScanData::NodeSlot *slot = &data.m_nodeSlots[data.m_numNodeSlots++];
+  slot = &data.m_nodeSlots[data.m_numNodeSlots++];
+  ndbrequire(sourceNodeId < MAX_NDB_NODES);
   slot->m_sourceNodeId = sourceNodeId;
   slot->m_ownerInstance = 1;
   slot->m_scanIterI = RNIL;
   slot->m_endOfData = false;
   slot->m_close_pending = false;
+  slot->m_rowsOutstanding = 0;
+  slot->m_confPending = false;
+  slot->m_batchPending = false;
   return slot;
 }
 
@@ -7906,6 +8096,15 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
                               Uint32 ownerInstance,
                               Uint32 joinAggStateKey, Uint32 scanIterI) {
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  if (requestPtr.p->m_state & Request::RS_ABORTING) return;
+  if (unlikely(!getNodeInfo(sourceNodeId).m_connected)) {
+    jam();
+    abort(signal, requestPtr, DbspjErr::NodeFailure);
+    return;
+  }
+  CteScanData::NodeSlot *slot = cte_scan_findNodeSlot(data, sourceNodeId);
+  ndbrequire(slot != nullptr && !slot->m_batchPending);
+  ndbrequire(slot->m_rowsOutstanding == 0 && !slot->m_confPending);
 
   CteScanReq *req =
       reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
@@ -7923,6 +8122,7 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
   req->resultRef = data.m_api_resultRef;
   req->resultData = requestPtr.p->m_rootResultData;
   req->joinAggStateKey = joinAggStateKey;
+  req->coordinatorRef = requestPtr.p->m_senderRef;
   req->scanIterI = scanIterI;
 
   /* Attach AttrInfo section (with FLUSH_AI + user projection) when
@@ -7948,15 +8148,20 @@ void Dbspj::cte_scan_sendReq(Signal *signal, Ptr<Request> requestPtr,
   const Uint32 length =
       (scanIterI == RNIL) ? CteScanReq::SignalLength
                           : CteScanReq::SignalLengthContinue;
+  if (scanIterI != RNIL) {
+    /* Test hook: the requester dies as it asks for its second batch,
+     * leaving every source paused with a live iterator token. */
+    CRASH_INSERTION(17532);
+  }
   ndbrequire(ownerInstance > 0);
   Uint32 ref = numberToRef(DBLQH, ownerInstance, sourceNodeId);
   sendSignal(ref, GSN_CTE_SCAN_REQ, signal, length, JBB,
              cnt > 0 ? &handle : nullptr);
 
+  slot->m_confPending = true;
+  slot->m_batchPending = true;
   data.m_outstanding++;
-  /* Per-REQ increment so checkBatchComplete fires at every batch
-   * boundary (fragmentCompleted=0 + activeMask) and the API drives
-   * the next batch with SCAN_NEXTREQ. */
+  // Retain this obligation until CONF/REF AND all declared rows arrive.
   requestPtr.p->m_outstanding++;
 }
 
@@ -7964,13 +8169,25 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr) {
   jam();
   DEB_CTE(("(%u) cte_scan_start: node=%u cteId=%u rootFragId=%u "
-           "numDataNodes=%u RT_CTE_PHASE=%d m_cteId=%u",
+           "RT_CTE_PHASE=%d m_cteId=%u",
            instance(), treeNodePtr.p->m_node_no,
            treeNodePtr.p->m_cteScan_data.m_cteId,
-           requestPtr.p->m_rootFragId, m_numDataNodes,
+           requestPtr.p->m_rootFragId,
            !!(requestPtr.p->m_bits & Request::RT_CTE_PHASE),
            treeNodePtr.p->m_cteId));
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
+
+  if (requestPtr.p->m_state & Request::RS_ABORTING) return;
+  Uint32 nodeId = 0;
+  while ((nodeId = data.m_nodes.find(nodeId + 1)) !=
+         NdbNodeBitmask::NotFound) {
+    if (unlikely(!getNodeInfo(nodeId).m_connected)) {
+      // The failure sweep may not have reached this request yet.
+      // Do not map rootFragId against a topology changed by failure.
+      abort(signal, requestPtr, DbspjErr::NodeFailure);
+      return;
+    }
+  }
 
   /* Resolve aggStateKey for this CTE from the Request's CTE key table */
   const Uint32 cteId = data.m_cteId;
@@ -7994,8 +8211,6 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
 
   /* Reset scan state */
   data.m_outstanding = 0;
-  data.m_rowsReceived = 0;
-  data.m_rowsExpecting = 0;
   data.m_endOfData = false;
   data.m_numNodeSlots = 0;
 
@@ -8018,11 +8233,9 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     requestPtr.p->m_active_tree_nodes.set(treeNodePtr.p->m_node_no);
   }
 
-  /* requestPtr.m_outstanding is bumped per-REQ inside cte_scan_sendReq
-   * and decremented per CTE_SCAN_CONF in execCTE_SCAN_CONF, mirroring
-   * the scanFrag model.  That gives checkBatchComplete a chance to
-   * fire at every batch boundary (fragmentCompleted=0 + activeMask),
-   * so the API can pace the scan via SCAN_NEXTREQ. */
+  /* Each source batch holds one request obligation until both the
+   * reply and its rows arrive. The API then paces the next batch
+   * through SCAN_NEXTREQ. */
 
   /* Treat data nodes as fragments for scanCte: with N data nodes,
    * only rootFragId 0..N-1 are "valid" and actually scan their local
@@ -8039,7 +8252,12 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * only one LDM instance per node should read from them.  Real
    * table scans (scanFrag_start) are different: each LDM instance
    * scans its own local fragment partition. */
-  ndbrequire(m_numDataNodes > 0);
+  /* The CTE's owner list is DBTC's SETUP target set in ascending node
+   * order (aggKeys section); DBLQH builds the same list from
+   * JoinAggSetupReq::setupNodes, so virtual fragment K is the K-th
+   * owner on every node. */
+  const Uint32 numOwners = cteOwnerCount(requestPtr.p, cteIdx);
+  ndbrequire(numOwners > 0);
   /* This virtual-fragment -> data-node mapping keys on the request's
    * single m_rootFragId and assumes exactly one root fragment per
    * request: a fragsPerWorker > 1 bundle would make the set of
@@ -8049,11 +8267,11 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
    * CTE_SCAN (scanCte) operation — only CTE_LOOKUP-probed CTEs may
    * bundle.  Tripwire: */
   ndbassert(requestPtr.p->m_rootFragCnt <= 1);
-  if (requestPtr.p->m_rootFragId >= m_numDataNodes) {
+  if (requestPtr.p->m_rootFragId >= numOwners) {
     jam();
     DEB_CTE(("(%u) cte_scan_start: skip non-node fragment rootFragId=%u "
-             "numDataNodes=%u node=%u",
-             instance(), requestPtr.p->m_rootFragId, m_numDataNodes,
+             "numOwners=%u node=%u",
+             instance(), requestPtr.p->m_rootFragId, numOwners,
              treeNodePtr.p->m_node_no));
     /* Force completion without sending any REQ.  No per-REQ bump was
      * made, so nothing to decrement from requestPtr.m_outstanding. */
@@ -8070,10 +8288,9 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     return;
   }
 
-  /* rootFragId < m_numDataNodes — map the fragment to the data node
-   * whose local CTE partition we must scan. m_dataNodeList[K] is the
-   * nodeId of the K-th connected DB node. */
-  targetNodeId = m_dataNodeList[requestPtr.p->m_rootFragId];
+  /* rootFragId < numOwners: the fragment maps to the data node whose
+   * local CTE partition we must scan, the rootFragId-th owner. */
+  targetNodeId = cteOwnerNode(requestPtr.p, cteIdx, requestPtr.p->m_rootFragId);
 
   /* Determine joinAggStateKey: when scanCte is an aggregate leaf,
    * the scanned groups feed into a JoinAggInterpreter (typically the
@@ -8102,6 +8319,8 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       // Main query aggregate leaf: feed into main aggregation.
       baseKey = requestPtr.p->m_aggStateKeys[targetNodeId];
     }
+    /* P2c: post-READY path — see the cte_lookup_send twin. */
+    ndbrequire(baseKey != RNIL);
     Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
     joinAggStateKey =
         JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
@@ -8112,7 +8331,7 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     jam();
     /* Common case: per-fragment scan (instances >= nodes).
      * Send one CTE_SCAN_REQ to the DBLQH owning rootFragId's partition
-     * (targetNodeId = m_dataNodeList[rootFragId]); may be remote. */
+     * (targetNodeId = the rootFragId-th owner); may be remote. */
     data.m_aggStateKey =
         requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + targetNodeId];
     const Uint32 ownerInstance =
@@ -8131,10 +8350,10 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
     /* Uncommon case: instances < nodes.  Send CTE_SCAN_REQ to ALL
      * nodes that have CTE state.  The m_cteScan_active guard in DBLQH
      * ensures each node's partition is scanned at most once. */
-    for (Uint32 nodeId = 1; nodeId < max_nodes; nodeId++) {
-      Uint32 aggKey =
+    for (Uint32 k = 0; k < numOwners; k++) {
+      const Uint32 nodeId = cteOwnerNode(requestPtr.p, cteIdx, k);
+      const Uint32 aggKey =
           requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
-      if (aggKey == 0) continue;  /* No CTE state on this node */
       const Uint32 ownerInstance =
           requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + nodeId];
       ndbrequire(ownerInstance > 0);
@@ -8147,39 +8366,76 @@ void Dbspj::cte_scan_start(Signal *signal, Ptr<Request> requestPtr,
       cte_scan_sendReq(signal, requestPtr, treeNodePtr, nodeId,
                        aggKey, ownerInstance, joinAggStateKey,
                        /*scanIterI=*/ RNIL);
+      if (requestPtr.p->m_state & Request::RS_ABORTING) return;
     }
   }
 }
 
 /**
- * Count TRANSID_AI signals for CTE scan.
- *
- * requestPtr.m_outstanding is bumped/decremented per CTE_SCAN_REQ
- * in cte_scan_sendReq / execCTE_SCAN_CONF (mirroring the scanFrag
- * model), so this function only transitions the tree node to
- * TN_INACTIVE when the entire scan has finished (endOfData seen AND
- * all expected rows received).  Handles the race where a row arrives
- * AFTER the final CONF and tips the received==expected balance.
+ * A source batch holds one obligation until its reply and all rows arrive.
+ * Do not send a close until that batch drains: its reply has the iterator
+ * token and its row signals may still be in transit.
  */
+void Dbspj::cte_scan_finishBatch(Signal *signal, Ptr<Request> requestPtr,
+                                   Ptr<TreeNode> treeNodePtr,
+                                   CteScanData::NodeSlot &slot) {
+  if (!slot.m_batchPending || slot.m_confPending ||
+      slot.m_rowsOutstanding != 0) return;
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  ndbrequire(data.m_outstanding > 0 && requestPtr.p->m_outstanding > 0);
+  slot.m_batchPending = false;
+  data.m_outstanding--;
+  requestPtr.p->m_outstanding--;
+  if (slot.m_close_pending && !slot.m_endOfData) {
+    jam();
+    slot.m_close_pending = false;
+    cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
+                          slot.m_sourceNodeId, slot.m_ownerInstance,
+                          slot.m_scanIterI);
+  }
+}
+
+bool Dbspj::cte_scan_checkComplete(Ptr<Request> requestPtr,
+                                    Ptr<TreeNode> treeNodePtr) {
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  data.m_endOfData = true;
+  for (Uint32 i = 0; i < data.m_numNodeSlots; i++) {
+    if (!data.m_nodeSlots[i].m_endOfData) {
+      data.m_endOfData = false;
+      return false;
+    }
+  }
+  if (data.m_outstanding != 0 ||
+      treeNodePtr.p->m_state != TreeNode::TN_ACTIVE) return false;
+  jam();
+  treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
+  ndbrequire(requestPtr.p->m_cnt_active > 0);
+  DEC_CNT_ACTIVE(requestPtr.p, "cte_scan_checkComplete",
+                 treeNodePtr.p->m_node_no);
+  requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+  if (!(requestPtr.p->m_state & Request::RS_ABORTING) &&
+      (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN)) {
+    requestPtr.p->m_cteScansComplete++;
+  }
+  return true;
+}
+
 void Dbspj::cte_scan_countSignal(Signal *signal, Ptr<Request> requestPtr,
                                   Ptr<TreeNode> treeNodePtr, Uint32 cnt) {
   jam();
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
-  data.m_rowsReceived += cnt;
-
-  if (data.m_outstanding == 0 &&
-      data.m_endOfData &&
-      data.m_rowsReceived == data.m_rowsExpecting) {
-    jam();
-    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-    ndbrequire(requestPtr.p->m_cnt_active > 0);
-    DEC_CNT_ACTIVE(requestPtr.p, "cte_scan_countSignal",
-                   treeNodePtr.p->m_node_no);
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
-      requestPtr.p->m_cteScansComplete++;
-    }
-  }
+  CteScanData::NodeSlot *slot =
+      cte_scan_findNodeSlot(data, refToNode(signal->getSendersBlockRef()));
+  ndbrequire(slot != nullptr && slot->m_batchPending);
+  ndbrequire(cnt <= data.m_batchSize);
+  const Int32 rows = slot->m_rowsOutstanding - Int32(cnt);
+  ndbrequire(rows >= -Int32(data.m_batchSize));
+  ndbrequire(slot->m_confPending || rows >= 0);
+  slot->m_rowsOutstanding = rows;
+  cte_scan_finishBatch(signal, requestPtr, treeNodePtr, *slot);
+  // execTRANSID_AI processes this last row before notifying descendants
+  // and calling checkBatchComplete.
+  cte_scan_checkComplete(requestPtr, treeNodePtr);
 }
 
 /**
@@ -8199,12 +8455,6 @@ void Dbspj::cte_scan_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
   ndbassert(treeNodePtr.p->m_state == TreeNode::TN_ACTIVE);
   ndbassert(data.m_outstanding == 0);
   ndbassert(!data.m_endOfData);
-
-  /* Reset per-batch counters; the scanFrag model does the same at
-   * scanFrag_execSCAN_NEXTREQ entry.  requestPtr.m_rows is already
-   * reset by sendConf for the previous batch. */
-  data.m_rowsReceived = 0;
-  data.m_rowsExpecting = 0;
 
   const Uint32 cteIdx = [&]{
     for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
@@ -8226,6 +8476,7 @@ void Dbspj::cte_scan_execSCAN_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
     cte_scan_sendReq(signal, requestPtr, treeNodePtr, srcNode,
                      aggKey, slot.m_ownerInstance, data.m_joinAggStateKey,
                      slot.m_scanIterI);
+    if (requestPtr.p->m_state & Request::RS_ABORTING) return;
     sent++;
   }
   /* At least one slot must have been open; otherwise we wouldn't be
@@ -8257,131 +8508,31 @@ void Dbspj::execCTE_SCAN_CONF(Signal *signal) {
            requestPtr.p->m_outstanding));
 
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
-  ndbrequire(data.m_outstanding > 0);
-  data.m_outstanding--;
-  /* Per-CONF decrement matches the per-REQ bump in cte_scan_sendReq.
-   * When all per-node CONFs for the current batch have arrived,
-   * requestPtr.m_outstanding drops to 0 and checkBatchComplete will
-   * emit SCAN_FRAGCONF (fragmentCompleted=0 + activeMask for an
-   * intermediate batch, fragmentCompleted=1 for the final batch). */
-  ndbrequire(requestPtr.p->m_outstanding > 0);
-  requestPtr.p->m_outstanding--;
-
-  /* Look up (or allocate) the per-source-node slot and stash the
-   * iterator token.  RNIL on EndOfData CONFs — DBLQH has already
-   * released its CteScanIterState pool record at that point. */
-  const Uint32 sourceNodeId = refToNode(conf->senderRef);
   CteScanData::NodeSlot *slot =
-      cte_scan_findOrAddNodeSlot(data, sourceNodeId);
-  ndbrequire(slot != nullptr);
-  slot->m_ownerInstance = refToInstance(conf->senderRef);
+      cte_scan_findNodeSlot(data, refToNode(conf->senderRef));
+  ndbrequire(slot != nullptr && slot->m_batchPending && slot->m_confPending);
+  ndbrequire(slot->m_ownerInstance == refToInstance(conf->senderRef));
+  ndbrequire(conf->numRowsToSpj <= data.m_batchSize);
+  const Int32 rows = slot->m_rowsOutstanding + Int32(conf->numRowsToSpj);
+  ndbrequire(rows >= 0 && rows <= Int32(data.m_batchSize));
+  slot->m_rowsOutstanding = rows;
+  slot->m_confPending = false;
   slot->m_scanIterI = conf->scanIterI;
+  slot->m_endOfData = (conf->flags & CteScanConf::EndOfData) != 0;
+  if (slot->m_endOfData) slot->m_close_pending = false;
 
-  /* Three accounting paths:
-   * (a) Agg-feed (joinAggStateKey != RNIL): rows go INTO the target
-   *     JoinAggInterpreter at DBLQH, not to API or DBSPJ.  Don't
-   *     touch m_rows or rowsExpecting.  Used for CTE-2-reads-CTE-1.
-   * (b) T_USER_PROJECTION (FLUSH_AI to API): DBLQH flushed rows to
-   *     the API directly.  Bump m_rows so SCAN_TABCONF reports the
-   *     right count.  If non-leaf, also bump rowsExpecting for the
-   *     residual TRANSID_AI that drives child operations.
-   * (c) Neither (legacy/internal): rows came back to DBSPJ as
-   *     TRANSID_AI.  Bump rowsExpecting only. */
-  if (data.m_joinAggStateKey != RNIL) {
-    jam();
-    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (a) agg-feed", instance()));
-  } else if (treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) {
-    jam();
-    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (b) USER_PROJ isLeaf=%d",
-             instance(), (int)treeNodePtr.p->isLeaf()));
+  // Preserve API row accounting; numRowsToSpj independently counts
+  // the residual rows that must arrive here, including during abort.
+  if (data.m_joinAggStateKey == RNIL &&
+      ((treeNodePtr.p->m_bits & TreeNode::T_USER_PROJECTION) ||
+       treeNodePtr.p->isLeaf())) {
     requestPtr.p->m_rows += conf->numRows;
-    if (!treeNodePtr.p->isLeaf()) {
-      jam();
-      data.m_rowsExpecting += conf->numRows;
-    }
-  } else if (treeNodePtr.p->isLeaf()) {
-    jam();
-    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (leaf) m_rows %u->%u",
-             instance(), requestPtr.p->m_rows,
-             requestPtr.p->m_rows + conf->numRows));
-    requestPtr.p->m_rows += conf->numRows;
-  } else {
-    jam();
-    DEB_CTE(("(%u) execCTE_SCAN_CONF: path (c) rowsExpecting %u->%u",
-             instance(), data.m_rowsExpecting,
-             data.m_rowsExpecting + conf->numRows));
-    data.m_rowsExpecting += conf->numRows;
   }
 
-  DEB_CTE(("(%u) execCTE_SCAN_CONF: after accounting: m_rows=%u "
-           "rowsReceived=%u rowsExpecting=%u m_outstanding=%u "
-           "endOfData=%d bits=0x%x",
-           instance(), requestPtr.p->m_rows,
-           data.m_rowsReceived, data.m_rowsExpecting,
-           data.m_outstanding, (int)data.m_endOfData,
-           treeNodePtr.p->m_bits));
-
-  bool endOfData = (conf->flags & CteScanConf::EndOfData) != 0;
-  /* Only set m_endOfData once the FINAL CONF arrives; intermediate
-   * CONFs (for batches where the scan continues) keep it false. */
-  if (endOfData) {
-    data.m_endOfData = true;
-    slot->m_endOfData = true;
-    slot->m_close_pending = false;
-  }
-
-  /* Abort-in-progress: if the in-flight REQ whose CONF just arrived
-   * was flagged for closure by cte_scan_abort, fire a close REQ now
-   * for the CONF's scanIterI (DBLQH holds that pool record until the
-   * close lands).  The close CONF will arrive with EndOfData=1 and
-   * drain this slot through the normal completion path above. */
-  if (!endOfData &&
-      (requestPtr.p->m_state & Request::RS_ABORTING) != 0 &&
-      slot->m_close_pending &&
-      conf->scanIterI != RNIL) {
-    jam();
-    slot->m_close_pending = false;
-    slot->m_scanIterI = RNIL;  // ownership handed to the close REQ
-    cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
-                          sourceNodeId, slot->m_ownerInstance,
-                          conf->scanIterI);
-  }
-
-  /* Intermediate CONF (EndOfData=0): nothing to do here.  Another REQ
-   * is NOT sent from this function — the API drives the next batch
-   * via SCAN_NEXTREQ, which lands in cte_scan_execSCAN_NEXTREQ.  The
-   * slot->m_scanIterI stashed above is what the continuation REQ
-   * will echo back to DBLQH for O(1) hash-bucket resume. */
-
-  /* On the final CONF (endOfData=1), and once all expected rows have
-   * arrived, transition the tree node to TN_INACTIVE.  Race: rows can
-   * arrive AFTER the CONF — cte_scan_countSignal performs the same
-   * check and finalises the node when the tally completes late. */
-  DEB_CTE(("(%u) execCTE_SCAN_CONF: completion check: "
-           "data_outstanding=%u endOfData=%d rowsRecv=%u rowsExp=%u "
-           "req_outstanding=%u cnt_active=%u",
-           instance(), data.m_outstanding, (int)data.m_endOfData,
-           data.m_rowsReceived, data.m_rowsExpecting,
-           requestPtr.p->m_outstanding, requestPtr.p->m_cnt_active));
-  if (data.m_outstanding == 0 &&
-      data.m_endOfData &&
-      data.m_rowsReceived == data.m_rowsExpecting) {
-    jam();
-    DEB_CTE(("(%u) execCTE_SCAN_CONF: COMPLETING node=%u",
-             instance(), treeNodePtr.p->m_node_no));
-    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-    ndbrequire(requestPtr.p->m_cnt_active > 0);
-    DEC_CNT_ACTIVE(requestPtr.p, "execCTE_SCAN_CONF",
-                   treeNodePtr.p->m_node_no);
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
-
-    if (treeNodePtr.p->m_bits & TreeNode::T_CTE_SCAN) {
-      requestPtr.p->m_cteScansComplete++;
-    }
+  // This may send a close and overwrite the incoming signal.
+  cte_scan_finishBatch(signal, requestPtr, treeNodePtr, *slot);
+  if (cte_scan_checkComplete(requestPtr, treeNodePtr)) {
     handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
-  } else {
-    DEB_CTE(("(%u) execCTE_SCAN_CONF: NOT completing node=%u",
-             instance(), treeNodePtr.p->m_node_no));
   }
 
   checkBatchComplete(signal, requestPtr);
@@ -8405,13 +8556,25 @@ void Dbspj::execCTE_SCAN_REF(Signal *signal) {
            requestPtr.p->m_outstanding));
 
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
-  ndbrequire(data.m_outstanding > 0);
-  data.m_outstanding--;
+  const Uint32 errorCode = ref->errorCode;
+  CteScanData::NodeSlot *slot =
+      cte_scan_findNodeSlot(data, refToNode(ref->senderRef));
+  ndbrequire(slot != nullptr && slot->m_batchPending && slot->m_confPending);
+  ndbrequire(slot->m_ownerInstance == refToInstance(ref->senderRef));
+  ndbrequire(ref->numRowsToSpj <= data.m_batchSize);
+  const Int32 rows = slot->m_rowsOutstanding + Int32(ref->numRowsToSpj);
+  ndbrequire(rows >= 0 && rows <= Int32(data.m_batchSize));
+  slot->m_rowsOutstanding = rows;
+  slot->m_confPending = false;
+  slot->m_scanIterI = RNIL;
+  slot->m_endOfData = true;
+  slot->m_close_pending = false;
+  cte_scan_finishBatch(signal, requestPtr, treeNodePtr, *slot);
 
-  ndbrequire(requestPtr.p->m_outstanding > 0);
-  requestPtr.p->m_outstanding--;
-
-  abort(signal, requestPtr, ref->errorCode);
+  abort(signal, requestPtr, errorCode);
+  // abort() is a no-op if an earlier failure already started cleanup.
+  cte_scan_checkComplete(requestPtr, treeNodePtr);
+  checkBatchComplete(signal, requestPtr);
 }
 
 void Dbspj::cte_scan_cleanup(Ptr<Request> requestPtr,
@@ -8435,6 +8598,19 @@ void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
                                    Uint32 scanIterI) {
   ndbrequire(scanIterI != RNIL);
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  CteScanData::NodeSlot *slot = cte_scan_findNodeSlot(data, sourceNodeId);
+  ndbrequire(slot != nullptr && !slot->m_batchPending);
+  ndbrequire(slot->m_rowsOutstanding == 0 && !slot->m_confPending);
+  slot->m_scanIterI = RNIL;
+  slot->m_close_pending = false;
+  if (unlikely(!getNodeInfo(sourceNodeId).m_connected)) {
+    // No batch is in flight. Do not create a new wait on a dead owner.
+    jam();
+    slot->m_endOfData = true;
+    return;
+  }
+  slot->m_confPending = true;
+  slot->m_batchPending = true;
   CteScanReq *req =
       reinterpret_cast<CteScanReq *>(signal->getDataPtrSend());
   req->senderRef = reference();
@@ -8446,6 +8622,7 @@ void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
   req->resultRef = 0;
   req->resultData = 0;
   req->joinAggStateKey = RNIL;
+  req->coordinatorRef = requestPtr.p->m_senderRef;
   req->scanIterI = scanIterI;
   req->flags = CteScanReq::CloseFlag;
 
@@ -8459,65 +8636,66 @@ void Dbspj::cte_scan_sendCloseReq(Signal *signal, Ptr<Request> requestPtr,
 }
 
 /**
- * Abort handler for CTE_SCAN.  Drives the tree node through the same
- * bookkeeping the normal scan path uses, but via close REQs rather
- * than TRANSID_AI:
- *
- *  - Slot with a stashed scanIterI (paused between batches, nothing
- *    in flight): fire a close REQ now.  DBLQH releases the pool
- *    record and replies with an EndOfData CONF that drains the
- *    per-REQ counters via execCTE_SCAN_CONF.
- *  - Slot with an in-flight REQ (scanIterI == RNIL because no CONF
- *    back yet, or in flight after a continuation): set close_pending.
- *    When the CONF lands, execCTE_SCAN_CONF notices RS_ABORTING +
- *    close_pending and fires a close REQ for the CONF's scanIterI.
- *  - Already-finished slot (m_endOfData): skip.
- *
- * If nothing needed closing (all slots m_endOfData, no in-flight
- * REQs) the tree would otherwise leave cnt_active > 0 and the
- * ndbassert at batchComplete would fire.  In that case transition
- * TN_INACTIVE directly.
+ * Close paused sources immediately; defer closure of each in-flight
+ * source until its own reply and rows have drained.
  */
 void Dbspj::cte_scan_abort(Signal *signal, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr) {
   jam();
-  if (treeNodePtr.p->m_state != TreeNode::TN_ACTIVE) {
-    jam();
-    return;
-  }
+  if (treeNodePtr.p->m_state != TreeNode::TN_ACTIVE) return;
   CteScanData &data = treeNodePtr.p->m_cteScan_data;
-  const bool in_flight = (data.m_outstanding > 0);
-  const Uint32 numSlots = data.m_numNodeSlots;
-  for (Uint32 i = 0; i < numSlots; i++) {
+  for (Uint32 i = 0; i < data.m_numNodeSlots; i++) {
     CteScanData::NodeSlot &slot = data.m_nodeSlots[i];
     if (slot.m_endOfData) continue;
-    if (!in_flight && slot.m_scanIterI != RNIL) {
-      /* Scan is paused between batches; the stashed scanIterI is the
-       * pool record DBLQH still holds.  Safe to close it now. */
+    if (slot.m_batchPending) {
+      jam();
+      slot.m_close_pending = true;
+    } else if (slot.m_scanIterI != RNIL) {
       jam();
       cte_scan_sendCloseReq(signal, requestPtr, treeNodePtr,
                             slot.m_sourceNodeId, slot.m_ownerInstance,
                             slot.m_scanIterI);
-      slot.m_scanIterI = RNIL;
     } else {
-      /* Either a REQ is in flight for SOME slot (we can't tell which
-       * from data.m_outstanding alone, so defer for every non-ended
-       * slot) or the slot never saw a CONF.  execCTE_SCAN_CONF will
-       * fire the close REQ when the in-flight CONF lands. */
-      jam();
-      slot.m_close_pending = true;
+      // Slot allocated, but sending its first REQ failed.
+      slot.m_endOfData = true;
     }
   }
+  cte_scan_checkComplete(requestPtr, treeNodePtr);
+}
 
-  /* No close REQs queued and no in-flight work: drive the state
-   * transition directly so batchComplete sees cnt_active == 0. */
-  if (data.m_outstanding == 0) {
+Uint32 Dbspj::cte_scan_execNODE_FAILREP(Signal *,
+                                         Ptr<Request> requestPtr,
+                                         Ptr<TreeNode> treeNodePtr,
+                                         NdbNodeBitmask mask) {
+  CteScanData &data = treeNodePtr.p->m_cteScan_data;
+  bool affected = false;
+  for (Uint32 i = 0; i < data.m_numNodeSlots; i++) {
+    CteScanData::NodeSlot &slot = data.m_nodeSlots[i];
+    if (!mask.get(slot.m_sourceNodeId)) continue;
     jam();
-    treeNodePtr.p->m_state = TreeNode::TN_INACTIVE;
-    ndbrequire(requestPtr.p->m_cnt_active > 0);
-    DEC_CNT_ACTIVE(requestPtr.p, "cte_scan_abort", treeNodePtr.p->m_node_no);
-    requestPtr.p->m_completed_tree_nodes.set(treeNodePtr.p->m_node_no);
+    affected = true;
+    // NODE_FAILREP guarantees that neither reply nor remaining rows
+    // can arrive. Retire only this failed source's batch obligation.
+    if (slot.m_batchPending) {
+      ndbrequire(data.m_outstanding > 0 && requestPtr.p->m_outstanding > 0);
+      data.m_outstanding--;
+      requestPtr.p->m_outstanding--;
+    }
+    slot.m_batchPending = false;
+    slot.m_confPending = false;
+    slot.m_rowsOutstanding = 0;
+    slot.m_scanIterI = RNIL;
+    slot.m_endOfData = true;
+    slot.m_close_pending = false;
   }
+  // An unstarted or paused scan also depends on its original topology.
+  mask.bitAND(data.m_nodes);
+  if (!affected && mask.isclear()) return 0;
+  if (requestPtr.p->m_state & Request::RS_ABORTING) {
+    cte_scan_checkComplete(requestPtr, treeNodePtr);
+  }
+  // nodeFail() aborts the request and calls checkBatchComplete.
+  return 1;
 }
 
 bool Dbspj::cte_scan_checkNode(const Ptr<Request> requestPtr,
@@ -8570,10 +8748,79 @@ void Dbspj::sendCteScanDoneRep(Signal *signal, Ptr<Request> requestPtr,
              signal, CtePhaseCompleteRep::SignalLength, JBB);
 }
 
+/**
+ * RONDB-1120 P2b: parse the key/owner transport section riding the
+ * per-CTE READY broadcast and CTE_START_MAIN_REQ (format documented
+ * at CteStartMainReq::KeysSectionNum).  While execution still gates
+ * on SETUP_CONF this duplicates the SCAN_FRAGREQ aggKeys section —
+ * values are cross-checked (debug) and overwritten (idempotent);
+ * after the P2c un-gating these carriers are the ONLY key source.
+ */
+void Dbspj::parseJoinAggKeySection(SectionHandle &handle,
+                                   Ptr<Request> requestPtr) {
+  SegmentedSectionPtr secPtr;
+  if (!handle.getSection(secPtr, CteStartMainReq::KeysSectionNum)) {
+    jam();
+    releaseSections(handle);
+    return;
+  }
+  SectionReader reader(secPtr, getSectionSegmentPool());
+  const Uint32 max_nodes = MAX_NDB_NODES;
+  Uint32 remaining = reader.getSize();
+  while (remaining >= 2) {
+    Uint32 blockCteId, cnt;
+    ndbrequire(reader.getWord(&blockCteId));
+    ndbrequire(reader.getWord(&cnt));
+    remaining -= 2;
+    ndbrequire(remaining >= cnt * 3);
+    Uint32 cteIdx = RNIL;
+    if (blockCteId != CteStartMainReq::KEYS_CTE_ID_MAIN) {
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId == blockCteId) {
+          cteIdx = i;
+          break;
+        }
+      }
+      ndbrequire(cteIdx != RNIL);
+      ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+    }
+    for (Uint32 k = 0; k < cnt; k++) {
+      Uint32 nodeId, aggKey, owner;
+      ndbrequire(reader.getWord(&nodeId));
+      ndbrequire(reader.getWord(&aggKey));
+      ndbrequire(reader.getWord(&owner));
+      ndbrequire(nodeId < max_nodes);
+      if (blockCteId == CteStartMainReq::KEYS_CTE_ID_MAIN) {
+        /* P2c: the SCAN_FRAGREQ section pre-fills RNIL (key-less);
+         * dual-era equality still checked when a real key was set. */
+        ndbassert(!requestPtr.p->m_aggNodes.get(nodeId) ||
+                  requestPtr.p->m_aggStateKeys[nodeId] == aggKey ||
+                  requestPtr.p->m_aggStateKeys[nodeId] == RNIL);
+        requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
+        requestPtr.p->m_aggNodes.set(nodeId);
+      } else {
+        ndbassert(
+            requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId] ==
+                aggKey ||
+            requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId] ==
+                RNIL);
+        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId] =
+            aggKey;
+        requestPtr.p->m_cteAggOwnerInstances[cteIdx * max_nodes + nodeId] =
+            owner;
+      }
+    }
+    remaining -= cnt * 3;
+  }
+  ndbrequire(remaining == 0);
+  releaseSections(handle);
+}
+
 void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
   jamEntry();
   const CtePhaseStartReq *req =
       reinterpret_cast<const CtePhaseStartReq *>(signal->getDataPtr());
+  SectionHandle handle(this, signal);
 
   Request key;
   key.m_senderData = req->senderData;
@@ -8581,7 +8828,21 @@ void Dbspj::execCTE_PHASE_START_REQ(Signal *signal) {
   key.m_transId[1] = req->transId2;
 
   Ptr<Request> requestPtr;
-  ndbrequire(m_scan_request_hash.find(requestPtr, key));
+  if (unlikely(!m_scan_request_hash.find(requestPtr, key))) {
+    jam();
+    releaseSections(handle);
+    return;  // Worker may have been released by an earlier abort.
+  }
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0 ||
+      requestPtr.p->m_state == Request::RS_ABORTED) {
+    jam();
+    releaseSections(handle);
+    return;  // Late READY must not restart an aborting worker.
+  }
+
+  /* RONDB-1120 P2b: install this CTE's key/owner block before the
+   * READY transition — dependents started below may probe it. */
+  parseJoinAggKeySection(handle, requestPtr);
 
   const Uint32 readyCteId = req->cteId;
 
@@ -8647,6 +8908,7 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   jamEntry();
   const CteStartMainReq *req =
       reinterpret_cast<const CteStartMainReq *>(signal->getDataPtr());
+  SectionHandle handle(this, signal);
 
   Request key;
   key.m_senderData = req->senderData;
@@ -8654,7 +8916,22 @@ void Dbspj::execCTE_START_MAIN_REQ(Signal *signal) {
   key.m_transId[1] = req->transId2;
 
   Ptr<Request> requestPtr;
-  ndbrequire(m_scan_request_hash.find(requestPtr, key));
+  if (unlikely(!m_scan_request_hash.find(requestPtr, key))) {
+    jam();
+    releaseSections(handle);
+    return;  // Worker may have been released by an earlier abort.
+  }
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0 ||
+      requestPtr.p->m_state == Request::RS_ABORTED) {
+    jam();
+    releaseSections(handle);
+    return;  // Late READY must not restart an aborting worker.
+  }
+
+  /* RONDB-1120 P2b: install the main + all-CTE key/owner blocks
+   * before the main root starts — main probes and feed wire keys
+   * consume them. */
+  parseJoinAggKeySection(handle, requestPtr);
 
   // Transition all CTE contexts to READY
   for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
@@ -9062,29 +9339,43 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
     Uint32 nodeId = refToNode(ref);
     LqhKeyReq::setJoinAggFlag(req->attrLen, 1);
     const Uint32 cteId = treeNodePtr.p->m_cteId;
-    const Uint32 max_nodes = MAX_NDB_NODES;
-    Uint32 cteIdx = RNIL;
-    for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
-      if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
-        cteIdx = i;
-        break;
-      }
-    }
-    ndbrequire(cteIdx != RNIL);
-    ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
-    Uint32 cteAggKey =
-        requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
-    req->variableData[var_index + 4] = cteAggKey;
     agg_extra = 1;
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
+      jam();
+      /* RONDB-1120 P3: the identity word REPLACES the wire key —
+       * DBLQH resolves the CTE state by (transid, queryTag, cteId)
+       * with the raw base key (leaf 0), parking until the local
+       * SETUP processes. */
+      LqhKeyReq::setJoinAggIdentityFlag(req->attrLen, 1);
+      req->variableData[var_index + 4] =
+          JoinAggregationState::packIdentWord(
+              requestPtr.p->m_joinAggQueryTag, cteId, 0);
+    } else {
+      jam();
+      /* Legacy keyed form (no queryTag — unreachable from same-version
+       * DBTC; kept for robustness). */
+      const Uint32 max_nodes = MAX_NDB_NODES;
+      Uint32 cteIdx = RNIL;
+      for (Uint32 i = 0; i < requestPtr.p->m_numCtes; i++) {
+        if (requestPtr.p->m_cteContexts[i].m_cteId == cteId) {
+          cteIdx = i;
+          break;
+        }
+      }
+      ndbrequire(cteIdx != RNIL);
+      ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
+      req->variableData[var_index + 4] =
+          requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
+    }
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     DEB_CTE(("(%u) Send LQHKEYREQ from node: %u for T_AGGREGATE_LEAF",
       instance(), treeNodePtr.p->m_node_no));
     /**
-     * Main query aggregate leaf: aggStateKey from m_aggStateKeys
-     * with multi-leaf star-schema encoding.
-     * aggStateKey is placed at var_index + 4, which assumes DBLQH's
-     * nextPos walk over variableData arrives here after:
+     * Main query aggregate leaf.  The single JoinAgg word (identity
+     * word, or raw aggStateKey in the legacy keyed form) is placed at
+     * var_index + 4, which assumes DBLQH's nextPos walk over
+     * variableData arrives here after:
      *   ApplicationAddressFlag=1 (2 words) + CorrFactorFlag=1 (2 words).
      */
     ndbassert(LqhKeyReq::getSameClientAndTcFlag(req->requestInfo) == 0);
@@ -9099,20 +9390,33 @@ void Dbspj::lookup_send(Signal *signal, Ptr<Request> requestPtr,
       jam();
       LqhKeyReq::setOuterJoinAggFlag(req->attrLen, 1);
     }
-    Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
     Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-    Uint32 encodedKey =
-        JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
-    req->variableData[var_index + 4] = encodedKey;
-    DEB_STAR_AGG(("(%u)DBPSJ STAR_AGG lookup_send: node=%u leafIdx=%u "
-                  "baseKey=%u encodedKey=0x%08x nodeId=%u",
-                  instance(),
-                  treeNodePtr.p->m_node_no,
-                  leafIdx,
-                  baseKey,
-                  encodedKey,
-                  nodeId));
     agg_extra = 1;
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
+      jam();
+      /* RONDB-1120 P3: identity word replaces the wire key — main
+       * aggregation, leafIdx re-encoded by DBLQH after resolution. */
+      LqhKeyReq::setJoinAggIdentityFlag(req->attrLen, 1);
+      req->variableData[var_index + 4] =
+          JoinAggregationState::packIdentWord(
+              requestPtr.p->m_joinAggQueryTag, RNIL, leafIdx);
+    } else {
+      jam();
+      /* Legacy keyed form. */
+      Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+      Uint32 encodedKey = (baseKey == RNIL)
+          ? RNIL
+          : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+      req->variableData[var_index + 4] = encodedKey;
+      DEB_STAR_AGG(("(%u)DBPSJ STAR_AGG lookup_send: node=%u leafIdx=%u "
+                    "baseKey=%u encodedKey=0x%08x nodeId=%u",
+                    instance(),
+                    treeNodePtr.p->m_node_no,
+                    leafIdx,
+                    baseKey,
+                    encodedKey,
+                    nodeId));
+    }
   }
 
   Uint32 err = 0;
@@ -10632,6 +10936,16 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
   req->transId[1] = requestPtr.p->m_transId[1];
   req->requestPtrI = requestPtr.i;
   req->treeNodePtrI = treeNodePtr.i;
+  req->coordinatorRef = requestPtr.p->m_senderRef;
+  /* RONDB-1120 P2c: identity word — the wire key above can be RNIL
+   * while the SETUP round is in flight (and stays RNIL for non-CTE
+   * queries, which have no P2b key carrier); DBLQH resolves the local
+   * main-agg state by identity, parking until the local SETUP
+   * processes. */
+  req->identWord = (requestPtr.p->m_joinAggQueryTag <= 0xFFFF)
+      ? JoinAggregationState::packIdentWord(
+            requestPtr.p->m_joinAggQueryTag, RNIL, 0)
+      : RNIL;
 
   SectionHandle handle(this);
   if (linkedPtrI != RNIL) {
@@ -10720,7 +11034,10 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
          TreeNode::T_NULL_ROW_DEFERRED_RESTART)) {
       jam();
       treeNodePtr.p->m_bits &= ~TreeNode::T_NULL_ROW_DEFERRED_RESTART;
-      scanFrag_parent_batch_complete(signal, requestPtr, treeNodePtr);
+      if ((requestPtr.p->m_state & Request::RS_ABORTING) == 0) {
+        jam();
+        scanFrag_parent_batch_complete(signal, requestPtr, treeNodePtr);
+      }
     }
 
     /**
@@ -10750,7 +11067,8 @@ void Dbspj::execJOIN_AGG_NULL_ROW_CONF(Signal *signal) {
  * execJOIN_AGG_NULL_ROW_REF
  *
  * DBLQH failed to process the null-extended row (e.g. aggregate state
- * not found or invalid signal format). Abort the request.
+ * not found or invalid signal format). Abort the request and retire the
+ * expected reply, just as for CONF, so abort cleanup can complete.
  */
 void Dbspj::execJOIN_AGG_NULL_ROW_REF(Signal *signal) {
   jamEntry();
@@ -10761,7 +11079,31 @@ void Dbspj::execJOIN_AGG_NULL_ROW_REF(Signal *signal) {
   requestPtr.i = ref->requestPtrI;
   m_request_pool.getPtr(requestPtr);
 
+  Ptr<TreeNode> treeNodePtr;
+  treeNodePtr.i = ref->treeNodePtrI;
+  m_treenode_pool.getPtr(treeNodePtr);
+  const Uint32 Tnode = refToNode(signal->getSendersBlockRef());
+
+  // Abort first so counting the reply cannot resume congested operations.
   abort(signal, requestPtr, ref->errorCode);
+
+  if (treeNodePtr.p->isLookup()) {
+    jam();
+    lookup_countSignal(signal, requestPtr, treeNodePtr, 1);
+  } else {
+    jam();
+    ndbassert(requestPtr.p->m_lookup_node_data[Tnode] >= 1);
+    requestPtr.p->m_lookup_node_data[Tnode] -= 1;
+    ndbassert(requestPtr.p->m_outstanding >= 1);
+    requestPtr.p->m_outstanding -= 1;
+
+    ScanFragData &sfData = treeNodePtr.p->m_scanFrag_data;
+    ndbassert(sfData.m_null_row_outstanding >= 1);
+    sfData.m_null_row_outstanding -= 1;
+    jamDataDebug(sfData.m_null_row_outstanding);
+    treeNodePtr.p->m_bits &= ~TreeNode::T_NULL_ROW_DEFERRED_RESTART;
+  }
+  checkBatchComplete(signal, requestPtr);
 }
 
 Uint32 Dbspj::lookup_execNODE_FAILREP(Signal *signal, Ptr<Request> requestPtr,
@@ -13054,14 +13396,25 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
      */
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
+      jam();
+      /* RONDB-1120 P3: the identity word REPLACES the key word —
+       * still exactly one agg word. */
+      ScanFragReq::setJoinAggIdentityFlag(req->requestInfo, 1);
+    }
   } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
     jam();
     ScanFragReq::setJoinAggFlag(req->requestInfo, 1);
     agg_extra = 1;
+    if (likely(requestPtr.p->m_joinAggQueryTag <= 0xFFFF)) {
+      jam();
+      /* RONDB-1120 P3: identity word replaces the key word. */
+      ScanFragReq::setJoinAggIdentityFlag(req->requestInfo, 1);
+    }
     if (!(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN)) {
       jam();
       ScanFragReq::setOuterJoinAggFlag(req->requestInfo, 1);
-      agg_extra = 2;  // aggStateKey + rangeCount
+      agg_extra += 1;  // + rangeCount
       DEB_MATCH(("(%u)DBSPJ scanFrag_send: OuterJoinAggFlag=1 "
                  "reqPtrI: %u, treeNode=%u rangeCount=%u",
                  instance(),
@@ -13358,31 +13711,57 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
           }
           ndbrequire(cteIdx != RNIL);
           ndbrequire(requestPtr.p->m_cteAggStateKeys != nullptr);
-          Uint32 cteAggKey =
-              requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
-          req->variableData[var_index + 2] = cteAggKey;
+          Uint32 vpos = var_index + 2;
+          if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
+            jam();
+            /* RONDB-1120 P3: the identity word REPLACES the wire key
+             * — CTE body scans feed the CTE's state with the raw base
+             * key (leaf 0), resolved node-locally by DBLQH. */
+            req->variableData[vpos++] =
+                JoinAggregationState::packIdentWord(
+                    requestPtr.p->m_joinAggQueryTag, cteId, 0);
+          } else {
+            jam();
+            /* Legacy keyed form (no queryTag). */
+            req->variableData[vpos++] =
+                requestPtr.p->m_cteAggStateKeys[cteIdx * max_nodes + nodeId];
+          }
           DEB_CTE(("(%u) Send SCAN_FRAGREQ from node: %u with T_CTE_SCAN",
             instance(), treeNodePtr.p->m_node_no));
         } else {
           jam();
           ndbrequire(requestPtr.p->m_aggNodes.get(nodeId));
-          Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
           Uint32 leafIdx = treeNodePtr.p->m_agg_leaf_index;
-          Uint32 scanEncodedKey =
-              JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
-          req->variableData[var_index + 2] = scanEncodedKey;
-          DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u, node=%u"
-                        " leafIdx=%u baseKey=%u encodedKey=0x%08x nodeId=%u",
-                        instance(),
-                        requestPtr.i,
-                        treeNodePtr.p->m_node_no,
-                        leafIdx,
-                        baseKey,
-                        scanEncodedKey,
-                        nodeId));
-          if (agg_extra > 1) {
+          Uint32 vpos = var_index + 2;
+          if (ScanFragReq::getJoinAggIdentityFlag(req->requestInfo)) {
             jam();
-            req->variableData[var_index + 3] = data.m_agg_range_cnt;
+            /* RONDB-1120 P3: identity word replaces the wire key —
+             * main aggregation, leafIdx re-encoded by DBLQH. */
+            req->variableData[vpos++] =
+                JoinAggregationState::packIdentWord(
+                    requestPtr.p->m_joinAggQueryTag, RNIL, leafIdx);
+          } else {
+            jam();
+            /* Legacy keyed form. */
+            Uint32 baseKey = requestPtr.p->m_aggStateKeys[nodeId];
+            Uint32 scanEncodedKey = (baseKey == RNIL)
+                ? RNIL
+                : JoinAggregationState::encodeAggStateKey(baseKey, leafIdx);
+            req->variableData[vpos++] = scanEncodedKey;
+            DEB_STAR_AGG(("(%u)DBSPJ STAR_AGG scanFrag_send: reqPtrI: %u,"
+                          " node=%u leafIdx=%u baseKey=%u encodedKey=0x%08x"
+                          " nodeId=%u",
+                          instance(),
+                          requestPtr.i,
+                          treeNodePtr.p->m_node_no,
+                          leafIdx,
+                          baseKey,
+                          scanEncodedKey,
+                          nodeId));
+          }
+          if (ScanFragReq::getOuterJoinAggFlag(req->requestInfo)) {
+            jam();
+            req->variableData[vpos++] = data.m_agg_range_cnt;
           }
         }
       }

@@ -130,6 +130,19 @@ ScanFragReq::setJoinAggFlag(requestInfo, 1);
 scanReq->requestInfo = requestInfo;
 ```
 
+### JoinAggSetupReq from a block test
+
+`JoinAggSetupReq::SignalLength` includes `setupNodes`
+(`NdbNodeBitmask::Size` words): the data nodes DBTC set the query up on,
+which every DBLQH turns into its CTE owner list (RONDB-1120, see
+`claude_files/pushdown_join_aggregation/cte_owner_list.md`). A block test
+that sends SETUP_REQ itself can either fill `setupNodes` with the
+connected data nodes and send `SignalLength`, or send `SignalLength_v1`
+(13 words), in which case DblqhProxy builds the list from its own view of
+the connected data nodes. Use one form for all nodes of a query, or the
+owner lists differ. With the full length, a listed node the receiver is
+not connected to is answered with JOIN_AGG_SETUP_REF error 286.
+
 ### AttrInfo / Aggregation Programs
 
 Aggregation programs follow the NdbAggregator wire format:
@@ -212,6 +225,44 @@ Long sections:
   triggering eviction when a 4th distinct group arrives during scan.
   Use `NdbRestarter::insertErrorInAllNodes(5090)` before test,
   `insertErrorInAllNodes(0)` after.
+
+Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
+
+| Code | Block | Effect | "once" clears itself |
+|---|---|---|---|
+| 5121 / 5122 / 5123 | Proxy / DBLQH / Proxy | crash node on SETUP_REQ / COMPLETE_REQ / RELEASE_REQ | no (crash) |
+| 5124 / 5125 | DBLQH / Proxy | COMPLETE_REF once / SETUP_REF once | yes |
+| 5127 | Proxy | hold ONE SETUP_REQ 20 ms (feeds park) | yes |
+| 5128 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF swallowed once | yes |
+| 5129 | DBLQH `cteScanReqImpl` | ONE continuation answered CTE_SCAN_REF(1251), token released | yes |
+| 5130 | DBLQH `cteScanAggFeed` | one group per continuation round while set | no |
+| 5131 | DBLQH `cteLookupReqImpl` | hold ONE lookup 50 ms | yes |
+| 5132 | DBLQH `joinAggNullRowReqImpl` | ONE null-row injection REFed | yes |
+| 5133 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute delayed 200 ms while set | no |
+| 5134 | DBLQH `redistAlloc` | 512-byte redistribution pages while set | no |
+| 5135 | DBLQH `execSCAN_NEXTREQ` | ONE scan close swallowed (arm right before the close; logs when it fires) | yes |
+| 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
+| 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
+| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
+| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE SETUP_REQ dropped (no reply) | yes |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute held, 200 ms at a time, until cleared | no |
+| 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance | no |
+| 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
+| 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |
+| 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_AGG_FEED_HELD event per instance naming the remote requester | no |
+| 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
+| 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
+| 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
+| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 5 s (stale reclaim) | yes |
+| 17532 | DBSPJ `cte_scan_sendReq` | crash when a second CTE scan batch is requested | no (crash) |
+| 17533 | DBSPJ `execSCAN_NEXTREQ` | ONE close from DBTC swallowed, request left waiting (arm right before the close; logs when it fires) | yes |
+
+Leak-check DUMP codes (each crashes the node on a leak, so run them at the
+end of a test with `NdbRestarter::dumpStateAllNodes`):
+2361 join-agg states, 2362 CTE scan iterator records (per worker),
+2363 identity table + park records, 2560 DBTC completion records / CTE
+scan-fragment handles / scans left in a join-agg or closing state,
+2650 DBSPJ requests.
 
 ## Building
 

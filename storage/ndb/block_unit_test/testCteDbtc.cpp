@@ -990,11 +990,34 @@ collectResults(SignalSender &ss,
                Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId)
 {
   V("Waiting for results...\n");
+  /* The agg SCAN_TABCONF (requestInfo = EndOfData | 1) announces the
+   * TOTAL agg result-row count in its ops area
+   * ([receiverId, RNIL, rows, moreMask, ...]) — but the TRANSID_AI
+   * result batches come DIRECTLY from each data node's DBLQH while
+   * the conf comes from DBTC, and cross-node signal ordering is not
+   * guaranteed.  The real NDB API waits for all announced rows (the
+   * agg accounting); do the same here instead of stopping at the
+   * first EndOfData conf, which occasionally loses a remote node's
+   * groups under load (single-node can't lose: same transporter,
+   * FIFO). */
+  bool gotEndOfData = false;
+  bool haveExpected = false;
+  Uint64 expectedRows = 0;
+  Uint64 collectedRows = 0;
   bool done = false;
   while (!done) {
     SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
                                        "TRANSID_AI/SCAN_TABCONF");
-    if (resp == nullptr) return -1;
+    if (resp == nullptr) {
+      if (gotEndOfData && haveExpected) {
+        fprintf(stderr,
+                "collectResults: timeout with %llu of %llu announced "
+                "agg rows collected\n",
+                (unsigned long long)collectedRows,
+                (unsigned long long)expectedRows);
+      }
+      return -1;
+    }
     int gsn = getGsn(resp);
 
     if (gsn == GSN_TRANSID_AI) {
@@ -1002,6 +1025,7 @@ collectResults(SignalSender &ss,
       if (parseTransIdAI(resp, result) != 0) return -1;
       V("  TRANSID_AI: n_gb_cols=%u n_agg=%u n_groups=%u\n",
         result.n_gb_cols, result.n_agg_results, result.n_groups);
+      collectedRows += result.groups.size();
       allResults.push_back(std::move(result));
     }
     else if (gsn == GSN_SCAN_TABCONF) {
@@ -1015,7 +1039,16 @@ collectResults(SignalSender &ss,
         resp->header.theLength);
 
       if (endOfData) {
-        done = true;
+        /* Agg conf carries the announced row total; the back-to-back
+         * pure close conf (op count 0) does not. */
+        if (ops >= 1 && resp->header.theLength >= 7) {
+          expectedRows = d[6];
+          haveExpected = true;
+          V("  -> announced agg rows: %llu (collected so far: %llu)\n",
+            (unsigned long long)expectedRows,
+            (unsigned long long)collectedRows);
+        }
+        gotEndOfData = true;
       } else {
         Uint32 sigLen = resp->header.theLength;
         Uint32 words_per_op = ops > 0 ? (sigLen - 4) / ops : 4;
@@ -1057,6 +1090,8 @@ collectResults(SignalSender &ss,
     else {
       V("  Ignoring GSN %d\n", gsn);
     }
+    done = gotEndOfData &&
+           (!haveExpected || collectedRows >= expectedRows);
   }
   return 0;
 }
@@ -1735,6 +1770,25 @@ testTwoCtesGroupBy(TestCtx &ctx)
   std::map<Int64, Int64> expected = {{1, 30}, {2, 120}, {3, 60}};
   if (groupSums != expected) {
     printf("FAIL (unexpected groups)\n");
+    /* Diagnostics: dump every result record so an occasional failure
+     * shows whether rows went missing (short sums), were duplicated
+     * (inflated sums), or a garbage group appeared. */
+    printf("  DIAG: %zu result records collected\n", results.size());
+    for (size_t ri = 0; ri < results.size(); ri++) {
+      const AggResult &r = results[ri];
+      printf("  DIAG: result[%zu]: n_gb_cols=%u n_agg=%u n_groups=%u\n",
+             ri, r.n_gb_cols, r.n_agg_results, r.n_groups);
+      for (const auto &g : r.groups) {
+        printf("  DIAG:   grp=%lld sum=%lld (keyBytes=%zu valBytes=%zu)\n",
+               (long long)extractGroupKey(g.first),
+               (long long)extractSumBigint(g.second, 0),
+               g.first.size(), g.second.size());
+      }
+    }
+    for (auto &kv : groupSums) {
+      printf("  DIAG: merged group(%lld) = %lld\n",
+             (long long)kv.first, (long long)kv.second);
+    }
     ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
     return -1;
   }

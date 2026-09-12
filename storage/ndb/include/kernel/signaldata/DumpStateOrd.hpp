@@ -189,6 +189,8 @@ class DumpStateOrd {
     LqhSkipTcNodeCheck = 2359,
     LqhRestoreTcNodeCheck = 2360,
     LqhDumpJoinAggStates = 2361,  // Verify all join agg states are released
+    LqhDumpCteIterStates = 2362,  // Verify the CTE scan iterator pool is empty
+    LqhDumpJoinAggIdentity = 2363,  // Verify identity table + park pool empty
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,
@@ -228,6 +230,8 @@ class DumpStateOrd {
     TcResetTransientPoolMaxSize = 2557,
     TcSetTransErrorLogLevel = 2558,
     TcNdbInfoApiConnectRecFull = 2559,
+    TcDumpJoinAggRecords = 2560,  // Verify join-agg records / scans released
+    SpjDumpRequests = 2650,       // Verify DBSPJ request pools are empty
     CmvmiDumpConnections = 2600,
     CmvmiDumpLongSignalMemory = 2601,
     /**
