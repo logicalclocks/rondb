@@ -212,6 +212,25 @@ EDGE-FLOAT-A`) since it asserts exact floats and dates.
   criterion.  `ronsql_fs_ng4r2` recorded and green with F22 recorded as
   a known outcome.
 
+### Requirements reports on the JIT and ng2r2 arms (2026-09-12)
+
+Run by the assistant at the user's request (`--start-and-exit` cluster
+per arm, `.fs_load 0.01`, `.fs_verify --requirements --all --vectors`),
+reports preserved under `requirements_reports/2026-09-12/`:
+
+| arm | engine | supported | gated | unsupported | untested | failed | acceptance | unsupported rows |
+|---|---|---|---|---|---|---|---|---|
+| base-interpreter | `2c69712b45d2` (pre-F20-fix) | 12 | 4 | 4 | 0 | 0 | FAIL | R-S6 (F0), R-A2-binary (F7), R-A5-types (F4/F5/F6/F9), R-F1 (F1) |
+| jit (`CompiledInterpreter=ON`) | `444740b81eb8` | 12 | 4 | 4 | 0 | 0 | FAIL | same |
+| ng2r2 (2 node groups × 2 replicas) | `444740b81eb8` | 12 | 4 | 4 | 0 | 0 | FAIL | same |
+
+The per-requirement statuses are identical across the three arms: the
+compiled interpreter and the second node group change nothing in what
+Hopsworks' emitted branches get served, and every non-supported row is
+an open ledger finding.  (F21/F22 do not appear: their probes are known
+rows of R-A5-types via F5/F6 on every topology, and the `.fs_verify`
+DECIMAL rule tolerates the F21 digit.)
+
 ## 6. E8 exit
 
 Met: the three suites are green ×3 and the requirements report runs
@@ -221,7 +240,6 @@ follow-up in the NDB API dictionary cache), **F21** (DECIMAL SUM on the
 DOUBLE path is topology-dependent; handled in the probes), **F22**
 (BIGINT SUM overflow undetected at the cross-fragment merge; known
 until the overflow-handling overhaul, a separate task).  Open,
-optional: the requirements reports on the JIT and ng2r2 arms
-(`--label jit` / `--label ng2r2`), the batchpkread Go suite under ASAN
-for F20, strict JIT arming of the four Hopsworks tests, and the E7
-hazard run.
+optional: the batchpkread Go suite under ASAN for F20, strict JIT arming
+of the four Hopsworks tests, and the E7 hazard run.  The requirements
+reports on the JIT and ng2r2 arms are done (identical to the base arm).

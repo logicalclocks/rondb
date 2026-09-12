@@ -43,6 +43,7 @@ Hopsworks Feature Store online-serving builder generates.
   `.fs_verify --requirements` acceptance report, `emit.ConformFixture`, mirror suites
   `ronsql_fs_ng2r2` / `ronsql_fs_ng4r2` / `ronsql_fs_jit`, `scripts/refresh_golden_fixtures.sh`
 - `adding_a_shape.md` — the one-page guide for adding a statement shape end to end
+- `requirements_reports/<date>/<arm>.json` — `.fs_verify --requirements` reports per arm (base, jit, ng2r2)
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.
