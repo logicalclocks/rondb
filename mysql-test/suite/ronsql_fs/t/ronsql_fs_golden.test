@@ -1,0 +1,74 @@
+# ronsql_fs_golden — RONDB-1121 A6: execute the captured Java corpus.
+# Compare Java MySQL SQL with Go MySQL twins and Go RonSQL vectors.
+# F0/F7 are narrow expected rejections; no blanket --allow-reject.
+# The CLI owns fixture setup/cleanup. Do not load the E4 data set here.
+# Reports survive success/failure under log/ronsql_fs_golden-*/report.json.
+# Each run uses a fresh directory, including MTR --repeat runs.
+
+--source include/have_ndb.inc
+--source include/not_windows.inc
+
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found
+}
+
+--disable_query_log
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+--enable_query_log
+
+--echo === A6 captured Java corpus: MySQL twins and RonSQL vectors ===
+perl;
+  use strict;
+  use warnings;
+  use Cwd qw(abs_path);
+  use File::Spec;
+  use File::Temp qw(tempdir);
+
+  my $binary = abs_path($ENV{RONDB_CLI})
+    or die "Cannot resolve RONDB_CLI\n";
+  -x $binary or die "RONDB_CLI is not executable\n";
+
+  # MYSQL_TEST_DIR identifies the source mysql-test directory even when
+  # MTR is launched through the out-of-source build's wrapper.
+  my $corpus = abs_path(File::Spec->catdir($ENV{MYSQL_TEST_DIR},
+    '..', 'tools', 'rondb-cli', 'internal', 'fsq', 'testdata', 'hopsworks_golden'))
+    or die "Cannot locate the source Hopsworks golden corpus\n";
+  -f File::Spec->catfile($corpus, 'manifest.json')
+    or die "Hopsworks golden corpus manifest is missing\n";
+  my $log = abs_path(File::Spec->catdir($ENV{MYSQLTEST_VARDIR}, 'log'))
+    or die "Cannot locate MTR log directory\n";
+  my $work = tempdir('ronsql_fs_golden-XXXXXX', DIR => $log, CLEANUP => 0);
+  chdir($work) or die "Cannot enter $work: $!\n";
+
+  # The dot-command parser splits on whitespace. Fixed relative paths
+  # avoid embedding source/build paths in that command, even with spaces.
+  symlink($corpus, 'corpus') or die "Cannot link corpus in $work: $!\n";
+  my @command = ($binary,
+    '--mysql-host=127.0.0.1', "--mysql-port=$ENV{MASTER_MYPORT}",
+    "--rdrs-host=$ENV{RDRS_NOKEY_HOST}", "--rdrs-port=$ENV{RDRS_NOKEY_PORT}",
+    '--mysql-user=root', '--mysql-password=', '--rdrs-api-key=',
+    '--no-rondis', '--quiet', '-e',
+    '.fs_verify --golden corpus --json report.json --quiet');
+
+  # List-form system avoids shell interpolation. Explicit endpoints and
+  # credentials override ambient CLI settings; use the suite's no-key RDRS.
+  my $status = system { $binary } @command;
+  if ($status == -1) {
+    die "Cannot launch golden runner; artifacts: $work: $!\n";
+  }
+  if ($status != 0) {
+    die sprintf("Golden runner failed: exit=%d signal=%d; artifacts: %s\n",
+      $status >> 8, $status & 127, $work);
+  }
+  -s 'report.json' or die "Golden runner omitted its report: $work\n";
+EOF
+
+--echo === Verify fixture database cleanup ===
+# These are the two database names in the pinned Java corpus.
+# Do not issue DROP here: leaked or pre-existing databases must not be hidden.
+SELECT COUNT(*) AS remaining_golden_databases
+FROM information_schema.schemata
+WHERE schema_name IN ('golden_1_fs', 'golden_2_fs');

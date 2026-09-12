@@ -58,6 +58,7 @@ const (
 	benchCatOfflineFS    = "offline_fs"    // offline feature materialization (full-table CTEs)
 	benchCatTPCHCte      = "tpch_cte"      // TPC-H rewritten with CTEs (RonSQL envelope)
 	benchCatTPCHOfficial = "tpch_official" // official TPC-H formulation (MySQL only)
+	benchCatFSHW         = "fs_hw"         // Hopsworks serving shapes over fs_bench (RONDB-1121 E5, fs_bench.go)
 )
 
 // RonSQLBenchQuery is a named analytics benchmark query over the tpch
@@ -97,6 +98,15 @@ type RonSQLBenchQuery struct {
 	KeySQL       string
 	KeyDefault   int
 	KeySpan      int // when > 0, {KEY2} = {KEY} + KeySpan
+	// Resolver, when set, renders every placeholder of SQL for one request
+	// (fs_hw entries: {KEY}, {KEYS:n}, {SKEY}, {ACCT}/{CUR}, {NOW-7d} ...)
+	// instead of the {KEY}/{KEY2} substitution; maxKey comes from KeySQL.
+	Resolver func(sql string, rng *rand.Rand, maxKey int) string
+	// Placeholders documents the resolver's placeholders for the listing.
+	Placeholders string
+	// PlanPins are substrings expected in the RonSQL EXPLAIN of the warmup
+	// statement; a missing pin prints a warning (benchmarks.md §7).
+	PlanPins []string
 }
 
 // sqlBenchName is the query's name in the .bench_sql namespace.
@@ -730,7 +740,9 @@ func (s *Shell) listRonSQLBenchQueries() {
 	fmt.Println("  TPC-H rewritten with CTEs:")
 	printBenchQueryCategory(benchCatTPCHCte, false)
 	fmt.Println()
-	fmt.Println("    all                  Run every RonSQL-capable query sequentially")
+	printFSHWCategory(false)
+	fmt.Println()
+	fmt.Println("    all                  Run every RonSQL-capable query sequentially (fs_hw only when fs_bench is loaded)")
 	fmt.Println()
 	fmt.Println("  Queries run against the tpch database - run .load_tpch first.")
 	fmt.Println("  Defaults: T=1 thread, N=10 requests per thread.")
@@ -756,7 +768,9 @@ func (s *Shell) listSQLBenchQueries() {
 	fmt.Println("  TPC-H official formulations:")
 	printBenchQueryCategory(benchCatTPCHOfficial, true)
 	fmt.Println()
-	fmt.Println("    all                  Run every query sequentially")
+	printFSHWCategory(true)
+	fmt.Println()
+	fmt.Println("    all                  Run every query sequentially (fs_hw only when fs_bench is loaded)")
 	fmt.Println()
 	fmt.Println("  Queries run against the tpch database - run .load_tpch first.")
 	fmt.Println("  Defaults: T=1 thread, N=10 requests per thread.")
@@ -811,9 +825,13 @@ func substituteBenchKey(q *RonSQLBenchQuery, key int) string {
 	return strings.ReplaceAll(sql, "{KEY}", strconv.Itoa(key))
 }
 
-// buildRonSQLBenchSQL substitutes the {KEY} / {KEY2} placeholders if present.
-// This is the bare SQL shared with the MySQL baseline paths.
+// buildRonSQLBenchSQL substitutes the {KEY} / {KEY2} placeholders if present
+// (or every placeholder through the entry's Resolver).  This is the bare SQL
+// shared with the MySQL baseline paths.
 func buildRonSQLBenchSQL(q *RonSQLBenchQuery, rng *rand.Rand, maxKey int) string {
+	if q.Resolver != nil {
+		return q.Resolver(q.SQL, rng, maxKey)
+	}
 	if !q.RandKey {
 		return q.SQL
 	}
@@ -1003,12 +1021,19 @@ func (s *Shell) runBenchRonSQL(name string, numThreads, numOps int) error {
 		s.listRonSQLBenchQueries()
 		return nil
 	}
+	if strings.EqualFold(name, benchCatFSHW) {
+		return s.runBenchFSHW(true, numThreads, numOps)
+	}
 	if strings.EqualFold(name, "all") {
 		var failed []string
 		total := 0
+		skipFSHW := !s.fsHWAvailable()
+		if skipFSHW {
+			fmt.Println(ui.Info("fs_bench is not loaded: skipping the fs_hw category (run .fs_load first)"))
+		}
 		for i := range ronsqlBenchQueries {
 			q := &ronsqlBenchQueries[i]
-			if q.MySQLOnly {
+			if q.MySQLOnly || (skipFSHW && q.Category == benchCatFSHW) {
 				continue
 			}
 			total++
@@ -1113,6 +1138,9 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 		fmt.Println(strings.TrimSpace(string(data)))
 	}
 	fmt.Println()
+	if len(q.PlanPins) > 0 || q.Category == benchCatFSHW {
+		s.checkBenchPlanPins(clients[0], q, warmupReq.Query)
+	}
 
 	var doneOps int64
 	var wg sync.WaitGroup
@@ -1167,10 +1195,22 @@ func (s *Shell) runBenchSQLNamed(name string, numThreads, numOps int) error {
 		s.listSQLBenchQueries()
 		return nil
 	}
+	if strings.EqualFold(name, benchCatFSHW) {
+		return s.runBenchFSHW(false, numThreads, numOps)
+	}
 	if strings.EqualFold(name, "all") {
 		var failed []string
+		total := 0
+		skipFSHW := !s.fsHWAvailable()
+		if skipFSHW {
+			fmt.Println(ui.Info("fs_bench is not loaded: skipping the fs_hw category (run .fs_load first)"))
+		}
 		for i := range ronsqlBenchQueries {
 			q := &ronsqlBenchQueries[i]
+			if skipFSHW && q.Category == benchCatFSHW {
+				continue
+			}
+			total++
 			if err := s.runBenchSQLQuery(q, numThreads, numOps); err != nil {
 				fmt.Println(ui.Error(fmt.Sprintf("Benchmark %s failed: %v", q.sqlBenchName(), err)))
 				failed = append(failed, q.sqlBenchName())
@@ -1178,7 +1218,7 @@ func (s *Shell) runBenchSQLNamed(name string, numThreads, numOps int) error {
 		}
 		if len(failed) > 0 {
 			return fmt.Errorf("%d of %d benchmarks failed: %s",
-				len(failed), len(ronsqlBenchQueries), strings.Join(failed, ", "))
+				len(failed), total, strings.Join(failed, ", "))
 		}
 		return nil
 	}

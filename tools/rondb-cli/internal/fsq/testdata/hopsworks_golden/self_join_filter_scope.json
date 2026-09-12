@@ -1,0 +1,336 @@
+{
+  "name": "self_join_filter_scope",
+  "fgs": [
+    {
+      "id": 1,
+      "name": "events",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": "event_time",
+      "ttl": null,
+      "features": [
+        {
+          "name": "entity_id",
+          "type": "bigint",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "event_time",
+          "type": "timestamp",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "amount",
+          "type": "bigint",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "fee",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "tags",
+          "type": "array<string>",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "index": 0,
+      "parent": 0,
+      "fg": 1,
+      "type": "INNER",
+      "prefix": "f_",
+      "on": [],
+      "features": [
+        {
+          "name": "count",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_count",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_sum",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_min",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_max",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_avg",
+          "type": "double",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_fee_greatest",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_fee_least",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": {
+        "*": [
+          "count"
+        ],
+        "amount": [
+          "count",
+          "sum",
+          "min",
+          "max",
+          "avg"
+        ],
+        "amount,fee": [
+          "greatest",
+          "least"
+        ]
+      },
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    },
+    {
+      "index": 1,
+      "parent": 0,
+      "fg": 1,
+      "type": "INNER",
+      "prefix": "other_",
+      "on": [],
+      "features": [
+        {
+          "name": "count",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_count",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_sum",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_min",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_max",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_avg",
+          "type": "double",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_fee_greatest",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_fee_least",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": {
+        "*": [
+          "count"
+        ],
+        "amount": [
+          "count",
+          "sum",
+          "min",
+          "max",
+          "avg"
+        ],
+        "amount,fee": [
+          "greatest",
+          "least"
+        ]
+      },
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    }
+  ],
+  "filters": [
+    {
+      "fg": 1,
+      "joinIndex": 1,
+      "logic": "SINGLE",
+      "feature": "amount",
+      "condition": "GREATER_THAN",
+      "value": "10",
+      "valueFeatureGroupId": null
+    }
+  ],
+  "options": {
+    "batch": false,
+    "inferenceHelpers": false,
+    "logging": false,
+    "vectorWithHelpers": false
+  },
+  "definition": null,
+  "trainingDataset": false,
+  "maxCollectN": 50,
+  "maxCollectCells": 100,
+  "expectedTemplates": 2,
+  "expectedError": null,
+  "schemaVersion": 1,
+  "source": "java-generated",
+  "provenance": {
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "trackedWorktreeDirty": true,
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "javaVersion": "21.0.12.1",
+    "timezone": "UTC",
+    "locale": "en-US"
+  },
+  "inputSha256": "8e3eb74237ee9290f65f3db0f8ae9f082e24e7c3d80fa0915f5d0b864d27a3c9",
+  "expected": {
+    "statements": [
+      {
+        "aggregateFeatureNames": [
+          "f_count",
+          "f_amount_count",
+          "f_amount_sum",
+          "f_amount_min",
+          "f_amount_max",
+          "f_amount_avg",
+          "f_amount_fee_greatest",
+          "f_amount_fee_least"
+        ],
+        "aggregateWindow": null,
+        "collectAscending": null,
+        "collectFeatureName": null,
+        "collectFilterApplied": null,
+        "collectFilters": null,
+        "collectN": null,
+        "collectOrderBy": null,
+        "collectSourceFeatures": null,
+        "featureGroupId": 1,
+        "prefix": "f_",
+        "preparedStatementIndex": 0,
+        "preparedStatementParameters": [
+          {
+            "name": "entity_id",
+            "index": 1
+          }
+        ],
+        "queryOnline": "SELECT COUNT(*) AS `f_count`, COUNT(`amount`) AS `f_amount_count`, SUM(`amount`) AS `f_amount_sum`, MIN(`amount`) AS `f_amount_min`, MAX(`amount`) AS `f_amount_max`, AVG(`amount`) AS `f_amount_avg`, MAX(GREATEST(`amount`, `fee`)) AS `f_amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `f_amount_fee_least` FROM `golden_1_fs`.`events_1` WHERE `entity_id` = ?",
+        "queryOnlineScan": null,
+        "queryRonsql": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, AVG(`amount`) AS `amount_avg`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `events_1` WHERE `entity_id` = ?;",
+        "ronsqlDatabase": "golden_1_fs",
+        "snowflakeTemplate": null,
+        "snowflakeTemplates": null
+      },
+      {
+        "aggregateFeatureNames": [
+          "other_count",
+          "other_amount_count",
+          "other_amount_sum",
+          "other_amount_min",
+          "other_amount_max",
+          "other_amount_avg",
+          "other_amount_fee_greatest",
+          "other_amount_fee_least"
+        ],
+        "aggregateWindow": null,
+        "collectAscending": null,
+        "collectFeatureName": null,
+        "collectFilterApplied": null,
+        "collectFilters": null,
+        "collectN": null,
+        "collectOrderBy": null,
+        "collectSourceFeatures": null,
+        "featureGroupId": 1,
+        "prefix": "other_",
+        "preparedStatementIndex": 1,
+        "preparedStatementParameters": [
+          {
+            "name": "entity_id",
+            "index": 1
+          }
+        ],
+        "queryOnline": "SELECT COUNT(*) AS `other_count`, COUNT(`amount`) AS `other_amount_count`, SUM(`amount`) AS `other_amount_sum`, MIN(`amount`) AS `other_amount_min`, MAX(`amount`) AS `other_amount_max`, AVG(`amount`) AS `other_amount_avg`, MAX(GREATEST(`amount`, `fee`)) AS `other_amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `other_amount_fee_least` FROM `golden_1_fs`.`events_1` WHERE `entity_id` = ? AND `amount` > 10",
+        "queryOnlineScan": null,
+        "queryRonsql": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, AVG(`amount`) AS `amount_avg`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `events_1` WHERE `entity_id` = ? AND `amount` > 10;",
+        "ronsqlDatabase": "golden_1_fs",
+        "snowflakeTemplate": null,
+        "snowflakeTemplates": null
+      }
+    ],
+    "gateOrException": null
+  }
+}
