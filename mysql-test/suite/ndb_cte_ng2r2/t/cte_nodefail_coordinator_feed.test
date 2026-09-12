@@ -1,0 +1,97 @@
+# RONDB-1120 NF-7: the transaction coordinator fails while a source's
+# aggregation feed of a CTE scan is running for a live requester.
+# Run with: ./mtr --suite=ndb_cte_ng2r2 cte_nodefail_coordinator_feed
+#
+# Runs the CteCoordinatorDiesAggFeed case from the testNodeRestart NDBT
+# program (storage/ndb/test/ndbapi/testNodeRestart.cpp, plan
+# storage/ndb/claude_files/pushdown_join_aggregation/node_failure_test_plan.md).
+#
+# Same query and hold as NF-6 (error insert 5144 on an isolated source),
+# but the case chooses the coordinator up front so that the source is not
+# the coordinator, and kills the coordinator once the source has reported
+# the requester. It requires the source's CTE_AGG_FEED_REFUSED line (the
+# feed answered its live requester with a REF), the query to fail with a
+# node-failure error (286, 20016 or the API's 4010 / 4025 / 4028 / 4031),
+# the coordinator to rejoin, the join-agg leak-check DUMPs (2361, 2362,
+# 2363, 2560, 2650) to stay clean (2361 covers commit c13a662bc93) and
+# the query to return every row afterwards. Three iterations. The
+# source's insert is cleared after each iteration.
+#
+# Three distinct roles need 4 data nodes, so the case lives in this suite
+# and skips where no coordinator leaves an isolated source.
+#
+# The error insert needs error-insert capable ndbmtd binaries, and the
+# testNodeRestart binary is only present in WITH_NDB_TEST builds.
+#
+# On failure the program's output is in $NDB_TOOLS_OUTPUT (var/tmp) of the
+# saved test directory.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its tables (TEST_DB.T1 and the CTE fixtures
+# TEST_DB.cte_nf_src / cte_nf_virtual) directly via the NDB API. Tables
+# created outside of the MySQL Server crash the MySQL Server, so both
+# MySQL Servers are shut down while the NDBT case runs and started again
+# after the NDBT tables have been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # NF-7: kill the coordinator during a held aggregation feed (error insert 5144)
+--exec $TEST_NODE_RESTART -n CteCoordinatorDiesAggFeed T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops T1 and the case's finalizer drops the CTE
+# fixtures when the case completes cleanly; a missing table is not an
+# error here.
+--echo "[dropping NDBT test tables]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_src >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_virtual >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # CteCoordinatorDiesAggFeed passed

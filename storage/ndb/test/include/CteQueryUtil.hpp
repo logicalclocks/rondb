@@ -81,9 +81,11 @@ struct Options {
   /* Batch rows for the main scan of LookupMain (0 = API default).  Must
    * be at least the source table's fragment count. */
   Uint32 mainBatchRows;
+  /* Data node to use as transaction coordinator (0 = the API's choice). */
+  Uint32 tcNodeId;
   Options()
       : shape(LookupMain), closeAfterFirstBatch(false), beforeClose(nullptr),
-        beforeExecute(nullptr), arg(nullptr), mainBatchRows(0) {}
+        beforeExecute(nullptr), arg(nullptr), mainBatchRows(0), tcNodeId(0) {}
 };
 
 struct Result {
@@ -295,7 +297,9 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   }
   qb->destroy();
 
-  NdbTransaction *trans = ndb->startTransaction();
+  NdbTransaction *trans = opt.tcNodeId != 0
+                              ? ndb->startTransaction(opt.tcNodeId, 0)
+                              : ndb->startTransaction();
   if (trans == nullptr) {
     res.failedAt = "startTransaction";
     res.ndbError = ndb->getNdbError().code;

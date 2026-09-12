@@ -88,10 +88,10 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       rounds, 20 ms at a time, until cleared; the requester / coordinator
       down checks still run first. The first held round of a remote
       requester emits InfoEvent
-      "[CTE_NF6_FEED_HELD node=<node> iteration=<extra> requester=<node>]"
+      "[CTE_AGG_FEED_HELD node=<node> iteration=<extra> requester=<node>]"
       once per instance (extra is the test iteration, its top bit marks the
-      event as sent). NF-6 kills the named requester and clears the insert
-      on the source afterwards.
+      event as sent). NF-6 kills the named requester, NF-7 the coordinator;
+      both clear the insert on the source afterwards.
 Next DBLQH 5145
 Next DBDICT 6229
 Next DBDIH 7251

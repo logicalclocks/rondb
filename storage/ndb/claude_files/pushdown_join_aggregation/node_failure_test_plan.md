@@ -212,7 +212,7 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5141 | DBLQH `cteLookupReqImpl` | hold every inbound CTE lookup, 200 ms at a time, until cleared; one event per instance for the first remote probe | DBSPJ workers on the other nodes keep probes charged to this node for as long as the kill needs (NF-3) |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, then swallow the CTE_SCAN_CONF of every remote requester while set; one event per instance | a remote DBSPJ worker holds this source's batch without a reply for as long as the kill needs (NF-4) |
 | 5143 | DBLQH `cteScanEmitResults` | report each saved iterator for a remote requester as `[CTE_NF5_SCAN_PAUSED node=S iteration=I requester=R]`; rows and CONF delivered normally | identifies the actual requester of a paused remote scan before the kill (NF-5); cleared by the test |
-| 5144 | DBLQH `cteScanAggFeed` | hold every aggregation feed continuation between rounds, 20 ms at a time, until cleared (after the requester / coordinator down checks); `[CTE_NF6_FEED_HELD node=S iteration=I requester=R]` once per instance | the feed is still running when its requester (NF-6) or the coordinator (NF-7) is killed; cleared by the test |
+| 5144 | DBLQH `cteScanAggFeed` | hold every aggregation feed continuation between rounds, 20 ms at a time, until cleared (after the requester / coordinator down checks); `[CTE_AGG_FEED_HELD node=S iteration=I requester=R]` once per instance | the feed is still running when its requester (NF-6) or the coordinator (NF-7) is killed; cleared by the test |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | send COMPLETE_REQ with aggStateKey RNIL for one node even if the key is known | identity-addressed COMPLETE parks or resolves |
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | drop ONE SETUP_CONF for good (not 20 ms) | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
@@ -261,7 +261,7 @@ node other than the TC master when possible, and skips otherwise.
 | NF-4 | `CteScanSourceDiesMidBatch` | 5142 on P: rows sent, the CONF to every remote worker swallowed (scanCte main query; P = an owner scanned from another node, skips when there is none) | P | slot retired by `cte_scan_execNODE_FAILREP`; request completes with 286 / 20016; 2362 clean on survivors (`f718b5be5d6`) |
 | NF-5 | `CteRequesterDiesPausedScan` | 5143 on S reports a saved iterator and its actual remote requester R; API holds scanCte after its first row; choose S with both S and the coordinator outside the routing replica set | R | S logs `CTE_SCAN_ITER_RELEASED` for R; close returns; 2362 clean (`c3ce0732890`) |
 | NF-6 | `CteRequesterDiesAggFeed` | 5144 on S holds the aggregation feed (FeedChain: CTE 1 over scanCte(CTE 0)) and names its remote requester R; S chosen with S and the coordinator outside the routing replica set | R | S logs `CTE_AGG_FEED_ABANDONED` for R (continuation stopped on ZNODE_DOWN, no REF); R rejoins (NF completion not stalled); query fails 286 / 20016; 2362 clean (`c3ce0732890`) |
-| NF-7 | `CteCoordinatorDiesAggFeed` | 5130 on P, C != R | C | continuation REFs the live requester; states reclaimed; 2361 clean (`c13a662bc93`) |
+| NF-7 | `CteCoordinatorDiesAggFeed` | 5144 on S as in NF-6; C chosen up front (startTransaction hint) so that an isolated source S != C exists; R named by the event | C | S logs `CTE_AGG_FEED_REFUSED` for C (continuation REFs the live requester); states reclaimed, 2361 clean; query fails 286 / 20016 / API 4010-4031 (`c13a662bc93`) |
 | NF-8 | `CteCoordinatorDiesReady` | query holding a CTE_READY state while probing (long lookup phase) | C | CTE_READY states reclaimed by proxy; 2361 clean (`ae810a9dc73`) |
 | NF-9 | `CteCoordinatorDiesPausedRedist` | 5133 on P | C | paused CTE_REDISTRIBUTING state marked in owner sweep and reclaimed (`0f983279eb6`) |
 | NF-10 | `CoordinatorDiesReleaseInFlight` | 8312 on C | C (crash insert) | no double teardown on survivors (`b30c78c0be0`); 2361 clean |
@@ -313,6 +313,15 @@ after the post-kill marker and query completion checks. A cleanup guard
 also clears it on error exits; the query step handles failed arming and
 a stop during the handoff to the killer. The driver's baseline and
 post-recovery checks run the case's own shape.
+NF-7 reuses the held feed with the kill target set to the coordinator
+(`CTE_NF_KILL_COORDINATOR`): the case chooses the coordinator before the
+transaction starts (`Options::tcNodeId`, `startTransaction(node, 0)`) as
+a node for which an isolated source other than itself exists, the event
+still names the requester (checked distinct from both), and the post-kill
+marker is `[CTE_AGG_FEED_REFUSED node=S failed=C requester=R]`, emitted
+by `cteScanAggFeed` when it stops on the coordinator's ZNODE_DOWN and
+REFs the requester. The accepted query errors add the NDB API's own
+node-failure aborts (4010, 4025, 4028, 4031) for coordinator kills.
 
 Each case runs 3 iterations to shake timing. Registration in
 `daily-basic--01-tests.txt` next to the existing `JoinAggNodeRestart`
@@ -452,7 +461,8 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | `cte_nodefail_scan_source.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteScanSourceDiesMidBatch T1` (NF-4) - **done** |
 | `cte_nodefail_requester_paused.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteRequesterDiesPausedScan T1` (NF-5) - **done** |
 | `cte_nodefail_requester_feed.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteRequesterDiesAggFeed T1` (NF-6) - **done** |
-| `cte_nodefail_<case>.test` (suite `ndb_cte`, or `ndb_cte_ng2r2` when the case needs 4 nodes) | 1-3 | one wrapper per further NDBT case (NF-7 .. NF-12, PK-8), same pattern |
+| `cte_nodefail_coordinator_feed.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesAggFeed T1` (NF-7) - **done** |
+| `cte_nodefail_<case>.test` (suite `ndb_cte`, or `ndb_cte_ng2r2` when the case needs 4 nodes) | 1-3 | one wrapper per further NDBT case (NF-8 .. NF-12, PK-8), same pattern |
 | `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |
 | `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline |

@@ -21986,6 +21986,10 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       jam();
       // DBSPJ is alive and still needs its terminal reply. Stop before
       // accessing either interpreter; NF cleanup waits for this release.
+      /* Cluster-log evidence that the feed answered its live requester
+       * after the coordinator's failure; the NF-7 test waits for it. */
+      infoEvent("[CTE_AGG_FEED_REFUSED node=%u failed=%u requester=%u]",
+                getOwnNodeId(), hostPtr.i, refToNode(senderRef));
       releaseCteScanIterState(aggFeedStateI);
       sendCteScanRef(signal, senderRef, senderData,
                      ZNODEFAIL_BEFORE_COMMIT);
@@ -22006,7 +22010,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
     constexpr Uint32 eventSent = 0x80000000;
     if (refToNode(senderRef) != getOwnNodeId() &&
         (c_error_insert_extra & eventSent) == 0) {
-      infoEvent("[CTE_NF6_FEED_HELD node=%u iteration=%u requester=%u]",
+      infoEvent("[CTE_AGG_FEED_HELD node=%u iteration=%u requester=%u]",
                 getOwnNodeId(), c_error_insert_extra, refToNode(senderRef));
       c_error_insert_extra |= eventSent;
     }
