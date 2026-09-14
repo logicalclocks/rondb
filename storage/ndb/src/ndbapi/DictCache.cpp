@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -101,10 +102,10 @@ void LocalDictCache::drop(const BaseString &name) {
 
 Ndb_local_table_info *LocalDictCache::remove(const BaseString &name) {
   ASSERT_NOT_MYSQLD;
-  Ndb_local_table_info *info =
-      m_tableHash.deleteKey(name.c_str(), name.length());
-  assert(info != nullptr);
-  return info;  // unlinked from the hash; caller owns it, NOT destroyed here
+  // Unlike drop(), a miss is not a caller bug: returns nullptr when nothing is
+  // cached under name. On a hit the entry is unlinked from the hash and the
+  // caller owns it; it is NOT destroyed here.
+  return m_tableHash.deleteKey(name.c_str(), name.length());
 }
 
 /*****************************************************************
