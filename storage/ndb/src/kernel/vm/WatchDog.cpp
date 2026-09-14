@@ -391,6 +391,8 @@ void WatchDog::run() {
             /* Immediate exit without attempting to trace
              * to avoid I/O stalls leaving process hanging
              */
+            ErrorReporter::reportNodeStartFailure(NDBD_EXIT_WATCHDOG_TERMINATE,
+                                                  last_stuck_action);
             NdbShutdown(NDBD_EXIT_WATCHDOG_TERMINATE, NST_Watchdog);
           }
           if (oldCounterValue[i] == 9) {  // Allocating memory

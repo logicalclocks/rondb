@@ -27,6 +27,8 @@
 #ifndef DBTUX_H
 #define DBTUX_H
 
+#include <atomic>
+
 #include <ndb_limits.h>
 #include <ArrayPool.hpp>
 #include <AttributeDescriptor.hpp>
@@ -95,10 +97,29 @@ class Dbtux : public SimulatedBlock {
   Dblqh* c_lqh;
   Dbacc* c_acc;
   Dbtux* m_ldm_instance_used;
+
+  /**
+   * [NODE-START] step 11 progress: rows scanned by the index builds
+   * since the last reset. The offline build runs mt_buildIndexFragment
+   * in the NDBFS threads, so the counter is atomic; DBLQH resets it
+   * when the rebuild step starts and reads it from its report tick in
+   * the LDM thread.
+   */
+  void nsl_build_rows_reset() {
+    m_nsl_build_rows.store(0, std::memory_order_relaxed);
+  }
+  void nsl_build_rows_add(Uint64 rows) {
+    m_nsl_build_rows.fetch_add(rows, std::memory_order_relaxed);
+  }
+  Uint64 nsl_build_rows() const {
+    return m_nsl_build_rows.load(std::memory_order_relaxed);
+  }
   void execTUX_BOUND_INFO(Signal* signal);
   void execREAD_PSEUDO_REQ(Uint32 scanPtrI, Uint32 attrId, Uint32* out, Uint32 out_words);
 
 private:
+  std::atomic<Uint64> m_nsl_build_rows{0};
+
   // sizes are in words (Uint32)
   static constexpr Uint32 MaxIndexAttributes = MAX_ATTRIBUTES_IN_INDEX;
   static constexpr Uint32 MaxAttrDataSize =

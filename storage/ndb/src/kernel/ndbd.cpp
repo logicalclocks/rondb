@@ -36,7 +36,9 @@
 #include <portlib/NdbDir.hpp>
 
 #include "vm/Configuration.hpp"
+#include "vm/NodeStartLog.hpp"
 #include "vm/SimBlockList.hpp"
+#include "vm/ndbd_malloc.hpp"
 #include "vm/ThreadConfig.hpp"
 #include "vm/WatchDog.hpp"
 #include "vm/mt.hpp"
@@ -865,6 +867,55 @@ void stop_async_log_func(NdbThread *thr, ThreadData &thr_args) {
   }
 }
 
+/**
+ * [NODE-START] step 1 (init) covers the process startup before the
+ * kernel blocks exist, see vm/NodeStartLog.hpp. The start type is not
+ * known at this point. Elapsed times are anchored at
+ * globalData.theNodeStartTicks, set at the top of ndbd_run.
+ */
+static void log_init_step(Uint32 sub, const char *verb, bool with_elapsed) {
+  /* A sub-step counts from its own start: the end of the previous one
+     (the node start for sub-step 1), see NodeStartLog.hpp. */
+  static NDB_TICKS sub_start;
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (!NdbTick_IsValid(sub_start)) {
+    sub_start = NdbTick_IsValid(globalData.theNodeStartTicks)
+                    ? globalData.theNodeStartTicks
+                    : now;
+  }
+  char buf[NodeStartLog::BUF_SIZE];
+  Int64 elapsed = -1;
+  if (with_elapsed) {
+    elapsed = (Int64)NdbTick_Elapsed(sub_start, now).seconds();
+  }
+  NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_INIT, sub,
+                     NodeState::ST_ILLEGAL_TYPE, verb, elapsed);
+  if (sub > 0 && strcmp(verb, "completed") == 0) {
+    /* The next sub-step starts now; memory touched from now on belongs
+       to it and its progress lines count from here. */
+    sub_start = now;
+    ndbd_malloc_set_touch_report_substep(sub + 1);
+    ndbd_malloc_set_touch_report_start(now);
+  }
+}
+
+/**
+ * [NODE-START] failed line for the step 1 exits that never reach
+ * ErrorReporter. The error itself is logged by the caller just before;
+ * call this before the asynchronous logger is stopped.
+ */
+static void log_init_failed(const char *what) {
+  /* Claim the end of the narrative (see GlobalData::theNodeStartLogState)
+     so a concurrent watchdog/ErrorReporter failure prints no second line. */
+  Uint32 expected = GlobalData::NSL_STARTING;
+  if (!globalData.theNodeStartLogState.compare_exchange_strong(
+          expected, GlobalData::NSL_FAILED, std::memory_order_acq_rel)) {
+    return;
+  }
+  char buf[NodeStartLog::BUF_SIZE];
+  NodeStartLog::failed(buf, sizeof(buf), "init aborted, %s", what);
+}
+
 void ndbd_run(bool foreground, int report_fd, const char *connect_str,
               int force_nodeid, const char *bind_address, bool no_start,
               bool initial, bool initialstart, unsigned allocated_nodeid,
@@ -949,6 +1000,9 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
         "Normal start of data node using checkpoint and log info if existing");
   }
 
+  globalData.theNodeStartTicks = NdbTick_getCurrentTicks();
+  log_init_step(0, "started", false);
+
   log_memusage("init1");
 
   globalEmulatorData.create();
@@ -960,6 +1014,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   Configuration *theConfig = globalEmulatorData.theConfiguration;
   if (!theConfig->init(no_start, initial, initialstart)) {
     g_eventLogger->error("Failed to init Configuration");
+    log_init_failed("could not initialize the configuration");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
@@ -991,6 +1046,10 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
 
   log_memusage("Config fetch");
 
+  log_init_step(1, "completed", true);
+  ndbd_malloc_set_touch_report_frequency(
+      globalData.theNodeStartLogReportFrequency);
+
   theConfig->setupConfiguration();
   {
     /**
@@ -1001,7 +1060,10 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
       globalEmulatorData.theConfiguration->getOwnConfigIterator();
     if (p == 0)
     {
-      abort();
+      g_eventLogger->error("Failed to create the own configuration iterator");
+      log_init_failed("could not read the own configuration");
+      stop_async_log_func(log_threadvar, thread_args);
+      ndbd_exit(-1);
     }
     Uint64 reserved_transmem_bytes =
         globalEmulatorData.theSimBlockList->getTransactionMemoryNeed(
@@ -1034,6 +1096,8 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     else
       g_eventLogger->error(
           "Shutting down. This version of OpenSSL is not supported.");
+    log_init_failed(openssl_version_ok ? "no valid TLS certificate"
+                                       : "unsupported OpenSSL version");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
@@ -1047,6 +1111,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     run-time environment
   */
   if (get_multithreaded_config(globalEmulatorData)) {
+    log_init_failed("invalid thread configuration");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
@@ -1073,12 +1138,15 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     watchCounter = 9;  //  Means "doing allocation"
     globalEmulatorData.theWatchDog->registerWatchedThread(&watchCounter, 0);
     if (init_global_memory_manager(globalEmulatorData, &watchCounter) != 0) {
+      log_init_failed("global memory allocation failed");
       stop_async_log_func(log_threadvar, thread_args);
       ndbd_exit(1);
     }
     globalEmulatorData.theWatchDog->unregisterWatchedThread(0);
   }
   g_eventLogger->info("Memory Allocation for global memory pools Completed");
+
+  log_init_step(2, "completed", true);
   log_memusage("Global memory pools allocated");
 
   bool have_password_option =
@@ -1095,6 +1163,8 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
     g_eventLogger->info(
         "Data node configured to have encryption "
         "but password not provided");
+    log_init_failed("filesystem encryption password not provided");
+    stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
 
@@ -1105,12 +1175,16 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
       g_eventLogger->info(
           "Invalid filesystem password, "
           "empty password not allowed");
+      log_init_failed("invalid filesystem password");
+      stop_async_log_func(log_threadvar, thread_args);
       ndbd_exit(-1);
     }
     if (pwd_size > MAX_BACKUP_ENCRYPTION_PASSWORD_LENGTH) {
       g_eventLogger->info(
           "Invalid filesystem password, "
           "too long");
+      log_init_failed("invalid filesystem password");
+      stop_async_log_func(log_threadvar, thread_args);
       ndbd_exit(-1);
     }
 
@@ -1132,7 +1206,24 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   */
   globalEmulatorData.theThreadConfig->init();
 
-  globalEmulatorData.theConfiguration->addThread(log_threadvar, NdbfsThread);
+  {
+    /**
+     * CPU binding of the asynchronous log thread. The error handler is
+     * not installed yet (catchsigs() follows the block load), so a
+     * binding failure is returned here and reported as a start failure
+     * through the same drained early-exit path as the other step 1 exits.
+     */
+    bool lock_cpu_failed = false;
+    globalEmulatorData.theConfiguration->addThread(log_threadvar, NdbfsThread,
+                                                   false, &lock_cpu_failed);
+    if (lock_cpu_failed) {
+      g_eventLogger->error(
+          "Failed to lock the log thread to its configured CPU");
+      log_init_failed("could not lock the log thread to its configured CPU");
+      stop_async_log_func(log_threadvar, thread_args);
+      ndbd_exit(-1);
+    }
+  }
 
   log_memusage("Thread config initialised");
 
@@ -1218,6 +1309,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
                                                globalData.theUseOnlyIPv4Flag))
   {
     g_eventLogger->info("globalTransporterRegistry.start_service() failed");
+    log_init_failed("could not start the transporter service");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
@@ -1230,6 +1322,7 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   NdbThread *pTrp = globalTransporterRegistry.start_clients();
   if (pTrp == 0) {
     g_eventLogger->info("globalTransporterRegistry.start_clients() failed");
+    log_init_failed("could not start the transporter client thread");
     stop_async_log_func(log_threadvar, thread_args);
     ndbd_exit(-1);
   }
@@ -1245,6 +1338,8 @@ void ndbd_run(bool foreground, int report_fd, const char *connect_str,
   globalEmulatorData.theConfiguration->addThread(pSockServ, SocketServerThread);
 
   g_eventLogger->info("Starting the data node run-time environment");
+
+  log_init_step(3, "completed", true);
   {
     /**
       We have finally arrived at the point where we start the run-time
