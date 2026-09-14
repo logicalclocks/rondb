@@ -240,6 +240,18 @@ follow-up in the NDB API dictionary cache), **F21** (DECIMAL SUM on the
 DOUBLE path is topology-dependent; handled in the probes), **F22**
 (BIGINT SUM overflow undetected at the cross-fragment merge; known
 until the overflow-handling overhaul, a separate task).  Open,
-optional: the batchpkread Go suite under ASAN for F20, strict JIT arming
-of the four Hopsworks tests, and the E7 hazard run.  The requirements
-reports on the JIT and ng2r2 arms are done (identical to the base arm).
+optional: the batchpkread Go suite under ASAN for F20 and the E7 hazard
+run.  The requirements reports on the JIT and ng2r2 arms are done
+(identical to the base arm).
+
+### Strict JIT arming (2026-09-12)
+
+The four Hopsworks tests of `ronsql_fs_jit` (smoke, templates, golden,
+vectors — recorded fallback delta 0) now bracket their `--source` with
+`suite/ronsql_cte_jit/include/jit_strict_arm.inc` / `jit_strict_disarm.inc`
+(ERROR_INSERT 4064 DBTUP + 5120 DBLQH proxy): a program of the Hopsworks
+corpus that stops compiling fails the query instead of falling back.
+The census pins stay (expected 0).  The two fuzz mirrors (deltas 24 /
+280, the envelope beyond Hopsworks) keep census pins only.  The
+includes print nothing, so the recorded results are unchanged; a run of
+the suite is the verification.
