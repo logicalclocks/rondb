@@ -48,8 +48,6 @@ type Expect struct {
 	Finding string      // ledger id, e.g. "F0"
 	Pattern string      // substring of the RonSQL error (rejections) or note (wrong results)
 	Wrong   *WrongValue // exact single-row mismatch; nil grants no wrong-result exemption
-	// UnquotedTemporal lists the only output columns eligible for F9 matching.
-	UnquotedTemporal []string
 }
 
 // Statement is one bound statement of a case.
@@ -79,12 +77,8 @@ type Case struct {
 	Ordered      bool
 	ExpectReject *Expect
 	KnownWrong   *Expect
-	// KnownError is a verify-only expectation: the RonSQL response is known
-	// to be unusable (F9: unparsable JSON) although the TEXT form compared
-	// by the MTR test is fine.  Reported as KNOWN-ERROR, not as a failure.
-	KnownError *Expect
-	Hazard     string // finding id: not executed unless hazards are enabled
-	MTR        bool   // part of the golden MTR test
+	Hazard       string // finding id: not executed unless hazards are enabled
+	MTR          bool   // part of the golden MTR test
 	// Canon selects the MTR-side canonicalization applied to both engines'
 	// TEXT output before the diff: "" (byte-strict) or CanonNumeric.
 	Canon string
@@ -391,18 +385,6 @@ func (b *builder) needsNumericCanon(c Case) bool {
 		}
 	}
 	return false
-}
-
-// knownError marks an already-added case with a verify-only expected
-// execution error (the MTR TEXT compare is unaffected).
-func (b *builder) knownError(id string, e *Expect) {
-	for i := range b.out {
-		if b.out[i].ID == id {
-			b.out[i].KnownError = e
-			return
-		}
-	}
-	b.fail(id, fmt.Errorf("knownError: no such case"))
 }
 
 func (b *builder) fail(id string, err error) {
@@ -784,10 +766,4 @@ func (b *builder) edgeCases() {
 		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;", false, nil, nil, "F1")
 	e("EDGE-F1-string-reuse-nonull", "F1 kernel-side variant (DATA NODE CRASH — hazard)",
 		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "F1")
-	// F9: MIN/MAX over a DATE/TIMESTAMP column is printed unquoted in JSON
-	// output (ResultPrinter::print_aggregate_value), so the RDRS body is
-	// unparsable; the TEXT form (MTR) is correct.
-	for _, id := range []string{"EDGE-float-exact", "EDGE-date-range", "EDGE-ts3-cutoff", "EDGE-ts6-cutoff", "EDGE-ts0-batch"} {
-		b.knownError(id, Known["F9"])
-	}
 }

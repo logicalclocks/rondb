@@ -14,5 +14,6 @@ repro comes from `--shrink`.
 | F8 (rule) | framework | `agg:transactions` with `MIN(category)` / `MAX(category)` (4 of 200 cases) | MySQL `Grocery`, RonSQL `grocery` (collation-equal values, unspecified representative) | — | FRAMEWORK, fixed: the generator samples only `COUNT` over `category` / `device` (the columns whose domain holds collation-equal variants), per the F8 rule of E1. |
 
 Known outcomes that are not findings: `CLEAN-REJECT` on every collect
-case (F0, the Hopsworks CTE form), `KNOWN-ERROR` on MIN/MAX over the
-event time (F9), `GATED` / `NO-TEMPLATE` for the gated shapes.
+case (F0, the Hopsworks CTE form), `GATED` / `NO-TEMPLATE` for the gated
+shapes.  (`KNOWN-ERROR` on MIN/MAX over the event time, F9, until its fix
+in RONDB-1124 M1.1; those cases now `PASS`.)

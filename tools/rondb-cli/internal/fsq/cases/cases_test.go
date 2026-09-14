@@ -126,8 +126,8 @@ func TestBoundText(t *testing.T) {
 			t.Errorf("%s: Canon = %q, want %q", id, got, want)
 		}
 	}
-	if ke := byID["EDGE-date-range"].KnownError; ke == nil || ke.Finding != "F9" || byID["EDGE-ts0-batch"].KnownError == nil || byID["EDGE-big-safe"].KnownError != nil {
-		t.Error("F9 known-error marks: temporal MIN/MAX cases only")
+	if c := byID["EDGE-date-range"]; c.ExpectReject != nil || c.KnownWrong != nil || c.Hazard != "" {
+		t.Error("EDGE-date-range: a plain case since F9 (temporal MIN/MAX quoting in JSON) was fixed")
 	}
 	if byID["S6-cte-k21"].ExpectReject == nil || byID["EDGE-F1-string-reuse"].Hazard != "F1" {
 		t.Error("expectation table wiring")

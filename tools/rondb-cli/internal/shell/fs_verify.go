@@ -67,7 +67,7 @@ type caseResult struct {
 
 func isFailure(status string) bool {
 	switch status {
-	case "REJECT(expected)", "REJECT(allowed)", "KNOWN-WRONG", "KNOWN-ERROR", "HEADER-ONLY", "SKIP", "HAZARD-SKIPPED", "UNTESTED":
+	case "REJECT(expected)", "REJECT(allowed)", "KNOWN-WRONG", "HEADER-ONLY", "SKIP", "HAZARD-SKIPPED", "UNTESTED":
 		return false
 	}
 	return !strings.HasPrefix(status, "PASS")
@@ -194,9 +194,6 @@ func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o
 			if c.KnownWrong != nil && res.Status == "PASS" {
 				res.Status, res.Message = "PASS(was-known-wrong)", c.KnownWrong.Finding+" now agrees"
 			}
-			if c.KnownError != nil && res.Status == "PASS" {
-				res.Status, res.Message = "PASS(was-known-error)", c.KnownError.Finding+" now parses"
-			}
 			if rep.Note != "" && res.Message == "" {
 				res.Message = rep.Note
 			}
@@ -217,10 +214,6 @@ func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o
 				if len(res.Raw) > 4096 {
 					res.Raw = res.Raw[:4096] + "…"
 				}
-			}
-			if c.KnownError.MatchesError(mysqlResp.Result, ronResp,
-				canon.Options{Ordered: c.Ordered, Tolerance: o.tolerance}) {
-				res.Status, res.Message = "KNOWN-ERROR", c.KnownError.Finding+": "+res.Message
 			}
 			return res
 		}
@@ -378,7 +371,7 @@ func (s *Shell) runFSVerify(args []string) error {
 			return err
 		}
 		for _, r := range results {
-			if !isFailure(r.Status) && r.Status != "KNOWN-WRONG" && r.Status != "KNOWN-ERROR" && r.Status != "REJECT(allowed)" {
+			if !isFailure(r.Status) && r.Status != "KNOWN-WRONG" && r.Status != "REJECT(allowed)" {
 				continue
 			}
 			base := filepath.Join(o.dumpDir, r.ID)
@@ -424,7 +417,7 @@ func shapeStatus(statuses []string) string {
 		switch {
 		case isFailure(st):
 			return "FAILED"
-		case st == "REJECT(expected)" || st == "REJECT(allowed)" || st == "KNOWN-WRONG" || st == "KNOWN-ERROR" || st == "HAZARD-SKIPPED":
+		case st == "REJECT(expected)" || st == "REJECT(allowed)" || st == "KNOWN-WRONG" || st == "HAZARD-SKIPPED":
 			out = "UNSUPPORTED"
 		case st == "UNTESTED" && out == "SUPPORTED":
 			out = "UNTESTED"

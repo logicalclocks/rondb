@@ -21,6 +21,7 @@ One row per signature (`CASE … <production>|<constructs>`).
 
 Known outcomes that are not findings: `CLEAN-REJECT` on the probe
 production and the CTE-form collect (expectation table), `KNOWN-WRONG`
-on string-keyed snowflakes (F14), `KNOWN-ERROR` on temporal MIN/MAX
-(F9), `KNOWN-HAZARD` on the discovery-log hazards, `PASS(hazard)` /
-`PASS(was-expected-reject)` when the engine has moved.
+on string-keyed snowflakes (F14), `KNOWN-HAZARD` on the discovery-log
+hazards, `PASS(hazard)` / `PASS(was-expected-reject)` when the engine has
+moved.  (`KNOWN-ERROR` on temporal MIN/MAX, F9, until its fix in
+RONDB-1124 M1.1; those cases now `PASS`.)

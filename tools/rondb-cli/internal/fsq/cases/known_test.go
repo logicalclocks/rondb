@@ -93,106 +93,11 @@ func TestMatchesWrong(t *testing.T) {
 				t.Fatal("a fixed result is a normal pass, not a known mismatch")
 			}
 			var absent *Expect
-			for _, e := range []*Expect{absent, Known["F9"]} {
+			for _, e := range []*Expect{absent, Known["F6"]} {
 				if e.MatchesWrong(ref, result(tc.ronsql), canon.Options{}) {
 					t.Fatal("an absent signature must not grant an exemption")
 				}
 			}
 		})
-	}
-}
-
-func TestMatchesErrorF9(t *testing.T) {
-	ref := &exec.Result{
-		Columns: []string{"cnt", "d_min"},
-		Types:   []string{"BIGINT", "DATE"},
-		Rows:    [][]exec.Cell{{{Text: "3"}, {Text: "2000-01-01"}}},
-	}
-	response := func(body string) exec.Response {
-		return exec.Response{Outcome: exec.Error, Message: "malformed JSON result: syntax error",
-			Result: &exec.Result{Raw: body}}
-	}
-	for _, tc := range []struct {
-		name, body string
-		match      bool
-	}{
-		{"known", `{"data":[{"cnt":3,"d_min":2000-01-01}]}`, true},
-		{"bare-array", `[{"cnt":3,"d_min":2000-01-01}]`, true},
-		{"whitespace", `{ "data": [ { "cnt": 3, "d_min": 2000-01-01 } ] }`, true},
-		{"fixed", `{"data":[{"cnt":3,"d_min":"2000-01-01"}]}`, false},
-		{"truncated", `{"data":[{"cnt":3,"d_min":2000-01-01}]`, false},
-		{"trailing-garbage", `{"data":[{"cnt":3,"d_min":2000-01-01}]} broken`, false},
-		{"wrong-count", `{"data":[{"cnt":4,"d_min":2000-01-01}]}`, false},
-		{"wrong-date", `{"data":[{"cnt":3,"d_min":2001-01-01}]}`, false},
-		{"wrong-alias", `{"data":[{"changed":3,"d_min":2000-01-01}]}`, false},
-		{"unknown-temporal", `{"data":[{"cnt":3,"other":2000-01-01}]}`, false},
-		{"duplicate-name", `{"data":[{"cnt":3,"d_min":2000-01-01,"d_min":2000-01-01}]}`, false},
-		{"missing-row", `{"data":[]}`, false},
-		{"extra-row", `{"data":[{"cnt":3,"d_min":2000-01-01},{"cnt":3,"d_min":2000-01-01}]}`, false},
-		{"null-count", `{"data":[{"cnt":null,"d_min":2000-01-01}]}`, false},
-		{"malformed-metadata", `{"data":[{"cnt":3,"d_min":2000-01-01}],"metadata":{"d_min":2000-01-01}}`, false},
-		{"duplicate-data", `{"data":[{"cnt":3,"d_min":2000-01-01}],"data":[]}`, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := response(tc.body)
-			if got := Known["F9"].MatchesError(ref, r, canon.Options{RelaxedHeaders: true}); got != tc.match {
-				t.Fatalf("match=%v, want %v", got, tc.match)
-			}
-			if r.Outcome != exec.Error || r.Result.Raw != tc.body {
-				t.Fatal("F9 matching must preserve the original error and raw response")
-			}
-		})
-	}
-	t.Run("quoted-text", func(t *testing.T) {
-		ref := &exec.Result{
-			Columns: []string{"d_min", "s"},
-			Types:   []string{"DATE", "VARCHAR"},
-			Rows:    [][]exec.Cell{{{Text: "2000-01-01"}, {Text: `{"d_min":2000-01-01}`}}},
-		}
-		r := response(`{"data":[{"d_min":2000-01-01,"s":"{\"d_min\":2000-01-01}"}]}`)
-		if !Known["F9"].MatchesError(ref, r, canon.Options{}) {
-			t.Fatal("text inside a quoted JSON string must remain untouched")
-		}
-	})
-	for _, typ := range []string{"TIMESTAMP", "DATETIME"} {
-		t.Run(typ, func(t *testing.T) {
-			ref := &exec.Result{
-				Columns: []string{"entity_id", "ts3_min", "ts6_min"},
-				Types:   []string{"BIGINT", typ, typ},
-				Rows: [][]exec.Cell{
-					{{Text: "1"}, {Text: "2026-05-01 12:00:00.000"}, {Text: "2026-05-01 12:00:00.000001"}},
-					{{Text: "2"}, {Null: true}, {Text: "2026-05-01 12:00:00.000000"}},
-				},
-			}
-			r := response(`{"data":[{"entity_id":2,"ts3_min":null,"ts6_min":2026-05-01 12:00:00},{"entity_id":1,"ts3_min":2026-05-01 12:00:00.000,"ts6_min":2026-05-01 12:00:00.000001}]}`)
-			if !Known["F9"].MatchesError(ref, r, canon.Options{}) {
-				t.Fatal("timestamp fractions, NULLs and unordered batch rows must match")
-			}
-			if Known["F9"].MatchesError(ref, r, canon.Options{Ordered: true}) {
-				t.Fatal("ordered comparison must still detect reordered rows")
-			}
-		})
-	}
-	r := response(`{"data":[{"cnt":3,"d_min":2000-01-01}]}`)
-	ref.Types[1] = "VARCHAR"
-	if Known["F9"].MatchesError(ref, r, canon.Options{}) {
-		t.Fatal("an unquoted non-temporal value is not F9")
-	}
-	ref.Types[1] = "DATE"
-	var absent *Expect
-	for _, e := range []*Expect{absent, Known["F4"]} {
-		if e.MatchesError(ref, r, canon.Options{}) {
-			t.Fatal("a case without the F9 signature must not receive an exemption")
-		}
-	}
-	for _, outcome := range []exec.Outcome{exec.OK, exec.CleanReject, exec.Retryable, exec.Timeout, exec.Crash} {
-		r.Outcome = outcome
-		if Known["F9"].MatchesError(ref, r, canon.Options{}) {
-			t.Fatal("non-parse outcomes must not receive an F9 exemption")
-		}
-	}
-	r.Outcome, r.Message = exec.Error, "HTTP 500: error"
-	if Known["F9"].MatchesError(ref, r, canon.Options{}) {
-		t.Fatal("unrelated errors must not receive an F9 exemption")
 	}
 }

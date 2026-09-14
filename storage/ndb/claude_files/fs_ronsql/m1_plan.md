@@ -146,6 +146,31 @@ text.  There are 103 permanent-error throw sites (`RonSQLPreparer.cpp` 80,
 
 ## M1.1 — F9: quote temporal MIN/MAX in JSON
 
+**Status: DONE 2026-09-15 on RONDB-1124 — verified: `ronsql.ronsql_temporal_json`
+recorded and reviewed (all twelve bodies parse, every temporal aggregate
+quoted, values and NULL groups correct); `ronsql_fs` and `ronsql_fs_jit`
+`ronsql_fs_fuzz_spec` + `ronsql_fs_fuzz_env` green on the new SUMMARY
+lines; `go test ./internal/fsq/... ./internal/shell/...` green.  The
+`ronsql_fs_ng2r2` / `ronsql_fs_ng4r2` fuzz results carry the same SUMMARY
+lines (same seed; they were identical before) and are confirmed the next
+time those mirrors run.**  Implementation notes: `print_aggregate_result`
+passes `m_quote` (the only aggregate branch that printed a string-typed
+value without it; BIGINT/DOUBLE need none, string MIN/MAX already quoted);
+new `suite/ronsql` test `ronsql_temporal_json` with the include
+`ronsql_json_check.inc` (ronsql_cli JSON, RDRS explicit and default
+`outputFormat`, every body decoded by perl `JSON::PP` and printed
+canonically) over DATE / YEAR / DATETIME(6) / TIMESTAMP(0,3,6) / TIME(3),
+GROUP BY with NULL and all-NULL groups, and a pass-through control row.
+Framework: `Known["F9"]`, `Expect.UnquotedTemporal`, `MatchesError`,
+`Case.KnownError`, the envelope `temporal-minmax` row and `EnvCase.Known`,
+the spec `Expect.KnownError` and the `KNOWN-ERROR` / `PASS(was-known-error)`
+statuses are removed (the `temporal-minmax` construct tag stays in the
+envelope signature); the eight fuzz `.result` SUMMARY lines lose their
+`known-error=3`: the envelope cases become `pass`, and of the three spec
+cases one becomes `pass` while two report `clean-reject` (a case reports
+its worst template status, and those two also carry an F0 collect
+template).
+
 **Site.** `ResultPrinter::print_aggregate_value`
 (`storage/ndb/src/ronsql/ResultPrinter.cpp:2401`): the D17 temporal
 decode calls `print_temporal_packed(out, …, temporal_fsp, "")` with an

@@ -64,10 +64,6 @@ type Expect struct {
 	// Templates is the number of RonSQL templates Build must emit when
 	// no gate applies (-1: not checked, used while shrinking).
 	Templates int
-	// KnownError names the engine finding that makes the RonSQL response
-	// unusable although the statement is legal: "F9" for MIN/MAX over a
-	// DATE/TIMESTAMP column (unparsable JSON).
-	KnownError string
 	// Reason documents a deliberate violation.
 	Reason string
 }
@@ -307,9 +303,9 @@ var collationAmbiguous = map[string]bool{"category": true, "device": true}
 // validAggregate samples 1-4 entries inside the type matrix.  String
 // columns get exactly one function (F1: a string column aggregated twice
 // with another column load in between crashes RDRS); MIN/MAX over the
-// event time is sampled rarely and flagged as the F9 known error.
-func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
-	known := ""
+// event time is sampled rarely (it exposed F9, the JSON quoting defect
+// fixed in RONDB-1124 M1.1).
+func (s *sampler) validAggregate(fg spec.FeatureGroup) spec.AggSpec {
 	var numeric, ints, strs []string
 	for _, f := range valueFeatures(fg) {
 		switch {
@@ -379,7 +375,6 @@ func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
 			if fg.EventTime != "" && !used[fg.EventTime] {
 				used[fg.EventTime] = true
 				agg = append(agg, spec.AggEntry{Key: fg.EventTime, Fns: []string{s.pickString([]string{"min", "max"})}})
-				known = "F9"
 			}
 		case 5:
 			if len(numeric) > 0 {
@@ -394,7 +389,7 @@ func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
 	if len(agg) == 0 {
 		agg = spec.AggSpec{{Key: "*", Fns: []string{"count"}}}
 	}
-	return agg, known
+	return agg
 }
 
 // collectFeature builds the synthesized array<struct<...>> feature of a
@@ -631,11 +626,8 @@ func (s *sampler) serving() {
 				}
 				entityKeys := len(pkNames(fg)) - 1 // minus the event time
 				if kind == 0 {
-					agg, known := s.validAggregate(fg)
+					agg := s.validAggregate(fg)
 					j.Aggregate, j.Features = agg, aggOutputs(agg)
-					if known != "" {
-						c.Expect.KnownError = known
-					}
 					if s.pct(60) {
 						j.Window = i64p([]int64{3600, 86400, 7 * 86400, 30 * 86400, 90 * 86400}[s.rng.IntN(5)])
 					}
@@ -842,7 +834,6 @@ func (s *sampler) serving() {
 	c.Expect.Templates = expected
 	if gate != "" {
 		c.Expect.Templates = 0
-		c.Expect.KnownError = ""
 		s.sig = append(s.sig, "gate="+gate)
 	}
 	c.Signature = strings.Join(s.sig, "|")
@@ -895,7 +886,7 @@ func (s *sampler) definition() {
 		}
 		s.sig = append(s.sig, "collect")
 	} else {
-		agg, _ := s.validAggregate(fg)
+		agg := s.validAggregate(fg)
 		d.Aggregate = agg
 		if fg.EventTime == "" {
 			gate, reason = spec.CodeAggregateInvalid, "aggregate on a feature group without event time"

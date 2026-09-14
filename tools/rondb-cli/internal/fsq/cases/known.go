@@ -26,10 +26,6 @@
 package cases
 
 import (
-	"encoding/json"
-	"regexp"
-	"strings"
-
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/canon"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/exec"
 )
@@ -37,7 +33,7 @@ import (
 // Known is the expectation table (random_generator.md §5.3, findings in
 // mysql-test/suite/ronsql_fs/findings/smoke.md): the single place where
 // "known engine outcome" lives.  A case referencing an entry reports
-// REJECT(expected) / KNOWN-WRONG / KNOWN-ERROR instead of FAIL; a case that
+// REJECT(expected) / KNOWN-WRONG instead of FAIL; a case that
 // unexpectedly passes reports PASS(was-...) so the entry can be retired.
 var Known = map[string]*Expect{
 	// Hopsworks collect CTE form: non-aggregating CTE body over a partial key (risk R1).
@@ -59,10 +55,6 @@ var Known = map[string]*Expect{
 		Wrong: &WrongValue{Column: "big_sum", MySQL: "9223372036854775808", RonSQL: "-9223372036854775808"}},
 	// VARBINARY cannot be projected by the pass-through printer.
 	"F7": {Finding: "F7", Pattern: "Unsupported column type"},
-	// MIN/MAX over a DATE/TIMESTAMP column is unquoted in JSON output (RDRS
-	// default): the body is not JSON.  Verify-only (Case.KnownError).
-	"F9": {Finding: "F9", Pattern: "malformed JSON result",
-		UnquotedTemporal: []string{"d_min", "d_max", "ts3_min", "ts6_min", "ts0_min"}},
 	// A snowflake template whose CTE body is keyed by a VARCHAR entity key
 	// returns no rows through CTE_SCAN although the body alone returns its
 	// group (E6, findings/spec_fuzz.md).  Detected structurally by the fuzzer.
@@ -106,69 +98,4 @@ func (e *Expect) MatchesWrong(ref, got *exec.Result, opt canon.Options) bool {
 	adjusted.Rows[0][column] = ref.Rows[0][column]
 	opt.RelaxedHeaders = false
 	return canon.Compare(ref, &adjusted, opt).Equal
-}
-
-// Match complete JSON strings as well as bare temporal member values.
-// The string alternative prevents edits inside an already quoted value.
-var temporalJSONToken = regexp.MustCompile(
-	`("(?:[^"\\]|\\.)*")(\s*:\s*)([0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?)?)(\s*[,}])|"(?:[^"\\]|\\.)*"`)
-
-// MatchesError recognizes F9 without converting the response into success:
-// quoting only the named temporal fields must restore a complete result
-// that agrees with MySQL. The original malformed body is never modified.
-func (e *Expect) MatchesError(ref *exec.Result, response exec.Response, opt canon.Options) bool {
-	if e == nil || len(e.UnquotedTemporal) == 0 || e.Pattern == "" ||
-		ref == nil || response.Result == nil || response.Outcome != exec.Error ||
-		!strings.HasPrefix(response.Message, e.Pattern+":") {
-		return false
-	}
-	raw := response.Result.Raw
-	if json.Valid([]byte(raw)) {
-		return false
-	}
-	allowed := map[string]bool{}
-	for i, name := range ref.Columns {
-		if i >= len(ref.Types) {
-			continue
-		}
-		switch strings.ToUpper(ref.Types[i]) {
-		case "DATE", "TIMESTAMP", "DATETIME":
-			for _, column := range e.UnquotedTemporal {
-				if name == column {
-					allowed[name] = true
-				}
-			}
-		}
-	}
-	changed := false
-	quoted := temporalJSONToken.ReplaceAllStringFunc(raw, func(token string) string {
-		parts := temporalJSONToken.FindStringSubmatch(token)
-		if parts[1] == "" {
-			return token
-		}
-		var name string
-		if json.Unmarshal([]byte(parts[1]), &name) != nil || !allowed[name] {
-			return token
-		}
-		changed = true
-		return parts[1] + parts[2] + `"` + parts[3] + `"` + parts[4]
-	})
-	if !changed {
-		return false
-	}
-	// The recorded F9 envelope is either a bare row array or {"data":...}.
-	// Do not excuse malformed metadata outside the result rows.
-	if strings.HasPrefix(strings.TrimSpace(quoted), "{") {
-		var envelope map[string]json.RawMessage
-		if json.Unmarshal([]byte(quoted), &envelope) != nil ||
-			len(envelope) != 1 || envelope["data"] == nil {
-			return false
-		}
-	}
-	columns, rows, err := exec.ParseJSONData([]byte(quoted))
-	if err != nil {
-		return false
-	}
-	opt.RelaxedHeaders = false
-	return canon.Compare(ref, &exec.Result{Columns: columns, Rows: rows}, opt).Equal
 }

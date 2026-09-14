@@ -200,7 +200,7 @@ func EvidenceClass(status string) string {
 	switch {
 	case status == "PASS" || strings.HasPrefix(status, "PASS("):
 		return "pass"
-	case status == "REJECT(expected)" || status == "REJECT(allowed)" || status == "KNOWN-WRONG" || status == "KNOWN-ERROR" || status == "HAZARD-SKIPPED" || status == "HEADER-ONLY":
+	case status == "REJECT(expected)" || status == "REJECT(allowed)" || status == "KNOWN-WRONG" || status == "HAZARD-SKIPPED" || status == "HEADER-ONLY":
 		return "unsupported"
 	case status == "UNTESTED" || status == "SKIP" || status == "":
 		return "untested"

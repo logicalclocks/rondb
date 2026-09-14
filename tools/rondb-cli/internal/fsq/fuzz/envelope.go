@@ -98,7 +98,6 @@ var Expectations = []Expectation{
 	{Construct: "syntax", Reject: true, Pattern: "Syntax error", Note: "implicit alias, DISTINCT, BETWEEN, OFFSET, UNION, RIGHT JOIN: outside the grammar"},
 	{Construct: "having", Reject: true, Pattern: "Could not find column", AltPatterns: []string{"Got record with fewer aggregates than expected"}, TaggedOnly: true, Finding: "F17", Note: "HAVING is unsupported (corrected-envelope): it rejects with 'Could not find column' (alias not resolved), or, with ORDER BY on an aggregate alias + LIMIT, the internal 'Got record with fewer aggregates than expected. Please report a bug.' error (F17)"},
 	{Construct: "string-snowflake", KnownWrong: true, Finding: "F14", Note: "a snowflake CTE body keyed by a VARCHAR entity key returns no rows (known wrong)"},
-	{Construct: "temporal-minmax", Pattern: "malformed JSON result", Finding: "F9", Note: "MIN/MAX over a DATE/TIMESTAMP output (unparsable JSON)"},
 }
 
 // ExpectationFor returns the table row of a construct.
@@ -129,17 +128,6 @@ type EnvCase struct {
 func (c EnvCase) ExpectReject() (Expectation, bool) {
 	for _, k := range c.Constructs {
 		if e, ok := ExpectationFor(k); ok && e.Reject {
-			return e, true
-		}
-	}
-	return Expectation{}, false
-}
-
-// Known reports a non-rejecting, non-wrong known finding (F9: the RonSQL
-// response is unusable although the statement is legal).
-func (c EnvCase) Known() (Expectation, bool) {
-	for _, k := range c.Constructs {
-		if e, ok := ExpectationFor(k); ok && !e.Reject && !e.KnownWrong && e.Finding != "" {
 			return e, true
 		}
 	}
@@ -339,6 +327,8 @@ func (es *envSampler) singleAgg(withFilters bool) {
 		es.tag("avg")
 	}
 	if es.pct(5) {
+		// Signature-only tag: MIN/MAX over a temporal column runs since F9
+		// (unquoted JSON output) was fixed in RONDB-1124 M1.1.
 		outputs = append(outputs, "MAX(`event_time`) AS `event_time_max`")
 		es.tag("temporal-minmax")
 	}

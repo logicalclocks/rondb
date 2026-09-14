@@ -369,8 +369,8 @@ func ParseTextHeader(text string) []string {
 // and explicit nulls.  Duplicate keys in a row object are an error (a
 // duplicate output alias would silently overwrite a value).
 // jsonErrDetail appends the text around a syntax error's offset so an
-// engine-side formatting bug (F9: an unquoted temporal MIN/MAX in JSON
-// output) is visible in the CASE line.
+// engine-side formatting bug (as F9 was: an unquoted temporal MIN/MAX in
+// JSON output) is visible in the CASE line.
 func jsonErrDetail(body []byte, err error) string {
 	var se *json.SyntaxError
 	if !errors.As(err, &se) {
@@ -389,7 +389,7 @@ func jsonErrDetail(body []byte, err error) string {
 func ParseJSONData(body []byte) ([]string, [][]Cell, error) {
 	// Validate the whole document before extracting rows. Token decoding
 	// alone can otherwise accept a truncated wrapper or trailing garbage.
-	// RawMessage preserves numeric tokens and SyntaxError offsets (F9).
+	// RawMessage preserves numeric tokens and SyntaxError offsets.
 	var document json.RawMessage
 	if err := json.Unmarshal(body, &document); err != nil {
 		return nil, nil, err

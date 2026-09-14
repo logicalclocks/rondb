@@ -24,11 +24,12 @@ F8 was a framework fixture issue and is already fixed.
   for snowflake_binary DTO 1, single/1, single/2 and single/9; all ten
   MySQL twin comparisons passed. Golden mode recognizes only that DTO's
   named type-17 rejection as REJECT(expected); binary support remains open.
-- [ ] F9: quote temporal MIN/MAX values in JSON output. Malformed JSON
-  must be decoded as an error, never a successful result. The known F9
-  cases may report non-failing KNOWN-ERROR only when quoting their named
-  temporal fields restores valid JSON that fully agrees with MySQL.
-  The original malformed response remains an error and is retained.
+- [x] F9: quote temporal MIN/MAX values in JSON output. FIXED 2026-09-14
+  (RONDB-1124 M1.1): `ResultPrinter::print_aggregate_result` passes
+  `m_quote` to the temporal decoder; regression test
+  `ronsql.ronsql_temporal_json`. Malformed JSON is still decoded as an
+  error, never a successful result; the F9 exemption (`KNOWN-ERROR`) is
+  retired.
 - [ ] F10 (bench.md): mysqld crashes (`NdbSqlUtil::likeLongvarchar` require in the
   ordered-scan sorted merge) on a pushed aggregate with a VARCHAR GROUP BY key and
   an IN list (`fs_hw_strkey_batch100`, pushdown ON). Run the fs_hw matrix with

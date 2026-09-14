@@ -111,8 +111,8 @@ func TestExpectationPatternsExistInEngine(t *testing.T) {
 	}
 	all := strings.Join(sources, "\n")
 	for _, e := range Expectations {
-		if e.Pattern == "" || e.Finding == "F9" {
-			continue // F9's pattern is the framework's JSON parser message
+		if e.Pattern == "" {
+			continue // known-wrong rows carry no engine message
 		}
 		if !strings.Contains(all, e.Pattern) {
 			t.Errorf("expectation %s: pattern %q not found in the engine sources", e.Construct, e.Pattern)

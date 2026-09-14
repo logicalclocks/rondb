@@ -60,10 +60,10 @@ func TestParseJSONData(t *testing.T) {
 	if _, _, err := ParseJSONData([]byte(`[{"a":1}]`)); err != nil {
 		t.Errorf("bare array (ronsql_cli): %v", err)
 	}
-	f9 := []byte(`{"data":[{"cnt":3,"d_min":1970-01-01}]}`)
-	if _, _, err := ParseJSONData(f9); err == nil {
-		t.Error("unquoted temporal aggregate (F9) must be a syntax error")
-	} else if d := jsonErrDetail(f9, err); len(d) <= len(err.Error()) || d[len(d)-1] != '"' {
+	bare := []byte(`{"data":[{"cnt":3,"d_min":1970-01-01}]}`)
+	if _, _, err := ParseJSONData(bare); err == nil {
+		t.Error("an unquoted temporal value (the former F9 body) must be a syntax error")
+	} else if d := jsonErrDetail(bare, err); len(d) <= len(err.Error()) || d[len(d)-1] != '"' {
 		t.Errorf("detail must quote the offending text: %s", d)
 	}
 }

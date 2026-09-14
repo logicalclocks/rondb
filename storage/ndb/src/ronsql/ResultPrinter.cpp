@@ -1178,8 +1178,8 @@ ResultPrinter::setup_output_format()
 // — the column's native bytes (little-endian for DATE/YEAR, big-endian
 // for DATETIME2/TIME2/TIMESTAMP2) loaded into a register — which is
 // also what a raw column re-packs to (see print_passthrough_value).
-// `quote` wraps the text ("" for TSV and aggregate results, "\"" for
-// JSON pass-through output).
+// `quote` wraps the text: the printer's m_quote ("" for TSV, "\"" for
+// JSON), for pass-through columns and aggregate results alike.
 static void
 print_temporal_packed(std::ostream& out, Uint64 w,
                       ResultPrinter::TemporalDisplay temporal, int fsp,
@@ -2399,8 +2399,11 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
   if (temporal != TemporalDisplay::NONE &&
       result.type() == NdbDictionary::Column::Bigunsigned)
   {
+    // Quoted like a pass-through temporal column: under JSON output the
+    // value is a string, and an empty quote here left the body unparsable
+    // (RONDB-1121 F9).
     print_temporal_packed(out, result.data_uint64(), temporal,
-                          temporal_fsp, "");
+                          temporal_fsp, m_quote);
     return;
   }
 

@@ -1,0 +1,58 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# RONDB-1121 finding F9, fixed in RONDB-1124 (M1.1): MIN/MAX over a temporal
+# column must be quoted under JSON output.  JSON is the RDRS default and what
+# Hopsworks reads, so an unquoted value ("d_min":1970-01-01) made the whole
+# serving response unparsable, while the TEXT form was always right.  Every
+# body below goes through perl's JSON::PP: invalid JSON fails the --exec, and
+# the canonical re-encoding it prints keeps the quotes in the result file.
+# The pass-through row is the control: that printer always quoted.
+
+# RonSQL works in UTC; store the TIMESTAMP literals as written.
+SET time_zone = "+00:00";
+
+CREATE TABLE tj (
+  pk  INT PRIMARY KEY,
+  grp INT NOT NULL,
+  d   DATE,
+  y   YEAR,
+  dt  DATETIME(6),
+  ts0 TIMESTAMP NULL,
+  ts3 TIMESTAMP(3) NULL,
+  ts6 TIMESTAMP(6) NULL,
+  t3  TIME(3)
+) ENGINE=NDB;
+INSERT INTO tj VALUES
+  (1, 1, '2025-11-24', 2025, '2025-11-24 11:47:03.000001', '2025-11-24 11:47:03', '2025-11-24 11:47:03.001', '2025-11-24 11:47:03.000001', '11:47:03.001'),
+  (2, 1, '2026-01-31', 1999, '2026-01-31 23:59:59.999999', '2026-01-31 23:59:59', '2026-01-31 23:59:59.999', '2026-01-31 23:59:59.999999', '23:59:59.999'),
+  (3, 2, '1970-01-01', 2000, '1970-01-01 00:00:00.000000', '1970-01-01 00:00:01', '1970-01-01 00:00:01.000', '1970-01-01 00:00:01.000000', '00:00:00.000'),
+  (4, 2, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+  (5, 3, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+
+--let $JSON_CANON=perl -MJSON::PP -e 'print JSON::PP->new->canonical->encode(JSON::PP->new->decode(join q(), <STDIN>)), qq(\n)'
+let $RDRS_RONSQL = curl --no-progress-meter --fail-with-body -X POST
+  -H "Content-Type: application/json"
+  http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d;
+
+--echo ===== Control: pass-through temporal columns =====
+--let $QUERY=SELECT pk, d, y, dt, ts0, ts3, ts6, t3 FROM tj WHERE pk = 2;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+--echo ===== MIN/MAX over every temporal type, one group =====
+--let $QUERY=SELECT COUNT(*) AS cnt, MIN(d) AS d_min, MAX(d) AS d_max, MIN(y) AS y_min, MAX(y) AS y_max, MIN(dt) AS dt_min, MAX(dt) AS dt_max, MIN(ts0) AS ts0_min, MAX(ts0) AS ts0_max, MIN(ts3) AS ts3_min, MAX(ts3) AS ts3_max, MIN(ts6) AS ts6_min, MAX(ts6) AS ts6_max, MIN(t3) AS t3_min, MAX(t3) AS t3_max FROM tj;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+--echo ===== GROUP BY: a group with NULLs and an all-NULL group =====
+--let $QUERY=SELECT grp, COUNT(*) AS cnt, MIN(d) AS d_min, MAX(dt) AS dt_max, MIN(ts3) AS ts3_min, MAX(ts6) AS ts6_max FROM tj GROUP BY grp ORDER BY grp;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+--echo ===== Hopsworks shape: key lookup with temporal MIN/MAX (F9 reproduction) =====
+--let $QUERY=SELECT COUNT(*) AS cnt, MIN(d) AS d_min, MAX(d) AS d_max, MIN(ts3) AS ts3_min, MAX(ts6) AS ts6_max FROM tj WHERE grp = 1;
+--source suite/ronsql/include/ronsql_json_check.inc
+
+DROP TABLE tj;
