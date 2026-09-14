@@ -762,8 +762,12 @@ func (b *builder) edgeCases() {
 		"WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, nil, nil, "")
 	e("EDGE-comp-binary", "VARBINARY projection through the snowflake template (F7, emitted shape)",
 		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, Known["F7"], nil, "")
-	e("EDGE-F1-string-reuse", "F1: string aggregated twice with a load in between (CRASH — hazard)",
-		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;", false, nil, nil, "F1")
-	e("EDGE-F1-string-reuse-nonull", "F1 kernel-side variant (DATA NODE CRASH — hazard)",
-		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "F1")
+	// F1 (RONDB-1121 smoke): a string column aggregated twice with another
+	// column load in between crashed RDRS (entity 1) or a data node (entity
+	// 3).  RONDB-1056 10561b78d1e fixed the kernel cause (the string register
+	// was clobbered by a later numeric load); asserted since M1.2.
+	e("EDGE-F1-string-reuse", "F1: string aggregated twice with a load in between (fixed: RONDB-1056 10561b78d1e)",
+		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;", false, nil, nil, "")
+	e("EDGE-F1-string-reuse-nonull", "F1 kernel-side variant, no NULLs (fixed: RONDB-1056 10561b78d1e)",
+		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "")
 }

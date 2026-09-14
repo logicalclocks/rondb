@@ -198,6 +198,26 @@ fuzzers report `known-error=0`.
 
 ## M1.2 — F1: string feature aggregated twice
 
+**Status: DONE 2026-09-15 on RONDB-1124 — verified: `ronsql_fs`,
+`ronsql_fs_jit` (strict-armed, fallback pin still 0), `ronsql_fs_ng2r2`,
+`ronsql_fs_ng4r2` templates + smoke + fuzz_spec recorded and reviewed
+(both F1 templates cases: empty diff, `2 15 Beta` / `3 12 z`; the combined
+smoke probe's only diff is F2's DECIMAL scale, as in EDGE-NULL-A2; the
+seed-1 spec SUMMARY is unchanged with the rebuilt sampler because the
+status classes are shape-driven); `go test ./internal/fsq/...
+./internal/shell/...` incl. the templates golden test.**  Step 1's evidence exists without a separate
+`.fs_verify` run: the kernel fix's own test `ronsql_string_agg_interleaved`
+runs the two framework statements (its queries 1 and 6) on the same
+`edge_hist_1` rows the loader writes, through RDRS and ronsql_cli, on
+both arms, and is green.  Step 2 done: hazards cleared (asserted templates
+cases, notes carry the fixing commit), the smoke `NEXT-PHASE F1` block is
+enabled as probes EDGE-NULL-A5 / EDGE-NULL-A, `validAggregate` draws one
+to three functions per string column (F8 rule kept; the seed-1 spec
+distribution shifts), R-F1 title without "hazard".  Step 3 resolved as
+(i) before this package: RONDB-1056 item 16 (2026-09-09) lowers
+non-adjacent string consumers, so the strict-armed JIT mirror keeps its
+fallback pin at 0 (see `suite/ronsql_jit/t/ronsql_string_agg_interleaved.test`).
+
 **State.** Two faces were recorded on 2026-09-09/10 (`smoke.md` F1):
 (a) RDRS/ronsql_cli abort in `NdbSqlUtil::cmpLongvarchar`
 (`require(lb + m1 <= n1 && lb + m2 <= n2)`) while merging per-fragment

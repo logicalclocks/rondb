@@ -271,13 +271,30 @@ SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE
 --sorted_result
 SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
 
-# NEXT-PHASE F1 (suite/ronsql_fs/findings/smoke.md): a string column
-# aggregated twice with another column load in between (here COUNT(s_val)
-# ... MAX(s_val)) crashes RDRS or a DATA NODE: the kernel resets the
-# attribute read position per opcode, so the reused string register points
-# at overwritten bytes.  Disabled until fixed in the engine tree.
-#   SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
-#   SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;
+# F1 (suite/ronsql_fs/findings/smoke.md): a string column aggregated twice
+# with another column load in between (here COUNT(s_val) ... MAX(s_val))
+# crashed RDRS or a DATA NODE — the kernel reset the attribute read
+# position per opcode, so the reused string register pointed at
+# overwritten bytes.  Fixed by RONDB-1056 10561b78d1e (per-row string
+# high-water mark); enabled in M1.2.
+
+--echo
+--echo === PROBE EDGE-NULL-A5: mixed-NULL group, string aggregated twice with a load in between (F1, fixed) ===
+let $QUERY=
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
+
+--echo
+--echo === PROBE EDGE-NULL-A: mixed-NULL group, the combined statement (F1, fixed) ===
+let $QUERY=
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
 
 --echo
 --echo === PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===

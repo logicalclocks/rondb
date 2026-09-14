@@ -11,8 +11,10 @@ F8 was a framework fixture issue and is already fixed.
 ## Engine and protocol work
 
 - [ ] F0: support the Hopsworks CTE-form collect query over a partial key.
-- [ ] F1: fix reused string aggregate storage (client/data-node crashes
-  and possible wrong values). Keep hazardous probes opt-in until fixed.
+- [x] F1: reused string aggregate storage (client/data-node crashes and
+  possible wrong values). FIXED by RONDB-1056 `10561b78d1e` (per-row string
+  high-water mark in both interpreters); the framework cases and smoke
+  probes are asserted since M1.2 (2026-09-15).
 - [ ] F2: resolve DECIMAL MIN/MAX scale formatting differences.
 - [ ] F3: resolve AVG formatting/precision differences.
 - [ ] F4: resolve FLOAT display differences between MySQL and RonSQL.
@@ -87,6 +89,15 @@ F8 was a framework fixture issue and is already fixed.
   `NdbQueryImpl::setFetchTerminated` (NdbQueryOperation.cpp:3511, pushed-join
   worker accounting on an abort path; area last changed by RONDB-1107 on 2026-09-01);
   20 consecutive reruns passed. Intermittent; for the RONDB-1107 / join-aggregation owners.
+- [ ] Observation (2026-09-15, unrelated to RONDB-1124): the `== Expected result ==`
+  display of smoke probe EDGE-FLOAT-B (`SUM(f_double)` over `edge_hist_1` entity 4)
+  is a MySQL-side, order-dependent double sum that flips between two one-ulp
+  neighbours (`123457.38900010001` in every recording except the M1.0 recording of
+  `ronsql_fs_ng4r2`, which had `123457.3890001`; the compare block through
+  `ronsql_compare.inc` has always shown `…10001`). Only the display line moves, so it
+  is a rare re-record diff, not a wrong result. Fix when it bites: `--replace_regex`
+  on that display statement, or drop the DOUBLE sum from the display as was done
+  for the DECIMAL sum (F21).
   instead of returning HTTP 500 for these client errors. Preserve the
   current permanent-error classification until the protocol is changed.
 

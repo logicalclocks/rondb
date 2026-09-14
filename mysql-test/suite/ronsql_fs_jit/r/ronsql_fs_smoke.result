@@ -447,6 +447,44 @@ SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE
 s_max	s_min
 Beta	alpha
 
+=== PROBE EDGE-NULL-A5: mixed-NULL group, string aggregated twice with a load in between (F1, fixed) ===
+== Query ==
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
+cnt_s	i1_sum	s_max
+2	15	Beta
+
+=== PROBE EDGE-NULL-A: mixed-NULL group, the combined statement (F1, fixed) ===
+== Query ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ cnt_all	cnt_i1	cnt_s	i1_sum	i2_min	i3_max	dec_min	dec_max	s_max	g_max	l_min
+-4	2	2	15	15	30	-3.25	10.50	Beta	25	5
++4	2	2	15	15	30	-3.25	10.5	Beta	25	5
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+cnt_all	cnt_i1	cnt_s	i1_sum	i2_min	i3_max	dec_min	dec_max	s_max	g_max	l_min
+4	2	2	15	15	30	-3.25	10.50	Beta	25	5
+
 === PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===
 == Query ==
 SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;

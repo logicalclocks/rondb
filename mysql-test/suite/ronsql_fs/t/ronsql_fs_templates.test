@@ -1138,14 +1138,28 @@ EOF
 --remove_file $QUERY_FILE
 
 --echo
---echo === EDGE-F1-string-reuse: EDGE edge — F1: string aggregated twice with a load in between (CRASH — hazard) ===
-# HAZARD F1: this statement crashed RDRS or a data node; not executed.
-#   SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+--echo === EDGE-F1-string-reuse: EDGE edge — F1: string aggregated twice with a load in between (fixed: RONDB-1056 10561b78d1e) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_EDGE_F1_string_reuse_0.sql
+--write_file $QUERY_FILE
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+EOF
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
 
 --echo
---echo === EDGE-F1-string-reuse-nonull: EDGE edge — F1 kernel-side variant (DATA NODE CRASH — hazard) ===
-# HAZARD F1: this statement crashed RDRS or a data node; not executed.
-#   SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;
+--echo === EDGE-F1-string-reuse-nonull: EDGE edge — F1 kernel-side variant, no NULLs (fixed: RONDB-1056 10561b78d1e) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_EDGE_F1_string_reuse_nonull_0.sql
+--write_file $QUERY_FILE
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;
+EOF
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3|
 
 DELIMITER ;|
 

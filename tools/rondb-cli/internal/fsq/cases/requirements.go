@@ -114,7 +114,7 @@ func Requirements() []Requirement {
 				"EDGE-str-collation", "EDGE-str-escapes", "EDGE-str-in-list", "EDGE-date-range", "EDGE-ts0-batch", "EDGE-ts3-cutoff", "EDGE-ts6-cutoff", "EDGE-seq-boundary", "EDGE-seq-order"}},
 		{ID: "R-A5-composite", Title: "Composite child hops", Branch: "review A5 / composite hop", Emitted: true,
 			Cases: []string{"EDGE-comp-hop", "EDGE-comp-batch", "EDGE-comp-swapped"}},
-		{ID: "R-F1", Title: "String aggregate re-use (F1 hazard)", Branch: "data_model.md §11 F1", Emitted: true,
+		{ID: "R-F1", Title: "String aggregate re-use (F1)", Branch: "data_model.md §11 F1", Emitted: true,
 			Cases: []string{"EDGE-F1-string-reuse", "EDGE-F1-string-reuse-nonull"}},
 		{ID: "R-GATE-filter", Title: "Online-filter gates", Branch: "COLLECT_UNSUPPORTED_ONLINE_FILTER", Emitted: true, Gate: "COLLECT_UNSUPPORTED_ONLINE_FILTER",
 			Fixtures: []string{"filter_or_rejected", "filter_backslash_rejected", "filter_control_rejected"}},

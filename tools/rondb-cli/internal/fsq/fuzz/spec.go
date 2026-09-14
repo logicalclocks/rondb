@@ -301,10 +301,11 @@ func aggOutputs(agg spec.AggSpec) []spec.TDFeature {
 var collationAmbiguous = map[string]bool{"category": true, "device": true}
 
 // validAggregate samples 1-4 entries inside the type matrix.  String
-// columns get exactly one function (F1: a string column aggregated twice
-// with another column load in between crashes RDRS); MIN/MAX over the
-// event time is sampled rarely (it exposed F9, the JSON quoting defect
-// fixed in RONDB-1124 M1.1).
+// columns draw one to three functions (the F1 crash on a string column
+// aggregated twice with a load in between is fixed, RONDB-1056
+// 10561b78d1e; the F8 collation rule still limits the ambiguous columns
+// to COUNT); MIN/MAX over the event time is sampled rarely (it exposed
+// F9, the JSON quoting defect fixed in RONDB-1124 M1.1).
 func (s *sampler) validAggregate(fg spec.FeatureGroup) spec.AggSpec {
 	var numeric, ints, strs []string
 	for _, f := range valueFeatures(fg) {
@@ -355,7 +356,14 @@ func (s *sampler) validAggregate(fg spec.FeatureGroup) spec.AggSpec {
 						// 'Grocery') has an unspecified representative on both engines.
 						fns = []string{"count"}
 					}
-					agg = append(agg, spec.AggEntry{Key: col, Fns: []string{s.pickString(fns)}})
+					m := 1 + s.rng.IntN(len(fns))
+					perm := s.rng.Perm(len(fns))[:m]
+					sort.Ints(perm)
+					var pick []string
+					for _, i := range perm {
+						pick = append(pick, fns[i])
+					}
+					agg = append(agg, spec.AggEntry{Key: col, Fns: pick})
 				}
 			}
 		case 3:
