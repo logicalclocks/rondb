@@ -278,6 +278,11 @@ void Configuration::fetch_configuration(
   iter.get(CFG_DB_NUM_SCAN_FRAGREQ_COUNTS, &num_scan_fragreq_counts);
   globalData.theNumScanFragReqCounts = num_scan_fragreq_counts;
 
+  Uint32 node_start_log_report_frequency = 15;
+  iter.get(CFG_DB_NODE_START_LOG_REPORT_FREQUENCY,
+           &node_start_log_report_frequency);
+  globalData.theNodeStartLogReportFrequency = node_start_log_report_frequency;
+
   const char * pidfile_dir;
   if(iter.get(CFG_NODE_PIDFILE_DIR, &pidfile_dir) == 0)
   {
@@ -2691,7 +2696,8 @@ int Configuration::setRealtimeScheduler(NdbThread *pThread,
   return 0;
 }
 
-int Configuration::setLockCPU(NdbThread *pThread, enum ThreadTypes type) {
+int Configuration::setLockCPU(NdbThread *pThread, enum ThreadTypes type,
+                              bool abort_on_failure) {
   int res = 0;
   if (type != BlockThread && type != SendThread && type != ReceiveThread) {
     if (type == NdbfsThread) {
@@ -2716,7 +2722,14 @@ int Configuration::setLockCPU(NdbThread *pThread, enum ThreadTypes type) {
       g_eventLogger->info("Failed to lock tid = %d to CPU, error_no = %d",
                           NdbThread_GetTid(pThread), (-res));
 #ifndef HAVE_MAC_OS_X_THREAD_INFO
-      abort(); /* We fail when failing to lock to CPUs */
+      if (abort_on_failure) {
+        /* [NODE-START] failed line naming the cause before the abort
+           reaches the error handler installed by catchsigs(). */
+        ErrorReporter::reportNodeStartFailure(
+            NDBD_EXIT_INVALID_CONFIG,
+            "Failed to lock a thread to its configured CPU");
+        abort(); /* We fail when failing to lock to CPUs */
+      }
 #endif
       return 1;
     }
@@ -2795,7 +2808,8 @@ const char *Configuration::get_type_string(enum ThreadTypes type) {
 }
 
 Uint32 Configuration::addThread(struct NdbThread *pThread,
-                                enum ThreadTypes type, bool single_threaded) {
+                                enum ThreadTypes type, bool single_threaded,
+                                bool *lock_cpu_failed) {
   const char *type_str;
   Uint32 i;
   NdbMutex_Lock(threadIdMutex);
@@ -2835,7 +2849,14 @@ Uint32 Configuration::addThread(struct NdbThread *pThread,
      * main threads are set in ThreadConfig::ipControlLoop
      * as it's handled differently with mt
      */
-    setLockCPU(pThread, type);
+    const int lock_res = setLockCPU(pThread, type,
+                                    /* abort_on_failure */
+                                    lock_cpu_failed == nullptr);
+#ifndef HAVE_MAC_OS_X_THREAD_INFO
+    if (lock_cpu_failed != nullptr) *lock_cpu_failed = (lock_res != 0);
+#else
+    (void)lock_res;
+#endif
   }
   /**
    * All other thread types requires special handling of real-time

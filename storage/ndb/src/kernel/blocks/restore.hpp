@@ -141,6 +141,8 @@ class Restore : public SimulatedBlock {
     Uint64 m_rows_restored_delete_failed;
     Uint64 m_ignored_rows;
     Uint64 m_row_operations;
+    Uint64 m_nsl_row_ops_batch;  // [NODE-START] row operations not yet
+                                 // published to the requesting DBLQH
 
     Uint64 m_restore_start_time;
     Uint64 m_rows_in_lcp;
@@ -239,6 +241,7 @@ class Restore : public SimulatedBlock {
   void parse_fragment_footer(Signal *, FilePtr, const Uint32 *, Uint32 len);
   void parse_gcp_entry(Signal *, FilePtr, const Uint32 *, Uint32 len);
   void close_file(Signal *, FilePtr, bool remove_flag = false);
+  void nsl_publish_row_ops(FilePtr);
 
   Uint32 calculate_hash(Uint32 tableId,
                         const Uint32 *src,

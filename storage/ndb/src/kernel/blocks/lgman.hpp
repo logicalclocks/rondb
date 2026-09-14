@@ -27,6 +27,7 @@
 #ifndef LGMAN_H
 #define LGMAN_H
 
+#include <NodeStartLog.hpp>
 #include <SimulatedBlock.hpp>
 
 #include <DLHashTable.hpp>
@@ -348,6 +349,17 @@ public:
 
   Uint64 m_records_applied;  // Track number of records applied
   Uint64 m_pages_applied;    // Track number of pages applied
+
+  /**
+   * [NODE-START] step 9 (undo-dd) progress reporting, see
+   * vm/NodeStartLog.hpp. The timer throttles the progress line of the
+   * UNDO apply loop, then anchors the page-cache flush sub-step until
+   * execEND_LCPCONF; m_nsl_total_pages is the sum of the undo file
+   * pages of all logfile groups (the worst case amount to apply).
+   */
+  NodeStartLogTimer m_nsl_timer;
+  Uint64 m_nsl_total_pages;
+
   NdbMutex *m_client_mutex;
 
   /**

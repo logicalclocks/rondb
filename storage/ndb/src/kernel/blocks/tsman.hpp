@@ -30,6 +30,7 @@
 #include <ndb_limits.h>
 #include <IntrusiveList.hpp>
 #include <NodeBitmask.hpp>
+#include <NodeStartLog.hpp>
 #include <SafeMutex.hpp>
 #include <SimulatedBlock.hpp>
 #include <signaldata/Extent.hpp>
@@ -223,6 +224,16 @@ public:
   bool c_encrypted_filesystem;
   bool m_lcp_ongoing;
   BlockReference m_end_lcp_ref;
+
+  /**
+   * [NODE-START] step 9 sub-step 4 (scan tablespace extents), see
+   * vm/NodeStartLog.hpp. The extent-header scan of one datafile runs
+   * in a single signal, so progress is reported per completed
+   * datafile.
+   */
+  NodeStartLogTimer m_nsl_timer;
+  Uint32 m_nsl_datafiles_scanned;
+  bool m_nsl_scan_started = false; /* step 9 sub-step 4 started line printed */
   Datafile_hash m_file_hash;
   Tablespace_list m_tablespace_list;
   Tablespace_hash m_tablespace_hash;

@@ -827,6 +827,42 @@ void Dbdih::execCONTINUEB(Signal *signal) {
       jam();
       nodeRestartPh2Lab2(signal);
       return;
+    case DihContinueB::ZNSL_REPORT: {
+      jam();
+      if (signal->theData[1] == NSL_MASTER_TAG) {
+        jam();
+        if (c_nsl_master_state == NSL_M_IDLE) {
+          jam();
+          c_nsl_master_tick_armed = false;
+          return;
+        }
+        const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+        if (c_nsl_master_timer.report_due(freq)) {
+          jam();
+          nsl_master_report(signal);
+        }
+        signal->theData[0] = DihContinueB::ZNSL_REPORT;
+        signal->theData[1] = NSL_MASTER_TAG;
+        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                            c_nsl_master_timer.next_tick_delay_ms(freq), 2);
+        return;
+      }
+      if (c_nsl_active_step != signal->theData[1]) {
+        jam();
+        /* The step this report chain was armed for has completed. */
+        return;
+      }
+      const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+      if (c_nsl_timer.report_due(freq)) {
+        jam();
+        nsl_report_progress(signal);
+      }
+      signal->theData[0] = DihContinueB::ZNSL_REPORT;
+      signal->theData[1] = c_nsl_active_step;
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                          c_nsl_timer.next_tick_delay_ms(freq), 2);
+      return;
+    }
     case DihContinueB::SwitchReplica: {
       jam();
       const Uint32 nodeId = signal->theData[1];
@@ -1042,6 +1078,19 @@ void Dbdih::execCOPY_GCIREQ(Signal *signal) {
     case CopyGCIReq::RESTART: {
       ok = true;
       jam();
+      if (!isMaster() && cstarttype == NodeState::ST_SYSTEM_RESTART &&
+          c_nsl_sr_meta_phase == 0) {
+        jam();
+        /* [NODE-START] step 7 sub-step 1 on a non-master: the master's
+           sysfile has arrived (the master prints started/completed). */
+        c_nsl_sr_meta_phase = 1;
+        char buf[NodeStartLog::BUF_SIZE];
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 1,
+                           cstarttype, "completed",
+                           (Int64)c_nsl_timer.elapsed_sec(),
+                           "sysfile synchronized by master node %u",
+                           refToNode(cmasterdihref));
+      }
       Uint32 newest = SYSFILE->newestRestorableGCI;
       m_micro_gcp.m_old_gci = Uint64(newest) << 32;
       crestartGci = newest;
@@ -1944,6 +1993,438 @@ I N T E R N A L  P H A S E S
 /*---------------------------------------------------------------------------*/
 /*NDB_STTOR                              START SIGNAL AT START/RESTART       */
 /*---------------------------------------------------------------------------*/
+/* Declared in NodeStartLog.hpp. NDBCNTR shares DBDIH's main thread; the
+   DBLQH proxy runs in the rep thread and gets the values DBDIH publishes
+   atomically (Dbdih::nsl_sr_*). */
+Uint64 nsl_dih_sr_metadata_start() {
+  const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
+  return (dih != nullptr) ? dih->nsl_sr_metadata_start() : 0;
+}
+
+bool nsl_dih_performed_copy_phase() {
+  const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
+  return (dih != nullptr) && dih->nsl_performed_copy_phase();
+}
+
+bool nsl_dih_wait_lcp_reported() {
+  const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
+  return (dih != nullptr) && dih->nsl_wait_lcp_reported();
+}
+
+bool nsl_dih_sr_receiving_tables(Uint64 &sub_start, Uint32 &tables) {
+  const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
+  sub_start = 0;
+  tables = 0;
+  if (dih == nullptr) {
+    return false;
+  }
+  /* The sub-step start is published before any table count. */
+  sub_start = dih->nsl_sr_sub2_start();
+  if (sub_start == 0) {
+    return false;
+  }
+  tables = dih->nsl_sr_tabs_received();
+  return true;
+}
+
+void Dbdih::nsl_start_step(Signal *signal, Uint32 step) {
+  c_nsl_active_step = step;
+  c_nsl_timer.start_step();
+  const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+  if (freq != 0) {
+    signal->theData[0] = DihContinueB::ZNSL_REPORT;
+    signal->theData[1] = step;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                        NodeStartLog::tickDelayMillis(freq), 2);
+  }
+}
+
+/* Elapsed time of the current system-restart step 7 sub-step. */
+Int64 Dbdih::nsl_sr_sub_elapsed() const {
+  return NdbTick_IsValid(c_nsl_sr_sub_start)
+             ? (Int64)NdbTick_Elapsed(c_nsl_sr_sub_start,
+                                      NdbTick_getCurrentTicks())
+                   .seconds()
+             : (Int64)c_nsl_timer.elapsed_sec();
+}
+
+/* Elapsed time of the current step 12 sub-step (falls back to the step). */
+Int64 Dbdih::nsl_sync_sub_elapsed() const {
+  return NdbTick_IsValid(c_nsl_sync_sub_start)
+             ? (Int64)NdbTick_Elapsed(c_nsl_sync_sub_start,
+                                      NdbTick_getCurrentTicks())
+                   .seconds()
+             : (Int64)c_nsl_timer.elapsed_sec();
+}
+
+void Dbdih::nsl_stop_step() {
+  c_nsl_active_step = 0;
+  c_nsl_timer.stop_step();
+}
+
+void Dbdih::nsl_report_progress(Signal *signal) {
+  char buf[NodeStartLog::BUF_SIZE];
+  const Int64 elapsed = (Int64)c_nsl_timer.elapsed_sec();
+  switch (c_nsl_active_step) {
+    case NodeStartLog::NSL_START_PERM: {
+      if (c_dictLockSlavePtrI_nodeRestart == RNIL) {
+        /* Sub-step 1: the DICT lock is taken before START_PERMREQ. */
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_START_PERM, 1,
+                           cstarttype, "waiting", elapsed,
+                           "master node %u has not granted the DICT lock"
+                           " yet, a schema operation may be in progress",
+                           refToNode(cmasterdihref));
+        if (c_nsl_timer.escalate_due()) {
+          jam();
+          infoEvent("%s", buf);
+        }
+        break;
+      }
+      char detail[320];
+      int pos = BaseString::snprintf(
+          detail, sizeof(detail),
+          "master node %u has not granted start permission yet, %u retries",
+          refToNode(cmasterdihref), c_nsl_perm_retries);
+      if (c_nsl_last_perm_ref != 0 && pos > 0 &&
+          (size_t)pos < sizeof(detail)) {
+        pos += BaseString::snprintf(
+            detail + pos, sizeof(detail) - pos, ", last refusal: %s",
+            (c_nsl_last_perm_ref == StartPermRef::ZNODE_ALREADY_STARTING_ERROR)
+                ? "another node is starting"
+                : "node start currently disallowed");
+      }
+      if (cstarttype == NodeState::ST_INITIAL_NODE_RESTART && pos > 0 &&
+          (size_t)pos < sizeof(detail)) {
+        /* Granted once every live node has invalidated this node's old
+           LCPs; they report that as assist lines under this sub-step. */
+        BaseString::snprintf(detail + pos, sizeof(detail) - pos,
+                             ", the live nodes first invalidate this node's"
+                             " old LCPs");
+      }
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_START_PERM, 2,
+                         cstarttype, "waiting", elapsed, "%s", detail);
+      if (c_nsl_timer.escalate_due()) {
+        jam();
+        infoEvent("%s", buf);
+      }
+      break;
+    }
+    case NodeStartLog::NSL_METADATA: {
+      if (cstarttype == NodeState::ST_SYSTEM_RESTART) {
+        /* Master only: a non-master runs no tick for this step. */
+        if (c_nsl_sr_meta_phase == 0) {
+          /* Before sub-step 1: a step-level wait. */
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                             cstarttype, "waiting", elapsed,
+                             "not every node has reached the metadata"
+                             " synchronization point yet");
+        } else if (c_nsl_sr_meta_phase == 1) {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 1,
+                             cstarttype, "waiting", nsl_sr_sub_elapsed(),
+                             "synchronizing the sysfile with all nodes");
+        } else {
+          /**
+           * One interleaved phase: DICT restores the schema from disk
+           * while each table's distribution is read and sent to all
+           * nodes; show both positions on one sub-step 2 line.
+           */
+          char detail[256];
+          Uint32 pass, passes, object, last_object;
+          int pos;
+          if (nsl_dict_restart_progress(pass, passes, object, last_object)) {
+            pos = BaseString::snprintf(detail, sizeof(detail),
+                                       "DICT is restoring the schema from"
+                                       " disk: pass %u/%u, schema object"
+                                       " %u/%u, ",
+                                       pass, passes, object, last_object);
+          } else {
+            pos = BaseString::snprintf(detail, sizeof(detail),
+                                       "restoring the schema from disk, ");
+          }
+          if (pos > 0 && (size_t)pos < sizeof(detail)) {
+            BaseString::snprintf(detail + pos, sizeof(detail) - pos,
+                                 "%u table objects read and distributed to"
+                                 " all nodes",
+                                 c_nsl_sr_tabs_distributed);
+          }
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 2,
+                             cstarttype, "progress", nsl_sr_sub_elapsed(),
+                             "%s", detail);
+          break;
+        }
+      } else {
+        Uint32 pass, passes, object, last_object;
+        if (nsl_dict_restart_progress(pass, passes, object, last_object)) {
+          /* Sub-step 3: our DICT works through the copied schema. */
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 3,
+                             cstarttype, "progress", elapsed,
+                             "DICT is processing the schema copied from"
+                             " master node %u: pass %u/%u, schema object"
+                             " %u/%u",
+                             refToNode(cmasterdihref), pass, passes, object,
+                             last_object);
+        } else {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                             cstarttype, "waiting", elapsed,
+                             "master node %u has not copied the metadata"
+                             " to us yet",
+                             refToNode(cmasterdihref));
+        }
+      }
+      if (c_nsl_timer.escalate_due()) {
+        jam();
+        infoEvent("%s", buf);
+      }
+      break;
+    }
+    case NodeStartLog::NSL_SYNCHRONIZE: {
+      /**
+       * Fragment count only: the rows/bytes fields of COPY_FRAGCONF
+       * carry the size of the last scan batch, not fragment totals
+       * (DBLQH fills them from m_curr_batch_size_*). The per-fragment
+       * row/byte truth is in DBLQH's "Completed copy of fragment"
+       * reporting.
+       */
+      if (c_nsl_sync_sub == 1) {
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 1,
+                           cstarttype, "waiting", elapsed,
+                           "master node %u has not accepted the take-over"
+                           " yet (START_TOREQ)",
+                           refToNode(cmasterdihref));
+        if (c_nsl_timer.escalate_due()) {
+          jam();
+          infoEvent("%s", buf);
+        }
+        break;
+      }
+      if (c_nsl_sync_sub == 3) {
+        /**
+         * DBLQH answers the first COPY_ACTIVEREQ of the logging phase
+         * only once every LDM has completed a local checkpoint of the
+         * fragments it copied and the log tails are cut (NDBCNTR's
+         * WAIT_ALL_COMPLETE_LCP barrier), so the fragment counter
+         * cannot move before that: report the barrier as the wait it
+         * is, the counter takes over once it has passed.
+         */
+        Uint32 ldms_done = 0, ldms = 0, gci_needed = 0, gci_done = 0;
+        const Uint32 barrier =
+            nsl_cntr_local_lcp_barrier(ldms_done, ldms, gci_needed, gci_done);
+        if (barrier == 1) {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE,
+                             3, cstarttype, "waiting", nsl_sync_sub_elapsed(),
+                             "the copied fragments are being checkpointed"
+                             " locally before REDO logging is enabled,"
+                             " %u/%u LDMs done",
+                             ldms_done, ldms);
+        } else if (barrier == 2) {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE,
+                             3, cstarttype, "waiting", nsl_sync_sub_elapsed(),
+                             "local checkpoint of the copied fragments"
+                             " complete on all %u LDMs, waiting for GCI %u"
+                             " to become restorable (GCI %u is restorable"
+                             " so far) before the log tails are cut and"
+                             " REDO logging is enabled",
+                             ldms, gci_needed, gci_done);
+        } else if (barrier == 3) {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE,
+                             3, cstarttype, "waiting", nsl_sync_sub_elapsed(),
+                             "local checkpoint of the copied fragments"
+                             " complete on all %u LDMs, cutting the REDO"
+                             " and UNDO log tails before REDO logging is"
+                             " enabled",
+                             ldms);
+        } else {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE,
+                             3, cstarttype, "progress", nsl_sync_sub_elapsed(),
+                             "enabling REDO logging on the copied fragments:"
+                             " %u/%u done",
+                             c_nsl_frags_logged, c_nsl_frags_to_log);
+          break;
+        }
+        if (c_nsl_timer.escalate_due()) {
+          jam();
+          infoEvent("%s", buf);
+        }
+        break;
+      }
+      {
+        /**
+         * Fragments done, then the rows received by the DBLQH workers
+         * since the step started, with the rate: this moves inside a
+         * large fragment. No total is known up front.
+         */
+        char detail[256];
+        const Uint64 total = nsl_lqh_copy_row_ops_total();
+        const Uint64 ops = (total >= c_nsl_sync_row_ops_base)
+                               ? (total - c_nsl_sync_row_ops_base)
+                               : total;
+        int pos = BaseString::snprintf(
+            detail, sizeof(detail),
+            "copied %u fragments from live nodes, %llu row operations"
+            " received so far",
+            c_nsl_frags_copied, (unsigned long long)ops);
+        /* Sub-step lines count from the sub-step's start (the copy rows
+           are counted from the step start, none flow before sub-step 2). */
+        const Int64 sub_elapsed = nsl_sync_sub_elapsed();
+        if (pos > 0 && (size_t)pos < sizeof(detail)) {
+          NodeStartLog::appendRateEta(detail + pos, sizeof(detail) - pos, ops,
+                                      0, sub_elapsed, "row operations");
+        }
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 2,
+                           cstarttype, "progress", sub_elapsed, "%s", detail);
+      }
+      break;
+    }
+    case NSL_WAIT_RECCONF_TAG: {
+      /**
+       * System restart master, own local recovery done (DBLQH printed
+       * steps 8-11): waiting for the other nodes to finish theirs.
+       */
+      NodeStartLog::wait_line(buf, sizeof(buf), elapsed,
+                              "local recovery of this node is complete,"
+                              " waiting for nodes %s to complete theirs"
+                              " (START_RECCONF)",
+                              BaseString::getPrettyTextShort(
+                                  c_START_RECREQ_Counter.getNodeBitmask())
+                                  .c_str());
+      if (c_nsl_timer.escalate_due()) {
+        jam();
+        infoEvent("%s", buf);
+      }
+      break;
+    }
+    case NodeStartLog::NSL_WAIT_LCP: {
+      /**
+       * Same reading of c_lcpState as the master's END_TOREQ handling
+       * (WAIT_LCP): up to LCP_TC_CLOPSIZE no LCP has started; from
+       * START_LCP_REQ on (handleStartLcpReq sets the status, the
+       * participants and SYSFILE->latestLCP_ID) the LCP includes this
+       * node only if it is a participating LQH. A non-master sees
+       * LCP_COPY_GCI before its START_LCP_REQ, when the participants of
+       * the new LCP are not known here yet.
+       */
+      const Uint32 master = refToNode(cmasterdihref);
+      switch (c_lcpState.lcpStatus) {
+        case LCP_STATUS_IDLE:
+        case LCP_WAIT_MUTEX:
+        case LCP_TCGET:
+        case LCP_TC_CLOPSIZE:
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 1,
+                             cstarttype, "waiting", elapsed,
+                             "master node %u has not yet completed a local"
+                             " checkpoint that includes this node, waiting"
+                             " for the next LCP to start",
+                             master);
+          break;
+        case LCP_COPY_GCI:
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 1,
+                             cstarttype, "waiting", elapsed,
+                             "master node %u has not yet completed a local"
+                             " checkpoint that includes this node, an LCP"
+                             " is starting",
+                             master);
+          break;
+        default:
+          if (c_lcpState.m_participatingLQH.get(getOwnNodeId())) {
+            NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP,
+                               1, cstarttype, "waiting", elapsed,
+                               "master node %u has not yet completed a local"
+                               " checkpoint that includes this node, LCP %u"
+                               " is running with this node",
+                               master, SYSFILE->latestLCP_ID);
+          } else {
+            NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP,
+                               1, cstarttype, "waiting", elapsed,
+                               "master node %u has not yet completed a local"
+                               " checkpoint that includes this node, LCP %u"
+                               " is running without it, the next one"
+                               " includes it",
+                               master, SYSFILE->latestLCP_ID);
+          }
+          break;
+      }
+      if (c_nsl_timer.escalate_due()) {
+        jam();
+        infoEvent("%s", buf);
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+void Dbdih::nsl_master_set_state(Signal *signal, Uint32 state, Uint32 node) {
+  c_nsl_master_state = state;
+  c_nsl_master_node = node;
+  if (state == NSL_M_IDLE) {
+    c_nsl_master_timer.stop_step();
+    return;
+  }
+  c_nsl_master_timer.start_step();
+  const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+  if (freq != 0 && !c_nsl_master_tick_armed) {
+    c_nsl_master_tick_armed = true;
+    signal->theData[0] = DihContinueB::ZNSL_REPORT;
+    signal->theData[1] = NSL_MASTER_TAG;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                        NodeStartLog::tickDelayMillis(freq), 2);
+  }
+}
+
+void Dbdih::nsl_master_report(Signal *signal) {
+  char buf[NodeStartLog::BUF_SIZE];
+  const Int64 elapsed = (Int64)c_nsl_master_timer.elapsed_sec();
+  switch (c_nsl_master_state) {
+    case NSL_M_INVALIDATE: {
+      NodeStartLog::assist_line(buf, sizeof(buf), c_nsl_master_node,
+                                NodeStartLog::NSL_START_PERM, 2,
+                                NodeState::ST_INITIAL_NODE_RESTART,
+                                "progress", elapsed,
+                                "invalidating this node's old LCPs before"
+                                " its start permission is granted");
+      break;
+    }
+    case NSL_M_WAIT_PAUSE: {
+      NodeStartLog::assist_line(buf, sizeof(buf), c_nsl_master_node,
+                                NodeStartLog::NSL_METADATA, 1,
+                                NodeState::ST_NODE_RESTART, "waiting",
+                                elapsed,
+                                "fragment info lock or LCP pause still"
+                                " pending, the metadata copy starts once the"
+                                " lock is held and any running LCP is paused");
+      break;
+    }
+    case NSL_M_COPY_META: {
+      NodeStartLog::assist_line(buf, sizeof(buf), c_nsl_master_node,
+                                NodeStartLog::NSL_METADATA, 2,
+                                NodeState::ST_NODE_RESTART, "progress",
+                                elapsed, "copied %u/%u table objects",
+                                c_nsl_tabs_copied, c_nsl_tabs_total);
+      break;
+    }
+    case NSL_M_COPY_DICT: {
+      NodeStartLog::assist_line(buf, sizeof(buf), c_nsl_master_node,
+                                NodeStartLog::NSL_METADATA, 3,
+                                NodeState::ST_NODE_RESTART, "waiting",
+                                elapsed, "DICT is copying the schema");
+      break;
+    }
+    case NSL_M_INCLUDE: {
+      NodeStartLog::assist_line(buf, sizeof(buf), c_nsl_master_node,
+                                NodeStartLog::NSL_METADATA, 4,
+                                NodeState::ST_NODE_RESTART, "waiting",
+                                elapsed,
+                                "not every node has included the node in"
+                                " the GCP and LCP protocols yet, done at the"
+                                " next GCP boundary (INCL_NODEREQ)");
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 void Dbdih::execNDB_STTOR(Signal *signal) {
   jamEntry();
   BlockReference cntrRef = signal->theData[0]; /* SENDERS BLOCK REFERENCE */
@@ -1990,12 +2471,33 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
       if (cstarttype == NodeState::ST_INITIAL_START) {
         jam();
         // setInitialActiveStatus is moved into makeNodeGroups
+        {
+          char buf[NodeStartLog::BUF_SIZE];
+          infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
+                                                NodeStartLog::NSL_START_PERM,
+                                                cstarttype));
+        }
       } else if (cstarttype == NodeState::ST_SYSTEM_RESTART) {
         jam();
-        /*empty*/;
+        {
+          char buf[NodeStartLog::BUF_SIZE];
+          infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
+                                                NodeStartLog::NSL_START_PERM,
+                                                cstarttype));
+        }
       } else if ((cstarttype == NodeState::ST_NODE_RESTART) ||
                  (cstarttype == NodeState::ST_INITIAL_NODE_RESTART)) {
         jam();
+        nsl_start_step(signal, NodeStartLog::NSL_START_PERM);
+        {
+          char buf[NodeStartLog::BUF_SIZE];
+          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                             NodeStartLog::NSL_START_PERM, 0,
+                                             cstarttype, "started", -1,
+                                             "requesting start permission"
+                                             " from master node %u",
+                                             refToNode(cmasterdihref)));
+        }
         nodeRestartPh2Lab(signal);
         return;
       } else {
@@ -2025,6 +2527,48 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
         ndbStartReqLab(signal, cntrRef);
         return;
       }  // if
+      if (cstarttype == NodeState::ST_SYSTEM_RESTART) {
+        jam();
+        /**
+         * [NODE-START] step 7 of a system restart. Once every node has
+         * completed this phase the master receives NDB_STARTREQ,
+         * synchronizes the sysfile (ndbStartReqLab), restores the schema
+         * through DICT and reads and distributes each table's
+         * distribution (execDIADDTABREQ .. execCOPY_TABCONF), all before
+         * the START_FRAGREQs; the step completes in dictStartConfLab. The
+         * master runs the report tick. A non-master sees no DIH signal
+         * marking the end of the step, so it reports only the boundary
+         * here and per-table progress in execCOPY_TABREQ, and DBLQH
+         * accounts the completion at its first START_FRAGREQ.
+         */
+        c_nsl_sr_meta_phase = 0;
+        c_nsl_sr_tabs_distributed = 0;
+        c_nsl_sr_tabs_received = 0;
+        if (isMaster()) {
+          jam();
+          nsl_start_step(signal, NodeStartLog::NSL_METADATA);
+          char buf[NodeStartLog::BUF_SIZE];
+          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                             NodeStartLog::NSL_METADATA, 0,
+                                             cstarttype, "started", -1,
+                                             "this node is the master, it"
+                                             " reads and distributes the"
+                                             " metadata once all nodes"
+                                             " reach this point"));
+        } else {
+          jam();
+          c_nsl_timer.start_step();
+          c_nsl_sr_meta_start_pub.store(NdbTick_getCurrentTicks().getUint64(),
+                                        std::memory_order_release);
+          char buf[NodeStartLog::BUF_SIZE];
+          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                             NodeStartLog::NSL_METADATA, 0,
+                                             cstarttype, "started", -1,
+                                             "master node %u reads and"
+                                             " distributes the metadata",
+                                             refToNode(cmasterdihref)));
+        }
+      }
       ndbsttorry10Lab(signal, __LINE__);
       break;
 
@@ -2042,6 +2586,12 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
           jam();
           ndbassert(c_lcpState.lcpStatus == LCP_STATUS_IDLE);
           c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
+          {
+            char buf[NodeStartLog::BUF_SIZE];
+            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
+                                                  NodeStartLog::NSL_METADATA,
+                                                  typestart));
+          }
           ndbsttorry10Lab(signal, __LINE__);
           return;
         case NodeState::ST_SYSTEM_RESTART:
@@ -2079,6 +2629,17 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
                               " information from master(%u) Starting",
                               refToNode(cmasterdihref));
 
+          nsl_start_step(signal, NodeStartLog::NSL_METADATA);
+          {
+            char buf[NodeStartLog::BUF_SIZE];
+            infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                               NodeStartLog::NSL_METADATA, 0,
+                                               cstarttype, "started", -1,
+                                               "metadata is copied to us by"
+                                               " master node %u",
+                                               refToNode(cmasterdihref)));
+          }
+
           StartMeReq *req = (StartMeReq *)&signal->theData[0];
           req->startingRef = reference();
           req->startingVersion = 0;  // Obsolete
@@ -2093,6 +2654,32 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
         case NodeState::ST_INITIAL_START:
         case NodeState::ST_SYSTEM_RESTART:
           jam();
+          if (typestart == NodeState::ST_INITIAL_START) {
+            jam();
+            /**
+             * An initial start has no local recovery and nothing to
+             * synchronize; emit the skipped markers of steps 8-12 at
+             * the point where they would have executed.
+             */
+            char buf[NodeStartLog::BUF_SIZE];
+            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
+                                                  NodeStartLog::NSL_RESTORE,
+                                                  typestart));
+            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
+                                                  NodeStartLog::NSL_UNDO_DD,
+                                                  typestart));
+            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
+                                                  NodeStartLog::NSL_REDO_EXEC,
+                                                  typestart));
+            infoEvent("%s",
+                      NodeStartLog::skipped(buf, sizeof(buf),
+                                            NodeStartLog::NSL_INDEX_REBUILD,
+                                            typestart));
+            infoEvent("%s",
+                      NodeStartLog::skipped(buf, sizeof(buf),
+                                            NodeStartLog::NSL_SYNCHRONIZE,
+                                            typestart));
+          }
           /*---------------------------------------------------------------------*/
           // WE EXECUTE A LOCAL CHECKPOINT AS A PART OF A SYSTEM RESTART.
           // THE IDEA IS THAT WE NEED TO
@@ -2113,6 +2700,16 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
               "Make On-line Database recoverable by waiting for LCP"
               " Starting, LCP id = %u",
               SYSFILE->latestLCP_ID + 1);
+
+          nsl_start_step(signal, NodeStartLog::NSL_WAIT_LCP);
+          {
+            char buf[NodeStartLog::BUF_SIZE];
+            infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                               NodeStartLog::NSL_WAIT_LCP, 0,
+                                               cstarttype, "started", -1,
+                                               "LCP id %u",
+                                               SYSFILE->latestLCP_ID + 1));
+          }
 
           c_lcpState.immediateLcpStart = true;
           cwaitLcpSr = true;
@@ -2135,6 +2732,20 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
       ndbabort();
     case ZNDB_SPH6:
       jam();
+      /**
+       * On a non-master node in an initial start or system restart the
+       * skipped markers of steps 8-12 (initial start) or 12 (system
+       * restart without take-over) and the step 13 lines are printed by
+       * NDBCNTR at wait point 5.2, where the node waits for the master's
+       * NDB start phase 5 (the first LCP); only the master executes that
+       * phase in DBDIH.
+       */
+      {
+        char buf[NodeStartLog::BUF_SIZE];
+        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                           NodeStartLog::NSL_ACTIVATE, 0,
+                                           typestart, "started", -1));
+      }
       switch (typestart) {
         case NodeState::ST_INITIAL_START:
         case NodeState::ST_SYSTEM_RESTART:
@@ -2155,6 +2766,23 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
                   ((Uint64(ZUNDEFINED_GCI_LIMIT + 1)) << 32);
             }
             startGcp(signal);
+            {
+              /* Momentary: same signal execution as the step start. */
+              char buf[NodeStartLog::BUF_SIZE];
+              NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE,
+                                 1, typestart, "completed", 0,
+                                 "global checkpoint protocol running");
+            }
+          } else {
+            jam();
+            /* Only the master starts the protocol; account for the
+               sub-step here so the numbering is complete on every node. */
+            char buf[NodeStartLog::BUF_SIZE];
+            NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE, 1,
+                               typestart, "completed", 0,
+                               "global checkpoint protocol started by master"
+                               " node %u",
+                               refToNode(cmasterdihref));
           }
           ndbsttorry10Lab(signal, __LINE__);
           return;
@@ -2314,6 +2942,16 @@ void Dbdih::ndbStartReqLab(Signal *signal, BlockReference ref) {
   infoEvent("Restarting cluster to GCI: %u", gci);
 
   ndbrequire(isMaster());
+  c_nsl_sr_meta_phase = 1;
+  c_nsl_sr_sub_start = NdbTick_getCurrentTicks();
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 1,
+                       cstarttype, "started", -1,
+                       "restarting cluster to GCI %u, synchronizing the"
+                       " sysfile with all nodes",
+                       gci);
+  }
   copyGciLab(signal, CopyGCIReq::RESTART);  // We have already read the file!
 }  // Dbdih::ndbStartReqLab()
 
@@ -2593,6 +3231,19 @@ void Dbdih::execSTART_PERMCONF(Signal *signal) {
   g_eventLogger->info(
       "Request permission to start our node from master Completed");
 
+  if (c_nsl_active_step == NodeStartLog::NSL_START_PERM) {
+    jam();
+    char buf[NodeStartLog::BUF_SIZE];
+    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                       NodeStartLog::NSL_START_PERM, 0,
+                                       cstarttype, "completed",
+                                       (Int64)c_nsl_timer.elapsed_sec(),
+                                       "permission granted by master node"
+                                       " %u, %u retries",
+                                       refToNode(cmasterdihref),
+                                       c_nsl_perm_retries));
+    nsl_stop_step();
+  }
 }  // Dbdih::execSTART_PERMCONF()
 
 void Dbdih::execSTART_PERMREF(Signal *signal) {
@@ -2607,6 +3258,8 @@ void Dbdih::execSTART_PERMREF(Signal *signal) {
     /*-----------------------------------------------------------------------*/
     g_eventLogger->info("Did not get permission to start (%u) retry in 3s",
                         errorCode);
+    c_nsl_perm_retries++;
+    c_nsl_last_perm_ref = errorCode;
     signal->theData[0] = DihContinueB::ZSTART_PERMREQ_AGAIN;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 3000, 1);
     return;
@@ -2705,6 +3358,18 @@ void Dbdih::execSTART_MECONF(Signal *signal) {
       "Request copying of distribution and dictionary"
       " information from master Completed");
 
+  if (c_nsl_active_step == NodeStartLog::NSL_METADATA) {
+    jam();
+    char buf[NodeStartLog::BUF_SIZE];
+    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                       NodeStartLog::NSL_METADATA, 0,
+                                       cstarttype, "completed",
+                                       (Int64)c_nsl_timer.elapsed_sec(),
+                                       "metadata copied by master node %u",
+                                       refToNode(cmasterdihref)));
+    nsl_stop_step();
+  }
+
   ndbsttorry10Lab(signal, __LINE__);
 
   if (getNodeActiveStatus(getOwnNodeId()) == Sysfile::NS_Configured) {
@@ -2730,6 +3395,21 @@ void Dbdih::execSTART_COPYCONF(Signal *signal) {
         "Make On-line Database recoverable by waiting for"
         " LCP Completed, LCP id = %u",
         SYSFILE->latestLCP_ID);
+
+    if (c_nsl_active_step == NodeStartLog::NSL_WAIT_LCP) {
+      jam();
+      char buf[NodeStartLog::BUF_SIZE];
+      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                         NodeStartLog::NSL_WAIT_LCP, 0,
+                                         cstarttype, "completed",
+                                         (Int64)c_nsl_timer.elapsed_sec(),
+                                         "LCP id %u, driven by master node"
+                                         " %u",
+                                         SYSFILE->latestLCP_ID,
+                                         refToNode(cmasterdihref)));
+      c_nsl_wait_lcp_reported = true;
+      nsl_stop_step();
+    }
 
     ndbrequire(nodeId == cownNodeId);
     CRASH_INSERTION(7132);
@@ -3265,6 +3945,40 @@ void Dbdih::start_copy_meta_data(Signal *signal) {
   init_copy_node_nr();
   g_eventLogger->info("Start copying tables to starting node %u",
     c_nodeStartMaster.startNode);
+
+  c_nsl_tabs_copied = 0;
+  c_nsl_tabs_total = 0;
+  {
+    TabRecordPtr countTabPtr;
+    for (countTabPtr.i = 0; countTabPtr.i < ctabFileSize; countTabPtr.i++) {
+      ptrAss(countTabPtr, tabRecord);
+      if (countTabPtr.p->tabStatus == TabRecord::TS_ACTIVE) {
+        c_nsl_tabs_total++;
+      }
+    }
+  }
+  if (c_nsl_master_state == NSL_M_WAIT_PAUSE) {
+    jam();
+    /* Sub-step 1 (pause LCP / lock fragment info) is done: the mutex is
+       held and any LCP is paused. */
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::assist_line(buf, sizeof(buf), c_nodeStartMaster.startNode,
+                              NodeStartLog::NSL_METADATA, 1,
+                              NodeState::ST_NODE_RESTART, "completed",
+                              (Int64)c_nsl_master_timer.elapsed_sec(),
+                              "fragment info locked, LCP paused");
+  }
+  nsl_master_set_state(signal, NSL_M_COPY_META, c_nodeStartMaster.startNode);
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::assist_line(buf, sizeof(buf), c_nodeStartMaster.startNode,
+                              NodeStartLog::NSL_METADATA, 2,
+                              NodeState::ST_NODE_RESTART, "started", -1,
+                              "%u table objects (tables, unique index"
+                              " tables and ordered indexes) to copy",
+                              c_nsl_tabs_total);
+  }
+
   c_nodeStartMaster.wait = 10;
   c_nodeStartMaster.COPY_TABREQs = 0;
   signal->theData[0] = DihContinueB::ZCOPY_NODE;
@@ -4096,6 +4810,16 @@ void Dbdih::startme_copygci_conf(Signal *signal) {
     setNodeRecoveryStatus(c_nodeStartMaster.startNode,
                           NodeRecord::WAIT_LCP_TO_COPY_DICT);
 
+    nsl_master_set_state(signal, NSL_M_WAIT_PAUSE,
+                         c_nodeStartMaster.startNode);
+    {
+      char buf[NodeStartLog::BUF_SIZE];
+      NodeStartLog::assist_line(buf, sizeof(buf), c_nodeStartMaster.startNode,
+                                NodeStartLog::NSL_METADATA, 1,
+                                NodeState::ST_NODE_RESTART, "started", -1,
+                                "pause LCP / lock fragment info");
+    }
+
     Callback c = {safe_cast(&Dbdih::lcpBlockedLab),
                   c_nodeStartMaster.startNode};
     Mutex mutex(signal, c_mutexMgr, c_nodeStartMaster.m_fragmentInfoMutex);
@@ -4165,6 +4889,24 @@ void Dbdih::nodeDictStartConfLab(Signal* signal, Uint32 nodeId)
   signal->theData[1] = nodeId;
   sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
 
+  if (c_nsl_master_state == NSL_M_COPY_DICT) {
+    jam();
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::assist_line(buf, sizeof(buf), nodeId,
+                              NodeStartLog::NSL_METADATA, 3,
+                              NodeState::ST_NODE_RESTART, "completed",
+                              (Int64)c_nsl_master_timer.elapsed_sec(),
+                              "schema copied");
+    /* Sub-step 4 ends with START_MECONF, see execUNBLO_DICTCONF. */
+    nsl_master_set_state(signal, NSL_M_INCLUDE, nodeId);
+    NodeStartLog::assist_line(buf, sizeof(buf), nodeId,
+                              NodeStartLog::NSL_METADATA, 4,
+                              NodeState::ST_NODE_RESTART, "started", -1,
+                              "including the node in the GCP and LCP"
+                              " protocols on all nodes at the next GCP"
+                              " boundary");
+  }
+
   /*-------------------------------------------------------------------------
    * NOW WE HAVE COPIED BOTH DIH AND DICT INFORMATION. WE ARE NOW READY TO
    * INTEGRATE THE NODE INTO THE LCP AND GCP PROTOCOLS AND TO ALLOW UPDATES OF
@@ -4187,6 +4929,15 @@ void Dbdih::nodeDictStartConfLab(Signal* signal, Uint32 nodeId)
 }  // Dbdih::nodeDictStartConfLab()
 
 void Dbdih::dihCopyCompletedLab(Signal *signal) {
+  nsl_master_set_state(signal, NSL_M_COPY_DICT, c_nodeStartMaster.startNode);
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::assist_line(buf, sizeof(buf), c_nodeStartMaster.startNode,
+                              NodeStartLog::NSL_METADATA, 3,
+                              NodeState::ST_NODE_RESTART, "started", -1,
+                              "DICT copies the schema");
+  }
+
   signal->theData[0] = NDB_LE_NR_CopyDistr;
   signal->theData[1] = c_nodeStartMaster.startNode;
   sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 2, JBB);
@@ -4370,6 +5121,18 @@ void Dbdih::execUNBLO_DICTCONF(Signal *signal) {
     jamLine((Uint16)ret);
     ndbrequire(ret == 0);
     send_START_MECONF_data_v1(signal, ref);
+  }
+  if (c_nsl_master_state == NSL_M_INCLUDE) {
+    jam();
+    /* [NODE-START] step 7 sub-step 4 done: START_MECONF ends the
+       starting node's step 7. */
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::assist_line(buf, sizeof(buf), nodeId,
+                              NodeStartLog::NSL_METADATA, 4,
+                              NodeState::ST_NODE_RESTART, "completed",
+                              (Int64)c_nsl_master_timer.elapsed_sec(),
+                              "node included in the protocols on all nodes");
+    nsl_master_set_state(signal, NSL_M_IDLE, 0);
   }
   nodeResetStart(signal);
 
@@ -4567,6 +5330,16 @@ void Dbdih::execSTART_INFOREQ(Signal *signal) {
   if (req->typeStart == NodeState::ST_INITIAL_NODE_RESTART) {
     jam();
     g_eventLogger->info("Started invalidation of node %u", startNode);
+    nsl_master_set_state(signal, NSL_M_INVALIDATE, startNode);
+    {
+      char buf[NodeStartLog::BUF_SIZE];
+      NodeStartLog::assist_line(buf, sizeof(buf), startNode,
+                                NodeStartLog::NSL_START_PERM, 2,
+                                NodeState::ST_INITIAL_NODE_RESTART,
+                                "started", -1,
+                                "invalidating this node's old LCPs before"
+                                " its start permission is granted");
+    }
     setAllowNodeStart(startNode, false);
     init_invalidate_node_lcp(startNode);
     invalidateNodeLCP(signal, startNode, 0);
@@ -7710,6 +8483,60 @@ void Dbdih::nr_start_logging(Signal *signal, TakeOverRecordPtr takeOverPtr) {
 
       takeOverPtr = c_mainTakeOverPtr;
 
+      if (c_nsl_active_step == NodeStartLog::NSL_SYNCHRONIZE) {
+        jam();
+        char buf[NodeStartLog::BUF_SIZE];
+        if (c_nsl_sync_sub == 3) {
+          jam();
+          /* Sub-step 3 ends with the last take-over thread. The copy
+             visited every fragment of the node, REDO logging only those
+             of logged tables: say so when the counts differ. */
+          if (c_nsl_frags_logged == c_nsl_frags_copied) {
+            NodeStartLog::line(buf, sizeof(buf),
+                               NodeStartLog::NSL_SYNCHRONIZE, 3, cstarttype,
+                               "completed", nsl_sync_sub_elapsed(),
+                               "REDO logging enabled on %u fragments",
+                               c_nsl_frags_logged);
+          } else {
+            NodeStartLog::line(buf, sizeof(buf),
+                               NodeStartLog::NSL_SYNCHRONIZE, 3, cstarttype,
+                               "completed", nsl_sync_sub_elapsed(),
+                               "REDO logging enabled on %u of the %u copied"
+                               " fragments, the rest are ordered indexes or"
+                               " unlogged tables and need none",
+                               c_nsl_frags_logged, c_nsl_frags_copied);
+          }
+        }
+        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                           NodeStartLog::NSL_SYNCHRONIZE, 0,
+                                           cstarttype, "completed",
+                                           (Int64)c_nsl_timer.elapsed_sec(),
+                                           "%u fragments copied, REDO"
+                                           " logging enabled",
+                                           c_nsl_frags_copied));
+        nsl_stop_step();
+      }
+      if (takeOverPtr.p->m_flags & StartCopyReq::WAIT_LCP) {
+        jam();
+        /**
+         * Step 13 is this node's own wait only when END_TOREQ asks the
+         * master to wait for an LCP. A take-over forced by the master
+         * during a system restart (flags 0) does not wait here; the
+         * cluster LCP wait is then driven by the master and accounted
+         * in NDB_STTOR phase 6.
+         */
+        nsl_start_step(signal, NodeStartLog::NSL_WAIT_LCP);
+        char buf[NodeStartLog::BUF_SIZE];
+        infoEvent("%s",
+                  NodeStartLog::line(buf, sizeof(buf),
+                                     NodeStartLog::NSL_WAIT_LCP, 0,
+                                     cstarttype, "started", -1,
+                                     "an LCP driven by master node %u must"
+                                     " include this node before it is"
+                                     " recoverable",
+                                     refToNode(cmasterdihref)));
+      }
+
       takeOverPtr.p->toSlaveStatus = TakeOverRecord::TO_END_TO;
       EndToReq *req = (EndToReq *)signal->getDataPtrSend();
       req->senderData = takeOverPtr.i;
@@ -8021,6 +8848,23 @@ void Dbdih::execSTART_TOCONF(Signal *signal) {
   c_mainTakeOverPtr = takeOverPtr;
   c_mainTakeOverPtr.p->m_number_of_copy_threads = c_max_takeover_copy_threads;
   c_mainTakeOverPtr.p->m_copy_threads_completed = 0;
+  if (c_nsl_active_step == NodeStartLog::NSL_SYNCHRONIZE &&
+      c_nsl_sync_sub == 1) {
+    jam();
+    /* [NODE-START] step 12: sub-step 1 done, the copy (sub-step 2) begins. */
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 1,
+                       cstarttype, "completed",
+                       (Int64)c_nsl_timer.elapsed_sec(),
+                       "take-over accepted by master node %u, %u copy"
+                       " threads",
+                       refToNode(cmasterdihref), c_max_takeover_copy_threads);
+    c_nsl_sync_sub = 2;
+    c_nsl_sync_sub_start = NdbTick_getCurrentTicks();
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 2,
+                       cstarttype, "started", -1,
+                       "copying fragments from live nodes");
+  }
   c_activeThreadTakeOverPtr.i = RNIL;
   check_take_over_completed_correctly();
 
@@ -8623,6 +9467,8 @@ void Dbdih::execCOPY_FRAGCONF(Signal *signal) {
   Uint32 rows_lo = conf->rows_lo;
   Uint32 bytes_lo = conf->bytes_lo;
 
+  c_nsl_frags_copied++;
+
   ndbrequire(conf->tableId == takeOverPtr.p->toCurrentTabref);
   ndbrequire(conf->fragId == takeOverPtr.p->toCurrentFragid);
   ndbrequire(conf->startingNodeId == takeOverPtr.p->toStartingNode);
@@ -8636,6 +9482,11 @@ void Dbdih::execCOPY_FRAGCONF(Signal *signal) {
   TabRecordPtr tabPtr;
   tabPtr.i = takeOverPtr.p->toCurrentTabref;
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
+  if (tabPtr.p->tabStorage == TabRecord::ST_NORMAL) {
+    /* [NODE-START] step 12 sub-step 3 total: only these fragments get
+       REDO logging enabled (nr_start_logging skips the other classes). */
+    c_nsl_frags_to_log++;
+  }
 
   FragmentstorePtr fragPtr;
   getFragstore(tabPtr.p, takeOverPtr.p->toCurrentFragid, fragPtr);
@@ -8730,6 +9581,7 @@ void Dbdih::execCOPY_ACTIVECONF(Signal *signal) {
     jam();
     ndbrequire(takeOverPtr.p->toSlaveStatus ==
                TakeOverRecord::TO_SL_COPY_ACTIVE);
+    c_nsl_frags_logged++; /* [NODE-START] step 12 sub-step 3 progress */
 
     if (c_activeThreadTakeOverPtr.i != RNIL) {
       jam();
@@ -8825,6 +9677,29 @@ void Dbdih::toCopyCompletedLab(Signal *signal, TakeOverRecordPtr takeOverPtr) {
   infoEvent("Bring Database On-line Completed on node %u",
             takeOverPtr.p->toStartingNode);
 
+  if (c_nsl_active_step == NodeStartLog::NSL_SYNCHRONIZE) {
+    jam();
+    /* Sub-step 3 (enable REDO logging) follows; the step completes in
+       nr_start_logging once all take-over threads have finished it. */
+    char buf[NodeStartLog::BUF_SIZE];
+    const Uint64 copy_total = nsl_lqh_copy_row_ops_total();
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 2,
+                       cstarttype, "completed", nsl_sync_sub_elapsed(),
+                       "%u fragments copied from live nodes (all fragment"
+                       " replicas of this node, ordered indexes included),"
+                       " %llu row operations received",
+                       c_nsl_frags_copied,
+                       (unsigned long long)((copy_total >= c_nsl_sync_row_ops_base)
+                                                ? (copy_total - c_nsl_sync_row_ops_base)
+                                                : copy_total));
+    c_nsl_sync_sub = 3;
+    c_nsl_sync_sub_start = NdbTick_getCurrentTicks();
+    c_nsl_frags_logged = 0;
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 3,
+                       cstarttype, "started", -1,
+                       "enabling REDO logging on the copied fragments");
+  }
+
   {
     jam();
     g_eventLogger->info("Starting REDO logging");
@@ -8906,6 +9781,27 @@ void Dbdih::execEND_TOCONF(Signal *signal) {
   Uint32 senderData = takeOverPtr.p->m_senderData;
   Uint32 senderRef = takeOverPtr.p->m_senderRef;
   Uint32 nodeId = takeOverPtr.p->toStartingNode;
+
+  if (c_nsl_active_step == NodeStartLog::NSL_WAIT_LCP &&
+      !(senderRef == reference() && senderData == RNIL)) {
+    jam();
+    /**
+     * Take-over during a system restart (NDBCNTR waitpoint42To): the
+     * START_COPYCONF below goes to NDBCNTR, not back to this block, so
+     * the wait-lcp step is completed here. In a node restart the reply
+     * reaches execSTART_COPYCONF, which completes it there.
+     */
+    char buf[NodeStartLog::BUF_SIZE];
+    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                       NodeStartLog::NSL_WAIT_LCP, 0,
+                                       cstarttype, "completed",
+                                       (Int64)c_nsl_timer.elapsed_sec(),
+                                       "LCP id %u, driven by master node %u",
+                                       SYSFILE->latestLCP_ID,
+                                       refToNode(cmasterdihref)));
+    c_nsl_wait_lcp_reported = true;
+    nsl_stop_step();
+  }
 
   releaseTakeOver(takeOverPtr, false);
   c_mainTakeOverPtr.i = RNIL;
@@ -10899,6 +11795,17 @@ void Dbdih::invalidateNodeLCP(Signal *signal,
       nodePtr.p->m_invalidate_node_lcp_ongoing = false;
       setAllowNodeStart(nodeId, true);
       g_eventLogger->info("Completed invalidation of node %u", nodeId);
+      if (c_nsl_master_state == NSL_M_INVALIDATE) {
+        jam();
+        char buf[NodeStartLog::BUF_SIZE];
+        NodeStartLog::assist_line(buf, sizeof(buf), nodeId,
+                                  NodeStartLog::NSL_START_PERM, 2,
+                                  NodeState::ST_INITIAL_NODE_RESTART,
+                                  "completed",
+                                  (Int64)c_nsl_master_timer.elapsed_sec(),
+                                  "old LCPs invalidated");
+        nsl_master_set_state(signal, NSL_M_IDLE, 0);
+      }
       if (getNodeStatus(nodeId) == NodeRecord::STARTING) {
         jam();
         if (!isMaster()) {
@@ -18306,6 +19213,20 @@ void Dbdih::execCOPY_GCICONF(Signal *signal) {
     case CopyGCIReq::RESTART: {
       ok = true;
       jam();
+      c_nsl_sr_meta_phase = 2;
+      {
+        char buf[NodeStartLog::BUF_SIZE];
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 1,
+                           cstarttype, "completed", nsl_sr_sub_elapsed(),
+                           "sysfile synchronized");
+        /* Sub-step 2 starts now, its lines count from here. */
+        c_nsl_sr_sub_start = NdbTick_getCurrentTicks();
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 2,
+                           cstarttype, "started", -1,
+                           "DICT restores the schema from disk while each"
+                           " table's distribution is read and sent to all"
+                           " nodes");
+      }
       DictStartReq *req = (DictStartReq *)&signal->theData[0];
       req->restartGci = SYSFILE->newestRestorableGCI;
       req->senderRef = reference();
@@ -19047,6 +19968,31 @@ void Dbdih::openingCopyGciErrorLab(Signal *signal, FileRecordPtr filePtr) {
 /* ------------------------------------------------------------------------- */
 void Dbdih::dictStartConfLab(Signal *signal) {
   infoEvent("Restore Database from disk Starting");
+  /**
+   * System restart: the schema and every table's distribution are now
+   * restored and distributed, step 7 is complete. The START_FRAGREQ
+   * distribution that follows is step 8 sub-step 1, accounted in
+   * completeRestartLab.
+   */
+  if (c_nsl_active_step == NodeStartLog::NSL_METADATA) {
+    jam();
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 2,
+                       cstarttype, "completed", nsl_sr_sub_elapsed(),
+                       "schema restored from disk, %u table objects"
+                       " read and distributed to all nodes",
+                       c_nsl_sr_tabs_distributed);
+    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                       NodeStartLog::NSL_METADATA, 0,
+                                       cstarttype, "completed",
+                                       (Int64)c_nsl_timer.elapsed_sec(),
+                                       "%u table objects read and"
+                                       " distributed to all nodes",
+                                       c_nsl_sr_tabs_distributed));
+    nsl_stop_step();
+  }
+  c_nsl_frags_distributed = 0;
+  c_nsl_frags_dist_start = NdbTick_getCurrentTicks();
   /* ----------------------------------------------------------------------- */
   /*     WE HAVE NOW RECEIVED ALL THE TABLES TO RESTART.                     */
   /* ----------------------------------------------------------------------- */
@@ -19675,6 +20621,21 @@ void Dbdih::execCOPY_TABREQ(Signal *signal) {
   ptrCheckGuard(tabPtr, ctabFileSize, tabRecord);
   if (reqinfo == 1) {
     jam();
+    if (cstarttype == NodeState::ST_SYSTEM_RESTART &&
+        !getNodeState().getStarted() && c_nsl_sr_meta_phase < 2) {
+      jam();
+      /* [NODE-START] step 7 sub-step 2 on a non-master begins with the
+         first packet of the first table the master sends. */
+      c_nsl_sr_meta_phase = 2;
+      c_nsl_sr_sub_start = NdbTick_getCurrentTicks();
+      c_nsl_sr_sub2_start_pub.store(c_nsl_sr_sub_start.getUint64(),
+                                    std::memory_order_release);
+      char buf[NodeStartLog::BUF_SIZE];
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 2,
+                         cstarttype, "started", -1,
+                         "receiving the table objects from master node %u",
+                         refToNode(cmasterdihref));
+    }
     tabPtr.p->schemaVersion = schemaVersion;
     D("COPY_TABREQ: tableId: " << tabPtr.i << " schemaVersion: 0x"
       << hex << schemaVersion);
@@ -19731,6 +20692,22 @@ void Dbdih::execCOPY_TABREQ(Signal *signal) {
   ndbrequire(tabPtr.p->tabCopyStatus == TabRecord::CS_IDLE);
   tabPtr.p->tabCopyStatus = TabRecord::CS_COPY_TAB_REQ;
   DEB_LCP_ONGOING(("Finished COPY_TAB_REQ for table %u", tabPtr.i));
+  if (cstarttype == NodeState::ST_SYSTEM_RESTART &&
+      !getNodeState().getStarted()) {
+    jam();
+    /* [NODE-START] step 7 progress of a non-master, see NDB_STTOR 3. */
+    c_nsl_sr_tabs_received++;
+    c_nsl_sr_tabs_received_pub.store(c_nsl_sr_tabs_received,
+                                     std::memory_order_release);
+    if (c_nsl_timer.report_due(globalData.theNodeStartLogReportFrequency)) {
+      jam();
+      char buf[NodeStartLog::BUF_SIZE];
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 2,
+                         cstarttype, "progress", nsl_sr_sub_elapsed(),
+                         "received %u table objects from master node %u",
+                         c_nsl_sr_tabs_received, refToNode(cmasterdihref));
+    }
+  }
   signal->theData[0] = DihContinueB::ZREAD_PAGES_INTO_TABLE;
   signal->theData[1] = tabPtr.i;
   sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
@@ -20160,6 +21137,7 @@ void Dbdih::startFragment(Signal *signal, Uint32 tableId, Uint32 fragId) {
    * resetReplicaSr, nothing should have changed since this setup.
    */
   sendStartFragreq(signal, tabPtr, fragId);
+  c_nsl_frags_distributed++;
 
   /**
    * Don't wait for START_FRAGCONF
@@ -20182,6 +21160,24 @@ void Dbdih::startFragment(Signal *signal, Uint32 tableId, Uint32 fragId) {
 /* **********     COMPLETE RESTART MODULE                        *************/
 /*****************************************************************************/
 void Dbdih::completeRestartLab(Signal *signal) {
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    const Int64 elapsed =
+        NdbTick_IsValid(c_nsl_frags_dist_start)
+            ? (Int64)NdbTick_Elapsed(c_nsl_frags_dist_start,
+                                     NdbTick_getCurrentTicks())
+                  .seconds()
+            : -1;
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_RESTORE, 1,
+                       cstarttype, "completed", elapsed,
+                       "restore requests distributed for %u fragments",
+                       c_nsl_frags_distributed);
+  }
+  /**
+   * The master's own local recovery (steps 8-11) is reported by its
+   * DBLQH instances; the wait for the other nodes' START_RECCONF is
+   * armed when its own arrives, see execSTART_RECCONF.
+   */
   sendLoopMacro(START_RECREQ, sendSTART_RECREQ, RNIL);
 }  // completeRestartLab()
 
@@ -20215,6 +21211,18 @@ void Dbdih::execSTART_RECCONF(Signal *signal) {
     g_eventLogger->info("Bring Database On-line Starting");
     infoEvent("Bring Database On-line Starting on node %u", senderNodeId);
 
+    c_nsl_frags_copied = 0;
+    c_nsl_frags_to_log = 0;
+    c_nsl_sync_row_ops_base = nsl_lqh_copy_row_ops_total();
+    c_nsl_sync_sub = 1; /* START_TOREQ outstanding, see execSTART_TOCONF */
+    nsl_start_step(signal, NodeStartLog::NSL_SYNCHRONIZE);
+    {
+      char buf[NodeStartLog::BUF_SIZE];
+      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                         NodeStartLog::NSL_SYNCHRONIZE, 0,
+                                         cstarttype, "started", -1));
+    }
+
     /**
      * This is node restart
      */
@@ -20227,11 +21235,25 @@ void Dbdih::execSTART_RECCONF(Signal *signal) {
 
   /* No take over record in the system restart case here */
   ndbrequire(senderData == RNIL);
+  if (senderNodeId == getOwnNodeId()) {
+    jam();
+    /**
+     * [NODE-START] this node's local recovery is done (its DBLQH printed
+     * steps 8-11); from here the master waits for the other nodes'
+     * START_RECCONF. The ZNSL_REPORT tick prints a step-less waiting
+     * line naming them; stopped below when the last one has arrived.
+     */
+    nsl_start_step(signal, NSL_WAIT_RECCONF_TAG);
+  }
   /* --------------------------------------------------------------------- */
   // This was the system restart case. We set the state indicating that the
   // node has completed restoration of all fragments.
   /* --------------------------------------------------------------------- */
   receiveLoopMacro(START_RECREQ, senderNodeId);
+  if (c_nsl_active_step == NSL_WAIT_RECCONF_TAG) {
+    jam();
+    nsl_stop_step();
+  }
 
   /**
    * Remove each node that has to TO from LCP/LQH
@@ -20276,6 +21298,28 @@ void Dbdih::execSTART_RECCONF(Signal *signal) {
   }
 
   infoEvent("Restore Database from disk Completed");
+
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    if (m_to_nodes.isclear()) {
+      jam();
+      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                         NodeStartLog::NSL_SYNCHRONIZE, 0,
+                                         cstarttype, "skipped", -1,
+                                         "no take-over required"));
+    } else {
+      jam();
+      /* The nodes needing take-over run it themselves after this point. */
+      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                         NodeStartLog::NSL_SYNCHRONIZE, 0,
+                                         cstarttype, "skipped", -1,
+                                         "this node needs no take-over,"
+                                         " nodes %s are taken over next",
+                                         BaseString::getPrettyTextShort(
+                                             m_to_nodes)
+                                             .c_str()));
+    }
+  }
 
   signal->theData[0] = reference();
   m_sr_nodes.copyto(NdbNodeBitmask::Size, signal->theData + 1);
@@ -20373,6 +21417,16 @@ void Dbdih::copyNodeLab(Signal *signal, Uint32 decrement_outstanding) {
   ndbrequire(!c_COPY_TABREQ_Counter.isWaitingFor(nodePtr.i));
   g_eventLogger->info("Finished copying table to starting node %u",
     nodePtr.i);
+
+  if (c_nsl_master_state == NSL_M_COPY_META) {
+    jam();
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::assist_line(buf, sizeof(buf), nodePtr.i,
+                              NodeStartLog::NSL_METADATA, 2,
+                              NodeState::ST_NODE_RESTART, "completed",
+                              (Int64)c_nsl_master_timer.elapsed_sec(),
+                              "%u table objects copied", c_nsl_tabs_copied);
+  }
 
   if (is_lcp_paused()) {
     jam();
@@ -20701,6 +21755,7 @@ void Dbdih::execCOPY_TABCONF(Signal *signal) {
     ndbrequire(nodeId == c_nodeStartMaster.startNode);
     ndbrequire(c_nodeStartMaster.COPY_TABREQs > 0);
     c_nodeStartMaster.COPY_TABREQs--;
+    c_nsl_tabs_copied++;
     jamData(c_nodeStartMaster.COPY_TABREQs);
     jamData(tableId);
     if (c_nodeStartMaster.COPY_TABREQs == 0) {
@@ -20716,6 +21771,7 @@ void Dbdih::execCOPY_TABCONF(Signal *signal) {
     // next table.
     /* --------------------------------------------------------------------- */
     receiveLoopMacro(COPY_TABREQ, nodeId);
+    c_nsl_sr_tabs_distributed++;
     /* --------------------------------------------------------------------- */
     /*   WE HAVE NOW COPIED TO ALL NODES. WE HAVE NOW COMPLETED RESTORING    */
     /*   THIS TABLE. CONTINUE WITH THE NEXT TABLE.                           */
@@ -22921,6 +23977,18 @@ void Dbdih::allNodesLcpCompletedLab(Signal *signal) {
         "Make On-line Database recoverable by waiting for LCP"
         " Completed, LCP id = %u",
         SYSFILE->latestLCP_ID);
+
+    if (c_nsl_active_step == NodeStartLog::NSL_WAIT_LCP) {
+      jam();
+      char buf[NodeStartLog::BUF_SIZE];
+      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
+                                         NodeStartLog::NSL_WAIT_LCP, 0,
+                                         cstarttype, "completed",
+                                         (Int64)c_nsl_timer.elapsed_sec(),
+                                         "LCP id %u", SYSFILE->latestLCP_ID));
+      c_nsl_wait_lcp_reported = true;
+      nsl_stop_step();
+    }
 
     cwaitLcpSr = false;
     ndbsttorry10Lab(signal, __LINE__);
@@ -25495,6 +26563,15 @@ void Dbdih::nodeResetStart(Signal *signal) {
   c_nodeStartMaster.activeState = false;
   c_nodeStartMaster.blockGcp = 0;
   c_nodeStartMaster.m_outstandingGsn = 0;
+
+  /**
+   * Stop the [NODE-START] assisted-restart reporting for the reset
+   * start; the armed tick chain self-terminates on the idle state.
+   * (The signal argument may be NULL here, so no line is emitted.)
+   */
+  c_nsl_master_state = NSL_M_IDLE;
+  c_nsl_master_node = 0;
+  c_nsl_master_timer.stop_step();
 
   if (startGCP == 2)  // effective
   {

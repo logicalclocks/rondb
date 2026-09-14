@@ -1822,6 +1822,7 @@ Uint32 Restore::init_file(const RestoreLcpReq *req, FilePtr file_ptr) {
   file_ptr.p->m_rows_restored_write = 0;
   file_ptr.p->m_ignored_rows = 0;
   file_ptr.p->m_row_operations = 0;
+  file_ptr.p->m_nsl_row_ops_batch = 0;
 
   file_ptr.p->m_file_id = Uint32(~0);
   file_ptr.p->m_ctl_file_no = Uint32(~0);
@@ -1876,7 +1877,27 @@ Uint32 Restore::seize_file(FilePtr file_ptr) {
   return err;
 }
 
+/**
+ * [NODE-START] step 8 progress: hand the row operations applied since
+ * the last call (the same events as m_row_operations: inserts, writes
+ * and deletes of a partial LCP) to the DBLQH worker that requested this
+ * fragment. That is this LDM's own DBLQH when RESTORE runs the fragment
+ * and another LDM's when this is a recover thread (QRESTORE), hence the
+ * atomic counter there. Called every 1024 operations and when the
+ * fragment is done.
+ */
+void Restore::nsl_publish_row_ops(FilePtr file_ptr) {
+  if (file_ptr.p->m_nsl_row_ops_batch == 0) return;
+  if (refToMain(file_ptr.p->m_sender_ref) == DBLQH) {
+    Dblqh *lqh = (Dblqh *)globalData.getBlock(
+        DBLQH, refToInstance(file_ptr.p->m_sender_ref));
+    lqh->nsl_restore_row_ops_add(file_ptr.p->m_nsl_row_ops_batch);
+  }
+  file_ptr.p->m_nsl_row_ops_batch = 0;
+}
+
 void Restore::release_file(FilePtr file_ptr, bool statistics) {
+  nsl_publish_row_ops(file_ptr);
   LocalList pages(m_databuffer_pool, file_ptr.p->m_pages);
 
   List::Iterator it;
@@ -3179,6 +3200,9 @@ void Restore::execLQHKEYREF(Signal *signal) {
   }
   file_ptr.p->m_rows_restored_delete_failed++;
   file_ptr.p->m_row_operations++;
+  if (++file_ptr.p->m_nsl_row_ops_batch == 1024) {
+    nsl_publish_row_ops(file_ptr);
+  }
   check_restore_ready(signal, file_ptr);
 }
 
@@ -3232,22 +3256,34 @@ void Restore::execLQHKEYCONF(Signal *signal) {
       jam();
       file_ptr.p->m_rows_restored++;
       file_ptr.p->m_row_operations++;
+      if (++file_ptr.p->m_nsl_row_ops_batch == 1024) {
+        nsl_publish_row_ops(file_ptr);
+      }
       break;
     case BackupFormat::WRITE_TYPE:
       jam();
       file_ptr.p->m_rows_restored++;
       file_ptr.p->m_row_operations++;
+      if (++file_ptr.p->m_nsl_row_ops_batch == 1024) {
+        nsl_publish_row_ops(file_ptr);
+      }
       break;
     case BackupFormat::NORMAL_DELETE_TYPE:
       jam();
       file_ptr.p->m_rows_restored--;
       file_ptr.p->m_row_operations++;
+      if (++file_ptr.p->m_nsl_row_ops_batch == 1024) {
+        nsl_publish_row_ops(file_ptr);
+      }
       break;
     case BackupFormat::DELETE_BY_ROWID_TYPE:
     case BackupFormat::DELETE_BY_PAGEID_TYPE:
     case BackupFormat::DELETE_BY_ROWID_WRITE_TYPE:
       jam();
       file_ptr.p->m_row_operations++;
+      if (++file_ptr.p->m_nsl_row_ops_batch == 1024) {
+        nsl_publish_row_ops(file_ptr);
+      }
       break;
     default:
       ndbabort();

@@ -37,6 +37,7 @@
 #include <signaldata/TuxMaint.hpp>
 #include "AttributeOffset.hpp"
 #include "Dbtup.hpp"
+#include "../dbtux/Dbtux.hpp"
 
 #define JAM_FILE_ID 418
 
@@ -569,15 +570,28 @@ void Dbtup::execBUILD_INDX_IMPL_REQ(Signal *signal) {
     buildPtr.p->m_fragNo = 0;
     buildPtr.p->m_pageId = 0;
     buildPtr.p->m_tupleNo = firstTupleNo;
+
+    /* [NODE-START] step 11 progress: the base table fragments on this
+       LDM, the unit both build paths advance by. */
+    m_nsl_build_index_id = buildPtr.p->m_indexId;
+    m_nsl_build_frags_done = 0;
+    m_nsl_build_frags_total = 0;
+    buildPtr.p->m_nsl_rows = 0;
+    for (Uint32 i = 0; i < MAX_FRAG_PER_LQH; i++) {
+      if (c_lqh->getNextTupFragrec(tablePtr.i, i) == RNIL64) break;
+      m_nsl_build_frags_total++;
+    }
     // start build
 
     bool offline =
         !!(buildReq->requestType & BuildIndxImplReq::RF_BUILD_OFFLINE);
     if (offline && m_max_parallel_index_build > 1) {
       jam();
+      m_nsl_build_parallel = true;
       buildIndexOffline(signal, buildPtr.i);
     } else {
       jam();
+      m_nsl_build_parallel = false;
       buildIndex(signal, buildPtr.i);
     }
     return;
@@ -631,6 +645,14 @@ void Dbtup::buildIndex(Signal *signal, Uint32 buildPtrI) {
     if (buildPtr.p->m_pageId >= fragPtr.p->m_max_page_cnt) {
       jam();
       buildPtr.p->m_fragNo++;
+      m_nsl_build_frags_done++;
+      if (buildPtr.p->m_nsl_rows != 0) {
+        /* [NODE-START] step 11 progress: flush the rest of the batch. */
+        if (buildPtr.p->m_buildRef == DBTUX) {
+          c_tux->nsl_build_rows_add(buildPtr.p->m_nsl_rows);
+        }
+        buildPtr.p->m_nsl_rows = 0;
+      }
       buildPtr.p->m_pageId = 0;
       buildPtr.p->m_tupleNo = firstTupleNo;
       break;
@@ -808,6 +830,15 @@ void Dbtup::buildIndex(Signal *signal, Uint32 buildPtrI) {
     }
 #endif
     // next tuple
+    if (++buildPtr.p->m_nsl_rows == 1024) {
+      /* [NODE-START] step 11 progress: publish scanned rows in the same
+         batches as the parallel builder, so the periodic line advances
+         inside a large fragment too. */
+      if (buildPtr.p->m_buildRef == DBTUX) {
+        c_tux->nsl_build_rows_add(buildPtr.p->m_nsl_rows);
+      }
+      buildPtr.p->m_nsl_rows = 0;
+    }
     buildPtr.p->m_tupleNo++;
     break;
   } while (0);
@@ -1098,8 +1129,26 @@ void Dbtup::execBUILD_INDX_IMPL_CONF(Signal *signal) {
   ndbrequire(buildPtr.p->m_outstanding);
   buildPtr.p->m_outstanding--;
   buildPtr.p->m_fragNo++;
+  m_nsl_build_frags_done++;
 
   buildIndexOffline_table_readonly(signal, ptr);
+}
+
+void Dbtup::nsl_build_index_progress(Uint32 &indexId, Uint32 &fragsDone,
+                                     Uint32 &fragsTotal, Uint32 &building) {
+  indexId = m_nsl_build_index_id;
+  fragsDone = m_nsl_build_frags_done;
+  fragsTotal = m_nsl_build_frags_total;
+  building = 0;
+  BuildIndexPtr buildPtr;
+  if (c_buildIndexList.first(buildPtr)) {
+    /* Parallel build: fragments handed to the NDBFS threads (none
+       while the table is still being set read-only). Single-threaded
+       build: one fragment at a time in this thread. */
+    building = m_nsl_build_parallel
+                   ? buildPtr.p->m_outstanding
+                   : ((fragsDone < fragsTotal) ? 1 : 0);
+  }
 }
 
 void Dbtup::buildIndexReply(Signal *signal, const BuildIndexRec *buildPtrP) {

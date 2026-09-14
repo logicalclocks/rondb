@@ -35,6 +35,8 @@
 #include <DebuggerNames.hpp>
 #include <FastScheduler.hpp>
 #include "EventLogger.hpp"
+#include <NodeStartLog.hpp>
+#include <atomic>
 
 #include "TimeModule.hpp"
 #include "ndb_stacktrace.h"
@@ -207,6 +209,27 @@ void ErrorReporter::formatMessage(int thr_no, Uint32 num_threads, int faultID,
 
 NdbShutdownType ErrorReporter::s_errorHandlerShutdownType = NST_ErrorHandler;
 
+/**
+ * [NODE-START] failure line: a node that goes down before it has
+ * started says so in the start narrative, so the last 'started' line
+ * above it in the node log names the step that was running.
+ */
+void ErrorReporter::reportNodeStartFailure(int ec, const char *message) {
+  /* Claim the end of the narrative: exactly one of 'completed' (NDBCNTR)
+     and 'failed' is printed, once, whichever thread wins. */
+  Uint32 expected = GlobalData::NSL_STARTING;
+  if (!globalData.theNodeStartLogState.compare_exchange_strong(
+          expected, GlobalData::NSL_FAILED, std::memory_order_acq_rel)) {
+    return;
+  }
+  ndbd_exit_classification cl;
+  const char *desc = ndbd_exit_message(ec, &cl);
+  char buf[NodeStartLog::BUF_SIZE];
+  NodeStartLog::failed(buf, sizeof(buf), "node start aborted, error %d, %s: %s",
+                       ec, desc != nullptr ? desc : "",
+                       message != nullptr ? message : "");
+}
+
 void ErrorReporter::handleAssert(const char *message, const char *file,
                                  int line, int ec) {
   char refMessage[200];
@@ -219,6 +242,8 @@ void ErrorReporter::handleAssert(const char *message, const char *file,
 #endif
   NdbShutdownType nst = s_errorHandlerShutdownType;
   WriteMessage(ec, message, refMessage, nst);
+
+  reportNodeStartFailure(ec, message);
 
   NdbShutdown(ec, nst);
   exit(1);  // Deadcode
@@ -266,6 +291,8 @@ ErrorReporter::handleError(int messageID,
 
   g_eventLogger->info("%s", problemData);
   g_eventLogger->info("%s", objRef);
+
+  reportNodeStartFailure(messageID, problemData);
 
   NdbShutdown(messageID, nst);
   exit(1);  // kill warning

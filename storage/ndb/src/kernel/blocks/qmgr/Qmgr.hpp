@@ -29,6 +29,7 @@
 
 #include <NdbGetRUsage.h>
 #include <NdbTick.h>
+#include <NodeStartLog.hpp>
 #include <NodeBitmask.hpp>
 #include <ProcessInfo.hpp>
 #include <SignalCounter.hpp>
@@ -73,6 +74,7 @@
 #define ZRESEND_GET_NUM_MULTI_TRP_REQ 9
 #define ZSWITCH_MULTI_TRP 10
 #define ZSEND_TRP_KEEP_ALIVE 11
+#define ZNSL_JOIN_REPORT 12
 
 /* Error Codes ------------------------------*/
 #define ZERRTOOMANY 1101
@@ -797,6 +799,22 @@ class Qmgr : public SimulatedBlock {
   Uint32 c_restartNoNodegroupTimeout;
   NDB_TICKS c_start_election_time;
   Uint32 c_apiFailureTimeoutSecs;
+
+  /**
+   * [NODE-START] step 2 (join) logging, see vm/NodeStartLog.hpp.
+   * The last CM_REGREF received is remembered so that the periodic
+   * waiting report can say why the join has not completed yet.
+   * c_nsl_last_regref_node == 0 means no refusal seen yet. Once the
+   * president is known the 3 s CM_REGREQ loop stops, so a ZNSL_JOIN_REPORT
+   * CONTINUEB chain keeps the waiting heartbeat through the inclusion
+   * protocol (CM_NODEINFOREQ / CM_ADD) until the step completes.
+   */
+  NodeStartLogTimer c_nsl_join_timer;
+  Uint16 c_nsl_last_regref_node;
+  Uint32 c_nsl_last_regref_code;
+  bool c_nsl_join_tick_armed;
+  void nsl_report_inclusion_wait();
+  void nsl_arm_join_tick(Signal *signal);
 
   Uint16 creadyDistCom;
 

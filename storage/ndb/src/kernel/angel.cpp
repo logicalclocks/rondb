@@ -42,6 +42,7 @@
 
 #include <NdbTCP.h>
 #include <EventLogger.hpp>
+#include "vm/NodeStartLog.hpp"
 #include "util/ndb_opts.h"
 
 #include "../mgmapi/mgmapi_configuration.hpp"
@@ -53,6 +54,26 @@
 #endif
 
 #define JAM_FILE_ID 333
+
+/**
+ * [NODE-START] step 1 heartbeat while the angel waits for a node id
+ * from the management server (the node id may be in use by a previous
+ * instance, or the management server may refuse it). The configuration
+ * is not known yet, so the default report frequency applies.
+ */
+static void nsl_alloc_nodeid_retry(void *ctx, int attempt,
+                                   const char *error_msg) {
+  NodeStartLogTimer *timer = static_cast<NodeStartLogTimer *>(ctx);
+  if (!timer->is_active()) timer->start_step();
+  if (!timer->report_due(NodeStartLog::DEFAULT_REPORT_FREQUENCY_SEC)) return;
+  char buf[NodeStartLog::BUF_SIZE];
+  NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_INIT, 1,
+                     NodeState::ST_ILLEGAL_TYPE, "waiting",
+                     (Int64)timer->elapsed_sec(),
+                     "angel: no node id from the management server after"
+                     " %d attempts, last error: %s",
+                     attempt, error_msg != nullptr ? error_msg : "");
+}
 
 /*
  * process_waiter class provides a check_child_exit_status method that works on
@@ -202,6 +223,23 @@ int process_waiter::close_handle() {
 }
 
 static void angel_exit(int code) { ndb_daemon_exit(code); }
+
+/**
+ * [NODE-START] failed line for a start that the angel gives up on,
+ * then exit. The error itself is logged by the caller just before.
+ */
+static void angel_start_failed(const char *fmt, ...)
+    ATTRIBUTE_FORMAT(printf, 1, 2);
+static void angel_start_failed(const char *fmt, ...) {
+  char detail[NodeStartLog::BUF_SIZE];
+  va_list ap;
+  va_start(ap, fmt);
+  BaseString::vsnprintf(detail, sizeof(detail), fmt, ap);
+  va_end(ap);
+  char buf[NodeStartLog::BUF_SIZE];
+  NodeStartLog::failed(buf, sizeof(buf), "angel %s", detail);
+  angel_exit(1);
+}
 
 static void reportShutdown(const ndb_mgm_configuration *config, NodeId nodeid,
                            int error_exit, bool restart, bool nostart,
@@ -439,8 +477,13 @@ static process_waiter spawn_process(const char *progname [[maybe_unused]],
     // the symlink target between restarts.
     execv(restart_exec_path, argv);
     // execv should not return, if it does something is wrong
+    const int exec_errno = errno;
     fprintf(stderr, "angel: execv of '%s' failed, errno: %d\n",
-            restart_exec_path, errno);
+            restart_exec_path, exec_errno);
+    /* Forked child, no logger: the [NODE-START] failed line goes to
+       stderr, which the angel's out file captures. */
+    fprintf(stderr, "[NODE-START] failed: could not exec '%s', errno %d\n",
+            restart_exec_path, exec_errno);
     _exit(1);
   }
 
@@ -472,7 +515,8 @@ static process_waiter retry_spawn_process(const char *progname,
       if (retry_counter++ == max_retries) {
         g_eventLogger->error("Angel failed to spawn %d times, giving up",
                              retry_counter);
-        angel_exit(1);
+        angel_start_failed("could not spawn the data node process, %u tries",
+                           retry_counter);
       }
 
       g_eventLogger->warning("Angel failed to spawn, sleep and retry");
@@ -570,7 +614,9 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
         "Could not initialize connection to management "
         "server, error: '%s'",
         retriever.getErrorString());
-    angel_exit(1);
+    angel_start_failed("could not initialize the management server"
+                       " connection: %s",
+                       retriever.getErrorString());
   }
 
   retriever.init_mgm_tls(tls_search_path, Node::Type::DB, mgm_tls_level);
@@ -581,7 +627,8 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
         "Could not connect to management server, "
         "error: '%s'",
         retriever.getErrorString());
-    angel_exit(1);
+    angel_start_failed("could not connect to the management server: %s",
+                       retriever.getErrorString());
   }
 
   char buf[512];
@@ -602,11 +649,16 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
 
   const int alloc_retries = 10;
   const int alloc_delay = 3;
+  NodeStartLogTimer alloc_wait_timer;
+  retriever.setAllocNodeIdRetryCallback(nsl_alloc_nodeid_retry,
+                                        &alloc_wait_timer);
   const Uint32 nodeid = retriever.allocNodeId(alloc_retries, alloc_delay);
+  retriever.setAllocNodeIdRetryCallback(nullptr, nullptr);
   if (nodeid == 0) {
     g_eventLogger->error("Failed to allocate nodeid, error: '%s'",
                          retriever.getErrorString());
-    angel_exit(1);
+    angel_start_failed("could not allocate a node id: %s",
+                       retriever.getErrorString());
   }
   g_eventLogger->info("Angel allocated nodeid: %u", nodeid);
 
@@ -616,12 +668,13 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
         "Could not fetch configuration/invalid "
         "configuration, error: '%s'",
         retriever.getErrorString());
-    angel_exit(1);
+    angel_start_failed("could not fetch the configuration: %s",
+                       retriever.getErrorString());
   }
 
   if (!configure(config.get(), nodeid)) {
     // Failed to configure, error already printed
-    angel_exit(1);
+    angel_start_failed("could not apply the configuration");
   }
 
   if (daemon) {
@@ -633,7 +686,7 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
     if (ndb_daemonize(lockfile, logfile) != 0) {
       g_eventLogger->error("Couldn't start as daemon, error: '%s'",
                            ndb_daemon_error);
-      angel_exit(1);
+      angel_start_failed("could not start as a daemon: %s", ndb_daemon_error);
     }
   }
 
@@ -648,14 +701,14 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
     if (pipe(fds)) {
       g_eventLogger->error("Failed to create pipe, errno: %d (%s)", errno,
                            strerror(errno));
-      angel_exit(1);
+      angel_start_failed("could not create the child status pipe");
     }
 
     FILE *child_info_r;
     if (!(child_info_r = fdopen(fds[0], "r"))) {
       g_eventLogger->error("Failed to open stream for pipe, errno: %d (%s)",
                            errno, strerror(errno));
-      angel_exit(1);
+      angel_start_failed("could not open the child status pipe");
     }
 
     int fs_password_fds[2];
@@ -663,7 +716,7 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
       if (pipe(fs_password_fds)) {
         g_eventLogger->error("Failed to create pipe, errno: %d (%s)", errno,
                              strerror(errno));
-        angel_exit(1);
+        angel_start_failed("could not create the filesystem password pipe");
       }
       // Angel stdin is closed and attached to pipe, not strictly wanted,
       // but to make it work on windows and spawn we need to reset the
@@ -733,7 +786,7 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
     if (!child.valid()) {
       // safety, retry_spawn_process returns valid child or give up
       g_eventLogger->error("retry_spawn_process");
-      angel_exit(1);
+      angel_start_failed("could not spawn the data node process");
     }
     const std::intmax_t child_pid = child.get_pid_as_intmax();
 
@@ -767,7 +820,7 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
       if (fd == -1) {
         g_eventLogger->error("Failed to open %s errno: %d (%s)", nul, errno,
                              strerror(errno));
-        angel_exit(1);
+        angel_start_failed("could not open %s", nul);
       }
 
       // angel stdin reset to /dev/null
@@ -783,7 +836,8 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
       if (write(fs_password_fds[1], password, password_length + 1) == -1) {
         g_eventLogger->error("Failed to write to pipe, errno: %d (%s)", errno,
                              strerror(errno));
-        angel_exit(1);
+        angel_start_failed(
+            "could not pass the filesystem password to the data node process");
       }
     }
 
@@ -942,7 +996,8 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
           "Could not connect to management server, "
           "error: '%s'",
           retriever.getErrorString());
-      angel_exit(1);
+      angel_start_failed("could not connect to the management server: %s",
+                         retriever.getErrorString());
     }
     g_eventLogger->info("Angel reconnected to '%s:%d'",
                         retriever.get_mgmd_host(), retriever.get_mgmd_port());
@@ -953,16 +1008,22 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
     g_eventLogger->debug("Angel reallocating nodeid %d", nodeid);
     const int alloc_retries = 20;
     const int alloc_delay = 3;
+    NodeStartLogTimer alloc_wait_timer;
+    retriever.setAllocNodeIdRetryCallback(nsl_alloc_nodeid_retry,
+                                          &alloc_wait_timer);
     const Uint32 realloced = retriever.allocNodeId(alloc_retries, alloc_delay);
+    retriever.setAllocNodeIdRetryCallback(nullptr, nullptr);
     if (realloced == 0) {
       g_eventLogger->error("Angel failed to allocate nodeid, error: '%s'",
                            retriever.getErrorString());
-      angel_exit(1);
+      angel_start_failed("could not reallocate node id %u: %s", nodeid,
+                         retriever.getErrorString());
     }
     if (realloced != nodeid) {
       g_eventLogger->error("Angel failed to reallocate nodeid %d, got %d",
                            nodeid, realloced);
-      angel_exit(1);
+      angel_start_failed("reallocated node id %u instead of %u", realloced,
+                         nodeid);
     }
     g_eventLogger->info("Angel reallocated nodeid: %u", nodeid);
   }

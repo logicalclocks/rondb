@@ -502,6 +502,7 @@ Uint32 ConfigRetriever::allocNodeId(int no_retries, int retry_delay_in_seconds,
     return 0;  // Error
   }
 
+  int attempt = 0;
   while (1) {
     if (ndb_mgm_is_connected(m_handle) == 1 ||
         ndb_mgm_connect_tls(m_handle, 0, 0, verbose, m_tls_req_level) == 0) {
@@ -518,6 +519,11 @@ Uint32 ConfigRetriever::allocNodeId(int no_retries, int retry_delay_in_seconds,
       break;
     }
     no_retries--;
+    attempt++;
+    if (m_alloc_retry_cb != nullptr) {
+      m_alloc_retry_cb(m_alloc_retry_ctx, attempt,
+                       ndb_mgm_get_latest_error_desc(m_handle));
+    }
     NdbSleep_SecSleep(retry_delay_in_seconds);
   }
   BaseString tmp;

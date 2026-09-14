@@ -73,6 +73,17 @@ class ConfigRetriever {
    * @return Node id of this node (as stated in local config or connectString)
    */
   Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds);
+  /**
+   * Optional observer of node id allocation retries: called before each
+   * retry sleep with the attempt count and the latest error description.
+   * Used by the data node angel to report a long wait for a node id.
+   */
+  typedef void (*AllocNodeIdRetryCb)(void *ctx, int attempt,
+                                     const char *error_msg);
+  void setAllocNodeIdRetryCallback(AllocNodeIdRetryCb cb, void *ctx) {
+    m_alloc_retry_cb = cb;
+    m_alloc_retry_ctx = ctx;
+  }
   Uint32 allocNodeId(int no_retries, int retry_delay_in_seconds, int verbose,
                      int &error);
 
@@ -121,6 +132,8 @@ class ConfigRetriever {
   bool check_duplicate_hostname_port(const struct ndb_mgm_configuration *conf,
                                      char *buf);
   int m_tls_req_level{0};
+  AllocNodeIdRetryCb m_alloc_retry_cb{nullptr};
+  void *m_alloc_retry_ctx{nullptr};
 };
 
 #endif
