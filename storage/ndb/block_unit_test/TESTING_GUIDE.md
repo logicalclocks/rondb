@@ -266,6 +266,14 @@ end of a test with `NdbRestarter::dumpStateAllNodes`):
 scan-fragment handles / scans left in a join-agg or closing state,
 2650 DBSPJ requests.
 
+DUMPs 2361 and 2363 optionally accept a second word, a test cookie.
+After a clean check, regular DBLQH instance 1 emits
+[JOIN_AGG_LEAK_CHECK_OK node=N dump=D cookie=C]. One-word requests
+remain silent on success. Subscribe before sending, check both management
+return values, and require the matching event for each node and dump.
+Compare node connection counters before and after verification so a
+crash followed by automatic restart cannot pass.
+
 ## Building
 
 ```bash

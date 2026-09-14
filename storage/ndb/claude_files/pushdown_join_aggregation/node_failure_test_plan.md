@@ -396,6 +396,16 @@ two MTR files (0.5 day).
 New binary `block_unit_test/testCteProtocol.cpp` (SignalSender, links
 NDBTEST) plus additions to `testJoinAgg` and `testCteDbtc`. Deterministic:
 no node kills, error inserts only where a real DBLQH reply must be shaped.
+Status: `testCteProtocol` exists with section 5.3 (TD-1 .. TD-8), MTR
+wrapper `suite/ndb_push_agg/t/testCteProtocol.test` (the suite that runs
+the other block tests; `NDB_PUSH_AGG_DIR` locates the binary). It drives
+one data node: SETUP (legacy or full length), scan feeds to populate
+groups, COMPLETE with the result stream, RELEASE variants, then DUMP
+2361 / 2363 on every node after a settle time for the teardown chain.
+Each dump carries a cookie and must produce its matching
+JOIN_AGG_LEAK_CHECK_OK event. Both management return values are checked;
+all data nodes must remain STARTED with unchanged connection counters
+across verification, so an automatic restart cannot hide a leak crash.
 
 ### 5.1 DBSPJ CTE scan slot model (via DBTC harness + DBLQH inserts)
 
@@ -421,14 +431,14 @@ SCAN_TABREF and result rows):
 
 | ID | Sequence | Expected |
 |---|---|---|
-| TD-1 | SETUP, then RELEASE twice back to back (noReply 0) | two CONFs, one teardown; 2361 clean |
-| TD-2 | 5137 (slow teardown) + second RELEASE mid-chain | second RELEASE CONFs and starts nothing; 2361 clean after the chain |
-| TD-3 | RELEASE with wrong requestId | ignored, CONF sent, state still alive (a COMPLETE afterwards succeeds); then correct RELEASE |
-| TD-4 | RELEASE with wrong senderRef (another SignalSender) | ignored + CONF |
-| TD-5 | RELEASE with zero transid and correct requestId (stale-reclaim form) | accepted |
-| TD-6 | 5136 (proxy re-sends to itself) | exactly one teardown; 2361 clean |
-| TD-7 | SETUP_REQ (full length) whose `setupNodes` lists a node id that is not a connected data node | JOIN_AGG_SETUP_REF 286, no state seized; 2361 unchanged (`cte_owner_list.md`) |
-| TD-8 | SETUP_REQ of `SignalLength_v1` (13 words) | accepted; owner list = the receiver's connected data nodes (block-test fallback) |
+| TD-1 | SETUP, then RELEASE twice back to back (noReply 0) | two CONFs, one teardown; 2361 clean - **done** |
+| TD-2 | arm 5146 with checked management results; RELEASE, require the matching hold event, then second RELEASE mid-chain | second RELEASE CONFs and starts nothing; cleanup guard clears the insert on failure too; 2361 clean after clearing - **done** |
+| TD-3 | RELEASE with wrong requestId | ignored, CONF sent, state still alive (a COMPLETE afterwards returns the scanned groups); then correct RELEASE - **done** |
+| TD-4 | populate groups, RELEASE with wrong senderRef (another SignalSender), then COMPLETE from the owner | ignored + CONF to the other sender; COMPLETE returns the scanned groups, then the owner releases the state - **done** |
+| TD-5 | RELEASE with zero transid and correct requestId (stale-reclaim form) | accepted - **done** |
+| TD-6 | 5136 (proxy re-sends to itself) | two CONFs, exactly one teardown; 2361 clean - **done** |
+| TD-7 | SETUP_REQ (full length) whose `setupNodes` lists a node id that is not a connected data node; then the same request naming exactly the data nodes | JOIN_AGG_SETUP_REF 286, no state seized, 2363 clean; the second accepted (`cte_owner_list.md`) - **done** |
+| TD-8 | CTE-mode SETUP_REQ of `SignalLength_v1` (13 words) | accepted; owner list = the receiver's connected data nodes (block-test fallback) - **done** |
 
 ### 5.4 Identity validation on keyed peer signals (`testCteProtocol`, hand-built signals)
 

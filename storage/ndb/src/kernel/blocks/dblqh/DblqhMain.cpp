@@ -42921,6 +42921,12 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
         ndbabort();
       }
     }
+    if (signal->getLength() == 2 && instance() == 1 && !m_is_query_block) {
+      /* Optional test cookie: acknowledge only after the pool is clean.
+       * One-word callers retain the existing silent-success behavior. */
+      infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
+                getOwnNodeId(), arg, signal->theData[1]);
+    }
     return;
   }
   if (signal->theData[0] == DumpStateOrd::LqhDumpCteIterStates) {
@@ -42963,6 +42969,11 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
                           "placeholders=%u parkRecs=%u",
                           entries, placeholders, parked);
       ndbabort();
+    }
+    if (signal->getLength() == 2 && !m_is_query_block) {
+      /* Instance 1 checked both the identity table and park records. */
+      infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
+                getOwnNodeId(), arg, signal->theData[1]);
     }
     return;
   }
