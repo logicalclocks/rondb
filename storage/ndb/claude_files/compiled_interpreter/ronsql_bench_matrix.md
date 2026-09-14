@@ -20,6 +20,16 @@ benchmark cluster started the ndbcrunch way (CPU binding through
 Build (once): `ndbmtd ndb_mgmd ndb_mgm mysqld mysql mysqladmin rdrs2
 rondb-cli`. Then, from the repo root:
 
+Feature-store serving shapes (RONDB-1121 E5): `--queries fs_hw` selects
+the `fs_hw_*` family and defaults `--load` to `fs`, which runs
+`.fs_load <sf> <threads> <batch> --db fs_bench` (idempotent, checksum-
+verified; `--fs-sf` overrides the scale factor, `--hash-twin` adds the
+hash-only PK table for `fs_hw_hash_point`).  `--load both` loads TPC-H
+too.  Report section G compares each RonSQL template with the MySQL
+production twin (`fs_hw_X_twin`); `results.json` carries
+`client_overhead_ms` (latency − execute − prepare) per RonSQL case.
+See `storage/ndb/claude_files/fs_ronsql/benchmarks.md`.
+
 ```sh
 # smoke run: 1 thread, ~2 s per case, sf 0.1, all queries, all engines, OFF then ON
 python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build --quick

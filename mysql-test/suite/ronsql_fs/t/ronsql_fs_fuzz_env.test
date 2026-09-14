@@ -1,0 +1,35 @@
+# ronsql_fs_fuzz_env — RONDB-1121 E7: envelope-level random generator.
+# Drives the rondb-cli binary: 200 seeded RonSQL statements (seed 1)
+# over the feature-store schema beyond the Hopsworks shapes (CTE per
+# feature group, LEFT chains from a CTE, IN lists, filters, HAVING /
+# ORDER BY / LIMIT, CTE-body ORDER BY, known-unsupported probes), run on
+# MySQL and RonSQL (RDRS), compared typed and classified against the
+# expectation table (random_generator.md §5.3).  Hazards are off.  Only
+# the SUMMARY line, any SIGNATURE lines and failing CASE lines are
+# printed (--quiet); a failing case makes the command exit non-zero.
+# Findings: suite/ronsql_fs/findings/envelope_fuzz.md.
+
+--source include/have_ndb.inc
+
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found
+}
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--echo === Create and load the feature-store data set ===
+--source suite/ronsql_fs/include/fs_schema.inc
+--source suite/ronsql_fs/include/fs_data.inc
+
+--let $FS=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --rdrs-host=$RDRS_NOKEY_HOST --rdrs-port=$RDRS_NOKEY_PORT --no-rondis --quiet
+
+--echo
+--echo === Envelope-level fuzz: seed 1, 200 cases, hazards off ===
+--exec $FS -e ".fs_fuzz envelope --seed 1 --count 200 --db test --sf 0.01 --threads 4 --dump-dir $MYSQLTEST_VARDIR/log/fs_fuzz_env --quiet"
+
+--echo
+--echo === Cleanup ===
+--source suite/ronsql_fs/include/fs_drop.inc

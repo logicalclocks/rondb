@@ -1,0 +1,136 @@
+{
+  "name": "collect_asc",
+  "fgs": [
+    {
+      "id": 1,
+      "name": "events",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": "event_time",
+      "ttl": null,
+      "features": [
+        {
+          "name": "entity_id",
+          "type": "bigint",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "event_time",
+          "type": "timestamp",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "amount",
+          "type": "bigint",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "fee",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "tags",
+          "type": "array<string>",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "index": 0,
+      "parent": 0,
+      "fg": 1,
+      "type": "INNER",
+      "prefix": "f_",
+      "on": [],
+      "features": [
+        {
+          "name": "events_collect",
+          "type": "array<struct<event_time:timestamp,amount:bigint>>",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": null,
+      "window": null,
+      "collectN": 5,
+      "orderBy": "event_time",
+      "ascending": true
+    }
+  ],
+  "filters": [],
+  "options": {
+    "batch": false,
+    "inferenceHelpers": false,
+    "logging": false,
+    "vectorWithHelpers": false
+  },
+  "definition": null,
+  "trainingDataset": false,
+  "maxCollectN": 50,
+  "maxCollectCells": 100,
+  "expectedTemplates": 1,
+  "expectedError": null,
+  "schemaVersion": 1,
+  "source": "java-generated",
+  "provenance": {
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "trackedWorktreeDirty": true,
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "javaVersion": "21.0.12.1",
+    "timezone": "UTC",
+    "locale": "en-US"
+  },
+  "inputSha256": "a08e3d6c4773c76b32d13a153f41a8e2db8db8e629cc63a330c8e2c37aaebfdd",
+  "expected": {
+    "statements": [
+      {
+        "aggregateFeatureNames": null,
+        "aggregateWindow": null,
+        "collectAscending": true,
+        "collectFeatureName": "events_collect",
+        "collectFilterApplied": false,
+        "collectFilters": null,
+        "collectN": 5,
+        "collectOrderBy": "event_time",
+        "collectSourceFeatures": [
+          "entity_id",
+          "event_time",
+          "amount"
+        ],
+        "featureGroupId": 1,
+        "prefix": "f_",
+        "preparedStatementIndex": 0,
+        "preparedStatementParameters": [
+          {
+            "name": "entity_id",
+            "index": 1
+          }
+        ],
+        "queryOnline": "SELECT *\nFROM (SELECT `fg0`.`entity_id` AS `f_entity_id`, `fg0`.`event_time` AS `f_event_time`, `fg0`.`amount` AS `f_amount`, ROW_NUMBER() OVER (PARTITION BY `fg0`.`entity_id` ORDER BY `fg0`.`event_time` DESC) AS hopsworks_collect_rank\nFROM `golden_1_fs`.`events_1` AS `fg0`\nWHERE `fg0`.`entity_id` = ?) AS hopsworks_collect_src\nWHERE hopsworks_collect_rank <= ?\nORDER BY hopsworks_collect_rank DESC",
+        "queryOnlineScan": "SELECT `fg0`.`entity_id` AS `f_entity_id`, `fg0`.`event_time` AS `f_event_time`, `fg0`.`amount` AS `f_amount`\nFROM `golden_1_fs`.`events_1` AS `fg0`\nWHERE `fg0`.`entity_id` = ?\nORDER BY `fg0`.`event_time` DESC\nLIMIT ?",
+        "queryRonsql": "WITH t AS (SELECT `entity_id`, `event_time`, `amount` FROM `events_1` WHERE `entity_id` = ? ORDER BY `event_time` DESC LIMIT 5) SELECT `entity_id`, `event_time`, `amount` FROM t;",
+        "ronsqlDatabase": "golden_1_fs",
+        "snowflakeTemplate": null,
+        "snowflakeTemplates": null
+      }
+    ],
+    "gateOrException": null
+  }
+}

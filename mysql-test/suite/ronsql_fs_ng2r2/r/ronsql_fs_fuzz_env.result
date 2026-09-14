@@ -1,0 +1,11 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+4
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Create and load the feature-store data set ===
+
+=== Envelope-level fuzz: seed 1, 200 cases, hazards off ===
+SUMMARY fuzz-envelope seed=1 cases=200 clean-reject=25 known-error=3 known-wrong=10 pass=162
+
+=== Cleanup ===

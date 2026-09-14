@@ -1,0 +1,13 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+=== A6 captured Java corpus: MySQL twins and RonSQL vectors ===
+SUMMARY golden selected=45 attempted=45 failed=0 mysql-pass=183 ronsql-pass=125 ronsql-rejected=15 ronsql-untested=43
+=== Verify fixture database cleanup ===
+SELECT COUNT(*) AS remaining_golden_databases
+FROM information_schema.schemata
+WHERE schema_name IN ('golden_1_fs', 'golden_2_fs');
+remaining_golden_databases
+0
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_fs_golden_jit_fallback_delta;
+ronsql_fs_golden_jit_fallback_delta
+0

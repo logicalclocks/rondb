@@ -1,0 +1,35 @@
+# ronsql_fs_vectors — RONDB-1121 E4: L2 vector-level equivalence.
+# Drives the rondb-cli binary: for every serving spec of the catalog
+# (tools/rondb-cli/internal/fsq/cases/specs.go) over seeded entity keys,
+# the RonSQL template set (RDRS /ronsql) and the production MySQL
+# statement are executed, folded the way the Hopsworks serving client
+# folds them (framework_design.md §8) and compared per entity; the
+# MySQL-side fold is also checked against the data-model expectation.
+# Only the SUMMARY / SHAPE lines and failing SPEC lines are printed
+# (--quiet); a failing spec makes the command exit non-zero.
+# Findings: suite/ronsql_fs/findings/smoke.md.
+
+--source include/have_ndb.inc
+
+if (!$RONDB_CLI) {
+  --skip rondb-cli binary not found
+}
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--echo === Create and load the feature-store data set ===
+--source suite/ronsql_fs/include/fs_schema.inc
+--source suite/ronsql_fs/include/fs_data.inc
+
+--let $FS=$RONDB_CLI --host=127.0.0.1 --mysql-port=$MASTER_MYPORT --rdrs-host=$RDRS_NOKEY_HOST --rdrs-port=$RDRS_NOKEY_PORT --no-rondis --quiet
+
+--echo
+--echo === L2 vector oracle: every catalog spec, seed 1, 120 keys per spec ===
+--exec $FS -e ".fs_verify --vectors --db test --sf 0.01 --seed 1 --count 120 --dump-dir $MYSQLTEST_VARDIR/log/fs_vectors --quiet"
+
+--echo
+--echo === Cleanup ===
+--source suite/ronsql_fs/include/fs_drop.inc

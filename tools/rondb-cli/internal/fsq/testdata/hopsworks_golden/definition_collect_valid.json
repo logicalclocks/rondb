@@ -1,0 +1,96 @@
+{
+  "name": "definition_collect_valid",
+  "fgs": [
+    {
+      "id": 1,
+      "name": "events",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": "event_time",
+      "ttl": null,
+      "features": [
+        {
+          "name": "entity_id",
+          "type": "bigint",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "event_time",
+          "type": "timestamp",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "amount",
+          "type": "bigint",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "fee",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "tags",
+          "type": "array<string>",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    }
+  ],
+  "joins": [],
+  "filters": [],
+  "options": {
+    "batch": false,
+    "inferenceHelpers": false,
+    "logging": false,
+    "vectorWithHelpers": false
+  },
+  "definition": {
+    "fg": 1,
+    "sourceFeatures": [
+      "amount"
+    ],
+    "collectN": 5,
+    "orderBy": null,
+    "ascending": false,
+    "aggregate": null,
+    "window": null
+  },
+  "trainingDataset": false,
+  "maxCollectN": 50,
+  "maxCollectCells": 100,
+  "expectedTemplates": 1,
+  "expectedError": null,
+  "schemaVersion": 1,
+  "source": "java-generated",
+  "provenance": {
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "trackedWorktreeDirty": true,
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "javaVersion": "21.0.12.1",
+    "timezone": "UTC",
+    "locale": "en-US"
+  },
+  "inputSha256": "b4d7098a0cfdac0bf8bf1a6dc264f78c55bb167a8a5a88f841dd7eafcdc3ebab",
+  "expected": {
+    "collectN": 5,
+    "collectOrderBy": "event_time",
+    "collectAscending": false,
+    "aggregate": null,
+    "aggregateWindow": null,
+    "gateOrException": null
+  }
+}

@@ -1,0 +1,8 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Create and load the feature-store data set ===
+
+=== Spec-level fuzz: seed 1, 200 cases, L1 on both engines ===
+SUMMARY fuzz-spec seed=1 cases=200 clean-reject=27 gated=32 known-error=3 known-wrong=6 no-template=34 pass=98
+
+=== Cleanup ===

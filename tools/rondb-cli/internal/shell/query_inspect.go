@@ -75,6 +75,10 @@ func (s *Shell) sampleBenchSQL(q *RonSQLBenchQuery) (string, int) {
 		return q.SQL, 0
 	}
 	maxKey := s.resolveRonSQLBenchKeyRange(q)
+	if q.Resolver != nil {
+		// Seed 1: the same placeholder values the benchmark warmup uses.
+		return q.Resolver(q.SQL, rand.New(rand.NewSource(1)), maxKey), 0
+	}
 	key := pickBenchKey(q, rand.New(rand.NewSource(1)), maxKey)
 	return substituteBenchKey(q, key), key
 }
@@ -102,7 +106,11 @@ func printBenchQueryDetails(q *RonSQLBenchQuery, name string, ronsqlSide bool) {
 		fmt.Println(ui.Info(fmt.Sprintf("RonSQL prefix: %q prepended on .bench_ronsql/.explain_ronsql (not used by the MySQL baseline)",
 			q.RonSQLPrefix)))
 	}
-	if q.RandKey {
+	if q.Resolver != nil {
+		fmt.Println(ui.Info(q.Placeholders))
+		fmt.Println(ui.Info(fmt.Sprintf("max = %s (default %d); .explain_* use the seed-1 values of the benchmark warmup", q.KeySQL, q.KeyDefault)))
+		fmt.Println()
+	} else if q.RandKey {
 		fmt.Println(ui.Info(fmt.Sprintf("{KEY} is a random key per benchmark request, 1..max from: %s (default %d)",
 			q.KeySQL, q.KeyDefault)))
 		if q.KeySpan > 0 {
@@ -154,7 +162,9 @@ func (s *Shell) runExplainRonSQL(name string) error {
 
 	fmt.Println()
 	fmt.Println(ui.Info(fmt.Sprintf("EXPLAIN %s (RonSQL) - %s", q.Name, q.Description)))
-	if q.RandKey {
+	if q.Resolver != nil {
+		fmt.Println(ui.Info("Using the seed-1 placeholder values of the benchmark warmup"))
+	} else if q.RandKey {
 		fmt.Println(ui.Info(fmt.Sprintf("Using sample key {KEY}=%d", key)))
 	}
 	fmt.Println()
@@ -211,7 +221,9 @@ func (s *Shell) runExplainSQL(name string) error {
 
 	fmt.Println()
 	fmt.Println(ui.Info(fmt.Sprintf("EXPLAIN %s (MySQL server) - %s", q.sqlBenchName(), q.Description)))
-	if q.RandKey {
+	if q.Resolver != nil {
+		fmt.Println(ui.Info("Using the seed-1 placeholder values of the benchmark warmup"))
+	} else if q.RandKey {
 		fmt.Println(ui.Info(fmt.Sprintf("Using sample key {KEY}=%d", key)))
 	}
 	fmt.Println()

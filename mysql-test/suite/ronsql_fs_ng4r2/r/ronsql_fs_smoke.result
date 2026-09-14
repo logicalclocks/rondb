@@ -1,0 +1,851 @@
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+data_nodes
+8
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Create and load the feature-store data set (sf 0.01) ===
+
+=== Row counts ===
+SELECT COUNT(*) AS customers FROM customers_1;
+customers
+1000
+SELECT COUNT(*) AS transactions FROM transactions_1;
+transactions
+35756
+SELECT COUNT(*) AS transactions_hash FROM transactions_hash_1;
+transactions_hash
+35756
+SELECT COUNT(*) AS sessions FROM sessions_1;
+sessions
+6625
+SELECT COUNT(*) AS balances FROM balances_1;
+balances
+1001
+SELECT COUNT(*) AS balance_hist FROM balance_hist_1;
+balance_hist
+3597
+SELECT COUNT(DISTINCT customer_id) AS customers_with_tx FROM transactions_1;
+customers_with_tx
+938
+
+=== Hopsworks DDL round-trip: TIMESTAMP(3), TTL comment, hash-only PK ===
+SHOW CREATE TABLE sessions_1;
+Table	Create Table
+sessions_1	CREATE TABLE `sessions_1` (
+  `customer_id` bigint NOT NULL,
+  `event_time` timestamp(3) NOT NULL /*!50606 STORAGE MEMORY */,
+  `duration` int DEFAULT NULL,
+  `pages` int DEFAULT NULL,
+  `device` varchar(100) DEFAULT NULL,
+  `bytes` bigint DEFAULT NULL,
+  PRIMARY KEY (`customer_id`,`event_time`),
+  KEY `ttl_index` (`event_time`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3153600000@event_time,READ_BACKUP=1'
+SHOW CREATE TABLE transactions_hash_1;
+Table	Create Table
+transactions_hash_1	CREATE TABLE `transactions_hash_1` (
+  `customer_id` bigint NOT NULL,
+  `event_time` timestamp NOT NULL /*!50606 STORAGE MEMORY */,
+  `amount` bigint DEFAULT NULL,
+  `fee` int DEFAULT NULL,
+  `merchant_id` int DEFAULT NULL,
+  `category` varchar(100) DEFAULT NULL,
+  `score` double DEFAULT NULL,
+  `amount_dec` decimal(12,2) DEFAULT NULL,
+  `flag` tinyint DEFAULT NULL,
+  PRIMARY KEY (`customer_id`,`event_time`) USING HASH,
+  KEY `idx_merchant_id` (`merchant_id`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1'
+
+=== S1: aggregate point read (customer 31: 300 rows), GREATEST fold ===
+== Query ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31|
+amount_count	amount_sum	amount_min	amount_max	fee_min	amount_fee_greatest	amount_fee_least
+300	163350	111	998	-10	998	39
+
+=== S1: aggregate point read, customer with no rows (16) ===
+== Query ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`amount`) AS `amount_max` FROM `transactions_1` WHERE `customer_id` = 16;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`amount`) AS `amount_max` FROM `transactions_1` WHERE `customer_id` = 16|
+amount_count	amount_sum	amount_max
+0	NULL	NULL
+
+=== S2: windowed aggregate, customer 111 (daily rows), 7-day window bound inclusive ===
+=== (FS_NOW = 2026-06-01 00:00:00; rows i=1..7 are exactly 1..7 days old -> 7 rows) ===
+== Query ==
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum`, MIN(`event_time`) AS `event_time_min`, MAX(`event_time`) AS `event_time_max` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` >= '2026-05-25 00:00:00';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum`, MIN(`event_time`) AS `event_time_min`, MAX(`event_time`) AS `event_time_max` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` >= '2026-05-25 00:00:00'|
+count	amount_sum	event_time_min	event_time_max
+7	6363	2026-05-25 00:00:00	2026-05-31 00:00:00
+
+=== S6b: collect last-5, direct form, customer 21 (exactly 5 rows), ordered compare ===
+== Query ==
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5|
+customer_id	event_time	amount	category
+21	2026-05-31 18:00:00	768	Travel
+21	2026-05-31 12:00:00	785	online
+21	2026-05-31 06:00:00	802	grocery
+21	2026-05-31 00:00:00	819	Grocery
+21	2026-05-30 18:00:00	836	fuel
+
+=== S6b: collect last-5, direct form, customer 31 (300 rows), ordered compare ===
+== Query ==
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5|
+customer_id	event_time	amount	category
+31	2026-05-31 17:43:00	178	fuel
+31	2026-05-31 11:43:00	195	travel
+31	2026-05-31 05:43:00	212	Travel
+31	2026-05-30 23:43:00	229	online
+31	2026-05-30 17:43:00	246	grocery
+
+=== PROBE S3: batch aggregate, IN list + GROUP BY (keys 16 none, 17 one, 20 five, 31 max, 1001 missing) ===
+== Query ==
+SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 1001) GROUP BY `customer_id`;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 1001) GROUP BY `customer_id`|
+customer_id	amount_count	amount_sum
+17	1	644
+20	5	3855
+31	300	163350
+
+=== PROBE S6 (risk R1): collect last-5, Hopsworks CTE form, customer 21 ===
+== Query ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
+
+Number of output lines, including header: 6
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,6 +1,3 @@
+-customer_id	event_time	amount	category
+-21	2026-05-30 18:00:00	836	fuel
+-21	2026-05-31 00:00:00	819	Grocery
+-21	2026-05-31 06:00:00	802	grocery
+-21	2026-05-31 12:00:00	785	online
+-21	2026-05-31 18:00:00	768	Travel
++CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'transactions_1' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
++Caught exception: Non-aggregating CTE body is not a single-row key lookup.
++Error handling: RPE
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
+customer_id	event_time	amount	category
+21	2026-05-30 18:00:00	836	fuel
+21	2026-05-31 00:00:00	819	Grocery
+21	2026-05-31 06:00:00	802	grocery
+21	2026-05-31 12:00:00	785	online
+21	2026-05-31 18:00:00	768	Travel
+
+=== PROBE S7: snowflake 1-hop, Hopsworks template, customer 21 (region 22) ===
+== Query ==
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`|
+r_region_name	r_population
+Region 22	271590
+
+=== PROBE S7: snowflake 2-hop, Hopsworks template, customer 21 (region 22 -> country 22) ===
+== Query ==
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`|
+r_region_name	c_country_name
+Region 22	Country 22
+
+=== PROBE S7: snowflake 1-hop, batch form, keys 21 / 13 (NULL region) / 29 (dangling region) ===
+== Query ==
+WITH `b` AS (SELECT `customer_id`, `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` IN (21, 13, 29) GROUP BY `customer_id`, `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `b`.`customer_id` AS `customer_id` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `customer_id`, `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` IN (21, 13, 29) GROUP BY `customer_id`, `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `b`.`customer_id` AS `customer_id` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`|
+r_region_name	customer_id
+Region 22	21
+
+=== PROBE S8b: snowflake 2-hop with LEFT JOIN hops, customer 16 (region 17 -> NULL country) ===
+== Query ==
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` LEFT JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` LEFT JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` LEFT JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` LEFT JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`|
+r_region_name	c_country_name
+Region 17	NULL
+
+=== PROBE S10: string entity key, aggregate point read (cust-00000021) ===
+== Query ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000021';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000021'|
+amount_count	amount_sum
+5	4010
+
+=== PROBE S10 (collation): lower-case literal against the upper-case key CUST-00000010 ===
+=== (MySQL utf8mb4_0900_ai_ci matches case-insensitively; RonSQL behaviour recorded here) ===
+== Query ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000010';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000010'|
+amount_count	amount_sum
+20	11770
+
+=== PROBE S4 (collation): string filter 'grocery' against mixed-case rows, customer 31 ===
+== Query ==
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` = 'grocery';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` = 'grocery'|
+count	amount_sum
+100	54850
+
+=== PROBE S1 on the hash-only PK twin (no ordered index: table scan on both engines) ===
+== Query ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_hash_1` WHERE `customer_id` = 31;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_hash_1` WHERE `customer_id` = 31|
+amount_count	amount_sum
+300	163350
+
+=== PROBE S2 on sessions_1: TIMESTAMP(3) event time, 1-hour window, customer 3 ===
+== Query ==
+SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum`, MAX(`event_time`) AS `event_time_max` FROM `sessions_1` WHERE `customer_id` = 3 AND `event_time` >= '2026-05-31 22:00:00';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum`, MAX(`event_time`) AS `event_time_max` FROM `sessions_1` WHERE `customer_id` = 3 AND `event_time` >= '2026-05-31 22:00:00'|
+count	duration_sum	event_time_max
+1	76	2026-05-31 22:29:56.999
+
+=== PROBE S9: composite entity key + window on balance_hist_1 (account 4, currency EUR) ===
+== Query ==
+SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` >= '2026-03-03 00:00:00';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` >= '2026-03-03 00:00:00'|
+count	delta_sum
+10	-575
+
+=== EDGE: DDL round-trip of TIMESTAMP(6) and VARBINARY columns ===
+SHOW CREATE TABLE edge_ts_1|
+Table	Create Table
+edge_ts_1	CREATE TABLE `edge_ts_1` (
+  `entity_id` bigint NOT NULL,
+  `seq` int NOT NULL,
+  `ts0` timestamp NULL DEFAULT NULL,
+  `ts3` timestamp(3) NULL DEFAULT NULL,
+  `ts6` timestamp(6) NULL DEFAULT NULL,
+  PRIMARY KEY (`entity_id`,`seq`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1'
+SHOW CREATE TABLE edge_child_1|
+Table	Create Table
+edge_child_1	CREATE TABLE `edge_child_1` (
+  `ck1` int NOT NULL,
+  `ck2` int NOT NULL,
+  `label` varchar(100) DEFAULT NULL,
+  `payload` varbinary(100) DEFAULT NULL,
+  `weight` int DEFAULT NULL,
+  PRIMARY KEY (`ck1`,`ck2`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1'
+
+=== PROBE EDGE-NULL-A1: mixed-NULL group, COUNT(*) vs COUNT(col), integer aggregates ===
+== Query ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
+cnt_all	cnt_i1	cnt_s	i1_sum	i2_min	i3_max
+4	2	2	15	15	30
+
+=== PROBE EDGE-NULL-A2: mixed-NULL group, DECIMAL(18,2) MIN/MAX ===
+== Query ==
+SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ dec_min	dec_max	dec_sum
+--3.25	10.50	7.25
++-3.25	10.5	7.25
+==========
+
+
+
+== Expected result ==
+SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1|
+dec_min	dec_max	dec_sum
+-3.25	10.50	7.25
+
+=== PROBE EDGE-NULL-A3: mixed-NULL group, GREATEST/LEAST null propagation ===
+== Query ==
+SELECT MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+g_max	l_min
+25	5
+
+=== PROBE EDGE-NULL-A4: mixed-NULL group, string MIN/MAX (aggregated adjacently: safe, see F1) ===
+== Query ==
+SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+s_max	s_min
+Beta	alpha
+
+=== PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===
+== Query ==
+SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ i2_avg	fd_avg
+-17.5000	0.5
++17.5000	0.5000
+==========
+
+
+
+== Expected result ==
+SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1|
+i2_avg	fd_avg
+17.5000	0.5
+
+=== PROBE EDGE-NULL-C: all-NULL group ===
+== Query ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2|
+cnt_all	cnt_i1	i1_sum	dec_max	d_max	s_min
+3	0	NULL	NULL	NULL	NULL
+
+=== PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max ===
+== Query ==
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3|
+ff_sum	fd_sum	fd_min	d_min	d_max	dec_sum
+3.75	1028.125	-0.125	1970-01-01	2024-02-29	6.06
+
+=== PROBE EDGE-FLOAT-B: rounding-sensitive floats (FLOAT binary32, non-dyadic doubles) ===
+== Query ==
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ ff_sum	fd_sum	ff_max	dec_sum
+-123457.38906261639	123457.38900010001	123457	123457.39
++123457.38906261639	123457.38900010001	123456.7890625	123457.39
+==========
+
+
+
+== Expected result ==
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
+ff_sum	fd_sum	ff_max	dec_sum
+123457.38906261639	123457.38900010001	123457	123457.39
+
+=== PROBE EDGE-DATE: DATE spread up to 9999-12-31 ===
+== Query ==
+SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01'|
+cnt	d_min	d_max
+3	2000-01-01	9999-12-31
+
+=== PROBE EDGE-BIG-A: exact BIGINT around 2^53 (SUM = 2^54 - 1) ===
+== Query ==
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`f_exact`) AS `fe_sum` FROM `edge_big_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`f_exact`) AS `fe_sum` FROM `edge_big_1` WHERE `entity_id` = 1|
+big_sum	big_min	big_max	fe_sum
+18014398509481983	-9007199254740993	9007199254740993	1000000000001024.8
+
+=== PROBE EDGE-BIG-B: signed limits (SUM = 0) and large DECIMAL(18,2) ===
+== Query ==
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,2 @@
+ big_sum	big_min	big_max	dec_sum	dec_max
+-0	-9223372036854775807	9223372036854775807	0.00	999999999999999.99
++0	-9223372036854775807	9223372036854775807	0	1000000000000000
+==========
+
+
+
+== Expected result ==
+SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2|
+big_sum	big_min	big_max	dec_sum	dec_max
+0	-9223372036854775807	9223372036854775807	0.00	999999999999999.99
+
+=== PROBE EDGE-BIG-C: deliberate BIGINT SUM overflow (MySQL widens to DECIMAL) ===
+== Query ==
+SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,3 @@
+-big_sum
+-9223372036854775808
++Error handling: SRE,te->RPE
++Caught exception: Failed to execute scan aggregation.
++NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
+==========
+
+
+
+== Expected result ==
+SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3|
+big_sum
+9223372036854775808
+
+=== EDGE: stored bytes of the UTF-8 keys (utf8mb4 round trip through mysqltest) ===
+SELECT `n`, HEX(`s_key`) AS `key_hex`, CHAR_LENGTH(`s_key`) AS `chars`, LENGTH(`s_key`) AS `bytes` FROM `edge_str_1` WHERE `n` IN (10, 13) ORDER BY `n`|
+n	key_hex	chars	bytes
+10	E697A5E69CACE8AA9E	3	9
+13	CEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBBCEBB	100	200
+SELECT `n`, HEX(`s_val`) AS `val_hex` FROM `edge_str_1` WHERE `n` IN (9, 11, 14, 15, 16) ORDER BY `n`|
+n	val_hex
+9	C3857361
+11	736D696C6520F09F9880
+14	6261636B5C736C617368
+15	7461620968657265
+16	6C696E65310A6C696E6532
+
+=== PROBE EDGE-STR-A: apostrophe key, IN list with empty / literal-NULL / multibyte keys ===
+== Query ==
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a')|
+cnt	n_sum	k_min	k_max
+5	35		日本語
+
+=== PROBE EDGE-STR-B: SQL NULL vs the string 'NULL' vs '' in TEXT output (A3: TEXT cannot tell them apart) ===
+== Query ==
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('NULL', 'null-string', 'empty-value') ORDER BY `n`;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('NULL', 'null-string', 'empty-value') ORDER BY `n`|
+s_key	s_val	n
+NULL	NULL	2
+null-string	NULL	3
+empty-value		5
+
+=== PROBE EDGE-STR-C: backslash / tab / newline values, 100-char keys, UTF-8 4-byte value ===
+== Query ==
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('backslash', 'tab', 'newline', 'emoji-value') ORDER BY `n`;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('backslash', 'tab', 'newline', 'emoji-value') ORDER BY `n`|
+s_key	s_val	n
+emoji-value	smile 😀	11
+backslash	back\slash	14
+tab	tab	here	15
+newline	line1
+line2	16
+
+=== PROBE EDGE-STR-D: case and accent pairs match under utf8mb4_0900_ai_ci ===
+=== (no string MIN/MAX here: the representative of collation-equal strings is unspecified, F8) ===
+== Query ==
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`n`) AS `n_min`, MAX(`n`) AS `n_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`n`) AS `n_min`, MAX(`n`) AS `n_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa'|
+cnt	n_sum	n_min	n_max
+4	30	6	9
+
+=== PROBE EDGE-TS-A: TIMESTAMP(3) and (6) inclusive >= at the cutoff (expect 2 of 3 rows) ===
+== Query ==
+SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` >= '2026-05-01 12:00:00.000'|
+cnt3	ts3_min
+2	2026-05-01 12:00:00.000
+== Query ==
+SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` >= '2026-05-01 12:00:00.000000';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` >= '2026-05-01 12:00:00.000000'|
+cnt6	ts6_min
+2	2026-05-01 12:00:00.000000
+
+=== PROBE EDGE-TS-B: batch window at the cutoff (entities 1, 2, 3 empty) ===
+== Query ==
+SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` >= '2026-05-01 12:00:00' GROUP BY `entity_id`;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` >= '2026-05-01 12:00:00' GROUP BY `entity_id`|
+entity_id	cnt	ts0_min
+1	2	2026-05-01 12:00:00
+2	2	2026-05-01 12:00:00
+
+=== PROBE EDGE-SEQ-A: collect with an explicit sequence_no order column (reversed event_time), direct form ===
+== Query ==
+SELECT `entity_id`, `sequence_no`, `event_time`, `payload`, `amount` FROM `edge_seq_1` WHERE `entity_id` = 4 ORDER BY `sequence_no` DESC LIMIT 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `entity_id`, `sequence_no`, `event_time`, `payload`, `amount` FROM `edge_seq_1` WHERE `entity_id` = 4 ORDER BY `sequence_no` DESC LIMIT 2|
+entity_id	sequence_no	event_time	payload	amount
+4	3	2026-05-31 21:00:00	old	3
+4	2	2026-05-31 22:00:00	mid	2
+
+=== PROBE EDGE-SEQ-B: N boundary (7 rows, LIMIT 8) ascending ===
+== Query ==
+SELECT `entity_id`, `sequence_no`, `payload` FROM `edge_seq_1` WHERE `entity_id` = 1 ORDER BY `sequence_no` ASC LIMIT 8;
+
+Number of output lines, including header: 8
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT `entity_id`, `sequence_no`, `payload` FROM `edge_seq_1` WHERE `entity_id` = 1 ORDER BY `sequence_no` ASC LIMIT 8|
+entity_id	sequence_no	payload
+1	1	p1
+1	2	p2
+1	3	p3
+1	4	p4
+1	5	p5
+1	6	p6
+1	7	p7
+
+=== PROBE EDGE-COMP-A: composite child-PK hop with two conditions (parent 2 -> child B) ===
+== Query ==
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
+c_label	c_weight
+B	21
+
+=== PROBE EDGE-COMP-B: swapped binding selects a different child (parent 2 with ck1<->ck2 -> child A) ===
+== Query ==
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`|
+c_label	c_weight
+A	12
+
+=== PROBE EDGE-COMP-C: batch over dangling (3), NULL hop (4) and matches (1, 5, 6) ===
+== Query ==
+WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
+c_label	parent_id
+A	1
+C	5
+D	6
+
+=== PROBE EDGE-COMP-D: VARBINARY projection through the snowflake template (A2: emitted by Hopsworks; engine support recorded) ===
+== Query ==
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
+
+Number of output lines, including header: 2
+
+== Diff ==
+--- mysql.out
++++ ronsql.out
+@@ -1,2 +1,3 @@
+-c_label	c_payload
+-A	\n
++Unsupported column type (17) in pass-through result.
++Caught exception: Unsupported column type in pass-through result.
++Error handling: RPE
+==========
+
+
+
+== Expected result ==
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
+c_label	c_payload
+
+A	
+
+=== Cleanup ===

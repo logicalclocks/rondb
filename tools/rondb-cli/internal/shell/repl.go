@@ -618,6 +618,8 @@ func (s *Shell) executeInternal(line string) error {
 			return err
 		}
 		return s.runLoadRDRS(numThreads, numOps, rowsPerOp)
+	case "fs_load", "fs_drop", "fs_emit_mtr", "fs_schema", "fs_verify", "fs_show", "fs_fuzz":
+		return s.executeFS(cmd, parts[1:])
 	case "load_tpch":
 		if s.restClient == nil {
 			return fmt.Errorf("REST API not connected. Cannot run load_tpch.")
@@ -4270,10 +4272,38 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
     .load_tpch [SF] [T] [B]              Load TPC-H data (SF=scale factor, fractions ok e.g. 0.1; T=threads, B=batch size)
     .drop_tpch                           Drop all TPC-H tables and database
 
+  Feature-store test framework (RONDB-1121, Hopsworks-shaped tables):
+    .fs_load [SF] [T] [B] [--db D]       Create and load the feature-store data set (SF=scale factor, default 1
+                                         = 100k customers / ~5.4M rows; T=threads; B=rows per INSERT; --db default fs_bench)
+    .fs_drop [--db D]                    Drop the feature-store database
+    .fs_emit_mtr <dir> [--sf 0.01]       Write the MTR includes (fs_schema/fs_data/fs_drop.inc) for suite ronsql_fs
+    .fs_schema [--db D] [--hash-twin]    Print the Hopsworks online DDL of the feature-store tables
+    .fs_show [--case ID|--shape S]       Print the bound statements of the case matrix (Hopsworks shapes S1-S10, edge cases)
+    .fs_verify [--shape S1,S3|--case ID] Run the case matrix on MySQL and RonSQL (RDRS) and compare typed results
+    .fs_verify --vectors [--seed N --count M] Vector-level (L2) comparison of every serving spec over sampled entity keys
+                                         (--db test --sf 0.01 --threads 4 --timeout 30s --include-hazards --allow-reject --json P --dump-dir P)
+    .fs_verify --requirements [--all] [--vectors]  Strict acceptance: the versioned requirements manifest (L1 cases, L2 specs
+                                         with --vectors, in-process Java conformance); SUPPORTED / UNSUPPORTED / HOPSWORKS-GATED /
+                                         UNTESTED / FAILED per requirement; refuses --allow-reject; --req R-S1,R-S7 --fixtures DIR
+                                         --engine-commit H --label TEXT --json P
+    .fs_verify --golden DIR --json NEW_FILE  Run Java-captured SQL, Go MySQL twins and RonSQL; creates/drops isolated golden databases
+                                         [--fixture NAME --timeout 30s --cleanup-timeout 30s --tolerance 1e-9 --allow-reject --quiet]
+    .fs_emit_mtr <dir> --cases           Also write suite/ronsql_fs/t/ronsql_fs_templates.test from the case matrix
+    .fs_fuzz spec --seed S --count N     Spec-level fuzzer: seeded feature-view specs through the emitter gates, L1 on both
+                                         engines (--vectors adds L2; --direct-collect runs the S6b form; --shrink; --dump-dir P;
+                                         --json P; --ledger P --allow-known; --max-rows 10000; --db test --sf 0.01 --threads 4)
+    .fs_fuzz envelope --seed S --count N Envelope-level fuzzer: RonSQL statements beyond the Hopsworks shapes (CTE per FG,
+                                         LEFT chains, IN lists, filters, HAVING/ORDER BY, probes) classified against the
+                                         expectation table; --include-hazards runs the discovery-log hazards; --only p1,p2
+    .fs_fuzz show --seed S --index I     Print one generated case and its bound statements without running it
+    .fs_fuzz replay --file results.json  Re-run the cases of a previous run (after an engine fix)
+
   Analytics benchmarks (pushdown aggregation/CTE queries, need .load_tpch first):
     .bench_ronsql                        List available RonSQL benchmark queries
     .bench_ronsql <name> [T] [N]         Run named query T threads × N requests (default 1×10)
     .bench_ronsql all [T] [N]            Run all RonSQL benchmark queries sequentially
+    .bench_ronsql fs_hw [T] [N]          Run the Hopsworks serving-shape benchmarks (database fs_bench: .fs_load first);
+                                         .bench_sql fs_hw runs them, and the MySQL production twins, on the MySQL server
     .bench_sql <name> [T] [N]            Run the same named queries via the MySQL server
                                          (comparative baseline; also tpch_q* official
                                          TPC-H and ORDER BY/LIMIT fs queries)
@@ -4592,6 +4622,13 @@ func (s *Shell) getCompleter() *readline.PrefixCompleter {
 		readline.PcItem(".load_rdrs"),
 		readline.PcItem(".load_tpch"),
 		readline.PcItem(".drop_tpch"),
+		readline.PcItem(".fs_load"),
+		readline.PcItem(".fs_drop"),
+		readline.PcItem(".fs_emit_mtr"),
+		readline.PcItem(".fs_schema"),
+		readline.PcItem(".fs_show"),
+		readline.PcItem(".fs_verify"),
+		readline.PcItem(".fs_fuzz"),
 		readline.PcItem(".bench_rdrs"),
 		readline.PcItem(".bench_rdrs_cont"),
 		readline.PcItem(".bench_ronsql", ronsqlBenchCompletions()...),

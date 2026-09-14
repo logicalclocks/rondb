@@ -1,0 +1,5 @@
+# Mirror of suite/ronsql_fs/t/ronsql_fs_fuzz_env.test on the 2 node groups x 2 replicas (4 data nodes) topology
+# (RONDB-1121 E8).  Test logic lives ONLY in the sourced original; the first
+# statement pins the topology so the mirror cannot run on the base cluster.
+SELECT COUNT(*) AS data_nodes FROM ndbinfo.nodes;
+--source suite/ronsql_fs/t/ronsql_fs_fuzz_env.test

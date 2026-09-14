@@ -1,0 +1,271 @@
+{
+  "name": "snowflake_helper_vector",
+  "fgs": [
+    {
+      "id": 1,
+      "name": "profiles",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": null,
+      "ttl": null,
+      "features": [
+        {
+          "name": "entity_id",
+          "type": "bigint",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "region_id",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "region_code",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "tier",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "regions",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": null,
+      "ttl": null,
+      "features": [
+        {
+          "name": "region_id",
+          "type": "int",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "region_code",
+          "type": "string",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "country_id",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "region_name",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "payload",
+          "type": "binary",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "countries",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": null,
+      "ttl": null,
+      "features": [
+        {
+          "name": "country_id",
+          "type": "int",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "country_name",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "index": 0,
+      "parent": 0,
+      "fg": 1,
+      "type": "INNER",
+      "prefix": "",
+      "on": [],
+      "features": [
+        {
+          "name": "tier",
+          "type": null,
+          "label": true,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": null,
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    },
+    {
+      "index": 1,
+      "parent": 0,
+      "fg": 1,
+      "type": "INNER",
+      "prefix": "p_",
+      "on": [
+        [
+          "entity_id",
+          "entity_id"
+        ]
+      ],
+      "features": [
+        {
+          "name": "tier",
+          "type": null,
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": null,
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    },
+    {
+      "index": 2,
+      "parent": 1,
+      "fg": 2,
+      "type": "INNER",
+      "prefix": "r_",
+      "on": [
+        [
+          "region_id",
+          "region_id"
+        ],
+        [
+          "region_code",
+          "region_code"
+        ]
+      ],
+      "features": [
+        {
+          "name": "region_name",
+          "type": null,
+          "label": false,
+          "inferenceHelper": true,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": null,
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    },
+    {
+      "index": 3,
+      "parent": 2,
+      "fg": 3,
+      "type": "INNER",
+      "prefix": "c_",
+      "on": [
+        [
+          "country_id",
+          "country_id"
+        ]
+      ],
+      "features": [
+        {
+          "name": "country_name",
+          "type": null,
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": null,
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    }
+  ],
+  "filters": [],
+  "options": {
+    "batch": false,
+    "inferenceHelpers": false,
+    "logging": false,
+    "vectorWithHelpers": true
+  },
+  "definition": null,
+  "trainingDataset": false,
+  "maxCollectN": 50,
+  "maxCollectCells": 100,
+  "expectedTemplates": 1,
+  "expectedError": null,
+  "schemaVersion": 1,
+  "source": "java-generated",
+  "provenance": {
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "trackedWorktreeDirty": true,
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "javaVersion": "21.0.12.1",
+    "timezone": "UTC",
+    "locale": "en-US"
+  },
+  "inputSha256": "24206abeb89c6119948dfcd3212988d029c281a88bfc02b48a2f0e82a1ed7ee1",
+  "expected": {
+    "statements": [
+      {
+        "aggregateFeatureNames": null,
+        "aggregateWindow": null,
+        "collectAscending": null,
+        "collectFeatureName": null,
+        "collectFilterApplied": null,
+        "collectFilters": null,
+        "collectN": null,
+        "collectOrderBy": null,
+        "collectSourceFeatures": null,
+        "featureGroupId": 1,
+        "prefix": "p_",
+        "preparedStatementIndex": 1,
+        "preparedStatementParameters": [
+          {
+            "name": "entity_id",
+            "index": 1
+          }
+        ],
+        "queryOnline": "SELECT `fg1`.`region_name` AS `r_region_name`, `fg2`.`country_name` AS `c_country_name`, `fg0`.`tier` AS `p_tier`\nFROM `golden_1_fs`.`profiles_1` AS `fg0`\nINNER JOIN `golden_1_fs`.`regions_1` AS `fg1` ON `fg0`.`region_id` = `fg1`.`region_id` AND `fg0`.`region_code` = `fg1`.`region_code`\nINNER JOIN `golden_1_fs`.`countries_1` AS `fg2` ON `fg1`.`country_id` = `fg2`.`country_id`\nWHERE `fg0`.`entity_id` = ?",
+        "queryOnlineScan": null,
+        "queryRonsql": null,
+        "ronsqlDatabase": "golden_1_fs",
+        "snowflakeTemplate": true,
+        "snowflakeTemplates": [
+          "WITH `b` AS (SELECT `region_id`, `region_code`, COUNT(*) AS `hw_cnt` FROM `profiles_1` WHERE `entity_id` = ? GROUP BY `region_id`, `region_code`) SELECT `j2`.`region_name` AS `r_region_name`, `j3`.`country_name` AS `c_country_name` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` AND `j2`.`region_code` = `b`.`region_code` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;"
+        ]
+      }
+    ],
+    "gateOrException": null
+  }
+}

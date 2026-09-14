@@ -1,0 +1,19 @@
+# Mirror of suite/ronsql_fs/t/ronsql_fs_golden.test with the JIT active
+# (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
+# differential for the feature-store corpus (RONDB-1121 E8).  Test logic
+# lives ONLY in the sourced original.
+#
+# STRICT ARM (2026-09-12): the recorded fallback delta of this test is 0 —
+# every program of the Hopsworks corpus compiles — so the --source is
+# bracketed with the strict-compile error inserts (ERROR_INSERT 4064 in
+# DBTUP, 5120 in the DBLQH proxy; suite/ronsql_cte_jit/include): a program
+# that stops compiling now FAILS the query instead of falling back to the
+# interpreter.  The delta line stays as the census pin (expected 0); a
+# change in either direction is a coverage change — investigate, then
+# re-record deliberately.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_cte_jit/include/jit_strict_arm.inc
+--source suite/ronsql_fs/t/ronsql_fs_golden.test
+--source suite/ronsql_cte_jit/include/jit_strict_disarm.inc
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ronsql_fs_golden_jit_fallback_delta;

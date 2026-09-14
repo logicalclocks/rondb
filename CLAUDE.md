@@ -131,6 +131,11 @@ Design and implementation docs in `storage/ndb/claude_files/pushdown_join_aggreg
 - `coordinator_research.md` — DBTC orchestration plan (Phase 7: SETUP/COMPLETE/RELEASE)
 - `coordinator_implementation.md` — DBSPJ implementation notes (Phase 7: aggStateKeys, lookup_send)
 
+### Feature-Store RonSQL Test Framework (RONDB-1121)
+Plan and phase docs in `storage/ndb/claude_files/fs_ronsql/`:
+- `fs_ronsql_plan.md` — master plan (architecture, planning phases P0-P5, execution phases E1-E8)
+- `shape_catalog.md` — RonSQL statement shapes emitted by the Hopsworks `PreparedStatementBuilder`
+
 ### Rondis Server Implementation
 ```
 storage/ndb/src/rondis/

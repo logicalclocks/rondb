@@ -5596,22 +5596,14 @@ void NdbDictInterface::execDROP_TABLE_REF(const NdbApiSignal *signal) {
 int NdbDictionaryImpl::invalidateObject(NdbTableImpl &impl) {
   DBUG_ENTER("NdbDictionaryImpl::invalidateObject");
   DBUG_PRINT("enter", ("internal_name: %s", impl.m_internalName.c_str()));
-
-  m_localHash.drop(impl.m_internalName);
-  m_globalHash->lock();
-  m_globalHash->release(&impl, 1);
-  m_globalHash->unlock();
+  detach_local_reference(impl, 1);
   DBUG_RETURN(0);
 }
 
 int NdbDictionaryImpl::removeCachedObject(NdbTableImpl &impl) {
   DBUG_ENTER("NdbDictionaryImpl::removeCachedObject");
   DBUG_PRINT("enter", ("internal_name: %s", impl.m_internalName.c_str()));
-
-  m_localHash.drop(impl.m_internalName);
-  m_globalHash->lock();
-  m_globalHash->release(&impl);
-  m_globalHash->unlock();
+  detach_local_reference(impl, 0);
   DBUG_RETURN(0);
 }
 
@@ -5632,8 +5624,74 @@ void NdbDictionaryImpl::park_stale_object(const BaseString &internalName) {
   // onto this Ndb's stale list, reusing the wrapper as the list node so that
   // parking needs no allocation and cannot fail.
   Ndb_local_table_info *info = m_localHash.remove(internalName);
+  if (unlikely(info == nullptr)) {
+    // Nothing cached under that name on this Ndb (already parked or dropped)
+    DBUG_VOID_RETURN;
+  }
   info->m_next_stale = m_staleLocalTableInfoHead;
   m_staleLocalTableInfoHead = info;
+  DBUG_VOID_RETURN;
+}
+
+/*
+ * Unlink the parked entry that backs impl, if any, and destroy its wrapper.
+ * The global-cache reference it held is NOT released here; the caller
+ * releases it exactly once. Returns whether an entry was found.
+ */
+bool NdbDictionaryImpl::unpark_stale_object(const NdbTableImpl *impl) {
+  Ndb_local_table_info **link = &m_staleLocalTableInfoHead;
+  while (*link != nullptr) {
+    Ndb_local_table_info *info = *link;
+    if (info->m_table_impl == impl) {
+      *link = info->m_next_stale;
+      Ndb_local_table_info::destroy(info);
+      return true;
+    }
+    link = &info->m_next_stale;
+  }
+  return false;
+}
+
+/*
+ * Detach THIS Ndb's reference to impl for a by-pointer invalidate / remove
+ * (NdbDictionary::Dictionary::invalidateTable(const Table *),
+ * invalidateIndex(const Index *), removeCachedTable(const Table *), ...).
+ *
+ * Since RONDB-1092 a stale local entry is parked, not released inline, and
+ * the local hash may then hold a NEWER incarnation of the same internal
+ * name. The reference that backs the caller's pointer is therefore either
+ * the local entry (if it still points at impl) or a parked entry - never
+ * "whatever is cached under that name". Dropping by name regardless
+ * destroyed the newer incarnation's wrapper (leaking its reference) and
+ * released the parked reference a second time from
+ * releaseStaleTableReferences(), so the object was deleted while other Ndbs
+ * still referenced it (RONDB-1121 F20: RDRS crashes in getIndex() on a freed
+ * object and GlobalDictCache::release() on a garbage name).
+ *
+ * If this Ndb holds no reference for impl at all (the pointer came from
+ * another path, or was already invalidated through this Ndb), there is
+ * nothing to release: releasing would steal another holder's reference.
+ */
+void NdbDictionaryImpl::detach_local_reference(NdbTableImpl &impl,
+                                               int invalidate) {
+  DBUG_ENTER("NdbDictionaryImpl::detach_local_reference");
+  DBUG_PRINT("enter", ("internal_name: %s invalidate: %d",
+                       impl.m_internalName.c_str(), invalidate));
+  Ndb_local_table_info *info = m_localHash.get(impl.m_internalName);
+  if (info != nullptr && info->m_table_impl == &impl) {
+    m_localHash.drop(impl.m_internalName);
+  } else if (!unpark_stale_object(&impl)) {
+    // This Ndb holds no reference for impl (a pointer obtained through
+    // another path, e.g. getTableGlobal): nothing to release - releasing
+    // would steal another holder's reference. Callers that want other
+    // holders refreshed invalidate by name, which takes and releases its own
+    // reference. As before, the pointer must be live.
+    DBUG_PRINT("info", ("impl %p is not referenced by this Ndb; nothing to release", &impl));
+    DBUG_VOID_RETURN;
+  }
+  m_globalHash->lock();
+  m_globalHash->release(&impl, invalidate);
+  m_globalHash->unlock();
   DBUG_VOID_RETURN;
 }
 

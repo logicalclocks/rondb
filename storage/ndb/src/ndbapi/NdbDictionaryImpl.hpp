@@ -1086,6 +1086,8 @@ class NdbDictionaryImpl : public NdbDictionary::Dictionary {
    */
   Ndb_local_table_info *m_staleLocalTableInfoHead;
   void park_stale_object(const BaseString &internalName);
+  bool unpark_stale_object(const NdbTableImpl *impl);
+  void detach_local_reference(NdbTableImpl &impl, int invalidate);
 
   static NdbDictionaryImpl &getImpl(NdbDictionary::Dictionary &t);
   static const NdbDictionaryImpl &getImpl(const NdbDictionary::Dictionary &t);
@@ -1593,6 +1595,14 @@ inline NdbIndexImpl *NdbDictionaryImpl::getIndex(const char *index_name,
 
   {
     NdbIndexImpl *idx = tab->m_index;
+    if (unlikely(idx == nullptr)) {
+      // Not an index object (or one whose index part is gone): treat it as a
+      // stale entry rather than dereferencing it.
+      tab->m_status = NdbDictionary::Object::Invalid;
+      park_stale_object(internal_indexname);
+      m_error.code = 241;  // Invalid schema object version
+      return nullptr;
+    }
     /**
      * The index cache is keyed by base-table id (sys/def/<tabid>/<index_name>).
      * After a table is dropped and recreated the base-table id can be reused by
@@ -1645,6 +1655,12 @@ retry:
 
   {
     NdbIndexImpl *idx = tab->m_index;
+    if (unlikely(idx == nullptr)) {
+      tab->m_status = NdbDictionary::Object::Invalid;
+      park_stale_object(old_internal_indexname);
+      m_error.code = 241;  // Invalid schema object version
+      return nullptr;
+    }
     // Same validation for the old index-name format (see above).
     if (idx->m_table_id == (unsigned)prim.getObjectId() &&
         idx->m_table_version == (unsigned)prim.getObjectVersion()) {

@@ -1,0 +1,215 @@
+{
+  "name": "aggregate_composite_batch",
+  "fgs": [
+    {
+      "id": 1,
+      "name": "events",
+      "version": 1,
+      "featurestoreId": 1,
+      "online": true,
+      "eventTime": "event_time",
+      "ttl": null,
+      "features": [
+        {
+          "name": "entity_id",
+          "type": "bigint",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "currency",
+          "type": "string",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "event_time",
+          "type": "timestamp",
+          "primary": true,
+          "offlineOnly": false
+        },
+        {
+          "name": "amount",
+          "type": "bigint",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "fee",
+          "type": "int",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "category",
+          "type": "string",
+          "primary": false,
+          "offlineOnly": false
+        },
+        {
+          "name": "tags",
+          "type": "array<string>",
+          "primary": false,
+          "offlineOnly": false
+        }
+      ]
+    }
+  ],
+  "joins": [
+    {
+      "index": 0,
+      "parent": 0,
+      "fg": 1,
+      "type": "INNER",
+      "prefix": "f_",
+      "on": [],
+      "features": [
+        {
+          "name": "count",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_count",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_sum",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_min",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_max",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_avg",
+          "type": "double",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_fee_greatest",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        },
+        {
+          "name": "amount_fee_least",
+          "type": "bigint",
+          "label": false,
+          "inferenceHelper": false,
+          "trainingHelper": false
+        }
+      ],
+      "aggregate": {
+        "*": [
+          "count"
+        ],
+        "amount": [
+          "count",
+          "sum",
+          "min",
+          "max",
+          "avg"
+        ],
+        "amount,fee": [
+          "greatest",
+          "least"
+        ]
+      },
+      "window": null,
+      "collectN": null,
+      "orderBy": null,
+      "ascending": false
+    }
+  ],
+  "filters": [],
+  "options": {
+    "batch": true,
+    "inferenceHelpers": false,
+    "logging": false,
+    "vectorWithHelpers": false
+  },
+  "definition": null,
+  "trainingDataset": false,
+  "maxCollectN": 50,
+  "maxCollectCells": 100,
+  "expectedTemplates": 0,
+  "expectedError": null,
+  "schemaVersion": 1,
+  "source": "java-generated",
+  "provenance": {
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "trackedWorktreeDirty": true,
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "javaVersion": "21.0.12.1",
+    "timezone": "UTC",
+    "locale": "en-US"
+  },
+  "inputSha256": "6050cf64420fe5b5aa832e1010de9a1b6f0150fa63d5595fd5ffda221c70698a",
+  "expected": {
+    "statements": [
+      {
+        "aggregateFeatureNames": [
+          "f_count",
+          "f_amount_count",
+          "f_amount_sum",
+          "f_amount_min",
+          "f_amount_max",
+          "f_amount_avg",
+          "f_amount_fee_greatest",
+          "f_amount_fee_least"
+        ],
+        "aggregateWindow": null,
+        "collectAscending": null,
+        "collectFeatureName": null,
+        "collectFilterApplied": null,
+        "collectFilters": null,
+        "collectN": null,
+        "collectOrderBy": null,
+        "collectSourceFeatures": null,
+        "featureGroupId": 1,
+        "prefix": "f_",
+        "preparedStatementIndex": 0,
+        "preparedStatementParameters": [
+          {
+            "name": "entity_id",
+            "index": 1
+          },
+          {
+            "name": "currency",
+            "index": 2
+          }
+        ],
+        "queryOnline": "SELECT `entity_id` AS `f_entity_id`, `currency` AS `f_currency`, COUNT(*) AS `f_count`, COUNT(`amount`) AS `f_amount_count`, SUM(`amount`) AS `f_amount_sum`, MIN(`amount`) AS `f_amount_min`, MAX(`amount`) AS `f_amount_max`, AVG(`amount`) AS `f_amount_avg`, MAX(GREATEST(`amount`, `fee`)) AS `f_amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `f_amount_fee_least` FROM `golden_1_fs`.`events_1` WHERE (`entity_id`, `currency`) IN (?) GROUP BY `entity_id`, `currency`",
+        "queryOnlineScan": null,
+        "queryRonsql": null,
+        "ronsqlDatabase": null,
+        "snowflakeTemplate": null,
+        "snowflakeTemplates": null
+      }
+    ],
+    "gateOrException": null
+  }
+}
