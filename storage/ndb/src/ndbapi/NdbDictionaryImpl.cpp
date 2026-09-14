@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -5625,7 +5625,9 @@ void NdbDictionaryImpl::park_stale_object(const BaseString &internalName) {
   // parking needs no allocation and cannot fail.
   Ndb_local_table_info *info = m_localHash.remove(internalName);
   if (unlikely(info == nullptr)) {
-    // Nothing cached under that name on this Ndb (already parked or dropped)
+    // Nothing cached under that name on this Ndb (already parked or dropped).
+    // remove() returns nullptr on a miss rather than asserting, so this is
+    // safe in both debug and release builds.
     DBUG_VOID_RETURN;
   }
   info->m_next_stale = m_staleLocalTableInfoHead;
