@@ -1,0 +1,99 @@
+# RONDB-1120 NF-12: the transaction coordinator fails while CTE feeds are
+# parked on a peer's identity placeholder.
+# Run with: ./mtr --suite=ndb_cte cte_nodefail_coordinator_parked
+#
+# Runs the CteCoordinatorDiesParked case from the testNodeRestart NDBT
+# program (storage/ndb/test/ndbapi/testNodeRestart.cpp, plan
+# storage/ndb/claude_files/pushdown_join_aggregation/node_failure_test_plan.md).
+#
+# The CTE's aggregate leaf looks up pk = grp, so the coordinator's workers
+# feed the peer. Error insert 5145 on the peer holds its SETUP_REQs while
+# the coordinator is alive. LDM/query instances hold their failure sweepers
+# until NODE_FAILREP clears the local insert. The case kills the coordinator
+# once a parked requester was reported; the SETUP hold then releases and
+# the case requires the peer's JOIN_AGG_SETUP_REJECTED line (CTE owner-list
+# validation rejected the late SETUP before allocating a state),
+# the query to fail with a node-failure error, the
+# coordinator to rejoin, the join-agg leak-check DUMPs (2361, 2362, 2363,
+# 2560, 2650) to stay clean and the query to return every row afterwards.
+# The dumps verify that parked requests and placeholders were freed.
+# This tests rejected SETUP cleanup; NULL_ROW replay after coordinator
+# failure (5efa38683b1) needs a separate case.
+# Three iterations; the peer's insert is cleared after each. Needs 2 data
+# nodes with 2 replicas, which this suite's cluster provides.
+#
+# The error insert needs error-insert capable ndbmtd binaries, and the
+# testNodeRestart binary is only present in WITH_NDB_TEST builds.
+#
+# On failure the program's output is in $NDB_TOOLS_OUTPUT (var/tmp) of the
+# saved test directory.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its tables (TEST_DB.T1 and the CTE fixtures
+# TEST_DB.cte_nf_src / cte_nf_virtual) directly via the NDB API. Tables
+# created outside of the MySQL Server crash the MySQL Server, so both
+# MySQL Servers are shut down while the NDBT case runs and started again
+# after the NDBT tables have been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # NF-12: kill the coordinator while CTE feeds are parked on a peer (error insert 5145)
+--exec $TEST_NODE_RESTART -n CteCoordinatorDiesParked T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops T1 and the case's finalizer drops the CTE
+# fixtures when the case completes cleanly; a missing table is not an
+# error here.
+--echo "[dropping NDBT test tables]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_src >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_virtual >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # CteCoordinatorDiesParked passed

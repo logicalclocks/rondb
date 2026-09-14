@@ -53,6 +53,7 @@
 #include "../../src/ndbapi/NdbQueryOperation.hpp"
 #include <CteQueryUtil.hpp>
 #include "../../src/ndbapi/NdbDictionaryImpl.hpp"
+#include "mgmapi_debug.h"
 #include "mgmapi_internal.h"
 #include "my_sys.h"
 #include "mysql/strings/m_ctype.h"
@@ -12163,10 +12164,11 @@ static int runCteNfLeakDumps(NdbRestarter &restarter) {
 static int runCteNfCheckQuery(
     Ndb *ndb, const char *when,
     CteQueryUtil::Shape shape = CteQueryUtil::LookupMain,
-    Uint32 expectedRows = CTE_NF_ROWS) {
+    Uint32 expectedRows = CTE_NF_ROWS, bool crossNodeLeaf = false) {
   for (int attempt = 0; attempt < 2; attempt++) {
     CteQueryUtil::Options clean;
     clean.shape = shape;
+    clean.crossNodeLeaf = crossNodeLeaf;
     CteQueryUtil::Result res;
     const int rc = CteQueryUtil::runQuery(ndb, clean, res);
     if (rc == 0 && res.rows == expectedRows) return NDBT_OK;
@@ -12412,14 +12414,16 @@ struct CteNfEventListener {
 };
 
 /*
- * Shared hold driver for NF-2 through NF-4 and NF-6 through NF-9.
+ * Shared hold driver for NF-2 through NF-4, NF-6 through NF-9,
+ * NF-11 and NF-12.
  * An error insert on the picked node holds a protocol operation. Its
  * event identifies the armed node and iteration (the extra error-insert
  * value), and optionally the requester, according to eventNamesRequester.
  * The killer subscribes before the query is armed, waits for the matching
  * hold event and kills the node selected by killTarget. The query must
- * then fail with an error accepted by cteNfNodeFailureError. A TC or API
- * timeout, or a return before the confirmed hold and kill, fails the case.
+ * then fail with an error accepted by cteNfNodeFailureError; NF-11 also
+ * accepts the park sweeper's error 1251. A TC or API timeout, or a return
+ * before the confirmed hold and kill, fails the case.
  *
  * The picker chooses the node to arm once the coordinator is known.
  * Returning -1 skips the case on an unsuitable topology: the iteration's
@@ -12455,6 +12459,13 @@ struct CteNfHoldCase {
   /* Whether the hold event carries a "requester=R" field. Feed and
    * redistribution holds name their sender; probe and scan holds do not. */
   bool eventNamesRequester;
+  /* CTE0's aggregate leaf looks up pk = grp so feeds cross nodes
+   * (CteQueryUtil::Options::crossNodeLeaf); the parking cases need it. */
+  bool crossNodeLeaf;
+  /* A coordinator kill normally waits for an event naming a requester
+   * other than the coordinator, so that requester survives. Set when
+   * the coordinator's own requests may be the parked ones (NF-12). */
+  bool allowCoordinatorRequester;
 };
 
 /* The errors a query may end with after the kill: node-failure reports
@@ -12556,7 +12567,8 @@ static bool cteNfHoldBeforeExecute(void *arg, Uint32 tcNodeId) {
 }
 
 static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
-                             const CteNfHoldCase &hold) {
+                             const CteNfHoldCase &hold,
+                             bool allowParkSweepError = false) {
   Ndb *ndb = GETNDB(step);
   NdbRestarter restarter;
   if (restarter.getNumDbNodes() < 2) {
@@ -12571,8 +12583,8 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
       hold.shape == CteQueryUtil::ScanRoot && groups < CTE_NF_ROWS
           ? groups
           : CTE_NF_ROWS;
-  if (runCteNfCheckQuery(ndb, "Baseline", hold.shape, expectedRows) !=
-      NDBT_OK) {
+  if (runCteNfCheckQuery(ndb, "Baseline", hold.shape, expectedRows,
+                         hold.crossNodeLeaf) != NDBT_OK) {
     ctx->stopTest();
     return NDBT_FAILED;
   }
@@ -12580,6 +12592,7 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
     CteNfHoldArgs args = {ctx, &restarter, ndb, &hold, iter};
     CteQueryUtil::Options opt;
     opt.shape = hold.shape;
+    opt.crossNodeLeaf = hold.crossNodeLeaf;
     opt.beforeExecute = cteNfHoldBeforeExecute;
     opt.arg = &args;
     if (hold.chooseTc != nullptr) {
@@ -12612,10 +12625,17 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
       ctx->stopTest();
       return NDBT_FAILED;
     }
-    /* I1: only a node-failure error may end the query (see
-     * cteNfNodeFailureError). */
-    if (rc != -1 || !cteNfNodeFailureError(res.ndbError, hold.killTarget)) {
-      g_err << "Expected a node-failure error after the peer failure "
+    /* NF-11's sweep sends STATE_NOT_FOUND (1251) to live requesters.
+     * It may reach DBTC before the node-failure error. Only NF-11 opts
+     * into this outcome; its killer still requires JOIN_AGG_PARK_SWEPT
+     * before publishing CteNfRestarted and allowing this step to pass. */
+    const bool expectedError =
+        cteNfNodeFailureError(res.ndbError, hold.killTarget) ||
+        (allowParkSweepError && res.ndbError == 1251);
+    if (rc != -1 || !expectedError) {
+      g_err << "Expected a node-failure error"
+            << (allowParkSweepError ? " or park-sweep error 1251" : "")
+            << " after the peer failure "
             << "(rc=" << rc << ", ndbError=" << res.ndbError
             << ", rows=" << res.rows << ")" << endl;
       ctx->stopTest();
@@ -12629,8 +12649,8 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
     if (ctx->isTestStopped()) return NDBT_FAILED;
   }
   /* I5 */
-  if (runCteNfCheckQuery(ndb, "Post-recovery", hold.shape, expectedRows) !=
-      NDBT_OK) {
+  if (runCteNfCheckQuery(ndb, "Post-recovery", hold.shape, expectedRows,
+                         hold.crossNodeLeaf) != NDBT_OK) {
     ctx->stopTest();
     return NDBT_FAILED;
   }
@@ -12676,8 +12696,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
      * ignore its event and keep waiting within the same deadline. */
     BaseString ignored;
     const bool skipCoordinator =
-        hold.eventNamesRequester &&
-        hold.killTarget == CTE_NF_KILL_COORDINATOR;
+        hold.eventNamesRequester && hold.killTarget != CTE_NF_KILL_ARMED &&
+        !hold.allowCoordinatorRequester;
     if (skipCoordinator) {
       ignored.assfmt("%s%u]", expected.c_str(),
                      ctx->getProperty("CteNfTc", (Uint32)0));
@@ -12711,7 +12731,8 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     } else if (hold.killTarget == CTE_NF_KILL_COORDINATOR) {
       const int tc = (int)ctx->getProperty("CteNfTc", (Uint32)0);
       if (tc == 0 || tc == armed ||
-          (requester != 0 && (Uint32)tc == requester)) {
+          (requester != 0 && (Uint32)tc == requester &&
+           !hold.allowCoordinatorRequester)) {
         g_err << "Coordinator " << tc << " is not distinct from the armed "
               << "node " << armed << " and the requester " << requester
               << endl;
@@ -12802,7 +12823,7 @@ static const CteNfHoldCase CTE_NF2_HOLD = {
     "the survivors' CTE states never answered COMPLETE (regression of "
     "55e99285ebb)",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_ARMED, nullptr,
-    nullptr, true};
+    nullptr, true, false, false};
 
 static int runCtePeerRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF2_HOLD);
@@ -12831,7 +12852,7 @@ static const CteNfHoldCase CTE_NF3_HOLD = {
     "DBSPJ never drained the probes outstanding to the failed node "
     "(regression of 6c7fa88dcaa)",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_ARMED, nullptr,
-    nullptr, false};
+    nullptr, false, false, false};
 
 static int runCteLookupTargetQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF3_HOLD);
@@ -12919,7 +12940,7 @@ static const CteNfHoldCase CTE_NF4_HOLD = {
     "DBSPJ never retired the CTE scan slot of the failed source "
     "(regression of f718b5be5d6)",
     CteQueryUtil::ScanRoot, cteNfPickRemoteScanSource, CTE_NF_KILL_ARMED,
-    nullptr, nullptr, false};
+    nullptr, nullptr, false, false, false};
 
 static int runCteScanSourceQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF4_HOLD);
@@ -13189,7 +13210,8 @@ static const CteNfHoldCase CTE_NF6_HOLD = {
     "CteRequesterDiesAggFeed", 5144, "CTE_AGG_FEED_HELD",
     "DBTC never failed the query after its requester node died",
     CteQueryUtil::FeedChain, cteNfPickFeedSource,
-    CTE_NF_KILL_EVENT_REQUESTER, "CTE_AGG_FEED_ABANDONED", nullptr, true};
+    CTE_NF_KILL_EVENT_REQUESTER, "CTE_AGG_FEED_ABANDONED", nullptr, true,
+    false, false};
 
 static int runCteRequesterFeedQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF6_HOLD);
@@ -13240,7 +13262,7 @@ static const CteNfHoldCase CTE_NF7_HOLD = {
     "the API never learned that its coordinator died",
     CteQueryUtil::FeedChain, cteNfPickFeedSourceNotTc,
     CTE_NF_KILL_COORDINATOR, "CTE_AGG_FEED_REFUSED",
-    cteNfChooseTcForFeedCoordinator, true};
+    cteNfChooseTcForFeedCoordinator, true, false, false};
 
 static int runCteCoordinatorFeedQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF7_HOLD);
@@ -13268,7 +13290,7 @@ static const CteNfHoldCase CTE_NF8_HOLD = {
     "CteCoordinatorDiesReady", 5141, "CTE_NF3_LOOKUP_HELD",
     "the API never learned that its coordinator died",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
-    "JOIN_AGG_RELEASES_QUEUED", nullptr, false};
+    "JOIN_AGG_RELEASES_QUEUED", nullptr, false, false, false};
 
 static int runCteCoordinatorReadyQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF8_HOLD);
@@ -13312,7 +13334,8 @@ static const CteNfHoldCase CTE_NF9_HOLD = {
     "CteCoordinatorDiesPausedRedist", 5140, "CTE_NF2_CONF_HELD",
     "the API never learned that its coordinator died",
     CteQueryUtil::LookupMain, cteNfPickRedistPeerForCoordinator,
-    CTE_NF_KILL_COORDINATOR, "JOIN_AGG_RELEASES_QUEUED", nullptr, true};
+    CTE_NF_KILL_COORDINATOR, "JOIN_AGG_RELEASES_QUEUED", nullptr, true,
+    false, false};
 
 static int runCteCoordinatorRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF9_HOLD);
@@ -13321,6 +13344,341 @@ static int runCteCoordinatorRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
 static int runCteCoordinatorRedistKiller(NDBT_Context *ctx,
                                          NDBT_Step *step) {
   return runCteNfHoldKiller(ctx, step, CTE_NF9_HOLD);
+}
+
+/*
+ * NF-10 CoordinatorDiesReleaseInFlight (commit b30c78c0be0).
+ *
+ * Error insert 5146 on a peer holds teardown after RELEASE takes
+ * ownership. Subscribe before arming and kill the coordinator only
+ * after CTE_NF10_TEARDOWN_HELD identifies the held pool key. Require
+ * CTE_NF10_RECLAIM_SKIPPED for that same peer, iteration, coordinator
+ * and key before clearing the hold. This proves node-failure reclaim
+ * encountered an unfinished teardown and skipped it (m_release_started).
+ * The query may return every row before the kill because RELEASE_CONF
+ * is sent before teardown. Otherwise it must report a node-failure
+ * error after the confirmed hold and kill. Restart and leak checks
+ * verify that the original teardown completed. Runs on 2 nodes.
+ */
+/* Check both management return values: insertError2InNode() can report
+ * success even when the management request failed. Both NF-10 steps
+ * establish their management connection before using this helper. */
+static bool cteNf10InsertError(NdbRestarter &restarter, int node, int error,
+                               int extra = 0) {
+  ndb_mgm_reply reply = {};
+  if (restarter.handle == nullptr ||
+      ndb_mgm_insert_error2(restarter.handle, node, error, extra, &reply) == -1 ||
+      reply.return_code != 0) {
+    g_err << "Failed to set error insert " << error << " on peer "
+          << node << endl;
+    return false;
+  }
+  return true;
+}
+
+struct CteNf10InsertGuard {
+  NDBT_Context *ctx;
+  NdbRestarter *restarter;
+  Uint32 iteration;
+  int node;
+  bool active;
+
+  bool clear() {
+    if (!active) return true;
+    if (node == 0) {
+      if (ctx->getProperty("CteNfArmed", (Uint32)0) != iteration)
+        return true;
+      node = (int)ctx->getProperty("CteNfPeer", (Uint32)0);
+    }
+    if (!cteNf10InsertError(*restarter, node, 0)) return false;
+    active = false;
+    return true;
+  }
+
+  ~CteNf10InsertGuard() {
+    if (!clear()) ctx->stopTest();
+  }
+};
+
+struct CteNf10Args {
+  NDBT_Context *ctx;
+  NdbRestarter *restarter;
+  Uint32 iter;
+};
+
+static bool cteNf10BeforeExecute(void *arg, Uint32 tcNodeId) {
+  CteNf10Args *a = (CteNf10Args *)arg;
+  if (!cteNfWaitProperty(a->ctx, "CteNfListening", a->iter + 1, 30)) {
+    g_err << "Teardown event listener was not ready within 30 s" << endl;
+    return false;
+  }
+  const int peer = cteNfPickVictim(*a->restarter, tcNodeId);
+  if (peer <= 0 || (Uint32)peer == tcNodeId) {
+    g_err << "No peer distinct from coordinator " << tcNodeId << endl;
+    return false;
+  }
+  if (a->ctx->isTestStopped()) return false;
+  /* A failed management call may still have delivered the insert.
+   * Transfer cleanup ownership only after publishing the armed peer. */
+  CteNf10InsertGuard insertGuard = {
+      a->ctx, a->restarter, a->iter + 1, peer, true};
+  if (!cteNf10InsertError(*a->restarter, peer, 5146, a->iter + 1))
+    return false;
+  a->ctx->setProperty("CteNfPeer", (Uint32)peer);
+  a->ctx->setProperty("CteNfVictim", tcNodeId);
+  a->ctx->setProperty("CteNfArmed", a->iter + 1);
+  /* The killer may have exited before seeing this iteration's insert.
+   * In that case the local guard must still perform cleanup. */
+  if (a->ctx->isTestStopped()) return false;
+  insertGuard.active = false;  // the killer now owns cleanup
+  return true;
+}
+
+static int runCteCoordinatorReleaseQuery(NDBT_Context *ctx,
+                                         NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] CoordinatorDiesReleaseInFlight needs >= 2 data nodes"
+          << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+  if (runCteNfCheckQuery(ndb, "Baseline") != NDBT_OK) {
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    CteNf10Args args = {ctx, &restarter, iter};
+    CteQueryUtil::Options opt;
+    opt.shape = CteQueryUtil::LookupMain;
+    opt.beforeExecute = cteNf10BeforeExecute;
+    opt.arg = &args;
+    CteQueryUtil::Result res;
+    g_err << "=== CoordinatorDiesReleaseInFlight iteration " << iter
+          << " ===" << endl;
+    const int rc = CteQueryUtil::runQuery(ndb, opt, res);
+    if (rc == -2) {
+      g_err << "Query build/hook failed at " << res.failedAt << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I1: RELEASE_CONF precedes held teardown, so a full result may
+     * arrive before the hold event or kill. An error is accepted only
+     * after both; neither a receive timeout nor a close timeout passes.
+     * The killer still requires the matching reclaim event before it
+     * publishes CteNfRestarted and lets this step pass. */
+    const bool killed =
+        ctx->getProperty("CteNfHeld", (Uint32)0) == iter + 1 &&
+        ctx->getProperty("CteNfKillIssued", (Uint32)0) == iter + 1;
+    const bool complete = rc == 0 && res.rows == CTE_NF_ROWS;
+    const bool nodeFailure =
+        killed && rc == -1 &&
+        cteNfNodeFailureError(res.ndbError, CTE_NF_KILL_COORDINATOR);
+    const bool closeOk =
+        res.closeError == 0 ||
+        (killed &&
+         cteNfNodeFailureError(res.closeError, CTE_NF_KILL_COORDINATOR));
+    if ((!complete && !nodeFailure) || !closeOk) {
+      g_err << "Unexpected query outcome during the teardown hold (rc="
+            << rc << ", ndbError=" << res.ndbError << ", rows=" << res.rows
+            << ", closeError=" << res.closeError << ")" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    g_err << (complete ? "Query returned every row"
+                       : "Query failed with a node-failure error")
+          << " (rc=" << rc << ", ndbError=" << res.ndbError
+          << ", rows=" << res.rows << ", " << res.queryMillis << " ms)"
+          << endl;
+    ctx->setProperty("CteNfQueryDone", iter + 1);
+    ctx->getPropertyWait("CteNfRestarted", iter + 1);
+    if (ctx->isTestStopped()) return NDBT_FAILED;
+  }
+  /* I5 */
+  if (runCteNfCheckQuery(ndb, "Post-recovery") != NDBT_OK) {
+    ctx->stopTest();
+    return NDBT_FAILED;
+  }
+  ctx->stopTest();
+  return NDBT_OK;
+}
+
+static int runCteCoordinatorReleaseKiller(NDBT_Context *ctx,
+                                          NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) return NDBT_OK;
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    /* Install before waiting: stopTest may wake us after arming. */
+    CteNf10InsertGuard insertGuard = {
+        ctx, &restarter, iter + 1, 0, true};
+    CteNfEventListener events;
+    if (!events.open(restarter)) {
+      g_err << "Failed to subscribe to teardown events" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("CteNfListening", iter + 1);
+    ctx->getPropertyWait("CteNfArmed", iter + 1);
+    if (ctx->isTestStopped()) return NDBT_OK;
+    const int peer = (int)ctx->getProperty("CteNfPeer", (Uint32)0);
+    int victim = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+    BaseString expected, line;
+    expected.assfmt("[CTE_NF10_TEARDOWN_HELD node=%u iteration=%u "
+                    "coordinator=%u key=",
+                    (Uint32)peer, iter + 1, (Uint32)victim);
+    if (!events.waitFor(ctx, expected.c_str(), 30000, &line) ||
+        ctx->isTestStopped()) {
+      g_err << "Peer " << peer << " did not hold teardown for coordinator "
+            << victim << " within 30 s" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    Uint32 key = RNIL;
+    int consumed = 0;
+    const char *marker = strstr(line.c_str(), expected.c_str());
+    if (marker == nullptr ||
+        sscanf(marker + strlen(expected.c_str()), "%u]%n",
+               &key, &consumed) != 1 ||
+        consumed == 0 || key == RNIL) {
+      g_err << "Invalid teardown marker: " << line.c_str() << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (ctx->isTestStopped()) return NDBT_OK;
+    ctx->setProperty("CteNfHeld", iter + 1);
+    ctx->setProperty("CteNfKillIssued", iter + 1);
+    g_err << "Killing coordinator " << victim << " while peer " << peer
+          << " holds teardown of key " << key << endl;
+    if (restarter.restartOneDbNode(victim, /* initial */ false,
+                                   /* nostart */ true,
+                                   /* abort */ true) != 0) {
+      g_err << "restartOneDbNode(" << victim << ") failed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    expected.assfmt("[CTE_NF10_RECLAIM_SKIPPED node=%u iteration=%u "
+                    "failed=%u key=%u]",
+                    (Uint32)peer, iter + 1, (Uint32)victim, key);
+    if (!events.waitFor(ctx, expected.c_str(), 30000)) {
+      g_err << "Peer " << peer << " did not report reclaim skipping key "
+            << key << " for coordinator " << victim << " within 30 s"
+            << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    g_err << "Peer " << peer << " reported reclaim skipping held key "
+          << key << endl;
+    if (restarter.waitNodesNoStart(&victim, 1, 60) != 0) {
+      g_err << "Coordinator " << victim << " did not reach NOT_STARTED"
+            << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I1: the API must get out of the query once its coordinator is gone. */
+    if (!cteNfWaitProperty(ctx, "CteNfQueryDone", iter + 1, 120)) {
+      g_err << "The query did not complete within 120 s of the coordinator "
+            << "crash" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* The peer survives: clear its hold only after matching the skip
+     * and finishing the query. The guard also clears on every error. */
+    if (!insertGuard.clear()) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I2, I3: let the original teardown finish and bring C back. */
+    if (restarter.startNodes(&victim, 1) != 0 ||
+        restarter.waitClusterStarted(180) != 0) {
+      g_err << "Cluster did not come back whole after coordinator " << victim
+            << " died during held teardown (double teardown on a "
+            << "survivor?)" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I4 */
+    if (runCteNfLeakDumps(restarter) != NDBT_OK) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("CteNfRestarted", iter + 1);
+  }
+  return NDBT_OK;
+}
+
+/*
+ * Parking cases NF-11 and NF-12 (P2 park design and CTE SETUP owner-list
+ * validation). Error insert 5145 on a peer P holds every SETUP_REQ while
+ * its coordinator is alive, so the consumers that race ahead of the
+ * SETUP (the CTE feeds of every node's workers, made remote by the
+ * cross-node leaf) park on the identity placeholder. LDM/query instances
+ * hold their failure sweepers until NODE_FAILREP clears the local insert.
+ * The hook reports each remote requester that parks (CTE_NF11_PARKED).
+ *
+ * NF-11 CteRequesterDiesParked: a reported requester R (not the
+ * coordinator) is killed. NODE_FAILREP ends the sweeper hold for the
+ * rest of the iteration, including for any later placeholders created by
+ * surviving requesters. The sweeper's REFs to R are dropped harmlessly,
+ * live requesters abort, and the placeholder and park records go
+ * (P logs JOIN_AGG_PARK_SWEPT naming R). The query must fail with
+ * 286 / 20016, or 1251 if a sweep REF reaches DBTC first. The hold, kill
+ * and sweep checks are required for either outcome. After the restart
+ * the identity dump (2363) is clean. Needs three nodes: P, R and the
+ * coordinator.
+ *
+ * NF-12 CteCoordinatorDiesParked: the coordinator is killed while its
+ * own or other requesters' requests are parked at P. The SETUP hold
+ * releases when the coordinator disconnects. CTE owner-list validation
+ * rejects the late SETUP before allocating a state, and P reports
+ * JOIN_AGG_SETUP_REJECTED. The API must see its coordinator's failure;
+ * after clearing the insert and restarting the coordinator, the leak
+ * dumps must show that the parked requests and placeholders were freed.
+ * This covers rejected SETUP cleanup; NULL_ROW replay after coordinator
+ * failure (5efa38683b1) needs a separate case. Runs on 2 nodes.
+ *
+ * P's insert is cleared after the query completes, as for the other
+ * cases whose armed node survives.
+ */
+static int cteNfPickPeerNeedingThird(Ndb *ndb, NdbRestarter &restarter,
+                                     Uint32 tcNodeId) {
+  if (restarter.getNumDbNodes() < 3) {
+    g_err << "Needs a coordinator, an armed peer and a requester on distinct "
+          << "nodes" << endl;
+    return -1;
+  }
+  return cteNfPickPeer(ndb, restarter, tcNodeId);
+}
+
+static const CteNfHoldCase CTE_NF11_HOLD = {
+    "CteRequesterDiesParked", 5145, "CTE_NF11_PARKED",
+    "DBTC never failed the query after its requester node died",
+    CteQueryUtil::LookupMain, cteNfPickPeerNeedingThird,
+    CTE_NF_KILL_EVENT_REQUESTER, "JOIN_AGG_PARK_SWEPT", nullptr, true,
+    true, false};
+
+static int runCteRequesterParkedQuery(NDBT_Context *ctx, NDBT_Step *step) {
+  return runCteNfHoldQuery(ctx, step, CTE_NF11_HOLD,
+                           /* allowParkSweepError */ true);
+}
+
+static int runCteRequesterParkedKiller(NDBT_Context *ctx, NDBT_Step *step) {
+  return runCteNfHoldKiller(ctx, step, CTE_NF11_HOLD);
+}
+
+static const CteNfHoldCase CTE_NF12_HOLD = {
+    "CteCoordinatorDiesParked", 5145, "CTE_NF11_PARKED",
+    "the API never learned that its coordinator died",
+    CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
+    "JOIN_AGG_SETUP_REJECTED", nullptr, true, true, true};
+
+static int runCteCoordinatorParkedQuery(NDBT_Context *ctx, NDBT_Step *step) {
+  return runCteNfHoldQuery(ctx, step, CTE_NF12_HOLD);
+}
+
+static int runCteCoordinatorParkedKiller(NDBT_Context *ctx,
+                                         NDBT_Step *step) {
+  return runCteNfHoldKiller(ctx, step, CTE_NF12_HOLD);
 }
 
 NDBT_TESTSUITE(testNodeRestart);
@@ -14305,6 +14663,36 @@ TESTCASE("CteCoordinatorDiesPausedRedist",
   INITIALIZER(runCteNfCreateTables);
   STEP(runCteCoordinatorRedistQuery);
   STEP(runCteCoordinatorRedistKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CoordinatorDiesReleaseInFlight",
+         "RONDB-1120 NF-10: error insert 5146 holds teardown on a peer; "
+         "kill the coordinator after the hold event and require reclaim "
+         "to skip that same key (b30c78c0be0), then clear the hold, restart "
+         "the coordinator and verify no record remains") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteCoordinatorReleaseQuery);
+  STEP(runCteCoordinatorReleaseKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteRequesterDiesParked",
+         "RONDB-1120 NF-11: error insert 5145 on a peer holds the SETUP and "
+         "the park sweeper so remote CTE feeds stay parked; killing a parked "
+         "requester must let the sweeper REF it harmlessly, abort the rest "
+         "and clean the placeholder (2363 clean)") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteRequesterParkedQuery);
+  STEP(runCteRequesterParkedKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteCoordinatorDiesParked",
+         "RONDB-1120 NF-12: error insert 5145 on a peer holds the SETUP and "
+         "the park sweeper so CTE feeds stay parked; killing the coordinator "
+         "must reject the late SETUP before state allocation and leave "
+         "the identity and state pools clean after parked-request cleanup") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteCoordinatorParkedQuery);
+  STEP(runCteCoordinatorParkedKiller);
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",

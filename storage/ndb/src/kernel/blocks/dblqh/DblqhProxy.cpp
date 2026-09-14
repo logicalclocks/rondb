@@ -2477,6 +2477,20 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                         signal->getLength(), &handle);
     return;
   }
+  if (ERROR_INSERTED(5145) &&
+      getNodeInfo(refToNode(senderRef)).m_connected) {
+    jam();
+    /* Test hook (NF-11, NF-12): hold every SETUP_REQ, 20 ms at a time,
+     * while its coordinator is alive, so consumers park on the
+     * placeholder; the LDM/query instances hold their park sweepers
+     * until NODE_FAILREP clears their local insert. Once the coordinator
+     * disconnects, the held CTE SETUP reaches the owner-list
+     * validation below, which rejects it before allocating any state. */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
   if (ERROR_INSERTED(5139)) {
     jam();
     /* Test hook: lose ONE SETUP_REQ for good (no CONF, no REF). A
@@ -2544,6 +2558,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
                               ZNODEFAIL_BEFORE_COMMIT, __LINE__, RNIL,
                               cteIndex);
+          if (!getNodeInfo(refToNode(senderRef)).m_connected) {
+            /* NF-12 evidence: the late SETUP was rejected before state
+             * allocation. Parked-request cleanup is checked separately
+             * by the leak dumps after the insert is cleared. */
+            infoEvent("[JOIN_AGG_SETUP_REJECTED node=%u failed=%u]",
+                      getOwnNodeId(), refToNode(senderRef));
+          }
           return;
         }
       }
@@ -3562,6 +3583,18 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
    * pages remain).  State stays alive until the whole chain finishes. */
   if (state != nullptr) {
     jam();
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(5146) &&
+        refToNode(state->m_senderRef) != getOwnNodeId()) {
+      /* NF-10: RELEASE owns this state and its identity is removed,
+       * but the teardown continuation below will hold the pool record.
+       * Emit once on entry, not on every delayed continuation. */
+      infoEvent("[CTE_NF10_TEARDOWN_HELD node=%u iteration=%u "
+                "coordinator=%u key=%u]",
+                getOwnNodeId(), ERROR_INSERT_EXTRA,
+                refToNode(state->m_senderRef), aggStateKey);
+    }
+#endif
     continueJoinAggTeardown(signal, aggStateKey);
   }
 }
@@ -3585,7 +3618,19 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
     if (state == nullptr) continue;
     if (refToNode(state->m_senderRef) != failedNodeId) continue;
     // An earlier RELEASE already owns teardown, including pool release.
-    if (state->m_release_started) continue;
+    if (state->m_release_started) {
+      jam();
+#ifdef ERROR_INSERT
+      if (ERROR_INSERTED(5146)) {
+        /* NF-10 matches this to the held key and coordinator. The
+         * hold remains armed until the test observes this skip. */
+        infoEvent("[CTE_NF10_RECLAIM_SKIPPED node=%u iteration=%u "
+                  "failed=%u key=%u]",
+                  getOwnNodeId(), ERROR_INSERT_EXTRA, failedNodeId, k);
+      }
+#endif
+      continue;
+    }
     const JoinAggregationState::State aggState = state->m_state.load();
     /* CTE owners mark NODE_FAIL_ABORT in their node-failure sweep,
      * including paused redistribution and ready states. Other aggregation
@@ -3713,6 +3758,22 @@ DblqhProxy::continueJoinAggTeardown(Signal *signal, Uint32 aggStateKey) {
     jam();
     return;
   }
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5146) &&
+      refToNode(state->m_senderRef) != getOwnNodeId()) {
+    jam();
+    /* Keep RELEASE's teardown ownership and the pool record until the
+     * test clears the insert, including after coordinator failure.
+     * Rearm this one continuation per held state; duplicate RELEASEs
+     * must not start another chain. The key cannot be recycled while
+     * this chain owns the state. */
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
+    signal->theData[1] = aggStateKey;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 2);
+    return;
+  }
+#endif
 
   /* Phase 1: shared MUTEX_BASED interpreter, if present. */
   if (state->m_agg_interpreter != nullptr) {

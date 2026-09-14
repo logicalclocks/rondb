@@ -19,7 +19,7 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 
 | Item | Count | Where |
 |---|---|---|
-| New error inserts | 20 (DBLQH 5128-5144, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
+| New error inserts | 21 (DBLQH 5128-5145, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
 | New DUMP codes (leak checks) | 4 (LQH 2362-2363, TC 2560, SPJ new handler + 1 code) | kernel blocks |
 | NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
@@ -213,6 +213,8 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, then swallow the CTE_SCAN_CONF of every remote requester while set; one event per instance | a remote DBSPJ worker holds this source's batch without a reply for as long as the kill needs (NF-4) |
 | 5143 | DBLQH `cteScanEmitResults` | report each saved iterator for a remote requester as `[CTE_NF5_SCAN_PAUSED node=S iteration=I requester=R]`; rows and CONF delivered normally | identifies the actual requester of a paused remote scan before the kill (NF-5); cleared by the test |
 | 5144 | DBLQH `cteScanAggFeed` | hold every aggregation feed continuation between rounds, 20 ms at a time, until cleared (after the requester / coordinator down checks); `[CTE_AGG_FEED_HELD node=S iteration=I requester=R]` once per instance | the feed is still running when its requester (NF-6) or the coordinator (NF-7) is killed; cleared by the test |
+| 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggParkSweep` / `parkJoinAggConsumer` | hold every SETUP while its coordinator lives; LDM/query instances hold placeholder sweepers until NODE_FAILREP clears their local insert; `[CTE_NF11_PARKED node=P iteration=I requester=R]` per instance and requester | consumers stay parked until the requester (NF-11) or the coordinator (NF-12) is killed; NF-11 observes the sweep, NF-12 observes late CTE SETUP rejection before state allocation; cleared by the test |
+| 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators until cleared; report held and skipped states with iteration, coordinator and pool key | NF-10 kills the coordinator after the hold event and requires reclaim to skip the same key before clearing |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | send COMPLETE_REQ with aggStateKey RNIL for one node even if the key is known | identity-addressed COMPLETE parks or resolves |
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | drop ONE SETUP_CONF for good (not 20 ms) | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
@@ -264,9 +266,9 @@ node other than the TC master when possible, and skips otherwise.
 | NF-7 | `CteCoordinatorDiesAggFeed` | 5144 on S as in NF-6; C chosen up front (startTransaction hint) so that an isolated source S != C exists; R named by the event | C | S logs `CTE_AGG_FEED_REFUSED` for C (continuation REFs the live requester); states reclaimed, 2361 clean; query fails 286 / 20016 / API 4010, 4025, 4028, 4031 (`c13a662bc93`) |
 | NF-8 | `CteCoordinatorDiesReady` | 5141 on P holds every probe, the query sits on CTE_READY states | C | P logs `JOIN_AGG_RELEASES_QUEUED` for C (proxy queued releases; leak checks verify completed reclamation); query fails 286 / 20016 / API 4010, 4025, 4028, 4031; 2361 clean (`ae810a9dc73`) |
 | NF-9 | `CteCoordinatorDiesPausedRedist` | 5140 on P holds redistribute requests with RI_NEED_CONF (one group per row); wait for a held sender other than C, proving a surviving owner is paused on P's CONF | C | P logs `JOIN_AGG_RELEASES_QUEUED` for C (proxy queued releases; leak checks verify completed reclamation); query fails 286 / 20016 / API 4010, 4025, 4028, 4031; 2361 clean (`0f983279eb6`) |
-| NF-10 | `CoordinatorDiesReleaseInFlight` | 8312 on C | C (crash insert) | no double teardown on survivors (`b30c78c0be0`); 2361 clean |
-| NF-11 | `CteRequesterDiesParked` | 5138 on P, kill R while its consumers are parked | R | sweeper REFs go to a dead node harmlessly; placeholders cleaned; 2363 clean |
-| NF-12 | `CteCoordinatorDiesParked` | 5138 on P, kill C | C | parked NULL_ROW / COMPLETE replay hits the coordinator check and REFs; 2363 clean (`5efa38683b1`) |
+| NF-10 | `CoordinatorDiesReleaseInFlight` | 5146 on P holds teardown after RELEASE takes ownership; wait for CTE_NF10_TEARDOWN_HELD naming C and a pool key | C | P reports CTE_NF10_RECLAIM_SKIPPED for the same iteration, C and key; query returns every row or fails with a node-failure error after the kill; clear 5146, restart C and require leak checks clean (`b30c78c0be0`) |
+| NF-11 | `CteRequesterDiesParked` | 5145 on P with the cross-node leaf (feeds of every node park at P); R = a reported parked requester other than C (3 nodes) | R | P logs `JOIN_AGG_PARK_SWEPT` naming R (sweeper REFs to the dead node dropped, live requesters aborted, placeholder cleaned); query fails 286 / 20016 / 1251; confirmed hold, kill and sweep required; 2363 clean |
+| NF-12 | `CteCoordinatorDiesParked` | 5145 on P with the cross-node leaf; C killed once a parked requester was reported (C's own allowed) | C | the SETUP hold releases on C's disconnect, P logs `JOIN_AGG_SETUP_REJECTED` (CTE owner-list validation rejected the late SETUP before state allocation); query fails 286 / 20016 / API 4010, 4025, 4028, 4031; after clearing the insert and restarting C, 2363 and 2361 clean |
 
 NF-2 uses one distinct group per source row to cross the 64 KiB
 redistribution flow-control threshold. Its killer subscribes before the
@@ -335,6 +337,45 @@ coordinator's states. The count is queued releases, not completed teardown;
 the later leak checks verify that reclamation finished.
 NF-8 runs on 2 nodes; NF-9's wrapper is in the 4-node suite so paused
 states exist on surviving peers.
+NF-11 and NF-12 use the held-signal driver with insert 5145, which
+combines the SETUP hold (proxy half, released once the coordinator is no
+longer connected), the placeholder sweeper hold (LDM/query instances
+clear their local insert on NODE_FAILREP) and the parked-requester event.
+The hold stays off for the rest of the iteration, so requests still
+arriving from surviving nodes cannot create another held placeholder.
+The test explicitly clears the peer's remaining insert, including the proxy.
+The cross-node leaf (`CteQueryUtil::Options::crossNodeLeaf`: CTE0's leaf
+looks up pk = grp) makes every node's feeds land on remote nodes, so
+consumers of P park from every other node. NF-11 kills a reported
+requester and waits for `[JOIN_AGG_PARK_SWEPT node=P failed=R count=N]`,
+which `joinAggParkSweep` now emits in every build. NF-11 also accepts
+1251: the sweep sends STATE_NOT_FOUND to live requesters, and this error
+can reach DBTC before its node-failure error. This allowance is local to
+NF-11 and still requires the confirmed hold, kill and sweep.
+NF-12 kills the
+coordinator (its own parked requests are allowed, `allowCoordinatorRequester`)
+and waits for `[JOIN_AGG_SETUP_REJECTED node=P failed=C]`, emitted by
+the proxy after rejecting the held CTE SETUP. The original owner list
+includes C, so owner-list validation rejects that SETUP once C is
+disconnected, before any state allocation or parked-request flush.
+The marker proves rejection; the leak dumps after clearing the insert
+and restarting C verify that parked requests and placeholders were freed.
+NULL_ROW replay after coordinator failure (`5efa38683b1`) remains a
+separate pending case (PK-8); NF-12 does not exercise that handler.
+NF-10 arms 5146 on a peer after subscribing to management events.
+RELEASE removes the identity and acknowledges normally, but the peer
+holds the teardown and pool record. The killer waits up to 30 s for
+CTE_NF10_TEARDOWN_HELD naming the query's coordinator, then kills that
+coordinator. It requires CTE_NF10_RECLAIM_SKIPPED for the same peer,
+iteration, coordinator and key within 30 s. The held key cannot be
+recycled, so this proves reclaim encountered the original teardown.
+The query may return every row before the kill; otherwise only a
+node-failure error after the confirmed hold and kill is accepted.
+Receive and close timeouts fail. Once the matching skip and query
+completion are observed, clear the peer's insert, restart the coordinator
+and verify the pools are clean. The insert guard also clears the hold
+on failure. Runs on 2 nodes; crash insert 8312 and the restart-policy
+override are no longer needed by this case.
 
 Each case runs 3 iterations to shake timing. Registration in
 `daily-basic--01-tests.txt` next to the existing `JoinAggNodeRestart`
@@ -444,7 +485,7 @@ entries, 16384 park records, 25-word park buffer.
 | PK-5 | identity table exhaustion | debug insert capping JAI_MAX_ENTRIES at N (5141) | SETUP_REF OutOfQueryMemory; query fails cleanly |
 | PK-6 | RELEASE before flush / stale SETUP_CONF | 8313 (drop one SETUP_CONF) so the scan aborts and the CONF is stale | `sendStaleSetupReclaim` releases the state with zero transid; 2361 clean |
 | PK-7 | duplicate identity | two SETUPs with the same transid + queryTag from `testJoinAgg` | second gets SETUP_REF InvalidRequest (release builds); first still releasable |
-| PK-8 | parked replay after coordinator death | NF-12 above | covered in Phase 1; listed here for the parking matrix |
+| PK-8 | parked replay after coordinator death | separate replay hold after successful SETUP; include NULL_ROW_REQ | pending: replay must hit the failed-coordinator guard (`5efa38683b1`), with identity and state pools clean; NF-12 covers SETUP rejection instead |
 
 PK-1..PK-7 live in `testCteProtocol` (PK-1, PK-2 need a running CTE
 query: reuse the NDB API helper).
@@ -477,7 +518,9 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | `cte_nodefail_coordinator_feed.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesAggFeed T1` (NF-7) - **done** |
 | `cte_nodefail_coordinator_ready.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesReady T1` (NF-8) - **done** |
 | `cte_nodefail_coordinator_redist.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesPausedRedist T1` (NF-9) - **done** |
-| `cte_nodefail_<case>.test` (suite `ndb_cte`, or `ndb_cte_ng2r2` when the case needs 4 nodes) | 1-3 | one wrapper per further NDBT case (NF-10 .. NF-12, PK-8), same pattern |
+| `cte_nodefail_coordinator_release.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CoordinatorDiesReleaseInFlight T1` (NF-10) - **done** |
+| `cte_nodefail_requester_parked.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteRequesterDiesParked T1` (NF-11) - **done** |
+| `cte_nodefail_coordinator_parked.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesParked T1` (NF-12: late SETUP rejection and parked-request cleanup; PK-8 remains pending) - **done** |
 | `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |
 | `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline |

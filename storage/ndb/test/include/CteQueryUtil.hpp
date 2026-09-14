@@ -83,9 +83,15 @@ struct Options {
   Uint32 mainBatchRows;
   /* Data node to use as transaction coordinator (0 = the API's choice). */
   Uint32 tcNodeId;
+  /* CTE0's aggregate leaf looks up pk = grp instead of pk = pk, so the
+   * feeds of a scanned row go to the node holding row `grp`, spread over
+   * the cluster, instead of staying on the scanning node.  Same result
+   * rows; used by the parking cases, which need remote feeds. */
+  bool crossNodeLeaf;
   Options()
       : shape(LookupMain), closeAfterFirstBatch(false), beforeClose(nullptr),
-        beforeExecute(nullptr), arg(nullptr), mainBatchRows(0), tcNodeId(0) {}
+        beforeExecute(nullptr), arg(nullptr), mainBatchRows(0), tcNodeId(0),
+        crossNodeLeaf(false) {}
 };
 
 struct Result {
@@ -223,8 +229,8 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     qb->destroy();
     return -2;
   }
-  const NdbQueryOperand *cteJoinKey[] = {qb->linkedValue(cteScanOp, "pk"),
-                                         nullptr};
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, opt.crossNodeLeaf ? "grp" : "pk"), nullptr};
   NdbQueryOptions cteLeafOpts;
   cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
   cteLeafOpts.setAggregation(cteAgg);

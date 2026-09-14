@@ -53,7 +53,9 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5129: Answer ONE CTE scan continuation with CTE_SCAN_REF 1251, token
       released (cteScanReqImpl, cleared after use)
 5130: Aggregation feed handles one group per continuation round while set
-5131: Hold ONE CTE lookup 50 ms via a delayed signal to self (cleared after use)
+5131: Hold ONE CTE lookup 50 ms via a delayed signal to self (cleared after use).
+      The local copy records the requester's connection generation and is
+      discarded without a reply if the requester disconnects or reconnects.
 5132: REF ONE null-row injection (joinAggNullRowReqImpl, cleared after use)
 5133: Delay every inbound JOIN_AGG_REDISTRIBUTE_REQ 200 ms while set
 5134: redistAlloc uses 512-byte redistribution pages while set
@@ -75,6 +77,10 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       "[CTE_NF3_LOOKUP_HELD node=<node> iteration=<extra>]" (once per
       instance; extra is the test iteration, its top bit marks the event
       as sent). NF-3 waits for this event before killing the peer.
+      Local delayed copies retain the requester's original connection
+      generation across every re-hold. Drop them without a reply when
+      that requester disconnects or reconnects, even after the insert
+      has been cleared (NF-8 kills the coordinator/requester).
 5142: In cteScanEmitResults, after a batch's rows went out, swallow the
       CTE_SCAN_CONF of every REMOTE requester while set (local requesters
       are answered). The first swallow emits InfoEvent
@@ -94,7 +100,26 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       once per instance (extra is the test iteration, its top bit marks the
       event as sent). NF-6 kills the named requester, NF-7 the coordinator;
       both clear the insert on the source afterwards.
-Next DBLQH 5145
+5145: Parking hold (DblqhProxy + DBLQH). Proxy: hold every JOIN_AGG_SETUP_REQ
+      20 ms at a time while its coordinator is connected. DBLQH: hold the
+      placeholder failure sweeper 20 ms at a time until NODE_FAILREP
+      clears the insert on each LDM/query instance; later placeholders
+      are then swept normally. Report each remote requester that parks as
+      "[CTE_NF11_PARKED node=<node> iteration=<extra low half>
+      requester=<node>]" once per instance and requester. NF-11 kills a
+      reported requester, NF-12 the coordinator; both explicitly clear
+      the peer's remaining insert (including the proxy) afterwards.
+5146: Hold proxy join-agg teardown for remote coordinators, 20 ms at a
+      time, until explicitly cleared (also after node failure). RELEASE
+      still removes the identity and sends its CONF. Emit InfoEvent
+      "[CTE_NF10_TEARDOWN_HELD node=<node> iteration=<extra>
+      coordinator=<node> key=<key>]" once when RELEASE starts teardown.
+      Node-failure reclaim emits "[CTE_NF10_RECLAIM_SKIPPED node=<node>
+      iteration=<extra> failed=<node> key=<key>]" when it skips a state
+      already owned by RELEASE. NF-10 must match both events for the
+      same iteration, coordinator and key, then clear the surviving
+      peer's insert to let teardown finish.
+Next DBLQH 5147
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

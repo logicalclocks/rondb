@@ -9278,6 +9278,7 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
   const Uint32 queryTag = JoinAggregationState::identWordQueryTag(identWord);
   const Uint32 cteId = JoinAggregationState::identWordCteId(identWord);
   const Uint32 leafIdx = JoinAggregationState::identWordLeafIdx(identWord);
+  const Uint32 requesterNode = refToNode(signal->senderBlockRef());
 
   const Uint32 parkI = joinAggSeizeParkRec();
   if (unlikely(parkI == RNIL)) {
@@ -9368,6 +9369,21 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
     signal->theData[4] = cteId;
     sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
   }
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5145) && requesterNode != getOwnNodeId()) {
+    /* Test hook (NF-11, NF-12): report each remote requester that parks
+     * here, once per instance and requester (extra: iteration in the low
+     * half, requester bitmap in the high half; ids above 15 share a bit).
+     * The tests kill a reported requester, or the coordinator, while its
+     * requests are parked. */
+    const Uint32 bit = 16 + (requesterNode < 15 ? requesterNode : 15);
+    if ((c_error_insert_extra & (1u << bit)) == 0) {
+      infoEvent("[CTE_NF11_PARKED node=%u iteration=%u requester=%u]",
+                getOwnNodeId(), c_error_insert_extra & 0xFFFF, requesterNode);
+      c_error_insert_extra |= (1u << bit);
+    }
+  }
+#endif
   return res;
 }
 
@@ -9382,15 +9398,35 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
   const Uint32 queryTag = signal->theData[3];
   const Uint32 cteId = signal->theData[4];
+  if (ERROR_INSERTED(5145)) {
+    jam();
+    /* Test hook (NF-11, NF-12): hold until this instance processes
+     * NODE_FAILREP or the test clears the insert. The failure handler
+     * clears the insert for the rest of the iteration, so placeholders
+     * created later by surviving requesters are also swept normally. */
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 5);
+    return;
+  }
   Uint32 chain = joinAggIdentitySweep(transid, queryTag, cteId);
   if (chain == RNIL) {
     jam();  // filled or already released — nothing to do
     return;
   }
+  Uint32 swept = 0;
+  Uint32 deadRequester = 0;
   while (chain != RNIL) {
     jam();
     JoinAggParkRec *const rec = joinAggGetParkRec(chain);
     const Uint32 next = rec->m_next;
+    swept++;
+    if (deadRequester == 0) {
+      HostRecordPtr hostPtr;
+      hostPtr.i = refToNode(rec->m_senderRef);
+      if (hostPtr.i > 0 && hostPtr.i < chostFileSize) {
+        ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
+        if (hostPtr.p->nodestatus == ZNODE_DOWN) deadRequester = hostPtr.i;
+      }
+    }
     for (Uint32 k = 0; k < rec->m_noOfSections; k++) {
       releaseSection(rec->m_sections[k]);
     }
@@ -9465,6 +9501,11 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
     joinAggFreeParkRec(chain);
     chain = next;
   }
+  /* Cluster-log evidence of a swept placeholder, naming a failed
+   * requester when one was among the parked (0 otherwise); NF-11 waits
+   * for this line after killing the requester. */
+  infoEvent("[JOIN_AGG_PARK_SWEPT node=%u failed=%u count=%u]",
+            getOwnNodeId(), deadRequester, swept);
 }
 
 /**
@@ -16968,6 +17009,14 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
 
 #ifdef ERROR_INSERT
   c_master_node_id = nodeFail.masterNodeId;
+  if (ERROR_INSERTED(5145)) {
+    jam();
+    /* End the parking hold on every LDM/query instance at node failure.
+     * Keep it off even after the original placeholder has been swept:
+     * later requests from surviving nodes must not become held again.
+     * The proxy's separate SETUP hold is unaffected. */
+    CLEAR_ERROR_INSERT_VALUE;
+  }
 #endif
 
   ndbrequire(index == TnoOfNodes);
@@ -21604,13 +21653,45 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
    * We copy the section data into local buffers before releasing. */
   SectionHandle handle(this, signal);
 
+#ifdef ERROR_INSERT
+  /* Test-delayed lookups survive in our local timer queue after the
+   * original sender fails. Carry its connection generation in a local
+   * trailer so clearing the insert cannot send an old TreeNode pointer
+   * back to a restarted DBSPJ. This is not part of the wire protocol. */
+  const Uint32 requesterNode = refToNode(req.senderRef);
+  const NodeInfo &requester = getNodeInfo(requesterNode);
+  const Uint32 requesterConnectCount = requester.m_connectCount;
+  const Uint32 delayedLookupLength = CteLookupReq::SignalLength + 1;
+  Uint32 lookupSignalLength = signal->getLength();
+  const bool delayedLookup =
+      signal->getSendersBlockRef() == reference() &&
+      lookupSignalLength == delayedLookupLength;
+  if (delayedLookup || ERROR_INSERTED(5131) || ERROR_INSERTED(5141)) {
+    if (requesterNode != getOwnNodeId() &&
+        (!requester.m_connected ||
+         (delayedLookup &&
+          signal->theData[CteLookupReq::SignalLength] !=
+              requesterConnectCount))) {
+      jam();
+      // The requester is gone; drop its saved sections without a reply.
+      releaseSections(handle);
+      return;
+    }
+    if (!delayedLookup) {
+      jam();
+      ndbrequire(lookupSignalLength == CteLookupReq::SignalLength);
+      signal->theData[CteLookupReq::SignalLength] = requesterConnectCount;
+      lookupSignalLength = delayedLookupLength;
+    }
+  }
+
   if (ERROR_INSERTED(5131)) {
     jam();
     /* Test hook: hold ONE lookup 50 ms so its reply is in flight when a
      * test kills the target node or closes the request. */
     CLEAR_ERROR_INSERT_VALUE;
     sendSignalWithDelay(reference(), GSN_CTE_LOOKUP_REQ, signal, 50,
-                        signal->getLength(), &handle);
+                        lookupSignalLength, &handle);
     return;
   }
   if (ERROR_INSERTED(5141)) {
@@ -21622,7 +21703,6 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * The first remote request seen by this instance emits the event the
      * test waits for; the extra error-insert value carries the test
      * iteration, and its top bit records that the event went out. */
-#ifdef ERROR_INSERT
     constexpr Uint32 eventSent = 0x80000000;
     if (signal->getSendersBlockRef() != reference() &&
         refToNode(req.senderRef) != getOwnNodeId() &&
@@ -21631,11 +21711,11 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
                 getOwnNodeId(), c_error_insert_extra);
       c_error_insert_extra |= eventSent;
     }
-#endif
     sendSignalWithDelay(reference(), GSN_CTE_LOOKUP_REQ, signal, 200,
-                        signal->getLength(), &handle);
+                        lookupSignalLength, &handle);
     return;
   }
+#endif
 
   // DBSPJ may still be alive after its DBTC coordinator fails.
   // Check the request's coordinator before dereferencing shared state.

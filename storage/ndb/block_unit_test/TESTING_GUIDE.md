@@ -250,6 +250,8 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
 | 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |
 | 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_AGG_FEED_HELD event per instance naming the remote requester | no |
+| 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | SETUP held while its coordinator lives, park sweeper held until local NODE_FAILREP; CTE_NF11_PARKED event per instance and remote requester | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
+| 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators; CTE_NF10_TEARDOWN_HELD identifies the state, CTE_NF10_RECLAIM_SKIPPED proves failure cleanup skipped it | no; test must clear after matching events |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
