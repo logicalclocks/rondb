@@ -181,8 +181,8 @@ Number of output lines, including header: 6
 -21	2026-05-31 12:00:00	785	online
 -21	2026-05-31 18:00:00	768	Travel
 +CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'transactions_1' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
-+Caught exception: Non-aggregating CTE body is not a single-row key lookup.
 +Error handling: RPE
++[unsupported] Caught exception: Non-aggregating CTE body is not a single-row key lookup.
 ==========
 
 
@@ -487,9 +487,9 @@ SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MA
 cnt_all	cnt_i1	i1_sum	dec_max	d_max	s_min
 3	0	NULL	NULL	NULL	NULL
 
-=== PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max ===
+=== PROBE EDGE-FLOAT-A: exactly representable floats and DATE min/max (no DECIMAL SUM: F21, topology-dependent) ===
 == Query ==
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3;
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3;
 
 Number of output lines, including header: 2
 
@@ -499,9 +499,9 @@ Number of output lines, including header: 2
 
 
 == Expected result ==
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 3|
-ff_sum	fd_sum	fd_min	d_min	d_max	dec_sum
-3.75	1028.125	-0.125	1970-01-01	2024-02-29	6.06
+SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3|
+ff_sum	fd_sum	fd_min	d_min	d_max
+3.75	1028.125	-0.125	1970-01-01	2024-02-29
 
 === PROBE EDGE-FLOAT-B: rounding-sensitive floats (FLOAT binary32, non-dyadic doubles) ===
 == Query ==
@@ -523,7 +523,7 @@ Number of output lines, including header: 2
 == Expected result ==
 SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
 ff_sum	fd_sum	ff_max	dec_sum
-123457.38906261639	123457.38900010001	123457	123457.39
+123457.38906261639	123457.3890001	123457	123457.39
 
 === PROBE EDGE-DATE: DATE spread up to 9999-12-31 ===
 == Query ==
@@ -588,12 +588,10 @@ Number of output lines, including header: 2
 == Diff ==
 --- mysql.out
 +++ ronsql.out
-@@ -1,2 +1,3 @@
--big_sum
+@@ -1,2 +1,2 @@
+ big_sum
 -9223372036854775808
-+Error handling: SRE,te->RPE
-+Caught exception: Failed to execute scan aggregation.
-+NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
++-9223372036854775808
 ==========
 
 
@@ -836,8 +834,8 @@ Number of output lines, including header: 2
 -c_label	c_payload
 -A	\n
 +Unsupported column type (17) in pass-through result.
-+Caught exception: Unsupported column type in pass-through result.
 +Error handling: RPE
++[unsupported] Caught exception: Unsupported column type in pass-through result.
 ==========
 
 

@@ -22,6 +22,32 @@ fuzzers; the error-code tests of M1.0 pass; the three MTR suites are green
 
 ## M1.0 — Proper HTTP status codes for RonSQL errors
 
+**Status: DONE 2026-09-14 on RONDB-1124 — verified: `rdrs2-golang_gotest`
+(incl. `TestErrorStatusByClass`), `ronsql`, `ronsql_cte`, `ronsql_fs`,
+`ronsql_fs_jit`, `ronsql_fs_ng2r2` green; results embedding RDRS error
+bodies re-recorded for the `[<class>]` prefix.**  Implementation notes: the class lives on
+`RonSQLPermanentError` (`RonSQLCommon.hpp`), set explicitly at the parser
+error, the `feature_not_implemented` macro, the OOM / no-Ndb paths and the
+NDB-error rethrow (classified by `NdbError::Classification`, NDB code
+attached), and by `ronsql_classify_message()` for every other site — an
+unrecognized wording stays INTERNAL (500) so it is visible as
+`[internal]`.  `ronsql_op` maps the class to 400 / 413 / 503 / 500,
+prefixes the body with `[<class>]` and exports the class and NDB code
+through `RonSQLExecParams`; `ronsql_ctrl` sets the status from the
+operation and adds `X-RonSQL-Error-Class` / `X-RonSQL-NDB-Error`.
+Framework: `exec.Classify` accepts the new statuses and keeps the old
+framing; `exec.ErrorClass` parses the prefix.
+Verification notes: the controller's parse-only pre-check had its own
+catch (unprefixed, 500) — now classified through the shared
+`ronsql_http_code_for`; the unknown-column error surfaces through the
+stale-schema path as "Could not find column" (added to the SEMANTIC
+vocabulary).  While running `rdrs2-golang_gotest` a pre-existing, unrelated
+failure surfaced once the `ronsql` package passed: the runner stops at the
+first failing package, and `ronsqltpch` (written for the dedicated
+`rdrs2-ronsqltpch` suite) fails with 401 in the generic suite since
+RONDB-1104 enabled API keys there; it is now excluded from the generic
+run (`run_gotest.inc`).
+
 ### Today
 
 `storage/ndb/rest-server2/server/src/db_operations/ronsql/ronsql_operation.cpp`

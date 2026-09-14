@@ -112,7 +112,8 @@ using std::endl;
 #include "RdrsSchemaCache.hpp"
 
 #define feature_not_implemented(description) \
-  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, \
+                             "RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
 
@@ -1101,7 +1102,7 @@ RonSQLPreparer::parse()
       }
     }
   }
-  throw RonSQLPermanentError("Syntax error.");
+  throw RonSQLPermanentError(RonSQLErrorClass::SYNTAX, "Syntax error.");
 }
 
 void
@@ -12226,7 +12227,8 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // is NOT a std::runtime_error, so it would otherwise reach catch(...).
     DEB_TRACE(); err << "Error handling: OOM->RPE\n";
     cleanup_trans();
-    throw RonSQLPermanentError("Out of memory while processing the query.");
+    throw RonSQLPermanentError(RonSQLErrorClass::RESOURCE,
+                               "Out of memory while processing the query.");
   }
   catch (const std::runtime_error& e)
   {
@@ -12244,7 +12246,7 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     } else {
       DEB_TRACE(); err << ",nn\n";
       cleanup_trans();
-      throw RonSQLPermanentError("No NDB object");
+      throw RonSQLPermanentError(RonSQLErrorClass::RESOURCE, "No NDB object");
     }
     /*
      * Render the Ndb error BEFORE releasing the transaction. getNdbError()
@@ -12303,7 +12305,27 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     }
     DEB_TRACE();
     err << "->RPE\n" << ndb_err_text.str() << '\n';
-    throw RonSQLPermanentError(e.what());
+    // RONDB-1124: an NDB error caused by the statement or its data is the
+    // client's (e.g. 1860 arithmetic overflow); anything else is ours.
+    RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+    switch (ndb_err.classification) {
+    case NdbError::ApplicationError:
+    case NdbError::NoDataFound:
+    case NdbError::ConstraintViolation:
+    case NdbError::SchemaError:
+    case NdbError::UserDefinedError:
+      cls = RonSQLErrorClass::SEMANTIC;
+      break;
+    case NdbError::InsufficientSpace:
+      cls = RonSQLErrorClass::RESOURCE;
+      break;
+    case NdbError::FunctionNotImplemented:
+      cls = RonSQLErrorClass::UNSUPPORTED;
+      break;
+    default:
+      break;
+    }
+    throw RonSQLPermanentError(cls, e.what(), ndb_err.code);
   }
   catch (...) {
     // All exceptions thrown should be instances of runtime_error.

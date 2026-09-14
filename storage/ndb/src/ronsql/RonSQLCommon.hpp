@@ -25,6 +25,7 @@
 #ifndef STORAGE_NDB_SRC_RONSQL_RONSQLCOMMON_HPP
 #define STORAGE_NDB_SRC_RONSQL_RONSQLCOMMON_HPP 1
 
+#include <cstring>
 #include "Ndb.hpp"
 #include "NdbOperation.hpp"
 #include "mysql_time.h"
@@ -137,6 +138,12 @@ struct RonSQLExecParams
   RonSQLPhaseStats* phase_stats = nullptr;  // Optional: per-phase timing sink
                                             // (captured only when non-NULL and
                                             // RONSQL_PHASE_STATS is compiled in)
+  // RONDB-1124 (output): set by ronsql_op when the statement fails
+  // permanently, so the HTTP layer can report the error class (status code,
+  // X-RonSQL-Error-Class) and the NDB error code (X-RonSQL-NDB-Error)
+  // without parsing the message.
+  const char* error_class = NULL;
+  int error_ndb_code = 0;
   static const Uint32 ARENA_MALLOC_PAGE_SIZE = 2048;
 };
 
@@ -389,8 +396,94 @@ struct CorrelatedPair {
 class RonSQLRetryableError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
+
+/*
+ * RONDB-1124: the class of a permanent RonSQL error decides how the caller
+ * reports it - RDRS maps it to an HTTP status (400 for syntax / semantic /
+ * unsupported, 413 for a result that exceeds a size limit, 503 for an
+ * exhausted resource, 500 for an internal error) and prefixes the message
+ * with the class name.  A site that knows its class passes it; the
+ * one-argument constructor classifies by message text
+ * (ronsql_classify_message), which covers the require_prm() sites.
+ */
+enum class RonSQLErrorClass {
+  SYNTAX,       // the statement does not parse
+  SEMANTIC,     // valid SQL that refers to nothing, or mistyped operands
+  UNSUPPORTED,  // valid SQL that RonSQL does not run
+  LIMIT,        // a RonSQL or configured limit is exceeded
+  RESOURCE,     // the server ran out of a resource; retry later
+  INTERNAL      // a bug: the statement should have worked
+};
+
+inline const char* ronsql_error_class_name(RonSQLErrorClass c) {
+  switch (c) {
+  case RonSQLErrorClass::SYNTAX:      return "syntax";
+  case RonSQLErrorClass::SEMANTIC:    return "semantic";
+  case RonSQLErrorClass::UNSUPPORTED: return "unsupported";
+  case RonSQLErrorClass::LIMIT:       return "limit";
+  case RonSQLErrorClass::RESOURCE:    return "resource";
+  case RonSQLErrorClass::INTERNAL:    return "internal";
+  }
+  return "internal";
+}
+
+/*
+ * Classify a permanent-error message by its wording.  Rules are ordered:
+ * an explicit bug marker wins, then syntax, resource and limit markers,
+ * then the "not supported" family, then the user-error vocabulary.  Anything
+ * unrecognized stays INTERNAL (a 500, today's behaviour), so a wrongly
+ * worded user error is visible as "[internal]" rather than hidden as a 400.
+ */
+inline RonSQLErrorClass ronsql_classify_message(const char* msg) {
+  if (msg == nullptr) return RonSQLErrorClass::INTERNAL;
+  auto has = [msg](const char* needle) { return strstr(msg, needle) != nullptr; };
+  auto starts = [msg](const char* prefix) { return strncmp(msg, prefix, strlen(prefix)) == 0; };
+  if (has("Please report a bug") || starts("Bug in ") || has("INTERNAL"))
+    return RonSQLErrorClass::INTERNAL;
+  if (starts("Syntax error") || has("Parser stack exceeded") || has("Empty input"))
+    return RonSQLErrorClass::SYNTAX;
+  if (has("Out of memory") || has("No NDB object"))
+    return RonSQLErrorClass::RESOURCE;
+  if (has("too large") || has("Too many") || has("too many") || has("more than 1000") ||
+      has("exceeded") || has("exceeds"))
+    return RonSQLErrorClass::LIMIT;
+  if (has("not supported") || has("not yet supported") || has("feature not implemented") ||
+      has("not implemented") || has("Unsupported") || has("only supported") ||
+      has("cannot be used") || has("is not a single-row key lookup") ||
+      has("cannot be projected") || has("cannot be applied"))
+    return RonSQLErrorClass::UNSUPPORTED;
+  if (has("not found") || has("Could not find") || has("could not find") ||
+      has("explain mode") || has("Tried to ") ||
+      has("Unknown") || has("Ambiguous") || has("Not unique") ||
+      has("Duplicate") || has("requires") || has("mismatch") || has("compared to") ||
+      has("must ") || has("references") || has("Non-boolean") || has("Expected") ||
+      has("Failed converting") || has("Failed to convert") || has("non-numeric") ||
+      has("Failed to get table") || has("Failed to get index") || has("does not") ||
+      has("is not a") || has("is not in") || has("invalid") || has("Invalid") ||
+      has("contradiction") || has("without") || has("no FROM") || has("no aggregate") ||
+      has("Not an aggregate") || has("Ungrouped") || has("not in GROUP BY") ||
+      has("not a body output") || has("LIMIT 0") || has("failed") || has("Failed to execute"))
+    return RonSQLErrorClass::SEMANTIC;
+  return RonSQLErrorClass::INTERNAL;
+}
+
 class RonSQLPermanentError : public std::runtime_error {
-  using std::runtime_error::runtime_error;
+ public:
+  explicit RonSQLPermanentError(const std::string& msg)
+    : std::runtime_error(msg),
+      m_class(ronsql_classify_message(msg.c_str())) {}
+  explicit RonSQLPermanentError(const char* msg)
+    : std::runtime_error(msg),
+      m_class(ronsql_classify_message(msg)) {}
+  RonSQLPermanentError(RonSQLErrorClass c, const std::string& msg,
+                       int ndb_error_code = 0)
+    : std::runtime_error(msg), m_class(c), m_ndb_error_code(ndb_error_code) {}
+  RonSQLErrorClass error_class() const { return m_class; }
+  const char* error_class_name() const { return ronsql_error_class_name(m_class); }
+  int ndb_error_code() const { return m_ndb_error_code; }
+ private:
+  RonSQLErrorClass m_class;
+  int m_ndb_error_code = 0;
 };
 /*
  * Carries the Ndb error code because the transaction is closed before the

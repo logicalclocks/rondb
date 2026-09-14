@@ -18,6 +18,7 @@
  */
 
 #include "ronsql_operation.hpp"
+#include <cstring>
 #include "src/error_strings.h"
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
 #include "storage/ndb/plugin/ndb_sleep.h"
@@ -36,6 +37,25 @@
 #endif
 
 #include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
+
+HTTP_CODE ronsql_http_code_for(RonSQLErrorClass cls, const char* what) {
+  switch (cls) {
+  case RonSQLErrorClass::SYNTAX:
+  case RonSQLErrorClass::SEMANTIC:
+  case RonSQLErrorClass::UNSUPPORTED:
+    return CLIENT_ERROR;
+  case RonSQLErrorClass::LIMIT:
+    return (what != nullptr &&
+            (strstr(what, "result too large") != nullptr ||
+             strstr(what, "Response too large") != nullptr))
+               ? PAYLOAD_TOO_LARGE : CLIENT_ERROR;
+  case RonSQLErrorClass::RESOURCE:
+    return SERVICE_UNAVAILABLE;
+  case RonSQLErrorClass::INTERNAL:
+    return SERVER_ERROR;
+  }
+  return SERVER_ERROR;
+}
 
 RS_Status ronsql_op(RonSQLExecParams& params) {
   std::basic_ostream<char>& err = *params.err_stream;
@@ -88,20 +108,39 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
     catch (RonSQLRetryableError& e) {
       DEB_TRACE();
       if (is_last_attempt) {
-        err << "Caught RonSQLRetryableError after " << max_attempts
+        /*
+         * RONDB-1124: an exhausted retry budget is "try again later", not a
+         * server bug: 503 Service Unavailable (was 500).
+         */
+        err << "[resource] Caught RonSQLRetryableError after " << max_attempts
             << " attempts: " << e.what() << ".\n";
-        return RS_SERVER_ERROR(
-            std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
-            " Detail: " + e.what());
+        params.error_class = "resource";
+        return __RS_ERROR(SERVICE_UNAVAILABLE, -1, -1, -1, -1,
+                          std::string(rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)) +
+                          " Detail: " + e.what(),
+                          __LINE__, __MYFILENAME__);
       }
       ndb_retry_sleep(retry_sleep_ms);
       retry_sleep_ms = std::min(retry_sleep_ms * 2, 1000);
     }
     catch (RonSQLPermanentError& e) {
-      err << "Caught exception: " << e.what() << "\n";
-      return RS_SERVER_ERROR(
-          std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)) +
-          " Detail: " + e.what());
+      /*
+       * RONDB-1124: the error class chooses the HTTP status.  Syntax,
+       * semantic and unsupported errors are the client's (400); a result
+       * or request that exceeds a size limit is 413; other limits are
+       * 400; an exhausted resource is 503; an internal error stays 500.
+       * The class name prefixes the message and is exported through
+       * params.error_class for the X-RonSQL-Error-Class header.
+       */
+      const char* cls = e.error_class_name();
+      err << "[" << cls << "] Caught exception: " << e.what() << "\n";
+      params.error_class = cls;
+      params.error_ndb_code = e.ndb_error_code();
+      const HTTP_CODE http = ronsql_http_code_for(e.error_class(), e.what());
+      return __RS_ERROR(http, -1, -1, e.ndb_error_code(), -1,
+                        std::string(rdrsErrorMessage(ERROR_RONSQL_PERMANENT)) +
+                        " [" + cls + "] Detail: " + e.what(),
+                        __LINE__, __MYFILENAME__);
     }
     catch (...) {
       // This should never happen

@@ -75,7 +75,17 @@ F8 was a framework fixture issue and is already fixed.
   `Failed writing aggregation program. Please report a bug.` instead of the
   specific `AVG over string columns is not supported.` guard (which fires for
   temporal AVG). Found by the E7 envelope fuzzer. Functionally a clean reject.
-- [ ] HTTP status: distinguish invalid SQL/syntax from server failures
+- [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
+  error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
+  X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,
+  ronsql / ronsql_cte / fs suites green, results re-recorded for the prefix).
+- [ ] Observation (2026-09-14, unrelated to RONDB-1124): one run of `ronsql.ronsql_join`
+  Test 3 (`SELECT o.o_custkey, MIN(l.l_price), MAX(l.l_price) FROM orders AS o JOIN
+  lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey`) aborted `ronsql_cli` on
+  the debug assertion `m_finalWorkers < getWorkerCount()` in
+  `NdbQueryImpl::setFetchTerminated` (NdbQueryOperation.cpp:3511, pushed-join
+  worker accounting on an abort path; area last changed by RONDB-1107 on 2026-09-01);
+  20 consecutive reruns passed. Intermittent; for the RONDB-1107 / join-aggregation owners.
   instead of returning HTTP 500 for these client errors. Preserve the
   current permanent-error classification until the protocol is changed.
 

@@ -114,7 +114,30 @@ func TestClassify(t *testing.T) {
 		t.Error("retryable")
 	}
 	if o, _ := Classify(400, "bad database"); o != Error {
-		t.Error("400")
+		t.Error("400 without a RonSQL body is a request error")
+	}
+	// RONDB-1124: the class decides the status; a 400 with the RonSQL
+	// framing is a clean rejection, 413 too, 503 is retryable.
+	if o, _ := Classify(400, "[syntax] Caught exception: Syntax error."); o != CleanReject {
+		t.Error("400 syntax")
+	}
+	if o, _ := Classify(400, "[unsupported] Caught exception: Non-aggregating CTE body is not a single-row key lookup."); o != CleanReject {
+		t.Error("400 unsupported")
+	}
+	if o, _ := Classify(413, "[limit] Caught exception: Pass-through ORDER BY result too large."); o != CleanReject {
+		t.Error("413")
+	}
+	if o, _ := Classify(503, "[resource] Caught RonSQLRetryableError after 10 attempts: x"); o != Retryable {
+		t.Error("503")
+	}
+	if o, _ := Classify(500, "[internal] Caught exception: Failed writing aggregation program. Please report a bug."); o != CleanReject {
+		t.Error("500 internal keeps the permanent outcome")
+	}
+	if c := ErrorClass("Error handling: RPE\n[semantic] Caught exception: Table not found."); c != "semantic" {
+		t.Errorf("ErrorClass %q", c)
+	}
+	if c := ErrorClass("Caught exception: Table not found."); c != "" {
+		t.Errorf("ErrorClass without prefix %q", c)
 	}
 	if o, _ := Classify(429, "rate limited"); o != Retryable {
 		t.Error("429")

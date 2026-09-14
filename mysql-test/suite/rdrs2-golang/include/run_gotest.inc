@@ -109,6 +109,12 @@ if (defined $ENV{'RDRS_GO_PACKAGE'} && $ENV{'RDRS_GO_PACKAGE'} ne '') {
     @packages = split(' ', $ENV{'RDRS_GO_PACKAGE'});
 } else {
     @packages = split(/\n/, `go list ./... 2>/dev/null`);
+    # The TPC-H RonSQL package belongs to its own suite (rdrs2-ronsqltpch),
+    # which loads the TPC-H tables with load_tpch and runs RDRS without API
+    # keys.  In this suite the instances require API keys (RONDB-1104) and
+    # the tables are not loaded, so every query would fail with 401
+    # "API key not authorized to access test" before touching a table.
+    @packages = grep { !m{/integrationtests/ronsqltpch$} } @packages;
 }
 die "No Go packages found to test\n" unless @packages;
 

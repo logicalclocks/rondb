@@ -212,11 +212,14 @@ var transientNDBErrors = []string{
 	"Table definition has changed",
 }
 
-// Classify maps an RDRS response to an outcome (ronsql_ctrl.cpp /
-// ronsql_operation.cpp: every RonSQL error is HTTP 500 with a text body;
-// "Caught exception:" = permanent, "RonSQLRetryableError" = retryable;
-// 429 = rate limited; 400 = request validation).  Transient NDB dictionary
-// errors classify as Retryable whatever the body's framing.
+// Classify maps an RDRS response to an outcome.  Since RONDB-1124 the
+// status carries the error class (ronsql_operation.cpp): 400 = syntax /
+// semantic / unsupported (a clean rejection), 413 = a size limit (also a
+// clean rejection), 429 = rate limited, 503 = an exhausted resource or
+// retry budget (retryable), 500 = internal.  Before RONDB-1124 every RonSQL
+// error was a 500 with a "Caught exception:" body; that framing is still
+// honoured so the framework classifies both servers.  Transient NDB
+// dictionary errors classify as Retryable whatever the framing.
 func Classify(status int, body string) (Outcome, string) {
 	msg := strings.TrimSpace(body)
 	switch {
@@ -224,15 +227,36 @@ func Classify(status int, body string) (Outcome, string) {
 		return OK, ""
 	case status == http.StatusTooManyRequests:
 		return Retryable, msg
+	case status == http.StatusServiceUnavailable:
+		return Retryable, msg
+	case status == http.StatusBadRequest && strings.Contains(msg, "Caught exception:"):
+		return CleanReject, msg
+	case status == http.StatusRequestEntityTooLarge:
+		return CleanReject, msg
 	case status == http.StatusInternalServerError && strings.Contains(msg, "RonSQLRetryableError"):
 		return Retryable, msg
 	case status == http.StatusInternalServerError && isTransientNDB(msg):
 		return Retryable, msg
 	case status == http.StatusInternalServerError && strings.Contains(msg, "Caught exception:"):
+		// pre-RONDB-1124 servers: every permanent error was a 500; on a
+		// RONDB-1124 server a 500 with this framing is "[internal]", which is
+		// still a clean, permanent outcome of the statement
 		return CleanReject, msg
 	default:
 		return Error, fmt.Sprintf("HTTP %d: %s", status, msg)
 	}
+}
+
+// ErrorClass extracts the RONDB-1124 error class from a RonSQL error body
+// ("[syntax] Caught exception: …"); "" when absent (older servers).
+func ErrorClass(body string) string {
+	msg := strings.TrimSpace(body)
+	i := strings.Index(msg, "[")
+	j := strings.Index(msg, "] Caught ")
+	if i < 0 || j < 0 || j < i {
+		return ""
+	}
+	return msg[i+1 : j]
 }
 
 func isTransientNDB(msg string) bool {

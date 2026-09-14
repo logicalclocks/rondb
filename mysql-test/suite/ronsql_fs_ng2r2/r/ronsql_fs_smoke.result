@@ -181,8 +181,8 @@ Number of output lines, including header: 6
 -21	2026-05-31 12:00:00	785	online
 -21	2026-05-31 18:00:00	768	Travel
 +CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'transactions_1' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
-+Caught exception: Non-aggregating CTE body is not a single-row key lookup.
 +Error handling: RPE
++[unsupported] Caught exception: Non-aggregating CTE body is not a single-row key lookup.
 ==========
 
 
@@ -592,8 +592,8 @@ Number of output lines, including header: 2
 -big_sum
 -9223372036854775808
 +Error handling: SRE,te->RPE
-+Caught exception: Failed to execute scan aggregation.
 +NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
++[semantic] Caught exception: Failed to execute scan aggregation.
 ==========
 
 
@@ -836,8 +836,8 @@ Number of output lines, including header: 2
 -c_label	c_payload
 -A	\n
 +Unsupported column type (17) in pass-through result.
-+Caught exception: Unsupported column type in pass-through result.
 +Error handling: RPE
++[unsupported] Caught exception: Unsupported column type in pass-through result.
 ==========
 
 

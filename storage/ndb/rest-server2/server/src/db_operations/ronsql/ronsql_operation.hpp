@@ -25,4 +25,12 @@
 
 RS_Status ronsql_op(RonSQLExecParams& params);
 
+/*
+ * RONDB-1124: the HTTP status for a permanent RonSQL error of the given
+ * class - 400 syntax / semantic / unsupported, 413 for a result or request
+ * that exceeds a size limit (other limits 400), 503 resource, 500 internal.
+ * Shared by ronsql_op and the controller's parse-only pre-check.
+ */
+HTTP_CODE ronsql_http_code_for(RonSQLErrorClass cls, const char* what);
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_DB_OPERATIONS_RONSQL_OPERATION_HPP_

@@ -108,7 +108,8 @@ static inline void ronsql_timestamp_tv_to_TIME(const my_timeval &tv,
 }
 
 #define feature_not_implemented(description) \
-  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, \
+                             "RonSQL feature not implemented: " description)
 #define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
 
 DEFINE_FORMATTER(quoted_identifier, LexCString, {

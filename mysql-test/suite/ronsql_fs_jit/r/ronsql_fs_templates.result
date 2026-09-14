@@ -1475,8 +1475,8 @@ Number of output lines, including header: 2
 -big_sum
 -9223372036854775808
 +Error handling: SRE,te->RPE
-+Caught exception: Failed to execute scan aggregation.
 +NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
++[semantic] Caught exception: Failed to execute scan aggregation.
 ==========
 
 

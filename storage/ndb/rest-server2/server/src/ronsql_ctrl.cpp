@@ -24,6 +24,7 @@
 #include "json_parser.hpp"
 #include <drogon/HttpTypes.h>
 #include "storage/ndb/src/ronsql/RonSQLPreparer.hpp"
+#include "db_operations/ronsql/ronsql_operation.hpp"
 #include "storage/ndb/src/ronsql/RonSQLPerf.hpp"
 #include "api_key.hpp"
 #include "rate_limit.hpp"
@@ -209,11 +210,31 @@ void RonSQLCtrl::ronsql(
       status = authenticate(api_key,
                             std::vector<TableAccessRequest>{accessReq});
     }
+    catch (RonSQLPermanentError& e) {
+      /*
+       * RONDB-1124: a parse-time rejection (a syntax error, an unsupported
+       * construct the parser already knows) carries its class like an
+       * execution-time one: status by class, "[<class>]" prefix and the
+       * X-RonSQL-Error-Class header.
+       */
+      const char* cls = e.error_class_name();
+      err_stream << "[" << cls << "] Caught exception: " << e.what() << "\n";
+      resp->setStatusCode(static_cast<drogon::HttpStatusCode>(
+          ronsql_http_code_for(e.error_class(), e.what())));
+      resp->setContentTypeCodeAndCustomString(
+        drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+      resp->addHeader("X-RonSQL-Error-Class", cls);
+      resp->setBody(err_stream.str());
+      callback(resp);
+      DEB_TRACE();
+      return;
+    }
     catch (std::exception& e) {
-      err_stream << "Caught exception: " << e.what() << "\n";
+      err_stream << "[internal] Caught exception: " << e.what() << "\n";
       resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
       resp->setContentTypeCodeAndCustomString(
         drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+      resp->addHeader("X-RonSQL-Error-Class", "internal");
       resp->setBody(err_stream.str());
       callback(resp);
       DEB_TRACE();
@@ -373,15 +394,36 @@ void RonSQLCtrl::ronsql(
   }
   else {
     DEB_TRACE();
-    /* Rate limit rejections (RONDB-978) must surface as 429 like on every
-       other endpoint, everything else keeps the historical 500 of this
-       endpoint. ronsql_op reports the throttling as TOO_MANY_REQUESTS and
-       does not retry it. */
-    resp->setStatusCode(status.http_code == TOO_MANY_REQUESTS
-                          ? drogon::HttpStatusCode::k429TooManyRequests
-                          : drogon::HttpStatusCode::k500InternalServerError);
+    /*
+     * RONDB-1124: ronsql_op chooses the status from the error class - 400
+     * (syntax / semantic / unsupported), 413 (too large), 429 (rate limit,
+     * RONDB-978), 503 (resource, exhausted retries), 500 (internal) - and
+     * exports the class and NDB error code for the headers below, so
+     * clients, load balancers and alerting can tell a client mistake from
+     * a server failure without parsing the body.  The body stays the
+     * text/plain diagnostic, now prefixed with "[<class>]".
+     */
+    drogon::HttpStatusCode code =
+        static_cast<drogon::HttpStatusCode>(status.http_code);
+    switch (status.http_code) {
+    case CLIENT_ERROR:
+    case PAYLOAD_TOO_LARGE:
+    case TOO_MANY_REQUESTS:
+    case SERVICE_UNAVAILABLE:
+    case SERVER_ERROR:
+      break;
+    default:
+      code = drogon::HttpStatusCode::k500InternalServerError;
+    }
+    resp->setStatusCode(code);
     resp->setContentTypeCodeAndCustomString(
       drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+    if (params.error_class != nullptr) {
+      resp->addHeader("X-RonSQL-Error-Class", params.error_class);
+    }
+    if (params.error_ndb_code != 0) {
+      resp->addHeader("X-RonSQL-NDB-Error", std::to_string(params.error_ndb_code));
+    }
     DEB_TRACE();
     resp->setBody(err_str);
   }
