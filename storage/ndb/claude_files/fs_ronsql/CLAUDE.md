@@ -44,6 +44,8 @@ Hopsworks Feature Store online-serving builder generates.
   `ronsql_fs_ng2r2` / `ronsql_fs_ng4r2` / `ronsql_fs_jit`, `scripts/refresh_golden_fixtures.sh`
 - `adding_a_shape.md` — the one-page guide for adding a statement shape end to end
 - `requirements_reports/<date>/<arm>.json` — `.fs_verify --requirements` reports per arm (base, jit, ng2r2)
+- `ronsql_fs_support_plan.md` — the engine work plan derived from the findings: work packages A–I, milestones M1–M4, acceptance evidence per package
+- `m1_plan.md` — M1 in implementation detail: proper HTTP error codes (M1.0), F9, F1 (verify-first), F0 collect CTE collapse, F7 binary projections
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.
