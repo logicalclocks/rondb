@@ -1152,7 +1152,10 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
       if (col->flags & NdbRecord::IsDisk) no_disk_flag = 0;
 
       Uint32 length;
-      const char *data;
+      // Only read when length > 0; every path that leaves it unset also sets
+      // length = 0 (null mysqld bitfield). Initialized to keep clang's
+      // -Wconditional-uninitialized quiet.
+      const char *data = nullptr;
 
       if (likely(!(col->flags &
                    (NdbRecord::IsBlob | NdbRecord::IsMysqldBitfield)))) {
