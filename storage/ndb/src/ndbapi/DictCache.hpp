@@ -1,5 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
+   Copyright (c) 2026, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -70,7 +71,9 @@ class LocalDictCache {
   void put(const BaseString &name, Ndb_local_table_info *);
   void drop(const BaseString &name);
   // Unlink an entry from the hash and return it WITHOUT destroying it; the
-  // caller takes ownership of the wrapper. Used to park stale entries.
+  // caller takes ownership of the wrapper. Returns nullptr if nothing is
+  // cached under name (unlike drop(), a miss is not asserted). Used to park
+  // stale entries.
   Ndb_local_table_info *remove(const BaseString &name);
 
   NdbLinHash<Ndb_local_table_info> m_tableHash;  // On name

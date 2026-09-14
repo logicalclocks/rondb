@@ -1,0 +1,25 @@
+--source include/have_ndb.inc
+
+# RONDB-1121 F20 / RONDB-1092 follow-up.
+#
+# Runs the NDB API test case testDict -n InvalidateParkedByPointer end-to-end
+# against the MTR cluster. The case exercises a by-pointer
+# NdbDictionary::Dictionary::invalidateTable(const Table *) and
+# invalidateIndex(const Index *) of a dictionary object that a second Ndb has
+# invalidated by name, so that the calling Ndb has PARKED its stale reference
+# (RONDB-1092) and cached a newer incarnation under the same internal name.
+# The by-pointer invalidate must release exactly the parked reference and
+# leave the current incarnation cached; before the fix it destroyed the newer
+# incarnation's cache entry and released the parked reference twice, which is
+# what crashed RDRS in NdbDictionaryImpl::getIndex on a freed object.
+#
+# The test program creates and drops its own tables (T1_parked and its ordered
+# index) in TEST_DB. The database is created and dropped here so that the NDB
+# metadata sync cannot leave a stray TEST_DB behind in the mysqlds.
+
+CREATE DATABASE TEST_DB;
+
+let NDBAPITEST_NAME=testDict;
+let NDBAPITEST_ARGS=-n InvalidateParkedByPointer T1;
+let NDBAPITEST_CLEANUP_QUERY=DROP DATABASE TEST_DB;
+--source suite/ndb/include/run_ndbapitest.inc
