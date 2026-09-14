@@ -208,7 +208,7 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5137 | Proxy `continueJoinAggTeardown` | `JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH` = 1 while set | long teardown chain overlapping NF reclaim / duplicate release |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | hold EVERY SETUP_REQ until cleared (not 20 ms) | all consumers park; sweeper (10 ms) fires; node kills while parked |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | drop the SETUP_REQ once (no CONF, no REF) | placeholder never filled: sweeper REF path for every parked GSN |
-| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold every inbound redistribute request, 200 ms at a time, until cleared | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2) |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold inbound redistribute requests with RI_NEED_CONF, 200 ms at a time, until cleared; other rows proceed without timer entries | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2) |
 | 5141 | DBLQH `cteLookupReqImpl` | hold every inbound CTE lookup, 200 ms at a time, until cleared; one event per instance for the first remote probe | DBSPJ workers on the other nodes keep probes charged to this node for as long as the kill needs (NF-3) |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, then swallow the CTE_SCAN_CONF of every remote requester while set; one event per instance | a remote DBSPJ worker holds this source's batch without a reply for as long as the kill needs (NF-4) |
 | 5143 | DBLQH `cteScanEmitResults` | report each saved iterator for a remote requester as `[CTE_NF5_SCAN_PAUSED node=S iteration=I requester=R]`; rows and CONF delivered normally | identifies the actual requester of a paused remote scan before the kill (NF-5); cleared by the test |
@@ -256,14 +256,14 @@ node other than the TC master when possible, and skips otherwise.
 | ID | Case name | Window (insert) | Victim | Primary invariant beyond I1-I5 |
 |---|---|---|---|---|
 | NF-1 | `CteCloseOwedByFailedNode` | 17533 on W: DBTC's close swallowed by every DBSPJ worker there | W | DBTC ScanRecord leaves CLOSING_SCAN; API receives EndOfData; `TcDumpJoinAggRecords` clean (`c7faa193ac2`) |
-| NF-2 | `CtePeerDiesDuringRedistribute` | 5140 on P: every inbound redistribute held, the senders paused on its CONF | P | survivors' CTE states go ERROR / NODE_FAIL_ABORT via identity sweep; COMPLETE_REF reaches DBTC exactly once (`55e99285ebb`) |
+| NF-2 | `CtePeerDiesDuringRedistribute` | 5140 on P: inbound redistribute requests with RI_NEED_CONF held, their senders paused on its CONF | P | survivors' CTE states go ERROR / NODE_FAIL_ABORT via identity sweep; COMPLETE_REF reaches DBTC exactly once (`55e99285ebb`) |
 | NF-3 | `CteLookupTargetDies` | 5141 on P: every inbound CTE lookup held, the requesters' probes outstanding | P | DBSPJ drains `m_nodeOutstanding[P]`; request completes with 286 / 20016 (`6c7fa88dcaa`) |
 | NF-4 | `CteScanSourceDiesMidBatch` | 5142 on P: rows sent, the CONF to every remote worker swallowed (scanCte main query; P = an owner scanned from another node, skips when there is none) | P | slot retired by `cte_scan_execNODE_FAILREP`; request completes with 286 / 20016; 2362 clean on survivors (`f718b5be5d6`) |
 | NF-5 | `CteRequesterDiesPausedScan` | 5143 on S reports a saved iterator and its actual remote requester R; API holds scanCte after its first row; choose S with both S and the coordinator outside the routing replica set | R | S logs `CTE_SCAN_ITER_RELEASED` for R; close returns; 2362 clean (`c3ce0732890`) |
 | NF-6 | `CteRequesterDiesAggFeed` | 5144 on S holds the aggregation feed (FeedChain: CTE 1 over scanCte(CTE 0)) and names its remote requester R; S chosen with S and the coordinator outside the routing replica set | R | S logs `CTE_AGG_FEED_ABANDONED` for R (continuation stopped on ZNODE_DOWN, no REF); R rejoins (NF completion not stalled); query fails 286 / 20016; 2362 clean (`c3ce0732890`) |
-| NF-7 | `CteCoordinatorDiesAggFeed` | 5144 on S as in NF-6; C chosen up front (startTransaction hint) so that an isolated source S != C exists; R named by the event | C | S logs `CTE_AGG_FEED_REFUSED` for C (continuation REFs the live requester); states reclaimed, 2361 clean; query fails 286 / 20016 / API 4010-4031 (`c13a662bc93`) |
-| NF-8 | `CteCoordinatorDiesReady` | query holding a CTE_READY state while probing (long lookup phase) | C | CTE_READY states reclaimed by proxy; 2361 clean (`ae810a9dc73`) |
-| NF-9 | `CteCoordinatorDiesPausedRedist` | 5133 on P | C | paused CTE_REDISTRIBUTING state marked in owner sweep and reclaimed (`0f983279eb6`) |
+| NF-7 | `CteCoordinatorDiesAggFeed` | 5144 on S as in NF-6; C chosen up front (startTransaction hint) so that an isolated source S != C exists; R named by the event | C | S logs `CTE_AGG_FEED_REFUSED` for C (continuation REFs the live requester); states reclaimed, 2361 clean; query fails 286 / 20016 / API 4010, 4025, 4028, 4031 (`c13a662bc93`) |
+| NF-8 | `CteCoordinatorDiesReady` | 5141 on P holds every probe, the query sits on CTE_READY states | C | P logs `JOIN_AGG_RELEASES_QUEUED` for C (proxy queued releases; leak checks verify completed reclamation); query fails 286 / 20016 / API 4010, 4025, 4028, 4031; 2361 clean (`ae810a9dc73`) |
+| NF-9 | `CteCoordinatorDiesPausedRedist` | 5140 on P holds redistribute requests with RI_NEED_CONF (one group per row); wait for a held sender other than C, proving a surviving owner is paused on P's CONF | C | P logs `JOIN_AGG_RELEASES_QUEUED` for C (proxy queued releases; leak checks verify completed reclamation); query fails 286 / 20016 / API 4010, 4025, 4028, 4031; 2361 clean (`0f983279eb6`) |
 | NF-10 | `CoordinatorDiesReleaseInFlight` | 8312 on C | C (crash insert) | no double teardown on survivors (`b30c78c0be0`); 2361 clean |
 | NF-11 | `CteRequesterDiesParked` | 5138 on P, kill R while its consumers are parked | R | sweeper REFs go to a dead node harmlessly; placeholders cleaned; 2363 clean |
 | NF-12 | `CteCoordinatorDiesParked` | 5138 on P, kill C | C | parked NULL_ROW / COMPLETE replay hits the coordinator check and REFs; 2363 clean (`5efa38683b1`) |
@@ -304,7 +304,7 @@ timeout that close subsequently clears while draining the current batch.
 NF-6 goes back to the held-signal driver with two additions: the picked
 node is the armed source (5144, same isolation rule as NF-5 but on
 `cte_nf_src`, the routing table of the FeedChain shape), the event names
-the requester and that requester is killed (`killRequesterFromEvent`),
+the requester and that requester is killed (`CTE_NF_KILL_EVENT_REQUESTER`),
 and after the kill the driver requires a post-kill marker from the armed
 node (`postKillTag`): `[CTE_AGG_FEED_ABANDONED node=S failed=R]`, which
 `cteScanAggFeed` now emits, in every build, when it stops on the
@@ -322,6 +322,19 @@ marker is `[CTE_AGG_FEED_REFUSED node=S failed=C requester=R]`, emitted
 by `cteScanAggFeed` when it stops on the coordinator's ZNODE_DOWN and
 REFs the requester. The accepted query errors add the NDB API's own
 node-failure aborts (4010, 4025, 4028, 4031) for coordinator kills.
+NF-8 and NF-9 are the coordinator kills of the NF-3 and NF-2 holds (5141
+and 5140 on a peer) with the same kill target. The 5140 event names the
+redistribution sender (`eventNamesRequester` true); NF-9 ignores events
+from the coordinator and waits for a surviving sender within the same
+30 s deadline. It skips clusters with fewer than three data nodes.
+The 5141 event has no requester field. Their post-kill marker is
+`[JOIN_AGG_RELEASES_QUEUED node=P
+failed=C count=N]`, which `DblqhProxy::execJOIN_AGG_NODE_FAIL_REP` now
+emits, in every build, after queueing release requests for a failed
+coordinator's states. The count is queued releases, not completed teardown;
+the later leak checks verify that reclamation finished.
+NF-8 runs on 2 nodes; NF-9's wrapper is in the 4-node suite so paused
+states exist on surviving peers.
 
 Each case runs 3 iterations to shake timing. Registration in
 `daily-basic--01-tests.txt` next to the existing `JoinAggNodeRestart`
@@ -462,7 +475,9 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | `cte_nodefail_requester_paused.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteRequesterDiesPausedScan T1` (NF-5) - **done** |
 | `cte_nodefail_requester_feed.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteRequesterDiesAggFeed T1` (NF-6) - **done** |
 | `cte_nodefail_coordinator_feed.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesAggFeed T1` (NF-7) - **done** |
-| `cte_nodefail_<case>.test` (suite `ndb_cte`, or `ndb_cte_ng2r2` when the case needs 4 nodes) | 1-3 | one wrapper per further NDBT case (NF-8 .. NF-12, PK-8), same pattern |
+| `cte_nodefail_coordinator_ready.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesReady T1` (NF-8) - **done** |
+| `cte_nodefail_coordinator_redist.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesPausedRedist T1` (NF-9) - **done** |
+| `cte_nodefail_<case>.test` (suite `ndb_cte`, or `ndb_cte_ng2r2` when the case needs 4 nodes) | 1-3 | one wrapper per further NDBT case (NF-10 .. NF-12, PK-8), same pattern |
 | `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |
 | `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline |

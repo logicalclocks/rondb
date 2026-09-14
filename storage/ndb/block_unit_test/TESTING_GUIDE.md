@@ -245,7 +245,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE SETUP_REQ dropped (no reply) | yes |
-| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute held, 200 ms at a time, until cleared | no |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender | no |
 | 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance | no |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
 | 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |

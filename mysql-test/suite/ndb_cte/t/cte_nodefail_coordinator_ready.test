@@ -1,29 +1,27 @@
-# RONDB-1120 NF-2: a CTE peer node fails while the other nodes wait for
-# its redistribute CONF.  Run with: ./mtr --suite=ndb_cte cte_nodefail_peer_redist
+# RONDB-1120 NF-8: the transaction coordinator fails while a CTE query is
+# probing READY states.  Run with: ./mtr --suite=ndb_cte cte_nodefail_coordinator_ready
 #
-# Runs the CtePeerDiesDuringRedistribute case from the testNodeRestart NDBT
+# Runs the CteCoordinatorDiesReady case from the testNodeRestart NDBT
 # program (storage/ndb/test/ndbapi/testNodeRestart.cpp, plan
 # storage/ndb/claude_files/pushdown_join_aggregation/node_failure_test_plan.md).
 #
-# Error insert 5140 on the victim holds inbound JOIN_AGG_REDISTRIBUTE_REQ
-# with RI_NEED_CONF. With distinct groups the redistribution crosses
-# the flow-control threshold; the case waits for the victim's event confirming
-# a held RI_NEED_CONF request for this iteration. The case then aborts the
-# victim and requires the survivors' states to fail through the identity
-# sweep, DBTC to get its COMPLETE reply exactly once (commit 55e99285ebb)
-# and the query to fail with 286 or 20016 (timeouts fail the test);
-# it restarts the victim, runs the
-# join-agg leak-check DUMPs (2361, 2362, 2363, 2560, 2650; each crashes a
-# node on a leak) and re-runs the query for the full row count. Three
-# iterations. Needs 2 data nodes with 2 replicas, which this suite's
-# cluster provides.
+# Error insert 5141 on a peer holds every inbound CTE lookup, so the query
+# sits in its lookup phase with CTE_READY states on every node. The case
+# waits for the peer's event confirming a held remote probe, kills the
+# coordinator and requires the peer's JOIN_AGG_RELEASES_QUEUED line for
+# the coordinator (releases queued, commit ae810a9dc73), the query to fail
+# with a node-failure error (286, 20016 or API 4010 / 4025 / 4028 / 4031),
+# the coordinator to rejoin, the join-agg leak-check DUMPs (2361, 2362,
+# 2363, 2560, 2650; each crashes a node on a leak) to verify completed
+# reclamation, and the query to return every row afterwards. Three
+# iterations; the peer's insert is cleared after each. Needs 2 data nodes
+# with 2 replicas, which this suite's cluster provides.
 #
 # The error insert needs error-insert capable ndbmtd binaries, and the
 # testNodeRestart binary is only present in WITH_NDB_TEST builds.
 #
 # On failure the program's output is in $NDB_TOOLS_OUTPUT (var/tmp) of the
-# saved test directory; the case logs the 120 s COMPLETE deadline and any
-# leak-check dump that crashed a node there.
+# saved test directory.
 
 --source include/have_ndb.inc
 --source include/have_ndb_debug.inc
@@ -70,8 +68,8 @@ EOF
 
 --connection default
 
---echo # NF-2: kill a CTE peer holding redistribute requests needing a CONF (error insert 5140)
---exec $TEST_NODE_RESTART -n CtePeerDiesDuringRedistribute T1 >> $NDB_TOOLS_OUTPUT 2>&1
+--echo # NF-8: kill the coordinator while a peer holds every CTE probe (error insert 5141)
+--exec $TEST_NODE_RESTART -n CteCoordinatorDiesReady T1 >> $NDB_TOOLS_OUTPUT 2>&1
 
 # The NDBT framework drops T1 and the case's finalizer drops the CTE
 # fixtures when the case completes cleanly; a missing table is not an
@@ -93,4 +91,4 @@ EOF
 
 --remove_file $NDB_TOOLS_OUTPUT
 
---echo # CtePeerDiesDuringRedistribute passed
+--echo # CteCoordinatorDiesReady passed

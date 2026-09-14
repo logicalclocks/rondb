@@ -63,11 +63,13 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5137: Teardown releases one group per round while set (DblqhProxy)
 5138: Hold every JOIN_AGG_SETUP_REQ until cleared (DblqhProxy)
 5139: Drop ONE JOIN_AGG_SETUP_REQ, no reply (DblqhProxy, cleared after use)
-5140: Hold EVERY inbound JOIN_AGG_REDISTRIBUTE_REQ, 200 ms at a time, until
-      cleared. A remote RI_NEED_CONF request emits InfoEvent
-      "[CTE_NF2_CONF_HELD node=<node> iteration=<extra>]" on first arrival;
-      extra is the test iteration.
-      NF-2 waits for this event before killing the peer.
+5140: Hold inbound JOIN_AGG_REDISTRIBUTE_REQ with RI_NEED_CONF, 200 ms at
+      a time, until cleared. Other rows proceed normally, avoiding a timer
+      entry per group row. A held remote request emits InfoEvent
+      "[CTE_NF2_CONF_HELD node=<node> iteration=<extra> requester=<sender>]"
+      on first arrival; extra is the test iteration. NF-2 waits for this
+      event before killing the peer. NF-9 requires a sender other than
+      the coordinator, so the paused sender survives the kill.
 5141: Hold EVERY inbound CTE_LOOKUP_REQ, 200 ms at a time, until cleared. The
       first remote request held by an instance emits InfoEvent
       "[CTE_NF3_LOOKUP_HELD node=<node> iteration=<extra>]" (once per

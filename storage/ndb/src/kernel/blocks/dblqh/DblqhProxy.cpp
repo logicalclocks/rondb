@@ -3579,6 +3579,7 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
    * fire-and-forget RELEASE_REQ to ourselves for each one.
    */
   const Uint32 poolSize = getJoinAggStatePoolSize();
+  Uint32 releasesQueued = 0;
   for (Uint32 k = 0; k < poolSize; k++) {
     JoinAggregationState *state = getJoinAggState(k);
     if (state == nullptr) continue;
@@ -3609,7 +3610,15 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
       req->noReply = 1;
       sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
                  JoinAggReleaseReq::SignalLength, JBB);
+      releasesQueued++;
     }
+  }
+  if (releasesQueued > 0) {
+    jam();
+    /* Report queued releases for the failed coordinator's states.
+     * Teardown runs later; NF-8/NF-9 verify completion with leak checks. */
+    infoEvent("[JOIN_AGG_RELEASES_QUEUED node=%u failed=%u count=%u]",
+              getOwnNodeId(), failedNodeId, releasesQueued);
   }
 }
 

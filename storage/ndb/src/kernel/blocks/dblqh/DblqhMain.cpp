@@ -23503,25 +23503,26 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   }
   ndbrequire(signal->getLength() >= JoinAggRedistributeReq::SignalLength);
 
-  if (ERROR_INSERTED(5140)) {
+  const JoinAggRedistributeReq *req =
+      reinterpret_cast<const JoinAggRedistributeReq *>(signal->getDataPtr());
+  if (ERROR_INSERTED(5140) &&
+      (req->requestInfo & JoinAggRedistributeReq::RI_NEED_CONF) != 0) {
     jam();
-    /* Test hook (NF-2): hold EVERY inbound redistribute request, 200 ms
-     * at a time, until the insert is cleared - the re-delivered copy is
-     * held again. Every sender stays paused in CTE_REDISTRIBUTING
-     * waiting for this node's CONF for as long as the test needs to
-     * kill this node. Logged once per request, on first arrival. */
+    /* Test hook (NF-2, NF-9): hold requests needing a CONF, 200 ms at a
+     * time, until the insert is cleared. The sender stops after sending
+     * such a request, so each paused sender state needs only one timer
+     * entry. Holding every group row can exhaust the long time queue
+     * before the senders reach the flow-control threshold.
+     * Re-delivered copies stay held; log only on first arrival. */
     if (signal->getSendersBlockRef() != reference()) {
       g_eventLogger->info(
           "DBLQH %u: error insert 5140 holds a redistribute request from "
           "node %u", instance(), refToNode(signal->getSendersBlockRef()));
-      const JoinAggRedistributeReq *req =
-          reinterpret_cast<const JoinAggRedistributeReq *>(signal->getDataPtr());
-      if ((req->requestInfo & JoinAggRedistributeReq::RI_NEED_CONF) != 0 &&
-          refToNode(req->senderRef) != getOwnNodeId()) {
+      if (refToNode(req->senderRef) != getOwnNodeId()) {
         /* Observable handshake: a remote owner is paused on our CONF.
          * The extra error-insert value identifies the test iteration. */
-        infoEvent("[CTE_NF2_CONF_HELD node=%u iteration=%u]",
-                  getOwnNodeId(), ERROR_INSERT_EXTRA);
+        infoEvent("[CTE_NF2_CONF_HELD node=%u iteration=%u requester=%u]",
+                  getOwnNodeId(), ERROR_INSERT_EXTRA, refToNode(req->senderRef));
       }
     }
     SectionHandle handle(this, signal);
@@ -23542,8 +23543,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     return;
   }
 
-  const JoinAggRedistributeReq *req =
-    (const JoinAggRedistributeReq *)signal->getDataPtr();
   Uint32 aggStateKey = req->aggStateKey;
   /* Capture the identity words now: the CONF/REF constructions below write
    * through getDataPtrSend(), which aliases this request buffer. */
