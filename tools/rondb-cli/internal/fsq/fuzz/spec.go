@@ -193,11 +193,24 @@ func pkNames(fg spec.FeatureGroup) []string {
 	return out
 }
 
-// valueFeatures are the scalar, non-key, non-event-time features.
+// valueFeatures are the scalar, non-key, non-event-time features: the
+// operands of aggregates and collect fields (complex types are gated there).
 func valueFeatures(fg spec.FeatureGroup) []spec.Feature {
+	return nonKeyFeatures(fg, false)
+}
+
+// projectableFeatures are the non-key, non-event-time features a snowflake
+// or plain join may project, complex (binary / array / struct / map) ones
+// included: they are served as VARBINARY online and the pass-through
+// printer prints them since RONDB-1124 M1.4 (F7).
+func projectableFeatures(fg spec.FeatureGroup) []spec.Feature {
+	return nonKeyFeatures(fg, true)
+}
+
+func nonKeyFeatures(fg spec.FeatureGroup, complex bool) []spec.Feature {
 	var out []spec.Feature
 	for _, f := range fg.Features {
-		if f.Primary || f.Name == fg.EventTime || spec.IsComplexType(f.Type) {
+		if f.Primary || f.Name == fg.EventTime || (!complex && spec.IsComplexType(f.Type)) {
 			continue
 		}
 		out = append(out, f)
@@ -216,8 +229,18 @@ func isTemporal(t string) bool {
 func isString(t string) bool { return spec.BaseType(t) == "string" }
 
 // sampleFeatures picks lo..hi distinct value features (in schema order).
+// sampleFeatures draws lo..hi scalar features (collect fields).
 func (s *sampler) sampleFeatures(fg spec.FeatureGroup, lo, hi int) []spec.Feature {
-	vals := valueFeatures(fg)
+	return s.sampleFrom(valueFeatures(fg), lo, hi)
+}
+
+// sampleProjection draws lo..hi projectable features (join projections),
+// complex-typed ones included.
+func (s *sampler) sampleProjection(fg spec.FeatureGroup, lo, hi int) []spec.Feature {
+	return s.sampleFrom(projectableFeatures(fg), lo, hi)
+}
+
+func (s *sampler) sampleFrom(vals []spec.Feature, lo, hi int) []spec.Feature {
 	if len(vals) == 0 {
 		return nil
 	}
@@ -594,7 +617,7 @@ func (s *sampler) serving() {
 	// Join 0: the entity group and 0-3 of its plain features (a MySQL-only
 	// point read; label features are never selected).
 	joins := []spec.Join{{Index: 0, Parent: 0, FG: root.ID, Type: spec.JoinInner, Prefix: strp(""),
-		Features: s.tdFeatures(s.sampleFeatures(root, 0, 3), flags)}}
+		Features: s.tdFeatures(s.sampleProjection(root, 0, 3), flags)}}
 	next := 1
 	topology := s.choose(55, 35, 10) // star, snowflake, both
 	if _, _, hasChain := fkChild(root.Name); !hasChain {
@@ -656,7 +679,7 @@ func (s *sampler) serving() {
 				joins = append(joins, j)
 				next++
 			default:
-				fs := s.sampleFeatures(root, 1, 3)
+				fs := s.sampleProjection(root, 1, 3)
 				if len(fs) == 0 {
 					continue
 				}
@@ -680,7 +703,7 @@ func (s *sampler) serving() {
 			on = append(on, [2]string{k, k})
 		}
 		rootJoin := spec.Join{Index: next, Parent: 0, FG: root.ID, Type: spec.JoinInner, Prefix: strp("p_"), On: on,
-			Features: s.tdFeatures(s.sampleFeatures(root, 1, 2), flags)}
+			Features: s.tdFeatures(s.sampleProjection(root, 1, 2), flags)}
 		if len(rootJoin.Features) == 0 {
 			rootJoin.Features = []spec.TDFeature{{Name: root.Features[len(root.Features)-1].Name}}
 		}
@@ -700,7 +723,7 @@ func (s *sampler) serving() {
 			cfg := s.g.fgs[child]
 			fgSet[cfg.ID] = cfg
 			j := spec.Join{Index: next, Parent: parentIdx, FG: cfg.ID, Type: hopType, Prefix: strp(child[:1] + "_"), On: [][2]string{cond},
-				Features: s.tdFeatures(s.sampleFeatures(cfg, 1, 2), flags)}
+				Features: s.tdFeatures(s.sampleProjection(cfg, 1, 2), flags)}
 			if jt == 2 && d == depth-1 && depth > 1 {
 				j.Type = []spec.JoinType{spec.JoinLeft, spec.JoinInner}[(jt+1)%2] // mixed types within the subtree
 			}

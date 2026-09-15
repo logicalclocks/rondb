@@ -396,10 +396,13 @@ TEXT and BIT keep the rejection.  Framework: `canon` maps the MySQL binary
 type names to a binary kind, base64-decodes the RonSQL side of
 `Compare` before sorting / matching, and `CellsEqual` accepts the base64
 form on either side (the vector oracle needs no side information);
-`Known["F7"]`, the golden `snowflake_binary` policy and the spec fuzzer's
-avoidance are untouched except for the retired expectation — the spec
-fuzzer still does not project complex-typed features (`IsComplexType`
-skip), a possible follow-up now that binary is served.
+`Known["F7"]` and the golden `snowflake_binary` policy are retired.
+Follow-up (same day): the spec fuzzer's join projections draw from
+`projectableFeatures` (complex-typed ones included: `customers.tags`,
+served as VARBINARY), while aggregates and collect fields keep the scalar
+`valueFeatures` (the validator gates complex types there);
+`TestComplexFeaturesProjectedOnly` pins it and the seed-1 spec SUMMARY is
+re-recorded.
 
 **Shape.** Hopsworks projects `binary` features (embeddings) and
 serialized `array` features through the snowflake templates:
@@ -441,6 +444,21 @@ R-A2-binary SUPPORTED.
 contract.
 
 ---
+
+## Result (2026-09-15)
+
+All five packages landed on `RONDB-1124-fs-ronsql` (`b6bc75ae2e7`,
+`a6550f2bf6c`, `1b4f6a77c5f`, `6d2d2a124eb`, `a710b5ad8c4`).  Exit
+criteria met, evidence in `requirements_reports/2026-09-15/` and
+`phase_e8.md`: R-S6, R-F1 and R-A2-binary SUPPORTED on the base, JIT and
+ng2r2 arms (15 supported, 4 gated, 1 unsupported, identical per
+requirement); R-A5-types stays UNSUPPORTED through F4 / F5 / F6 (M2);
+`known-error` is 0 in both fuzzers and the spec fuzzer has no
+`clean-reject` left; `rdrs2-golang_gotest` incl. `TestErrorStatusByClass`
+green; the `ronsql`, `ronsql_cte` and the four `ronsql_fs*` suites green
+with `ronsql_fs_jit` strict-armed (fallback pins 0).  Every
+expectation-table entry the packages retired (`F9`, `S6-cte`, `F7`, the
+`EDGE-F1-*` hazards) is gone rather than left as `PASS(was-…)`.
 
 ## Order and dependencies
 
