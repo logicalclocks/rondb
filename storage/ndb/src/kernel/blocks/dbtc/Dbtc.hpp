@@ -2489,6 +2489,8 @@ class Dbtc : public SimulatedBlock {
                               ScanRecordPtr scanptr);
   bool getValidAggCompleteRecord(AggCompleteRecordPtr &recPtr);
   void releaseAggCompleteRecords(ScanRecordPtr scanptr);
+  void completeCteAggregation(Signal *signal, ScanRecordPtr scanptr,
+                              AggCompleteRecordPtr rec);
   /* DAG scheduler (cte_dag_scheduler_plan.md): per-CTE readiness. */
   void cteMarkReady(Signal *signal, ScanRecordPtr scanptr, Uint32 cteId);
   /* RONDB-1120 P2b: build the key/owner transport section (format:

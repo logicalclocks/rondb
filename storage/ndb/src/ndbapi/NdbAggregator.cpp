@@ -26,6 +26,7 @@
 #include "../../src/ndbapi/NdbDictionaryImpl.hpp"
 #include <simsimd/simsimd.h>
 #include <NdbSqlUtil.hpp>
+#include <my_dbug.h>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_NDBAGGREGATOR 1
@@ -349,6 +350,18 @@ void NdbAggregator::mergeStringSlot(AggResItem *dst,
   }
 }
 
+/* Debug fault injection at the numeric-merge boundary lets the API tests
+ * exercise error propagation and string cleanup before overflow checks
+ * are enabled in the shared arithmetic helper. */
+static Int32 mergeNumericResult(AggResItem* dst, const AggResItem& src,
+                                Uint32 op) {
+  DBUG_EXECUTE_IF("ndb_agg_merge_error", {
+    if (op == kOpSum || op == kOpSumBigint || op == kOpSumDouble)
+      return 1860;
+  });
+  return aggMergeNumericSlot(dst, src, op);
+}
+
 Int32 NdbAggregator::ProcessRes(char* buf) {
 #ifdef DEBUG_NDBAGGREGATOR
   {
@@ -520,6 +533,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       }
       if (need_merge) {
         DEB_TRACE();
+        Int32 merge_error = 0;
         for (Uint32 i = 0; i < n_agg_results; i++) {
           DEB_TRACE();
           // Handle NDB_TYPE_UNDEFINED and NULL cases before merging.
@@ -555,7 +569,9 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
                  (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||
                   agg_res_ptr[i].type == NDB_TYPE_DOUBLE));
           DEB_TRACE();
-          aggMergeNumericSlot(&agg_res_ptr[i], res[i], agg_ops_[i]);
+          merge_error =
+              mergeNumericResult(&agg_res_ptr[i], res[i], agg_ops_[i]);
+          if (merge_error != 0) break;
         }
         if (wire_has_strings) {
           for (Uint32 i = 0; i < n_agg_results; i++) {
@@ -569,6 +585,9 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
             }
           }
         }
+        // Release every decoded string above, including slots not visited
+        // after a failed numeric merge, before returning the NDB error.
+        if (merge_error != 0) return -merge_error;
       }
 #if defined(PA_CHECK) && !defined(NDEBUG)
       {
@@ -640,6 +659,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       res = local_res;
     }
 
+    Int32 merge_error = 0;
     for (Uint32 i = 0; i < n_agg_results; i++) {
       DEB_TRACE();
       // Phase I.6: allow CHAR / VARCHAR / Longvarchar through the
@@ -672,7 +692,9 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
                 res[i].type == NDB_TYPE_DOUBLE) &&
                (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||
                 agg_res_ptr[i].type == NDB_TYPE_DOUBLE));
-        aggMergeNumericSlot(&agg_res_ptr[i], res[i], agg_ops_[i]);
+        merge_error =
+            mergeNumericResult(&agg_res_ptr[i], res[i], agg_ops_[i]);
+        if (merge_error != 0) break;
       }
     }
     // Phase I.6 (F.2-K.5d): release any string val_ptr buffers in
@@ -692,6 +714,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         }
       }
     }
+    // As in the grouped path, clean up decoded strings before failing.
+    if (merge_error != 0) return -merge_error;
     DEB_TRACE();
     parse_pos += ((/*gb_cols_len + */agg_res_len) >> 2);
   }

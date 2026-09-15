@@ -1,0 +1,5 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+--echo Running CTE completion reply-order tests
+--exec $NDB_PUSH_AGG_DIR/testJoinAggIdempotency -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --failure-orders --iterations 1

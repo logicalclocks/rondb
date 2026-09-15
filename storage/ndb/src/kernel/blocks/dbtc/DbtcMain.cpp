@@ -31932,19 +31932,12 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
 
   if (rec.p->m_outstanding != 0) return;
 
-  rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
     jam();
-    if (scanptr.p->m_aggErrorCode != 0) {
-      tryAbortJoinAgg(signal, scanptr);
-      return;
-    }
-    /* DAG scheduler: this CTE is now redistributed cluster-wide —
-     * mark it READY, broadcast to workers so dependents can start,
-     * and start the main query once every CTE is READY. */
-    cteMarkReady(signal, scanptr, rec.p->m_cteIndex);
+    completeCteAggregation(signal, scanptr, rec);
   } else {
     jam();
+    rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
     ApiConnectRecordPtr apiConnectptr;
     apiConnectptr.i = scanptr.p->scanApiRec;
     c_apiConnectRecordPool.getPtr(apiConnectptr);
@@ -32031,6 +32024,34 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
     return;
   }
 
+#ifdef ERROR_INSERT
+  /* Pair with DBLQH 5124: every node returns REF for CTE 0.
+   * 8130 keeps the first REF and converts later replies to CONF.
+   * 8131 converts every reply except the last to CONF.
+   * No delays: the pending count determines the order deterministically.
+   * Use error 1860 to prove the ordering hook was actually exercised. */
+  if (rec.p->m_kind == AggCompleteRecord::KIND_CTE &&
+      rec.p->m_cteIndex == 0 &&
+      (ERROR_INSERTED(8130) || ERROR_INSERTED(8131))) {
+    const bool makeConf = ERROR_INSERTED(8130)
+                             ? rec.p->m_errorCode != 0
+                             : rec.p->m_outstanding > 1;
+    if (makeConf) {
+      const JoinAggCompleteRef saved = *ref;
+      JoinAggCompleteConf *conf =
+          (JoinAggCompleteConf *)signal->getDataPtrSend();
+      conf->senderRef = saved.senderRef;
+      conf->senderData = saved.senderData;
+      conf->requestId = saved.requestId;
+      conf->numResultRows = 0;
+      conf->resultBytes = 0;
+      execJOIN_AGG_COMPLETE_CONF(signal);
+      return;
+    }
+    ((JoinAggCompleteRef *)signal->getDataPtrSend())->errorCode = 1860;
+  }
+#endif
+
   rec.p->m_aggNodesPending.clear(senderNodeId);
   ndbrequire(rec.p->m_outstanding > 0);
   rec.p->m_outstanding--;
@@ -32051,14 +32072,37 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
 
   if (rec.p->m_outstanding != 0) return;
 
-  rec.p->m_state = AggCompleteRecord::REC_FAILED;
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
     jam();
-    tryAbortJoinAgg(signal, scanptr);
+    completeCteAggregation(signal, scanptr, rec);
   } else {
     jam();
+    rec.p->m_state = AggCompleteRecord::REC_FAILED;
     sendJoinAggReleaseReqs(signal, scanptr);
   }
+}
+
+/* Decide CTE completion only after every reply has arrived.  A final
+ * CONF must take the same failure path as a final REF when an earlier
+ * reply failed.  Use the persistent query error code so failures from
+ * other CTEs also prevent dependent work from starting. */
+void Dbtc::completeCteAggregation(Signal *signal, ScanRecordPtr scanptr,
+                                  AggCompleteRecordPtr rec) {
+  ndbrequire(rec.p->m_kind == AggCompleteRecord::KIND_CTE);
+  ndbrequire(rec.p->m_outstanding == 0);
+
+  if (scanptr.p->m_aggErrorCode == 0) {
+    jam();
+    rec.p->m_state = AggCompleteRecord::REC_COMPLETE;
+    cteMarkReady(signal, scanptr, rec.p->m_cteIndex);
+    return;
+  }
+
+  jam();
+  rec.p->m_state = AggCompleteRecord::REC_FAILED;
+  /* Wait for SETUP and outstanding COMPLETE replies before closing
+   * the failed scan through the RONDB-1120 abort path. */
+  tryAbortJoinAgg(signal, scanptr);
 }
 
 void Dbtc::execJOIN_AGG_RELEASE_CONF(Signal *signal) {
@@ -32685,6 +32729,12 @@ Uint32 Dbtc::buildJoinAggKeySection(ScanRecordPtr scanptr,
  */
 void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
                              Uint32 cteId) {
+#ifdef ERROR_INSERT
+  /* The reply-order tests fail CTE 0. Advertising it as READY would
+   * incorrectly start its dependent CTE, even if that later fails too. */
+  ndbrequire(cteId != 0 ||
+             !(ERROR_INSERTED(8130) || ERROR_INSERTED(8131)));
+#endif
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);

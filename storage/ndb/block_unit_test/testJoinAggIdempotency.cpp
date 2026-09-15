@@ -61,7 +61,7 @@
  *     totals 60,60,140,140,50.
  *
  * Usage: testJoinAggIdempotency -c <connect_string> -m <mysql_port>
- *                               [-v] [--iterations N]
+ *                               [-v] [--iterations N] [--failure-orders]
  */
 
 #include <ndb_global.h>
@@ -69,6 +69,7 @@
 #include <NdbApi.hpp>
 #include <NdbAggregator.hpp>
 #include <NdbSleep.h>
+#include <NdbRestarter.hpp>
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "NdbQueryOperation.hpp"
@@ -205,7 +206,7 @@ insertTestData(Ndb *ndb)
  * result rows.  Returns 0 on success, -1 on failure.  Called from
  * runD9 and from runD11's loop body. */
 static int
-runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
+runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
@@ -378,7 +379,34 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
     return -1;
   }
 
-  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+  const int executeResult = trans->execute(NdbTransaction::NoCommit);
+  if (expectedError != 0) {
+    int errorCode = 0;
+    Uint32 rowCount = 0;
+    if (executeResult != 0) {
+      errorCode = trans->getNdbError().code;
+    } else {
+      NdbQuery::NextResultOutcome outcome;
+      while ((outcome = query->nextResult(true)) ==
+             NdbQuery::NextResult_gotRow) {
+        rowCount++;
+      }
+      if (outcome == NdbQuery::NextResult_error)
+        errorCode = query->getNdbError().code;
+    }
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    if (errorCode != expectedError || rowCount != 0) {
+      fprintf(stderr, "FAILED (iter=%u expected error=%d and 0 rows, "
+                      "got error=%d and %u rows)\n",
+              iterIdx, expectedError, errorCode, rowCount);
+      return -1;
+    }
+    return 0;
+  }
+
+  if (executeResult != 0) {
     const NdbError &qErr = query->getNdbError();
     fprintf(stderr, "FAILED (execute iter=%u: %d %s)\n",
             iterIdx, qErr.code, qErr.message);
@@ -477,6 +505,42 @@ runD11(Ndb *ndb, Uint32 iterations)
   return 0;
 }
 
+/* Both reply orders use a failing CTE 0 with a dependent CTE 1.
+ * DBTC's 8130/8131 hooks also assert that CTE 0 is never advertised READY,
+ * so a dependent cannot start unnoticed and fail with a secondary error. */
+static int
+runFailureOrders(Ndb *ndb, const char *connectString)
+{
+  NdbRestarter restarter(connectString);
+  if (restarter.getNumDbNodes() < 2) {
+    fprintf(stderr, "FAILED (reply-order tests require two data nodes)\n");
+    return -1;
+  }
+
+  for (int errorInsert : {8130, 8131}) {
+    printf("Completion order: %s ... ",
+           errorInsert == 8130 ? "REF then CONF" : "CONF then REF");
+    fflush(stdout);
+    // 5124 targets DBLQH; 8130/8131 target DBTC and do not clear 5124.
+    if (restarter.insertErrorInAllNodes(5124) != 0 ||
+        restarter.insertErrorInAllNodes(errorInsert) != 0) {
+      fprintf(stderr, "FAILED (arming completion faults)\n");
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    const int result = runChainedCteOnce(ndb, errorInsert, 1860);
+    // Clear all block instances before recovery, including unused LDMs.
+    const int cleared = restarter.insertErrorInAllNodes(0);
+    if (result != 0 || cleared != 0) {
+      if (cleared != 0) fprintf(stderr, "FAILED (clearing faults)\n");
+      return -1;
+    }
+    if (runChainedCteOnce(ndb, errorInsert) != 0) return -1;
+    printf("OK (error 1860, no rows, recovery verified)\n");
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -486,6 +550,7 @@ int main(int argc, char **argv)
   const char *connectString = "localhost:1186";
   int mysqlPort = 3306;
   Uint32 iterations = 100;
+  bool failureOrders = false;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
@@ -496,16 +561,14 @@ int main(int argc, char **argv)
       verbose = true;
     else if (strcmp(argv[i], "--iterations") == 0 && i + 1 < argc)
       iterations = (Uint32)atoi(argv[++i]);
+    else if (strcmp(argv[i], "--failure-orders") == 0)
+      failureOrders = true;
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
-             "[--iterations N]\n", argv[0]);
+             "[--iterations N] [--failure-orders]\n", argv[0]);
       return 0;
     }
   }
-
-  printf("=== testJoinAggIdempotency ===\n");
-  printf("Connect: %s, MySQL port: %d, iterations: %u\n",
-         connectString, mysqlPort, iterations);
 
   /* MTR integration: dup stdout, redirect stdout → stderr.  The
    * verbose progress output goes to stderr; only the final
@@ -513,6 +576,10 @@ int main(int argc, char **argv)
    * file matches.  Same pattern as testCteNdbApiOuterJoin. */
   int mtr_fd = dup(fileno(stdout));
   dup2(fileno(stderr), fileno(stdout));
+
+  printf("=== testJoinAggIdempotency ===\n");
+  printf("Connect: %s, MySQL port: %d, iterations: %u\n",
+         connectString, mysqlPort, iterations);
 
   ndb_init();
   int rc = 0;
@@ -557,6 +624,10 @@ int main(int argc, char **argv)
     }
 
     if (insertTestData(&ndb) != 0) { rc = 1; goto cleanup; }
+    if (failureOrders && runFailureOrders(&ndb, connectString) != 0) {
+      rc = 1;
+      goto cleanup;
+    }
     if (runD9(&ndb) != 0)          { rc = 1; goto cleanup; }
     if (runD11(&ndb, iterations) != 0) { rc = 1; goto cleanup; }
 

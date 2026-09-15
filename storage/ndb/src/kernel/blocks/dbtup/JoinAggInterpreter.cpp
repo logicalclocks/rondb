@@ -1578,11 +1578,10 @@ static Int32 mergeAccumulators(AggResItem* dst, AggResItem* src,
     if (dst[i].is_null) { dst[i] = src[i]; continue; }
     /* Both slots non-null and numeric — merge with the shared
      * signedness/promotion-correct helper (NdbAggregationCommon.hpp).
-     * The old per-op code here keyed every compare and add on
-     * dst.is_unsigned alone.  Numeric overflow retains the legacy
-     * distributed-merge behavior; this function's error return remains
-     * reserved for errors that its callers already propagate. */
-    aggMergeNumericSlot(&dst[i], src[i], agg_ops[i]);
+     * Propagate a numeric error just like a string-merge error: earlier
+     * slots may already have changed, so the caller must abort. */
+    const Int32 ret = aggMergeNumericSlot(&dst[i], src[i], agg_ops[i]);
+    if (ret != 0) return ret;
   }
   return 0;
 }

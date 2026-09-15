@@ -19767,6 +19767,9 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
   if (ERROR_INSERTED(5124)) {
     jam();
     CLEAR_ERROR_INSERT_VALUE;
+    // CTE COMPLETE requests carry the per-node aggregation-key section.
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
     JoinAggCompleteRef *ref =
       (JoinAggCompleteRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
