@@ -291,7 +291,7 @@ plan; the fs framework's `.bench_sql` runs are the acceptance check.
 | milestone | packages | acceptance evidence |
 |---|---|---|
 | **M1 — emitted branches served** (detail: `m1_plan.md`) — **DONE 2026-09-15 on RONDB-1124** | error codes (M1.0), D1 (F9), B (F1), A (F0), C (F7) | requirements report (`requirements_reports/2026-09-15/`): R-S6, R-F1, R-A2-binary SUPPORTED on base / jit / ng2r2; only R-A5-types left (F4/F5/F6); RonSQL errors carry 400/413/503/500 by class |
-| **M2 — type fidelity** | D2 (F5/F21/F2), D3 (F6/F22, the overflow overhaul), D4 (F3/F4) | `acceptance=PASS` on base / jit / ng2r2; `ronsql_fs_ng4r2` identical to base |
+| **M2 — type fidelity** (detail: `m2_plan.md`) | D2 (F5/F21/F2), D3 (F6/F22, the overflow overhaul), D4 (F3/F4) | `acceptance=PASS` on base / jit / ng2r2; `ronsql_fs_ng4r2` identical to base |
 | **M3 — serving performance** | F (F12), G (F13) | `fs_hw` targets met, plan pins re-recorded, `benchmarks.md` §8 run 4 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
