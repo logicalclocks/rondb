@@ -132,6 +132,10 @@ static void print_string(std::ostream& output_stream,
                          bool utf8_output,
                          bool trim_space_suffix);
 static double convert_result_to_double(NdbAggregator::Result result);
+static void print_base64(std::ostream& out, const unsigned char* bytes,
+                         size_t len);
+static void print_binary_tsv(std::ostream& out, const unsigned char* bytes,
+                             size_t len);
 
 // require or investigate schema version
 static inline void
@@ -1432,10 +1436,51 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       out << decStr;
       break;
     }
+  case NdbDictionary::Column::Binary:
+  case NdbDictionary::Column::Varbinary:
+  case NdbDictionary::Column::Longvarbinary:
+    {
+      // RONDB-1124 M1.4 (RONDB-1121 F7): binary pass-through values, the
+      // Hopsworks binary / serialized-array features projected through
+      // the snowflake templates.  JSON carries them as a base64 string
+      // (RFC 4648 with padding, no line breaks — the convention of the
+      // RDRS pk-read responses, so a client decodes both endpoints
+      // alike); TEXT prints the raw bytes with the mysql client's
+      // batch-mode escaping (\0 \t \n \\), byte for byte what the client
+      // prints for the same column.  BINARY(n) is printed at its full
+      // padded length, as MySQL returns it.  BLOB/TEXT stay unsupported
+      // (they need the blob API).
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on BINARY NdbRecAttr");
+      const unsigned char* data =
+          pointer_cast<const unsigned char*>(attr->aRef());
+      const unsigned char* bytes;
+      size_t len;
+      if (t == NdbDictionary::Column::Binary) {
+        bytes = data;
+        len = (size_t)col->getSizeInBytes();
+      } else if (t == NdbDictionary::Column::Varbinary) {
+        bytes = &data[1];
+        len = (size_t)data[0];
+      } else {
+        bytes = &data[2];
+        len = (size_t)data[0] | ((size_t)data[1] << 8);
+      }
+      if (m_json_output) {
+        out << '"';
+        print_base64(out, bytes, len);
+        out << '"';
+      } else if (m_tsv_output) {
+        print_binary_tsv(out, bytes, len);
+      } else {
+        abort();
+      }
+      break;
+    }
   default:
     // Old temporal formats (pre-5.6 Datetime/Time/Timestamp),
-    // Olddecimal, BIT, BINARY/VARBINARY and BLOB/TEXT are not
-    // supported in pass-through results.
+    // Olddecimal, BIT and BLOB/TEXT are not supported in pass-through
+    // results.
     *m_err << "Unsupported column type (" << (int)t
            << ") in pass-through result." << endl;
     throw RonSQLPermanentError(
@@ -1962,6 +2007,58 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
       break;
     default:
       abort();
+    }
+  }
+}
+
+// Base64 (RFC 4648, "=" padding, no line breaks) for binary pass-through
+// values under JSON output.  Not mysys' base64_encode, which inserts a
+// newline every 76 characters.
+static void
+print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
+{
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  size_t i = 0;
+  char quad[4];
+  for (; i + 3 <= len; i += 3)
+  {
+    Uint32 v = ((Uint32)bytes[i] << 16) | ((Uint32)bytes[i + 1] << 8) |
+               (Uint32)bytes[i + 2];
+    quad[0] = alphabet[(v >> 18) & 0x3f];
+    quad[1] = alphabet[(v >> 12) & 0x3f];
+    quad[2] = alphabet[(v >> 6) & 0x3f];
+    quad[3] = alphabet[v & 0x3f];
+    out.write(quad, 4);
+  }
+  if (i < len)
+  {
+    Uint32 v = (Uint32)bytes[i] << 16;
+    if (i + 1 < len) v |= (Uint32)bytes[i + 1] << 8;
+    quad[0] = alphabet[(v >> 18) & 0x3f];
+    quad[1] = alphabet[(v >> 12) & 0x3f];
+    quad[2] = (i + 1 < len) ? alphabet[(v >> 6) & 0x3f] : '=';
+    quad[3] = '=';
+    out.write(quad, 4);
+  }
+}
+
+// Binary pass-through values under TEXT output: the raw bytes with the
+// escaping the mysql client applies in batch mode (client/mysql.cc
+// tee_write, MY_PRINT_ESC_0 | MY_PRINT_CTRL): NUL, tab, newline and
+// backslash are written as \0, \t, \n and \\; every other byte as is.
+static void
+print_binary_tsv(std::ostream& out, const unsigned char* bytes, size_t len)
+{
+  for (size_t i = 0; i < len; i++)
+  {
+    switch (bytes[i])
+    {
+    case 0x00: out << "\\0"; break;
+    case 0x09: out << "\\t"; break;
+    case 0x0a: out << "\\n"; break;
+    case 0x5c: out << "\\\\"; break;
+    default: out.put((char)bytes[i]); break;
     }
   }
 }

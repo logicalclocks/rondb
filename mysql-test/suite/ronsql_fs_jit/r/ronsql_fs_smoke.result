@@ -847,21 +847,13 @@ A	1
 C	5
 D	6
 
-=== PROBE EDGE-COMP-D: VARBINARY projection through the snowflake template (A2: emitted by Hopsworks; engine support recorded) ===
+=== PROBE EDGE-COMP-D: VARBINARY projection through the snowflake template (A2: emitted by Hopsworks; F7 fixed in RONDB-1124 M1.4) ===
 == Query ==
 WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
 
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,3 @@
--c_label	c_payload
--A	\n
-+Unsupported column type (17) in pass-through result.
-+Error handling: RPE
-+[unsupported] Caught exception: Unsupported column type in pass-through result.
 ==========
 
 

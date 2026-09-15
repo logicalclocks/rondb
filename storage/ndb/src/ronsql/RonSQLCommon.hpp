@@ -123,6 +123,12 @@ struct RonSQLExecParams
     TEXT_NOHEADER, // Same as TEXT, except suppress the header line for query
                    // output.
   };
+  // Binary pass-through values (BINARY / VARBINARY columns projected as
+  // they are, RONDB-1124 M1.4): under JSON and JSON_ASCII a base64 string
+  // (RFC 4648 with padding, no line breaks — the RDRS pk-read convention);
+  // under TEXT the raw bytes with the mysql client's batch-mode escaping
+  // (NUL, tab, newline and backslash as \0 \t \n \\).  BLOB / TEXT
+  // columns are not supported in pass-through results.
   OutputFormat output_format = OutputFormat::JSON;
   std::basic_ostream<char>* err_stream = NULL;
   const char* operation_id = NULL; // Only used with RDRS

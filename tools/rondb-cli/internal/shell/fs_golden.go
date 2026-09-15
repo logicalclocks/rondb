@@ -952,11 +952,6 @@ func (o goldenCLIOptions) policy(f emit.GoldenFixture, request goldenRequest) go
 	policy := goldenGroupOpts{tolerance: o.tolerance, allowReject: o.allowReject}
 	if request.Plan.Kind == vector.Snowflake {
 		policy.left = goldenLeftSubtree(f.View, request.Captured.DTO.PreparedStatementIndex)
-		// F7: only the captured binary-projection DTO and its observed type.
-		if f.Name == "snowflake_binary" && request.Captured.DTO.PreparedStatementIndex == 1 {
-			policy.expectReject = &cases.Expect{Finding: "F7",
-				Pattern: "Unsupported column type (17) in pass-through result."}
-		}
 	}
 	return policy
 }

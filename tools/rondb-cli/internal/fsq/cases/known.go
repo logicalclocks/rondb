@@ -51,8 +51,6 @@ var Known = map[string]*Expect{
 	// (E8 topology mirror ng4r2).  Known until the overflow-handling overhaul.
 	"F22": {Finding: "F22", Pattern: "BIGINT SUM overflow undetected at the cross-fragment merge (topology-dependent)",
 		Wrong: &WrongValue{Column: "big_sum", MySQL: "9223372036854775808", RonSQL: "-9223372036854775808"}},
-	// VARBINARY cannot be projected by the pass-through printer.
-	"F7": {Finding: "F7", Pattern: "Unsupported column type"},
 	// A snowflake template whose CTE body is keyed by a VARCHAR entity key
 	// returns no rows through CTE_SCAN although the body alone returns its
 	// group (E6, findings/spec_fuzz.md).  Detected structurally by the fuzzer.

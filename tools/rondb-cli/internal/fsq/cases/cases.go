@@ -763,8 +763,10 @@ func (b *builder) edgeCases() {
 		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`;", false, nil, nil, "")
 	e("EDGE-comp-batch", "batch over dangling, NULL and matching hops",
 		"WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, nil, nil, "")
-	e("EDGE-comp-binary", "VARBINARY projection through the snowflake template (F7, emitted shape)",
-		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, Known["F7"], nil, "")
+	// F7 (RONDB-1121): the pass-through printer rejected VARBINARY;
+	// RONDB-1124 M1.4 prints it (raw bytes in TEXT, base64 in JSON).
+	e("EDGE-comp-binary", "VARBINARY projection through the snowflake template (F7 fixed in RONDB-1124 M1.4)",
+		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, nil, nil, "")
 	// F1 (RONDB-1121 smoke): a string column aggregated twice with another
 	// column load in between crashed RDRS (entity 1) or a data node (entity
 	// 3).  RONDB-1056 10561b78d1e fixed the kernel cause (the string register

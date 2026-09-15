@@ -276,9 +276,12 @@ key, collation-sensitive equality.
   struct's order field even when it is in the PK; exact field schema,
   prefix, asc/desc order, NULL values and empty-array behavior.
 - S7/S8: projected complex/binary fields are current builder output,
-  not E7-only probes. There is no corresponding snowflake type gate;
-  this tree's pass-through printer rejects VARBINARY. Record an engine
-  support gap and retain mandatory production cases.
+  not E7-only probes. There is no corresponding snowflake type gate.
+  Since RONDB-1124 M1.4 the pass-through printer serves BINARY /
+  VARBINARY: raw bytes under TEXT, a base64 string under JSON (the RDRS
+  pk-read convention, so the client decodes both endpoints alike);
+  BLOB-mapped binaries stay an engine gap. Retain the mandatory
+  production cases.
 - S7/S8/S9: full composite child-PK hops, permuted condition order,
   repeated/missing key components, composite root bindings and misses.
 - S1-S10: applicable type/literal/boundary fixtures from

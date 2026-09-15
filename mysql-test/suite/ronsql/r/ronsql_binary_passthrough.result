@@ -1,0 +1,158 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+CREATE TABLE bp (
+id  INT NOT NULL,
+grp INT NOT NULL,
+b4  BINARY(4),
+vb  VARBINARY(16),
+lvb VARBINARY(300),
+PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO bp VALUES
+(1, 1, 'AB',         0x4142,             REPEAT('x', 300)),
+(2, 1, 0x00090A5C,   0x00090A5C0D0B7F,   0x00),
+(3, 1, 0xC328FF01,   0xC328FFFE80,       REPEAT(0xFF, 260)),
+(4, 2, X'',          X'',                X''),
+(5, 2, NULL,         NULL,               NULL);
+
+=== bp-1: single-table projection, TEXT parity with the mysql client (escapes, invalid UTF-8, padding) ===
+== Query ==
+SELECT id, b4, vb FROM bp WHERE grp = 1;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result (hex) ==
+SELECT id, HEX(b4) AS b4_hex, HEX(vb) AS vb_hex FROM bp WHERE grp = 1;
+id	b4_hex	vb_hex
+1	41420000	4142
+2	00090A5C	00090A5C0D0B7F
+3	C328FF01	C328FFFE80
+
+=== bp-2: the long form (two-byte length prefix), TEXT parity ===
+== Query ==
+SELECT id, lvb FROM bp WHERE grp = 1;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result (lengths) ==
+SELECT id, LENGTH(lvb) AS lvb_len, HEX(LEFT(lvb, 4)) AS lvb_head FROM bp WHERE grp = 1;
+id	lvb_len	lvb_head
+1	300	78787878
+2	1	00
+3	260	FFFFFFFF
+
+=== bp-3: empty values and NULLs, TEXT parity ===
+== Query ==
+SELECT id, b4, vb, lvb FROM bp WHERE grp = 2;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result (hex) ==
+SELECT id, HEX(b4) AS b4_hex, HEX(vb) AS vb_hex, HEX(lvb) AS lvb_hex FROM bp WHERE grp = 2;
+id	b4_hex	vb_hex	lvb_hex
+4	00000000		
+5	NULL	NULL	NULL
+
+=== bp-4: the Hopsworks snowflake projection (aggregate CTE body, binary column on the joined table) ===
+== Query ==
+WITH c AS (SELECT grp AS g, COUNT(*) AS n FROM bp GROUP BY grp) SELECT b.id, b.vb, c.n FROM bp AS b JOIN c ON c.g = b.grp;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result (hex) ==
+WITH c AS (SELECT grp AS g, COUNT(*) AS n FROM bp GROUP BY grp) SELECT b.id, HEX(b.vb) AS vb_hex, c.n FROM bp AS b JOIN c ON c.g = b.grp;
+id	vb_hex	n
+1	4142	3
+2	00090A5C0D0B7F	3
+3	C328FFFE80	3
+4		2
+5	NULL	2
+===== JSON: base64 strings (AB\0\0 = QUIAAA==, AB = QUI=, 00 09 0A 5C = AAkKXA==) =====
+== Query ==
+SELECT id, b4, vb FROM bp WHERE grp = 1 AND id < 3 ORDER BY id;
+== ronsql_cli JSON ==
+[{"id":1,"b4":"QUIAAA==","vb":"QUI="},{"id":2,"b4":"AAkKXA==","vb":"AAkKXA0Lfw=="}]
+[{"b4":"QUIAAA==","id":1,"vb":"QUI="},{"b4":"AAkKXA==","id":2,"vb":"AAkKXA0Lfw=="}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":1,"b4":"QUIAAA==","vb":"QUI="},{"id":2,"b4":"AAkKXA==","vb":"AAkKXA0Lfw=="}]
+}
+{"data":[{"b4":"QUIAAA==","id":1,"vb":"QUI="},{"b4":"AAkKXA==","id":2,"vb":"AAkKXA0Lfw=="}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":1,"b4":"QUIAAA==","vb":"QUI="},{"id":2,"b4":"AAkKXA==","vb":"AAkKXA0Lfw=="}]
+}
+{"data":[{"b4":"QUIAAA==","id":1,"vb":"QUI="},{"b4":"AAkKXA==","id":2,"vb":"AAkKXA0Lfw=="}]}
+
+===== JSON: invalid UTF-8 and high bytes are just bytes (C3 28 FF 01 = wyj/AQ==) =====
+== Query ==
+SELECT id, b4, vb FROM bp WHERE id = 3;
+== ronsql_cli JSON ==
+[{"id":3,"b4":"wyj/AQ==","vb":"wyj//oA="}]
+[{"b4":"wyj/AQ==","id":3,"vb":"wyj//oA="}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":3,"b4":"wyj/AQ==","vb":"wyj//oA="}]
+}
+{"data":[{"b4":"wyj/AQ==","id":3,"vb":"wyj//oA="}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":3,"b4":"wyj/AQ==","vb":"wyj//oA="}]
+}
+{"data":[{"b4":"wyj/AQ==","id":3,"vb":"wyj//oA="}]}
+
+===== JSON: empty (padded BINARY(4) = AAAAAA==, empty VARBINARY = "") and NULL =====
+== Query ==
+SELECT id, b4, vb, lvb FROM bp WHERE grp = 2 ORDER BY id;
+== ronsql_cli JSON ==
+[{"id":4,"b4":"AAAAAA==","vb":"","lvb":""},{"id":5,"b4":null,"vb":null,"lvb":null}]
+[{"b4":"AAAAAA==","id":4,"lvb":"","vb":""},{"b4":null,"id":5,"lvb":null,"vb":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":4,"b4":"AAAAAA==","vb":"","lvb":""},{"id":5,"b4":null,"vb":null,"lvb":null}]
+}
+{"data":[{"b4":"AAAAAA==","id":4,"lvb":"","vb":""},{"b4":null,"id":5,"lvb":null,"vb":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":4,"b4":"AAAAAA==","vb":"","lvb":""},{"id":5,"b4":null,"vb":null,"lvb":null}]
+}
+{"data":[{"b4":"AAAAAA==","id":4,"lvb":"","vb":""},{"b4":null,"id":5,"lvb":null,"vb":null}]}
+
+===== JSON: the snowflake projection =====
+== Query ==
+WITH c AS (SELECT grp AS g, COUNT(*) AS n FROM bp GROUP BY grp) SELECT b.id, b.vb, c.n FROM bp AS b JOIN c ON c.g = b.grp ORDER BY b.id;
+== ronsql_cli JSON ==
+[{"id":1,"vb":"QUI=","n":3},{"id":2,"vb":"AAkKXA0Lfw==","n":3},{"id":3,"vb":"wyj//oA=","n":3},{"id":4,"vb":"","n":2},{"id":5,"vb":null,"n":2}]
+[{"id":1,"n":3,"vb":"QUI="},{"id":2,"n":3,"vb":"AAkKXA0Lfw=="},{"id":3,"n":3,"vb":"wyj//oA="},{"id":4,"n":2,"vb":""},{"id":5,"n":2,"vb":null}]
+== RDRS JSON (explicit outputFormat) ==
+{"data":
+[{"id":1,"vb":"QUI=","n":3},{"id":2,"vb":"AAkKXA0Lfw==","n":3},{"id":3,"vb":"wyj//oA=","n":3},{"id":4,"vb":"","n":2},{"id":5,"vb":null,"n":2}]
+}
+{"data":[{"id":1,"n":3,"vb":"QUI="},{"id":2,"n":3,"vb":"AAkKXA0Lfw=="},{"id":3,"n":3,"vb":"wyj//oA="},{"id":4,"n":2,"vb":""},{"id":5,"n":2,"vb":null}]}
+== RDRS JSON (default output format) ==
+{"data":
+[{"id":1,"vb":"QUI=","n":3},{"id":2,"vb":"AAkKXA0Lfw==","n":3},{"id":3,"vb":"wyj//oA=","n":3},{"id":4,"vb":"","n":2},{"id":5,"vb":null,"n":2}]
+}
+{"data":[{"id":1,"n":3,"vb":"QUI="},{"id":2,"n":3,"vb":"AAkKXA0Lfw=="},{"id":3,"n":3,"vb":"wyj//oA="},{"id":4,"n":2,"vb":""},{"id":5,"n":2,"vb":null}]}
+
+DROP TABLE bp;

@@ -25,7 +25,11 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] F5: preserve DECIMAL values beyond 2^53 cents exactly.
 - [ ] F6: decide BIGINT SUM overflow behavior relative to MySQL widening;
   retain the explicit expected-rejection probe meanwhile.
-- [ ] F7: support emitted VARBINARY/complex snowflake projections.
+- [x] F7: support emitted VARBINARY/complex snowflake projections. FIXED
+  2026-09-15 (RONDB-1124 M1.4): the pass-through printer prints BINARY /
+  VARBINARY (raw bytes in TEXT, base64 in JSON); regression test
+  `ronsql.ronsql_binary_passthrough`; the framework compares base64 cells
+  by their bytes.
   The user-run A6 corpus reproduced the type-17 pass-through rejection
   for snowflake_binary DTO 1, single/1, single/2 and single/9; all ten
   MySQL twin comparisons passed. Golden mode recognizes only that DTO's

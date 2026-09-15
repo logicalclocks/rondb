@@ -376,6 +376,31 @@ form.
 
 ## M1.4 — F7: binary and complex projections through snowflake templates
 
+**Status: DONE 2026-09-15 on RONDB-1124 — verified: `ronsql` and
+`ronsql_jit` `ronsql_binary_passthrough` recorded and reviewed (TEXT byte
+parity with the mysql client on escapes, invalid UTF-8, padding, the
+two-byte-prefix form, empty and NULL; the base64 bodies as predicted on
+ronsql_cli and both RDRS forms; JIT fallback pin 0);
+`ronsql_cte_dd_passthrough_types` re-recorded identically on its six
+suites (pt-P2 accepted, `1 4142 2` / `2 4344 2`); the four `ronsql_fs*`
+mirrors re-recorded identically: EDGE-comp-binary clean, the smoke
+EDGE-COMP-D probe clean, golden `ronsql-rejected` 3 → 0 (140 RonSQL
+passes); `go test` incl. the new `TestCompareBinary`.**  Implementation notes: `print_passthrough_value`
+gained the `Binary` / `Varbinary` / `Longvarbinary` branch — JSON prints a
+base64 string through a local RFC 4648 encoder (mysys' `base64_encode`
+inserts a newline every 76 characters, so it is not used), TEXT prints the
+raw bytes with the mysql client's batch-mode escaping (`tee_write`:
+`\0 \t \n \\`, everything else as is), BINARY(n) at its padded length;
+the contract is documented at `RonSQLExecParams::OutputFormat`.  BLOB /
+TEXT and BIT keep the rejection.  Framework: `canon` maps the MySQL binary
+type names to a binary kind, base64-decodes the RonSQL side of
+`Compare` before sorting / matching, and `CellsEqual` accepts the base64
+form on either side (the vector oracle needs no side information);
+`Known["F7"]`, the golden `snowflake_binary` policy and the spec fuzzer's
+avoidance are untouched except for the retired expectation — the spec
+fuzzer still does not project complex-typed features (`IsComplexType`
+skip), a possible follow-up now that binary is served.
+
 **Shape.** Hopsworks projects `binary` features (embeddings) and
 serialized `array` features through the snowflake templates:
 `SELECT j2.label, j2.payload FROM b JOIN edge_child_1 AS j2 ON …` where

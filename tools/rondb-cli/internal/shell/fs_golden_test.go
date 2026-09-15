@@ -1117,7 +1117,7 @@ func TestGoldenCLIPolicyScope(t *testing.T) {
 	}
 }
 
-func TestGoldenBinaryRejectPolicy(t *testing.T) {
+func TestGoldenExpectedRejectClassification(t *testing.T) {
 	view, dto := goldenInputCase(t, "snowflake_binary")
 	inputs, err := goldenInputsFor(view, dto)
 	if err != nil {
@@ -1126,9 +1126,14 @@ func TestGoldenBinaryRejectPolicy(t *testing.T) {
 	request := goldenRequest{Plan: inputs.Plan, Captured: cases.StatementGroup{DTO: dto}}
 	fixture := emit.GoldenFixture{View: view}
 	policy := (goldenCLIOptions{}).policy(fixture, request)
-	if policy.expectReject == nil || policy.expectReject.Finding != "F7" || policy.allowReject {
-		t.Fatalf("missing narrow F7 policy: %+v", policy)
+	// The binary projection runs since RONDB-1124 M1.4: no fixture carries
+	// an expected rejection any more.  The classification of an expected
+	// rejection is exercised with an explicit narrow policy.
+	if policy.expectReject != nil || policy.allowReject {
+		t.Fatalf("unexpected policy for snowflake_binary: %+v", policy)
 	}
+	policy.expectReject = &cases.Expect{Finding: "F7",
+		Pattern: "Unsupported column type (17) in pass-through result."}
 	for _, tc := range []struct {
 		outcome exec.Outcome
 		message string
@@ -1151,15 +1156,6 @@ func TestGoldenBinaryRejectPolicy(t *testing.T) {
 			result.failed() != (tc.status != "REJECT(expected)") {
 			t.Fatalf("%s: wrong classification: %+v", tc.message, result)
 		}
-	}
-	fixture.Name = "snowflake_inner"
-	if (goldenCLIOptions{}).policy(fixture, request).expectReject != nil {
-		t.Fatal("F7 policy leaked to another fixture")
-	}
-	fixture.Name = "snowflake_binary"
-	request.Captured.DTO.PreparedStatementIndex++
-	if (goldenCLIOptions{}).policy(fixture, request).expectReject != nil {
-		t.Fatal("F7 policy leaked to another DTO")
 	}
 }
 
