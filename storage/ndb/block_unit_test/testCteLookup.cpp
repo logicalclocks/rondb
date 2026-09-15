@@ -1302,6 +1302,63 @@ testFailedCteLateReplies(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
         expectNotReady(701) != 0)
       return -1;
 
+    /* Late groups must receive exactly one REF with the original
+     * error, whether or not the sender requested flow-control CONF.
+     * Use a distinct sender key to verify that the reply echoes it. */
+    for (Uint32 needConf = 0; needConf <= 1; needConf++) {
+      const Uint32 senderKey = key ^ 0x40000000u;
+      AggResItem value = {};
+      value.type = NDB_TYPE_BIGINT;
+      value.value.val_int64 = 10;
+      Uint32 valueWords[sizeof(value) / sizeof(Uint32)];
+      memcpy(valueWords, &value, sizeof(value));
+
+      SimpleSignal lateSig;
+      JoinAggRedistributeReq *req =
+        reinterpret_cast<JoinAggRedistributeReq *>(lateSig.getDataPtrSend());
+      req->aggStateKey = key;
+      req->senderAggStateKey = senderKey;
+      req->keyLen = keyBytes;
+      req->valueLen = sizeof(value);
+      req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
+      req->identWord = identWord;
+      req->transid[0] = FAKE_TRANS_ID1;
+      req->transid[1] = FAKE_TRANS_ID2;
+      req->senderRef = ss.getOwnRef();
+      lateSig.set(ss, 0, block, GSN_JOIN_AGG_REDISTRIBUTE_REQ,
+                  JoinAggRedistributeReq::SignalLength);
+      lateSig.header.m_noOfSections = 2;
+      lateSig.ptr[0].p = keyBuf;
+      lateSig.ptr[0].sz = keyWords;
+      lateSig.ptr[1].p = valueWords;
+      lateSig.ptr[1].sz = sizeof(valueWords) / sizeof(Uint32);
+      if (ss.sendSignal(node, &lateSig) != SEND_OK) {
+        fprintf(stderr, "FAIL 7: send late REDISTRIBUTE_REQ failed\n");
+        return -1;
+      }
+      SimpleSignal *resp =
+        waitForSignal(ss, WAIT_TIMEOUT_MS, "late REDISTRIBUTE_REF");
+      if (resp == nullptr) return -1;
+      if (getGsn(resp) != GSN_JOIN_AGG_REDISTRIBUTE_REF) {
+        fprintf(stderr, "FAIL 7: expected REDISTRIBUTE_REF, got GSN=%d\n",
+                getGsn(resp));
+        return -1;
+      }
+      const JoinAggRedistributeRef *lateRef =
+        reinterpret_cast<const JoinAggRedistributeRef *>(resp->getDataPtr());
+      if (lateRef->errorCode != originalError ||
+          lateRef->aggStateKey != key || lateRef->senderNodeId != node ||
+          lateRef->senderAggStateKey != senderKey ||
+          lateRef->identWord != identWord ||
+          lateRef->transid[0] != FAKE_TRANS_ID1 ||
+          lateRef->transid[1] != FAKE_TRANS_ID2) {
+        fprintf(stderr, "FAIL 7: incorrect redistribution error or correlation\n");
+        return -1;
+      }
+      /* This ordered barrier also rejects any extra CONF or COMPLETE_REF. */
+      if (expectNotReady(704 + needConf) != 0) return -1;
+    }
+
     /* A late flow-control CONF must not restart redistribution. */
     SimpleSignal sig;
     JoinAggRedistributeConf *conf =

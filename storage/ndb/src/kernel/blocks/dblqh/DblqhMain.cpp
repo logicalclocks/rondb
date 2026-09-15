@@ -23997,6 +23997,28 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
 
   SectionHandle handle(this, signal);
 
+  /* Reject late groups before decoding or acknowledging them. A CONF
+   * would resume a peer that must abort, and a secondary error would
+   * hide the failure that originally stopped this CTE. */
+  if (state->isAborting()) {
+    jam();
+    releaseSections(handle);
+    JoinAggRedistributeRef *ref =
+      (JoinAggRedistributeRef *)signal->getDataPtrSend();
+    ref->aggStateKey = aggStateKey;
+    ref->senderNodeId = getOwnNodeId();
+    ref->errorCode = state->m_error_code != 0
+                         ? state->m_error_code
+                         : ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->senderAggStateKey = senderAggStateKey;
+    ref->identWord = reqIdentWord;
+    ref->transid[0] = reqTransid[0];
+    ref->transid[1] = reqTransid[1];
+    sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
+               signal, JoinAggRedistributeRef::SignalLength, JBB);
+    return;
+  }
+
   SegmentedSectionPtr keySection, valueSection;
   ndbrequire(handle.getSection(keySection,
                                JoinAggRedistributeReq::KeySectionNum));
@@ -24037,23 +24059,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     conf->transid[1] = reqTransid[1];
     sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_CONF,
                signal, JoinAggRedistributeConf::SignalLength, JBB);
-  }
-
-  /* Failed or aborting states must not accept more groups. */
-  if (state->isAborting()) {
-    jam();
-    JoinAggRedistributeRef *ref =
-      (JoinAggRedistributeRef *)signal->getDataPtrSend();
-    ref->aggStateKey = aggStateKey;
-    ref->senderNodeId = getOwnNodeId();
-    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
-    ref->senderAggStateKey = senderAggStateKey;  // D25
-    ref->identWord = reqIdentWord;
-    ref->transid[0] = reqTransid[0];
-    ref->transid[1] = reqTransid[1];
-    sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
-               signal, JoinAggRedistributeRef::SignalLength, JBB);
-    return;
   }
 
   /* A parked row can overtake our COMPLETE_REQ. Queue until local
