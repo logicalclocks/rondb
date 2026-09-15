@@ -20323,9 +20323,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
   }
 
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (state == nullptr ||
-      state->m_state.load() == JoinAggregationState::ERROR ||
-      state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+  if (state == nullptr || state->isAborting()) {
     jam();
     return;  // Aborted or released while this continuation was queued.
   }
@@ -23335,6 +23333,7 @@ void Dblqh::abortCteRedistribution(Signal *signal,
                                     JoinAggregationState *state,
                                     Uint32 errorCode, bool notifyPeers) {
   jam();
+  ndbassert(state->m_owner_instance == instance());
   if (state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
     // A surviving peer may still reply while deferred release is pending.
     // Keep the coordinator-failure marker and leave cleanup to the proxy.
@@ -23345,6 +23344,7 @@ void Dblqh::abortCteRedistribution(Signal *signal,
   if (state->m_error_code == 0) {
     state->m_error_code = errorCode;
   }
+  state->m_cte_waiting_conf = false;
   state->m_state.store(JoinAggregationState::ERROR);
   if (firstError && notifyPeers) {
     for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
@@ -23474,9 +23474,7 @@ void Dblqh::sendScalarRedistributeReq(Signal* signal,
 
 void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (state == nullptr ||
-      state->m_state.load() == JoinAggregationState::ERROR ||
-      state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+  if (state == nullptr || state->isAborting()) {
     jam();
     return;  // Aborted or released while this continuation was queued.
   }
@@ -24038,9 +24036,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                signal, JoinAggRedistributeConf::SignalLength, JBB);
   }
 
-  /* If in ERROR state, send REF */
-  if (curState == JoinAggregationState::ERROR ||
-      curState == JoinAggregationState::NODE_FAIL_ABORT) {
+  /* Failed or aborting states must not accept more groups. */
+  if (state->isAborting()) {
     jam();
     JoinAggRedistributeRef *ref =
       (JoinAggRedistributeRef *)signal->getDataPtrSend();
@@ -24324,9 +24321,7 @@ void Dblqh::processRedistQueue(Signal *signal,
  */
 void Dblqh::continueRedistQueueDrain(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (state == nullptr ||
-      state->m_state.load() == JoinAggregationState::ERROR ||
-      state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+  if (state == nullptr || state->isAborting()) {
     jam();
     return;
   }
@@ -24486,15 +24481,17 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
     return;
   }
 
+  if (state->isAborting()) {
+    jam();
+    return;
+  }
+
   /* An error may follow this sender's successful FINAL (e.g. failure
    * during AVG/LIMIT finalization). Handle it before duplicate filtering.
    * The originating node notifies every peer; do not rebroadcast. */
   if (errorCode != 0) {
     jam();
-    if (state->m_state.load() != JoinAggregationState::ERROR &&
-        state->m_state.load() != JoinAggregationState::NODE_FAIL_ABORT) {
-      abortCteRedistribution(signal, state, errorCode, false);
-    }
+    abortCteRedistribution(signal, state, errorCode, false);
     return;
   }
 
@@ -24533,9 +24530,7 @@ void Dblqh::execJOIN_AGG_FINAL_REP(Signal *signal) {
  * missing state means the CTE was aborted/released mid-chain — drop. */
 void Dblqh::continueCteAvgFinalize(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (state == nullptr ||
-      state->m_state.load() == JoinAggregationState::ERROR ||
-      state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+  if (state == nullptr || state->isAborting()) {
     jam();
     return;  // Aborted or released while this continuation was queued.
   }
@@ -24566,9 +24561,7 @@ void Dblqh::continueCteAvgFinalize(Signal *signal, Uint32 aggStateKey) {
  * and performs the CTE_READY transition. */
 void Dblqh::continueCteLimitFinalize(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
-  if (state == nullptr ||
-      state->m_state.load() == JoinAggregationState::ERROR ||
-      state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+  if (state == nullptr || state->isAborting()) {
     jam();
     return;  // Aborted or released while this continuation was queued.
   }
@@ -24602,8 +24595,8 @@ void Dblqh::continueCteLimitFinalize(Signal *signal, Uint32 aggStateKey) {
 void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   /* Redistribution, FINAL and queue-drain handlers run on the owner. */
   ndbassert(state->m_owner_instance == instance());
-  if (state->m_state.load() == JoinAggregationState::ERROR ||
-      state->m_state.load() == JoinAggregationState::NODE_FAIL_ABORT) {
+  if (state->isAborting()) {
+    // Successful finalization must never revive a failed CTE.
     jam();
     return;
   }
