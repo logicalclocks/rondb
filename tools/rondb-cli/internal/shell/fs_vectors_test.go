@@ -63,9 +63,12 @@ func testSpecRejectionPreservesEarlierMismatch(t *testing.T, allowReject bool) {
 			break
 		}
 	}
-	if sp == nil || sp.ExpectReject == nil {
-		t.Fatal("missing expected-rejection spec")
+	if sp == nil {
+		t.Fatal("missing collect spec")
 	}
+	// The collect form runs since RONDB-1124 M1.3; give the spec a narrow
+	// expected rejection so the test has one to preserve.
+	sp.ExpectReject = cases.Known["F7"]
 	rejectionMessage, rejectionStatus, reportedMessage := sp.ExpectReject.Pattern, "REJECT(expected)", sp.ExpectReject.Finding
 	if allowReject {
 		rejectionMessage, rejectionStatus, reportedMessage = "new unsupported shape", "REJECT(allowed)", "new unsupported shape"
@@ -187,7 +190,7 @@ func TestSpecMissingReferenceAndMySQLOnly(t *testing.T) {
 			}
 			// Even an expected-rejection annotation must not turn a skipped
 			// template into PASS(was-expected-reject).
-			sp.ExpectReject = cases.Known["S6-cte"]
+			sp.ExpectReject = cases.Known["F7"]
 			dto := &sp.DTOs()[0]
 			if tc.name != "missing-reference" {
 				dto.QueryRonsql = nil
@@ -276,9 +279,12 @@ func TestSpecAllowRejectOnlyAllowsCleanRejections(t *testing.T) {
 			break
 		}
 	}
-	if sp == nil || sp.ExpectReject == nil {
-		t.Fatal("missing expected-rejection spec")
+	if sp == nil {
+		t.Fatal("missing collect spec")
 	}
+	// The collect form runs since RONDB-1124 M1.3; give the spec a narrow
+	// expected rejection so the classification table below has one.
+	sp.ExpectReject = cases.Known["F7"]
 	for _, tc := range []struct {
 		name, message, status, shape string
 		outcome                      exec.Outcome

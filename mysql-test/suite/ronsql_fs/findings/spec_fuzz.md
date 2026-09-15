@@ -13,7 +13,7 @@ repro comes from `--shrink`.
 | F3 (rule) | framework | `agg:transactions` with `AVG(amount_dec)` (1 of 1000 cases, seed 2, `--vectors --direct-collect --shrink`; shrunk in 11 steps to one batch aggregate with one filter) | MySQL `299.716667`, RonSQL `299.7167` for a mean of three DECIMAL(12,2) values: RonSQL prints AVG with four decimals (F3), which the exact DECIMAL comparison rejected | `SELECT customer_id, AVG(amount_dec) AS amount_dec_avg FROM transactions_1 WHERE customer_id IN (965) GROUP BY customer_id;` | FRAMEWORK, fixed: `canon.CellsEqualCol` / `Compare` accept AVG outputs (`<source>_avg`) within 1e-4 (the F3 allowance the E1 ledger prescribed); the engine-side F3 row stays open. |
 | F8 (rule) | framework | `agg:transactions` with `MIN(category)` / `MAX(category)` (4 of 200 cases) | MySQL `Grocery`, RonSQL `grocery` (collation-equal values, unspecified representative) | — | FRAMEWORK, fixed: the generator samples only `COUNT` over `category` / `device` (the columns whose domain holds collation-equal variants), per the F8 rule of E1. |
 
-Known outcomes that are not findings: `CLEAN-REJECT` on every collect
-case (F0, the Hopsworks CTE form), `GATED` / `NO-TEMPLATE` for the gated
-shapes.  (`KNOWN-ERROR` on MIN/MAX over the event time, F9, until its fix
+Known outcomes that are not findings: `GATED` / `NO-TEMPLATE` for the
+gated shapes.  (`CLEAN-REJECT` on every collect case, F0, the Hopsworks
+CTE form, until its fix in RONDB-1124 M1.3; those cases now `PASS`.)  (`KNOWN-ERROR` on MIN/MAX over the event time, F9, until its fix
 in RONDB-1124 M1.1; those cases now `PASS`.)

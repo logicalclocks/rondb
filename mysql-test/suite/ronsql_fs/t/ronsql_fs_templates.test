@@ -275,12 +275,11 @@ SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SU
 --write_file $QUERY_FILE
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
-# expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out 2>&1
---exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out
---remove_file $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
 
 --echo
 --echo === S6b-k21: S6b single — direct collect form: exactly 5 rows ===
@@ -300,12 +299,11 @@ SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` W
 --write_file $QUERY_FILE
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
-# expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out 2>&1
---exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out
---remove_file $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
 
 --echo
 --echo === S6b-k31: S6b single — direct collect form: 300 rows ===
@@ -325,12 +323,11 @@ SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` W
 --write_file $QUERY_FILE
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
-# expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out 2>&1
---exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out
---remove_file $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
 
 --echo
 --echo === S6b-k16: S6b single — direct collect form: no rows ===

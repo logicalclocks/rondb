@@ -10,7 +10,11 @@ F8 was a framework fixture issue and is already fixed.
 
 ## Engine and protocol work
 
-- [ ] F0: support the Hopsworks CTE-form collect query over a partial key.
+- [x] F0: support the Hopsworks CTE-form collect query over a partial key.
+  FIXED 2026-09-15 (RONDB-1124 M1.3): the projection-only main over a
+  non-aggregating single-table body with ORDER BY and LIMIT collapses into
+  the body at parse time (`collapse_collect_cte`); regression test
+  `ronsql.ronsql_cte_collect_collapse`.
 - [x] F1: reused string aggregate storage (client/data-node crashes and
   possible wrong values). FIXED by RONDB-1056 `10561b78d1e` (per-row string
   high-water mark in both interpreters); the framework cases and smoke

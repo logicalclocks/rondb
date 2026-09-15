@@ -537,8 +537,11 @@ func (b *builder) collectCases() {
 		c    int64
 		note string
 	}{{21, "exactly 5 rows"}, {31, "300 rows"}, {16, "no rows"}} {
+		// F0 (RONDB-1121): the emitted CTE form was rejected as "not a
+		// single-row key lookup"; RONDB-1124 M1.3 collapses it into the
+		// direct S6b statement, so it is asserted like any other case.
 		b.emitCase(fmt.Sprintf("S6-cte-k%d", k.c), "S6", "single", "Hopsworks CTE collect form: "+k.note,
-			b.collectView("s6", 5, false, false), key(k.c), false, Known["S6-cte"], true)
+			b.collectView("s6", 5, false, false), key(k.c), false, nil, true)
 		// S6b: the direct single-table form, the same columns and order.
 		b.sqlCase(fmt.Sprintf("S6b-k%d", k.c), "S6b", "single", "direct collect form: "+k.note,
 			fmt.Sprintf("SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = %d ORDER BY `event_time` DESC LIMIT 5;", k.c),

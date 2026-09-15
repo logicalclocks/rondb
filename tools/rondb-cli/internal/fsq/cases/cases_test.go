@@ -129,7 +129,7 @@ func TestBoundText(t *testing.T) {
 	if c := byID["EDGE-date-range"]; c.ExpectReject != nil || c.KnownWrong != nil || c.Hazard != "" {
 		t.Error("EDGE-date-range: a plain case since F9 (temporal MIN/MAX quoting in JSON) was fixed")
 	}
-	if byID["S6-cte-k21"].ExpectReject == nil || byID["EDGE-F1-string-reuse"].Hazard != "" || !byID["EDGE-F1-string-reuse"].MTR {
+	if byID["S6-cte-k21"].ExpectReject != nil || byID["EDGE-F1-string-reuse"].Hazard != "" || !byID["EDGE-F1-string-reuse"].MTR {
 		t.Error("expectation table wiring")
 	}
 }

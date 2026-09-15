@@ -481,10 +481,8 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 		allOK := true
 		for _, st := range g.Statements {
 			sqlText := st.RonSQL
-			isCTECollect := strings.HasPrefix(sqlText, "WITH t AS (")
 			if o.directCollect {
 				sqlText, _ = fuzz.DirectCollect(sqlText)
-				isCTECollect = false
 			}
 			res.Statements = append(res.Statements, sqlText)
 			ordered := strings.Contains(sqlText, " ORDER BY ")
@@ -526,12 +524,7 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 				}
 				ronResults = append(ronResults, rr.Result)
 			case exec.CleanReject:
-				if isCTECollect && strings.Contains(rr.Message, cases.Known["S6-cte"].Pattern) {
-					worst("CLEAN-REJECT", "F0")
-					res.Finding = "F0"
-				} else {
-					worst("REJECT-UNEXPECTED", firstLine(rr.Message))
-				}
+				worst("REJECT-UNEXPECTED", firstLine(rr.Message))
 				allOK = false
 			case exec.Retryable:
 				worst("RETRY-EXHAUSTED", firstLine(rr.Message))

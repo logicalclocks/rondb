@@ -393,6 +393,10 @@ private:
   DynamicArray<SubqueryInfo> m_subquery_infos;
   bool m_has_subqueries = false;
   bool m_has_ctes = false;
+  // RONDB-1124 M1.3: name of the CTE collapse_collect_cte() folded into the
+  // single-table pass-through statement ({NULL, 0} when no collapse ran);
+  // reported by EXPLAIN.
+  LexCString m_collapsed_cte = LexCString{NULL, 0};
   // True for aggregating queries (the only ones RonSQL fully supports).
   // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
   // shape that Phase E.3 enables — drives the pass-through delivery
@@ -450,6 +454,13 @@ private:
    * plan-time enforcement that the body WHERE binds every primary key
    * column by equality with a constant (<= 1 row). */
   void detect_single_row_ctes();
+  /* RONDB-1124 M1.3 (RONDB-1121 F0): fold the Hopsworks collect form —
+   * a projection-only main over one non-aggregating single-table CTE
+   * body with ORDER BY and LIMIT — into the body, so the single-table
+   * pass-through ORDER BY scan serves it.  Parse-time AST rewrite; a
+   * no-op for every other shape. */
+  void collapse_collect_cte();
+  static bool ce_has_subquery(const ConditionalExpression* ce);
   void enforce_single_row_cte_body(const CteDefinition* cte,
                                    QueryScope& scope);
   /* Phase I.17h: synthesise a FROM clause from qualified column refs

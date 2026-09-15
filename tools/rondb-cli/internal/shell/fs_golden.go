@@ -950,9 +950,6 @@ func parseGoldenOptions(a fsArgs) (goldenCLIOptions, error) {
 
 func (o goldenCLIOptions) policy(f emit.GoldenFixture, request goldenRequest) goldenGroupOpts {
 	policy := goldenGroupOpts{tolerance: o.tolerance, allowReject: o.allowReject}
-	if request.Plan.Kind == vector.Collect && request.Captured.DTO.TemplateCount() > 0 {
-		policy.expectReject = cases.Known["S6-cte"]
-	}
 	if request.Plan.Kind == vector.Snowflake {
 		policy.left = goldenLeftSubtree(f.View, request.Captured.DTO.PreparedStatementIndex)
 		// F7: only the captured binary-projection DTO and its observed type.

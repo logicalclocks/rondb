@@ -119,7 +119,7 @@ SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amoun
 SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 1001) GROUP BY `customer_id`|
 
 --echo
---echo === PROBE S6 (risk R1): collect last-5, Hopsworks CTE form, customer 21 ===
+--echo === PROBE S6 (F0, fixed in RONDB-1124 M1.3: collapsed into the direct form): collect last-5, Hopsworks CTE form, customer 21 ===
 let $QUERY=
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;|
 --source suite/ronsql/include/ronsql_compare.inc

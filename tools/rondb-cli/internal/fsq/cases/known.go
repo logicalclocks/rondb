@@ -36,8 +36,6 @@ import (
 // REJECT(expected) / KNOWN-WRONG instead of FAIL; a case that
 // unexpectedly passes reports PASS(was-...) so the entry can be retired.
 var Known = map[string]*Expect{
-	// Hopsworks collect CTE form: non-aggregating CTE body over a partial key (risk R1).
-	"S6-cte": {Finding: "F0", Pattern: "Non-aggregating CTE body is not a single-row key lookup"},
 	// MySQL prints FLOAT with display precision; RonSQL prints the exact binary32 value.
 	"F4": {Finding: "F4", Pattern: "FLOAT display precision",
 		Wrong: &WrongValue{Column: "ff_max", MySQL: "123457", RonSQL: "123456.7890625"}},

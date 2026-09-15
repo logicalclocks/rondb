@@ -1,0 +1,222 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+CREATE TABLE ev (
+entity_id  BIGINT NOT NULL,
+event_time TIMESTAMP(3) NOT NULL,
+amount     BIGINT,
+fee        INT,
+category   VARCHAR(20),
+PRIMARY KEY (entity_id, event_time)
+) ENGINE=NDB;
+INSERT INTO ev VALUES
+(1, '2026-01-01 01:00:00.000', 300,  1, 'grocery'),
+(1, '2026-01-01 02:00:00.000', 100,  2, 'travel'),
+(1, '2026-01-01 03:00:00.000', 800,  3, 'grocery'),
+(1, '2026-01-01 04:00:00.000', NULL, 4, 'travel'),
+(1, '2026-01-01 05:00:00.000', 200,  5, 'grocery'),
+(1, '2026-01-01 06:00:00.000', 700,  6, 'travel'),
+(1, '2026-01-01 07:00:00.000', 400,  7, 'grocery'),
+(1, '2026-01-01 08:00:00.000', 600,  8, 'travel'),
+(2, '2026-01-02 01:00:00.000', 10,   1, 'grocery'),
+(2, '2026-01-02 02:00:00.000', 20,   2, 'grocery'),
+(2, '2026-01-02 03:00:00.000', 30,   3, 'travel');
+
+=== cc-1: the emitted form, DESC LIMIT 5 (8 rows -> newest 5) + EXPLAIN pin ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== cc-2: ASC LIMIT 5 (oldest 5) ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time ASC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== cc-3: LIMIT 1 ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 1) SELECT entity_id, event_time, amount FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== cc-4: LIMIT 50 (the Hopsworks MaxCollectN) over 8 rows ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount, fee, category FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 50) SELECT entity_id, event_time, amount, fee, category FROM t;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+
+=== cc-5: fewer rows than n (entity 2: 3 rows, LIMIT 5) ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 2 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-6: missing entity (no rows) ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 3 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== cc-7: an extra WHERE filter (the emitter's collect filter form) ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount, category FROM ev WHERE entity_id = 1 AND category = 'grocery' ORDER BY event_time DESC LIMIT 2) SELECT entity_id, event_time, amount, category FROM t;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== cc-8: the main reorders and aliases the CTE columns ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT amount AS a, entity_id AS e, event_time FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-9: the main selects a strict subset (the ORDER BY column is not projected) ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT amount FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-10: ORDER BY a non-indexed column (buffered sort; largest 3 amounts, NULL excluded by DESC) ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY amount DESC LIMIT 3) SELECT entity_id, event_time, amount FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-11: the body's ORDER BY names a body output alias ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time AS et, amount FROM ev WHERE entity_id = 1 ORDER BY et DESC LIMIT 2) SELECT et, amount FROM t;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== cc-12: the main qualifies its columns with the CTE name ===
+== Query ==
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT t.entity_id, t.amount FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-13: the body aliases its table ===
+== Query ==
+WITH t AS (SELECT e.entity_id, e.event_time, e.amount FROM ev AS e WHERE e.entity_id = 1 ORDER BY e.event_time DESC LIMIT 3) SELECT entity_id, event_time FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-14: swapped aliases: the body's ORDER BY binds to its own alias (the amount column), as in MySQL ===
+== Query ==
+WITH t AS (SELECT amount AS event_time, event_time AS amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT event_time, amount FROM t;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== cc-P1 (kept rule): a WHERE in the main is not the collect form ===
+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'ev' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
+Error handling: RPE
+ronsql_cli caught exception: Non-aggregating CTE body is not a single-row key lookup.
+
+=== cc-P2 (kept rule): a join in the main is not the collect form ===
+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'ev' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
+Error handling: RPE
+ronsql_cli caught exception: Non-aggregating CTE body is not a single-row key lookup.
+
+=== cc-P3 (kept rule): a body without LIMIT is not the collect form ===
+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'ev' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
+Error handling: RPE
+ronsql_cli caught exception: Non-aggregating CTE body is not a single-row key lookup.
+
+=== cc-P4 (kept rule): a body with LIMIT but no ORDER BY is not the collect form ===
+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'ev' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
+Error handling: RPE
+ronsql_cli caught exception: Non-aggregating CTE body is not a single-row key lookup.
+
+=== cc-P5: the main names a column the CTE does not output ===
+Column 'fee' is not an output of CTE 't'.
+Error handling: RPE
+ronsql_cli caught exception: Column is not an output of the CTE.
+DROP TABLE ev;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_cte_collect_collapse_jit_fallback_delta;
+ronsql_cte_collect_collapse_jit_fallback_delta
+0

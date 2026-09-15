@@ -510,6 +510,24 @@ customer_id	count	amount_count	amount_sum	amount_min	amount_max	fee_min	fee_max	
 31	87	87	55419	314	995	-10	39	995	39
 
 === S6-cte-k21: S6 single — Hopsworks CTE collect form: exactly 5 rows ===
+== Query ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
+customer_id	event_time	amount	category
+21	2026-05-30 18:00:00	836	fuel
+21	2026-05-31 00:00:00	819	Grocery
+21	2026-05-31 06:00:00	802	grocery
+21	2026-05-31 12:00:00	785	online
+21	2026-05-31 18:00:00	768	Travel
 
 === S6b-k21: S6b single — direct collect form: exactly 5 rows ===
 == Query ==
@@ -532,6 +550,24 @@ customer_id	event_time	amount	category
 21	2026-05-30 18:00:00	836	fuel
 
 === S6-cte-k31: S6 single — Hopsworks CTE collect form: 300 rows ===
+== Query ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
+customer_id	event_time	amount	category
+31	2026-05-30 17:43:00	246	grocery
+31	2026-05-30 23:43:00	229	online
+31	2026-05-31 05:43:00	212	Travel
+31	2026-05-31 11:43:00	195	travel
+31	2026-05-31 17:43:00	178	fuel
 
 === S6b-k31: S6b single — direct collect form: 300 rows ===
 == Query ==
@@ -554,6 +590,19 @@ customer_id	event_time	amount	category
 31	2026-05-30 17:43:00	246	grocery
 
 === S6-cte-k16: S6 single — Hopsworks CTE collect form: no rows ===
+== Query ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
+customer_id	event_time	amount	category
 
 === S6b-k16: S6b single — direct collect form: no rows ===
 == Query ==

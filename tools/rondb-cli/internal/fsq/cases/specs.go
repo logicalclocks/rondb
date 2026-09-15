@@ -132,7 +132,7 @@ func Specs(cfg Config) ([]Spec, error) {
 		Filter: func(t data.Tx) bool { return t.Amount >= 300 },
 		View:   b.txAggView("v-s4d", txAgg, i64p(30*day), true, []spec.Filter{leaf("amount", spec.CondGreaterThanOrEqual, "300")})})
 
-	add(Spec{ID: "V-S6-cte-n5", Shape: "S6", Note: "Hopsworks CTE collect form (F0)", Family: "collect", ExpectReject: Known["S6-cte"],
+	add(Spec{ID: "V-S6-cte-n5", Shape: "S6", Note: "Hopsworks CTE collect form", Family: "collect",
 		View: b.collectView("v-s6", 5, false, false)})
 	add(Spec{ID: "V-S6b-direct-n5", Shape: "S6b", Note: "direct collect, newest first, N = 5", Family: "collect", DirectCollect: true,
 		View: b.collectView("v-s6b", 5, false, false)})

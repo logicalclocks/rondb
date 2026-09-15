@@ -273,6 +273,35 @@ merge if not; the JIT lowering is RONDB-1056 work (separate estimate).
 
 ## M1.3 — F0: the emitted collect CTE form
 
+**Status: DONE 2026-09-15 on RONDB-1124 — verified: `ronsql` and
+`ronsql_jit` `ronsql_cte_collect_collapse` recorded and reviewed (all 14
+cases agree on MySQL / RDRS / ronsql_cli with empty diffs, EXPLAIN pin
+present, no CTE section, the five kept-rule rejections and the new
+"not an output of CTE" message; JIT fallback pin 0); `ronsql_cte` and
+`ronsql_cte_jit` unchanged; the four `ronsql_fs*` mirrors re-recorded
+identically: templates S6-cte-k21/k31/k16 clean (6/6/0 lines), smoke S6
+probe clean, golden `ronsql-rejected` 15 → 3 (the 12 collect DTOs pass),
+vectors S6 SUPPORTED 22/22, spec fuzz `clean-reject` 29 → 0 (`pass` 128),
+envelope fuzz `clean-reject` 25 → 20 (`pass` 170); `go test` incl. the
+templates golden and bench registry fixtures.**  Implementation notes:
+the rewrite runs in `parse()` right after `detect_single_row_ctes()` and
+before the non-aggregate gate (`RonSQLPreparer::collapse_collect_cte`), so
+every later stage sees the plain single-table statement: the main's
+outputs keep their names and order and take the body columns they name,
+the body's table / WHERE / ORDER BY / LIMIT become the root's, the CTE
+list is dropped and `m_collapsed_cte` drives the EXPLAIN line.  A body
+ORDER BY entry naming a body output alias is redirected to the underlying
+column; when a root output alias would capture the bare name in
+`resolve_orderby_aliases()`, the entry is re-registered qualified with the
+body table alias.  Column-registry entries the body parse flagged inner
+are un-flagged for the columns the collapsed statement uses; the main's
+own entries nothing references any more become alias-only sentinels.  The
+pattern requires ORDER BY *and* LIMIT >= 1 (a LIMIT-only or ORDER-BY-only
+body keeps today's rules); a body WHERE with a subquery is not collapsed.
+A main column the CTE does not output raises "Column 'x' is not an output
+of CTE 't'" (SEMANTIC) instead of the F0 message.  obc-19/20 and the
+srb-P shapes join in the main, so they stay on the single-row path.
+
 **Shape.** For every collect feature Hopsworks emits
 
 ```

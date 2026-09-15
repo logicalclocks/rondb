@@ -1081,14 +1081,14 @@ func TestGoldenCLIOptions(t *testing.T) {
 
 func TestGoldenCLIPolicyScope(t *testing.T) {
 	for _, tc := range []struct {
-		name          string
-		left, collect bool
+		name string
+		left bool
 	}{
-		{"collect_desc", false, true},
-		{"collect_batch_gated", false, false},
-		{"aggregate_single", false, false},
-		{"snowflake_left", true, false},
-		{"snowflake_inner", false, false},
+		{"collect_desc", false}, // the CTE collect form runs since RONDB-1124 M1.3: no expected rejection
+		{"collect_batch_gated", false},
+		{"aggregate_single", false},
+		{"snowflake_left", true},
+		{"snowflake_inner", false},
 	} {
 		view, dto := goldenInputCase(t, tc.name)
 		inputs, err := goldenInputsFor(view, dto)
@@ -1097,11 +1097,8 @@ func TestGoldenCLIPolicyScope(t *testing.T) {
 		}
 		request := goldenRequest{Plan: inputs.Plan, Captured: cases.StatementGroup{DTO: dto}}
 		policy := (goldenCLIOptions{tolerance: 1e-9}).policy(emit.GoldenFixture{View: view}, request)
-		if policy.left != tc.left || (policy.expectReject != nil) != tc.collect || policy.allowReject {
+		if policy.left != tc.left || policy.expectReject != nil || policy.allowReject {
 			t.Fatalf("%s: wrong policy %+v", tc.name, policy)
-		}
-		if tc.collect && policy.expectReject != cases.Known["S6-cte"] {
-			t.Fatal("collect rejection did not use the existing narrow expectation")
 		}
 	}
 	view, dto := goldenInputCase(t, "snowflake_left")

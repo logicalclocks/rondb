@@ -176,8 +176,11 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 			continue
 		}
 		add(BenchEntry{Name: name, Shape: "S6b", Description: fmt.Sprintf("collect the newest %d rows, direct form", n), Rows: fmt.Sprintf("<= %d", n), SQL: direct, PlanPins: collectPins(n)})
+		// The emitted CTE form collapses into the direct statement
+		// (RONDB-1124 M1.3, F0): same plan pins, expected same cost.
+		add(BenchEntry{Name: fmt.Sprintf("fs_hw_collect%d_cte", n), Shape: "S6", Description: fmt.Sprintf("collect the newest %d rows, Hopsworks CTE form (collapsed into the direct form)", n), Rows: fmt.Sprintf("<= %d", n), SQL: ronsql(g, 0),
+			PlanPins: append([]string{"collapsed into the pass-through ORDER BY scan"}, collectPins(n)...)})
 		if n == 5 {
-			add(BenchEntry{Name: "fs_hw_collect5_cte", Shape: "S6", Description: "collect the newest 5 rows, Hopsworks CTE form (F0: clean rejection expected)", Rows: "<= 5 (or REJECT)", SQL: ronsql(g, 0)})
 			add(BenchEntry{Name: "fs_hw_collect5_twin", Shape: "S6 twin", Description: "production MySQL collect statement (ROW_NUMBER window, rank <= 5)", Rows: "<= 5", MySQLOnly: true, SQL: twin(g)})
 		}
 	}

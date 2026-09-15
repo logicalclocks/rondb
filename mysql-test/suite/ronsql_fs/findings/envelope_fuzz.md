@@ -20,7 +20,8 @@ One row per signature (`CASE … <production>|<constructs>`).
 | HAVING | envelope (expected) | `having-order\|…,having…` (11 of 200, seed 1) | HAVING referencing an aggregate output alias (`HAVING \`n\` > 2`) rejects with `Could not find column (column names are case sensitive).`: RonSQL resolves HAVING against base columns, not SELECT aliases. Consistent with the corrected-envelope doc listing HAVING as unsupported. | `SELECT \`customer_id\`, COUNT(*) AS \`n\` FROM \`transactions_1\` WHERE \`customer_id\` IN (…) GROUP BY \`customer_id\` HAVING \`n\` > 1;` | EXPECTED — HAVING is outside the RonSQL envelope; expectation-table row `having` (tagged-only, so the generic message is matched only for HAVING cases). ORDER BY on an aggregate alias + LIMIT (without HAVING) is supported and passes. |
 
 Known outcomes that are not findings: `CLEAN-REJECT` on the probe
-production and the CTE-form collect (expectation table), `KNOWN-WRONG`
+production (expectation table; the CTE-form collect, F0, ran as a clean
+reject until its fix in RONDB-1124 M1.3 and now passes), `KNOWN-WRONG`
 on string-keyed snowflakes (F14), `KNOWN-HAZARD` on the discovery-log
 hazards, `PASS(hazard)` / `PASS(was-expected-reject)` when the engine has
 moved.  (`KNOWN-ERROR` on temporal MIN/MAX, F9, until its fix in

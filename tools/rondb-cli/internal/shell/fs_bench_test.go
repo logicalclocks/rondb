@@ -60,8 +60,8 @@ func TestFSHWRegistry(t *testing.T) {
 			t.Errorf("%s: resolution must be deterministic for a seed", q.Name)
 		}
 	}
-	if fshw != 25 || twins != 3 {
-		t.Fatalf("fs_hw entries %d (twins %d), want 25 (3)", fshw, twins)
+	if fshw != 26 || twins != 3 {
+		t.Fatalf("fs_hw entries %d (twins %d), want 26 (3)", fshw, twins)
 	}
 	for name, n := range names {
 		if n > 1 {

@@ -84,7 +84,6 @@ func (e Expectation) Matches(message string) bool {
 // Expectations is the expectation table (random_generator.md §5.3); the
 // unit test checks every pattern against the engine sources.
 var Expectations = []Expectation{
-	{Construct: "cte-body-orderby-nonagg", Reject: true, Pattern: "Non-aggregating CTE body is not a single-row key lookup", Finding: "F0", Note: "the Hopsworks collect CTE form (S6)"},
 	{Construct: "cte-partial-key", KnownWrong: true, Finding: "F18", Note: "partial-key CTE lookup (binds fewer than all virtual-key columns): the engine now runs it (it used to reject with 'Partial CTE lookup key not supported') and returns the wrong row count"},
 	{Construct: "cte-scan-outer-child", KnownWrong: true, Finding: "F19", Note: "CTE_SCAN as an outer-join child: the engine now runs it (it used to reject with 'CTE_SCAN as outer-join child is not supported') and its result diverges from MySQL"},
 	{Construct: "join-no-index", Reject: true, Pattern: "no suitable index on join columns", Note: "a join column without a usable index"},
@@ -497,8 +496,9 @@ func (es *envSampler) havingOrder() {
 // aggregating body top-N.
 func (es *envSampler) cteBodyOrderBy() {
 	if es.pct(50) {
+		// Signature-only tag since RONDB-1124 M1.3 collapsed this form (F0);
+		// a derived table's row order is unspecified, so the set is compared.
 		es.tag("cte-body-orderby-nonagg")
-		es.c.Ordered = true
 		es.c.SQL = "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = " + es.oneKey() +
 			" ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;"
 		return

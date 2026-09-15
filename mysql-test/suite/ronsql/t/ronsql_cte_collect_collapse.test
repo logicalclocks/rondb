@@ -1,0 +1,188 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# RONDB-1121 finding F0, fixed in RONDB-1124 (M1.3): the Hopsworks collect
+# form
+#
+#   WITH t AS (SELECT cols FROM tbl WHERE key = ? ORDER BY ts DESC LIMIT n)
+#   SELECT cols FROM t;
+#
+# has a non-aggregating CTE body over a PK prefix, which the CTE rules
+# rejected ("not a single-row key lookup").  RonSQLPreparer::
+# collapse_collect_cte now folds a projection-only main over one such body
+# with ORDER BY and LIMIT into the body at parse time, so the single-table
+# pass-through ORDER BY scan serves it exactly like the direct statement.
+# Every case runs on MySQL, RDRS and ronsql_cli through ronsql_compare.inc
+# with a strict (sorted) diff: a derived table's row order is unspecified,
+# the SET the body's ORDER BY + LIMIT selects is what must agree.  cc-1 pins
+# the EXPLAIN line; the cc-P cases pin the shapes that keep today's rules.
+#
+# Data: entity 1 has 8 rows one hour apart with NON-monotonic amounts (so
+# "newest 3" and "largest 3" are different sets), one NULL amount and two
+# categories; entity 2 has 3 rows (fewer than n); entity 3 has none.
+
+--let $suppress_ronsql_cli=
+--let $strict_diff=yes
+
+CREATE TABLE ev (
+  entity_id  BIGINT NOT NULL,
+  event_time TIMESTAMP(3) NOT NULL,
+  amount     BIGINT,
+  fee        INT,
+  category   VARCHAR(20),
+  PRIMARY KEY (entity_id, event_time)
+) ENGINE=NDB;
+INSERT INTO ev VALUES
+  (1, '2026-01-01 01:00:00.000', 300,  1, 'grocery'),
+  (1, '2026-01-01 02:00:00.000', 100,  2, 'travel'),
+  (1, '2026-01-01 03:00:00.000', 800,  3, 'grocery'),
+  (1, '2026-01-01 04:00:00.000', NULL, 4, 'travel'),
+  (1, '2026-01-01 05:00:00.000', 200,  5, 'grocery'),
+  (1, '2026-01-01 06:00:00.000', 700,  6, 'travel'),
+  (1, '2026-01-01 07:00:00.000', 400,  7, 'grocery'),
+  (1, '2026-01-01 08:00:00.000', 600,  8, 'travel'),
+  (2, '2026-01-02 01:00:00.000', 10,   1, 'grocery'),
+  (2, '2026-01-02 02:00:00.000', 20,   2, 'grocery'),
+  (2, '2026-01-02 03:00:00.000', 30,   3, 'travel');
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/cc_query.sql
+
+--echo
+--echo === cc-1: the emitted form, DESC LIMIT 5 (8 rows -> newest 5) + EXPLAIN pin ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/cc_explain.out
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 't' collapsed into the pass-through ORDER BY scan" $EXPLAIN_FILE
+--exec grep -qF 'Result limited to 5 rows.' $EXPLAIN_FILE
+# no CTE section is printed: the plan is the plain single-table one
+--error 1
+--exec grep -qF 'CTE definitions:' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === cc-2: ASC LIMIT 5 (oldest 5) ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time ASC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-3: LIMIT 1 ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 1) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-4: LIMIT 50 (the Hopsworks MaxCollectN) over 8 rows ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount, fee, category FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 50) SELECT entity_id, event_time, amount, fee, category FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-5: fewer rows than n (entity 2: 3 rows, LIMIT 5) ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 2 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-6: missing entity (no rows) ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 3 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-7: an extra WHERE filter (the emitter's collect filter form) ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount, category FROM ev WHERE entity_id = 1 AND category = 'grocery' ORDER BY event_time DESC LIMIT 2) SELECT entity_id, event_time, amount, category FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-8: the main reorders and aliases the CTE columns ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT amount AS a, entity_id AS e, event_time FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-9: the main selects a strict subset (the ORDER BY column is not projected) ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-10: ORDER BY a non-indexed column (buffered sort; largest 3 amounts, NULL excluded by DESC) ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY amount DESC LIMIT 3) SELECT entity_id, event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-11: the body's ORDER BY names a body output alias ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time AS et, amount FROM ev WHERE entity_id = 1 ORDER BY et DESC LIMIT 2) SELECT et, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-12: the main qualifies its columns with the CTE name ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT t.entity_id, t.amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-13: the body aliases its table ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT e.entity_id, e.event_time, e.amount FROM ev AS e WHERE e.entity_id = 1 ORDER BY e.event_time DESC LIMIT 3) SELECT entity_id, event_time FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-14: swapped aliases: the body's ORDER BY binds to its own alias (the amount column), as in MySQL ===
+--write_file $QUERY_FILE
+WITH t AS (SELECT amount AS event_time, event_time AS amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 3) SELECT event_time, amount FROM t;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === cc-P1 (kept rule): a WHERE in the main is not the collect form ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, amount FROM t WHERE amount > 100;' 2>&1
+
+--echo
+--echo === cc-P2 (kept rule): a join in the main is not the collect form ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT e.fee FROM ev AS e JOIN t ON t.entity_id = e.entity_id;' 2>&1
+
+--echo
+--echo === cc-P3 (kept rule): a body without LIMIT is not the collect form ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC) SELECT entity_id, amount FROM t;' 2>&1
+
+--echo
+--echo === cc-P4 (kept rule): a body with LIMIT but no ORDER BY is not the collect form ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 LIMIT 5) SELECT entity_id, amount FROM t;' 2>&1
+
+--echo
+--echo === cc-P5: the main names a column the CTE does not output ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, fee FROM t;' 2>&1
+
+DROP TABLE ev;

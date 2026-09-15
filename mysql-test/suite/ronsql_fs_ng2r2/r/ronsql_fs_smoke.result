@@ -164,25 +164,13 @@ customer_id	amount_count	amount_sum
 20	5	3855
 31	300	163350
 
-=== PROBE S6 (risk R1): collect last-5, Hopsworks CTE form, customer 21 ===
+=== PROBE S6 (F0, fixed in RONDB-1124 M1.3: collapsed into the direct form): collect last-5, Hopsworks CTE form, customer 21 ===
 == Query ==
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 
 Number of output lines, including header: 6
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,6 +1,3 @@
--customer_id	event_time	amount	category
--21	2026-05-30 18:00:00	836	fuel
--21	2026-05-31 00:00:00	819	Grocery
--21	2026-05-31 06:00:00	802	grocery
--21	2026-05-31 12:00:00	785	online
--21	2026-05-31 18:00:00	768	Travel
-+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'transactions_1' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
-+Error handling: RPE
-+[unsupported] Caught exception: Non-aggregating CTE body is not a single-row key lookup.
 ==========
 
 
