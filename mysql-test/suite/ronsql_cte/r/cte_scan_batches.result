@@ -1,0 +1,42 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== csb-1 (SM-1): scanCte root, 1500 groups over several batches ===
+== Query ==
+WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_orderkey)
+SELECT k, n, prio FROM ok;
+
+Number of output lines, including header: 1501
+
+== Diff ==
+==========
+
+
+
+== Expected row count ==
+WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_orderkey)
+SELECT COUNT(*) AS cte_groups, SUM(n) AS rows_covered FROM ok;
+cte_groups	rows_covered
+1500	1500
+
+=== csb-2 (SM-2): ALL ERROR 5129, the first continuation is refused ===
+RonSQL query failed with NDB error 1251 (CTE scan continuation refused)
+Fewer than the 1500 groups were delivered before the failure
+
+=== csb-3: leak checks (each dump crashes its node on a leak) ===
+
+=== csb-4: the clean scan again after the refused continuation ===
+== Query ==
+WITH ok AS (SELECT o_orderkey AS k, COUNT(*) AS n, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_orderkey)
+SELECT k, n, prio FROM ok;
+
+Number of output lines, including header: 1501
+
+== Diff ==
+==========
+
+
+

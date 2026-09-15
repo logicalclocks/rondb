@@ -1,4 +1,9 @@
 --source include/have_ndb.inc
+# Test 7 (RONDB-1120 LK-2) arms DBLQH error insert 5132 and relies on the
+# leak-check DUMPs 2361 / 2362 / 2363 / 2560 / 2650, which crash a node
+# on a leak.
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
 
 --echo Running testCteNdbApiOuterJoin
 --exec $NDB_PUSH_AGG_DIR/testCteNdbApiOuterJoin -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

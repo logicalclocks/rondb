@@ -6909,10 +6909,35 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
       }
       if (keyIsNull) {
         jam();
-        // NULL key: no match possible in CTE hash table.
-        // For scan parents this is simply ignored (no row returned).
-        DEB_CTE(("(%u) cte_lookup_send: NULL key, skip", instance()));
+        /* NULL key: no group can match.  A pass-through parent row is
+         * delivered anyway and the API NULL-fills the CTE columns, so
+         * there is nothing to send.  An aggregating outer join must
+         * still feed the NULL-extended parent row, as the readTuple
+         * (lookup_send) and scanFrag (scanFrag_parent_row) arms do: the
+         * leaf injects it through JOIN_AGG_NULL_ROW_REQ with its own
+         * columns marked NULL (the CTE_LOOKUP_REF miss form), an
+         * intermediate node propagates it down to the leaf.  Skipping
+         * it dropped the row from COUNT(*) (RONDB-1120 finding F-5,
+         * testCteNdbApiOuterJoin Test 7). */
+        DEB_CTE(("(%u) cte_lookup_send: NULL key, no probe", instance()));
         releaseSection(keyInfoPtrI);
+        keyInfoPtrI = RNIL;
+        if ((treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) == 0) {
+          if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) {
+            jam();
+            ndbassert(treeNodePtr.p->m_node_no < 64);
+            const Uint64 nullNodes = 1ULL << treeNodePtr.p->m_node_no;
+            err = sendJoinAggNullRow(signal, requestPtr, treeNodePtr,
+                                     rowRef, /*parentLevelAdjust=*/0,
+                                     nullNodes);
+            if (unlikely(err != 0)) break;
+          } else if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) {
+            jam();
+            err = propagateNullToAggLeaf(signal, requestPtr, treeNodePtr,
+                                         rowRef);
+            if (unlikely(err != 0)) break;
+          }
+        }
         return;
       }
     } else if (treeNodePtr.p->m_send.m_keyInfoPtrI != RNIL) {

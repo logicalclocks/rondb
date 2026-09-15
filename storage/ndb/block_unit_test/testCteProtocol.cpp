@@ -703,7 +703,7 @@ waitReleaseConf(SignalSender &ss, const char *context)
 static int
 checkLeaks(SignalSender &ss, NdbRestarter &restarter, const char *label)
 {
-  return joinAggCheckLeaks(ss, restarter, label, JOIN_AGG_LQH_LEAK_DUMPS,
+  return joinAggCheckLeaks(&ss, restarter, label, JOIN_AGG_LQH_LEAK_DUMPS,
                            NDB_ARRAY_SIZE(JOIN_AGG_LQH_LEAK_DUMPS),
                            TEARDOWN_SETTLE_MS, WAIT_TIMEOUT_MS);
 }

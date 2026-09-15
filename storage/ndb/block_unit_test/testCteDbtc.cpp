@@ -2766,7 +2766,7 @@ checkScannedGroups(const ScanCursor &cur, const char *label)
 static int
 leakCheck(TestCtx &ctx, const char *label)
 {
-  return joinAggCheckLeaks(*ctx.ss, *ctx.restarter, label,
+  return joinAggCheckLeaks(ctx.ss, *ctx.restarter, label,
                            JOIN_AGG_ALL_LEAK_DUMPS,
                            NDB_ARRAY_SIZE(JOIN_AGG_ALL_LEAK_DUMPS),
                            SETTLE_MS, WAIT_TIMEOUT_MS);

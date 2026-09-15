@@ -399,6 +399,11 @@ private:
   // path in execute_join() and skips ResultPrinter::compile() (which
   // requires every SELECT-list column to appear in GROUP BY).
   bool m_is_aggregate_query = true;
+  /* Set once a pass-through header or row has been written to
+   * out_stream.  The stream cannot be rewound, so a failure after that
+   * point must not be retried: a transparent retry repeats the rows
+   * already delivered (RONDB-1120 finding F-6). */
+  bool m_output_started = false;
 
   // One QueryScope per CTE in ast_root.cte_list, in declaration order.
   // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.

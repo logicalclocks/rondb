@@ -23099,6 +23099,10 @@ redistAlloc(JoinAggregationState *state, Uint32 bytes, Uint32 threadId,
     auto *page = (JoinAggregationState::RedistPage *)lc_ndbd_pool_malloc(
         pageBytes, RG_QUERY_MEMORY, threadId, false);
     if (page == nullptr) return nullptr;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    JoinAggregationState::s_redist_pages.fetch_add(1,
+                                                 std::memory_order_relaxed);
+#endif
     page->next = state->m_redist_page_head;
     state->m_redist_page_head = page;
     state->m_redist_page_ptr =
@@ -23120,6 +23124,7 @@ static const Uint32 REDIST_PAGES_PER_FREE_BATCH = 256;
  * This chain owns only the pages; it must never look up or release an
  * aggregation state. The state may be released while this chain runs.
  * CONTINUEB words 1 and 2 carry the page pointer, high word first.
+ * Test hook 5134 adds a cookie and cumulative page count in words 3/4.
  */
 void Dblqh::continueFreeCteRedistPages(Signal *signal) {
   jam();
@@ -23131,9 +23136,24 @@ void Dblqh::continueFreeCteRedistPages(Signal *signal) {
   while (page != nullptr && count < REDIST_PAGES_PER_FREE_BATCH) {
     auto *next = page->next;
     lc_ndbd_pool_free(page);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    JoinAggregationState::s_redist_pages.fetch_sub(1,
+                                                 std::memory_order_relaxed);
+#endif
     page = next;
     count++;
   }
+  Uint32 length = 3;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  if (signal->getLength() == 5) {
+    length = 5;
+    signal->theData[4] += count;
+    if (page == nullptr) {
+      infoEvent("[CTE_REDIST_PAGES_FREED node=%u pages=%u cookie=%u]",
+                getOwnNodeId(), signal->theData[4], signal->theData[3]);
+    }
+  }
+#endif
   if (page != nullptr) {
     jam();
     const Uint64 nextPtr =
@@ -23141,7 +23161,7 @@ void Dblqh::continueFreeCteRedistPages(Signal *signal) {
     signal->theData[0] = ZCONTINUE_FREE_CTE_REDIST_PAGES;
     signal->theData[1] = static_cast<Uint32>(nextPtr >> 32);
     signal->theData[2] = static_cast<Uint32>(nextPtr);
-    sendSignal(reference(), GSN_CONTINUEB, signal, 3, JBB);
+    sendSignal(reference(), GSN_CONTINUEB, signal, length, JBB);
   }
 }
 
@@ -23857,8 +23877,30 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
    * finalization has finished; only the owner LDM touches this queue. */
   if (curState == JoinAggregationState::SETUP_COMPLETE ||
       curState == JoinAggregationState::FINALIZING ||
-      curState == JoinAggregationState::SENDING_RESULTS) {
+      curState == JoinAggregationState::SENDING_RESULTS
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      || ERROR_INSERTED(5134) || state->m_redist_test_hold
+#endif
+      ) {
     jam();
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    if (ERROR_INSERTED(5134) || state->m_redist_test_hold) {
+      // One entry per page makes the number of queued pages predictable.
+      state->m_redist_page_remaining = 0;
+      if (!state->m_redist_test_hold) {
+        state->m_redist_test_hold = true;
+        state->m_redist_test_cookie = ERROR_INSERT_EXTRA;
+        // Only one timer per state, with identity to reject a local copy
+        // surviving teardown and reuse of the pool slot.
+        signal->theData[0] = ZCONTINUE_CTE_REDIST_DRAIN;
+        signal->theData[1] = aggStateKey;
+        signal->theData[2] = reqIdentWord;
+        signal->theData[3] = reqTransid[0];
+        signal->theData[4] = reqTransid[1];
+        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 5);
+      }
+    }
+#endif
     Uint32 keyWords = (keyLen + 3) >> 2;
     Uint32 valWords = (valueLen + 3) >> 2;
     Uint32 allocBytes = sizeof(JoinAggregationState::RedistQueueEntry) -
@@ -23866,8 +23908,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                         (keyWords + valWords) * sizeof(Uint32);
     auto *entry = (JoinAggregationState::RedistQueueEntry *)
         redistAlloc(state, allocBytes, getThreadId(),
-                    /* Test hook 5134: tiny pages so a drain leaves more
-                     * than one free batch behind. */
                     ERROR_INSERTED(5134)
                         ? 512 : JoinAggregationState::REDIST_PAGE_SIZE);
     if (unlikely(entry == nullptr)) {
@@ -24020,6 +24060,11 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REF(Signal *signal) {
 void Dblqh::processRedistQueue(Signal *signal,
                                 JoinAggregationState *state,
                                 Uint32 aggStateKey) {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  // The test timer drains only after all peer requests have arrived.
+  // COMPLETE must still start our own redistribution in the meantime.
+  if (state->m_redist_test_hold) return;
+#endif
   JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
   ndbrequire(interp != nullptr);
 
@@ -24074,6 +24119,14 @@ void Dblqh::processRedistQueue(Signal *signal,
     signal->theData[0] = ZCONTINUE_FREE_CTE_REDIST_PAGES;
     signal->theData[1] = static_cast<Uint32>(ptrValue >> 32);
     signal->theData[2] = static_cast<Uint32>(ptrValue);
+    signal->setLength(3);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    if (state->m_redist_test_cookie != 0) {
+      signal->theData[3] = state->m_redist_test_cookie;
+      signal->theData[4] = 0;  // Pages freed across this detached chain
+      signal->setLength(5);
+    }
+#endif
     continueFreeCteRedistPages(signal);
   }
   checkCteReady(signal, state);
@@ -24091,6 +24144,33 @@ void Dblqh::continueRedistQueueDrain(Signal *signal, Uint32 aggStateKey) {
     return;
   }
 
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  if (signal->getLength() == 5) {
+    if (!state->m_redist_test_hold ||
+        JoinAggregationState::packIdentWord(
+            state->m_queryTag, state->m_cte_index, 0) != signal->theData[2] ||
+        state->m_transid[0] != signal->theData[3] ||
+        state->m_transid[1] != signal->theData[4]) {
+      return;
+    }
+    bool ready = state->m_cte_redistribution_done;
+    Uint64 expected = 0, applied = 0;
+    for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+      const Uint32 node = state->m_cte_node_list[i];
+      if (node == getOwnNodeId()) continue;
+      ready = ready && state->m_cte_nodes_finalized.get(node);
+      expected += state->m_cte_redist_expected[node];
+      applied += state->m_cte_redist_applied[node];
+    }
+    // FINAL can overtake parked requests. Wait for the declared rows,
+    // not just the reports. CONFs have already allowed senders to finish.
+    if (!ready || expected != applied + state->m_redist_queue_count) {
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 5);
+      return;
+    }
+    state->m_redist_test_hold = false;
+  }
+#endif
   if (state->m_redist_queue_head != nullptr) {
     jam();
     processRedistQueue(signal, state, aggStateKey);
@@ -43028,6 +43108,25 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
     }
     if (signal->getLength() == 2 && !m_is_query_block) {
       /* Instance 1 checked both the identity table and park records. */
+      infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
+                getOwnNodeId(), arg, signal->theData[1]);
+    }
+    return;
+  }
+  if (arg == DumpStateOrd::LqhDumpCteRedistPages) {
+    jam();
+    // This counter covers every worker and the proxy, including page
+    // lists owned only by a local CONTINUEB after the state is released.
+    // Run after queries and their asynchronous cleanup have completed.
+    if (instance() != 1 || m_is_query_block) return;
+    const Uint32 pages = JoinAggregationState::s_redist_pages.load(
+        std::memory_order_relaxed);
+    if (pages != 0) {
+      g_eventLogger->info("DUMP 2364: outstanding redistribution pages=%u",
+                          pages);
+      ndbabort();
+    }
+    if (signal->getLength() == 2) {
       infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
                 getOwnNodeId(), arg, signal->theData[1]);
     }

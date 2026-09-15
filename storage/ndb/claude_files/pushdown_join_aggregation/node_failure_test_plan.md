@@ -20,7 +20,7 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 | Item | Count | Where |
 |---|---|---|
 | New error inserts | 25 (DBLQH 5128-5147, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
-| New DUMP codes (leak checks) | 4 (LQH 2362-2363, TC 2560, SPJ new handler + 1 code) | kernel blocks |
+| New DUMP codes (leak checks) | 5 (LQH 2362-2364, TC 2560, SPJ new handler + 1 code) | kernel blocks |
 | NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
 | Parking cases | 8 | `block_unit_test/testCteProtocol` + 2 in `testNodeRestart` |
@@ -202,7 +202,7 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5131 | DBLQH `cteLookupReqImpl` | delay the CTE_LOOKUP_CONF/REF 50 ms once (park in a CONTINUEB) | lookup reply in flight when the target node is killed |
 | 5132 | DBLQH `joinAggNullRowReqImpl` | REF once with ZJOIN_AGG_INTERPRETER_ERROR | `execJOIN_AGG_NULL_ROW_REF` accounting |
 | 5133 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | delay the flow-control CONF 200 ms while set | sender paused in CTE_REDISTRIBUTING (the "paused redistribution" window for coordinator kill) |
-| 5134 | DBLQH `redistAlloc` | `REDIST_PAGE_SIZE` effectively 512 bytes while set | > 256 pages after a drain (page-free chain split) |
+| 5134 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | queue every incoming redistribution row, one entry per page (minimum 512 bytes), until the owner's own redistribution and all declared peer requests are complete; the extra value is the cookie of the detached chain's `[CTE_REDIST_PAGES_FREED node=N pages=P cookie=C]` event | a drain that leaves far more than 256 pages behind, deterministically (page-free chain split, PG-1) |
 | 5135 | DBLQH `execSCAN_NEXTREQ`, close of a join-agg / CTE scan | ignore the close once (no SCAN_FRAGCONF) | DBTC CLOSING_SCAN with one close owed: kill this node |
 | 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | re-send the same RELEASE to itself once | duplicate release during teardown |
 | 5137 | Proxy `continueJoinAggTeardown` | `JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH` = 1 while set | long teardown chain overlapping NF reclaim / duplicate release |
@@ -234,6 +234,7 @@ crash in autotest.
 |---|---|---|
 | 2362 `LqhDumpCteIterStates` | DBLQH, every LDM and query instance | `c_cteScanIterStatePool` used == 0 (log senderNodeId, coordinatorNodeId, aggFeed); two-word form emits the JOIN_AGG_LEAK_CHECK_OK cookie event like 2361 |
 | 2363 `LqhDumpJoinAggIdentity` | DBLQH instance 1 (shared table) | identity table has no entries and no placeholders; park pool has no records (`s_jaiFreeHead` chain length == JAI_MAX_PARK) |
+| 2364 `LqhDumpCteRedistPages` | DBLQH instance 1 (debug builds) | node-wide redistribution page count is zero, including lists detached from released states; two-word form emits the cookie event (run after asynchronous cleanup) |
 | 2560 `TcDumpJoinAggRecords` | DBTC | `AggCompleteRecord` pool, CTE scan-fragment handle pool and `m_joinAggNodes` allocations are empty; no ScanRecord in WAIT_JOIN_AGG_* or CLOSING_SCAN |
 | new `SpjDumpRequests` | DBSPJ (add `execDUMP_STATE_ORD`, register in `DbspjInit.cpp`) | request pool and tree-node pool empty; log any request with its state and outstanding count |
 
@@ -446,7 +447,7 @@ SCAN_TABREF and result rows):
 | ID | Sequence | Expected |
 |---|---|---|
 | LK-1 | 5141 holds every lookup (extra bit 30 reports the first held local request), the CTE_LOOKUP main select of Test 5, API close after the hold event (Test 15) | the close does not complete while the replies are held, completes once they drain after the insert is cleared; 2650 clean - **done** |
-| LK-2 | outer-join CTE lookup with a NULL key + 5132 | `execJOIN_AGG_NULL_ROW_REF` retires the reply; request aborts with the REF error, no hang (`84f15ad6454`). Pending: needs an aggregating main query with a nullable join column feeding an outer CTE_LOOKUP (`testCteNdbApiOuterJoin` shape with a NULL key row) |
+| LK-2 | `testCteNdbApiOuterJoin` Test 7: aggregating `scanTable(oj_rhs_nk) LEFT JOIN lookupCte` over a nullable join column (one NULL key row, one miss) with 5132 on every data node | control COUNT=4 SUM=80; with the insert the query fails with 1253 instead of hanging (`execJOIN_AGG_NULL_ROW_REF` retires the reply, `84f15ad6454`), all five leak dumps clean, the control succeeds again - **done** |
 
 ### 5.3 Proxy teardown and RELEASE identity (`testJoinAgg`, direct SETUP/RELEASE)
 
@@ -482,13 +483,25 @@ state's real pool key, the slot-reuse case the identity checks exist for:
 
 | ID | Sequence | Expected |
 |---|---|---|
-| PG-1 | 5134 (tiny pages) + CTE with > 300 queued groups arriving during finalization | drain completes, state stays alive (query returns correct rows), pages freed (2364 clean) (`35f1ce95afa`) |
+| PG-1 | 5134 queues all incoming groups until local redistribution and declared peer requests complete, one entry per page | query matches MySQL; cookie-matched completed page chains from every node, at least one exceeding 256 pages; DUMP 2364 acknowledged by every node; clean query repeated - implemented in `cte_redist_pages.test`, validation pending |
 
-MTR deliverables of this phase: `cte_redist_pages.test` (5134 with a
-wide GROUP BY CTE, result must equal the baseline; covers PG-1 through
-RonSQL) and `cte_scan_batches.test` (a CTE scan forced through several
-batches, once clean and once with `ALL ERROR 5129` expecting error 1251;
-covers SM-1 and SM-2 through RonSQL), both in `ronsql_cte`.
+DUMP 2364 checks a debug-only node-wide count of redistribution pages.
+Unlike 2361, it includes detached lists whose aggregation state has
+already been released. Allocation and all three free paths update the
+count. Run it after asynchronous cleanup has finished; the optional
+second word is a cookie acknowledged with JOIN_AGG_LEAK_CHECK_OK.
+
+MTR deliverables of this phase, both in `ronsql_cte`:
+`cte_redist_pages.test` (`ALL ERROR 5134` around a wide GROUP BY CTE over
+lineitem, 1500 groups with 8 aggregate slots joined into a GROUP BY main
+query; result equals the MySQL baseline, completed multi-batch freeing
+and DUMP 2364 acknowledgements are required before the other five leak
+dumps, then the query is repeated with normal pages; covers PG-1) and
+`cte_scan_batches.test` (scanCte pass-through root over 1500 groups,
+three batches per source, compared with MySQL; then `ALL ERROR 5129`
+and the same query through `ronsql_cli`, which must exit 1 with NDB
+error 1251 in its output; leak dumps; the clean scan again; covers SM-1
+and SM-2). Both need `--record` on first run and the debug build.
 
 Effort: 5.5 days (new binary 2 days, cases 3 days, MTR 0.5 day).
 
@@ -556,8 +569,8 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | `cte_nodefail_coordinator_parked.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesParked T1` (NF-12: late SETUP rejection and parked-request cleanup; PK-8 remains pending) - **done** |
 | `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |
-| `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline |
-| `cte_scan_batches.test` (`ronsql_cte`) | 2 | CTE scan over several batches, clean run then `ALL ERROR 5129` expecting 1251 |
+| `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline, leak dumps, clean re-run - **done** |
+| `cte_scan_batches.test` (`ronsql_cte`) | 2 | CTE scan over several batches compared with MySQL, then `ALL ERROR 5129` with `ronsql_cli` exiting 1 on NDB error 1251, leak dumps, clean re-run - **done** |
 | `cte_park_basic.test` (`ronsql_cte`) | 3 | `ALL ERROR 5127`, filter and outer-join bodies from `body_filter.inc`, results identical to baseline; `ALL ERROR 0`; `ALL DUMP 2363` |
 | `cte_park_sweeper.test` (`ronsql_cte`) | 3 | `ALL ERROR 5139`, one query fails with 1251, clean re-run, `ALL DUMP 2363` |
 
@@ -619,6 +632,8 @@ independent once Phase 0 is in and can be split between people.
 | F-1 | NF-1 post-recovery check (2026-09-11) | After a data node rejoined, a CTE lookup query returned 3108 of 4096 rows with no error | DBSPJ's ordered data-node list (`m_dataNodeList`) is rebuilt only at STTOR and NODE_FAILREP, never when a node reconnects or is included, while DBLQH builds each query's owner list from the connected nodes at SETUP; both map owner = hash % count, so a surviving SPJ with a one-entry list sent every probe to itself and the groups owned by the rejoined node missed silently | fixed: DBSPJ rebuilds the list on demand in `cte_scan_start`, `cte_scan_build`, `cte_lookup_build` and on INCL_NODEREQ; follow-up done 2026-09-11: the owner list is decided once per query by DBTC from its connected data nodes and carried to every DBLQH in `JoinAggSetupReq::setupNodes` and to every DBSPJ worker in the aggKeys section; DBSPJ's private list is gone (`cte_owner_list.md`) |
 | F-2 | NF-1 first run | Node crashed in `checkInitGlobalVariables` (fragment lock held) | test hook 5135 returned from SCAN_NEXTREQ without `release_frag_access` | fixed in the hook |
 | F-3 | NF-1 third run | Every iteration reported "window missed" with rc=0, whether or not the close had been held | two test defects: (a) the killer published the kill only after `waitNodesNoStart`, so a close completed by DBTC's node-failure handling was checked before the flag existed; (b) the swallow sat in DBLQH, where it depends on the victim's LQH scan being mid-batch when the close arrives, and it left no trace when it fired | fixed: the killer publishes `CteNfKillIssued` before issuing the kill and the close is timed (`Result::closeMillis`); the swallow moved to DBSPJ `execSCAN_NEXTREQ` (17533) where every worker on the victim holds DBTC's close regardless of LQH state; the main scan runs with a 64-row batch so no worker has finished at the first row; both hooks log when they fire |
+| F-6 | SM-2 through RonSQL, `cte_scan_batches.test` first run (2026-09-15) | Under `ALL ERROR 5129` (once per node) `ronsql_cli` exited 0 and printed 2015 rows for a 1500-group CTE scan | RonSQL's pass-through drains stream rows to `out_stream` as they arrive, and both `execute_passthrough_drain` and the single-table drain (through the generic NDB-status classification) turned the mid-drain failure into `RonSQLRetryableError`; the retry succeeded once the insert had cleared, but neither `ronsql_cli` (stdout) nor RDRS (its per-request response buffer) can rewind the rows already written, so the response held the partial first attempt plus the complete second one | fixed in RonSQL: `m_output_started` is set when a pass-through header or row is written; after that a drain failure is `RonSQLPermanentError` in every classification path (direct, NDB temporary status, stale-schema reload). Aggregating queries print after the drain and keep their retry. `cte_scan_batches.test` csb-2 pins the exit code, the 1251 on stderr and the short output |
+| F-5 | LK-2 control run, `testCteNdbApiOuterJoin` Test 7 (2026-09-15) | `SELECT COUNT(*), SUM(cte.total) FROM t LEFT JOIN cte ON cte.grp = t.nullable_col` returned COUNT=3 for 4 rows: the row whose join key is NULL was dropped from the aggregation (the miss row was counted) | `Dbspj::cte_lookup_send` skipped a NULL key outright ("no match possible"), which is right for pass-through queries (the API NULL-fills the CTE columns of the delivered parent row) but wrong for an aggregating outer join, where the readTuple (`lookup_send`) and scanFrag (`scanFrag_parent_row`) arms feed the NULL-extended row through JOIN_AGG_NULL_ROW_REQ | fixed: the CTE lookup arm injects the NULL row for an outer-join aggregate leaf (own columns marked NULL, the CTE_LOOKUP_REF miss form) and propagates it for an aggregate ancestor; pinned by Test 7 and `ronsql_cte/cte_null_key_outer.test` |
 | F-4 | SM-5 design review (2026-09-15) | A CTE_SCAN_CONF lost without a node failure (5128) leaves the scan unrecoverable: DBTC's fragment timeout (`timeOutFoundFragLab`, LQH_ACTIVE) calls `scanError`, which sends SCAN_TABREF with closeNeeded and a close to DBSPJ, but DBSPJ keeps the slot's batch obligation until the reply arrives, so the close never completes; the fragment times out again every `TransactionDeadlockDetectionTimeout` and re-issues the close, and the ApiConnectRecord stays in CLOSING_SCAN with the DBSPJ request pending until the node fails | by design: a reply is lost only by node failure, which NODE_FAILREP handles (NF-4); DBTC's timeout is not a recovery path for a live DBSPJ worker | documented; SM-5 not run, no test may leave such a scan behind |
 
 ## 12. Risks and open points

@@ -272,7 +272,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5131 | DBLQH `cteLookupReqImpl` | hold ONE lookup 50 ms | yes |
 | 5132 | DBLQH `joinAggNullRowReqImpl` | ONE null-row injection REFed | yes |
 | 5133 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute delayed 200 ms while set | no |
-| 5134 | DBLQH `redistAlloc` | 512-byte redistribution pages while set | no |
+| 5134 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | arm before a CTE query: every incoming redistribution row is queued, one entry per page (minimum 512 bytes), until the owner's own redistribution and all declared peer requests are complete; the drain then frees the pages and the detached chain emits CTE_REDIST_PAGES_FREED with the extra value as cookie | no |
 | 5135 | DBLQH `execSCAN_NEXTREQ` | ONE scan close swallowed (arm right before the close; logs when it fires) | yes |
 | 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
@@ -296,13 +296,16 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 Leak-check DUMP codes (each crashes the node on a leak, so run them at the
 end of a test with `NdbRestarter::dumpStateAllNodes`):
 2361 join-agg states, 2362 CTE scan iterator records (per worker),
-2363 identity table + park records, 2560 DBTC completion records / CTE
-scan-fragment handles / scans left in a join-agg or closing state,
-2650 DBSPJ requests.
+2363 identity table + park records, 2364 outstanding redistribution
+pages (debug builds; a node-wide count that also covers page lists
+detached from released states, so run it only after asynchronous
+cleanup has finished), 2560 DBTC completion records / CTE scan-fragment
+handles / scans left in a join-agg or closing state, 2650 DBSPJ
+requests.
 
-DUMPs 2361, 2362, 2363 (regular DBLQH instance 1), 2560 (DBTC instance
-1) and 2650 (DBSPJ instance 1) optionally accept a second word, a test
-cookie. After a clean check the instance emits
+DUMPs 2361, 2362, 2363, 2364 (regular DBLQH instance 1), 2560 (DBTC
+instance 1) and 2650 (DBSPJ instance 1) optionally accept a second word,
+a test cookie. After a clean check the instance emits
 [JOIN_AGG_LEAK_CHECK_OK node=N dump=D cookie=C]. One-word requests
 remain silent on success. Subscribe before sending, check both management
 return values, and require the matching event for each node and dump.

@@ -8080,6 +8080,7 @@ RonSQLPreparer::execute_single_table_passthrough()
     m_resultprinter->print_passthrough_header(attrs, num_cols,
                                               m_conf.out_stream);
     header_emitted = true;
+    m_output_started = true;
   }
   // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT without ORDER BY —
   // stream rows and stop at the limit, then close the scan early
@@ -8113,6 +8114,7 @@ RonSQLPreparer::execute_single_table_passthrough()
       m_resultprinter->print_passthrough_header(attrs, num_cols,
                                                 m_conf.out_stream);
       header_emitted = true;
+      m_output_started = true;
     }
     m_resultprinter->print_passthrough_row(attrs, num_cols,
                                            /*is_first_row=*/(row_count == 0),
@@ -9149,6 +9151,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
         const_cast<const NdbRecAttr* const*>(attrs), num_cols,
         m_conf.out_stream);
     header_emitted = true;
+    m_output_started = true;
   }
 
   Uint32 row_count = 0;
@@ -9200,6 +9203,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
           const_cast<const NdbRecAttr* const*>(attrs), num_cols,
           m_conf.out_stream);
       header_emitted = true;
+      m_output_started = true;
     }
     // Phase I.12: substitute NULL for every column whose op reports
     // isRowNULL() (LEFT JOIN unmatched-row marker).  print_passthrough_value
@@ -9231,6 +9235,11 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     std::basic_ostream<char>& errout = *m_conf.err_stream;
     errout << "Pass-through query failed: " << err.message
            << " (code " << err.code << ")" << std::endl;
+    if (m_output_started) {
+      // Rows already reached out_stream; a retry would repeat them.
+      throw RonSQLPermanentError("Pass-through drain failed after rows "
+                                 "were delivered.");
+    }
     throw RonSQLRetryableError("Pass-through drain failed.");
   }
 
@@ -12195,10 +12204,13 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // RonSQLPermanentError.
     cleanup_trans();
     err << "Error handling: RMS";
-    if (unload_schema()) {
+    // Reload the schema either way; retry only if nothing was streamed yet.
+    const bool schema_changed = unload_schema();
+    if (schema_changed && !m_output_started) {
       DEB_TRACE(); err << "->RRE\n";
       throw RonSQLRetryableError(e.what());
     }
+    if (m_output_started) { DEB_TRACE(); err << ",od"; }
     DEB_TRACE(); err << "->RPE\n";
     throw RonSQLPermanentError(e.what());
   }
@@ -12275,6 +12287,12 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
       DEB_TRACE(); err << ",nu";
       // Treat error as temporary, no unloading of schema.
       temporary = true;
+    }
+    if (temporary && m_output_started) {
+      // Rows already reached out_stream (pass-through drains stream as
+      // they go); a retry would repeat them (RONDB-1120 finding F-6).
+      DEB_TRACE(); err << ",od";
+      temporary = false;
     }
     // Now that the ndb error is described on err stream, we'll rethrow the
     // exception with a new error type.

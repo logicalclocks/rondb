@@ -349,12 +349,21 @@ struct JoinAggregationState {
   // when the queue is drained or the state is released.
   //------------------------------------------------------------------
   static constexpr Uint32 REDIST_PAGE_SIZE = 32768;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  // Node-wide count, including pages detached from released states.
+  // Workers allocate/free pages; the proxy also frees them on teardown.
+  static std::atomic<Uint32> s_redist_pages;
+#endif
   struct RedistPage {
     RedistPage *next;    // Linked list of allocated pages
   };
   RedistPage *m_redist_page_head;   // First allocated page
   char *m_redist_page_ptr;          // Current allocation pointer within page
   Uint32 m_redist_page_remaining;   // Bytes remaining in current page
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  bool m_redist_test_hold;           // One identity-checked drain timer
+  Uint32 m_redist_test_cookie;       // 5134 completion event cookie
+#endif
 
   // Queue for REDISTRIBUTE_REQ groups arriving before local finalization.
   // Stored as a singly-linked list of variable-size entries allocated from
@@ -455,6 +464,10 @@ struct JoinAggregationState {
     m_redist_page_head(nullptr),
     m_redist_page_ptr(nullptr),
     m_redist_page_remaining(0),
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    m_redist_test_hold(false),
+    m_redist_test_cookie(0),
+#endif
     m_redist_queue_head(nullptr),
     m_redist_queue_tail(nullptr),
     m_redist_queue_count(0),

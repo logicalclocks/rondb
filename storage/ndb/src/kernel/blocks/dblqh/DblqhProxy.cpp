@@ -36,6 +36,9 @@
 
 // Static definition for node failure counter
 std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+std::atomic<Uint32> JoinAggregationState::s_redist_pages{0};
+#endif
 
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/DumpStateOrd.hpp>
@@ -2411,6 +2414,10 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         while (page != nullptr) {
           auto *next = page->next;
           lc_ndbd_pool_free(page);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+          JoinAggregationState::s_redist_pages.fetch_sub(1,
+                                                       std::memory_order_relaxed);
+#endif
           page = next;
         }
       }
@@ -2611,6 +2618,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_creation_time = 0;
   state->m_last_activity_time = 0;
   state->m_redist_page_head = nullptr;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  // ArrayPool::seize does not run the constructor, including on reuse.
+  state->m_redist_test_hold = false;
+  state->m_redist_test_cookie = 0;
+#endif
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
@@ -3710,6 +3722,10 @@ DblqhProxy::continueFreeRedistPages(Signal *signal, Uint32 aggStateKey) {
     jam();
     auto *next = page->next;
     lc_ndbd_pool_free(page);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    JoinAggregationState::s_redist_pages.fetch_sub(1,
+                                                 std::memory_order_relaxed);
+#endif
     page = next;
     count++;
   }

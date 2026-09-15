@@ -182,14 +182,20 @@ inline constexpr int JOIN_AGG_ALL_LEAK_DUMPS[] = {
 
 /* Require positive completion of every listed DUMP on every node.
  * A management success only confirms that the dump was sent. settleMs
- * gives CONTINUEB teardown chains time to drain first. */
+ * gives CONTINUEB teardown chains time to drain first. ss is the
+ * caller's locked SignalSender, unlocked while waiting (nullptr for
+ * NDB API clients). */
 static inline int
-joinAggCheckLeaks(SignalSender &ss, NdbRestarter &restarter,
+joinAggCheckLeaks(SignalSender *ss, NdbRestarter &restarter,
                   const char *label, const int *codes, unsigned numCodes,
                   Uint32 settleMs, Uint32 timeoutMs)
 {
-  /* Management waits must not block this API client's heartbeats. */
-  ScopedSenderUnlock unlockSender(ss);
+  /* Management waits must not block a SignalSender's heartbeats. */
+  if (ss != nullptr) ss->unlock();
+  struct Relock {
+    SignalSender *s;
+    ~Relock() { if (s != nullptr) s->lock(); }
+  } relock = {ss};
   std::map<int, int> before, after;
   if (!readStartedNodeConnections(restarter, before, label)) return -1;
   ProtocolEventListener events;

@@ -58,7 +58,10 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       discarded without a reply if the requester disconnects or reconnects.
 5132: REF ONE null-row injection (joinAggNullRowReqImpl, cleared after use)
 5133: Delay every inbound JOIN_AGG_REDISTRIBUTE_REQ 200 ms while set
-5134: redistAlloc uses 512-byte redistribution pages while set
+5134: Arm before a CTE query: queue all incoming redistribution rows,
+      one entry per page (minimum 512 bytes), until local redistribution
+      and all declared peer requests are complete. Extra value is a
+      nonzero cookie for the detached page-chain completion event.
 5135: Swallow ONE SCAN_NEXTREQ(close) in execSCAN_NEXTREQ, scan left as if
       the close never arrived (cleared after use, logs when it fires)
 5136: Duplicate ONE JOIN_AGG_RELEASE_REQ to self (DblqhProxy, cleared after use)

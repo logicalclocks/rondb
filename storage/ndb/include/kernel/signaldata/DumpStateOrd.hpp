@@ -191,6 +191,7 @@ class DumpStateOrd {
     LqhDumpJoinAggStates = 2361,  // Verify all join agg states are released
     LqhDumpCteIterStates = 2362,  // Verify the CTE scan iterator pool is empty
     LqhDumpJoinAggIdentity = 2363,  // Verify identity table + park pool empty
+    LqhDumpCteRedistPages = 2364,  // Verify all redistribution pages freed
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,
