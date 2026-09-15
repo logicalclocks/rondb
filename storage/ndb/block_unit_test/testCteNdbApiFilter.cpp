@@ -2408,13 +2408,16 @@ testCteScanRootEarlyClose(Ndb *ndb, MYSQL *conn)
   }
 
   int got = 0;
-  NdbQuery::NextResultOutcome outcome;
+  NdbQuery::NextResultOutcome outcome =
+      NdbQuery::NextResult_bufferEmpty;
   while (got < READ_FIRST &&
          (outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {
     got++;
   }
   if (got < READ_FIRST) {
-    printf("FAILED (got only %d rows before close)\n", got);
+    const NdbError &error = query->getNdbError();
+    printf("FAILED (got only %d rows before close; outcome=%d, error=%d: %s)\n",
+           got, static_cast<int>(outcome), error.code, error.message);
     query->close(); trans->close(); queryDef->destroy();
     return -1;
   }
@@ -4470,6 +4473,7 @@ testCteOrderByLimit(Ndb *ndb, MYSQL *conn)
 static int
 testCteSingleGroup(Ndb *ndb, MYSQL *conn)
 {
+  const int singleGroupViolation = 1273;  // ZCTE_SINGLE_GROUP_VIOLATION
   printf("Test 28: single-group CTE (constant owner) ... ");
   fflush(stdout);
 
@@ -4618,8 +4622,10 @@ testCteSingleGroup(Ndb *ndb, MYSQL *conn)
     }
 
     bool sawError = false;
+    int errorCode = 0;
     if (trans->execute(NdbTransaction::NoCommit) != 0) {
       sawError = true;
+      errorCode = trans->getNdbError().code;
       V("\n  %s execute error: trans %d: %s\n", scName,
         trans->getNdbError().code, trans->getNdbError().message);
     } else {
@@ -4629,6 +4635,7 @@ testCteSingleGroup(Ndb *ndb, MYSQL *conn)
       }
       if (outcome == NdbQuery::NextResult_error) {
         sawError = true;
+        errorCode = query->getNdbError().code;
         V("\n  %s drain error: %d: %s\n", scName,
           query->getNdbError().code, query->getNdbError().message);
       }
@@ -4652,7 +4659,7 @@ testCteSingleGroup(Ndb *ndb, MYSQL *conn)
 
     if (legit) {
       if (sawError) {
-        printf("FAILED (%s: unexpected error)\n", scName);
+        printf("FAILED (%s: unexpected error %d)\n", scName, errorCode);
         return -1;
       }
       if (count != 3) {
@@ -4665,6 +4672,11 @@ testCteSingleGroup(Ndb *ndb, MYSQL *conn)
         printf("FAILED (%s: two-group body under CTE_SINGLE_GROUP "
                "completed without error, COUNT=%lld)\n", scName,
                (long long)count);
+        return -1;
+      }
+      if (errorCode != singleGroupViolation) {
+        printf("FAILED (%s: expected error %d, got %d)\n",
+               scName, singleGroupViolation, errorCode);
         return -1;
       }
     }

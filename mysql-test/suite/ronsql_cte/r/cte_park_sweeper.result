@@ -1,0 +1,25 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== cps-1: one SETUP rejected late (5139), the first attempt fails with 1251 ===
+The first attempt failed with NDB error 1251 (parked consumers swept)
+The retried attempt returned the MySQL result
+
+=== cps-2: leak checks (each dump crashes its node on a leak) ===
+
+=== cps-3: the same query without the insert ===
+== Query ==
+WITH cust AS (
+SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+

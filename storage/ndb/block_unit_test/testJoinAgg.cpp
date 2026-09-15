@@ -827,8 +827,12 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
   req->routeRef = ss.getOwnRef();
   req->cteIndex = RNIL;
 
+  /* RONDB-1120: identity tag — mirrors senderData (this test waits
+   * for RELEASE_CONF between queries, so reuse is safe). */
+  req->queryTag = req->senderData;
+  /* Direct DBLQH sender: use the receiver's connected-node list. */
   ssig.set(ss, 0, DBLQH, GSN_JOIN_AGG_SETUP_REQ,
-           JoinAggSetupReq::SignalLength);
+           JoinAggSetupReq::SignalLength_v1);
   Uint32 receiverId = FAKE_SENDER_DATA;
   const std::vector<Uint32> metadata =
     buildJoinAggMetadata(aggProgram, meta);
@@ -1191,6 +1195,7 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId,
    * state->m_owner_instance == instance().  Multi-LDM nodes can pick
    * any instance via (aggStateKey % workers) + 1. */
   Uint16 recBlock = numberToBlock(DBLQH, ownerInstance);
+  req->identWord = RNIL;  /* keyed form — no identity (RONDB-1120 P4) */
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 
@@ -3647,6 +3652,7 @@ testCompleteRefError(Ndb * /*ndb*/, SignalSender &ss, const TableMeta &meta)
   req->maxBatchRows = 100;
 
   Uint16 recBlock = numberToBlock(DBLQH, 1);
+  req->identWord = RNIL;  /* keyed form — no identity (RONDB-1120 P4) */
   ssig.set(ss, 0, recBlock, GSN_JOIN_AGG_COMPLETE_REQ,
            JoinAggCompleteReq::SignalLength);
 

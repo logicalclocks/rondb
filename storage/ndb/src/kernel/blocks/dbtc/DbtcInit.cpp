@@ -180,6 +180,7 @@ void Dbtc::initData()
   ctabrecFilesize = ZTABREC_FILESIZE;
   cdihblockref = DBDIH_REF;
   cspjInstanceRR = 1;
+  c_joinAggQueryTagCounter = 0;
   m_load_balancer_location = 0;
 
   c_lqhkeyconf_direct_sent = 0;

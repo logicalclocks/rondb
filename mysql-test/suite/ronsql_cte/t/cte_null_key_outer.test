@@ -1,0 +1,63 @@
+# RONDB-1120 finding F-5 (node_failure_test_plan.md section 11), found by
+# testCteNdbApiOuterJoin Test 7 (LK-2): an aggregating LEFT JOIN onto a
+# CTE keyed by a NULLABLE column dropped every parent row whose key is
+# NULL.  DBSPJ's cte_lookup_send skipped a NULL key without feeding the
+# NULL-extended row to the aggregation, unlike the readTuple and scanFrag
+# parent-row arms.  Fixed: the outer-join aggregate leaf injects the row
+# through JOIN_AGG_NULL_ROW_REQ (an intermediate node propagates it).
+#
+# orders.o_clerk is NULL for one row in seven (214 of 1500); the CTE
+# groups the non-NULL clerks.  Both COUNT(*) results must be 1500.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
+# dictionary cache for join queries, so we compare the mysql client against
+# RDRS only (matching the ronsql suite's CTE convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === nko-1: scalar aggregate, LEFT JOIN cte ON a nullable key ===
+DELIMITER |;
+let $QUERY=
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+            FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+            FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk|
+
+--echo
+--echo === nko-2: grouped aggregate, LEFT JOIN cte ON a nullable key ===
+let $QUERY=
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+            FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+            FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus|
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

@@ -1,0 +1,50 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== nko-1: scalar aggregate, LEFT JOIN cte ON a nullable key ===
+== Query ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk|
+COUNT(*)	SUM(cl.n)
+1500	41362
+
+=== nko-2: grouped aggregate, LEFT JOIN cte ON a nullable key ===
+== Query ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus|
+o_orderstatus	COUNT(*)	SUM(cl.n)
+F	500	13766
+O	500	13798
+P	500	13798
