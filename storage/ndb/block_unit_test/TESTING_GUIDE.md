@@ -276,8 +276,8 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5135 | DBLQH `execSCAN_NEXTREQ` | ONE scan close swallowed (arm right before the close; logs when it fires) | yes |
 | 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
-| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
-| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE SETUP_REQ dropped (no reply) | yes |
+| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | the selected SETUP_REQs (extra: 0 all, 0xFFFF main, 0xFFFE none, else cteIndex + 1) and every placeholder sweeper held until cleared; switch extra to 0xFFFE to replay before clearing the sweeper hold | no |
+| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE identity left unfilled; SETUP_REF 1251 sent after 200 ms | yes |
 | 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender | no |
 | 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance for the first remote request (extra bit 30 set: for the first request from any node) | no |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
@@ -286,10 +286,12 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | SETUP held while its coordinator lives, park sweeper held until local NODE_FAILREP; CTE_NF11_PARKED event per instance and remote requester | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
 | 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators; CTE_NF10_TEARDOWN_HELD identifies the state, CTE_NF10_RECLAIM_SKIPPED proves failure cleanup skipped it | no; test must clear after matching events |
 | 5147 | DBLQH `cteScanEmitResults` | the CTE_SCAN_CONF of every local requester held after its rows went out (not EndOfData), 100 ms at a time, until cleared; one CTE_SCAN_CONF_HELD event per held reply | no |
+| 5148 | Proxy + DBLQH park paths | the 5138 hold of every SETUP and sweeper; extra caps the park pool, a consumer is refused once that many records are in use | no |
+| 5149 | Proxy `execJOIN_AGG_SETUP_REQ` | SETUP refused with OutOfQueryMemory once the identity table holds `extra` entries | no |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
-| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 5 s (stale reclaim) | yes |
+| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 5 s; PK-6 names an absent scan and requires hold/reclaim events | yes |
 | 17532 | DBSPJ `cte_scan_sendReq` | crash when a second CTE scan batch is requested | no (crash) |
 | 17533 | DBSPJ `execSCAN_NEXTREQ` | ONE close from DBTC swallowed, request left waiting (arm right before the close; logs when it fires) | yes |
 
@@ -313,7 +315,15 @@ Compare node connection counters before and after verification so a
 crash followed by automatic restart cannot pass. `JoinAggTestUtil.hpp`
 (header-only) implements this as `joinAggCheckLeaks`, together with the
 checked error-insert setter, its clearing guard and the management event
-listener; `testCteProtocol` and `testCteDbtc` use it.
+listener; `testCteProtocol`, `testCteDbtc` and `testCteNdbApiOuterJoin`
+use it.
+
+DUMP 2365 is a statistic, not a check: regular DBLQH instance 1 answers
+[JOIN_AGG_PARK_STATS node=N lqhkey= scanfrag= nullrow= complete= redist=
+final= inuse= cookie=C] with the cumulative parks per GSN class since the
+node started and the park records in use. `testCteProtocol` polls it
+while a SETUP is held (5138) to see which consumers parked before
+releasing the hold.
 
 ## Building
 

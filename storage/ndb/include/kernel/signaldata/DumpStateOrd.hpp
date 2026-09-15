@@ -192,6 +192,7 @@ class DumpStateOrd {
     LqhDumpCteIterStates = 2362,  // Verify the CTE scan iterator pool is empty
     LqhDumpJoinAggIdentity = 2363,  // Verify identity table + park pool empty
     LqhDumpCteRedistPages = 2364,  // Verify all redistribution pages freed
+    LqhDumpJoinAggParkStats = 2365,  // Report parks per GSN (test statistics)
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,

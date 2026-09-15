@@ -510,6 +510,9 @@ class FsReadWriteReq;
 /* CONTINUEB codes used by DblqhProxy (outside DBLQH_C) */
 #define ZCONTINUE_FREE_REDIST_PAGES 49
 #define ZCONTINUE_JOIN_AGG_TEARDOWN 50
+#ifdef ERROR_INSERT
+#define ZCONTINUE_JOIN_AGG_SETUP_REF 51
+#endif
 
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
@@ -3585,6 +3588,7 @@ private:
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
                                Uint32 errorCode, bool notifyPeers = true);
   bool isJoinAggCoordinatorFailed(Uint32 coordinatorRef);
+  bool joinAggParkCapReached();
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,

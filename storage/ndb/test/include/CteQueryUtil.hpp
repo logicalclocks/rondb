@@ -41,6 +41,18 @@
  *               partition into its CTE1 state with the aggregation feed
  *               continuation; main = scan cte_nf_src -> lookupCte(CTE1).
  *               Expect `rows` rows.
+ *   ScanAggMain No CTE: scan cte_nf_src -> scan its ordered PRIMARY
+ *               index with child.pk = parent.pk. The child carries
+ *               COUNT(*), SUM(val), so its SCAN_FRAGREQ feeds the state.
+ *               Requires the SQL-created PRIMARY index. Expect
+ *               aggCount = rows, aggSum = sum of 0..rows-1.
+ *   OuterAggMain No CTE: scan cte_nf_src -> LEFT JOIN readTuple(pk = nk)
+ *               carrying COUNT(*), SUM(val of the joined row).  nk is
+ *               NULL for every fourth row (a NULL key, fed through
+ *               JOIN_AGG_NULL_ROW_REQ) and equals pk otherwise.  Expect
+ *               aggCount = rows, aggSum = sum of i for i % 4 != 3.
+ * The last two exist for the parking cases (node_failure_test_plan.md
+ * section 6): every consumer signal a held SETUP can park.
  *
  * The runner calls an optional hook once the transaction coordinator
  * is known and before execute(), so a test can arm an error insert on
@@ -66,7 +78,13 @@ namespace CteQueryUtil {
 static const char *const SRC_TABLE = "cte_nf_src";
 static const char *const VIRT_TABLE = "cte_nf_virtual";
 
-enum Shape { LookupMain = 0, ScanRoot = 1, FeedChain = 2 };
+enum Shape {
+  LookupMain = 0,
+  ScanRoot = 1,
+  FeedChain = 2,
+  ScanAggMain = 3,
+  OuterAggMain = 4
+};
 
 struct Options {
   Shape shape;
@@ -102,9 +120,11 @@ struct Result {
   int ndbError;      // NDB error code on a runtime failure
   int closeError;    // NDB error observed after explicit query close
   const char *failedAt;
+  Int64 aggCount;    // ScanAggMain / OuterAggMain: COUNT(*)
+  Int64 aggSum;      // ScanAggMain / OuterAggMain: SUM(val)
   Result()
       : tcNodeId(0), rows(0), queryMillis(0), closeMillis(0), ndbError(0),
-        closeError(0), failedAt("") {}
+        closeError(0), failedAt(""), aggCount(0), aggSum(0) {}
 };
 
 static inline void dropTables(Ndb *ndb) {
@@ -113,8 +133,10 @@ static inline void dropTables(Ndb *ndb) {
   (void)dict->dropTable(VIRT_TABLE);
 }
 
-/* cte_nf_src(pk INT PK, grp INT, val BIGINT) and the CTE projection
- * descriptor cte_nf_virtual(grp INT PK, total BIGINT). */
+/* cte_nf_src(pk INT PK, grp INT, val BIGINT, nk INT NULL) and the CTE
+ * projection descriptor cte_nf_virtual(grp INT PK, total BIGINT).  A
+ * block test that runs beside live mysqlds must create the same tables
+ * through MySQL instead (see testCteProtocol) and only call loadTable. */
 static inline int createTables(Ndb *ndb) {
   dropTables(ndb);
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
@@ -133,6 +155,10 @@ static inline int createTables(Ndb *ndb) {
     val.setType(NdbDictionary::Column::Bigint);
     val.setNullable(false);
     tab.addColumn(val);
+    NdbDictionary::Column nk("nk");
+    nk.setType(NdbDictionary::Column::Int);
+    nk.setNullable(true);
+    tab.addColumn(nk);
     if (dict->createTable(tab) != 0) return -1;
   }
   {
@@ -151,7 +177,8 @@ static inline int createTables(Ndb *ndb) {
   return 0;
 }
 
-/* pk = i, grp = i % groups, val = i for i in [0, rows). */
+/* pk = i, grp = i % groups, val = i, nk = NULL when i % 4 == 3 and i
+ * otherwise, for i in [0, rows). */
 static inline int loadTable(Ndb *ndb, Uint32 rows, Uint32 groups) {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   const NdbDictionary::Table *tab = dict->getTable(SRC_TABLE);
@@ -164,7 +191,9 @@ static inline int loadTable(Ndb *ndb, Uint32 rows, Uint32 groups) {
       if (op == nullptr || op->insertTuple() != 0 ||
           op->equal("pk", (Int32)i) != 0 ||
           op->setValue("grp", (Int32)(i % groups)) != 0 ||
-          op->setValue("val", (Int64)i) != 0) {
+          op->setValue("val", (Int64)i) != 0 ||
+          ((i % 4 == 3) ? op->setValue("nk", (const char *)nullptr)
+                        : op->setValue("nk", (Int32)i)) != 0) {
         trans->close();
         return -1;
       }
@@ -211,6 +240,17 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     }
   }
 
+  /* ScanAggMain / OuterAggMain: the main aggregation COUNT(*), SUM(val).
+   * Register 0 holds the constant 1 so NULL-extended rows still count. */
+  const bool aggMain = (opt.shape == ScanAggMain || opt.shape == OuterAggMain);
+  NdbAggregator mainAgg(srcTab);
+  if (aggMain &&
+      (!mainAgg.LoadUint64(1, 0) || !mainAgg.LoadColumn("val", 1) ||
+       !mainAgg.Count(0, 0) || !mainAgg.Sum(1, 1) || !mainAgg.Finalize())) {
+    res.failedAt = "mainAgg";
+    return -2;
+  }
+
   NdbQueryBuilder *qb = NdbQueryBuilder::create();
   if (qb == nullptr) {
     res.failedAt = "NdbQueryBuilder::create";
@@ -218,32 +258,35 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   }
 
   /* CTE 0: scan src -> self-lookup on pk carrying the aggregation. */
-  if (qb->beginCteSubtree(0) == nullptr) {
-    res.failedAt = "beginCteSubtree";
-    qb->destroy();
-    return -2;
-  }
-  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
-  if (cteScanOp == nullptr) {
-    res.failedAt = "cte scanTable";
-    qb->destroy();
-    return -2;
-  }
-  const NdbQueryOperand *cteJoinKey[] = {
-      qb->linkedValue(cteScanOp, opt.crossNodeLeaf ? "grp" : "pk"), nullptr};
-  NdbQueryOptions cteLeafOpts;
-  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-  cteLeafOpts.setAggregation(cteAgg);
-  if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
-    res.failedAt = "cte readTuple";
-    qb->destroy();
-    return -2;
-  }
-  qb->endCteSubtree();
-  if (qb->defineCte(0, srcTab, cteAgg) != 0) {
-    res.failedAt = "defineCte";
-    qb->destroy();
-    return -2;
+  if (!aggMain) {
+    if (qb->beginCteSubtree(0) == nullptr) {
+      res.failedAt = "beginCteSubtree";
+      qb->destroy();
+      return -2;
+    }
+    const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(srcTab);
+    if (cteScanOp == nullptr) {
+      res.failedAt = "cte scanTable";
+      qb->destroy();
+      return -2;
+    }
+    const NdbQueryOperand *cteJoinKey[] = {
+        qb->linkedValue(cteScanOp, opt.crossNodeLeaf ? "grp" : "pk"),
+        nullptr};
+    NdbQueryOptions cteLeafOpts;
+    cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    cteLeafOpts.setAggregation(cteAgg);
+    if (qb->readTuple(srcTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+      res.failedAt = "cte readTuple";
+      qb->destroy();
+      return -2;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(0, srcTab, cteAgg) != 0) {
+      res.failedAt = "defineCte";
+      qb->destroy();
+      return -2;
+    }
   }
 
   /* FeedChain's CTE 1: a CTE scan of CTE 0 as the aggregate leaf. */
@@ -287,6 +330,52 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
       qb->destroy();
       return -2;
     }
+  } else if (opt.shape == ScanAggMain) {
+    // A main aggregate leaf cannot be the root. Use a child index scan
+    // that finds exactly the parent's row and carries the aggregation.
+    const NdbDictionary::Index *pkIndex = dict->getIndex("PRIMARY", SRC_TABLE);
+    if (pkIndex == nullptr) {
+      res.failedAt = "getIndex PRIMARY";
+      res.ndbError = dict->getNdbError().code;
+      qb->destroy();
+      return -2;
+    }
+    const NdbQueryTableScanOperationDef *root = qb->scanTable(srcTab);
+    if (root == nullptr) {
+      res.failedAt = "main scanTable";
+      res.ndbError = qb->getNdbError().code;
+      qb->destroy();
+      return -2;
+    }
+    const NdbQueryOperand *key[] = {qb->linkedValue(root, "pk"), nullptr};
+    NdbQueryIndexBound bound(key);
+    NdbQueryOptions scanOpts;
+    scanOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    scanOpts.setAggregation(mainAgg);
+    if (qb->scanIndex(pkIndex, srcTab, &bound, &scanOpts) == nullptr) {
+      res.failedAt = "agg scanIndex";
+      res.ndbError = qb->getNdbError().code;
+      qb->destroy();
+      return -2;
+    }
+  } else if (opt.shape == OuterAggMain) {
+    /* scan src -> LEFT JOIN readTuple(pk = nk) as the aggregate leaf:
+     * nk NULL rows take the JOIN_AGG_NULL_ROW_REQ path. */
+    const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(srcTab);
+    if (mainScanOp == nullptr) {
+      res.failedAt = "main scanTable";
+      qb->destroy();
+      return -2;
+    }
+    const NdbQueryOperand *leafKey[] = {qb->linkedValue(mainScanOp, "nk"),
+                                        nullptr};
+    NdbQueryOptions leafOpts;   /* MatchAll: LEFT JOIN */
+    leafOpts.setAggregation(mainAgg);
+    if (qb->readTuple(srcTab, leafKey, &leafOpts) == nullptr) {
+      res.failedAt = "outer readTuple";
+      qb->destroy();
+      return -2;
+    }
   } else {
     if (qb->scanCte(0, 2, virtTab) == nullptr) {
       res.failedAt = "scanCte";
@@ -298,6 +387,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   const NdbQueryDef *queryDef = qb->prepare(ndb);
   if (queryDef == nullptr) {
     res.failedAt = "prepare";
+    res.ndbError = qb->getNdbError().code;
     qb->destroy();
     return -2;
   }
@@ -340,6 +430,9 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
       (void)lookupOp->getValue("grp");
       (void)lookupOp->getValue("total");
     }
+  } else if (aggMain) {
+    /* No getValue on an aggregating query's operations: it would shift
+     * the linked-attribute positions (block_unit_test/CLAUDE.md). */
   } else {
     NdbQueryOperation *mainOp = query->getQueryOperation(nOps - 1);
     if (mainOp != nullptr) {
@@ -389,6 +482,22 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
     res.failedAt = "nextResult";
     res.ndbError = query->getNdbError().code;
     rc = -1;
+  }
+  if (aggMain && rc == 0) {
+    NdbAggregator *agg = query->getAggregator();
+    if (agg == nullptr) {
+      res.failedAt = "getAggregator";
+      rc = -2;
+    } else {
+      NdbAggregator::ResultRecord rec = agg->FetchResultRecord();
+      if (rec.end()) {
+        res.failedAt = "no aggregation result";
+        rc = -2;
+      } else {
+        res.aggCount = rec.FetchAggregationResult().data_int64();
+        res.aggSum = rec.FetchAggregationResult().data_int64();
+      }
+    }
   }
   const NDB_TICKS closeStart = NdbTick_getCurrentTicks();
   query->close();

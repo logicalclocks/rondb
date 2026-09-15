@@ -17574,6 +17574,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_booked_fragments_count = 0;
   scanptr.p->m_schema_version_scan_cookie = DihScanTabConf::InvalidCookie;
   scanptr.p->m_close_scan_req = false;
+  scanptr.p->m_scan_error_sent = false;
   scanptr.p->m_pass_all_confs = ScanTabReq::getPassAllConfsFlag(ri);
   scanptr.p->m_extended_conf = ScanTabReq::getExtendedConf(ri);
 
@@ -19079,12 +19080,24 @@ void Dbtc::scanError(Signal *signal, ScanRecordPtr scanptr, Uint32 errorCode) {
   const bool apiFail =
       (apiConnectptr.p->apiFailState != ApiConnectRecord::AFS_API_OK);
 
+  /*
+   * A JoinAgg close can defer while SETUP/COMPLETE replies are pending,
+   * leaving the scan RUNNING. Further worker failures must advance
+   * cleanup without sending another SCAN_TABREF: a duplicate REF can
+   * interrupt the API's wait for the close confirmation.
+   * Once the API has requested close, only that confirmation is due.
+   * Capture this before close_scan_req(), which may release the records.
+   */
+  const bool reportError = !apiFail && !scanP->m_close_scan_req &&
+                           !scanP->m_scan_error_sent;
+  if (reportError) scanP->m_scan_error_sent = true;
+
   /**
    * Close scan wo/ having received an order to do so
    */
   close_scan_req(signal, scanptr, false, apiConnectptr);
 
-  if (apiFail) {
+  if (!reportError) {
     jam();
     return;
   }
@@ -31333,9 +31346,12 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
   }
   if (ERROR_INSERTED(8313)) {
     jam();
-    /* Test hook: delay ONE SETUP_CONF 5 s. A test that aborts the query
-     * inside that window makes the CONF stale on arrival and drives
-     * sendStaleSetupReclaim (keyed release with a zero transid). */
+    /* Delay ONE SETUP_CONF 5 s. PK-6 addresses an absent scan so
+     * delivery must take the stale-reclaim path, independent of timing. */
+    infoEvent("[JOIN_AGG_SETUP_CONF_HELD node=%u instance=%u scan=%u "
+              "request=%u key=%u]",
+              getOwnNodeId(), instance(), conf->senderData,
+              conf->requestId, conf->aggStateKey);
     CLEAR_ERROR_INSERT_VALUE;
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_CONF, signal, 5000,
                         signal->getLength());
@@ -31666,6 +31682,12 @@ void Dbtc::sendStaleSetupReclaim(Signal *signal, Uint32 senderRef,
   req->noReply = 1;
   sendSignal(senderRef, GSN_JOIN_AGG_RELEASE_REQ, signal,
              JoinAggReleaseReq::SignalLength, JBB);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  // PK-6 waits for this event, then verifies that teardown freed the state.
+  infoEvent("[JOIN_AGG_STALE_SETUP_RECLAIM node=%u instance=%u scan=%u "
+            "request=%u key=%u]",
+            getOwnNodeId(), instance(), senderData, requestId, aggStateKey);
+#endif
 }
 
 void Dbtc::execJOIN_AGG_SETUP_REF(Signal *signal) {

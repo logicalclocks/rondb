@@ -2124,6 +2124,8 @@ class Dbtc : public SimulatedBlock {
 
     // Close is ordered
     bool m_close_scan_req;
+    // scanError has reported a failure to the API.
+    bool m_scan_error_sent;
     // All SCAN_FRAGCONS should be passed on to the API as SCAN_TABCONFS.
     // This is needed to correctly propagate 'node masks' when scanning via the
     // SPJ block.

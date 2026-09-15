@@ -66,8 +66,15 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       the close never arrived (cleared after use, logs when it fires)
 5136: Duplicate ONE JOIN_AGG_RELEASE_REQ to self (DblqhProxy, cleared after use)
 5137: Teardown releases one group per round while set (DblqhProxy)
-5138: Hold every JOIN_AGG_SETUP_REQ until cleared (DblqhProxy)
-5139: Drop ONE JOIN_AGG_SETUP_REQ, no reply (DblqhProxy, cleared after use)
+5138: Hold JOIN_AGG_SETUP_REQs 20 ms at a time until cleared (DblqhProxy)
+      while the LDM / query instances hold the placeholder sweepers, so
+      guaranteed replay switches extra to 0xFFFE before clearing the
+      insert, letting SETUP run first. Extra selects: 0 = all, 0xFFFF
+      = the main aggregation only, 0xFFFE = none (sweeper hold only),
+      otherwise cteIndex + 1.
+5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1251 after 200 ms
+      so consumers can be swept first and DBTC can finish its SETUP round
+      (DblqhProxy, cleared after use).
 5140: Hold inbound JOIN_AGG_REDISTRIBUTE_REQ with RI_NEED_CONF, 200 ms at
       a time, until cleared. Other rows proceed normally, avoiding a timer
       entry per group row. A held remote request emits InfoEvent
@@ -130,7 +137,15 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       "[CTE_SCAN_CONF_HELD node=<node> iteration=<extra> requester=<node>]"
       per held reply. testCteDbtc SM-3 closes the scan while the reply is
       held: DBSPJ must defer the close until the batch drains.
-Next DBLQH 5148
+5148: The 5138 hold of every SETUP and sweeper, with the extra value
+      instead capping the join-agg park pool: once it holds at least
+      `extra` records a consumer is refused as if the pool were exhausted
+      (parkJoinAggConsumer / joinAggResolveOrParkGeneric) and takes its
+      normal resource-error path (PK-4).
+5149: Refuse JOIN_AGG_SETUP_REQ with OutOfQueryMemory once the identity
+      table holds at least `extra` entries (DblqhProxy), as if the table
+      were full (PK-5).
+Next DBLQH 5150
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
@@ -653,7 +668,8 @@ DBTC node failure take over testing (RonDB)
 8311: Send ONE JOIN_AGG_COMPLETE_REQ with aggStateKey RNIL (cleared after use)
 8312: Crash after the JOIN_AGG_RELEASE_REQs have been sent
       (sendJoinAggReleaseReqs / releaseJoinAggResources)
-8313: Delay ONE JOIN_AGG_SETUP_CONF 5 s, stale-reclaim path (cleared after use)
+8313: Delay ONE JOIN_AGG_SETUP_CONF 5 s and emit JOIN_AGG_SETUP_CONF_HELD
+      (cleared after use). PK-6 names an absent scan to force stale reclaim.
 
 
 TRPMAN

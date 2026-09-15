@@ -19,8 +19,8 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 
 | Item | Count | Where |
 |---|---|---|
-| New error inserts | 25 (DBLQH 5128-5147, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
-| New DUMP codes (leak checks) | 5 (LQH 2362-2364, TC 2560, SPJ new handler + 1 code) | kernel blocks |
+| New error inserts | 27 (DBLQH 5128-5149, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
+| New DUMP codes (leak checks) | 5 (LQH 2362-2364, TC 2560, SPJ new handler + 1 code) + LQH 2365 (park statistics, not a check) | kernel blocks |
 | NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
 | Parking cases | 8 | `block_unit_test/testCteProtocol` + 2 in `testNodeRestart` |
@@ -206,8 +206,8 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5135 | DBLQH `execSCAN_NEXTREQ`, close of a join-agg / CTE scan | ignore the close once (no SCAN_FRAGCONF) | DBTC CLOSING_SCAN with one close owed: kill this node |
 | 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | re-send the same RELEASE to itself once | duplicate release during teardown |
 | 5137 | Proxy `continueJoinAggTeardown` | `JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH` = 1 while set | long teardown chain overlapping NF reclaim / duplicate release |
-| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | hold EVERY SETUP_REQ until cleared (not 20 ms) | all consumers park; sweeper (10 ms) fires; node kills while parked |
-| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | drop the SETUP_REQ once (no CONF, no REF) | placeholder never filled: sweeper REF path for every parked GSN |
+| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggParkSweep` | hold the selected SETUP_REQs (extra: 0 all, 0xFFFF main, 0xFFFE none, else cteIndex + 1) and every placeholder sweeper until cleared | switch extra to 0xFFFE to release SETUP while sweepers remain held; clear after replay (PK-1) |
+| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | leave one identity unfilled, send SETUP_REF 1251 after 200 ms | placeholder never filled: sweeper REF path for every parked GSN |
 | 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold inbound redistribute requests with RI_NEED_CONF, 200 ms at a time, until cleared; other rows proceed without timer entries | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2) |
 | 5141 | DBLQH `cteLookupReqImpl` | hold every inbound CTE lookup, 200 ms at a time, until cleared; one event per instance for the first remote probe (extra bit 30: for the first probe from any node) | DBSPJ workers on the other nodes keep probes charged to this node for as long as the kill needs (NF-3); LK-1 closes during the hold |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, then swallow the CTE_SCAN_CONF of every remote requester while set; one event per instance | a remote DBSPJ worker holds this source's batch without a reply for as long as the kill needs (NF-4) |
@@ -216,9 +216,11 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggParkSweep` / `parkJoinAggConsumer` | hold every SETUP while its coordinator lives; LDM/query instances hold placeholder sweepers until NODE_FAILREP clears their local insert; `[CTE_NF11_PARKED node=P iteration=I requester=R]` per instance and requester | consumers stay parked until the requester (NF-11) or the coordinator (NF-12) is killed; NF-11 observes the sweep, NF-12 observes late CTE SETUP rejection before state allocation; cleared by the test |
 | 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators until cleared; report held and skipped states with iteration, coordinator and pool key | NF-10 kills the coordinator after the hold event and requires reclaim to skip the same key before clearing |
 | 5147 | DBLQH `cteScanEmitResults` | hold the CTE_SCAN_CONF of every local requester after its rows went out (batches short of EndOfData), 100 ms at a time via CONTINUEB, until cleared; `[CTE_SCAN_CONF_HELD node=S iteration=I requester=R]` per held reply | the API closes while DBSPJ's slot still owes the batch, so the close must wait on `close_pending` (SM-3) |
+| 5148 | Proxy + DBLQH park paths | the 5138 hold of every SETUP and sweeper, with extra capping the park pool: a consumer is refused once `extra` records are in use | park pool exhaustion with the pool far from full (PK-4) |
+| 5149 | Proxy `execJOIN_AGG_SETUP_REQ` | refuse the SETUP with OutOfQueryMemory once the identity table holds `extra` entries | identity table exhaustion (PK-5) |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | send COMPLETE_REQ with aggStateKey RNIL for one node even if the key is known | identity-addressed COMPLETE parks or resolves |
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
-| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | drop ONE SETUP_CONF for good (not 20 ms) | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
+| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | delay ONE SETUP_CONF 5 s and emit the hold event | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
 | 17532 | DBSPJ `cte_scan_sendReq` | after sending, crash-insert the local node once the second batch is requested | multi-batch CTE scan with paused sources on the requester side |
 | 17533 | DBSPJ `execSCAN_NEXTREQ`, close from DBTC | swallow the close once, request left waiting (logs when it fires) | DBTC CLOSING_SCAN with a worker's close reply owed: kill this node (NF-1) |
 
@@ -524,23 +526,43 @@ entries, 16384 park records, 25-word park buffer.
 
 | ID | Case | Hook | Expected |
 |---|---|---|---|
-| PK-1 | every GSN parks and replays | 5127 (one SETUP held 20 ms) on a 4-node CTE query with an outer-join lookup | LQHKEYREQ, SCAN_FRAGREQ, NULL_ROW_REQ, REDISTRIBUTE_REQ, FINAL_REP each observed parked (add a debug counter per GSN exposed by 2363) and the query result is correct |
-| PK-2 | identity-addressed COMPLETE | 8310 (delay SETUP_CONF) and 8311 (force RNIL key) | COMPLETE resolves or parks, then replays; result correct |
-| PK-3 | sweeper REF path | 5139 (drop one SETUP) | query fails with 1251 within ~50 ms; every parked GSN got its REF or drop; placeholder removed; 2363 clean |
-| PK-4 | park pool exhaustion | debug insert that caps effective JAI_MAX_PARK at 4 (5140) with 5138 holding SETUP | consumer error path (LQHKEYREF / SCAN_FRAGREF with resource error), no crash; 2363 clean after SETUP released |
-| PK-5 | identity table exhaustion | debug insert capping JAI_MAX_ENTRIES at N (5141) | SETUP_REF OutOfQueryMemory; query fails cleanly |
-| PK-6 | RELEASE before flush / stale SETUP_CONF | 8313 (drop one SETUP_CONF) so the scan aborts and the CONF is stale | `sendStaleSetupReclaim` releases the state with zero transid; 2361 clean |
-| PK-7 | duplicate identity | two SETUPs with the same transid + queryTag from `testJoinAgg` | second gets SETUP_REF InvalidRequest (release builds); first still releasable |
+| PK-1 | every GSN parks and replays | 5138 holds the selected SETUPs and the sweepers until cleared; DUMP 2365 counts parks per GSN. (a) direct: an identity-addressed COMPLETE, a redistributed row and a FINAL_REP parked before the SETUP; (b) NDB API: LookupMain with CTE0's SETUP held, ScanAggMain and OuterAggMain with the main SETUP held | (a) the flushed COMPLETE streams its result, the flushed row is in the CTE scan; (b) LQHKEYREQ, SCAN_FRAGREQ, LQHKEYREQ + NULL_ROW_REQ observed parked, every result correct after the release; a held SETUP blocks the feeds, so REDISTRIBUTE / FINAL_REP park only in (a) - **done** |
+| PK-2 | identity-addressed COMPLETE | 8310 (delay SETUP_CONF) and 8311 (force RNIL key) on the coordinator | COMPLETE resolves by identity; result correct - **done** |
+| PK-3 | sweeper REF path | 5139 (leave identity unfilled, delayed SETUP_REF drains DBTC accounting) | query fails with 1251 within 3 s; `JOIN_AGG_PARK_SWEPT` with failed=0; placeholder removed; all dumps clean - **done** |
+| PK-4 | park pool exhaustion | 5148 (the 5138 hold with extra = 4 capping the park pool) | the fifth consumer takes the resource-error path, the query fails with 1251; the four parked are replayed into the aborting request after the release; dumps clean - **done** |
+| PK-5 | identity table exhaustion | 5149 (extra = 0: every SETUP refused) | SETUP_REF OutOfQueryMemory, the query fails with 20008 - **done** |
+| PK-6 | stale SETUP_CONF | 8313 (one SETUP_CONF delayed 5 s); a real state names DBTC with scan RNIL | require hold and stale-reclaim events for that request, then clean pools; no API query can release the state normally - **done** |
+| PK-7 | duplicate identity | two SETUPs with the same transid + queryTag (`testCteProtocol`) | second gets SETUP_REF InvalidRequest 20002 in every build (the debug assert is gone: a REF is the safe answer); identity-addressed COMPLETE still returns the first state's scanned groups before release - **done** |
 | PK-8 | parked replay after coordinator death | separate replay hold after successful SETUP; include NULL_ROW_REQ | pending: replay must hit the failed-coordinator guard (`5efa38683b1`), with identity and state pools clean; NF-12 covers SETUP rejection instead |
 
-PK-1..PK-7 live in `testCteProtocol` (PK-1, PK-2 need a running CTE
-query: reuse the NDB API helper).
+PK-1..PK-7 live in `testCteProtocol`. The NDB API queries use the
+`CteQueryUtil.hpp` shapes (tables created through MySQL, since the test
+runs beside live mysqlds) on a second thread and Ndb object, so the test
+can poll DUMP 2365 and release the hold while the query is in flight.
+Two shapes were added for the parking cases: `ScanAggMain` (a root scan
+followed by an equality scan of the SQL-created PRIMARY index on the
+same pk; the child is the aggregate leaf, its SCAN_FRAGREQ feeds) and
+`OuterAggMain` (LEFT
+JOIN readTuple on the nullable `nk` column, one NULL key in four, so
+NULL_ROW_REQ feeds). A held SETUP also holds that state's feeds, so the
+scan phase never completes while it is held: COMPLETE, REDISTRIBUTE and
+FINAL_REP cannot park during an API query and are parked by hand in
+PK-1 (a) instead. Its REDISTRIBUTE / FINAL replay portion requires at
+least two data nodes: SETUP and COMPLETE run on every participant and
+the scans must find the injected group exactly once across all owners.
+A single-node run explicitly skips that portion; parked COMPLETE replay
+still runs.
 
-MTR deliverables of this phase: `cte_park_basic.test` (`ALL ERROR 5127`
-around the filter and outer-join bodies from `body_filter.inc`, results
-identical to the baseline) and `cte_park_sweeper.test` (`ALL ERROR 5139`,
-one query expected to fail with 1251, then a clean re-run), both in
-`ronsql_cte`.
+MTR deliverables of this phase, both in `ronsql_cte` - **done**:
+`cte_park_basic.test` (`ALL ERROR 5127` before a probed CTE, an outer
+join onto a CTE with NULL and missing keys, and a pass-through scanCte
+root; every result equals the MySQL baseline whether the parked
+consumers were flushed or swept and retried; leak dumps) and
+`cte_park_sweeper.test` (`ALL ERROR 5139`; `ronsql_cli`'s first attempt
+fails with 1251 (stderr) before any row was delivered, so RonSQL retries
+and the retried result is diffed against the mysql client; leak dumps;
+a clean comparison). Both need `--record` on first run and the debug
+build.
 
 Effort: 3.5 days including the two capacity inserts and the MTR files.
 
@@ -635,6 +657,7 @@ independent once Phase 0 is in and can be split between people.
 | F-6 | SM-2 through RonSQL, `cte_scan_batches.test` first run (2026-09-15) | Under `ALL ERROR 5129` (once per node) `ronsql_cli` exited 0 and printed 2015 rows for a 1500-group CTE scan | RonSQL's pass-through drains stream rows to `out_stream` as they arrive, and both `execute_passthrough_drain` and the single-table drain (through the generic NDB-status classification) turned the mid-drain failure into `RonSQLRetryableError`; the retry succeeded once the insert had cleared, but neither `ronsql_cli` (stdout) nor RDRS (its per-request response buffer) can rewind the rows already written, so the response held the partial first attempt plus the complete second one | fixed in RonSQL: `m_output_started` is set when a pass-through header or row is written; after that a drain failure is `RonSQLPermanentError` in every classification path (direct, NDB temporary status, stale-schema reload). Aggregating queries print after the drain and keep their retry. `cte_scan_batches.test` csb-2 pins the exit code, the 1251 on stderr and the short output |
 | F-5 | LK-2 control run, `testCteNdbApiOuterJoin` Test 7 (2026-09-15) | `SELECT COUNT(*), SUM(cte.total) FROM t LEFT JOIN cte ON cte.grp = t.nullable_col` returned COUNT=3 for 4 rows: the row whose join key is NULL was dropped from the aggregation (the miss row was counted) | `Dbspj::cte_lookup_send` skipped a NULL key outright ("no match possible"), which is right for pass-through queries (the API NULL-fills the CTE columns of the delivered parent row) but wrong for an aggregating outer join, where the readTuple (`lookup_send`) and scanFrag (`scanFrag_parent_row`) arms feed the NULL-extended row through JOIN_AGG_NULL_ROW_REQ | fixed: the CTE lookup arm injects the NULL row for an outer-join aggregate leaf (own columns marked NULL, the CTE_LOOKUP_REF miss form) and propagates it for an aggregate ancestor; pinned by Test 7 and `ronsql_cte/cte_null_key_outer.test` |
 | F-4 | SM-5 design review (2026-09-15) | A CTE_SCAN_CONF lost without a node failure (5128) leaves the scan unrecoverable: DBTC's fragment timeout (`timeOutFoundFragLab`, LQH_ACTIVE) calls `scanError`, which sends SCAN_TABREF with closeNeeded and a close to DBSPJ, but DBSPJ keeps the slot's batch obligation until the reply arrives, so the close never completes; the fragment times out again every `TransactionDeadlockDetectionTimeout` and re-issues the close, and the ApiConnectRecord stays in CLOSING_SCAN with the DBSPJ request pending until the node fails | by design: a reply is lost only by node failure, which NODE_FAILREP handles (NF-4); DBTC's timeout is not a recovery path for a live DBSPJ worker | documented; SM-5 not run, no test may leave such a scan behind |
+| F-7 | Phase 3 parking run, `testCteProtocol` section 6 (2026-09-15) | After a JoinAgg close had been deferred (SETUP / COMPLETE replies still pending, the scan left RUNNING), a further worker failure sent a second SCAN_TABREF, which interrupted the API's wait for the close confirmation | `Dbtc::scanError` reported every failure to the API unless the API itself had failed; it did not remember that a REF had already been sent, nor that the API had ordered the close and was owed only its confirmation | fixed: `ScanRecord::m_scan_error_sent` (reset in `initScanrec`); `scanError` still advances cleanup through `close_scan_req` on every call but sends SCAN_TABREF only for the first failure and never after the API requested the close (the decision is taken before `close_scan_req`, which may release the records) |
 
 ## 12. Risks and open points
 

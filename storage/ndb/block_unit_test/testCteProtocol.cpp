@@ -88,6 +88,39 @@
  *   ID-7  (not run) a shorter-than-required signal asserts in the
  *         receiver by contract; it would crash the node.
  *
+ * Section 6, parking.  A consumer signal that arrives before its SETUP
+ * parks on an identity placeholder; the SETUP's flush replays it, the 10
+ * ms sweeper aborts it when no SETUP comes.  Error insert 5138 holds
+ * selected SETUPs and the sweepers until cleared, DUMP 2365 reports the
+ * parks per GSN class.  The NDB API queries (CteQueryUtil.hpp shapes,
+ * tables created through MySQL) run on a second thread so the test can
+ * watch the parks and release the hold.
+ *
+ *   PK-1  every parkable GSN parks and replays: (a) an identity-addressed
+ *         COMPLETE, a redistributed row and a FINAL_REP parked by hand
+ *         before the SETUP, then flushed: the COMPLETE streams its
+ *         result, the row appears in the CTE scan; (b) LQHKEYREQ feeds
+ *         (LookupMain, CTE0's SETUP held), SCAN_FRAGREQ feeds
+ *         (ScanAggMain, main SETUP held), LQHKEYREQ + NULL_ROW_REQ
+ *         (OuterAggMain, main SETUP held); each query's result is
+ *         correct after the release.
+ *   PK-2  identity-addressed COMPLETE: 8310 (SETUP_CONF delayed) and
+ *         8311 (RNIL key forced) each resolve; result correct.
+ *   PK-3  5139 rejects one SETUP after 200 ms: the unfilled identity
+ *         is swept; the delayed REF lets DBTC finish cleanup.
+ *   PK-4  5148 caps the park pool at 4 while holding the SETUPs: the
+ *         fifth consumer takes the resource-error path and the query
+ *         fails with 1251; the four parked are replayed after the release
+ *         into the aborting request; pools clean.
+ *   PK-5  5149 refuses every SETUP as if the identity table were full:
+ *         the query fails with OutOfQueryMemory (20008).
+ *   PK-6  8313 delays a SETUP_CONF addressed to an absent DBTC scan:
+ *         require the hold and stale-reclaim events, then clean pools.
+ *   PK-7  a second SETUP with the same identity is refused with
+ *         InvalidRequest (20002); identity-addressed COMPLETE must
+ *         still return the first state's scanned groups.
+ *   PK-8  pending (parked replay after coordinator death).
+ *
  * After every case the leak-check DUMPs 2361 (join-agg states), 2362
  * (CTE scan iterator records) and 2363 (identity table, placeholders and
  * park records) run on every node;
@@ -121,6 +154,8 @@
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include <NdbRestarter.hpp>
 #include "JoinAggTestUtil.hpp"
+#include <CteQueryUtil.hpp>
+#include <thread>
 #include <mysql.h>
 
 #include <map>
@@ -429,30 +464,32 @@ struct SetupParams {
   Uint32 queryTag;
   Uint32 strategy;
   Uint32 cteIndex;
+  Uint32 senderRef;            /* 0 = the SignalSender; PK-6 uses DBTC */
+  Uint32 senderData;
   bool fullLength;             /* send setupNodes (RONDB-1120 length) */
   NdbNodeBitmask setupNodes;   /* only with fullLength */
   SetupParams()
       : requestId(FAKE_REQUEST_ID), queryTag(FAKE_REQUEST_ID),
         strategy(JoinAggSetupReq::STRATEGY_MUTEX_FREE), cteIndex(RNIL),
-        fullLength(false) {
+        senderRef(0), senderData(FAKE_SENDER_DATA), fullLength(false) {
     transid[0] = FAKE_TRANS_ID1;
     transid[1] = FAKE_TRANS_ID2;
     setupNodes.clear();
   }
 };
 
-/* 0 = CONF (keyOut, ownerOut set), 1 = REF (refCodeOut set), -1 = error */
+/* Send the SETUP_REQ without waiting (the reply may interleave with
+ * replies to signals parked before it). */
 static int
-sendSetupReq(SignalSender &ss, Uint32 nodeId,
+sendSetupRaw(SignalSender &ss, Uint32 nodeId,
              const std::vector<Uint32> &aggProgram, const TableMeta &meta,
-             const SetupParams &p, Uint32 &keyOut, Uint32 &ownerOut,
-             Uint32 &refCodeOut)
+             const SetupParams &p)
 {
   SimpleSignal ssig;
   JoinAggSetupReq *req =
       reinterpret_cast<JoinAggSetupReq *>(ssig.getDataPtrSend());
-  req->senderRef = ss.getOwnRef();
-  req->senderData = FAKE_SENDER_DATA;
+  req->senderRef = p.senderRef != 0 ? p.senderRef : ss.getOwnRef();
+  req->senderData = p.senderData;
   req->requestId = p.requestId;
   req->transid[0] = p.transid[0];
   req->transid[1] = p.transid[1];
@@ -483,6 +520,17 @@ sendSetupReq(SignalSender &ss, Uint32 nodeId,
     fprintf(stderr, "sendSignal SETUP_REQ failed\n");
     return -1;
   }
+  return 0;
+}
+
+/* 0 = CONF (keyOut, ownerOut set), 1 = REF (refCodeOut set), -1 = error */
+static int
+sendSetupReq(SignalSender &ss, Uint32 nodeId,
+             const std::vector<Uint32> &aggProgram, const TableMeta &meta,
+             const SetupParams &p, Uint32 &keyOut, Uint32 &ownerOut,
+             Uint32 &refCodeOut)
+{
+  if (sendSetupRaw(ss, nodeId, aggProgram, meta, p) != 0) return -1;
   SimpleSignal *resp = waitForSignal(ss, "SETUP_CONF");
   if (resp == nullptr) return -1;
   const int gsn = getGsn(resp);
@@ -586,7 +634,8 @@ sendCompleteReq(SignalSender &ss, Uint32 nodeId, Uint32 aggStateKey,
   req->aggStateKey = aggStateKey;
   req->maxBatchRows = 1000;
   req->heartbeatScanFragPtrI = RNIL;
-  req->identWord = RNIL;  /* keyed form */
+  req->identWord = aggStateKey == RNIL
+                       ? packIdentWord(FAKE_REQUEST_ID, RNIL) : RNIL;
   ssig.set(ss, 0, numberToBlock(DBLQH, ownerInstance),
            GSN_JOIN_AGG_COMPLETE_REQ, JoinAggCompleteReq::SignalLength);
   if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
@@ -720,6 +769,7 @@ struct Ctx {
   const std::vector<Uint32> &prog;
   Uint32 node;   /* the data node driven by every case */
   Ndb_cluster_connection *con2;  /* another API node id; null if none */
+  Ndb *ndbq;                     /* NDB API queries, on their own thread */
 };
 
 static int
@@ -1829,6 +1879,684 @@ id6(Ctx &c)
 }
 
 /* ------------------------------------------------------------------ */
+/* Section 6: parking                                                  */
+/* ------------------------------------------------------------------ */
+
+static const Uint32 NF_ROWS = 64;
+static const Uint32 NF_GROUPS = 8;
+/* DUMP 2365 classes, in the event's order. */
+enum ParkClass {
+  PARK_LQHKEY = 0, PARK_SCANFRAG, PARK_NULLROW, PARK_COMPLETE, PARK_REDIST,
+  PARK_FINAL, PARK_CLASSES
+};
+static const char *const PARK_NAMES[PARK_CLASSES] = {
+    "LQHKEYREQ", "SCAN_FRAGREQ", "NULL_ROW_REQ", "COMPLETE_REQ",
+    "REDISTRIBUTE_REQ", "FINAL_REP"};
+/* Error insert 5138 extra values: which SETUPs to hold. */
+static const Uint32 HOLD_CTE0_SETUP = 1;
+static const Uint32 HOLD_MAIN_SETUP = 0xFFFF;
+static const Uint32 HOLD_NO_SETUP = 0xFFFE;   /* sweeper hold only */
+static const Uint32 DBSPJ_INVALID_REQUEST = 20002;
+static const Uint32 DBSPJ_OUT_OF_QUERY_MEMORY = 20008;
+static const Uint32 PARK_POLL_MS = 50;
+static const Uint32 PARK_WAIT_MS = 2000;
+
+/* The CTE query tables, created through MySQL (CteQueryUtil::createTables
+ * would use the NDB API, which is not allowed beside live mysqlds). */
+static int
+createCteNfTables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_nf_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_nf_virtual");
+  if (sqlExec(conn,
+              "CREATE TABLE cte_nf_src ("
+              "  pk INT NOT NULL PRIMARY KEY,"
+              "  grp INT NOT NULL,"
+              "  val BIGINT NOT NULL,"
+              "  nk INT NULL"
+              ") ENGINE=NDB") != 0)
+    return -1;
+  return sqlExec(conn,
+                 "CREATE TABLE cte_nf_virtual ("
+                 "  grp INT NOT NULL PRIMARY KEY,"
+                 "  total BIGINT NOT NULL"
+                 ") ENGINE=NDB");
+}
+
+static void
+dropCteNfTables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_nf_src");
+  sqlExec(conn, "DROP TABLE IF EXISTS cte_nf_virtual");
+}
+
+struct ParkStats {
+  Uint32 counts[PARK_CLASSES];
+  Uint32 inUse;
+};
+
+/* DUMP 2365 on c.node, answered by regular instance 1 with the cookie. */
+static int
+readParkStats(Ctx &c, ParkStats &s)
+{
+  ScopedSenderUnlock unlock(c.ss);
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (!events.open(c.restarter)) return -1;
+  static Uint32 nextCookie = 0x50000;
+  const Uint32 cookie = ++nextCookie;
+  const int dump[] = {DumpStateOrd::LqhDumpJoinAggParkStats, (int)cookie};
+  ndb_mgm_reply reply = {};
+  if (ndb_mgm_dump_state(c.restarter.handle, (int)c.node, dump, 2,
+                         &reply) == -1 ||
+      reply.return_code != 0) {
+    fprintf(stderr, "DUMP 2365 on node %u failed\n", c.node);
+    return -1;
+  }
+  char marker[64];
+  snprintf(marker, sizeof(marker), "cookie=%u]", cookie);
+  if (!events.waitFor(marker)) return -1;
+  const char *p = strstr(events.matched, "[JOIN_AGG_PARK_STATS");
+  Uint32 node = 0;
+  if (p == nullptr ||
+      sscanf(p, "[JOIN_AGG_PARK_STATS node=%u lqhkey=%u scanfrag=%u "
+                "nullrow=%u complete=%u redist=%u final=%u inuse=%u",
+             &node, &s.counts[0], &s.counts[1], &s.counts[2], &s.counts[3],
+             &s.counts[4], &s.counts[5], &s.inUse) != 8) {
+    fprintf(stderr, "Unparsable park statistics: %s\n", events.matched);
+    return -1;
+  }
+  return 0;
+}
+
+/* Poll until every class in `mask` grew past `base` on c.node. */
+static int
+waitParked(Ctx &c, const ParkStats &base, Uint32 mask, ParkStats &now,
+           const char *label)
+{
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  for (;;) {
+    if (readParkStats(c, now) != 0) return -1;
+    bool all = true;
+    for (Uint32 k = 0; k < PARK_CLASSES; k++) {
+      if ((mask & (1u << k)) != 0 && now.counts[k] <= base.counts[k]) {
+        all = false;
+      }
+    }
+    if (all) {
+      V("%s: parked", label);
+      for (Uint32 k = 0; k < PARK_CLASSES; k++) {
+        V(" %s=%u", PARK_NAMES[k], now.counts[k] - base.counts[k]);
+      }
+      V(" inuse=%u\n", now.inUse);
+      return 0;
+    }
+    if (NdbTick_CurrentMillisecond() - start > PARK_WAIT_MS) {
+      fprintf(stderr, "%s: not parked within %u ms:", label, PARK_WAIT_MS);
+      for (Uint32 k = 0; k < PARK_CLASSES; k++) {
+        if ((mask & (1u << k)) != 0 && now.counts[k] <= base.counts[k]) {
+          fprintf(stderr, " %s", PARK_NAMES[k]);
+        }
+      }
+      fprintf(stderr, "\n");
+      return -1;
+    }
+    NdbSleep_MilliSleep(PARK_POLL_MS);
+  }
+}
+
+/* Poll until at least `inUse` park records are held on c.node. */
+static int
+waitParkRecords(Ctx &c, Uint32 inUse, ParkStats &now, const char *label)
+{
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  for (;;) {
+    if (readParkStats(c, now) != 0) return -1;
+    if (now.inUse >= inUse) return 0;
+    if (NdbTick_CurrentMillisecond() - start > PARK_WAIT_MS) {
+      fprintf(stderr, "%s: only %u park records in use after %u ms, "
+                      "expected %u\n", label, now.inUse, PARK_WAIT_MS, inUse);
+      return -1;
+    }
+    NdbSleep_MilliSleep(PARK_POLL_MS);
+  }
+}
+
+/* An NDB API CTE query on its own thread and Ndb object. */
+struct QueryRun {
+  Ndb *ndb;
+  SignalSender &sender;
+  CteQueryUtil::Options opt;
+  CteQueryUtil::Result res;
+  int rc;
+  std::thread thread;
+  QueryRun(Ndb *n, SignalSender &s) : ndb(n), sender(s), rc(-3) {}
+  void start() {
+    thread = std::thread([this] {
+      rc = CteQueryUtil::runQuery(ndb, opt, res);
+    });
+  }
+  void join() {
+    if (thread.joinable()) {
+      // Broadcast delivery may need this client's mutex while the query
+      // thread polls. Holding it across join can also stop API heartbeats.
+      ScopedSenderUnlock unlock(sender);
+      thread.join();
+    }
+  }
+  ~QueryRun() { join(); }
+};
+
+static Int64
+expectedSum(bool skipNullKeys)
+{
+  Int64 s = 0;
+  for (Uint32 i = 0; i < NF_ROWS; i++) {
+    if (!skipNullKeys || i % 4 != 3) s += i;
+  }
+  return s;
+}
+
+static int
+checkQueryResult(const QueryRun &q, const char *label)
+{
+  if (q.rc != 0) {
+    fprintf(stderr, "%s: query failed at %s (rc=%d ndbError=%d)\n", label,
+            q.res.failedAt, q.rc, q.res.ndbError);
+    return -1;
+  }
+  bool ok = true;
+  switch (q.opt.shape) {
+    case CteQueryUtil::LookupMain:
+    case CteQueryUtil::FeedChain:
+      ok = q.res.rows == NF_ROWS;
+      break;
+    case CteQueryUtil::ScanRoot:
+      ok = q.res.rows == NF_GROUPS;
+      break;
+    case CteQueryUtil::ScanAggMain:
+      ok = q.res.aggCount == (Int64)NF_ROWS &&
+           q.res.aggSum == expectedSum(false);
+      break;
+    case CteQueryUtil::OuterAggMain:
+      ok = q.res.aggCount == (Int64)NF_ROWS &&
+           q.res.aggSum == expectedSum(true);
+      break;
+  }
+  if (!ok) {
+    fprintf(stderr, "%s: wrong result: rows=%llu count=%lld sum=%lld\n",
+            label, (unsigned long long)q.res.rows, (long long)q.res.aggCount,
+            (long long)q.res.aggSum);
+    return -1;
+  }
+  return 0;
+}
+
+static void
+setQueryOptions(Ctx &c, QueryRun &q, CteQueryUtil::Shape shape)
+{
+  q.opt.shape = shape;
+  q.opt.tcNodeId = c.node;
+  q.opt.crossNodeLeaf = c.restarter.getNumDbNodes() > 1;
+}
+
+/* Hold the SETUPs selected by holdSel on c.node, run the query, require
+ * the masked classes to park, release, verify the result. */
+static int
+runParkedQuery(Ctx &c, CteQueryUtil::Shape shape, Uint32 holdSel,
+               Uint32 mask, const char *label)
+{
+  ParkStats base, now;
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5138, (int)holdSel)) return -1;
+  if (readParkStats(c, base) != 0) return -1;
+  QueryRun q(c.ndbq, c.ss);
+  setQueryOptions(c, q, shape);
+  q.start();
+  int rc = waitParked(c, base, mask, now, label);
+  // Let SETUP run while sweepers remain held. Clearing both together
+  // races their independent timers and can turn replay into an abort.
+  if (!setErrorInsert(c.restarter, c.node, 5138, (int)HOLD_NO_SETUP)) {
+    (void)guard.clear();
+    rc = -1;
+  }
+  q.join();
+  if (!guard.clear()) rc = -1;
+  // A prepare/execute failure also prevents parking. Report it even
+  // when the parking wait failed, while preserving that wait failure.
+  if (checkQueryResult(q, label) != 0) rc = -1;
+  return rc;
+}
+
+/* First row of a CTE scan in its raw form: [AH(0,8) grp][AH(1,8) sum]. */
+static int
+cteScanOneRow(SignalSender &ss, const CteScanParams &p, Int64 &grp,
+              Int64 &sum, Uint32 &rows)
+{
+  if (sendCteScanReq(ss, p) != 0) return -1;
+  rows = 0;
+  bool haveRow = false;
+  for (;;) {
+    SimpleSignal *resp = waitForSignal(ss, "CTE_SCAN row");
+    if (resp == nullptr) return -1;
+    const int gsn = getGsn(resp);
+    if (gsn == GSN_TRANSID_AI) {
+      rows++;
+      if (!haveRow) {
+        const Uint32 *data;
+        Uint32 len;
+        if (resp->header.m_noOfSections > 0) {
+          data = resp->ptr[0].p;
+          len = resp->ptr[0].sz;
+        } else {
+          data = resp->getDataPtr() + TransIdAI::HeaderLength;
+          len = resp->getLength() - TransIdAI::HeaderLength;
+        }
+        if (len < 6) {
+          fprintf(stderr, "CTE scan row too short (%u words)\n", len);
+          return -1;
+        }
+        memcpy(&grp, &data[1], sizeof(grp));
+        memcpy(&sum, &data[4], sizeof(sum));
+        haveRow = true;
+      }
+    } else if (gsn == GSN_CTE_SCAN_CONF) {
+      const CteScanConf *conf =
+          reinterpret_cast<const CteScanConf *>(resp->getDataPtr());
+      if ((conf->flags & CteScanConf::EndOfData) == 0) {
+        fprintf(stderr, "CTE scan paused, expected EndOfData\n");
+        return -1;
+      }
+      return 0;
+    } else if (gsn == GSN_CTE_SCAN_REF) {
+      fprintf(stderr, "CTE_SCAN_REF %u\n",
+              reinterpret_cast<const CteScanRef *>(resp->getDataPtr())
+                  ->errorCode);
+      return -1;
+    } else {
+      fprintf(stderr, "Unexpected GSN %d during the CTE scan\n", gsn);
+      return -1;
+    }
+  }
+}
+
+/* PK-1 (a): the owner-plane signals park by hand and replay. */
+static int
+pk1OwnerPlane(Ctx &c)
+{
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5138, (int)HOLD_NO_SETUP))
+    return -1;
+  ParkStats base, now;
+
+  /* (i) A non-CTE state: the identity-addressed COMPLETE parks; the
+   * SETUP flushes it and its result stream follows the SETUP_CONF in
+   * either order. */
+  if (readParkStats(c, base) != 0) return -1;
+  {
+    SimpleSignal ssig;
+    JoinAggCompleteReq *req =
+        reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
+    req->senderRef = c.ss.getOwnRef();
+    req->senderData = FAKE_SENDER_DATA;
+    req->requestId = FAKE_REQUEST_ID;
+    req->transid[0] = FAKE_TRANS_ID1;
+    req->transid[1] = FAKE_TRANS_ID2;
+    req->aggStateKey = RNIL;
+    req->maxBatchRows = 1000;
+    req->heartbeatScanFragPtrI = RNIL;
+    req->identWord = packIdentWord(FAKE_REQUEST_ID, RNIL);
+    ssig.set(c.ss, 0, numberToBlock(DBLQH, 1), GSN_JOIN_AGG_COMPLETE_REQ,
+             JoinAggCompleteReq::SignalLength);
+    if (c.ss.sendSignal(c.node, &ssig) != SEND_OK) {
+      fprintf(stderr, "sendSignal COMPLETE_REQ failed\n");
+      return -1;
+    }
+  }
+  if (waitParked(c, base, 1u << PARK_COMPLETE, now, "PK-1 COMPLETE") != 0)
+    return -1;
+  {
+    SetupParams p;
+    if (sendSetupRaw(c.ss, c.node, c.prog, c.meta, p) != 0) return -1;
+    Uint32 key = RNIL, groups = 0;
+    bool haveSetup = false, haveComplete = false;
+    while (!(haveSetup && haveComplete)) {
+      SimpleSignal *resp = waitForSignal(c.ss, "SETUP_CONF / COMPLETE_CONF");
+      if (resp == nullptr) return -1;
+      const int gsn = getGsn(resp);
+      if (gsn == GSN_JOIN_AGG_SETUP_CONF) {
+        key = reinterpret_cast<const JoinAggSetupConf *>(resp->getDataPtr())
+                  ->aggStateKey;
+        haveSetup = true;
+      } else if (gsn == GSN_JOIN_AGG_COMPLETE_CONF) {
+        haveComplete = true;
+      } else if (gsn == GSN_JOIN_AGG_SEND_REQ) {
+        if (sendSendConf(c.ss, reinterpret_cast<const JoinAggSendReq *>(
+                                   resp->getDataPtr())) != 0)
+          return -1;
+      } else if (gsn == GSN_TRANSID_AI) {
+        const Uint32 *data = resp->header.m_noOfSections > 0
+                                 ? resp->ptr[0].p
+                                 : resp->getDataPtr() + TransIdAI::HeaderLength;
+        groups += data[2];
+      } else {
+        fprintf(stderr, "PK-1: unexpected GSN %d after the SETUP\n", gsn);
+        return -1;
+      }
+    }
+    if (groups != 0) {
+      fprintf(stderr, "PK-1: the replayed COMPLETE returned %u groups\n",
+              groups);
+      return -1;
+    }
+    if (releaseAndWait(c, key) != 0) return -1;
+  }
+
+  /* (ii) Redistribution needs multiple CTE participants. Single-node
+   * COMPLETE deliberately skips the redistribution queue. The parked
+   * COMPLETE case above still runs on a single-node cluster. */
+  if (c.restarter.getNumDbNodes() < 2) {
+    fprintf(stderr, "PK-1a: [SKIPPED] parked redistribution needs "
+                    "at least two data nodes\n");
+    if (!guard.clear()) return -1;
+    return checkLeaks(c.ss, c.restarter, "PK-1a");
+  }
+
+  /* A synthetic API-origin row and a FINAL_REP park; SETUP flushes
+   * them. Complete every real participant so redistribution can move
+   * the merged group to its hash owner, then scan all owners. */
+  const Int64 REDIST_GRP = 7, REDIST_SUM = 4242;
+  if (readParkStats(c, base) != 0) return -1;
+  {
+    const PeerIdentity id = cteIdentity();
+    SimpleSignal ssig;
+    JoinAggRedistributeReq *req =
+        reinterpret_cast<JoinAggRedistributeReq *>(ssig.getDataPtrSend());
+    req->aggStateKey = RNIL;
+    req->senderAggStateKey = FORGED_SENDER_KEY;
+    req->keyLen = 12;
+    req->valueLen = sizeof(AggResItem);
+    req->requestInfo = 0;
+    req->identWord = id.identWord;
+    req->transid[0] = id.transid[0];
+    req->transid[1] = id.transid[1];
+    req->senderRef = c.ss.getOwnRef();
+    ssig.set(c.ss, 0, numberToBlock(DBLQH, 1), GSN_JOIN_AGG_REDISTRIBUTE_REQ,
+             JoinAggRedistributeReq::SignalLength);
+    /* The group key as stored: one AttributeHeader-led BIGINT column. */
+    Uint32 keyWords[3];
+    AttributeHeader::init(&keyWords[0], 0, 8);
+    memcpy(&keyWords[1], &REDIST_GRP, sizeof(REDIST_GRP));
+    AggResItem acc;
+    memset(&acc, 0, sizeof(acc));
+    acc.type = COL_TYPE_BIGINT;
+    acc.value.val_int64 = REDIST_SUM;
+    Uint32 valueWords[(sizeof(AggResItem) + 3) / 4];
+    memset(valueWords, 0, sizeof(valueWords));
+    memcpy(valueWords, &acc, sizeof(acc));
+    ssig.header.m_noOfSections = 2;
+    ssig.ptr[JoinAggRedistributeReq::KeySectionNum].p = keyWords;
+    ssig.ptr[JoinAggRedistributeReq::KeySectionNum].sz = 3;
+    ssig.ptr[JoinAggRedistributeReq::ValueSectionNum].p = valueWords;
+    ssig.ptr[JoinAggRedistributeReq::ValueSectionNum].sz =
+        NDB_ARRAY_SIZE(valueWords);
+    if (c.ss.sendSignal(c.node, &ssig) != SEND_OK) {
+      fprintf(stderr, "sendSignal REDISTRIBUTE_REQ failed\n");
+      return -1;
+    }
+    SimpleSignal fsig;
+    JoinAggFinalRep *rep =
+        reinterpret_cast<JoinAggFinalRep *>(fsig.getDataPtrSend());
+    rep->aggStateKey = RNIL;
+    rep->senderNodeId = c.node;
+    rep->identWord = id.identWord;
+    rep->transid[0] = id.transid[0];
+    rep->transid[1] = id.transid[1];
+    rep->redistributeCountLo = 0;
+    rep->redistributeCountHi = 0;
+    rep->errorCode = 0;
+    fsig.set(c.ss, 0, numberToBlock(DBLQH, 1), GSN_JOIN_AGG_FINAL_REP,
+             JoinAggFinalRep::SignalLength);
+    if (c.ss.sendSignal(c.node, &fsig) != SEND_OK) {
+      fprintf(stderr, "sendSignal FINAL_REP failed\n");
+      return -1;
+    }
+  }
+  if (waitParked(c, base, (1u << PARK_REDIST) | (1u << PARK_FINAL), now,
+                 "PK-1 REDISTRIBUTE/FINAL") != 0)
+    return -1;
+  {
+    std::vector<CteNode> nodes;
+    if (cteSetupAll(c, nodes) != 0) return -1;
+    if (cteCompleteAll(c, nodes, 0, 0) != 0) return -1;
+    Uint32 totalRows = 0;
+    bool correct = true;
+    for (const CteNode &n : nodes) {
+      CteScanParams sp(n, c.ss);
+      sp.batchSize = 1000;
+      Int64 grp = 0, sum = 0;
+      Uint32 rows = 0;
+      if (cteScanOneRow(c.ss, sp, grp, sum, rows) != 0) return -1;
+      totalRows += rows;
+      if (rows != 0 &&
+          (rows != 1 || grp != REDIST_GRP || sum != REDIST_SUM)) {
+        fprintf(stderr, "PK-1: unexpected row on node %u: rows=%u "
+                        "grp=%lld sum=%lld\n", n.node, rows,
+                        (long long)grp, (long long)sum);
+        correct = false;
+      }
+    }
+    if (cteReleaseAll(c, nodes) != 0) return -1;
+    if (totalRows != 1 || !correct) {
+      fprintf(stderr, "PK-1: expected the replayed group exactly once, "
+                      "got %u rows\n", totalRows);
+      return -1;
+    }
+  }
+  if (!guard.clear()) return -1;
+  return checkLeaks(c.ss, c.restarter, "PK-1a");
+}
+
+/* PK-1 (b): consumer feeds park under a held SETUP and replay. */
+static int
+pk1Feeds(Ctx &c)
+{
+  if (runParkedQuery(c, CteQueryUtil::LookupMain, HOLD_CTE0_SETUP,
+                     1u << PARK_LQHKEY, "PK-1 LookupMain") != 0)
+    return -1;
+  if (runParkedQuery(c, CteQueryUtil::ScanAggMain, HOLD_MAIN_SETUP,
+                     1u << PARK_SCANFRAG, "PK-1 ScanAggMain") != 0)
+    return -1;
+  if (runParkedQuery(c, CteQueryUtil::OuterAggMain, HOLD_MAIN_SETUP,
+                     (1u << PARK_LQHKEY) | (1u << PARK_NULLROW),
+                     "PK-1 OuterAggMain") != 0)
+    return -1;
+  return checkLeaks(c.ss, c.restarter, "PK-1b");
+}
+
+/* PK-2: the identity-addressed COMPLETE resolves under 8310 (SETUP_CONF
+ * delayed) and 8311 (RNIL key forced); the result is correct. */
+static int
+pk2(Ctx &c)
+{
+  const int inserts[] = {8310, 8311};
+  for (unsigned i = 0; i < NDB_ARRAY_SIZE(inserts); i++) {
+    ErrorInsertGuard guard = {c.restarter, c.node, true};
+    if (!setErrorInsert(c.restarter, c.node, inserts[i], 0)) return -1;
+    QueryRun q(c.ndbq, c.ss);
+    setQueryOptions(c, q, CteQueryUtil::LookupMain);
+    q.start();
+    q.join();
+    if (!guard.clear()) return -1;
+    char label[32];
+    snprintf(label, sizeof(label), "PK-2 insert %d", inserts[i]);
+    if (checkQueryResult(q, label) != 0) return -1;
+  }
+  return checkLeaks(c.ss, c.restarter, "PK-2");
+}
+
+/* PK-3: 5139 leaves one identity unfilled; the sweeper REFs the
+ * consumers and a delayed SETUP_REF drains DBTC's SETUP accounting.
+ * Require the sweep event as well as the query's 1251. */
+static int
+pk3(Ctx &c)
+{
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (!events.open(c.restarter)) return -1;
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5139, 0)) return -1;
+  QueryRun q(c.ndbq, c.ss);
+  setQueryOptions(c, q, CteQueryUtil::LookupMain);
+  q.start();
+  q.join();
+  if (!guard.clear()) return -1;
+  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_STATE_NOT_FOUND) {
+    fprintf(stderr, "PK-3: expected failure %u, got rc=%d ndbError=%d at %s "
+                    "(rows=%llu)\n",
+            ZJOIN_AGG_STATE_NOT_FOUND, q.rc, q.res.ndbError, q.res.failedAt,
+            (unsigned long long)q.res.rows);
+    return -1;
+  }
+  if (q.res.queryMillis > 3000) {
+    fprintf(stderr, "PK-3: the failure took %llu ms\n",
+            (unsigned long long)q.res.queryMillis);
+    return -1;
+  }
+  char marker[96];
+  snprintf(marker, sizeof(marker), "[JOIN_AGG_PARK_SWEPT node=%u failed=0 ",
+           c.node);
+  {
+    ScopedSenderUnlock unlock(c.ss);
+    if (!events.waitFor(marker)) return -1;
+  }
+  V("PK-3: %s\n", events.matched);
+  return checkLeaks(c.ss, c.restarter, "PK-3");
+}
+
+/* PK-4: 5148 holds every SETUP and caps the park pool at 4: the fifth
+ * consumer takes the resource-error path, the query fails with 1251,
+ * and the four parked are replayed into the aborting request after
+ * the release. */
+static int
+pk4(Ctx &c)
+{
+  const Uint32 cap = 4;
+  ParkStats base, now;
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5148, (int)cap)) return -1;
+  if (readParkStats(c, base) != 0) return -1;
+  QueryRun q(c.ndbq, c.ss);
+  setQueryOptions(c, q, CteQueryUtil::LookupMain);
+  q.start();
+  int rc = waitParkRecords(c, cap, now, "PK-4");
+  /* Give the refused consumer's REF time to abort the request. */
+  NdbSleep_MilliSleep(200);
+  if (!guard.clear()) rc = -1;
+  q.join();
+  if (rc != 0) return -1;
+  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_STATE_NOT_FOUND) {
+    fprintf(stderr, "PK-4: expected failure %u, got rc=%d ndbError=%d at %s "
+                    "(rows=%llu)\n",
+            ZJOIN_AGG_STATE_NOT_FOUND, q.rc, q.res.ndbError, q.res.failedAt,
+            (unsigned long long)q.res.rows);
+    return -1;
+  }
+  return checkLeaks(c.ss, c.restarter, "PK-4");
+}
+
+/* PK-5: 5149 refuses every SETUP as if the identity table were full. */
+static int
+pk5(Ctx &c)
+{
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 5149, 0)) return -1;
+  QueryRun q(c.ndbq, c.ss);
+  setQueryOptions(c, q, CteQueryUtil::LookupMain);
+  q.start();
+  q.join();
+  if (!guard.clear()) return -1;
+  if (q.rc != -1 || q.res.ndbError != (int)DBSPJ_OUT_OF_QUERY_MEMORY) {
+    fprintf(stderr, "PK-5: expected failure %u, got rc=%d ndbError=%d at %s\n",
+            DBSPJ_OUT_OF_QUERY_MEMORY, q.rc, q.res.ndbError, q.res.failedAt);
+    return -1;
+  }
+  return checkLeaks(c.ss, c.restarter, "PK-5");
+}
+
+/* PK-6: create a real state naming DBTC as coordinator but RNIL as
+ * its scan record. Its delayed SETUP_CONF is necessarily stale: there
+ * is no API query whose normal close could release this state. */
+static int
+pk6(Ctx &c)
+{
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (!events.open(c.restarter)) return -1;
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  if (!setErrorInsert(c.restarter, c.node, 8313, 0)) return -1;
+  SetupParams p;
+  p.senderRef = numberToRef(DBTC, 1, c.node);
+  p.senderData = RNIL;
+  p.requestId = FAKE_REQUEST_ID + 6;
+  p.queryTag = p.requestId;
+  if (sendSetupRaw(c.ss, c.node, c.prog, c.meta, p) != 0) return -1;
+  {
+    ScopedSenderUnlock unlock(c.ss);
+    char marker[160];
+    snprintf(marker, sizeof(marker),
+             "[JOIN_AGG_SETUP_CONF_HELD node=%u instance=1 scan=%u "
+             "request=%u ", c.node, p.senderData, p.requestId);
+    if (!events.waitFor(marker)) return -1;
+    snprintf(marker, sizeof(marker),
+             "[JOIN_AGG_STALE_SETUP_RECLAIM node=%u instance=1 scan=%u "
+             "request=%u ", c.node, p.senderData, p.requestId);
+    if (!events.waitFor(marker)) return -1;
+  }
+  if (!guard.clear()) return -1;
+  return checkLeaks(c.ss, c.restarter, "PK-6");
+}
+
+/* PK-7: a second SETUP with the same identity is refused and the first
+ * state stays releasable. */
+static int
+pk7(Ctx &c)
+{
+  Uint32 key, owner;
+  if (setupDefault(c, key, owner) != 0) return -1;
+  SetupParams p;
+  Uint32 key2 = RNIL, owner2 = 0, refCode = 0;
+  const int rc = sendSetupReq(c.ss, c.node, c.prog, c.meta, p, key2, owner2,
+                              refCode);
+  if (rc == 0) {
+    fprintf(stderr, "PK-7: a duplicate SETUP was accepted (key %u)\n", key2);
+    (void)releaseAndWait(c, key2);
+    (void)releaseAndWait(c, key);
+    return -1;
+  }
+  if (rc != 1 || refCode != DBSPJ_INVALID_REQUEST) {
+    fprintf(stderr, "PK-7: expected SETUP_REF %u, got rc=%d code=%u\n",
+            DBSPJ_INVALID_REQUEST, rc, refCode);
+    (void)releaseAndWait(c, key);
+    return -1;
+  }
+  Uint32 rows = 0, groups = 0;
+  if (runScans(c.ss, c.meta, c.node, key, rows) != 0) return -1;
+  // Resolve by identity, not by the saved key: duplicate rejection must
+  // preserve both the first state and its identity-table entry.
+  if (sendCompleteReq(c.ss, c.node, RNIL, 1) != 0 ||
+      receiveResults(c.ss, groups) != 0)
+    return -1;
+  if (releaseAndWait(c, key) != 0) return -1;
+  if (rows == 0 || groups != rows) {
+    fprintf(stderr, "PK-7: %u groups after duplicate SETUP, expected %u\n",
+            groups, rows);
+    return -1;
+  }
+  return checkLeaks(c.ss, c.restarter, "PK-7");
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1885,6 +2613,23 @@ int main(int argc, char **argv)
     const std::vector<Uint32> prog =
         buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
 
+    /* Section 6: the NDB API CTE queries run on their own Ndb object
+     * from a second thread; their tables are created through MySQL. */
+    if (createCteNfTables(conn) != 0 ||
+        CteQueryUtil::loadTable(&ndb, NF_ROWS, NF_GROUPS) != 0) {
+      fprintf(stderr, "Cannot create or load the cte_nf tables\n");
+      mysql_close(conn);
+      result = 1;
+      break;
+    }
+    Ndb ndbq(&con, "test");
+    if (ndbq.init() != 0) {
+      fprintf(stderr, "Ndb::init failed: %s\n", ndbq.getNdbError().message);
+      mysql_close(conn);
+      result = 1;
+      break;
+    }
+
     /* A second API node id for ID-5 (a paused scan's token presented
      * from another node).  Optional: that sub-case is skipped without it.
      * Destroyed before ndb and con, after the SignalSender using it. */
@@ -1900,7 +2645,7 @@ int main(int argc, char **argv)
       SignalSender ss(&con);
       ss.lock();
       Ctx c = {ss, con, restarter, meta, prog,
-               (Uint32)restarter.getDbNodeId(0), con2Ptr};
+               (Uint32)restarter.getDbNodeId(0), con2Ptr, &ndbq};
       V("Driving data node %u from ref 0x%08x\n", c.node, ss.getOwnRef());
 
       struct Case { const char *name; int (*fn)(Ctx &); };
@@ -1919,6 +2664,14 @@ int main(int argc, char **argv)
           {"ID-4 FINAL_REP under another identity", id4},
           {"ID-5 CTE scan continuation tokens", id5},
           {"ID-6 consumer requests of a failed coordinator", id6},
+          {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
+          {"PK-1b consumer feeds parked and replayed", pk1Feeds},
+          {"PK-2 identity-addressed COMPLETE", pk2},
+          {"PK-3 sweeper REFs after a lost SETUP", pk3},
+          {"PK-4 park pool exhaustion", pk4},
+          {"PK-5 identity table exhaustion", pk5},
+          {"PK-6 stale SETUP_CONF reclaim", pk6},
+          {"PK-7 duplicate identity refused", pk7},
       };
       for (unsigned i = 0; i < NDB_ARRAY_SIZE(cases); i++) {
         const int rc = cases[i].fn(c);
@@ -1934,6 +2687,7 @@ int main(int argc, char **argv)
       }
       ss.unlock();
     }
+    dropCteNfTables(conn);
     dropTestTable(conn);
     mysql_close(conn);
   } while (0);

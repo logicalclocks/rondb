@@ -32,6 +32,7 @@
 */
 
 #include <ndb_global.h>
+#include <atomic>
 #include "portlib/ndb_compiler.h"
 #include "util/require.h"
 
@@ -6373,6 +6374,23 @@ static constexpr Uint32 JAI_MAX_PARK = 16384;
 static SimulatedBlock::JoinAggParkRec *s_jaiParkRecs = nullptr;
 static Uint32 s_jaiParkFreeHead = RNIL;
 
+/* Test statistics (DUMP 2365): cumulative parks per GSN class and the
+ * park records in use.  Relaxed atomics on the rare park path. */
+static std::atomic<Uint32>
+    s_jaiParkCounts[SimulatedBlock::JAI_PARK_GSN_CLASSES];
+static std::atomic<Uint32> s_jaiParkInUse{0};
+
+static inline Uint32 jaiParkClass(Uint32 gsn) {
+  switch (gsn) {
+    case GSN_LQHKEYREQ: return 0;
+    case GSN_SCAN_FRAGREQ: return 1;
+    case GSN_JOIN_AGG_NULL_ROW_REQ: return 2;
+    case GSN_JOIN_AGG_COMPLETE_REQ: return 3;
+    case GSN_JOIN_AGG_REDISTRIBUTE_REQ: return 4;
+    default: return 5;  // GSN_JOIN_AGG_FINAL_REP
+  }
+}
+
 static inline JoinAggIdentityEntry &jaiEntry(Uint32 i) {
   return s_jaiEntries[i];
 }
@@ -6588,6 +6606,14 @@ void SimulatedBlock::joinAggIdentityStats(Uint32 *entries,
   *parkRecsInUse = JAI_MAX_PARK - freeRecs;
 }
 
+void SimulatedBlock::joinAggParkStats(Uint32 counts[JAI_PARK_GSN_CLASSES],
+                                      Uint32 *parkRecsInUse) {
+  for (Uint32 c = 0; c < JAI_PARK_GSN_CLASSES; c++) {
+    counts[c] = s_jaiParkCounts[c].load(std::memory_order_relaxed);
+  }
+  *parkRecsInUse = s_jaiParkInUse.load(std::memory_order_relaxed);
+}
+
 Uint32 SimulatedBlock::joinAggSeizeParkRec() {
   require(s_jaiParkRecs != nullptr);
   Uint32 i;
@@ -6595,6 +6621,7 @@ Uint32 SimulatedBlock::joinAggSeizeParkRec() {
   i = s_jaiParkFreeHead;
   if (likely(i != RNIL)) {
     s_jaiParkFreeHead = s_jaiParkRecs[i].m_next;
+    s_jaiParkInUse.fetch_add(1, std::memory_order_relaxed);
   }
   NdbMutex_Unlock(s_jaiFreeMutex);
   if (unlikely(i == RNIL)) {
@@ -6614,6 +6641,7 @@ void SimulatedBlock::joinAggFreeParkRec(Uint32 i) {
   NdbMutex_Lock(s_jaiFreeMutex);
   s_jaiParkRecs[i].m_next = s_jaiParkFreeHead;
   s_jaiParkFreeHead = i;
+  s_jaiParkInUse.fetch_sub(1, std::memory_order_relaxed);
   NdbMutex_Unlock(s_jaiFreeMutex);
 }
 
@@ -6674,6 +6702,12 @@ SimulatedBlock::joinAggIdentityResolveOrPark(const Uint32 *transid,
     part.m_buckets[bucket] = entryI;
     entryUsed = true;
     res = JAI_ROP_PARKED_NEW;
+  }
+  // After unlocking, SETUP or a sweeper can detach, free and reuse the
+  // parked record. Count it while we still own access to its contents.
+  if (res == JAI_ROP_PARKED || res == JAI_ROP_PARKED_NEW) {
+    s_jaiParkCounts[jaiParkClass(s_jaiParkRecs[parkRecI].m_gsn)].fetch_add(
+        1, std::memory_order_relaxed);
   }
   NdbMutex_Unlock(part.m_mutex);
 

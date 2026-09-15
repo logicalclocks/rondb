@@ -103,6 +103,7 @@ struct ErrorInsertGuard {
 struct ProtocolEventListener {
   NdbSocket socket;
   Uint32 timeoutMs = 30000;
+  char matched[1024] = {};   /* the line that satisfied the last waitFor */
   ~ProtocolEventListener() {
     if (socket.is_valid()) socket.close();
   }
@@ -122,7 +123,11 @@ struct ProtocolEventListener {
         fprintf(stderr, "Failed to read management events\n");
         return false;
       }
-      if (strstr(line, marker) != nullptr) return true;
+      if (strstr(line, marker) != nullptr) {
+        strncpy(matched, line, sizeof(matched) - 1);
+        matched[sizeof(matched) - 1] = '\0';
+        return true;
+      }
     }
     fprintf(stderr, "TIMEOUT waiting for %s\n", marker);
     return false;

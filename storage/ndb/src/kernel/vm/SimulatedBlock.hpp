@@ -2418,6 +2418,12 @@ public:
   // placeholders (SETUP never arrived), and park records in use.
   static void joinAggIdentityStats(Uint32 *entries, Uint32 *placeholders,
                                    Uint32 *parkRecsInUse);
+  // Test statistics for DUMP 2365: cumulative parks per GSN class
+  // (LQHKEYREQ, SCAN_FRAGREQ, NULL_ROW_REQ, COMPLETE_REQ,
+  // REDISTRIBUTE_REQ, FINAL_REP) and park records in use right now.
+  static constexpr Uint32 JAI_PARK_GSN_CLASSES = 6;
+  static void joinAggParkStats(Uint32 counts[JAI_PARK_GSN_CLASSES],
+                               Uint32 *parkRecsInUse);
 
   //------------------------------------------------------------------
   // RONDB-1120 P2: waiter-queue parking (plan 2.2).  A consumer

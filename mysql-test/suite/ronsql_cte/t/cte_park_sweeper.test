@@ -1,0 +1,74 @@
+# RONDB-1120 node_failure_test_plan.md section 6 through RonSQL: the
+# placeholder sweeper.
+#
+# DBLQH error insert 5139 leaves ONE SETUP identity unfilled on every
+# data node and sends SETUP_REF 1251 after 200 ms, allowing DBTC's SETUP
+# accounting to drain (it clears itself once it fired). The
+# consumer signals that raced ahead of that SETUP park on an identity
+# placeholder that is never filled, so the 10 ms sweeper answers each of
+# them with STATE_NOT_FOUND (1251): the query fails with 1251 instead of
+# hanging.  The failure happens before any row is delivered, so RonSQL
+# retries and the retried attempt (the insert has cleared) must return
+# the MySQL result: ronsql_cli's stderr shows the 1251 of the first
+# attempt, its stdout is diffed against the mysql client.  The leak
+# dumps then verify that the placeholders and park records are gone,
+# and a clean comparison follows.
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
+# dictionary cache for join queries, so we compare the mysql client against
+# RDRS only (matching the ronsql suite's CTE convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === cps-1: one SETUP rejected late (5139), the first attempt fails with 1251 ===
+--exec $NDB_MGM -e "ALL ERROR 5139" > /dev/null
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio FROM orders GROUP BY o_custkey) SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio) FROM customer AS c JOIN cust ON cust.k = c.c_custkey GROUP BY c.c_mktsegment;' > $MYSQL_TMP_DIR/cte_park_sweeper.out 2> $MYSQL_TMP_DIR/cte_park_sweeper.err
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--exec grep -q "code 1251" $MYSQL_TMP_DIR/cte_park_sweeper.err
+--echo The first attempt failed with NDB error 1251 (parked consumers swept)
+--exec $MYSQL --default-character-set=utf8mb4 -D test -e 'WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio FROM orders GROUP BY o_custkey) SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio) FROM customer AS c JOIN cust ON cust.k = c.c_custkey GROUP BY c.c_mktsegment;' > $MYSQL_TMP_DIR/cte_park_sweeper.mysql
+--exec (head -n 1 $MYSQL_TMP_DIR/cte_park_sweeper.out && tail -n +2 $MYSQL_TMP_DIR/cte_park_sweeper.out | sort) > $MYSQL_TMP_DIR/cte_park_sweeper.out.sorted
+--exec (head -n 1 $MYSQL_TMP_DIR/cte_park_sweeper.mysql && tail -n +2 $MYSQL_TMP_DIR/cte_park_sweeper.mysql | sort) > $MYSQL_TMP_DIR/cte_park_sweeper.mysql.sorted
+--exec diff -u --label mysql.out $MYSQL_TMP_DIR/cte_park_sweeper.mysql.sorted --label ronsql.out $MYSQL_TMP_DIR/cte_park_sweeper.out.sorted
+--echo The retried attempt returned the MySQL result
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper.out
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper.err
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper.mysql
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper.out.sorted
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper.mysql.sorted
+
+--echo
+--echo === cps-2: leak checks (each dump crashes its node on a leak) ===
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2362" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2363" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2560" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--echo
+--echo === cps-3: the same query without the insert ===
+DELIMITER |;
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;|
+--source suite/ronsql/include/ronsql_compare.inc
+DELIMITER ;|
+
+--source suite/ronsql_cte/include/cte_drop.inc

@@ -2475,10 +2475,33 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     return;
   }
   if (ERROR_INSERTED(5138)) {
+    /* Test hook: hold SETUP_REQs back, 20 ms at a time, until the insert
+     * is cleared, while the LDM / query instances hold the placeholder
+     * sweepers (joinAggParkSweep), so consumers stay parked until the
+     * test releases the SETUP and the flush replays them (PK-1, PK-4).
+     * For guaranteed replay, switch extra to 0xFFFE before clearing:
+     * SETUP runs while the sweepers remain held.
+     * The extra value selects the SETUPs held: 0 = every one, 0xFFFF =
+     * the main aggregation only, 0xFFFE = none (sweeper hold only, for
+     * a test that parks signals by hand), otherwise cteIndex + 1. */
+    const Uint32 sel = ERROR_INSERT_EXTRA;
+    const bool hold = (sel == 0) ||
+                      (sel == 0xFFFF && cteIndex == RNIL) ||
+                      (sel < 0xFFFE && cteIndex != RNIL &&
+                       sel == cteIndex + 1);
+    if (hold) {
+      jam();
+      SectionHandle handle(this, signal);
+      sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                          signal->getLength(), &handle);
+      return;
+    }
+  }
+  if (ERROR_INSERTED(5148)) {
     jam();
-    /* Test hook: hold EVERY SETUP_REQ back, 20 ms at a time, until the
-     * insert is cleared. Consumers park on the placeholder, the 10 ms
-     * sweeper fires, and node kills while parked become deterministic. */
+    /* Test hook (PK-4): the 5138 hold of every SETUP and sweeper, with
+     * the extra value capping the park pool instead (one insert per
+     * block instance, so the two cannot be armed together). */
     SectionHandle handle(this, signal);
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
                         signal->getLength(), &handle);
@@ -2500,12 +2523,19 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   }
   if (ERROR_INSERTED(5139)) {
     jam();
-    /* Test hook: lose ONE SETUP_REQ for good (no CONF, no REF). A
-     * placeholder created by racing consumers is never filled, so the
-     * sweeper answers every parked signal with STATE_NOT_FOUND. */
+    /* Leave ONE identity unfilled so the sweeper rejects its consumers.
+     * Still complete the SETUP round: a live node silently losing its
+     * reply leaves DBTC waiting forever, including during API failure.
+     * Delay the REF to give the 10 ms sweeper time to run first. */
     CLEAR_ERROR_INSERT_VALUE;
     SectionHandle handle(this, signal);
     releaseSections(handle);
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_SETUP_REF;
+    signal->theData[1] = senderRef;
+    signal->theData[2] = senderData;
+    signal->theData[3] = requestId;
+    signal->theData[4] = cteIndex;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 200, 5);
     return;
   }
 #endif
@@ -3393,6 +3423,24 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
    * safety-net identity removal is key-qualified, so the other live
    * entry survives the duplicate case. */
   Uint32 jaWaiters = RNIL;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5149)) {
+    /* Test hook (PK-5): refuse the SETUP as if the identity table were
+     * full once it holds at least `extra` entries. */
+    Uint32 entries = 0, placeholders = 0, parked = 0;
+    joinAggIdentityStats(&entries, &placeholders, &parked);
+    if (entries >= ERROR_INSERT_EXTRA) {
+      jam();
+      g_eventLogger->info(
+          "DblqhProxy: error insert 5149 refuses SETUP at %u identity "
+          "entries (cap %u)", entries, ERROR_INSERT_EXTRA);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key,
+                          cteIndex);
+      return;
+    }
+  }
+#endif
   const JoinAggIdentityInsertResult idRes = joinAggIdentityInsert(
       state->m_transid, state->m_queryTag, state->m_cte_index, key,
       &jaWaiters);
@@ -3404,10 +3452,11 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         (idRes == JAI_INSERT_DUPLICATE) ? "duplicate" : "no memory",
         state->m_transid[0], state->m_transid[1], state->m_queryTag,
         state->m_cte_index, key);
-    /* Duplicate identity indicates a bug (queryTag collision or a
-     * missed removal) — crash debug builds; memory exhaustion is a
+    /* A duplicate identity means a second SETUP for a live state
+     * (queryTag collision, a missed removal, or a sender replaying a
+     * request): refuse it in every build, the REF is the safe answer
+     * and the first state stays intact (PK-7).  Memory exhaustion is a
      * legal resource failure. */
-    ndbassert(idRes != JAI_INSERT_DUPLICATE);
     sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
                         (idRes == JAI_INSERT_DUPLICATE)
                             ? DbspjErr::InvalidRequest
@@ -3685,6 +3734,19 @@ void
 DblqhProxy::execCONTINUEB(Signal *signal) {
   jamEntry();
   switch (signal->theData[0]) {
+#ifdef ERROR_INSERT
+    case ZCONTINUE_JOIN_AGG_SETUP_REF: {
+      jam();
+      const Uint32 senderRef = signal->theData[1];
+      const Uint32 senderData = signal->theData[2];
+      const Uint32 requestId = signal->theData[3];
+      const Uint32 cteIndex = signal->theData[4];
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          ZJOIN_AGG_STATE_NOT_FOUND, __LINE__, RNIL,
+                          cteIndex);
+      break;
+    }
+#endif
     case ZCONTINUE_FREE_REDIST_PAGES:
       jam();
       continueFreeRedistPages(signal, signal->theData[1]);

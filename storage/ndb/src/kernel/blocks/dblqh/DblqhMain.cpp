@@ -9286,6 +9286,10 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
   const Uint32 leafIdx = JoinAggregationState::identWordLeafIdx(identWord);
   const Uint32 requesterNode = refToNode(signal->senderBlockRef());
 
+  if (unlikely(joinAggParkCapReached())) {
+    jam();  // Test hook 5148: the park pool is treated as exhausted.
+    return SimulatedBlock::JAI_ROP_FAILED;
+  }
   const Uint32 parkI = joinAggSeizeParkRec();
   if (unlikely(parkI == RNIL)) {
     jam();
@@ -9404,12 +9408,15 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
   const Uint32 queryTag = signal->theData[3];
   const Uint32 cteId = signal->theData[4];
-  if (ERROR_INSERTED(5145)) {
+  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5138) || ERROR_INSERTED(5148)) {
     jam();
-    /* Test hook (NF-11, NF-12): hold until this instance processes
-     * NODE_FAILREP or the test clears the insert. The failure handler
-     * clears the insert for the rest of the iteration, so placeholders
-     * created later by surviving requesters are also swept normally. */
+    /* Test hooks. 5145 (NF-11, NF-12): hold until this instance
+     * processes NODE_FAILREP or the test clears the insert. The failure
+     * handler clears the insert for the rest of the iteration, so
+     * placeholders created later by surviving requesters are also swept
+     * normally. 5138 / 5148 (PK-1, PK-4): hold while SETUP is held.
+     * For guaranteed replay, switch 5138 to extra 0xFFFE first: SETUP
+     * runs while sweepers stay held. Clear after the query completes. */
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 5);
     return;
   }
@@ -19937,6 +19944,21 @@ void Dblqh::execJOIN_AGG_NULL_ROW_REQ(Signal *signal) {
   }
 }
 
+/* Test hook 5148 (PK-4): treat the park pool as exhausted once it holds
+ * at least `extra` records, so the consumer error path runs with the
+ * real pool far from full. */
+bool Dblqh::joinAggParkCapReached() {
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5148)) {
+    Uint32 counts[JAI_PARK_GSN_CLASSES];
+    Uint32 inUse = 0;
+    joinAggParkStats(counts, &inUse);
+    return inUse >= ERROR_INSERT_EXTRA;
+  }
+#endif
+  return false;
+}
+
 /**
  * RONDB-1120 P4: generic resolve-or-park for identity-addressed
  * owner-plane signals (COMPLETE / REDISTRIBUTE / FINAL_REP and the
@@ -19954,6 +19976,10 @@ Dblqh::joinAggResolveOrParkGeneric(Signal *signal, Uint32 gsn,
   *keyOut = RNIL;
   const Uint32 queryTag = JoinAggregationState::identWordQueryTag(identWord);
   const Uint32 cteId = JoinAggregationState::identWordCteId(identWord);
+  if (unlikely(joinAggParkCapReached())) {
+    jam();  // Test hook 5148: the park pool is treated as exhausted.
+    return SimulatedBlock::JAI_ROP_FAILED;
+  }
   const Uint32 parkRecI = joinAggSeizeParkRec();
   if (unlikely(parkRecI == RNIL)) {
     jam();
@@ -43111,6 +43137,21 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
       infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
                 getOwnNodeId(), arg, signal->theData[1]);
     }
+    return;
+  }
+  if (arg == DumpStateOrd::LqhDumpJoinAggParkStats) {
+    jam();
+    /* Test statistics, not a leak check: cumulative parks per GSN
+     * class and the park records in use, from regular instance 1. */
+    if (instance() != 1 || m_is_query_block) return;
+    Uint32 counts[JAI_PARK_GSN_CLASSES];
+    Uint32 inUse = 0;
+    joinAggParkStats(counts, &inUse);
+    infoEvent("[JOIN_AGG_PARK_STATS node=%u lqhkey=%u scanfrag=%u nullrow=%u "
+              "complete=%u redist=%u final=%u inuse=%u cookie=%u]",
+              getOwnNodeId(), counts[0], counts[1], counts[2], counts[3],
+              counts[4], counts[5], inUse,
+              signal->getLength() >= 2 ? signal->theData[1] : 0);
     return;
   }
   if (arg == DumpStateOrd::LqhDumpCteRedistPages) {
