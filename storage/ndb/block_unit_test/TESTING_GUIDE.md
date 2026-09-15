@@ -279,12 +279,13 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | every SETUP_REQ held until cleared | no |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE SETUP_REQ dropped (no reply) | yes |
 | 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender | no |
-| 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance | no |
+| 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance for the first remote request (extra bit 30 set: for the first request from any node) | no |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
 | 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |
 | 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_AGG_FEED_HELD event per instance naming the remote requester | no |
 | 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | SETUP held while its coordinator lives, park sweeper held until local NODE_FAILREP; CTE_NF11_PARKED event per instance and remote requester | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
 | 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators; CTE_NF10_TEARDOWN_HELD identifies the state, CTE_NF10_RECLAIM_SKIPPED proves failure cleanup skipped it | no; test must clear after matching events |
+| 5147 | DBLQH `cteScanEmitResults` | the CTE_SCAN_CONF of every local requester held after its rows went out (not EndOfData), 100 ms at a time, until cleared; one CTE_SCAN_CONF_HELD event per held reply | no |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
@@ -299,13 +300,17 @@ end of a test with `NdbRestarter::dumpStateAllNodes`):
 scan-fragment handles / scans left in a join-agg or closing state,
 2650 DBSPJ requests.
 
-DUMPs 2361, 2362 and 2363 optionally accept a second word, a test cookie.
-After a clean check, regular DBLQH instance 1 emits
+DUMPs 2361, 2362, 2363 (regular DBLQH instance 1), 2560 (DBTC instance
+1) and 2650 (DBSPJ instance 1) optionally accept a second word, a test
+cookie. After a clean check the instance emits
 [JOIN_AGG_LEAK_CHECK_OK node=N dump=D cookie=C]. One-word requests
 remain silent on success. Subscribe before sending, check both management
 return values, and require the matching event for each node and dump.
 Compare node connection counters before and after verification so a
-crash followed by automatic restart cannot pass.
+crash followed by automatic restart cannot pass. `JoinAggTestUtil.hpp`
+(header-only) implements this as `joinAggCheckLeaks`, together with the
+checked error-insert setter, its clearing guard and the management event
+listener; `testCteProtocol` and `testCteDbtc` use it.
 
 ## Building
 

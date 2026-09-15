@@ -1178,6 +1178,12 @@ void Dbspj::execDUMP_STATE_ORD(Signal *signal) {
       }
     }
     if (leaked != 0) ndbabort();
+    if (signal->getLength() == 2 && instance() == 1) {
+      /* Optional test cookie, as DBLQH 2361: instance 1 answers once its
+       * own check passed; a leak in any instance crashes the node. */
+      infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
+                getOwnNodeId(), signal->theData[0], signal->theData[1]);
+    }
     return;
   }
 }

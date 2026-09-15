@@ -76,7 +76,9 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       first remote request held by an instance emits InfoEvent
       "[CTE_NF3_LOOKUP_HELD node=<node> iteration=<extra>]" (once per
       instance; extra is the test iteration, its top bit marks the event
-      as sent). NF-3 waits for this event before killing the peer.
+      as sent; bit 30 set in extra reports the first held request even
+      from a local requester, for testCteDbtc LK-1). NF-3 waits for this
+      event before killing the peer.
       Local delayed copies retain the requester's original connection
       generation across every re-hold. Drop them without a reply when
       that requester disconnects or reconnects, even after the insert
@@ -119,7 +121,13 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       already owned by RELEASE. NF-10 must match both events for the
       same iteration, coordinator and key, then clear the surviving
       peer's insert to let teardown finish.
-Next DBLQH 5147
+5147: Hold the CTE_SCAN_CONF of every LOCAL requester after its rows went
+      out (cteScanEmitResults, batches that are not EndOfData), 100 ms at
+      a time via CONTINUEB, until explicitly cleared. Emit InfoEvent
+      "[CTE_SCAN_CONF_HELD node=<node> iteration=<extra> requester=<node>]"
+      per held reply. testCteDbtc SM-3 closes the scan while the reply is
+      held: DBSPJ must defer the close until the batch drains.
+Next DBLQH 5148
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

@@ -1,4 +1,9 @@
 --source include/have_ndb.inc
+# Tests 12-15 (node_failure_test_plan.md sections 5.1 / 5.2) arm DBLQH
+# error inserts 5129, 5141 and 5147 and rely on the leak-check DUMPs
+# 2361 / 2362 / 2363 / 2560 / 2650, which crash a node on a leak.
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
 
 --echo Running testCteDbtc
 --exec $NDB_PUSH_AGG_DIR/testCteDbtc -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

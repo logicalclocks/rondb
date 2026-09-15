@@ -19,7 +19,7 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 
 | Item | Count | Where |
 |---|---|---|
-| New error inserts | 21 (DBLQH 5128-5145, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
+| New error inserts | 25 (DBLQH 5128-5147, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
 | New DUMP codes (leak checks) | 4 (LQH 2362-2363, TC 2560, SPJ new handler + 1 code) | kernel blocks |
 | NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
@@ -209,12 +209,13 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` | hold EVERY SETUP_REQ until cleared (not 20 ms) | all consumers park; sweeper (10 ms) fires; node kills while parked |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | drop the SETUP_REQ once (no CONF, no REF) | placeholder never filled: sweeper REF path for every parked GSN |
 | 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold inbound redistribute requests with RI_NEED_CONF, 200 ms at a time, until cleared; other rows proceed without timer entries | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2) |
-| 5141 | DBLQH `cteLookupReqImpl` | hold every inbound CTE lookup, 200 ms at a time, until cleared; one event per instance for the first remote probe | DBSPJ workers on the other nodes keep probes charged to this node for as long as the kill needs (NF-3) |
+| 5141 | DBLQH `cteLookupReqImpl` | hold every inbound CTE lookup, 200 ms at a time, until cleared; one event per instance for the first remote probe (extra bit 30: for the first probe from any node) | DBSPJ workers on the other nodes keep probes charged to this node for as long as the kill needs (NF-3); LK-1 closes during the hold |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, then swallow the CTE_SCAN_CONF of every remote requester while set; one event per instance | a remote DBSPJ worker holds this source's batch without a reply for as long as the kill needs (NF-4) |
 | 5143 | DBLQH `cteScanEmitResults` | report each saved iterator for a remote requester as `[CTE_NF5_SCAN_PAUSED node=S iteration=I requester=R]`; rows and CONF delivered normally | identifies the actual requester of a paused remote scan before the kill (NF-5); cleared by the test |
 | 5144 | DBLQH `cteScanAggFeed` | hold every aggregation feed continuation between rounds, 20 ms at a time, until cleared (after the requester / coordinator down checks); `[CTE_AGG_FEED_HELD node=S iteration=I requester=R]` once per instance | the feed is still running when its requester (NF-6) or the coordinator (NF-7) is killed; cleared by the test |
 | 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggParkSweep` / `parkJoinAggConsumer` | hold every SETUP while its coordinator lives; LDM/query instances hold placeholder sweepers until NODE_FAILREP clears their local insert; `[CTE_NF11_PARKED node=P iteration=I requester=R]` per instance and requester | consumers stay parked until the requester (NF-11) or the coordinator (NF-12) is killed; NF-11 observes the sweep, NF-12 observes late CTE SETUP rejection before state allocation; cleared by the test |
 | 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators until cleared; report held and skipped states with iteration, coordinator and pool key | NF-10 kills the coordinator after the hold event and requires reclaim to skip the same key before clearing |
+| 5147 | DBLQH `cteScanEmitResults` | hold the CTE_SCAN_CONF of every local requester after its rows went out (batches short of EndOfData), 100 ms at a time via CONTINUEB, until cleared; `[CTE_SCAN_CONF_HELD node=S iteration=I requester=R]` per held reply | the API closes while DBSPJ's slot still owes the batch, so the close must wait on `close_pending` (SM-3) |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | send COMPLETE_REQ with aggStateKey RNIL for one node even if the key is known | identity-addressed COMPLETE parks or resolves |
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | drop ONE SETUP_CONF for good (not 20 ms) | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
@@ -416,6 +417,17 @@ JOIN_AGG_LEAK_CHECK_OK event. Both management return values are checked;
 all data nodes must remain STARTED with unchanged connection counters
 across verification, so an automatic restart cannot hide a leak crash.
 
+Sections 5.1 and 5.2 live in `testCteDbtc` (Tests 12 to 15), which
+drives DBTC with hand-built SCAN_TABREQs and therefore controls every
+SCAN_NEXTREQ: it can acknowledge one batch at a time and close while a
+batch is in flight, which no NDB API client can do. Test 12 to 14 use
+a new scanCte main root tree (QN_CTE_SCAN, the pass-through shape RonSQL
+emits for `SELECT ... FROM cte`) with the batch size carried in
+SCAN_TABREQ; rows are awaited per CONF the way the NDB API does, since
+they travel from DBLQH to the API on their own path. The leak
+verification (`JoinAggTestUtil.hpp`, shared with `testCteProtocol`)
+covers 2361 / 2362 / 2363 / 2560 / 2650, each with the cookie event.
+
 ### 5.1 DBSPJ CTE scan slot model (via DBTC harness + DBLQH inserts)
 
 Driven from `testCteDbtc` (which already observes SCAN_TABCONF /
@@ -423,18 +435,18 @@ SCAN_TABREF and result rows):
 
 | ID | Sequence forced | Expected |
 |---|---|---|
-| SM-1 | rows before CONF (normal), batchSize 2, 10 groups | five CONFs, obligation released only after reply and rows each time; final EndOfData; `SpjDumpRequests` clean |
-| SM-2 | 5129: REF on the second continuation | SCAN_TABREF 1251; slot ended without close; 2362 clean (token released by DBLQH) |
-| SM-3 | close during in-flight batch: API closes the scan (SCAN_NEXTREQ close) while 5128 holds one CONF | `close_pending` set, close sent only after the batch drains; close CONF has numRowsToSpj 0 |
-| SM-4 | multi-source scan (`m_cteScanAllNodes`) where one source returns EndOfData first | slot ended; other slots continue; completion only when all ended |
-| SM-5 | 5128 then timeout instead of node kill | request stays incomplete (documents that the SPJ side relies on DBTC's timeout); DBTC scan timeout aborts; dumps clean afterwards |
+| SM-1 | scanCte main root (hand-built QN_CTE_SCAN tree, Test 12) paced at batchSize 2 over 10 groups; the API acknowledges each batch | no fragment op declares more than 2 rows, five row batches on one data node (at least five when spread), every group once, EndOfData; all five leak dumps clean - **done** |
+| SM-2 | 5129: REF on the first continuation (Test 13) | SCAN_TABREF 1251 with closeNeeded, the close completes; 2362 clean (token released by DBLQH), 2650 / 2560 clean - **done** |
+| SM-3 | close during an in-flight batch (Test 14): 5147 is armed before starting the scan and holds the first nonfinal local batch's CTE_SCAN_CONF after its rows went out (5128 drops it for good, which nothing but node failure recovers, see F-4), the API closes after the hold event | the close does not complete while the reply is held (`close_pending`), completes after the insert is cleared; the deferred close request releases the token, 2362 clean - **done** |
+| SM-4 | multi-source scan (`m_cteScanAllNodes`) where one source returns EndOfData first | slot ended; other slots continue; completion only when all ended. **Not run:** the mode is DBTC's decision when a node has fewer DBSPJ instances than the cluster has data nodes (`CTE_SCAN_ALL_NODES` in the aggKeys section); no request-side switch exists and the MTR clusters never take it |
+| SM-5 | 5128 then timeout instead of node kill | **Not run**, see F-4: DBTC's fragment timeout only re-issues the close, DBSPJ cannot answer it while the batch obligation is open, so the scan stays CLOSING_SCAN and the request pending until the node fails (NF-4 covers the failure) |
 
 ### 5.2 CTE lookup accounting
 
 | ID | Sequence | Expected |
 |---|---|---|
-| LK-1 | 5131 (reply held) + API close during the hold | reply drained after abort; request completes |
-| LK-2 | outer-join CTE lookup with a NULL key + 5132 | `execJOIN_AGG_NULL_ROW_REF` retires the reply; request aborts with the REF error, no hang (`84f15ad6454`) |
+| LK-1 | 5141 holds every lookup (extra bit 30 reports the first held local request), the CTE_LOOKUP main select of Test 5, API close after the hold event (Test 15) | the close does not complete while the replies are held, completes once they drain after the insert is cleared; 2650 clean - **done** |
+| LK-2 | outer-join CTE lookup with a NULL key + 5132 | `execJOIN_AGG_NULL_ROW_REF` retires the reply; request aborts with the REF error, no hang (`84f15ad6454`). Pending: needs an aggregating main query with a nullable join column feeding an outer CTE_LOOKUP (`testCteNdbApiOuterJoin` shape with a NULL key row) |
 
 ### 5.3 Proxy teardown and RELEASE identity (`testJoinAgg`, direct SETUP/RELEASE)
 
@@ -607,6 +619,7 @@ independent once Phase 0 is in and can be split between people.
 | F-1 | NF-1 post-recovery check (2026-09-11) | After a data node rejoined, a CTE lookup query returned 3108 of 4096 rows with no error | DBSPJ's ordered data-node list (`m_dataNodeList`) is rebuilt only at STTOR and NODE_FAILREP, never when a node reconnects or is included, while DBLQH builds each query's owner list from the connected nodes at SETUP; both map owner = hash % count, so a surviving SPJ with a one-entry list sent every probe to itself and the groups owned by the rejoined node missed silently | fixed: DBSPJ rebuilds the list on demand in `cte_scan_start`, `cte_scan_build`, `cte_lookup_build` and on INCL_NODEREQ; follow-up done 2026-09-11: the owner list is decided once per query by DBTC from its connected data nodes and carried to every DBLQH in `JoinAggSetupReq::setupNodes` and to every DBSPJ worker in the aggKeys section; DBSPJ's private list is gone (`cte_owner_list.md`) |
 | F-2 | NF-1 first run | Node crashed in `checkInitGlobalVariables` (fragment lock held) | test hook 5135 returned from SCAN_NEXTREQ without `release_frag_access` | fixed in the hook |
 | F-3 | NF-1 third run | Every iteration reported "window missed" with rc=0, whether or not the close had been held | two test defects: (a) the killer published the kill only after `waitNodesNoStart`, so a close completed by DBTC's node-failure handling was checked before the flag existed; (b) the swallow sat in DBLQH, where it depends on the victim's LQH scan being mid-batch when the close arrives, and it left no trace when it fired | fixed: the killer publishes `CteNfKillIssued` before issuing the kill and the close is timed (`Result::closeMillis`); the swallow moved to DBSPJ `execSCAN_NEXTREQ` (17533) where every worker on the victim holds DBTC's close regardless of LQH state; the main scan runs with a 64-row batch so no worker has finished at the first row; both hooks log when they fire |
+| F-4 | SM-5 design review (2026-09-15) | A CTE_SCAN_CONF lost without a node failure (5128) leaves the scan unrecoverable: DBTC's fragment timeout (`timeOutFoundFragLab`, LQH_ACTIVE) calls `scanError`, which sends SCAN_TABREF with closeNeeded and a close to DBSPJ, but DBSPJ keeps the slot's batch obligation until the reply arrives, so the close never completes; the fragment times out again every `TransactionDeadlockDetectionTimeout` and re-issues the close, and the ApiConnectRecord stays in CLOSING_SCAN with the DBSPJ request pending until the node fails | by design: a reply is lost only by node failure, which NODE_FAILREP handles (NF-4); DBTC's timeout is not a recovery path for a live DBSPJ worker | documented; SM-5 not run, no test may leave such a scan behind |
 
 ## 12. Risks and open points
 

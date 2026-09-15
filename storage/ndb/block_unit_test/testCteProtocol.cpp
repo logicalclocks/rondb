@@ -106,9 +106,6 @@
 #include <NdbApi.hpp>
 #include <NdbSleep.h>
 #include <NdbTick.h>
-#include <InputStream.hpp>
-#include <mgmapi_debug.h>
-#include "mgmapi_internal.h"
 #include "../src/ndbapi/SignalSender.hpp"
 #include <kernel/BlockNumbers.h>
 #include <kernel/GlobalSignalNumbers.h>
@@ -123,6 +120,7 @@
 #include <kernel/AttributeHeader.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include <NdbRestarter.hpp>
+#include "JoinAggTestUtil.hpp"
 #include <mysql.h>
 
 #include <map>
@@ -698,162 +696,16 @@ waitReleaseConf(SignalSender &ss, const char *context)
   return 0;
 }
 
-/* Keep a client available to transporter broadcasts while another
- * client is polled or the test waits on a management event. */
-struct ScopedSenderUnlock {
-  SignalSender &sender;
-  explicit ScopedSenderUnlock(SignalSender &s) : sender(s) {
-    sender.unlock();
-  }
-  ~ScopedSenderUnlock() { sender.lock(); }
-};
-
-/* NdbRestarter's insert helpers can return success after a management
- * error. Check the API result and the server's reply explicitly. */
-static bool
-setErrorInsert(NdbRestarter &restarter, Uint32 node, int error, int extra)
-{
-  ndb_mgm_reply reply = {};
-  if (restarter.handle == nullptr ||
-      ndb_mgm_insert_error2(restarter.handle, node, error, extra, &reply) == -1 ||
-      reply.return_code != 0) {
-    fprintf(stderr, "Setting error insert %d on node %u failed\n",
-            error, node);
-    return false;
-  }
-  return true;
-}
-
-struct ErrorInsertGuard {
-  NdbRestarter &restarter;
-  Uint32 node;
-  bool active;
-
-  bool clear() {
-    if (!active) return true;
-    if (!setErrorInsert(restarter, node, 0, 0)) return false;
-    active = false;
-    return true;
-  }
-  ~ErrorInsertGuard() { (void)clear(); }
-};
-
-/* Subscribe before releasing the state so the hold event cannot be
- * missed. Unrelated events do not extend the timeout. */
-struct ProtocolEventListener {
-  NdbSocket socket;
-  ~ProtocolEventListener() {
-    if (socket.is_valid()) socket.close();
-  }
-  bool open(NdbRestarter &restarter) {
-    if (restarter.handle == nullptr) return false;
-    int filter[] = {2, NDB_MGM_EVENT_CATEGORY_INFO, 0};
-    socket = ndb_mgm_listen_event_internal(restarter.handle, filter, 0, true);
-    return socket.is_valid();
-  }
-  bool waitFor(const char *marker) {
-    SocketInputStream input(socket, 100);
-    const Uint64 start = NdbTick_CurrentMillisecond();
-    char line[1024] = {};
-    while (NdbTick_CurrentMillisecond() - start < WAIT_TIMEOUT_MS) {
-      input.reset_timeout();
-      if (input.gets(line, sizeof(line)) == nullptr) {
-        fprintf(stderr, "Failed to read management events\n");
-        return false;
-      }
-      if (strstr(line, marker) != nullptr) return true;
-    }
-    fprintf(stderr, "TIMEOUT waiting for %s\n", marker);
-    return false;
-  }
-};
-
-/* Snapshot every data node, requiring STARTED without waiting for a
- * failed node to restart. The management connection counter changes
- * on disconnect/reconnect even if STARTED is observed again. */
-static bool
-readStartedNodeConnections(NdbRestarter &restarter,
-                           std::map<int, int> &connections,
-                           const char *label)
-{
-  connections.clear();
-  const ndb_mgm_node_type types[] = {
-      NDB_MGM_NODE_TYPE_NDB, NDB_MGM_NODE_TYPE_UNKNOWN};
-  ndb_mgm_cluster_state *state =
-      restarter.handle != nullptr
-          ? ndb_mgm_get_status2(restarter.handle, types) : nullptr;
-  if (state == nullptr) {
-    fprintf(stderr, "%s: cannot read data-node status\n", label);
-    return false;
-  }
-  bool ok = true;
-  for (int i = 0; i < state->no_of_nodes; i++) {
-    const ndb_mgm_node_state &node = state->node_states[i];
-    if (node.node_status != NDB_MGM_NODE_STATUS_STARTED ||
-        node.connect_count < 0) {
-      fprintf(stderr, "%s: node %d is not ready for leak verification "
-                      "(status=%d connect_count=%d)\n",
-              label, node.node_id, (int)node.node_status, node.connect_count);
-      ok = false;
-      break;
-    }
-    connections[node.node_id] = node.connect_count;
-  }
-  free(state);
-  if (connections.empty()) {
-    fprintf(stderr, "%s: no started data nodes found\n", label);
-    return false;
-  }
-  return ok;
-}
-
-/* Require positive completion of DUMP 2361, 2362 and 2363 on every node.
- * A management success only confirms that the dump was sent. */
+/* The DBLQH leak checks (JoinAggTestUtil.hpp): 2361 join-agg states,
+ * 2362 CTE scan iterator records, 2363 identity table and park records.
+ * A RELEASE's teardown runs as a CONTINUEB chain after its CONF; the
+ * settle time lets it drain before the dumps run. */
 static int
 checkLeaks(SignalSender &ss, NdbRestarter &restarter, const char *label)
 {
-  /* Management waits must not block this API client's heartbeats. */
-  ScopedSenderUnlock unlockSender(ss);
-  std::map<int, int> before, after;
-  if (!readStartedNodeConnections(restarter, before, label)) return -1;
-  ProtocolEventListener events;
-  if (!events.open(restarter)) {
-    fprintf(stderr, "%s: cannot subscribe to leak-check events\n", label);
-    return -1;
-  }
-  /* Each invocation uses a new cookie so a late event cannot satisfy
-   * the next case's check. Node and dump code are matched as well. */
-  static Uint32 nextCookie = 0;
-  const Uint32 cookie = ++nextCookie;
-  NdbSleep_MilliSleep(TEARDOWN_SETTLE_MS);
-  const int codes[] = {DumpStateOrd::LqhDumpJoinAggStates,
-                       DumpStateOrd::LqhDumpCteIterStates,
-                       DumpStateOrd::LqhDumpJoinAggIdentity};
-  for (const auto &node : before) {
-    for (unsigned i = 0; i < NDB_ARRAY_SIZE(codes); i++) {
-      const int dump[] = {codes[i], (int)cookie};
-      ndb_mgm_reply reply = {};
-      if (ndb_mgm_dump_state(restarter.handle, node.first, dump, 2,
-                             &reply) == -1 ||
-          reply.return_code != 0) {
-        fprintf(stderr, "%s: DUMP %d on node %d failed\n",
-                label, codes[i], node.first);
-        return -1;
-      }
-      char marker[128];
-      snprintf(marker, sizeof(marker),
-               "[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
-               (Uint32)node.first, (Uint32)codes[i], cookie);
-      if (!events.waitFor(marker)) return -1;
-    }
-  }
-  if (!readStartedNodeConnections(restarter, after, label)) return -1;
-  if (before != after) {
-    fprintf(stderr, "%s: data-node connections changed during leak "
-                    "verification\n", label);
-    return -1;
-  }
-  return 0;
+  return joinAggCheckLeaks(ss, restarter, label, JOIN_AGG_LQH_LEAK_DUMPS,
+                           NDB_ARRAY_SIZE(JOIN_AGG_LQH_LEAK_DUMPS),
+                           TEARDOWN_SETTLE_MS, WAIT_TIMEOUT_MS);
 }
 
 /* ------------------------------------------------------------------ */

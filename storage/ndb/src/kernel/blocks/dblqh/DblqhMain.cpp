@@ -1159,6 +1159,12 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     continueFreeCteRedistPages(signal);
     return;
   }
+  case ZCONTINUE_CTE_SCAN_CONF_HELD:
+  {
+    jam();
+    continueCteScanConfHeld(signal);
+    return;
+  }
   case ZCONTINUE_CTE_AVG_FINALIZE:
   {
     jam();
@@ -21704,11 +21710,16 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
      * test waits for; the extra error-insert value carries the test
      * iteration, and its top bit records that the event went out. */
     constexpr Uint32 eventSent = 0x80000000;
+    /* LK-1: with this extra flag the first held request is reported
+     * even when its requester is this node. */
+    constexpr Uint32 reportLocal = 0x40000000;
     if (signal->getSendersBlockRef() != reference() &&
-        refToNode(req.senderRef) != getOwnNodeId() &&
+        (refToNode(req.senderRef) != getOwnNodeId() ||
+         (c_error_insert_extra & reportLocal) != 0) &&
         (c_error_insert_extra & eventSent) == 0) {
       infoEvent("[CTE_NF3_LOOKUP_HELD node=%u iteration=%u]",
-                getOwnNodeId(), c_error_insert_extra);
+                getOwnNodeId(),
+                c_error_insert_extra & ~(eventSent | reportLocal));
       c_error_insert_extra |= eventSent;
     }
     sendSignalWithDelay(reference(), GSN_CTE_LOOKUP_REQ, signal, 200,
@@ -22790,8 +22801,47 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
 #endif
     return;
   }
+  if (ERROR_INSERTED(5147) && !endOfData &&
+      refToNode(req.senderRef) == getOwnNodeId()) {
+    jam();
+#ifdef ERROR_INSERT
+    /* Test hook (SM-3): the batch's rows went out; hold this reply for a
+     * LOCAL requester, 100 ms at a time, until the insert is cleared.
+     * A close reaching DBSPJ meanwhile must wait for the batch to drain
+     * (close_pending) instead of racing the reply.  The extra value
+     * identifies the test iteration. */
+    infoEvent("[CTE_SCAN_CONF_HELD node=%u iteration=%u requester=%u]",
+              getOwnNodeId(), c_error_insert_extra,
+              refToNode(req.senderRef));
+    Uint32 held[CteScanConf::SignalLength];
+    memcpy(held, conf, sizeof(held));
+    signal->theData[0] = ZCONTINUE_CTE_SCAN_CONF_HELD;
+    signal->theData[1] = req.senderRef;
+    memcpy(&signal->theData[2], held, sizeof(held));
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100,
+                        2 + CteScanConf::SignalLength);
+    return;
+#endif
+  }
   sendSignal(req.senderRef, GSN_CTE_SCAN_CONF,
              signal, CteScanConf::SignalLength, JBB);
+}
+
+/* Test hook 5147: re-deliver a held CTE_SCAN_CONF once the insert is
+ * cleared.  Word 1 is the requester, words 2.. the reply. */
+void Dblqh::continueCteScanConfHeld(Signal *signal) {
+  jam();
+  if (ERROR_INSERTED(5147)) {
+    jam();
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 100,
+                        2 + CteScanConf::SignalLength);
+    return;
+  }
+  const Uint32 senderRef = signal->theData[1];
+  memmove(signal->getDataPtrSend(), &signal->theData[2],
+          CteScanConf::SignalLength * sizeof(Uint32));
+  sendSignal(senderRef, GSN_CTE_SCAN_CONF, signal,
+             CteScanConf::SignalLength, JBB);
 }
 
 /**
