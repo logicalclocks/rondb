@@ -308,8 +308,10 @@ class NdbQueryImpl {
                                Uint32 fragInfo);
 
   /** Process all accumulated aggregation results through NdbAggregator.
-   *  Called after scan completes. Feeds each batch to ProcessRes()
-   *  (skipping the AttributeHeader word), then calls PrepareResults().
+   *  Called after scan completes. Feeds each batch, including its
+   *  AttributeHeader, to ProcessRes(). Calls PrepareResults() only after
+   *  every batch succeeds. Returns 0 on success, or -1 with the query
+   *  error set on failure.
    */
   int processAggResults();
 

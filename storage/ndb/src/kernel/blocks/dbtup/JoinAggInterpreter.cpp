@@ -1693,15 +1693,18 @@ static void extractAggOps(const Uint32* prog, Uint32 prog_len,
   }
 }
 
-Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
-                                      Uint32 max_groups,
-                                      uchar* xfrm_buf,
-                                      Uint32 xfrm_buf_len) {
+Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
+                                     Uint32 max_groups,
+                                     Uint32& remaining,
+                                     uchar* xfrm_buf,
+                                     Uint32 xfrm_buf_len) {
   assert(other != nullptr);
   assert(m_n_agg_results == other->m_n_agg_results);
 
-  if (ensureStringResultsFrom(other->m_string_results) != 0) {
-    return 0;
+  remaining = 0;
+  const Int32 string_ret = ensureStringResultsFrom(other->m_string_results);
+  if (string_ret != 0) {
+    return string_ret;
   }
 
   if (!m_agg_ops_cached) {
@@ -1719,7 +1722,7 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
       if (ret != 0) {
         g_eventLogger->debug("mergeFrom scalar accumulator merge failed: %d",
                              ret);
-        return 0;
+        return ret;
       }
     }
     m_processed_rows += other->m_processed_rows;
@@ -1758,7 +1761,7 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
           g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
                                ret);
           other->freeGroupData(other_data);
-          return 0;
+          return ret;
         }
         other->freeGroupData(other_data);
       } else {
@@ -1770,7 +1773,8 @@ Uint32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
       if (max_groups > 0 && count >= max_groups &&
           !other->m_gb_map->empty()) {
         m_n_groups = m_gb_map->size();
-        return other->m_gb_map->size();
+        remaining = other->m_gb_map->size();
+        return 0;
       }
     }
   }

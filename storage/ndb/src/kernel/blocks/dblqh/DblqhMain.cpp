@@ -20354,9 +20354,24 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         Uint32 other_size = (other_map != nullptr) ? other_map->size() : 0;
         Uint32 batch = (other_size > MERGE_GROUPS_PER_BATCH) ?
                        MERGE_GROUPS_PER_BATCH : 0;
-        Uint32 remaining = interps[0]->mergeFrom(
-            interps[merge_idx], batch,
+        Uint32 remaining = 0;
+        const Int32 ret = interps[0]->mergeFrom(
+            interps[merge_idx], batch, remaining,
             c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
+        if (unlikely(ret != 0)) {
+          jam();
+          state->m_state.store(JoinAggregationState::ERROR);
+          JoinAggCompleteRef *ref =
+            (JoinAggCompleteRef *)signal->getDataPtrSend();
+          ref->senderRef = reference();
+          ref->senderData = senderData;
+          ref->requestId = requestId;
+          ref->errorCode = static_cast<Uint32>(ret);
+          ref->errorLine = __LINE__;
+          sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                     signal, JoinAggCompleteRef::SignalLength, JBB);
+          return;
+        }
         if (remaining > 0) {
           jam();
           signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
@@ -24125,12 +24140,14 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   if (unlikely(ret != 0)) {
     jam();
-    abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+    const Uint32 errorCode = ret > 0 ? static_cast<Uint32>(ret)
+                                    : ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+    abortCteRedistribution(signal, state, errorCode);
     JoinAggRedistributeRef *ref =
       (JoinAggRedistributeRef *)signal->getDataPtrSend();
     ref->aggStateKey = aggStateKey;
     ref->senderNodeId = getOwnNodeId();
-    ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+    ref->errorCode = errorCode;
     ref->senderAggStateKey = senderAggStateKey;  // D25
     ref->identWord = reqIdentWord;
     ref->transid[0] = reqTransid[0];
@@ -24249,7 +24266,9 @@ void Dblqh::processRedistQueue(Signal *signal,
         c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread
     if (unlikely(ret != 0)) {
       jam();
-      abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+      const Uint32 errorCode = ret > 0 ? static_cast<Uint32>(ret)
+                                      : ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      abortCteRedistribution(signal, state, errorCode);
       return;
     }
 

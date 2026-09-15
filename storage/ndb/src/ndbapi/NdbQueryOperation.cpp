@@ -2424,8 +2424,12 @@ int NdbQueryImpl::processAggResults() {
      * the buffer including the marker.
      */
     if (batchLen > 1) {
-      m_aggregator->ProcessRes(
+      const Int32 result = m_aggregator->ProcessRes(
           const_cast<char *>(reinterpret_cast<const char *>(batchData)));
+      if (result < 0) {
+        setErrorCode(-result);
+        return -1;
+      }
     }
   }
   m_aggregator->PrepareResults();
@@ -3233,8 +3237,9 @@ NdbQuery::NextResultOutcome NdbQueryImpl::nextRootResult(bool fetchAllowed,
           assert(m_applFrags.getCurrent() == nullptr);
           getRoot().nullifyResult();
           m_state = EndOfData;
-          if (m_hasAggregation) {
-            processAggResults();
+          if (m_hasAggregation && processAggResults() != 0) {
+            postFetchRelease();
+            return NdbQuery::NextResult_error;
           }
           postFetchRelease();
           return NdbQuery::NextResult_scanComplete;
