@@ -1164,9 +1164,12 @@ done:
 
 static int
 testFailedCteLateReplies(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
-                         int mysqlPort)
+                         int mysqlPort, bool cancel = false,
+                         bool identityCancel = false)
 {
-  printf("Test 7: Late replies after CTE failure...\n");
+  printf("Test 7: Late replies after CTE %s...\n",
+         identityCancel ? "identity cancellation" :
+         cancel ? "cancellation" : "failure");
   std::set<Uint32> nodes(meta.fragNodes.begin(), meta.fragNodes.end());
   if (nodes.size() < 2) {
     printf("  SKIP: requires at least two data nodes\n");
@@ -1285,6 +1288,29 @@ testFailedCteLateReplies(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
     return 0;
   };
 
+  std::function<int(Uint32, Uint32, Uint32, Uint32, Uint32)> sendCancel =
+      [&](Uint32 errorCode, Uint32 requestId, Uint32 transId1,
+          Uint32 transId2, Uint32 senderData) -> int {
+    SimpleSignal sig;
+    JoinAggCancelReq *req =
+      reinterpret_cast<JoinAggCancelReq *>(sig.getDataPtrSend());
+    req->senderRef = ss.getOwnRef();
+    req->senderData = senderData;
+    req->requestId = requestId;
+    req->transid[0] = transId1;
+    req->transid[1] = transId2;
+    req->aggStateKey = identityCancel ? RNIL : key;
+    req->errorCode = errorCode;
+    req->identWord = identWord;
+    const Uint16 cancelBlock =
+        identityCancel ? numberToBlock(DBLQH, 1) : block;
+    sig.set(ss, 0, cancelBlock, GSN_JOIN_AGG_CANCEL_REQ,
+            JoinAggCancelReq::SignalLength);
+    if (ss.sendSignal(node, &sig) == SEND_OK) return 0;
+    fprintf(stderr, "FAIL 7: send CANCEL_REQ failed\n");
+    return -1;
+  };
+
   int result = [&]() -> int {
     /* Empty grouped states avoid row redistribution.  Complete only one
      * node so it waits at the FINAL_REP barrier until we release its peers. */
@@ -1293,8 +1319,35 @@ testFailedCteLateReplies(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
       return -1;
 
     const Uint32 originalError = CteLookupRef::AGG_FEED_SELF_REFERENCE;
-    if (sendFailure(originalError) != 0 ||
-        expectCompleteError(node, originalError) != 0)
+    /* Stale cancellation must not consume the live completion. The
+     * ordered lookup catches an unexpected COMPLETE_REF immediately. */
+    const Uint32 stale[][4] = {
+      {FAKE_REQUEST_ID + 1, FAKE_TRANS_ID1, FAKE_TRANS_ID2, FAKE_SENDER_DATA},
+      {FAKE_REQUEST_ID, FAKE_TRANS_ID1 ^ 1, FAKE_TRANS_ID2, FAKE_SENDER_DATA},
+      {FAKE_REQUEST_ID, FAKE_TRANS_ID1, FAKE_TRANS_ID2 ^ 1, FAKE_SENDER_DATA},
+      {FAKE_REQUEST_ID, FAKE_TRANS_ID1, FAKE_TRANS_ID2, FAKE_SENDER_DATA + 1}
+    };
+    for (Uint32 i = 0; i < 4; i++) {
+      if (sendCancel(originalError, stale[i][0], stale[i][1],
+                      stale[i][2], stale[i][3]) != 0 ||
+          expectNotReady(710 + i) != 0)
+        return -1;
+    }
+    if (cancel) {
+      if (sendCancel(originalError, FAKE_REQUEST_ID, FAKE_TRANS_ID1,
+                      FAKE_TRANS_ID2, FAKE_SENDER_DATA) != 0)
+        return -1;
+    } else if (sendFailure(originalError) != 0) {
+      return -1;
+    }
+    if (expectCompleteError(node, originalError) != 0)
+      return -1;
+
+    /* Repeated cancellation must neither reply again nor replace the
+     * original error (also checked by the late group requests below). */
+    if (sendCancel(CteLookupRef::STATE_NOT_READY, FAKE_REQUEST_ID,
+                    FAKE_TRANS_ID1, FAKE_TRANS_ID2, FAKE_SENDER_DATA) != 0 ||
+        expectNotReady(714) != 0)
       return -1;
 
     /* A second failure must not emit another completion reply. */
@@ -1486,6 +1539,10 @@ int main(int argc, char **argv)
       if (testFlushAIRouting(&ndb, ss, meta, mysqlPort) != 0) result = 1;
       if (testErrorCases(&ndb, ss, meta, mysqlPort) != 0) result = 1;
       if (testFailedCteLateReplies(&ndb, ss, meta, mysqlPort) != 0) result = 1;
+      if (testFailedCteLateReplies(&ndb, ss, meta, mysqlPort, true) != 0)
+        result = 1;
+      if (testFailedCteLateReplies(&ndb, ss, meta, mysqlPort, true, true) != 0)
+        result = 1;
 
       ss.unlock();
     }

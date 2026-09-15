@@ -12303,6 +12303,13 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
          instance(), scanptr.i, apiConnectptr.i, signal->theData[3],
          senderRef, senderNodeId, signal->theData[1], signal->theData[2],
          refreshed, ctcTimer, rec.p->m_outstanding));
+    if (rec.p->m_kind == AggCompleteRecord::KIND_CTE &&
+        rec.p->m_errorCode != 0 &&
+        scanptr.p->m_aggSetupState != ScanRecord::AGG_SETUP_CANCELLED) {
+      jam();
+      // COMPLETE may have started after the first CANCEL was sent.
+      cancelCteAggregation(signal, scanptr, rec);
+    }
     return;
   }
 
@@ -32055,7 +32062,8 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
   rec.p->m_aggNodesPending.clear(senderNodeId);
   ndbrequire(rec.p->m_outstanding > 0);
   rec.p->m_outstanding--;
-  if (rec.p->m_errorCode == 0) rec.p->m_errorCode = ref->errorCode;
+  const bool firstError = rec.p->m_errorCode == 0;
+  if (firstError) rec.p->m_errorCode = ref->errorCode;
 
   if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED) {
     jam();
@@ -32070,6 +32078,10 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
                 instance(), rec.i, (Uint32)rec.p->m_kind,
                 senderNodeId, rec.p->m_outstanding, ref->errorCode));
 
+  if (firstError && rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
+    jam();
+    cancelCteAggregation(signal, scanptr, rec);
+  }
   if (rec.p->m_outstanding != 0) return;
 
   if (rec.p->m_kind == AggCompleteRecord::KIND_CTE) {
@@ -32079,6 +32091,47 @@ void Dbtc::execJOIN_AGG_COMPLETE_REF(Signal *signal) {
     jam();
     rec.p->m_state = AggCompleteRecord::REC_FAILED;
     sendJoinAggReleaseReqs(signal, scanptr);
+  }
+}
+
+/* A failed node may never send FINAL_REP. Stop the remaining peers
+ * instead of waiting for their redistribution barriers indefinitely.
+ * Keep the pending bits: each peer still owes its original completion
+ * reply, which may already be in flight. RELEASE remains a later phase. */
+void Dbtc::cancelCteAggregation(Signal *signal, ScanRecordPtr scanptr,
+                                 AggCompleteRecordPtr rec) {
+  ndbrequire(rec.p->m_kind == AggCompleteRecord::KIND_CTE);
+  ndbrequire(scanptr.p->m_aggErrorCode != 0);
+  ndbrequire(rec.p->m_cteIndex < scanptr.p->m_numCtes);
+  const ScanRecord::JoinAggNodeState *cteNodes =
+      scanptr.p->m_cteAggNodeState[rec.p->m_cteIndex];
+  ndbrequire(cteNodes != nullptr);
+  ApiConnectRecordPtr apiPtr;
+  apiPtr.i = scanptr.p->scanApiRec;
+  c_apiConnectRecordPool.getPtr(apiPtr);
+
+  const NdbNodeBitmask pending = rec.p->m_aggNodesPending;
+  for (Uint32 node = pending.find_first();
+       node != NdbNodeBitmask::NotFound;
+       node = pending.find_next(node + 1)) {
+    if (!getNodeInfo(node).m_connected) continue;  // Node failure drains it.
+    const Uint32 key = rec.p->m_aggStateKeys[node];
+    const Uint32 owner =
+        key == RNIL ? 1 : cteNodes->m_aggOwnerInstances[node];
+    ndbrequire(owner > 0);
+    JoinAggCancelReq *req =
+        (JoinAggCancelReq *)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = scanptr.i;
+    req->requestId = makeAggCompleteRequestId(rec.i);
+    req->transid[0] = apiPtr.p->transid[0];
+    req->transid[1] = apiPtr.p->transid[1];
+    req->aggStateKey = key;
+    req->errorCode = scanptr.p->m_aggErrorCode;
+    req->identWord = JoinAggregationState::packIdentWord(
+        scanptr.p->m_joinAggQueryTag, rec.p->m_cteIndex, 0);
+    sendSignal(numberToRef(DBLQH, owner, node), GSN_JOIN_AGG_CANCEL_REQ,
+               signal, JoinAggCancelReq::SignalLength, JBB);
   }
 }
 

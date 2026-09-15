@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 982;
+const GlobalSignalNumber MAX_GSN = 983;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1331,4 +1331,7 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 
 /* Data node security: block reports a malicious/malformed signal to QMGR */
 #define GSN_MALICIOUS_SIGNAL_REPORT     982
+
+/* Cancel pending CTE completion on an owner LDM (DBTC -> DBLQH). */
+#define GSN_JOIN_AGG_CANCEL_REQ        983
 #endif

@@ -166,6 +166,22 @@ struct JoinAggCompleteRef {
   Uint32 errorLine;
 };
 
+/* Stop a pending CTE COMPLETE after a peer failed. Sent by the same
+ * coordinator to the same owner LDM after COMPLETE_REQ. A pending
+ * completion replies with COMPLETE_REF; an already completed or failed
+ * state has sent its reply and must not send another one.
+ * No sections. Correlation fields identify the original COMPLETE_REQ. */
+struct JoinAggCancelReq {
+  static constexpr Uint32 SignalLength = 8;
+  Uint32 senderRef;
+  Uint32 senderData;
+  Uint32 requestId;
+  Uint32 transid[2];
+  Uint32 aggStateKey;
+  Uint32 errorCode;
+  Uint32 identWord;  // Resolve an unknown key and validate a known key.
+};
+
 struct JoinAggReleaseReq {
   static constexpr Uint32 SignalLength = 7;
   Uint32 senderRef;

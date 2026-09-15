@@ -19953,6 +19953,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     }
   }
   state->m_state.store(JoinAggregationState::FINALIZING);
+  if (state->m_cte_mode) {
+    // Also retry a CANCEL that arrived before this COMPLETE was replayed.
+    sendJoinAggCompleteHeartbeat(signal, state);
+  }
 
   /*
    * Select interpreter based on strategy.
@@ -19994,6 +19998,72 @@ bool Dblqh::isJoinAggCoordinatorFailed(Uint32 coordinatorRef) {
   hostPtr.i = refToNode(coordinatorRef);
   ptrCheckGuard(hostPtr, chostFileSize, hostRecord);
   return hostPtr.p->nodestatus == ZNODE_DOWN;
+}
+
+/* Identity resolution and parked replay can reorder COMPLETE and CANCEL.
+ * COMPLETE sends a startup heartbeat so DBTC retries an early CANCEL.
+ * A completion reply may already be in flight when CANCEL arrives. */
+void Dblqh::execJOIN_AGG_CANCEL_REQ(Signal *signal) {
+  jamEntry();
+  ndbrequire(signal->getLength() >= JoinAggCancelReq::SignalLength);
+  const JoinAggCancelReq *req =
+      (const JoinAggCancelReq *)signal->getDataPtr();
+  const BlockReference senderRef = signal->getSendersBlockRef();
+  const bool ownerForward =
+      refToNode(senderRef) == getOwnNodeId() &&
+      refToMain(senderRef) == DBLQH;
+  if (req->errorCode == 0 ||
+      (senderRef != req->senderRef && !ownerForward)) {
+    jam();
+    return;
+  }
+
+  Uint32 key = req->aggStateKey;
+  if (key == RNIL) {
+    jam();
+    key = joinAggIdentityLookup(
+        req->transid,
+        JoinAggregationState::identWordQueryTag(req->identWord),
+        JoinAggregationState::identWordCteId(req->identWord));
+  }
+  JoinAggregationState *state =
+      key != RNIL ? getJoinAggState(key) : nullptr;
+  if (state == nullptr ||
+      state->m_transid[0] != req->transid[0] ||
+      state->m_transid[1] != req->transid[1] ||
+      JoinAggregationState::packIdentWord(
+          state->m_queryTag, state->m_cte_index, 0) != req->identWord) {
+    jam();
+    // A pending COMPLETE will trigger a retry when it starts.
+    return;
+  }
+  if (state->m_owner_instance != instance()) {
+    jam();
+    ((JoinAggCancelReq *)signal->getDataPtrSend())->aggStateKey = key;
+    sendSignal(numberToRef(DBLQH, state->m_owner_instance, getOwnNodeId()),
+               GSN_JOIN_AGG_CANCEL_REQ, signal,
+               JoinAggCancelReq::SignalLength, JBB);
+    return;
+  }
+
+  if (!state->m_cte_mode ||
+      state->m_cte_complete_senderRef != req->senderRef ||
+      state->m_cte_complete_senderData != req->senderData ||
+      state->m_cte_complete_requestId != req->requestId ||
+      state->m_cte_complete_transid[0] != req->transid[0] ||
+      state->m_cte_complete_transid[1] != req->transid[1]) {
+    jam();
+    return;
+  }
+
+  const JoinAggregationState::State current = state->m_state.load();
+  if (current != JoinAggregationState::FINALIZING &&
+      current != JoinAggregationState::SENDING_RESULTS &&
+      current != JoinAggregationState::CTE_REDISTRIBUTING) {
+    jam();
+    return;  // Only pending completion work may send a new reply.
+  }
+  abortCteRedistribution(signal, state, req->errorCode);
 }
 
 /**
