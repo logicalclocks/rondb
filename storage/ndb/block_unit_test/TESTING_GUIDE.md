@@ -143,6 +143,39 @@ the connected data nodes. Use one form for all nodes of a query, or the
 owner lists differ. With the full length, a listed node the receiver is
 not connected to is answered with JOIN_AGG_SETUP_REF error 286.
 
+### Peer and consumer signals from a block test
+
+`testCteProtocol` (section 5.4 of `node_failure_test_plan.md`) sends the
+owner-plane peer signals (JOIN_AGG_REDISTRIBUTE_REQ / CONF / REF,
+JOIN_AGG_FINAL_REP) and the consumer requests (CTE_SCAN_REQ,
+CTE_LOOKUP_REQ, JOIN_AGG_NULL_ROW_REQ) from the API node. Points that
+matter when writing such a test:
+
+- These GSNs have no entry in `SignalScopes.hpp`, so DBLQH executes them
+  for an API sender in every build; only SCAN_FRAGREQ depends on the
+  debug relaxation.
+- Address them to the owner LDM instance from SETUP_CONF
+  (`numberToBlock(DBLQH, ownerInstance)`), never to instance 0 (the
+  proxy does not handle them).
+- Every keyed peer signal must carry the state's identity: transid and
+  `packIdentWord(queryTag, cteIndex, 0)` = `(queryTag & 0xFFFF) |
+  (cte7 << 16)` with `cte7 = 0x7F` for a main aggregation. A mismatch is
+  dropped (CONF, REF, FINAL_REP) or answered with REDISTRIBUTE_REF 1251
+  echoing the sender's words (REQ). Do not send a REDISTRIBUTE_REQ with
+  a matching identity and made-up sections: it is merged.
+- A CTE-mode state reaches CTE_READY only when every data node has a
+  state and every COMPLETE carries all `[nodeId, key, owner]` triples;
+  send every COMPLETE before waiting for any reply.
+- A CTE_SCAN_REQ without AttrInfo returns each group as a raw TRANSID_AI
+  to `senderRef`; a paused batch's CONF carries the continuation token,
+  bound to the requesting node and freed by EndOfData or a close request
+  (`SignalLengthClose`, `CloseFlag`).
+- `isJoinAggCoordinatorFailed` checks only DBTC references against
+  `hostRecord`, where every node id that never started stays
+  ZNODE_DOWN: `numberToRef(DBTC, <unused node id>)` models a failed
+  coordinator without restarting anything; the test's own reference is
+  never checked.
+
 ### AttrInfo / Aggregation Programs
 
 Aggregation programs follow the NdbAggregator wire format:
@@ -266,7 +299,7 @@ end of a test with `NdbRestarter::dumpStateAllNodes`):
 scan-fragment handles / scans left in a join-agg or closing state,
 2650 DBSPJ requests.
 
-DUMPs 2361 and 2363 optionally accept a second word, a test cookie.
+DUMPs 2361, 2362 and 2363 optionally accept a second word, a test cookie.
 After a clean check, regular DBLQH instance 1 emits
 [JOIN_AGG_LEAK_CHECK_OK node=N dump=D cookie=C]. One-word requests
 remain silent on success. Subscribe before sending, check both management

@@ -42952,6 +42952,12 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
       leaked++;
     }
     if (leaked != 0) ndbabort();
+    if (signal->getLength() == 2 && instance() == 1 && !m_is_query_block) {
+      /* Optional test cookie, as for 2361: regular instance 1 answers once
+       * its own pool passed; a leak in any instance crashes the node. */
+      infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
+                getOwnNodeId(), signal->theData[0], signal->theData[1]);
+    }
     return;
   }
   if (signal->theData[0] == DumpStateOrd::LqhDumpJoinAggIdentity) {

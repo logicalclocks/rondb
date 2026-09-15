@@ -54,8 +54,43 @@
  *         (SignalLength_v1): accepted, the owner list is the receiver's
  *         connected data nodes.
  *
- * After every case the leak-check DUMPs 2361 (join-agg states) and 2363
- * (identity table, placeholders and park records) run on every node;
+ * Section 5.4, identity validation on keyed peer signals.  Each case
+ * builds a CTE state on every data node (CTE-mode SETUP, fragment scans,
+ * COMPLETE with the per-node key triples) and forges the peer signals a
+ * node can receive from a stale or hostile sender after its pool slot
+ * was reused: every one names the state's real pool key.
+ *
+ *   ID-1  JOIN_AGG_REDISTRIBUTE_REQ with a wrong identWord, then with a
+ *         wrong transid: REDISTRIBUTE_REF 1251 echoing the sender's own
+ *         key, identWord and transid; the state still reaches CTE_READY
+ *         and a scan returns every group.
+ *   ID-2  JOIN_AGG_REDISTRIBUTE_CONF with a wrong transid, then with a
+ *         wrong identWord: ignored (an accepted CONF would resume a
+ *         redistribution this state never started); the state
+ *         completes normally.
+ *   ID-3  JOIN_AGG_REDISTRIBUTE_REF with a wrong identWord: ignored, the
+ *         state completes normally.  Control: the same REF with the
+ *         correct identity aborts the state, whose COMPLETE then answers
+ *         COMPLETE_REF 1251.
+ *   ID-4  JOIN_AGG_FINAL_REP with a wrong identWord, then with a wrong
+ *         transid, each with success and error reports: ignored, the
+ *         state completes normally. Accepting an error report aborts
+ *         the state even with only one data node.
+ *   ID-5  CTE_SCAN_REQ continuation tokens: a token no record ever had,
+ *         the live token of a paused scan used from another API node, the
+ *         token released by EndOfData and a token released by a close
+ *         request all answer CTE_SCAN_REF 1251; the legitimate
+ *         continuations in between return every group; 2362 clean.
+ *   ID-6  CTE_SCAN_REQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ whose
+ *         coordinator reference names DBTC on a node that is down: REF 286
+ *         before any state access; the same requests naming DBTC on a
+ *         live data node and an unknown key answer 1251 instead.
+ *   ID-7  (not run) a shorter-than-required signal asserts in the
+ *         receiver by contract; it would crash the node.
+ *
+ * After every case the leak-check DUMPs 2361 (join-agg states), 2362
+ * (CTE scan iterator records) and 2363 (identity table, placeholders and
+ * park records) run on every node;
  * each crashes its node on any surviving record. Require a clean-check
  * event for each dump and unchanged node connection counters, so an
  * automatic restart cannot hide a crash. A RELEASE's teardown runs as a
@@ -83,6 +118,9 @@
 #include <kernel/signaldata/ScanFrag.hpp>
 #include <kernel/signaldata/TransIdAI.hpp>
 #include <kernel/signaldata/DumpStateOrd.hpp>
+#include <kernel/signaldata/CteScan.hpp>
+#include <kernel/signaldata/CteLookup.hpp>
+#include <kernel/AttributeHeader.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include <NdbRestarter.hpp>
 #include <mysql.h>
@@ -112,6 +150,26 @@ static const Uint32 INTERPRETER_EXIT_OK = 18;
 static const Uint32 AGG_MAGIC = 0x0721;
 static const Uint32 AGG_RESULT_ATTR = 0xFF00;
 static const Uint32 ZNODEFAIL_BEFORE_COMMIT = 286;
+static const Uint32 ZJOIN_AGG_STATE_NOT_FOUND = 1251;
+
+/* Section 5.4.  The CTE identity every keyed peer signal must carry:
+ * JoinAggregationState::packIdentWord(queryTag, cteId, 0) in the kernel. */
+static const Uint32 IDENT_CTE_MAIN = 0x7F;
+static const Uint32 CTE_INDEX = 0;
+static const Uint32 CTE_SCAN_BATCH = 4;
+/* The forged sender's own state key, echoed in REDISTRIBUTE_CONF / REF. */
+static const Uint32 FORGED_SENDER_KEY = 0x5EED;
+/* A pool index no state can have: rejected before the pool is touched. */
+static const Uint32 UNKNOWN_STATE_KEY = 0x00FFFFFE;
+/* A continuation token no iterator record ever had. */
+static const Uint32 UNKNOWN_SCAN_TOKEN = 0x3FFFFFFF;
+
+static Uint32
+packIdentWord(Uint32 queryTag, Uint32 cteId)
+{
+  const Uint32 cte7 = (cteId == RNIL) ? IDENT_CTE_MAIN : cteId;
+  return (queryTag & 0xFFFF) | (cte7 << 16);
+}
 
 /* ------------------------------------------------------------------ */
 /* Aggregation program: SELECT SUM(b) FROM t GROUP BY a                 */
@@ -749,7 +807,7 @@ readStartedNodeConnections(NdbRestarter &restarter,
   return ok;
 }
 
-/* Require positive completion of DUMP 2361 and 2363 on every node.
+/* Require positive completion of DUMP 2361, 2362 and 2363 on every node.
  * A management success only confirms that the dump was sent. */
 static int
 checkLeaks(SignalSender &ss, NdbRestarter &restarter, const char *label)
@@ -769,6 +827,7 @@ checkLeaks(SignalSender &ss, NdbRestarter &restarter, const char *label)
   const Uint32 cookie = ++nextCookie;
   NdbSleep_MilliSleep(TEARDOWN_SETTLE_MS);
   const int codes[] = {DumpStateOrd::LqhDumpJoinAggStates,
+                       DumpStateOrd::LqhDumpCteIterStates,
                        DumpStateOrd::LqhDumpJoinAggIdentity};
   for (const auto &node : before) {
     for (unsigned i = 0; i < NDB_ARRAY_SIZE(codes); i++) {
@@ -808,6 +867,7 @@ struct Ctx {
   const TableMeta &meta;
   const std::vector<Uint32> &prog;
   Uint32 node;   /* the data node driven by every case */
+  Ndb_cluster_connection *con2;  /* another API node id; null if none */
 };
 
 static int
@@ -831,6 +891,619 @@ releaseAndWait(Ctx &c, Uint32 key)
                      FAKE_TRANS_ID2, 0) != 0)
     return -1;
   return waitReleaseConf(c.ss, "RELEASE_CONF");
+}
+
+/* The lowest node id below 48 that is not a data node.  It was never
+ * started, so every DBLQH host record keeps it ZNODE_DOWN (the same
+ * test the coordinator-failure paths use) and no SETUP owner list may
+ * contain it.  0 if none. */
+static Uint32
+pickNonDataNodeId(NdbRestarter &restarter, NdbNodeBitmask *dataNodesOut)
+{
+  NdbNodeBitmask dataNodes;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    dataNodes.set((Uint32)restarter.getDbNodeId(i));
+  }
+  if (dataNodesOut != nullptr) *dataNodesOut = dataNodes;
+  for (Uint32 n = 1; n < 48; n++) {
+    if (!dataNodes.get(n)) return n;
+  }
+  fprintf(stderr, "no free node id below 48\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Section 5.4: a CTE state on every data node, then forged peers       */
+/* ------------------------------------------------------------------ */
+
+struct CteNode {
+  Uint32 node;
+  Uint32 key;
+  Uint32 owner;   /* owner LDM instance from SETUP_CONF */
+};
+
+struct PeerIdentity {
+  Uint32 identWord;
+  Uint32 transid[2];
+};
+
+static PeerIdentity
+cteIdentity()
+{
+  PeerIdentity id = {packIdentWord(FAKE_REQUEST_ID, CTE_INDEX),
+                     {FAKE_TRANS_ID1, FAKE_TRANS_ID2}};
+  return id;
+}
+
+/* CTE-mode SETUP on every data node.  The legacy length makes each node
+ * take the connected data nodes as the owner list, so every node needs a
+ * state before any of them may COMPLETE. */
+static int
+cteSetupAll(Ctx &c, std::vector<CteNode> &nodes)
+{
+  nodes.clear();
+  for (int i = 0; i < c.restarter.getNumDbNodes(); i++) {
+    CteNode n = {(Uint32)c.restarter.getDbNodeId(i), RNIL, 0};
+    SetupParams p;
+    p.strategy |= JoinAggSetupReq::CTE_MODE_FLAG;
+    p.cteIndex = CTE_INDEX;
+    Uint32 refCode = 0;
+    if (sendSetupReq(c.ss, n.node, c.prog, c.meta, p, n.key, n.owner,
+                     refCode) != 0) {
+      fprintf(stderr, "CTE SETUP on node %u not accepted (code=%u)\n",
+              n.node, refCode);
+      return -1;
+    }
+    nodes.push_back(n);
+  }
+  return 0;
+}
+
+static int
+cteScanFragments(Ctx &c, const std::vector<CteNode> &nodes, Uint32 &rowsOut)
+{
+  rowsOut = 0;
+  for (const CteNode &n : nodes) {
+    Uint32 rows = 0;
+    if (runScans(c.ss, c.meta, n.node, n.key, rows) != 0) return -1;
+    rowsOut += rows;
+  }
+  return 0;
+}
+
+static int
+cteSetupAndScan(Ctx &c, std::vector<CteNode> &nodes, Uint32 &rowsOut)
+{
+  if (cteSetupAll(c, nodes) != 0) return -1;
+  return cteScanFragments(c, nodes, rowsOut);
+}
+
+/* COMPLETE every node with the per-node key triples, then collect one
+ * reply per node: in CTE mode a COMPLETE_CONF without result rows once
+ * the state is CTE_READY.  With expectRefCode != 0 every node must
+ * answer COMPLETE_REF and refNode must report that code. Validate each
+ * reply's owner reference and echoed request fields; no participant may
+ * supply a second reply in place of another participant's first. */
+static int
+cteCompleteAll(Ctx &c, const std::vector<CteNode> &nodes,
+               Uint32 expectRefCode, Uint32 refNode)
+{
+  std::vector<Uint32> triples;
+  std::map<Uint32, bool> replied;
+  for (const CteNode &n : nodes) {
+    replied.emplace(numberToRef(DBLQH, n.owner, n.node), false);
+    triples.push_back(n.node);
+    triples.push_back(n.key);
+    triples.push_back(n.owner);
+  }
+  for (const CteNode &n : nodes) {
+    SimpleSignal ssig;
+    JoinAggCompleteReq *req =
+        reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
+    req->senderRef = c.ss.getOwnRef();
+    req->senderData = FAKE_SENDER_DATA;
+    req->requestId = FAKE_REQUEST_ID;
+    req->transid[0] = FAKE_TRANS_ID1;
+    req->transid[1] = FAKE_TRANS_ID2;
+    req->aggStateKey = n.key;
+    req->maxBatchRows = 1000;
+    req->heartbeatScanFragPtrI = RNIL;
+    req->identWord = RNIL;  /* keyed form */
+    ssig.set(c.ss, 0, numberToBlock(DBLQH, n.owner),
+             GSN_JOIN_AGG_COMPLETE_REQ, JoinAggCompleteReq::SignalLength);
+    ssig.header.m_noOfSections = 1;
+    ssig.ptr[0].p = triples.data();
+    ssig.ptr[0].sz = (Uint32)triples.size();
+    if (c.ss.sendSignal(n.node, &ssig) != SEND_OK) {
+      fprintf(stderr, "sendSignal CTE COMPLETE_REQ failed\n");
+      return -1;
+    }
+  }
+  bool refNodeSeen = false;
+  for (size_t i = 0; i < nodes.size(); i++) {
+    SimpleSignal *resp = waitForSignal(c.ss, "CTE COMPLETE reply");
+    if (resp == nullptr) return -1;
+    const int gsn = getGsn(resp);
+    if (gsn != GSN_JOIN_AGG_COMPLETE_CONF &&
+        gsn != GSN_JOIN_AGG_COMPLETE_REF) {
+      fprintf(stderr, "Unexpected GSN %d waiting for a CTE COMPLETE reply\n",
+              gsn);
+      return -1;
+    }
+    const Uint32 expectedLength = gsn == GSN_JOIN_AGG_COMPLETE_CONF
+        ? JoinAggCompleteConf::SignalLength : JoinAggCompleteRef::SignalLength;
+    if (resp->getLength() < expectedLength) {
+      fprintf(stderr, "Short CTE COMPLETE reply: GSN %d length %u\n",
+              gsn, resp->getLength());
+      return -1;
+    }
+    /* CONF and REF share the senderRef, senderData, requestId header. */
+    const Uint32 *data = resp->getDataPtr();
+    const Uint32 senderRef = data[0];
+    auto participant = replied.find(senderRef);
+    if (participant == replied.end()) {
+      fprintf(stderr, "CTE COMPLETE reply from unexpected owner 0x%x\n",
+              senderRef);
+      return -1;
+    }
+    if (data[1] != FAKE_SENDER_DATA || data[2] != FAKE_REQUEST_ID) {
+      fprintf(stderr, "CTE COMPLETE reply from 0x%x has senderData=%u "
+                      "requestId=%u\n", senderRef, data[1], data[2]);
+      return -1;
+    }
+    if (participant->second) {
+      fprintf(stderr, "Duplicate CTE COMPLETE reply from owner 0x%x\n",
+              senderRef);
+      return -1;
+    }
+    participant->second = true;
+    if (gsn == GSN_JOIN_AGG_COMPLETE_CONF) {
+      if (expectRefCode != 0) {
+        fprintf(stderr, "COMPLETE_CONF from a state that should be "
+                        "aborted\n");
+        return -1;
+      }
+      continue;
+    }
+    if (gsn == GSN_JOIN_AGG_COMPLETE_REF) {
+      const JoinAggCompleteRef *ref =
+          reinterpret_cast<const JoinAggCompleteRef *>(resp->getDataPtr());
+      const Uint32 from = refToNode(ref->senderRef);
+      if (expectRefCode == 0) {
+        fprintf(stderr, "COMPLETE_REF from node %u: errorCode=%u "
+                        "errorLine=%u\n",
+                from, ref->errorCode, ref->errorLine);
+        return -1;
+      }
+      V("COMPLETE_REF from node %u: errorCode=%u\n", from, ref->errorCode);
+      if (from == refNode) {
+        refNodeSeen = true;
+        if (ref->errorCode != expectRefCode) {
+          fprintf(stderr, "node %u answered COMPLETE_REF %u, expected %u\n",
+                  from, ref->errorCode, expectRefCode);
+          return -1;
+        }
+      }
+      continue;
+    }
+  }
+  if (expectRefCode != 0 && !refNodeSeen) {
+    fprintf(stderr, "no COMPLETE_REF from node %u\n", refNode);
+    return -1;
+  }
+  return 0;
+}
+
+static int
+cteReleaseAll(Ctx &c, const std::vector<CteNode> &nodes)
+{
+  int rc = 0;
+  for (const CteNode &n : nodes) {
+    if (sendReleaseReq(c.ss, n.node, n.key, FAKE_REQUEST_ID, FAKE_TRANS_ID1,
+                       FAKE_TRANS_ID2, 0) != 0 ||
+        waitReleaseConf(c.ss, "CTE RELEASE_CONF") != 0)
+      rc = -1;
+  }
+  return rc;
+}
+
+/* CTE_SCAN_REQ without AttrInfo: DBLQH emits every group as a raw
+ * TRANSID_AI to senderRef, the nested-CTE feed form, so the rows are
+ * counted without parsing.  The first request has no token; a
+ * continuation carries the token of the CONF that paused; a close
+ * request carries CloseFlag. */
+struct CteScanParams {
+  Uint32 node;
+  Uint32 instance;       /* DBLQH instance: the owner LDM */
+  Uint32 key;
+  Uint32 batchSize;
+  Uint32 scanIterI;
+  Uint32 flags;
+  Uint32 coordinatorRef;
+  Uint32 senderRef;
+  CteScanParams(const CteNode &n, SignalSender &ss)
+      : node(n.node), instance(n.owner), key(n.key),
+        batchSize(CTE_SCAN_BATCH), scanIterI(RNIL), flags(0),
+        coordinatorRef(ss.getOwnRef()), senderRef(ss.getOwnRef()) {}
+};
+
+static int
+sendCteScanReq(SignalSender &ss, const CteScanParams &p)
+{
+  SimpleSignal ssig;
+  CteScanReq *req = reinterpret_cast<CteScanReq *>(ssig.getDataPtrSend());
+  req->senderRef = p.senderRef;
+  req->senderData = FAKE_SENDER_DATA;
+  req->aggStateKey = p.key;
+  req->transId1 = FAKE_TRANS_ID1;
+  req->transId2 = FAKE_TRANS_ID2;
+  req->batchSize = p.batchSize;
+  req->resultRef = p.senderRef;
+  req->resultData = FAKE_SENDER_DATA;
+  req->joinAggStateKey = RNIL;
+  req->coordinatorRef = p.coordinatorRef;
+  req->scanIterI = p.scanIterI;
+  req->flags = p.flags;
+  Uint32 len = CteScanReq::SignalLength;
+  if (p.flags != 0) {
+    len = CteScanReq::SignalLengthClose;
+  } else if (p.scanIterI != RNIL) {
+    len = CteScanReq::SignalLengthContinue;
+  }
+  ssig.set(ss, 0, numberToBlock(DBLQH, p.instance), GSN_CTE_SCAN_REQ, len);
+  if (ss.sendSignal(p.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal CTE_SCAN_REQ failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+/* Rows precede the reply.  0 = CONF, 1 = REF, -1 = error. */
+static int
+waitCteScanReply(SignalSender &ss, const char *context, Uint32 &rows,
+                 CteScanConf &conf, Uint32 &refCode)
+{
+  rows = 0;
+  for (;;) {
+    SimpleSignal *resp = waitForSignal(ss, context);
+    if (resp == nullptr) return -1;
+    const int gsn = getGsn(resp);
+    if (gsn == GSN_TRANSID_AI) {
+      rows++;
+    } else if (gsn == GSN_CTE_SCAN_CONF) {
+      conf = *reinterpret_cast<const CteScanConf *>(resp->getDataPtr());
+      return 0;
+    } else if (gsn == GSN_CTE_SCAN_REF) {
+      refCode =
+          reinterpret_cast<const CteScanRef *>(resp->getDataPtr())->errorCode;
+      return 1;
+    } else {
+      fprintf(stderr, "Unexpected GSN %d waiting for %s\n", gsn, context);
+      return -1;
+    }
+  }
+}
+
+/* One batch that must CONF; p.scanIterI becomes the CONF's token. */
+static int
+cteScanBatch(SignalSender &ss, CteScanParams &p, const char *context,
+             Uint32 &rows, bool &endOfData)
+{
+  if (sendCteScanReq(ss, p) != 0) return -1;
+  CteScanConf conf = {};
+  Uint32 refCode = 0;
+  const int rc = waitCteScanReply(ss, context, rows, conf, refCode);
+  if (rc != 0) {
+    if (rc == 1) {
+      fprintf(stderr, "%s: CTE_SCAN_REF errorCode=%u\n", context, refCode);
+    }
+    return -1;
+  }
+  endOfData = (conf.flags & CteScanConf::EndOfData) != 0;
+  if (endOfData != (conf.scanIterI == RNIL) || conf.numRows != rows) {
+    fprintf(stderr, "%s: CONF flags=%u scanIterI=%u numRows=%u after %u "
+                    "rows\n", context, conf.flags, conf.scanIterI,
+            conf.numRows, rows);
+    return -1;
+  }
+  p.scanIterI = conf.scanIterI;
+  return 0;
+}
+
+/* A forged request that must answer CTE_SCAN_REF with the given code
+ * and no rows. */
+static int
+cteScanExpectRef(SignalSender &ss, const CteScanParams &p,
+                 const char *context, Uint32 expected)
+{
+  if (sendCteScanReq(ss, p) != 0) return -1;
+  Uint32 rows = 0, refCode = 0;
+  CteScanConf conf = {};
+  const int rc = waitCteScanReply(ss, context, rows, conf, refCode);
+  if (rc < 0) return -1;
+  if (rc == 0) {
+    fprintf(stderr, "%s: answered CONF (numRows=%u flags=%u), expected "
+                    "REF %u\n", context, conf.numRows, conf.flags, expected);
+    return -1;
+  }
+  if (refCode != expected || rows != 0) {
+    fprintf(stderr, "%s: REF %u after %u rows, expected REF %u\n", context,
+            refCode, rows, expected);
+    return -1;
+  }
+  V("%s: REF %u as expected\n", context, expected);
+  return 0;
+}
+
+/* Every group on every listed node, scanned to EndOfData. */
+static int
+cteScanGroups(Ctx &c, const std::vector<CteNode> &nodes, Uint32 &groupsOut)
+{
+  groupsOut = 0;
+  for (const CteNode &n : nodes) {
+    CteScanParams p(n, c.ss);
+    p.batchSize = 1000;
+    bool endOfData = false;
+    while (!endOfData) {
+      Uint32 rows = 0;
+      if (cteScanBatch(c.ss, p, "CTE_SCAN", rows, endOfData) != 0) return -1;
+      groupsOut += rows;
+    }
+  }
+  return 0;
+}
+
+/* The state must still complete: COMPLETE_CONF from every node, then a
+ * scan returning every group. */
+static int
+cteCompleteAndVerify(Ctx &c, const std::vector<CteNode> &nodes,
+                     Uint32 expectedGroups, const char *label)
+{
+  if (cteCompleteAll(c, nodes, 0, 0) != 0) {
+    fprintf(stderr, "%s: the state did not reach CTE_READY\n", label);
+    return -1;
+  }
+  Uint32 groups = 0;
+  if (cteScanGroups(c, nodes, groups) != 0) return -1;
+  if (groups != expectedGroups) {
+    fprintf(stderr, "%s: the scan returned %u groups, expected %u\n", label,
+            groups, expectedGroups);
+    return -1;
+  }
+  return 0;
+}
+
+/* Forged owner-plane peer signals, all naming the state's real key and
+ * addressed to its owner LDM, the way a peer node sends them. */
+static int
+sendRedistributeReq(SignalSender &ss, const CteNode &n,
+                    const PeerIdentity &id)
+{
+  SimpleSignal ssig;
+  JoinAggRedistributeReq *req =
+      reinterpret_cast<JoinAggRedistributeReq *>(ssig.getDataPtrSend());
+  req->aggStateKey = n.key;
+  req->senderAggStateKey = FORGED_SENDER_KEY;
+  req->keyLen = 4;
+  req->valueLen = 4;
+  req->requestInfo = JoinAggRedistributeReq::RI_NEED_CONF;
+  req->identWord = id.identWord;
+  req->transid[0] = id.transid[0];
+  req->transid[1] = id.transid[1];
+  req->senderRef = ss.getOwnRef();
+  ssig.set(ss, 0, numberToBlock(DBLQH, n.owner),
+           GSN_JOIN_AGG_REDISTRIBUTE_REQ,
+           JoinAggRedistributeReq::SignalLength);
+  /* Never parsed: the identity check precedes the section reads. */
+  Uint32 keyWord = 0, valueWord = 0;
+  ssig.header.m_noOfSections = 2;
+  ssig.ptr[JoinAggRedistributeReq::KeySectionNum].p = &keyWord;
+  ssig.ptr[JoinAggRedistributeReq::KeySectionNum].sz = 1;
+  ssig.ptr[JoinAggRedistributeReq::ValueSectionNum].p = &valueWord;
+  ssig.ptr[JoinAggRedistributeReq::ValueSectionNum].sz = 1;
+  if (ss.sendSignal(n.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal REDISTRIBUTE_REQ failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+static int
+expectRedistributeRef(SignalSender &ss, const CteNode &n,
+                      const PeerIdentity &id, const char *context)
+{
+  SimpleSignal *resp = waitForSignal(ss, context);
+  if (resp == nullptr) return -1;
+  const int gsn = getGsn(resp);
+  if (gsn != GSN_JOIN_AGG_REDISTRIBUTE_REF) {
+    fprintf(stderr, "%s: got GSN %d, expected REDISTRIBUTE_REF\n", context,
+            gsn);
+    return -1;
+  }
+  const JoinAggRedistributeRef *ref =
+      reinterpret_cast<const JoinAggRedistributeRef *>(resp->getDataPtr());
+  if (ref->errorCode != ZJOIN_AGG_STATE_NOT_FOUND ||
+      ref->aggStateKey != n.key || ref->senderNodeId != n.node ||
+      ref->senderAggStateKey != FORGED_SENDER_KEY ||
+      ref->identWord != id.identWord ||
+      ref->transid[0] != id.transid[0] ||
+      ref->transid[1] != id.transid[1]) {
+    fprintf(stderr, "%s: REF errorCode=%u key=%u node=%u senderKey=0x%x "
+                    "identWord=0x%x transid=0x%x/0x%x\n",
+            context, ref->errorCode, ref->aggStateKey, ref->senderNodeId,
+            ref->senderAggStateKey, ref->identWord, ref->transid[0],
+            ref->transid[1]);
+    return -1;
+  }
+  V("%s: REF %u echoing the sender's words\n", context, ref->errorCode);
+  return 0;
+}
+
+static int
+sendRedistributeConf(SignalSender &ss, const CteNode &n,
+                     const PeerIdentity &id)
+{
+  SimpleSignal ssig;
+  JoinAggRedistributeConf *conf =
+      reinterpret_cast<JoinAggRedistributeConf *>(ssig.getDataPtrSend());
+  conf->aggStateKey = FORGED_SENDER_KEY;
+  conf->senderNodeId = n.node;
+  conf->senderAggStateKey = n.key;  /* the state an accepted CONF resumes */
+  conf->identWord = id.identWord;
+  conf->transid[0] = id.transid[0];
+  conf->transid[1] = id.transid[1];
+  ssig.set(ss, 0, numberToBlock(DBLQH, n.owner),
+           GSN_JOIN_AGG_REDISTRIBUTE_CONF,
+           JoinAggRedistributeConf::SignalLength);
+  if (ss.sendSignal(n.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal REDISTRIBUTE_CONF failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+static int
+sendRedistributeRef(SignalSender &ss, const CteNode &n,
+                    const PeerIdentity &id)
+{
+  SimpleSignal ssig;
+  JoinAggRedistributeRef *ref =
+      reinterpret_cast<JoinAggRedistributeRef *>(ssig.getDataPtrSend());
+  ref->aggStateKey = FORGED_SENDER_KEY;
+  ref->senderNodeId = n.node;
+  ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+  ref->senderAggStateKey = n.key;  /* the state an accepted REF aborts */
+  ref->identWord = id.identWord;
+  ref->transid[0] = id.transid[0];
+  ref->transid[1] = id.transid[1];
+  ssig.set(ss, 0, numberToBlock(DBLQH, n.owner),
+           GSN_JOIN_AGG_REDISTRIBUTE_REF,
+           JoinAggRedistributeRef::SignalLength);
+  if (ss.sendSignal(n.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal REDISTRIBUTE_REF failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+static int
+sendFinalRep(SignalSender &ss, const CteNode &n, const PeerIdentity &id,
+             Uint32 senderNodeId, Uint32 errorCode)
+{
+  SimpleSignal ssig;
+  JoinAggFinalRep *rep =
+      reinterpret_cast<JoinAggFinalRep *>(ssig.getDataPtrSend());
+  rep->aggStateKey = n.key;
+  rep->senderNodeId = senderNodeId;
+  rep->identWord = id.identWord;
+  rep->transid[0] = id.transid[0];
+  rep->transid[1] = id.transid[1];
+  rep->redistributeCountLo = 0;
+  rep->redistributeCountHi = 0;
+  rep->errorCode = errorCode;
+  ssig.set(ss, 0, numberToBlock(DBLQH, n.owner), GSN_JOIN_AGG_FINAL_REP,
+           JoinAggFinalRep::SignalLength);
+  if (ss.sendSignal(n.node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal FINAL_REP failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+/* Consumer requests for ID-6: the coordinator check precedes every
+ * state access, so no state and no AttrInfo are needed. */
+static int
+sendCteLookupReq(SignalSender &ss, Uint32 node, Uint32 instance, Uint32 key,
+                 Uint32 coordinatorRef)
+{
+  SimpleSignal ssig;
+  CteLookupReq *req = reinterpret_cast<CteLookupReq *>(ssig.getDataPtrSend());
+  req->senderRef = ss.getOwnRef();
+  req->senderData = FAKE_SENDER_DATA;
+  req->aggStateKey = key;
+  req->keyLen = 8;
+  req->resultRef = ss.getOwnRef();
+  req->resultData = FAKE_SENDER_DATA;
+  req->routeRef = coordinatorRef;
+  req->correlation = FAKE_SENDER_DATA;
+  req->joinAggStateKey = RNIL;
+  req->flags = 0;
+  ssig.set(ss, 0, numberToBlock(DBLQH, instance), GSN_CTE_LOOKUP_REQ,
+           CteLookupReq::SignalLength);
+  Uint32 keySection[3];
+  AttributeHeader::init(&keySection[0], 0, 8);
+  keySection[1] = 1;
+  keySection[2] = 0;
+  ssig.header.m_noOfSections = 1;
+  ssig.ptr[CteLookupReq::KeySectionNum].p = keySection;
+  ssig.ptr[CteLookupReq::KeySectionNum].sz = 3;
+  if (ss.sendSignal(node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal CTE_LOOKUP_REQ failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+static int
+sendNullRowReq(SignalSender &ss, Uint32 node, Uint32 instance, Uint32 key,
+               Uint32 coordinatorRef)
+{
+  SimpleSignal ssig;
+  JoinAggNullRowReq *req =
+      reinterpret_cast<JoinAggNullRowReq *>(ssig.getDataPtrSend());
+  req->senderRef = ss.getOwnRef();
+  req->aggStateKey = key;
+  req->transId[0] = FAKE_TRANS_ID1;
+  req->transId[1] = FAKE_TRANS_ID2;
+  req->requestPtrI = FAKE_SENDER_DATA;
+  req->treeNodePtrI = FAKE_SENDER_DATA + 1;
+  req->identWord = RNIL;
+  req->coordinatorRef = coordinatorRef;
+  ssig.set(ss, 0, numberToBlock(DBLQH, instance), GSN_JOIN_AGG_NULL_ROW_REQ,
+           JoinAggNullRowReq::SignalLength);
+  if (ss.sendSignal(node, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal NULL_ROW_REQ failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+/* One REF of the given GSN with the expected error code and echo. */
+static int
+expectRef(SignalSender &ss, int gsn, Uint32 expected, const char *context)
+{
+  SimpleSignal *resp = waitForSignal(ss, context);
+  if (resp == nullptr) return -1;
+  const int got = getGsn(resp);
+  if (got != gsn) {
+    fprintf(stderr, "%s: got GSN %d, expected GSN %d\n", context, got, gsn);
+    return -1;
+  }
+  Uint32 code = 0;
+  bool echoOk = true;
+  if (gsn == GSN_CTE_LOOKUP_REF) {
+    const CteLookupRef *ref =
+        reinterpret_cast<const CteLookupRef *>(resp->getDataPtr());
+    code = ref->errorCode;
+    echoOk = ref->senderData == FAKE_SENDER_DATA &&
+             ref->correlation == FAKE_SENDER_DATA;
+  } else if (gsn == GSN_JOIN_AGG_NULL_ROW_REF) {
+    const JoinAggNullRowRef *ref =
+        reinterpret_cast<const JoinAggNullRowRef *>(resp->getDataPtr());
+    code = ref->errorCode;
+    echoOk = ref->requestPtrI == FAKE_SENDER_DATA &&
+             ref->treeNodePtrI == FAKE_SENDER_DATA + 1;
+  } else {
+    fprintf(stderr, "%s: unsupported GSN %d\n", context, gsn);
+    return -1;
+  }
+  if (code != expected || !echoOk) {
+    fprintf(stderr, "%s: REF %u (echo %s), expected REF %u\n", context, code,
+            echoOk ? "ok" : "wrong", expected);
+    return -1;
+  }
+  V("%s: REF %u as expected\n", context, expected);
+  return 0;
 }
 
 /* TD-1: two RELEASEs back to back, two CONFs, one teardown. */
@@ -983,17 +1656,8 @@ static int
 td7(Ctx &c)
 {
   NdbNodeBitmask dataNodes;
-  for (int i = 0; i < c.restarter.getNumDbNodes(); i++) {
-    dataNodes.set((Uint32)c.restarter.getDbNodeId(i));
-  }
-  Uint32 badNode = 0;
-  for (Uint32 n = 1; n < 48 && badNode == 0; n++) {
-    if (!dataNodes.get(n)) badNode = n;
-  }
-  if (badNode == 0) {
-    fprintf(stderr, "TD-7: no free node id below 48\n");
-    return -1;
-  }
+  const Uint32 badNode = pickNonDataNodeId(c.restarter, &dataNodes);
+  if (badNode == 0) return -1;
   {
     SetupParams p;
     p.strategy |= JoinAggSetupReq::CTE_MODE_FLAG;
@@ -1053,6 +1717,265 @@ td8(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "TD-8");
 }
 
+/* ID-1: a REDISTRIBUTE_REQ naming the state's key under another identity
+ * is refused with a REF echoing the sender's own words; the state is
+ * untouched. */
+static int
+id1(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  const CteNode &target = nodes[0];
+  PeerIdentity forged = cteIdentity();
+  forged.identWord = packIdentWord(FAKE_REQUEST_ID, CTE_INDEX + 1);
+  if (sendRedistributeReq(c.ss, target, forged) != 0 ||
+      expectRedistributeRef(c.ss, target, forged, "ID-1 wrong identWord") !=
+          0)
+    return -1;
+  forged = cteIdentity();
+  forged.transid[1] ^= 1;
+  if (sendRedistributeReq(c.ss, target, forged) != 0 ||
+      expectRedistributeRef(c.ss, target, forged, "ID-1 wrong transid") != 0)
+    return -1;
+  if (cteCompleteAndVerify(c, nodes, rows, "ID-1") != 0) return -1;
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-1");
+}
+
+/* ID-2: a REDISTRIBUTE_CONF for the state's key under another identity is
+ * ignored.  An accepted CONF would resume a redistribution this state
+ * never started; the COMPLETE that follows from the same sender runs
+ * after the forgeries on the same owner LDM. */
+static int
+id2(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  PeerIdentity forged = cteIdentity();
+  forged.transid[0] ^= 0x10;
+  if (sendRedistributeConf(c.ss, nodes[0], forged) != 0) return -1;
+  forged = cteIdentity();
+  forged.identWord = packIdentWord(FAKE_REQUEST_ID + 1, CTE_INDEX);
+  if (sendRedistributeConf(c.ss, nodes[0], forged) != 0) return -1;
+  if (cteCompleteAndVerify(c, nodes, rows, "ID-2") != 0) return -1;
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-2");
+}
+
+/* ID-3: a REDISTRIBUTE_REF under another identity is ignored and the state
+ * completes; the control shows that the same REF with the right identity
+ * does abort it (COMPLETE answers COMPLETE_REF 1251). */
+static int
+id3(Ctx &c)
+{
+  {
+    std::vector<CteNode> nodes;
+    Uint32 rows = 0;
+    if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+    PeerIdentity forged = cteIdentity();
+    forged.identWord = packIdentWord(FAKE_REQUEST_ID + 1, CTE_INDEX);
+    if (sendRedistributeRef(c.ss, nodes[0], forged) != 0) return -1;
+    if (cteCompleteAndVerify(c, nodes, rows, "ID-3 forged REF") != 0)
+      return -1;
+    if (cteReleaseAll(c, nodes) != 0) return -1;
+  }
+  {
+    std::vector<CteNode> nodes;
+    Uint32 rows = 0;
+    if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+    if (sendRedistributeRef(c.ss, nodes[0], cteIdentity()) != 0) return -1;
+    if (cteCompleteAll(c, nodes, ZJOIN_AGG_STATE_NOT_FOUND, nodes[0].node) !=
+        0) {
+      fprintf(stderr, "ID-3 control: a REF with the correct identity did "
+                      "not abort the state\n");
+      return -1;
+    }
+    if (cteReleaseAll(c, nodes) != 0) return -1;
+  }
+  return checkLeaks(c.ss, c.restarter, "ID-3");
+}
+
+/* ID-4: success and error FINAL_REPs under another identity are ignored.
+ * An accepted error report aborts even a single-node state, whose READY
+ * check does not depend on the local node's successful FINAL bit. */
+static int
+id4(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  const Uint32 peer = nodes.size() > 1 ? nodes[1].node : nodes[0].node;
+  PeerIdentity forged = cteIdentity();
+  forged.identWord = packIdentWord(FAKE_REQUEST_ID, CTE_INDEX + 1);
+  if (sendFinalRep(c.ss, nodes[0], forged, peer, 0) != 0 ||
+      sendFinalRep(c.ss, nodes[0], forged, peer,
+                    ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+    return -1;
+  forged = cteIdentity();
+  forged.transid[0] ^= 0x10;
+  if (sendFinalRep(c.ss, nodes[0], forged, peer, 0) != 0 ||
+      sendFinalRep(c.ss, nodes[0], forged, peer,
+                    ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+    return -1;
+  if (cteCompleteAndVerify(c, nodes, rows, "ID-4") != 0) return -1;
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-4");
+}
+
+/* ID-5: continuation tokens.  A paused scan's token is bound to the
+ * requesting node and freed on EndOfData or close; anything else answers
+ * CTE_SCAN_REF 1251 without touching the record. */
+static int
+id5(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  if (cteCompleteAll(c, nodes, 0, 0) != 0) return -1;
+  const CteNode &src = nodes[0];
+
+  CteScanParams live(src, c.ss);
+  live.batchSize = 1;
+  bool endOfData = false;
+  Uint32 batchRows = 0;
+  if (cteScanBatch(c.ss, live, "ID-5 first batch", batchRows, endOfData) != 0)
+    return -1;
+  if (endOfData) {
+    fprintf(stderr, "ID-5: node %u holds too few groups to pause a scan\n",
+            src.node);
+    return -1;
+  }
+  Uint32 groups = batchRows;
+  const Uint32 token = live.scanIterI;
+
+  {
+    CteScanParams p = live;
+    p.scanIterI = UNKNOWN_SCAN_TOKEN;
+    if (cteScanExpectRef(c.ss, p, "ID-5 unknown token",
+                         ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+      return -1;
+  }
+  if (c.con2 != nullptr) {
+    /* The live token presented by another API node. */
+    ScopedSenderUnlock unlockOwner(c.ss);
+    SignalSender other(c.con2);
+    other.lock();
+    CteScanParams p(src, other);
+    p.scanIterI = token;
+    const int rc = cteScanExpectRef(other, p, "ID-5 token from another node",
+                                    ZJOIN_AGG_STATE_NOT_FOUND);
+    other.unlock();
+    if (rc != 0) return -1;
+  } else {
+    fprintf(stderr, "ID-5: [SKIPPED] no second API node for the "
+                    "wrong-node token\n");
+  }
+  /* The legitimate continuations still drain the scan. */
+  live.batchSize = CTE_SCAN_BATCH;
+  while (!endOfData) {
+    if (cteScanBatch(c.ss, live, "ID-5 continuation", batchRows,
+                     endOfData) != 0)
+      return -1;
+    groups += batchRows;
+  }
+  {
+    std::vector<CteNode> rest(nodes.begin() + 1, nodes.end());
+    Uint32 restGroups = 0;
+    if (cteScanGroups(c, rest, restGroups) != 0) return -1;
+    groups += restGroups;
+  }
+  if (groups != rows) {
+    fprintf(stderr, "ID-5: %u groups scanned, expected %u\n", groups, rows);
+    return -1;
+  }
+  {
+    CteScanParams p = live;
+    p.scanIterI = token;
+    if (cteScanExpectRef(c.ss, p, "ID-5 token released by EndOfData",
+                         ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+      return -1;
+  }
+  {
+    /* A second paused scan, released by a close request. */
+    CteScanParams p(src, c.ss);
+    p.batchSize = 1;
+    if (cteScanBatch(c.ss, p, "ID-5 second scan", batchRows, endOfData) != 0)
+      return -1;
+    if (endOfData) {
+      fprintf(stderr, "ID-5: the second scan did not pause\n");
+      return -1;
+    }
+    const Uint32 token2 = p.scanIterI;
+    CteScanParams close = p;
+    close.flags = CteScanReq::CloseFlag;
+    if (sendCteScanReq(c.ss, close) != 0) return -1;
+    CteScanConf conf = {};
+    Uint32 refCode = 0;
+    const int rc = waitCteScanReply(c.ss, "ID-5 close", batchRows, conf,
+                                    refCode);
+    if (rc != 0 || batchRows != 0 || conf.numRows != 0 ||
+        (conf.flags & CteScanConf::EndOfData) == 0 || conf.scanIterI != RNIL) {
+      fprintf(stderr, "ID-5 close: rc=%d rows=%u numRows=%u flags=%u "
+                      "scanIterI=%u refCode=%u\n",
+              rc, batchRows, conf.numRows, conf.flags, conf.scanIterI,
+              refCode);
+      return -1;
+    }
+    p.scanIterI = token2;
+    if (cteScanExpectRef(c.ss, p, "ID-5 token released by close",
+                         ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+      return -1;
+  }
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-5");
+}
+
+/* ID-6: a consumer request whose coordinator is DBTC on a node that is
+ * down is refused with 286 before any state access; with DBTC on a live
+ * data node the same request reaches the state lookup (1251). */
+static int
+id6(Ctx &c)
+{
+  const Uint32 node = (Uint32)c.restarter.getDbNodeId(0);
+  const Uint32 downNode = pickNonDataNodeId(c.restarter, nullptr);
+  if (downNode == 0) return -1;
+  const Uint32 downTc = numberToRef(DBTC, downNode);
+  /* An API reference bypasses the node-status check entirely. */
+  const Uint32 liveTc = numberToRef(DBTC, node);
+  V("ID-6: coordinator reference 0x%08x names node %u\n", downTc, downNode);
+  {
+    CteNode n = {node, UNKNOWN_STATE_KEY, 1};
+    CteScanParams p(n, c.ss);
+    p.coordinatorRef = downTc;
+    if (cteScanExpectRef(c.ss, p, "ID-6 CTE_SCAN_REQ, coordinator down",
+                         ZNODEFAIL_BEFORE_COMMIT) != 0)
+      return -1;
+    p.coordinatorRef = liveTc;
+    if (cteScanExpectRef(c.ss, p, "ID-6 CTE_SCAN_REQ, coordinator live",
+                         ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+      return -1;
+  }
+  if (sendCteLookupReq(c.ss, node, 1, UNKNOWN_STATE_KEY, downTc) != 0 ||
+      expectRef(c.ss, GSN_CTE_LOOKUP_REF, ZNODEFAIL_BEFORE_COMMIT,
+                "ID-6 CTE_LOOKUP_REQ, coordinator down") != 0)
+    return -1;
+  if (sendCteLookupReq(c.ss, node, 1, UNKNOWN_STATE_KEY, liveTc) != 0 ||
+      expectRef(c.ss, GSN_CTE_LOOKUP_REF, ZJOIN_AGG_STATE_NOT_FOUND,
+                "ID-6 CTE_LOOKUP_REQ, coordinator live") != 0)
+    return -1;
+  if (sendNullRowReq(c.ss, node, 1, UNKNOWN_STATE_KEY, downTc) != 0 ||
+      expectRef(c.ss, GSN_JOIN_AGG_NULL_ROW_REF, ZNODEFAIL_BEFORE_COMMIT,
+                "ID-6 NULL_ROW_REQ, coordinator down") != 0)
+    return -1;
+  if (sendNullRowReq(c.ss, node, 1, UNKNOWN_STATE_KEY, liveTc) != 0 ||
+      expectRef(c.ss, GSN_JOIN_AGG_NULL_ROW_REF, ZJOIN_AGG_STATE_NOT_FOUND,
+                "ID-6 NULL_ROW_REQ, coordinator live") != 0)
+    return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-6");
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -1110,11 +2033,22 @@ int main(int argc, char **argv)
     const std::vector<Uint32> prog =
         buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
 
+    /* A second API node id for ID-5 (a paused scan's token presented
+     * from another node).  Optional: that sub-case is skipped without it.
+     * Destroyed before ndb and con, after the SignalSender using it. */
+    Ndb_cluster_connection con2(connectString);
+    Ndb_cluster_connection *con2Ptr = nullptr;
+    if (con2.connect(2, 1, 0) == 0 && con2.wait_until_ready(30, 0) >= 0) {
+      con2Ptr = &con2;
+    } else {
+      fprintf(stderr, "No second API node id available\n");
+    }
+
     {
       SignalSender ss(&con);
       ss.lock();
       Ctx c = {ss, con, restarter, meta, prog,
-               (Uint32)restarter.getDbNodeId(0)};
+               (Uint32)restarter.getDbNodeId(0), con2Ptr};
       V("Driving data node %u from ref 0x%08x\n", c.node, ss.getOwnRef());
 
       struct Case { const char *name; int (*fn)(Ctx &); };
@@ -1127,6 +2061,12 @@ int main(int argc, char **argv)
           {"TD-6 duplicate RELEASE queued by the proxy", td6},
           {"TD-7 SETUP naming an unreachable node", td7},
           {"TD-8 legacy-length CTE SETUP", td8},
+          {"ID-1 REDISTRIBUTE_REQ under another identity", id1},
+          {"ID-2 REDISTRIBUTE_CONF under another identity", id2},
+          {"ID-3 REDISTRIBUTE_REF under another identity", id3},
+          {"ID-4 FINAL_REP under another identity", id4},
+          {"ID-5 CTE scan continuation tokens", id5},
+          {"ID-6 consumer requests of a failed coordinator", id6},
       };
       for (unsigned i = 0; i < NDB_ARRAY_SIZE(cases); i++) {
         const int rc = cases[i].fn(c);

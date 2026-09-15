@@ -231,7 +231,7 @@ crash in autotest.
 
 | Code | Block | Checks |
 |---|---|---|
-| 2362 `LqhDumpCteIterStates` | DBLQH, every LDM and query instance | `c_cteScanIterStatePool` used == 0 (log senderNodeId, coordinatorNodeId, aggFeed) |
+| 2362 `LqhDumpCteIterStates` | DBLQH, every LDM and query instance | `c_cteScanIterStatePool` used == 0 (log senderNodeId, coordinatorNodeId, aggFeed); two-word form emits the JOIN_AGG_LEAK_CHECK_OK cookie event like 2361 |
 | 2363 `LqhDumpJoinAggIdentity` | DBLQH instance 1 (shared table) | identity table has no entries and no placeholders; park pool has no records (`s_jaiFreeHead` chain length == JAI_MAX_PARK) |
 | 2560 `TcDumpJoinAggRecords` | DBTC | `AggCompleteRecord` pool, CTE scan-fragment handle pool and `m_joinAggNodes` allocations are empty; no ScanRecord in WAIT_JOIN_AGG_* or CLOSING_SCAN |
 | new `SpjDumpRequests` | DBSPJ (add `execDUMP_STATE_ORD`, register in `DbspjInit.cpp`) | request pool and tree-node pool empty; log any request with its state and outstanding count |
@@ -396,13 +396,22 @@ two MTR files (0.5 day).
 New binary `block_unit_test/testCteProtocol.cpp` (SignalSender, links
 NDBTEST) plus additions to `testJoinAgg` and `testCteDbtc`. Deterministic:
 no node kills, error inserts only where a real DBLQH reply must be shaped.
-Status: `testCteProtocol` exists with section 5.3 (TD-1 .. TD-8), MTR
-wrapper `suite/ndb_push_agg/t/testCteProtocol.test` (the suite that runs
-the other block tests; `NDB_PUSH_AGG_DIR` locates the binary). It drives
-one data node: SETUP (legacy or full length), scan feeds to populate
-groups, COMPLETE with the result stream, RELEASE variants, then DUMP
-2361 / 2363 on every node after a settle time for the teardown chain.
-Each dump carries a cookie and must produce its matching
+Status: `testCteProtocol` exists with sections 5.3 (TD-1 .. TD-8) and
+5.4 (ID-1 .. ID-6), MTR wrapper `suite/ndb_push_agg/t/testCteProtocol.test`
+(the suite that runs the other block tests; `NDB_PUSH_AGG_DIR` locates the
+binary). Section 5.3 drives one data node: SETUP (legacy or full length),
+scan feeds to populate groups, COMPLETE with the result stream, RELEASE
+variants. Section 5.4 builds a CTE state on every data node (CTE-mode
+SETUP, fragment scans, COMPLETE with the per-node key triples, so it
+works on one node as well as on the multi-node suites) and forges the
+peer and consumer signals against it. COMPLETE collection requires one
+reply from each expected owner, with matching requestId and senderData;
+duplicate replies cannot substitute for a missing participant.
+ID-5 opens a second cluster
+connection so a token can be presented from another API node id (the
+sub-case is skipped when no node id is free). After every case DUMP
+2361 / 2362 / 2363 run on every node after a settle time for the
+teardown chain. Each dump carries a cookie and must produce its matching
 JOIN_AGG_LEAK_CHECK_OK event. Both management return values are checked;
 all data nodes must remain STARTED with unchanged connection counters
 across verification, so an automatic restart cannot hide a leak crash.
@@ -442,18 +451,20 @@ SCAN_TABREF and result rows):
 
 ### 5.4 Identity validation on keyed peer signals (`testCteProtocol`, hand-built signals)
 
-Set up a real two-node CTE through `testCteDbtc`-style flow, capture the
-keys from SETUP_CONF, then send forged signals to the owner instance:
+Set up a CTE state on every data node with the direct SETUP / scan /
+COMPLETE flow (the keys and owner instances come from SETUP_CONF), then
+send forged signals to the owner instance; every forgery names the
+state's real pool key, the slot-reuse case the identity checks exist for:
 
 | ID | Signal | Forgery | Expected |
 |---|---|---|---|
-| ID-1 | REDISTRIBUTE_REQ | wrong identWord, valid key | dropped, REF(1251) to the test; the real query still completes |
-| ID-2 | REDISTRIBUTE_CONF | wrong transid | ignored; sender (real) unaffected |
-| ID-3 | REDISTRIBUTE_REF | wrong identWord | ignored; no abort of the real state |
-| ID-4 | FINAL_REP | wrong identWord | ignored; owner does not finalize early |
-| ID-5 | CTE_SCAN_REQ continuation | recycled / invalid scanIterI, wrong sender node | CTE_SCAN_REF 1251; no crash |
-| ID-6 | CTE_SCAN_REQ / CTE_LOOKUP_REQ / NULL_ROW_REQ | coordinatorRef of a node marked down (use a node restarted with `-n`) | REF 286 before any state access |
-| ID-7 | any of the above | shorter-than-required signal length | node asserts (documents the `>=` contract; run only in a throwaway cluster, or skip) |
+| ID-1 | REDISTRIBUTE_REQ | wrong identWord, then wrong transid, valid key | REF 1251 to the test echoing its senderAggStateKey, identWord and transid; the state still reaches CTE_READY and a scan returns every group - **done** |
+| ID-2 | REDISTRIBUTE_CONF | wrong transid, then wrong identWord, the state's key as senderAggStateKey | ignored (an accepted CONF would resume a redistribution never started); the state completes normally - **done** |
+| ID-3 | REDISTRIBUTE_REF | wrong identWord | ignored, the state completes normally; control: the correct identity aborts the state and its COMPLETE answers COMPLETE_REF 1251 - **done** |
+| ID-4 | FINAL_REP | wrong identWord, then wrong transid, each with success and error reports | ignored; the state completes normally; accepting an error report aborts even a single-node state - **done** |
+| ID-5 | CTE_SCAN_REQ continuation | a token no record had; a paused scan's live token from another API node id; the token after EndOfData; a token released by a close request | CTE_SCAN_REF 1251 each, no rows; the legitimate continuations return every group; 2362 clean - **done** |
+| ID-6 | CTE_SCAN_REQ / CTE_LOOKUP_REQ / NULL_ROW_REQ | coordinatorRef = DBTC on a node id that never started (hostRecord keeps it ZNODE_DOWN, the same test a `-n` restart leaves behind) | REF 286 before any state access; the same requests naming DBTC on a live data node and an unknown key answer 1251 - **done** |
+| ID-7 | any of the above | shorter-than-required signal length | node asserts (documents the `>=` contract); not run, it would crash the node |
 
 ### 5.5 Page-free chain
 
