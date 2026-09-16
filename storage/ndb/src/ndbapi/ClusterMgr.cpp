@@ -2545,6 +2545,20 @@ void ClusterMgr::execNODE_FAILREP(const NdbApiSignal *sig,
                                   const LinearSectionPtr ptr[]) {
   DBUG_ENTER("ClusterMgr::execNODE_FAILREP");
   const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
+  /**
+   * We can arrive here from two paths. One is when the data nodes sends
+   * a bitmask of failed data nodes, this uses the NdbNodeBitmask where
+   * there can be at most 144 bits. This one will use the
+   * else where it will be assigned using bitmask_assign_checked. This
+   * will copy the 144 bits and zero out the remainder of the bits.
+   *
+   * The second path here is from the code above, this will send the
+   * full NodeBitmask with a single bit set. Since this is always sent
+   * through a method call it will always be the size of NodeBitmask
+   * even after an upgrade since both sender and receiver will use the
+   * new bitmask. The bitmask_assign_checked will still verify that
+   * we are not sending a bitmask bigger than the NodeBitmask.
+   */
   NodeBitmask mask;
   if (sig->getLength() == NodeFailRep::SignalLengthLong_v1) {
     // Legacy fixed-length format, frozen at the 64-word mask
