@@ -460,7 +460,15 @@ int TransporterFacade::start_instance(NodeId nodeId,
   theOwnId = nodeId;
   DEBUG_FPRINTF((stderr, "(%u)FAC:start_instance\n", ownId()));
 
-  theTransporterRegistry = new TransporterRegistry(this, this);
+  /**
+   * Size the registry's transporter id indexed arrays and poll structures
+   * for a client: one transporter per data node, per other MGM node and
+   * to ourselves (see MAX_TRPS), instead of the data node default that
+   * also covers 8192 node ids and the node group multi transporters. The
+   * registry refuses to create a transporter beyond this and ::configure()
+   * fails cleanly if a configuration ever needs more.
+   */
+  theTransporterRegistry = new TransporterRegistry(this, this, MAX_TRPS);
   if (theTransporterRegistry == nullptr) {
     DBUG_RETURN(-1);
   }

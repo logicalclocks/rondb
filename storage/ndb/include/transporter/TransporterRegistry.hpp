@@ -262,6 +262,18 @@ class TransporterRegistry {
  public:
   /**
    * Constructor
+   *
+   * maxTransporters is the number of transporter id slots. Transporter
+   * ids are assigned sequentially from 1 (id 0 is reserved), so at most
+   * maxTransporters - 1 transporters can exist; configureTransporter()
+   * refuses to create more. Data nodes use the default, which covers
+   * every node id plus the node group multi transporters. API and MGM
+   * clients pass TransporterFacade::MAX_TRPS, since a client only has one
+   * transporter per data node, per other MGM node and to itself.
+   *
+   * Arrays indexed by node id (theNodeIdTransporters, peerUpIndicators,
+   * connectingTime, ...) are always sized ABS_MAX_NODES and are not
+   * affected by this argument.
    */
   TransporterRegistry(TransporterCallback *callback,
                       TransporterReceiveHandle *receiveHandle,
@@ -729,12 +741,14 @@ class TransporterRegistry {
    * peerUpIndicators[nodeId] is set by receiver thread
    * to indicate that node is probable up.
    * It is read and cleared by start clients thread.
+   * Indexed by node id: ABS_MAX_NODES entries.
    */
   volatile bool *peerUpIndicators;
 
   /**
    * Count of how long time one have been attempting to
    * connect to node nodeId, in units of 100ms.
+   * Indexed by node id: ABS_MAX_NODES entries.
    */
   Uint32 *connectingTime;
 

@@ -389,8 +389,15 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
   performStates = new PerformState[maxTransporters];
   nodeActiveStates    = new bool              [ABS_MAX_NODES];
   ioStates = new IOState[maxTransporters];
-  peerUpIndicators = new bool[maxTransporters];
-  connectingTime = new Uint32[maxTransporters];
+  /**
+   * peerUpIndicators and connectingTime are indexed by node id (see
+   * indicate_node_up(), get_and_clear_node_up_indicator() and the
+   * backoff_* helpers), not by transporter id, and are initialized in
+   * the ABS_MAX_NODES loop below. They must therefore not be sized by
+   * maxTransporters, which a client registry sets far below ABS_MAX_NODES.
+   */
+  peerUpIndicators = new bool[ABS_MAX_NODES];
+  connectingTime = new Uint32[ABS_MAX_NODES];
   m_disconnect_errnum = new int[maxTransporters];
   m_disconnect_enomem_error = new Uint32[maxTransporters];
   m_error_states = new ErrorState[maxTransporters];
@@ -897,6 +904,8 @@ bool TransporterRegistry::connect_server(NdbSocket &&socket, BaseString &msg,
 void TransporterRegistry::insert_allTransporters(Transporter *t) {
   TrpId trp_id = t->getTransporterIndex();
   if (trp_id == 0) {
+    /* Ids are 1..maxTransporters-1, never overrun the id indexed arrays */
+    require(nTransporters + 1 < maxTransporters);
     nTransporters++;
     require(allTransporters[nTransporters] == nullptr);
     allTransporters[nTransporters] = t;
@@ -947,6 +956,22 @@ bool TransporterRegistry::configureTransporter(
 
   DEBUG("Configuring transporter from " << localNodeId << " to "
                                         << remoteNodeId);
+
+  /**
+   * Transporter ids are assigned sequentially from 1 (id 0 is reserved)
+   * and index arrays of maxTransporters entries. Refuse to create the
+   * transporter rather than overrun them. The caller (IPCConfig) logs the
+   * failed node pair and fails the whole configuration, so an API or MGM
+   * client with more transporters than TransporterFacade::MAX_TRPS fails
+   * to start instead of corrupting memory.
+   */
+  if (unlikely(nTransporters + 1 >= maxTransporters)) {
+    g_eventLogger->error(
+        "Node %u can not create a transporter to node %u, all %u "
+        "transporter id slots are in use",
+        localNodeId, remoteNodeId, maxTransporters - 1);
+    return false;
+  }
 
   switch (config->type) {
     case tt_TCP_TRANSPORTER:
@@ -1015,6 +1040,7 @@ bool TransporterRegistry::createTCPTransporter(
     TransporterConfiguration *config) {
   TCP_Transporter *t = nullptr;
   /* Don't use index 0, special use case for extra transporters */
+  assert(nTransporters + 1 < maxTransporters);  // checked by caller
   config->transporterIndex = nTransporters + 1;
   if (config->remoteNodeId == config->localNodeId) {
     t = new Loopback_Transporter(*this, config);
@@ -1047,6 +1073,7 @@ bool TransporterRegistry::createSHMTransporter(TransporterConfiguration *config
   DBUG_ENTER("TransporterRegistry::createTransporter SHM");
 
   /* Don't use index 0, special use case for extra  transporters */
+  assert(nTransporters + 1 < maxTransporters);  // checked by caller
   config->transporterIndex = nTransporters + 1;
 
   SHM_Transporter *t = new SHM_Transporter(
@@ -1098,6 +1125,7 @@ bool TransporterRegistry::createRDMATransporter(
   DBUG_ENTER("TransporterRegistry::createTransporter RDMA");
 
   /* Don't use index 0, special use case for extra transporters */
+  assert(nTransporters + 1 < maxTransporters);  // checked by caller
   config->transporterIndex = nTransporters + 1;
 
   /* Match SHM_Transporter style: tolerate (impossible) NULL return from
@@ -2859,7 +2887,7 @@ void TransporterRegistry::printState() {
   ndbout << "-- TransporterRegistry -- " << endl
          << endl
          << "Transporters = " << nTransporters << endl;
-  for (TrpId trpId = 1; trpId <= maxTransporters; trpId++) {
+  for (TrpId trpId = 1; trpId <= nTransporters; trpId++) {
     if (allTransporters[trpId] != nullptr) {
       const NodeId remoteNodeId = allTransporters[trpId]->getRemoteNodeId();
       ndbout << "Transporter: " << trpId << " remoteNodeId: " << remoteNodeId
