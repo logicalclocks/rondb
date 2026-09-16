@@ -1,0 +1,9 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# PK-8: kill the coordinator while parked replays are held on a peer (error insert 5150)
+"[dropping NDBT test tables]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# CteCoordinatorDiesParkedReplay passed

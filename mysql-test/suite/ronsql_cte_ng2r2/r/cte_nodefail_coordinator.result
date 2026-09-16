@@ -1,0 +1,4 @@
+RonSQL coordinator: baseline matched
+RonSQL coordinator: observed hold and killed the intended node
+RonSQL coordinator: bounded completion with a checked result or node-failure error
+RonSQL coordinator: recovery query matched and leak checks acknowledged

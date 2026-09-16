@@ -387,6 +387,10 @@ class FsReadWriteReq;
 #define ZCONTINUE_FREE_CTE_REDIST_PAGES 58
 /* Test hook 5147: a CTE_SCAN_CONF held for a local requester. */
 #define ZCONTINUE_CTE_SCAN_CONF_HELD 59
+#ifdef ERROR_INSERT
+/* Test hook 5150: one timer per instance re-checks the held replays. */
+#define ZCONTINUE_JOIN_AGG_FLUSH_HELD 60
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -512,6 +516,14 @@ class FsReadWriteReq;
 #define ZCONTINUE_JOIN_AGG_TEARDOWN 50
 #ifdef ERROR_INSERT
 #define ZCONTINUE_JOIN_AGG_SETUP_REF 51
+/* DBLQH error inserts from this code on are delivered to the query-thread
+ * LQH instances (DBQLQH) as well as to the LDM instances: DblqhProxy
+ * forwards their NDB_TAMPER to DbqlqhProxy.  TRPMAN routes V_QUERY-
+ * addressed LQHKEYREQ, SCAN_FRAGREQ, CTE_LOOKUP_REQ and
+ * JOIN_AGG_NULL_ROW_REQ to either kind of instance, so a hook that acts
+ * on whichever instance runs the request (the RONDB-1120 hooks) is
+ * incomplete on the LDMs alone. */
+#define ZFIRST_QUERY_THREAD_ERROR_INSERT 5128
 #endif
 
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
@@ -3744,6 +3756,9 @@ private:
       Uint32 *keyOut);
   void joinAggParkSweep(Signal *signal);
   void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
+#ifdef ERROR_INSERT
+  void joinAggReleaseHeldFlush(Signal *signal);
+#endif
   Uint32 initScanrec(const class ScanFragReq *,
                      Uint32 aiLen,
                      TcConnectionrecPtr,
@@ -4579,6 +4594,23 @@ public:
    * into a self-amplifying signal storm.
    */
   Uint32 m_delay_copy_park_tc = RNIL;
+  /**
+   * ERROR_INSERT 5150 (PK-8): park records whose replay this instance
+   * holds until NODE_FAILREP clears the insert, chained through m_next,
+   * and whether the single re-check timer is scheduled.  One timer per
+   * instance, never one per record: the time queue holds 512 entries.
+   */
+  Uint32 m_join_agg_held_flush_head = RNIL;
+  bool m_join_agg_held_flush_timer = false;
+  /**
+   * PK-8 selects one held NULL_ROW per instance and arming. The park
+   * record index identifies that request until replay; the iteration
+   * distinguishes later uses of the same pool slot or coordinator.
+   * The guard may report rejection only during this record's replay.
+   */
+  Uint32 m_join_agg_observed_null_row = RNIL;
+  Uint32 m_join_agg_observed_iteration = 0;
+  bool m_join_agg_observed_replay = false;
 #endif
 
   // Configurable

@@ -2421,9 +2421,22 @@ public:
   // Test statistics for DUMP 2365: cumulative parks per GSN class
   // (LQHKEYREQ, SCAN_FRAGREQ, NULL_ROW_REQ, COMPLETE_REQ,
   // REDISTRIBUTE_REQ, FINAL_REP) and park records in use right now.
+  enum JoinAggParkClass {
+    JAI_PARK_CLASS_LQHKEY = 0,
+    JAI_PARK_CLASS_SCANFRAG = 1,
+    JAI_PARK_CLASS_NULLROW = 2,
+    JAI_PARK_CLASS_COMPLETE = 3,
+    JAI_PARK_CLASS_REDIST = 4,
+    JAI_PARK_CLASS_FINAL = 5
+  };
   static constexpr Uint32 JAI_PARK_GSN_CLASSES = 6;
   static void joinAggParkStats(Uint32 counts[JAI_PARK_GSN_CLASSES],
                                Uint32 *parkRecsInUse);
+  // Test probe (error insert 5150): bitmask of the JoinAggParkClass
+  // values parked on this identity's unfilled placeholder; 0 when the
+  // identity is absent or already filled by SETUP.
+  static Uint32 joinAggIdentityParkedClasses(const Uint32 *transid,
+                                             Uint32 queryTag, Uint32 cteId);
 
   //------------------------------------------------------------------
   // RONDB-1120 P2: waiter-queue parking (plan 2.2).  A consumer

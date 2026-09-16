@@ -6382,12 +6382,15 @@ static std::atomic<Uint32> s_jaiParkInUse{0};
 
 static inline Uint32 jaiParkClass(Uint32 gsn) {
   switch (gsn) {
-    case GSN_LQHKEYREQ: return 0;
-    case GSN_SCAN_FRAGREQ: return 1;
-    case GSN_JOIN_AGG_NULL_ROW_REQ: return 2;
-    case GSN_JOIN_AGG_COMPLETE_REQ: return 3;
-    case GSN_JOIN_AGG_REDISTRIBUTE_REQ: return 4;
-    default: return 5;  // GSN_JOIN_AGG_FINAL_REP
+    case GSN_LQHKEYREQ: return SimulatedBlock::JAI_PARK_CLASS_LQHKEY;
+    case GSN_SCAN_FRAGREQ: return SimulatedBlock::JAI_PARK_CLASS_SCANFRAG;
+    case GSN_JOIN_AGG_NULL_ROW_REQ:
+      return SimulatedBlock::JAI_PARK_CLASS_NULLROW;
+    case GSN_JOIN_AGG_COMPLETE_REQ:
+      return SimulatedBlock::JAI_PARK_CLASS_COMPLETE;
+    case GSN_JOIN_AGG_REDISTRIBUTE_REQ:
+      return SimulatedBlock::JAI_PARK_CLASS_REDIST;
+    default: return SimulatedBlock::JAI_PARK_CLASS_FINAL;
   }
 }
 
@@ -6612,6 +6615,31 @@ void SimulatedBlock::joinAggParkStats(Uint32 counts[JAI_PARK_GSN_CLASSES],
     counts[c] = s_jaiParkCounts[c].load(std::memory_order_relaxed);
   }
   *parkRecsInUse = s_jaiParkInUse.load(std::memory_order_relaxed);
+}
+
+Uint32 SimulatedBlock::joinAggIdentityParkedClasses(const Uint32 *transid,
+                                                    Uint32 queryTag,
+                                                    Uint32 cteId) {
+  require(s_jaiEntries != nullptr);
+  const Uint32 hash = jaiHash(transid, queryTag, cteId);
+  JoinAggIdentityPartition &part = s_jaiPartitions[jaiPartitionOf(hash)];
+  const Uint32 bucket = jaiBucketOf(hash);
+  Uint32 mask = 0;
+  NdbMutex_Lock(part.m_mutex);
+  for (Uint32 i = part.m_buckets[bucket]; i != RNIL;
+       i = jaiEntry(i).m_next) {
+    const JoinAggIdentityEntry &e = jaiEntry(i);
+    if (!jaiMatches(e, transid, queryTag, cteId)) continue;
+    if (e.m_aggStateKey == RNIL) {
+      // The waiter chain is stable under the partition mutex.
+      for (Uint32 r = e.m_waiterHead; r != RNIL; r = s_jaiParkRecs[r].m_next) {
+        mask |= 1u << jaiParkClass(s_jaiParkRecs[r].m_gsn);
+      }
+    }
+    break;
+  }
+  NdbMutex_Unlock(part.m_mutex);
+  return mask;
 }
 
 Uint32 SimulatedBlock::joinAggSeizeParkRec() {

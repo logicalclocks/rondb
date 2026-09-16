@@ -19,13 +19,13 @@ Companion docs: `joinagg_setup_overlap_plan.md` (identity table, parking,
 
 | Item | Count | Where |
 |---|---|---|
-| New error inserts | 27 (DBLQH 5128-5149, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
+| New error inserts | 28 (DBLQH 5128-5150, DBTC 8311-8313, DBSPJ 17532-17533) | kernel blocks |
 | New DUMP codes (leak checks) | 5 (LQH 2362-2364, TC 2560, SPJ new handler + 1 code) + LQH 2365 (park statistics, not a check) | kernel blocks |
-| NDBT node-failure cases | 12 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
+| NDBT node-failure cases | 12 + PK-8 | `testNodeRestart` (new `testCteNodeFail` if the binary grows too large) |
 | Block-level protocol / state-machine cases | 14 | `block_unit_test/testCteDbtc`, `testJoinAgg`, new `testCteProtocol` |
-| Parking cases | 8 | `block_unit_test/testCteProtocol` + 2 in `testNodeRestart` |
-| MTR cases | 6 test files, developed inside Phases 1-3 (maintainer direction) | `mysql-test/suite/ronsql_cte` (4-node variant `ronsql_cte_ng2r2`) |
-| Autotest registration | all NDBT cases | `storage/ndb/test/run-test/daily-basic--0N-tests.txt` |
+| Parking cases | 8 | PK-1..PK-7 in `block_unit_test/testCteProtocol`, PK-8 (a node kill) in `testNodeRestart` beside NF-11 / NF-12 |
+| MTR cases | 7 RonSQL test files developed inside Phases 1-3 (maintainer direction) + 13 wrappers of the NDBT cases - **done** | `mysql-test/suite/ronsql_cte` (4-node variant `ronsql_cte_ng2r2`), wrappers in `ndb_cte` / `ndb_cte_ng2r2` |
+| Autotest registration | all NDBT cases - **done** | `storage/ndb/test/run-test/daily-basic--16-tests.txt` (next to `JoinAggNodeRestart`), 3- and 4-node cases also in `16node-tests.txt` |
 
 ---
 
@@ -193,6 +193,9 @@ at all today.
 All are `ERROR_INSERTED(n)` (self-clearing where "once" is stated, via
 `CLEAR_ERROR_INSERT_VALUE`), guarded by `#ifdef ERROR_INSERT`, and each
 gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
+All codes from 5128 on are armed on the query-thread LQH instances as
+well as on the LDMs (DblqhProxy forwards them to DbqlqhProxy; F-8), since
+TRPMAN may run the hooked request on either kind of instance.
 
 | Code | Where | Effect | Window it opens |
 |---|---|---|---|
@@ -208,16 +211,17 @@ gets a one-line entry in `TESTING_GUIDE.md`, "ERROR_INSERT for Testing".
 | 5137 | Proxy `continueJoinAggTeardown` | `JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH` = 1 while set | long teardown chain overlapping NF reclaim / duplicate release |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggParkSweep` | hold the selected SETUP_REQs (extra: 0 all, 0xFFFF main, 0xFFFE none, else cteIndex + 1) and every placeholder sweeper until cleared | switch extra to 0xFFFE to release SETUP while sweepers remain held; clear after replay (PK-1) |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | leave one identity unfilled, send SETUP_REF 1251 after 200 ms | placeholder never filled: sweeper REF path for every parked GSN |
-| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold inbound redistribute requests with RI_NEED_CONF, 200 ms at a time, until cleared; other rows proceed without timer entries | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2) |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | hold inbound redistribute requests with RI_NEED_CONF, 200 ms at a time, until cleared; other rows proceed without timer entries; `[CTE_NF2_CONF_HELD node=P iteration=I requester=R]` on first arrival and, for a matching state owned by this worker, `[CTE_RONSQL_REDIST_HELD node=P cookie=I requester=R coordinator=C]` | senders paused in CTE_REDISTRIBUTING for as long as the kill needs (NF-2); the RonSQL peer test picks its victim from the second event |
 | 5141 | DBLQH `cteLookupReqImpl` | hold every inbound CTE lookup, 200 ms at a time, until cleared; one event per instance for the first remote probe (extra bit 30: for the first probe from any node) | DBSPJ workers on the other nodes keep probes charged to this node for as long as the kill needs (NF-3); LK-1 closes during the hold |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, then swallow the CTE_SCAN_CONF of every remote requester while set; one event per instance | a remote DBSPJ worker holds this source's batch without a reply for as long as the kill needs (NF-4) |
 | 5143 | DBLQH `cteScanEmitResults` | report each saved iterator for a remote requester as `[CTE_NF5_SCAN_PAUSED node=S iteration=I requester=R]`; rows and CONF delivered normally | identifies the actual requester of a paused remote scan before the kill (NF-5); cleared by the test |
-| 5144 | DBLQH `cteScanAggFeed` | hold every aggregation feed continuation between rounds, 20 ms at a time, until cleared (after the requester / coordinator down checks); `[CTE_AGG_FEED_HELD node=S iteration=I requester=R]` once per instance | the feed is still running when its requester (NF-6) or the coordinator (NF-7) is killed; cleared by the test |
+| 5144 | DBLQH `cteScanAggFeed` | hold every aggregation feed continuation between rounds, 20 ms at a time, until cleared (after the requester / coordinator down checks); `[CTE_AGG_FEED_HELD node=S iteration=I requester=R]` once per instance for a remote requester and `[CTE_RONSQL_FEED_HELD node=S cookie=I requester=R coordinator=C]` once per instance on a non-coordinator source (extra: low 29 bits = iteration / cookie, bit 29 = clear on NODE_FAILREP so RonSQL retries do not stall behind the hold, top two bits = event flags) | the feed is still running when its requester (NF-6) or the coordinator (NF-7, the RonSQL coordinator test) is killed; cleared by the test, or by NODE_FAILREP with bit 29 |
 | 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggParkSweep` / `parkJoinAggConsumer` | hold every SETUP while its coordinator lives; LDM/query instances hold placeholder sweepers until NODE_FAILREP clears their local insert; `[CTE_NF11_PARKED node=P iteration=I requester=R]` per instance and requester | consumers stay parked until the requester (NF-11) or the coordinator (NF-12) is killed; NF-11 observes the sweep, NF-12 observes late CTE SETUP rejection before state allocation; cleared by the test |
 | 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators until cleared; report held and skipped states with iteration, coordinator and pool key | NF-10 kills the coordinator after the hold event and requires reclaim to skip the same key before clearing |
 | 5147 | DBLQH `cteScanEmitResults` | hold the CTE_SCAN_CONF of every local requester after its rows went out (batches short of EndOfData), 100 ms at a time via CONTINUEB, until cleared; `[CTE_SCAN_CONF_HELD node=S iteration=I requester=R]` per held reply | the API closes while DBSPJ's slot still owes the batch, so the close must wait on `close_pending` (SM-3) |
 | 5148 | Proxy + DBLQH park paths | the 5138 hold of every SETUP and sweeper, with extra capping the park pool: a consumer is refused once `extra` records are in use | park pool exhaustion with the pool far from full (PK-4) |
 | 5149 | Proxy `execJOIN_AGG_SETUP_REQ` | refuse the SETUP with OutOfQueryMemory once the identity table holds `extra` entries | identity table exhaustion (PK-5) |
+| 5150 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggFlushParked` / `joinAggParkSweep` | hold every SETUP until a NULL_ROW_REQ has parked on its identity (sweepers held meanwhile), let it succeed, then hold the replay of the parked consumers on each instance behind one re-check timer until NODE_FAILREP clears the instance's insert; `[CTE_PK8_REPLAY_HELD node=P iteration=I instance=B park=R coordinator=C]` selects one held NULL_ROW per instance and arming; its synchronous replay into the coordinator guard reports `[JOIN_AGG_NULL_ROW_REJECTED node=P failed=C iteration=I instance=B park=R]`; the test requires this matching pair | consumers parked before a successful SETUP are replayed only after their coordinator failed (PK-8) |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | send COMPLETE_REQ with aggStateKey RNIL for one node even if the key is known | identity-addressed COMPLETE parks or resolves |
 | 8312 | DBTC `sendJoinAggReleaseReqs` / `releaseJoinAggResources` | CRASH_INSERTION right after the RELEASE_REQs are sent | coordinator dies with releases in flight: reclaim vs teardown overlap |
 | 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | delay ONE SETUP_CONF 5 s and emit the hold event | stale-SETUP reclaim path (`sendStaleSetupReclaim`) and RELEASE identity with zero transid |
@@ -364,8 +368,9 @@ includes C, so owner-list validation rejects that SETUP once C is
 disconnected, before any state allocation or parked-request flush.
 The marker proves rejection; the leak dumps after clearing the insert
 and restarting C verify that parked requests and placeholders were freed.
-NULL_ROW replay after coordinator failure (`5efa38683b1`) remains a
-separate pending case (PK-8); NF-12 does not exercise that handler.
+NULL_ROW replay after coordinator failure (`5efa38683b1`) is the
+separate case PK-8 (`CteCoordinatorDiesParkedReplay`, section 6); NF-12
+does not exercise that handler.
 NF-10 arms 5146 on a peer after subscribing to management events.
 RELEASE removes the identity and acknowledges normally, but the peer
 holds the teardown and pool record. The killer waits up to 30 s for
@@ -387,8 +392,17 @@ entry, `max-time: 1800`, happens in Phase 5.
 
 MTR deliverables of this phase (see §7 for the shared idioms):
 `cte_nodefail_peer.test` and `cte_nodefail_coordinator.test` in
-`ronsql_cte_ng2r2`, written as soon as NF-2 and NF-7 pass in NDBT so the
-same windows are covered end to end through RonSQL.
+`ronsql_cte_ng2r2` use a background `ronsql_cli` under mysqltest's Perl
+driver. Cookie-matched cluster-log holds identify a redistribution peer
+(5140) or the coordinator of an aggregation feed (5144). The latter does
+not require the requester to survive; NF-7 covers that three-role kernel
+case. The CLI coordinator test sets extra bit 29 of 5144: every worker
+clears its hold in NODE_FAILREP, allowing retries to progress even while
+management-side cleanup is pending. NF-6/NF-7 do not set that option.
+Both tests require bounded completion, an exact result after retry
+or a recognized node-failure error with no output, a clean recovery query,
+and cookie-matched leak-check acknowledgements. They cover CLI integration,
+not the RDRS HTTP retry loop.
 
 Effort: 4.5 days including the shared CTE query helper (1 day) and the
 two MTR files (0.5 day).
@@ -533,9 +547,12 @@ entries, 16384 park records, 25-word park buffer.
 | PK-5 | identity table exhaustion | 5149 (extra = 0: every SETUP refused) | SETUP_REF OutOfQueryMemory, the query fails with 20008 - **done** |
 | PK-6 | stale SETUP_CONF | 8313 (one SETUP_CONF delayed 5 s); a real state names DBTC with scan RNIL | require hold and stale-reclaim events for that request, then clean pools; no API query can release the state normally - **done** |
 | PK-7 | duplicate identity | two SETUPs with the same transid + queryTag (`testCteProtocol`) | second gets SETUP_REF InvalidRequest 20002 in every build (the debug assert is gone: a REF is the safe answer); identity-addressed COMPLETE still returns the first state's scanned groups before release - **done** |
-| PK-8 | parked replay after coordinator death | separate replay hold after successful SETUP; include NULL_ROW_REQ | pending: replay must hit the failed-coordinator guard (`5efa38683b1`), with identity and state pools clean; NF-12 covers SETUP rejection instead |
+| PK-8 | parked replay after coordinator death | `testNodeRestart -n CteCoordinatorDiesParkedReplay`: 5150 on a peer P (OuterAggMain, so P's own DBSPJ injects NULL rows) lets the SETUP succeed once a NULL_ROW_REQ has parked, then holds the replay of the parked consumers per instance; C killed after `CTE_PK8_REPLAY_HELD` | the replays run after P's NODE_FAILREP: the NULL_ROW replays hit the failed-coordinator guard (`5efa38683b1`, P reports `JOIN_AGG_NULL_ROW_REJECTED` naming C and the same iteration, instance and park record as the held NULL_ROW), LQHKEYREQ replays abort with 286 or are swept once the state is reclaimed; query fails 286 / 20016 / API 4010, 4025, 4028, 4031; after clearing the insert and restarting C, 2361 / 2363 clean; MTR wrapper `cte_nodefail_coordinator_replay.test` (`ndb_cte`) - **done** |
 
-PK-1..PK-7 live in `testCteProtocol`. The NDB API queries use the
+PK-1..PK-7 live in `testCteProtocol`; PK-8 kills a node and lives in
+`testNodeRestart` on the shared hold driver of section 4 (its query shape
+is `OuterAggMain`, its hold event names no requester, its post-kill
+marker is the guard's event). The NDB API queries use the
 `CteQueryUtil.hpp` shapes (tables created through MySQL, since the test
 runs beside live mysqlds) on a second thread and Ndb object, so the test
 can poll DUMP 2365 and release the hold while the query is in flight.
@@ -588,13 +605,14 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | `cte_nodefail_coordinator_redist.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesPausedRedist T1` (NF-9) - **done** |
 | `cte_nodefail_coordinator_release.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CoordinatorDiesReleaseInFlight T1` (NF-10) - **done** |
 | `cte_nodefail_requester_parked.test` (suite `ndb_cte_ng2r2`, 4 data nodes) | 1 | wrapper: `testNodeRestart -n CteRequesterDiesParked T1` (NF-11) - **done** |
-| `cte_nodefail_coordinator_parked.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesParked T1` (NF-12: late SETUP rejection and parked-request cleanup; PK-8 remains pending) - **done** |
-| `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | long multi-node CTE query in a `--send`, `2 ERROR 5133`, `2 RESTART -n` while paused, `--reap` expects error, `ndb_waiter`, re-run query, `ALL DUMP 2361/2362/2363/2560` |
-| `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | same with the TC node of the rdrs connection killed (`8312` on that node) |
+| `cte_nodefail_coordinator_parked.test` (suite `ndb_cte`) | 1 | wrapper: `testNodeRestart -n CteCoordinatorDiesParked T1` (NF-12: late SETUP rejection and parked-request cleanup) - **done** |
+| `cte_nodefail_coordinator_replay.test` (suite `ndb_cte`) | 3 | wrapper: `testNodeRestart -n CteCoordinatorDiesParkedReplay T1` (PK-8: replay of consumers parked before a successful SETUP after the coordinator failed) - **done** |
+| `cte_nodefail_peer.test` (suite `ronsql_cte_ng2r2`) | 1 | background CLI, 5140 hold, cookie-matched peer selection, abort restart, checked retry/error, recovery query and leak acknowledgements (shared driver `ronsql_cte/include/cte_nodefail.inc`) - **done** |
+| `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | chained CTE through background CLI, 5144 feed hold naming the actual coordinator (extra bit 29 clears the hold on NODE_FAILREP), abort restart, checked retry/error, recovery query and leak acknowledgements - **done** |
 | `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline, leak dumps, clean re-run - **done** |
 | `cte_scan_batches.test` (`ronsql_cte`) | 2 | CTE scan over several batches compared with MySQL, then `ALL ERROR 5129` with `ronsql_cli` exiting 1 on NDB error 1251, leak dumps, clean re-run - **done** |
-| `cte_park_basic.test` (`ronsql_cte`) | 3 | `ALL ERROR 5127`, filter and outer-join bodies from `body_filter.inc`, results identical to baseline; `ALL ERROR 0`; `ALL DUMP 2363` |
-| `cte_park_sweeper.test` (`ronsql_cte`) | 3 | `ALL ERROR 5139`, one query fails with 1251, clean re-run, `ALL DUMP 2363` |
+| `cte_park_basic.test` (`ronsql_cte`) | 3 | `ALL ERROR 5127` before a probed CTE, an outer join onto a CTE with NULL and missing keys and a pass-through root; results identical to the MySQL baseline; `ALL ERROR 0`; leak dumps - **done** |
+| `cte_park_sweeper.test` (`ronsql_cte`) | 3 | `ALL ERROR 5139`, the first `ronsql_cli` attempt fails with 1251 and the retry matches the mysql client; leak dumps; clean re-run - **done** |
 
 MTR cannot read a DUMP's output, so the leak dumps rely on the crash they
 raise; each test asserts the cluster is still up afterwards
@@ -604,13 +622,16 @@ raise; each test asserts the cluster is still up afterwards
 
 ## 8. Phase 5 - registration and soak
 
-- Add every new NDBT case to `daily-basic--01-tests.txt` (format `cmd:` /
-  `args: -n <Case> T1` / `max-time:`); 4-node cases also to
-  `16node-tests.txt`.
+- Every new NDBT case is registered in `daily-basic--16-tests.txt` next
+  to the existing `JoinAggNodeRestart` / `JoinAggErrorInsert` entries
+  (format `cmd:` / `args: -n <Case> T1` / `max-time:`; 600 s for the
+  2-node cases, 900 s for those that need 3 or 4 nodes and skip
+  otherwise); the 3- and 4-node cases (NF-4, NF-5, NF-6, NF-7, NF-9,
+  NF-11) are also in `16node-tests.txt` - **done**.
 - Run each node-failure case 50 times in a loop on a 4-node dev cluster
   before enabling in autotest; timing windows that never trigger in 50
   runs get a wider insert (e.g. raise 5133's delay) rather than a sleep in
-  the test.
+  the test - **open** (the user's soak run).
 - Effort: 1 day.
 
 ---
@@ -657,6 +678,7 @@ independent once Phase 0 is in and can be split between people.
 | F-6 | SM-2 through RonSQL, `cte_scan_batches.test` first run (2026-09-15) | Under `ALL ERROR 5129` (once per node) `ronsql_cli` exited 0 and printed 2015 rows for a 1500-group CTE scan | RonSQL's pass-through drains stream rows to `out_stream` as they arrive, and both `execute_passthrough_drain` and the single-table drain (through the generic NDB-status classification) turned the mid-drain failure into `RonSQLRetryableError`; the retry succeeded once the insert had cleared, but neither `ronsql_cli` (stdout) nor RDRS (its per-request response buffer) can rewind the rows already written, so the response held the partial first attempt plus the complete second one | fixed in RonSQL: `m_output_started` is set when a pass-through header or row is written; after that a drain failure is `RonSQLPermanentError` in every classification path (direct, NDB temporary status, stale-schema reload). Aggregating queries print after the drain and keep their retry. `cte_scan_batches.test` csb-2 pins the exit code, the 1251 on stderr and the short output |
 | F-5 | LK-2 control run, `testCteNdbApiOuterJoin` Test 7 (2026-09-15) | `SELECT COUNT(*), SUM(cte.total) FROM t LEFT JOIN cte ON cte.grp = t.nullable_col` returned COUNT=3 for 4 rows: the row whose join key is NULL was dropped from the aggregation (the miss row was counted) | `Dbspj::cte_lookup_send` skipped a NULL key outright ("no match possible"), which is right for pass-through queries (the API NULL-fills the CTE columns of the delivered parent row) but wrong for an aggregating outer join, where the readTuple (`lookup_send`) and scanFrag (`scanFrag_parent_row`) arms feed the NULL-extended row through JOIN_AGG_NULL_ROW_REQ | fixed: the CTE lookup arm injects the NULL row for an outer-join aggregate leaf (own columns marked NULL, the CTE_LOOKUP_REF miss form) and propagates it for an aggregate ancestor; pinned by Test 7 and `ronsql_cte/cte_null_key_outer.test` |
 | F-4 | SM-5 design review (2026-09-15) | A CTE_SCAN_CONF lost without a node failure (5128) leaves the scan unrecoverable: DBTC's fragment timeout (`timeOutFoundFragLab`, LQH_ACTIVE) calls `scanError`, which sends SCAN_TABREF with closeNeeded and a close to DBSPJ, but DBSPJ keeps the slot's batch obligation until the reply arrives, so the close never completes; the fragment times out again every `TransactionDeadlockDetectionTimeout` and re-issues the close, and the ApiConnectRecord stays in CLOSING_SCAN with the DBSPJ request pending until the node fails | by design: a reply is lost only by node failure, which NODE_FAILREP handles (NF-4); DBTC's timeout is not a recovery path for a live DBSPJ worker | documented; SM-5 not run, no test may leave such a scan behind |
+| F-8 | PK-8 first run, `ndb_cte.cte_nodefail_coordinator_replay` (2026-09-16) | With 5150 armed on the peer, the query failed with 1251 after 12 ms and the peer logged `JOIN_AGG_PARK_SWEPT ... count=1020`: the sweeper ran although every LDM instance held it | CMVMI addresses DBLQH error inserts to DblqhProxy, which forwards them to its LDM workers only; the query-thread LQH instances (DBQLQH, behind DbqlqhProxy) receive nothing but the clear. TRPMAN routes V_QUERY-addressed LQHKEYREQ, SCAN_FRAGREQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ to either kind of instance, so a NULL_ROW parked on an unarmed query-thread instance, whose 10 ms sweeper then removed the shared placeholder and REFed all 1020 waiters. Every hook that acts on the instance running the request had the same exposure: the 5138 / 5145 / 5148 sweeper holds (PK-1b, PK-4, NF-11, NF-12), the 5141 lookup hold (NF-3, LK-1), 5131 / 5132 (NULL_ROW) and the CTE scan hooks, all of which held only when TRPMAN happened to pick an LDM | fixed: `DblqhProxy::execNDB_TAMPER` forwards codes from `ZFIRST_QUERY_THREAD_ERROR_INSERT` (5128) on to `DBQLQH_REF`; codes below stay LDM-only so legacy DBLQH inserts keep their behaviour |
 | F-7 | Phase 3 parking run, `testCteProtocol` section 6 (2026-09-15) | After a JoinAgg close had been deferred (SETUP / COMPLETE replies still pending, the scan left RUNNING), a further worker failure sent a second SCAN_TABREF, which interrupted the API's wait for the close confirmation | `Dbtc::scanError` reported every failure to the API unless the API itself had failed; it did not remember that a REF had already been sent, nor that the API had ordered the close and was owed only its confirmation | fixed: `ScanRecord::m_scan_error_sent` (reset in `initScanrec`); `scanError` still advances cleanup through `close_scan_req` on every call but sends SCAN_TABREF only for the first failure and never after the API requested the close (the decision is taken before `close_scan_req`, which may release the records) |
 
 ## 12. Risks and open points

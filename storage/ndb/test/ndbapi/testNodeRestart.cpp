@@ -12158,23 +12158,28 @@ static int runCteNfLeakDumps(NdbRestarter &restarter) {
   return NDBT_OK;
 }
 
-/* Run the clean query with the case's shape and expected row count.
+/* Run the clean query with the case's shape and require the result
+ * loadTable(CTE_NF_ROWS, groups) implies (CteQueryUtil::resultMatches).
  * A second attempt after a pause separates a transient post-restart
  * effect from a persistent one. */
 static int runCteNfCheckQuery(
     Ndb *ndb, const char *when,
     CteQueryUtil::Shape shape = CteQueryUtil::LookupMain,
-    Uint32 expectedRows = CTE_NF_ROWS, bool crossNodeLeaf = false) {
+    Uint32 groups = CTE_NF_GROUPS, bool crossNodeLeaf = false) {
   for (int attempt = 0; attempt < 2; attempt++) {
     CteQueryUtil::Options clean;
     clean.shape = shape;
     clean.crossNodeLeaf = crossNodeLeaf;
     CteQueryUtil::Result res;
     const int rc = CteQueryUtil::runQuery(ndb, clean, res);
-    if (rc == 0 && res.rows == expectedRows) return NDBT_OK;
+    if (rc == 0 &&
+        CteQueryUtil::resultMatches(shape, res, CTE_NF_ROWS, groups))
+      return NDBT_OK;
     g_err << when << ": CTE query attempt " << attempt << " rc=" << rc
           << " failedAt=" << res.failedAt << " ndbError=" << res.ndbError
-          << " rows=" << res.rows << " expected " << expectedRows << endl;
+          << " rows=" << res.rows << " count=" << res.aggCount
+          << " sum=" << res.aggSum << " (" << CTE_NF_ROWS << " rows, "
+          << groups << " groups loaded)" << endl;
     NdbSleep_SecSleep(5);
   }
   return NDBT_FAILED;
@@ -12415,7 +12420,7 @@ struct CteNfEventListener {
 
 /*
  * Shared hold driver for NF-2 through NF-4, NF-6 through NF-9,
- * NF-11 and NF-12.
+ * NF-11, NF-12 and PK-8.
  * An error insert on the picked node holds a protocol operation. Its
  * event identifies the armed node and iteration (the extra error-insert
  * value), and optionally the requester, according to eventNamesRequester.
@@ -12576,14 +12581,10 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
     ctx->stopTest();
     return NDBT_OK;
   }
-  /* LookupMain returns one row per source row; ScanRoot returns one
-   * per populated group. loadTable assigns grp = i % groups. */
+  /* loadTable assigns grp = i % groups; the expected result follows
+   * from the shape (CteQueryUtil::resultMatches). */
   const Uint32 groups = ctx->getProperty("CteNfGroups", CTE_NF_GROUPS);
-  const Uint32 expectedRows =
-      hold.shape == CteQueryUtil::ScanRoot && groups < CTE_NF_ROWS
-          ? groups
-          : CTE_NF_ROWS;
-  if (runCteNfCheckQuery(ndb, "Baseline", hold.shape, expectedRows,
+  if (runCteNfCheckQuery(ndb, "Baseline", hold.shape, groups,
                          hold.crossNodeLeaf) != NDBT_OK) {
     ctx->stopTest();
     return NDBT_FAILED;
@@ -12649,7 +12650,7 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
     if (ctx->isTestStopped()) return NDBT_FAILED;
   }
   /* I5 */
-  if (runCteNfCheckQuery(ndb, "Post-recovery", hold.shape, expectedRows,
+  if (runCteNfCheckQuery(ndb, "Post-recovery", hold.shape, groups,
                          hold.crossNodeLeaf) != NDBT_OK) {
     ctx->stopTest();
     return NDBT_FAILED;
@@ -12684,7 +12685,12 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     /* Match the complete marker, including node and iteration; a
      * requester-naming marker is matched up to the requester field. */
     BaseString expected, line;
-    if (hold.eventNamesRequester) {
+    const bool matchParkedReplay = hold.insert == 5150;
+    Uint32 replayInstance = 0, replayPark = RNIL, replayCoordinator = 0;
+    if (matchParkedReplay) {
+      expected.assfmt("[%s node=%u iteration=%u instance=", hold.eventTag,
+                      (Uint32)armed, iter + 1);
+    } else if (hold.eventNamesRequester) {
       expected.assfmt("[%s node=%u iteration=%u requester=", hold.eventTag,
                       (Uint32)armed, iter + 1);
     } else {
@@ -12710,6 +12716,19 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
             << " for iteration " << iter << endl;
       ctx->stopTest();
       return NDBT_FAILED;
+    }
+    if (matchParkedReplay) {
+      const char *marker = strstr(line.c_str(), expected.c_str());
+      if (marker == nullptr ||
+          sscanf(marker + strlen(expected.c_str()),
+                 "%u park=%u coordinator=%u]", &replayInstance,
+                 &replayPark, &replayCoordinator) != 3 ||
+          replayInstance == 0 || replayPark == RNIL ||
+          replayCoordinator != ctx->getProperty("CteNfTc", (Uint32)0)) {
+        g_err << "Invalid NULL_ROW replay marker: " << line.c_str() << endl;
+        ctx->stopTest();
+        return NDBT_FAILED;
+      }
     }
     Uint32 requester = 0;
     if (hold.eventNamesRequester) {
@@ -12755,8 +12774,15 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
     if (hold.postKillTag != nullptr) {
       /* The armed node must see the failure and say so. */
       BaseString needle;
-      needle.assfmt("[%s node=%u failed=%u", hold.postKillTag, (Uint32)armed,
-                    (Uint32)victim);
+      if (matchParkedReplay) {
+        // Match the exact NULL_ROW selected before killing its coordinator.
+        needle.assfmt("[%s node=%u failed=%u iteration=%u instance=%u "
+                      "park=%u]", hold.postKillTag, (Uint32)armed,
+                      (Uint32)victim, iter + 1, replayInstance, replayPark);
+      } else {
+        needle.assfmt("[%s node=%u failed=%u", hold.postKillTag, (Uint32)armed,
+                      (Uint32)victim);
+      }
       if (!events.waitFor(ctx, needle.c_str(), 30000)) {
         g_err << "Node " << armed << " did not report " << hold.postKillTag
               << " for failed node " << victim << " within 30 s" << endl;
@@ -13092,9 +13118,8 @@ static int runCteRequesterPausedScan(NDBT_Context *ctx, NDBT_Step *step) {
   }
   /* ScanRoot returns one row per populated group. */
   const Uint32 groups = ctx->getProperty("CteNfGroups", CTE_NF_GROUPS);
-  const Uint32 expectedRows = groups < CTE_NF_ROWS ? groups : CTE_NF_ROWS;
   if (runCteNfCheckQuery(ndb, "Baseline", CteQueryUtil::ScanRoot,
-                         expectedRows) != NDBT_OK)
+                         groups) != NDBT_OK)
     return NDBT_FAILED;
   for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
     CteNfEventListener events;
@@ -13172,7 +13197,7 @@ static int runCteRequesterPausedScan(NDBT_Context *ctx, NDBT_Step *step) {
   }
   /* I5 */
   if (runCteNfCheckQuery(ndb, "Post-recovery", CteQueryUtil::ScanRoot,
-                         expectedRows) != NDBT_OK)
+                         groups) != NDBT_OK)
     return NDBT_FAILED;
   return NDBT_OK;
 }
@@ -13634,11 +13659,34 @@ static int runCteCoordinatorReleaseKiller(NDBT_Context *ctx,
  * JOIN_AGG_SETUP_REJECTED. The API must see its coordinator's failure;
  * after clearing the insert and restarting the coordinator, the leak
  * dumps must show that the parked requests and placeholders were freed.
- * This covers rejected SETUP cleanup; NULL_ROW replay after coordinator
- * failure (5efa38683b1) needs a separate case. Runs on 2 nodes.
+ * This covers rejected SETUP cleanup; the replay of consumers parked
+ * before a SUCCESSFUL SETUP is PK-8 below. Runs on 2 nodes.
  *
  * P's insert is cleared after the query completes, as for the other
  * cases whose armed node survives.
+ *
+ * PK-8 CteCoordinatorDiesParkedReplay (plan section 6; guard
+ * 5efa38683b1): error insert 5150 on a peer P holds its SETUP until a
+ * JOIN_AGG_NULL_ROW_REQ has parked on the SETUP's identity (the query is
+ * OuterAggMain: a LEFT JOIN aggregate leaf keyed on the nullable nk, so
+ * P's own DBSPJ workers inject NULL rows into P's state, beside the
+ * LQHKEYREQ feeds of every node), and holds the sweepers meanwhile.  The
+ * SETUP then succeeds and detaches the parked consumers for replay, but
+ * every LDM / query instance keeps its replays on a held chain (one
+ * re-check timer per instance). CTE_PK8_REPLAY_HELD selects one held
+ * NULL_ROW per instance and iteration, naming its park record and
+ * coordinator. The coordinator is killed after this event. NODE_FAILREP on P
+ * marks the coordinator down and clears the LDM inserts, so the held
+ * replays run against a failed coordinator: the NULL_ROW replays must
+ * reach the coordinator guard (P reports JOIN_AGG_NULL_ROW_REJECTED
+ * naming the coordinator and the same iteration, instance and park
+ * record). Ordinary late NULL_ROW requests cannot satisfy this check.
+ * The LQHKEYREQ replays are aborted with
+ * ZNODEFAIL_BEFORE_COMMIT or, once the state is reclaimed, swept as
+ * STATE_NOT_FOUND.  The query fails with a node-failure error; after the
+ * insert is cleared and the coordinator restarted, the leak dumps prove
+ * that the state, the identity and every park record were freed.  Runs
+ * on 2 nodes.
  */
 static int cteNfPickPeerNeedingThird(Ndb *ndb, NdbRestarter &restarter,
                                      Uint32 tcNodeId) {
@@ -13679,6 +13727,23 @@ static int runCteCoordinatorParkedQuery(NDBT_Context *ctx, NDBT_Step *step) {
 static int runCteCoordinatorParkedKiller(NDBT_Context *ctx,
                                          NDBT_Step *step) {
   return runCteNfHoldKiller(ctx, step, CTE_NF12_HOLD);
+}
+
+static const CteNfHoldCase CTE_PK8_HOLD = {
+    "CteCoordinatorDiesParkedReplay", 5150, "CTE_PK8_REPLAY_HELD",
+    "the API never learned that its coordinator died while parked replays "
+    "were held",
+    CteQueryUtil::OuterAggMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
+    "JOIN_AGG_NULL_ROW_REJECTED", nullptr, false, false, true};
+
+static int runCteCoordinatorParkedReplayQuery(NDBT_Context *ctx,
+                                              NDBT_Step *step) {
+  return runCteNfHoldQuery(ctx, step, CTE_PK8_HOLD);
+}
+
+static int runCteCoordinatorParkedReplayKiller(NDBT_Context *ctx,
+                                               NDBT_Step *step) {
+  return runCteNfHoldKiller(ctx, step, CTE_PK8_HOLD);
 }
 
 NDBT_TESTSUITE(testNodeRestart);
@@ -14693,6 +14758,17 @@ TESTCASE("CteCoordinatorDiesParked",
   INITIALIZER(runCteNfCreateTables);
   STEP(runCteCoordinatorParkedQuery);
   STEP(runCteCoordinatorParkedKiller);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteCoordinatorDiesParkedReplay",
+         "RONDB-1120 PK-8: error insert 5150 on a peer lets the SETUP "
+         "succeed once a NULL_ROW has parked, then holds the replay of the "
+         "parked consumers; killing the coordinator must make the replays "
+         "hit the failed-coordinator guards (5efa38683b1) and leave the "
+         "state, identity and park pools clean") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteCoordinatorParkedReplayQuery);
+  STEP(runCteCoordinatorParkedReplayKiller);
   FINALIZER(runCteNfDropTables);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",

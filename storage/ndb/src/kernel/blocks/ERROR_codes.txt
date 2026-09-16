@@ -48,6 +48,13 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5127: RONDB-1056 JIT: dump program + translation at JOIN_AGG_SETUP compile
       (DblqhProxy; DEBUG_JIT builds only). Was 5119 until the TTL replica-
       rowid work took 5119.
+DBLQH codes from 5128 on (ZFIRST_QUERY_THREAD_ERROR_INSERT) are delivered
+to the query-thread LQH instances (DBQLQH) as well: DblqhProxy forwards
+their NDB_TAMPER to DbqlqhProxy, because TRPMAN routes V_QUERY-addressed
+LQHKEYREQ, SCAN_FRAGREQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ to
+either kind of instance and these hooks act on whichever instance runs
+the request. Codes below 5128 stay on the LDM instances. Clearing (code
+0) reaches every instance from CMVMI in both cases.
 5128: Drop ONE CTE_SCAN_CONF after its rows were sent (cteScanEmitResults,
       cleared after use)
 5129: Answer ONE CTE scan continuation with CTE_SCAN_REF 1251, token
@@ -82,6 +89,8 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       on first arrival; extra is the test iteration. NF-2 waits for this
       event before killing the peer. NF-9 requires a sender other than
       the coordinator, so the paused sender survives the kill.
+      A matching local owner state also emits CTE_RONSQL_REDIST_HELD
+      with node, cookie=extra, requester and coordinator for RonSQL MTR.
 5141: Hold EVERY inbound CTE_LOOKUP_REQ, 200 ms at a time, until cleared. The
       first remote request held by an instance emits InfoEvent
       "[CTE_NF3_LOOKUP_HELD node=<node> iteration=<extra>]" (once per
@@ -112,6 +121,13 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
       once per instance (extra is the test iteration, its top bit marks the
       event as sent). NF-6 kills the named requester, NF-7 the coordinator;
       both clear the insert on the source afterwards.
+      CTE_RONSQL_FEED_HELD also names the coordinator, including local
+      requesters, once per instance on a non-coordinator source. Bit 30
+      marks this second event; the low 29 bits identify the iteration.
+      Bit 29 opts into clearing 5144 on NODE_FAILREP on every LDM/query
+      instance, so RonSQL retries cannot stall behind the test hold while
+      management-side cleanup is pending. Without it, NF-6/NF-7 retain
+      their hold until explicitly cleared. The proxy is cleared by the test.
 5145: Parking hold (DblqhProxy + DBLQH). Proxy: hold every JOIN_AGG_SETUP_REQ
       20 ms at a time while its coordinator is connected. DBLQH: hold the
       placeholder failure sweeper 20 ms at a time until NODE_FAILREP
@@ -145,7 +161,19 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5149: Refuse JOIN_AGG_SETUP_REQ with OutOfQueryMemory once the identity
       table holds at least `extra` entries (DblqhProxy), as if the table
       were full (PK-5).
-Next DBLQH 5150
+5150: Hold every JOIN_AGG_SETUP_REQ, 20 ms at a time, until a
+      JOIN_AGG_NULL_ROW_REQ has parked on its identity (DblqhProxy; the
+      LDM / query instances hold the placeholder sweepers meanwhile), then
+      let it succeed and hold the replay of the parked consumers on each
+      instance (one re-check timer per instance) until the instance
+      processes NODE_FAILREP, which clears its insert; emits
+      "[CTE_PK8_REPLAY_HELD node=N iteration=I instance=B park=R
+      coordinator=C]" for one held NULL_ROW per instance and arming.
+      Replaying that record into the failed-coordinator guard emits
+      "[JOIN_AGG_NULL_ROW_REJECTED node=N failed=C iteration=I instance=B
+      park=R]". Ordinary late requests do not emit this event. PK-8
+      requires the matching pair. The proxy's insert is cleared by the test.
+Next DBLQH 5151
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

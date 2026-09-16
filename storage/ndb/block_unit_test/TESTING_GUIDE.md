@@ -278,16 +278,17 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | the selected SETUP_REQs (extra: 0 all, 0xFFFF main, 0xFFFE none, else cteIndex + 1) and every placeholder sweeper held until cleared; switch extra to 0xFFFE to replay before clearing the sweeper hold | no |
 | 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE identity left unfilled; SETUP_REF 1251 sent after 200 ms | yes |
-| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender | no |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender; CTE_RONSQL_REDIST_HELD also names the coordinator of a matching local owner state | no |
 | 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance for the first remote request (extra bit 30 set: for the first request from any node) | no |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
 | 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |
-| 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_AGG_FEED_HELD event per instance naming the remote requester | no |
+| 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_AGG_FEED_HELD event per instance naming the remote requester; CTE_RONSQL_FEED_HELD names the coordinator for CLI tests (low 29 extra bits = cookie, bit 29 = clear on NODE_FAILREP, top two = event flags) | with bit 29: workers clear on node failure; test clears proxy |
 | 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | SETUP held while its coordinator lives, park sweeper held until local NODE_FAILREP; CTE_NF11_PARKED event per instance and remote requester | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
 | 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators; CTE_NF10_TEARDOWN_HELD identifies the state, CTE_NF10_RECLAIM_SKIPPED proves failure cleanup skipped it | no; test must clear after matching events |
 | 5147 | DBLQH `cteScanEmitResults` | the CTE_SCAN_CONF of every local requester held after its rows went out (not EndOfData), 100 ms at a time, until cleared; one CTE_SCAN_CONF_HELD event per held reply | no |
 | 5148 | Proxy + DBLQH park paths | the 5138 hold of every SETUP and sweeper; extra caps the park pool, a consumer is refused once that many records are in use | no |
 | 5149 | Proxy `execJOIN_AGG_SETUP_REQ` | SETUP refused with OutOfQueryMemory once the identity table holds `extra` entries | no |
+| 5150 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggFlushParked` / park sweeper | SETUP held until a NULL_ROW_REQ has parked on its identity (sweepers held meanwhile), then the replay of the parked consumers held per instance until NODE_FAILREP; CTE_PK8_REPLAY_HELD selects one held NULL_ROW per instance and arming; JOIN_AGG_NULL_ROW_REJECTED must match its iteration, instance and park record | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
 | 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
 | 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
@@ -317,6 +318,15 @@ crash followed by automatic restart cannot pass. `JoinAggTestUtil.hpp`
 checked error-insert setter, its clearing guard and the management event
 listener; `testCteProtocol`, `testCteDbtc` and `testCteNdbApiOuterJoin`
 use it.
+
+DBLQH error inserts from 5128 on are armed on the query-thread LQH
+instances (DBQLQH) as well as on the LDMs: DblqhProxy forwards their
+NDB_TAMPER to DbqlqhProxy. TRPMAN routes V_QUERY-addressed LQHKEYREQ,
+SCAN_FRAGREQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ to either kind of
+instance, so a hold or event that lives in one of those handlers, or in
+the parking code they reach, would otherwise apply to some deliveries
+only (finding F-8 in the plan). Codes below 5128 stay LDM-only. A test
+clears with code 0, which reaches every instance either way.
 
 DUMP 2365 is a statistic, not a check: regular DBLQH instance 1 answers
 [JOIN_AGG_PARK_STATS node=N lqhkey= scanfrag= nullrow= complete= redist=

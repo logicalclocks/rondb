@@ -2047,16 +2047,6 @@ struct QueryRun {
   ~QueryRun() { join(); }
 };
 
-static Int64
-expectedSum(bool skipNullKeys)
-{
-  Int64 s = 0;
-  for (Uint32 i = 0; i < NF_ROWS; i++) {
-    if (!skipNullKeys || i % 4 != 3) s += i;
-  }
-  return s;
-}
-
 static int
 checkQueryResult(const QueryRun &q, const char *label)
 {
@@ -2065,25 +2055,7 @@ checkQueryResult(const QueryRun &q, const char *label)
             q.res.failedAt, q.rc, q.res.ndbError);
     return -1;
   }
-  bool ok = true;
-  switch (q.opt.shape) {
-    case CteQueryUtil::LookupMain:
-    case CteQueryUtil::FeedChain:
-      ok = q.res.rows == NF_ROWS;
-      break;
-    case CteQueryUtil::ScanRoot:
-      ok = q.res.rows == NF_GROUPS;
-      break;
-    case CteQueryUtil::ScanAggMain:
-      ok = q.res.aggCount == (Int64)NF_ROWS &&
-           q.res.aggSum == expectedSum(false);
-      break;
-    case CteQueryUtil::OuterAggMain:
-      ok = q.res.aggCount == (Int64)NF_ROWS &&
-           q.res.aggSum == expectedSum(true);
-      break;
-  }
-  if (!ok) {
+  if (!CteQueryUtil::resultMatches(q.opt.shape, q.res, NF_ROWS, NF_GROUPS)) {
     fprintf(stderr, "%s: wrong result: rows=%llu count=%lld sum=%lld\n",
             label, (unsigned long long)q.res.rows, (long long)q.res.aggCount,
             (long long)q.res.aggSum);

@@ -248,6 +248,9 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
   addRecSignal(GSN_QUOTA_OVERLOAD_REP,
                &DblqhProxy::execQUOTA_OVERLOAD_REP);
 
+  // Overrides LocalProxy's handler (registered by its constructor).
+  addRecSignal(GSN_NDB_TAMPER, &DblqhProxy::execNDB_TAMPER, true);
+
   // GSN_JOIN_AGG signals (setup + release handled by proxy)
   addRecSignal(GSN_JOIN_AGG_SETUP_REQ,
                &DblqhProxy::execJOIN_AGG_SETUP_REQ);
@@ -268,6 +271,33 @@ DblqhProxy::~DblqhProxy() {
 
 SimulatedBlock *DblqhProxy::newWorker(Uint32 instanceNo) {
   return new Dblqh(m_ctx, instanceNo, DBLQH);
+}
+
+// GSN_NDB_TAMPER
+
+void DblqhProxy::execNDB_TAMPER(Signal *signal) {
+  jamEntry();
+#ifdef ERROR_INSERT
+  /* CMVMI addresses the DBLQH error inserts (5000-5999) to this proxy
+   * only, and LocalProxy forwards them to the LDM instances.  The
+   * query-thread LQH instances (DBQLQH, behind DbqlqhProxy) get nothing
+   * but the clear, although TRPMAN routes V_QUERY-addressed LQHKEYREQ,
+   * SCAN_FRAGREQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ to them as
+   * well as to the LDMs.  A hook that acts on whichever instance runs
+   * the request (the RONDB-1120 park sweeper and replay holds among
+   * them) is then armed on some of the instances only: PK-8's first run
+   * had a query-thread instance sweep 1020 parked consumers 10 ms after
+   * they parked, past the hold armed on every LDM.  Forward the codes
+   * from ZFIRST_QUERY_THREAD_ERROR_INSERT on to DbqlqhProxy, which fans
+   * them out to its workers; code 0 reaches every proxy from CMVMI. */
+  if (signal->theData[0] >= ZFIRST_QUERY_THREAD_ERROR_INSERT &&
+      globalData.ndbMtQueryWorkers > 0) {
+    jam();
+    sendSignal(DBQLQH_REF, GSN_NDB_TAMPER, signal, signal->getLength(),
+               JBB);
+  }
+#endif
+  LocalProxy::execNDB_TAMPER(signal);
 }
 
 // GSN_NDB_STTOR
@@ -2516,6 +2546,22 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
      * until NODE_FAILREP clears their local insert. Once the coordinator
      * disconnects, the held CTE SETUP reaches the owner-list
      * validation below, which rejects it before allocating any state. */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
+  if (ERROR_INSERTED(5150) &&
+      getNodeInfo(refToNode(senderRef)).m_connected &&
+      (joinAggIdentityParkedClasses(req->transid, queryTag, cteIndex) &
+       (1u << JAI_PARK_CLASS_NULLROW)) == 0) {
+    jam();
+    /* Test hook (PK-8): hold the SETUP, 20 ms at a time, until a
+     * JOIN_AGG_NULL_ROW_REQ has parked on its identity (the LDM / query
+     * instances hold the sweepers meanwhile), then let it succeed: the
+     * flush detaches the parked consumers and the instances hold their
+     * replay until the coordinator fails.  A SETUP whose coordinator is
+     * already gone proceeds to the normal rejection below. */
     SectionHandle handle(this, signal);
     sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
                         signal->getLength(), &handle);

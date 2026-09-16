@@ -127,6 +127,38 @@ struct Result {
         closeError(0), failedAt(""), aggCount(0), aggSum(0) {}
 };
 
+/* SUM(val) an aggregating main shape must return over `rows` loaded
+ * rows: ScanAggMain adds every row, OuterAggMain every row whose nk is
+ * not NULL (the NULL-extended rows are counted but add no val). */
+static inline Int64 expectedAggSum(Uint32 rows, Shape shape) {
+  Int64 sum = 0;
+  for (Uint32 i = 0; i < rows; i++) {
+    if (shape == OuterAggMain && i % 4 == 3) continue;
+    sum += i;
+  }
+  return sum;
+}
+
+/* Whether a completed run (rc == 0) returned the result loadTable(rows,
+ * groups) implies for the shape: one row per source row (LookupMain,
+ * FeedChain), one per populated group (ScanRoot), or COUNT(*) = rows
+ * with the sum above (ScanAggMain, OuterAggMain). */
+static inline bool resultMatches(Shape shape, const Result &res, Uint32 rows,
+                                 Uint32 groups) {
+  switch (shape) {
+    case LookupMain:
+    case FeedChain:
+      return res.rows == rows;
+    case ScanRoot:
+      return res.rows == (groups < rows ? groups : rows);
+    case ScanAggMain:
+    case OuterAggMain:
+      return res.aggCount == (Int64)rows &&
+             res.aggSum == expectedAggSum(rows, shape);
+  }
+  return false;
+}
+
 static inline void dropTables(Ndb *ndb) {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   (void)dict->dropTable(SRC_TABLE);

@@ -1191,6 +1191,15 @@ void Dblqh::execCONTINUEB(Signal *signal) {
     joinAggFlushParked(signal, signal->theData[1]);
     return;
   }
+#ifdef ERROR_INSERT
+  case ZCONTINUE_JOIN_AGG_FLUSH_HELD:
+  {
+    jam();
+    /* Test hook 5150 (PK-8): re-check the replays this instance holds. */
+    joinAggReleaseHeldFlush(signal);
+    return;
+  }
+#endif
   case ZCONTINUE_AGG_INTERP_TEARDOWN:
   {
     jam();
@@ -9408,7 +9417,8 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
   const Uint32 queryTag = signal->theData[3];
   const Uint32 cteId = signal->theData[4];
-  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5138) || ERROR_INSERTED(5148)) {
+  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5138) || ERROR_INSERTED(5148) ||
+      ERROR_INSERTED(5150)) {
     jam();
     /* Test hooks. 5145 (NF-11, NF-12): hold until this instance
      * processes NODE_FAILREP or the test clears the insert. The failure
@@ -9416,7 +9426,9 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
      * placeholders created later by surviving requesters are also swept
      * normally. 5138 / 5148 (PK-1, PK-4): hold while SETUP is held.
      * For guaranteed replay, switch 5138 to extra 0xFFFE first: SETUP
-     * runs while sweepers stay held. Clear after the query completes. */
+     * runs while sweepers stay held. Clear after the query completes.
+     * 5150 (PK-8): hold while the proxy waits for a NULL_ROW to park;
+     * the SETUP then fills the placeholder before this runs again. */
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 5);
     return;
   }
@@ -9530,6 +9542,37 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
  */
 void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
   JoinAggParkRec *const rec = joinAggGetParkRec(parkRecI);
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5150)) {
+    jam();
+    /* Test hook (PK-8): the SETUP succeeded and detached this record for
+     * replay.  Keep it on this instance's held chain until NODE_FAILREP
+     * clears the insert (the coordinator died), so the replay runs
+     * against a failed coordinator and must be rejected by the guards.
+     * One timer per instance re-checks the chain every 20 ms.  The
+     * event selects one held NULL_ROW per instance and arming. */
+    rec->m_next = m_join_agg_held_flush_head;
+    m_join_agg_held_flush_head = parkRecI;
+    if (rec->m_gsn == GSN_JOIN_AGG_NULL_ROW_REQ &&
+        (c_error_insert_extra & (1u << 16)) == 0) {
+      const JoinAggNullRowReq *req =
+          reinterpret_cast<const JoinAggNullRowReq *>(rec->m_theData);
+      m_join_agg_observed_null_row = parkRecI;
+      m_join_agg_observed_iteration = c_error_insert_extra & 0xFFFF;
+      infoEvent("[CTE_PK8_REPLAY_HELD node=%u iteration=%u instance=%u "
+                "park=%u coordinator=%u]",
+                getOwnNodeId(), m_join_agg_observed_iteration, instance(),
+                parkRecI, refToNode(req->coordinatorRef));
+      c_error_insert_extra |= (1u << 16);
+    }
+    if (!m_join_agg_held_flush_timer) {
+      m_join_agg_held_flush_timer = true;
+      signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_HELD;
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 1);
+    }
+    return;
+  }
+#endif
   const Uint32 gsn = rec->m_gsn;
   const Uint32 sigLen = rec->m_sigLen;
   memcpy(signal->getDataPtrSend(), rec->m_theData, sigLen * sizeof(Uint32));
@@ -9546,7 +9589,18 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
     execLQHKEYREQ(signal);
   } else if (gsn == GSN_JOIN_AGG_NULL_ROW_REQ) {
     jam();
+#ifdef ERROR_INSERT
+    // The synchronous handler sees the token only for this exact replay.
+    m_join_agg_observed_replay =
+        (parkRecI == m_join_agg_observed_null_row);
+#endif
     execJOIN_AGG_NULL_ROW_REQ(signal);
+#ifdef ERROR_INSERT
+    if (m_join_agg_observed_replay) {
+      m_join_agg_observed_replay = false;
+      m_join_agg_observed_null_row = RNIL;
+    }
+#endif
   } else if (gsn == GSN_JOIN_AGG_COMPLETE_REQ) {
     jam();
     execJOIN_AGG_COMPLETE_REQ(signal);
@@ -9561,6 +9615,36 @@ void Dblqh::joinAggFlushParked(Signal *signal, Uint32 parkRecI) {
     execSCAN_FRAGREQ(signal);
   }
 }
+
+#ifdef ERROR_INSERT
+/* Test hook 5150 (PK-8): while the insert is set, re-check in 20 ms;
+ * once NODE_FAILREP cleared it, hand every held record back to the
+ * normal flush path, one job each, so the replays run after this
+ * instance marked the coordinator down. */
+void Dblqh::joinAggReleaseHeldFlush(Signal *signal) {
+  if (ERROR_INSERTED(5150)) {
+    jam();
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_HELD;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 1);
+    return;
+  }
+  m_join_agg_held_flush_timer = false;
+  Uint32 i = m_join_agg_held_flush_head;
+  m_join_agg_held_flush_head = RNIL;
+  Uint32 released = 0;
+  while (i != RNIL) {
+    jam();
+    const Uint32 next = joinAggGetParkRec(i)->m_next;
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_PARKED;
+    signal->theData[1] = i;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
+    released++;
+    i = next;
+  }
+  g_eventLogger->info("DBLQH %u: error insert 5150 released %u held "
+                      "parked replays", instance(), released);
+}
+#endif
 
 void Dblqh::execLQHKEYREQ(Signal *signal) {
   if (unlikely(!assembleFragments(signal))) {
@@ -17022,12 +17106,24 @@ void Dblqh::execNODE_FAILREP(Signal *signal) {
 
 #ifdef ERROR_INSERT
   c_master_node_id = nodeFail.masterNodeId;
-  if (ERROR_INSERTED(5145)) {
+  constexpr Uint32 clearFeedHoldOnNodeFailure = 0x20000000;
+  if (ERROR_INSERTED(5144) &&
+      (c_error_insert_extra & clearFeedHoldOnNodeFailure) != 0) {
+    jam();
+    // RonSQL retries before management-side cleanup may complete. Stop
+    // holding new feeds on every worker, including workers that have not
+    // held a feed yet. Existing continuations still check requester and
+    // coordinator status first, after this handler marks failed nodes down.
+    CLEAR_ERROR_INSERT_VALUE;
+  }
+  if (ERROR_INSERTED(5145) || ERROR_INSERTED(5150)) {
     jam();
     /* End the parking hold on every LDM/query instance at node failure.
      * Keep it off even after the original placeholder has been swept:
      * later requests from surviving nodes must not become held again.
-     * The proxy's separate SETUP hold is unaffected. */
+     * The proxy's separate SETUP hold is unaffected.  For 5150 (PK-8)
+     * the held replays are released by the next re-check, after this
+     * handler marked the failed coordinator down below. */
     CLEAR_ERROR_INSERT_VALUE;
   }
 #endif
@@ -20045,6 +20141,17 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     jam();
     SectionHandle handle(this, signal);
     releaseSections(handle);
+#ifdef ERROR_INSERT
+    // Ordinary late requests cannot satisfy PK-8's replay assertion.
+    // Each arming selects a new record, even for the same coordinator.
+    if (m_join_agg_observed_replay) {
+      infoEvent("[JOIN_AGG_NULL_ROW_REJECTED node=%u failed=%u "
+                "iteration=%u instance=%u park=%u]",
+                getOwnNodeId(), refToNode(req->coordinatorRef),
+                m_join_agg_observed_iteration, instance(),
+                m_join_agg_observed_null_row);
+    }
+#endif
     JoinAggNullRowRef *ref =
         (JoinAggNullRowRef *)signal->getDataPtrSend();
     ref->senderRef = reference();
@@ -22122,14 +22229,28 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
      * stays owned. Both node-down checks above run first, so once the
      * requester or the coordinator has failed the feed ends the normal
      * way. The first held round of a remote requester emits the event the
-     * test waits for (extra = test iteration, top bit = event sent). */
+     * test waits for (extra: low 29 bits = iteration, bit 29 opts into
+     * clearing on NODE_FAILREP, top two bits mark the events below). */
 #ifdef ERROR_INSERT
     constexpr Uint32 eventSent = 0x80000000;
+    constexpr Uint32 ronsqlEventSent = 0x40000000;
+    const Uint32 cookie = c_error_insert_extra & 0x1fffffff;
     if (refToNode(senderRef) != getOwnNodeId() &&
         (c_error_insert_extra & eventSent) == 0) {
       infoEvent("[CTE_AGG_FEED_HELD node=%u iteration=%u requester=%u]",
-                getOwnNodeId(), c_error_insert_extra, refToNode(senderRef));
+                getOwnNodeId(), cookie, refToNode(senderRef));
       c_error_insert_extra |= eventSent;
+    }
+    // A local requester is sufficient for the RonSQL integration test.
+    // NF-7 separately requires a requester distinct from the coordinator.
+    if (feedPtr.p->coordinatorNodeId != 0 &&
+        feedPtr.p->coordinatorNodeId != getOwnNodeId() &&
+        (c_error_insert_extra & ronsqlEventSent) == 0) {
+      infoEvent("[CTE_RONSQL_FEED_HELD node=%u cookie=%u requester=%u "
+                "coordinator=%u]",
+                getOwnNodeId(), cookie, refToNode(senderRef),
+                feedPtr.p->coordinatorNodeId);
+      c_error_insert_extra |= ronsqlEventSent;
     }
 #endif
     signal->theData[0] = ZCONTINUE_CTE_SCAN_AGG_FEED;
@@ -23699,6 +23820,27 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
          * The extra error-insert value identifies the test iteration. */
         infoEvent("[CTE_NF2_CONF_HELD node=%u iteration=%u requester=%u]",
                   getOwnNodeId(), ERROR_INSERT_EXTRA, refToNode(req->senderRef));
+        // RonSQL has no beforeExecute callback exposing its coordinator.
+        // Report only a matching state owned by this worker.
+        Uint32 key = req->aggStateKey;
+        if (key == RNIL && req->identWord != RNIL) {
+          key = joinAggIdentityLookup(
+              req->transid,
+              JoinAggregationState::identWordQueryTag(req->identWord),
+              JoinAggregationState::identWordCteId(req->identWord));
+        }
+        const JoinAggregationState *held = getJoinAggState(key);
+        if (held != nullptr && held->m_owner_instance == instance() &&
+            held->m_transid[0] == req->transid[0] &&
+            held->m_transid[1] == req->transid[1] &&
+            JoinAggregationState::packIdentWord(
+                held->m_queryTag, held->m_cte_index, 0) == req->identWord) {
+          infoEvent("[CTE_RONSQL_REDIST_HELD node=%u cookie=%u requester=%u "
+                    "coordinator=%u]",
+                    getOwnNodeId(), ERROR_INSERT_EXTRA,
+                    refToNode(req->senderRef),
+                    joinAggCoordinatorNodeId(held->m_senderRef));
+        }
       }
     }
     SectionHandle handle(this, signal);
