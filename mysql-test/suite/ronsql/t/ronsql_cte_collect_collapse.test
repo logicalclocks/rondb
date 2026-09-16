@@ -28,6 +28,9 @@ call mtr.add_suppression("Participant timeout");
 --let $suppress_ronsql_cli=
 --let $strict_diff=yes
 
+# Schema-distribution timeouts are tolerated for fixture DDL.
+# add_suppression above handles the server log; this handles SQL warning 1296.
+--disable_warnings ER_GET_ERRMSG ONCE
 CREATE TABLE ev (
   entity_id  BIGINT NOT NULL,
   event_time TIMESTAMP(3) NOT NULL,
@@ -185,4 +188,5 @@ EOF
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT entity_id, event_time, amount FROM ev WHERE entity_id = 1 ORDER BY event_time DESC LIMIT 5) SELECT entity_id, fee FROM t;' 2>&1
 
+--disable_warnings ER_GET_ERRMSG ONCE
 DROP TABLE ev;

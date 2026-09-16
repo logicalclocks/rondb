@@ -206,7 +206,8 @@ insertTestData(Ndb *ndb)
  * result rows.  Returns 0 on success, -1 on failure.  Called from
  * runD9 and from runD11's loop body. */
 static int
-runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0)
+runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
+                  bool independentCte = false)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
@@ -310,6 +311,32 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0)
     fprintf(stderr, "FAILED (defineCte 1 iter=%u)\n", iterIdx);
     qb->destroy();
     return -1;
+  }
+
+  if (independentCte) {
+    /* CTE 2 can scan or redistribute while the CTE 0 -> CTE 1 chain
+     * fails. It uses the same data but has no dependency on that chain. */
+    qb->beginCteSubtree(2);
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      qb->destroy();
+      return -1;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(2, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+      qb->destroy();
+      return -1;
+    }
   }
 
   /* Main query: scan + lookupCte(1) — pass-through delivery to API. */
@@ -538,6 +565,18 @@ runFailureOrders(Ndb *ndb, const char *connectString)
     if (runChainedCteOnce(ndb, errorInsert) != 0) return -1;
     printf("OK (error 1860, no rows, recovery verified)\n");
   }
+
+  printf("Completion failure with independent CTE ... ");
+  fflush(stdout);
+  if (restarter.insertErrorInAllNodes(5124) != 0) {
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  const int result = runChainedCteOnce(ndb, 5124, 1251, true);
+  const int cleared = restarter.insertErrorInAllNodes(0);
+  if (result != 0 || cleared != 0) return -1;
+  if (runChainedCteOnce(ndb, 5124, 0, true) != 0) return -1;
+  printf("OK (error 1251, no rows, recovery verified)\n");
   return 0;
 }
 
