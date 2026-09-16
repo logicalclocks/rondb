@@ -273,9 +273,10 @@ struct GBHashEntryCmp {
  * error code on failure.  Callers must abort the result on failure; earlier
  * slots or groups may already have been merged.
  *
- * Arithmetic is still unchanged in this step: BIGINT addition is modular
- * and DOUBLE follows IEEE arithmetic.  Checked arithmetic follows after
- * error propagation and distributed cancellation are in place.
+ * BIGINT SUM returns error 1860 when the mathematical sum is outside
+ * the result domain: signed 64-bit if both inputs are signed, unsigned
+ * 64-bit otherwise. A failed addition leaves the destination unchanged.
+ * DOUBLE follows IEEE arithmetic; COUNT still uses unsigned addition.
  */
 static inline double aggSlotAsDouble(const AggResItem& v) {
   if (v.type == NDB_TYPE_DOUBLE) return v.value.val_double;
@@ -316,8 +317,37 @@ static inline Int32 aggMergeSum(AggResItem* dst, const AggResItem& src) {
 
   assert(src.type == NDB_TYPE_BIGINT &&
          dst->type == NDB_TYPE_BIGINT);
-  dst->value.val_uint64 += src.value.val_uint64;
-  dst->is_unsigned = src.is_unsigned || dst->is_unsigned;
+  if (!src.is_unsigned && !dst->is_unsigned) {
+    const Int64 a = dst->value.val_int64;
+    const Int64 b = src.value.val_int64;
+    if ((b > 0 && a > INT64_MAX - b) ||
+        (b < 0 && a < INT64_MIN - b))
+      return 1860;
+    dst->value.val_int64 = a + b;
+    return 0;
+  }
+
+  // At least one input is unsigned. A negative signed contribution
+  // subtracts its magnitude; it must not be reinterpreted as positive.
+  const AggResItem& unsignedInput = dst->is_unsigned ? *dst : src;
+  const AggResItem& other = dst->is_unsigned ? src : *dst;
+  const Uint64 a = unsignedInput.value.val_uint64;
+  Uint64 sum;
+  if (!other.is_unsigned && other.value.val_int64 < 0) {
+    // Unsigned subtraction also handles INT64_MIN without negating it.
+    const Uint64 magnitude = Uint64(0) -
+                             static_cast<Uint64>(other.value.val_int64);
+    if (a < magnitude) return 1860;
+    sum = a - magnitude;
+  } else {
+    const Uint64 b = other.is_unsigned
+                         ? other.value.val_uint64
+                         : static_cast<Uint64>(other.value.val_int64);
+    if (b > UINT64_MAX - a) return 1860;
+    sum = a + b;
+  }
+  dst->value.val_uint64 = sum;
+  dst->is_unsigned = true;
   return 0;
 }
 

@@ -350,9 +350,8 @@ void NdbAggregator::mergeStringSlot(AggResItem *dst,
   }
 }
 
-/* Debug fault injection at the numeric-merge boundary lets the API tests
- * exercise error propagation and string cleanup before overflow checks
- * are enabled in the shared arithmetic helper. */
+/* Debug fault injection at the numeric-merge boundary can exercise
+ * error propagation independently of the supplied numeric values. */
 static Int32 mergeNumericResult(AggResItem* dst, const AggResItem& src,
                                 Uint32 op) {
   DBUG_EXECUTE_IF("ndb_agg_merge_error", {
@@ -686,8 +685,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         // rows took different arms (big-06: the old assert here
         // rejected exactly that and aborted the RDRS process at 8
         // nodes).  aggMergeNumericSlot applies the same signedness-OR
-        // / value-domain / DOUBLE-promotion rules, while preserving
-        // the distributed merger's existing overflow behavior.
+        // / value-domain / DOUBLE-promotion rules, including checked
+        // BIGINT SUM shared with the distributed merger.
         assert((res[i].type == NDB_TYPE_BIGINT ||
                 res[i].type == NDB_TYPE_DOUBLE) &&
                (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||

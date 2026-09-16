@@ -95,8 +95,5 @@ SET_PROPERTY(SOURCE TransporterFacade.cpp
 
 NDB_ADD_TEST(SectionIterators-t SectionIterators.cpp NdbApiSignal.cpp)
 
-# Standalone API merge failure tests; DBUG fault injection is debug-only.
+# Standalone numeric boundary and API merge failure/recovery tests.
 NDB_ADD_TEST(NdbAggregatorMerge-t NdbAggregatorMergeTest.cpp LIBS ndbclient_static)
-IF(TARGET NdbAggregatorMerge-t)
-  SET_TESTS_PROPERTIES(NdbAggregatorMerge-t PROPERTIES SKIP_RETURN_CODE 77)
-ENDIF()
