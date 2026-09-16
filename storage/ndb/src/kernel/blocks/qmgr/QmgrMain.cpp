@@ -782,13 +782,11 @@ void Qmgr::sendSttorryLab(Signal *signal, bool first_phase) {
         " completed");
     if (c_nsl_join_timer.is_active()) {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s",
-                NodeStartLog::line(
-                    buf, sizeof(buf), NodeStartLog::NSL_JOIN, 0,
-                    NodeState::ST_ILLEGAL_TYPE, "completed",
-                    (Int64)c_nsl_join_timer.elapsed_sec(),
-                    "included in heartbeat protocol, president node %u",
-                    cpresident));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 0,
+                         NodeState::ST_ILLEGAL_TYPE, "completed",
+                         (Int64)c_nsl_join_timer.elapsed_sec(),
+                         "included in heartbeat protocol, president node %u",
+                         cpresident);
       c_nsl_join_timer.stop_step();
     }
   }
@@ -809,9 +807,8 @@ void Qmgr::startphase1(Signal *signal) {
   c_nsl_join_timer.start_step();
   {
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s",
-              NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 0,
-                                 NodeState::ST_ILLEGAL_TYPE, "started", -1));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 0,
+                       NodeState::ST_ILLEGAL_TYPE, "started", -1);
   }
 
   NodeRecPtr nodePtr;

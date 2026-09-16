@@ -531,9 +531,8 @@ Suma::execSTTOR(Signal* signal) {
       c_nsl_handover_gci = 0; /* set when the handover request goes out */
       {
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                           NodeStartLog::NSL_HANDOVER, 0,
-                                           m_typeOfStart, "started", -1));
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_HANDOVER, 0,
+                           m_typeOfStart, "started", -1);
       }
       c_startup.m_wait_handover = true;
       check_start_handover(signal);
@@ -567,9 +566,8 @@ Suma::execSTTOR(Signal* signal) {
     }
     {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                            NodeStartLog::NSL_HANDOVER,
-                                            m_typeOfStart));
+      NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_HANDOVER,
+                            m_typeOfStart);
     }
   }
   sendSTTORRY(signal);
@@ -1328,21 +1326,17 @@ void Suma::sendSTTORRY(Signal *signal) {
       }
     }
     if (c_nsl_handover_gci != 0) {
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_HANDOVER, 0,
-                                         m_typeOfStart, "completed",
-                                         step_elapsed,
-                                         "subscription buckets taken over at"
-                                         " GCI %u",
-                                         c_nsl_handover_gci));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_HANDOVER, 0,
+                         m_typeOfStart, "completed", step_elapsed,
+                         "subscription buckets taken over at"
+                         " GCI %u",
+                         c_nsl_handover_gci);
     } else {
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_HANDOVER, 0,
-                                         m_typeOfStart, "completed",
-                                         step_elapsed,
-                                         "no subscription buckets to take"
-                                         " over, this node has no node"
-                                         " group"));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_HANDOVER, 0,
+                         m_typeOfStart, "completed", step_elapsed,
+                         "no subscription buckets to take"
+                         " over, this node has no node"
+                         " group");
     }
     c_nsl_handover_timer.stop_step();
   }

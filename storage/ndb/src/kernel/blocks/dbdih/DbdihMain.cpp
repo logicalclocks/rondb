@@ -1998,26 +1998,22 @@ I N T E R N A L  P H A S E S
    atomically (Dbdih::nsl_sr_*). */
 Uint64 nsl_dih_sr_metadata_start() {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
-  return (dih != nullptr) ? dih->nsl_sr_metadata_start() : 0;
+  return dih->nsl_sr_metadata_start();
 }
 
 bool nsl_dih_performed_copy_phase() {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
-  return (dih != nullptr) && dih->nsl_performed_copy_phase();
+  return dih->nsl_performed_copy_phase();
 }
 
 bool nsl_dih_wait_lcp_reported() {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
-  return (dih != nullptr) && dih->nsl_wait_lcp_reported();
+  return dih->nsl_wait_lcp_reported();
 }
 
 bool nsl_dih_sr_receiving_tables(Uint64 &sub_start, Uint32 &tables) {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
-  sub_start = 0;
   tables = 0;
-  if (dih == nullptr) {
-    return false;
-  }
   /* The sub-step start is published before any table count. */
   sub_start = dih->nsl_sr_sub2_start();
   if (sub_start == 0) {
@@ -2249,23 +2245,39 @@ void Dbdih::nsl_report_progress(Signal *signal) {
       }
       {
         /**
-         * Fragments done, then the rows received by the DBLQH workers
-         * since the step started, with the rate: this moves inside a
-         * large fragment. No total is known up front.
+         * Fragments done against the total counted by the take-over's
+         * first pass (nr_start_fragments), with rate and estimate, then
+         * the rows received by the DBLQH workers since the step started,
+         * with their rate: those move inside a large fragment.
          */
         char detail[256];
         const Uint64 total = nsl_lqh_copy_row_ops_total();
         const Uint64 ops = (total >= c_nsl_sync_row_ops_base)
                                ? (total - c_nsl_sync_row_ops_base)
                                : total;
-        int pos = BaseString::snprintf(
-            detail, sizeof(detail),
-            "copied %u fragments from live nodes, %llu row operations"
-            " received so far",
-            c_nsl_frags_copied, (unsigned long long)ops);
         /* Sub-step lines count from the sub-step's start (the copy rows
            are counted from the step start, none flow before sub-step 2). */
         const Int64 sub_elapsed = nsl_sync_sub_elapsed();
+        int pos;
+        if (c_nsl_frags_total > 0) {
+          pos = BaseString::snprintf(detail, sizeof(detail),
+                                     "copied %u/%u fragments from live nodes",
+                                     c_nsl_frags_copied, c_nsl_frags_total);
+          if (pos > 0 && (size_t)pos < sizeof(detail)) {
+            pos += NodeStartLog::appendRateEta(
+                detail + pos, sizeof(detail) - pos, c_nsl_frags_copied,
+                c_nsl_frags_total, sub_elapsed, "fragments");
+          }
+        } else {
+          pos = BaseString::snprintf(detail, sizeof(detail),
+                                     "copied %u fragments from live nodes",
+                                     c_nsl_frags_copied);
+        }
+        if (pos > 0 && (size_t)pos < sizeof(detail)) {
+          pos += BaseString::snprintf(detail + pos, sizeof(detail) - pos,
+                                      ", %llu row operations received so far",
+                                      (unsigned long long)ops);
+        }
         if (pos > 0 && (size_t)pos < sizeof(detail)) {
           NodeStartLog::appendRateEta(detail + pos, sizeof(detail) - pos, ops,
                                       0, sub_elapsed, "row operations");
@@ -2473,17 +2485,15 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
         // setInitialActiveStatus is moved into makeNodeGroups
         {
           char buf[NodeStartLog::BUF_SIZE];
-          infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                                NodeStartLog::NSL_START_PERM,
-                                                cstarttype));
+          NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_START_PERM,
+                                cstarttype);
         }
       } else if (cstarttype == NodeState::ST_SYSTEM_RESTART) {
         jam();
         {
           char buf[NodeStartLog::BUF_SIZE];
-          infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                                NodeStartLog::NSL_START_PERM,
-                                                cstarttype));
+          NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_START_PERM,
+                                cstarttype);
         }
       } else if ((cstarttype == NodeState::ST_NODE_RESTART) ||
                  (cstarttype == NodeState::ST_INITIAL_NODE_RESTART)) {
@@ -2491,12 +2501,11 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
         nsl_start_step(signal, NodeStartLog::NSL_START_PERM);
         {
           char buf[NodeStartLog::BUF_SIZE];
-          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                             NodeStartLog::NSL_START_PERM, 0,
-                                             cstarttype, "started", -1,
-                                             "requesting start permission"
-                                             " from master node %u",
-                                             refToNode(cmasterdihref)));
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_START_PERM, 0,
+                             cstarttype, "started", -1,
+                             "requesting start permission"
+                             " from master node %u",
+                             refToNode(cmasterdihref));
         }
         nodeRestartPh2Lab(signal);
         return;
@@ -2548,25 +2557,23 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
           jam();
           nsl_start_step(signal, NodeStartLog::NSL_METADATA);
           char buf[NodeStartLog::BUF_SIZE];
-          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                             NodeStartLog::NSL_METADATA, 0,
-                                             cstarttype, "started", -1,
-                                             "this node is the master, it"
-                                             " reads and distributes the"
-                                             " metadata once all nodes"
-                                             " reach this point"));
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                             cstarttype, "started", -1,
+                             "this node is the master, it"
+                             " reads and distributes the"
+                             " metadata once all nodes"
+                             " reach this point");
         } else {
           jam();
           c_nsl_timer.start_step();
           c_nsl_sr_meta_start_pub.store(NdbTick_getCurrentTicks().getUint64(),
                                         std::memory_order_release);
           char buf[NodeStartLog::BUF_SIZE];
-          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                             NodeStartLog::NSL_METADATA, 0,
-                                             cstarttype, "started", -1,
-                                             "master node %u reads and"
-                                             " distributes the metadata",
-                                             refToNode(cmasterdihref)));
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                             cstarttype, "started", -1,
+                             "master node %u reads and"
+                             " distributes the metadata",
+                             refToNode(cmasterdihref));
         }
       }
       ndbsttorry10Lab(signal, __LINE__);
@@ -2588,9 +2595,8 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
           c_lcpState.setLcpStatus(LCP_STATUS_IDLE, __LINE__);
           {
             char buf[NodeStartLog::BUF_SIZE];
-            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                                  NodeStartLog::NSL_METADATA,
-                                                  typestart));
+            NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_METADATA,
+                                  typestart);
           }
           ndbsttorry10Lab(signal, __LINE__);
           return;
@@ -2632,12 +2638,11 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
           nsl_start_step(signal, NodeStartLog::NSL_METADATA);
           {
             char buf[NodeStartLog::BUF_SIZE];
-            infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                               NodeStartLog::NSL_METADATA, 0,
-                                               cstarttype, "started", -1,
-                                               "metadata is copied to us by"
-                                               " master node %u",
-                                               refToNode(cmasterdihref)));
+            NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                               cstarttype, "started", -1,
+                               "metadata is copied to us by"
+                               " master node %u",
+                               refToNode(cmasterdihref));
           }
 
           StartMeReq *req = (StartMeReq *)&signal->theData[0];
@@ -2662,23 +2667,16 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
              * the point where they would have executed.
              */
             char buf[NodeStartLog::BUF_SIZE];
-            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                                  NodeStartLog::NSL_RESTORE,
-                                                  typestart));
-            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                                  NodeStartLog::NSL_UNDO_DD,
-                                                  typestart));
-            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                                  NodeStartLog::NSL_REDO_EXEC,
-                                                  typestart));
-            infoEvent("%s",
-                      NodeStartLog::skipped(buf, sizeof(buf),
-                                            NodeStartLog::NSL_INDEX_REBUILD,
-                                            typestart));
-            infoEvent("%s",
-                      NodeStartLog::skipped(buf, sizeof(buf),
-                                            NodeStartLog::NSL_SYNCHRONIZE,
-                                            typestart));
+            NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_RESTORE,
+                                  typestart);
+            NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_UNDO_DD,
+                                  typestart);
+            NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_REDO_EXEC,
+                                  typestart);
+            NodeStartLog::skipped(buf, sizeof(buf),
+                                  NodeStartLog::NSL_INDEX_REBUILD, typestart);
+            NodeStartLog::skipped(buf, sizeof(buf),
+                                  NodeStartLog::NSL_SYNCHRONIZE, typestart);
           }
           /*---------------------------------------------------------------------*/
           // WE EXECUTE A LOCAL CHECKPOINT AS A PART OF A SYSTEM RESTART.
@@ -2704,11 +2702,9 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
           nsl_start_step(signal, NodeStartLog::NSL_WAIT_LCP);
           {
             char buf[NodeStartLog::BUF_SIZE];
-            infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                               NodeStartLog::NSL_WAIT_LCP, 0,
-                                               cstarttype, "started", -1,
-                                               "LCP id %u",
-                                               SYSFILE->latestLCP_ID + 1));
+            NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                               cstarttype, "started", -1, "LCP id %u",
+                               SYSFILE->latestLCP_ID + 1);
           }
 
           c_lcpState.immediateLcpStart = true;
@@ -2742,9 +2738,8 @@ void Dbdih::execNDB_STTOR(Signal *signal) {
        */
       {
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                           NodeStartLog::NSL_ACTIVATE, 0,
-                                           typestart, "started", -1));
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE, 0,
+                           typestart, "started", -1);
       }
       switch (typestart) {
         case NodeState::ST_INITIAL_START:
@@ -3234,14 +3229,12 @@ void Dbdih::execSTART_PERMCONF(Signal *signal) {
   if (c_nsl_active_step == NodeStartLog::NSL_START_PERM) {
     jam();
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                       NodeStartLog::NSL_START_PERM, 0,
-                                       cstarttype, "completed",
-                                       (Int64)c_nsl_timer.elapsed_sec(),
-                                       "permission granted by master node"
-                                       " %u, %u retries",
-                                       refToNode(cmasterdihref),
-                                       c_nsl_perm_retries));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_START_PERM, 0,
+                       cstarttype, "completed",
+                       (Int64)c_nsl_timer.elapsed_sec(),
+                       "permission granted by master node"
+                       " %u, %u retries",
+                       refToNode(cmasterdihref), c_nsl_perm_retries);
     nsl_stop_step();
   }
 }  // Dbdih::execSTART_PERMCONF()
@@ -3361,12 +3354,10 @@ void Dbdih::execSTART_MECONF(Signal *signal) {
   if (c_nsl_active_step == NodeStartLog::NSL_METADATA) {
     jam();
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                       NodeStartLog::NSL_METADATA, 0,
-                                       cstarttype, "completed",
-                                       (Int64)c_nsl_timer.elapsed_sec(),
-                                       "metadata copied by master node %u",
-                                       refToNode(cmasterdihref)));
+    NodeStartLog::line(
+        buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0, cstarttype,
+        "completed", (Int64)c_nsl_timer.elapsed_sec(),
+        "metadata copied by master node %u", refToNode(cmasterdihref));
     nsl_stop_step();
   }
 
@@ -3399,14 +3390,12 @@ void Dbdih::execSTART_COPYCONF(Signal *signal) {
     if (c_nsl_active_step == NodeStartLog::NSL_WAIT_LCP) {
       jam();
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_WAIT_LCP, 0,
-                                         cstarttype, "completed",
-                                         (Int64)c_nsl_timer.elapsed_sec(),
-                                         "LCP id %u, driven by master node"
-                                         " %u",
-                                         SYSFILE->latestLCP_ID,
-                                         refToNode(cmasterdihref)));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                         cstarttype, "completed",
+                         (Int64)c_nsl_timer.elapsed_sec(),
+                         "LCP id %u, driven by master node"
+                         " %u",
+                         SYSFILE->latestLCP_ID, refToNode(cmasterdihref));
       c_nsl_wait_lcp_reported = true;
       nsl_stop_step();
     }
@@ -8107,6 +8096,12 @@ void Dbdih::startTakeOver(Signal *signal, Uint32 startNode,
   takeOverPtr.p->toFailedNode = nodeTakenOver;
   takeOverPtr.p->toCurrentTabref = 0;
   takeOverPtr.p->toCurrentFragid = 0;
+  if (startNode == getOwnNodeId()) {
+    jam();
+    /* [NODE-START] step 12: nr_start_fragments counts the fragment
+       replicas the copy phase will visit. */
+    c_nsl_frags_total = 0;
+  }
 
   ndbrequire(req != NULL);
   takeOverPtr.p->m_flags = req->flags;
@@ -8129,8 +8124,7 @@ void Dbdih::nr_start_fragments(Signal *signal, TakeOverRecordPtr takeOverPtr) {
       return;
     }  // if
     ptrAss(tabPtr, tabRecord);
-    if (tabPtr.p->tabStatus != TabRecord::TS_ACTIVE ||
-        tabPtr.p->tabStorage != TabRecord::ST_NORMAL) {
+    if (tabPtr.p->tabStatus != TabRecord::TS_ACTIVE) {
       jam();
       takeOverPtr.p->toCurrentFragid = 0;
       takeOverPtr.p->toCurrentTabref++;
@@ -8147,18 +8141,41 @@ void Dbdih::nr_start_fragments(Signal *signal, TakeOverRecordPtr takeOverPtr) {
     getFragstore(tabPtr.p, fragId, fragPtr);
     ReplicaRecordPtr loopReplicaPtr;
     loopReplicaPtr.i = fragPtr.p->oldStoredReplicas;
+    /**
+     * [NODE-START] step 12: the copy phase (startNextCopyFragment) copies
+     * one replica per fragment, the first old replica of the starting
+     * node or of the node taken over (the two differ only when an
+     * interrupted take-over is resumed, Sysfile::NS_TakeOver). Count that
+     * fragment once, in every table class, so the copy progress can show
+     * X/Y. The restore request below is sent for the starting node's own
+     * replica of a logged table only, as before.
+     */
+    bool nsl_counted = false;
     while (loopReplicaPtr.i != RNIL64) {
       ndbrequire(c_replicaRecordPool.getPtr(loopReplicaPtr));
       if (loopReplicaPtr.p->procNode == takeOverPtr.p->toStartingNode) {
         jam();
-        nr_start_fragment(signal, takeOverPtr, loopReplicaPtr);
-        loopCount += MaxFragsToSearch; /* Take a break */
+        if (!nsl_counted && takeOverPtr.p->toStartingNode == getOwnNodeId()) {
+          c_nsl_frags_total++;
+        }
+        if (tabPtr.p->tabStorage == TabRecord::ST_NORMAL) {
+          jam();
+          nr_start_fragment(signal, takeOverPtr, loopReplicaPtr);
+          loopCount += MaxFragsToSearch; /* Take a break */
+        }
         break;
-      } else {
+      }
+      if (!nsl_counted &&
+          loopReplicaPtr.p->procNode == takeOverPtr.p->toFailedNode) {
         jam();
-        loopReplicaPtr.i = loopReplicaPtr.p->nextPool;
-      }  // if
-    }    // while
+        if (takeOverPtr.p->toStartingNode == getOwnNodeId()) {
+          c_nsl_frags_total++;
+        }
+        nsl_counted = true;
+      }
+      jam();
+      loopReplicaPtr.i = loopReplicaPtr.p->nextPool;
+    }  // while
     takeOverPtr.p->toCurrentFragid++;
   }  // while
   signal->theData[0] = DihContinueB::ZTO_START_FRAGMENTS;
@@ -8507,13 +8524,12 @@ void Dbdih::nr_start_logging(Signal *signal, TakeOverRecordPtr takeOverPtr) {
                                c_nsl_frags_logged, c_nsl_frags_copied);
           }
         }
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                           NodeStartLog::NSL_SYNCHRONIZE, 0,
-                                           cstarttype, "completed",
-                                           (Int64)c_nsl_timer.elapsed_sec(),
-                                           "%u fragments copied, REDO"
-                                           " logging enabled",
-                                           c_nsl_frags_copied));
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 0,
+                           cstarttype, "completed",
+                           (Int64)c_nsl_timer.elapsed_sec(),
+                           "%u fragments copied, REDO"
+                           " logging enabled",
+                           c_nsl_frags_copied);
         nsl_stop_step();
       }
       if (takeOverPtr.p->m_flags & StartCopyReq::WAIT_LCP) {
@@ -8527,14 +8543,12 @@ void Dbdih::nr_start_logging(Signal *signal, TakeOverRecordPtr takeOverPtr) {
          */
         nsl_start_step(signal, NodeStartLog::NSL_WAIT_LCP);
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s",
-                  NodeStartLog::line(buf, sizeof(buf),
-                                     NodeStartLog::NSL_WAIT_LCP, 0,
-                                     cstarttype, "started", -1,
-                                     "an LCP driven by master node %u must"
-                                     " include this node before it is"
-                                     " recoverable",
-                                     refToNode(cmasterdihref)));
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                           cstarttype, "started", -1,
+                           "an LCP driven by master node %u must"
+                           " include this node before it is"
+                           " recoverable",
+                           refToNode(cmasterdihref));
       }
 
       takeOverPtr.p->toSlaveStatus = TakeOverRecord::TO_END_TO;
@@ -8863,7 +8877,9 @@ void Dbdih::execSTART_TOCONF(Signal *signal) {
     c_nsl_sync_sub_start = NdbTick_getCurrentTicks();
     NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 2,
                        cstarttype, "started", -1,
-                       "copying fragments from live nodes");
+                       "copying %u fragments from live nodes (all fragment"
+                       " replicas of this node, ordered indexes included)",
+                       c_nsl_frags_total);
   }
   c_activeThreadTakeOverPtr.i = RNIL;
   check_take_over_completed_correctly();
@@ -9792,13 +9808,11 @@ void Dbdih::execEND_TOCONF(Signal *signal) {
      * reaches execSTART_COPYCONF, which completes it there.
      */
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                       NodeStartLog::NSL_WAIT_LCP, 0,
-                                       cstarttype, "completed",
-                                       (Int64)c_nsl_timer.elapsed_sec(),
-                                       "LCP id %u, driven by master node %u",
-                                       SYSFILE->latestLCP_ID,
-                                       refToNode(cmasterdihref)));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                       cstarttype, "completed",
+                       (Int64)c_nsl_timer.elapsed_sec(),
+                       "LCP id %u, driven by master node %u",
+                       SYSFILE->latestLCP_ID, refToNode(cmasterdihref));
     c_nsl_wait_lcp_reported = true;
     nsl_stop_step();
   }
@@ -19982,13 +19996,12 @@ void Dbdih::dictStartConfLab(Signal *signal) {
                        "schema restored from disk, %u table objects"
                        " read and distributed to all nodes",
                        c_nsl_sr_tabs_distributed);
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                       NodeStartLog::NSL_METADATA, 0,
-                                       cstarttype, "completed",
-                                       (Int64)c_nsl_timer.elapsed_sec(),
-                                       "%u table objects read and"
-                                       " distributed to all nodes",
-                                       c_nsl_sr_tabs_distributed));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                       cstarttype, "completed",
+                       (Int64)c_nsl_timer.elapsed_sec(),
+                       "%u table objects read and"
+                       " distributed to all nodes",
+                       c_nsl_sr_tabs_distributed);
     nsl_stop_step();
   }
   c_nsl_frags_distributed = 0;
@@ -21218,9 +21231,8 @@ void Dbdih::execSTART_RECCONF(Signal *signal) {
     nsl_start_step(signal, NodeStartLog::NSL_SYNCHRONIZE);
     {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_SYNCHRONIZE, 0,
-                                         cstarttype, "started", -1));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 0,
+                         cstarttype, "started", -1);
     }
 
     /**
@@ -21303,21 +21315,16 @@ void Dbdih::execSTART_RECCONF(Signal *signal) {
     char buf[NodeStartLog::BUF_SIZE];
     if (m_to_nodes.isclear()) {
       jam();
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_SYNCHRONIZE, 0,
-                                         cstarttype, "skipped", -1,
-                                         "no take-over required"));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 0,
+                         cstarttype, "skipped", -1, "no take-over required");
     } else {
       jam();
       /* The nodes needing take-over run it themselves after this point. */
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_SYNCHRONIZE, 0,
-                                         cstarttype, "skipped", -1,
-                                         "this node needs no take-over,"
-                                         " nodes %s are taken over next",
-                                         BaseString::getPrettyTextShort(
-                                             m_to_nodes)
-                                             .c_str()));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 0,
+                         cstarttype, "skipped", -1,
+                         "this node needs no take-over,"
+                         " nodes %s are taken over next",
+                         BaseString::getPrettyTextShort(m_to_nodes).c_str());
     }
   }
 
@@ -23981,11 +23988,10 @@ void Dbdih::allNodesLcpCompletedLab(Signal *signal) {
     if (c_nsl_active_step == NodeStartLog::NSL_WAIT_LCP) {
       jam();
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_WAIT_LCP, 0,
-                                         cstarttype, "completed",
-                                         (Int64)c_nsl_timer.elapsed_sec(),
-                                         "LCP id %u", SYSFILE->latestLCP_ID));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                         cstarttype, "completed",
+                         (Int64)c_nsl_timer.elapsed_sec(), "LCP id %u",
+                         SYSFILE->latestLCP_ID);
       c_nsl_wait_lcp_reported = true;
       nsl_stop_step();
     }

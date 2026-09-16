@@ -62,7 +62,7 @@ class DblqhProxy : public LocalProxy {
   /**
    * [NODE-START] node-wide step lines, see vm/NodeStartLog.hpp.
    * The workers print per-LDM lines; the proxy prints one
-   * 'completed: all N LDMs' line, mirrored to the cluster log, at the
+   * 'completed: all N LDMs' line, at the
    * fan-ins that already exist: NDB_STTORRY of phase 1 (step 4
    * redo-init), LOCAL_RECOVERY_COMP_REP per phase (steps 8, 9, 10) and
    * START_RECCONF (step 11). Step 6 (redo-prepare) ends LDM-locally in

@@ -2144,11 +2144,10 @@ void Ndbcntr::sendCntrStartReq(Signal *signal) {
     c_nsl_admission_timer.start_step();
     c_nsl_waiting_admission = true;
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s", NodeStartLog::line(
-                        buf, sizeof(buf), NodeStartLog::NSL_ADMISSION, 0,
-                        ctypeOfStart, "started",
-                        -1, "asking master node %u to accept our start",
-                        cmasterNodeId));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ADMISSION, 0,
+                       ctypeOfStart, "started", -1,
+                       "asking master node %u to accept our start",
+                       cmasterNodeId);
   }
 
   if (getOwnNodeId() == cmasterNodeId) {
@@ -2307,13 +2306,11 @@ void Ndbcntr::execCNTR_START_CONF(Signal *signal) {
   c_nsl_waiting_admission = false;
   {
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s",
-              NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ADMISSION,
-                                 0, ctypeOfStart, "completed",
-                                 (Int64)c_nsl_admission_timer.elapsed_sec(),
-                                 "start type: %s, master node %u",
-                                 NodeStartLog::startTypeName(ctypeOfStart),
-                                 cmasterNodeId));
+    NodeStartLog::line(
+        buf, sizeof(buf), NodeStartLog::NSL_ADMISSION, 0, ctypeOfStart,
+        "completed", (Int64)c_nsl_admission_timer.elapsed_sec(),
+        "start type: %s, master node %u",
+        NodeStartLog::startTypeName(ctypeOfStart), cmasterNodeId);
     c_nsl_admission_timer.stop_step();
     infoEvent("%s", NodeStartLog::plan(buf, sizeof(buf), ctypeOfStart));
   }
@@ -3329,27 +3326,24 @@ void Ndbcntr::ph5ALab(Signal *signal) {
           jam();
           for (Uint32 step = NodeStartLog::NSL_RESTORE;
                step <= NodeStartLog::NSL_SYNCHRONIZE; step++) {
-            infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf), step,
-                                                  ctypeOfStart));
+            NodeStartLog::skipped(buf, sizeof(buf), step, ctypeOfStart);
           }
         } else if (!nsl_dih_performed_copy_phase()) {
           jam();
-          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                             NodeStartLog::NSL_SYNCHRONIZE, 0,
-                                             ctypeOfStart, "skipped", -1,
-                                             "no take-over of this node"));
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_SYNCHRONIZE, 0,
+                             ctypeOfStart, "skipped", -1,
+                             "no take-over of this node");
         }
         if (!nsl_dih_wait_lcp_reported()) {
           jam();
           c_nsl_wait_lcp_start = NdbTick_getCurrentTicks();
-          infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                             NodeStartLog::NSL_WAIT_LCP, 0,
-                                             ctypeOfStart, "started", -1,
-                                             "master node %u drives the first"
-                                             " local checkpoint, this node"
-                                             " waits for it at NDB start"
-                                             " phase 5 wait point",
-                                             cmasterNodeId));
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                             ctypeOfStart, "started", -1,
+                             "master node %u drives the first"
+                             " local checkpoint, this node"
+                             " waits for it at NDB start"
+                             " phase 5 wait point",
+                             cmasterNodeId);
         }
       }
       nsl_park(NSL_PARK_WP_5_2);
@@ -3731,9 +3725,8 @@ void Ndbcntr::handle_start_phase_110(Signal *signal) {
        */
       {
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                              NodeStartLog::NSL_BARRIER,
-                                              ctypeOfStart));
+        NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_BARRIER,
+                              ctypeOfStart);
       }
       sendSttorry(signal);
       return;
@@ -3789,9 +3782,8 @@ void Ndbcntr::handle_start_phase_110(Signal *signal) {
   c_nsl_barrier_timer.start_step();
   {
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                       NodeStartLog::NSL_BARRIER, 0,
-                                       ctypeOfStart, "started", -1));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_BARRIER, 0,
+                       ctypeOfStart, "started", -1);
   }
 
   /**
@@ -3926,12 +3918,9 @@ void Ndbcntr::leave_restart_barrier(Signal *signal, const char *reason) {
   if (c_nsl_barrier_timer.is_active()) {
     jam();
     char buf[NodeStartLog::BUF_SIZE];
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                       NodeStartLog::NSL_BARRIER, 0,
-                                       ctypeOfStart, "completed",
-                                       (Int64)c_nsl_barrier_timer
-                                           .elapsed_sec(),
-                                       "%s", reason));
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_BARRIER, 0,
+                       ctypeOfStart, "completed",
+                       (Int64)c_nsl_barrier_timer.elapsed_sec(), "%s", reason);
     c_nsl_barrier_timer.stop_step();
   }
   sendSttorry(signal);
@@ -4050,15 +4039,14 @@ void Ndbcntr::execCNTR_WAITREP(Signal *signal) {
         jam();
         /* Step 13 on a non-master, started at the wait point 5.2 park. */
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::line(
-                            buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
-                            ctypeOfStart, "completed",
-                            (Int64)NdbTick_Elapsed(c_nsl_wait_lcp_start,
-                                                   NdbTick_getCurrentTicks())
-                                .seconds(),
-                            "first local checkpoint completed, driven by"
-                            " master node %u",
-                            signal->theData[0]));
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_WAIT_LCP, 0,
+                           ctypeOfStart, "completed",
+                           (Int64)NdbTick_Elapsed(c_nsl_wait_lcp_start,
+                                                  NdbTick_getCurrentTicks())
+                               .seconds(),
+                           "first local checkpoint completed, driven by"
+                           " master node %u",
+                           signal->theData[0]);
         NdbTick_Invalidate(&c_nsl_wait_lcp_start);
       }
       nsl_unpark();
@@ -6084,12 +6072,10 @@ void Ndbcntr::Missra::sendNextREAD_CONFIG_REQ(Signal *signal) {
                                  cntr.c_nsl_read_config_start, now)
                                  .seconds()
                            : -1);
-    cntr.infoEvent(
-        "%s", NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_INIT, 0,
-                                 NodeState::ST_ILLEGAL_TYPE, "completed",
-                                 (Int64)NdbTick_Elapsed(cntr.c_nsl_start_ticks,
-                                                        now)
-                                     .seconds()));
+    NodeStartLog::line(
+        buf, sizeof(buf), NodeStartLog::NSL_INIT, 0, NodeState::ST_ILLEGAL_TYPE,
+        "completed",
+        (Int64)NdbTick_Elapsed(cntr.c_nsl_start_ticks, now).seconds());
   }
   /**
    * Finished...
@@ -6214,10 +6200,8 @@ void Ndbcntr::Missra::sendNextSTTOR(Signal *signal) {
                                        NdbTick_getCurrentTicks())
                     .seconds()
               : -1;
-      cntr.infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                              NodeStartLog::NSL_ACTIVATE, 0,
-                                              cntr.ctypeOfStart, "completed",
-                                              elapsed));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE, 0,
+                         cntr.ctypeOfStart, "completed", elapsed);
     }
 
     if (start != 0) {

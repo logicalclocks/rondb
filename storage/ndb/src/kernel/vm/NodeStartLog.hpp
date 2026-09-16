@@ -61,26 +61,33 @@
  *                once every node has completed start phase 5, elapsed=30s
  *
  * All helpers print the line to the node log (g_eventLogger, always on)
- * and return the formatted line so that call sites can mirror major-step
- * boundaries to the cluster log with infoEvent("%s", buf). Progress and
- * waiting lines are throttled by NodeStartLogTimer using the
- * NodeStartLogReportFrequency configuration parameter (seconds,
- * 0 = boundary lines only).
+ * and return the formatted line so that the few call sites that mirror
+ * a line to the cluster log can pass it to infoEvent("%s", buf). The
+ * ATTRIBUTE_FORMAT annotations below only give compile-time checking of
+ * the detail format against its arguments (the same annotation
+ * Logger::info and SimulatedBlock::infoEvent carry); nothing here
+ * prints with printf, the pieces are snprintf'ed into the caller's
+ * buffer and printed once. Progress and waiting lines are throttled by
+ * NodeStartLogTimer using the NodeStartLogReportFrequency configuration
+ * parameter (seconds, 0 = boundary lines only).
  *
  * The cluster log (management server) receives, through infoEvent at
- * the call sites: the plan line, the node-level started, completed and
- * skipped lines of the steps (except step 1's started line, printed
- * before the node can send events), and, once a step has run for 60 s,
- * the report tick's line for it, repeated every 10 minutes: a waiting
- * line, or the progress line of step 7's schema processing, the one
- * tick that reports progress there. The failed line is node-log only:
- * in the kernel ErrorReporter prints it from a process that is already
- * going down, and the angel's exits print it without sending an event.
- * A failed start therefore has no closing line in the cluster log: its
- * narrative stops at the last mirrored line, or has none when the node
- * fails in step 1; when the angel reports the exit, the management
- * server's node-down lines follow (Forced node shutdown completed,
- * Node N Disconnected).
+ * the call sites, only three things: the plan line, the final
+ * "[NODE-START] completed: <start type> finished" line, and, once a
+ * step has run for 60 s, the report tick's line for it, repeated every
+ * 10 minutes: a waiting line, or the progress line of step 7's schema
+ * processing, the one tick that reports progress there. The per-step
+ * started, completed and skipped lines are node-log only; the cluster
+ * log keeps its existing "Start phase N completed" lines as the coarse
+ * markers of a healthy start, and a start that stalls announces itself
+ * there after 60 s. The failed line is node-log only too: in the kernel
+ * ErrorReporter prints it from a process that is already going down,
+ * and the angel's exits print it without sending an event. A failed
+ * start therefore has no closing line in the cluster log: its narrative
+ * stops at the plan line or at an escalated waiting line, or has none
+ * when the node fails before admission; when the angel reports the
+ * exit, the management server's node-down lines follow (Forced node
+ * shutdown completed, Node N Disconnected).
  *
  * The elapsed field of a step line counts from the start of the step (on
  * a per-LDM line from that LDM's start of the step); on a sub-step line

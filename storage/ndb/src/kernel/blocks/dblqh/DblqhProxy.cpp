@@ -297,22 +297,20 @@ void DblqhProxy::nsl_sr_metadata_completed(Uint32 sender) {
                        "received %u table objects from master node %u",
                        tables, sender);
   }
-  infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                     NodeStartLog::NSL_METADATA, 0,
-                                     c_nsl_start_type, "completed", elapsed,
-                                     "metadata distributed by master node %u",
-                                     sender));
+  NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                     c_nsl_start_type, "completed", elapsed,
+                     "metadata distributed by master node %u", sender);
 }
 
-/* One node-wide 'started' line, mirrored to the cluster log. */
+/* One node-wide 'started' line. */
 void DblqhProxy::nsl_node_started(Uint32 step) {
   if (!nsl_step_runs(step)) {
     jam();
     return;
   }
   char buf[NodeStartLog::BUF_SIZE];
-  infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0,
-                                     c_nsl_start_type, "started", -1));
+  NodeStartLog::line(buf, sizeof(buf), step, 0, c_nsl_start_type, "started",
+                     -1);
 }
 
 /* One node-wide 'completed' line per LQH step at its fan-in. */
@@ -336,11 +334,10 @@ void DblqhProxy::nsl_node_completed(Uint32 step, const NDB_TICKS &since) {
      */
     const Uint32 parts = globalData.ndbLogParts;
     const Uint32 ldms = nsl_ldms_with_log_parts();
-    infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0, t,
-                                       "completed", elapsed,
-                                       "all %u LDMs holding the %u REDO log"
-                                       " parts",
-                                       ldms, parts));
+    NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                       "all %u LDMs holding the %u REDO log"
+                       " parts",
+                       ldms, parts);
     return;
   }
   if (step == NodeStartLog::NSL_RESTORE) {
@@ -356,38 +353,34 @@ void DblqhProxy::nsl_node_completed(Uint32 step, const NDB_TICKS &since) {
     if (with_frags == 0) {
       jam();
       if (copied) {
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0, t,
-                                           "completed", elapsed,
-                                           "no fragments to copy to this"
-                                           " node"));
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "no fragments to copy to this"
+                           " node");
       } else {
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0, t,
-                                           "completed", elapsed,
-                                           "no fragments to restore on this"
-                                           " node"));
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "no fragments to restore on this"
+                           " node");
       }
       return;
     }
     if (with_frags < c_workers) {
       jam();
       if (copied) {
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0, t,
-                                           "completed", elapsed,
-                                           "%u of %u LDMs received fragments"
-                                           " to copy",
-                                           with_frags, c_workers));
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "%u of %u LDMs received fragments"
+                           " to copy",
+                           with_frags, c_workers);
       } else {
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0, t,
-                                           "completed", elapsed,
-                                           "%u of %u LDMs held fragments to"
-                                           " restore",
-                                           with_frags, c_workers));
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "%u of %u LDMs held fragments to"
+                           " restore",
+                           with_frags, c_workers);
       }
       return;
     }
   }
-  infoEvent("%s", NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed",
-                                     elapsed, "all %u LDMs", c_workers));
+  NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                     "all %u LDMs", c_workers);
 }
 
 /**
@@ -1468,9 +1461,8 @@ void DblqhProxy::execLOCAL_RECOVERY_COMP_REP(Signal *signal) {
       if (c_nsl_start_type == NodeState::ST_INITIAL_NODE_RESTART) {
         jam();
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                              NodeStartLog::NSL_UNDO_DD,
-                                              c_nsl_start_type));
+        NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_UNDO_DD,
+                              c_nsl_start_type);
       } else {
         nsl_node_started(NodeStartLog::NSL_UNDO_DD);
       }

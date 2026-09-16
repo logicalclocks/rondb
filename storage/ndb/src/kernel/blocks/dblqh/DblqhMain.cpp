@@ -1963,11 +1963,10 @@ void Dblqh::startphase1Lab(Signal *signal, Uint32 _dummy, Uint32 ownNodeId) {
     nsl_start_step(signal, NodeStartLog::NSL_REDO_INIT);
     if (nsl_is_reporter()) {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_REDO_INIT, 0,
-                                         cstartType, "started", -1,
-                                         "%u files, %u MBytes per LDM",
-                                         c_totalLogFiles, c_totallogMBytes));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REDO_INIT, 0,
+                         cstartType, "started", -1,
+                         "%u files, %u MBytes per LDM", c_totalLogFiles,
+                         c_totallogMBytes);
     }
   }
   LogFileRecordPtr logFilePtr;
@@ -2056,9 +2055,8 @@ void Dblqh::startphase1Lab(Signal *signal, Uint32 _dummy, Uint32 ownNodeId) {
     jam();
     if (nsl_is_reporter()) {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                            NodeStartLog::NSL_REDO_INIT,
-                                            cstartType));
+      NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_REDO_INIT,
+                            cstartType);
     }
     g_eventLogger->info(
         "LDM(%u): Started LDM restart phase 1"
@@ -2211,9 +2209,8 @@ void Dblqh::startphase3Lab(Signal *signal) {
       }
       if (nsl_is_reporter()) {
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                           NodeStartLog::NSL_REDO_PREPARE, 0,
-                                           cstartType, "started", -1));
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REDO_PREPARE, 0,
+                           cstartType, "started", -1);
       }
       for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
         jam();
@@ -2231,9 +2228,8 @@ void Dblqh::startphase3Lab(Signal *signal) {
       jam();
       if (nsl_is_reporter()) {
         char buf[NodeStartLog::BUF_SIZE];
-        infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                              NodeStartLog::NSL_REDO_PREPARE,
-                                              cstartType));
+        NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_REDO_PREPARE,
+                              cstartType);
       }
       for (logPartPtr.i = 0; logPartPtr.i < clogPartFileSize; logPartPtr.i++) {
         jam();
@@ -28760,12 +28756,11 @@ void Dblqh::closingSrLab(Signal *signal, LogFileRecordPtr logFilePtr) {
     const Uint32 done = nsl_lqh_proxy_redo_prepare_done(ldms);
     if (ldms != 0 && done == ldms) {
       jam();
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_REDO_PREPARE, 0,
-                                         cstartType, "completed", elapsed,
-                                         "all %u LDMs holding the %u REDO"
-                                         " log parts",
-                                         ldms, globalData.ndbLogParts));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REDO_PREPARE, 0,
+                         cstartType, "completed", elapsed,
+                         "all %u LDMs holding the %u REDO"
+                         " log parts",
+                         ldms, globalData.ndbLogParts);
     }
   }
 
@@ -29984,9 +29979,8 @@ void Dblqh::execSET_LOCAL_LCP_ID_CONF(Signal *signal) {
 
     if (nsl_is_reporter()) {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::skipped(buf, sizeof(buf),
-                                            NodeStartLog::NSL_REDO_EXEC,
-                                            cstartType));
+      NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_REDO_EXEC,
+                            cstartType);
     }
     DEB_INDEX_BUILD(("(%u) Start rebuilding index line: %u",
       instance(), __LINE__));
@@ -30005,9 +29999,8 @@ void Dblqh::execSET_LOCAL_LCP_ID_CONF(Signal *signal) {
     c_nsl_redo_sub = 1;
     if (nsl_is_reporter()) {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_REDO_EXEC, 0,
-                                         cstartType, "started", -1));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REDO_EXEC, 0,
+                         cstartType, "started", -1);
     }
   }
   startExecSr(signal);
@@ -30096,11 +30089,9 @@ void Dblqh::rebuildOrderedIndexes(Signal *signal, Uint32 tableId) {
     nsl_start_step(signal, NodeStartLog::NSL_INDEX_REBUILD);
     if (nsl_is_reporter()) {
       char buf[NodeStartLog::BUF_SIZE];
-      infoEvent("%s", NodeStartLog::line(buf, sizeof(buf),
-                                         NodeStartLog::NSL_INDEX_REBUILD, 0,
-                                         cstartType, "started", -1,
-                                         "%u ordered indexes",
-                                         c_nsl_indexes_total));
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_INDEX_REBUILD, 0,
+                         cstartType, "started", -1, "%u ordered indexes",
+                         c_nsl_indexes_total);
     }
 
     sendLOCAL_RECOVERY_COMPLETE_REP(
