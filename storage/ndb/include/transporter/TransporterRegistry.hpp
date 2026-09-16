@@ -39,6 +39,7 @@
 #define TransporterRegistry_H
 
 #include <assert.h>
+#include <atomic>
 #include "ndb_config.h"
 
 #if defined(HAVE_EPOLL_CREATE)
@@ -208,6 +209,59 @@ struct TransporterReceiveData {
    * message. No more unpacking and delivery of messages allowed.
    */
   TrpBitmask m_bad_data_transporters;
+
+  /**
+   * Working set of performReceive(): the union of
+   * m_recv_socket_transporters and m_read_transporters for the current
+   * round. A persistent member rather than a local so that only the
+   * m_trp_words words in use are ever written; the words above stay
+   * zero from construction, which is what makes the sized assign in
+   * performReceive() correct (a local TrpBitmask would clear all 260
+   * words on every construction).
+   */
+  TrpBitmask m_handle_trps;
+
+  /**
+   * Number of 32 bit words of the TrpBitmasks above that can hold a set
+   * bit: (highest transporter id >> 5) + 1. Refreshed from
+   * TransporterRegistry::m_trp_words at the start of every
+   * pollReceive() and performReceive() so that all mask operations
+   * within a round use one width.
+   *
+   * Bits are only ever set for existing transporter ids, and ids are
+   * handed out sequentially from 1, so the words above this width are
+   * always zero and need not be scanned or copied. This cuts the per
+   * round full mask passes (isclear/bitOR/clear/assign/find_next) from
+   * 260 words each to the width in use: 8 words for an API client, one
+   * or two words for a data node in a small cluster. The layout of the
+   * masks is unchanged.
+   */
+  Uint32 m_trp_words;
+
+  bool trps_isclear(const TrpBitmask &m) const {
+    return BitmaskImpl::isclear(m_trp_words, m.rep.data);
+  }
+  void trps_clear(TrpBitmask &m) const {
+    BitmaskImpl::clear(m_trp_words, m.rep.data);
+  }
+  void trps_assign(TrpBitmask &dst, const TrpBitmask &src) const {
+    BitmaskImpl::assign(m_trp_words, dst.rep.data, src.rep.data);
+  }
+  void trps_bitOR(TrpBitmask &dst, const TrpBitmask &src) const {
+    BitmaskImpl::bitOR(m_trp_words, dst.rep.data, src.rep.data);
+  }
+  Uint32 trps_find_next(const TrpBitmask &m, Uint32 n) const {
+    return BitmaskImpl::find_next(m_trp_words, m.rep.data, n);
+  }
+  /**
+   * Debug check of the invariant behind m_trp_words: no bit is set in
+   * the words above the width in use.
+   */
+  bool trps_upper_words_clear(const TrpBitmask &m) const {
+    assert(m_trp_words >= 1 && m_trp_words <= _TRP_BITMASK_SIZE);
+    return BitmaskImpl::isclear(_TRP_BITMASK_SIZE - m_trp_words,
+                                m.rep.data + m_trp_words);
+  }
 
   /**
    * Last transporter received from if unable to complete all transporters
@@ -674,6 +728,20 @@ class TransporterRegistry {
   NodeId localNodeId;
   unsigned maxTransporters;
   Uint32 nTransporters;
+  /**
+   * Number of TrpBitmask words that can hold a set bit given the
+   * transporter ids handed out so far: (nTransporters >> 5) + 1.
+   * Published with release semantics wherever nTransporters grows and
+   * loaded once per round by the receive threads into
+   * TransporterReceiveData::m_trp_words. Never shrinks. A receive thread
+   * only sets a bit for a transporter it has learnt about through the
+   * connect protocol, which happens after the id was handed out and
+   * this value stored, so the width it loads always covers its bits.
+   */
+  std::atomic<Uint32> m_trp_words;
+  void publish_trp_words() {
+    m_trp_words.store((nTransporters >> 5) + 1, std::memory_order_release);
+  }
   Uint32 nTCPTransporters;
   Uint32 nSHMTransporters;
   /*

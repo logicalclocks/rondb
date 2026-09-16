@@ -207,6 +207,8 @@ TransporterReceiveData::TransporterReceiveData()
     m_read_transporters(),
     m_has_data_transporters(),
     m_bad_data_transporters(),
+    m_handle_trps(),
+    m_trp_words(1),
     m_last_trp_id(0),
     m_stop_trp_id(0)
 {
@@ -220,6 +222,7 @@ TransporterReceiveData::TransporterReceiveData()
   m_read_transporters.clear();
   m_has_data_transporters.clear();
   m_bad_data_transporters.clear();
+  m_handle_trps.clear();  // words above m_trp_words are never written again
 
 #if defined(HAVE_EPOLL_CREATE)
   m_epoll_fd = -1;
@@ -361,6 +364,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
       localNodeId(0),
       maxTransporters(_maxTransporters),
       nTransporters(0),
+      m_trp_words(1),
       nTCPTransporters(0),
       nSHMTransporters(0),
       nRDMATransporters(0),
@@ -907,6 +911,7 @@ void TransporterRegistry::insert_allTransporters(Transporter *t) {
     /* Ids are 1..maxTransporters-1, never overrun the id indexed arrays */
     require(nTransporters + 1 < maxTransporters);
     nTransporters++;
+    publish_trp_words();
     require(allTransporters[nTransporters] == nullptr);
     allTransporters[nTransporters] = t;
     t->setTransporterIndex(nTransporters);
@@ -1057,6 +1062,7 @@ bool TransporterRegistry::createTCPTransporter(
 
   // Put the transporter in the transporter arrays
   nTransporters++;
+  publish_trp_words();
   allTransporters[nTransporters] = t;
   theTCPTransporters[nTCPTransporters] = t;
   theNodeIdTransporters[t->getRemoteNodeId()] = t;
@@ -1087,6 +1093,7 @@ bool TransporterRegistry::createSHMTransporter(TransporterConfiguration *config
 
   // Put the transporter in the transporter arrays
   nTransporters++;
+  publish_trp_words();
   allTransporters[nTransporters] = t;
   theSHMTransporters[nSHMTransporters] = t;
   theNodeIdTransporters[t->getRemoteNodeId()] = t;
@@ -1141,6 +1148,7 @@ bool TransporterRegistry::createRDMATransporter(
 
   // Put the transporter in the transporter arrays
   nTransporters++;
+  publish_trp_words();
   allTransporters[nTransporters] = t;
   theRDMATransporters[nRDMATransporters] = t;
   theNodeIdTransporters[t->getRemoteNodeId()] = t;
@@ -1798,6 +1806,17 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
   Uint32 retVal = 0;
 
   /**
+   * Width of the receive masks for this round, see
+   * TransporterReceiveData::m_trp_words. Checked in debug builds: no
+   * bit may be set above the width in any mask we scan.
+   */
+  recvdata.m_trp_words = m_trp_words.load(std::memory_order_acquire);
+  assert(recvdata.trps_upper_words_clear(recvdata.m_read_transporters));
+  assert(recvdata.trps_upper_words_clear(recvdata.m_recv_socket_transporters));
+  assert(recvdata.trps_upper_words_clear(recvdata.m_has_data_transporters));
+  assert(recvdata.trps_upper_words_clear(recvdata.m_handled_transporters));
+
+  /**
    * It is important that we read data from transporters in a fair
    * manner. Thus it is important that not one transporter gets more
    * attention than others. To achieve this we decide which transporters
@@ -1880,8 +1899,8 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * we don't lose indications of data from those transporters
    * we will set m_has_data_transporters on those.
    */
-  if (!(recvdata.m_read_transporters.isclear() &&
-        recvdata.m_recv_socket_transporters.isclear()))
+  if (!(recvdata.trps_isclear(recvdata.m_read_transporters) &&
+        recvdata.trps_isclear(recvdata.m_recv_socket_transporters)))
   {
     /**
      * There is still transporters from previous pollReceive iteration
@@ -1899,7 +1918,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * This might entail a sleep waiting for transporters to receive on their
    * socket (all transporters have a socket, even the SHM transporter).
    */
-  if (!recvdata.m_has_data_transporters.isclear())
+  if (!recvdata.trps_isclear(recvdata.m_has_data_transporters))
   {
     /**
      * Don't wait for sockets to receive data, we are already
@@ -2000,8 +2019,9 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
     retVal |= res;
   }
 #endif
-  recvdata.m_read_transporters.bitOR(recvdata.m_has_data_transporters);
-  recvdata.m_has_data_transporters.clear();
+  recvdata.trps_bitOR(recvdata.m_read_transporters,
+                      recvdata.m_has_data_transporters);
+  recvdata.trps_clear(recvdata.m_has_data_transporters);
   Uint32 stop_trp_id = recvdata.m_stop_trp_id;
   recvdata.m_last_trp_id = 0;
   recvdata.m_stop_trp_id = 0;
@@ -2297,6 +2317,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   TransporterReceiveWatchdog guard(recvdata);
   assert((receiveHandle == &recvdata) || (receiveHandle == nullptr));
   bool stopReceiving = false;
+  /* Width of the receive masks for this round, see pollReceive() */
+  recvdata.m_trp_words = m_trp_words.load(std::memory_order_acquire);
 
   if (recvdata.m_recv_socket_transporters.get(0))
   {
@@ -2364,13 +2386,20 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    *  advantage of this small optimization is not worth the risk.
    */
   NDB_TICKS last_recv = NdbTick_getCurrentTicks();
-  TrpBitmask handle_trps(recvdata.m_recv_socket_transporters);
+  /**
+   * Working set for this round: transporters with data on their socket
+   * plus those with data left over from the previous round. Persistent
+   * member so that only the m_trp_words words in use are written and
+   * scanned, see TransporterReceiveData::m_trp_words.
+   */
+  TrpBitmask &handle_trps = recvdata.m_handle_trps;
+  recvdata.trps_assign(handle_trps, recvdata.m_recv_socket_transporters);
   bool stop_unpacking = false;
-  handle_trps.bitOR(recvdata.m_read_transporters);
+  recvdata.trps_bitOR(handle_trps, recvdata.m_read_transporters);
   Uint32 trp_id = recvdata.m_last_trp_id;
   Uint32 rec_bytes = 0;
   Uint32 loop_count = 0;
-  while ((trp_id = handle_trps.find_next(trp_id + 1)) !=
+  while ((trp_id = recvdata.trps_find_next(handle_trps, trp_id + 1)) !=
             BitmaskImpl::NotFound)
   {
     assert(recvdata.m_transporters.get(trp_id));
@@ -2777,7 +2806,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
       }
     }
   }
-  recvdata.m_handled_transporters.clear();
+  recvdata.trps_clear(recvdata.m_handled_transporters);
   recvdata.m_last_trp_id = 0;
   return (Uint32)(stopReceiving || stop_unpacking);
 }
