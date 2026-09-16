@@ -31390,6 +31390,9 @@ bool Dbtc::seizeAggCompleteRecord(AggCompleteRecordPtr &recPtr,
   recPtr.p->m_outstanding = 0;
   recPtr.p->m_state = AggCompleteRecord::REC_IDLE;
   recPtr.p->m_errorCode = 0;
+#ifdef ERROR_INSERT
+  recPtr.p->m_testCteBarrierNodes.clear();
+#endif
   scanptr.p->m_aggRecordsHead = recPtr.i;
   scanptr.p->m_aggRecordsCount++;
   return true;
@@ -31943,6 +31946,64 @@ void Dbtc::execJOIN_AGG_COMPLETE_CONF(Signal *signal) {
                   instance(), senderNodeId, rec.i));
     return;
   }
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(8132) &&
+      conf->resultBytes == JoinAggCompleteConf::TestCteBarrier) {
+    // These are barrier markers, not completion replies. Leave all
+    // outstanding counts intact until normal cancellation drains them.
+    ndbrequire(rec.p->m_kind == AggCompleteRecord::KIND_CTE);
+    ndbrequire(rec.p->m_cteIndex == 0 || rec.p->m_cteIndex == 2);
+    ndbrequire(!rec.p->m_testCteBarrierNodes.get(senderNodeId));
+    rec.p->m_testCteBarrierNodes.set(senderNodeId);
+    Uint32 ready = 0;
+    AggCompleteRecordPtr first;
+    first.i = RNIL;
+    for (Uint32 i = scanptr.p->m_aggRecordsHead; i != RNIL;) {
+      AggCompleteRecordPtr candidate;
+      candidate.i = i;
+      ndbrequire(getValidAggCompleteRecord(candidate));
+      i = candidate.p->m_nextI;
+      if (candidate.p->m_kind != AggCompleteRecord::KIND_CTE ||
+          (candidate.p->m_cteIndex != 0 && candidate.p->m_cteIndex != 2))
+        continue;
+      ndbrequire(candidate.p->m_state ==
+                 AggCompleteRecord::REC_WAIT_COMPLETE);
+      ndbrequire(candidate.p->m_outstanding == 2);
+      if (candidate.p->m_testCteBarrierNodes.count() == 2)
+        ready |= 1U << candidate.p->m_cteIndex;
+      if (candidate.p->m_cteIndex == 0) first = candidate;
+    }
+    if (ready != ((1U << 0) | (1U << 2))) return;
+
+    // Fail CTE 0 on the coordinator's own node first. Its real REF
+    // records 1860 before query-wide cancellation can crash a peer.
+    ndbrequire(first.i != RNIL);
+    const Uint32 node = getOwnNodeId();
+    ndbrequire(first.p->m_aggNodesPending.get(node));
+    const Uint32 key = first.p->m_aggStateKeys[node];
+    const Uint32 owner = key == RNIL ? 1 :
+        scanptr.p->m_cteAggNodeState[0]->m_aggOwnerInstances[node];
+    ndbrequire(owner > 0);
+    ApiConnectRecordPtr apiPtr;
+    apiPtr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiPtr);
+    JoinAggCancelReq *req =
+        (JoinAggCancelReq *)signal->getDataPtrSend();
+    req->senderRef = reference();
+    req->senderData = scanptr.i;
+    req->requestId = makeAggCompleteRequestId(first.i);
+    req->transid[0] = apiPtr.p->transid[0];
+    req->transid[1] = apiPtr.p->transid[1];
+    req->aggStateKey = key;
+    req->errorCode = 1860;
+    req->identWord = JoinAggregationState::packIdentWord(
+        scanptr.p->m_joinAggQueryTag, 0, 0);
+    sendSignal(numberToRef(DBLQH, owner, node), GSN_JOIN_AGG_CANCEL_REQ,
+               signal, JoinAggCancelReq::SignalLength, JBB);
+    return;
+  }
+#endif
 
   rec.p->m_aggNodesPending.clear(senderNodeId);
   ndbrequire(rec.p->m_outstanding > 0);
@@ -32867,6 +32928,8 @@ void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
    * incorrectly start its dependent CTE, even if that later fails too. */
   ndbrequire(cteId != 0 ||
              !(ERROR_INSERTED(8130) || ERROR_INSERTED(8131)));
+  // Barrier tests must not start a dependent CTE either.
+  ndbrequire(!ERROR_INSERTED(8132));
 #endif
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
@@ -32936,6 +32999,9 @@ void Dbtc::broadcastCteReady(Signal *signal, ScanRecordPtr scanptr,
 void Dbtc::sendCteStartMainReqs(Signal *signal, ScanRecordPtr scanptr) {
   ndbrequire(scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_DONE);
   ndbrequire(scanptr.p->m_aggErrorCode == 0);
+#ifdef ERROR_INSERT
+  ndbrequire(!ERROR_INSERTED(8132));
+#endif
   ApiConnectRecordPtr apiPtr;
   apiPtr.i = scanptr.p->scanApiRec;
   c_apiConnectRecordPool.getPtr(apiPtr);

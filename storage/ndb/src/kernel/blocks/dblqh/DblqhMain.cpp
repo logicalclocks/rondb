@@ -20063,6 +20063,21 @@ void Dblqh::execJOIN_AGG_CANCEL_REQ(Signal *signal) {
     jam();
     return;  // Only pending completion work may send a new reply.
   }
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5152) || ERROR_INSERTED(5153)) {
+    ndbrequire(current == JoinAggregationState::CTE_REDISTRIBUTING);
+    ndbrequire(state->m_cte_redistribution_done);
+    ndbrequire(state->m_cte_nodes_finalized.isclear());
+    // The local seed cancellation must reply before the remote node
+    // crashes while handling query-wide cancellation.
+    if (getOwnNodeId() != refToNode(req->senderRef)) {
+      CRASH_INSERTION(5153);
+    }
+    // Keep peers at the test barrier until DBTC cancels them.
+    abortCteRedistribution(signal, state, req->errorCode, false);
+    return;
+  }
+#endif
   abortCteRedistribution(signal, state, req->errorCode);
 }
 
@@ -23819,6 +23834,28 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   }
 
 redistribution_done:
+#ifdef ERROR_INSERT
+  if ((ERROR_INSERTED(5152) || ERROR_INSERTED(5153)) &&
+      (state->m_cte_index == 0 || state->m_cte_index == 2)) {
+    // Both independent CTEs must reach this point on both nodes before
+    // DBTC 8132 triggers a failure. Withhold every FINAL_REP so no CTE
+    // can become READY while waiting for the other barrier markers.
+    ndbrequire(state->m_cte_num_nodes == 2);
+    ndbrequire(!state->m_cte_redistribution_done);
+    state->m_cte_redistribution_done = true;
+    state->m_cte_redist_batch_bytes = 0;
+    JoinAggCompleteConf *conf =
+        (JoinAggCompleteConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->senderData = state->m_cte_complete_senderData;
+    conf->requestId = state->m_cte_complete_requestId;
+    conf->numResultRows = 0;
+    conf->resultBytes = JoinAggCompleteConf::TestCteBarrier;
+    sendSignal(state->m_cte_complete_senderRef, GSN_JOIN_AGG_COMPLETE_CONF,
+               signal, JoinAggCompleteConf::SignalLength, JBB);
+    return;
+  }
+#endif
   /* All local groups processed. sendBatchedFragmentedSignal emitted
    * every fragment before returning; each FINAL declares the number of
    * logical requests sent to that destination. Receivers may replay

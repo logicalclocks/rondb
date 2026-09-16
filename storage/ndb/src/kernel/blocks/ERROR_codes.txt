@@ -178,7 +178,10 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       placeholder, the delayed SETUP flushes them on their original
       threads (cte_park_basic). Was 5127 before the code was found to be
       registered above for the RONDB-1056 JIT dump.
-Next DBLQH 5152
+5152: Hold CTE 0 and 2 at the FINAL_REP barrier for DBTC 8132;
+      suppress peer notification on CANCEL to exercise DBTC cancellation.
+5153: As 5152, but crash the non-coordinator node on CANCEL.
+Next DBLQH 5154
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

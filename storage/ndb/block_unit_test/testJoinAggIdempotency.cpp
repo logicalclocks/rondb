@@ -62,6 +62,7 @@
  *
  * Usage: testJoinAggIdempotency -c <connect_string> -m <mysql_port>
  *                               [-v] [--iterations N] [--failure-orders]
+ *                               [--cancellation-barriers]
  */
 
 #include <ndb_global.h>
@@ -70,6 +71,7 @@
 #include <NdbAggregator.hpp>
 #include <NdbSleep.h>
 #include <NdbRestarter.hpp>
+#include <kernel/signaldata/DumpStateOrd.hpp>
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "NdbQueryOperation.hpp"
@@ -207,7 +209,8 @@ insertTestData(Ndb *ndb)
  * runD9 and from runD11's loop body. */
 static int
 runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
-                  bool independentCte = false)
+                  bool independentCte = false,
+                  Uint32 *coordinatorNode = nullptr)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
@@ -373,6 +376,9 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
     queryDef->destroy();
     return -1;
   }
+
+  if (coordinatorNode != nullptr)
+    *coordinatorNode = trans->getConnectedNodeId();
 
   NdbQuery *query = trans->createQuery(queryDef);
   if (query == nullptr) {
@@ -580,6 +586,77 @@ runFailureOrders(Ndb *ndb, const char *connectString)
   return 0;
 }
 
+/* 5152 holds FINAL_REPs; 5153 also crashes the non-coordinator node
+ * on CANCEL. DBTC 8132 waits for both independent CTEs on both nodes
+ * before provoking the first real COMPLETE_REF with error 1860. */
+static int
+runCancellationBarriers(Ndb *ndb, const char *connectString)
+{
+  NdbRestarter restarter(connectString);
+  if (restarter.getNumDbNodes() != 2 || restarter.getNumReplicas() != 2) {
+    fprintf(stderr, "FAILED (cancellation tests require two data nodes "
+                    "with two replicas)\n");
+    return -1;
+  }
+  const int nodes[] = {restarter.getDbNodeId(0), restarter.getDbNodeId(1)};
+  if (nodes[0] <= 0 || nodes[1] <= 0 || nodes[0] == nodes[1]) return -1;
+
+  for (int errorInsert : {5152, 5153}) {
+    printf("Cancellation at FINAL_REP barrier%s ... ",
+           errorInsert == 5153 ? " with node failure" : "");
+    fflush(stdout);
+    // Restart an injected crash into NOSTART so the test can verify it.
+    const int restart[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+    int result = 0;
+    if (restarter.dumpStateAllNodes(restart, 2) != 0 ||
+        restarter.insertErrorInAllNodes(errorInsert) != 0 ||
+        restarter.insertErrorInAllNodes(8132) != 0)
+      result = -1;
+
+    Uint32 coordinator = 0;
+    if (result == 0)
+      result = runChainedCteOnce(ndb, errorInsert, 1860, true, &coordinator);
+
+    if (errorInsert == 5153 &&
+        (coordinator == Uint32(nodes[0]) || coordinator == Uint32(nodes[1]))) {
+      const int victim = coordinator == Uint32(nodes[0]) ? nodes[1] : nodes[0];
+      if (restarter.waitNodesNoStart(&victim, 1, 60) != 0 ||
+          restarter.getNodeStatus(coordinator) != NDB_MGM_NODE_STATUS_STARTED) {
+        fprintf(stderr, "FAILED (expected only node %d to crash)\n", victim);
+        result = -1;
+      }
+    } else if (errorInsert == 5153) {
+      result = -1;
+    }
+
+    // Attempt cleanup even when an API result check fails.
+    // Error inserts reset on the crashed process. Clear surviving nodes
+    // and restart any node left in NOSTART.
+    for (int node : nodes) {
+      const int status = restarter.getNodeStatus(node);
+      if (status == NDB_MGM_NODE_STATUS_STARTED) {
+        if (restarter.insertErrorInNode(node, 0) != 0) result = -1;
+      } else if (status == NDB_MGM_NODE_STATUS_NOT_STARTED) {
+        if (errorInsert != 5153) result = -1;
+        if (restarter.startNodes(&node, 1) != 0) result = -1;
+      } else {
+        result = -1;
+      }
+    }
+    if (restarter.waitClusterStarted(120) != 0) result = -1;
+    if (restarter.insertErrorInAllNodes(0) != 0) result = -1;
+    if (restarter.dumpStateAllNodes(restart, 1) != 0) result = -1;
+    if (ndb->waitUntilReady(60) != 0) result = -1;
+    if (result != 0) {
+      fprintf(stderr, "FAILED (cancellation case %d)\n", errorInsert);
+      return -1;
+    }
+    if (runChainedCteOnce(ndb, errorInsert, 0, true) != 0) return -1;
+    printf("OK (error 1860, no rows, close and recovery verified)\n");
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -590,6 +667,7 @@ int main(int argc, char **argv)
   int mysqlPort = 3306;
   Uint32 iterations = 100;
   bool failureOrders = false;
+  bool cancellationBarriers = false;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
@@ -602,9 +680,12 @@ int main(int argc, char **argv)
       iterations = (Uint32)atoi(argv[++i]);
     else if (strcmp(argv[i], "--failure-orders") == 0)
       failureOrders = true;
+    else if (strcmp(argv[i], "--cancellation-barriers") == 0)
+      cancellationBarriers = true;
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
-             "[--iterations N] [--failure-orders]\n", argv[0]);
+             "[--iterations N] [--failure-orders] "
+             "[--cancellation-barriers]\n", argv[0]);
       return 0;
     }
   }
@@ -664,6 +745,11 @@ int main(int argc, char **argv)
 
     if (insertTestData(&ndb) != 0) { rc = 1; goto cleanup; }
     if (failureOrders && runFailureOrders(&ndb, connectString) != 0) {
+      rc = 1;
+      goto cleanup;
+    }
+    if (cancellationBarriers &&
+        runCancellationBarriers(&ndb, connectString) != 0) {
       rc = 1;
       goto cleanup;
     }

@@ -150,6 +150,10 @@ struct JoinAggCompleteReq {
 
 struct JoinAggCompleteConf {
   static constexpr Uint32 SignalLength = 5;
+#ifdef ERROR_INSERT
+  // 5152/5153 -> 8132: local redistribution done, FINAL_REP withheld.
+  static constexpr Uint32 TestCteBarrier = 0x43544557;
+#endif
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;

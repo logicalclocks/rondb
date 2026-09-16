@@ -2322,6 +2322,9 @@ class Dbtc : public SimulatedBlock {
       REC_FAILED = 3
     } m_state;
     Uint32 m_errorCode;
+#ifdef ERROR_INSERT
+    NdbNodeBitmask m_testCteBarrierNodes;
+#endif
   };
   typedef Ptr<AggCompleteRecord> AggCompleteRecordPtr;
   typedef TransientPool<AggCompleteRecord> AggCompleteRecord_pool;
