@@ -113,6 +113,7 @@ void BitmaskImpl::setFieldImpl(Uint32 dst[], unsigned shiftL, unsigned len,
 template struct BitmaskPOD<1>;
 template struct BitmaskPOD<2>;
 template struct BitmaskPOD<5>;    // NdbNodeBitmask
+template struct BitmaskPOD<8>;    // ClientTrpBitmask, NodeBitmask255
 template struct BitmaskPOD<64>;   // NodeBitmask2K (frozen legacy mask)
 template struct BitmaskPOD<68>;   // legacy TrpBitmask size
 template struct BitmaskPOD<256>;  // NodeBitmask

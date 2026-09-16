@@ -965,10 +965,10 @@ void TransporterFacade::wakeup_send_thread(void) {
  *    before return - Just that it will complete as soon as
  *    possible, which is more or less the same as 'adaptive' does.
  */
-void TransporterFacade::do_send_adaptive(const TrpBitmask &trps) {
+void TransporterFacade::do_send_adaptive(const ClientTrpBitmask &trps) {
   assert(m_active_trps.contains(trps));
 
-  for (Uint32 trp = trps.find_first(); trp != TrpBitmask::NotFound;
+  for (Uint32 trp = trps.find_first(); trp != ClientTrpBitmask::NotFound;
        trp = trps.find_next(trp + 1)) {
     struct TFSendBuffer *b = get_send_buffer(trp);
     Guard g(&b->m_mutex);
@@ -1050,7 +1050,7 @@ void TransporterFacade::threadMainSend(void) {
      * micro-nap (!= ETIMEDOUT), which only happens if we have to
      * take immediate send action.
      */
-    TrpBitmask send_trps(m_has_data_trps);
+    ClientTrpBitmask send_trps(m_has_data_trps);
 
     if (m_send_thread_nodes.get(SEND_THREAD_NO) == false) {
       if (!m_has_data_trps.isclear()) {
@@ -1658,7 +1658,7 @@ bool TransporterFacade::set_up_node_active_in_send_buffers(
      * same single-transporter invariant as TCP/SHM API links.
      */
     require(num_ids == 1);
-    require(trp_ids[0] > 0);
+    require(trp_ids[0] > 0 && trp_ids[0] < MAX_TRPS);
     theOwnTrpId = trp_ids[0];
   }
 
@@ -1681,7 +1681,7 @@ bool TransporterFacade::set_up_node_active_in_send_buffers(
      * single transporter path.
      */
     require(num_ids == 1);
-    require(trp_ids[0] > 0);
+    require(trp_ids[0] > 0 && trp_ids[0] < MAX_TRPS);
     b = get_or_create_send_buffer(trp_ids[0]);
     if (unlikely(b == nullptr)) DBUG_RETURN(false);
     b->m_node_active = true;
@@ -1722,6 +1722,29 @@ bool TransporterFacade::configure(NodeId nodeId,
   if (!IPCConfig::configureTransporters(theOwnId, conf, *theTransporterRegistry,
                                         true))
     DBUG_RETURN(false);
+
+  /**
+   * The client side transporter masks (ClientTrpBitmask) and the send
+   * buffer slot arrays are sized for MAX_TRPS transporter ids. The
+   * registry assigns transporter ids sequentially from 1, so a transporter
+   * count below MAX_TRPS guarantees that every id fits. An API node only
+   * has transporters to the data nodes and to itself, an ndb_mgmd also to
+   * the other management servers, so this can only trip on an absurd
+   * configuration. Fail the configuration cleanly here rather than
+   * letting an id escape the masks further down (also covers the mgmd
+   * online reconfigure, which passes through here again).
+   */
+  {
+    const int num_trps = theTransporterRegistry->get_transporter_count();
+    if (unlikely(num_trps < 0 || Uint32(num_trps) >= MAX_TRPS)) {
+      g_eventLogger->error(
+          "Node %u is configured with %d transporters, but an API or MGM "
+          "node supports at most %u. Reduce the number of data nodes or "
+          "management servers in the configuration.",
+          theOwnId, num_trps, MAX_TRPS - 1);
+      DBUG_RETURN(false);
+    }
+  }
 
   /* Set up active communication with all configured nodes / transporters */
   if (!set_up_node_active_in_send_buffers(theOwnId, conf)) DBUG_RETURN(false);
@@ -3434,8 +3457,8 @@ void TransporterFacade::try_send_buffer(TrpId trp_id, struct TFSendBuffer *b) {
  *
  * Also see ::try_send_buffer() for comments.
  */
-void TransporterFacade::try_send_all(const TrpBitmask &trps) {
-  for (Uint32 trp = trps.find_first(); trp != TrpBitmask::NotFound;
+void TransporterFacade::try_send_all(const ClientTrpBitmask &trps) {
+  for (Uint32 trp = trps.find_first(); trp != ClientTrpBitmask::NotFound;
        trp = trps.find_next(trp + 1)) {
     struct TFSendBuffer *b = get_send_buffer(trp);
     NdbMutex_Lock(&b->m_mutex);

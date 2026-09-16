@@ -176,7 +176,7 @@ void trp_client::close() {
  *
  * Protected by having the 'm_mutex' locked
  */
-void trp_client::set_enabled_send(const TrpBitmask &trps) {
+void trp_client::set_enabled_send(const ClientTrpBitmask &trps) {
   assert(NdbMutex_Trylock(m_mutex) != 0);
   m_enabled_trps_mask.assign(trps);
 }
