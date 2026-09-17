@@ -1,7 +1,39 @@
 --source include/have_ndb.inc
 
+# NDBT creates TEST_DB.T1 directly through the NDB API. Keep both
+# mysqlds stopped so metadata discovery cannot import the API table.
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+--connection default
+--echo # Shutting down mysqld 1
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo # Shutting down mysqld 2
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
 let NDBAPITEST_NAME=testScan;
 let NDBAPITEST_ARGS=-nScanStartRestart T1;
-let NDBAPITEST_CLEANUP_QUERY=DROP DATABASE TEST_DB;
+let NDBAPITEST_CLEANUP_QUERY=;
 
 --source suite/ndb/include/run_ndbapitest.inc
+
+# NDBT drops T1 before reporting success. With no metadata discovery
+# during the test, there is no SQL TEST_DB schema to clean up.
+--connection default
+--echo # Starting mysqld 1
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--connection s2
+--echo # Starting mysqld 2
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--connection default
+--disconnect s2
