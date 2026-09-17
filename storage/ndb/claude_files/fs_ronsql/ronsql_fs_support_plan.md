@@ -173,11 +173,13 @@ and overflow tests with interpreter/JIT parity are complete (`2f618dae6bf`).
 Retire the unchecked-merge finding only with matching regression evidence;
 represent the remaining MySQL range difference explicitly.
 
-**D4. Display rules (F3, F4) — pending.** Apply source-type-specific AVG
-scale and FLOAT rendering within the existing 64-bit representations.
-Test scalar, grouped, ordered, and CTE results. Formatting must not imply
-exact DECIMAL arithmetic. Remove canonicalization and retire findings only
-where strict comparisons demonstrate the issue is resolved.
+**D4. Display rules (F3, F4) — in progress.** AVG column formatting is
+complete with passing base/JIT regressions (`2ca8fc243f5`); AVG arithmetic
+expressions retain the existing four-digit rule. FLOAT MIN/MAX, projection,
+and GROUP BY rendering now use source-type metadata through chained CTEs;
+SUM/AVG remain double. Strict CLI/HTTP FLOAT regressions await user validation.
+Formatting must not imply exact DECIMAL arithmetic. Remove canonicalization
+and retire findings only where strict comparisons demonstrate resolution.
 
 ### WP-E — String entity keys in snowflake templates (F14) — P1
 

@@ -1,0 +1,105 @@
+--source include/have_ndb.inc
+--let strict_diff=yes
+--let suppress_ronsql_cli=
+--let QUERY=
+--let QUERY_FILE=$MYSQL_TMP_DIR/float-format.sql
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE float_format (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  f FLOAT,
+  d DOUBLE
+) ENGINE=NDB;
+--enable_warnings
+# Decimal fractions expose the noise from rendering FLOAT as DOUBLE.
+# SUM/AVG use only g = 1: two operands avoid accumulation-order differences.
+INSERT INTO float_format VALUES
+(1, 1, 0.1, 1.23456789),
+(2, 1, 0.2, 2.34567891),
+(3, 2, -0.1, -1.23456789),
+(4, 2, -0.2, -2.34567891),
+(5, 3, 1e-20, 2.5),
+(6, 3, 1e20, 3.5),
+(7, 4, 0, 0),
+(8, 1, NULL, NULL),
+(9, 5, NULL, NULL);
+--enable_query_log
+
+--echo Scalar FLOAT extrema and DOUBLE control
+--write_file $QUERY_FILE
+SELECT MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format WHERE g = 1;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Grouped FLOAT extrema: signs, exponents, zero and NULL
+--write_file $QUERY_FILE
+SELECT g, MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo FLOAT group keys
+--write_file $QUERY_FILE
+SELECT f, COUNT(*) AS n FROM float_format GROUP BY f;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Ordered FLOAT keys and extrema
+--write_file $QUERY_FILE
+SELECT f, MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format GROUP BY f ORDER BY f;
+EOF
+--let skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo CTE projection of native FLOAT and widened MIN
+--write_file $QUERY_FILE
+WITH a AS (SELECT f, MIN(f) AS lo FROM float_format GROUP BY f) SELECT f, lo FROM a;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Widened FLOAT CTE group keys
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, MIN(f) AS lo FROM float_format GROUP BY g) SELECT lo, COUNT(*) AS n FROM a GROUP BY lo;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Ordered widened FLOAT CTE group keys
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, MIN(f) AS lo FROM float_format GROUP BY g) SELECT lo, COUNT(*) AS n FROM a GROUP BY lo ORDER BY lo DESC;
+EOF
+--let skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo CTE extrema preserve FLOAT while SUM and AVG remain DOUBLE
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g) SELECT MIN(lo) AS lo, MAX(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+# a's g = 1 bound turns b's source into a constant-key CTE lookup.
+# That lookup must be scheduled as b's materialization root.
+--echo Chained CTE projection preserves each display type
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g), b AS (SELECT g, MAX(lo) AS lo, MIN(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a GROUP BY g) SELECT g, lo, hi, sf, af FROM b;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Direct FLOAT SUM and AVG retain DOUBLE precision
+--write_file $QUERY_FILE
+SELECT SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Empty scalar FLOAT extrema
+--write_file $QUERY_FILE
+SELECT MIN(f) AS lo, MAX(f) AS hi FROM float_format WHERE g = 0;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--disable_query_log
+--disable_warnings
+DROP TABLE float_format;
+--enable_warnings
+--enable_query_log
+--let strict_diff=

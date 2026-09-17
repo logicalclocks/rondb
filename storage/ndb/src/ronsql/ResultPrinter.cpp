@@ -510,6 +510,9 @@ ResultPrinter::compile()
         cmd.print_group_by_column.charset = charset;
         cmd.print_group_by_column.precision = precision;
         cmd.print_group_by_column.scale = scale;
+        cmd.print_group_by_column.float_display =
+            m_column_metadata != NULL &&
+            m_column_metadata[o->column.col_idx].float_display;
         m_program.push(cmd);
         break;
       }
@@ -519,6 +522,7 @@ ResultPrinter::compile()
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
         cmd.print_aggregate.charset = aggregate_arg_charset(o);
+        cmd.print_aggregate.float_display = aggregate_uses_float_display(o);
         {
           // D15: only format with fixed scale when the source DECIMAL is within
           // DOUBLE's exact range (precision <= 15); wider DECIMALs keep compact
@@ -729,7 +733,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:
-          print_float_or_double(out, column.data_float());
+          print_float_or_double(out, column.data_float(), true);
           break;
         case NdbDictionary::Column::Type::Double:
           // cte_avg_plan.md V4 (C8): a Double GROUP BY column carrying
@@ -745,7 +749,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
                        column.data_double());
               out << fbuf;
             } else {
-              print_float_or_double(out, column.data_double());
+              print_float_or_double(out, column.data_double(),
+                                    cmd.print_group_by_column.float_display);
             }
           }
           break;
@@ -880,6 +885,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
                                cmd.print_aggregate.scale,
+                               cmd.print_aggregate.float_display,
                                cmd.print_aggregate.temporal,
                                cmd.print_aggregate.temporal_fsp);
       }
@@ -1305,7 +1311,7 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   case NdbDictionary::Column::Bigunsigned:
     out << (unsigned long long)attr->u_64_value(); break;
   case NdbDictionary::Column::Float:
-    print_float_or_double(out, (double)attr->float_value()); break;
+    print_float_or_double(out, attr->float_value(), true); break;
   case NdbDictionary::Column::Double:
     {
       // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
@@ -1320,7 +1326,8 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
         snprintf(buf, sizeof(buf), "%.*f", sc, attr->double_value());
         out << buf;
       } else {
-        print_float_or_double(out, attr->double_value());
+        print_float_or_double(out, attr->double_value(),
+                              meta != NULL && meta->float_display);
       }
     }
     break;
@@ -1791,7 +1798,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:         ///< 32-bit float. 4 bytes float
-          print_float_or_double(out, column.data_float());
+          print_float_or_double(out, column.data_float(), true);
           break;
         case NdbDictionary::Column::Type::Double:        ///< 64-bit float. 8 byte float
           // cte_avg_plan.md V4 (C8): see the buffered-path Double arm.
@@ -1804,7 +1811,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
                        column.data_double());
               out << fbuf;
             } else {
-              print_float_or_double(out, column.data_double());
+              print_float_or_double(out, column.data_double(),
+                                    cmd.print_group_by_column.float_display);
             }
           }
           break;
@@ -1941,6 +1949,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
                                cmd.print_aggregate.scale,
+                               cmd.print_aggregate.float_display,
                                cmd.print_aggregate.temporal,
                                cmd.print_aggregate.temporal_fsp);
       }
@@ -2295,11 +2304,16 @@ print_string(std::ostream& out,
 }
 
 inline void
-ResultPrinter::print_float_or_double(std::ostream& out, double value)
+ResultPrinter::print_float_or_double(std::ostream& out, double value,
+                                     bool float_display)
 {
-  char buffer[FLOATING_POINT_BUFFER];
+  char buffer[FLOATING_POINT_BUFFER + 1];
   bool error;
-  size_t len = my_fcvt_compact(value, buffer, &error);
+  // Match MySQL's text-protocol FLOAT conversion. SUM/AVG and true DOUBLE
+  // values retain the existing compact double representation.
+  size_t len = float_display
+      ? my_gcvt(value, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buffer, &error)
+      : my_fcvt_compact(value, buffer, &error);
   if (error)
   {
     // value is Inf, -Inf or NaN.
@@ -2355,6 +2369,21 @@ ResultPrinter::avg_arg_scale(const Outputs* out) const
   // avg_scale is initialized even when the older display metadata is absent
   // (e.g. a DOUBLE CTE result with no fixed scale, or offline EXPLAIN).
   return m_column_metadata[arg->getLoadIdx()].avg_scale;
+}
+
+bool
+ResultPrinter::aggregate_uses_float_display(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE ||
+      (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX))
+    return false;
+  const AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  // Arithmetic expressions have their own result type; only a column
+  // MIN/MAX preserves FLOAT display.
+  if (arg == NULL || !arg->isLoad() || m_column_metadata == NULL ||
+      m_column_names == NULL || arg->getLoadIdx() >= m_column_names->size())
+    return false;
+  return m_column_metadata[arg->getLoadIdx()].float_display;
 }
 
 CHARSET_INFO*
@@ -2494,6 +2523,7 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
                                       NdbAggregator::Result result,
                                       CHARSET_INFO* charset,
                                       int scale,
+                                      bool float_display,
                                       TemporalDisplay temporal,
                                       int temporal_fsp)
 {
@@ -2532,15 +2562,15 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
     {
       // MIN/MAX over a DECIMAL(_, scale) is widened to DOUBLE in the kernel,
       // but MySQL prints it with the source scale (e.g. 20055.00).  Format
-      // with fixed scale so the output matches; true DOUBLE/FLOAT results
-      // pass scale == 0 and keep the compact my_fcvt_compact formatting.
+      // with fixed scale so the output matches; floating results pass
+      // scale == 0 and use their source-type display below.
       char buf[FLOATING_POINT_BUFFER];
       snprintf(buf, sizeof(buf), "%.*f", scale, result.data_double());
       out << buf;
     }
     else
     {
-      print_float_or_double(out, result.data_double());
+      print_float_or_double(out, result.data_double(), float_display);
     }
     break;
   case NdbDictionary::Column::Char:

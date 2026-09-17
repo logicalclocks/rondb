@@ -866,6 +866,7 @@ private:
   // scope's resolved dict columns.  Shared by the aggregate and
   // pass-through ResultPrinter constructions.
   ResultPrinter::ColumnMetadata* build_result_column_metadata();
+  bool column_uses_float_display(QueryScope& scope, Uint32 col_idx);
   void apply_filter_top_level(NdbScanFilter* filter);
   void apply_filter(NdbScanFilter* filter, QueryScope& scope,
                     struct ConditionalExpression* ce);

@@ -36,7 +36,7 @@ the original exact-DECIMAL design. See `ronsql_fs_support_plan.md`, WP-D.
 | Distributed CTE SUM boundaries, overflow and recovery | Complete |
 | CTE lookup/scan delivery while the direct API connection is unavailable | Complete |
 | RonSQL integer SUM boundary/error tests and interpreter/JIT parity | Complete |
-| AVG scale and FLOAT display rules | In progress: AVG column formatting |
+| AVG scale and FLOAT display rules | AVG columns complete; FLOAT validation pending |
 | Framework expectations and requirements reports for the limited scope | Pending |
 
 Completed commits include `8f064822249` (checked SUM) and `bd9c41158cd`
@@ -45,6 +45,10 @@ The routing test passed 100 repetitions with diagnostics; the user
 subsequently reported all requested tests passing after their removal.
 Commit `2f618dae6bf` adds the passing RonSQL SUM and strict JIT regressions,
 completing the M2.1/M2.2 gates for checked integer SUM.
+Commit `2ca8fc243f5` completes AVG column formatting, with passing base/JIT
+regressions. AVG arithmetic expressions retain the existing four-digit rule.
+The FLOAT display patch adds strict CLI/HTTP comparisons for native and
+CTE values; user validation is pending.
 
 ## M2.1 — RonSQL coverage of the checked 64-bit contract
 

@@ -6865,6 +6865,34 @@ RonSQLPreparer::compile()
   }
 }
 
+// The wire type cannot distinguish FLOAT MIN/MAX (widened to DOUBLE) from
+// SUM/AVG (whose result is genuinely DOUBLE). Follow only type-preserving
+// projections and MIN/MAX, including chained CTEs. dict_column alone is
+// insufficient because SUM also borrows it for DECIMAL scale metadata.
+bool
+RonSQLPreparer::column_uses_float_display(QueryScope& scope, Uint32 col_idx)
+{
+  if (scope.resolved_columns == NULL || col_idx >= m_columns.size())
+    return false;
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+  if (ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+    return ref.dict_column != NULL &&
+           ref.dict_column->getType() == NdbDictionary::Column::Float;
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+      ref.cte_def_idx >= m_cte_scopes.size() || ref.cte_output == NULL)
+    return false;
+  QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
+  if (cs == NULL) return false;
+  const Outputs* o = ref.cte_output;
+  if (o->type == Outputs::Type::COLUMN)
+    return column_uses_float_display(*cs, o->column.col_idx);
+  if (o->type == Outputs::Type::AGGREGATE &&
+      (o->aggregate.fun == T_MIN || o->aggregate.fun == T_MAX) &&
+      o->aggregate.arg != NULL && o->aggregate.arg->isLoad())
+    return column_uses_float_display(*cs, o->aggregate.arg->getLoadIdx());
+  return false;
+}
+
 ResultPrinter::ColumnMetadata*
 RonSQLPreparer::build_result_column_metadata()
 {
@@ -6875,6 +6903,8 @@ RonSQLPreparer::build_result_column_metadata()
     column_metadata[col_idx].precision = 0;
     column_metadata[col_idx].scale = 0;
     column_metadata[col_idx].avg_scale = 4;
+    column_metadata[col_idx].float_display =
+        column_uses_float_display(m_main_scope, col_idx);
     column_metadata[col_idx].has_metadata = false;
     column_metadata[col_idx].temporal =
         ResultPrinter::TemporalDisplay::NONE;

@@ -1,0 +1,126 @@
+SET @float_format_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+Scalar FLOAT extrema and DOUBLE control
+== Query ==
+SELECT MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Grouped FLOAT extrema: signs, exponents, zero and NULL
+== Query ==
+SELECT g, MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format GROUP BY g;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+FLOAT group keys
+== Query ==
+SELECT f, COUNT(*) AS n FROM float_format GROUP BY f;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Ordered FLOAT keys and extrema
+== Query ==
+SELECT f, MIN(f) AS lo, MAX(f) AS hi, MIN(d) AS dlo, MAX(d) AS dhi FROM float_format GROUP BY f ORDER BY f;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+CTE projection of native FLOAT and widened MIN
+== Query ==
+WITH a AS (SELECT f, MIN(f) AS lo FROM float_format GROUP BY f) SELECT f, lo FROM a;
+
+Number of output lines, including header: 9
+
+== Diff ==
+==========
+
+
+
+Widened FLOAT CTE group keys
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo FROM float_format GROUP BY g) SELECT lo, COUNT(*) AS n FROM a GROUP BY lo;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+Ordered widened FLOAT CTE group keys
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo FROM float_format GROUP BY g) SELECT lo, COUNT(*) AS n FROM a GROUP BY lo ORDER BY lo DESC;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+CTE extrema preserve FLOAT while SUM and AVG remain DOUBLE
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g) SELECT MIN(lo) AS lo, MAX(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Chained CTE projection preserves each display type
+== Query ==
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g), b AS (SELECT g, MAX(lo) AS lo, MIN(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a GROUP BY g) SELECT g, lo, hi, sf, af FROM b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Direct FLOAT SUM and AVG retain DOUBLE precision
+== Query ==
+SELECT SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Empty scalar FLOAT extrema
+== Query ==
+SELECT MIN(f) AS lo, MAX(f) AS hi FROM float_format WHERE g = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @float_format_jit_c0 AS SIGNED)
+AS ronsql_float_formatting_jit_fallback_delta;
+ronsql_float_formatting_jit_fallback_delta
+0
