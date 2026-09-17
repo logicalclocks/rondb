@@ -173,7 +173,12 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       "[JOIN_AGG_NULL_ROW_REJECTED node=N failed=C iteration=I instance=B
       park=R]". Ordinary late requests do not emit this event. PK-8
       requires the matching pair. The proxy's insert is cleared by the test.
-Next DBLQH 5151
+5151: Delay ONE JOIN_AGG_SETUP_REQ 20 ms (DblqhProxy, cleared after use;
+      RONDB-1120 P2c). Consumers race ahead and park on the identity
+      placeholder, the delayed SETUP flushes them on their original
+      threads (cte_park_basic). Was 5127 before the code was found to be
+      registered above for the RONDB-1056 JIT dump.
+Next DBLQH 5152
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128

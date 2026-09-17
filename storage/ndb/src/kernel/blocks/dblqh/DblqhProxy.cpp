@@ -2490,7 +2490,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   CRASH_INSERTION(5121);  // Crash node on SETUP_REQ for join agg NF testing
 
 #ifdef ERROR_INSERT
-  if (ERROR_INSERTED(5127)) {
+  if (ERROR_INSERTED(5151)) {
     jam();
     /* RONDB-1120 P2c: hold ONE SETUP_REQ back 20 ms.  With the gate
      * flipped, consumers (LQHKEYREQ / SCAN_FRAGREQ feeds) race ahead

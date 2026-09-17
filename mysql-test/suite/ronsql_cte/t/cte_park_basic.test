@@ -1,6 +1,6 @@
 # RONDB-1120 node_failure_test_plan.md section 6 through RonSQL: parking.
 #
-# DBLQH error insert 5127 delays ONE JOIN_AGG_SETUP_REQ by 20 ms on every
+# DBLQH error insert 5151 delays ONE JOIN_AGG_SETUP_REQ by 20 ms on every
 # data node (it clears itself on that node once it fired).  The consumer
 # signals DBTC and DBSPJ send in the meantime (aggregation feeds, the
 # NULL-row injections of an outer join, an identity-addressed COMPLETE)
@@ -31,8 +31,8 @@ call mtr.add_suppression("Participant timeout");
 --source suite/ronsql_cte/include/cte_data.inc
 
 --echo
---echo === cpb-1: CTE probed by lookups, one SETUP held 20 ms (5127) ===
---exec $NDB_MGM -e "ALL ERROR 5127" > /dev/null
+--echo === cpb-1: CTE probed by lookups, one SETUP held 20 ms (5151) ===
+--exec $NDB_MGM -e "ALL ERROR 5151" > /dev/null
 DELIMITER |;
 let $QUERY=
 WITH cust AS (
@@ -53,8 +53,8 @@ FROM customer AS c JOIN cust ON cust.k = c.c_custkey
 GROUP BY c.c_mktsegment|
 
 --echo
---echo === cpb-2: outer join onto a CTE with NULL and missing keys (5127) ===
---exec $NDB_MGM -e "ALL ERROR 5127" > /dev/null
+--echo === cpb-2: outer join onto a CTE with NULL and missing keys (5151) ===
+--exec $NDB_MGM -e "ALL ERROR 5151" > /dev/null
 let $QUERY=
 WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
             FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
@@ -72,8 +72,8 @@ FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
 GROUP BY o.o_orderstatus|
 
 --echo
---echo === cpb-3: pass-through scanCte root (5127) ===
---exec $NDB_MGM -e "ALL ERROR 5127" > /dev/null
+--echo === cpb-3: pass-through scanCte root (5151) ===
+--exec $NDB_MGM -e "ALL ERROR 5151" > /dev/null
 let $QUERY=
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
             FROM orders GROUP BY o_custkey)

@@ -1,7 +1,7 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
-=== cpb-1: CTE probed by lookups, one SETUP held 20 ms (5127) ===
+=== cpb-1: CTE probed by lookups, one SETUP held 20 ms (5151) ===
 == Query ==
 WITH cust AS (
 SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
@@ -31,7 +31,7 @@ FURNITURE	300	600
 HOUSEHOLD	300	900
 MACHINERY	300	1200
 
-=== cpb-2: outer join onto a CTE with NULL and missing keys (5127) ===
+=== cpb-2: outer join onto a CTE with NULL and missing keys (5151) ===
 == Query ==
 WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
 FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
@@ -57,7 +57,7 @@ F	500	13766
 O	500	13798
 P	500	13798
 
-=== cpb-3: pass-through scanCte root (5127) ===
+=== cpb-3: pass-through scanCte root (5151) ===
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
 FROM orders GROUP BY o_custkey)

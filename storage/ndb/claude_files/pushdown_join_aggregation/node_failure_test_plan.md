@@ -4,7 +4,7 @@
 on branch RONDB-1120 between `e2dad705492` and `dd1df0db64a`. All existing
 suites pass on that range; none of them exercises a node failure while a
 CTE / join-aggregation query is in flight, and none exercises the identity
-parking mechanism deterministically beyond the two existing hooks (5127,
+parking mechanism deterministically beyond the two existing hooks (5151,
 8310). This plan adds the hooks, the tests, and the pool-leak checks that
 make the new code observable.
 
@@ -175,7 +175,7 @@ dump raises on a leak.
 | 5124 | DBLQH `execJOIN_AGG_COMPLETE_REQ` | REF once (state not found) |
 | 5125 | Proxy `execJOIN_AGG_SETUP_REQ` | SETUP_REF once (allocation failure) |
 | 5126 | Proxy `execJOIN_AGG_SETUP_REQ` | max 3 groups per interpreter (eviction) |
-| 5127 | Proxy `execJOIN_AGG_SETUP_REQ` | hold ONE SETUP_REQ 20 ms (parking of LQHKEYREQ / SCAN_FRAGREQ feeds) |
+| 5151 | Proxy `execJOIN_AGG_SETUP_REQ` | hold ONE SETUP_REQ 20 ms (parking of LQHKEYREQ / SCAN_FRAGREQ feeds) |
 | 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | delay ONE SETUP_CONF 20 ms (identity-addressed COMPLETE with RNIL key) |
 | 8098 | DBTC `execNODE_FAILREP` | pre-existing NF hook, unrelated |
 | 17530, 17531 | DBSPJ | in use (CTE); 17532+ free |
@@ -576,7 +576,7 @@ A single-node run explicitly skips that portion; parked COMPLETE replay
 still runs.
 
 MTR deliverables of this phase, both in `ronsql_cte` - **done**:
-`cte_park_basic.test` (`ALL ERROR 5127` before a probed CTE, an outer
+`cte_park_basic.test` (`ALL ERROR 5151` before a probed CTE, an outer
 join onto a CTE with NULL and missing keys, and a pass-through scanCte
 root; every result equals the MySQL baseline whether the parked
 consumers were flushed or swept and retried; leak dumps) and
@@ -616,7 +616,7 @@ phase. Six files in `mysql-test/suite/ronsql_cte*/t`, each with
 | `cte_nodefail_coordinator.test` (`ronsql_cte_ng2r2`) | 1 | chained CTE through background CLI, 5144 feed hold naming the actual coordinator (extra bit 29 clears the hold on NODE_FAILREP), abort restart, checked retry/error, recovery query and leak acknowledgements - **done** |
 | `cte_redist_pages.test` (`ronsql_cte`) | 2 | `ALL ERROR 5134`, wide GROUP BY CTE redistributed across nodes, result equals baseline, leak dumps, clean re-run - **done** |
 | `cte_scan_batches.test` (`ronsql_cte`) | 2 | CTE scan over several batches compared with MySQL, then `ALL ERROR 5129` with `ronsql_cli` exiting 1 on NDB error 1251, leak dumps, clean re-run - **done** |
-| `cte_park_basic.test` (`ronsql_cte`) | 3 | `ALL ERROR 5127` before a probed CTE, an outer join onto a CTE with NULL and missing keys and a pass-through root; results identical to the MySQL baseline; `ALL ERROR 0`; leak dumps - **done** |
+| `cte_park_basic.test` (`ronsql_cte`) | 3 | `ALL ERROR 5151` before a probed CTE, an outer join onto a CTE with NULL and missing keys and a pass-through root; results identical to the MySQL baseline; `ALL ERROR 0`; leak dumps - **done** |
 | `cte_park_sweeper.test` (`ronsql_cte`) | 3 | `ALL ERROR 5139`, the first `ronsql_cli` attempt fails with 1251 and the retry matches the mysql client; leak dumps; clean re-run - **done** |
 
 MTR cannot read a DUMP's output, so the leak dumps rely on the crash they

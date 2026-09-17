@@ -181,7 +181,7 @@ P2c outcome notes (the gate flip — the latency win):
   DBLQH impl resolves by identity and parks on miss (same
   resolve-or-park + destRef discipline; flush re-executes the
   handler, the sweeper answers JOIN_AGG_NULL_ROW_REF →  DBSPJ abort).
-- ERROR_INSERT 5127 (DblqhProxy): holds ONE SETUP_REQ back 20 ms
+- ERROR_INSERT 5151 (DblqhProxy): holds ONE SETUP_REQ back 20 ms
   (clear-on-first) — consumers park and flush on their original query
   threads, and any COMPLETE boundary reached meanwhile exercises the
   H2 deferral.  EI 5125 (immediate SETUP_REF) now exercises

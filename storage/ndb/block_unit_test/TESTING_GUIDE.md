@@ -265,7 +265,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 |---|---|---|---|
 | 5121 / 5122 / 5123 | Proxy / DBLQH / Proxy | crash node on SETUP_REQ / COMPLETE_REQ / RELEASE_REQ | no (crash) |
 | 5124 / 5125 | DBLQH / Proxy | COMPLETE_REF once / SETUP_REF once | yes |
-| 5127 | Proxy | hold ONE SETUP_REQ 20 ms (feeds park) | yes |
+| 5151 | Proxy | hold ONE SETUP_REQ 20 ms (feeds park) | yes |
 | 5128 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF swallowed once | yes |
 | 5129 | DBLQH `cteScanReqImpl` | ONE continuation answered CTE_SCAN_REF(1251), token released | yes |
 | 5130 | DBLQH `cteScanAggFeed` | one group per continuation round while set | no |
