@@ -21381,9 +21381,11 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                      TransIdAI::HeaderLength, JBB, lsp, 1);
         } else {
           jam();
-          /* The API may start the query before its connection to this
-           * CTE owner is enabled.  Follow DBTUP's FLUSH_AI routing:
-           * the fourth word names the TC that can reach the API. */
+          /* The API can start a query before all data nodes have
+           * enabled its connection.  Use the FLUSH_AI route through
+           * DBTC, as Dbtup::flush_read_buffer does for table rows.
+           * The route is shared by all workers even when a CTE scan
+           * overrides the final-read resultRef/resultData above. */
           const Uint32 routeRef = finalR[pos + 3];
           ndbrequire(refToMain(routeRef) == DBTC);
           DEB_JOIN_AGG(("(%u) CTE result routed: dest=0x%x route=0x%x "

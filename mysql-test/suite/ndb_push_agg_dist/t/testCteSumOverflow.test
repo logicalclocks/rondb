@@ -1,0 +1,4 @@
+--source include/have_ndb.inc
+
+--echo Running distributed CTE SUM boundary and overflow tests
+--exec $NDB_PUSH_AGG_DIR/testJoinAggIdempotency -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --sum-overflow --iterations 1

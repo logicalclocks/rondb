@@ -62,7 +62,7 @@
  *
  * Usage: testJoinAggIdempotency -c <connect_string> -m <mysql_port>
  *                               [-v] [--iterations N] [--failure-orders]
- *                               [--cancellation-barriers]
+ *                               [--cancellation-barriers] [--sum-overflow]
  */
 
 #include <ndb_global.h>
@@ -83,6 +83,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <string>
 
 static bool verbose = false;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
@@ -125,17 +126,19 @@ runSql(MYSQL *conn, const char *sql)
 /* ------------------------------------------------------------------ */
 
 static int
-createTables(MYSQL *conn)
+createTables(MYSQL *conn, bool primaryReads = false)
 {
   if (runSql(conn, "DROP TABLE IF EXISTS jagidem_src") != 0) return -1;
   if (runSql(conn, "DROP TABLE IF EXISTS jagidem_virt") != 0) return -1;
 
-  if (runSql(conn,
-        "CREATE TABLE jagidem_src ("
-        " pk INT NOT NULL,"
-        " grp INT NOT NULL,"
-        " val BIGINT NOT NULL,"
-        " PRIMARY KEY USING HASH (pk)) ENGINE=NDB") != 0) return -1;
+  std::string sourceDdl =
+      "CREATE TABLE jagidem_src ("
+      " pk INT NOT NULL,"
+      " grp INT NOT NULL,"
+      " val BIGINT NOT NULL,"
+      " PRIMARY KEY USING HASH (pk)) ENGINE=NDB";
+  if (primaryReads) sourceDdl += " COMMENT='NDB_TABLE=READ_BACKUP=0'";
+  if (runSql(conn, sourceDdl.c_str()) != 0) return -1;
 
   /* Virtual table providing the type metadata for the chained
    * lookupCte primitives — same schema convention as testCteNdbApi.cpp. */
@@ -204,13 +207,21 @@ insertTestData(Ndb *ndb)
 /* Chained-CTE query construction + execution                          */
 /* ------------------------------------------------------------------ */
 
-/* Build + execute the chained-CTE query once, verify the 5 expected
- * result rows.  Returns 0 on success, -1 on failure.  Called from
- * runD9 and from runD11's loop body. */
+/* The merge probe uses two rows in one group. Its dependent CTE uses
+ * MAX to preserve the first CTE's total: another SUM could overflow on
+ * a wrapped value and conceal a missed overflow in the first merge. */
+struct CteMergeProbe {
+  Int64 expectedTotal;
+};
+
+/* Build + execute the chained-CTE query once, verify either the expected
+ * error or the result rows (five normally, two for a merge probe).
+ * Returns 0 on success, -1 on failure. */
 static int
 runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
                   bool independentCte = false,
-                  Uint32 *coordinatorNode = nullptr)
+                  Uint32 *coordinatorNode = nullptr,
+                  const CteMergeProbe *mergeProbe = nullptr)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
@@ -243,7 +254,7 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
   NdbAggregator cte1Agg(virtTab);
   if (!cte1Agg.GroupByLinked(0, grpCol) ||
       !cte1Agg.LoadLinkedColumn(1, 0, totalCol) ||
-      !cte1Agg.Sum(0, 0) ||
+      !(mergeProbe != nullptr ? cte1Agg.Max(0, 0) : cte1Agg.Sum(0, 0)) ||
       !cte1Agg.Finalize()) {
     fprintf(stderr, "FAILED (cte1Agg iter=%u: %s)\n",
             iterIdx, cte1Agg.GetError().err_msg_);
@@ -450,9 +461,14 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
 
   /* Expected cte1 totals per group. */
   std::map<Int32, Int64> expected;
-  expected[1] = 60;
-  expected[2] = 140;
-  expected[3] = 50;
+  if (mergeProbe != nullptr) {
+    expected[1] = mergeProbe->expectedTotal;
+  } else {
+    expected[1] = 60;
+    expected[2] = 140;
+    expected[3] = 50;
+  }
+  const Uint32 expectedRows = mergeProbe != nullptr ? 2 : 5;
 
   Uint32 rowCount = 0;
   NdbQuery::NextResultOutcome outcome;
@@ -493,9 +509,9 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
   trans->close();
   queryDef->destroy();
 
-  if (rowCount != 5) {
-    fprintf(stderr, "FAILED (iter=%u expected 5 rows, got %u)\n",
-            iterIdx, rowCount);
+  if (rowCount != expectedRows) {
+    fprintf(stderr, "FAILED (iter=%u expected %u rows, got %u)\n",
+            iterIdx, expectedRows, rowCount);
     return -1;
   }
   return 0;
@@ -657,6 +673,101 @@ runCancellationBarriers(Ndb *ndb, const char *connectString)
   return 0;
 }
 
+/* Pick keys whose primary replicas are on different data nodes.
+ * READ_BACKUP=0 forces the self-join lookup feeding SUM to those owners,
+ * so each node receives exactly one value and only redistribution can
+ * overflow. Re-fetch metadata after each query invalidates its cache. */
+static int
+insertDistributedPair(Ndb *ndb, Int64 left, Int64 right)
+{
+  auto *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  const auto *tab = dict->getTable(SRC_TABLE);
+  if (tab == nullptr || tab->getReadBackupFlag() || tab->getFullyReplicated()) {
+    fprintf(stderr, "FAILED (distributed SUM requires primary-only reads)\n");
+    return -1;
+  }
+  Int32 keys[2] = {};
+  Uint32 nodes[2] = {};
+  Uint32 found = 0;
+  for (Int32 candidate = 1; candidate <= 10000 && found < 2; candidate++) {
+    Ndb::Key_part_ptr parts[] = {
+      {&candidate, sizeof(candidate)}, {nullptr, 0}
+    };
+    Uint32 hash = 0;
+    if (Ndb::computeHash(&hash, tab, parts, nullptr, 0) != 0) {
+      fprintf(stderr, "FAILED (computing distribution hash)\n");
+      return -1;
+    }
+    const Uint32 fragment = tab->getPartitionId(hash);
+    Uint32 node = 0;
+    if (tab->getFragmentNodes(fragment, &node, 1) == 0 || node == 0) {
+      fprintf(stderr, "FAILED (finding primary replica)\n");
+      return -1;
+    }
+    if (found == 0 || node != nodes[0]) {
+      keys[found] = candidate;
+      nodes[found++] = node;
+    }
+  }
+  if (found != 2) {
+    fprintf(stderr, "FAILED (SUM test requires keys on two data nodes)\n");
+    return -1;
+  }
+  V("  keys %d/%d on primary nodes %u/%u\n",
+    keys[0], keys[1], nodes[0], nodes[1]);
+  if (insertOneRow(ndb, tab, keys[0], 1, left) != 0) return -1;
+  return insertOneRow(ndb, tab, keys[1], 1, right);
+}
+
+static int
+runSumMergeOverflows(Ndb *ndb, MYSQL *conn)
+{
+  struct Case {
+    const char *name;
+    Int64 left, right, total;
+    int error;
+  };
+  const Case cases[] = {
+    {"positive overflow", INT64_MAX, 1, 0, 1860},
+    {"negative overflow", INT64_MIN, -1, 0, 1860},
+    {"maximum in range", INT64_MAX - 1, 1, INT64_MAX, 0},
+    {"minimum in range", INT64_MIN + 1, -1, INT64_MIN, 0},
+    {"opposite signs", INT64_MIN, INT64_MAX, -1, 0},
+  };
+  Uint32 iteration = 0;
+  for (const auto& c : cases) {
+    for (bool independent : {false, true}) {
+      for (bool reverse : {false, true}) {
+        printf("Distributed SUM: %s independent=%u reverse=%u ... ",
+               c.name, unsigned(independent), unsigned(reverse));
+        fflush(stdout);
+        if (runSql(conn, "DELETE FROM jagidem_src") != 0) return -1;
+        if (insertDistributedPair(ndb, reverse ? c.right : c.left,
+                                   reverse ? c.left : c.right) != 0)
+          return -1;
+        const CteMergeProbe probe = {c.total};
+        const int result = runChainedCteOnce(
+            ndb, iteration, c.error, independent, nullptr, &probe);
+
+        // Restore the normal data even when the result check fails.
+        if (runSql(conn, "DELETE FROM jagidem_src") != 0 ||
+            insertTestData(ndb) != 0)
+          return -1;
+        if (result != 0) return -1;
+        printf("OK (result/error and close verified)\n");
+        printf("Recovery after %s independent=%u reverse=%u ... ",
+               c.name, unsigned(independent), unsigned(reverse));
+        fflush(stdout);
+        if (runChainedCteOnce(ndb, iteration, 0, independent) != 0) return -1;
+        printf("OK (five rows verified)\n");
+        iteration++;
+      }
+    }
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -668,6 +779,7 @@ int main(int argc, char **argv)
   Uint32 iterations = 100;
   bool failureOrders = false;
   bool cancellationBarriers = false;
+  bool sumOverflow = false;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
@@ -682,10 +794,12 @@ int main(int argc, char **argv)
       failureOrders = true;
     else if (strcmp(argv[i], "--cancellation-barriers") == 0)
       cancellationBarriers = true;
+    else if (strcmp(argv[i], "--sum-overflow") == 0)
+      sumOverflow = true;
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
              "[--iterations N] [--failure-orders] "
-             "[--cancellation-barriers]\n", argv[0]);
+             "[--cancellation-barriers] [--sum-overflow]\n", argv[0]);
       return 0;
     }
   }
@@ -715,7 +829,7 @@ int main(int argc, char **argv)
     ndb_end(0);
     return 1;
   }
-  if (createTables(conn) != 0) {
+  if (createTables(conn, sumOverflow) != 0) {
     mysql_close(conn);
     mysql_library_end();
     ndb_end(0);
@@ -750,6 +864,10 @@ int main(int argc, char **argv)
     }
     if (cancellationBarriers &&
         runCancellationBarriers(&ndb, connectString) != 0) {
+      rc = 1;
+      goto cleanup;
+    }
+    if (sumOverflow && runSumMergeOverflows(&ndb, conn) != 0) {
       rc = 1;
       goto cleanup;
     }
