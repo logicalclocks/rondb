@@ -1,0 +1,9 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# F-12: SETUP sent to an already-failed node (error insert 8314)
+"[dropping NDBT test tables]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# CteSetupAlreadyFailedNode passed

@@ -1,0 +1,62 @@
+# F-12: SETUP obligations created after node-failure handling completed.
+# LookupMain and OuterAggMain must fail and close within 30 seconds.
+# DUMP 2560/2361 must pass on survivors before the victim is restarted.
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# NDBT creates tables directly through the NDB API. Stop mysqlds until
+# those tables have been dropped, as in the other node-failure wrappers.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+--echo # F-12: SETUP sent to an already-failed node (error insert 8314)
+--exec $TEST_NODE_RESTART -n CteSetupAlreadyFailedNode T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo "[dropping NDBT test tables]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_src >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_virtual >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+--echo # CteSetupAlreadyFailedNode passed

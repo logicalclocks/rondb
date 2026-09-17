@@ -13763,6 +13763,159 @@ static int runCteCoordinatorParkedReplayKiller(NDBT_Context *ctx,
   return runCteNfHoldKiller(ctx, step, CTE_PK8_HOLD);
 }
 
+/*
+ * F-12: create SETUP obligations after the victim's failure handling ended.
+ * LookupMain exercises CTE SETUP; OuterAggMain exercises main-only SETUP.
+ * No later node failure may be needed to complete either query or close.
+ */
+static bool cteSetupFailedNodeCheckTc(void *arg, Uint32 tcNodeId) {
+  return tcNodeId == *static_cast<const Uint32 *>(arg);
+}
+
+static int cteSetupFailedNodeAttempt(NDBT_Context *ctx, Ndb *ndb,
+                                     NdbRestarter &restarter, Uint32 tc,
+                                     int victim, CteQueryUtil::Shape shape,
+                                     Uint32 iteration) {
+  CteNfEventListener events;
+  if (!events.open(restarter) ||
+      !cteNf10InsertError(restarter, tc, 8314, victim))
+    return NDBT_FAILED;
+
+  CteQueryUtil::Options opt;
+  opt.shape = shape;
+  opt.tcNodeId = tc;
+  opt.beforeExecute = cteSetupFailedNodeCheckTc;
+  opt.arg = &tc;
+  CteQueryUtil::Result res;
+  int rc = 0;
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  ctx->setProperty("CteSetupAttempt", iteration);
+  do {
+    res = CteQueryUtil::Result();
+    rc = CteQueryUtil::runQuery(ndb, opt, res);
+    if (rc != 0) break;
+    if (!CteQueryUtil::resultMatches(shape, res, CTE_NF_ROWS, CTE_NF_GROUPS))
+      break;
+    /* 8314 waits for DBTC's failure handling to finish. A successful
+     * query before then is only a warm-up; it cannot satisfy this test. */
+    NdbSleep_MilliSleep(100);
+  } while (NdbTick_CurrentMillisecond() - start < 30000);
+  const Uint64 elapsed = NdbTick_CurrentMillisecond() - start;
+  ctx->setProperty("CteSetupAttempt", Uint32(0));
+
+  Uint32 closeLimitMillis = 30000;
+  DBUG_EXECUTE_IF("ndb_reduced_api_protocol_timeout",
+                 { closeLimitMillis = 5000; });
+  g_err << "F-12 shape=" << (Uint32)shape << " rc=" << rc
+        << " error=" << res.ndbError << " at " << res.failedAt
+        << " elapsed=" << elapsed << " close=" << res.closeMillis << endl;
+  if (!cteNf10InsertError(restarter, tc, 0) ||
+      rc != -1 || res.ndbError != 286 || elapsed >= 30000 ||
+      res.closeMillis >= closeLimitMillis ||
+      (res.closeError != 0 && res.closeError != 286))
+    return NDBT_FAILED;
+
+  BaseString marker;
+  marker.assfmt("[JOIN_AGG_SETUP_FAILED_NODE node=%u failed=%u]",
+                tc, (Uint32)victim);
+  if (!events.waitFor(ctx, marker.c_str(), 5000)) {
+    g_err << "8314 did not inject a SETUP after failure handling completed"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  /* Let queued fire-and-forget releases drain, then check the survivors
+   * BEFORE restarting the victim. A restart must not hide leaked state. */
+  NdbSleep_MilliSleep(1000);
+  const int codes[] = {DumpStateOrd::TcDumpJoinAggRecords,
+                       DumpStateOrd::LqhDumpJoinAggStates};
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const int node = restarter.getDbNodeId(i);
+    if (node == victim) continue;
+    for (unsigned d = 0; d < NDB_ARRAY_SIZE(codes); d++) {
+      int dump[] = {codes[d], (int)iteration};
+      marker.assfmt("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
+                    (Uint32)node, (Uint32)codes[d], iteration);
+      if (restarter.dumpStateOneNode(node, dump, 2) != 0 ||
+          !events.waitFor(ctx, marker.c_str(), 10000))
+        return NDBT_FAILED;
+    }
+  }
+  return restarter.checkClusterAlive(&victim, 1) == 0
+             ? NDBT_OK : NDBT_FAILED;
+}
+
+static int runCteSetupFailedNodeImpl(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.waitClusterStarted(120) != 0) return NDBT_FAILED;
+  const int tc = restarter.getDbNodeId(0);
+  const int victim = restarter.getRandomNodeSameNodeGroup(tc, 0);
+  if (victim < 0) {
+    g_err << "[SKIPPED] CteSetupAlreadyFailedNode needs two replicas" << endl;
+    return NDBT_OK;
+  }
+  Ndb *ndb = GETNDB(step);
+  const CteQueryUtil::Shape shapes[] = {CteQueryUtil::LookupMain,
+                                       CteQueryUtil::OuterAggMain};
+  for (unsigned i = 0; i < NDB_ARRAY_SIZE(shapes); i++) {
+    if (runCteNfCheckQuery(ndb, "Baseline", shapes[i]) != NDBT_OK)
+      return NDBT_FAILED;
+  }
+
+  int result = NDBT_OK;
+  do {
+    CHECK2(restarter.restartOneDbNode(victim, false, true, true) == 0);
+    CHECK2(restarter.waitNodesNoStart(&victim, 1, 120) == 0);
+    for (unsigned i = 0; i < NDB_ARRAY_SIZE(shapes); i++) {
+      if (cteSetupFailedNodeAttempt(ctx, ndb, restarter, tc, victim,
+                                    shapes[i], i + 1) != NDBT_OK) {
+        result = NDBT_FAILED;
+        break;
+      }
+    }
+  } while (false);
+
+  /* Restore the cluster on ordinary assertion/management failures too. */
+  if (!cteNf10InsertError(restarter, tc, 0)) result = NDBT_FAILED;
+  if (restarter.startNodes(&victim, 1) != 0 ||
+      restarter.waitClusterStarted(180) != 0)
+    result = NDBT_FAILED;
+  if (result != NDBT_OK) return result;
+  for (unsigned i = 0; i < NDB_ARRAY_SIZE(shapes); i++) {
+    if (runCteNfCheckQuery(ndb, "Post-recovery", shapes[i]) != NDBT_OK)
+      return NDBT_FAILED;
+  }
+  return runCteNfLeakDumps(restarter);
+}
+
+static int runCteSetupFailedNode(NDBT_Context *ctx, NDBT_Step *step) {
+  const int result = runCteSetupFailedNodeImpl(ctx, step);
+  ctx->stopTest();
+  return result;
+}
+
+/* stopTest() cannot interrupt runQuery() blocked in query->close().
+ * Abort the test process on expiry, rather than wait for the API's
+ * multi-minute timeout or let a timed-out query count as a pass. */
+static int runCteSetupFailedNodeWatchdog(NDBT_Context *ctx, NDBT_Step *step) {
+  Uint32 previous = 0;
+  Uint64 start = 0;
+  while (!ctx->isTestStopped()) {
+    const Uint32 current = ctx->getProperty("CteSetupAttempt", Uint32(0));
+    if (current != previous) {
+      previous = current;
+      start = NdbTick_CurrentMillisecond();
+    }
+    if (current != 0 && NdbTick_CurrentMillisecond() - start >= 30000) {
+      g_err << "F-12: query/close exceeded 30 s; aborting test process"
+            << endl;
+      abort();
+    }
+    NdbSleep_MilliSleep(100);
+  }
+  return NDBT_OK;
+}
+
 NDBT_TESTSUITE(testNodeRestart);
 TESTCASE("NoLoad",
          "Test that one node at a time can be stopped and then restarted "
@@ -14642,6 +14795,14 @@ TESTCASE("JoinAggErrorInsert",
   INITIALIZER(runLoadTable);
   STEP(runJoinAggErrorInsert);
   FINALIZER(runClearTable);
+}
+TESTCASE("CteSetupAlreadyFailedNode",
+         "F-12: SETUP to an already-failed node must fail and close "
+         "within 30 seconds, with clean pools before the victim restarts") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteSetupFailedNode);
+  STEP(runCteSetupFailedNodeWatchdog);
+  FINALIZER(runCteNfDropTables);
 }
 TESTCASE("CteCloseOwedByFailedNode",
          "RONDB-1120 NF-1: the API closes a CTE scan while error insert "

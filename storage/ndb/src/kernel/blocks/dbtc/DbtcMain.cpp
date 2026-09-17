@@ -18281,7 +18281,7 @@ void Dbtc::sendDihGetNodesLab(Signal *signal, ScanRecordPtr scanptr,
     scanP->scanState = ScanRecord::WAIT_JOIN_AGG_SETUP;
     if (unlikely(!sendJoinAggSetupReqs(signal, scanptr, apiConnectptr))) {
       jam();
-      return;  // aborted, or held gated by a partial-send failure
+      return;  // aborted, or waiting for SETUP failure cleanup
     }
     if (unlikely(!buildAggKeysSection(signal, scanptr))) {
       jam();
@@ -19773,6 +19773,7 @@ void Dbtc::close_scan_req(Signal *signal, ScanRecordPtr scanPtr,
     if (likely(cteAggResponsesOutstanding(scanPtr))) {
       jam();
       recordJoinAggError(scanPtr.p, ZSCAN_LQH_ERROR);
+      reconcileJoinAggSetup(signal, scanPtr);
       return;
     }
     /**
@@ -30945,6 +30946,49 @@ void Dbtc::releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr) {
   CRASH_INSERTION(8312);
 }
 
+/* Queue the reply rather than executing its handler inline: processing
+ * the last SETUP response can release the scan record. */
+void Dbtc::sendJoinAggSetupNodeFailure(Signal *signal, ScanRecordPtr scanptr,
+                                      Uint32 failedNodeId, Uint32 cteIndex) {
+  JoinAggSetupRef *ref = (JoinAggSetupRef *)signal->getDataPtrSend();
+  ref->senderRef = numberToRef(DBLQH, failedNodeId);
+  ref->senderData = scanptr.i;
+  ref->requestId = scanptr.p->m_joinAggSetupRequestId;
+  ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
+  ref->errorLine = __LINE__;
+  ref->cteIndex = cteIndex;
+  sendSignal(reference(), GSN_JOIN_AGG_SETUP_REF, signal,
+             JoinAggSetupRef::SignalLength, JBB);
+}
+
+/* A failed node cannot answer a pending SETUP.  Reconcile against DBTC's
+ * alive set, which NODE_FAILREP clears before transporter disconnect.
+ * Leave pending bits and counters to the normal REF handler; repeated
+ * calls are safe because it checks both requestId and the pending bit.
+ * Cancelled rounds are cleanup only and must not restart an abort. */
+void Dbtc::reconcileJoinAggSetup(Signal *signal, ScanRecordPtr scanptr) {
+  if (!scanptr.p->m_joinAgg ||
+      !joinAggSetupResponsesOutstanding(scanptr.p)) {
+    return;
+  }
+  for (Uint32 c = 0; c <= scanptr.p->m_numCtes; c++) {
+    const bool main = (c == scanptr.p->m_numCtes);
+    const auto *nodes = main ? scanptr.p->m_joinAggNodes
+                            : scanptr.p->m_cteAggNodeState[c];
+    if (nodes == nullptr) continue;
+    for (Uint32 nodeId = nodes->m_setupNodesPending.find_first();
+         nodeId != NdbNodeBitmask::NotFound;
+         nodeId = nodes->m_setupNodesPending.find_next(nodeId + 1)) {
+      if (!c_alive_nodes.get(nodeId)) {
+        jam();
+        recordJoinAggError(scanptr.p, ZNODEFAIL_BEFORE_COMMIT);
+        sendJoinAggSetupNodeFailure(signal, scanptr, nodeId,
+                                    main ? RNIL : c);
+      }
+    }
+  }
+}
+
 /**
  * Handle node failure for join aggregation phases.
  * For nodes still pending, fake the appropriate signal and let
@@ -30977,16 +31021,8 @@ bool Dbtc::handleJoinAggNodeFailure(Signal *signal, ScanRecordPtr scanptr,
     if (nodes->m_setupNodesPending.get(failedNodeId)) {
       jam();
       involved = true;
-      JoinAggSetupRef *ref =
-          (JoinAggSetupRef *)signal->getDataPtrSend();
-      ref->senderRef = failedRef;
-      ref->senderData = scanptr.i;
-      ref->requestId = scanptr.p->m_joinAggSetupRequestId;
-      ref->errorCode = ZNODEFAIL_BEFORE_COMMIT;
-      ref->errorLine = __LINE__;
-      ref->cteIndex = main ? RNIL : c;
-      sendSignal(reference(), GSN_JOIN_AGG_SETUP_REF, signal,
-                 JoinAggSetupRef::SignalLength, JBB);
+      sendJoinAggSetupNodeFailure(signal, scanptr, failedNodeId,
+                                  main ? RNIL : c);
     }
   }
 
@@ -31094,6 +31130,28 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     }
   }
   setupNodes.set(getOwnNodeId());
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(8314)) {
+    /* F-12: create obligations that the completed node-failure handler
+     * cannot answer. Do not change c_alive_nodes: reconciliation must
+     * still see the target as dead. The test retries clean queries until
+     * failure handling on this DBTC instance has finished. */
+    const Uint32 failedNodeId = ERROR_INSERT_EXTRA;
+    ndbrequire(failedNodeId > 0 && failedNodeId < MAX_NDB_NODES &&
+               failedNodeId != getOwnNodeId());
+    ndbrequire(getNodeInfo(failedNodeId).m_type == NodeInfo::DB);
+    HostRecordPtr failed;
+    failed.i = failedNodeId;
+    ptrCheckGuard(failed, chostFilesize, hostRecord);
+    if (!c_alive_nodes.get(failedNodeId) && failed.p->m_nf_bits == 0) {
+      jam();
+      setupNodes.set(failedNodeId);
+      infoEvent("[JOIN_AGG_SETUP_FAILED_NODE node=%u failed=%u]",
+                getOwnNodeId(), failedNodeId);
+    }
+  }
+#endif
 
   /* Main query aggregation setup — only if a main agg program exists.
    * CTE-only queries (no main aggregation) skip this loop. */
@@ -31277,11 +31335,14 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
     abortScanLab(signal, scanptr, ZGET_DATAREC_ERROR, true, apiConnectptr);
     return false;
   }
+  /* Catch an already-failed destination before starting fragment scans,
+   * including main-only queries with no CTE READY transition.  The send
+   * filter normally prevents this; reconciliation is a defensive check. */
+  reconcileJoinAggSetup(signal, scanptr);
   if (unlikely(scanptr.p->m_aggPhaseFailed)) {
     jam();
-    /* Partial-send failure with requests already in flight: stay
-     * gated in WAIT_JOIN_AGG_SETUP — the trickling CONF/REFs drive
-     * the release/abort (pre-P2c resolution). */
+    /* A send failure or failed SETUP destination with replies still in
+     * flight: stay in WAIT_JOIN_AGG_SETUP until CONF/REFs drive cleanup. */
     return false;
   }
   return true;
@@ -31614,8 +31675,11 @@ bool Dbtc::buildAggKeysSection(Signal *signal, ScanRecordPtr scanptr) {
  * starting the main query to provoke another error is unsafe before
  * SETUP has supplied its keys. */
 void Dbtc::tryAbortJoinAgg(Signal *signal, ScanRecordPtr scanptr) {
-  if (scanptr.p->m_aggSetupState != ScanRecord::AGG_SETUP_DONE ||
-      scanptr.p->m_aggErrorCode == 0 ||
+  if (scanptr.p->m_aggSetupState != ScanRecord::AGG_SETUP_DONE) {
+    reconcileJoinAggSetup(signal, scanptr);
+    return;
+  }
+  if (scanptr.p->m_aggErrorCode == 0 ||
       joinAggCompleteResponsesOutstanding(scanptr)) {
     return;
   }
@@ -32362,7 +32426,9 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
     for (Uint32 n = nodes.find_first();
          n != NdbNodeBitmask::NotFound;
          n = nodes.find_next(n + 1)) {
-      if (getNodeInfo(n).m_connected) {
+      /* NODE_FAILREP can precede the transporter disconnect.  Exclude
+       * failed nodes from both the owner map and the COMPLETE fan-out. */
+      if (getNodeInfo(n).m_connected && c_alive_nodes.get(n)) {
         aggKeysBuf[aggKeysLen++] = n;
         aggKeysBuf[aggKeysLen++] = cteNodes->m_aggStateKeys[n];
         aggKeysBuf[aggKeysLen++] = cteNodes->m_aggOwnerInstances[n];
@@ -32387,7 +32453,8 @@ void Dbtc::sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
     for (Uint32 nodeId = nodes.find_first();
          nodeId != NdbNodeBitmask::NotFound;
          nodeId = nodes.find_next(nodeId + 1)) {
-      if (!getNodeInfo(nodeId).m_connected) {
+      if (!getNodeInfo(nodeId).m_connected ||
+          !c_alive_nodes.get(nodeId)) {
         jam();
         cteNodes->m_aggNodes.clear(nodeId);
         if (!scanptr.p->m_aggPhaseFailed) {
@@ -32490,6 +32557,7 @@ void Dbtc::cteMarkReady(Signal *signal, ScanRecordPtr scanptr,
      * (this trips only in ERROR_INSERT / extreme-starvation runs).
      * joinAggSetupRoundDone replays cteMarkReady per deferred bit. */
     scanptr.p->m_cteReadyDeferredMask |= bit;
+    reconcileJoinAggSetup(signal, scanptr);
     return;
   }
   if (unlikely(scanptr.p->m_cteReadyMask & bit)) {
@@ -32775,7 +32843,9 @@ void Dbtc::sendJoinAggCompleteReqs(Signal *signal, ScanRecordPtr scanptr) {
   for (Uint32 nodeId = nodes.find_first();
        nodeId != NdbNodeBitmask::NotFound;
        nodeId = nodes.find_next(nodeId + 1)) {
-    if (!getNodeInfo(nodeId).m_connected) {
+    /* Do not create a reply obligation after NODE_FAILREP has run. */
+    if (!getNodeInfo(nodeId).m_connected ||
+        !c_alive_nodes.get(nodeId)) {
       jam();
       /**
        * Node died — remove from aggNodes. Its state is lost.
@@ -32912,7 +32982,9 @@ void Dbtc::sendJoinAggReleaseReqs(Signal *signal, ScanRecordPtr scanptr) {
   for (Uint32 nodeId = nodes.find_first();
        nodeId != NdbNodeBitmask::NotFound;
        nodeId = nodes.find_next(nodeId + 1)) {
-    if (!getNodeInfo(nodeId).m_connected) {
+    /* Do not create a reply obligation after NODE_FAILREP has run. */
+    if (!getNodeInfo(nodeId).m_connected ||
+        !c_alive_nodes.get(nodeId)) {
       jam();
       /**
        * Node died — its aggregation state is lost with it.

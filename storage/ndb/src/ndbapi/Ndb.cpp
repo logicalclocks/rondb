@@ -1204,11 +1204,11 @@ void Ndb::closeTransaction(NdbTransaction *aConnection) {
   }
 
   if (aConnection->theForceReleaseOnClose) {
-#ifdef VM_TRACE
-    g_eventLogger->info(
-        "closeTransaction() forcing release of "
-        "kernel state");
-#endif
+    /* Forced release is also normal cleanup after a failed pushed scan. */
+    DBUG_EXECUTE_IF("ndb_trace_force_release", {
+      g_eventLogger->info(
+          "closeTransaction() forcing release of kernel state");
+    });
     aConnection->theReleaseOnClose = false;
     aConnection->theForceReleaseOnClose = false;
     releaseConnectToNdb(aConnection);

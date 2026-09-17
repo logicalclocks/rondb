@@ -162,6 +162,11 @@ class NdbQueryImpl {
   void release();
 
   NdbTransaction &getNdbTransaction() const { return m_transaction; }
+  /* Receiver-thread access under the receive mutex. A detached scan must
+   * not receive rows through its still-connected parent transaction. */
+  NdbTransaction *getReceiverTransaction() const {
+    return m_tcState == Detached ? nullptr : &m_transaction;
+  }
 
   /** Root operation number for result stream access (0 for non-CTE). */
   Uint32 getRootStreamOpNo() const { return m_rootOpNo; }
@@ -459,9 +464,10 @@ class NdbQueryImpl {
     Destructed
   } m_state;
 
-  enum {       // Assumed state of query cursor in TC block
+  enum {       // State of the query's interaction with TC
     Inactive,  // Execution not started at TC
-    Active
+    Active,
+    Detached   // Failed scan handed to transaction release; ignore replies
   } m_tcState;
 
   /** Next query in same transaction.*/
@@ -479,6 +485,9 @@ class NdbQueryImpl {
    * Checked and moved into 'm_error' with ::hasReceivedError().
    */
   int m_errorReceived;  // BEWARE: protect with PollGuard mutex
+  /* Error from SCAN_TABREF with closeNeeded, not a local API timeout.
+   * Only access under the receive mutex. */
+  int m_scanTabRefError;
 
   /** Transaction in which this query instance executes.*/
   NdbTransaction &m_transaction;
@@ -669,6 +678,10 @@ class NdbQueryImpl {
   bool hasReceivedError();  // Need mutex lock
 
   void setFetchTerminated(int aErrorCode, bool needClose);  // Need mutex lock
+
+  /** Stop receiving a failed scan before asynchronous kernel cleanup.
+   *  Requires the receive mutex and SCAN_TABREF with closeNeeded. */
+  void detachFailedScan();
 
   /** Close cursor on TC */
   int closeTcCursor(bool forceSend);

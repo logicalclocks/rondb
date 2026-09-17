@@ -2721,7 +2721,7 @@ class Dbtc : public SimulatedBlock {
   void close_scan_req_send_conf(Signal*, ScanRecordPtr, ApiConnectRecordPtr apiConnectptr);
   /* Returns false when the setup round cannot proceed to fragment
    * scans: nothing could be sent (scan already aborted here) or a
-   * partial-send failure was recorded (scan stays in
+   * send failure or failed SETUP destination was recorded (scan stays in
    * WAIT_JOIN_AGG_SETUP; the trickling responses drive the abort). */
   bool sendJoinAggSetupReqs(Signal *, ScanRecordPtr, ApiConnectRecordPtr);
   /* RONDB-1120 P2c: build the pre-CONF aggKeys section for the root
@@ -2736,6 +2736,9 @@ class Dbtc : public SimulatedBlock {
     return scanP->m_aggSetupState == ScanRecord::AGG_SETUP_IN_FLIGHT &&
            scanP->m_aggSetupOutstanding != 0;
   }
+  void sendJoinAggSetupNodeFailure(Signal *, ScanRecordPtr,
+                                   Uint32 failedNodeId, Uint32 cteIndex);
+  void reconcileJoinAggSetup(Signal *, ScanRecordPtr);
   void cancelJoinAggSetup(ScanRecord *scanP) {
     if (scanP->m_joinAgg) {
       scanP->m_aggSetupState = ScanRecord::AGG_SETUP_CANCELLED;

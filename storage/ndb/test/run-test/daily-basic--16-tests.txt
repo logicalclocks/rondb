@@ -138,3 +138,6 @@ cmd: testNodeRestart
 args: -n CteCoordinatorDiesParkedReplay T1
 max-time: 600
 
+cmd: testNodeRestart
+args: -n CteSetupAlreadyFailedNode T1
+max-time: 600
