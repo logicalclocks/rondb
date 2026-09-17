@@ -9,7 +9,6 @@ connection mysqld2;
 call mtr.add_suppression("Failed to release global schema lock");
 call mtr.add_suppression("Got temporary error 4025 'Node failure caused abort of transaction' from NDB");
 connection default;
-disconnect mysqld2;
 --enable_query_log
 
 #
@@ -84,5 +83,17 @@ let $wait_condition=
 let $wait_condition=
   SELECT COUNT(*) > 0 FROM ndbinfo.processes WHERE node_id=1600;
 --source include/wait_condition.inc
+
+# Seeing API node 1600 in processes only proves that it has reconnected
+# to at least one data node. Wait through the affected mysqld's own
+# ndbinfo connection before MTR compares its node and error-insert state.
+--disable_query_log
+connection mysqld2;
+let $wait_condition=
+  SELECT COUNT(*) = 2 FROM ndbinfo.nodes WHERE node_id IN (1,2);
+--source include/wait_condition.inc
+connection default;
+disconnect mysqld2;
+--enable_query_log
 
 --remove_file $NDB_TOOLS_OUTPUT
