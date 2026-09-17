@@ -1,0 +1,7 @@
+Scalar SUM: signed/unsigned boundaries, opposite signs, above 2^53, zero and NULL
+Grouped SUM: exact boundaries and NULL groups
+Empty scalar and grouped SUM
+Scalar/grouped overflow and recovery: case 8
+Scalar/grouped overflow and recovery: case 9
+Scalar/grouped overflow and recovery: case 10
+Checked 64-bit SUM tests passed

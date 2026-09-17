@@ -155,41 +155,29 @@ unparsable serving response. Evidence: `EDGE-date-range`, `EDGE-ts*`,
 `EDGE-float-exact` from `KNOWN-ERROR` to `PASS`; `Known["F9"]` retired;
 fuzzers' `known-error` counts to 0.
 
-**D2. Exact DECIMAL aggregation (F5, F21, F2) — P1.** DECIMAL with
-scale > 0 takes the DOUBLE path, so values beyond 2^53 cents lose digits
-(F5: `MAX(dec_big)` = `1000000000000000` vs `999999999999999.99`), the
-last digit of a SUM depends on the topology's combine order (F21:
-`6.0600000000000005` on two node groups), and MIN/MAX drop the scale
-(F2: `10.5` vs `10.50`). Design: keep DECIMAL(p,s) as a scaled integer
-through the per-fragment aggregation, the wire partials and the API
-merge (int128 accumulator for SUM; MIN/MAX as the scaled integer), and
-print with the column's scale. That makes DECIMAL aggregates exact,
-deterministic across topologies and formatted like MySQL in one change.
-Evidence: `EDGE-decimal-large`, `EDGE-null-decimal` to `PASS`, `Known["F5"]`
-retired, `EDGE-float-exact` may regain `SUM(dec_val)`, canonicalizer's
-DECIMAL rule can become strict.
+**D2. Exact DECIMAL aggregation (F5, F21, F2) — deferred.** The first
+version retains signed/unsigned 64-bit integers and double. DECIMAL
+conversion and range restrictions remain; scaled DECIMAL values can lose
+precision through the double path. Do not retire these findings or promise
+exact DECIMAL results based on display-only changes. No accumulator or
+wire widening is planned.
 
-**D3. BIGINT SUM overflow semantics (F6, F22) — separate task (overflow
-overhaul).** Today: NDB error 1860 when the overflow happens inside one
-fragment, a silently wrapped value when the partials overflow only at the
-API merge (`aggMergeSum`: unchecked `val_uint64 +=`). MySQL widens
-`SUM(BIGINT)` to DECIMAL. Decide one semantics and apply it everywhere:
-either widen (int128 / DECIMAL accumulator, which D2's accumulator gives
-for free) or error consistently (checked add in the merge, raise 1860).
-Widening matches the MySQL twin and is what the generator's clients
-expect. Evidence: `EDGE-big-overflow` from `REJECT(expected)` /
-`KNOWN-WRONG` to `PASS` on every topology, `Known["F6"]` and `["F22"]`
-retired, `ronsql_fs_ng4r2` records the same output as the base suite.
+**D3. BIGINT SUM overflow semantics (F6, F22) — checked 64-bit.**
+Row accumulation and partial-result merges must report NDB error 1860
+when an integer addition exceeds its signed/unsigned range. MySQL may
+return a wider DECIMAL; this is an intentional difference. Intermediate
+overflow can still depend on evaluation order for mixed-sign inputs.
+The shared checked merge, API/kernel error propagation, CTE cancellation
+and recovery, and distributed SUM tests are complete. Next: RonSQL
+scalar/grouped boundary and overflow tests with interpreter/JIT parity.
+Retire the unchecked-merge finding only with matching regression evidence;
+represent the remaining MySQL range difference explicitly.
 
-**D4. Display rules (F3, F4) — P2.** AVG prints four decimals regardless
-of the input type (`0.5000` vs MySQL `0.5` for DOUBLE; MySQL uses scale+4
-for exact types and `%g`-style for doubles); FLOAT MIN/MAX prints the
-exact binary32 value (`123456.7890625` vs MySQL's 6-significant-digit
-`123457`). Align the printer with MySQL's rules per input type. The
-canonicalizer tolerates both today (AVG within 1e-4, FLOAT pinned), so
-these matter for byte-identical clients only; do them with D2 since the
-printer is touched anyway. Evidence: `S1-avg-k31`, `EDGE-float-rounding`
-strict, `Known["F4"]` retired, MTR numeric canonicalization hook removable.
+**D4. Display rules (F3, F4) — pending.** Apply source-type-specific AVG
+scale and FLOAT rendering within the existing 64-bit representations.
+Test scalar, grouped, ordered, and CTE results. Formatting must not imply
+exact DECIMAL arithmetic. Remove canonicalization and retire findings only
+where strict comparisons demonstrate the issue is resolved.
 
 ### WP-E — String entity keys in snowflake templates (F14) — P1
 
@@ -291,15 +279,15 @@ plan; the fs framework's `.bench_sql` runs are the acceptance check.
 | milestone | packages | acceptance evidence |
 |---|---|---|
 | **M1 — emitted branches served** (detail: `m1_plan.md`) — **DONE 2026-09-15 on RONDB-1124** | error codes (M1.0), D1 (F9), B (F1), A (F0), C (F7) | requirements report (`requirements_reports/2026-09-15/`): R-S6, R-F1, R-A2-binary SUPPORTED on base / jit / ng2r2; only R-A5-types left (F4/F5/F6); RonSQL errors carry 400/413/503/500 by class |
-| **M2 — type fidelity** (detail: `m2_plan.md`) | D2 (F5/F21/F2), D3 (F6/F22, the overflow overhaul), D4 (F3/F4) | `acceptance=PASS` on base / jit / ng2r2; `ronsql_fs_ng4r2` identical to base |
+| **M2 — 64-bit numeric fidelity** (detail: `m2_plan.md`) | D3 checked overflow, D4 display; D2 deferred | base / jit / ng2r2 / ng4r2 verify the limited contract; retain unmet exact-DECIMAL requirements |
 | **M3 — serving performance** | F (F12), G (F13) | `fs_hw` targets met, plan pins re-recorded, `benchmarks.md` §8 run 4 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
 
 M1 is small and high-value: D1 is a one-line fix, B and C are contained,
-and A maps onto an execution path that already exists. M2's D2 is the one
-structurally larger item (a DECIMAL accumulator through kernel, wire and
-merge) and D3 is the separate overflow task the user has scheduled. M3 is
+and A maps onto an execution path that already exists. M2 now focuses on
+checked 64-bit overflow and display rules; exact DECIMAL accumulation is
+deferred. See the detailed plan for completed work and remaining gates. M3 is
 where RonSQL either becomes the serving path for batch and snowflake
 vectors or stays behind the SQL path (today: collect is faster on RonSQL,
 snowflake and batch are faster through MySQL).

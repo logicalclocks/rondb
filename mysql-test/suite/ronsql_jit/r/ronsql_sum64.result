@@ -1,0 +1,12 @@
+SET @sum64_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+Scalar SUM: signed/unsigned boundaries, opposite signs, above 2^53, zero and NULL
+Grouped SUM: exact boundaries and NULL groups
+Empty scalar and grouped SUM
+Scalar/grouped overflow and recovery: case 8
+Scalar/grouped overflow and recovery: case 9
+Scalar/grouped overflow and recovery: case 10
+Checked 64-bit SUM tests passed
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @sum64_jit_c0 AS SIGNED)
+AS ronsql_sum64_jit_fallback_delta;
+ronsql_sum64_jit_fallback_delta
+0
