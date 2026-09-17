@@ -10911,11 +10911,33 @@ static int restartBarrierCheckSurvived(NdbRestarter &res, int parkedNode) {
 }
 
 static int restartBarrierExpectNodeRestartLock(NDBT_Step *step,
-                                               bool expectLocked) {
+                                               bool expectLocked,
+                                               bool waitForTakeover = false) {
   NdbDictionary::Dictionary *dict = GETNDB(step)->getDictionary();
   NdbDictionaryImpl &dictImpl = NdbDictionaryImpl::getImpl(*dict);
 
-  const int result = dictImpl.beginSchemaTrans(false);
+  /*
+   * QMGR can report the new master before DBDICT has processed the
+   * node failure and completed dictionary takeover. The API's internal
+   * retries can expire during that interval, especially while another
+   * failed node is still being detected. Only the post-failure probes
+   * wait here; BusyWithNR and successful begins must reach the assertion.
+   */
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  int result;
+  for (;;) {
+    result = dictImpl.beginSchemaTrans(false);
+    if (result == 0 || !waitForTakeover) break;
+
+    const int errorCode = dictImpl.getNdbError().code;
+    if (errorCode != SchemaTransBeginRef::NotMaster &&
+        errorCode != SchemaTransBeginRef::Busy)
+      break;
+
+    if (NdbTick_CurrentMillisecond() - start >= Uint64(300) * 1000)
+      break;
+    NdbSleep_SecSleep(1);
+  }
   if (expectLocked) {
     if (result == 0) {
       dictImpl.endSchemaTrans(
@@ -11801,7 +11823,7 @@ int runRestartBarrierMasterFailDictLock(NDBT_Context *ctx,
    * gone, so BusyWithNR can only come from NodeRestartLockTakeover
    * rebuilding the lock in the new master.
    */
-  if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+  if (restartBarrierExpectNodeRestartLock(step, true, true) != NDBT_OK)
     return NDBT_FAILED;
 
   if (restartBarrierClearStall(res, parkedNode))
@@ -11885,7 +11907,7 @@ int runRestartBarrierMasterFailRemoteDictLock(NDBT_Context *ctx,
    * BusyWithNR now depends on the parked node reporting its private
    * DIH lock record to the new remote DICT master.
    */
-  if (restartBarrierExpectNodeRestartLock(step, true) != NDBT_OK)
+  if (restartBarrierExpectNodeRestartLock(step, true, true) != NDBT_OK)
     return NDBT_FAILED;
 
   if (restartBarrierClearStall(res, parkedNode))
