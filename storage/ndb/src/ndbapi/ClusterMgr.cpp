@@ -234,6 +234,8 @@ bool ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
     Uint8 type;  // NodeInfo::NodeType value, valid when has_type == 1
     Uint8 active;
   };
+  // The trailing () value-initializes every entry to all zero (defined == 0
+  // for ids not in the configuration), which phase 2 and 3 depend on.
   NodePlan *plan = new (std::nothrow) NodePlan[ABS_MAX_NODES]();
   if (unlikely(plan == nullptr)) {
     return false;

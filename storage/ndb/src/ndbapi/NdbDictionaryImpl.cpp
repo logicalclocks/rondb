@@ -3397,18 +3397,18 @@ void NdbDictInterface::execSignal(void *dictImpl,
 
     case GSN_NODE_FAILREP: {
       DBUG_ENTER("NdbDictInterface::NODE_FAILREP");
-      const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, signal->getDataPtr());
-      Uint32 len = NodeFailRep::getNodeMaskLength(signal->getLength());
-      const Uint32 *nbm;
-      if (signal->m_noOfSections >= 1) {
-        assert(len == 0);
-        nbm = ptr[0].p;
-        len = ptr[0].sz;
-      } else {
-        // inline legacy format is frozen at the 64-word mask
-        assert(len == NodeBitmask2K::Size);
-        nbm = rep->theAllNodes;
-      }
+      /**
+       * NODE_FAILREP reaches an NDB API client only through ClusterMgr's
+       * re-broadcast (ClusterMgr::execNODE_FAILREP), which always carries
+       * the failed nodes as one signal section holding a packed
+       * NodeBitmask; the legacy inline layouts are decoded there and never
+       * forwarded. The section holds exactly ptr[0].sz words, which is the
+       * only valid scan bound.
+       */
+      assert(NodeFailRep::getNodeMaskLength(signal->getLength()) == 0);
+      assert(signal->m_noOfSections == 1);
+      const Uint32 len = ptr[0].sz;
+      const Uint32 *nbm = ptr[0].p;
       for (Uint32 i = BitmaskImpl::find_first(len, nbm);
            i != BitmaskImpl::NotFound;
            i = BitmaskImpl::find_next(len, nbm, i + 1)) {
