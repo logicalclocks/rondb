@@ -121,6 +121,9 @@ if (!$tmp) {
 if ($NDB_BACKUP_DIR)
 {
   #Check no backup is sill running, backupstatus should report "Backup not started"
+  # A successful connection retry is not part of the cluster state.
+  # Keep the backup status output and let --exec fail on connection failure.
+  --replace_regex /ERROR: Unable to connect with connect string: [^\n]*\n// /Retrying every [0-9]+ seconds[.] Attempts left:[ 0-9]*\n//
   --exec $NDB_MGM -e"ALL REPORT BACKUPSTATUS"
 
   #Include backup_restore_cleanup.inc at the end of test case
