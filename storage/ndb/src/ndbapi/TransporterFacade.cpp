@@ -31,6 +31,7 @@
 #include <NdbSleep.h>
 #include <ndb_global.h>
 #include <ndb_limits.h>
+#include <new>
 #include <IPCConfig.hpp>
 #include <NdbOut.hpp>
 #include <TransporterCallback.hpp>
@@ -459,7 +460,15 @@ int TransporterFacade::start_instance(NodeId nodeId,
   theOwnId = nodeId;
   DEBUG_FPRINTF((stderr, "(%u)FAC:start_instance\n", ownId()));
 
-  theTransporterRegistry = new TransporterRegistry(this, this);
+  /**
+   * Size the registry's transporter id indexed arrays and poll structures
+   * for a client: one transporter per data node, per other MGM node and
+   * to ourselves (see MAX_TRPS), instead of the data node default that
+   * also covers 8192 node ids and the node group multi transporters. The
+   * registry refuses to create a transporter beyond this and ::configure()
+   * fails cleanly if a configuration ever needs more.
+   */
+  theTransporterRegistry = new TransporterRegistry(this, this, MAX_TRPS);
   if (theTransporterRegistry == nullptr) {
     DBUG_RETURN(-1);
   }
@@ -964,12 +973,12 @@ void TransporterFacade::wakeup_send_thread(void) {
  *    before return - Just that it will complete as soon as
  *    possible, which is more or less the same as 'adaptive' does.
  */
-void TransporterFacade::do_send_adaptive(const TrpBitmask &trps) {
+void TransporterFacade::do_send_adaptive(const ClientTrpBitmask &trps) {
   assert(m_active_trps.contains(trps));
 
-  for (Uint32 trp = trps.find_first(); trp != TrpBitmask::NotFound;
+  for (Uint32 trp = trps.find_first(); trp != ClientTrpBitmask::NotFound;
        trp = trps.find_next(trp + 1)) {
-    struct TFSendBuffer *b = &m_send_buffers[trp];
+    struct TFSendBuffer *b = get_send_buffer(trp);
     Guard g(&b->m_mutex);
 
     if (b->m_flushed_cnt > 0 && b->m_current_send_buffer_size > 0) {
@@ -1049,7 +1058,7 @@ void TransporterFacade::threadMainSend(void) {
      * micro-nap (!= ETIMEDOUT), which only happens if we have to
      * take immediate send action.
      */
-    TrpBitmask send_trps(m_has_data_trps);
+    ClientTrpBitmask send_trps(m_has_data_trps);
 
     if (m_send_thread_nodes.get(SEND_THREAD_NO) == false) {
       if (!m_has_data_trps.isclear()) {
@@ -1534,10 +1543,13 @@ TransporterFacade::TransporterFacade(GlobalDictCache *cache,
   thePollMutex = NdbMutex_CreateWithName("PollMutex");
   sendPerformedLastInterval = 0;
   m_open_close_mutex = NdbMutex_Create();
+  /**
+   * Send buffer slots are created per configured transporter id in
+   * set_up_node_active_in_send_buffers(); no 8192-iteration mutex
+   * initialization loop here anymore.
+   */
   for (Uint32 i = 0; i < NDB_ARRAY_SIZE(m_send_buffers); i++) {
-    char name_buf[32];
-    BaseString::snprintf(name_buf, sizeof(name_buf), "sendbuffer:%u", i);
-    NdbMutex_InitWithName(&m_send_buffers[i].m_mutex, name_buf);
+    m_send_buffers[i].store(nullptr, std::memory_order_relaxed);
   }
 
   m_send_thread_cond = NdbCondition_Create();
@@ -1597,7 +1609,46 @@ bool TransporterFacade::do_connect_mgm(NodeId nodeId,
   DBUG_RETURN(true);
 }
 
-void TransporterFacade::set_up_node_active_in_send_buffers(
+/**
+ * Look up or create the send buffer slot for a configured transporter
+ * id.
+ *
+ * Slots are created only here, always inside ::configure() (initial
+ * start or mgmd online reconfigure), after configureTransporters()
+ * assigned the id and before the transporter can start connecting:
+ * server-side accepts require performStates[trpId] == CONNECTING,
+ * which is entered via startConnecting() only after the node was set
+ * up in this very ::configure() call. The slot pointer is
+ * release-stored only after the TFSendBuffer, including its embedded
+ * mutex, is completely initialized, and the caller sets m_node_active /
+ * m_active_trps only afterwards, so m_active_trps never advertises a
+ * transporter id whose slot isn't visible. Slots are never freed or
+ * moved again until the facade is destructed.
+ *
+ * Returns nullptr on allocation failure: ::configure() then fails,
+ * which every caller already handles (API connect fails cleanly; the
+ * mgmd logs 'this node need a restart').
+ */
+TransporterFacade::TFSendBuffer *TransporterFacade::get_or_create_send_buffer(
+    TrpId trp_id) {
+  require(trp_id > 0 && trp_id < MAX_TRPS);
+  TFSendBuffer *b = m_send_buffers[trp_id].load(std::memory_order_acquire);
+  if (b != nullptr) {
+    /* mgmd online reconfigure: the id was configured before */
+    return b;
+  }
+  b = new (std::nothrow) TFSendBuffer();
+  if (unlikely(b == nullptr)) {
+    return nullptr;
+  }
+  char name_buf[32];
+  BaseString::snprintf(name_buf, sizeof(name_buf), "sendbuffer:%u", trp_id);
+  NdbMutex_InitWithName(&b->m_mutex, name_buf);
+  m_send_buffers[trp_id].store(b, std::memory_order_release);
+  return b;
+}
+
+bool TransporterFacade::set_up_node_active_in_send_buffers(
     NodeId nodeId, const ndb_mgm_configuration *conf) {
   DBUG_ENTER("TransporterFacade::set_up_node_active_in_send_buffers");
   ndb_mgm_configuration_iterator iter(conf, CFG_SECTION_CONNECTION);
@@ -1615,12 +1666,13 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
      * same single-transporter invariant as TCP/SHM API links.
      */
     require(num_ids == 1);
-    require(trp_ids[0] > 0);
+    require(trp_ids[0] > 0 && trp_ids[0] < MAX_TRPS);
     theOwnTrpId = trp_ids[0];
   }
 
   /* Need to also communicate with myself, not found in config */
-  b = m_send_buffers + theOwnTrpId;
+  b = get_or_create_send_buffer(theOwnTrpId);
+  if (unlikely(b == nullptr)) DBUG_RETURN(false);
   b->m_node_active = true;
   m_active_trps.set(theOwnTrpId);
 
@@ -1637,12 +1689,13 @@ void TransporterFacade::set_up_node_active_in_send_buffers(
      * single transporter path.
      */
     require(num_ids == 1);
-    require(trp_ids[0] > 0);
-    b = m_send_buffers + trp_ids[0];
+    require(trp_ids[0] > 0 && trp_ids[0] < MAX_TRPS);
+    b = get_or_create_send_buffer(trp_ids[0]);
+    if (unlikely(b == nullptr)) DBUG_RETURN(false);
     b->m_node_active = true;
     m_active_trps.set(trp_ids[0]);
   }
-  DBUG_VOID_RETURN;
+  DBUG_RETURN(true);
 }
 
 void TransporterFacade::configure_tls(const char *searchPath, int nodeType,
@@ -1678,11 +1731,34 @@ bool TransporterFacade::configure(NodeId nodeId,
                                         true))
     DBUG_RETURN(false);
 
+  /**
+   * The client side transporter masks (ClientTrpBitmask) and the send
+   * buffer slot arrays are sized for MAX_TRPS transporter ids. The
+   * registry assigns transporter ids sequentially from 1, so a transporter
+   * count below MAX_TRPS guarantees that every id fits. An API node only
+   * has transporters to the data nodes and to itself, an ndb_mgmd also to
+   * the other management servers, so this can only trip on an absurd
+   * configuration. Fail the configuration cleanly here rather than
+   * letting an id escape the masks further down (also covers the mgmd
+   * online reconfigure, which passes through here again).
+   */
+  {
+    const int num_trps = theTransporterRegistry->get_transporter_count();
+    if (unlikely(num_trps < 0 || Uint32(num_trps) >= MAX_TRPS)) {
+      g_eventLogger->error(
+          "Node %u is configured with %d transporters, but an API or MGM "
+          "node supports at most %u. Reduce the number of data nodes or "
+          "management servers in the configuration.",
+          theOwnId, num_trps, MAX_TRPS - 1);
+      DBUG_RETURN(false);
+    }
+  }
+
   /* Set up active communication with all configured nodes / transporters */
-  set_up_node_active_in_send_buffers(theOwnId, conf);
+  if (!set_up_node_active_in_send_buffers(theOwnId, conf)) DBUG_RETURN(false);
 
   // Configure cluster manager
-  theClusterMgr->configure(nodeId, conf);
+  if (!theClusterMgr->configure(nodeId, conf)) DBUG_RETURN(false);
 
   // Configure send buffers
   if (!m_send_buffer.inited()) {
@@ -2081,7 +2157,12 @@ TransporterFacade::~TransporterFacade() {
   delete theTransporterRegistry;
   NdbMutex_Unlock(thePollMutex);
   for (Uint32 i = 0; i < NDB_ARRAY_SIZE(m_send_buffers); i++) {
-    NdbMutex_Deinit(&m_send_buffers[i].m_mutex);
+    TFSendBuffer *b = m_send_buffers[i].load(std::memory_order_relaxed);
+    if (b != nullptr) {
+      NdbMutex_Deinit(&b->m_mutex);
+      delete b;
+      m_send_buffers[i].store(nullptr, std::memory_order_relaxed);
+    }
   }
   NdbMutex_Destroy(thePollMutex);
   NdbMutex_Destroy(m_open_close_mutex);
@@ -3301,7 +3382,7 @@ void TransporterFacade::flush_send_buffer(TrpId trp, const TFBuffer *sb) {
 
   assert(trp < NDB_ARRAY_SIZE(m_send_buffers));
   assert(m_active_trps.get(trp));
-  struct TFSendBuffer *b = m_send_buffers + trp;
+  struct TFSendBuffer *b = get_send_buffer(trp);
   Guard g(&b->m_mutex);
   assert(b->m_node_enabled);
   b->m_current_send_buffer_size += sb->m_bytes_in_buffer;
@@ -3384,10 +3465,10 @@ void TransporterFacade::try_send_buffer(TrpId trp_id, struct TFSendBuffer *b) {
  *
  * Also see ::try_send_buffer() for comments.
  */
-void TransporterFacade::try_send_all(const TrpBitmask &trps) {
-  for (Uint32 trp = trps.find_first(); trp != TrpBitmask::NotFound;
+void TransporterFacade::try_send_all(const ClientTrpBitmask &trps) {
+  for (Uint32 trp = trps.find_first(); trp != ClientTrpBitmask::NotFound;
        trp = trps.find_next(trp + 1)) {
-    struct TFSendBuffer *b = &m_send_buffers[trp];
+    struct TFSendBuffer *b = get_send_buffer(trp);
     NdbMutex_Lock(&b->m_mutex);
     if (likely(b->m_current_send_buffer_size > 0)) {
       try_send_buffer(trp, b);
@@ -3473,7 +3554,7 @@ Uint32 TransporterFacade::get_bytes_to_send_iovec(TrpId trp_id,
   }
 
   Uint32 count = 0;
-  TFBuffer *b = &m_send_buffers[trp_id].m_out_buffer;
+  TFBuffer *b = &get_send_buffer(trp_id)->m_out_buffer;
   TFBufferGuard g0(*b);
   TFPage *page = b->m_head;
   while (page != nullptr && count < max) {
@@ -3488,7 +3569,7 @@ Uint32 TransporterFacade::get_bytes_to_send_iovec(TrpId trp_id,
 }
 
 Uint32 TransporterFacade::bytes_sent(TrpId trp_id, Uint32 bytes) {
-  TFBuffer *b = &m_send_buffers[trp_id].m_out_buffer;
+  TFBuffer *b = &get_send_buffer(trp_id)->m_out_buffer;
   TFBufferGuard g0(*b);
   Uint32 used_bytes = b->m_bytes_in_buffer;
   Uint32 page_count = 0;
@@ -3578,7 +3659,7 @@ void TransporterFacade::enable_send_buffer(TrpId trp_id) {
 
   // Enable global buffers
   {
-    struct TFSendBuffer *b = &m_send_buffers[trp_id];
+    struct TFSendBuffer *b = get_send_buffer(trp_id);
     Guard g(&b->m_mutex);
 
     // There should be no pending buffered send data
@@ -3634,7 +3715,7 @@ void TransporterFacade::disable_send_buffer(TrpId trp_id) {
 
   // Disable global buffers when all thread-locals are disabled.
   {
-    struct TFSendBuffer *b = &m_send_buffers[trp_id];
+    struct TFSendBuffer *b = get_send_buffer(trp_id);
     Guard g(&b->m_mutex);
     b->m_node_enabled = false;
     discard_send_buffer(b);
@@ -3703,14 +3784,16 @@ ndb_sockaddr TransporterFacade::ext_get_connect_address(NodeId nodeId) {
 bool TransporterFacade::ext_isConnected(NodeId aNodeId) {
   bool val;
   theClusterMgr->lock();
-  val = theClusterMgr->theNodes[aNodeId].is_connected();
+  /* getNodeInfo() bounds-checks aNodeId and returns a default node
+     (not connected) for ids outside our configuration view. */
+  val = theClusterMgr->getNodeInfo(aNodeId).is_connected();
   theClusterMgr->unlock();
   return val;
 }
 
 void TransporterFacade::ext_doConnect(NodeId aNodeId) {
   theClusterMgr->lock();
-  assert(theClusterMgr->theNodes[aNodeId].is_connected() == false);
+  assert(theClusterMgr->getNodeInfo(aNodeId).is_connected() == false);
   startConnecting(aNodeId);
   theClusterMgr->unlock();
 }
@@ -3724,7 +3807,7 @@ bool TransporterFacade::ext_isArbitratorActive() const {
 bool TransporterFacade::ext_hasUnsupportedDbNode() const {
   if (theClusterMgr == nullptr) return false;
   for (NodeId n = 1; n < ABS_MAX_NDB_NODES; n++) {
-    const trp_node &node = theClusterMgr->theNodes[n];
+    const trp_node &node = theClusterMgr->getNodeInfo(n);
     if (!node.defined) continue;
     if (node.m_info.m_type != NodeInfo::DB) continue;
     if (!node.is_connected()) continue;
@@ -3740,7 +3823,7 @@ bool TransporterFacade::ext_hasUnsupportedDbNode() const {
 bool TransporterFacade::ext_hasConnectedDbNode() const {
   if (theClusterMgr == nullptr) return false;
   for (NodeId n = 1; n < ABS_MAX_NDB_NODES; n++) {
-    const trp_node &node = theClusterMgr->theNodes[n];
+    const trp_node &node = theClusterMgr->getNodeInfo(n);
     if (!node.defined) continue;
     if (node.m_info.m_type != NodeInfo::DB) continue;
     if (node.is_connected()) return true;

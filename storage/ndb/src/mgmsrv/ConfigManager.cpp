@@ -1979,16 +1979,19 @@ ConfigManager::run()
 
       case GSN_NODE_FAILREP: {
         const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
-        assert(sig->getLength() >= NodeFailRep::SignalLengthLong);
+        /**
+         * Section form only, see ClusterMgr::execNODE_FAILREP: NODE_FAILREP
+         * reaches an NDB API client only through ClusterMgr's re-broadcast,
+         * which carries the failed nodes as one section holding a packed
+         * NodeBitmask. The legacy inline layouts are decoded there and never
+         * forwarded. The section holds exactly ptr[0].sz words, which is the
+         * only valid scan bound.
+         */
+        assert(NodeFailRep::getNodeMaskLength(sig->getLength()) == 0);
+        assert(sig->header.m_noOfSections == 1);
 
         NodeBitmask nodeMap;
-        Uint32 len = NodeFailRep::getNodeMaskLength(sig->getLength());
-        if (sig->header.m_noOfSections >= 1) {
-          assert(len == 0);
-          nodeMap.assign(sig->ptr[0].sz, sig->ptr[0].p);
-        } else {
-          nodeMap.assign(len, rep->theAllNodes);
-        }
+        nodeMap.assign(sig->ptr[0].sz, sig->ptr[0].p);
         assert(rep->noOfNodes == nodeMap.count());
         nodeMap.bitAND(m_all_mgm);
 

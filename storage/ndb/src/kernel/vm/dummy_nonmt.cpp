@@ -46,6 +46,14 @@ compute_jb_pages(struct EmulatorData*)
   return 0;
 }
 
+/**
+ * Non-mt stubs for the mt.cpp memory sizing that
+ * Configuration::compute_static_overhead() calls. Only ndbmtd is built;
+ * these satisfy the unit test links of ndbkernel, like compute_jb_pages().
+ */
+Uint32 mt_get_num_trp_ids_for_max_nodeid(Uint32) { return MAX_NTRANSPORTERS; }
+Uint64 mt_get_static_memory_usage(Uint32, Uint32, Uint32) { return 0; }
+
 #include <BlockNumbers.h>
 
 #define JAM_FILE_ID 222
