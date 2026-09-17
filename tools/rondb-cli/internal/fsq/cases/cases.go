@@ -79,6 +79,8 @@ type Case struct {
 	KnownWrong   *Expect
 	Hazard       string // finding id: not executed unless hazards are enabled
 	MTR          bool   // part of the golden MTR test
+	// RequireReject distinguishes contract errors from known limitations.
+	RequireReject bool
 	// Canon selects the MTR-side canonicalization applied to both engines'
 	// TEXT output before the diff: "" (byte-strict) or CanonNumeric.
 	Canon string
@@ -114,11 +116,10 @@ func (c Case) MatchesShapes(selected map[string]bool) bool {
 	return false
 }
 
-// CanonNumeric strips trailing fractional zeros on both sides (RonSQL prints
-// AVG with four decimals regardless of the input type, F3, and drops the
-// scale of DECIMAL MIN/MAX, F2); values still have to agree exactly.  It is
-// set automatically for statements that use AVG or touch a DECIMAL, DOUBLE
-// or FLOAT column.
+// CanonNumeric strips trailing fractional zeros on both sides; values still
+// have to agree exactly. It remains enabled for AVG and fractional columns
+// while DECIMAL scale differences (F2) and AVG expression formatting (F3)
+// remain open. Strict display regressions cover the fixed column paths.
 const CanonNumeric = "numeric"
 
 // Config selects the data set the cases bind to.
@@ -725,7 +726,7 @@ func (b *builder) edgeCases() {
 	e("EDGE-float-exact", "exactly representable floats, DATE min/max",
 		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "")
 	e("EDGE-float-rounding", "rounding-sensitive floats (MySQL FLOAT display precision, F4)",
-		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;", false, nil, Known["F4"], "")
+		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;", false, nil, nil, "")
 	e("EDGE-date-range", "DATE spread to 9999-12-31",
 		"SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01';", false, nil, nil, "")
 	e("EDGE-big-safe", "BIGINT around 2^53, SUM = 2^54 - 1",
@@ -734,11 +735,14 @@ func (b *builder) edgeCases() {
 		"SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max` FROM `edge_big_1` WHERE `entity_id` = 2;", false, nil, nil, "")
 	e("EDGE-decimal-large", "DECIMAL(18,2) beyond 2^53 cents (F5 wrong value)",
 		"SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;", false, nil, Known["F5"], "")
-	// Topology-dependent outcome: the clean F6 error when both rows share a
-	// fragment (1-2 node groups), the wrapped F22 value when they do not
-	// (4 node groups); both are known, neither is a pass.
-	e("EDGE-big-overflow", "deliberate BIGINT SUM overflow (F6 clean error, or the F22 wrapped value on more node groups)",
-		"SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;", false, Known["F6"], Known["F22"], "")
+	// The checked 64-bit contract requires 1860 for both local and merged SUM.
+	b.add(Case{
+		ID: "EDGE-big-overflow", Shape: "EDGE", Mode: "edge", Origin: "framework",
+		Note: "deliberate BIGINT SUM overflow (required NDB error 1860; MySQL widens)",
+		Statements: []Statement{{Label: "sql",
+			RonSQL: "SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;"}},
+		ExpectReject: Known["F6"], RequireReject: true, MTR: true,
+	})
 	e("EDGE-str-in-list", "apostrophe, empty, literal-NULL and multibyte keys in an IN list",
 		"SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a');", false, nil, nil, "")
 	e("EDGE-str-null-vs-NULL", "SQL NULL vs the string 'NULL' vs '' (typed nullness)",

@@ -148,8 +148,12 @@ func (s *Shell) fsEngines(o verifyOpts) (*exec.MySQL, *exec.RDRS, *exec.CLI, err
 	return my, rd, cli, nil
 }
 
+type caseQuerier interface {
+	Query(context.Context, string) exec.Response
+}
+
 // runCase executes one case on one engine pair and classifies it.
-func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o verifyOpts) caseResult {
+func runCase(ctx context.Context, c cases.Case, my, rd caseQuerier, o verifyOpts) caseResult {
 	res := caseResult{ID: c.ID, Shape: c.Shape, Shapes: c.Shapes(), Mode: c.Mode, Status: "PASS"}
 	if c.Hazard != "" && !o.includeHazards {
 		res.Status, res.Message = "HAZARD-SKIPPED", c.Hazard
@@ -169,6 +173,10 @@ func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o
 		}
 		switch ronResp.Outcome {
 		case exec.OK:
+			if c.RequireReject {
+				res.Status, res.Message = "UNEXPECTED-SUCCESS", "required rejection was not returned"
+				return res
+			}
 			if c.ExpectReject != nil {
 				res.Status = "PASS(was-expected-reject)"
 				res.Message = c.ExpectReject.Finding + " no longer rejects"
@@ -203,7 +211,7 @@ func runCase(ctx context.Context, c cases.Case, my *exec.MySQL, rd *exec.RDRS, o
 				return res
 			}
 			res.Status, res.Message = "REJECT", firstLine(ronResp.Message)
-			if o.allowReject {
+			if o.allowReject && !c.RequireReject {
 				res.Status = "REJECT(allowed)"
 			}
 			return res

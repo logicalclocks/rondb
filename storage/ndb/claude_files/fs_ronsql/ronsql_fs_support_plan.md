@@ -177,7 +177,11 @@ represent the remaining MySQL range difference explicitly.
 complete with passing base/JIT regressions (`2ca8fc243f5`); AVG arithmetic
 expressions retain the existing four-digit rule. FLOAT MIN/MAX, projection,
 and GROUP BY rendering now use source-type metadata through chained CTEs;
-SUM/AVG remain double. Strict CLI/HTTP FLOAT regressions await user validation.
+SUM/AVG remain double. Strict CLI/HTTP FLOAT regressions and the chained CTE
+lookup startup fix passed user testing (`df820fa3540`, pushed). Framework
+F4/F22 exemptions are retired and M2.4 validation is complete across base,
+JIT, ng2r2, and ng4r2. R-A5-types remains unsupported for F5/F6; original
+req-v1 acceptance remains FAIL. See the 2026-09-17 closeout in `phase_e8.md`.
 Formatting must not imply exact DECIMAL arithmetic. Remove canonicalization
 and retire findings only where strict comparisons demonstrate resolution.
 

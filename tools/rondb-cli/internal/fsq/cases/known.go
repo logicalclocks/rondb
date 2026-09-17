@@ -36,21 +36,12 @@ import (
 // REJECT(expected) / KNOWN-WRONG instead of FAIL; a case that
 // unexpectedly passes reports PASS(was-...) so the entry can be retired.
 var Known = map[string]*Expect{
-	// MySQL prints FLOAT with display precision; RonSQL prints the exact binary32 value.
-	"F4": {Finding: "F4", Pattern: "FLOAT display precision",
-		Wrong: &WrongValue{Column: "ff_max", MySQL: "123457", RonSQL: "123456.7890625"}},
 	// DECIMAL(18,2) beyond 2^53 cents loses precision on RonSQL's DOUBLE path.
 	"F5": {Finding: "F5", Pattern: "DECIMAL precision loss",
 		Wrong: &WrongValue{Column: "dec_max", MySQL: "999999999999999.99", RonSQL: "1000000000000000"}},
-	// BIGINT SUM overflow is a clean NDB error (MySQL widens to DECIMAL) - when
-	// the overflow happens inside one fragment's aggregation.
-	"F6": {Finding: "F6", Pattern: "arithmetic operation results overflow"},
-	// When the overflowing rows sit in different fragments (more node groups),
-	// the API-side merge (aggMergeSum) adds the partials unchecked and the
-	// query returns the wrapped value instead of error 1860: 2^63-1 + 1 -> -2^63
-	// (E8 topology mirror ng4r2).  Known until the overflow-handling overhaul.
-	"F22": {Finding: "F22", Pattern: "BIGINT SUM overflow undetected at the cross-fragment merge (topology-dependent)",
-		Wrong: &WrongValue{Column: "big_sum", MySQL: "9223372036854775808", RonSQL: "-9223372036854775808"}},
+	// Intentional 64-bit SUM range difference: local and merged overflow must
+	// report 1860. MySQL widens to DECIMAL; wrapped values are never accepted.
+	"F6": {Finding: "F6", Pattern: "NDB Permanent error 1860,"},
 	// A snowflake template whose CTE body is keyed by a VARCHAR entity key
 	// returns no rows through CTE_SCAN although the body alone returns its
 	// group (E6, findings/spec_fuzz.md).  Detected structurally by the fuzzer.

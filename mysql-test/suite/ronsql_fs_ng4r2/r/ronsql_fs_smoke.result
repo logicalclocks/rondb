@@ -482,12 +482,6 @@ SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHE
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- i2_avg	fd_avg
--17.5000	0.5
-+17.5000	0.5000
 ==========
 
 
@@ -536,12 +530,6 @@ SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) A
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- ff_sum	fd_sum	ff_max	dec_sum
--123457.38906261639	123457.38900010001	123457	123457.39
-+123457.38906261639	123457.38900010001	123456.7890625	123457.39
 ==========
 
 
@@ -605,23 +593,7 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 big_sum	big_min	big_max	dec_sum	dec_max
 0	-9223372036854775807	9223372036854775807	0.00	999999999999999.99
 
-=== PROBE EDGE-BIG-C: deliberate BIGINT SUM overflow (MySQL widens to DECIMAL) ===
-== Query ==
-SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;
-
-Number of output lines, including header: 2
-
-== Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- big_sum
--9223372036854775808
-+-9223372036854775808
-==========
-
-
-
+=== PROBE EDGE-BIG-C: deliberate BIGINT SUM overflow (required NDB error 1860; MySQL widens) ===
 == Expected result ==
 SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3|
 big_sum

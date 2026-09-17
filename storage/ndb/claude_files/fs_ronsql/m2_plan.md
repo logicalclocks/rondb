@@ -36,8 +36,8 @@ the original exact-DECIMAL design. See `ronsql_fs_support_plan.md`, WP-D.
 | Distributed CTE SUM boundaries, overflow and recovery | Complete |
 | CTE lookup/scan delivery while the direct API connection is unavailable | Complete |
 | RonSQL integer SUM boundary/error tests and interpreter/JIT parity | Complete |
-| AVG scale and FLOAT display rules | AVG columns complete; FLOAT validation pending |
-| Framework expectations and requirements reports for the limited scope | Pending |
+| AVG scale and FLOAT display rules | Complete for columns; AVG expressions retain four digits |
+| Framework expectations and requirements reports for the limited scope | Complete: four configurations verified; R-A5 remains unsupported |
 
 Completed commits include `8f064822249` (checked SUM) and `bd9c41158cd`
 (distributed SUM tests and CTE result routing). Both are pushed.
@@ -47,8 +47,26 @@ Commit `2f618dae6bf` adds the passing RonSQL SUM and strict JIT regressions,
 completing the M2.1/M2.2 gates for checked integer SUM.
 Commit `2ca8fc243f5` completes AVG column formatting, with passing base/JIT
 regressions. AVG arithmetic expressions retain the existing four-digit rule.
-The FLOAT display patch adds strict CLI/HTTP comparisons for native and
-CTE values; user validation is pending.
+Commit `df820fa3540` completes FLOAT display and fixes constant-key CTE
+lookup startup. The user reported all requested tests passing; it is pushed.
+
+M2.4 requires error 1860 for `EDGE-big-overflow`; the F22 wrapped-result
+and F4 FLOAT-display exemptions are removed. Smoke overflow probes assert
+CLI error 1860 and HTTP 400 with semantic/NDB-1860 headers. FLOAT plus
+INT/DOUBLE AVG smoke comparisons are strict. The user reported Go checks
+and smoke/templates passing across base, JIT, ng2r2, and ng4r2.
+
+Requirements/vector runs on all four configurations have been reviewed:
+15 supported, 4 Hopsworks-gated, 1 unsupported, no failed or untested
+requirements. FLOAT passes and overflow returns the expected rejection.
+R-A5-types remains unsupported for F5 (DECIMAL precision) and F6 (the
+intentional 64-bit SUM range difference); original req-v1 acceptance is
+FAIL. F3 remains open for AVG expressions and precision limits; broad
+numeric canonicalization remains.
+
+This completes M2 within the approved first-version scope. See the
+2026-09-17 closeout in `phase_e8.md` for results and report provenance.
+Historical JSON reports remain unchanged.
 
 ## M2.1 — RonSQL coverage of the checked 64-bit contract
 

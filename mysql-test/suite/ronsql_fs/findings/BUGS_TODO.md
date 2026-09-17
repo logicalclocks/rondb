@@ -20,11 +20,17 @@ F8 was a framework fixture issue and is already fixed.
   high-water mark in both interpreters); the framework cases and smoke
   probes are asserted since M1.2 (2026-09-15).
 - [ ] F2: resolve DECIMAL MIN/MAX scale formatting differences.
-- [ ] F3: resolve AVG formatting/precision differences.
-- [ ] F4: resolve FLOAT display differences between MySQL and RonSQL.
+- [ ] F3: AVG column formatting fixed (`2ca8fc243f5`), with strict smoke
+  coverage for INT/DOUBLE AVG. Arithmetic expressions retain four digits;
+  DECIMAL precision limitations remain.
+- [x] F4: FLOAT display fixed (`df820fa3540`) with passing base/JIT
+  regressions. The framework exemption is removed; smoke/templates passed
+  on base, JIT, ng2r2, and ng4r2, and the requirements probe reports PASS.
 - [ ] F5: preserve DECIMAL values beyond 2^53 cents exactly.
-- [ ] F6: decide BIGINT SUM overflow behavior relative to MySQL widening;
-  retain the explicit expected-rejection probe meanwhile.
+- [x] F6: first-version SUM uses checked signed/unsigned 64-bit accumulators.
+  Overflow must report NDB error 1860; MySQL's wider DECIMAL result remains
+  an intentional range difference. Template and smoke probes assert this
+  contract; it does not satisfy the original exact-DECIMAL requirement.
 - [x] F7: support emitted VARBINARY/complex snowflake projections. FIXED
   2026-09-15 (RONDB-1124 M1.4): the pass-through printer prints BINARY /
   VARBINARY (raw bytes in TEXT, base64 in JSON); regression test
@@ -59,11 +65,12 @@ F8 was a framework fixture issue and is already fixed.
   `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
   LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope
   fuzzer, seed 1; isolate with `--threads 1`. Pushdown join aggregation (RONDB-733).
-- [ ] F22 (smoke.md): BIGINT SUM overflow is detected only inside a fragment's
-  aggregation; the API-side merge (`aggMergeSum`) adds partials unchecked, so the
-  probe errors (1860) on 1–2 node groups but returns the wrapped -2^63 on ng4r2.
-  KNOWN for now (expectation table F22 next to F6): overflow handling gets a
-  general overhaul as a separate task. Found by the E8 ng4r2 mirror.
+- [x] F22 (smoke.md): unchecked BIGINT SUM merge fixed by `8f064822249`,
+  with passing distributed and RonSQL regressions (`bd9c41158cd`,
+  `2f618dae6bf`). The framework no longer exempts wrapped results.
+  Smoke probes check CLI error 1860 and HTTP 400 with semantic/NDB-1860
+  headers. Base, JIT, ng2r2, and ng4r2 validation passed; the requirements
+  probe reports REJECT(expected), with F6 retaining the MySQL range difference.
 - [ ] F21 (smoke.md): SUM over DECIMAL(18,2) is topology-dependent on RonSQL
   (`6.0600000000000005` on 2 node groups vs `6.06` on 1; MySQL exact) — the F5
   DOUBLE path combines per-fragment partial sums in topology order. Found by the

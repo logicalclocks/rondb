@@ -281,3 +281,39 @@ overflow overhaul).  Both fuzzers report no `known-error` and no
 no-template=28 pass=128` after the projection sampler started drawing
 complex-typed features; envelope: `clean-reject=20 known-wrong=10
 pass=170`).
+
+### M2 limited-scope closeout (2026-09-17, RONDB-1124)
+
+The user ran the Go checks and smoke/templates across base, JIT, ng2r2,
+and ng4r2, then ran requirements with vectors on each configuration.
+Engine HEAD was `df820fa35405`, with the M2.4 framework expectation
+changes in the working tree. Hopsworks provenance was `f85a653bcafd`.
+
+| configuration | supported | gated | unsupported | untested | failed | acceptance |
+|---|---|---|---|---|---|---|
+| base-interpreter | 15 | 4 | 1 | 0 | 0 | FAIL |
+| jit | 15 | 4 | 1 | 0 | 0 | FAIL |
+| ng2r2 | 15 | 4 | 1 | 0 | 0 | FAIL |
+| ng4r2 | 15 | 4 | 1 | 0 | 0 | FAIL |
+
+Reports were inspected after the separate configuration runs. The current
+ng2r2 report contains 82 passing cases, one expected rejection
+(`EDGE-big-overflow`, F6), one known DECIMAL mismatch
+(`EDGE-decimal-large`, F5), and 20 passing vector specs. The FLOAT probe
+passes on every configuration; F4 and F22 exemptions are retired.
+
+R-A5-types is the sole unsupported requirement, naming F5 and F6.
+Checked signed/unsigned 64-bit SUM is the approved contract; MySQL may
+produce a wider DECIMAL. Exact DECIMAL arithmetic remains deferred.
+Thus M2's approved scope is complete while original req-v1 acceptance
+remains FAIL. AVG expression formatting and remaining DECIMAL limitations
+stay open; this closeout does not claim wider numeric support.
+
+Report provenance: all four `/tmp/fs_req_m24_*.json` filenames were
+overwritten when every label was rerun on each cluster. After the final
+run they all contain ng2r2 evidence, regardless of label; only
+`fs_req_m24_ng2r2.json` names that configuration correctly. The table
+above records the separately reviewed runs, not four independently
+preserved JSON artifacts. Historical reports under
+`requirements_reports/` are unchanged. Any future per-configuration
+archive must capture one report with the matching label per cluster.

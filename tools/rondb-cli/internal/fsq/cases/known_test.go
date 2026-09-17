@@ -36,7 +36,6 @@ func TestMatchesWrong(t *testing.T) {
 	for _, tc := range []struct {
 		id, column, typ, mysql, ronsql, sum string
 	}{
-		{"F4", "ff_max", "FLOAT", "123457", "123456.7890625", "123457.39"},
 		{"F5", "dec_max", "DECIMAL", "999999999999999.99", "1000000000000000", "0.00"},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
