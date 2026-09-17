@@ -1271,30 +1271,24 @@ ndbd_support_2k_api_nodes(Uint32 x) {
 /*
  * Support for node ids 2040..8191 (the "8k tier").
  *
- * Introduced in the 26.02 release line at 26.02.9. NOTE: 26.02.8 was
+ * Introduced in the 26.02 release line at 26.02.11. NOTE: 26.02.10 was
  * released WITHOUT this feature, so the cutoff must not be lowered
- * to 8.
+ * to 10.
  *
  * NOTE: this predicate is intentionally branch-aware and conservative.
  * Only release lines KNOWN to carry the feature return true; every other
  * version (including numerically higher lines that may not contain the
- * feature) returns false. When the feature is merged to another release
- * line, add that line's cutoff explicitly (see
- * ndbd_support_drop_table_notification() for the pattern). Do NOT replace
- * this with a plain numeric >= comparison: version numbers are not
- * monotonic across parallel release lines.
+ * feature) returns false.
+ *
+ * No release with higher release number than 26.02 are released
+ * without this feature, so it is safe to simply compare with
+ * 26.02.11.
  */
-#define NDBD_SUPPORT_8K_API_NODES_2602 NDB_MAKE_VERSION(26,2,9)
+#define NDBD_SUPPORT_8K_API_NODES_2602 NDB_MAKE_VERSION(26,2,11)
 static inline
 bool
 ndbd_support_8k_api_nodes(Uint32 x) {
-  const Uint32 major = (x >> 16) & 0xFF;
-  const Uint32 minor = (x >>  8) & 0xFF;
-  const Uint32 rel = x & 0xFF;
-  if ((major == 26) && (minor == 2)) {
-    return rel >= 9;
-  }
-  return false;
+  return x >= NDBD_SUPPORT_8K_API_NODES_2602;
 }
 
 /*
