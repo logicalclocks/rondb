@@ -1,6 +1,17 @@
 --source include/have_ndb.inc
 --source include/have_ndb_debug.inc
 
+# Disconnecting API node 1600 can abort the second mysqld's schema-lock
+# transaction while its binlog thread is setting up or reconnecting.
+--disable_query_log
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+call mtr.add_suppression("Failed to release global schema lock");
+call mtr.add_suppression("Got temporary error 4025 'Node failure caused abort of transaction' from NDB");
+connection default;
+disconnect mysqld2;
+--enable_query_log
+
 #
 # Data node security: signal-scope violation enforcement.
 #
