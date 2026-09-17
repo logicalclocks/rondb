@@ -1407,11 +1407,30 @@ Uint64
 Configuration::compute_static_overhead()
 {
   /**
-   * Overhead from DBDIH pages, DBINFO, DBUTIL, DBDICT, block overhead
-   * 122 MByte from mt.cpp. Schema transaction memory.
+   * Overhead from DBDIH pages, DBINFO, DBUTIL, DBDICT, block overhead and
+   * schema transaction memory.
+   *
+   * The mt.cpp share used to be a fixed 122 MByte inside a 208 MByte
+   * constant, estimated in 2021 with 906 block thread slots and 352
+   * transporter ids. Since then thr_data has grown and the transporter id
+   * indexed arrays are sized from the configured max node id and the
+   * thread counts, so that share is computed from the real struct sizes
+   * and the configuration instead (mt_get_static_memory_usage()).
    */
-  Uint64 static_overhead = Uint64(208) * MBYTE64;
+  Uint64 static_overhead = Uint64(86) * MBYTE64;
   Uint32 num_threads = get_num_threads();
+  {
+    const Uint32 num_trp_ids =
+        mt_get_num_trp_ids_for_max_nodeid(SimulatedBlock::get_max_nodeid());
+    const Uint64 mt_usage = mt_get_static_memory_usage(
+        num_trp_ids, num_threads, globalData.ndbMtReceiveThreads);
+    g_eventLogger->info("Static overhead from mt.cpp is %llu MBytes "
+                        "(%u transporter ids, %u block threads, "
+                        "%u receive threads)",
+                        mt_usage / MBYTE64, num_trp_ids, num_threads,
+                        globalData.ndbMtReceiveThreads);
+    static_overhead += mt_usage;
+  }
   static_overhead += // Small memory allocations
     ((num_threads) * MBYTE64);
   Uint32 num_send_threads = globalData.ndbMtSendThreads;

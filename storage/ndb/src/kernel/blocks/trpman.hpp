@@ -78,6 +78,16 @@ public:
   DistributionHandler m_distribution_handle;
   bool m_distribution_handler_inited;
 
+  /**
+   * Bytes of per transporter activity tracking (m_trp_activity) that each
+   * TRPMAN instance allocates for 'num_trp_ids' transporter ids. Used by
+   * mt_get_static_memory_usage() for the automatic memory configuration,
+   * see Configuration::compute_static_overhead().
+   */
+  static Uint64 get_trp_activity_bytes(Uint32 num_trp_ids) {
+    return Uint64(num_trp_ids) * sizeof(TrpActivity);
+  }
+
  protected:
   bool getParam(const char *name, Uint32 *count) override;
 

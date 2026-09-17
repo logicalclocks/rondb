@@ -90,6 +90,25 @@ void mt_execSTOP_FOR_CRASH();
 Uint32 mt_get_thread_signal_id(Uint32 thr_no);
 Uint32 mt_get_exec_thread_signal_id(Uint32 thr_no, Uint32 sender_thr_no);
 Uint32 mt_map_api_node_to_recv_instance(NodeId);
+
+/**
+ * Memory sizing for Configuration::compute_static_overhead().
+ *
+ * mt_get_num_trp_ids_for_max_nodeid() is the formula the transporter id
+ * indexed arrays are sized with (glob_num_trp_ids): the configured max
+ * node id plus one, plus the node group multi transporter margin, capped
+ * at the compile time ceiling MAX_NTRANSPORTERS. 0 (max node id not known)
+ * gives the ceiling.
+ *
+ * mt_get_static_memory_usage() sums the mt.cpp allocations from the real
+ * struct sizes: the thr_repository and send thread objects, and the
+ * arrays that scale with the transporter ids and the thread counts,
+ * including TRPMAN's per transporter activity array (one instance per
+ * receive thread).
+ */
+Uint32 mt_get_num_trp_ids_for_max_nodeid(Uint32 max_nodeid_plus_1);
+Uint64 mt_get_static_memory_usage(Uint32 num_trp_ids, Uint32 num_block_threads,
+                                  Uint32 num_recv_threads);
 void mt_getSendBufferLevel(NodeId node,
                            BlockNumber bno,
                            SB_LevelType &level);

@@ -50,6 +50,7 @@
 #include <WatchDog.hpp>
 #include <blocks/pgman.hpp>
 #include <blocks/thrman.hpp>
+#include <blocks/trpman.hpp>
 #include <signaldata/StopForCrash.hpp>
 #include "FastScheduler.hpp"
 #include "TransporterCallbackKernel.hpp"
@@ -1974,10 +1975,19 @@ struct thr_repository {
   struct send_buffer *m_send_buffers;
 
   /**
-   * The buffers published by threads, one row per transporter id.
-   * Allocated in rep_init() with glob_num_trp_ids rows.
+   * The send queues published by the block threads: one row per
+   * transporter id with one entry per block thread. Allocated in
+   * rep_init() with glob_num_trp_ids rows of m_thread_count entries,
+   * i.e. runtime sized in both dimensions. The previous rows of
+   * MAX_BLOCK_THREADS (722) entries cost 46 KB per transporter id,
+   * 383 MB at the 8192 node id ceiling, for a few dozen threads in use.
+   * The row for 'trp_id' starts at trp_id * m_thread_count, use
+   * thread_send_queues().
    */
-  thr_send_queue (*m_thread_send_buffers)[MAX_BLOCK_THREADS];
+  thr_send_queue *m_thread_send_buffers;
+  thr_send_queue *thread_send_queues(TrpId trp_id) {
+    return m_thread_send_buffers + (Uint64(trp_id) * m_thread_count);
+  }
 
   ~thr_repository() {
     for (Uint32 i = 0; i < MAX_BLOCK_THREADS; i++) {
@@ -5098,7 +5108,7 @@ static void link_thread_send_buffers(thr_repository::send_buffer *sb,
                                      TrpId trp_id) {
   Uint32 ri[MAX_BLOCK_THREADS];
   Uint32 wi[MAX_BLOCK_THREADS];
-  thr_send_queue *src = g_thr_repository->m_thread_send_buffers[trp_id];
+  thr_send_queue *src = g_thr_repository->thread_send_queues(trp_id);
   for (unsigned thr = 0; thr < glob_num_threads; thr++) {
     ri[thr] = sb->m_read_index[thr];
     wi[thr] = src[thr].m_write_index;
@@ -5131,7 +5141,7 @@ static void link_thread_send_buffers(thr_repository::send_buffer *sb,
     bool more_pages;
 
     do {
-      src = g_thr_repository->m_thread_send_buffers[trp_id];
+      src = g_thr_repository->thread_send_queues(trp_id);
       more_pages = false;
       for (unsigned thr = 0; thr < glob_num_threads; thr++, src++) {
         Uint32 r = ri[thr];
@@ -5678,7 +5688,7 @@ static void flush_send_buffer(thr_data *selfptr, TrpId trp_id) {
   }
   assert(src->m_last_page != nullptr);
 
-  thr_send_queue *dst = rep->m_thread_send_buffers[trp_id] + thr_no;
+  thr_send_queue *dst = rep->thread_send_queues(trp_id) + thr_no;
   thr_repository::send_buffer *sb = rep->m_send_buffers + trp_id;
 
   Uint32 wi = dst->m_write_index;
@@ -9763,8 +9773,9 @@ rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
   require(rep->m_send_buffers == nullptr);
   rep->m_send_buffers = new thr_repository::send_buffer[glob_num_trp_ids];
   require(rep->m_thread_send_buffers == nullptr);
+  require(cnt > 0 && cnt <= MAX_BLOCK_THREADS);
   rep->m_thread_send_buffers =
-      new thr_send_queue[glob_num_trp_ids][MAX_BLOCK_THREADS];
+      new thr_send_queue[Uint64(glob_num_trp_ids) * cnt];
 
   rep->m_thread_count = cnt;
   for (unsigned int i = 0; i < cnt; i++) {
@@ -9781,8 +9792,7 @@ rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
   }
 
   std::memset(rep->m_thread_send_buffers, 0,
-              sizeof(thr_send_queue) * MAX_BLOCK_THREADS *
-                  Uint64(glob_num_trp_ids));
+              sizeof(thr_send_queue) * Uint64(glob_num_trp_ids) * cnt);
   for (Uint32 node_id = 0; node_id < ABS_MAX_NODES; node_id++)
   {
     glob_max_send_buffer_size[node_id] =
@@ -9996,17 +10006,19 @@ void ThreadConfig::init() {
    * if the max node id is not available.
    */
   {
-    const Uint32 max_nodeid_plus_1 = SimulatedBlock::get_max_nodeid();
-    glob_num_trp_ids = MAX_NTRANSPORTERS;
-    if (max_nodeid_plus_1 > 0) {
-      const Uint32 num_trp_ids =
-          max_nodeid_plus_1 + ((MAX_REPLICAS - 1) * MAX_NODE_GROUP_TRANSPORTERS);
-      if (num_trp_ids < Uint32(MAX_NTRANSPORTERS)) {
-        glob_num_trp_ids = num_trp_ids;
-      }
-    }
+    glob_num_trp_ids =
+        mt_get_num_trp_ids_for_max_nodeid(SimulatedBlock::get_max_nodeid());
     g_eventLogger->info("NDBMT: number of transporter id slots=%u",
                         glob_num_trp_ids);
+    // Same formula as Configuration::compute_static_overhead() uses for the
+    // automatic memory configuration, logged here for cross checking.
+    g_eventLogger->info(
+        "NDBMT: static memory usage=%llu MBytes (%u transporter ids, "
+        "%u block threads, %u receive threads)",
+        mt_get_static_memory_usage(glob_num_trp_ids, glob_num_threads,
+                                   globalData.ndbMtReceiveThreads) /
+            MBYTE64,
+        glob_num_trp_ids, glob_num_threads, globalData.ndbMtReceiveThreads);
   }
 
   g_eventLogger->info("NDBMT: number of block threads=%u", glob_num_threads);
@@ -10029,6 +10041,45 @@ Uint32 mt_get_recv_thread_idx(TrpId trp_id) {
 }
 
 Uint32 mt_get_num_trp_ids() { return glob_num_trp_ids; }
+
+Uint32 mt_get_num_trp_ids_for_max_nodeid(Uint32 max_nodeid_plus_1) {
+  /**
+   * The margin for the node group (multi-)transporters mirrors the
+   * MAX_NTRANSPORTERS formula. Fall back to the compile time ceiling if
+   * the max node id is not available.
+   */
+  if (max_nodeid_plus_1 == 0) return MAX_NTRANSPORTERS;
+  const Uint32 num_trp_ids =
+      max_nodeid_plus_1 + ((MAX_REPLICAS - 1) * MAX_NODE_GROUP_TRANSPORTERS);
+  return (num_trp_ids < Uint32(MAX_NTRANSPORTERS)) ? num_trp_ids
+                                                    : Uint32(MAX_NTRANSPORTERS);
+}
+
+Uint64 mt_get_static_memory_usage(Uint32 num_trp_ids, Uint32 num_block_threads,
+                                  Uint32 num_recv_threads) {
+  /**
+   * The mt.cpp allocations that Configuration::compute_static_overhead()
+   * accounts for, from the real struct sizes so that the estimate follows
+   * the code:
+   * - the thr_repository object (g_thr_repository_mem), dominated by the
+   *   embedded thr_data[MAX_BLOCK_THREADS];
+   * - the send thread state (g_send_threads_mem);
+   * - the transporter id indexed arrays of rep_init() and thr_init(): one
+   *   send_buffer per id, one thr_send_queue per id per block thread, and
+   *   per block thread one thr_send_buffer and one pending TrpId per id;
+   * - TRPMAN's per transporter activity array, one instance per receive
+   *   thread, the one block array sized from the same transporter ids.
+   */
+  Uint64 bytes = sizeof(thr_repository) + NDB_CL;
+  bytes += sizeof(thr_send_threads) + NDB_CL;
+  bytes += Uint64(num_trp_ids) * sizeof(thr_repository::send_buffer);
+  bytes += Uint64(num_trp_ids) * num_block_threads * sizeof(thr_send_queue);
+  bytes += Uint64(num_trp_ids) * num_block_threads *
+           (sizeof(thr_send_buffer) + sizeof(TrpId));
+  bytes += Uint64(num_recv_threads) *
+           Trpman::get_trp_activity_bytes(num_trp_ids);
+  return bytes;
+}
 
 Uint32
 mt_map_api_node_to_recv_instance(NodeId node_id)
