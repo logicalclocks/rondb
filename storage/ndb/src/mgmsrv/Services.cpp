@@ -2789,7 +2789,7 @@ static bool clear_dynamic_ports_from_config(Config *config) {
  * data nodes) exceed 1 MiB. Keep a hard bound to avoid unbounded
  * allocation from a misbehaving client.
  */
-static constexpr Uint32 MAX_CONFIG_BASE64_LEN = 8 * 1024 * 1024;
+static constexpr Uint32 MAX_CONFIG_BASE64_LEN = 12 * 1024 * 1024;
 
 void MgmApiSession::setConfig_v1(Parser_t::Context &ctx,
                                  Properties const &args) {

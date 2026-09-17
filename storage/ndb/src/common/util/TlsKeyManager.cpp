@@ -442,7 +442,7 @@ void TlsKeyManager::describe_cert(cert_record &entry, struct x509_st *cert) {
 
 void TlsKeyManager::cert_table_set(int node_id, X509 *cert) {
   Guard mutex_guard(&m_cert_table_mutex);
-  assert(node_id > 0 && node_id < ABS_MAX_NODES);
+  assert(node_id >= 0 && node_id < ABS_MAX_NODES);
   if (node_id <= 0 || node_id >= ABS_MAX_NODES)
     return;  // Client certs (id 0) do not go into table; reject bad ids
 
