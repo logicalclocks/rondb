@@ -32,11 +32,22 @@
  *   the JoinAggInterpreter::initGBTypes inline-type decoder
  *   (cte_filter_phase_e1k.md).
  *
+ * RONDB-1120 LK-2 (Test 7, node_failure_test_plan.md section 5.2): the
+ *   Test 5 shape over oj_rhs_nk, whose join column is nullable.  A NULL
+ *   key skips the probe and injects the NULL-extended row through
+ *   JOIN_AGG_NULL_ROW_REQ, a miss injects it from the CTE_LOOKUP_REF
+ *   arm.  With error insert 5132 on every data node the first injection
+ *   a node sees is answered JOIN_AGG_NULL_ROW_REF 1253: DBSPJ must retire
+ *   that reply and fail the query with 1253 instead of hanging
+ *   (84f15ad6454); the join-agg pools are clean afterwards and the
+ *   control query succeeds again.
+ *
  * Schema (created via MySQL):
  *   oj_cte_src(pk INT PK, grp INT, val BIGINT)         -- CTE source
  *   oj_cte_virtual(grp INT PK, total BIGINT)           -- virtual table
  *                                                        for lookupCte/scanCte
  *   oj_rhs(id INT PK, label CHAR(8))                   -- outer-join RHS
+ *   oj_rhs_nk(id INT PK, grp_ref INT NULL)             -- nullable join key
  *
  * Test data:
  *   oj_cte_src: (1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)
@@ -45,6 +56,8 @@
  *   oj_rhs:     (1,'one'),(3,'three'),(5,'five')
  *               -- id=1,3 match CTE groups; id=5 does NOT, so LEFT JOIN
  *               -- against CTE must NULL-fill cte cols for id=5.
+ *   oj_rhs_nk:  (1,1),(2,NULL),(3,3),(4,7)
+ *               -- id=1,3 match; id=2 has a NULL key; id=4 misses.
  *
  * Usage: testCteNdbApiOuterJoin -c <connect_string> -m <mysql_port> [-v]
  *                               [--only N]
@@ -60,6 +73,7 @@
 #include "NdbQueryOperation.hpp"
 
 #include <mysql.h>
+#include "JoinAggTestUtil.hpp"
 
 #include <climits>
 #include <cstdio>
@@ -73,6 +87,10 @@ static const char *TEST_DB         = "test";
 static const char *CTE_SRC_TABLE   = "oj_cte_src";
 static const char *CTE_VIRT_TABLE  = "oj_cte_virtual";
 static const char *RHS_TABLE       = "oj_rhs";
+static const char *RHS_NK_TABLE    = "oj_rhs_nk";
+/* Test 7 needs the management server: set from -c in main. */
+static const char *g_connectString = "localhost:1186";
+static const Uint32 ZJOIN_AGG_INTERPRETER_ERROR = 1253;
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -113,6 +131,7 @@ createTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS oj_cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS oj_cte_virtual");
   sqlExec(conn, "DROP TABLE IF EXISTS oj_rhs");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj_rhs_nk");
 
   if (sqlExec(conn,
       "CREATE TABLE oj_cte_src ("
@@ -133,6 +152,12 @@ createTestTables(MYSQL *conn)
       "  label CHAR(8) NOT NULL"
       ") ENGINE=NDB DEFAULT CHARSET=latin1") != 0) return -1;
 
+  if (sqlExec(conn,
+      "CREATE TABLE oj_rhs_nk ("
+      "  id INT NOT NULL PRIMARY KEY,"
+      "  grp_ref INT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
   return 0;
 }
 
@@ -149,8 +174,13 @@ insertTestData(MYSQL *conn)
    * Tests 1/2 drive scanCte vs oj_rhs (grp=2 unmatched on rhs side);
    * Tests 3/4 drive scanTable(oj_rhs) vs lookupCte (id=5 unmatched on
    * CTE side). */
+  if (sqlExec(conn,
+      "INSERT INTO oj_rhs VALUES (1,'one'),(3,'three'),(5,'five')") != 0)
+    return -1;
+
+  /* Test 7: id=1,3 match CTE groups, id=2 has a NULL key, id=4 misses. */
   return sqlExec(conn,
-      "INSERT INTO oj_rhs VALUES (1,'one'),(3,'three'),(5,'five')");
+      "INSERT INTO oj_rhs_nk VALUES (1,1),(2,NULL),(3,3),(4,7)");
 }
 
 static void
@@ -159,6 +189,7 @@ dropTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS oj_cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS oj_cte_virtual");
   sqlExec(conn, "DROP TABLE IF EXISTS oj_rhs");
+  sqlExec(conn, "DROP TABLE IF EXISTS oj_rhs_nk");
 }
 
 /* ------------------------------------------------------------------ */
@@ -918,6 +949,193 @@ testScanCteParentMainAgg(Ndb *ndb, MYSQL * /*conn*/)
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 7 (RONDB-1120 LK-2, node_failure_test_plan.md section 5.2):    */
+/*   WITH cte0 AS (SELECT grp, SUM(val) FROM oj_cte_src GROUP BY grp)  */
+/*   SELECT COUNT(*), SUM(cte0.total)                                  */
+/*     FROM oj_rhs_nk LEFT JOIN cte0 ON cte0.grp = oj_rhs_nk.grp_ref;  */
+/*                                                                     */
+/* oj_rhs_nk: (1,1),(2,NULL),(3,3),(4,7); cte0 groups={1,2,3}.          */
+/*   id=1 → total=30, id=3 → total=50: count 2, sum 80                 */
+/*   id=2 → NULL key: DBSPJ skips the probe and injects the NULL row   */
+/*          through JOIN_AGG_NULL_ROW_REQ                              */
+/*   id=4 → miss: the CTE_LOOKUP_REF arm injects the NULL row          */
+/* Control: COUNT=4, SUM=80.                                           */
+/*                                                                     */
+/* With error insert 5132 on every data node the first injection each  */
+/* node sees is answered JOIN_AGG_NULL_ROW_REF 1253.  DBSPJ must retire */
+/* that reply (execJOIN_AGG_NULL_ROW_REF, 84f15ad6454) so the request  */
+/* completes: the query fails with 1253 instead of hanging, the        */
+/* join-agg pools are clean, and the control query succeeds again.     */
+/* ------------------------------------------------------------------ */
+
+/* 0 = result in count / sum, 1 = the query failed with *errorCode,
+ * -1 = harness error. */
+static int
+runNullKeyLeftJoinAgg(Ndb *ndb, Int64 &count, Int64 &sum, Uint32 &errorCode)
+{
+  errorCode = 0;
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(CTE_SRC_TABLE);
+  dict->invalidateTable(CTE_VIRT_TABLE);
+  dict->invalidateTable(RHS_NK_TABLE);
+  const NdbDictionary::Table *srcTab  = dict->getTable(CTE_SRC_TABLE);
+  const NdbDictionary::Table *virtTab = dict->getTable(CTE_VIRT_TABLE);
+  const NdbDictionary::Table *rhsTab  = dict->getTable(RHS_NK_TABLE);
+  if (srcTab == nullptr || virtTab == nullptr || rhsTab == nullptr) {
+    fprintf(stderr, "Test 7: table lookup failed\n");
+    return -1;
+  }
+
+  NdbAggregator cteAgg(srcTab);
+  if (!buildCteAgg(cteAgg)) {
+    fprintf(stderr, "Test 7: cteAgg build failed\n");
+    return -1;
+  }
+  const NdbDictionary::Column *totalCol = virtTab->getColumn("total");
+  NdbAggregator mainAgg(virtTab);
+  if (!mainAgg.LoadUint64(1, 0) ||
+      !mainAgg.LoadLinkedColumn(1, 1, totalCol) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Sum(1, 1) ||
+      !mainAgg.Finalize()) {
+    fprintf(stderr, "Test 7: mainAgg: %s\n", mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  qb->beginCteSubtree(0);
+  {
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    const NdbQueryOperand *key[] = { qb->linkedValue(scan, "pk"), nullptr };
+    NdbQueryOptions leafOpts;
+    leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+    leafOpts.setAggregation(cteAgg);
+    qb->readTuple(srcTab, key, &leafOpts);
+  }
+  qb->endCteSubtree();
+  qb->defineCte(0, srcTab, cteAgg);
+
+  const NdbQueryTableScanOperationDef *mainScan = qb->scanTable(rhsTab);
+  if (mainScan == nullptr) {
+    fprintf(stderr, "Test 7: scanTable: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScan, "grp_ref"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;   /* MatchAll: LEFT JOIN */
+  cteLookupOpts.setAggregation(mainAgg);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    fprintf(stderr, "Test 7: lookupCte: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    fprintf(stderr, "Test 7: prepare: %s\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  NdbQuery *query = trans->createQuery(queryDef);
+  int rc = 0;
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    errorCode = trans->getNdbError().code;
+    V("  execute failed: %u %s\n", errorCode, trans->getNdbError().message);
+    rc = 1;
+  } else {
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {}
+    if (outcome == NdbQuery::NextResult_error) {
+      errorCode = query->getNdbError().code;
+      V("  nextResult failed: %u %s\n", errorCode,
+        query->getNdbError().message);
+      rc = 1;
+    } else {
+      NdbAggregator *resultAgg = query->getAggregator();
+      if (resultAgg == nullptr) {
+        fprintf(stderr, "Test 7: no aggregator on the query\n");
+        rc = -1;
+      } else {
+        NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+        if (rec.end()) {
+          fprintf(stderr, "Test 7: no aggregation result\n");
+          rc = -1;
+        } else {
+          count = rec.FetchAggregationResult().data_int64();
+          sum = rec.FetchAggregationResult().data_int64();
+        }
+      }
+    }
+  }
+  query->close();
+  trans->close();
+  queryDef->destroy();
+  return rc;
+}
+
+static int
+testNullRowRefAbort(Ndb *ndb, MYSQL * /*conn*/)
+{
+  printf("Test 7: LK-2 NULL_ROW_REQ refused (5132) ... ");
+  fflush(stdout);
+  NdbRestarter restarter(g_connectString);
+  Int64 count = 0, sum = 0;
+  Uint32 code = 0;
+
+  int rc = runNullKeyLeftJoinAgg(ndb, count, sum, code);
+  if (rc != 0 || count != 4 || sum != 80) {
+    printf("FAILED (control: rc=%d error=%u COUNT=%lld SUM=%lld, expected "
+           "COUNT=4 SUM=80)\n", rc, code, (long long)count, (long long)sum);
+    return -1;
+  }
+
+  /* Every node refuses its first injection; the query dies on the first
+   * REF, so clear the nodes that never fired before the re-run. */
+  if (restarter.insertErrorInAllNodes(5132) != 0) {
+    printf("FAILED (insertErrorInAllNodes 5132)\n");
+    return -1;
+  }
+  rc = runNullKeyLeftJoinAgg(ndb, count, sum, code);
+  const bool cleared = restarter.insertErrorInAllNodes(0) == 0;
+  if (rc != 1 || code != ZJOIN_AGG_INTERPRETER_ERROR) {
+    printf("FAILED (expected the query to fail with %u, got rc=%d error=%u "
+           "COUNT=%lld SUM=%lld)\n",
+           ZJOIN_AGG_INTERPRETER_ERROR, rc, code, (long long)count,
+           (long long)sum);
+    return -1;
+  }
+  if (!cleared) {
+    printf("FAILED (clearing the error insert)\n");
+    return -1;
+  }
+  V("  the query failed with %u as expected\n", code);
+
+  /* The refused reply was retired: nothing may survive on any node. */
+  if (joinAggCheckLeaks(nullptr, restarter, "Test 7",
+                        JOIN_AGG_ALL_LEAK_DUMPS,
+                        NDB_ARRAY_SIZE(JOIN_AGG_ALL_LEAK_DUMPS),
+                        /*settleMs=*/500, /*timeoutMs=*/30000) != 0) {
+    printf("FAILED (leak check)\n");
+    return -1;
+  }
+
+  rc = runNullKeyLeftJoinAgg(ndb, count, sum, code);
+  if (rc != 0 || count != 4 || sum != 80) {
+    printf("FAILED (re-run: rc=%d error=%u COUNT=%lld SUM=%lld)\n",
+           rc, code, (long long)count, (long long)sum);
+    return -1;
+  }
+  printf("OK (error %u once, then COUNT=%lld SUM=%lld)\n",
+         ZJOIN_AGG_INTERPRETER_ERROR, (long long)count, (long long)sum);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -933,6 +1151,7 @@ static const TestEntry g_tests[] = {
     { 4, testMainLookupCteLeftJoinSmallBatch },
     { 5, testCteSubtreeLeftJoinAggFeed },
     { 6, testScanCteParentMainAgg },
+    { 7, testNullRowRefAbort },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -957,6 +1176,8 @@ int main(int argc, char **argv)
       return 0;
     }
   }
+
+  g_connectString = connectString;
 
   if (onlyTest != -1) {
     bool found = false;

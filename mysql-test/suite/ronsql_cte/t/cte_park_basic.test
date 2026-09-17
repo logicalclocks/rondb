@@ -1,0 +1,94 @@
+# RONDB-1120 node_failure_test_plan.md section 6 through RonSQL: parking.
+#
+# DBLQH error insert 5151 delays ONE JOIN_AGG_SETUP_REQ by 20 ms on every
+# data node (it clears itself on that node once it fired).  The consumer
+# signals DBTC and DBSPJ send in the meantime (aggregation feeds, the
+# NULL-row injections of an outer join, an identity-addressed COMPLETE)
+# park on the identity placeholder and are replayed by the flush when
+# the SETUP processes, or aborted by the 10 ms sweeper when the SETUP is
+# later than that, in which case RonSQL retries the query.  Either way
+# every result below must equal the MySQL baseline: a CTE probed by a
+# lookup, an outer join onto a CTE with NULL and missing keys feeding a
+# scalar aggregation, and a pass-through scanCte root.  The leak dumps
+# run afterwards.
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# All data-driven CTE tests involve joins; ronsql_cli does not refresh the NDB
+# dictionary cache for join queries, so we compare the mysql client against
+# RDRS only (matching the ronsql suite's CTE convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--source suite/ronsql_cte/include/cte_schema.inc
+--source suite/ronsql_cte/include/cte_data.inc
+
+--echo
+--echo === cpb-1: CTE probed by lookups, one SETUP held 20 ms (5151) ===
+--exec $NDB_MGM -e "ALL ERROR 5151" > /dev/null
+DELIMITER |;
+let $QUERY=
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cust AS (
+  SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio
+  FROM orders GROUP BY o_custkey)
+SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio)
+FROM customer AS c JOIN cust ON cust.k = c.c_custkey
+GROUP BY c.c_mktsegment|
+
+--echo
+--echo === cpb-2: outer join onto a CTE with NULL and missing keys (5151) ===
+--exec $NDB_MGM -e "ALL ERROR 5151" > /dev/null
+let $QUERY=
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+            FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH cl AS (SELECT o_clerk AS k, COUNT(*) AS n
+            FROM orders WHERE o_clerk IS NOT NULL GROUP BY o_clerk)
+SELECT o.o_orderstatus, COUNT(*), SUM(cl.n)
+FROM orders AS o LEFT JOIN cl ON cl.k = o.o_clerk
+GROUP BY o.o_orderstatus|
+
+--echo
+--echo === cpb-3: pass-through scanCte root (5151) ===
+--exec $NDB_MGM -e "ALL ERROR 5151" > /dev/null
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
+            FROM orders GROUP BY o_custkey)
+SELECT k, n FROM cf;|
+--source suite/ronsql/include/ronsql_compare.inc
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === cpb-4: leak checks (each dump crashes its node on a leak) ===
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2362" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2363" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2560" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--source suite/ronsql_cte/include/cte_drop.inc

@@ -1,0 +1,9 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# NF-11: kill a requester whose CTE feeds are parked on a peer (error insert 5145)
+"[dropping NDBT test tables]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# CteRequesterDiesParked passed

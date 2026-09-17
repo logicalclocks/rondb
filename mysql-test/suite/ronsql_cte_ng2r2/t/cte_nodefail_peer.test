@@ -1,0 +1,6 @@
+# Real node failure through ronsql_cli; shared fixture and bounded driver.
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+--let RNF_MODE = peer
+--source suite/ronsql_cte/include/cte_nodefail.inc

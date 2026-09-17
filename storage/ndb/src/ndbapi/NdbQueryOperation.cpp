@@ -29,6 +29,7 @@
 #include <NdbAggregator.hpp>
 #include <NdbAggregationCommon.hpp>
 #include <NdbDictionary.hpp>
+#include <EventLogger.hpp>
 #include <NdbIndexScanOperation.hpp>
 #include "API.hpp"
 #include "NdbInterpretedCode.hpp"
@@ -64,6 +65,14 @@
 //#define DEBUG_JOIN_AGG_TRACE 1
 //#define DEBUG_JOIN_AGG_API 1
 //#define DEBUG_CTE_API 1
+#define DEBUG_QUERY_RECEIVE 1
+#endif
+
+#ifdef DEBUG_QUERY_RECEIVE
+#define DEB_QUERY_RECEIVE(arglist) \
+  do { g_eventLogger->info arglist ; } while (0)
+#else
+#define DEB_QUERY_RECEIVE(arglist) do { } while (0)
 #endif
 
 #ifdef DEBUG_CTE_API
@@ -694,6 +703,19 @@ class NdbWorker {
   }
 
   void setConfReceived(Uint32 tcPtrI);
+
+#ifdef DEBUG_QUERY_RECEIVE
+  // Called under PollGuard before timeout handling clears receive state.
+  void traceReceiveState() const {
+    DEB_QUERY_RECEIVE(("Query receive worker=%u receiverId=0x%x rootOp=%u "
+                       "confReceived=%u outstandingResults=%d "
+                       "pendingRequests=%u availableResults=%u",
+                       m_workerNo, getReceiverId(), m_rootOpNo,
+                       static_cast<Uint32>(m_confReceived),
+                       m_outstandingResults, m_pendingRequests,
+                       m_availResultSets));
+  }
+#endif
 
   /**
    * The worker will read from a number of fragments of a table.
@@ -2723,6 +2745,7 @@ NdbQueryImpl::NdbQueryImpl(NdbTransaction &trans,
       m_queryDef(&queryDef),
       m_error(),
       m_errorReceived(0),
+      m_scanTabRefError(0),
       m_transaction(trans),
       m_scanTransaction(nullptr),
       m_operations(nullptr),
@@ -3340,9 +3363,23 @@ NdbQueryImpl::FetchResult NdbQueryImpl::awaitMoreResults(bool forceSend) {
           setFetchTerminated(Err_NodeFailCausedAbort, false);
         else if (likely(waitResult == FetchResult_ok))
           continue;
-        else if (waitResult == FetchResult_timeOut)
+        else if (waitResult == FetchResult_timeOut) {
+#ifdef DEBUG_QUERY_RECEIVE
+          const Uint64 transId = m_scanTransaction->getTransactionId();
+          DEB_QUERY_RECEIVE(("Query receive timeout: transid=(0x%x,0x%x) "
+                             "tcNode=%u workers=%u pending=%u final=%u "
+                             "aggReceived=%u aggExpected=%u aggFinalConfs=%u",
+                             static_cast<Uint32>(transId),
+                             static_cast<Uint32>(transId >> 32),
+                             nodeId, m_workerCount, m_pendingWorkers,
+                             m_finalWorkers, m_aggReceivedResults,
+                             m_aggExpectedResults, m_aggFinalConfs));
+          for (Uint32 i = 0; i < m_workerCount; i++) {
+            m_workers[i].traceReceiveState();
+          }
+#endif
           setFetchTerminated(Err_ReceiveTimedOut, true);
-        else
+        } else
           setFetchTerminated(Err_NodeFailCausedAbort, false);
 
         assert(m_state != Failed);
@@ -3561,6 +3598,9 @@ void NdbQueryImpl::execCLOSE_SCAN_REP(int errorCode, bool needClose) {
   if (traceSignals) {
     ndbout << "NdbQueryImpl::execCLOSE_SCAN_REP()" << endl;
   }
+  /* This entry point receives SCAN_TABREF or EndOfData from TC.
+   * Local receive timeouts call setFetchTerminated() directly. */
+  m_scanTabRefError = needClose ? errorCode : 0;
   setFetchTerminated(errorCode, needClose);
 }
 
@@ -4964,6 +5004,22 @@ int NdbQueryImpl::sendFetchMore(NdbWorker *workers[], Uint32 cnt,
   return 0;
 }  // NdbQueryImpl::sendFetchMore()
 
+void NdbQueryImpl::detachFailedScan() {
+  assert(m_scanTabRefError != 0);
+  assert(m_tcState == Active);
+  assert(m_scanTransaction != nullptr);
+
+  /* TC confirmations use the scan transaction, while result receivers
+   * use the parent transaction. Disable both paths before close() clears
+   * workers and receivers outside the receive mutex. Keep the connection
+   * out of the idle pool: closeTransaction() must send TCRELEASEREQ. */
+  m_tcState = Detached;
+  m_scanTransaction->Status(NdbTransaction::DisConnecting);
+  m_scanTransaction->theForceReleaseOnClose = true;
+  setFetchTerminated(m_scanTabRefError, false);
+  setErrorCode(m_scanTabRefError);
+}
+
 int NdbQueryImpl::closeTcCursor(bool forceSend) {
   assert(getQueryDef().isScanQuery());
 
@@ -5007,6 +5063,15 @@ int NdbQueryImpl::closeTcCursor(bool forceSend) {
   }  // while
 
   assert(m_pendingWorkers == 0);
+  if (m_scanTabRefError != 0 && m_finalWorkers < getWorkerCount()) {
+    /* TC has already failed this scan. Request normal scan cleanup, but
+     * do not wait for its confirmation. close() releases the scan
+     * transaction while kernel cleanup finishes independently. */
+    const int error = sendClose(nodeId);
+    if (likely(error == 0)) ndb->do_forceSend(forceSend);
+    detachFailedScan();
+    return error;
+  }
   NdbWorker::clear(m_workers, m_workerCount);
   m_errorReceived = 0;  // Clear errors caused by previous fetching
   m_error.code = 0;
@@ -5042,6 +5107,10 @@ int NdbQueryImpl::closeTcCursor(bool forceSend) {
           setFetchTerminated(Err_NodeFailCausedAbort, false);
       }
       if (hasReceivedError()) {
+        /* SCAN_TABREF may also arrive while an ordinary close is waiting.
+         * Its close request has already been sent. */
+        if (m_scanTabRefError != 0 && m_finalWorkers < getWorkerCount())
+          detachFailedScan();
         break;
       }
     }  // while

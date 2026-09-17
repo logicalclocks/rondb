@@ -36,6 +36,9 @@
 
 // Static definition for node failure counter
 std::atomic<Uint32> JoinAggregationState::s_node_fail_count{0};
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+std::atomic<Uint32> JoinAggregationState::s_redist_pages{0};
+#endif
 
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/DumpStateOrd.hpp>
@@ -245,6 +248,9 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
   addRecSignal(GSN_QUOTA_OVERLOAD_REP,
                &DblqhProxy::execQUOTA_OVERLOAD_REP);
 
+  // Overrides LocalProxy's handler (registered by its constructor).
+  addRecSignal(GSN_NDB_TAMPER, &DblqhProxy::execNDB_TAMPER, true);
+
   // GSN_JOIN_AGG signals (setup + release handled by proxy)
   addRecSignal(GSN_JOIN_AGG_SETUP_REQ,
                &DblqhProxy::execJOIN_AGG_SETUP_REQ);
@@ -265,6 +271,33 @@ DblqhProxy::~DblqhProxy() {
 
 SimulatedBlock *DblqhProxy::newWorker(Uint32 instanceNo) {
   return new Dblqh(m_ctx, instanceNo, DBLQH);
+}
+
+// GSN_NDB_TAMPER
+
+void DblqhProxy::execNDB_TAMPER(Signal *signal) {
+  jamEntry();
+#ifdef ERROR_INSERT
+  /* CMVMI addresses the DBLQH error inserts (5000-5999) to this proxy
+   * only, and LocalProxy forwards them to the LDM instances.  The
+   * query-thread LQH instances (DBQLQH, behind DbqlqhProxy) get nothing
+   * but the clear, although TRPMAN routes V_QUERY-addressed LQHKEYREQ,
+   * SCAN_FRAGREQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ to them as
+   * well as to the LDMs.  A hook that acts on whichever instance runs
+   * the request (the RONDB-1120 park sweeper and replay holds among
+   * them) is then armed on some of the instances only: PK-8's first run
+   * had a query-thread instance sweep 1020 parked consumers 10 ms after
+   * they parked, past the hold armed on every LDM.  Forward the codes
+   * from ZFIRST_QUERY_THREAD_ERROR_INSERT on to DbqlqhProxy, which fans
+   * them out to its workers; code 0 reaches every proxy from CMVMI. */
+  if (signal->theData[0] >= ZFIRST_QUERY_THREAD_ERROR_INSERT &&
+      globalData.ndbMtQueryWorkers > 0) {
+    jam();
+    sendSignal(DBQLQH_REF, GSN_NDB_TAMPER, signal, signal->getLength(),
+               JBB);
+  }
+#endif
+  LocalProxy::execNDB_TAMPER(signal);
 }
 
 // GSN_NDB_STTOR
@@ -311,6 +344,8 @@ void DblqhProxy::callREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_JOIN_AGG_STATE_POOL_SIZE,
                             &joinAggPoolSize);
   initJoinAggStatePool(joinAggPoolSize);
+  /* RONDB-1120 P0: identity hash (fixed 16384 entries, ~500 kB). */
+  initJoinAggIdentityHash();
 
   /* RONDB-1056 Phase 8: CompiledInterpreter (JIT) mode. Node-global; set
    * here once (before any scan/aggregation traffic) and consulted at every
@@ -2360,7 +2395,8 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
                                  Uint32 requestId,
                                  Uint32 errorCode,
                                  Uint32 errorLine,
-                                 Uint32 aggStateKey) {
+                                 Uint32 aggStateKey,
+                                 Uint32 cteIndex) {
   jam();
   // Clean up partially allocated state
   if (aggStateKey != RNIL) {
@@ -2408,6 +2444,10 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
         while (page != nullptr) {
           auto *next = page->next;
           lc_ndbd_pool_free(page);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+          JoinAggregationState::s_redist_pages.fetch_sub(1,
+                                                       std::memory_order_relaxed);
+#endif
           page = next;
         }
       }
@@ -2421,7 +2461,10 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   ref->requestId = requestId;
   ref->errorCode = errorCode;
   ref->errorLine = errorLine;
-  ref->cteIndex = RNIL;
+  /* RONDB-1120 P2c: echo the REQ's cteIndex so DBTC accounts the REF
+   * against the right counter (a CTE REF previously decremented the
+   * MAIN counter). */
+  ref->cteIndex = cteIndex;
   sendSignal(senderRef, GSN_JOIN_AGG_SETUP_REF,
              signal, JoinAggSetupRef::SignalLength, JBB);
 }
@@ -2435,8 +2478,113 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const Uint32 senderRef = req->senderRef;
   const Uint32 senderData = req->senderData;
   const Uint32 requestId = req->requestId;
+  const Uint32 cteIndex = req->cteIndex;
+  /* RONDB-1120 P2c hardening: the identity keys on the sequence
+   * queryTag, never on the recyclable senderData (scanPtr.i).
+   * Defensive fallback for a short signal from an out-of-tree
+   * sender. */
+  const Uint32 queryTag =
+      (signal->getLength() >= JoinAggSetupReq::SignalLength_v1)
+          ? req->queryTag : senderData;
 
   CRASH_INSERTION(5121);  // Crash node on SETUP_REQ for join agg NF testing
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5151)) {
+    jam();
+    /* RONDB-1120 P2c: hold ONE SETUP_REQ back 20 ms.  With the gate
+     * flipped, consumers (LQHKEYREQ / SCAN_FRAGREQ feeds) race ahead
+     * and PARK on the identity placeholder; the delayed processing
+     * then flushes them on their original query threads, and DBTC's
+     * H2 deferral holds any COMPLETE boundary reached meanwhile.
+     * Clear-on-first so the re-arrival processes normally. */
+    CLEAR_ERROR_INSERT_VALUE;
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
+  if (ERROR_INSERTED(5138)) {
+    /* Test hook: hold SETUP_REQs back, 20 ms at a time, until the insert
+     * is cleared, while the LDM / query instances hold the placeholder
+     * sweepers (joinAggParkSweep), so consumers stay parked until the
+     * test releases the SETUP and the flush replays them (PK-1, PK-4).
+     * For guaranteed replay, switch extra to 0xFFFE before clearing:
+     * SETUP runs while the sweepers remain held.
+     * The extra value selects the SETUPs held: 0 = every one, 0xFFFF =
+     * the main aggregation only, 0xFFFE = none (sweeper hold only, for
+     * a test that parks signals by hand), otherwise cteIndex + 1. */
+    const Uint32 sel = ERROR_INSERT_EXTRA;
+    const bool hold = (sel == 0) ||
+                      (sel == 0xFFFF && cteIndex == RNIL) ||
+                      (sel < 0xFFFE && cteIndex != RNIL &&
+                       sel == cteIndex + 1);
+    if (hold) {
+      jam();
+      SectionHandle handle(this, signal);
+      sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                          signal->getLength(), &handle);
+      return;
+    }
+  }
+  if (ERROR_INSERTED(5148)) {
+    jam();
+    /* Test hook (PK-4): the 5138 hold of every SETUP and sweeper, with
+     * the extra value capping the park pool instead (one insert per
+     * block instance, so the two cannot be armed together). */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
+  if (ERROR_INSERTED(5145) &&
+      getNodeInfo(refToNode(senderRef)).m_connected) {
+    jam();
+    /* Test hook (NF-11, NF-12): hold every SETUP_REQ, 20 ms at a time,
+     * while its coordinator is alive, so consumers park on the
+     * placeholder; the LDM/query instances hold their park sweepers
+     * until NODE_FAILREP clears their local insert. Once the coordinator
+     * disconnects, the held CTE SETUP reaches the owner-list
+     * validation below, which rejects it before allocating any state. */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
+  if (ERROR_INSERTED(5150) &&
+      getNodeInfo(refToNode(senderRef)).m_connected &&
+      (joinAggIdentityParkedClasses(req->transid, queryTag, cteIndex) &
+       (1u << JAI_PARK_CLASS_NULLROW)) == 0) {
+    jam();
+    /* Test hook (PK-8): hold the SETUP, 20 ms at a time, until a
+     * JOIN_AGG_NULL_ROW_REQ has parked on its identity (the LDM / query
+     * instances hold the sweepers meanwhile), then let it succeed: the
+     * flush detaches the parked consumers and the instances hold their
+     * replay until the coordinator fails.  A SETUP whose coordinator is
+     * already gone proceeds to the normal rejection below. */
+    SectionHandle handle(this, signal);
+    sendSignalWithDelay(reference(), GSN_JOIN_AGG_SETUP_REQ, signal, 20,
+                        signal->getLength(), &handle);
+    return;
+  }
+  if (ERROR_INSERTED(5139)) {
+    jam();
+    /* Leave ONE identity unfilled so the sweeper rejects its consumers.
+     * Still complete the SETUP round: a live node silently losing its
+     * reply leaves DBTC waiting forever, including during API failure.
+     * Delay the REF to give the 10 ms sweeper time to run first. */
+    CLEAR_ERROR_INSERT_VALUE;
+    SectionHandle handle(this, signal);
+    releaseSections(handle);
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_SETUP_REF;
+    signal->theData[1] = senderRef;
+    signal->theData[2] = senderData;
+    signal->theData[3] = requestId;
+    signal->theData[4] = cteIndex;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 200, 5);
+    return;
+  }
+#endif
 
 #ifdef ERROR_INSERT
   if (ERROR_INSERTED(5125)) {
@@ -2445,13 +2593,66 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     SectionHandle handle(this, signal);
     releaseSections(handle);
     sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                        DbspjErr::OutOfQueryMemory, __LINE__, RNIL);
+                        DbspjErr::OutOfQueryMemory, __LINE__, RNIL, cteIndex);
     return;
   }
 #endif
 
   AGGT(("AGGT(%u) PROXY SETUP recv cteIndex=%u",
         instance(), req->cteIndex));
+
+  /* RONDB-1120: the CTE owner list is DBTC's SETUP target set
+   * (req->setupNodes, DBTC's snapshot of connected data nodes),
+   * the same set DBSPJ reads per CTE from the aggKeys section, so every
+   * node maps owner = hash % count over one list.  Check it before any
+   * state is seized: a listed node this node cannot reach would leave
+   * its redistribute / FINAL_REP traffic undeliverable, so answer with
+   * the node-failure code and let the API retry instead of building a
+   * state that can only stall. */
+  const bool cteModeReq =
+      (req->concurrencyStrategy & JoinAggSetupReq::CTE_MODE_FLAG) != 0;
+  const bool haveSetupNodes =
+      signal->getLength() >= JoinAggSetupReq::SignalLength;
+  NdbNodeBitmask setupNodes;
+  if (haveSetupNodes) {
+    jam();
+    setupNodes.assign(NdbNodeBitmask::Size, req->setupNodes);
+    if (cteModeReq) {
+      jam();
+      if (unlikely(setupNodes.isclear())) {
+        jam();
+        SectionHandle handle(this, signal);
+        releaseSections(handle);
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            DbspjErr::InvalidRequest, __LINE__, RNIL,
+                            cteIndex);
+        return;
+      }
+      for (Uint32 nodeId = setupNodes.find_first();
+           nodeId != NdbNodeBitmask::NotFound;
+           nodeId = setupNodes.find_next(nodeId + 1)) {
+        if (unlikely(nodeId >= MAX_NDB_NODES ||
+                     !getNodeInfo(nodeId).m_connected ||
+                     getNodeInfo(nodeId).m_type != NodeInfo::DB)) {
+          jam();
+          jamLine(nodeId);
+          SectionHandle handle(this, signal);
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              ZNODEFAIL_BEFORE_COMMIT, __LINE__, RNIL,
+                              cteIndex);
+          if (!getNodeInfo(refToNode(senderRef)).m_connected) {
+            /* NF-12 evidence: the late SETUP was rejected before state
+             * allocation. Parked-request cleanup is checked separately
+             * by the leak dumps after the insert is cleared. */
+            infoEvent("[JOIN_AGG_SETUP_REJECTED node=%u failed=%u]",
+                      getOwnNodeId(), refToNode(senderRef));
+          }
+          return;
+        }
+      }
+    }
+  }
   // Seize a JoinAggregationState record from the static pool
   Uint32 key = seizeJoinAggState();
   if (key == RNIL) {
@@ -2459,7 +2660,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     SectionHandle handle(this, signal);
     releaseSections(handle);
     sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                        DbspjErr::OutOfQueryMemory, __LINE__, RNIL);
+                        DbspjErr::OutOfQueryMemory, __LINE__, RNIL, cteIndex);
     return;
   }
 
@@ -2478,6 +2679,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_max_batch_rows = 0;
   state->m_state.store(JoinAggregationState::IDLE);
   state->m_error_code = 0;
+  state->m_release_started = false;
   state->m_agg_interpreter = nullptr;
   state->m_per_thread_interpreters = nullptr;
   state->m_num_leaves = 0;
@@ -2492,11 +2694,17 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   state->m_creation_time = 0;
   state->m_last_activity_time = 0;
   state->m_redist_page_head = nullptr;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  // ArrayPool::seize does not run the constructor, including on reuse.
+  state->m_redist_test_hold = false;
+  state->m_redist_test_cookie = 0;
+#endif
 
   // Populate immutable identification fields
   state->m_transid[0] = req->transid[0];
   state->m_transid[1] = req->transid[1];
   state->m_senderData = senderData;
+  state->m_queryTag = queryTag;
   state->m_requestId = requestId;
   state->m_senderRef = senderRef;
 
@@ -2553,6 +2761,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
            sizeof(state->m_cte_remote_ownerInstances));
     state->m_cte_waiting_conf = false;
     state->m_cte_redist_batch_bytes = 0;
+    /* ArrayPool::seize skips the constructor: a stale true here would
+     * suppress the COMPLETE_REF in abortCteRedistribution and trip the
+     * ndbrequire in checkCteReady for the next occupant of this slot. */
+    state->m_cte_complete_reply_sent = false;
     state->m_cte_complete_senderRef = 0;
     state->m_cte_complete_senderData = 0;
     state->m_cte_complete_requestId = 0;
@@ -2573,20 +2785,42 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     state->m_cte_num_nodes = 0;
     state->m_cte_redistribution_done = false;
     state->m_cte_scalar_shipped = false;
-    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
-      jamDebug();
-      jamDataDebug(i);
-      if (getNodeInfo(i).m_connected &&
-          getNodeInfo(i).m_type == NodeInfo::DB) {
+    if (haveSetupNodes) {
+      jam();
+      /* DBTC's set, checked above, in ascending node order: the order
+       * every DBLQH and every DBSPJ worker use for owner = hash % count. */
+      for (Uint32 i = setupNodes.find_first();
+           i != NdbNodeBitmask::NotFound;
+           i = setupNodes.find_next(i + 1)) {
         jamDebug();
         jamDataDebug(i);
+        ndbrequire(state->m_cte_num_nodes <
+                   NDB_ARRAY_SIZE(state->m_cte_node_list));
         state->m_cte_node_list[state->m_cte_num_nodes] = i;
         state->m_cte_num_nodes++;
+      }
+    } else {
+      jam();
+      /* Legacy-length request (block unit tests driving DBLQH directly,
+       * no DBTC to decide the set): this node's connected data nodes. */
+      for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+        jamDebug();
+        jamDataDebug(i);
+        if (getNodeInfo(i).m_connected &&
+            getNodeInfo(i).m_type == NodeInfo::DB) {
+          jamDebug();
+          jamDataDebug(i);
+          state->m_cte_node_list[state->m_cte_num_nodes] = i;
+          state->m_cte_num_nodes++;
+        }
       }
     }
     state->m_cte_node_fail_count =
         JoinAggregationState::s_node_fail_count.load();
     state->m_cte_nodes_finalized.clear();
+    memset(state->m_cte_redist_sent, 0, sizeof(state->m_cte_redist_sent));
+    memset(state->m_cte_redist_applied, 0, sizeof(state->m_cte_redist_applied));
+    memset(state->m_cte_redist_expected, 0, sizeof(state->m_cte_redist_expected));
   }
 
   // Expected operations
@@ -2617,7 +2851,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       SectionHandle handle(this, signal);
       releaseSections(handle);
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::InvalidRequest, __LINE__, key);
+                          DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
       return;
     }
     SectionHandle handle(this, signal);
@@ -2634,7 +2868,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       jam();
       releaseSections(handle);
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+                          DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
       return;
     }
     copy(allProgsBuf, ptr);
@@ -2656,7 +2890,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         state->m_all_programs_buf = nullptr;
         releaseSections(handle);
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key);
+                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
         return;
       }
       pos = 1;
@@ -2671,7 +2905,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_all_programs_buf = nullptr;
       releaseSections(handle);
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::InvalidRequest, __LINE__, key);
+                          DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
       return;
     }
 
@@ -2686,7 +2920,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_all_programs_buf = nullptr;
       releaseSections(handle);
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+                          DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
       return;
     }
     state->m_num_leaves = numLeaves;
@@ -2717,7 +2951,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           state->m_all_programs_buf = nullptr;
           releaseSections(handle);
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key);
+                              DbspjErr::InvalidRequest, __LINE__, key,
+                              cteIndex);
           return;
         }
         progStart = allProgsBuf;
@@ -2733,7 +2968,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
           state->m_all_programs_buf = nullptr;
           releaseSections(handle);
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key);
+                              DbspjErr::InvalidRequest, __LINE__, key,
+                              cteIndex);
           return;
         }
         progStart = &allProgsBuf[pos];
@@ -2784,7 +3020,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       jam();
       releaseSections(handle);
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+                          DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
       return;
     }
     copy(idsBuf, rcvPtr);
@@ -2801,7 +3037,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         jam();
         releaseSections(handle);
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key);
+                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
         return;
       }
 
@@ -2812,7 +3048,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         jam();
         releaseSections(handle);
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::OutOfQueryMemory, __LINE__, key);
+                            DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
         return;
       }
       copy(metaBuf, metaPtr);
@@ -2824,7 +3060,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         lc_ndbd_pool_free(metaBuf);
         releaseSections(handle);
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key);
+                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
         return;
       }
       const Uint32 expectedWords =
@@ -2836,7 +3072,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         lc_ndbd_pool_free(metaBuf);
         releaseSections(handle);
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key);
+                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
         return;
       }
 
@@ -3104,7 +3340,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     if (unlikely(page == nullptr)) {
       jam();
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+                          DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
       return;
     }
     JoinAggInterpreter *interp =
@@ -3128,7 +3364,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       if (unlikely(ret != 0)) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key);
+                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
         return;
       }
     }
@@ -3147,7 +3383,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     if (unlikely(arr == nullptr)) {
       jam();
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          DbspjErr::OutOfQueryMemory, __LINE__, key);
+                          DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
       return;
     }
     for (Uint32 i = 0; i < num_threads; i++) {
@@ -3164,7 +3400,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       if (unlikely(page == nullptr)) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::OutOfQueryMemory, __LINE__, key);
+                            DbspjErr::OutOfQueryMemory, __LINE__, key, cteIndex);
         return;
       }
       JoinAggInterpreter *interp =
@@ -3187,7 +3423,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         if (unlikely(ret != 0)) {
           jam();
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key);
+                              DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
           return;
         }
       }
@@ -3220,6 +3456,82 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
   AGGT(("AGGT(%u) PROXY SETUP done key=%u cte=%u",
         instance(), key, (Uint32)state->m_cte_mode));
+  /* RONDB-1120 P0 (joinagg_setup_overlap_plan.md): register the
+   * identity -> aggStateKey mapping.  Placed after FULL state
+   * construction and before the CONF, per plan 2.2 — under the P2
+   * un-gating this ordering (plus the partition mutex inside the
+   * insert) is what publishes the constructed state to consumer
+   * threads.  A failed insert is a failed SETUP: from P1 on the
+   * identity IS how consumers find the state, and a DUPLICATE means a
+   * lookup would resolve to the wrong live state (the mis-addressing
+   * bug class) — so REF now, keeping P0 -> P1 failure semantics
+   * identical.  sendJoinAggSetupRef releases the partial state; its
+   * safety-net identity removal is key-qualified, so the other live
+   * entry survives the duplicate case. */
+  Uint32 jaWaiters = RNIL;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5149)) {
+    /* Test hook (PK-5): refuse the SETUP as if the identity table were
+     * full once it holds at least `extra` entries. */
+    Uint32 entries = 0, placeholders = 0, parked = 0;
+    joinAggIdentityStats(&entries, &placeholders, &parked);
+    if (entries >= ERROR_INSERT_EXTRA) {
+      jam();
+      g_eventLogger->info(
+          "DblqhProxy: error insert 5149 refuses SETUP at %u identity "
+          "entries (cap %u)", entries, ERROR_INSERT_EXTRA);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::OutOfQueryMemory, __LINE__, key,
+                          cteIndex);
+      return;
+    }
+  }
+#endif
+  const JoinAggIdentityInsertResult idRes = joinAggIdentityInsert(
+      state->m_transid, state->m_queryTag, state->m_cte_index, key,
+      &jaWaiters);
+  if (unlikely(idRes != JAI_INSERT_OK)) {
+    jam();
+    g_eventLogger->info(
+        "DblqhProxy: JoinAgg identity insert failed (%s): "
+        "transid=(0x%x,0x%x) queryTag=%u cteId=%u key=%u",
+        (idRes == JAI_INSERT_DUPLICATE) ? "duplicate" : "no memory",
+        state->m_transid[0], state->m_transid[1], state->m_queryTag,
+        state->m_cte_index, key);
+    /* A duplicate identity means a second SETUP for a live state
+     * (queryTag collision, a missed removal, or a sender replaying a
+     * request): refuse it in every build, the REF is the safe answer
+     * and the first state stays intact (PK-7).  Memory exhaustion is a
+     * legal resource failure. */
+    sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                        (idRes == JAI_INSERT_DUPLICATE)
+                            ? DbspjErr::InvalidRequest
+                            : DbspjErr::OutOfQueryMemory,
+                        __LINE__, key, cteIndex);
+    return;
+  }
+
+  if (unlikely(jaWaiters != RNIL)) {
+    jam();
+    /* RONDB-1120 P2: consumers raced ahead of this SETUP and parked
+     * on the placeholder we just filled.  Wake each one on the LDM
+     * that parked it — a flush CONTINUEB carrying the park record;
+     * the LDM rebuilds the ORIGINAL signal (incl. the original
+     * header sender, which SCAN_FRAGCONF targets) and re-executes.
+     * Read m_next BEFORE sending: once the flush is in flight the
+     * LDM owns (and frees) the record. */
+    Uint32 i = jaWaiters;
+    while (i != RNIL) {
+      JoinAggParkRec *rec = joinAggGetParkRec(i);
+      const Uint32 next = rec->m_next;
+      const Uint32 destRef = rec->m_destRef;
+      signal->theData[0] = ZCONTINUE_JOIN_AGG_FLUSH_PARKED;
+      signal->theData[1] = i;
+      sendSignal(destRef, GSN_CONTINUEB, signal, 2, JBB);
+      i = next;
+    }
+  }
+
   // Send CONF with the pool key
   JoinAggSetupConf *conf =
     (JoinAggSetupConf *)signal->getDataPtrSend();
@@ -3252,9 +3564,55 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
 
   CRASH_INSERTION(5123);  // Crash node on RELEASE_REQ for join agg NF testing
 
+  if (ERROR_INSERTED(5136)) {
+    jam();
+    /* Test hook: queue an exact duplicate of this release behind it. The
+     * duplicate must find m_release_started set, start no second teardown
+     * chain, and still CONF when a reply was requested. */
+    CLEAR_ERROR_INSERT_VALUE;
+    sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
+               JoinAggReleaseReq::SignalLength, JBB);
+  }
+
   JoinAggregationState *state = getJoinAggState(aggStateKey);
+  if (state != nullptr &&
+      (state->m_requestId != requestId ||
+       (senderRef != reference() && state->m_senderRef != senderRef) ||
+       ((req->transid[0] != 0 || req->transid[1] != 0) &&
+        (state->m_transid[0] != req->transid[0] ||
+         state->m_transid[1] != req->transid[1])))) {
+    jam();
+    // The pool slot belongs to another query. Stale-SETUP reclaim has
+    // no transaction id, but must still match coordinator and SETUP id.
+    // Treat a mismatch as already released and acknowledge if requested.
+    state = nullptr;
+  }
+  if (state != nullptr && state->m_release_started) {
+    jam();
+    // Teardown already owns this record. Still send CONF if requested,
+    // but do not start another continuation chain for the same key.
+    state = nullptr;
+  }
   if (state != nullptr) {
     jam();
+    state->m_release_started = true;
+    /* RONDB-1120 P0: unregister the identity at RELEASE processing
+     * time — NOT at the end of the CONTINUEB-sliced teardown — so a
+     * back-to-back query on the same transaction can re-register
+     * immediately (plan 2.2).  Idempotent; releaseJoinAggState keeps
+     * a safety-net removal for bypassing release paths. */
+#ifdef VM_TRACE
+    {
+      const Uint32 lookedUp = joinAggIdentityLookup(
+          state->m_transid, state->m_queryTag, state->m_cte_index);
+      /* Node-failure cleanup can send duplicate RELEASEs — a missing
+       * entry (RNIL) is legal; a DIFFERENT live key for this identity
+       * is not. */
+      ndbassert(lookedUp == aggStateKey || lookedUp == RNIL);
+    }
+#endif
+    joinAggIdentityRemove(state->m_transid, state->m_queryTag,
+                          state->m_cte_index, aggStateKey);
     // Free aggregation program buffer(s)
     if (state->m_all_programs_buf != nullptr) {
       lc_ndbd_pool_free(state->m_all_programs_buf);
@@ -3332,6 +3690,18 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
    * pages remain).  State stays alive until the whole chain finishes. */
   if (state != nullptr) {
     jam();
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(5146) &&
+        refToNode(state->m_senderRef) != getOwnNodeId()) {
+      /* NF-10: RELEASE owns this state and its identity is removed,
+       * but the teardown continuation below will hold the pool record.
+       * Emit once on entry, not on every delayed continuation. */
+      infoEvent("[CTE_NF10_TEARDOWN_HELD node=%u iteration=%u "
+                "coordinator=%u key=%u]",
+                getOwnNodeId(), ERROR_INSERT_EXTRA,
+                refToNode(state->m_senderRef), aggStateKey);
+    }
+#endif
     continueJoinAggTeardown(signal, aggStateKey);
   }
 }
@@ -3349,29 +3719,58 @@ DblqhProxy::execJOIN_AGG_NODE_FAIL_REP(Signal *signal) {
    * fire-and-forget RELEASE_REQ to ourselves for each one.
    */
   const Uint32 poolSize = getJoinAggStatePoolSize();
+  Uint32 releasesQueued = 0;
   for (Uint32 k = 0; k < poolSize; k++) {
     JoinAggregationState *state = getJoinAggState(k);
     if (state == nullptr) continue;
     if (refToNode(state->m_senderRef) != failedNodeId) continue;
+    // An earlier RELEASE already owns teardown, including pool release.
+    if (state->m_release_started) {
+      jam();
+#ifdef ERROR_INSERT
+      if (ERROR_INSERTED(5146)) {
+        /* NF-10 matches this to the held key and coordinator. The
+         * hold remains armed until the test observes this skip. */
+        infoEvent("[CTE_NF10_RECLAIM_SKIPPED node=%u iteration=%u "
+                  "failed=%u key=%u]",
+                  getOwnNodeId(), ERROR_INSERT_EXTRA, failedNodeId, k);
+      }
+#endif
+      continue;
+    }
     const JoinAggregationState::State aggState = state->m_state.load();
+    /* CTE owners mark NODE_FAIL_ABORT in their node-failure sweep,
+     * including paused redistribution and ready states. Other aggregation
+     * continuations mark it in checkJoinAggNodeFailed. Reclaim these and
+     * the remaining inactive phases only after local failure cleanup. */
     if (aggState == JoinAggregationState::NODE_FAIL_ABORT ||
         aggState == JoinAggregationState::SETUP_COMPLETE ||
         aggState == JoinAggregationState::COMPLETED ||
         aggState == JoinAggregationState::ERROR ||
-        aggState == JoinAggregationState::WAITING_SEND_CONF) {
+        aggState == JoinAggregationState::WAITING_SEND_CONF ||
+        aggState == JoinAggregationState::CTE_READY) {
       jam();
       JoinAggReleaseReq *req =
           (JoinAggReleaseReq *)signal->getDataPtrSend();
       req->senderRef = reference();
       req->senderData = 0;
-      req->requestId = 0;
-      req->transid[0] = 0;
-      req->transid[1] = 0;
+      // Snapshot the identity before queueing this local release.
+      req->requestId = state->m_requestId;
+      req->transid[0] = state->m_transid[0];
+      req->transid[1] = state->m_transid[1];
       req->aggStateKey = k;
       req->noReply = 1;
       sendSignal(reference(), GSN_JOIN_AGG_RELEASE_REQ, signal,
                  JoinAggReleaseReq::SignalLength, JBB);
+      releasesQueued++;
     }
+  }
+  if (releasesQueued > 0) {
+    jam();
+    /* Report queued releases for the failed coordinator's states.
+     * Teardown runs later; NF-8/NF-9 verify completion with leak checks. */
+    infoEvent("[JOIN_AGG_RELEASES_QUEUED node=%u failed=%u count=%u]",
+              getOwnNodeId(), failedNodeId, releasesQueued);
   }
 }
 
@@ -3381,6 +3780,19 @@ void
 DblqhProxy::execCONTINUEB(Signal *signal) {
   jamEntry();
   switch (signal->theData[0]) {
+#ifdef ERROR_INSERT
+    case ZCONTINUE_JOIN_AGG_SETUP_REF: {
+      jam();
+      const Uint32 senderRef = signal->theData[1];
+      const Uint32 senderData = signal->theData[2];
+      const Uint32 requestId = signal->theData[3];
+      const Uint32 cteIndex = signal->theData[4];
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          ZJOIN_AGG_STATE_NOT_FOUND, __LINE__, RNIL,
+                          cteIndex);
+      break;
+    }
+#endif
     case ZCONTINUE_FREE_REDIST_PAGES:
       jam();
       continueFreeRedistPages(signal, signal->theData[1]);
@@ -3418,6 +3830,10 @@ DblqhProxy::continueFreeRedistPages(Signal *signal, Uint32 aggStateKey) {
     jam();
     auto *next = page->next;
     lc_ndbd_pool_free(page);
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+    JoinAggregationState::s_redist_pages.fetch_sub(1,
+                                                 std::memory_order_relaxed);
+#endif
     page = next;
     count++;
   }
@@ -3467,11 +3883,28 @@ DblqhProxy::continueJoinAggTeardown(Signal *signal, Uint32 aggStateKey) {
     return;
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5146) &&
+      refToNode(state->m_senderRef) != getOwnNodeId()) {
+    jam();
+    /* Keep RELEASE's teardown ownership and the pool record until the
+     * test clears the insert, including after coordinator failure.
+     * Rearm this one continuation per held state; duplicate RELEASEs
+     * must not start another chain. The key cannot be recycled while
+     * this chain owns the state. */
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
+    signal->theData[1] = aggStateKey;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 20, 2);
+    return;
+  }
+#endif
+
   /* Phase 1: shared MUTEX_BASED interpreter, if present. */
   if (state->m_agg_interpreter != nullptr) {
     jam();
     JoinAggInterpreter *interp = state->m_agg_interpreter;
-    if (!interp->tearDownChunk(JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+    if (!interp->tearDownChunk(ERROR_INSERTED(5137)
+                                   ? 1 : JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
       jam();
       signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
       signal->theData[1] = aggStateKey;
@@ -3495,7 +3928,8 @@ DblqhProxy::continueJoinAggTeardown(Signal *signal, Uint32 aggStateKey) {
       JoinAggInterpreter *interp = state->m_per_thread_interpreters[i];
       if (interp == nullptr) continue;
       jam();
-      if (!interp->tearDownChunk(JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
+      if (!interp->tearDownChunk(ERROR_INSERTED(5137)
+                                   ? 1 : JOIN_AGG_TEARDOWN_GROUPS_PER_BATCH)) {
         jam();
         signal->theData[0] = ZCONTINUE_JOIN_AGG_TEARDOWN;
         signal->theData[1] = aggStateKey;

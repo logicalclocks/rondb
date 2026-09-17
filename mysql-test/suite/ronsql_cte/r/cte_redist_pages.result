@@ -1,0 +1,61 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== crp-1 (PG-1): wide GROUP BY CTE redistributed under ALL ERROR 5134 ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n,
+SUM(l_quantity) AS q, MIN(l_quantity) AS qmin,
+MAX(l_quantity) AS qmax, SUM(l_partkey) AS pk,
+SUM(l_suppkey) AS sk, MIN(l_shipdate) AS d1,
+MAX(l_shipdate) AS d2
+FROM lineitem GROUP BY l_orderkey)
+SELECT o.o_orderstatus, COUNT(*), SUM(li.n), SUM(li.q), SUM(li.qmin),
+SUM(li.qmax), SUM(li.pk), SUM(li.sk), MIN(li.d1), MAX(li.d2)
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+GROUP BY o.o_orderstatus;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n,
+SUM(l_quantity) AS q, MIN(l_quantity) AS qmin,
+MAX(l_quantity) AS qmax, SUM(l_partkey) AS pk,
+SUM(l_suppkey) AS sk, MIN(l_shipdate) AS d1,
+MAX(l_shipdate) AS d2
+FROM lineitem GROUP BY l_orderkey)
+SELECT o.o_orderstatus, COUNT(*), SUM(li.n), SUM(li.q), SUM(li.qmin),
+SUM(li.qmax), SUM(li.pk), SUM(li.sk), MIN(li.d1), MAX(li.d2)
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+GROUP BY o.o_orderstatus|
+o_orderstatus	COUNT(*)	SUM(li.n)	SUM(li.q)	SUM(li.qmin)	SUM(li.qmax)	SUM(li.pk)	SUM(li.sk)	MIN(li.d1)	MAX(li.d2)
+F	500	1000	25500	12260	13240	50500	25500	1995-01-02	1997-09-27
+O	500	1000	25500	12260	13240	50500	25500	1995-01-02	1997-09-27
+P	500	1000	25500	12260	13240	50500	25500	1995-01-02	1997-09-27
+
+=== crp-2: leak checks (each dump crashes its node on a leak) ===
+
+=== crp-3: the same query with normal pages ===
+== Query ==
+WITH li AS (SELECT l_orderkey AS k, COUNT(*) AS n,
+SUM(l_quantity) AS q, MIN(l_quantity) AS qmin,
+MAX(l_quantity) AS qmax, SUM(l_partkey) AS pk,
+SUM(l_suppkey) AS sk, MIN(l_shipdate) AS d1,
+MAX(l_shipdate) AS d2
+FROM lineitem GROUP BY l_orderkey)
+SELECT o.o_orderstatus, COUNT(*), SUM(li.n), SUM(li.q), SUM(li.qmin),
+SUM(li.qmax), SUM(li.pk), SUM(li.sk), MIN(li.d1), MAX(li.d2)
+FROM orders AS o JOIN li ON li.k = o.o_orderkey
+GROUP BY o.o_orderstatus;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+

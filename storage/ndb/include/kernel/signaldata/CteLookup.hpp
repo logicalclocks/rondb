@@ -43,7 +43,8 @@ struct CteLookupReq {
   Uint32 keyLen;          // Key length in bytes
   Uint32 resultRef;       // FLUSH_AI target: API block reference
   Uint32 resultData;      // FLUSH_AI connect ptr: API receiver ID
-  Uint32 routeRef;        // RouteRef for TRANSID_AI_R routing
+  Uint32 routeRef;        // DBTC coordinator for DBSPJ requests; also used
+                          // for TRANSID_AI_R routing
   Uint32 correlation;     // Parent-child correlation (root receiverId + tuple corr)
   Uint32 joinAggStateKey; // RNIL = send to API via FLUSH_AI;
                           // else = encoded aggStateKey for target JoinAggInterpreter

@@ -588,11 +588,17 @@ class DblqhProxy : public LocalProxy {
   void sendLCP_COMPLETE_REP(Signal *);
   void execQUOTA_OVERLOAD_REP(Signal*);
 
+  // GSN_NDB_TAMPER: LocalProxy's forwarding to the LDM instances, plus
+  // forwarding to the query-thread instances for the codes from
+  // ZFIRST_QUERY_THREAD_ERROR_INSERT on.
+  void execNDB_TAMPER(Signal*);
+
   // GSN_JOIN_AGG signals (setup + release handled by proxy)
   void execJOIN_AGG_SETUP_REQ(Signal*);
   void sendJoinAggSetupRef(Signal*, Uint32 senderRef, Uint32 senderData,
                            Uint32 requestId, Uint32 errorCode,
-                           Uint32 errorLine, Uint32 aggStateKey);
+                           Uint32 errorLine, Uint32 aggStateKey,
+                           Uint32 cteIndex);
   void execJOIN_AGG_RELEASE_REQ(Signal*);
   void execJOIN_AGG_NODE_FAIL_REP(Signal*);
 

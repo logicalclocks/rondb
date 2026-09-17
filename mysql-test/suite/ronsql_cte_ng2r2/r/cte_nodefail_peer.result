@@ -1,0 +1,4 @@
+RonSQL peer: baseline matched
+RonSQL peer: observed hold and killed the intended node
+RonSQL peer: bounded completion with a checked result or node-failure error
+RonSQL peer: recovery query matched and leak checks acknowledged

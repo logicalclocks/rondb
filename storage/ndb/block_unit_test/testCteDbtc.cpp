@@ -76,6 +76,23 @@
  *   Test 10: Negative — CTE_LOOKUP with invalid cteId
  *   Test 11: Negative — missing CTE_DEFS_MARKER
  *
+ * RONDB-1120 node_failure_test_plan.md sections 5.1 / 5.2 (DBSPJ CTE scan
+ * slot model, CTE lookup accounting), each ending with the five
+ * join-aggregation leak checks (JoinAggTestUtil.hpp):
+ *   Test 12: SM-1 scanCte main root paced at 2 rows per batch over 10
+ *            groups: five row batches of at most two rows, every group
+ *            once, then EndOfData
+ *   Test 13: SM-2 error insert 5129 refuses the first continuation with
+ *            CTE_SCAN_REF 1251 after releasing the token: SCAN_TABREF
+ *            1251, the close completes, no iterator record survives
+ *   Test 14: SM-3 arm 5147 before starting the scan, then close after
+ *            the first local batch is held: the close completes only
+ *            after the held reply drains (DBSPJ close_pending), the
+ *            deferred close request releases the token
+ *   Test 15: LK-1 the API closes a CTE_LOOKUP main select while every
+ *            lookup reply is held (5141): the close completes only after
+ *            the held replies drain, no DBSPJ request survives
+ *
  * Usage: testCteDbtc -c <connect_string> -m <mysql_port> [-v]
  */
 
@@ -94,10 +111,12 @@
 #include <kernel/signaldata/TransIdAI.hpp>
 #include <kernel/signaldata/QueryTree.hpp>
 #include <kernel/CteLinkedAttr.hpp>
+#include <kernel/AttributeHeader.hpp>
 #include <ndbapi/NdbAggregationCommon.hpp>
 #include <ndb_constants.h>
 
 #include <NdbRestarter.hpp>
+#include "JoinAggTestUtil.hpp"
 #include <mysql.h>
 
 #include <climits>
@@ -105,6 +124,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <set>
 #include <vector>
@@ -122,6 +142,18 @@ static const char *TABLE_NAME_3COL = "cte_dbtc_test3";
 static const Uint32 FAKE_TRANS_ID1 = 0xCCDD0001;
 static const Uint32 FAKE_TRANS_ID2 = 0xCCDD0002;
 static const Uint32 WAIT_TIMEOUT_MS = 60000;
+/* Sections 5.1 / 5.2: teardown settle before the leak dumps, the window
+ * in which a held close must NOT complete (well inside the 3 s scan
+ * timeout of the MTR configuration), the DBLQH error for a missing
+ * state / released token, and the paced batch size. */
+static const Uint32 SETTLE_MS = 500;
+static const Uint32 QUIET_WINDOW_MS = 700;
+static const Uint32 ZJOIN_AGG_STATE_NOT_FOUND = 1251;
+static const Uint32 CTE_SCAN_BATCH_ROWS = 2;
+static const Uint32 CTE_SCAN_GROUPS = 10;
+/* Error insert 5141 extra flag: report the first held lookup even when
+ * its requester is this node (the NF-3 event names remote ones only). */
+static const Uint32 REPORT_LOCAL_LOOKUP_HOLD = 0x40000000;
 
 static const Uint32 COL_TYPE_BIGINT = 9;
 static const Uint32 AGG_MAGIC = 0x0721;
@@ -990,11 +1022,34 @@ collectResults(SignalSender &ss,
                Uint32 apiConnectPtr, Uint32 tcRef, Uint32 nodeId)
 {
   V("Waiting for results...\n");
+  /* The agg SCAN_TABCONF (requestInfo = EndOfData | 1) announces the
+   * TOTAL agg result-row count in its ops area
+   * ([receiverId, RNIL, rows, moreMask, ...]) — but the TRANSID_AI
+   * result batches come DIRECTLY from each data node's DBLQH while
+   * the conf comes from DBTC, and cross-node signal ordering is not
+   * guaranteed.  The real NDB API waits for all announced rows (the
+   * agg accounting); do the same here instead of stopping at the
+   * first EndOfData conf, which occasionally loses a remote node's
+   * groups under load (single-node can't lose: same transporter,
+   * FIFO). */
+  bool gotEndOfData = false;
+  bool haveExpected = false;
+  Uint64 expectedRows = 0;
+  Uint64 collectedRows = 0;
   bool done = false;
   while (!done) {
     SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS,
                                        "TRANSID_AI/SCAN_TABCONF");
-    if (resp == nullptr) return -1;
+    if (resp == nullptr) {
+      if (gotEndOfData && haveExpected) {
+        fprintf(stderr,
+                "collectResults: timeout with %llu of %llu announced "
+                "agg rows collected\n",
+                (unsigned long long)collectedRows,
+                (unsigned long long)expectedRows);
+      }
+      return -1;
+    }
     int gsn = getGsn(resp);
 
     if (gsn == GSN_TRANSID_AI) {
@@ -1002,6 +1057,7 @@ collectResults(SignalSender &ss,
       if (parseTransIdAI(resp, result) != 0) return -1;
       V("  TRANSID_AI: n_gb_cols=%u n_agg=%u n_groups=%u\n",
         result.n_gb_cols, result.n_agg_results, result.n_groups);
+      collectedRows += result.groups.size();
       allResults.push_back(std::move(result));
     }
     else if (gsn == GSN_SCAN_TABCONF) {
@@ -1015,7 +1071,16 @@ collectResults(SignalSender &ss,
         resp->header.theLength);
 
       if (endOfData) {
-        done = true;
+        /* Agg conf carries the announced row total; the back-to-back
+         * pure close conf (op count 0) does not. */
+        if (ops >= 1 && resp->header.theLength >= 7) {
+          expectedRows = d[6];
+          haveExpected = true;
+          V("  -> announced agg rows: %llu (collected so far: %llu)\n",
+            (unsigned long long)expectedRows,
+            (unsigned long long)collectedRows);
+        }
+        gotEndOfData = true;
       } else {
         Uint32 sigLen = resp->header.theLength;
         Uint32 words_per_op = ops > 0 ? (sigLen - 4) / ops : 4;
@@ -1057,6 +1122,8 @@ collectResults(SignalSender &ss,
     else {
       V("  Ignoring GSN %d\n", gsn);
     }
+    done = gotEndOfData &&
+           (!haveExpected || collectedRows >= expectedRows);
   }
   return 0;
 }
@@ -1554,6 +1621,7 @@ struct TestCtx {
   SignalSender *ss;
   Uint32 nodeId;
   MYSQL *conn;
+  NdbRestarter *restarter;
 };
 
 /* ------------------------------------------------------------------ */
@@ -1735,6 +1803,25 @@ testTwoCtesGroupBy(TestCtx &ctx)
   std::map<Int64, Int64> expected = {{1, 30}, {2, 120}, {3, 60}};
   if (groupSums != expected) {
     printf("FAIL (unexpected groups)\n");
+    /* Diagnostics: dump every result record so an occasional failure
+     * shows whether rows went missing (short sums), were duplicated
+     * (inflated sums), or a garbage group appeared. */
+    printf("  DIAG: %zu result records collected\n", results.size());
+    for (size_t ri = 0; ri < results.size(); ri++) {
+      const AggResult &r = results[ri];
+      printf("  DIAG: result[%zu]: n_gb_cols=%u n_agg=%u n_groups=%u\n",
+             ri, r.n_gb_cols, r.n_agg_results, r.n_groups);
+      for (const auto &g : r.groups) {
+        printf("  DIAG:   grp=%lld sum=%lld (keyBytes=%zu valBytes=%zu)\n",
+               (long long)extractGroupKey(g.first),
+               (long long)extractSumBigint(g.second, 0),
+               g.first.size(), g.second.size());
+      }
+    }
+    for (auto &kv : groupSums) {
+      printf("  DIAG: merged group(%lld) = %lld\n",
+             (long long)kv.first, (long long)kv.second);
+    }
     ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
     return -1;
   }
@@ -2170,6 +2257,827 @@ testCteLookupMainSelect(TestCtx &ctx)
   printf("PASS\n");
   ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
   return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Sections 5.1 / 5.2: DBSPJ CTE scan slots and lookup accounting      */
+/* ------------------------------------------------------------------ */
+
+/*
+ * QueryTree with 1 CTE subtree and a QN_CTE_SCAN main root, the shape
+ * RonSQL emits for a pass-through scan of a CTE:
+ *   WITH cte0 AS (SELECT grp, SUM(val) FROM src t1 JOIN src t2
+ *                 ON t1.pk = t2.pk GROUP BY grp)
+ *   SELECT grp, total FROM cte0;
+ * 4 nodes:
+ *   Node 0: QN_CTE_SUBTREE (cteId=0, numNodes=2)
+ *   Node 1:   QN_SCAN_FRAG (CTE 0 scan, linked: pk)
+ *   Node 2:   QN_LOOKUP (CTE 0 agg leaf, self-join by pk)
+ *   Node 3: QN_CTE_SCAN (cteId=0, numResultCols=2): no parent, no
+ *           aggregation, every group is a result row
+ * The root's parameters carry ExitOK and the virtual column list plus
+ * CORR_FACTOR64, as NdbQueryOperationImpl::prepareAttrInfo serializes a
+ * scanCte root, so DBLQH delivers each group to the API by FLUSH_AI.
+ */
+static std::vector<Uint32>
+buildQueryTreeWithCteScanRoot(Uint32 tableId, Uint32 tableVersion,
+                              Uint32 pkAttrId, Uint32 receiverId)
+{
+  std::vector<Uint32> ai;
+  const Uint32 cte_sub_len = 4;
+  const Uint32 cte_scan_len = 5;
+  const Uint32 cte_leaf_len = 7;
+  /* 4 fixed header words + 2 words of virt-col type info per column */
+  const Uint32 main_len = 4 + 4;
+  const Uint32 tree_len = 1 + cte_sub_len + cte_scan_len + cte_leaf_len +
+                          main_len;
+  Uint32 cnt_len = 0;
+  QueryTree::setCntLen(cnt_len, 4, tree_len);
+  ai.push_back(cnt_len);
+
+  /* Node 0: QN_CTE_SUBTREE (cteId=0) */
+  Uint32 n0_len = 0;
+  QueryNode::setOpLen(n0_len, QueryNode::QN_CTE_SUBTREE, cte_sub_len);
+  ai.push_back(n0_len);
+  ai.push_back(0);
+  ai.push_back(0);                       /* cteId = 0 */
+  ai.push_back(2);                       /* numNodes = 2 */
+
+  /* Node 1: QN_SCAN_FRAG (CTE 0 scan, linked: pk) */
+  Uint32 n1_len = 0;
+  QueryNode::setOpLen(n1_len, QueryNode::QN_SCAN_FRAG, cte_scan_len);
+  ai.push_back(n1_len);
+  ai.push_back(DABits::NI_AGGREGATE | DABits::NI_LINKED_ATTR);
+  ai.push_back(tableId);
+  ai.push_back(tableVersion);
+  ai.push_back((pkAttrId << 16) | 1);
+
+  /* Node 2: QN_LOOKUP (CTE 0 agg leaf, self-join by pk) */
+  Uint32 n2_len = 0;
+  QueryNode::setOpLen(n2_len, QueryNode::QN_LOOKUP, cte_leaf_len);
+  ai.push_back(n2_len);
+  ai.push_back(DABits::NI_HAS_PARENT | DABits::NI_KEY_LINKED |
+               DABits::NI_AGGREGATE | DABits::NI_AGGREGATE_LEAF);
+  ai.push_back(tableId);
+  ai.push_back(tableVersion);
+  ai.push_back((1 << 16) | 1);           /* parent: node 1 */
+  ai.push_back((0 << 16) | 1);           /* key: 1 pattern word */
+  ai.push_back(QueryPattern::col(0));
+
+  /* Node 3: QN_CTE_SCAN main root */
+  Uint32 n3_len = 0;
+  QueryNode::setOpLen(n3_len, QueryNode::QN_CTE_SCAN, main_len);
+  ai.push_back(n3_len);
+  ai.push_back(0);                       /* requestInfo: plain root */
+  ai.push_back(0);                       /* cteId = 0 */
+  ai.push_back(2);                       /* numResultCols: grp, SUM */
+  ai.push_back(CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8));
+  ai.push_back(CteLinkedAttr::encodeWord1(0));
+  ai.push_back(CteLinkedAttr::encodeWord0(NDB_TYPE_BIGINT, 8));
+  ai.push_back(CteLinkedAttr::encodeWord1(0));
+
+  /* ---- Parameter section (4 params) ---- */
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_CTE_SUBTREE,
+                                  QN_CteSubtreeParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+  }
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_SCAN_FRAG,
+                                  QN_ScanFragParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+    ai.push_back(256);
+    ai.push_back(65536);
+    ai.push_back(0);
+    ai.push_back(0);
+    ai.push_back(0);
+  }
+  {
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_LOOKUP,
+                                  QN_LookupParameters::NodeSize);
+    ai.push_back(p_len);
+    ai.push_back(0);
+    ai.push_back(receiverId);
+  }
+  {
+    /* ExitOK (2 words) + attribute list: count, 2 columns, CORR. */
+    const Uint32 param_total = QN_CteScanParameters::NodeSize + 2 + 4;
+    Uint32 p_len = 0;
+    QueryNodeParameters::setOpLen(p_len, QueryNodeParameters::QN_CTE_SCAN,
+                                  param_total);
+    ai.push_back(p_len);
+    ai.push_back(DABits::PI_ATTR_INTERPRET | DABits::PI_ATTR_LIST);
+    ai.push_back(receiverId);
+    ai.push_back((0u << 16) | 1u);       /* program_len=1 */
+    ai.push_back(INTERPRETER_EXIT_OK);
+    ai.push_back(3);                      /* 2 virtual columns + CORR */
+    ai.push_back(0u << 16);
+    ai.push_back(1u << 16);
+    ai.push_back(AttributeHeader::CORR_FACTOR64 << 16);
+  }
+  return ai;
+}
+
+/* SCAN_TABREQ for the scanCte root with an explicit batch size.  DBTC
+ * hands it to every DBSPJ worker as batch_size_rows, and DBLQH applies
+ * it to each CTE_SCAN_REQ, so the CTE scan pauses every batchRows
+ * groups until the API acknowledges the batch. */
+static int
+sendScanTabReqCteScanRoot(SignalSender &ss, Uint32 nodeId,
+                          Uint32 apiConnectPtr, Uint32 tcRef,
+                          const TableMeta &meta,
+                          const std::vector<Uint32> &queryTree,
+                          const std::vector<Uint32> &cte0AggProgram,
+                          Uint32 receiverId, Uint32 batchRows)
+{
+  V("SCAN_TABREQ -> node %u, table=%u (scanCte root, batch %u)\n",
+    nodeId, meta.tableId, batchRows);
+
+  SimpleSignal ssig;
+  Uint32 *data = ssig.getDataPtrSend();
+  memset(data, 0, 25 * sizeof(Uint32));
+
+  Uint32 requestInfo = buildScanTabReqInfo();
+  requestInfo &= ~(Uint32(SCAN_BATCH_MASK) << SCAN_BATCH_SHIFT);
+  requestInfo |= (batchRows & SCAN_BATCH_MASK) << SCAN_BATCH_SHIFT;
+
+  data[0] = apiConnectPtr;
+  data[1] = 0;
+  data[2] = requestInfo;
+  data[3] = meta.tableId;
+  data[4] = meta.schemaVersion;
+  data[5] = 0xFFFF;              /* storedProcId = RNIL */
+  data[6] = FAKE_TRANS_ID1;
+  data[7] = FAKE_TRANS_ID2;
+  data[8] = apiConnectPtr;        /* buddyConPtr */
+  data[9] = 65536;                /* batch_byte_size */
+  data[10] = batchRows;           /* first_batch_size */
+  data[15] = meta.fragCount;      /* scanParallelism = all fragments */
+
+  ssig.set(ss, 0, refToBlock(tcRef), GSN_SCAN_TABREQ, 16);
+
+  std::vector<Uint32> aggSection;
+  aggSection.push_back(0);            /* boundsLen = 0 */
+  aggSection.push_back(receiverId);   /* aggReceiverId */
+  aggSection.push_back(0xCDE00000);   /* CTE_DEFS_MARKER, no main agg */
+  aggSection.push_back(1);            /* numCtes = 1 */
+  aggSection.push_back(meta.tableId);
+  aggSection.push_back(meta.schemaVersion);
+  aggSection.push_back(0);            /* depMask lo */
+  aggSection.push_back(0);            /* depMask hi */
+  aggSection.push_back(0);            /* flags */
+  aggSection.push_back((Uint32)cte0AggProgram.size());
+  aggSection.insert(aggSection.end(),
+                    cte0AggProgram.begin(), cte0AggProgram.end());
+  appendJoinAggMetadataContainer(aggSection, meta, nullptr,
+                                 &cte0AggProgram, nullptr);
+
+  ssig.header.m_noOfSections = 3;
+  std::vector<Uint32> dummyReceiverIds(meta.fragCount, 0);
+  ssig.ptr[0].p = dummyReceiverIds.data();
+  ssig.ptr[0].sz = meta.fragCount;
+  ssig.ptr[1].p = queryTree.data();
+  ssig.ptr[1].sz = (Uint32)queryTree.size();
+  ssig.ptr[2].p = aggSection.data();
+  ssig.ptr[2].sz = (Uint32)aggSection.size();
+
+  if (ss.sendSignal(nodeId, &ssig) != SEND_OK) {
+    fprintf(stderr, "sendSignal SCAN_TABREQ failed\n");
+    return -1;
+  }
+  return 0;
+}
+
+/* One DBTC reply: SCAN_TABCONF (fragment ops to acknowledge, rows they
+ * declare) or SCAN_TABREF.  Rows travel from DBLQH to the API on their
+ * own path, so CONFs are queued until their declared rows have arrived.
+ * Intervening CONFs retain their continuation handles. A REF aborts the
+ * wait and discards queued batch handles. Returns 0 on a ready reply,
+ * 1 if none becomes ready within timeoutMs, -1 on an error. */
+struct ScanReply {
+  bool isRef = false;
+  bool endOfData = false;
+  Uint32 declaredRows = 0;   /* over every op of this CONF */
+  Uint32 maxOpRows = 0;      /* largest single op */
+  Uint32 rowOps = 0;         /* ops that declared rows */
+  Uint32 errorCode = 0;      /* REF */
+  Uint32 closeNeeded = 0;    /* REF */
+  Uint32 rowsRequired = 0;   /* cumulative row count needed for this CONF */
+  std::vector<Uint32> pendingOps;
+};
+
+struct ScanCursor {
+  Uint32 apiConnectPtr = 0;
+  Uint32 tcRef = 0;
+  Uint32 nodeId = 0;
+  Uint32 rowsSeen = 0;       /* TRANSID_AI signals received */
+  Uint32 rowsDeclared = 0;   /* by every CONF so far */
+  std::vector<CteLookupRow> rows;
+  std::deque<ScanReply> pendingReplies;
+};
+
+static int
+takeRow(SignalSender &, const SimpleSignal *resp, ScanCursor &cur)
+{
+  CteLookupRow row;
+  if (parseCteLookupTransIdAI(resp, row) != 0) return -1;
+  cur.rows.push_back(row);
+  cur.rowsSeen++;
+  return 0;
+}
+
+static int
+waitScanReply(SignalSender &ss, ScanCursor &cur, Uint32 timeoutMs,
+              ScanReply &reply)
+{
+  reply = ScanReply();
+  const Uint64 start = NdbTick_CurrentMillisecond();
+  for (;;) {
+    if (!cur.pendingReplies.empty() &&
+        cur.rowsSeen >= cur.pendingReplies.front().rowsRequired) {
+      reply = cur.pendingReplies.front();
+      cur.pendingReplies.pop_front();
+      return 0;
+    }
+    const Uint64 elapsed = NdbTick_CurrentMillisecond() - start;
+    if (elapsed >= timeoutMs) return 1;
+    SimpleSignal *resp = ss.waitFor(timeoutMs - (Uint32)elapsed);
+    if (resp == nullptr) return 1;
+    const int gsn = getGsn(resp);
+    if (gsn == GSN_TRANSID_AI) {
+      if (takeRow(ss, resp, cur) != 0) return -1;
+      continue;
+    }
+    if (gsn == GSN_SCAN_TABCONF) {
+      ScanReply received;
+      const Uint32 sigLen = resp->getLength();
+      if (sigLen < ScanTabConf::SignalLength) {
+        fprintf(stderr, "Short SCAN_TABCONF: length %u\n", sigLen);
+        return -1;
+      }
+      const Uint32 *d = resp->getDataPtr();
+      const Uint32 ri = d[1];
+      received.endOfData = (ri & ScanTabConf::EndOfData) != 0;
+      const Uint32 ops = ri & 0xFF;
+      const Uint32 *opData = d + ScanTabConf::SignalLength;
+      Uint32 opWords = sigLen - ScanTabConf::SignalLength;
+      if (resp->header.m_noOfSections != 0) {
+        if (resp->header.m_noOfSections != 1 ||
+            sigLen != ScanTabConf::SignalLength) {
+          fprintf(stderr, "Invalid SCAN_TABCONF section layout\n");
+          return -1;
+        }
+        opData = resp->ptr[0].p;
+        opWords = resp->ptr[0].sz;
+      }
+      /* These requests set ExtendedConf: each op has four words,
+       * or five when the API version supports the active bitmask.
+       * DBTC moves the whole list to section 0 when it does not fit. */
+      if ((ops == 0 && opWords != 0) ||
+          (ops != 0 && opWords != 4 * ops && opWords != 5 * ops)) {
+        fprintf(stderr, "Invalid SCAN_TABCONF: %u words for %u ops\n",
+                opWords, ops);
+        return -1;
+      }
+      const Uint32 wordsPerOp = ops != 0 ? opWords / ops : 0;
+      for (Uint32 i = 0; i < ops; i++) {
+        const Uint32 *op = opData + i * wordsPerOp;
+        const Uint32 rows = op[2];
+        received.declaredRows += rows;
+        if (rows > received.maxOpRows) received.maxOpRows = rows;
+        if (rows > 0) received.rowOps++;
+        if (op[1] != RNIL) received.pendingOps.push_back(op[1]);
+      }
+      cur.rowsDeclared += received.declaredRows;
+      received.rowsRequired = cur.rowsDeclared;
+      cur.pendingReplies.push_back(received);
+      V("  SCAN_TABCONF: ops=%u rows=%u endOfData=%d pending=%zu\n",
+        ops, received.declaredRows, (int)received.endOfData,
+        received.pendingOps.size());
+      continue;
+    }
+    if (gsn == GSN_SCAN_TABREF) {
+      /* Aborted batches must not be acknowledged or delay the close
+       * while waiting for rows that may no longer be delivered. */
+      cur.pendingReplies.clear();
+      cur.rowsDeclared = cur.rowsSeen;
+      const Uint32 *d = resp->getDataPtr();
+      reply.isRef = true;
+      reply.errorCode = d[3];
+      reply.closeNeeded = d[4];
+      V("  SCAN_TABREF: errorCode=%u closeNeeded=%u\n", reply.errorCode,
+        reply.closeNeeded);
+      return 0;
+    }
+    V("  Ignoring GSN %d (sigLen=%u)\n", gsn, resp->header.theLength);
+  }
+}
+
+static int
+sendScanNextReq(SignalSender &ss, const ScanCursor &cur,
+                const std::vector<Uint32> &ops, bool close)
+{
+  SimpleSignal sig;
+  Uint32 *d = sig.getDataPtrSend();
+  d[0] = cur.apiConnectPtr;
+  d[1] = close ? 1 : 0;   /* stopScan */
+  d[2] = FAKE_TRANS_ID1;
+  d[3] = FAKE_TRANS_ID2;
+  /* A section-bearing CONF can return more handles than fit in a
+   * short NEXTREQ. Keep the entire continuation list in section 0. */
+  if (ops.size() > 25 - ScanNextReq::SignalLength) {
+    sig.set(ss, 0, refToBlock(cur.tcRef), GSN_SCAN_NEXTREQ,
+            ScanNextReq::SignalLength);
+    sig.header.m_noOfSections = 1;
+    sig.ptr[0].p = ops.data();
+    sig.ptr[0].sz = (Uint32)ops.size();
+  } else {
+    for (size_t i = 0; i < ops.size(); i++)
+      d[ScanNextReq::SignalLength + i] = ops[i];
+    sig.set(ss, 0, refToBlock(cur.tcRef), GSN_SCAN_NEXTREQ,
+            (Uint32)(ScanNextReq::SignalLength + ops.size()));
+    sig.header.m_noOfSections = 0;
+  }
+  if (ss.sendSignal(cur.nodeId, &sig) != SEND_OK) {
+    fprintf(stderr, "sendSignal SCAN_NEXTREQ%s failed\n",
+            close ? " (close)" : "");
+    return -1;
+  }
+  return 0;
+}
+
+/* Rows a lookup delivered on its way out may trail the close
+ * confirmation; drain them so the next test starts clean. */
+static void
+drainStray(SignalSender &ss)
+{
+  while (SimpleSignal *resp = ss.waitFor(300)) {
+    V("  Draining GSN %d after the close\n", getGsn(resp));
+  }
+}
+
+/* After a close request: DBTC confirms with an EndOfData CONF once
+ * every fragment is closed. */
+static int
+waitScanClosed(SignalSender &ss, ScanCursor &cur, const char *context)
+{
+  for (;;) {
+    ScanReply reply;
+    const int rc = waitScanReply(ss, cur, WAIT_TIMEOUT_MS, reply);
+    if (rc != 0) {
+      fprintf(stderr, "%s: no close confirmation\n", context);
+      return -1;
+    }
+    if (reply.isRef) {
+      fprintf(stderr, "%s: SCAN_TABREF %u while closing\n", context,
+              reply.errorCode);
+      return -1;
+    }
+    if (reply.endOfData) break;
+  }
+  drainStray(ss);
+  return 0;
+}
+
+/* The window in which a deferred close must NOT complete: replies from
+ * sources that are not held are tolerated, EndOfData or a REF fails.
+ * 0 = quiet, -1 = the close completed or failed. */
+static int
+expectCloseDeferred(SignalSender &ss, ScanCursor &cur, const char *context)
+{
+  for (;;) {
+    ScanReply reply;
+    const int rc = waitScanReply(ss, cur, QUIET_WINDOW_MS, reply);
+    if (rc == 1) return 0;
+    if (rc < 0) return -1;
+    if (reply.isRef) {
+      fprintf(stderr, "%s: SCAN_TABREF %u while the close was expected to "
+                      "wait\n", context, reply.errorCode);
+      return -1;
+    }
+    if (reply.endOfData) {
+      fprintf(stderr, "%s: the close completed while the reply was held\n",
+              context);
+      return -1;
+    }
+  }
+}
+
+/* The 3-column table with 20 rows in 10 groups (pk 1..20, grp = pk mod
+ * 10, val = pk * 10), the CTE program, the scanCte-root tree and a TC
+ * connect. */
+struct CteScanFixture {
+  TableMeta meta;
+  ScanCursor cur;
+  std::vector<Uint32> cte0Agg;
+  std::vector<Uint32> queryTree;
+  Uint32 receiverId = 0;
+  bool tcSeized = false;
+};
+
+static std::map<Int64, Int64>
+expectedCteGroups()
+{
+  /* grp 0: val(10) + val(20); grp g: val(g) + val(g + 10) */
+  std::map<Int64, Int64> m;
+  m[0] = 100 + 200;
+  for (Int64 g = 1; g <= 9; g++) m[g] = 10 * g + 10 * (g + 10);
+  return m;
+}
+
+static int
+setupCteScanFixture(TestCtx &ctx, CteScanFixture &f, Uint32 receiverId)
+{
+  ctx.ss->unlock();
+  int rc = createTestTable3Col(ctx.conn, ctx.ndb, f.meta);
+  if (rc == 0) {
+    rc = sqlExec(ctx.conn,
+                 "INSERT INTO cte_dbtc_test3 VALUES "
+                 "(1,1,10),(2,2,20),(3,3,30),(4,4,40),(5,5,50),"
+                 "(6,6,60),(7,7,70),(8,8,80),(9,9,90),(10,0,100),"
+                 "(11,1,110),(12,2,120),(13,3,130),(14,4,140),"
+                 "(15,5,150),(16,6,160),(17,7,170),(18,8,180),"
+                 "(19,9,190),(20,0,200)");
+  }
+  ctx.ss->lock();
+  if (rc != 0) return -1;
+  f.receiverId = receiverId;
+  f.cte0Agg = buildAggProgram_SumGroupBy(f.meta.attrIdB, f.meta.attrIdC);
+  f.queryTree = buildQueryTreeWithCteScanRoot(
+      f.meta.tableId, f.meta.schemaVersion, f.meta.attrIdA, receiverId);
+  f.cur = ScanCursor();
+  f.cur.nodeId = ctx.nodeId;
+  if (seizeTcConnect(*ctx.ss, ctx.nodeId, f.cur.apiConnectPtr,
+                     f.cur.tcRef) != 0)
+    return -1;
+  f.tcSeized = true;
+  return 0;
+}
+
+static void
+teardownCteScanFixture(TestCtx &ctx, CteScanFixture &f)
+{
+  if (f.tcSeized) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, f.cur.apiConnectPtr, f.cur.tcRef);
+  }
+  ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+}
+
+static int
+startCteScan(TestCtx &ctx, CteScanFixture &f)
+{
+  return sendScanTabReqCteScanRoot(*ctx.ss, ctx.nodeId, f.cur.apiConnectPtr,
+                                   f.cur.tcRef, f.meta, f.queryTree,
+                                   f.cte0Agg, f.receiverId,
+                                   CTE_SCAN_BATCH_ROWS);
+}
+
+static int
+checkScannedGroups(const ScanCursor &cur, const char *label)
+{
+  std::map<Int64, Int64> got;
+  for (const CteLookupRow &r : cur.rows) {
+    if (got.count(r.grpKey) != 0) {
+      fprintf(stderr, "%s: group %lld delivered twice\n", label,
+              (long long)r.grpKey);
+      return -1;
+    }
+    got[r.grpKey] = r.sumVal;
+  }
+  if (got != expectedCteGroups()) {
+    fprintf(stderr, "%s: %zu groups delivered, expected %u:\n", label,
+            got.size(), CTE_SCAN_GROUPS);
+    for (const auto &kv : got) {
+      fprintf(stderr, "  grp=%lld SUM=%lld\n", (long long)kv.first,
+              (long long)kv.second);
+    }
+    return -1;
+  }
+  return 0;
+}
+
+static int
+leakCheck(TestCtx &ctx, const char *label)
+{
+  return joinAggCheckLeaks(ctx.ss, *ctx.restarter, label,
+                           JOIN_AGG_ALL_LEAK_DUMPS,
+                           NDB_ARRAY_SIZE(JOIN_AGG_ALL_LEAK_DUMPS),
+                           SETTLE_MS, WAIT_TIMEOUT_MS);
+}
+
+/* Print the verdict the way the other tests do and return rc. */
+static int
+finishTest(int rc, const char *what)
+{
+  if (rc == 0) {
+    printf("PASS\n");
+  } else {
+    printf("FAIL (%s)\n", what);
+  }
+  return rc;
+}
+
+/*
+ * Test 12 (SM-1): the scanCte root paced at 2 rows per batch over 10
+ * groups.  DBSPJ holds one obligation per source batch until the reply
+ * and its rows arrived, then the API paces the next batch through
+ * SCAN_NEXTREQ: no fragment op ever declares more than 2 rows, five
+ * row-carrying batches on one data node (at least five when the groups
+ * are spread over several), every group exactly once, then EndOfData.
+ */
+static int
+testCteScanBatches(TestCtx &ctx)
+{
+  printf("Test 12: SM-1 scanCte root, 10 groups in batches of 2 ... ");
+  fflush(stdout);
+  CteScanFixture f;
+  const char *what = "setup";
+  int rc = setupCteScanFixture(ctx, f, 300);
+  if (rc == 0) rc = startCteScan(ctx, f);
+  Uint32 rowOps = 0;
+  while (rc == 0) {
+    ScanReply reply;
+    what = "scan reply";
+    rc = waitScanReply(*ctx.ss, f.cur, WAIT_TIMEOUT_MS, reply);
+    if (rc != 0) { rc = -1; break; }
+    if (reply.isRef) {
+      fprintf(stderr, "Test 12: SCAN_TABREF %u\n", reply.errorCode);
+      rc = -1;
+      break;
+    }
+    if (reply.maxOpRows > CTE_SCAN_BATCH_ROWS) {
+      fprintf(stderr, "Test 12: a fragment declared %u rows in one batch, "
+                      "the limit is %u\n",
+              reply.maxOpRows, CTE_SCAN_BATCH_ROWS);
+      what = "batch size";
+      rc = -1;
+      break;
+    }
+    rowOps += reply.rowOps;
+    if (reply.endOfData) break;
+    if (!reply.pendingOps.empty()) {
+      rc = sendScanNextReq(*ctx.ss, f.cur, reply.pendingOps, false);
+    }
+  }
+  if (rc == 0) {
+    const Uint32 minBatches =
+        (CTE_SCAN_GROUPS + CTE_SCAN_BATCH_ROWS - 1) / CTE_SCAN_BATCH_ROWS;
+    const bool oneNode = ctx.restarter->getNumDbNodes() == 1;
+    if (rowOps < minBatches || rowOps > CTE_SCAN_GROUPS ||
+        (oneNode && rowOps != minBatches)) {
+      fprintf(stderr, "Test 12: %u row batches, expected %u\n", rowOps,
+              minBatches);
+      what = "batch count";
+      rc = -1;
+    }
+  }
+  if (rc == 0) {
+    what = "groups";
+    rc = checkScannedGroups(f.cur, "Test 12");
+  }
+  teardownCteScanFixture(ctx, f);
+  if (rc == 0) {
+    what = "leak check";
+    rc = leakCheck(ctx, "Test 12");
+  }
+  return finishTest(rc, what);
+}
+
+/*
+ * Test 13 (SM-2): error insert 5129 answers the first continuation
+ * with CTE_SCAN_REF 1251 after releasing the token.  DBSPJ ends the
+ * slot without sending a close, DBTC reports SCAN_TABREF 1251 and the
+ * API's close completes; no iterator record survives (2362).  On one
+ * data node the first batch always leaves a continuation; with the
+ * groups spread over several nodes the armed node needs more than one
+ * batch of its own, which 10 groups make practically certain.
+ */
+static int
+testCteScanContinuationRef(TestCtx &ctx)
+{
+  printf("Test 13: SM-2 CTE scan continuation refused (5129) ... ");
+  fflush(stdout);
+  CteScanFixture f;
+  const char *what = "setup";
+  int rc = setupCteScanFixture(ctx, f, 301);
+  ErrorInsertGuard guard = {*ctx.restarter, ctx.nodeId, true};
+  if (rc == 0 && !setErrorInsert(*ctx.restarter, ctx.nodeId, 5129, 0)) {
+    rc = -1;
+  }
+  if (rc == 0) rc = startCteScan(ctx, f);
+  bool gotRef = false;
+  Uint32 refCode = 0;
+  while (rc == 0) {
+    ScanReply reply;
+    what = "scan reply";
+    rc = waitScanReply(*ctx.ss, f.cur, WAIT_TIMEOUT_MS, reply);
+    if (rc != 0) { rc = -1; break; }
+    if (reply.isRef) {
+      gotRef = true;
+      refCode = reply.errorCode;
+      if (reply.closeNeeded != 0) {
+        what = "close after REF";
+        rc = sendScanNextReq(*ctx.ss, f.cur, {}, true);
+        if (rc == 0) rc = waitScanClosed(*ctx.ss, f.cur, "Test 13");
+      }
+      break;
+    }
+    if (reply.endOfData) {
+      fprintf(stderr, "Test 13: the scan completed without a REF\n");
+      what = "no REF";
+      rc = -1;
+      break;
+    }
+    if (!reply.pendingOps.empty()) {
+      rc = sendScanNextReq(*ctx.ss, f.cur, reply.pendingOps, false);
+    }
+  }
+  if (rc == 0 && (!gotRef || refCode != ZJOIN_AGG_STATE_NOT_FOUND)) {
+    fprintf(stderr, "Test 13: expected SCAN_TABREF %u, got %s%u\n",
+            ZJOIN_AGG_STATE_NOT_FOUND, gotRef ? "" : "no REF / ", refCode);
+    what = "REF code";
+    rc = -1;
+  }
+  if (!guard.clear()) rc = -1;   /* 5129 self-clears; be certain */
+  teardownCteScanFixture(ctx, f);
+  if (rc == 0) {
+    what = "leak check";
+    rc = leakCheck(ctx, "Test 13");
+  }
+  return finishTest(rc, what);
+}
+
+/*
+ * Test 14 (SM-3): the API closes the scan while a batch is in flight.
+ * Error insert 5147 is armed before starting the scan and holds the
+ * first nonfinal local batch's CTE_SCAN_CONF after its rows went out.
+ * DBSPJ must keep the slot's obligation and defer the close
+ * (close_pending) until the held reply arrives: the close cannot
+ * complete while the insert is set, completes once it is cleared, and
+ * the deferred close request releases the token (2362 clean).
+ */
+static int
+testCteScanCloseDuringBatch(TestCtx &ctx)
+{
+  printf("Test 14: SM-3 close while a CTE scan batch is held (5147) ... ");
+  fflush(stdout);
+  CteScanFixture f;
+  const char *what = "setup";
+  int rc = setupCteScanFixture(ctx, f, 302);
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (rc == 0 && !events.open(*ctx.restarter)) {
+    fprintf(stderr, "Test 14: cannot subscribe to management events\n");
+    rc = -1;
+  }
+  /* Hold the first nonfinal local batch before any API continuation.
+   * Reply order from other nodes must not choose which source is held. */
+  ErrorInsertGuard guard = {*ctx.restarter, ctx.nodeId, true};
+  if (rc == 0 && !setErrorInsert(*ctx.restarter, ctx.nodeId, 5147, 1)) {
+    what = "error insert";
+    rc = -1;
+  }
+  if (rc == 0) {
+    what = "start scan";
+    rc = startCteScan(ctx, f);
+  }
+  if (rc == 0) {
+    char marker[128];
+    snprintf(marker, sizeof(marker),
+             "[CTE_SCAN_CONF_HELD node=%u iteration=1 requester=%u]",
+             ctx.nodeId, ctx.nodeId);
+    what = "hold event";
+    ScopedSenderUnlock unlock(*ctx.ss);
+    if (!events.waitFor(marker)) rc = -1;
+  }
+  if (rc == 0) {
+    what = "close";
+    rc = sendScanNextReq(*ctx.ss, f.cur, {}, true);
+  }
+  if (rc == 0) {
+    what = "close deferred";
+    rc = expectCloseDeferred(*ctx.ss, f.cur, "Test 14");
+  }
+  if (rc == 0 && !guard.clear()) {
+    what = "clear insert";
+    rc = -1;
+  }
+  if (rc == 0) {
+    what = "close completion";
+    rc = waitScanClosed(*ctx.ss, f.cur, "Test 14");
+  }
+  if (rc == 0 && ctx.restarter->getNumDbNodes() == 1 &&
+      f.cur.rowsSeen != CTE_SCAN_BATCH_ROWS) {
+    fprintf(stderr, "Test 14: %u rows delivered, expected %u (one "
+                    "batch)\n", f.cur.rowsSeen, CTE_SCAN_BATCH_ROWS);
+    what = "rows";
+    rc = -1;
+  }
+  (void)guard.clear();
+  teardownCteScanFixture(ctx, f);
+  if (rc == 0) {
+    what = "leak check";
+    rc = leakCheck(ctx, "Test 14");
+  }
+  return finishTest(rc, what);
+}
+
+/*
+ * Test 15 (LK-1): the API closes a CTE_LOOKUP main select while every
+ * lookup reply is held (5141, reporting the first held request even
+ * from this node).  DBSPJ's abort must wait for the outstanding
+ * replies: the close cannot complete while the insert is set and
+ * completes once the held lookups are delivered; no DBSPJ request
+ * survives (2650).
+ */
+static int
+testCteLookupCloseDuringHold(TestCtx &ctx)
+{
+  printf("Test 15: LK-1 close while CTE lookups are held (5141) ... ");
+  fflush(stdout);
+  const char *what = "setup";
+  ctx.ss->unlock();
+  TableMeta meta;
+  int rc = createTestTable3Col(ctx.conn, ctx.ndb, meta);
+  if (rc == 0) {
+    rc = sqlExec(ctx.conn,
+                 "INSERT INTO cte_dbtc_test3 VALUES "
+                 "(1,1,10),(2,1,20),(3,2,30),(4,2,40),(5,3,50)");
+  }
+  ctx.ss->lock();
+  ScanCursor cur;
+  cur.nodeId = ctx.nodeId;
+  bool tcSeized = false;
+  if (rc == 0) {
+    rc = seizeTcConnect(*ctx.ss, ctx.nodeId, cur.apiConnectPtr, cur.tcRef);
+    tcSeized = (rc == 0);
+  }
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (rc == 0 && !events.open(*ctx.restarter)) {
+    fprintf(stderr, "Test 15: cannot subscribe to management events\n");
+    rc = -1;
+  }
+  ErrorInsertGuard guard = {*ctx.restarter, ctx.nodeId, true};
+  if (rc == 0 &&
+      !setErrorInsert(*ctx.restarter, ctx.nodeId, 5141,
+                      (int)(REPORT_LOCAL_LOOKUP_HOLD | 1))) {
+    what = "error insert";
+    rc = -1;
+  }
+  if (rc == 0) {
+    const Uint32 receiverId = 400;
+    std::vector<Uint32> cte0Agg =
+        buildAggProgram_SumGroupBy(meta.attrIdB, meta.attrIdC);
+    std::vector<Uint32> queryTree =
+        buildQueryTreeWithCteLookup(meta.tableId, meta.schemaVersion,
+                                    meta.attrIdA, meta.attrIdB, receiverId);
+    what = "SCAN_TABREQ";
+    rc = sendScanTabReqWithCteLookup(*ctx.ss, ctx.nodeId, cur.apiConnectPtr,
+                                     cur.tcRef, meta, queryTree, cte0Agg,
+                                     receiverId);
+  }
+  if (rc == 0) {
+    char marker[128];
+    snprintf(marker, sizeof(marker),
+             "[CTE_NF3_LOOKUP_HELD node=%u iteration=1]", ctx.nodeId);
+    what = "hold event";
+    ScopedSenderUnlock unlock(*ctx.ss);
+    if (!events.waitFor(marker)) rc = -1;
+  }
+  if (rc == 0) {
+    what = "close";
+    rc = sendScanNextReq(*ctx.ss, cur, {}, true);
+  }
+  if (rc == 0) {
+    what = "close deferred";
+    rc = expectCloseDeferred(*ctx.ss, cur, "Test 15");
+  }
+  if (rc == 0 && !guard.clear()) {
+    what = "clear insert";
+    rc = -1;
+  }
+  if (rc == 0) {
+    what = "close completion";
+    rc = waitScanClosed(*ctx.ss, cur, "Test 15");
+  }
+  (void)guard.clear();
+  if (tcSeized) {
+    releaseTcConnect(*ctx.ss, ctx.nodeId, cur.apiConnectPtr, cur.tcRef);
+  }
+  ctx.ss->unlock(); dropTestTable3Col(ctx.conn); ctx.ss->lock();
+  if (rc == 0) {
+    what = "leak check";
+    rc = leakCheck(ctx, "Test 15");
+  }
+  return finishTest(rc, what);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2932,7 +3840,7 @@ int main(int argc, char *argv[])
         refToNode(ss.getOwnRef()),
         ss.getOwnRef());
 
-      TestCtx tctx = {&ndb, &ss, (Uint32)nodeId, conn};
+      TestCtx tctx = {&ndb, &ss, (Uint32)nodeId, conn, &restarter};
 
       if (testTwoCtesMultiPhase(tctx) != 0) result = 1;
       if (testCteLookupMainSelect(tctx) != 0) result = 1;
@@ -2940,6 +3848,11 @@ int main(int argc, char *argv[])
       if (testTwoCtesGroupBy(tctx) != 0) result = 1;
       if (testTwoCtesLargeDataset(tctx) != 0) result = 1;
       if (testTwoCtesEmptyTable(tctx) != 0) result = 1;
+      /* node_failure_test_plan.md sections 5.1 / 5.2 */
+      if (testCteScanBatches(tctx) != 0) result = 1;
+      if (testCteScanContinuationRef(tctx) != 0) result = 1;
+      if (testCteScanCloseDuringBatch(tctx) != 0) result = 1;
+      if (testCteLookupCloseDuringHold(tctx) != 0) result = 1;
       /* Negative tests */
       if (testNegative_ScanParallelism(tctx) != 0) result = 1;
       if (testNegative_TooManyCtes(tctx) != 0) result = 1;

@@ -82,3 +82,62 @@ cmd: testNodeRestart
 args: -n JoinAggErrorInsert T1
 max-time: 300
 
+# RONDB-1120 CTE node-failure and parking cases (node_failure_test_plan.md
+# sections 4 and 6). The cases that need 3 or 4 data nodes skip on smaller
+# clusters and are also listed in 16node-tests.txt.
+
+cmd: testNodeRestart
+args: -n CteCloseOwedByFailedNode T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CtePeerDiesDuringRedistribute T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CteLookupTargetDies T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CteScanSourceDiesMidBatch T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n CteRequesterDiesPausedScan T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n CteRequesterDiesAggFeed T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesAggFeed T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesReady T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesPausedRedist T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n CoordinatorDiesReleaseInFlight T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CteRequesterDiesParked T1
+max-time: 900
+
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesParked T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesParkedReplay T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n CteSetupAlreadyFailedNode T1
+max-time: 600

@@ -1,0 +1,9 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# NF-10: kill the coordinator during confirmed peer teardown (error insert 5146)
+"[dropping NDBT test tables]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# CoordinatorDiesReleaseInFlight passed

@@ -99,7 +99,7 @@ class Dbspj : public SimulatedBlock {
    * General signals
    */
   void execSET_DOMAIN_ID_REQ(Signal *signal);
-  void execDUMP_STATE_ORD(Signal *signal){}
+  void execDUMP_STATE_ORD(Signal *signal);  // DbspjMain.cpp, leak checks
   void execREAD_NODESCONF(Signal*);
   void execREAD_CONFIG_REQ(Signal *signal);
   void execSTTOR(Signal *signal);
@@ -681,6 +681,10 @@ class Dbspj : public SimulatedBlock {
      * normalization.  0 = none declared. */
     Uint32 m_numKeyPositions;
     Uint32 m_keyPositions[QN_CteLookupNode::MaxKeyPositions];
+    // Keep the topology used by this query: a node failure invalidates
+    // CTE ownership even when no lookup currently awaits a reply.
+    NdbNodeBitmask m_nodes;
+    Uint32 m_nodeOutstanding[ABS_MAX_NDB_NODES];
   };
 
   /**
@@ -701,9 +705,7 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_cteId;           // Source CTE to scan
     Uint32 m_numResultCols;   // GROUP BY + aggregate result columns
     Uint32 m_aggStateKey;     // DBLQH aggStateKey for the source CTE
-    Uint32 m_outstanding;     // Outstanding CTE_SCAN_REQ (0 or 1)
-    Uint32 m_rowsReceived;    // TRANSID_AI signals received so far
-    Uint32 m_rowsExpecting;   // Rows from CTE_SCAN_CONF numRows
+    Uint32 m_outstanding;     // Source batches awaiting reply and/or rows
     Uint32 m_batchSize;       // Max groups per batch
     bool m_endOfData;         // All groups sent by DBLQH
     Uint32 m_api_resultRef;   // FLUSH_AI target: API block reference
@@ -723,15 +725,15 @@ class Dbspj : public SimulatedBlock {
      * (O(1) hash-bucket resume instead of restarting from bucket 0).
      * Slots are compact: m_numNodeSlots in [0, MAX_CTE_SCAN_NODE_SLOTS]. */
     struct NodeSlot {
-      Uint32 m_sourceNodeId;   // DBLQH nodeId this slot tracks
       Uint32 m_ownerInstance;  // DBLQH instance that owns scanIterI
-      Uint32 m_scanIterI;      // CteScanIterState pool i-value; RNIL on
-                               // first REQ and after EndOfData CONF
-      bool m_endOfData;        // Final CONF seen from this node
-      bool m_close_pending;    // Set by cte_scan_abort on slots with an
-                               // in-flight REQ; the CONF handler fires
-                               // a close REQ for the CONF's scanIterI
-                               // when RS_ABORTING is observed.
+      Uint32 m_scanIterI;      // RNIL before first CONF and after EndOfData
+      Uint16 m_sourceNodeId;   // DBLQH nodeId this slot tracks
+      Int16 m_rowsOutstanding; // Declared rows minus received rows;
+                               // negative before CONF/REF, bounded by 256
+      bool m_endOfData;
+      bool m_close_pending;   // Close after the current batch drains
+      bool m_confPending;     // Awaiting CONF/REF for this batch
+      bool m_batchPending;    // One request obligation until reply AND rows
     };
     /* Single-node scans use slot[0]; m_cteScanAllNodes fan-out uses
      * one slot per participating node.  Sized to cover every possible
@@ -739,6 +741,7 @@ class Dbspj : public SimulatedBlock {
     static constexpr Uint32 MAX_CTE_SCAN_NODE_SLOTS = ABS_MAX_NDB_NODES;
     NodeSlot m_nodeSlots[MAX_CTE_SCAN_NODE_SLOTS];
     Uint32 m_numNodeSlots;
+    NdbNodeBitmask m_nodes;   // Topology captured before CTE execution
 
     /* Per-column inline type info (2 words/col, encoded per
      * CteLinkedAttr.hpp).  Same role as CteLookupData::m_virtTypeInfo
@@ -1543,6 +1546,12 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_numCtes;       // Number of CTE contexts registered (0 if no CTEs)
     Uint32 m_ctesReady;     // Count of CTEs that reached CTE_READY state
     Uint32 m_cteScansComplete; // Count of CTE scans fully completed
+    /* RONDB-1120 P1: DBTC's per-query discriminator (its scan record
+     * index, = JoinAggSetupReq::senderData) from the aggKeys section.
+     * Forwarded to DBLQH beside every joinAggStateKey word so DBLQH
+     * resolves the state by identity (transid, queryTag, cteId).
+     * RNIL when the aggKeys section carried no tag. */
+    Uint32 m_joinAggQueryTag;
     bool m_cteScanAllNodes;    // CTE_SCAN must send to all nodes (instances < nodes)
     /**
      * Per-CTE per-node aggStateKeys.  Flat array indexed as
@@ -1551,6 +1560,19 @@ class Dbspj : public SimulatedBlock {
      */
     Uint32 *m_cteAggStateKeys;
     Uint32 *m_cteAggOwnerInstances;
+    /**
+     * Per-CTE owner list (RONDB-1120): DBTC's SETUP target set for that
+     * CTE in ascending node order, from the aggKeys section.  Flat
+     * array [cteIndex * MAX_NDB_NODES + k] with m_cteOwnerCount[cteIndex]
+     * entries, m_numCteKeyBlocks CTE blocks; lives in the
+     * m_cteAggStateKeys allocation.  DBLQH builds the same list from
+     * JoinAggSetupReq::setupNodes, so owner = hash % count agrees
+     * cluster-wide by construction; virtual CTE fragment K scans the
+     * K-th owner.
+     */
+    Uint32 *m_cteOwnerNodes;
+    Uint32 *m_cteOwnerCount;
+    Uint32 m_numCteKeyBlocks;
 
     ArenaHead m_arena;
 
@@ -1708,11 +1730,19 @@ class Dbspj : public SimulatedBlock {
 
   NdbNodeBitmask c_alive_nodes;
 
-  // Sorted list of data node IDs — used for CTE hash-based routing.
-  // Built in execSTTOR phase 4, updated in execNODE_FAILREP.
-  Uint32 m_dataNodeList[ABS_MAX_NDB_NODES];
-  Uint32 m_numDataNodes;
-  void buildDataNodeList();
+  /* The owner list of CTE 'cteIdx' in a request (Request::m_cteOwnerNodes):
+   * DBTC's SETUP target set, the list every DBLQH routes over too. */
+  Uint32 cteOwnerCount(const Request *req, Uint32 cteIdx) const {
+    ndbrequire(req->m_cteOwnerCount != nullptr &&
+               cteIdx < req->m_numCteKeyBlocks);
+    return req->m_cteOwnerCount[cteIdx];
+  }
+  Uint32 cteOwnerNode(const Request *req, Uint32 cteIdx, Uint32 k) const {
+    ndbrequire(k < cteOwnerCount(req, cteIdx));
+    return req->m_cteOwnerNodes[cteIdx * MAX_NDB_NODES + k];
+  }
+  void cteOwnerNodes(const Request *req, Uint32 cteIdx,
+                     NdbNodeBitmask &mask) const;
 
   void do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
@@ -1969,6 +1999,12 @@ class Dbspj : public SimulatedBlock {
                           const QueryNodeParameters *);
   void cte_lookup_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_lookup_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_lookup_countReplies(Ptr<Request>, Ptr<TreeNode>, Uint32 nodeId,
+                               Uint32 cnt);
+  void cte_lookup_checkComplete(Ptr<Request>, Ptr<TreeNode>);
+  void cte_lookup_abort(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 cte_lookup_execNODE_FAILREP(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                                     NdbNodeBitmask);
   void cte_lookup_parent_row(Signal *, Ptr<Request>, Ptr<TreeNode>, const RowPtr &);
   Uint64 cte_lookup_hash_key(const JoinAggInterpreter *, const char *,
                              Uint32, Uint32);
@@ -1999,6 +2035,11 @@ class Dbspj : public SimulatedBlock {
                         const QueryNodeParameters *);
   void cte_scan_start(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void cte_scan_countSignal(Signal *, Ptr<Request>, Ptr<TreeNode>, Uint32 cnt);
+  void cte_scan_finishBatch(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                            CteScanData::NodeSlot &);
+  bool cte_scan_checkComplete(Ptr<Request>, Ptr<TreeNode>);
+  Uint32 cte_scan_execNODE_FAILREP(Signal *, Ptr<Request>, Ptr<TreeNode>,
+                                  NdbNodeBitmask);
   void cte_scan_execSCAN_NEXTREQ(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void execCTE_SCAN_CONF(Signal *);
   void execCTE_SCAN_REF(Signal *);
@@ -2007,8 +2048,8 @@ class Dbspj : public SimulatedBlock {
   void cte_scan_dumpNode(const Ptr<Request>, const Ptr<TreeNode>);
 
   /* Build and send a CTE_SCAN_REQ to the DBLQH on sourceNodeId.
-   * scanIterI == RNIL produces a first REQ (SignalLength = 9); any
-   * other value produces a continuation (SignalLengthContinue = 10)
+   * scanIterI == RNIL produces a first REQ (SignalLength = 10); any
+   * other value produces a continuation (SignalLengthContinue = 11)
    * that echoes the scanIterI from a prior CTE_SCAN_CONF.  Duplicates
    * the AttrInfo section so the caller's copy is preserved for the
    * next batch.  Increments data.m_outstanding on success. */
@@ -2039,6 +2080,9 @@ class Dbspj : public SimulatedBlock {
   void maybeResumeCongestedNodes(Signal *signal, Ptr<Request> requestPtr,
                                  Ptr<TreeNode> treeNodePtr);
 
+  CteScanData::NodeSlot *cte_scan_findNodeSlot(
+      CteScanData &data, Uint32 sourceNodeId);
+
   /* Return the NodeSlot for sourceNodeId, allocating a new one if
    * none exists.  Returns nullptr if all slots are in use (should
    * never happen: ABS_MAX_NDB_NODES slots are available). */
@@ -2050,6 +2094,10 @@ class Dbspj : public SimulatedBlock {
    */
   void execCTE_START_MAIN_REQ(Signal *);
   void execCTE_PHASE_START_REQ(Signal *);
+  /* RONDB-1120 P2b: parse the key/owner transport section (format:
+   * CteStartMainReq::KeysSectionNum) into the request's key maps.
+   * Releases the handle's sections. */
+  void parseJoinAggKeySection(SectionHandle &handle, Ptr<Request>);
   void sendCteScanDoneRep(Signal *, Ptr<Request>, const CteContext &);
 
   /**

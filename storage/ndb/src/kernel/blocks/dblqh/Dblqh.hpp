@@ -378,6 +378,19 @@ class FsReadWriteReq;
 #define ZCONTINUE_AGG_INTERP_TEARDOWN 51
 #define ZCONTINUE_CTE_AVG_FINALIZE 52
 #define ZCONTINUE_CTE_LIMIT_FINALIZE 53
+/* RONDB-1120 P2: ZCONTINUE_JOIN_AGG_PARK_SWEEP (54) and
+ * ZCONTINUE_JOIN_AGG_FLUSH_PARKED (55) live in
+ * JoinAggregationState.hpp — DblqhProxy sends the flush tag to Dblqh
+ * instances, and this define region is DBLQH_C-guarded. */
+#define ZCONTINUE_CTE_NODE_FAILURE 56
+#define ZCONTINUE_CTE_SCAN_NODE_FAILURE 57
+#define ZCONTINUE_FREE_CTE_REDIST_PAGES 58
+/* Test hook 5147: a CTE_SCAN_CONF held for a local requester. */
+#define ZCONTINUE_CTE_SCAN_CONF_HELD 59
+#ifdef ERROR_INSERT
+/* Test hook 5150: one timer per instance re-checks the held replays. */
+#define ZCONTINUE_JOIN_AGG_FLUSH_HELD 60
+#endif
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -501,6 +514,17 @@ class FsReadWriteReq;
 /* CONTINUEB codes used by DblqhProxy (outside DBLQH_C) */
 #define ZCONTINUE_FREE_REDIST_PAGES 49
 #define ZCONTINUE_JOIN_AGG_TEARDOWN 50
+#ifdef ERROR_INSERT
+#define ZCONTINUE_JOIN_AGG_SETUP_REF 51
+/* DBLQH error inserts from this code on are delivered to the query-thread
+ * LQH instances (DBQLQH) as well as to the LDM instances: DblqhProxy
+ * forwards their NDB_TAMPER to DbqlqhProxy.  TRPMAN routes V_QUERY-
+ * addressed LQHKEYREQ, SCAN_FRAGREQ, CTE_LOOKUP_REQ and
+ * JOIN_AGG_NULL_ROW_REQ to either kind of instance, so a hook that acts
+ * on whichever instance runs the request (the RONDB-1120 hooks) is
+ * incomplete on the LDMs alone. */
+#define ZFIRST_QUERY_THREAD_ERROR_INSERT 5128
+#endif
 
 /* Join aggregation error codes (outside DBLQH_C for DblqhProxy) */
 #define ZJOIN_AGG_STATE_ALLOC_FAILED       1250
@@ -512,6 +536,10 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_RESULT_TOO_LARGE         1256
 #define ZJOIN_AGG_TIMEOUT                  1257
 #define ZJOIN_AGG_ALREADY_FINALIZED        1258
+/* RONDB-1120 P2: internal sentinel from initScanrec — the identity
+ * lookup missed on an identity-authoritative scan; the caller parks
+ * or aborts.  Never sent on the wire. */
+#define ZJOIN_AGG_PARKED                   1279
 #define ZJOIN_AGG_MUTEX_ERROR              1259
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
@@ -916,6 +944,8 @@ class Dblqh : public SimulatedBlock {
     Uint16 m_jit_filter_reject_code;
     Uint8 m_jit_filter_ineligible;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
+    Uint32 m_join_agg_ident_word;   // RONDB-1120 P2: identity word saved by
+                                    // initScanrec for the parked-scan flow
     Uint32 m_join_agg_evict_rows;   // Evicted group rows sent to API during this scan batch
     Uint32 m_rows_examined;          // Total rows examined in this scan batch
     Uint8 m_outer_join_agg_scan;     // Set from OuterJoinAggFlag in SCAN_FRAGREQ
@@ -3528,11 +3558,6 @@ private:
                         SectionHandle *handle = nullptr);
   void execCTE_SCAN_REQ(Signal* signal);
   void cteScanReqImpl(Signal* signal);
-  /* cinBuf + attrInfoLen carry the AttrInfo section needed to run a
-   * CTE filter program per group.  On the initial CTE_SCAN_REQ the
-   * caller passes the AttrInfo bound into the incoming signal; on a
-   * CONTINUEB resumption within the agg-feed path they are
-   * (nullptr, 0) — see runCteFilter's short-circuit. */
   /* Release a CteScanIterState pool record and, if populated, free
    * the cinBufOverflow filter buffer allocated via lc_ndbd_pool_malloc.
    * Safe to call with stateI == RNIL (no-op). */
@@ -3542,9 +3567,7 @@ private:
                       Uint32 senderRef, Uint32 senderData,
                       Uint32 joinAggStateKey,
                       Uint32 iterBucket, const char *iterRaw,
-                      Uint32 groupsSent,
-                      const Uint32 *cinBuf, Uint32 attrInfoLen,
-                      Uint32 aggFeedStateI);
+                      Uint32 groupsSent, Uint32 aggFeedStateI);
   void cteScanEmitResults(Signal* signal, const CteScanReq &req,
                           JoinAggInterpreter *interp,
                           const Uint32 *finalR, Uint32 finalRLen,
@@ -3558,13 +3581,16 @@ private:
                                   Uint32 ownerNode,
                                   Uint32 senderAggStateKey);
   void sendCteScanRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
-                      Uint32 errorCode, SectionHandle *handle = nullptr);
+                      Uint32 errorCode, SectionHandle *handle = nullptr,
+                      Uint32 numRowsToSpj = 0);
   void execJOIN_AGG_REDISTRIBUTE_REQ(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_CONF(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_REF(Signal* signal);
   void execJOIN_AGG_FINAL_REP(Signal* signal);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
+  void continueFreeCteRedistPages(Signal* signal);
+  void continueCteScanConfHeld(Signal* signal);
   void continueCteAvgFinalize(Signal* signal, Uint32 aggStateKey);
   void continueCteLimitFinalize(Signal* signal, Uint32 aggStateKey);
   void continueAggInterpTeardown(Signal* signal, AggInterpreter* interp);
@@ -3572,7 +3598,9 @@ private:
                           Uint32 aggStateKey);
   void checkCteReady(Signal* signal, JoinAggregationState* state);
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
-                               Uint32 errorCode);
+                               Uint32 errorCode, bool notifyPeers = true);
+  bool isJoinAggCoordinatorFailed(Uint32 coordinatorRef);
+  bool joinAggParkCapReached();
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
                               Uint32 senderRef);
   void continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
@@ -3717,6 +3745,20 @@ private:
   void sendAttrinfoLoop(Signal *signal);
   void sendAttrinfoSignal(Signal *signal);
   void sendLqhAttrinfoSignal(Signal *signal);
+  /* RONDB-1120 P2: waiter-queue parking (plan 2.2).  Shared by the
+   * LQHKEYREQ and SCAN_FRAGREQ identity-authoritative paths. */
+  SimulatedBlock::JoinAggResolveOrParkResult parkJoinAggConsumer(
+      Signal *signal, Uint32 gsn, Uint32 sigLen, Uint32 identWord,
+      TcConnectionrecPtr tcConnectptr, Uint32 *keyOut,
+      bool keepRecOnResolve, Uint32 *parkRecIOut);
+  SimulatedBlock::JoinAggResolveOrParkResult joinAggResolveOrParkGeneric(
+      Signal *signal, Uint32 gsn, const Uint32 *transid, Uint32 identWord,
+      Uint32 *keyOut);
+  void joinAggParkSweep(Signal *signal);
+  void joinAggFlushParked(Signal *signal, Uint32 parkRecI);
+#ifdef ERROR_INSERT
+  void joinAggReleaseHeldFlush(Signal *signal);
+#endif
   Uint32 initScanrec(const class ScanFragReq *,
                      Uint32 aiLen,
                      TcConnectionrecPtr,
@@ -4552,6 +4594,23 @@ public:
    * into a self-amplifying signal storm.
    */
   Uint32 m_delay_copy_park_tc = RNIL;
+  /**
+   * ERROR_INSERT 5150 (PK-8): park records whose replay this instance
+   * holds until NODE_FAILREP clears the insert, chained through m_next,
+   * and whether the single re-check timer is scheduled.  One timer per
+   * instance, never one per record: the time queue holds 512 entries.
+   */
+  Uint32 m_join_agg_held_flush_head = RNIL;
+  bool m_join_agg_held_flush_timer = false;
+  /**
+   * PK-8 selects one held NULL_ROW per instance and arming. The park
+   * record index identifies that request until replay; the iteration
+   * distinguishes later uses of the same pool slot or coordinator.
+   * The guard may report rejection only during this record's replay.
+   */
+  Uint32 m_join_agg_observed_null_row = RNIL;
+  Uint32 m_join_agg_observed_iteration = 0;
+  bool m_join_agg_observed_replay = false;
 #endif
 
   // Configurable
@@ -5401,6 +5460,9 @@ public:
     Uint32  cinBufInline[CTE_SCAN_FILTER_INLINE_WORDS];
     Uint32 *cinBufOverflow;  // nullptr if attrInfoLen fits inline
     Uint32  nextPool;
+    Uint16  senderNodeId;    // Requesting DBSPJ node, for failure cleanup
+    Uint16  coordinatorNodeId; // DBTC coordinator node; 0 for non-DBTC callers
+    bool    aggFeed;         // Owned by a local continuation, not DBSPJ
 
     const Uint32 *cinBuf() const {
       return cinBufOverflow != nullptr ? cinBufOverflow : cinBufInline;
@@ -5610,6 +5672,11 @@ private:
   void send_handle_tc_failed_scans(Signal *signal,
                                    NodeId nodeId,
                                    Uint32 startPtrI);
+  void handleCteNodeFailure(Signal *signal, Uint32 nodeId, Uint32 bucket);
+  void handleCteScanNodeFailure(Signal *signal, Uint32 nodeId,
+                                Uint32 startPtrI);
+  void abortCteOnNodeFailure(Signal *signal, JoinAggregationState *state,
+                             Uint32 nodeId);
 
   /* Frag lock checks */
   bool have_frag_scan_access() const;

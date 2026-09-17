@@ -763,3 +763,30 @@ max-time: 500
 cmd: flexHammer
 args: -r 5 -t 32 
 
+
+# RONDB-1120 CTE node-failure cases that need more than 2 data nodes
+# (node_failure_test_plan.md section 4).
+max-time: 900
+cmd: testNodeRestart
+args: -n CteScanSourceDiesMidBatch T1
+
+max-time: 900
+cmd: testNodeRestart
+args: -n CteRequesterDiesPausedScan T1
+
+max-time: 900
+cmd: testNodeRestart
+args: -n CteRequesterDiesAggFeed T1
+
+max-time: 900
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesAggFeed T1
+
+max-time: 900
+cmd: testNodeRestart
+args: -n CteCoordinatorDiesPausedRedist T1
+
+max-time: 900
+cmd: testNodeRestart
+args: -n CteRequesterDiesParked T1
+

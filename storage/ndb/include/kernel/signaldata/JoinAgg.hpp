@@ -27,11 +27,17 @@
 #define JOIN_AGG_HPP
 
 #include "SignalData.hpp"
+#include <NodeBitmask.hpp>
 
 #define JAM_FILE_ID 571
 
 struct JoinAggSetupReq {
-  static constexpr Uint32 SignalLength = 12;
+  /* Length before setupNodes was added (RONDB-1120).  A request of this
+   * length carries no node set and the receiver falls back to its own
+   * view of the connected data nodes; only block unit tests that drive
+   * DBLQH directly, with no DBTC to decide the set, still send it. */
+  static constexpr Uint32 SignalLength_v1 = 13;
+  static constexpr Uint32 SignalLength = 13 + NdbNodeBitmask::Size;
   static constexpr Uint32 AggProgramSectionNum = 0;
   static constexpr Uint32 ReceiverIdsSectionNum = 1;
   static constexpr Uint32 ColumnMetaSectionNum = 2;
@@ -68,6 +74,24 @@ struct JoinAggSetupReq {
   Uint32 routeRef;
   Uint32 cteIndex;  // CTE index (0..MAX_CTES-1) or RNIL for main aggregation.
                      // Echoed back in SETUP_CONF/REF so DBTC can route the response.
+  Uint32 queryTag;  // RONDB-1120 P2c hardening: the identity queryTag —
+                     // a per-DBTC-instance sequence (16-bit wrapping),
+                     // NOT the recyclable scanPtr.i.  With fire-and-forget
+                     // RELEASE, back-to-back scans in one transaction
+                     // reuse scanPtr.i while the previous query's identity
+                     // entry may still await its RELEASE processing; a
+                     // sequence tag makes (transid, queryTag) collisions
+                     // impossible within any realistic window.  senderData
+                     // stays scanPtr.i for CONF/REF routing.  Direct-DBLQH
+                     // block tests mirror their senderData here.
+  /* RONDB-1120: the data nodes DBTC set this query up on, one SETUP_REQ
+   * each - its snapshot of connected data nodes.  In CTE mode
+   * every node builds its owner list from this set in ascending node
+   * order, so CTE group ownership (owner = hash % count) is decided
+   * once, by DBTC, instead of by each node's view of which peers were
+   * connected when its SETUP arrived.  DBSPJ takes the same set per CTE
+   * from the aggKeys section DBTC attaches to the root SCAN_FRAGREQ. */
+  Uint32 setupNodes[NdbNodeBitmask::Size];
   // Long section 0: Aggregation program
   // Long section 1: Receiver IDs for hash-partitioned aggregation results
 };
@@ -101,14 +125,22 @@ struct JoinAggSetupRef {
 };
 
 struct JoinAggCompleteReq {
-  static constexpr Uint32 SignalLength = 8;
+  static constexpr Uint32 SignalLength = 9;
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
   Uint32 transid[2];
-  Uint32 aggStateKey;
+  Uint32 aggStateKey;     // RNIL = identity-addressed (RONDB-1120 P4):
+                          // that node's SETUP_CONF had not arrived at
+                          // send time; DBLQH resolves identWord +
+                          // transid node-locally (parking until the
+                          // local SETUP processes) and self-routes to
+                          // the owner LDM.
   Uint32 maxBatchRows;
   Uint32 heartbeatScanFragPtrI;
+  Uint32 identWord;       // packIdentWord(queryTag, cteId, 0) — always
+                          // set by 26.x DBTC; consumed when
+                          // aggStateKey == RNIL.
 
   // Optional section: per-node aggStateKeys for CTE lookup forwarding.
   // Format: [nodeId1, aggKey1, ownerInstance1, ...] triples.
@@ -138,8 +170,8 @@ struct JoinAggReleaseReq {
   static constexpr Uint32 SignalLength = 7;
   Uint32 senderRef;
   Uint32 senderData;
-  Uint32 requestId;
-  Uint32 transid[2];
+  Uint32 requestId;  // Original JOIN_AGG_SETUP_REQ requestId
+  Uint32 transid[2]; // Zero for stale-SETUP reclaim; requestId still checked
   Uint32 aggStateKey;
   Uint32 noReply;  // If set, DBLQH will not send RELEASE_CONF
 };
@@ -183,12 +215,20 @@ struct JoinAggNodeFailRep {
 // DBSPJ → DblqhProxy: inject a null-extended row for outer join aggregation
 // when DBSPJ skips LQHKEYREQ because the key is NULL.
 struct JoinAggNullRowReq {
-  static constexpr Uint32 SignalLength = 6;
+  static constexpr Uint32 SignalLength = 8;
   Uint32 senderRef;
   Uint32 aggStateKey;
   Uint32 transId[2];
   Uint32 requestPtrI;   // DBSPJ request pointer (for routing CONF back)
   Uint32 treeNodePtrI;  // DBSPJ tree node pointer
+  Uint32 identWord;     // RONDB-1120 P2c: packIdentWord(queryTag, RNIL, 0)
+                        // or RNIL.  Under the un-gated SETUP round the
+                        // wire aggStateKey can be RNIL (non-CTE queries
+                        // never learn keys in DBSPJ) — DBLQH resolves
+                        // the local main-agg state by identity
+                        // (transId + identWord) and parks until the
+                        // local SETUP processes.
+  Uint32 coordinatorRef; // DBTC reference, retained across parked replay
   // Long section 0: linked_attr_data (parent column values with table metadata)
 };
 
@@ -223,13 +263,28 @@ struct JoinAggNullRowRef {
  * Long section 1: accumulator_data (AggResItem array)
  */
 struct JoinAggRedistributeReq {
-  static constexpr Uint32 SignalLength = 5;
+  static constexpr Uint32 SignalLength = 9;
   Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
+                          // — RNIL = identity-addressed (RONDB-1120 P4:
+                          // the destination's key was unknown when DBTC
+                          // built the COMPLETE keys section); receiver
+                          // resolves identWord + transid locally and
+                          // self-routes to its owner LDM.
   Uint32 senderAggStateKey; // Sender's own state, echoed in CONF/REF so the
                             // sender resumes the correct state (D25 fix).
   Uint32 keyLen;          // Group key length in bytes
   Uint32 valueLen;        // Accumulator data length in bytes
   Uint32 requestInfo;     // Flags (RI_NEED_CONF)
+  Uint32 identWord;       // packIdentWord(queryTag, cteId, 0)
+  Uint32 transid[2];      // For the identity resolution above (the
+                          // redistribute signals carried no transid
+                          // before P4)
+  Uint32 senderRef;       // Reply-to for CONF/REF.  RONDB-1120 P4: an
+                          // identity-addressed REQ may be
+                          // owner-FORWARDED on the target node, which
+                          // makes the signal-header sender the
+                          // forwarding instance — replies must go to
+                          // this explicit ref instead.
 
   enum { KeySectionNum = 0, ValueSectionNum = 1 };
   enum RequestInfoBits { RI_NEED_CONF = 0x1 };
@@ -241,11 +296,13 @@ struct JoinAggRedistributeReq {
  * REDISTRIBUTE_REQ of the batch, providing flow control.
  */
 struct JoinAggRedistributeConf {
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 6;
   Uint32 aggStateKey;
   Uint32 senderNodeId;    // Node that processed the group(s)
   Uint32 senderAggStateKey; // Echoed from the REQ; the redistributing sender's
                             // own state to resume (D25 fix).
+  Uint32 identWord;         // Echoed from the REQ: validate the state behind
+  Uint32 transid[2];        // senderAggStateKey before resuming redistribution.
 };
 
 /**
@@ -254,24 +311,37 @@ struct JoinAggRedistributeConf {
  * redistribution and send COMPLETE_REF.
  */
 struct JoinAggRedistributeRef {
-  static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 SignalLength = 7;
   Uint32 aggStateKey;
   Uint32 senderNodeId;
   Uint32 errorCode;
   Uint32 senderAggStateKey; // Echoed from the REQ; the redistributing sender's
                             // own state to resume/abort (D25 fix).
+  Uint32 identWord;         // Echoed from the REQ: the sender validates the
+  Uint32 transid[2];        // state behind senderAggStateKey against these
+                            // before aborting it (the slot may be recycled).
 };
 
 /**
  * JOIN_AGG_FINAL_REP — fire-and-forget report that a node has finished
  * sending all its REDISTRIBUTE_REQ messages for a CTE materialization.
- * When all participating nodes have sent FINAL_REP, the CTE transitions
- * to CTE_READY and can serve CTE_LOOKUP_REQ.
+ * Each destination waits for FINAL_REP from every peer AND merges all
+ * REDISTRIBUTE_REQs declared by those reports before becoming CTE_READY.
+ * Parking and owner forwarding may deliver FINAL_REP before earlier rows.
+ * A nonzero errorCode aborts the peer's redistribution instead of waiting
+ * for rows or FINALs that the failing node will never send.
  */
 struct JoinAggFinalRep {
-  static constexpr Uint32 SignalLength = 2;
-  Uint32 aggStateKey;     // JoinAggregationState pool index
+  static constexpr Uint32 SignalLength = 8;
+  Uint32 aggStateKey;     // JoinAggregationState pool index — RNIL =
+                          // identity-addressed (RONDB-1120 P4), see
+                          // JoinAggRedistributeReq::aggStateKey
   Uint32 senderNodeId;    // Which node finished redistribution
+  Uint32 identWord;       // packIdentWord(queryTag, cteId, 0)
+  Uint32 transid[2];
+  Uint32 redistributeCountLo; // Number of logical REDISTRIBUTE_REQs sent
+  Uint32 redistributeCountHi; // to THIS destination, low/high 32 bits
+  Uint32 errorCode;           // Zero on success; counts ignored on failure
 };
 
 #undef JAM_FILE_ID

@@ -1,0 +1,16 @@
+# RONDB-1120 Phase 2: block-level protocol and state-machine cases driven
+# directly against DblqhProxy / DBLQH (node_failure_test_plan.md section 5).
+# Section 5.3, TD-1 .. TD-8: proxy teardown idempotence, RELEASE identity
+# validation and the SETUP owner-list validation.  Section 5.4, ID-1 ..
+# ID-6: identity validation on forged peer signals (REDISTRIBUTE_REQ /
+# CONF / REF, FINAL_REP), CTE scan continuation tokens and the coordinator
+# check of consumer requests; ID-5 uses a second API node id when one is
+# free.  Needs error inserts 5136 and 5146 and the leak-check DUMPs 2361 /
+# 2362 / 2363, which crash a node on a leak; the program prints PASSED or
+# FAILED.
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--echo Running testCteProtocol
+--exec $NDB_PUSH_AGG_DIR/testCteProtocol -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

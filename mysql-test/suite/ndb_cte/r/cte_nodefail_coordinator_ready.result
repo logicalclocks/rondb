@@ -1,0 +1,9 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# NF-8: kill the coordinator while a peer holds every CTE probe (error insert 5141)
+"[dropping NDBT test tables]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# CteCoordinatorDiesReady passed

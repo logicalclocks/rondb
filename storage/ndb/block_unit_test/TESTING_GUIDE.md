@@ -130,6 +130,52 @@ ScanFragReq::setJoinAggFlag(requestInfo, 1);
 scanReq->requestInfo = requestInfo;
 ```
 
+### JoinAggSetupReq from a block test
+
+`JoinAggSetupReq::SignalLength` includes `setupNodes`
+(`NdbNodeBitmask::Size` words): the data nodes DBTC set the query up on,
+which every DBLQH turns into its CTE owner list (RONDB-1120, see
+`claude_files/pushdown_join_aggregation/cte_owner_list.md`). A block test
+that sends SETUP_REQ itself can either fill `setupNodes` with the
+connected data nodes and send `SignalLength`, or send `SignalLength_v1`
+(13 words), in which case DblqhProxy builds the list from its own view of
+the connected data nodes. Use one form for all nodes of a query, or the
+owner lists differ. With the full length, a listed node the receiver is
+not connected to is answered with JOIN_AGG_SETUP_REF error 286.
+
+### Peer and consumer signals from a block test
+
+`testCteProtocol` (section 5.4 of `node_failure_test_plan.md`) sends the
+owner-plane peer signals (JOIN_AGG_REDISTRIBUTE_REQ / CONF / REF,
+JOIN_AGG_FINAL_REP) and the consumer requests (CTE_SCAN_REQ,
+CTE_LOOKUP_REQ, JOIN_AGG_NULL_ROW_REQ) from the API node. Points that
+matter when writing such a test:
+
+- These GSNs have no entry in `SignalScopes.hpp`, so DBLQH executes them
+  for an API sender in every build; only SCAN_FRAGREQ depends on the
+  debug relaxation.
+- Address them to the owner LDM instance from SETUP_CONF
+  (`numberToBlock(DBLQH, ownerInstance)`), never to instance 0 (the
+  proxy does not handle them).
+- Every keyed peer signal must carry the state's identity: transid and
+  `packIdentWord(queryTag, cteIndex, 0)` = `(queryTag & 0xFFFF) |
+  (cte7 << 16)` with `cte7 = 0x7F` for a main aggregation. A mismatch is
+  dropped (CONF, REF, FINAL_REP) or answered with REDISTRIBUTE_REF 1251
+  echoing the sender's words (REQ). Do not send a REDISTRIBUTE_REQ with
+  a matching identity and made-up sections: it is merged.
+- A CTE-mode state reaches CTE_READY only when every data node has a
+  state and every COMPLETE carries all `[nodeId, key, owner]` triples;
+  send every COMPLETE before waiting for any reply.
+- A CTE_SCAN_REQ without AttrInfo returns each group as a raw TRANSID_AI
+  to `senderRef`; a paused batch's CONF carries the continuation token,
+  bound to the requesting node and freed by EndOfData or a close request
+  (`SignalLengthClose`, `CloseFlag`).
+- `isJoinAggCoordinatorFailed` checks only DBTC references against
+  `hostRecord`, where every node id that never started stays
+  ZNODE_DOWN: `numberToRef(DBTC, <unused node id>)` models a failed
+  coordinator without restarting anything; the test's own reference is
+  never checked.
+
 ### AttrInfo / Aggregation Programs
 
 Aggregation programs follow the NdbAggregator wire format:
@@ -212,6 +258,82 @@ Long sections:
   triggering eviction when a 4th distinct group arrives during scan.
   Use `NdbRestarter::insertErrorInAllNodes(5090)` before test,
   `insertErrorInAllNodes(0)` after.
+
+Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
+
+| Code | Block | Effect | "once" clears itself |
+|---|---|---|---|
+| 5121 / 5122 / 5123 | Proxy / DBLQH / Proxy | crash node on SETUP_REQ / COMPLETE_REQ / RELEASE_REQ | no (crash) |
+| 5124 / 5125 | DBLQH / Proxy | COMPLETE_REF once / SETUP_REF once | yes |
+| 5151 | Proxy | hold ONE SETUP_REQ 20 ms (feeds park) | yes |
+| 5128 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF swallowed once | yes |
+| 5129 | DBLQH `cteScanReqImpl` | ONE continuation answered CTE_SCAN_REF(1251), token released | yes |
+| 5130 | DBLQH `cteScanAggFeed` | one group per continuation round while set | no |
+| 5131 | DBLQH `cteLookupReqImpl` | hold ONE lookup 50 ms | yes |
+| 5132 | DBLQH `joinAggNullRowReqImpl` | ONE null-row injection REFed | yes |
+| 5133 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | every inbound redistribute delayed 200 ms while set | no |
+| 5134 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | arm before a CTE query: every incoming redistribution row is queued, one entry per page (minimum 512 bytes), until the owner's own redistribution and all declared peer requests are complete; the drain then frees the pages and the detached chain emits CTE_REDIST_PAGES_FREED with the extra value as cookie | no |
+| 5135 | DBLQH `execSCAN_NEXTREQ` | ONE scan close swallowed (arm right before the close; logs when it fires) | yes |
+| 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
+| 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
+| 5138 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | the selected SETUP_REQs (extra: 0 all, 0xFFFF main, 0xFFFE none, else cteIndex + 1) and every placeholder sweeper held until cleared; switch extra to 0xFFFE to replay before clearing the sweeper hold | no |
+| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE identity left unfilled; SETUP_REF 1251 sent after 200 ms | yes |
+| 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender; CTE_RONSQL_REDIST_HELD also names the coordinator of a matching local owner state | no |
+| 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance for the first remote request (extra bit 30 set: for the first request from any node) | no |
+| 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |
+| 5143 | DBLQH `cteScanEmitResults` | diagnostic only: CTE_NF5_SCAN_PAUSED event naming the remote requester of each saved iterator; rows and CONF unchanged | no |
+| 5144 | DBLQH `cteScanAggFeed` | every aggregation feed held between rounds, 20 ms at a time, until cleared; one CTE_AGG_FEED_HELD event per instance naming the remote requester; CTE_RONSQL_FEED_HELD names the coordinator for CLI tests (low 29 extra bits = cookie, bit 29 = clear on NODE_FAILREP, top two = event flags) | with bit 29: workers clear on node failure; test clears proxy |
+| 5145 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | SETUP held while its coordinator lives, park sweeper held until local NODE_FAILREP; CTE_NF11_PARKED event per instance and remote requester | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
+| 5146 | Proxy release / teardown / node-failure reclaim | hold teardown for remote coordinators; CTE_NF10_TEARDOWN_HELD identifies the state, CTE_NF10_RECLAIM_SKIPPED proves failure cleanup skipped it | no; test must clear after matching events |
+| 5147 | DBLQH `cteScanEmitResults` | the CTE_SCAN_CONF of every local requester held after its rows went out (not EndOfData), 100 ms at a time, until cleared; one CTE_SCAN_CONF_HELD event per held reply | no |
+| 5148 | Proxy + DBLQH park paths | the 5138 hold of every SETUP and sweeper; extra caps the park pool, a consumer is refused once that many records are in use | no |
+| 5149 | Proxy `execJOIN_AGG_SETUP_REQ` | SETUP refused with OutOfQueryMemory once the identity table holds `extra` entries | no |
+| 5150 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH `joinAggFlushParked` / park sweeper | SETUP held until a NULL_ROW_REQ has parked on its identity (sweepers held meanwhile), then the replay of the parked consumers held per instance until NODE_FAILREP; CTE_PK8_REPLAY_HELD selects one held NULL_ROW per instance and arming; JOIN_AGG_NULL_ROW_REJECTED must match its iteration, instance and park record | LDM/query instances clear on NODE_FAILREP; test clears the proxy |
+| 8310 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 20 ms | yes |
+| 8311 | DBTC `sendJoinAggCompleteReqs` | ONE COMPLETE sent with aggStateKey RNIL | yes |
+| 8312 | DBTC release senders | crash after sending RELEASE_REQs | no (crash) |
+| 8313 | DBTC `execJOIN_AGG_SETUP_CONF` | ONE SETUP_CONF delayed 5 s; PK-6 names an absent scan and requires hold/reclaim events | yes |
+| 17532 | DBSPJ `cte_scan_sendReq` | crash when a second CTE scan batch is requested | no (crash) |
+| 17533 | DBSPJ `execSCAN_NEXTREQ` | ONE close from DBTC swallowed, request left waiting (arm right before the close; logs when it fires) | yes |
+
+Leak-check DUMP codes (each crashes the node on a leak, so run them at the
+end of a test with `NdbRestarter::dumpStateAllNodes`):
+2361 join-agg states, 2362 CTE scan iterator records (per worker),
+2363 identity table + park records, 2364 outstanding redistribution
+pages (debug builds; a node-wide count that also covers page lists
+detached from released states, so run it only after asynchronous
+cleanup has finished), 2560 DBTC completion records / CTE scan-fragment
+handles / scans left in a join-agg or closing state, 2650 DBSPJ
+requests.
+
+DUMPs 2361, 2362, 2363, 2364 (regular DBLQH instance 1), 2560 (DBTC
+instance 1) and 2650 (DBSPJ instance 1) optionally accept a second word,
+a test cookie. After a clean check the instance emits
+[JOIN_AGG_LEAK_CHECK_OK node=N dump=D cookie=C]. One-word requests
+remain silent on success. Subscribe before sending, check both management
+return values, and require the matching event for each node and dump.
+Compare node connection counters before and after verification so a
+crash followed by automatic restart cannot pass. `JoinAggTestUtil.hpp`
+(header-only) implements this as `joinAggCheckLeaks`, together with the
+checked error-insert setter, its clearing guard and the management event
+listener; `testCteProtocol`, `testCteDbtc` and `testCteNdbApiOuterJoin`
+use it.
+
+DBLQH error inserts from 5128 on are armed on the query-thread LQH
+instances (DBQLQH) as well as on the LDMs: DblqhProxy forwards their
+NDB_TAMPER to DbqlqhProxy. TRPMAN routes V_QUERY-addressed LQHKEYREQ,
+SCAN_FRAGREQ, CTE_LOOKUP_REQ and JOIN_AGG_NULL_ROW_REQ to either kind of
+instance, so a hold or event that lives in one of those handlers, or in
+the parking code they reach, would otherwise apply to some deliveries
+only (finding F-8 in the plan). Codes below 5128 stay LDM-only. A test
+clears with code 0, which reaches every instance either way.
+
+DUMP 2365 is a statistic, not a check: regular DBLQH instance 1 answers
+[JOIN_AGG_PARK_STATS node=N lqhkey= scanfrag= nullrow= complete= redist=
+final= inuse= cookie=C] with the cumulative parks per GSN class since the
+node started and the park records in use. `testCteProtocol` polls it
+while a SETUP is held (5138) to see which consumers parked before
+releasing the hold.
 
 ## Building
 
