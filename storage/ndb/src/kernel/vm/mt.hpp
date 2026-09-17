@@ -101,8 +101,9 @@ Uint32 mt_map_api_node_to_recv_instance(NodeId);
  * gives the ceiling.
  *
  * mt_get_static_memory_usage() sums the mt.cpp allocations from the real
- * struct sizes: the thr_repository and send thread objects, and the
- * arrays that scale with the transporter ids and the thread counts,
+ * struct sizes: the thr_repository and send thread objects, one thr_data
+ * per block thread, and the arrays that scale with the transporter ids
+ * and the thread counts,
  * including TRPMAN's per transporter activity array (one instance per
  * receive thread).
  */

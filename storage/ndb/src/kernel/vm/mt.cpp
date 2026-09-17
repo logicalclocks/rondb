@@ -1863,6 +1863,9 @@ struct thr_repository {
         m_mem_manager_lock("memmanagerlock"),
         m_jb_pool("jobbufferpool"),
         m_sb_pool("sendbufferpool"),
+        m_thread_count(0),
+        m_thread(nullptr),
+        m_thread_mem(nullptr),
         m_send_buffers(nullptr),
         m_thread_send_buffers(nullptr) {
     // Verify assumed cacheline alignment
@@ -1872,7 +1875,6 @@ struct thr_repository {
     assert((((UintPtr)&m_mem_manager_lock) % NDB_CL) == 0);
     assert((((UintPtr)&m_jb_pool) % NDB_CL) == 0);
     assert((((UintPtr)&m_sb_pool) % NDB_CL) == 0);
-    assert((((UintPtr)m_thread) % NDB_CL) == 0);
     assert((sizeof(m_receive_lock[0]) % NDB_CL) == 0);
   }
 
@@ -1894,12 +1896,19 @@ struct thr_repository {
   unsigned m_thread_count;
 
   /**
-   * Protect m_mm and m_thread_count from CPU cache misses, first
-   * part of m_thread (struct thr_data) is globally shared variables.
-   * So sharing cache line with these for these read only variables
-   * isn't a good idea
+   * The block threads' thr_data, one per configured block thread
+   * (m_thread_count entries). Allocated and constructed in rep_init() at
+   * a cache line aligned offset within m_thread_mem, once the thread
+   * count is known, instead of embedding thr_data[MAX_BLOCK_THREADS]
+   * (722) here: sizeof(thr_data) is ~72 KB in an optimized build and
+   * ~324 KB with the large VM_TRACE/ERROR_INSERT jam buffer, so the
+   * embedded array cost ~51 MB respectively ~228 MB regardless of the
+   * thread count. thr_data is alignas(NDB_CL), so consecutive objects in
+   * the block stay cache line aligned. Both pointers are read only after
+   * rep_init(), like m_mm and m_thread_count.
    */
-  alignas(NDB_CL) struct thr_data m_thread[MAX_BLOCK_THREADS];
+  struct thr_data *m_thread;
+  char *m_thread_mem;
 
   /* The buffers that are to be sent */
   struct send_buffer {
@@ -1990,12 +1999,17 @@ struct thr_repository {
   }
 
   ~thr_repository() {
-    for (Uint32 i = 0; i < MAX_BLOCK_THREADS; i++) {
+    for (Uint32 i = 0; i < m_thread_count; i++) {
       delete[] m_thread[i].m_pending_send_trps;
       m_thread[i].m_pending_send_trps = nullptr;
       delete[] m_thread[i].m_send_buffers;
       m_thread[i].m_send_buffers = nullptr;
+      m_thread[i].~thr_data();
     }
+    m_thread = nullptr;
+    m_thread_count = 0;
+    delete[] m_thread_mem;
+    m_thread_mem = nullptr;
     delete[] m_send_buffers;
     m_send_buffers = nullptr;
     delete[] m_thread_send_buffers;
@@ -9777,6 +9791,27 @@ rep_init(struct thr_repository* rep, unsigned int cnt, Ndbd_mem_manager *mm)
   rep->m_thread_send_buffers =
       new thr_send_queue[Uint64(glob_num_trp_ids) * cnt];
 
+  /**
+   * Allocate and construct the thr_data objects for the configured block
+   * threads only (see the m_thread declaration). thr_data is
+   * alignas(NDB_CL) and the new operator does not ensure alignment for
+   * overaligned types, so as for g_thr_repository_mem over-allocate a
+   * char[] and construct the objects at a cache line aligned offset.
+   */
+  static_assert((sizeof(thr_data) % NDB_CL) == 0,
+                "thr_data objects must stay cache line aligned in an array");
+  require(rep->m_thread == nullptr && rep->m_thread_mem == nullptr);
+  rep->m_thread_mem = new char[(sizeof(thr_data) * cnt) + NDB_CL];
+  {
+    const int aligned_offs = NDB_CL_PADSZ((UintPtr)rep->m_thread_mem);
+    char *aligned_mem = &rep->m_thread_mem[aligned_offs];
+    require((((UintPtr)aligned_mem) % NDB_CL) == 0);
+    rep->m_thread = reinterpret_cast<thr_data *>(aligned_mem);
+  }
+  for (unsigned int i = 0; i < cnt; i++) {
+    new (&rep->m_thread[i]) thr_data();
+  }
+
   rep->m_thread_count = cnt;
   for (unsigned int i = 0; i < cnt; i++) {
     thr_init(rep, &rep->m_thread[i], cnt, i);
@@ -10061,8 +10096,8 @@ Uint64 mt_get_static_memory_usage(Uint32 num_trp_ids, Uint32 num_block_threads,
    * The mt.cpp allocations that Configuration::compute_static_overhead()
    * accounts for, from the real struct sizes so that the estimate follows
    * the code:
-   * - the thr_repository object (g_thr_repository_mem), dominated by the
-   *   embedded thr_data[MAX_BLOCK_THREADS];
+   * - the thr_repository object (g_thr_repository_mem) and the thr_data
+   *   objects of the configured block threads (m_thread_mem);
    * - the send thread state (g_send_threads_mem);
    * - the transporter id indexed arrays of rep_init() and thr_init(): one
    *   send_buffer per id, one thr_send_queue per id per block thread, and
@@ -10071,6 +10106,7 @@ Uint64 mt_get_static_memory_usage(Uint32 num_trp_ids, Uint32 num_block_threads,
    *   thread, the one block array sized from the same transporter ids.
    */
   Uint64 bytes = sizeof(thr_repository) + NDB_CL;
+  bytes += (Uint64(num_block_threads) * sizeof(thr_data)) + NDB_CL;
   bytes += sizeof(thr_send_threads) + NDB_CL;
   bytes += Uint64(num_trp_ids) * sizeof(thr_repository::send_buffer);
   bytes += Uint64(num_trp_ids) * num_block_threads * sizeof(thr_send_queue);
