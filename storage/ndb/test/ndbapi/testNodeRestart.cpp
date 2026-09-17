@@ -12797,6 +12797,20 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       ctx->stopTest();
       return NDBT_FAILED;
     }
+    /* A requester kill leaves the coordinator alive: the API's close
+     * then waits for DBTC's close confirmation, and DBTC defers a
+     * JoinAgg close until every SETUP / feed reply is in, including
+     * those the armed node still holds (5145's SETUP, 5144's feeds of
+     * the live requesters).  The hold has served its purpose once the
+     * post-kill marker was seen, so release it before waiting for the
+     * query, or the query cannot complete (F-9).  A coordinator kill
+     * fails the API directly; the insert stays armed through the query
+     * check there. */
+    if (hold.killTarget == CTE_NF_KILL_EVENT_REQUESTER &&
+        !insertGuard.clear()) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
     /* I1: the query must complete once the node failure is handled. */
     if (!cteNfWaitProperty(ctx, "CteNfQueryDone", iter + 1, 120)) {
       g_err << "The query did not complete within 120 s of the node "
@@ -12804,7 +12818,7 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       ctx->stopTest();
       return NDBT_FAILED;
     }
-    /* Keep the insert armed through the failure checks on success. */
+    /* Already cleared for requester kills; clear now for the others. */
     if (!insertGuard.clear()) {
       ctx->stopTest();
       return NDBT_FAILED;
@@ -13662,8 +13676,11 @@ static int runCteCoordinatorReleaseKiller(NDBT_Context *ctx,
  * This covers rejected SETUP cleanup; the replay of consumers parked
  * before a SUCCESSFUL SETUP is PK-8 below. Runs on 2 nodes.
  *
- * P's insert is cleared after the query completes, as for the other
- * cases whose armed node survives.
+ * P's insert is cleared once the sweep marker is seen and R is down,
+ * before the query is waited for: with C alive, the API's close waits
+ * for DBTC, whose deferred JoinAgg close needs P's held SETUP reply
+ * (F-9).  NF-12's hold releases on C's disconnect and its insert is
+ * cleared after the query completes.
  *
  * PK-8 CteCoordinatorDiesParkedReplay (plan section 6; guard
  * 5efa38683b1): error insert 5150 on a peer P holds its SETUP until a

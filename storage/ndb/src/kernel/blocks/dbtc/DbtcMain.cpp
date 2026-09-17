@@ -31070,12 +31070,24 @@ bool Dbtc::sendJoinAggSetupReqs(Signal *signal, ScanRecordPtr scanptr,
    * order.  Preserve the connected-data-node SETUP target set:
    * recovered nodes can serve queries in start phase 110 before
    * NDBCNTR includes them in c_startedNodeSet.  Always include the
-   * own node, the constant owner of single-row / LIMIT CTEs. */
+   * own node, the constant owner of single-row / LIMIT CTEs.
+   *
+   * Also require c_alive_nodes (cleared in execNODE_FAILREP, set at
+   * INCL_NODEREQ, so a recovering node still qualifies).  NODE_FAILREP
+   * reaches this block through QMGR's failure protocol before the
+   * node-level transporter disconnect clears m_connected, by up to
+   * ~100 ms with multi-transporters.  A query started in that window
+   * put the dead node in the set: its SETUPs were dropped by the
+   * transporter, nobody faked their replies (handleJoinAggNodeFailure
+   * had already run, before this scan existed), the setup round never
+   * completed and the scan could be neither finished nor closed
+   * (node_failure_test_plan.md F-12). */
   NdbNodeBitmask setupNodes;
   setupNodes.clear();
   for (Uint32 nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
     if (getNodeInfo(nodeId).m_connected &&
-        getNodeInfo(nodeId).m_type == NodeInfo::DB) {
+        getNodeInfo(nodeId).m_type == NodeInfo::DB &&
+        c_alive_nodes.get(nodeId)) {
       jam();
       jamLine(nodeId);
       setupNodes.set(nodeId);

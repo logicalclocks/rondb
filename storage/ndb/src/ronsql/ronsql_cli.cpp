@@ -104,11 +104,23 @@ main(int argc, char** argv)
       cerr << "Unable to connect to cluster within 30 secs." << endl;
       return 1;
     }
-    // Connect and wait for the storage nodes (ndbd's)
-    if (cluster_connection.wait_until_ready(30,0) < 0)
+    // Connect and wait for the storage nodes (ndbd's).  Wait for every
+    // data node, as RDRS does, not just the first one: a pushed
+    // aggregation delivers its result rows from every data node straight
+    // to this API node, and a data node discards signals to an API node
+    // it has not activated yet (QMGR API_REGREQ -> ENABLE_COMREQ), so a
+    // query started after the first alive node can lose rows and wait
+    // for them until the API timeout (node_failure_test_plan.md F-11).
+    const int ready = cluster_connection.wait_until_ready(30, 30);
+    if (ready < 0)
     {
       cerr << "Cluster was not ready within 30 secs." << endl;
       return 1;
+    }
+    if (ready > 0)
+    {
+      cerr << "Warning: not every data node is ready; results from nodes "
+              "that have not activated this connection can be lost." << endl;
     }
     Ndb myNdb(&cluster_connection, config.database);
     // Set max 1024  parallel transactions

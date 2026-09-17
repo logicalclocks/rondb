@@ -23,7 +23,13 @@ groups owned by the rejoined node were reported missing, with no error
   once per query, preserving the existing SETUP target selection.
   Recovered nodes can serve queries while parked in start phase 110,
   before NDBCNTR includes them in `c_startedNodeSet`; excluding them
-  could send aggregation work to a node with no SETUP state.
+  could send aggregation work to a node with no SETUP state.  The
+  snapshot also requires DBTC's own `c_alive_nodes`: NODE_FAILREP
+  reaches DBTC before the node-level transporter disconnect clears
+  `m_connected`, and a query started in that window would otherwise
+  include the dead node, whose SETUPs nobody answers or fakes
+  (node_failure_test_plan.md F-12).  `c_alive_nodes` is set at
+  INCL_NODEREQ, so a recovering node still qualifies.
   DBTC always includes its own node (the constant owner of single-row
   and LIMIT CTEs), sends one SETUP_REQ per node in the
   set and stamps the set into every request as

@@ -155,8 +155,10 @@ sub result_text {
   my ($phase) = @_;
   my $text = read_file("$prefix.$phase.out");
   # The API logger shares stdout. Strip only complete disconnect notices,
-  # not query rows or receive/close timeout diagnostics.
-  $text =~ s/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[NdbApi\] INFO\s+-- Node \d+ transporter to node \d+ \(id \d+\) disconnected[ \t]*\r?\n//mg;
+  # not query rows or receive/close timeout diagnostics. The notice may
+  # carry a reason ("disconnected in recv with errnum: 54"), so accept
+  # any tail after "disconnected" on that line.
+  $text =~ s/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d \[NdbApi\] INFO\s+-- Node \d+ transporter to node \d+ \(id \d+\) disconnected[^\r\n]*\r?\n//mg;
   if ($phase eq 'failure') {
     # VM_TRACE PollGuard resets WAIT_NODE_FAILURE to NO_WAIT (0) before
     # printing this line. Timeout state 2 must remain an error.
@@ -224,7 +226,13 @@ my $ok = eval {
     if ($err . $out) =~ /(?:code\s+4008\b|code\s+4012\b|Time-out state|receive timeout|scan close failed)/i;
   my @errors = ($err =~ /\(code (\d+)\)/g);
   push @errors, ($err =~ /^NDB [^\n]*? (\d+),/mg);
-  my %allowed = map { $_ => 1 } (286, 20016, 4010, 4025, 4028, 4031);
+  # Node-failure reports from DBTC / DBLQH (286), DBSPJ (20016) and the
+  # API (40xx), plus STATE_NOT_FOUND (1251) from the 10 ms placeholder
+  # sweeper: it REFs the consumers parked at the failure, and a retried
+  # attempt that starts while the survivors still handle the failure can
+  # see its SETUP processed later than its consumers arrive (plan F-10).
+  # RonSQL retries 1251 like the others; the final result is checked below.
+  my %allowed = map { $_ => 1 } (286, 20016, 4010, 4025, 4028, 4031, 1251);
   die "Unexpected/missing node-failure diagnostic; see $prefix.failure.err\n"
     unless @errors && !(grep { !$allowed{$_} } @errors);
   if ($rc == 0) {
