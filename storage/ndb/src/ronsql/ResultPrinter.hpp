@@ -52,6 +52,7 @@ public:
     CHARSET_INFO* charset;
     int precision;
     int scale;
+    int avg_scale;  // AVG fractional digits; -1 selects compact double output
     bool has_metadata;
     TemporalDisplay temporal;
     int temporal_fsp;   // fractional-seconds precision (DATETIME2 / TIME2)
@@ -114,6 +115,7 @@ private:
       {
         Uint32 reg_a_sum;
         Uint32 reg_a_count;
+        int scale;
       } print_avg;
       struct
       {
@@ -172,6 +174,11 @@ private:
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value);
+  void print_avg_result(std::ostream& out,
+                        NdbAggregator::Result sum,
+                        NdbAggregator::Result count,
+                        int scale);
+  int avg_arg_scale(const Outputs* out) const;
   void print_aggregate_result(std::ostream& out,
                               NdbAggregator::Result result,
                               CHARSET_INFO* charset,

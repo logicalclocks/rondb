@@ -6874,6 +6874,7 @@ RonSQLPreparer::build_result_column_metadata()
     column_metadata[col_idx].charset = NULL;
     column_metadata[col_idx].precision = 0;
     column_metadata[col_idx].scale = 0;
+    column_metadata[col_idx].avg_scale = 4;
     column_metadata[col_idx].has_metadata = false;
     column_metadata[col_idx].temporal =
         ResultPrinter::TemporalDisplay::NONE;
@@ -6895,8 +6896,8 @@ RonSQLPreparer::build_result_column_metadata()
       // SUM(s) over a's s = SUM(DECIMAL) — plumbs no stored column
       // either, and resolve_chained_column_type now carries the D15
       // scale/precision through aggregate layers.  rscale == 0 leaves
-      // has_metadata false, so integer/COUNT/string/temporal chains
-      // behave exactly as before.
+      // has_metadata false; AVG formatting independently distinguishes
+      // floating CTE results from integer results.
       if (ref.kind ==
               QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
           ref.cte_output != NULL) {
@@ -6906,11 +6907,16 @@ RonSQLPreparer::build_result_column_metadata()
         Int32 rscale = 0;
         Int32 rprecision = 0;
         if (resolve_chained_column_type(m_main_scope, col_idx, rt, rlen,
-                                         rcs, rscale, rprecision) &&
-            rscale > 0) {
-          column_metadata[col_idx].precision = rprecision;
-          column_metadata[col_idx].scale = rscale;
-          column_metadata[col_idx].has_metadata = true;
+                                         rcs, rscale, rprecision)) {
+          if (rt == NdbDictionary::Column::Float ||
+              rt == NdbDictionary::Column::Double)
+            column_metadata[col_idx].avg_scale = -1;
+          if (rscale > 0) {
+            column_metadata[col_idx].precision = rprecision;
+            column_metadata[col_idx].scale = rscale;
+            column_metadata[col_idx].has_metadata = true;
+            column_metadata[col_idx].avg_scale = std::min(rscale + 4, 30);
+          }
         }
       }
       continue;
@@ -6919,6 +6925,18 @@ RonSQLPreparer::build_result_column_metadata()
     column_metadata[col_idx].precision = col->getPrecision();
     column_metadata[col_idx].scale = col->getScale();
     column_metadata[col_idx].has_metadata = true;
+    switch (col->getType()) {
+    case NdbDictionary::Column::Float:
+    case NdbDictionary::Column::Double:
+      column_metadata[col_idx].avg_scale = -1;
+      break;
+    case NdbDictionary::Column::Decimal:
+    case NdbDictionary::Column::Decimalunsigned:
+      column_metadata[col_idx].avg_scale = std::min(col->getScale() + 4, 30);
+      break;
+    default:
+      break;  // Integer AVG retains four fractional digits.
+    }
     // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
     // ref.dict_column back to the original source column even through a CTE
     // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal

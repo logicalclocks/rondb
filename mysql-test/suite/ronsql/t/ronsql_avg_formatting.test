@@ -1,0 +1,93 @@
+--source include/have_ndb.inc
+--let strict_diff=yes
+--let suppress_ronsql_cli=
+--let QUERY=
+--let QUERY_FILE=$MYSQL_TMP_DIR/avg-format.sql
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE avg_format (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  i INT,
+  u INT UNSIGNED,
+  d0 DECIMAL(10,0),
+  d2 DECIMAL(12,2),
+  d6 DECIMAL(12,6),
+  d30 DECIMAL(30,30),
+  f FLOAT,
+  d DOUBLE
+) ENGINE=NDB;
+--enable_warnings
+# Binary-exact fractions isolate display rules from accumulation-order noise.
+INSERT INTO avg_format VALUES
+(1, 1, 1, 1, 1, 1.00, 1.125000, 0.5, 0.25, 0.5),
+(2, 1, 2, 2, 2, 2.00, 1.375000, 0.5, 0.75, 1.0),
+(3, 2, -1, 3, -1, -1.00, -1.125000, -0.5, -0.25, -0.5),
+(4, 2, -2, 4, -2, -2.00, -1.375000, -0.5, -0.75, -1.0),
+(5, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+(6, 3, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+--enable_query_log
+
+--echo Scalar AVG: integer, DECIMAL and floating columns
+--write_file $QUERY_FILE
+SELECT AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format WHERE g = 1;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Grouped AVG: negative values and NULL groups
+--write_file $QUERY_FILE
+SELECT g, AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Ordered AVG uses the same formatting
+--write_file $QUERY_FILE
+SELECT g, AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format GROUP BY g ORDER BY g DESC;
+EOF
+--let skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo DECIMAL AVG scale is capped at 30
+--write_file $QUERY_FILE
+SELECT AVG(d30) AS a30 FROM avg_format WHERE g = 1;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Empty scalar AVG
+--write_file $QUERY_FILE
+SELECT AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format WHERE g = 0;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo Empty grouped AVG
+--write_file $QUERY_FILE
+SELECT g, AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format WHERE g = 0 GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo CTE AVG projection
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, AVG(i) AS ai, AVG(d2) AS a2, AVG(f) AS af FROM avg_format GROUP BY g) SELECT g, ai, a2, af FROM a ORDER BY g;
+EOF
+--let skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo AVG over CTE averages derives the next scale
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, AVG(i) AS ai, AVG(d2) AS a2, AVG(f) AS af FROM avg_format GROUP BY g) SELECT AVG(ai) AS ai, AVG(a2) AS a2, AVG(af) AS af FROM a;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo AVG over a floating CTE SUM stays compact
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, SUM(f) AS sf FROM avg_format GROUP BY g) SELECT AVG(sf) AS af FROM a;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--disable_query_log
+--disable_warnings
+DROP TABLE avg_format;
+--enable_warnings
+--enable_query_log
+--let strict_diff=

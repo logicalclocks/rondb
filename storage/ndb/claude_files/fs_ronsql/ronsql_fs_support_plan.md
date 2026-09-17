@@ -168,8 +168,8 @@ when an integer addition exceeds its signed/unsigned range. MySQL may
 return a wider DECIMAL; this is an intentional difference. Intermediate
 overflow can still depend on evaluation order for mixed-sign inputs.
 The shared checked merge, API/kernel error propagation, CTE cancellation
-and recovery, and distributed SUM tests are complete. Next: RonSQL
-scalar/grouped boundary and overflow tests with interpreter/JIT parity.
+and recovery, distributed SUM tests, and RonSQL scalar/grouped boundary
+and overflow tests with interpreter/JIT parity are complete (`2f618dae6bf`).
 Retire the unchecked-merge finding only with matching regression evidence;
 represent the remaining MySQL range difference explicitly.
 

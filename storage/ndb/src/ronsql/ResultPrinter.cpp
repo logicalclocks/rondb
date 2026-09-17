@@ -543,6 +543,7 @@ ResultPrinter::compile()
         cmd.type = Cmd::Type::PRINT_AVG;
         cmd.print_avg.reg_a_sum = o->avg.agg_index_sum;
         cmd.print_avg.reg_a_count = o->avg.agg_index_count;
+        cmd.print_avg.scale = avg_arg_scale(o);
         m_program.push(cmd);
         break;
       }
@@ -885,25 +886,9 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
       break;
     case Cmd::Type::PRINT_AVG:
       {
-        NdbAggregator::Result result_sum = m_regs_a[cmd.print_avg.reg_a_sum];
-        NdbAggregator::Result result_count = m_regs_a[cmd.print_avg.reg_a_count];
-        if (result_sum.is_null() &&
-            !result_count.is_null() &&
-            result_count.type() == NdbDictionary::Column::Type::Bigunsigned &&
-            result_count.data_uint64() == 0) {
-          out << m_null_representation;
-        } else {
-          double numerator = convert_result_to_double(result_sum);
-          double denominator = convert_result_to_double(result_count);
-          double result = numerator / denominator;
-          char buffer[FLOATING_POINT_BUFFER];
-          bool error;
-          my_fcvt(result, 4, buffer, &error);
-          if (error)
-            out << m_null_representation;
-          else
-            out << buffer;
-        }
+        print_avg_result(out, m_regs_a[cmd.print_avg.reg_a_sum],
+                         m_regs_a[cmd.print_avg.reg_a_count],
+                         cmd.print_avg.scale);
       }
       break;
     case Cmd::Type::PRINT_STR:
@@ -1962,25 +1947,9 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
       break;
     case Cmd::Type::PRINT_AVG:
       {
-        NdbAggregator::Result result_sum = m_regs_a[cmd.print_avg.reg_a_sum];
-        NdbAggregator::Result result_count = m_regs_a[cmd.print_avg.reg_a_count];
-        if (result_sum.is_null() &&
-            !result_count.is_null() &&
-            result_count.type() == NdbDictionary::Column::Type::Bigunsigned &&
-            result_count.data_uint64() == 0) {
-          out << m_null_representation;
-        } else {
-          double numerator = convert_result_to_double(result_sum);
-          double denominator = convert_result_to_double(result_count);
-          double result = numerator / denominator;
-          char buffer[FLOATING_POINT_BUFFER];
-          bool error;
-          my_fcvt(result, 4, buffer, &error);
-          if (error)
-            out << m_null_representation;
-          else
-            out << buffer;
-        }
+        print_avg_result(out, m_regs_a[cmd.print_avg.reg_a_sum],
+                         m_regs_a[cmd.print_avg.reg_a_count],
+                         cmd.print_avg.scale);
       }
       break;
     case Cmd::Type::PRINT_STR:
@@ -2340,6 +2309,52 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value)
   ndbrequire(len > 0 && buffer[len] == 0);
   out << buffer;
   return;
+}
+
+void
+ResultPrinter::print_avg_result(std::ostream& out,
+                                NdbAggregator::Result sum,
+                                NdbAggregator::Result count,
+                                int scale)
+{
+  if (sum.is_null() &&
+      !count.is_null() &&
+      count.type() == NdbDictionary::Column::Type::Bigunsigned &&
+      count.data_uint64() == 0) {
+    out << m_null_representation;
+    return;
+  }
+
+  const double result =
+      convert_result_to_double(sum) / convert_result_to_double(count);
+  if (scale < 0) {
+    print_float_or_double(out, result);
+    return;
+  }
+
+  ndbrequire(scale <= 30);
+  char buffer[FLOATING_POINT_BUFFER];
+  bool error;
+  my_fcvt(result, scale, buffer, &error);
+  if (error)
+    out << m_null_representation;
+  else
+    out << buffer;
+}
+
+int
+ResultPrinter::avg_arg_scale(const Outputs* out) const
+{
+  ndbrequire(out != NULL && out->type == Outputs::Type::AVG);
+  const AggregationAPICompiler::Expr* arg = out->avg.arg;
+  // Expression result-type inference is separate from column metadata.
+  // Keep the existing four-digit formatting for those arguments.
+  if (arg == NULL || !arg->isLoad() || m_column_metadata == NULL ||
+      m_column_names == NULL || arg->getLoadIdx() >= m_column_names->size())
+    return 4;
+  // avg_scale is initialized even when the older display metadata is absent
+  // (e.g. a DOUBLE CTE result with no fixed scale, or offline EXPLAIN).
+  return m_column_metadata[arg->getLoadIdx()].avg_scale;
 }
 
 CHARSET_INFO*
