@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include <time.h>
+#include <memory>
 #include "util/require.h"
 
 #include <NdbDir.hpp>
@@ -2323,7 +2324,8 @@ bool ConfigManager::get_packed_config(ndb_mgm_node_type nodetype,
       break;
 
     default:
-      error.assign("get_packed_config, unknown config state: %d",
+      // assign(const char*, size_t) would truncate to m_config_state chars
+      error.assfmt("get_packed_config, unknown config state: %d",
                    m_config_state);
       return false;
       break;
@@ -2332,8 +2334,50 @@ bool ConfigManager::get_packed_config(ndb_mgm_node_type nodetype,
   require(m_config != 0);
   if (buf64) {
     if (v2) {
+      if (node_id != 0) {
+        NodeBitmask all_mgm;
+        m_config->get_nodemask(all_mgm, NDB_MGM_NODE_TYPE_MGM);
+        if (all_mgm.get(node_id) == false) {
+          /**
+           * Data node or API node: hand out only its own connection
+           * sections (ConfigObject::pack_v2 with node_id). Build the
+           * filtered copy straight from m_config; the previous code first
+           * took a full copy (pack and unpack of every section) on every
+           * request, which with 8k API node slots meant serializing about
+           * a million connection sections per node connect. Set the
+           * dynamic ports in the small copy as is done for the full
+           * configuration below; the previous per node path left them
+           * out, so every client asked the mgmd for each dynamic port at
+           * connect time. Nothing is cached for these requests, the
+           * filtered copy is small.
+           */
+          std::unique_ptr<Config> node_config(
+              m_config->create_node_copy(node_id));
+          if (node_config == nullptr) {
+            error.assfmt("get_packed_config, failed to create config for "
+                         "node %u", node_id);
+            return false;
+          }
+          if (!m_dynamic_ports.set_in_config(node_config.get())) {
+            error.assfmt("get_packed_config, failed to set dynamic ports in "
+                         "config for node %u", node_id);
+            return false;
+          }
+          if (!node_config->pack64_v2(*buf64)) {
+            error.assfmt("get_packed_config, failed to pack config for "
+                         "node %u", node_id);
+            return false;
+          }
+          return true;
+        }
+      }
+      /**
+       * Full configuration: management servers and requests without a
+       * node id (ndb_config, the mgm client). Packed on first use and
+       * cached until the next configuration change; no longer built as a
+       * side effect of the per node requests above.
+       */
       if (!m_packed_config_v2.length()) {
-        // No packed config exist, generate a new one
         Config config_copy(m_config);
         if (!m_dynamic_ports.set_in_config(&config_copy)) {
           error.assign(
@@ -2343,18 +2387,6 @@ bool ConfigManager::get_packed_config(ndb_mgm_node_type nodetype,
         if (!config_copy.pack64_v2(m_packed_config_v2)) {
           error.assign("get_packed_config, failed to pack config_copy");
           return false;
-        }
-      }
-      if (node_id != 0) {
-        NodeBitmask all_mgm;
-        m_config->get_nodemask(all_mgm, NDB_MGM_NODE_TYPE_MGM);
-        if (all_mgm.get(node_id) == false) {
-          BaseString tmp;
-          Config config_copy(m_config);
-          if (config_copy.pack64_v2(tmp, node_id)) {
-            buf64->assign(tmp, tmp.length());
-            return true;
-          }
         }
       }
       buf64->assign(m_packed_config_v2, m_packed_config_v2.length());
