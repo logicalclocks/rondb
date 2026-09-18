@@ -5546,7 +5546,9 @@ bool MgmtSrvr::connect_to_self() {
   ndb_mgm_set_connectstring(mgm_handle, buf.c_str());
 
   ndb_mgm_set_ssl_ctx(mgm_handle, ssl_ctx());
-  if (ndb_mgm_connect_tls(mgm_handle, 0, 0, 0, m_client_tls_req) < 0) {
+  // Allow transient local connection failures after opening the MGM service.
+  // Persistent connection failures and TLS errors still fail startup.
+  if (ndb_mgm_connect_tls(mgm_handle, 60, 1, 0, m_client_tls_req) < 0) {
     g_eventLogger->warning("%d %s", ndb_mgm_get_latest_error(mgm_handle),
                            ndb_mgm_get_latest_error_desc(mgm_handle));
     ndb_mgm_destroy_handle(&mgm_handle);
