@@ -9293,7 +9293,6 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
   const Uint32 queryTag = JoinAggregationState::identWordQueryTag(identWord);
   const Uint32 cteId = JoinAggregationState::identWordCteId(identWord);
   const Uint32 leafIdx = JoinAggregationState::identWordLeafIdx(identWord);
-  const Uint32 requesterNode = refToNode(signal->senderBlockRef());
 
   if (unlikely(joinAggParkCapReached())) {
     jam();  // Test hook 5148: the park pool is treated as exhausted.
@@ -9389,6 +9388,9 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
     sendSignalWithDelay(rec->m_destRef, GSN_CONTINUEB, signal, 10, 5);
   }
 #ifdef ERROR_INSERT
+  /* The header's sender ref was overwritten by sendSignalWithDelay above;
+   * the park record (still alive: res is PARKED here) holds the original. */
+  const Uint32 requesterNode = refToNode(rec->m_senderRef);
   if (ERROR_INSERTED(5145) && requesterNode != getOwnNodeId()) {
     /* Test hook (NF-11, NF-12): report each remote requester that parks
      * here, once per instance and requester (extra: iteration in the low
