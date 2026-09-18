@@ -30,6 +30,7 @@
 #include <stddef.h>
 
 #include "ndb_types.h"
+#include <NdbTick.h>
 
 #define JAM_FILE_ID 234
 
@@ -37,6 +38,25 @@
  * common memory allocation function for ndbd kernel
  */
 void *ndbd_malloc(size_t size);
+
+/**
+ * Arm/disarm the [NODE-START] touch-memory progress reports. Armed by
+ * ndbd_run once the configuration is fetched (value =
+ * NodeStartLogReportFrequency) and disarmed (0) when the node has
+ * started, so runtime page population and unit tests stay silent.
+ */
+void ndbd_malloc_set_touch_report_frequency(Uint32 freq_sec);
+/**
+ * The step 1 sub-step the touch reports are attributed to. With
+ * LateAlloc (the default) sub-step 2 maps only the job, file and
+ * transporter buffers; the global memory pools are mapped and touched
+ * by CMVMI while the blocks read their configuration (sub-step 4), so
+ * ndbd_run advances this as its sub-steps complete and re-anchors the
+ * elapsed value of the reports at that sub-step's start (the contract
+ * for sub-step lines, see NodeStartLog.hpp).
+ */
+void ndbd_malloc_set_touch_report_substep(Uint32 sub_step);
+void ndbd_malloc_set_touch_report_start(const NDB_TICKS &start);
 bool ndbd_malloc_need_watchdog(size_t size);
 void *ndbd_malloc_watched(size_t size, volatile Uint32 *watch_dog);
 void ndbd_free(void *p, size_t size);

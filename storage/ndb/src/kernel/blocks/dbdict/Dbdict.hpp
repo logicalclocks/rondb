@@ -53,6 +53,7 @@
 #include <SegmentList.hpp>
 #include <SignalCounter.hpp>
 #include <SimpleProperties.hpp>
+#include <NodeStartLog.hpp>
 #include <SimulatedBlock.hpp>
 #include <blocks/mutexes.hpp>
 #include <cstring>
@@ -130,6 +131,7 @@
 #define ZDICT_TRANSIENT_POOL_STAT 11
 #define ZDICT_CONNECT_LOOP 12
 #define ZDICT_DISCONNECT_LOOP 13
+#define ZNSL_FK_REPORT 14
 
 
 /*--------------------------------------------------------------*/
@@ -1293,9 +1295,13 @@ class Dbdict : public SimulatedBlock {
    * when a file is being read from disk
    ****************************************************************************/
   struct RestartRecord {
-    RestartRecord() { m_complete = false; }
+    RestartRecord() {
+      m_complete = false;
+      m_active = false;
+    }
 
     bool m_complete;
+    bool m_active; /* [NODE-START] step 7: a schema restore is running */
 
     /**    Global check point identity       */
     Uint32 gciToRestart;
@@ -1318,6 +1324,16 @@ class Dbdict : public SimulatedBlock {
   };
   RestartRecord c_restartRecord;
 
+ public:
+  /**
+   * [NODE-START] step 7 progress: the position of a running schema
+   * restore (pass and schema object), read by DBDIH's report tick in
+   * the same thread. Returns false when no schema restore is running.
+   */
+  bool nsl_restart_progress(Uint32 &pass, Uint32 &passes, Uint32 &object,
+                            Uint32 &last_object) const;
+
+ private:
   /**
    * This record stores all the information needed
    * when a file is being read from disk
@@ -4677,6 +4693,17 @@ class Dbdict : public SimulatedBlock {
   void enableFK_fromEndTrans(Signal *, Uint32 tx_key, Uint32 ret);
   bool c_restart_enable_fks;
   bool c_nr_upgrade_fks_done;
+  /**
+   * Step 14 FK sub-step: timer for its waiting heartbeat (CONTINUEB
+   * ZNSL_FK_REPORT, armed at the sub-step start, ends with the timer),
+   * the dictionary object id whose schema transaction is running (RNIL
+   * while the node-restart trigger id check runs instead) and the
+   * number of FK schema transactions finished so far.
+   */
+  NodeStartLogTimer c_nsl_fk_timer;
+  Uint32 c_nsl_fk_current_id;
+  Uint32 c_nsl_fk_enabled;
+  bool c_nsl_fk_tick_armed;
   Uint32 c_at_restart_skip_indexes;
   Uint32 c_at_restart_skip_fks;
 

@@ -1267,6 +1267,13 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
      STR_VALUE(MAX_INT_RNIL)},
 
+    {CFG_DB_NODE_START_LOG_REPORT_FREQUENCY, "NodeStartLogReportFrequency",
+     DB_TOKEN,
+     "Frequency in seconds of [NODE-START] progress reports during node "
+     "start, 0 = only step boundary reports",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "15", "0",
+     STR_VALUE(MAX_INT_RNIL)},
+
     {CFG_DB_O_DIRECT_SYNC_FLAG, "ODirectSyncFlag", DB_TOKEN,
      "O_DIRECT writes are treated as sync:ed writes", ConfigInfo::CI_USED,
      false, ConfigInfo::CI_BOOL, "false", "false", "true"},

@@ -377,6 +377,24 @@ void Qmgr::execCONTINUEB(Signal *signal) {
       jam();
       runArbitThread(signal);
       return;
+    case ZNSL_JOIN_REPORT: {
+      jam();
+      if (!c_nsl_join_timer.is_active()) {
+        jam();
+        /* Joined: the report tick ends with the step. */
+        c_nsl_join_tick_armed = false;
+        return;
+      }
+      const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+      if (c_nsl_join_timer.report_due(freq)) {
+        jam();
+        nsl_report_inclusion_wait();
+      }
+      signal->theData[0] = ZNSL_JOIN_REPORT;
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                          c_nsl_join_timer.next_tick_delay_ms(freq), 1);
+      return;
+    }
     case ZSTART_FAILURE_LIMIT: {
       if (cpresident != ZNIL) {
         jam();
@@ -574,6 +592,112 @@ void Qmgr::execSTART_ORD(Signal *signal) {
  * QMGR is only interested in the first phase.
  * During phase one we clear all registered applications.
  *---------------------------------------------------------------------------*/
+/**
+ * Helpers for the [NODE-START] step 2 (join) reports.
+ */
+static const char *get_regref_cause_string(Uint32 code) {
+  switch (code) {
+    case CmRegRef::ZBUSY:
+      return "president busy";
+    case CmRegRef::ZBUSY_PRESIDENT:
+      return "president busy including another node";
+    case CmRegRef::ZBUSY_TO_PRES:
+      return "president take-over in progress";
+    case CmRegRef::ZNOT_IN_CFG:
+      return "not in configuration";
+    case CmRegRef::ZELECTION:
+      return "election in progress";
+    case CmRegRef::ZNOT_PRESIDENT:
+      return "receiver is not the president";
+    case CmRegRef::ZNOT_DEAD:
+      return "previous instance not yet declared dead";
+    case CmRegRef::ZINCOMPATIBLE_VERSION:
+      return "incompatible version";
+    case CmRegRef::ZINCOMPATIBLE_START_TYPE:
+      return "incompatible start type";
+    case CmRegRef::ZSINGLE_USER_MODE:
+      return "single user mode";
+    default:
+      return "generic refusal";
+  }
+}
+
+static void nsl_append_node_list(char *buf, size_t len,
+                                 const NdbNodeBitmask &mask) {
+  size_t pos = 0;
+  bool first = true;
+  buf[0] = 0;
+  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+    if (mask.get(i)) {
+      const int ret = BaseString::snprintf(buf + pos, len - pos, "%s%u",
+                                           first ? "" : ",", i);
+      if (ret < 0 || (size_t)ret >= len - pos) break;
+      pos += (size_t)ret;
+      first = false;
+    }
+  }
+  if (first) {
+    BaseString::snprintf(buf, len, "none");
+  }
+}
+
+/**
+ * [NODE-START] step 2 sub-step 3 heartbeat, see nsl_report_inclusion_wait.
+ * Armed once the president is known: by execCM_REGCONF on a joining
+ * node, by electionWon on the president while co-starting nodes remain
+ * to be included. The tick ends with the step (sendSttorryLab).
+ */
+void Qmgr::nsl_arm_join_tick(Signal *signal) {
+  const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+  if (freq != 0 && !c_nsl_join_tick_armed && c_nsl_join_timer.is_active()) {
+    jam();
+    c_nsl_join_tick_armed = true;
+    signal->theData[0] = ZNSL_JOIN_REPORT;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                        NodeStartLog::tickDelayMillis(freq), 1);
+  }
+}
+
+void Qmgr::nsl_report_inclusion_wait() {
+  /**
+   * President known, inclusion protocol running. On a joining node:
+   * first the node information exchange with every running node, then
+   * the president's CM_ADD commit which makes this node a running
+   * member. On the president: the CM_ADD of every co-starting node
+   * (execCM_ACKADD completes the step when the last one is in).
+   */
+  char buf[NodeStartLog::BUF_SIZE];
+  if (cpresident == getOwnNodeId()) {
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 3,
+                       NodeState::ST_ILLEGAL_TYPE, "waiting",
+                       (Int64)c_nsl_join_timer.elapsed_sec(),
+                       "we are the president, waiting to include the"
+                       " co-starting nodes %s (CM_ADD)",
+                       BaseString::getPrettyTextShort(c_start.m_starting_nodes)
+                           .c_str());
+  } else if (c_start.m_gsn == GSN_CM_NODEINFOREQ && !c_start.m_nodes.done()) {
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 3,
+                       NodeState::ST_ILLEGAL_TYPE, "waiting",
+                       (Int64)c_nsl_join_timer.elapsed_sec(),
+                       "exchanging node information, waiting for"
+                       " CM_NODEINFOCONF from nodes %s",
+                       BaseString::getPrettyTextShort(
+                           c_start.m_nodes.getNodeBitmask())
+                           .c_str());
+  } else {
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 3,
+                       NodeState::ST_ILLEGAL_TYPE, "waiting",
+                       (Int64)c_nsl_join_timer.elapsed_sec(),
+                       "president node %u has not committed our"
+                       " inclusion yet (CM_ADD)",
+                       cpresident);
+  }
+  if (c_nsl_join_timer.escalate_due()) {
+    jam();
+    infoEvent("%s", buf);
+  }
+}
+
 /*******************************/
 /* STTOR                      */
 /*******************************/
@@ -656,6 +780,15 @@ void Qmgr::sendSttorryLab(Signal *signal, bool first_phase) {
     g_eventLogger->info(
         "Include node protocol completed, phase 1 in QMGR"
         " completed");
+    if (c_nsl_join_timer.is_active()) {
+      char buf[NodeStartLog::BUF_SIZE];
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 0,
+                         NodeState::ST_ILLEGAL_TYPE, "completed",
+                         (Int64)c_nsl_join_timer.elapsed_sec(),
+                         "included in heartbeat protocol, president node %u",
+                         cpresident);
+      c_nsl_join_timer.stop_step();
+    }
   }
   /*****************************/
   /*  STTORRY                  */
@@ -670,6 +803,13 @@ void Qmgr::sendSttorryLab(Signal *signal, bool first_phase) {
 
 void Qmgr::startphase1(Signal *signal) {
   jamEntry();
+
+  c_nsl_join_timer.start_step();
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 0,
+                       NodeState::ST_ILLEGAL_TYPE, "started", -1);
+  }
 
   NodeRecPtr nodePtr;
   nodePtr.i = getOwnNodeId();
@@ -1099,6 +1239,14 @@ void Qmgr::execREAD_NODESREF(Signal *signal) {
 /* CM_INFOCONF                */
 /*******************************/
 void Qmgr::execCM_INFOCONF(Signal *signal) {
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 1,
+                       NodeState::ST_ILLEGAL_TYPE, "completed",
+                       (Int64)c_nsl_join_timer.elapsed_sec(),
+                       "newest GCI on disk: %u", c_start.m_latest_gci);
+  }
+
   /**
    * Open communication to all DB nodes
    */
@@ -1659,6 +1807,14 @@ void Qmgr::execCM_REGCONF(Signal *signal) {
 
   myNodePtr.p->ndynamicId = TdynamicId;
 
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 2,
+                       NodeState::ST_ILLEGAL_TYPE, "completed",
+                       (Int64)c_nsl_join_timer.elapsed_sec(),
+                       "president is node %u", cpresident);
+  }
+
   // set own MT config here or in REF, and others in CM_NODEINFOREQ/CONF
   setNodeInfo(getOwnNodeId()).m_lqh_workers = globalData.ndbMtLqhWorkers;
   setNodeInfo(getOwnNodeId()).m_query_threads = globalData.ndbMtQueryWorkers;
@@ -1701,6 +1857,8 @@ void Qmgr::execCM_REGCONF(Signal *signal) {
 
   c_start.m_gsn = GSN_CM_NODEINFOREQ;
   c_start.m_nodes = c_clusterNodes;
+
+  nsl_arm_join_tick(signal);
 
   if (ERROR_INSERTED(937)) {
     CLEAR_ERROR_INSERT_VALUE;
@@ -1932,6 +2090,18 @@ void Qmgr::execCM_REGREF(Signal *signal) {
   }
 
   c_start.m_regReqReqRecv++;
+
+  if (TaddNodeno != getOwnNodeId()) {
+    /**
+     * Remember the refusal for the [NODE-START] waiting report.
+     * A node also sends CM_REGREQ to itself and answers itself with
+     * ZELECTION as part of the election; that self-refusal carries
+     * no diagnostic value, so only refusals from other nodes are
+     * recorded.
+     */
+    c_nsl_last_regref_node = (Uint16)TaddNodeno;
+    c_nsl_last_regref_code = TrefuseReason;
+  }
 
   // Ignore block reference in data[0]
 
@@ -2432,6 +2602,15 @@ void Qmgr::electionWon(Signal *signal) {
 
   cpresidentAlive = ZTRUE;
   NdbTick_Invalidate(&c_start_election_time);
+
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 2,
+                       NodeState::ST_ILLEGAL_TYPE, "completed",
+                       (Int64)c_nsl_join_timer.elapsed_sec(),
+                       "won election, we are the president");
+  }
+
   c_start.reset();
 
   signal->theData[0] = NDB_LE_CM_REGCONF;
@@ -2444,6 +2623,11 @@ void Qmgr::electionWon(Signal *signal) {
   if (c_start.m_starting_nodes.isclear()) {
     jam();
     sendSttorryLab(signal, true);
+  } else {
+    jam();
+    /* Step 2 stays open until every co-starting node is included
+       (execCM_ACKADD): give the wait a heartbeat. */
+    nsl_arm_join_tick(signal);
   }
 }
 
@@ -2461,6 +2645,52 @@ void Qmgr::regreqTimeLimitLab(Signal *signal) {
     if (c_start.m_president_candidate == ZNIL) {
       jam();
       c_start.m_president_candidate = getOwnNodeId();
+    }
+
+    if (c_nsl_join_timer.report_due(
+            globalData.theNodeStartLogReportFrequency)) {
+      jam();
+      /**
+       * Still no president after another CM_REGREQ round. Report why:
+       * which data nodes have a transporter connection to us and the
+       * last refusal received, so a hang here is diagnosable from the
+       * node log.
+       */
+      NdbNodeBitmask connected;
+      NdbNodeBitmask missing;
+      for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+        if (!c_definedNodes.get(i) || i == getOwnNodeId()) continue;
+        if (c_connectedNodes.get(i)) {
+          connected.set(i);
+        } else {
+          missing.set(i);
+        }
+      }
+      char connected_buf[256];
+      char missing_buf[256];
+      nsl_append_node_list(connected_buf, sizeof(connected_buf), connected);
+      nsl_append_node_list(missing_buf, sizeof(missing_buf), missing);
+      char detail[384];
+      const int pos = BaseString::snprintf(
+          detail, sizeof(detail),
+          "no president elected, connected data nodes [%s],"
+          " not connected [%s]",
+          connected_buf, missing_buf);
+      if (c_nsl_last_regref_node != 0 && pos > 0 &&
+          (size_t)pos < sizeof(detail)) {
+        BaseString::snprintf(detail + pos, sizeof(detail) - pos,
+                             ", last refusal: node %u (%s)",
+                             c_nsl_last_regref_node,
+                             get_regref_cause_string(c_nsl_last_regref_code));
+      }
+      char buf[NodeStartLog::BUF_SIZE];
+      NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 2,
+                         NodeState::ST_ILLEGAL_TYPE, "waiting",
+                         (Int64)c_nsl_join_timer.elapsed_sec(), "%s", detail);
+      if (c_nsl_join_timer.escalate_due()) {
+        jam();
+        infoEvent("%s", buf);
+      }
     }
 
     cmInfoconf010Lab(signal);

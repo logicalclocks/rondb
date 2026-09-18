@@ -50,6 +50,14 @@ class ErrorReporter {
 
   static int get_trace_no();
 
+  /**
+   * [NODE-START] failed line for a node that goes down before its start
+   * narrative is complete (globalData.theNodeStartLogState). Printed once
+   * per process; safe from any thread. Called by handleError/handleAssert
+   * and by the watchdog's direct NdbShutdown path.
+   */
+  static void reportNodeStartFailure(int faultID, const char *problemData);
+
   static void prepare_to_crash(bool first_phase, bool error_insert_crash);
 
   static bool dumpOneJam(FILE *jamStream, int syncMethod, Uint32 syncValue,

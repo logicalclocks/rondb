@@ -54,6 +54,9 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
   m_lcp_started = false;
   m_outstanding_wait_lcp = 0;
   m_outstanding_start_node_lcp_req = 0;
+  c_nsl_start_type = NodeState::ST_ILLEGAL_TYPE;
+  NdbTick_Invalidate(&c_nsl_redo_init_start);
+  for (Uint32 i = 0; i < 4; i++) NdbTick_Invalidate(&c_nsl_rec_start[i]);
 
   // GSN_CREATE_TAB_REQ
   addRecSignal(GSN_CREATE_TAB_REQ, &DblqhProxy::execCREATE_TAB_REQ);
@@ -196,6 +199,17 @@ void DblqhProxy::callNDB_STTOR(Signal *signal) {
   ndbrequire(ss.m_gsn == 0);
 
   const Uint32 startPhase = signal->theData[2];
+  c_nsl_start_type = signal->theData[3];
+  if (startPhase == 1 &&
+      (c_nsl_start_type == NodeState::ST_INITIAL_START ||
+       c_nsl_start_type == NodeState::ST_INITIAL_NODE_RESTART)) {
+    jam();
+    /* [NODE-START] step 4: the workers initialise the REDO log in phase 1
+       and reply NDB_STTORRY when done; the fan-in is the node-wide end. */
+    c_nsl_redo_init_start = NdbTick_getCurrentTicks();
+    Ss_NDB_STTOR &nss = ssFind<Ss_NDB_STTOR>(1);
+    nss.m_sendCONF = (SsFUNCREP)&DblqhProxy::sendNDB_STTORRY_nsl;
+  }
   switch (startPhase) {
     case 3:
       jam();
@@ -207,6 +221,196 @@ void DblqhProxy::callNDB_STTOR(Signal *signal) {
       backNDB_STTOR(signal);
       break;
   }
+}
+
+void DblqhProxy::sendNDB_STTORRY_nsl(Signal *signal, Uint32 ssId) {
+  jam();
+  Ss_NDB_STTOR &ss = ssFind<Ss_NDB_STTOR>(ssId);
+  if (lastReply(ss)) {
+    jam();
+    nsl_node_completed(NodeStartLog::NSL_REDO_INIT, c_nsl_redo_init_start);
+  }
+  LocalProxy::sendNDB_STTORRY(signal, ssId);
+}
+
+/**
+ * The LQH steps run on the workers only for the start types below;
+ * otherwise the workers printed 'skipped' and the fan-in passes
+ * trivially, so the proxy prints no node-wide line either.
+ */
+bool DblqhProxy::nsl_step_runs(Uint32 step) const {
+  const Uint32 t = c_nsl_start_type;
+  switch (step) {
+    case NodeStartLog::NSL_REDO_INIT:
+      return (t == NodeState::ST_INITIAL_START ||
+              t == NodeState::ST_INITIAL_NODE_RESTART);
+    case NodeStartLog::NSL_RESTORE:
+      /* An initial node restart copies the fragments from the live
+         nodes in this step instead of restoring them from an LCP. */
+      return (t == NodeState::ST_NODE_RESTART ||
+              t == NodeState::ST_SYSTEM_RESTART ||
+              t == NodeState::ST_INITIAL_NODE_RESTART);
+    case NodeStartLog::NSL_UNDO_DD:
+    case NodeStartLog::NSL_REDO_EXEC:
+      return (t == NodeState::ST_NODE_RESTART ||
+              t == NodeState::ST_SYSTEM_RESTART);
+    case NodeStartLog::NSL_INDEX_REBUILD:
+      return (t == NodeState::ST_NODE_RESTART ||
+              t == NodeState::ST_SYSTEM_RESTART ||
+              t == NodeState::ST_INITIAL_NODE_RESTART);
+    default:
+      return false;
+  }
+}
+
+/**
+ * System restart, non-master: the master's DIH read and distributed the
+ * metadata (step 7) for this node too; account for that step once, at
+ * the first START_FRAGREQ or, for a node holding no fragment, at the
+ * START_RECREQ. DBDIH printed the step's 'started' line in the main
+ * thread and publishes its start tick atomically for this proxy, which
+ * runs in the rep thread (mt.cpp thr_LOCAL).
+ */
+void DblqhProxy::nsl_sr_metadata_completed(Uint32 sender) {
+  if (c_nsl_start_type != NodeState::ST_SYSTEM_RESTART ||
+      sender == getOwnNodeId() || c_nsl_sr_metadata_done) {
+    jam();
+    return;
+  }
+  c_nsl_sr_metadata_done = true;
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  const Uint64 since = nsl_dih_sr_metadata_start();
+  const Int64 elapsed =
+      (since != 0) ? (Int64)NdbTick_Elapsed(NDB_TICKS(since), now).seconds()
+                   : -1;
+  char buf[NodeStartLog::BUF_SIZE];
+  Uint64 sub_start = 0;
+  Uint32 tables = 0;
+  if (nsl_dih_sr_receiving_tables(sub_start, tables)) {
+    jam();
+    /* Sub-step 2 (receiving the tables) ends with the step; DBDIH
+       printed its started and progress lines. */
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 2,
+                       c_nsl_start_type, "completed",
+                       (Int64)NdbTick_Elapsed(NDB_TICKS(sub_start), now)
+                           .seconds(),
+                       "received %u table objects from master node %u",
+                       tables, sender);
+  }
+  NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_METADATA, 0,
+                     c_nsl_start_type, "completed", elapsed,
+                     "metadata distributed by master node %u", sender);
+}
+
+/* One node-wide 'started' line. */
+void DblqhProxy::nsl_node_started(Uint32 step) {
+  if (!nsl_step_runs(step)) {
+    jam();
+    return;
+  }
+  char buf[NodeStartLog::BUF_SIZE];
+  NodeStartLog::line(buf, sizeof(buf), step, 0, c_nsl_start_type, "started",
+                     -1);
+}
+
+/* One node-wide 'completed' line per LQH step at its fan-in. */
+void DblqhProxy::nsl_node_completed(Uint32 step, const NDB_TICKS &since) {
+  const Uint32 t = c_nsl_start_type;
+  if (!nsl_step_runs(step)) {
+    jam();
+    return;
+  }
+  const Int64 elapsed =
+      NdbTick_IsValid(since)
+          ? (Int64)NdbTick_Elapsed(since, NdbTick_getCurrentTicks()).seconds()
+          : -1;
+  char buf[NodeStartLog::BUF_SIZE];
+  if (step == NodeStartLog::NSL_REDO_INIT) {
+    jam();
+    /**
+     * Only the LDMs that own REDO log parts initialize files and print
+     * a per-LDM completion (part i is owned by LDM i for fewer parts
+     * than LDMs); name that count rather than all the workers.
+     */
+    const Uint32 parts = globalData.ndbLogParts;
+    const Uint32 ldms = nsl_ldms_with_log_parts();
+    NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                       "all %u LDMs holding the %u REDO log"
+                       " parts",
+                       ldms, parts);
+    return;
+  }
+  if (step == NodeStartLog::NSL_RESTORE) {
+    jam();
+    /**
+     * Only the workers that received a START_FRAGREQ restored (copied,
+     * in an initial node restart) anything and printed a per-LDM
+     * completion; a node without a node group holds no fragment and
+     * prints none. Name what happened instead of claiming every LDM.
+     */
+    const Uint32 with_frags = c_nsl_workers_with_frags.count();
+    const bool copied = (t == NodeState::ST_INITIAL_NODE_RESTART);
+    if (with_frags == 0) {
+      jam();
+      if (copied) {
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "no fragments to copy to this"
+                           " node");
+      } else {
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "no fragments to restore on this"
+                           " node");
+      }
+      return;
+    }
+    if (with_frags < c_workers) {
+      jam();
+      if (copied) {
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "%u of %u LDMs received fragments"
+                           " to copy",
+                           with_frags, c_workers);
+      } else {
+        NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                           "%u of %u LDMs held fragments to"
+                           " restore",
+                           with_frags, c_workers);
+      }
+      return;
+    }
+  }
+  NodeStartLog::line(buf, sizeof(buf), step, 0, t, "completed", elapsed,
+                     "all %u LDMs", c_workers);
+}
+
+/**
+ * Declared in NodeStartLog.hpp: the node-wide step 9 start for the LDM
+ * workers (0 before it, and in ndbd, which has no proxy).
+ */
+Uint64 nsl_lqh_proxy_undo_dd_start() {
+  if (globalData.ndbMtLqhWorkers == 0) {
+    return 0;
+  }
+  const DblqhProxy *proxy = (const DblqhProxy *)globalData.getBlock(DBLQH);
+  return (proxy != nullptr) ? proxy->nsl_undo_dd_start() : 0;
+}
+
+/**
+ * Declared in NodeStartLog.hpp: a worker's step 6 completion counted in
+ * the proxy; returns the count and the number of LDMs that hold REDO log
+ * parts (0 in ndbd, which has no proxy and no node-wide LQH lines).
+ */
+Uint32 nsl_lqh_proxy_redo_prepare_done(Uint32 &ldms_with_log_parts) {
+  ldms_with_log_parts = 0;
+  if (globalData.ndbMtLqhWorkers == 0) {
+    return 0;
+  }
+  DblqhProxy *proxy = (DblqhProxy *)globalData.getBlock(DBLQH);
+  if (proxy == nullptr) {
+    return 0;
+  }
+  ldms_with_log_parts = proxy->nsl_ldms_with_log_parts();
+  return proxy->nsl_redo_prepare_done_inc();
 }
 
 // GSN_READ_CONFIG_REQ
@@ -1137,8 +1341,24 @@ void DblqhProxy::sendALTER_TAB_CONF(Signal *signal, Uint32 ssId) {
 
 void DblqhProxy::execSTART_FRAGREQ(Signal *signal) {
   jam();
+  if (!NdbTick_IsValid(c_nsl_rec_start[0])) {
+    jam();
+    /**
+     * [NODE-START] step 8 begins at the first START_FRAGREQ. In a
+     * system restart the requests come from the master's DIH, which
+     * read and distributed the metadata (step 7) for this node too;
+     * account for that step here on the other nodes, right before
+     * their restore starts. In an initial node restart the requests
+     * carry no LCP and the workers copy the fragments from the live
+     * nodes; step 8 covers that copy.
+     */
+    c_nsl_rec_start[0] = NdbTick_getCurrentTicks();
+    nsl_sr_metadata_completed(refToNode(signal->getSendersBlockRef()));
+    nsl_node_started(NodeStartLog::NSL_RESTORE);
+  }
   StartFragReq *req = (StartFragReq *)signal->getDataPtrSend();
   Uint32 instanceNo = getInstance(req->tableId, req->fragId);
+  c_nsl_workers_with_frags.set(instanceNo); /* [NODE-START] step 8 */
 
   // wl4391_todo impl. method that fakes senders block-ref
   sendSignal(numberToRef(DBLQH, instanceNo, getOwnNodeId()), GSN_START_FRAGREQ,
@@ -1177,6 +1397,17 @@ void DblqhProxy::execSTART_RECREQ(Signal *signal) {
   ss.undoDDCompletedCount = 0;
   ss.execREDOLogCompletedCount = 0;
   ss.phaseToSend = 0;
+  if (!NdbTick_IsValid(c_nsl_rec_start[0])) {
+    jam();
+    /* No START_FRAGREQ arrived: this node holds no fragment (e.g. no
+       node group). Step 8 still gets its start line here, so that the
+       fan-in below has a boundary to complete; in a system restart the
+       master's metadata step (7) is completed for this node here too,
+       the START_RECREQ comes from the master's DIH. */
+    c_nsl_rec_start[0] = NdbTick_getCurrentTicks();
+    nsl_sr_metadata_completed(refToNode(signal->getSendersBlockRef()));
+    nsl_node_started(NodeStartLog::NSL_RESTORE);
+  }
 
   // seize records for sub-ops
   Uint32 i;
@@ -1216,24 +1447,53 @@ void DblqhProxy::execLOCAL_RECOVERY_COMP_REP(Signal *signal) {
         jam();
         return;
       }
+      nsl_node_completed(NodeStartLog::NSL_RESTORE, c_nsl_rec_start[0]);
+      /**
+       * Step 9 starts now, not at the first LDM's restore end: LGMAN
+       * receives its START_RECREQ only once every LDM has sent one
+       * (the START_RECREQ_2 fan-in), so nothing runs before this. An
+       * initial node restart has nothing to undo after its copy; its
+       * skipped marker belongs here too, after the step 8 completion.
+       */
+      c_nsl_rec_start[1] = NdbTick_getCurrentTicks();
+      c_nsl_undo_dd_start.store(c_nsl_rec_start[1].getUint64(),
+                                std::memory_order_release);
+      if (c_nsl_start_type == NodeState::ST_INITIAL_NODE_RESTART) {
+        jam();
+        char buf[NodeStartLog::BUF_SIZE];
+        NodeStartLog::skipped(buf, sizeof(buf), NodeStartLog::NSL_UNDO_DD,
+                              c_nsl_start_type);
+      } else {
+        nsl_node_started(NodeStartLog::NSL_UNDO_DD);
+      }
       break;
     }
     case LocalRecoveryCompleteRep::UNDO_DD_COMPLETED: {
       jam();
       ss.undoDDCompletedCount++;
+      if (ss.undoDDCompletedCount == 1) {
+        jam();
+        c_nsl_rec_start[2] = NdbTick_getCurrentTicks(); /* first LDM: redo */
+      }
       if (ss.undoDDCompletedCount < c_workers) {
         jam();
         return;
       }
+      nsl_node_completed(NodeStartLog::NSL_UNDO_DD, c_nsl_rec_start[1]);
       break;
     }
     case LocalRecoveryCompleteRep::EXECUTE_REDO_LOG_COMPLETED: {
       jam();
       ss.execREDOLogCompletedCount++;
+      if (ss.execREDOLogCompletedCount == 1) {
+        jam();
+        c_nsl_rec_start[3] = NdbTick_getCurrentTicks(); /* first LDM: index */
+      }
       if (ss.execREDOLogCompletedCount < c_workers) {
         jam();
         return;
       }
+      nsl_node_completed(NodeStartLog::NSL_REDO_EXEC, c_nsl_rec_start[2]);
       break;
     }
     default:
@@ -1297,6 +1557,8 @@ void DblqhProxy::sendSTART_RECCONF(Signal *signal, Uint32 ssId) {
 
   if (ss.m_error == 0) {
     jam();
+    nsl_node_completed(NodeStartLog::NSL_INDEX_REBUILD, c_nsl_rec_start[3]);
+    for (Uint32 i = 0; i < 4; i++) NdbTick_Invalidate(&c_nsl_rec_start[i]);
 
     /**
      * There should be no disk-ops in flight here...check it
