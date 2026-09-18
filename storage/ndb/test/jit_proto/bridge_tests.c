@@ -73,6 +73,8 @@
 #define kOpSkip          29
 #define kOpSetRegNull    30
 #define kOpAvg           31   /* ronsql_jit item 15 (RONDB-1107 AVG) */
+#define kOpOrderBy       32
+#define kOpLimit         33
 /* Phase 5C-2: the optimizer's DOUBLE-track rewrites. */
 #define kOpSumDouble     15
 #define kOpMaxDouble     17
@@ -4996,6 +4998,41 @@ static void test_f64_vs_u64_import(void) {
   mark_pass(name);
 }
 
+/* ORDER BY/LIMIT must preserve the row SUM and its NULL/overflow exits,
+ * including LIMIT 0: truncation belongs to the CTE owner after merging. */
+static void test_cte_order_limit_metadata(void) {
+  const uint32_t order_flags[] = {
+    (1u << 25) | (1u << 24), /* aggregate DESC */
+    (1u << 25),             /* aggregate ASC */
+    (1u << 24),             /* group key DESC */
+    0                       /* group key ASC */
+  };
+  const uint32_t limits[] = {2, 1, 0, 0x03FFFFFFu};
+  for (unsigned i = 0; i < 4; i++) {
+    char name[64];
+    snprintf(name, sizeof(name), "cte_order_limit_metadata_%u", i);
+    uint32_t prog[] = {
+      enc_load_col(NDB_TYPE_BIGINT, 0, 2),
+      enc_sum(0, 0),
+      enc_op(kOpOrderBy, order_flags[i]),
+      enc_op(kOpLimit, limits[i]),
+    };
+    Program p;
+    if (!expect_accepted_ex(name, prog, 4, 1, &p, 4)) return;
+    if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind,
+                         OP_LOAD_COL_NDB_NB)) return;
+    if (!expect_op_field(name, &p, 0, "c", p.ops[0].c, 2)) return;
+    if (!expect_op_field(name, &p, 1, "kind", p.ops[1].kind,
+                         OP_SUM_BIGINT_CHECKED)) return;
+    if (!expect_op_field(name, &p, 1, "d", p.ops[1].d, 3)) return;
+    if (!expect_op_field(name, &p, 2, "kind", p.ops[2].kind,
+                         OP_EXIT)) return;
+    if (!expect_op_field(name, &p, 3, "kind", p.ops[3].kind,
+                         OP_OVERFLOW_EXIT)) return;
+    mark_pass(name);
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* ronsql_jit item 15 — kOpAvg: typed SUM into the visible dst slot +   */
 /* COUNT into the hidden companion slot n_visible + ordinal.            */
@@ -5441,6 +5478,7 @@ int main(void) {
   test_u64_pack_import_reject();
   test_u64_arith_operand_reject();
   test_f64_vs_u64_import();
+  test_cte_order_limit_metadata();
   test_avg_bigint_single();
   test_avg_two_with_sum();
   test_avg_no_visible_count_rejects();
