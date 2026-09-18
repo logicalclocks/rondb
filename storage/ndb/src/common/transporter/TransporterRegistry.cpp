@@ -4053,7 +4053,12 @@ TransporterRegistry::start_service(SocketServer& socket_server,
     addr.set_port(port);
     if (!socket_server.setup(transporter_service, &addr)) {
       DBUG_PRINT("info", ("Trying new port"));
-      port = 0;
+      /*
+       * Ask the OS for a new port. The dynamic port this node used before it
+       * went down is not reserved for it while it is down, so some other
+       * process may well have taken it in the meantime.
+       */
+      addr.set_port(0);
       if (t.m_s_service_port > 0 ||
           !socket_server.setup(transporter_service, &addr)) {
         /*
@@ -4066,7 +4071,7 @@ TransporterRegistry::start_service(SocketServer& socket_server,
             Ndb_combine_address_port(buf,
                                      sizeof(buf),
                                      t.m_interface,
-                                     t.m_s_service_port);
+                                     port);
         g_eventLogger->error("Unable to setup transporter service port: %s!\n"
                              "Please check if the port is already used,\n"
                              "(perhaps the Node is already running)",
