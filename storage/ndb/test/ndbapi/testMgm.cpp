@@ -788,10 +788,15 @@ int runSetConfig(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/*
+ * Pace session turnover in the UntilStopped stress loops below. Each call
+ * creates a fresh management connection; unbounded reconnects can exhaust
+ * local ephemeral ports and interfere with config validation's bind probe.
+ */
 int runSetConfigUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() && (result = runSetConfig(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
@@ -814,7 +819,7 @@ int runGetConfig(NDBT_Context *ctx, NDBT_Step *step) {
 int runGetConfigUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() && (result = runGetConfig(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
@@ -945,7 +950,7 @@ int runGetConfigFromNodeUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() &&
          (result = runGetConfigFromNode(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
@@ -993,7 +998,7 @@ int runTestStatusUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() &&
          (result = runTestStatus(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
@@ -1293,7 +1298,7 @@ int runTestGetNodeIdUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() &&
          (result = runTestGetNodeId(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
@@ -1832,7 +1837,7 @@ int runTestSetConfigParallelUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() &&
          (result = runTestSetConfigParallel(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
@@ -2772,7 +2777,7 @@ static int runTestGetVersionUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
   int result = NDBT_OK;
   while (!ctx->isTestStopped() &&
          (result = runTestGetVersion(ctx, step)) == NDBT_OK)
-    ;
+    NdbSleep_MilliSleep(100);
   return result;
 }
 
