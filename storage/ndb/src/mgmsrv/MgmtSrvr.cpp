@@ -5925,7 +5925,7 @@ bool MgmtSrvr::request_events(NdbNodeBitmask nodes, Uint32 reports_per_node,
         // only care about data-nodes: ids beyond NdbNodeBitmask are dropped
         NdbNodeBitmask failed;
         node_failrep_get_mask(signal, failed);
-        for (NodeId i = failed.find_first(); i != NdbNodeBitmask::NotFound;
+        for (Uint32 i = failed.find_first(); i != NdbNodeBitmask::NotFound;
              i = failed.find_next(i + 1)) {
           nodes.clear(i);
 
