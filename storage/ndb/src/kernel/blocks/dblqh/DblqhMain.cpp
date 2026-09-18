@@ -24004,9 +24004,6 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   const BlockReference replyRef =
       (req->senderRef != 0) ? req->senderRef : signal->getSendersBlockRef();
 
-  const Uint32 senderNodeId = refToNode(replyRef);
-  ndbrequire(senderNodeId < ABS_MAX_NDB_NODES);
-
   if (unlikely(aggStateKey == RNIL)) {
     jam();
     /* RONDB-1120 P4: identity-addressed redistribute — the
@@ -24127,6 +24124,14 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
   }
+
+  /*
+   * Only accepted rows use the per-data-node redistribution counters.
+   * Reject stale or aborted requests above before checking this bound:
+   * block tests send those probes from API nodes with higher node IDs.
+   */
+  const Uint32 senderNodeId = refToNode(replyRef);
+  ndbrequire(senderNodeId < ABS_MAX_NDB_NODES);
 
   SegmentedSectionPtr keySection, valueSection;
   ndbrequire(handle.getSection(keySection,
