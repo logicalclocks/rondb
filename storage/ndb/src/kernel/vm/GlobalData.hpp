@@ -30,6 +30,7 @@
 #include <kernel_types.h>
 #include <ndb_global.h>
 #include <cstring>
+#include <atomic>
 #include "Prio.hpp"
 #include "VMSignal.hpp"
 
@@ -145,6 +146,30 @@ struct GlobalData {
   Uint32     theNumLqhKeyReqCounts;
   Uint32     theNumScanFragReqCounts;
 
+  /**
+   * NodeStartLogReportFrequency, seconds between [NODE-START] progress
+   * reports during the node start, 0 = only step boundary reports.
+   * theNodeStartTicks is set at the top of ndbd_run and anchors all
+   * total-elapsed values in the [NODE-START] lines.
+   */
+  Uint32     theNodeStartLogReportFrequency;
+  NDB_TICKS  theNodeStartTicks;
+  /**
+   * End state of the [NODE-START] narrative. NDBCNTR ("Node started")
+   * claims NSL_DONE and prints the final 'completed' line; a failing
+   * thread (ErrorReporter, watchdog) claims NSL_FAILED and prints the
+   * 'failed' line. Both use a compare-and-swap from NSL_STARTING, so
+   * exactly one of the two lines is printed, once, whichever thread
+   * wins. SL_STARTED is not usable for this: it is set in STTOR phase 8,
+   * before the handover (101) and barrier (110) phases.
+   */
+  enum NodeStartLogState : Uint32 {
+    NSL_STARTING = 0,
+    NSL_DONE = 1,
+    NSL_FAILED = 2
+  };
+  std::atomic<Uint32> theNodeStartLogState;
+
   GlobalData() {
     theSignalId = 0;
     theStartLevel = NodeState::SL_NOTHING;
@@ -174,6 +199,9 @@ struct GlobalData {
     theMaxSendDelay = 0;
     theNumLqhKeyReqCounts = 0;
     theNumScanFragReqCounts = 0;
+    theNodeStartLogReportFrequency = 15;
+    NdbTick_Invalidate(&theNodeStartTicks);
+    theNodeStartLogState = NSL_STARTING;
     theUseTcInSameRRGroup = false;
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;

@@ -98,10 +98,17 @@ Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx *req) {
   int err =
       req->tup_ptr->mt_scan_init(req->tableId, req->fragId, &pos, &fragPtrI);
   bool moveNext = false;
+  /* [NODE-START] step 11 progress: scanned rows, added to the shared
+     atomic in batches to keep it cheap for the parallel builds. */
+  Uint64 nsl_rows = 0;
   while (globalData.theRestartFlag != perform_stop && err == 0 &&
          (err = req->tup_ptr->mt_scan_next(req->tableId, fragPtrI, &pos,
                                            moveNext)) == 0) {
     moveNext = true;
+    if (++nsl_rows == 1024) {
+      nsl_build_rows_add(nsl_rows);
+      nsl_rows = 0;
+    }
 
     // set up search entry
     TreeEnt ent;
@@ -144,6 +151,10 @@ Dbtux::mt_buildIndexFragment(mt_BuildIndxCtx *req) {
     frag.m_entryCount++;
     frag.m_entryBytes += key_data->get_data_len();
     frag.m_entryOps++;
+  }
+
+  if (nsl_rows != 0) {
+    nsl_build_rows_add(nsl_rows);
   }
 
   if (err < 0) {
