@@ -1431,9 +1431,9 @@ Number of output lines, including header: 2
 
 
 == Expected result ==
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
+SELECT CAST(SUM(`f_float`) AS DECIMAL(20,9)) AS `ff_sum`, CAST(SUM(`f_double`) AS DECIMAL(20,9)) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, CAST(SUM(`dec_val`) AS DECIMAL(20,9)) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
 ff_sum	fd_sum	ff_max	dec_sum
-123457.38906261639	123457.38900010001	123457	123457.39
+123457.389062616	123457.389000100	123457	123457.390000000
 
 === EDGE-date-range: EDGE edge — DATE spread to 9999-12-31 ===
 == Query ==

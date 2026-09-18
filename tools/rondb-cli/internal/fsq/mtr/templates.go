@@ -79,6 +79,13 @@ DELIMITER ;|
 const numericCanon = "# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides\n" +
 	"--let $canonicalization_script=s/(\\.[0-9]*[1-9])0+(\\t|\\$)/\\1\\2/g;s/\\.0+(\\t|\\$)/\\1/g\n"
 
+// floatRoundingCanon is specific to the EDGE-float-rounding fixture.
+const floatRoundingCanon = `# SUM uses binary64 and fragment merge order can change the last few bits.
+# Compare at nine decimal places, retaining the fixture's 1e-7 contribution.
+# Integer-form ff_max remains exact, preserving the FLOAT display check.
+--let $canonicalization_perl=s/(-?[0-9]+\.[0-9]+)/sprintf("%.9f", \$1)/ge;
+`
+
 func fileID(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -130,7 +137,9 @@ func RenderTemplatesTest(cs []cases.Case, db string) string {
 			if c.Ordered {
 				b.WriteString("--let $skip_sort=yes\n")
 			}
-			if c.Canon == cases.CanonNumeric {
+			if c.ID == "EDGE-float-rounding" {
+				b.WriteString(floatRoundingCanon)
+			} else if c.Canon == cases.CanonNumeric {
 				b.WriteString(numericCanon)
 			}
 			b.WriteString("--source suite/ronsql/include/ronsql_compare.inc\n")
@@ -138,7 +147,15 @@ func RenderTemplatesTest(cs []cases.Case, db string) string {
 			if !c.Ordered {
 				b.WriteString("--sorted_result\n")
 			}
-			fmt.Fprintf(&b, "%s|\n", strings.TrimSuffix(strings.TrimSpace(st.RonSQL), ";"))
+			expectedSQL := strings.TrimSuffix(strings.TrimSpace(st.RonSQL), ";")
+			if c.ID == "EDGE-float-rounding" {
+				// Stabilize the printed MySQL reference across fragment merge orders.
+				for _, col := range []string{"f_float", "f_double", "dec_val"} {
+					sum := "SUM(`" + col + "`)"
+					expectedSQL = strings.ReplaceAll(expectedSQL, sum, "CAST("+sum+" AS DECIMAL(20,9))")
+				}
+			}
+			fmt.Fprintf(&b, "%s|\n", expectedSQL)
 		}
 	}
 	b.WriteString(footer)

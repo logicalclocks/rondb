@@ -902,12 +902,14 @@ SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) 
 SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;
 EOF
 --let $strict_diff=yes
-# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
---let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
+# SUM uses binary64 and fragment merge order can change the last few bits.
+# Compare at nine decimal places, retaining the fixture's 1e-7 contribution.
+# Integer-form ff_max remains exact, preserving the FLOAT display check.
+--let $canonicalization_perl=s/(-?[0-9]+\.[0-9]+)/sprintf("%.9f", \$1)/ge;
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
+SELECT CAST(SUM(`f_float`) AS DECIMAL(20,9)) AS `ff_sum`, CAST(SUM(`f_double`) AS DECIMAL(20,9)) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, CAST(SUM(`dec_val`) AS DECIMAL(20,9)) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
 
 --echo
 --echo === EDGE-date-range: EDGE edge — DATE spread to 9999-12-31 ===
