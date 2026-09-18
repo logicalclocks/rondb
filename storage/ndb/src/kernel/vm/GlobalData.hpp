@@ -169,6 +169,35 @@ struct GlobalData {
     NSL_FAILED = 2
   };
   std::atomic<Uint32> theNodeStartLogState;
+  /**
+   * [NODE-START] cross-block reads. Each owning block registers its
+   * function here from its constructor (Dbdih::nsl_register_hooks() and
+   * so on); the readers call the nsl_*() functions declared in
+   * NodeStartLog.hpp, defined in vm/NodeStartLogHooks.cpp, which dispatch
+   * through these pointers and return a neutral value while nothing is
+   * registered. Function pointers instead of direct calls keep a reader's
+   * object file free of references into the owner's object: a unit test
+   * that links libndbblocks.a against stubbed DBDIH/NDBCNTR symbols
+   * (ndb_trpman-t) must not pull the real DBDIH/NDBCNTR objects in.
+   */
+  struct NodeStartLogHooks {
+    Uint64 (*lqh_copy_row_ops_total)() = nullptr;
+    bool (*dict_restart_progress)(Uint32 &pass, Uint32 &passes,
+                                  Uint32 &object,
+                                  Uint32 &last_object) = nullptr;
+    Uint64 (*dih_sr_metadata_start)() = nullptr;
+    bool (*dih_performed_copy_phase)() = nullptr;
+    bool (*dih_wait_lcp_reported)() = nullptr;
+    bool (*dih_sr_receiving_tables)(Uint64 &sub_start,
+                                    Uint32 &tables) = nullptr;
+    Uint64 (*lqh_proxy_undo_dd_start)() = nullptr;
+    Uint32 (*lqh_proxy_redo_prepare_done)(Uint32 &ldms_with_log_parts) =
+        nullptr;
+    Uint32 (*cntr_local_lcp_barrier)(Uint32 &ldms_done, Uint32 &ldms,
+                                     Uint32 &gci_needed,
+                                     Uint32 &gci_done) = nullptr;
+  };
+  NodeStartLogHooks theNodeStartLogHooks;
 
   GlobalData() {
     theSignalId = 0;

@@ -39,6 +39,7 @@ ADD_LIBRARY(ndbkernel STATIC
   LockQueue.cpp
   Mutex.cpp
   Ndbinfo.cpp
+  NodeStartLogHooks.cpp
   Pool.cpp
   Rope.cpp
   SafeCounter.cpp

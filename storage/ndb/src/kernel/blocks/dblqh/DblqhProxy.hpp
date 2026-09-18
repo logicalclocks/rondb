@@ -81,6 +81,7 @@ class DblqhProxy : public LocalProxy {
    */
   Uint32 c_nsl_start_type;
   NDB_TICKS c_nsl_redo_init_start;
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
   NDB_TICKS c_nsl_rec_start[4]; /* restore, undo-dd, redo-exec, index */
   /**
    * Node-wide start of step 9 (undo-dd) as a tick value, 0 until the

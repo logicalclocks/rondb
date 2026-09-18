@@ -8002,9 +8002,12 @@ Uint32 Ndbcntr::nsl_local_lcp_barrier(Uint32 &ldms_done, Uint32 &ldms,
   return 1;
 }
 
-/* Declared in NodeStartLog.hpp; DBDIH reads it in the same thread. */
-Uint32 nsl_cntr_local_lcp_barrier(Uint32 &ldms_done, Uint32 &ldms,
-                                  Uint32 &gci_needed, Uint32 &gci_done) {
+/* Registered in Ndbcntr::nsl_register_hooks() as the
+   nsl_cntr_local_lcp_barrier() read of NodeStartLog.hpp; DBDIH reads it in
+   the same thread. */
+static Uint32 nsl_cntr_local_lcp_barrier_impl(Uint32 &ldms_done, Uint32 &ldms,
+                                              Uint32 &gci_needed,
+                                              Uint32 &gci_done) {
   const Ndbcntr *cntr = (const Ndbcntr *)globalData.getBlock(NDBCNTR);
   if (cntr == nullptr) {
     ldms_done = 0;
@@ -8014,6 +8017,11 @@ Uint32 nsl_cntr_local_lcp_barrier(Uint32 &ldms_done, Uint32 &ldms,
     return 0;
   }
   return cntr->nsl_local_lcp_barrier(ldms_done, ldms, gci_needed, gci_done);
+}
+
+void Ndbcntr::nsl_register_hooks() {
+  globalData.theNodeStartLogHooks.cntr_local_lcp_barrier =
+      nsl_cntr_local_lcp_barrier_impl;
 }
 
 void Ndbcntr::get_node_group_mask(Signal *signal, NodeId node_id,

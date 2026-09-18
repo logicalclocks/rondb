@@ -747,8 +747,13 @@ class NodeStartLogTimer {
 
 /**
  * Progress sources owned by another block than the one that reports
- * them. Plain declarations keep the readers free of the owners' headers;
- * the definitions live next to the data.
+ * them. Plain declarations keep the readers free of the owners' headers.
+ * The definitions (vm/NodeStartLogHooks.cpp) dispatch through
+ * GlobalData::theNodeStartLogHooks, which each owner fills from its
+ * constructor (nsl_register_hooks()), so a reader's object file carries
+ * no reference into the owner's object: ndb_trpman-t links
+ * libndbblocks.a against stubbed DBDIH/NDBCNTR symbols and must not pull
+ * the real objects in.
  *
  * nsl_lqh_copy_row_ops_total() (DblqhMain.cpp): rows received on the
  * fragment copy path by all DBLQH workers, read by the DBDIH step 12
