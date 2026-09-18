@@ -547,8 +547,14 @@ void NDBT_TestCaseImpl1::startStepInThread(int stepNo, NDBT_Context *ctx) {
   pStep->setContext(ctx);
   char buf[16];
   BaseString::snprintf(buf, sizeof(buf), "step_%d", stepNo);
+  // 2 MB by default: test steps keep sizeable arrays on the stack, and
+  // node id indexed ones grew with the 8192 node id ceiling. A test that
+  // wants many threads can still set a smaller size through the property.
+  // NdbThread_Create scales the value by SIZEOF_CHARP / 4, so a 64 bit
+  // build gets twice this.
   Uint32 stackSize = ctx->getProperty(
-      NDBT_TestCase::getStepThreadStackSizePropName(), Uint32(512 * 1024));
+      NDBT_TestCase::getStepThreadStackSizePropName(),
+      Uint32(2 * 1024 * 1024));
 
   NdbThread *pThread = NdbThread_Create(runStep_C, (void **)pStep, stackSize,
                                         buf, NDB_THREAD_PRIO_LOW);

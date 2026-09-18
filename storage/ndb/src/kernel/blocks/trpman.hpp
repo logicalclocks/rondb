@@ -78,6 +78,16 @@ public:
   DistributionHandler m_distribution_handle;
   bool m_distribution_handler_inited;
 
+  /**
+   * Bytes of per transporter activity tracking (m_trp_activity) that each
+   * TRPMAN instance allocates for 'num_trp_ids' transporter ids. Used by
+   * mt_get_static_memory_usage() for the automatic memory configuration,
+   * see Configuration::compute_static_overhead().
+   */
+  static Uint64 get_trp_activity_bytes(Uint32 num_trp_ids) {
+    return Uint64(num_trp_ids) * sizeof(TrpActivity);
+  }
+
  protected:
   bool getParam(const char *name, Uint32 *count) override;
 
@@ -115,10 +125,38 @@ public:
   bool m_init_continueb;
 
   TrpBitmask m_recv_data;  // Bit will be set on when transporter receives data
-  struct {
+  struct TrpActivity {
     NDB_TICKS last_recv;
     Uint32 hist_bins[TRP_ACTIVITY_HIST_BIN_COUNT];
-  } m_trp_activity[MAX_NTRANSPORTERS];
+  };
+  /**
+   * Per-transporter receive activity, indexed by TrpId. Allocated in
+   * execREAD_CONFIG_REQ() with mt_get_num_trp_ids() entries (runtime
+   * sized from the configured max node id) instead of being embedded
+   * with the compile-time MAX_NTRANSPORTERS ceiling, which costs
+   * ~730 KB per TRPMAN instance (one per receive thread) at the 8192
+   * node id ceiling regardless of the actual cluster size.
+   */
+  TrpActivity *m_trp_activity;
+  Uint32 m_num_trp_ids;
+
+  /**
+   * Single access path to m_trp_activity[]. Every caller passes a
+   * transporter id handed out by the TransporterRegistry, which is
+   * sized from the same configuration as m_trp_activity, so the bound
+   * holds by contract. A contract violation used to land inside a
+   * ceiling-sized in-object array; with the runtime-sized heap array it
+   * would be silent heap corruption (or a null dereference before
+   * READ_CONFIG), so crash deliberately instead.
+   */
+  TrpActivity *get_trp_activity(TrpId trp_id) {
+    ndbrequire(m_trp_activity != nullptr);
+    ndbrequire(trp_id < m_num_trp_ids);
+    return &m_trp_activity[trp_id];
+  }
+
+ public:
+  ~Trpman() override;
 };
 
 class TrpmanProxy : public LocalProxy {

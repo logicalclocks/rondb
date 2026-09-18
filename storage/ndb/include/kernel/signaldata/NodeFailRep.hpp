@@ -41,7 +41,13 @@ struct NodeFailRep {
   static constexpr Uint32 SignalLengthLong = 3;
 
   static constexpr Uint32 SignalLength_v1 = 3 + NdbNodeBitmask48::Size;
-  static constexpr Uint32 SignalLengthLong_v1 = 3 + NodeBitmask::Size;
+  /**
+   * Legacy fixed-length format for receivers that do not support node
+   * bitmasks in signal sections. Frozen at the 64-word (2048 bit) mask
+   * size: deriving this from NodeBitmask::Size would silently change the
+   * legacy wire length whenever the in-memory mask grows.
+   */
+  static constexpr Uint32 SignalLengthLong_v1 = 3 + NodeBitmask2K::Size;
 
   static constexpr Uint32 FailNoIndex = 0;
   Uint32 failNo;
@@ -57,7 +63,9 @@ struct NodeFailRep {
   Uint32 noOfNodes;
   union {
     Uint32 theNodes[NdbNodeBitmask::Size];  // data nodes 8.0.17 and older
-    Uint32 theAllNodes[NodeBitmask::Size];  // api nodes 8.0.17 and older
+    // api nodes 8.0.17 and older; frozen legacy layout (64 words), the
+    // modern path sends the mask as a signal section instead
+    Uint32 theAllNodes[NodeBitmask2K::Size];
   };
 
   static Uint32 getNodeMaskLength(Uint32 signalLength) {

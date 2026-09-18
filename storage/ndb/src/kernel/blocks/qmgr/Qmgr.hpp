@@ -935,7 +935,7 @@ class Qmgr : public SimulatedBlock {
   void dec_get_num_multi_trps_sent(NodeId);
   void inc_get_num_multi_trps_sent(NodeId);
   void handle_graceful_shutdown(Signal*);
-  bool check_all_nodes_support_high_node_ids();
+  bool check_all_nodes_support_high_node_ids(Uint32 highest_node_id);
 };
 #undef JAM_FILE_ID
 
