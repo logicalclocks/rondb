@@ -930,7 +930,22 @@ void ConfigManager::execCONFIG_CHANGE_IMPL_REQ(SignalSender &ss,
     }
 
     case ConfigChangeImplReq::Commit:
+      /**
+       * commitConfigChange() notifies the subscribers, i.e.
+       * MgmtSrvr::config_changed(), which reconfigures the
+       * TransporterFacade and thereby takes the ClusterMgr lock, a
+       * trp_client lock. Release our own trp_client lock (the
+       * SignalSender) meanwhile: the poll owner delivering a signal to
+       * ClusterMgr holds that lock and may for_each() the signal to every
+       * client, which blocks on ours, so holding it here deadlocks the
+       * mgmd whenever e.g. an API_REGCONF arrives during the change
+       * (seen as 'set config' timing out in testMgm SetConfig).
+       * m_config_mutex stays held; signals arriving meanwhile are queued
+       * on the SignalSender and handled by the next waitFor().
+       */
+      ss.unlock();
       commitConfigChange();
+      ss.lock();
 
       // All nodes has agreed on config -> CONFIRMED
       m_config_state = CS_CONFIRMED;

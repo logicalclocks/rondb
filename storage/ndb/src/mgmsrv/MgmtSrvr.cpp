@@ -960,52 +960,65 @@ void MgmtSrvr::setClusterLog(const Config *config) {
 void MgmtSrvr::config_changed(NodeId node_id, const Config *new_config) {
   DBUG_ENTER("MgmtSrvr::config_changed");
 
-  Guard g(m_local_config_mutex);
+  {
+    Guard g(m_local_config_mutex);
 
-  // Don't allow nodeid to change, once it's been set
-  require(_ownNodeId == 0 || _ownNodeId == node_id);
+    // Don't allow nodeid to change, once it's been set
+    require(_ownNodeId == 0 || _ownNodeId == node_id);
 
-  _ownNodeId = node_id;
+    _ownNodeId = node_id;
 
-  if (m_local_config) delete m_local_config;
+    if (m_local_config) delete m_local_config;
 
-  m_local_config = new Config(new_config);  // Copy
-  require(m_local_config != 0);
+    m_local_config = new Config(new_config);  // Copy
+    require(m_local_config != 0);
 
-  /* Rebuild node arrays */
-  ConfigIter iter(m_local_config, CFG_SECTION_NODE);
-  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
-    clear_connect_address_cache(i);
+    /* Rebuild node arrays */
+    ConfigIter iter(m_local_config, CFG_SECTION_NODE);
+    for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
+      clear_connect_address_cache(i);
 
-    if (iter.first()) continue;
+      if (iter.first()) continue;
 
-    if (iter.find(CFG_NODE_ID, i) == 0) {
-      unsigned type;
-      require(iter.get(CFG_TYPE_OF_SECTION, &type) == 0);
+      if (iter.find(CFG_NODE_ID, i) == 0) {
+        unsigned type;
+        require(iter.get(CFG_TYPE_OF_SECTION, &type) == 0);
 
-      switch (type) {
-        case NODE_TYPE_DB:
-          nodeTypes[i] = NDB_MGM_NODE_TYPE_NDB;
-          break;
-        case NODE_TYPE_API:
-          nodeTypes[i] = NDB_MGM_NODE_TYPE_API;
-          break;
-        case NODE_TYPE_MGM:
-          nodeTypes[i] = NDB_MGM_NODE_TYPE_MGM;
-          break;
-        default:
-          break;
+        switch (type) {
+          case NODE_TYPE_DB:
+            nodeTypes[i] = NDB_MGM_NODE_TYPE_NDB;
+            break;
+          case NODE_TYPE_API:
+            nodeTypes[i] = NDB_MGM_NODE_TYPE_API;
+            break;
+          case NODE_TYPE_MGM:
+            nodeTypes[i] = NDB_MGM_NODE_TYPE_MGM;
+            break;
+          default:
+            break;
+        }
+      } else {
+        nodeTypes[i] = (enum ndb_mgm_node_type) - 1;
       }
-    } else {
-      nodeTypes[i] = (enum ndb_mgm_node_type) - 1;
     }
+
+    // Setup cluster log
+    setClusterLog(m_local_config);
   }
 
-  // Setup cluster log
-  setClusterLog(m_local_config);
-
+  /**
+   * Reconfigure the transporters and ClusterMgr without holding
+   * m_local_config_mutex. TransporterFacade::configure() takes the
+   * ClusterMgr lock (a trp_client lock); change_config() and
+   * alloc_node_id_req() take m_local_config_mutex while holding a
+   * SignalSender lock, and the poll owner delivering to ClusterMgr may
+   * for_each() a signal to every client. Holding m_local_config_mutex
+   * here would close that cycle. The new configuration is owned by the
+   * ConfigManager, which holds its own mutex for the duration of this
+   * call, so it can be used directly.
+   */
   if (theFacade) {
-    if (!theFacade->configure(_ownNodeId, m_local_config->m_configuration)) {
+    if (!theFacade->configure(node_id, new_config->m_configuration)) {
       g_eventLogger->warning(
           "Could not reconfigure everything online, "
           "this node need a restart");
