@@ -999,9 +999,12 @@ int runTestStatusUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
 
 static bool get_nodeid(NdbMgmd &mgmd, const Properties &args,
                        Properties &reply) {
-  // Fill in default values of other args
+  // Fill in default values of other args. Announce our real version: the
+  // mgmd's node id gates judge the announced version against the node ids in
+  // the cluster configuration (this test cluster has ids above 255), so the
+  // upstream placeholder 1 would be refused before any check is reached.
   Properties call_args(args);
-  if (!call_args.contains("version")) call_args.put("version", 1);
+  if (!call_args.contains("version")) call_args.put("version", NDB_VERSION);
   if (!call_args.contains("nodetype")) call_args.put("nodetype", 1);
   if (!call_args.contains("nodeid")) call_args.put("nodeid", 1);
   if (!call_args.contains("user")) call_args.put("user", "mysqld");

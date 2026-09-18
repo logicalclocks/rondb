@@ -773,14 +773,17 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
     }
   }
 
-  bool compatible;
+  /**
+   * Only the node type is validated here. The client's version is not
+   * judged: a node's version compatibility is verified when it registers
+   * with the data nodes (API_REGREQ), and the one version dependent rule
+   * for allocating an id is the node id range gate below. Clients of other
+   * versions, and testMgm which sends version 1, rely on this.
+   */
   switch (nodetype) {
     case NODE_TYPE_MGM:
     case NODE_TYPE_API:
-      compatible = ndbCompatible_mgmt_api(NDB_VERSION, version);
-      break;
     case NODE_TYPE_DB:
-      compatible = ndbCompatible_mgmt_ndb(NDB_VERSION, version);
       break;
     default:
       m_output->println("result: unknown nodetype %d", nodetype);
@@ -788,20 +791,34 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
       return;
   }
 
-  if (!compatible) {
-    m_output->println("result: Node type %d with incompatible version 0x%x",
-                      nodetype, version);
+  ndb_sockaddr client_addr;
+  {
+    errno = 0;
+    int r = ndb_getpeername(m_secure_socket.ndb_socket(), &client_addr);
+    if (r != 0) {
+      m_output->println("result: getpeername() failed, err= %d",
+                        ndb_socket_errno());
+      m_output->println("%s", "");
+      return;
+    }
+  }
+
+  /* Check nodeid parameter */
+  if (nodeid > MAX_NODES_ID) {
+    m_output->println("result: illegal nodeid %u", nodeid);
     m_output->println("%s", "");
     return;
   }
 
   {
     /**
-     * Version gates for high node ids. Refuse the allocation up front,
-     * both when the requested id itself needs a newer version and when
-     * the configuration contains high node ids (in the latter case the
-     * client would otherwise get a reservation only to be refused at
-     * config fetch, leaving a dangling reservation behind).
+     * Version gates for high node ids, after the range check so that an id
+     * outside the range is "illegal nodeid" whoever asks, and before the
+     * allocation so that an old client is refused up front, both when the
+     * requested id itself needs a newer version and when the configuration
+     * contains high node ids (in the latter case the client would
+     * otherwise get a reservation only to be refused at config fetch,
+     * leaving a dangling reservation behind).
      */
     const NodeId max_node_id = m_mgmsrv.get_max_node_id();
     const char *reject = nullptr;
@@ -825,25 +842,6 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
       m_output->println("%s", "");
       return;
     }
-  }
-
-  ndb_sockaddr client_addr;
-  {
-    errno = 0;
-    int r = ndb_getpeername(m_secure_socket.ndb_socket(), &client_addr);
-    if (r != 0) {
-      m_output->println("result: getpeername() failed, err= %d",
-                        ndb_socket_errno());
-      m_output->println("%s", "");
-      return;
-    }
-  }
-
-  /* Check nodeid parameter */
-  if (nodeid > MAX_NODES_ID) {
-    m_output->println("result: illegal nodeid %u", nodeid);
-    m_output->println("%s", "");
-    return;
   }
 
   NodeId tmp = nodeid;
