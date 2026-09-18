@@ -48,8 +48,6 @@ type Expect struct {
 	Finding string      // ledger id, e.g. "F0"
 	Pattern string      // substring of the RonSQL error (rejections) or note (wrong results)
 	Wrong   *WrongValue // exact single-row mismatch; nil grants no wrong-result exemption
-	// UnquotedTemporal lists the only output columns eligible for F9 matching.
-	UnquotedTemporal []string
 }
 
 // Statement is one bound statement of a case.
@@ -79,12 +77,10 @@ type Case struct {
 	Ordered      bool
 	ExpectReject *Expect
 	KnownWrong   *Expect
-	// KnownError is a verify-only expectation: the RonSQL response is known
-	// to be unusable (F9: unparsable JSON) although the TEXT form compared
-	// by the MTR test is fine.  Reported as KNOWN-ERROR, not as a failure.
-	KnownError *Expect
-	Hazard     string // finding id: not executed unless hazards are enabled
-	MTR        bool   // part of the golden MTR test
+	Hazard       string // finding id: not executed unless hazards are enabled
+	MTR          bool   // part of the golden MTR test
+	// RequireReject distinguishes contract errors from known limitations.
+	RequireReject bool
 	// Canon selects the MTR-side canonicalization applied to both engines'
 	// TEXT output before the diff: "" (byte-strict) or CanonNumeric.
 	Canon string
@@ -120,11 +116,10 @@ func (c Case) MatchesShapes(selected map[string]bool) bool {
 	return false
 }
 
-// CanonNumeric strips trailing fractional zeros on both sides (RonSQL prints
-// AVG with four decimals regardless of the input type, F3, and drops the
-// scale of DECIMAL MIN/MAX, F2); values still have to agree exactly.  It is
-// set automatically for statements that use AVG or touch a DECIMAL, DOUBLE
-// or FLOAT column.
+// CanonNumeric strips trailing fractional zeros on both sides; values still
+// have to agree exactly. It remains enabled for AVG and fractional columns
+// while DECIMAL scale differences (F2) and AVG expression formatting (F3)
+// remain open. Strict display regressions cover the fixed column paths.
 const CanonNumeric = "numeric"
 
 // Config selects the data set the cases bind to.
@@ -393,18 +388,6 @@ func (b *builder) needsNumericCanon(c Case) bool {
 	return false
 }
 
-// knownError marks an already-added case with a verify-only expected
-// execution error (the MTR TEXT compare is unaffected).
-func (b *builder) knownError(id string, e *Expect) {
-	for i := range b.out {
-		if b.out[i].ID == id {
-			b.out[i].KnownError = e
-			return
-		}
-	}
-	b.fail(id, fmt.Errorf("knownError: no such case"))
-}
-
 func (b *builder) fail(id string, err error) {
 	b.errs = append(b.errs, fmt.Errorf("%s: %w", id, err))
 }
@@ -555,8 +538,11 @@ func (b *builder) collectCases() {
 		c    int64
 		note string
 	}{{21, "exactly 5 rows"}, {31, "300 rows"}, {16, "no rows"}} {
+		// F0 (RONDB-1121): the emitted CTE form was rejected as "not a
+		// single-row key lookup"; RONDB-1124 M1.3 collapses it into the
+		// direct S6b statement, so it is asserted like any other case.
 		b.emitCase(fmt.Sprintf("S6-cte-k%d", k.c), "S6", "single", "Hopsworks CTE collect form: "+k.note,
-			b.collectView("s6", 5, false, false), key(k.c), false, Known["S6-cte"], true)
+			b.collectView("s6", 5, false, false), key(k.c), false, nil, true)
 		// S6b: the direct single-table form, the same columns and order.
 		b.sqlCase(fmt.Sprintf("S6b-k%d", k.c), "S6b", "single", "direct collect form: "+k.note,
 			fmt.Sprintf("SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = %d ORDER BY `event_time` DESC LIMIT 5;", k.c),
@@ -740,7 +726,7 @@ func (b *builder) edgeCases() {
 	e("EDGE-float-exact", "exactly representable floats, DATE min/max",
 		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "")
 	e("EDGE-float-rounding", "rounding-sensitive floats (MySQL FLOAT display precision, F4)",
-		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;", false, nil, Known["F4"], "")
+		"SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;", false, nil, nil, "")
 	e("EDGE-date-range", "DATE spread to 9999-12-31",
 		"SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` >= '2000-01-01';", false, nil, nil, "")
 	e("EDGE-big-safe", "BIGINT around 2^53, SUM = 2^54 - 1",
@@ -749,11 +735,14 @@ func (b *builder) edgeCases() {
 		"SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max` FROM `edge_big_1` WHERE `entity_id` = 2;", false, nil, nil, "")
 	e("EDGE-decimal-large", "DECIMAL(18,2) beyond 2^53 cents (F5 wrong value)",
 		"SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;", false, nil, Known["F5"], "")
-	// Topology-dependent outcome: the clean F6 error when both rows share a
-	// fragment (1-2 node groups), the wrapped F22 value when they do not
-	// (4 node groups); both are known, neither is a pass.
-	e("EDGE-big-overflow", "deliberate BIGINT SUM overflow (F6 clean error, or the F22 wrapped value on more node groups)",
-		"SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;", false, Known["F6"], Known["F22"], "")
+	// The checked 64-bit contract requires 1860 for both local and merged SUM.
+	b.add(Case{
+		ID: "EDGE-big-overflow", Shape: "EDGE", Mode: "edge", Origin: "framework",
+		Note: "deliberate BIGINT SUM overflow (required NDB error 1860; MySQL widens)",
+		Statements: []Statement{{Label: "sql",
+			RonSQL: "SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;"}},
+		ExpectReject: Known["F6"], RequireReject: true, MTR: true,
+	})
 	e("EDGE-str-in-list", "apostrophe, empty, literal-NULL and multibyte keys in an IN list",
 		"SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a');", false, nil, nil, "")
 	e("EDGE-str-null-vs-NULL", "SQL NULL vs the string 'NULL' vs '' (typed nullness)",
@@ -778,16 +767,16 @@ func (b *builder) edgeCases() {
 		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`;", false, nil, nil, "")
 	e("EDGE-comp-batch", "batch over dangling, NULL and matching hops",
 		"WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, nil, nil, "")
-	e("EDGE-comp-binary", "VARBINARY projection through the snowflake template (F7, emitted shape)",
-		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, Known["F7"], nil, "")
-	e("EDGE-F1-string-reuse", "F1: string aggregated twice with a load in between (CRASH — hazard)",
-		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;", false, nil, nil, "F1")
-	e("EDGE-F1-string-reuse-nonull", "F1 kernel-side variant (DATA NODE CRASH — hazard)",
-		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "F1")
-	// F9: MIN/MAX over a DATE/TIMESTAMP column is printed unquoted in JSON
-	// output (ResultPrinter::print_aggregate_value), so the RDRS body is
-	// unparsable; the TEXT form (MTR) is correct.
-	for _, id := range []string{"EDGE-float-exact", "EDGE-date-range", "EDGE-ts3-cutoff", "EDGE-ts6-cutoff", "EDGE-ts0-batch"} {
-		b.knownError(id, Known["F9"])
-	}
+	// F7 (RONDB-1121): the pass-through printer rejected VARBINARY;
+	// RONDB-1124 M1.4 prints it (raw bytes in TEXT, base64 in JSON).
+	e("EDGE-comp-binary", "VARBINARY projection through the snowflake template (F7 fixed in RONDB-1124 M1.4)",
+		"WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;", false, nil, nil, "")
+	// F1 (RONDB-1121 smoke): a string column aggregated twice with another
+	// column load in between crashed RDRS (entity 1) or a data node (entity
+	// 3).  RONDB-1056 10561b78d1e fixed the kernel cause (the string register
+	// was clobbered by a later numeric load); asserted since M1.2.
+	e("EDGE-F1-string-reuse", "F1: string aggregated twice with a load in between (fixed: RONDB-1056 10561b78d1e)",
+		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;", false, nil, nil, "")
+	e("EDGE-F1-string-reuse-nonull", "F1 kernel-side variant, no NULLs (fixed: RONDB-1056 10561b78d1e)",
+		"SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;", false, nil, nil, "")
 }

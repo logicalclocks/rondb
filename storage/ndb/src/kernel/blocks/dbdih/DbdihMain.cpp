@@ -17673,8 +17673,12 @@ void Dbdih::GCP_SAVEhandling(Signal *signal, Uint32 nodeId) {
     }
     m_gcp_save.m_master.m_saveConfNodes.clear();
   }
+  // A first durable GCP can complete after the node has entered single-user
+  // mode or shutdown. Those states have also completed startup, so clear the
+  // flag before copying the sysfile or the next restart becomes an initial
+  // start despite the completed checkpoint.
   if (SYSFILE->getInitialStartOngoing() &&
-      getNodeState().startLevel == NodeState::SL_STARTED) {
+      getNodeState().startLevel >= NodeState::SL_STARTED) {
     jam();
 #if 0
     g_eventLogger->info("Dbdih: Clearing initial start ongoing");

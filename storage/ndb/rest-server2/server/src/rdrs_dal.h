@@ -35,7 +35,8 @@ typedef enum HTTP_CODE {
   CONFLICT          = 409,
   PAYLOAD_TOO_LARGE = 413,
   TOO_MANY_REQUESTS = 429,
-  SERVER_ERROR      = 500
+  SERVER_ERROR      = 500,
+  SERVICE_UNAVAILABLE = 503
 } HTTP_CODE;
 
 // Status

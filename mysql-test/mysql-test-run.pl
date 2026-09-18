@@ -294,6 +294,7 @@ our @RONDB_SUITES = qw(
   ndb_opt
   ndb_push_agg
   ndb_push_agg_dist
+  ndb_push_agg_jit
   ndb_quota
   ndb_ring_buffer
   ndb_rpl
@@ -309,12 +310,18 @@ our @RONDB_SUITES = qw(
   rdrs2-golang
   rdrs2-ronsqltpch
   ronsql
+  ronsql_jit
   ronsql_cte
+  ronsql_cte_jit
   ronsql_large
   ronsql_cte_ng1r3
   ronsql_cte_ng2r2
   ronsql_cte_ng2r3
   ronsql_cte_ng4r2
+  ronsql_fs
+  ronsql_fs_jit
+  ronsql_fs_ng2r2
+  ronsql_fs_ng4r2
   myrouter
   myrouter_ndb
 );

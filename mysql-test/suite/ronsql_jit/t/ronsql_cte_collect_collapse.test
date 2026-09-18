@@ -1,0 +1,13 @@
+# Mirror of suite/ronsql/t/ronsql_cte_collect_collapse.test with the JIT
+# active (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
+# differential. Test logic lives ONLY in the sourced original.
+#
+# PIN-ONLY. The collapsed collect form is a pass-through ORDER BY scan with
+# no aggregation program; the scan filter of cc-7 (an extra equality on a
+# VARCHAR column) is the only program the JIT may see. The recorded
+# fallback delta below is the coverage pin: a change in EITHER direction is
+# a coverage change — investigate, then re-record deliberately.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql/t/ronsql_cte_collect_collapse.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ronsql_cte_collect_collapse_jit_fallback_delta;

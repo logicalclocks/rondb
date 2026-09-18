@@ -63,8 +63,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <set>
+#include <utility>
 #include <vector>
 
 static bool verbose = false;
@@ -1157,6 +1159,312 @@ done:
 }
 
 /* ------------------------------------------------------------------ */
+/* Test 7: Late replies after a CTE redistribution failure              */
+/* ------------------------------------------------------------------ */
+
+static int
+testFailedCteLateReplies(Ndb *ndb, SignalSender &ss, const TableMeta &meta,
+                         int mysqlPort, bool cancel = false,
+                         bool identityCancel = false)
+{
+  printf("Test 7: Late replies after CTE %s...\n",
+         identityCancel ? "identity cancellation" :
+         cancel ? "cancellation" : "failure");
+  std::set<Uint32> nodes(meta.fragNodes.begin(), meta.fragNodes.end());
+  if (nodes.size() < 2) {
+    printf("  SKIP: requires at least two data nodes\n");
+    return 0;
+  }
+
+  std::vector<Uint32> aggProg =
+    buildAggProgram_SumGroupBy(meta.attrIdA, meta.attrIdB);
+  std::map<Uint32, Uint32> aggKeys;
+  std::map<Uint32, Uint32> owners;
+  for (Uint32 node : nodes) {
+    Uint32 key = 0, owner = 0;
+    if (sendSetupReq(ss, node, aggProg, meta, key, owner) != 0) {
+      releaseAll(ss, aggKeys);
+      return -1;
+    }
+    aggKeys[node] = key;
+    owners[node] = owner;
+  }
+
+  const Uint32 node = *nodes.begin();
+  const Uint32 key = aggKeys[node];
+  const Uint16 block = numberToBlock(DBLQH, owners[node]);
+  const Uint32 ownerRef = numberToRef(DBLQH, owners[node], node);
+  // SETUP uses queryTag=FAKE_SENDER_DATA, cteIndex=RNIL and leafIdx=0.
+  const Uint32 identWord = (FAKE_SENDER_DATA & 0xFFFF) | (0x7Fu << 16);
+  std::vector<Uint32> attrInfo =
+    buildCteLookupAttrInfo(1, 1, ss.getOwnRef(),
+                           FAKE_SENDER_DATA, ss.getOwnRef());
+  Uint32 keyBuf[3], keyWords, keyBytes;
+  buildBigintKey(keyBuf, keyWords, keyBytes, meta.attrIdA, 1);
+
+  /* A lookup on the same owner is an ordered barrier: any extra
+   * COMPLETE_REF/CONF from the preceding injected reply fails this check.
+   * STATE_NOT_READY also distinguishes ERROR from a revived, empty CTE,
+   * which would return GROUP_NOT_FOUND.  No timing-based sleeps needed. */
+  std::function<int(Uint32)> expectNotReady = [&](Uint32 correlationId) -> int {
+    if (sendCteLookupReq(ss, node, owners[node], key, correlationId,
+                         keyBuf, keyWords, keyBytes, attrInfo) != 0)
+      return -1;
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "failed CTE lookup");
+    if (resp == nullptr) return -1;
+    if (getGsn(resp) != GSN_CTE_LOOKUP_REF) {
+      fprintf(stderr, "FAIL 7: expected CTE_LOOKUP_REF, got GSN=%d\n",
+              getGsn(resp));
+      return -1;
+    }
+    const CteLookupRef *ref =
+      reinterpret_cast<const CteLookupRef *>(resp->getDataPtr());
+    if (ref->errorCode != CteLookupRef::STATE_NOT_READY ||
+        ref->senderData != correlationId || ref->senderRef != ownerRef) {
+      fprintf(stderr, "FAIL 7: lookup error=%u senderData=%u senderRef=%x\n",
+              ref->errorCode, ref->senderData, ref->senderRef);
+      return -1;
+    }
+    return 0;
+  };
+
+  std::function<int(Uint32)> sendFailure = [&](Uint32 errorCode) -> int {
+    SimpleSignal sig;
+    JoinAggRedistributeRef *ref =
+      reinterpret_cast<JoinAggRedistributeRef *>(sig.getDataPtrSend());
+    std::map<Uint32, Uint32>::const_reverse_iterator peer = aggKeys.rbegin();
+    ref->aggStateKey = peer->second;
+    ref->senderNodeId = peer->first;
+    ref->errorCode = errorCode;
+    ref->senderAggStateKey = key;
+    ref->identWord = identWord;
+    ref->transid[0] = FAKE_TRANS_ID1;
+    ref->transid[1] = FAKE_TRANS_ID2;
+    sig.set(ss, 0, block, GSN_JOIN_AGG_REDISTRIBUTE_REF,
+            JoinAggRedistributeRef::SignalLength);
+    if (ss.sendSignal(node, &sig) == SEND_OK) return 0;
+    fprintf(stderr, "FAIL 7: send REDISTRIBUTE_REF failed\n");
+    return -1;
+  };
+
+  std::function<int(Uint32, Uint32, Uint32)> sendFinal = [&](
+      Uint32 destination, Uint32 senderNode, Uint32 errorCode) -> int {
+    SimpleSignal sig;
+    JoinAggFinalRep *rep =
+      reinterpret_cast<JoinAggFinalRep *>(sig.getDataPtrSend());
+    rep->aggStateKey = aggKeys[destination];
+    rep->senderNodeId = senderNode;
+    rep->identWord = identWord;
+    rep->transid[0] = FAKE_TRANS_ID1;
+    rep->transid[1] = FAKE_TRANS_ID2;
+    rep->redistributeCountLo = 0;
+    rep->redistributeCountHi = 0;
+    rep->errorCode = errorCode;
+    sig.set(ss, 0, numberToBlock(DBLQH, owners[destination]),
+            GSN_JOIN_AGG_FINAL_REP, JoinAggFinalRep::SignalLength);
+    if (ss.sendSignal(destination, &sig) == SEND_OK) return 0;
+    fprintf(stderr, "FAIL 7: send FINAL_REP failed\n");
+    return -1;
+  };
+
+  std::function<int(Uint32, Uint32)> expectCompleteError = [&](
+      Uint32 expectedNode, Uint32 errorCode) -> int {
+    SimpleSignal *resp = waitForSignal(ss, WAIT_TIMEOUT_MS, "COMPLETE_REF");
+    if (resp == nullptr) return -1;
+    if (getGsn(resp) != GSN_JOIN_AGG_COMPLETE_REF) {
+      fprintf(stderr, "FAIL 7: expected COMPLETE_REF, got GSN=%d\n",
+              getGsn(resp));
+      return -1;
+    }
+    const JoinAggCompleteRef *ref =
+      reinterpret_cast<const JoinAggCompleteRef *>(resp->getDataPtr());
+    if (ref->errorCode != errorCode ||
+        ref->senderRef != numberToRef(DBLQH, owners[expectedNode], expectedNode) ||
+        ref->senderData != FAKE_SENDER_DATA ||
+        ref->requestId != FAKE_REQUEST_ID) {
+      fprintf(stderr, "FAIL 7: incorrect completion error or correlation\n");
+      return -1;
+    }
+    return 0;
+  };
+
+  std::function<int(Uint32, Uint32, Uint32, Uint32, Uint32)> sendCancel =
+      [&](Uint32 errorCode, Uint32 requestId, Uint32 transId1,
+          Uint32 transId2, Uint32 senderData) -> int {
+    SimpleSignal sig;
+    JoinAggCancelReq *req =
+      reinterpret_cast<JoinAggCancelReq *>(sig.getDataPtrSend());
+    req->senderRef = ss.getOwnRef();
+    req->senderData = senderData;
+    req->requestId = requestId;
+    req->transid[0] = transId1;
+    req->transid[1] = transId2;
+    req->aggStateKey = identityCancel ? RNIL : key;
+    req->errorCode = errorCode;
+    req->identWord = identWord;
+    const Uint16 cancelBlock =
+        identityCancel ? numberToBlock(DBLQH, 1) : block;
+    sig.set(ss, 0, cancelBlock, GSN_JOIN_AGG_CANCEL_REQ,
+            JoinAggCancelReq::SignalLength);
+    if (ss.sendSignal(node, &sig) == SEND_OK) return 0;
+    fprintf(stderr, "FAIL 7: send CANCEL_REQ failed\n");
+    return -1;
+  };
+
+  int result = [&]() -> int {
+    /* Empty grouped states avoid row redistribution.  Complete only one
+     * node so it waits at the FINAL_REP barrier until we release its peers. */
+    if (sendCompleteReq(ss, node, key, owners[node], aggKeys, owners) != 0 ||
+        expectNotReady(700) != 0)
+      return -1;
+
+    const Uint32 originalError = CteLookupRef::AGG_FEED_SELF_REFERENCE;
+    /* Stale cancellation must not consume the live completion. The
+     * ordered lookup catches an unexpected COMPLETE_REF immediately. */
+    const Uint32 stale[][4] = {
+      {FAKE_REQUEST_ID + 1, FAKE_TRANS_ID1, FAKE_TRANS_ID2, FAKE_SENDER_DATA},
+      {FAKE_REQUEST_ID, FAKE_TRANS_ID1 ^ 1, FAKE_TRANS_ID2, FAKE_SENDER_DATA},
+      {FAKE_REQUEST_ID, FAKE_TRANS_ID1, FAKE_TRANS_ID2 ^ 1, FAKE_SENDER_DATA},
+      {FAKE_REQUEST_ID, FAKE_TRANS_ID1, FAKE_TRANS_ID2, FAKE_SENDER_DATA + 1}
+    };
+    for (Uint32 i = 0; i < 4; i++) {
+      if (sendCancel(originalError, stale[i][0], stale[i][1],
+                      stale[i][2], stale[i][3]) != 0 ||
+          expectNotReady(710 + i) != 0)
+        return -1;
+    }
+    if (cancel) {
+      if (sendCancel(originalError, FAKE_REQUEST_ID, FAKE_TRANS_ID1,
+                      FAKE_TRANS_ID2, FAKE_SENDER_DATA) != 0)
+        return -1;
+    } else if (sendFailure(originalError) != 0) {
+      return -1;
+    }
+    if (expectCompleteError(node, originalError) != 0)
+      return -1;
+
+    /* Repeated cancellation must neither reply again nor replace the
+     * original error (also checked by the late group requests below). */
+    if (sendCancel(CteLookupRef::STATE_NOT_READY, FAKE_REQUEST_ID,
+                    FAKE_TRANS_ID1, FAKE_TRANS_ID2, FAKE_SENDER_DATA) != 0 ||
+        expectNotReady(714) != 0)
+      return -1;
+
+    /* A second failure must not emit another completion reply. */
+    if (sendFailure(CteLookupRef::STATE_NOT_READY) != 0 ||
+        expectNotReady(701) != 0)
+      return -1;
+
+    /* Late groups must receive exactly one REF with the original
+     * error, whether or not the sender requested flow-control CONF.
+     * Use a distinct sender key to verify that the reply echoes it. */
+    for (Uint32 needConf = 0; needConf <= 1; needConf++) {
+      const Uint32 senderKey = key ^ 0x40000000u;
+      AggResItem value = {};
+      value.type = NDB_TYPE_BIGINT;
+      value.value.val_int64 = 10;
+      Uint32 valueWords[sizeof(value) / sizeof(Uint32)];
+      memcpy(valueWords, &value, sizeof(value));
+
+      SimpleSignal lateSig;
+      JoinAggRedistributeReq *req =
+        reinterpret_cast<JoinAggRedistributeReq *>(lateSig.getDataPtrSend());
+      req->aggStateKey = key;
+      req->senderAggStateKey = senderKey;
+      req->keyLen = keyBytes;
+      req->valueLen = sizeof(value);
+      req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
+      req->identWord = identWord;
+      req->transid[0] = FAKE_TRANS_ID1;
+      req->transid[1] = FAKE_TRANS_ID2;
+      req->senderRef = ss.getOwnRef();
+      lateSig.set(ss, 0, block, GSN_JOIN_AGG_REDISTRIBUTE_REQ,
+                  JoinAggRedistributeReq::SignalLength);
+      lateSig.header.m_noOfSections = 2;
+      lateSig.ptr[0].p = keyBuf;
+      lateSig.ptr[0].sz = keyWords;
+      lateSig.ptr[1].p = valueWords;
+      lateSig.ptr[1].sz = sizeof(valueWords) / sizeof(Uint32);
+      if (ss.sendSignal(node, &lateSig) != SEND_OK) {
+        fprintf(stderr, "FAIL 7: send late REDISTRIBUTE_REQ failed\n");
+        return -1;
+      }
+      SimpleSignal *resp =
+        waitForSignal(ss, WAIT_TIMEOUT_MS, "late REDISTRIBUTE_REF");
+      if (resp == nullptr) return -1;
+      if (getGsn(resp) != GSN_JOIN_AGG_REDISTRIBUTE_REF) {
+        fprintf(stderr, "FAIL 7: expected REDISTRIBUTE_REF, got GSN=%d\n",
+                getGsn(resp));
+        return -1;
+      }
+      const JoinAggRedistributeRef *lateRef =
+        reinterpret_cast<const JoinAggRedistributeRef *>(resp->getDataPtr());
+      if (lateRef->errorCode != originalError ||
+          lateRef->aggStateKey != key || lateRef->senderNodeId != node ||
+          lateRef->senderAggStateKey != senderKey ||
+          lateRef->identWord != identWord ||
+          lateRef->transid[0] != FAKE_TRANS_ID1 ||
+          lateRef->transid[1] != FAKE_TRANS_ID2) {
+        fprintf(stderr, "FAIL 7: incorrect redistribution error or correlation\n");
+        return -1;
+      }
+      /* This ordered barrier also rejects any extra CONF or COMPLETE_REF. */
+      if (expectNotReady(704 + needConf) != 0) return -1;
+    }
+
+    /* A late flow-control CONF must not restart redistribution. */
+    SimpleSignal sig;
+    JoinAggRedistributeConf *conf =
+      reinterpret_cast<JoinAggRedistributeConf *>(sig.getDataPtrSend());
+    std::map<Uint32, Uint32>::const_reverse_iterator peer = aggKeys.rbegin();
+    conf->aggStateKey = peer->second;
+    conf->senderNodeId = peer->first;
+    conf->senderAggStateKey = key;
+    conf->identWord = identWord;
+    conf->transid[0] = FAKE_TRANS_ID1;
+    conf->transid[1] = FAKE_TRANS_ID2;
+    sig.set(ss, 0, block, GSN_JOIN_AGG_REDISTRIBUTE_CONF,
+            JoinAggRedistributeConf::SignalLength);
+    if (ss.sendSignal(node, &sig) != SEND_OK) {
+      fprintf(stderr, "FAIL 7: send REDISTRIBUTE_CONF failed\n");
+      return -1;
+    }
+    if (expectNotReady(702) != 0) return -1;
+
+    /* RONDB-1120 propagates the failure to peers, even before COMPLETE.
+     * Replay that error from this sender to the peer's owner before its
+     * COMPLETE_REQ, so the deferred-error check is ordered and does not
+     * depend on when the real peer notification arrives. */
+    for (Uint32 peerNode : nodes) {
+      if (peerNode == node) continue;
+      if (sendFinal(peerNode, node, originalError) != 0 ||
+          sendCompleteReq(ss, peerNode, aggKeys[peerNode], owners[peerNode],
+                          aggKeys, owners) != 0 ||
+          expectCompleteError(peerNode, originalError) != 0)
+        return -1;
+    }
+
+    /* A late successful FINAL must not revive the failed origin. The
+     * lookup barrier also detects any extra completion response. */
+    for (Uint32 peerNode : nodes) {
+      if (peerNode == node) continue;
+      if (sendFinal(node, peerNode, 0) != 0) return -1;
+    }
+    return expectNotReady(703);
+  }();
+
+  for (const std::pair<const Uint32, Uint32> &entry : aggKeys) {
+    if (sendReleaseReq(ss, entry.first, entry.second) != 0) result = -1;
+  }
+  if (result != 0) return -1;
+
+  /* A fresh setup, scan, completion and lookup must work after cleanup. */
+  if (testBasicLookup(ndb, ss, meta, mysqlPort) != 0) return -1;
+  printf("  PASS\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -1230,6 +1538,11 @@ int main(int argc, char **argv)
       if (testCteModeSilentComplete(&ndb, ss, meta, mysqlPort) != 0) result = 1;
       if (testFlushAIRouting(&ndb, ss, meta, mysqlPort) != 0) result = 1;
       if (testErrorCases(&ndb, ss, meta, mysqlPort) != 0) result = 1;
+      if (testFailedCteLateReplies(&ndb, ss, meta, mysqlPort) != 0) result = 1;
+      if (testFailedCteLateReplies(&ndb, ss, meta, mysqlPort, true) != 0)
+        result = 1;
+      if (testFailedCteLateReplies(&ndb, ss, meta, mysqlPort, true, true) != 0)
+        result = 1;
 
       ss.unlock();
     }

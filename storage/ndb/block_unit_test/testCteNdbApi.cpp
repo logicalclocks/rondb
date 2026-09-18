@@ -6391,7 +6391,8 @@ testSingleRowCteEmpty(Ndb *ndb, MYSQL * /*conn*/)
  * 5-row cte_src projected as (grp, val)) materializes 5 distinct
  * rows.  The kernel must FAIL the query cleanly
  * (ZCTE_SINGLE_ROW_VIOLATION via JOIN_AGG_COMPLETE_REF), never crash
- * and never return rows. */
+ * and never return rows.  Preserve error 1272 through DBTC even if a
+ * later CTE scan reports STATE_NOT_READY (1264). */
 static int
 testSingleRowCteViolation(Ndb *ndb, MYSQL * /*conn*/)
 {
@@ -6473,9 +6474,11 @@ testSingleRowCteViolation(Ndb *ndb, MYSQL * /*conn*/)
   }
 
   bool sawError = false;
+  int errorCode = 0;
   Uint32 rowCount = 0;
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
     sawError = true;
+    errorCode = trans->getNdbError().code;
     V("\n  execute failed as expected: trans err %d: %s\n",
       trans->getNdbError().code, trans->getNdbError().message);
   } else {
@@ -6486,6 +6489,7 @@ testSingleRowCteViolation(Ndb *ndb, MYSQL * /*conn*/)
     }
     if (outcome == NdbQuery::NextResult_error) {
       sawError = true;
+      errorCode = query->getNdbError().code;
       V("\n  nextResult failed as expected: err %d: %s\n",
         query->getNdbError().code, query->getNdbError().message);
     }
@@ -6502,7 +6506,23 @@ testSingleRowCteViolation(Ndb *ndb, MYSQL * /*conn*/)
     printf("FAILED (violating query completed without error)\n");
     return -1;
   }
-  printf("OK (clean error, 0 rows)\n");
+  /* ZCTE_SINGLE_ROW_VIOLATION, reported by JOIN_AGG_COMPLETE_REF. */
+  const int expectedError = 1272;
+  if (errorCode != expectedError) {
+    printf("FAILED (expected original CTE error %d, got %d)\n",
+           expectedError, errorCode);
+    return -1;
+  }
+
+  /* Exercise cleanup even when this test is selected on its own. */
+  Uint32 recoveryRows = 0;
+  if (runSingleRowCteScan(ndb, SROW_SRC_TABLE, &recoveryRows) != 0)
+    return -1;
+  if (recoveryRows != 1) {
+    printf("FAILED (recovery expected 1 row, got %u)\n", recoveryRows);
+    return -1;
+  }
+  printf("OK (original error 1272, 0 rows, recovery verified)\n");
   return 0;
 }
 

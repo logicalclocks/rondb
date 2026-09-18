@@ -1,0 +1,7 @@
+# Run the same checked 64-bit SUM cases with strict JIT compilation.
+SET @sum64_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_jit/include/jit_strict_arm.inc
+--source suite/ronsql/t/ronsql_sum64.test
+--source suite/ronsql_jit/include/jit_strict_disarm.inc
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @sum64_jit_c0 AS SIGNED)
+       AS ronsql_sum64_jit_fallback_delta;

@@ -1,0 +1,82 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE sum64_values (
+  pk INT NOT NULL PRIMARY KEY,
+  case_id INT NOT NULL,
+  s BIGINT,
+  u BIGINT UNSIGNED
+) ENGINE=NDB;
+--enable_warnings
+
+# Cases 1-7: signed max/min, opposite signs, above 2^53, unsigned max,
+# zero, and all NULL. Each case has two rows.
+# Cases 8-10: signed positive/negative and unsigned overflow.
+INSERT INTO sum64_values VALUES
+(1, 1, 9223372036854775806, NULL), (2, 1, 1, NULL),
+(3, 2, -9223372036854775807, NULL), (4, 2, -1, NULL),
+(5, 3, -9223372036854775808, NULL), (6, 3, 9223372036854775807, NULL),
+(7, 4, 9007199254740992, NULL), (8, 4, 1, NULL),
+(9, 5, NULL, 18446744073709551614), (10, 5, NULL, 1),
+(11, 6, 0, 0), (12, 6, 0, 0),
+(13, 7, NULL, NULL), (14, 7, NULL, NULL),
+(15, 8, 9223372036854775807, NULL), (16, 8, 1, NULL),
+(17, 9, -9223372036854775808, NULL), (18, 9, -1, NULL),
+(19, 10, NULL, 18446744073709551615), (20, 10, NULL, 1);
+
+--echo Scalar SUM: signed/unsigned boundaries, opposite signs, above 2^53, zero and NULL
+--let sum64_overflow=0
+--let sum64_case=1
+while ($sum64_case <= 7)
+{
+  --let sum64_query=SELECT SUM(s) AS signed_total, SUM(u) AS unsigned_total FROM sum64_values WHERE case_id = $sum64_case
+  --source suite/ronsql/include/ronsql_sum64_check.inc
+  --inc $sum64_case
+}
+
+--echo Grouped SUM: exact boundaries and NULL groups
+--let sum64_query=SELECT case_id, SUM(s) AS signed_total, SUM(u) AS unsigned_total FROM sum64_values WHERE case_id <= 7 GROUP BY case_id
+--source suite/ronsql/include/ronsql_sum64_check.inc
+
+--echo Empty scalar and grouped SUM
+--let sum64_query=SELECT SUM(s) AS signed_total, SUM(u) AS unsigned_total FROM sum64_values WHERE case_id = 0
+--source suite/ronsql/include/ronsql_sum64_check.inc
+--let sum64_query=SELECT case_id, SUM(s) AS signed_total, SUM(u) AS unsigned_total FROM sum64_values WHERE case_id = 0 GROUP BY case_id
+--source suite/ronsql/include/ronsql_sum64_check.inc
+
+# Every overflow is checked through both CLI and HTTP, followed by a
+# successful query through both. SQL placement is not pinned here:
+# testCteSumOverflow and merge unit tests cover the distributed paths.
+--let sum64_case=8
+while ($sum64_case <= 10)
+{
+  --echo Scalar/grouped overflow and recovery: case $sum64_case
+  --let sum64_column=s
+  if ($sum64_case == 10)
+  {
+    --let sum64_column=u
+  }
+
+  --let sum64_overflow=1
+  --let sum64_query=SELECT SUM($sum64_column) AS total FROM sum64_values WHERE case_id = $sum64_case
+  --source suite/ronsql/include/ronsql_sum64_check.inc
+  --let sum64_overflow=0
+  --let sum64_query=SELECT SUM(s) AS signed_total, SUM(u) AS unsigned_total FROM sum64_values WHERE case_id = 4
+  --source suite/ronsql/include/ronsql_sum64_check.inc
+
+  --let sum64_overflow=1
+  --let sum64_query=SELECT case_id, SUM($sum64_column) AS total FROM sum64_values WHERE case_id = $sum64_case GROUP BY case_id
+  --source suite/ronsql/include/ronsql_sum64_check.inc
+  --let sum64_overflow=0
+  --let sum64_query=SELECT case_id, SUM(s) AS signed_total, SUM(u) AS unsigned_total FROM sum64_values WHERE case_id <= 7 GROUP BY case_id
+  --source suite/ronsql/include/ronsql_sum64_check.inc
+  --inc $sum64_case
+}
+
+--disable_warnings
+DROP TABLE sum64_values;
+--enable_warnings
+--enable_query_log
+--echo Checked 64-bit SUM tests passed

@@ -1,0 +1,5 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+--echo Running CTE cancellation barrier and node-failure tests
+--exec $NDB_PUSH_AGG_DIR/testJoinAggIdempotency -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT --cancellation-barriers --iterations 1

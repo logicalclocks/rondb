@@ -66,6 +66,35 @@ func TestCompareTypes(t *testing.T) {
 	}
 }
 
+func TestCompareBinary(t *testing.T) {
+	ref := &exec.Result{Columns: []string{"id", "payload"}, Types: []string{"INT", "VARBINARY"},
+		Rows: [][]exec.Cell{{{Text: "2"}, {Text: "\x00\x09\n\\"}}, {{Text: "1"}, {Text: "AB"}}, {{Text: "3"}, {Null: true}}}}
+	got := &exec.Result{Columns: []string{"id", "payload"},
+		Rows: [][]exec.Cell{{{Text: "1"}, {Text: "QUI="}}, {{Text: "2"}, {Text: "AAkKXA=="}}, {{Text: "3"}, {Null: true}}}}
+	if rep := Compare(ref, got, Options{}); !rep.Equal {
+		t.Fatalf("base64 payloads must compare equal to the raw bytes: %s\n%s", rep.Reason, rep.Diff)
+	}
+	if len(got.Rows[0]) != 2 || got.Rows[0][1].Text != "QUI=" {
+		t.Fatal("the RonSQL result must not be modified in place")
+	}
+	wrong := &exec.Result{Columns: []string{"id", "payload"},
+		Rows: [][]exec.Cell{{{Text: "1"}, {Text: "QUM="}}, {{Text: "2"}, {Text: "AAkKXA=="}}, {{Text: "3"}, {Null: true}}}}
+	if rep := Compare(ref, wrong, Options{}); rep.Equal {
+		t.Fatal("a different payload must not compare equal")
+	}
+	twin := &exec.Result{Columns: []string{"id", "payload"}, Types: []string{"INT", "VARBINARY"},
+		Rows: [][]exec.Cell{{{Text: "1"}, {Text: "QUI="}}, {{Text: "2"}, {Text: "x"}}, {{Text: "3"}, {Null: true}}}}
+	if rep := Compare(twin, twin, Options{}); !rep.Equal {
+		t.Fatal("a MySQL result whose raw bytes happen to be base64 text is never decoded")
+	}
+	if !CellsEqual(exec.Cell{Text: "AB"}, exec.Cell{Text: "QUI="}, "VARBINARY", 0) ||
+		!CellsEqual(exec.Cell{Text: "QUI="}, exec.Cell{Text: "AB"}, "BINARY", 0) ||
+		CellsEqual(exec.Cell{Text: "AB"}, exec.Cell{Text: "QUM="}, "VARBINARY", 0) ||
+		!IsBinaryType("BLOB") || IsBinaryType("VARCHAR") {
+		t.Fatal("binary cell equality must accept the base64 form on either side")
+	}
+}
+
 func TestCompareOrderAndHeaders(t *testing.T) {
 	a := []exec.Cell{cell("1")}
 	b := []exec.Cell{cell("2")}

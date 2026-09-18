@@ -1,0 +1,104 @@
+SET @avg_format_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+Scalar AVG: integer, DECIMAL and floating columns
+== Query ==
+SELECT AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Grouped AVG: negative values and NULL groups
+== Query ==
+SELECT g, AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+Ordered AVG uses the same formatting
+== Query ==
+SELECT g, AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format GROUP BY g ORDER BY g DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+DECIMAL AVG scale is capped at 30
+== Query ==
+SELECT AVG(d30) AS a30 FROM avg_format WHERE g = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Empty scalar AVG
+== Query ==
+SELECT AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format WHERE g = 0;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+Empty grouped AVG
+== Query ==
+SELECT g, AVG(i) AS ai, AVG(u) AS au, AVG(d0) AS a0, AVG(d2) AS a2, AVG(d6) AS a6, AVG(f) AS af, AVG(d) AS ad FROM avg_format WHERE g = 0 GROUP BY g;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+CTE AVG projection
+== Query ==
+WITH a AS (SELECT g, AVG(i) AS ai, AVG(d2) AS a2, AVG(f) AS af FROM avg_format GROUP BY g) SELECT g, ai, a2, af FROM a ORDER BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+AVG over CTE averages derives the next scale
+== Query ==
+WITH a AS (SELECT g, AVG(i) AS ai, AVG(d2) AS a2, AVG(f) AS af FROM avg_format GROUP BY g) SELECT AVG(ai) AS ai, AVG(a2) AS a2, AVG(af) AS af FROM a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+AVG over a floating CTE SUM stays compact
+== Query ==
+WITH a AS (SELECT g, SUM(f) AS sf FROM avg_format GROUP BY g) SELECT AVG(sf) AS af FROM a;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @avg_format_jit_c0 AS SIGNED)
+AS ronsql_avg_formatting_jit_fallback_delta;
+ronsql_avg_formatting_jit_fallback_delta
+0

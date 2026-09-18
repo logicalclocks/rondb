@@ -26,10 +26,6 @@
 package cases
 
 import (
-	"encoding/json"
-	"regexp"
-	"strings"
-
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/canon"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/exec"
 )
@@ -37,32 +33,15 @@ import (
 // Known is the expectation table (random_generator.md §5.3, findings in
 // mysql-test/suite/ronsql_fs/findings/smoke.md): the single place where
 // "known engine outcome" lives.  A case referencing an entry reports
-// REJECT(expected) / KNOWN-WRONG / KNOWN-ERROR instead of FAIL; a case that
+// REJECT(expected) / KNOWN-WRONG instead of FAIL; a case that
 // unexpectedly passes reports PASS(was-...) so the entry can be retired.
 var Known = map[string]*Expect{
-	// Hopsworks collect CTE form: non-aggregating CTE body over a partial key (risk R1).
-	"S6-cte": {Finding: "F0", Pattern: "Non-aggregating CTE body is not a single-row key lookup"},
-	// MySQL prints FLOAT with display precision; RonSQL prints the exact binary32 value.
-	"F4": {Finding: "F4", Pattern: "FLOAT display precision",
-		Wrong: &WrongValue{Column: "ff_max", MySQL: "123457", RonSQL: "123456.7890625"}},
 	// DECIMAL(18,2) beyond 2^53 cents loses precision on RonSQL's DOUBLE path.
 	"F5": {Finding: "F5", Pattern: "DECIMAL precision loss",
 		Wrong: &WrongValue{Column: "dec_max", MySQL: "999999999999999.99", RonSQL: "1000000000000000"}},
-	// BIGINT SUM overflow is a clean NDB error (MySQL widens to DECIMAL) - when
-	// the overflow happens inside one fragment's aggregation.
-	"F6": {Finding: "F6", Pattern: "arithmetic operation results overflow"},
-	// When the overflowing rows sit in different fragments (more node groups),
-	// the API-side merge (aggMergeSum) adds the partials unchecked and the
-	// query returns the wrapped value instead of error 1860: 2^63-1 + 1 -> -2^63
-	// (E8 topology mirror ng4r2).  Known until the overflow-handling overhaul.
-	"F22": {Finding: "F22", Pattern: "BIGINT SUM overflow undetected at the cross-fragment merge (topology-dependent)",
-		Wrong: &WrongValue{Column: "big_sum", MySQL: "9223372036854775808", RonSQL: "-9223372036854775808"}},
-	// VARBINARY cannot be projected by the pass-through printer.
-	"F7": {Finding: "F7", Pattern: "Unsupported column type"},
-	// MIN/MAX over a DATE/TIMESTAMP column is unquoted in JSON output (RDRS
-	// default): the body is not JSON.  Verify-only (Case.KnownError).
-	"F9": {Finding: "F9", Pattern: "malformed JSON result",
-		UnquotedTemporal: []string{"d_min", "d_max", "ts3_min", "ts6_min", "ts0_min"}},
+	// Intentional 64-bit SUM range difference: local and merged overflow must
+	// report 1860. MySQL widens to DECIMAL; wrapped values are never accepted.
+	"F6": {Finding: "F6", Pattern: "NDB Permanent error 1860,"},
 	// A snowflake template whose CTE body is keyed by a VARCHAR entity key
 	// returns no rows through CTE_SCAN although the body alone returns its
 	// group (E6, findings/spec_fuzz.md).  Detected structurally by the fuzzer.
@@ -106,69 +85,4 @@ func (e *Expect) MatchesWrong(ref, got *exec.Result, opt canon.Options) bool {
 	adjusted.Rows[0][column] = ref.Rows[0][column]
 	opt.RelaxedHeaders = false
 	return canon.Compare(ref, &adjusted, opt).Equal
-}
-
-// Match complete JSON strings as well as bare temporal member values.
-// The string alternative prevents edits inside an already quoted value.
-var temporalJSONToken = regexp.MustCompile(
-	`("(?:[^"\\]|\\.)*")(\s*:\s*)([0-9]{4}-[0-9]{2}-[0-9]{2}(?: [0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?)?)(\s*[,}])|"(?:[^"\\]|\\.)*"`)
-
-// MatchesError recognizes F9 without converting the response into success:
-// quoting only the named temporal fields must restore a complete result
-// that agrees with MySQL. The original malformed body is never modified.
-func (e *Expect) MatchesError(ref *exec.Result, response exec.Response, opt canon.Options) bool {
-	if e == nil || len(e.UnquotedTemporal) == 0 || e.Pattern == "" ||
-		ref == nil || response.Result == nil || response.Outcome != exec.Error ||
-		!strings.HasPrefix(response.Message, e.Pattern+":") {
-		return false
-	}
-	raw := response.Result.Raw
-	if json.Valid([]byte(raw)) {
-		return false
-	}
-	allowed := map[string]bool{}
-	for i, name := range ref.Columns {
-		if i >= len(ref.Types) {
-			continue
-		}
-		switch strings.ToUpper(ref.Types[i]) {
-		case "DATE", "TIMESTAMP", "DATETIME":
-			for _, column := range e.UnquotedTemporal {
-				if name == column {
-					allowed[name] = true
-				}
-			}
-		}
-	}
-	changed := false
-	quoted := temporalJSONToken.ReplaceAllStringFunc(raw, func(token string) string {
-		parts := temporalJSONToken.FindStringSubmatch(token)
-		if parts[1] == "" {
-			return token
-		}
-		var name string
-		if json.Unmarshal([]byte(parts[1]), &name) != nil || !allowed[name] {
-			return token
-		}
-		changed = true
-		return parts[1] + parts[2] + `"` + parts[3] + `"` + parts[4]
-	})
-	if !changed {
-		return false
-	}
-	// The recorded F9 envelope is either a bare row array or {"data":...}.
-	// Do not excuse malformed metadata outside the result rows.
-	if strings.HasPrefix(strings.TrimSpace(quoted), "{") {
-		var envelope map[string]json.RawMessage
-		if json.Unmarshal([]byte(quoted), &envelope) != nil ||
-			len(envelope) != 1 || envelope["data"] == nil {
-			return false
-		}
-	}
-	columns, rows, err := exec.ParseJSONData([]byte(quoted))
-	if err != nil {
-		return false
-	}
-	opt.RelaxedHeaders = false
-	return canon.Compare(ref, &exec.Result{Columns: columns, Rows: rows}, opt).Equal
 }

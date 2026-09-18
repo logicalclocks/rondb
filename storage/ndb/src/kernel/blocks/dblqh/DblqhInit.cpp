@@ -684,6 +684,7 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
 #endif
     addRecSignal(GSN_SCAN_FRAGREQ, &Dblqh::execSCAN_FRAGREQ);
     addRecSignal(GSN_JOIN_AGG_COMPLETE_REQ, &Dblqh::execJOIN_AGG_COMPLETE_REQ);
+    addRecSignal(GSN_JOIN_AGG_CANCEL_REQ, &Dblqh::execJOIN_AGG_CANCEL_REQ);
     addRecSignal(GSN_JOIN_AGG_NULL_ROW_REQ, &Dblqh::execJOIN_AGG_NULL_ROW_REQ);
 
     addRecSignal(GSN_JOIN_AGG_SEND_CONF, &Dblqh::execJOIN_AGG_SEND_CONF);
@@ -847,6 +848,7 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     addRecSignal(GSN_ABORTREQ, &Dblqh::execABORTREQ);
     addRecSignal(GSN_SCAN_FRAGREQ, &Dblqh::execSCAN_FRAGREQ);
     addRecSignal(GSN_JOIN_AGG_COMPLETE_REQ, &Dblqh::execJOIN_AGG_COMPLETE_REQ);
+    addRecSignal(GSN_JOIN_AGG_CANCEL_REQ, &Dblqh::execJOIN_AGG_CANCEL_REQ);
     addRecSignal(GSN_JOIN_AGG_NULL_ROW_REQ, &Dblqh::execJOIN_AGG_NULL_ROW_REQ);
 
     addRecSignal(GSN_JOIN_AGG_SEND_CONF, &Dblqh::execJOIN_AGG_SEND_CONF);

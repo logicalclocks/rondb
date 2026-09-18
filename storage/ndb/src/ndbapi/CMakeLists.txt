@@ -94,3 +94,6 @@ SET_PROPERTY(SOURCE TransporterFacade.cpp
              NDB_TLS_SEARCH_PATH="${WITH_NDB_TLS_SEARCH_PATH}")
 
 NDB_ADD_TEST(SectionIterators-t SectionIterators.cpp NdbApiSignal.cpp)
+
+# Standalone numeric boundary and API merge failure/recovery tests.
+NDB_ADD_TEST(NdbAggregatorMerge-t NdbAggregatorMergeTest.cpp LIBS ndbclient_static)

@@ -2266,9 +2266,8 @@ Dbspj::build(Build_context& ctx,
      * the subsequent numNodes are the embedded materialization nodes.
      *
      * QN_CTE_LOOKUP and QN_CTE_SCAN nodes inside a subtree read from
-     * OTHER CTEs — they are not materialization nodes and must NOT be
-     * marked T_CTE_SCAN (which drives JoinAgg routing, aggStateKey
-     * assignment, and phase startup).
+     * OTHER CTEs. Only a subtree root driving materialization is marked
+     * T_CTE_SCAN below; child CTE readers are driven by their parent.
      */
     if (ctx.m_cteSubtreeRemaining > 0 &&
         node_op != QueryNode::QN_CTE_SUBTREE) {
@@ -2350,21 +2349,19 @@ Dbspj::build(Build_context& ctx,
           }
           ancestorPtrI = ancestorPtr.p->m_parentPtrI;
         }
-        /* CTE-2-reads-CTE-1 case: the nested CTE_SCAN is itself the
-         * subtree root (no scan ancestor above it).  This scanCte is
-         * BOTH the data source for the enclosing CTE's materialization
-         * AND its aggregate leaf — there's no separate base-table
-         * scan to walk up to.  Mark THIS node as the materialization
-         * scan (T_CTE_SCAN) and record it as the CTE's scan tree
-         * node so checkPrepareComplete / execCTE_PHASE_START_REQ
-         * find it and call cte_scan_start to drive the materialization. */
-        if (!foundScanAncestor &&
-            node_op == QueryNode::QN_CTE_SCAN &&
+        /* A CTE reader can be both the subtree root and its aggregate
+         * leaf. Mark both scanCte and constant-key lookupCte roots as
+         * materialization start points. In particular, RonSQL can turn
+         * a scan of a single-group predecessor into lookupCte; without
+         * T_CTE_SCAN the READY broadcast never starts that subtree.
+         * The scheduler dispatches through m_info->m_start, selecting
+         * cte_scan_start or cte_lookup_start as appropriate. */
+        if (!foundScanAncestor && isCteOnlyNode &&
             nodePtr.p->m_parentPtrI == RNIL) {
           jam();
           nodePtr.p->m_bits |= TreeNode::T_CTE_SCAN;
           DEB_CTE(("(%u) build: mark T_CTE_SCAN on nested "
-                   "CTE_SCAN root node %u (subtree CTE %u, "
+                   "CTE reader root node %u (subtree CTE %u, "
                    "feeds enclosing aggregator)",
                    instance(), nodePtr.p->m_node_no,
                    ctx.m_cteSubtreeCteId));

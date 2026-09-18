@@ -1283,8 +1283,19 @@ Unsupported column type (22) in pass-through result.
 Error handling: RPE
 ronsql_cli caught exception: Unsupported column type in pass-through result.
 
-=== pt-P2 (rejection): VARBINARY projection in a pass-through result ===
-b_raw	n
-Unsupported column type (17) in pass-through result.
-Error handling: RPE
-ronsql_cli caught exception: Unsupported column type in pass-through result.
+=== pt-P2 (accepted since RONDB-1124 M1.4): VARBINARY projection in a pass-through result ===
+== Query ==
+WITH cb AS (SELECT b_grp AS g, COUNT(*) AS n FROM bin1 GROUP BY b_grp) SELECT b.b_id, b.b_raw, cb.n FROM bin1 AS b JOIN cb ON cb.g = b.b_grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cb AS (SELECT b_grp AS g, COUNT(*) AS n FROM bin1 GROUP BY b_grp) SELECT b.b_id, HEX(b.b_raw) AS b_raw_hex, cb.n FROM bin1 AS b JOIN cb ON cb.g = b.b_grp;
+b_id	b_raw_hex	n
+1	4142	2
+2	4344	2

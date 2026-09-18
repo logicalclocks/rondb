@@ -252,7 +252,6 @@ func (s *Shell) reportFuzz(results []fuzzResult, o fuzzOpts, label string, regen
 func runEnvCase(ctx context.Context, c fuzz.EnvCase, my vectorQuerier, rd vectorQuerier, o fuzzOpts) fuzzResult {
 	res := fuzzResult{ID: c.ID, Seed: c.Seed, Index: c.Index, Kind: c.Production, Status: "PASS", Signature: c.Signature, Statements: []string{c.SQL}}
 	expectReject, expectsReject := c.ExpectReject()
-	known, hasKnown := c.Known()
 	myResp := my.Query(ctx, c.SQL)
 	if myResp.Outcome != exec.OK {
 		if clusterDown(myResp.Message) {
@@ -324,11 +323,7 @@ func runEnvCase(ctx context.Context, c fuzz.EnvCase, my vectorQuerier, rd vector
 	case exec.Crash:
 		res.Status, res.Message = "CRASH", firstLine(rr.Message)
 	default:
-		if hasKnown && known.Finding == "F9" && strings.Contains(rr.Message, known.Pattern) {
-			res.Status, res.Message, res.Finding = "KNOWN-ERROR", "F9: "+firstLine(rr.Message), "F9"
-		} else {
-			res.Status, res.Message = "ERROR", firstLine(rr.Message)
-		}
+		res.Status, res.Message = "ERROR", firstLine(rr.Message)
 	}
 	return res
 }

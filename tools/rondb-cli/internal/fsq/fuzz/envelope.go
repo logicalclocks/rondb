@@ -84,7 +84,6 @@ func (e Expectation) Matches(message string) bool {
 // Expectations is the expectation table (random_generator.md §5.3); the
 // unit test checks every pattern against the engine sources.
 var Expectations = []Expectation{
-	{Construct: "cte-body-orderby-nonagg", Reject: true, Pattern: "Non-aggregating CTE body is not a single-row key lookup", Finding: "F0", Note: "the Hopsworks collect CTE form (S6)"},
 	{Construct: "cte-partial-key", KnownWrong: true, Finding: "F18", Note: "partial-key CTE lookup (binds fewer than all virtual-key columns): the engine now runs it (it used to reject with 'Partial CTE lookup key not supported') and returns the wrong row count"},
 	{Construct: "cte-scan-outer-child", KnownWrong: true, Finding: "F19", Note: "CTE_SCAN as an outer-join child: the engine now runs it (it used to reject with 'CTE_SCAN as outer-join child is not supported') and its result diverges from MySQL"},
 	{Construct: "join-no-index", Reject: true, Pattern: "no suitable index on join columns", Note: "a join column without a usable index"},
@@ -98,7 +97,6 @@ var Expectations = []Expectation{
 	{Construct: "syntax", Reject: true, Pattern: "Syntax error", Note: "implicit alias, DISTINCT, BETWEEN, OFFSET, UNION, RIGHT JOIN: outside the grammar"},
 	{Construct: "having", Reject: true, Pattern: "Could not find column", AltPatterns: []string{"Got record with fewer aggregates than expected"}, TaggedOnly: true, Finding: "F17", Note: "HAVING is unsupported (corrected-envelope): it rejects with 'Could not find column' (alias not resolved), or, with ORDER BY on an aggregate alias + LIMIT, the internal 'Got record with fewer aggregates than expected. Please report a bug.' error (F17)"},
 	{Construct: "string-snowflake", KnownWrong: true, Finding: "F14", Note: "a snowflake CTE body keyed by a VARCHAR entity key returns no rows (known wrong)"},
-	{Construct: "temporal-minmax", Pattern: "malformed JSON result", Finding: "F9", Note: "MIN/MAX over a DATE/TIMESTAMP output (unparsable JSON)"},
 }
 
 // ExpectationFor returns the table row of a construct.
@@ -129,17 +127,6 @@ type EnvCase struct {
 func (c EnvCase) ExpectReject() (Expectation, bool) {
 	for _, k := range c.Constructs {
 		if e, ok := ExpectationFor(k); ok && e.Reject {
-			return e, true
-		}
-	}
-	return Expectation{}, false
-}
-
-// Known reports a non-rejecting, non-wrong known finding (F9: the RonSQL
-// response is unusable although the statement is legal).
-func (c EnvCase) Known() (Expectation, bool) {
-	for _, k := range c.Constructs {
-		if e, ok := ExpectationFor(k); ok && !e.Reject && !e.KnownWrong && e.Finding != "" {
 			return e, true
 		}
 	}
@@ -339,6 +326,8 @@ func (es *envSampler) singleAgg(withFilters bool) {
 		es.tag("avg")
 	}
 	if es.pct(5) {
+		// Signature-only tag: MIN/MAX over a temporal column runs since F9
+		// (unquoted JSON output) was fixed in RONDB-1124 M1.1.
 		outputs = append(outputs, "MAX(`event_time`) AS `event_time_max`")
 		es.tag("temporal-minmax")
 	}
@@ -507,8 +496,9 @@ func (es *envSampler) havingOrder() {
 // aggregating body top-N.
 func (es *envSampler) cteBodyOrderBy() {
 	if es.pct(50) {
+		// Signature-only tag since RONDB-1124 M1.3 collapsed this form (F0);
+		// a derived table's row order is unspecified, so the set is compared.
 		es.tag("cte-body-orderby-nonagg")
-		es.c.Ordered = true
 		es.c.SQL = "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = " + es.oneKey() +
 			" ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;"
 		return

@@ -53,7 +53,8 @@ statement from `fsq/mysqltwin`.
 | `fs_hw_agg_batch10` / `_batch100` / `_batch1000` | S3 | `SELECT customer_id, COUNT(amount) AS amount_count, SUM(amount) AS amount_sum FROM transactions_1 WHERE customer_id IN ({KEYS:10}) GROUP BY customer_id;` | KEYS:n | ≤ n |
 | `fs_hw_agg_batch100_window` | S3+S2 | batch 100 + `AND event_time >= {NOW-30d}` | KEYS:100, NOW-30d | ≤ 100 |
 | `fs_hw_collect5` / `_collect50` | S6b | `SELECT customer_id, event_time, amount, category FROM transactions_1 WHERE customer_id = {KEY} ORDER BY event_time DESC LIMIT 5;` | KEY | ≤ N |
-| `fs_hw_collect5_cte` | S6 | the Hopsworks CTE form of the above | KEY | ≤ 5 (or clean reject, see R1) |
+| `fs_hw_collect5_cte` | S6 | the Hopsworks CTE form of the above (collapsed into the direct form since RONDB-1124 M1.3; same plan pins) | KEY | ≤ 5 |
+| `fs_hw_collect50_cte` | S6 | the Hopsworks CTE form of `fs_hw_collect50` (collapsed, same plan pins) | KEY | ≤ 50 |
 | `fs_hw_collect5_twin` | S6 twin | MySQL `ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY event_time DESC)` statement with rank `<= 5` | KEY | ≤ 5 |
 | `fs_hw_snow1_point` | S7 | `WITH b AS (SELECT region_id, COUNT(*) AS hw_cnt FROM customers_1 WHERE customer_id = {KEY} GROUP BY region_id) SELECT j2.region_name AS r_region_name, j2.population AS r_population FROM b JOIN regions_1 AS j2 ON j2.region_id = b.region_id;` | KEY | ≤ 1 |
 | `fs_hw_snow2_point` | S7 | + `JOIN countries_1 AS j3 ON j3.country_id = j2.country_id`, projecting `j3.country_name AS c_country_name` too | KEY | ≤ 1 |
@@ -365,8 +366,9 @@ Expectations to sanity-check the first run against (not thresholds):
 point aggregates and 1-hop snowflakes should be sub-millisecond in
 engine time at 1 thread; `batch1000` and `collect50` are dominated by
 result size; `hash_point` should be visibly worse than `agg_point`;
-`collect5_cte` is expected to reject cleanly until the engine supports
-the shape (R1), and its row stays in the table as `REJECT`.
+`collect5_cte` / `collect50_cte` rejected cleanly (R1, F0) until
+RONDB-1124 M1.3 collapsed the CTE form into the direct statement; since
+then they carry the direct entries' plan pins and should match their cost.
 
 ---
 

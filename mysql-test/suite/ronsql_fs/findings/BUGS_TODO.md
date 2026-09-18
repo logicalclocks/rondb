@@ -10,25 +10,42 @@ F8 was a framework fixture issue and is already fixed.
 
 ## Engine and protocol work
 
-- [ ] F0: support the Hopsworks CTE-form collect query over a partial key.
-- [ ] F1: fix reused string aggregate storage (client/data-node crashes
-  and possible wrong values). Keep hazardous probes opt-in until fixed.
+- [x] F0: support the Hopsworks CTE-form collect query over a partial key.
+  FIXED 2026-09-15 (RONDB-1124 M1.3): the projection-only main over a
+  non-aggregating single-table body with ORDER BY and LIMIT collapses into
+  the body at parse time (`collapse_collect_cte`); regression test
+  `ronsql.ronsql_cte_collect_collapse`.
+- [x] F1: reused string aggregate storage (client/data-node crashes and
+  possible wrong values). FIXED by RONDB-1056 `10561b78d1e` (per-row string
+  high-water mark in both interpreters); the framework cases and smoke
+  probes are asserted since M1.2 (2026-09-15).
 - [ ] F2: resolve DECIMAL MIN/MAX scale formatting differences.
-- [ ] F3: resolve AVG formatting/precision differences.
-- [ ] F4: resolve FLOAT display differences between MySQL and RonSQL.
+- [ ] F3: AVG column formatting fixed (`2ca8fc243f5`), with strict smoke
+  coverage for INT/DOUBLE AVG. Arithmetic expressions retain four digits;
+  DECIMAL precision limitations remain.
+- [x] F4: FLOAT display fixed (`df820fa3540`) with passing base/JIT
+  regressions. The framework exemption is removed; smoke/templates passed
+  on base, JIT, ng2r2, and ng4r2, and the requirements probe reports PASS.
 - [ ] F5: preserve DECIMAL values beyond 2^53 cents exactly.
-- [ ] F6: decide BIGINT SUM overflow behavior relative to MySQL widening;
-  retain the explicit expected-rejection probe meanwhile.
-- [ ] F7: support emitted VARBINARY/complex snowflake projections.
+- [x] F6: first-version SUM uses checked signed/unsigned 64-bit accumulators.
+  Overflow must report NDB error 1860; MySQL's wider DECIMAL result remains
+  an intentional range difference. Template and smoke probes assert this
+  contract; it does not satisfy the original exact-DECIMAL requirement.
+- [x] F7: support emitted VARBINARY/complex snowflake projections. FIXED
+  2026-09-15 (RONDB-1124 M1.4): the pass-through printer prints BINARY /
+  VARBINARY (raw bytes in TEXT, base64 in JSON); regression test
+  `ronsql.ronsql_binary_passthrough`; the framework compares base64 cells
+  by their bytes.
   The user-run A6 corpus reproduced the type-17 pass-through rejection
   for snowflake_binary DTO 1, single/1, single/2 and single/9; all ten
   MySQL twin comparisons passed. Golden mode recognizes only that DTO's
   named type-17 rejection as REJECT(expected); binary support remains open.
-- [ ] F9: quote temporal MIN/MAX values in JSON output. Malformed JSON
-  must be decoded as an error, never a successful result. The known F9
-  cases may report non-failing KNOWN-ERROR only when quoting their named
-  temporal fields restores valid JSON that fully agrees with MySQL.
-  The original malformed response remains an error and is retained.
+- [x] F9: quote temporal MIN/MAX values in JSON output. FIXED 2026-09-14
+  (RONDB-1124 M1.1): `ResultPrinter::print_aggregate_result` passes
+  `m_quote` to the temporal decoder; regression test
+  `ronsql.ronsql_temporal_json`. Malformed JSON is still decoded as an
+  error, never a successful result; the F9 exemption (`KNOWN-ERROR`) is
+  retired.
 - [ ] F10 (bench.md): mysqld crashes (`NdbSqlUtil::likeLongvarchar` require in the
   ordered-scan sorted merge) on a pushed aggregate with a VARCHAR GROUP BY key and
   an IN list (`fs_hw_strkey_batch100`, pushdown ON). Run the fs_hw matrix with
@@ -48,11 +65,12 @@ F8 was a framework fixture issue and is already fixed.
   `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
   LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope
   fuzzer, seed 1; isolate with `--threads 1`. Pushdown join aggregation (RONDB-733).
-- [ ] F22 (smoke.md): BIGINT SUM overflow is detected only inside a fragment's
-  aggregation; the API-side merge (`aggMergeSum`) adds partials unchecked, so the
-  probe errors (1860) on 1–2 node groups but returns the wrapped -2^63 on ng4r2.
-  KNOWN for now (expectation table F22 next to F6): overflow handling gets a
-  general overhaul as a separate task. Found by the E8 ng4r2 mirror.
+- [x] F22 (smoke.md): unchecked BIGINT SUM merge fixed by `8f064822249`,
+  with passing distributed and RonSQL regressions (`bd9c41158cd`,
+  `2f618dae6bf`). The framework no longer exempts wrapped results.
+  Smoke probes check CLI error 1860 and HTTP 400 with semantic/NDB-1860
+  headers. Base, JIT, ng2r2, and ng4r2 validation passed; the requirements
+  probe reports REJECT(expected), with F6 retaining the MySQL range difference.
 - [ ] F21 (smoke.md): SUM over DECIMAL(18,2) is topology-dependent on RonSQL
   (`6.0600000000000005` on 2 node groups vs `6.06` on 1; MySQL exact) — the F5
   DOUBLE path combines per-fragment partial sums in topology order. Found by the
@@ -75,7 +93,26 @@ F8 was a framework fixture issue and is already fixed.
   `Failed writing aggregation program. Please report a bug.` instead of the
   specific `AVG over string columns is not supported.` guard (which fires for
   temporal AVG). Found by the E7 envelope fuzzer. Functionally a clean reject.
-- [ ] HTTP status: distinguish invalid SQL/syntax from server failures
+- [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
+  error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
+  X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,
+  ronsql / ronsql_cte / fs suites green, results re-recorded for the prefix).
+- [ ] Observation (2026-09-14, unrelated to RONDB-1124): one run of `ronsql.ronsql_join`
+  Test 3 (`SELECT o.o_custkey, MIN(l.l_price), MAX(l.l_price) FROM orders AS o JOIN
+  lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey`) aborted `ronsql_cli` on
+  the debug assertion `m_finalWorkers < getWorkerCount()` in
+  `NdbQueryImpl::setFetchTerminated` (NdbQueryOperation.cpp:3511, pushed-join
+  worker accounting on an abort path; area last changed by RONDB-1107 on 2026-09-01);
+  20 consecutive reruns passed. Intermittent; for the RONDB-1107 / join-aggregation owners.
+- [ ] Observation (2026-09-15, unrelated to RONDB-1124): the `== Expected result ==`
+  display of smoke probe EDGE-FLOAT-B (`SUM(f_double)` over `edge_hist_1` entity 4)
+  is a MySQL-side, order-dependent double sum that flips between two one-ulp
+  neighbours (`123457.38900010001` in every recording except the M1.0 recording of
+  `ronsql_fs_ng4r2`, which had `123457.3890001`; the compare block through
+  `ronsql_compare.inc` has always shown `…10001`). Only the display line moves, so it
+  is a rare re-record diff, not a wrong result. Fix when it bites: `--replace_regex`
+  on that display statement, or drop the DOUBLE sum from the display as was done
+  for the DECIMAL sum (F21).
   instead of returning HTTP 500 for these client errors. Preserve the
   current permanent-error classification until the protocol is changed.
 

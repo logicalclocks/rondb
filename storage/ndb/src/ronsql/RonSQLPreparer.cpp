@@ -112,7 +112,8 @@ using std::endl;
 #include "RdrsSchemaCache.hpp"
 
 #define feature_not_implemented(description) \
-  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, \
+                             "RonSQL feature not implemented: " description)
 
 static const char* interval_type_name(TokenKind interval_type);
 
@@ -603,6 +604,9 @@ RonSQLPreparer::parse()
     // too (the gate is pass-through-only, but analyze_ctes()'s
     // aggregate requirement applies to every path).
     detect_single_row_ctes();
+    // RONDB-1124 M1.3: the Hopsworks collect CTE form becomes the plain
+    // single-table ORDER BY / LIMIT statement before the gate below sees it.
+    collapse_collect_cte();
     if (!m_is_aggregate_query)
     {
       // Phase E.3: allow the narrowly-supported projection-only main
@@ -1101,7 +1105,7 @@ RonSQLPreparer::parse()
       }
     }
   }
-  throw RonSQLPermanentError("Syntax error.");
+  throw RonSQLPermanentError(RonSQLErrorClass::SYNTAX, "Syntax error.");
 }
 
 void
@@ -1966,6 +1970,235 @@ RonSQLPreparer::detect_single_row_ctes()
     // (MAX_JOIN_KEY_COLS <= QN_CteLookupNode::MaxKeyPositions).
     stmt->is_single_row_cte = true;
   }
+}
+
+/*
+ * RONDB-1124 M1.3 (RONDB-1121 finding F0): the Hopsworks collect form
+ *
+ *   WITH t AS (SELECT c1, c2 FROM tbl WHERE ... ORDER BY x DESC LIMIT n)
+ *   SELECT c1, c2 FROM t;
+ *
+ * is what the feature-store query generator emits for every collect
+ * feature.  Its body is neither an aggregate nor a single-row key lookup
+ * (the entity key is only a PK prefix), so the CTE rules rejected it,
+ * while the body alone runs on the single-table pass-through ORDER BY
+ * path (ordered index + SF_OrderBy streaming, or the buffered sort).
+ * The two statements are set-equivalent: the body's ORDER BY + LIMIT
+ * decide the materialized set and a derived table's row order is
+ * unspecified.  So the statement is rewritten into its body here, at
+ * parse time, before the non-aggregate gate and analyze_ctes() — every
+ * later stage sees a plain single-table statement.  EXPLAIN reports the
+ * collapse (print()).
+ *
+ * Pattern (all must hold; anything else keeps today's CTE rules):
+ *  - exactly one CTE, and the main query is FROM that CTE alone: no
+ *    joins, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT or aggregate
+ *    expressions; every output a plain column reference, optionally
+ *    qualified with the CTE alias, that names an output of the CTE
+ *    (any subset, any order, aliases allowed);
+ *  - the body is a single real table with no joins, GROUP BY, HAVING,
+ *    aggregate / arithmetic expressions or subqueries; plain-column
+ *    outputs with distinct names; both ORDER BY and LIMIT >= 1 (the
+ *    WHERE is free: the entity-key bound makes the ordered scan cheap
+ *    but is not needed for correctness).
+ *
+ * Rewrite: the main's outputs keep their names and order and take the
+ * body columns they name; the body's table, WHERE, ORDER BY and LIMIT
+ * become the root's; the CTE list is dropped.  A body ORDER BY entry
+ * that names a body output alias is redirected to the underlying column
+ * (body-scope semantics); when a root output alias would capture the
+ * bare name in resolve_orderby_aliases(), the entry is re-registered
+ * qualified with the body table alias.  Column registry entries the
+ * body parse flagged as inner are un-flagged for the columns the
+ * collapsed statement uses; the main's own entries that nothing
+ * references any more become alias-only sentinels (the single-table
+ * resolver skips those).
+ */
+static inline bool
+lex_name_eq(const LexString& a, const LexCString& b)
+{
+  return a.len == b.len && (a.len == 0 || memcmp(a.str, b.str, a.len) == 0);
+}
+
+bool
+RonSQLPreparer::ce_has_subquery(const ConditionalExpression* ce)
+{
+  if (ce == NULL)
+    return false;
+  switch (ce->op)
+  {
+  case T_EXISTS:
+  case I_SUBQUERY:
+  case I_IN_SUBQUERY:
+  case I_CORR_SCALAR:
+    return true;
+  case T_IS:
+    return ce_has_subquery(ce->is.arg);
+  case T_INTERVAL:
+    return ce_has_subquery(ce->interval.arg);
+  case T_EXTRACT:
+    return ce_has_subquery(ce->extract.arg);
+  case T_IDENTIFIER:
+  case T_INT:
+  case T_FLOAT:
+  case T_STRING:
+  case I_MYSQL_TIME:
+  case T_SUM:
+  case T_MIN:
+  case T_MAX:
+  case T_COUNT:
+  case T_AVG:
+  case T_NULL:
+    return false;
+  default:
+    return ce_has_subquery(ce->args.left) || ce_has_subquery(ce->args.right);
+  }
+}
+
+void
+RonSQLPreparer::collapse_collect_cte()
+{
+  SelectStatement& root = m_context.ast_root;
+  CteDefinition* cte = root.cte_list;
+  if (cte == NULL || cte->next != NULL) return;
+  SelectStatement* body = cte->stmt;
+
+  // Main: FROM the CTE alone, projection-only.
+  if (root.root_table == NULL || !(root.root_table->name == cte->name))
+    return;
+  if (root.joins != NULL || root.where_expression != NULL ||
+      root.groupby_columns != NULL || root.having_expression != NULL ||
+      root.orderby_columns != NULL || root.limit >= 0 ||
+      root.outputs == NULL || m_main_scope.agg != NULL)
+    return;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next)
+    if (o->type != Outputs::Type::COLUMN) return;
+
+  // Body: one real table, non-aggregating, ORDER BY + LIMIT >= 1.
+  if (body == NULL || body->root_table == NULL || body->joins != NULL ||
+      body->groupby_columns != NULL || body->having_expression != NULL ||
+      body->agg != NULL || body->outputs == NULL ||
+      body->orderby_columns == NULL || body->limit < 1)
+    return;
+  if (find_cte_definition(body->root_table->name) != NULL) return;
+  if (ce_has_subquery(body->where_expression)) return;
+  for (const Outputs* o = body->outputs; o != NULL; o = o->next)
+  {
+    if (o->type != Outputs::Type::COLUMN) return;
+    for (const Outputs* p = o->next; p != NULL; p = p->next)
+      if (p->output_name == o->output_name) return;  // ambiguous name
+  }
+  const LexCString& body_alias = body->root_table->alias;
+  for (const OrderbyColumns* ob = body->orderby_columns; ob != NULL;
+       ob = ob->next)
+  {
+    if (ob->kind != OrderbyColumns::Kind::TABLE_COLUMN) return;
+    const LexCString& q = m_column_qualifiers[ob->col_idx];
+    if (q.c_str() != NULL && !(q == body_alias)) return;
+  }
+
+  // Every main output names a body output (a qualifier must be the CTE
+  // alias).  A name the CTE does not output is an error MySQL raises too.
+  Uint32 num_main = 0;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next) num_main++;
+  const Outputs** matches = m_amalloc->alloc_exc<const Outputs*>(num_main);
+  num_main = 0;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next)
+  {
+    const LexCString& q = m_column_qualifiers[o->column.col_idx];
+    if (q.c_str() != NULL && !(q == root.root_table->alias)) return;
+    const LexCString& name = m_columns[o->column.col_idx];
+    const Outputs* match = NULL;
+    for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+    {
+      if (lex_name_eq(bo->output_name, name))
+      {
+        match = bo;
+        break;
+      }
+    }
+    if (match == NULL)
+    {
+      std::basic_ostream<char>& err = *m_conf.err_stream;
+      err << "Column '" << name.c_str() << "' is not an output of CTE '"
+          << cte->name.c_str() << "'." << std::endl;
+      throw RonSQLPermanentError("Column is not an output of the CTE.");
+    }
+    matches[num_main++] = match;
+  }
+
+  // ---- Rewrite.
+  const Uint32 num_cols = m_columns.size();
+  bool* live = m_amalloc->alloc_exc<bool>(num_cols);
+  for (Uint32 i = 0; i < num_cols; i++) live[i] = false;
+  Uint32* old_main = m_amalloc->alloc_exc<Uint32>(num_main);
+  Uint32 k = 0;
+  for (Outputs* o = root.outputs; o != NULL; o = o->next, k++)
+  {
+    old_main[k] = o->column.col_idx;
+    o->column.col_idx = matches[k]->column.col_idx;
+    mark_scope_column_ref(live, o->column.col_idx);
+  }
+  for (OrderbyColumns* ob = body->orderby_columns; ob != NULL; ob = ob->next)
+  {
+    if (m_column_qualifiers[ob->col_idx].c_str() == NULL)
+    {
+      // A bare name that is a body output alias means that output's
+      // column in the body's scope.
+      const LexCString& name = m_columns[ob->col_idx];
+      for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+      {
+        if (lex_name_eq(bo->output_name, name))
+        {
+          ob->col_idx = bo->column.col_idx;
+          break;
+        }
+      }
+    }
+    if (m_column_qualifiers[ob->col_idx].c_str() == NULL)
+    {
+      // resolve_orderby_aliases() would bind a bare name to a root output
+      // alias of the same name; when that alias denotes another column,
+      // pin the entry to the table column by qualifying it.
+      const LexCString& cname = m_columns[ob->col_idx];
+      for (const Outputs* o = root.outputs; o != NULL; o = o->next)
+      {
+        if (lex_name_eq(o->output_name, cname) &&
+            o->column.col_idx != ob->col_idx)
+        {
+          ob->col_idx = m_context.qualified_column_name_to_idx(body_alias,
+                                                                cname);
+          break;
+        }
+      }
+    }
+    mark_scope_column_ref(live, ob->col_idx);
+  }
+  mark_scope_column_refs_ce(live, body->where_expression);
+  for (Uint32 i = 0; i < num_cols; i++)
+  {
+    if (live[i] && i < m_col_is_inner.size())
+      m_col_is_inner[i] = false;
+  }
+  for (Uint32 i = 0; i < num_main; i++)
+  {
+    Uint32 idx = old_main[i];
+    if (idx < num_cols && live[idx]) continue;
+    while (m_col_is_alias.size() <= idx)
+      m_col_is_alias.push(false);
+    m_col_is_alias[idx] = true;
+  }
+
+  root.root_table = body->root_table;
+  root.table = body->table;
+  root.joins = NULL;
+  root.where_expression = body->where_expression;
+  root.groupby_columns = NULL;
+  root.having_expression = NULL;
+  root.orderby_columns = body->orderby_columns;
+  root.limit = body->limit;
+  root.cte_list = NULL;
+  m_collapsed_cte = cte->name;
 }
 
 /*
@@ -6632,6 +6865,34 @@ RonSQLPreparer::compile()
   }
 }
 
+// The wire type cannot distinguish FLOAT MIN/MAX (widened to DOUBLE) from
+// SUM/AVG (whose result is genuinely DOUBLE). Follow only type-preserving
+// projections and MIN/MAX, including chained CTEs. dict_column alone is
+// insufficient because SUM also borrows it for DECIMAL scale metadata.
+bool
+RonSQLPreparer::column_uses_float_display(QueryScope& scope, Uint32 col_idx)
+{
+  if (scope.resolved_columns == NULL || col_idx >= m_columns.size())
+    return false;
+  const QueryScope::ResolvedColumnRef& ref = scope.resolved_columns[col_idx];
+  if (ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+    return ref.dict_column != NULL &&
+           ref.dict_column->getType() == NdbDictionary::Column::Float;
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+      ref.cte_def_idx >= m_cte_scopes.size() || ref.cte_output == NULL)
+    return false;
+  QueryScope* cs = m_cte_scopes[ref.cte_def_idx];
+  if (cs == NULL) return false;
+  const Outputs* o = ref.cte_output;
+  if (o->type == Outputs::Type::COLUMN)
+    return column_uses_float_display(*cs, o->column.col_idx);
+  if (o->type == Outputs::Type::AGGREGATE &&
+      (o->aggregate.fun == T_MIN || o->aggregate.fun == T_MAX) &&
+      o->aggregate.arg != NULL && o->aggregate.arg->isLoad())
+    return column_uses_float_display(*cs, o->aggregate.arg->getLoadIdx());
+  return false;
+}
+
 ResultPrinter::ColumnMetadata*
 RonSQLPreparer::build_result_column_metadata()
 {
@@ -6641,6 +6902,9 @@ RonSQLPreparer::build_result_column_metadata()
     column_metadata[col_idx].charset = NULL;
     column_metadata[col_idx].precision = 0;
     column_metadata[col_idx].scale = 0;
+    column_metadata[col_idx].avg_scale = 4;
+    column_metadata[col_idx].float_display =
+        column_uses_float_display(m_main_scope, col_idx);
     column_metadata[col_idx].has_metadata = false;
     column_metadata[col_idx].temporal =
         ResultPrinter::TemporalDisplay::NONE;
@@ -6662,8 +6926,8 @@ RonSQLPreparer::build_result_column_metadata()
       // SUM(s) over a's s = SUM(DECIMAL) — plumbs no stored column
       // either, and resolve_chained_column_type now carries the D15
       // scale/precision through aggregate layers.  rscale == 0 leaves
-      // has_metadata false, so integer/COUNT/string/temporal chains
-      // behave exactly as before.
+      // has_metadata false; AVG formatting independently distinguishes
+      // floating CTE results from integer results.
       if (ref.kind ==
               QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
           ref.cte_output != NULL) {
@@ -6673,11 +6937,16 @@ RonSQLPreparer::build_result_column_metadata()
         Int32 rscale = 0;
         Int32 rprecision = 0;
         if (resolve_chained_column_type(m_main_scope, col_idx, rt, rlen,
-                                         rcs, rscale, rprecision) &&
-            rscale > 0) {
-          column_metadata[col_idx].precision = rprecision;
-          column_metadata[col_idx].scale = rscale;
-          column_metadata[col_idx].has_metadata = true;
+                                         rcs, rscale, rprecision)) {
+          if (rt == NdbDictionary::Column::Float ||
+              rt == NdbDictionary::Column::Double)
+            column_metadata[col_idx].avg_scale = -1;
+          if (rscale > 0) {
+            column_metadata[col_idx].precision = rprecision;
+            column_metadata[col_idx].scale = rscale;
+            column_metadata[col_idx].has_metadata = true;
+            column_metadata[col_idx].avg_scale = std::min(rscale + 4, 30);
+          }
         }
       }
       continue;
@@ -6686,6 +6955,18 @@ RonSQLPreparer::build_result_column_metadata()
     column_metadata[col_idx].precision = col->getPrecision();
     column_metadata[col_idx].scale = col->getScale();
     column_metadata[col_idx].has_metadata = true;
+    switch (col->getType()) {
+    case NdbDictionary::Column::Float:
+    case NdbDictionary::Column::Double:
+      column_metadata[col_idx].avg_scale = -1;
+      break;
+    case NdbDictionary::Column::Decimal:
+    case NdbDictionary::Column::Decimalunsigned:
+      column_metadata[col_idx].avg_scale = std::min(col->getScale() + 4, 30);
+      break;
+    default:
+      break;  // Integer AVG retains four fractional digits.
+    }
     // D17 + temporal: resolve_cte_output_columns_for_scope plumbs
     // ref.dict_column back to the original source column even through a CTE
     // MIN/MAX, so for MIN(temporal)/MAX(temporal) this is the temporal
@@ -12226,7 +12507,8 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     // is NOT a std::runtime_error, so it would otherwise reach catch(...).
     DEB_TRACE(); err << "Error handling: OOM->RPE\n";
     cleanup_trans();
-    throw RonSQLPermanentError("Out of memory while processing the query.");
+    throw RonSQLPermanentError(RonSQLErrorClass::RESOURCE,
+                               "Out of memory while processing the query.");
   }
   catch (const std::runtime_error& e)
   {
@@ -12244,7 +12526,7 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     } else {
       DEB_TRACE(); err << ",nn\n";
       cleanup_trans();
-      throw RonSQLPermanentError("No NDB object");
+      throw RonSQLPermanentError(RonSQLErrorClass::RESOURCE, "No NDB object");
     }
     /*
      * Render the Ndb error BEFORE releasing the transaction. getNdbError()
@@ -12303,7 +12585,27 @@ RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
     }
     DEB_TRACE();
     err << "->RPE\n" << ndb_err_text.str() << '\n';
-    throw RonSQLPermanentError(e.what());
+    // RONDB-1124: an NDB error caused by the statement or its data is the
+    // client's (e.g. 1860 arithmetic overflow); anything else is ours.
+    RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+    switch (ndb_err.classification) {
+    case NdbError::ApplicationError:
+    case NdbError::NoDataFound:
+    case NdbError::ConstraintViolation:
+    case NdbError::SchemaError:
+    case NdbError::UserDefinedError:
+      cls = RonSQLErrorClass::SEMANTIC;
+      break;
+    case NdbError::InsufficientSpace:
+      cls = RonSQLErrorClass::RESOURCE;
+      break;
+    case NdbError::FunctionNotImplemented:
+      cls = RonSQLErrorClass::UNSUPPORTED;
+      break;
+    default:
+      break;
+    }
+    throw RonSQLPermanentError(cls, e.what(), ndb_err.code);
   }
   catch (...) {
     // All exceptions thrown should be instances of runtime_error.
@@ -15536,6 +15838,14 @@ RonSQLPreparer::print()
     out << "FRAGS_PER_WORKER = " << m_context.ast_root.frags_per_worker
         << " (requested; the NDB API normalizes to a power of two <= 8 and"
            " may clamp or ignore it, see frags_per_worker_plan.md)\n\n";
+  }
+
+  // RONDB-1124 M1.3: the collect form ran as its body (collapse_collect_cte).
+  if (m_collapsed_cte.c_str() != NULL) {
+    out << "CTE '" << m_collapsed_cte.c_str()
+        << "' collapsed into the pass-through ORDER BY scan: a"
+           " projection-only main over a non-aggregating single-table body"
+           " with ORDER BY and LIMIT runs as that body.\n\n";
   }
 
   // Print CTE definitions

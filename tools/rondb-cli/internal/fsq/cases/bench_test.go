@@ -58,12 +58,12 @@ func benchEntries(t *testing.T) map[string]BenchEntry {
 
 func TestBenchEntriesCatalog(t *testing.T) {
 	entries := benchEntries(t)
-	if len(entries) != 25 {
-		t.Fatalf("%d entries, want 25 (benchmarks.md §2)", len(entries))
+	if len(entries) != 26 {
+		t.Fatalf("%d entries, want 26 (benchmarks.md §2)", len(entries))
 	}
 	for _, name := range []string{"fs_hw_floor", "fs_hw_agg_point", "fs_hw_agg_window7d", "fs_hw_agg_greatest", "fs_hw_agg_filter",
 		"fs_hw_agg_batch10", "fs_hw_agg_batch100", "fs_hw_agg_batch1000", "fs_hw_agg_batch100_window", "fs_hw_collect5", "fs_hw_collect50",
-		"fs_hw_collect5_cte", "fs_hw_collect5_twin", "fs_hw_snow1_point", "fs_hw_snow2_point", "fs_hw_snow1_batch100", "fs_hw_snow2_left_chain",
+		"fs_hw_collect5_cte", "fs_hw_collect50_cte", "fs_hw_collect5_twin", "fs_hw_snow1_point", "fs_hw_snow2_point", "fs_hw_snow1_batch100", "fs_hw_snow2_left_chain",
 		"fs_hw_snow2_left_single", "fs_hw_snow1_twin", "fs_hw_snow2_twin", "fs_hw_strkey_point", "fs_hw_strkey_batch100", "fs_hw_composite_point",
 		"fs_hw_hash_point", "fs_hw_sessions_window2h"} {
 		if _, ok := entries[name]; !ok {

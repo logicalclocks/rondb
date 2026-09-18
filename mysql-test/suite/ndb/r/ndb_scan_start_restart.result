@@ -1,4 +1,9 @@
+# Shutting down mysqld 1
+# Shutting down mysqld 2
 Running command
 Result of command: 0
-DROP DATABASE TEST_DB;
 Test program success!
+# Starting mysqld 1
+# restart
+# Starting mysqld 2
+# restart

@@ -1794,12 +1794,16 @@ int NdbScanOperation::DoAggregation() {
     switch(check) {
     case -1:
       return -1;
-    case 0:
-      if (m_aggregation_code->ProcessRes(myRecAttr->aRef())) {
+    case 0: {
+      const Int32 result = m_aggregation_code->ProcessRes(myRecAttr->aRef());
+      if (result > 0) {
         continue;
-      } else {
-        return -1;
       }
+      if (result < 0) {
+        setErrorCodeAbort(-result);
+      }
+      return -1;
+    }
     case 1:
       // Scan complete.
       m_aggregation_code->PrepareResults();

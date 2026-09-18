@@ -50,9 +50,10 @@ SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amoun
 SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 5;
 -- plan pins: Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending | Result limited to 5 rows.
 
-=== fs_hw_collect5_cte [S6] ronsql+mysql rows=<= 5 (or REJECT)
--- collect the newest 5 rows, Hopsworks CTE form (F0: clean rejection expected)
+=== fs_hw_collect5_cte [S6] ronsql+mysql rows=<= 5
+-- collect the newest 5 rows, Hopsworks CTE form (collapsed into the direct form)
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
+-- plan pins: collapsed into the pass-through ORDER BY scan | Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending | Result limited to 5 rows.
 
 === fs_hw_collect5_twin [S6 twin] mysql-only rows=<= 5
 -- production MySQL collect statement (ROW_NUMBER window, rank <= 5)
@@ -67,6 +68,11 @@ ORDER BY hopsworks_collect_rank
 -- collect the newest 50 rows, direct form
 SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 50;
 -- plan pins: Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending | Result limited to 50 rows.
+
+=== fs_hw_collect50_cte [S6] ronsql+mysql rows=<= 50
+-- collect the newest 50 rows, Hopsworks CTE form (collapsed into the direct form)
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 50) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
+-- plan pins: collapsed into the pass-through ORDER BY scan | Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending | Result limited to 50 rows.
 
 === fs_hw_snow1_point [S7] ronsql+mysql rows=<= 1
 -- snowflake 1-hop INNER (customer -> region)

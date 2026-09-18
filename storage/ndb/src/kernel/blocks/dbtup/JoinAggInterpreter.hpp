@@ -187,8 +187,11 @@ class JoinAggInterpreter : public AggInterpreterBase {
       Uint32 xfrm_buf_len,
       const struct LeafProgram* leaf = nullptr);
 
-  Uint32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups,
-                   uchar* xfrm_buf, Uint32 xfrm_buf_len);
+  // Returns 0 on success or a positive NDB error code on failure.
+  // On success, remaining is the number of groups still to merge.
+  // A failed merge may have consumed part of other; abort the query.
+  Int32 mergeFrom(JoinAggInterpreter* other, Uint32 max_groups,
+                  Uint32& remaining, uchar* xfrm_buf, Uint32 xfrm_buf_len);
 
   using AggInterpreterBase::initGBTypesFromMetadata;
 
@@ -245,7 +248,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * If the key is new, inserts a new group with the incoming data.
    * For Phase I.17e scalar (no GROUP BY) redistribute, callers can pass
    * keyLen == 0 and the call dispatches to mergeScalarAccumulators.
-   * Returns 0 on success, negative on error (e.g., memory allocation failure).
+   * Returns 0 on success, a positive NDB error code, or a negative
+   * internal failure code (e.g., memory allocation failure).
    */
   Int32 mergeOneGroup(const char* key, Uint32 keyLen,
                       const char* accumulators, Uint32 accLen,
@@ -259,7 +263,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
    * its local m_agg_results and ships it to the DBTC-co-located owner
    * node.  The owner repeatedly calls this method (one call per
    * non-owner peer) to fold every node's contribution into its own
-   * accumulators.  Returns 0 on success, negative on error.
+   * accumulators. Returns 0 on success, a positive NDB error code,
+   * or a negative internal failure code.
    */
   Int32 mergeScalarAccumulators(const char* accumulators, Uint32 accLen);
 

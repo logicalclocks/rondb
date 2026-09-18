@@ -30,6 +30,8 @@ import (
 	"testing"
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/cases"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/data"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/exec"
 )
 
 func TestVerifyRejectionStatuses(t *testing.T) {
@@ -43,6 +45,7 @@ func TestVerifyRejectionStatuses(t *testing.T) {
 		{"REJECT(allowed)", false, "UNSUPPORTED"},
 		{"REJECT", true, "FAILED"},
 		{"WRONG-RESULT", true, "FAILED"},
+		{"UNEXPECTED-SUCCESS", true, "FAILED"},
 		{"ERROR", true, "FAILED"},
 		{"TIMEOUT", true, "FAILED"},
 		{"CRASH", true, "FAILED"},
@@ -114,5 +117,107 @@ func TestEdgeShapeReporting(t *testing.T) {
 	}
 	if got := shapeStatus(statusesByShape([]caseResult{r}, nil)["S1"]); got != "UNSUPPORTED" {
 		t.Fatal("a skipped hazard must not disappear from its serving shape")
+	}
+}
+
+type caseQueryFunc func(context.Context, string) exec.Response
+
+func (f caseQueryFunc) Query(ctx context.Context, sql string) exec.Response {
+	return f(ctx, sql)
+}
+
+func TestBigOverflowRequires1860(t *testing.T) {
+	cs, err := cases.Enumerate(cases.Config{DB: "test", Scale: data.NewScale(0.01)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c cases.Case
+	for _, candidate := range cs {
+		if candidate.ID == "EDGE-big-overflow" {
+			c = candidate
+		}
+	}
+	if !c.RequireReject || c.ExpectReject == nil || c.KnownWrong != nil || len(c.Statements) != 1 {
+		t.Fatal("overflow must require a rejection without a wrong-result exemption")
+	}
+	result := func(value string) exec.Response {
+		return exec.Response{Outcome: exec.OK, Result: &exec.Result{
+			Columns: []string{"big_sum"}, Rows: [][]exec.Cell{{{Text: value}}},
+		}}
+	}
+	ref := result("9223372036854775808")
+	my := caseQueryFunc(func(context.Context, string) exec.Response { return ref })
+	for _, tc := range []struct {
+		name   string
+		rsp    exec.Response
+		status string
+	}{
+		{"overflow", exec.Response{Outcome: exec.CleanReject, Message: "NDB Permanent error 1860, Application error: arithmetic operation results overflow"}, "REJECT(expected)"},
+		{"wrong-code", exec.Response{Outcome: exec.CleanReject, Message: "NDB Permanent error 4008, arithmetic operation results overflow"}, "REJECT"},
+		{"missing-code", exec.Response{Outcome: exec.CleanReject, Message: "arithmetic operation results overflow"}, "REJECT"},
+		{"wrapped", result("-9223372036854775808"), "UNEXPECTED-SUCCESS"},
+		{"widened", ref, "UNEXPECTED-SUCCESS"},
+		{"timeout", exec.Response{Outcome: exec.Timeout}, "TIMEOUT"},
+		{"crash", exec.Response{Outcome: exec.Crash}, "CRASH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rd := caseQueryFunc(func(context.Context, string) exec.Response { return tc.rsp })
+			for _, allow := range []bool{false, true} {
+				got := runCase(context.Background(), c, my, rd, verifyOpts{allowReject: allow})
+				if got.Status != tc.status {
+					t.Fatalf("allowReject=%v: got %s, want %s", allow, got.Status, tc.status)
+				}
+				wantEvidence := "failed"
+				if tc.status == "REJECT(expected)" {
+					wantEvidence = "unsupported"
+				}
+				if cases.EvidenceClass(got.Status) != wantEvidence {
+					t.Fatalf("incorrect requirements evidence for %s", got.Status)
+				}
+			}
+		})
+	}
+	// Ordinary known limitations may still improve to a matching result.
+	c.RequireReject = false
+	got := runCase(context.Background(), c, my, my, verifyOpts{})
+	if got.Status != "PASS(was-expected-reject)" {
+		t.Fatalf("ordinary expected rejection: got %s", got.Status)
+	}
+}
+
+func TestFloatDisplayRegressionIsFailure(t *testing.T) {
+	cs, err := cases.Enumerate(cases.Config{DB: "test", Scale: data.NewScale(0.01)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c cases.Case
+	for _, candidate := range cs {
+		if candidate.ID == "EDGE-float-rounding" {
+			c = candidate
+		}
+	}
+	if len(c.Statements) != 1 || c.KnownWrong != nil {
+		t.Fatal("FLOAT display probe must run without a wrong-result exemption")
+	}
+	result := func(max string) exec.Response {
+		return exec.Response{Outcome: exec.OK, Result: &exec.Result{
+			Columns: []string{"ff_sum", "fd_sum", "ff_max", "dec_sum"},
+			Types:   []string{"DOUBLE", "DOUBLE", "FLOAT", "DECIMAL"},
+			Rows: [][]exec.Cell{{{Text: "123457.38906261639"},
+				{Text: "123457.38900010001"}, {Text: max}, {Text: "123457.39"}}},
+		}}
+	}
+	my := caseQueryFunc(func(context.Context, string) exec.Response { return result("123457") })
+	for _, tc := range []struct{ value, status string }{
+		{"123457", "PASS"},
+		{"123456.7890625", "WRONG-RESULT"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			rd := caseQueryFunc(func(context.Context, string) exec.Response { return result(tc.value) })
+			got := runCase(context.Background(), c, my, rd, verifyOpts{})
+			if got.Status != tc.status {
+				t.Fatalf("got %s, want %s", got.Status, tc.status)
+			}
+		})
 	}
 }

@@ -410,6 +410,12 @@ struct JoinAggregationState {
   // DblqhProxy only: one teardown chain per allocated pool record.
   bool m_release_started;
 
+  // Pending callbacks must not resume work after an abort or failure.
+  bool isAborting() const {
+    const State state = m_state.load();
+    return state == ERROR || state == NODE_FAIL_ABORT;
+  }
+
   //------------------------------------------------------------------
   // Key-based access — pool index assigned at seize time
   //------------------------------------------------------------------

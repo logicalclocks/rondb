@@ -106,6 +106,8 @@
 /* ronsql_jit item 15: AVG as one opcode (RONDB-1107) — SUM into the
  * visible dst slot + COUNT into a hidden companion slot. */
 #define BR_kOpAvg           31
+#define BR_kOpOrderBy       32
+#define BR_kOpLimit         33
 
 /* From storage/ndb/include/ndb_constants.h. */
 #define BR_NDB_TYPE_TINYINT          1
@@ -307,6 +309,8 @@ const char *ndb_jit_bridge_agg_op_name(uint32_t op) {
     case BR_kOpSkip:           return "kOpSkip";
     case BR_kOpSetRegNull:     return "kOpSetRegNull";
     case BR_kOpAvg:            return "kOpAvg";
+    case BR_kOpOrderBy:        return "kOpOrderBy";
+    case BR_kOpLimit:          return "kOpLimit";
     default:                   return "kOp?";
   }
 }
@@ -3856,6 +3860,14 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
         pos += 1;
         break;
       }
+
+      case BR_kOpOrderBy:
+      case BR_kOpLimit:
+        /* Declarative CTE metadata, already parsed by JoinAggInterpreter.
+         * Sorting and truncation run after aggregation and redistribution;
+         * these words have no per-row work, just like in the interpreter. */
+        pos += 1;
+        break;
 
       case BR_kOpAvg: {
         /* ronsql_jit item 15: AVG(x) as one opcode (RONDB-1107 — CTE

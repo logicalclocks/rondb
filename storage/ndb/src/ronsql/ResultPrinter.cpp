@@ -108,7 +108,8 @@ static inline void ronsql_timestamp_tv_to_TIME(const my_timeval &tv,
 }
 
 #define feature_not_implemented(description) \
-  throw RonSQLPermanentError("RonSQL feature not implemented: " description)
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, \
+                             "RonSQL feature not implemented: " description)
 #define bug(x) throw RonSQLPermanentError(x " Please report a bug.")
 
 DEFINE_FORMATTER(quoted_identifier, LexCString, {
@@ -131,6 +132,10 @@ static void print_string(std::ostream& output_stream,
                          bool utf8_output,
                          bool trim_space_suffix);
 static double convert_result_to_double(NdbAggregator::Result result);
+static void print_base64(std::ostream& out, const unsigned char* bytes,
+                         size_t len);
+static void print_binary_tsv(std::ostream& out, const unsigned char* bytes,
+                             size_t len);
 
 // require or investigate schema version
 static inline void
@@ -505,6 +510,9 @@ ResultPrinter::compile()
         cmd.print_group_by_column.charset = charset;
         cmd.print_group_by_column.precision = precision;
         cmd.print_group_by_column.scale = scale;
+        cmd.print_group_by_column.float_display =
+            m_column_metadata != NULL &&
+            m_column_metadata[o->column.col_idx].float_display;
         m_program.push(cmd);
         break;
       }
@@ -514,6 +522,7 @@ ResultPrinter::compile()
         cmd.type = Cmd::Type::PRINT_AGGREGATE;
         cmd.print_aggregate.reg_a = o->aggregate.agg_index;
         cmd.print_aggregate.charset = aggregate_arg_charset(o);
+        cmd.print_aggregate.float_display = aggregate_uses_float_display(o);
         {
           // D15: only format with fixed scale when the source DECIMAL is within
           // DOUBLE's exact range (precision <= 15); wider DECIMALs keep compact
@@ -538,6 +547,7 @@ ResultPrinter::compile()
         cmd.type = Cmd::Type::PRINT_AVG;
         cmd.print_avg.reg_a_sum = o->avg.agg_index_sum;
         cmd.print_avg.reg_a_count = o->avg.agg_index_count;
+        cmd.print_avg.scale = avg_arg_scale(o);
         m_program.push(cmd);
         break;
       }
@@ -723,7 +733,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
           out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:
-          print_float_or_double(out, column.data_float());
+          print_float_or_double(out, column.data_float(), true);
           break;
         case NdbDictionary::Column::Type::Double:
           // cte_avg_plan.md V4 (C8): a Double GROUP BY column carrying
@@ -739,7 +749,8 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
                        column.data_double());
               out << fbuf;
             } else {
-              print_float_or_double(out, column.data_double());
+              print_float_or_double(out, column.data_double(),
+                                    cmd.print_group_by_column.float_display);
             }
           }
           break;
@@ -874,31 +885,16 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
                                cmd.print_aggregate.scale,
+                               cmd.print_aggregate.float_display,
                                cmd.print_aggregate.temporal,
                                cmd.print_aggregate.temporal_fsp);
       }
       break;
     case Cmd::Type::PRINT_AVG:
       {
-        NdbAggregator::Result result_sum = m_regs_a[cmd.print_avg.reg_a_sum];
-        NdbAggregator::Result result_count = m_regs_a[cmd.print_avg.reg_a_count];
-        if (result_sum.is_null() &&
-            !result_count.is_null() &&
-            result_count.type() == NdbDictionary::Column::Type::Bigunsigned &&
-            result_count.data_uint64() == 0) {
-          out << m_null_representation;
-        } else {
-          double numerator = convert_result_to_double(result_sum);
-          double denominator = convert_result_to_double(result_count);
-          double result = numerator / denominator;
-          char buffer[FLOATING_POINT_BUFFER];
-          bool error;
-          my_fcvt(result, 4, buffer, &error);
-          if (error)
-            out << m_null_representation;
-          else
-            out << buffer;
-        }
+        print_avg_result(out, m_regs_a[cmd.print_avg.reg_a_sum],
+                         m_regs_a[cmd.print_avg.reg_a_count],
+                         cmd.print_avg.scale);
       }
       break;
     case Cmd::Type::PRINT_STR:
@@ -1177,8 +1173,8 @@ ResultPrinter::setup_output_format()
 // — the column's native bytes (little-endian for DATE/YEAR, big-endian
 // for DATETIME2/TIME2/TIMESTAMP2) loaded into a register — which is
 // also what a raw column re-packs to (see print_passthrough_value).
-// `quote` wraps the text ("" for TSV and aggregate results, "\"" for
-// JSON pass-through output).
+// `quote` wraps the text: the printer's m_quote ("" for TSV, "\"" for
+// JSON), for pass-through columns and aggregate results alike.
 static void
 print_temporal_packed(std::ostream& out, Uint64 w,
                       ResultPrinter::TemporalDisplay temporal, int fsp,
@@ -1315,7 +1311,7 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   case NdbDictionary::Column::Bigunsigned:
     out << (unsigned long long)attr->u_64_value(); break;
   case NdbDictionary::Column::Float:
-    print_float_or_double(out, (double)attr->float_value()); break;
+    print_float_or_double(out, attr->float_value(), true); break;
   case NdbDictionary::Column::Double:
     {
       // D15: a DECIMAL-derived value carried as DOUBLE prints with its source
@@ -1330,7 +1326,8 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
         snprintf(buf, sizeof(buf), "%.*f", sc, attr->double_value());
         out << buf;
       } else {
-        print_float_or_double(out, attr->double_value());
+        print_float_or_double(out, attr->double_value(),
+                              meta != NULL && meta->float_display);
       }
     }
     break;
@@ -1431,10 +1428,51 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       out << decStr;
       break;
     }
+  case NdbDictionary::Column::Binary:
+  case NdbDictionary::Column::Varbinary:
+  case NdbDictionary::Column::Longvarbinary:
+    {
+      // RONDB-1124 M1.4 (RONDB-1121 F7): binary pass-through values, the
+      // Hopsworks binary / serialized-array features projected through
+      // the snowflake templates.  JSON carries them as a base64 string
+      // (RFC 4648 with padding, no line breaks — the convention of the
+      // RDRS pk-read responses, so a client decodes both endpoints
+      // alike); TEXT prints the raw bytes with the mysql client's
+      // batch-mode escaping (\0 \t \n \\), byte for byte what the client
+      // prints for the same column.  BINARY(n) is printed at its full
+      // padded length, as MySQL returns it.  BLOB/TEXT stay unsupported
+      // (they need the blob API).
+      const NdbDictionary::Column* col = attr->getColumn();
+      require_sch(col != nullptr, "NULL column on BINARY NdbRecAttr");
+      const unsigned char* data =
+          pointer_cast<const unsigned char*>(attr->aRef());
+      const unsigned char* bytes;
+      size_t len;
+      if (t == NdbDictionary::Column::Binary) {
+        bytes = data;
+        len = (size_t)col->getSizeInBytes();
+      } else if (t == NdbDictionary::Column::Varbinary) {
+        bytes = &data[1];
+        len = (size_t)data[0];
+      } else {
+        bytes = &data[2];
+        len = (size_t)data[0] | ((size_t)data[1] << 8);
+      }
+      if (m_json_output) {
+        out << '"';
+        print_base64(out, bytes, len);
+        out << '"';
+      } else if (m_tsv_output) {
+        print_binary_tsv(out, bytes, len);
+      } else {
+        abort();
+      }
+      break;
+    }
   default:
     // Old temporal formats (pre-5.6 Datetime/Time/Timestamp),
-    // Olddecimal, BIT, BINARY/VARBINARY and BLOB/TEXT are not
-    // supported in pass-through results.
+    // Olddecimal, BIT and BLOB/TEXT are not supported in pass-through
+    // results.
     *m_err << "Unsupported column type (" << (int)t
            << ") in pass-through result." << endl;
     throw RonSQLPermanentError(
@@ -1760,7 +1798,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
           out << column.data_uint64();
           break;
         case NdbDictionary::Column::Type::Float:         ///< 32-bit float. 4 bytes float
-          print_float_or_double(out, column.data_float());
+          print_float_or_double(out, column.data_float(), true);
           break;
         case NdbDictionary::Column::Type::Double:        ///< 64-bit float. 8 byte float
           // cte_avg_plan.md V4 (C8): see the buffered-path Double arm.
@@ -1773,7 +1811,8 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
                        column.data_double());
               out << fbuf;
             } else {
-              print_float_or_double(out, column.data_double());
+              print_float_or_double(out, column.data_double(),
+                                    cmd.print_group_by_column.float_display);
             }
           }
           break;
@@ -1910,31 +1949,16 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
         NdbAggregator::Result result = m_regs_a[cmd.print_aggregate.reg_a];
         print_aggregate_result(out, result, cmd.print_aggregate.charset,
                                cmd.print_aggregate.scale,
+                               cmd.print_aggregate.float_display,
                                cmd.print_aggregate.temporal,
                                cmd.print_aggregate.temporal_fsp);
       }
       break;
     case Cmd::Type::PRINT_AVG:
       {
-        NdbAggregator::Result result_sum = m_regs_a[cmd.print_avg.reg_a_sum];
-        NdbAggregator::Result result_count = m_regs_a[cmd.print_avg.reg_a_count];
-        if (result_sum.is_null() &&
-            !result_count.is_null() &&
-            result_count.type() == NdbDictionary::Column::Type::Bigunsigned &&
-            result_count.data_uint64() == 0) {
-          out << m_null_representation;
-        } else {
-          double numerator = convert_result_to_double(result_sum);
-          double denominator = convert_result_to_double(result_count);
-          double result = numerator / denominator;
-          char buffer[FLOATING_POINT_BUFFER];
-          bool error;
-          my_fcvt(result, 4, buffer, &error);
-          if (error)
-            out << m_null_representation;
-          else
-            out << buffer;
-        }
+        print_avg_result(out, m_regs_a[cmd.print_avg.reg_a_sum],
+                         m_regs_a[cmd.print_avg.reg_a_count],
+                         cmd.print_avg.scale);
       }
       break;
     case Cmd::Type::PRINT_STR:
@@ -1961,6 +1985,58 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
       break;
     default:
       abort();
+    }
+  }
+}
+
+// Base64 (RFC 4648, "=" padding, no line breaks) for binary pass-through
+// values under JSON output.  Not mysys' base64_encode, which inserts a
+// newline every 76 characters.
+static void
+print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
+{
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  size_t i = 0;
+  char quad[4];
+  for (; i + 3 <= len; i += 3)
+  {
+    Uint32 v = ((Uint32)bytes[i] << 16) | ((Uint32)bytes[i + 1] << 8) |
+               (Uint32)bytes[i + 2];
+    quad[0] = alphabet[(v >> 18) & 0x3f];
+    quad[1] = alphabet[(v >> 12) & 0x3f];
+    quad[2] = alphabet[(v >> 6) & 0x3f];
+    quad[3] = alphabet[v & 0x3f];
+    out.write(quad, 4);
+  }
+  if (i < len)
+  {
+    Uint32 v = (Uint32)bytes[i] << 16;
+    if (i + 1 < len) v |= (Uint32)bytes[i + 1] << 8;
+    quad[0] = alphabet[(v >> 18) & 0x3f];
+    quad[1] = alphabet[(v >> 12) & 0x3f];
+    quad[2] = (i + 1 < len) ? alphabet[(v >> 6) & 0x3f] : '=';
+    quad[3] = '=';
+    out.write(quad, 4);
+  }
+}
+
+// Binary pass-through values under TEXT output: the raw bytes with the
+// escaping the mysql client applies in batch mode (client/mysql.cc
+// tee_write, MY_PRINT_ESC_0 | MY_PRINT_CTRL): NUL, tab, newline and
+// backslash are written as \0, \t, \n and \\; every other byte as is.
+static void
+print_binary_tsv(std::ostream& out, const unsigned char* bytes, size_t len)
+{
+  for (size_t i = 0; i < len; i++)
+  {
+    switch (bytes[i])
+    {
+    case 0x00: out << "\\0"; break;
+    case 0x09: out << "\\t"; break;
+    case 0x0a: out << "\\n"; break;
+    case 0x5c: out << "\\\\"; break;
+    default: out.put((char)bytes[i]); break;
     }
   }
 }
@@ -2228,11 +2304,16 @@ print_string(std::ostream& out,
 }
 
 inline void
-ResultPrinter::print_float_or_double(std::ostream& out, double value)
+ResultPrinter::print_float_or_double(std::ostream& out, double value,
+                                     bool float_display)
 {
-  char buffer[FLOATING_POINT_BUFFER];
+  char buffer[FLOATING_POINT_BUFFER + 1];
   bool error;
-  size_t len = my_fcvt_compact(value, buffer, &error);
+  // Match MySQL's text-protocol FLOAT conversion. SUM/AVG and true DOUBLE
+  // values retain the existing compact double representation.
+  size_t len = float_display
+      ? my_gcvt(value, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buffer, &error)
+      : my_fcvt_compact(value, buffer, &error);
   if (error)
   {
     // value is Inf, -Inf or NaN.
@@ -2242,6 +2323,67 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value)
   ndbrequire(len > 0 && buffer[len] == 0);
   out << buffer;
   return;
+}
+
+void
+ResultPrinter::print_avg_result(std::ostream& out,
+                                NdbAggregator::Result sum,
+                                NdbAggregator::Result count,
+                                int scale)
+{
+  if (sum.is_null() &&
+      !count.is_null() &&
+      count.type() == NdbDictionary::Column::Type::Bigunsigned &&
+      count.data_uint64() == 0) {
+    out << m_null_representation;
+    return;
+  }
+
+  const double result =
+      convert_result_to_double(sum) / convert_result_to_double(count);
+  if (scale < 0) {
+    print_float_or_double(out, result);
+    return;
+  }
+
+  ndbrequire(scale <= 30);
+  char buffer[FLOATING_POINT_BUFFER];
+  bool error;
+  my_fcvt(result, scale, buffer, &error);
+  if (error)
+    out << m_null_representation;
+  else
+    out << buffer;
+}
+
+int
+ResultPrinter::avg_arg_scale(const Outputs* out) const
+{
+  ndbrequire(out != NULL && out->type == Outputs::Type::AVG);
+  const AggregationAPICompiler::Expr* arg = out->avg.arg;
+  // Expression result-type inference is separate from column metadata.
+  // Keep the existing four-digit formatting for those arguments.
+  if (arg == NULL || !arg->isLoad() || m_column_metadata == NULL ||
+      m_column_names == NULL || arg->getLoadIdx() >= m_column_names->size())
+    return 4;
+  // avg_scale is initialized even when the older display metadata is absent
+  // (e.g. a DOUBLE CTE result with no fixed scale, or offline EXPLAIN).
+  return m_column_metadata[arg->getLoadIdx()].avg_scale;
+}
+
+bool
+ResultPrinter::aggregate_uses_float_display(const Outputs* out) const
+{
+  if (out == NULL || out->type != Outputs::Type::AGGREGATE ||
+      (out->aggregate.fun != T_MIN && out->aggregate.fun != T_MAX))
+    return false;
+  const AggregationAPICompiler::Expr* arg = out->aggregate.arg;
+  // Arithmetic expressions have their own result type; only a column
+  // MIN/MAX preserves FLOAT display.
+  if (arg == NULL || !arg->isLoad() || m_column_metadata == NULL ||
+      m_column_names == NULL || arg->getLoadIdx() >= m_column_names->size())
+    return false;
+  return m_column_metadata[arg->getLoadIdx()].float_display;
 }
 
 CHARSET_INFO*
@@ -2381,6 +2523,7 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
                                       NdbAggregator::Result result,
                                       CHARSET_INFO* charset,
                                       int scale,
+                                      bool float_display,
                                       TemporalDisplay temporal,
                                       int temporal_fsp)
 {
@@ -2398,8 +2541,11 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
   if (temporal != TemporalDisplay::NONE &&
       result.type() == NdbDictionary::Column::Bigunsigned)
   {
+    // Quoted like a pass-through temporal column: under JSON output the
+    // value is a string, and an empty quote here left the body unparsable
+    // (RONDB-1121 F9).
     print_temporal_packed(out, result.data_uint64(), temporal,
-                          temporal_fsp, "");
+                          temporal_fsp, m_quote);
     return;
   }
 
@@ -2416,15 +2562,15 @@ ResultPrinter::print_aggregate_result(std::ostream& out,
     {
       // MIN/MAX over a DECIMAL(_, scale) is widened to DOUBLE in the kernel,
       // but MySQL prints it with the source scale (e.g. 20055.00).  Format
-      // with fixed scale so the output matches; true DOUBLE/FLOAT results
-      // pass scale == 0 and keep the compact my_fcvt_compact formatting.
+      // with fixed scale so the output matches; floating results pass
+      // scale == 0 and use their source-type display below.
       char buf[FLOATING_POINT_BUFFER];
       snprintf(buf, sizeof(buf), "%.*f", scale, result.data_double());
       out << buf;
     }
     else
     {
-      print_float_or_double(out, result.data_double());
+      print_float_or_double(out, result.data_double(), float_display);
     }
     break;
   case NdbDictionary::Column::Char:

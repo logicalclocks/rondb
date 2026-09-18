@@ -62,6 +62,55 @@ func TestCaseDeterminism(t *testing.T) {
 
 func itoa(i int) string { return strconv.Itoa(i) }
 
+// TestComplexFeaturesProjectedOnly: since RONDB-1124 M1.4 (F7) join
+// projections may carry complex-typed features (served as VARBINARY);
+// aggregates and collect fields stay scalar (the definition validator
+// gates them).
+func TestComplexFeaturesProjectedOnly(t *testing.T) {
+	g := gen()
+	projected := 0
+	for i := 0; i < 400; i++ {
+		c := g.Case(1, i)
+		if c.Kind != "serving" {
+			continue
+		}
+		for _, j := range c.View.Joins {
+			if j.CollectN != nil {
+				// The collect feature is array<struct<field:type,...>> by
+				// construction; its fields must be scalar.
+				for _, f := range j.Features {
+					if f.Type == nil {
+						continue
+					}
+					inner := strings.TrimSuffix(strings.TrimPrefix(*f.Type, "array<struct<"), ">>")
+					for _, field := range strings.Split(inner, ",") {
+						if _, typ, ok := strings.Cut(field, ":"); ok && spec.IsComplexType(typ) {
+							t.Fatalf("case %s: complex field %s in collect feature %s", c.ID, field, f.Name)
+						}
+					}
+				}
+				continue
+			}
+			if j.Aggregate != nil {
+				for _, f := range j.Features {
+					if f.Type != nil && spec.IsComplexType(*f.Type) {
+						t.Fatalf("case %s: complex feature %s in an aggregate join", c.ID, f.Name)
+					}
+				}
+				continue
+			}
+			for _, f := range j.Features {
+				if f.Type != nil && spec.IsComplexType(*f.Type) {
+					projected++
+				}
+			}
+		}
+	}
+	if projected == 0 {
+		t.Fatal("no complex-typed feature projected in 400 seed-1 cases")
+	}
+}
+
 // TestExpectationsAgreeWithEmitter is the generator's self-check: every
 // case's predicted gate and template count must be what the ported
 // emitter (or the definition validator) actually produces.

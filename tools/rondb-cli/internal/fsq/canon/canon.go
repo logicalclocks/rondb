@@ -32,6 +32,7 @@
 package canon
 
 import (
+	"encoding/base64"
 	"fmt"
 	"math"
 	"math/big"
@@ -65,6 +66,7 @@ const (
 	kDecimal
 	kFloat
 	kTime
+	kBinary
 )
 
 func kindOf(dbType string) kind {
@@ -75,8 +77,50 @@ func kindOf(dbType string) kind {
 		return kFloat
 	case "TIMESTAMP", "DATETIME", "TIME":
 		return kTime
+	case "BINARY", "VARBINARY", "BLOB", "TINYBLOB", "MEDIUMBLOB", "LONGBLOB":
+		return kBinary
 	}
 	return kExact
+}
+
+// IsBinaryType reports whether a MySQL type name is a binary string type,
+// which RonSQL's JSON output carries as a base64 string (RONDB-1124 M1.4).
+func IsBinaryType(dbType string) bool { return kindOf(dbType) == kBinary }
+
+// decodeBinary returns the bytes a RonSQL JSON cell carries for a binary
+// column: the base64 decoding of its text, or the text itself when it is
+// not base64 (the comparison then reports the difference).
+func decodeBinary(c exec.Cell) exec.Cell {
+	if c.Null {
+		return c
+	}
+	if b, err := base64.StdEncoding.DecodeString(c.Text); err == nil {
+		return exec.Cell{Text: string(b)}
+	}
+	return c
+}
+
+// decodeBinaryColumns returns got with the cells of binary columns
+// base64-decoded (a shallow copy; got itself is left intact).
+func decodeBinaryColumns(got *exec.Result, kinds []kind) *exec.Result {
+	any := false
+	for _, k := range kinds {
+		any = any || k == kBinary
+	}
+	if !any {
+		return got
+	}
+	out := *got
+	out.Rows = make([][]exec.Cell, len(got.Rows))
+	for r, row := range got.Rows {
+		out.Rows[r] = append([]exec.Cell(nil), row...)
+		for i := range out.Rows[r] {
+			if i < len(kinds) && kinds[i] == kBinary {
+				out.Rows[r][i] = decodeBinary(out.Rows[r][i])
+			}
+		}
+	}
+	return &out
 }
 
 // normTime trims trailing fractional zeros: "12:00:00.000" -> "12:00:00".
@@ -166,6 +210,12 @@ func cellsEqual(a, b exec.Cell, k kind, tol float64) bool {
 		}
 	case kTime:
 		return normTime(a.Text) == normTime(b.Text)
+	case kBinary:
+		// MySQL delivers the raw bytes, RonSQL's JSON a base64 string: equal
+		// when the texts agree or one is the base64 form of the other.
+		return a.Text == b.Text ||
+			base64.StdEncoding.EncodeToString([]byte(a.Text)) == b.Text ||
+			a.Text == base64.StdEncoding.EncodeToString([]byte(b.Text))
 	}
 	return a.Text == b.Text
 }
@@ -224,6 +274,11 @@ func Compare(ref, got *exec.Result, opt Options) Report {
 			kinds[i] = kindOf(ref.Types[i])
 			hasFloat = hasFloat || kinds[i] == kFloat
 		}
+	}
+	// A RonSQL result (no MySQL type names) carries binary columns as
+	// base64 (RONDB-1124 M1.4); compare, sort and match on the bytes.
+	if len(got.Types) == 0 {
+		got = decodeBinaryColumns(got, kinds)
 	}
 	if len(ref.Rows) != len(got.Rows) {
 		rep.Reason = fmt.Sprintf("row count %d vs %d", len(ref.Rows), len(got.Rows))

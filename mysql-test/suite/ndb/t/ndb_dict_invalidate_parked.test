@@ -1,5 +1,10 @@
 --source include/have_ndb.inc
 
+# NDBT uses uppercase TEST_DB. On a case-insensitive filesystem, CREATE
+# and DROP can use different schema-distribution keys and replay can
+# recreate the database during a later cluster restart.
+--source include/have_case_sensitive_file_system.inc
+
 # RONDB-1121 F20 / RONDB-1092 follow-up.
 #
 # Runs the NDB API test case testDict -n InvalidateParkedByPointer end-to-end

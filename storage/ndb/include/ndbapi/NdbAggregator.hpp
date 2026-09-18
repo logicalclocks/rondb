@@ -328,6 +328,9 @@ class NdbAggregator {
     return agg_columns_;
   }
 
+  // Returns the number of Uint32 words consumed on success, or a
+  // negative NDB error code on failure. Callers must stop processing
+  // results on failure and report the error through the scan/query.
   Int32 ProcessRes(char* buf);
 
   bool LoadColumn(const char* name, Uint32 reg_id);

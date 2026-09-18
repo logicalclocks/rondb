@@ -255,3 +255,65 @@ The census pins stay (expected 0).  The two fuzz mirrors (deltas 24 /
 280, the envelope beyond Hopsworks) keep census pins only.  The
 includes print nothing, so the recorded results are unchanged; a run of
 the suite is the verification.
+
+### Requirements reports after M1 (2026-09-15, RONDB-1124)
+
+Run by the user after the five M1 packages of RONDB-1124 (M1.0 error
+classes `b6bc75ae2e7`, M1.1 F9 `a6550f2bf6c`, M1.2 F1 `1b4f6a77c5f`,
+M1.3 F0 `6d2d2a124eb`, M1.4 F7 `a710b5ad8c4`), same recipe as above,
+reports under `requirements_reports/2026-09-15/`:
+
+| arm | engine | supported | gated | unsupported | untested | failed | acceptance | unsupported rows |
+|---|---|---|---|---|---|---|---|---|
+| base-interpreter | `a710b5ad8c4d` | 15 | 4 | 1 | 0 | 0 | FAIL | R-A5-types (F4/F5/F6) |
+| jit (`CompiledInterpreter=ON`) | `a710b5ad8c4d` | 15 | 4 | 1 | 0 | 0 | FAIL | same |
+| ng2r2 (2 node groups × 2 replicas) | `a710b5ad8c4d` | 15 | 4 | 1 | 0 | 0 | FAIL | same |
+
+R-S6 (the collect CTE form), R-F1 (string aggregate re-use) and
+R-A2-binary (binary snowflake projections) moved from UNSUPPORTED to
+SUPPORTED, and F9 left R-A5-types; the per-requirement statuses are
+again identical across the arms.  Case tally on every arm: 81 `PASS`, 1
+`REJECT(expected)` (EDGE-big-overflow, F6), 2 `KNOWN-WRONG`
+(EDGE-decimal-large F5, EDGE-float-rounding F4).  The acceptance FAIL is
+R-A5-types alone, the M2 type-fidelity work (F4 / F5 / F6 with the F22
+overflow overhaul).  Both fuzzers report no `known-error` and no
+`clean-reject` on the spec side (seed 1: `gated=42 known-wrong=2
+no-template=28 pass=128` after the projection sampler started drawing
+complex-typed features; envelope: `clean-reject=20 known-wrong=10
+pass=170`).
+
+### M2 limited-scope closeout (2026-09-17, RONDB-1124)
+
+The user ran the Go checks and smoke/templates across base, JIT, ng2r2,
+and ng4r2, then ran requirements with vectors on each configuration.
+Engine HEAD was `df820fa35405`, with the M2.4 framework expectation
+changes in the working tree. Hopsworks provenance was `f85a653bcafd`.
+
+| configuration | supported | gated | unsupported | untested | failed | acceptance |
+|---|---|---|---|---|---|---|
+| base-interpreter | 15 | 4 | 1 | 0 | 0 | FAIL |
+| jit | 15 | 4 | 1 | 0 | 0 | FAIL |
+| ng2r2 | 15 | 4 | 1 | 0 | 0 | FAIL |
+| ng4r2 | 15 | 4 | 1 | 0 | 0 | FAIL |
+
+Reports were inspected after the separate configuration runs. The current
+ng2r2 report contains 82 passing cases, one expected rejection
+(`EDGE-big-overflow`, F6), one known DECIMAL mismatch
+(`EDGE-decimal-large`, F5), and 20 passing vector specs. The FLOAT probe
+passes on every configuration; F4 and F22 exemptions are retired.
+
+R-A5-types is the sole unsupported requirement, naming F5 and F6.
+Checked signed/unsigned 64-bit SUM is the approved contract; MySQL may
+produce a wider DECIMAL. Exact DECIMAL arithmetic remains deferred.
+Thus M2's approved scope is complete while original req-v1 acceptance
+remains FAIL. AVG expression formatting and remaining DECIMAL limitations
+stay open; this closeout does not claim wider numeric support.
+
+Report provenance: all four `/tmp/fs_req_m24_*.json` filenames were
+overwritten when every label was rerun on each cluster. After the final
+run they all contain ng2r2 evidence, regardless of label; only
+`fs_req_m24_ng2r2.json` names that configuration correctly. The table
+above records the separately reviewed runs, not four independently
+preserved JSON artifacts. Historical reports under
+`requirements_reports/` are unchanged. Any future per-configuration
+archive must capture one report with the matching label per cluster.

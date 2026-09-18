@@ -269,11 +269,14 @@ struct GBHashEntryCmp {
  * Count() increments by one per row and cannot be reused for
  * merging).
  *
- * Distributed SUM merging deliberately retains its existing behavior:
- * BIGINT uses modular 64-bit addition and DOUBLE follows IEEE arithmetic.
- * Overflow reporting is not introduced here because neither of the existing
- * distributed merge call chains propagates it reliably.  In particular, a
- * failed merge must never silently omit one partial result.
+ * SUM and numeric-slot merging return 0 on success or a positive NDB
+ * error code on failure.  Callers must abort the result on failure; earlier
+ * slots or groups may already have been merged.
+ *
+ * BIGINT SUM returns error 1860 when the mathematical sum is outside
+ * the result domain: signed 64-bit if both inputs are signed, unsigned
+ * 64-bit otherwise. A failed addition leaves the destination unchanged.
+ * DOUBLE follows IEEE arithmetic; COUNT still uses unsigned addition.
  */
 static inline double aggSlotAsDouble(const AggResItem& v) {
   if (v.type == NDB_TYPE_DOUBLE) return v.value.val_double;
@@ -281,7 +284,7 @@ static inline double aggSlotAsDouble(const AggResItem& v) {
                        : static_cast<double>(v.value.val_int64);
 }
 
-static inline void aggMergeSum(AggResItem* dst, const AggResItem& src) {
+static inline Int32 aggMergeSum(AggResItem* dst, const AggResItem& src) {
   assert(!src.is_null && !dst->is_null);
 
   /*
@@ -296,11 +299,11 @@ static inline void aggMergeSum(AggResItem* dst, const AggResItem& src) {
   if (src.type == NDB_TYPE_BIGINT &&
       dst->type == NDB_TYPE_BIGINT) {
     if (!src.is_unsigned && src.value.val_int64 == 0) {
-      return;
+      return 0;
     }
     if (!dst->is_unsigned && dst->value.val_int64 == 0) {
       *dst = src;
-      return;
+      return 0;
     }
   }
 
@@ -309,13 +312,43 @@ static inline void aggMergeSum(AggResItem* dst, const AggResItem& src) {
         aggSlotAsDouble(*dst) + aggSlotAsDouble(src);
     dst->type = NDB_TYPE_DOUBLE;
     dst->is_unsigned = false;
-    return;
+    return 0;
   }
 
   assert(src.type == NDB_TYPE_BIGINT &&
          dst->type == NDB_TYPE_BIGINT);
-  dst->value.val_uint64 += src.value.val_uint64;
-  dst->is_unsigned = src.is_unsigned || dst->is_unsigned;
+  if (!src.is_unsigned && !dst->is_unsigned) {
+    const Int64 a = dst->value.val_int64;
+    const Int64 b = src.value.val_int64;
+    if ((b > 0 && a > INT64_MAX - b) ||
+        (b < 0 && a < INT64_MIN - b))
+      return 1860;
+    dst->value.val_int64 = a + b;
+    return 0;
+  }
+
+  // At least one input is unsigned. A negative signed contribution
+  // subtracts its magnitude; it must not be reinterpreted as positive.
+  const AggResItem& unsignedInput = dst->is_unsigned ? *dst : src;
+  const AggResItem& other = dst->is_unsigned ? src : *dst;
+  const Uint64 a = unsignedInput.value.val_uint64;
+  Uint64 sum;
+  if (!other.is_unsigned && other.value.val_int64 < 0) {
+    // Unsigned subtraction also handles INT64_MIN without negating it.
+    const Uint64 magnitude = Uint64(0) -
+                             static_cast<Uint64>(other.value.val_int64);
+    if (a < magnitude) return 1860;
+    sum = a - magnitude;
+  } else {
+    const Uint64 b = other.is_unsigned
+                         ? other.value.val_uint64
+                         : static_cast<Uint64>(other.value.val_int64);
+    if (b > UINT64_MAX - a) return 1860;
+    sum = a + b;
+  }
+  dst->value.val_uint64 = sum;
+  dst->is_unsigned = true;
+  return 0;
 }
 
 static inline void aggMergeMax(AggResItem* dst, const AggResItem& src) {
@@ -381,7 +414,7 @@ static inline void aggMergeMin(AggResItem* dst, const AggResItem& src) {
   }
 }
 
-static inline void aggMergeNumericSlot(AggResItem* dst,
+static inline Int32 aggMergeNumericSlot(AggResItem* dst,
                                        const AggResItem& src,
                                        Uint32 agg_op) {
   switch (agg_op) {
@@ -390,25 +423,24 @@ static inline void aggMergeNumericSlot(AggResItem* dst,
              dst->type == NDB_TYPE_BIGINT);
       assert(src.is_unsigned && dst->is_unsigned);
       dst->value.val_uint64 += src.value.val_uint64;
-      return;
+      return 0;
     case kOpSum:
     case kOpSumBigint:
     case kOpSumDouble:
-      aggMergeSum(dst, src);
-      return;
+      return aggMergeSum(dst, src);
     case kOpMax:
     case kOpMaxBigint:
     case kOpMaxDouble:
       aggMergeMax(dst, src);
-      return;
+      return 0;
     case kOpMin:
     case kOpMinBigint:
     case kOpMinDouble:
       aggMergeMin(dst, src);
-      return;
+      return 0;
     default:
       assert(false);
-      return;
+      return 0;
   }
 }
 

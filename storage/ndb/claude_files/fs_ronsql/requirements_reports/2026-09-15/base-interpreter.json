@@ -1,0 +1,3221 @@
+{
+  "version": "req-v1",
+  "generatedAt": "2026-09-15T11:22:56Z",
+  "engineCommit": "a710b5ad8c4d1587a0be8dec23e3fdcd2e060320",
+  "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+  "label": "base-interpreter",
+  "configuration": {
+    "count": 120,
+    "db": "test",
+    "includeHazards": false,
+    "mysql": "localhost:13001",
+    "now": "2026-06-01T00:00:00Z",
+    "rdrs": "localhost:13005",
+    "seed": 1,
+    "sf": 0.01,
+    "threads": 4,
+    "timeout": "30s",
+    "tolerance": 1e-9,
+    "vectors": true
+  },
+  "fixtureProvenance": {
+    "exporterSourceSha256": "59f994ebbbbd4822f692c2b63454291a05044a8c68fff360ae28532d8f2ad31d",
+    "hopsworksCommit": "f85a653bcafd1058b4da5c31daf31de43f818bbf",
+    "javaVersion": "21.0.12.1",
+    "locale": "en-US",
+    "timezone": "UTC",
+    "trackedDiffSha256": "e58825a573be9d81ad6ce8d4dbdabc9dec6692816879f40b38cb628d37937d1e",
+    "trackedWorktreeDirty": true
+  },
+  "fixtureDir": "/Users/mikael/mysql_trees/rondb_1121_fs_ronsql/tools/rondb-cli/internal/fsq/testdata/hopsworks_golden",
+  "requirements": [
+    {
+      "id": "R-S1",
+      "title": "Aggregate, point lookup",
+      "branch": "applyRonsqlAggregate (single)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S1-avg-k31": "PASS",
+        "S1-decimal-k31": "PASS",
+        "S1-k1001": "PASS",
+        "S1-k16": "PASS",
+        "S1-k17": "PASS",
+        "S1-k31": "PASS"
+      },
+      "specs": {
+        "V-S1-agg": "PASS"
+      },
+      "fixtures": {
+        "aggregate_single": "CONFORMANT",
+        "aggregate_training_dataset": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S2",
+      "title": "Aggregate, windowed",
+      "branch": "applyRonsqlAggregate + window bound",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S2-k1-w3600s": "PASS",
+        "S2-k111-w604800s": "PASS",
+        "S2-k111-w7776000s": "PASS",
+        "S2-k21-w2592000s": "PASS"
+      },
+      "fixtures": {
+        "aggregate_window": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S3",
+      "title": "Aggregate, batch IN list + GROUP BY",
+      "branch": "applyRonsqlAggregate (batch, one entity key)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S3-b10": "PASS",
+        "S3-b100": "PASS",
+        "S3-b100-w30d": "PASS",
+        "S3-b1000": "PASS"
+      },
+      "specs": {
+        "V-S3-agg-b10": "PASS",
+        "V-S3-agg-b100": "PASS"
+      },
+      "fixtures": {
+        "aggregate_batch": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S4",
+      "title": "Aggregate with online filters",
+      "branch": "renderRonsqlCondition (=, \u003c\u003e, \u003c, \u003c=, \u003e, \u003e=, LIKE)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S4-eq-string": "PASS",
+        "S4-ge-numeric": "PASS",
+        "S4-like": "PASS",
+        "S4-ne": "PASS",
+        "S4-quote": "PASS",
+        "S4-two-leaves": "PASS",
+        "S4-window-filter-b10": "PASS"
+      },
+      "specs": {
+        "V-S4-eq-grocery": "PASS",
+        "V-S4-ge-300": "PASS",
+        "V-S4-like-gro": "PASS",
+        "V-S4-window-b10": "PASS"
+      },
+      "fixtures": {
+        "filter_equals": "CONFORMANT",
+        "filter_greater_than": "CONFORMANT",
+        "filter_greater_than_or_equal": "CONFORMANT",
+        "filter_less_than": "CONFORMANT",
+        "filter_less_than_or_equal": "CONFORMANT",
+        "filter_like": "CONFORMANT",
+        "filter_not_equals": "CONFORMANT",
+        "self_join_filter_scope": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S5",
+      "title": "GREATEST/LEAST fold",
+      "branch": "aggregateOutputs (greatest, least)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "EDGE-null-greatest": "PASS",
+        "S1-k31": "PASS"
+      },
+      "fixtures": {
+        "aggregate_single": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S6",
+      "title": "Collect last-N, Hopsworks CTE form",
+      "branch": "buildRonsqlCollectTemplate",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S6-cte-k16": "PASS",
+        "S6-cte-k21": "PASS",
+        "S6-cte-k31": "PASS"
+      },
+      "specs": {
+        "V-S6-cte-n5": "PASS"
+      },
+      "fixtures": {
+        "collect_asc": "CONFORMANT",
+        "collect_desc": "CONFORMANT",
+        "collect_explicit_order": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S6b",
+      "title": "Collect last-N, direct form (framework target shape)",
+      "branch": "S6b (not emitted by Hopsworks)",
+      "kind": "framework",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S6b-k16": "PASS",
+        "S6b-k21": "PASS",
+        "S6b-k31": "PASS",
+        "S6b-k31-limit50": "PASS"
+      },
+      "specs": {
+        "V-S6b-direct-asc-n5": "PASS",
+        "V-S6b-direct-n5": "PASS",
+        "V-S6b-direct-n50": "PASS"
+      }
+    },
+    {
+      "id": "R-S7",
+      "title": "Snowflake, all-INNER combined template",
+      "branch": "buildSnowflakeStatement (INNER)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S7-1hop-k13": "PASS",
+        "S7-1hop-k16": "PASS",
+        "S7-1hop-k18": "PASS",
+        "S7-1hop-k21": "PASS",
+        "S7-1hop-k29": "PASS",
+        "S7-2hop-b10": "PASS",
+        "S7-2hop-k13": "PASS",
+        "S7-2hop-k16": "PASS",
+        "S7-2hop-k18": "PASS",
+        "S7-2hop-k21": "PASS",
+        "S7-2hop-k29": "PASS"
+      },
+      "specs": {
+        "V-S7-inner-1hop": "PASS",
+        "V-S7-inner-2hop": "PASS",
+        "V-S7-inner-2hop-b10": "PASS"
+      },
+      "fixtures": {
+        "snowflake_batch": "CONFORMANT",
+        "snowflake_helper_inference": "CONFORMANT",
+        "snowflake_helper_logging": "CONFORMANT",
+        "snowflake_helper_vector": "CONFORMANT",
+        "snowflake_inner": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S8",
+      "title": "Snowflake, all-LEFT per-chain templates",
+      "branch": "buildRonsqlSnowflakeTemplates (LEFT)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S8-chains-b10": "PASS",
+        "S8-chains-k13": "PASS",
+        "S8-chains-k16": "PASS",
+        "S8-chains-k18": "PASS",
+        "S8-chains-k21": "PASS",
+        "S8-chains-k29": "PASS"
+      },
+      "specs": {
+        "V-S8-left-2hop": "PASS",
+        "V-S8-left-2hop-b10": "PASS"
+      },
+      "fixtures": {
+        "snowflake_left": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S9",
+      "title": "Composite entity keys",
+      "branch": "applyRonsqlAggregate (composite key, single)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S9-a2-USD": "PASS",
+        "S9-a4-EUR": "PASS",
+        "S9-a4-EUR-w90d": "PASS",
+        "S9-a4-GBP": "PASS",
+        "S9-a5-SEK": "PASS"
+      },
+      "specs": {
+        "V-S9-hist": "PASS",
+        "V-S9-hist-w90d": "PASS"
+      },
+      "fixtures": {
+        "aggregate_composite_batch": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-S10",
+      "title": "String entity keys",
+      "branch": "applyRonsqlAggregate (VARCHAR key)",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "S10-CUST_00000010": "PASS",
+        "S10-O_Brien": "PASS",
+        "S10-b10": "PASS",
+        "S10-cust_00000010": "PASS",
+        "S10-cust_00000021": "PASS",
+        "S10-cust_99999999": "PASS"
+      },
+      "specs": {
+        "V-S10-str": "PASS",
+        "V-S10-str-b10": "PASS"
+      },
+      "fixtures": {
+        "aggregate_string_key": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-A2-binary",
+      "title": "Emitted binary / complex snowflake projections",
+      "branch": "review A2",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "EDGE-comp-binary": "PASS"
+      },
+      "fixtures": {
+        "snowflake_binary": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-A3-null",
+      "title": "Typed NULL and production aliases",
+      "branch": "review A3",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "EDGE-all-null": "PASS",
+        "EDGE-null-avg": "PASS",
+        "EDGE-null-decimal": "PASS",
+        "EDGE-null-ints": "PASS",
+        "EDGE-null-string-adjacent": "PASS",
+        "EDGE-str-null-vs-NULL": "PASS"
+      }
+    },
+    {
+      "id": "R-A5-types",
+      "title": "Deterministic type, literal and time-boundary fixtures",
+      "branch": "review A5 / data_model.md §11",
+      "kind": "emitted",
+      "status": "UNSUPPORTED",
+      "accepted": false,
+      "cases": {
+        "EDGE-big-limits": "PASS",
+        "EDGE-big-overflow": "REJECT(expected)",
+        "EDGE-big-safe": "PASS",
+        "EDGE-date-range": "PASS",
+        "EDGE-decimal-large": "KNOWN-WRONG",
+        "EDGE-float-exact": "PASS",
+        "EDGE-float-rounding": "KNOWN-WRONG",
+        "EDGE-seq-boundary": "PASS",
+        "EDGE-seq-order": "PASS",
+        "EDGE-str-collation": "PASS",
+        "EDGE-str-escapes": "PASS",
+        "EDGE-str-in-list": "PASS",
+        "EDGE-ts0-batch": "PASS",
+        "EDGE-ts3-cutoff": "PASS",
+        "EDGE-ts6-cutoff": "PASS"
+      },
+      "findings": [
+        "F4",
+        "F5",
+        "F6"
+      ],
+      "detail": [
+        "case EDGE-big-overflow REJECT(expected)",
+        "case EDGE-decimal-large KNOWN-WRONG",
+        "case EDGE-float-rounding KNOWN-WRONG"
+      ]
+    },
+    {
+      "id": "R-A5-composite",
+      "title": "Composite child hops",
+      "branch": "review A5 / composite hop",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "EDGE-comp-batch": "PASS",
+        "EDGE-comp-hop": "PASS",
+        "EDGE-comp-swapped": "PASS"
+      }
+    },
+    {
+      "id": "R-F1",
+      "title": "String aggregate re-use (F1)",
+      "branch": "data_model.md §11 F1",
+      "kind": "emitted",
+      "status": "SUPPORTED",
+      "accepted": true,
+      "cases": {
+        "EDGE-F1-string-reuse": "PASS",
+        "EDGE-F1-string-reuse-nonull": "PASS"
+      }
+    },
+    {
+      "id": "R-GATE-filter",
+      "title": "Online-filter gates",
+      "branch": "COLLECT_UNSUPPORTED_ONLINE_FILTER",
+      "kind": "gate",
+      "status": "HOPSWORKS-GATED",
+      "accepted": true,
+      "fixtures": {
+        "filter_backslash_rejected": "gate:COLLECT_UNSUPPORTED_ONLINE_FILTER",
+        "filter_control_rejected": "gate:COLLECT_UNSUPPORTED_ONLINE_FILTER",
+        "filter_or_rejected": "gate:COLLECT_UNSUPPORTED_ONLINE_FILTER"
+      }
+    },
+    {
+      "id": "R-GATE-join",
+      "title": "Join-key gates",
+      "branch": "JOIN_ON_PARTIAL_PRIMARY_KEY",
+      "kind": "gate",
+      "status": "HOPSWORKS-GATED",
+      "accepted": true,
+      "fixtures": {
+        "snowflake_partial_key": "gate:JOIN_ON_PARTIAL_PRIMARY_KEY"
+      }
+    },
+    {
+      "id": "R-GATE-silent",
+      "title": "Silent template suppression (mixed joins, cross-store, batch collect)",
+      "branch": "buildRonsqlSnowflakeTemplates / buildDTO (no template)",
+      "kind": "gate",
+      "status": "HOPSWORKS-GATED",
+      "accepted": true,
+      "fixtures": {
+        "collect_batch_gated": "CONFORMANT",
+        "snowflake_cross_store_gated": "CONFORMANT",
+        "snowflake_mixed_gated": "CONFORMANT"
+      }
+    },
+    {
+      "id": "R-GATE-definition",
+      "title": "Definition-time collect / aggregate gates",
+      "branch": "ValidateDefinition",
+      "kind": "gate",
+      "status": "HOPSWORKS-GATED",
+      "accepted": true,
+      "fixtures": {
+        "definition_aggregate_string_sum": "gate:AGGREGATE_INVALID",
+        "definition_aggregate_valid": "CONFORMANT",
+        "definition_collect_and_aggregate": "gate:AGGREGATE_WITH_COLLECT",
+        "definition_collect_bad_layout": "gate:COLLECT_NO_SERVABLE_INDEX",
+        "definition_collect_complex": "gate:COLLECT_INVALID_N",
+        "definition_collect_key_only": "gate:COLLECT_INVALID_N",
+        "definition_collect_max": "CONFORMANT",
+        "definition_collect_order_missing": "gate:COLLECT_NO_ORDER_BY",
+        "definition_collect_order_unknown": "gate:COLLECT_NO_SERVABLE_INDEX",
+        "definition_collect_over_max": "gate:COLLECT_N_TOO_LARGE",
+        "definition_collect_valid": "CONFORMANT",
+        "definition_collect_width": "gate:COLLECT_TOO_WIDE",
+        "definition_collect_width_boundary": "CONFORMANT",
+        "definition_collect_zero": "gate:COLLECT_INVALID_N"
+      }
+    }
+  ],
+  "counts": {
+    "HOPSWORKS-GATED": 4,
+    "SUPPORTED": 15,
+    "UNSUPPORTED": 1
+  },
+  "acceptance": "FAIL",
+  "caseResults": [
+    {
+      "id": "EDGE-F1-string-reuse",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.242,
+      "statement": "SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 1596,
+        "firstbatch": 1381,
+        "load": 5,
+        "ndbprep": 109,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 24,
+        "print": 4,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-F1-string-reuse-nonull",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.497,
+      "statement": "SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 1873,
+        "firstbatch": 1671,
+        "load": 7,
+        "ndbprep": 86,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 26,
+        "print": 3,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-all-null",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.511,
+      "statement": "SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, SUM(`i1`) AS `i1_sum`, MAX(`dec_val`) AS `dec_max`, MAX(`d_date`) AS `d_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 2;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 1784,
+        "firstbatch": 1522,
+        "load": 4,
+        "ndbprep": 150,
+        "parse": 11,
+        "plan": 0,
+        "prepare": 21,
+        "print": 3,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-big-limits",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.238,
+      "statement": "SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max` FROM `edge_big_1` WHERE `entity_id` = 2;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1520,
+        "firstbatch": 1306,
+        "load": 5,
+        "ndbprep": 112,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 18,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-big-overflow",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "REJECT(expected)",
+      "latencyMs": 1.271,
+      "message": "F6",
+      "statement": "SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;",
+      "rows": 0
+    },
+    {
+      "id": "EDGE-big-safe",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.959,
+      "statement": "SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) AS `big_max`, SUM(`f_exact`) AS `fe_sum` FROM `edge_big_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 6,
+        "drain": 0,
+        "execute": 780,
+        "firstbatch": 519,
+        "load": 7,
+        "ndbprep": 139,
+        "parse": 14,
+        "plan": 1,
+        "prepare": 30,
+        "print": 8,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-comp-batch",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S7",
+        "S8",
+        "S9"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 3.097,
+      "statement": "WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 275,
+        "execute": 2976,
+        "firstbatch": 2362,
+        "load": 9,
+        "ndbprep": 3,
+        "parse": 14,
+        "plan": 0,
+        "prepare": 26,
+        "print": 0,
+        "rows": 3,
+        "send": 162,
+        "subquery": 0
+      },
+      "rows": 3
+    },
+    {
+      "id": "EDGE-comp-binary",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S7",
+        "S8"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 3.599,
+      "statement": "WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 10,
+        "execute": 3459,
+        "firstbatch": 3026,
+        "load": 16,
+        "ndbprep": 8,
+        "parse": 16,
+        "plan": 0,
+        "prepare": 38,
+        "print": 0,
+        "rows": 1,
+        "send": 188,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-comp-hop",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S7",
+        "S8",
+        "S9"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.587,
+      "statement": "WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 10,
+        "execute": 2444,
+        "firstbatch": 2320,
+        "load": 12,
+        "ndbprep": 6,
+        "parse": 15,
+        "plan": 0,
+        "prepare": 32,
+        "print": 0,
+        "rows": 1,
+        "send": 64,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-comp-swapped",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S7",
+        "S8",
+        "S9"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.753,
+      "statement": "WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 2 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`weight` AS `c_weight` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck2` AND `j2`.`ck2` = `b`.`ck1`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 8,
+        "execute": 2612,
+        "firstbatch": 2515,
+        "load": 12,
+        "ndbprep": 4,
+        "parse": 17,
+        "plan": 0,
+        "prepare": 32,
+        "print": 0,
+        "rows": 1,
+        "send": 55,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-date-range",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1",
+        "S4"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.381,
+      "statement": "SELECT COUNT(*) AS `cnt`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 5 AND `d_date` \u003e= '2000-01-01';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1277,
+        "firstbatch": 1259,
+        "load": 4,
+        "ndbprep": 10,
+        "parse": 8,
+        "plan": 1,
+        "prepare": 16,
+        "print": 4,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-decimal-large",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "KNOWN-WRONG",
+      "latencyMs": 1.316,
+      "message": "F5: column \"dec_max\" differs",
+      "statement": "SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2;",
+      "diff": "+ 0\t1000000000000000\n- 0.00\t999999999999999.99\n",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 1198,
+        "firstbatch": 1185,
+        "load": 5,
+        "ndbprep": 3,
+        "parse": 6,
+        "plan": 1,
+        "prepare": 15,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-float-exact",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.06,
+      "statement": "SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) AS `fd_min`, MIN(`d_date`) AS `d_min`, MAX(`d_date`) AS `d_max` FROM `edge_hist_1` WHERE `entity_id` = 3;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 945,
+        "firstbatch": 932,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 8,
+        "plan": 1,
+        "prepare": 17,
+        "print": 8,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-float-rounding",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "KNOWN-WRONG",
+      "latencyMs": 1.77,
+      "message": "F4: unordered rows differ: 1 missing, 1 extra",
+      "statement": "SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;",
+      "diff": "- 123457.38906261639\t123457.38900010001\t123457\t123457.39\n+ 123457.38906261639\t123457.38900010001\t123456.7890625\t123457.39\n",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 1658,
+        "firstbatch": 1644,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 7,
+        "plan": 1,
+        "prepare": 16,
+        "print": 8,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-null-avg",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.997,
+      "statement": "SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 884,
+        "firstbatch": 874,
+        "load": 4,
+        "ndbprep": 2,
+        "parse": 6,
+        "plan": 1,
+        "prepare": 15,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-null-decimal",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.366,
+      "statement": "SELECT MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 889,
+        "firstbatch": 879,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 6,
+        "plan": 0,
+        "prepare": 12,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-null-greatest",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1",
+        "S5"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.473,
+      "statement": "SELECT MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 7,
+        "drain": 0,
+        "execute": 1358,
+        "firstbatch": 1348,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 10,
+        "plan": 1,
+        "prepare": 22,
+        "print": 2,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-null-ints",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.055,
+      "statement": "SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max` FROM `edge_hist_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 937,
+        "firstbatch": 923,
+        "load": 4,
+        "ndbprep": 5,
+        "parse": 9,
+        "plan": 0,
+        "prepare": 18,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-null-string-adjacent",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S1"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 2.244,
+      "statement": "SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE `entity_id` = 1;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 2131,
+        "firstbatch": 2126,
+        "load": 2,
+        "ndbprep": 1,
+        "parse": 5,
+        "plan": 0,
+        "prepare": 10,
+        "print": 2,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-seq-boundary",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S6",
+        "S6b"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.734,
+      "statement": "SELECT `entity_id`, `sequence_no`, `payload` FROM `edge_seq_1` WHERE `entity_id` = 1 ORDER BY `sequence_no` ASC LIMIT 8;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 0,
+        "drain": 22,
+        "execute": 600,
+        "firstbatch": 563,
+        "load": 5,
+        "ndbprep": 3,
+        "parse": 7,
+        "plan": 2,
+        "prepare": 16,
+        "print": 0,
+        "rows": 7,
+        "send": 10,
+        "subquery": 0
+      },
+      "rows": 7
+    },
+    {
+      "id": "EDGE-seq-order",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S6",
+        "S6b"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.632,
+      "statement": "SELECT `entity_id`, `sequence_no`, `event_time`, `payload`, `amount` FROM `edge_seq_1` WHERE `entity_id` = 4 ORDER BY `sequence_no` DESC LIMIT 2;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 6,
+        "execute": 538,
+        "firstbatch": 512,
+        "load": 4,
+        "ndbprep": 2,
+        "parse": 5,
+        "plan": 0,
+        "prepare": 11,
+        "print": 0,
+        "rows": 2,
+        "send": 16,
+        "subquery": 0
+      },
+      "rows": 2
+    },
+    {
+      "id": "EDGE-str-collation",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S4",
+        "S10"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.133,
+      "statement": "SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`n`) AS `n_min`, MAX(`n`) AS `n_max` FROM `edge_str_1` WHERE `s_val` = 'case' OR `s_val` = 'asa';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 997,
+        "firstbatch": 982,
+        "load": 6,
+        "ndbprep": 8,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 21,
+        "print": 3,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-str-escapes",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S10"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.67,
+      "statement": "SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('backslash', 'tab', 'newline', 'emoji-value') ORDER BY `n`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 0,
+        "drain": 166,
+        "execute": 587,
+        "firstbatch": 387,
+        "load": 3,
+        "ndbprep": 6,
+        "parse": 6,
+        "plan": 1,
+        "prepare": 11,
+        "print": 0,
+        "rows": 4,
+        "send": 16,
+        "subquery": 0
+      },
+      "rows": 4
+    },
+    {
+      "id": "EDGE-str-in-list",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S10"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.819,
+      "statement": "SELECT COUNT(*) AS `cnt`, SUM(`n`) AS `n_sum`, MIN(`s_key`) AS `k_min`, MAX(`s_key`) AS `k_max` FROM `edge_str_1` WHERE `s_key` IN ('O''Brien', 'NULL', '', '日本語', 'in-list-a');",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 713,
+        "firstbatch": 702,
+        "load": 3,
+        "ndbprep": 5,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 16,
+        "print": 3,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-str-null-vs-NULL",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S10"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.874,
+      "statement": "SELECT `s_key`, `s_val`, `n` FROM `edge_str_1` WHERE `s_key` IN ('NULL', 'null-string', 'empty-value') ORDER BY `n`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 0,
+        "drain": 249,
+        "execute": 780,
+        "firstbatch": 510,
+        "load": 3,
+        "ndbprep": 3,
+        "parse": 6,
+        "plan": 1,
+        "prepare": 10,
+        "print": 0,
+        "rows": 3,
+        "send": 10,
+        "subquery": 0
+      },
+      "rows": 3
+    },
+    {
+      "id": "EDGE-ts0-batch",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S2",
+        "S3"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.332,
+      "statement": "SELECT `entity_id`, COUNT(*) AS `cnt`, MIN(`ts0`) AS `ts0_min` FROM `edge_ts_1` WHERE `entity_id` IN (1, 2, 3) AND `ts0` \u003e= '2026-05-01 12:00:00' GROUP BY `entity_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1221,
+        "firstbatch": 1206,
+        "load": 3,
+        "ndbprep": 7,
+        "parse": 7,
+        "plan": 1,
+        "prepare": 13,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 2
+    },
+    {
+      "id": "EDGE-ts3-cutoff",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S2"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 0.802,
+      "statement": "SELECT COUNT(*) AS `cnt3`, MIN(`ts3`) AS `ts3_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts3` \u003e= '2026-05-01 12:00:00.000';",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 710,
+        "firstbatch": 693,
+        "load": 4,
+        "ndbprep": 10,
+        "parse": 6,
+        "plan": 1,
+        "prepare": 15,
+        "print": 4,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "EDGE-ts6-cutoff",
+      "shape": "EDGE",
+      "shapes": [
+        "EDGE",
+        "S2"
+      ],
+      "mode": "edge",
+      "status": "PASS",
+      "latencyMs": 1.062,
+      "statement": "SELECT COUNT(*) AS `cnt6`, MIN(`ts6`) AS `ts6_min` FROM `edge_ts_1` WHERE `entity_id` = 1 AND `ts6` \u003e= '2026-05-01 12:00:00.000000';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 976,
+        "firstbatch": 963,
+        "load": 3,
+        "ndbprep": 7,
+        "parse": 5,
+        "plan": 1,
+        "prepare": 12,
+        "print": 4,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S1-avg-k31",
+      "shape": "S1",
+      "shapes": [
+        "S1"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.442,
+      "statement": "SELECT AVG(`amount`) AS `amount_avg`, SUM(`amount`) AS `amount_sum`, AVG(`score`) AS `score_avg`, SUM(`score`) AS `score_sum`, MIN(`score`) AS `score_min`, MAX(`score`) AS `score_max` FROM `transactions_1` WHERE `customer_id` = 31;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 1328,
+        "firstbatch": 1314,
+        "load": 6,
+        "ndbprep": 3,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 21,
+        "print": 7,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S1-decimal-k31",
+      "shape": "S1",
+      "shapes": [
+        "S1"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.001,
+      "statement": "SELECT SUM(`amount_dec`) AS `amount_dec_sum`, MIN(`amount_dec`) AS `amount_dec_min`, MAX(`amount_dec`) AS `amount_dec_max` FROM `transactions_1` WHERE `customer_id` = 31;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1915,
+        "firstbatch": 1895,
+        "load": 4,
+        "ndbprep": 1,
+        "parse": 5,
+        "plan": 0,
+        "prepare": 11,
+        "print": 16,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S1-k1001",
+      "shape": "S1",
+      "shapes": [
+        "S1"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.268,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 1001;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 1158,
+        "firstbatch": 1145,
+        "load": 5,
+        "ndbprep": 2,
+        "parse": 13,
+        "plan": 1,
+        "prepare": 24,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S1-k16",
+      "shape": "S1",
+      "shapes": [
+        "S1"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.502,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 16;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 1383,
+        "firstbatch": 1373,
+        "load": 4,
+        "ndbprep": 2,
+        "parse": 13,
+        "plan": 1,
+        "prepare": 24,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S1-k17",
+      "shape": "S1",
+      "shapes": [
+        "S1"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.391,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 17;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 1290,
+        "firstbatch": 1279,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 21,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S1-k31",
+      "shape": "S1",
+      "shapes": [
+        "S1"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.07,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 969,
+        "firstbatch": 958,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 12,
+        "plan": 2,
+        "prepare": 21,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S10-CUST_00000010",
+      "shape": "S10",
+      "shapes": [
+        "S10"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.468,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_str_1` WHERE `customer_key` = 'CUST-00000010';",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 2323,
+        "firstbatch": 2308,
+        "load": 4,
+        "ndbprep": 2,
+        "parse": 12,
+        "plan": 1,
+        "prepare": 22,
+        "print": 8,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S10-O_Brien",
+      "shape": "S10",
+      "shapes": [
+        "S10"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.537,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_str_1` WHERE `customer_key` = 'O''Brien';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 1429,
+        "firstbatch": 1418,
+        "load": 6,
+        "ndbprep": 3,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 24,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S10-b10",
+      "shape": "S10",
+      "shapes": [
+        "S10"
+      ],
+      "mode": "batch10",
+      "status": "PASS",
+      "latencyMs": 6.057,
+      "statement": "SELECT `customer_key`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_str_1` WHERE `customer_key` IN ('cust-00000001', 'cust-00000002', 'cust-00000003', 'cust-00000004', 'cust-00000005', 'cust-00000006', 'cust-00000007', 'cust-00000008', 'cust-00000009', 'CUST-00000010') GROUP BY `customer_key`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 5887,
+        "firstbatch": 5821,
+        "load": 4,
+        "ndbprep": 7,
+        "parse": 14,
+        "plan": 1,
+        "prepare": 23,
+        "print": 53,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 10
+    },
+    {
+      "id": "S10-cust_00000010",
+      "shape": "S10",
+      "shapes": [
+        "S10"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.542,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000010';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 9,
+        "drain": 0,
+        "execute": 1353,
+        "firstbatch": 1329,
+        "load": 12,
+        "ndbprep": 6,
+        "parse": 24,
+        "plan": 1,
+        "prepare": 48,
+        "print": 8,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S10-cust_00000021",
+      "shape": "S10",
+      "shapes": [
+        "S10"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.918,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_str_1` WHERE `customer_key` = 'cust-00000021';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 8,
+        "drain": 0,
+        "execute": 1750,
+        "firstbatch": 1732,
+        "load": 8,
+        "ndbprep": 5,
+        "parse": 21,
+        "plan": 1,
+        "prepare": 40,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S10-cust_99999999",
+      "shape": "S10",
+      "shapes": [
+        "S10"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.145,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_str_1` WHERE `customer_key` = 'cust-99999999';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 1997,
+        "firstbatch": 1984,
+        "load": 5,
+        "ndbprep": 3,
+        "parse": 12,
+        "plan": 1,
+        "prepare": 23,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S2-k1-w3600s",
+      "shape": "S2",
+      "shapes": [
+        "S2"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.965,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 1 AND `event_time` \u003e= '2026-05-31 23:00:00';",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 835,
+        "firstbatch": 816,
+        "load": 6,
+        "ndbprep": 10,
+        "parse": 13,
+        "plan": 1,
+        "prepare": 28,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S2-k111-w604800s",
+      "shape": "S2",
+      "shapes": [
+        "S2"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.832,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` \u003e= '2026-05-25 00:00:00';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 1696,
+        "firstbatch": 1676,
+        "load": 4,
+        "ndbprep": 7,
+        "parse": 13,
+        "plan": 1,
+        "prepare": 24,
+        "print": 7,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S2-k111-w7776000s",
+      "shape": "S2",
+      "shapes": [
+        "S2"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.979,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 111 AND `event_time` \u003e= '2026-03-03 00:00:00';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 871,
+        "firstbatch": 857,
+        "load": 3,
+        "ndbprep": 6,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 20,
+        "print": 5,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S2-k21-w2592000s",
+      "shape": "S2",
+      "shapes": [
+        "S2"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.107,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 21 AND `event_time` \u003e= '2026-05-02 00:00:00';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 9,
+        "drain": 0,
+        "execute": 934,
+        "firstbatch": 909,
+        "load": 8,
+        "ndbprep": 11,
+        "parse": 21,
+        "plan": 2,
+        "prepare": 41,
+        "print": 7,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S3-b10",
+      "shape": "S3",
+      "shapes": [
+        "S3"
+      ],
+      "mode": "batch10",
+      "status": "PASS",
+      "latencyMs": 16.335,
+      "statement": "SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 111, 1001, 13, 29, 1, 2) GROUP BY `customer_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 16142,
+        "firstbatch": 16089,
+        "load": 4,
+        "ndbprep": 7,
+        "parse": 17,
+        "plan": 1,
+        "prepare": 28,
+        "print": 39,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 8
+    },
+    {
+      "id": "S3-b100",
+      "shape": "S3",
+      "shapes": [
+        "S3"
+      ],
+      "mode": "batch100",
+      "status": "PASS",
+      "latencyMs": 90.036,
+      "statement": "SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 111, 1001, 13, 29, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92) GROUP BY `customer_id`;",
+      "phases": {
+        "analyze": 4,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 89638,
+        "firstbatch": 89239,
+        "load": 4,
+        "ndbprep": 16,
+        "parse": 25,
+        "plan": 2,
+        "prepare": 41,
+        "print": 372,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 88
+    },
+    {
+      "id": "S3-b100-w30d",
+      "shape": "S3",
+      "shapes": [
+        "S3"
+      ],
+      "mode": "batch100",
+      "status": "PASS",
+      "latencyMs": 82.742,
+      "statement": "SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 111, 1001, 13, 29, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92) AND `event_time` \u003e= '2026-05-02 00:00:00' GROUP BY `customer_id`;",
+      "phases": {
+        "analyze": 4,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 82337,
+        "firstbatch": 81910,
+        "load": 5,
+        "ndbprep": 27,
+        "parse": 27,
+        "plan": 3,
+        "prepare": 46,
+        "print": 381,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 88
+    },
+    {
+      "id": "S3-b1000",
+      "shape": "S3",
+      "shapes": [
+        "S3"
+      ],
+      "mode": "batch1000",
+      "status": "PASS",
+      "latencyMs": 173.956,
+      "statement": "SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 111, 1001, 13, 29, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174, 175, 176, 177, 178, 179, 180, 181, 182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193, 194, 195, 196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501, 502, 503, 504, 505, 506, 507, 508, 509, 510, 511, 512, 513, 514, 515, 516, 517, 518, 519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 531, 532, 533, 534, 535, 536, 537, 538, 539, 540, 541, 542, 543, 544, 545, 546, 547, 548, 549, 550, 551, 552, 553, 554, 555, 556, 557, 558, 559, 560, 561, 562, 563, 564, 565, 566, 567, 568, 569, 570, 571, 572, 573, 574, 575, 576, 577, 578, 579, 580, 581, 582, 583, 584, 585, 586, 587, 588, 589, 590, 591, 592, 593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605, 606, 607, 608, 609, 610, 611, 612, 613, 614, 615, 616, 617, 618, 619, 620, 621, 622, 623, 624, 625, 626, 627, 628, 629, 630, 631, 632, 633, 634, 635, 636, 637, 638, 639, 640, 641, 642, 643, 644, 645, 646, 647, 648, 649, 650, 651, 652, 653, 654, 655, 656, 657, 658, 659, 660, 661, 662, 663, 664, 665, 666, 667, 668, 669, 670, 671, 672, 673, 674, 675, 676, 677, 678, 679, 680, 681, 682, 683, 684, 685, 686, 687, 688, 689, 690, 691, 692, 693, 694, 695, 696, 697, 698, 699, 700, 701, 702, 703, 704, 705, 706, 707, 708, 709, 710, 711, 712, 713, 714, 715, 716, 717, 718, 719, 720, 721, 722, 723, 724, 725, 726, 727, 728, 729, 730, 731, 732, 733, 734, 735, 736, 737, 738, 739, 740, 741, 742, 743, 744, 745, 746, 747, 748, 749, 750, 751, 752, 753, 754, 755, 756, 757, 758, 759, 760, 761, 762, 763, 764, 765, 766, 767, 768, 769, 770, 771, 772, 773, 774, 775, 776, 777, 778, 779, 780, 781, 782, 783, 784, 785, 786, 787, 788, 789, 790, 791, 792, 793, 794, 795, 796, 797, 798, 799, 800, 801, 802, 803, 804, 805, 806, 807, 808, 809, 810, 811, 812, 813, 814, 815, 816, 817, 818, 819, 820, 821, 822, 823, 824, 825, 826, 827, 828, 829, 830, 831, 832, 833, 834, 835, 836, 837, 838, 839, 840, 841, 842, 843, 844, 845, 846, 847, 848, 849, 850, 851, 852, 853, 854, 855, 856, 857, 858, 859, 860, 861, 862, 863, 864, 865, 866, 867, 868, 869, 870, 871, 872, 873, 874, 875, 876, 877, 878, 879, 880, 881, 882, 883, 884, 885, 886, 887, 888, 889, 890, 891, 892, 893, 894, 895, 896, 897, 898, 899, 900, 901, 902, 903, 904, 905, 906, 907, 908, 909, 910, 911, 912, 913, 914, 915, 916, 917, 918, 919, 920, 921, 922, 923, 924, 925, 926, 927, 928, 929, 930, 931, 932, 933, 934, 935, 936, 937, 938, 939, 940, 941, 942, 943, 944, 945, 946, 947, 948, 949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963, 964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978, 979, 980, 981, 982, 983, 984, 985, 986, 987, 988, 989, 990, 991, 992) GROUP BY `customer_id`;",
+      "phases": {
+        "analyze": 31,
+        "attempts": 1,
+        "compile": 7,
+        "drain": 0,
+        "execute": 171085,
+        "firstbatch": 166964,
+        "load": 8,
+        "ndbprep": 128,
+        "parse": 133,
+        "plan": 53,
+        "prepare": 235,
+        "print": 3935,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 930
+    },
+    {
+      "id": "S4-eq-string",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.765,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` = 'grocery';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 1639,
+        "firstbatch": 1615,
+        "load": 4,
+        "ndbprep": 5,
+        "parse": 12,
+        "plan": 1,
+        "prepare": 22,
+        "print": 11,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S4-ge-numeric",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.091,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31 AND `amount` \u003e= 300;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 8,
+        "drain": 0,
+        "execute": 920,
+        "firstbatch": 889,
+        "load": 8,
+        "ndbprep": 10,
+        "parse": 20,
+        "plan": 2,
+        "prepare": 41,
+        "print": 10,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S4-like",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 3.068,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` LIKE 'gro%';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 2956,
+        "firstbatch": 2942,
+        "load": 3,
+        "ndbprep": 4,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 22,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S4-ne",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.096,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31 AND `fee` \u003c\u003e 0;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 986,
+        "firstbatch": 972,
+        "load": 4,
+        "ndbprep": 4,
+        "parse": 13,
+        "plan": 0,
+        "prepare": 22,
+        "print": 7,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S4-quote",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 3.532,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31 AND `category` = 'it''s';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 3415,
+        "firstbatch": 3403,
+        "load": 3,
+        "ndbprep": 3,
+        "parse": 12,
+        "plan": 1,
+        "prepare": 20,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S4-two-leaves",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.075,
+      "statement": "SELECT COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` = 31 AND `amount` \u003e 200 AND `category` = 'online';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 969,
+        "firstbatch": 955,
+        "load": 4,
+        "ndbprep": 5,
+        "parse": 12,
+        "plan": 1,
+        "prepare": 22,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S4-window-filter-b10",
+      "shape": "S4",
+      "shapes": [
+        "S4"
+      ],
+      "mode": "batch10",
+      "status": "PASS",
+      "latencyMs": 76.832,
+      "statement": "SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MIN(`amount`) AS `amount_min`, MAX(`amount`) AS `amount_max`, MIN(`fee`) AS `fee_min`, MAX(`fee`) AS `fee_max`, MAX(GREATEST(`amount`, `fee`)) AS `amount_fee_greatest`, MAX(LEAST(`amount`, `fee`)) AS `amount_fee_least` FROM `transactions_1` WHERE `customer_id` IN (16, 17, 20, 31, 111, 1001, 13, 29, 1, 2) AND `amount` \u003e= 300 AND `event_time` \u003e= '2026-05-02 00:00:00' GROUP BY `customer_id`;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 12,
+        "drain": 0,
+        "execute": 76466,
+        "firstbatch": 76406,
+        "load": 19,
+        "ndbprep": 11,
+        "parse": 29,
+        "plan": 3,
+        "prepare": 105,
+        "print": 29,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 6
+    },
+    {
+      "id": "S6-cte-k16",
+      "shape": "S6",
+      "shapes": [
+        "S6"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.638,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 0,
+        "execute": 513,
+        "firstbatch": 493,
+        "load": 6,
+        "ndbprep": 4,
+        "parse": 14,
+        "plan": 3,
+        "prepare": 25,
+        "print": 0,
+        "rows": 0,
+        "send": 13,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S6-cte-k21",
+      "shape": "S6",
+      "shapes": [
+        "S6"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.83,
+      "statement": "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 11,
+        "execute": 2661,
+        "firstbatch": 2632,
+        "load": 5,
+        "ndbprep": 3,
+        "parse": 11,
+        "plan": 1,
+        "prepare": 19,
+        "print": 0,
+        "rows": 5,
+        "send": 13,
+        "subquery": 0
+      },
+      "rows": 5
+    },
+    {
+      "id": "S6-cte-k31",
+      "shape": "S6",
+      "shapes": [
+        "S6"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.823,
+      "statement": "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 0,
+        "drain": 8,
+        "execute": 693,
+        "firstbatch": 669,
+        "load": 3,
+        "ndbprep": 2,
+        "parse": 12,
+        "plan": 2,
+        "prepare": 17,
+        "print": 0,
+        "rows": 5,
+        "send": 11,
+        "subquery": 0
+      },
+      "rows": 5
+    },
+    {
+      "id": "S6b-k16",
+      "shape": "S6b",
+      "shapes": [
+        "S6b"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.726,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 0,
+        "execute": 2583,
+        "firstbatch": 2561,
+        "load": 2,
+        "ndbprep": 2,
+        "parse": 6,
+        "plan": 1,
+        "prepare": 10,
+        "print": 0,
+        "rows": 0,
+        "send": 11,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S6b-k21",
+      "shape": "S6b",
+      "shapes": [
+        "S6b"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.99,
+      "statement": "SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 13,
+        "execute": 589,
+        "firstbatch": 546,
+        "load": 8,
+        "ndbprep": 4,
+        "parse": 9,
+        "plan": 3,
+        "prepare": 31,
+        "print": 0,
+        "rows": 5,
+        "send": 21,
+        "subquery": 0
+      },
+      "rows": 5
+    },
+    {
+      "id": "S6b-k31",
+      "shape": "S6b",
+      "shapes": [
+        "S6b"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.948,
+      "statement": "SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 10,
+        "execute": 788,
+        "firstbatch": 759,
+        "load": 4,
+        "ndbprep": 3,
+        "parse": 5,
+        "plan": 1,
+        "prepare": 13,
+        "print": 0,
+        "rows": 5,
+        "send": 12,
+        "subquery": 0
+      },
+      "rows": 5
+    },
+    {
+      "id": "S6b-k31-limit50",
+      "shape": "S6b",
+      "shapes": [
+        "S6b"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.935,
+      "statement": "SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 50;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 69,
+        "execute": 1753,
+        "firstbatch": 1638,
+        "load": 9,
+        "ndbprep": 7,
+        "parse": 12,
+        "plan": 3,
+        "prepare": 27,
+        "print": 0,
+        "rows": 50,
+        "send": 34,
+        "subquery": 0
+      },
+      "rows": 50
+    },
+    {
+      "id": "S7-1hop-k13",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.782,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 13 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1678,
+        "firstbatch": 1593,
+        "load": 9,
+        "ndbprep": 3,
+        "parse": 10,
+        "plan": 0,
+        "prepare": 22,
+        "print": 0,
+        "rows": 0,
+        "send": 52,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S7-1hop-k16",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.681,
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 9,
+        "execute": 1541,
+        "firstbatch": 1408,
+        "load": 16,
+        "ndbprep": 6,
+        "parse": 14,
+        "plan": 0,
+        "prepare": 33,
+        "print": 0,
+        "rows": 1,
+        "send": 72,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S7-1hop-k18",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.822,
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 18 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 9,
+        "execute": 1707,
+        "firstbatch": 1615,
+        "load": 10,
+        "ndbprep": 4,
+        "parse": 11,
+        "plan": 0,
+        "prepare": 22,
+        "print": 0,
+        "rows": 1,
+        "send": 53,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S7-1hop-k21",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.683,
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 92,
+        "execute": 1552,
+        "firstbatch": 1380,
+        "load": 8,
+        "ndbprep": 3,
+        "parse": 11,
+        "plan": 0,
+        "prepare": 21,
+        "print": 0,
+        "rows": 1,
+        "send": 53,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S7-1hop-k29",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.73,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 29 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1622,
+        "firstbatch": 1543,
+        "load": 7,
+        "ndbprep": 4,
+        "parse": 11,
+        "plan": 0,
+        "prepare": 20,
+        "print": 0,
+        "rows": 0,
+        "send": 52,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S7-2hop-b10",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "batch10",
+      "status": "PASS",
+      "latencyMs": 1.858,
+      "statement": "WITH `b` AS (SELECT `customer_id`, `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` IN (21, 13, 29, 16, 18, 1001, 1, 2, 3, 4) GROUP BY `customer_id`, `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population`, `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent`, `b`.`customer_id` AS `customer_id` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 109,
+        "execute": 1732,
+        "firstbatch": 1506,
+        "load": 8,
+        "ndbprep": 3,
+        "parse": 14,
+        "plan": 0,
+        "prepare": 23,
+        "print": 0,
+        "rows": 5,
+        "send": 81,
+        "subquery": 0
+      },
+      "rows": 5
+    },
+    {
+      "id": "S7-2hop-k13",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.6,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 13 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population`, `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 1424,
+        "firstbatch": 1306,
+        "load": 10,
+        "ndbprep": 3,
+        "parse": 14,
+        "plan": 0,
+        "prepare": 28,
+        "print": 0,
+        "rows": 0,
+        "send": 79,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S7-2hop-k16",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.84,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population`, `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 0,
+        "execute": 1727,
+        "firstbatch": 1619,
+        "load": 8,
+        "ndbprep": 4,
+        "parse": 12,
+        "plan": 0,
+        "prepare": 22,
+        "print": 0,
+        "rows": 0,
+        "send": 76,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S7-2hop-k18",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.407,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 18 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population`, `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 2240,
+        "firstbatch": 2135,
+        "load": 8,
+        "ndbprep": 4,
+        "parse": 12,
+        "plan": 0,
+        "prepare": 23,
+        "print": 0,
+        "rows": 0,
+        "send": 74,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S7-2hop-k21",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.922,
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population`, `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 1055,
+        "execute": 2804,
+        "firstbatch": 1651,
+        "load": 8,
+        "ndbprep": 4,
+        "parse": 12,
+        "plan": 0,
+        "prepare": 22,
+        "print": 0,
+        "rows": 1,
+        "send": 69,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S7-2hop-k29",
+      "shape": "S7",
+      "shapes": [
+        "S7"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.647,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 29 GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r_region_name`, `j2`.`population` AS `r_population`, `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 0,
+        "execute": 1547,
+        "firstbatch": 1453,
+        "load": 6,
+        "ndbprep": 2,
+        "parse": 11,
+        "plan": 0,
+        "prepare": 18,
+        "print": 0,
+        "rows": 0,
+        "send": 67,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S8-chains-b10",
+      "shape": "S8",
+      "shapes": [
+        "S8"
+      ],
+      "mode": "batch10",
+      "status": "PASS",
+      "latencyMs": 5.989,
+      "statement": "WITH `b` AS (SELECT `customer_id`, `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` IN (21, 13, 29, 16, 18, 1001, 1, 2, 3, 4) GROUP BY `customer_id`, `region_id`) SELECT `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent`, `b`.`customer_id` AS `customer_id` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 27,
+        "execute": 3071,
+        "firstbatch": 2935,
+        "load": 9,
+        "ndbprep": 3,
+        "parse": 15,
+        "plan": 0,
+        "prepare": 27,
+        "print": 0,
+        "rows": 5,
+        "send": 71,
+        "subquery": 0
+      },
+      "rows": 5
+    },
+    {
+      "id": "S8-chains-k13",
+      "shape": "S8",
+      "shapes": [
+        "S8"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 5.609,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 13 GROUP BY `region_id`) SELECT `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 3653,
+        "firstbatch": 3553,
+        "load": 8,
+        "ndbprep": 4,
+        "parse": 12,
+        "plan": 0,
+        "prepare": 22,
+        "print": 0,
+        "rows": 0,
+        "send": 73,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S8-chains-k16",
+      "shape": "S8",
+      "shapes": [
+        "S8"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 2.975,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 16 GROUP BY `region_id`) SELECT `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 0,
+        "execute": 1310,
+        "firstbatch": 1219,
+        "load": 6,
+        "ndbprep": 3,
+        "parse": 10,
+        "plan": 0,
+        "prepare": 18,
+        "print": 0,
+        "rows": 0,
+        "send": 68,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S8-chains-k18",
+      "shape": "S8",
+      "shapes": [
+        "S8"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 4.834,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 18 GROUP BY `region_id`) SELECT `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 2761,
+        "firstbatch": 2660,
+        "load": 6,
+        "ndbprep": 3,
+        "parse": 10,
+        "plan": 0,
+        "prepare": 19,
+        "print": 0,
+        "rows": 0,
+        "send": 76,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S8-chains-k21",
+      "shape": "S8",
+      "shapes": [
+        "S8"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 4.884,
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 21 GROUP BY `region_id`) SELECT `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 1,
+        "drain": 33,
+        "execute": 2698,
+        "firstbatch": 2572,
+        "load": 6,
+        "ndbprep": 3,
+        "parse": 9,
+        "plan": 0,
+        "prepare": 17,
+        "print": 0,
+        "rows": 1,
+        "send": 66,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S8-chains-k29",
+      "shape": "S8",
+      "shapes": [
+        "S8"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 6.196999999999999,
+      "message": "empty result on both engines (RonSQL carries no column list)",
+      "statement": "WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = 29 GROUP BY `region_id`) SELECT `j3`.`country_name` AS `c_country_name`, `j3`.`continent` AS `c_continent` FROM `b` JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id` JOIN `countries_1` AS `j3` ON `j3`.`country_id` = `j2`.`country_id`;",
+      "phases": {
+        "analyze": 1,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 4569,
+        "firstbatch": 4468,
+        "load": 6,
+        "ndbprep": 3,
+        "parse": 10,
+        "plan": 0,
+        "prepare": 20,
+        "print": 0,
+        "rows": 0,
+        "send": 71,
+        "subquery": 0
+      },
+      "rows": 0
+    },
+    {
+      "id": "S9-a2-USD",
+      "shape": "S9",
+      "shapes": [
+        "S9"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.306,
+      "statement": "SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum`, MIN(`delta`) AS `delta_min`, MAX(`delta`) AS `delta_max` FROM `balance_hist_1` WHERE `account_id` = 2 AND `currency` = 'USD';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 5,
+        "drain": 0,
+        "execute": 1198,
+        "firstbatch": 1183,
+        "load": 6,
+        "ndbprep": 5,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 21,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S9-a4-EUR",
+      "shape": "S9",
+      "shapes": [
+        "S9"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 1.057,
+      "statement": "SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum`, MIN(`delta`) AS `delta_min`, MAX(`delta`) AS `delta_max` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 4,
+        "drain": 0,
+        "execute": 944,
+        "firstbatch": 931,
+        "load": 3,
+        "ndbprep": 3,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 18,
+        "print": 6,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S9-a4-EUR-w90d",
+      "shape": "S9",
+      "shapes": [
+        "S9"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.984,
+      "statement": "SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum`, MIN(`delta`) AS `delta_min`, MAX(`delta`) AS `delta_max` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'EUR' AND `event_time` \u003e= '2026-03-03 00:00:00';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 859,
+        "firstbatch": 845,
+        "load": 5,
+        "ndbprep": 9,
+        "parse": 9,
+        "plan": 1,
+        "prepare": 35,
+        "print": 3,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S9-a4-GBP",
+      "shape": "S9",
+      "shapes": [
+        "S9"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.956,
+      "statement": "SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum`, MIN(`delta`) AS `delta_min`, MAX(`delta`) AS `delta_max` FROM `balance_hist_1` WHERE `account_id` = 4 AND `currency` = 'GBP';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 3,
+        "drain": 0,
+        "execute": 858,
+        "firstbatch": 849,
+        "load": 3,
+        "ndbprep": 3,
+        "parse": 8,
+        "plan": 0,
+        "prepare": 14,
+        "print": 2,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    },
+    {
+      "id": "S9-a5-SEK",
+      "shape": "S9",
+      "shapes": [
+        "S9"
+      ],
+      "mode": "single",
+      "status": "PASS",
+      "latencyMs": 0.931,
+      "statement": "SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum`, MIN(`delta`) AS `delta_min`, MAX(`delta`) AS `delta_max` FROM `balance_hist_1` WHERE `account_id` = 5 AND `currency` = 'SEK';",
+      "phases": {
+        "analyze": 0,
+        "attempts": 1,
+        "compile": 2,
+        "drain": 0,
+        "execute": 820,
+        "firstbatch": 813,
+        "load": 2,
+        "ndbprep": 2,
+        "parse": 7,
+        "plan": 1,
+        "prepare": 13,
+        "print": 2,
+        "rows": 0,
+        "send": 0,
+        "subquery": 0
+      },
+      "rows": 1
+    }
+  ],
+  "specResults": [
+    {
+      "id": "V-S1-agg",
+      "shape": "S1",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 115.22900000000001
+    },
+    {
+      "id": "V-S10-str",
+      "shape": "S10",
+      "status": "PASS",
+      "keys": 122,
+      "units": 122,
+      "compared": 1098,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 114.61
+    },
+    {
+      "id": "V-S10-str-b10",
+      "shape": "S10",
+      "status": "PASS",
+      "keys": 120,
+      "units": 12,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 54.637
+    },
+    {
+      "id": "V-S3-agg-b10",
+      "shape": "S3",
+      "status": "PASS",
+      "keys": 120,
+      "units": 12,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 163.57600000000002
+    },
+    {
+      "id": "V-S3-agg-b100",
+      "shape": "S3",
+      "status": "PASS",
+      "keys": 120,
+      "units": 2,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 58.84
+    },
+    {
+      "id": "V-S4-eq-grocery",
+      "shape": "S4",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 113.81099999999999
+    },
+    {
+      "id": "V-S4-ge-300",
+      "shape": "S4",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 113.40999999999998
+    },
+    {
+      "id": "V-S4-like-gro",
+      "shape": "S4",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 114.189
+    },
+    {
+      "id": "V-S4-window-b10",
+      "shape": "S4",
+      "status": "PASS",
+      "keys": 120,
+      "units": 12,
+      "compared": 1080,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 162.55100000000002
+    },
+    {
+      "id": "V-S6-cte-n5",
+      "shape": "S6",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 120,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 75.25899999999999
+    },
+    {
+      "id": "V-S6b-direct-asc-n5",
+      "shape": "S6b",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 120,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 74.97999999999995
+    },
+    {
+      "id": "V-S6b-direct-n5",
+      "shape": "S6b",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 120,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 74.237
+    },
+    {
+      "id": "V-S6b-direct-n50",
+      "shape": "S6b",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 120,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 79.66899999999997
+    },
+    {
+      "id": "V-S7-inner-1hop",
+      "shape": "S7",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 240,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "notServed": [
+        "p_age",
+        "p_tier"
+      ],
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 137.186
+    },
+    {
+      "id": "V-S7-inner-2hop",
+      "shape": "S7",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 480,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "notServed": [
+        "p_age",
+        "p_tier"
+      ],
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 136.43299999999994
+    },
+    {
+      "id": "V-S7-inner-2hop-b10",
+      "shape": "S7",
+      "status": "PASS",
+      "keys": 120,
+      "units": 12,
+      "compared": 480,
+      "mysqlOnlyGroups": 12,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "notServed": [
+        "p_age",
+        "p_tier"
+      ],
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 18.118000000000002
+    },
+    {
+      "id": "V-S8-left-2hop",
+      "shape": "S8",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 480,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 102,
+      "notServed": [
+        "p_age",
+        "p_tier"
+      ],
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 266.25600000000003
+    },
+    {
+      "id": "V-S8-left-2hop-b10",
+      "shape": "S8",
+      "status": "PASS",
+      "keys": 120,
+      "units": 12,
+      "compared": 480,
+      "mysqlOnlyGroups": 12,
+      "uncomparedGroups": 0,
+      "leftMiss": 102,
+      "notServed": [
+        "p_age",
+        "p_tier"
+      ],
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 35.283
+    },
+    {
+      "id": "V-S9-hist",
+      "shape": "S9",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 480,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 102.92199999999995
+    },
+    {
+      "id": "V-S9-hist-w90d",
+      "shape": "S9",
+      "status": "PASS",
+      "keys": 120,
+      "units": 120,
+      "compared": 480,
+      "mysqlOnlyGroups": 0,
+      "uncomparedGroups": 0,
+      "leftMiss": 0,
+      "mismatches": 0,
+      "expectMismatches": 0,
+      "latencyMs": 102.64599999999996
+    }
+  ]
+}

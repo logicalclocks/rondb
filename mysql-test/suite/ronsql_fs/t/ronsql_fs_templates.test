@@ -275,12 +275,11 @@ SELECT `customer_id`, COUNT(*) AS `count`, COUNT(`amount`) AS `amount_count`, SU
 --write_file $QUERY_FILE
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
-# expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out 2>&1
---exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out
---remove_file $MYSQL_TMP_DIR/rej_S6_cte_k21_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
 
 --echo
 --echo === S6b-k21: S6b single — direct collect form: exactly 5 rows ===
@@ -300,12 +299,11 @@ SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` W
 --write_file $QUERY_FILE
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
-# expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out 2>&1
---exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out
---remove_file $MYSQL_TMP_DIR/rej_S6_cte_k31_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 31 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
 
 --echo
 --echo === S6b-k31: S6b single — direct collect form: 300 rows ===
@@ -325,12 +323,11 @@ SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` W
 --write_file $QUERY_FILE
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 EOF
-# expected clean rejection (F0): Non-aggregating CTE body is not a single-row key lookup
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out 2>&1
---exec grep -qF 'Non-aggregating CTE body is not a single-row key lookup' $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out
---remove_file $MYSQL_TMP_DIR/rej_S6_cte_k16_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 16 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t|
 
 --echo
 --echo === S6b-k16: S6b single — direct collect form: no rows ===
@@ -904,14 +901,15 @@ SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MIN(`f_double`) 
 --write_file $QUERY_FILE
 SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4;
 EOF
-# known wrong result (F4): FLOAT display precision — recorded, not asserted
---let $strict_diff=
-# numeric canonicalization (F2/F3): trailing fractional zeros stripped on both sides
---let $canonicalization_script=s/(\.[0-9]*[1-9])0+(\t|\$)/\1\2/g;s/\.0+(\t|\$)/\1/g
+--let $strict_diff=yes
+# SUM uses binary64 and fragment merge order can change the last few bits.
+# Compare at nine decimal places, retaining the fixture's 1e-7 contribution.
+# Integer-form ff_max remains exact, preserving the FLOAT display check.
+--let $canonicalization_perl=s/(-?[0-9]+\.[0-9]+)/sprintf("%.9f", \$1)/ge;
 --source suite/ronsql/include/ronsql_compare.inc
 --echo == Expected result ==
 --sorted_result
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
+SELECT CAST(SUM(`f_float`) AS DECIMAL(20,9)) AS `ff_sum`, CAST(SUM(`f_double`) AS DECIMAL(20,9)) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, CAST(SUM(`dec_val`) AS DECIMAL(20,9)) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
 
 --echo
 --echo === EDGE-date-range: EDGE edge — DATE spread to 9999-12-31 ===
@@ -967,18 +965,17 @@ EOF
 SELECT SUM(`dec_big`) AS `dec_sum`, MAX(`dec_big`) AS `dec_max` FROM `edge_big_1` WHERE `entity_id` = 2|
 
 --echo
---echo === EDGE-big-overflow: EDGE edge — deliberate BIGINT SUM overflow (F6 clean error, or the F22 wrapped value on more node groups) ===
+--echo === EDGE-big-overflow: EDGE edge — deliberate BIGINT SUM overflow (required NDB error 1860; MySQL widens) ===
 --let QUERY_FILE=$MYSQL_TMP_DIR/q_EDGE_big_overflow_0.sql
 --write_file $QUERY_FILE
 SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;
 EOF
-# known wrong result (F22): BIGINT SUM overflow undetected at the cross-fragment merge (topology-dependent) — recorded, not asserted
-# (or the clean rejection F6: arithmetic operation results overflow — which of the two depends on the topology)
---let $strict_diff=
---source suite/ronsql/include/ronsql_compare.inc
---echo == Expected result ==
---sorted_result
-SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3|
+# expected clean rejection (F6): NDB Permanent error 1860,
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out 2>&1
+--exec grep -qF 'NDB Permanent error 1860,' $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out
+--remove_file $MYSQL_TMP_DIR/rej_EDGE_big_overflow_0.out
+--remove_file $QUERY_FILE
 
 --echo
 --echo === EDGE-str-in-list: EDGE edge — apostrophe, empty, literal-NULL and multibyte keys in an IN list ===
@@ -1125,27 +1122,40 @@ EOF
 WITH `b` AS (SELECT `parent_id`, `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` IN (1, 3, 4, 5, 6) GROUP BY `parent_id`, `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `b`.`parent_id` AS `parent_id` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
 
 --echo
---echo === EDGE-comp-binary: EDGE edge — VARBINARY projection through the snowflake template (F7, emitted shape) ===
+--echo === EDGE-comp-binary: EDGE edge — VARBINARY projection through the snowflake template (F7 fixed in RONDB-1124 M1.4) ===
 --let QUERY_FILE=$MYSQL_TMP_DIR/q_EDGE_comp_binary_0.sql
 --write_file $QUERY_FILE
 WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
 EOF
-# expected clean rejection (F7): Unsupported column type
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file $QUERY_FILE > $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out 2>&1
---exec grep -qF 'Unsupported column type' $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out
---remove_file $MYSQL_TMP_DIR/rej_EDGE_comp_binary_0.out
---remove_file $QUERY_FILE
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`|
 
 --echo
---echo === EDGE-F1-string-reuse: EDGE edge — F1: string aggregated twice with a load in between (CRASH — hazard) ===
-# HAZARD F1: this statement crashed RDRS or a data node; not executed.
-#   SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+--echo === EDGE-F1-string-reuse: EDGE edge — F1: string aggregated twice with a load in between (fixed: RONDB-1056 10561b78d1e) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_EDGE_F1_string_reuse_0.sql
+--write_file $QUERY_FILE
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+EOF
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
 
 --echo
---echo === EDGE-F1-string-reuse-nonull: EDGE edge — F1 kernel-side variant (DATA NODE CRASH — hazard) ===
-# HAZARD F1: this statement crashed RDRS or a data node; not executed.
-#   SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;
+--echo === EDGE-F1-string-reuse-nonull: EDGE edge — F1 kernel-side variant, no NULLs (fixed: RONDB-1056 10561b78d1e) ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_EDGE_F1_string_reuse_nonull_0.sql
+--write_file $QUERY_FILE
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3;
+EOF
+--let $strict_diff=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 3|
 
 DELIMITER ;|
 

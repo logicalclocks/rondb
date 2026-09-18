@@ -164,25 +164,13 @@ customer_id	amount_count	amount_sum
 20	5	3855
 31	300	163350
 
-=== PROBE S6 (risk R1): collect last-5, Hopsworks CTE form, customer 21 ===
+=== PROBE S6 (F0, fixed in RONDB-1124 M1.3: collapsed into the direct form): collect last-5, Hopsworks CTE form, customer 21 ===
 == Query ==
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transactions_1` WHERE `customer_id` = 21 ORDER BY `event_time` DESC LIMIT 5) SELECT `customer_id`, `event_time`, `amount`, `category` FROM t;
 
 Number of output lines, including header: 6
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,6 +1,3 @@
--customer_id	event_time	amount	category
--21	2026-05-30 18:00:00	836	fuel
--21	2026-05-31 00:00:00	819	Grocery
--21	2026-05-31 06:00:00	802	grocery
--21	2026-05-31 12:00:00	785	online
--21	2026-05-31 18:00:00	768	Travel
-+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'transactions_1' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
-+Caught exception: Non-aggregating CTE body is not a single-row key lookup.
-+Error handling: RPE
 ==========
 
 
@@ -449,9 +437,25 @@ SELECT MAX(`s_val`) AS `s_max`, MIN(`s_val`) AS `s_min` FROM `edge_hist_1` WHERE
 s_max	s_min
 Beta	alpha
 
-=== PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===
+=== PROBE EDGE-NULL-A5: mixed-NULL group, string aggregated twice with a load in between (F1, fixed) ===
 == Query ==
-SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MAX(`s_val`) AS `s_max` FROM `edge_hist_1` WHERE `entity_id` = 1|
+cnt_s	i1_sum	s_max
+2	15	Beta
+
+=== PROBE EDGE-NULL-A: mixed-NULL group, the combined statement (F1, fixed) ===
+== Query ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1;
 
 Number of output lines, including header: 2
 
@@ -459,9 +463,25 @@ Number of output lines, including header: 2
 --- mysql.out
 +++ ronsql.out
 @@ -1,2 +1,2 @@
- i2_avg	fd_avg
--17.5000	0.5
-+17.5000	0.5000
+ cnt_all	cnt_i1	cnt_s	i1_sum	i2_min	i3_max	dec_min	dec_max	s_max	g_max	l_min
+-4	2	2	15	15	30	-3.25	10.50	Beta	25	5
++4	2	2	15	15	30	-3.25	10.5	Beta	25	5
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS `cnt_all`, COUNT(`i1`) AS `cnt_i1`, COUNT(`s_val`) AS `cnt_s`, SUM(`i1`) AS `i1_sum`, MIN(`i2`) AS `i2_min`, MAX(`i3`) AS `i3_max`, MIN(`dec_val`) AS `dec_min`, MAX(`dec_val`) AS `dec_max`, MAX(`s_val`) AS `s_max`, MAX(GREATEST(`i1`, `i2`, `i3`)) AS `g_max`, MIN(LEAST(`i1`, `i2`, `i3`)) AS `l_min` FROM `edge_hist_1` WHERE `entity_id` = 1|
+cnt_all	cnt_i1	cnt_s	i1_sum	i2_min	i3_max	dec_min	dec_max	s_max	g_max	l_min
+4	2	2	15	15	30	-3.25	10.50	Beta	25	5
+
+=== PROBE EDGE-NULL-B: AVG over a column with NULLs (formatting probe) ===
+== Query ==
+SELECT AVG(`i2`) AS `i2_avg`, AVG(`f_double`) AS `fd_avg` FROM `edge_hist_1` WHERE `entity_id` = 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
 ==========
 
 
@@ -510,20 +530,14 @@ SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) A
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,2 @@
- ff_sum	fd_sum	ff_max	dec_sum
--123457.38906261639	123457.38900010001	123457	123457.39
-+123457.38906261639	123457.38900010001	123456.7890625	123457.39
 ==========
 
 
 
 == Expected result ==
-SELECT SUM(`f_float`) AS `ff_sum`, SUM(`f_double`) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, SUM(`dec_val`) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
+SELECT CAST(SUM(`f_float`) AS DECIMAL(20,9)) AS `ff_sum`, CAST(SUM(`f_double`) AS DECIMAL(20,9)) AS `fd_sum`, MAX(`f_float`) AS `ff_max`, CAST(SUM(`dec_val`) AS DECIMAL(20,9)) AS `dec_sum` FROM `edge_hist_1` WHERE `entity_id` = 4|
 ff_sum	fd_sum	ff_max	dec_sum
-123457.38906261639	123457.38900010001	123457	123457.39
+123457.389062616	123457.389000100	123457	123457.390000000
 
 === PROBE EDGE-DATE: DATE spread up to 9999-12-31 ===
 == Query ==
@@ -579,25 +593,7 @@ SELECT SUM(`big_val`) AS `big_sum`, MIN(`big_val`) AS `big_min`, MAX(`big_val`) 
 big_sum	big_min	big_max	dec_sum	dec_max
 0	-9223372036854775807	9223372036854775807	0.00	999999999999999.99
 
-=== PROBE EDGE-BIG-C: deliberate BIGINT SUM overflow (MySQL widens to DECIMAL) ===
-== Query ==
-SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3;
-
-Number of output lines, including header: 2
-
-== Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,3 @@
--big_sum
--9223372036854775808
-+Error handling: SRE,te->RPE
-+Caught exception: Failed to execute scan aggregation.
-+NDB Permanent error 1860, Application error: arithmetic operation results overflow, check error log on data node for more details
-==========
-
-
-
+=== PROBE EDGE-BIG-C: deliberate BIGINT SUM overflow (required NDB error 1860; MySQL widens) ===
 == Expected result ==
 SELECT SUM(`big_val`) AS `big_sum` FROM `edge_big_1` WHERE `entity_id` = 3|
 big_sum
@@ -823,21 +819,13 @@ A	1
 C	5
 D	6
 
-=== PROBE EDGE-COMP-D: VARBINARY projection through the snowflake template (A2: emitted by Hopsworks; engine support recorded) ===
+=== PROBE EDGE-COMP-D: VARBINARY projection through the snowflake template (A2: emitted by Hopsworks; F7 fixed in RONDB-1124 M1.4) ===
 == Query ==
 WITH `b` AS (SELECT `ck1`, `ck2`, COUNT(*) AS `hw_cnt` FROM `edge_parent_1` WHERE `parent_id` = 1 GROUP BY `ck1`, `ck2`) SELECT `j2`.`label` AS `c_label`, `j2`.`payload` AS `c_payload` FROM `b` JOIN `edge_child_1` AS `j2` ON `j2`.`ck1` = `b`.`ck1` AND `j2`.`ck2` = `b`.`ck2`;
 
 Number of output lines, including header: 2
 
 == Diff ==
---- mysql.out
-+++ ronsql.out
-@@ -1,2 +1,3 @@
--c_label	c_payload
--A	\n
-+Unsupported column type (17) in pass-through result.
-+Caught exception: Unsupported column type in pass-through result.
-+Error handling: RPE
 ==========
 
 

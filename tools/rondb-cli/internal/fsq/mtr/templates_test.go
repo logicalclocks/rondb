@@ -38,7 +38,7 @@ import (
 func TestRenderRejectionRequiresExitAndMessage(t *testing.T) {
 	c := cases.Case{
 		ID: "rejected", Shape: "S6", Mode: "single", MTR: true,
-		ExpectReject: cases.Known["S6-cte"],
+		ExpectReject: &cases.Expect{Finding: "F0", Pattern: "Non-aggregating CTE body is not a single-row key lookup"},
 		Statements:   []cases.Statement{{RonSQL: "SELECT 1;"}},
 	}
 	got := RenderTemplatesTest([]cases.Case{c}, "test")

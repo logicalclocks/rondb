@@ -64,10 +64,6 @@ type Expect struct {
 	// Templates is the number of RonSQL templates Build must emit when
 	// no gate applies (-1: not checked, used while shrinking).
 	Templates int
-	// KnownError names the engine finding that makes the RonSQL response
-	// unusable although the statement is legal: "F9" for MIN/MAX over a
-	// DATE/TIMESTAMP column (unparsable JSON).
-	KnownError string
 	// Reason documents a deliberate violation.
 	Reason string
 }
@@ -197,11 +193,24 @@ func pkNames(fg spec.FeatureGroup) []string {
 	return out
 }
 
-// valueFeatures are the scalar, non-key, non-event-time features.
+// valueFeatures are the scalar, non-key, non-event-time features: the
+// operands of aggregates and collect fields (complex types are gated there).
 func valueFeatures(fg spec.FeatureGroup) []spec.Feature {
+	return nonKeyFeatures(fg, false)
+}
+
+// projectableFeatures are the non-key, non-event-time features a snowflake
+// or plain join may project, complex (binary / array / struct / map) ones
+// included: they are served as VARBINARY online and the pass-through
+// printer prints them since RONDB-1124 M1.4 (F7).
+func projectableFeatures(fg spec.FeatureGroup) []spec.Feature {
+	return nonKeyFeatures(fg, true)
+}
+
+func nonKeyFeatures(fg spec.FeatureGroup, complex bool) []spec.Feature {
 	var out []spec.Feature
 	for _, f := range fg.Features {
-		if f.Primary || f.Name == fg.EventTime || spec.IsComplexType(f.Type) {
+		if f.Primary || f.Name == fg.EventTime || (!complex && spec.IsComplexType(f.Type)) {
 			continue
 		}
 		out = append(out, f)
@@ -220,8 +229,18 @@ func isTemporal(t string) bool {
 func isString(t string) bool { return spec.BaseType(t) == "string" }
 
 // sampleFeatures picks lo..hi distinct value features (in schema order).
+// sampleFeatures draws lo..hi scalar features (collect fields).
 func (s *sampler) sampleFeatures(fg spec.FeatureGroup, lo, hi int) []spec.Feature {
-	vals := valueFeatures(fg)
+	return s.sampleFrom(valueFeatures(fg), lo, hi)
+}
+
+// sampleProjection draws lo..hi projectable features (join projections),
+// complex-typed ones included.
+func (s *sampler) sampleProjection(fg spec.FeatureGroup, lo, hi int) []spec.Feature {
+	return s.sampleFrom(projectableFeatures(fg), lo, hi)
+}
+
+func (s *sampler) sampleFrom(vals []spec.Feature, lo, hi int) []spec.Feature {
 	if len(vals) == 0 {
 		return nil
 	}
@@ -305,11 +324,12 @@ func aggOutputs(agg spec.AggSpec) []spec.TDFeature {
 var collationAmbiguous = map[string]bool{"category": true, "device": true}
 
 // validAggregate samples 1-4 entries inside the type matrix.  String
-// columns get exactly one function (F1: a string column aggregated twice
-// with another column load in between crashes RDRS); MIN/MAX over the
-// event time is sampled rarely and flagged as the F9 known error.
-func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
-	known := ""
+// columns draw one to three functions (the F1 crash on a string column
+// aggregated twice with a load in between is fixed, RONDB-1056
+// 10561b78d1e; the F8 collation rule still limits the ambiguous columns
+// to COUNT); MIN/MAX over the event time is sampled rarely (it exposed
+// F9, the JSON quoting defect fixed in RONDB-1124 M1.1).
+func (s *sampler) validAggregate(fg spec.FeatureGroup) spec.AggSpec {
 	var numeric, ints, strs []string
 	for _, f := range valueFeatures(fg) {
 		switch {
@@ -359,7 +379,14 @@ func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
 						// 'Grocery') has an unspecified representative on both engines.
 						fns = []string{"count"}
 					}
-					agg = append(agg, spec.AggEntry{Key: col, Fns: []string{s.pickString(fns)}})
+					m := 1 + s.rng.IntN(len(fns))
+					perm := s.rng.Perm(len(fns))[:m]
+					sort.Ints(perm)
+					var pick []string
+					for _, i := range perm {
+						pick = append(pick, fns[i])
+					}
+					agg = append(agg, spec.AggEntry{Key: col, Fns: pick})
 				}
 			}
 		case 3:
@@ -379,7 +406,6 @@ func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
 			if fg.EventTime != "" && !used[fg.EventTime] {
 				used[fg.EventTime] = true
 				agg = append(agg, spec.AggEntry{Key: fg.EventTime, Fns: []string{s.pickString([]string{"min", "max"})}})
-				known = "F9"
 			}
 		case 5:
 			if len(numeric) > 0 {
@@ -394,7 +420,7 @@ func (s *sampler) validAggregate(fg spec.FeatureGroup) (spec.AggSpec, string) {
 	if len(agg) == 0 {
 		agg = spec.AggSpec{{Key: "*", Fns: []string{"count"}}}
 	}
-	return agg, known
+	return agg
 }
 
 // collectFeature builds the synthesized array<struct<...>> feature of a
@@ -591,7 +617,7 @@ func (s *sampler) serving() {
 	// Join 0: the entity group and 0-3 of its plain features (a MySQL-only
 	// point read; label features are never selected).
 	joins := []spec.Join{{Index: 0, Parent: 0, FG: root.ID, Type: spec.JoinInner, Prefix: strp(""),
-		Features: s.tdFeatures(s.sampleFeatures(root, 0, 3), flags)}}
+		Features: s.tdFeatures(s.sampleProjection(root, 0, 3), flags)}}
 	next := 1
 	topology := s.choose(55, 35, 10) // star, snowflake, both
 	if _, _, hasChain := fkChild(root.Name); !hasChain {
@@ -631,11 +657,8 @@ func (s *sampler) serving() {
 				}
 				entityKeys := len(pkNames(fg)) - 1 // minus the event time
 				if kind == 0 {
-					agg, known := s.validAggregate(fg)
+					agg := s.validAggregate(fg)
 					j.Aggregate, j.Features = agg, aggOutputs(agg)
-					if known != "" {
-						c.Expect.KnownError = known
-					}
 					if s.pct(60) {
 						j.Window = i64p([]int64{3600, 86400, 7 * 86400, 30 * 86400, 90 * 86400}[s.rng.IntN(5)])
 					}
@@ -656,7 +679,7 @@ func (s *sampler) serving() {
 				joins = append(joins, j)
 				next++
 			default:
-				fs := s.sampleFeatures(root, 1, 3)
+				fs := s.sampleProjection(root, 1, 3)
 				if len(fs) == 0 {
 					continue
 				}
@@ -680,7 +703,7 @@ func (s *sampler) serving() {
 			on = append(on, [2]string{k, k})
 		}
 		rootJoin := spec.Join{Index: next, Parent: 0, FG: root.ID, Type: spec.JoinInner, Prefix: strp("p_"), On: on,
-			Features: s.tdFeatures(s.sampleFeatures(root, 1, 2), flags)}
+			Features: s.tdFeatures(s.sampleProjection(root, 1, 2), flags)}
 		if len(rootJoin.Features) == 0 {
 			rootJoin.Features = []spec.TDFeature{{Name: root.Features[len(root.Features)-1].Name}}
 		}
@@ -700,7 +723,7 @@ func (s *sampler) serving() {
 			cfg := s.g.fgs[child]
 			fgSet[cfg.ID] = cfg
 			j := spec.Join{Index: next, Parent: parentIdx, FG: cfg.ID, Type: hopType, Prefix: strp(child[:1] + "_"), On: [][2]string{cond},
-				Features: s.tdFeatures(s.sampleFeatures(cfg, 1, 2), flags)}
+				Features: s.tdFeatures(s.sampleProjection(cfg, 1, 2), flags)}
 			if jt == 2 && d == depth-1 && depth > 1 {
 				j.Type = []spec.JoinType{spec.JoinLeft, spec.JoinInner}[(jt+1)%2] // mixed types within the subtree
 			}
@@ -842,7 +865,6 @@ func (s *sampler) serving() {
 	c.Expect.Templates = expected
 	if gate != "" {
 		c.Expect.Templates = 0
-		c.Expect.KnownError = ""
 		s.sig = append(s.sig, "gate="+gate)
 	}
 	c.Signature = strings.Join(s.sig, "|")
@@ -895,7 +917,7 @@ func (s *sampler) definition() {
 		}
 		s.sig = append(s.sig, "collect")
 	} else {
-		agg, _ := s.validAggregate(fg)
+		agg := s.validAggregate(fg)
 		d.Aggregate = agg
 		if fg.EventTime == "" {
 			gate, reason = spec.CodeAggregateInvalid, "aggregate on a feature group without event time"

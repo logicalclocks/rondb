@@ -52,6 +52,8 @@ public:
     CHARSET_INFO* charset;
     int precision;
     int scale;
+    int avg_scale;  // AVG fractional digits; -1 selects compact double output
+    bool float_display;  // FLOAT value, even when a CTE carries it as DOUBLE
     bool has_metadata;
     TemporalDisplay temporal;
     int temporal_fsp;   // fractional-seconds precision (DATETIME2 / TIME2)
@@ -101,12 +103,14 @@ private:
         CHARSET_INFO* charset;
         int precision;
         int scale;
+        bool float_display;
       } print_group_by_column;
       struct
       {
         Uint32 reg_a;
         CHARSET_INFO* charset;
         int scale;   // source DECIMAL scale for MIN/MAX (0 = none/compact)
+        bool float_display;
         TemporalDisplay temporal; // D17+: temporal decode for the result
         int temporal_fsp;         // fractional-seconds precision (DATETIME2/TIME2)
       } print_aggregate;
@@ -114,6 +118,7 @@ private:
       {
         Uint32 reg_a_sum;
         Uint32 reg_a_count;
+        int scale;
       } print_avg;
       struct
       {
@@ -171,13 +176,21 @@ private:
   int compare_rows(StoredRow& a, StoredRow& b);
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
-  void print_float_or_double(std::ostream& out, double value);
+  void print_float_or_double(std::ostream& out, double value,
+                              bool float_display = false);
+  void print_avg_result(std::ostream& out,
+                        NdbAggregator::Result sum,
+                        NdbAggregator::Result count,
+                        int scale);
+  int avg_arg_scale(const Outputs* out) const;
   void print_aggregate_result(std::ostream& out,
                               NdbAggregator::Result result,
                               CHARSET_INFO* charset,
                               int scale,
+                              bool float_display,
                               TemporalDisplay temporal,
                               int temporal_fsp);
+  bool aggregate_uses_float_display(const Outputs* out) const;
   CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
   int aggregate_arg_scale(const Outputs* out) const;
   int aggregate_arg_precision(const Outputs* out) const;

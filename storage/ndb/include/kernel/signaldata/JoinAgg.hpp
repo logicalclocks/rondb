@@ -150,6 +150,10 @@ struct JoinAggCompleteReq {
 
 struct JoinAggCompleteConf {
   static constexpr Uint32 SignalLength = 5;
+#ifdef ERROR_INSERT
+  // 5152/5153 -> 8132: local redistribution done, FINAL_REP withheld.
+  static constexpr Uint32 TestCteBarrier = 0x43544557;
+#endif
   Uint32 senderRef;
   Uint32 senderData;
   Uint32 requestId;
@@ -164,6 +168,22 @@ struct JoinAggCompleteRef {
   Uint32 requestId;
   Uint32 errorCode;
   Uint32 errorLine;
+};
+
+/* Stop a pending CTE COMPLETE after a peer failed. Sent by the same
+ * coordinator to the same owner LDM after COMPLETE_REQ. A pending
+ * completion replies with COMPLETE_REF; an already completed or failed
+ * state has sent its reply and must not send another one.
+ * No sections. Correlation fields identify the original COMPLETE_REQ. */
+struct JoinAggCancelReq {
+  static constexpr Uint32 SignalLength = 8;
+  Uint32 senderRef;
+  Uint32 senderData;
+  Uint32 requestId;
+  Uint32 transid[2];
+  Uint32 aggStateKey;
+  Uint32 errorCode;
+  Uint32 identWord;  // Resolve an unknown key and validate a known key.
 };
 
 struct JoinAggReleaseReq {

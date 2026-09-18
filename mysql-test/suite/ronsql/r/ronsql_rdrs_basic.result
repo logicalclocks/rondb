@@ -121,7 +121,7 @@ GROUPxxx_4	31560
 == CLI, SELECT, explainMode=REQUIRE ==
 == RDRS, SELECT, explainMode=REQUIRE ==
 Error handling: RPE
-Caught exception: Tried to query with explain mode set to REQUIRE.
+[semantic] Caught exception: Tried to query with explain mode set to REQUIRE.
 == CLI, SELECT, explainMode=REMOVE ==
 c	max(sint16)
 NULL	32566
@@ -241,7 +241,7 @@ The program for post-processing and output has 8 instructions.
 == CLI, EXPLAIN SELECT, explainMode=FORBID ==
 == RDRS, EXPLAIN SELECT, explainMode=FORBID ==
 Error handling: RPE
-Caught exception: Tried to EXPLAIN with explain mode set to FORBID.
+[semantic] Caught exception: Tried to EXPLAIN with explain mode set to FORBID.
 == CLI, EXPLAIN SELECT, explainMode=REQUIRE ==
 Query parse tree:
 SELECT
@@ -523,7 +523,7 @@ GROUPxxx_4	31560
 Failed to get column `sint16_altered`.
 Note that column names are case sensitive.
 Error handling: RMS->RPE
-Caught exception: Could not find column (column names are case sensitive).
+[semantic] Caught exception: Could not find column (column names are case sensitive).
 
 == Before ALTER TABLE, new query via CLI ==
 Failed to get column `sint16_altered`.

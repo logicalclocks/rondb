@@ -9,9 +9,10 @@
 # silently different from MySQL.  These cases lock in the fixed
 # behavior: raw temporal / DECIMAL columns decode through the shared
 # packed-temporal decoder and decimal_bin2str, CTE packed temporal
-# outputs decode via the resolved source column's metadata, and
-# unsupported types (BIT, VARBINARY) reject with a clean error naming
-# the type.
+# outputs decode via the resolved source column's metadata, and the
+# unsupported type BIT rejects with a clean error naming the type
+# (VARBINARY was rejected too until RONDB-1124 M1.4 added binary
+# pass-through: raw bytes in TEXT, base64 in JSON — pt-P2 is accepted).
 #
 # Projection half of the agg-d17a..d17j MIN/MAX-over-temporal matrix in
 # body_agg.inc.  TEXT/TSV comparison only (the harness posts
@@ -32,7 +33,8 @@
 #   8  CTE MIN over zero TIMESTAMPs (packed Bigunsigned zero decode)
 #   9  aggregate GROUP BY over a zero TIMESTAMP (raw group-by print arm)
 #   P1 rejection: BIT projection (clean error, local table)
-#   P2 rejection: VARBINARY projection (clean error, local table)
+#   P2 (accepted since RONDB-1124 M1.4): VARBINARY projection through an
+#      I.8 chain (local table; raw bytes in the TEXT compare)
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -242,9 +244,12 @@ DELIMITER ;|
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cb AS (SELECT b_grp AS g, COUNT(*) AS n FROM bin1 GROUP BY b_grp) SELECT b.b_bits, cb.n FROM bin1 AS b JOIN cb ON cb.g = b.b_grp;' 2>&1
 
 --echo
---echo === pt-P2 (rejection): VARBINARY projection in a pass-through result ===
---error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cb AS (SELECT b_grp AS g, COUNT(*) AS n FROM bin1 GROUP BY b_grp) SELECT b.b_raw, cb.n FROM bin1 AS b JOIN cb ON cb.g = b.b_grp;' 2>&1
+--echo === pt-P2 (accepted since RONDB-1124 M1.4): VARBINARY projection in a pass-through result ===
+--let $QUERY=WITH cb AS (SELECT b_grp AS g, COUNT(*) AS n FROM bin1 GROUP BY b_grp) SELECT b.b_id, b.b_raw, cb.n FROM bin1 AS b JOIN cb ON cb.g = b.b_grp;
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cb AS (SELECT b_grp AS g, COUNT(*) AS n FROM bin1 GROUP BY b_grp) SELECT b.b_id, HEX(b.b_raw) AS b_raw_hex, cb.n FROM bin1 AS b JOIN cb ON cb.g = b.b_grp;
 
 --disable_query_log
 --disable_warnings

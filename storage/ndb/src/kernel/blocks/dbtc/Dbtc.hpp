@@ -2177,6 +2177,7 @@ class Dbtc : public SimulatedBlock {
     bool m_joinAgg;
     bool m_hasMainAggProgram;      // True if main query has an agg program
     bool m_aggPhaseFailed;         // Error received during current agg phase
+    bool m_cteAborting;            // Closing workers and draining CTE completions
     Uint32 m_aggErrorCode;         // Error code from first failure
     /**
      * Root fragments bundled per SPJ worker (SCAN_FRAGREQ) for JoinAgg
@@ -2321,6 +2322,9 @@ class Dbtc : public SimulatedBlock {
       REC_FAILED = 3
     } m_state;
     Uint32 m_errorCode;
+#ifdef ERROR_INSERT
+    NdbNodeBitmask m_testCteBarrierNodes;
+#endif
   };
   typedef Ptr<AggCompleteRecord> AggCompleteRecordPtr;
   typedef TransientPool<AggCompleteRecord> AggCompleteRecord_pool;
@@ -2489,6 +2493,12 @@ class Dbtc : public SimulatedBlock {
                               ScanRecordPtr scanptr);
   bool getValidAggCompleteRecord(AggCompleteRecordPtr &recPtr);
   void releaseAggCompleteRecords(ScanRecordPtr scanptr);
+  void completeCteAggregation(Signal *signal, ScanRecordPtr scanptr,
+                              AggCompleteRecordPtr rec);
+  void cancelCteAggregation(Signal *signal, ScanRecordPtr scanptr,
+                            AggCompleteRecordPtr rec);
+  void abortCteQuery(Signal *signal, ScanRecordPtr scanptr);
+  bool cteCompletionsOutstanding(ScanRecordPtr scanptr);
   /* DAG scheduler (cte_dag_scheduler_plan.md): per-CTE readiness. */
   void cteMarkReady(Signal *signal, ScanRecordPtr scanptr, Uint32 cteId);
   /* RONDB-1120 P2b: build the key/owner transport section (format:

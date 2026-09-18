@@ -61,7 +61,8 @@
  *     totals 60,60,140,140,50.
  *
  * Usage: testJoinAggIdempotency -c <connect_string> -m <mysql_port>
- *                               [-v] [--iterations N]
+ *                               [-v] [--iterations N] [--failure-orders]
+ *                               [--cancellation-barriers] [--sum-overflow]
  */
 
 #include <ndb_global.h>
@@ -69,6 +70,8 @@
 #include <NdbApi.hpp>
 #include <NdbAggregator.hpp>
 #include <NdbSleep.h>
+#include <NdbRestarter.hpp>
+#include <kernel/signaldata/DumpStateOrd.hpp>
 #include "NdbQueryBuilder.hpp"
 #include "NdbQueryBuilderImpl.hpp"
 #include "NdbQueryOperation.hpp"
@@ -80,6 +83,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <string>
 
 static bool verbose = false;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
@@ -122,17 +126,19 @@ runSql(MYSQL *conn, const char *sql)
 /* ------------------------------------------------------------------ */
 
 static int
-createTables(MYSQL *conn)
+createTables(MYSQL *conn, bool primaryReads = false)
 {
   if (runSql(conn, "DROP TABLE IF EXISTS jagidem_src") != 0) return -1;
   if (runSql(conn, "DROP TABLE IF EXISTS jagidem_virt") != 0) return -1;
 
-  if (runSql(conn,
-        "CREATE TABLE jagidem_src ("
-        " pk INT NOT NULL,"
-        " grp INT NOT NULL,"
-        " val BIGINT NOT NULL,"
-        " PRIMARY KEY USING HASH (pk)) ENGINE=NDB") != 0) return -1;
+  std::string sourceDdl =
+      "CREATE TABLE jagidem_src ("
+      " pk INT NOT NULL,"
+      " grp INT NOT NULL,"
+      " val BIGINT NOT NULL,"
+      " PRIMARY KEY USING HASH (pk)) ENGINE=NDB";
+  if (primaryReads) sourceDdl += " COMMENT='NDB_TABLE=READ_BACKUP=0'";
+  if (runSql(conn, sourceDdl.c_str()) != 0) return -1;
 
   /* Virtual table providing the type metadata for the chained
    * lookupCte primitives — same schema convention as testCteNdbApi.cpp. */
@@ -201,11 +207,21 @@ insertTestData(Ndb *ndb)
 /* Chained-CTE query construction + execution                          */
 /* ------------------------------------------------------------------ */
 
-/* Build + execute the chained-CTE query once, verify the 5 expected
- * result rows.  Returns 0 on success, -1 on failure.  Called from
- * runD9 and from runD11's loop body. */
+/* The merge probe uses two rows in one group. Its dependent CTE uses
+ * MAX to preserve the first CTE's total: another SUM could overflow on
+ * a wrapped value and conceal a missed overflow in the first merge. */
+struct CteMergeProbe {
+  Int64 expectedTotal;
+};
+
+/* Build + execute the chained-CTE query once, verify either the expected
+ * error or the result rows (five normally, two for a merge probe).
+ * Returns 0 on success, -1 on failure. */
 static int
-runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
+runChainedCteOnce(Ndb *ndb, Uint32 iterIdx, int expectedError = 0,
+                  bool independentCte = false,
+                  Uint32 *coordinatorNode = nullptr,
+                  const CteMergeProbe *mergeProbe = nullptr)
 {
   NdbDictionary::Dictionary *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
@@ -238,7 +254,7 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
   NdbAggregator cte1Agg(virtTab);
   if (!cte1Agg.GroupByLinked(0, grpCol) ||
       !cte1Agg.LoadLinkedColumn(1, 0, totalCol) ||
-      !cte1Agg.Sum(0, 0) ||
+      !(mergeProbe != nullptr ? cte1Agg.Max(0, 0) : cte1Agg.Sum(0, 0)) ||
       !cte1Agg.Finalize()) {
     fprintf(stderr, "FAILED (cte1Agg iter=%u: %s)\n",
             iterIdx, cte1Agg.GetError().err_msg_);
@@ -311,6 +327,32 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
     return -1;
   }
 
+  if (independentCte) {
+    /* CTE 2 can scan or redistribute while the CTE 0 -> CTE 1 chain
+     * fails. It uses the same data but has no dependency on that chain. */
+    qb->beginCteSubtree(2);
+    const NdbQueryTableScanOperationDef *scan = qb->scanTable(srcTab);
+    if (scan == nullptr) {
+      qb->destroy();
+      return -1;
+    }
+    const NdbQueryOperand *key[] = {
+      qb->linkedValue(scan, "pk"), nullptr
+    };
+    NdbQueryOptions opts;
+    opts.setMatchType(NdbQueryOptions::MatchNonNull);
+    opts.setAggregation(cte0Agg);
+    if (qb->readTuple(srcTab, key, &opts) == nullptr) {
+      qb->destroy();
+      return -1;
+    }
+    qb->endCteSubtree();
+    if (qb->defineCte(2, srcTab, cte0Agg, /*depMask=*/0) != 0) {
+      qb->destroy();
+      return -1;
+    }
+  }
+
   /* Main query: scan + lookupCte(1) — pass-through delivery to API. */
   const NdbQueryTableScanOperationDef *mainScan = qb->scanTable(srcTab);
   if (mainScan == nullptr) {
@@ -346,6 +388,9 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
     return -1;
   }
 
+  if (coordinatorNode != nullptr)
+    *coordinatorNode = trans->getConnectedNodeId();
+
   NdbQuery *query = trans->createQuery(queryDef);
   if (query == nullptr) {
     fprintf(stderr, "FAILED (createQuery iter=%u: %s)\n",
@@ -378,7 +423,34 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
     return -1;
   }
 
-  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+  const int executeResult = trans->execute(NdbTransaction::NoCommit);
+  if (expectedError != 0) {
+    int errorCode = 0;
+    Uint32 rowCount = 0;
+    if (executeResult != 0) {
+      errorCode = trans->getNdbError().code;
+    } else {
+      NdbQuery::NextResultOutcome outcome;
+      while ((outcome = query->nextResult(true)) ==
+             NdbQuery::NextResult_gotRow) {
+        rowCount++;
+      }
+      if (outcome == NdbQuery::NextResult_error)
+        errorCode = query->getNdbError().code;
+    }
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    if (errorCode != expectedError || rowCount != 0) {
+      fprintf(stderr, "FAILED (iter=%u expected error=%d and 0 rows, "
+                      "got error=%d and %u rows)\n",
+              iterIdx, expectedError, errorCode, rowCount);
+      return -1;
+    }
+    return 0;
+  }
+
+  if (executeResult != 0) {
     const NdbError &qErr = query->getNdbError();
     fprintf(stderr, "FAILED (execute iter=%u: %d %s)\n",
             iterIdx, qErr.code, qErr.message);
@@ -389,9 +461,14 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
 
   /* Expected cte1 totals per group. */
   std::map<Int32, Int64> expected;
-  expected[1] = 60;
-  expected[2] = 140;
-  expected[3] = 50;
+  if (mergeProbe != nullptr) {
+    expected[1] = mergeProbe->expectedTotal;
+  } else {
+    expected[1] = 60;
+    expected[2] = 140;
+    expected[3] = 50;
+  }
+  const Uint32 expectedRows = mergeProbe != nullptr ? 2 : 5;
 
   Uint32 rowCount = 0;
   NdbQuery::NextResultOutcome outcome;
@@ -432,9 +509,9 @@ runChainedCteOnce(Ndb *ndb, Uint32 iterIdx)
   trans->close();
   queryDef->destroy();
 
-  if (rowCount != 5) {
-    fprintf(stderr, "FAILED (iter=%u expected 5 rows, got %u)\n",
-            iterIdx, rowCount);
+  if (rowCount != expectedRows) {
+    fprintf(stderr, "FAILED (iter=%u expected %u rows, got %u)\n",
+            iterIdx, expectedRows, rowCount);
     return -1;
   }
   return 0;
@@ -477,6 +554,220 @@ runD11(Ndb *ndb, Uint32 iterations)
   return 0;
 }
 
+/* Both reply orders use a failing CTE 0 with a dependent CTE 1.
+ * DBTC's 8130/8131 hooks also assert that CTE 0 is never advertised READY,
+ * so a dependent cannot start unnoticed and fail with a secondary error. */
+static int
+runFailureOrders(Ndb *ndb, const char *connectString)
+{
+  NdbRestarter restarter(connectString);
+  if (restarter.getNumDbNodes() < 2) {
+    fprintf(stderr, "FAILED (reply-order tests require two data nodes)\n");
+    return -1;
+  }
+
+  for (int errorInsert : {8130, 8131}) {
+    printf("Completion order: %s ... ",
+           errorInsert == 8130 ? "REF then CONF" : "CONF then REF");
+    fflush(stdout);
+    // 5124 targets DBLQH; 8130/8131 target DBTC and do not clear 5124.
+    if (restarter.insertErrorInAllNodes(5124) != 0 ||
+        restarter.insertErrorInAllNodes(errorInsert) != 0) {
+      fprintf(stderr, "FAILED (arming completion faults)\n");
+      restarter.insertErrorInAllNodes(0);
+      return -1;
+    }
+    const int result = runChainedCteOnce(ndb, errorInsert, 1860);
+    // Clear all block instances before recovery, including unused LDMs.
+    const int cleared = restarter.insertErrorInAllNodes(0);
+    if (result != 0 || cleared != 0) {
+      if (cleared != 0) fprintf(stderr, "FAILED (clearing faults)\n");
+      return -1;
+    }
+    if (runChainedCteOnce(ndb, errorInsert) != 0) return -1;
+    printf("OK (error 1860, no rows, recovery verified)\n");
+  }
+
+  printf("Completion failure with independent CTE ... ");
+  fflush(stdout);
+  if (restarter.insertErrorInAllNodes(5124) != 0) {
+    restarter.insertErrorInAllNodes(0);
+    return -1;
+  }
+  const int result = runChainedCteOnce(ndb, 5124, 1251, true);
+  const int cleared = restarter.insertErrorInAllNodes(0);
+  if (result != 0 || cleared != 0) return -1;
+  if (runChainedCteOnce(ndb, 5124, 0, true) != 0) return -1;
+  printf("OK (error 1251, no rows, recovery verified)\n");
+  return 0;
+}
+
+/* 5152 holds FINAL_REPs; 5153 also crashes the non-coordinator node
+ * on CANCEL. DBTC 8132 waits for both independent CTEs on both nodes
+ * before provoking the first real COMPLETE_REF with error 1860. */
+static int
+runCancellationBarriers(Ndb *ndb, const char *connectString)
+{
+  NdbRestarter restarter(connectString);
+  if (restarter.getNumDbNodes() != 2 || restarter.getNumReplicas() != 2) {
+    fprintf(stderr, "FAILED (cancellation tests require two data nodes "
+                    "with two replicas)\n");
+    return -1;
+  }
+  const int nodes[] = {restarter.getDbNodeId(0), restarter.getDbNodeId(1)};
+  if (nodes[0] <= 0 || nodes[1] <= 0 || nodes[0] == nodes[1]) return -1;
+
+  for (int errorInsert : {5152, 5153}) {
+    printf("Cancellation at FINAL_REP barrier%s ... ",
+           errorInsert == 5153 ? " with node failure" : "");
+    fflush(stdout);
+    // Restart an injected crash into NOSTART so the test can verify it.
+    const int restart[] = {DumpStateOrd::CmvmiSetRestartOnErrorInsert, 1};
+    int result = 0;
+    if (restarter.dumpStateAllNodes(restart, 2) != 0 ||
+        restarter.insertErrorInAllNodes(errorInsert) != 0 ||
+        restarter.insertErrorInAllNodes(8132) != 0)
+      result = -1;
+
+    Uint32 coordinator = 0;
+    if (result == 0)
+      result = runChainedCteOnce(ndb, errorInsert, 1860, true, &coordinator);
+
+    if (errorInsert == 5153 &&
+        (coordinator == Uint32(nodes[0]) || coordinator == Uint32(nodes[1]))) {
+      const int victim = coordinator == Uint32(nodes[0]) ? nodes[1] : nodes[0];
+      if (restarter.waitNodesNoStart(&victim, 1, 60) != 0 ||
+          restarter.getNodeStatus(coordinator) != NDB_MGM_NODE_STATUS_STARTED) {
+        fprintf(stderr, "FAILED (expected only node %d to crash)\n", victim);
+        result = -1;
+      }
+    } else if (errorInsert == 5153) {
+      result = -1;
+    }
+
+    // Attempt cleanup even when an API result check fails.
+    // Error inserts reset on the crashed process. Clear surviving nodes
+    // and restart any node left in NOSTART.
+    for (int node : nodes) {
+      const int status = restarter.getNodeStatus(node);
+      if (status == NDB_MGM_NODE_STATUS_STARTED) {
+        if (restarter.insertErrorInNode(node, 0) != 0) result = -1;
+      } else if (status == NDB_MGM_NODE_STATUS_NOT_STARTED) {
+        if (errorInsert != 5153) result = -1;
+        if (restarter.startNodes(&node, 1) != 0) result = -1;
+      } else {
+        result = -1;
+      }
+    }
+    if (restarter.waitClusterStarted(120) != 0) result = -1;
+    if (restarter.insertErrorInAllNodes(0) != 0) result = -1;
+    if (restarter.dumpStateAllNodes(restart, 1) != 0) result = -1;
+    if (ndb->waitUntilReady(60) != 0) result = -1;
+    if (result != 0) {
+      fprintf(stderr, "FAILED (cancellation case %d)\n", errorInsert);
+      return -1;
+    }
+    if (runChainedCteOnce(ndb, errorInsert, 0, true) != 0) return -1;
+    printf("OK (error 1860, no rows, close and recovery verified)\n");
+  }
+  return 0;
+}
+
+/* Pick keys whose primary replicas are on different data nodes.
+ * READ_BACKUP=0 forces the self-join lookup feeding SUM to those owners,
+ * so each node receives exactly one value and only redistribution can
+ * overflow. Re-fetch metadata after each query invalidates its cache. */
+static int
+insertDistributedPair(Ndb *ndb, Int64 left, Int64 right)
+{
+  auto *dict = ndb->getDictionary();
+  dict->invalidateTable(SRC_TABLE);
+  const auto *tab = dict->getTable(SRC_TABLE);
+  if (tab == nullptr || tab->getReadBackupFlag() || tab->getFullyReplicated()) {
+    fprintf(stderr, "FAILED (distributed SUM requires primary-only reads)\n");
+    return -1;
+  }
+  Int32 keys[2] = {};
+  Uint32 nodes[2] = {};
+  Uint32 found = 0;
+  for (Int32 candidate = 1; candidate <= 10000 && found < 2; candidate++) {
+    Ndb::Key_part_ptr parts[] = {
+      {&candidate, sizeof(candidate)}, {nullptr, 0}
+    };
+    Uint32 hash = 0;
+    if (Ndb::computeHash(&hash, tab, parts, nullptr, 0) != 0) {
+      fprintf(stderr, "FAILED (computing distribution hash)\n");
+      return -1;
+    }
+    const Uint32 fragment = tab->getPartitionId(hash);
+    Uint32 node = 0;
+    if (tab->getFragmentNodes(fragment, &node, 1) == 0 || node == 0) {
+      fprintf(stderr, "FAILED (finding primary replica)\n");
+      return -1;
+    }
+    if (found == 0 || node != nodes[0]) {
+      keys[found] = candidate;
+      nodes[found++] = node;
+    }
+  }
+  if (found != 2) {
+    fprintf(stderr, "FAILED (SUM test requires keys on two data nodes)\n");
+    return -1;
+  }
+  V("  keys %d/%d on primary nodes %u/%u\n",
+    keys[0], keys[1], nodes[0], nodes[1]);
+  if (insertOneRow(ndb, tab, keys[0], 1, left) != 0) return -1;
+  return insertOneRow(ndb, tab, keys[1], 1, right);
+}
+
+static int
+runSumMergeOverflows(Ndb *ndb, MYSQL *conn)
+{
+  struct Case {
+    const char *name;
+    Int64 left, right, total;
+    int error;
+  };
+  const Case cases[] = {
+    {"positive overflow", INT64_MAX, 1, 0, 1860},
+    {"negative overflow", INT64_MIN, -1, 0, 1860},
+    {"maximum in range", INT64_MAX - 1, 1, INT64_MAX, 0},
+    {"minimum in range", INT64_MIN + 1, -1, INT64_MIN, 0},
+    {"opposite signs", INT64_MIN, INT64_MAX, -1, 0},
+  };
+  Uint32 iteration = 0;
+  for (const auto& c : cases) {
+    for (bool independent : {false, true}) {
+      for (bool reverse : {false, true}) {
+        printf("Distributed SUM: %s independent=%u reverse=%u ... ",
+               c.name, unsigned(independent), unsigned(reverse));
+        fflush(stdout);
+        if (runSql(conn, "DELETE FROM jagidem_src") != 0) return -1;
+        if (insertDistributedPair(ndb, reverse ? c.right : c.left,
+                                   reverse ? c.left : c.right) != 0)
+          return -1;
+        const CteMergeProbe probe = {c.total};
+        const int result = runChainedCteOnce(
+            ndb, iteration, c.error, independent, nullptr, &probe);
+
+        // Restore the normal data even when the result check fails.
+        if (runSql(conn, "DELETE FROM jagidem_src") != 0 ||
+            insertTestData(ndb) != 0)
+          return -1;
+        if (result != 0) return -1;
+        printf("OK (result/error and close verified)\n");
+        printf("Recovery after %s independent=%u reverse=%u ... ",
+               c.name, unsigned(independent), unsigned(reverse));
+        fflush(stdout);
+        if (runChainedCteOnce(ndb, iteration, 0, independent) != 0) return -1;
+        printf("OK (five rows verified)\n");
+        iteration++;
+      }
+    }
+  }
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
@@ -486,6 +777,9 @@ int main(int argc, char **argv)
   const char *connectString = "localhost:1186";
   int mysqlPort = 3306;
   Uint32 iterations = 100;
+  bool failureOrders = false;
+  bool cancellationBarriers = false;
+  bool sumOverflow = false;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "-c") == 0 && i + 1 < argc)
@@ -496,16 +790,19 @@ int main(int argc, char **argv)
       verbose = true;
     else if (strcmp(argv[i], "--iterations") == 0 && i + 1 < argc)
       iterations = (Uint32)atoi(argv[++i]);
+    else if (strcmp(argv[i], "--failure-orders") == 0)
+      failureOrders = true;
+    else if (strcmp(argv[i], "--cancellation-barriers") == 0)
+      cancellationBarriers = true;
+    else if (strcmp(argv[i], "--sum-overflow") == 0)
+      sumOverflow = true;
     else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
       printf("Usage: %s -c <connect_string> -m <mysql_port> [-v] "
-             "[--iterations N]\n", argv[0]);
+             "[--iterations N] [--failure-orders] "
+             "[--cancellation-barriers] [--sum-overflow]\n", argv[0]);
       return 0;
     }
   }
-
-  printf("=== testJoinAggIdempotency ===\n");
-  printf("Connect: %s, MySQL port: %d, iterations: %u\n",
-         connectString, mysqlPort, iterations);
 
   /* MTR integration: dup stdout, redirect stdout → stderr.  The
    * verbose progress output goes to stderr; only the final
@@ -513,6 +810,10 @@ int main(int argc, char **argv)
    * file matches.  Same pattern as testCteNdbApiOuterJoin. */
   int mtr_fd = dup(fileno(stdout));
   dup2(fileno(stderr), fileno(stdout));
+
+  printf("=== testJoinAggIdempotency ===\n");
+  printf("Connect: %s, MySQL port: %d, iterations: %u\n",
+         connectString, mysqlPort, iterations);
 
   ndb_init();
   int rc = 0;
@@ -528,7 +829,7 @@ int main(int argc, char **argv)
     ndb_end(0);
     return 1;
   }
-  if (createTables(conn) != 0) {
+  if (createTables(conn, sumOverflow) != 0) {
     mysql_close(conn);
     mysql_library_end();
     ndb_end(0);
@@ -557,6 +858,19 @@ int main(int argc, char **argv)
     }
 
     if (insertTestData(&ndb) != 0) { rc = 1; goto cleanup; }
+    if (failureOrders && runFailureOrders(&ndb, connectString) != 0) {
+      rc = 1;
+      goto cleanup;
+    }
+    if (cancellationBarriers &&
+        runCancellationBarriers(&ndb, connectString) != 0) {
+      rc = 1;
+      goto cleanup;
+    }
+    if (sumOverflow && runSumMergeOverflows(&ndb, conn) != 0) {
+      rc = 1;
+      goto cleanup;
+    }
     if (runD9(&ndb) != 0)          { rc = 1; goto cleanup; }
     if (runD11(&ndb, iterations) != 0) { rc = 1; goto cleanup; }
 

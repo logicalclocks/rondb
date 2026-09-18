@@ -80,7 +80,7 @@ type fuzzResult struct {
 
 // Severity order for the case status (the worst statement wins).
 var fuzzSeverity = map[string]int{
-	"PASS": 0, "SKIP": 1, "NO-TEMPLATE": 1, "GATED": 1, "CLEAN-REJECT": 2, "KNOWN-ERROR": 3, "KNOWN-WRONG": 3, "KNOWN": 3,
+	"PASS": 0, "SKIP": 1, "NO-TEMPLATE": 1, "GATED": 1, "CLEAN-REJECT": 2, "KNOWN-WRONG": 3, "KNOWN": 3,
 	"TEMPLATE-MISMATCH": 10, "GATE-MISMATCH": 11, "BIND-ERROR": 12, "MYSQL-ERROR": 13, "ERROR": 14,
 	"REJECT-UNEXPECTED": 15, "WRONG-RESULT": 16, "RETRY-EXHAUSTED": 17, "TIMEOUT": 18, "CRASH": 19,
 }
@@ -481,10 +481,8 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 		allOK := true
 		for _, st := range g.Statements {
 			sqlText := st.RonSQL
-			isCTECollect := strings.HasPrefix(sqlText, "WITH t AS (")
 			if o.directCollect {
 				sqlText, _ = fuzz.DirectCollect(sqlText)
-				isCTECollect = false
 			}
 			res.Statements = append(res.Statements, sqlText)
 			ordered := strings.Contains(sqlText, " ORDER BY ")
@@ -526,12 +524,7 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 				}
 				ronResults = append(ronResults, rr.Result)
 			case exec.CleanReject:
-				if isCTECollect && strings.Contains(rr.Message, cases.Known["S6-cte"].Pattern) {
-					worst("CLEAN-REJECT", "F0")
-					res.Finding = "F0"
-				} else {
-					worst("REJECT-UNEXPECTED", firstLine(rr.Message))
-				}
+				worst("REJECT-UNEXPECTED", firstLine(rr.Message))
 				allOK = false
 			case exec.Retryable:
 				worst("RETRY-EXHAUSTED", firstLine(rr.Message))
@@ -543,12 +536,7 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 				worst("CRASH", firstLine(rr.Message))
 				return res
 			default:
-				if c.Expect.KnownError == "F9" && strings.Contains(rr.Message, cases.Known["F9"].Pattern) {
-					worst("KNOWN-ERROR", "F9: "+firstLine(rr.Message))
-					res.Finding = "F9"
-				} else {
-					worst("ERROR", firstLine(rr.Message))
-				}
+				worst("ERROR", firstLine(rr.Message))
 				allOK = false
 			}
 		}

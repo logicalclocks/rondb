@@ -83,6 +83,9 @@ SELECT COUNT(*) FROM t1;
 --let $mysqld_name=mysqld.2.1
 --source include/start_mysqld.inc
 
+# Connection retries are not part of the restored metadata result.
+# Keep the row count and let --exec fail if the command does not succeed.
+--replace_regex /ERROR: Unable to connect with connect string: [^\n]*\n// /Retrying every [0-9]+ seconds[.] Attempts left:[ 0-9]*\n//
 --exec $NDB_SELECT_COUNT -d mysql ndb_sql_metadata
 SELECT COUNT(*) FROM t1;
 DROP TABLE t1;
