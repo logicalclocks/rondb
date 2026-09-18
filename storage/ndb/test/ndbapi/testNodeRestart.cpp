@@ -10814,11 +10814,28 @@ static const int RESTART_BARRIER_PHASE = 110;
 static const int RESTART_BARRIER_STALL_PHASE = 100;
 
 static int restartBarrierCheckPrereqs(NdbRestarter &res) {
-  if (res.getNumDbNodes() < 4) {
+  // A transient management connection failure is not a topology mismatch.
+  if (res.waitConnected(60) != 0) {
+    g_err << "Failed to connect to management server for restart barrier"
+             " prerequisites"
+          << endl;
+    return NDBT_FAILED;
+  }
+  const int numDbNodes = res.getNumDbNodes();
+  if (numDbNodes < 0) {
+    g_err << "Failed to read data node count" << endl;
+    return NDBT_FAILED;
+  }
+  if (numDbNodes < 4) {
     g_err << "[SKIPPED] Test requires at least 4 data nodes" << endl;
     return NDBT_SKIPPED;
   }
-  if (res.getNumNodeGroups() < 2) {
+  const int numNodeGroups = res.getNumNodeGroups();
+  if (numNodeGroups < 0) {
+    g_err << "Failed to read node group count" << endl;
+    return NDBT_FAILED;
+  }
+  if (numNodeGroups < 2) {
     g_err << "[SKIPPED] Test requires at least 2 node groups" << endl;
     return NDBT_SKIPPED;
   }
