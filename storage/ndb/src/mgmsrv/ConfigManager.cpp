@@ -1994,7 +1994,9 @@ ConfigManager::run()
       }
 
       case GSN_NODE_FAILREP: {
-        const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
+        // Only read by an assert, hence unused in a release build
+        [[maybe_unused]] const NodeFailRep *rep =
+            CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
         /**
          * Section form only, see ClusterMgr::execNODE_FAILREP: NODE_FAILREP
          * reaches an NDB API client only through ClusterMgr's re-broadcast,
