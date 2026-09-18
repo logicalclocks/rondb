@@ -1616,9 +1616,14 @@ static bool check_set_config_invalid_content_encoding(NdbMgmd &mgmd) {
 static bool check_set_config_too_large_content_length(NdbMgmd &mgmd) {
   g_info << __func__ << endl;
   Properties args;
-  args.put("Content-Length", 1024 * 1024 + 1);
+  // One byte above the bound the mgmd enforces (shared definition, so the
+  // test follows when the bound changes)
+  const Uint32 too_large = NDB_MGM_MAX_CONFIG_BASE64_LEN + 1;
+  args.put("Content-Length", too_large);
+  BaseString expected;
+  expected.assfmt("Illegal config length size %u", too_large);
   return set_config_result_contains(mgmd, args, BaseString(""),
-                                    "Illegal config length size 1048577");
+                                    expected.c_str());
 }
 
 static bool check_set_config_too_small_content_length(NdbMgmd &mgmd) {

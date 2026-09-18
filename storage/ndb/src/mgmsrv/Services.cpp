@@ -38,6 +38,7 @@
 #include <ConfigValues.hpp>
 #include <Vector.hpp>
 #include <mgmapi_configuration.hpp>
+#include "../mgmapi/mgmapi_internal.h"
 #include "../mgmapi/ndb_logevent.hpp"
 #include "MgmAuth.hpp"
 #include "Services.hpp"
@@ -2787,9 +2788,10 @@ static bool clear_dynamic_ports_from_config(Config *config) {
  * ids: a minimal config with ~8000 API slots measures ~824 KB (v2 packed,
  * base64) and realistic configs (hostnames, per-node parameters, more
  * data nodes) exceed 1 MiB. Keep a hard bound to avoid unbounded
- * allocation from a misbehaving client.
+ * allocation from a misbehaving client. The value is defined in
+ * mgmapi_internal.h so that testMgm checks against the same bound.
  */
-static constexpr Uint32 MAX_CONFIG_BASE64_LEN = 12 * 1024 * 1024;
+static constexpr Uint32 MAX_CONFIG_BASE64_LEN = NDB_MGM_MAX_CONFIG_BASE64_LEN;
 
 void MgmApiSession::setConfig_v1(Parser_t::Context &ctx,
                                  Properties const &args) {
@@ -2822,7 +2824,7 @@ void MgmApiSession::setConfig(Parser_t::Context &ctx, Properties const &args,
 
   args.get("Content-Length", &len64);
   if (len64 == 0 || len64 > MAX_CONFIG_BASE64_LEN) {
-    result.assfmt("Illegal config length size %d", len64);
+    result.assfmt("Illegal config length size %u", len64);
     goto done;
   }
   len64 += 1;  // Trailing \n
