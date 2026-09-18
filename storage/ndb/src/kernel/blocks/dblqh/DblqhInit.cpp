@@ -606,7 +606,8 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
   m_rowid_mismatch_suppressed = 0;
 
   if (blockNo == DBLQH) {
-    addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dblqh::execQUOTA_OVERLOAD_REP);
+    nsl_register_hooks();
+  addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dblqh::execQUOTA_OVERLOAD_REP);
     addRecSignal(GSN_CREATE_DB_REQ, &Dblqh::execCREATE_DB_REQ);
     addRecSignal(GSN_ALTER_DB_REQ, &Dblqh::execALTER_DB_REQ);
     addRecSignal(GSN_DROP_DB_REQ, &Dblqh::execDROP_DB_REQ);

@@ -205,6 +205,7 @@ Dbdih::Dbdih(Block_context &ctx)
   m_max_node_id = 0;
 
   /* Node Recovery Status Module signals */
+  nsl_register_hooks();
   addRecSignal(GSN_ALLOC_NODEID_REP, &Dbdih::execALLOC_NODEID_REP);
   addRecSignal(GSN_INCL_NODE_HB_PROTOCOL_REP,
                &Dbdih::execINCL_NODE_HB_PROTOCOL_REP);

@@ -1331,6 +1331,7 @@ class Dbdict : public SimulatedBlock {
    * restore (pass and schema object), read by DBDIH's report tick in
    * the same thread. Returns false when no schema restore is running.
    */
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
   bool nsl_restart_progress(Uint32 &pass, Uint32 &passes, Uint32 &object,
                             Uint32 &last_object) const;
 

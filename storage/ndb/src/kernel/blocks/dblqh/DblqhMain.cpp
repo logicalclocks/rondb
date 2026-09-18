@@ -40662,7 +40662,7 @@ void Dblqh::checkInitGlobalVariables() {
  * DBLQH worker. In ndbd the single DBLQH is instance 0; in ndbmtd
  * instance 0 is the proxy and the workers are 1..ndbMtLqhWorkers.
  */
-Uint64 nsl_lqh_copy_row_ops_total() {
+static Uint64 nsl_lqh_copy_row_ops_total_impl() {
   if (globalData.ndbMtLqhWorkers == 0) {
     Dblqh *lqh = (Dblqh *)globalData.getBlock(DBLQH);
     return (lqh != nullptr) ? lqh->nsl_copy_row_ops() : 0;
@@ -40673,4 +40673,9 @@ Uint64 nsl_lqh_copy_row_ops_total() {
     if (lqh != nullptr) total += lqh->nsl_copy_row_ops();
   }
   return total;
+}
+
+void Dblqh::nsl_register_hooks() {
+  globalData.theNodeStartLogHooks.lqh_copy_row_ops_total =
+      nsl_lqh_copy_row_ops_total_impl;
 }

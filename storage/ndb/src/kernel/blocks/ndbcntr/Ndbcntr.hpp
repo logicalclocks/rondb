@@ -535,6 +535,7 @@ class Ndbcntr : public SimulatedBlock {
   Uint32 c_nsl_park;
   Uint32 c_nsl_park_sp;
   NodeStartLogTimer c_nsl_park_timer;
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
   void nsl_park(Uint32 park, Uint32 sp = 0);
   void nsl_unpark();
   void nsl_report_park();

@@ -3232,6 +3232,7 @@ private:
   Uint32 c_nsl_redo_round_done_no; /* ... and which round that was (1..4) */
   void nsl_start_step(Signal *signal, Uint32 step);
   void nsl_stop_step();
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
   bool nsl_is_reporter() const;
   void nsl_report_progress(Signal *signal);
 
