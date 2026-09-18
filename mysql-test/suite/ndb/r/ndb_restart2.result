@@ -15,5 +15,9 @@ RonDB is being started.
 Wait for nodes to recover
 
 Wait for mysqld to connect to the cluster
+SELECT * FROM test.t1 ORDER BY pk1;
+pk1	attr1	attr2	attr3
+9410	9412	NULL	9412
+9411	9413	17	9413
 Clean up
 DROP TABLE test.t1;
