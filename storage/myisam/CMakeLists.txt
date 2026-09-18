@@ -95,11 +95,21 @@ IF(MY_COMPILER_IS_GNU)
 ENDIF()
 
 # Same thing as above, but for clang, disable warnings for memset().
-IF(MY_COMPILER_IS_CLANG)
+# -Wnontrivial-memcall is a subgroup of -Wnontrivial-memaccess that only
+# exists in clang 20 and later; older clang (e.g. Apple clang 17) knows
+# only the umbrella group, so fall back to that when the subgroup is
+# unknown. Note that the probe result is cached per flag name, so a build
+# tree configured before a compiler upgrade must be reconfigured from a
+# clean cache for the narrower flag to be picked up.
+MY_CHECK_CXX_COMPILER_WARNING("-Wnontrivial-memcall" HAS_WARN_FLAG)
+IF(NOT HAS_WARN_FLAG)
+  MY_CHECK_CXX_COMPILER_WARNING("-Wnontrivial-memaccess" HAS_WARN_FLAG)
+ENDIF()
+IF(HAS_WARN_FLAG)
   ADD_COMPILE_FLAGS(
     ${MYISAM_SOURCES}
     myisamchk.cc
-    COMPILE_FLAGS "-Wno-nontrivial-memcall")
+    COMPILE_FLAGS "${HAS_WARN_FLAG}")
 ENDIF()
 
 MY_CHECK_CXX_COMPILER_WARNING("-Wcast-function-type" HAS_WARN_FLAG)
