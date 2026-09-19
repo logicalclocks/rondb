@@ -1405,6 +1405,10 @@ void DblqhProxy::execSTART_RECREQ(Signal *signal) {
   ss.undoDDCompletedCount = 0;
   ss.execREDOLogCompletedCount = 0;
   ss.phaseToSend = 0;
+  /* [NODE-START] a new local recovery: the node-wide 'started' lines of
+     steps 10 and 11 are open for claiming again, see
+     GlobalData::theNodeStartLogStartedClaims. */
+  globalData.theNodeStartLogStartedClaims.store(0, std::memory_order_release);
   if (!NdbTick_IsValid(c_nsl_rec_start[0])) {
     jam();
     /* No START_FRAGREQ arrived: this node holds no fragment (e.g. no
