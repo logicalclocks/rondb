@@ -954,6 +954,46 @@ void Dbdict::execCONTINUEB(Signal *signal) {
       jam();
       startNextGetTabInfoReq(signal);
       break;
+    case ZNSL_FK_REPORT: {
+      jam();
+      /* [NODE-START] step 14 FK sub-step heartbeat; ends with the timer. */
+      if (!c_nsl_fk_timer.is_active()) {
+        jam();
+        c_nsl_fk_tick_armed = false;
+        return;
+      }
+      const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+      if (c_nsl_fk_timer.report_due(freq)) {
+        jam();
+        char buf[NodeStartLog::BUF_SIZE];
+        if (c_nsl_fk_current_id == RNIL) {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE,
+                             NodeStartLog::subTotal(NodeStartLog::NSL_ACTIVATE,
+                                                    c_restartType),
+                             c_restartType, "waiting",
+                             (Int64)c_nsl_fk_timer.elapsed_sec(),
+                             "enabling foreign keys, checking the foreign"
+                             " key trigger ids");
+        } else {
+          NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE,
+                             NodeStartLog::subTotal(NodeStartLog::NSL_ACTIVATE,
+                                                    c_restartType),
+                             c_restartType, "waiting",
+                             (Int64)c_nsl_fk_timer.elapsed_sec(),
+                             "enabling foreign keys, schema transaction for"
+                             " object id %u, %u foreign keys enabled so far",
+                             c_nsl_fk_current_id, c_nsl_fk_enabled);
+        }
+        if (c_nsl_fk_timer.escalate_due()) {
+          jam();
+          infoEvent("%s", buf);
+        }
+      }
+      signal->theData[0] = ZNSL_FK_REPORT;
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                          c_nsl_fk_timer.next_tick_delay_ms(freq), 1);
+      return;
+    }
     default:
       ndbabort();
   }  // switch
@@ -2297,7 +2337,12 @@ Dbdict::Dbdict(Block_context &ctx)
       c_reservedCounterMgr(*this) {
   BLOCK_CONSTRUCTOR(Dbdict);
 
+  c_nsl_fk_current_id = RNIL;
+  c_nsl_fk_enabled = 0;
+  c_nsl_fk_tick_armed = false;
+
   // Transit signals
+  nsl_register_hooks();
   addRecSignal(GSN_DUMP_STATE_ORD, &Dbdict::execDUMP_STATE_ORD);
   addRecSignal(GSN_GET_TABINFOREQ, &Dbdict::execGET_TABINFOREQ);
   addRecSignal(GSN_GET_TABINFOREF, &Dbdict::execGET_TABINFOREF);
@@ -2589,6 +2634,7 @@ void Dbdict::initCommonData() {
   initRetrieveRecord(0, 0, 0);
   initSchemaRecord();
   initRestartRecord();
+  c_max_restart_table_id = 0;
   initSendSchemaRecord();
   initReadTableRecord();
   initWriteTableRecord();
@@ -3372,6 +3418,7 @@ void Dbdict::execNDB_STTOR(Signal *signal) {
     jam();
     c_initialStart = true;
     c_restartRecord.m_complete = true;
+    c_restartRecord.m_active = false;
   } else if (restartType == NodeState::ST_SYSTEM_RESTART) {
     jam();
     c_systemRestart = true;
@@ -3405,6 +3452,27 @@ void Dbdict::execNDB_STTOR(Signal *signal) {
     case 7:
       jam();
       g_eventLogger->info("Foreign Key enabling Starting");
+      c_nsl_fk_timer.start_step();
+      c_nsl_fk_current_id = RNIL;
+      c_nsl_fk_enabled = 0;
+      {
+        char buf[NodeStartLog::BUF_SIZE];
+        NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE,
+                           NodeStartLog::subTotal(NodeStartLog::NSL_ACTIVATE,
+                                                  c_restartType),
+                           c_restartType, "started", -1);
+      }
+      {
+        /* Heartbeat for the FK schema transactions, see ZNSL_FK_REPORT. */
+        const Uint32 freq = globalData.theNodeStartLogReportFrequency;
+        if (freq != 0 && !c_nsl_fk_tick_armed) {
+          jam();
+          c_nsl_fk_tick_armed = true;
+          signal->theData[0] = ZNSL_FK_REPORT;
+          sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
+                              NodeStartLog::tickDelayMillis(freq), 1);
+        }
+      }
       enableFKs(signal, 0);
       break;
     default:
@@ -4019,6 +4087,10 @@ void Dbdict::execLIST_TABLES_CONF(Signal *signal) {
  */
 
 void Dbdict::enableFKs(Signal *signal, Uint32 id) {
+  if (id != 0) {
+    /* Re-entered from enableFK_fromEndTrans: one more FK done. */
+    c_nsl_fk_enabled++;
+  }
   if (id == 0) {
     D("enableFKs start");
 
@@ -4059,6 +4131,7 @@ void Dbdict::enableFKs(Signal *signal, Uint32 id) {
     }
 
     D("enableFKs id=" << id);
+    c_nsl_fk_current_id = id;
 
     TxHandlePtr tx_ptr;
     seizeTxHandle(tx_ptr, false);
@@ -4078,6 +4151,19 @@ void Dbdict::enableFKs(Signal *signal, Uint32 id) {
   c_restart_enable_fks = false;
   D("enableFKs done");
   g_eventLogger->info("Foreign key enabling Completed");
+  {
+    char buf[NodeStartLog::BUF_SIZE];
+    const Int64 fk_elapsed =
+        c_nsl_fk_timer.is_active() ? (Int64)c_nsl_fk_timer.elapsed_sec() : -1;
+    c_nsl_fk_timer.stop_step();
+    /* The step itself completes in NDBCNTR at the end of start phase
+       100, after the remaining NDB start phases (Missra). */
+    NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_ACTIVATE,
+                       NodeStartLog::subTotal(NodeStartLog::NSL_ACTIVATE,
+                                              c_restartType),
+                       c_restartType, "completed", fk_elapsed,
+                       "%u foreign keys enabled", c_nsl_fk_enabled);
+  }
   sendNDB_STTORRY(signal);
 }
 
@@ -4771,6 +4857,10 @@ void Dbdict::set_max_check_schema_status() {
       continue;
     }
     c_max_restart_table_id = tableId;
+    /* [NODE-START] step 7: the schema restore is running from here on
+       (both the read from disk and the copy from the master pass this
+       point before checkSchemaStatus starts). */
+    c_restartRecord.m_active = true;
     g_eventLogger->info("Start restore schema, max restart table id = %u", tableId);
     return;
   }
@@ -4936,6 +5026,8 @@ void Dbdict::restartNextPass(Signal *signal) {
     jam();
 
     c_restartRecord.m_complete = true;
+
+    c_restartRecord.m_active = false;
     ndbrequire(c_restartRecord.m_op_cnt == 0);
 
     /**
@@ -35366,4 +35458,34 @@ void Dbdict::execLIST_DATABASE_REQ(Signal *signal) {
     db_ptr.p->m_max_parallel_complex_queries;
   sendSignal(req->senderRef, GSN_LIST_DATABASE_CONF, signal,
              ListDatabaseConf::SignalLength, JBB, lsPtr, 1);
+}
+
+bool Dbdict::nsl_restart_progress(Uint32 &pass, Uint32 &passes,
+                                  Uint32 &object, Uint32 &last_object) const {
+  if (!c_restartRecord.m_active) return false;
+  pass = c_restartRecord.m_pass + 1;
+  passes = c_restartRecord.m_end_pass + 1;
+  last_object = c_max_restart_table_id;
+  /* activeTable runs one past the last object while a pass ends its
+     schema transaction; show the end of the pass, not 101/100. */
+  object = (c_restartRecord.activeTable > last_object)
+               ? last_object
+               : c_restartRecord.activeTable;
+  return true;
+}
+
+/* Registered in Dbdict::nsl_register_hooks() as the
+   nsl_dict_restart_progress() read of NodeStartLog.hpp; DBDICT and DBDIH
+   share the main thread. */
+static bool nsl_dict_restart_progress_impl(Uint32 &pass, Uint32 &passes,
+                                           Uint32 &object,
+                                           Uint32 &last_object) {
+  const Dbdict *dict = (const Dbdict *)globalData.getBlock(DBDICT);
+  return (dict != nullptr) &&
+         dict->nsl_restart_progress(pass, passes, object, last_object);
+}
+
+void Dbdict::nsl_register_hooks() {
+  globalData.theNodeStartLogHooks.dict_restart_progress =
+      nsl_dict_restart_progress_impl;
 }

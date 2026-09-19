@@ -33,6 +33,7 @@
 #include <DL64HashTable.hpp>
 #include <NdbCondition.h>
 #include <NdbTick.h>
+#include <NodeStartLog.hpp>
 #include <ndb_limits.h>
 #include <ndb_version.h>
 #include <DLHashTable.hpp>
@@ -349,6 +350,7 @@ class FsReadWriteReq;
  */
 #define ZDELAY_NEXT_COPY_ROW 45
 #endif
+#define ZNSL_REPORT 46
 
 /* ------------------------------------------------------------------------- */
 /*        NODE STATE DURING SYSTEM RESTART, VARIABLES CNODES_SR_STATE        */
@@ -3122,6 +3124,29 @@ public:
   alignas(NDB_CL) Uint32 cfirstfreeTcConrecShared;
   Uint32 ctcNumFreeShared;
   Uint32 ctcConnectReservedShared;
+
+  /**
+   * [NODE-START] step 8 progress: row operations applied to this LDM's
+   * fragments so far by the LCP restore. A fragment is restored by this
+   * LDM's RESTORE instance or by a recover thread (QRESTORE) on its
+   * behalf, so the restorers add to the counter through the request's
+   * sender reference and it is atomic. Reset when the step starts, read
+   * by the report tick together with c_nsl_copy_row_ops.
+   */
+  void nsl_restore_row_ops_reset() {
+    c_nsl_restore_row_ops.store(0, std::memory_order_relaxed);
+  }
+  void nsl_restore_row_ops_add(Uint64 ops) {
+    c_nsl_restore_row_ops.fetch_add(ops, std::memory_order_relaxed);
+  }
+  Uint64 nsl_restore_row_ops() const {
+    return c_nsl_restore_row_ops.load(std::memory_order_relaxed);
+  }
+  /* Rows received on the fragment copy path (steps 8 and 12); the
+     DBDIH step 12 tick sums the workers from the main thread. */
+  Uint64 nsl_copy_row_ops() const {
+    return c_nsl_copy_row_ops.load(std::memory_order_relaxed);
+  }
 private:
   struct TcNodeFailRecord {
     enum TcFailStatus {
@@ -3156,6 +3181,60 @@ private:
 
   Uint32 m_startup_report_frequency;
   NDB_TICKS m_last_report_time;
+
+  /**
+   * [NODE-START] logging of the LQH-owned steps (redo-init,
+   * redo-prepare, redo-exec, index-rebuild), see vm/NodeStartLog.hpp.
+   * One step is active at a time per LDM instance; a ZNSL_REPORT
+   * CONTINUEB chain prints periodic progress while a step is active.
+   * Node-level boundary lines are emitted by one instance only
+   * (nsl_is_reporter()), per-LDM lines by every instance.
+   */
+  NodeStartLogTimer c_nsl_timer;
+  Uint32 c_nsl_active_step;
+  /**
+   * Step 6 (redo-prepare) reads the page headers of this LDM's REDO log
+   * parts while the restore (step 8) can already start on its fragments
+   * (system restart: START_FRAGREQ arrives during the header scan), so
+   * it keeps its own state and report chain instead of c_nsl_active_step.
+   */
+  bool c_nsl_redo_prepare_active;
+  NodeStartLogTimer c_nsl_redo_prepare_timer;
+  void nsl_report_redo_prepare(Signal *signal);
+  NDB_TICKS c_nsl_redo_sub2_start; /* step 10 sub-step 2 start */
+  Uint32 c_nsl_indexes_total;
+  Uint32 c_nsl_indexes_done;
+  Uint32 c_nsl_index_current;    /* step 11: index table being built */
+  Uint64 c_nsl_index_rows_total; /* step 11: rows the builds will scan */
+  Uint32 c_nsl_frags_restored;
+  NDB_TICKS c_nsl_restore_start; /* step 8 start on this LDM (step 8 wait lines) */
+  std::atomic<Uint64> c_nsl_restore_row_ops{0}; /* step 8, see accessors */
+  /**
+   * Rows received by the copy of a fragment from a live node: in step
+   * 8 for a fragment without a usable LCP (every fragment in an initial
+   * node restart), in step 12 for the changes since the LCP. Counted
+   * in this thread in c_nsl_copy_row_ops_batch and published to the
+   * atomic every 1024 rows and at each fragment's end, so the copy row
+   * path pays one plain increment per row. Reset with step 8; DBDIH
+   * takes a baseline at the start of step 12.
+   */
+  std::atomic<Uint64> c_nsl_copy_row_ops{0};
+  Uint64 c_nsl_copy_row_ops_batch;
+  void nsl_copy_row_ops_flush() {
+    if (c_nsl_copy_row_ops_batch != 0) {
+      c_nsl_copy_row_ops.fetch_add(c_nsl_copy_row_ops_batch,
+                                   std::memory_order_relaxed);
+      c_nsl_copy_row_ops_batch = 0;
+    }
+  }
+  Uint32 c_nsl_redo_sub; /* step 10: 1 = execution rounds, 2 = head/tail */
+  bool c_nsl_redo_round_done;      /* step 10: every part finished the round */
+  Uint32 c_nsl_redo_round_done_no; /* ... and which round that was (1..4) */
+  void nsl_start_step(Signal *signal, Uint32 step);
+  void nsl_stop_step();
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
+  bool nsl_is_reporter() const;
+  void nsl_report_progress(Signal *signal);
 
   struct LocalSysfileStruct {
     LocalSysfileStruct() {}
@@ -4977,9 +5056,8 @@ public:
   void TRACE_OP_DUMP(const TcConnectionrec *regTcPtr, const char *pos);
 #endif
 
-#ifdef ERROR_INSERT
+  /* Master node id from READ_NODESCONF, kept current by NODE_FAILREP. */
   Uint32 c_master_node_id;
-#endif
 
   Uint32 get_node_status(Uint32 nodeId) const;
   bool check_ndb_versions() const;

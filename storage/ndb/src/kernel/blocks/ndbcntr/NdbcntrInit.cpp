@@ -40,6 +40,12 @@ void Ndbcntr::initData() {
   m_restart_barrier_waiting = false;
   c_restart_barrier_timeout_ms = 0;
   c_graceful_stop_timeout_ms = 27000;
+  c_nsl_waiting_admission = false;
+  c_nsl_park = NSL_PARK_NONE;
+  c_nsl_park_sp = 0;
+  NdbTick_Invalidate(&c_nsl_activate_start);
+  NdbTick_Invalidate(&c_nsl_wait_lcp_start);
+  NdbTick_Invalidate(&c_nsl_read_config_start);
   c_start.reset();
   cmasterNodeId = 0;
   cnoStartNodes = 0;
@@ -99,6 +105,7 @@ Ndbcntr::Ndbcntr(Block_context &ctx)
   BLOCK_CONSTRUCTOR(Ndbcntr);
 
   // Transit signals
+  nsl_register_hooks();
   addRecSignal(GSN_CONTINUEB, &Ndbcntr::execCONTINUEB);
   addRecSignal(GSN_READ_NODESCONF, &Ndbcntr::execREAD_NODESCONF);
   addRecSignal(GSN_READ_NODESREF, &Ndbcntr::execREAD_NODESREF);
