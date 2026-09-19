@@ -34,6 +34,7 @@
 # JIT-eligible.)
 
 --source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
 --disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");

@@ -5,5 +5,8 @@
 # stay legal, so whole corpus tests can arm this. Cmvmi routes
 # `all error N` by range (4xxx DBTUP, 5xxx DBLQH), hence two commands;
 # `all error 0` broadcasts the clear to every block.
+# Strict-compile arming is done with data-node error inserts, which only
+# exist in debug/ERROR_INSERT builds. Skip the test on production binaries.
+--source suite/ndb/t/have_ndb_error_insert.inc
 --exec $NDB_MGM -e "all error 4064" >> $MYSQL_TMP_DIR/jit_strict_mgm.log
 --exec $NDB_MGM -e "all error 5120" >> $MYSQL_TMP_DIR/jit_strict_mgm.log
