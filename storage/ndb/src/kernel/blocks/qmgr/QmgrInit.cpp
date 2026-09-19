@@ -35,6 +35,9 @@
 void Qmgr::initData() {
   m_graceful_shutdown_started = false;
   creadyDistCom = ZFALSE;
+  c_nsl_last_regref_node = 0;
+  c_nsl_last_regref_code = 0;
+  c_nsl_join_tick_armed = false;
   m_current_switch_multi_trp_node = 0;
   m_get_num_multi_trps_sent = 0;
   m_initial_set_up_multi_trp_done = false;
