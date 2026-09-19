@@ -85,9 +85,7 @@ void Dblqh::initData()
   c_num_nodes_in_our_nodegroup = 0;
   c_num_blocked_copy_fragment_processes = 0;
 
-#ifdef ERROR_INSERT
   c_master_node_id = RNIL;
-#endif
   m_tot_written_bytes = 0;
   NdbMutex_Init(&m_read_redo_log_data_mutex);
 
@@ -120,6 +118,19 @@ void Dblqh::initData()
   c_is_io_lag_reported = false;
   c_wait_lcp_surfacing = false;
   c_executing_redo_log = 0;
+  c_nsl_active_step = 0;
+  c_nsl_indexes_total = 0;
+  c_nsl_indexes_done = 0;
+  c_nsl_index_current = RNIL;
+  c_nsl_index_rows_total = 0;
+  c_nsl_frags_restored = 0;
+  c_nsl_redo_prepare_active = false;
+  c_nsl_redo_round_done = false;
+  c_nsl_redo_round_done_no = 0;
+  NdbTick_Invalidate(&c_nsl_redo_sub2_start);
+  NdbTick_Invalidate(&c_nsl_restore_start);
+  c_nsl_copy_row_ops_batch = 0;
+  c_nsl_redo_sub = 1;
   c_start_phase_9_waiting = false;
   c_outstanding_write_local_sysfile = false;
   c_send_gcp_saveref_needed = false;
@@ -603,7 +614,8 @@ Dblqh::Dblqh(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
   m_rowid_mismatch_suppressed = 0;
 
   if (blockNo == DBLQH) {
-    addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dblqh::execQUOTA_OVERLOAD_REP);
+    nsl_register_hooks();
+  addRecSignal(GSN_QUOTA_OVERLOAD_REP, &Dblqh::execQUOTA_OVERLOAD_REP);
     addRecSignal(GSN_CREATE_DB_REQ, &Dblqh::execCREATE_DB_REQ);
     addRecSignal(GSN_ALTER_DB_REQ, &Dblqh::execALTER_DB_REQ);
     addRecSignal(GSN_DROP_DB_REQ, &Dblqh::execDROP_DB_REQ);

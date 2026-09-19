@@ -308,14 +308,17 @@
    released 26.02: on an id conflict the lower version always wins, so
    these two moved to 706/707 */
 #define CFG_DB_CRASH_ON_LEAKED_LCP_BIT 706
-#define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 707
-#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 708
+#define CFG_DB_NODE_START_LOG_REPORT_FREQUENCY 707
+#define CFG_DB_JOIN_AGG_STATE_POOL_SIZE 708
+#define CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION 709
 
-#define CFG_DB_COMPILED_INTERPRETER 709 /* 708 was taken by
+#define CFG_DB_COMPILED_INTERPRETER 710 /* 708 was taken by
   CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION in the 26.10 merge (and 705
   by upstream before that): a duplicate id makes the DBLQH proxy read the
   OTHER parameter as the JIT mode -> JIT silently OFF node-wide. Keep
-  this the highest DB id; check for duplicates after every merge. */
+  this the highest DB id; check for duplicates after every merge.
+  2026-09-18: 707 went to NodeStartLogReportFrequency (released 25.10,
+  lower version wins), so 707/708/709 above moved to 708/709/710. */
 /* Values for CFG_DB_COMPILED_INTERPRETER (CompiledInterpreter enum param):
  * controls the RONDB-1056 JIT for pushed-down interpreted programs (scan
  * filters + standalone and join aggregation). */
