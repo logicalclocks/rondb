@@ -107,13 +107,18 @@ class Configuration {
 
   void setAllRealtimeScheduler();
   void setAllLockCPU(bool exec_thread);
-  int setLockCPU(NdbThread *, enum ThreadTypes type);
+  /* abort_on_failure = false: report a failed CPU binding by returning 1
+     instead of aborting (used for the async log thread, whose binding
+     runs before the error handler is installed). */
+  int setLockCPU(NdbThread *, enum ThreadTypes type,
+                 bool abort_on_failure = true);
   int setThreadPrio(NdbThread *, enum ThreadTypes type);
   int setRealtimeScheduler(NdbThread *, enum ThreadTypes type, bool real_time,
                            bool init);
   bool get_io_real_time() const;
   Uint32 addThread(struct NdbThread *, enum ThreadTypes type,
-                   bool single_threaded = false);
+                   bool single_threaded = false,
+                   bool *lock_cpu_failed = nullptr);
   void removeThread(struct NdbThread *);
   void yield_main(Uint32 thread_index, bool start);
   void initThreadArray();

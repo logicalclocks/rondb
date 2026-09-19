@@ -39,6 +39,7 @@
 #include <signaldata/StopReq.hpp>
 
 #include <NdbTick.h>
+#include <NodeStartLog.hpp>
 #include <NodeState.hpp>
 
 #define JAM_FILE_ID 457
@@ -496,7 +497,57 @@ class Ndbcntr : public SimulatedBlock {
    */
   Uint32 c_graceful_stop_timeout_ms;
 
+  /**
+   * [NODE-START] uniform start-step logging, see vm/NodeStartLog.hpp.
+   * The admission timer covers step 3 (waiting for the NDBCNTR master
+   * to grant our start in CNTR_START_CONF), c_nsl_start_ticks anchors
+   * the total elapsed time reported when the node has started,
+   * c_nsl_activate_start the step 14 (activate) elapsed time: from
+   * NDB start phase 6 to the end of start phase 100 (Missra).
+   */
+  NodeStartLogTimer c_nsl_admission_timer;
+  bool c_nsl_waiting_admission;
+  NDB_TICKS c_nsl_start_ticks;
+  NDB_TICKS c_nsl_activate_start;
+  NDB_TICKS c_nsl_wait_lcp_start; /* non-master IS/SR: step 13 started at wp 5.2 */
+  NDB_TICKS c_nsl_read_config_start; /* step 1 sub-step 4 started (Missra START_ORD) */
+  NodeStartLogTimer c_nsl_barrier_timer;
+
+  /**
+   * [NODE-START] heartbeat for the cluster-wide wait points of an
+   * initial or system restart, where this node is parked in NDBCNTR
+   * until the master or every node has reached a point: the start
+   * phase barrier (wait_sp), wait points 4.1, 5.2, 6.1 and 7.1 on a
+   * non-master, and the master's waits for the 5.2, 6.1 and 7.1
+   * reports. Reported from the ZSTARTUP tick, see nsl_report_park().
+   */
+  enum NslPark {
+    NSL_PARK_NONE = 0,
+    NSL_PARK_WAIT_SP = 1,
+    NSL_PARK_WP_4_1 = 2,
+    NSL_PARK_WP_5_2 = 3,
+    NSL_PARK_WP_6_1 = 4,
+    NSL_PARK_WP_7_1 = 5,
+    NSL_PARK_MASTER_5_2 = 6,
+    NSL_PARK_MASTER_6_1 = 7,
+    NSL_PARK_MASTER_7_1 = 8
+  };
+  Uint32 c_nsl_park;
+  Uint32 c_nsl_park_sp;
+  NodeStartLogTimer c_nsl_park_timer;
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
+  void nsl_park(Uint32 park, Uint32 sp = 0);
+  void nsl_unpark();
+  void nsl_report_park();
  public:
+  /**
+   * [NODE-START] step 12 sub-step 3 (read by DBDIH in the same thread):
+   * the state of the local-checkpoint barrier that precedes the REDO
+   * logging of the copied fragments, see nsl_cntr_local_lcp_barrier() in
+   * vm/NodeStartLog.hpp.
+   */
+  Uint32 nsl_local_lcp_barrier(Uint32 &ldms_done, Uint32 &ldms,
+                               Uint32 &gci_needed, Uint32 &gci_done) const;
   struct StopRecord {
   public:
     StopRecord(Ndbcntr &_cntr) : cntr(_cntr) {

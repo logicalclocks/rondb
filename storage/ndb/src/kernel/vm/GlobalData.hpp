@@ -30,6 +30,7 @@
 #include <kernel_types.h>
 #include <ndb_global.h>
 #include <cstring>
+#include <atomic>
 #include "Prio.hpp"
 #include "VMSignal.hpp"
 
@@ -145,6 +146,59 @@ struct GlobalData {
   Uint32     theNumLqhKeyReqCounts;
   Uint32     theNumScanFragReqCounts;
 
+  /**
+   * NodeStartLogReportFrequency, seconds between [NODE-START] progress
+   * reports during the node start, 0 = only step boundary reports.
+   * theNodeStartTicks is set at the top of ndbd_run and anchors all
+   * total-elapsed values in the [NODE-START] lines.
+   */
+  Uint32     theNodeStartLogReportFrequency;
+  NDB_TICKS  theNodeStartTicks;
+  /**
+   * End state of the [NODE-START] narrative. NDBCNTR ("Node started")
+   * claims NSL_DONE and prints the final 'completed' line; a failing
+   * thread (ErrorReporter, watchdog) claims NSL_FAILED and prints the
+   * 'failed' line. Both use a compare-and-swap from NSL_STARTING, so
+   * exactly one of the two lines is printed, once, whichever thread
+   * wins. SL_STARTED is not usable for this: it is set in STTOR phase 8,
+   * before the handover (101) and barrier (110) phases.
+   */
+  enum NodeStartLogState : Uint32 {
+    NSL_STARTING = 0,
+    NSL_DONE = 1,
+    NSL_FAILED = 2
+  };
+  std::atomic<Uint32> theNodeStartLogState;
+  /**
+   * [NODE-START] cross-block reads. Each owning block registers its
+   * function here from its constructor (Dbdih::nsl_register_hooks() and
+   * so on); the readers call the nsl_*() functions declared in
+   * NodeStartLog.hpp, defined in vm/NodeStartLogHooks.cpp, which dispatch
+   * through these pointers and return a neutral value while nothing is
+   * registered. Function pointers instead of direct calls keep a reader's
+   * object file free of references into the owner's object: a unit test
+   * that links libndbblocks.a against stubbed DBDIH/NDBCNTR symbols
+   * (ndb_trpman-t) must not pull the real DBDIH/NDBCNTR objects in.
+   */
+  struct NodeStartLogHooks {
+    Uint64 (*lqh_copy_row_ops_total)() = nullptr;
+    bool (*dict_restart_progress)(Uint32 &pass, Uint32 &passes,
+                                  Uint32 &object,
+                                  Uint32 &last_object) = nullptr;
+    Uint64 (*dih_sr_metadata_start)() = nullptr;
+    bool (*dih_performed_copy_phase)() = nullptr;
+    bool (*dih_wait_lcp_reported)() = nullptr;
+    bool (*dih_sr_receiving_tables)(Uint64 &sub_start,
+                                    Uint32 &tables) = nullptr;
+    Uint64 (*lqh_proxy_undo_dd_start)() = nullptr;
+    Uint32 (*lqh_proxy_redo_prepare_done)(Uint32 &ldms_with_log_parts) =
+        nullptr;
+    Uint32 (*cntr_local_lcp_barrier)(Uint32 &ldms_done, Uint32 &ldms,
+                                     Uint32 &gci_needed,
+                                     Uint32 &gci_done) = nullptr;
+  };
+  NodeStartLogHooks theNodeStartLogHooks;
+
   GlobalData() {
     theSignalId = 0;
     theStartLevel = NodeState::SL_NOTHING;
@@ -174,6 +228,9 @@ struct GlobalData {
     theMaxSendDelay = 0;
     theNumLqhKeyReqCounts = 0;
     theNumScanFragReqCounts = 0;
+    theNodeStartLogReportFrequency = 15;
+    NdbTick_Invalidate(&theNodeStartTicks);
+    theNodeStartLogState = NSL_STARTING;
     theUseTcInSameRRGroup = false;
 #ifdef GCP_TIMER_HACK
     gcp_timer_limit = 0;
