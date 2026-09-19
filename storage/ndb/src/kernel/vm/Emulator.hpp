@@ -697,6 +697,8 @@ static constexpr const char* const jamFileNames[] =
   "QueryDatabase.hpp",                  // 562
   "QueryDatabase.cpp",                  // 563
   "SetDomainId.hpp",                    // 564
+  "SetConfigParam.hpp",                 // 565
+  "NodeStartLog.hpp",                   // 566
   // END jamFileNames (This marker is used by ./test_jamFileNames.sh)
 };
 

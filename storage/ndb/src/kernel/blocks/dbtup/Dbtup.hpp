@@ -1788,6 +1788,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 m_tupleNo;      // tuple number on page
     Uint32 m_buildRef;     // Where to send tuples
     Uint32 m_outstanding;  // If mt-build...
+    Uint64 m_nsl_rows;     // [NODE-START] rows scanned by the single-
+                           // threaded build, not yet published to DBTUX
     BuildIndxImplRef::ErrorCode m_errorCode;
     union {
       Uint32 nextPool;
@@ -1801,6 +1803,15 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
   BuildIndexRec_pool c_buildIndexPool;
   BuildIndexRec_list c_buildIndexList;
   Uint32 c_noOfBuildIndexRec;
+  /**
+   * [NODE-START] step 11 progress of the index build in progress: the
+   * index, the base table fragments on this LDM (the unit of the
+   * offline build fan-out) and how many of them are done.
+   */
+  Uint32 m_nsl_build_index_id;
+  Uint32 m_nsl_build_frags_total;
+  Uint32 m_nsl_build_frags_done;
+  bool m_nsl_build_parallel; /* fragments handed to the NDBFS threads */
 
   int mt_scan_init(Uint32 tableId,
                    Uint32 fragId,
@@ -2435,6 +2446,14 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
                        Uint64 & free_mem_bytes,
                        Uint64 & disk_bytes,
                        Uint64 & free_disk_bytes);
+
+  /**
+   * [NODE-START] step 11: fragments done/total of the index being
+   * built and the fragment builds running right now (the offline build
+   * hands up to BuildIndexThreads fragments to the NDBFS threads).
+   */
+  void nsl_build_index_progress(Uint32 &indexId, Uint32 &fragsDone,
+                                Uint32 &fragsTotal, Uint32 &building);
 
  private:
   BLOCK_DEFINES(Dbtup);
