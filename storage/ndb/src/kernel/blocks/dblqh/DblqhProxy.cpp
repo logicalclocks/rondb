@@ -59,6 +59,7 @@ DblqhProxy::DblqhProxy(Block_context &ctx)
   for (Uint32 i = 0; i < 4; i++) NdbTick_Invalidate(&c_nsl_rec_start[i]);
 
   // GSN_CREATE_TAB_REQ
+  nsl_register_hooks();
   addRecSignal(GSN_CREATE_TAB_REQ, &DblqhProxy::execCREATE_TAB_REQ);
   addRecSignal(GSN_CREATE_TAB_CONF, &DblqhProxy::execCREATE_TAB_CONF);
   addRecSignal(GSN_CREATE_TAB_REF, &DblqhProxy::execCREATE_TAB_REF);
@@ -384,10 +385,10 @@ void DblqhProxy::nsl_node_completed(Uint32 step, const NDB_TICKS &since) {
 }
 
 /**
- * Declared in NodeStartLog.hpp: the node-wide step 9 start for the LDM
+ * Registered in nsl_register_hooks() as the corresponding nsl_*() read of NodeStartLog.hpp: the node-wide step 9 start for the LDM
  * workers (0 before it, and in ndbd, which has no proxy).
  */
-Uint64 nsl_lqh_proxy_undo_dd_start() {
+static Uint64 nsl_lqh_proxy_undo_dd_start_impl() {
   if (globalData.ndbMtLqhWorkers == 0) {
     return 0;
   }
@@ -396,11 +397,12 @@ Uint64 nsl_lqh_proxy_undo_dd_start() {
 }
 
 /**
- * Declared in NodeStartLog.hpp: a worker's step 6 completion counted in
+ * Registered in nsl_register_hooks() as the corresponding nsl_*() read of NodeStartLog.hpp: a worker's step 6 completion counted in
  * the proxy; returns the count and the number of LDMs that hold REDO log
  * parts (0 in ndbd, which has no proxy and no node-wide LQH lines).
  */
-Uint32 nsl_lqh_proxy_redo_prepare_done(Uint32 &ldms_with_log_parts) {
+static Uint32 nsl_lqh_proxy_redo_prepare_done_impl(
+    Uint32 &ldms_with_log_parts) {
   ldms_with_log_parts = 0;
   if (globalData.ndbMtLqhWorkers == 0) {
     return 0;
@@ -411,6 +413,12 @@ Uint32 nsl_lqh_proxy_redo_prepare_done(Uint32 &ldms_with_log_parts) {
   }
   ldms_with_log_parts = proxy->nsl_ldms_with_log_parts();
   return proxy->nsl_redo_prepare_done_inc();
+}
+
+void DblqhProxy::nsl_register_hooks() {
+  GlobalData::NodeStartLogHooks &h = globalData.theNodeStartLogHooks;
+  h.lqh_proxy_undo_dd_start = nsl_lqh_proxy_undo_dd_start_impl;
+  h.lqh_proxy_redo_prepare_done = nsl_lqh_proxy_redo_prepare_done_impl;
 }
 
 // GSN_READ_CONFIG_REQ
@@ -1397,6 +1405,10 @@ void DblqhProxy::execSTART_RECREQ(Signal *signal) {
   ss.undoDDCompletedCount = 0;
   ss.execREDOLogCompletedCount = 0;
   ss.phaseToSend = 0;
+  /* [NODE-START] a new local recovery: the node-wide 'started' lines of
+     steps 10 and 11 are open for claiming again, see
+     GlobalData::theNodeStartLogStartedClaims. */
+  globalData.theNodeStartLogStartedClaims.store(0, std::memory_order_release);
   if (!NdbTick_IsValid(c_nsl_rec_start[0])) {
     jam();
     /* No START_FRAGREQ arrived: this node holds no fragment (e.g. no

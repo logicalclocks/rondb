@@ -29997,7 +29997,7 @@ void Dblqh::execSET_LOCAL_LCP_ID_CONF(Signal *signal) {
     jam();
     nsl_start_step(signal, NodeStartLog::NSL_REDO_EXEC);
     c_nsl_redo_sub = 1;
-    if (nsl_is_reporter()) {
+    if (globalData.nsl_claim_node_started(NodeStartLog::NSL_REDO_EXEC)) {
       char buf[NodeStartLog::BUF_SIZE];
       NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_REDO_EXEC, 0,
                          cstartType, "started", -1);
@@ -30087,7 +30087,7 @@ void Dblqh::rebuildOrderedIndexes(Signal *signal, Uint32 tableId) {
       }
     }
     nsl_start_step(signal, NodeStartLog::NSL_INDEX_REBUILD);
-    if (nsl_is_reporter()) {
+    if (globalData.nsl_claim_node_started(NodeStartLog::NSL_INDEX_REBUILD)) {
       char buf[NodeStartLog::BUF_SIZE];
       NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_INDEX_REBUILD, 0,
                          cstartType, "started", -1, "%u ordered indexes",
@@ -38691,7 +38691,10 @@ void Dblqh::writeDbgInfoPageHeader(LogPageRecordPtr logP,
 bool Dblqh::nsl_is_reporter() const {
   /**
    * Node-level [NODE-START] boundary lines that need no proxy view are
-   * emitted by worker instance 1 only (instance 0 without a proxy).
+   * emitted by worker instance 1 only (instance 0 without a proxy),
+   * except the 'started' lines of steps 10 and 11, which go to the first
+   * worker entering the step (GlobalData::nsl_claim_node_started): those
+   * steps begin per LDM and can complete instantly.
    * Lines that depend on which LDM owns fragments (step 8 started,
    * step 9 started, SR step 7 completed) come from DblqhProxy.
    * Per-LDM progress and completion lines come from every instance.
@@ -40540,7 +40543,7 @@ void Dblqh::checkInitGlobalVariables() {
  * DBLQH worker. In ndbd the single DBLQH is instance 0; in ndbmtd
  * instance 0 is the proxy and the workers are 1..ndbMtLqhWorkers.
  */
-Uint64 nsl_lqh_copy_row_ops_total() {
+static Uint64 nsl_lqh_copy_row_ops_total_impl() {
   if (globalData.ndbMtLqhWorkers == 0) {
     Dblqh *lqh = (Dblqh *)globalData.getBlock(DBLQH);
     return (lqh != nullptr) ? lqh->nsl_copy_row_ops() : 0;
@@ -40551,4 +40554,9 @@ Uint64 nsl_lqh_copy_row_ops_total() {
     if (lqh != nullptr) total += lqh->nsl_copy_row_ops();
   }
   return total;
+}
+
+void Dblqh::nsl_register_hooks() {
+  globalData.theNodeStartLogHooks.lqh_copy_row_ops_total =
+      nsl_lqh_copy_row_ops_total_impl;
 }

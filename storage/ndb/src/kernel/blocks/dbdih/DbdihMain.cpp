@@ -1993,25 +1993,26 @@ I N T E R N A L  P H A S E S
 /*---------------------------------------------------------------------------*/
 /*NDB_STTOR                              START SIGNAL AT START/RESTART       */
 /*---------------------------------------------------------------------------*/
-/* Declared in NodeStartLog.hpp. NDBCNTR shares DBDIH's main thread; the
-   DBLQH proxy runs in the rep thread and gets the values DBDIH publishes
-   atomically (Dbdih::nsl_sr_*). */
-Uint64 nsl_dih_sr_metadata_start() {
+/* Registered in Dbdih::nsl_register_hooks() as the nsl_dih_*() reads of
+   NodeStartLog.hpp. NDBCNTR shares DBDIH's main thread; the DBLQH proxy
+   runs in the rep thread and gets the values DBDIH publishes atomically
+   (Dbdih::nsl_sr_*). */
+static Uint64 nsl_dih_sr_metadata_start_impl() {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
   return dih->nsl_sr_metadata_start();
 }
 
-bool nsl_dih_performed_copy_phase() {
+static bool nsl_dih_performed_copy_phase_impl() {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
   return dih->nsl_performed_copy_phase();
 }
 
-bool nsl_dih_wait_lcp_reported() {
+static bool nsl_dih_wait_lcp_reported_impl() {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
   return dih->nsl_wait_lcp_reported();
 }
 
-bool nsl_dih_sr_receiving_tables(Uint64 &sub_start, Uint32 &tables) {
+static bool nsl_dih_sr_receiving_tables_impl(Uint64 &sub_start, Uint32 &tables) {
   const Dbdih *dih = (const Dbdih *)globalData.getBlock(DBDIH);
   tables = 0;
   /* The sub-step start is published before any table count. */
@@ -2021,6 +2022,14 @@ bool nsl_dih_sr_receiving_tables(Uint64 &sub_start, Uint32 &tables) {
   }
   tables = dih->nsl_sr_tabs_received();
   return true;
+}
+
+void Dbdih::nsl_register_hooks() {
+  GlobalData::NodeStartLogHooks &h = globalData.theNodeStartLogHooks;
+  h.dih_sr_metadata_start = nsl_dih_sr_metadata_start_impl;
+  h.dih_performed_copy_phase = nsl_dih_performed_copy_phase_impl;
+  h.dih_wait_lcp_reported = nsl_dih_wait_lcp_reported_impl;
+  h.dih_sr_receiving_tables = nsl_dih_sr_receiving_tables_impl;
 }
 
 void Dbdih::nsl_start_step(Signal *signal, Uint32 step) {

@@ -105,6 +105,7 @@ Ndbcntr::Ndbcntr(Block_context &ctx)
   BLOCK_CONSTRUCTOR(Ndbcntr);
 
   // Transit signals
+  nsl_register_hooks();
   addRecSignal(GSN_CONTINUEB, &Ndbcntr::execCONTINUEB);
   addRecSignal(GSN_READ_NODESCONF, &Ndbcntr::execREAD_NODESCONF);
   addRecSignal(GSN_READ_NODESREF, &Ndbcntr::execREAD_NODESREF);

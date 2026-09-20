@@ -155,6 +155,24 @@ struct GlobalData {
   Uint32     theNodeStartLogReportFrequency;
   NDB_TICKS  theNodeStartTicks;
   /**
+   * [NODE-START] steps 10 (redo-exec) and 11 (index-rebuild) are entered
+   * by each LDM on its own when its previous step ends, and their work
+   * can be instant (an empty log part, an index over no rows), so a
+   * fixed reporter LDM may print the node-wide 'started' line after
+   * other LDMs have already completed the step. The first LDM to enter
+   * the step claims the line here (bit = step) and prints it before
+   * doing any work of its own; the DBLQH proxy clears the claims when
+   * START_RECREQ opens a new local recovery. The single LDM of ndbd
+   * always wins its claim.
+   */
+  std::atomic<Uint32> theNodeStartLogStartedClaims{0};
+  bool nsl_claim_node_started(Uint32 step) {
+    const Uint32 bit = 1u << step;
+    return (theNodeStartLogStartedClaims.fetch_or(bit,
+                                                  std::memory_order_acq_rel) &
+            bit) == 0;
+  }
+  /**
    * End state of the [NODE-START] narrative. NDBCNTR ("Node started")
    * claims NSL_DONE and prints the final 'completed' line; a failing
    * thread (ErrorReporter, watchdog) claims NSL_FAILED and prints the
@@ -169,6 +187,35 @@ struct GlobalData {
     NSL_FAILED = 2
   };
   std::atomic<Uint32> theNodeStartLogState;
+  /**
+   * [NODE-START] cross-block reads. Each owning block registers its
+   * function here from its constructor (Dbdih::nsl_register_hooks() and
+   * so on); the readers call the nsl_*() functions declared in
+   * NodeStartLog.hpp, defined in vm/NodeStartLogHooks.cpp, which dispatch
+   * through these pointers and return a neutral value while nothing is
+   * registered. Function pointers instead of direct calls keep a reader's
+   * object file free of references into the owner's object: a unit test
+   * that links libndbblocks.a against stubbed DBDIH/NDBCNTR symbols
+   * (ndb_trpman-t) must not pull the real DBDIH/NDBCNTR objects in.
+   */
+  struct NodeStartLogHooks {
+    Uint64 (*lqh_copy_row_ops_total)() = nullptr;
+    bool (*dict_restart_progress)(Uint32 &pass, Uint32 &passes,
+                                  Uint32 &object,
+                                  Uint32 &last_object) = nullptr;
+    Uint64 (*dih_sr_metadata_start)() = nullptr;
+    bool (*dih_performed_copy_phase)() = nullptr;
+    bool (*dih_wait_lcp_reported)() = nullptr;
+    bool (*dih_sr_receiving_tables)(Uint64 &sub_start,
+                                    Uint32 &tables) = nullptr;
+    Uint64 (*lqh_proxy_undo_dd_start)() = nullptr;
+    Uint32 (*lqh_proxy_redo_prepare_done)(Uint32 &ldms_with_log_parts) =
+        nullptr;
+    Uint32 (*cntr_local_lcp_barrier)(Uint32 &ldms_done, Uint32 &ldms,
+                                     Uint32 &gci_needed,
+                                     Uint32 &gci_done) = nullptr;
+  };
+  NodeStartLogHooks theNodeStartLogHooks;
 
   GlobalData() {
     theSignalId = 0;

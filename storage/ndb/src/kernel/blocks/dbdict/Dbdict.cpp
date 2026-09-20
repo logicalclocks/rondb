@@ -2220,6 +2220,7 @@ Dbdict::Dbdict(Block_context &ctx)
   c_nsl_fk_tick_armed = false;
 
   // Transit signals
+  nsl_register_hooks();
   addRecSignal(GSN_DUMP_STATE_ORD, &Dbdict::execDUMP_STATE_ORD);
   addRecSignal(GSN_GET_TABINFOREQ, &Dbdict::execGET_TABINFOREQ);
   addRecSignal(GSN_GET_TABINFOREF, &Dbdict::execGET_TABINFOREF);
@@ -35070,10 +35071,18 @@ bool Dbdict::nsl_restart_progress(Uint32 &pass, Uint32 &passes,
   return true;
 }
 
-/* Declared in NodeStartLog.hpp; DBDICT and DBDIH share the main thread. */
-bool nsl_dict_restart_progress(Uint32 &pass, Uint32 &passes, Uint32 &object,
-                               Uint32 &last_object) {
+/* Registered in Dbdict::nsl_register_hooks() as the
+   nsl_dict_restart_progress() read of NodeStartLog.hpp; DBDICT and DBDIH
+   share the main thread. */
+static bool nsl_dict_restart_progress_impl(Uint32 &pass, Uint32 &passes,
+                                           Uint32 &object,
+                                           Uint32 &last_object) {
   const Dbdict *dict = (const Dbdict *)globalData.getBlock(DBDICT);
   return (dict != nullptr) &&
          dict->nsl_restart_progress(pass, passes, object, last_object);
+}
+
+void Dbdict::nsl_register_hooks() {
+  globalData.theNodeStartLogHooks.dict_restart_progress =
+      nsl_dict_restart_progress_impl;
 }

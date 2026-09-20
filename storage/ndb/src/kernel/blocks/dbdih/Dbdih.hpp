@@ -2581,6 +2581,7 @@ class Dbdih : public SimulatedBlock {
   Uint32 c_nsl_frags_distributed;   /* SR master: fragments given START_FRAGREQ */
   NDB_TICKS c_nsl_frags_dist_start; /* SR master: step 8 sub-step 1 started */
   bool c_nsl_wait_lcp_reported;     /* step 13 completed already logged here */
+  void nsl_register_hooks(); /* GlobalData::theNodeStartLogHooks */
   void nsl_start_step(Signal *signal, Uint32 step);
   void nsl_stop_step();
   Int64 nsl_sync_sub_elapsed() const;
