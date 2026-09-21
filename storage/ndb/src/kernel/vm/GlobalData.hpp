@@ -155,6 +155,24 @@ struct GlobalData {
   Uint32     theNodeStartLogReportFrequency;
   NDB_TICKS  theNodeStartTicks;
   /**
+   * [NODE-START] steps 10 (redo-exec) and 11 (index-rebuild) are entered
+   * by each LDM on its own when its previous step ends, and their work
+   * can be instant (an empty log part, an index over no rows), so a
+   * fixed reporter LDM may print the node-wide 'started' line after
+   * other LDMs have already completed the step. The first LDM to enter
+   * the step claims the line here (bit = step) and prints it before
+   * doing any work of its own; the DBLQH proxy clears the claims when
+   * START_RECREQ opens a new local recovery. The single LDM of ndbd
+   * always wins its claim.
+   */
+  std::atomic<Uint32> theNodeStartLogStartedClaims{0};
+  bool nsl_claim_node_started(Uint32 step) {
+    const Uint32 bit = 1u << step;
+    return (theNodeStartLogStartedClaims.fetch_or(bit,
+                                                  std::memory_order_acq_rel) &
+            bit) == 0;
+  }
+  /**
    * End state of the [NODE-START] narrative. NDBCNTR ("Node started")
    * claims NSL_DONE and prints the final 'completed' line; a failing
    * thread (ErrorReporter, watchdog) claims NSL_FAILED and prints the
