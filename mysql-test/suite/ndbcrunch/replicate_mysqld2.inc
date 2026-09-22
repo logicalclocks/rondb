@@ -16,6 +16,14 @@ let $source_pos= query_get_value(SHOW BINARY LOG STATUS, Position, 1);
 --echo ## Connect to second mysqld, then start replicating from first mysqld
 --connect(mysqld2,127.0.0.1,root,,test,$MYSQLD2_PORT,)
 
+# Replication starts over from the beginning of the source binlog. When another
+# test in this suite has already replicated to this server, the epochs recorded
+# in mysql.ndb_apply_status are later than the ones now replayed and the applier
+# warns about that. It's expected here, since each test replays the whole binlog.
+--disable_query_log
+call mtr.add_suppression("Replica: At SQL thread start applying epoch .* which is lower than previously applied epoch");
+--enable_query_log
+
 eval
 CHANGE REPLICATION SOURCE TO
   SOURCE_HOST='127.0.0.1',
@@ -218,5 +226,21 @@ if ($CRUNCH_STATS)
 
 }
 
+# Remove the replication configuration from this server again, otherwise MTR's
+# check-testcase reports that the test changed the state of the server. Done
+# after the counters above have been collected, since this resets them.
+--disable_query_log
+RESET REPLICA ALL;
+--enable_query_log
+
 connection default;
+
+# STOP REPLICA above only stops the replica threads. The binlog dump thread on
+# this server (the source) keeps waiting for binlog updates that never come,
+# since it only notices the disconnected replica when it has something to send.
+# Stop it here, otherwise MTR's check-testcase sees the extra connection and
+# reports that the test didn't clean up properly.
+--let $include_silent= 1
+--source include/rpl/stop_dump_threads.inc
+--let $include_silent= 0
 

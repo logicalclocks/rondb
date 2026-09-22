@@ -35,6 +35,11 @@ static void print_utility_help();
 
 bool opt_core;
 
+/* Link stub: trpman.cpp references this mt.cpp function, but this unit
+ * test only exercises the static histogram helpers and never executes
+ * READ_CONFIG_REQ where it is called. */
+Uint32 mt_get_num_trp_ids() { return MAX_NTRANSPORTERS; }
+
 static bool opt_print;
 static bool opt_test;
 
