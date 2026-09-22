@@ -397,7 +397,8 @@ class Driver:
             names = []
             for l in lines:
                 m = RE_LIST.match(l)
-                if m and m.group(1) != 'all' and '[.bench_sql only]' not in l:
+                # 'all' and 'fs_hw' are the category runners of the listing, not queries
+                if m and m.group(1) not in ('all', 'fs_hw') and '[.bench_sql only]' not in l:
                     names.append((m.group(1), m.group(2)))
             if not names:
                 raise RuntimeError('could not parse "%s" output:\n%s' % (cmd, '\n'.join(lines)))
@@ -418,7 +419,8 @@ class Driver:
         sel = self.a.queries
         if sel in ('all', ''):
             return pairs
-        cats = {'fs': lambda n: n.startswith('fs_') and not n.startswith('fs_hw_'),
+        cats = {'core': lambda n: n.startswith('core_'),
+                'fs': lambda n: n.startswith('fs_') and not n.startswith('fs_hw_'),
                 'fs_hw': lambda n: n.startswith('fs_hw_'),
                 'offline_fs': lambda n: n.startswith('offline_fs_'),
                 'tpch_cte': lambda n: n.startswith('tpch_q') and not n.endswith('_official'),
@@ -1048,7 +1050,8 @@ def parse_args():
     ap.add_argument('--probe-requests', type=int, default=3)
     ap.add_argument('--min-requests', type=int, default=5)
     ap.add_argument('--max-requests', type=int, default=5000)
-    ap.add_argument('--queries', default='all', help='all | fs | offline_fs | tpch_cte | tpch_official | name,name,...')
+    ap.add_argument('--queries', default='all', help='all | core | fs | offline_fs | tpch_cte | tpch_official | fs_hw | name,name,... '
+                    '(all needs --load both when fs_bench is not loaded: the fs_hw entries are part of it)')
     ap.add_argument('--engines', default='ronsql,mysqld,mysqld_nopush')
     ap.add_argument('--compiler', default='off,on', help='compiler arms in order (default off,on)')
     ap.add_argument('--toggle', default='auto', choices=['auto', 'set', 'restart'],

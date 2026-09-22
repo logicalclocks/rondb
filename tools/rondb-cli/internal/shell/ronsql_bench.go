@@ -28,6 +28,7 @@ package shell
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +60,7 @@ const (
 	benchCatTPCHCte      = "tpch_cte"      // TPC-H rewritten with CTEs (RonSQL envelope)
 	benchCatTPCHOfficial = "tpch_official" // official TPC-H formulation (MySQL only)
 	benchCatFSHW         = "fs_hw"         // Hopsworks serving shapes over fs_bench (RONDB-1121 E5, fs_bench.go)
+	benchCatCore         = "core"          // engine primitives over tpch (RONDB-1121 M3.0 performance census, fs_ronsql/m3_plan.md)
 )
 
 // RonSQLBenchQuery is a named analytics benchmark query over the tpch
@@ -119,7 +121,7 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 
 // ronsqlBenchQueries is the registry of named analytics benchmark queries.
 //
-// Four families:
+// Families (the fs_hw_* entries are appended at init by fs_bench.go):
 //
 //   - fs_*: online Feature-Store-style workloads. CTEs compute per-entity
 //     aggregate features and are joined to entity tables, with filters
@@ -148,6 +150,11 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 //     cte_tpch_qN on MySQL shows the cost of the CTE rewrite; comparing
 //     cte_tpch_qN on MySQL against tpch_qN on .bench_ronsql shows
 //     RonSQL vs MySQL on identical SQL.
+//
+//   - core_*: engine primitives over tpch (RONDB-1121 M3.0 performance
+//     census, fs_ronsql/m3_plan.md): one access path or execution stage
+//     per entry, so that a slow feature-store shape can be attributed to
+//     the primitive it is built from.
 var ronsqlBenchQueries = []RonSQLBenchQuery{
 	// ---------------------------------------------------------------
 	// Online Feature-Store-style benchmarks (filter-bounded)
@@ -369,6 +376,139 @@ LIMIT 1000;`,
 FROM orders
 ORDER BY o_orderdate DESC
 LIMIT 100;`,
+	},
+
+	// ---------------------------------------------------------------
+	// Engine primitives (RONDB-1121 M3.0 performance census,
+	// fs_ronsql/m3_plan.md): one access path or execution stage per
+	// entry over tpch — PK lookup, IN lists on the PK and on a
+	// secondary index, ordered-index range, pass-through drain, AVG,
+	// full scans with and without a row filter, few and many groups.
+	// {KEY} / {KEYS:n} on orders resolve to existing (sparse)
+	// o_orderkeys, see tpchOrderKeyResolver.  Plan pins record the
+	// access path each entry is meant to measure; a pin warning means
+	// the entry measures something else now.
+	// ---------------------------------------------------------------
+	{
+		Name:         "core_pk_lookup",
+		Category:     benchCatCore,
+		Description:  "Single-row primary key lookup, projection only: the lookup floor (one PK read, no scan, no aggregation)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
+		KeyDefault:   4 * tpchOrdersBase,
+		Resolver:     tpchOrderKeyResolver,
+		Placeholders: tpchOrderKeyLegend,
+		PlanPins:     []string{"Execute as primary key lookup."},
+		SQL: `SELECT o_custkey, o_orderdate, o_totalprice, o_orderstatus
+FROM orders
+WHERE o_orderkey = {KEY};`,
+	},
+	{
+		Name:         "core_in_pk100",
+		Category:     benchCatCore,
+		Description:  "IN list of 100 existing primary keys, aggregated: batched PK reads or a filtered scan? (F12 on a complete PK)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
+		KeyDefault:   4 * tpchOrdersBase,
+		Resolver:     tpchOrderKeyResolver,
+		Placeholders: tpchOrderKeyLegend,
+		SQL: `SELECT COUNT(*), SUM(o_totalprice), MAX(o_orderdate)
+FROM orders
+WHERE o_orderkey IN ({KEYS:100});`,
+	},
+	{
+		Name:         "core_in_idx100",
+		Category:     benchCatCore,
+		Description:  "IN list of 100 customers on a secondary ordered index, GROUP BY the key (~1k rows; batch serving off the PK, F12)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		Resolver:     fsHWResolver,
+		Placeholders: "{KEYS:100} = 100 distinct random customers in 1..max (KeySQL)",
+		SQL: `SELECT o_custkey, COUNT(*), SUM(o_totalprice)
+FROM orders
+WHERE o_custkey IN ({KEYS:100})
+GROUP BY o_custkey;`,
+	},
+	{
+		Name:        "core_idx_range",
+		Category:    benchCatCore,
+		Description: "Ordered-index range aggregate: one month of orders via idx_orders_orderdate (~19k rows at sf 1), fixed bounds",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as index scan.", "Index: `idx_orders_orderdate`"},
+		SQL: `SELECT COUNT(*), SUM(o_totalprice), MAX(o_totalprice)
+FROM orders
+WHERE o_orderdate >= '1998-06-01' AND o_orderdate <= '1998-06-30';`,
+	},
+	{
+		Name:        "core_avg_range",
+		Category:    benchCatCore,
+		Description: "AVG over an index range: ~1k orders of a random 100-customer segment via idx_orders_custkey (the AVG path)",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:  tpchCustomerBase,
+		KeySpan:     100,
+		PlanPins:    []string{"Execute as index scan.", "Index: `idx_orders_custkey`"},
+		SQL: `SELECT COUNT(*), AVG(o_totalprice), AVG(o_shippriority), MIN(o_totalprice)
+FROM orders
+WHERE o_custkey >= {KEY} AND o_custkey < {KEY2};`,
+	},
+	{
+		Name:        "core_pass_range",
+		Category:    benchCatCore,
+		Description: "Pass-through range: ~1k orders of a random 100-customer segment projected, no ORDER BY (result drain; fs_history adds the sort)",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:  tpchCustomerBase,
+		KeySpan:     100,
+		PlanPins:    []string{"Execute as index scan.", "Index: `idx_orders_custkey`"},
+		SQL: `SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice
+FROM orders
+WHERE o_custkey >= {KEY} AND o_custkey < {KEY2};`,
+	},
+	{
+		Name:        "core_scan_agg",
+		Category:    benchCatCore,
+		Description: "Full table scan, scalar aggregates over lineitem (6M rows at sf 1): data-node scan + aggregation throughput, the JIT's best case",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan.", "No filters."},
+		SQL: `SELECT COUNT(*), SUM(l_extendedprice), SUM(l_quantity), MIN(l_shipdate), MAX(l_shipdate)
+FROM lineitem;`,
+	},
+	{
+		Name:        "core_scan_filter",
+		Category:    benchCatCore,
+		Description: "Full table scan with a 3-conjunct filter on unindexed lineitem columns (~4% qualify): per-row filter evaluation cost",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan.", "FILTERS:"},
+		SQL: `SELECT COUNT(*), SUM(l_extendedprice)
+FROM lineitem
+WHERE l_quantity > 25 AND l_discount >= 0.05 AND l_shipmode = 'AIR';`,
+	},
+	{
+		Name:        "core_group_few",
+		Category:    benchCatCore,
+		Description: "Full scan of orders (1.5M rows at sf 1) GROUP BY o_orderstatus, 3 groups: grouping cost without result volume",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan."},
+		SQL: `SELECT o_orderstatus, COUNT(*), SUM(o_totalprice)
+FROM orders
+GROUP BY o_orderstatus;`,
+	},
+	{
+		Name:        "core_group_many",
+		Category:    benchCatCore,
+		Description: "Full scan of orders GROUP BY o_custkey, ~100k groups: per-fragment group tables, API-side partial merge, 100k-row result",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan."},
+		SQL: `SELECT o_custkey, COUNT(*), SUM(o_totalprice), MAX(o_orderdate)
+FROM orders
+GROUP BY o_custkey;`,
 	},
 
 	// ---------------------------------------------------------------
@@ -740,6 +880,9 @@ func (s *Shell) listRonSQLBenchQueries() {
 	fmt.Println("  TPC-H rewritten with CTEs:")
 	printBenchQueryCategory(benchCatTPCHCte, false)
 	fmt.Println()
+	fmt.Println("  Engine primitives (one access path or execution stage per entry, tpch):")
+	printBenchQueryCategory(benchCatCore, false)
+	fmt.Println()
 	printFSHWCategory(false)
 	fmt.Println()
 	fmt.Println("    all                  Run every RonSQL-capable query sequentially (fs_hw only when fs_bench is loaded)")
@@ -767,6 +910,9 @@ func (s *Shell) listSQLBenchQueries() {
 	fmt.Println()
 	fmt.Println("  TPC-H official formulations:")
 	printBenchQueryCategory(benchCatTPCHOfficial, true)
+	fmt.Println()
+	fmt.Println("  Engine primitives (identical SQL to .bench_ronsql core_*):")
+	printBenchQueryCategory(benchCatCore, true)
 	fmt.Println()
 	printFSHWCategory(true)
 	fmt.Println()
@@ -846,6 +992,43 @@ func applyRonSQLPrefix(q *RonSQLBenchQuery, sql string) string {
 		return sql
 	}
 	return q.RonSQLPrefix + " " + sql
+}
+
+// tpchOrderKeyLegend documents the placeholders of tpchOrderKeyResolver.
+const tpchOrderKeyLegend = "Placeholders per request: {KEY} a random existing o_orderkey (multiples of 4 up to MAX(o_orderkey), KeySQL); " +
+	"{KEYS:n} n distinct existing o_orderkeys"
+
+var tpchOrderKeyPlaceholder = regexp.MustCompile(`\{KEY\}|\{KEYS:[0-9]+\}`)
+
+// tpchOrderKeyResolver renders {KEY} as a random existing o_orderkey and
+// {KEYS:n} as n distinct existing o_orderkeys.  .load_tpch writes sparse
+// order keys (multiples of 4, generateOrdersRows in tpch.go), so the plain
+// {KEY} draw in [1, maxKey] would miss three requests in four; maxKey is
+// MAX(o_orderkey) from KeySQL.
+func tpchOrderKeyResolver(sql string, rng *rand.Rand, maxKey int) string {
+	orders := maxKey / 4
+	if orders < 1 {
+		orders = 1
+	}
+	return tpchOrderKeyPlaceholder.ReplaceAllStringFunc(sql, func(m string) string {
+		if m == "{KEY}" {
+			return strconv.Itoa(4 * (rng.Intn(orders) + 1))
+		}
+		n, _ := strconv.Atoi(m[len("{KEYS:") : len(m)-1])
+		if n > orders {
+			n = orders
+		}
+		seen := make(map[int]bool, n)
+		keys := make([]string, 0, n)
+		for len(keys) < n {
+			k := rng.Intn(orders) + 1
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, strconv.Itoa(4*k))
+			}
+		}
+		return strings.Join(keys, ", ")
+	})
 }
 
 // countRonSQLResultRows counts data rows in a TEXT (header + TSV) response.
@@ -1138,7 +1321,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 		fmt.Println(strings.TrimSpace(string(data)))
 	}
 	fmt.Println()
-	if len(q.PlanPins) > 0 || q.Category == benchCatFSHW {
+	if len(q.PlanPins) > 0 || q.Category == benchCatFSHW || q.Category == benchCatCore {
 		s.checkBenchPlanPins(clients[0], q, warmupReq.Query)
 	}
 

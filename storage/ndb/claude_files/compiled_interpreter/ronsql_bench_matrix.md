@@ -30,6 +30,20 @@ production twin (`fs_hw_X_twin`); `results.json` carries
 `client_overhead_ms` (latency − execute − prepare) per RonSQL case.
 See `storage/ndb/claude_files/fs_ronsql/benchmarks.md`.
 
+Engine primitives (RONDB-1121 M3.0): `--queries core` selects the
+`core_*` family — one access path or execution stage per entry over
+TPC-H (PK lookup, IN lists on the PK and on a secondary index, index
+range, pass-through drain, AVG, full scans with and without a filter,
+few and many groups), each with plan pins so the case log carries the
+EXPLAIN.  `--queries all --load both` runs every category in one
+cluster; `mysql-test/suite/ronsqlcrunch/census.cnf` (through
+`--cpubind`, which is a plain defaults-extra-file) raises `DataMemory`
+so both data sets fit at sf 1.  `ronsql_bench_triage.py <out>
+[--baseline <earlier out>]` turns `results.json` into the ranked
+needs-work list (latency and throughput classes against the MySQL
+server, phase attribution, OFF/ON, plan-pin warnings, the 15 % / 25 %
+regression rule).  See `storage/ndb/claude_files/fs_ronsql/m3_plan.md`.
+
 ```sh
 # smoke run: 1 thread, ~2 s per case, sf 0.1, all queries, all engines, OFF then ON
 python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build --quick
@@ -46,7 +60,7 @@ Useful switches:
 
 | Switch | Effect |
 |---|---|
-| `--queries fs` / `offline_fs` / `tpch_cte` / `tpch_official` / `a,b,c` | subset of the registry (`.bench_ronsql list`, `.bench_sql list`) |
+| `--queries core` / `fs` / `offline_fs` / `tpch_cte` / `tpch_official` / `fs_hw` / `a,b,c` | subset of the registry (`.bench_ronsql list`, `.bench_sql list`); `all` includes `fs_hw`, so it needs `--load both` |
 | `--engines ronsql,mysqld,mysqld_nopush` | `mysqld` = aggregation pushdown ON (`ndb_pushdown_aggregate`, `ndb_join_pushdown_aggregate[_outer_join]` set GLOBAL), `mysqld_nopush` = all three OFF (mysqld does the aggregation itself; the data nodes only scan) |
 | `--compiler off,on` | compiler arms, in order |
 | `--repeat N` | run every case N times, interleaved; the report shows the median run per case (use 3+ on a noisy machine) |

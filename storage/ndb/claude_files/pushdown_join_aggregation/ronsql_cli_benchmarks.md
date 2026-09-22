@@ -19,6 +19,13 @@ by the **MySQL server** over the same tables. Three comparisons matter:
 3. `.bench_ronsql tpch_qN` vs `.bench_sql tpch_qN` — RonSQL's best shape vs
    MySQL's official shape: the end-user view.
 
+A fifth family, `core_*` (RONDB-1121 M3.0, `fs_ronsql/m3_plan.md`), isolates
+the engine primitives the shapes above are built from — PK lookup, IN lists
+on the PK and on a secondary index, ordered-index range, pass-through drain,
+AVG, full scans with and without a row filter, few and many groups — one
+access path per entry with plan pins; and `fs_hw_*` (`fs_ronsql/benchmarks.md`)
+are the Hopsworks serving shapes over the `fs_bench` data set.
+
 ## Implementation
 
 | File | What |

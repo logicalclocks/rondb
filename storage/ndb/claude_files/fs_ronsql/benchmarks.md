@@ -3,7 +3,10 @@
 **Status: E5 code written 2026-09-10 (`phase_e5.md`): the `fs_hw`
 registry is generated from the emitter, `.bench_ronsql fs_hw` /
 `.bench_sql fs_hw` and `ronsql_bench_matrix.py --queries fs_hw --load fs`
-run it; the results tables in §8 are empty until the first run.** Builds on the rondb-cli benchmark
+run it; the results tables in §8 are empty until the first run.
+Runs 1–3 (2026-09-11, §8) predate M1 / M2 / RONDB-1120; the re-measurement
+of everything, plus the `core` engine-primitive category and the triage
+script, is the M3.0 census in `m3_plan.md` (run 4).** Builds on the rondb-cli benchmark
 registry (`tools/rondb-cli/internal/shell/ronsql_bench.go`), the
 `ronsqlcrunch` cluster (`mysql-test/suite/ronsqlcrunch/t/setup.test`),
 and the matrix driver
