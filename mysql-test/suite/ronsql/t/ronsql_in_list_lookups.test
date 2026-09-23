@@ -20,6 +20,10 @@ call mtr.add_suppression("Participant timeout");
 
 --disable_query_log
 --disable_warnings
+# RonSQL works in UTC and ronsql_compare.inc runs the mysql client in
+# UTC, but mtr's own session is not: insert the TIMESTAMP keys in UTC so
+# both engines see the literals below (see ronsql_timestamp.test).
+SET time_zone = "+00:00";
 CREATE TABLE t_pk1 (
   id INT NOT NULL,
   v INT NOT NULL,

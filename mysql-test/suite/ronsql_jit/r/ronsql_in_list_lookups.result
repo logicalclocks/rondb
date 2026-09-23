@@ -173,7 +173,7 @@ Number of output lines, including header: 5
 == Query ==
 SELECT ts, v FROM t_ts WHERE ts IN ('2026-01-03 00:00:00', '2026-01-01 00:00:00', '2026-02-01 00:00:00');
 
-Number of output lines, including header: 0
+Number of output lines, including header: 3
 
 == Diff ==
 ==========
