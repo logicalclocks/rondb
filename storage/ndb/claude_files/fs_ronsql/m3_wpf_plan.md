@@ -7,11 +7,13 @@ not an option.** The engine work of M3 starts here; F27 (the node
 failure after query-memory exhaustion) is investigated in parallel
 (`m3_experiments.md` X4).
 
-**Status: F1a done 2026-09-23 — `RonSQLPreparer.{hpp,cpp}`, test
-`ronsql_in_list_lookups` + JIT mirror green (the user's run; JIT
-fallback delta 0). F1b (aggregation on PK reads) is a kernel + API
-package awaiting the user's decision. F2 next. Each phase is one
-reviewed diff; the user builds and tests.**
+**Status: F1a, F2 (incl. the DBLQH fix for multi-range scans with
+pushdown aggregation) and F1b (aggregation on primary-key reads, kernel
++ API + RonSQL) done 2026-09-23 — tests green in the user's run. Every
+RonSQL query requires all data nodes >= 26.10.0. Open: the JIT mirror of
+`ronsql_in_list_ranges` recorded a fallback delta of 96 (the lookup
+mirror 0) — attribute it (residual scan filters are the likely source);
+F3 (SPJ roots) next, then the census rerun for the §0 targets.**
 
 ## 0. Contract and targets
 
@@ -325,7 +327,68 @@ pass-through ORDER BY keeps the scan path in this cut (the scan arm
 owns the client-side sort). EXPLAIN: `Execute as N primary key lookups
 (IN list on \`col\`).`
 
-### F1b — aggregation on primary-key reads (kernel + API; decision pending)
+### F1b — aggregation on primary-key reads (kernel + API) — written 2026-09-23
+
+As built (design from the code-path research of 2026-09-23):
+
+- **Protocol.** A committed interpreted primary-key read carries the
+  finalized `NdbAggregator` program after its five interpreted sections
+  (the scan layout) and an aggregation-read flag: `TcKeyReq` attrLen
+  bit 16 (long TCKEYREQ only; `getAggReadFlag`/`setAggReadFlag`),
+  forwarded by DBTC (`CacheRecord::m_agg_read`, `sendlqhkeyreq`) as
+  `LqhKeyReq` attrLen bit 15 (`SI_AGG_READ_SHIFT`; the dead short-request
+  `SI_ATTR_LEN` field narrowed to 15 bits). Printers show `agg_read`.
+- **DBLQH** (`execLQHKEYREQ`): `TcConnectionrec::m_agg_read` from the
+  flag on every key request; refused with 1868 (`ZAGG_WRONG_OPERATION`)
+  unless ZREAD, dirty, interpreted, and not join aggregation.
+- **DBTUP**: `KeyReqStruct::m_agg_read`; `handleReadReq` refuses a
+  non-interpreted aggregation read; the lookup arm of
+  `interpreterStartLab` calls `handleAggReadRow` after the residual
+  filter accepted the row: locate the program from the raw section
+  lengths, validate magic / bounds (1868), build a one-row interpreter
+  with the new non-fatal `PushdownInterpreterFactory::CreateAggForRead`
+  (1870 on failure; JIT only for reusable programs, a cache hit), reset
+  `read_length`, `ProcessRec` (its error is the read's error),
+  `PrepareAggResIfNeeded(force)`, bounded teardown (at most one group),
+  and `sendReadAttrinfo` of the record — one TRANSID_AI per accepted row,
+  routed like any read reply. A missing / filtered / expired row never
+  gets there (626 TCKEYREF).
+- **NDB API**: `OperationOptions::OO_AGGREGATION` (0x1000000) with
+  `aggregationCode`, appended last; an options struct of the previous
+  size is still accepted (copied, without the option). Allowed on
+  `ReadRequest` + `LM_CommittedRead` through the primary key only, with
+  no other values read (read-mask columns, blobs, OO_GETVALUE,
+  OO_GET_FINAL_VALUE, OO_LOCKHANDLE → 4574), a finalized program (4560)
+  for the same table (241), and every data node >= 26.10.0
+  (`ndbd_support_pk_read_aggregation` → 4575, like 4562 for scan
+  aggregation; old data nodes would ignore the flag). The operation gets
+  an AGG RecAttr (`getAggregationResult()`); the builder sets the
+  interpreted flag and the 5-word header even without a filter, skips
+  the AGG RecAttr in the read list and appends the program; short
+  requests are refused; `NdbReceiver::unpackRow` hands an operation's
+  record to that RecAttr (marker word kept for `ProcessRes`).
+- **RonSQL**: `detect_pk_lookup` admits an aggregate when an IN list
+  binds a PK column (a single-key aggregate stays a pruned index scan, so
+  no existing plan changes); `execute_pk_lookup_aggregate` issues N reads
+  with OO_AGGREGATION (+ OO_INTERPRETED for residuals) sharing one
+  finalized reusable aggregator, `ProcessRes` per successful read,
+  NoDataFound skipped, `PrepareResults`, printed by the ResultPrinter (so
+  GROUP BY / ORDER BY / LIMIT behave as on the scan path). A cross-key
+  64-bit SUM overflow (`ProcessRes` → -1860) and every other read error
+  go through `throw_key_read_error`, which classifies the read's own
+  error (the transaction error may be another read's 626) and logs it as
+  the exception investigation does. EXPLAIN: `Execute as N aggregating
+  primary key lookups (IN list on \`col\`: T values, N distinct).`
+- **Tests**: `ronsql_in_list_agg_lookups` (+ `ronsql_jit` strict mirror):
+  scalar / GROUP BY key / GROUP BY non-key / residual filter / all
+  missing / string MIN-MAX + AVG / composite PK / hash-only PK / VARCHAR
+  PK / ORDER BY alias + LIMIT / single key stays a scan / 1860 overflow
+  across keys (CLI and HTTP) and recovery. `ronsql_in_list_ranges`:
+  its two complete-PK aggregate cases now pin the aggregating lookups;
+  its 501-range case moved to a (id, sub) key to stay a PK-prefix
+  multi-range scan.
+
+Original sketch:
 
 The package sketched in §2.3. Scope: `TcKeyReq` / `LqhKeyReq` flag,
 DBTC pass-through, DBLQH/DBTUP running the aggregation program on the
@@ -338,6 +401,45 @@ aggregates) scale with N instead of with the fragment count; measured
 against the F2 multi-range scan on `core_in_pk100` / `core_in_pk1000`.
 
 ### F2 — multi-range index scans for prefix and secondary-index lists (single table)
+
+**Kernel finding (2026-09-23).** A multi-range scan with pushdown
+aggregation did not work in the data nodes. DBLQH runs a multi-range
+scan as one DBTUX scan per range (`accScanCloseConfLab` restarts the
+next range while `primKeyLen` holds unread bounds). With aggregation on,
+the end of every range reached the aggregation flush
+(`Dbtup::SendAggResToAPI` from the `fragId == RNIL` branch of the scan
+loop), so a scalar aggregate would have been emitted once per range —
+its accumulators are not reset by the flush — and then the next range's
+start failed the pushdown state-machine `ndbrequire(!m_has_pushdown ||
+scanState == SCAN_FREE)` in `continueAfterReceivingAllAiLab`: a data
+node failure on the second range. RonSQL had carried `SF_MultiRange` on
+single-range aggregate scans until RONDB-983 without ever sending two
+ranges; the MySQL handler's pushed aggregation issues one scan per range
+(run 3's "313 scan batches per request"). The fix (two DBLQH hunks,
+`DblqhMain.cpp`): flush only when no further range follows (the exact
+negation of `accScanCloseConfLab`'s "another range" test), and let the
+next range of a pushdown scan start from `WAIT_CLOSE_SCAN`. The
+aggregation interpreter is created lazily on the first row and lives on
+the scan record, so it carries across ranges; the GROUP BY mid-scan
+batch flush drains the whole group map, so partial flushes inside a
+range are unaffected. No per-feature version gate: RonSQL's
+single-table IN-list ranges and this fix ship together, and no stable
+release contains a RonSQL that sends a multi-range aggregate scan. Instead
+(the user, 2026-09-23) every RonSQL query requires all data nodes to run
+26.10.0 or later: `NDBD_RONSQL_MIN_VERSION` / `ndbd_support_ronsql`
+(`ndb_version.h.in`), checked in the `RonSQLPreparer` constructor right
+after `configure()` against `Ndb::getMinDbNodeVersion()`; below it (or
+with no data node connected) the query is refused with a 503-class
+error (`RonSQLErrorClass::RESOURCE`) — during a rolling upgrade to 26.10
+RonSQL is unavailable until the last data node is upgraded.
+
+Written 2026-09-23: `RonSQLPreparer.{hpp,cpp}` (`ScanConfig` IN fields,
+`dedup_in_values` shared with F1a, the candidate builder, the ORDER BY
+exclusion, the per-range emit, EXPLAIN `Ranges: N (IN list on \`col\`: T
+values, N distinct; SF_MultiRange).`), `DblqhMain.cpp`,
+tests `ronsql_in_list_ranges` + JIT mirror (strict), `fsq/cases/bench.go`
+pins + golden (`fs_hw_agg_batch*`, `strkey_batch100` → index scan with
+`SF_MultiRange`).
 
 Files: `RonSQLPreparer.hpp` (`ScanConfig` fields), `RonSQLPreparer.cpp`
 (candidate builder, range set, the single-table emit, EXPLAIN).

@@ -26,24 +26,24 @@ SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`am
 -- plan pins: Execute as index scan. | Index: `PRIMARY`
 
 === fs_hw_agg_batch10 [S3] ronsql+mysql rows=<= 10
--- batch aggregate, IN list of 10 + GROUP BY (F12: table scan)
+-- batch aggregate, IN list of 10 + GROUP BY (WP-F F2: one index range per key)
 SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN ({KEYS:10}) GROUP BY `customer_id`;
--- plan pins: Execute as table scan.
+-- plan pins: Execute as index scan. | Index: `PRIMARY` | SF_MultiRange
 
 === fs_hw_agg_batch100 [S3] ronsql+mysql rows=<= 100
--- batch aggregate, IN list of 100 + GROUP BY (F12: table scan)
+-- batch aggregate, IN list of 100 + GROUP BY (WP-F F2: one index range per key)
 SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN ({KEYS:100}) GROUP BY `customer_id`;
--- plan pins: Execute as table scan.
+-- plan pins: Execute as index scan. | Index: `PRIMARY` | SF_MultiRange
 
 === fs_hw_agg_batch1000 [S3] ronsql+mysql rows=<= 1000
--- batch aggregate, IN list of 1000 + GROUP BY (F12: table scan)
+-- batch aggregate, IN list of 1000 + GROUP BY (WP-F F2: one index range per key)
 SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN ({KEYS:1000}) GROUP BY `customer_id`;
--- plan pins: Execute as table scan.
+-- plan pins: Execute as index scan. | Index: `PRIMARY` | SF_MultiRange
 
 === fs_hw_agg_batch100_window [S3+S2] ronsql+mysql rows=<= 100
--- batch of 100 with a 30-day window (F12: table scan)
+-- batch of 100 with a 30-day window (WP-F F2: one index range per key)
 SELECT `customer_id`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE `customer_id` IN ({KEYS:100}) AND `event_time` >= {NOW-30d} GROUP BY `customer_id`;
--- plan pins: Execute as table scan.
+-- plan pins: Execute as index scan. | Index: `PRIMARY` | SF_MultiRange
 
 === fs_hw_collect5 [S6b] ronsql+mysql rows=<= 5
 -- collect the newest 5 rows, direct form
@@ -120,9 +120,9 @@ SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`am
 -- plan pins: Execute as index scan. | Index: `PRIMARY`
 
 === fs_hw_strkey_batch100 [S10+S3] ronsql+mysql rows=<= 100
--- batch of 100 string keys (F12: table scan; F10 crashes the pushed mysqld arm)
+-- batch of 100 string keys (WP-F F2: one index range per key; F10 crashes the pushed mysqld arm)
 SELECT `customer_key`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` IN ({SKEYS:100}) GROUP BY `customer_key`;
--- plan pins: Execute as table scan.
+-- plan pins: Execute as index scan. | Index: `PRIMARY` | SF_MultiRange
 
 === fs_hw_composite_point [S9] ronsql+mysql rows=1
 -- composite entity key (account, currency) with a 90-day window

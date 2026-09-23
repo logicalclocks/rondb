@@ -89,6 +89,7 @@ bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
   if (LqhKeyReq::getTTLIgnoreFlag(reqInfo)) fprintf(output, "ttl_ignore ");
   if (LqhKeyReq::getTTLOnlyExpiredFlag(reqInfo)) fprintf(output, "ttl_only_expire ");
   if (LqhKeyReq::getJoinAggFlag(attrLen)) fprintf(output, "join_agg ");
+  if (LqhKeyReq::getAggReadFlag(attrLen)) fprintf(output, "agg_read ");
 
   fprintf(output, "ScanInfo/noFiredTriggers: H\'%x\n", sig->scanInfo);
 

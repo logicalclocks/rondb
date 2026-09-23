@@ -112,6 +112,11 @@ class LqhKeyReq {
   static void setReorgFlag(UintR &scanData, Uint32 val);
   static Uint8 getJoinAggFlag(const UintR &scanData);
   static void setJoinAggFlag(UintR &scanData, UintR val);
+  /* Aggregation on a primary-key read (RONDB-1124 WP-F F1b): run the
+   * aggregation program that follows the interpreted sections on the
+   * read tuple and return its result record (committed read only). */
+  static UintR getAggReadFlag(const UintR &scanData);
+  static void setAggReadFlag(UintR &scanData, UintR val);
   static Uint8 getOuterJoinAggFlag(const UintR &scanData);
   static void setOuterJoinAggFlag(UintR &scanData, UintR val);
   /* RONDB-1120 P3: when set, the single JoinAgg variableData word is
@@ -298,8 +303,12 @@ class LqhKeyReq {
   };
 
   enum ScanInfo {
+    /* Attrinfo length of a short LQHKEYREQ (no longer sent: DBTC writes
+     * 0, DBLQH reads the AttrInfo section length).  Bit 15 is taken by
+     * the aggregation-read flag, so the legacy field keeps bits 0-14. */
     SI_ATTR_LEN_SHIFT = 0,
-    SI_ATTR_LEN_MASK = 65535,
+    SI_ATTR_LEN_MASK = 32767,
+    SI_AGG_READ_SHIFT = 15,
     SI_STORED_PROC_SHIFT = 16,
     SI_DISTR_KEY_SHIFT = 17,
     SI_DISTR_KEY_MASK = 255,
@@ -500,6 +509,15 @@ inline Uint8 LqhKeyReq::getJoinAggFlag(const UintR &scanData) {
 inline void LqhKeyReq::setJoinAggFlag(UintR &scanData, UintR val) {
   ASSERT_BOOL(val, "LqhKeyReq::setJoinAggFlag");
   scanData |= (val << SI_JOIN_AGG_SHIFT);
+}
+
+inline UintR LqhKeyReq::getAggReadFlag(const UintR &scanData) {
+  return (scanData >> SI_AGG_READ_SHIFT) & 1;
+}
+
+inline void LqhKeyReq::setAggReadFlag(UintR &scanData, UintR val) {
+  ASSERT_BOOL(val, "LqhKeyReq::setAggReadFlag");
+  scanData |= (val << SI_AGG_READ_SHIFT);
 }
 
 inline Uint8 LqhKeyReq::getOuterJoinAggFlag(const UintR &scanData) {

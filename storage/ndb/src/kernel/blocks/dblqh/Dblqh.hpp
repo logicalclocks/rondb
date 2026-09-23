@@ -544,6 +544,10 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 #define ZATTRINFO_TOO_LARGE                1262
+/* Aggregation-read flag on an operation that is not a committed
+ * interpreted read (RONDB-1124 WP-F F1b).  Same code as DBTUP's
+ * ZAGG_WRONG_OPERATION, which is only visible inside DBTUP. */
+#define ZAGG_READ_WRONG_OPERATION          1868
 #define ZCTE_LOOKUP_GROUP_NOT_FOUND        1263
 #define ZCTE_LOOKUP_STATE_NOT_READY        1264
 #define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
@@ -3159,6 +3163,13 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_query_thread;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     Uint8 m_outer_join_agg;         // Outer join aggregation flag (handle key-not-found)
+    /*
+     * Aggregation on a primary-key read (RONDB-1124 WP-F F1b): set from
+     * the LQHKEYREQ attrLen word for a committed interpreted read; DBTUP
+     * runs the aggregation program that follows the interpreted sections
+     * on the read tuple and returns its result record.
+     */
+    Uint8 m_agg_read = 0;
     enum dealloc_states {
       /*
        * Example set of dealloc ops:

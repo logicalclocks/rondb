@@ -120,6 +120,18 @@ class PushdownInterpreterFactory {
   static PushdownCreateResult Create(const Uint32* prog, Uint32 prog_len,
                                      Int64 table_id, Int64 frag_id,
                                      Uint32 thread_id);
+  /*
+   * Aggregation on a primary-key read (RONDB-1124 WP-F F1b): an
+   * aggregation interpreter for one looked-up tuple.  Unlike Create, a
+   * program that is not an aggregation, fails Init / OptimizeProgram, or
+   * an allocation failure returns nullptr (the read fails with an error)
+   * instead of stopping the node; and the program is JIT-compiled only
+   * when it is marked reusable — a cache hit after the first compile —
+   * since a one-row interpreter has nothing to amortize a compile over.
+   */
+  static AggInterpreter* CreateAggForRead(const Uint32* prog, Uint32 prog_len,
+                                          Int64 table_id, Int64 frag_id,
+                                          Uint32 thread_id);
 };
 
 #endif  // PUSHDOWNINTERPRETER_H_

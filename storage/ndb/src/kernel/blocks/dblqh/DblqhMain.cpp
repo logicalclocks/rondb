@@ -9933,6 +9933,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->m_query_thread = 0;
   regTcPtr->m_join_agg_state_key = RNIL;
   regTcPtr->m_outer_join_agg = 0;
+  regTcPtr->m_agg_read = LqhKeyReq::getAggReadFlag(attrLenFlags);
   regTcPtr->m_dealloc_data.m_dealloc_ref_count = RNIL;
   {
     regTcPtr->operation = (Operation_t)op == ZREAD_EX ? ZREAD : (Operation_t)op;
@@ -10146,6 +10147,24 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
   regTcPtr->gci_hi = gci_flag ? sig2 : sig3;
   regTcPtr->gci_lo = gci_flag ? ~Uint32(0) : 0;
   nextPos += gci_flag;
+
+  if (unlikely(regTcPtr->m_agg_read)) {
+    /*
+     * Aggregation on a primary-key read (RONDB-1124 WP-F F1b) is defined
+     * for a committed (dirty) interpreted read only: the result record
+     * replaces the read reply, which only a committed read sends
+     * straight to the API without an LQHKEYCONF to account for, and the
+     * program rides after the interpreted sections.  It cannot be
+     * combined with join aggregation, which feeds shared state instead.
+     */
+    if (regTcPtr->operation != ZREAD || !regTcPtr->dirtyOp ||
+        !regTcPtr->opExec || LqhKeyReq::getJoinAggFlag(attrLenFlags)) {
+      jam();
+      earlyKeyReqAbort_simple(signal, lqhKeyReq, ZAGG_READ_WRONG_OPERATION,
+                              __LINE__, tcConnectptr);
+      return;
+    }
+  }
 
   if (LqhKeyReq::getJoinAggFlag(attrLenFlags)) {
     jam();
@@ -25280,9 +25299,18 @@ void Dblqh::continueAfterReceivingAllAiLab(
   /*
    * PA related
    * statemach
+   * SCAN_FREE: the first (or only) range.  WAIT_CLOSE_SCAN: the next
+   * range of a multi-range aggregation scan, started by
+   * accScanCloseConfLab after the previous DBTUX range scan closed;
+   * primKeyLen still holds the unread ranges and the aggregation state
+   * carries over (RONDB-1124 WP-F F2).  Vector search keeps the
+   * single-range rule.
    */
   ndbrequire(!scanPtr->m_has_pushdown ||
-             scanPtr->scanState == ScanRecord::SCAN_FREE);
+             scanPtr->scanState == ScanRecord::SCAN_FREE ||
+             (scanPtr->scanState == ScanRecord::WAIT_CLOSE_SCAN &&
+              regTcPtr->primKeyLen > 0 &&
+              scanPtr->m_vs_interpreter == nullptr));
   scanPtr->scanState = ScanRecord::WAIT_ACC_SCAN;
   AccScanReq *req = (AccScanReq *)&signal->theData[0];
 
@@ -26066,9 +26094,24 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       jamDebug();
       /*
        * Filter out the pushdown vector search case
+       *
+       * Multi-range (MRR) aggregation scan (RONDB-1124 WP-F F2): DBTUX
+       * ends every range with this last NEXT_SCANCONF, and
+       * accScanCloseConfLab starts the next range while primKeyLen
+       * still holds unread range bounds.  The aggregation state
+       * belongs to the whole scan, so it is carried into the next range
+       * and flushed once, after the last one — flushing per range would
+       * emit a scalar aggregate
+       * once per range (its accumulators are not reset by the flush)
+       * and could not restart the scan afterwards.  The condition
+       * below is exactly the negation of accScanCloseConfLab's
+       * "another range to scan" test.
        */
+      const bool more_ranges =
+          (tcConnectptr.p->primKeyLen > 0 &&
+           scanPtr->scanCompletedStatus != ZTRUE);
       // m_agg_interpreter != nullptr implies m_has_pushdown == true
-      if (scanPtr->m_agg_interpreter != nullptr) {
+      if (scanPtr->m_agg_interpreter != nullptr && !more_ranges) {
         if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
           jam();
           sendScanFragConf(signal, ZFALSE, tcConnectptr.p);

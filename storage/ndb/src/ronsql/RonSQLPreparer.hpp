@@ -298,6 +298,18 @@ private:
     // pass-through path (index == NULL candidates never qualify).
     bool index_order = false;
     bool index_order_desc = false;
+    // WP-F F2 (m3_wpf_plan.md §2.4): an IN-shaped conjunct consumed as
+    // an equality bound with several values — one index range per
+    // distinct value (SF_MultiRange), every other bound repeated in
+    // each range.  in_cond_idx is the conjunct's index in the caller's
+    // conjunct list (-1 = no IN list), in_col_idx its column (m_columns
+    // index), in_values the literals in list order after
+    // de-duplication (in_count of them; in_total before).
+    int in_cond_idx = -1;
+    Uint32 in_col_idx = 0;
+    struct ConditionalExpression** in_values = NULL;
+    Uint32 in_count = 0;
+    Uint32 in_total = 0;
   };
   enum class CteKeyCoverage {
     ExactOrdered,
@@ -567,11 +579,28 @@ private:
   // emit-supported types, falling back to the scan-config path
   // (always correct) when the program cannot be carried.
   bool detect_pk_lookup();
+  // Every RonSQL query requires all data nodes to be 26.10.0 or later
+  // (ndbd_support_ronsql); throws a 503-class error otherwise.
+  void check_data_node_version();
+  // WP-F F1b: an aggregate over an IN list on the primary key as N
+  // committed key reads carrying the aggregation program (OO_AGGREGATION),
+  // merged into `aggregator` like per-fragment scan partials.
+  void execute_pk_lookup_aggregate(NdbAggregator* aggregator);
+  // WP-F: raise one key read's own error (the transaction error may
+  // belong to another read of the batch, e.g. 626 for a missing key).
+  [[noreturn]] void throw_key_read_error(const NdbError& op_err,
+                                         const char* what);
   // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
   // on one column); see the definition for the contract.
   bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
                       struct ConditionalExpression** out, Uint32 cap,
                       Uint32* count);
+  // WP-F: de-duplicate IN-list literals by the column's comparison
+  // (type + charset), keeping list order; false when a literal cannot
+  // be encoded for the column or the type has no comparator.
+  bool dedup_in_values(const NdbDictionary::Column* col,
+                       struct ConditionalExpression** values, Uint32 total,
+                       Uint32* count);
   // `defer_force_check` (Phase 4b): skip build_scan_config_candidates'
   // FORCE INDEX satisfiability throws so the ORDER BY index pass can
   // still qualify the forced index; plan_index_and_filter then runs
@@ -664,7 +693,8 @@ private:
       const TableRef* hint,
       bool defer_force_check = false,
       const NdbDictionary::Table* table = NULL,
-      bool allow_nullable_high_bound = false);
+      bool allow_nullable_high_bound = false,
+      bool allow_in_ranges = false);
   // True if `index` is named in the table ref's index-hint list (case
   // insensitive).  Used to apply FORCE/USE/IGNORE INDEX.
   static bool index_named_in_hint(const NdbDictionary::Index* index,

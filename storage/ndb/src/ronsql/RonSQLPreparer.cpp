@@ -52,6 +52,7 @@
 #include "decimal.h"
 #include <decimal_utils.hpp>
 #include <kernel/Interpreter.hpp>
+#include <ndb_version.h>
 #include <kernel/signaldata/QueryTree.hpp>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -170,6 +171,11 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   try {
     PERF_TS(t_prep_start);
     configure();
+    // Before any dictionary or data access.  EXPLAIN without a cluster
+    // connection (ndb == NULL) has nothing to check.
+    if (m_conf.ndb != NULL) {
+      check_data_node_version();
+    }
     PERF_TS(t_parse_start);
     STAT_TS(m_conf.phase_stats, s_parse_start);
     parse();
@@ -3452,13 +3458,19 @@ RonSQLPreparer::generate_scan_config_candidates(bool defer_force_check)
   // allow_nullable_high_bound = true: open_single_table_scan_op appends
   // the NULL-excluding low bound (setBound BoundLT NULL) for nullable
   // high-only columns, so the plan keeps the index.
+  //
+  // allow_in_ranges (WP-F F2): an IN list on an index column becomes one
+  // range per value, for pass-through and pushdown-aggregation scans
+  // alike (DBLQH carries the aggregation state across the ranges of a
+  // multi-range scan).
   build_scan_config_candidates(m_indexes,
                                m_toplevel_conditions,
                                m_scan_config_candidates,
                                m_context.ast_root.root_table,
                                defer_force_check,
                                m_main_scope.table,
-                               /*allow_nullable_high_bound=*/true);
+                               /*allow_nullable_high_bound=*/true,
+                               /*allow_in_ranges=*/true);
 }
 
 // Interpreted programs on lookup operations ride inside every
@@ -3475,6 +3487,10 @@ static const Uint32 LOOKUP_FILTER_MAX_WORDS = 64;
 // scan's cap as well (NdbIndexScanOperation::MaxRangeNo), so both
 // mechanisms fall back at the same size.
 static const Uint32 IN_LOOKUPS_MAX = 4095;
+// WP-F F2 (m3_wpf_plan.md §2.4): the largest IN list served as a
+// multi-range index scan, one range per distinct value; range numbers
+// run 0 .. n-1 and must not exceed the protocol's MaxRangeNo.
+static const Uint32 IN_RANGES_MAX = NdbIndexScanOperation::MaxRangeNo;
 
 /*
  * WP-F (m3_wpf_plan.md §2.1): recognise an IN-shaped conjunct.  The
@@ -3552,14 +3568,114 @@ RonSQLPreparer::match_in_shape(struct ConditionalExpression* ce,
   return *count > 0;
 }
 
+/*
+ * WP-F: de-duplicate the literals of an IN list by the column's own
+ * comparison.  A duplicate key would be read (F1a) or scanned (F2) twice
+ * — printing its row twice, or counting it twice in an aggregate — and
+ * under a case-insensitive collation 'a' and 'A' are one key.  The
+ * literals are encoded exactly as the lookup key and the index bound
+ * encode them (encode_constant, the column's NdbRecord byte format) and
+ * compared with the NdbSqlUtil comparator for the column's type and
+ * charset — the pass-through sort's comparator — keeping the first
+ * occurrence of each key in list order.  values[0..*count) receives the
+ * survivors.  A literal the encoder rejects, or a type without a
+ * comparator, returns false and the caller leaves the conjunct a filter.
+ */
+bool
+RonSQLPreparer::dedup_in_values(const NdbDictionary::Column* col,
+                                ConditionalExpression** values,
+                                Uint32 total, Uint32* count)
+{
+  *count = 0;
+  if (col == NULL || total == 0) return false;
+  const NdbSqlUtil::Type& sql_type =
+      NdbSqlUtil::getType(static_cast<Uint32>(col->getType()));
+  if (sql_type.m_cmp == NULL) return false;
+  raw_value* enc = m_amalloc->alloc_exc<raw_value>(total);
+  try {
+    for (Uint32 v = 0; v < total; v++) {
+      enc[v] = encode_constant(values[v], col);
+    }
+  } catch (RonSQLPermanentError&) {
+    return false;
+  } catch (RonSQLMaybeStaleSchema&) {
+    return false;
+  } catch (RonSQLRetryableError&) {
+    return false;
+  }
+  const void* cs = col->getCharset();
+  std::vector<Uint32> order(total);
+  for (Uint32 v = 0; v < total; v++) order[v] = v;
+  std::stable_sort(order.begin(), order.end(),
+                   [&](Uint32 a, Uint32 b) {
+                     return (*sql_type.m_cmp)(cs, enc[a].val,
+                                              (unsigned)enc[a].len,
+                                              enc[b].val,
+                                              (unsigned)enc[b].len) < 0;
+                   });
+  bool* dup = m_amalloc->alloc_exc<bool>(total);
+  for (Uint32 v = 0; v < total; v++) dup[v] = false;
+  for (Uint32 v = 1; v < total; v++) {
+    Uint32 p = order[v - 1];
+    Uint32 q = order[v];
+    if ((*sql_type.m_cmp)(cs, enc[p].val, (unsigned)enc[p].len,
+                          enc[q].val, (unsigned)enc[q].len) == 0) {
+      dup[q] = true;  // stable sort: q is the later one in list order
+    }
+  }
+  Uint32 n = 0;
+  for (Uint32 v = 0; v < total; v++) {
+    if (!dup[v]) values[n++] = values[v];
+  }
+  *count = n;
+  return n > 0;
+}
+
+/*
+ * Every RonSQL query requires all data nodes to run RonDB 26.10.0 or
+ * later (ndbd_support_ronsql, ndb_version.h.in).  The Ndb object caches
+ * the lowest version any connected data node reports for the cluster
+ * (each data node reports the minimum over all data nodes it knows of),
+ * refreshed on every received signal; 0 means no data node is
+ * connected.  Both refusals are 503-class (RonSQLErrorClass::RESOURCE):
+ * the request is valid and succeeds once the cluster is reachable and
+ * upgraded — during a rolling upgrade to 26.10 RonSQL is unavailable
+ * until the last data node is upgraded.
+ */
+void
+RonSQLPreparer::check_data_node_version()
+{
+  const Uint32 v = m_conf.ndb->getMinDbNodeVersion();
+  if (v == 0) {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::RESOURCE,
+        "No data node is connected. RonSQL needs a running cluster whose "
+        "data nodes all run RonDB 26.10.0 or later.");
+  }
+  if (!ndbd_support_ronsql(v)) {
+    std::ostringstream msg;
+    msg << "RonSQL requires every data node to run RonDB "
+        << ((NDBD_RONSQL_MIN_VERSION >> 16) & 0xFF) << "."
+        << ((NDBD_RONSQL_MIN_VERSION >> 8) & 0xFF) << "."
+        << (NDBD_RONSQL_MIN_VERSION & 0xFF)
+        << " or later; the oldest data node runs "
+        << ((v >> 16) & 0xFF) << "." << ((v >> 8) & 0xFF) << "."
+        << (v & 0xFF)
+        << ". RonSQL queries are refused until all data nodes are "
+           "upgraded.";
+    throw RonSQLPermanentError(RonSQLErrorClass::RESOURCE, msg.str());
+  }
+}
+
 bool
 RonSQLPreparer::detect_pk_lookup()
 {
-  // Aggregate queries never take the lookup: single-table aggregation
-  // runs through NdbScanOperation + SO_AGGREGATION; a plain readTuple
-  // has no aggregator path (the single-table twin of the Phase 0
-  // lookup-root rule).
-  if (m_is_aggregate_query) return false;
+  // Aggregate queries take the lookup only with an IN list on a PK
+  // column (WP-F F1b): N committed reads that each carry the aggregation
+  // program (NdbOperation OO_AGGREGATION) and return one partial result,
+  // merged like per-fragment scan partials.  A single-key aggregate
+  // stays a fragment-pruned index scan (checked below, once the IN list
+  // is known).
   const NdbDictionary::Table* tab = m_main_scope.table;
   if (tab == NULL) return false;
   const int nkeys = tab->getNoOfPrimaryKeys();
@@ -3663,65 +3779,23 @@ RonSQLPreparer::detect_pk_lookup()
   for (int k = 0; k < nkeys; k++) {
     if (pk_const[k] == NULL) return false;  // partial PK cover
   }
+  if (m_is_aggregate_query && in_col < 0) return false;  // see above
   Uint32 in_count = 0;
   if (in_col >= 0) {
     // F1a keeps a pass-through ORDER BY on the scan path: the scan arm
-    // owns the client-side sort (m3_wpf_plan.md F1a).
-    if (m_context.ast_root.orderby_columns != NULL) return false;
-    /*
-     * De-duplicate the list by the column's own comparison: a duplicate
-     * key would read and print its row twice, and under a
-     * case-insensitive collation 'a' and 'A' are one key.  The literals
-     * are encoded exactly as the lookup arm encodes them
-     * (encode_constant, the column's NdbRecord byte format) and compared
-     * with the NdbSqlUtil comparator for the column's type and charset
-     * — the pass-through sort's comparator — keeping the first
-     * occurrence of each key in list order.  A literal the encoder
-     * rejects sends the whole WHERE to the scan path, like the residual
-     * trial build below.
-     */
+    // owns the client-side sort (m3_wpf_plan.md F1a).  An aggregate's
+    // ORDER BY is applied by the ResultPrinter on either path.
+    if (!m_is_aggregate_query &&
+        m_context.ast_root.orderby_columns != NULL) return false;
+    // De-duplicate by the column's own comparison (dedup_in_values); a
+    // literal the key encoder rejects sends the whole WHERE to the scan
+    // path, like the residual trial build below.
     const NdbDictionary::Column* in_pk_col =
         tab->getColumn(tab->getPrimaryKey(in_col));
     ndbrequire(in_pk_col != NULL);
-    const NdbSqlUtil::Type& sql_type =
-        NdbSqlUtil::getType(static_cast<Uint32>(in_pk_col->getType()));
-    if (sql_type.m_cmp == NULL) return false;
-    raw_value* enc = m_amalloc->alloc_exc<raw_value>(in_total);
-    try {
-      for (Uint32 v = 0; v < in_total; v++) {
-        enc[v] = encode_constant(in_values[v], in_pk_col);
-      }
-    } catch (RonSQLPermanentError&) {
-      return false;
-    } catch (RonSQLMaybeStaleSchema&) {
-      return false;
-    } catch (RonSQLRetryableError&) {
+    if (!dedup_in_values(in_pk_col, in_values, in_total, &in_count)) {
       return false;
     }
-    const void* cs = in_pk_col->getCharset();
-    std::vector<Uint32> order(in_total);
-    for (Uint32 v = 0; v < in_total; v++) order[v] = v;
-    std::stable_sort(order.begin(), order.end(),
-                     [&](Uint32 a, Uint32 b) {
-                       return (*sql_type.m_cmp)(cs, enc[a].val,
-                                                (unsigned)enc[a].len,
-                                                enc[b].val,
-                                                (unsigned)enc[b].len) < 0;
-                     });
-    bool* dup = m_amalloc->alloc_exc<bool>(in_total);
-    for (Uint32 v = 0; v < in_total; v++) dup[v] = false;
-    for (Uint32 v = 1; v < in_total; v++) {
-      Uint32 p = order[v - 1];
-      Uint32 q = order[v];
-      if ((*sql_type.m_cmp)(cs, enc[p].val, (unsigned)enc[p].len,
-                            enc[q].val, (unsigned)enc[q].len) == 0) {
-        dup[q] = true;  // stable sort: q is the later one in list order
-      }
-    }
-    for (Uint32 v = 0; v < in_total; v++) {
-      if (!dup[v]) in_values[in_count++] = in_values[v];
-    }
-    ndbrequire(in_count >= 1);
     pk_const[in_col] = in_values[0];
   }
   if (num_residual > 0) {
@@ -3781,7 +3855,8 @@ RonSQLPreparer::build_scan_config_candidates(
     const TableRef* hint,
     bool defer_force_check,
     const NdbDictionary::Table* table,
-    bool allow_nullable_high_bound)
+    bool allow_nullable_high_bound,
+    bool allow_in_ranges)
 {
   const Uint32 num_conds = toplevel_conditions.size();
   const TableRef::HintKind hint_kind =
@@ -3822,6 +3897,13 @@ RonSQLPreparer::build_scan_config_candidates(
       condition_handling_map[j] = -1;
     }
     int goodness = 0;
+    // WP-F F2: at most one IN-shaped conjunct per candidate becomes a
+    // multi-value equality bound; a second one stays a filter.
+    int in_cond_idx = -1;
+    Uint32 in_col_idx = 0;
+    ConditionalExpression** in_values = NULL;
+    Uint32 in_count = 0;
+    Uint32 in_total = 0;
     Uint32 col_count = index->getNoOfColumns();
     require_bug(col_count > 0, "Index appears to have no columns.");
     bool later_columns_blocked = false;
@@ -3843,6 +3925,58 @@ RonSQLPreparer::build_scan_config_candidates(
         ConditionalExpression* ce = toplevel_conditions[cond_idx];
         if (condition_handling_map[cond_idx] != -1) {
           // Already used as bound for an earlier index column
+          continue;
+        }
+        if (ce->op == T_OR) {
+          /*
+           * WP-F F2 (m3_wpf_plan.md §2.4): `col IN (v1 … vn)` on this
+           * index column is an equality bound with n values — one index
+           * range per distinct value, instead of a residual OR chain
+           * evaluated on every row of a full scan (F23).  Like an
+           * equality it leaves later index columns available (the
+           * windowed batch shape `k IN (…) AND ts >= X` bounds both).
+           * Only when the caller's emit path can issue several ranges
+           * (allow_in_ranges), once per candidate, and when every value
+           * encodes for the column; otherwise the conjunct stays a
+           * filter as before.
+           */
+          if (!allow_in_ranges || in_cond_idx >= 0 || table == NULL) {
+            continue;
+          }
+          Uint32 leaf_col = 0;
+          Uint32 n_leaves = 0;
+          if (!match_in_shape(ce, &leaf_col, NULL, 0, &n_leaves)) continue;
+          if (strcmp(column_name, m_columns[leaf_col].c_str()) != 0) {
+            // A bound-eligible conjunct on another column: same rule as
+            // the plain comparisons below.
+            later_columns_blocked = true;
+            continue;
+          }
+          if (lbound_set || ubound_set) continue;  // already bound
+          if (n_leaves > IN_RANGES_MAX) continue;
+          const NdbDictionary::Column* tab_col =
+              table->getColumn(column_name);
+          if (tab_col == NULL) continue;
+          ConditionalExpression** vals =
+              m_amalloc->alloc_exc<ConditionalExpression*>(n_leaves);
+          Uint32 filled = 0;
+          ndbrequire(match_in_shape(ce, &leaf_col, vals, n_leaves, &filled) &&
+                     filled == n_leaves);
+          Uint32 n_distinct = 0;
+          if (!dedup_in_values(tab_col, vals, n_leaves, &n_distinct)) {
+            continue;
+          }
+          lbound_set = true;
+          ubound_set = true;
+          later_columns_blocked = false;
+          condition_handling_map[cond_idx] = (int)col_idx;
+          ndbrequire(num_consumed_this_col < 2);
+          consumed_this_col[num_consumed_this_col++] = cond_idx;
+          in_cond_idx = (int)cond_idx;
+          in_col_idx = leaf_col;
+          in_values = vals;
+          in_count = n_distinct;
+          in_total = n_leaves;
           continue;
         }
         TokenKind op = ce->op;
@@ -3932,14 +4066,24 @@ RonSQLPreparer::build_scan_config_candidates(
       }
     }
     if (goodness) {
+      if (in_cond_idx >= 0 && in_count > 1) {
+        // WP-F F2: n ranges cost more than one; a candidate binding the
+        // same columns with plain equalities wins a tie.
+        goodness = (goodness * 9) / 10;
+        if (goodness == 0) goodness = 1;
+      }
       if (strcmp(index->getName(), "PRIMARY") == 0) {
         // If the index can be used, then add a 1-point bonus for the PRIMARY
         // index.
         goodness++;
       }
-      out_candidates.push(ScanConfig { index,
-                                       condition_handling_map,
-                                       goodness });
+      ScanConfig candidate { index, condition_handling_map, goodness };
+      candidate.in_cond_idx = in_cond_idx;
+      candidate.in_col_idx = in_col_idx;
+      candidate.in_values = in_values;
+      candidate.in_count = in_count;
+      candidate.in_total = in_total;
+      out_candidates.push(candidate);
     }
   }
 
@@ -4103,6 +4247,10 @@ RonSQLPreparer::add_orderby_scan_config_candidates()
       }
     }
     if (existing != NULL) {
+      // WP-F F2: a multi-range candidate (IN list) delivers each range
+      // in index order but not the ranges in ORDER BY order; it keeps
+      // the client-side sort.
+      if (existing->in_cond_idx >= 0) continue;
       // A bound-based candidate: its equality bounds may let the ORDER
       // BY skip leading index columns.  The bonus only breaks ties
       // between equally good bound candidates — a better bound
@@ -7785,17 +7933,22 @@ RonSQLPreparer::execute()
     aggregator.set_reusable_program(true);
     DBGV(programAggregator(&aggregator));
     require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
-    STAT_TS(m_conf.phase_stats, s_scandef_start);
-    NdbScanOperation* scanOp = open_single_table_scan_op();
-    DEB_TRACE();
-    require_run(DBG(scanOp->setAggregationCode(&aggregator)) >= 0,
-                "Failed to set aggregation code.");
-    STAT_TS(m_conf.phase_stats, s_agg_start);
-    STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_agg_start);
-    require_run(DBG(scanOp->DoAggregation()) >= 0,
-                "Failed to execute scan aggregation.");
-    STAT_TS(m_conf.phase_stats, s_agg_end);
-    STAT_SET(m_conf.phase_stats, firstbatch_us, s_agg_start, s_agg_end);
+    if (m_pk_lookup) {
+      // WP-F F1b: IN list on the primary key — N aggregating key reads.
+      execute_pk_lookup_aggregate(&aggregator);
+    } else {
+      STAT_TS(m_conf.phase_stats, s_scandef_start);
+      NdbScanOperation* scanOp = open_single_table_scan_op();
+      DEB_TRACE();
+      require_run(DBG(scanOp->setAggregationCode(&aggregator)) >= 0,
+                  "Failed to set aggregation code.");
+      STAT_TS(m_conf.phase_stats, s_agg_start);
+      STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_agg_start);
+      require_run(DBG(scanOp->DoAggregation()) >= 0,
+                  "Failed to execute scan aggregation.");
+      STAT_TS(m_conf.phase_stats, s_agg_end);
+      STAT_SET(m_conf.phase_stats, firstbatch_us, s_agg_start, s_agg_end);
+    }
     DEB_TRACE();
 
     // Print results
@@ -7810,6 +7963,129 @@ RonSQLPreparer::execute()
   catch (...) {
     handle_ronsql_exception(std::current_exception());
   }
+}
+
+/*
+ * WP-F F1b (m3_wpf_plan.md §2.3): an aggregate whose WHERE binds every
+ * primary-key column, one of them with an IN list, as N committed key
+ * reads in one transaction.  Each read carries the finalized aggregation
+ * program (NdbOperation OO_AGGREGATION) and, when there are residual
+ * conjuncts, the lookup filter program (OO_INTERPRETED) that runs first
+ * on the data node.  A read whose row exists and passes the filter
+ * returns one partial aggregation record; ProcessRes merges them exactly
+ * as it merges per-fragment scan partials (GROUP BY groups by key, the
+ * checked 64-bit SUM overflow surfaces as 1860), and PrepareResults
+ * finishes.  A missing or filtered row fails its read with NoDataFound
+ * and contributes nothing.  The IN list was de-duplicated at planning
+ * time (dedup_in_values), so no row is counted twice.
+ */
+void
+RonSQLPreparer::execute_pk_lookup_aggregate(NdbAggregator* aggregator)
+{
+  ndbrequire(m_pk_lookup && m_pk_lookup_in_col >= 0);
+  const Uint32 n_ops = m_pk_lookup_in_count;
+  ndbrequire(n_ops >= 1);
+  STAT_TS(m_conf.phase_stats, s_kr_start);
+  const NdbDictionary::Table* tab = m_main_scope.table;
+  const int nkeys = tab->getNoOfPrimaryKeys();
+  const NdbRecord* rec = tab->getDefaultRecord();
+  require_sch(rec != NULL, "Failed to get default record for lookup.");
+  const Uint32 rowlen = NdbDictionary::getRecordRowLength(rec);
+  require_run(rowlen > 0, "Empty default record for lookup.");
+  // The reads return no column values (all-zero mask): the aggregation
+  // record arrives in the operation's own result RecAttr, so one unused
+  // result row serves every read.
+  char* result_row = m_amalloc->alloc_exc<char>(rowlen);
+  memset(result_row, 0, rowlen);
+  const Uint32 mask_len = ((Uint32)tab->getNoOfColumns() + 7) / 8;
+  unsigned char* zero_mask = m_amalloc->alloc_exc<unsigned char>(mask_len);
+  memset(zero_mask, 0, mask_len);
+  NdbInterpretedCode residual_code(tab);
+  if (m_pk_lookup_has_residual) {
+    // Built once and shared; the detection-time trial build proved it
+    // fits LOOKUP_FILTER_MAX_WORDS with emit-supported types.
+    NdbScanFilter filter(&residual_code);
+    DBGV(filter.setSqlCmpSemantics());
+    require_run(DBG(filter.begin(NdbScanFilter::AND)) >= 0,
+                "Failed to apply lookup filter.");
+    Uint32 num_residual = 0;
+    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
+      if (m_pk_lookup_cond_map[i] == -1) {
+        apply_filter(&filter, m_main_scope, m_toplevel_conditions[i]);
+        num_residual++;
+      }
+    }
+    ndbrequire(num_residual > 0);
+    require_run(DBG(filter.end()) >= 0, "Failed to apply lookup filter.");
+    require_run(DBG(residual_code.finalise()) == 0,
+                "Failed to finalise lookup filter.");
+  }
+  NdbOperation::OperationOptions opts;
+  memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent = NdbOperation::OperationOptions::OO_AGGREGATION;
+  opts.aggregationCode = aggregator;
+  if (m_pk_lookup_has_residual) {
+    opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+    opts.interpretedCode = &residual_code;
+  }
+  const NdbOperation** ops = m_amalloc->alloc_exc<const NdbOperation*>(n_ops);
+  ConditionalExpression** key_const =
+      m_amalloc->alloc_exc<ConditionalExpression*>(nkeys);
+  for (int k = 0; k < nkeys; k++) key_const[k] = m_pk_lookup_const[k];
+  for (Uint32 n = 0; n < n_ops; n++) {
+    key_const[m_pk_lookup_in_col] = m_pk_lookup_in_values[n];
+    char* key_row = m_amalloc->alloc_exc<char>(rowlen);
+    memset(key_row, 0, rowlen);
+    for (int k = 0; k < nkeys; k++) {
+      const NdbDictionary::Column* pk_col =
+          tab->getColumn(tab->getPrimaryKey(k));
+      ndbrequire(pk_col != NULL);
+      // The column's NdbRecord byte format, as in the pass-through arm.
+      raw_value rv = encode_constant(key_const[k], pk_col);
+      char* dst = NdbDictionary::getValuePtr(rec, key_row,
+                                             pk_col->getAttrId());
+      require_run(dst != NULL, "Failed to locate key column in record.");
+      memcpy(dst, rv.val, rv.len);
+    }
+    ops[n] = DBG(m_trans->readTuple(rec, key_row, rec, result_row,
+                                    NdbOperation::LM_CommittedRead,
+                                    zero_mask, &opts, sizeof(opts)));
+    require_sch(ops[n] != NULL, "Failed to define aggregating key read.");
+  }
+  STAT_TS(m_conf.phase_stats, s_kr_defined);
+  STAT_SET(m_conf.phase_stats, ndbprep_us, s_kr_start, s_kr_defined);
+  if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0) {
+    // As in the pass-through arm: execute may report a NoDataFound of
+    // one read; each read's own outcome is checked below.
+    const NdbError& trans_err = m_trans->getNdbError();
+    require_run(trans_err.classification == NdbError::NoDataFound,
+                "Failed to execute aggregating key reads.");
+  }
+  STAT_TS(m_conf.phase_stats, s_kr_done);
+  STAT_SET(m_conf.phase_stats, firstbatch_us, s_kr_defined, s_kr_done);
+  Uint32 n_rows = 0;
+  for (Uint32 n = 0; n < n_ops; n++) {
+    const NdbError& op_err = ops[n]->getNdbError();
+    if (op_err.code != 0) {
+      if (op_err.classification == NdbError::NoDataFound) {
+        continue;  // no row for this key, or the filter rejected it
+      }
+      throw_key_read_error(op_err, "Failed to execute aggregating key read.");
+    }
+    const NdbRecAttr* ra = ops[n]->getAggregationResult();
+    require_run(ra != NULL && ra->isNULL() == 0,
+                "Aggregating key read returned no aggregation record.");
+    const Int32 ret = aggregator->ProcessRes(ra->aRef());
+    if (ret < 0) {
+      // As DoAggregation: a merge error (1860 for a checked 64-bit SUM
+      // that overflows across the keys) fails the query with that code.
+      throw_key_read_error(m_conf.ndb->getNdbError(-ret),
+                           "Failed to merge key-read aggregation results.");
+    }
+    n_rows++;
+  }
+  aggregator->PrepareResults();
+  STAT_COUNT(m_conf.phase_stats, rows_drained, n_rows);
 }
 
 /*
@@ -7954,112 +8230,137 @@ RonSQLPreparer::open_single_table_scan_op()
     scanFlags |= NdbScanOperation::SF_OrderBy;
     if (sc.index_order_desc) scanFlags |= NdbScanOperation::SF_Descending;
   }
+  // WP-F F2 (m3_wpf_plan.md §2.5): an IN list consumed as a bound is one
+  // range per distinct value.  Every other bound conjunct is repeated in
+  // each range; end_of_bound(r) closes range r.  index_order never
+  // coexists with an IN list (add_orderby_scan_config_candidates skips
+  // such candidates), so the ranges need no particular order.
+  const bool in_ranges = (sc.in_cond_idx >= 0);
+  const Uint32 num_ranges = in_ranges ? sc.in_count : 1;
+  ndbrequire(num_ranges >= 1);
+  ndbrequire(!(in_ranges && sc.index_order));
+  if (num_ranges > 1) {
+    scanFlags |= NdbScanOperation::SF_MultiRange;
+  }
   require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
                                             DBG(scanFlags))) == 0,
               "Failed to initialize index scan operation.");
   bool any_bound = false;
-  // Per-index-column bound sides, for the nullable high-only fix below.
-  static const Uint32 MAX_BOUND_COLS = 32;
-  bool col_has_low[MAX_BOUND_COLS];
-  bool col_has_high[MAX_BOUND_COLS];
-  for (Uint32 c = 0; c < MAX_BOUND_COLS; c++) {
-    col_has_low[c] = false;
-    col_has_high[c] = false;
-  }
-  int max_bound_col = -1;
-  for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
-  {
-    int index_col_idx = DBG(sc.condition_handling_map[i]);
-    if (index_col_idx == -1) {
-      // This condition could not be configured for the index scan. It will
-      // be applied as part of the filter instead.
-      continue;
+  for (Uint32 range_no = 0; range_no < num_ranges; range_no++) {
+    // Per-index-column bound sides, for the nullable high-only fix below.
+    static const Uint32 MAX_BOUND_COLS = 32;
+    bool col_has_low[MAX_BOUND_COLS];
+    bool col_has_high[MAX_BOUND_COLS];
+    for (Uint32 c = 0; c < MAX_BOUND_COLS; c++) {
+      col_has_low[c] = false;
+      col_has_high[c] = false;
     }
-    any_bound = true;
-    ConditionalExpression* ce = m_toplevel_conditions[i];
-    Uint32 condition_col_idx = DBG(ce->args.left->col_idx);
-    ConditionalExpression* condition_constant = ce->args.right;
-    TokenKind op = DBG(ce->op);
-    NdbIndexScanOperation::BoundType bt;
-    switch (op) {
-    case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
-    /* This mapping might seem surprising.
-     * - In RonSQL, we have normalized the conditional expressions to have
-     *   the column name on the left and the constant on the right. Thus,
-     *   T_GE means column value >= constant, or in other words, the
-     *   constant is a lower bound.
-     * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
+    int max_bound_col = -1;
+    for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++)
+    {
+      int index_col_idx = DBG(sc.condition_handling_map[i]);
+      if (index_col_idx == -1) {
+        // This condition could not be configured for the index scan. It will
+        // be applied as part of the filter instead.
+        continue;
+      }
+      any_bound = true;
+      ConditionalExpression* ce = m_toplevel_conditions[i];
+      Uint32 condition_col_idx;
+      ConditionalExpression* condition_constant;
+      TokenKind op;
+      if ((int)i == sc.in_cond_idx) {
+        // WP-F F2: this range's value of the IN list, as an equality.
+        condition_col_idx = sc.in_col_idx;
+        condition_constant = sc.in_values[range_no];
+        op = T_EQUALS;
+      } else {
+        condition_col_idx = DBG(ce->args.left->col_idx);
+        condition_constant = ce->args.right;
+        op = DBG(ce->op);
+      }
+      NdbIndexScanOperation::BoundType bt;
+      switch (op) {
+      case T_EQUALS: bt = NdbIndexScanOperation::BoundType::BoundEQ; break;
+      /* This mapping might seem surprising.
+       * - In RonSQL, we have normalized the conditional expressions to have
+       *   the column name on the left and the constant on the right. Thus,
+       *   T_GE means column value >= constant, or in other words, the
+       *   constant is a lower bound.
+       * - In ndbapi, BoundLE is documented to mean non-strict "lower bound".
+       */
+      case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
+      case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
+      case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
+      case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
+      default: abort();
+      }
+      const char* colName = m_columns[condition_col_idx].c_str();
+      require_run(m_main_scope.resolved_columns != NULL,
+                  "Index scan bound: missing resolved columns.");
+      const QueryScope::ResolvedColumnRef& condition_ref =
+          m_main_scope.resolved_columns[condition_col_idx];
+      require_prm(
+          condition_ref.kind ==
+          QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+          "Index scan bound requires a stored-table column.");
+      require_prm(condition_ref.dict_column != NULL,
+                  "Index scan bound column descriptor missing.");
+      raw_value rv = encode_constant(condition_constant,
+                                     condition_ref.dict_column);
+      require_run(DBG(myIndexScanOp->setBound(DBG(colName),
+                                              DBG(bt),
+                                              DBG(rv).val)) == 0,
+                  "Failed to set bound for index scan.");
+      if (index_col_idx >= 0 && index_col_idx < (int)MAX_BOUND_COLS) {
+        if (op == T_EQUALS || op == T_GE || op == T_GT)
+          col_has_low[index_col_idx] = true;
+        if (op == T_EQUALS || op == T_LE || op == T_LT)
+          col_has_high[index_col_idx] = true;
+        if (index_col_idx > max_bound_col) max_bound_col = index_col_idx;
+      }
+      DEB_TRACE();
+    }
+    /*
+     * NULL-excluding low bound (findings/nullable_bounds.md): NULL sorts
+     * below every value in an NDB ordered index, so a HIGH-only bound on
+     * a NULLABLE column starts the scan at the index head and would
+     * return NULL rows that SQL comparison semantics exclude (col <= X
+     * is UNKNOWN for NULL).  Emit the mysqld range-optimizer idiom for
+     * such columns: setBound(col, BoundLT, NULL) — a strict low bound
+     * whose value is NULL, i.e. "col > NULL" — which keeps the conjunct
+     * a bound (plan unchanged) while excluding the NULL entries.  A
+     * high-only column is always the LAST bounded column (a range blocks
+     * later columns), so the strict low bound lands on the last low key
+     * part, as the old setBound API requires; emitting after the loop
+     * keeps earlier equality lows ahead of it.  It belongs to every range
+     * of a multi-range scan.
      */
-    case T_GE:     bt = NdbIndexScanOperation::BoundType::BoundLE; break;
-    case T_GT:     bt = NdbIndexScanOperation::BoundType::BoundLT; break;
-    case T_LE:     bt = NdbIndexScanOperation::BoundType::BoundGE; break;
-    case T_LT:     bt = NdbIndexScanOperation::BoundType::BoundGT; break;
-    default: abort();
-    }
-    const char* colName = m_columns[condition_col_idx].c_str();
-    require_run(m_main_scope.resolved_columns != NULL,
-                "Index scan bound: missing resolved columns.");
-    const QueryScope::ResolvedColumnRef& condition_ref =
-        m_main_scope.resolved_columns[condition_col_idx];
-    require_prm(
-        condition_ref.kind ==
-        QueryScope::ResolvedColumnRef::Kind::StoredColumn,
-        "Index scan bound requires a stored-table column.");
-    require_prm(condition_ref.dict_column != NULL,
-                "Index scan bound column descriptor missing.");
-    raw_value rv = encode_constant(condition_constant,
-                                   condition_ref.dict_column);
-    require_run(DBG(myIndexScanOp->setBound(DBG(colName),
-                                            DBG(bt),
-                                            DBG(rv).val)) == 0,
-                "Failed to set bound for index scan.");
-    if (index_col_idx >= 0 && index_col_idx < (int)MAX_BOUND_COLS) {
-      if (op == T_EQUALS || op == T_GE || op == T_GT)
-        col_has_low[index_col_idx] = true;
-      if (op == T_EQUALS || op == T_LE || op == T_LT)
-        col_has_high[index_col_idx] = true;
-      if (index_col_idx > max_bound_col) max_bound_col = index_col_idx;
+    for (int c = 0; c <= max_bound_col; c++) {
+      if (!col_has_high[c] || col_has_low[c]) continue;
+      const NdbDictionary::Column* idx_col = index->getColumn(c);
+      require_run(idx_col != NULL, "Index column missing for bound.");
+      const NdbDictionary::Column* tab_col =
+          m_main_scope.table->getColumn(idx_col->getName());
+      if (tab_col == NULL || tab_col->getNullable()) {
+        require_run(DBG(myIndexScanOp->setBound(
+                        DBG(idx_col->getName()),
+                        NdbIndexScanOperation::BoundType::BoundLT,
+                        /*aValue=*/NULL)) == 0,
+                    "Failed to set NULL-excluding low bound.");
+      }
     }
     DEB_TRACE();
-  }
-  /*
-   * NULL-excluding low bound (findings/nullable_bounds.md): NULL sorts
-   * below every value in an NDB ordered index, so a HIGH-only bound on
-   * a NULLABLE column starts the scan at the index head and would
-   * return NULL rows that SQL comparison semantics exclude (col <= X
-   * is UNKNOWN for NULL).  Emit the mysqld range-optimizer idiom for
-   * such columns: setBound(col, BoundLT, NULL) — a strict low bound
-   * whose value is NULL, i.e. "col > NULL" — which keeps the conjunct
-   * a bound (plan unchanged) while excluding the NULL entries.  A
-   * high-only column is always the LAST bounded column (a range blocks
-   * later columns), so the strict low bound lands on the last low key
-   * part, as the old setBound API requires; emitting after the loop
-   * keeps earlier equality lows ahead of it.
-   */
-  for (int c = 0; c <= max_bound_col; c++) {
-    if (!col_has_high[c] || col_has_low[c]) continue;
-    const NdbDictionary::Column* idx_col = index->getColumn(c);
-    require_run(idx_col != NULL, "Index column missing for bound.");
-    const NdbDictionary::Column* tab_col =
-        m_main_scope.table->getColumn(idx_col->getName());
-    if (tab_col == NULL || tab_col->getNullable()) {
-      require_run(DBG(myIndexScanOp->setBound(
-                      DBG(idx_col->getName()),
-                      NdbIndexScanOperation::BoundType::BoundLT,
-                      /*aValue=*/NULL)) == 0,
-                  "Failed to set NULL-excluding low bound.");
+    // Close the range only when a bound was added: end_of_bound fails
+    // with 4259 "Invalid set of range scan bounds" when no setBound
+    // preceded it, and a Phase 4b ORDER BY-driven candidate may carry no
+    // bounds at all (full index scan in key order, conjuncts as filters).
+    // A multi-range scan (WP-F F2) closes every range, the last included.
+    if (any_bound) {
+      require_run(DBG(myIndexScanOp->end_of_bound(range_no)) == 0,
+                  "Failed to set end of bound.");
     }
-  }
-  DEB_TRACE();
-  // Close the (single) range only when a bound was added: end_of_bound
-  // fails with 4259 "Invalid set of range scan bounds" when no setBound
-  // preceded it, and a Phase 4b ORDER BY-driven candidate may carry no
-  // bounds at all (full index scan in key order, conjuncts as filters).
-  // todo Is this necessary after removing the multirange flag?
-  if (any_bound) {
-    require_run(DBG(myIndexScanOp->end_of_bound(0)) == 0,
-                "Failed to set end of bound.");
-  }
+  }  // for range_no
   if (has_filter)
   {
     DEB_TRACE();
@@ -8503,8 +8804,9 @@ RonSQLPreparer::execute_single_table_passthrough()
         // code 626, whose classification is NoDataFound,
         // indistinguishable from row-absent by design; both mean no
         // row for this key.
-        require_run(op_err.classification == NdbError::NoDataFound,
-                    "Failed to execute lookup.");
+        if (op_err.classification != NdbError::NoDataFound) {
+          throw_key_read_error(op_err, "Failed to execute lookup.");
+        }
         continue;
       }
       const NdbRecAttr** attrs_n = op_attrs + (size_t)n * num_cols;
@@ -12683,6 +12985,56 @@ is_rate_limit_error(int ndb_error_code)
   }
 }
 
+/*
+ * WP-F: raise one key read's own error.  In a batch of key reads the
+ * transaction error can belong to another read (626 for a missing key),
+ * so the failing read's error is classified here the way
+ * handle_ronsql_exception classifies a transaction error: a rate limit
+ * rejection, a temporary error (retryable), or a permanent error whose
+ * class follows the NDB classification.  A schema error is left to
+ * handle_ronsql_exception, which unloads the schema and decides on a
+ * retry (it applies to every read of the batch alike).
+ */
+void
+RonSQLPreparer::throw_key_read_error(const NdbError& op_err, const char* what)
+{
+  if (op_err.classification == NdbError::SchemaError) {
+    throw std::runtime_error(what);
+  }
+  // Describe the error on the err stream as handle_ronsql_exception
+  // does (ronsql_cli prints it; tests grep "NDB Permanent error 1860,").
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  err << "Error handling: key read";
+  if (m_conf.rate_limit_identity != NULL && is_rate_limit_error(op_err.code)) {
+    err << "->RLE\n" << op_err << '\n';
+    throw RonSQLRateLimitError(what, op_err.code);
+  }
+  if (op_err.status == NdbError::TemporaryError ||
+      op_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
+    err << "->RRE\n" << op_err << '\n';
+    throw RonSQLRetryableError(what);
+  }
+  err << "->RPE\n" << op_err << '\n';
+  RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;
+  switch (op_err.classification) {
+  case NdbError::ApplicationError:
+  case NdbError::NoDataFound:
+  case NdbError::ConstraintViolation:
+  case NdbError::UserDefinedError:
+    cls = RonSQLErrorClass::SEMANTIC;
+    break;
+  case NdbError::InsufficientSpace:
+    cls = RonSQLErrorClass::RESOURCE;
+    break;
+  case NdbError::FunctionNotImplemented:
+    cls = RonSQLErrorClass::UNSUPPORTED;
+    break;
+  default:
+    break;
+  }
+  throw RonSQLPermanentError(cls, what, op_err.code);
+}
+
 void
 RonSQLPreparer::handle_ronsql_exception(std::exception_ptr eptr) {
   std::basic_ostream<char>& err = *m_conf.err_stream;
@@ -16498,6 +16850,7 @@ RonSQLPreparer::print()
     auto print_pk_lookup_head = [&](decltype(out)& o) {
       if (m_pk_lookup_in_col >= 0) {
         o << "Execute as " << m_pk_lookup_in_count
+          << (m_is_aggregate_query ? " aggregating" : "")
           << " primary key lookups (IN list on `"
           << m_main_scope.table->getPrimaryKey(m_pk_lookup_in_col)
           << "`: " << m_pk_lookup_in_total << " values, "
@@ -16589,6 +16942,13 @@ RonSQLPreparer::print()
       }
       out << ")\nWith goodness " << sc.goodness << " it's the best of "
           << m_scan_config_candidates.size() << " options.\n";
+      if (sc.in_cond_idx >= 0) {
+        // WP-F F2: the IN list is one index range per distinct value.
+        out << "Ranges: " << sc.in_count << " (IN list on "
+            << quoted_identifier(m_columns[sc.in_col_idx].c_str()) << ": "
+            << sc.in_total << " values, " << sc.in_count << " distinct"
+            << (sc.in_count > 1 ? "; SF_MultiRange" : "") << ").\n";
+      }
       Uint32 cond_cnt = m_toplevel_conditions.size();
       Uint32 filter_cnt = 0;
       for (Uint32 i = 0; i < cond_cnt; i++) {
@@ -16632,10 +16992,17 @@ RonSQLPreparer::print()
               prefixlen++;
             }
           }
-          print(m_toplevel_conditions[i],
-                i + 1 == cond_cnt
-                ? LexString{"              ", prefixlen}
-                : LexString{"│             ", prefixlen + 2});
+          if ((int)i == sc.in_cond_idx) {
+            // WP-F F2: summarise the IN list instead of its OR tree.
+            out << quoted_identifier(m_columns[sc.in_col_idx].c_str())
+                << " IN (" << sc.in_total << " values, " << sc.in_count
+                << " distinct)\n";
+          } else {
+            print(m_toplevel_conditions[i],
+                  i + 1 == cond_cnt
+                  ? LexString{"              ", prefixlen}
+                  : LexString{"│             ", prefixlen + 2});
+          }
         }
       }
     }

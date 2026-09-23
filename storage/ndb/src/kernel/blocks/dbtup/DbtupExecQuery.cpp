@@ -2356,6 +2356,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
 #endif
     req_struct.scan_rec = lqhScanPtrP;
     req_struct.m_join_agg_state_key = lqhScanPtrP->m_join_agg_state_key;
+    req_struct.m_agg_read = 0;
     /*
      * TTL related
      */
@@ -2436,6 +2437,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     req_struct.m_row_id.m_page_idx = row_id_page_idx;
     req_struct.scan_rec = nullptr;
     req_struct.m_join_agg_state_key = lqhOpPtrP->m_join_agg_state_key;
+    req_struct.m_agg_read = lqhOpPtrP->m_agg_read;
     regOperPtr->ttl_ignore = lqhOpPtrP->ttl_ignore;
     regOperPtr->ttl_only_expired = lqhOpPtrP->ttl_only_expired;
     regOperPtr->ring_buffer_op = lqhOpPtrP->ring_buffer_op;
@@ -3407,6 +3409,14 @@ int Dbtup::handleReadReq(
   if (!req_struct->interpreted_exec)
   {
     jamDebug();
+    if (unlikely(req_struct->m_agg_read)) {
+      /* The aggregation program rides after the interpreted sections;
+       * DBLQH admits the flag on interpreted reads only. */
+      jam();
+      terrorCode = ZAGG_WRONG_OPERATION;
+      tupkeyErrorLab(req_struct);
+      return -1;
+    }
     if (req_struct->m_join_agg_state_key != RNIL) {
       jam();
       /*
@@ -6412,6 +6422,10 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         jamDebug();
         int res = prepareAndHandleJoinAggRow(req_struct, RsubLen);
         if (res != 0) return res;
+      } else if (unlikely(req_struct->m_agg_read)) {
+        jamDebug();
+        int res = handleAggReadRow(signal, req_struct, RattroutCounter);
+        if (res != 0) return res;
       } else {
         sendReadAttrinfo(signal, req_struct, RattroutCounter);
       }
@@ -6425,6 +6439,90 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
   } else {
     return TUPKEY_abort(req_struct, ZTOTAL_LEN_ERROR);
   }
+}
+
+/*
+ * Aggregation on a primary-key read (RONDB-1124 WP-F F1b).
+ *
+ * The committed interpreted read carries a finalized NdbAggregator
+ * program after its five interpreted sections — the layout a scan with
+ * pushdown aggregation uses.  We get here after the residual filter
+ * (the exec region) accepted the looked-up tuple.  A one-row
+ * aggregation interpreter processes the tuple, its result record is
+ * force-prepared into theData[25..] and sent as the operation's read
+ * reply: exactly one TRANSID_AI per accepted row, which the API merges
+ * across the operations of a batch like per-fragment scan partials.  A
+ * missing or filtered row never reaches this point (626, TCKEYREF), so
+ * every operation still ends with one TRANSID_AI or one TCKEYREF.
+ *
+ * Differences from the scan path: nothing is kept between rows (no
+ * batching, no SCAN_FRAGCONF accounting), a malformed program or an
+ * allocation failure is an operation error rather than a node stop, and
+ * the reply goes through sendReadAttrinfo (routed when the API is not
+ * directly connected) instead of SendAggregationResult.
+ */
+int Dbtup::handleAggReadRow(Signal *signal, KeyReqStruct *req_struct,
+                            Uint32 RattroutCounter) {
+  const Uint32 attrinfo_len = req_struct->attrinfo_len;
+  if (unlikely(req_struct->operPtrP->op_type != ZREAD ||
+               RattroutCounter != 0 || attrinfo_len < 5)) {
+    /* Only a pure read, and it must read nothing itself: the result
+     * record is the whole reply. */
+    jam();
+    return TUPKEY_abort(req_struct, ZAGG_WRONG_OPERATION);
+  }
+  /* The section lengths as sent (interpreterStartLab's RinitReadLen has
+   * the input parameters subtracted; they are part of section 0). */
+  const Uint32 sections = cinBuffer[0] + cinBuffer[1] + cinBuffer[2] +
+                          cinBuffer[3] + cinBuffer[4];
+  const Uint32 proc_start = 5 + sections;
+  if (unlikely(proc_start >= attrinfo_len ||
+               (cinBuffer[proc_start] >> 16) != 0x0721)) {
+    jam();
+    return TUPKEY_abort(req_struct, ZAGG_WRONG_OPERATION);
+  }
+  const Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
+  if (unlikely(proc_len < 8 || proc_len > attrinfo_len - proc_start)) {
+    jam();
+    return TUPKEY_abort(req_struct, ZAGG_WRONG_OPERATION);
+  }
+  AggInterpreter *interp = PushdownInterpreterFactory::CreateAggForRead(
+      &cinBuffer[proc_start], proc_len, req_struct->fragPtrP->fragTableId,
+      req_struct->fragPtrP->fragmentId, getThreadId());
+  if (unlikely(interp == nullptr)) {
+    jam();
+    return TUPKEY_abort(req_struct, ZAGG_ALLOC_MEM_FAILED);
+  }
+  /* A one-row interpreter holds at most one group, so the bounded
+   * teardown finishes in one call — also after a failed ProcessRec
+   * that already inserted its group. */
+  auto destroy = [](AggInterpreter *agg) {
+    agg->beginTeardown();
+    const bool drained = agg->tearDownChunk(16);
+    ndbrequire(drained);
+    PushdownInterpreter::Destruct(agg);
+  };
+  req_struct->read_length = 0;  // ProcessRec requires it on entry
+  const int ret =
+      interp->ProcessRec(this, req_struct, getThreadId(), jamBuffer());
+  if (unlikely(ret != 0)) {
+    jam();
+    destroy(interp);
+    return TUPKEY_abort(req_struct, ret);
+  }
+  const Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
+  destroy(interp);
+  if (unlikely(res_len == 0)) {
+    /* An accepted row always yields a record (its group is inserted
+     * before the program runs); defensive. */
+    jam();
+    return TUPKEY_abort(req_struct, ZAGG_OTHER_ERROR);
+  }
+  /* ProcessRec set read_length for a new group; sendReadAttrinfo
+   * expects 0 for an API destination and sets it to res_len. */
+  req_struct->read_length = 0;
+  sendReadAttrinfo(signal, req_struct, res_len);
+  return 0;
 }
 
 void Dbtup::SendAggregationResult(Signal* signal, Uint32 res_len,

@@ -44,6 +44,7 @@ class NdbBlob;
 class TcKeyReq;
 class NdbRecord;
 class NdbInterpretedCode;
+class NdbAggregator;
 struct GenericSectionPtr;
 class NdbLockHandle;
 
@@ -1144,7 +1145,24 @@ class NdbOperation {
        * Without this flag, the kernel rejects writes to ring-buffer tables.
        */
       OO_RING_BUFFER_OP = 0x400000,
-      OO_RING_BUFFER_SHOW_META = 0x800000
+      OO_RING_BUFFER_SHOW_META = 0x800000,
+      /*
+       * Aggregation on a primary-key read (RONDB-1124): run the finalized
+       * NdbAggregator program (aggregationCode) on the read row inside
+       * the data node and return one aggregation result record instead
+       * of column values.  Committed primary-key reads (ReadRequest,
+       * LM_CommittedRead) only, with no other values read: no read mask
+       * columns, blobs or extra get values.  An OO_INTERPRETED program
+       * acts as a row filter before the aggregation.  After execute,
+       * getAggregationResult() holds the record for the aggregator's
+       * ProcessRes() when the operation succeeded; a missing or
+       * filtered row fails the operation with a NoDataFound error (626)
+       * and contributes nothing.  N such reads sharing one aggregator,
+       * each merged with ProcessRes() and finished with one
+       * PrepareResults(), aggregate over N keys — the way a scan merges
+       * its per-fragment partials.
+       */
+      OO_AGGREGATION = 0x1000000
     };
 
     /* An operation-specific abort option.
@@ -1182,6 +1200,11 @@ class NdbOperation {
 
     /* customData ptr for this operation */
     void *customData;
+
+    /* Finalized aggregation program for OO_AGGREGATION.  Added last: an
+     * OperationOptions of the previous size (ending before this field)
+     * is still accepted, without OO_AGGREGATION. */
+    const NdbAggregator *aggregationCode;
   };
 
   /* getLockHandle
@@ -1193,6 +1216,13 @@ class NdbOperation {
    * has been executed.
    */
   const NdbLockHandle *getLockHandle() const;
+
+  /* The aggregation result record of an OO_AGGREGATION read, for
+   * NdbAggregator::ProcessRes(getAggregationResult()->aRef()) after a
+   * successful execute; nullptr for other operations. */
+  const NdbRecAttr *getAggregationResult() const {
+    return m_read_aggregation_rec_attr;
+  }
   const NdbLockHandle *getLockHandle();
 
 #ifndef DOXYGEN_SHOULD_SKIP_INTERNAL
@@ -1647,6 +1677,12 @@ class NdbOperation {
   Uint32 m_unused_read_mask[(128 + 31) >> 5];
   /* Interpreted program for NdbRecord operations. */
   const NdbInterpretedCode *m_interpreted_code;
+
+  /* OO_AGGREGATION on a primary-key read: the program appended after the
+   * interpreted sections, and the RecAttr receiving the result record.
+   * (Distinct from NdbScanOperation's scan-aggregation members.) */
+  const NdbAggregator *m_read_aggregation_code;
+  NdbRecAttr *m_read_aggregation_rec_attr;
 
   /* Ptr to supplied SetValueSpec for NdbRecord */
   const SetValueSpec *m_extraSetValues;

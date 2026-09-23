@@ -312,3 +312,45 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
 
   return result;
 }
+
+AggInterpreter*
+PushdownInterpreterFactory::CreateAggForRead(const Uint32* prog,
+                                             Uint32 prog_len,
+                                             Int64 table_id, Int64 frag_id,
+                                             Uint32 thread_id) {
+  if (prog == nullptr || prog_len < 8 ||
+      DetectType(prog, prog_len) != PushdownType::AGGREGATION) {
+    return nullptr;
+  }
+  void* page_ptr = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
+                                       thread_id, false);
+  if (page_ptr == nullptr) {
+    g_eventLogger->error("Alloc mem for aggregation on a key read failed");
+    return nullptr;
+  }
+  AggInterpreter* agg = new(page_ptr) AggInterpreter(prog_len, table_id,
+                                                     frag_id, thread_id);
+  if (!agg->Init(prog) || !agg->OptimizeProgram()) {
+    /* Nothing was processed: the destructor only frees what Init
+     * allocated (see ~AggInterpreterBase, case (c)). */
+    PushdownInterpreter::Destruct(agg);
+    return nullptr;
+  }
+  if (agg->prog_reusable()) {
+    const Uint32 *agg_prog = agg->agg_program();
+    const Uint32 bc_off = agg->agg_prog_start_pos();
+    if (bc_off < prog_len) {
+      void *handle = nullptr;
+      void *entry = dbtup_jit_compile_agg(agg_prog + bc_off,
+                                          prog_len - bc_off, &handle,
+                                          /*reusable=*/true,
+                                          /*n_visible_results=*/
+                                          NDB_JIT_NO_AVG_SLOTS);
+      if (entry != nullptr) {
+        agg->setJitEntry(reinterpret_cast<JitEntry>(entry));
+        agg->setJitCacheHandle(handle);
+      }
+    }
+  }
+  return agg;
+}

@@ -2457,6 +2457,9 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     Uint32 agg_curr_batch_size_bytes;
     Uint32 agg_n_res_recs;
     Uint32 m_join_agg_state_key;  // Pool index for join agg state (RNIL if none)
+    /* Aggregation on a primary-key read (RONDB-1124 WP-F F1b): key
+     * operations only, copied from Dblqh::TcConnectionrec::m_agg_read. */
+    Uint32 m_agg_read;
     Uint32 ttl_purge_window_size;
 
     /**
@@ -3420,6 +3423,9 @@ private:
   int handleJoinAggRow(KeyReqStruct *req_struct,
                        const Uint32 *linked_data, Uint32 linked_len);
   int prepareAndHandleJoinAggRow(KeyReqStruct *req_struct, Uint32 RsubLen);
+  /* Aggregation on a primary-key read (RONDB-1124 WP-F F1b). */
+  int handleAggReadRow(Signal *signal, KeyReqStruct *req_struct,
+                       Uint32 RattroutCounter);
   bool writeLogMemory(KeyReqStruct *req_struct,
                       const char *input_ptr,
                       Uint32 byte_size);

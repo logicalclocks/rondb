@@ -4471,6 +4471,9 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     regCachePtr->m_ttl_only_expired = TcKeyReq::getTTLOnlyExpiredFlag(Treqinfo);
     regCachePtr->m_ring_buffer_op = TcKeyReq::getRingBufferOpFlag(Treqinfo);
     regCachePtr->m_ring_buffer_show_meta = TcKeyReq::getRingBufferShowMetaFlag(Treqinfo);
+    /* Aggregation-read flag: bit 16 of the attrLen word, unused by long
+     * TCKEYREQ (the AttrInfo length is the section length). */
+    regCachePtr->m_agg_read = TcKeyReq::getAggReadFlag(tcKeyReq->attrLen);
   } else {
     TkeyLength = TcKeyReq::getKeyLength(Treqinfo);
     TattrLen = TcKeyReq::getAttrinfoLen(tcKeyReq->attrLen);
@@ -4486,6 +4489,7 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     regCachePtr->m_ttl_only_expired = 0;
     regCachePtr->m_ring_buffer_op = 0;
     regCachePtr->m_ring_buffer_show_meta = 0;
+    regCachePtr->m_agg_read = 0;
   }
   bool util_flag = ZFALSE;
   if (unlikely(refToMain(sendersBlockRef) == DBUTIL))
@@ -5871,6 +5875,9 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
      full), so it can only be set once attrLen has been filled in */
   LqhKeyReq::setRingBufferOpFlag(lqhKeyReq->attrLen,
                                  regCachePtr->m_ring_buffer_op);
+  /* Aggregation on a primary-key read (RONDB-1124 WP-F F1b): same
+   * attrLen word; DBLQH checks it is a committed interpreted read. */
+  LqhKeyReq::setAggReadFlag(lqhKeyReq->attrLen, regCachePtr->m_agg_read);
   lqhKeyReq->hashValue = sig2;
   lqhKeyReq->requestInfo = Tdata10;
   lqhKeyReq->tcBlockref = sig4;

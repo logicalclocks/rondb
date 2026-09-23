@@ -1179,7 +1179,13 @@ int NdbReceiver::unpackRow(const Uint32 *aDataPtr, Uint32 aLength, char *row) {
 #endif // PA_CHECK && !NDEBUG
 
     if (aLength > 0) {
-      assert(m_type == NDB_SCANRECEIVER);
+      if (m_type != NDB_SCANRECEIVER) {
+        /* Aggregation on a primary-key read (OO_AGGREGATION, RONDB-1124):
+         * the operation's only RecAttr receives the record now, marker
+         * word included, for NdbAggregator::ProcessRes. */
+        return handle_rec_attrs(m_firstRecAttr, m_firstFinalRecAttr,
+                                aDataPtr, aLength);
+      }
 
       /* Save position for RecAttr values for later retrieval. */
       m_rec_attr_data = aDataPtr;

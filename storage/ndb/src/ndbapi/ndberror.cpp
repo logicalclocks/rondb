@@ -954,6 +954,8 @@ ErrorBundle ErrorCodes[] = {
   { 4571, DMEC, AE, "Append/Partial write can only work with version >= 24.10.0" },
   { 4572, DMEC, AE, "Rate Limits and Quotas can only work with version >= 24.10.0" },
   { 4573, DMEC, AE, "Interpreted Insert can only work with version >= 24.10.0 and Write requests" },
+  { 4574, DMEC, AE, "OO_AGGREGATION needs a committed primary-key read (LM_CommittedRead) with no other values read (no read mask columns, blobs or extra get values) and a long TCKEYREQ" },
+  { 4575, DMEC, AE, "Aggregation on primary-key reads can only work with version >= 26.10.0" },
 
   { 4200, DMEC, AE, "Status Error when defining an operation" },
   { 4201, DMEC, AE, "Variable Arrays not yet supported" },
