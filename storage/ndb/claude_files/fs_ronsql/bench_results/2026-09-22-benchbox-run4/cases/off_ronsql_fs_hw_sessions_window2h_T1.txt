@@ -1,0 +1,68 @@
+
+[*] RonSQL Benchmark fs_hw_sessions_window2h: 1 threads × 5000 requests = 5000 total requests
+[*] [S2 TIMESTAMP(3)] 2-hour window on sessions_1 (TIMESTAMP(3) event time, ttl index) (rows/req 1)
+
+SELECT COUNT(*) AS `count`, SUM(`duration`) AS `duration_sum` FROM `sessions_1` WHERE `customer_id` = {KEY} AND `event_time` >= {NOW-2h};
+
+[*] Random key range: 1..100000
+[*] Warmup: 407.04us, 1 result rows
+[*] Warmup phases (µs): parse=10,analyze=0,load=9,plan=2,compile=2,prepare=25,subquery=0,ndbprep=6,send=0,firstbatch=67,drain=0,print=3,execute=79,rows=0,attempts=1
+
+[*] Warmup plan (EXPLAIN):
+Query parse tree:
+SELECT
+  Out_0:`count`
+   = A0:Count(1)
+  Out_1:`duration_sum`
+   = A1:Sum(`duration`)
+FROM sessions_1
+WHERE
+  AND
+  ├─ =
+  │  ├─ `customer_id`
+  │  ╰─ 98082
+  ╰─ >=
+     ├─ `event_time`
+     ╰─ STRING: 2026-05-31<20>22:00:00
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C00 r00 = C00:`duration`
+Sum    A01  r00 A01:SUM <- r00:`duration`
+
+Execute as index scan.
+Index: `PRIMARY`(`customer_id`, `event_time`)
+With goodness 110111 it's the best of 3 options.
+CONDITIONS (2 bounds):
+├─ INDEX[0]: =
+│            ├─ `customer_id`
+│            ╰─ 98082
+╰─ INDEX[1]: >=
+             ├─ `event_time`
+             ╰─ STRING: 2026-05-31<20>22:00:00
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+
+[OK] RonSQL Benchmark fs_hw_sessions_window2h completed in 0.47s
+   Requests: 5000 (errors: 0)
+   Throughput: 10584.55 queries/sec
+   Latency: min=48.87us avg=83.20us max=1.25ms p95=84.67us p99=1.12ms p99.9=1.14ms
+
+   Phase breakdown (server-side, 5000/5000 requests sampled):
+     phase               avg        p95        p99        max
+     parse            1.66us     2.00us     2.00us    11.00us
+     analyze          0.04us     0.00us     1.00us     1.00us
+     load             1.21us     2.00us     2.00us     6.00us
+     plan             0.14us     1.00us     1.00us     2.00us
+     compile          0.34us     1.00us     1.00us     3.00us
+     prepare          3.68us     4.00us     5.00us    24.00us
+     ndbprep          0.71us     1.00us     1.00us     8.00us
+     firstbatch      49.79us    47.00us     1.09ms     1.20ms
+     print            0.20us     1.00us     1.00us     3.00us
+     execute         51.18us    48.00us     1.09ms     1.21ms
+     rows drained 0.0 per request
+

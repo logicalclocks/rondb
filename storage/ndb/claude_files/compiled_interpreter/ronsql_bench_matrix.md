@@ -42,7 +42,11 @@ so both data sets fit at sf 1.  `ronsql_bench_triage.py <out>
 [--baseline <earlier out>]` turns `results.json` into the ranked
 needs-work list (latency and throughput classes against the MySQL
 server, phase attribution, OFF/ON, plan-pin warnings, the 15 % / 25 %
-regression rule).  See `storage/ndb/claude_files/fs_ronsql/m3_plan.md`.
+regression rule).  It merges several run directories (a rerun of the
+thread counts a stopped run did not reach), reports where an
+incomplete run stopped, prints the ON arm's `ndbinfo.jit` deltas per
+query, and counts a baseline's verdicts only when it ran on the same
+host and architecture.  See `storage/ndb/claude_files/fs_ronsql/m3_plan.md`.
 
 ```sh
 # smoke run: 1 thread, ~2 s per case, sf 0.1, all queries, all engines, OFF then ON

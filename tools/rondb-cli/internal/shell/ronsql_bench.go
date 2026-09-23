@@ -501,6 +501,16 @@ FROM orders
 GROUP BY o_orderstatus;`,
 	},
 	{
+		Name:        "core_group_2k",
+		Category:    benchCatCore,
+		Description: "Full scan of orders GROUP BY o_orderdate, ~2.4k groups: the middle point of the group-count curve (3 / 2.4k / 100k)",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan."},
+		SQL: `SELECT o_orderdate, COUNT(*), SUM(o_totalprice)
+FROM orders
+GROUP BY o_orderdate;`,
+	},
+	{
 		Name:        "core_group_many",
 		Category:    benchCatCore,
 		Description: "Full scan of orders GROUP BY o_custkey, ~100k groups: per-fragment group tables, API-side partial merge, 100k-row result",

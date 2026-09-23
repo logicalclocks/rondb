@@ -286,7 +286,7 @@ plan; the fs framework's `.bench_sql` runs are the acceptance check.
 |---|---|---|
 | **M1 — emitted branches served** (detail: `m1_plan.md`) — **DONE 2026-09-15 on RONDB-1124** | error codes (M1.0), D1 (F9), B (F1), A (F0), C (F7) | requirements report (`requirements_reports/2026-09-15/`): R-S6, R-F1, R-A2-binary SUPPORTED on base / jit / ng2r2; only R-A5-types left (F4/F5/F6); RonSQL errors carry 400/413/503/500 by class |
 | **M2 — 64-bit numeric fidelity** (detail: `m2_plan.md`) | D3 checked overflow, D4 display; D2 deferred | base / jit / ng2r2 / ng4r2 verify the limited contract; retain unmet exact-DECIMAL requirements |
-| **M3 — serving performance** | F (F12), G (F13) | `fs_hw` targets met, plan pins re-recorded, `benchmarks.md` §8 run 4 |
+| **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
 

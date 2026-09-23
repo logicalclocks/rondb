@@ -417,29 +417,31 @@ class Driver:
 
     def select_queries(self, pairs):
         sel = self.a.queries
-        if sel in ('all', ''):
-            return pairs
         cats = {'core': lambda n: n.startswith('core_'),
                 'fs': lambda n: n.startswith('fs_') and not n.startswith('fs_hw_'),
                 'fs_hw': lambda n: n.startswith('fs_hw_'),
                 'offline_fs': lambda n: n.startswith('offline_fs_'),
                 'tpch_cte': lambda n: n.startswith('tpch_q') and not n.endswith('_official'),
                 'tpch_official': lambda n: n.startswith('tpch_q') and n in [p['sql'] for p in pairs if p['mysql_only']]}
-        if sel in cats:
+        if sel in ('all', ''):
+            chosen = list(pairs)
+        elif sel in cats:
             chosen = [p for p in pairs if cats[sel](p['name'])]
-            if sel == 'fs_hw' and not self.fs_hash_twin():
-                # transactions_hash_1 is loaded only with --hash-twin (default at sf <= 0.1):
-                # a case with a missing prerequisite is an error, not a timing sample.
-                skipped = [p['name'] for p in chosen if p['name'] == 'fs_hw_hash_point']
-                if skipped:
-                    log('%s == %s needs the hash twin (.fs_load --hash-twin): skipped' % (ts(), ', '.join(skipped)))
+        else:
+            wanted = set(sel.split(','))
+            chosen = [p for p in pairs if p['name'] in wanted or p['sql'] in wanted]
+            missing = wanted - {p['name'] for p in chosen} - {p['sql'] for p in chosen}
+            if missing:
+                raise RuntimeError('unknown queries: %s' % ', '.join(sorted(missing)))
+        if not self.fs_hash_twin():
+            # transactions_hash_1 is loaded only with --hash-twin (default at sf <= 0.1):
+            # a case with a missing prerequisite is an error, not a timing sample
+            # (census run 4 hit the FAIL under --queries all; the skip now applies
+            # to every selection).
+            skipped = [p['name'] for p in chosen if p['name'] == 'fs_hw_hash_point']
+            if skipped:
+                log('%s == %s needs the hash twin (.fs_load --hash-twin): skipped' % (ts(), ', '.join(skipped)))
                 chosen = [p for p in chosen if p['name'] != 'fs_hw_hash_point']
-            return chosen
-        wanted = set(sel.split(','))
-        chosen = [p for p in pairs if p['name'] in wanted or p['sql'] in wanted]
-        missing = wanted - {p['name'] for p in chosen} - {p['sql'] for p in chosen}
-        if missing:
-            raise RuntimeError('unknown queries: %s' % ', '.join(sorted(missing)))
         return chosen
 
     def fs_hash_twin(self):

@@ -5,12 +5,19 @@ Reads one <run>/results.json (or the run directory) and prints a Markdown
 report that ranks every RonSQL-capable query by how far it is from the
 MySQL server on the same statement, at the lowest thread count (latency)
 and at the highest (throughput), attributes RonSQL time to its server-side
-phases, reports the compiled-interpreter effect, and — with --baseline —
-flags regressions against an earlier run of the same matrix.
+phases, reports what the compiled interpreter did (OFF/ON ratio and the
+ndbinfo.jit deltas: rows through compiled programs, fallbacks), says
+where an incomplete run stopped, and — with --baseline — flags
+regressions against an earlier run of the same matrix on the same
+machine.
 
-    python3 ronsql_bench_triage.py /tmp/fs_hw_run4 \
-        --baseline storage/ndb/claude_files/fs_ronsql/bench_results/2026-09-11-prod_build-run2 \
-        --out /tmp/fs_hw_run4/triage.md
+    python3 ronsql_bench_triage.py /tmp/census_run4 [/tmp/census_run4_t8] \
+        --baseline storage/ndb/claude_files/fs_ronsql/bench_results/2026-09-22-benchbox-run4 \
+        --out /tmp/census_run4/triage.md
+
+Several run directories are merged (cases concatenated): a rerun of the
+thread counts or queries the first run did not reach is triaged together
+with it.
 
 Classes (ratio = RonSQL / MySQL for latency, MySQL / RonSQL for q/s; both
 > 1 mean RonSQL is behind):
@@ -23,8 +30,11 @@ Classes (ratio = RonSQL / MySQL for latency, MySQL / RonSQL for q/s; both
 Regression rule (benchmarks.md §8): a case regresses when avg worsens by
 more than --regress-avg (15 %) or p99 by more than --regress-p99 (25 %)
 against the baseline case with the same query, engine, compiler arm and
-thread count.  A plan-pin warning in the case log is reported next to it
-so a plan change can be told from a code regression.
+thread count.  The verdicts count towards the needs-work list only when
+the baseline ran on the same host and architecture (results.json meta);
+across machines they compare hardware as much as code and are shown as
+information.  A plan-pin warning in the case log is reported next to a
+case so a plan change can be told from a code regression.
 """
 import argparse
 import glob
@@ -63,6 +73,14 @@ def fmt_pct(v):
     return '-' if v is None else '%+.0f%%' % (v * 100)
 
 
+def fmt_num(v):
+    if v is None:
+        return '-'
+    if v >= 1000:
+        return '%.0f' % v
+    return '%.2f' % v
+
+
 def ratio(a, b):
     if a is None or b is None or b == 0:
         return None
@@ -70,16 +88,26 @@ def ratio(a, b):
 
 
 class Run:
-    def __init__(self, path):
-        if os.path.isdir(path):
-            self.dir = path
-            path = os.path.join(path, 'results.json')
-        else:
-            self.dir = os.path.dirname(os.path.abspath(path))
-        with open(path) as f:
-            d = json.load(f)
-        self.meta = d.get('meta', {})
-        self.cases = d.get('cases', [])
+    """One matrix run, or several merged (a rerun of the thread counts or
+    queries an earlier run did not reach): cases are concatenated, the
+    meta comes from the first."""
+
+    def __init__(self, paths):
+        if isinstance(paths, str):
+            paths = [paths]
+        self.dirs, self.meta, self.cases = [], {}, []
+        for path in paths:
+            if os.path.isdir(path):
+                d = path
+                path = os.path.join(path, 'results.json')
+            else:
+                d = os.path.dirname(os.path.abspath(path))
+            self.dirs.append(d)
+            with open(path) as f:
+                j = json.load(f)
+            if not self.meta:
+                self.meta = j.get('meta', {})
+            self.cases += j.get('cases', [])
         self.threads = sorted({c['threads'] for c in self.cases})
         self.engines = []
         self.arms = []
@@ -104,18 +132,41 @@ class Run:
             return ok[len(ok) // 2]
         return hits[0] if hits else None
 
+    def missing_queries(self, threads):
+        """Queries with no case at all at this thread count (the run
+        stopped, or the selection changed)."""
+        have = {c['query'] for c in self.cases if c['threads'] == threads}
+        return [q for q in self.queries if q not in have]
+
+    def last_case(self, threads):
+        hits = [c for c in self.cases if c['threads'] == threads]
+        return hits[-1] if hits else None
+
     def pin_warnings(self, case):
         """Plan-pin lines from the raw CLI log of a case (cases/<tag>.txt)."""
         tag = case.get('tag')
         if not tag:
             return []
-        for p in glob.glob(os.path.join(self.dir, 'cases', tag + '.txt')):
-            try:
-                with open(p, errors='replace') as f:
-                    return [l.strip() for l in f if RE_PIN.search(l)]
-            except OSError:
-                return []
+        for d in self.dirs:
+            for p in glob.glob(os.path.join(d, 'cases', tag + '.txt')):
+                try:
+                    with open(p, errors='replace') as f:
+                        return [l.strip() for l in f if RE_PIN.search(l)]
+                except OSError:
+                    return []
         return []
+
+    def where(self):
+        m = self.meta
+        return '%s/%s' % (m.get('host') or '?', m.get('arch') or '?')
+
+
+def same_machine(run, base):
+    """True / False when both runs record host and arch, None when unknown."""
+    a, b = run.meta, base.meta
+    if not (a.get('host') and b.get('host')):
+        return None
+    return a.get('host') == b.get('host') and a.get('arch') == b.get('arch')
 
 
 def classify(r, parity, slow):
@@ -138,6 +189,17 @@ def top_phase(case):
     return best
 
 
+def jit_info(case):
+    """ndbinfo.jit deltas of a case per request (the driver's counters
+    include the warmup request, hence requests + 1)."""
+    jd = case.get('jit_delta') or {}
+    n = (case.get('requests') or 0) + 1
+    return {'rows': jd.get('rows_executed', 0) / n,
+            'compiled': jd.get('programs_compiled', 0) / n,
+            'reused': jd.get('programs_reused', 0) / n,
+            'fallback': jd.get('programs_fallback', 0)}
+
+
 def triage(run, base, a):
     mysql_engine = next((e for e in a.mysql_engines if e in run.engines), None)
     arm = a.arm if a.arm in run.arms else (run.arms[0] if run.arms else None)
@@ -148,7 +210,7 @@ def triage(run, base, a):
         rs1 = run.find(qn, 'ronsql', arm, t1)
         if rs1 is None:
             continue  # MySQL-only entry (twins, official TPC-H)
-        row = {'query': qn, 'ronsql': rs1}
+        row = {'query': qn, 'ronsql': rs1, 'fail': None, 'tput_fail': None}
         ms1 = run.find(qn, mysql_engine, arm, t1) if mysql_engine else None
         row['mysql'] = ms1
         if not rs1['ok']:
@@ -171,6 +233,8 @@ def triage(run, base, a):
         else:
             row['tput_ratio'], row['tput_class'] = None, ('FAIL' if rsm else 'N/A')
             row['ronsql_scale'] = row['mysql_scale'] = None
+            if rsm:
+                row['tput_fail'] = rsm.get('error')
         # phases
         if rs1['ok']:
             ph = rs1.get('phases') or {}
@@ -181,14 +245,14 @@ def triage(run, base, a):
             row['rows'] = rs1.get('rows_drained')
         else:
             row['execute_share'] = row['top_phase'] = row['client_overhead'] = row['rows'] = None
-        # compiled interpreter effect (arm vs the other arm, T1)
-        row['jit_ratio'] = None
+        # compiled interpreter: OFF / ON at T1 and the ON arm's jit counters
+        row['jit_ratio'], row['jit'] = None, None
         if other_arm and rs1['ok']:
             ro = run.find(qn, 'ronsql', other_arm, t1)
             if ro and ro['ok']:
-                # OFF / ON  (> 1 = the compiled arm is faster)
                 off, on = (rs1, ro) if arm == 'OFF' else (ro, rs1)
                 row['jit_ratio'] = ratio(off.get('avg_ms'), on.get('avg_ms'))
+                row['jit'] = jit_info(on)
         # plan pins
         row['pins'] = run.pin_warnings(rs1)
         # baseline
@@ -220,27 +284,65 @@ def triage(run, base, a):
     return rows, mysql_engine, arm, other_arm, t1, tmax
 
 
-def severity(row):
+def severity(row, regressions_count):
     """Sort key: failures first, then the worst of the two ratios."""
-    if row['lat_class'] == 'FAIL':
+    if row['lat_class'] == 'FAIL' or row['tput_class'] == 'FAIL':
         return (3, 0.0)
     worst = max(row['lat_ratio'] or 0.0, row['tput_ratio'] or 0.0)
-    reg = any(b['verdict'] == 'REGRESSION' for b in row['base'])
+    reg = regressions_count and any(b['verdict'] == 'REGRESSION' for b in row['base'])
     cls = {'CRITICAL': 2, 'SLOW': 1}.get(row['lat_class'], 0)
     cls = max(cls, {'CRITICAL': 2, 'SLOW': 1}.get(row['tput_class'], 0))
     return (cls if cls else (1 if reg else 0), worst)
 
 
+def jit_reading(r, noise):
+    j, q = r['jit'], r['jit_ratio']
+    if j is None:
+        return '-'
+    if j['rows'] < 1:
+        return 'no rows through interpreted programs (lookup / pass-through / no filter): cannot show'
+    if j['fallback']:
+        return 'FALLBACK: %d programs fell back to the interpreter' % j['fallback']
+    if q is None:
+        return '-'
+    if q >= 1 + noise:
+        return 'ON faster'
+    if q <= 1 - noise:
+        return 'ON slower'
+    return 'rows executed, no effect: the program is not where the time goes'
+
+
 def report(run, base, a):
     rows, meng, arm, other_arm, t1, tmax = triage(run, base, a)
+    comparable = same_machine(run, base) if base else None
+    regressions_count = comparable is True
     out = []
     m = run.meta
     out.append('# RonSQL performance triage')
     out.append('')
-    out.append('run: build=%s sf=%s threads=%s engines=%s arms=%s%s' % (
-        m.get('build', '?'), m.get('sf', '?'), run.threads, ','.join(run.engines), ','.join(run.arms),
-        (' baseline=%s' % a.baseline) if base else ''))
+    out.append('run: host=%s build=%s sf=%s threads=%s engines=%s arms=%s started=%s%s' % (
+        run.where(), m.get('build', '?'), m.get('sf', '?'), run.threads, ','.join(run.engines), ','.join(run.arms),
+        m.get('started', '?'), (' baseline=%s (host %s)' % (a.baseline, base.where())) if base else ''))
     out.append('')
+    for t in run.threads:
+        miss = run.missing_queries(t)
+        if miss:
+            last = run.last_case(t)
+            out.append('**Coverage: T=%d has no case for %d of %d queries** — the last case at T=%d was %s (%s); '
+                       'the run stopped or the selection changed. Missing: %s.'
+                       % (t, len(miss), len(run.queries), t,
+                          last['tag'] if last else '?',
+                          ('ok' if last and last['ok'] else ('FAILED: %s' % (last.get('error') or '')[:160])) if last else '?',
+                          ', '.join(miss[:12]) + (', …' if len(miss) > 12 else '')))
+            out.append('')
+    if base and comparable is False:
+        out.append('**Baseline ran on another machine** (%s vs %s): its verdicts compare hardware as much as '
+                   'code and are listed in section 5 as information only; they do not put a query on the '
+                   'needs-work list.' % (base.where(), run.where()))
+        out.append('')
+    elif base and comparable is None:
+        out.append('Baseline host unknown (old results.json without meta.host): verdicts are informational.')
+        out.append('')
     out.append('MySQL reference engine: `%s`; compiler arm for the engine comparison: `%s`. '
                'Latency ratio = RonSQL avg / MySQL avg at T=%d; throughput ratio = MySQL q/s / RonSQL q/s at T=%d '
                '(both > 1 = RonSQL behind). Classes: PARITY <= %.2fx, SLOW <= %.2fx, CRITICAL above; '
@@ -248,10 +350,10 @@ def report(run, base, a):
     out.append('')
 
     # 1. needs-work list
-    ranked = sorted(rows, key=severity, reverse=True)
+    ranked = sorted(rows, key=lambda r: severity(r, regressions_count), reverse=True)
     needs = [r for r in ranked if r['lat_class'] in ('FAIL', 'SLOW', 'CRITICAL')
-             or r['tput_class'] in ('SLOW', 'CRITICAL')
-             or any(b['verdict'] == 'REGRESSION' for b in r['base'])]
+             or r['tput_class'] in ('FAIL', 'SLOW', 'CRITICAL')
+             or (regressions_count and any(b['verdict'] == 'REGRESSION' for b in r['base']))]
     out.append('## 1. Needs work (%d of %d RonSQL-capable queries)' % (len(needs), len(rows)))
     out.append('')
     if needs:
@@ -262,15 +364,26 @@ def report(run, base, a):
             rs, ms = r['ronsql'], r['mysql']
             rsm, msm = r.get('ronsql_max'), r.get('mysql_max')
             lat = '%s (%s)' % (r['lat_class'], fmt_ratio(r['lat_ratio'])) if r['lat_class'] != 'FAIL' else 'FAIL: %s' % (r.get('fail') or '')[:80]
-            tput = '%s (%s)' % (r['tput_class'], fmt_ratio(r['tput_ratio'])) if r['tput_class'] not in ('N/A', 'FAIL') else r['tput_class']
+            if r['tput_class'] == 'FAIL':
+                tput = 'FAIL: %s' % (r.get('tput_fail') or '')[:80]
+            elif r['tput_class'] == 'N/A':
+                tput = 'N/A'
+            else:
+                tput = '%s (%s)' % (r['tput_class'], fmt_ratio(r['tput_ratio']))
             avgs = '%s / %s' % (fmt_ms(rs.get('avg_ms')), fmt_ms(ms.get('avg_ms')) if ms and ms['ok'] else '-')
             qps = '%s / %s' % (fmt_qps(rsm), fmt_qps(msm))
             tp = '%s %s' % (r['top_phase'][0], fmt_ms(r['top_phase'][1])) if r['top_phase'] else '-'
             pins = '; '.join(r['pins'])[:80] if r['pins'] else '-'
             regs = [b for b in r['base'] if b['verdict'] != 'same']
-            bl = '; '.join('%s %s T%d %s avg %s p99 %s' % (b['verdict'], b['engine'], b['threads'], b['arm'],
-                                                            fmt_pct(b['d_avg']), fmt_pct(b['d_p99']))
-                           for b in regs) if regs else ('same' if r['base'] else '-')
+            if not r['base']:
+                bl = '-'
+            elif not regressions_count:
+                bl = 'cross-host, see §5'
+            elif regs:
+                bl = '; '.join('%s %s T%d %s avg %s p99 %s' % (b['verdict'], b['engine'], b['threads'], b['arm'],
+                                                            fmt_pct(b['d_avg']), fmt_pct(b['d_p99'])) for b in regs)
+            else:
+                bl = 'same'
             out.append('| %d | %s | %s | %s | %s | %s | %s | %s | %s | %s |'
                        % (i, r['query'], lat, tput, avgs, qps, tp,
                           ('%.1f' % r['rows']) if r['rows'] is not None else '-', pins, bl))
@@ -302,9 +415,12 @@ def report(run, base, a):
         out.append('| query | class | RonSQL q/s | MySQL q/s | MySQL/RonSQL | RonSQL scale | MySQL scale | RonSQL avg @T%d | p99 @T%d |' % (tmax, tmax))
         out.append('|---|---|---:|---:|---:|---:|---:|---:|---:|')
         for r in sorted(rows, key=lambda r: r['query']):
+            if r['tput_class'] == 'N/A' and not r.get('ronsql_max'):
+                continue  # no case at this thread count (coverage line above)
             rsm, msm = r.get('ronsql_max'), r.get('mysql_max')
             out.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |' % (
-                r['query'], r['tput_class'], fmt_qps(rsm), fmt_qps(msm),
+                r['query'], r['tput_class'] if r['tput_class'] != 'FAIL' else 'FAIL: %s' % (r.get('tput_fail') or '')[:60],
+                fmt_qps(rsm), fmt_qps(msm),
                 fmt_ratio(r['tput_ratio']), fmt_ratio(r['ronsql_scale']), fmt_ratio(r['mysql_scale']),
                 fmt_ms(rsm.get('avg_ms')) if rsm and rsm['ok'] else '-',
                 fmt_ms(rsm.get('p99_ms')) if rsm and rsm['ok'] else '-'))
@@ -313,20 +429,24 @@ def report(run, base, a):
     # 4. compiled interpreter
     if other_arm:
         jit = [r for r in rows if r['jit_ratio'] is not None]
-        wins = [r for r in jit if r['jit_ratio'] >= 1 + a.jit_noise]
-        losses = [r for r in jit if r['jit_ratio'] <= 1 - a.jit_noise]
-        out.append('## 4. Compiled interpreter (OFF avg / ON avg at T=%d; > 1 = ON faster; noise band ±%.0f%%)'
+        out.append('## 4. Compiled interpreter at T=%d: OFF avg / ON avg (> 1 = ON faster; noise band ±%.0f%%) and the ON arm\'s ndbinfo.jit deltas per request'
                    % (t1, a.jit_noise * 100))
         out.append('')
-        out.append('faster with ON: %s' % (', '.join('%s %s' % (r['query'], fmt_ratio(r['jit_ratio'])) for r in wins) or 'none'))
-        out.append('')
-        out.append('slower with ON: %s' % (', '.join('%s %s' % (r['query'], fmt_ratio(r['jit_ratio'])) for r in losses) or 'none'))
+        out.append('| query | OFF/ON | rows executed/req | compiled/req | reused/req | fallback | reading |')
+        out.append('|---|---:|---:|---:|---:|---:|---|')
+        for r in sorted(jit, key=lambda r: -(r['jit']['rows'] if r['jit'] else 0)):
+            j = r['jit'] or {'rows': None, 'compiled': None, 'reused': None, 'fallback': None}
+            out.append('| %s | %s | %s | %s | %s | %s | %s |' % (
+                r['query'], fmt_ratio(r['jit_ratio']), fmt_num(j['rows']), fmt_num(j['compiled']),
+                fmt_num(j['reused']), '-' if j['fallback'] is None else '%d' % j['fallback'], jit_reading(r, a.jit_noise)))
         out.append('')
 
     # 5. baseline
     if base:
-        out.append('## 5. Against the baseline (%s): avg > +%.0f%% or p99 > +%.0f%% = REGRESSION, avg < -%.0f%% = IMPROVED'
-                   % (a.baseline, a.regress_avg * 100, a.regress_p99 * 100, a.regress_avg * 100))
+        out.append('## 5. Against the baseline (%s, host %s%s): avg > +%.0f%% or p99 > +%.0f%% = REGRESSION, avg < -%.0f%% = IMPROVED'
+                   % (a.baseline, base.where(),
+                      '' if comparable else '; NOT the same machine, informational',
+                      a.regress_avg * 100, a.regress_p99 * 100, a.regress_avg * 100))
         out.append('')
         out.append('| query | engine | threads | arm | baseline avg | now avg | avg | p99 | verdict |')
         out.append('|---|---|---:|---|---:|---:|---:|---:|---|')
@@ -346,15 +466,20 @@ def report(run, base, a):
     counts = {}
     for r in rows:
         counts[r['lat_class']] = counts.get(r['lat_class'], 0) + 1
+    tfail = sum(1 for r in rows if r['tput_class'] == 'FAIL')
     regs = sum(1 for r in rows for b in r['base'] if b['verdict'] == 'REGRESSION')
-    out.append('SUMMARY queries=%d %s regressions=%d' % (
-        len(rows), ' '.join('%s=%d' % (k.lower(), counts[k]) for k in ('FAIL', 'CRITICAL', 'SLOW', 'PARITY', 'N/A') if k in counts), regs))
+    missing = sum(len(run.missing_queries(t)) for t in run.threads)
+    out.append('SUMMARY queries=%d %s tmax_fail=%d missing_cases=%d regressions=%d%s' % (
+        len(rows), ' '.join('%s=%d' % (k.lower(), counts[k]) for k in ('FAIL', 'CRITICAL', 'SLOW', 'PARITY', 'N/A') if k in counts),
+        tfail, missing, regs, '' if (not base or regressions_count) else ' (cross-host, informational)'))
     return '\n'.join(out) + '\n', rows
 
 
 def parse_args():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('run', help='<out> directory of ronsql_bench_matrix.py or its results.json')
+    ap.add_argument('run', nargs='+',
+                    help='<out> directory of ronsql_bench_matrix.py or its results.json; several are merged '
+                         '(e.g. the first run plus a rerun of the thread counts it did not reach)')
     ap.add_argument('--baseline', help='an earlier run (directory or results.json) for the regression rule')
     ap.add_argument('--mysql-engines', default=','.join(MYSQL_ENGINES),
                     help='MySQL reference engines in order of preference (default %s)' % ','.join(MYSQL_ENGINES))

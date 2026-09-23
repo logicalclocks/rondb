@@ -1,0 +1,46 @@
+
+[*] RonSQL Benchmark fs_hw_floor: 1 threads × 5000 requests = 5000 total requests
+[*] [-] Fixed-overhead floor: COUNT(*) over countries_1 (40 rows) (rows/req 1)
+
+SELECT COUNT(*) FROM `countries_1`;
+
+[*] Warmup: 465.01us, 1 result rows
+[*] Warmup phases (µs): parse=13,analyze=0,load=8,plan=1,compile=3,prepare=27,subquery=0,ndbprep=57,send=0,firstbatch=76,drain=0,print=2,execute=149,rows=0,attempts=1
+
+[*] Warmup plan (EXPLAIN):
+Query parse tree:
+SELECT
+  Out_0:`COUNT(*)`
+   = A0:Count(1)
+FROM countries_1
+
+Aggregation program (2 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+
+Execute as fragment-stats COUNT(*) (no row scan).
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 5 instructions.
+
+
+[OK] RonSQL Benchmark fs_hw_floor completed in 0.74s
+   Requests: 5000 (errors: 0)
+   Throughput: 6713.87 queries/sec
+   Latency: min=43.64us avg=139.79us max=1.30ms p95=1.11ms p99=1.12ms p99.9=1.13ms
+
+   Phase breakdown (server-side, 5000/5000 requests sampled):
+     phase               avg        p95        p99        max
+     parse            0.67us     1.00us     1.00us     4.00us
+     analyze          0.03us     0.00us     1.00us     1.00us
+     load             0.79us     1.00us     1.00us     4.00us
+     plan             0.07us     1.00us     1.00us     1.00us
+     compile          0.26us     1.00us     1.00us     2.00us
+     prepare          2.10us     3.00us     4.00us    12.00us
+     ndbprep          0.19us     1.00us     1.00us    32.00us
+     firstbatch     109.90us     1.07ms     1.09ms     1.15ms
+     print            0.10us     1.00us     1.00us     1.00us
+     execute        110.59us     1.07ms     1.09ms     1.15ms
+     rows drained 0.0 per request
+

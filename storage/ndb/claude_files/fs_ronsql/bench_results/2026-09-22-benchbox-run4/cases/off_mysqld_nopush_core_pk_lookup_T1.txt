@@ -1,0 +1,17 @@
+
+[*] SQL Benchmark core_pk_lookup (MySQL server): 1 threads × 5000 requests = 5000 total requests
+[*] Single-row primary key lookup, projection only: the lookup floor (one PK read, no scan, no aggregation)
+
+SELECT o_custkey, o_orderdate, o_totalprice, o_orderstatus
+FROM orders
+WHERE o_orderkey = {KEY};
+
+[*] Random key range: 1..6000000
+[*] Warmup: 293.48us, 1 result rows
+
+
+[OK] SQL Benchmark core_pk_lookup completed in 2.20s
+   Requests: 5000 (errors: 0)
+   Throughput: 2275.97 queries/sec
+   Latency: min=106.40us avg=438.98us max=2.17ms p95=1.19ms p99=1.19ms p99.9=1.42ms
+
