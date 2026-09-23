@@ -1014,6 +1014,21 @@ int NdbRestarter::getMasterNodeVersion(int &version) {
   return -1;
 }
 
+int NdbRestarter::getNodeVersion(int nodeId, int &version) {
+  if (!isConnected()) return -1;
+  if (getStatus() != 0) return -1;
+
+  for (unsigned i = 0; i < ndbNodes.size(); i++) {
+    if (ndbNodes[i].node_id == nodeId) {
+      version = ndbNodes[i].version;
+      return 0;
+    }
+  }
+
+  g_err << "Could not find node info for node id " << nodeId << endl;
+  return -1;
+}
+
 int NdbRestarter::getNodeTypeVersionRange(ndb_mgm_node_type type, int &minVer,
                                           int &maxVer) {
   if (!isConnected()) return -1;

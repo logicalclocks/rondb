@@ -125,7 +125,16 @@ class DefineBackupRef {
     FailedAllocateTableMem = 1347,
     FailedToAllocateFileRecord = 1348,
     FailedToAllocateAttributeRecord = 1349,
-    FailedForBackupFilesAleadyExist = 1350
+    FailedForBackupFilesAleadyExist = 1350,
+    /* 1351 is StartBackupRef::FailedStartSinceDefineFailed */
+    FailedToAllocateBackupRecord = 1352,
+    /**
+     * This node is still sweeping the on-disk debris of a failed
+     * backup with the same id (it died mid-backup and was just
+     * ordered to clean up on rejoin); defining a new backup with
+     * that id would race the removals.
+     */
+    FailedForDebrisSweepInProgress = 1353
   };
 
  private:

@@ -72,6 +72,48 @@ class NdbBackup : public NdbConfig {
   int clearOldBackups();
   int abort(unsigned _backup_id);
 
+  /**
+   * Check whether any backup file content (regular files under a
+   * BACKUP-* entry) exists in the node's BackupDataDir. Empty
+   * directory shells do not count: scoped removal of a failed backup
+   * leaves the shared BACKUP-<id> parent in place. Returns 1 if
+   * content exists, 0 if none, -1 on error (or on Windows where the
+   * check is not implemented).
+   */
+  int backupDirsExist(int node_id);
+
+  /**
+   * Check whether any BACKUP-* directory entry (empty shell or not)
+   * exists in the node's BackupDataDir. Complements backupDirsExist:
+   * a completed removal of a failed backup must leave neither file
+   * content nor the BACKUP-<id> / BACKUP-<id>-PART-N-OF-M directory
+   * shells. Returns 1 if any such directory exists, 0 if none, -1 on
+   * error (or on Windows where the check is not implemented).
+   */
+  int backupShellsExist(int node_id);
+
+  /**
+   * Fabricate / check a single-threaded-layout fileset for the given
+   * backup id in the node's BackupDataDir (the three files directly
+   * under BACKUP-<id>, no part directories) - stands in for a valid
+   * older single-threaded backup when testing that a failed
+   * multithreaded attempt reusing the id never touches it.
+   * createStBackupFileset returns 0 on success; stBackupFilesetExists
+   * returns 1 if all three files exist, 0 if not, -1 on error (both
+   * -1 on Windows).
+   */
+  int createStBackupFileset(int node_id, unsigned backup_id);
+  int stBackupFilesetExists(int node_id, unsigned backup_id);
+
+  /**
+   * Check whether any BACKUP-<id>-PART-* directory (or content below
+   * one) of the given backup id remains on the node - the
+   * multithreaded attempt's own layout, which a debris sweep must
+   * remove. Returns 1 if present, 0 if none, -1 on error (or on
+   * Windows).
+   */
+  int backupMtDebrisExists(int node_id, unsigned backup_id);
+
  private:
   int execRestore(bool _restore_data, bool _restore_meta, bool _restore_epoch,
                   bool _disable_indexes, bool _enable_indexes,
