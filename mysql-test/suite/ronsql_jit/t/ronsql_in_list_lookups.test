@@ -1,0 +1,9 @@
+# WP-F F1a: primary-key lookups for IN lists carry no aggregation
+# program; only the residual filter rides a lookup, as interpreted code
+# outside the compiled-program path.  Census pin only: the fallback
+# delta must stay 0 (arm strict once the recorded delta is 0 and the
+# lookup filters are known to compile).
+SET @in_list_lookups_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql/t/ronsql_in_list_lookups.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @in_list_lookups_jit_c0 AS SIGNED)
+       AS ronsql_in_list_lookups_jit_fallback_delta;

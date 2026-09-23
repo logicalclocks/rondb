@@ -349,6 +349,21 @@ private:
   bool m_pk_lookup_has_residual = false;
   struct ConditionalExpression** m_pk_lookup_const = NULL;
   int* m_pk_lookup_cond_map = NULL;
+  // WP-F F1a (m3_wpf_plan.md §2.3): an IN-shaped conjunct on one PK
+  // column turns the single-row lookup into N lookups in one
+  // transaction.  m_pk_lookup_in_col is that column's PK ordinal (-1 =
+  // plain single-row lookup), m_pk_lookup_in_cond_idx the conjunct's
+  // index in m_toplevel_conditions, m_pk_lookup_in_values the literals
+  // in list order after de-duplication by the column's comparison
+  // (arena array, m_pk_lookup_in_count entries; m_pk_lookup_in_total is
+  // the count before de-duplication, for EXPLAIN).  m_pk_lookup_const
+  // holds the first value for that column as a placeholder; the
+  // execute arm substitutes per operation.
+  int m_pk_lookup_in_col = -1;
+  int m_pk_lookup_in_cond_idx = -1;
+  struct ConditionalExpression** m_pk_lookup_in_values = NULL;
+  Uint32 m_pk_lookup_in_count = 0;
+  Uint32 m_pk_lookup_in_total = 0;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -552,6 +567,11 @@ private:
   // emit-supported types, falling back to the scan-config path
   // (always correct) when the program cannot be carried.
   bool detect_pk_lookup();
+  // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
+  // on one column); see the definition for the contract.
+  bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
+                      struct ConditionalExpression** out, Uint32 cap,
+                      Uint32* count);
   // `defer_force_check` (Phase 4b): skip build_scan_config_candidates'
   // FORCE INDEX satisfiability throws so the ORDER BY index pass can
   // still qualify the forced index; plan_index_and_filter then runs

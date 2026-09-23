@@ -3469,6 +3469,89 @@ RonSQLPreparer::generate_scan_config_candidates(bool defer_force_check)
 // (detect_pk_lookup).
 static const Uint32 LOOKUP_FILTER_MAX_WORDS = 64;
 
+// WP-F F1a (m3_wpf_plan.md §2.3): the largest IN list served as a batch
+// of primary-key lookups in one transaction and one execute.  Beyond it
+// the conjunct stays a filter on the scan path.  4095 is the multi-range
+// scan's cap as well (NdbIndexScanOperation::MaxRangeNo), so both
+// mechanisms fall back at the same size.
+static const Uint32 IN_LOOKUPS_MAX = 4095;
+
+/*
+ * WP-F (m3_wpf_plan.md §2.1): recognise an IN-shaped conjunct.  The
+ * parser rewrites `col IN (a, b, c)` into the left-deep tree
+ * `((col = a) OR (col = b)) OR (col = c)` (RonSQLParser.y, in_list), so
+ * an IN list reaches the planner as one T_OR top-level conjunct.
+ * Returns true when every leaf is a T_EQUALS between one and the same
+ * column (a T_IDENTIFIER, on either side) and a literal the bound and
+ * key encoders serve (T_INT / T_FLOAT / T_STRING / I_MYSQL_TIME);
+ * col_idx receives the column, count the number of leaves, and — when
+ * out != NULL — out[0..count) the literals in list order (the caller
+ * sizes out from a first call with out == NULL; more than cap leaves
+ * fails).  Any other leaf (another column, column-vs-column, a subquery
+ * placeholder, a nested AND) makes the conjunct not IN-shaped and it
+ * stays a filter as before.  The tree is as deep as the list is long,
+ * so the walk keeps its own stack.
+ */
+bool
+RonSQLPreparer::match_in_shape(struct ConditionalExpression* ce,
+                               Uint32* col_idx,
+                               struct ConditionalExpression** out,
+                               Uint32 cap, Uint32* count)
+{
+  *count = 0;
+  if (ce == NULL || ce->op != T_OR) return false;
+  bool have_col = false;
+  const char* col_name = NULL;
+  Uint32 col = 0;
+  std::vector<ConditionalExpression*> stack;
+  stack.push_back(ce);
+  while (!stack.empty()) {
+    ConditionalExpression* node = stack.back();
+    stack.pop_back();
+    if (node == NULL) return false;
+    if (node->op == T_OR) {
+      // Right first, so the leaves pop in list order.
+      stack.push_back(node->args.right);
+      stack.push_back(node->args.left);
+      continue;
+    }
+    if (node->op != T_EQUALS) return false;
+    ConditionalExpression* l = node->args.left;
+    ConditionalExpression* r = node->args.right;
+    if (l == NULL || r == NULL) return false;
+    ConditionalExpression* ident;
+    ConditionalExpression* lit;
+    if (l->op == T_IDENTIFIER && r->op != T_IDENTIFIER) {
+      ident = l;
+      lit = r;
+    } else if (r->op == T_IDENTIFIER && l->op != T_IDENTIFIER) {
+      ident = r;
+      lit = l;
+    } else {
+      return false;
+    }
+    if (lit->op != T_INT && lit->op != T_FLOAT && lit->op != T_STRING &&
+        lit->op != I_MYSQL_TIME) {
+      return false;
+    }
+    const char* name = m_columns[ident->col_idx].c_str();
+    if (!have_col) {
+      have_col = true;
+      col = ident->col_idx;
+      col_name = name;
+    } else if (strcmp(name, col_name) != 0) {
+      return false;
+    }
+    if (out != NULL) {
+      if (*count >= cap) return false;
+      out[*count] = lit;
+    }
+    (*count)++;
+  }
+  *col_idx = col;
+  return *count > 0;
+}
+
 bool
 RonSQLPreparer::detect_pk_lookup()
 {
@@ -3502,9 +3585,52 @@ RonSQLPreparer::detect_pk_lookup()
    * scan-config path takes over (always correct, possibly a full
    * table scan on a hash-PK table).
    */
+  int in_col = -1;
+  int in_cond_idx = -1;
+  ConditionalExpression** in_values = NULL;
+  Uint32 in_total = 0;
   for (Uint32 i = 0; i < num_conds; i++) {
     ConditionalExpression* ce = m_toplevel_conditions[i];
     cond_map[i] = -1;
+    if (ce->op == T_OR) {
+      /*
+       * WP-F F1a: one IN-shaped conjunct on a not-yet-bound PK column
+       * binds it with N values — N lookups instead of one.  A second
+       * IN-shaped conjunct, or one on a column already bound by an
+       * equality, stays a residual: the lookup's filter program
+       * re-checks it against each fetched row, so `pk = 5 AND pk IN
+       * (1, 5)` and `pk IN (1, 5) AND pk IN (5, 9)` stay correct.  A
+       * list longer than IN_LOOKUPS_MAX leaves the whole WHERE to the
+       * scan path.
+       */
+      Uint32 in_col_idx = 0;
+      Uint32 n_leaves = 0;
+      if (in_col < 0 &&
+          match_in_shape(ce, &in_col_idx, NULL, 0, &n_leaves)) {
+        if (n_leaves > IN_LOOKUPS_MAX) return false;
+        const char* col_name = m_columns[in_col_idx].c_str();
+        for (int k = 0; k < nkeys; k++) {
+          const char* pk_name = tab->getPrimaryKey(k);
+          if (pk_name != NULL && strcmp(pk_name, col_name) == 0 &&
+              pk_const[k] == NULL) {
+            in_values =
+                m_amalloc->alloc_exc<ConditionalExpression*>(n_leaves);
+            Uint32 filled = 0;
+            ndbrequire(match_in_shape(ce, &in_col_idx, in_values, n_leaves,
+                                      &filled) &&
+                       filled == n_leaves);
+            in_total = n_leaves;
+            in_col = k;
+            in_cond_idx = (int)i;
+            pk_const[k] = in_values[0];
+            cond_map[i] = k;
+            break;
+          }
+        }
+      }
+      if (in_cond_idx != (int)i) num_residual++;
+      continue;
+    }
     if (ce->op != T_EQUALS) { num_residual++; continue; }
     ConditionalExpression* col_side = NULL;
     ConditionalExpression* const_side = NULL;
@@ -3536,6 +3662,67 @@ RonSQLPreparer::detect_pk_lookup()
   }
   for (int k = 0; k < nkeys; k++) {
     if (pk_const[k] == NULL) return false;  // partial PK cover
+  }
+  Uint32 in_count = 0;
+  if (in_col >= 0) {
+    // F1a keeps a pass-through ORDER BY on the scan path: the scan arm
+    // owns the client-side sort (m3_wpf_plan.md F1a).
+    if (m_context.ast_root.orderby_columns != NULL) return false;
+    /*
+     * De-duplicate the list by the column's own comparison: a duplicate
+     * key would read and print its row twice, and under a
+     * case-insensitive collation 'a' and 'A' are one key.  The literals
+     * are encoded exactly as the lookup arm encodes them
+     * (encode_constant, the column's NdbRecord byte format) and compared
+     * with the NdbSqlUtil comparator for the column's type and charset
+     * — the pass-through sort's comparator — keeping the first
+     * occurrence of each key in list order.  A literal the encoder
+     * rejects sends the whole WHERE to the scan path, like the residual
+     * trial build below.
+     */
+    const NdbDictionary::Column* in_pk_col =
+        tab->getColumn(tab->getPrimaryKey(in_col));
+    ndbrequire(in_pk_col != NULL);
+    const NdbSqlUtil::Type& sql_type =
+        NdbSqlUtil::getType(static_cast<Uint32>(in_pk_col->getType()));
+    if (sql_type.m_cmp == NULL) return false;
+    raw_value* enc = m_amalloc->alloc_exc<raw_value>(in_total);
+    try {
+      for (Uint32 v = 0; v < in_total; v++) {
+        enc[v] = encode_constant(in_values[v], in_pk_col);
+      }
+    } catch (RonSQLPermanentError&) {
+      return false;
+    } catch (RonSQLMaybeStaleSchema&) {
+      return false;
+    } catch (RonSQLRetryableError&) {
+      return false;
+    }
+    const void* cs = in_pk_col->getCharset();
+    std::vector<Uint32> order(in_total);
+    for (Uint32 v = 0; v < in_total; v++) order[v] = v;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](Uint32 a, Uint32 b) {
+                       return (*sql_type.m_cmp)(cs, enc[a].val,
+                                                (unsigned)enc[a].len,
+                                                enc[b].val,
+                                                (unsigned)enc[b].len) < 0;
+                     });
+    bool* dup = m_amalloc->alloc_exc<bool>(in_total);
+    for (Uint32 v = 0; v < in_total; v++) dup[v] = false;
+    for (Uint32 v = 1; v < in_total; v++) {
+      Uint32 p = order[v - 1];
+      Uint32 q = order[v];
+      if ((*sql_type.m_cmp)(cs, enc[p].val, (unsigned)enc[p].len,
+                            enc[q].val, (unsigned)enc[q].len) == 0) {
+        dup[q] = true;  // stable sort: q is the later one in list order
+      }
+    }
+    for (Uint32 v = 0; v < in_total; v++) {
+      if (!dup[v]) in_values[in_count++] = in_values[v];
+    }
+    ndbrequire(in_count >= 1);
+    pk_const[in_col] = in_values[0];
   }
   if (num_residual > 0) {
     /*
@@ -3578,6 +3765,11 @@ RonSQLPreparer::detect_pk_lookup()
   m_pk_lookup_const = pk_const;
   m_pk_lookup_cond_map = cond_map;
   m_pk_lookup_has_residual = (num_residual > 0);
+  m_pk_lookup_in_col = in_col;
+  m_pk_lookup_in_cond_idx = in_cond_idx;
+  m_pk_lookup_in_values = in_values;
+  m_pk_lookup_in_count = in_count;
+  m_pk_lookup_in_total = in_total;
   return true;
 }
 
@@ -8109,7 +8301,9 @@ RonSQLPreparer::execute_single_table_passthrough()
   // Phase 3 (ronsql_orderby_limit_plan.md): ORDER BY on the
   // pass-through path — count entries up front so `attrs` has room for
   // ORDER BY-only extra slots on the scan arm.  The PK-lookup arm
-  // returns at most one row, so sorting is a no-op there.
+  // returns at most one row per key and never runs with an ORDER BY
+  // (detect_pk_lookup keeps that on the scan path), so sorting is a
+  // no-op there.
   Uint32 n_orderby = 0;
   for (const OrderbyColumns* ob = m_context.ast_root.orderby_columns;
        ob != NULL; ob = ob->next)
@@ -8135,72 +8329,61 @@ RonSQLPreparer::execute_single_table_passthrough()
 
   if (m_pk_lookup) {
     /*
-     * Single-row primary key lookup.  Two definition arms share the
-     * execute + print tail below: the RecAttr readTuple when the WHERE
-     * was fully consumed as keys, and an NdbRecord readTuple carrying
-     * residual conjuncts as an OO_INTERPRETED filter program (the
-     * RecAttr-style operation has no interpreted-code facility —
-     * OO_INTERPRETED is NdbRecord-only).  The interpreted-code object
-     * and the arena rows must outlive execute(), hence block scope.
+     * Primary key lookup(s).  Two definition arms share the execute +
+     * print tail below: the RecAttr readTuple when the WHERE was fully
+     * consumed as keys, and an NdbRecord readTuple carrying residual
+     * conjuncts as an OO_INTERPRETED filter program (the RecAttr-style
+     * operation has no interpreted-code facility — OO_INTERPRETED is
+     * NdbRecord-only).  WP-F F1a (m3_wpf_plan.md §2.3): an IN-shaped
+     * conjunct on one PK column makes this N operations in one
+     * transaction and one execute — each key goes to the fragment that
+     * holds it, so the batch costs N lookups whatever the fragment
+     * count.  Committed reads only support AO_IgnoreError, so a missing
+     * key is an empty result on its own operation, never an aborted
+     * batch.  The interpreted-code object and the arena rows must
+     * outlive execute(), hence block scope.
      */
-    const NdbOperation* exec_op = NULL;
+    const Uint32 n_ops =
+        (m_pk_lookup_in_col >= 0) ? m_pk_lookup_in_count : 1;
+    ndbrequire(n_ops >= 1);
+    const NdbOperation** exec_ops =
+        m_amalloc->alloc_exc<const NdbOperation*>(n_ops);
+    const NdbRecAttr** op_attrs =
+        m_amalloc->alloc_exc<const NdbRecAttr*>((size_t)n_ops * num_cols);
     NdbInterpretedCode residual_code(m_main_scope.table);
     const int nkeys = m_main_scope.table->getNoOfPrimaryKeys();
-    if (!m_pk_lookup_has_residual) {
-      NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
-      require_sch(op != NULL, "Failed to get lookup operation.");
-      require_run(DBG(op->readTuple(NdbOperation::LM_CommittedRead)) == 0,
-                  "Failed to initialize lookup operation.");
-      for (int k = 0; k < nkeys; k++) {
-        const char* pk_name = m_main_scope.table->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            m_main_scope.table->getColumn(pk_name);
-        ndbrequire(pk_col != NULL);
-        raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
-        require_run(DBG(op->equal(pk_name,
-                                  static_cast<const char*>(rv.val))) == 0,
-                    "Failed to set primary key value for lookup.");
-      }
-      register_passthrough_getvalues(op, attrs, num_cols);
-      exec_op = op;
-    } else {
-      const NdbRecord* rec = m_main_scope.table->getDefaultRecord();
+    // Key literals per PK column; the IN column's entry is replaced per
+    // operation.
+    ConditionalExpression** key_const =
+        m_amalloc->alloc_exc<ConditionalExpression*>(nkeys);
+    for (int k = 0; k < nkeys; k++) key_const[k] = m_pk_lookup_const[k];
+    const NdbRecord* rec = NULL;
+    Uint32 rowlen = 0;
+    unsigned char* zero_mask = NULL;
+    char* result_row = NULL;
+    if (m_pk_lookup_has_residual) {
+      rec = m_main_scope.table->getDefaultRecord();
       require_sch(rec != NULL, "Failed to get default record for lookup.");
-      const Uint32 rowlen = NdbDictionary::getRecordRowLength(rec);
+      rowlen = NdbDictionary::getRecordRowLength(rec);
       require_run(rowlen > 0, "Empty default record for lookup.");
-      char* key_row = m_amalloc->alloc_exc<char>(rowlen);
-      memset(key_row, 0, rowlen);
       /*
        * The result record/row are pure scaffolding: the all-zero mask
        * requests no NdbRecord result columns, and the projected
        * columns instead arrive as OO_GETVALUE extra reads — plain
        * NdbRecAttr results, so the pass-through printer keeps its
-       * RecAttr path unchanged.
+       * RecAttr path unchanged.  Nothing is written into result_row,
+       * so one buffer serves every operation.
        */
-      char* result_row = m_amalloc->alloc_exc<char>(rowlen);
+      result_row = m_amalloc->alloc_exc<char>(rowlen);
       memset(result_row, 0, rowlen);
       const Uint32 mask_len =
           ((Uint32)m_main_scope.table->getNoOfColumns() + 7) / 8;
-      unsigned char* zero_mask = m_amalloc->alloc_exc<unsigned char>(mask_len);
+      zero_mask = m_amalloc->alloc_exc<unsigned char>(mask_len);
       memset(zero_mask, 0, mask_len);
-      for (int k = 0; k < nkeys; k++) {
-        const char* pk_name = m_main_scope.table->getPrimaryKey(k);
-        const NdbDictionary::Column* pk_col =
-            m_main_scope.table->getColumn(pk_name);
-        ndbrequire(pk_col != NULL);
-        // encode_constant produces the column's NdbRecord byte format
-        // for every supported PK type (little-endian ints at column
-        // width, space-padded CHAR, length-prefixed VARCHAR, packed
-        // temporals), so the bytes go into the key row verbatim.
-        raw_value rv = encode_constant(m_pk_lookup_const[k], pk_col);
-        char* dst = NdbDictionary::getValuePtr(rec, key_row,
-                                               pk_col->getAttrId());
-        require_run(dst != NULL, "Failed to locate key column in record.");
-        memcpy(dst, rv.val, rv.len);
-      }
-      // Residual filter program, rebuilt per execute like the scan
-      // arm's NdbScanFilter; the detection-time trial build proved it
-      // fits LOOKUP_FILTER_MAX_WORDS with emit-supported types.
+      // Residual filter program, built once and shared by every
+      // operation, rebuilt per execute like the scan arm's
+      // NdbScanFilter; the detection-time trial build proved it fits
+      // LOOKUP_FILTER_MAX_WORDS with emit-supported types.
       {
         NdbScanFilter filter(&residual_code);
         DBGV(filter.setSqlCmpSemantics());
@@ -8218,25 +8401,69 @@ RonSQLPreparer::execute_single_table_passthrough()
       }
       require_run(DBG(residual_code.finalise()) == 0,
                   "Failed to finalise lookup filter.");
-      NdbOperation::GetValueSpec* gets =
-          m_amalloc->alloc_exc<NdbOperation::GetValueSpec>(num_cols);
-      build_passthrough_getvalue_specs(gets, num_cols);
-      NdbOperation::OperationOptions opts;
-      memset(&opts, 0, sizeof(opts));
-      opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED |
-                            NdbOperation::OperationOptions::OO_GETVALUE;
-      opts.interpretedCode = &residual_code;
-      opts.extraGetValues = gets;
-      opts.numExtraGetValues = num_cols;
-      exec_op = DBG(m_trans->readTuple(rec, key_row, rec, result_row,
-                                       NdbOperation::LM_CommittedRead,
-                                       zero_mask, &opts, sizeof(opts)));
-      require_sch(exec_op != NULL, "Failed to define lookup operation.");
-      for (Uint32 i = 0; i < num_cols; i++) {
-        // OO_GETVALUE RecAttrs are populated at definition time.
-        attrs[i] = gets[i].recAttr;
-        require_run(attrs[i] != NULL,
-                    "Single-table pass-through: OO_GETVALUE failed.");
+    }
+    for (Uint32 n = 0; n < n_ops; n++) {
+      if (m_pk_lookup_in_col >= 0) {
+        key_const[m_pk_lookup_in_col] = m_pk_lookup_in_values[n];
+      }
+      const NdbRecAttr** attrs_n = op_attrs + (size_t)n * num_cols;
+      if (!m_pk_lookup_has_residual) {
+        NdbOperation* op = DBG(m_trans->getNdbOperation(m_main_scope.table));
+        require_sch(op != NULL, "Failed to get lookup operation.");
+        require_run(DBG(op->readTuple(NdbOperation::LM_CommittedRead)) == 0,
+                    "Failed to initialize lookup operation.");
+        for (int k = 0; k < nkeys; k++) {
+          const char* pk_name = m_main_scope.table->getPrimaryKey(k);
+          const NdbDictionary::Column* pk_col =
+              m_main_scope.table->getColumn(pk_name);
+          ndbrequire(pk_col != NULL);
+          raw_value rv = encode_constant(key_const[k], pk_col);
+          require_run(DBG(op->equal(pk_name,
+                                    static_cast<const char*>(rv.val))) == 0,
+                      "Failed to set primary key value for lookup.");
+        }
+        register_passthrough_getvalues(op, attrs_n, num_cols);
+        exec_ops[n] = op;
+      } else {
+        char* key_row = m_amalloc->alloc_exc<char>(rowlen);
+        memset(key_row, 0, rowlen);
+        for (int k = 0; k < nkeys; k++) {
+          const char* pk_name = m_main_scope.table->getPrimaryKey(k);
+          const NdbDictionary::Column* pk_col =
+              m_main_scope.table->getColumn(pk_name);
+          ndbrequire(pk_col != NULL);
+          // encode_constant produces the column's NdbRecord byte format
+          // for every supported PK type (little-endian ints at column
+          // width, space-padded CHAR, length-prefixed VARCHAR, packed
+          // temporals), so the bytes go into the key row verbatim.
+          raw_value rv = encode_constant(key_const[k], pk_col);
+          char* dst = NdbDictionary::getValuePtr(rec, key_row,
+                                                 pk_col->getAttrId());
+          require_run(dst != NULL, "Failed to locate key column in record.");
+          memcpy(dst, rv.val, rv.len);
+        }
+        NdbOperation::GetValueSpec* gets =
+            m_amalloc->alloc_exc<NdbOperation::GetValueSpec>(num_cols);
+        build_passthrough_getvalue_specs(gets, num_cols);
+        NdbOperation::OperationOptions opts;
+        memset(&opts, 0, sizeof(opts));
+        opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED |
+                              NdbOperation::OperationOptions::OO_GETVALUE;
+        opts.interpretedCode = &residual_code;
+        opts.extraGetValues = gets;
+        opts.numExtraGetValues = num_cols;
+        const NdbOperation* op =
+            DBG(m_trans->readTuple(rec, key_row, rec, result_row,
+                                   NdbOperation::LM_CommittedRead,
+                                   zero_mask, &opts, sizeof(opts)));
+        require_sch(op != NULL, "Failed to define lookup operation.");
+        for (Uint32 i = 0; i < num_cols; i++) {
+          // OO_GETVALUE RecAttrs are populated at definition time.
+          attrs_n[i] = gets[i].recAttr;
+          require_run(attrs_n[i] != NULL,
+                      "Single-table pass-through: OO_GETVALUE failed.");
+        }
+        exec_ops[n] = op;
       }
     }
     // Phase stats: ndbprep = lookup-op definition; the NDB API fuses
@@ -8244,49 +8471,54 @@ RonSQLPreparer::execute_single_table_passthrough()
     // and drain stay 0, like the fused single-table aggregate path).
     STAT_TS(m_conf.phase_stats, s_pk_defined);
     STAT_SET(m_conf.phase_stats, ndbprep_us, s_scandef_start, s_pk_defined);
-    bool have_row = true;
-    if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0 ||
-        exec_op->getNdbError().code != 0) {
+    if (DBG(m_trans->execute(NdbTransaction::Commit)) != 0) {
       // A missing row surfaces as NoDataFound — the one place a failed
-      // NDB call is a normal, empty result.  On the residual arm this
-      // also covers a fetched-but-rejected row: NdbScanFilter's reject
-      // path is interpret_exit_nok() with the default error code 626,
-      // whose classification is NoDataFound — indistinguishable from
-      // row-absent by design, and both mean an empty result here.
-      // (The NdbRecord readTuple defaults to AO_IgnoreError, so
-      // execute() may return 0 with only the op error set — hence the
-      // dual check above.)  Anything else is a real error, classified
-      // by handle_ronsql_exception.
-      const NdbError& op_err = exec_op->getNdbError();
+      // NDB call is a normal, empty result.  Every operation ignores
+      // its own errors, but execute() may still return -1 with the
+      // transaction error set to that NoDataFound; anything else is a
+      // real error, classified by handle_ronsql_exception.
       const NdbError& trans_err = m_trans->getNdbError();
-      if (op_err.classification == NdbError::NoDataFound ||
-          trans_err.classification == NdbError::NoDataFound) {
-        have_row = false;
-      } else {
-        require_run(false, "Failed to execute lookup.");
-      }
+      require_run(trans_err.classification == NdbError::NoDataFound,
+                  "Failed to execute lookup.");
     }
-    // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT 0 prints nothing
-    // (any LIMIT >= 1 cannot constrain a single-row lookup further).
-    if (m_context.ast_root.limit == 0) have_row = false;
     STAT_TS(m_conf.phase_stats, s_pk_done);
     STAT_SET(m_conf.phase_stats, firstbatch_us, s_pk_defined, s_pk_done);
-    STAT_COUNT(m_conf.phase_stats, rows_drained, have_row ? 1 : 0);
+    // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT counts printed rows;
+    // -1 means no LIMIT, and LIMIT 0 prints nothing (JSON keeps its
+    // framing).
+    const Int64 limit = m_context.ast_root.limit;
+    Uint32 row_count = 0;
     if (is_json) {
-      m_resultprinter->print_passthrough_header(attrs, num_cols,
+      m_resultprinter->print_passthrough_header(op_attrs, num_cols,
                                                 m_conf.out_stream);
       header_emitted = true;
     }
-    if (have_row) {
+    for (Uint32 n = 0; n < n_ops; n++) {
+      if (limit >= 0 && (Int64)row_count >= limit) break;
+      const NdbError& op_err = exec_ops[n]->getNdbError();
+      if (op_err.code != 0) {
+        // NoDataFound: the row is absent or, on the residual arm,
+        // fetched but rejected by the filter program — NdbScanFilter's
+        // reject path is interpret_exit_nok() with the default error
+        // code 626, whose classification is NoDataFound,
+        // indistinguishable from row-absent by design; both mean no
+        // row for this key.
+        require_run(op_err.classification == NdbError::NoDataFound,
+                    "Failed to execute lookup.");
+        continue;
+      }
+      const NdbRecAttr** attrs_n = op_attrs + (size_t)n * num_cols;
       if (!header_emitted) {
-        m_resultprinter->print_passthrough_header(attrs, num_cols,
+        m_resultprinter->print_passthrough_header(attrs_n, num_cols,
                                                   m_conf.out_stream);
         header_emitted = true;
       }
-      m_resultprinter->print_passthrough_row(attrs, num_cols,
-                                             /*is_first_row=*/true,
+      m_resultprinter->print_passthrough_row(attrs_n, num_cols,
+                                             /*is_first_row=*/(row_count == 0),
                                              m_conf.out_stream);
+      row_count++;
     }
+    STAT_COUNT(m_conf.phase_stats, rows_drained, row_count);
     if (header_emitted) {
       m_resultprinter->print_passthrough_finish(m_conf.out_stream);
     }
@@ -16261,12 +16493,34 @@ RonSQLPreparer::print()
     // single-table access choice lives in planner state, so EXPLAIN
     // can tell the whole truth here.
     Uint32 cond_cnt = m_toplevel_conditions.size();
+    // WP-F F1a: N lookups for an IN list on a PK column; the list is
+    // summarised instead of printing its OR tree.
+    auto print_pk_lookup_head = [&](decltype(out)& o) {
+      if (m_pk_lookup_in_col >= 0) {
+        o << "Execute as " << m_pk_lookup_in_count
+          << " primary key lookups (IN list on `"
+          << m_main_scope.table->getPrimaryKey(m_pk_lookup_in_col)
+          << "`: " << m_pk_lookup_in_total << " values, "
+          << m_pk_lookup_in_count << " distinct).\n";
+      } else {
+        o << "Execute as primary key lookup.\n";
+      }
+    };
+    auto print_pk_lookup_cond = [&](Uint32 i, LexString prefix) {
+      if ((int)i == m_pk_lookup_in_cond_idx) {
+        out << "`" << m_main_scope.table->getPrimaryKey(m_pk_lookup_in_col)
+            << "` IN (" << m_pk_lookup_in_total << " values, "
+            << m_pk_lookup_in_count << " distinct)\n";
+      } else {
+        print(m_toplevel_conditions[i], prefix);
+      }
+    };
     if (!m_pk_lookup_has_residual) {
-      out << "Execute as primary key lookup.\n"
-          << "KEYS (" << cond_cnt << "):\n";
+      print_pk_lookup_head(out);
+      out << "KEYS (" << cond_cnt << "):\n";
       for (Uint32 i = 0; i < cond_cnt; i++) {
         out << (i+1 == cond_cnt ? "╰─ " : "├─ ");
-        print(m_toplevel_conditions[i],
+        print_pk_lookup_cond(i,
               i + 1 == cond_cnt
               ? LexString{"   ", 3}
               : LexString{"│  ", 5});
@@ -16282,8 +16536,8 @@ RonSQLPreparer::print()
         }
       }
       Uint32 key_cnt = cond_cnt - filter_cnt;
-      out << "Execute as primary key lookup.\n"
-          << "CONDITIONS (" << key_cnt << " key"
+      print_pk_lookup_head(out);
+      out << "CONDITIONS (" << key_cnt << " key"
           << (key_cnt == 1 ? "" : "s")
           << " and " << filter_cnt << " filter"
           << (filter_cnt == 1 ? "" : "s") << "):\n";
@@ -16301,7 +16555,7 @@ RonSQLPreparer::print()
             prefixlen++;
           }
         }
-        print(m_toplevel_conditions[i],
+        print_pk_lookup_cond(i,
               i + 1 == cond_cnt
               ? LexString{"              ", prefixlen}
               : LexString{"│             ", prefixlen + 2});

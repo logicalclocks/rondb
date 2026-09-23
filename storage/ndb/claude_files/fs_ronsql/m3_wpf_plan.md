@@ -7,8 +7,11 @@ not an option.** The engine work of M3 starts here; F27 (the node
 failure after query-memory exhaustion) is investigated in parallel
 (`m3_experiments.md` X4).
 
-**Status: plan. No engine code changed yet. Each phase is one reviewed
-diff; the user builds and tests.**
+**Status: F1a done 2026-09-23 — `RonSQLPreparer.{hpp,cpp}`, test
+`ronsql_in_list_lookups` + JIT mirror green (the user's run; JIT
+fallback delta 0). F1b (aggregation on PK reads) is a kernel + API
+package awaiting the user's decision. F2 next. Each phase is one
+reviewed diff; the user builds and tests.**
 
 ## 0. Contract and targets
 
@@ -156,7 +159,37 @@ of them has an IN-shaped conjunct", and the lookup arm applies to
 aggregate queries too (§2.3). The aggregate lookup is new; the
 pass-through lookup generalises the existing one.
 
-### 2.3 N primary-key lookups (F1)
+### 2.3 N primary-key lookups (F1a, F1b)
+
+**Finding of the F1 research (2026-09-23).** Aggregation on a
+primary-key read does not exist below RonSQL: the kernel runs the
+aggregation interpreter only under the scan protocol
+(`ScanTabReq::setAggregation` / `ScanFragReq::getAggregationFlag`;
+`TcKeyReq` has no such flag), the join-aggregation feed on lookups is
+driven by DBSPJ under a scan root (`JOIN_AGG_SETUP` lives on the
+SCAN_TABREQ path), and `NdbQueryBuilder` rejects a lookup-rooted
+aggregate query with `QRY_WRONG_OPERATION_TYPE` ("an aggregate query
+must use the scan protocol", `NdbQueryBuilder.cpp:1800`); `NdbQueryOptions::setAggregation`
+deep-copies the program and every `NdbQuery` creates its own
+`NdbAggregator`, so N queries could not share one either. Hence:
+
+- *Pass-through* complete-PK lists → N PK lookups now (RonSQL only,
+  F1a below).
+- *Aggregate* complete-PK lists → true PK lookups need **F1b, a kernel +
+  API package**: a TCKEYREQ/LQHKEYREQ aggregation flag with the program
+  in the ATTRINFO section, DBTUP running `AggInterpreter` on the one
+  tuple and returning the aggregation record as the TRANSID_AI result,
+  DBTC passing the flag through, `NdbOperation::setAggregationCode` on
+  the API and the receiver feeding the record into an `NdbAggregator`
+  shared by the N operations (the aggregator already merges per-fragment
+  partials, so N per-operation partials are the same thing). Until F1b
+  lands, the aggregate complete-PK list is served by the multi-range
+  scan on the ordered PRIMARY index (F2) — the "scan is the only option"
+  clause — and F1b's benefit is measured against that (`core_in_pk100`,
+  `core_in_pk1000`). Per-key *pruned single-range scans* are not an
+  alternative: each is a scan (`MaxNoOfConcurrentScans` per TC caps a
+  batch at 256, setup cost per scan), so they lose to the multi-range
+  scan above a few keys.
 
 *Pass-through* (`SELECT cols … WHERE pk IN (…)`, optional residual
 conjuncts): the existing single-row arms, repeated N times in one
@@ -281,27 +314,28 @@ an IN shape.
 
 ## 3. Phases
 
-### F1 — primary-key lookups for complete-PK IN lists (single table)
+### F1a — primary-key lookups for pass-through complete-PK IN lists (single table, RonSQL only)
 
-Files: `RonSQLPreparer.hpp/.cpp` — `match_in_shape`, the extended
-`detect_pk_lookup`, the N-operation pass-through arm, the N-query
-aggregate arm (`emit_root_op` mechanism), EXPLAIN. No kernel change;
-possibly the `NdbAggregator` sharing question decides an API touch.
+`detect_pk_lookup` accepts one IN-shaped conjunct on a PK column (plain
+equalities on the others); the execute arm issues N `readTuple`s in one
+transaction with `AO_IgnoreError` (a missing key is a normal empty
+result on that operation, not an aborted batch), prints the rows that
+came back in the list order after de-duplication, honours LIMIT; a
+pass-through ORDER BY keeps the scan path in this cut (the scan arm
+owns the client-side sort). EXPLAIN: `Execute as N primary key lookups
+(IN list on \`col\`).`
 
-Tests: new `mysql-test/suite/ronsql/t/ronsql_in_list_lookups.test`
-(tables with a single-column PK, a composite PK `(a, b)`, a `USING
-HASH` PK, VARCHAR and TIMESTAMP PKs; results compared with MySQL through
-`ronsql_compare.inc`: pass-through and aggregate IN lists, `GROUP BY
-pk`, composite PK with an IN on either column and an equality on the
-other, residual filters, duplicates / `NULL` / missing keys / one value
-/ descending order / mixed-case strings, 4096 values (fallback),
-`IGNORE INDEX` irrelevance, EXPLAIN of each) and its `ronsql_jit`
-mirror (strict arming; fallback delta 0). `ronsql_fs` suites green.
+### F1b — aggregation on primary-key reads (kernel + API; decision pending)
 
-Evidence: `core_in_pk100` ≤ 1 ms and a 1000-key variant (registry
-entry `core_in_pk1000`, added with the diff) for the `IN_LOOKUPS_MAX`
-decision; `fs_hw_hash_point`'s table gets an IN-list entry
-(`fs_hw_hash_batch100`) so the hash-only case is measured; pins.
+The package sketched in §2.3. Scope: `TcKeyReq` / `LqhKeyReq` flag,
+DBTC pass-through, DBLQH/DBTUP running the aggregation program on the
+looked-up tuple (the interpreter and the record format exist; the
+lookup-path plumbing does not), the API `NdbOperation::setAggregationCode`
+and receiver → `NdbAggregator::ProcessRes`, then RonSQL's N-operation
+aggregate arm. Tests at every level (testDict/testNdbApi-style API
+test, MTR). Benefit: complete-PK aggregate lists (and single-row
+aggregates) scale with N instead of with the fragment count; measured
+against the F2 multi-range scan on `core_in_pk100` / `core_in_pk1000`.
 
 ### F2 — multi-range index scans for prefix and secondary-index lists (single table)
 

@@ -1,0 +1,289 @@
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# WP-F F1a (storage/ndb/claude_files/fs_ronsql/m3_wpf_plan.md §2.3):
+# a pass-through query whose WHERE binds every primary-key column, with
+# one IN list on one of them, executes as N primary-key lookups in one
+# transaction instead of a table scan filtered by the OR chain.  Every
+# result below is compared strictly with the MySQL server (row order is
+# free: the compare include sorts both outputs), and the EXPLAIN pins
+# say which mechanism ran.  Both includes consume and remove
+# $QUERY_FILE, hence the query is written twice per case.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let QUERY_FILE=$MYSQL_TMP_DIR/in_list_query.sql
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/in_list_explain.out
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE t_pk1 (
+  id INT NOT NULL,
+  v INT NOT NULL,
+  s VARCHAR(20) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+CREATE TABLE t_pk2 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (a, b)
+) ENGINE=NDB;
+CREATE TABLE t_hash (
+  id INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE t_str (
+  k VARCHAR(20) NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (k)
+) ENGINE=NDB;
+CREATE TABLE t_ts (
+  ts TIMESTAMP NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (ts)
+) ENGINE=NDB;
+let $i=50;
+while ($i)
+{
+  --eval INSERT INTO t_pk1 VALUES ($i, $i*10, CONCAT('s', $i))
+  --eval INSERT INTO t_hash VALUES ($i, $i*10)
+  dec $i;
+}
+let $a=5;
+while ($a)
+{
+  let $b=5;
+  while ($b)
+  {
+    --eval INSERT INTO t_pk2 VALUES ($a, $b, $a*100+$b)
+    dec $b;
+  }
+  dec $a;
+}
+INSERT INTO t_str VALUES ('Key1', 1), ('Key2', 2), ('Key3', 3), ('Key4', 4), ('key five', 5);
+INSERT INTO t_ts VALUES ('2026-01-01 00:00:00', 1), ('2026-01-02 00:00:00', 2),
+                        ('2026-01-03 00:00:00', 3), ('2026-01-04 00:00:00', 4);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === single-column PK: three keys, out of order ===
+--write_file $QUERY_FILE
+SELECT id, v, s FROM t_pk1 WHERE id IN (3, 1, 2);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v, s FROM t_pk1 WHERE id IN (3, 1, 2);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 primary key lookups (IN list on `id`: 3 values, 3 distinct).' $EXPLAIN_FILE
+--exec grep -qF '`id` IN (3 values, 3 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === duplicates in the list count once ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (3, 1, 3, 2, 1, 1);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (3, 1, 3, 2, 1, 1);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 primary key lookups (IN list on `id`: 6 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === missing keys match nothing ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 999, 2, 1000);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === every key missing: empty result ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (998, 999);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === one value is a plain equality (single-row lookup as before) ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (7);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (7);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as primary key lookup.' $EXPLAIN_FILE
+
+--echo
+--echo === residual filter on another column rides every lookup ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5) AND v > 25;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5) AND v > 25;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 5 primary key lookups (IN list on `id`: 5 values, 5 distinct).' $EXPLAIN_FILE
+--exec grep -qF 'FILTER:' $EXPLAIN_FILE
+
+--echo
+--echo === an equality on the IN column after the list is a residual ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) AND id = 2;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) AND id = 2;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 primary key lookups (IN list on `id`: 3 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === an equality before the list binds first; the list is the residual ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id = 2 AND id IN (1, 2, 3);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id = 2 AND id IN (1, 2, 3);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as primary key lookup.' $EXPLAIN_FILE
+
+--echo
+--echo === composite PK: equality on a, list on b ===
+--write_file $QUERY_FILE
+SELECT a, b, v FROM t_pk2 WHERE a = 2 AND b IN (1, 3, 5);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT a, b, v FROM t_pk2 WHERE a = 2 AND b IN (1, 3, 5);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 primary key lookups (IN list on `b`: 3 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === composite PK: list on a, equality on b ===
+--write_file $QUERY_FILE
+SELECT a, b, v FROM t_pk2 WHERE b = 4 AND a IN (5, 1);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT a, b, v FROM t_pk2 WHERE b = 4 AND a IN (5, 1);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 2 primary key lookups (IN list on `a`: 2 values, 2 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === composite PK: two lists leave b unbound, so no lookup (scan path) ===
+--write_file $QUERY_FILE
+SELECT a, b, v FROM t_pk2 WHERE a IN (1, 2) AND b IN (2, 3);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT a, b, v FROM t_pk2 WHERE a IN (1, 2) AND b IN (2, 3);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--error 1
+--exec grep -qF 'primary key lookup' $EXPLAIN_FILE
+
+--echo
+--echo === hash-only PK: lookups need no ordered index ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_hash WHERE id IN (5, 6, 7, 500);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_hash WHERE id IN (5, 6, 7, 500);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 primary key lookups (IN list on `id`: 4 values, 4 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === VARCHAR PK under a case-insensitive collation: 'key1' and 'KEY1' are one key ===
+--write_file $QUERY_FILE
+SELECT k, v FROM t_str WHERE k IN ('key1', 'KEY2', 'Key3', 'KEY1', 'nope', 'key five');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, v FROM t_str WHERE k IN ('key1', 'KEY2', 'Key3', 'KEY1', 'nope', 'key five');
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 5 primary key lookups (IN list on `k`: 6 values, 5 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === TIMESTAMP PK ===
+--write_file $QUERY_FILE
+SELECT ts, v FROM t_ts WHERE ts IN ('2026-01-03 00:00:00', '2026-01-01 00:00:00', '2026-02-01 00:00:00');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT ts, v FROM t_ts WHERE ts IN ('2026-01-03 00:00:00', '2026-01-01 00:00:00', '2026-02-01 00:00:00');
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 primary key lookups (IN list on `ts`: 3 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === LIMIT 0 prints nothing; a LIMIT above the list size changes nothing ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) LIMIT 0;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) LIMIT 100;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === ORDER BY keeps the scan path in this cut (correct, sorted client-side) ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (3, 1, 2) ORDER BY v DESC;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id IN (3, 1, 2) ORDER BY v DESC;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--error 1
+--exec grep -qF 'primary key lookup' $EXPLAIN_FILE
+
+--echo
+--echo === a list on a non-PK column is a filter, as before ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE v IN (10, 20, 30);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE v IN (10, 20, 30);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--error 1
+--exec grep -qF 'primary key lookup' $EXPLAIN_FILE
+
+--echo
+--echo === a mixed OR is not an IN shape ===
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id = 1 OR v = 20;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, v FROM t_pk1 WHERE id = 1 OR v = 20;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--error 1
+--exec grep -qF 'primary key lookup' $EXPLAIN_FILE
+
+--remove_file $EXPLAIN_FILE
+--disable_query_log
+DROP TABLE t_pk1, t_pk2, t_hash, t_str, t_ts;
+--enable_query_log
