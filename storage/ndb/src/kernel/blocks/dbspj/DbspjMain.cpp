@@ -1240,7 +1240,11 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
       break;
     }
     new (requestPtr.p) Request(ah);
-    do_init(requestPtr.p, req, signal->getSendersBlockRef());
+    if (unlikely(!do_init(requestPtr.p, req, signal->getSendersBlockRef()))) {
+      jam();
+      err = DbspjErr::OutOfQueryMemory;
+      break;
+    }
 
     Uint32 len_cnt;
 
@@ -1333,7 +1337,41 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
   }
 }
 
-void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
+/**
+ * The per-node aggStateKeys / lookup-node arrays of a Request, one
+ * query-memory block freed by cleanup().  do_init allocates it last, once
+ * every field cleanup() and the request-hash removal read is set, so an
+ * exhausted query memory is an OutOfQueryMemory REF of this request
+ * instead of an ndbrequire that stopped the node (F27, census run 4:
+ * 8 concurrent many-group CTE queries).
+ */
+bool Dbspj::alloc_request_node_arrays(Request *requestP) {
+  requestP->m_aggStateKeys = nullptr;
+  requestP->m_lookup_node_data = nullptr;
+  const Uint32 max_nodes = MAX_NDB_NODES;
+  const size_t alloc_size = max_nodes * sizeof(Uint32) +
+                            max_nodes * sizeof(Uint16);
+  void *mem = nullptr;
+  if (ERROR_INSERTED_CLEAR(17534)) {
+    jam();
+    g_eventLogger->info(
+        "Injecting OutOfQueryMem error 17534 at line %d file %s", __LINE__,
+        __FILE__);
+  } else {
+    mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY, getThreadId(),
+                              true);
+  }
+  if (unlikely(mem == nullptr)) {
+    jam();
+    return false;
+  }
+  requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
+  requestP->m_lookup_node_data = reinterpret_cast<Uint16 *>(
+      static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
+  return true;
+}
+
+bool Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_bits = 0;
   requestP->m_errCode = 0;
   requestP->m_state = Request::RS_BUILDING;
@@ -1359,18 +1397,6 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_transId[1] = req->transId2;
   requestP->m_rootFragId = LqhKeyReq::getFragmentId(req->fragmentData);
   requestP->m_rootFragCnt = 1;
-  {
-    const Uint32 max_nodes = MAX_NDB_NODES;
-    const size_t alloc_size = max_nodes * sizeof(Uint32) +
-                              max_nodes * sizeof(Uint16);
-    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                                    getThreadId(), true);
-    ndbrequire(mem != nullptr);
-    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
-    requestP->m_lookup_node_data =
-        reinterpret_cast<Uint16 *>(
-            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
-  }
   /* Request objects come from a TransientPool (no constructor runs) and
    * the lookup protocol carries no aggStateKeys section, so without this
    * clear a recycled Request keeps the previous occupant's m_aggNodes
@@ -1413,6 +1439,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
     requestP->m_senderRef = senderRef;
   }
   requestP->m_rootResultData = tmp;
+  return alloc_request_node_arrays(requestP);
 }
 
 void Dbspj::store_lookup(Ptr<Request> requestPtr) {
@@ -1582,7 +1609,11 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       break;
     }
     new (requestPtr.p) Request(ah);
-    do_init(requestPtr.p, req, signal->getSendersBlockRef());
+    if (unlikely(!do_init(requestPtr.p, req, signal->getSendersBlockRef()))) {
+      jam();
+      err = DbspjErr::OutOfQueryMemory;
+      break;
+    }
 
     Uint32 len_cnt;
     {
@@ -1908,7 +1939,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
   }
 }
 
-void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
+bool Dbspj::do_init(Request *requestP, const ScanFragReq *req,
                     Uint32 senderRef) {
   requestP->m_bits = Request::RT_SCAN;
   requestP->m_errCode = 0;
@@ -1938,18 +1969,6 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_rootResultData = req->resultData;
   requestP->m_rootFragId = req->fragmentNoKeyLen;
   requestP->m_rootFragCnt = 0;  // Filled in later
-  {
-    const Uint32 max_nodes = MAX_NDB_NODES;
-    const size_t alloc_size = max_nodes * sizeof(Uint32) +
-                              max_nodes * sizeof(Uint16);
-    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                                    getThreadId(), true);
-    ndbrequire(mem != nullptr);
-    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
-    requestP->m_lookup_node_data =
-        reinterpret_cast<Uint16 *>(
-            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
-  }
   requestP->m_aggNodes.clear();
   requestP->m_lastHbrepTicks = getHighResTimer();
 #ifdef SPJ_TRACE_TIME
@@ -1964,6 +1983,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   } else {
     requestP->m_user_id = RNIL;
   }
+  return alloc_request_node_arrays(requestP);
 }
 
 void Dbspj::store_scan(Ptr<Request> requestPtr) {

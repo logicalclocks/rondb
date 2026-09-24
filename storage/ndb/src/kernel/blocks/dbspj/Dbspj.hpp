@@ -1744,13 +1744,16 @@ class Dbspj : public SimulatedBlock {
   void cteOwnerNodes(const Request *req, Uint32 cteIdx,
                      NdbNodeBitmask &mask) const;
 
-  void do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
+  // False when query memory for the per-node arrays is exhausted; the
+  // Request is then fully initialized for cleanup() (F27).
+  bool do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
   void handle_early_lqhkey_ref(Signal *, const LqhKeyReq *, Uint32 err);
   void sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef);
   void sendTCKEYCONF(Signal *signal, Uint32 len, Uint32 ref, Uint32 routeRef);
 
-  void do_init(Request *, const ScanFragReq *, Uint32 senderRef);
+  bool do_init(Request *, const ScanFragReq *, Uint32 senderRef);
+  bool alloc_request_node_arrays(Request *);
   void store_scan(Ptr<Request>);
   void handle_early_scanfrag_ref(Signal *, const ScanFragReq *, Uint32 err);
 
