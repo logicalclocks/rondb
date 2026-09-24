@@ -2866,6 +2866,10 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
    */
   Uint64 m_copy_tuple_alloc_count;
   Uint64 m_copy_tuple_saved_count;
+
+  /* Join-aggregation rows fed by this thread, counted only while error
+   * insert 4041 (intermittent group eviction) is active. */
+  Uint32 m_join_agg_evict_row_count;
 #endif
   void set_commit_started(Uint32 leaderOperPtrI);
   void set_commit_performed(OperationrecPtr firstOperPtr, Fragrecord *fragPtrP);

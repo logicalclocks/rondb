@@ -5597,7 +5597,8 @@ int Dbtup::prepareAndHandleJoinAggRow(KeyReqStruct *req_struct,
  *
  * Feed a row into the join aggregation JoinAggInterpreter instead of
  * sending via TRANSID_AI.  Selects the correct interpreter based
- * on the concurrency strategy and increments m_completed_ops.
+ * on the concurrency strategy.  Writes nothing shared outside the
+ * interpreter: this runs once per scanned row on every LDM thread.
  *
  * If the interpreter returns AGG_EVICT_NEEDED (group map is full),
  * evicts one group by sending it via TRANSID_AI, then retries.
@@ -5661,13 +5662,14 @@ retry:
   if (ret != 0) {
     return TUPKEY_abort(req_struct, ret);
   }
-  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
 #ifdef ERROR_INSERT
+  /* Every 7th row this LDM thread feeds (a block-local count: no row
+   * counter is shared between the threads feeding one state). */
   if (ERROR_INSERTED(4041) &&
+      (++m_join_agg_evict_row_count % 7) == 0 &&
       interp->gb_map_mutable() != nullptr &&
-      interp->gb_map_mutable()->size() > 2 &&
-      (state->m_completed_ops.load(std::memory_order_relaxed) % 7) == 0) {
+      interp->gb_map_mutable()->size() > 2) {
     c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
     evict_count++;
   }

@@ -16471,7 +16471,6 @@ retry:
     goto retry;
   }
   ndbrequire(ret == 0);
-  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
   /* 5. Send LQHKEYCONF (no data, readlenAi = 0) */
   regTcPtr->readlenAi = 0;
@@ -19831,10 +19830,11 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
       gbSize = interp->gb_map_mutable()->size();
     DEB_JOIN_AGG(("(%u)DBLQH execJOIN_AGG_COMPLETE_REQ:"
                   " aggStateKey=%u strategy=%u num_threads=%u"
-                  " gb_map_size=%u completed_ops=%u cte_mode=%u",
+                  " gb_map_size=%u processed_rows=%llu cte_mode=%u",
                   getThreadId(), aggStateKey, state->m_strategy,
                   state->m_num_threads, gbSize,
-                  state->m_completed_ops.load(),
+                  (interp != nullptr) ?
+                    (unsigned long long)interp->processed_rows() : 0ULL,
                   state->m_cte_mode));
   }
 
@@ -20440,7 +20440,6 @@ retry:
                signal, JoinAggNullRowRef::SignalLength, JBB);
     return;
   }
-  state->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
   /* Send CONF back to DBSPJ */
   JoinAggNullRowConf *conf =
@@ -21345,8 +21344,6 @@ retry_agg:
                      ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
     return;
   }
-
-  targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
 
   /* Send CONF only — no TRANSID_AI sent to API or DBSPJ */
   CteLookupConf *conf = (CteLookupConf *)signal->getDataPtrSend();
@@ -22559,7 +22556,6 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                        ZCTE_LOOKUP_OUTPUT_OVERFLOW);
         return;
       }
-      targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
       rowsThisBatch++;
       groupsSent++;
     }
@@ -22698,7 +22694,6 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
           return;
         }
       }
-      targetState->m_completed_ops.fetch_add(1, std::memory_order_relaxed);
       groupsSent = 1;
     }  /* else branch of scalar filter gate */
   }

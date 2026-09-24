@@ -219,7 +219,6 @@ struct JoinAggregationState {
   // Operation Tracking (atomic — updated by any LDM thread)
   //------------------------------------------------------------------
   std::atomic<Uint32> m_outstanding_ops;   // Operations still in progress
-  std::atomic<Uint32> m_completed_ops;     // Operations completed successfully
   std::atomic<Uint32> m_failed_ops;        // Operations that failed
   Uint32 m_total_ops_expected;             // Total operations (0 = unknown)
 
@@ -448,7 +447,6 @@ struct JoinAggregationState {
     m_agg_interpreter(nullptr),
     m_per_thread_interpreters(nullptr),
     m_outstanding_ops(0),
-    m_completed_ops(0),
     m_failed_ops(0),
     m_total_ops_expected(0),
     m_memory_budget_pages(0),

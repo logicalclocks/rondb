@@ -2671,7 +2671,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   // Every field in JoinAggregationState must be set here to avoid
   // stale values from a previous pool occupant.
   state->m_outstanding_ops.store(0);
-  state->m_completed_ops.store(0);
   state->m_failed_ops.store(0);
   state->m_agg_curr_batch_size_rows = 0;
   state->m_agg_curr_batch_size_bytes = 0;

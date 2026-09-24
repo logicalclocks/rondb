@@ -80,6 +80,7 @@ void Dbtup::initData()
 #ifdef ERROR_INSERT
   m_copy_tuple_alloc_count = 0;
   m_copy_tuple_saved_count = 0;
+  m_join_agg_evict_row_count = 0;
 #endif
 
   // Records with constant sizes
