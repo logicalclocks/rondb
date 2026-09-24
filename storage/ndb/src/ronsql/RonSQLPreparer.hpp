@@ -598,11 +598,16 @@ private:
   // Raise the error of one failed operation or pushed query by its NDB
   // classification, as handle_ronsql_exception does for a transaction
   // error: rate limit (RLE), temporary (RRE, unless rows were already
-  // streamed) or permanent with its error class and code (RPE).  `where`
-  // labels the err-stream line.  Callers route schema errors first.
+  // streamed) or permanent with its error class and code (RPE).  With
+  // `retry_internal` (pushed queries) internal and unknown-result errors
+  // are retried too: the join-aggregation / CTE protocol reports its
+  // transient races as internal errors (e.g. 1251 for a swept parked
+  // consumer).  `where` labels the err-stream line.  Callers route schema
+  // errors first.
   [[noreturn]] void throw_classified_ndb_error(const NdbError& err,
                                                const char* what,
-                                               const char* where);
+                                               const char* where,
+                                               bool retry_internal = false);
   // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
   // on one column); see the definition for the contract.
   bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
