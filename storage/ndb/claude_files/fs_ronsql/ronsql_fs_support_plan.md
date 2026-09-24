@@ -51,7 +51,7 @@ does not.
 | F5, F21, F2 | DECIMAL aggregation on the DOUBLE path | WRONG VALUE (>2^53), topology-dependent digit, scale formatting | yes (decimal money features) | WP-D2 |
 | F6, F22 | BIGINT SUM overflow: per-fragment 1860 vs unchecked merge | clean error on small clusters, wrapped value on large | yes (sum over bigint) | WP-D3 (overflow overhaul, separate task) |
 | F3, F4 | AVG / FLOAT display rules | formatting (tolerated by the canonicalizer) | yes | WP-D4 |
-| F14 | CTE body bound on a VARCHAR primary key | WRONG RESULT (no rows) | yes (string entity keys + snowflake) — not yet in the manifest | WP-E |
+| F14 | CTE body bound on a VARCHAR primary key | WRONG RESULT (no rows) — FIXED 2026-09-24 in WP-F F3 (double VARCHAR length prefix on pushed-query constants) | yes (string entity keys + snowflake) — not yet in the manifest | WP-E (engine part done) |
 | F12 | planner: IN list → table scan | PERFORMANCE 200–1000× | yes (batch serving, 10–1000 keys) | WP-F |
 | F13 | CTE_SCAN + PK_LOOKUP round trips | PERFORMANCE 3–4× | yes (every snowflake point read) | WP-G |
 | F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH | no (LEFT JOIN onto an aggregated CTE) | WP-H |
@@ -200,6 +200,12 @@ encoded or compared differently from the standalone aggregate path
 materialization (`QueryPlanner` / CTE body root construction) and reuse
 the standalone bound builder. Add a kernel-side or API-side regression
 with a VARCHAR PK.
+
+**Status (2026-09-24).** Engine part done within WP-F F3: the divergence
+was a doubled VARCHAR length prefix on every pushed-query constant
+(`NdbQueryBuilder::constValue(ptr, len)` takes the value without it), not
+the CTE materialization; spec fuzzer `known-wrong` 2 → 0 and the F14
+markers retired. The framework additions below remain.
 
 **Evidence.** Spec fuzzer `known-wrong` (F14) to 0, `Known["F14"]` retired;
 framework: add string-keyed snowflake cases (`S7-1hop-str`, `S8-chains-str`)

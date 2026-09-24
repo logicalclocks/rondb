@@ -3491,6 +3491,14 @@ static const Uint32 IN_LOOKUPS_MAX = 4095;
 // multi-range index scan, one range per distinct value; range numbers
 // run 0 .. n-1 and must not exceed the protocol's MaxRangeNo.
 static const Uint32 IN_RANGES_MAX = NdbIndexScanOperation::MaxRangeNo;
+// WP-F F3: an IN list on an SPJ root (CTE body root, join root) is a
+// fixed key in the query definition (NdbQueryBuilder::scanIndex with one
+// bound per range), serialized into the QueryTree: DBSPJ refuses a node
+// of 32 K words or more and the tree length is a 16-bit field.  The IN
+// ranges of all SPJ roots of one query share this budget (4 words per
+// range for a 4-byte key, so 4095 INT values fit); a root whose ranges
+// would exceed it keeps its IN list as a residual filter.
+static const Uint32 SPJ_IN_RANGE_WORDS_MAX = 16384;
 
 /*
  * WP-F (m3_wpf_plan.md §2.1): recognise an IN-shaped conjunct.  The
@@ -4595,20 +4603,52 @@ RonSQLPreparer::select_root_scan_config(QueryScope& scope,
   // NdbQueryIndexBound / emit_index_scan_root, which cannot express a
   // NULL-excluding low bound operand — a nullable high-only conjunct
   // must stay a residual filter.
+  // allow_in_ranges (WP-F F3): an IN list on an index column is one
+  // range per distinct value, emitted as a multi-range bound by
+  // emit_index_scan_root.
   build_scan_config_candidates(scope.body_indexes,
                                scope.body_toplevel_conditions,
                                scope.body_scan_config_candidates,
                                hint,
                                /*defer_force_check=*/false,
                                scope.table,
-                               /*allow_nullable_high_bound=*/false);
+                               /*allow_nullable_high_bound=*/false,
+                               /*allow_in_ranges=*/true);
 
   // 4. Pick highest-scoring candidate.
-  Uint32 chosen = 0;
-  for (Uint32 i = 1; i < scope.body_scan_config_candidates.size(); i++) {
-    if (scope.body_scan_config_candidates[i].goodness >
-        scope.body_scan_config_candidates[chosen].goodness) {
-      chosen = i;
+  auto pick = [&scope](bool allow_in) {
+    Uint32 chosen = 0;
+    for (Uint32 i = 1; i < scope.body_scan_config_candidates.size(); i++) {
+      const ScanConfig& c = scope.body_scan_config_candidates[i];
+      if (!allow_in && c.in_cond_idx >= 0) continue;
+      if (c.goodness > scope.body_scan_config_candidates[chosen].goodness) {
+        chosen = i;
+      }
+    }
+    return chosen;
+  };
+  Uint32 chosen = pick(true);
+  if (scope.body_scan_config_candidates[chosen].in_cond_idx >= 0) {
+    // WP-F F3: the ranges go into the QueryTree; over the query's budget
+    // the IN list stays a filter.  The candidates built without IN
+    // ranges are appended (the builder emits one candidate per index,
+    // with its IN list consumed where it could be) and the choice is
+    // made among them.
+    const Uint32 words =
+        spj_in_range_words(scope.body_scan_config_candidates[chosen],
+                           scope.body_toplevel_conditions, tab);
+    if (m_spj_in_range_words + words > SPJ_IN_RANGE_WORDS_MAX) {
+      build_scan_config_candidates(scope.body_indexes,
+                                   scope.body_toplevel_conditions,
+                                   scope.body_scan_config_candidates,
+                                   hint,
+                                   /*defer_force_check=*/false,
+                                   scope.table,
+                                   /*allow_nullable_high_bound=*/false,
+                                   /*allow_in_ranges=*/false);
+      chosen = pick(false);
+    } else {
+      m_spj_in_range_words += words;
     }
   }
   scope.body_scan_config = &scope.body_scan_config_candidates[chosen];
@@ -4622,6 +4662,57 @@ RonSQLPreparer::select_root_scan_config(QueryScope& scope,
     plan.ops[0].type = JoinOp::INDEX_SCAN;
     plan.ops[0].index = scope.body_scan_config->index;
   }
+}
+
+// WP-F F3: an IN-list candidate's ranges as NdbQueryBuilder serializes
+// them into the QueryTree — per range one P_DATA header and, per bound
+// entry, a BoundType word, an AttributeHeader and the value words (the
+// converted value: the NdbRecord format encode_constant produces).  The
+// IN values are encoded (dedup_in_values already did so); a bound every
+// range repeats counts at its column's size, or for a string literal on a
+// variable-size column at the literal's length plus the length prefix
+// (other right sides — a subquery placeholder is not substituted yet at
+// planning time — at the column's full size).
+Uint32
+RonSQLPreparer::spj_in_range_words(const ScanConfig& sc,
+                                   DynamicArray<ConditionalExpression*>& conds,
+                                   const NdbDictionary::Table* tab)
+{
+  require_bug(sc.in_cond_idx >= 0 && sc.index != NULL,
+              "IN-range size asked for a candidate without an IN list.");
+  // Words every range repeats: the bounds on the other index columns,
+  // one entry per consumed conjunct (an equality is one BoundEQ entry).
+  Uint32 shared = 0;
+  const NdbDictionary::Column* in_col = NULL;
+  for (Uint32 ci = 0; ci < conds.size(); ci++) {
+    const int k = sc.condition_handling_map[ci];
+    if (k == -1) continue;
+    const NdbDictionary::Column* col =
+        tab->getColumn(sc.index->getColumn((Uint32)k)->getName());
+    require_run(col != NULL, "Index column missing on table.");
+    if ((int)ci == sc.in_cond_idx) {
+      in_col = col;
+      continue;
+    }
+    Uint32 bytes = (Uint32)col->getSizeInBytes();
+    const ConditionalExpression* right = conds[ci]->args.right;
+    const NdbDictionary::Column::ArrayType at = col->getArrayType();
+    if (at != NdbDictionary::Column::ArrayTypeFixed && right != NULL &&
+        right->op == T_STRING) {
+      const Uint32 literal =
+          (at == NdbDictionary::Column::ArrayTypeShortVar ? 1 : 2) +
+          (Uint32)right->string.len;
+      if (literal < bytes) bytes = literal;
+    }
+    shared += 2 + (bytes + 3) / 4;
+  }
+  require_run(in_col != NULL, "IN-list column missing on table.");
+  Uint32 words = 0;
+  for (Uint32 r = 0; r < sc.in_count; r++) {
+    raw_value rv = encode_constant(sc.in_values[r], in_col);
+    words += 1 + shared + 2 + (Uint32)((rv.len + 3) / 4);
+  }
+  return words;
 }
 
 // True when every primary-key column of the scope's root table has an
@@ -10101,12 +10192,21 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
   require_run(scope.body_scan_config != NULL &&
               scope.body_scan_config->index == idx,
               "Index-scan root missing scan-config metadata.");
+  const ScanConfig& sc = *scope.body_scan_config;
 
+  // Per bound index column: its low / high operand and inclusivity.  The
+  // IN-list column (WP-F F3) is an equality whose operand differs per
+  // range; it is marked and substituted below.
   Uint32 idx_col_count = idx->getNoOfColumns();
-  const NdbQueryOperand* lowKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-  const NdbQueryOperand* highKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-  Uint32 lowFill = 0, highFill = 0;
-  bool lowIncl = true, highIncl = true;
+  const NdbQueryOperand* col_low[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  const NdbQueryOperand* col_high[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  bool col_low_incl[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  bool col_high_incl[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+  Uint32 bound_cols = 0;
+  int in_k = -1;
+  const NdbDictionary::Column* in_tab_col = NULL;
+  require_run(idx_col_count <= NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY,
+              "Index-scan root: too many index columns.");
   for (Uint32 k = 0; k < idx_col_count; k++) {
     const NdbDictionary::Column* idx_col = idx->getColumn(k);
     ndbrequire(idx_col != NULL);
@@ -10118,14 +10218,19 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
     const NdbQueryOperand* low_op = NULL;
     const NdbQueryOperand* high_op = NULL;
     bool k_low_incl = true, k_high_incl = true;
+    bool k_is_in = false;
     for (Uint32 ci = 0; ci < scope.body_toplevel_conditions.size();
          ci++) {
-      if ((Uint32)scope.body_scan_config->condition_handling_map[ci]
-          != k) continue;
+      if ((Uint32)sc.condition_handling_map[ci] != k) continue;
+      if ((int)ci == sc.in_cond_idx) {
+        // The IN conjunct binds both sides of its column alone.
+        k_is_in = true;
+        continue;
+      }
       ConditionalExpression* ce = scope.body_toplevel_conditions[ci];
       ConditionalExpression* right_const = ce->args.right;
       raw_value rv = encode_constant(right_const, tab_col);
-      const NdbQueryOperand* operand = qb->constValue(rv.val, rv.len);
+      const NdbQueryOperand* operand = query_const_value(qb, rv, tab_col);
       require_run(operand != NULL,
                   "Failed to create const value for index-scan root bound.");
       TokenKind op = ce->op;
@@ -10138,23 +10243,61 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
         if (op == T_LT) k_high_incl = false;
       }
     }
+    if (k_is_in) {
+      require_bug(low_op == NULL && high_op == NULL,
+                  "Index-scan root: IN-list column has another bound.");
+      in_k = (int)k;
+      in_tab_col = tab_col;
+      col_low[k] = col_high[k] = NULL;  // per range
+      col_low_incl[k] = col_high_incl[k] = true;
+      bound_cols = k + 1;
+      continue;
+    }
     if (low_op == NULL && high_op == NULL) break;
-    if (low_op != NULL) {
-      lowKeys[lowFill++] = low_op;
-      lowIncl = k_low_incl;
-    }
-    if (high_op != NULL) {
-      highKeys[highFill++] = high_op;
-      highIncl = k_high_incl;
-    }
+    col_low[k] = low_op;
+    col_high[k] = high_op;
+    col_low_incl[k] = k_low_incl;
+    col_high_incl[k] = k_high_incl;
+    bound_cols = k + 1;
     // A half-open last column truncates further coverage on
     // both sides — select_root_scan_config already
     // enforces this via later_columns_blocked, but make the
     // emit-side invariant explicit too.
     if (low_op == NULL || high_op == NULL) break;
   }
-  lowKeys[lowFill] = nullptr;
-  highKeys[highFill] = nullptr;
+  require_run(sc.in_cond_idx < 0 || (in_k >= 0 && sc.in_count >= 1),
+              "Index-scan root: IN list not on a bound index column.");
+
+  // The low / high chains of one range (NULL-terminated), with the
+  // inclusivity of the last entry on each side.
+  auto fill_range = [&](const NdbQueryOperand* in_op,
+                        const NdbQueryOperand** lowKeys,
+                        const NdbQueryOperand** highKeys,
+                        bool& lowIncl, bool& highIncl) {
+    Uint32 lowFill = 0, highFill = 0;
+    lowIncl = highIncl = true;
+    for (Uint32 k = 0; k < bound_cols; k++) {
+      const NdbQueryOperand* lo = ((int)k == in_k) ? in_op : col_low[k];
+      const NdbQueryOperand* hi = ((int)k == in_k) ? in_op : col_high[k];
+      if (lo != NULL) {
+        lowKeys[lowFill++] = lo;
+        lowIncl = col_low_incl[k];
+      }
+      if (hi != NULL) {
+        highKeys[highFill++] = hi;
+        highIncl = col_high_incl[k];
+      }
+    }
+    lowKeys[lowFill] = nullptr;
+    highKeys[highFill] = nullptr;
+  };
+  auto in_operand = [&](Uint32 r) -> const NdbQueryOperand* {
+    raw_value rv = encode_constant(sc.in_values[r], in_tab_col);
+    const NdbQueryOperand* operand = query_const_value(qb, rv, in_tab_col);
+    require_run(operand != NULL,
+                "Failed to create const value for index-scan root range.");
+    return operand;
+  };
 
   // Residual conjuncts (cmh[i] == -1) go through the
   // InterpretedCode filter, mirroring the TABLE_SCAN branch.
@@ -10187,9 +10330,47 @@ RonSQLPreparer::emit_index_scan_root(NdbQueryBuilder* qb,
     rootOpts.setInterpretedCode(rootCode);
   }
 
-  NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
-  const NdbQueryOperationDef* def = qb->scanIndex(idx, tab, &bound, &rootOpts);
-  require_run(def != NULL, "Failed to create index-scan root.");
+  const NdbQueryOperationDef* def = NULL;
+  const Uint32 num_ranges = (in_k >= 0) ? sc.in_count : 1;
+  if (num_ranges == 1) {
+    const NdbQueryOperand* lowKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    const NdbQueryOperand* highKeys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
+    bool lowIncl, highIncl;
+    fill_range((in_k >= 0) ? in_operand(0) : NULL, lowKeys, highKeys,
+               lowIncl, highIncl);
+    NdbQueryIndexBound bound(lowKeys, lowIncl, highKeys, highIncl);
+    def = qb->scanIndex(idx, tab, &bound, &rootOpts);
+  } else {
+    // WP-F F3: one range per distinct IN value, as a multi-range bound
+    // in the query definition — the only form a CTE body root or a main
+    // root after CTE subtrees can take (NdbQuery::setBound reaches
+    // operation 0 only).  scanIndex copies the operand pointers, the
+    // arrays only need to live through the call.
+    const Uint32 stride = NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1;
+    const NdbQueryOperand** keys =
+        m_amalloc->alloc_exc<const NdbQueryOperand*>(2 * stride * num_ranges);
+    NdbQueryIndexBound* bounds =
+        m_amalloc->alloc_exc<NdbQueryIndexBound>(num_ranges);
+    const NdbQueryIndexBound** bound_ptrs =
+        m_amalloc->alloc_exc<const NdbQueryIndexBound*>(num_ranges);
+    for (Uint32 r = 0; r < num_ranges; r++) {
+      const NdbQueryOperand** lowKeys = keys + 2 * stride * r;
+      const NdbQueryOperand** highKeys = lowKeys + stride;
+      bool lowIncl, highIncl;
+      fill_range(in_operand(r), lowKeys, highKeys, lowIncl, highIncl);
+      bound_ptrs[r] = new (&bounds[r])
+          NdbQueryIndexBound(lowKeys, lowIncl, highKeys, highIncl);
+    }
+    def = qb->scanIndex(idx, tab, bound_ptrs, num_ranges, &rootOpts);
+  }
+  if (def == NULL) {
+    // The query builder's error (e.g. QRY_MULTI_RANGE_BOUND) says why.
+    std::stringstream msg;
+    msg << "Failed to create index-scan root: "
+        << qb->getNdbError().message << " (" << qb->getNdbError().code
+        << ").";
+    require_run(false, msg.str().c_str());
+  }
   return def;
 }
 
@@ -10216,7 +10397,7 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
         root_table->getColumn(pk_col_names[k]);
     ndbrequire(pk_col != NULL);
     raw_value rv = encode_constant(pk_const[k], pk_col);
-    pk_keys[k] = qb->constValue(rv.val, rv.len);
+    pk_keys[k] = query_const_value(qb, rv, pk_col);
     require_run(pk_keys[k] != NULL,
                 "Failed to create const value for PK index scan.");
   }
@@ -10567,7 +10748,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
           {
             raw_value rv = encode_constant(
                 const_cast<ConditionalExpression*>(ce_const), pk_col);
-            lookup_keys[k] = qb->constValue(rv.val, rv.len);
+            lookup_keys[k] = query_const_value(qb, rv, pk_col);
           }
           break;
         }
@@ -10752,7 +10933,7 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
             root_table->getColumn(pk_name);
         ndbrequire(pk_col != NULL);
         raw_value rv = encode_constant(pk_const[k], pk_col);
-        pk_keys[k] = qb->constValue(rv.val, rv.len);
+        pk_keys[k] = query_const_value(qb, rv, pk_col);
         require_run(pk_keys[k] != NULL,
                     "Failed to create const value for PK lookup.");
       }
@@ -12730,7 +12911,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
               op.table->getColumn(rb.child_col_name);
           require_run(bcol != NULL, "Unknown bound column.");
           raw_value rv = encode_constant(rb.const_cond->args.right, bcol);
-          const NdbQueryOperand* cv = qb->constValue(rv.val, rv.len);
+          const NdbQueryOperand* cv = query_const_value(qb, rv, bcol);
           ndbrequire(num_cb_operands < MAX_JOIN_KEY_COLS * 2);
           cb_conds[num_cb_operands] = rb.const_cond;
           cb_operands[num_cb_operands] = cv;
@@ -13717,6 +13898,32 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
                                  " timestamp with weird delimiters or spaces");
   }
   // todo test nanosecond rounding, see status->nanoseconds
+}
+
+// F14: encode_constant returns the NdbRecord byte format, which for a
+// VARCHAR / LONGVARCHAR (and VARBINARY) column starts with its 1- or
+// 2-byte length.  NdbQueryBuilder::constValue(ptr, len) takes the value
+// without it and adds the prefix itself (ha_ndbcluster strips it the
+// same way); passing it through made a double prefix, so a VARCHAR bound
+// or key in a pushed query matched nothing.
+const NdbQueryOperand*
+RonSQLPreparer::query_const_value(NdbQueryBuilder* qb, raw_value rv,
+                                  const NdbDictionary::Column* col)
+{
+  size_t prefix = 0;
+  switch (col->getArrayType()) {
+  case NdbDictionary::Column::ArrayTypeShortVar:
+    prefix = 1;
+    break;
+  case NdbDictionary::Column::ArrayTypeMediumVar:
+    prefix = 2;
+    break;
+  default:
+    break;
+  }
+  require_run(rv.len >= prefix, "Constant shorter than its length prefix.");
+  return qb->constValue(static_cast<const char*>(rv.val) + prefix,
+                        static_cast<Uint32>(rv.len - prefix));
 }
 
 raw_value
@@ -16505,6 +16712,17 @@ RonSQLPreparer::print()
           }
           if (root_op.index != NULL) {
             out << " using " << root_op.index->getName();
+            // WP-F F3: an IN list on the body root's index is one range
+            // per distinct value.
+            const ScanConfig* bsc = cte_scope->body_scan_config;
+            if (bsc != NULL && bsc->index == root_op.index &&
+                bsc->in_cond_idx >= 0) {
+              out << ", " << bsc->in_count << " range"
+                  << (bsc->in_count == 1 ? "" : "s") << " (IN list on "
+                  << quoted_identifier(m_columns[bsc->in_col_idx].c_str())
+                  << ": " << bsc->in_total << " values, " << bsc->in_count
+                  << " distinct)";
+            }
           }
           if (cte_scope->body_minmax_kind ==
               QueryScope::MinMaxKind::MIN_ASC) {
@@ -16594,6 +16812,13 @@ RonSQLPreparer::print()
           if (sc.condition_handling_map[ci] == -1) filter_cnt++;
         }
         Uint32 bound_cnt = cond_cnt - filter_cnt;
+        if (sc.in_cond_idx >= 0) {
+          // WP-F F3: an IN list on the root's index, one range per value.
+          out << indent << "  Ranges: " << sc.in_count << " (IN list on "
+              << quoted_identifier(m_columns[sc.in_col_idx].c_str()) << ": "
+              << sc.in_total << " values, " << sc.in_count << " distinct"
+              << (sc.in_count > 1 ? "; multi-range" : "") << ")\n";
+        }
         out << indent << "  CONDITIONS (" << bound_cnt << " bound"
             << (bound_cnt == 1 ? "" : "s");
         if (filter_cnt > 0) {
@@ -16625,7 +16850,13 @@ RonSQLPreparer::print()
               cond_last ? LexString{"              ", labellen}
                         : LexString{"│             ", labellen + 2},
               m_amalloc);
-          print(m_main_scope.body_toplevel_conditions[ci], cont);
+          if ((int)ci == sc.in_cond_idx) {
+            out << quoted_identifier(m_columns[sc.in_col_idx].c_str())
+                << " IN (" << sc.in_total << " values, " << sc.in_count
+                << " distinct)\n";
+          } else {
+            print(m_main_scope.body_toplevel_conditions[ci], cont);
+          }
         }
       }
       if (!op.is_root && op.num_key_cols > 0) {

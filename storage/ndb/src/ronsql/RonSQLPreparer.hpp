@@ -48,6 +48,7 @@ struct yy_buffer_state;
 // <NdbApi.hpp>, so forward-declare the handful of types we reference from
 // this header. Full definitions are included in RonSQLPreparer.cpp.
 class NdbQueryBuilder;
+class NdbQueryOperand;
 class NdbQueryOperationDef;
 class NdbQueryOptions;
 
@@ -376,6 +377,10 @@ private:
   struct ConditionalExpression** m_pk_lookup_in_values = NULL;
   Uint32 m_pk_lookup_in_count = 0;
   Uint32 m_pk_lookup_in_total = 0;
+  // WP-F F3: QueryTree words the IN ranges of this query's SPJ roots
+  // (CTE body roots, join root) take so far; capped by
+  // SPJ_IN_RANGE_WORDS_MAX (select_root_scan_config).
+  Uint32 m_spj_in_range_words = 0;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -720,6 +725,11 @@ private:
   void select_root_scan_config(QueryScope& scope,
                                ConditionalExpression* where_ce,
                                const TableRef* hint);
+  // WP-F F3: QueryTree words of an IN-list candidate's ranges as
+  // NdbQueryBuilder serializes them (one P_DATA block per range).
+  Uint32 spj_in_range_words(const ScanConfig& sc,
+                            DynamicArray<ConditionalExpression*>& conds,
+                            const NdbDictionary::Table* tab);
   // True when every primary-key column of scope's root table has an
   // equality against a constant among the root-classified WHERE
   // conjuncts (join_where_ce[0]) — the shapes emit_root_op serves
@@ -932,6 +942,11 @@ private:
                            struct ConditionalExpression* ce);
   raw_value encode_constant(struct ConditionalExpression *ce,
                             const NdbDictionary::Column* col);
+  // A pushed-query constant for `col` from encode_constant's bytes (F14:
+  // NdbQueryBuilder::constValue(ptr, len) takes a variable-size value
+  // without its length prefix).
+  const NdbQueryOperand* query_const_value(NdbQueryBuilder* qb, raw_value rv,
+                                           const NdbDictionary::Column* col);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   // D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`

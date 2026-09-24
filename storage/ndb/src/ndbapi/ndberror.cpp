@@ -1123,6 +1123,9 @@ ErrorBundle ErrorCodes[] = {
     "missing fragment routing override" },
   { QRY_BAD_FRAGMENT_DATA, DMEC, AE,
     "Query root table fragment has no nodes" },
+  { QRY_MULTI_RANGE_BOUND, DMEC, AE,
+    "Multi-range index scan needs constant bounds on an unsorted scan "
+    "without a parent operation" },
 
   /*
    * Management server error codes

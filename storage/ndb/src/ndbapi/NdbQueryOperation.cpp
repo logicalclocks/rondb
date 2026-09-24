@@ -2970,6 +2970,15 @@ int NdbQueryImpl::setBound(const NdbRecord *key_record,
                NdbQueryOperationDef::OrderedIndexScan)) {
     return QRY_WRONG_OPERATION_TYPE;
   }
+  if (unlikely(getRoot().getQueryOperationDef().getOpNo() != 0)) {
+    /**
+     * RonDB: in a query with CTE subtrees the main-query root is not
+     * operation 0; the KEYINFO built here would reach the CTE container
+     * node and be dropped.  Such a root takes its (multi-range) bound at
+     * definition time: NdbQueryBuilder::scanIndex().
+     */
+    return QRY_WRONG_OPERATION_TYPE;
+  }
 
   assert(m_state >= Defined);
   if (m_state != Defined) {
@@ -6546,7 +6555,29 @@ int NdbQueryOperationImpl::prepareKeyInfo(
 
   const NdbQueryOperationDefImpl::IndexBound *bounds =
       m_operationDef.getBounds();
-  if (bounds) {
+  if (bounds != nullptr &&
+      m_operationDef.getType() == NdbQueryOperationDef::OrderedIndexScan &&
+      static_cast<const NdbQueryIndexScanOperationDefImpl &>(m_operationDef)
+              .getNoOfRanges() > 1) {
+    /**
+     * RonDB: a multi-range bound on the query root, constants only.  Each
+     * range is stamped with its length and range number; the pruning
+     * state stays Prune_No (only setBound() asks for a prune check).
+     */
+    const NdbQueryIndexScanOperationDefImpl &def =
+        static_cast<const NdbQueryIndexScanOperationDefImpl &>(m_operationDef);
+    Uint32 shortest = 0xFFFFFFFF;
+    for (Uint32 r = 0; r < def.getNoOfRanges(); r++) {
+      const NdbQueryIndexScanOperationDefImpl::RangeBound range =
+          def.getRange(r);
+      const int error = def.appendConstRange(keyInfo, range, r);
+      if (unlikely(error)) return error;
+      const Uint32 common = (range.lowKeys <= range.highKeys) ? range.lowKeys
+                                                              : range.highKeys;
+      if (common < shortest) shortest = common;
+    }
+    m_queryImpl.m_shortestBound = shortest;
+  } else if (bounds) {
     const int error = prepareIndexKeyInfo(keyInfo, bounds, actualParam);
     if (unlikely(error)) return error;
   }
@@ -6587,35 +6618,15 @@ static int serializeConstOp(const NdbConstOperandImpl &constOp,
   // Check that column->shrink_varchar() not specified, only used by mySQL
   // assert (!(column->flags & NdbDictionary::RecMysqldShrinkVarchar));
   buffer.skipRestOfWord();
+  /**
+   * RonDB: the converted value already is the column's wire format, with
+   * the length prefix of a variable-size column (every const operand
+   * class converts to it), exactly what the bound and key patterns of
+   * non-root operations send.  Adding a prefix here double-prefixed the
+   * raw-data constValue(ptr, len) of the query root.
+   */
   len = constOp.getSizeInBytes();
-  Uint8 shortLen[2];
-  switch (constOp.getColumn()->getArrayType()) {
-    case NdbDictionary::Column::ArrayTypeFixed:
-      buffer.appendBytes(constOp.getAddr(), len);
-      break;
-
-    case NdbDictionary::Column::ArrayTypeShortVar:
-      // Such errors should have been caught in convert2ColumnType().
-      assert(len <= 0xFF);
-      shortLen[0] = (unsigned char)len;
-      buffer.appendBytes(shortLen, 1);
-      buffer.appendBytes(constOp.getAddr(), len);
-      len += 1;
-      break;
-
-    case NdbDictionary::Column::ArrayTypeMediumVar:
-      // Such errors should have been caught in convert2ColumnType().
-      assert(len <= 0xFFFF);
-      shortLen[0] = (unsigned char)(len & 0xFF);
-      shortLen[1] = (unsigned char)(len >> 8);
-      buffer.appendBytes(shortLen, 2);
-      buffer.appendBytes(constOp.getAddr(), len);
-      len += 2;
-      break;
-
-    default:
-      assert(false);
-  }
+  buffer.appendBytes(constOp.getAddr(), len);
   if (unlikely(buffer.isMemoryExhausted())) {
     return Err_MemoryAlloc;
   }

@@ -12,8 +12,16 @@ pushdown aggregation) and F1b (aggregation on primary-key reads, kernel
 + API + RonSQL) done 2026-09-23 — tests green in the user's run. Every
 RonSQL query requires all data nodes >= 26.10.0. Open: the JIT mirror of
 `ronsql_in_list_ranges` recorded a fallback delta of 96 (the lookup
-mirror 0) — attribute it (residual scan filters are the likely source);
-F3 (SPJ roots) next, then the census rerun for the §0 targets.**
+mirror 0) — attribute it (residual scan filters are the likely source).
+F3 (SPJ roots) built 2026-09-23 as multi-range bounds in the query
+definition (§2.6, not `NdbQuery::setBound`), together with the F14 fix
+(VARCHAR constants in pushed queries); F14 confirmed by both fuzzers
+2026-09-24 (spec seed 1 known-wrong 2 → 0, envelope 9 cases → PASS,
+markers retired).  The `ronsql_fs_jit` spec-fuzz fallback pin moved
+152 → 136 (recorded 2026-09-17, before WP-F): IN lists no longer run as
+OR-chain scan filters under F1a / F2 / F1b / F3; not attributed per
+case (the counter counts per compile attempt).  Then the census rerun
+for the §0 targets.**
 
 ## 0. Contract and targets
 
@@ -270,17 +278,55 @@ it applies if Hopsworks partitions by the entity key (§1 last bullet).
 
 ### 2.6 SPJ roots: CTE bodies and join roots (F3)
 
-`emit_index_scan_root` cannot pass N ranges at definition time: define
-the root with `scanIndex(idx, tab, /*bound=*/NULL, &rootOpts)`, keep the
-range set on the scope, and between `m_trans->createQuery(queryDef)`
-(`:9028`) and `execute` call `query->setBound(idx->getDefaultRecord(),
-&ib)` per range (`ib.range_no = r`, `low_key == high_key` pointing at
-one key buffer laid out per the index's default `NdbRecord` —
-`getOffset` / `setNull` / `getRecordRowLength` — both inclusive, so the
-API sends one `BoundEQ` per column; the windowed shape uses distinct low
-and high buffers with `high_key_count` one less). The residual filter
-stays on `rootOpts`. `m_prunability` becomes `Prune_Unknown`, which an
-unpruned multi-range scan is.
+*As built (2026-09-23).* The first design — define the root without a
+bound and call `NdbQuery::setBound` per range after `createQuery` — does
+not reach the target shape: `setBound` writes the query's KEYINFO, which
+DBSPJ attaches to operation 0, and in a query with CTE subtrees operation
+0 is the CTE container, not the body root (the body root is operation
+1+, a parentless node whose constant bound is a *fixed key* in the
+QueryTree); a main-query root after the CTE subtrees is the same. So the
+ranges go into the query definition instead:
+
+- **NDB API**: `NdbQueryBuilder::scanIndex(index, table, const
+  NdbQueryIndexBound *const bounds[], Uint32 noOfBounds, options, ident)`
+  (the single-bound call delegates to it). More than one range requires
+  constant operands, no parent and no sorted scan (error 4832
+  `QRY_MULTI_RANGE_BOUND`), at most `MaxRangeNo + 1` ranges. Range 0 stays
+  in `m_bound`, ranges 1..n−1 are kept flat (`m_extraRanges`,
+  `m_rangeOperands`). Serialization, per range, the KEYINFO words
+  `BoundType, AttributeHeader(keyNo, len), value` with the first word
+  stamped `(rangeWords << 16) | (r << 4)` — what `Dblqh::copyNextRange`
+  splits on: for a non-root operation one `P_DATA` block per range in
+  the bound pattern (`Dbspj::expand` copies `P_DATA` verbatim into the
+  fixed key), for the query root the same words in the query's KEYINFO
+  (`prepareKeyInfo`). No prune pattern for a multi-range bound (it was
+  built from range 0 only); the root keeps `Prune_No`. No DBSPJ / DBLQH /
+  wire change: multi-range KEYINFO with JoinAgg is the path DBSPJ's
+  multi-range child scans already take.
+- **API hardening on the way**: the QueryTree length (16 bits) is now
+  checked (`QRY_DEFINITION_TOO_LARGE`), and `NdbQuery::setBound` refuses
+  a root that is not operation 0 (its KEYINFO would be dropped).
+- **RonSQL**: `select_root_scan_config` builds the candidates with
+  `allow_in_ranges`; `emit_index_scan_root` computes the per-column
+  bound plan once and emits one bound per distinct IN value (the IN
+  column's operand substituted, the other bounds repeated). The ranges of
+  all SPJ roots of a query share a budget of `SPJ_IN_RANGE_WORDS_MAX` =
+  16384 QueryTree words (DBSPJ refuses a node of 32 K words; 4095 INT
+  values take 16380); over it, the candidates are rebuilt without IN
+  ranges and the list stays a filter. EXPLAIN: `Body root: INDEX_SCAN
+  using PRIMARY, N ranges (IN list on \`col\`: T values, N distinct)`
+  and, for a join root, `Ranges: N (IN list on \`col\`: …; multi-range)`
+  above its `CONDITIONS`.
+- **F14 on the same path**: `NdbQueryBuilder::constValue(ptr, len)`
+  takes a variable-size value without its length prefix (the API adds
+  it; ha_ndbcluster strips it), but RonSQL passed `encode_constant`'s
+  NdbRecord bytes — every VARCHAR bound or key of a pushed query was
+  doubly prefixed and matched nothing (F14). `query_const_value` strips
+  the prefix at all five call sites; in the API, `serializeConstOp` (the
+  query-root KEYINFO) no longer adds a prefix to the already-prefixed
+  converted value, and `NdbCharConstOperandImpl::convertVChar` now
+  produces the prefixed form like the generic constant, so the pattern
+  and KEYINFO paths agree for both.
 
 A CTE body with a complete-PK IN list (`fs_hw_snow1_batch100`:
 `customers_1 WHERE customer_id IN (…) GROUP BY customer_id, region_id`)
@@ -460,17 +506,24 @@ dump regenerated; `ndbinfo.jit` compiles per request → 0.
 
 ### F3 — SPJ roots (CTE bodies and join roots) by multi-range scan
 
-Files: `RonSQLPreparer.cpp` (`emit_index_scan_root`, the
-post-`createQuery` bound loop, scope state for the range set, the join
-plan printer).
+Built 2026-09-23 (§2.6 as built). Files: NDB API `NdbQueryBuilder.hpp`
+/ `.cpp`, `NdbQueryBuilderImpl.hpp`, `NdbQueryOperation.cpp`,
+`ndberror.cpp` (4832); RonSQL `RonSQLPreparer.cpp` / `.hpp`
+(`select_root_scan_config`, `spj_in_range_words`,
+`emit_index_scan_root`, `query_const_value`, the plan printers);
+`fsq/cases/bench.go` + golden (`fs_hw_snow1_batch100` pins the ranges).
 
-Tests: a `ronsql_cte` body include with IN lists on the body's leading
-PK column and on a secondary index (`body_index.inc` pattern), a
-snowflake with an IN-list body, an IN list on a main-query join root;
-JIT mirror; `ronsql_fs` green.
+Tests: `ronsql/ronsql_in_list_spj` (+ `ronsql_jit` mirror): CTE body
+roots (complete PK under a snowflake, aggregating main query, duplicates
+→ one range, PK prefix + window, secondary index, VARCHAR keys), F14
+(VARCHAR equality body bound, both cases), main-query join roots
+(aggregating, pass-through, residual filter, VARCHAR IN list, VARCHAR key
+lookup), the main root after a CTE subtree, 4095 ranges, and the budget
+(250 ranges of a 200-character leading bound fit, 300 fall back).
 
-Evidence: `fs_hw_snow1_batch100` ≤ 10 ms, pin `Body root: INDEX_SCAN
-using PRIMARY`; the S7-batch templates.
+Evidence: `fs_hw_snow1_batch100` ≤ 10 ms, pins `Body root: INDEX_SCAN
+using PRIMARY` + `ranges (IN list on \`customer_id\``; the S7-batch
+templates; spec fuzzer `known-wrong` F14 → 0.
 
 ### F4 — residual IN lists as a branch tree; ORDER BY by index order
 

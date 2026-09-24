@@ -137,7 +137,8 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 		return []string{"Execute as index scan.", "ORDER BY: index order (SF_OrderBy | SF_Descending", fmt.Sprintf("Result limited to %d rows.", n)}
 	}
 	snowPins := []string{"Body root: INDEX_SCAN using PRIMARY", "[ROOT] CTE_SCAN", "[INNER] PK_LOOKUP"}
-	snowBatchPins := []string{"Body root: TABLE_SCAN", "[ROOT] CTE_SCAN", "[INNER] PK_LOOKUP"}
+	// WP-F F3: the batch body's IN list is one PRIMARY range per key.
+	snowBatchPins := []string{"Body root: INDEX_SCAN using PRIMARY", "ranges (IN list on `customer_id`", "[ROOT] CTE_SCAN", "[INNER] PK_LOOKUP"}
 	leftPins := []string{"Body root: INDEX_SCAN using PRIMARY", "[ROOT] CTE_SCAN", "[LEFT JOIN] PK_LOOKUP"}
 
 	point := spec.AggSpec{{Key: "amount", Fns: []string{"count", "sum", "max"}}, {Key: "fee", Fns: []string{"min"}}}
@@ -199,7 +200,7 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 		add(BenchEntry{Name: "fs_hw_snow2_twin", Shape: "S7 twin", Description: "production MySQL nested join, 2 hops", Rows: "<= 1", MySQLOnly: true, SQL: twin(g)})
 	}
 	if g, ok := emitted("fs_hw_snow1_batch100", b.snowflakeView("hw-s1b", 1, spec.JoinInner, true), 100); ok {
-		add(BenchEntry{Name: "fs_hw_snow1_batch100", Shape: "S7 batch", Description: "snowflake 1-hop batch of 100 (root key projected; F12: CTE body table scan)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: snowBatchPins})
+		add(BenchEntry{Name: "fs_hw_snow1_batch100", Shape: "S7 batch", Description: "snowflake 1-hop batch of 100 (root key projected; WP-F F3: one CTE body range per key)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: snowBatchPins})
 	}
 	if g, ok := emitted("fs_hw_snow2_left_chain", b.snowflakeView("hw-s8", 2, spec.JoinLeft, false), 0); ok {
 		add(BenchEntry{Name: "fs_hw_snow2_left_chain", Shape: "S8", Description: "LEFT per-chain template for the country node (two inner hops, one projection)", Rows: "<= 1", SQL: ronsql(g, 1), PlanPins: snowPins})

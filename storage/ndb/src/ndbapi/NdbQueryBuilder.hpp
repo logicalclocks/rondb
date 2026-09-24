@@ -602,6 +602,22 @@ class NdbQueryBuilder {
       const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
 
   /**
+   * Multi-range index scan: 'noOfBounds' ranges, range i carrying range
+   * number i (1 <= noOfBounds <= NdbIndexScanOperation::MaxRangeNo + 1).
+   * With more than one range every bound operand must be a constant,
+   * the scan must not be sorted and the operation must not have a
+   * parent: the query root, a CTE body root, or the main-query root
+   * after the CTE subtrees (error QRY_MULTI_RANGE_BOUND otherwise).
+   * The ranges are scanned in order on each fragment; duplicate ranges
+   * return their rows once per range.  One bound is the same as the
+   * single-bound scanIndex().
+   */
+  const NdbQueryIndexScanOperationDef *scanIndex(
+      const NdbDictionary::Index *, const NdbDictionary::Table *,
+      const NdbQueryIndexBound *const bounds[], Uint32 noOfBounds,
+      const NdbQueryOptions *options = nullptr, const char *ident = nullptr);
+
+  /**
    * Create a CTE lookup operation that looks up a key in a materialized
    * CTE hash table. The virtualTable parameter is a dummy NDB table whose
    * PK columns match the CTE's GROUP BY key column types.
