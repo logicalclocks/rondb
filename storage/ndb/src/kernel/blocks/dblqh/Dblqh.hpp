@@ -548,6 +548,8 @@ class FsReadWriteReq;
  * interpreted read (RONDB-1124 WP-F F1b).  Same code as DBTUP's
  * ZAGG_WRONG_OPERATION, which is only visible inside DBTUP. */
 #define ZAGG_READ_WRONG_OPERATION          1868
+/* DBTUP's ZAGG_ALLOC_MEM_FAILED (out of query memory, temporary). */
+#define ZJOIN_AGG_ALLOC_MEM_FAILED         1870
 #define ZCTE_LOOKUP_GROUP_NOT_FOUND        1263
 #define ZCTE_LOOKUP_STATE_NOT_READY        1264
 #define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
@@ -563,6 +565,12 @@ class FsReadWriteReq;
  * group — a classification violation; API-controlled input, so the
  * query fails cleanly. */
 #define ZCTE_SINGLE_GROUP_VIOLATION        1273
+/* Temporary conditions of the RONDB-1120 identity / parking protocol,
+ * which a retry of the query can survive (RonSQL retries temporary
+ * errors only): the park sweeper found the SETUP still missing, and the
+ * park or identity pool was exhausted. */
+#define ZJOIN_AGG_SETUP_NOT_RECEIVED       1274
+#define ZJOIN_AGG_PARK_POOL_EXHAUSTED      1275
 
 /**
  * @class dblqh

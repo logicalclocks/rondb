@@ -293,14 +293,6 @@ require_run(bool condition, const char* msg)
   throw std::runtime_error(msg);
 }
 
-// require or fail with retry
-static inline void
-require_tmp(bool condition, const char* msg)
-{
-  if (likely(condition)) return;
-  throw RonSQLRetryableError(msg);
-}
-
 /*
  * Walk a ConditionalExpression subtree and determine which table its
  * columns reference.  Returns:
@@ -8883,6 +8875,24 @@ RonSQLPreparer::execute_single_table_passthrough()
     // -1 means no LIMIT, and LIMIT 0 prints nothing (JSON keeps its
     // framing).
     const Int64 limit = m_context.ast_root.limit;
+    // Raise a failed read (other than a missing row) before anything is
+    // printed: a temporary error is retried only while no output went
+    // out, and a retry after printed rows would print them twice.  The
+    // walk mirrors the print loop below, LIMIT included.
+    {
+      Uint32 rows_to_print = 0;
+      for (Uint32 n = 0; n < n_ops; n++) {
+        if (limit >= 0 && (Int64)rows_to_print >= limit) break;
+        const NdbError& op_err = exec_ops[n]->getNdbError();
+        if (op_err.code != 0) {
+          if (op_err.classification != NdbError::NoDataFound) {
+            throw_key_read_error(op_err, "Failed to execute lookup.");
+          }
+          continue;
+        }
+        rows_to_print++;
+      }
+    }
     Uint32 row_count = 0;
     if (is_json) {
       m_resultprinter->print_passthrough_header(op_attrs, num_cols,
@@ -9718,15 +9728,15 @@ RonSQLPreparer::execute_join()
       if (err.classification == NdbError::SchemaError) {
         throw RonSQLMaybeStaleSchema("Join query execution failed.");
       }
-      // Anything else by its classification.  Temporary errors are
-      // retried, and so are internal ones: the join-aggregation / CTE
-      // protocol reports transient races as internal errors (1251 for a
-      // swept parked consumer, cte_park_sweeper).  An error of the
-      // statement itself fails at once: retrying every error resent a
-      // deterministic one (1869 from the aggregation interpreter, census
-      // run 5) ten times, each a full query.
+      // Anything else by its classification: only a temporary error is
+      // retried.  An internal error is a defect a retry cannot mend, and
+      // an error of the statement itself fails the same way every time:
+      // retrying every error resent a deterministic one (1869 from the
+      // aggregation interpreter, census run 5) ten times, each a full
+      // query.  Transient kernel conditions (races, node failure, memory)
+      // are reported with temporary codes.
       throw_classified_ndb_error(err, "Join query execution failed.",
-                                 "join query", /*retry_internal=*/true);
+                                 "join query");
     }
 
     // Collect and print aggregation results
@@ -10170,7 +10180,7 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
                                    ? "Pass-through drain failed after rows "
                                      "were delivered."
                                    : "Pass-through drain failed.",
-                               "pass-through drain", /*retry_internal=*/true);
+                               "pass-through drain");
   }
 
   if (sorting) {
@@ -13212,8 +13222,7 @@ RonSQLPreparer::throw_key_read_error(const NdbError& op_err, const char* what)
 void
 RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
                                            const char* what,
-                                           const char* where,
-                                           bool retry_internal)
+                                           const char* where)
 {
   // Describe the error on the err stream as handle_ronsql_exception
   // does (ronsql_cli prints it; tests grep "NDB Permanent error 1860,").
@@ -13224,10 +13233,7 @@ RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
     throw RonSQLRateLimitError(what, op_err.code);
   }
   if (op_err.status == NdbError::TemporaryError ||
-      op_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT ||
-      (retry_internal &&
-       (op_err.classification == NdbError::InternalError ||
-        op_err.classification == NdbError::UnknownResultError))) {
+      op_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
     if (!m_output_started) {
       err << "->RRE\n" << op_err << '\n';
       throw RonSQLRetryableError(what);
@@ -13750,7 +13756,7 @@ RonSQLPreparer::apply_filter_top_level(NdbScanFilter* filter)
    * unnecessary in the special case of exactly one condition of type T_AND or
    * T_OR.
    */
-  require_tmp(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
+  require_run(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
   bool has_filter = false;
   for (Uint32 i = 0; i < m_toplevel_conditions.size(); i++) {
     if (m_scan_config->condition_handling_map[i] == -1) {
@@ -13770,7 +13776,7 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
   switch (ce->op)
   {
   case T_OR:
-    require_tmp(DBG(filter->begin(NdbScanFilter::OR)) >= 0, filter_fail);
+    require_run(DBG(filter->begin(NdbScanFilter::OR)) >= 0, filter_fail);
     apply_filter(filter, scope, ce->args.left);
     apply_filter(filter, scope, ce->args.right);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
@@ -13778,13 +13784,13 @@ RonSQLPreparer::apply_filter(NdbScanFilter* filter, QueryScope& scope,
   case T_XOR:
     abort(); // This should have been "simplified" away
   case T_AND:
-    require_tmp(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
+    require_run(DBG(filter->begin(NdbScanFilter::AND)) >= 0, filter_fail);
     apply_filter(filter, scope, ce->args.left);
     apply_filter(filter, scope, ce->args.right);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;
   case T_NOT:
-    require_tmp(DBG(filter->begin(NdbScanFilter::NAND)) >= 0, filter_fail);
+    require_run(DBG(filter->begin(NdbScanFilter::NAND)) >= 0, filter_fail);
     apply_filter(filter, scope, ce->args.left);
     require_sch(DBG(filter->end()) >= 0, filter_fail);
     break;

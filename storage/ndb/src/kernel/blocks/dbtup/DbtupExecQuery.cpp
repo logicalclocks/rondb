@@ -6488,12 +6488,16 @@ int Dbtup::handleAggReadRow(Signal *signal, KeyReqStruct *req_struct,
     jam();
     return TUPKEY_abort(req_struct, ZAGG_WRONG_OPERATION);
   }
+  bool out_of_memory = false;
   AggInterpreter *interp = PushdownInterpreterFactory::CreateAggForRead(
       &cinBuffer[proc_start], proc_len, req_struct->fragPtrP->fragTableId,
-      req_struct->fragPtrP->fragmentId, getThreadId());
+      req_struct->fragPtrP->fragmentId, getThreadId(), &out_of_memory);
   if (unlikely(interp == nullptr)) {
     jam();
-    return TUPKEY_abort(req_struct, ZAGG_ALLOC_MEM_FAILED);
+    /* 1870 is temporary (out of query memory); a rejected program is
+     * the statement's own error. */
+    return TUPKEY_abort(req_struct, out_of_memory ? ZAGG_ALLOC_MEM_FAILED
+                                                  : ZAGG_WRONG_OPERATION);
   }
   /* A one-row interpreter holds at most one group, so the bounded
    * teardown finishes in one call — also after a failed ProcessRec

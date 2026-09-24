@@ -222,6 +222,9 @@ class AggInterpreterBase : public PushdownInterpreter {
   static constexpr Uint16 AVG_NO_HIDDEN = 0xFFFF;
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* Init() failed for want of query memory when this is still false;
+   * with the block allocated the program itself was rejected. */
+  bool has_buf_block() const { return m_buf_block != nullptr; }
   /* prog[3] AGG_PROG_FLAG_REUSABLE — the client re-sends this program
    * across executions (RonSQL); the JIT compile pins its blob in the
    * reuse cache (Phase 8 Slice 4). */

@@ -79,9 +79,9 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       insert, letting SETUP run first. Extra selects: 0 = all, 0xFFFF
       = the main aggregation only, 0xFFFE = none (sweeper hold only),
       otherwise cteIndex + 1.
-5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1251 after 200 ms
-      so consumers can be swept first and DBTC can finish its SETUP round
-      (DblqhProxy, cleared after use).
+5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1274 after 200 ms
+      so consumers can be swept first (sweeper REF 1274, temporary) and
+      DBTC can finish its SETUP round (DblqhProxy, cleared after use).
 5140: Hold inbound JOIN_AGG_REDISTRIBUTE_REQ with RI_NEED_CONF, 200 ms at
       a time, until cleared. Other rows proceed normally, avoiding a timer
       entry per group row. A held remote request emits InfoEvent
@@ -157,7 +157,7 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       instead capping the join-agg park pool: once it holds at least
       `extra` records a consumer is refused as if the pool were exhausted
       (parkJoinAggConsumer / joinAggResolveOrParkGeneric) and takes its
-      normal resource-error path (PK-4).
+      normal resource-error path, the temporary 1275 (PK-4).
 5149: Refuse JOIN_AGG_SETUP_REQ with OutOfQueryMemory once the identity
       table holds at least `extra` entries (DblqhProxy), as if the table
       were full (PK-5).

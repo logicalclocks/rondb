@@ -1,8 +1,8 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
-=== cps-1: one SETUP rejected late (5139), the first attempt fails with 1251 ===
-The first attempt failed with NDB error 1251 (parked consumers swept)
+=== cps-1: one SETUP rejected late (5139), the first attempt fails with 1274 ===
+The first attempt failed with the temporary NDB error 1274 (parked consumers swept)
 The retried attempt returned the MySQL result
 
 === cps-2: leak checks (each dump crashes its node on a leak) ===

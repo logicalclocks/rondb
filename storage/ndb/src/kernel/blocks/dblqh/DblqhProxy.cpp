@@ -3349,7 +3349,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                     0,
                                     getThreadId());
     state->m_agg_interpreter = interp;
-    interp->Init(leaf0.m_agg_program);
+    if (unlikely(!interp->Init(leaf0.m_agg_program))) {
+      jam();
+      /* Without its buffer block the interpreter would fail every row
+       * with 1869: out of query memory (temporary) unless the block was
+       * allocated and the program itself was rejected. */
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          interp->has_buf_block()
+                              ? DbspjErr::InvalidRequest
+                              : DbspjErr::OutOfQueryMemory,
+                          __LINE__, key, cteIndex);
+      return;
+    }
     if (state->m_num_leaves > 1) {
       interp->setTotalAggResults(state->m_total_agg_results);
       interp->cacheMultiLeafAggOps(state->m_leaf_programs,
@@ -3364,7 +3375,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       if (unlikely(ret != 0)) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
+                            ret == ZJOIN_AGG_ALLOC_MEM_FAILED
+                                ? DbspjErr::OutOfQueryMemory
+                                : DbspjErr::InvalidRequest,
+                            __LINE__, key, cteIndex);
         return;
       }
     }
@@ -3409,7 +3423,15 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                       0,
                                       getThreadId());
       arr[i] = interp;
-      interp->Init(leaf0.m_agg_program);
+      if (unlikely(!interp->Init(leaf0.m_agg_program))) {
+        jam();
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            interp->has_buf_block()
+                                ? DbspjErr::InvalidRequest
+                                : DbspjErr::OutOfQueryMemory,
+                            __LINE__, key, cteIndex);
+        return;
+      }
       if (state->m_num_leaves > 1) {
         interp->setTotalAggResults(state->m_total_agg_results);
         interp->cacheMultiLeafAggOps(state->m_leaf_programs,
@@ -3423,7 +3445,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         if (unlikely(ret != 0)) {
           jam();
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
+                              ret == ZJOIN_AGG_ALLOC_MEM_FAILED
+                                  ? DbspjErr::OutOfQueryMemory
+                                  : DbspjErr::InvalidRequest,
+                              __LINE__, key, cteIndex);
           return;
         }
       }
@@ -3788,7 +3813,7 @@ DblqhProxy::execCONTINUEB(Signal *signal) {
       const Uint32 requestId = signal->theData[3];
       const Uint32 cteIndex = signal->theData[4];
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          ZJOIN_AGG_STATE_NOT_FOUND, __LINE__, RNIL,
+                          ZJOIN_AGG_SETUP_NOT_RECEIVED, __LINE__, RNIL,
                           cteIndex);
       break;
     }

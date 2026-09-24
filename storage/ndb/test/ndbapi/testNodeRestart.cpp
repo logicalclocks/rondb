@@ -12199,8 +12199,9 @@ static int runCteNfLeakDumps(NdbRestarter &restarter) {
 
 /* Run the clean query with the case's shape and require the result
  * loadTable(CTE_NF_ROWS, groups) implies (CteQueryUtil::resultMatches).
- * A second attempt after a pause separates a transient post-restart
- * effect from a persistent one. */
+ * A temporary error (a transient post-restart effect) gets a second
+ * attempt after a pause; any other error or a wrong result fails at
+ * once, as RonSQL retries only temporary errors. */
 static int runCteNfCheckQuery(
     Ndb *ndb, const char *when,
     CteQueryUtil::Shape shape = CteQueryUtil::LookupMain,
@@ -12219,6 +12220,7 @@ static int runCteNfCheckQuery(
           << " rows=" << res.rows << " count=" << res.aggCount
           << " sum=" << res.aggSum << " (" << CTE_NF_ROWS << " rows, "
           << groups << " groups loaded)" << endl;
+    if (rc == 0 || res.ndbErrorStatus != NdbError::TemporaryError) break;
     NdbSleep_SecSleep(5);
   }
   return NDBT_FAILED;
@@ -12466,7 +12468,8 @@ struct CteNfEventListener {
  * The killer subscribes before the query is armed, waits for the matching
  * hold event and kills the node selected by killTarget. The query must
  * then fail with an error accepted by cteNfNodeFailureError; NF-11 also
- * accepts the park sweeper's error 1251. A TC or API timeout, or a return
+ * accepts the park sweeper's temporary error 1274. A TC or API timeout, or
+ * a return
  * before the confirmed hold and kill, fails the case.
  *
  * The picker chooses the node to arm once the coordinator is known.
@@ -12665,16 +12668,18 @@ static int runCteNfHoldQuery(NDBT_Context *ctx, NDBT_Step *step,
       ctx->stopTest();
       return NDBT_FAILED;
     }
-    /* NF-11's sweep sends STATE_NOT_FOUND (1251) to live requesters.
+    /* NF-11's sweep sends SETUP_NOT_RECEIVED (1274) to live requesters.
      * It may reach DBTC before the node-failure error. Only NF-11 opts
      * into this outcome; its killer still requires JOIN_AGG_PARK_SWEPT
-     * before publishing CteNfRestarted and allowing this step to pass. */
+     * before publishing CteNfRestarted and allowing this step to pass.
+     * Every accepted error is temporary: RonSQL retries only those. */
     const bool expectedError =
-        cteNfNodeFailureError(res.ndbError, hold.killTarget) ||
-        (allowParkSweepError && res.ndbError == 1251);
+        (cteNfNodeFailureError(res.ndbError, hold.killTarget) ||
+         (allowParkSweepError && res.ndbError == 1274)) &&
+        res.ndbErrorStatus == NdbError::TemporaryError;
     if (rc != -1 || !expectedError) {
-      g_err << "Expected a node-failure error"
-            << (allowParkSweepError ? " or park-sweep error 1251" : "")
+      g_err << "Expected a temporary node-failure error"
+            << (allowParkSweepError ? " or park-sweep error 1274" : "")
             << " after the peer failure "
             << "(rc=" << rc << ", ndbError=" << res.ndbError
             << ", rows=" << res.rows << ")" << endl;
@@ -13700,7 +13705,7 @@ static int runCteCoordinatorReleaseKiller(NDBT_Context *ctx,
  * surviving requesters. The sweeper's REFs to R are dropped harmlessly,
  * live requesters abort, and the placeholder and park records go
  * (P logs JOIN_AGG_PARK_SWEPT naming R). The query must fail with
- * 286 / 20016, or 1251 if a sweep REF reaches DBTC first. The hold, kill
+ * 286 / 20016, or 1274 if a sweep REF reaches DBTC first. The hold, kill
  * and sweep checks are required for either outcome. After the restart
  * the identity dump (2363) is clean. Needs three nodes: P, R and the
  * coordinator.

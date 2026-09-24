@@ -225,7 +225,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           len_in_char + m_n_agg_results * sizeof(AggResItem),
           len_in_char);
       if (agg_rec == nullptr) {
-        return ZAGG_OTHER_ERROR;
+        /* The chunk budget or RG_QUERY_MEMORY is exhausted. */
+        return ZAGG_ALLOC_MEM_FAILED;
       }
       memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);

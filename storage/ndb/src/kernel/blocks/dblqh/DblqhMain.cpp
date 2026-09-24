@@ -9408,12 +9408,23 @@ SimulatedBlock::JoinAggResolveOrParkResult Dblqh::parkJoinAggConsumer(
   return res;
 }
 
+/* The error of a failed join-aggregation feed: the interpreter's own
+ * code (1860 overflow, 1870 out of query memory — temporary, 1869 ...)
+ * classifies the failure; `fallback` (an internal error) only when there
+ * is none. */
+static inline Uint32 joinAggFeedError(Int32 ret, Uint32 fallback) {
+  return ret > AGG_EVICT_NEEDED ? static_cast<Uint32>(ret) : fallback;
+}
+
 /**
  * RONDB-1120 P2: the placeholder failure sweeper.  If the identity is
  * still an unfilled placeholder after 10 ms, SETUP never arrived
  * (SETUP_REF or loss) — abort every parked request with a REF so
  * DBTC's abort (which waits for the CONF/REF of every in-flight
- * request) cannot deadlock, and release the parked sections.
+ * request) cannot deadlock, and release the parked sections.  The REFs
+ * carry the temporary ZJOIN_AGG_SETUP_NOT_RECEIVED: a SETUP that is only
+ * late (a loaded instance, a JIT compile) or lost with a failed node is
+ * a race a retry of the query survives.
  */
 void Dblqh::joinAggParkSweep(Signal *signal) {
   const Uint32 transid[2] = { signal->theData[1], signal->theData[2] };
@@ -9470,7 +9481,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
       ref->senderRef = reference();
       ref->senderData = req->senderData;
       ref->requestId = req->requestId;
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorCode = ZJOIN_AGG_SETUP_NOT_RECEIVED;
       ref->errorLine = __LINE__;
       sendSignal(rec->m_senderRef, GSN_JOIN_AGG_COMPLETE_REF, signal,
                  JoinAggCompleteRef::SignalLength, JBB);
@@ -9481,7 +9492,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
           (JoinAggRedistributeRef *)signal->getDataPtrSend();
       ref->aggStateKey = RNIL;
       ref->senderNodeId = getOwnNodeId();
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorCode = ZJOIN_AGG_SETUP_NOT_RECEIVED;
       ref->senderAggStateKey = req->senderAggStateKey;
       ref->identWord = req->identWord;
       ref->transid[0] = req->transid[0];
@@ -9501,7 +9512,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
       ref->aggStateKey = req->aggStateKey;
       ref->requestPtrI = req->requestPtrI;
       ref->treeNodePtrI = req->treeNodePtrI;
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorCode = ZJOIN_AGG_SETUP_NOT_RECEIVED;
       ref->errorLine = __LINE__;
       sendSignal(rec->m_senderRef, GSN_JOIN_AGG_NULL_ROW_REF, signal,
                  JoinAggNullRowRef::SignalLength, JBB);
@@ -9512,7 +9523,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
       ref->userRef = req->clientConnectPtr;
       /* DBSPJ feeds assert SameClientAndTcFlag == 0 at send time. */
       ref->connectPtr = req->clientConnectPtr;
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+      ref->errorCode = ZJOIN_AGG_SETUP_NOT_RECEIVED;
       ref->transId1 = req->transId1;
       ref->transId2 = req->transId2;
       ref->flags = 0;
@@ -9523,7 +9534,7 @@ void Dblqh::joinAggParkSweep(Signal *signal) {
           reinterpret_cast<const ScanFragReq *>(rec->m_theData);
       send_scan_fragref(signal, req->transId1, req->transId2,
                         req->senderData, rec->m_senderRef,
-                        ZJOIN_AGG_STATE_NOT_FOUND);
+                        ZJOIN_AGG_SETUP_NOT_RECEIVED);
     }
     joinAggFreeParkRec(chain);
     chain = next;
@@ -10199,7 +10210,7 @@ void Dblqh::execLQHKEYREQ(Signal *signal) {
         } else if (pr == SimulatedBlock::JAI_ROP_FAILED) {
           jam();
           earlyKeyReqAbort_simple(signal, lqhKeyReq,
-                                  ZJOIN_AGG_STATE_NOT_FOUND,
+                                  ZJOIN_AGG_PARK_POOL_EXHAUSTED,
                                   __LINE__, tcConnectptr);
           return;
         } else {
@@ -16470,7 +16481,18 @@ retry:
     sendEvictedAggGroup(signal, interp, state);
     goto retry;
   }
-  ndbrequire(ret == 0);
+  if (unlikely(ret != 0)) {
+    jam();
+    /* The null-extended row failed (1860 overflow, 1870 out of query
+     * memory, ...): fail this operation with the interpreter's code
+     * instead of stopping the node.  ACC and TUP are already aborted,
+     * so continue at the tail of the abort path, which sends the
+     * LQHKEYREF and cleans up. */
+    regTcPtr->errorCode = joinAggFeedError(ret, ZJOIN_AGG_INTERPRETER_ERROR);
+    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
+    continueAfterLogAbortWriteLab(signal, tcConnectptr);
+    return;
+  }
 
   /* 5. Send LQHKEYCONF (no data, readlenAi = 0) */
   regTcPtr->readlenAi = 0;
@@ -19738,6 +19760,7 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
 
   CRASH_INSERTION(5122);  // Crash node on COMPLETE_REQ for join agg NF testing
 
+  bool parkPoolExhausted = false;
   if (unlikely(aggStateKey == RNIL)) {
     jam();
     /* RONDB-1120 P4: identity-addressed COMPLETE — this node's
@@ -19770,9 +19793,12 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
         if (res == SimulatedBlock::JAI_ROP_RESOLVED) {
           jam();
           aggStateKey = keyOut;
+        } else {
+          jam();
+          parkPoolExhausted = true;
         }
         /* FAILED keeps aggStateKey RNIL — the state==nullptr REF
-         * below answers. */
+         * below answers, with the temporary park-pool code. */
       }
     }
     if (aggStateKey != RNIL) {
@@ -19817,7 +19843,8 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     ref->senderRef = reference();
     ref->senderData = senderData;
     ref->requestId = requestId;
-    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->errorCode = parkPoolExhausted ? ZJOIN_AGG_PARK_POOL_EXHAUSTED
+                                       : ZJOIN_AGG_STATE_NOT_FOUND;
     ref->errorLine = __LINE__;
     sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
                signal, JoinAggCompleteRef::SignalLength, JBB);
@@ -20324,6 +20351,7 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     return;
   }
 
+  bool parkPoolExhausted = false;
   JoinAggregationState *state =
       (aggStateKey != RNIL) ? getJoinAggState(aggStateKey) : nullptr;
   if (state == nullptr && identWord != RNIL) {
@@ -20356,6 +20384,9 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
         jam();
         aggStateKey = keyOut;
         state = getJoinAggState(keyOut);
+      } else {
+        jam();
+        parkPoolExhausted = true;
       }
       /* FAILED falls through to the REF below. */
     }
@@ -20370,7 +20401,8 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
     ref->aggStateKey = aggStateKey;
     ref->requestPtrI = requestPtrI;
     ref->treeNodePtrI = treeNodePtrI;
-    ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+    ref->errorCode = parkPoolExhausted ? ZJOIN_AGG_PARK_POOL_EXHAUSTED
+                                       : ZJOIN_AGG_STATE_NOT_FOUND;
     ref->errorLine = __LINE__;
     sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
                signal, JoinAggNullRowRef::SignalLength, JBB);
@@ -20434,7 +20466,7 @@ retry:
     ref->aggStateKey = aggStateKey;
     ref->requestPtrI = requestPtrI;
     ref->treeNodePtrI = treeNodePtrI;
-    ref->errorCode = ZJOIN_AGG_INTERPRETER_ERROR;
+    ref->errorCode = joinAggFeedError(ret, ZJOIN_AGG_INTERPRETER_ERROR);
     ref->errorLine = __LINE__;
     sendSignal(senderRef, GSN_JOIN_AGG_NULL_ROW_REF,
                signal, JoinAggNullRowRef::SignalLength, JBB);
@@ -20497,6 +20529,10 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
             c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
         if (unlikely(ret != 0)) {
           jam();
+          /* Late peer requests REF with the recorded cause. */
+          if (state->m_error_code == 0) {
+            state->m_error_code = static_cast<Uint32>(ret);
+          }
           state->m_state.store(JoinAggregationState::ERROR);
           JoinAggCompleteRef *ref =
             (JoinAggCompleteRef *)signal->getDataPtrSend();
@@ -20578,6 +20614,12 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         JoinGBHashTable *gb_map = interp->gb_map_mutable();
         if (gb_map != nullptr && gb_map->size() > 1) {
           jam();
+          const Uint32 violation = state->m_cte_single_row
+                                       ? ZCTE_SINGLE_ROW_VIOLATION
+                                       : ZCTE_SINGLE_GROUP_VIOLATION;
+          if (state->m_error_code == 0) {
+            state->m_error_code = violation;
+          }
           state->m_state.store(JoinAggregationState::ERROR);
           state->m_cte_complete_reply_sent = true;
           JoinAggCompleteRef *ref =
@@ -20585,9 +20627,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
           ref->senderRef = reference();
           ref->senderData = senderData;
           ref->requestId = requestId;
-          ref->errorCode = state->m_cte_single_row
-                               ? ZCTE_SINGLE_ROW_VIOLATION
-                               : ZCTE_SINGLE_GROUP_VIOLATION;
+          ref->errorCode = violation;
           ref->errorLine = __LINE__;
           sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
                      signal, JoinAggCompleteRef::SignalLength, JBB);
@@ -20617,11 +20657,12 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       DEB_CTE(("(%u) CTE COMPLETE: multi-node redistribution starting, "
                "aggStateKey=%u cte_num_nodes=%u",
                instance(), aggStateKey, state->m_cte_num_nodes));
-      /* Check for node failure since SETUP */
+      /* Check for node failure since SETUP: a node failure (temporary,
+       * the query can be retried), not a lost state. */
       if (JoinAggregationState::s_node_fail_count.load(
               std::memory_order_relaxed) != state->m_cte_node_fail_count) {
         jam();
-        abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_NOT_FOUND);
+        abortCteRedistribution(signal, state, ZNODEFAIL_BEFORE_COMMIT);
         return;
       }
 
@@ -21321,10 +21362,12 @@ retry_agg:
     jam();
     if (unlikely(targetState->m_cte_mode)) {
       /* Eviction is not supported for CTE materialization targets —
-       * the CTE hash table must hold all groups. */
+       * the CTE hash table must hold all groups.  Outside error insert
+       * 5126 an eviction request means a group could not be allocated:
+       * out of query memory, a temporary error. */
       jam();
       sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       ZCTE_EVICT_IN_CTE_LEAF, req.correlation);
+                       DbspjErr::OutOfQueryMemory, req.correlation);
       return;
     }
     sendEvictedAggGroup(signal, targetInterp, targetState);
@@ -21341,7 +21384,8 @@ retry_agg:
         (unsigned long long)targetInterp->processed_rows(),
         targetInterp->inited() ? 1 : 0);
     sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     ZCTE_LOOKUP_OUTPUT_OVERFLOW, req.correlation);
+                     joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR),
+                     req.correlation);
     return;
   }
 
@@ -22535,11 +22579,12 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       if (aggRet == AGG_EVICT_NEEDED) {
         jam();
         if (unlikely(targetState->m_cte_mode)) {
-          /* Eviction is not supported for CTE materialization targets */
+          /* Eviction is not supported for CTE materialization targets;
+           * the group could not be allocated (see the CTE_LOOKUP feed). */
           jam();
           releaseCteScanIterState(aggFeedStateI);
           sendCteScanRef(signal, senderRef, senderData,
-                         ZCTE_EVICT_IN_CTE_LEAF);
+                         DbspjErr::OutOfQueryMemory);
           return;
         }
         sendEvictedAggGroup(signal, targetInterp, targetState);
@@ -22553,7 +22598,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
             linkedPos);
         releaseCteScanIterState(aggFeedStateI);
         sendCteScanRef(signal, senderRef, senderData,
-                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                       joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR));
         return;
       }
       rowsThisBatch++;
@@ -22663,7 +22708,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
         jam();
         releaseCteScanIterState(aggFeedStateI);
         sendCteScanRef(signal, senderRef, senderData,
-                       ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                       joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR));
         return;
       }
       if (aggRet == AGG_EVICT_NEEDED) {
@@ -22672,7 +22717,7 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
           jam();
           releaseCteScanIterState(aggFeedStateI);
           sendCteScanRef(signal, senderRef, senderData,
-                         ZCTE_EVICT_IN_CTE_LEAF);
+                         DbspjErr::OutOfQueryMemory);
           return;
         }
         sendEvictedAggGroup(signal, targetInterp, targetState);
@@ -22690,7 +22735,8 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
           jam();
           releaseCteScanIterState(aggFeedStateI);
           sendCteScanRef(signal, senderRef, senderData,
-                         ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+                         joinAggFeedError(aggRet,
+                                          ZJOIN_AGG_INTERPRETER_ERROR));
           return;
         }
       }
@@ -23825,7 +23871,7 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   if (JoinAggregationState::s_node_fail_count.load(
           std::memory_order_relaxed) != state->m_cte_node_fail_count) {
     jam();
-    abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_NOT_FOUND);
+    abortCteRedistribution(signal, state, ZNODEFAIL_BEFORE_COMMIT);
     return;
   }
 
@@ -24250,7 +24296,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
             (JoinAggRedistributeRef *)signal->getDataPtrSend();
           ref->aggStateKey = RNIL;
           ref->senderNodeId = getOwnNodeId();
-          ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+          ref->errorCode = ZJOIN_AGG_PARK_POOL_EXHAUSTED;
           ref->senderAggStateKey = senderAggStateKey;
           ref->identWord = reqIdentWord;
           ref->transid[0] = reqTransid[0];
@@ -24279,6 +24325,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
     // The state is gone or the pool slot belongs to another query. Answer
     // with a REF so a live sender fails fast instead of waiting for a CONF;
     // the sender validates its own state against the echoed identity.
+    // Only an abort releases a state its peers still redistribute to, and
+    // then DBTC already holds the query's error (or is itself gone with
+    // its node), so this code is never the one the API sees; for a request
+    // under a foreign identity (block test ID-1) it is a protocol error.
     SectionHandle handle(this, signal);
     releaseSections(handle);
     JoinAggRedistributeRef *ref =
@@ -24320,9 +24370,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       (JoinAggRedistributeRef *)signal->getDataPtrSend();
     ref->aggStateKey = aggStateKey;
     ref->senderNodeId = getOwnNodeId();
+    /* No recorded cause: a NODE_FAIL_ABORT. */
     ref->errorCode = state->m_error_code != 0
                          ? state->m_error_code
-                         : ZJOIN_AGG_STATE_NOT_FOUND;
+                         : ZNODEFAIL_BEFORE_COMMIT;
     ref->senderAggStateKey = senderAggStateKey;
     ref->identWord = reqIdentWord;
     ref->transid[0] = reqTransid[0];
@@ -24460,7 +24511,7 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                                      groupValue, groupValueLen,
                                      senderNodeId))) {
         jam();
-        errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+        errorCode = DbspjErr::OutOfQueryMemory;  // temporary
       }
     } else {
       const Int32 ret = interp->mergeOneGroup(
@@ -24469,8 +24520,10 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
           c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
       if (unlikely(ret != 0)) {
         jam();
+        /* mergeOneGroup's own code (1870 out of query memory, ...);
+         * -1 is a malformed group (internal). */
         errorCode = ret > 0 ? static_cast<Uint32>(ret)
-                            : ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+                            : ZJOIN_AGG_INTERPRETER_ERROR;
       } else {
         state->m_cte_redist_applied[senderNodeId]++;
       }
@@ -24648,7 +24701,7 @@ void Dblqh::processRedistQueue(Signal *signal,
     if (unlikely(ret != 0)) {
       jam();
       const Uint32 errorCode = ret > 0 ? static_cast<Uint32>(ret)
-                                      : ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+                                      : ZJOIN_AGG_INTERPRETER_ERROR;
       abortCteRedistribution(signal, state, errorCode);
       return;
     }
@@ -25415,7 +25468,7 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
                                 /* keepRecOnResolve */ true, &parkRecI);
         if (unlikely(pr == SimulatedBlock::JAI_ROP_FAILED)) {
           jam();
-          errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
+          errorCode = ZJOIN_AGG_PARK_POOL_EXHAUSTED;
           goto error_handler2;
         }
         if (pr == SimulatedBlock::JAI_ROP_RESOLVED) {

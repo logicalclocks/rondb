@@ -1880,7 +1880,16 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
   } else {
     /* New key — allocate and insert */
     char *new_group = allocGroupData(keyLen + v_len, keyLen);
-    if (new_group == nullptr) return -1;  /* Memory allocation failure */
+    if (new_group == nullptr) {
+      /* Out of query memory: a temporary error, unlike the -1 returns
+       * above for a malformed request. */
+      if (payload_len > 0) {
+        for (Uint32 i = 0; i < m_n_agg_results; i++) {
+          freeStringAggSlot(&local_items[i]);
+        }
+      }
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
 
     memcpy(new_group, key, keyLen);
     if (payload_len > 0) {

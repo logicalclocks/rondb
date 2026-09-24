@@ -317,7 +317,9 @@ AggInterpreter*
 PushdownInterpreterFactory::CreateAggForRead(const Uint32* prog,
                                              Uint32 prog_len,
                                              Int64 table_id, Int64 frag_id,
-                                             Uint32 thread_id) {
+                                             Uint32 thread_id,
+                                             bool* out_of_memory) {
+  *out_of_memory = false;
   if (prog == nullptr || prog_len < 8 ||
       DetectType(prog, prog_len) != PushdownType::AGGREGATION) {
     return nullptr;
@@ -326,11 +328,13 @@ PushdownInterpreterFactory::CreateAggForRead(const Uint32* prog,
                                        thread_id, false);
   if (page_ptr == nullptr) {
     g_eventLogger->error("Alloc mem for aggregation on a key read failed");
+    *out_of_memory = true;
     return nullptr;
   }
   AggInterpreter* agg = new(page_ptr) AggInterpreter(prog_len, table_id,
                                                      frag_id, thread_id);
   if (!agg->Init(prog) || !agg->OptimizeProgram()) {
+    *out_of_memory = !agg->has_buf_block();
     /* Nothing was processed: the destructor only frees what Init
      * allocated (see ~AggInterpreterBase, case (c)). */
     PushdownInterpreter::Destruct(agg);

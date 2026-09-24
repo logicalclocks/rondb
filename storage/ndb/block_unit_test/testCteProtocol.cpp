@@ -107,11 +107,12 @@
  *   PK-2  identity-addressed COMPLETE: 8310 (SETUP_CONF delayed) and
  *         8311 (RNIL key forced) each resolve; result correct.
  *   PK-3  5139 rejects one SETUP after 200 ms: the unfilled identity
- *         is swept; the delayed REF lets DBTC finish cleanup.
+ *         is swept; the delayed REF lets DBTC finish cleanup.  The query
+ *         fails with the temporary 1274 (a retry would succeed).
  *   PK-4  5148 caps the park pool at 4 while holding the SETUPs: the
  *         fifth consumer takes the resource-error path and the query
- *         fails with 1251; the four parked are replayed after the release
- *         into the aborting request; pools clean.
+ *         fails with the temporary 1275; the four parked are replayed
+ *         after the release into the aborting request; pools clean.
  *   PK-5  5149 refuses every SETUP as if the identity table were full:
  *         the query fails with OutOfQueryMemory (20008).
  *   PK-6  8313 delays a SETUP_CONF addressed to an absent DBTC scan:
@@ -184,6 +185,9 @@ static const Uint32 AGG_MAGIC = 0x0721;
 static const Uint32 AGG_RESULT_ATTR = 0xFF00;
 static const Uint32 ZNODEFAIL_BEFORE_COMMIT = 286;
 static const Uint32 ZJOIN_AGG_STATE_NOT_FOUND = 1251;
+/* Temporary (TR): a race or a resource shortage a retry survives. */
+static const Uint32 ZJOIN_AGG_SETUP_NOT_RECEIVED = 1274;
+static const Uint32 ZJOIN_AGG_PARK_POOL_EXHAUSTED = 1275;
 
 /* Section 5.4.  The CTE identity every keyed peer signal must carry:
  * JoinAggregationState::packIdentWord(queryTag, cteId, 0) in the kernel. */
@@ -2369,7 +2373,7 @@ pk2(Ctx &c)
 
 /* PK-3: 5139 leaves one identity unfilled; the sweeper REFs the
  * consumers and a delayed SETUP_REF drains DBTC's SETUP accounting.
- * Require the sweep event as well as the query's 1251. */
+ * Require the sweep event as well as the query's temporary 1274. */
 static int
 pk3(Ctx &c)
 {
@@ -2383,10 +2387,12 @@ pk3(Ctx &c)
   q.start();
   q.join();
   if (!guard.clear()) return -1;
-  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_STATE_NOT_FOUND) {
-    fprintf(stderr, "PK-3: expected failure %u, got rc=%d ndbError=%d at %s "
-                    "(rows=%llu)\n",
-            ZJOIN_AGG_STATE_NOT_FOUND, q.rc, q.res.ndbError, q.res.failedAt,
+  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_SETUP_NOT_RECEIVED ||
+      q.res.ndbErrorStatus != NdbError::TemporaryError) {
+    fprintf(stderr, "PK-3: expected temporary failure %u, got rc=%d "
+                    "ndbError=%d status=%d at %s (rows=%llu)\n",
+            ZJOIN_AGG_SETUP_NOT_RECEIVED, q.rc, q.res.ndbError,
+            (int)q.res.ndbErrorStatus, q.res.failedAt,
             (unsigned long long)q.res.rows);
     return -1;
   }
@@ -2407,9 +2413,9 @@ pk3(Ctx &c)
 }
 
 /* PK-4: 5148 holds every SETUP and caps the park pool at 4: the fifth
- * consumer takes the resource-error path, the query fails with 1251,
- * and the four parked are replayed into the aborting request after
- * the release. */
+ * consumer takes the resource-error path, the query fails with the
+ * temporary 1275, and the four parked are replayed into the aborting
+ * request after the release. */
 static int
 pk4(Ctx &c)
 {
@@ -2427,10 +2433,12 @@ pk4(Ctx &c)
   if (!guard.clear()) rc = -1;
   q.join();
   if (rc != 0) return -1;
-  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_STATE_NOT_FOUND) {
-    fprintf(stderr, "PK-4: expected failure %u, got rc=%d ndbError=%d at %s "
-                    "(rows=%llu)\n",
-            ZJOIN_AGG_STATE_NOT_FOUND, q.rc, q.res.ndbError, q.res.failedAt,
+  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_PARK_POOL_EXHAUSTED ||
+      q.res.ndbErrorStatus != NdbError::TemporaryError) {
+    fprintf(stderr, "PK-4: expected temporary failure %u, got rc=%d "
+                    "ndbError=%d status=%d at %s (rows=%llu)\n",
+            ZJOIN_AGG_PARK_POOL_EXHAUSTED, q.rc, q.res.ndbError,
+            (int)q.res.ndbErrorStatus, q.res.failedAt,
             (unsigned long long)q.res.rows);
     return -1;
   }
