@@ -23,6 +23,12 @@ ETA. Per case the driver also records the ndbinfo.jit counter deltas
 (programs compiled / reused / fallback, rows executed, compile time)
 and, for the mysqld engines, mysqld's NDB API counters (time spent
 waiting for the data nodes, scan batches, rows read, pushed queries).
+Unless --no-mem-probe, it also records the data nodes' QUERY_MEMORY and
+TRANSACTION_MEMORY use from ndbinfo.resources per case: idle before,
+the peak sampled while the case runs (--mem-sample seconds) and idle
+after (--mem-settle seconds after the case). Memory that returns to the
+before-level is load; memory kept after the case, or an idle level that
+climbs from case to case, is a leak (census F27).
 
 Where the time goes:
   - RonSQL: the server-side phase breakdown RDRS returns in the
@@ -42,6 +48,7 @@ Usage (from the repo root):
       [--cpubind FILE] [--client-cpus 16-19] [--rondis] [--rdrs-threads 64]
       [--toggle auto|set|restart] [--no-load] [--keep-cluster]
       [--no-start --mysql-port P --mysql-sock S --rdrs-port P --connectstring C]
+      [--no-mem-probe | --mem-sample 1.0 --mem-settle 1.0]
       [--out DIR] [--quick] [--verbose]
 
   --quick     = --threads 1 --seconds 2 (smoke run)
@@ -62,6 +69,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -81,6 +89,9 @@ MYSQLD_STATUS = ['Ndb_api_wait_nanos_count', 'Ndb_api_wait_exec_complete_count',
                  'Ndb_pushed_reads']
 PUSHDOWN_VARS = ['ndb_pushdown_aggregate', 'ndb_join_pushdown_aggregate',
                  'ndb_join_pushdown_aggregate_outer_join']
+# ndbinfo.resources rows tracked per case (used / max in 32 KB pages).
+MEM_RESOURCES = ['QUERY_MEMORY', 'TRANSACTION_MEMORY']
+PAGE_MB = 32.0 / 1024
 ENGINES = {
     'ronsql':        ('bench_ronsql', None),
     'mysqld':        ('bench_sql', 'ON'),
@@ -318,6 +329,16 @@ class Cluster:
         rows = self.sql('SELECT %s FROM ndbinfo.jit' % ','.join('SUM(%s)' % c for c in JIT_COLS))
         return dict(zip(JIT_COLS, [int(float(v)) for v in rows[0]])) if rows else {}
 
+    def mem_usage(self):
+        """{'used': {resource: {node: pages}}, 'max': {...}} for MEM_RESOURCES."""
+        rows = self.sql("SELECT node_id, resource_name, used, max FROM ndbinfo.resources "
+                        "WHERE resource_name IN (%s)" % ','.join("'%s'" % m for m in MEM_RESOURCES))
+        used, mx = {}, {}
+        for node, res, u, m in rows:
+            used.setdefault(res, {})[int(node)] = int(u)
+            mx.setdefault(res, {})[int(node)] = int(m)
+        return {'used': used, 'max': mx}
+
     def mysqld_status(self):
         rows = self.sql("SHOW GLOBAL STATUS WHERE Variable_name IN (%s)"
                         % ','.join("'%s'" % v for v in MYSQLD_STATUS))
@@ -363,6 +384,47 @@ class Cluster:
 
 
 # --------------------------------------------------------------- driver
+class MemSampler(threading.Thread):
+    """Polls ndbinfo.resources while a case runs and keeps the per-node peak
+    of every MEM_RESOURCES row. Uses its own mysql client process per poll,
+    never the benchmark's connections."""
+    def __init__(self, cl, interval):
+        super().__init__(daemon=True)
+        self.cl, self.interval = cl, interval
+        self.stop_ev = threading.Event()
+        self.peak = {}      # resource -> node -> pages
+        self.samples = 0
+        self.errors = 0
+
+    def note(self, usage):
+        for res, nodes in usage['used'].items():
+            p = self.peak.setdefault(res, {})
+            for node, v in nodes.items():
+                if v > p.get(node, -1):
+                    p[node] = v
+
+    def run(self):
+        while not self.stop_ev.wait(self.interval):
+            try:
+                self.note(self.cl.mem_usage())
+                self.samples += 1
+            except RuntimeError:
+                self.errors += 1
+
+    def finish(self):
+        self.stop_ev.set()
+        self.join(timeout=30)
+        return self.peak
+
+
+def mem_total(nodes):
+    """Pages summed over the data nodes; None when there is no reading
+    (the cluster went away before the idle reading after a case)."""
+    if nodes is None:
+        return None
+    return sum(nodes.values()) if nodes else 0
+
+
 class Driver:
     def __init__(self, a):
         self.a = a
@@ -599,6 +661,17 @@ class Driver:
             self.cl.set_pushdown(pushdown)
         jit0 = self.cl.jit_counters()
         st0 = self.cl.mysqld_status() if pushdown is not None else None
+        mem0, sampler = None, None
+        if self.a.mem_probe:
+            try:
+                mem0 = self.cl.mem_usage()
+            except RuntimeError as e:
+                log('   memory probe off for the rest of the run: %s' % str(e).splitlines()[0][:200])
+                self.a.mem_probe = False
+        if mem0 is not None:
+            if self.a.mem_sample > 0:
+                sampler = MemSampler(self.cl, self.a.mem_sample)
+                sampler.start()
         t0 = time.time()
         shown = []
         def cb(line):
@@ -611,7 +684,10 @@ class Driver:
             if self.a.verbose or interesting:
                 log('   | ' + line)
             shown.append(line)
-        rc, lines = self.cli(command, line_cb=cb)
+        try:
+            rc, lines = self.cli(command, line_cb=cb)
+        finally:
+            peak = sampler.finish() if sampler is not None else {}
         r['wall_s'] = time.time() - t0
         r['rc'] = rc
         text = '\n'.join(lines)
@@ -658,6 +734,20 @@ class Driver:
             if st0 is not None:
                 st1 = self.cl.mysqld_status()
                 r['mysqld_delta'] = {k: st1.get(k, 0) - st0.get(k, 0) for k in MYSQLD_STATUS}
+            if mem0 is not None:
+                if self.a.mem_settle > 0:
+                    time.sleep(self.a.mem_settle)
+                mem1 = self.cl.mem_usage()
+                tracker = MemSampler(self.cl, 0)
+                tracker.peak = peak
+                tracker.note(mem0)
+                tracker.note(mem1)
+                r['mem'] = {res: {'before': mem0['used'].get(res, {}),
+                                  'peak': tracker.peak.get(res, {}),
+                                  'after': mem1['used'].get(res, {}),
+                                  'max': mem1['max'].get(res, {})}
+                            for res in MEM_RESOURCES}
+                r['mem_samples'] = sampler.samples if sampler is not None else 0
         except RuntimeError as e:
             # The server stopped answering after the case: a crash (the error
             # log of mysqld / the data nodes has the stack). Record it on the
@@ -666,6 +756,18 @@ class Driver:
             r['error'] = 'cluster unreachable after the case (%s): %s' % (r['error'] or 'no client error', str(e).splitlines()[-1][:200])
             r['jit_delta'] = {k: 0 for k in JIT_COLS}
             self.cluster_down = r['error']
+            if mem0 is not None and 'mem' not in r:
+                # Keep what was seen before the cluster went away: the idle
+                # level and the sampled peak (F27: the memory at the failure).
+                tracker = MemSampler(self.cl, 0)
+                tracker.peak = peak
+                tracker.note(mem0)
+                r['mem'] = {res: {'before': mem0['used'].get(res, {}),
+                                  'peak': tracker.peak.get(res, {}),
+                                  'after': None,
+                                  'max': mem0['max'].get(res, {})}
+                            for res in MEM_RESOURCES}
+                r['mem_samples'] = sampler.samples if sampler is not None else 0
         return r
 
     def run_case(self, idx, total, arm, engine, q, threads, rep=0):
@@ -694,9 +796,22 @@ class Driver:
         corr = raw - self.idle.get('Ndb_api_wait_nanos_count', 0.0) * r.get('wall_s', 0.0)
         return max(0.0, corr) / n / 1e6
 
+    def mem_note(self, r):
+        qm = (r.get('mem') or {}).get('QUERY_MEMORY')
+        if not qm:
+            return None
+        b, p, af = mem_total(qm['before']), mem_total(qm['peak']), mem_total(qm['after'])
+        if af is None:
+            return ('query memory before/peak %.1f/%.1f MB (no reading after: cluster unreachable)'
+                    % (b * PAGE_MB, p * PAGE_MB))
+        return ('query memory before/peak/after %.1f/%.1f/%.1f MB%s'
+                % (b * PAGE_MB, p * PAGE_MB, af * PAGE_MB,
+                   (' (RETAINED %+.1f MB)' % ((af - b) * PAGE_MB)) if af > b else ''))
+
     def summary_line(self, r):
         if not r['ok']:
-            log('   => FAILED: %s' % r['error'])
+            note = self.mem_note(r)
+            log('   => FAILED: %s%s' % (r['error'], (', ' + note) if note else ''))
             return
         parts = ['%.1f q/s' % r['qps'], 'avg %s' % fmt_ms(r.get('avg_ms')), 'p95 %s' % fmt_ms(r.get('p95_ms'))]
         if r['engine'] == 'ronsql' and r['phases']:
@@ -718,6 +833,9 @@ class Driver:
         jd = r['jit_delta']
         parts.append('jit compiled %d reused %d fallback %d rows %d'
                      % (jd['programs_compiled'], jd['programs_reused'], jd['programs_fallback'], jd['rows_executed']))
+        note = self.mem_note(r)
+        if note:
+            parts.append(note)
         log('   => ' + ', '.join(parts))
 
     def save_json(self):
@@ -1035,6 +1153,40 @@ class Driver:
                             row += ' %s | %s | %s |' % (fmt_ms(same), fmt_ms(tt), fmt_ratio(tt, rs))
                         out.append(row)
             out.append('')
+
+        # H. Data-node memory per case, in run order (every case, failed ones
+        # included: an out-of-query-memory failure is where it matters).
+        mem_cases = [r for r in R if r.get('mem')]
+        if mem_cases:
+            out.append('## H. Data-node memory per case, in run order (ndbinfo.resources, MB summed over data nodes)')
+            out.append('')
+            qmax = mem_total(mem_cases[-1]['mem'].get('QUERY_MEMORY', {}).get('max'))
+            first = mem_total(mem_cases[0]['mem']['QUERY_MEMORY']['before'])
+            afters = [mem_total(r['mem']['QUERY_MEMORY']['after']) for r in mem_cases]
+            last = next((v for v in reversed(afters) if v is not None), first)
+            retained = [r for r, af in zip(mem_cases, afters)
+                        if af is not None and af > mem_total(r['mem']['QUERY_MEMORY']['before'])]
+            out.append('before = idle before the case; peak = highest sample while it ran (every %gs) or idle; '
+                       'after = idle %gs after it. QUERY_MEMORY max %s. Idle QUERY_MEMORY at the start %.1f MB, '
+                       'at the end %.1f MB (%+.1f MB); %d of %d cases left more in use than they found. '
+                       'A level that returns to idle is load; one that stays up or climbs from case to case is a leak.'
+                       % (a.mem_sample, a.mem_settle, ('%.1f MB' % (qmax * PAGE_MB)) if qmax else 'unlimited (0)',
+                          first * PAGE_MB, last * PAGE_MB, (last - first) * PAGE_MB, len(retained), len(mem_cases)))
+            out.append('')
+            out.append('| # | case | ok | QM before | QM peak | QM after | QM after-before | TM peak | samples |')
+            out.append('|---:|---|---|---:|---:|---:|---:|---:|---:|')
+            for i, r in enumerate(mem_cases, 1):
+                qm, tm = r['mem']['QUERY_MEMORY'], r['mem'].get('TRANSACTION_MEMORY', {})
+                b, p, af = mem_total(qm['before']), mem_total(qm['peak']), mem_total(qm['after'])
+                if af is None:
+                    after_cell, diff_cell = '-', '-'
+                else:
+                    after_cell = '%.1f' % (af * PAGE_MB)
+                    diff_cell = ('**%+.1f**' % ((af - b) * PAGE_MB)) if af > b else '%+.1f' % ((af - b) * PAGE_MB)
+                out.append('| %d | %s | %s | %.1f | %.1f | %s | %s | %.1f | %d |'
+                           % (i, r['tag'], 'ok' if r['ok'] else 'FAIL', b * PAGE_MB, p * PAGE_MB, after_cell, diff_cell,
+                              (mem_total(tm.get('peak')) or 0) * PAGE_MB, r.get('mem_samples', 0)))
+            out.append('')
         return '\n'.join(out)
 
 
@@ -1080,6 +1232,12 @@ def parse_args():
     ap.add_argument('--hash-twin', action='store_true', help='.fs_load --hash-twin (transactions_hash_1 for fs_hw_hash_point; default at sf <= 0.1)')
     ap.add_argument('--no-hash-twin', action='store_true', help='.fs_load --no-hash-twin')
     ap.add_argument('--keep-cluster', action='store_true', help='leave the cluster running at the end')
+    ap.add_argument('--no-mem-probe', dest='mem_probe', action='store_false',
+                    help='do not record QUERY_MEMORY / TRANSACTION_MEMORY use per case (ndbinfo.resources)')
+    ap.add_argument('--mem-sample', type=float, default=1.0,
+                    help='seconds between ndbinfo.resources samples while a case runs (0 = before/after only; default 1)')
+    ap.add_argument('--mem-settle', type=float, default=1.0,
+                    help='seconds to wait after a case before the idle "after" reading (default 1)')
     ap.add_argument('--stop', action='store_true', help='only stop the cluster of <build> (after --keep-cluster)')
     ap.add_argument('--report-only', action='store_true', help='only regenerate <out>/report.md from <out>/results.json')
     ap.add_argument('--out', default=os.path.join(REPO, 'ronsql_bench_out'))

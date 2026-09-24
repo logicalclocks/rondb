@@ -196,6 +196,21 @@ failed, and is the memory budget or the failure path the bug?
 4. *The masking.* 1869 after 20008: the aggregation interpreter reports
    a generic error where the memory error should reach the client;
    engine fix regardless of the crash.
+5. *Leak or load* (added 2026-09-24, after the node logs showed JoinAgg
+   park-sweep aborts and 1869 from the join-aggregation per-row path
+   before the failure, but no memory figures). `ronsql_bench_matrix.py`
+   now reads `ndbinfo.resources` (QUERY_MEMORY, TRANSACTION_MEMORY)
+   around every case: idle before, the peak sampled every
+   `--mem-sample` seconds while it runs, idle `--mem-settle` seconds
+   after; the summary line shows `query memory before/peak/after` and
+   flags `RETAINED`, report §H lists every case in run order with the
+   idle drift over the run. Rerun `offline_fs` (and `tpch_cte`) with
+   it, e.g. `--queries offline_fs --threads 1,8 --requests 3
+   --mem-sample 0.5`: a peak that falls back to the idle level is load
+   (raise `SharedGlobalMemory` or lower concurrency); memory still held
+   after the case, or an idle level climbing across cases, is a leak
+   (aborted / swept JoinAgg states or self-continue requests not
+   releasing query memory).
 
 **Decision rule.** Any `ndbrequire` / abort in the trace ⇒ P0 fix
 before the next census run. Pure exhaustion ⇒ document the budget in
@@ -203,7 +218,10 @@ before the next census run. Pure exhaustion ⇒ document the budget in
 isolation for `offline_fs` until the memory reject is clean (no 1869,
 no failure), and open the engine item for a graceful reject.
 
-**Result.** (empty)
+**Result.** (a) found 2026-09-24: DBSPJ `do_init` allocated the
+Request's per-node arrays under `ndbrequire` — fixed in `914cbf9bbb7`
+(OutOfQueryMemory REF, error insert 17534). What exhausts the query
+memory (step 5) and the 1869 masking (step 4) are open.
 
 ## X5. Hopsworks online table DDL
 
