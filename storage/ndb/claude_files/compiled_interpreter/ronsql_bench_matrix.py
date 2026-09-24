@@ -23,8 +23,9 @@ ETA. Per case the driver also records the ndbinfo.jit counter deltas
 (programs compiled / reused / fallback, rows executed, compile time)
 and, for the mysqld engines, mysqld's NDB API counters (time spent
 waiting for the data nodes, scan batches, rows read, pushed queries).
-Unless --no-mem-probe, it also records the data nodes' QUERY_MEMORY and
-TRANSACTION_MEMORY use from ndbinfo.resources per case: idle before,
+Unless --no-mem-probe, it also records the data nodes' QUERY_MEMORY,
+TRANSACTION_MEMORY and TOTAL_GLOBAL_MEMORY (the shared pool query memory
+draws on) use from ndbinfo.resources per case: idle before,
 the peak sampled while the case runs (--mem-sample seconds) and idle
 after (--mem-settle seconds after the case). Memory that returns to the
 before-level is load; memory kept after the case, or an idle level that
@@ -90,7 +91,9 @@ MYSQLD_STATUS = ['Ndb_api_wait_nanos_count', 'Ndb_api_wait_exec_complete_count',
 PUSHDOWN_VARS = ['ndb_pushdown_aggregate', 'ndb_join_pushdown_aggregate',
                  'ndb_join_pushdown_aggregate_outer_join']
 # ndbinfo.resources rows tracked per case (used / max in 32 KB pages).
-MEM_RESOURCES = ['QUERY_MEMORY', 'TRANSACTION_MEMORY']
+# QUERY_MEMORY has no quota of its own: it draws on the shared global
+# memory, whose use and limit TOTAL_GLOBAL_MEMORY shows.
+MEM_RESOURCES = ['QUERY_MEMORY', 'TRANSACTION_MEMORY', 'TOTAL_GLOBAL_MEMORY']
 PAGE_MB = 32.0 / 1024
 ENGINES = {
     'ronsql':        ('bench_ronsql', None),
@@ -415,6 +418,37 @@ class MemSampler(threading.Thread):
         self.stop_ev.set()
         self.join(timeout=30)
         return self.peak
+
+
+# ndbinfo.resources reports an unbounded resource's max as 0 or as the
+# 32-bit sentinel 0xFFFFFFFF pages.
+MEM_MAX_UNLIMITED = 0xFFFFFFFF
+
+
+def mem_max_text(nodes):
+    """The per-node max of a resource, e.g. '2048.0 MB per node', or
+    'unlimited' when any node reports 0 or the sentinel."""
+    if not nodes:
+        return 'unknown'
+    vals = [int(v) for v in nodes.values()]
+    if any(v == 0 or v >= MEM_MAX_UNLIMITED for v in vals):
+        return 'unlimited'
+    lo, hi = min(vals), max(vals)
+    if lo == hi:
+        return '%.1f MB per node' % (lo * PAGE_MB)
+    return '%.1f-%.1f MB per node' % (lo * PAGE_MB, hi * PAGE_MB)
+
+
+def mem_node_peak(entry):
+    """(pages, percent) of the data node with the highest peak of a
+    resource entry; percent of that node's max, None when unbounded."""
+    peak = (entry or {}).get('peak') or {}
+    if not peak:
+        return None, None
+    node = max(peak, key=lambda n: peak[n])
+    mx = int(((entry or {}).get('max') or {}).get(node, 0) or 0)
+    pct = (100.0 * peak[node] / mx) if 0 < mx < MEM_MAX_UNLIMITED else None
+    return peak[node], pct
 
 
 def mem_total(nodes):
@@ -802,11 +836,17 @@ class Driver:
             return None
         b, p, af = mem_total(qm['before']), mem_total(qm['peak']), mem_total(qm['after'])
         if af is None:
-            return ('query memory before/peak %.1f/%.1f MB (no reading after: cluster unreachable)'
+            note = ('query memory before/peak %.1f/%.1f MB (no reading after: cluster unreachable)'
                     % (b * PAGE_MB, p * PAGE_MB))
-        return ('query memory before/peak/after %.1f/%.1f/%.1f MB%s'
-                % (b * PAGE_MB, p * PAGE_MB, af * PAGE_MB,
-                   (' (RETAINED %+.1f MB)' % ((af - b) * PAGE_MB)) if af > b else ''))
+        else:
+            note = ('query memory before/peak/after %.1f/%.1f/%.1f MB%s'
+                    % (b * PAGE_MB, p * PAGE_MB, af * PAGE_MB,
+                       (' (RETAINED %+.1f MB)' % ((af - b) * PAGE_MB)) if af > b else ''))
+        gp, gpct = mem_node_peak(r['mem'].get('TOTAL_GLOBAL_MEMORY'))
+        if gp is not None:
+            note += ', global memory peak %.1f MB on one node%s' % (
+                gp * PAGE_MB, (' (%.0f%% of its max)' % gpct) if gpct is not None else '')
+        return note
 
     def summary_line(self, r):
         if not r['ok']:
@@ -1160,21 +1200,24 @@ class Driver:
         if mem_cases:
             out.append('## H. Data-node memory per case, in run order (ndbinfo.resources, MB summed over data nodes)')
             out.append('')
-            qmax = mem_total(mem_cases[-1]['mem'].get('QUERY_MEMORY', {}).get('max'))
+            qmax = mem_max_text(mem_cases[-1]['mem'].get('QUERY_MEMORY', {}).get('max'))
+            gmax = mem_max_text(mem_cases[-1]['mem'].get('TOTAL_GLOBAL_MEMORY', {}).get('max'))
             first = mem_total(mem_cases[0]['mem']['QUERY_MEMORY']['before'])
             afters = [mem_total(r['mem']['QUERY_MEMORY']['after']) for r in mem_cases]
             last = next((v for v in reversed(afters) if v is not None), first)
             retained = [r for r, af in zip(mem_cases, afters)
                         if af is not None and af > mem_total(r['mem']['QUERY_MEMORY']['before'])]
             out.append('before = idle before the case; peak = highest sample while it ran (every %gs) or idle; '
-                       'after = idle %gs after it. QUERY_MEMORY max %s. Idle QUERY_MEMORY at the start %.1f MB, '
+                       'after = idle %gs after it. QUERY_MEMORY max %s: it draws on the shared global memory, '
+                       'TOTAL_GLOBAL_MEMORY max %s (GM peak = the highest per-node peak and its share of that node\'s max). '
+                       'Idle QUERY_MEMORY at the start %.1f MB, '
                        'at the end %.1f MB (%+.1f MB); %d of %d cases left more in use than they found. '
                        'A level that returns to idle is load; one that stays up or climbs from case to case is a leak.'
-                       % (a.mem_sample, a.mem_settle, ('%.1f MB' % (qmax * PAGE_MB)) if qmax else 'unlimited (0)',
+                       % (a.mem_sample, a.mem_settle, qmax, gmax,
                           first * PAGE_MB, last * PAGE_MB, (last - first) * PAGE_MB, len(retained), len(mem_cases)))
             out.append('')
-            out.append('| # | case | ok | QM before | QM peak | QM after | QM after-before | TM peak | samples |')
-            out.append('|---:|---|---|---:|---:|---:|---:|---:|---:|')
+            out.append('| # | case | ok | QM before | QM peak | QM after | QM after-before | TM peak | GM peak (node) | samples |')
+            out.append('|---:|---|---|---:|---:|---:|---:|---:|---:|---:|')
             for i, r in enumerate(mem_cases, 1):
                 qm, tm = r['mem']['QUERY_MEMORY'], r['mem'].get('TRANSACTION_MEMORY', {})
                 b, p, af = mem_total(qm['before']), mem_total(qm['peak']), mem_total(qm['after'])
@@ -1183,9 +1226,14 @@ class Driver:
                 else:
                     after_cell = '%.1f' % (af * PAGE_MB)
                     diff_cell = ('**%+.1f**' % ((af - b) * PAGE_MB)) if af > b else '%+.1f' % ((af - b) * PAGE_MB)
-                out.append('| %d | %s | %s | %.1f | %.1f | %s | %s | %.1f | %d |'
+                gp, gpct = mem_node_peak(r['mem'].get('TOTAL_GLOBAL_MEMORY'))
+                if gp is None:
+                    gm_cell = '-'
+                else:
+                    gm_cell = '%.1f%s' % (gp * PAGE_MB, (' (%.0f%%)' % gpct) if gpct is not None else '')
+                out.append('| %d | %s | %s | %.1f | %.1f | %s | %s | %.1f | %s | %d |'
                            % (i, r['tag'], 'ok' if r['ok'] else 'FAIL', b * PAGE_MB, p * PAGE_MB, after_cell, diff_cell,
-                              (mem_total(tm.get('peak')) or 0) * PAGE_MB, r.get('mem_samples', 0)))
+                              (mem_total(tm.get('peak')) or 0) * PAGE_MB, gm_cell, r.get('mem_samples', 0)))
             out.append('')
         return '\n'.join(out)
 
@@ -1233,7 +1281,7 @@ def parse_args():
     ap.add_argument('--no-hash-twin', action='store_true', help='.fs_load --no-hash-twin')
     ap.add_argument('--keep-cluster', action='store_true', help='leave the cluster running at the end')
     ap.add_argument('--no-mem-probe', dest='mem_probe', action='store_false',
-                    help='do not record QUERY_MEMORY / TRANSACTION_MEMORY use per case (ndbinfo.resources)')
+                    help='do not record QUERY_MEMORY / TRANSACTION_MEMORY / TOTAL_GLOBAL_MEMORY use per case (ndbinfo.resources)')
     ap.add_argument('--mem-sample', type=float, default=1.0,
                     help='seconds between ndbinfo.resources samples while a case runs (0 = before/after only; default 1)')
     ap.add_argument('--mem-settle', type=float, default=1.0,
