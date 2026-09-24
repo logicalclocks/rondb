@@ -1737,44 +1737,51 @@ Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
     return 0;
   }
 
+  /* Drain `other` in bucket order (popNext resumes where the previous
+   * batch stopped).  The two tables grow independently (linear hashing,
+   * AggHashTable.hpp), so a group's bucket in this table is its source
+   * bucket only while both have the same geometry; otherwise it is
+   * rehashed on this table. */
   const Uint32 v_len = val_len();
-  const Uint32 nbuckets = m_gb_map->bucketCount();
   Uint32 count = 0;
-  for (Uint32 b = 0; b < nbuckets; b++) {
-    while (!other->m_gb_map->bucketEmpty(b)) {
-      char* other_data = other->m_gb_map->popBucketHead(b);
-      Uint32 other_key_len =
-        *reinterpret_cast<Uint32*>(other_data - JoinGBHashTable::OVERHEAD +
-                                   JoinGBHashTable::KEY_LEN_OFFSET);
+  Uint32 src_b = 0;
+  char* other_data;
+  while ((other_data = other->m_gb_map->popNext(&src_b)) != nullptr) {
+    Uint32 other_key_len =
+      *reinterpret_cast<Uint32*>(other_data - JoinGBHashTable::OVERHEAD +
+                                 JoinGBHashTable::KEY_LEN_OFFSET);
 
-      char* my_data = m_gb_map->findInBucket(b, other_data, other_key_len);
-      if (my_data != nullptr) {
-        AggResItem *other_items =
-          reinterpret_cast<AggResItem *>(other_data + other_key_len);
-        AggResItem *my_items =
-          reinterpret_cast<AggResItem *>(my_data + other_key_len);
-        Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
-                                      m_cached_agg_ops, m_string_results,
-                                      m_thread_id, true);
-        if (ret != 0) {
-          g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
-                               ret);
-          other->freeGroupData(other_data);
-          return ret;
-        }
+    const Uint32 b = m_gb_map->sameGeometry(*other->m_gb_map)
+        ? src_b
+        : m_gb_map->hashKey(other_data, other_key_len,
+                            xfrm_buf, xfrm_buf_len);
+    char* my_data = m_gb_map->findInBucket(b, other_data, other_key_len);
+    if (my_data != nullptr) {
+      AggResItem *other_items =
+        reinterpret_cast<AggResItem *>(other_data + other_key_len);
+      AggResItem *my_items =
+        reinterpret_cast<AggResItem *>(my_data + other_key_len);
+      Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
+                                    m_cached_agg_ops, m_string_results,
+                                    m_thread_id, true);
+      if (ret != 0) {
+        g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
+                             ret);
         other->freeGroupData(other_data);
-      } else {
-        m_gb_map->insertRaw(other_data, xfrm_buf, xfrm_buf_len);
-        m_result_size += other_key_len + v_len;
+        return ret;
       }
-      count++;
+      other->freeGroupData(other_data);
+    } else {
+      m_gb_map->insertRawInBucket(b, other_data, xfrm_buf, xfrm_buf_len);
+      m_result_size += other_key_len + v_len;
+    }
+    count++;
 
-      if (max_groups > 0 && count >= max_groups &&
-          !other->m_gb_map->empty()) {
-        m_n_groups = m_gb_map->size();
-        remaining = other->m_gb_map->size();
-        return 0;
-      }
+    if (max_groups > 0 && count >= max_groups &&
+        !other->m_gb_map->empty()) {
+      m_n_groups = m_gb_map->size();
+      remaining = other->m_gb_map->size();
+      return 0;
     }
   }
 

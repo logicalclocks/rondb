@@ -565,10 +565,10 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
     while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
       m_gb_cols[i++] = m_prog[m_cur_pos++];
     }
-    /* m_gb_map_buf was placement-new'd by initBufBlock. */
-    m_gb_map_buf->clear();
+    /* m_gb_map_buf was placement-new'd by initBufBlock; growth segments
+     * are allocated on this interpreter's thread id. */
     m_gb_map = m_gb_map_buf;
-    m_gb_map->init(JOIN_AGG_HASH_BUCKET_COUNT);
+    m_gb_map->init(m_thread_id);
   }
 
   if (m_n_agg_results) {
@@ -2873,6 +2873,11 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
       return false;  /* More groups remain — caller re-schedules. */
     }
   }
+  /* The map is empty: return its growth segments (bounded by
+   * GBHashTable::MAX_SEGMENTS; none unless the table grew). */
+  if (m_gb_map != nullptr) {
+    m_gb_map->release();
+  }
   /* Phase 2: scalar (no-GROUP-BY) string winners + m_string_results
    * metadata array.  One-shot; idempotent on re-entry. */
   if (m_agg_results != nullptr && m_string_results != nullptr) {
@@ -2986,10 +2991,26 @@ AggInterpreterBase::~AggInterpreterBase() {
     lc_ndbd_pool_free(m_column_meta_hash);
     m_column_meta_hash = nullptr;
   }
+  /* The group table lives inside m_buf_block; its growth segments are
+   * separate allocations. */
+  if (m_gb_map_buf != nullptr) {
+    m_gb_map_buf->release();
+  }
   if (m_buf_block != nullptr) {
     lc_ndbd_pool_free(m_buf_block);
     m_buf_block = nullptr;
   }
+}
+
+/* GBHashTable growth (AggHashTable.hpp): bucket segments and their
+ * directory come from query memory like the group chunks.  A failed
+ * allocation stops the table's growth; the query continues. */
+void* agg_gb_segment_alloc(size_t bytes, Uint32 thread_id) {
+  return lc_ndbd_pool_malloc(bytes, RG_QUERY_MEMORY, thread_id, false);
+}
+
+void agg_gb_segment_free(void* ptr) {
+  lc_ndbd_pool_free(ptr);
 }
 
 /*
