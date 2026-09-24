@@ -244,6 +244,21 @@ class GBHashTable {
     return const_cast<GBHashTable*>(this)->begin();
   }
 
+  /* The first entry in bucket order at or after `bucket` — resumes a
+   * sliced walk that saved its bucket index.  Entries only move to
+   * higher buckets as the table grows, so every entry that was at or
+   * after `bucket` when the walk paused is still there. */
+  Iterator beginAt(Uint32 bucket) {
+    if (bucket < m_first_hint) bucket = m_first_hint;
+    for (Uint32 b = bucket; b < m_bucket_count; b++) {
+      char*& head = bucketRef(b);
+      if (head != nullptr) {
+        return Iterator(this, b, &head, head);
+      }
+    }
+    return Iterator(this, m_bucket_count, nullptr, nullptr);
+  }
+
   /**
    * Construct an iterator at a saved position (bucket + raw pointer).
    * Used for CTE scan / AVG-finalize / LIMIT-finalize resume — the

@@ -335,6 +335,9 @@ struct JoinAggregationState {
                                             // emitted (single-feeder rule)
   bool m_cte_waiting_conf;                  // Paused waiting for REDISTRIBUTE_CONF
   Uint32 m_cte_redist_batch_bytes;          // Bytes sent in current batch (flow control)
+  Uint32 m_cte_redist_bucket;               // Resume bucket of the send walk: every
+                                            // group before it is local (remote ones
+                                            // were sent and erased)
   Uint32 m_cte_node_fail_count;             // Snapshot of s_node_fail_count at SETUP
 
   // Global node failure counter — incremented by execNODE_FAILREP.
@@ -466,6 +469,7 @@ struct JoinAggregationState {
     m_cte_scalar_shipped(false),
     m_cte_waiting_conf(false),
     m_cte_redist_batch_bytes(0),
+    m_cte_redist_bucket(0),
     m_cte_node_fail_count(0),
     m_redist_page_head(nullptr),
     m_redist_page_ptr(nullptr),

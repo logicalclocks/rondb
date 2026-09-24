@@ -20608,6 +20608,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
 
       state->m_state.store(JoinAggregationState::CTE_REDISTRIBUTING);
       state->m_cte_redist_batch_bytes = 0;
+      state->m_cte_redist_bucket = 0;
       AGGT(("AGGT(%u) DBLQH redist start key=%u",
             instance(), aggStateKey));
       continueJoinAggRedistribute(signal, aggStateKey);
@@ -23705,7 +23706,14 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
     Uint32 batch_count = 0;
     Uint32 batch_bytes = state->m_cte_redist_batch_bytes;
 
-    for (auto iter = gb_map->begin(); iter.valid();) {
+    /* Resume where the previous batch paused instead of at the first
+     * bucket: restarting walked every local group before the frontier
+     * again on each of the ~groups/256 re-entries (quadratic).  Groups
+     * merged in from other nodes meanwhile are local; a split moves
+     * entries only to higher buckets, so no unsent group is left behind
+     * the saved bucket (GBHashTable::beginAt). */
+    for (auto iter = gb_map->beginAt(state->m_cte_redist_bucket);
+         iter.valid();) {
       jam();
       sendJoinAggCompleteHeartbeat(signal, state);
       const char *data = reinterpret_cast<const char *>(iter.data());
@@ -23841,6 +23849,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         jam();
         state->m_cte_waiting_conf = true;
         state->m_cte_redist_batch_bytes = 0;
+        state->m_cte_redist_bucket =
+            iter.valid() ? iter.bucket() : gb_map->bucketCount();
         return;
       }
 
@@ -23848,6 +23858,8 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         /* Yield via CONTINUEB (local scheduling fairness) */
         jam();
         state->m_cte_redist_batch_bytes = batch_bytes;
+        state->m_cte_redist_bucket =
+            iter.valid() ? iter.bucket() : gb_map->bucketCount();
         signal->theData[0] = ZCONTINUE_JOIN_AGG_REDISTRIBUTE;
         signal->theData[1] = aggStateKey;
         sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
