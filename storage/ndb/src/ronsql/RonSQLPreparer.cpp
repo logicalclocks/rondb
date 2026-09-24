@@ -9699,11 +9699,13 @@ RonSQLPreparer::execute_join()
     (void)n_rows;
     if (rc == NdbQuery::NextResult_error)
     {
-      const NdbError& err = query->getNdbError();
+      // A copy outlives query->close(); its details may point into the
+      // query's storage, so they are dropped (message is static).
+      NdbError err = query->getNdbError();
+      err.details = NULL;
       std::basic_ostream<char>& errout = *m_conf.err_stream;
       errout << "Join query failed: " << err.message
              << " (code " << err.code << ")" << std::endl;
-      const NdbError::Classification classification = err.classification;
       query->close();
       queryDef->destroy();
       qb->destroy();
@@ -9713,10 +9715,15 @@ RonSQLPreparer::execute_join()
       // through RonSQLMaybeStaleSchema so handle_ronsql_exception calls
       // unload_schema(); the next attempt's RonSQLPreparer load() then
       // fetches the fresh schema.
-      if (classification == NdbError::SchemaError) {
+      if (err.classification == NdbError::SchemaError) {
         throw RonSQLMaybeStaleSchema("Join query execution failed.");
       }
-      throw RonSQLRetryableError("Join query execution failed.");
+      // Anything else by its classification: only a temporary error is
+      // retried.  Retrying every error resent a permanent one (1869 from
+      // the aggregation interpreter, census run 5) ten times, each a full
+      // query under the memory pressure that caused it.
+      throw_classified_ndb_error(err, "Join query execution failed.",
+                                 "join query");
     }
 
     // Collect and print aggregation results
@@ -10145,12 +10152,22 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
     std::basic_ostream<char>& errout = *m_conf.err_stream;
     errout << "Pass-through query failed: " << err.message
            << " (code " << err.code << ")" << std::endl;
-    if (m_output_started) {
-      // Rows already reached out_stream; a retry would repeat them.
-      throw RonSQLPermanentError("Pass-through drain failed after rows "
-                                 "were delivered.");
+    // As the aggregating join path: a schema error reloads the dictionary
+    // (a retry only if no row went out yet), anything else by its
+    // classification; a temporary error after rows were delivered is
+    // permanent, since a retry would repeat them.
+    if (err.classification == NdbError::SchemaError) {
+      throw RonSQLMaybeStaleSchema(m_output_started
+                                       ? "Pass-through drain failed after "
+                                         "rows were delivered."
+                                       : "Pass-through drain failed.");
     }
-    throw RonSQLRetryableError("Pass-through drain failed.");
+    throw_classified_ndb_error(err,
+                               m_output_started
+                                   ? "Pass-through drain failed after rows "
+                                     "were delivered."
+                                   : "Pass-through drain failed.",
+                               "pass-through drain");
   }
 
   if (sorting) {
@@ -13186,18 +13203,30 @@ RonSQLPreparer::throw_key_read_error(const NdbError& op_err, const char* what)
   if (op_err.classification == NdbError::SchemaError) {
     throw std::runtime_error(what);
   }
+  throw_classified_ndb_error(op_err, what, "key read");
+}
+
+void
+RonSQLPreparer::throw_classified_ndb_error(const NdbError& op_err,
+                                           const char* what,
+                                           const char* where)
+{
   // Describe the error on the err stream as handle_ronsql_exception
   // does (ronsql_cli prints it; tests grep "NDB Permanent error 1860,").
   std::basic_ostream<char>& err = *m_conf.err_stream;
-  err << "Error handling: key read";
+  err << "Error handling: " << where;
   if (m_conf.rate_limit_identity != NULL && is_rate_limit_error(op_err.code)) {
     err << "->RLE\n" << op_err << '\n';
     throw RonSQLRateLimitError(what, op_err.code);
   }
   if (op_err.status == NdbError::TemporaryError ||
       op_err.mysql_code == HA_ERR_LOCK_WAIT_TIMEOUT) {
-    err << "->RRE\n" << op_err << '\n';
-    throw RonSQLRetryableError(what);
+    if (!m_output_started) {
+      err << "->RRE\n" << op_err << '\n';
+      throw RonSQLRetryableError(what);
+    }
+    // Rows already reached out_stream; a retry would repeat them.
+    err << ",od";
   }
   err << "->RPE\n" << op_err << '\n';
   RonSQLErrorClass cls = RonSQLErrorClass::INTERNAL;

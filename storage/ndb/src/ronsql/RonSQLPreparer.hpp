@@ -595,6 +595,14 @@ private:
   // belong to another read of the batch, e.g. 626 for a missing key).
   [[noreturn]] void throw_key_read_error(const NdbError& op_err,
                                          const char* what);
+  // Raise the error of one failed operation or pushed query by its NDB
+  // classification, as handle_ronsql_exception does for a transaction
+  // error: rate limit (RLE), temporary (RRE, unless rows were already
+  // streamed) or permanent with its error class and code (RPE).  `where`
+  // labels the err-stream line.  Callers route schema errors first.
+  [[noreturn]] void throw_classified_ndb_error(const NdbError& err,
+                                               const char* what,
+                                               const char* where);
   // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
   // on one column); see the definition for the contract.
   bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
