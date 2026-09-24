@@ -23377,6 +23377,10 @@ static const Uint32 REDIST_GROUPS_PER_BATCH = 256;
  * fine while still bounding each real-time slice. */
 static const Uint32 ZCTE_AVG_FINALIZE_BATCH = 1024;
 static const Uint32 REDIST_MAX_BATCH_BYTES = 64 * 1024;
+/* Upper bound of one RI_BATCH request (8 KB: one long signal in release
+ * builds; the receiver merges its groups in one signal execution, about
+ * the work of one REDIST_GROUPS_PER_BATCH sender slice). */
+static const Uint32 REDIST_BATCH_MAX_WORDS = 2048;
 
 /**
  * redistAlloc — bump-allocate from the state's page-based allocator.
@@ -23610,6 +23614,175 @@ void Dblqh::sendScalarRedistributeReq(Signal* signal,
            instance(), ownerNode, dstKey, dstOwner, valLen));
 }
 
+/* Give every remote node of the state an equal slot of the batch arena,
+ * at most REDIST_BATCH_MAX_WORDS.  A destination without a slot (none is
+ * expected) gets m_cap 0, so each of its groups goes out on its own. */
+void Dblqh::initRedistBatches(const JoinAggregationState *state,
+                              RedistBatch *batches) {
+  memset(batches, 0, (MAX_DATA_NODE_ID + 1) * sizeof(RedistBatch));
+  const Uint32 ownNodeId = getOwnNodeId();
+  Uint32 remote = 0;
+  for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+    if (state->m_cte_node_list[i] != ownNodeId) remote++;
+  }
+  if (remote == 0) return;
+  const Uint32 cap =
+      MIN(REDIST_BATCH_MAX_WORDS, ZREDIST_BATCH_ARENA_WORDS / remote);
+  Uint32 slot = 0;
+  for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+    const Uint32 node = state->m_cte_node_list[i];
+    if (node == ownNodeId) continue;
+    ndbrequire(node <= MAX_DATA_NODE_ID);
+    batches[node].m_buf = c_redist_batch_arena + slot * cap;
+    batches[node].m_cap = cap;
+    slot++;
+  }
+}
+
+/* Append one group record (JoinAggRedistributeReq, RI_BATCH) — the key
+ * and value bytes the single-group form would send.  The caller has
+ * checked that the record fits. */
+void Dblqh::appendRedistBatch(RedistBatch &batch, JoinAggInterpreter *interp,
+                              const char *data, Uint32 keyLen,
+                              Uint32 valLen) {
+  const Uint32 keyWords = (keyLen + 3) >> 2;
+  const Uint32 valWords = (valLen + 3) >> 2;
+  Uint32 *rec = batch.m_buf + batch.m_used;
+  rec[0] = keyLen;
+  rec[1] = valLen;
+  Uint32 *key = rec + JoinAggRedistributeReq::BatchRecordHeaderWords;
+  memcpy(key, data, keyWords * sizeof(Uint32));
+  Uint32 *value = key + keyWords;
+  if (valWords > 0) {
+    value[valWords - 1] = 0;  // No stale bytes in the padding
+    memcpy(value, data + keyLen, interp->val_len());
+    if (interp->hasStringSlots()) {
+      interp->encodeStringPayload(
+          reinterpret_cast<const AggResItem *>(data + keyLen),
+          reinterpret_cast<char *>(value + ((interp->val_len() + 3) >> 2)));
+    }
+  }
+  batch.m_used += JoinAggRedistributeReq::BatchRecordHeaderWords +
+                  keyWords + valWords;
+  batch.m_groups++;
+}
+
+void Dblqh::flushRedistBatch(Signal *signal, JoinAggregationState *state,
+                             Uint32 aggStateKey, Uint32 dstNode,
+                             RedistBatch &batch, bool needConf) {
+  if (batch.m_groups == 0) return;
+  LinearSectionPtr lsp[3];
+  lsp[JoinAggRedistributeReq::BatchSectionNum].p = batch.m_buf;
+  lsp[JoinAggRedistributeReq::BatchSectionNum].sz = batch.m_used;
+  const Uint32 requestInfo =
+      JoinAggRedistributeReq::RI_BATCH |
+      (needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0);
+  sendRedistributeReq(signal, state, aggStateKey, dstNode, batch.m_groups,
+                      batch.m_used, requestInfo, lsp, 1, batch.m_groups);
+  batch.m_used = 0;
+  batch.m_groups = 0;
+}
+
+/* Flush every destination's batch.  confNode's batch (0: none) goes
+ * last and asks for the flow-control CONF: the destination of the group
+ * that crossed the window, as when every group had its own request. */
+void Dblqh::flushRedistBatches(Signal *signal, JoinAggregationState *state,
+                               Uint32 aggStateKey, RedistBatch *batches,
+                               Uint32 confNode) {
+  for (Uint32 i = 0; i < state->m_cte_num_nodes; i++) {
+    const Uint32 node = state->m_cte_node_list[i];
+    if (node <= MAX_DATA_NODE_ID && node != confNode) {
+      flushRedistBatch(signal, state, aggStateKey, node, batches[node], false);
+    }
+  }
+  if (confNode != 0) {
+    ndbrequire(batches[confNode].m_groups > 0);
+    flushRedistBatch(signal, state, aggStateKey, confNode, batches[confNode],
+                     true);
+  }
+}
+
+/* The single-group form, for a group that does not fit a batch slot. */
+void Dblqh::sendRedistributeGroup(Signal *signal, JoinAggregationState *state,
+                                  Uint32 aggStateKey,
+                                  JoinAggInterpreter *interp, Uint32 dstNode,
+                                  const char *data, Uint32 keyLen,
+                                  Uint32 valLen, bool needConf) {
+  LinearSectionPtr lsp[3];
+  lsp[0].p = reinterpret_cast<const Uint32 *>(data);
+  lsp[0].sz = (keyLen + 3) >> 2;
+  Uint32 valueBuf[ZATTR_BUFFER_SIZE];
+  ndbrequire(((valLen + 3) >> 2) <= ZATTR_BUFFER_SIZE);
+  memcpy(valueBuf, data + keyLen, interp->val_len());
+  if (interp->hasStringSlots()) {
+    interp->encodeStringPayload(
+        reinterpret_cast<const AggResItem *>(data + keyLen),
+        reinterpret_cast<char *>(valueBuf + ((interp->val_len() + 3) >> 2)));
+  }
+  lsp[1].p = valueBuf;
+  lsp[1].sz = (valLen + 3) >> 2;
+  if (lsp[1].sz == 0) {
+    /* Zero-aggregate (single-row projection) record: valueLen == 0.
+     * Send one dummy word to avoid any 0-size-section quirks in
+     * the transporter / fragmentation layer (the scalar
+     * redistribute's precedent, see sendScalarRedistributeReq);
+     * the receiver consumes req->valueLen and ignores the word. */
+    jam();
+    valueBuf[0] = 0;
+    lsp[1].sz = 1;
+  }
+  sendRedistributeReq(signal, state, aggStateKey, dstNode, keyLen, valLen,
+                      needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0,
+                      lsp, 2, 1);
+}
+
+void Dblqh::sendRedistributeReq(Signal *signal, JoinAggregationState *state,
+                                Uint32 aggStateKey, Uint32 dstNode,
+                                Uint32 keyLen, Uint32 valueLen,
+                                Uint32 requestInfo, LinearSectionPtr lsp[3],
+                                Uint32 noOfSections, Uint32 groups) {
+  /* Phase L (E.1): address the request to the destination's owner LDM
+   * and the destination's local aggStateKey, not to instance 1 + our
+   * own key.  Both come from the COMPLETE_REQ aggKey-triples section,
+   * populated at the top of execJOIN_AGG_COMPLETE_REQ. */
+  const Uint32 dstKey = state->m_cte_remote_aggKeys[dstNode];
+  const Uint32 dstOwner = state->m_cte_remote_ownerInstances[dstNode];
+  JoinAggRedistributeReq *req =
+    (JoinAggRedistributeReq *)signal->getDataPtrSend();
+  req->aggStateKey = dstKey;
+  /* D25: carry our own state key so the receiver echoes it in the CONF/REF
+   * and we resume the right state (the CONF returns to this owner LDM, but
+   * dstKey would resolve to the wrong local state). */
+  req->senderAggStateKey = aggStateKey;
+  req->keyLen = keyLen;
+  req->valueLen = valueLen;
+  req->requestInfo = requestInfo;
+  /* RONDB-1120 P4: identity for a dstKey == RNIL destination. */
+  req->identWord = JoinAggregationState::packIdentWord(
+      state->m_queryTag, state->m_cte_index, 0);
+  req->transid[0] = state->m_transid[0];
+  req->transid[1] = state->m_transid[1];
+  req->senderRef = reference();
+
+  const BlockReference remoteRef = (dstKey != RNIL)
+      ? numberToRef(DBLQH, dstOwner, dstNode)
+      : numberToRef(DBLQH, 1, dstNode);
+  if (dstKey != RNIL) {
+    ndbrequire(dstOwner > 0);
+  }
+  DEB_JOIN_AGG_REDIST_VERBOSE(
+      ("(%u) DBLQH REDIST_REQ send: "
+       "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u dstOwner=%u "
+       "keyLen=%u valueLen=%u requestInfo=0x%x groups=%u",
+       instance(), aggStateKey, dstKey, dstNode, dstOwner, keyLen,
+       valueLen, requestInfo, groups));
+  sendBatchedFragmentedSignal(remoteRef,
+                              GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
+                              JoinAggRedistributeReq::SignalLength,
+                              JBB, lsp, noOfSections);
+  state->m_cte_redist_sent[dstNode] += groups;
+}
+
 void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
   JoinAggregationState *state = getJoinAggState(aggStateKey);
   if (state == nullptr || state->isAborting()) {
@@ -23731,6 +23904,11 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
     const Uint32 ownNodeId = getOwnNodeId();
     Uint32 batch_count = 0;
     Uint32 batch_bytes = state->m_cte_redist_batch_bytes;
+    /* Groups bound for the same node go out many per request (RI_BATCH)
+     * instead of one signal per group.  The slots are shared by every
+     * state of this instance: each exit from this slice flushes them. */
+    RedistBatch batches[MAX_DATA_NODE_ID + 1];
+    initRedistBatches(state, batches);
 
     /* Resume where the previous batch paused instead of at the first
      * bucket: restarting walked every local group before the frontier
@@ -23796,79 +23974,45 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         continue;
       }
 
-      /* Calculate signal size */
-      Uint32 sigBytes = (((keyLen + 3) >> 2) + ((valLen + 3) >> 2) +
-                         JoinAggRedistributeReq::SignalLength) * sizeof(Uint32);
-      bool needConf = (batch_bytes + sigBytes >= REDIST_MAX_BATCH_BYTES);
-
-      /* Send REDISTRIBUTE_REQ to owner.  Phase L (E.1): address it
-       * to the destination's owner LDM and the destination's local
-       * aggStateKey, not to instance 1 + our own key.  Both come
-       * from the COMPLETE_REQ aggKey-triples section, populated at
-       * the top of execJOIN_AGG_COMPLETE_REQ. */
-      const Uint32 dstKey = state->m_cte_remote_aggKeys[ownerNode];
-      const Uint32 dstOwner = state->m_cte_remote_ownerInstances[ownerNode];
-      JoinAggRedistributeReq *req =
-        (JoinAggRedistributeReq *)signal->getDataPtrSend();
-      req->aggStateKey = dstKey;
-      /* D25: carry our own state key so the receiver echoes it in the CONF/REF
-       * and we resume the right state (the CONF returns to this owner LDM, but
-       * dstKey would resolve to the wrong local state). */
-      req->senderAggStateKey = aggStateKey;
-      req->keyLen = keyLen;
-      req->valueLen = valLen;
-      req->requestInfo = needConf ? JoinAggRedistributeReq::RI_NEED_CONF : 0;
-      /* RONDB-1120 P4: identity for a dstKey == RNIL destination. */
-      req->identWord = JoinAggregationState::packIdentWord(
-          state->m_queryTag, state->m_cte_index, 0);
-      req->transid[0] = state->m_transid[0];
-      req->transid[1] = state->m_transid[1];
-      req->senderRef = reference();
-
-      LinearSectionPtr lsp[3];
-      lsp[0].p = reinterpret_cast<const Uint32 *>(data);
-      lsp[0].sz = (keyLen + 3) >> 2;
-      Uint32 valueBuf[ZATTR_BUFFER_SIZE];
-      ndbrequire(((valLen + 3) >> 2) <= ZATTR_BUFFER_SIZE);
-      memcpy(valueBuf, data + keyLen, interp->val_len());
-      if (interp->hasStringSlots()) {
-        interp->encodeStringPayload(slots, reinterpret_cast<char*>(
-            valueBuf + ((interp->val_len() + 3) >> 2)));
-      }
-      lsp[1].p = valueBuf;
-      lsp[1].sz = (valLen + 3) >> 2;
-      if (lsp[1].sz == 0) {
-        /* Zero-aggregate (single-row projection) record: valueLen == 0.
-         * Send one dummy word to avoid any 0-size-section quirks in
-         * the transporter / fragmentation layer (the scalar
-         * redistribute's precedent, see sendScalarRedistributeReq);
-         * the receiver consumes req->valueLen and ignores the word. */
+      const Uint32 keyWords = (keyLen + 3) >> 2;
+      const Uint32 valWords = (valLen + 3) >> 2;
+      const Uint32 recWords = JoinAggRedistributeReq::BatchRecordHeaderWords +
+                              keyWords + valWords;
+      ndbrequire(ownerNode <= MAX_DATA_NODE_ID);
+      RedistBatch &batch = batches[ownerNode];
+      bool needConf;
+      if (likely(recWords <= batch.m_cap)) {
         jam();
-        valueBuf[0] = 0;
-        lsp[1].sz = 1;
+        if (batch.m_used + recWords > batch.m_cap) {
+          jam();
+          flushRedistBatch(signal, state, aggStateKey, ownerNode, batch,
+                           false);
+        }
+        appendRedistBatch(batch, interp, data, keyLen, valLen);
+        batch_bytes += recWords * sizeof(Uint32);
+        needConf = (batch_bytes >= REDIST_MAX_BATCH_BYTES);
+        if (needConf) {
+          jam();
+          flushRedistBatches(signal, state, aggStateKey, batches, ownerNode);
+        }
+      } else {
+        /* Larger than a batch slot: send the group on its own. */
+        jam();
+        const Uint32 sigBytes =
+            (keyWords + valWords + JoinAggRedistributeReq::SignalLength) *
+            sizeof(Uint32);
+        needConf = (batch_bytes + sigBytes >= REDIST_MAX_BATCH_BYTES);
+        if (needConf) {
+          jam();
+          flushRedistBatches(signal, state, aggStateKey, batches, 0);
+        }
+        sendRedistributeGroup(signal, state, aggStateKey, interp, ownerNode,
+                              data, keyLen, valLen, needConf);
+        batch_bytes += sigBytes;
       }
-
-      const BlockReference remoteRef = (dstKey != RNIL)
-          ? numberToRef(DBLQH, dstOwner, ownerNode)
-          : numberToRef(DBLQH, 1, ownerNode);
-      if (dstKey != RNIL) {
-        ndbrequire(dstOwner > 0);
-      }
-      DEB_JOIN_AGG_REDIST_VERBOSE(
-          ("(%u) DBLQH REDIST_REQ send: "
-           "srcAggStateKey=%u dstAggStateKey=%u dstNode=%u dstOwner=%u "
-           "keyLen=%u valueLen=%u needConf=%u batchBytes=%u sigBytes=%u",
-           instance(), aggStateKey, dstKey, ownerNode, dstOwner, keyLen,
-           valLen, needConf, batch_bytes, sigBytes));
-      sendBatchedFragmentedSignal(remoteRef,
-                                  GSN_JOIN_AGG_REDISTRIBUTE_REQ, signal,
-                                  JoinAggRedistributeReq::SignalLength,
-                                  JBB, lsp, 2);
-      state->m_cte_redist_sent[ownerNode]++;
 
       gb_map->eraseAndNext(iter);
       batch_count++;
-      batch_bytes += sigBytes;
 
       if (needConf) {
         /* Pause — wait for CONF before continuing */
@@ -23883,6 +24027,7 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
       if (batch_count >= REDIST_GROUPS_PER_BATCH) {
         /* Yield via CONTINUEB (local scheduling fairness) */
         jam();
+        flushRedistBatches(signal, state, aggStateKey, batches, 0);
         state->m_cte_redist_batch_bytes = batch_bytes;
         state->m_cte_redist_bucket =
             iter.valid() ? iter.bucket() : gb_map->bucketCount();
@@ -23892,6 +24037,7 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         return;
       }
     }
+    flushRedistBatches(signal, state, aggStateKey, batches, 0);
   }
 
 redistribution_done:
@@ -24057,6 +24203,8 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   const Uint32 valueLen = req->valueLen;
   const bool needConf =
       (req->requestInfo & JoinAggRedistributeReq::RI_NEED_CONF) != 0;
+  const bool isBatch =
+      (req->requestInfo & JoinAggRedistributeReq::RI_BATCH) != 0;
   /* RONDB-1120 P4: replies go to the explicit reply-to ref — after an
    * owner-forward the signal-header sender is the forwarding
    * instance, not the source owner LDM. */
@@ -24192,29 +24340,45 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
   const Uint32 senderNodeId = refToNode(replyRef);
   ndbrequire(senderNodeId < ABS_MAX_NDB_NODES);
 
-  SegmentedSectionPtr keySection, valueSection;
-  ndbrequire(handle.getSection(keySection,
-                               JoinAggRedistributeReq::KeySectionNum));
-  ndbrequire(handle.getSection(valueSection,
-                               JoinAggRedistributeReq::ValueSectionNum));
-
+  /* The single-group form carries the key and the value in two
+   * sections; RI_BATCH carries keyLen groups in one section. */
   Uint32 keyBuf[MAX_KEY_SIZE_IN_WORDS + 1];
-  Uint32 *valBuf = cattrInfoBuffer;
-  ndbrequire(keySection.sz <= MAX_KEY_SIZE_IN_WORDS);
-  ndbrequire(valueSection.sz <= ZATTR_BUFFER_SIZE);
-  copy(keyBuf, keySection);
-  copy(valBuf, valueSection);
+  Uint32 *const buf = cattrInfoBuffer;
+  Uint32 groupCount = 1;
+  Uint32 bufWords = 0;
+  if (isBatch) {
+    jam();
+    SegmentedSectionPtr batchSection;
+    ndbrequire(handle.getSection(batchSection,
+                                 JoinAggRedistributeReq::BatchSectionNum));
+    ndbrequire(keyLen > 0);
+    ndbrequire(batchSection.sz == valueLen);
+    ndbrequire(batchSection.sz <= ZATTR_BUFFER_SIZE);
+    groupCount = keyLen;
+    bufWords = batchSection.sz;
+    copy(buf, batchSection);
+  } else {
+    SegmentedSectionPtr keySection, valueSection;
+    ndbrequire(handle.getSection(keySection,
+                                 JoinAggRedistributeReq::KeySectionNum));
+    ndbrequire(handle.getSection(valueSection,
+                                 JoinAggRedistributeReq::ValueSectionNum));
+    ndbrequire(keySection.sz <= MAX_KEY_SIZE_IN_WORDS);
+    ndbrequire(valueSection.sz <= ZATTR_BUFFER_SIZE);
+    copy(keyBuf, keySection);
+    copy(buf, valueSection);
+  }
   releaseSections(handle);
 
   JoinAggregationState::State curState = state->m_state.load();
   DEB_JOIN_AGG_REDIST_VERBOSE(
       ("(%u) DBLQH REDIST_REQ recv: "
        "aggStateKey=%u senderAggStateKey=%u senderNode=%u senderRef=0x%x "
-       "state=%u keyLen=%u valueLen=%u keyWords=%u valueWords=%u "
+       "state=%u batch=%u groups=%u keyLen=%u valueLen=%u "
        "needConf=%u queueCount=%u redistDone=%u",
        instance(), aggStateKey, senderAggStateKey,
        refToNode(signal->getSendersBlockRef()), signal->getSendersBlockRef(),
-       (Uint32)curState, keyLen, valueLen, keySection.sz, valueSection.sz,
+       (Uint32)curState, isBatch, groupCount, keyLen, valueLen,
        needConf, state->m_redist_queue_count,
        state->m_cte_redistribution_done));
 
@@ -24236,50 +24400,90 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
 
   /* A parked row can overtake our COMPLETE_REQ. Queue until local
    * finalization has finished; only the owner LDM touches this queue. */
-  if (curState == JoinAggregationState::SETUP_COMPLETE ||
+  const bool queue =
+      curState == JoinAggregationState::SETUP_COMPLETE ||
       curState == JoinAggregationState::FINALIZING ||
       curState == JoinAggregationState::SENDING_RESULTS
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
       || ERROR_INSERTED(5134) || state->m_redist_test_hold
 #endif
-      ) {
+      ;
+  JoinAggInterpreter *interp = nullptr;
+  if (queue) {
     jam();
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
-    if (ERROR_INSERTED(5134) || state->m_redist_test_hold) {
-      // One entry per page makes the number of queued pages predictable.
-      state->m_redist_page_remaining = 0;
-      if (!state->m_redist_test_hold) {
-        state->m_redist_test_hold = true;
-        state->m_redist_test_cookie = ERROR_INSERT_EXTRA;
-        // Only one timer per state, with identity to reject a local copy
-        // surviving teardown and reuse of the pool slot.
-        signal->theData[0] = ZCONTINUE_CTE_REDIST_DRAIN;
-        signal->theData[1] = aggStateKey;
-        signal->theData[2] = reqIdentWord;
-        signal->theData[3] = reqTransid[0];
-        signal->theData[4] = reqTransid[1];
-        sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 5);
-      }
+    if ((ERROR_INSERTED(5134) || state->m_redist_test_hold) &&
+        !state->m_redist_test_hold) {
+      state->m_redist_test_hold = true;
+      state->m_redist_test_cookie = ERROR_INSERT_EXTRA;
+      // Only one timer per state, with identity to reject a local copy
+      // surviving teardown and reuse of the pool slot.
+      signal->theData[0] = ZCONTINUE_CTE_REDIST_DRAIN;
+      signal->theData[1] = aggStateKey;
+      signal->theData[2] = reqIdentWord;
+      signal->theData[3] = reqTransid[0];
+      signal->theData[4] = reqTransid[1];
+      sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 5);
     }
 #endif
-    Uint32 keyWords = (keyLen + 3) >> 2;
-    Uint32 valWords = (valueLen + 3) >> 2;
-    Uint32 allocBytes = sizeof(JoinAggregationState::RedistQueueEntry) -
-                        sizeof(Uint32) +  /* subtract data[1] placeholder */
-                        (keyWords + valWords) * sizeof(Uint32);
-    auto *entry = (JoinAggregationState::RedistQueueEntry *)
-        redistAlloc(state, allocBytes, getThreadId(),
-                    ERROR_INSERTED(5134)
-                        ? 512 : JoinAggregationState::REDIST_PAGE_SIZE);
-    if (unlikely(entry == nullptr)) {
+  } else {
+    /* Process immediately: merge into local hash table */
+    interp = getJoinAggResultInterpreter(state);
+    ndbrequire(interp != nullptr);
+  }
+
+  Uint32 pos = 0;
+  for (Uint32 g = 0; g < groupCount; g++) {
+    const Uint32 *groupKey = keyBuf;
+    Uint32 groupKeyLen = keyLen;
+    const Uint32 *groupValue = buf;
+    Uint32 groupValueLen = valueLen;
+    if (isBatch) {
       jam();
-      abortCteRedistribution(signal, state, ZCTE_LOOKUP_OUTPUT_OVERFLOW);
+      ndbrequire(bufWords - pos >=
+                 JoinAggRedistributeReq::BatchRecordHeaderWords);
+      groupKeyLen = buf[pos];
+      groupValueLen = buf[pos + 1];
+      const Uint32 keyWords = (groupKeyLen + 3) >> 2;
+      const Uint32 valueWords = (groupValueLen + 3) >> 2;
+      pos += JoinAggRedistributeReq::BatchRecordHeaderWords;
+      ndbrequire(keyWords <= MAX_KEY_SIZE_IN_WORDS);
+      ndbrequire(keyWords + valueWords <= bufWords - pos);
+      groupKey = buf + pos;
+      groupValue = groupKey + keyWords;
+      pos += keyWords + valueWords;
+    }
+
+    Uint32 errorCode = 0;
+    if (queue) {
+      if (unlikely(!queueRedistGroup(state, groupKey, groupKeyLen,
+                                     groupValue, groupValueLen,
+                                     senderNodeId))) {
+        jam();
+        errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      }
+    } else {
+      const Int32 ret = interp->mergeOneGroup(
+          reinterpret_cast<const char *>(groupKey), groupKeyLen,
+          reinterpret_cast<const char *>(groupValue), groupValueLen,
+          c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
+      if (unlikely(ret != 0)) {
+        jam();
+        errorCode = ret > 0 ? static_cast<Uint32>(ret)
+                            : ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      } else {
+        state->m_cte_redist_applied[senderNodeId]++;
+      }
+    }
+    if (unlikely(errorCode != 0)) {
+      jam();
+      abortCteRedistribution(signal, state, errorCode);
       /* Send REF to sender so it aborts too */
       JoinAggRedistributeRef *ref =
         (JoinAggRedistributeRef *)signal->getDataPtrSend();
       ref->aggStateKey = aggStateKey;
       ref->senderNodeId = getOwnNodeId();
-      ref->errorCode = ZCTE_LOOKUP_OUTPUT_OVERFLOW;
+      ref->errorCode = errorCode;
       ref->senderAggStateKey = senderAggStateKey;  // D25
       ref->identWord = reqIdentWord;
       ref->transid[0] = reqTransid[0];
@@ -24288,61 +24492,60 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                  signal, JoinAggRedistributeRef::SignalLength, JBB);
       return;
     }
-    entry->next = nullptr;
-    entry->keyLen = keyLen;
-    entry->valueLen = valueLen;
-    entry->senderNodeId = senderNodeId;
-    memcpy(entry->data, keyBuf, keyWords * sizeof(Uint32));
-    memcpy(entry->data + keyWords, valBuf, valWords * sizeof(Uint32));
-    if (state->m_redist_queue_tail != nullptr)
-      state->m_redist_queue_tail->next = entry;
-    else
-      state->m_redist_queue_head = entry;
-    state->m_redist_queue_tail = entry;
-    state->m_redist_queue_count++;
-    DEB_JOIN_AGG_REDIST_VERBOSE(
-        ("(%u) DBLQH REDIST_REQ queued: "
-         "aggStateKey=%u senderAggStateKey=%u state=%u keyLen=%u "
-         "valueLen=%u queueCount=%u",
-         instance(), aggStateKey, senderAggStateKey, (Uint32)curState, keyLen,
-         valueLen, state->m_redist_queue_count));
-    return;
   }
-  /* Process immediately: merge into local hash table */
-  JoinAggInterpreter *interp = getJoinAggResultInterpreter(state);
-  ndbrequire(interp != nullptr);
+  ndbrequire(pos == bufWords);
 
-  Int32 ret = interp->mergeOneGroup(
-      reinterpret_cast<const char *>(keyBuf), keyLen,
-      reinterpret_cast<const char *>(valBuf), valueLen,
-      c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
-  if (unlikely(ret != 0)) {
+  DEB_JOIN_AGG_REDIST_VERBOSE(
+      ("(%u) DBLQH REDIST_REQ %s: "
+       "aggStateKey=%u senderAggStateKey=%u state=%u groups=%u "
+       "queueCount=%u redistDone=%u",
+       instance(), queue ? "queued" : "merged", aggStateKey,
+       senderAggStateKey, (Uint32)curState, groupCount,
+       state->m_redist_queue_count, state->m_cte_redistribution_done));
+  if (queue) {
     jam();
-    const Uint32 errorCode = ret > 0 ? static_cast<Uint32>(ret)
-                                    : ZCTE_LOOKUP_OUTPUT_OVERFLOW;
-    abortCteRedistribution(signal, state, errorCode);
-    JoinAggRedistributeRef *ref =
-      (JoinAggRedistributeRef *)signal->getDataPtrSend();
-    ref->aggStateKey = aggStateKey;
-    ref->senderNodeId = getOwnNodeId();
-    ref->errorCode = errorCode;
-    ref->senderAggStateKey = senderAggStateKey;  // D25
-    ref->identWord = reqIdentWord;
-    ref->transid[0] = reqTransid[0];
-    ref->transid[1] = reqTransid[1];
-    sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
-               signal, JoinAggRedistributeRef::SignalLength, JBB);
     return;
   }
-  state->m_cte_redist_applied[senderNodeId]++;
-  DEB_JOIN_AGG_REDIST_VERBOSE(
-      ("(%u) DBLQH REDIST_REQ merged: "
-       "aggStateKey=%u senderAggStateKey=%u state=%u keyLen=%u valueLen=%u "
-       "queueCount=%u redistDone=%u",
-       instance(), aggStateKey, senderAggStateKey, (Uint32)curState, keyLen,
-       valueLen, state->m_redist_queue_count,
-       state->m_cte_redistribution_done));
   checkCteReady(signal, state);
+}
+
+/* Queue one redistributed group until local finalization has finished
+ * (execJOIN_AGG_REDISTRIBUTE_REQ).  False when no memory is left. */
+bool Dblqh::queueRedistGroup(JoinAggregationState *state, const Uint32 *key,
+                             Uint32 keyLen, const Uint32 *value,
+                             Uint32 valueLen, Uint32 senderNodeId) {
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+  if (ERROR_INSERTED(5134) || state->m_redist_test_hold) {
+    // One entry per page makes the number of queued pages predictable.
+    state->m_redist_page_remaining = 0;
+  }
+#endif
+  const Uint32 keyWords = (keyLen + 3) >> 2;
+  const Uint32 valWords = (valueLen + 3) >> 2;
+  const Uint32 allocBytes = sizeof(JoinAggregationState::RedistQueueEntry) -
+                            sizeof(Uint32) +  /* subtract data[1] placeholder */
+                            (keyWords + valWords) * sizeof(Uint32);
+  auto *entry = (JoinAggregationState::RedistQueueEntry *)
+      redistAlloc(state, allocBytes, getThreadId(),
+                  ERROR_INSERTED(5134)
+                      ? 512 : JoinAggregationState::REDIST_PAGE_SIZE);
+  if (unlikely(entry == nullptr)) {
+    jam();
+    return false;
+  }
+  entry->next = nullptr;
+  entry->keyLen = keyLen;
+  entry->valueLen = valueLen;
+  entry->senderNodeId = senderNodeId;
+  memcpy(entry->data, key, keyWords * sizeof(Uint32));
+  memcpy(entry->data + keyWords, value, valWords * sizeof(Uint32));
+  if (state->m_redist_queue_tail != nullptr)
+    state->m_redist_queue_tail->next = entry;
+  else
+    state->m_redist_queue_head = entry;
+  state->m_redist_queue_tail = entry;
+  state->m_redist_queue_count++;
+  return true;
 }
 
 /**

@@ -3599,6 +3599,38 @@ private:
   void execJOIN_AGG_REDISTRIBUTE_CONF(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_REF(Signal* signal);
   void execJOIN_AGG_FINAL_REP(Signal* signal);
+  /* Groups bound for one redistribution destination, sent many per
+   * JOIN_AGG_REDISTRIBUTE_REQ (RI_BATCH).  The slots live in
+   * c_redist_batch_arena, shared by every state of this instance, so a
+   * continueJoinAggRedistribute slice flushes them before it returns. */
+  struct RedistBatch {
+    Uint32 *m_buf;     // Slot in c_redist_batch_arena, nullptr: no slot
+    Uint32 m_cap;      // Slot size in words
+    Uint32 m_used;     // Words filled
+    Uint32 m_groups;   // Groups filled
+  };
+  void initRedistBatches(const JoinAggregationState* state,
+                         RedistBatch* batches);
+  void appendRedistBatch(RedistBatch& batch, JoinAggInterpreter* interp,
+                         const char* data, Uint32 keyLen, Uint32 valLen);
+  void flushRedistBatch(Signal* signal, JoinAggregationState* state,
+                        Uint32 aggStateKey, Uint32 dstNode,
+                        RedistBatch& batch, bool needConf);
+  void flushRedistBatches(Signal* signal, JoinAggregationState* state,
+                          Uint32 aggStateKey, RedistBatch* batches,
+                          Uint32 confNode);
+  void sendRedistributeGroup(Signal* signal, JoinAggregationState* state,
+                             Uint32 aggStateKey, JoinAggInterpreter* interp,
+                             Uint32 dstNode, const char* data, Uint32 keyLen,
+                             Uint32 valLen, bool needConf);
+  void sendRedistributeReq(Signal* signal, JoinAggregationState* state,
+                           Uint32 aggStateKey, Uint32 dstNode, Uint32 keyLen,
+                           Uint32 valueLen, Uint32 requestInfo,
+                           LinearSectionPtr lsp[3], Uint32 noOfSections,
+                           Uint32 groups);
+  bool queueRedistGroup(JoinAggregationState* state, const Uint32* key,
+                        Uint32 keyLen, const Uint32* value, Uint32 valueLen,
+                        Uint32 senderNodeId);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
   void continueFreeCteRedistPages(Signal* signal);
@@ -5978,6 +6010,10 @@ private:
 #endif
   Uint32 cattrInfoBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cevictBuffer[ZATTR_BUFFER_SIZE + 16];
+  /* Redistribution batch slots (RedistBatch), split evenly between the
+   * remote destinations of the state being redistributed. */
+  static constexpr Uint32 ZREDIST_BATCH_ARENA_WORDS = 16384;
+  Uint32 c_redist_batch_arena[ZREDIST_BATCH_ARENA_WORDS];
 };
 
 inline bool Dblqh::check_expand_shrink_ongoing(Uint32 tableId, Uint32 fragId) {
