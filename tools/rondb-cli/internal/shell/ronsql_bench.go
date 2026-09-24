@@ -407,14 +407,36 @@ WHERE o_orderkey = {KEY};`,
 	{
 		Name:         "core_in_pk100",
 		Category:     benchCatCore,
-		Description:  "IN list of 100 existing primary keys, aggregated: batched PK reads or a filtered scan? (F12 on a complete PK)",
+		Description:  "IN list of 100 existing primary keys, aggregated: 100 aggregating PK reads (WP-F F1b)",
 		Database:     "tpch",
 		RandKey:      true,
 		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
 		KeyDefault:   4 * tpchOrdersBase,
 		Resolver:     tpchOrderKeyResolver,
 		Placeholders: tpchOrderKeyLegend,
+		PlanPins:     []string{"Execute as 100 aggregating primary key lookups (IN list on `o_orderkey`: 100 values, 100 distinct)."},
 		SQL: `SELECT COUNT(*), SUM(o_totalprice), MAX(o_orderdate)
+FROM orders
+WHERE o_orderkey IN ({KEYS:100});`,
+	},
+	{
+		// The plain-read twin of core_in_pk100: the same 100 keys read
+		// without an aggregation program (WP-F F1a), so its round trip
+		// against core_in_pk100's isolates the per-read aggregation
+		// cost (census run 5: 224 µs aggregating vs mysqld's 150 µs of
+		// plain reads).  Also the batch vector read Hopsworks sends
+		// with the same key list.
+		Name:         "core_in_pk100_pass",
+		Category:     benchCatCore,
+		Description:  "IN list of 100 existing primary keys, projected: 100 plain PK reads (WP-F F1a; the batch vector read)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
+		KeyDefault:   4 * tpchOrdersBase,
+		Resolver:     tpchOrderKeyResolver,
+		Placeholders: tpchOrderKeyLegend,
+		PlanPins:     []string{"Execute as 100 primary key lookups (IN list on `o_orderkey`: 100 values, 100 distinct)."},
+		SQL: `SELECT o_totalprice, o_orderdate
 FROM orders
 WHERE o_orderkey IN ({KEYS:100});`,
 	},

@@ -8176,6 +8176,10 @@ RonSQLPreparer::execute_pk_lookup_aggregate(NdbAggregator* aggregator)
     n_rows++;
   }
   aggregator->PrepareResults();
+  // The merge of the per-key partial results is this path's drain: it
+  // follows the round trip (firstbatch) and precedes printing.
+  STAT_TS(m_conf.phase_stats, s_kr_merged);
+  STAT_SET(m_conf.phase_stats, drain_us, s_kr_done, s_kr_merged);
   STAT_COUNT(m_conf.phase_stats, rows_drained, n_rows);
 }
 

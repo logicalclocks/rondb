@@ -554,7 +554,7 @@ cd ../../tools/rondb-cli && go test ./internal/fsq/cases -run TestBenchRegistryG
 # numbers, on the benchmark computer's kept cluster (m3_experiments.md X0)
 rondb --mysql-port <p> --rdrs-port <r> --no-rondis -e ".bench_ronsql core_in_pk100 1 500" -e ".explain_ronsql core_in_pk100"
 python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build \
-    --queries core_in_pk100,core_in_pk1000,core_in_idx100,fs_hw_agg_batch10,fs_hw_agg_batch100,fs_hw_agg_batch1000,fs_hw_agg_batch100_window,fs_hw_strkey_batch100,fs_hw_snow1_batch100 \
+    --queries core_in_pk100,core_in_pk100_pass,core_in_idx100,fs_hw_agg_batch10,fs_hw_agg_batch100,fs_hw_agg_batch1000,fs_hw_agg_batch100_window,fs_hw_strkey_batch100,fs_hw_snow1_batch100 \
     --no-start --no-load --mysql-port <p> --mysql-sock <s> --rdrs-port <r> --connectstring <c> --threads 1,8 --seconds 10 --out /tmp/wpf
 python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_triage.py /tmp/wpf --baseline storage/ndb/claude_files/fs_ronsql/bench_results/2026-09-22-benchbox-run4
 ```
@@ -571,7 +571,8 @@ the run numbers in `benchmarks.md` §8.
 - **One `NdbAggregator` for N lookup queries** (§2.3): the first thing
   F1 establishes; the fallbacks are named there.
 - **Per-query overhead at N = 1000 lookups** (`NdbQueryBuilder`,
-  `createQuery`, N receivers): measured by `core_in_pk1000`; sets
+  `createQuery`, N receivers): to be measured by a `core_in_pk1000`
+  entry (not in the registry yet; `core_in_pk100` / `_pass` exist); sets
   `IN_LOOKUPS_MAX` and the point where the scan takes over.
 - **Transporter batch size**: 1000 `LQHKEYREQ` with interpreted
   programs in one `execute` — the send buffer and `MaxNoOfConcurrentOperations`
