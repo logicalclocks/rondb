@@ -1065,15 +1065,54 @@ var ronsqlPhaseOrder = []string{
 	"execute",
 }
 
-// parseRonSQLPhases parses an x-ronsql-phases header value into a
-// name → value map. Returns nil for an empty header (old RDRS build or
-// RONSQL_PHASE_STATS compiled out).
-func parseRonSQLPhases(header string) map[string]int64 {
-	if header == "" {
-		return nil
+// ronsqlPhaseIndex maps a timing field to its ronsqlPhaseOrder position.
+// Read-only after initialization, so the benchmark goroutines share it.
+var ronsqlPhaseIndex = func() map[string]int {
+	m := make(map[string]int, len(ronsqlPhaseOrder))
+	for i, name := range ronsqlPhaseOrder {
+		m[name] = i
 	}
-	phases := make(map[string]int64)
-	for _, kv := range strings.Split(header, ",") {
+	return m
+}()
+
+// phaseSamples holds one benchmark goroutine's x-ronsql-phases values.
+// Each goroutine records into its own, without locking, and the parts are
+// merged once after the run: recording through one shared lock serialized
+// the goroutines outside the timed window and cost the RonSQL arm ~30 µs
+// per request of client throughput at 8 threads (census run 5, fs_floor:
+// 8 / throughput 135 µs against a measured latency of 103 µs).
+type phaseSamples struct {
+	values  [][]int64 // per ronsqlPhaseOrder position, microseconds
+	samples int64
+	retries int64 // sum of (attempts - 1) over sampled requests
+	rows    int64 // sum of drained rows over sampled requests
+}
+
+func newPhaseSamples(capacity int) *phaseSamples {
+	if capacity > 100000 {
+		capacity = 100000
+	}
+	ps := &phaseSamples{values: make([][]int64, len(ronsqlPhaseOrder))}
+	for i := range ps.values {
+		ps.values[i] = make([]int64, 0, capacity)
+	}
+	return ps
+}
+
+// Record parses one x-ronsql-phases header value ("parse=12,...,rows=8,
+// attempts=1") in place. A missing header (old RDRS build or
+// RONSQL_PHASE_STATS compiled out) or one without a valid field records
+// nothing; fields outside ronsqlPhaseOrder are ignored, as the printed
+// breakdown never showed them.
+func (ps *phaseSamples) Record(header string) {
+	valid := false
+	for header != "" {
+		kv := header
+		if c := strings.IndexByte(header, ','); c >= 0 {
+			kv, header = header[:c], header[c+1:]
+		} else {
+			header = ""
+		}
 		eq := strings.IndexByte(kv, '=')
 		if eq <= 0 {
 			continue
@@ -1082,63 +1121,71 @@ func parseRonSQLPhases(header string) map[string]int64 {
 		if err != nil {
 			continue
 		}
-		phases[strings.TrimSpace(kv[:eq])] = v
+		valid = true
+		switch name := strings.TrimSpace(kv[:eq]); name {
+		case "attempts":
+			if v > 1 {
+				ps.retries += v - 1
+			}
+		case "rows":
+			ps.rows += v
+		default:
+			if i, ok := ronsqlPhaseIndex[name]; ok {
+				ps.values[i] = append(ps.values[i], v)
+			}
+		}
 	}
-	if len(phases) == 0 {
-		return nil
+	if valid {
+		ps.samples++
 	}
-	return phases
 }
 
 // phaseBreakdown aggregates per-phase server-side latencies across the
-// requests of one benchmark run.
+// requests of one benchmark run: the merge of the goroutines' samples.
 type phaseBreakdown struct {
-	mu         sync.Mutex
-	collectors map[string]*LatencyCollector
+	collectors []*LatencyCollector // per ronsqlPhaseOrder position
 	samples    int64
-	retries    int64 // sum of (attempts - 1) over sampled requests
-	rows       int64 // sum of drained rows over sampled requests
+	retries    int64
+	rows       int64
 }
 
-func newPhaseBreakdown() *phaseBreakdown {
-	return &phaseBreakdown{collectors: make(map[string]*LatencyCollector)}
-}
-
-// Record parses one x-ronsql-phases header value and feeds the per-phase
-// collectors. A missing header is ignored (the breakdown then reports
-// unavailability once at print time instead of per request).
-func (pb *phaseBreakdown) Record(header string) {
-	phases := parseRonSQLPhases(header)
-	if phases == nil {
-		return
-	}
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
-	pb.samples++
-	for name, v := range phases {
-		switch name {
-		case "attempts":
-			if v > 1 {
-				pb.retries += v - 1
+func mergePhaseSamples(parts []*phaseSamples) *phaseBreakdown {
+	pb := &phaseBreakdown{collectors: make([]*LatencyCollector, len(ronsqlPhaseOrder))}
+	for i := range ronsqlPhaseOrder {
+		n := 0
+		for _, ps := range parts {
+			if ps != nil {
+				n += len(ps.values[i])
 			}
-		case "rows":
-			pb.rows += v
-		default:
-			c := pb.collectors[name]
-			if c == nil {
-				c = NewLatencyCollector()
-				pb.collectors[name] = c
-			}
-			c.Record(time.Duration(v) * time.Microsecond)
 		}
+		if n == 0 {
+			continue
+		}
+		all := make([]time.Duration, 0, n)
+		for _, ps := range parts {
+			if ps == nil {
+				continue
+			}
+			for _, v := range ps.values[i] {
+				all = append(all, time.Duration(v)*time.Microsecond)
+			}
+		}
+		pb.collectors[i] = &LatencyCollector{totalLatencies: all}
 	}
+	for _, ps := range parts {
+		if ps == nil {
+			continue
+		}
+		pb.samples += ps.samples
+		pb.retries += ps.retries
+		pb.rows += ps.rows
+	}
+	return pb
 }
 
 // Print writes the per-phase breakdown table after the end-to-end results.
 // Phases that never exceeded 0µs in the whole run are omitted.
 func (pb *phaseBreakdown) Print(totalRequests int64) {
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
 	if pb.samples == 0 {
 		fmt.Printf("   Phase breakdown: not available (no %s header; RDRS predates it or RONSQL_PHASE_STATS is compiled out)\n\n",
 			ronsqlPhasesHeader)
@@ -1147,8 +1194,8 @@ func (pb *phaseBreakdown) Print(totalRequests int64) {
 	fmt.Printf("   Phase breakdown (server-side, %d/%d requests sampled):\n",
 		pb.samples, totalRequests)
 	fmt.Printf("     %-12s %10s %10s %10s %10s\n", "phase", "avg", "p95", "p99", "max")
-	for _, name := range ronsqlPhaseOrder {
-		c := pb.collectors[name]
+	for i, name := range ronsqlPhaseOrder {
+		c := pb.collectors[i]
 		if c == nil {
 			continue
 		}
@@ -1339,7 +1386,12 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	errorCollector := NewErrorCollector()
-	phases := newPhaseBreakdown()
+	// One phase sample set per goroutine, merged after the run (no shared
+	// lock on the request path).
+	phaseParts := make([]*phaseSamples, numThreads)
+	for t := range phaseParts {
+		phaseParts[t] = newPhaseSamples(numOps)
+	}
 	benchStart := time.Now()
 	stopProgress := benchProgressReporter(totalOps, &doneOps, errorCollector, benchStart)
 
@@ -1349,6 +1401,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 		go func(threadID int, restClient *client.RestClient) {
 			defer wg.Done()
 
+			phases := phaseParts[threadID]
 			rng := rand.New(rand.NewSource(int64(threadID)*100003 + 7))
 			for i := 0; i < numOps; i++ {
 				req := RonSQLRequest{
@@ -1376,7 +1429,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	benchDuration := time.Since(benchStart)
 
 	printBenchResults("RonSQL", q.Name, doneOps, benchDuration, latencyCollector, errorCollector)
-	phases.Print(doneOps)
+	mergePhaseSamples(phaseParts).Print(doneOps)
 	return nil
 }
 
