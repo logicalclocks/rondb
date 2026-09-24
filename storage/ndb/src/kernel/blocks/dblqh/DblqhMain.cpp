@@ -19989,6 +19989,37 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
         instance(), aggStateKey, (Uint32)state->m_cte_mode));
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     jam();
+    /* Merge into the per-thread table holding the most groups rather
+     * than into thread 0's: every group of the others is re-inserted
+     * into the target, so a small or empty [0] (a thread that scanned
+     * little of this query) rebuilt the largest table group by group
+     * (F24).  Every row of the query has been processed by now (the
+     * per-thread choice by thread id is over); slot 0 is the result
+     * interpreter from here on (getJoinAggResultInterpreter), and the
+     * other slots are only merged and torn down, in any order. */
+    {
+      JoinAggInterpreter **interps = state->m_per_thread_interpreters;
+      auto groups_of = [](const JoinAggInterpreter *interp) -> Uint32 {
+        const JoinGBHashTable *map =
+            (interp != nullptr) ? interp->gb_map() : nullptr;
+        return (map != nullptr) ? map->size() : 0;
+      };
+      Uint32 best = 0;
+      Uint32 best_groups = groups_of(interps[0]);
+      for (Uint32 i = 1; i < state->m_num_threads; i++) {
+        const Uint32 groups = groups_of(interps[i]);
+        if (groups > best_groups) {
+          best = i;
+          best_groups = groups;
+        }
+      }
+      if (best != 0) {
+        jam();
+        JoinAggInterpreter *tmp = interps[0];
+        interps[0] = interps[best];
+        interps[best] = tmp;
+      }
+    }
     continueJoinAggMerge(signal, aggStateKey, 1,
                          senderRef, senderData, requestId);
     return;
