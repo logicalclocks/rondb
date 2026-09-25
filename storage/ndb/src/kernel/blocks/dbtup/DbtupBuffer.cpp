@@ -549,13 +549,14 @@ bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
   ndbrequire(lqhScanPtrP->m_agg_interpreter != nullptr);
   AggInterpreter* interp = lqhScanPtrP->m_agg_interpreter;
   Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
-  const auto* gb_map = interp->gb_map();
-  bool all_sent = (gb_map == nullptr || gb_map->empty());
-  if (all_sent) {
-    lqhScanPtrP->m_agg_n_res_recs = interp->NumOfResRecords(true);
-  }
+  const JoinGBHashTable *gb_map = interp->gb_map();
+  const bool all_sent = (gb_map == nullptr || gb_map->empty());
+  const bool final_drain =
+      lqhScanPtrP->m_agg_drain_state == Dblqh::ScanRecord::AGG_DRAIN_FINAL;
+  lqhScanPtrP->m_agg_n_res_recs =
+      interp->NumOfResRecords(all_sent && final_drain);
   if (res_len != 0) {
-    if (all_sent) {
+    if (all_sent && final_drain) {
       ndbrequire(lqhScanPtrP->m_agg_n_res_recs == 0);
     }
     TransIdAI * transIdAI=  (TransIdAI *)signal->getDataPtrSend();

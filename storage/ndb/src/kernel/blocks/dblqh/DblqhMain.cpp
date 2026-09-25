@@ -6505,11 +6505,11 @@ void Dblqh::execTUPKEYCONF(Signal *signal) {
            * PA related
            * conf->agg_batch_size_bytes > 0 only happens
            * in group by mode and reaches the aggregation
-           * batch limitation. so here conf->agg_n_res_recs
-           * would be 1
+           * batch limitation. A bounded result record can leave
+           * additional groups pending in the interpreter.
            */
           ndbrequire(tupKeyConf->agg_batch_size_rows == 1);
-          ndbrequire(tupKeyConf->agg_n_res_recs == 1);
+          ndbrequire(tupKeyConf->agg_n_res_recs >= 1);
           ndbrequire(scanPtr->m_agg_curr_batch_size_bytes == 0);
           ndbrequire(scanPtr->m_agg_curr_batch_size_rows == 0);
         }
@@ -18902,16 +18902,23 @@ void Dblqh::continueScanNextReqLab(Signal *signal,
     return;
   }  // if
 
-  // m_agg_interpreter != nullptr implies m_has_pushdown == true
-  if (scanPtr->m_agg_interpreter != nullptr &&
-      scanPtr->m_agg_interpreter->gb_map() != nullptr &&
-      !scanPtr->m_agg_interpreter->gb_map()->empty()) {
+  // Resident groups alone do not mean the fragment scan has finished.
+  if (scanPtr->m_agg_drain_state != ScanRecord::AGG_SCAN) {
     jam();
-    if (!c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr)) {
-      sendScanFragConf(signal, ZFALSE, regTcPtr);
-      return;
+    ndbrequire(scanPtr->m_agg_interpreter != nullptr);
+    const bool final_drain =
+        scanPtr->m_agg_drain_state == ScanRecord::AGG_DRAIN_FINAL;
+    const bool all_sent = c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr);
+    if (all_sent) {
+      scanPtr->m_agg_drain_state = ScanRecord::AGG_SCAN;
+      if (final_drain) {
+        closeScanLab(signal, regTcPtr);
+        return;
+      }
     }
-    closeScanLab(signal, regTcPtr);
+    // One result record completes this batch. After a memory drain,
+    // the next SCAN_NEXTREQ resumes scanning once the table is empty.
+    sendScanFragConf(signal, ZFALSE, regTcPtr);
     return;
   }
 
@@ -26492,6 +26499,7 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
            scanPtr->scanCompletedStatus != ZTRUE);
       // m_agg_interpreter != nullptr implies m_has_pushdown == true
       if (scanPtr->m_agg_interpreter != nullptr && !more_ranges) {
+        scanPtr->m_agg_drain_state = ScanRecord::AGG_DRAIN_FINAL;
         if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
           jam();
           sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
@@ -28127,6 +28135,7 @@ void Dblqh::init_release_scanrec(Signal *signal, ScanRecord *scanPtr) {
    * reset aggregation variables
    */
   scanPtr->m_has_pushdown = false;
+  scanPtr->m_agg_drain_state = ScanRecord::AGG_SCAN;
   scanPtr->m_agg_curr_batch_size_rows = 0;
   scanPtr->m_agg_curr_batch_size_bytes = 0;
   scanPtr->m_agg_n_res_recs = 0;
@@ -28755,13 +28764,11 @@ void Dblqh::sendScanFragConf(Signal *signal,
      *  2. scan complete: scanPtr->m_agg_interpreter->NumOfResRecords()
      *     will return 0;
      *
-     * Exception:
-     * If an error happened on other fragment's aggregation interpreter,
-     * this function will be invoked by Dblqh::closeScanLab(). In this situation,
-     * since it is in a error handling process, the scanState is WAIT_CLOSE_SCAN
-     * and m_agg_n_res_recs can be bigger than 1.
+     * A bounded drain can leave more groups resident between batches.
+     * The error-close path can also retain groups pending teardown.
      */
     ndbrequire(scanPtr->scanState == Dblqh::ScanRecord::WAIT_CLOSE_SCAN ||
+               scanPtr->m_agg_drain_state != ScanRecord::AGG_SCAN ||
                (scanPtr->m_agg_n_res_recs == 0 ||
                scanPtr->m_agg_n_res_recs == 1));
   }

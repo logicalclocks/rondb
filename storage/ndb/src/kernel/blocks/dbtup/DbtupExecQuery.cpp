@@ -6400,6 +6400,12 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
           Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
             PrepareAggResIfNeeded(signal, false);
           if (res_len != 0) {
+            const JoinGBHashTable *groups =
+                scan_rec_ptr->m_agg_interpreter->gb_map();
+            scan_rec_ptr->m_agg_drain_state =
+                (groups != nullptr && !groups->empty())
+                    ? Dblqh::ScanRecord::AGG_DRAIN_MEMORY
+                    : Dblqh::ScanRecord::AGG_SCAN;
             ndbrequire(req_struct->agg_curr_batch_size_rows == 0);
             ndbrequire(req_struct->agg_curr_batch_size_bytes == 0);
             req_struct->agg_curr_batch_size_rows = 1;

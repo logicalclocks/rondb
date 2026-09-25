@@ -458,8 +458,8 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     Uint32 n_groups = 0;
     /* Step 2b: iterate the JoinGBHashTable, emit each group, then
      * erase + freeGroupData.  Same emit→erase→free shape as
-     * JoinAggInterpreter::evictOneGroup but generalized to drain
-     * every currently-resident group. */
+     * JoinAggInterpreter::evictOneGroup.  Emit one bounded record;
+     * remaining groups are drained in later scan batches. */
     for (auto iter = m_gb_map->begin(); iter.valid();) {
       Uint32 key_len = iter.keyLen();
       char* key_ptr = iter.data();
@@ -469,6 +469,13 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
       assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
+      const Uint32 group_bytes =
+          g_result_header_size_per_group_ + key_len + v_len_total;
+      // A group is indivisible and may exceed the normal batch target.
+      if (n_groups > 0 &&
+          pos * sizeof(Uint32) + group_bytes > DEF_AGG_RESULT_BATCH_BYTES) {
+        break;
+      }
       data_buf[pos++] = key_len << 16 | v_len_total;
       MEMCOPY_NO_WORDS(&data_buf[pos], key_ptr, key_len >> 2);
       MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], slots,
@@ -488,10 +495,13 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       m_gb_map->eraseAndNext(iter);
       freeGroupData(key_ptr);
       n_groups++;
+      const Uint32 resident_bytes = key_len + v_len_base;
+      ndbrequire(m_result_size >= resident_bytes);
+      m_result_size -= resident_bytes;
     }
     data_buf[n_groups_pos] = n_groups;
     m_n_groups = m_gb_map->size();
-    m_result_size = 0;
+    assert(!m_gb_map->empty() || m_result_size == 0);
   } else {
     const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
     const Uint32 payload_bytes =

@@ -781,6 +781,7 @@ class Dblqh : public SimulatedBlock {
       m_reserved(0),
       m_send_early_hbrep(0),
       m_has_pushdown(0),
+      m_agg_drain_state(AGG_SCAN),
       m_agg_curr_batch_size_rows(0),
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
@@ -925,6 +926,13 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_continous_scan_state;
     // Pushdown (aggregation or vector search)
     Uint8 m_has_pushdown;
+    // A memory-pressure drain resumes the scan; a final drain closes it.
+    enum AggDrainState : Uint8 {
+      AGG_SCAN,
+      AGG_DRAIN_MEMORY,
+      AGG_DRAIN_FINAL
+    };
+    AggDrainState m_agg_drain_state;
     Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
                                        // batch completed", which means either
                                        // size of group map in aggregation
