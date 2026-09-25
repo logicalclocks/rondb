@@ -41,10 +41,9 @@
  * `m_buf_block` carves the per-instance buffers from RG_QUERY_MEMORY
  * (right-sized to the program's actual prog_len / n_gb_cols /
  * n_agg_results), and group records live in MEM_CHUNK_SIZE pages
- * lazily allocated on first insert.  The per-batch streaming drain
- * (PrepareAggResIfNeeded) frees each group via freeGroupData after
- * emit, keeping resident footprint near one chunk for
- * low-cardinality queries.
+ * lazily allocated on first insert. Groups stay resident until scan
+ * completion or QueryMemory pressure. PrepareAggResIfNeeded drains
+ * them in bounded result batches, freeing each group via freeGroupData.
  *
  * AggInterpreter remains a thin subclass: it owns the streaming
  * drain (no merge / eviction / mutex / linked-attr / multi-leaf
@@ -56,7 +55,8 @@ class AggInterpreter : public AggInterpreterBase {
                  Int64 table_id, Int64 frag_id,
                  Uint32 thread_id):
     AggInterpreterBase(PushdownType::AGGREGATION, prog_len,
-                       table_id, frag_id, thread_id) {
+                       table_id, frag_id, thread_id),
+    m_drain_memory(false) {
     /* All scratch fields and buffer pointers initialised by the base
      * ctor (Steps 3a-A / 3a-B). */
   }
@@ -73,6 +73,9 @@ class AggInterpreter : public AggInterpreterBase {
   Uint32 NumOfResRecords(bool last_time = false);
   /* gb_map / val_len / n_gb_cols / n_agg_results / agg_results /
    * processed_rows accessors lifted to AggInterpreterBase in Step 3b. */
+
+ private:
+  bool m_drain_memory;
 };
 
 #endif  // AGGINTERPRETER_H_

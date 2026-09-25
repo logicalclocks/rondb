@@ -1009,6 +1009,11 @@ bool Ndbd_mem_manager::get_resource_limit_nolock(Uint32 id,
   return false;
 }
 
+Uint32 Ndbd_mem_manager::get_resource_free_shared_nolock(Uint32 id) const {
+  require(id > 0 && id <= MM_RG_COUNT);
+  return m_resource_limits.get_resource_free_shared(id);
+}
+
 Uint32 Ndbd_mem_manager::get_allocated() const {
   mt_mem_manager_lock();
   const Uint32 val = m_resource_limits.get_allocated();

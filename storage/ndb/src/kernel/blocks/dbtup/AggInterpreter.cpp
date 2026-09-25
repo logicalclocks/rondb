@@ -120,14 +120,13 @@ bool AggInterpreter::Init(const Uint32* prog) {
   /* Common post-allocation steps. */
   initSharedAfterAlloc(prog);
 
-  /* AggInterpreter-specific: chunk-allocator budget.  Starts small and
-   * lets bookMoreMemory grow it if a high-cardinality GROUP BY needs
-   * more; available_pages is generous because the query memory pool
-   * enforces the real cap. */
+  /* Grow through QueryMemory rather than imposing a fragment byte limit.
+   * The remaining ceiling is the chunk allocator's Uint32 accounting;
+   * ProcessRec requests a drain before reaching it. */
   if (m_n_gb_cols) {
-    initChunkAllocator(/*thread_id=*/0,
+    initChunkAllocator(m_thread_id,
                        /*budget_pages=*/1,
-                       /*available_pages=*/4096);
+                       /*available_pages=*/UINT32_MAX / MEM_CHUNK_SIZE);
   }
 
   /* Validate embedded interpreter blocks. */
@@ -170,6 +169,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     return ZAGG_OTHER_ERROR;
   }
 
+  const Uint32 previous_chunk_bytes = m_total_chunk_bytes;
   AggResItem* agg_res_ptr = nullptr;
   if (m_n_gb_cols) {
     /* Step 2b: resolve GROUP BY column type metadata once.  Normal-scan
@@ -244,6 +244,30 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     }
   } else {
     agg_res_ptr = m_agg_results;
+  }
+
+  /* Check on chunk growth and periodically for pressure from other queries
+   * or string aggregate buffers. These snapshots are advisory; allocation
+   * failures still follow the existing error path. */
+  if (m_n_gb_cols &&
+      (m_total_chunk_bytes != previous_chunk_bytes ||
+       (m_processed_rows & 255) == 0)) {
+    const Ndbd_mem_manager &mm = block_tup->m_ctx.m_mm;
+    Resource_limit rl;
+    ndbrequire(mm.get_resource_limit_nolock(RG_QUERY_MEMORY, rl));
+    const Uint64 committed = Uint64(rl.m_curr) + rl.m_booked_pages;
+    /* QueryMemory has no reserved pages and cannot grow beyond
+     * m_max_high_prio at its LOW_PRIO_MEMORY priority. */
+    const Uint32 limit = rl.m_max < rl.m_max_high_prio
+                            ? rl.m_max : rl.m_max_high_prio;
+    Uint64 available = limit > committed ? limit - committed : 0;
+    const Uint32 shared =
+        mm.get_resource_free_shared_nolock(RG_QUERY_MEMORY);
+    if (available > shared) available = shared;
+    /* Leave 5% headroom, with at least one page for small pools. */
+    m_drain_memory =
+        available <= (committed + available) / 20 + 1 ||
+        m_total_chunk_bytes >= m_total_available - MEM_CHUNK_SIZE;
   }
 
   /* Phase 6.5 RONDB-1056: standalone pushed aggregation JIT path.
@@ -419,15 +443,12 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 }
 
 Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
-  // Limitation
-  Uint32 total_size = m_result_size +
-                  (m_gb_map ?
-                   m_gb_map->size() * g_result_header_size_per_group_ : 0) +
-                  g_result_header_size_;
-  if (!force && (m_gb_map == nullptr ||
-        total_size < DEF_AGG_RESULT_BATCH_BYTES)) {
+  if (!force && !m_drain_memory) {
     return 0;
   }
+  /* Dblqh continues a memory drain with force=true until the map is empty,
+   * then resumes scanning and obtains a fresh pressure estimate. */
+  m_drain_memory = false;
   if (force &&
       (m_n_gb_cols != 0 && (m_gb_map == nullptr || m_gb_map->size() == 0))) {
     assert(m_result_size == 0);
