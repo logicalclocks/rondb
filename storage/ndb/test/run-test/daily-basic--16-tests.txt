@@ -139,5 +139,13 @@ args: -n CteCoordinatorDiesParkedReplay T1
 max-time: 600
 
 cmd: testNodeRestart
+args: -n CteCoordinatorDiesWaitingScan T1
+max-time: 600
+
+cmd: testNodeRestart
+args: -n JoinAggCoordinatorDiesAtOwner T1
+max-time: 600
+
+cmd: testNodeRestart
 args: -n CteSetupAlreadyFailedNode T1
 max-time: 600

@@ -31526,10 +31526,60 @@ void Dbtc::execJOIN_AGG_SETUP_CONF(Signal *signal) {
     return;  // Duplicate response; do not change accounting or live keys.
   }
   ndbrequire(scanptr.p->m_aggSetupOutstanding > 0);
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(8315) && cteIndex == RNIL &&
+      scanptr.p->m_numCtes == 0 &&
+      scanptr.p->scanState == ScanRecord::RUNNING &&
+      scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_IN_FLIGHT) {
+    jam();
+    /* Test hook (PK-9): fail the scan as a worker's SCAN_FRAGREF would,
+     * just before this CONF is accounted.  close_scan_req cancels the
+     * SETUP round and sends the fragment closes, so the CONF meets
+     * AGG_SETUP_CANCELLED with fragments still running: the window in
+     * which this node's consumers may still feed its state. */
+    CLEAR_ERROR_INSERT_VALUE;
+    const JoinAggSetupConf saved = *conf;
+    infoEvent("[JOIN_AGG_SETUP_CONF_AFTER_CANCEL node=%u instance=%u "
+              "scan=%u request=%u key=%u]",
+              getOwnNodeId(), instance(), scanptr.i, saved.requestId,
+              saved.aggStateKey);
+    scanError(signal, scanptr, ZSCAN_LQH_ERROR);
+    if (unlikely(!scanRecordPool.getValidPtr(scanptr))) {
+      jam();
+      // Nothing was running: the close released the scan at once.
+      sendStaleSetupReclaim(signal, saved.senderRef, saved.senderData,
+                            saved.requestId, saved.aggStateKey);
+      return;
+    }
+    // scanError wrote its signals into the buffer conf points at.
+    memcpy(signal->getDataPtrSend(), &saved, sizeof(saved));
+  }
+#endif
   if (scanptr.p->m_aggSetupState == ScanRecord::AGG_SETUP_CANCELLED) {
     jam();
     setupNodes->m_setupNodesPending.clear(nodeId);
     scanptr.p->m_aggSetupOutstanding--;
+    if (!scanptr.p->m_running_scan_frags.isEmpty() &&
+        setupNodes->m_aggNodes.get(nodeId)) {
+      jam();
+      /* The fragment closes are still in flight.  This node's consumers
+       * found the state by identity (P2c) and may still feed it: a
+       * RELEASE now would free its programs and interpreters under
+       * them.  Keep the key instead; releaseJoinAggResources releases
+       * it once every fragment has closed, which a DBSPJ worker reports
+       * only after all its consumers have finished. */
+      setupNodes->m_aggStateKeys[nodeId] = conf->aggStateKey;
+      setupNodes->m_aggOwnerInstances[nodeId] = conf->ownerInstance;
+#if defined(VM_TRACE) || defined(ERROR_INSERT)
+      // PK-9 waits for this event.
+      infoEvent("[JOIN_AGG_SETUP_CONF_DEFERRED node=%u instance=%u scan=%u "
+                "request=%u key=%u]",
+                getOwnNodeId(), instance(), scanptr.i, conf->requestId,
+                conf->aggStateKey);
+#endif
+      return;
+    }
+    // The scan's fragments are done: nothing feeds the state any more.
     sendStaleSetupReclaim(signal, conf->senderRef, conf->senderData,
                           conf->requestId, conf->aggStateKey);
     return;
@@ -31784,8 +31834,11 @@ void Dbtc::joinAggSetupRoundDone(Signal *signal, ScanRecordPtr scanptr) {
  * was dropped as stale.  The key never reached the scan's maps, so
  * scan teardown cannot release it — a keyed fire-and-forget RELEASE
  * is the only path that frees the state (and its identity entry) on
- * that node.  The state is guaranteed live: nobody else ever learned
- * the key.
+ * that node.  The state is live (nobody else learned the key), but
+ * consumers find it by identity: send this only once the scan's
+ * fragments are done, so nothing still feeds it.  A CONF that meets a
+ * cancelled round with fragments still closing keeps its key for the
+ * scan's teardown instead (execJOIN_AGG_SETUP_CONF).
  */
 void Dbtc::sendStaleSetupReclaim(Signal *signal, Uint32 senderRef,
                                  Uint32 senderData, Uint32 requestId,

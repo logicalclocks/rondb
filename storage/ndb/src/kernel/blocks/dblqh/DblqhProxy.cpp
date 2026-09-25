@@ -3633,6 +3633,31 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   if (state != nullptr) {
     jam();
     state->m_release_started = true;
+    /* The teardown below frees what the owner LDM works on, so no owner
+     * work may be in progress and no peer group may still be on its way
+     * to the state:
+     *  - DBTC sends RELEASE only after every COMPLETE_REQ it sent was
+     *    answered (close_scan_req defers until then; the stale-SETUP
+     *    reclaim follows the same close). The owner answers CONF only
+     *    when done: COMPLETED, or CTE_READY once every peer's FINAL_REP
+     *    count was applied, so nothing is left in flight to it. It
+     *    answers REF only with the state failed (ERROR).
+     *  - JOIN_AGG_NODE_FAIL_REP reclaims only states outside the owner
+     *    phases, after every LDM stopped its continuations for the
+     *    failed coordinator (NODE_FAIL_ABORT).
+     * Neither teardown nor the pool resets m_state, so a late
+     * REDISTRIBUTE_REQ (a peer's group sent before that peer aborted)
+     * finds ERROR / NODE_FAIL_ABORT and is REFed without being queued or
+     * merged. A path that refuses a CTE COMPLETE while the state lives
+     * must therefore fail the state, not only the request. */
+#ifdef VM_TRACE
+    {
+      const JoinAggregationState::State phase = state->m_state.load();
+      ndbassert(phase != JoinAggregationState::FINALIZING &&
+                phase != JoinAggregationState::SENDING_RESULTS &&
+                phase != JoinAggregationState::CTE_REDISTRIBUTING);
+    }
+#endif
     /* RONDB-1120 P0: unregister the identity at RELEASE processing
      * time — NOT at the end of the CONTINUEB-sliced teardown — so a
      * back-to-back query on the same transaction can re-register

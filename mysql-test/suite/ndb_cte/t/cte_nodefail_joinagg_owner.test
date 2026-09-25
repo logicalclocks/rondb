@@ -1,0 +1,94 @@
+# RONDB-1121 NF-14: the transaction coordinator of a main join aggregation
+# fails while an owner LDM is merging.
+# Run with: ./mtr --suite=ndb_cte cte_nodefail_joinagg_owner
+#
+# Runs the JoinAggCoordinatorDiesAtOwner case from the testNodeRestart NDBT
+# program (storage/ndb/test/ndbapi/testNodeRestart.cpp, plan
+# storage/ndb/claude_files/pushdown_join_aggregation/node_failure_test_plan.md).
+#
+# Error insert 5154 holds the owner's merge continuation (FINALIZING) and
+# ignores m_connected, as if DISCONNECT_REP came after the node-failure
+# protocol, so only the owner's ZNODE_DOWN can stop it. The case waits for
+# the owner's hold marker naming the coordinator, kills the coordinator
+# and requires the survivor's JOIN_AGG_RELEASES_QUEUED line for it: the
+# merge stopped and the proxy reclaimed the state. It then clears the
+# hold, restarts the coordinator, runs the leak-check DUMPs (2361, 2362,
+# 2363, 2560, 2650; each crashes a node on a leak) and requires a clean
+# join aggregation afterwards. Two iterations. Needs 2 data nodes with 2
+# replicas, which this suite's cluster provides.
+#
+# The error insert needs error-insert capable ndbmtd binaries, and the
+# testNodeRestart binary is only present in WITH_NDB_TEST builds.
+#
+# On failure the program's output is in $NDB_TOOLS_OUTPUT (var/tmp) of the
+# saved test directory.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its tables (TEST_DB.T1 and the CTE fixtures
+# TEST_DB.cte_nf_src / cte_nf_virtual) directly via the NDB API. Tables
+# created outside of the MySQL Server crash the MySQL Server, so both
+# MySQL Servers are shut down while the NDBT case runs and started again
+# after the NDBT tables have been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # NF-14: kill the coordinator while its owner LDMs hold the merge (error insert 5154)
+--exec $TEST_NODE_RESTART -n JoinAggCoordinatorDiesAtOwner T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops T1 and the case's finalizer drops the CTE
+# fixtures when the case completes cleanly; a missing table is not an
+# error here.
+--echo "[dropping NDBT test tables]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_src >> $NDB_TOOLS_OUTPUT 2>&1 || true
+--exec $NDB_DROP_TABLE -d TEST_DB cte_nf_virtual >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # JoinAggCoordinatorDiesAtOwner passed

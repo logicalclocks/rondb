@@ -114,6 +114,146 @@ scan whatever the group count: core_scan_agg +44 MB, core_idx_range +36 MB
 at 8 threads).  Understand (chunk / pool granularity) — it sets the
 concurrency budget together with F27 (c).
 
+#### A6 analysis (2026-09-25, code reading and an allocator model; no code changed)
+
+**What the numbers are.**  Every per-node QUERY_MEMORY peak in run 6 is a
+whole number of `lc_ndbd_pool` segments (64 pages = 2 MB each).  Above
+idle: core_scan_agg and core_scan_filter 11 per node, core_group_2k 10–11,
+core_idx_range and core_group_few 9, core_group_many 6–7, core_avg_range
+2 / 5, core_in_idx100 1 / 2, pass-through 0.  So the cost is segments
+pinned, not bytes used.  A scalar aggregate fragment scan allocates one
+32 KB page for the interpreter object
+(`PushdownInterpreterFactory::Create`, PushdownInterpreter.cpp ~270,
+called with `getThreadId()` from DbtupExecQuery.cpp ~1062) and a small
+`m_buf_block` (AggInterpreterBase.cpp ~3061).  Both are freed at scan
+close (`releaseScanInterpreters`, DblqhMain.cpp ~28121).  The object is
+"a few hundred bytes" (AggInterpreterBase.hpp ~503), so ~95 % of the page
+is unused.  Nothing else on the plain aggregate-scan path draws query
+memory: the DBTC sites are JoinAgg-only, and the JIT uses `malloc`.  Four
+fragment scans per query at T=8 give about 16 live pages per node, which
+is ~0.5 MB of data held in 18–22 MB.
+
+**H1: one pool per thread — confirmed, explains up to 4 of the 11.**  The
+long-lived lc pool keeps one base per (resource, `thread_id & (N−1)`),
+where N is the next power of two ≥ LDM + recv + main + TC threads
+(`init_memory_pools` ndbd_malloc_impl.cpp ~2255, `default_map_pool_id`
+~4252).  A segment goes back to the global manager only when it is
+completely free (`MAX_FREE_LONG_AREAS 0`, ~4131).  With `NumCPUs=4` the
+automatic configuration is 4 receive threads and no LDM, TC or main
+threads (thr_config.cpp ~336).  Each receive thread hosts one LDM worker,
+one query worker and a TC.  Thread ids are 0–3 (mt.cpp ~9890).  That
+gives 4 query-memory pools per node, each used by one thread.
+*Correction to §6 of m3_plan.md: runs 4 and 6 had 4 LDM workers on 4
+receive threads, not 2 LDM threads.*  Any thread with a live aggregate
+scan pins at least one 2 MB segment, whatever the group count.  The floor
+is therefore 4 segments per node (8 MB) whenever every thread runs one.
+
+**H2: segment classification bug — confirmed in code, explains 1–2 of the
+11.**  `check_memory_area_pos` (ndbd_malloc_impl.cpp ~3965) is meant to
+find the segment's highest non-empty free-area list at or below
+`*check_pos`.  The test `if (i != (*check_pos) + 1)` (~3972) skips list
+`*check_pos` itself even when it is still non-empty.  After
+`lc_memseg_malloc` carves an area and moves it down a list, the segment
+therefore drops to the next lower non-empty list.  On an exact fit it
+drops to `POS_MEMORY_AREA_EMPTY` and leaves the base lists.  Either way it
+keeps larger free areas it no longer advertises.  A free re-promotes the
+segment only up to the class of the area just merged (~4164).  A 32 KB
+request starts its search at list 7 (areas ≥ 64 KB, ~3479), so it cannot
+use a single freed page anyway.  Once demoted, a segment that still has
+several hundred KB free is invisible to page requests, and a new segment
+is fetched.
+
+Concrete sequence: a segment's big area F and a merged hole T (both
+256 KB–1 MB, list 8) sit side by side.  Pages carved from F move F to
+list 7, and the segment drops to 7 although T is in 8.  More pages move F
+to list 6; list 7 is now empty, so the segment drops to 6.  The next
+32 KB page fetches a new segment while T (~700 KB) is free.
+
+A Python replica of malloc, memseg, split, check and free (scratchpad
+`lcsim*.py`), replaying page + `m_buf_block` per scan, gives:
+- One pool with 16 live scans: with the bug, a second segment ~25 % of
+  the time and ~500 segment fetch/release cycles per 40 k scans.  Each
+  cycle takes `mt_mem_manager_lock` and does a 64-page allocation.  With
+  the one-line fix: 1 segment, 1 fetch.
+- One node (4 pools, 16–32 live scans, 57 one-second samples as in the
+  census): peak 5–6 segments with the bug, 4 with the fix, insensitive to
+  the size of `m_buf_block`.
+
+**Still unexplained: about 5 segments per node** (9–11 observed, at most
+6 modelled).  The model assumes each pool has a single allocating thread,
+which holds for scalar scans.  Explaining the gap needs either segments
+fetched by several threads into one pool (the lockless-fetch race in
+Status of A) or more live allocations per request than the code shows.
+Measure it (A5 DUMP below) before claiming more.  GROUP BY does share a
+pool across threads — see side finding (a).
+
+**Side findings.**
+- (a) `AggInterpreter::Init` calls `initChunkAllocator(/*thread_id=*/0, …)`
+  (AggInterpreter.cpp ~128) after `initBufBlock` and
+  `m_gb_map->init(m_thread_id)`.  It overwrites `m_thread_id`, so group
+  chunks (32 KB) and string MIN/MAX slot arrays from every thread come
+  from thread 0's pool.  That means cross-thread contention on one pool
+  mutex and exposure to the lockless-fetch segment race.  The GROUP BY
+  hash segments stay per thread.
+- (b) The churn in H2 is also a CPU cost: every fetch and release goes
+  through the global memory-manager lock.
+- (c) `VecSearchInterpreter` uses the tail of its 32 KB page
+  (VecSearchInterpreter.cpp ~89–93).  Only AggInterpreter can be
+  right-sized.
+
+**Proposed fixes (ranked; none written).**
+1. *Right-size the aggregation interpreter* (RonSQL-local, no allocator
+   change).  Allocate `sizeof(AggInterpreter)` instead of `MEM_CHUNK_SIZE`
+   in `Create` (aggregation branch) and `CreateAggForRead`
+   (PushdownInterpreter.cpp ~270, ~327), or place the object at the head
+   of `m_buf_block` (one allocation).  The per-scan footprint drops from
+   ~33 KB to ~1–3 KB.  Small requests reuse holes, so for scalar scans the
+   32 KB list-7 pattern that triggers H2 goes away.  It also helps F1b
+   (one page per aggregating PK read today).  Risk: low; check that
+   nothing assumes the object is page-aligned.
+2. *One-line classification fix* in `check_memory_area_pos`: return the
+   first non-empty list from `*check_pos` downward, i.e. drop the
+   `i != *check_pos + 1` condition.  When the list is still non-empty the
+   position stays unchanged, which the caller already handles
+   (`new_pos == old_pos`).  The EMPTY case then only happens for a truly
+   full segment.  Effect: no demotion churn, −1 to −2 segments per node,
+   fewer global-lock round trips for every lc_ndbd_pool user.  Risk: low
+   and local, but it is the core allocator (the earlier allocator change
+   was reverted as too intrusive), so it needs your go-ahead.
+3. *GROUP BY chunks on the executing thread*: `initChunkAllocator(m_thread_id, …)`.
+   Frees need no thread id, and the chunked teardown (CONTINUEB) runs on
+   the owning thread.  First confirm why 0 was chosen (JoinAgg merges
+   move chunks between interpreters, but plain AggInterpreter does not).
+   Effect: no shared pool 0; possibly an F24 gain.
+4. Only if 1–3 are not enough: a small per-Dbtup free list of interpreter
+   blocks (bigger change).  Do not cache free segments
+   (`MAX_FREE_LONG_AREAS > 0`): idle levels would step, which the leak
+   tests reject.
+
+**Concurrency budget with F27 (c).**  After fix 1, an aggregate scan costs
+~1–3 KB per fragment scan.  Query memory is then bounded by (a) a floor of
+one 2 MB segment per busy block-thread pool and (b) the per-query group
+memory of F27 (c) (~550 B per group; 70–110 MB for a many-group CTE
+query).  The floor is set by the thread count, not the client count.  In
+X0 (`NumCPUs=15`: 6 LDM + 4 TC + 1 main + 3 recv = 14 block threads,
+16 pools) it is at most 14 × 2 MB = 28 MB per node.  Admission control
+therefore only needs to budget (b).
+
+**Verification (you run).**
+- A5 first: a DUMP that prints, for RG_QUERY_MEMORY, each lc base's
+  segment count, free words and `m_current_pos`, plus a segment-fetch
+  counter.  Run it during an 8-client core_scan_agg to see which pools
+  hold the 11 segments.  That settles the unexplained part and fix 3's
+  share.
+- Census slice with finer sampling:
+  `python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build --queries core_scan_agg,core_idx_range,core_avg_range,core_group_few --threads 1,8 --mem-sample 0.2 --cpubind mysql-test/suite/ronsqlcrunch/census.cnf --out <dir>`,
+  before and after each fix.  Expect T=1 ≈ 1 segment per busy thread and
+  T=8 ≤ 4 per node after fixes 1 and 2.
+- A leak-harness-style assertion (new `ronsql_large_mem_qm_budget`):
+  8 concurrent scalar aggregates over a 4-fragment table through RDRS,
+  polling `ndbinfo.resources` every 100 ms.  Require peak − idle ≤ 64 ×
+  (block threads) pages per node, and back to idle after the settle.
+
 ### Status of A (2026-09-25)
 
 Tested: ronsql_large_mem_leak, _controls and _strings pass; _errors ran
@@ -174,13 +314,68 @@ through except the mle-e5126 step below (the re-check is new, rerun).
   while reading the allocator: a lockless fetch whose backend allocation
   fails returns without decrementing m_num_active_global_malloc, so every
   later fetch of that pool holds the mutex (not fixed).
-- A2 open: DBSPJ RS_ABORTED (upstream scan-abort protocol, documented as
-  a possible leak when no SCAN_NEXTREQ follows; DUMP 2650 in the
-  node-failure tests has not caught it, so TC take-over seems to close
-  the scan — revisit if a leak test shows it); a REDISTRIBUTE_REQ after
-  RELEASE and the node-failure sweep skipping FINALIZING /
-  SENDING_RESULTS need an analysis of the proxy-teardown vs owner-LDM
-  ordering first.
+- A2 DBSPJ RS_ABORTED (2026-09-25, written, not built): a real leak.  A
+  scan request waiting for SCAN_NEXTREQ (RS_WAITING) when its TC's node
+  dies was parked as an RS_ABORTED tombstone for a SCAN_NEXTREQ that
+  cannot come (DBTC take-over handles no scans; DBLQH closes only its
+  own scans of the failed TC): Request, arena and m_aggStateKeys /
+  m_cteAggStateKeys / m_cteContexts lost until node restart, and DUMP
+  2650 would stop the node.  The node-failure tests never killed the TC
+  while a worker waited between batches (the CTE phase never waits).
+  Fix: `Dbspj::nodeFail` marks a scan whose TC failed
+  `RT_REQUESTER_FAILED`; `cleanup` then releases it in full (tombstones
+  stay only while the TC lives).  Same change: the DBSPJ node-failure
+  sweep resumed every continuation at its first bucket (upstream too),
+  so ≥ 64 weighted requests that stay in the hash held it on one prefix
+  forever; it now resumes at `iter.bucket`.  Marker
+  `[SPJ_ORPHANED_SCANS node= instance= failed= count=]`.  Test NF-13
+  `testNodeRestart -n CteCoordinatorDiesWaitingScan T1` (wrapper
+  `ndb_cte.cte_nodefail_coordinator_waiting`, autotest daily-basic--16).
+- A2 REDISTRIBUTE_REQ after RELEASE (2026-09-25, hardening written, not
+  built): cannot reach a live-looking state (DBTC releases only after
+  every COMPLETE reply; a CONF'd owner has reconciled every peer's count,
+  a REF'd one stays ERROR / NODE_FAIL_ABORT, which teardown does not
+  reset), with one exception fixed: the two CTE COMPLETE refusals for a
+  malformed key section REFed with the state left SETUP_COMPLETE, so a
+  peer's group could be CONF'd and queued into a state being released.
+  They now fail it through `abortCteRedistribution` (ERROR, peers told).
+  The rule is documented at `DblqhProxy::execJOIN_AGG_RELEASE_REQ`, which
+  asserts no owner phase (FINALIZING / SENDING_RESULTS /
+  CTE_REDISTRIBUTING) is in progress.  Test testCteProtocol ID-8.  Not
+  done (2 c): the owner's identity check reads fields the proxy thread
+  re-initialises when it reuses the slot.
+- A2 stale-SETUP reclaim under running consumers (2026-09-25, found while
+  checking the RELEASE senders; fix written, not built): for a main
+  aggregation without CTEs, `close_scan_req` on a RUNNING scan cancels
+  the SETUP round and sends the fragment closes at once, and a
+  SETUP_CONF arriving before the closes drained was reclaimed
+  immediately.  That node's consumers (found by identity, P2c) could
+  still feed the state while the RELEASE freed its programs, leaf
+  programs, JIT handles and interpreters: `ndbrequire(leafIndex <
+  m_num_leaves)` in `Dbtup::handleJoinAggRow` or a use-after-free.
+  CTE queries are not exposed (the CTE stage defers the close while
+  SETUP replies are outstanding; READY / START_MAIN need every CONF).
+  Fix (DBTC `execJOIN_AGG_SETUP_CONF`): with fragments still running the
+  CONF keeps its key for `releaseJoinAggResources` at scan release
+  (after every fragment closed); otherwise the reclaim stays.  Test
+  testCteProtocol PK-9 (5138 hold + new DBTC insert 8315, events
+  JOIN_AGG_SETUP_CONF_AFTER_CANCEL / _DEFERRED).  Check the F27 case-25
+  crash logs for this signature.
+- A2 node-failure sweep vs owner LDM (2026-09-25, written, not built):
+  skipping FINALIZING / SENDING_RESULTS is by design, but the owner's
+  merge / send continuations stopped only on `m_connected`, which clears
+  on DISCONNECT_REP (unordered with NODE_FAILREP): a continuation could
+  outlive node-failure handling, be skipped and leak its state.
+  `checkJoinAggNodeFailed` now also tests the instance's ZNODE_DOWN
+  (`isJoinAggCoordinatorFailed`).  No guard for a late COMPLETE /
+  SEND_CONF of the dead coordinator (user, 2026-09-25): after
+  NODE_FAILREP nothing arrives from that node until it restarts, which
+  needs node-failure handling complete; the park flush replaying a
+  parked COMPLETE comes from the proxy like the workers' NODE_FAILREP, so
+  it runs first.  Test NF-14 `testNodeRestart -n
+  JoinAggCoordinatorDiesAtOwner T1` (error insert 5154 merge hold
+  ignoring m_connected; wrapper `ndb_cte.cte_nodefail_joinagg_owner`,
+  autotest daily-basic--16).
 - A3 done: `c_cteScanIterStatePool` is started (static page at node start
   instead of a never-released transient page on first use); DBTC's
   `c_aggCompleteRecordPool` / `c_cteScanFragHandlePool` reserve one static

@@ -1494,7 +1494,9 @@ class Dbspj : public SimulatedBlock {
       RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
       ,
       RT_AGG_ANCESTOR_MATCH = 0x100,  // Match tracking for intermediate agg ancestors
-      RT_CTE_PHASE = 0x200    // CTE materialization scans in progress
+      RT_CTE_PHASE = 0x200,   // CTE materialization scans in progress
+      RT_REQUESTER_FAILED = 0x400  // Scan: the requesting TC's node failed,
+                                   // no SCAN_NEXTREQ can arrive any more
     };
 
     enum RequestState {

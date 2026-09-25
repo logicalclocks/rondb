@@ -19938,15 +19938,16 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     if (handle.m_cnt == 0) {
       jam();
       releaseSections(handle);
-      JoinAggCompleteRef *ref =
-        (JoinAggCompleteRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->requestId = requestId;
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
-      ref->errorLine = __LINE__;
-      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
-                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      /* Fail the state, not only this request: DBTC aborts the query
+       * and releases it, while its peers may already redistribute to
+       * it. They must meet an aborting state (REF), never a
+       * SETUP_COMPLETE one that queues their groups into a state being
+       * torn down (see execJOIN_AGG_RELEASE_REQ). As the ERROR arm of
+       * the duplicate-REQ guard above: ERROR, peers told, COMPLETE_REF. */
+      state->m_cte_complete_senderRef = senderRef;
+      state->m_cte_complete_senderData = senderData;
+      state->m_cte_complete_requestId = requestId;
+      abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_NOT_FOUND);
       return;
     }
     SegmentedSectionPtr ptr;
@@ -19958,15 +19959,11 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
     if (unlikely(ptr.sz > 3 * MAX_NDB_NODES)) {
       jam();
       releaseSections(handle);
-      JoinAggCompleteRef *ref =
-        (JoinAggCompleteRef *)signal->getDataPtrSend();
-      ref->senderRef = reference();
-      ref->senderData = senderData;
-      ref->requestId = requestId;
-      ref->errorCode = ZJOIN_AGG_STATE_NOT_FOUND;
-      ref->errorLine = __LINE__;
-      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
-                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      /* Fail the state as above. */
+      state->m_cte_complete_senderRef = senderRef;
+      state->m_cte_complete_senderData = senderData;
+      state->m_cte_complete_requestId = requestId;
+      abortCteRedistribution(signal, state, ZJOIN_AGG_STATE_NOT_FOUND);
       return;
     }
     copy(tripleBuf, ptr);
@@ -20179,7 +20176,22 @@ void Dblqh::execJOIN_AGG_CANCEL_REQ(Signal *signal) {
  */
 bool Dblqh::checkJoinAggNodeFailed(Signal*, Uint32 aggStateKey,
                                    Uint32 senderRef) {
-  if (!getNodeInfo(refToNode(senderRef)).m_connected) {
+  /* Test this instance's host record too, not only m_connected.
+   * JOIN_AGG_NODE_FAIL_REP reclaims the failed coordinator's states only
+   * after every LDM finished its NODE_FAILREP handling, and it skips
+   * FINALIZING / SENDING_RESULTS: a continuation still running then is
+   * never reclaimed. ZNODE_DOWN is set in this instance's NODE_FAILREP,
+   * so the next slice (queued ahead of the rest of that handling) stops.
+   * m_connected clears on DISCONNECT_REP, which is not ordered with
+   * NODE_FAILREP and can come after the whole node-failure protocol. */
+  bool disconnected = !getNodeInfo(refToNode(senderRef)).m_connected;
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5154)) {
+    // NF-14: simulate a DISCONNECT_REP that lags the whole protocol.
+    disconnected = false;
+  }
+#endif
+  if (disconnected || isJoinAggCoordinatorFailed(senderRef)) {
     jam();
     // Stop this continuation, but do not release shared state while
     // other workers may still use it. JOIN_AGG_NODE_FAIL_REP performs
@@ -20516,6 +20528,36 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     return;  // Aborted or released while this continuation was queued.
   }
   sendJoinAggCompleteHeartbeat(signal, state);
+
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(5154) && !state->m_cte_mode &&
+      refToMain(senderRef) == DBTC &&
+      refToNode(senderRef) != getOwnNodeId()) {
+    jam();
+    /* Test hook (NF-14): hold the owner's merge of a main aggregation
+     * with a remote coordinator (FINALIZING, which the proxy's
+     * coordinator-failure reclaim skips) until cleared. The continuation
+     * is re-queued without delay, so it stays ordered with this
+     * instance's NODE_FAILREP handling like a real merge slice, and every
+     * round passes the failure check above; checkJoinAggNodeFailed
+     * ignores m_connected while 5154 is set. The extra error-insert value
+     * carries the test iteration; its top bit records the event. */
+    constexpr Uint32 eventSent = 0x80000000;
+    if ((c_error_insert_extra & eventSent) == 0) {
+      infoEvent("[JOIN_AGG_MERGE_HELD node=%u iteration=%u coordinator=%u]",
+                getOwnNodeId(), c_error_insert_extra, refToNode(senderRef));
+      c_error_insert_extra |= eventSent;
+    }
+    signal->theData[0] = ZCONTINUE_JOIN_AGG_MERGE;
+    signal->theData[1] = aggStateKey;
+    signal->theData[2] = merge_idx;
+    signal->theData[3] = senderRef;
+    signal->theData[4] = senderData;
+    signal->theData[5] = requestId;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 6, JBB);
+    return;
+  }
+#endif
 
   /*
    * MUTEX_FREE merge phase: merge per-thread interpreters into [0].

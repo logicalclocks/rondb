@@ -13808,6 +13808,289 @@ static int runCteCoordinatorParkedReplayKiller(NDBT_Context *ctx,
 }
 
 /*
+ * NF-13 CteCoordinatorDiesWaitingScan.
+ *
+ * The API holds a CTE query after its first row. The main scan runs with
+ * a 64-row batch, so every DBSPJ worker has sent a non-final
+ * SCAN_FRAGCONF and waits for DBTC's next SCAN_NEXTREQ (RS_WAITING).
+ * The close hook then kills the coordinator. DBTC take-over handles no
+ * scans, so no SCAN_NEXTREQ can follow: each surviving worker must
+ * release its request when it aborts. Before the fix they stayed in the
+ * scan hash as RS_ABORTED tombstones, with their arena and CTE key
+ * arrays, until the node restarted, and DUMP 2650 stopped the node.
+ * The survivors' SPJ_ORPHANED_SCANS marker proves the window was hit.
+ */
+struct CteCoordWaitingArgs {
+  NdbRestarter *restarter;
+  int victim;  // the coordinator once the hook issued its kill, else 0
+};
+
+static bool cteCoordWaitingBeforeClose(void *arg, Uint32 tcNodeId) {
+  CteCoordWaitingArgs *a = (CteCoordWaitingArgs *)arg;
+  /* The first row came with some worker's first batch; let every other
+   * worker's first batch reach DBTC too, so that all of them wait. */
+  NdbSleep_MilliSleep(300);
+  int victim = (int)tcNodeId;
+  g_err << "Killing coordinator node " << victim
+        << " while its DBSPJ workers wait for SCAN_NEXTREQ" << endl;
+  a->victim = victim;
+  if (a->restarter->restartOneDbNode(victim, /* initial */ false,
+                                     /* nostart */ true,
+                                     /* abort */ true) != 0) {
+    g_err << "restartOneDbNode(" << victim << ") failed" << endl;
+    return false;
+  }
+  if (a->restarter->waitNodesNoStart(&victim, 1) != 0) {
+    g_err << "waitNodesNoStart(" << victim << ") failed" << endl;
+    return false;
+  }
+  return true;
+}
+
+/* Wait for a survivor's SPJ_ORPHANED_SCANS naming the killed coordinator. */
+static bool cteNfWaitOrphanedScans(NDBT_Context *ctx,
+                                   CteNfEventListener &events, int victim) {
+  char failed[32];
+  BaseString::snprintf(failed, sizeof(failed), " failed=%d ", victim);
+  const Uint64 deadline = NdbTick_CurrentMillisecond() + 30000;
+  for (Uint64 now = NdbTick_CurrentMillisecond(); now < deadline;
+       now = NdbTick_CurrentMillisecond()) {
+    BaseString line;
+    if (!events.waitFor(ctx, "[SPJ_ORPHANED_SCANS ", Uint32(deadline - now),
+                        &line)) {
+      return false;
+    }
+    if (strstr(line.c_str(), failed) != nullptr) {
+      g_err << "Survivor found the orphaned scans: " << line.c_str();
+      return true;
+    }
+  }
+  return false;
+}
+
+static int runCteCoordinatorWaitingScan(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] CteCoordinatorDiesWaitingScan needs >= 2 data nodes"
+          << endl;
+    return NDBT_OK;
+  }
+  if (runCteNfCheckQuery(ndb, "Baseline") != NDBT_OK) return NDBT_FAILED;
+  for (Uint32 iter = 0; iter < CTE_NF_ITERATIONS; iter++) {
+    g_err << "=== CteCoordinatorDiesWaitingScan iteration " << iter << " ==="
+          << endl;
+    /* Subscribe before the kill: the marker comes with NODE_FAILREP. */
+    CteNfEventListener events;
+    if (!events.open(restarter)) {
+      g_err << "Failed to subscribe to management events" << endl;
+      return NDBT_FAILED;
+    }
+    CteCoordWaitingArgs args = {&restarter, 0};
+    CteQueryUtil::Options opt;
+    opt.shape = CteQueryUtil::LookupMain;
+    opt.closeAfterFirstBatch = true;
+    opt.mainBatchRows = 64;
+    opt.beforeClose = cteCoordWaitingBeforeClose;
+    opt.arg = &args;
+    CteQueryUtil::Result res;
+    /* The close after the kill fails at once on the TC's disconnect. */
+    const int rc = CteQueryUtil::runQuery(ndb, opt, res);
+    g_err << "Query returned rc=" << rc << " failedAt=" << res.failedAt
+          << " ndbError=" << res.ndbError << " rows=" << res.rows
+          << " closeError=" << res.closeError << endl;
+    const bool killed = args.victim != 0;
+    const bool window =
+        killed && rc == 0 && cteNfWaitOrphanedScans(ctx, events, args.victim);
+    if (killed && (restarter.startNodes(&args.victim, 1) != 0 ||
+                   restarter.waitClusterStarted(180) != 0)) {
+      g_err << "Coordinator " << args.victim << " did not rejoin" << endl;
+      return NDBT_FAILED;
+    }
+    if (!killed || rc != 0) {
+      g_err << "The coordinator was not killed after the first row" << endl;
+      return NDBT_FAILED;
+    }
+    if (!window) {
+      g_err << "No survivor reported SPJ_ORPHANED_SCANS for coordinator "
+            << args.victim << " within 30 s: no DBSPJ worker was waiting "
+            << "for SCAN_NEXTREQ when it died" << endl;
+      return NDBT_FAILED;
+    }
+    /* I4: 2650 finds no DBSPJ request left, the others no join-agg record. */
+    if (runCteNfLeakDumps(restarter) != NDBT_OK) return NDBT_FAILED;
+  }
+  /* I5 */
+  if (runCteNfCheckQuery(ndb, "Post-recovery") != NDBT_OK) return NDBT_FAILED;
+  return NDBT_OK;
+}
+
+/*
+ * NF-14 JoinAggCoordinatorDiesAtOwner.
+ *
+ * DblqhProxy reclaims a failed coordinator's join-aggregation states once
+ * every LDM has handled the NODE_FAILREP, and skips FINALIZING /
+ * SENDING_RESULTS: the owner LDM's merge and send continuations must
+ * stop first. They stopped only on m_connected, which clears on
+ * DISCONNECT_REP and can come after the whole protocol; they now also
+ * stop on the owner's host record (ZNODE_DOWN, set in its NODE_FAILREP,
+ * ahead of the rest of its failure handling).
+ *
+ * Error insert 5154, armed on every node for the self-join aggregation of
+ * runJoinAggQuery (main aggregation, no CTE), holds the owner's merge
+ * (FINALIZING) and ignores m_connected, so only ZNODE_DOWN can stop it.
+ * The killer waits for the owner's hold marker naming the coordinator,
+ * kills it and requires the survivor's JOIN_AGG_RELEASES_QUEUED for it:
+ * the merge stopped and the state was reclaimed. Before the fix the merge
+ * outlived node-failure handling, the reclaim skipped it and it leaked.
+ * Then the hold is cleared, the coordinator restarted and the leak dumps
+ * run.
+ */
+static const int JA_OWNER_INSERT = 5154;
+static const char *const JA_OWNER_MARKER = "[JOIN_AGG_MERGE_HELD ";
+static const Uint32 JA_OWNER_ITERATIONS = 2;
+
+/* A clean join aggregation; temporary effects of a recent restart get
+ * two more attempts. */
+static bool joinAggOwnerCleanQuery(Ndb *ndb, const NdbDictionary::Table *tab,
+                                   const char *when) {
+  for (int attempt = 0; attempt < 3; attempt++) {
+    const int rc = runJoinAggQuery(ndb, tab);
+    if (rc == 0) return true;
+    g_err << when << ": join aggregation attempt " << attempt << " rc=" << rc
+          << endl;
+    if (rc == -2) return false;
+    NdbSleep_SecSleep(5);
+  }
+  return false;
+}
+
+static int runJoinAggOwnerQuery(NDBT_Context *ctx, NDBT_Step *step) {
+  Ndb *ndb = GETNDB(step);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] JoinAggCoordinatorDiesAtOwner needs >= 2 data nodes"
+          << endl;
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+  for (Uint32 w = 0; w < JA_OWNER_ITERATIONS; w++) {
+    if (!joinAggOwnerCleanQuery(ndb, tab, w == 0 ? "Baseline" : "Recovery")) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("JaOwnerReady", w + 1);
+    ctx->getPropertyWait("JaOwnerArmed", w + 1);
+    if (ctx->isTestStopped()) return NDBT_FAILED;
+    /* Fails once the coordinator is killed; the killer judges the window. */
+    const int rc = runJoinAggQuery(ndb, tab);
+    g_err << "Held query of iteration " << w << " returned rc=" << rc << endl;
+    ctx->setProperty("JaOwnerQueryDone", w + 1);
+    ctx->getPropertyWait("JaOwnerRestarted", w + 1);
+    if (ctx->isTestStopped()) return NDBT_FAILED;
+  }
+  const bool ok = joinAggOwnerCleanQuery(ndb, tab, "Post-recovery");
+  ctx->stopTest();
+  return ok ? NDBT_OK : NDBT_FAILED;
+}
+
+static void joinAggOwnerClearInserts(NdbRestarter &restarter, int victim) {
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const int n = restarter.getDbNodeId(i);
+    if (n != victim) restarter.insertErrorInNode(n, 0);
+  }
+}
+
+static int runJoinAggOwnerKiller(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) return NDBT_OK;
+  for (Uint32 w = 0; w < JA_OWNER_ITERATIONS; w++) {
+    const int insert = JA_OWNER_INSERT;
+    const Uint32 iteration = w + 1;
+    ctx->getPropertyWait("JaOwnerReady", w + 1);
+    if (ctx->isTestStopped()) return NDBT_OK;
+    g_err << "=== JoinAggCoordinatorDiesAtOwner iteration " << w << " ==="
+          << endl;
+    CteNfEventListener events;
+    if (!events.open(restarter)) {
+      g_err << "Failed to subscribe to management events" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (restarter.insertError2InAllNodes(insert, iteration) != 0) {
+      g_err << "insertError2InAllNodes(" << insert << ") failed" << endl;
+      joinAggOwnerClearInserts(restarter, 0);
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("JaOwnerArmed", w + 1);
+
+    BaseString line;
+    Uint32 node = 0, iter = 0, coordinator = 0;
+    const char *marker = nullptr;
+    if (events.waitFor(ctx, JA_OWNER_MARKER, 30000, &line)) {
+      marker = strstr(line.c_str(), " node=");
+    }
+    if (marker == nullptr ||
+        sscanf(marker, " node=%u iteration=%u coordinator=%u]", &node, &iter,
+               &coordinator) != 3 ||
+        iter != iteration || coordinator == 0 || coordinator == node) {
+      g_err << "No valid " << JA_OWNER_MARKER << "marker within 30 s: "
+            << line.c_str() << endl;
+      joinAggOwnerClearInserts(restarter, 0);
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    int victim = (int)coordinator;
+    g_err << "Node " << node << " holds the merge of coordinator "
+          << victim << "; killing the coordinator" << endl;
+    if (restarter.restartOneDbNode(victim, /* initial */ false,
+                                   /* nostart */ true,
+                                   /* abort */ true) != 0 ||
+        restarter.waitNodesNoStart(&victim, 1) != 0) {
+      g_err << "Failed to kill coordinator " << victim << endl;
+      joinAggOwnerClearInserts(restarter, victim);
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* The held merge stopped on ZNODE_DOWN, so the proxy reclaimed the
+     * state after node-failure handling. */
+    BaseString reclaim;
+    reclaim.assfmt("[JOIN_AGG_RELEASES_QUEUED node=%u failed=%d ", node,
+                   victim);
+    const bool reclaimed = events.waitFor(ctx, reclaim.c_str(), 30000);
+    joinAggOwnerClearInserts(restarter, victim);
+    if (!cteNfWaitProperty(ctx, "JaOwnerQueryDone", w + 1, 120)) {
+      g_err << "The held query did not end within 120 s of the kill" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (restarter.startNodes(&victim, 1) != 0 ||
+        restarter.waitClusterStarted(180) != 0) {
+      g_err << "Coordinator " << victim << " did not rejoin" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    if (!reclaimed) {
+      g_err << "No JOIN_AGG_RELEASES_QUEUED from node " << node
+            << " for coordinator " << victim << " within 30 s: the owner's "
+            << "merge outlived node-failure handling and its state was "
+            << "not reclaimed" << endl;
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    /* I4 */
+    if (runCteNfLeakDumps(restarter) != NDBT_OK) {
+      ctx->stopTest();
+      return NDBT_FAILED;
+    }
+    ctx->setProperty("JaOwnerRestarted", w + 1);
+  }
+  return NDBT_OK;
+}
+
+/*
  * F-12: create SETUP obligations after the victim's failure handling ended.
  * LookupMain exercises CTE SETUP; OuterAggMain exercises main-only SETUP.
  * No later node failure may be needed to complete either query or close.
@@ -14992,6 +15275,26 @@ TESTCASE("CteCoordinatorDiesParkedReplay",
   STEP(runCteCoordinatorParkedReplayQuery);
   STEP(runCteCoordinatorParkedReplayKiller);
   FINALIZER(runCteNfDropTables);
+}
+TESTCASE("CteCoordinatorDiesWaitingScan",
+         "RONDB-1121 NF-13: the API holds a CTE query after its first row "
+         "while every DBSPJ worker waits for SCAN_NEXTREQ; killing the "
+         "coordinator must make the survivors release those requests "
+         "(no RS_ABORTED tombstone: DUMP 2650 clean) and leave no "
+         "join-agg record behind") {
+  INITIALIZER(runCteNfCreateTables);
+  STEP(runCteCoordinatorWaitingScan);
+  FINALIZER(runCteNfDropTables);
+}
+TESTCASE("JoinAggCoordinatorDiesAtOwner",
+         "RONDB-1121 NF-14: error insert 5154 holds a main aggregation's "
+         "merge at its owner LDM and ignores m_connected; killing the "
+         "coordinator must stop the merge on the owner's ZNODE_DOWN so the "
+         "proxy reclaims the state, leaving no join-agg record behind") {
+  INITIALIZER(runLoadTable);
+  STEP(runJoinAggOwnerQuery);
+  STEP(runJoinAggOwnerKiller);
+  FINALIZER(runClearTable);
 }
 TESTCASE("NodeFailLeakDuringNodeStart",
          "Check that a node that dies while starting can re-allocate its "

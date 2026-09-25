@@ -184,11 +184,17 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
 5152: Hold CTE 0 and 2 at the FINAL_REP barrier for DBTC 8132;
       suppress peer notification on CANCEL to exercise DBTC cancellation.
 5153: As 5152, but crash the non-coordinator node on CANCEL.
-Next DBLQH 5154
+5154: Hold the owner's merge continuation of a main aggregation with a
+      remote coordinator (re-queued without delay) until cleared, and ignore
+      m_connected in checkJoinAggNodeFailed (a DISCONNECT_REP lagging the
+      node-failure protocol); emits [JOIN_AGG_MERGE_HELD node=N iteration=I
+      coordinator=C] (extra = iteration, top bit = event sent). NF-14: the
+      host record's ZNODE_DOWN must stop it
+Next DBLQH 5155
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
-Next DBTC 8315 (RonDB)
+Next DBTC 8316 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -714,6 +720,12 @@ DBTC node failure take over testing (RonDB)
       its node-failure handling. Does not change c_alive_nodes. Emits
       JOIN_AGG_SETUP_FAILED_NODE; remains armed until explicitly cleared.
       CteSetupAlreadyFailedNode requires bounded failure/close and clean pools.
+8315: At ONE main-aggregation JOIN_AGG_SETUP_CONF (no CTE, scan RUNNING,
+      round in flight), fail the scan with scanError(270) first, then
+      account the CONF: it meets AGG_SETUP_CANCELLED with the fragment
+      closes in flight. Emits JOIN_AGG_SETUP_CONF_AFTER_CANCEL (cleared
+      after use). PK-9 requires JOIN_AGG_SETUP_CONF_DEFERRED, not a
+      stale-SETUP reclaim.
 
 
 TRPMAN
