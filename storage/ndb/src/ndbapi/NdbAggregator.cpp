@@ -1433,7 +1433,20 @@ bool NdbAggregator::Finalize() {
 
   result_size_est_ += sizeof(AggResItem) * n_agg_results_;
 
-  if (result_size_est_ >= MAX_AGG_RESULT_BATCH_BYTES - 128) {
+  // String MIN/MAX append a length word and a padded column value after
+  // the fixed slots. getSizeInBytes() includes VARCHAR length prefixes.
+  for (Uint32 i = 0; i < n_agg_results_; i++) {
+    const NdbDictionary::Column *col = agg_columns_[i];
+    if ((agg_ops_[i] == kOpMin || agg_ops_[i] == kOpMax) &&
+        col != nullptr && isStringType(col->getType())) {
+      result_size_est_ += sizeof(Uint32) +
+                         ((col->getSizeInBytes() + 3) & ~3U);
+    }
+  }
+
+  // The estimate already includes result and group headers. Receiver
+  // bookkeeping is allocated separately from these wire bytes.
+  if (result_size_est_ > MAX_AGG_RESULT_BATCH_BYTES) {
     SetError(kErrTooBigResult);
     /*
      * PA related

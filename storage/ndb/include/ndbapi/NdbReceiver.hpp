@@ -158,6 +158,9 @@ class NdbReceiver {
       Uint32 &batch_bytes,    // In/Out: 'REQ' Argument to TC
       Uint32 &buffer_bytes);  // Out:     ReceiveBuffer size
 
+  // One aggregation result batch, including receive-buffer bookkeeping.
+  static Uint32 aggregation_bufsize();
+
   /*
     Set up buffers for receiving TRANSID_AI and KEYINFO20 signals
     during a scan using NdbRecord.

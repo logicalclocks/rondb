@@ -18,6 +18,7 @@
 #include <ndb_global.h>
 #include <mysql/strings/m_ctype.h>
 #include <NdbAggregator.hpp>
+#include "NdbDictionaryImpl.hpp"
 #include <kernel/AttributeHeader.hpp>
 
 #include <cstdio>
@@ -298,9 +299,54 @@ static bool runNumericCases() {
   return true;
 }
 
+static bool runResultSizeCases() {
+  // Exercise complete wire records above the old limit and around the
+  // new limit. Synthetic dictionary sizes avoid needing a cluster.
+  const Uint32 recordSizes[] = {12 * 1024, 16 * 1024 - 4,
+                               16 * 1024, 16 * 1024 + 4};
+  for (Uint32 recordBytes : recordSizes) {
+    for (Uint32 op : {Uint32(kOpCount), Uint32(kOpMin), Uint32(kOpMax)}) {
+      NdbColumnImpl column;
+      column.setType(NdbDictionary::Column::Longvarchar);
+      column.setCharset(&my_charset_bin);
+      column.m_attrSize = 1;
+      // Three result-header words, one group-header word, one slot,
+      // and either a key AttributeHeader or a string length word.
+      column.m_arraySize = recordBytes - 5 * sizeof(Uint32) -
+                           sizeof(AggResItem);
+
+      NdbAggregator agg(nullptr);
+      if (op == kOpCount) {
+        CHECK(agg.GroupByLinked(0, &column));
+        CHECK(agg.LoadInt64(1, 0));
+        CHECK(agg.Count(0, 0));
+      } else {
+        CHECK(agg.LoadLinkedColumn(0, 0, &column));
+        CHECK(op == kOpMin ? agg.Min(0, 0) : agg.Max(0, 0));
+      }
+      const bool accepted = agg.Finalize();
+      CHECK(accepted == (recordBytes <= 16 * 1024));
+      if (!accepted) CHECK(agg.GetError().errno_ == kErrTooBigResult);
+    }
+  }
+
+  // COUNT over a wide string returns only a numeric slot, no payload.
+  NdbColumnImpl column;
+  column.setType(NdbDictionary::Column::Longvarchar);
+  column.setCharset(&my_charset_bin);
+  column.m_attrSize = 1;
+  column.m_arraySize = 16 * 1024;
+  NdbAggregator count(nullptr);
+  CHECK(count.LoadLinkedColumn(0, 0, &column));
+  CHECK(count.Count(0, 0));
+  CHECK(count.Finalize());
+  return true;
+}
+
 int main() {
   if (ndb_init() != 0) return 1;
   bool passed = runNumericCases();
+  if (!runResultSizeCases()) passed = false;
   for (bool grouped : {false, true}) {
     for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR),
                         Uint32(NDB_TYPE_LONGVARCHAR)}) {
@@ -315,7 +361,8 @@ int main() {
   }
   ndb_end(0);
   printf("%s\n", passed
-      ? "PASSED: numeric boundaries and 18 string failure/recovery cases"
+      ? "PASSED: result-size boundaries, numeric boundaries "
+        "and 18 string failure/recovery cases"
       : "FAILED");
   return passed ? 0 : 1;
 }

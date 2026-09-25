@@ -781,6 +781,12 @@ void NdbReceiver::result_bufsize(
                  4;
 }
 
+Uint32 NdbReceiver::aggregation_bufsize() {
+  return NdbReceiverBuffer::calculateBufferSizeInWords(
+             1, MAX_AGG_RESULT_BATCH_BYTES / sizeof(Uint32), 0) *
+         sizeof(Uint32);
+}
+
 /**
  * pad
  * This function determines how much 'padding' should be applied
