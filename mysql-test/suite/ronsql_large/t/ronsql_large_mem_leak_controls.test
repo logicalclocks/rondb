@@ -1,0 +1,95 @@
+# ronsql_large_mem_leak_controls -- controls for the RonSQL data-node
+# memory-leak harness: query shapes that do NOT build a CTE and, per the
+# benchmark observations, leave no query memory behind.  They must pass
+# with tolerance 0; if a control fails, suspect the harness (settling,
+# background activity, a warm-up gap) before the engine -- or a real leak
+# outside the CTE code.
+#
+#   mlx-1  PK lookup                                   (no query memory)
+#   mlx-2  single-table aggregate, 5 groups            (AggInterpreter)
+#   mlx-3  single-table aggregate, 20000 groups sent   (streaming drain)
+#   mlx-4  pushed scan-scan join, 10000 rows           (DBSPJ row buffers:
+#          row-page cache released by a 100 ms timer within ~3 s)
+#   mlx-5  join aggregation without a CTE, 5 groups    (JoinAgg SETUP /
+#          COMPLETE / RELEASE without CTE state: discriminates a leak in
+#          the join-aggregation machinery from one in the CTE code)
+#   mlx-6  pushed join with LIMIT 5000 of 20000 rows   (early close of a
+#          non-CTE SPJ scan; the projection is value-uniform)
+#
+# Method, knobs and how to read a failure: see ronsql_large_mem_leak.test
+# and suite/ronsql_large/include/mem_leak_init.inc.  Rounds 1 / 10 / 50;
+# tolerance 0 pages per node after round 1.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak_controls
+--let $mlk_prefix = mlx
+--let $mlk_round1 = 1
+--let $mlk_round2 = 10
+--let $mlk_round3 = 50
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = control: primary-key lookup
+let $QUERY=
+SELECT lc_region, lc_segment, lc_balance FROM lg_cust WHERE lc_id = 4711;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = control: single-table aggregate, 5 groups
+let $QUERY=
+SELECT lg_region, COUNT(*), SUM(lg_qty), SUM(lg_amount)
+FROM lg_orders GROUP BY lg_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = control: single-table aggregate, 20000 groups sent to the client
+let $QUERY=
+SELECT lg_cust, COUNT(*), SUM(lg_amount), MAX(lg_date)
+FROM lg_orders GROUP BY lg_cust;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = control: pushed scan-scan join, 10000 rows (DBSPJ row buffers)
+let $QUERY=
+SELECT c.lc_id, o.lg_id, o.lg_qty
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+WHERE c.lc_id <= 2000;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = discriminator: join aggregation without a CTE, 5 groups
+let $QUERY=
+SELECT c.lc_region, COUNT(*), SUM(o.lg_qty)
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = control: pushed join, LIMIT 5000 of 20000 rows (early close, uniform projection)
+let $QUERY=
+SELECT c.lc_region
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+WHERE c.lc_region = 2
+LIMIT 5000;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--source suite/ronsql_large/include/mem_leak_measure_all.inc
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

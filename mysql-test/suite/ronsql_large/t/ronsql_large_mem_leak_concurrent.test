@@ -1,0 +1,116 @@
+# ronsql_large_mem_leak_concurrent -- data-node query-memory leak
+# detection for RonSQL CTE queries under concurrency: every measured round
+# runs 8 concurrent RDRS clients (forked from perl), first per shape, then
+# all shapes mixed.  Concurrent queries spread over all LDM / TC / SPJ
+# instances, use distinct join-aggregation state keys, and under the MTR
+# memory budget (SharedGlobalMemory 20M per data node) some are refused
+# with "out of query memory" (20008, retried by RDRS up to 10 times, then
+# HTTP 503): that abort-and-retry path must free its memory too.  HTTP 503
+# is therefore tolerated in the rounds (counted in the report file), any
+# other error or a wrong result fails the test.  A data node failure here
+# is the census finding F27 (8 concurrent many-group CTE queries), not a
+# harness problem.
+#
+#   mlc-1  offline_fs_scalar (scalar reduce over a 20000-group CTE)
+#   mlc-2  offline_fs_chain  (CTE over a CTE)
+#   mlc-3  tpch q13 shape    (LEFT JOIN a filtered CTE, NULL-extended rows)
+#   mlc-4  offline_fs_batch  (CTE joined to lg_cust, GROUP BY VARCHAR)
+#   mlc-mixed  the four shapes interleaved over the 8 clients
+#
+# Method, knobs and how to read a failure: see ronsql_large_mem_leak.test
+# and suite/ronsql_large/include/mem_leak_init.inc.  Rounds of 1 / 3 / 10
+# executions per client (8 / 24 / 80 in total); tolerance 0 pages per node
+# after round 1.  No per-execution QUERY_MEMORY trace with concurrent
+# clients.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak_concurrent
+--let $mlk_prefix = mlc
+--let $mlk_round1 = 1
+--let $mlk_round2 = 3
+--let $mlk_round3 = 10
+--let $mlk_round_clients = 8
+--let $mlk_round_accept = ok_or_503
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = offline_fs_scalar under 8 concurrent clients
+let $QUERY=
+WITH cust_features AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+  FROM lg_orders GROUP BY lg_cust)
+SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
+FROM cust_features;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = offline_fs_chain under 8 concurrent clients
+let $QUERY=
+WITH per_cust AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+  FROM lg_orders GROUP BY lg_cust),
+cust_rollup AS (
+  SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
+  FROM per_cust GROUP BY k)
+SELECT COUNT(*), SUM(cust_rollup.cnt2), MAX(cust_rollup.max_spend), MIN(cust_rollup.max_spend)
+FROM cust_rollup;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q13 shape under 8 concurrent clients
+let $QUERY=
+WITH c_orders AS (
+  SELECT lg_cust AS k, COUNT(*) AS order_cnt
+  FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT COUNT(*), SUM(c_orders.order_cnt), MIN(c_orders.order_cnt), MAX(c_orders.order_cnt)
+FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = offline_fs_batch under 8 concurrent clients
+let $QUERY=
+WITH cust_features AS (
+  SELECT lg_cust AS k, COUNT(*) AS order_cnt, SUM(lg_amount) AS total_spend,
+         MAX(lg_amount) AS max_order
+  FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_segment, COUNT(*), SUM(cust_features.order_cnt),
+       SUM(cust_features.total_spend), MAX(cust_features.max_order)
+FROM lg_cust AS c JOIN cust_features ON cust_features.k = c.lc_id
+GROUP BY c.lc_segment;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--source suite/ronsql_large/include/mem_leak_measure_all.inc
+
+# All four shapes interleaved: client c runs shape (c + i) % 4 in its i-th
+# execution, so every round mixes the shapes on the data nodes.
+--let $mlk_k = mixed
+--let $mlk_shapes = 1,2,3,4
+--let $mlk_r1 = 1
+--let $mlk_r2 = 3
+--let $mlk_r3 = 10
+--let $mlk_clients = 8
+--let $mlk_accept = ok_or_503
+--let $mlk_trace = 0
+--source suite/ronsql_large/include/mem_leak_measure.inc
+
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

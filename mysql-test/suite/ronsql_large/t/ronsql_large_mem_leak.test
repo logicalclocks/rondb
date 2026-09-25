@@ -1,0 +1,157 @@
+# ronsql_large_mem_leak -- data-node query-memory leak detection for
+# RonSQL, primary shapes: scalar reductions over a CTE with no base-table
+# join in the main SELECT.
+#
+# Why these shapes: in benchmark runs the idle QUERY_MEMORY 'used' level
+# of the data nodes (ndbinfo.resources) stepped up permanently (1-6 pages
+# of 32 KB per node, never released) after scalar reductions over a CTE:
+# the tpch q15 rewrite (date-filtered GROUP BY CTE, MAX/MIN/SUM/COUNT over
+# it), offline_fs_chain (CTE over a CTE) and offline_fs_scalar.  The code
+# audit found bounded one-offs behind such steps (a CteScanIterState pool
+# page per LDM instance on the CTE owner, a DBSPJ arena page per SPJ
+# instance, DBTC record pages per TC instance) -- this test tells bounded
+# growth from a leak.
+#
+# Method (suite/ronsql_large/include/mem_leak_*.inc):
+#   cluster warm-up  CTE / SPJ queries, 1 + 8 concurrent executions: the
+#                    lazy allocations of the first CTE query on a fresh
+#                    cluster happen before any baseline.
+#   phase 1 (per shape, mem_leak_register.inc)
+#     - settle, record the idle level (per node, QUERY_MEMORY and
+#       TRANSACTION_MEMORY, ndbinfo.resources.used, 32 KB pages)
+#     - reference run, then 2 executions x 8 concurrent RDRS clients
+#       (>= 4 LDM + 3 TC instances per data node), so every per-instance
+#       one-off page is allocated now
+#     - first-use check: back within 32 QUERY_MEMORY / 16
+#       TRANSACTION_MEMORY pages per node of the idle level.  Bounded
+#       one-offs fit; a leaked lc_ndbd_pool allocation pins a whole 2 MB
+#       segment (64 pages) and fails here.
+#     - strict comparison of the result with mysqld (ronsql_compare.inc)
+#   phase 2 (per shape, after all shapes are warm, mem_leak_measure.inc)
+#     - round 1: 1 execution, settle (5 s without change), baseline
+#     - round 2: 10 executions, poll (<= 60 s) until back at the baseline
+#     - round 3: 50 executions, poll until back at the baseline
+#     Tolerance 0 pages: the settled level after round 2 and 3 must equal
+#     the level after round 1 on every node, for both resources.
+#   end: DUMP 2361/2362/2363/2364 (debug builds), 2560, 2650 record-level
+#     leak checks with acknowledgements (mem_leak_dumps.inc).
+# Every result of every execution is compared with the reference output.
+#
+# Reading a failure:
+#   "LEAK mlk-N first use: node 3 QM +64 pages ..." -- a pinned pool
+#     segment after the first ~18 executions: a per-request leak in
+#     lc_ndbd_pool memory (2 MB steps).  A small value (a few pages) is a
+#     one-off the 8-client warm-up did not reach.
+#   "LEAK mlk-N round 2/3: ..." -- the level grew after round 1.  The
+#     report file $MYSQLTEST_VARDIR/log/ronsql_large_mem_leak.report has
+#     the baseline, the final level per node and the QUERY_MEMORY total
+#     after each execution of every round: growth proportional to the
+#     round size is a per-request leak; the same step in round 2 and 3 is
+#     a late one-off.
+#   "mem_leak_dumps: no acknowledgement ..." -- a node aborted in a DUMP
+#     leak check; its ndb_<id>_out.log names the leaked record.
+#   "... the result differs from the reference" -- wrong result, not a
+#     leak; the result is kept in var/tmp/mlk_q<N>.mismatch_*.
+# The failed checks are collected; the test fails at the end with all of
+# them (mem_leak_finish.inc).
+#
+# Data: load_ronsql_large, 20000 lg_cust x 100000 lg_orders (5 orders per
+# customer, lg_date 2018..2022).  Runtime: about 330 RDRS executions of
+# 100-20000-group CTE queries plus 17 ronsql_cli runs and ~20 settle
+# waits of >= 5 s; a few minutes on a release build, 5-10 minutes on a
+# debug build.  RONSQL_MEM_LEAK_ROUNDS=1,10,200 in the environment scales
+# the rounds (the printed counts then differ from the .result).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Compare mysqld with RDRS only (the CTE-suite convention); strict diff.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak
+--let $mlk_prefix = mlk
+--let $mlk_round1 = 1
+--let $mlk_round2 = 10
+--let $mlk_round3 = 50
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = tpch q15 shape: date-filtered CTE body (~13400 groups), scalar MAX/MIN/SUM/COUNT over the CTE
+let $QUERY=
+WITH revenue AS (
+  SELECT lg_cust AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+  FROM lg_orders
+  WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+  GROUP BY lg_cust)
+SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
+FROM revenue;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q15 shape, 100 groups (GROUP BY lg_qty): is the step tied to the group count?
+let $QUERY=
+WITH revenue AS (
+  SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+  FROM lg_orders
+  WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+  GROUP BY lg_qty)
+SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
+FROM revenue;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = offline_fs_scalar: per-customer CTE (20000 groups), scalar reduce over the CTE
+let $QUERY=
+WITH cust_features AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+  FROM lg_orders GROUP BY lg_cust)
+SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
+FROM cust_features;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = offline_fs_chain: CTE over a CTE (20000 + 20000 groups), scalar reduce
+let $QUERY=
+WITH per_cust AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+  FROM lg_orders GROUP BY lg_cust),
+cust_rollup AS (
+  SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
+  FROM per_cust GROUP BY k)
+SELECT COUNT(*), SUM(cust_rollup.cnt2), MAX(cust_rollup.max_spend), MIN(cust_rollup.max_spend)
+FROM cust_rollup;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+# The same scalar-over-CTE shape through ronsql_cli: a new NDB API
+# connection per execution (API connect / disconnect cleanup in the data
+# nodes).  Sequential only (one API slot), smaller rounds.
+--let $mlk_label = offline_fs_scalar through ronsql_cli (a new NDB API connection per execution)
+--let $mlk_shape_kind = cli
+--let $mlk_shape_round2 = 3
+--let $mlk_shape_round3 = 10
+let $QUERY=
+WITH cust_features AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+  FROM lg_orders GROUP BY lg_cust)
+SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
+FROM cust_features;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--source suite/ronsql_large/include/mem_leak_measure_all.inc
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

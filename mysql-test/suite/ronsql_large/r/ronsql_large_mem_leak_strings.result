@@ -1,0 +1,156 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Bulk-load large dataset (20000 cust, 100000 orders) ===
+PASSED
+
+=== mem-leak harness: cluster warm-up (first CTE / SPJ lazy allocations happen here) ===
+cluster warm-up: 3 execution(s) via RDRS, every result identical to the reference
+cluster warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+
+=== mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+=== mls-1: control: numeric twin of mls-5, MIN/MAX(DECIMAL) per customer, 20000 groups sent ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+SELECT o.lg_cust, MIN(c.lc_balance), MAX(c.lc_balance), COUNT(*)
+FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
+GROUP BY o.lg_cust;
+
+Number of output lines, including header: 20001
+
+== Diff ==
+==========
+
+
+
+
+=== mls-2: L3: join aggregation GROUP BY region, MIN/MAX of VARCHAR and CHAR merged over LDM threads ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+SELECT c.lc_region, MIN(c.lc_segment), MAX(c.lc_segment),
+MIN(o.lg_status), MAX(o.lg_status), COUNT(*)
+FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== mls-3: L2: CTE MIN/MAX(CHAR) over 20000 redistributed groups, MIN/MAX again in the main join ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH st AS (
+SELECT lg_cust AS k, MIN(lg_status) AS mn, MAX(lg_status) AS mx, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), SUM(st.n), MIN(st.mn), MAX(st.mx)
+FROM lg_cust AS c JOIN st ON st.k = c.lc_id
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== mls-4: L2: CTE MIN/MAX(VARCHAR) over 20000 groups, MIN/MAX again in the main join ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH seg AS (
+SELECT lc_id AS k, MIN(lc_segment) AS mn, MAX(lc_segment) AS mx
+FROM lg_cust GROUP BY lc_id)
+SELECT c.lc_region, COUNT(*), MIN(seg.mn), MAX(seg.mx)
+FROM lg_cust AS c JOIN seg ON seg.k = c.lc_id
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== mls-5: L1: join aggregation, MIN(VARCHAR) per customer, 20000 groups sent to the client ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+SELECT o.lg_cust, MIN(c.lc_segment), COUNT(*)
+FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
+GROUP BY o.lg_cust;
+
+Number of output lines, including header: 20001
+
+== Diff ==
+==========
+
+
+
+
+=== mem-leak harness: phase 2, measured rounds ===
+
+--- mls-1: rounds of 1, 10 and 30 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every 200 response identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every 200 response identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 30 execution(s) via RDRS, every 200 response identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mls-2: rounds of 1, 10 and 30 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every 200 response identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every 200 response identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 30 execution(s) via RDRS, every 200 response identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mls-3: rounds of 1, 10 and 30 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every 200 response identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every 200 response identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 30 execution(s) via RDRS, every 200 response identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mls-4: rounds of 1, 10 and 30 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every 200 response identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every 200 response identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 30 execution(s) via RDRS, every 200 response identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mls-5: rounds of 1, 10 and 30 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every 200 response identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every 200 response identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 30 execution(s) via RDRS, every 200 response identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+=== mem-leak harness: record-level leak checks ===
+structural leak checks acknowledged by all 4 data nodes
+mem-leak harness: 5 shape(s) measured, no data-node memory growth
+
+=== Drop large dataset ===
+PASSED

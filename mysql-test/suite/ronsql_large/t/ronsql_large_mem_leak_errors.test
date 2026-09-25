@@ -1,0 +1,236 @@
+# ronsql_large_mem_leak_errors -- data-node memory must also be released
+# when a RonSQL CTE / join-aggregation query is aborted or slowed down
+# half-way.  Each case arms a DBLQH / DBSPJ / DBTUP error insert on every
+# data node, runs 3 requests of one shape through RDRS (the insert is
+# cleared after each request), waits until QUERY_MEMORY and
+# TRANSACTION_MEMORY are back at the level before the case (tolerance 0
+# pages per node) and runs the record-level DUMP leak checks (2361-2364,
+# 2560, 2650, each aborts its node on a leak).  Needs debug-compiled data
+# nodes for the inserts and the DBLQH DUMPs.
+#
+# RDRS retries temporary NDB errors up to 10 times with back-off, so a
+# one-shot insert that fails with a temporary error (5125, 5139) must
+# still give the reference result; a persistent refusal (5149) makes all
+# 10 attempts fail (HTTP 503) -- 30 aborted executions per case; inserts
+# with an internal error or rows already streamed (5124, 5129, 5132,
+# 17534) may or may not fail the request, only a hang or a wrong result
+# fails the case; slow-path inserts (5130, 5137, 4041, 5126, 5134) must
+# give the reference result.
+#
+#   case    insert  shape  what
+#   e5149a  5149 0  mle-1  every JOIN_AGG_SETUP_REQ refused, OutOfQueryMemory
+#   e5149b  5149 1  mle-1  SETUPs refused once one identity exists: a
+#                          partly set-up query is torn down
+#   e5125   5125    mle-2  one SETUP_REF allocation failure per node
+#   e5139   5139    mle-2  one SETUP identity never filled: SETUP_REF 1274
+#                          after 200 ms, parked consumers swept (1274)
+#   e17534  17534   mle-2  DBSPJ Request allocation refused (F27 path)
+#   e5124   5124    mle-2  JOIN_AGG_COMPLETE_REF state-not-found
+#   e5129   5129    mle-4  CTE_SCAN_REF 1251 on a scan continuation after
+#                          rows were streamed (not retried)
+#   e5132   5132    mle-3  JOIN_AGG_NULL_ROW_REF on a NULL-row injection
+#   e5137   5137    mle-1  teardown frees one group per CONTINUEB round
+#                          (armed 2 s after the request)
+#   e5130   5130    mle-1  aggregation feed: one group per round
+#   e4041   4041    mle-5  intermittent group eviction (every ~7 rows)
+#   e5126   5126    mle-5  group eviction with maxGroups = 3
+#   e5134   5134 C  mle-2  every redistributed row queued on its own page
+#                          (detached page chain freed after the query)
+#
+# Method, knobs and how to read a failure: see ronsql_large_mem_leak.test
+# and suite/ronsql_large/include/mem_leak_init.inc; the per-case include
+# is suite/ronsql_large/include/mem_leak_error_case.inc.  A "LEAK
+# mle-e<code>" line names the insert whose abort / slow path keeps memory.
+# Runtime: 5 shapes registered (first-use check, warm-up, comparison),
+# then 13 cases of about 10-20 s each.
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak_errors
+--let $mlk_prefix = mle
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = offline_fs_scalar: scalar reduce over a 20000-group CTE
+let $QUERY=
+WITH cust_features AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+  FROM lg_orders GROUP BY lg_cust)
+SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
+FROM cust_features;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = per-customer CTE (20000 groups) joined to lg_cust, GROUP BY region
+let $QUERY=
+WITH cf AS (
+  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_qty) AS q
+  FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), SUM(cf.cnt), SUM(cf.q)
+FROM lg_cust AS c JOIN cf ON cf.k = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q13 shape: LEFT JOIN a filtered CTE (NULL-row injection)
+let $QUERY=
+WITH c_orders AS (
+  SELECT lg_cust AS k, COUNT(*) AS order_cnt
+  FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT COUNT(*), SUM(c_orders.order_cnt), MIN(c_orders.order_cnt), MAX(c_orders.order_cnt)
+FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = pass-through CTE_SCAN root, 20000 rows through scan continuations
+let $QUERY=
+WITH cf AS (
+  SELECT lg_cust AS k, COUNT(*) AS n
+  FROM lg_orders GROUP BY lg_cust)
+SELECT n FROM cf;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q15 shape, 100 groups (eviction target)
+let $QUERY=
+WITH revenue AS (
+  SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+  FROM lg_orders
+  WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+  GROUP BY lg_qty)
+SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
+FROM revenue;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--echo
+--echo === mem-leak harness: error inserts ===
+--let $ei_reps = 3
+
+# Extra 0: refuse once the identity table holds >= 0 entries, i.e. always.
+--let $ei_name = e5149a
+--let $ei_code = 5149
+--let $ei_extra = 0
+--let $ei_shape = 1
+--let $ei_accept = fail
+--let $ei_what = every JOIN_AGG_SETUP_REQ refused with OutOfQueryMemory, 10 RDRS attempts per request
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5149b
+--let $ei_code = 5149
+--let $ei_extra = 1
+--let $ei_shape = 1
+--let $ei_accept = fail
+--let $ei_what = SETUP refused once one identity exists, a partly set-up query torn down
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5125
+--let $ei_code = 5125
+--let $ei_shape = 2
+--let $ei_accept = ok
+--let $ei_what = one SETUP_REF allocation failure per node, retried
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5139
+--let $ei_code = 5139
+--let $ei_shape = 2
+--let $ei_accept = ok
+--let $ei_what = one SETUP identity never filled, parked consumers swept with 1274, retried
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e17534
+--let $ei_code = 17534
+--let $ei_shape = 2
+--let $ei_accept = any
+--let $ei_what = DBSPJ Request allocation refused with OutOfQueryMemory
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5124
+--let $ei_code = 5124
+--let $ei_shape = 2
+--let $ei_accept = any
+--let $ei_what = JOIN_AGG_COMPLETE_REF state-not-found
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5129
+--let $ei_code = 5129
+--let $ei_shape = 4
+--let $ei_accept = any
+--let $ei_what = CTE_SCAN_REF 1251 on a continuation after rows were streamed
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5132
+--let $ei_code = 5132
+--let $ei_shape = 3
+--let $ei_accept = any
+--let $ei_what = JOIN_AGG_NULL_ROW_REF on a NULL-row injection
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5137
+--let $ei_code = 5137
+--let $ei_shape = 1
+--let $ei_accept = ok
+--let $ei_hold = 2
+--let $ei_what = teardown frees one group per CONTINUEB round, armed 2 s after the request
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5130
+--let $ei_code = 5130
+--let $ei_shape = 1
+--let $ei_accept = ok
+--let $ei_what = aggregation feed handles one group per continuation round
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e4041
+--let $ei_code = 4041
+--let $ei_shape = 5
+--let $ei_accept = ok
+--let $ei_what = intermittent group eviction in join aggregation
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5126
+--let $ei_code = 5126
+--let $ei_shape = 5
+--let $ei_accept = ok
+--let $ei_what = group eviction with maxGroups = 3
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5134
+--let $ei_code = 5134
+--let $ei_extra = `SELECT FLOOR(RAND() * 536870910) + 1`
+--let $ei_shape = 2
+--let $ei_accept = ok
+--let $ei_what = every redistributed row queued on its own page, detached page chain freed later
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--echo
+--echo === the cluster answers correctly after all inserts ===
+--let MLKE_SHAPES = 1,2,3,4,5
+--let MLKE_COUNT = 5
+--let MLKE_CLIENTS = 1
+--let MLKE_ACCEPT = ok
+--let MLKE_LABEL = clean run
+--let MLKE_QUIET = 0
+--let MLKE_TRACE = 0
+--source suite/ronsql_large/include/mem_leak_exec.inc
+
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

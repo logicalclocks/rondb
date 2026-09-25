@@ -1,0 +1,202 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Bulk-load large dataset (20000 cust, 100000 orders) ===
+PASSED
+
+=== mem-leak harness: cluster warm-up (first CTE / SPJ lazy allocations happen here) ===
+cluster warm-up: 3 execution(s) via RDRS, every result identical to the reference
+cluster warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+
+=== mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+=== mle-1: offline_fs_scalar: scalar reduce over a 20000-group CTE ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH cust_features AS (
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust)
+SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
+FROM cust_features;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mle-2: per-customer CTE (20000 groups) joined to lg_cust, GROUP BY region ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH cf AS (
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_qty) AS q
+FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), SUM(cf.cnt), SUM(cf.q)
+FROM lg_cust AS c JOIN cf ON cf.k = c.lc_id
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== mle-3: tpch q13 shape: LEFT JOIN a filtered CTE (NULL-row injection) ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH c_orders AS (
+SELECT lg_cust AS k, COUNT(*) AS order_cnt
+FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT COUNT(*), SUM(c_orders.order_cnt), MIN(c_orders.order_cnt), MAX(c_orders.order_cnt)
+FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mle-4: pass-through CTE_SCAN root, 20000 rows through scan continuations ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH cf AS (
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
+SELECT n FROM cf;
+
+Number of output lines, including header: 20001
+
+== Diff ==
+==========
+
+
+
+
+=== mle-5: tpch q15 shape, 100 groups (eviction target) ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH revenue AS (
+SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+FROM lg_orders
+WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+GROUP BY lg_qty)
+SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
+FROM revenue;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mem-leak harness: error inserts ===
+
+--- mle-e5149a: error insert 5149 on every data node, shape mle-1: every JOIN_AGG_SETUP_REQ refused with OutOfQueryMemory, 10 RDRS attempts per request ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request failed, as the insert intends
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5149b: error insert 5149 on every data node, shape mle-1: SETUP refused once one identity exists, a partly set-up query torn down ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request failed, as the insert intends
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5125: error insert 5125 on every data node, shape mle-2: one SETUP_REF allocation failure per node, retried ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5139: error insert 5139 on every data node, shape mle-2: one SETUP identity never filled, parked consumers swept with 1274, retried ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e17534: error insert 17534 on every data node, shape mle-2: DBSPJ Request allocation refused with OutOfQueryMemory ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request answered, no hang
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5124: error insert 5124 on every data node, shape mle-2: JOIN_AGG_COMPLETE_REF state-not-found ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request answered, no hang
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5129: error insert 5129 on every data node, shape mle-4: CTE_SCAN_REF 1251 on a continuation after rows were streamed ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request answered, no hang
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5132: error insert 5132 on every data node, shape mle-3: JOIN_AGG_NULL_ROW_REF on a NULL-row injection ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request answered, no hang
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5137: error insert 5137 on every data node, shape mle-1: teardown frees one group per CONTINUEB round, armed 2 s after the request ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5130: error insert 5130 on every data node, shape mle-1: aggregation feed handles one group per continuation round ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e4041: error insert 4041 on every data node, shape mle-5: intermittent group eviction in join aggregation ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5126: error insert 5126 on every data node, shape mle-5: group eviction with maxGroups = 3 ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5134: error insert 5134 on every data node, shape mle-2: every redistributed row queued on its own page, detached page chain freed later ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+=== the cluster answers correctly after all inserts ===
+clean run: 5 execution(s) via RDRS, every result identical to the reference
+
+=== mem-leak harness: record-level leak checks ===
+structural leak checks acknowledged by all 4 data nodes
+mem-leak harness: 5 shape(s) measured, no data-node memory growth
+
+=== Drop large dataset ===
+PASSED

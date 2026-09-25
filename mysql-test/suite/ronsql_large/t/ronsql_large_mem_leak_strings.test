@@ -1,0 +1,127 @@
+# ronsql_large_mem_leak_strings -- data-node query-memory leaks of string
+# (CHAR / VARCHAR) MIN / MAX in join aggregation and CTEs.
+#
+# EXPECTED TO FAIL UNTIL FIXED.  The code audit found three per-request
+# leaks of string MIN/MAX result slots, which are lc_ndbd_pool_malloc
+# allocations (>= 32 bytes per group per string slot, RG_QUERY_MEMORY,
+# per LDM thread):
+#   L1  grouped join aggregation whose result groups are sent to the API:
+#       continueJoinAggSend erases the sent groups without freeing their
+#       string slots                                         (mls-5)
+#   L2  a CTE with GROUP BY and string MIN/MAX redistributed across
+#       the nodes / node groups (this suite: 2 NG x 2 replicas) (mls-3/4)
+#   L3  the MUTEX_FREE merge of string MIN/MAX when the incoming value
+#       loses (groups spread over several LDM threads)       (mls-2, and
+#       inside mls-3..5)
+# The recorded .result is the FIXED state: every check passes.  Until the
+# fixes land, expect "LEAK mls-N first use: node X QM +64 pages" lines
+# (a leaked slot pins its 2 MB pool segment, 64 pages, on each LDM thread
+# that leaked, right after the reference run + warm-up) and possibly LEAK
+# lines for later rounds once a pinned segment fills up; the failures are
+# collected and the test fails at the end with all of them.
+#
+#   mls-1  numeric twin of mls-5 (MIN/MAX of DECIMAL, 20000 groups sent):
+#          must pass, isolates the string slots as the cause
+#   mls-2  L3: join aggregation GROUP BY region (5 groups, rows of each
+#          group on every LDM thread), MIN/MAX of VARCHAR(12) and CHAR(1)
+#   mls-3  L2: CTE GROUP BY lg_cust (20000 groups) with MIN/MAX(CHAR(1)),
+#          redistributed, re-aggregated as MIN/MAX in the main join
+#   mls-4  L2: CTE GROUP BY lc_id (20000 groups) with MIN/MAX(VARCHAR(12)),
+#          re-aggregated as MIN/MAX in the main join
+#   mls-5  L1: join aggregation GROUP BY lg_cust (20000 groups sent to the
+#          client) with MIN(VARCHAR(12)) of the joined customer
+#
+# Order: smallest expected leak first.  A leak pins pool segments on the
+# LDM threads; a later shape's leaked slots can land in the free space of
+# a segment an earlier shape pinned and then show no new step (masking).
+# To attribute a leak after a partial fix, rerun, or reorder / comment out
+# shapes.  mls-1 runs first, on a clean cluster.
+#
+# Volume: L1 with 20000 groups and one string slot leaks ~160 KB per node
+# per execution; the rounds (1 / 10 / 30, one warm-up execution per client
+# instead of two) keep the total below the MTR query-memory budget
+# (SharedGlobalMemory 20M) most of the time.  If the leak exhausts it, the
+# requests are refused (HTTP 503 after RDRS's retries), which the rounds
+# tolerate here -- the verify still reports the residual.
+#
+# Method, knobs and how to read a failure: see ronsql_large_mem_leak.test
+# and suite/ronsql_large/include/mem_leak_init.inc.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak_strings
+--let $mlk_prefix = mls
+--let $mlk_round1 = 1
+--let $mlk_round2 = 10
+--let $mlk_round3 = 30
+--let $mlk_warmup = 1
+--let $mlk_round_accept = ok_or_503
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = control: numeric twin of mls-5, MIN/MAX(DECIMAL) per customer, 20000 groups sent
+let $QUERY=
+SELECT o.lg_cust, MIN(c.lc_balance), MAX(c.lc_balance), COUNT(*)
+FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
+GROUP BY o.lg_cust;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = L3: join aggregation GROUP BY region, MIN/MAX of VARCHAR and CHAR merged over LDM threads
+let $QUERY=
+SELECT c.lc_region, MIN(c.lc_segment), MAX(c.lc_segment),
+       MIN(o.lg_status), MAX(o.lg_status), COUNT(*)
+FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
+GROUP BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = L2: CTE MIN/MAX(CHAR) over 20000 redistributed groups, MIN/MAX again in the main join
+let $QUERY=
+WITH st AS (
+  SELECT lg_cust AS k, MIN(lg_status) AS mn, MAX(lg_status) AS mx, COUNT(*) AS n
+  FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), SUM(st.n), MIN(st.mn), MAX(st.mx)
+FROM lg_cust AS c JOIN st ON st.k = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = L2: CTE MIN/MAX(VARCHAR) over 20000 groups, MIN/MAX again in the main join
+let $QUERY=
+WITH seg AS (
+  SELECT lc_id AS k, MIN(lc_segment) AS mn, MAX(lc_segment) AS mx
+  FROM lg_cust GROUP BY lc_id)
+SELECT c.lc_region, COUNT(*), MIN(seg.mn), MAX(seg.mx)
+FROM lg_cust AS c JOIN seg ON seg.k = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = L1: join aggregation, MIN(VARCHAR) per customer, 20000 groups sent to the client
+let $QUERY=
+SELECT o.lg_cust, MIN(c.lc_segment), COUNT(*)
+FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
+GROUP BY o.lg_cust;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--source suite/ronsql_large/include/mem_leak_measure_all.inc
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

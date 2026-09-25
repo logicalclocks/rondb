@@ -92,8 +92,13 @@ PUSHDOWN_VARS = ['ndb_pushdown_aggregate', 'ndb_join_pushdown_aggregate',
                  'ndb_join_pushdown_aggregate_outer_join']
 # ndbinfo.resources rows tracked per case (used / max in 32 KB pages).
 # QUERY_MEMORY has no quota of its own: it draws on the shared global
-# memory, whose use and limit TOTAL_GLOBAL_MEMORY shows.
-MEM_RESOURCES = ['QUERY_MEMORY', 'TRANSACTION_MEMORY', 'TOTAL_GLOBAL_MEMORY']
+# memory, whose use and limit TOTAL_GLOBAL_MEMORY shows.  The report reads
+# the first three; the rest are recorded in results.json to attribute
+# global-memory growth outside query and transaction memory (census run 6:
+# ~31 MB/node that never came back, suspected job and send buffers).
+MEM_RESOURCES = ['QUERY_MEMORY', 'TRANSACTION_MEMORY', 'TOTAL_GLOBAL_MEMORY',
+                 'JOBBUFFER', 'TRANSPORTER_BUFFERS', 'DATA_MEMORY',
+                 'SCHEMA_MEMORY', 'REPLICATION_MEMORY']
 PAGE_MB = 32.0 / 1024
 ENGINES = {
     'ronsql':        ('bench_ronsql', None),
@@ -499,11 +504,14 @@ class Driver:
             if not names:
                 raise RuntimeError('could not parse "%s" output:\n%s' % (cmd, '\n'.join(lines)))
             out[eng] = names
-        # pair RonSQL names with their .bench_sql twin (cte_ prefix for the CTE rewrites)
+        # pair RonSQL names with their .bench_sql twin: the cte_ rewrite when
+        # there is one (tpch_qN runs cte_tpch_qN's SQL; the official tpch_qN
+        # stays a mysql_only entry for --queries tpch_official), else the
+        # same name
         sql_names = [n for n, _ in out['sql']]
         pairs = []
         for n, d in out['ronsql']:
-            sql = n if n in sql_names else ('cte_' + n if 'cte_' + n in sql_names else None)
+            sql = 'cte_' + n if 'cte_' + n in sql_names else (n if n in sql_names else None)
             pairs.append({'name': n, 'sql': sql, 'desc': d, 'mysql_only': False})
         covered = {p['sql'] for p in pairs}
         for n, d in out['sql']:
