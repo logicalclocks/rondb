@@ -201,7 +201,7 @@ pool across threads — see side finding (a).
   (VecSearchInterpreter.cpp ~89–93).  Only AggInterpreter can be
   right-sized.
 
-**Proposed fixes (ranked; 2 written, the rest not).**
+**Proposed fixes (ranked; 1 and 2 written, the rest not).**
 1. *Right-size the aggregation interpreter* (RonSQL-local, no allocator
    change).  Allocate `sizeof(AggInterpreter)` instead of `MEM_CHUNK_SIZE`
    in `Create` (aggregation branch) and `CreateAggForRead`
@@ -211,6 +211,16 @@ pool across threads — see side finding (a).
    32 KB list-7 pattern that triggers H2 goes away.  It also helps F1b
    (one page per aggregating PK read today).  Risk: low; check that
    nothing assumes the object is page-aligned.
+   *Written 2026-09-25 (not built or run yet):* `Create` (aggregation
+   only; vector search keeps its page, it stores the program in the
+   tail), `CreateAggForRead` and both `JoinAggInterpreter` sites in
+   DblqhProxy (~3350, ~3424) allocate `sizeof(...)`.  Checked: no
+   AggInterpreter / JoinAggInterpreter code uses memory past the object;
+   lc pool allocations were never page-aligned (16-byte steps inside a
+   segment, 8 bytes past a step), so alignment is unchanged; the free is
+   size-agnostic; a write past the object trips the magic `require` in
+   `lc_ndbd_pool_free`.  The object is roughly 0.9 KB (estimate from the
+   member list).
 2. *One-line classification fix* in `check_memory_area_pos`: return the
    first non-empty list from `*check_pos` downward, i.e. drop the
    `i != *check_pos + 1` condition.  When the list is still non-empty the

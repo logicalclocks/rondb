@@ -267,16 +267,23 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
   PushdownCreateResult result = {nullptr, nullptr};
   PushdownType type = DetectType(prog, prog_len);
 
-  void* page_ptr = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                       thread_id, false);
-  if (page_ptr == nullptr) {
+  /* An aggregation interpreter keeps its buffers in m_buf_block and its
+   * groups in chunk pages, so it needs only its own size.  A vector
+   * search interpreter stores its program in the rest of a
+   * MEM_CHUNK_SIZE page (VecSearchInterpreter::Init). */
+  const size_t obj_size = (type == PushdownType::AGGREGATION)
+                              ? sizeof(AggInterpreter)
+                              : MEM_CHUNK_SIZE;
+  void* obj_ptr = lc_ndbd_pool_malloc(obj_size, RG_QUERY_MEMORY,
+                                      thread_id, false);
+  if (obj_ptr == nullptr) {
     g_eventLogger->error("Alloc mem for pushdown interpreter failed");
     return result;
   }
 
   if (type == PushdownType::AGGREGATION) {
-    result.agg = new(page_ptr) AggInterpreter(prog_len, table_id, frag_id,
-                                              thread_id);
+    result.agg = new(obj_ptr) AggInterpreter(prog_len, table_id, frag_id,
+                                             thread_id);
     require(result.agg->Init(prog));
     require(result.agg->OptimizeProgram());
     /* Phase 8 Slice 3c: JIT-compile the per-row aggregation. The
@@ -305,8 +312,8 @@ PushdownInterpreterFactory::Create(const Uint32* prog, Uint32 prog_len,
       }
     }
   } else {
-    result.vs = new(page_ptr) VecSearchInterpreter(prog_len, table_id, frag_id,
-                                                   thread_id);
+    result.vs = new(obj_ptr) VecSearchInterpreter(prog_len, table_id, frag_id,
+                                                  thread_id);
     require(result.vs->Init(prog));
   }
 
@@ -324,15 +331,15 @@ PushdownInterpreterFactory::CreateAggForRead(const Uint32* prog,
       DetectType(prog, prog_len) != PushdownType::AGGREGATION) {
     return nullptr;
   }
-  void* page_ptr = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                       thread_id, false);
-  if (page_ptr == nullptr) {
+  void* obj_ptr = lc_ndbd_pool_malloc(sizeof(AggInterpreter),
+                                      RG_QUERY_MEMORY, thread_id, false);
+  if (obj_ptr == nullptr) {
     g_eventLogger->error("Alloc mem for aggregation on a key read failed");
     *out_of_memory = true;
     return nullptr;
   }
-  AggInterpreter* agg = new(page_ptr) AggInterpreter(prog_len, table_id,
-                                                     frag_id, thread_id);
+  AggInterpreter* agg = new(obj_ptr) AggInterpreter(prog_len, table_id,
+                                                    frag_id, thread_id);
   if (!agg->Init(prog) || !agg->OptimizeProgram()) {
     *out_of_memory = !agg->has_buf_block();
     /* Nothing was processed: the destructor only frees what Init

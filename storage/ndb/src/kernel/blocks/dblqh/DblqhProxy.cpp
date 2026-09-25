@@ -3347,8 +3347,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const LeafProgram &leaf0 = state->m_leaf_programs[0];
   if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
     jam();
-    void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                     getThreadId(), false);
+    void *page = lc_ndbd_pool_malloc(sizeof(JoinAggInterpreter),
+                                     RG_QUERY_MEMORY, getThreadId(), false);
     if (unlikely(page == nullptr)) {
       jam();
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
@@ -3421,8 +3421,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       per_thread_budget = 4;
     }
     for (Uint32 i = 0; i < num_threads; i++) {
-      void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                       getThreadId(), false);
+      void *page = lc_ndbd_pool_malloc(sizeof(JoinAggInterpreter),
+                                       RG_QUERY_MEMORY, getThreadId(), false);
       if (unlikely(page == nullptr)) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
