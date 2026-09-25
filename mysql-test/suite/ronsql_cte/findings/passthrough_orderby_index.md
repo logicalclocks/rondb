@@ -92,9 +92,23 @@ Prose notes:
 - **NULL placement** follows the ordered index (NULL sorts lowest):
   first in ASC, last in DESC — MySQL semantics, same as the Phase 3
   comparator (poi-6/7).
-- **Batch boundary under the ordered merge** (poi-8, LIMIT 260 of
-  1500): at least one receiver must fetch a second batch in every
-  topology before the drain closes the scan early.
+- **Batch = LIMIT on a streamed LIMIT** (m3_run6_plan.md C3).  The
+  scan used the API default batch (BatchSize: 384 in mtr, 990 in the
+  census config), so every fragment shipped up to a full batch for a
+  top-N: fs_latest (LIMIT 100) fetched 4 x 990 rows per request, like
+  its mysqld twin.  `open_single_table_scan_op` now takes the batch and
+  the pass-through drain passes the LIMIT when it streams (index order
+  or no ORDER BY; the Phase 3 buffered sort keeps the default).  No
+  fragment can contribute more than LIMIT rows, so the ordered merge
+  still completes on the first batches.  The x-ronsql-phases header
+  gained `fetched=` (Ndb::ReadRowCount delta: rows the NDB API
+  received), and `ronsql_phase_rows.inc` asserts `fetched <= LIMIT x
+  fragments` through `$EXPECT_FETCHED_MAX` (poi-4, poi-5, poi-8; pl-15
+  in passthrough_limit).  poi-8's old claim that LIMIT 260 of 1500
+  forces a second batch was not guaranteed even with the 384-row
+  default; poi-19 now forces one: a skewed table puts the whole top-400
+  in one fragment, so that fragment refills its 384-row batch mid-merge
+  before the early close.
 - **fs_history is NOT index-ordered** (poi-11): its WHERE picks
   idx_o_custkey, which is not in date order.  The CLI gained
   `fs_latest` (no WHERE, `ORDER BY o_orderdate DESC LIMIT 100`) as the

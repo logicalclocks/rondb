@@ -34,6 +34,10 @@
 #   12  single-table PK lookup + LIMIT 1 (row survives)
 #   13  single-table PK lookup + LIMIT 0 -> empty
 #   14  single-table PK lookup MISS + LIMIT 1 -> empty
+#   15  single-table index scan, truncating LIMIT 5 (uniform): each
+#       fragment is asked for at most 5 rows per batch, so fetched <=
+#       5 x fragments (m3_run6_plan.md C3; the default batch fetched
+#       all 500 matching rows)
 #   (the Phase-2-era P1/P2 ORDER-BY-rejection probes were retired when
 #   Phase 3 shipped ORDER BY — see body_passthrough_orderby.inc)
 --source include/have_ndb.inc
@@ -45,6 +49,12 @@ call mtr.add_suppression("Participant timeout");
 --let $strict_diff=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
+# Fragments of orders, for pl-15's fetched= bound (LIMIT x fragments).
+--let $orders_frags=`SELECT COUNT(DISTINCT fragment_num) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/orders'`
+if ($orders_frags < 1)
+{
+  --die No fragments found for test/def/orders in ndbinfo.memory_per_fragment
+}
 
 DELIMITER |;
 
@@ -238,6 +248,31 @@ SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 999999 LIMIT 1;|
 --echo == Expected result ==
 --sorted_result
 SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 999999 LIMIT 1|
+
+--echo
+--echo === pl-15: single-table index scan, truncating LIMIT: batch = LIMIT ===
+# 500 orders have status 'O' (idx_o_status_date bound, no ORDER BY).
+# The scan asks each fragment for at most 5 rows per batch, so the rows
+# the NDB API receives stay within 5 x fragments; the default batch
+# (BatchSize, 384 in mtr) shipped every matching row of every fragment.
+# Uniform projection: any 5 delivered rows print identically.  The
+# string literal needs QUERY_FILE ($QUERY is single-quoted in the shell).
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_pl15.sql
+--write_file $QUERY_FILE
+SELECT o_orderstatus FROM orders WHERE o_orderstatus = 'O' LIMIT 5;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPECT_ROWS=5
+--let $fetch_limit=5
+--expr $EXPECT_FETCHED_MAX = $fetch_limit * $orders_frags
+--let QUERY_FILE=$MYSQL_TMP_DIR/q_pl15r.sql
+--write_file $QUERY_FILE
+SELECT o_orderstatus FROM orders WHERE o_orderstatus = 'O' LIMIT 5;
+EOF
+--source suite/ronsql/include/ronsql_phase_rows.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o_orderstatus FROM orders WHERE o_orderstatus = 'O' LIMIT 5|
 
 DELIMITER ;|
 

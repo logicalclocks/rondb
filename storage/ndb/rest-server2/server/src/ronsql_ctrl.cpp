@@ -56,9 +56,10 @@ using std::endl;
 /*
  * Serialize per-request phase timings for the x-ronsql-phases response
  * header.  All values are microseconds (last ronsql_op attempt); rows is
- * the drained row count and attempts the ronsql_op attempt count.  Field
- * order and names are pinned by mysql-test/suite/ronsql/t/ronsql_phase_stats
- * and parsed by tools/rondb-cli (ronsql_bench.go).
+ * the drained row count, attempts the ronsql_op attempt count and fetched
+ * the rows the NDB API received.  Field order and names are pinned by
+ * mysql-test/suite/ronsql/t/ronsql_phase_stats and parsed by
+ * tools/rondb-cli (ronsql_bench.go); a new field goes last.
  */
 static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s) {
   char buf[512];
@@ -66,7 +67,7 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s) {
            "parse=%llu,analyze=%llu,load=%llu,plan=%llu,compile=%llu,"
            "prepare=%llu,subquery=%llu,ndbprep=%llu,send=%llu,"
            "firstbatch=%llu,drain=%llu,print=%llu,execute=%llu,"
-           "rows=%llu,attempts=%u",
+           "rows=%llu,attempts=%u,fetched=%llu",
            (unsigned long long)s.parse_us,
            (unsigned long long)s.analyze_us,
            (unsigned long long)s.load_us,
@@ -81,7 +82,8 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s) {
            (unsigned long long)s.print_us,
            (unsigned long long)s.execute_us,
            (unsigned long long)s.rows_drained,
-           (unsigned)s.attempts);
+           (unsigned)s.attempts,
+           (unsigned long long)s.rows_fetched);
   return std::string(buf);
 }
 #endif  // RONSQL_PHASE_STATS

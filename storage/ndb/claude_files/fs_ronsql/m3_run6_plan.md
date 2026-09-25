@@ -457,6 +457,31 @@ size (RonSQLPreparer.cpp ~8330) lets every fragment return up to 990
 rows; under an ordered merge each fragment needs at most offset + limit.
 Set the batch size; add a fetched-row counter to the phases.
 
+*Status (2026-09-25, uncommitted, not built).*  Confirmed from run 6:
+the 990 is the census config's `BatchSize=990` (`[api default]` via
+ronsqlcrunch/my.cnf; the NDB API default is 384), and the mysqld twin
+reads 4.0 batches / 3960 rows / 170 KB per request (4 fragments x 990)
+to return 100 rows — both engines over-read alike.  RonSQL has no
+OFFSET, so the batch is the LIMIT.
+- Batch: `open_single_table_scan_op(batch_rows)` passes the batch to
+  both `readTuples` calls; the pass-through scan arm passes
+  max(LIMIT, 1) when the LIMIT streams (index order or no ORDER BY — so
+  Phase 2's unordered LIMIT benefits too); the Phase 3 buffered sort
+  and the aggregate path keep the default.  The API caps it at
+  BatchSize.  Expected fs_latest: 400 rows fetched (4 x 100).
+- Counter: `RonSQLPhaseStats::rows_fetched` = `Ndb::ReadRowCount`
+  delta across the attempt (ronsql_op; mysqld's ndb_api_read_row_count,
+  so directly comparable to section D's rows/req), appended to
+  x-ronsql-phases as `fetched=`; rondb-cli prints "rows fetched N per
+  request"; the matrix driver adds a `fetched` column to report C.
+- Tests: `ronsql_phase_rows.inc` takes `$EXPECT_FETCHED_MAX`
+  (records only the verdict: the count depends on the fragment count);
+  orderby_index poi-4 / 5 / 8 and passthrough_limit pl-15 assert
+  fetched <= LIMIT x fragments; new poi-19 forces a mid-merge batch
+  refill (whole top-400 in one fragment of a `PARTITION BY KEY (p)`
+  table, LIMIT above the 384-row BatchSize); ronsql_phase_stats
+  baselines gain `,fetched=N`.
+
 **C4. Snowflake points (WP-G / F13)**: 334–382 µs vs 186–223 µs (mysqld)
 and ~150 µs (production twin); isolated ~8 ms execute outliers (cause
 unknown: park / identity pools?).

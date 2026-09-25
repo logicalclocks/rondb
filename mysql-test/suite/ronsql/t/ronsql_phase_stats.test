@@ -11,7 +11,8 @@ call mtr.add_suppression("Participant timeout");
 # (RonSQLPhaseStats, serialized by ronsql_ctrl.cpp).  Requires RDRS
 # built with RONSQL_PHASE_STATS (the default — see RonSQLPerf.hpp).
 #
-# The header value is "parse=<us>,analyze=<us>,...,rows=<n>,attempts=<n>".
+# The header value is
+# "parse=<us>,analyze=<us>,...,rows=<n>,attempts=<n>,fetched=<n>".
 # Timing values vary per run, so the assertions normalize every number
 # to N and pin the exact field list, order, and names — the same list
 # tools/rondb-cli (ronsql_bench.go parseRonSQLPhases) and the docs rely

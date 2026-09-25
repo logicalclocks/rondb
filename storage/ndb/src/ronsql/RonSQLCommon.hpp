@@ -69,6 +69,11 @@ class RdrsSchemaCache;  // Forward declaration — optional, for index list cach
  * - single-table pass-through PK-lookup arm: ndbprep = lookup-op
  *   definition; firstbatch = execute(Commit) (the NDB API fuses send +
  *   read); send/drain stay 0; rows is 0 or 1.
+ *
+ * rows (rows_drained) is what RonSQL consumed; fetched (rows_fetched) is
+ * what the data nodes shipped for it, on every path.  An ordered LIMIT
+ * scan drains LIMIT rows but fetches up to one batch per fragment, so
+ * fetched / rows shows batch over-read (m3_run6_plan.md C3).
  */
 struct RonSQLPhaseStats
 {
@@ -89,6 +94,10 @@ struct RonSQLPhaseStats
                             // records on the agg path, result rows on the
                             // pass-through path; 0 on the fused
                             // single-table path)
+  Uint64 rows_fetched = 0;  // rows the NDB API received for the last
+                            // attempt: the Ndb::ReadRowCount delta (one
+                            // per TRANSID_AI, i.e. per scanned or read
+                            // row; mysqld's ndb_api_read_row_count)
   Uint32 attempts = 0;      // ronsql_op attempts (1 = no retry)
 };
 

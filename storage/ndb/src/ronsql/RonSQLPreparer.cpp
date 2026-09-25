@@ -8258,7 +8258,7 @@ RonSQLPreparer::execute_count_star_shortcut()
 }
 
 NdbScanOperation*
-RonSQLPreparer::open_single_table_scan_op()
+RonSQLPreparer::open_single_table_scan_op(Uint32 batch_rows)
 {
   ScanConfig& sc = *m_scan_config;
   const NdbDictionary::Index* index = sc.index;
@@ -8274,7 +8274,8 @@ RonSQLPreparer::open_single_table_scan_op()
     DEB_TRACE();
     NdbScanOperation* myScanOp = DBG(m_trans->getNdbScanOperation(DBG(m_main_scope.table)));
     require_sch(myScanOp != NULL, "Failed to get scan operation.");
-    require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead)) == 0,
+    require_prm(DBG(myScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
+                                         0, 0, DBG(batch_rows))) == 0,
                 "Failed to initialize scan operation.");
     DEB_TRACE();
     if (has_filter)
@@ -8330,7 +8331,8 @@ RonSQLPreparer::open_single_table_scan_op()
     scanFlags |= NdbScanOperation::SF_MultiRange;
   }
   require_run(DBG(myIndexScanOp->readTuples(NdbOperation::LockMode::LM_CommittedRead,
-                                            DBG(scanFlags))) == 0,
+                                            DBG(scanFlags), 0,
+                                            DBG(batch_rows))) == 0,
               "Failed to initialize index scan operation.");
   bool any_bound = false;
   for (Uint32 range_no = 0; range_no < num_ranges; range_no++) {
@@ -8932,8 +8934,24 @@ RonSQLPreparer::execute_single_table_passthrough()
     return;
   }
 
-  // Scan arm: shared setup, then a streaming drain.
-  NdbScanOperation* scanOp = open_single_table_scan_op();
+  // Scan arm: shared setup, then a streaming drain.  limit == -1 means
+  // no LIMIT.
+  const Int64 limit = m_context.ast_root.limit;
+  // C3 (m3_run6_plan.md): a streamed LIMIT (the index-order top-N or a
+  // LIMIT without ORDER BY) asks each fragment for at most LIMIT rows
+  // per batch.  No fragment can contribute more than LIMIT rows, so the
+  // SF_OrderBy merge still completes in one round trip per fragment,
+  // where the API default (BatchSize: 990 in the census config) had
+  // every fragment scan and ship up to 990 rows for fs_latest's
+  // LIMIT 100.  The Phase 3 buffered sort needs every row and keeps the
+  // default.  The NDB API caps the value at BatchSize; LIMIT 0 still
+  // executes the scan, so it asks for one row.
+  Uint32 batch_rows = 0;
+  if (limit >= 0 && !sorting) {
+    batch_rows = (Uint32)std::min<Int64>(std::max<Int64>(limit, 1),
+                                         (Int64)0xFFFFFFFF);
+  }
+  NdbScanOperation* scanOp = open_single_table_scan_op(batch_rows);
   register_passthrough_getvalues(scanOp, attrs, num_cols);
   // Phase 3: resolve ORDER BY sort keys BEFORE execute.  A sort column
   // already in the SELECT reuses its output slot; others get an extra
@@ -9004,12 +9022,11 @@ RonSQLPreparer::execute_single_table_passthrough()
   }
   // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT without ORDER BY —
   // stream rows and stop at the limit, then close the scan early
-  // instead of draining the remaining batches.  limit == -1 means no
-  // LIMIT.  With LIMIT 0 the loop never runs, so the deferred TSV
-  // header is never printed (JSON keeps its framing).  Phase 4b's
-  // index-order streaming takes the same path: the SF_OrderBy merge
-  // delivers rows in ORDER BY order, so the cutoff is the top-N.
-  const Int64 limit = m_context.ast_root.limit;
+  // instead of draining the remaining batches.  With LIMIT 0 the loop
+  // never runs, so the deferred TSV header is never printed (JSON keeps
+  // its framing).  Phase 4b's index-order streaming takes the same
+  // path: the SF_OrderBy merge delivers rows in ORDER BY order, so the
+  // cutoff is the top-N.
   Uint32 row_count = 0;
   int rc = 1;  // pre-set "scan complete" for the LIMIT-0 no-loop case
   bool limit_reached = (limit == 0);

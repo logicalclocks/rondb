@@ -1076,8 +1076,9 @@ func countRonSQLResultRows(data []byte) int {
 // ronsqlPhasesHeader is the RDRS response header carrying per-request
 // RonSQL phase timings, emitted when the server is compiled with
 // RONSQL_PHASE_STATS (the default; see RonSQLPerf.hpp). Value format:
-// "parse=12,analyze=3,load=45,...,rows=8,attempts=1" — timing fields in
-// microseconds, last ronsql_op attempt; rows/attempts are counters.
+// "parse=12,analyze=3,load=45,...,rows=8,attempts=1,fetched=40" — timing
+// fields in microseconds, last ronsql_op attempt; rows/attempts/fetched
+// are counters (fetched: rows the NDB API received, rows: rows drained).
 const ronsqlPhasesHeader = "x-ronsql-phases"
 
 // ronsqlPhaseOrder is the canonical display order of the timing fields.
@@ -1104,10 +1105,12 @@ var ronsqlPhaseIndex = func() map[string]int {
 // per request of client throughput at 8 threads (census run 5, fs_floor:
 // 8 / throughput 135 µs against a measured latency of 103 µs).
 type phaseSamples struct {
-	values  [][]int64 // per ronsqlPhaseOrder position, microseconds
-	samples int64
-	retries int64 // sum of (attempts - 1) over sampled requests
-	rows    int64 // sum of drained rows over sampled requests
+	values         [][]int64 // per ronsqlPhaseOrder position, microseconds
+	samples        int64
+	retries        int64 // sum of (attempts - 1) over sampled requests
+	rows           int64 // sum of drained rows over sampled requests
+	fetched        int64 // sum of fetched rows over the requests that report it
+	fetchedSamples int64 // requests whose header carried fetched=
 }
 
 func newPhaseSamples(capacity int) *phaseSamples {
@@ -1151,6 +1154,9 @@ func (ps *phaseSamples) Record(header string) {
 			}
 		case "rows":
 			ps.rows += v
+		case "fetched":
+			ps.fetched += v
+			ps.fetchedSamples++
 		default:
 			if i, ok := ronsqlPhaseIndex[name]; ok {
 				ps.values[i] = append(ps.values[i], v)
@@ -1165,10 +1171,12 @@ func (ps *phaseSamples) Record(header string) {
 // phaseBreakdown aggregates per-phase server-side latencies across the
 // requests of one benchmark run: the merge of the goroutines' samples.
 type phaseBreakdown struct {
-	collectors []*LatencyCollector // per ronsqlPhaseOrder position
-	samples    int64
-	retries    int64
-	rows       int64
+	collectors     []*LatencyCollector // per ronsqlPhaseOrder position
+	samples        int64
+	retries        int64
+	rows           int64
+	fetched        int64
+	fetchedSamples int64
 }
 
 func mergePhaseSamples(parts []*phaseSamples) *phaseBreakdown {
@@ -1201,6 +1209,8 @@ func mergePhaseSamples(parts []*phaseSamples) *phaseBreakdown {
 		pb.samples += ps.samples
 		pb.retries += ps.retries
 		pb.rows += ps.rows
+		pb.fetched += ps.fetched
+		pb.fetchedSamples += ps.fetchedSamples
 	}
 	return pb
 }
@@ -1230,6 +1240,11 @@ func (pb *phaseBreakdown) Print(totalRequests int64) {
 			formatLatency(p99Lat), formatLatency(maxLat))
 	}
 	fmt.Printf("     %-12s %.1f per request\n", "rows drained", float64(pb.rows)/float64(pb.samples))
+	if pb.fetchedSamples > 0 {
+		// Rows the data nodes shipped (older RDRS builds omit fetched=).
+		fmt.Printf("     %-12s %.1f per request\n", "rows fetched",
+			float64(pb.fetched)/float64(pb.fetchedSamples))
+	}
 	if pb.retries > 0 {
 		fmt.Printf("     Retries: %d (phase values reflect each request's last attempt)\n", pb.retries)
 	}

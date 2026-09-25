@@ -660,8 +660,10 @@ private:
   // m_scan_config, bounds from condition_handling_map (with the
   // documented inverted BoundType mapping), residual conjuncts applied
   // as an NdbScanFilter.  Returns the configured operation; the caller
-  // attaches aggregation or getValue()s and executes.
-  NdbScanOperation* open_single_table_scan_op();
+  // attaches aggregation or getValue()s and executes.  batch_rows is the
+  // per-fragment batch in rows (0 = the NDB API default, BatchSize); the
+  // pass-through drain passes the LIMIT of a streamed LIMIT.
+  NdbScanOperation* open_single_table_scan_op(Uint32 batch_rows = 0);
   // Phase 1 W3: projection-only single-table execution — PK-lookup arm
   // (NoDataFound = empty result) or scan drain arm, both feeding the
   // pass-through printer.

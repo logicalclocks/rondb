@@ -113,6 +113,7 @@ RE_TPUT = re.compile(r'Throughput: ([0-9.]+) queries/sec')
 RE_LATLINE = re.compile(r'Latency: min=(\S+) avg=(\S+) max=(\S+) p95=(\S+) p99=(\S+) p99\.9=(\S+)')
 RE_PHASE = re.compile(r'^\s*(' + '|'.join(PHASES) + r')\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$')
 RE_ROWS = re.compile(r'rows drained\s+([0-9.]+) per request')
+RE_FETCHED = re.compile(r'rows fetched\s+([0-9.]+) per request')
 RE_DONE = re.compile(r'Benchmark \S+ completed in ([0-9.]+)s')
 RE_LIST = re.compile(r'^    (\S+)\s+(.*\S)\s*$')
 RE_PROGRESS = re.compile(r'Progress: (\d+)/(\d+) requests')
@@ -720,7 +721,7 @@ class Driver:
             s = line.strip()
             if not s:
                 return
-            interesting = (s.startswith(('Warmup', 'Progress', 'Throughput', 'Latency', 'Requests', 'rows drained'))
+            interesting = (s.startswith(('Warmup', 'Progress', 'Throughput', 'Latency', 'Requests', 'rows drained', 'rows fetched'))
                            or ('error' in s.lower() and 'errors: 0' not in s)
                            or RE_PHASE.match(line) is not None or 'not available' in s)
             if self.a.verbose or interesting:
@@ -757,6 +758,9 @@ class Driver:
             m = RE_ROWS.search(line)
             if m:
                 r['rows_drained'] = float(m.group(1))
+            m = RE_FETCHED.search(line)
+            if m:
+                r['rows_fetched'] = float(m.group(1))
             m = RE_DONE.search(line)
             if m:
                 r['bench_s'] = float(m.group(1))
@@ -1083,11 +1087,12 @@ class Driver:
             out.append('client = end-to-end latency seen by rondb-cli; http+client = client - prepare - execute '
                        '(RDRS HTTP handling, JSON, network); firstbatch = data-node execution until the first '
                        'result row (single-table: the whole DoAggregation); load = NDB dictionary lookups; '
-                       'rows = result rows drained per request.')
+                       'rows = result rows drained per request; fetched = rows the NDB API received per '
+                       'request (compare with section D\'s rows/req for mysqld).')
             out.append('')
             cols = ['parse', 'analyze', 'load', 'plan', 'compile', 'ndbprep', 'send', 'firstbatch', 'drain', 'print']
-            out.append('| query | compiler | client | prepare | execute | http+client | ' + ' | '.join(cols) + ' | rows | top |')
-            out.append('|---|---|---:|---:|---:|---:|' + '---:|' * len(cols) + '---:|---|')
+            out.append('| query | compiler | client | prepare | execute | http+client | ' + ' | '.join(cols) + ' | rows | fetched | top |')
+            out.append('|---|---|---:|---:|---:|---:|' + '---:|' * len(cols) + '---:|---:|---|')
             for qn in qnames:
                 for arm in arms:
                     r = self.find(query=qn, engine='ronsql', compiler=arm, threads=t)
@@ -1098,10 +1103,11 @@ class Driver:
                     ex, pr = pv('execute'), pv('prepare')
                     over = (r['avg_ms'] - (ex or 0) - (pr or 0)) if r.get('avg_ms') is not None else None
                     top = max(((k, pv(k) or 0) for k in cols), key=lambda kv: kv[1]) if ph else ('-', 0)
-                    out.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |'
+                    out.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |'
                                % (qn, arm, fmt_ms(r.get('avg_ms')), fmt_ms(pr), fmt_ms(ex), fmt_ms(over),
                                   ' | '.join(fmt_ms(pv(k)) for k in cols),
                                   ('%.1f' % r['rows_drained']) if 'rows_drained' in r else '-',
+                                  ('%.1f' % r['rows_fetched']) if 'rows_fetched' in r else '-',
                                   '%s %s' % (top[0], fmt_ms(top[1]))))
             out.append('')
 
