@@ -2225,6 +2225,7 @@ MemChunk* AggInterpreterBase::allocNewChunk() {
   chunk->used = 0;
   chunk->live_groups = 0;
   chunk->group_list = nullptr;
+  chunk->owner = this;
   chunk->next = m_chunks;
   chunk->prev = nullptr;
   if (m_chunks != nullptr) {
@@ -2270,20 +2271,26 @@ void AggInterpreterBase::freeGroupData(char* ptr) {
   MemChunk* chunk = reinterpret_cast<MemChunk*>(raw - offset - sizeof(MemChunk));
   chunk->live_groups--;
   if (chunk->live_groups == 0) {
+    /* Unlink from the owner's list: a group moved by mergeFrom is freed
+     * through the target interpreter (teardown of slot 0 after an abort
+     * in the middle of a batched merge) while its chunk is still on the
+     * source's list; unlinking from this interpreter's list corrupted it
+     * and left the source to free the chunk again. */
+    AggInterpreterBase* const own = chunk->owner;
     if (chunk->prev != nullptr) {
       chunk->prev->next = chunk->next;
     } else {
-      m_chunks = chunk->next;
+      own->m_chunks = chunk->next;
     }
     if (chunk->next != nullptr) {
       chunk->next->prev = chunk->prev;
     } else {
-      m_chunks_tail = chunk->prev;
+      own->m_chunks_tail = chunk->prev;
     }
-    if (m_current_chunk == chunk) {
-      m_current_chunk = m_chunks;
+    if (own->m_current_chunk == chunk) {
+      own->m_current_chunk = own->m_chunks;
     }
-    m_total_chunk_bytes -= MEM_CHUNK_SIZE;
+    own->m_total_chunk_bytes -= MEM_CHUNK_SIZE;
     lc_ndbd_pool_free(chunk);
   }
 }

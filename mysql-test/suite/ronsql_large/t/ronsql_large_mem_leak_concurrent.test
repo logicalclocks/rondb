@@ -54,8 +54,8 @@ DELIMITER |;
 --let $mlk_label = offline_fs_scalar under 8 concurrent clients
 let $QUERY=
 WITH cust_features AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust)
 SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
 FROM cust_features;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -63,11 +63,11 @@ FROM cust_features;|
 --let $mlk_label = offline_fs_chain under 8 concurrent clients
 let $QUERY=
 WITH per_cust AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
-  FROM lg_orders GROUP BY lg_cust),
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust),
 cust_rollup AS (
-  SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
-  FROM per_cust GROUP BY k)
+SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
+FROM per_cust GROUP BY k)
 SELECT COUNT(*), SUM(cust_rollup.cnt2), MAX(cust_rollup.max_spend), MIN(cust_rollup.max_spend)
 FROM cust_rollup;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -75,8 +75,8 @@ FROM cust_rollup;|
 --let $mlk_label = tpch q13 shape under 8 concurrent clients
 let $QUERY=
 WITH c_orders AS (
-  SELECT lg_cust AS k, COUNT(*) AS order_cnt
-  FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS order_cnt
+FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
 SELECT COUNT(*), SUM(c_orders.order_cnt), MIN(c_orders.order_cnt), MAX(c_orders.order_cnt)
 FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -84,11 +84,11 @@ FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
 --let $mlk_label = offline_fs_batch under 8 concurrent clients
 let $QUERY=
 WITH cust_features AS (
-  SELECT lg_cust AS k, COUNT(*) AS order_cnt, SUM(lg_amount) AS total_spend,
-         MAX(lg_amount) AS max_order
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS order_cnt, SUM(lg_amount) AS total_spend,
+MAX(lg_amount) AS max_order
+FROM lg_orders GROUP BY lg_cust)
 SELECT c.lc_segment, COUNT(*), SUM(cust_features.order_cnt),
-       SUM(cust_features.total_spend), MAX(cust_features.max_order)
+SUM(cust_features.total_spend), MAX(cust_features.max_order)
 FROM lg_cust AS c JOIN cust_features ON cust_features.k = c.lc_id
 GROUP BY c.lc_segment;|
 --source suite/ronsql_large/include/mem_leak_register.inc

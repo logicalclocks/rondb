@@ -37,7 +37,7 @@ while ($ei_i < $ei_reps)
   --source suite/ronsql_large/include/mem_leak_exec.inc
   if ($ei_hold)
   {
-    --real_sleep $ei_hold
+    --sleep $ei_hold
   }
   --exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
   --inc $ei_i

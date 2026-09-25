@@ -442,6 +442,15 @@ void Dblqh::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg,
     pc,
     Uint32(1),
     UINT32_MAX);
+  /* Allocate the static page now.  Without it every seize takes the
+   * transient part, and a TransientPool never releases its first
+   * transient page: the first CTE feed / paused CTE scan on each LDM
+   * instance raised the idle QUERY_MEMORY by a page for good (census
+   * run 6, the steps after scalar reductions over a CTE). */
+  while (c_cteScanIterStatePool.startup())
+  {
+    refresh_watch_dog();
+  }
 
   Uint32 reserveTcConnRecs = 0;
   ndbrequire(!ndb_mgm_get_int_parameter(mgm_cfg, CFG_LDM_RESERVED_OPERATIONS,

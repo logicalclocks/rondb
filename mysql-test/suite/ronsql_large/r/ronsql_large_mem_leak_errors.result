@@ -111,6 +111,24 @@ Number of output lines, including header: 2
 
 
 
+=== mle-6: join aggregation without a CTE, 5 groups (eviction target) ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+SELECT c.lc_region, COUNT(*), SUM(o.lg_qty)
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
 === mem-leak harness: error inserts ===
 
 --- mle-e5149a: error insert 5149 on every data node, shape mle-1: every JOIN_AGG_SETUP_REQ refused with OutOfQueryMemory, 10 RDRS attempts per request ---
@@ -173,15 +191,21 @@ baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
 after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
 structural leak checks acknowledged by all 4 data nodes
 
---- mle-e4041: error insert 4041 on every data node, shape mle-5: intermittent group eviction in join aggregation ---
+--- mle-e4041: error insert 4041 on every data node, shape mle-6: intermittent group eviction in join aggregation ---
 baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
 3 request(s) with the insert armed: every result identical to the reference
 after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
 structural leak checks acknowledged by all 4 data nodes
 
---- mle-e5126: error insert 5126 on every data node, shape mle-5: group eviction with maxGroups = 3 ---
+--- mle-e5126: error insert 5126 on every data node, shape mle-6: group eviction with maxGroups = 3 ---
 baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
 3 request(s) with the insert armed: every result identical to the reference
+after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
+structural leak checks acknowledged by all 4 data nodes
+
+--- mle-e5126c: error insert 5126 on every data node, shape mle-5: maxGroups = 3 on a CTE body: no eviction from a CTE materialization, temporary 1870 ---
+baseline: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+3 request(s) with the insert armed: every request failed, as the insert intends
 after the error insert: QUERY_MEMORY and TRANSACTION_MEMORY back to the baseline on all 4 data nodes
 structural leak checks acknowledged by all 4 data nodes
 
@@ -196,7 +220,7 @@ clean run: 5 execution(s) via RDRS, every result identical to the reference
 
 === mem-leak harness: record-level leak checks ===
 structural leak checks acknowledged by all 4 data nodes
-mem-leak harness: 5 shape(s) measured, no data-node memory growth
+mem-leak harness: 6 shape(s) measured, no data-node memory growth
 
 === Drop large dataset ===
 PASSED

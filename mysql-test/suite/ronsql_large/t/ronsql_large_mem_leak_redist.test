@@ -57,8 +57,8 @@ DELIMITER |;
 --let $mlk_label = multi-column GROUP BY CTE (60000 groups, heavy cross-node-group redistribution), scalar reduce
 let $QUERY=
 WITH g AS (
-  SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
-  FROM lg_orders GROUP BY lg_cust, lg_status)
+SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust, lg_status)
 SELECT COUNT(*) AS group_count, SUM(q) AS total_qty, SUM(c) AS total_rows
 FROM g;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -66,18 +66,18 @@ FROM g;|
 --let $mlk_label = CTE-body ORDER BY + LIMIT 100 at 100000 groups (sliced finalize on the constant owner)
 let $QUERY=
 WITH top AS (
-  SELECT lg_id AS k, SUM(lg_amount) AS a, COUNT(*) AS c
-  FROM lg_orders GROUP BY lg_id ORDER BY k DESC LIMIT 100)
+SELECT lg_id AS k, SUM(lg_amount) AS a, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_id ORDER BY k DESC LIMIT 100)
 SELECT COUNT(*) AS kept, MIN(top.k) AS lo, MAX(top.k) AS hi,
-       SUM(top.c) AS rows_kept
+SUM(top.c) AS rows_kept
 FROM top;|
 --source suite/ronsql_large/include/mem_leak_register.inc
 
 --let $mlk_label = aggregate-ordered LIMIT 50 at 20000 groups (partial-merge rank on the owner)
 let $QUERY=
 WITH per_cust AS (
-  SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
-  FROM lg_orders GROUP BY lg_cust ORDER BY s DESC, k LIMIT 50)
+SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust ORDER BY s DESC, k LIMIT 50)
 SELECT COUNT(*) AS kept, SUM(per_cust.s) AS tot, SUM(per_cust.c) AS rows_kept
 FROM per_cust;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -85,24 +85,24 @@ FROM per_cust;|
 --let $mlk_label = pass-through CTE_SCAN root, 20000 rows through CTE scan continuations
 let $QUERY=
 WITH cf AS (
-  SELECT lg_cust AS k, COUNT(*) AS n
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
 SELECT n FROM cf;|
 --source suite/ronsql_large/include/mem_leak_register.inc
 
 --let $mlk_label = pass-through CTE_SCAN root, LIMIT 300: early close mid-stream
 let $QUERY=
 WITH cf AS (
-  SELECT lg_cust AS k, COUNT(*) AS n
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
 SELECT n FROM cf LIMIT 300;|
 --source suite/ronsql_large/include/mem_leak_register.inc
 
 --let $mlk_label = pass-through join, lg_cust root + CTE lookup child, LIMIT 300: early close
 let $QUERY=
 WITH cf AS (
-  SELECT lg_cust AS k, COUNT(*) AS n
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
 SELECT cf.n FROM lg_cust AS c JOIN cf ON cf.k = c.lc_id LIMIT 300;|
 --source suite/ronsql_large/include/mem_leak_register.inc
 

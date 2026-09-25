@@ -16368,7 +16368,7 @@ Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
  * - execJOIN_AGG_NULL_ROW (explicit null row injection)
  * - Dbtup::handleJoinAggRow (scan-time eviction)
  */
-void Dblqh::sendEvictedAggGroup(Signal *signal,
+bool Dblqh::sendEvictedAggGroup(Signal *signal,
                                  JoinAggInterpreter *interp,
                                  JoinAggregationState *state) {
   jamDebug();
@@ -16378,7 +16378,13 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
       sizeof(cevictBuffer) / sizeof(Uint32),
       &words_written,
       c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
-  ndbrequire(evict_ret == 0);
+  if (unlikely(evict_ret != 0)) {
+    jam();
+    /* Nothing to evict: the interpreter could not allocate a group even
+     * with an empty table (query memory exhausted), or the group does not
+     * fit the eviction buffer.  Fail the operation, not the node. */
+    return false;
+  }
 
   TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
   {
@@ -16399,6 +16405,7 @@ void Dblqh::sendEvictedAggGroup(Signal *signal,
              TransIdAI::HeaderLength, JBB, ptr, 1);
 
   state->m_rows_sent++;
+  return true;
 }
 
 /*
@@ -16478,8 +16485,13 @@ retry:
                                              c_tup->getAggXfrmBufLen(),
                                              leaf);
   if (ret == AGG_EVICT_NEEDED) {
-    sendEvictedAggGroup(signal, interp, state);
-    goto retry;
+    /* A CTE materialization keeps every group (no eviction), and an
+     * empty table cannot be evicted from: out of query memory. */
+    if (likely(!state->m_cte_mode &&
+               sendEvictedAggGroup(signal, interp, state))) {
+      goto retry;
+    }
+    ret = ZJOIN_AGG_ALLOC_MEM_FAILED;
   }
   if (unlikely(ret != 0)) {
     jam();
@@ -20455,8 +20467,13 @@ retry:
                                              c_tup->getAggXfrmBufLen());
   if (ret == AGG_EVICT_NEEDED) {
     jam();
-    sendEvictedAggGroup(signal, interp, state);
-    goto retry;
+    /* No eviction from a CTE materialization or an empty table: out of
+     * query memory. */
+    if (likely(!state->m_cte_mode &&
+               sendEvictedAggGroup(signal, interp, state))) {
+      goto retry;
+    }
+    ret = ZJOIN_AGG_ALLOC_MEM_FAILED;
   }
   if (unlikely(ret != 0)) {
     jam();
@@ -20888,6 +20905,10 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       batch_signal_bytes +=
           (3 + TransIdAI::HeaderLength + 1 + pos) * sizeof(Uint32);
 
+      /* The group leaves the table here, and teardown walks only the
+       * table: free its string MIN/MAX buffers now (their payload went
+       * out in the signal above), as eviction and the plain drain do. */
+      interp->freeGroupStringSlots(slots);
       gb_map->eraseAndNext(iter);
 
       if (!iter.valid()) {
@@ -21370,7 +21391,12 @@ retry_agg:
                        DbspjErr::OutOfQueryMemory, req.correlation);
       return;
     }
-    sendEvictedAggGroup(signal, targetInterp, targetState);
+    if (unlikely(!sendEvictedAggGroup(signal, targetInterp, targetState))) {
+      jam();
+      sendCteLookupRef(signal, req.senderRef, req.senderData,
+                       DbspjErr::OutOfQueryMemory, req.correlation);
+      return;
+    }
     goto retry_agg;
   }
   if (unlikely(aggRet != 0)) {
@@ -22587,7 +22613,14 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                          DbspjErr::OutOfQueryMemory);
           return;
         }
-        sendEvictedAggGroup(signal, targetInterp, targetState);
+        if (unlikely(!sendEvictedAggGroup(signal, targetInterp,
+                                          targetState))) {
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         DbspjErr::OutOfQueryMemory);
+          return;
+        }
         goto retry_agg_scan;
       }
       if (unlikely(aggRet != 0)) {
@@ -22720,7 +22753,14 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                          DbspjErr::OutOfQueryMemory);
           return;
         }
-        sendEvictedAggGroup(signal, targetInterp, targetState);
+        if (unlikely(!sendEvictedAggGroup(signal, targetInterp,
+                                          targetState))) {
+          jam();
+          releaseCteScanIterState(aggFeedStateI);
+          sendCteScanRef(signal, senderRef, senderData,
+                         DbspjErr::OutOfQueryMemory);
+          return;
+        }
         /* Retry after eviction */
         aggReq.no_exec_instructions = 0;
         aggRet = targetInterp->processRecWithLinkedAttrs(
@@ -24057,6 +24097,10 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
         batch_bytes += sigBytes;
       }
 
+      /* Packed above (payload copied): free the group's string MIN/MAX
+       * buffers before it leaves the table — teardown walks only the
+       * table, so they would be lost. */
+      interp->freeGroupStringSlots(const_cast<AggResItem*>(slots));
       gb_map->eraseAndNext(iter);
       batch_count++;
 

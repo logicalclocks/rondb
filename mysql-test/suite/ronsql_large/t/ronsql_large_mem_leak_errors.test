@@ -32,8 +32,12 @@
 #   e5137   5137    mle-1  teardown frees one group per CONTINUEB round
 #                          (armed 2 s after the request)
 #   e5130   5130    mle-1  aggregation feed: one group per round
-#   e4041   4041    mle-5  intermittent group eviction (every ~7 rows)
-#   e5126   5126    mle-5  group eviction with maxGroups = 3
+#   e4041   4041    mle-6  intermittent group eviction (every ~7 rows)
+#   e5126   5126    mle-6  group eviction with maxGroups = 3
+#   e5126c  5126    mle-5  maxGroups = 3 on a CTE body: a CTE materialization
+#                          keeps every group (no eviction), so every request
+#                          fails with the temporary 1870 and memory must
+#                          come back
 #   e5134   5134 C  mle-2  every redistributed row queued on its own page
 #                          (detached page chain freed after the query)
 #
@@ -72,8 +76,8 @@ DELIMITER |;
 --let $mlk_label = offline_fs_scalar: scalar reduce over a 20000-group CTE
 let $QUERY=
 WITH cust_features AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust)
 SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
 FROM cust_features;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -81,8 +85,8 @@ FROM cust_features;|
 --let $mlk_label = per-customer CTE (20000 groups) joined to lg_cust, GROUP BY region
 let $QUERY=
 WITH cf AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_qty) AS q
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_qty) AS q
+FROM lg_orders GROUP BY lg_cust)
 SELECT c.lc_region, COUNT(*), SUM(cf.cnt), SUM(cf.q)
 FROM lg_cust AS c JOIN cf ON cf.k = c.lc_id
 GROUP BY c.lc_region;|
@@ -91,8 +95,8 @@ GROUP BY c.lc_region;|
 --let $mlk_label = tpch q13 shape: LEFT JOIN a filtered CTE (NULL-row injection)
 let $QUERY=
 WITH c_orders AS (
-  SELECT lg_cust AS k, COUNT(*) AS order_cnt
-  FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS order_cnt
+FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
 SELECT COUNT(*), SUM(c_orders.order_cnt), MIN(c_orders.order_cnt), MAX(c_orders.order_cnt)
 FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -100,20 +104,29 @@ FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
 --let $mlk_label = pass-through CTE_SCAN root, 20000 rows through scan continuations
 let $QUERY=
 WITH cf AS (
-  SELECT lg_cust AS k, COUNT(*) AS n
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
 SELECT n FROM cf;|
 --source suite/ronsql_large/include/mem_leak_register.inc
 
 --let $mlk_label = tpch q15 shape, 100 groups (eviction target)
 let $QUERY=
 WITH revenue AS (
-  SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
-  FROM lg_orders
-  WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
-  GROUP BY lg_qty)
+SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+FROM lg_orders
+WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+GROUP BY lg_qty)
 SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
 FROM revenue;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+# Eviction is only legitimate outside a CTE: an evicted group goes to the
+# API, which merges it into the main result.
+--let $mlk_label = join aggregation without a CTE, 5 groups (eviction target)
+let $QUERY=
+SELECT c.lc_region, COUNT(*), SUM(o.lg_qty)
+FROM lg_cust AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id
+GROUP BY c.lc_region;|
 --source suite/ronsql_large/include/mem_leak_register.inc
 
 DELIMITER ;|
@@ -198,16 +211,23 @@ DELIMITER ;|
 
 --let $ei_name = e4041
 --let $ei_code = 4041
---let $ei_shape = 5
+--let $ei_shape = 6
 --let $ei_accept = ok
 --let $ei_what = intermittent group eviction in join aggregation
 --source suite/ronsql_large/include/mem_leak_error_case.inc
 
 --let $ei_name = e5126
 --let $ei_code = 5126
---let $ei_shape = 5
+--let $ei_shape = 6
 --let $ei_accept = ok
 --let $ei_what = group eviction with maxGroups = 3
+--source suite/ronsql_large/include/mem_leak_error_case.inc
+
+--let $ei_name = e5126c
+--let $ei_code = 5126
+--let $ei_shape = 5
+--let $ei_accept = fail
+--let $ei_what = maxGroups = 3 on a CTE body: no eviction from a CTE materialization, temporary 1870
 --source suite/ronsql_large/include/mem_leak_error_case.inc
 
 --let $ei_name = e5134

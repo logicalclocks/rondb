@@ -114,6 +114,79 @@ scan whatever the group count: core_scan_agg +44 MB, core_idx_range +36 MB
 at 8 threads).  Understand (chunk / pool granularity) — it sets the
 concurrency budget together with F27 (c).
 
+### Status of A (2026-09-25)
+
+Tested: ronsql_large_mem_leak, _controls and _strings pass; _errors ran
+through except the mle-e5126 step below (the re-check is new, rerun).
+
+- A1 done: L1 and L2 free the group's string slots before
+  `eraseAndNext` (the payload is already in the signal / batch); L3
+  `mergeFrom` frees the losing string values with the source group.
+- A2 done: `mergeOneGroup` frees only the copied slots on a copy failure
+  (double free); `decodeRedistributionStringSlots` clears the slots it did
+  not reach on a failure, so the cleanup never frees the sender's pointer
+  values; `MemChunk::owner` — `freeGroupData` unlinks an emptied chunk from
+  its owner's list and `mergeFrom`'s splice re-owns the chunks, so a group
+  moved by an interrupted batched merge is freed safely by slot 0's
+  teardown (which the proxy chain runs before the sources');
+  `sendJoinAggSetupRef` nulls what it frees; the leaf-program array is
+  allocated cleared (a REF inside the fill loop released garbage JIT
+  handles).
+- A2 found by ronsql_large_mem_leak_strings (2026-09-25): 8 concurrent
+  string-MIN/MAX queries exhausted the suite's 20 MB SharedGlobalMemory;
+  the first failed group allocation asked for an eviction with an empty
+  table and `ndbrequire(evict_ret == 0)` in `sendEvictedAggGroup` stopped
+  two data nodes (F27 (c)).  `sendEvictedAggGroup` now returns false when
+  nothing can be evicted and all seven callers fail the operation with the
+  temporary 1870 / 20008; the DBTUP scan feed and error insert 4041 no
+  longer evict from a CTE materialization (its table must keep every
+  group; the DBLQH CTE feeds already refused).
+- Allocator race found by ronsql_large_mem_leak_errors case mle-e5126
+  (2026-09-25): after eviction-heavy join aggregation one data node kept
+  one 2 MB lc_ndbd_pool segment (64 QUERY_MEMORY pages); a diagnostic run
+  showed it survive 120 s idle and every other query type, and go with the
+  next join aggregation.  Cause: `lc_mempool_long_lived_pool_malloc`
+  releases the pool mutex while one thread fetches a new segment; a thread
+  arriving meanwhile fetches its own holding the mutex; both were inserted,
+  the first thread's retry could allocate from the second segment, and a
+  segment is only released by a free that leaves it fully free — an unused
+  one stayed until a later allocation in that pool used it.  Join
+  aggregation is exposed because every per-thread interpreter allocates
+  from the DblqhProxy thread's pool from several LDM threads.  An allocator
+  fix (the lockless fetcher returning its segment when the request fits the
+  existing segments after re-locking) was written and reverted
+  (2026-09-25, user: too big and too intrusive for the core allocator), so
+  this stays known allocator behaviour: bounded (at most one spare segment
+  per racing fetch, per pool), released by the pool's next allocate / free
+  cycle, but visible to exact leak tests.  The leak harness handles it
+  instead (mem_leak_verify.inc reclaim re-check): when a verify times out
+  with only QUERY_MEMORY steps of ≥ 64 pages, it runs two plain join
+  aggregations through RDRS (mlk_reclaim.body, written by
+  mem_leak_init.inc) and polls again for $mlk_recheck_max_polls (15 s); a
+  spare segment is then the proxy pool's only segment, gets allocated from
+  and released, while a leaked allocation keeps its segment and still
+  fails.  The re-check shows only in the report file (a "reclaim query"
+  line and "then the reclaim query and N s more" in the verdict line).
+  The regression test written for the allocator fix
+  (ronsql_large_mem_leak_evict) was dropped with it.  Open idea: per-LDM
+  pools for the interpreters' chunks (removes the cross-thread contention on the proxy
+  pool's mutex that triggers the race; possibly an F24 gain).  Also seen
+  while reading the allocator: a lockless fetch whose backend allocation
+  fails returns without decrementing m_num_active_global_malloc, so every
+  later fetch of that pool holds the mutex (not fixed).
+- A2 open: DBSPJ RS_ABORTED (upstream scan-abort protocol, documented as
+  a possible leak when no SCAN_NEXTREQ follows; DUMP 2650 in the
+  node-failure tests has not caught it, so TC take-over seems to close
+  the scan — revisit if a leak test shows it); a REDISTRIBUTE_REQ after
+  RELEASE and the node-failure sweep skipping FINALIZING /
+  SENDING_RESULTS need an analysis of the proxy-teardown vs owner-LDM
+  ordering first.
+- A3 done: `c_cteScanIterStatePool` is started (static page at node start
+  instead of a never-released transient page on first use); DBTC's
+  `c_aggCompleteRecordPool` / `c_cteScanFragHandlePool` reserve one static
+  record.  The idle levels move up by these pages at start and no longer
+  step at run time.  DBSPJ's arena page stays (upstream RWPool).
+
 ## B. Regressions and measurement (second)
 
 **B1. Census configuration.**  Uncomment `NumCPUs=15` and the cpubind

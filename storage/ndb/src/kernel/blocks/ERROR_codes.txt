@@ -26,7 +26,8 @@ Next QMGR 963
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
-4041: Force intermittent group eviction in join aggregation (every ~7 rows)
+4041: Force intermittent group eviction in join aggregation (every ~7 rows
+      per LDM thread); not on a CTE materialization, which keeps every group
 4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
       scan filter with a compilable region (Dbtup / AggInterpreter /
       JoinAggInterpreter; deliberate-fallback canaries are exempt)
@@ -41,7 +42,9 @@ Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
 5124: Simulate JOIN_AGG_COMPLETE_REF state-not-found in Dblqh
 5125: Simulate JOIN_AGG_SETUP_REF allocation failure in DblqhProxy
-5126: Force join aggregation group eviction by limiting maxGroups to 3 (DblqhProxy)
+5126: Force join aggregation group eviction by limiting maxGroups to 3 (DblqhProxy);
+      a CTE materialization cannot evict, so a CTE body with more groups fails
+      with the temporary 1870 / 20008
 5120: RONDB-1056 JIT strict compile for the join-agg path (DblqhProxy): a
       per-leaf compile failure at JOIN_AGG_SETUP is fatal (suite-wide strict
       arming, paired with DBTUP 4064)

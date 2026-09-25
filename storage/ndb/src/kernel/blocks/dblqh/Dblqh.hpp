@@ -3944,7 +3944,10 @@ private:
   void handlePendingAbort(Signal*, TcConnectionrec*);
   void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
 public:
-  void sendEvictedAggGroup(Signal*,
+  /* False when no group could be evicted (the table is empty: a single
+   * group could not be allocated, query memory is exhausted); the caller
+   * then fails the operation with the temporary 1870. */
+  bool sendEvictedAggGroup(Signal*,
                            JoinAggInterpreter*,
                            JoinAggregationState*);
   JoinAggInterpreter* getJoinAggInterpreter(JoinAggregationState*);

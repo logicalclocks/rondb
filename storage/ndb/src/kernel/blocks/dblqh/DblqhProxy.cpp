@@ -2402,11 +2402,16 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   if (aggStateKey != RNIL) {
     JoinAggregationState *state = getJoinAggState(aggStateKey);
     if (state != nullptr) {
+      /* Null every freed field: the released slot keeps its contents
+       * (the pool does not clear it), so nothing may point at freed
+       * memory if a stale key ever reaches it again. */
       if (state->m_all_programs_buf != nullptr) {
         lc_ndbd_pool_free(state->m_all_programs_buf);
+        state->m_all_programs_buf = nullptr;
       }
       if (state->m_column_meta_buf != nullptr) {
         lc_ndbd_pool_free(state->m_column_meta_buf);
+        state->m_column_meta_buf = nullptr;
       }
       if (state->m_leaf_programs != nullptr) {
         /* RONDB-1056 Phase 6-4: release each leaf's reuse-cache handle
@@ -2419,14 +2424,17 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
           state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
         }
         lc_ndbd_pool_free(state->m_leaf_programs);
+        state->m_leaf_programs = nullptr;
       }
       if (state->m_receiverIds != nullptr) {
         lc_ndbd_pool_free(state->m_receiverIds);
+        state->m_receiverIds = nullptr;
       }
       if (state->m_agg_interpreter != nullptr) {
         state->m_agg_interpreter->freeAllChunks();
         state->m_agg_interpreter->~JoinAggInterpreter();
         lc_ndbd_pool_free(state->m_agg_interpreter);
+        state->m_agg_interpreter = nullptr;
       }
       if (state->m_per_thread_interpreters != nullptr) {
         for (Uint32 i = 0; i < state->m_num_threads; i++) {
@@ -2437,6 +2445,7 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
           }
         }
         lc_ndbd_pool_free(state->m_per_thread_interpreters);
+        state->m_per_thread_interpreters = nullptr;
       }
       // Free any redistribution queue pages
       {
@@ -2450,6 +2459,7 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
 #endif
           page = next;
         }
+        state->m_redist_page_head = nullptr;
       }
       releaseJoinAggState(aggStateKey);
     }
@@ -2909,11 +2919,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       return;
     }
 
-    // Allocate LeafProgram descriptor array
+    // Allocate LeafProgram descriptor array, cleared: a REF from inside
+    // the fill loop below releases every leaf's JIT handle
+    // (sendJoinAggSetupRef), including the leaves not filled yet.
     state->m_leaf_programs =
       (LeafProgram *)lc_ndbd_pool_malloc(numLeaves * sizeof(LeafProgram),
                                           RG_QUERY_MEMORY, getThreadId(),
-                                          false);
+                                          true);
     if (unlikely(state->m_leaf_programs == nullptr)) {
       jam();
       lc_ndbd_pool_free(allProgsBuf);

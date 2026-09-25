@@ -92,10 +92,10 @@ DELIMITER |;
 --let $mlk_label = tpch q15 shape: date-filtered CTE body (~13400 groups), scalar MAX/MIN/SUM/COUNT over the CTE
 let $QUERY=
 WITH revenue AS (
-  SELECT lg_cust AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
-  FROM lg_orders
-  WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
-  GROUP BY lg_cust)
+SELECT lg_cust AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+FROM lg_orders
+WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+GROUP BY lg_cust)
 SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
 FROM revenue;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -103,10 +103,10 @@ FROM revenue;|
 --let $mlk_label = tpch q15 shape, 100 groups (GROUP BY lg_qty): is the step tied to the group count?
 let $QUERY=
 WITH revenue AS (
-  SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
-  FROM lg_orders
-  WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
-  GROUP BY lg_qty)
+SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+FROM lg_orders
+WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+GROUP BY lg_qty)
 SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
 FROM revenue;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -114,8 +114,8 @@ FROM revenue;|
 --let $mlk_label = offline_fs_scalar: per-customer CTE (20000 groups), scalar reduce over the CTE
 let $QUERY=
 WITH cust_features AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust)
 SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
 FROM cust_features;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -123,11 +123,11 @@ FROM cust_features;|
 --let $mlk_label = offline_fs_chain: CTE over a CTE (20000 + 20000 groups), scalar reduce
 let $QUERY=
 WITH per_cust AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
-  FROM lg_orders GROUP BY lg_cust),
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust),
 cust_rollup AS (
-  SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
-  FROM per_cust GROUP BY k)
+SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
+FROM per_cust GROUP BY k)
 SELECT COUNT(*), SUM(cust_rollup.cnt2), MAX(cust_rollup.max_spend), MIN(cust_rollup.max_spend)
 FROM cust_rollup;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -141,8 +141,8 @@ FROM cust_rollup;|
 --let $mlk_shape_round3 = 10
 let $QUERY=
 WITH cust_features AS (
-  SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust)
 SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
 FROM cust_features;|
 --source suite/ronsql_large/include/mem_leak_register.inc

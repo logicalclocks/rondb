@@ -22,7 +22,7 @@
 --let $mlk_prev = `$mlk_sig_sql`
 while ($mlk_stable < $mlk_settle_reads)
 {
-  --real_sleep 0.5
+  --sleep 0.5
   --let $mlk_now = `$mlk_sig_sql`
   if ($mlk_now == $mlk_prev)
   {

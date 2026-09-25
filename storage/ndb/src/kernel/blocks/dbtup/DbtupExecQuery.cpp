@@ -5655,7 +5655,16 @@ retry:
       jamBuffer(),
       leaf);
   if (ret == AGG_EVICT_NEEDED) {
-    c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
+    /* A CTE materialization must keep every group (its table is what
+     * CTE_LOOKUP / CTE_SCAN read; an evicted group would reach the result
+     * receiver as a result row), and an empty table cannot be evicted
+     * from: both mean out of query memory, a temporary error — never a
+     * node failure (census run 6 / ronsql_large_mem_leak_strings). */
+    if (unlikely(state->m_cte_mode ||
+                 !c_lqh->sendEvictedAggGroup(req_struct->signal, interp,
+                                             state))) {
+      return TUPKEY_abort(req_struct, ZAGG_ALLOC_MEM_FAILED);
+    }
     evict_count++;
     goto retry;
   }
@@ -5668,9 +5677,10 @@ retry:
    * counter is shared between the threads feeding one state). */
   if (ERROR_INSERTED(4041) &&
       (++m_join_agg_evict_row_count % 7) == 0 &&
+      !state->m_cte_mode &&
       interp->gb_map_mutable() != nullptr &&
-      interp->gb_map_mutable()->size() > 2) {
-    c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state);
+      interp->gb_map_mutable()->size() > 2 &&
+      c_lqh->sendEvictedAggGroup(req_struct->signal, interp, state)) {
     evict_count++;
   }
 #endif

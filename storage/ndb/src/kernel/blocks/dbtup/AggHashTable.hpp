@@ -33,6 +33,8 @@
 #define AGG_EVICT_NEEDED 1
 #define MEM_CHUNK_SIZE 32768
 
+class AggInterpreterBase;
+
 struct MemChunk {
   char* data;
   Uint32 capacity;
@@ -41,6 +43,11 @@ struct MemChunk {
   MemChunk* next;
   MemChunk* prev;
   char* group_list;         // singly-linked list of live groups in this chunk
+  /* The interpreter whose chunk list holds this chunk.  JoinAggInterpreter
+   * ::mergeFrom moves groups between interpreters before it moves their
+   * chunks, so a group can be freed through an interpreter that is not
+   * the chunk's owner; freeGroupData unlinks from the owner's list. */
+  AggInterpreterBase* owner;
 };
 
 /*

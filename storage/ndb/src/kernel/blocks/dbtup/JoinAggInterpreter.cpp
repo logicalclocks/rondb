@@ -1595,25 +1595,30 @@ static Int32 decodeRedistributionStringSlots(
     Uint32 thread_id) {
   const char* p = appended;
   const char* end = appended + appended_len;
-  for (Uint32 i = 0; i < n_agg_results; i++) {
+  Int32 err = 0;
+  Uint32 i = 0;
+  for (; i < n_agg_results; i++) {
     if (!isStringAggType(slots[i].type) ||
         slots[i].is_null ||
         slots[i].value.val_ptr == nullptr) {
       continue;
     }
     if (p + sizeof(Uint32) > end) {
-      return ZAGG_OTHER_ERROR;
+      err = ZAGG_OTHER_ERROR;
+      break;
     }
     const Uint32 byte_size = *reinterpret_cast<const Uint32*>(p);
     p += sizeof(Uint32);
     const Uint32 padded = (byte_size + 3) & ~3U;
     if (p + padded > end) {
-      return ZAGG_OTHER_ERROR;
+      err = ZAGG_OTHER_ERROR;
+      break;
     }
     const Uint32 prefix = (string_results != nullptr) ?
         string_results[i].prefix_bytes : stringPrefixBytes(slots[i].type);
     if (byte_size < prefix) {
-      return ZAGG_OTHER_ERROR;
+      err = ZAGG_OTHER_ERROR;
+      break;
     }
     const Uint32 payload_len = byte_size - prefix;
     Uint32 alloc_size = (4 + byte_size + 15) & ~15U;
@@ -1621,7 +1626,8 @@ static Int32 decodeRedistributionStringSlots(
     char* dst_buf = static_cast<char*>(
         lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY, thread_id, false));
     if (dst_buf == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
+      err = ZAGG_ALLOC_MEM_FAILED;
+      break;
     }
     Uint16* hdr = reinterpret_cast<Uint16*>(dst_buf);
     hdr[0] = static_cast<Uint16>(payload_len);
@@ -1632,7 +1638,17 @@ static Int32 decodeRedistributionStringSlots(
     slots[i].value.val_ptr = dst_buf;
     p += padded;
   }
-  return 0;
+  if (err != 0) {
+    /* The slots from i on still carry the sender's pointer values (only
+     * a presence flag here, addresses on another node): clear them so
+     * the caller's cleanup frees only the buffers decoded above. */
+    for (; i < n_agg_results; i++) {
+      if (isStringAggType(slots[i].type)) {
+        slots[i].value.val_ptr = nullptr;
+      }
+    }
+  }
+  return err;
 }
 
 static void extractAggOps(const Uint32* prog, Uint32 prog_len,
@@ -1764,6 +1780,11 @@ Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
       Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
                                     m_cached_agg_ops, m_string_results,
                                     m_thread_id, true);
+      /* The merge moved every winning string value into my_items and
+       * cleared it in other_items; the losing values are still owned
+       * by the source group, which leaves `other` here: free them with
+       * it (the popped group is no longer reachable by teardown). */
+      other->freeGroupStringSlots(other_items);
       if (ret != 0) {
         g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
                              ret);
@@ -1786,6 +1807,10 @@ Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
   }
 
   if (other->m_chunks != nullptr) {
+    /* The moved groups' chunks become ours (MemChunk::owner). */
+    for (MemChunk* c = other->m_chunks; c != nullptr; c = c->next) {
+      c->owner = this;
+    }
     other->m_chunks_tail->next = m_chunks;
     if (m_chunks != nullptr) {
       m_chunks->prev = other->m_chunks_tail;
@@ -1904,7 +1929,11 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
           Int32 ret = copyStringAggSlot(&dst_items[i], &src_const_items[i],
                                         m_string_results, i, m_thread_id);
           if (ret != 0) {
-            for (Uint32 j = 0; j < m_n_agg_results; j++) {
+            /* Only slots before i hold copies of their own; slot i is
+             * null and the later slots still alias local_items (the
+             * memcpy above), which are freed below — freeing them here
+             * too was a double free. */
+            for (Uint32 j = 0; j < i; j++) {
               freeStringAggSlot(&dst_items[j]);
             }
             freeGroupData(new_group);

@@ -85,7 +85,7 @@ GROUP BY o.lg_cust;|
 --let $mlk_label = L3: join aggregation GROUP BY region, MIN/MAX of VARCHAR and CHAR merged over LDM threads
 let $QUERY=
 SELECT c.lc_region, MIN(c.lc_segment), MAX(c.lc_segment),
-       MIN(o.lg_status), MAX(o.lg_status), COUNT(*)
+MIN(o.lg_status), MAX(o.lg_status), COUNT(*)
 FROM lg_orders AS o JOIN lg_cust AS c ON c.lc_id = o.lg_cust
 GROUP BY c.lc_region;|
 --source suite/ronsql_large/include/mem_leak_register.inc
@@ -93,8 +93,8 @@ GROUP BY c.lc_region;|
 --let $mlk_label = L2: CTE MIN/MAX(CHAR) over 20000 redistributed groups, MIN/MAX again in the main join
 let $QUERY=
 WITH st AS (
-  SELECT lg_cust AS k, MIN(lg_status) AS mn, MAX(lg_status) AS mx, COUNT(*) AS n
-  FROM lg_orders GROUP BY lg_cust)
+SELECT lg_cust AS k, MIN(lg_status) AS mn, MAX(lg_status) AS mx, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
 SELECT c.lc_region, COUNT(*), SUM(st.n), MIN(st.mn), MAX(st.mx)
 FROM lg_cust AS c JOIN st ON st.k = c.lc_id
 GROUP BY c.lc_region;|
@@ -103,8 +103,8 @@ GROUP BY c.lc_region;|
 --let $mlk_label = L2: CTE MIN/MAX(VARCHAR) over 20000 groups, MIN/MAX again in the main join
 let $QUERY=
 WITH seg AS (
-  SELECT lc_id AS k, MIN(lc_segment) AS mn, MAX(lc_segment) AS mx
-  FROM lg_cust GROUP BY lc_id)
+SELECT lc_id AS k, MIN(lc_segment) AS mn, MAX(lc_segment) AS mx
+FROM lg_cust GROUP BY lc_id)
 SELECT c.lc_region, COUNT(*), MIN(seg.mn), MAX(seg.mx)
 FROM lg_cust AS c JOIN seg ON seg.k = c.lc_id
 GROUP BY c.lc_region;|

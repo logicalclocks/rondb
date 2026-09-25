@@ -11,6 +11,8 @@
 #   mem_leak_error_case.inc   one error insert armed around a few requests
 #   mem_leak_snapshot.inc     settle, then record the per-node baseline
 #   mem_leak_verify.inc       poll until the level is back at the baseline
+#                             (with a reclaim re-check for a spare
+#                             lc_ndbd_pool segment, see there)
 #   mem_leak_exec.inc         run shapes through RDRS / ronsql_cli
 #   mem_leak_dumps.inc        record-level DUMP leak checks
 #   mem_leak_finish.inc       DUMP checks, verdict, cleanup
@@ -49,6 +51,8 @@
 #                        [60 = 30 s]; the baseline is then marked
 #                        UNSETTLED in the report (too high, never too low)
 #   $mlk_verify_max_polls  0.5 s polls before a verify fails [120 = 60 s]
+#   $mlk_recheck_max_polls  0.5 s polls after the reclaim query of a
+#                        failed verify (mem_leak_verify.inc) [30 = 15 s]
 #   $mlk_collect         1: a failed check prints LEAK and the test goes
 #                        on, mem_leak_finish.inc fails it; 0: fail at once
 #                        [1]
@@ -118,6 +122,10 @@ if ($mlk_verify_max_polls == '')
 {
   --let $mlk_verify_max_polls = 120
 }
+if ($mlk_recheck_max_polls == '')
+{
+  --let $mlk_recheck_max_polls = 30
+}
 if ($mlk_collect == '')
 {
   --let $mlk_collect = 1
@@ -182,6 +190,13 @@ for my $id (sort keys %q) {
   print $fh "rdrs\n";
   close($fh);
 }
+# Reclaim query of mem_leak_verify.inc (RDRS request body, no quotes or
+# backslashes to escape): a plain join aggregation, 5 groups.
+open(my $fh, '>', "$tmp/mlk_reclaim.body") or die "open: $!\n";
+print $fh '{"query":"SELECT c.lc_region, COUNT(*), SUM(o.lg_qty) FROM lg_cust '
+  . 'AS c JOIN lg_orders AS o ON o.lg_cust = c.lc_id GROUP BY c.lc_region;",'
+  . '"database":"test","outputFormat":"TEXT"}';
+close($fh);
 EOF
 --let MLKE_SHAPES = w1,w2,w3
 --let MLKE_COUNT = 3
