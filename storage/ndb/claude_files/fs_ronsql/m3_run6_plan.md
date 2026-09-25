@@ -201,7 +201,7 @@ pool across threads — see side finding (a).
   (VecSearchInterpreter.cpp ~89–93).  Only AggInterpreter can be
   right-sized.
 
-**Proposed fixes (ranked; none written).**
+**Proposed fixes (ranked; 2 written, the rest not).**
 1. *Right-size the aggregation interpreter* (RonSQL-local, no allocator
    change).  Allocate `sizeof(AggInterpreter)` instead of `MEM_CHUNK_SIZE`
    in `Create` (aggregation branch) and `CreateAggForRead`
@@ -220,6 +220,12 @@ pool across threads — see side finding (a).
    fewer global-lock round trips for every lc_ndbd_pool user.  Risk: low
    and local, but it is the core allocator (the earlier allocator change
    was reverted as too intrusive), so it needs your go-ahead.
+   *Written 2026-09-25 (not built or run yet):* the fix, a `VM_TRACE`
+   check that lists above `*check_pos` are empty, and
+   `long_segment_position_test` in `ndbd_malloc-t`.  The test carves
+   32 pages, frees pages 1–8 into a second list-8 hole and allocates 8
+   more.  Before the fix the 8th page fetches a second segment (checked
+   with the `lcsim.py` replica); with the fix there is only one fetch.
 3. *GROUP BY chunks on the executing thread*: `initChunkAllocator(m_thread_id, …)`.
    Frees need no thread id, and the chunked teardown (CONTINUEB) runs on
    the owning thread.  First confirm why 0 was chosen (JoinAgg merges

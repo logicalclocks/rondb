@@ -3965,15 +3965,24 @@ static void
 check_memory_area_pos(LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr,
                       lc_uint32 *check_pos)
 {
+  /**
+   * Find the highest non-empty free list at or below *check_pos.
+   * *check_pos is the segment's current position and an allocation
+   * only moves areas down, so all lists above it are empty. If list
+   * *check_pos still has areas the position is unchanged.
+   */
+#ifdef VM_TRACE
+  for (lc_uint32 i = (*check_pos) + 1; i < NUM_FREE_AREA_LISTS; i++)
+  {
+    require(mem_area_ptr->m_first_free[i] == nullptr);
+  }
+#endif
   for (lc_uint32 i = (*check_pos) + 1; i > 0; i--)
   {
     if (mem_area_ptr->m_first_free[i - 1] != nullptr)
     {
-      if (i != (*check_pos) + 1)
-      {
-        *check_pos = i - 1;
-        return;
-      }
+      *check_pos = i - 1;
+      return;
     }
   }
   *check_pos = POS_MEMORY_AREA_EMPTY;
@@ -4873,6 +4882,51 @@ simple_single_thread_long_small_test()
   free(ptrs);
 }
 
+/**
+ * Test case for bug where check_memory_area_pos skipped the list it
+ * started from. A segment with a free area still in that list moved to
+ * a lower base list, 32 kB requests no longer found it and a new
+ * segment was fetched.
+ *
+ * Carve 32 pages from a fresh segment, the big free area drops to
+ * list 8. Free pages 1-8, they merge into a second list 8 area which
+ * is first in the list. Then allocate 8 more pages. They fit in the
+ * segment, so no second segment may be fetched.
+ */
+static void
+long_segment_position_test()
+{
+  const lc_uint32 num_pages = 32;
+  const lc_uint32 num_extra = 8;
+  void *ptrs[num_pages + num_extra];
+  size_t malloc_size = 32768;
+  printf("Long malloc segment position test\n");
+  int start_mallocs = num_mallocs.load();
+  for (lc_uint32 i = 0; i < num_pages; i++)
+  {
+    ptrs[i] = lc_ndbd_pool_malloc(malloc_size, 0, 0, 0);
+    require(ptrs[i] != nullptr);
+  }
+  require(num_mallocs.load() == start_mallocs + 1);
+  for (lc_uint32 i = 1; i <= 8; i++)
+  {
+    lc_ndbd_pool_free(ptrs[i]);
+    ptrs[i] = nullptr;
+  }
+  for (lc_uint32 i = num_pages; i < num_pages + num_extra; i++)
+  {
+    ptrs[i] = lc_ndbd_pool_malloc(malloc_size, 0, 0, 0);
+    require(ptrs[i] != nullptr);
+  }
+  require(num_mallocs.load() == start_mallocs + 1);
+  for (lc_uint32 i = 0; i < num_pages + num_extra; i++)
+  {
+    if (ptrs[i] != nullptr)
+      lc_ndbd_pool_free(ptrs[i]);
+  }
+  require(num_mallocs.load() == start_mallocs);
+}
+
 static void
 many_single_thread_short_test(void **mem_area)
 {
@@ -5429,6 +5483,7 @@ lc_ndbd_malloc_test()
   test_get_array_pos();
   simple_single_thread_long_test();
   simple_single_thread_long_small_test();
+  long_segment_position_test();
   printf("num_mallocs: %d\n", num_mallocs.load());
   many_malloc_single_thread_long_test();
   printf("num_mallocs: %d\n", num_mallocs.load());
