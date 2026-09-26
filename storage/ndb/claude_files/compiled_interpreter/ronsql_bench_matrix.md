@@ -38,7 +38,28 @@ few and many groups), each with plan pins so the case log carries the
 EXPLAIN.  `--queries all --load both` runs every category in one
 cluster; `mysql-test/suite/ronsqlcrunch/census.cnf` (through
 `--cpubind`, which is a plain defaults-extra-file) raises `DataMemory`
-so both data sets fit at sf 1.  `ronsql_bench_triage.py <out>
+so both data sets fit at sf 1, and `census_benchbox.cnf` adds the
+benchmark computer's `NumCPUs` and CPU sets (run it with
+`--client-cpus 24-31 --expect-ldm 4`, see the file).
+
+The driver reads what the cluster is before the first case — threads
+and `NumCPUs` per data node (`ndbinfo.threads`, `ndbinfo.config_values`),
+the CPU set of every ndbmtd / mysqld / rdrs2 process of the mtr var
+directory and the CPU topology (Linux `/proc`, `/sys`), the loaded row
+counts — into `results.json` `meta.cluster` and a `cluster:` line of the
+report, also with `--no-start` (the arguments describe nothing then).
+It warns when `NumCPUs` does not match the data-node sets, a server is
+unbound, sets overlap (client included), or the data-node sets (or
+mysqld's and RDRS's) are not alike in cores and clock; `--expect-ldm N`
+stops before the first case when a data node does not run N LDM
+threads.  Every case records the statement it ran (`statement`); the
+report marks a MySQL case that ran another statement than its RonSQL
+pair (`≠SQL`, census run 6's tpch_cte ran the official TPC-H SQL).
+RonSQL's `tpch_qN` pairs with `.bench_sql cte_tpch_qN`; the official
+statement runs as `tpch_qN_official` (`--queries tpch_official`), and
+the driver refuses two pairs or two cases with the same name.
+
+`ronsql_bench_triage.py <out>
 [--baseline <earlier out>]` turns `results.json` into the ranked
 needs-work list (latency and throughput classes against the MySQL
 server, phase attribution, OFF/ON, plan-pin warnings, the 15 % / 25 %
@@ -46,7 +67,11 @@ regression rule).  It merges several run directories (a rerun of the
 thread counts a stopped run did not reach), reports where an
 incomplete run stopped, prints the ON arm's `ndbinfo.jit` deltas per
 query, and counts a baseline's verdicts only when it ran on the same
-host and architecture.  See `storage/ndb/claude_files/fs_ronsql/m3_plan.md`.
+host and architecture and the same recorded cluster configuration
+(`CONFIG DIFFERS` otherwise; runs without `meta.cluster` are
+informational).  A pair whose MySQL case ran another statement is
+classed `DIFFERENT-SQL` (parsed from the case logs for older runs), not
+SLOW / CRITICAL.  See `storage/ndb/claude_files/fs_ronsql/m3_plan.md`.
 
 ```sh
 # smoke run: 1 thread, ~2 s per case, sf 0.1, all queries, all engines, OFF then ON

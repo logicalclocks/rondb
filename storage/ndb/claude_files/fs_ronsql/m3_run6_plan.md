@@ -16,8 +16,8 @@ tests.  This plan orders the follow-up work: **A memory leaks**, then
   run 4.  Comparisons with run 5 (X0) are confounded.
 - **No code regression.**  Every apparent regression is explained by the
   configuration, the RDRS head-of-line blocking (B2) or the tpch_cte
-  pairing bug (the mysqld arm ran the official TPC-H SQL; fixed in
-  `ronsql_bench_matrix.py`, 97f7b2954ca).  `attempts=1` everywhere; the
+  pairing bug (the mysqld arm ran the official TPC-H SQL; partly fixed
+  in 97f7b2954ca, completed in B1b).  `attempts=1` everywhere; the
   only retries were offline_fs_wide's expected out-of-memory failure.
 - **F24 fixes worked:** offline_fs_scalar 993 → 168 ms, offline_fs_batch
   1538 → 211 ms, tpch q2 / q13 / q22 single request ~1.1 s → 113 / 139 /
@@ -405,6 +405,50 @@ lines on the box; have the driver log the LDM count per node
 (`SELECT node_id, COUNT(*) FROM ndbinfo.threads WHERE thread_name='ldm'
 GROUP BY node_id`) and warn when it does not match the cnf.
 
+*Status (2026-09-26): done in the driver, not yet run on the box.*  The
+box (`lscpu -e`) is a hybrid CPU: 0-15 = 8 P-cores × 2 hyperthreads
+(cores 2 and 3, CPUs 4-7, favoured at 5.8 GHz, the rest 5.5 GHz), 16-31 =
+16 E-cores at 4.3 GHz in four L2 clusters.  X0 as written (data nodes
+0-14 and 16-30) would have put one data node on P-cores and the other on
+E-cores, and run 6's `--client-cpus 12-15,28-31` overlaps both data-node
+sets and mysqld.  New `mysql-test/suite/ronsqlcrunch/census_benchbox.cnf`
+(checked in, nothing uncommented by hand): data nodes on 4 P-cores each
+with one favoured core each (0-5,8-9 and 6-7,10-15), `NumCPUs=8` (4 LDM,
+2 TC, 1 send, 1 recv per node), both mysqlds on E-cluster 16-19, RDRS on
+20-23 (same kind of CPUs as mysqld), client and driver on 24-31;
+census.cnf keeps no binding and points to it.  Fewer LDMs than X0's
+intended 6, but alike nodes; using E-cores for the data nodes would mix
+LDM speeds.  `ronsql_bench_matrix.py` now reads the running cluster
+before the first case, also with `--no-start` (runs 6 fs / fs_hw /
+tpch_cte recorded `cpubind=-` and the default `sf=0.1` from the
+arguments): threads and NumCPUs per node, every server's CPU set and
+the CPU topology (Linux `/proc`, `/sys`), loaded row counts →
+`meta.cluster` and a `cluster:` report line; warnings for NumCPUs ≠
+set size, unbound servers, overlapping sets (client included), and
+data-node sets (or mysqld's vs RDRS's) not alike in cores and clock;
+`--expect-ldm N` stops before the first case on a mismatch.
+`ronsql_bench_triage.py` shows both runs' clusters and makes the
+baseline verdicts informational when the configuration differs (`CONFIG
+DIFFERS`) or is not recorded — so runs 4–6 are never a regression
+baseline for runs from the new configuration.
+
+**B1b. tpch_cte pairing.**  97f7b2954ca paired RonSQL `tpch_qN` with
+`cte_tpch_qN`, but left the official statement (`.bench_sql tpch_qN`) as a
+MySQL-only pair also named `tpch_qN`: `--queries tpch_cte` ran both on
+MySQL, the two cases shared a tag (one log overwrote the other) and the
+report took the slower as the median of two.  *Done (2026-09-26):* the
+official pairs are named `tpch_qN_official` (`--queries tpch_official`),
+a `.bench_sql` name selects only when no pair has that name, duplicate
+pair names or case tags stop the driver.  Every case records its
+statement; the report marks a MySQL case whose statement differs from its
+RonSQL pair's (`≠SQL`), the triage classes it `DIFFERENT-SQL` (never
+SLOW / CRITICAL; for older runs the statement is parsed from the case
+logs) and a baseline case with another statement is `different SQL`.
+Run 6's tpch_cte triages as 5 × DIFFERENT-SQL: all five MySQL numbers
+(not only q2 / q22) are the official SQL — q11 3.31 s and q13 2.76 s made
+RonSQL look 11× and 3× faster.  Rerun tpch_cte with the fixed driver
+(the command in B5, `--queries tpch_cte --load tpch`).
+
 **B2. RDRS head-of-line blocking (new, also a production issue).**  On
 Linux drogon 1.9.7 gives each of the 64 IO loops its own SO_REUSEPORT
 listener (`extra/drogon/drogon-1.9.7/lib/src/ListenerManager.cc` ~85–111,
@@ -446,10 +490,19 @@ avg latency) is 6.1–7.1 of 8 on RonSQL point shapes vs 7.8 for mysqld,
 even after 5e52fc493ce: ~20 % of RonSQL q/s lost client-side outside the
 timed window (tools/rondb-cli/internal/client/rest.go ~175).
 
-**B5. Run 7.**  X0 active, pairing fix, wider memory probe,
-`--mem-settle 5`, one idle reading ~30 s after the last case, `--repeat 3`
-for core_scan_filter / core_scan_agg (+18–20 %, unexplained), threads
-1,8.
+**B5. Run 7.**  census_benchbox.cnf (B1) with `--expect-ldm 4`, pairing
+fix (B1b), wider memory probe, `--mem-settle 5`, one idle reading ~30 s
+after the last case, `--repeat 3` for core_scan_filter / core_scan_agg
+(+18–20 %, unexplained), threads 1,8.  Shape of the command (on the box,
+after pulling):
+
+```
+taskset -c 24-31 python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+    --build prod_build --queries all --load both --sf 1 --threads 1,8 --seconds 10 \
+    --engines ronsql,mysqld_nopush --compiler off --mem-settle 5 \
+    --cpubind mysql-test/suite/ronsqlcrunch/census_benchbox.cnf \
+    --client-cpus 24-31 --expect-ldm 4 --keep-cluster --out ~/census_run7
+```
 
 ## C. Specific queries (third)
 

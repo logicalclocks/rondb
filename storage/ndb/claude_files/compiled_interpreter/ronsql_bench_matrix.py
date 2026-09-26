@@ -46,7 +46,7 @@ Usage (from the repo root):
       [--build prod_build] [--sf 0.1] [--threads 1,8] [--seconds 5 | --requests N]
       [--queries all|fs|offline_fs|tpch_cte|tpch_official|name,name,...]
       [--engines ronsql,mysqld,mysqld_nopush] [--compiler off,on]
-      [--cpubind FILE] [--client-cpus 16-19] [--rondis] [--rdrs-threads 64]
+      [--cpubind FILE] [--client-cpus 16-19] [--expect-ldm N] [--rondis] [--rdrs-threads 64]
       [--toggle auto|set|restart] [--no-load] [--keep-cluster]
       [--no-start --mysql-port P --mysql-sock S --rdrs-port P --connectstring C]
       [--no-mem-probe | --mem-sample 1.0 --mem-settle 1.0]
@@ -54,6 +54,15 @@ Usage (from the repo root):
 
   --quick     = --threads 1 --seconds 2 (smoke run)
   --stop      = only stop a cluster left running by --keep-cluster
+
+Before the first case the driver reads what the cluster is (ndbinfo
+thread counts and NumCPUs per data node, the CPU set of every server
+process on Linux, the loaded row counts) into results.json meta.cluster
+and the report header, warns about a NumCPUs that does not match the
+data-node CPU sets and about CPU sets shared between data nodes, servers
+and the client, and with --expect-ldm N stops when a data node does not
+run N LDM threads.  Every case records the statement it ran; the report
+marks a MySQL case whose statement differs from its RonSQL pair's.
 
 Outputs: <out>/results.json (every case, all parsed numbers),
 <out>/report.md (the tables printed at the end), <out>/cases/*.txt
@@ -117,6 +126,11 @@ RE_FETCHED = re.compile(r'rows fetched\s+([0-9.]+) per request')
 RE_DONE = re.compile(r'Benchmark \S+ completed in ([0-9.]+)s')
 RE_LIST = re.compile(r'^    (\S+)\s+(.*\S)\s*$')
 RE_PROGRESS = re.compile(r'Progress: (\d+)/(\d+) requests')
+# The benchmark header of .bench_ronsql / .bench_sql, followed by the
+# description line, a blank line and the statement; the statement ends at
+# the next rondb-cli status line ([*] / [OK] / [WARN] / [ERROR]).
+RE_BENCH_HDR = re.compile(r'(?:RonSQL|SQL) Benchmark \S+.* total requests')
+RE_UI_LINE = re.compile(r'^\[(?:\*|OK|WARN|ERROR)\] ')
 
 
 # ---------------------------------------------------------------- utils
@@ -193,6 +207,188 @@ def which_bin(build, name):
 
 def median(xs):
     return statistics.median(xs) if xs else None
+
+
+def case_statement(lines):
+    """The statement a benchmark case ran, whitespace-normalised, from the
+    rondb-cli output (both runners print the registry SQL after the
+    header and the description), or None when there is no header."""
+    for i, line in enumerate(lines):
+        if RE_BENCH_HDR.search(line):
+            body = []
+            for l in lines[i + 2:]:
+                if RE_UI_LINE.match(l):
+                    break
+                body.append(l)
+            text = ' '.join(' '.join(body).split())
+            return text or None
+    return None
+
+
+def case_file_statement(run_dir, case):
+    """case_statement() of a recorded case: its 'statement' field, or for
+    results.json files written before the field existed, parsed from the
+    raw CLI log <run_dir>/cases/<tag>.txt."""
+    if case.get('statement'):
+        return case['statement']
+    tag = case.get('tag')
+    if not tag:
+        return None
+    try:
+        with open(os.path.join(run_dir, 'cases', tag + '.txt'), errors='replace') as f:
+            return case_statement([ANSI.sub('', l.rstrip('\n')) for l in f])
+    except OSError:
+        return None
+
+
+def cpu_set(spec):
+    """'0-7,16' -> {0..7, 16}; None for an empty / unparsable list."""
+    cpus = set()
+    for part in (spec or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r'^(\d+)(?:-(\d+))?$', part)
+        if not m:
+            return None
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        cpus.update(range(lo, hi + 1))
+    return cpus or None
+
+
+def fmt_cpus(cpus):
+    """{0,1,2,5} -> '0-2,5'."""
+    out, run_start, prev = [], None, None
+    for c in sorted(cpus):
+        if prev is not None and c == prev + 1:
+            prev = c
+            continue
+        if run_start is not None:
+            out.append(str(run_start) if run_start == prev else '%d-%d' % (run_start, prev))
+        run_start = prev = c
+    if run_start is not None:
+        out.append(str(run_start) if run_start == prev else '%d-%d' % (run_start, prev))
+    return ','.join(out)
+
+
+def cpu_topology():
+    """{cpu: [core key, max MHz]} from Linux sysfs, None elsewhere: which
+    logical CPUs share a core (SMT) and how fast each can run (a hybrid
+    CPU's P- and E-cores differ, census box: 0-15 = 8 P-cores x 2, 16-31 =
+    16 E-cores)."""
+    base = '/sys/devices/system/cpu'
+    if not os.path.isdir(base):
+        return None
+    def read(path):
+        try:
+            with open(path) as fh:
+                return fh.read().strip()
+        except OSError:
+            return None
+    out = {}
+    for name in os.listdir(base):
+        m = re.match(r'^cpu(\d+)$', name)
+        if not m:
+            continue
+        d = os.path.join(base, name)
+        pkg, core = read(os.path.join(d, 'topology', 'physical_package_id')), read(os.path.join(d, 'topology', 'core_id'))
+        khz = read(os.path.join(d, 'cpufreq', 'cpuinfo_max_freq'))
+        out[m.group(1)] = ['%s:%s' % (pkg, core) if core is not None else None,
+                           int(khz) // 1000 if khz and khz.isdigit() else None]
+    return out or None
+
+
+def cpu_set_shape(cpus, topo):
+    """(logical CPUs, physical cores, sorted max MHz) of a CPU set."""
+    info = [topo.get(str(c)) for c in sorted(cpus)]
+    if not topo or any(i is None for i in info):
+        return None
+    return (len(cpus), len({i[0] for i in info}), tuple(sorted(i[1] or 0 for i in info)))
+
+
+def shape_text(shape):
+    n, cores, mhz = shape
+    lo, hi = min(mhz), max(mhz)
+    return '%d CPUs on %d cores, max %s MHz' % (n, cores, lo if lo == hi else '%d-%d' % (lo, hi))
+
+
+def config_warnings(facts):
+    """What is wrong with the measured configuration (meta.cluster): data
+    nodes with different LDM counts, NumCPUs that does not match the
+    data-node CPU sets (census run 4: NumCPUs=4 on 15-CPU sets), unbound
+    server processes, and CPU sets shared between data nodes, servers and
+    the benchmark client (the two mysqlds may share: the second is idle)."""
+    w = []
+    nodes = facts.get('nodes') or {}
+    ldm = {n: (v.get('threads') or {}).get('ldm', 0) for n, v in nodes.items()}
+    if len(set(ldm.values())) > 1:
+        w.append('data nodes run different LDM thread counts: %s'
+                 % ', '.join('node %s %d' % kv for kv in sorted(ldm.items())))
+    procs = facts.get('procs')
+    if not procs:
+        return w
+    everything = set(range(facts.get('online_cpus') or 0))
+    sets = {k: cpu_set(v) for k, v in procs.items()}
+    bound = {}
+    for k, s in sorted(sets.items()):
+        if s is None or (everything and s >= everything):
+            w.append('%s is not bound to a CPU set (%s)' % (k, procs[k]))
+        else:
+            bound[k] = s
+    client = cpu_set(facts.get('client_cpus'))
+    if client is None:
+        w.append('the benchmark client is not bound (--client-cpus)')
+    else:
+        bound['client'] = client
+    ndbd_sizes = {len(s) for k, s in bound.items() if k.startswith('ndbd')}
+    num_cpus = {v.get('NumCPUs') for v in nodes.values() if v.get('NumCPUs') is not None}
+    if len(ndbd_sizes) == 1 and len(num_cpus) == 1:
+        size, nc = ndbd_sizes.pop(), num_cpus.pop()
+        if str(size) != str(nc):
+            w.append('NumCPUs=%s on %d-CPU data-node sets: the thread configuration does not match the binding'
+                     % (nc, size))
+    # Sets that are compared with each other must be alike: the data nodes
+    # (a node on E-cores or on SMT siblings limits the cluster), and the
+    # two servers of the engine comparison (mysqld.1.1 and rdrs.1.1).
+    topo = facts.get('cpus')
+    if topo:
+        for group in ([k for k in bound if k.startswith('ndbd')], [k for k in ('mysqld.1.1', 'rdrs.1.1') if k in bound]):
+            shapes = {k: cpu_set_shape(bound[k], topo) for k in group}
+            if len(group) > 1 and None not in shapes.values() and len(set(shapes.values())) > 1:
+                w.append('CPU sets not alike: ' + '; '.join('%s %s' % (k, shape_text(shapes[k])) for k in sorted(group)))
+    keys = sorted(bound)
+    for i, ka in enumerate(keys):
+        for kb in keys[i + 1:]:
+            if ka.startswith('mysqld') and kb.startswith('mysqld'):
+                continue
+            common = bound[ka] & bound[kb]
+            if common:
+                w.append('%s and %s share CPUs %s' % (ka, kb, fmt_cpus(common)))
+    return w
+
+
+def cluster_summary(facts):
+    """One line describing the cluster a run measured (meta.cluster)."""
+    if not facts:
+        return 'unknown (results.json without meta.cluster)'
+    if facts.get('error'):
+        return 'unknown (%s)' % facts['error']
+    parts = []
+    for node, n in sorted((facts.get('nodes') or {}).items(), key=lambda kv: int(kv[0])):
+        thr = n.get('threads') or {}
+        parts.append('node %s: %s; NumCPUs %s' % (
+            node, ', '.join('%s %d' % (k, thr[k]) for k in sorted(thr)) or 'no threads',
+            n.get('NumCPUs', '?')))
+    procs = facts.get('procs')
+    if procs is None:
+        parts.append('process CPU sets unknown (%s)' % (facts.get('procs_note') or 'not Linux'))
+    else:
+        parts.append('CPU sets: ' + ', '.join('%s %s' % (k, procs[k]) for k in sorted(procs))
+                     + ', client %s' % (facts.get('client_cpus') or 'unbound'))
+    data = facts.get('data') or {}
+    if data:
+        parts.append('data: ' + ', '.join('%s %d rows' % (k, v) for k, v in sorted(data.items())))
+    return '; '.join(parts)
 
 
 # ------------------------------------------------------------- cluster
@@ -375,6 +571,76 @@ class Cluster:
             self.sql('ANALYZE TABLE ' + ', '.join('tpch.' + t for t in tables))
         return tables
 
+    # -- the configuration that is actually running -------------------------
+    def facts(self, client_cpus):
+        """What the running cluster is, read from it instead of from the
+        driver's arguments (census run 6 attached with --no-start and
+        recorded cpubind=- and the default sf; run 4 and run 6 ran
+        NumCPUs=4 without anyone noticing): thread counts per data node
+        (ndbinfo.threads), NumCPUs and AutomaticThreadConfig
+        (ndbinfo.config_values), the CPU set of every server process of
+        this mtr var directory (Linux /proc) and the loaded row counts."""
+        f = {'nodes': {}, 'procs': None, 'procs_note': None, 'client_cpus': client_cpus,
+             'online_cpus': os.cpu_count(), 'data': {}}
+        for node, name, cnt in self.sql('SELECT node_id, thread_name, COUNT(*) FROM ndbinfo.threads '
+                                        'GROUP BY node_id, thread_name'):
+            f['nodes'].setdefault(str(int(node)), {'threads': {}})['threads'][name] = int(cnt)
+        try:
+            for node, pname, val in self.sql(
+                    "SELECT v.node_id, p.param_name, v.config_value FROM ndbinfo.config_values AS v "
+                    "JOIN ndbinfo.config_params AS p ON p.param_number = v.config_param "
+                    "WHERE p.param_name IN ('NumCPUs', 'AutomaticThreadConfig')"):
+                f['nodes'].setdefault(str(int(node)), {'threads': {}})[pname] = val
+        except RuntimeError:
+            pass
+        for key in ('tpch.lineitem', 'fs_bench.customers_1'):
+            try:
+                f['data'][key] = int(self.sql('SELECT COUNT(*) FROM %s' % key)[0][0])
+            except (RuntimeError, IndexError, ValueError):
+                pass
+        f['procs'], f['procs_note'] = self.proc_cpus()
+        f['cpus'] = cpu_topology()
+        return f
+
+    def proc_cpus(self):
+        """({label: Cpus_allowed_list}, None) for the ndbmtd / mysqld / rdrs2
+        processes of this mtr var directory (labels as in the cnf:
+        ndbd.1.1, mysqld.1.1, rdrs.1.1), or (None, why not)."""
+        if not os.path.isdir('/proc/self'):
+            return None, 'no /proc: not Linux'
+        roots = {self.var, os.path.realpath(self.var)}
+        procs = {}
+        for pid in os.listdir('/proc'):
+            if not pid.isdigit():
+                continue
+            try:
+                with open('/proc/%s/cmdline' % pid, 'rb') as fh:
+                    argv = [x.decode('utf-8', 'replace') for x in fh.read().split(b'\0') if x]
+                with open('/proc/%s/status' % pid) as fh:
+                    status = fh.read()
+            except OSError:
+                continue
+            cmd = ' '.join(argv)
+            if not argv or not any(r in cmd for r in roots):
+                continue
+            exe = os.path.basename(argv[0])
+            suffix = re.search(r'--defaults-group-suffix=(\S+)', cmd)
+            if exe in ('ndbmtd', 'ndbd') and suffix:
+                label = 'ndbd' + suffix.group(1)
+            elif exe == 'mysqld' and suffix:
+                label = 'mysqld' + suffix.group(1)
+            elif exe == 'rdrs2':
+                m = re.search(r'(rdrs\.\d+\.\d+)_config\.json', cmd)
+                label = m.group(1) if m else 'rdrs'
+            else:
+                continue
+            m = re.search(r'^Cpus_allowed_list:\s*(\S+)', status, re.M)
+            if m:
+                procs[label] = m.group(1)   # the angel and the worker ndbmtd share it
+        if not procs:
+            return None, 'no ndbmtd / mysqld / rdrs2 process of %s found' % self.var
+        return procs, None
+
     # -- compiler mode ----------------------------------------------------
     def jit_mode_values(self):
         try:
@@ -474,6 +740,7 @@ class Driver:
         self.case_times = []
         self.n_cache = {}
         self.cluster_down = None   # message once the cluster stopped answering (a mysqld crash ends the matrix)
+        self.cluster = None        # what the running cluster is (read_cluster)
         os.makedirs(os.path.join(a.out, 'cases'), exist_ok=True)
 
     # -- rondb-cli --------------------------------------------------------
@@ -494,30 +761,49 @@ class Driver:
 
     def list_queries(self):
         out = {}
+        mysql_only_names = set()   # .bench_ronsql names of MySQL-only entries
         for eng, cmd in (('ronsql', '.bench_ronsql list'), ('sql', '.bench_sql list')):
             rc, lines = self.cli(cmd, line_cb=lambda l: None)
             names = []
             for l in lines:
                 m = RE_LIST.match(l)
                 # 'all' and 'fs_hw' are the category runners of the listing, not queries
-                if m and m.group(1) not in ('all', 'fs_hw') and '[.bench_sql only]' not in l:
+                if not m or m.group(1) in ('all', 'fs_hw'):
+                    continue
+                if '[.bench_sql only]' in l:
+                    mysql_only_names.add(m.group(1))
+                else:
                     names.append((m.group(1), m.group(2)))
             if not names:
                 raise RuntimeError('could not parse "%s" output:\n%s' % (cmd, '\n'.join(lines)))
             out[eng] = names
         # pair RonSQL names with their .bench_sql twin: the cte_ rewrite when
-        # there is one (tpch_qN runs cte_tpch_qN's SQL; the official tpch_qN
-        # stays a mysql_only entry for --queries tpch_official), else the
-        # same name
+        # there is one (tpch_qN runs cte_tpch_qN's SQL), else the same name
         sql_names = [n for n, _ in out['sql']]
+        ronsql_names = {n for n, _ in out['ronsql']}
         pairs = []
         for n, d in out['ronsql']:
             sql = 'cte_' + n if 'cte_' + n in sql_names else (n if n in sql_names else None)
             pairs.append({'name': n, 'sql': sql, 'desc': d, 'mysql_only': False})
         covered = {p['sql'] for p in pairs}
         for n, d in out['sql']:
-            if n not in covered:
-                pairs.append({'name': n, 'sql': n, 'desc': d, 'mysql_only': True})
+            if n in covered:
+                continue
+            name = n
+            if n in ronsql_names:
+                # .bench_sql tpch_qN is the official statement, .bench_ronsql
+                # tpch_qN the CTE rewrite: the MySQL-only case takes the
+                # registry's .bench_ronsql name (tpch_qN_official) so its
+                # results never mix with the pair's (census run 6 compared
+                # RonSQL's rewrite with MySQL's official SQL).
+                name = n + '_official'
+                if name not in mysql_only_names:
+                    raise RuntimeError('.bench_sql %s is a MySQL-only statement, but .bench_ronsql %s is another one '
+                                       'and there is no %s to name it by' % (n, n, name))
+            pairs.append({'name': name, 'sql': n, 'desc': d, 'mysql_only': True})
+        dup = sorted({p['name'] for p in pairs if sum(1 for x in pairs if x['name'] == p['name']) > 1})
+        if dup:
+            raise RuntimeError('two registry entries pair under the same name: %s' % ', '.join(dup))
         return pairs
 
     def select_queries(self, pairs):
@@ -527,17 +813,25 @@ class Driver:
                 'fs_hw': lambda n: n.startswith('fs_hw_'),
                 'offline_fs': lambda n: n.startswith('offline_fs_'),
                 'tpch_cte': lambda n: n.startswith('tpch_q') and not n.endswith('_official'),
-                'tpch_official': lambda n: n.startswith('tpch_q') and n in [p['sql'] for p in pairs if p['mysql_only']]}
+                'tpch_official': lambda n: n.startswith('tpch_q') and n.endswith('_official')}
         if sel in ('all', ''):
             chosen = list(pairs)
         elif sel in cats:
             chosen = [p for p in pairs if cats[sel](p['name'])]
         else:
-            wanted = set(sel.split(','))
-            chosen = [p for p in pairs if p['name'] in wanted or p['sql'] in wanted]
-            missing = wanted - {p['name'] for p in chosen} - {p['sql'] for p in chosen}
+            # a name selects its pair; a .bench_sql name (cte_tpch_q2) only
+            # when no pair has that name (tpch_q2 is the pair, not the
+            # official statement .bench_sql calls tpch_q2)
+            wanted = [w for w in sel.split(',') if w]
+            picked, missing = set(), []
+            for w in wanted:
+                hits = [p['name'] for p in pairs if p['name'] == w] or [p['name'] for p in pairs if p['sql'] == w]
+                if not hits:
+                    missing.append(w)
+                picked.update(hits)
             if missing:
                 raise RuntimeError('unknown queries: %s' % ', '.join(sorted(missing)))
+            chosen = [p for p in pairs if p['name'] in picked]
         if not self.fs_hash_twin():
             # transactions_hash_1 is loaded only with --hash-twin (default at sf <= 0.1):
             # a case with a missing prerequisite is an error, not a timing sample
@@ -554,7 +848,8 @@ class Driver:
         if self.a.no_hash_twin:
             return False
         sf = self.a.fs_sf if self.a.fs_sf is not None else self.a.sf
-        if self.a.hash_twin or sf <= 0.1:
+        if self.a.hash_twin or (sf <= 0.1 and not self.a.no_load):
+            # without a load of our own, --sf describes nothing: look
             return True
         try:
             return bool(self.cl.sql("SHOW TABLES LIKE 'transactions_hash_1'", db='fs_bench'))
@@ -677,6 +972,27 @@ class Driver:
         self.cl.start(mode)
         self.ensure_data()
 
+    def read_cluster(self):
+        """Record what the running cluster is (meta.cluster, the report
+        header), warn about a configuration that does not match its
+        binding, and stop before the first case when --expect-ldm is not
+        what every data node runs."""
+        try:
+            self.cluster = self.cl.facts(self.a.client_cpus)
+        except RuntimeError as e:
+            self.cluster = {'error': str(e).splitlines()[0][:200]}
+        self.cluster['warnings'] = [] if self.cluster.get('error') else config_warnings(self.cluster)
+        log('%s == cluster: %s' % (ts(), cluster_summary(self.cluster)))
+        for w in self.cluster['warnings']:
+            log('   WARNING: ' + w)
+        if self.a.expect_ldm is not None:
+            ldm = {n: (v.get('threads') or {}).get('ldm', 0) for n, v in (self.cluster.get('nodes') or {}).items()}
+            if not ldm or any(v != self.a.expect_ldm for v in ldm.values()):
+                raise RuntimeError('--expect-ldm %d, but the data nodes run %s: wrong configuration '
+                                   '(NumCPUs / cpubind in the --cpubind file), no case was run'
+                                   % (self.a.expect_ldm, ', '.join('node %s %d LDM' % kv for kv in sorted(ldm.items()))
+                                      or 'unknown LDM counts'))
+
     # -- one case -----------------------------------------------------------
     def requests_for(self, engine, q, arm, threads):
         if self.a.requests:
@@ -733,6 +1049,7 @@ class Driver:
             peak = sampler.finish() if sampler is not None else {}
         r['wall_s'] = time.time() - t0
         r['rc'] = rc
+        r['statement'] = case_statement(lines)
         text = '\n'.join(lines)
         if record:
             with open(os.path.join(self.a.out, 'cases', '%s.txt' % tag), 'w') as f:
@@ -816,9 +1133,14 @@ class Driver:
                 r['mem_samples'] = sampler.samples if sampler is not None else 0
         return r
 
+    @staticmethod
+    def case_tag(arm, engine, q, threads, rep):
+        """The case's name in results.json and its cases/<tag>.txt file."""
+        return '%s_%s_%s_T%d' % (arm.lower(), engine, q['name'], threads) + ('_r%d' % rep if rep else '')
+
     def run_case(self, idx, total, arm, engine, q, threads, rep=0):
         n = self.requests_for(engine, q, arm, threads)
-        tag = '%s_%s_%s_T%d' % (arm.lower(), engine, q['name'], threads) + ('_r%d' % rep if rep else '')
+        tag = self.case_tag(arm, engine, q, threads, rep)
         t0 = time.time()
         log('')
         log('%s [%d/%d] compiler=%s engine=%s query=%s threads=%d requests/thread=%d%s'
@@ -895,6 +1217,7 @@ class Driver:
                 'order': self.a.order, 'repeat': self.a.repeat, 'idle_rates': getattr(self, 'idle', {}),
                 'requests': self.a.requests, 'engines': self.a.engines, 'compiler': self.a.compiler,
                 'cpubind': self.a.cpubind, 'client_cpus': self.a.client_cpus, 'rondis': self.a.rondis,
+                'cluster': self.cluster, 'expect_ldm': self.a.expect_ldm,
                 'started': self.started, 'host': os.uname().nodename, 'os': os.uname().sysname,
                 'arch': os.uname().machine}
         with open(os.path.join(self.a.out, 'results.json'), 'w') as f:
@@ -911,6 +1234,7 @@ class Driver:
         self.idle = {}
         try:
             self.enter_arm(arms[0], first=True)
+            self.read_cluster()
             pairs = self.select_queries(self.list_queries())
             log('%s == %d queries: %s' % (ts(), len(pairs), ', '.join(p['name'] for p in pairs)))
             if any(e.startswith('mysqld') for e in a.engines):
@@ -949,6 +1273,11 @@ class Driver:
                                 for eng in a.engines:
                                     if eligible(q, eng):
                                         cases.append((arm, threads, q, eng, rep))
+            tags = [self.case_tag(arm, eng, q, threads, rep) for arm, threads, q, eng, rep in cases]
+            dup = sorted({t for t in tags if tags.count(t) > 1})
+            if dup:
+                raise RuntimeError('cases with the same tag would overwrite each other\'s log and mix in the '
+                                   'report: %s' % ', '.join(dup))
             total = len(cases)
             log('%s == %d cases, order %s, repeat %d (report shows the median run per case)'
                 % (ts(), total, a.order, a.repeat))
@@ -999,6 +1328,22 @@ class Driver:
             return ok[len(ok) // 2]
         return hits[0] if hits else None
 
+    def statement_mismatches(self):
+        """{query: {engines}} for the MySQL cases whose statement differs
+        from the RonSQL case's of the same pair (both recorded)."""
+        out = {}
+        stmt = {id(r): case_file_statement(self.a.out, r) for r in self.results}
+        for q in {r['query'] for r in self.results}:
+            rs = {stmt[id(r)] for r in self.results
+                  if r['query'] == q and r['engine'] == 'ronsql' and stmt[id(r)]}
+            if len(rs) != 1:
+                continue
+            ref = rs.pop()
+            for r in self.results:
+                if r['query'] == q and r['engine'] != 'ronsql' and stmt[id(r)] and stmt[id(r)] != ref:
+                    out.setdefault(q, set()).add(r['engine'])
+        return out
+
     def report(self):
         a = self.a
         R = self.results
@@ -1010,10 +1355,23 @@ class Driver:
         out = []
         out.append('# RonSQL / MySQL / compiled-interpreter benchmark matrix')
         out.append('')
+        host = getattr(self, 'host_info', None) or (os.uname().nodename, os.uname().sysname, os.uname().machine)
         out.append('build=%s sf=%g threads=%s engines=%s compiler=%s order=%s repeat=%d cpubind=%s client_cpus=%s host=%s (%s %s) started %s'
-                   % (a.build, a.sf, a.threads, ','.join(a.engines), ','.join(arms), a.order, a.repeat, a.cpubind or '-',
-                      a.client_cpus or '-', os.uname().nodename, os.uname().sysname, os.uname().machine, self.started))
+                   % ((a.build, a.sf, a.threads, ','.join(a.engines), ','.join(arms), a.order, a.repeat, a.cpubind or '-',
+                       a.client_cpus or '-') + tuple(host) + (self.started,)))
         out.append('')
+        out.append('cluster (read from the running cluster): %s' % cluster_summary(self.cluster))
+        out.append('')
+        warnings = (self.cluster or {}).get('warnings') or []
+        if warnings:
+            out.append('**Configuration warnings:** ' + '; '.join(warnings) + '.')
+            out.append('')
+        mismatch = self.statement_mismatches()
+        if mismatch:
+            out.append('**DIFFERENT SQL:** the %s case(s) of %s ran another statement than RonSQL; their ratios '
+                       '(section B, marked \u2260SQL) compare statements, not engines.'
+                       % ('/'.join(sorted({e for es in mismatch.values() for e in es})), ', '.join(sorted(mismatch))))
+            out.append('')
         failed = [r for r in R if not r['ok']]
         if failed:
             out.append('FAILED cases: ' + ', '.join('%s (%s)' % (r['tag'], r['error']) for r in failed))
@@ -1074,7 +1432,8 @@ class Driver:
                         for eng in a.engines:
                             if eng != 'ronsql':
                                 m = get(qn, eng, arm, threads, 'avg_ms')
-                                row += ' %s | %s |' % (fmt_ms(m), fmt_ratio(m, rs))
+                                diff = ' \u2260SQL' if eng in mismatch.get(qn, ()) else ''
+                                row += ' %s | %s%s |' % (fmt_ms(m), fmt_ratio(m, rs), diff)
                         out.append(row)
             out.append('')
 
@@ -1280,6 +1639,9 @@ def parse_args():
     ap.add_argument('--cpubind', help='cpubind.cnf (mtr --defaults-extra-file; see suite/ronsqlcrunch/cpubind.cnf)')
     ap.add_argument('--client-cpus', help='taskset CPU list for the rondb-cli benchmark client (Linux)')
     ap.add_argument('--num-cpus', type=int, help='override NumCPUs for the data nodes')
+    ap.add_argument('--expect-ldm', type=int,
+                    help='LDM threads every data node must run (ndbinfo.threads); a mismatch stops the matrix '
+                         'before the first case (the census passes 4 with census_benchbox.cnf)')
     ap.add_argument('--rondis', action='store_true', help='also start Rondis in RDRS')
     ap.add_argument('--rdrs-threads', type=int, default=64, help='RDRS REST.NumThreads (default 64)')
     ap.add_argument('--no-start', action='store_true', help='use a running cluster (give --mysql-port/--mysql-sock/--rdrs-port/--connectstring)')
@@ -1337,11 +1699,13 @@ def main():
         with open(os.path.join(a.out, 'results.json')) as f:
             j = json.load(f)
         meta = j['meta']
-        for k in ('sf', 'threads', 'engines', 'compiler', 'cpubind', 'client_cpus', 'order', 'repeat'):
+        for k in ('build', 'sf', 'threads', 'engines', 'compiler', 'cpubind', 'client_cpus', 'order', 'repeat'):
             if k in meta:
                 setattr(a, k, meta[k])
         d = Driver.__new__(Driver)
         d.a, d.results, d.started = a, j['cases'], meta.get('started', '?')
+        d.cluster = meta.get('cluster')
+        d.host_info = (meta.get('host', '?'), meta.get('os', '?'), meta.get('arch', '?'))
         d.idle = meta.get('idle_rates', {}) or {}
         report = d.report()
         with open(os.path.join(a.out, 'report.md'), 'w') as f:

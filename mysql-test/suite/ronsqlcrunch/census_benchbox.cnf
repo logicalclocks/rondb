@@ -1,0 +1,57 @@
+# The M3.0 performance census configuration for the benchmark computer
+# (storage/ndb/claude_files/fs_ronsql/m3_plan.md, m3_run6_plan.md B1):
+# census.cnf plus NumCPUs and the CPU binding, checked in so that nothing
+# is uncommented by hand on the box (census runs 4 and 6 ran the suite
+# default NumCPUs=4; run 6 also unbound).  census.cnf stays the portable
+# variant for machines without taskset.
+#
+# The box (lscpu -e, 2026-09-26) is a hybrid CPU with 32 logical CPUs:
+#   CPUs  0-15  8 P-cores with two hyperthreads each (0/1 = core 0, 2/3 =
+#               core 1, ...), max 5.5 GHz; cores 2 and 3 (CPUs 4-7) are
+#               the favoured cores, max 5.8 GHz
+#   CPUs 16-31  16 E-cores, one thread each, max 4.3 GHz, in four
+#               clusters sharing an L2 (16-19, 20-23, 24-27, 28-31)
+# Layout, every set disjoint:
+#   data nodes  4 P-cores each, one favoured core each, so the two nodes
+#               are alike (a node on E-cores would limit the cluster):
+#               node 1 cores 0,1,2,4 = CPUs 0-5,8-9
+#               node 2 cores 3,5,6,7 = CPUs 6-7,10-15
+#               NumCPUs=8 = the set size: 4 LDM, 2 TC, 1 send, 1 recv
+#               thread per node (thr_config.cpp), so --expect-ldm 4
+#   mysqld      E-cluster 16-19 (both mysqlds; the second one is idle)
+#   RDRS        E-cluster 20-23: the same kind of CPUs as mysqld, so the
+#               RonSQL / MySQL comparison is fair
+#   client      E-clusters 24-31 for rondb-cli (--client-cpus); run the
+#               driver itself there too, so its ndbinfo sampling stays
+#               off the server CPUs
+# The driver checks all of this on the running cluster (report header
+# "cluster: ...", configuration warnings, --expect-ldm).
+#
+#   taskset -c 24-31 python3 \
+#       storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+#       --build prod_build --queries all --load both --sf 1 \
+#       --cpubind mysql-test/suite/ronsqlcrunch/census_benchbox.cnf \
+#       --client-cpus 24-31 --expect-ldm 4 ...
+
+[cluster_config.1]
+TotalMemoryConfig=12G
+DataMemory=6G
+NumCPUs=8
+
+# RDRS gets as many NDB data connections as each mysqld has
+# (ndb-cluster-connection-pool=2 in my.cnf), see census.cnf.
+[rdrs.1.1]
+RonDBConnectionPoolSize=2
+cpubind=20-23
+
+[cluster_config.ndbd.1.1]
+cpubind=0-5,8-9
+
+[cluster_config.ndbd.2.1]
+cpubind=6-7,10-15
+
+[mysqld.1.1]
+cpubind=16-19
+
+[mysqld.2.1]
+cpubind=16-19

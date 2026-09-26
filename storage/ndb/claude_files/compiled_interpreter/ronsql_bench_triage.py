@@ -26,15 +26,25 @@ Classes (ratio = RonSQL / MySQL for latency, MySQL / RonSQL for q/s; both
     SLOW      ratio <= --slow   (default 3.0)
     CRITICAL  ratio >  --slow
     FAIL      the RonSQL case failed (rejection, error, crash)
+    DIFFERENT-SQL  the MySQL case ran another statement than the RonSQL
+              case (census run 6 tpch_cte: the official TPC-H SQL against
+              RonSQL's CTE rewrite); not an engine comparison, never on the
+              needs-work list.  The statement is the case's 'statement'
+              field, or for older runs parsed from cases/<tag>.txt.
 
 Regression rule (benchmarks.md §8): a case regresses when avg worsens by
 more than --regress-avg (15 %) or p99 by more than --regress-p99 (25 %)
 against the baseline case with the same query, engine, compiler arm and
 thread count.  The verdicts count towards the needs-work list only when
-the baseline ran on the same host and architecture (results.json meta);
-across machines they compare hardware as much as code and are shown as
-information.  A plan-pin warning in the case log is reported next to a
-case so a plan change can be told from a code regression.
+the baseline ran on the same host and architecture and on the same
+cluster configuration (results.json meta.cluster: threads and NumCPUs per
+data node, process CPU sets, client CPUs, loaded rows); otherwise they
+compare hardware or configuration as much as code and are shown as
+information (CONFIG DIFFERS, or configuration not recorded: runs before
+2026-09-26).  A case whose statement differs from the baseline's is
+'different SQL', not a verdict.  A plan-pin warning in the case log is
+reported next to a case so a plan change can be told from a code
+regression.
 """
 import argparse
 import glob
@@ -42,6 +52,9 @@ import json
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ronsql_bench_matrix import case_file_statement, cluster_summary  # noqa: E402
 
 PHASE_COLS = ['parse', 'analyze', 'load', 'plan', 'compile', 'ndbprep', 'send',
               'firstbatch', 'drain', 'print']
@@ -96,6 +109,7 @@ class Run:
         if isinstance(paths, str):
             paths = [paths]
         self.dirs, self.meta, self.cases = [], {}, []
+        self._stmt = {}
         for path in paths:
             if os.path.isdir(path):
                 d = path
@@ -160,6 +174,50 @@ class Run:
         m = self.meta
         return '%s/%s' % (m.get('host') or '?', m.get('arch') or '?')
 
+    def statement(self, case):
+        """The statement a case ran (whitespace-normalised), None when
+        neither results.json nor the case log has it."""
+        if case is None:
+            return None
+        if id(case) not in self._stmt:
+            st = None
+            for d in self.dirs:
+                st = case_file_statement(d, case)
+                if st:
+                    break
+            self._stmt[id(case)] = st
+        return self._stmt[id(case)]
+
+
+def differs(a, b):
+    return a is not None and b is not None and a != b
+
+
+def config_differences(run, base):
+    """[] when both runs record the same cluster configuration, the list
+    of differences, or None when either does not record it."""
+    a, b = run.meta.get('cluster'), base.meta.get('cluster')
+    if not a or not b or a.get('error') or b.get('error'):
+        return None
+    def nodes(c):
+        return sorted('%s NumCPUs %s' % (', '.join('%s %d' % kv for kv in sorted((v.get('threads') or {}).items())),
+                                         v.get('NumCPUs', '?'))
+                      for v in (c.get('nodes') or {}).values())
+    diffs = []
+    if nodes(a) != nodes(b):
+        diffs.append('data-node threads: now [%s], baseline [%s]' % ('; '.join(nodes(a)), '; '.join(nodes(b))))
+    pa, pb = a.get('procs') or {}, b.get('procs') or {}
+    moved = sorted(k for k in set(pa) | set(pb) if pa.get(k) != pb.get(k))
+    if moved:
+        diffs.append('CPU sets: ' + ', '.join('%s %s -> %s' % (k, pb.get(k, '-'), pa.get(k, '-')) for k in moved))
+    if a.get('client_cpus') != b.get('client_cpus'):
+        diffs.append('client CPUs %s -> %s' % (b.get('client_cpus') or 'unbound', a.get('client_cpus') or 'unbound'))
+    da, db = a.get('data') or {}, b.get('data') or {}
+    changed = sorted(k for k in set(da) & set(db) if da[k] != db[k])
+    if changed:
+        diffs.append('loaded rows: ' + ', '.join('%s %d -> %d' % (k, db[k], da[k]) for k in changed))
+    return diffs
+
 
 def same_machine(run, base):
     """True / False when both runs record host and arch, None when unknown."""
@@ -213,20 +271,25 @@ def triage(run, base, a):
         row = {'query': qn, 'ronsql': rs1, 'fail': None, 'tput_fail': None}
         ms1 = run.find(qn, mysql_engine, arm, t1) if mysql_engine else None
         row['mysql'] = ms1
+        row['different_sql'] = differs(run.statement(rs1), run.statement(ms1))
         if not rs1['ok']:
             row['lat_class'] = 'FAIL'
             row['lat_ratio'] = None
             row['fail'] = rs1.get('error')
         else:
             row['lat_ratio'] = ratio(rs1.get('avg_ms'), ms1.get('avg_ms') if ms1 and ms1['ok'] else None)
-            row['lat_class'] = classify(row['lat_ratio'], a.parity, a.slow)
+            row['lat_class'] = 'DIFFERENT-SQL' if row['different_sql'] else classify(row['lat_ratio'], a.parity, a.slow)
         # throughput at the highest thread count
         rsm = run.find(qn, 'ronsql', arm, tmax) if tmax != t1 else None
         msm = run.find(qn, mysql_engine, arm, tmax) if (mysql_engine and tmax != t1) else None
         row['ronsql_max'], row['mysql_max'] = rsm, msm
         if rsm and rsm['ok']:
             row['tput_ratio'] = ratio(msm.get('qps') if msm and msm['ok'] else None, rsm.get('qps'))
-            row['tput_class'] = classify(row['tput_ratio'], a.parity, a.slow)
+            if differs(run.statement(rsm), run.statement(msm)):
+                row['different_sql'] = True
+                row['tput_class'] = 'DIFFERENT-SQL'
+            else:
+                row['tput_class'] = classify(row['tput_ratio'], a.parity, a.slow)
             row['ronsql_scale'] = ratio(rsm.get('qps'), rs1.get('qps'))
             row['mysql_scale'] = ratio(msm.get('qps') if msm and msm['ok'] else None,
                                        ms1.get('qps') if ms1 and ms1['ok'] else None)
@@ -272,7 +335,9 @@ def triage(run, base, a):
                         if d_avg is None:
                             continue
                         verdict = 'same'
-                        if d_avg - 1 > a.regress_avg or (d_p99 is not None and d_p99 - 1 > a.regress_p99):
+                        if differs(run.statement(cur), base.statement(old)):
+                            verdict = 'different SQL'
+                        elif d_avg - 1 > a.regress_avg or (d_p99 is not None and d_p99 - 1 > a.regress_p99):
                             verdict = 'REGRESSION'
                         elif 1 - d_avg > a.regress_avg:
                             verdict = 'IMPROVED'
@@ -315,7 +380,8 @@ def jit_reading(r, noise):
 def report(run, base, a):
     rows, meng, arm, other_arm, t1, tmax = triage(run, base, a)
     comparable = same_machine(run, base) if base else None
-    regressions_count = comparable is True
+    cfg = config_differences(run, base) if base else None
+    regressions_count = comparable is True and cfg == []
     out = []
     m = run.meta
     out.append('# RonSQL performance triage')
@@ -324,6 +390,20 @@ def report(run, base, a):
         run.where(), m.get('build', '?'), m.get('sf', '?'), run.threads, ','.join(run.engines), ','.join(run.arms),
         m.get('started', '?'), (' baseline=%s (host %s)' % (a.baseline, base.where())) if base else ''))
     out.append('')
+    out.append('cluster: %s' % cluster_summary(m.get('cluster')))
+    if base:
+        out.append('')
+        out.append('baseline cluster: %s' % cluster_summary(base.meta.get('cluster')))
+    out.append('')
+    warnings = (m.get('cluster') or {}).get('warnings') or []
+    if warnings:
+        out.append('**Configuration warnings:** ' + '; '.join(warnings) + '.')
+        out.append('')
+    diff_sql = sorted(r['query'] for r in rows if r.get('different_sql'))
+    if diff_sql:
+        out.append('**DIFFERENT SQL:** the MySQL case of %s ran another statement than the RonSQL case; classed '
+                   'DIFFERENT-SQL, not an engine comparison.' % ', '.join(diff_sql))
+        out.append('')
     for t in run.threads:
         miss = run.missing_queries(t)
         if miss:
@@ -343,10 +423,22 @@ def report(run, base, a):
     elif base and comparable is None:
         out.append('Baseline host unknown (old results.json without meta.host): verdicts are informational.')
         out.append('')
+    if base and cfg:
+        out.append('**CONFIG DIFFERS from the baseline:** %s. The verdicts in section 5 compare configurations as '
+                   'much as code and are informational.' % '; '.join(cfg))
+        out.append('')
+    elif base and cfg is None:
+        out.append('**Cluster configuration not recorded** for %s (results.json from before meta.cluster, '
+                   '2026-09-26): a NumCPUs or CPU-binding difference cannot be ruled out (census runs 4 and 6 '
+                   'ran NumCPUs=4), so the verdicts in section 5 are informational.'
+                   % ('both runs' if not m.get('cluster') and not base.meta.get('cluster')
+                      else ('this run' if not m.get('cluster') else 'the baseline')))
+        out.append('')
     out.append('MySQL reference engine: `%s`; compiler arm for the engine comparison: `%s`. '
                'Latency ratio = RonSQL avg / MySQL avg at T=%d; throughput ratio = MySQL q/s / RonSQL q/s at T=%d '
                '(both > 1 = RonSQL behind). Classes: PARITY <= %.2fx, SLOW <= %.2fx, CRITICAL above; '
-               'FAIL = the RonSQL case did not run.' % (meng, arm, t1, tmax, a.parity, a.slow))
+               'FAIL = the RonSQL case did not run; DIFFERENT-SQL = the MySQL case ran another statement.'
+               % (meng, arm, t1, tmax, a.parity, a.slow))
     out.append('')
 
     # 1. needs-work list
@@ -378,7 +470,7 @@ def report(run, base, a):
             if not r['base']:
                 bl = '-'
             elif not regressions_count:
-                bl = 'cross-host, see §5'
+                bl = 'informational, see §5'
             elif regs:
                 bl = '; '.join('%s %s T%d %s avg %s p99 %s' % (b['verdict'], b['engine'], b['threads'], b['arm'],
                                                             fmt_pct(b['d_avg']), fmt_pct(b['d_p99'])) for b in regs)
@@ -388,7 +480,12 @@ def report(run, base, a):
                        % (i, r['query'], lat, tput, avgs, qps, tp,
                           ('%.1f' % r['rows']) if r['rows'] is not None else '-', pins, bl))
     else:
-        out.append('Nothing: every RonSQL-capable query is at parity with the MySQL server and no case regressed.')
+        compared = [r for r in rows if not r.get('different_sql')]
+        out.append('Nothing: %s' % (
+            'every RonSQL-capable query is at parity with the MySQL server and no case regressed.'
+            if len(compared) == len(rows) else
+            '%d of %d queries compared, all at parity and none regressed; %d not compared (DIFFERENT-SQL).'
+            % (len(compared), len(rows), len(rows) - len(compared))))
     out.append('')
 
     # 2. full latency + phases table
@@ -445,7 +542,7 @@ def report(run, base, a):
     if base:
         out.append('## 5. Against the baseline (%s, host %s%s): avg > +%.0f%% or p99 > +%.0f%% = REGRESSION, avg < -%.0f%% = IMPROVED'
                    % (a.baseline, base.where(),
-                      '' if comparable else '; NOT the same machine, informational',
+                      '' if regressions_count else '; informational (another machine or configuration, see above)',
                       a.regress_avg * 100, a.regress_p99 * 100, a.regress_avg * 100))
         out.append('')
         out.append('| query | engine | threads | arm | baseline avg | now avg | avg | p99 | verdict |')
@@ -470,8 +567,9 @@ def report(run, base, a):
     regs = sum(1 for r in rows for b in r['base'] if b['verdict'] == 'REGRESSION')
     missing = sum(len(run.missing_queries(t)) for t in run.threads)
     out.append('SUMMARY queries=%d %s tmax_fail=%d missing_cases=%d regressions=%d%s' % (
-        len(rows), ' '.join('%s=%d' % (k.lower(), counts[k]) for k in ('FAIL', 'CRITICAL', 'SLOW', 'PARITY', 'N/A') if k in counts),
-        tfail, missing, regs, '' if (not base or regressions_count) else ' (cross-host, informational)'))
+        len(rows), ' '.join('%s=%d' % (k.lower(), counts[k])
+                            for k in ('FAIL', 'CRITICAL', 'SLOW', 'PARITY', 'DIFFERENT-SQL', 'N/A') if k in counts),
+        tfail, missing, regs, '' if (not base or regressions_count) else ' (informational)'))
     return '\n'.join(out) + '\n', rows
 
 

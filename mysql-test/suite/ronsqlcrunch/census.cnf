@@ -6,8 +6,10 @@
 #
 # The driver takes it through --cpubind, which is a plain
 # --defaults-extra-file for mtr (the driver appends its own
-# CompiledInterpreter / RDRS settings the same way); on Linux add the
-# cpubind= lines of cpubind.cnf below.
+# CompiledInterpreter / RDRS settings the same way).  This file carries
+# no CPU binding and runs the suite's NumCPUs; the benchmark computer
+# uses census_benchbox.cnf (the same settings plus NumCPUs and the CPU
+# sets for its hybrid CPU) with --expect-ldm.
 #
 #   python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
 #       --build prod_build --queries all --load both --sf 1 \
@@ -18,9 +20,8 @@ TotalMemoryConfig=12G
 DataMemory=6G
 # NumCPUs must equal the size of each data node's cpubind set: with the
 # suite default (4) a node bound to 15 CPUs still runs the 4-CPU thread
-# configuration (2 LDM threads) and leaves the rest idle — census run 4
-# did exactly that.  Uncomment and set together with the cpubind lines.
-#NumCPUs=15
+# configuration and leaves the rest idle — census run 4 did exactly that.
+# Set both in a machine-specific file like census_benchbox.cnf.
 
 # RDRS gets as many NDB data connections as each mysqld has
 # (ndb-cluster-connection-pool=2 in my.cnf), so an engine comparison
@@ -28,17 +29,3 @@ DataMemory=6G
 # mysqld ones (census run 5, fs_hw_floor / fs_hw_snow1_point at T=8).
 [rdrs.1.1]
 RonDBConnectionPoolSize=2
-
-# CPU binding for a benchmark computer (Linux, taskset); keep the sets
-# disjoint: data nodes, mysqld, RDRS (the RonSQL client's server: it
-# needs its own CPUs), and the rondb-cli client (--client-cpus).
-#[cluster_config.ndbd.1.1]
-#cpubind=0-14
-#[cluster_config.ndbd.2.1]
-#cpubind=16-30
-#[mysqld.1.1]
-#cpubind=15,31
-#[mysqld.2.1]
-#cpubind=15,31
-#[rdrs.1.1]
-#cpubind=32-35
