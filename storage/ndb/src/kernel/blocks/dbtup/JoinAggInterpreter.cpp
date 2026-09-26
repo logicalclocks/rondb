@@ -53,7 +53,7 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #undef DEBUG_PA_INTERP
 #define DEBUG_AGG 1
-#define DEBUG_CTE 1
+//#define DEBUG_CTE 1
 #endif
 #define DEBUG_PA_INTERP_PART_ID 0
 

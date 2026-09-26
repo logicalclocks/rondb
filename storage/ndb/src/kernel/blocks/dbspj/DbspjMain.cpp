@@ -80,7 +80,7 @@
 //#define DEBUG_MATCH 1
 //#define DEBUG_SCAN_PARENT_ROW 1
 //#define DEBUG_CTE 1
-#define DEBUG_CTE_PHASE 1
+//#define DEBUG_CTE_PHASE 1
 /* DEBUG_CTE_PHASE_VERBOSE traces every batch-completion check.  This is
  * useful for stuck outstanding/cnt_active debugging, but too chatty for
  * normal CTE phase tracing. */
@@ -150,7 +150,7 @@
  * To enable: uncomment DEBUG_CNT_ACTIVE below in a debug build and
  * rebuild ndbd.  Production builds always inline to a bare ++/--. */
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_CNT_ACTIVE 1
+//#define DEBUG_CNT_ACTIVE 1
 #endif
 
 /* m_cnt_active mutations always inline to a bare ++/-- — keeping the

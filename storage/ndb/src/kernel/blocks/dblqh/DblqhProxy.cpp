@@ -50,7 +50,7 @@ std::atomic<Uint32> JoinAggregationState::s_redist_pages{0};
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_EXEC_SR 1
-#define DEBUG_STAR_AGG 1
+// #define DEBUG_STAR_AGG 1
 #endif
 
 #ifdef DEBUG_STAR_AGG

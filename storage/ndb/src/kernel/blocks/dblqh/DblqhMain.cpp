@@ -172,7 +172,7 @@
 #define DEBUG_SCAN_HB_SEND 1
 //#define DEBUG_CONT_SCAN 1
 //#define DEBUG_INDEX_BUILD 1
-#define DEBUG_JOIN_AGG 1
+//#define DEBUG_JOIN_AGG 1
 //#define DEBUG_MATCH 1
 //#define DEBUG_CTE 1
 #endif
