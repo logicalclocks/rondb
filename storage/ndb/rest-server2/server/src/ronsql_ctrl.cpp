@@ -30,7 +30,9 @@
 #include "rate_limit.hpp"
 #include <metrics.hpp>
 #include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
+#include "ronsql_worker_pool.hpp"
 #include <cstdio>
+#include <memory>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SQL_CTRL 1
@@ -57,17 +59,24 @@ using std::endl;
  * Serialize per-request phase timings for the x-ronsql-phases response
  * header.  All values are microseconds (last ronsql_op attempt); rows is
  * the drained row count, attempts the ronsql_op attempt count and fetched
- * the rows the NDB API received.  Field order and names are pinned by
+ * the rows the NDB API received.  queue is the time the request waited
+ * for a RonSQL worker, loop the REST (IO loop) thread that received it and
+ * worker the RonSQL worker that ran it (from 1; 0 = ran on the IO loop,
+ * RonSQL.NumThreads = 0).  Field order and names are pinned by
  * mysql-test/suite/ronsql/t/ronsql_phase_stats and parsed by
  * tools/rondb-cli (ronsql_bench.go); a new field goes last.
  */
-static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s) {
+static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
+                                             Uint64 queue_us,
+                                             Uint32 loop,
+                                             Uint32 worker) {
   char buf[512];
   snprintf(buf, sizeof(buf),
            "parse=%llu,analyze=%llu,load=%llu,plan=%llu,compile=%llu,"
            "prepare=%llu,subquery=%llu,ndbprep=%llu,send=%llu,"
            "firstbatch=%llu,drain=%llu,print=%llu,execute=%llu,"
-           "rows=%llu,attempts=%u,fetched=%llu",
+           "rows=%llu,attempts=%u,fetched=%llu,"
+           "queue=%llu,loop=%u,worker=%u",
            (unsigned long long)s.parse_us,
            (unsigned long long)s.analyze_us,
            (unsigned long long)s.load_us,
@@ -83,18 +92,137 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s) {
            (unsigned long long)s.execute_us,
            (unsigned long long)s.rows_drained,
            (unsigned)s.attempts,
-           (unsigned long long)s.rows_fetched);
+           (unsigned long long)s.rows_fetched,
+           (unsigned long long)queue_us,
+           (unsigned)loop,
+           (unsigned)worker);
   return std::string(buf);
 }
 #endif  // RONSQL_PHASE_STATS
 
+namespace {
+/* The drogon callback, remembering whether the request was answered. */
+class ResponseCallback {
+ public:
+  explicit ResponseCallback(
+      std::function<void(const drogon::HttpResponsePtr &)> &&fn)
+      : m_fn(std::move(fn)) {}
+  void operator()(const drogon::HttpResponsePtr &resp) {
+    m_called = true;
+    m_fn(resp);
+  }
+  bool called() const { return m_called; }
+
+ private:
+  std::function<void(const drogon::HttpResponsePtr &)> m_fn;
+  bool m_called = false;
+};
+
+/*
+ * One /ronsql request, from the moment the controller accepts it until its
+ * response is handed to drogon (m3_run6_plan.md B2).  RonSQLCtrl::ronsql
+ * fills it on the IO loop (parse, validate, authorize); execute() runs the
+ * statement and answers, on a RonSQL worker or, with RonSQL.NumThreads = 0,
+ * on the IO loop.  params points into the members (sql_buffer into
+ * amalloc, the two streams, operation_id into reqStruct,
+ * rate_limit_identity into rl_identity, phase_stats), so a request never
+ * moves: it lives on the heap and changes hands as a pointer.  The drogon
+ * callback may be called from any thread; drogon queues the send onto the
+ * connection's IO loop.
+ */
+class RonSQLRequest final : public RonSQLWorkerPool::Job {
+ public:
+  RonSQLRequest(std::function<void(const drogon::HttpResponsePtr &)> &&cb,
+                Uint32 loop)
+      : resp(drogon::HttpResponse::newHttpResponse()),
+        metricsUpdater(resp),
+        callback(std::move(cb)),
+        amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE),
+        out_stream(globalConfigs.internal.maxRespSize),
+        loop_index(loop) {}
+
+  void run(Uint32 worker_no, Uint32 ndb_thread_index,
+           Uint64 queue_us) override {
+    worker = worker_no;
+    queue_wait_us = queue_us;
+    try {
+      execute(ndb_thread_index);
+    }
+    catch (std::exception& e) {
+      /* On the IO loop drogon's exception handler answered such a failure
+       * with 500; on a worker the request has to do it itself. */
+      if (!callback.called()) {
+        err_stream << "[internal] Caught exception: " << e.what() << "\n";
+        resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+        resp->setContentTypeCodeAndCustomString(
+          drogon::CT_TEXT_PLAIN,
+          "content-type: text/plain; charset=utf-8; \r\n");
+        resp->addHeader("X-RonSQL-Error-Class", "internal");
+        resp->setBody(err_stream.str());
+        callback(resp);
+      }
+    }
+  }
+  void cancel() override {
+    reply_unavailable("RDRS is shutting down, retry on another server");
+  }
+
+  // Run the statement with the Ndb object of ndb_thread_index and answer.
+  void execute(Uint32 ndb_thread_index);
+  // Answer 503 with the temporary error class "resource".
+  void reply_unavailable(const std::string &why);
+
+  drogon::HttpResponsePtr resp;
+  // Records the latency (from acceptance, so it includes the queue wait)
+  // and the status class when the request is destroyed, after the
+  // response was handed to drogon.
+  RonSQLEndPointMetricsUpdater metricsUpdater;
+  ResponseCallback callback;
+  RonSQLParams reqStruct;
+  ArenaMalloc amalloc;
+  RonSQLExecParams params;
+#ifdef RONSQL_PHASE_STATS
+  RonSQLPhaseStats phase_stats;
+#endif
+  // Internal.MaxRespSize bounds the accumulated response body
+  // (0 = unlimited).  The engine's printers never inspect stream state,
+  // so past the cap the drain keeps running with writes silently
+  // no-oped (bounded memory); the exceeded() check after ronsql_dal
+  // converts that into a clean error.  The controller-written JSON
+  // prologue/epilogue go through the same stream, so the cap covers
+  // the whole body.
+  CappedOStream out_stream;
+  std::ostringstream err_stream;
+  bool do_explain = false;
+  // Rate limit identity (RONDB-978); outlives ronsql_dal.
+  std::string rl_identity;
+  const Uint32 loop_index;  // REST thread that received the request
+  Uint32 worker = 0;        // RonSQL worker, 0 = executed on the IO loop
+  Uint64 queue_wait_us = 0;
+};
+
+void RonSQLRequest::reply_unavailable(const std::string &why) {
+  err_stream << "[resource] " << rdrsErrorMessage(ERROR_RONSQL_TEMPORARY)
+             << ": " << why << ".\n";
+  resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+  resp->setContentTypeCodeAndCustomString(
+    drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+  resp->addHeader("X-RonSQL-Error-Class", "resource");
+  resp->setBody(err_stream.str());
+  callback(resp);
+}
+}  // namespace
+
 void RonSQLCtrl::ronsql(
   const drogon::HttpRequestPtr &req,
-  std::function<void(const drogon::HttpResponsePtr &)> &&callback) {
+  std::function<void(const drogon::HttpResponsePtr &)> &&callback_in) {
 
-  auto resp = drogon::HttpResponse::newHttpResponse();
-  RonSQLEndPointMetricsUpdater metricsUpdater(resp);
   size_t currentThreadIndex = drogon::app().getCurrentThreadIndex();
+  std::unique_ptr<RonSQLRequest> request = std::make_unique<RonSQLRequest>(
+      std::move(callback_in), (Uint32)currentThreadIndex);
+  // What used to live on this stack frame is owned by the request.
+  drogon::HttpResponsePtr &resp = request->resp;
+  auto &callback = request->callback;
   if (currentThreadIndex >= globalConfigs.rest.numThreads) {
     resp->setBody("Too many threads");
     resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
@@ -118,7 +246,7 @@ void RonSQLCtrl::ronsql(
   }
   memcpy(jsonParser.get_buffer().get(), json_str, length);
 
-  RonSQLParams reqStruct;
+  RonSQLParams &reqStruct = request->reqStruct;
 
   RS_Status status = jsonParser.ronsql_parse(
       simdjson::padded_string_view(
@@ -136,15 +264,13 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
-  ArenaMalloc amalloc(RonSQLExecParams::ARENA_MALLOC_PAGE_SIZE);
-  RonSQLExecParams params;
+  RonSQLExecParams &params = request->params;
   /* Restored after the 26.05 upmerge dropped it (the cache itself and
    * its main.cc lifecycle survived; only this handoff was lost, so
    * every query paid the ~400 µs listIndexes() slow path). */
   params.schema_cache = g_schema_cache;
 #ifdef RONSQL_PHASE_STATS
-  RonSQLPhaseStats phase_stats;
-  params.phase_stats = &phase_stats;
+  params.phase_stats = &request->phase_stats;
 #endif
 
   std::string& database = reqStruct.database;
@@ -158,23 +284,13 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
-  // Internal.MaxRespSize bounds the accumulated response body
-  // (0 = unlimited).  The engine's printers never inspect stream state,
-  // so past the cap the drain keeps running with writes silently
-  // no-oped (bounded memory); the exceeded() check after ronsql_dal
-  // converts that into a clean error.  The controller-written JSON
-  // prologue/epilogue go through the same stream, so the cap covers
-  // the whole body.
-  CappedOStream out_stream(globalConfigs.internal.maxRespSize);
-  std::ostringstream err_stream;
-
-  bool do_explain = false;
+  std::ostringstream &err_stream = request->err_stream;
   status = ronsql_validate_and_init_params(reqStruct,
                                            params,
-                                           &out_stream,
+                                           &request->out_stream,
                                            &err_stream,
-                                           &amalloc,
-                                           &do_explain);
+                                           &request->amalloc,
+                                           &request->do_explain);
   if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
         drogon::HttpStatusCode::k200OK) {
     resp->setBody(std::string(status.message));
@@ -184,7 +300,6 @@ void RonSQLCtrl::ronsql(
     return;
   }
 
-  std::string rl_identity;
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     /*
@@ -251,7 +366,8 @@ void RonSQLCtrl::ronsql(
       return;
     }
     // Tag the executor's transactions with the rate limit identity
-    // (RONDB-978). rl_identity outlives ronsql_dal below.
+    // (RONDB-978).
+    std::string &rl_identity = request->rl_identity;
     rl_identity = get_rate_limit_identity(api_key);
     if (!rl_identity.empty()) {
       params.rate_limit_identity = rl_identity.c_str();
@@ -259,6 +375,37 @@ void RonSQLCtrl::ronsql(
     }
   }
 
+  if (g_ronsql_worker_pool == nullptr) {
+    // RonSQL.NumThreads = 0: execute on this IO loop with its Ndb object.
+    request->execute((Uint32)currentThreadIndex);
+    return;
+  }
+  /*
+   * Hand the statement to a RonSQL worker, so that it does not stall the
+   * other connections of this IO loop (m3_run6_plan.md B2).  Once queued,
+   * the request must not be touched here any more: a worker may already
+   * have answered and destroyed it.
+   */
+  std::unique_ptr<RonSQLWorkerPool::Job> job = std::move(request);
+  RonSQLWorkerPool::SubmitResult result = g_ronsql_worker_pool->submit(job);
+  if (result == RonSQLWorkerPool::SubmitResult::OK) {
+    return;
+  }
+  RonSQLRequest *rejected = static_cast<RonSQLRequest *>(job.get());
+  if (result == RonSQLWorkerPool::SubmitResult::QUEUE_FULL) {
+    rejected->reply_unavailable(
+        "too many RonSQL requests are waiting (RonSQL.MaxQueuedRequests = " +
+        std::to_string(g_ronsql_worker_pool->max_queued()) +
+        "), retry later");
+  } else {
+    rejected->cancel();
+  }
+  DEB_TRACE();
+}
+
+void RonSQLRequest::execute(Uint32 ndb_thread_index) {
+  std::string& database = reqStruct.database;
+  RS_Status status;
   bool json_output = params.output_format ==
                        RonSQLExecParams::OutputFormat::JSON ||
                      params.output_format ==
@@ -276,7 +423,7 @@ void RonSQLCtrl::ronsql(
   DEB_TRACE();
   status = ronsql_dal(database.c_str(),
                       &params,
-                      currentThreadIndex);
+                      ndb_thread_index);
   DEB_TRACE();
 
   if (json_output) {
@@ -387,7 +534,9 @@ void RonSQLCtrl::ronsql(
     }
     DEB_TRACE();
 #ifdef RONSQL_PHASE_STATS
-    resp->addHeader("x-ronsql-phases", ronsql_phase_stats_header(phase_stats));
+    resp->addHeader("x-ronsql-phases",
+                    ronsql_phase_stats_header(phase_stats, queue_wait_us,
+                                              loop_index, worker));
 #endif
     // Move — out_str came from CappedOStream::take(), avoiding one of
     // the full-body copies of the old ostringstream flow.

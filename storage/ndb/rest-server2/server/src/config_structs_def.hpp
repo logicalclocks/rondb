@@ -138,6 +138,25 @@ CLASS
 )
 
 CLASS
+(RonSQLConfig,
+ CM(unsigned, numThreads, NumThreads, 16,
+    "Number of RonSQL worker threads. A /ronsql request is parsed and"
+    " authorized on the REST thread that received it and then executed by"
+    " one of these workers, each with its own NDB object, so a long"
+    " statement does not stall the other connections of that REST thread."
+    " It is also the number of RonSQL statements this server executes at"
+    " once. 0 executes the statements on the REST threads (no pool).")
+ CM(unsigned, maxQueuedRequests, MaxQueuedRequests, 1024,
+    "Maximum number of /ronsql requests waiting for a RonSQL worker. A"
+    " request arriving when the queue is full fails at once with 503 and"
+    " error class 'resource' (temporary; retry later).")
+ PROBLEM(numThreads > 991, "Number of RonSQL threads too high")
+ PROBLEM(numThreads > 0 && maxQueuedRequests == 0,
+         "RonSQL.MaxQueuedRequests must be at least 1 when"
+         " RonSQL.NumThreads is not 0")
+)
+
+CLASS
 (RondisDatabaseConfig,
  CM(int, index, Index, -1, // Set the default to an illegal value as a hack to
                            // make this field mandatory.
@@ -518,6 +537,8 @@ CLASS
  CM(RateLimit, rateLimit, RateLimit, RateLimit(),
     "USER rate limiting policy for this server's NDB traffic (RONDB-978).")
  CM(REST, rest, REST, REST(), "REST server settings.")
+ CM(RonSQLConfig, ronsql, RonSQL, RonSQLConfig(),
+    "RonSQL execution settings for the /ronsql REST endpoint.")
  CM(RondisConfig, rondis, Rondis, RondisConfig(),
     "An object describing configuration for the rondis server")
  CM(GRPC, grpc, GRPC, GRPC(),

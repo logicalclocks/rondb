@@ -420,6 +420,23 @@ confirm by repeated `.bench_ronsql fs_batch 8 5000` runs (efficiency
 flips ~0.7 / ~0.97); fix by executing RonSQL on a worker pool off the IO
 loop (stopgap for the census: more RESTNumThreads).
 
+*Status (2026-09-26): implemented, not yet built or tested.*  New
+`server/src/ronsql_worker_pool.{hpp,cpp}`; `RonSQLCtrl::ronsql` parses,
+validates and authorizes on the IO loop, then queues a heap
+`RonSQLRequest` (owns everything `params` points into) for a worker,
+which runs `RonSQLRequest::execute` (the former second half of the
+handler) with its own Ndb object and calls the drogon callback (drogon
+queues the send onto the connection's loop).  Config `RonSQL.NumThreads`
+(16; 0 = old behaviour on the IO loop) and `RonSQL.MaxQueuedRequests`
+(1024; full queue = 503, class `resource`).  Worker Ndb indexes sit
+between the MySQL-router and TTL-purge ranges (main.cc); shutdown stops
+the pool before drogon quits.  `x-ronsql-phases` gains
+`,queue=<us>,loop=<n>,worker=<n>` (worker 0 = ran on the IO loop);
+`ronsql_phase_stats` (ronsql + ronsql_jit) re-recorded with a
+worker ≥ 1 assertion.  Not done: queue metrics in Prometheus, `queue` in
+the rondb-cli breakdown, a head-of-line regression test (long statement
+next to pk-reads on one loop).
+
 **B3. Triage.**  Flag cases whose http+client share of execute exceeds
 10 % (loop collision) or compare server execute percentiles; the current
 triage calls them REGRESSION.

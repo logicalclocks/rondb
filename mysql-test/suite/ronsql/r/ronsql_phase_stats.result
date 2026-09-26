@@ -8,7 +8,9 @@ call mtr.add_suppression("Participant timeout");
 == Header count (must be 1) ==
 1
 == Normalized header (values masked to N) ==
-x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N,queue=N,loop=N,worker=N
+== Executed by a RonSQL worker (must be 1) ==
+1
 == Result body (sorted) ==
 1	2	3
 2	2	7
@@ -19,7 +21,7 @@ b	COUNT(*)	SUM(a)
 == Header count (must be 1) ==
 1
 == Normalized header (values masked to N) ==
-x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N,queue=N,loop=N,worker=N
 == Result body (sorted) ==
 2	5
 MAX(agg.cnt)	COUNT(*)
@@ -28,7 +30,7 @@ MAX(agg.cnt)	COUNT(*)
 == Header count (must be 1) ==
 1
 == Normalized header (values masked to N) ==
-x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N,queue=N,loop=N,worker=N
 == Result body (sorted) ==
 1	1
 2	1
@@ -41,7 +43,7 @@ a	b
 == Header count (must be 1) ==
 1
 == Normalized header (values masked to N) ==
-x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N,queue=N,loop=N,worker=N
 == Result body (sorted) ==
 3	2
 a	b
@@ -50,6 +52,6 @@ a	b
 == Header count (must be 1) ==
 1
 == Normalized header (values masked to N) ==
-x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N
+x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N,queue=N,loop=N,worker=N
 
 === Cleanup ===

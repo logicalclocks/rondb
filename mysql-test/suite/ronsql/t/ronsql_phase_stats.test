@@ -12,11 +12,14 @@ call mtr.add_suppression("Participant timeout");
 # built with RONSQL_PHASE_STATS (the default — see RonSQLPerf.hpp).
 #
 # The header value is
-# "parse=<us>,analyze=<us>,...,rows=<n>,attempts=<n>,fetched=<n>".
+# "parse=<us>,analyze=<us>,...,rows=<n>,attempts=<n>,fetched=<n>,
+#  queue=<us>,loop=<n>,worker=<n>".
 # Timing values vary per run, so the assertions normalize every number
 # to N and pin the exact field list, order, and names — the same list
 # tools/rondb-cli (ronsql_bench.go parseRonSQLPhases) and the docs rely
-# on.  See test_benchmark_extension_plan.md (Phase B4).
+# on.  See test_benchmark_extension_plan.md (Phase B4).  worker is the
+# RonSQL worker that executed the statement (m3_run6_plan.md B2); with
+# the default RonSQL.NumThreads it is >= 1 (0 = ran on the IO loop).
 
 --echo
 --echo === Create table ===
@@ -41,6 +44,8 @@ INSERT INTO ph1 VALUES (1, 1), (2, 1), (3, 2), (4, 2), (5, 3);
 --exec grep -ci '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-1
 --echo == Normalized header (values masked to N) ==
 --exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-1 | tr -d '\r' | tr '[:upper:]' '[:lower:]' | sed -r 's/=[0-9]+/=N/g'
+--echo == Executed by a RonSQL worker (must be 1) ==
+--exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/phase-hdrs-1 | tr -d '\r' | grep -cE ',worker=[1-9][0-9]*$'
 --echo == Result body (sorted) ==
 --exec sort $MYSQL_TMP_DIR/phase-out-1
 --remove_file $MYSQL_TMP_DIR/phase-body-1
