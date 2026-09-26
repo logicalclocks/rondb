@@ -8,6 +8,12 @@ connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
 connection mysqld2;
 call mtr.add_suppression("Failed to release global schema lock");
 call mtr.add_suppression("Got temporary error 4025 'Node failure caused abort of transaction' from NDB");
+# A preceding test (ndb_security_enforce) may also have disconnected 1600,
+# leaving the second mysqld's binlog thread still retrying its setup. A
+# disconnect in the middle of that setup fails it with 4009, so wait until
+# the binlog thread is set up and the second mysqld is writable again.
+--source include/ndb_not_readonly.inc
+--disable_query_log
 connection default;
 --enable_query_log
 
@@ -86,12 +92,16 @@ let $wait_condition=
 
 # Seeing API node 1600 in processes only proves that it has reconnected
 # to at least one data node. Wait through the affected mysqld's own
-# ndbinfo connection before MTR compares its node and error-insert state.
+# ndbinfo connection before MTR compares its node and error-insert state,
+# and until its binlog thread has completed setup again so that the next
+# test does not start while that setup is still running.
 --disable_query_log
 connection mysqld2;
 let $wait_condition=
   SELECT COUNT(*) = 2 FROM ndbinfo.nodes WHERE node_id IN (1,2);
 --source include/wait_condition.inc
+--source include/ndb_not_readonly.inc
+--disable_query_log
 connection default;
 disconnect mysqld2;
 --enable_query_log

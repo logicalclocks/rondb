@@ -21,6 +21,18 @@
 #   DUMP 9100 <offendingNodeId> <violationType>  - synthesize a malicious report
 #
 
+# 1600 is also the connection used by server_2's binlog thread. A disconnect
+# in the middle of that thread's setup (e.g. still retrying after an earlier
+# test disconnected 1600) fails it with 4009, so wait until the binlog thread
+# is set up and server_2 is writable.
+--disable_query_log
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+--source include/ndb_not_readonly.inc
+--disable_query_log
+connection default;
+--enable_query_log
+
 --echo # Sanity: API node 1600 is currently connected.
 let $wait_condition=
   SELECT COUNT(*) > 0 FROM ndbinfo.processes WHERE node_id=1600;
@@ -44,13 +56,16 @@ let $wait_condition=
 
 # Seeing API node 1600 in processes only proves that it has reconnected
 # to at least one data node. Wait through the affected mysqld's own
-# ndbinfo connection before MTR compares its node and error-insert state.
+# ndbinfo connection before MTR compares its node and error-insert state,
+# and until its binlog thread has completed setup again so that the next
+# test does not start while that setup is still running.
 --disable_query_log
-connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
 connection mysqld2;
 let $wait_condition=
   SELECT COUNT(*) = 2 FROM ndbinfo.nodes WHERE node_id IN (1,2);
 --source include/wait_condition.inc
+--source include/ndb_not_readonly.inc
+--disable_query_log
 connection default;
 disconnect mysqld2;
 --enable_query_log
