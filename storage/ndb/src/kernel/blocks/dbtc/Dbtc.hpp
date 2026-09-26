@@ -1618,6 +1618,11 @@ class Dbtc : public SimulatedBlock {
      */
     Uint8 m_ring_buffer_op;
     Uint8 m_ring_buffer_show_meta;
+    /*
+     * Aggregation on a primary-key read (RONDB-1124 WP-F F1b): forwarded
+     * to DBLQH in the LQHKEYREQ attrLen word, which validates it.
+     */
+    Uint8 m_agg_read;
     /* End of TCKEYREQ/TCINDXREQ only fields */
   };
 

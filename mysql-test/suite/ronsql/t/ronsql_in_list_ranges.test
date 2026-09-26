@@ -1,0 +1,329 @@
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# WP-F F2 (storage/ndb/claude_files/fs_ronsql/m3_wpf_plan.md §2.4-2.5):
+# an IN list on a column of an ordered index (a primary-key prefix, a
+# later primary-key column after equalities, or a secondary index)
+# becomes one index range per distinct value — a multi-range
+# (SF_MultiRange) index scan instead of a table scan filtered by the OR
+# chain (finding F23).  Aggregate queries run that scan with pushdown
+# aggregation, which needs the data nodes to carry the aggregation state
+# across ranges (DBLQH).  Every
+# result is compared strictly with the MySQL server (row order is free
+# unless $skip_sort is set) and the EXPLAIN pins say which plan ran.
+# Both includes consume and remove $QUERY_FILE, hence the query is
+# written twice per case.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let QUERY_FILE=$MYSQL_TMP_DIR/in_ranges_query.sql
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/in_ranges_explain.out
+
+--disable_query_log
+--disable_warnings
+# Event history keyed (k, ts): k 1..60, 1..5 rows per k (ts <= k % 5 + 1),
+# no rows at all for every k divisible by 7.
+CREATE TABLE t_ev (
+  k INT NOT NULL,
+  ts INT NOT NULL,
+  v INT NOT NULL,
+  c VARCHAR(10) NOT NULL,
+  PRIMARY KEY (k, ts)
+) ENGINE=NDB;
+INSERT INTO t_ev
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 299)
+  SELECT n DIV 5 + 1, n % 5 + 1, (n DIV 5 + 1) * 100 + n % 5 + 1, CONCAT('c', n % 5 + 1)
+  FROM seq
+  WHERE n % 5 + 1 <= (n DIV 5 + 1) % 5 + 1 AND (n DIV 5 + 1) % 7 <> 0;
+# Secondary ordered index on g.
+CREATE TABLE t_sec (
+  id INT NOT NULL,
+  g INT NOT NULL,
+  w INT NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_g (g)
+) ENGINE=NDB;
+INSERT INTO t_sec
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 200)
+  SELECT n, n % 25, n FROM seq;
+# VARCHAR primary-key prefix under a case-insensitive collation.
+CREATE TABLE t_skey (
+  sk VARCHAR(20) NOT NULL,
+  ts INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (sk, ts)
+) ENGINE=NDB;
+INSERT INTO t_skey VALUES ('Key1', 1, 11), ('Key1', 2, 12), ('Key2', 1, 21),
+                          ('key three', 1, 31), ('Key4', 1, 41);
+# Nullable indexed column.
+CREATE TABLE t_null (
+  id INT NOT NULL,
+  n INT NULL,
+  PRIMARY KEY (id),
+  KEY idx_n (n)
+) ENGINE=NDB;
+INSERT INTO t_null VALUES (1, 1), (2, NULL), (3, 0), (4, NULL), (5, 2),
+                          (6, NULL), (7, 1), (8, NULL), (9, 0), (10, NULL);
+# Enough distinct groups to overflow the 4096-byte aggregation batch in
+# the middle of a multi-range scan.  The key is (id, sub) so that an IN
+# list on id is a PK prefix — a multi-range scan — rather than complete
+# primary keys, which take aggregating key reads (F1b).
+CREATE TABLE t_big (
+  id INT NOT NULL,
+  sub INT NOT NULL,
+  g INT NOT NULL,
+  w INT NOT NULL,
+  PRIMARY KEY (id, sub)
+) ENGINE=NDB;
+INSERT INTO t_big
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 600)
+  SELECT n, 1, n % 7, n * 3 FROM seq;
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === Hopsworks batch aggregate: IN on the leading PK column + GROUP BY ===
+--write_file $QUERY_FILE
+SELECT k, COUNT(v), SUM(v), MAX(ts) FROM t_ev WHERE k IN (3, 1, 2, 9, 13, 59) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, COUNT(v), SUM(v), MAX(ts) FROM t_ev WHERE k IN (3, 1, 2, 9, 13, 59) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as index scan.' $EXPLAIN_FILE
+--exec grep -qF 'Index: `PRIMARY`' $EXPLAIN_FILE
+--exec grep -qF 'Ranges: 6 (IN list on `k`: 6 values, 6 distinct; SF_MultiRange).' $EXPLAIN_FILE
+--exec grep -qF '`k` IN (6 values, 6 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === scalar aggregate over several ranges (counted once, not per range) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_ev WHERE k IN (1, 2, 3, 4, 5);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_ev WHERE k IN (1, 2, 3, 4, 5);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 5 (IN list on `k`: 5 values, 5 distinct; SF_MultiRange).' $EXPLAIN_FILE
+
+--echo
+--echo === windowed batch: IN on k plus a range on the next PK column ===
+--write_file $QUERY_FILE
+SELECT k, COUNT(*), SUM(v) FROM t_ev WHERE k IN (1, 2, 3, 4, 11) AND ts >= 2 GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, COUNT(*), SUM(v) FROM t_ev WHERE k IN (1, 2, 3, 4, 11) AND ts >= 2 GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 5 (IN list on `k`: 5 values, 5 distinct; SF_MultiRange).' $EXPLAIN_FILE
+--exec grep -qF 'CONDITIONS (2 bounds):' $EXPLAIN_FILE
+
+--echo
+--echo === duplicates are scanned once ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k IN (2, 2, 3, 3, 3);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k IN (2, 2, 3, 3, 3);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 2 (IN list on `k`: 5 values, 2 distinct; SF_MultiRange).' $EXPLAIN_FILE
+
+--echo
+--echo === empty ranges first and in between (keys divisible by 7 have no rows) ===
+--write_file $QUERY_FILE
+SELECT k, COUNT(*), SUM(v) FROM t_ev WHERE k IN (7, 1, 14, 21, 2, 28) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v), MAX(v) FROM t_ev WHERE k IN (7, 1, 14, 21, 2, 28);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === every range empty ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k IN (7, 14, 21);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, COUNT(*) FROM t_ev WHERE k IN (7, 14, 21) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === one distinct value: a single range, no SF_MultiRange ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k IN (4, 4);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k IN (4, 4);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 1 (IN list on `k`: 2 values, 1 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === complete PK, aggregate: equality on k, IN on ts — aggregating key reads (F1b) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k = 4 AND ts IN (1, 3, 9);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE k = 4 AND ts IN (1, 3, 9);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 aggregating primary key lookups (IN list on `ts`: 3 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === complete single-column PK, aggregate — aggregating key reads (F1b) ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(w), MIN(g) FROM t_sec WHERE id IN (5, 6, 500, 150);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(w), MIN(g) FROM t_sec WHERE id IN (5, 6, 500, 150);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 aggregating primary key lookups (IN list on `id`: 4 values, 4 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === secondary index: aggregate and pass-through ===
+--write_file $QUERY_FILE
+SELECT g, COUNT(*), SUM(w) FROM t_sec WHERE g IN (3, 1, 24, 30) GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT g, COUNT(*), SUM(w) FROM t_sec WHERE g IN (3, 1, 24, 30) GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Index: `idx_g`' $EXPLAIN_FILE
+--exec grep -qF 'Ranges: 4 (IN list on `g`: 4 values, 4 distinct; SF_MultiRange).' $EXPLAIN_FILE
+--write_file $QUERY_FILE
+SELECT id, g, w FROM t_sec WHERE g IN (7, 19) AND w > 50;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, g, w FROM t_sec WHERE g IN (7, 19) AND w > 50;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 2 (IN list on `g`: 2 values, 2 distinct; SF_MultiRange).' $EXPLAIN_FILE
+--exec grep -qF 'FILTER:' $EXPLAIN_FILE
+
+--echo
+--echo === pass-through on the PK prefix ===
+--write_file $QUERY_FILE
+SELECT k, ts, v, c FROM t_ev WHERE k IN (5, 3, 7);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === ORDER BY on the IN column: client-side sort, never index order over ranges ===
+--write_file $QUERY_FILE
+SELECT k, ts, v FROM t_ev WHERE k IN (3, 1, 2) ORDER BY k DESC, ts;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, ts, v FROM t_ev WHERE k IN (3, 1, 2) ORDER BY k DESC, ts;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 3 (IN list on `k`: 3 values, 3 distinct; SF_MultiRange).' $EXPLAIN_FILE
+--error 1
+--exec grep -qF 'ORDER BY: index order' $EXPLAIN_FILE
+--write_file $QUERY_FILE
+SELECT k, ts, v FROM t_ev WHERE k IN (3, 1, 2) ORDER BY v DESC LIMIT 4;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === VARCHAR PK prefix, case-insensitive: 'key1' and 'KEY1' are one range ===
+--write_file $QUERY_FILE
+SELECT sk, COUNT(*), SUM(v) FROM t_skey WHERE sk IN ('key1', 'KEY1', 'KEY2', 'Key Three', 'nope') GROUP BY sk;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT sk, COUNT(*), SUM(v) FROM t_skey WHERE sk IN ('key1', 'KEY1', 'KEY2', 'Key Three', 'nope') GROUP BY sk;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 4 (IN list on `sk`: 5 values, 4 distinct; SF_MultiRange).' $EXPLAIN_FILE
+
+--echo
+--echo === nullable indexed column: NULL rows never match ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(id) FROM t_null WHERE n IN (1, 0);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(id) FROM t_null WHERE n IN (1, 0);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Index: `idx_n`' $EXPLAIN_FILE
+
+--echo
+--echo === 500 ranges, 500 groups: aggregation batches flush mid-scan across ranges ===
+--disable_query_log
+--let $list = 5000
+--let $i = 500
+while ($i)
+{
+  --let $list = $list, $i
+  --dec $i
+}
+--enable_query_log
+--let QUERY = SELECT id, COUNT(*), SUM(w) FROM t_big WHERE id IN ($list) GROUP BY id;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT COUNT(*), SUM(w), MAX(w) FROM t_big WHERE id IN ($list);
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT g, COUNT(*), SUM(w) FROM t_big WHERE id IN ($list) GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT COUNT(*), SUM(w) FROM t_big WHERE id IN ($list);
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 501 (IN list on `id`: 501 values, 501 distinct; SF_MultiRange).' $EXPLAIN_FILE
+
+--echo
+--echo === fallbacks: a second IN list and an unindexed column stay filters ===
+--write_file $QUERY_FILE
+SELECT k, COUNT(*) FROM t_ev WHERE k IN (1, 2, 3) AND ts IN (1, 2) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, COUNT(*) FROM t_ev WHERE k IN (1, 2, 3) AND ts IN (1, 2) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 3 (IN list on `k`: 3 values, 3 distinct; SF_MultiRange).' $EXPLAIN_FILE
+--exec grep -qF 'FILTER:' $EXPLAIN_FILE
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE c IN ('c1', 'c3');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_ev WHERE c IN ('c1', 'c3');
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as table scan.' $EXPLAIN_FILE
+
+--echo
+--echo === IGNORE INDEX leaves the list a filter; the result is unchanged ===
+--write_file $QUERY_FILE
+SELECT k, COUNT(*), SUM(v) FROM t_ev IGNORE INDEX (`PRIMARY`) WHERE k IN (3, 1, 2) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT k, COUNT(*), SUM(v) FROM t_ev IGNORE INDEX (`PRIMARY`) WHERE k IN (3, 1, 2) GROUP BY k;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as table scan.' $EXPLAIN_FILE
+
+--remove_file $EXPLAIN_FILE
+--disable_query_log
+DROP TABLE t_ev, t_sec, t_skey, t_null, t_big;
+--enable_query_log

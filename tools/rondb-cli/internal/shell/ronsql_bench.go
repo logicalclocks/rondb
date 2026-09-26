@@ -28,6 +28,7 @@ package shell
 import (
 	"fmt"
 	"math/rand"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,6 +60,7 @@ const (
 	benchCatTPCHCte      = "tpch_cte"      // TPC-H rewritten with CTEs (RonSQL envelope)
 	benchCatTPCHOfficial = "tpch_official" // official TPC-H formulation (MySQL only)
 	benchCatFSHW         = "fs_hw"         // Hopsworks serving shapes over fs_bench (RONDB-1121 E5, fs_bench.go)
+	benchCatCore         = "core"          // engine primitives over tpch (RONDB-1121 M3.0 performance census, fs_ronsql/m3_plan.md)
 )
 
 // RonSQLBenchQuery is a named analytics benchmark query over the tpch
@@ -119,7 +121,7 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 
 // ronsqlBenchQueries is the registry of named analytics benchmark queries.
 //
-// Four families:
+// Families (the fs_hw_* entries are appended at init by fs_bench.go):
 //
 //   - fs_*: online Feature-Store-style workloads. CTEs compute per-entity
 //     aggregate features and are joined to entity tables, with filters
@@ -148,6 +150,11 @@ func (q *RonSQLBenchQuery) sqlBenchName() string {
 //     cte_tpch_qN on MySQL shows the cost of the CTE rewrite; comparing
 //     cte_tpch_qN on MySQL against tpch_qN on .bench_ronsql shows
 //     RonSQL vs MySQL on identical SQL.
+//
+//   - core_*: engine primitives over tpch (RONDB-1121 M3.0 performance
+//     census, fs_ronsql/m3_plan.md): one access path or execution stage
+//     per entry, so that a slow feature-store shape can be attributed to
+//     the primitive it is built from.
 var ronsqlBenchQueries = []RonSQLBenchQuery{
 	// ---------------------------------------------------------------
 	// Online Feature-Store-style benchmarks (filter-bounded)
@@ -160,18 +167,43 @@ var ronsqlBenchQueries = []RonSQLBenchQuery{
 		SQL:         `SELECT COUNT(*) FROM region;`,
 	},
 	{
-		Name:        "fs_point",
-		Category:    benchCatFS,
-		Description: "On-demand feature vector for one random customer (CTE body filtered on entity key)",
-		Database:    "tpch",
-		RandKey:     true,
-		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
-		KeyDefault:  tpchCustomerBase,
+		Name:         "fs_point",
+		Category:     benchCatFS,
+		Description:  "On-demand feature vector for one random customer (CTE body filtered on entity key)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		Resolver:     tpchCustKeyResolver,
+		Placeholders: tpchCustKeyLegend,
+		// RONDB-1124 C2: MIN / MAX over a single-group CTE runs flattened
+		// into the single-table aggregate over the body (no CTE protocol).
+		PlanPins: []string{"CTE 'cust_features' flattened into a single-table aggregate",
+			"Index: `idx_orders_custkey`"},
 		SQL: `WITH cust_features AS (
   SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_totalprice) AS total_spend,
          MIN(o_orderdate) AS first_order, MAX(o_orderdate) AS last_order
   FROM orders WHERE o_custkey = {KEY} GROUP BY o_custkey)
 SELECT MAX(cust_features.order_cnt), MAX(cust_features.total_spend),
+       MIN(cust_features.first_order), MAX(cust_features.last_order)
+FROM cust_features;`,
+	},
+	{
+		Name:         "fs_point_cte",
+		Category:     benchCatFS,
+		Description:  "fs_point kept on the single-group CTE path by an outer COUNT(*): the cost the fs_point flatten removes",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		Resolver:     tpchCustKeyResolver,
+		Placeholders: tpchCustKeyLegend,
+		PlanPins:     []string{"[single-group body]"},
+		SQL: `WITH cust_features AS (
+  SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_totalprice) AS total_spend,
+         MIN(o_orderdate) AS first_order, MAX(o_orderdate) AS last_order
+  FROM orders WHERE o_custkey = {KEY} GROUP BY o_custkey)
+SELECT COUNT(*), MAX(cust_features.order_cnt), MAX(cust_features.total_spend),
        MIN(cust_features.first_order), MAX(cust_features.last_order)
 FROM cust_features;`,
 	},
@@ -369,6 +401,171 @@ LIMIT 1000;`,
 FROM orders
 ORDER BY o_orderdate DESC
 LIMIT 100;`,
+	},
+
+	// ---------------------------------------------------------------
+	// Engine primitives (RONDB-1121 M3.0 performance census,
+	// fs_ronsql/m3_plan.md): one access path or execution stage per
+	// entry over tpch — PK lookup, IN lists on the PK and on a
+	// secondary index, ordered-index range, pass-through drain, AVG,
+	// full scans with and without a row filter, few and many groups.
+	// {KEY} / {KEYS:n} on orders resolve to existing (sparse)
+	// o_orderkeys, see tpchOrderKeyResolver.  Plan pins record the
+	// access path each entry is meant to measure; a pin warning means
+	// the entry measures something else now.
+	// ---------------------------------------------------------------
+	{
+		Name:         "core_pk_lookup",
+		Category:     benchCatCore,
+		Description:  "Single-row primary key lookup, projection only: the lookup floor (one PK read, no scan, no aggregation)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
+		KeyDefault:   4 * tpchOrdersBase,
+		Resolver:     tpchOrderKeyResolver,
+		Placeholders: tpchOrderKeyLegend,
+		PlanPins:     []string{"Execute as primary key lookup."},
+		SQL: `SELECT o_custkey, o_orderdate, o_totalprice, o_orderstatus
+FROM orders
+WHERE o_orderkey = {KEY};`,
+	},
+	{
+		Name:         "core_in_pk100",
+		Category:     benchCatCore,
+		Description:  "IN list of 100 existing primary keys, aggregated: 100 aggregating PK reads (WP-F F1b)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
+		KeyDefault:   4 * tpchOrdersBase,
+		Resolver:     tpchOrderKeyResolver,
+		Placeholders: tpchOrderKeyLegend,
+		PlanPins:     []string{"Execute as 100 aggregating primary key lookups (IN list on `o_orderkey`: 100 values, 100 distinct)."},
+		SQL: `SELECT COUNT(*), SUM(o_totalprice), MAX(o_orderdate)
+FROM orders
+WHERE o_orderkey IN ({KEYS:100});`,
+	},
+	{
+		// The plain-read twin of core_in_pk100: the same 100 keys read
+		// without an aggregation program (WP-F F1a), so its round trip
+		// against core_in_pk100's isolates the per-read aggregation
+		// cost (census run 5: 224 µs aggregating vs mysqld's 150 µs of
+		// plain reads).  Also the batch vector read Hopsworks sends
+		// with the same key list.
+		Name:         "core_in_pk100_pass",
+		Category:     benchCatCore,
+		Description:  "IN list of 100 existing primary keys, projected: 100 plain PK reads (WP-F F1a; the batch vector read)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(o_orderkey) FROM tpch.orders",
+		KeyDefault:   4 * tpchOrdersBase,
+		Resolver:     tpchOrderKeyResolver,
+		Placeholders: tpchOrderKeyLegend,
+		PlanPins:     []string{"Execute as 100 primary key lookups (IN list on `o_orderkey`: 100 values, 100 distinct)."},
+		SQL: `SELECT o_totalprice, o_orderdate
+FROM orders
+WHERE o_orderkey IN ({KEYS:100});`,
+	},
+	{
+		Name:         "core_in_idx100",
+		Category:     benchCatCore,
+		Description:  "IN list of 100 customers on a secondary ordered index, GROUP BY the key (~1k rows; batch serving off the PK, F12)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		Resolver:     fsHWResolver,
+		Placeholders: "{KEYS:100} = 100 distinct random customers in 1..max (KeySQL)",
+		SQL: `SELECT o_custkey, COUNT(*), SUM(o_totalprice)
+FROM orders
+WHERE o_custkey IN ({KEYS:100})
+GROUP BY o_custkey;`,
+	},
+	{
+		Name:        "core_idx_range",
+		Category:    benchCatCore,
+		Description: "Ordered-index range aggregate: one month of orders via idx_orders_orderdate (~19k rows at sf 1), fixed bounds",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as index scan.", "Index: `idx_orders_orderdate`"},
+		SQL: `SELECT COUNT(*), SUM(o_totalprice), MAX(o_totalprice)
+FROM orders
+WHERE o_orderdate >= '1998-06-01' AND o_orderdate <= '1998-06-30';`,
+	},
+	{
+		Name:        "core_avg_range",
+		Category:    benchCatCore,
+		Description: "AVG over an index range: ~1k orders of a random 100-customer segment via idx_orders_custkey (the AVG path)",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:  tpchCustomerBase,
+		KeySpan:     100,
+		PlanPins:    []string{"Execute as index scan.", "Index: `idx_orders_custkey`"},
+		SQL: `SELECT COUNT(*), AVG(o_totalprice), AVG(o_shippriority), MIN(o_totalprice)
+FROM orders
+WHERE o_custkey >= {KEY} AND o_custkey < {KEY2};`,
+	},
+	{
+		Name:        "core_pass_range",
+		Category:    benchCatCore,
+		Description: "Pass-through range: ~1k orders of a random 100-customer segment projected, no ORDER BY (result drain; fs_history adds the sort)",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:  tpchCustomerBase,
+		KeySpan:     100,
+		PlanPins:    []string{"Execute as index scan.", "Index: `idx_orders_custkey`"},
+		SQL: `SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice
+FROM orders
+WHERE o_custkey >= {KEY} AND o_custkey < {KEY2};`,
+	},
+	{
+		Name:        "core_scan_agg",
+		Category:    benchCatCore,
+		Description: "Full table scan, scalar aggregates over lineitem (6M rows at sf 1): data-node scan + aggregation throughput, the JIT's best case",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan.", "No filters."},
+		SQL: `SELECT COUNT(*), SUM(l_extendedprice), SUM(l_quantity), MIN(l_shipdate), MAX(l_shipdate)
+FROM lineitem;`,
+	},
+	{
+		Name:        "core_scan_filter",
+		Category:    benchCatCore,
+		Description: "Full table scan with a 3-conjunct filter on unindexed lineitem columns (~4% qualify): per-row filter evaluation cost",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan.", "FILTERS:"},
+		SQL: `SELECT COUNT(*), SUM(l_extendedprice)
+FROM lineitem
+WHERE l_quantity > 25 AND l_discount >= 0.05 AND l_shipmode = 'AIR';`,
+	},
+	{
+		Name:        "core_group_few",
+		Category:    benchCatCore,
+		Description: "Full scan of orders (1.5M rows at sf 1) GROUP BY o_orderstatus, 3 groups: grouping cost without result volume",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan."},
+		SQL: `SELECT o_orderstatus, COUNT(*), SUM(o_totalprice)
+FROM orders
+GROUP BY o_orderstatus;`,
+	},
+	{
+		Name:        "core_group_2k",
+		Category:    benchCatCore,
+		Description: "Full scan of orders GROUP BY o_orderdate, ~2.4k groups: the middle point of the group-count curve (3 / 2.4k / 100k)",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan."},
+		SQL: `SELECT o_orderdate, COUNT(*), SUM(o_totalprice)
+FROM orders
+GROUP BY o_orderdate;`,
+	},
+	{
+		Name:        "core_group_many",
+		Category:    benchCatCore,
+		Description: "Full scan of orders GROUP BY o_custkey, ~100k groups: per-fragment group tables, API-side partial merge, 100k-row result",
+		Database:    "tpch",
+		PlanPins:    []string{"Execute as table scan."},
+		SQL: `SELECT o_custkey, COUNT(*), SUM(o_totalprice), MAX(o_orderdate)
+FROM orders
+GROUP BY o_custkey;`,
 	},
 
 	// ---------------------------------------------------------------
@@ -740,6 +937,9 @@ func (s *Shell) listRonSQLBenchQueries() {
 	fmt.Println("  TPC-H rewritten with CTEs:")
 	printBenchQueryCategory(benchCatTPCHCte, false)
 	fmt.Println()
+	fmt.Println("  Engine primitives (one access path or execution stage per entry, tpch):")
+	printBenchQueryCategory(benchCatCore, false)
+	fmt.Println()
 	printFSHWCategory(false)
 	fmt.Println()
 	fmt.Println("    all                  Run every RonSQL-capable query sequentially (fs_hw only when fs_bench is loaded)")
@@ -767,6 +967,9 @@ func (s *Shell) listSQLBenchQueries() {
 	fmt.Println()
 	fmt.Println("  TPC-H official formulations:")
 	printBenchQueryCategory(benchCatTPCHOfficial, true)
+	fmt.Println()
+	fmt.Println("  Engine primitives (identical SQL to .bench_ronsql core_*):")
+	printBenchQueryCategory(benchCatCore, true)
 	fmt.Println()
 	printFSHWCategory(true)
 	fmt.Println()
@@ -848,6 +1051,61 @@ func applyRonSQLPrefix(q *RonSQLBenchQuery, sql string) string {
 	return q.RonSQLPrefix + " " + sql
 }
 
+// tpchCustKeyLegend documents the placeholder of tpchCustKeyResolver.
+const tpchCustKeyLegend = "Placeholders per request: {KEY} a random customer that has orders " +
+	"(c_custkey up to MAX(c_custkey), KeySQL, not a multiple of 3)"
+
+// tpchCustKeyResolver renders {KEY} as a random customer that has orders.
+// .load_tpch gives no orders to customers whose key is a multiple of 3
+// (the TPC-H rule, generateOrdersRows in tpch.go), so a point lookup drawn
+// in [1, maxKey] would find nothing one request in three; maxKey is
+// MAX(c_custkey) from KeySQL.  Range and IN-list shapes keep the plain
+// draw: their orders per request do not change.
+func tpchCustKeyResolver(sql string, rng *rand.Rand, maxKey int) string {
+	n := tpchCustomersWithOrders(maxKey)
+	if n < 1 {
+		n = 1
+	}
+	return strings.ReplaceAll(sql, "{KEY}", strconv.Itoa(tpchOrderCustKey(rng.Intn(n))))
+}
+
+// tpchOrderKeyLegend documents the placeholders of tpchOrderKeyResolver.
+const tpchOrderKeyLegend = "Placeholders per request: {KEY} a random existing o_orderkey (multiples of 4 up to MAX(o_orderkey), KeySQL); " +
+	"{KEYS:n} n distinct existing o_orderkeys"
+
+var tpchOrderKeyPlaceholder = regexp.MustCompile(`\{KEY\}|\{KEYS:[0-9]+\}`)
+
+// tpchOrderKeyResolver renders {KEY} as a random existing o_orderkey and
+// {KEYS:n} as n distinct existing o_orderkeys.  .load_tpch writes sparse
+// order keys (multiples of 4, generateOrdersRows in tpch.go), so the plain
+// {KEY} draw in [1, maxKey] would miss three requests in four; maxKey is
+// MAX(o_orderkey) from KeySQL.
+func tpchOrderKeyResolver(sql string, rng *rand.Rand, maxKey int) string {
+	orders := maxKey / 4
+	if orders < 1 {
+		orders = 1
+	}
+	return tpchOrderKeyPlaceholder.ReplaceAllStringFunc(sql, func(m string) string {
+		if m == "{KEY}" {
+			return strconv.Itoa(4 * (rng.Intn(orders) + 1))
+		}
+		n, _ := strconv.Atoi(m[len("{KEYS:") : len(m)-1])
+		if n > orders {
+			n = orders
+		}
+		seen := make(map[int]bool, n)
+		keys := make([]string, 0, n)
+		for len(keys) < n {
+			k := rng.Intn(orders) + 1
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, strconv.Itoa(4*k))
+			}
+		}
+		return strings.Join(keys, ", ")
+	})
+}
+
 // countRonSQLResultRows counts data rows in a TEXT (header + TSV) response.
 func countRonSQLResultRows(data []byte) int {
 	body := strings.TrimSpace(string(data))
@@ -861,8 +1119,9 @@ func countRonSQLResultRows(data []byte) int {
 // ronsqlPhasesHeader is the RDRS response header carrying per-request
 // RonSQL phase timings, emitted when the server is compiled with
 // RONSQL_PHASE_STATS (the default; see RonSQLPerf.hpp). Value format:
-// "parse=12,analyze=3,load=45,...,rows=8,attempts=1" — timing fields in
-// microseconds, last ronsql_op attempt; rows/attempts are counters.
+// "parse=12,analyze=3,load=45,...,rows=8,attempts=1,fetched=40" — timing
+// fields in microseconds, last ronsql_op attempt; rows/attempts/fetched
+// are counters (fetched: rows the NDB API received, rows: rows drained).
 const ronsqlPhasesHeader = "x-ronsql-phases"
 
 // ronsqlPhaseOrder is the canonical display order of the timing fields.
@@ -872,15 +1131,56 @@ var ronsqlPhaseOrder = []string{
 	"execute",
 }
 
-// parseRonSQLPhases parses an x-ronsql-phases header value into a
-// name → value map. Returns nil for an empty header (old RDRS build or
-// RONSQL_PHASE_STATS compiled out).
-func parseRonSQLPhases(header string) map[string]int64 {
-	if header == "" {
-		return nil
+// ronsqlPhaseIndex maps a timing field to its ronsqlPhaseOrder position.
+// Read-only after initialization, so the benchmark goroutines share it.
+var ronsqlPhaseIndex = func() map[string]int {
+	m := make(map[string]int, len(ronsqlPhaseOrder))
+	for i, name := range ronsqlPhaseOrder {
+		m[name] = i
 	}
-	phases := make(map[string]int64)
-	for _, kv := range strings.Split(header, ",") {
+	return m
+}()
+
+// phaseSamples holds one benchmark goroutine's x-ronsql-phases values.
+// Each goroutine records into its own, without locking, and the parts are
+// merged once after the run: recording through one shared lock serialized
+// the goroutines outside the timed window and cost the RonSQL arm ~30 µs
+// per request of client throughput at 8 threads (census run 5, fs_floor:
+// 8 / throughput 135 µs against a measured latency of 103 µs).
+type phaseSamples struct {
+	values         [][]int64 // per ronsqlPhaseOrder position, microseconds
+	samples        int64
+	retries        int64 // sum of (attempts - 1) over sampled requests
+	rows           int64 // sum of drained rows over sampled requests
+	fetched        int64 // sum of fetched rows over the requests that report it
+	fetchedSamples int64 // requests whose header carried fetched=
+}
+
+func newPhaseSamples(capacity int) *phaseSamples {
+	if capacity > 100000 {
+		capacity = 100000
+	}
+	ps := &phaseSamples{values: make([][]int64, len(ronsqlPhaseOrder))}
+	for i := range ps.values {
+		ps.values[i] = make([]int64, 0, capacity)
+	}
+	return ps
+}
+
+// Record parses one x-ronsql-phases header value ("parse=12,...,rows=8,
+// attempts=1") in place. A missing header (old RDRS build or
+// RONSQL_PHASE_STATS compiled out) or one without a valid field records
+// nothing; fields outside ronsqlPhaseOrder are ignored, as the printed
+// breakdown never showed them.
+func (ps *phaseSamples) Record(header string) {
+	valid := false
+	for header != "" {
+		kv := header
+		if c := strings.IndexByte(header, ','); c >= 0 {
+			kv, header = header[:c], header[c+1:]
+		} else {
+			header = ""
+		}
 		eq := strings.IndexByte(kv, '=')
 		if eq <= 0 {
 			continue
@@ -889,63 +1189,78 @@ func parseRonSQLPhases(header string) map[string]int64 {
 		if err != nil {
 			continue
 		}
-		phases[strings.TrimSpace(kv[:eq])] = v
+		valid = true
+		switch name := strings.TrimSpace(kv[:eq]); name {
+		case "attempts":
+			if v > 1 {
+				ps.retries += v - 1
+			}
+		case "rows":
+			ps.rows += v
+		case "fetched":
+			ps.fetched += v
+			ps.fetchedSamples++
+		default:
+			if i, ok := ronsqlPhaseIndex[name]; ok {
+				ps.values[i] = append(ps.values[i], v)
+			}
+		}
 	}
-	if len(phases) == 0 {
-		return nil
+	if valid {
+		ps.samples++
 	}
-	return phases
 }
 
 // phaseBreakdown aggregates per-phase server-side latencies across the
-// requests of one benchmark run.
+// requests of one benchmark run: the merge of the goroutines' samples.
 type phaseBreakdown struct {
-	mu         sync.Mutex
-	collectors map[string]*LatencyCollector
-	samples    int64
-	retries    int64 // sum of (attempts - 1) over sampled requests
-	rows       int64 // sum of drained rows over sampled requests
+	collectors     []*LatencyCollector // per ronsqlPhaseOrder position
+	samples        int64
+	retries        int64
+	rows           int64
+	fetched        int64
+	fetchedSamples int64
 }
 
-func newPhaseBreakdown() *phaseBreakdown {
-	return &phaseBreakdown{collectors: make(map[string]*LatencyCollector)}
-}
-
-// Record parses one x-ronsql-phases header value and feeds the per-phase
-// collectors. A missing header is ignored (the breakdown then reports
-// unavailability once at print time instead of per request).
-func (pb *phaseBreakdown) Record(header string) {
-	phases := parseRonSQLPhases(header)
-	if phases == nil {
-		return
-	}
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
-	pb.samples++
-	for name, v := range phases {
-		switch name {
-		case "attempts":
-			if v > 1 {
-				pb.retries += v - 1
+func mergePhaseSamples(parts []*phaseSamples) *phaseBreakdown {
+	pb := &phaseBreakdown{collectors: make([]*LatencyCollector, len(ronsqlPhaseOrder))}
+	for i := range ronsqlPhaseOrder {
+		n := 0
+		for _, ps := range parts {
+			if ps != nil {
+				n += len(ps.values[i])
 			}
-		case "rows":
-			pb.rows += v
-		default:
-			c := pb.collectors[name]
-			if c == nil {
-				c = NewLatencyCollector()
-				pb.collectors[name] = c
-			}
-			c.Record(time.Duration(v) * time.Microsecond)
 		}
+		if n == 0 {
+			continue
+		}
+		all := make([]time.Duration, 0, n)
+		for _, ps := range parts {
+			if ps == nil {
+				continue
+			}
+			for _, v := range ps.values[i] {
+				all = append(all, time.Duration(v)*time.Microsecond)
+			}
+		}
+		pb.collectors[i] = &LatencyCollector{totalLatencies: all}
 	}
+	for _, ps := range parts {
+		if ps == nil {
+			continue
+		}
+		pb.samples += ps.samples
+		pb.retries += ps.retries
+		pb.rows += ps.rows
+		pb.fetched += ps.fetched
+		pb.fetchedSamples += ps.fetchedSamples
+	}
+	return pb
 }
 
 // Print writes the per-phase breakdown table after the end-to-end results.
 // Phases that never exceeded 0µs in the whole run are omitted.
 func (pb *phaseBreakdown) Print(totalRequests int64) {
-	pb.mu.Lock()
-	defer pb.mu.Unlock()
 	if pb.samples == 0 {
 		fmt.Printf("   Phase breakdown: not available (no %s header; RDRS predates it or RONSQL_PHASE_STATS is compiled out)\n\n",
 			ronsqlPhasesHeader)
@@ -954,8 +1269,8 @@ func (pb *phaseBreakdown) Print(totalRequests int64) {
 	fmt.Printf("   Phase breakdown (server-side, %d/%d requests sampled):\n",
 		pb.samples, totalRequests)
 	fmt.Printf("     %-12s %10s %10s %10s %10s\n", "phase", "avg", "p95", "p99", "max")
-	for _, name := range ronsqlPhaseOrder {
-		c := pb.collectors[name]
+	for i, name := range ronsqlPhaseOrder {
+		c := pb.collectors[i]
 		if c == nil {
 			continue
 		}
@@ -968,6 +1283,11 @@ func (pb *phaseBreakdown) Print(totalRequests int64) {
 			formatLatency(p99Lat), formatLatency(maxLat))
 	}
 	fmt.Printf("     %-12s %.1f per request\n", "rows drained", float64(pb.rows)/float64(pb.samples))
+	if pb.fetchedSamples > 0 {
+		// Rows the data nodes shipped (older RDRS builds omit fetched=).
+		fmt.Printf("     %-12s %.1f per request\n", "rows fetched",
+			float64(pb.fetched)/float64(pb.fetchedSamples))
+	}
 	if pb.retries > 0 {
 		fmt.Printf("     Retries: %d (phase values reflect each request's last attempt)\n", pb.retries)
 	}
@@ -1138,7 +1458,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 		fmt.Println(strings.TrimSpace(string(data)))
 	}
 	fmt.Println()
-	if len(q.PlanPins) > 0 || q.Category == benchCatFSHW {
+	if len(q.PlanPins) > 0 || q.Category == benchCatFSHW || q.Category == benchCatCore {
 		s.checkBenchPlanPins(clients[0], q, warmupReq.Query)
 	}
 
@@ -1146,7 +1466,12 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	var wg sync.WaitGroup
 	latencyCollector := NewLatencyCollector()
 	errorCollector := NewErrorCollector()
-	phases := newPhaseBreakdown()
+	// One phase sample set per goroutine, merged after the run (no shared
+	// lock on the request path).
+	phaseParts := make([]*phaseSamples, numThreads)
+	for t := range phaseParts {
+		phaseParts[t] = newPhaseSamples(numOps)
+	}
 	benchStart := time.Now()
 	stopProgress := benchProgressReporter(totalOps, &doneOps, errorCollector, benchStart)
 
@@ -1156,6 +1481,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 		go func(threadID int, restClient *client.RestClient) {
 			defer wg.Done()
 
+			phases := phaseParts[threadID]
 			rng := rand.New(rand.NewSource(int64(threadID)*100003 + 7))
 			for i := 0; i < numOps; i++ {
 				req := RonSQLRequest{
@@ -1183,7 +1509,7 @@ func (s *Shell) runBenchRonSQLQuery(q *RonSQLBenchQuery, numThreads, numOps int)
 	benchDuration := time.Since(benchStart)
 
 	printBenchResults("RonSQL", q.Name, doneOps, benchDuration, latencyCollector, errorCollector)
-	phases.Print(doneOps)
+	mergePhaseSamples(phaseParts).Print(doneOps)
 	return nil
 }
 

@@ -215,8 +215,10 @@ var transientNDBErrors = []string{
 // Classify maps an RDRS response to an outcome.  Since RONDB-1124 the
 // status carries the error class (ronsql_operation.cpp): 400 = syntax /
 // semantic / unsupported (a clean rejection), 413 = a size limit (also a
-// clean rejection), 429 = rate limited, 503 = an exhausted resource or
-// retry budget (retryable), 500 = internal.  Before RONDB-1124 every RonSQL
+// clean rejection), 429 = rate limited, 503 = an exhausted retry budget
+// of temporary errors (retryable) or a permanent resource-class error
+// ("Caught exception:", not retried: only temporary errors are),
+// 500 = internal.  Before RONDB-1124 every RonSQL
 // error was a 500 with a "Caught exception:" body; that framing is still
 // honoured so the framework classifies both servers.  Transient NDB
 // dictionary errors classify as Retryable whatever the framing.
@@ -227,6 +229,10 @@ func Classify(status int, body string) (Outcome, string) {
 		return OK, ""
 	case status == http.StatusTooManyRequests:
 		return Retryable, msg
+	case status == http.StatusServiceUnavailable && strings.Contains(msg, "Caught exception:"):
+		// a permanent [resource] error (RonSQLPermanentError): as final
+		// as a 500 [internal]; a retry would fail the same way
+		return CleanReject, msg
 	case status == http.StatusServiceUnavailable:
 		return Retryable, msg
 	case status == http.StatusBadRequest && strings.Contains(msg, "Caught exception:"):

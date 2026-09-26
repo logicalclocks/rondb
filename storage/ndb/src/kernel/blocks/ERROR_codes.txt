@@ -26,7 +26,12 @@ Next QMGR 963
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
-4041: Force intermittent group eviction in join aggregation (every ~7 rows)
+4041: Force intermittent group eviction in join aggregation (every ~7 rows
+      per LDM thread); not on a CTE materialization, which keeps every group
+4042: Force a QueryMemory drain in standalone GROUP BY aggregation on every
+      7th row of a fragment scan while more than 2 groups are resident
+4043: Force a QueryMemory drain in standalone GROUP BY aggregation once the
+      resident groups need two result batches (2 x DEF_AGG_RESULT_BATCH_BYTES)
 4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
       scan filter with a compilable region (Dbtup / AggInterpreter /
       JoinAggInterpreter; deliberate-fallback canaries are exempt)
@@ -35,13 +40,15 @@ Next DBACC 3007
       program whose compilable region did not JIT-compile aborts the node;
       per-row fallbacks never trip it (suite-wide strict arming, paired
       with DBLQH 5120)
-Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
+Next DBTUP 4044 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing
 5124: Simulate JOIN_AGG_COMPLETE_REF state-not-found in Dblqh
 5125: Simulate JOIN_AGG_SETUP_REF allocation failure in DblqhProxy
-5126: Force join aggregation group eviction by limiting maxGroups to 3 (DblqhProxy)
+5126: Force join aggregation group eviction by limiting maxGroups to 3 (DblqhProxy);
+      a CTE materialization cannot evict, so a CTE body with more groups fails
+      with the temporary 1870 / 20008
 5120: RONDB-1056 JIT strict compile for the join-agg path (DblqhProxy): a
       per-leaf compile failure at JOIN_AGG_SETUP is fatal (suite-wide strict
       arming, paired with DBTUP 4064)
@@ -79,9 +86,9 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       insert, letting SETUP run first. Extra selects: 0 = all, 0xFFFF
       = the main aggregation only, 0xFFFE = none (sweeper hold only),
       otherwise cteIndex + 1.
-5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1251 after 200 ms
-      so consumers can be swept first and DBTC can finish its SETUP round
-      (DblqhProxy, cleared after use).
+5139: Leave ONE SETUP identity unfilled; send SETUP_REF 1274 after 200 ms
+      so consumers can be swept first (sweeper REF 1274, temporary) and
+      DBTC can finish its SETUP round (DblqhProxy, cleared after use).
 5140: Hold inbound JOIN_AGG_REDISTRIBUTE_REQ with RI_NEED_CONF, 200 ms at
       a time, until cleared. Other rows proceed normally, avoiding a timer
       entry per group row. A held remote request emits InfoEvent
@@ -157,7 +164,7 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
       instead capping the join-agg park pool: once it holds at least
       `extra` records a consumer is refused as if the pool were exhausted
       (parkJoinAggConsumer / joinAggResolveOrParkGeneric) and takes its
-      normal resource-error path (PK-4).
+      normal resource-error path, the temporary 1275 (PK-4).
 5149: Refuse JOIN_AGG_SETUP_REQ with OutOfQueryMemory once the identity
       table holds at least `extra` entries (DblqhProxy), as if the table
       were full (PK-5).
@@ -181,11 +188,17 @@ the request. Codes below 5128 stay on the LDM instances. Clearing (code
 5152: Hold CTE 0 and 2 at the FINAL_REP barrier for DBTC 8132;
       suppress peer notification on CANCEL to exercise DBTC cancellation.
 5153: As 5152, but crash the non-coordinator node on CANCEL.
-Next DBLQH 5154
+5154: Hold the owner's merge continuation of a main aggregation with a
+      remote coordinator (re-queued without delay) until cleared, and ignore
+      m_connected in checkJoinAggNodeFailed (a DISCONNECT_REP lagging the
+      node-failure protocol); emits [JOIN_AGG_MERGE_HELD node=N iteration=I
+      coordinator=C] (extra = iteration, top bit = event sent). NF-14: the
+      host record's ZNODE_DOWN must stop it
+Next DBLQH 5155
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
-Next DBTC 8315 (RonDB)
+Next DBTC 8316 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -196,7 +209,7 @@ Next DBTUX 12011
 Next SUMA 13063
 Next LGMAN 15002
 Next TSMAN 16002
-Next DBSPJ 17534 (17530-17533 RonDB CTE)
+Next DBSPJ 17535 (17530-17534 RonDB)
 Next TRIX 18004
 Next DBUTIL 19002
 
@@ -711,6 +724,12 @@ DBTC node failure take over testing (RonDB)
       its node-failure handling. Does not change c_alive_nodes. Emits
       JOIN_AGG_SETUP_FAILED_NODE; remains armed until explicitly cleared.
       CteSetupAlreadyFailedNode requires bounded failure/close and clean pools.
+8315: At ONE main-aggregation JOIN_AGG_SETUP_CONF (no CTE, scan RUNNING,
+      round in flight), fail the scan with scanError(270) first, then
+      account the CONF: it meets AGG_SETUP_CANCELLED with the fragment
+      closes in flight. Emits JOIN_AGG_SETUP_CONF_AFTER_CANCEL (cleared
+      after use). PK-9 requires JOIN_AGG_SETUP_CONF_DEFERRED, not a
+      stale-SETUP reclaim.
 
 
 TRPMAN
@@ -1142,3 +1161,7 @@ DBSPJ (RonDB CTE / join aggregation)
 17533: Swallow ONE SCAN_NEXTREQ(close) from DBTC in execSCAN_NEXTREQ, the
        request left waiting (cleared after use, logs when it fires): the
        worker owes DBTC its close reply until this node is killed (NF-1)
+17534: Fail the per-node array allocation of a new Request in do_init
+       (query memory exhausted; cleared after use): the LQHKEYREQ /
+       SCAN_FRAGREQ is refused with OutOfQueryMemory instead of stopping
+       the node (F27)

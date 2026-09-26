@@ -80,7 +80,7 @@
 //#define DEBUG_MATCH 1
 //#define DEBUG_SCAN_PARENT_ROW 1
 //#define DEBUG_CTE 1
-#define DEBUG_CTE_PHASE 1
+//#define DEBUG_CTE_PHASE 1
 /* DEBUG_CTE_PHASE_VERBOSE traces every batch-completion check.  This is
  * useful for stuck outstanding/cnt_active debugging, but too chatty for
  * normal CTE phase tracing. */
@@ -150,7 +150,7 @@
  * To enable: uncomment DEBUG_CNT_ACTIVE below in a debug build and
  * rebuild ndbd.  Production builds always inline to a bare ++/--. */
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
-#define DEBUG_CNT_ACTIVE 1
+//#define DEBUG_CNT_ACTIVE 1
 #endif
 
 /* m_cnt_active mutations always inline to a bare ++/-- — keeping the
@@ -1118,19 +1118,41 @@ void Dbspj::nodeFail_checkRequests(Signal *signal) {
   hash->next(bucket, iter);
 
   const Uint32 RT_BREAK = 64;
+  Uint32 orphaned = 0;
+  Uint32 orphanedRequester = 0;
   for (Uint32 i = 0;
        (i < RT_BREAK || iter.bucket == bucket) && !iter.curr.isNull(); i++) {
     jam();
 
     Ptr<Request> requestPtr = iter.curr;
     hash->next(iter);
+    if ((requestPtr.p->m_state & Request::RS_WAITING) != 0 &&
+        (requestPtr.p->m_bits & Request::RT_REQUESTER_FAILED) == 0 &&
+        refToMain(requestPtr.p->m_senderRef) == DBTC &&
+        failed.get(refToNode(requestPtr.p->m_senderRef))) {
+      /* Waits for a SCAN_NEXTREQ its failed TC can no longer send:
+       * nodeFail() aborts it and cleanup() releases it in full. */
+      orphaned++;
+      orphanedRequester = refToNode(requestPtr.p->m_senderRef);
+    }
     i += nodeFail(signal, requestPtr, failed);
+  }
+  if (orphaned > 0) {
+    jam();
+    /* Cluster-log evidence that scans left waiting by a failed TC were
+     * found; NF-13 (CteCoordinatorDiesWaitingScan) waits for it. */
+    infoEvent("[SPJ_ORPHANED_SCANS node=%u instance=%u failed=%u count=%u]",
+              getOwnNodeId(), instance(), orphanedRequester, orphaned);
   }
 
   if (!iter.curr.isNull()) {
     jam();
     signal->theData[0] = type;
-    signal->theData[1] = bucket;
+    /* Resume where this slice stopped. The loop always finishes the
+     * bucket it started in, so every slice advances; resuming at the
+     * slice's first bucket instead re-walked the same requests and never
+     * got past requests that stay in the hash (RS_ABORTED tombstones). */
+    signal->theData[1] = iter.bucket;
     failed.copyto(NdbNodeBitmask::Size, signal->theData + 2);
     LinearSectionPtr lsptr[3];
     lsptr[0].p = signal->theData + 2;
@@ -1240,7 +1262,11 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
       break;
     }
     new (requestPtr.p) Request(ah);
-    do_init(requestPtr.p, req, signal->getSendersBlockRef());
+    if (unlikely(!do_init(requestPtr.p, req, signal->getSendersBlockRef()))) {
+      jam();
+      err = DbspjErr::OutOfQueryMemory;
+      break;
+    }
 
     Uint32 len_cnt;
 
@@ -1333,7 +1359,41 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
   }
 }
 
-void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
+/**
+ * The per-node aggStateKeys / lookup-node arrays of a Request, one
+ * query-memory block freed by cleanup().  do_init allocates it last, once
+ * every field cleanup() and the request-hash removal read is set, so an
+ * exhausted query memory is an OutOfQueryMemory REF of this request
+ * instead of an ndbrequire that stopped the node (F27, census run 4:
+ * 8 concurrent many-group CTE queries).
+ */
+bool Dbspj::alloc_request_node_arrays(Request *requestP) {
+  requestP->m_aggStateKeys = nullptr;
+  requestP->m_lookup_node_data = nullptr;
+  const Uint32 max_nodes = MAX_NDB_NODES;
+  const size_t alloc_size = max_nodes * sizeof(Uint32) +
+                            max_nodes * sizeof(Uint16);
+  void *mem = nullptr;
+  if (ERROR_INSERTED_CLEAR(17534)) {
+    jam();
+    g_eventLogger->info(
+        "Injecting OutOfQueryMem error 17534 at line %d file %s", __LINE__,
+        __FILE__);
+  } else {
+    mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY, getThreadId(),
+                              true);
+  }
+  if (unlikely(mem == nullptr)) {
+    jam();
+    return false;
+  }
+  requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
+  requestP->m_lookup_node_data = reinterpret_cast<Uint16 *>(
+      static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
+  return true;
+}
+
+bool Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_bits = 0;
   requestP->m_errCode = 0;
   requestP->m_state = Request::RS_BUILDING;
@@ -1359,18 +1419,6 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
   requestP->m_transId[1] = req->transId2;
   requestP->m_rootFragId = LqhKeyReq::getFragmentId(req->fragmentData);
   requestP->m_rootFragCnt = 1;
-  {
-    const Uint32 max_nodes = MAX_NDB_NODES;
-    const size_t alloc_size = max_nodes * sizeof(Uint32) +
-                              max_nodes * sizeof(Uint16);
-    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                                    getThreadId(), true);
-    ndbrequire(mem != nullptr);
-    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
-    requestP->m_lookup_node_data =
-        reinterpret_cast<Uint16 *>(
-            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
-  }
   /* Request objects come from a TransientPool (no constructor runs) and
    * the lookup protocol carries no aggStateKeys section, so without this
    * clear a recycled Request keeps the previous occupant's m_aggNodes
@@ -1413,6 +1461,7 @@ void Dbspj::do_init(Request *requestP, const LqhKeyReq *req, Uint32 senderRef) {
     requestP->m_senderRef = senderRef;
   }
   requestP->m_rootResultData = tmp;
+  return alloc_request_node_arrays(requestP);
 }
 
 void Dbspj::store_lookup(Ptr<Request> requestPtr) {
@@ -1582,7 +1631,11 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
       break;
     }
     new (requestPtr.p) Request(ah);
-    do_init(requestPtr.p, req, signal->getSendersBlockRef());
+    if (unlikely(!do_init(requestPtr.p, req, signal->getSendersBlockRef()))) {
+      jam();
+      err = DbspjErr::OutOfQueryMemory;
+      break;
+    }
 
     Uint32 len_cnt;
     {
@@ -1908,7 +1961,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
   }
 }
 
-void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
+bool Dbspj::do_init(Request *requestP, const ScanFragReq *req,
                     Uint32 senderRef) {
   requestP->m_bits = Request::RT_SCAN;
   requestP->m_errCode = 0;
@@ -1938,18 +1991,6 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   requestP->m_rootResultData = req->resultData;
   requestP->m_rootFragId = req->fragmentNoKeyLen;
   requestP->m_rootFragCnt = 0;  // Filled in later
-  {
-    const Uint32 max_nodes = MAX_NDB_NODES;
-    const size_t alloc_size = max_nodes * sizeof(Uint32) +
-                              max_nodes * sizeof(Uint16);
-    void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                                    getThreadId(), true);
-    ndbrequire(mem != nullptr);
-    requestP->m_aggStateKeys = static_cast<Uint32 *>(mem);
-    requestP->m_lookup_node_data =
-        reinterpret_cast<Uint16 *>(
-            static_cast<char *>(mem) + max_nodes * sizeof(Uint32));
-  }
   requestP->m_aggNodes.clear();
   requestP->m_lastHbrepTicks = getHighResTimer();
 #ifdef SPJ_TRACE_TIME
@@ -1964,6 +2005,7 @@ void Dbspj::do_init(Request *requestP, const ScanFragReq *req,
   } else {
     requestP->m_user_id = RNIL;
   }
+  return alloc_request_node_arrays(requestP);
 }
 
 void Dbspj::store_scan(Ptr<Request> requestPtr) {
@@ -4553,6 +4595,19 @@ Uint32 Dbspj::nodeFail(Signal *signal, Ptr<Request> requestPtr,
   Uint32 cnt = 0;
   Uint32 iter = 0;
 
+  if (requestPtr.p->isScan() &&
+      refToMain(requestPtr.p->m_senderRef) == DBTC &&
+      nodes.get(refToNode(requestPtr.p->m_senderRef))) {
+    jam();
+    /**
+     * The requesting TC died with its node: DBTC take-over does not
+     * handle scans, so no SCAN_NEXTREQ will ever reach this request.
+     * Always aborted below; cleanup() must then release it in full,
+     * also when it was RS_WAITING (no RS_ABORTED tombstone).
+     */
+    requestPtr.p->m_bits |= Request::RT_REQUESTER_FAILED;
+  }
+
   {
     Ptr<TreeNode> nodePtr;
     Local_TreeNode_list list(m_treenode_pool, requestPtr.p->m_nodes);
@@ -4650,19 +4705,21 @@ void Dbspj::cleanup(Ptr<Request> requestPtr, bool in_hash) {
     /**
      * If a Request in state RS_WAITING is aborted (node failure?),
      * there is no ongoing client request we can reply to.
-     * We set it to RS_ABORTED state now, a later SCAN_NEXTREQ will
-     * find the RS_ABORTED request, REF with the abort reason, and
-     * then complete the cleaning up
+     * While its TC lives, set it to RS_ABORTED: the TC's next
+     * SCAN_NEXTREQ (the API fetching more, or closing) finds the
+     * RS_ABORTED request, REFs with the abort reason and completes
+     * the cleaning up.
      *
-     * NOTE1: If no SCAN_NEXTREQ ever arrives for this Request, it
-     *        is effectively leaked!
-     *
-     * NOTE2: During testing I was never able to find any SCAN_NEXTREQ
-     *        arriving for a ABORTED query. So there likely are such
-     *        leaks! Suspect that TC does not send SCAN_NEXTREQ to
-     *        SPJ/LQH blocks affected by a node failure?
+     * When the TC's node failed (RT_REQUESTER_FAILED) no SCAN_NEXTREQ
+     * can follow: DBTC take-over handles no scans, and DBLQH closes
+     * only its own scans of the failed TC. A tombstone would leak the
+     * Request, its arena and the join-aggregation / CTE arrays for
+     * good (DUMP 2650 then stops the node), so release in full now.
+     * A tombstone left by an earlier failure of another node is
+     * aborted again when its TC fails and freed here.
      */
-    if (unlikely((requestPtr.p->m_state & Request::RS_WAITING) != 0)) {
+    if (unlikely((requestPtr.p->m_state & Request::RS_WAITING) != 0) &&
+        (requestPtr.p->m_bits & Request::RT_REQUESTER_FAILED) == 0) {
       jam();
       ndbrequire(in_hash);
       requestPtr.p->m_state = Request::RS_ABORTED;
@@ -5099,12 +5156,10 @@ void Dbspj::execSCAN_NEXTREQ(Signal *signal) {
   {
     /**
      * A RS_ABORTED query is a 'toombstone' left behind when a
-     * RS_WAITING query was aborted by node failures. The idea is
-     * that the next SCAN_NEXTREQ will reply with the abort reason
-     * and clean up.
-     *
-     * TODO: This doesn't seems to happen as assumed by design,
-     *       Thus, RS_ABORTED queries are likely leaked!
+     * RS_WAITING query was aborted by the failure of another node
+     * while its TC lives. This SCAN_NEXTREQ replies with the abort
+     * reason and cleans up. (A request whose TC failed is released
+     * at once, see cleanup(): no SCAN_NEXTREQ could reach it.)
      */
     if (unlikely(state == Request::RS_ABORTED)) {
       jam();

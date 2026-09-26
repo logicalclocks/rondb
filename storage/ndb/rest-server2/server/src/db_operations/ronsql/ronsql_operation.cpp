@@ -69,6 +69,15 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       STAT_COUNT(params.phase_stats, attempts, (Uint32)(attempt + 1));
       PERF_TS(t_total);
       STAT_TS(params.phase_stats, s_total);
+#ifdef RONSQL_PHASE_STATS
+      // Rows fetched (m3_run6_plan.md C3): the Ndb client statistic is
+      // per Ndb object, and this request owns params.ndb, so the delta
+      // across the attempt is this attempt's rows.
+      const Uint64 s_fetched_start =
+          (params.phase_stats != nullptr && params.ndb != nullptr)
+              ? params.ndb->getClientStat(Ndb::ReadRowCount)
+              : 0;
+#endif
       RonSQLPreparer executor(params);
       PERF_TS(t_prepare_end);
       PERF_LOG("prepare (constructor)", t_total, t_prepare_end);
@@ -82,6 +91,12 @@ RS_Status ronsql_op(RonSQLExecParams& params) {
       PERF_LOG("total (ronsql_op)", t_total, t_exec_end);
       STAT_TS(params.phase_stats, s_exec_end);
       STAT_SET(params.phase_stats, execute_us, s_prepare_end, s_exec_end);
+#ifdef RONSQL_PHASE_STATS
+      if (params.phase_stats != nullptr && params.ndb != nullptr) {
+        params.phase_stats->rows_fetched =
+            params.ndb->getClientStat(Ndb::ReadRowCount) - s_fetched_start;
+      }
+#endif
 
       DEB_TRACE();
       return RS_OK;

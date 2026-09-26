@@ -1507,13 +1507,58 @@ const NdbQueryTableScanOperationDef *NdbQueryBuilder::scanTable(
   return &op->m_interface;
 }
 
+static bool allConstOperands(const NdbQueryOperand *const keys[]) {
+  if (keys == nullptr) return true;
+  for (int i = 0; keys[i] != nullptr; i++) {
+    if (keys[i]->getImpl().getKind() != NdbQueryOperandImpl::Const) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const NdbQueryIndexScanOperationDef *NdbQueryBuilder::scanIndex(
     const NdbDictionary::Index *index, const NdbDictionary::Table *table,
     const NdbQueryIndexBound *bound, const NdbQueryOptions *options,
     const char *ident) {
+  const NdbQueryIndexBound *const bounds[1] = {bound};
+  return scanIndex(index, table, bounds, (bound != nullptr) ? 1 : 0, options,
+                   ident);
+}
+
+const NdbQueryIndexScanOperationDef *NdbQueryBuilder::scanIndex(
+    const NdbDictionary::Index *index, const NdbDictionary::Table *table,
+    const NdbQueryIndexBound *const bounds[], Uint32 noOfBounds,
+    const NdbQueryOptions *options, const char *ident) {
   if (m_impl.hasError()) return nullptr;
   // Required non-NULL arguments
   returnErrIf(table == nullptr || index == nullptr, QRY_REQ_ARG_IS_NULL);
+  returnErrIf(noOfBounds > 0 && bounds == nullptr, QRY_REQ_ARG_IS_NULL);
+  returnErrIf(noOfBounds > NdbIndexScanOperation::MaxRangeNo + 1,
+              QRY_MULTI_RANGE_BOUND);
+  if (noOfBounds > 1) {
+    /**
+     * RonDB: a multi-range bound is serialized as constant KEYINFO words
+     * (one range per bound, stamped with its length and range number),
+     * so every operand must be a constant; the ranges of a fragment are
+     * scanned one after the other, so the scan cannot be sorted.
+     */
+    for (Uint32 r = 0; r < noOfBounds; r++) {
+      returnErrIf(bounds[r] == nullptr, QRY_REQ_ARG_IS_NULL);
+      returnErrIf(!allConstOperands(bounds[r]->m_low) ||
+                      !allConstOperands(bounds[r]->m_high),
+                  QRY_MULTI_RANGE_BOUND);
+    }
+    if (options != nullptr) {
+      const NdbQueryOptions::ScanOrdering order =
+          options->getImpl().getOrdering();
+      returnErrIf(order == NdbQueryOptions::ScanOrdering_ascending ||
+                      order == NdbQueryOptions::ScanOrdering_descending,
+                  QRY_MULTI_RANGE_BOUND);
+    }
+  }
+  const NdbQueryIndexBound *const bound =
+      (noOfBounds > 0) ? bounds[0] : nullptr;
 
   if (m_impl.m_operations.size() > 0) {
     /**
@@ -1568,39 +1613,31 @@ const NdbQueryIndexScanOperationDef *NdbQueryBuilder::scanIndex(
 
   int error = 0;
   NdbQueryIndexScanOperationDefImpl *op = new NdbQueryIndexScanOperationDefImpl(
-      indexImpl, tableImpl, bound,
+      indexImpl, tableImpl, bounds, noOfBounds,
       options ? options->getImpl() : defaultOptions, ident,
       m_impl.m_operations.size(), m_impl.getNextInternalOpNo(), error);
 
   returnErrIf(m_impl.takeOwnership(op) != 0, Err_MemoryAlloc);
   returnErrIf(error != 0, error);  // C'tor returned error, bailout
 
-  returnErrIf(op->m_bound.lowKeys > indexImpl.getNoOfColumns() ||
-                  op->m_bound.highKeys > indexImpl.getNoOfColumns(),
-              QRY_TOO_MANY_KEY_VALUES);
-
   // Bind lowKeys, and if applicable, highKeys to the column being referred
-  Uint32 i;
-  for (i = 0; i < op->m_bound.lowKeys; ++i) {
-    const NdbColumnImpl &col = NdbColumnImpl::getImpl(*indexImpl.getColumn(i));
-
-    const int error =
-        (i < op->m_bound.highKeys && op->m_bound.high[i] != op->m_bound.low[i])
-            ? op->m_bound.low[i]->bindOperand(col, *op) ||
-                  op->m_bound.high[i]->bindOperand(col, *op)
-            : op->m_bound.low[i]->bindOperand(col, *op);
-
-    returnErrIf(error != 0, error);
-  }
-
-  // Bind any remaining highKeys past '#lowKeys'
-  for (; i < op->m_bound.highKeys; ++i) {
-    const NdbColumnImpl &col = NdbColumnImpl::getImpl(*indexImpl.getColumn(i));
-    error = op->m_bound.high[i]->bindOperand(col, *op);
+  for (Uint32 r = 0; r < op->getNoOfRanges(); r++) {
+    const NdbQueryIndexScanOperationDefImpl::RangeBound range =
+        op->getRange(r);
+    returnErrIf(range.lowKeys > indexImpl.getNoOfColumns() ||
+                    range.highKeys > indexImpl.getNoOfColumns(),
+                QRY_TOO_MANY_KEY_VALUES);
+    returnErrIf(op->getNoOfRanges() > 1 && range.lowKeys == 0 &&
+                    range.highKeys == 0,
+                QRY_MULTI_RANGE_BOUND);
+    error = op->bindRangeOperands(range);
     returnErrIf(error != 0, error);
   }
 
   const NdbQueryOperationDefImpl *parent = op->getParentOperation();
+  // A multi-range bound serializes as a fixed key: no parent operation.
+  returnErrIf(op->getNoOfRanges() > 1 && parent != nullptr,
+              QRY_MULTI_RANGE_BOUND);
   if (parent != nullptr &&
       (op->getMatchType() & NdbQueryOptions::MatchNonNull) == 0) {
     /**
@@ -1856,6 +1893,16 @@ NdbQueryDefImpl::NdbQueryDefImpl(
     }
   }
 
+  // The tree length is a 16-bit field of the QueryTree header.
+  if (unlikely(m_serializedDef.isMemoryExhausted())) {
+    error = Err_MemoryAlloc;
+    return;
+  }
+  if (unlikely(m_serializedDef.getSize() > 0xFFFF)) {
+    error = QRY_DEFINITION_TOO_LARGE;
+    return;
+  }
+
   // Set length and number of nodes in tree.
   Uint32 cntLen;
   QueryTree::setCntLen(
@@ -2014,9 +2061,14 @@ int NdbCharConstOperandImpl::convertVChar() {
     len = maxlen;
   }
 
-  char *dst = m_converted.getCharBuffer(len);
+  // RonDB: the converted value is the column's wire format, length
+  // prefix included, as NdbGenericConstOperandImpl produces it; bound and
+  // key patterns and the root KEYINFO (serializeConstOp) all send it as
+  // is.
+  char *dst = m_converted.getCharBuffer(len + 1);
   if (unlikely(dst == nullptr)) return Err_MemoryAlloc;
 
+  *(Uint8 *)dst++ = (Uint8)len;
   memcpy(dst, m_value, len);
   return 0;
 }  // NdbCharConstOperandImpl::convertVChar
@@ -2204,13 +2256,20 @@ NdbQueryLookupOperationDefImpl::NdbQueryLookupOperationDefImpl(
 
 NdbQueryIndexScanOperationDefImpl::NdbQueryIndexScanOperationDefImpl(
     const NdbIndexImpl &index, const NdbTableImpl &table,
-    const NdbQueryIndexBound *bound, const NdbQueryOptionsImpl &options,
-    const char *ident, Uint32 opNo, Uint32 internalOpNo, int &error)
+    const NdbQueryIndexBound *const bounds[], Uint32 noOfBounds,
+    const NdbQueryOptionsImpl &options, const char *ident, Uint32 opNo,
+    Uint32 internalOpNo, int &error)
     : NdbQueryScanOperationDefImpl(table, options, ident, opNo, internalOpNo,
                                    error),
       m_interface(*this),
       m_index(index),
+      // Sized up front: no allocation unless multi-range.
+      m_extraRanges(noOfBounds > 1 ? noOfBounds - 1 : 0),
+      m_rangeOperands(noOfBounds > 1 ? 2 * (noOfBounds - 1) : 0,
+                      noOfBounds > 1 ? 2 * (noOfBounds - 1) : 0),
       m_paramInPruneKey(false) {
+  const NdbQueryIndexBound *const bound =
+      (noOfBounds > 0) ? bounds[0] : nullptr;
   memset(&m_bound, 0, sizeof m_bound);
   if (bound != nullptr) {
     if (bound->m_low != nullptr) {
@@ -2241,6 +2300,143 @@ NdbQueryIndexScanOperationDefImpl::NdbQueryIndexScanOperationDefImpl(
     m_bound.lowKeys = m_bound.highKeys = 0;
     m_bound.lowIncl = m_bound.highIncl = true;
   }
+
+  // RonDB: ranges 1..n-1 of a multi-range bound, operands kept flat.
+  for (Uint32 r = 1; r < noOfBounds; r++) {
+    const NdbQueryIndexBound *const b = bounds[r];
+    ExtraRange range;
+    range.lowPos = m_rangeOperands.size();
+    range.lowKeys = 0;
+    for (; b->m_low != nullptr && b->m_low[range.lowKeys] != nullptr;
+         range.lowKeys++) {
+      assert(range.lowKeys < MAX_ATTRIBUTES_IN_INDEX);
+      if (unlikely(m_rangeOperands.push_back(
+                       &b->m_low[range.lowKeys]->getImpl()) != 0)) {
+        error = Err_MemoryAlloc;
+        return;
+      }
+    }
+    range.highPos = m_rangeOperands.size();
+    range.highKeys = 0;
+    for (; b->m_high != nullptr && b->m_high[range.highKeys] != nullptr;
+         range.highKeys++) {
+      assert(range.highKeys < MAX_ATTRIBUTES_IN_INDEX);
+      if (unlikely(m_rangeOperands.push_back(
+                       &b->m_high[range.highKeys]->getImpl()) != 0)) {
+        error = Err_MemoryAlloc;
+        return;
+      }
+    }
+    range.lowIncl = b->m_lowInclusive;
+    range.highIncl = b->m_highInclusive;
+    if (unlikely(m_extraRanges.push_back(range) != 0)) {
+      error = Err_MemoryAlloc;
+      return;
+    }
+  }
+}
+
+NdbQueryIndexScanOperationDefImpl::RangeBound
+NdbQueryIndexScanOperationDefImpl::getRange(Uint32 r) const {
+  RangeBound range;
+  if (r == 0) {
+    range.low = m_bound.low;
+    range.high = m_bound.high;
+    range.lowKeys = m_bound.lowKeys;
+    range.highKeys = m_bound.highKeys;
+    range.lowIncl = m_bound.lowIncl;
+    range.highIncl = m_bound.highIncl;
+  } else {
+    // m_rangeOperands no longer grows once the c'tor is done.
+    const ExtraRange &extra = m_extraRanges[r - 1];
+    NdbQueryOperandImpl *const *const base =
+        (m_rangeOperands.size() > 0) ? &m_rangeOperands[0] : nullptr;
+    range.low = base + extra.lowPos;
+    range.high = base + extra.highPos;
+    range.lowKeys = extra.lowKeys;
+    range.highKeys = extra.highKeys;
+    range.lowIncl = extra.lowIncl;
+    range.highIncl = extra.highIncl;
+  }
+  return range;
+}
+
+int NdbQueryIndexScanOperationDefImpl::bindRangeOperands(
+    const RangeBound &range) {
+  const Uint32 keyCount =
+      (range.lowKeys > range.highKeys) ? range.lowKeys : range.highKeys;
+  for (Uint32 i = 0; i < keyCount; i++) {
+    const NdbColumnImpl &col = NdbColumnImpl::getImpl(*m_index.getColumn(i));
+    NdbQueryOperandImpl *const low =
+        (i < range.lowKeys) ? range.low[i] : nullptr;
+    // An operand serving as both low and high value is bound once.
+    NdbQueryOperandImpl *const high =
+        (i < range.highKeys && range.high[i] != low) ? range.high[i]
+                                                     : nullptr;
+    NdbQueryOperandImpl *const operands[2] = {low, high};
+    for (NdbQueryOperandImpl *operand : operands) {
+      if (operand == nullptr) continue;
+      // A constant shared by several ranges (an equality on a leading
+      // column) is converted once: rebinding would convert it again.
+      if (operand->getKind() == NdbQueryOperandImpl::Const &&
+          operand->getColumn() == &col)
+        continue;
+      const int error = operand->bindOperand(col, *this);
+      if (unlikely(error != 0)) return error;
+    }
+  }
+  return 0;
+}
+
+int NdbQueryIndexScanOperationDefImpl::appendConstRange(
+    Uint32Buffer &buffer, const RangeBound &range, Uint32 rangeNo) const {
+  assert(rangeNo <= NdbIndexScanOperation::MaxRangeNo);
+  const Uint32 startPos = buffer.getSize();
+  const Uint32 keyCount =
+      (range.lowKeys > range.highKeys) ? range.lowKeys : range.highKeys;
+  for (Uint32 keyNo = 0; keyNo < keyCount; keyNo++) {
+    // Same bound types as appendBoundPattern() / prepareIndexKeyInfo().
+    const NdbQueryOperandImpl *values[2];
+    Uint32 types[2];
+    Uint32 cnt = 0;
+    if (keyNo < range.lowKeys && keyNo < range.highKeys &&
+        range.low[keyNo] == range.high[keyNo]) {
+      values[cnt] = range.low[keyNo];
+      types[cnt++] = NdbIndexScanOperation::BoundEQ;
+    } else {
+      if (keyNo < range.lowKeys) {
+        values[cnt] = range.low[keyNo];
+        types[cnt++] = range.lowIncl || keyNo + 1 < range.lowKeys
+                           ? NdbIndexScanOperation::BoundLE
+                           : NdbIndexScanOperation::BoundLT;
+      }
+      if (keyNo < range.highKeys) {
+        values[cnt] = range.high[keyNo];
+        types[cnt++] = range.highIncl || keyNo + 1 < range.highKeys
+                           ? NdbIndexScanOperation::BoundGE
+                           : NdbIndexScanOperation::BoundGT;
+      }
+    }
+    for (Uint32 v = 0; v < cnt; v++) {
+      assert(values[v]->getKind() == NdbQueryOperandImpl::Const);
+      const NdbConstOperandImpl &constOp =
+          *static_cast<const NdbConstOperandImpl *>(values[v]);
+      // As appendBoundValue(): the index column number as attribute id,
+      // the converted value (length-prefixed for variable-size columns).
+      const AttributeHeader ah(keyNo, constOp.getSizeInBytes());
+      buffer.append(types[v]);
+      buffer.append(ah.m_value);
+      buffer.appendBytes(constOp.getAddr(), constOp.getSizeInBytes());
+    }
+  }
+  const Uint32 length = buffer.getSize() - startPos;
+  if (unlikely(buffer.isMemoryExhausted())) return Err_MemoryAlloc;
+  // scanIndex() refuses an empty range in a multi-range bound.
+  assert(length > 0);
+  if (unlikely(length == 0)) return QRY_MULTI_RANGE_BOUND;
+  if (unlikely(length > 0xFFFF)) return QRY_DEFINITION_TOO_LARGE;
+  buffer.put(startPos, buffer.get(startPos) | (length << 16) | (rangeNo << 4));
+  return 0;
 }
 
 int NdbQueryIndexScanOperationDefImpl::checkPrunable(
@@ -2890,6 +3086,13 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendPrunePattern(
   if (getOpNo() == 0) return 0;
 
   /*
+   * RonDB: the prune pattern is built from range 0 only; the ranges of a
+   * multi-range bound may hash to different fragments, so it is never
+   * pruned.
+   */
+  if (getNoOfRanges() > 1) return 0;
+
+  /*
    * DBSPJ prune patterns currently map one prune key to one fragment.
    * Partition-hash fanout needs one base-key prune key to scan a raw hash
    * interval of fanout fragments. Until DBSPJ expands prune keys into that
@@ -3077,6 +3280,36 @@ Uint32 NdbQueryIndexScanOperationDefImpl::appendBoundPattern(
    * with NdbQueryOperationImpl::prepareIndexKeyInfo()
    */
   if (getOpNo() == 0) return 0;
+
+  if (getNoOfRanges() > 1) {
+    /**
+     * RonDB: a multi-range bound (constants only, no parent) is a fixed
+     * key: one P_DATA block per range holding its KEYINFO words, the
+     * first word stamped with the range length and number.  DBSPJ copies
+     * P_DATA verbatim into the key (Dbspj::expand), and DBLQH scans the
+     * ranges one after the other (Dblqh::copyNextRange).  One range is
+     * bounded by the key size (far below a P_DATA block's 0xFFFF words);
+     * a bound pattern over 0xFFFF words makes the node exceed 0xFFFF
+     * words, which serializeOperation() refuses, and memory exhaustion is
+     * caught by NdbQueryDefImpl.
+     */
+    const Uint32 startPos = serializedDef.getSize();
+    serializedDef.append(0);  // Length of the bound pattern, set below
+    for (Uint32 r = 0; r < getNoOfRanges(); r++) {
+      const Uint32 dataPos = serializedDef.getSize();
+      serializedDef.append(0);  // P_DATA header, set below
+      const int error = appendConstRange(serializedDef, getRange(r), r);
+      if (unlikely(error != 0)) {
+        assert(error == Err_MemoryAlloc);
+        return DABits::NI_KEY_CONSTS;
+      }
+      serializedDef.put(
+          dataPos, QueryPattern::data(serializedDef.getSize() - dataPos - 1));
+    }
+    const Uint32 len = serializedDef.getSize() - startPos - 1;
+    serializedDef.put(startPos, len & 0xFFFF);
+    return DABits::NI_KEY_CONSTS;
+  }
 
   if (m_bound.lowKeys > 0 || m_bound.highKeys > 0) {
     int paramCnt = 0;

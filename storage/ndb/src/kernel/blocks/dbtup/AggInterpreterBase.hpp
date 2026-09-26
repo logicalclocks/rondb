@@ -222,6 +222,9 @@ class AggInterpreterBase : public PushdownInterpreter {
   static constexpr Uint16 AVG_NO_HIDDEN = 0xFFFF;
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* Init() failed for want of query memory when this is still false;
+   * with the block allocated the program itself was rejected. */
+  bool has_buf_block() const { return m_buf_block != nullptr; }
   /* prog[3] AGG_PROG_FLAG_REUSABLE — the client re-sends this program
    * across executions (RonSQL); the JIT compile pins its blob in the
    * reuse cache (Phase 8 Slice 4). */
@@ -500,8 +503,9 @@ class AggInterpreterBase : public PushdownInterpreter {
    * OptimizeProgram — same fields, moved up the class hierarchy.  (The
    * old "sizeof(subclass) <= MEM_CHUNK_SIZE" static_asserts were removed
    * in Step 3a-B when the big inline buffers moved out to an externally
-   * carved, right-sized m_buf_block; the placement-new'd object header is
-   * now only a few hundred bytes, well under the 32 KB chunk.) */
+   * carved, right-sized m_buf_block.  The object is now allocated at its
+   * own size, by PushdownInterpreterFactory and DblqhProxy, not in a
+   * 32 KB chunk.) */
   Uint32* m_prog;
   Uint32 m_agg_prog_start_pos;
 

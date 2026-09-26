@@ -1,0 +1,116 @@
+# ronsql_large_mem_leak_join -- data-node query-memory leak detection for
+# RonSQL CTEs joined to a base table: the offline feature-store family
+# (offline_fs_batch / offline_fs_multi) and the tpch q13 / q22 / q2
+# rewrites, i.e. a many-group CTE body (redistributed across both node
+# groups of this 2-NG x 2-replica suite) reached through complete-key
+# CTE lookups from the base table, re-aggregated in the main SELECT;
+# plus the outer-join (NULL-row injection) and anti-join forms.  The
+# anti-joins (q22) grow the DBSPJ row-page cache transiently; it is
+# released by a timer within ~3 s, which the 5 s settle / 60 s verify
+# polls absorb.
+#
+# Method, knobs and how to read a failure: see ronsql_large_mem_leak.test
+# and suite/ronsql_large/include/mem_leak_init.inc.  Rounds here are 1 /
+# 10 / 30 executions; tolerance 0 pages per node after round 1 for
+# QUERY_MEMORY and TRANSACTION_MEMORY; first-use allowance 32 / 16 pages.
+#
+# Data: load_ronsql_large (20000 lg_cust, 100000 lg_orders, lg_date
+# 2018..2022, lc_segment one of 5 values).  Runtime: about 5 x 60 RDRS
+# executions of 20000-group CTE joins plus settle waits.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak_join
+--let $mlk_prefix = mlj
+--let $mlk_round1 = 1
+--let $mlk_round2 = 10
+--let $mlk_round3 = 30
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = offline_fs_batch: per-customer CTE (20000 groups) joined to lg_cust, GROUP BY VARCHAR segment
+let $QUERY=
+WITH cust_features AS (
+SELECT lg_cust AS k, COUNT(*) AS order_cnt, SUM(lg_amount) AS total_spend,
+MAX(lg_amount) AS max_order
+FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_segment, COUNT(*), SUM(cust_features.order_cnt),
+SUM(cust_features.total_spend), MAX(cust_features.max_order)
+FROM lg_cust AS c JOIN cust_features ON cust_features.k = c.lc_id
+GROUP BY c.lc_segment;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = offline_fs_multi: two CTEs (all orders, 2022 orders) joined to lg_cust
+let $QUERY=
+WITH order_stats AS (
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust),
+recent_stats AS (
+SELECT lg_cust AS k2, COUNT(*) AS recent_cnt
+FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), SUM(order_stats.cnt), SUM(order_stats.spend),
+SUM(recent_stats.recent_cnt)
+FROM lg_cust AS c
+JOIN order_stats ON order_stats.k = c.lc_id
+JOIN recent_stats ON recent_stats.k2 = c.lc_id
+GROUP BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q13 shape: LEFT JOIN a filtered CTE, a third of the customers NULL-extended
+let $QUERY=
+WITH c_orders AS (
+SELECT lg_cust AS k, COUNT(*) AS order_cnt
+FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT COUNT(*), SUM(c_orders.order_cnt), MIN(c_orders.order_cnt), MAX(c_orders.order_cnt)
+FROM lg_cust AS c LEFT JOIN c_orders ON c_orders.k = c.lc_id;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q22 shape: anti-join (LEFT JOIN CTE ... IS NULL) with a base-table filter
+let $QUERY=
+WITH cust_orders AS (
+SELECT lg_cust AS k, COUNT(*) AS order_cnt
+FROM lg_orders WHERE lg_date >= '2022-01-01' GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), SUM(c.lc_balance), MAX(c.lc_balance)
+FROM lg_cust AS c LEFT JOIN cust_orders ON cust_orders.k = c.lc_id
+WHERE cust_orders.order_cnt IS NULL AND c.lc_balance > 0.00
+GROUP BY c.lc_region
+ORDER BY c.lc_region;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = tpch q2 shape: per-key MIN CTE joined to a filtered base table, ORDER BY + LIMIT
+let $QUERY=
+WITH min_cost AS (
+SELECT lg_cust AS pk, MIN(lg_amount) AS mc, COUNT(*) AS cnt
+FROM lg_orders GROUP BY lg_cust)
+SELECT c.lc_region, COUNT(*), MIN(min_cost.mc), MAX(min_cost.mc), SUM(min_cost.cnt)
+FROM lg_cust AS c JOIN min_cost ON min_cost.pk = c.lc_id
+WHERE c.lc_segment = 'BUILDING'
+GROUP BY c.lc_region
+ORDER BY c.lc_region
+LIMIT 100;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--source suite/ronsql_large/include/mem_leak_measure_all.inc
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

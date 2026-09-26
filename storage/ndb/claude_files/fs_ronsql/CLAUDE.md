@@ -47,6 +47,11 @@ Hopsworks Feature Store online-serving builder generates.
 - `ronsql_fs_support_plan.md` — the engine work plan derived from the findings: work packages A–I, milestones M1–M4, acceptance evidence per package
 - `m1_plan.md` — M1 in implementation detail: proper HTTP error codes (M1.0), F9, F1 (verify-first), F0 collect CTE collapse, F7 binary projections
 - `m2_plan.md` — M2 in implementation detail: exact DECIMAL / wide SUM (wire + kernel + API + printer), one overflow semantics, AVG / FLOAT display rules, JIT lowering, acceptance PASS
+- `m3_plan.md` — M3 serving performance, starting with the M3.0 performance census: the whole registry (new `core` engine-primitive category + fs / offline_fs / tpch_cte / fs_hw) on the current engine, one matrix run, `ronsql_bench_triage.py` ranks what needs work; §6 = run 4 (2026-09-22, benchmark computer): findings F23–F25, F27, F13 closed
+- `m3_experiments.md` — the experiment plans after run 4: X0 corrected cluster configuration, X1 the ~1 ms idle-wake stall (F25), X2 where the many-group cost is (F24), X3 point-shape throughput, X4 the data node failure after query-memory exhaustion (F27)
+- `m3_wpf_plan.md` — WP-F in implementation detail (F23 / F12): IN lists on primary-key columns as a set of PK lookups (F1), multi-range index scans where lookups are impossible — PK prefix, secondary index (F2), CTE bodies / join roots (F3) — a branch-tree filter fallback (F4), pruning and more from the numbers (F5); mechanism as found, tests, targets
+- `m3_run6_plan.md` — work plan after census run 6 (2026-09-24/25): A memory leaks (string MIN/MAX slot leaks L1–L3, error-path defects, bounded per-instance pages, global-memory high-water, ronsql_large_mem_leak* tests), B regressions and measurement (census config, RDRS head-of-line blocking, triage, run 7), C specific queries (core_group_many F24 (b), fs_point flattening, fs_latest batch size, snowflake points, per-query memory)
+- `bench_results/<date>-<build>-run<N>/` — matrix runs: report.md, results.json, triage; run 4 carries the case logs behind F23–F27
 - Later: `phase_e<N>.md` per execution phase.
 
 Reference Hopsworks tree (read-only): `/Users/mikael/github/hopsworks_ronsql`.

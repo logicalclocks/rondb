@@ -19,6 +19,13 @@ by the **MySQL server** over the same tables. Three comparisons matter:
 3. `.bench_ronsql tpch_qN` vs `.bench_sql tpch_qN` — RonSQL's best shape vs
    MySQL's official shape: the end-user view.
 
+A fifth family, `core_*` (RONDB-1121 M3.0, `fs_ronsql/m3_plan.md`), isolates
+the engine primitives the shapes above are built from — PK lookup, IN lists
+on the PK and on a secondary index, ordered-index range, pass-through drain,
+AVG, full scans with and without a row filter, few and many groups — one
+access path per entry with plan pins; and `fs_hw_*` (`fs_ronsql/benchmarks.md`)
+are the Hopsworks serving shapes over the `fs_bench` data set.
+
 ## Implementation
 
 | File | What |
@@ -127,7 +134,10 @@ The CLI loader (`.load_tpch [SF]`) creates database `tpch` with the 8
 standard TPC-H tables (unprefixed names). At SF=1: 150k customers, 10k
 suppliers, 200k parts, 800k partsupp, 1.5M orders, 6M lineitems, plus fixed
 nation (25) and region (5). Order keys are sparse (multiples of 4);
-`o_custkey` is uniformly random, ~10 orders/customer; `o_orderdate` spans
+`o_custkey` is uniformly random over the customers whose key is not a
+multiple of 3 (the TPC-H rule, since 2026-09-26: a third of the customers
+have no orders, ~15 orders per customer with orders; before, every
+customer had ~10 and Q22's anti-join found almost nothing); `o_orderdate` spans
 1992-01-01 to ~1998-08 (~625 orders/day, ~2500 lineitems/day); ~4
 lineitems/order. Phone country codes are uniform in 10..34 (not
 nation-derived). Note this is a different physical schema from
@@ -168,7 +178,8 @@ sweeps belong in `offline_fs_*`).
 | Name | Shape | Source rows (SF=1) | Engines |
 |------|-------|--------------------|---------|
 | `fs_floor` | Single-table `COUNT(*)` over region (5 rows) — fixed-overhead floor; the denominator for phase-timing analysis | 5 | both |
-| `fs_point` | CTE body filtered `o_custkey = <random>`, scalar main agg | ~10 orders | both |
+| `fs_point` | CTE body filtered `o_custkey = <random>`, scalar main agg (MIN / MAX only, so RonSQL flattens it into the single-table aggregate, RONDB-1124 C2) | ~10 orders | both |
+| `fs_point_cte` | `fs_point` plus an outer `COUNT(*)`, which keeps it on the single-group CTE path | ~10 orders | both |
 | `fs_batch` | Per-entity feature vectors for a random 100-customer segment ({KEY}/{KEY2} range in CTE body + main WHERE), `GROUP BY c_custkey` | ~1k orders, 100 output rows | both |
 | `fs_freshness` | Two CTEs (lifetime + last-order) over a random 500-customer segment, joined to the same customer range | ~10k orders | both |
 | `fs_supplier` | Per-supplier features over a 3-day `l_shipdate` window (index scan), joined to one random nation's suppliers | ~7k lineitems, ~400 suppliers | both |
@@ -250,7 +261,9 @@ the CLI-generated data where the official values would match nothing:
   including the MAX(total_revenue) join-back and ORDER BY.
 - **Q22**: faithful (phone-prefix country codes 13/31/23/29/30/18/17 all
   exist in the generator's uniform 10..34 range; AVG subquery + NOT EXISTS
-  anti-join + GROUP BY cntrycode).
+  anti-join + GROUP BY cntrycode).  Data loaded before 2026-09-26 gave every
+  customer orders, so the anti-join found nothing (0 rows, census run 6 /
+  6b); reload with the current `.load_tpch`.
 
 ## Known risks / scaling notes
 

@@ -1,0 +1,116 @@
+# ronsql_large_mem_leak_redist -- data-node query-memory leak detection
+# for the heavy redistribution and early-close paths of RonSQL CTEs.
+#
+#   mlr-1  multi-column GROUP BY (lg_cust, lg_status): 60000 groups
+#          redistributed across both node groups (RI_BATCH per-destination
+#          slots in the DBLQH arena, redistribution page chains)
+#   mlr-2  CTE-body ORDER BY + LIMIT 100 at 100000 groups: every group goes
+#          to the single constant owner, whose CONTINUEB-sliced finalize
+#          (top-N heap, 99900 group erasures) runs after the scan
+#   mlr-3  aggregate-ordered LIMIT 50 at 20000 groups (partial-merge rank)
+#   mlr-4  pass-through CTE_SCAN root, full: 20000 rows through many
+#          CTE_SCAN_REQ continuations per source
+#   mlr-5  the same with LIMIT 300: early close of the CTE scan mid-stream
+#          (the drain stops, the still-open sources are closed)
+#   mlr-6  pass-through join, real root + CTE lookup child, LIMIT 300:
+#          early close of a scan whose child is a CTE lookup
+# The pass-through projections are value-uniform (every customer has 5
+# orders), so a truncated result is deterministic.
+#
+# Method, knobs and how to read a failure: see ronsql_large_mem_leak.test
+# and suite/ronsql_large/include/mem_leak_init.inc.  Rounds 1 / 5 / 20;
+# tolerance 0 pages per node after round 1; the warm-up runs 4 concurrent
+# clients (not 8) because 8 concurrent 100000-group queries would mostly
+# be refused for query memory (SharedGlobalMemory 20M in MTR); the first-
+# use allowance (32 QUERY_MEMORY pages per node) covers per-instance
+# one-offs the 4-client warm-up may leave for round 1.
+#
+# Runtime: about 6 x 35 RDRS executions, mlr-1/2 are the heavy ones.
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--echo === Bulk-load large dataset (20000 cust, 100000 orders) ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT
+
+--let MLKE_TEST = ronsql_large_mem_leak_redist
+--let $mlk_prefix = mlr
+--let $mlk_round1 = 1
+--let $mlk_round2 = 5
+--let $mlk_round3 = 20
+--let $mlk_warmup_clients = 4
+--source suite/ronsql_large/include/mem_leak_init.inc
+
+--echo
+--echo === mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+DELIMITER |;
+
+--let $mlk_label = multi-column GROUP BY CTE (60000 groups, heavy cross-node-group redistribution), scalar reduce
+let $QUERY=
+WITH g AS (
+SELECT lg_cust AS k, lg_status AS st, SUM(lg_qty) AS q, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust, lg_status)
+SELECT COUNT(*) AS group_count, SUM(q) AS total_qty, SUM(c) AS total_rows
+FROM g;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = CTE-body ORDER BY + LIMIT 100 at 100000 groups (sliced finalize on the constant owner)
+let $QUERY=
+WITH top AS (
+SELECT lg_id AS k, SUM(lg_amount) AS a, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_id ORDER BY k DESC LIMIT 100)
+SELECT COUNT(*) AS kept, MIN(top.k) AS lo, MAX(top.k) AS hi,
+SUM(top.c) AS rows_kept
+FROM top;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = aggregate-ordered LIMIT 50 at 20000 groups (partial-merge rank on the owner)
+let $QUERY=
+WITH per_cust AS (
+SELECT lg_cust AS k, SUM(lg_amount) AS s, COUNT(*) AS c
+FROM lg_orders GROUP BY lg_cust ORDER BY s DESC, k LIMIT 50)
+SELECT COUNT(*) AS kept, SUM(per_cust.s) AS tot, SUM(per_cust.c) AS rows_kept
+FROM per_cust;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = pass-through CTE_SCAN root, 20000 rows through CTE scan continuations
+let $QUERY=
+WITH cf AS (
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
+SELECT n FROM cf;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = pass-through CTE_SCAN root, LIMIT 300: early close mid-stream
+let $QUERY=
+WITH cf AS (
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
+SELECT n FROM cf LIMIT 300;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+--let $mlk_label = pass-through join, lg_cust root + CTE lookup child, LIMIT 300: early close
+let $QUERY=
+WITH cf AS (
+SELECT lg_cust AS k, COUNT(*) AS n
+FROM lg_orders GROUP BY lg_cust)
+SELECT cf.n FROM lg_cust AS c JOIN cf ON cf.k = c.lc_id LIMIT 300;|
+--source suite/ronsql_large/include/mem_leak_register.inc
+
+DELIMITER ;|
+
+--source suite/ronsql_large/include/mem_leak_measure_all.inc
+--source suite/ronsql_large/include/mem_leak_finish.inc
+
+--echo
+--echo === Drop large dataset ===
+--exec $NDB_PUSH_AGG_DIR/load_ronsql_large --drop-only -c "$NDB_CONNECTSTRING" -m $MASTER_MYPORT

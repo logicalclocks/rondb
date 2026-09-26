@@ -1,0 +1,59 @@
+
+[*] RonSQL Benchmark core_pk_lookup: 1 threads × 5000 requests = 5000 total requests
+[*] Single-row primary key lookup, projection only: the lookup floor (one PK read, no scan, no aggregation)
+
+SELECT o_custkey, o_orderdate, o_totalprice, o_orderstatus
+FROM orders
+WHERE o_orderkey = {KEY};
+
+[*] Random key range: 1..6000000
+[*] Warmup: 457.29us, 1 result rows
+[*] Warmup phases (µs): parse=6,analyze=0,load=9,plan=0,compile=1,prepare=18,subquery=0,ndbprep=2,send=0,firstbatch=120,drain=0,print=0,execute=130,rows=1,attempts=1
+
+[*] Warmup plan (EXPLAIN):
+Query parse tree:
+SELECT
+  Out_0:`o_custkey`
+   = C0:`o_custkey`
+  Out_1:`o_orderdate`
+   = C1:`o_orderdate`
+  Out_2:`o_totalprice`
+   = C2:`o_totalprice`
+  Out_3:`o_orderstatus`
+   = C3:`o_orderstatus`
+FROM orders
+WHERE
+  =
+  ├─ `o_orderkey`
+  ╰─ 3992328
+
+No aggregation program.
+
+Execute as primary key lookup.
+KEYS (1):
+╰─ =
+   ├─ `o_orderkey`
+   ╰─ 3992328
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 0 instructions.
+
+
+[OK] RonSQL Benchmark core_pk_lookup completed in 2.07s
+   Requests: 5000 (errors: 0)
+   Throughput: 2416.97 queries/sec
+   Latency: min=39.85us avg=404.12us max=2.08ms p95=1.12ms p99=1.13ms p99.9=1.56ms
+
+   Phase breakdown (server-side, 5000/5000 requests sampled):
+     phase               avg        p95        p99        max
+     parse            1.32us     2.00us     2.00us     7.00us
+     analyze          0.03us     0.00us     1.00us     1.00us
+     load             1.59us     2.00us     2.00us     7.00us
+     plan             0.07us     1.00us     1.00us     1.00us
+     compile          0.07us     1.00us     1.00us     1.00us
+     prepare          3.40us     4.00us     5.00us    13.00us
+     ndbprep          0.23us     1.00us     1.00us     3.00us
+     firstbatch     372.01us     1.08ms     1.09ms     2.04ms
+     execute        373.12us     1.08ms     1.09ms     2.05ms
+     rows drained 1.0 per request
+

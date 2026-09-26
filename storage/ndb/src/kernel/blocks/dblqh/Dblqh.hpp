@@ -549,6 +549,12 @@ class FsReadWriteReq;
 #define ZJOIN_AGG_MATCH_RANGE_OVERFLOW     1260
 #define ZJOIN_AGG_INVALID_SECTION_COUNT    1261
 #define ZATTRINFO_TOO_LARGE                1262
+/* Aggregation-read flag on an operation that is not a committed
+ * interpreted read (RONDB-1124 WP-F F1b).  Same code as DBTUP's
+ * ZAGG_WRONG_OPERATION, which is only visible inside DBTUP. */
+#define ZAGG_READ_WRONG_OPERATION          1868
+/* DBTUP's ZAGG_ALLOC_MEM_FAILED (out of query memory, temporary). */
+#define ZJOIN_AGG_ALLOC_MEM_FAILED         1870
 #define ZCTE_LOOKUP_GROUP_NOT_FOUND        1263
 #define ZCTE_LOOKUP_STATE_NOT_READY        1264
 #define ZCTE_LOOKUP_ATTRINFO_MALFORMED     1265
@@ -564,6 +570,12 @@ class FsReadWriteReq;
  * group — a classification violation; API-controlled input, so the
  * query fails cleanly. */
 #define ZCTE_SINGLE_GROUP_VIOLATION        1273
+/* Temporary conditions of the RONDB-1120 identity / parking protocol,
+ * which a retry of the query can survive (RonSQL retries temporary
+ * errors only): the park sweeper found the SETUP still missing, and the
+ * park or identity pool was exhausted. */
+#define ZJOIN_AGG_SETUP_NOT_RECEIVED       1274
+#define ZJOIN_AGG_PARK_POOL_EXHAUSTED      1275
 
 /**
  * @class dblqh
@@ -774,6 +786,7 @@ class Dblqh : public SimulatedBlock {
       m_reserved(0),
       m_send_early_hbrep(0),
       m_has_pushdown(0),
+      m_agg_drain_state(AGG_SCAN),
       m_agg_curr_batch_size_rows(0),
       m_agg_curr_batch_size_bytes(0),
       m_agg_n_res_recs(0),
@@ -918,6 +931,13 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_continous_scan_state;
     // Pushdown (aggregation or vector search)
     Uint8 m_has_pushdown;
+    // A memory-pressure drain resumes the scan; a final drain closes it.
+    enum AggDrainState : Uint8 {
+      AGG_SCAN,
+      AGG_DRAIN_MEMORY,
+      AGG_DRAIN_FINAL
+    };
+    AggDrainState m_agg_drain_state;
     Uint32 m_agg_curr_batch_size_rows; // [0, 1], 1 indicates a "aggregation
                                        // batch completed", which means either
                                        // size of group map in aggregation
@@ -3164,6 +3184,13 @@ class Dblqh : public SimulatedBlock {
     Uint8 m_query_thread;
     Uint32 m_join_agg_state_key;    // Pool index for shared join agg state (RNIL if none)
     Uint8 m_outer_join_agg;         // Outer join aggregation flag (handle key-not-found)
+    /*
+     * Aggregation on a primary-key read (RONDB-1124 WP-F F1b): set from
+     * the LQHKEYREQ attrLen word for a committed interpreted read; DBTUP
+     * runs the aggregation program that follows the interpreted sections
+     * on the read tuple and returns its result record.
+     */
+    Uint8 m_agg_read = 0;
     enum dealloc_states {
       /*
        * Example set of dealloc ops:
@@ -3670,6 +3697,38 @@ private:
   void execJOIN_AGG_REDISTRIBUTE_CONF(Signal* signal);
   void execJOIN_AGG_REDISTRIBUTE_REF(Signal* signal);
   void execJOIN_AGG_FINAL_REP(Signal* signal);
+  /* Groups bound for one redistribution destination, sent many per
+   * JOIN_AGG_REDISTRIBUTE_REQ (RI_BATCH).  The slots live in
+   * c_redist_batch_arena, shared by every state of this instance, so a
+   * continueJoinAggRedistribute slice flushes them before it returns. */
+  struct RedistBatch {
+    Uint32 *m_buf;     // Slot in c_redist_batch_arena, nullptr: no slot
+    Uint32 m_cap;      // Slot size in words
+    Uint32 m_used;     // Words filled
+    Uint32 m_groups;   // Groups filled
+  };
+  void initRedistBatches(const JoinAggregationState* state,
+                         RedistBatch* batches);
+  void appendRedistBatch(RedistBatch& batch, JoinAggInterpreter* interp,
+                         const char* data, Uint32 keyLen, Uint32 valLen);
+  void flushRedistBatch(Signal* signal, JoinAggregationState* state,
+                        Uint32 aggStateKey, Uint32 dstNode,
+                        RedistBatch& batch, bool needConf);
+  void flushRedistBatches(Signal* signal, JoinAggregationState* state,
+                          Uint32 aggStateKey, RedistBatch* batches,
+                          Uint32 confNode);
+  void sendRedistributeGroup(Signal* signal, JoinAggregationState* state,
+                             Uint32 aggStateKey, JoinAggInterpreter* interp,
+                             Uint32 dstNode, const char* data, Uint32 keyLen,
+                             Uint32 valLen, bool needConf);
+  void sendRedistributeReq(Signal* signal, JoinAggregationState* state,
+                           Uint32 aggStateKey, Uint32 dstNode, Uint32 keyLen,
+                           Uint32 valueLen, Uint32 requestInfo,
+                           LinearSectionPtr lsp[3], Uint32 noOfSections,
+                           Uint32 groups);
+  bool queueRedistGroup(JoinAggregationState* state, const Uint32* key,
+                        Uint32 keyLen, const Uint32* value, Uint32 valueLen,
+                        Uint32 senderNodeId);
   void continueJoinAggRedistribute(Signal* signal, Uint32 aggStateKey);
   void continueRedistQueueDrain(Signal* signal, Uint32 aggStateKey);
   void continueFreeCteRedistPages(Signal* signal);
@@ -3975,7 +4034,10 @@ private:
   void handlePendingAbort(Signal*, TcConnectionrec*);
   void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
 public:
-  void sendEvictedAggGroup(Signal*,
+  /* False when no group could be evicted (the table is empty: a single
+   * group could not be allocated, query memory is exhausted); the caller
+   * then fails the operation with the temporary 1870. */
+  bool sendEvictedAggGroup(Signal*,
                            JoinAggInterpreter*,
                            JoinAggregationState*);
   JoinAggInterpreter* getJoinAggInterpreter(JoinAggregationState*);
@@ -6048,6 +6110,10 @@ private:
 #endif
   Uint32 cattrInfoBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cevictBuffer[ZATTR_BUFFER_SIZE + 16];
+  /* Redistribution batch slots (RedistBatch), split evenly between the
+   * remote destinations of the state being redistributed. */
+  static constexpr Uint32 ZREDIST_BATCH_ARENA_WORDS = 16384;
+  Uint32 c_redist_batch_arena[ZREDIST_BATCH_ARENA_WORDS];
 };
 
 inline bool Dblqh::check_expand_shrink_ongoing(Uint32 tableId, Uint32 fragId) {

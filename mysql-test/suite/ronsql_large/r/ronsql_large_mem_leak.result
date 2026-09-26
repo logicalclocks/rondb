@@ -1,0 +1,152 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+=== Bulk-load large dataset (20000 cust, 100000 orders) ===
+PASSED
+
+=== mem-leak harness: cluster warm-up (first CTE / SPJ lazy allocations happen here) ===
+cluster warm-up: 3 execution(s) via RDRS, every result identical to the reference
+cluster warm-up: 8 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+
+=== mem-leak harness: phase 1, first use, warm-up and comparison per shape ===
+
+=== mlk-1: tpch q15 shape: date-filtered CTE body (~13400 groups), scalar MAX/MIN/SUM/COUNT over the CTE ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH revenue AS (
+SELECT lg_cust AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+FROM lg_orders
+WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+GROUP BY lg_cust)
+SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
+FROM revenue;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mlk-2: tpch q15 shape, 100 groups (GROUP BY lg_qty): is the step tied to the group count? ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH revenue AS (
+SELECT lg_qty AS sk, SUM(lg_amount) AS total_rev, COUNT(*) AS item_cnt
+FROM lg_orders
+WHERE lg_date >= '2020-01-01' AND lg_date <= '2020-12-31'
+GROUP BY lg_qty)
+SELECT MAX(revenue.total_rev), MIN(revenue.total_rev), SUM(revenue.item_cnt), COUNT(*)
+FROM revenue;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mlk-3: offline_fs_scalar: per-customer CTE (20000 groups), scalar reduce over the CTE ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH cust_features AS (
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust)
+SELECT COUNT(*), SUM(cust_features.cnt), MAX(cust_features.spend), MIN(cust_features.spend)
+FROM cust_features;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mlk-4: offline_fs_chain: CTE over a CTE (20000 + 20000 groups), scalar reduce ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via RDRS, every result identical to the reference
+warm-up: 16 execution(s) via RDRS, 8 concurrent clients, every 200 response identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+== Query ==
+WITH per_cust AS (
+SELECT lg_cust AS k, COUNT(*) AS cnt, SUM(lg_amount) AS spend
+FROM lg_orders GROUP BY lg_cust),
+cust_rollup AS (
+SELECT k, SUM(cnt) AS cnt2, MAX(spend) AS max_spend
+FROM per_cust GROUP BY k)
+SELECT COUNT(*), SUM(cust_rollup.cnt2), MAX(cust_rollup.max_spend), MIN(cust_rollup.max_spend)
+FROM cust_rollup;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== mlk-5: offline_fs_scalar through ronsql_cli (a new NDB API connection per execution) ===
+idle level before the first execution: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+reference run: 1 execution(s) via ronsql_cli, every result identical to the reference
+warm-up: 2 execution(s) via ronsql_cli, every result identical to the reference
+first use: QUERY_MEMORY and TRANSACTION_MEMORY within the first-use allowance on all 4 data nodes
+
+=== mem-leak harness: phase 2, measured rounds ===
+
+--- mlk-1: rounds of 1, 10 and 50 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every result identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every result identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 50 execution(s) via RDRS, every result identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mlk-2: rounds of 1, 10 and 50 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every result identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every result identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 50 execution(s) via RDRS, every result identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mlk-3: rounds of 1, 10 and 50 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every result identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every result identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 50 execution(s) via RDRS, every result identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mlk-4: rounds of 1, 10 and 50 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via RDRS, every result identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 10 execution(s) via RDRS, every result identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 50 execution(s) via RDRS, every result identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+--- mlk-5: rounds of 1, 3 and 10 execution(s), the settled level must not grow after round 1 ---
+round 1: 1 execution(s) via ronsql_cli, every result identical to the reference
+baseline after round 1: QUERY_MEMORY and TRANSACTION_MEMORY recorded on all 4 data nodes
+round 2: 3 execution(s) via ronsql_cli, every result identical to the reference
+after round 2: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+round 3: 10 execution(s) via ronsql_cli, every result identical to the reference
+after round 3: QUERY_MEMORY and TRANSACTION_MEMORY back to the round-1 level on all 4 data nodes
+
+=== mem-leak harness: record-level leak checks ===
+structural leak checks acknowledged by all 4 data nodes
+mem-leak harness: 5 shape(s) measured, no data-node memory growth
+
+=== Drop large dataset ===
+PASSED

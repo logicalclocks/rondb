@@ -281,9 +281,17 @@ struct JoinAggNullRowRef {
  *
  * Long section 0: key_data (GROUP BY key, AttributeHeader-encoded)
  * Long section 1: accumulator_data (AggResItem array)
+ *
+ * With RI_BATCH the request carries several groups for the same
+ * destination in one section: keyLen holds the number of groups and
+ * valueLen the section length in words.  Each group is two header words
+ * (key bytes, value bytes) followed by the key and the value, each padded
+ * to whole words; an empty value takes no words.  The RI_NEED_CONF CONF
+ * covers the whole request.
  */
 struct JoinAggRedistributeReq {
   static constexpr Uint32 SignalLength = 9;
+  static constexpr Uint32 BatchRecordHeaderWords = 2;
   Uint32 aggStateKey;     // Destination JoinAggregationState on receiving node
                           // — RNIL = identity-addressed (RONDB-1120 P4:
                           // the destination's key was unknown when DBTC
@@ -292,9 +300,10 @@ struct JoinAggRedistributeReq {
                           // self-routes to its owner LDM.
   Uint32 senderAggStateKey; // Sender's own state, echoed in CONF/REF so the
                             // sender resumes the correct state (D25 fix).
-  Uint32 keyLen;          // Group key length in bytes
-  Uint32 valueLen;        // Accumulator data length in bytes
-  Uint32 requestInfo;     // Flags (RI_NEED_CONF)
+  Uint32 keyLen;          // Group key length in bytes (RI_BATCH: groups)
+  Uint32 valueLen;        // Accumulator data length in bytes (RI_BATCH:
+                          // words in BatchSectionNum)
+  Uint32 requestInfo;     // Flags (RI_NEED_CONF, RI_BATCH)
   Uint32 identWord;       // packIdentWord(queryTag, cteId, 0)
   Uint32 transid[2];      // For the identity resolution above (the
                           // redistribute signals carried no transid
@@ -306,8 +315,8 @@ struct JoinAggRedistributeReq {
                           // forwarding instance — replies must go to
                           // this explicit ref instead.
 
-  enum { KeySectionNum = 0, ValueSectionNum = 1 };
-  enum RequestInfoBits { RI_NEED_CONF = 0x1 };
+  enum { KeySectionNum = 0, ValueSectionNum = 1, BatchSectionNum = 0 };
+  enum RequestInfoBits { RI_NEED_CONF = 0x1, RI_BATCH = 0x2 };
 };
 
 /**

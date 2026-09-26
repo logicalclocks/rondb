@@ -120,14 +120,13 @@ bool AggInterpreter::Init(const Uint32* prog) {
   /* Common post-allocation steps. */
   initSharedAfterAlloc(prog);
 
-  /* AggInterpreter-specific: chunk-allocator budget.  Starts small and
-   * lets bookMoreMemory grow it if a high-cardinality GROUP BY needs
-   * more; available_pages is generous because the query memory pool
-   * enforces the real cap. */
+  /* Grow through QueryMemory rather than imposing a fragment byte limit.
+   * The remaining ceiling is the chunk allocator's Uint32 accounting;
+   * ProcessRec requests a drain before reaching it. */
   if (m_n_gb_cols) {
-    initChunkAllocator(/*thread_id=*/0,
+    initChunkAllocator(m_thread_id,
                        /*budget_pages=*/1,
-                       /*available_pages=*/4096);
+                       /*available_pages=*/UINT32_MAX / MEM_CHUNK_SIZE);
   }
 
   /* Validate embedded interpreter blocks. */
@@ -170,6 +169,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     return ZAGG_OTHER_ERROR;
   }
 
+  const Uint32 previous_chunk_bytes = m_total_chunk_bytes;
   AggResItem* agg_res_ptr = nullptr;
   if (m_n_gb_cols) {
     /* Step 2b: resolve GROUP BY column type metadata once.  Normal-scan
@@ -225,7 +225,8 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
           len_in_char + m_n_agg_results * sizeof(AggResItem),
           len_in_char);
       if (agg_rec == nullptr) {
-        return ZAGG_OTHER_ERROR;
+        /* The chunk budget or RG_QUERY_MEMORY is exhausted. */
+        return ZAGG_ALLOC_MEM_FAILED;
       }
       memset(agg_rec, 0, len_in_char + m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
@@ -244,6 +245,54 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   } else {
     agg_res_ptr = m_agg_results;
   }
+
+  /* Check on chunk growth and periodically for pressure from other queries
+   * or string aggregate buffers. These snapshots are advisory; allocation
+   * failures still follow the existing error path. */
+  if (m_n_gb_cols &&
+      (m_total_chunk_bytes != previous_chunk_bytes ||
+       (m_processed_rows & 255) == 0)) {
+    const Ndbd_mem_manager &mm = block_tup->m_ctx.m_mm;
+    Resource_limit rl;
+    ndbrequire(mm.get_resource_limit_nolock(RG_QUERY_MEMORY, rl));
+    const Uint64 committed = Uint64(rl.m_curr) + rl.m_booked_pages;
+    /* QueryMemory has no reserved pages and cannot grow beyond
+     * m_max_high_prio at its LOW_PRIO_MEMORY priority. */
+    const Uint32 limit = rl.m_max < rl.m_max_high_prio
+                            ? rl.m_max : rl.m_max_high_prio;
+    Uint64 available = limit > committed ? limit - committed : 0;
+    const Uint32 shared =
+        mm.get_resource_free_shared_nolock(RG_QUERY_MEMORY);
+    if (available > shared) available = shared;
+    /* Chunks come from per-thread lc_ndbd_pool pools, which take
+     * QueryMemory in 2 MB segments, and other threads may take the last
+     * pages between two checks here. Leave 5% headroom, but at least one
+     * segment for each thread that may run a fragment scan. */
+    const Uint64 segment_pages = (2 * 1024 * 1024) / GLOBAL_PAGE_SIZE;
+    const Uint64 scan_threads =
+        globalData.ndbMtQueryWorkers > 0 ? globalData.ndbMtQueryWorkers : 1;
+    Uint64 headroom = (committed + available) / 20 + 1;
+    if (headroom < scan_threads * segment_pages) {
+      headroom = scan_threads * segment_pages;
+    }
+    m_drain_memory =
+        available <= headroom ||
+        m_total_chunk_bytes >= m_total_available - MEM_CHUNK_SIZE;
+  }
+
+#ifdef ERROR_INSERT
+  /* Force the QueryMemory drain without real memory pressure. 4042 drains
+   * on every 7th row, so each drain fits in one result record and the scan
+   * resumes many times. 4043 waits until the resident groups need at least
+   * two result records, so each drain spans several scan batches. */
+  if (m_n_gb_cols && m_gb_map->size() > 2 &&
+      ((block_tup->jit_error_inserted(4042) &&
+        (m_processed_rows + 1) % 7 == 0) ||
+       (block_tup->jit_error_inserted(4043) &&
+        m_result_size >= 2 * DEF_AGG_RESULT_BATCH_BYTES))) {
+    m_drain_memory = true;
+  }
+#endif
 
   /* Phase 6.5 RONDB-1056: standalone pushed aggregation JIT path.
    * This is the same scalar-aggregation dispatch shape used by
@@ -418,15 +467,12 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 }
 
 Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
-  // Limitation
-  Uint32 total_size = m_result_size +
-                  (m_gb_map ?
-                   m_gb_map->size() * g_result_header_size_per_group_ : 0) +
-                  g_result_header_size_;
-  if (!force && (m_gb_map == nullptr ||
-        total_size < DEF_AGG_RESULT_BATCH_BYTES)) {
+  if (!force && !m_drain_memory) {
     return 0;
   }
+  /* Dblqh continues a memory drain with force=true until the map is empty,
+   * then resumes scanning and obtains a fresh pressure estimate. */
+  m_drain_memory = false;
   if (force &&
       (m_n_gb_cols != 0 && (m_gb_map == nullptr || m_gb_map->size() == 0))) {
     assert(m_result_size == 0);
@@ -457,8 +503,8 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     Uint32 n_groups = 0;
     /* Step 2b: iterate the JoinGBHashTable, emit each group, then
      * erase + freeGroupData.  Same emit→erase→free shape as
-     * JoinAggInterpreter::evictOneGroup but generalized to drain
-     * every currently-resident group. */
+     * JoinAggInterpreter::evictOneGroup.  Emit one bounded record;
+     * remaining groups are drained in later scan batches. */
     for (auto iter = m_gb_map->begin(); iter.valid();) {
       Uint32 key_len = iter.keyLen();
       char* key_ptr = iter.data();
@@ -468,6 +514,13 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       Uint32 v_len_total = v_len_base + payload_bytes;
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
       assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
+      const Uint32 group_bytes =
+          g_result_header_size_per_group_ + key_len + v_len_total;
+      // A group is indivisible and may exceed the normal batch target.
+      if (n_groups > 0 &&
+          pos * sizeof(Uint32) + group_bytes > DEF_AGG_RESULT_BATCH_BYTES) {
+        break;
+      }
       data_buf[pos++] = key_len << 16 | v_len_total;
       MEMCOPY_NO_WORDS(&data_buf[pos], key_ptr, key_len >> 2);
       MEMCOPY_NO_WORDS(&data_buf[pos + (key_len >> 2)], slots,
@@ -487,10 +540,13 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
       m_gb_map->eraseAndNext(iter);
       freeGroupData(key_ptr);
       n_groups++;
+      const Uint32 resident_bytes = key_len + v_len_base;
+      ndbrequire(m_result_size >= resident_bytes);
+      m_result_size -= resident_bytes;
     }
     data_buf[n_groups_pos] = n_groups;
     m_n_groups = m_gb_map->size();
-    m_result_size = 0;
+    assert(!m_gb_map->empty() || m_result_size == 0);
   } else {
     const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
     const Uint32 payload_bytes =

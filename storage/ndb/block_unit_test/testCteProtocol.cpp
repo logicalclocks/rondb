@@ -87,6 +87,10 @@
  *         live data node and an unknown key answer 1251 instead.
  *   ID-7  (not run) a shorter-than-required signal asserts in the
  *         receiver by contract; it would crash the node.
+ *   ID-8  a CTE COMPLETE without its per-node key section: COMPLETE_REF
+ *         1251, and the state fails with it (ERROR, peers told), so a
+ *         late REDISTRIBUTE_REQ with the correct identity answers
+ *         REDISTRIBUTE_REF 1251 instead of a CONF and a queued group.
  *
  * Section 6, parking.  A consumer signal that arrives before its SETUP
  * parks on an identity placeholder; the SETUP's flush replays it, the 10
@@ -107,11 +111,12 @@
  *   PK-2  identity-addressed COMPLETE: 8310 (SETUP_CONF delayed) and
  *         8311 (RNIL key forced) each resolve; result correct.
  *   PK-3  5139 rejects one SETUP after 200 ms: the unfilled identity
- *         is swept; the delayed REF lets DBTC finish cleanup.
+ *         is swept; the delayed REF lets DBTC finish cleanup.  The query
+ *         fails with the temporary 1274 (a retry would succeed).
  *   PK-4  5148 caps the park pool at 4 while holding the SETUPs: the
  *         fifth consumer takes the resource-error path and the query
- *         fails with 1251; the four parked are replayed after the release
- *         into the aborting request; pools clean.
+ *         fails with the temporary 1275; the four parked are replayed
+ *         after the release into the aborting request; pools clean.
  *   PK-5  5149 refuses every SETUP as if the identity table were full:
  *         the query fails with OutOfQueryMemory (20008).
  *   PK-6  8313 delays a SETUP_CONF addressed to an absent DBTC scan:
@@ -120,6 +125,13 @@
  *         InvalidRequest (20002); identity-addressed COMPLETE must
  *         still return the first state's scanned groups.
  *   PK-8  pending (parked replay after coordinator death).
+ *   PK-9  5138 holds the main SETUP of ScanAggMain (no CTE) until its
+ *         consumer scans park; then the SETUP runs and 8315 fails the scan
+ *         right before DBTC accounts its CONF, which meets the cancelled
+ *         round with the fragment closes in flight: DBTC must keep the
+ *         key for the scan's teardown (JOIN_AGG_SETUP_CONF_DEFERRED)
+ *         instead of a stale-SETUP reclaim that frees the state under the
+ *         replayed consumers; the query fails with 270; pools clean.
  *
  * After every case the leak-check DUMPs 2361 (join-agg states), 2362
  * (CTE scan iterator records) and 2363 (identity table, placeholders and
@@ -184,6 +196,9 @@ static const Uint32 AGG_MAGIC = 0x0721;
 static const Uint32 AGG_RESULT_ATTR = 0xFF00;
 static const Uint32 ZNODEFAIL_BEFORE_COMMIT = 286;
 static const Uint32 ZJOIN_AGG_STATE_NOT_FOUND = 1251;
+/* Temporary (TR): a race or a resource shortage a retry survives. */
+static const Uint32 ZJOIN_AGG_SETUP_NOT_RECEIVED = 1274;
+static const Uint32 ZJOIN_AGG_PARK_POOL_EXHAUSTED = 1275;
 
 /* Section 5.4.  The CTE identity every keyed peer signal must carry:
  * JoinAggregationState::packIdentWord(queryTag, cteId, 0) in the kernel. */
@@ -1395,6 +1410,12 @@ expectRef(SignalSender &ss, int gsn, Uint32 expected, const char *context)
     code = ref->errorCode;
     echoOk = ref->requestPtrI == FAKE_SENDER_DATA &&
              ref->treeNodePtrI == FAKE_SENDER_DATA + 1;
+  } else if (gsn == GSN_JOIN_AGG_COMPLETE_REF) {
+    const JoinAggCompleteRef *ref =
+        reinterpret_cast<const JoinAggCompleteRef *>(resp->getDataPtr());
+    code = ref->errorCode;
+    echoOk = ref->senderData == FAKE_SENDER_DATA &&
+             ref->requestId == FAKE_REQUEST_ID;
   } else {
     fprintf(stderr, "%s: unsupported GSN %d\n", context, gsn);
     return -1;
@@ -1876,6 +1897,55 @@ id6(Ctx &c)
                 "ID-6 NULL_ROW_REQ, coordinator live") != 0)
     return -1;
   return checkLeaks(c.ss, c.restarter, "ID-6");
+}
+
+/* ID-8: a CTE COMPLETE refused for its missing per-node key section
+ * fails the state, not only the request.  A peer's group sent before
+ * that peer aborted may arrive afterwards with the correct identity: it
+ * is REFed with the state's recorded cause (1251), not acknowledged and
+ * queued into a state its coordinator is about to release (the rule at
+ * DblqhProxy::execJOIN_AGG_RELEASE_REQ). */
+static int
+id8(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  const CteNode &target = nodes[0];
+  {
+    SimpleSignal ssig;
+    JoinAggCompleteReq *req =
+        reinterpret_cast<JoinAggCompleteReq *>(ssig.getDataPtrSend());
+    req->senderRef = c.ss.getOwnRef();
+    req->senderData = FAKE_SENDER_DATA;
+    req->requestId = FAKE_REQUEST_ID;
+    req->transid[0] = FAKE_TRANS_ID1;
+    req->transid[1] = FAKE_TRANS_ID2;
+    req->aggStateKey = target.key;
+    req->maxBatchRows = 1000;
+    req->heartbeatScanFragPtrI = RNIL;
+    req->identWord = RNIL;  /* keyed form, but no key section */
+    ssig.set(c.ss, 0, numberToBlock(DBLQH, target.owner),
+             GSN_JOIN_AGG_COMPLETE_REQ, JoinAggCompleteReq::SignalLength);
+    if (c.ss.sendSignal(target.node, &ssig) != SEND_OK) {
+      fprintf(stderr, "sendSignal CTE COMPLETE_REQ failed\n");
+      return -1;
+    }
+  }
+  if (expectRef(c.ss, GSN_JOIN_AGG_COMPLETE_REF, ZJOIN_AGG_STATE_NOT_FOUND,
+                "ID-8 COMPLETE without its key section") != 0)
+    return -1;
+  /* Before the fix the state stayed SETUP_COMPLETE: this answered
+   * REDISTRIBUTE_CONF and queued the group. */
+  if (sendRedistributeReq(c.ss, target, cteIdentity()) != 0 ||
+      expectRedistributeRef(c.ss, target, cteIdentity(),
+                            "ID-8 late group to the failed state") != 0)
+    return -1;
+  /* The failed owner told its peers (error FINAL_REP by identity); let
+   * those reach their states before releasing them. */
+  NdbSleep_MilliSleep(TEARDOWN_SETTLE_MS);
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "ID-8");
 }
 
 /* ------------------------------------------------------------------ */
@@ -2369,7 +2439,7 @@ pk2(Ctx &c)
 
 /* PK-3: 5139 leaves one identity unfilled; the sweeper REFs the
  * consumers and a delayed SETUP_REF drains DBTC's SETUP accounting.
- * Require the sweep event as well as the query's 1251. */
+ * Require the sweep event as well as the query's temporary 1274. */
 static int
 pk3(Ctx &c)
 {
@@ -2383,10 +2453,12 @@ pk3(Ctx &c)
   q.start();
   q.join();
   if (!guard.clear()) return -1;
-  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_STATE_NOT_FOUND) {
-    fprintf(stderr, "PK-3: expected failure %u, got rc=%d ndbError=%d at %s "
-                    "(rows=%llu)\n",
-            ZJOIN_AGG_STATE_NOT_FOUND, q.rc, q.res.ndbError, q.res.failedAt,
+  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_SETUP_NOT_RECEIVED ||
+      q.res.ndbErrorStatus != NdbError::TemporaryError) {
+    fprintf(stderr, "PK-3: expected temporary failure %u, got rc=%d "
+                    "ndbError=%d status=%d at %s (rows=%llu)\n",
+            ZJOIN_AGG_SETUP_NOT_RECEIVED, q.rc, q.res.ndbError,
+            (int)q.res.ndbErrorStatus, q.res.failedAt,
             (unsigned long long)q.res.rows);
     return -1;
   }
@@ -2407,9 +2479,9 @@ pk3(Ctx &c)
 }
 
 /* PK-4: 5148 holds every SETUP and caps the park pool at 4: the fifth
- * consumer takes the resource-error path, the query fails with 1251,
- * and the four parked are replayed into the aborting request after
- * the release. */
+ * consumer takes the resource-error path, the query fails with the
+ * temporary 1275, and the four parked are replayed into the aborting
+ * request after the release. */
 static int
 pk4(Ctx &c)
 {
@@ -2427,10 +2499,12 @@ pk4(Ctx &c)
   if (!guard.clear()) rc = -1;
   q.join();
   if (rc != 0) return -1;
-  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_STATE_NOT_FOUND) {
-    fprintf(stderr, "PK-4: expected failure %u, got rc=%d ndbError=%d at %s "
-                    "(rows=%llu)\n",
-            ZJOIN_AGG_STATE_NOT_FOUND, q.rc, q.res.ndbError, q.res.failedAt,
+  if (q.rc != -1 || q.res.ndbError != (int)ZJOIN_AGG_PARK_POOL_EXHAUSTED ||
+      q.res.ndbErrorStatus != NdbError::TemporaryError) {
+    fprintf(stderr, "PK-4: expected temporary failure %u, got rc=%d "
+                    "ndbError=%d status=%d at %s (rows=%llu)\n",
+            ZJOIN_AGG_PARK_POOL_EXHAUSTED, q.rc, q.res.ndbError,
+            (int)q.res.ndbErrorStatus, q.res.failedAt,
             (unsigned long long)q.res.rows);
     return -1;
   }
@@ -2526,6 +2600,80 @@ pk7(Ctx &c)
     return -1;
   }
   return checkLeaks(c.ss, c.restarter, "PK-7");
+}
+
+/* PK-9: 8315 fails a main aggregation (no CTE) just before DBTC accounts
+ * one SETUP_CONF, so that CONF meets the cancelled SETUP round with the
+ * fragment closes still in flight.  That node's consumers found the state
+ * by identity and may still feed it: DBTC must keep the key for the
+ * scan's teardown (JOIN_AGG_SETUP_CONF_DEFERRED), not reclaim it at once
+ * (JOIN_AGG_STALE_SETUP_RECLAIM: a RELEASE that frees the programs and
+ * interpreters under those consumers).  5138 holds the main SETUP until
+ * the consumer scans have parked, so no fragment can finish before the
+ * SETUP runs and its CONF (the one 8315 acts on) is accounted.  The query
+ * fails with DBTC's scan error 270; the leak checks show the teardown
+ * released the state. */
+static const Uint32 DBTC_SCAN_LQH_ERROR = 270;
+
+static int
+pk9(Ctx &c)
+{
+  ProtocolEventListener events;
+  events.timeoutMs = WAIT_TIMEOUT_MS;
+  if (!events.open(c.restarter)) return -1;
+  ErrorInsertGuard guard = {c.restarter, c.node, true};
+  // Two blocks: 8315 arms DBTC, 5138 DBLQH (error inserts route by range).
+  if (!setErrorInsert(c.restarter, c.node, 8315, 0) ||
+      !setErrorInsert(c.restarter, c.node, 5138, (int)HOLD_MAIN_SETUP))
+    return -1;
+  ParkStats base, now;
+  if (readParkStats(c, base) != 0) return -1;
+  QueryRun q(c.ndbq, c.ss);
+  setQueryOptions(c, q, CteQueryUtil::ScanAggMain);
+  q.start();
+  int rc = waitParked(c, base, 1u << PARK_SCANFRAG, now, "PK-9");
+  // Let the SETUP run while the sweepers stay held (as runParkedQuery):
+  // its CONF reaches DBTC while the replayed consumers start.
+  if (rc == 0 &&
+      !setErrorInsert(c.restarter, c.node, 5138, (int)HOLD_NO_SETUP))
+    rc = -1;
+  if (rc == 0) {
+    ScopedSenderUnlock unlock(c.ss);
+    char marker[160];
+    snprintf(marker, sizeof(marker),
+             "[JOIN_AGG_SETUP_CONF_AFTER_CANCEL node=%u ", c.node);
+    const char *at =
+        events.waitFor(marker) ? strstr(events.matched, marker) : nullptr;
+    Uint32 node = 0, instance = 0, scan = 0, request = 0, key = 0;
+    if (at == nullptr ||
+        sscanf(at,
+               "[JOIN_AGG_SETUP_CONF_AFTER_CANCEL node=%u instance=%u "
+               "scan=%u request=%u key=%u]",
+               &node, &instance, &scan, &request, &key) != 5) {
+      fprintf(stderr, "PK-9: no valid JOIN_AGG_SETUP_CONF_AFTER_CANCEL "
+                      "marker: %s\n", events.matched);
+      rc = -1;
+    } else {
+      snprintf(marker, sizeof(marker),
+               "[JOIN_AGG_SETUP_CONF_DEFERRED node=%u instance=%u scan=%u "
+               "request=%u key=%u]",
+               node, instance, scan, request, key);
+      if (!events.waitFor(marker)) {
+        fprintf(stderr, "PK-9: the CONF of key %u was not kept for the "
+                        "scan's teardown while its fragments closed\n", key);
+        rc = -1;
+      }
+    }
+  }
+  q.join();
+  if (!guard.clear()) rc = -1;
+  if (rc != 0) return -1;
+  if (q.rc != -1 || q.res.ndbError != (int)DBTC_SCAN_LQH_ERROR) {
+    fprintf(stderr, "PK-9: expected failure %u, got rc=%d ndbError=%d at %s\n",
+            DBTC_SCAN_LQH_ERROR, q.rc, q.res.ndbError, q.res.failedAt);
+    return -1;
+  }
+  return checkLeaks(c.ss, c.restarter, "PK-9");
 }
 
 /* ------------------------------------------------------------------ */
@@ -2636,6 +2784,7 @@ int main(int argc, char **argv)
           {"ID-4 FINAL_REP under another identity", id4},
           {"ID-5 CTE scan continuation tokens", id5},
           {"ID-6 consumer requests of a failed coordinator", id6},
+          {"ID-8 late group after a refused COMPLETE", id8},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
           {"PK-1b consumer feeds parked and replayed", pk1Feeds},
           {"PK-2 identity-addressed COMPLETE", pk2},
@@ -2644,6 +2793,7 @@ int main(int argc, char **argv)
           {"PK-5 identity table exhaustion", pk5},
           {"PK-6 stale SETUP_CONF reclaim", pk6},
           {"PK-7 duplicate identity refused", pk7},
+          {"PK-9 SETUP_CONF after a cancel, fragments closing", pk9},
       };
       for (unsigned i = 0; i < NDB_ARRAY_SIZE(cases); i++) {
         const int rc = cases[i].fn(c);

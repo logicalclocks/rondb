@@ -1,0 +1,266 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# WP-F F3 (storage/ndb/claude_files/fs_ronsql/m3_wpf_plan.md §2.6): an IN
+# list on the index of a pushed query's root — a CTE body root, the
+# main-query join root, or the main-query root after CTE subtrees — is
+# one index range per distinct value, a multi-range bound in the query
+# definition (NdbQueryBuilder::scanIndex with N bounds), instead of a
+# full scan filtered by the OR chain.  Also finding F14: a VARCHAR bound
+# or key in a pushed query carried a doubled length prefix and matched
+# nothing.  Results are compared strictly with the MySQL server; the
+# EXPLAIN pins say which plan ran.  Both includes consume and remove
+# $QUERY_FILE, hence each query is written twice.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let QUERY_FILE=$MYSQL_TMP_DIR/in_spj_query.sql
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/in_spj_explain.out
+
+--disable_query_log
+--disable_warnings
+# Entity table (complete PK customer_id, ordered PRIMARY index), 60 rows.
+CREATE TABLE t_cust (
+  customer_id INT NOT NULL,
+  region_id INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (customer_id)
+) ENGINE=NDB;
+INSERT INTO t_cust
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 60)
+  SELECT n, n % 5 + 1, n * 10 FROM seq;
+CREATE TABLE t_reg (
+  region_id INT NOT NULL,
+  region_name VARCHAR(20) NOT NULL,
+  country_id INT NOT NULL,
+  PRIMARY KEY (region_id)
+) ENGINE=NDB;
+INSERT INTO t_reg VALUES (1, 'north', 10), (2, 'south', 10), (3, 'east', 20),
+  (4, 'west', 20), (5, 'centre', 30);
+# History keyed (customer_id, ts): customer_id % 4 + 1 rows per customer.
+CREATE TABLE t_hist (
+  customer_id INT NOT NULL,
+  ts INT NOT NULL,
+  amount INT NOT NULL,
+  PRIMARY KEY (customer_id, ts)
+) ENGINE=NDB;
+INSERT INTO t_hist
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 299)
+  SELECT n DIV 5 + 1, n % 5 + 1, n FROM seq WHERE n % 5 <= (n DIV 5 + 1) % 4;
+# String entity key, case-insensitive collation (the F14 shape).
+CREATE TABLE t_scust (
+  k VARCHAR(20) NOT NULL,
+  region_id INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (k)
+) ENGINE=NDB;
+INSERT INTO t_scust
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 30)
+  SELECT CONCAT('cust-', LPAD(n, 2, '0')), n % 5 + 1, n FROM seq;
+# Secondary ordered index on a hash-PK table.
+CREATE TABLE t_sec (
+  id INT NOT NULL,
+  g INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_g (g)
+) ENGINE=NDB;
+INSERT INTO t_sec
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 80)
+  SELECT n, n % 11, n FROM seq;
+# A wide leading key: each range repeats a 200-character equality bound.
+CREATE TABLE t_wide (
+  a VARCHAR(255) NOT NULL,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (a, b)
+) ENGINE=NDB;
+INSERT INTO t_wide
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 40)
+  SELECT REPEAT('x', 200), n, n FROM seq
+  UNION ALL
+  SELECT REPEAT('y', 200), n, 1000 + n FROM seq;
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === CTE body root: complete-PK IN list under a snowflake join (S7 batch) ===
+--write_file $QUERY_FILE
+WITH b AS (SELECT customer_id, region_id, COUNT(*) AS cnt FROM t_cust WHERE customer_id IN (7, 3, 999, 12, 3, 44) GROUP BY customer_id, region_id) SELECT r.region_name, b.customer_id, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH b AS (SELECT customer_id, region_id, COUNT(*) AS cnt FROM t_cust WHERE customer_id IN (7, 3, 999, 12, 3, 44) GROUP BY customer_id, region_id) SELECT r.region_name, b.customer_id, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY, 5 ranges (IN list on `customer_id`: 6 values, 5 distinct)' $EXPLAIN_FILE
+--exec grep -qF '[ROOT] CTE_SCAN' $EXPLAIN_FILE
+
+--echo
+--echo === CTE body root: aggregating main query over the ranges' groups ===
+--write_file $QUERY_FILE
+WITH b AS (SELECT customer_id, region_id, SUM(v) AS sv FROM t_cust WHERE customer_id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12) GROUP BY customer_id, region_id) SELECT r.country_id, COUNT(*), SUM(b.sv) FROM b JOIN t_reg AS r ON r.region_id = b.region_id GROUP BY r.country_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === CTE body root: duplicates collapse to one range ===
+--write_file $QUERY_FILE
+WITH b AS (SELECT customer_id, region_id, COUNT(*) AS cnt FROM t_cust WHERE customer_id IN (5, 5) GROUP BY customer_id, region_id) SELECT r.region_name, b.customer_id, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH b AS (SELECT customer_id, region_id, COUNT(*) AS cnt FROM t_cust WHERE customer_id IN (5, 5) GROUP BY customer_id, region_id) SELECT r.region_name, b.customer_id, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY, 1 range (IN list on `customer_id`: 2 values, 1 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === CTE body root: PK-prefix IN list with a window on the next PK column ===
+--write_file $QUERY_FILE
+WITH h AS (SELECT customer_id, COUNT(*) AS n, SUM(amount) AS s FROM t_hist WHERE customer_id IN (5, 9, 13, 2, 61) AND ts >= 2 GROUP BY customer_id) SELECT h.customer_id, h.n, h.s, c.region_id FROM h JOIN t_cust AS c ON c.customer_id = h.customer_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH h AS (SELECT customer_id, COUNT(*) AS n, SUM(amount) AS s FROM t_hist WHERE customer_id IN (5, 9, 13, 2, 61) AND ts >= 2 GROUP BY customer_id) SELECT h.customer_id, h.n, h.s, c.region_id FROM h JOIN t_cust AS c ON c.customer_id = h.customer_id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY, 5 ranges (IN list on `customer_id`: 5 values, 5 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === CTE body root: IN list on a secondary index ===
+--write_file $QUERY_FILE
+WITH s AS (SELECT g, COUNT(*) AS n, SUM(v) AS sv FROM t_sec WHERE g IN (2, 5, 7, 40) GROUP BY g) SELECT SUM(n), SUM(sv), COUNT(*) FROM s;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH s AS (SELECT g, COUNT(*) AS n, SUM(v) AS sv FROM t_sec WHERE g IN (2, 5, 7, 40) GROUP BY g) SELECT SUM(n), SUM(sv), COUNT(*) FROM s;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using idx_g, 4 ranges (IN list on `g`: 4 values, 4 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === F14: CTE body bound on a VARCHAR primary key (stored and other case) ===
+--write_file $QUERY_FILE
+WITH b AS (SELECT region_id, COUNT(*) AS cnt FROM t_scust WHERE k = 'cust-07' GROUP BY region_id) SELECT r.region_name, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH b AS (SELECT region_id, COUNT(*) AS cnt FROM t_scust WHERE k = 'CUST-07' GROUP BY region_id) SELECT r.region_name, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === CTE body root: VARCHAR IN list, case-insensitive duplicates and a missing key ===
+--write_file $QUERY_FILE
+WITH b AS (SELECT k, region_id, COUNT(*) AS cnt FROM t_scust WHERE k IN ('cust-03', 'CUST-03', 'cust-17', 'nope') GROUP BY k, region_id) SELECT r.region_name, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH b AS (SELECT k, region_id, COUNT(*) AS cnt FROM t_scust WHERE k IN ('cust-03', 'CUST-03', 'cust-17', 'nope') GROUP BY k, region_id) SELECT r.region_name, b.cnt FROM b JOIN t_reg AS r ON r.region_id = b.region_id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY, 3 ranges (IN list on `k`: 4 values, 3 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === main-query join root: IN list, aggregating join (query root, KEYINFO) ===
+--write_file $QUERY_FILE
+SELECT r.region_name, COUNT(*), SUM(c.v) FROM t_cust AS c JOIN t_reg AS r ON r.region_id = c.region_id WHERE c.customer_id IN (1, 2, 3, 10, 20, 30, 999) GROUP BY r.region_name;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT r.region_name, COUNT(*), SUM(c.v) FROM t_cust AS c JOIN t_reg AS r ON r.region_id = c.region_id WHERE c.customer_id IN (1, 2, 3, 10, 20, 30, 999) GROUP BY r.region_name;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 7 (IN list on `customer_id`: 7 values, 7 distinct; multi-range)' $EXPLAIN_FILE
+
+--echo
+--echo === main-query join root: IN list, pass-through join ===
+--write_file $QUERY_FILE
+SELECT c.customer_id, c.v, r.region_name FROM t_cust AS c JOIN t_reg AS r ON r.region_id = c.region_id WHERE c.customer_id IN (4, 8, 15, 16, 23, 42, 8);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT c.customer_id, c.v, r.region_name FROM t_cust AS c JOIN t_reg AS r ON r.region_id = c.region_id WHERE c.customer_id IN (4, 8, 15, 16, 23, 42, 8);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 6 (IN list on `customer_id`: 7 values, 6 distinct; multi-range)' $EXPLAIN_FILE
+
+--echo
+--echo === main-query join root: PK-prefix IN list with a residual filter ===
+--write_file $QUERY_FILE
+SELECT h.customer_id, h.ts, h.amount, c.region_id FROM t_hist AS h JOIN t_cust AS c ON c.customer_id = h.customer_id WHERE h.customer_id IN (3, 6, 9) AND h.amount > 20;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === main-query join root: VARCHAR IN list and VARCHAR key lookup (F14) ===
+--write_file $QUERY_FILE
+SELECT s.k, s.v, r.region_name FROM t_scust AS s JOIN t_reg AS r ON r.region_id = s.region_id WHERE s.k IN ('cust-01', 'Cust-02', 'cust-29', 'zzz');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT s.k, s.v, r.region_name FROM t_scust AS s JOIN t_reg AS r ON r.region_id = s.region_id WHERE s.k IN ('cust-01', 'Cust-02', 'cust-29', 'zzz');
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 4 (IN list on `k`: 4 values, 4 distinct; multi-range)' $EXPLAIN_FILE
+--write_file $QUERY_FILE
+SELECT s.k, s.v, r.region_name FROM t_scust AS s JOIN t_reg AS r ON r.region_id = s.region_id WHERE s.k = 'CUST-11';
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === main-query root after a CTE subtree: IN list (fixed-key pattern) ===
+--write_file $QUERY_FILE
+WITH rs AS (SELECT region_id, COUNT(*) AS n FROM t_cust GROUP BY region_id) SELECT c.region_id, COUNT(*), SUM(rs.n), SUM(c.v) FROM t_cust AS c JOIN rs ON rs.region_id = c.region_id WHERE c.customer_id IN (3, 6, 9, 12, 100) GROUP BY c.region_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+WITH rs AS (SELECT region_id, COUNT(*) AS n FROM t_cust GROUP BY region_id) SELECT c.region_id, COUNT(*), SUM(rs.n), SUM(c.v) FROM t_cust AS c JOIN rs ON rs.region_id = c.region_id WHERE c.customer_id IN (3, 6, 9, 12, 100) GROUP BY c.region_id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 5 (IN list on `customer_id`: 5 values, 5 distinct; multi-range)' $EXPLAIN_FILE
+
+--echo
+--echo === 4095 ranges (the range-number limit) in a CTE body ===
+--disable_query_log
+--let $list = 4095
+--let $i = 4094
+while ($i)
+{
+  --let $list = $list, $i
+  --dec $i
+}
+--enable_query_log
+--let QUERY = WITH b AS (SELECT customer_id, region_id, SUM(v) AS sv FROM t_cust WHERE customer_id IN ($list) GROUP BY customer_id, region_id) SELECT r.country_id, COUNT(*), SUM(b.sv) FROM b JOIN t_reg AS r ON r.region_id = b.region_id GROUP BY r.country_id;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = WITH b AS (SELECT customer_id, region_id, SUM(v) AS sv FROM t_cust WHERE customer_id IN ($list) GROUP BY customer_id, region_id) SELECT r.country_id, COUNT(*), SUM(b.sv) FROM b JOIN t_reg AS r ON r.region_id = b.region_id GROUP BY r.country_id;
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY, 4095 ranges (IN list on `customer_id`: 4095 values, 4095 distinct)' $EXPLAIN_FILE
+
+--echo
+--echo === query-definition budget: a 200-character leading bound repeated per range ===
+# Each range is (a = <200 characters>, b = k): 57 words.  250 ranges fit
+# the 16384-word budget; 300 do not, and the IN list stays a filter on the
+# a-prefix scan.
+--exec perl -e 'print "WITH w AS (SELECT b, COUNT(*) AS n, SUM(v) AS sv FROM t_wide WHERE a = \x27" . ("x" x 200) . "\x27 AND b IN (" . join(", ", 1..250) . ") GROUP BY b) SELECT COUNT(*), SUM(n), SUM(sv) FROM w;\n"' > $QUERY_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--exec perl -e 'print "WITH w AS (SELECT b, COUNT(*) AS n, SUM(v) AS sv FROM t_wide WHERE a = \x27" . ("x" x 200) . "\x27 AND b IN (" . join(", ", 1..250) . ") GROUP BY b) SELECT COUNT(*), SUM(n), SUM(sv) FROM w;\n"' > $QUERY_FILE
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY, 250 ranges (IN list on `b`: 250 values, 250 distinct)' $EXPLAIN_FILE
+--exec perl -e 'print "WITH w AS (SELECT b, COUNT(*) AS n, SUM(v) AS sv FROM t_wide WHERE a = \x27" . ("x" x 200) . "\x27 AND b IN (" . join(", ", 1..300) . ") GROUP BY b) SELECT COUNT(*), SUM(n), SUM(sv) FROM w;\n"' > $QUERY_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--exec perl -e 'print "WITH w AS (SELECT b, COUNT(*) AS n, SUM(v) AS sv FROM t_wide WHERE a = \x27" . ("x" x 200) . "\x27 AND b IN (" . join(", ", 1..300) . ") GROUP BY b) SELECT COUNT(*), SUM(n), SUM(sv) FROM w;\n"' > $QUERY_FILE
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: INDEX_SCAN using PRIMARY' $EXPLAIN_FILE
+--error 1
+--exec grep -qF 'ranges (IN list on' $EXPLAIN_FILE
+
+--remove_file $EXPLAIN_FILE
+--disable_query_log
+DROP TABLE t_cust, t_reg, t_hist, t_scust, t_sec, t_wide;
+--enable_query_log

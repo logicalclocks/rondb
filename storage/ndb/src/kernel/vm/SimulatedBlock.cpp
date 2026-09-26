@@ -85,7 +85,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_TRANSID_AI 1
-#define DEBUG_CTE 1
+//#define DEBUG_CTE 1
 #define DEBUG_JOIN_AGG_PARK 1
 #endif
 

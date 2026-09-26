@@ -61,6 +61,20 @@ func tpchScaled(base int, sf float64) int {
 	return n
 }
 
+// tpchCustomersWithOrders is the number of customers in 1..customerCount
+// that get orders: TPC-H (dbgen) never gives an order to a customer whose
+// key is a multiple of 3, so a third of the customers have none (Q13's
+// zero-order bucket, Q22's NOT EXISTS anti-join).
+func tpchCustomersWithOrders(customerCount int) int {
+	return customerCount - customerCount/3
+}
+
+// tpchOrderCustKey maps i in [0, tpchCustomersWithOrders(n)) to the i-th
+// customer key that is not a multiple of 3: 1, 2, 4, 5, 7, ...
+func tpchOrderCustKey(i int) int {
+	return 3*(i/2) + i%2 + 1
+}
+
 // TPC-H reference data
 var tpchRegions = []string{"AFRICA", "AMERICA", "ASIA", "EUROPE", "MIDDLE EAST"}
 
@@ -385,10 +399,12 @@ func generateOrdersRows(sf float64, startRow, endRow int, rng *rand.Rand) []dsl.
 	if customerCount == 0 {
 		customerCount = 1
 	}
+	withOrders := tpchCustomersWithOrders(customerCount)
 
 	for i := startRow; i < endRow; i++ {
 		orderKey := int64(i+1) * 4 // Orders use sparse keys (multiples of 4, no 1 or 3 mod 8)
-		custKey := (rng.Intn(customerCount) + 1)
+		// Never a multiple of 3: a third of the customers have no orders (TPC-H)
+		custKey := tpchOrderCustKey(rng.Intn(withOrders))
 
 		// Order date between 1992-01-01 and 1998-08-02
 		startDate := time.Date(1992, 1, 1, 0, 0, 0, 0, time.UTC)

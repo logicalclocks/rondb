@@ -1,0 +1,57 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+############################################################
+# RONDB-1124: QueryMemory drains in standalone pushed GROUP BY
+############################################################
+#
+# When QueryMemory runs short, a fragment scan sends its resident
+# groups in bounded result records, one per scan batch, and then
+# resumes scanning. Groups seen again later in the scan are sent again
+# and merged by the API. ERROR_INSERT forces these drains:
+#   4042 - drain on every 7th row: each drain fits one record and the
+#          scan resumes many times, also right after its last row
+#   4043 - drain once the resident groups need two records: each
+#          drain spans several scan batches
+# push_agg_compare.inc runs every query with pushdown OFF and ON and
+# fails unless both return the same rows.
+#
+############################################################
+# Warm-up without forced drains, then record QueryMemory
+############################################################
+# W1 COUNT/SUM/MIN/MAX by g: pushed=1 rows=20000
+# W2 4000-byte GROUP BY key: pushed=1 rows=300
+# W3 repeating groups, one fragment: pushed=1 rows=400
+############################################################
+# E: ERROR_INSERT 4042, a drain on every 7th row
+############################################################
+# E1 COUNT/SUM/MIN/MAX by g: pushed=1 rows=20000
+# E2 nullable COUNT/SUM and string MIN/MAX by g: pushed=1 rows=20000
+# E3 two GROUP BY columns, one nullable: pushed=1 rows=52000
+# A scalar aggregate has no groups to drain.
+# E4 scalar aggregate: pushed=1 rows=1
+# 7 resident 4 KB groups need more than one record.
+# E5 4000-byte GROUP BY key: pushed=1 rows=300
+# E6 4000-byte string MIN/MAX payloads: pushed=1 rows=40
+# E7 drain on the last row of the fragment: pushed=1 rows=10
+# E8 repeating groups, one fragment: pushed=1 rows=400
+############################################################
+# F: ERROR_INSERT 4043, drains spanning several scan batches
+############################################################
+# F1 COUNT/SUM/MIN/MAX by g: pushed=1 rows=20000
+# F2 nullable COUNT/SUM and string MIN/MAX by g: pushed=1 rows=20000
+# F3 4000-byte GROUP BY key: pushed=1 rows=300
+# F4 repeating groups, one fragment: pushed=1 rows=400
+############################################################
+# G: the same scans without forced drains
+############################################################
+# G1 COUNT/SUM/MIN/MAX by g: pushed=1 rows=20000
+# G2 4000-byte GROUP BY key: pushed=1 rows=300
+# G3 repeating groups, one fragment: pushed=1 rows=400
+# QueryMemory must settle no higher than after the warm-up.
+# QUERY_MEMORY grew: 0
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t_hc, t_wide, t_one, t_rep;
+DROP TABLE seq_n;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_pushdown_agg_drain_jit_fallback_delta;
+ndb_pushdown_agg_drain_jit_fallback_delta
+0

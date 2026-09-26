@@ -277,7 +277,7 @@ Node-failure / parking hooks (see `node_failure_test_plan.md`, §3):
 | 5136 | Proxy `execJOIN_AGG_RELEASE_REQ` | ONE release duplicated to self | yes |
 | 5137 | Proxy `continueJoinAggTeardown` | one group per teardown round while set | no |
 | 5138 | Proxy `execJOIN_AGG_SETUP_REQ` + DBLQH park sweeper | the selected SETUP_REQs (extra: 0 all, 0xFFFF main, 0xFFFE none, else cteIndex + 1) and every placeholder sweeper held until cleared; switch extra to 0xFFFE to replay before clearing the sweeper hold | no |
-| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE identity left unfilled; SETUP_REF 1251 sent after 200 ms | yes |
+| 5139 | Proxy `execJOIN_AGG_SETUP_REQ` | ONE identity left unfilled; SETUP_REF 1274 (temporary) sent after 200 ms, the sweeper REFs the parked consumers with 1274 | yes |
 | 5140 | DBLQH `execJOIN_AGG_REDISTRIBUTE_REQ` | inbound redistribute requests needing a CONF held, 200 ms at a time, until cleared (other rows proceed); CTE_NF2_CONF_HELD names the sender; CTE_RONSQL_REDIST_HELD also names the coordinator of a matching local owner state | no |
 | 5141 | DBLQH `cteLookupReqImpl` | every inbound CTE lookup held, 200 ms at a time, until cleared; one CTE_NF3_LOOKUP_HELD event per instance for the first remote request (extra bit 30 set: for the first request from any node) | no |
 | 5142 | DBLQH `cteScanEmitResults` | rows sent, CTE_SCAN_CONF to every remote requester swallowed while set; one CTE_NF4_CONF_HELD event per instance | no |

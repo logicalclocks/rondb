@@ -1,0 +1,46 @@
+# --- /home/mikael/mysql_trees/rondb_2604/mysql-test/suite/ronsqlcrunch/census.cnf ---
+# Memory for the RONDB-1121 M3.0 performance census
+# (storage/ndb/claude_files/fs_ronsql/m3_plan.md): TPC-H sf 1 and the
+# feature-store data set (fs_bench sf 1) loaded side by side in one
+# cluster, so one ronsql_bench_matrix.py run covers every registry
+# category (--queries all --load both).
+#
+# The driver takes it through --cpubind, which is a plain
+# --defaults-extra-file for mtr (the driver appends its own
+# CompiledInterpreter / RDRS settings the same way); on Linux add the
+# cpubind= lines of cpubind.cnf below.
+#
+#   python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+#       --build prod_build --queries all --load both --sf 1 \
+#       --cpubind mysql-test/suite/ronsqlcrunch/census.cnf ...
+
+[cluster_config.1]
+TotalMemoryConfig=12G
+DataMemory=6G
+
+[cluster_config.ndbd.1.1]
+cpubind=0-14
+
+[cluster_config.ndbd.2.1]
+cpubind=16-29
+
+[mysqld.1.1]
+cpubind=15-16,30-31
+
+[mysqld.2.1]
+cpubind=15-16,30-31
+
+[rdrs.1.1]
+#cpubind=12-15
+
+# The mysqltest client (only used by mtr itself here)
+[mysqltest]
+cpubind=15-16,30-31
+
+
+
+[rdrs.1.1]
+RESTNumThreads=64
+
+[cluster_config.1]
+CompiledInterpreter=OFF

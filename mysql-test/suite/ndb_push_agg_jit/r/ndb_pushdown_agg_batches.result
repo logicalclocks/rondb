@@ -1,0 +1,49 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+############################################################
+# RONDB-1124: bounded aggregation result batches
+############################################################
+#
+# A standalone pushed GROUP BY keeps each fragment's groups resident
+# until the scan ends or QueryMemory runs short, then drains them in
+# result records of at most 16 KB, one record per scan batch. The API
+# receives each record in a 16 KB buffer and refuses to push a program
+# whose single group could exceed 16 KB, counting string MIN/MAX
+# values. push_agg_compare.inc runs every query with pushdown OFF and
+# ON and fails unless both return the same rows.
+#
+############################################################
+# A: high cardinality, each fragment drains many 16 KB records
+############################################################
+# A1 COUNT/SUM/MIN/MAX by g: pushed=1 rows=20000
+# A2 nullable COUNT/SUM and string MIN/MAX by g: pushed=1 rows=20000
+# A3 two GROUP BY columns, one nullable: pushed=1 rows=52000
+# A4 scalar aggregate: pushed=1 rows=1
+############################################################
+# B: wide groups stop a record at the 16 KB boundary
+############################################################
+# B1 4000-byte GROUP BY key: pushed=1 rows=300
+# B2 4000-byte string MIN/MAX payloads: pushed=1 rows=40
+############################################################
+# C: groups near the 16 KB limit
+############################################################
+# One 10 KB MAX payload per group: pushed, each record above 8 KB.
+# C1 MAX over VARCHAR(10000): pushed=1 rows=4
+# MIN and MAX payloads could need 20 KB: not pushed, server computes.
+# C2 MIN and MAX over VARCHAR(10000): pushed=0 rows=4
+# COUNT over a wide string returns no payload: pushed.
+# C3 COUNT over VARCHAR(10000): pushed=1 rows=4
+# A 15000-byte key fits one record on its own: pushed.
+# C4 VARCHAR(15000) GROUP BY key: pushed=1 rows=10
+# A 17000-byte key cannot fit one record: not pushed.
+# C5 VARCHAR(17000) GROUP BY key: pushed=0 rows=10
+############################################################
+# D: concurrent high-cardinality scans on every LDM thread
+############################################################
+# D1: 4 concurrent pushed scans match the non-pushed result
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t_hc, t_wide, t_s10, t_k15, t_k17;
+DROP TABLE seq_n;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_pushdown_agg_batches_jit_fallback_delta;
+ndb_pushdown_agg_batches_jit_fallback_delta
+0

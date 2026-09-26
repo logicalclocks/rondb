@@ -3,7 +3,10 @@
 **Status: E5 code written 2026-09-10 (`phase_e5.md`): the `fs_hw`
 registry is generated from the emitter, `.bench_ronsql fs_hw` /
 `.bench_sql fs_hw` and `ronsql_bench_matrix.py --queries fs_hw --load fs`
-run it; the results tables in §8 are empty until the first run.** Builds on the rondb-cli benchmark
+run it; the results tables in §8 are empty until the first run.
+Runs 1–3 (2026-09-11, §8) predate M1 / M2 / RONDB-1120; the re-measurement
+of everything, plus the `core` engine-primitive category and the triage
+script, is the M3.0 census in `m3_plan.md` (run 4).** Builds on the rondb-cli benchmark
 registry (`tools/rondb-cli/internal/shell/ronsql_bench.go`), the
 `ronsqlcrunch` cluster (`mysql-test/suite/ronsqlcrunch/t/setup.test`),
 and the matrix driver
@@ -195,6 +198,29 @@ Filled by E5 from the first matrix run (interpreter and JIT arms,
 1 and 8 threads, sf 1, `ronsqlcrunch` topology). Stored as
 `bench_results/<date>-<build>.md` next to this file (report.md copy,
 ≤ 30 KB) plus the `results.json`.
+
+### Run 4 — 2026-09-22, benchmark computer (Linux), full registry (M3.0 census), sf 1, `ronsql` vs `mysqld_nopush`, 1 thread complete, 8 threads stopped early
+
+Stored as `bench_results/2026-09-22-benchbox-run4/`; reading, findings
+F23–F26 and the rerun recipe in `m3_plan.md` §6. The `fs_hw` entries on
+this box (T=1, interpreter OFF, `firstbatch` in brackets): every point
+shape 76–93 µs (36–60 µs) — agg_point 80, agg_window7d 76, agg_greatest
+77, agg_filter 76, collect5 77, collect50 78, collect5_cte 76,
+collect50_cte 84, strkey_point 79, composite_point 93, sessions_window2h
+83, floor 140 (110); snowflakes 192–227 µs (126–138 µs): snow1_point
+227, snow2_point 196, snow2_left_chain 204, snow2_left_single 192 —
+F13 closed; batch IN lists unchanged in kind (F12 → F23): agg_batch10
+216 ms, agg_batch100 989 ms, agg_batch1000 8.73 s, agg_batch100_window
+981 ms, strkey_batch100 743 ms, snow1_batch100 37.7 ms; hash_point not
+loaded. MySQL nopush on this box: point shapes 210–321 µs, snowflakes
+0.97–1.11 ms, batch 0.78 / 7.7 / 95 ms — inflated by the ~1 ms idle-wake
+stall (F25) that hits ~30 % of its lookups, so the ratios are not
+comparable with run 2. The stall shows on RonSQL as p95 / p99 of
+1.05–1.17 ms on floor, composite_point, sessions_window2h, core_pk_lookup,
+fs_floor, fs_latest (3–35 % of requests) and is gone at 8 threads. The
+data nodes ran the default `NumCPUs=4` thread configuration (2 LDM
+threads per node) on 15-CPU sets. The 8-thread pass ended when the
+cluster went down under `offline_fs_batch` (F27).
 
 ### Run 2 — 2026-09-11, `prod_build`, macOS (Apple silicon), `ronsqlcrunch` topology, sf 1, RonSQL vs the unpushed MySQL server, 1 and 8 threads, interpreter OFF (JIT ON within noise on every entry)
 

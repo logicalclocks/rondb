@@ -1,0 +1,44 @@
+# Extra config template that lets NDB API nodes on another computer join the
+# cluster that mtr starts with --start-and-exit.
+#
+# By default mtr gives every node HostName=localhost, so (a) ndb_mgmd refuses
+# a node id to any client that does not connect over loopback and (b) a remote
+# API node would try to reach the data nodes at "localhost".  Naming the hosts
+# explicitly in the [cluster_config.1] lists fixes both: an explicit entry is
+# kept as written, an empty entry would become localhost.
+#
+# ndb_mgmd rejects a config that mixes localhost with other hostnames
+# ("Mixing of localhost ... with other hostname is illegal"), so EVERY node
+# below gets a real address, the mysqlds and the local API slots included.
+#
+# EDIT THE ADDRESSES BEFORE USE:
+#   LOCAL  (192.168.0.102) - the LAN address of the machine running mtr:
+#                            ndbd, ndb_mgmd, mysqld and the API slots the
+#                            mysqlds use.
+#   REMOTE (192.168.0.133) - the address of the remote computer, in free API
+#                            slots.  The ndbapi list must keep the 12 entries
+#                            of suite/ndb/my.cnf; entries 7 and 8 are free
+#                            slots without a fixed NodeId, entries 5, 6 and 12
+#                            are free slots with NodeId 192, 228 and 255.
+#
+# mtr allocates ports only for localhost, so the management port is fixed
+# here.  Change it if 1186 is in use on the machine.
+#
+# Usage (from a build directory):
+#   cd mysql-test
+#   ./mtr --start-and-exit --defaults-extra-file=suite/ndb/ext_hosts.cnf \
+#         ndb.ndb_basic
+#
+# The remote API node then uses the connectstring <LOCAL>:<PortNumber>.
+#
+# For another suite, copy this file and match the ndbd/mysqld/ndbapi entry
+# counts of that suite's my.cnf.
+
+[cluster_config.1]
+ndbd=192.168.0.102,192.168.0.102
+ndb_mgmd=192.168.0.102
+mysqld=192.168.0.102,192.168.0.102
+ndbapi=192.168.0.102,192.168.0.102,192.168.0.102,192.168.0.102,192.168.0.102,192.168.0.102,192.168.0.133,192.168.0.133,192.168.0.102,192.168.0.102,192.168.0.102,192.168.0.102
+
+[cluster_config.ndb_mgmd.1.1]
+PortNumber=1186
