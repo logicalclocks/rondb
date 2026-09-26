@@ -134,7 +134,10 @@ The CLI loader (`.load_tpch [SF]`) creates database `tpch` with the 8
 standard TPC-H tables (unprefixed names). At SF=1: 150k customers, 10k
 suppliers, 200k parts, 800k partsupp, 1.5M orders, 6M lineitems, plus fixed
 nation (25) and region (5). Order keys are sparse (multiples of 4);
-`o_custkey` is uniformly random, ~10 orders/customer; `o_orderdate` spans
+`o_custkey` is uniformly random over the customers whose key is not a
+multiple of 3 (the TPC-H rule, since 2026-09-26: a third of the customers
+have no orders, ~15 orders per customer with orders; before, every
+customer had ~10 and Q22's anti-join found almost nothing); `o_orderdate` spans
 1992-01-01 to ~1998-08 (~625 orders/day, ~2500 lineitems/day); ~4
 lineitems/order. Phone country codes are uniform in 10..34 (not
 nation-derived). Note this is a different physical schema from
@@ -258,7 +261,9 @@ the CLI-generated data where the official values would match nothing:
   including the MAX(total_revenue) join-back and ORDER BY.
 - **Q22**: faithful (phone-prefix country codes 13/31/23/29/30/18/17 all
   exist in the generator's uniform 10..34 range; AVG subquery + NOT EXISTS
-  anti-join + GROUP BY cntrycode).
+  anti-join + GROUP BY cntrycode).  Data loaded before 2026-09-26 gave every
+  customer orders, so the anti-join found nothing (0 rows, census run 6 /
+  6b); reload with the current `.load_tpch`.
 
 ## Known risks / scaling notes
 

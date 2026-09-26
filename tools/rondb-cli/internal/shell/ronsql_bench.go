@@ -167,13 +167,15 @@ var ronsqlBenchQueries = []RonSQLBenchQuery{
 		SQL:         `SELECT COUNT(*) FROM region;`,
 	},
 	{
-		Name:        "fs_point",
-		Category:    benchCatFS,
-		Description: "On-demand feature vector for one random customer (CTE body filtered on entity key)",
-		Database:    "tpch",
-		RandKey:     true,
-		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
-		KeyDefault:  tpchCustomerBase,
+		Name:         "fs_point",
+		Category:     benchCatFS,
+		Description:  "On-demand feature vector for one random customer (CTE body filtered on entity key)",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		Resolver:     tpchCustKeyResolver,
+		Placeholders: tpchCustKeyLegend,
 		// RONDB-1124 C2: MIN / MAX over a single-group CTE runs flattened
 		// into the single-table aggregate over the body (no CTE protocol).
 		PlanPins: []string{"CTE 'cust_features' flattened into a single-table aggregate",
@@ -187,14 +189,16 @@ SELECT MAX(cust_features.order_cnt), MAX(cust_features.total_spend),
 FROM cust_features;`,
 	},
 	{
-		Name:        "fs_point_cte",
-		Category:    benchCatFS,
-		Description: "fs_point kept on the single-group CTE path by an outer COUNT(*): the cost the fs_point flatten removes",
-		Database:    "tpch",
-		RandKey:     true,
-		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
-		KeyDefault:  tpchCustomerBase,
-		PlanPins:    []string{"[single-group body]"},
+		Name:         "fs_point_cte",
+		Category:     benchCatFS,
+		Description:  "fs_point kept on the single-group CTE path by an outer COUNT(*): the cost the fs_point flatten removes",
+		Database:     "tpch",
+		RandKey:      true,
+		KeySQL:       "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:   tpchCustomerBase,
+		Resolver:     tpchCustKeyResolver,
+		Placeholders: tpchCustKeyLegend,
+		PlanPins:     []string{"[single-group body]"},
 		SQL: `WITH cust_features AS (
   SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_totalprice) AS total_spend,
          MIN(o_orderdate) AS first_order, MAX(o_orderdate) AS last_order
@@ -1045,6 +1049,24 @@ func applyRonSQLPrefix(q *RonSQLBenchQuery, sql string) string {
 		return sql
 	}
 	return q.RonSQLPrefix + " " + sql
+}
+
+// tpchCustKeyLegend documents the placeholder of tpchCustKeyResolver.
+const tpchCustKeyLegend = "Placeholders per request: {KEY} a random customer that has orders " +
+	"(c_custkey up to MAX(c_custkey), KeySQL, not a multiple of 3)"
+
+// tpchCustKeyResolver renders {KEY} as a random customer that has orders.
+// .load_tpch gives no orders to customers whose key is a multiple of 3
+// (the TPC-H rule, generateOrdersRows in tpch.go), so a point lookup drawn
+// in [1, maxKey] would find nothing one request in three; maxKey is
+// MAX(c_custkey) from KeySQL.  Range and IN-list shapes keep the plain
+// draw: their orders per request do not change.
+func tpchCustKeyResolver(sql string, rng *rand.Rand, maxKey int) string {
+	n := tpchCustomersWithOrders(maxKey)
+	if n < 1 {
+		n = 1
+	}
+	return strings.ReplaceAll(sql, "{KEY}", strconv.Itoa(tpchOrderCustKey(rng.Intn(n))))
 }
 
 // tpchOrderKeyLegend documents the placeholders of tpchOrderKeyResolver.

@@ -449,6 +449,63 @@ Run 6's tpch_cte triages as 5 × DIFFERENT-SQL: all five MySQL numbers
 RonSQL look 11× and 3× faster.  Rerun tpch_cte with the fixed driver
 (the command in B5, `--queries tpch_cte --load tpch`).
 
+*Reruns 6b (2026-09-26, census_benchbox.cnf, the build with B2, T=8,
+mysqld_nopush, `~/census_run6b_tpch_cte`, `~/census_run6b_tpch_official`).*
+Two different questions, kept apart from now on:
+
+- **Engine (same SQL, tpch_cte):** RonSQL ahead on all five — q11 2.0×,
+  q13 1.6×, q15 1.6×, q22 1.5× (342 / 1126 / 165 / 1162 ms vs 682 / 1790 /
+  272 / 1748 ms).  q2 reads 16× (641 ms vs 10.3 s), but MySQL waited
+  11.6 ms per scan batch there against 0.4–0.9 ms elsewhere (q11 scans the
+  same partsupp at 0.41 ms): an anomaly of MySQL's plan for cte_tpch_q2 —
+  get `EXPLAIN ANALYZE` before quoting it.  RonSQL is server-bound (q/s ×
+  avg ≈ 7.9 of 8), all of it in firstbatch; http+client 0.4–0.5 ms.
+- **Plan (official SQL on MySQL vs RonSQL's rewrite):** the rewrites keep
+  each query's expensive part, not its semantics or result, so this
+  compares plans.  MySQL's official Q2 (521 ms / 15.2 q/s) and Q22 (528 ms)
+  beat the rewrites at T=8 (641 / 1162 ms): official Q2 filters parts
+  first and probes (50k rows read per request) where the rewrite
+  aggregates all 800k partsupp rows; official Q22 probes orders for the
+  filtered customers where the rewrite aggregates all 1.5M orders.  For a
+  single request RonSQL's rewrite is still faster on Q2 (113 vs 272 ms),
+  parallel over 8 fragments; saturated, the total work decides.  Official
+  Q11 (4.5 s, 4.8M rows read: partsupp twice plus a supplier and a nation
+  lookup per row) and Q13 (4.1 s) are expensive MySQL plans; RonSQL's
+  rewrites are 13× and 3.6× faster.  See C7.
+- **Official Q22 returned 0 rows** (runs 6 and 6b): the generator gave
+  every customer orders — B1c.
+- **Configuration and code since run 6:** RonSQL tpch_cte T=8 q/s −3 to
+  −18 % (single request q2 ±0, q13 +6 %, q22 +19 %); MySQL official SQL
+  +29 to +48 % avg (both mysqld time and NDB wait: mysqld moved from
+  unpinned to 4 E-cores, and MySQL executes in mysqld while RonSQL
+  executes in the data nodes, so the E-cores cost MySQL more; its T=8
+  numbers are CPU-queued on those 4 cores, ~7.9 of 8).  Confounded with 12
+  engine commits (the box binary has the B2 worker pool); fragment count
+  unchanged (PartitionsPerNode=4 in mtr, 8 fragments per table).  To
+  separate: the same build on census.cnf and census_benchbox.cnf,
+  `--threads 1,8 --repeat 3`.  Memory: no retention (idle QM 2.2 → 2.2 MB;
+  the +0.1–0.4 MB readings 1 s after a case are gone by the next case);
+  query-memory peaks per node below run 6 for q11 / q15 / q22 (−15 to
+  −25 %), q2's two nodes now alike (445 / 409 MB vs 502 / 374).
+
+**B1c. TPC-H order distribution.**  `.load_tpch` drew `o_custkey`
+uniformly over all customers: ~10 orders each, only ~7 of 150k customers
+without orders, so Q22's NOT EXISTS found nothing (0 rows) and Q13's
+zero-order bucket was empty.  TPC-H's dbgen never gives an order to a
+customer whose key is a multiple of 3.  *Done (2026-09-26, not yet
+loaded):* `generateOrdersRows` draws among the non-multiples of 3
+(`tpchCustomersWithOrders`, `tpchOrderCustKey` in tpch.go); a third of
+the customers have no orders, the others ~15.  fs_point / fs_point_cte draw
+only customers with orders (`tpchCustKeyResolver`), as the order-key
+shapes draw only existing order keys; range and IN-list shapes keep the
+plain draw (their orders per request do not change).  The bench driver
+detects old data (orders of customers 3, 6, 9 — index lookups) and drops
+and reloads it (warns with `--no-load`), and records the count in
+`meta.cluster` data, so a triage against a run on the old data shows
+CONFIG DIFFERS.  Every orders-based number moves: run 7 is the new
+baseline.  `block_unit_test/load_tpch.cpp` (MTR suites, `test.tpch_*`) is
+a separate generator and unchanged.
+
 **B2. RDRS head-of-line blocking (new, also a production issue).**  On
 Linux drogon 1.9.7 gives each of the 64 IO loops its own SO_REUSEPORT
 listener (`extra/drogon/drogon-1.9.7/lib/src/ListenerManager.cc` ~85–111,
@@ -612,3 +669,19 @@ instead of 1869.
 
 **C6. core_in_pk100** per-read aggregation cost (ndbprep 59 vs 15 µs,
 firstbatch 296 vs 181 µs against the pass-through twin) — low priority.
+
+**C7. Filter-first rewrites of TPC-H Q2 and Q22** (B1b reruns 6b).
+MySQL's official Q2 / Q22 beat RonSQL's rewrites at T=8 because they do
+less work: they filter first and probe (Q2: parts of size 15 / type
+STANDARD in EUROPE, then their partsupp rows; Q22: prefix and
+above-average customers, then an orders probe each), while the rewrites
+aggregate whole tables into the CTE (all 800k partsupp, all 1.5M orders).
+RonSQL has no correlated subqueries or NOT EXISTS, so the fix is in the
+rewrite or the planner: restrict the CTE body by the outer filter — a
+semi-join of the CTE body with the filtered outer table (Q2: `ps_partkey
+IN (parts of size 15 ...)`; Q22: `o_custkey IN (the filtered
+customers)`), either written into the registry SQL where RonSQL accepts
+it, or as a planner rewrite that pushes an equi-joined outer filter into
+the CTE body.  Measure against `tpch_q2_official` / `tpch_q22_official`
+on the reloaded data (B1c), T=1 and T=8; keep the current rewrites as the
+whole-table variants.

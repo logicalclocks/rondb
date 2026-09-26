@@ -562,6 +562,16 @@ class Cluster:
         s1 = self.mysqld_status()
         return {k: (s1.get(k, 0) - s0.get(k, 0)) / seconds for k in MYSQLD_STATUS}
 
+    def tpch_custkey_rule_orders(self):
+        """Orders of customers 3, 6 and 9 (index lookups): 0 when tpch was
+        loaded with the TPC-H rule (no orders for keys divisible by 3,
+        .load_tpch since 2026-09-26), ~30 for the older uniform draw; None
+        when there is no tpch.orders."""
+        try:
+            return int(self.sql('SELECT COUNT(*) FROM tpch.orders WHERE o_custkey IN (3, 6, 9)')[0][0])
+        except (RuntimeError, IndexError, ValueError):
+            return None
+
     def analyze_tpch(self):
         """ANALYZE TABLE so the MySQL optimizer has NDB index statistics from
         the first case on (otherwise plans drift between the arms as the
@@ -598,6 +608,9 @@ class Cluster:
                 f['data'][key] = int(self.sql('SELECT COUNT(*) FROM %s' % key)[0][0])
             except (RuntimeError, IndexError, ValueError):
                 pass
+        rule = self.tpch_custkey_rule_orders()
+        if rule is not None:
+            f['data']['tpch.orders of customers 3,6,9'] = rule
         f['procs'], f['procs_note'] = self.proc_cpus()
         f['cpus'] = cpu_topology()
         return f
@@ -906,13 +919,22 @@ class Driver:
             have = int(self.cl.sql('SELECT COUNT(*) FROM tpch.lineitem')[0][0])
         except RuntimeError:
             pass
+        old_rule = bool(have) and bool(self.cl.tpch_custkey_rule_orders())
         if self.a.no_load:
             log('%s == --no-load: tpch.lineitem has %d rows' % (ts(), have))
+            if old_rule:
+                log('   WARNING: tpch was loaded before the TPC-H o_custkey rule (customers 3, 6, 9 have orders): '
+                    'Q13 / Q22 and the customer-keyed shapes measure the old data')
             return
-        if have and abs(have - want) <= max(1, want // 100):
+        if have and abs(have - want) <= max(1, want // 100) and not old_rule:
             log('%s == tpch already loaded (lineitem %d rows for sf %g), skipping load' % (ts(), have, self.a.sf))
             self.analyze()
             return
+        if old_rule:
+            log('%s == tpch was loaded before the TPC-H o_custkey rule (customers 3, 6, 9 have orders): '
+                'dropping and reloading' % ts())
+            self.cli('.drop_tpch')
+            have = 0
         if have:
             log('%s == tpch has %d lineitem rows, want %d: dropping and reloading' % (ts(), have, want))
             self.cli('.drop_tpch')
