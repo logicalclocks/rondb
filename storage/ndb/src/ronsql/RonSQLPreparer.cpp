@@ -9282,12 +9282,10 @@ RonSQLPreparer::execute_single_table_passthrough()
   STAT_TS(m_conf.phase_stats, s_exec_sent);
   STAT_SET(m_conf.phase_stats, send_us, s_exec_start, s_exec_sent);
 
-  if (is_json) {
-    m_resultprinter->print_passthrough_header(attrs, num_cols,
-                                              m_conf.out_stream);
-    header_emitted = true;
-    m_output_started = true;
-  }
+  // The JSON '[' goes out with the first row, like the TSV header: a
+  // temporary error before any row must still be retried, and only a
+  // delivered row makes a retry unsafe.  An empty result gets its
+  // framing after the drain.
   // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT without ORDER BY —
   // stream rows and stop at the limit, then close the scan early
   // instead of draining the remaining batches.  With LIMIT 0 the loop
@@ -9347,12 +9345,17 @@ RonSQLPreparer::execute_single_table_passthrough()
   }
   if (sorting) {
     // Phase 3: sort the buffered rows and print the first
-    // min(limit, n).  The deferred TSV header is emitted here on the
+    // min(limit, n).  The deferred header (TSV or JSON) is emitted on the
     // first printed row.
     sort_and_print_passthrough_rows(sort_buf, sort_keys, n_sort_keys,
                                     num_cols, limit, m_amalloc,
                                     m_resultprinter, header_emitted,
                                     m_conf.out_stream);
+  }
+  if (is_json && !header_emitted) {
+    m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                              m_conf.out_stream);
+    header_emitted = true;
   }
   if (header_emitted) {
     m_resultprinter->print_passthrough_finish(m_conf.out_stream);
@@ -10356,18 +10359,14 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
   // array is the correct empty representation).  For TSV we defer
   // the header line until at least one row arrives so empty results
   // produce no output, matching the mysql client baseline that
-  // ronsql_compare.inc diffs against.
+  // ronsql_compare.inc diffs against.  The JSON '[' is deferred to the
+  // first row as well: a temporary error before any row must still be
+  // retried, and only a delivered row makes a retry unsafe.  An empty
+  // result gets its framing after the drain.
   bool header_emitted = false;
   bool is_json =
       (m_conf.output_format == RonSQLExecParams::OutputFormat::JSON ||
        m_conf.output_format == RonSQLExecParams::OutputFormat::JSON_ASCII);
-  if (is_json) {
-    m_resultprinter->print_passthrough_header(
-        const_cast<const NdbRecAttr* const*>(attrs), num_cols,
-        m_conf.out_stream);
-    header_emitted = true;
-    m_output_started = true;
-  }
 
   Uint32 row_count = 0;
   // Phase 2 (ronsql_orderby_limit_plan.md): LIMIT without ORDER BY —
@@ -10470,12 +10469,18 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
 
   if (sorting) {
     // Phase 3: sort the buffered rows and print the first
-    // min(limit, n).  The deferred TSV header is emitted here on the
+    // min(limit, n).  The deferred header (TSV or JSON) is emitted on the
     // first printed row.
     sort_and_print_passthrough_rows(sort_buf, sort_keys, n_sort_keys,
                                     num_cols, limit, m_amalloc,
                                     m_resultprinter, header_emitted,
                                     m_conf.out_stream);
+  }
+  if (is_json && !header_emitted) {
+    m_resultprinter->print_passthrough_header(
+        const_cast<const NdbRecAttr* const*>(attrs), num_cols,
+        m_conf.out_stream);
+    header_emitted = true;
   }
 
   // Only finish if we actually opened a frame (JSON always; TSV
