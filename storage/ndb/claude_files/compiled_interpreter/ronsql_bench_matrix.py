@@ -761,18 +761,13 @@ class Driver:
 
     def list_queries(self):
         out = {}
-        mysql_only_names = set()   # .bench_ronsql names of MySQL-only entries
         for eng, cmd in (('ronsql', '.bench_ronsql list'), ('sql', '.bench_sql list')):
             rc, lines = self.cli(cmd, line_cb=lambda l: None)
             names = []
             for l in lines:
                 m = RE_LIST.match(l)
                 # 'all' and 'fs_hw' are the category runners of the listing, not queries
-                if not m or m.group(1) in ('all', 'fs_hw'):
-                    continue
-                if '[.bench_sql only]' in l:
-                    mysql_only_names.add(m.group(1))
-                else:
+                if m and m.group(1) not in ('all', 'fs_hw') and '[.bench_sql only]' not in l:
                     names.append((m.group(1), m.group(2)))
             if not names:
                 raise RuntimeError('could not parse "%s" output:\n%s' % (cmd, '\n'.join(lines)))
@@ -781,6 +776,7 @@ class Driver:
         # there is one (tpch_qN runs cte_tpch_qN's SQL), else the same name
         sql_names = [n for n, _ in out['sql']]
         ronsql_names = {n for n, _ in out['ronsql']}
+        taken = ronsql_names | set(sql_names)
         pairs = []
         for n, d in out['ronsql']:
             sql = 'cte_' + n if 'cte_' + n in sql_names else (n if n in sql_names else None)
@@ -793,13 +789,14 @@ class Driver:
             if n in ronsql_names:
                 # .bench_sql tpch_qN is the official statement, .bench_ronsql
                 # tpch_qN the CTE rewrite: the MySQL-only case takes the
-                # registry's .bench_ronsql name (tpch_qN_official) so its
+                # registry's name for it, tpch_qN_official (.bench_ronsql
+                # list does not print the official category), so its
                 # results never mix with the pair's (census run 6 compared
                 # RonSQL's rewrite with MySQL's official SQL).
                 name = n + '_official'
-                if name not in mysql_only_names:
+                if name in taken:
                     raise RuntimeError('.bench_sql %s is a MySQL-only statement, but .bench_ronsql %s is another one '
-                                       'and there is no %s to name it by' % (n, n, name))
+                                       'and %s is taken too' % (n, n, name))
             pairs.append({'name': name, 'sql': n, 'desc': d, 'mysql_only': True})
         dup = sorted({p['name'] for p in pairs if sum(1 for x in pairs if x['name'] == p['name']) > 1})
         if dup:
