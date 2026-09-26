@@ -264,9 +264,19 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     const Uint32 shared =
         mm.get_resource_free_shared_nolock(RG_QUERY_MEMORY);
     if (available > shared) available = shared;
-    /* Leave 5% headroom, with at least one page for small pools. */
+    /* Chunks come from per-thread lc_ndbd_pool pools, which take
+     * QueryMemory in 2 MB segments, and other threads may take the last
+     * pages between two checks here. Leave 5% headroom, but at least one
+     * segment for each thread that may run a fragment scan. */
+    const Uint64 segment_pages = (2 * 1024 * 1024) / GLOBAL_PAGE_SIZE;
+    const Uint64 scan_threads =
+        globalData.ndbMtQueryWorkers > 0 ? globalData.ndbMtQueryWorkers : 1;
+    Uint64 headroom = (committed + available) / 20 + 1;
+    if (headroom < scan_threads * segment_pages) {
+      headroom = scan_threads * segment_pages;
+    }
     m_drain_memory =
-        available <= (committed + available) / 20 + 1 ||
+        available <= headroom ||
         m_total_chunk_bytes >= m_total_available - MEM_CHUNK_SIZE;
   }
 
