@@ -1,0 +1,106 @@
+--source include/have_ndb.inc
+--source suite/ndb_push_agg/t/have_ndb_error_insert.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# RONDB-1124: RonSQL aggregation with bounded result batches and
+# QueryMemory drains. A fragment keeps its groups resident until the scan
+# ends or QueryMemory runs short, then sends them in result records of at
+# most 16 KB, one per scan batch, and resumes scanning after a memory
+# drain. An IN list on the leading primary-key column runs as a
+# multi-range scan whose aggregation state is carried across ranges, so
+# forced drains land inside and between ranges:
+#   ERROR_INSERT 4042 - drain on every 7th row
+#   ERROR_INSERT 4043 - drain once the resident groups need two records
+# Every result is compared strictly with the MySQL server, which does
+# not push the aggregation (ndb_pushdown_aggregate is OFF by default).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/agg_drain_explain.out
+
+--disable_query_log
+--disable_warnings
+# 600 ids x 3 subs. pad is 3000 bytes and depends on id only, so 11
+# resident pad groups already need two result records.
+CREATE TABLE t_mr (
+  id INT NOT NULL,
+  sub INT NOT NULL,
+  g INT NOT NULL,
+  w INT NOT NULL,
+  pad VARCHAR(3000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  PRIMARY KEY (id, sub)
+) ENGINE=NDB;
+SET SESSION cte_max_recursion_depth = 10000;
+INSERT INTO t_mr
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 1799)
+  SELECT n DIV 3 + 1, n % 3 + 1, ((n DIV 3 + 1) * 7 + n % 3 + 1) % 150,
+         (n DIV 3 + 1) * 10 + n % 3 + 1,
+         CONCAT(LPAD(n DIV 3 + 1, 4, '0'), REPEAT('p', 2996))
+  FROM seq;
+# 10000-byte strings for string MAX payloads.
+CREATE TABLE t_s10 (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  s VARCHAR(10000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL
+) ENGINE=NDB;
+INSERT INTO t_s10
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 39)
+  SELECT n, n % 4, CONCAT(LPAD(n, 4, '0'), REPEAT(CHAR(97 + n % 26), 9996)) FROM seq;
+--enable_warnings
+--let $list = 5000
+--let $i = 400
+while ($i)
+{
+  --let $list = $list, $i
+  --dec $i
+}
+--enable_query_log
+
+--echo
+--echo === multi-range scan, ERROR_INSERT 4042: a drain on every 7th row ===
+--exec $NDB_MGM -e "all error 4042" >> $NDB_TOOLS_OUTPUT
+--let QUERY = SELECT id, COUNT(*), SUM(w), MIN(w), MAX(w) FROM t_mr WHERE id IN ($list) GROUP BY id;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT g, COUNT(*), SUM(w) FROM t_mr WHERE id IN ($list) GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT g, COUNT(*), MIN(pad), MAX(pad) FROM t_mr WHERE id IN ($list) GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT COUNT(*), SUM(w), MAX(w) FROM t_mr WHERE id IN ($list);
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT id, sub, COUNT(*), SUM(w) FROM t_mr GROUP BY id, sub;
+--source suite/ronsql/include/ronsql_compare.inc
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo
+--echo === multi-range scan, ERROR_INSERT 4043: drains spanning several batches ===
+--exec $NDB_MGM -e "all error 4043" >> $NDB_TOOLS_OUTPUT
+--let QUERY = SELECT pad, COUNT(*), SUM(w) FROM t_mr WHERE id IN ($list) GROUP BY pad;
+--source suite/ronsql/include/ronsql_compare.inc
+--let QUERY = SELECT pad, COUNT(*), SUM(w) FROM t_mr GROUP BY pad;
+--source suite/ronsql/include/ronsql_compare.inc
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--let QUERY = SELECT COUNT(*), SUM(w) FROM t_mr WHERE id IN ($list);
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Ranges: 401 (IN list on `id`: 401 values, 401 distinct; SF_MultiRange).' $EXPLAIN_FILE
+
+--echo
+--echo === one 10 KB string MAX payload per group, each record above 8 KB ===
+--let QUERY = SELECT g, MAX(s) FROM t_s10 GROUP BY g;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === MIN and MAX payloads could need 20 KB: the aggregator refuses ===
+--exec printf '{"query":"SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -o 'Failed to finalize aggregator' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected the aggregator to refuse a group over 16 KB"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+--remove_file $EXPLAIN_FILE
+--remove_file $NDB_TOOLS_OUTPUT
+
+--disable_query_log
+DROP TABLE t_mr, t_s10;
+--enable_query_log

@@ -28,6 +28,10 @@ Next NDBFS 2002
 Next DBACC 3007
 4041: Force intermittent group eviction in join aggregation (every ~7 rows
       per LDM thread); not on a CTE materialization, which keeps every group
+4042: Force a QueryMemory drain in standalone GROUP BY aggregation on every
+      7th row of a fragment scan while more than 2 groups are resident
+4043: Force a QueryMemory drain in standalone GROUP BY aggregation once the
+      resident groups need two result batches (2 x DEF_AGG_RESULT_BATCH_BYTES)
 4060: RONDB-1056 JIT must-JIT: interpreter fallback is fatal for any program /
       scan filter with a compilable region (Dbtup / AggInterpreter /
       JoinAggInterpreter; deliberate-fallback canaries are exempt)
@@ -36,7 +40,7 @@ Next DBACC 3007
       program whose compilable region did not JIT-compile aborts the node;
       per-row fallbacks never trip it (suite-wide strict arming, paired
       with DBLQH 5120)
-Next DBTUP 4042 (4060-4064 reserved for the RONDB-1056 JIT above)
+Next DBTUP 4044 (4060-4064 reserved for the RONDB-1056 JIT above)
 5121: CRASH_INSERTION in execJOIN_AGG_SETUP_REQ (DblqhProxy) — node failure testing
 5122: CRASH_INSERTION in execJOIN_AGG_COMPLETE_REQ (Dblqh) — node failure testing
 5123: CRASH_INSERTION in execJOIN_AGG_RELEASE_REQ (DblqhProxy) — node failure testing

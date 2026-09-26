@@ -1,0 +1,13 @@
+!include suite/ndb/my_1rpl.cnf
+
+# ndb_pushdown_agg_qmem.test: QueryMemory may use at most 30% of the
+# shared global pages. SharedGlobalMemory=20M plus the pages added for
+# SchemaMemory, job buffers and send buffers keeps that cap in the tens of
+# MB, well below the resident groups of the GROUP BY scans in the test,
+# so the fragments must drain under real memory pressure. The suite
+# my.cnf is not included: its TotalMemoryConfig leaves QueryMemory room
+# for every group.
+[cluster_config.1]
+SharedGlobalMemory=20M
+NumCPUs=8
+PartitionsPerNode=8

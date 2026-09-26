@@ -1,0 +1,195 @@
+--source include/have_ndb.inc
+
+--echo ############################################################
+--echo # RONDB-1124: bounded aggregation result batches
+--echo ############################################################
+--echo #
+--echo # A standalone pushed GROUP BY keeps each fragment's groups resident
+--echo # until the scan ends or QueryMemory runs short, then drains them in
+--echo # result records of at most 16 KB, one record per scan batch. The API
+--echo # receives each record in a 16 KB buffer and refuses to push a program
+--echo # whose single group could exceed 16 KB, counting string MIN/MAX
+--echo # values. push_agg_compare.inc runs every query with pushdown OFF and
+--echo # ON and fails unless both return the same rows.
+--echo #
+
+--disable_query_log
+CREATE TABLE seq_n (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+SET SESSION cte_max_recursion_depth = 100000;
+INSERT INTO seq_n
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 59999)
+  SELECT n FROM seq;
+
+# 60000 rows, 20000 groups of 3 rows (pk g, g + 20000, g + 40000). n is
+# NULL for all 3 rows when g % 5 = 0, otherwise 3 distinct values.
+CREATE TABLE t_hc (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  v BIGINT NOT NULL,
+  n INT NULL,
+  s VARCHAR(40) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL
+) ENGINE=NDB;
+let $i = 0;
+while ($i < 3)
+{
+  eval INSERT INTO t_hc
+    SELECT n, n % 20000, (n * 7919) % 100003 - 50000,
+           IF(n % 5 = 0, NULL, n % 3), CONCAT('s', LPAD((n * 31) % 9973, 5, '0'))
+    FROM seq_n WHERE n >= $i * 20000 AND n < ($i + 1) * 20000;
+  inc $i;
+}
+
+# 300 groups with a 4000-byte key: 3 groups fill a 16 KB result record.
+CREATE TABLE t_wide (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  k VARCHAR(4000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t_wide
+  SELECT n, n % 40,
+         CONCAT(LPAD(n % 300, 6, '0'), REPEAT(CHAR(97 + n % 300 % 26), 3994)),
+         n * 3 - 1000
+  FROM seq_n WHERE n < 1200;
+
+# 10000-byte strings for string MIN/MAX payloads.
+CREATE TABLE t_s10 (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  s VARCHAR(10000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL
+) ENGINE=NDB;
+INSERT INTO t_s10
+  SELECT n, n % 4, CONCAT(LPAD(n, 4, '0'), REPEAT(CHAR(97 + n % 26), 9996))
+  FROM seq_n WHERE n < 40;
+
+# GROUP BY keys just under and just over one 16 KB record.
+CREATE TABLE t_k15 (
+  pk INT NOT NULL PRIMARY KEY,
+  k VARCHAR(15000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL
+) ENGINE=NDB;
+INSERT INTO t_k15
+  SELECT n, CONCAT(LPAD(n % 10, 2, '0'), REPEAT('k', 14998)) FROM seq_n WHERE n < 30;
+CREATE TABLE t_k17 (
+  pk INT NOT NULL PRIMARY KEY,
+  k VARCHAR(17000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL
+) ENGINE=NDB;
+INSERT INTO t_k17
+  SELECT n, CONCAT(LPAD(n % 10, 2, '0'), REPEAT('k', 16998)) FROM seq_n WHERE n < 30;
+--enable_query_log
+
+--echo ############################################################
+--echo # A: high cardinality, each fragment drains many 16 KB records
+--echo ############################################################
+--let $pac_label = A1 COUNT/SUM/MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = A2 nullable COUNT/SUM and string MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(n), SUM(n), MIN(s), MAX(s) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = A3 two GROUP BY columns, one nullable
+--let $pac_query = SELECT g, n, COUNT(*) FROM t_hc GROUP BY g, n
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = A4 scalar aggregate
+--let $pac_query = SELECT COUNT(*), SUM(v), MIN(s), MAX(s) FROM t_hc
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # B: wide groups stop a record at the 16 KB boundary
+--echo ############################################################
+--let $pac_label = B1 4000-byte GROUP BY key
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_wide GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = B2 4000-byte string MIN/MAX payloads
+--let $pac_query = SELECT g, COUNT(*), MIN(k), MAX(k) FROM t_wide GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # C: groups near the 16 KB limit
+--echo ############################################################
+--echo # One 10 KB MAX payload per group: pushed, each record above 8 KB.
+--let $pac_label = C1 MAX over VARCHAR(10000)
+--let $pac_query = SELECT g, MAX(s) FROM t_s10 GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # MIN and MAX payloads could need 20 KB: not pushed, server computes.
+--let $pac_label = C2 MIN and MAX over VARCHAR(10000)
+--let $pac_query = SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # COUNT over a wide string returns no payload: pushed.
+--let $pac_label = C3 COUNT over VARCHAR(10000)
+--let $pac_query = SELECT g, COUNT(s) FROM t_s10 GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # A 15000-byte key fits one record on its own: pushed.
+--let $pac_label = C4 VARCHAR(15000) GROUP BY key
+--let $pac_query = SELECT k, COUNT(*) FROM t_k15 GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # A 17000-byte key cannot fit one record: not pushed.
+--let $pac_label = C5 VARCHAR(17000) GROUP BY key
+--let $pac_query = SELECT k, COUNT(*) FROM t_k17 GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # D: concurrent high-cardinality scans on every LDM thread
+--echo ############################################################
+--disable_query_log
+--let $d_query = SELECT g, COUNT(n), SUM(v), MIN(s), MAX(s) FROM t_hc GROUP BY g
+--let $d_dir = $MYSQLTEST_VARDIR/tmp
+SET ndb_pushdown_aggregate = OFF;
+--sorted_result
+--output $d_dir/push_agg_conc_off.txt
+--eval $d_query
+connect (con1,localhost,root,,test);
+connect (con2,localhost,root,,test);
+connect (con3,localhost,root,,test);
+connect (con4,localhost,root,,test);
+connection con1;
+SET ndb_pushdown_aggregate = ON;
+send_eval $d_query;
+connection con2;
+SET ndb_pushdown_aggregate = ON;
+send_eval $d_query;
+connection con3;
+SET ndb_pushdown_aggregate = ON;
+send_eval $d_query;
+connection con4;
+SET ndb_pushdown_aggregate = ON;
+send_eval $d_query;
+connection con1;
+--sorted_result
+--output $d_dir/push_agg_conc_1.txt
+reap;
+connection con2;
+--sorted_result
+--output $d_dir/push_agg_conc_2.txt
+reap;
+connection con3;
+--sorted_result
+--output $d_dir/push_agg_conc_3.txt
+reap;
+connection con4;
+--sorted_result
+--output $d_dir/push_agg_conc_4.txt
+reap;
+connection default;
+disconnect con1;
+disconnect con2;
+disconnect con3;
+disconnect con4;
+--diff_files $d_dir/push_agg_conc_off.txt $d_dir/push_agg_conc_1.txt
+--diff_files $d_dir/push_agg_conc_off.txt $d_dir/push_agg_conc_2.txt
+--diff_files $d_dir/push_agg_conc_off.txt $d_dir/push_agg_conc_3.txt
+--diff_files $d_dir/push_agg_conc_off.txt $d_dir/push_agg_conc_4.txt
+--remove_files_wildcard $d_dir push_agg_conc_*.txt
+--enable_query_log
+--echo # D1: 4 concurrent pushed scans match the non-pushed result
+
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t_hc, t_wide, t_s10, t_k15, t_k17;
+DROP TABLE seq_n;

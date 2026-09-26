@@ -343,10 +343,159 @@ static bool runResultSizeCases() {
   return true;
 }
 
+/* COUNT, SUM, MIN and MAX grouped by one INT key. */
+static const Uint32 kBatchOps[] = {kOpCount, kOpSum, kOpMin, kOpMax};
+static const Uint32 kBatchSlots = sizeof(kBatchOps) / sizeof(kBatchOps[0]);
+
+struct BatchGroup {
+  Int32 key;
+  Uint64 count;
+  Int64 sum, min, max;
+};
+
+static BatchGroup mergeBatchGroups(const BatchGroup& a, const BatchGroup& b) {
+  return {a.key, a.count + b.count, a.sum + b.sum,
+          a.min < b.min ? a.min : b.min, a.max > b.max ? a.max : b.max};
+}
+
+/* Pack groups into wire records the way the data node does after bounded
+ * result packing: stop before a group that would take the record past
+ * MAX_AGG_RESULT_BATCH_BYTES, but always emit at least one group. */
+static std::vector<std::vector<Uint32>>
+packBatchGroups(const std::vector<BatchGroup>& groups) {
+  const Uint32 keyBytes = 2 * sizeof(Uint32);
+  const Uint32 valueBytes = kBatchSlots * sizeof(AggResItem);
+  const Uint32 groupBytes = sizeof(Uint32) + keyBytes + valueBytes;
+  std::vector<std::vector<Uint32>> records;
+  size_t next = 0;
+  while (next < groups.size()) {
+    std::vector<Uint32> words = {
+        AttributeHeader(AttributeHeader::AGG_RESULT, 0).m_value,
+        (1u << 16) | kBatchSlots, 0};
+    Uint32 n_groups = 0;
+    while (next < groups.size() &&
+           (n_groups == 0 || words.size() * sizeof(Uint32) + groupBytes <=
+                                 MAX_AGG_RESULT_BATCH_BYTES)) {
+      const BatchGroup& g = groups[next++];
+      const AggResItem slots[kBatchSlots] = {
+          unsignedSlot(g.count), signedSlot(g.sum), signedSlot(g.min),
+          signedSlot(g.max)};
+      words.push_back((keyBytes << 16) | valueBytes);
+      words.push_back(AttributeHeader(0, sizeof(Int32)).m_value);
+      words.push_back(static_cast<Uint32>(g.key));
+      const Uint32 *raw = reinterpret_cast<const Uint32 *>(slots);
+      words.insert(words.end(), raw, raw + valueBytes / sizeof(Uint32));
+      n_groups++;
+    }
+    words[2] = n_groups;
+    records.push_back(std::move(words));
+  }
+  return records;
+}
+
+/* Feed the records to a fresh aggregator and compare every merged group
+ * against `expected`, indexed by key. */
+static bool checkBatchRecords(
+    const std::vector<std::vector<Uint32>>& records,
+    const std::vector<BatchGroup>& expected) {
+  NdbDictionary::Column keyColumn("k");
+  keyColumn.setType(NdbDictionary::Column::Int);
+  const NdbDictionary::Column *gbColumns[] = {&keyColumn};
+  std::vector<Uint32> program(8 + 1 + kBatchSlots, 0);
+  program[1] = (1u << 16) | kBatchSlots;
+  program[8] = NDB_TYPE_INT;
+  for (Uint32 i = 0; i < kBatchSlots; i++) {
+    program[9 + i] = (kBatchOps[i] << 26) | i;
+  }
+
+  NdbAggregator agg(nullptr);
+  agg.initForResults(program.data(), program.size(), gbColumns, 1);
+  for (const auto& record : records) {
+    CHECK(record.size() * sizeof(Uint32) <= MAX_AGG_RESULT_BATCH_BYTES);
+    std::vector<Uint32> copy = record;
+    CHECK(agg.ProcessRes(reinterpret_cast<char*>(copy.data())) ==
+          static_cast<Int32>(copy.size()));
+  }
+  agg.PrepareResults();
+  std::vector<bool> seen(expected.size(), false);
+  Uint32 rows = 0;
+  for (auto row = agg.FetchResultRecord(); !row.end();
+       row = agg.FetchResultRecord()) {
+    auto key = row.FetchGroupbyColumn();
+    CHECK(!key.end() && !key.is_null());
+    const Int32 k = key.data_int32();
+    CHECK(k >= 0 && Uint32(k) < expected.size() && !seen[k]);
+    seen[k] = true;
+    const BatchGroup& g = expected[k];
+    CHECK(g.key == k);
+    CHECK(checkValue(row.FetchAggregationResult(), unsignedSlot(g.count)));
+    CHECK(checkValue(row.FetchAggregationResult(), signedSlot(g.sum)));
+    CHECK(checkValue(row.FetchAggregationResult(), signedSlot(g.min)));
+    CHECK(checkValue(row.FetchAggregationResult(), signedSlot(g.max)));
+    CHECK(row.FetchAggregationResult().end());
+    rows++;
+  }
+  CHECK(rows == expected.size());
+  return true;
+}
+
+static bool runResultBatchCases() {
+  const Uint32 groupBytes =
+      3 * sizeof(Uint32) + kBatchSlots * sizeof(AggResItem);
+
+  // One full record: more groups than the old 8 KB record could carry.
+  const Uint32 fullGroups =
+      (MAX_AGG_RESULT_BATCH_BYTES - 3 * sizeof(Uint32)) / groupBytes;
+  std::vector<BatchGroup> groups;
+  for (Uint32 k = 0; k < fullGroups; k++) {
+    groups.push_back({Int32(k), 1, Int64(k), Int64(k), Int64(k)});
+  }
+  auto records = packBatchGroups(groups);
+  CHECK(records.size() == 1);
+  CHECK(records[0].size() * sizeof(Uint32) > 8192);
+  CHECK(records[0].size() * sizeof(Uint32) + groupBytes >
+        MAX_AGG_RESULT_BATCH_BYTES);
+  if (!checkBatchRecords(records, groups)) return false;
+
+  // One more group starts a second record.
+  groups.push_back({Int32(fullGroups), 1, Int64(fullGroups),
+                    Int64(fullGroups), Int64(fullGroups)});
+  records = packBatchGroups(groups);
+  CHECK(records.size() == 2 && records[1][2] == 1);
+  if (!checkBatchRecords(records, groups)) return false;
+
+  // A fragment drains under memory pressure, resumes scanning and drains
+  // again at the end. Keys 500-999 arrive in both drains and must merge;
+  // each drain spans several bounded records.
+  std::vector<BatchGroup> first, second, expected;
+  for (Int32 k = 0; k < 1000; k++) {
+    first.push_back({k, 1, k, k, k});
+  }
+  for (Int32 k = 500; k < 1500; k++) {
+    second.push_back({k, 2, 2 * k + 1000, k - 1000, k + 1000});
+  }
+  for (Int32 k = 0; k < 1500; k++) {
+    if (k < 500) {
+      expected.push_back(first[k]);
+    } else if (k < 1000) {
+      expected.push_back(mergeBatchGroups(first[k], second[k - 500]));
+    } else {
+      expected.push_back(second[k - 500]);
+    }
+  }
+  records = packBatchGroups(first);
+  CHECK(records.size() > 1);
+  const auto resumed = packBatchGroups(second);
+  CHECK(resumed.size() > 1);
+  records.insert(records.end(), resumed.begin(), resumed.end());
+  return checkBatchRecords(records, expected);
+}
+
 int main() {
   if (ndb_init() != 0) return 1;
   bool passed = runNumericCases();
   if (!runResultSizeCases()) passed = false;
+  if (!runResultBatchCases()) passed = false;
   for (bool grouped : {false, true}) {
     for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR),
                         Uint32(NDB_TYPE_LONGVARCHAR)}) {
@@ -361,8 +510,8 @@ int main() {
   }
   ndb_end(0);
   printf("%s\n", passed
-      ? "PASSED: result-size boundaries, numeric boundaries "
-        "and 18 string failure/recovery cases"
+      ? "PASSED: result-size boundaries, bounded result batches, "
+        "numeric boundaries and 18 string failure/recovery cases"
       : "FAILED");
   return passed ? 0 : 1;
 }

@@ -280,6 +280,20 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         m_total_chunk_bytes >= m_total_available - MEM_CHUNK_SIZE;
   }
 
+#ifdef ERROR_INSERT
+  /* Force the QueryMemory drain without real memory pressure. 4042 drains
+   * on every 7th row, so each drain fits in one result record and the scan
+   * resumes many times. 4043 waits until the resident groups need at least
+   * two result records, so each drain spans several scan batches. */
+  if (m_n_gb_cols && m_gb_map->size() > 2 &&
+      ((block_tup->jit_error_inserted(4042) &&
+        (m_processed_rows + 1) % 7 == 0) ||
+       (block_tup->jit_error_inserted(4043) &&
+        m_result_size >= 2 * DEF_AGG_RESULT_BATCH_BYTES))) {
+    m_drain_memory = true;
+  }
+#endif
+
   /* Phase 6.5 RONDB-1056: standalone pushed aggregation JIT path.
    * This is the same scalar-aggregation dispatch shape used by
    * JoinAggInterpreter once setup has published a compiled entry.
