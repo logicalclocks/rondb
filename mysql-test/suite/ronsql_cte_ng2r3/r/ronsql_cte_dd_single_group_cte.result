@@ -297,6 +297,81 @@ okey	ck	n
 642	42	5
 942	42	5
 
+=== sg-14: sg-1 plus an outer COUNT(*) — kept on the CTE path ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+MAX(cf.d2) AS md2
+FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+MAX(cf.d2) AS md2
+FROM cf|
+c	mn	ms	md1	md2
+1	5	42917.70	1995-02-12	1997-07-31
+
+=== sg-15: sg-8 plus an outer COUNT(*) — AVG finalized on the owner ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.a) AS ma, MAX(cf.n) AS mn
+FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a, COUNT(*) AS n
+FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.a) AS ma, MAX(cf.n) AS mn
+FROM cf|
+c	ma	mn
+1	8583.540000	5
+
+=== sg-16: sg-1 over the missing customer, flattened — all NULL ===
+== Query ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+MAX(cf.d2) AS md2
+FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+MAX(cf.d2) AS md2
+FROM cf|
+mn	ms	md1	md2
+NULL	NULL	NULL	NULL
+
 === sg-c1: control — partially-bound GROUP BY is NOT flagged ===
 == Query ==
 WITH cf AS (SELECT o_custkey AS k, o_shippriority AS p, COUNT(*) AS n

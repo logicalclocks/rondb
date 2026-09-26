@@ -451,6 +451,54 @@ join pays the CTE/JoinAgg protocol (~150–200 µs).  Flatten it in the
 planner into a single-table aggregate (as M1.3 did for the collect CTE);
 get EXPLAIN, bench a hand-flattened twin.
 
+*Status 2026-09-26: implemented, not yet built or run.*  Expected cost:
+the flattened statement is an `idx_orders_custkey` scan on every fragment
+with pushed aggregation, like mysqld's 45 µs NDB wait; its run 6 twins
+are fs_hw_agg_point (single-table point aggregate, firstbatch 64 µs, avg
+132 µs at T=8) and fs_floor (all-fragment scan, firstbatch 40 µs), so
+fs_point should drop from 264 to ~45–70 µs firstbatch and to ~150–200 µs
+avg at T=8, under mysqld's 210.
+- `RonSQLPreparer::flatten_single_group_cte()` runs in `parse()` before
+  the main aggregates are bound to their compiler.  Pattern: one CTE; the
+  main is FROM it alone with only MIN / MAX of CTE columns; the body is
+  one real table, grouped, every GROUP BY column bound by a top-level
+  `col = literal` conjunct (checked by name at parse time), no HAVING,
+  ORDER BY, LIMIT or subquery.  Each main output takes the body aggregate
+  it names; the main switches to the body's compiler; body aggregates no
+  output names are still bound (computed, not printed); GROUP BY and the
+  CTE list are dropped.  EXPLAIN: `CTE 'x' flattened into a single-table
+  aggregate`.
+- Empty group: a body COUNT of a constant becomes **SUM(1)** (n, or NULL
+  over no rows), since MAX(n) over an empty CTE is NULL, not 0.  SUM /
+  MIN / MAX / AVG are already NULL over no rows.
+- Kept on the CTE path: outer COUNT / SUM / AVG, a body COUNT(expr) (0 for
+  a group of NULLs), the GROUP BY column in the main, partially bound
+  GROUP BY, OR.  Soundness of "one group": RonSQL rejects cross-type
+  literals, so the WHERE equality and the GROUP BY agree on one value.
+- Tests: new `ronsql_cte_single_group_flatten` (suite ronsql + strict JIT
+  mirror, results predicted): 13 flattened cases incl. the empty group,
+  a group of NULLs, unnamed body aggregates, AVG, COUNT(1), arithmetic,
+  qualified / reversed spellings, two bound GROUP BY columns, string and
+  DATE keys; 6 controls pinned to the CTE path with data where a wrong
+  flatten changes the answer.  `body_single_group_cte.inc` (×5 suites):
+  sg-1 now pins the flatten; sg-14 / sg-15 keep sg-1 / sg-8 on the CTE
+  path with an outer COUNT(*) (G4 keyed-probe root on a hit, owner-side
+  AVG); sg-16 is the flattened empty group.  `ronsql_float_formatting`:
+  a CTE-path twin of the one case that now flattens.
+- Bench: fs_point pins the flatten and `idx_orders_custkey`; new
+  `fs_point_cte` (outer COUNT(*)) keeps measuring the CTE path.
+- First run (2026-09-26): suite ronsql green; the ronsql_jit mirror
+  failed control sgf-c2 (CTE path, not the flatten): `MAX(cf.cq)` over
+  `COUNT(qty)` of a group whose qty are all NULL read NULL instead of 0.
+  Cause: the interpreter's Count() sets its slot to 0 on a group's first
+  row even when the value is NULL, but the JIT branches over COUNT on a
+  NULL column (`nb_convert_loads`), so the join-agg group record kept an
+  undefined slot.  The API maps an undefined COUNT to 0 (RONDB-831), which
+  hid it on every non-CTE path.  Fix: `JoinAggInterpreter` group records
+  start COUNT slots (and AVG's hidden count) at 0, from the per-slot ops
+  now extracted in Init for grouped programs — the Phase I.17 scalar
+  pre-init, per group.  The JIT's null-skip is unchanged.
+
 **C3. fs_latest** (ORDER BY … LIMIT 100: firstbatch 641 µs at T=1):
 `readTuples(LM_CommittedRead, SF_OrderBy|SF_Descending)` without a batch
 size (RonSQLPreparer.cpp ~8330) lets every fragment return up to 990

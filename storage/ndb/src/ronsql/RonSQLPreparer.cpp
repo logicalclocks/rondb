@@ -517,6 +517,11 @@ RonSQLPreparer::parse()
   if (parse_result == 0)
   {
     ndbrequire(m_context.m_err_state == ErrState::NONE);
+    // RONDB-1124 (m3_run6_plan.md C2): MIN / MAX over one single-group CTE
+    // (the fs_point form) becomes the single-table aggregate over the body.
+    // It swaps the main compiler for the body's, so it must run before the
+    // loop below binds the main aggregates.
+    flatten_single_group_cte();
     /* We have already provided columns and expressions to the
      * AggregationAPICompiler. E.g. in `SELECT Max(col1 + col2)`, m_main_scope.agg already
      * knows about `col1`, `col2` and `col1 + col2`. Here, we let m_main_scope.agg know about
@@ -2197,6 +2202,269 @@ RonSQLPreparer::collapse_collect_cte()
   root.limit = body->limit;
   root.cte_list = NULL;
   m_collapsed_cte = cte->name;
+}
+
+// flatten_single_group_cte(): a parse-time twin of find_const_equality_for()
+// for a single-table body — true when a top-level AND conjunct of `ce` is
+// `col = literal` (either order) with col spelled `name`, bare or
+// qualified with `alias`.  Literals as in the G3 classification, minus
+// substituted subquery values (the flatten rejects subqueries).
+bool
+RonSQLPreparer::where_binds_name_to_literal(const ConditionalExpression* ce,
+                                            const LexCString& name,
+                                            const LexCString& alias) const
+{
+  if (ce == NULL) return false;
+  if (ce->op == T_AND)
+    return where_binds_name_to_literal(ce->args.left, name, alias) ||
+           where_binds_name_to_literal(ce->args.right, name, alias);
+  if (ce->op != T_EQUALS) return false;
+  const ConditionalExpression* col = ce->args.left;
+  const ConditionalExpression* lit = ce->args.right;
+  if (col->op != T_IDENTIFIER)
+  {
+    col = ce->args.right;
+    lit = ce->args.left;
+  }
+  if (col->op != T_IDENTIFIER) return false;
+  if (lit->op != T_INT && lit->op != T_FLOAT && lit->op != T_STRING &&
+      lit->op != I_MYSQL_TIME)
+    return false;
+  const LexCString& q = m_column_qualifiers[col->col_idx];
+  return m_columns[col->col_idx] == name &&
+         (q.c_str() == NULL || q == alias);
+}
+
+/*
+ * RONDB-1124 (m3_run6_plan.md C2): the fs_point form
+ *
+ *   WITH cf AS (SELECT k, COUNT(*) AS n, SUM(x) AS s, MIN(d) AS d1
+ *               FROM tbl WHERE k = 42 [AND ...] GROUP BY k)
+ *   SELECT MAX(cf.n), MAX(cf.s), MIN(cf.d1) FROM cf;
+ *
+ * re-aggregates a single-group CTE (every GROUP BY column bound to a
+ * constant, cte_single_group_plan.md G3): the body holds at most one
+ * group, made of every row its WHERE selects.  MIN(c) and MAX(c) over
+ * that one row are c, and NULL when there is no row.  So the statement is
+ * the single-table scalar aggregate over the body's table and WHERE, each
+ * main output taking the body aggregate it names, and the CTE protocol
+ * (JoinAgg SETUP, merge, COMPLETE, the keyed probe, RELEASE) is not needed.
+ * Rewritten here, at parse time, before the main aggregates are bound to
+ * their compiler.  EXPLAIN reports the flatten (print()).
+ *
+ * The empty group is the one trap: MAX(n) over an empty CTE is NULL, but
+ * COUNT(*) over no rows is 0.  A body COUNT of a constant (COUNT(*),
+ * COUNT(1)) therefore becomes SUM(1): n over n >= 1 rows, NULL over none.
+ * SUM, MIN, MAX and AVG are already NULL over no rows, and give the CTE's
+ * value when the group has only NULL inputs.
+ *
+ * "At most one group" holds because each GROUP BY column compares equal to
+ * one literal under the column's own type and collation, and RonSQL
+ * rejects cross-type literals in filters (a numeric literal against a
+ * string column fails the same way in both forms).
+ *
+ * Pattern (all must hold; anything else keeps the CTE path):
+ *  - exactly one CTE, and the main query is FROM that CTE alone: no joins,
+ *    WHERE, GROUP BY, HAVING, ORDER BY or LIMIT; every output is MIN or
+ *    MAX of a plain column reference, optionally qualified with the CTE
+ *    alias, that names a body output;
+ *  - the body reads one real table with no joins, HAVING, ORDER BY, LIMIT
+ *    or subquery; every GROUP BY column (bare or qualified with the body
+ *    table alias, and not the output alias of another body column) is
+ *    bound by a top-level AND conjunct `col = literal` (integer, float,
+ *    string or temporal literal, either order);
+ *  - each named body output is MIN, MAX or SUM, COUNT of a constant, or
+ *    AVG.  Not flattened: COUNT(expr) (0 for a group of NULLs but NULL for
+ *    no group), the GROUP BY column itself (a case-insensitive key could
+ *    print another spelling), outer COUNT / SUM / AVG (their value or type
+ *    differ from the inner aggregate's), GREATEST / LEAST.
+ *
+ * Rewrite: the main keeps its output names and order and switches to the
+ * body's compiler, whose expressions its outputs now use; body aggregates
+ * no output names are still bound, as the body would bind them, so their
+ * expressions are consumed (computed, not printed, like HAVING-only
+ * aggregates); the body's table and WHERE become the root's; the GROUP BY
+ * and the CTE list are dropped.  Column registry: the body's columns are
+ * un-flagged inner, and the main's references to CTE outputs that nothing
+ * uses any more become alias-only sentinels.
+ */
+void
+RonSQLPreparer::flatten_single_group_cte()
+{
+  SelectStatement& root = m_context.ast_root;
+  CteDefinition* cte = root.cte_list;
+  if (cte == NULL || cte->next != NULL) return;
+  SelectStatement* body = cte->stmt;
+
+  // Main: FROM the CTE alone, aggregate outputs only.
+  if (root.root_table == NULL || !(root.root_table->name == cte->name))
+    return;
+  if (root.joins != NULL || root.where_expression != NULL ||
+      root.groupby_columns != NULL || root.having_expression != NULL ||
+      root.orderby_columns != NULL || root.limit >= 0 ||
+      root.outputs == NULL || m_main_scope.agg == NULL)
+    return;
+
+  // Body: one real table, grouped, no HAVING, ORDER BY or LIMIT.
+  if (body == NULL || body->root_table == NULL || body->joins != NULL ||
+      body->groupby_columns == NULL || body->having_expression != NULL ||
+      body->orderby_columns != NULL || body->limit >= 0 ||
+      body->agg == NULL || body->outputs == NULL ||
+      body->where_expression == NULL)
+    return;
+  if (find_cte_definition(body->root_table->name) != NULL) return;
+  if (ce_has_subquery(body->where_expression)) return;
+  for (const Outputs* o = body->outputs; o != NULL; o = o->next)
+  {
+    if (o->type == Outputs::Type::SUBQUERY_AGG) return;
+    if (o->type == Outputs::Type::AGGREGATE &&
+        o->aggregate.implicit_scalar_pair_op)
+      return;
+    for (const Outputs* p = o->next; p != NULL; p = p->next)
+      if (p->output_name == o->output_name) return;  // ambiguous name
+  }
+
+  // Single group: every GROUP BY column equality-bound to a literal.
+  const LexCString& body_alias = body->root_table->alias;
+  for (const GroupbyColumns* gb = body->groupby_columns; gb != NULL;
+       gb = gb->next)
+  {
+    const LexCString& q = m_column_qualifiers[gb->col_idx];
+    if (q.c_str() != NULL && !(q == body_alias)) return;
+    const LexCString& name = m_columns[gb->col_idx];
+    // A name that is also the output alias of another body column is
+    // resolved differently by different engines; keep the CTE path.
+    for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+    {
+      if (lex_name_eq(bo->output_name, name) &&
+          (bo->type != Outputs::Type::COLUMN ||
+           !(m_columns[bo->column.col_idx] == name)))
+        return;
+    }
+    if (!where_binds_name_to_literal(body->where_expression, name,
+                                     body_alias))
+      return;
+  }
+
+  // Every main output is MIN / MAX of a body output the flatten can map.
+  Uint32 num_main = 0;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next) num_main++;
+  const Outputs** matches = m_amalloc->alloc_exc<const Outputs*>(num_main);
+  num_main = 0;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next)
+  {
+    if (o->type != Outputs::Type::AGGREGATE ||
+        (o->aggregate.fun != T_MIN && o->aggregate.fun != T_MAX) ||
+        o->aggregate.implicit_scalar_pair_op)
+      return;
+    const AggregationAPICompiler::Expr* arg = o->aggregate.arg;
+    if (arg == NULL || !arg->isLoad()) return;
+    const Uint32 idx = arg->getLoadIdx();
+    const LexCString& q = m_column_qualifiers[idx];
+    if (q.c_str() != NULL && !(q == root.root_table->alias)) return;
+    const Outputs* match = NULL;
+    for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+    {
+      if (lex_name_eq(bo->output_name, m_columns[idx]))
+      {
+        match = bo;
+        break;
+      }
+    }
+    if (match == NULL) return;  // the CTE path reports the unknown column
+    if (match->type == Outputs::Type::AGGREGATE)
+    {
+      if (match->aggregate.fun == T_COUNT &&
+          !match->aggregate.arg->isLoadConstantInt())
+        return;
+    }
+    else if (match->type != Outputs::Type::AVG)
+    {
+      return;  // a plain body column: the GROUP BY key
+    }
+    matches[num_main++] = match;
+  }
+
+  // ---- Rewrite.
+  AggregationAPICompiler* agg = body->agg;
+  for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+  {
+    bool named = false;
+    for (Uint32 i = 0; i < num_main && !named; i++)
+      named = (matches[i] == bo);
+    if (named) continue;
+    if (bo->type == Outputs::Type::AGGREGATE)
+    {
+      AggregationAPICompiler::Expr* expr = bo->aggregate.arg;
+      switch (bo->aggregate.fun)
+      {
+      case T_COUNT: agg->Count(expr); break;
+      case T_MAX: agg->Max(expr); break;
+      case T_MIN: agg->Min(expr); break;
+      case T_SUM: agg->Sum(expr); break;
+      default: abort();
+      }
+    }
+    else if (bo->type == Outputs::Type::AVG)
+    {
+      agg->Sum(bo->avg.arg);
+      agg->Count(bo->avg.arg);
+    }
+  }
+
+  const Uint32 num_cols = m_columns.size();
+  bool* live = m_amalloc->alloc_exc<bool>(num_cols);
+  for (Uint32 i = 0; i < num_cols; i++) live[i] = false;
+  Uint32* old_main = m_amalloc->alloc_exc<Uint32>(num_main);
+  Uint32 k = 0;
+  for (Outputs* o = root.outputs; o != NULL; o = o->next, k++)
+  {
+    old_main[k] = o->aggregate.arg->getLoadIdx();
+    const Outputs* bo = matches[k];
+    if (bo->type == Outputs::Type::AVG)
+    {
+      o->type = Outputs::Type::AVG;
+      o->avg.arg = bo->avg.arg;
+    }
+    else if (bo->aggregate.fun == T_COUNT)
+    {
+      o->aggregate.fun = T_SUM;
+      o->aggregate.arg = agg->ConstantInteger(1);
+    }
+    else
+    {
+      o->aggregate.fun = bo->aggregate.fun;
+      o->aggregate.arg = bo->aggregate.arg;
+    }
+  }
+  for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+  {
+    if (bo->type == Outputs::Type::AGGREGATE)
+      mark_scope_column_refs_expr(live, bo->aggregate.arg);
+    else if (bo->type == Outputs::Type::AVG)
+      mark_scope_column_refs_expr(live, bo->avg.arg);
+  }
+  mark_scope_column_refs_ce(live, body->where_expression);
+  for (Uint32 i = 0; i < num_cols; i++)
+  {
+    if (live[i] && i < m_col_is_inner.size())
+      m_col_is_inner[i] = false;
+  }
+  for (Uint32 i = 0; i < num_main; i++)
+  {
+    Uint32 idx = old_main[i];
+    if (idx < num_cols && live[idx]) continue;
+    while (m_col_is_alias.size() <= idx)
+      m_col_is_alias.push(false);
+    m_col_is_alias[idx] = true;
+  }
+
+  m_main_scope.agg = agg;
+  root.root_table = body->root_table;
+  root.table = body->table;
+  root.where_expression = body->where_expression;
+  root.cte_list = NULL;
+  m_flattened_cte = cte->name;
 }
 
 /*
@@ -16700,6 +16968,14 @@ RonSQLPreparer::print()
         << "' collapsed into the pass-through ORDER BY scan: a"
            " projection-only main over a non-aggregating single-table body"
            " with ORDER BY and LIMIT runs as that body.\n\n";
+  }
+  // RONDB-1124 C2: the single-group CTE ran as a single-table aggregate
+  // (flatten_single_group_cte).
+  if (m_flattened_cte.c_str() != NULL) {
+    out << "CTE '" << m_flattened_cte.c_str()
+        << "' flattened into a single-table aggregate: MIN / MAX over a"
+           " single-group body (every GROUP BY column bound to a constant)"
+           " run as the body's aggregates over its table and WHERE.\n\n";
   }
 
   // Print CTE definitions

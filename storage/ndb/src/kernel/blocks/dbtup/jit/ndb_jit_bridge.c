@@ -2499,7 +2499,11 @@ static int nb_op_reads_reg(const Op *op, uint8_t reg) {
      * listed deliberately: its stencil ignores the register, but the
      * INTERPRETER's Count kernel skips null registers — treating
      * COUNT as a reader is exactly what gives COUNT(nullable_col)
-     * its null-skip via the branch. */
+     * its null-skip via the branch. The skip does not do the other
+     * half of Count(): setting the slot to 0 on a group's first row
+     * when that row is NULL. Join-agg group records therefore start
+     * COUNT slots at 0 (JoinAggInterpreter::Init), and the API maps an
+     * undefined COUNT to 0 for everything else (RONDB-831). */
     case OP_SUM_BIGINT:
     case OP_SUM_BIGINT_CHECKED:
     case OP_SUM_U64_CHECKED:

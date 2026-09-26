@@ -88,6 +88,12 @@
  * inherited name lookup.  See agg_interpreter_unification_plan.md, Step 1.
  */
 
+static void extractAggOps(const Uint32* prog, Uint32 prog_len,
+                          Uint32 agg_prog_start_pos,
+                          Uint8* agg_ops, Uint32 n_agg_results,
+                          const Uint16* avg_hidden_map,
+                          Uint32 n_visible_results);
+
 bool JoinAggInterpreter::Init(const Uint32* prog) {
   if (m_inited) {
     return true;
@@ -288,6 +294,24 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
           break;
       }
     }
+  }
+
+  /* A new group's COUNT slots start at 0 too: ProcessRec's group
+   * prologue reads the per-slot ops cached here.  The interpreter's
+   * Count() sets a COUNT slot on the group's first row even when the
+   * value is NULL, but the JIT branches over COUNT on a NULL column
+   * (nb_convert_loads in ndb_jit_bridge.c), so a group whose values
+   * were all NULL kept an undefined slot, and a CTE consumer read
+   * COUNT(col) as NULL instead of 0.  The API maps an undefined COUNT
+   * to 0 (RONDB-831), but CTE results never pass through the API.
+   * Multi-leaf programs overwrite the cache with the combined layout
+   * in cacheMultiLeafAggOps.  m_agg_ops_cached stays false: the leaf
+   * switch reads it as the multi-leaf marker, and the merge-time
+   * extraction recomputes the same ops. */
+  if (m_n_gb_cols > 0) {
+    extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
   }
 
   /* Validate embedded interpreter blocks (Step 3b — shared helper). */
@@ -1041,6 +1065,14 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
       assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
       for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        if (m_cached_agg_ops[i] == kOpCount) {
+          /* COUNT starts at 0, see Init. */
+          agg_res_ptr[i].type = NDB_TYPE_BIGINT;
+          agg_res_ptr[i].value.val_uint64 = 0;
+          agg_res_ptr[i].is_unsigned = true;
+          agg_res_ptr[i].is_null = false;
+          continue;
+        }
         agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
         agg_res_ptr[i].value.val_int64 = 0;
         agg_res_ptr[i].is_unsigned = false;

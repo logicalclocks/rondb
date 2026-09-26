@@ -175,7 +175,8 @@ sweeps belong in `offline_fs_*`).
 | Name | Shape | Source rows (SF=1) | Engines |
 |------|-------|--------------------|---------|
 | `fs_floor` | Single-table `COUNT(*)` over region (5 rows) — fixed-overhead floor; the denominator for phase-timing analysis | 5 | both |
-| `fs_point` | CTE body filtered `o_custkey = <random>`, scalar main agg | ~10 orders | both |
+| `fs_point` | CTE body filtered `o_custkey = <random>`, scalar main agg (MIN / MAX only, so RonSQL flattens it into the single-table aggregate, RONDB-1124 C2) | ~10 orders | both |
+| `fs_point_cte` | `fs_point` plus an outer `COUNT(*)`, which keeps it on the single-group CTE path | ~10 orders | both |
 | `fs_batch` | Per-entity feature vectors for a random 100-customer segment ({KEY}/{KEY2} range in CTE body + main WHERE), `GROUP BY c_custkey` | ~1k orders, 100 output rows | both |
 | `fs_freshness` | Two CTEs (lifetime + last-order) over a random 500-customer segment, joined to the same customer range | ~10k orders | both |
 | `fs_supplier` | Per-supplier features over a 3-day `l_shipdate` window (index scan), joined to one random nation's suppliers | ~7k lineitems, ~400 suppliers | both |

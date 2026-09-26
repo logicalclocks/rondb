@@ -429,6 +429,10 @@ private:
   // single-table pass-through statement ({NULL, 0} when no collapse ran);
   // reported by EXPLAIN.
   LexCString m_collapsed_cte = LexCString{NULL, 0};
+  // RONDB-1124 (m3_run6_plan.md C2): name of the single-group CTE
+  // flatten_single_group_cte() folded into a single-table aggregate
+  // ({NULL, 0} when no flatten ran); reported by EXPLAIN.
+  LexCString m_flattened_cte = LexCString{NULL, 0};
   // True for aggregating queries (the only ones RonSQL fully supports).
   // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
   // shape that Phase E.3 enables — drives the pass-through delivery
@@ -492,6 +496,15 @@ private:
    * pass-through ORDER BY scan serves it.  Parse-time AST rewrite; a
    * no-op for every other shape. */
   void collapse_collect_cte();
+  /* RONDB-1124 (m3_run6_plan.md C2): fold MIN / MAX over one single-group
+   * CTE (the fs_point form) into the single-table aggregate over the
+   * body's table and WHERE.  Parse-time AST rewrite, run before the main
+   * aggregates are bound to their compiler; a no-op for every other
+   * shape. */
+  void flatten_single_group_cte();
+  bool where_binds_name_to_literal(const ConditionalExpression* ce,
+                                   const LexCString& name,
+                                   const LexCString& alias) const;
   static bool ce_has_subquery(const ConditionalExpression* ce);
   void enforce_single_row_cte_body(const CteDefinition* cte,
                                    QueryScope& scope);

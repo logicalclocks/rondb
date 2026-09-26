@@ -174,11 +174,32 @@ var ronsqlBenchQueries = []RonSQLBenchQuery{
 		RandKey:     true,
 		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
 		KeyDefault:  tpchCustomerBase,
+		// RONDB-1124 C2: MIN / MAX over a single-group CTE runs flattened
+		// into the single-table aggregate over the body (no CTE protocol).
+		PlanPins: []string{"CTE 'cust_features' flattened into a single-table aggregate",
+			"Index: `idx_orders_custkey`"},
 		SQL: `WITH cust_features AS (
   SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_totalprice) AS total_spend,
          MIN(o_orderdate) AS first_order, MAX(o_orderdate) AS last_order
   FROM orders WHERE o_custkey = {KEY} GROUP BY o_custkey)
 SELECT MAX(cust_features.order_cnt), MAX(cust_features.total_spend),
+       MIN(cust_features.first_order), MAX(cust_features.last_order)
+FROM cust_features;`,
+	},
+	{
+		Name:        "fs_point_cte",
+		Category:    benchCatFS,
+		Description: "fs_point kept on the single-group CTE path by an outer COUNT(*): the cost the fs_point flatten removes",
+		Database:    "tpch",
+		RandKey:     true,
+		KeySQL:      "SELECT MAX(c_custkey) FROM tpch.customer",
+		KeyDefault:  tpchCustomerBase,
+		PlanPins:    []string{"[single-group body]"},
+		SQL: `WITH cust_features AS (
+  SELECT o_custkey AS k, COUNT(*) AS order_cnt, SUM(o_totalprice) AS total_spend,
+         MIN(o_orderdate) AS first_order, MAX(o_orderdate) AS last_order
+  FROM orders WHERE o_custkey = {KEY} GROUP BY o_custkey)
+SELECT COUNT(*), MAX(cust_features.order_cnt), MAX(cust_features.total_spend),
        MIN(cust_features.first_order), MAX(cust_features.last_order)
 FROM cust_features;`,
 	},
