@@ -531,6 +531,17 @@ int main(int argc, char *argv[]) {
                             globalConfigs.security.tls.privateKeyFile);
   drogon::app().setThreadNum(globalConfigs.rest.numThreads);
   drogon::app().setThreadStackSize(8 * 1024 * 1024);
+  /* Connection-lifetime limits (0 = disabled): closing long-lived
+   * keep-alive connections periodically lets a Kubernetes Service - which
+   * balances per TCP connection, not per request - redistribute clients
+   * across pods, so a post-restart connection pile-up on the first-ready
+   * pod levels out. Drogon itself treats 0 as "no limit". */
+  drogon::app().setKeepaliveRequestsNumber(
+    globalConfigs.rest.maxKeepaliveRequests);
+  if (globalConfigs.rest.idleConnectionTimeoutS > 0) {
+    drogon::app().setIdleConnectionTimeout(
+      globalConfigs.rest.idleConnectionTimeoutS);
+  }
   drogon::app().disableSession();
   drogon::app().registerBeginningAdvice([]() {
     auto addresses = drogon::app().getListeners();

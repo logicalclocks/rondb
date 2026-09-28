@@ -5,7 +5,8 @@
     "ServerPort": @port,
     "ProbeEnable": false,
     "PingRequiresAuth": true,
-    "HealthRequiresAuth": true
+    "HealthRequiresAuth": true,
+    "MaxKeepaliveRequests": 5
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",

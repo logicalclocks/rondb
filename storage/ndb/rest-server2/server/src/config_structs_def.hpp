@@ -116,6 +116,21 @@ CLASS
  ALIAS(pingRequiresAuth, PingRequiresAuth, PingRequiresAPIKey)
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
+ CM(unsigned, maxKeepaliveRequests, MaxKeepaliveRequests, 0,
+    "Maximum number of requests served over one keep-alive connection on"
+    " the main port before the server closes it; 0 (the default) disables"
+    " the limit. A Kubernetes Service balances per TCP connection, not per"
+    " request, so long-lived pooled connections stick to whichever pod they"
+    " first landed on - after a fleet restart the first-ready pod keeps"
+    " most of the load forever. With a limit, every close forces the client"
+    " to reconnect and be re-balanced, and the busiest pod sheds"
+    " connections fastest, so skew levels out on its own. Does not apply to"
+    " the probe port.")
+ CM(unsigned, idleConnectionTimeoutS, IdleConnectionTimeoutS, 0,
+    "Seconds a keep-alive connection on the main port may sit idle before"
+    " the server closes it; 0 (the default) keeps the built-in 60 second"
+    " timeout. Complements MaxKeepaliveRequests for clients that hold"
+    " connections open but send rarely. Does not apply to the probe port.")
  CM(bool, probeEnable, ProbeEnable, true,
     "Whether to serve ping and health on a dedicated probe port. The probe"
     " port runs on its own thread so it keeps answering while every request"
