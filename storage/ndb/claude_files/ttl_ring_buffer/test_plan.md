@@ -259,3 +259,20 @@ inserted with ttl_col = NOW() + 10 s; the checks after the expiry wait with wait
 Recorded and audited on the 2026-09-22 22:18 build, PASS twice (85 s, 84 s); rdrs2 log free
 of purge errors. No product defect found. Case 4 cannot show whether the purge or the writer
 reached a given slot 2 first; the settled state is the same either way and is asserted.
+
+## 7. Plain-ring coverage of the pre-existing fixes, purge vs user locks (2026-09-28)
+
+- The three pre-existing ring fixes (commit "write every column on insert, map columns through
+  the table map, log wraps as writes") were covered only on TTL rings. Plain-ring cases added:
+  `ndb_ring_buffer.insert` Case 14 (omitted columns, TEXT included, single-row, multi-row and
+  LOAD DATA wraps) and Case 15 (virtual generated column before ring_idx), and
+  `ndb_rpl.ndb_rpl_ring_buffer` Case 18 (wrap logged as a write with
+  ndb_log_update_as_write = 0; the replica re-creates the slot and the meta row).
+- `ndb_ttl_purge.ttl_purge_lock_wait` (own .cnf, TransactionDeadlockDetectionTimeout 1200 ms):
+  a user lock on an expired row makes the purge transaction time out (274) and retry every
+  ~2.5 s while the other expired rows are reclaimed; on a TTL ring without ttl_index an open
+  INSERT leaves that prefix's expired rows unpurged until it commits, with ttl_index it does not
+  block the purge; a lock held for about 25 s makes the purge worker give up after its 10
+  retries ("Has retried for 10 times"), quit with state error and be restarted. The last
+  point is pinned as current behaviour; whether a lock timeout should count toward the worker
+  restart is an open question for the purger.
