@@ -472,6 +472,44 @@ SET ndb_ring_buffer_show_meta = OFF;
 DROP TABLE test.rb_uaw;
 SET GLOBAL ndb_log_update_as_write = 1;
 #
+# Case 18: a wrap on a ring without TTL is logged as a write with ndb_log_update_as_write = 0
+#
+SET GLOBAL ndb_log_update_as_write = 0;
+CREATE TABLE test.rb_uaw_plain (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'v_2');
+SET SESSION sql_log_bin = 0;
+DELETE FROM test.rb_uaw_plain WHERE client_id = 1;
+SET SESSION sql_log_bin = 1;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS replica_rows_after_delete FROM test.rb_uaw_plain;
+replica_rows_after_delete
+0
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'wrap_3');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw_plain ORDER BY ring_idx;
+client_id	ring_idx	val	HEX(ring_meta)
+1	0	NULL	0100000002000000020000000000000003000000000000000000000000000000
+1	1	wrap_3	NULL
+1	2	v_2	NULL
+SET ndb_ring_buffer_show_meta = OFF;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw_plain ORDER BY ring_idx;
+client_id	ring_idx	val	HEX(ring_meta)
+1	0	NULL	0100000002000000020000000000000003000000000000000000000000000000
+1	1	wrap_3	NULL
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_uaw_plain;
+SET GLOBAL ndb_log_update_as_write = 1;
+#
 # Cleanup
 #
 DROP TABLE test.rb;

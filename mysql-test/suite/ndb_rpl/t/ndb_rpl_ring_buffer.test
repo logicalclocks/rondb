@@ -632,6 +632,60 @@ SET GLOBAL ndb_log_update_as_write = 1;
 --connection master
 
 ###############################################################################
+# Case 18: the same for a ring buffer table without TTL
+###############################################################################
+
+--echo #
+--echo # Case 18: a wrap on a ring without TTL is logged as a write with ndb_log_update_as_write = 0
+--echo #
+
+# Without TTL nothing removes a replica's slot by itself; a local, unlogged
+# prefix DELETE on the replica stands in for any replica-side divergence.
+# The wrap still arrives as write row events and re-creates the slot and
+# the meta row.
+--connection master
+SET GLOBAL ndb_log_update_as_write = 0;
+CREATE TABLE test.rb_uaw_plain (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'v_2');
+--sync_slave_with_master
+
+--connection slave
+SET SESSION sql_log_bin = 0;
+DELETE FROM test.rb_uaw_plain WHERE client_id = 1;
+SET SESSION sql_log_bin = 1;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS replica_rows_after_delete FROM test.rb_uaw_plain;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The wrap on the source (slot 1 and the meta row are updates there)
+--connection master
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'wrap_3');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw_plain ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+--sync_slave_with_master
+
+# The replica re-created slot 1 and the meta row from the write row events
+--connection slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw_plain ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--connection master
+DROP TABLE test.rb_uaw_plain;
+SET GLOBAL ndb_log_update_as_write = 1;
+--sync_slave_with_master
+--connection master
+
+###############################################################################
 # Cleanup
 ###############################################################################
 

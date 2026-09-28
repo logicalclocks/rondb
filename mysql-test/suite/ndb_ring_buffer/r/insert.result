@@ -200,6 +200,83 @@ id	ring_idx	HEX(ring_meta)
 SET ndb_ring_buffer_show_meta = OFF;
 DROP TABLE test.rb_ignore;
 #
+# Case 14: an INSERT that omits columns writes their defaults into the slot it overwrites
+#
+CREATE TABLE test.rb_omit (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+note VARCHAR(20) DEFAULT 'dflt',
+num INT,
+doc TEXT,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+INSERT INTO test.rb_omit (client_id, val, note, num, doc) VALUES
+(1, 'old_1', 'old_note_1', 11, 'old_doc_1'),
+(1, 'old_2', 'old_note_2', 22, 'old_doc_2');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	old_1	old_note_1	11	old_doc_1
+1	2	old_2	old_note_2	22	old_doc_2
+INSERT INTO test.rb_omit (client_id, val) VALUES (1, 'wrap_3');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	wrap_3	dflt	NULL	NULL
+1	2	old_2	old_note_2	22	old_doc_2
+INSERT INTO test.rb_omit (client_id, val, num) VALUES (1, 'wrap_4', 44), (1, 'wrap_5', 55);
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	wrap_5	dflt	55	NULL
+1	2	wrap_4	dflt	44	NULL
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_omit_load.csv'
+    INTO TABLE test.rb_omit (client_id, val);
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	wrap_5	dflt	55	NULL
+1	2	load_6	dflt	NULL	NULL
+DROP TABLE test.rb_omit;
+#
+# Case 15: a virtual generated column before the ring columns
+#
+CREATE TABLE test.rb_vcol (
+client_id INT NOT NULL,
+twice INT AS (client_id * 2) VIRTUAL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_2');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_3'), (1, 'wrap_4');
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+client_id	twice	ring_idx	val
+1	2	1	wrap_4
+1	2	2	v_2
+1	2	3	v_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_vcol WHERE ring_idx = 0;
+client_id	ring_idx	HEX(ring_meta)
+1	0	0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_vcol (client_id, ring_idx, val) VALUES (1, 5, 'bad');
+ERROR HY000: Table storage engine for 'Cannot specify ring_idx column in INSERT on ring-buffer table' doesn't have this option
+UPDATE test.rb_vcol SET val = 'v_2u' WHERE client_id = 1 AND ring_idx = 2;
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+client_id	twice	ring_idx	val
+1	2	1	wrap_4
+1	2	2	v_2u
+1	2	3	v_3
+DELETE FROM test.rb_vcol WHERE client_id = 1;
+affected rows: 4
+SELECT COUNT(*) FROM test.rb_vcol;
+COUNT(*)
+0
+DROP TABLE test.rb_vcol;
+#
 # Cleanup
 #
 DROP TABLE test.rb;

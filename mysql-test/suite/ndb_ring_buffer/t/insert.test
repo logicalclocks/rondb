@@ -221,6 +221,87 @@ SET ndb_ring_buffer_show_meta = OFF;
 DROP TABLE test.rb_ignore;
 
 --echo #
+--echo # Case 14: an INSERT that omits columns writes their defaults into the slot it overwrites
+--echo #
+
+# A wrap writes the occupied slot with writeTuple, which becomes an update.
+# Every stored column is written, blob columns included, so an omitted
+# column gets its default or NULL instead of keeping the overwritten row's
+# value.
+CREATE TABLE test.rb_omit (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    note VARCHAR(20) DEFAULT 'dflt',
+    num INT,
+    doc TEXT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+
+INSERT INTO test.rb_omit (client_id, val, note, num, doc) VALUES
+    (1, 'old_1', 'old_note_1', 11, 'old_doc_1'),
+    (1, 'old_2', 'old_note_2', 22, 'old_doc_2');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+
+# Slot 1 is overwritten by a row with val only
+INSERT INTO test.rb_omit (client_id, val) VALUES (1, 'wrap_3');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+
+# Slot 2 is overwritten by a multi-row INSERT that sets num only; slot 1
+# again by its second row
+INSERT INTO test.rb_omit (client_id, val, num) VALUES (1, 'wrap_4', 44), (1, 'wrap_5', 55);
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+
+# LOAD DATA with val only behaves the same
+--write_file $MYSQLTEST_VARDIR/tmp/rb_omit_load.csv
+1	load_6
+EOF
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+eval LOAD DATA LOCAL INFILE '$MYSQLTEST_VARDIR/tmp/rb_omit_load.csv'
+    INTO TABLE test.rb_omit (client_id, val);
+--remove_file $MYSQLTEST_VARDIR/tmp/rb_omit_load.csv
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+DROP TABLE test.rb_omit;
+
+--echo #
+--echo # Case 15: a virtual generated column before the ring columns
+--echo #
+
+# Virtual generated columns exist in MySQL only, so the NDB column numbers
+# of ring_idx and ring_meta differ from their MySQL field numbers; the
+# handler maps them.
+CREATE TABLE test.rb_vcol (
+    client_id INT NOT NULL,
+    twice INT AS (client_id * 2) VIRTUAL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_2');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_3'), (1, 'wrap_4');
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+# next_pos 2, count 3, total_inserts 4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_vcol WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+# The ring column guards still apply
+--error ER_ILLEGAL_HA
+INSERT INTO test.rb_vcol (client_id, ring_idx, val) VALUES (1, 5, 'bad');
+UPDATE test.rb_vcol SET val = 'v_2u' WHERE client_id = 1 AND ring_idx = 2;
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+--enable_info
+DELETE FROM test.rb_vcol WHERE client_id = 1;
+--disable_info
+SELECT COUNT(*) FROM test.rb_vcol;
+DROP TABLE test.rb_vcol;
+
+--echo #
 --echo # Cleanup
 --echo #
 
