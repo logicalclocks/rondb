@@ -50,6 +50,7 @@ import com.mysql.clusterj.query.PredicateOperand;
 
 import testsuite.clusterj.model.RingBufferNotNull;
 import testsuite.clusterj.model.RingBufferTtl;
+import testsuite.clusterj.model.RingBufferTtlDt;
 import testsuite.clusterj.model.RingBufferSensor;
 
 /**
@@ -135,6 +136,17 @@ public class RingBufferTest extends AbstractClusterJTest {
                     + "ts TIMESTAMP NULL,"
                     + "val VARCHAR(50),"
                     + "PRIMARY KEY (client_id, ring_idx)"
+                    + ") ENGINE=ndbcluster"
+                    + " COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+            stmt.execute("DROP TABLE IF EXISTS ring_buffer_ttl_dt");
+            stmt.execute("CREATE TABLE ring_buffer_ttl_dt ("
+                    + "client_id INT NOT NULL,"
+                    + "ring_idx INT NOT NULL DEFAULT 0,"
+                    + "ring_meta VARBINARY(64),"
+                    + "ts DATETIME NULL,"
+                    + "val VARCHAR(50),"
+                    + "PRIMARY KEY (client_id, ring_idx),"
+                    + "INDEX ttl_index (ts)"
                     + ") ENGINE=ndbcluster"
                     + " COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
             stmt.execute("DROP TABLE IF EXISTS ring_buffer_autoinc");
@@ -235,6 +247,10 @@ public class RingBufferTest extends AbstractClusterJTest {
         testFlushBatchFailureThenCommit();
         // TTL ring buffer table: meta row TTL column, expiry, ring continues
         testTtlRing();
+        // TTL ring with a DATETIME TTL column: annotation interface,
+        // DynamicObject and concurrent writers
+        testTtlRingDatetime();
+        testTtlRingDatetimeConcurrent();
 
         // Concurrent tests (SamePrefix runs last - its normalized state
         // is checked by the SQL diagnostic queries in the .test file)
@@ -1208,6 +1224,222 @@ public class RingBufferTest extends AbstractClusterJTest {
                 s3b == null ? null : s3b.getVal());
         errorIfNotEqual("TTL ring: no slot 4 after the rejected insert", true, s4 == null);
         tx.commit();
+    }
+
+    /**
+     * Ring buffer table with TTL on a DATETIME column (ring_buffer_ttl_dt,
+     * MAX_ROWS_PER_PK=3, TTL 1 h, ttl_index on ts). RingBufferWriter packs
+     * the DATETIME maximum 9999-12-31 23:59:59 into the meta row's ts, so
+     * the meta row sorts last in ttl_index. Rows written through the
+     * annotation interface and through DynamicObject; the expired row is
+     * invisible to SQL and to find(). The TTL values are one day away from
+     * now, so the JVM time zone does not matter.
+     */
+    private void testTtlRingDatetime() {
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("DELETE FROM ring_buffer_ttl_dt");
+            stmt.close();
+        } catch (Throwable t) {
+            // ignore - table might be empty
+        }
+
+        long now = System.currentTimeMillis();
+        long day = 24L * 3600L * 1000L;
+        // Slot 1 expired a day ago, slot 2 live (annotation interface)
+        tx.begin();
+        RingBufferTtlDt r1 = session.newInstance(RingBufferTtlDt.class);
+        r1.setClientId(1);
+        r1.setTs(new Timestamp(now - day));
+        r1.setVal("dt_expired");
+        session.makePersistent(r1);
+        RingBufferTtlDt r2 = session.newInstance(RingBufferTtlDt.class);
+        r2.setClientId(1);
+        r2.setTs(new Timestamp(now + day));
+        r2.setVal("dt_live");
+        session.makePersistent(r2);
+        tx.commit();
+
+        // Slot 3 live (DynamicObject)
+        tx.begin();
+        DynamicObject d = session.newInstance(RingTtlDtDTO.class);
+        ColumnMetadata[] meta = d.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("client_id"))  d.set(i, 1);
+            else if (n.equals("ts"))    d.set(i, new Timestamp(now + day));
+            else if (n.equals("val"))   d.set(i, "dt_do_live");
+            else if (n.equals("ring_idx") || n.equals("ring_meta")) {
+                // system-managed
+            } else {
+                error("Unexpected column in ring_buffer_ttl_dt: " + n);
+            }
+        }
+        session.makePersistent(d);
+        tx.commit();
+
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT ring_idx, val FROM ring_buffer_ttl_dt"
+                    + " WHERE client_id = 1 ORDER BY ring_idx");
+            StringBuilder visible = new StringBuilder();
+            while (rs.next()) {
+                visible.append(rs.getInt("ring_idx")).append(':')
+                        .append(rs.getString("val")).append(' ');
+            }
+            rs.close();
+            errorIfNotEqual("TTL ring DATETIME: visible rows",
+                    "2:dt_live 3:dt_do_live ", visible.toString());
+
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            rs = stmt.executeQuery(
+                    "SELECT DATE_FORMAT(ts, '%Y-%m-%d %H:%i:%s') AS ts_str, HEX(ring_meta) AS m"
+                    + " FROM ring_buffer_ttl_dt WHERE client_id = 1 AND ring_idx = 0");
+            if (rs.next()) {
+                errorIfNotEqual("TTL ring DATETIME meta: ts = DATETIME maximum",
+                        "9999-12-31 23:59:59", rs.getString("ts_str"));
+                String m = rs.getString("m");
+                errorIfNotEqual("TTL ring DATETIME meta: next_pos", 1L, metaFieldLE(m, 4, 4));
+                errorIfNotEqual("TTL ring DATETIME meta: count", 3L, metaFieldLE(m, 8, 4));
+                errorIfNotEqual("TTL ring DATETIME meta: total_inserts", 3L, metaFieldLE(m, 16, 8));
+            } else {
+                error("TTL ring DATETIME: meta row not found");
+            }
+            rs.close();
+            // Through ttl_index the meta row is found at the maximum, after
+            // every data row
+            rs = stmt.executeQuery(
+                    "SELECT ring_idx FROM ring_buffer_ttl_dt FORCE INDEX (ttl_index)"
+                    + " WHERE ts >= '2000-01-01' ORDER BY ts");
+            StringBuilder order = new StringBuilder();
+            while (rs.next()) {
+                order.append(rs.getInt("ring_idx")).append(' ');
+            }
+            rs.close();
+            String o = order.toString();
+            errorIfNotEqual("TTL ring DATETIME: meta row last in ttl_index", true,
+                    o.equals("2 3 0 ") || o.equals("3 2 0 "));
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("TTL ring DATETIME SQL check failed: " + ex.getMessage());
+        }
+
+        // find(): the expired slot is invisible; the wrap overwrites it
+        tx.begin();
+        RingBufferTtlDt s1 = session.find(RingBufferTtlDt.class, new Object[]{1, 1});
+        errorIfNotEqual("TTL ring DATETIME: expired slot 1 invisible", true, s1 == null);
+        tx.commit();
+        tx.begin();
+        RingBufferTtlDt r4 = session.newInstance(RingBufferTtlDt.class);
+        r4.setClientId(1);
+        r4.setTs(new Timestamp(now + day));
+        r4.setVal("dt_wrap");
+        session.makePersistent(r4);
+        tx.commit();
+        tx.begin();
+        RingBufferTtlDt w1 = session.find(RingBufferTtlDt.class, new Object[]{1, 1});
+        errorIfNotEqual("TTL ring DATETIME: wrap into slot 1", "dt_wrap",
+                w1 == null ? null : w1.getVal());
+        tx.commit();
+    }
+
+    /**
+     * Concurrent ClusterJ writers on one prefix of the DATETIME TTL ring:
+     * NUM_THREADS threads x INSERTS_PER_THREAD inserts, every row live. No
+     * meta update may be lost (total_inserts), every slot holds a live row
+     * and the meta row keeps the DATETIME maximum.
+     */
+    private void testTtlRingDatetimeConcurrent() {
+        final int clientId = 2;
+        final long now = System.currentTimeMillis();
+        final long day = 24L * 3600L * 1000L;
+        final CountDownLatch startLatch = new CountDownLatch(1);
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int t = 0; t < NUM_THREADS; t++) {
+            final int threadIdx = t;
+            Thread thread = new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        startLatch.await();
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    try {
+                        for (int i = 0; i < INSERTS_PER_THREAD; i++) {
+                            // Concurrent first inserts of a prefix can fail
+                            // with 630 on the meta row; retry like
+                            // testConcurrentSamePrefix
+                            boolean inserted = false;
+                            for (int attempt = 0; attempt < 3 && !inserted; attempt++) {
+                                Session s = sessionFactory.getSession();
+                                try {
+                                    Transaction t = s.currentTransaction();
+                                    t.begin();
+                                    RingBufferTtlDt row = s.newInstance(RingBufferTtlDt.class);
+                                    row.setClientId(clientId);
+                                    row.setTs(new Timestamp(now + day));
+                                    row.setVal("c" + threadIdx + "_" + i);
+                                    s.makePersistent(row);
+                                    t.commit();
+                                    inserted = true;
+                                } catch (ClusterJException ex) {
+                                    if (attempt == 2) {
+                                        throw ex;
+                                    }
+                                } finally {
+                                    s.close();
+                                }
+                            }
+                        }
+                    } catch (Throwable ex) {
+                        error("TTL ring DATETIME concurrent thread " + threadIdx
+                                + ": " + ex.getMessage());
+                    }
+                }
+            });
+            threads.add(thread);
+            thread.start();
+        }
+        startLatch.countDown();
+        joinThreads(threads);
+
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT COUNT(*) AS n FROM ring_buffer_ttl_dt WHERE client_id = " + clientId);
+            rs.next();
+            errorIfNotEqual("TTL ring DATETIME concurrent: 3 visible rows", 3, rs.getInt("n"));
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            rs = stmt.executeQuery(
+                    "SELECT DATE_FORMAT(ts, '%Y-%m-%d %H:%i:%s') AS ts_str, HEX(ring_meta) AS m"
+                    + " FROM ring_buffer_ttl_dt WHERE client_id = " + clientId
+                    + " AND ring_idx = 0");
+            if (rs.next()) {
+                long total = NUM_THREADS * INSERTS_PER_THREAD;
+                String m = rs.getString("m");
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: ts = DATETIME maximum",
+                        "9999-12-31 23:59:59", rs.getString("ts_str"));
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: total_inserts",
+                        total, metaFieldLE(m, 16, 8));
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: count", 3L,
+                        metaFieldLE(m, 8, 4));
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: next_pos",
+                        total % 3 + 1, metaFieldLE(m, 4, 4));
+            } else {
+                error("TTL ring DATETIME concurrent: meta row not found");
+            }
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("TTL ring DATETIME concurrent SQL check failed: " + ex.getMessage());
+        }
     }
 
     /**
@@ -2526,6 +2758,11 @@ public class RingBufferTest extends AbstractClusterJTest {
         @Override public String table() { return "ring_buffer_blob"; }
     }
 
+    /** Ring table with TTL on a DATETIME column. */
+    public static class RingTtlDtDTO extends DynamicObject {
+        @Override public String table() { return "ring_buffer_ttl_dt"; }
+    }
+
     /** Ring table whose PK prefix is AUTO_INCREMENT. */
     public static class RingAutoIncDTO extends DynamicObject {
         @Override public String table() { return "ring_buffer_autoinc"; }
@@ -3374,6 +3611,7 @@ public class RingBufferTest extends AbstractClusterJTest {
             Statement stmt = connection.createStatement();
             stmt.execute("DELETE FROM ring_buffer_sensor");
             stmt.execute("DELETE FROM ring_buffer_ttl");
+            stmt.execute("DELETE FROM ring_buffer_ttl_dt");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
