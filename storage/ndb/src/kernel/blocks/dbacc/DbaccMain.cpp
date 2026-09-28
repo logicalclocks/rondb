@@ -1569,14 +1569,20 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
                           tcOprec,
                           tcBlockref));
 
-          release_frag_mutex_hash(fragrecptr.p, hash);
-
+          /* m_lockTime must be written BEFORE the fragment mutex is
+           * released: the moment the mutex is free, the lock owner's
+           * commit (running in the owning LDM thread while this can be a
+           * query thread) can already act on this operation, and the
+           * LockStats readers assume the timestamp of a queued/granted
+           * operation is valid. */
           fragrecptr.p->
-            m_lockStats.req_start_imm_ok((opbits & 
-                                          Operationrec::OP_LOCK_MODE) 
+            m_lockStats.req_start_imm_ok((opbits &
+                                          Operationrec::OP_LOCK_MODE)
                                          != ZREADLOCK,
                                          operationRecPtr.p->m_lockTime,
                                           getHighResTimer());
+
+          release_frag_mutex_hash(fragrecptr.p, hash);
         }
         else
         {
@@ -2195,20 +2201,26 @@ Dbacc::accIsLockedLab(Signal* signal,
                     tcBlockref,
                     lockOwnerPtr.i));
 
-    release_frag_mutex_hash(fragrecptr.p, hash);
-
+    /* m_lockTime must be written BEFORE the fragment mutex is released.
+     * This can run in a query thread (shared-lock read on a fragment owned
+     * by another LDM); the queue linkage made the operation visible under
+     * the mutex, and once the mutex is free the owning LDM's commit can
+     * promote a serial-queue waiter through startNew(), whose
+     * LockStats::wait_ok() asserts the wait-start timestamp is valid.
+     * Writing the timestamp after the release loses that race (observed as
+     * the wait_ok assert under concurrent REST load). */
     if (return_result == ZPARALLEL_QUEUE)
     {
       jamDebug();
-      c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
-                              operationRecPtr.p->localdata.m_page_idx,
-                              fragrecptr.p->tupFragptr);
-
-      fragrecptr.p->m_lockStats.req_start_imm_ok((bits & 
-                                            Operationrec::OP_LOCK_MODE) 
+      fragrecptr.p->m_lockStats.req_start_imm_ok((bits &
+                                            Operationrec::OP_LOCK_MODE)
                                             != ZREADLOCK,
                                             operationRecPtr.p->m_lockTime,
                                             getHighResTimer());
+      release_frag_mutex_hash(fragrecptr.p, hash);
+      c_tup->prepareTUPKEYREQ(operationRecPtr.p->localdata.m_page_no,
+                              operationRecPtr.p->localdata.m_page_idx,
+                              fragrecptr.p->tupFragptr);
       sendAcckeyconf(signal, ignore_ttl);
       return;
     } else if (return_result == ZSERIAL_QUEUE) {
@@ -2216,10 +2228,12 @@ Dbacc::accIsLockedLab(Signal* signal,
       fragrecptr.p->m_lockStats.req_start(
           (bits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
           operationRecPtr.p->m_lockTime, getHighResTimer());
+      release_frag_mutex_hash(fragrecptr.p, hash);
       signal->theData[0] = RNIL;
       return;
     } else {
       jam();
+      release_frag_mutex_hash(fragrecptr.p, hash);
       acckeyref1Lab(signal, return_result);
       return;
     }  // if
@@ -2357,10 +2371,12 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
                    tcOprec,
                    tcBlockref));
 
-  release_frag_mutex_hash(fragrecptr.p, hash);
+  /* Timestamp before the mutex release, as in accIsLockedLab(): LockStats
+   * readers assume a visible operation carries a valid timestamp. */
   fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
                                              operationRecPtr.p->m_lockTime,
                                              getHighResTimer());
+  release_frag_mutex_hash(fragrecptr.p, hash);
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
                           fragrecptr.p->tupFragptr);
