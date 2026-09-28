@@ -59,11 +59,13 @@ func newWithDefaults() AllConfigs {
 			ServerPort: 5406,
 		},
 		REST: REST{
-			Enable:      true,
-			ServerIP:    "0.0.0.0",
-			ServerPort:  4406,
-			ProbeEnable: true,
-			ProbePort:   4407,
+			Enable:                 true,
+			ServerIP:               "0.0.0.0",
+			ServerPort:             4406,
+			ProbeEnable:            true,
+			ProbePort:              4407,
+			MaxKeepaliveRequests:   0,
+			IdleConnectionTimeoutS: 0,
 		},
 		RonDB: RonDB{
 			Mgmds: []Mgmd{

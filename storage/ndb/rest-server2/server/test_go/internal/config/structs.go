@@ -66,6 +66,10 @@ type REST struct {
 	// mirrors REST.ProbeEnable / REST.ProbePort in config_structs_def.hpp.
 	ProbeEnable bool
 	ProbePort   uint16
+	// Connection-lifetime limits on the main port; 0 = disabled. Mirror
+	// REST.MaxKeepaliveRequests / REST.IdleConnectionTimeoutS.
+	MaxKeepaliveRequests   uint32
+	IdleConnectionTimeoutS uint32
 }
 
 func (g *REST) Validate() error {
