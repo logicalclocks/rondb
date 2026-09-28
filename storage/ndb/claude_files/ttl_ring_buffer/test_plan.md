@@ -32,6 +32,16 @@ MTR suite `ndb_ttl_purge` (2 data nodes, 2 mysqlds, rdrs2 purger):
 - `ttl_purge_ring_buffer_restart.test` (v2): node restart, initial node restart and system
   restart with purged holes below next_pos; refill over the holes; purge after the
   system restart.
+- `ttl_purge_ring_buffer_expiry.test` (v3): rows that expire while the test runs (the other
+  tests insert rows that are expired already or live for the whole test). Case 1: every read
+  path (table scan, prefix scan, PK read, ttl_index scan, COUNT(*), second mysqld) switches
+  together, the meta row does not change, the next insert goes to next_pos. Case 2: a
+  transaction overwrites a slot that expired after it locked the meta row. Case 3: rows a
+  transaction locked stay visible, updatable (a TTL column update revives them) and
+  deletable to it after they expire; unlocked expired rows are hidden from it, and a prefix
+  DELETE without the locks removes only the meta row. Case 4: purge and writers on slots
+  that have just expired. Case 5: TIMESTAMP(3)/DATETIME(6) rows; the purge reclaims the
+  early rows and not a row due later.
 
 MTR suite `ndb_rpl`: `ndb_rpl_ring_buffer.test` Case 14 (v1).
 
@@ -241,3 +251,11 @@ Runs after the fixes (2026-09-23, rondb-bin rebuilt 22:18 the day before):
     and the injector change only concerns TE_UPDATE on ring buffer tables. No earlier full
     `ndb_rpl` run exists on this branch to serve as a baseline; a run on the base commit would
     settle whether it is a pre-existing failure of the branch or of the environment.
+
+## 6. Expiry while the test runs (2026-09-28)
+
+`ndb_ttl_purge.ttl_purge_ring_buffer_expiry` added (section 1). TTL 5 s, crossing rows
+inserted with ttl_col = NOW() + 10 s; the checks after the expiry wait with wait_condition.
+Recorded and audited on the 2026-09-22 22:18 build, PASS twice (85 s, 84 s); rdrs2 log free
+of purge errors. No product defect found. Case 4 cannot show whether the purge or the writer
+reached a given slot 2 first; the settled state is the same either way and is asserted.

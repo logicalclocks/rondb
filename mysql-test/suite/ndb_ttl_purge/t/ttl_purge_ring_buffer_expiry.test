@@ -1,0 +1,417 @@
+--source include/have_ndb.inc
+--source include/have_multi_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_ring_buffer_expiry.test
+#
+# Rows of a ring buffer table with TTL (MAX_ROWS_PER_PK + TTL) that expire
+# while the test runs. The other ring TTL tests insert rows that are
+# either expired already (5 minutes old) or live for the whole test (1 hour
+# ahead); here a row is live when a statement or transaction first sees it
+# and expired when the next step runs.
+#   Case 1: one row crosses the boundary: table scan, prefix scan, PK read,
+#           ordered index scan, COUNT(*) and the second mysqld all switch
+#           from showing it to hiding it; the meta row does not change and
+#           the ring continues at next_pos, not in the expired slot.
+#   Case 2: a transaction overwrites one slot, the next slot expires, the
+#           same transaction overwrites it (a wrap onto a slot that expired
+#           after the meta row was read and locked).
+#   Case 3: a transaction locks rows that then expire: it still reads,
+#           updates (and can revive) and deletes them; rows it did not lock
+#           are hidden from it, and a prefix DELETE without the locks leaves
+#           the expired rows behind.
+#   Case 4: the purge and ring writers reach slots that have just expired
+#           at the same time.
+#   Case 5: TIMESTAMP(3) and DATETIME(6) TTL columns: the SQL layer and the
+#           purge agree on which row has expired, and a row due later is not
+#           purged early.
+#
+# Timing: TTL is 5 s and a crossing row is inserted with ttl_col = NOW() +
+# 10 s, so it expires 15 s after the INSERT. The "before" checks run right
+# after the INSERTs; the "after" checks wait for the expiry with
+# wait_condition, so a slow host only makes the test longer.
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+--connection server2
+SET time_zone = '+00:00';
+--connection server1
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbx;
+
+# Purge off for cases 1-3: expired rows stay in place physically
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+
+CREATE TABLE ttl_rbx.rb_c1 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbx.rb_c1 (ttl_col);
+CREATE TABLE ttl_rbx.rb_c2 LIKE ttl_rbx.rb_c1;
+CREATE TABLE ttl_rbx.rb_c3 LIKE ttl_rbx.rb_c1;
+
+--let $phys_c1 = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c1' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c1'
+--let $phys_c2 = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c2' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c2'
+--let $phys_c3 = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c3' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c3'
+
+--echo #
+--echo # Cases 1-3, seed: crossing rows (expire 15 s after the INSERT) and live rows
+--echo #
+
+# Case 1, prefix 1: slot 1 crossing, slot 2 live (next_pos 3)
+INSERT INTO ttl_rbx.rb_c1 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c1_cross');
+INSERT INTO ttl_rbx.rb_c1 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c1_live');
+# Case 2, prefix 2: three crossing rows, ring full (next_pos 1)
+INSERT INTO ttl_rbx.rb_c2 (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c2_cross_1');
+INSERT INTO ttl_rbx.rb_c2 (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c2_cross_2');
+INSERT INTO ttl_rbx.rb_c2 (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c2_cross_3');
+# Case 3, prefixes 3-5: two crossing rows each (next_pos 3)
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c3_locked');
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c3_unlocked');
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c4_locked_1');
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c4_locked_2');
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (5, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c5_nolock_1');
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (5, DATE_ADD(NOW(), INTERVAL 10 SECOND), 'c5_nolock_2');
+
+--echo #
+--echo # Case 1, before the expiry: every read path shows the crossing row
+--echo #
+
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c1 ORDER BY client_id, ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 WHERE client_id = 1 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 WHERE client_id = 1 AND ring_idx = 1;
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 FORCE INDEX (ttl_index) WHERE ttl_col >= '2000-01-01' ORDER BY ttl_col;
+SELECT COUNT(*) FROM ttl_rbx.rb_c1;
+--connection server2
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c1 ORDER BY client_id, ring_idx;
+--connection server1
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_c1 WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 2, before the expiry: a transaction overwrites slot 1 (a live crossing row)
+--echo #
+
+connect (con_c2, 127.0.0.1, root, , test, $MASTER_MYPORT, );
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO ttl_rbx.rb_c2 (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c2_new_1');
+SELECT ring_idx, data FROM ttl_rbx.rb_c2 WHERE client_id = 2 ORDER BY ring_idx;
+
+--echo #
+--echo # Case 3, before the expiry: a transaction locks prefix 3 slot 1 and all of prefix 4
+--echo #
+
+connect (con_c3, 127.0.0.1, root, , test, $MASTER_MYPORT, );
+SET time_zone = '+00:00';
+BEGIN;
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c3 WHERE client_id = 3 AND ring_idx = 1 FOR UPDATE;
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c3 WHERE client_id = 4 ORDER BY ring_idx FOR UPDATE;
+
+--echo #
+--echo # Wait until the crossing rows have expired (committed reads)
+--echo #
+
+--connection server1
+--let $wait_timeout = 60
+--let $wait_condition = SELECT (SELECT COUNT(*) FROM ttl_rbx.rb_c1 WHERE data = 'c1_cross') + (SELECT COUNT(*) FROM ttl_rbx.rb_c2 WHERE client_id = 2 AND ring_idx IN (2, 3)) + (SELECT COUNT(*) FROM ttl_rbx.rb_c3 WHERE client_id IN (3, 5)) = 0
+--source include/wait_condition.inc
+
+--echo #
+--echo # Case 1, after the expiry: every read path hides the row, the meta row and the physical row are unchanged
+--echo #
+
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c1 ORDER BY client_id, ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 WHERE client_id = 1 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 WHERE client_id = 1 AND ring_idx = 1;
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 FORCE INDEX (ttl_index) WHERE ttl_col >= '2000-01-01' ORDER BY ttl_col;
+SELECT COUNT(*) FROM ttl_rbx.rb_c1;
+--connection server2
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c1 ORDER BY client_id, ring_idx;
+--connection server1
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_c1 WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$phys_c1`
+--let $assert_text = rb_c1: 3 physical rows after the expiry (meta + expired + live)
+--let $assert_cond = $rows = 3
+--source include/assert.inc
+
+# The ring continues at next_pos 3, then wraps onto the expired slot 1
+INSERT INTO ttl_rbx.rb_c1 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c1_next');
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 WHERE client_id = 1 ORDER BY ring_idx;
+INSERT INTO ttl_rbx.rb_c1 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c1_wrap');
+SELECT ring_idx, data FROM ttl_rbx.rb_c1 WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+# next_pos 2, count 3, total_inserts 4
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_c1 WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$phys_c1`
+--let $assert_text = rb_c1: 4 physical rows after the wrap (meta + 3 slots)
+--let $assert_cond = $rows = 4
+--source include/assert.inc
+
+--echo #
+--echo # Case 2, after the expiry: the same transaction overwrites slot 2, which expired meanwhile
+--echo #
+
+--connection con_c2
+INSERT INTO ttl_rbx.rb_c2 (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c2_new_2');
+SELECT ring_idx, data FROM ttl_rbx.rb_c2 WHERE client_id = 2 ORDER BY ring_idx;
+COMMIT;
+--connection server1
+SELECT ring_idx, data FROM ttl_rbx.rb_c2 WHERE client_id = 2 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+# next_pos 3, count 3, total_inserts 5
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_c2 WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$phys_c2`
+--let $assert_text = rb_c2: 4 physical rows (meta + 2 new rows + expired slot 3)
+--let $assert_cond = $rows = 4
+--source include/assert.inc
+
+--echo #
+--echo # Case 3, after the expiry: the transaction still sees, updates and deletes the rows it locked
+--echo #
+
+--connection con_c3
+--enable_info
+# Prefix 3: the locked slot 1 is visible, the unlocked slot 2 is not
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c3 WHERE client_id = 3 ORDER BY ring_idx;
+# Prefix 4: both locked rows are visible
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c3 WHERE client_id = 4 ORDER BY ring_idx;
+# A scan UPDATE of prefix 3 changes the locked row only
+UPDATE ttl_rbx.rb_c3 SET data = CONCAT(data, '_upd') WHERE client_id = 3;
+# Moving the TTL column forward revives the locked row
+UPDATE ttl_rbx.rb_c3 SET ttl_col = DATE_ADD(NOW(), INTERVAL 1 HOUR) WHERE client_id = 3 AND ring_idx = 1;
+# Prefix DELETE of prefix 4 removes both locked rows and the meta row
+DELETE FROM ttl_rbx.rb_c3 WHERE client_id = 4;
+--disable_info
+COMMIT;
+
+--connection server1
+--enable_info
+# Prefix DELETE of prefix 5 (no locks): only the meta row goes, the expired rows stay
+DELETE FROM ttl_rbx.rb_c3 WHERE client_id = 5;
+--disable_info
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c3 ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_c3 WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$phys_c3`
+--let $assert_text = rb_c3: 5 physical rows (prefix 3 meta + 2 rows, prefix 5 two expired leftovers)
+--let $assert_cond = $rows = 5
+--source include/assert.inc
+
+# Both deleted prefixes start a fresh ring; prefix 5 overwrites its expired leftover in slot 1
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c4_again');
+INSERT INTO ttl_rbx.rb_c3 (client_id, ttl_col, data) VALUES (5, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'c5_again');
+SELECT client_id, ring_idx, data FROM ttl_rbx.rb_c3 ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_c3 WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$phys_c3`
+--let $assert_text = rb_c3: 8 physical rows (3 meta, 3 live, prefix 3 slot 2 and prefix 5 slot 2 expired)
+--let $assert_cond = $rows = 8
+--source include/assert.inc
+
+--disconnect con_c2
+--disconnect con_c3
+--connection server1
+DROP TABLE ttl_rbx.rb_c1;
+DROP TABLE ttl_rbx.rb_c2;
+DROP TABLE ttl_rbx.rb_c3;
+
+--echo #
+--echo # Case 4: the purge and ring writers reach just-expired slots at the same time
+--echo #
+
+CREATE TABLE ttl_rbx.rb_c4 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbx.rb_c4 (ttl_col);
+
+# One single-row autocommit INSERT into each of prefixes 1-20: crossing
+# (expires 15 s later) when cross = 1, live (1 h ahead) otherwise
+DELIMITER |;
+CREATE PROCEDURE ttl_rbx.ins_all(IN cross_row INT, IN tag VARCHAR(20))
+BEGIN
+  DECLARE p INT DEFAULT 1;
+  WHILE p <= 20 DO
+    IF cross_row = 1 THEN
+      INSERT INTO ttl_rbx.rb_c4 (client_id, ttl_col, data)
+          VALUES (p, DATE_ADD(NOW(), INTERVAL 10 SECOND), CONCAT(tag, '_', p));
+    ELSE
+      INSERT INTO ttl_rbx.rb_c4 (client_id, ttl_col, data)
+          VALUES (p, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT(tag, '_', p));
+    END IF;
+    SET p = p + 1;
+  END WHILE;
+END|
+DELIMITER ;|
+
+--let $wait_db = ttl_rbx
+--let $wait_table = rb_c4
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--let $phys_c4 = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c4' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c4'
+
+# The purge is still off. Three crossing rows per prefix: rings full, next_pos 1
+CALL ttl_rbx.ins_all(1, 'cross_a');
+CALL ttl_rbx.ins_all(1, 'cross_b');
+CALL ttl_rbx.ins_all(1, 'cross_c');
+SELECT COUNT(*) AS visible FROM ttl_rbx.rb_c4;
+
+# Aggressive purge on; nothing has expired yet
+--exec $ttl_purge_put_config '{"enabled":true,"min_batch_size":5,"max_batch_size":50,"sleep_interval_ms":100}' > /dev/null 2>&1
+
+# Round 1 overwrites slot 1 of every prefix while its row is still live
+CALL ttl_rbx.ins_all(0, 'r1');
+
+# As soon as the crossing rows have expired, round 2 overwrites slot 2 of
+# every prefix while the purge deletes slots 2 and 3
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) = 20 FROM ttl_rbx.rb_c4
+--source include/wait_condition.inc
+CALL ttl_rbx.ins_all(0, 'r2');
+
+# Settled: 20 meta rows + 40 live rows, every expired slot 3 reclaimed
+--let $wait_timeout = 120
+--let $wait_condition = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c4' AND fragment_num = 0) = 60 FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_c4'
+--source include/wait_condition.inc
+--let $rows = `$phys_c4`
+--let $assert_text = rb_c4: 60 physical rows once the purge has settled (20 meta + 40 live)
+--let $assert_cond = $rows = 60
+--source include/assert.inc
+
+SELECT COUNT(*) AS visible FROM ttl_rbx.rb_c4;
+SELECT ring_idx, LEFT(data, 2) AS round, COUNT(*) AS prefixes FROM ttl_rbx.rb_c4
+    GROUP BY ring_idx, round ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+# next_pos 3, count 3, total_inserts 5 on all 20 meta rows
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbx.rb_c4 WHERE ring_idx = 0
+    GROUP BY meta ORDER BY meta;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# Purge off again before case 5
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+DROP PROCEDURE ttl_rbx.ins_all;
+DROP TABLE ttl_rbx.rb_c4;
+
+--echo #
+--echo # Case 5: TIMESTAMP(3) and DATETIME(6) rows cross the boundary; the SQL layer and the purge agree
+--echo #
+
+CREATE TABLE ttl_rbx.rb_ts3 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col TIMESTAMP(3) NULL,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbx.rb_ts3 (ttl_col);
+CREATE TABLE ttl_rbx.rb_dt6 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME(6),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbx.rb_dt6 (ttl_col);
+
+--let $wait_db = ttl_rbx
+--let $wait_table = rb_ts3
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--let $wait_table = rb_dt6
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--let $phys_ts3 = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_ts3' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_ts3'
+--let $phys_dt6 = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_dt6' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbx/def/rb_dt6'
+
+# Baseline of the purge counter, read while the purge is off
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rbx_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rbx_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+# Each table: slot 1 expires 15 s after the INSERT, slot 2 is live, slot 3
+# expires 35 s after the INSERT
+INSERT INTO ttl_rbx.rb_ts3 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(3), INTERVAL 10 SECOND), 'ts3_early');
+INSERT INTO ttl_rbx.rb_ts3 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(3), INTERVAL 1 HOUR), 'ts3_live');
+INSERT INTO ttl_rbx.rb_ts3 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(3), INTERVAL 30 SECOND), 'ts3_late');
+INSERT INTO ttl_rbx.rb_dt6 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(6), INTERVAL 10 SECOND), 'dt6_early');
+INSERT INTO ttl_rbx.rb_dt6 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(6), INTERVAL 1 HOUR), 'dt6_live');
+INSERT INTO ttl_rbx.rb_dt6 (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(6), INTERVAL 30 SECOND), 'dt6_late');
+SELECT ring_idx, data FROM ttl_rbx.rb_ts3 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_dt6 ORDER BY ring_idx;
+
+# The early rows expire
+--let $wait_timeout = 60
+--let $wait_condition = SELECT (SELECT COUNT(*) FROM ttl_rbx.rb_ts3 WHERE ring_idx = 1) + (SELECT COUNT(*) FROM ttl_rbx.rb_dt6 WHERE ring_idx = 1) = 0
+--source include/wait_condition.inc
+SELECT ring_idx, data FROM ttl_rbx.rb_ts3 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_ts3 FORCE INDEX (ttl_index) WHERE ttl_col >= '2000-01-01' ORDER BY ttl_col;
+SELECT ring_idx, data FROM ttl_rbx.rb_dt6 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_dt6 FORCE INDEX (ttl_index) WHERE ttl_col >= '2000-01-01' ORDER BY ttl_col;
+
+# Purge on (default configuration): it reclaims the two early rows only
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--let $expected_purge_total = `SELECT $initial_purged + 2`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$phys_ts3`
+--let $assert_text = rb_ts3: 3 physical rows after the first purge (meta + live + late)
+--let $assert_cond = $rows = 3
+--source include/assert.inc
+--let $rows = `$phys_dt6`
+--let $assert_text = rb_dt6: 3 physical rows after the first purge (meta + live + late)
+--let $assert_cond = $rows = 3
+--source include/assert.inc
+SELECT ring_idx, data FROM ttl_rbx.rb_ts3 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_dt6 ORDER BY ring_idx;
+
+# The late rows expire and are reclaimed
+--let $wait_timeout = 60
+--let $wait_condition = SELECT (SELECT COUNT(*) FROM ttl_rbx.rb_ts3 WHERE ring_idx = 3) + (SELECT COUNT(*) FROM ttl_rbx.rb_dt6 WHERE ring_idx = 3) = 0
+--source include/wait_condition.inc
+--let $expected_purge_total = `SELECT $initial_purged + 4`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$phys_ts3`
+--let $assert_text = rb_ts3: 2 physical rows after the second purge (meta + live)
+--let $assert_cond = $rows = 2
+--source include/assert.inc
+--let $rows = `$phys_dt6`
+--let $assert_text = rb_dt6: 2 physical rows after the second purge (meta + live)
+--let $assert_cond = $rows = 2
+--source include/assert.inc
+SELECT ring_idx, data FROM ttl_rbx.rb_ts3 ORDER BY ring_idx;
+SELECT ring_idx, data FROM ttl_rbx.rb_dt6 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+# next_pos 4, count 3, total_inserts 3; the purge leaves the meta rows alone
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_ts3 WHERE ring_idx = 0;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbx.rb_dt6 WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE ttl_rbx.rb_ts3;
+DROP TABLE ttl_rbx.rb_dt6;
+DROP DATABASE ttl_rbx;
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
