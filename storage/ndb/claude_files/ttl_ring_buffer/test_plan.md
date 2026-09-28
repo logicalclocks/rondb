@@ -276,3 +276,31 @@ reached a given slot 2 first; the settled state is the same either way and is as
   retries ("Has retried for 10 times"), quit with state error and be restarted. The last
   point is pinned as current behaviour; whether a lock timeout should count toward the worker
   restart is an open question for the purger.
+
+## 8. The deferred tests (2026-09-28)
+
+The five deferred or missing items of section 2 now have tests:
+- B3: `ndb_ttl_purge.ttl_purge_ring_buffer_backup`: backup of rings with purged holes and
+  unpurged expired rows; data restore into the same schema and with --promote-attributes
+  VARCHAR -> TEXT (staging table). Visible rows, meta rows and physical rows equal the backed-up
+  state; the purge reclaims the restored expired rows; the rings continue at next_pos.
+- Node restart while rows expire: `ndb_ttl_purge.ttl_purge_ring_buffer_nr_expiry`: initial
+  node restart; rows expire and are purged while the node is down, writers wrap into the
+  purged slots, short-lived rows expire and are purged while the node copies its fragments,
+  a writer runs during the start. Both replicas end with the same rows and meta rows; the
+  restarted node alone serves the same result.
+- D3: ClusterJ `RingBufferTest.testTtlRingDatetime` and `testTtlRingDatetimeConcurrent`
+  (table `ring_buffer_ttl_dt`, DATETIME TTL column, ttl_index): annotation interface and
+  DynamicObject inserts, meta row ts = 9999-12-31 23:59:59 and last in ttl_index, wrap over the
+  expired slot, 4 concurrent writers without a lost meta update.
+- A6: `ndb_ttl_purge.ttl_purge_ring_buffer_alter`: TTL shortened (rows become expired and are
+  purged), lengthened (rows visible again, not purged), copying ALTER (the purge follows the new
+  table), DROP and CREATE with the same name, all while the purge runs.
+- C1: `ndb_ttl_rpl.ttl_rpl_ring_buffer_purge` (own .cnf: a REST server with the purge on the
+  source and on the replica cluster): the source purge's deletes replicate and remove the same
+  rows on the replica (expired there too), the wrap re-creates the purged slots on the replica,
+  the replica's own purge then has nothing left. The first MTR test with a purge on both sides
+  of replication; it applies to plain TTL tables as well (a plain TTL table is part of it).
+  Note: the header of `ttl_rpl_expired_apply.test` says a replicated DELETE of a row that is
+  expired on the replica is a no-op (626 swallowed); in this test such deletes removed the
+  rows physically.

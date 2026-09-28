@@ -1,0 +1,182 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_ring_buffer_alter.test
+#
+# DDL on a ring buffer table with TTL while the purge runs.
+#   Part A: ALTER shortens the TTL: rows that were live become expired and
+#           the purge reclaims them; live rows and meta rows stay.
+#   Part B: ALTER lengthens the TTL: expired rows become visible again and
+#           the purge leaves them alone.
+#   Part C: a copying ALTER (new table id) while the purge runs: the purge
+#           follows the new table.
+#   Part D: DROP and CREATE of a table with the same name while the purge
+#           runs: the purge reclaims the new table's expired rows and stays
+#           healthy.
+# ndb_ring_buffer's ttl_ring_buffer_ddl covers the visibility effect of a
+# TTL change without the purge.
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rba;
+
+--let $physical = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rba/def/rb' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rba/def/rb'
+
+CREATE TABLE ttl_rba.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rba.rb (ttl_col);
+--let $wait_db = ttl_rba
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--echo #
+--echo # Part A: ALTER shortens the TTL from 3600 s to 60 s while the purge runs
+--echo #
+
+# 10 minutes old: live with TTL 3600, expired with TTL 60
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p1_old_1');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p1_old_2');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_3');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p2_old_1');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_live_2');
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rba_a.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rba_a.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $base_purged = $json_value
+
+ALTER TABLE ttl_rba.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=60@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+
+# The purge picks up the new TTL and reclaims the 3 old rows
+--let $expected_purge_total = `SELECT $base_purged + 3`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$physical`
+--let $assert_text = Part A: 4 physical rows after the purge (2 meta + 2 live)
+--let $assert_cond = $rows = 4
+--source include/assert.inc
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rba.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Part B: ALTER lengthens the TTL from 60 s to 3600 s: expired rows come back and are not purged
+--echo #
+
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p1_old_4');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p2_old_3');
+# Hidden with TTL 60
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+
+ALTER TABLE ttl_rba.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=3600@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+# Visible again with TTL 3600
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rba_b.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rba_b.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $base_purged = $json_value
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 10
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rba_b2.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rba_b2.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Part B: nothing purged after the TTL was lengthened
+--let $assert_cond = $json_value = $base_purged
+--source include/assert.inc
+--let $rows = `$physical`
+--let $assert_text = Part B: 6 physical rows (2 meta + 4 live)
+--let $assert_cond = $rows = 6
+--source include/assert.inc
+
+--echo #
+--echo # Part C: a copying ALTER while the purge runs; the purge follows the new table
+--echo #
+
+ALTER TABLE ttl_rba.rb ALGORITHM=COPY, ADD COLUMN extra INT;
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+SELECT client_id, ring_idx, data, extra FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rba.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rba_c.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rba_c.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $base_purged = $json_value
+# Two rows expired under TTL 3600 go into the copied table
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p1_exp_5');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p2_exp_4');
+--let $expected_purge_total = `SELECT $base_purged + 2`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$physical`
+--let $assert_text = Part C: 6 physical rows after the purge of the copied table
+--let $assert_cond = $rows = 6
+--source include/assert.inc
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+
+--echo #
+--echo # Part D: DROP and CREATE with the same name while the purge runs
+--echo #
+
+DROP TABLE ttl_rba.rb;
+CREATE TABLE ttl_rba.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rba.rb (ttl_col);
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rba_d.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rba_d.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $base_purged = $json_value
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'd_exp_1');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'd_exp_2');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'd_live_3');
+--let $expected_purge_total = `SELECT $base_purged + 2`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$physical`
+--let $assert_text = Part D: 2 physical rows after the purge (meta + live)
+--let $assert_cond = $rows = 2
+--source include/assert.inc
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/rba_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rba_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = Part D: the purge worker is running
+--let $assert_cond = "$json_value" = "running"
+--source include/assert.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE ttl_rba.rb;
+DROP DATABASE ttl_rba;
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

@@ -1,0 +1,135 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+CREATE DATABASE ttl_rrb;
+CREATE TABLE ttl_rrb.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rrb.rb (ttl_col);
+CREATE TABLE ttl_rrb.t (
+id INT NOT NULL PRIMARY KEY,
+ttl_col DATETIME,
+data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE INDEX ttl_index ON ttl_rrb.t (ttl_col);
+#
+# 1. Seed with both purges off
+#
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_1');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_2');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_3');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_4');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_5');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_1');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_2');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_3');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_4');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_5');
+INSERT INTO ttl_rrb.t VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 't_exp_1');
+INSERT INTO ttl_rrb.t VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 't_exp_2');
+INSERT INTO ttl_rrb.t VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 't_exp_3');
+INSERT INTO ttl_rrb.t VALUES (4, DATE_ADD(NOW(), INTERVAL 1 HOUR), 't_live_4');
+INSERT INTO ttl_rrb.t VALUES (5, DATE_ADD(NOW(), INTERVAL 1 HOUR), 't_live_5');
+SELECT client_id, ring_idx, data FROM ttl_rrb.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	4	p1_live_4
+1	5	p1_live_5
+SELECT id, data FROM ttl_rrb.t ORDER BY id;
+id	data
+4	t_live_4
+5	t_live_5
+include/assert.inc [replica: 12 physical ring rows (2 meta + 10 data)]
+include/assert.inc [replica: 5 physical rows in the plain TTL table]
+#
+# 2. The source purge reclaims the expired rows; its deletes replicate
+#
+include/assert.inc [source: 4 physical ring rows after the purge (2 meta + 2 live)]
+include/assert.inc [source: 2 physical rows in the plain TTL table after the purge]
+SELECT client_id, ring_idx, data FROM ttl_rrb.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	4	p1_live_4
+1	5	p1_live_5
+SELECT id, data FROM ttl_rrb.t ORDER BY id;
+id	data
+4	t_live_4
+5	t_live_5
+include/assert.inc [replica: 4 physical ring rows after the replicated purge deletes]
+include/assert.inc [replica: 2 physical rows in the plain TTL table after the replicated purge deletes]
+SELECT MAX(LAST_ERROR_NUMBER) AS applier_error FROM performance_schema.replication_applier_status_by_worker;
+applier_error
+0
+#
+# 3. The source rings wrap into their purged slots
+#
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_wrap_6');
+INSERT INTO ttl_rrb.rb (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_wrap_6');
+INSERT INTO ttl_rrb.t VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 't_again_1');
+SELECT client_id, ring_idx, data FROM ttl_rrb.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	p1_wrap_6
+1	4	p1_live_4
+1	5	p1_live_5
+2	1	p2_wrap_6
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rrb.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000002000000050000000000000006000000000000000000000000000000
+2	0100000002000000050000000000000006000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT client_id, ring_idx, data FROM ttl_rrb.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	p1_wrap_6
+1	4	p1_live_4
+1	5	p1_live_5
+2	1	p2_wrap_6
+SELECT id, data FROM ttl_rrb.t ORDER BY id;
+id	data
+1	t_again_1
+4	t_live_4
+5	t_live_5
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rrb.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000002000000050000000000000006000000000000000000000000000000
+2	0100000002000000050000000000000006000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT MAX(LAST_ERROR_NUMBER) AS applier_error FROM performance_schema.replication_applier_status_by_worker;
+applier_error
+0
+#
+# 4. The replica's own purge finds nothing left to reclaim
+#
+include/assert.inc [replica: its purge reclaimed nothing]
+include/assert.inc [replica: 6 physical ring rows (2 meta + 4 live), as on the source]
+include/assert.inc [replica: 3 physical rows in the plain TTL table, as on the source]
+SELECT client_id, ring_idx, data FROM ttl_rrb.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	p1_wrap_6
+1	4	p1_live_4
+1	5	p1_live_5
+2	1	p2_wrap_6
+SELECT id, data FROM ttl_rrb.t ORDER BY id;
+id	data
+1	t_again_1
+4	t_live_4
+5	t_live_5
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rrb.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000002000000050000000000000006000000000000000000000000000000
+2	0100000002000000050000000000000006000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+include/assert.inc [source: 6 physical ring rows (2 meta + 4 live)]
+include/assert.inc [source: 3 physical rows in the plain TTL table]
+#
+# Cleanup
+#
+DROP DATABASE ttl_rrb;
+include/rpl/deinit.inc

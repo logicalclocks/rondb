@@ -1,0 +1,32 @@
+{
+  "PIDFile": "@pid-file",
+  "REST": {
+    "ServerIP": "@bind-address",
+    "ServerPort": @port
+  },
+  "RonDB": {
+      "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.slave.HostName",
+                   "Port": @cluster_config.ndb_mgmd.1.slave.PortNumber } ]
+  },
+  "Security": {
+    "InsecureAllowAll": @InsecureAllowAll,
+    "TLS": {
+      "EnableTLS": false,
+      "RequireAndVerifyClientCert": false
+    },
+    "APIKey": {
+      "UseHopsworksAPIKeys": @UseHopsworksAPIKeys
+    }
+  },
+  "Log": {
+    "Level": "INFO"
+  },
+  "Testing": {
+    "MySQL": {
+        "Servers": [ { "IP": "@mysqld.1.slave.#host",
+                       "Port": @mysqld.1.slave.port } ],
+      "User": "root",
+      "Password": ""
+    }
+  }
+}

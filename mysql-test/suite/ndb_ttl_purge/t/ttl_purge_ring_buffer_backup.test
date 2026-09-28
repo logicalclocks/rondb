@@ -1,0 +1,211 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_ring_buffer_backup.test
+#
+# Backup and ndb_restore of a ring buffer table with TTL (MAX_ROWS_PER_PK +
+# TTL) whose rings have physical holes (slots the purge reclaimed) and
+# expired rows the purge has not reached yet. ndb_ring_buffer's
+# backup_restore Case 12 only restores logical holes into the same schema.
+#   Part A: data restore into the same schema.
+#   Part B: data restore with --promote-attributes VARCHAR -> TEXT, which
+#           goes through a staging table (rows are restored into rb$ST... and
+#           moved into the ring table), the path of an earlier ring bug.
+# After each restore: the visible set, the ring meta rows and the physical
+# row count equal the backed-up state; the purge then reclaims the restored
+# expired rows and the rings continue from the restored next_pos.
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--source suite/ndb/include/backup_restore_setup.inc
+
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbb;
+
+CREATE TABLE ttl_rbb.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbb.rb (ttl_col);
+
+--let $wait_db = ttl_rbb
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+
+--let $physical = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbb/def/rb' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbb/def/rb'
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rbb_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rbb_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+--echo #
+--echo # Seed: purged holes, then expired rows the purge has not reached
+--echo #
+
+# Prefix 1: 3 expired + 2 live (full, next_pos 1)
+# Prefix 2: 5 expired (full, next_pos 1)
+# Prefix 3: 2 live (next_pos 3)
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_1');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_2');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_3');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_4');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_5');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_1');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_2');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_3');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_4');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_5');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_live_1');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_live_2');
+
+# The purge reclaims the 8 expired rows: holes at 1.1-1.3 and 2.1-2.5
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--let $expected_purge_total = `SELECT $initial_purged + 8`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+--let $rows = `$physical`
+--let $assert_text = 7 physical rows after the purge (3 meta + 4 live)
+--let $assert_cond = $rows = 7
+--source include/assert.inc
+
+# With the purge off: prefix 1 wraps into its hole at slot 1 with an
+# expired row (next_pos 2), prefix 3 gets an expired row in slot 3
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_6');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p3_exp_3');
+
+--echo # State at the backup
+SELECT client_id, ring_idx, data FROM ttl_rbb.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbb.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$physical`
+--let $assert_text = 9 physical rows at the backup (3 meta + 4 live + 2 expired)
+--let $assert_cond = $rows = 9
+--source include/assert.inc
+
+--source include/ndb_backup.inc
+
+--echo #
+--echo # Part A: restore into the same schema
+--echo #
+
+DROP TABLE ttl_rbb.rb;
+CREATE TABLE ttl_rbb.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbb.rb (ttl_col);
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+SELECT client_id, ring_idx, data FROM ttl_rbb.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbb.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$physical`
+--let $assert_text = Part A: 9 physical rows after the restore (holes and expired rows as backed up)
+--let $assert_cond = $rows = 9
+--source include/assert.inc
+
+# The purge reclaims the two restored expired rows
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rbb_a.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rbb_a.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $base_purged = $json_value
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--let $expected_purge_total = `SELECT $base_purged + 2`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$physical`
+--let $assert_text = Part A: 7 physical rows after the purge (3 meta + 4 live)
+--let $assert_cond = $rows = 7
+--source include/assert.inc
+
+# The rings continue from the restored next_pos: prefix 1 slot 2, prefix 3 slot 4
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_after_a');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_after_a');
+SELECT client_id, ring_idx, data FROM ttl_rbb.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbb.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Part B: restore with --promote-attributes VARCHAR -> TEXT (staging table)
+--echo #
+
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+DROP TABLE ttl_rbb.rb;
+CREATE TABLE ttl_rbb.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data TEXT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbb.rb (ttl_col);
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec $NDB_RESTORE -b $the_backup_id -n 1 -r --promote-attributes $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+--exec $NDB_RESTORE -b $the_backup_id -n 2 -r --promote-attributes $NDB_BACKUPS-$the_backup_id >> $NDB_TOOLS_OUTPUT 2>&1
+
+SELECT client_id, ring_idx, data FROM ttl_rbb.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbb.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+--let $rows = `$physical`
+--let $assert_text = Part B: 9 physical rows after the staging restore
+--let $assert_cond = $rows = 9
+--source include/assert.inc
+# No staging table is left behind
+SELECT COUNT(*) AS staging_tables FROM ndbinfo.dict_obj_info WHERE fq_name LIKE 'ttl_rbb/def/rb$ST%';
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/rbb_b.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/rbb_b.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $base_purged = $json_value
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--let $expected_purge_total = `SELECT $base_purged + 2`
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `$physical`
+--let $assert_text = Part B: 7 physical rows after the purge (3 meta + 4 live)
+--let $assert_cond = $rows = 7
+--source include/assert.inc
+
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_after_b');
+INSERT INTO ttl_rbb.rb (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_after_b');
+SELECT client_id, ring_idx, data FROM ttl_rbb.rb ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbb.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE ttl_rbb.rb;
+DROP DATABASE ttl_rbb;
+--source suite/ndb/include/backup_restore_cleanup.inc
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc
