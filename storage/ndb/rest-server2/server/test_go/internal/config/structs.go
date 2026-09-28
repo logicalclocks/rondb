@@ -62,6 +62,10 @@ type REST struct {
 	Enable     bool
 	ServerIP   string
 	ServerPort uint16
+	// Dedicated probe listener (ping/health only, never authenticated);
+	// mirrors REST.ProbeEnable / REST.ProbePort in config_structs_def.hpp.
+	ProbeEnable bool
+	ProbePort   uint16
 }
 
 func (g *REST) Validate() error {
@@ -70,6 +74,9 @@ func (g *REST) Validate() error {
 			return errors.New("the REST server IP cannot be empty")
 		} else if g.ServerPort == 0 {
 			return errors.New("the REST server port cannot be empty")
+		}
+		if g.ProbeEnable && g.ProbePort == 0 {
+			return errors.New("the REST probe port cannot be empty")
 		}
 	}
 	return nil

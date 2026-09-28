@@ -5383,6 +5383,7 @@ sub run_testcase ($) {
     foreach my $rdrs (rdrss()) {
       mtr_print($rdrs->name() .
                "  RDRS port " . $rdrs->value('port') .
+               ", probe port " . ($rdrs->if_exist('probeport') // '-') .
                ", rondis port " . $rdrs->value('rondisport'));
     }
   }
@@ -7097,6 +7098,15 @@ sub rdrs_start ($$) {
     my $rondisport = $rdrs->value('rondisport');
     if (!sleep_until_port_opened($rondisport, $opt_start_timeout, $host)) {
       mtr_error("Failed while waiting for rondis TCP server $host:$rondisport to open.");
+    }
+  }
+  # The dedicated probe listener (REST.ProbePort, resolved from @probeport in
+  # the config template). It starts before the NDB connection, so this wait
+  # is quick; failing it means the listener could not bind.
+  if (($rdrs->if_exist('probeport') // '') ne '') {
+    my $probeport = $rdrs->value('probeport');
+    if (!sleep_until_port_opened($probeport, $opt_start_timeout, $host)) {
+      mtr_error("Failed while waiting for probe TCP server $host:$probeport to open.");
     }
   }
 

@@ -23,7 +23,6 @@
 
 file(GLOB_RECURSE SRC
         api_key.cpp
-        base_ctrl.cpp
         batch_feature_store_ctrl.cpp
         batch_pk_read_ctrl.cpp
         buffer_manager.cpp
@@ -50,6 +49,7 @@ file(GLOB_RECURSE SRC
         pk_data_structs.cpp
         pk_read_ctrl.cpp
         pk_read_ctrl.cpp
+        probe_server.cpp
         prometheus_ctrl.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp

@@ -1,0 +1,103 @@
+# Reproduction/measurement test for REST-server liveness-probe starvation
+# during a data-node restart (customer incident on RonDB 25.10.18 under
+# Kubernetes: every ndbmtd restart in a rolling upgrade made ALL rdrs pods
+# fail their /ping liveness probe simultaneously and get killed).
+#
+# Mechanism under test: rdrs2 executes NDB operations synchronously on the
+# Drogon event-loop threads (pk_read_ctrl.cpp), and DATA_OP_RETRY_HANDLER
+# (retry_handler.hpp) retries transient errors with usleep backoff on those
+# same threads. /ping (ping_ctrl.cpp) does no NDB work but is served by the
+# same loops, so while a data-node restart makes every in-flight operation
+# block/retry under constant load, /ping stops being answered.
+#
+# Production scale (64 threads, 50-60 clients per server, 800GB nodes) cannot
+# be replicated here, so the scale is inverted: rdrs.3.1 runs with a tiny
+# thread pool (see the companion .cnf) and the Go driver applies more
+# concurrent pk-reads than there are threads while restarting one of the two
+# data nodes. A dedicated pinger measures /ping latency continuously; the
+# driver writes a timing report to
+#   $MYSQLTEST_VARDIR/log/ping_starvation_report.txt
+# including a simulated Kubernetes liveness verdict (probe timeout 2s,
+# period 5s, failureThreshold 4 - the shipped rondb-helm settings).
+#
+# This is a measurement harness, not a regression gate: it passes unless the
+# infrastructure itself fails (server unreachable, restart commands fail).
+# Knobs (all via environment):
+#   STARV_WORKERS       concurrent load workers (default 32)
+#   STARV_RESTART_MODE  graceful | abort       (default graceful)
+#   STARV_BATCH         batch size per request, 0 = single pk-read (default 0)
+#   STARV_BASELINE_S / STARV_RECOVERY_S  phase lengths (default 15s each)
+
+--source include/have_ndb.inc
+--source include/not_windows.inc
+
+--echo # Create the table the load workers read
+CREATE DATABASE starv_db;
+CREATE TABLE starv_db.t1 (id INT PRIMARY KEY, val VARCHAR(200) NOT NULL) ENGINE=NDBCLUSTER;
+
+# 2048 rows by doubling; quiet, since the row count is an implementation
+# detail of the load driver (it reads ids 1..COUNT(*)).
+--disable_query_log
+INSERT INTO starv_db.t1 VALUES (1, REPEAT('x', 200));
+let $i = 11;
+while ($i)
+{
+  SET @c = (SELECT COUNT(*) FROM starv_db.t1);
+  INSERT INTO starv_db.t1 SELECT id + @c, val FROM starv_db.t1;
+  dec $i;
+}
+--enable_query_log
+SELECT COUNT(*) FROM starv_db.t1;
+
+--echo # Run the load + pinger + data-node restart driver
+perl END_OF_PERL;
+use strict;
+use warnings;
+use File::Spec;
+
+my $MYSQL_BASEDIR = $ENV{'MYSQL_BASEDIR'};
+my $TEST_GO_DIR = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb',
+                                     'rest-server2', 'server', 'test_go');
+die "Directory $TEST_GO_DIR does not exist\n" unless -d $TEST_GO_DIR;
+chdir $TEST_GO_DIR or die "Cannot change directory to $TEST_GO_DIR: $!";
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $go_log_file = "$log_dir/rdrs2-golang_ping_starvation.output.log";
+if (open(my $trunc, '>', $go_log_file)) { close($trunc); }
+
+# The driver measures; it needs the no-auth plain-HTTP server, the restart
+# tooling and the report destination.
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NOAUTH'};
+$ENV{'RDRS_STARVATION'}  = '1';
+$ENV{'STARV_REPORT'}     = "$log_dir/ping_starvation_report.txt";
+$ENV{'STARV_DB'}         = 'starv_db';
+$ENV{'STARV_TABLE'}      = 't1';
+
+system("go test -v -count 1 -timeout 15m " .
+       "-run '^TestPingDuringNodeRestart\$' " .
+       "hopsworks.ai/rdrs2/internal/integrationtests/starvation " .
+       ">> \"$go_log_file\" 2>&1");
+my $exit_code = $? >> 8;
+if ($exit_code != 0) {
+    print "FAIL: starvation driver exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit 1;
+}
+print "PASS\n";
+print "Report: see ping_starvation_report.txt under MYSQLTEST_VARDIR/log\n";
+exit 0;
+END_OF_PERL
+
+# The driver leaves the restarted node running; make sure both mysqlds have
+# reconnected before cleanup and the post-test checks.
+--source include/ndb_wait_connected.inc
+connect(mysqld2,127.0.0.1,root,,test,$MASTER_MYPORT1);
+connection mysqld2;
+--source include/ndb_wait_connected.inc
+--disconnect mysqld2
+connection default;
+
+--echo # Cleanup
+DROP DATABASE starv_db;
