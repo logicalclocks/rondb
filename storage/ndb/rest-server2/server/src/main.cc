@@ -49,6 +49,7 @@ constexpr const char* const usageHelp =
 #include "rondb.h"
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
+#include "probe_server.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -76,6 +77,7 @@ static ServerThread* g_rondis_thread = nullptr;
 static Uint32 *g_database_index = nullptr;
 static bool g_rondis_running = false;
 static int g_exit_code = 0;
+static ProbeServer* g_probe_server = nullptr;
 TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 
@@ -85,6 +87,15 @@ static void do_exit() {
     printf("Quitting Drogon...\n");
     drogon::app().quit();
     return;
+  }
+  /* First: join the probe listener thread before anything it reads is torn
+   * down (it reaches the connection pool through get_rondb_stats). do_exit
+   * is the single funnel for every startup-failure path too, so this also
+   * covers a probe server left running when a later init step fails. */
+  if (g_probe_server != nullptr) {
+    g_probe_server->Stop();
+    delete g_probe_server;
+    g_probe_server = nullptr;
   }
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
@@ -349,6 +360,24 @@ int main(int argc, char *argv[]) {
   // Initialize Scan Metrics buffer
   initScanMetrics();
 
+  /* Start the probe listener before the RonDB connect below, which can
+   * block for a minute: binding early makes a port conflict fail fast and
+   * keeps "starting" (503) distinguishable from "dead" (connection refused)
+   * for the whole startup window. Both endpoints answer 503 until the
+   * server can actually serve: /ping until Drogon is up (g_drogon_up), so
+   * the startup probe can use this port with main-port semantics; /health
+   * additionally until the pool exists and reports ready data nodes. */
+  if (globalConfigs.rest.probeEnable) {
+    /* Config validation has already rejected ProbeEnable combined with
+     * Ping/HealthRequiresAuth, so the probe port serving without
+     * authentication can never contradict the configured auth policy. */
+    g_probe_server = new ProbeServer();
+    if (!g_probe_server->Start()) {
+      g_exit_code = 1;
+      do_exit();
+    }
+  }
+
   // Initialize JSON parsers
   assert(jsonParsers == nullptr);
   jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
@@ -508,6 +537,11 @@ int main(int argc, char *argv[]) {
     for (auto &address : addresses) {
       printf("RDRS Server running on %s\n", address.toIpPort().c_str());
     }
+    /* Both probe-port endpoints require this for a 200: neither a startup
+     * probe (ping) nor a readiness probe (health) may pass before the main
+     * port accepts connections. This advice runs once the event loops are
+     * up. */
+    g_drogon_up.store(true, std::memory_order_release);
   });
   drogon::app().setIntSignalHandler([]() {
     handle_signal(SIGINT);
@@ -518,5 +552,8 @@ int main(int argc, char *argv[]) {
   g_drogon_running = true;
   drogon::app().run();
   g_drogon_running = false;
+  /* The main port no longer accepts; both probe-port endpoints go back to
+   * 503 for the remainder of the teardown. */
+  g_drogon_up.store(false, std::memory_order_release);
   do_exit();
 }

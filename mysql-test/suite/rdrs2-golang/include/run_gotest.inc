@@ -219,10 +219,15 @@ run_smoke_tests('Go tests (without TLS, one simple test per package)');
 # gtest output is streamed to the log file, and echoed to the MTR console
 # only on failure.
 # ---------------------------------------------------------------------------
-my @cpp_tests = ('error_handling_test',   # pure error-classification tests
-                 'reconnect_test',        # RONDB-1104 reconnection cycle
+my @cpp_tests = ('probe_server_http_test',    # probe-port HTTP conformance
+                                              # (cluster-free, fast)
+                 'error_handling_test',       # pure error-classification tests
+                 'reconnect_test',            # RONDB-1104 reconnection cycle
                  'api_key_test',
-                 'feature_store_test');
+                 'feature_store_test',
+                 'probe_server_cluster_test'  # probe-port startup contract +
+                                              # /health under contention
+                );
 
 # Source builds place binaries in runtime_output_directory, packaged
 # builds in bin; multi-config generators add a configuration subdirectory.

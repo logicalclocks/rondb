@@ -1,0 +1,11 @@
+# Create the table the load workers read
+CREATE DATABASE starv_db;
+CREATE TABLE starv_db.t1 (id INT PRIMARY KEY, val VARCHAR(200) NOT NULL) ENGINE=NDBCLUSTER;
+SELECT COUNT(*) FROM starv_db.t1;
+COUNT(*)
+2048
+# Run the load + pinger + data-node restart driver
+PASS
+Report: see ping_starvation_report.txt under MYSQLTEST_VARDIR/log
+# Cleanup
+DROP DATABASE starv_db;

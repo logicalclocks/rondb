@@ -103,16 +103,45 @@ CLASS
  CM(unsigned, numThreads, NumThreads, 64,
     "Number of threads handling REST requests.")
  CM(bool, healthRequiresAuth, HealthRequiresAuth, false,
-    "Set to true to require authentication for the health endpoint.")
+    "Set to true to require authentication for the health endpoint on the"
+    " main port (ServerPort). The probe port (ProbePort) never"
+    " authenticates, so this setting is rejected at startup unless"
+    " ProbeEnable is false; see ProbeEnable.")
  ALIAS(healthRequiresAuth, HealthRequiresAuth, HealthRequiresAPIKey)
  CM(bool, pingRequiresAuth, PingRequiresAuth, false,
-    "Set to true to require authentication for the ping endpoint.")
+    "Set to true to require authentication for the ping endpoint on the"
+    " main port (ServerPort). The probe port (ProbePort) never"
+    " authenticates, so this setting is rejected at startup unless"
+    " ProbeEnable is false; see ProbeEnable.")
  ALIAS(pingRequiresAuth, PingRequiresAuth, PingRequiresAPIKey)
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
+ CM(bool, probeEnable, ProbeEnable, true,
+    "Whether to serve ping and health on a dedicated probe port. The probe"
+    " port runs on its own thread so it keeps answering while every request"
+    " thread is busy or blocked, which is what Kubernetes probes need. The"
+    " auth contract: the probe port is ALWAYS unauthenticated - API-key"
+    " validation reads RonDB and can stall for tens of seconds - while the"
+    " main port (ServerPort) endpoints honour PingRequiresAuth and"
+    " HealthRequiresAuth. Combining ProbeEnable with either of those flags"
+    " (with UseHopsworksAPIKeys) is therefore rejected at startup: if"
+    " authenticated ping or health is required, set this to false and use"
+    " the main port, accepting that its endpoints share the request"
+    " threads. Ping on the probe port answers 503 until the main port"
+    " accepts connections and 200 forever after, so a Kubernetes startup"
+    " probe can use it with main-port semantics.")
+ CM(Uint16, probePort, ProbePort, 4407,
+    "TCP port of the dedicated probe listener (see ProbeEnable). Serves only"
+    " GET/HEAD of the ping and health endpoints, always without"
+    " authentication. TLS mirrors the main REST listener, except a client"
+    " certificate is never required.")
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
+ PROBLEM(probeEnable && probePort == 0,
+         "REST probe port cannot be zero when ProbeEnable is set")
+ PROBLEM(probeEnable && probePort == serverPort,
+         "REST probe port must differ from the REST server port")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "
          MACRO_TO_STRING_CONSTANT(RDRS_MIN_NUM_THREADS))
@@ -481,6 +510,17 @@ CLASS
  PROBLEM(security.insecureAllowAll && rest.pingRequiresAuth,
          "Combining .Security.InsecureAllowAll and"
          " .REST.PingRequiresAuth is not allowed")
+ PROBLEM(rest.probeEnable && rondis.enable &&
+         rest.probePort == rondis.serverPort,
+         ".REST.ProbePort must differ from .Rondis.ServerPort")
+ PROBLEM(rest.probeEnable && security.apiKey.useHopsworksAPIKeys &&
+         (rest.pingRequiresAuth || rest.healthRequiresAuth),
+         ".REST.ProbeEnable cannot be combined with PingRequiresAuth or"
+         " HealthRequiresAuth: the probe port serves ping and health WITHOUT"
+         " authentication, because API-key validation reads RonDB and can"
+         " stall for tens of seconds - exactly what a probe endpoint must"
+         " never do. Set .REST.ProbeEnable=false to keep authenticated"
+         " ping/health on the main port.")
  CLASSDEFS
  (
   static AllConfigs get_all();

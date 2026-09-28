@@ -46,7 +46,7 @@ perl END_OF_PERL;
 use strict;
 use warnings;
 require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
-poll_health(200, 60, 'initial health');
+poll_health_both(200, 60, 'initial health');
 print "health: up\n";
 poll_data_readable(60, 'initial data read');
 print "data: row served before outage\n";
@@ -62,7 +62,7 @@ use strict;
 use warnings;
 require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
 # Poke pk-read so a request-path failure triggers the reconnection.
-poll_health_with_poke(503, 120, 'health during outage');
+poll_health_both_with_poke(503, 120, 'health during outage');
 print "health: down during outage\n";
 poll_data_unavailable(120, 'data read during outage');
 print "data: outage reported as server error\n";
@@ -77,7 +77,7 @@ perl END_OF_PERL;
 use strict;
 use warnings;
 require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
-poll_health_with_poke(200, 180, 'health after recovery');
+poll_health_both_with_poke(200, 180, 'health after recovery');
 print "health: recovered without restart\n";
 # These reads are also what triggers rdrs.3.1's own reconnection.
 poll_data_readable(180, 'data read after recovery');
