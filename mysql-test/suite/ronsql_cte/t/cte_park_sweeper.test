@@ -79,6 +79,16 @@ call mtr.add_suppression("Participant timeout");
 --remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.out.sorted
 --remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.clean.sorted
 
+# The failed first attempt's scan stays open in DBTC until 5139's delayed
+# SETUP_REFs (sent 200 ms after the intercepted SETUP) complete its SETUP
+# round: DBTC does not tear a scan down with a SETUP reply outstanding.
+# RDRS stays connected, so nothing releases that scan earlier (in cps-1 the
+# ronsql_cli exit does, through API failure handling), and cps-2 plus the
+# first dumps take less than 200 ms: DUMP 2560 used to find the scan still
+# RUNNING with setupOutstanding=2.  Let the REFs arrive before the leak
+# dumps; a scan the round does not release is still caught.
+--sleep 1
+
 --echo
 --echo === cps-3: leak checks (each dump crashes its node on a leak) ===
 --exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
