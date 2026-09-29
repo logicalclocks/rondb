@@ -14,10 +14,13 @@ customer_id	n_rows	n_amount	oldest	newest
 8	40	40	2026-05-30 08:04:00	2026-05-31 23:04:00
 9	1	1	2026-05-31 22:57:00	2026-05-31 22:57:00
 
-=== lastn-P1: the natural statement is served by the J1 rewrite ===
+=== lastn-P1: the natural statement is served by J5 ===
 == Explain Query ==
 
-=== lastn-P2 (rejection): a LIMIT body without the whole primary key ===
+=== lastn-P1b: a main-query GROUP BY keeps the J1 rewrite ===
+== Explain Query ==
+
+=== lastn-P2 (rejection): outside J5, a LIMIT body without the whole primary key ===
 CTE 't' has LIMIT but no aggregate functions or GROUP BY.  Such a body is served as the last N rows when it selects every primary key column of table 'lastn_tx', so that each row is its own group (missing: `event_time`).
 Error handling: RPE
 ronsql_cli caught exception: Non-aggregating LIMIT CTE body does not select the whole primary key.
@@ -51,7 +54,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
            WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10)
@@ -91,7 +94,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE customer_id = 2 ORDER BY event_time DESC LIMIT 10)
@@ -132,7 +135,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE customer_id = 1 ORDER BY event_time DESC LIMIT 10)
@@ -175,7 +178,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE customer_id = 4 ORDER BY event_time DESC LIMIT 10)
@@ -216,7 +219,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
            WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 1)
@@ -254,7 +257,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
            WHERE customer_id = 5 ORDER BY event_time ASC LIMIT 5)
@@ -293,7 +296,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE customer_id = 5 AND event_time >= '2026-05-31 18:00:00'
@@ -334,7 +337,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
            WHERE customer_id = 6 AND fee >= 0
@@ -419,7 +422,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, category FROM lastn_tx
            WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10)
@@ -671,7 +674,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE customer_id = 5 ORDER BY amount DESC LIMIT 5)
@@ -708,7 +711,7 @@ Number of output lines, including header: 2
 
 
 
-== J1: the natural statement on RonSQL ==
+== J5: the natural statement on RonSQL ==
 == Query ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE fee >= 0 ORDER BY event_time DESC LIMIT 10)
@@ -772,6 +775,197 @@ Number of output lines, including header: 2
 
 
 
+
+=== lastn-18: DECIMAL, DOUBLE and FLOAT columns over the last N ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, price, score, ratio FROM lastn_tx
+           WHERE customer_id = 4 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(price) AS n_price, SUM(price) AS s_price, MIN(price) AS mn_price,
+       MAX(price) AS mx_price, AVG(price) AS av_price,
+       SUM(score) AS s_score, MIN(score) AS mn_score, MAX(score) AS mx_score,
+       AVG(score) AS av_score,
+       SUM(ratio) AS s_ratio, MIN(ratio) AS mn_ratio, MAX(ratio) AS mx_ratio,
+       AVG(ratio) AS av_ratio
+FROM t;
+== Natural statement result (MySQL) ==
+n_price	s_price	mn_price	mx_price	av_price	s_score	mn_score	mx_score	av_score	s_ratio	mn_ratio	mx_ratio	av_ratio
+8	2743.25	264.00	417.25	342.906250	81.875	2	14.375	8.1875	34.25	-3.25	11.5	3.425
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, price, score, ratio,
+                  COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 4
+           GROUP BY customer_id, event_time, price, score, ratio
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(price) AS n_price, SUM(price) AS s_price, MIN(price) AS mn_price,
+       MAX(price) AS mx_price, AVG(price) AS av_price,
+       SUM(score) AS s_score, MIN(score) AS mn_score, MAX(score) AS mx_score,
+       AVG(score) AS av_score,
+       SUM(ratio) AS s_ratio, MIN(ratio) AS mn_ratio, MAX(ratio) AS mx_ratio,
+       AVG(ratio) AS av_ratio
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== J5: the natural statement on RonSQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, price, score, ratio FROM lastn_tx
+           WHERE customer_id = 4 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(price) AS n_price, SUM(price) AS s_price, MIN(price) AS mn_price,
+       MAX(price) AS mx_price, AVG(price) AS av_price,
+       SUM(score) AS s_score, MIN(score) AS mn_score, MAX(score) AS mx_score,
+       AVG(score) AS av_score,
+       SUM(ratio) AS s_ratio, MIN(ratio) AS mn_ratio, MAX(ratio) AS mx_ratio,
+       AVG(ratio) AS av_ratio
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-19: string MIN / MAX in the column collation ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, label FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 3)
+SELECT COUNT(label) AS n, MIN(label) AS mn, MAX(label) AS mx FROM t;
+== Natural statement result (MySQL) ==
+n	mn	mx
+3	apple	Zest
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, label, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 3
+           GROUP BY customer_id, event_time, label
+           ORDER BY event_time DESC LIMIT 3)
+SELECT COUNT(label) AS n, MIN(label) AS mn, MAX(label) AS mx FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== J5: the natural statement on RonSQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, label FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 3)
+SELECT COUNT(label) AS n, MIN(label) AS mn, MAX(label) AS mx FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+WITH t AS (SELECT label FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10)
+SELECT MIN(label) AS mn, MAX(label) AS mx FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-20: a body without the primary key in its outputs (J5 only) ===
+== Query ==
+WITH t AS (SELECT amount, fee FROM lastn_tx
+           WHERE customer_id = 6 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(fee) AS fee_min,
+       MAX(t.fee) AS fee_max
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+WITH t AS (SELECT amount AS amt FROM lastn_tx
+           WHERE customer_id = 6 ORDER BY event_time ASC LIMIT 4)
+SELECT SUM(amt) AS s, AVG(amt) AS av FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== COUNT(*) alone: no column is aggregated ==
+== Query ==
+WITH t AS (SELECT amount FROM lastn_tx
+           WHERE customer_id = 2 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== COUNT(*) alone without a body WHERE: the LIMIT, not the table count ==
+== Query ==
+WITH t AS (SELECT amount FROM lastn_tx ORDER BY event_time DESC LIMIT 7)
+SELECT COUNT(*) AS n FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-21: a body whose WHERE binds the whole primary key ===
+== Explain Query ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 3 AND event_time = '2026-05-31 23:39:00'
+           ORDER BY event_time DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MAX(amount) AS mx FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Key miss: COUNT 0, the rest NULL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 3 AND event_time = '2026-05-31 23:40:00'
+           ORDER BY event_time DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MAX(amount) AS mx FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-22: BIGINT SUM overflow over the last N ===
+== Explain Query ==
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_lastn_agg_jit_fallback_delta;
 ronsql_cte_dd_lastn_agg_jit_fallback_delta

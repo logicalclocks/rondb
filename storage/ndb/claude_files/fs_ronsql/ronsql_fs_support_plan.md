@@ -689,6 +689,75 @@ built in memory exactly as `ProcessRes` merges one from the wire.
     merge to prove the copies;
   - one COUNT fix-up case.
 
+*J5 step 2 committed `c851929eff6`.*
+
+*J5 step 3 status (2026-09-30): green. The lastn suites were recorded (JIT fallback delta 0), and the ronsql, ronsql_cte and ronsql_fs regressions pass.*
+- **Route.** `route_lastn_aggregate_to_api()` runs in `parse()` right
+  after `flatten_single_group_cte()`, before the main aggregates are bound.
+  It checks the v1 scope, gives the main outputs a new compiler whose loads
+  name the body columns (COUNT(*) keeps its constant), and moves the body's
+  table, WHERE, ORDER BY and LIMIT to the root. It sets
+  `m_api_side_aggregation`. Bare ORDER BY names that a main output alias
+  could capture are qualified with the body alias, as in the collapse.
+- **Planning.** J5 is treated as a pass-through wherever the scan is
+  chosen:
+  - ORDER BY index candidates (`plan_index_and_filter`);
+  - the single-key primary key lookup (`detect_pk_lookup`);
+  - the EXPLAIN ORDER BY strategy line.
+
+  `is_count_star_only_query()` declines J5, since without a body WHERE it
+  would count the whole table. A program that loads no column (COUNT(*)
+  alone) reads the first ORDER BY column, because the pass-through reads at
+  least one.
+- **Printer.** The aggregate `ResultPrinter` gets a copy of the statement
+  without ORDER BY and LIMIT, which belong to the scan.
+- **Execution.** `execute_api_side_aggregate()` builds the `NdbAggregator`
+  with `programAggregator()` and `Finalize()`. It never sends it.
+  - `execute_single_table_passthrough(api_rows)` reads the columns the
+    program loads. Its three delivery sites hand rows to
+    `ApiRowAggregation::add_row` instead of printing: the PK arm, the
+    streaming arm (LIMIT cutoff kept), and the sorted arm (the first
+    min(LIMIT, n) rows in sort order, via
+    `for_each_sorted_passthrough_row`).
+  - `add_row` runs the program per row: loads go through
+    `aggLoadColumnValue`, `LoadConstantInteger` and `Mov` are handled, and
+    each aggregate builds the kernel's one-row partial. Then it calls
+    `MergeLocalGroup`.
+  - A failed merge is raised with `throw_classified_ndb_error`, so the
+    message is the scan path's "Failed to execute scan aggregation.", with
+    the same class and NDB code (1860 → semantic, HTTP 400).
+  - `PrepareResults()`, then the aggregate printer.
+- **EXPLAIN.** "CTE 't' aggregated in RonSQL over the ORDER BY / LIMIT scan
+  of its body (last N rows): ...".
+- **Fix on the way.** `collapse_collect_cte()` could mark a column it had
+  just qualified past the end of its `live` array, because
+  `qualified_column_name_to_idx` may add a registry entry. Both it and the
+  J5 route now skip such entries.
+- **Tests** (`body_lastn_agg.inc`).
+  - P1 now pins J5: the J5 line, SF_OrderBy | SF_Descending, and neither
+    the J1 line nor CTE definitions.
+  - New P1b pins J1 for a main GROUP BY.
+  - P2 is now a J1-only statement, because the old P2 body is served by
+    J5.
+  - lastn-1..9, 15 and 16 are labelled `== J5 ==`. lastn-15 pins the
+    client-side sort arm.
+  - New cases:
+    - 18: DECIMAL(12,2), DOUBLE and FLOAT columns, which were added to
+      `lastn_tx` with binary-exact values;
+    - 19: string MIN/MAX where the byte order differs from the collation
+      order (column `label`);
+    - 20: bodies without the primary key, including an output alias and
+      ORDER BY on a non-output column, and COUNT(*) alone with and without
+      a body WHERE;
+    - 21: a whole-PK body, served by the PK lookup arm (EXPLAIN pin), with
+      a hit and a miss;
+    - 22: BIGINT SUM over `lastn_big`, with no overflow at LIMIT 2 and
+      1860 at LIMIT 3 (via `ronsql_sum64_check.inc`).
+  - Every result file was recorded again; the JIT mirror's fallback delta
+    stayed 0.
+- **Not done.** The pass-through transaction carries no rate-limit
+  identity (`setUserId`), exactly like the collect form it shares.
+
 Later (J5b and beyond):
 - **Main GROUP BY over the last N.** The group key must be encoded
   exactly as the kernel encodes GB keys, collation included, which is a
