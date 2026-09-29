@@ -664,6 +664,31 @@ maps to its `ZAGG_*` codes.
   (plus the negative-unsigned conversion error), NULL, the string payload
   helper and an unsupported type.
 
+*J5 step 1 committed `b1e38db2150` (aggregate suites unchanged).*
+
+*J5 step 2 status (2026-09-29): written, not built.*
+`NdbAggregator::MergeLocalGroup(gb_key, gb_len, items)` merges one partial
+built in memory exactly as `ProcessRes` merges one from the wire.
+- `ProcessRes`' two per-slot loops became private helpers, each with its
+  existing NULL / UNDEFINED ordering kept:
+  - `mergeGroupSlots` (a partial into an existing group);
+  - `mergeScalarSlots` (into `agg_results_`).
+
+  Around them: `fixupCountSlots` (RONDB-831, a new group's COUNT starts
+  at 0) and `freeUntransferredStrings`. `ProcessRes` calls them.
+- `MergeLocalGroup` first deep-copies the caller's string slots into the
+  `resolveStringSlots` layout (`copyStringSlots`, which also sets NULL
+  string slots to nullptr). A new group is allocated as one key-plus-slots
+  block, like the wire path.
+- The empty scalar result needs nothing special. `Finalize()` starts COUNT
+  slots at 0 and the rest at NULL, so an aggregator that received no row
+  prints COUNT 0 and NULLs (lastn-3 checks it end to end in step 3).
+- `NdbAggregatorMerge-t` gains:
+  - 18 `runLocalCase` cases, the in-memory twins of the wire string /
+    SUM / overflow cases, with the caller's buffers overwritten after the
+    merge to prove the copies;
+  - one COUNT fix-up case.
+
 Later (J5b and beyond):
 - **Main GROUP BY over the last N.** The group key must be encoded
   exactly as the kernel encodes GB keys, collation included, which is a
