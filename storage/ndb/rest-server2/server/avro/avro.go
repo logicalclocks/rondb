@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -44,6 +45,11 @@ type ComplexFeature struct {
 	AvroStruct *reflect.Type
 }
 
+// Schemas are registered and unregistered (feature view load, preload and
+// eviction in the feature store metadata cache) while other threads decode.
+// Concurrent map access is a fatal error in Go, so every access to
+// avroStructs holds avroStructsLock.
+var avroStructsLock sync.RWMutex
 var avroStructs = make(map[int64]*ComplexFeature)
 
 //export register_schema
@@ -60,7 +66,9 @@ func register_schema(schema string, outSchemaID *C.int64_t) C.ErrorCode {
 	}
 
 	id := curSchemaID.Add(1)
+	avroStructsLock.Lock()
 	avroStructs[id] = &ComplexFeature{schemaStr: schema, AvroSchema: &avroSchema, AvroStruct: &avroStruct}
+	avroStructsLock.Unlock()
 	*outSchemaID = C.int64_t(id)
 
 	return C.NO_ERROR
@@ -68,13 +76,17 @@ func register_schema(schema string, outSchemaID *C.int64_t) C.ErrorCode {
 
 //export unregister_schema
 func unregister_schema(schema_id C.int64_t) {
+	avroStructsLock.Lock()
 	delete(avroStructs, int64(schema_id))
+	avroStructsLock.Unlock()
 }
 
 //export unmarshal_avro
 func unmarshal_avro(schema_id C.int64_t, data []byte, outStr **C.char, outLen *C.int32_t) C.ErrorCode {
 
+	avroStructsLock.RLock()
 	cf, ok := avroStructs[int64(schema_id)]
+	avroStructsLock.RUnlock()
 	if !ok {
 		return C.ERROR_AVRO_SCHEMA_STRUCT_NOT_FOUND
 	}
