@@ -14493,8 +14493,26 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                    " literals and calls to DATE_ADD and"
                                    " DATE_SUB are supported.");
     }
+    // The buffer has the widest size (DATETIME(6) / TIMESTAMP(6)) and is
+    // zeroed: NdbInterpretedCode::branch_col reads the column's own size
+    // from it, whatever rv.len says.
     uchar* bindate = m_amalloc->alloc_exc<uchar>(binlen);
+    memset(bindate, 0, binlen);
     int precision = col->getPrecision();
+    // rv.len must be the column's width: the integer part (DATETIME2 5
+    // bytes, TIMESTAMP2 4) plus (precision + 1) / 2 fraction bytes, as
+    // my_datetime_packed_to_binary / my_timestamp_to_binary write it.
+    // The key-row paths memcpy rv.len bytes into the column's NdbRecord
+    // slot, and NdbQueryBuilder::constValue(ptr, len) requires exactly
+    // getSizeInBytes() for a fixed-size column.  Returning the widest size
+    // overran a TIMESTAMP(0) key slot by 3 bytes and failed CTE-body bounds
+    // on it with 4803 (WP-J lastn-7).  Same fix as DATE's binlen = 3.
+    Uint32 retlen = binlen;
+    if (type == NdbDictionary::Column::Type::Datetime2)
+      retlen = 5 + static_cast<Uint32>(precision + 1) / 2;
+    else if (type == NdbDictionary::Column::Type::Timestamp2)
+      retlen = 4 + static_cast<Uint32>(precision + 1) / 2;
+    require_run(retlen <= binlen, "Temporal precision out of range.");
     int warnings = 0;
     if (unlikely(mt.time_type != timetype)) {
       throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
@@ -14556,7 +14574,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     default:
       abort();
     }
-    return raw_value{bindate, binlen};
+    return raw_value{bindate, retlen};
   }
   throw RonSQLPermanentError("Bug in RonSQLPreparer::encode_constant");
 }

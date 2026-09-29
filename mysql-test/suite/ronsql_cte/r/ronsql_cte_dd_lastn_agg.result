@@ -1,0 +1,412 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+SELECT customer_id, COUNT(*) AS n_rows, COUNT(amount) AS n_amount,
+MIN(event_time) AS oldest, MAX(event_time) AS newest
+FROM lastn_tx GROUP BY customer_id ORDER BY customer_id|
+customer_id	n_rows	n_amount	oldest	newest
+2	3	3	2026-05-31 21:46:00	2026-05-31 23:46:00
+3	25	25	2026-05-30 23:39:00	2026-05-31 23:39:00
+4	25	19	2026-05-30 23:32:00	2026-05-31 23:32:00
+5	40	40	2026-05-30 08:25:00	2026-05-31 23:25:00
+6	40	40	2026-05-30 08:18:00	2026-05-31 23:18:00
+7	40	40	2026-05-30 08:11:00	2026-05-31 23:11:00
+8	40	40	2026-05-30 08:04:00	2026-05-31 23:04:00
+9	1	1	2026-05-31 22:57:00	2026-05-31 22:57:00
+
+=== lastn-P1 (rejection today): the natural statement ===
+CTE 't' has no aggregate functions and no GROUP BY, so it is only supported as a single-row key lookup: its WHERE clause must bind every primary key column of table 'lastn_tx' by equality with a constant.  Otherwise add GROUP BY and aggregate functions to the CTE body.
+Error handling: RPE
+ronsql_cli caught exception: Non-aggregating CTE body is not a single-row key lookup.
+
+=== lastn-1: COUNT(*), COUNT, SUM, MIN, MAX, AVG over the newest 10 of 25 rows ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(amount) AS n_amount, SUM(amount) AS s,
+       MIN(amount) AS mn, MAX(amount) AS mx, AVG(amount) AS av,
+       MIN(fee) AS fee_min, MAX(fee) AS fee_max
+FROM t;
+== Natural statement result (MySQL) ==
+n	n_amount	s	mn	mx	av	fee_min	fee_max
+10	10	2695	211	328	269.5000	-6	37
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, fee, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 3
+           GROUP BY customer_id, event_time, amount, fee
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(amount) AS n_amount, SUM(amount) AS s,
+       MIN(amount) AS mn, MAX(amount) AS mx, AVG(amount) AS av,
+       MIN(fee) AS fee_min, MAX(fee) AS fee_max
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-2: N above the row count (3 rows, LIMIT 10) ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 2 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, AVG(amount) AS av FROM t;
+== Natural statement result (MySQL) ==
+n	s	av
+3	561	187.0000
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 2
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, AVG(amount) AS av FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-3: entity with no rows (COUNT 0, the rest NULL) ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 1 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(amount) AS n_amount, SUM(amount) AS s,
+       MIN(amount) AS mn, MAX(amount) AS mx, AVG(amount) AS av
+FROM t;
+== Natural statement result (MySQL) ==
+n	n_amount	s	mn	mx	av
+0	0	NULL	NULL	NULL	NULL
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 1
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(amount) AS n_amount, SUM(amount) AS s,
+       MIN(amount) AS mn, MAX(amount) AS mx, AVG(amount) AS av
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-4: NULLs in the aggregated column ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 4 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(amount) AS n_amount, SUM(amount) AS s,
+       MIN(amount) AS mn, MAX(amount) AS mx, AVG(amount) AS av
+FROM t;
+== Natural statement result (MySQL) ==
+n	n_amount	s	mn	mx	av
+10	7	2126	248	352	303.7143
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 4
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(amount) AS n_amount, SUM(amount) AS s,
+       MIN(amount) AS mn, MAX(amount) AS mx, AVG(amount) AS av
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-5: LIMIT 1, the latest values ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 1)
+SELECT COUNT(*) AS n, MAX(amount) AS latest_amount, MAX(fee) AS latest_fee
+FROM t;
+== Natural statement result (MySQL) ==
+n	latest_amount	latest_fee
+1	211	23
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, fee, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 3
+           GROUP BY customer_id, event_time, amount, fee
+           ORDER BY event_time DESC LIMIT 1)
+SELECT COUNT(*) AS n, MAX(amount) AS latest_amount, MAX(fee) AS latest_fee
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-6: oldest N, ORDER BY event_time ASC LIMIT 5 ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY event_time ASC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(fee) AS fee_min FROM t;
+== Natural statement result (MySQL) ==
+n	s	fee_min
+5	3830	-10
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, fee, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 5
+           GROUP BY customer_id, event_time, amount, fee
+           ORDER BY event_time ASC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(fee) AS fee_min FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-7: time window tighter than N (6 rows in the window, LIMIT 10) ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 5 AND event_time >= '2026-05-31 18:00:00'
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, AVG(amount) AS av FROM t;
+== Natural statement result (MySQL) ==
+n	s	av
+6	1905	317.5000
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx
+           WHERE customer_id = 5 AND event_time >= '2026-05-31 18:00:00'
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, AVG(amount) AS av FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-8: residual filter on a non-key column + LIMIT ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, fee FROM lastn_tx
+           WHERE customer_id = 6 AND fee >= 0
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(fee) AS fee_min, MAX(fee) AS fee_max
+FROM t;
+== Natural statement result (MySQL) ==
+n	s	fee_min	fee_max
+10	3935	5	34
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, fee, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 6 AND fee >= 0
+           GROUP BY customer_id, event_time, amount, fee
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(fee) AS fee_min, MAX(fee) AS fee_max
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-W1: full primary-key lookup on the TIMESTAMP(0) key (key-row width) ===
+== Query ==
+SELECT customer_id, event_time, amount, fee FROM lastn_tx
+WHERE customer_id = 3 AND event_time = '2026-05-31 23:39:00';
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-W2: IN list on the TIMESTAMP(0) key (N primary-key lookups) ===
+== Query ==
+SELECT customer_id, event_time, amount FROM lastn_tx
+WHERE customer_id = 3
+  AND event_time IN ('2026-05-31 23:39:00', '2026-05-31 21:39:00',
+                     '2026-05-31 20:00:00');
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-W3: single-row CTE keyed on the TIMESTAMP(0) key (pushed-query constant) ===
+== Query ==
+WITH r AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 3 AND event_time = '2026-05-31 23:39:00')
+SELECT r.amount AS amount FROM r;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-9: string and temporal MIN / MAX over the last N ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, category FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(category) AS n, MIN(category) AS cat_min, MAX(category) AS cat_max,
+       MIN(event_time) AS oldest_kept, MAX(event_time) AS newest_kept
+FROM t;
+== Natural statement result (MySQL) ==
+n	cat_min	cat_max	oldest_kept	newest_kept
+10	dining	travel	2026-05-31 14:39:00	2026-05-31 23:39:00
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, category, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 3
+           GROUP BY customer_id, event_time, category
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(category) AS n, MIN(category) AS cat_min, MAX(category) AS cat_max,
+       MIN(event_time) AS oldest_kept, MAX(event_time) AS newest_kept
+FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-10: main-query GROUP BY a non-key column of the last-N CTE ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, category FROM lastn_tx
+           WHERE customer_id = 7 ORDER BY event_time DESC LIMIT 20)
+SELECT category, COUNT(*) AS n, SUM(amount) AS s FROM t GROUP BY category;
+== Natural statement result (MySQL) ==
+category	n	s
+dining	5	2315
+fuel	5	2510
+grocery	5	2380
+travel	5	2445
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount,
+                  category, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 7
+           GROUP BY customer_id, event_time, amount, category
+           ORDER BY event_time DESC LIMIT 20)
+SELECT category, COUNT(*) AS n, SUM(amount) AS s FROM t GROUP BY category;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-11: distinct categories among the last 20 (chained CTE) ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, category FROM lastn_tx
+           WHERE customer_id = 7 ORDER BY event_time DESC LIMIT 20),
+     g AS (SELECT category, COUNT(*) AS n FROM t GROUP BY category)
+SELECT COUNT(*) AS n_categories, MAX(n) AS top_category_count FROM g;
+== Natural statement result (MySQL) ==
+n_categories	top_category_count
+4	5
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, category, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 7
+           GROUP BY customer_id, event_time, category
+           ORDER BY event_time DESC LIMIT 20),
+     g AS (SELECT category, COUNT(*) AS n FROM t GROUP BY category)
+SELECT COUNT(*) AS n_categories, MAX(n) AS top_category_count FROM g;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-12: INNER JOIN onto a dimension, GROUP BY a dimension column ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, merchant_id FROM lastn_tx
+           WHERE customer_id = 8 ORDER BY event_time DESC LIMIT 10)
+SELECT m.mcc, COUNT(*) AS n, SUM(t.amount) AS s
+FROM t JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc;
+== Natural statement result (MySQL) ==
+mcc	n	s
+5002	8	3649
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount,
+                  merchant_id, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 8
+           GROUP BY customer_id, event_time, amount, merchant_id
+           ORDER BY event_time DESC LIMIT 10)
+SELECT m.mcc, COUNT(*) AS n, SUM(t.amount) AS s
+FROM t JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-13: LEFT JOIN onto a dimension (dangling merchant ids) ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount, merchant_id FROM lastn_tx
+           WHERE customer_id = 8 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(m.mcc) AS n_known_merchant, SUM(t.amount) AS s
+FROM t LEFT JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id;
+== Natural statement result (MySQL) ==
+n	n_known_merchant	s
+10	8	4545
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount,
+                  merchant_id, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 8
+           GROUP BY customer_id, event_time, amount, merchant_id
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, COUNT(m.mcc) AS n_known_merchant, SUM(t.amount) AS s
+FROM t LEFT JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+

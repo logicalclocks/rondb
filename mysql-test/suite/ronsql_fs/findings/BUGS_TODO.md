@@ -104,6 +104,34 @@ F8 was a framework fixture issue and is already fixed.
   `Failed writing aggregation program. Please report a bug.` instead of the
   specific `AVG over string columns is not supported.` guard (which fires for
   temporal AVG). Found by the E7 envelope fuzzer. Functionally a clean reject.
+- [ ] F28 (2026-09-29, WP-J J0 test `ronsql_cte.ronsql_cte_dd_lastn_agg` lastn-7):
+  `RonSQLPreparer::encode_constant` returned the widest length for every
+  DATETIME / TIMESTAMP constant (8 / 7 bytes) instead of the column's width
+  (5 / 4 + (precision + 1) / 2). A CTE body range on a TIMESTAMP(0) key
+  failed with `Failed to create index-scan root: Incompatible datatype
+  specified in operand argument (4803)`, because `NdbQueryBuilder::constValue`
+  requires exactly `getSizeInBytes()` for fixed-size columns. The key-row
+  paths (`memcpy(dst, rv.val, rv.len)` for PK lookups and IN-list lookups)
+  overran the 4-byte slot by 3 bytes. Single-table windowed aggregates were
+  unaffected (`setBound` takes the column's length). Fix written, not yet
+  built: the exact width is returned from a zeroed widest-size buffer.
+  Regression cases lastn-W1 (PK lookup), W2 (IN on the TIMESTAMP key) and
+  W3 (single-row CTE keyed on it).
+- [ ] F29 (2026-09-29, WP-J J0 first form, lastn-12): a join whose key is a
+  CTE MIN/MAX output over a narrower integer column fails with an internal
+  error. Repro: `WITH t AS (SELECT customer_id, event_time,
+  MAX(merchant_id) AS merchant_id FROM lastn_tx WHERE customer_id = 8
+  GROUP BY customer_id, event_time ORDER BY event_time DESC LIMIT 10)
+  SELECT m.mcc, COUNT(*) FROM t JOIN lastn_merchants AS m ON m.merchant_id
+  = t.merchant_id GROUP BY m.mcc` gives `[internal] Caught exception:
+  Failed to create child operation.` Cause: `build_cte_virtual_tables`
+  widens a MIN/MAX output to the wire type (INT → BIGINT), and
+  `NdbLinkedOperandImpl::bindOperand` requires identical parent and child
+  types (QRY_OPERAND_HAS_WRONG_TYPE). The same applies to FLOAT → DOUBLE,
+  DECIMAL → BIGINT / DOUBLE and temporal → Bigunsigned outputs. Either
+  link through a converted value or reject cleanly at plan time with a
+  permanent error naming the type mismatch. Not needed by WP-J (J0 / J1
+  carry non-key columns as GROUP BY keys, which keep their types).
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
   error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
   X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,

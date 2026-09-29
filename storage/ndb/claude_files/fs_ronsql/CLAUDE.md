@@ -44,7 +44,7 @@ Hopsworks Feature Store online-serving builder generates.
   `ronsql_fs_ng2r2` / `ronsql_fs_ng4r2` / `ronsql_fs_jit`, `scripts/refresh_golden_fixtures.sh`
 - `adding_a_shape.md` — the one-page guide for adding a statement shape end to end
 - `requirements_reports/<date>/<arm>.json` — `.fs_verify --requirements` reports per arm (base, jit, ng2r2)
-- `ronsql_fs_support_plan.md` — the engine work plan derived from the findings: work packages A–I, milestones M1–M4, acceptance evidence per package
+- `ronsql_fs_support_plan.md` — the engine work plan derived from the findings: work packages A–J (J = aggregates over the last N rows, a new shape), milestones M1–M5, acceptance evidence per package
 - `m1_plan.md` — M1 in implementation detail: proper HTTP error codes (M1.0), F9, F1 (verify-first), F0 collect CTE collapse, F7 binary projections
 - `m2_plan.md` — M2 in implementation detail: exact DECIMAL / wide SUM (wire + kernel + API + printer), one overflow semantics, AVG / FLOAT display rules, JIT lowering, acceptance PASS
 - `m3_plan.md` — M3 serving performance, starting with the M3.0 performance census: the whole registry (new `core` engine-primitive category + fs / offline_fs / tpch_cte / fs_hw) on the current engine, one matrix run, `ronsql_bench_triage.py` ranks what needs work; §6 = run 4 (2026-09-22, benchmark computer): findings F23–F25, F27, F13 closed

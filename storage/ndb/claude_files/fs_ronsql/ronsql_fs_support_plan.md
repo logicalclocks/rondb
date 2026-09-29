@@ -7,8 +7,9 @@ the requirements report (`phase_e8.md` §4: 12 supported, 4 Hopsworks-gated,
 **Output:** the engine work that makes RonSQL serve every statement the
 Hopsworks `PreparedStatementBuilder` emits, correctly and fast enough, with
 the RONDB-1121 framework as the acceptance gate for each step.
-**Date:** 2026-09-14. Engine fixes live in the engine tree; each work package
-names the framework evidence that flips when it lands.
+**Date:** 2026-09-14; WP-J (count-based windows) added 2026-09-28. Engine
+fixes live in the engine tree; each work package names the framework
+evidence that flips when it lands.
 
 ## 0. Acceptance definition
 
@@ -62,6 +63,7 @@ does not.
 | F10, F11 | mysqld pushdown aggregation (ndbcluster) | mysqld CRASH / error 4120 | MySQL path of `queryOnline` | WP-I (separate track) |
 | F20 | NDB API dictionary cache (RONDB-1092 follow-up) | RDRS CRASH | — | FIXED (`76cc05701c6`), backport recommended |
 | F8 | framework rule (collation-equal MIN/MAX) | — | — | done |
+| — | RonSQL planner: aggregate or join over a non-aggregating LIMIT CTE (count-based window, e.g. AVG of the last 10 rows) | UNSUPPORTED, clean reject | no (new shape; Hopsworks rejects collect + aggregate: `AGGREGATE_WITH_COLLECT`) | WP-J |
 
 ## 2. Work packages
 
@@ -286,6 +288,189 @@ on; the F10 comparator failure is the same `require` as F1's, so WP-B's
 string-buffer fix may share a root. Track in the pushdown-aggregation
 plan; the fs framework's `.bench_sql` runs are the acceptance check.
 
+### WP-J — Aggregates over the last N rows (count-based windows) — new shape
+
+Added 2026-09-28. Not emitted by Hopsworks today: this is a new feature
+type, so it needs a Hopsworks-side definition and emitter as well as the
+engine work below.
+
+**Need.** Features such as "average amount of the last 10 transactions" or
+"max fee over the last 20 events": a window defined by a row count instead
+of a time span. The natural statement is an aggregate over a last-N CTE:
+
+```
+WITH t AS (SELECT `amount`, `fee` FROM `transactions_1`
+           WHERE `customer_id` = ? [AND filters]
+           ORDER BY `event_time` DESC LIMIT 10)
+SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`,
+       MAX(`fee`) AS `fee_max`
+FROM t;
+```
+
+MySQL runs it as written (CTE bodies may carry ORDER BY / LIMIT), so it
+has a MySQL twin with the same text.
+
+**Mechanism as found.**
+- RonSQL rejects the statement: the main query aggregates, so
+  `collapse_collect_cte` (`RonSQLPreparer.cpp` ~2069, WP-A) does not
+  apply, and the body then fails the non-aggregating CTE gate (~6296:
+  `Non-aggregating CTE body is not a single-row key lookup.`).
+  Joining the last-N CTE to another table is rejected for the same
+  reason.
+- A grouped CTE body with ORDER BY / LIMIT is supported: the kernel
+  keeps the top N groups at the CTE finalize barrier
+  (`analyze_cte_body_orderby_limit` ~6082, `emit_cte_orderby_limit`;
+  tests `ronsql_cte_dd_orderby_limit_cte` obc-1..21 on every topology
+  and the JIT). Restrictions: ORDER BY names CTE outputs only (not
+  string MIN/MAX outputs), at most 8 ORDER BY columns, LIMIT at most
+  67 108 863, no OFFSET.
+- The collect path (single-table ORDER BY + LIMIT) streams: ordered
+  index scan with `SF_OrderBy`, batch = LIMIT per fragment (C3), ordered
+  merge in the API, stop after N rows. It reads at most N × fragments
+  rows (`fetched=` in `x-ronsql-phases`). fs_hw_collect5 / collect50:
+  77 / 78 µs at T=1 on the benchmark box (run 4).
+- Hopsworks online tables have no `PARTITION BY`, so they are
+  partitioned on the full primary key `(entity…, event_time)`: one
+  entity's rows are spread over all fragments. The last N rows exist
+  only after the API's ordered merge, so per-fragment partial
+  aggregates cannot be combined into the last-N aggregate. The
+  aggregation must happen after the merge, in the RonSQL layer. The
+  data nodes' aggregation interpreter (`dbtup/AggInterpreter*.cpp`) is
+  kernel-only; `NdbAggregator` decodes and merges data-node results and
+  has no path that aggregates raw rows.
+- Hopsworks rejects collect + aggregate on the same feature group at
+  definition time (`AGGREGATE_WITH_COLLECT`, golden fixture
+  `definition_collect_and_aggregate.json`).
+
+**Design, in phases.**
+
+*J0 — stop-gap form, no engine change (verify first).* Express the
+body as a grouped CTE with one group per row: every output column is a
+GROUP BY key, the full primary key first, plus a dummy COUNT(*) as in the
+Hopsworks snowflake CTE. The existing kernel top-N then keeps the last N
+rows:
+
+```
+WITH t AS (SELECT `customer_id`, `event_time`, `amount`, COUNT(*) AS `grp_rows`
+           FROM `transactions_1` WHERE `customer_id` = 42
+           GROUP BY `customer_id`, `event_time`, `amount`
+           ORDER BY `event_time` DESC LIMIT 10)
+SELECT COUNT(`amount`), AVG(`amount`) FROM t;
+```
+
+The primary key is unique, so each group is one row, the extra keys
+change nothing (NULLs included), and the result equals the natural
+statement. GROUP BY keys keep their source types. MAX(col) as the carrier
+of a non-key column was the first choice and fails as a general form:
+a CTE MIN/MAX output is widened to its wire type (INT → BIGINT,
+FLOAT → DOUBLE, DECIMAL → BIGINT / DOUBLE with DECIMAL's precision loss,
+temporal → 8-byte unsigned), and a widened INT join key fails the pushed
+join's operand type check (`Failed to create child operation`, lastn-12
+on 2026-09-29). Joins and GROUP BY in the main
+query over the CTE work through the existing grouped-CTE machinery
+(obc-8, obc-10, obc-11). To verify: GROUP BY on the TIMESTAMP key, AVG
+in a main query rooted on the CTE (the main scope decomposes AVG into
+SUM + COUNT). Cost: the body reads the entity's whole history and
+materializes one group per row, so it grows with the history length, not
+with N (F24 measured ~6 µs per group at 150k groups; the small-group cost
+is not measured). J0 is also the correctness oracle for J2.
+
+*J0 status (2026-09-29).* First run: lastn-P1 and lastn-1..6 pass, so
+the stop-gap form works, including main-query AVG over the CTE and GROUP
+BY on the TIMESTAMP key. lastn-7 (time window in the CTE body) found F28:
+TIMESTAMP / DATETIME constants had the widest width instead of the
+column's, which fails CTE-body bounds with 4803 and overran TIMESTAMP(0)
+key slots (`ronsql_fs/findings/BUGS_TODO.md`). Fix in `encode_constant`;
+regression cases lastn-W1..W3 added. Second run, with the fix: lastn-7..11
+and W1..W3 pass, including string and temporal MIN/MAX in the main query,
+main GROUP BY on a CTE output and a chained CTE. lastn-12 (INNER JOIN
+onto `lastn_merchants`) failed on the MAX() widening described above, so
+every J0 body now uses the GROUP-BY-every-column form. Third run pending:
+all cases, since the J0 text changed.
+
+The test: `mysql-test/suite/ronsql_cte/include/body_lastn_agg.inc`, run by
+`ronsql_cte_dd_lastn_agg` in `ronsql_cte`, the four `_ng*` layouts and
+`ronsql_cte_jit`. Table `lastn_tx` has the Hopsworks layout (PRIMARY KEY
+(customer_id, event_time), no PARTITION BY) plus a `lastn_merchants`
+dimension. `lastn_twin_check.inc` diffs MySQL's natural statement against
+MySQL's J0 form; `ronsql_compare.inc` then strict-diffs RonSQL against
+MySQL on the J0 form. Cases:
+- lastn-P1 pins today's rejection of the natural statement.
+- lastn-1..8 are the core: the aggregate set, N above the row count, no
+  rows, NULLs, LIMIT 1, oldest N, a time window tighter than N, and a
+  residual filter.
+- lastn-W1..W3 are F28's regressions on the TIMESTAMP(0) key: a
+  primary-key lookup, an IN list, and a single-row CTE.
+- lastn-9..13 are the uncertain features, ordered last so the core is
+  recorded first: string and temporal MIN/MAX in the main query, main
+  GROUP BY on a CTE output, a chained CTE, and INNER / LEFT joins onto
+  the dimension.
+
+*J1 — parse-time rewrite of the natural statement into J0.* Recognize
+exactly one CTE whose body reads one real table, has plain-column outputs,
+ORDER BY on primary-key columns only, LIMIT >= 1, and no GROUP BY,
+HAVING, aggregate or subquery. The main query must aggregate or join over
+that CTE (the pure projection stays WP-A's collapse). Rewrite the body
+into the J0 form: GROUP BY every output column plus any primary-key
+column the outputs lack (added as a hidden output), with a hidden
+COUNT(*). Output names and types stay as written. The 128-column GROUP BY
+limit is far above any feature group's width, and BLOB / TEXT columns are
+rejected as they are today. Restricting ORDER BY to primary-key
+columns keeps the kept set unique, which guarantees the same answer as
+MySQL (ties on a non-unique ORDER BY column are ambiguous on both
+engines). EXPLAIN reports the rewrite. Planner-only, like WP-A.
+
+*J2 — streaming fast path: collect scan + aggregation in the RonSQL
+layer.* For a main query that only aggregates the CTE (scalar, optionally
+GROUP BY on CTE columns, no joins), run the body as the collect scan
+(ordered index scan, batch = LIMIT, ordered merge, stop at N) and
+evaluate the main aggregates in the RonSQL layer over the ≤ N merged
+rows. Reads at most N × fragments rows, so cost is expected near collect
+(~80 µs) rather than growing with the history. The evaluator is new code
+and must reproduce the pushdown semantics exactly: COUNT(*) /
+COUNT(col) NULL rules, checked 64-bit integer SUM (error 1860, M2),
+DOUBLE SUM, AVG as SUM / COUNT with the M2 display scale, MIN / MAX with
+column collation for strings and temporal types, the DECIMAL
+conversion rules (WP-D2), and GREATEST / LEAST folds if the emitter uses
+them. J1 stays the path for everything J2 does not cover (joins).
+
+*J3 — last N enriched with a dimension, then aggregated* (e.g. distinct
+merchant categories among the last 20 transactions). J1 serves it
+functionally. A fast path would add batched primary-key lookups for the
+≤ N merged rows before the J2 evaluation. Only after J2 has numbers.
+
+*J4 — batch (last N per entity for an IN list).* Needs a per-key
+ordered range with a per-key limit, which the multi-range scan (WP-F F2)
+does not provide; alternatively one ordered scan per key in one
+transaction. Hopsworks gates collect batch today
+(`collect_batch_gated.json`), so this waits for a Hopsworks decision.
+
+*Hopsworks side.* A count-based window on aggregate features (e.g.
+`lastN` beside `aggregateWindow`), lifting `AGGREGATE_WITH_COLLECT` for
+that combination or adding a separate definition, and an emitter for
+the shape above (new catalog shape S11, both engines' text). The
+framework follows `adding_a_shape.md`: emitter port, golden fixture,
+requirements row, vector oracle fold, fuzzer production, fs_hw entry.
+
+**Evidence.**
+- J0: a new MTR test (`ronsql_cte_dd_lastn_agg`, JIT and topology mirrors)
+  comparing the J0 form with MySQL's natural statement. Cases: N below
+  the entity's row count, N above it, an entity with no rows (COUNT 0,
+  AVG / SUM / MIN / MAX NULL), NULLs in the aggregated column, a time
+  window combined with LIMIT, a main-query GROUP BY, a LEFT JOIN
+  onto a dimension.
+- J1: the same cases written naturally, strict-diffed against MySQL;
+  EXPLAIN pins the rewrite; clean rejects for ORDER BY on a non-key
+  column, string MIN/MAX as the ORDER BY key and OFFSET.
+- J2: the J1 cases on the fast path; `fetched=` ≤ N × fragments
+  (`$EXPECT_FETCHED_MAX`); a checked-SUM overflow case (1860) and a
+  string MIN/MAX collation case; J0 vs J2 differential over the spec
+  fuzzer's last-N productions; bench entries `fs_hw_agg_last10` /
+  `fs_hw_agg_last100` against the MySQL twin, recorded in
+  `benchmarks.md` §8.
+- Hopsworks: golden fixture for the new definition, requirement row
+  SUPPORTED on base / jit / ng2r2.
+
 ## 3. Sequencing
 
 | milestone | packages | acceptance evidence |
@@ -295,6 +480,7 @@ plan; the fs framework's `.bench_sql` runs are the acceptance check.
 | **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
+| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 streaming fast path; J3 / J4 after J2's numbers | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
 
 M1 is small and high-value: D1 is a one-line fix, B and C are contained,
 and A maps onto an execution path that already exists. M2 now focuses on
@@ -344,3 +530,7 @@ snowflake and batch are faster through MySQL).
 | H F18/F19 | days (restore guards) / weeks (implement) | choose per shape |
 | H F17/F16 | hours | messages / guards |
 | I F10/F11 | separate track | ndbcluster pushdown |
+| J0 last-N stop-gap | days (tests only) | TIMESTAMP GROUP BY key, main-scope AVG over a CTE |
+| J1 last-N rewrite | ~1 week | planner only, like WP-A; cost grows with the entity's history |
+| J2 last-N fast path | 2–3 weeks | new API-side aggregate evaluator must match pushdown semantics exactly |
+| J3 / J4 | after J2 | batched lookups; per-key limited ranges; Hopsworks decisions |
