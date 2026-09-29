@@ -84,6 +84,11 @@ class FSCacheEntry {
 
 metadata::FeatureViewMetadata*
   fs_metadata_cache_get(const std::string&, FSCacheEntry**);
+const metadata::AvroDecoder*
+  fs_cache_get_complex_feature_decoder(const std::string&,
+                                       const std::string&,
+                                       const std::string&,
+                                       FSCacheEntry**);
 void fs_metadata_update_cache(metadata::FeatureViewMetadata*,
                               FSCacheEntry*,
                               std::shared_ptr<RestErrorCode>);
@@ -106,6 +111,20 @@ class FSMetadataCache {
   void update_cache(metadata::FeatureViewMetadata*,
                     FSCacheEntry*,
                     std::shared_ptr<RestErrorCode>);
+  /*
+   * RONDB-1135: the Avro decoder of complex feature featureName of the
+   * feature group whose online table is fgTable ("<name>_<version>") in
+   * feature store fsName, taken from any valid cached feature view that
+   * serves the feature.  On success *entry is that cache entry with a
+   * reference taken, which keeps the decoder registered until released
+   * with fs_cache_dec_ref_count.  Returns nullptr (and *entry nullptr)
+   * when no cached feature view serves the feature.
+   */
+  const metadata::AvroDecoder*
+    get_complex_feature_decoder(const std::string &fsName,
+                                const std::string &fgTable,
+                                const std::string &featureName,
+                                FSCacheEntry **entry);
   void cache_entry_updater(Uint32);
   void start_fs_cache_thread();
 
@@ -117,6 +136,19 @@ class FSMetadataCache {
 
  private:
   std::unordered_map<std::string, FSCacheEntry*> m_fs_cache[NUM_FS_CACHES];
+  /*
+   * RONDB-1135: index of the complex features of the entries in
+   * m_fs_cache[i] that have metadata, by complex_feature_key(): the entry
+   * and its registered decoder for the feature.  An entry is indexed from
+   * when its metadata is set until it leaves m_fs_cache.  Guarded by
+   * m_rwLock[i].
+   */
+  struct ComplexFeatureRef {
+    FSCacheEntry *entry;
+    const metadata::AvroDecoder *decoder;
+  };
+  std::unordered_multimap<std::string, ComplexFeatureRef>
+    m_complex_features[NUM_FS_CACHES];
   std::atomic<bool> m_stopped{false};
   std::atomic<bool> m_force_reconnect{false};
   NdbMutex *m_rwLock[NUM_FS_CACHES];
@@ -135,6 +167,10 @@ class FSMetadataCache {
                                            const Uint32 key_cache_id);
   void insert_last(FSCacheEntry*, Uint32);
   void remove_entry(FSCacheEntry*, Uint32);
+  // Add / remove the complex features of an entry with metadata to / from
+  // m_complex_features.  Called with m_rwLock[key_cache_id] held.
+  void index_complex_features(FSCacheEntry*, Uint32);
+  void unindex_complex_features(FSCacheEntry*, Uint32);
 
   void load_single_feature_view(const std::string &fsName,
                                 const std::string &fvName,

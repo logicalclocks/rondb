@@ -137,6 +137,10 @@ class AvroDecoder {
   std::pair<RS_Status, std::optional<std::vector<char>>> 
     decode(std::vector<Uint8> &inData) const;
 
+  // Decode len bytes at data, replacing json with the JSON text of the
+  // value (RonSQL AVRO(), RONDB-1135).
+  RS_Status decode(const Uint8 *data, size_t len, std::string &json) const;
+
   std::string to_string() const {
     std::ostringstream oss;
     oss << "AvroDecoder {"

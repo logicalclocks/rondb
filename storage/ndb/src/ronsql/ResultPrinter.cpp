@@ -136,6 +136,7 @@ static void print_base64(std::ostream& out, const unsigned char* bytes,
                          size_t len);
 static void print_binary_tsv(std::ostream& out, const unsigned char* bytes,
                              size_t len);
+static void print_json_ascii(std::ostream& out, const std::string& json);
 
 // require or investigate schema version
 static inline void
@@ -143,6 +144,34 @@ require_sch(bool condition, const char* msg)
 {
   if (likely(condition)) return;
   throw RonSQLMaybeStaleSchema(msg);
+}
+
+// The value bytes of a non-NULL BINARY / VARBINARY / LONGVARBINARY
+// NdbRecAttr.  BINARY(n) is its full padded length, as MySQL returns it.
+static void
+binary_value_bytes(const NdbRecAttr* attr,
+                   const unsigned char** bytes,
+                   size_t* len)
+{
+  const NdbDictionary::Column* col = attr->getColumn();
+  require_sch(col != nullptr, "NULL column on BINARY NdbRecAttr");
+  const unsigned char* data =
+      pointer_cast<const unsigned char*>(attr->aRef());
+  switch (attr->getType()) {
+  case NdbDictionary::Column::Binary:
+    *bytes = data;
+    *len = (size_t)col->getSizeInBytes();
+    break;
+  case NdbDictionary::Column::Varbinary:
+    *bytes = &data[1];
+    *len = (size_t)data[0];
+    break;
+  default:
+    assert(attr->getType() == NdbDictionary::Column::Longvarbinary);
+    *bytes = &data[2];
+    *len = (size_t)data[0] | ((size_t)data[1] << 8);
+    break;
+  }
 }
 
 ResultPrinter::ResultPrinter(ArenaMalloc* amalloc,
@@ -1442,22 +1471,9 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
       // prints for the same column.  BINARY(n) is printed at its full
       // padded length, as MySQL returns it.  BLOB/TEXT stay unsupported
       // (they need the blob API).
-      const NdbDictionary::Column* col = attr->getColumn();
-      require_sch(col != nullptr, "NULL column on BINARY NdbRecAttr");
-      const unsigned char* data =
-          pointer_cast<const unsigned char*>(attr->aRef());
       const unsigned char* bytes;
       size_t len;
-      if (t == NdbDictionary::Column::Binary) {
-        bytes = data;
-        len = (size_t)col->getSizeInBytes();
-      } else if (t == NdbDictionary::Column::Varbinary) {
-        bytes = &data[1];
-        len = (size_t)data[0];
-      } else {
-        bytes = &data[2];
-        len = (size_t)data[0] | ((size_t)data[1] << 8);
-      }
+      binary_value_bytes(attr, &bytes, &len);
       if (m_json_output) {
         out << '"';
         print_base64(out, bytes, len);
@@ -1513,6 +1529,62 @@ ResultPrinter::passthrough_column_metadata(const Outputs* o) const
 }
 
 void
+ResultPrinter::set_avro_decoder(RonSQLAvroDecoder* decoder,
+                                const void* const* handles)
+{
+  assert(decoder != NULL);
+  assert(handles != NULL);
+  m_avro_decoder = decoder;
+  m_avro_handles = handles;
+}
+
+void
+ResultPrinter::print_passthrough_output(std::ostream& out,
+                                        const NdbRecAttr* attr,
+                                        const Outputs* o,
+                                        Uint32 pos)
+{
+  if (m_avro_handles != NULL && m_avro_handles[pos] != NULL) {
+    print_avro_value(out, attr, m_avro_handles[pos]);
+    return;
+  }
+  print_passthrough_value(out, attr, passthrough_column_metadata(o));
+}
+
+// RONDB-1135: an AVRO(column) value is the JSON text the decoder gives,
+// printed as a JSON value (not a string) under JSON, with \u escapes for
+// non-ASCII characters under JSON_ASCII, and with the batch-mode escaping
+// of a binary value under TEXT.  NULL prints as NULL.
+void
+ResultPrinter::print_avro_value(std::ostream& out,
+                                const NdbRecAttr* attr,
+                                const void* avro_handle)
+{
+  if (attr == NULL || attr->isNULL() == 1) {
+    out << m_null_representation;
+    return;
+  }
+  const unsigned char* bytes;
+  size_t len;
+  binary_value_bytes(attr, &bytes, &len);
+  std::string json;
+  m_avro_decoder->decode(avro_handle, bytes, len, json);
+  if (m_json_output) {
+    if (m_utf8_output) {
+      out.write(json.data(), json.size());
+    } else {
+      print_json_ascii(out, json);
+    }
+  } else if (m_tsv_output) {
+    print_binary_tsv(out,
+                     pointer_cast<const unsigned char*>(json.data()),
+                     json.size());
+  } else {
+    abort();
+  }
+}
+
+void
 ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
                                       Uint32 num_cols,
                                       bool is_first_row,
@@ -1530,8 +1602,7 @@ ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
       out << '"' << o->output_name << "\":";
       // Numbers print without quotes; strings and temporals quote
       // themselves (m_quote) inside print_passthrough_value.
-      print_passthrough_value(out, attrs[i],
-                              passthrough_column_metadata(o));
+      print_passthrough_output(out, attrs[i], o, i);
       o = o->next;
     }
     out << '}';
@@ -1542,8 +1613,7 @@ ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
     for (Uint32 i = 0; i < num_cols; i++) {
       assert(o != NULL);
       if (i > 0) out << '\t';
-      print_passthrough_value(out, attrs[i],
-                              passthrough_column_metadata(o));
+      print_passthrough_output(out, attrs[i], o, i);
       o = o->next;
     }
     out << '\n';
@@ -2018,6 +2088,34 @@ print_base64(std::ostream& out, const unsigned char* bytes, size_t len)
     quad[2] = (i + 1 < len) ? alphabet[(v >> 6) & 0x3f] : '=';
     quad[3] = '=';
     out.write(quad, 4);
+  }
+}
+
+// AVRO() values under JSON_ASCII output: the decoder's JSON text with every
+// non-ASCII character \u-escaped.  Non-ASCII characters only occur inside
+// JSON strings, where the escape means the same character, so a run of
+// them is printed as the content of a JSON string would be.
+static void
+print_json_ascii(std::ostream& out, const std::string& json)
+{
+  size_t i = 0;
+  while (i < json.size())
+  {
+    size_t run = i;
+    while (run < json.size() && (unsigned char)json[run] >= 0x80) run++;
+    if (run > i)
+    {
+      print_string(out,
+                   LexString{&json[i], run - i},
+                   &my_charset_utf8mb4_bin,
+                   true,   // json_escape
+                   false,  // utf8_output
+                   false); // trim_space_suffix
+      i = run;
+      continue;
+    }
+    out.put(json[i]);
+    i++;
   }
 }
 

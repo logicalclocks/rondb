@@ -107,6 +107,28 @@ std::pair<RS_Status, std::optional<std::vector<char>>>
   return {CRS_Status::SUCCESS.status, jsonString};
 }
 
+RS_Status AvroDecoder::decode(const Uint8 *data,
+                              size_t len,
+                              std::string &json) const {
+  GoSlice goSlice;
+  // The Go side only reads the input.
+  goSlice.data = const_cast<Uint8 *>(data);
+  goSlice.len = len;
+  goSlice.cap = len;
+
+  char *out = nullptr;
+  Int32 outLen = 0;
+
+  ErrorCode err = unmarshal_avro(schemaID, goSlice, &out, &outLen);
+  if (err != NO_ERROR) {
+    return CRS_Status(HTTP_CODE::SERVER_ERROR,
+                      std::string(rdrsErrorMessage(err))).status;
+  }
+  json.assign(out, outLen);
+  free(out);
+  return CRS_Status::SUCCESS.status;
+}
+
 std::string getFeatureGroupServingKey(int joinIndex, int featureGroupId) {
   std::ostringstream ss;
   ss << joinIndex << "|" << featureGroupId;

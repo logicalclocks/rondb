@@ -138,6 +138,11 @@ private:
   bool m_tsv_headers;
   const char* m_quote;
   LexString m_null_representation;
+  // RONDB-1135: AVRO(column) outputs of a pass-through query.  When set,
+  // m_avro_handles has one entry per output position: the decoder's
+  // handle for an AVRO() output, NULL for any other output.
+  RonSQLAvroDecoder* m_avro_decoder = NULL;
+  const void* const* m_avro_handles = NULL;
   // Program state
   NdbAggregator::Column* m_regs_g;
   NdbAggregator::Result* m_regs_a;
@@ -241,6 +246,10 @@ public:
                              bool is_first_row,
                              std::basic_ostream<char>* out_stream);
   void print_passthrough_finish(std::basic_ostream<char>* out_stream);
+  // RONDB-1135: print the AVRO() outputs of the pass-through rows through
+  // `decoder`; `handles` is indexed by output position (see m_avro_handles).
+  void set_avro_decoder(RonSQLAvroDecoder* decoder,
+                        const void* const* handles);
   void explain(std::basic_ostream<char>* out_stream);
 private:
   void setup_output_format();
@@ -250,6 +259,15 @@ private:
   void print_passthrough_value(std::ostream& out,
                                const class NdbRecAttr* attr,
                                const ColumnMetadata* meta);
+  // One pass-through output value: an AVRO() output when output position
+  // `pos` has a decoder handle, otherwise print_passthrough_value.
+  void print_passthrough_output(std::ostream& out,
+                                const class NdbRecAttr* attr,
+                                const struct Outputs* o,
+                                Uint32 pos);
+  void print_avro_value(std::ostream& out,
+                        const class NdbRecAttr* attr,
+                        const void* avro_handle);
   // col_idx-indexed metadata lookup for one pass-through output; NULL
   // when no metadata is available or the output is not a plain column.
   const ColumnMetadata* passthrough_column_metadata(
