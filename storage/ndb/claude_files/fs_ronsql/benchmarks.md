@@ -70,10 +70,10 @@ statement from `fsq/mysqltwin`.
 | `fs_hw_composite_point` | S9 | `SELECT COUNT(*) AS count, SUM(delta) AS delta_sum FROM balance_hist_1 WHERE account_id = {ACCT} AND currency = {CUR} AND event_time >= {NOW-90d};` | ACCT, CUR, NOW-90d | 1 |
 | `fs_hw_hash_point` | S1 on hash-only PK | `fs_hw_agg_point` over `transactions_hash_1` | KEY | 1 |
 | `fs_hw_sessions_window2h` | S2, TIMESTAMP(3) + ttl index | `SELECT COUNT(*) AS count, SUM(duration) AS duration_sum FROM sessions_1 WHERE customer_id = {KEY} AND event_time >= {NOW-2h};` | KEY, NOW-2h | 1 |
-| `fs_hw_agg_last10` | S11 (future, WP-J) | `WITH t AS (SELECT customer_id, event_time, amount, fee FROM transactions_1 WHERE customer_id = {KEY} ORDER BY event_time DESC LIMIT 10) SELECT COUNT(amount) AS amount_count, AVG(amount) AS amount_avg, MAX(fee) AS fee_max FROM t;` (J1 rewrite) | KEY | 1 |
+| `fs_hw_agg_last10` | S11 (future, WP-J) | `WITH t AS (SELECT customer_id, event_time, amount, fee FROM transactions_1 WHERE customer_id = {KEY} ORDER BY event_time DESC LIMIT 10) SELECT COUNT(amount) AS amount_count, AVG(amount) AS amount_avg, MAX(fee) AS fee_max FROM t;` (J5: the collect scan, aggregated in RonSQL) | KEY | 1 |
 | `fs_hw_agg_last100` | S11 | the same with `LIMIT 100` | KEY | 1 |
 | `fs_hw_agg_last10_tx300` | S11 | `fs_hw_agg_last10` for customers with 300 rows | TXKEY:300 | 1 |
-| `fs_hw_agg_last10_tx300_grouped` | S11 J0 | the J0 form of `fs_hw_agg_last10_tx300`: the body grouped by every column plus `COUNT(*)`, which reads all 300 rows (the CTE-plan baseline a fast path must beat) | TXKEY:300 | 1 |
+| `fs_hw_agg_last10_tx300_grouped` | S11 J0 | the J0 form of `fs_hw_agg_last10_tx300`: the body grouped by every column plus `COUNT(*)`, which reads all 300 rows and keeps the CTE plan (the baseline J5 is measured against) | TXKEY:300 | 1 |
 
 Twenty-five entries, plus the four WP-J entries (2026-09-29). Names are stable identifiers (the shape ids in
 `shape_catalog.md` are the cross-reference); the exact SQL is whatever
@@ -194,6 +194,8 @@ change:
 | `fs_hw_snow1_batch100` | observed: `Body root: TABLE_SCAN` (the IN list on the CTE body, F12), then CTE_SCAN + PK_LOOKUP |
 | `fs_hw_snow2_left_single` | `[LEFT JOIN] PK_LOOKUP` ×2 (observed) |
 | `fs_hw_hash_point` | `Execute as table scan.` (no ordered index) — the point of the entry; not yet observed (run 1 stopped before it) |
+| `fs_hw_agg_last10`, `_last100`, `_last10_tx300` | `CTE 't' aggregated in RonSQL over the ORDER BY / LIMIT scan …` (WP-J J5), `Execute as index scan.`, `ORDER BY: index order (SF_OrderBy | SF_Descending …` — the collect scan without `Result limited to N rows.` (the LIMIT belongs to the scan) |
+| `fs_hw_agg_last10_tx300_grouped` | `Body root: INDEX_SCAN using PRIMARY` (the J0 CTE plan) |
 
 ---
 

@@ -758,6 +758,18 @@ built in memory exactly as `ProcessRes` merges one from the wire.
 - **Not done.** The pass-through transaction carries no rate-limit
   identity (`setUserId`), exactly like the collect form it shares.
 
+*J5 step 3 committed `bf75969256c`.*
+
+*J5 step 4 status (2026-09-30): pins written, spot run pending.*
+- `fs_hw_agg_last10`, `_last100` and `_last10_tx300` now pin three things:
+  the J5 EXPLAIN line, `Execute as index scan.`, and the descending
+  index-order line.
+- `_tx300_grouped` keeps the J0 CTE plan as the baseline.
+- The golden registry dump and `benchmarks.md` §2 and §7 follow.
+- The spot run repeats the 2026-09-29 one: 1 thread × 5000 requests on
+  the user's cluster, with `collect5` as the floor and `.bench_sql` for
+  MySQL. Its table goes into `benchmarks.md` §8.
+
 Later (J5b and beyond):
 - **Main GROUP BY over the last N.** The group key must be encoded
   exactly as the kernel encodes GB keys, collation included, which is a

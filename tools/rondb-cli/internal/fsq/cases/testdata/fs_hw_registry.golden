@@ -75,19 +75,19 @@ WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `category` FROM `transa
 -- plan pins: collapsed into the pass-through ORDER BY scan | Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending | Result limited to 50 rows.
 
 === fs_hw_agg_last10 [S11] ronsql+mysql rows=1
--- COUNT / AVG / MAX over the newest 10 rows (future shape; WP-J J1 rewrite)
+-- COUNT / AVG / MAX over the newest 10 rows (future shape; WP-J J5: collect scan, aggregated in RonSQL)
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 10) SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;
--- plan pins: served as the last N rows | Body root: INDEX_SCAN using PRIMARY
+-- plan pins: aggregated in RonSQL over the ORDER BY / LIMIT scan | Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending
 
 === fs_hw_agg_last100 [S11] ronsql+mysql rows=1
 -- the same over the newest 100 rows
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 100) SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;
--- plan pins: served as the last N rows | Body root: INDEX_SCAN using PRIMARY
+-- plan pins: aggregated in RonSQL over the ORDER BY / LIMIT scan | Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending
 
 === fs_hw_agg_last10_tx300 [S11] ronsql+mysql rows=1
 -- newest 10 rows of customers with 300 rows (the longest history)
 WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee` FROM `transactions_1` WHERE `customer_id` = {TXKEY:300} ORDER BY `event_time` DESC LIMIT 10) SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;
--- plan pins: served as the last N rows | Body root: INDEX_SCAN using PRIMARY
+-- plan pins: aggregated in RonSQL over the ORDER BY / LIMIT scan | Execute as index scan. | ORDER BY: index order (SF_OrderBy | SF_Descending
 
 === fs_hw_agg_last10_tx300_grouped [S11 J0] ronsql+mysql rows=1
 -- J0 grouped form of fs_hw_agg_last10_tx300: all 300 rows grouped, then the top 10 (the CTE-plan baseline)

@@ -191,12 +191,14 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 		}
 	}
 	// WP-J (ronsql_fs_support_plan.md): aggregates over the newest N rows of
-	// an entity, a future Hopsworks shape (S11).  J1 rewrites the natural
-	// statement into a one-group-per-row CTE over the whole history (the J2
-	// per-fragment limit measured slower and is off).  The _grouped entry is
-	// the hand-written J0 form of the same statement: the CTE-plan baseline
-	// that a fast path must beat.  {TXKEY:300} picks customers with the
-	// longest history, so cost growth with history length shows.
+	// an entity, a future Hopsworks shape (S11).  J5 runs the natural
+	// statement as the collect scan (ordered PRIMARY index scan, SF_OrderBy
+	// descending, batch = LIMIT) and computes the aggregates in RonSQL over
+	// the delivered rows; the target is fs_hw_collect5's cost.  The _grouped
+	// entry is the hand-written J0 form of the same statement, which keeps
+	// the CTE plan (one group per row over the whole history): the baseline
+	// J5 is measured against.  {TXKEY:300} picks customers with the longest
+	// history, so any cost growth with history length shows.
 	lastN := func(key string, n int) string {
 		return fmt.Sprintf("WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee` FROM `transactions_1` "+
 			"WHERE `customer_id` = %s ORDER BY `event_time` DESC LIMIT %d) "+
@@ -207,8 +209,9 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 			"WHERE `customer_id` = %s GROUP BY `customer_id`, `event_time`, `amount`, `fee` ORDER BY `event_time` DESC LIMIT %d) "+
 			"SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;", key, n)
 	}
-	lastNPins := []string{"served as the last N rows", "Body root: INDEX_SCAN using PRIMARY"}
-	add(BenchEntry{Name: "fs_hw_agg_last10", Shape: "S11", Description: "COUNT / AVG / MAX over the newest 10 rows (future shape; WP-J J1 rewrite)",
+	lastNPins := []string{"aggregated in RonSQL over the ORDER BY / LIMIT scan", "Execute as index scan.",
+		"ORDER BY: index order (SF_OrderBy | SF_Descending"}
+	add(BenchEntry{Name: "fs_hw_agg_last10", Shape: "S11", Description: "COUNT / AVG / MAX over the newest 10 rows (future shape; WP-J J5: collect scan, aggregated in RonSQL)",
 		Rows: "1", SQL: lastN("{KEY}", 10), PlanPins: lastNPins})
 	add(BenchEntry{Name: "fs_hw_agg_last100", Shape: "S11", Description: "the same over the newest 100 rows",
 		Rows: "1", SQL: lastN("{KEY}", 100), PlanPins: lastNPins})
