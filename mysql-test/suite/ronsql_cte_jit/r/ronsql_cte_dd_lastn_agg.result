@@ -647,7 +647,7 @@ Number of output lines, including header: 5
 
 
 
-=== lastn-15: ORDER BY a non-index column (J1 without the J2 limit) ===
+=== lastn-15: ORDER BY a non-index column ===
 == Explain Query ==
 == Natural statement ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
@@ -685,7 +685,7 @@ Number of output lines, including header: 2
 
 
 
-=== lastn-16: the last 10 rows over all customers (no index bound, J1 only) ===
+=== lastn-16: the last 10 rows over all customers (no index bound) ===
 == Natural statement ==
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE fee >= 0 ORDER BY event_time DESC LIMIT 10)
@@ -713,6 +713,57 @@ Number of output lines, including header: 2
 WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
            WHERE fee >= 0 ORDER BY event_time DESC LIMIT 10)
 SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(event_time) AS oldest FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-17: two last-N branches combined in one statement ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10),
+     s AS (SELECT customer_id, event_time, fee FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY event_time DESC LIMIT 5),
+     ta AS (SELECT COUNT(*) AS n_t, SUM(amount) AS sum_amount FROM t),
+     sa AS (SELECT COUNT(*) AS n_s, MAX(fee) AS max_fee FROM s)
+SELECT ta.n_t, ta.sum_amount, sa.n_s, sa.max_fee FROM ta, sa;
+== Natural statement result (MySQL) ==
+n_t	sum_amount	n_s	max_fee
+10	2695	5	23
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 3
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10),
+     s AS (SELECT customer_id, event_time, fee, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 5
+           GROUP BY customer_id, event_time, fee
+           ORDER BY event_time DESC LIMIT 5),
+     ta AS (SELECT COUNT(*) AS n_t, SUM(amount) AS sum_amount FROM t),
+     sa AS (SELECT COUNT(*) AS n_s, MAX(fee) AS max_fee FROM s)
+SELECT ta.n_t, ta.sum_amount, sa.n_s, sa.max_fee FROM ta, sa;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== J1: the natural statement on RonSQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10),
+     s AS (SELECT customer_id, event_time, fee FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY event_time DESC LIMIT 5),
+     ta AS (SELECT COUNT(*) AS n_t, SUM(amount) AS sum_amount FROM t),
+     sa AS (SELECT COUNT(*) AS n_s, MAX(fee) AS max_fee FROM s)
+SELECT ta.n_t, ta.sum_amount, sa.n_s, sa.max_fee FROM ta, sa;
 
 Number of output lines, including header: 2
 

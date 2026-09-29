@@ -484,18 +484,72 @@ without a time window. EXPLAIN adds `[last-N DESC maxRows=N per fragment]`
 to the body root line. Anything else keeps the J1 plan: an ORDER BY on a
 non-index column (lastn-15), or no index bound (lastn-16).
 
-*J2 status (2026-09-29): written, not built.* Tests are in
-`ronsql_cte_dd_lastn_agg`. Every natural statement over customer_id = K
-now runs on J2, while the hand-written J0 forms keep the full grouped
-scan and are compared against the same MySQL results. lastn-P1 pins the
-EXPLAIN annotation; lastn-15 pins its absence. The benefit is to be
-measured with the `fs_hw_agg_last10` / `_last100` bench entries (not yet
-added).
+*J2 status: committed `83046377ccb`, then measured slower than J1 and
+switched off (2026-09-29).* The spot run (`benchmarks.md` §8, "WP-J spot
+run"), last 10 of 300 rows, 1 thread:
+
+| plan | avg |
+|---|---|
+| J2 | 2.54 ms |
+| J1 grouped body | 1.90 ms |
+| MySQL | 0.62 ms |
+
+Every row the limited scan keeps goes through the self-join lookup, about
+17 µs per row, against about 3.5 µs per grouped row for J1, so J2 only
+wins for histories far longer than N × fragments. RonSQL cannot see that
+at plan time.
+
+`select_cte_body_lastn_scan()` returns at once
+(`kLastNPerFragmentLimit = false`). The code stays for such workloads and
+for a kernel-side row limit on in-place aggregation scans, which would
+remove the self-join leaf. lastn-P1 and lastn-15 pin the absent EXPLAIN
+annotation.
+
+*J1 with several CTEs.* Each CTE in the WITH list is judged on its own.
+Several last-N CTEs in one statement are all rewritten when each is read
+only as a FROM root, e.g. two branches each aggregated in its own scalar
+CTE and combined with a comma join (lastn-17). A last-N CTE joined as a
+child keeps the rejection.
+
+*J5 — the fast path: collect scan plus aggregation in the RonSQL layer
+(next, agreed 2026-09-29).* The same run bounds the cost:
+- the CTE protocol's fixed cost is about 0.6 ms (`fs_hw_snow1_point`);
+- the ordered collect scan costs 0.40 ms (`fs_hw_collect5`), below
+  MySQL's 0.62 ms.
+
+Scope: a main query that aggregates one J1 last-N CTE directly (scalar or
+GROUP BY on CTE columns, aggregate arguments plain CTE columns, no joins,
+no main WHERE). The body runs as the collect scan: `collapse_collect_cte`'s
+single-table ORDER BY / LIMIT path, streaming in index order or with the
+buffered sort. Each delivered row is fed to an `NdbAggregator` as a
+one-row partial result, so the existing merge code computes the
+aggregates: checked 64-bit SUM (1860), string MIN/MAX with collation,
+COUNT and NULL rules. `ResultPrinter` prints them as for the kernel path.
+
+The new code is the per-row conversion of a column value into the
+kernel's accumulator type, which must mirror `AggInterpreter`
+(`AlignedType`). The J0/J1 results of `ronsql_cte_dd_lastn_agg` are its
+differential; EXPLAIN reports the path.
+
+Multi-branch extension, after J5: several independent last-N branches
+combined with a comma join (lastn-17's shape). Their collect scans are
+defined in one transaction and executed together, then aggregated per
+branch and combined. Joins over a last-N CTE stay on J1.
+
+*J2 benchmarks (2026-09-29).* Four `fs_hw` entries (`benchmarks.md` §2):
+- `fs_hw_agg_last10` and `fs_hw_agg_last100` use `{KEY}`, the serving mix
+  of history lengths.
+- `fs_hw_agg_last10_tx300` uses customers with 300 rows (new placeholder
+  `{TXKEY:n}`).
+- `fs_hw_agg_last10_tx300_grouped` is the hand-written J0 form, the
+  CTE-plan baseline.
+
+MySQL runs the same natural text through `.bench_sql`.
 
 *J3 — last N enriched with a dimension, then aggregated* (e.g. distinct
 merchant categories among the last 20 transactions). J1 serves it
-functionally. J2's limited body scan already applies to it (lastn-12..14);
-what remains is the join from the CTE, which reads at most N rows.
+functionally (lastn-12..14); J5's scope excludes joins, so this stays on
+J1 until a J5 extension adds the lookups.
 
 *J4 — batch (last N per entity for an IN list).* Needs a per-key
 ordered range with a per-key limit, which the multi-range scan (WP-F F2)
@@ -524,9 +578,10 @@ requirements row, vector oracle fold, fuzzer production, fs_hw entry.
   scan) as the differential and EXPLAIN pins for the annotation and its
   absence. `fetched=` does not apply: the body rows stay in the kernel.
   Aggregate semantics are unchanged, since the kernel still computes
-  them. Bench entries `fs_hw_agg_last10` / `fs_hw_agg_last100` go
-  against the MySQL twin and the J1-only plan (e.g. an ORDER BY that the
-  index does not serve), recorded in `benchmarks.md` §8.
+  them. Bench entries `fs_hw_agg_last10`, `_last100` and `_last10_tx300`
+  run against MySQL (same text) and against
+  `fs_hw_agg_last10_tx300_grouped` (the J1-without-J2 baseline), recorded
+  in `benchmarks.md` §8.
 - Hopsworks: golden fixture for the new definition, requirement row
   SUPPORTED on base / jit / ng2r2.
 
@@ -539,7 +594,7 @@ requirements row, vector oracle fold, fuzzer production, fs_hw entry.
 | **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
-| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 per-fragment limit on the ordered body scan; J3 / J4 after J2's numbers | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
+| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 per-fragment limit (off: slower), J5 collect scan + RonSQL-layer aggregation; J3 / J4 later | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
 
 M1 is small and high-value: D1 is a one-line fix, B and C are contained,
 and A maps onto an execution path that already exists. M2 now focuses on
@@ -591,5 +646,6 @@ snowflake and batch are faster through MySQL).
 | I F10/F11 | separate track | ndbcluster pushdown |
 | J0 last-N stop-gap | days (tests only) | TIMESTAMP GROUP BY key, main-scope AVG over a CTE |
 | J1 last-N rewrite | ~1 week | planner only, like WP-A; cost grows with the entity's history |
-| J2 last-N fast path | days (written 2026-09-29) | reuses the I.10 ordered-scan + maxRows + self-join-leaf shape; no new aggregation code |
+| J2 per-fragment limit | done, off | measured slower than J1 (self-join leaf per kept row) |
+| J5 collect scan + RonSQL-layer aggregation | 1–2 weeks | per-row conversion to the kernel's accumulator types must mirror AggInterpreter exactly |
 | J3 / J4 | after J2 | batched lookups; per-key limited ranges; Hopsworks decisions |

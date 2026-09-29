@@ -4970,11 +4970,24 @@ RonSQLPreparer::body_index_serves_orderby(const QueryScope& scope,
  * select_root_scan_config (one range: an IN-list multi-range scan
  * delivers each range in order but not the ranges) with LIMIT >= 1.
  * Everything else keeps the J1 plan.
+ *
+ * OFF (kLastNPerFragmentLimit): measured slower than the J1 plan it
+ * replaces (2026-09-29, last 10 of 300 rows, 1 thread: 2.54 ms average
+ * against 1.90 ms for the J1 grouped form; ronsql_fs_support_plan.md WP-J
+ * J2).  Every row the limited scan keeps goes through the self-join leaf
+ * lookup (~17 us per row), while the J1 body groups its rows in place
+ * (~3.5 us per row), so J2 only wins for histories far longer than
+ * N x fragments, which RonSQL cannot see at plan time.  Kept for such
+ * workloads and for a kernel-side limit on in-place aggregation scans,
+ * which would remove the leaf.
  */
+static constexpr bool kLastNPerFragmentLimit = false;
+
 void
 RonSQLPreparer::select_cte_body_lastn_scan(QueryScope& scope,
                                            const CteDefinition* cte)
 {
+  if (!kLastNPerFragmentLimit) return;
   if (cte == NULL || cte->stmt == NULL || !is_lastn_cte(cte)) return;
   const SelectStatement* body = cte->stmt;
   if (body->limit < 1 || body->limit > (Int64)0xFFFFFFFF) return;
