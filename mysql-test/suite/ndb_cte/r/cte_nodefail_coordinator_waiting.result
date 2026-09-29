@@ -1,0 +1,9 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# NF-13: kill the coordinator while every DBSPJ worker waits for SCAN_NEXTREQ
+"[dropping NDBT test tables]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# CteCoordinatorDiesWaitingScan passed

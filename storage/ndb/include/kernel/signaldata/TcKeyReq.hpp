@@ -166,6 +166,12 @@ class TcKeyReq {
 
   static Uint16 getAttrinfoLen(const UintR &attrLen);
   static void setAttrinfoLen(UintR &attrLen, Uint16 aiLen);
+  /* Aggregation on a primary-key read (RONDB-1124 WP-F F1b), long
+   * TCKEYREQ only: the ATTRINFO carries a finalized NdbAggregator program
+   * after the five interpreted sections; the data node runs it on the
+   * read tuple and returns one aggregation result record. */
+  static UintR getAggReadFlag(const UintR &attrLen);
+  static void setAggReadFlag(UintR &attrLen, UintR val);
 
   /**
    * Get:ers for requestInfo
@@ -507,11 +513,15 @@ class TcKeyReq {
            1111111111222222222233
  01234567890123456789012345678901
  aaaaaaaaaaaaaaaannnnnnnnnnnnnnnn   (Short TCKEYREQ)
- aaaaaaaaaaaaaaaa                   (Long TCKEYREQ)
+ aaaaaaaaaaaaaaaag                  (Long TCKEYREQ)
+
+ g = Aggregation on a primary-key read  - 1 Bit 16 (Long TCKEYREQ only;
+     the bits 0-15 still carry the short request's attrinfo length)
 */
 
 #define ATTRLEN_SHIFT (0)
 #define ATTRLEN_MASK (65535)
+#define TC_AGG_READ_SHIFT (16)
 
 inline Uint8 TcKeyReq::getCommitFlag(const UintR &requestInfo) {
   return (Uint8)((requestInfo >> COMMIT_SHIFT) & 1);
@@ -723,6 +733,15 @@ inline Uint16 TcKeyReq::getAttrinfoLen(const UintR &anAttrLen) {
 inline void TcKeyReq::setAttrinfoLen(UintR &anAttrLen, Uint16 aiLen) {
   //  ASSERT_MAX(aiLen, ATTRLEN_MASK, "TcKeyReq::setAttrinfoLen");
   anAttrLen |= aiLen;
+}
+
+inline UintR TcKeyReq::getAggReadFlag(const UintR &anAttrLen) {
+  return (anAttrLen >> TC_AGG_READ_SHIFT) & 1;
+}
+
+inline void TcKeyReq::setAggReadFlag(UintR &anAttrLen, UintR val) {
+  ASSERT_BOOL(val, "TcKeyReq::setAggReadFlag");
+  anAttrLen |= (val << TC_AGG_READ_SHIFT);
 }
 
 inline UintR TcKeyReq::getNoDiskFlag(const UintR &requestInfo) {

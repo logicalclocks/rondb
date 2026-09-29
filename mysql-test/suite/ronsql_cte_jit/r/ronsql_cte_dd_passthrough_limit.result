@@ -1127,6 +1127,29 @@ Number of output lines, including header: 0
 == Expected result ==
 SELECT o_orderkey, o_orderstatus FROM orders WHERE o_orderkey = 999999 LIMIT 1|
 o_orderkey	o_orderstatus
+
+=== pl-15: single-table index scan, truncating LIMIT: batch = LIMIT ===
+== Query ==
+SELECT o_orderstatus FROM orders WHERE o_orderstatus = 'O' LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Phase rows ==
+rows=5
+fetched within bound
+== Expected result ==
+SELECT o_orderstatus FROM orders WHERE o_orderstatus = 'O' LIMIT 5|
+o_orderstatus
+O
+O
+O
+O
+O
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_passthrough_limit_jit_fallback_delta;
 ronsql_cte_dd_passthrough_limit_jit_fallback_delta

@@ -1,0 +1,12 @@
+# WP-F F3: IN lists on pushed-query roots (CTE body roots, join roots) as
+# multi-range bounds in the query definition, and the F14 VARCHAR bound
+# fix.  The strict arming makes an aggregation program that fails to
+# compile stop the test; the census records the fallback delta of the
+# whole test (residual filters included; 8 at the first recording,
+# 2026-09-24, not yet attributed).
+SET @in_list_spj_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_jit/include/jit_strict_arm.inc
+--source suite/ronsql/t/ronsql_in_list_spj.test
+--source suite/ronsql_jit/include/jit_strict_disarm.inc
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @in_list_spj_jit_c0 AS SIGNED)
+       AS ronsql_in_list_spj_jit_fallback_delta;

@@ -1,0 +1,175 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+--echo ############################################################
+--echo # RONDB-1124: QueryMemory drains in standalone pushed GROUP BY
+--echo ############################################################
+--echo #
+--echo # When QueryMemory runs short, a fragment scan sends its resident
+--echo # groups in bounded result records, one per scan batch, and then
+--echo # resumes scanning. Groups seen again later in the scan are sent again
+--echo # and merged by the API. ERROR_INSERT forces these drains:
+--echo #   4042 - drain on every 7th row: each drain fits one record and the
+--echo #          scan resumes many times, also right after its last row
+--echo #   4043 - drain once the resident groups need two records: each
+--echo #          drain spans several scan batches
+--echo # push_agg_compare.inc runs every query with pushdown OFF and ON and
+--echo # fails unless both return the same rows.
+--echo #
+
+--disable_query_log
+CREATE TABLE seq_n (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+SET SESSION cte_max_recursion_depth = 100000;
+INSERT INTO seq_n
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 59999)
+  SELECT n FROM seq;
+
+# 60000 rows, 20000 groups of 3 rows (pk g, g + 20000, g + 40000).
+CREATE TABLE t_hc (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  v BIGINT NOT NULL,
+  n INT NULL,
+  s VARCHAR(40) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL
+) ENGINE=NDB;
+let $i = 0;
+while ($i < 3)
+{
+  eval INSERT INTO t_hc
+    SELECT n, n % 20000, (n * 7919) % 100003 - 50000,
+           IF(n % 5 = 0, NULL, n % 3), CONCAT('s', LPAD((n * 31) % 9973, 5, '0'))
+    FROM seq_n WHERE n >= $i * 20000 AND n < ($i + 1) * 20000;
+  inc $i;
+}
+
+# 300 groups with a 4000-byte key.
+CREATE TABLE t_wide (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  k VARCHAR(4000) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t_wide
+  SELECT n, n % 40,
+         CONCAT(LPAD(n % 300, 6, '0'), REPEAT(CHAR(97 + n % 300 % 26), 3994)),
+         n * 3 - 1000
+  FROM seq_n WHERE n < 1200;
+
+# One fragment, 70 rows: with 4042 the 70th row forces a drain, so the
+# scan resumes only to find its end.
+CREATE TABLE t_one (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  v INT NOT NULL
+) ENGINE=NDB PARTITION BY KEY(pk) PARTITIONS 1;
+INSERT INTO t_one SELECT n, n % 10, n FROM seq_n WHERE n < 70;
+
+# One fragment cycling 5 times through 400 groups of about 300 bytes:
+# every group comes back after every drain.
+CREATE TABLE t_rep (
+  pk INT NOT NULL PRIMARY KEY,
+  k VARCHAR(200) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  v INT NOT NULL
+) ENGINE=NDB PARTITION BY KEY(pk) PARTITIONS 1;
+INSERT INTO t_rep
+  SELECT n, CONCAT(LPAD(n % 400, 4, '0'), REPEAT('y', 196)), n
+  FROM seq_n WHERE n < 2000;
+--enable_query_log
+
+--echo ############################################################
+--echo # Warm-up without forced drains, then record QueryMemory
+--echo ############################################################
+--let $pac_label = W1 COUNT/SUM/MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--let $pac_label = W2 4000-byte GROUP BY key
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_wide GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--let $pac_label = W3 repeating groups, one fragment
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_rep GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--source suite/ndb_push_agg/include/push_agg_qm_settle.inc
+--let $qm_warm = $pa_qm
+
+--echo ############################################################
+--echo # E: ERROR_INSERT 4042, a drain on every 7th row
+--echo ############################################################
+--exec $NDB_MGM -e "all error 4042" >> $NDB_TOOLS_OUTPUT
+--let $pac_label = E1 COUNT/SUM/MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = E2 nullable COUNT/SUM and string MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(n), SUM(n), MIN(s), MAX(s) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = E3 two GROUP BY columns, one nullable
+--let $pac_query = SELECT g, n, COUNT(*) FROM t_hc GROUP BY g, n
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # A scalar aggregate has no groups to drain.
+--let $pac_label = E4 scalar aggregate
+--let $pac_query = SELECT COUNT(*), SUM(v), MIN(s), MAX(s) FROM t_hc
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # 7 resident 4 KB groups need more than one record.
+--let $pac_label = E5 4000-byte GROUP BY key
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_wide GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = E6 4000-byte string MIN/MAX payloads
+--let $pac_query = SELECT g, COUNT(*), MIN(k), MAX(k) FROM t_wide GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = E7 drain on the last row of the fragment
+--let $pac_query = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_one GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = E8 repeating groups, one fragment
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_rep GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo ############################################################
+--echo # F: ERROR_INSERT 4043, drains spanning several scan batches
+--echo ############################################################
+--exec $NDB_MGM -e "all error 4043" >> $NDB_TOOLS_OUTPUT
+--let $pac_label = F1 COUNT/SUM/MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = F2 nullable COUNT/SUM and string MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(n), SUM(n), MIN(s), MAX(s) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = F3 4000-byte GROUP BY key
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_wide GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = F4 repeating groups, one fragment
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_rep GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo ############################################################
+--echo # G: the same scans without forced drains
+--echo ############################################################
+--let $pac_label = G1 COUNT/SUM/MIN/MAX by g
+--let $pac_query = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_hc GROUP BY g
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--let $pac_label = G2 4000-byte GROUP BY key
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_wide GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+--let $pac_label = G3 repeating groups, one fragment
+--let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_rep GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo # QueryMemory must settle no higher than after the warm-up.
+--source suite/ndb_push_agg/include/push_agg_qm_settle.inc
+--let $qm_grew = `SELECT $pa_qm > $qm_warm`
+--echo # QUERY_MEMORY grew: $qm_grew
+
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t_hc, t_wide, t_one, t_rep;
+DROP TABLE seq_n;
+--remove_file $NDB_TOOLS_OUTPUT

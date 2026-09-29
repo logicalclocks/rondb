@@ -1,0 +1,248 @@
+SET @in_list_lookups_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== single-column PK: three keys, out of order ===
+== Query ==
+SELECT id, v, s FROM t_pk1 WHERE id IN (3, 1, 2);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== duplicates in the list count once ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (3, 1, 3, 2, 1, 1);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== missing keys match nothing ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (1, 999, 2, 1000);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== every key missing: empty result ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (998, 999);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== one value is a plain equality (single-row lookup as before) ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (7);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== residual filter on another column rides every lookup ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5) AND v > 25;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== an equality on the IN column after the list is a residual ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) AND id = 2;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== an equality before the list binds first; the list is the residual ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id = 2 AND id IN (1, 2, 3);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== composite PK: equality on a, list on b ===
+== Query ==
+SELECT a, b, v FROM t_pk2 WHERE a = 2 AND b IN (1, 3, 5);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== composite PK: list on a, equality on b ===
+== Query ==
+SELECT a, b, v FROM t_pk2 WHERE b = 4 AND a IN (5, 1);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== composite PK: two lists leave b unbound, so no lookup (scan path) ===
+== Query ==
+SELECT a, b, v FROM t_pk2 WHERE a IN (1, 2) AND b IN (2, 3);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== hash-only PK: lookups need no ordered index ===
+== Query ==
+SELECT id, v FROM t_hash WHERE id IN (5, 6, 7, 500);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== VARCHAR PK under a case-insensitive collation: 'key1' and 'KEY1' are one key ===
+== Query ==
+SELECT k, v FROM t_str WHERE k IN ('key1', 'KEY2', 'Key3', 'KEY1', 'nope', 'key five');
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== TIMESTAMP PK ===
+== Query ==
+SELECT ts, v FROM t_ts WHERE ts IN ('2026-01-03 00:00:00', '2026-01-01 00:00:00', '2026-02-01 00:00:00');
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== LIMIT 0 prints nothing; a LIMIT above the list size changes nothing ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) LIMIT 0;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (1, 2, 3) LIMIT 100;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== ORDER BY keeps the scan path in this cut (correct, sorted client-side) ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id IN (3, 1, 2) ORDER BY v DESC;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== a list on a non-PK column is a filter, as before ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE v IN (10, 20, 30);
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== a mixed OR is not an IN shape ===
+== Query ==
+SELECT id, v FROM t_pk1 WHERE id = 1 OR v = 20;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @in_list_lookups_jit_c0 AS SIGNED)
+AS ronsql_in_list_lookups_jit_fallback_delta;
+ronsql_in_list_lookups_jit_fallback_delta
+0

@@ -1,0 +1,31 @@
+# Memory for the RONDB-1121 M3.0 performance census
+# (storage/ndb/claude_files/fs_ronsql/m3_plan.md): TPC-H sf 1 and the
+# feature-store data set (fs_bench sf 1) loaded side by side in one
+# cluster, so one ronsql_bench_matrix.py run covers every registry
+# category (--queries all --load both).
+#
+# The driver takes it through --cpubind, which is a plain
+# --defaults-extra-file for mtr (the driver appends its own
+# CompiledInterpreter / RDRS settings the same way).  This file carries
+# no CPU binding and runs the suite's NumCPUs; the benchmark computer
+# uses census_benchbox.cnf (the same settings plus NumCPUs and the CPU
+# sets for its hybrid CPU) with --expect-ldm.
+#
+#   python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+#       --build prod_build --queries all --load both --sf 1 \
+#       --cpubind mysql-test/suite/ronsqlcrunch/census.cnf ...
+
+[cluster_config.1]
+TotalMemoryConfig=12G
+DataMemory=6G
+# NumCPUs must equal the size of each data node's cpubind set: with the
+# suite default (4) a node bound to 15 CPUs still runs the 4-CPU thread
+# configuration and leaves the rest idle — census run 4 did exactly that.
+# Set both in a machine-specific file like census_benchbox.cnf.
+
+# RDRS gets as many NDB data connections as each mysqld has
+# (ndb-cluster-connection-pool=2 in my.cnf), so an engine comparison
+# under concurrency does not pit one RDRS receive thread against two
+# mysqld ones (census run 5, fs_hw_floor / fs_hw_snow1_point at T=8).
+[rdrs.1.1]
+RonDBConnectionPoolSize=2

@@ -1,0 +1,33 @@
+
+[*] RonSQL Benchmark fs_latest: 1 threads × 5000 requests = 5000 total requests
+[*] Latest 100 orders (no WHERE, ORDER BY o_orderdate DESC LIMIT 100 — SF_OrderBy index-order streaming top-N, no client-side sort)
+
+SELECT o_orderkey, o_custkey, o_orderdate, o_totalprice
+FROM orders
+ORDER BY o_orderdate DESC
+LIMIT 100;
+
+[*] Warmup: 980.12us, 100 result rows
+[*] Warmup phases (µs): parse=8,analyze=0,load=9,plan=1,compile=1,prepare=21,subquery=0,ndbprep=3,send=22,firstbatch=678,drain=38,print=0,execute=768,rows=100,attempts=1
+
+
+[OK] RonSQL Benchmark fs_latest completed in 2.95s
+   Requests: 5000 (errors: 0)
+   Throughput: 1692.89 queries/sec
+   Latency: min=380.96us avg=579.23us max=1.93ms p95=1.14ms p99=1.17ms p99.9=1.52ms
+
+   Phase breakdown (server-side, 5000/5000 requests sampled):
+     phase               avg        p95        p99        max
+     parse            1.55us     2.00us     5.00us    14.00us
+     analyze          0.03us     0.00us     1.00us     1.00us
+     load             1.69us     2.00us     4.00us    13.00us
+     plan             0.13us     1.00us     1.00us     5.00us
+     compile          0.08us     1.00us     1.00us     5.00us
+     prepare          3.78us     5.00us    11.00us    25.00us
+     ndbprep          0.50us     1.00us     1.00us     7.00us
+     send             4.00us     5.00us     9.00us    20.00us
+     firstbatch     484.07us     1.04ms     1.06ms     1.79ms
+     drain           30.87us    32.00us    34.00us    49.00us
+     execute        546.29us     1.10ms     1.13ms     1.86ms
+     rows drained 100.0 per request
+

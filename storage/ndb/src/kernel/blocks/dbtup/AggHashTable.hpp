@@ -33,6 +33,8 @@
 #define AGG_EVICT_NEEDED 1
 #define MEM_CHUNK_SIZE 32768
 
+class AggInterpreterBase;
+
 struct MemChunk {
   char* data;
   Uint32 capacity;
@@ -41,6 +43,11 @@ struct MemChunk {
   MemChunk* next;
   MemChunk* prev;
   char* group_list;         // singly-linked list of live groups in this chunk
+  /* The interpreter whose chunk list holds this chunk.  JoinAggInterpreter
+   * ::mergeFrom moves groups between interpreters before it moves their
+   * chunks, so a group can be freed through an interpreter that is not
+   * the chunk's owner; freeGroupData unlinks from the owner's list. */
+  AggInterpreterBase* owner;
 };
 
 /*
@@ -54,10 +61,45 @@ struct GBColTypeInfo {
   Uint32 maxBytes;                 // AttributeDescriptor::getSizeInBytes
 };
 
+/* Query-memory allocation for GBHashTable growth (bucket segments and
+ * their directory).  Defined in AggInterpreterBase.cpp on the kernel
+ * pool (RG_QUERY_MEMORY); nullptr when the pool is exhausted. */
+void* agg_gb_segment_alloc(size_t bytes, Uint32 thread_id);
+void agg_gb_segment_free(void* ptr);
+
+constexpr Uint32 agg_gb_log2u(Uint32 v) {
+  return v <= 1 ? 0 : 1 + agg_gb_log2u(v >> 1);
+}
+
 /*
- * Chaining hash table for group-by lookup.  Templatized on BUCKET_COUNT
- * so AggInterpreter uses 256 buckets (~2KB) and JoinAggInterpreter uses
- * 1024 buckets (~8KB).
+ * Chaining hash table for group-by lookup, grown by linear hashing.
+ *
+ * The table starts with BUCKET_COUNT buckets held inline (segment 0) —
+ * a small aggregation costs no allocation.  Past a load factor of one
+ * (more entries than buckets) every insert splits one bucket: bucket
+ * `m_split` of the current round moves the entries whose next hash bit
+ * is set to the new bucket `m_split + round size`.  When every bucket of
+ * the round has split the table has doubled and a new round starts.
+ * Each insert therefore does at most one bounded split (the entries of
+ * one chain), never a whole-table rehash: no long pause on the LDM
+ * thread, however many groups the table grows to.
+ *
+ * Buckets live in fixed segments of BUCKET_COUNT pointers (8 KB for the
+ * join table) reached through a directory; segments never move, so a
+ * bucket's address (and an Iterator's prev link) stays valid as the
+ * table grows.  Segments and the directory come from query memory; when
+ * an allocation fails, or MAX_SEGMENTS is reached, growth stops and the
+ * table keeps working with longer chains.  release() returns them.
+ *
+ * Splits only move entries to HIGHER bucket indices, so a walk in
+ * bucket order that restarts or resumes by bucket index never misses
+ * an entry while the table grows (it may meet a moved entry twice).
+ * Entries do not store their hash: a split recomputes the hash of the
+ * chain it moves (callers pass the per-thread strnxfrm scratch).
+ *
+ * Buckets use the upper 32 bits of hashKeyFull: the lower bits pick the
+ * owner node (hash % nodes) for charset keys, and taking bucket bits
+ * from the same end would leave half of each owner's buckets empty.
  *
  * Group data layout (GROUP_LINK_OVERHEAD = 24 bytes prepended):
  *   [chunk_next(8)] [hash_next(8)] [key_len(4)] [chunk_offset(4)]
@@ -66,10 +108,21 @@ struct GBColTypeInfo {
  */
 template<Uint32 BUCKET_COUNT>
 class GBHashTable {
+  static_assert(BUCKET_COUNT >= 2 &&
+                    (BUCKET_COUNT & (BUCKET_COUNT - 1)) == 0,
+                "BUCKET_COUNT must be a power of two");
+
  public:
   static const Uint32 HASH_NEXT_OFFSET = sizeof(char*);
   static const Uint32 KEY_LEN_OFFSET = 2 * sizeof(char*);
   static const Uint32 OVERHEAD = 24;
+  /* Buckets per segment and the segment index shift. */
+  static constexpr Uint32 SEG_SHIFT = agg_gb_log2u(BUCKET_COUNT);
+  static constexpr Uint32 SEG_MASK = BUCKET_COUNT - 1;
+  /* Growth cap: BUCKET_COUNT * MAX_SEGMENTS buckets (4 M for the join
+   * table, 32 MB of bucket segments). */
+  static constexpr Uint32 MAX_SEGMENTS = 4096;
+  static constexpr Uint32 INITIAL_DIR_CAPACITY = 16;
 
   /* Key length of a group record given its DATA pointer (the pointer
    * past the link header, as stored in iterators and candidate lists).
@@ -101,22 +154,47 @@ class GBHashTable {
   };
 
   GBHashTable()
-    : m_size(0), m_bucket_count(BUCKET_COUNT),
-      m_bucket_mask(BUCKET_COUNT - 1),
+    : m_dir(nullptr), m_dir_capacity(0), m_nsegs(1), m_size(0),
+      m_bucket_count(BUCKET_COUNT), m_low_mask(BUCKET_COUNT - 1),
+      m_split(0), m_first_hint(0), m_thread_id(0), m_grow_stopped(false),
       m_col_types(nullptr), m_n_gb_cols(0) {
     memset(m_buckets, 0, sizeof(m_buckets));
   }
 
-  void init(Uint32 bucket_count) {
-    m_bucket_count = bucket_count;
-    m_bucket_mask = bucket_count - 1;
-    m_size = 0;
-    memset(m_buckets, 0, bucket_count * sizeof(char*));
+  /* Empty table with the initial geometry; `thread_id` is the
+   * interpreter's allocation thread for growth segments. */
+  void init(Uint32 thread_id) {
+    release();
+    m_thread_id = thread_id;
+    memset(m_buckets, 0, sizeof(m_buckets));
   }
 
+  /* Forget every entry (callers free the group data themselves) and
+   * return to the initial geometry. */
   void clear() {
-    memset(m_buckets, 0, m_bucket_count * sizeof(char*));
+    release();
+    memset(m_buckets, 0, sizeof(m_buckets));
+  }
+
+  /* Free the growth segments and the directory and return to the
+   * initial geometry.  Entries are not touched: call it on an empty
+   * table (teardown, or clear()).  Bounded: at most MAX_SEGMENTS frees. */
+  void release() {
+    if (m_dir != nullptr) {
+      for (Uint32 s = 1; s < m_nsegs; s++) {
+        agg_gb_segment_free(m_dir[s]);
+      }
+      agg_gb_segment_free(m_dir);
+      m_dir = nullptr;
+    }
+    m_dir_capacity = 0;
+    m_nsegs = 1;
     m_size = 0;
+    m_bucket_count = BUCKET_COUNT;
+    m_low_mask = BUCKET_COUNT - 1;
+    m_split = 0;
+    m_first_hint = 0;
+    m_grow_stopped = false;
   }
 
   /* D26: find()/insert()/erase()/insertRaw()/hashKey()/hashKeyFull() all
@@ -133,18 +211,16 @@ class GBHashTable {
 
   void insert(char* data_ptr, Uint32 key_len,
               uchar* xfrm_buf, Uint32 xfrm_buf_len) {
-    char* raw = data_ptr - OVERHEAD;
     Uint32 b = hashKey(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
-    hashNext(raw) = m_buckets[b];
-    m_buckets[b] = raw;
-    m_size++;
+    linkInBucket(b, data_ptr - OVERHEAD);
+    maybeGrow(xfrm_buf, xfrm_buf_len);
   }
 
   void erase(char* data_ptr, Uint32 key_len,
              uchar* xfrm_buf, Uint32 xfrm_buf_len) {
     char* raw = data_ptr - OVERHEAD;
     Uint32 b = hashKey(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
-    char** prev = &m_buckets[b];
+    char** prev = &bucketRef(b);
     while (*prev != nullptr) {
       if (*prev == raw) {
         *prev = hashNext(raw);
@@ -155,24 +231,39 @@ class GBHashTable {
     }
   }
 
+  /* The walk starts at m_first_hint, a lower bound on the first
+   * non-empty bucket, so loops that restart from begin() after erasing
+   * a slice of groups (result send, teardown) do not rescan the emptied
+   * front of a grown table. */
   Iterator begin() {
-    for (Uint32 b = 0; b < m_bucket_count; b++) {
-      if (m_buckets[b] != nullptr) {
-        return Iterator(this, b, &m_buckets[b], m_buckets[b]);
+    for (Uint32 b = m_first_hint; b < m_bucket_count; b++) {
+      char*& head = bucketRef(b);
+      if (head != nullptr) {
+        m_first_hint = b;
+        return Iterator(this, b, &head, head);
       }
     }
+    m_first_hint = m_bucket_count;
     return Iterator(this, m_bucket_count, nullptr, nullptr);
   }
 
   Iterator begin() const {
-    GBHashTable* self = const_cast<GBHashTable*>(this);
-    for (Uint32 b = 0; b < m_bucket_count; b++) {
-      if (m_buckets[b] != nullptr) {
-        return Iterator(self, b,
-                        const_cast<char**>(&m_buckets[b]), m_buckets[b]);
+    return const_cast<GBHashTable*>(this)->begin();
+  }
+
+  /* The first entry in bucket order at or after `bucket` — resumes a
+   * sliced walk that saved its bucket index.  Entries only move to
+   * higher buckets as the table grows, so every entry that was at or
+   * after `bucket` when the walk paused is still there. */
+  Iterator beginAt(Uint32 bucket) {
+    if (bucket < m_first_hint) bucket = m_first_hint;
+    for (Uint32 b = bucket; b < m_bucket_count; b++) {
+      char*& head = bucketRef(b);
+      if (head != nullptr) {
+        return Iterator(this, b, &head, head);
       }
     }
-    return Iterator(self, m_bucket_count, nullptr, nullptr);
+    return Iterator(this, m_bucket_count, nullptr, nullptr);
   }
 
   /**
@@ -186,10 +277,13 @@ class GBHashTable {
    * segfaulted on the first resumed erase slice; found by
    * ronsql_large_cte Q6 at 100k groups).  If `raw` is not found in the
    * chain the iterator falls back to a read-only one (prev_link
-   * nullptr), preserving the old behavior.
+   * nullptr), preserving the old behavior.  The table must not grow
+   * between save and restore (a split can move `raw` to a higher
+   * bucket); every saved-position walk runs in a window where the
+   * table is immutable.
    */
   Iterator iteratorAt(Uint32 bucket, char* raw) {
-    char** prev = &m_buckets[bucket];
+    char** prev = &bucketRef(bucket);
     while (*prev != nullptr) {
       if (*prev == raw) {
         return Iterator(this, bucket, prev, raw);
@@ -206,11 +300,13 @@ class GBHashTable {
       it.m_raw = nxt;
       return;
     }
+    GBHashTable* self = const_cast<GBHashTable*>(this);
     for (Uint32 b = it.m_bucket + 1; b < m_bucket_count; b++) {
-      if (m_buckets[b] != nullptr) {
+      char*& head = self->bucketRef(b);
+      if (head != nullptr) {
         it.m_bucket = b;
-        it.m_prev_link = const_cast<char**>(&m_buckets[b]);
-        it.m_raw = m_buckets[b];
+        it.m_prev_link = &head;
+        it.m_raw = head;
         return;
       }
     }
@@ -228,10 +324,11 @@ class GBHashTable {
       return;
     }
     for (Uint32 b = it.m_bucket + 1; b < m_bucket_count; b++) {
-      if (m_buckets[b] != nullptr) {
+      char*& head = bucketRef(b);
+      if (head != nullptr) {
         it.m_bucket = b;
-        it.m_prev_link = &m_buckets[b];
-        it.m_raw = m_buckets[b];
+        it.m_prev_link = &head;
+        it.m_raw = head;
         return;
       }
     }
@@ -244,10 +341,36 @@ class GBHashTable {
   bool empty() const { return m_size == 0; }
   Uint32 bucketCount() const { return m_bucket_count; }
 
+  /* True when both tables map every hash to the same bucket. */
+  bool sameGeometry(const GBHashTable& other) const {
+    return m_low_mask == other.m_low_mask && m_split == other.m_split;
+  }
+
+  /* Unlink and return the first entry in bucket order (its data
+   * pointer, and its bucket in *bucket_out), or nullptr when empty.
+   * Drains in slices without rescanning emptied buckets; the table
+   * must not grow while it is being drained. */
+  char* popNext(Uint32* bucket_out) {
+    for (Uint32 b = m_first_hint; b < m_bucket_count; b++) {
+      char*& head = bucketRef(b);
+      if (head != nullptr) {
+        char* raw = head;
+        head = hashNext(raw);
+        m_size--;
+        m_first_hint = b;
+        if (bucket_out != nullptr) *bucket_out = b;
+        return raw + OVERHEAD;
+      }
+    }
+    m_first_hint = m_bucket_count;
+    return nullptr;
+  }
+
   char* popBucketHead(Uint32 b) {
-    char* raw = m_buckets[b];
+    char*& head = bucketRef(b);
+    char* raw = head;
     if (raw == nullptr) return nullptr;
-    m_buckets[b] = hashNext(raw);
+    head = hashNext(raw);
     m_size--;
     return raw + OVERHEAD;
   }
@@ -257,12 +380,19 @@ class GBHashTable {
     char* raw = data_ptr - OVERHEAD;
     Uint32 key_len = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
     Uint32 b = hashKey(data_ptr, key_len, xfrm_buf, xfrm_buf_len);
-    hashNext(raw) = m_buckets[b];
-    m_buckets[b] = raw;
-    m_size++;
+    linkInBucket(b, raw);
+    maybeGrow(xfrm_buf, xfrm_buf_len);
   }
 
-  bool bucketEmpty(Uint32 b) const { return m_buckets[b] == nullptr; }
+  /* insertRaw into bucket `b`, which the caller computed with hashKey()
+   * on this table's current geometry (no insert in between). */
+  void insertRawInBucket(Uint32 b, char* data_ptr,
+                         uchar* xfrm_buf, Uint32 xfrm_buf_len) {
+    linkInBucket(b, data_ptr - OVERHEAD);
+    maybeGrow(xfrm_buf, xfrm_buf_len);
+  }
+
+  bool bucketEmpty(Uint32 b) const { return bucketHead(b) == nullptr; }
 
   void setTypeMeta(const GBColTypeInfo *types, Uint32 nCols) {
     m_col_types = types;
@@ -276,20 +406,141 @@ class GBHashTable {
    * race a concurrent thread's hash computation. */
   Uint64 hashKeyFull(const char* key, Uint32 len,
                      uchar* xfrm_buf, Uint32 xfrm_buf_len) const;
+  /* The bucket of a key on the current geometry. */
   Uint32 hashKey(const char* key, Uint32 len,
                  uchar* xfrm_buf, Uint32 xfrm_buf_len) const;
   char* findInBucket(Uint32 b, const char* key, Uint32 key_len) const;
 
  private:
-  char* m_buckets[BUCKET_COUNT];
+  char* m_buckets[BUCKET_COUNT];   // segment 0
+  char*** m_dir;                   // segments; nullptr until the first growth
+  Uint32 m_dir_capacity;
+  Uint32 m_nsegs;                  // segments in use, segment 0 included
   Uint32 m_size;
-  Uint32 m_bucket_count;
-  Uint32 m_bucket_mask;
+  Uint32 m_bucket_count;           // (m_low_mask + 1) + m_split
+  Uint32 m_low_mask;               // bucket mask of the current round
+  Uint32 m_split;                  // next bucket of the round to split
+  mutable Uint32 m_first_hint;     // lower bound on the first non-empty bucket
+  Uint32 m_thread_id;              // allocation thread for segments
+  bool m_grow_stopped;             // allocation failed or MAX_SEGMENTS reached
   const GBColTypeInfo *m_col_types;
   Uint32 m_n_gb_cols;
 
   static char*& hashNext(char* raw) {
     return *reinterpret_cast<char**>(raw + HASH_NEXT_OFFSET);
+  }
+
+  char*& bucketRef(Uint32 b) {
+    if (b < BUCKET_COUNT) return m_buckets[b];
+    return m_dir[b >> SEG_SHIFT][b & SEG_MASK];
+  }
+
+  char* bucketHead(Uint32 b) const {
+    if (b < BUCKET_COUNT) return m_buckets[b];
+    return m_dir[b >> SEG_SHIFT][b & SEG_MASK];
+  }
+
+  /* Linear hashing address: the low bits of the round, one more bit for
+   * the buckets of the round that have already split. */
+  Uint32 bucketOf(Uint32 h) const {
+    Uint32 b = h & m_low_mask;
+    if (b < m_split) {
+      b = h & ((m_low_mask << 1) | 1);
+    }
+    return b;
+  }
+
+  static Uint32 bucketHash(Uint64 full) {
+    return static_cast<Uint32>(full >> 32);
+  }
+
+  void linkInBucket(Uint32 b, char* raw) {
+    char*& head = bucketRef(b);
+    hashNext(raw) = head;
+    head = raw;
+    m_size++;
+    if (b < m_first_hint) m_first_hint = b;
+  }
+
+  void maybeGrow(uchar* xfrm_buf, Uint32 xfrm_buf_len) {
+    if (m_size <= m_bucket_count || m_grow_stopped) {
+      return;
+    }
+    splitOne(xfrm_buf, xfrm_buf_len);
+  }
+
+  /* One more segment (and a larger directory when full).  False when
+   * query memory is exhausted or the cap is reached. */
+  bool addSegment() {
+    if (m_nsegs >= MAX_SEGMENTS) {
+      return false;
+    }
+    if (m_nsegs >= m_dir_capacity) {
+      Uint32 cap = (m_dir_capacity == 0) ? INITIAL_DIR_CAPACITY
+                                         : 2 * m_dir_capacity;
+      if (cap > MAX_SEGMENTS) cap = MAX_SEGMENTS;
+      char*** dir = static_cast<char***>(
+          agg_gb_segment_alloc(cap * sizeof(char**), m_thread_id));
+      if (dir == nullptr) {
+        return false;
+      }
+      if (m_dir != nullptr) {
+        memcpy(dir, m_dir, m_nsegs * sizeof(char**));
+        agg_gb_segment_free(m_dir);
+      } else {
+        dir[0] = m_buckets;
+      }
+      m_dir = dir;
+      m_dir_capacity = cap;
+    }
+    /* Not cleared: each bucket is written by the split that creates it,
+     * and buckets at or past m_bucket_count are never read. */
+    char** seg = static_cast<char**>(
+        agg_gb_segment_alloc(BUCKET_COUNT * sizeof(char*), m_thread_id));
+    if (seg == nullptr) {
+      return false;
+    }
+    m_dir[m_nsegs++] = seg;
+    return true;
+  }
+
+  /* Split bucket m_split into itself and m_split + round size (the next
+   * bucket index, m_bucket_count): entries whose hash has the round's
+   * high bit set move to the new bucket, the others stay. */
+  void splitOne(uchar* xfrm_buf, Uint32 xfrm_buf_len) {
+    const Uint32 new_b = m_bucket_count;
+    if ((new_b & SEG_MASK) == 0 && !addSegment()) {
+      m_grow_stopped = true;
+      return;
+    }
+    const Uint32 high_bit = m_low_mask + 1;
+    char*& old_head = bucketRef(m_split);
+    char* chain = old_head;
+    char* keep = nullptr;
+    char* move = nullptr;
+    while (chain != nullptr) {
+      char* nxt = hashNext(chain);
+      const Uint32 key_len =
+          *reinterpret_cast<Uint32*>(chain + KEY_LEN_OFFSET);
+      const Uint32 h = bucketHash(
+          hashKeyFull(chain + OVERHEAD, key_len, xfrm_buf, xfrm_buf_len));
+      if ((h & high_bit) != 0) {
+        hashNext(chain) = move;
+        move = chain;
+      } else {
+        hashNext(chain) = keep;
+        keep = chain;
+      }
+      chain = nxt;
+    }
+    old_head = keep;
+    bucketRef(new_b) = move;
+    m_bucket_count++;
+    if (++m_split == high_bit) {
+      /* Every bucket of the round split: the table has doubled. */
+      m_split = 0;
+      m_low_mask = (m_low_mask << 1) | 1;
+    }
   }
 };
 
@@ -379,8 +630,7 @@ template<Uint32 BUCKET_COUNT>
 Uint32 GBHashTable<BUCKET_COUNT>::hashKey(const char* key, Uint32 len,
                                           uchar* xfrm_buf,
                                           Uint32 xfrm_buf_len) const {
-  return static_cast<Uint32>(
-             hashKeyFull(key, len, xfrm_buf, xfrm_buf_len)) & m_bucket_mask;
+  return bucketOf(bucketHash(hashKeyFull(key, len, xfrm_buf, xfrm_buf_len)));
 }
 
 template<Uint32 BUCKET_COUNT>
@@ -388,7 +638,7 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
                                               Uint32 key_len) const {
   if (m_col_types == nullptr) {
     // Raw comparison path (no type metadata)
-    for (char* raw = m_buckets[b]; raw != nullptr;
+    for (char* raw = bucketHead(b); raw != nullptr;
          raw = hashNext(raw)) {
       char* d = raw + OVERHEAD;
       Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
@@ -400,7 +650,7 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
   }
 
   // Type-aware comparison path: compare column-by-column using cmpFn
-  for (char* raw = m_buckets[b]; raw != nullptr;
+  for (char* raw = bucketHead(b); raw != nullptr;
        raw = hashNext(raw)) {
     char* d = raw + OVERHEAD;
     Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);

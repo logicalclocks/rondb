@@ -2455,6 +2455,28 @@ Dbacc::accIsLockedLab(Signal* signal,
                     (Uint32)dl_waiter.isScan, dl_num));
     }
 
+    /**
+     * Start the lock-time clock before releasing the fragment mutex. Once
+     * the mutex is released, a waiter in the serial queue can be granted by
+     * another thread: a query thread may execute this locked read while the
+     * owning LDM thread commits the lock owner, and startNew/startNext then
+     * read m_lockTime in LockStats::wait_ok.
+     */
+    if (return_result == ZPARALLEL_QUEUE)
+    {
+      fragrecptr.p->m_lockStats.req_start_imm_ok((bits &
+                                            Operationrec::OP_LOCK_MODE)
+                                            != ZREADLOCK,
+                                            operationRecPtr.p->m_lockTime,
+                                            getHighResTimer());
+    }
+    else if (return_result == ZSERIAL_QUEUE)
+    {
+      fragrecptr.p->m_lockStats.req_start(
+          (bits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
+          operationRecPtr.p->m_lockTime, getHighResTimer());
+    }
+
     release_frag_mutex_hash(fragrecptr.p, hash);
 
     if (return_result == ZPARALLEL_QUEUE)
@@ -2464,18 +2486,10 @@ Dbacc::accIsLockedLab(Signal* signal,
                               operationRecPtr.p->localdata.m_page_idx,
                               fragrecptr.p->tupFragptr);
 
-      fragrecptr.p->m_lockStats.req_start_imm_ok((bits &
-                                            Operationrec::OP_LOCK_MODE)
-                                            != ZREADLOCK,
-                                            operationRecPtr.p->m_lockTime,
-                                            getHighResTimer());
       sendAcckeyconf(signal, operationRecPtr.p, ignore_ttl);
       return;
     } else if (return_result == ZSERIAL_QUEUE) {
       jam();
-      fragrecptr.p->m_lockStats.req_start(
-          (bits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
-          operationRecPtr.p->m_lockTime, getHighResTimer());
       /**
        * Send one wait-for edge per blocking transaction to its collector TC.
        * NOTE: this reuses signal->theData, so we restore the "blocked"

@@ -28,6 +28,14 @@
 # poi-12: 1000, poi-14: 1500).  Identical, correctly ordered output from
 # both paths cannot hide which one ran.
 #
+# FETCHED ROWS (m3_run6_plan.md C3): a streamed LIMIT n asks each fragment
+# for at most n rows per batch, so the rows the NDB API receives (the
+# header's `fetched=`) stay within n x fragments; with the default batch
+# (BatchSize, 384 in mtr) poi-4 fetched up to 384 rows per fragment to
+# print 12.  poi-4 / poi-5 / poi-8 assert that bound ($orders_frags is
+# the fragment count of orders); poi-19 makes one fragment deliver a
+# second batch mid-merge (LIMIT above BatchSize).
+#
 # ORDER VERIFICATION: every case sets $skip_sort=yes so ronsql_compare.inc
 # strict-diffs RonSQL vs MySQL in DELIVERED row order.  Index-order cases
 # cannot add a tie-breaker column (it would break the prefix match), so
@@ -50,8 +58,8 @@
 #   6   NULLs first in ASC index order + LIMIT across the NULL run
 #       (residual filter, ORDER BY-driven idx_o_clerk)
 #   7   NULLs last in DESC index order, no LIMIT (residual filter)
-#   8   LIMIT 260 crosses a fragment batch boundary under the ordered
-#       merge, then closes early
+#   8   LIMIT 260 under the ordered merge: first batches only, then
+#       early close
 #   9   equality prefix with the conjuncts in reverse index order +
 #       range bound on the ORDER BY column
 #   10  mixed directions -> client-side sort (buffered)
@@ -68,6 +76,8 @@
 #   16  equality prefix + residual filter + LIMIT
 #   17  VARCHAR index order (collation) + LIMIT across a value boundary
 #   18  ORDER BY alias (OUTPUT_REF) served by the index, DESC + LIMIT
+#   19  one fragment holds the whole top-N and LIMIT exceeds BatchSize:
+#       that fragment refills its batch mid-merge, then early close
 #   P1  rejection: FORCE INDEX on an index serving neither a WHERE
 #       bound nor the ORDER BY (no WHERE)
 #   P2  rejection: same with a residual-only WHERE
@@ -81,6 +91,12 @@ call mtr.add_suppression("Participant timeout");
 --let $skip_sort=yes
 --source suite/ronsql_cte/include/cte_schema.inc
 --source suite/ronsql_cte/include/cte_data.inc
+# Fragments of orders, for the fetched= bounds (LIMIT x fragments).
+--let $orders_frags=`SELECT COUNT(DISTINCT fragment_num) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/orders'`
+if ($orders_frags < 1)
+{
+  --die No fragments found for test/def/orders in ndbinfo.memory_per_fragment
+}
 
 DELIMITER |;
 
@@ -213,6 +229,8 @@ ORDER BY o_orderdate DESC LIMIT 12;|
 --exec grep -qF 'ORDER BY: index order (SF_OrderBy | SF_Descending merge' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --let $EXPECT_ROWS=12
+--let $fetch_limit=12
+--expr $EXPECT_FETCHED_MAX = $fetch_limit * $orders_frags
 let $QUERY=
 SELECT o_orderkey, o_orderdate FROM orders
 ORDER BY o_orderdate DESC LIMIT 12;|
@@ -232,6 +250,8 @@ SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 11;|
 --source suite/ronsql/include/ronsql_compare.inc
 --let $EXPECT_ROWS=11
+--let $fetch_limit=11
+--expr $EXPECT_FETCHED_MAX = $fetch_limit * $orders_frags
 let $QUERY=
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 11;|
@@ -306,17 +326,20 @@ WHERE o_totalprice < 400 ORDER BY o_clerk DESC|
 # ============================================================
 
 --echo
---echo === poi-8: LIMIT 260 crosses a fragment batch boundary under the ordered merge ===
-# 1500 rows spread over the table's fragments: at 260 delivered rows at
-# least one receiver has had to fetch a second batch in every topology;
-# the drain then closes the still-open scan.  Key-only projection (dates
-# 1..500 are tied pairs).
+--echo === poi-8: LIMIT 260 under the ordered merge, then early close ===
+# 1500 rows spread over the table's fragments.  Each fragment is asked
+# for at most 260 rows per batch and none can contribute more than the
+# LIMIT, so the merge completes on the first batches and the drain closes
+# the still-open scan: fetched <= 260 x fragments.  poi-19 forces a
+# second batch.  Key-only projection (dates 1..500 are tied pairs).
 --let $skip_sort=yes
 let $QUERY=
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 260;|
 --source suite/ronsql/include/ronsql_compare.inc
 --let $EXPECT_ROWS=260
+--let $fetch_limit=260
+--expr $EXPECT_FETCHED_MAX = $fetch_limit * $orders_frags
 let $QUERY=
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 260;|
@@ -324,6 +347,53 @@ ORDER BY o_orderdate LIMIT 260;|
 --echo == Expected result ==
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 260|
+
+--echo
+--echo === poi-19: one fragment refills its batch mid-merge (LIMIT above BatchSize) ===
+# ob_skew is partitioned on p, so the 450 rows with p = 1 (d = 1..450)
+# live in one fragment and the 50 rows with p = 2 (d = 1001..1050) in one
+# fragment (possibly the same).  ORDER BY d LIMIT 400 takes every row
+# from the p = 1 fragment.  Its batch is min(LIMIT, BatchSize) = 384 rows
+# (mtr default BatchSize), so it must deliver a second batch while the
+# merge holds the other fragments' heads, and the drain closes the scan
+# with 50 of its rows unread.  d is unique: the delivered order is total.
+--disable_query_log
+CREATE TABLE ob_skew (
+  id INT NOT NULL,
+  p  INT NOT NULL,
+  d  INT NOT NULL,
+  PRIMARY KEY (id, p),
+  INDEX idx_ob_skew_d (d)
+) ENGINE=NDB PARTITION BY KEY (p)|
+INSERT INTO ob_skew
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 450)
+  SELECT n, 1, n FROM s|
+INSERT INTO ob_skew
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 50)
+  SELECT n, 2, 1000 + n FROM s|
+--enable_query_log
+--let $skip_sort=yes
+let $QUERY=
+SELECT d FROM ob_skew ORDER BY d LIMIT 400;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_poi_19.out
+let $QUERY=
+SELECT d FROM ob_skew ORDER BY d LIMIT 400;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Index: `idx_ob_skew_d`' $EXPLAIN_FILE
+--exec grep -qF 'Chosen for ORDER BY index order (no bounds).' $EXPLAIN_FILE
+--exec grep -qF 'ORDER BY: index order (SF_OrderBy merge' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let $EXPECT_ROWS=400
+let $QUERY=
+SELECT d FROM ob_skew ORDER BY d LIMIT 400;|
+--source suite/ronsql/include/ronsql_phase_rows.inc
+--echo == Expected result (summary; the order is strict-diffed above) ==
+SELECT COUNT(*), MIN(d), MAX(d)
+FROM (SELECT d FROM ob_skew ORDER BY d LIMIT 400) AS t|
+--disable_query_log
+DROP TABLE ob_skew|
+--enable_query_log
 
 # ============================================================
 # Equality prefix: conjunct order + composite bounds.

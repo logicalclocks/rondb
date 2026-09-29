@@ -32,11 +32,13 @@ call mtr.add_suppression("Participant timeout");
 # ~82 KiB of TSV output (400 rows x ~205 bytes) — comfortably over the
 # 64 KiB response cap; LIMIT'ed subsets stay far under it.
 --disable_query_log
+--disable_warnings
 CREATE TABLE szt (
   s_id  INT NOT NULL,
   s_pad CHAR(200) NOT NULL,
   PRIMARY KEY (s_id)
 ) ENGINE=NDB;
+--enable_warnings
 CREATE TABLE _d8 (d INT) ENGINE=MEMORY;
 INSERT INTO _d8 VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
 INSERT INTO szt SELECT a.d*100 + b.d*10 + c.d, REPEAT('x', 200)
@@ -103,5 +105,7 @@ EOF
 --remove_file $MYSQL_TMP_DIR/rl4_hdrs
 
 --disable_query_log
+--disable_warnings
 DROP TABLE szt;
+--enable_warnings
 --enable_query_log

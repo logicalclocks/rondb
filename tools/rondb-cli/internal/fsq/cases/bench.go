@@ -124,16 +124,21 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 	}
 
 	// Plan pins from the first run's EXPLAIN output (benchmarks.md §7):
-	// point reads on the ordered PK index, IN lists as a table scan (F12,
-	// pinned as observed so a planner fix shows up as a pin warning),
-	// collect in index order, snowflake CTE bodies and PK lookups.
+	// point reads on the ordered PK index, collect in index order,
+	// snowflake CTE bodies and PK lookups.  IN lists on the PK prefix were
+	// a table scan (F12 / F23) until RONDB-1124 WP-F F2 made them one
+	// index range per key (rangePins); the hash-only twin has no ordered
+	// index and stays a table scan (scanPins), as does the batch
+	// snowflake's CTE body until WP-F F3.
 	indexPins := []string{"Execute as index scan.", "Index: `PRIMARY`"}
 	scanPins := []string{"Execute as table scan."}
+	rangePins := []string{"Execute as index scan.", "Index: `PRIMARY`", "SF_MultiRange"}
 	collectPins := func(n int) []string {
 		return []string{"Execute as index scan.", "ORDER BY: index order (SF_OrderBy | SF_Descending", fmt.Sprintf("Result limited to %d rows.", n)}
 	}
 	snowPins := []string{"Body root: INDEX_SCAN using PRIMARY", "[ROOT] CTE_SCAN", "[INNER] PK_LOOKUP"}
-	snowBatchPins := []string{"Body root: TABLE_SCAN", "[ROOT] CTE_SCAN", "[INNER] PK_LOOKUP"}
+	// WP-F F3: the batch body's IN list is one PRIMARY range per key.
+	snowBatchPins := []string{"Body root: INDEX_SCAN using PRIMARY", "ranges (IN list on `customer_id`", "[ROOT] CTE_SCAN", "[INNER] PK_LOOKUP"}
 	leftPins := []string{"Body root: INDEX_SCAN using PRIMARY", "[ROOT] CTE_SCAN", "[LEFT JOIN] PK_LOOKUP"}
 
 	point := spec.AggSpec{{Key: "amount", Fns: []string{"count", "sum", "max"}}, {Key: "fee", Fns: []string{"min"}}}
@@ -158,11 +163,11 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 	for _, n := range []int{10, 100, 1000} {
 		name := fmt.Sprintf("fs_hw_agg_batch%d", n)
 		if g, ok := emitted(name, b.aggView("hw-b", data.TTransactions, "tx_", batchAgg, nil, true, nil), n); ok {
-			add(BenchEntry{Name: name, Shape: "S3", Description: fmt.Sprintf("batch aggregate, IN list of %d + GROUP BY (F12: table scan)", n), Rows: fmt.Sprintf("<= %d", n), SQL: ronsql(g, 0), PlanPins: scanPins})
+			add(BenchEntry{Name: name, Shape: "S3", Description: fmt.Sprintf("batch aggregate, IN list of %d + GROUP BY (WP-F F2: one index range per key)", n), Rows: fmt.Sprintf("<= %d", n), SQL: ronsql(g, 0), PlanPins: rangePins})
 		}
 	}
 	if g, ok := emitted("fs_hw_agg_batch100_window", b.aggView("hw-bw", data.TTransactions, "tx_", batchAgg, i64p(30*day), true, nil), 100); ok {
-		add(BenchEntry{Name: "fs_hw_agg_batch100_window", Shape: "S3+S2", Description: "batch of 100 with a 30-day window (F12: table scan)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: scanPins})
+		add(BenchEntry{Name: "fs_hw_agg_batch100_window", Shape: "S3+S2", Description: "batch of 100 with a 30-day window (WP-F F2: one index range per key)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: rangePins})
 	}
 	for _, n := range []int{5, 50} {
 		name := fmt.Sprintf("fs_hw_collect%d", n)
@@ -195,7 +200,7 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 		add(BenchEntry{Name: "fs_hw_snow2_twin", Shape: "S7 twin", Description: "production MySQL nested join, 2 hops", Rows: "<= 1", MySQLOnly: true, SQL: twin(g)})
 	}
 	if g, ok := emitted("fs_hw_snow1_batch100", b.snowflakeView("hw-s1b", 1, spec.JoinInner, true), 100); ok {
-		add(BenchEntry{Name: "fs_hw_snow1_batch100", Shape: "S7 batch", Description: "snowflake 1-hop batch of 100 (root key projected; F12: CTE body table scan)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: snowBatchPins})
+		add(BenchEntry{Name: "fs_hw_snow1_batch100", Shape: "S7 batch", Description: "snowflake 1-hop batch of 100 (root key projected; WP-F F3: one CTE body range per key)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: snowBatchPins})
 	}
 	if g, ok := emitted("fs_hw_snow2_left_chain", b.snowflakeView("hw-s8", 2, spec.JoinLeft, false), 0); ok {
 		add(BenchEntry{Name: "fs_hw_snow2_left_chain", Shape: "S8", Description: "LEFT per-chain template for the country node (two inner hops, one projection)", Rows: "<= 1", SQL: ronsql(g, 1), PlanPins: snowPins})
@@ -209,7 +214,7 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 		add(BenchEntry{Name: "fs_hw_strkey_point", Shape: "S10", Description: "point aggregate over a VARCHAR entity key", Rows: "1", SQL: ronsql(g, 0), PlanPins: indexPins})
 	}
 	if g, ok := emitted("fs_hw_strkey_batch100", b.aggView("hw-strb", data.TTxStr, "s_", batchAgg, nil, true, nil), 100); ok {
-		add(BenchEntry{Name: "fs_hw_strkey_batch100", Shape: "S10+S3", Description: "batch of 100 string keys (F12: table scan; F10 crashes the pushed mysqld arm)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: scanPins})
+		add(BenchEntry{Name: "fs_hw_strkey_batch100", Shape: "S10+S3", Description: "batch of 100 string keys (WP-F F2: one index range per key; F10 crashes the pushed mysqld arm)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: rangePins})
 	}
 	hist := spec.AggSpec{{Key: "*", Fns: []string{"count"}}, {Key: "delta", Fns: []string{"sum"}}}
 	if g, ok := emitted("fs_hw_composite_point", b.aggView("hw-hist", data.TBalanceHist, "b_", hist, i64p(90*day), false, nil), 0); ok {

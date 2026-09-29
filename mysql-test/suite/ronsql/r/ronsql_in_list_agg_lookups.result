@@ -1,0 +1,174 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== scalar aggregates over an IN list on the primary key; missing keys contribute nothing ===
+== Query ==
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v), COUNT(s) FROM t_pk1 WHERE id IN (3, 1, 999, 2);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== GROUP BY the key; duplicates are read once ===
+== Query ==
+SELECT id, COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (5, 3, 7, 5, 3) GROUP BY id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== GROUP BY a non-key column: partials from different keys merge into one group ===
+== Query ==
+SELECT g, COUNT(*), SUM(v), MAX(v) FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10) GROUP BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== residual filter on another column runs before the aggregation ===
+== Query ==
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5, 6, 7, 8) AND v > 40;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== every key missing or filtered: scalar gives one row, grouped gives none ===
+== Query ==
+SELECT COUNT(*), SUM(v), MAX(v) FROM t_pk1 WHERE id IN (998, 999);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (1, 2) AND v > 1000;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT id, COUNT(*) FROM t_pk1 WHERE id IN (998, 999) GROUP BY id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== string MIN / MAX (string payload records) and AVG ===
+== Query ==
+SELECT MIN(s), MAX(s), COUNT(s), AVG(v) FROM t_pk1 WHERE id IN (12, 4, 30, 7);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT g, MIN(s), MAX(s) FROM t_pk1 WHERE id IN (12, 4, 30, 7, 9, 22) GROUP BY g;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== composite primary key: equality on a, IN list on b ===
+== Query ==
+SELECT COUNT(*), SUM(v) FROM t_pk2 WHERE a = 3 AND b IN (1, 4, 9);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== hash-only primary key: no ordered index needed ===
+== Query ==
+SELECT COUNT(*), SUM(v) FROM t_hash WHERE id IN (5, 6, 7, 500);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== VARCHAR primary key under a case-insensitive collation ===
+== Query ==
+SELECT COUNT(*), SUM(v) FROM t_str WHERE k IN ('key1', 'KEY1', 'KEY2', 'Key Five', 'nope');
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== ORDER BY an aggregate alias with LIMIT (applied by the result printer) ===
+== Query ==
+SELECT id, SUM(v) AS sv FROM t_pk1 WHERE id IN (4, 9, 2, 17, 11) GROUP BY id ORDER BY sv DESC LIMIT 3;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== a single key stays a fragment-pruned index scan ===
+== Query ==
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id = 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== checked 64-bit SUM: an overflow across keys is error 1860; the query after it succeeds ===
+== Explain Query ==

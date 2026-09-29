@@ -505,6 +505,12 @@ class Ndbd_mem_manager {
   Uint32 get_free_shared_nolock() const;
 
   /**
+   * Advisory shared-page availability for a resource, accounting for
+   * bookings and priority reserves. Does not reserve the returned pages.
+   */
+  Uint32 get_resource_free_shared_nolock(Uint32 id) const;
+
+  /**
    * get_in_use is used by the resources ndbinfo table and by the above
    * mentioned DUMP 1000 command.
    */

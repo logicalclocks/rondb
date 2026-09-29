@@ -1,0 +1,75 @@
+
+[*] RonSQL Benchmark fs_hw_composite_point: 1 threads × 5000 requests = 5000 total requests
+[*] [S9] composite entity key (account, currency) with a 90-day window (rows/req 1)
+
+SELECT COUNT(*) AS `count`, SUM(`delta`) AS `delta_sum` FROM `balance_hist_1` WHERE `account_id` = {ACCT} AND `currency` = {CUR} AND `event_time` >= {NOW-90d};
+
+[*] Random key range: 1..100000
+[*] Warmup: 1.45ms, 1 result rows
+[*] Warmup phases (µs): parse=8,analyze=1,load=8,plan=1,compile=3,prepare=23,subquery=0,ndbprep=5,send=0,firstbatch=1109,drain=0,print=2,execute=1120,rows=0,attempts=1
+
+[*] Warmup plan (EXPLAIN):
+Query parse tree:
+SELECT
+  Out_0:`count`
+   = A0:Count(1)
+  Out_1:`delta_sum`
+   = A1:Sum(`delta`)
+FROM balance_hist_1
+WHERE
+  AND
+  ├─ AND
+  │  ├─ =
+  │  │  ├─ `account_id`
+  │  │  ╰─ 48082
+  │  ╰─ =
+  │     ├─ `currency`
+  │     ╰─ STRING: EUR
+  ╰─ >=
+     ├─ `event_time`
+     ╰─ STRING: 2026-03-03<20>00:00:00
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C00 r00 = C00:`delta`
+Sum    A01  r00 A01:SUM <- r00:`delta`
+
+Execute as index scan.
+Index: `PRIMARY`(`account_id`, `currency`, `event_time`)
+With goodness 210111 it's the best of 2 options.
+CONDITIONS (3 bounds):
+├─ INDEX[0]: =
+│            ├─ `account_id`
+│            ╰─ 48082
+├─ INDEX[1]: =
+│            ├─ `currency`
+│            ╰─ STRING: EUR
+╰─ INDEX[2]: >=
+             ├─ `event_time`
+             ╰─ STRING: 2026-03-03<20>00:00:00
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 8 instructions.
+
+
+[OK] RonSQL Benchmark fs_hw_composite_point completed in 0.52s
+   Requests: 5000 (errors: 0)
+   Throughput: 9593.64 queries/sec
+   Latency: min=48.83us avg=92.76us max=1.19ms p95=86.13us p99=1.13ms p99.9=1.14ms
+
+   Phase breakdown (server-side, 5000/5000 requests sampled):
+     phase               avg        p95        p99        max
+     parse            1.81us     2.00us     3.00us    10.00us
+     analyze          0.04us     0.00us     1.00us     1.00us
+     load             0.94us     1.00us     2.00us     6.00us
+     plan             0.15us     1.00us     1.00us     3.00us
+     compile          0.37us     1.00us     1.00us     3.00us
+     prepare          3.59us     4.00us     5.00us    24.00us
+     ndbprep          0.77us     1.00us     1.00us     6.00us
+     firstbatch      59.88us    48.00us     1.09ms     1.10ms
+     print            0.23us     1.00us     1.00us     3.00us
+     execute         61.36us    50.00us     1.09ms     1.11ms
+     rows drained 0.0 per request
+

@@ -227,21 +227,24 @@ my $ok = eval {
   my @errors = ($err =~ /\(code (\d+)\)/g);
   push @errors, ($err =~ /^NDB [^\n]*? (\d+),/mg);
   # Node-failure reports from DBTC / DBLQH (286), DBSPJ (20016) and the
-  # API (40xx), plus STATE_NOT_FOUND (1251) from the 10 ms placeholder
+  # API (40xx), plus SETUP_NOT_RECEIVED (1274) from the 10 ms placeholder
   # sweeper: it REFs the consumers parked at the failure, and a retried
   # attempt that starts while the survivors still handle the failure can
   # see its SETUP processed later than its consumers arrive (plan F-10).
-  # RonSQL retries 1251 like the others; the final result is checked below.
-  my %allowed = map { $_ => 1 } (286, 20016, 4010, 4025, 4028, 4031, 1251);
+  # All of them are temporary errors, which RonSQL retries (it retries
+  # nothing else); the final result is checked below.
+  my %allowed = map { $_ => 1 } (286, 20016, 4010, 4025, 4028, 4031, 1274);
   die "Unexpected/missing node-failure diagnostic; see $prefix.failure.err\n"
     unless @errors && !(grep { !$allowed{$_} } @errors);
   if ($rc == 0) {
     die "Retry returned an incomplete or duplicated result\n" unless $out eq $expected;
   } else {
-    die "Unexpected CLI exit status $rc\n" unless $rc == (1 << 8) || $rc == (3 << 8);
+    # Only temporary errors were reported, so a failure must be the
+    # exhausted retry budget (exit 3), never a permanent error (exit 1).
+    die "Unexpected CLI exit status $rc\n" unless $rc == (3 << 8);
     die "Failed aggregate query emitted a result\n" unless $out eq '';
     die "Missing final CLI error\n"
-      unless $err =~ /ronsql_cli caught (?:exception:|retryable error after 3 attempts\.)/;
+      unless $err =~ /ronsql_cli caught retryable error after 3 attempts\./;
   }
   print "RonSQL $mode: bounded completion with a checked result or node-failure error\n";
 

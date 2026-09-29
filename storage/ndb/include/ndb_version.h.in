@@ -1094,6 +1094,42 @@ ndbd_deadlock_detail_supported(Uint32 v)
   return v >= NDBD_DEADLOCK_DETAIL_VERSION;
 }
 
+/*
+ * RonSQL (RDRS and ronsql_cli) runs a query only when every data node
+ * is 26.10.0 or later.  Its execution paths depend on data-node
+ * behaviour that first ships together in 26.10 (pushdown aggregation
+ * across the ranges of a multi-range scan, CTE and join aggregation,
+ * checked 64-bit SUM merges, the compiled interpreter), so RonSQL does
+ * not negotiate per feature: it checks the cluster's minimum data-node
+ * version once per query and refuses to run below it.
+ */
+#define NDBD_RONSQL_MIN_VERSION NDB_MAKE_VERSION(26, 10, 0)
+static
+inline
+bool
+ndbd_support_ronsql(Uint32 v)
+{
+  return v >= NDBD_RONSQL_MIN_VERSION;
+}
+
+/*
+ * Aggregation on primary-key reads (NdbOperation::OperationOptions
+ * OO_AGGREGATION, RONDB-1124 WP-F F1b): TCKEYREQ / LQHKEYREQ carry an
+ * aggregation-read flag and the data node answers the committed read
+ * with one aggregation result record.  An older data node ignores the
+ * flag and would complete the read without that record, so the API
+ * refuses OO_AGGREGATION (error 4575) unless every data node passes
+ * this predicate.
+ */
+#define NDBD_PK_READ_AGGREGATION_VERSION NDB_MAKE_VERSION(26, 10, 0)
+static
+inline
+bool
+ndbd_support_pk_read_aggregation(Uint32 v)
+{
+  return v >= NDBD_PK_READ_AGGREGATION_VERSION;
+}
+
 #define NDBD_PARTIAL_UPDATE NDB_MAKE_VERSION(24, 10, 0)
 static
 inline

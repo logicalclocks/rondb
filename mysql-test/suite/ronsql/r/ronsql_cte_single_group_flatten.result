@@ -1,0 +1,256 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+CREATE TABLE sgf (
+id INT NOT NULL,
+ck INT NOT NULL,
+tag VARCHAR(10) NOT NULL,
+d DATE NOT NULL,
+price DECIMAL(15,2) NOT NULL,
+qty INT,
+PRIMARY KEY (id),
+KEY idx_sgf_ck (ck)
+) ENGINE=NDB;
+INSERT INTO sgf VALUES
+(1, 1, 'a', '2026-01-03', 10.50, 2),
+(2, 1, 'b', '2026-01-01', 20.25, 5),
+(3, 1, 'a', '2026-01-07', 7.00, NULL),
+(4, 1, 'c', '2026-01-05', 100.10, 1),
+(5, 2, 'a', '2026-02-01', 3.30, NULL),
+(6, 2, 'b', '2026-02-02', 4.40, NULL),
+(7, 3, 'z', '2026-03-01', 1.00, 9);
+
+=== sgf-1: the fs_point form (ck 1: 4 rows) + EXPLAIN pin ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(price) AS s, MIN(d) AS d1, MAX(d) AS d2 FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1, MAX(cf.d2) AS md2 FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== sgf-2: missing entity (ck 9): every output NULL, MAX(COUNT) too ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(price) AS s, MIN(d) AS d1, MAX(d) AS d2 FROM sgf WHERE ck = 9 GROUP BY ck) SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1, MAX(cf.d2) AS md2 FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-3: a group of NULL inputs (ck 2): COUNT 2, SUM / MIN / AVG NULL ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(qty) AS sq, MIN(qty) AS lq, AVG(qty) AS aq FROM sgf WHERE ck = 2 GROUP BY ck) SELECT MAX(cf.n) AS mn, MAX(cf.sq) AS msq, MIN(cf.lq) AS mlq, MAX(cf.aq) AS maq FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-4: unaliased main outputs keep their names ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, MIN(d) AS d1 FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MAX(n), MIN(cf.d1) FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-5: a subset, reordered; unnamed body aggregates (AVG among them) are computed, not printed ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(price) AS s, AVG(price) AS ap, MIN(d) AS d1, MAX(d) AS d2, SUM(qty) AS sq FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MIN(cf.d2) AS last_d, MIN(cf.n) AS cnt, MAX(cf.d1) AS first_d FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-6: AVG in the body (DECIMAL scale) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, AVG(price) AS ap, AVG(qty) AS aq, COUNT(*) AS n FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MAX(cf.ap) AS map, MIN(cf.aq) AS maq, MAX(cf.n) AS mn FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-7: COUNT(1) and arithmetic inside body aggregates ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(1) AS c1, SUM(qty * 2 + 1) AS x, MAX(qty - 1) AS y FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MAX(cf.c1) AS mc1, MAX(cf.x) AS mx, MIN(cf.y) AS my FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-8: body table alias, qualified names, literal on the left ===
+== Query ==
+WITH cf AS (SELECT s.ck AS k, COUNT(*) AS n, MAX(s.price) AS mp FROM sgf AS s WHERE 1 = s.ck GROUP BY s.ck) SELECT MAX(n) AS mn, MAX(cf.mp) AS mmp FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-9: an extra conjunct keeps part of the group (ck 1, qty > 1: 2 rows) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(price) AS s FROM sgf WHERE ck = 1 AND qty > 1 GROUP BY ck) SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-10: an extra conjunct empties the group: NULLs ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(price) AS s FROM sgf WHERE ck = 1 AND qty > 100 GROUP BY ck) SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-11: two GROUP BY columns, both bound (ck 1, tag 'a': 2 rows) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, tag AS t, COUNT(*) AS n, SUM(price) AS s FROM sgf WHERE ck = 1 AND tag = 'a' GROUP BY ck, tag) SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-12: string MIN / MAX in the body ===
+== Query ==
+WITH cf AS (SELECT ck AS k, MIN(tag) AS lo, MAX(tag) AS hi FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MAX(cf.lo) AS mlo, MIN(cf.hi) AS mhi FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-13: a DATE key bound by a string literal ===
+== Query ==
+WITH cf AS (SELECT d AS k, COUNT(*) AS n, SUM(price) AS s FROM sgf WHERE d = '2026-01-05' GROUP BY d) SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== sgf-c1 (CTE path): an outer COUNT(*) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n, SUM(price) AS s FROM sgf WHERE ck = 1 GROUP BY ck) SELECT COUNT(*) AS c, MAX(cf.n) AS mn, MAX(cf.s) AS ms FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== sgf-c2 (CTE path): a body COUNT(col) — 0 for a group of NULLs (ck 2) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(qty) AS cq FROM sgf WHERE ck = 2 GROUP BY ck) SELECT MAX(cf.cq) AS mcq FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== sgf-c3 (CTE path): the main reads the GROUP BY key ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n FROM sgf WHERE ck = 1 GROUP BY ck) SELECT MAX(cf.k) AS mk, MAX(cf.n) AS mn FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== sgf-c4 (CTE path): partially bound GROUP BY — 3 groups, MAX(n) 2 (a flatten would say 4) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, tag AS t, COUNT(*) AS n FROM sgf WHERE ck = 1 GROUP BY ck, tag) SELECT MAX(cf.n) AS mn FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== sgf-c5 (CTE path): an OR of two keys — 2 groups, MAX(n) 4 (a flatten would say 5) ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n FROM sgf WHERE ck = 1 OR ck = 3 GROUP BY ck) SELECT MAX(cf.n) AS mn FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+
+=== sgf-c6 (CTE path): an outer SUM ===
+== Query ==
+WITH cf AS (SELECT ck AS k, COUNT(*) AS n FROM sgf WHERE ck = 1 GROUP BY ck) SELECT SUM(cf.n) AS sn FROM cf;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+DROP TABLE sgf;

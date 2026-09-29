@@ -192,6 +192,11 @@ int NdbOperation::doSendKeyReq(int aNodeId, GenericSectionPtr *secs,
   NdbImpl *impl = theNdb->theImpl;
   bool forceShort = impl->forceShortRequests;
   bool sendLong = !forceShort;
+  if (unlikely(forceShort && m_read_aggregation_code != nullptr)) {
+    /* The aggregation-read flag exists in long TCKEYREQ only. */
+    setErrorCodeAbort(4574);
+    return -1;
+  }
   Uint32 tcNodeVersion = impl->getNodeNdbVersion(aNodeId);
 
   setRequestInfoTCKEYREQ(lastFlag, sendLong);
@@ -958,8 +963,11 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
    * ATTRINFO
    */
   const NdbInterpretedCode *code = m_interpreted_code;
-  if (code) {
-    if (code->m_flags & NdbInterpretedCode::UsesDisk) no_disk_flag = 0;
+  const NdbAggregator *agg = m_read_aggregation_code;
+  if (code || agg) {
+    if (code && (code->m_flags & NdbInterpretedCode::UsesDisk))
+      no_disk_flag = 0;
+    if (agg && agg->disk_columns()) no_disk_flag = 0;
 
     /* Need to add section lengths info to the signal */
     Uint32 sizes[AttrInfo::SectionSizeInfoLength];
@@ -1049,6 +1057,14 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
       requestedCols++;
     }
 
+    /* OO_AGGREGATION: the aggregation record is the whole reply; the
+     * data node refuses a read that also returns column values. */
+    if (unlikely(agg != nullptr &&
+                 (requestedCols > 0 || theBlobList != nullptr))) {
+      setErrorCodeAbort(4574);
+      return -1;
+    }
+
     /* Are there any columns to read via NdbRecord? */
     if (requestedCols > 0) {
       bool all = (requestedCols == m_currentTable->m_columns.size());
@@ -1078,6 +1094,11 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
      */
     const NdbRecAttr *ra= theReceiver.m_firstRecAttr;
     while (ra) {
+      if (ra == m_read_aggregation_rec_attr) {
+        /* Receives the OO_AGGREGATION result record; nothing to read. */
+        ra = ra->next();
+        continue;
+      }
       res = insertATTRINFOHdr_NdbRecord(ra->attrId(), 0);
       Uint32 extraAI = ra->getPartialReadAI();
       if (unlikely(res == 0 && extraAI != 0))
@@ -1396,6 +1417,16 @@ int NdbOperation::buildSignalsNdbRecord(Uint32 aTC_ConnectPtr, Uint64 aTransId,
     }
   }
 
+  /* OO_AGGREGATION: the finalized aggregation program follows the five
+   * interpreted sections (after the subroutine section), the layout a
+   * scan with pushdown aggregation uses; DBTUP finds it from the
+   * section lengths. */
+  if (agg != nullptr) {
+    res = insertATTRINFOData_NdbRecord((const char *)agg->buffer(),
+                                       agg->instructions_length() << 2);
+    if (res) return res;
+  }
+
   /* Check if too much attrinfo have been defined. */
   if (theTotalCurrAI_Len > TcKeyReq::MaxTotalAttrInfo) {
     setErrorCodeAbort(4257);
@@ -1455,8 +1486,17 @@ Uint32 NdbOperation::fillTcKeyReqHdr(TcKeyReq *tcKeyReq, Uint32 connectPtr,
   tcKeyReq->attrLen = 0;
 
   UintR reqInfo = 0;
-  TcKeyReq::setInterpretedFlag(reqInfo, (m_interpreted_code != nullptr));
+  /* OO_AGGREGATION: the aggregation program rides after the five
+   * interpreted sections, so the read is interpreted even without a
+   * filter program; the aggregation-read flag is carried in attrLen
+   * (long TCKEYREQ only). */
+  TcKeyReq::setInterpretedFlag(reqInfo,
+                               (m_interpreted_code != nullptr ||
+                                m_read_aggregation_code != nullptr));
   TcKeyReq::setInterpretedInsertFlag(reqInfo, theInterpretInsertIndicator);
+  if (m_read_aggregation_code != nullptr) {
+    TcKeyReq::setAggReadFlag(tcKeyReq->attrLen, 1);
+  }
   // AbortOption set later in prepareSendNdbRecord()
 
   tcKeyReq->transId1 = (Uint32)transId;

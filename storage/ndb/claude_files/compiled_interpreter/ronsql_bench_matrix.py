@@ -23,6 +23,13 @@ ETA. Per case the driver also records the ndbinfo.jit counter deltas
 (programs compiled / reused / fallback, rows executed, compile time)
 and, for the mysqld engines, mysqld's NDB API counters (time spent
 waiting for the data nodes, scan batches, rows read, pushed queries).
+Unless --no-mem-probe, it also records the data nodes' QUERY_MEMORY,
+TRANSACTION_MEMORY and TOTAL_GLOBAL_MEMORY (the shared pool query memory
+draws on) use from ndbinfo.resources per case: idle before,
+the peak sampled while the case runs (--mem-sample seconds) and idle
+after (--mem-settle seconds after the case). Memory that returns to the
+before-level is load; memory kept after the case, or an idle level that
+climbs from case to case, is a leak (census F27).
 
 Where the time goes:
   - RonSQL: the server-side phase breakdown RDRS returns in the
@@ -39,13 +46,23 @@ Usage (from the repo root):
       [--build prod_build] [--sf 0.1] [--threads 1,8] [--seconds 5 | --requests N]
       [--queries all|fs|offline_fs|tpch_cte|tpch_official|name,name,...]
       [--engines ronsql,mysqld,mysqld_nopush] [--compiler off,on]
-      [--cpubind FILE] [--client-cpus 16-19] [--rondis] [--rdrs-threads 64]
+      [--cpubind FILE] [--client-cpus 16-19] [--expect-ldm N] [--rondis] [--rdrs-threads 64]
       [--toggle auto|set|restart] [--no-load] [--keep-cluster]
       [--no-start --mysql-port P --mysql-sock S --rdrs-port P --connectstring C]
+      [--no-mem-probe | --mem-sample 1.0 --mem-settle 1.0]
       [--out DIR] [--quick] [--verbose]
 
   --quick     = --threads 1 --seconds 2 (smoke run)
   --stop      = only stop a cluster left running by --keep-cluster
+
+Before the first case the driver reads what the cluster is (ndbinfo
+thread counts and NumCPUs per data node, the CPU set of every server
+process on Linux, the loaded row counts) into results.json meta.cluster
+and the report header, warns about a NumCPUs that does not match the
+data-node CPU sets and about CPU sets shared between data nodes, servers
+and the client, and with --expect-ldm N stops when a data node does not
+run N LDM threads.  Every case records the statement it ran; the report
+marks a MySQL case whose statement differs from its RonSQL pair's.
 
 Outputs: <out>/results.json (every case, all parsed numbers),
 <out>/report.md (the tables printed at the end), <out>/cases/*.txt
@@ -62,6 +79,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -81,6 +99,16 @@ MYSQLD_STATUS = ['Ndb_api_wait_nanos_count', 'Ndb_api_wait_exec_complete_count',
                  'Ndb_pushed_reads']
 PUSHDOWN_VARS = ['ndb_pushdown_aggregate', 'ndb_join_pushdown_aggregate',
                  'ndb_join_pushdown_aggregate_outer_join']
+# ndbinfo.resources rows tracked per case (used / max in 32 KB pages).
+# QUERY_MEMORY has no quota of its own: it draws on the shared global
+# memory, whose use and limit TOTAL_GLOBAL_MEMORY shows.  The report reads
+# the first three; the rest are recorded in results.json to attribute
+# global-memory growth outside query and transaction memory (census run 6:
+# ~31 MB/node that never came back, suspected job and send buffers).
+MEM_RESOURCES = ['QUERY_MEMORY', 'TRANSACTION_MEMORY', 'TOTAL_GLOBAL_MEMORY',
+                 'JOBBUFFER', 'TRANSPORTER_BUFFERS', 'DATA_MEMORY',
+                 'SCHEMA_MEMORY', 'REPLICATION_MEMORY']
+PAGE_MB = 32.0 / 1024
 ENGINES = {
     'ronsql':        ('bench_ronsql', None),
     'mysqld':        ('bench_sql', 'ON'),
@@ -94,9 +122,15 @@ RE_TPUT = re.compile(r'Throughput: ([0-9.]+) queries/sec')
 RE_LATLINE = re.compile(r'Latency: min=(\S+) avg=(\S+) max=(\S+) p95=(\S+) p99=(\S+) p99\.9=(\S+)')
 RE_PHASE = re.compile(r'^\s*(' + '|'.join(PHASES) + r')\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*$')
 RE_ROWS = re.compile(r'rows drained\s+([0-9.]+) per request')
+RE_FETCHED = re.compile(r'rows fetched\s+([0-9.]+) per request')
 RE_DONE = re.compile(r'Benchmark \S+ completed in ([0-9.]+)s')
 RE_LIST = re.compile(r'^    (\S+)\s+(.*\S)\s*$')
 RE_PROGRESS = re.compile(r'Progress: (\d+)/(\d+) requests')
+# The benchmark header of .bench_ronsql / .bench_sql, followed by the
+# description line, a blank line and the statement; the statement ends at
+# the next rondb-cli status line ([*] / [OK] / [WARN] / [ERROR]).
+RE_BENCH_HDR = re.compile(r'(?:RonSQL|SQL) Benchmark \S+.* total requests')
+RE_UI_LINE = re.compile(r'^\[(?:\*|OK|WARN|ERROR)\] ')
 
 
 # ---------------------------------------------------------------- utils
@@ -173,6 +207,188 @@ def which_bin(build, name):
 
 def median(xs):
     return statistics.median(xs) if xs else None
+
+
+def case_statement(lines):
+    """The statement a benchmark case ran, whitespace-normalised, from the
+    rondb-cli output (both runners print the registry SQL after the
+    header and the description), or None when there is no header."""
+    for i, line in enumerate(lines):
+        if RE_BENCH_HDR.search(line):
+            body = []
+            for l in lines[i + 2:]:
+                if RE_UI_LINE.match(l):
+                    break
+                body.append(l)
+            text = ' '.join(' '.join(body).split())
+            return text or None
+    return None
+
+
+def case_file_statement(run_dir, case):
+    """case_statement() of a recorded case: its 'statement' field, or for
+    results.json files written before the field existed, parsed from the
+    raw CLI log <run_dir>/cases/<tag>.txt."""
+    if case.get('statement'):
+        return case['statement']
+    tag = case.get('tag')
+    if not tag:
+        return None
+    try:
+        with open(os.path.join(run_dir, 'cases', tag + '.txt'), errors='replace') as f:
+            return case_statement([ANSI.sub('', l.rstrip('\n')) for l in f])
+    except OSError:
+        return None
+
+
+def cpu_set(spec):
+    """'0-7,16' -> {0..7, 16}; None for an empty / unparsable list."""
+    cpus = set()
+    for part in (spec or '').split(','):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r'^(\d+)(?:-(\d+))?$', part)
+        if not m:
+            return None
+        lo, hi = int(m.group(1)), int(m.group(2) or m.group(1))
+        cpus.update(range(lo, hi + 1))
+    return cpus or None
+
+
+def fmt_cpus(cpus):
+    """{0,1,2,5} -> '0-2,5'."""
+    out, run_start, prev = [], None, None
+    for c in sorted(cpus):
+        if prev is not None and c == prev + 1:
+            prev = c
+            continue
+        if run_start is not None:
+            out.append(str(run_start) if run_start == prev else '%d-%d' % (run_start, prev))
+        run_start = prev = c
+    if run_start is not None:
+        out.append(str(run_start) if run_start == prev else '%d-%d' % (run_start, prev))
+    return ','.join(out)
+
+
+def cpu_topology():
+    """{cpu: [core key, max MHz]} from Linux sysfs, None elsewhere: which
+    logical CPUs share a core (SMT) and how fast each can run (a hybrid
+    CPU's P- and E-cores differ, census box: 0-15 = 8 P-cores x 2, 16-31 =
+    16 E-cores)."""
+    base = '/sys/devices/system/cpu'
+    if not os.path.isdir(base):
+        return None
+    def read(path):
+        try:
+            with open(path) as fh:
+                return fh.read().strip()
+        except OSError:
+            return None
+    out = {}
+    for name in os.listdir(base):
+        m = re.match(r'^cpu(\d+)$', name)
+        if not m:
+            continue
+        d = os.path.join(base, name)
+        pkg, core = read(os.path.join(d, 'topology', 'physical_package_id')), read(os.path.join(d, 'topology', 'core_id'))
+        khz = read(os.path.join(d, 'cpufreq', 'cpuinfo_max_freq'))
+        out[m.group(1)] = ['%s:%s' % (pkg, core) if core is not None else None,
+                           int(khz) // 1000 if khz and khz.isdigit() else None]
+    return out or None
+
+
+def cpu_set_shape(cpus, topo):
+    """(logical CPUs, physical cores, sorted max MHz) of a CPU set."""
+    info = [topo.get(str(c)) for c in sorted(cpus)]
+    if not topo or any(i is None for i in info):
+        return None
+    return (len(cpus), len({i[0] for i in info}), tuple(sorted(i[1] or 0 for i in info)))
+
+
+def shape_text(shape):
+    n, cores, mhz = shape
+    lo, hi = min(mhz), max(mhz)
+    return '%d CPUs on %d cores, max %s MHz' % (n, cores, lo if lo == hi else '%d-%d' % (lo, hi))
+
+
+def config_warnings(facts):
+    """What is wrong with the measured configuration (meta.cluster): data
+    nodes with different LDM counts, NumCPUs that does not match the
+    data-node CPU sets (census run 4: NumCPUs=4 on 15-CPU sets), unbound
+    server processes, and CPU sets shared between data nodes, servers and
+    the benchmark client (the two mysqlds may share: the second is idle)."""
+    w = []
+    nodes = facts.get('nodes') or {}
+    ldm = {n: (v.get('threads') or {}).get('ldm', 0) for n, v in nodes.items()}
+    if len(set(ldm.values())) > 1:
+        w.append('data nodes run different LDM thread counts: %s'
+                 % ', '.join('node %s %d' % kv for kv in sorted(ldm.items())))
+    procs = facts.get('procs')
+    if not procs:
+        return w
+    everything = set(range(facts.get('online_cpus') or 0))
+    sets = {k: cpu_set(v) for k, v in procs.items()}
+    bound = {}
+    for k, s in sorted(sets.items()):
+        if s is None or (everything and s >= everything):
+            w.append('%s is not bound to a CPU set (%s)' % (k, procs[k]))
+        else:
+            bound[k] = s
+    client = cpu_set(facts.get('client_cpus'))
+    if client is None:
+        w.append('the benchmark client is not bound (--client-cpus)')
+    else:
+        bound['client'] = client
+    ndbd_sizes = {len(s) for k, s in bound.items() if k.startswith('ndbd')}
+    num_cpus = {v.get('NumCPUs') for v in nodes.values() if v.get('NumCPUs') is not None}
+    if len(ndbd_sizes) == 1 and len(num_cpus) == 1:
+        size, nc = ndbd_sizes.pop(), num_cpus.pop()
+        if str(size) != str(nc):
+            w.append('NumCPUs=%s on %d-CPU data-node sets: the thread configuration does not match the binding'
+                     % (nc, size))
+    # Sets that are compared with each other must be alike: the data nodes
+    # (a node on E-cores or on SMT siblings limits the cluster), and the
+    # two servers of the engine comparison (mysqld.1.1 and rdrs.1.1).
+    topo = facts.get('cpus')
+    if topo:
+        for group in ([k for k in bound if k.startswith('ndbd')], [k for k in ('mysqld.1.1', 'rdrs.1.1') if k in bound]):
+            shapes = {k: cpu_set_shape(bound[k], topo) for k in group}
+            if len(group) > 1 and None not in shapes.values() and len(set(shapes.values())) > 1:
+                w.append('CPU sets not alike: ' + '; '.join('%s %s' % (k, shape_text(shapes[k])) for k in sorted(group)))
+    keys = sorted(bound)
+    for i, ka in enumerate(keys):
+        for kb in keys[i + 1:]:
+            if ka.startswith('mysqld') and kb.startswith('mysqld'):
+                continue
+            common = bound[ka] & bound[kb]
+            if common:
+                w.append('%s and %s share CPUs %s' % (ka, kb, fmt_cpus(common)))
+    return w
+
+
+def cluster_summary(facts):
+    """One line describing the cluster a run measured (meta.cluster)."""
+    if not facts:
+        return 'unknown (results.json without meta.cluster)'
+    if facts.get('error'):
+        return 'unknown (%s)' % facts['error']
+    parts = []
+    for node, n in sorted((facts.get('nodes') or {}).items(), key=lambda kv: int(kv[0])):
+        thr = n.get('threads') or {}
+        parts.append('node %s: %s; NumCPUs %s' % (
+            node, ', '.join('%s %d' % (k, thr[k]) for k in sorted(thr)) or 'no threads',
+            n.get('NumCPUs', '?')))
+    procs = facts.get('procs')
+    if procs is None:
+        parts.append('process CPU sets unknown (%s)' % (facts.get('procs_note') or 'not Linux'))
+    else:
+        parts.append('CPU sets: ' + ', '.join('%s %s' % (k, procs[k]) for k in sorted(procs))
+                     + ', client %s' % (facts.get('client_cpus') or 'unbound'))
+    data = facts.get('data') or {}
+    if data:
+        parts.append('data: ' + ', '.join('%s %d rows' % (k, v) for k, v in sorted(data.items())))
+    return '; '.join(parts)
 
 
 # ------------------------------------------------------------- cluster
@@ -318,6 +534,16 @@ class Cluster:
         rows = self.sql('SELECT %s FROM ndbinfo.jit' % ','.join('SUM(%s)' % c for c in JIT_COLS))
         return dict(zip(JIT_COLS, [int(float(v)) for v in rows[0]])) if rows else {}
 
+    def mem_usage(self):
+        """{'used': {resource: {node: pages}}, 'max': {...}} for MEM_RESOURCES."""
+        rows = self.sql("SELECT node_id, resource_name, used, max FROM ndbinfo.resources "
+                        "WHERE resource_name IN (%s)" % ','.join("'%s'" % m for m in MEM_RESOURCES))
+        used, mx = {}, {}
+        for node, res, u, m in rows:
+            used.setdefault(res, {})[int(node)] = int(u)
+            mx.setdefault(res, {})[int(node)] = int(m)
+        return {'used': used, 'max': mx}
+
     def mysqld_status(self):
         rows = self.sql("SHOW GLOBAL STATUS WHERE Variable_name IN (%s)"
                         % ','.join("'%s'" % v for v in MYSQLD_STATUS))
@@ -336,6 +562,16 @@ class Cluster:
         s1 = self.mysqld_status()
         return {k: (s1.get(k, 0) - s0.get(k, 0)) / seconds for k in MYSQLD_STATUS}
 
+    def tpch_custkey_rule_orders(self):
+        """Orders of customers 3, 6 and 9 (index lookups): 0 when tpch was
+        loaded with the TPC-H rule (no orders for keys divisible by 3,
+        .load_tpch since 2026-09-26), ~30 for the older uniform draw; None
+        when there is no tpch.orders."""
+        try:
+            return int(self.sql('SELECT COUNT(*) FROM tpch.orders WHERE o_custkey IN (3, 6, 9)')[0][0])
+        except (RuntimeError, IndexError, ValueError):
+            return None
+
     def analyze_tpch(self):
         """ANALYZE TABLE so the MySQL optimizer has NDB index statistics from
         the first case on (otherwise plans drift between the arms as the
@@ -344,6 +580,79 @@ class Cluster:
         if tables:
             self.sql('ANALYZE TABLE ' + ', '.join('tpch.' + t for t in tables))
         return tables
+
+    # -- the configuration that is actually running -------------------------
+    def facts(self, client_cpus):
+        """What the running cluster is, read from it instead of from the
+        driver's arguments (census run 6 attached with --no-start and
+        recorded cpubind=- and the default sf; run 4 and run 6 ran
+        NumCPUs=4 without anyone noticing): thread counts per data node
+        (ndbinfo.threads), NumCPUs and AutomaticThreadConfig
+        (ndbinfo.config_values), the CPU set of every server process of
+        this mtr var directory (Linux /proc) and the loaded row counts."""
+        f = {'nodes': {}, 'procs': None, 'procs_note': None, 'client_cpus': client_cpus,
+             'online_cpus': os.cpu_count(), 'data': {}}
+        for node, name, cnt in self.sql('SELECT node_id, thread_name, COUNT(*) FROM ndbinfo.threads '
+                                        'GROUP BY node_id, thread_name'):
+            f['nodes'].setdefault(str(int(node)), {'threads': {}})['threads'][name] = int(cnt)
+        try:
+            for node, pname, val in self.sql(
+                    "SELECT v.node_id, p.param_name, v.config_value FROM ndbinfo.config_values AS v "
+                    "JOIN ndbinfo.config_params AS p ON p.param_number = v.config_param "
+                    "WHERE p.param_name IN ('NumCPUs', 'AutomaticThreadConfig')"):
+                f['nodes'].setdefault(str(int(node)), {'threads': {}})[pname] = val
+        except RuntimeError:
+            pass
+        for key in ('tpch.lineitem', 'fs_bench.customers_1'):
+            try:
+                f['data'][key] = int(self.sql('SELECT COUNT(*) FROM %s' % key)[0][0])
+            except (RuntimeError, IndexError, ValueError):
+                pass
+        rule = self.tpch_custkey_rule_orders()
+        if rule is not None:
+            f['data']['tpch.orders of customers 3,6,9'] = rule
+        f['procs'], f['procs_note'] = self.proc_cpus()
+        f['cpus'] = cpu_topology()
+        return f
+
+    def proc_cpus(self):
+        """({label: Cpus_allowed_list}, None) for the ndbmtd / mysqld / rdrs2
+        processes of this mtr var directory (labels as in the cnf:
+        ndbd.1.1, mysqld.1.1, rdrs.1.1), or (None, why not)."""
+        if not os.path.isdir('/proc/self'):
+            return None, 'no /proc: not Linux'
+        roots = {self.var, os.path.realpath(self.var)}
+        procs = {}
+        for pid in os.listdir('/proc'):
+            if not pid.isdigit():
+                continue
+            try:
+                with open('/proc/%s/cmdline' % pid, 'rb') as fh:
+                    argv = [x.decode('utf-8', 'replace') for x in fh.read().split(b'\0') if x]
+                with open('/proc/%s/status' % pid) as fh:
+                    status = fh.read()
+            except OSError:
+                continue
+            cmd = ' '.join(argv)
+            if not argv or not any(r in cmd for r in roots):
+                continue
+            exe = os.path.basename(argv[0])
+            suffix = re.search(r'--defaults-group-suffix=(\S+)', cmd)
+            if exe in ('ndbmtd', 'ndbd') and suffix:
+                label = 'ndbd' + suffix.group(1)
+            elif exe == 'mysqld' and suffix:
+                label = 'mysqld' + suffix.group(1)
+            elif exe == 'rdrs2':
+                m = re.search(r'(rdrs\.\d+\.\d+)_config\.json', cmd)
+                label = m.group(1) if m else 'rdrs'
+            else:
+                continue
+            m = re.search(r'^Cpus_allowed_list:\s*(\S+)', status, re.M)
+            if m:
+                procs[label] = m.group(1)   # the angel and the worker ndbmtd share it
+        if not procs:
+            return None, 'no ndbmtd / mysqld / rdrs2 process of %s found' % self.var
+        return procs, None
 
     # -- compiler mode ----------------------------------------------------
     def jit_mode_values(self):
@@ -363,6 +672,78 @@ class Cluster:
 
 
 # --------------------------------------------------------------- driver
+class MemSampler(threading.Thread):
+    """Polls ndbinfo.resources while a case runs and keeps the per-node peak
+    of every MEM_RESOURCES row. Uses its own mysql client process per poll,
+    never the benchmark's connections."""
+    def __init__(self, cl, interval):
+        super().__init__(daemon=True)
+        self.cl, self.interval = cl, interval
+        self.stop_ev = threading.Event()
+        self.peak = {}      # resource -> node -> pages
+        self.samples = 0
+        self.errors = 0
+
+    def note(self, usage):
+        for res, nodes in usage['used'].items():
+            p = self.peak.setdefault(res, {})
+            for node, v in nodes.items():
+                if v > p.get(node, -1):
+                    p[node] = v
+
+    def run(self):
+        while not self.stop_ev.wait(self.interval):
+            try:
+                self.note(self.cl.mem_usage())
+                self.samples += 1
+            except RuntimeError:
+                self.errors += 1
+
+    def finish(self):
+        self.stop_ev.set()
+        self.join(timeout=30)
+        return self.peak
+
+
+# ndbinfo.resources reports an unbounded resource's max as 0 or as the
+# 32-bit sentinel 0xFFFFFFFF pages.
+MEM_MAX_UNLIMITED = 0xFFFFFFFF
+
+
+def mem_max_text(nodes):
+    """The per-node max of a resource, e.g. '2048.0 MB per node', or
+    'unlimited' when any node reports 0 or the sentinel."""
+    if not nodes:
+        return 'unknown'
+    vals = [int(v) for v in nodes.values()]
+    if any(v == 0 or v >= MEM_MAX_UNLIMITED for v in vals):
+        return 'unlimited'
+    lo, hi = min(vals), max(vals)
+    if lo == hi:
+        return '%.1f MB per node' % (lo * PAGE_MB)
+    return '%.1f-%.1f MB per node' % (lo * PAGE_MB, hi * PAGE_MB)
+
+
+def mem_node_peak(entry):
+    """(pages, percent) of the data node with the highest peak of a
+    resource entry; percent of that node's max, None when unbounded."""
+    peak = (entry or {}).get('peak') or {}
+    if not peak:
+        return None, None
+    node = max(peak, key=lambda n: peak[n])
+    mx = int(((entry or {}).get('max') or {}).get(node, 0) or 0)
+    pct = (100.0 * peak[node] / mx) if 0 < mx < MEM_MAX_UNLIMITED else None
+    return peak[node], pct
+
+
+def mem_total(nodes):
+    """Pages summed over the data nodes; None when there is no reading
+    (the cluster went away before the idle reading after a case)."""
+    if nodes is None:
+        return None
+    return sum(nodes.values()) if nodes else 0
+
+
 class Driver:
     def __init__(self, a):
         self.a = a
@@ -372,6 +753,7 @@ class Driver:
         self.case_times = []
         self.n_cache = {}
         self.cluster_down = None   # message once the cluster stopped answering (a mysqld crash ends the matrix)
+        self.cluster = None        # what the running cluster is (read_cluster)
         os.makedirs(os.path.join(a.out, 'cases'), exist_ok=True)
 
     # -- rondb-cli --------------------------------------------------------
@@ -397,47 +779,78 @@ class Driver:
             names = []
             for l in lines:
                 m = RE_LIST.match(l)
-                if m and m.group(1) != 'all' and '[.bench_sql only]' not in l:
+                # 'all' and 'fs_hw' are the category runners of the listing, not queries
+                if m and m.group(1) not in ('all', 'fs_hw') and '[.bench_sql only]' not in l:
                     names.append((m.group(1), m.group(2)))
             if not names:
                 raise RuntimeError('could not parse "%s" output:\n%s' % (cmd, '\n'.join(lines)))
             out[eng] = names
-        # pair RonSQL names with their .bench_sql twin (cte_ prefix for the CTE rewrites)
+        # pair RonSQL names with their .bench_sql twin: the cte_ rewrite when
+        # there is one (tpch_qN runs cte_tpch_qN's SQL), else the same name
         sql_names = [n for n, _ in out['sql']]
+        ronsql_names = {n for n, _ in out['ronsql']}
+        taken = ronsql_names | set(sql_names)
         pairs = []
         for n, d in out['ronsql']:
-            sql = n if n in sql_names else ('cte_' + n if 'cte_' + n in sql_names else None)
+            sql = 'cte_' + n if 'cte_' + n in sql_names else (n if n in sql_names else None)
             pairs.append({'name': n, 'sql': sql, 'desc': d, 'mysql_only': False})
         covered = {p['sql'] for p in pairs}
         for n, d in out['sql']:
-            if n not in covered:
-                pairs.append({'name': n, 'sql': n, 'desc': d, 'mysql_only': True})
+            if n in covered:
+                continue
+            name = n
+            if n in ronsql_names:
+                # .bench_sql tpch_qN is the official statement, .bench_ronsql
+                # tpch_qN the CTE rewrite: the MySQL-only case takes the
+                # registry's name for it, tpch_qN_official (.bench_ronsql
+                # list does not print the official category), so its
+                # results never mix with the pair's (census run 6 compared
+                # RonSQL's rewrite with MySQL's official SQL).
+                name = n + '_official'
+                if name in taken:
+                    raise RuntimeError('.bench_sql %s is a MySQL-only statement, but .bench_ronsql %s is another one '
+                                       'and %s is taken too' % (n, n, name))
+            pairs.append({'name': name, 'sql': n, 'desc': d, 'mysql_only': True})
+        dup = sorted({p['name'] for p in pairs if sum(1 for x in pairs if x['name'] == p['name']) > 1})
+        if dup:
+            raise RuntimeError('two registry entries pair under the same name: %s' % ', '.join(dup))
         return pairs
 
     def select_queries(self, pairs):
         sel = self.a.queries
-        if sel in ('all', ''):
-            return pairs
-        cats = {'fs': lambda n: n.startswith('fs_') and not n.startswith('fs_hw_'),
+        cats = {'core': lambda n: n.startswith('core_'),
+                'fs': lambda n: n.startswith('fs_') and not n.startswith('fs_hw_'),
                 'fs_hw': lambda n: n.startswith('fs_hw_'),
                 'offline_fs': lambda n: n.startswith('offline_fs_'),
                 'tpch_cte': lambda n: n.startswith('tpch_q') and not n.endswith('_official'),
-                'tpch_official': lambda n: n.startswith('tpch_q') and n in [p['sql'] for p in pairs if p['mysql_only']]}
-        if sel in cats:
+                'tpch_official': lambda n: n.startswith('tpch_q') and n.endswith('_official')}
+        if sel in ('all', ''):
+            chosen = list(pairs)
+        elif sel in cats:
             chosen = [p for p in pairs if cats[sel](p['name'])]
-            if sel == 'fs_hw' and not self.fs_hash_twin():
-                # transactions_hash_1 is loaded only with --hash-twin (default at sf <= 0.1):
-                # a case with a missing prerequisite is an error, not a timing sample.
-                skipped = [p['name'] for p in chosen if p['name'] == 'fs_hw_hash_point']
-                if skipped:
-                    log('%s == %s needs the hash twin (.fs_load --hash-twin): skipped' % (ts(), ', '.join(skipped)))
+        else:
+            # a name selects its pair; a .bench_sql name (cte_tpch_q2) only
+            # when no pair has that name (tpch_q2 is the pair, not the
+            # official statement .bench_sql calls tpch_q2)
+            wanted = [w for w in sel.split(',') if w]
+            picked, missing = set(), []
+            for w in wanted:
+                hits = [p['name'] for p in pairs if p['name'] == w] or [p['name'] for p in pairs if p['sql'] == w]
+                if not hits:
+                    missing.append(w)
+                picked.update(hits)
+            if missing:
+                raise RuntimeError('unknown queries: %s' % ', '.join(sorted(missing)))
+            chosen = [p for p in pairs if p['name'] in picked]
+        if not self.fs_hash_twin():
+            # transactions_hash_1 is loaded only with --hash-twin (default at sf <= 0.1):
+            # a case with a missing prerequisite is an error, not a timing sample
+            # (census run 4 hit the FAIL under --queries all; the skip now applies
+            # to every selection).
+            skipped = [p['name'] for p in chosen if p['name'] == 'fs_hw_hash_point']
+            if skipped:
+                log('%s == %s needs the hash twin (.fs_load --hash-twin): skipped' % (ts(), ', '.join(skipped)))
                 chosen = [p for p in chosen if p['name'] != 'fs_hw_hash_point']
-            return chosen
-        wanted = set(sel.split(','))
-        chosen = [p for p in pairs if p['name'] in wanted or p['sql'] in wanted]
-        missing = wanted - {p['name'] for p in chosen} - {p['sql'] for p in chosen}
-        if missing:
-            raise RuntimeError('unknown queries: %s' % ', '.join(sorted(missing)))
         return chosen
 
     def fs_hash_twin(self):
@@ -445,7 +858,8 @@ class Driver:
         if self.a.no_hash_twin:
             return False
         sf = self.a.fs_sf if self.a.fs_sf is not None else self.a.sf
-        if self.a.hash_twin or sf <= 0.1:
+        if self.a.hash_twin or (sf <= 0.1 and not self.a.no_load):
+            # without a load of our own, --sf describes nothing: look
             return True
         try:
             return bool(self.cl.sql("SHOW TABLES LIKE 'transactions_hash_1'", db='fs_bench'))
@@ -505,13 +919,22 @@ class Driver:
             have = int(self.cl.sql('SELECT COUNT(*) FROM tpch.lineitem')[0][0])
         except RuntimeError:
             pass
+        old_rule = bool(have) and bool(self.cl.tpch_custkey_rule_orders())
         if self.a.no_load:
             log('%s == --no-load: tpch.lineitem has %d rows' % (ts(), have))
+            if old_rule:
+                log('   WARNING: tpch was loaded before the TPC-H o_custkey rule (customers 3, 6, 9 have orders): '
+                    'Q13 / Q22 and the customer-keyed shapes measure the old data')
             return
-        if have and abs(have - want) <= max(1, want // 100):
+        if have and abs(have - want) <= max(1, want // 100) and not old_rule:
             log('%s == tpch already loaded (lineitem %d rows for sf %g), skipping load' % (ts(), have, self.a.sf))
             self.analyze()
             return
+        if old_rule:
+            log('%s == tpch was loaded before the TPC-H o_custkey rule (customers 3, 6, 9 have orders): '
+                'dropping and reloading' % ts())
+            self.cli('.drop_tpch')
+            have = 0
         if have:
             log('%s == tpch has %d lineitem rows, want %d: dropping and reloading' % (ts(), have, want))
             self.cli('.drop_tpch')
@@ -568,6 +991,27 @@ class Driver:
         self.cl.start(mode)
         self.ensure_data()
 
+    def read_cluster(self):
+        """Record what the running cluster is (meta.cluster, the report
+        header), warn about a configuration that does not match its
+        binding, and stop before the first case when --expect-ldm is not
+        what every data node runs."""
+        try:
+            self.cluster = self.cl.facts(self.a.client_cpus)
+        except RuntimeError as e:
+            self.cluster = {'error': str(e).splitlines()[0][:200]}
+        self.cluster['warnings'] = [] if self.cluster.get('error') else config_warnings(self.cluster)
+        log('%s == cluster: %s' % (ts(), cluster_summary(self.cluster)))
+        for w in self.cluster['warnings']:
+            log('   WARNING: ' + w)
+        if self.a.expect_ldm is not None:
+            ldm = {n: (v.get('threads') or {}).get('ldm', 0) for n, v in (self.cluster.get('nodes') or {}).items()}
+            if not ldm or any(v != self.a.expect_ldm for v in ldm.values()):
+                raise RuntimeError('--expect-ldm %d, but the data nodes run %s: wrong configuration '
+                                   '(NumCPUs / cpubind in the --cpubind file), no case was run'
+                                   % (self.a.expect_ldm, ', '.join('node %s %d LDM' % kv for kv in sorted(ldm.items()))
+                                      or 'unknown LDM counts'))
+
     # -- one case -----------------------------------------------------------
     def requests_for(self, engine, q, arm, threads):
         if self.a.requests:
@@ -595,21 +1039,36 @@ class Driver:
             self.cl.set_pushdown(pushdown)
         jit0 = self.cl.jit_counters()
         st0 = self.cl.mysqld_status() if pushdown is not None else None
+        mem0, sampler = None, None
+        if self.a.mem_probe:
+            try:
+                mem0 = self.cl.mem_usage()
+            except RuntimeError as e:
+                log('   memory probe off for the rest of the run: %s' % str(e).splitlines()[0][:200])
+                self.a.mem_probe = False
+        if mem0 is not None:
+            if self.a.mem_sample > 0:
+                sampler = MemSampler(self.cl, self.a.mem_sample)
+                sampler.start()
         t0 = time.time()
         shown = []
         def cb(line):
             s = line.strip()
             if not s:
                 return
-            interesting = (s.startswith(('Warmup', 'Progress', 'Throughput', 'Latency', 'Requests', 'rows drained'))
+            interesting = (s.startswith(('Warmup', 'Progress', 'Throughput', 'Latency', 'Requests', 'rows drained', 'rows fetched'))
                            or ('error' in s.lower() and 'errors: 0' not in s)
                            or RE_PHASE.match(line) is not None or 'not available' in s)
             if self.a.verbose or interesting:
                 log('   | ' + line)
             shown.append(line)
-        rc, lines = self.cli(command, line_cb=cb)
+        try:
+            rc, lines = self.cli(command, line_cb=cb)
+        finally:
+            peak = sampler.finish() if sampler is not None else {}
         r['wall_s'] = time.time() - t0
         r['rc'] = rc
+        r['statement'] = case_statement(lines)
         text = '\n'.join(lines)
         if record:
             with open(os.path.join(self.a.out, 'cases', '%s.txt' % tag), 'w') as f:
@@ -635,6 +1094,9 @@ class Driver:
             m = RE_ROWS.search(line)
             if m:
                 r['rows_drained'] = float(m.group(1))
+            m = RE_FETCHED.search(line)
+            if m:
+                r['rows_fetched'] = float(m.group(1))
             m = RE_DONE.search(line)
             if m:
                 r['bench_s'] = float(m.group(1))
@@ -654,6 +1116,20 @@ class Driver:
             if st0 is not None:
                 st1 = self.cl.mysqld_status()
                 r['mysqld_delta'] = {k: st1.get(k, 0) - st0.get(k, 0) for k in MYSQLD_STATUS}
+            if mem0 is not None:
+                if self.a.mem_settle > 0:
+                    time.sleep(self.a.mem_settle)
+                mem1 = self.cl.mem_usage()
+                tracker = MemSampler(self.cl, 0)
+                tracker.peak = peak
+                tracker.note(mem0)
+                tracker.note(mem1)
+                r['mem'] = {res: {'before': mem0['used'].get(res, {}),
+                                  'peak': tracker.peak.get(res, {}),
+                                  'after': mem1['used'].get(res, {}),
+                                  'max': mem1['max'].get(res, {})}
+                            for res in MEM_RESOURCES}
+                r['mem_samples'] = sampler.samples if sampler is not None else 0
         except RuntimeError as e:
             # The server stopped answering after the case: a crash (the error
             # log of mysqld / the data nodes has the stack). Record it on the
@@ -662,11 +1138,28 @@ class Driver:
             r['error'] = 'cluster unreachable after the case (%s): %s' % (r['error'] or 'no client error', str(e).splitlines()[-1][:200])
             r['jit_delta'] = {k: 0 for k in JIT_COLS}
             self.cluster_down = r['error']
+            if mem0 is not None and 'mem' not in r:
+                # Keep what was seen before the cluster went away: the idle
+                # level and the sampled peak (F27: the memory at the failure).
+                tracker = MemSampler(self.cl, 0)
+                tracker.peak = peak
+                tracker.note(mem0)
+                r['mem'] = {res: {'before': mem0['used'].get(res, {}),
+                                  'peak': tracker.peak.get(res, {}),
+                                  'after': None,
+                                  'max': mem0['max'].get(res, {})}
+                            for res in MEM_RESOURCES}
+                r['mem_samples'] = sampler.samples if sampler is not None else 0
         return r
+
+    @staticmethod
+    def case_tag(arm, engine, q, threads, rep):
+        """The case's name in results.json and its cases/<tag>.txt file."""
+        return '%s_%s_%s_T%d' % (arm.lower(), engine, q['name'], threads) + ('_r%d' % rep if rep else '')
 
     def run_case(self, idx, total, arm, engine, q, threads, rep=0):
         n = self.requests_for(engine, q, arm, threads)
-        tag = '%s_%s_%s_T%d' % (arm.lower(), engine, q['name'], threads) + ('_r%d' % rep if rep else '')
+        tag = self.case_tag(arm, engine, q, threads, rep)
         t0 = time.time()
         log('')
         log('%s [%d/%d] compiler=%s engine=%s query=%s threads=%d requests/thread=%d%s'
@@ -690,9 +1183,28 @@ class Driver:
         corr = raw - self.idle.get('Ndb_api_wait_nanos_count', 0.0) * r.get('wall_s', 0.0)
         return max(0.0, corr) / n / 1e6
 
+    def mem_note(self, r):
+        qm = (r.get('mem') or {}).get('QUERY_MEMORY')
+        if not qm:
+            return None
+        b, p, af = mem_total(qm['before']), mem_total(qm['peak']), mem_total(qm['after'])
+        if af is None:
+            note = ('query memory before/peak %.1f/%.1f MB (no reading after: cluster unreachable)'
+                    % (b * PAGE_MB, p * PAGE_MB))
+        else:
+            note = ('query memory before/peak/after %.1f/%.1f/%.1f MB%s'
+                    % (b * PAGE_MB, p * PAGE_MB, af * PAGE_MB,
+                       (' (RETAINED %+.1f MB)' % ((af - b) * PAGE_MB)) if af > b else ''))
+        gp, gpct = mem_node_peak(r['mem'].get('TOTAL_GLOBAL_MEMORY'))
+        if gp is not None:
+            note += ', global memory peak %.1f MB on one node%s' % (
+                gp * PAGE_MB, (' (%.0f%% of its max)' % gpct) if gpct is not None else '')
+        return note
+
     def summary_line(self, r):
         if not r['ok']:
-            log('   => FAILED: %s' % r['error'])
+            note = self.mem_note(r)
+            log('   => FAILED: %s%s' % (r['error'], (', ' + note) if note else ''))
             return
         parts = ['%.1f q/s' % r['qps'], 'avg %s' % fmt_ms(r.get('avg_ms')), 'p95 %s' % fmt_ms(r.get('p95_ms'))]
         if r['engine'] == 'ronsql' and r['phases']:
@@ -714,6 +1226,9 @@ class Driver:
         jd = r['jit_delta']
         parts.append('jit compiled %d reused %d fallback %d rows %d'
                      % (jd['programs_compiled'], jd['programs_reused'], jd['programs_fallback'], jd['rows_executed']))
+        note = self.mem_note(r)
+        if note:
+            parts.append(note)
         log('   => ' + ', '.join(parts))
 
     def save_json(self):
@@ -721,6 +1236,7 @@ class Driver:
                 'order': self.a.order, 'repeat': self.a.repeat, 'idle_rates': getattr(self, 'idle', {}),
                 'requests': self.a.requests, 'engines': self.a.engines, 'compiler': self.a.compiler,
                 'cpubind': self.a.cpubind, 'client_cpus': self.a.client_cpus, 'rondis': self.a.rondis,
+                'cluster': self.cluster, 'expect_ldm': self.a.expect_ldm,
                 'started': self.started, 'host': os.uname().nodename, 'os': os.uname().sysname,
                 'arch': os.uname().machine}
         with open(os.path.join(self.a.out, 'results.json'), 'w') as f:
@@ -737,6 +1253,7 @@ class Driver:
         self.idle = {}
         try:
             self.enter_arm(arms[0], first=True)
+            self.read_cluster()
             pairs = self.select_queries(self.list_queries())
             log('%s == %d queries: %s' % (ts(), len(pairs), ', '.join(p['name'] for p in pairs)))
             if any(e.startswith('mysqld') for e in a.engines):
@@ -775,6 +1292,11 @@ class Driver:
                                 for eng in a.engines:
                                     if eligible(q, eng):
                                         cases.append((arm, threads, q, eng, rep))
+            tags = [self.case_tag(arm, eng, q, threads, rep) for arm, threads, q, eng, rep in cases]
+            dup = sorted({t for t in tags if tags.count(t) > 1})
+            if dup:
+                raise RuntimeError('cases with the same tag would overwrite each other\'s log and mix in the '
+                                   'report: %s' % ', '.join(dup))
             total = len(cases)
             log('%s == %d cases, order %s, repeat %d (report shows the median run per case)'
                 % (ts(), total, a.order, a.repeat))
@@ -825,6 +1347,22 @@ class Driver:
             return ok[len(ok) // 2]
         return hits[0] if hits else None
 
+    def statement_mismatches(self):
+        """{query: {engines}} for the MySQL cases whose statement differs
+        from the RonSQL case's of the same pair (both recorded)."""
+        out = {}
+        stmt = {id(r): case_file_statement(self.a.out, r) for r in self.results}
+        for q in {r['query'] for r in self.results}:
+            rs = {stmt[id(r)] for r in self.results
+                  if r['query'] == q and r['engine'] == 'ronsql' and stmt[id(r)]}
+            if len(rs) != 1:
+                continue
+            ref = rs.pop()
+            for r in self.results:
+                if r['query'] == q and r['engine'] != 'ronsql' and stmt[id(r)] and stmt[id(r)] != ref:
+                    out.setdefault(q, set()).add(r['engine'])
+        return out
+
     def report(self):
         a = self.a
         R = self.results
@@ -836,10 +1374,23 @@ class Driver:
         out = []
         out.append('# RonSQL / MySQL / compiled-interpreter benchmark matrix')
         out.append('')
+        host = getattr(self, 'host_info', None) or (os.uname().nodename, os.uname().sysname, os.uname().machine)
         out.append('build=%s sf=%g threads=%s engines=%s compiler=%s order=%s repeat=%d cpubind=%s client_cpus=%s host=%s (%s %s) started %s'
-                   % (a.build, a.sf, a.threads, ','.join(a.engines), ','.join(arms), a.order, a.repeat, a.cpubind or '-',
-                      a.client_cpus or '-', os.uname().nodename, os.uname().sysname, os.uname().machine, self.started))
+                   % ((a.build, a.sf, a.threads, ','.join(a.engines), ','.join(arms), a.order, a.repeat, a.cpubind or '-',
+                       a.client_cpus or '-') + tuple(host) + (self.started,)))
         out.append('')
+        out.append('cluster (read from the running cluster): %s' % cluster_summary(self.cluster))
+        out.append('')
+        warnings = (self.cluster or {}).get('warnings') or []
+        if warnings:
+            out.append('**Configuration warnings:** ' + '; '.join(warnings) + '.')
+            out.append('')
+        mismatch = self.statement_mismatches()
+        if mismatch:
+            out.append('**DIFFERENT SQL:** the %s case(s) of %s ran another statement than RonSQL; their ratios '
+                       '(section B, marked \u2260SQL) compare statements, not engines.'
+                       % ('/'.join(sorted({e for es in mismatch.values() for e in es})), ', '.join(sorted(mismatch))))
+            out.append('')
         failed = [r for r in R if not r['ok']]
         if failed:
             out.append('FAILED cases: ' + ', '.join('%s (%s)' % (r['tag'], r['error']) for r in failed))
@@ -900,7 +1451,8 @@ class Driver:
                         for eng in a.engines:
                             if eng != 'ronsql':
                                 m = get(qn, eng, arm, threads, 'avg_ms')
-                                row += ' %s | %s |' % (fmt_ms(m), fmt_ratio(m, rs))
+                                diff = ' \u2260SQL' if eng in mismatch.get(qn, ()) else ''
+                                row += ' %s | %s%s |' % (fmt_ms(m), fmt_ratio(m, rs), diff)
                         out.append(row)
             out.append('')
 
@@ -913,11 +1465,12 @@ class Driver:
             out.append('client = end-to-end latency seen by rondb-cli; http+client = client - prepare - execute '
                        '(RDRS HTTP handling, JSON, network); firstbatch = data-node execution until the first '
                        'result row (single-table: the whole DoAggregation); load = NDB dictionary lookups; '
-                       'rows = result rows drained per request.')
+                       'rows = result rows drained per request; fetched = rows the NDB API received per '
+                       'request (compare with section D\'s rows/req for mysqld).')
             out.append('')
             cols = ['parse', 'analyze', 'load', 'plan', 'compile', 'ndbprep', 'send', 'firstbatch', 'drain', 'print']
-            out.append('| query | compiler | client | prepare | execute | http+client | ' + ' | '.join(cols) + ' | rows | top |')
-            out.append('|---|---|---:|---:|---:|---:|' + '---:|' * len(cols) + '---:|---|')
+            out.append('| query | compiler | client | prepare | execute | http+client | ' + ' | '.join(cols) + ' | rows | fetched | top |')
+            out.append('|---|---|---:|---:|---:|---:|' + '---:|' * len(cols) + '---:|---:|---|')
             for qn in qnames:
                 for arm in arms:
                     r = self.find(query=qn, engine='ronsql', compiler=arm, threads=t)
@@ -928,10 +1481,11 @@ class Driver:
                     ex, pr = pv('execute'), pv('prepare')
                     over = (r['avg_ms'] - (ex or 0) - (pr or 0)) if r.get('avg_ms') is not None else None
                     top = max(((k, pv(k) or 0) for k in cols), key=lambda kv: kv[1]) if ph else ('-', 0)
-                    out.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s |'
+                    out.append('| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |'
                                % (qn, arm, fmt_ms(r.get('avg_ms')), fmt_ms(pr), fmt_ms(ex), fmt_ms(over),
                                   ' | '.join(fmt_ms(pv(k)) for k in cols),
                                   ('%.1f' % r['rows_drained']) if 'rows_drained' in r else '-',
+                                  ('%.1f' % r['rows_fetched']) if 'rows_fetched' in r else '-',
                                   '%s %s' % (top[0], fmt_ms(top[1]))))
             out.append('')
 
@@ -1031,6 +1585,48 @@ class Driver:
                             row += ' %s | %s | %s |' % (fmt_ms(same), fmt_ms(tt), fmt_ratio(tt, rs))
                         out.append(row)
             out.append('')
+
+        # H. Data-node memory per case, in run order (every case, failed ones
+        # included: an out-of-query-memory failure is where it matters).
+        mem_cases = [r for r in R if r.get('mem')]
+        if mem_cases:
+            out.append('## H. Data-node memory per case, in run order (ndbinfo.resources, MB summed over data nodes)')
+            out.append('')
+            qmax = mem_max_text(mem_cases[-1]['mem'].get('QUERY_MEMORY', {}).get('max'))
+            gmax = mem_max_text(mem_cases[-1]['mem'].get('TOTAL_GLOBAL_MEMORY', {}).get('max'))
+            first = mem_total(mem_cases[0]['mem']['QUERY_MEMORY']['before'])
+            afters = [mem_total(r['mem']['QUERY_MEMORY']['after']) for r in mem_cases]
+            last = next((v for v in reversed(afters) if v is not None), first)
+            retained = [r for r, af in zip(mem_cases, afters)
+                        if af is not None and af > mem_total(r['mem']['QUERY_MEMORY']['before'])]
+            out.append('before = idle before the case; peak = highest sample while it ran (every %gs) or idle; '
+                       'after = idle %gs after it. QUERY_MEMORY max %s: it draws on the shared global memory, '
+                       'TOTAL_GLOBAL_MEMORY max %s (GM peak = the highest per-node peak and its share of that node\'s max). '
+                       'Idle QUERY_MEMORY at the start %.1f MB, '
+                       'at the end %.1f MB (%+.1f MB); %d of %d cases left more in use than they found. '
+                       'A level that returns to idle is load; one that stays up or climbs from case to case is a leak.'
+                       % (a.mem_sample, a.mem_settle, qmax, gmax,
+                          first * PAGE_MB, last * PAGE_MB, (last - first) * PAGE_MB, len(retained), len(mem_cases)))
+            out.append('')
+            out.append('| # | case | ok | QM before | QM peak | QM after | QM after-before | TM peak | GM peak (node) | samples |')
+            out.append('|---:|---|---|---:|---:|---:|---:|---:|---:|---:|')
+            for i, r in enumerate(mem_cases, 1):
+                qm, tm = r['mem']['QUERY_MEMORY'], r['mem'].get('TRANSACTION_MEMORY', {})
+                b, p, af = mem_total(qm['before']), mem_total(qm['peak']), mem_total(qm['after'])
+                if af is None:
+                    after_cell, diff_cell = '-', '-'
+                else:
+                    after_cell = '%.1f' % (af * PAGE_MB)
+                    diff_cell = ('**%+.1f**' % ((af - b) * PAGE_MB)) if af > b else '%+.1f' % ((af - b) * PAGE_MB)
+                gp, gpct = mem_node_peak(r['mem'].get('TOTAL_GLOBAL_MEMORY'))
+                if gp is None:
+                    gm_cell = '-'
+                else:
+                    gm_cell = '%.1f%s' % (gp * PAGE_MB, (' (%.0f%%)' % gpct) if gpct is not None else '')
+                out.append('| %d | %s | %s | %.1f | %.1f | %s | %s | %.1f | %s | %d |'
+                           % (i, r['tag'], 'ok' if r['ok'] else 'FAIL', b * PAGE_MB, p * PAGE_MB, after_cell, diff_cell,
+                              (mem_total(tm.get('peak')) or 0) * PAGE_MB, gm_cell, r.get('mem_samples', 0)))
+            out.append('')
         return '\n'.join(out)
 
 
@@ -1048,7 +1644,8 @@ def parse_args():
     ap.add_argument('--probe-requests', type=int, default=3)
     ap.add_argument('--min-requests', type=int, default=5)
     ap.add_argument('--max-requests', type=int, default=5000)
-    ap.add_argument('--queries', default='all', help='all | fs | offline_fs | tpch_cte | tpch_official | name,name,...')
+    ap.add_argument('--queries', default='all', help='all | core | fs | offline_fs | tpch_cte | tpch_official | fs_hw | name,name,... '
+                    '(all needs --load both when fs_bench is not loaded: the fs_hw entries are part of it)')
     ap.add_argument('--engines', default='ronsql,mysqld,mysqld_nopush')
     ap.add_argument('--compiler', default='off,on', help='compiler arms in order (default off,on)')
     ap.add_argument('--toggle', default='auto', choices=['auto', 'set', 'restart'],
@@ -1061,6 +1658,9 @@ def parse_args():
     ap.add_argument('--cpubind', help='cpubind.cnf (mtr --defaults-extra-file; see suite/ronsqlcrunch/cpubind.cnf)')
     ap.add_argument('--client-cpus', help='taskset CPU list for the rondb-cli benchmark client (Linux)')
     ap.add_argument('--num-cpus', type=int, help='override NumCPUs for the data nodes')
+    ap.add_argument('--expect-ldm', type=int,
+                    help='LDM threads every data node must run (ndbinfo.threads); a mismatch stops the matrix '
+                         'before the first case (the census passes 4 with census_benchbox.cnf)')
     ap.add_argument('--rondis', action='store_true', help='also start Rondis in RDRS')
     ap.add_argument('--rdrs-threads', type=int, default=64, help='RDRS REST.NumThreads (default 64)')
     ap.add_argument('--no-start', action='store_true', help='use a running cluster (give --mysql-port/--mysql-sock/--rdrs-port/--connectstring)')
@@ -1075,6 +1675,12 @@ def parse_args():
     ap.add_argument('--hash-twin', action='store_true', help='.fs_load --hash-twin (transactions_hash_1 for fs_hw_hash_point; default at sf <= 0.1)')
     ap.add_argument('--no-hash-twin', action='store_true', help='.fs_load --no-hash-twin')
     ap.add_argument('--keep-cluster', action='store_true', help='leave the cluster running at the end')
+    ap.add_argument('--no-mem-probe', dest='mem_probe', action='store_false',
+                    help='do not record QUERY_MEMORY / TRANSACTION_MEMORY / TOTAL_GLOBAL_MEMORY use per case (ndbinfo.resources)')
+    ap.add_argument('--mem-sample', type=float, default=1.0,
+                    help='seconds between ndbinfo.resources samples while a case runs (0 = before/after only; default 1)')
+    ap.add_argument('--mem-settle', type=float, default=1.0,
+                    help='seconds to wait after a case before the idle "after" reading (default 1)')
     ap.add_argument('--stop', action='store_true', help='only stop the cluster of <build> (after --keep-cluster)')
     ap.add_argument('--report-only', action='store_true', help='only regenerate <out>/report.md from <out>/results.json')
     ap.add_argument('--out', default=os.path.join(REPO, 'ronsql_bench_out'))
@@ -1112,11 +1718,13 @@ def main():
         with open(os.path.join(a.out, 'results.json')) as f:
             j = json.load(f)
         meta = j['meta']
-        for k in ('sf', 'threads', 'engines', 'compiler', 'cpubind', 'client_cpus', 'order', 'repeat'):
+        for k in ('build', 'sf', 'threads', 'engines', 'compiler', 'cpubind', 'client_cpus', 'order', 'repeat'):
             if k in meta:
                 setattr(a, k, meta[k])
         d = Driver.__new__(Driver)
         d.a, d.results, d.started = a, j['cases'], meta.get('started', '?')
+        d.cluster = meta.get('cluster')
+        d.host_info = (meta.get('host', '?'), meta.get('os', '?'), meta.get('arch', '?'))
         d.idle = meta.get('idle_rates', {}) or {}
         report = d.report()
         with open(os.path.join(a.out, 'report.md'), 'w') as f:

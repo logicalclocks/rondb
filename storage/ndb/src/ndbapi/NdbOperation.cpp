@@ -176,6 +176,8 @@ int NdbOperation::init(const NdbTableImpl *tab, NdbTransaction *myConnection) {
   m_flags = 0;
   m_flags |= OF_NO_DISK;
   m_interpreted_code = nullptr;
+  m_read_aggregation_code = nullptr;
+  m_read_aggregation_rec_attr = nullptr;
   m_extraSetValues = nullptr;
   m_numExtraSetValues = 0;
   m_inputParams = nullptr;

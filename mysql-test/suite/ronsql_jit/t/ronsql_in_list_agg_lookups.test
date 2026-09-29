@@ -1,0 +1,11 @@
+# WP-F F1b: aggregating primary-key reads.  RonSQL marks its aggregation
+# programs reusable, so each read's one-row interpreter takes the
+# compiled program from the node's JIT cache.  The strict arming covers
+# the scan compile path only (4064); the fallback census pins that no
+# program falls back.
+SET @in_list_agg_lookups_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_jit/include/jit_strict_arm.inc
+--source suite/ronsql/t/ronsql_in_list_agg_lookups.test
+--source suite/ronsql_jit/include/jit_strict_disarm.inc
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @in_list_agg_lookups_jit_c0 AS SIGNED)
+       AS ronsql_in_list_agg_lookups_jit_fallback_delta;

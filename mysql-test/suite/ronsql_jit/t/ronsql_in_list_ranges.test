@@ -1,0 +1,11 @@
+# WP-F F2: IN lists as multi-range index scans, the aggregate ones with
+# pushdown aggregation across ranges.  The strict arming makes an
+# aggregation program that fails to compile stop the test; residual scan
+# filters are outside it.  The census pins the recorded fallback delta
+# (96 at the first recording, 2026-09-23, not yet attributed).
+SET @in_list_ranges_jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql_jit/include/jit_strict_arm.inc
+--source suite/ronsql/t/ronsql_in_list_ranges.test
+--source suite/ronsql_jit/include/jit_strict_disarm.inc
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @in_list_ranges_jit_c0 AS SIGNED)
+       AS ronsql_in_list_ranges_jit_fallback_delta;

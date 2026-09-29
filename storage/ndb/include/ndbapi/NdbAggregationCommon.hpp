@@ -38,8 +38,10 @@ struct CHARSET_INFO;
  */
 #define PA_CHECK 1
 
-#define MAX_AGG_RESULT_BATCH_BYTES 8192
-#define DEF_AGG_RESULT_BATCH_BYTES 4096
+// Wire bytes, including result and group headers. A group must fit
+// within one result batch.
+#define MAX_AGG_RESULT_BATCH_BYTES (16 * 1024)
+#define DEF_AGG_RESULT_BATCH_BYTES MAX_AGG_RESULT_BATCH_BYTES
 #define MAX_AGG_N_GROUPBY_COLS 128
 #define MAX_AGG_N_RESULTS 256
 #define MAX_AGG_PROGRAM_WORD_SIZE 1024

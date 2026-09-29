@@ -6,7 +6,8 @@
 # NULL-row injections of an outer join, an identity-addressed COMPLETE)
 # park on the identity placeholder and are replayed by the flush when
 # the SETUP processes, or aborted by the 10 ms sweeper when the SETUP is
-# later than that, in which case RonSQL retries the query.  Either way
+# later than that (the temporary 1274), in which case RonSQL retries the
+# query.  Either way
 # every result below must equal the MySQL baseline: a CTE probed by a
 # lookup, an outer join onto a CTE with NULL and missing keys feeding a
 # scalar aggregation, and a pass-through scanCte root.  The leak dumps

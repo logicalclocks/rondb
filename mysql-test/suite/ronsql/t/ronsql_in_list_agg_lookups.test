@@ -1,0 +1,212 @@
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# WP-F F1b (storage/ndb/claude_files/fs_ronsql/m3_wpf_plan.md §2.3):
+# an aggregate whose WHERE binds every primary-key column, one of them
+# with an IN list, runs as N committed primary-key reads.  Each read
+# carries the aggregation program (NdbOperation OO_AGGREGATION); the data
+# node runs it on the read row and returns one partial result, which
+# RonSQL merges like per-fragment scan partials.  Results are compared
+# strictly with the MySQL server; EXPLAIN pins say which plan ran.  Both
+# includes consume and remove $QUERY_FILE, hence each query is written
+# twice.
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let QUERY_FILE=$MYSQL_TMP_DIR/agg_lookups_query.sql
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/agg_lookups_explain.out
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE t_pk1 (
+  id INT NOT NULL,
+  g INT NOT NULL,
+  v INT NOT NULL,
+  s VARCHAR(20) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO t_pk1
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 50)
+  SELECT n, n % 3, n * 10, CONCAT('s', LPAD(n, 2, '0')) FROM seq;
+CREATE TABLE t_pk2 (
+  a INT NOT NULL,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (a, b)
+) ENGINE=NDB;
+INSERT INTO t_pk2
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 24)
+  SELECT n DIV 5 + 1, n % 5 + 1, (n DIV 5 + 1) * 100 + n % 5 + 1 FROM seq;
+CREATE TABLE t_hash (
+  id INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+INSERT INTO t_hash
+  WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 50)
+  SELECT n, n * 10 FROM seq;
+CREATE TABLE t_str (
+  k VARCHAR(20) NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (k)
+) ENGINE=NDB;
+INSERT INTO t_str VALUES ('Key1', 1), ('Key2', 2), ('Key3', 3), ('Key4', 4), ('key five', 5);
+# Two values whose sum overflows a signed 64-bit accumulator.
+CREATE TABLE t_big (
+  id INT NOT NULL,
+  s BIGINT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO t_big VALUES (1, 9223372036854775807), (2, 1), (3, 5);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === scalar aggregates over an IN list on the primary key; missing keys contribute nothing ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v), COUNT(s) FROM t_pk1 WHERE id IN (3, 1, 999, 2);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v), COUNT(s) FROM t_pk1 WHERE id IN (3, 1, 999, 2);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 aggregating primary key lookups (IN list on `id`: 4 values, 4 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === GROUP BY the key; duplicates are read once ===
+--write_file $QUERY_FILE
+SELECT id, COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (5, 3, 7, 5, 3) GROUP BY id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (5, 3, 7, 5, 3) GROUP BY id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 aggregating primary key lookups (IN list on `id`: 5 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === GROUP BY a non-key column: partials from different keys merge into one group ===
+--write_file $QUERY_FILE
+SELECT g, COUNT(*), SUM(v), MAX(v) FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5, 6, 7, 8, 9, 10) GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === residual filter on another column runs before the aggregation ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5, 6, 7, 8) AND v > 40;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (1, 2, 3, 4, 5, 6, 7, 8) AND v > 40;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 8 aggregating primary key lookups (IN list on `id`: 8 values, 8 distinct).' $EXPLAIN_FILE
+--exec grep -qF 'FILTER:' $EXPLAIN_FILE
+
+--echo
+--echo === every key missing or filtered: scalar gives one row, grouped gives none ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v), MAX(v) FROM t_pk1 WHERE id IN (998, 999);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id IN (1, 2) AND v > 1000;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT id, COUNT(*) FROM t_pk1 WHERE id IN (998, 999) GROUP BY id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === string MIN / MAX (string payload records) and AVG ===
+--write_file $QUERY_FILE
+SELECT MIN(s), MAX(s), COUNT(s), AVG(v) FROM t_pk1 WHERE id IN (12, 4, 30, 7);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT g, MIN(s), MAX(s) FROM t_pk1 WHERE id IN (12, 4, 30, 7, 9, 22) GROUP BY g;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === composite primary key: equality on a, IN list on b ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk2 WHERE a = 3 AND b IN (1, 4, 9);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk2 WHERE a = 3 AND b IN (1, 4, 9);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 3 aggregating primary key lookups (IN list on `b`: 3 values, 3 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === hash-only primary key: no ordered index needed ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_hash WHERE id IN (5, 6, 7, 500);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_hash WHERE id IN (5, 6, 7, 500);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 aggregating primary key lookups (IN list on `id`: 4 values, 4 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === VARCHAR primary key under a case-insensitive collation ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_str WHERE k IN ('key1', 'KEY1', 'KEY2', 'Key Five', 'nope');
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_str WHERE k IN ('key1', 'KEY1', 'KEY2', 'Key Five', 'nope');
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 4 aggregating primary key lookups (IN list on `k`: 5 values, 4 distinct).' $EXPLAIN_FILE
+
+--echo
+--echo === ORDER BY an aggregate alias with LIMIT (applied by the result printer) ===
+--write_file $QUERY_FILE
+SELECT id, SUM(v) AS sv FROM t_pk1 WHERE id IN (4, 9, 2, 17, 11) GROUP BY id ORDER BY sv DESC LIMIT 3;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === a single key stays a fragment-pruned index scan ===
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id = 5;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--write_file $QUERY_FILE
+SELECT COUNT(*), SUM(v) FROM t_pk1 WHERE id = 5;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--error 1
+--exec grep -qF 'primary key lookup' $EXPLAIN_FILE
+
+--echo
+--echo === checked 64-bit SUM: an overflow across keys is error 1860; the query after it succeeds ===
+--write_file $QUERY_FILE
+SELECT SUM(s) FROM t_big WHERE id IN (2, 3);
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Execute as 2 aggregating primary key lookups (IN list on `id`: 2 values, 2 distinct).' $EXPLAIN_FILE
+--let sum64_overflow=1
+--let sum64_query=SELECT SUM(s) AS total FROM t_big WHERE id IN (1, 2)
+--source suite/ronsql/include/ronsql_sum64_check.inc
+--let sum64_overflow=0
+--let sum64_query=SELECT SUM(s) AS total FROM t_big WHERE id IN (2, 3)
+--source suite/ronsql/include/ronsql_sum64_check.inc
+
+--remove_file $EXPLAIN_FILE
+--disable_query_log
+DROP TABLE t_pk1, t_pk2, t_hash, t_str, t_big;
+--enable_query_log

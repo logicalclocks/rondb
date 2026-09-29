@@ -120,7 +120,7 @@ and unsupported statement shapes (single-table path, §6 Phase 2).
 | CTE single-node short-circuit: `m_cte_num_nodes <= 1` skips redistribute/FINAL_REP entirely | `DblqhMain.cpp:18937-18951` | Fires automatically once the state's node list is `{own}` |
 | Non-CTE aggregation has **no cross-node merge in the kernel** — each node streams partial groups to the API, API merges | `DblqhMain.cpp:19129-19173`, `JoinAggregationState.hpp:208-211` | With one state the API receives one already-merged stream; no protocol change |
 | Scalar CTE redistribute owner is already "the TC-co-located node" (`refToNode(m_senderRef)`) | `DblqhMain.cpp:21278-21297`, `:20564-20571` | LOCAL degenerates this to a no-op |
-| `JoinAggregationState::m_total_ops_expected` exists, is set from `JoinAggSetupReq::expectedOpCount` (always 0 today) and **is never used as a barrier** | `DblqhProxy.cpp:2493`; per-row counter `m_completed_ops` maintained at `DbtupExecQuery.cpp:5274`, `DblqhMain.cpp:19660` etc. | Dormant fields tailor-made for the feed completion barrier |
+| `JoinAggregationState::m_total_ops_expected` exists, is set from `JoinAggSetupReq::expectedOpCount` (always 0 today) and **is never used as a barrier** | `DblqhProxy.cpp:2493`; the per-row counter `m_completed_ops` it was meant to pair with was removed 2026-09-24 (RONDB-1124 F24 fix 5: an atomic add per row on the shared state, read by nothing) | Dormant field for the feed completion barrier; the owner needs its own count of received feeds |
 | Agg-consumed rows never count into `Request::m_rows` (self-continue / DELIVERED-hang invariants) | `DbspjMain.cpp:6916-6919`, `:13195-13199`, `:3712-3718` | Feed rows must preserve this |
 | ScanTabReq requestInfo: **all 32 bits allocated** | `ScanTab.hpp:171-265` | Flag must ride elsewhere |
 | Extended requestInfo = upper 16 bits of `storedProcId` (in-flight work, bits 31/30 already used; today the API sends 0xFFFF, `NdbQueryOperation.cpp:4528`) | in-flight branch | LOCAL takes the next free extended bit |
@@ -193,8 +193,9 @@ request**:
   buffer-only mode — the shape `cteLookupAggFeed` already runs (Step 4d
   `tablePtrP = nullptr` hardening), with leaf-column loads resolving from
   the shipped buffer via the `loadColumnTypedFromBuf` machinery (Step 4b),
-  including the `AGG_EVICT_NEEDED` retry loop, and increments
-  `m_completed_ops`.
+  including the `AGG_EVICT_NEEDED` retry loop, and counts the feed in a
+  per-state received-feed counter (owner LDM thread only, so not atomic;
+  `m_completed_ops` was removed by F24 fix 5 and counted local rows too).
 
 Rows read *on* the owner node keep today's zero-copy local feed path
 unchanged — both paths coexist per query.
@@ -224,7 +225,7 @@ DBTC sends COMPLETE only after all scan/lookup CONFs; an in-flight feed
   sums per request; DBTC accumulates and sends the total in
   `JOIN_AGG_COMPLETE_REQ` (reviving `expectedOpCount` /
   `m_total_ops_expected`). The owner defers finalize until
-  `m_completed_ops` reaches the expected total — the same
+  its received-feed count reaches the expected total — the same
   defer-then-continue shape as the redistribute queue
   (`DblqhMain.cpp:21557-21600`). Robust regardless of transporter layout.
 
@@ -359,7 +360,7 @@ Implements §4.2 + §4.3 and removes the interim 1271 gate:
   packing, batched send.
 - Owner-side DBLQH: `execJOIN_AGG_FEED_REQ` — buffer-only
   `processRecWithLinkedAttrs` (Step 4d/4b machinery), eviction retry,
-  `m_completed_ops`; COMPLETE defers finalize until the expected count is
+  received-feed count; COMPLETE defers finalize until the expected count is
   reached (redistribute-queue defer pattern).
 - Tests: block tests forcing remote feeds (≥2 node groups); flip the
   ng2r2/ng2r3/ng4r2 MTR suites to result-compare; ERROR_INSERT for
@@ -424,4 +425,5 @@ Phases 0-2 are configuration of existing machinery. Phase 3 is the real
 mechanism, and every piece of it composes precedented components: CTE feed
 receive shape (4d), typed buffer packing (`buildCteLinkedBuffer`),
 buffer-based column loads (4b), version-gated CONF fields (`rowsExamined`),
-and the dormant `expectedOpCount`/`m_completed_ops` pair for the barrier.
+and the dormant `expectedOpCount` plus an owner-side received-feed count
+for the barrier.

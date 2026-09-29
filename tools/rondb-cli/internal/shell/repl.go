@@ -4407,6 +4407,12 @@ Common parameters:
                                      a join could not be pushed
 
    Query families:
+     core_*        Engine primitives over tpch (RONDB-1121 M3.0 performance
+                   census): one access path or execution stage per entry —
+                   PK lookup, IN lists on the PK / a secondary index, index
+                   range, pass-through drain, AVG, full scans with / without
+                   a filter, few / many groups.  {KEY} on orders resolves to
+                   an existing (sparse) order key.
      fs_*          Online Feature-Store-style: CTEs compute per-entity
                    aggregate features joined to entity tables, with filters
                    bounding the work to hundreds .. tens of thousands of

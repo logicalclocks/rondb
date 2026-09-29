@@ -50,7 +50,7 @@ std::atomic<Uint32> JoinAggregationState::s_redist_pages{0};
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_EXEC_SR 1
-#define DEBUG_STAR_AGG 1
+// #define DEBUG_STAR_AGG 1
 #endif
 
 #ifdef DEBUG_STAR_AGG
@@ -2676,11 +2676,16 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
   if (aggStateKey != RNIL) {
     JoinAggregationState *state = getJoinAggState(aggStateKey);
     if (state != nullptr) {
+      /* Null every freed field: the released slot keeps its contents
+       * (the pool does not clear it), so nothing may point at freed
+       * memory if a stale key ever reaches it again. */
       if (state->m_all_programs_buf != nullptr) {
         lc_ndbd_pool_free(state->m_all_programs_buf);
+        state->m_all_programs_buf = nullptr;
       }
       if (state->m_column_meta_buf != nullptr) {
         lc_ndbd_pool_free(state->m_column_meta_buf);
+        state->m_column_meta_buf = nullptr;
       }
       if (state->m_leaf_programs != nullptr) {
         /* RONDB-1056 Phase 6-4: release each leaf's reuse-cache handle
@@ -2693,14 +2698,17 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
           state->m_leaf_programs[i].m_jit_cache_handle = nullptr;
         }
         lc_ndbd_pool_free(state->m_leaf_programs);
+        state->m_leaf_programs = nullptr;
       }
       if (state->m_receiverIds != nullptr) {
         lc_ndbd_pool_free(state->m_receiverIds);
+        state->m_receiverIds = nullptr;
       }
       if (state->m_agg_interpreter != nullptr) {
         state->m_agg_interpreter->freeAllChunks();
         state->m_agg_interpreter->~JoinAggInterpreter();
         lc_ndbd_pool_free(state->m_agg_interpreter);
+        state->m_agg_interpreter = nullptr;
       }
       if (state->m_per_thread_interpreters != nullptr) {
         for (Uint32 i = 0; i < state->m_num_threads; i++) {
@@ -2711,6 +2719,7 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
           }
         }
         lc_ndbd_pool_free(state->m_per_thread_interpreters);
+        state->m_per_thread_interpreters = nullptr;
       }
       // Free any redistribution queue pages
       {
@@ -2724,6 +2733,7 @@ DblqhProxy::sendJoinAggSetupRef(Signal *signal,
 #endif
           page = next;
         }
+        state->m_redist_page_head = nullptr;
       }
       releaseJoinAggState(aggStateKey);
     }
@@ -2945,7 +2955,6 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   // Every field in JoinAggregationState must be set here to avoid
   // stale values from a previous pool occupant.
   state->m_outstanding_ops.store(0);
-  state->m_completed_ops.store(0);
   state->m_failed_ops.store(0);
   state->m_agg_curr_batch_size_rows = 0;
   state->m_agg_curr_batch_size_bytes = 0;
@@ -3035,6 +3044,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
            sizeof(state->m_cte_remote_ownerInstances));
     state->m_cte_waiting_conf = false;
     state->m_cte_redist_batch_bytes = 0;
+    state->m_cte_redist_bucket = 0;
     /* ArrayPool::seize skips the constructor: a stale true here would
      * suppress the COMPLETE_REF in abortCteRedistribution and trip the
      * ndbrequire in checkCteReady for the next occupant of this slot. */
@@ -3183,11 +3193,13 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       return;
     }
 
-    // Allocate LeafProgram descriptor array
+    // Allocate LeafProgram descriptor array, cleared: a REF from inside
+    // the fill loop below releases every leaf's JIT handle
+    // (sendJoinAggSetupRef), including the leaves not filled yet.
     state->m_leaf_programs =
       (LeafProgram *)lc_ndbd_pool_malloc(numLeaves * sizeof(LeafProgram),
                                           RG_QUERY_MEMORY, getThreadId(),
-                                          false);
+                                          true);
     if (unlikely(state->m_leaf_programs == nullptr)) {
       jam();
       lc_ndbd_pool_free(allProgsBuf);
@@ -3609,8 +3621,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
   const LeafProgram &leaf0 = state->m_leaf_programs[0];
   if (state->m_strategy == JoinAggregationState::MUTEX_BASED) {
     jam();
-    void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                     getThreadId(), false);
+    void *page = lc_ndbd_pool_malloc(sizeof(JoinAggInterpreter),
+                                     RG_QUERY_MEMORY, getThreadId(), false);
     if (unlikely(page == nullptr)) {
       jam();
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
@@ -3623,7 +3635,18 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                     0,
                                     getThreadId());
     state->m_agg_interpreter = interp;
-    interp->Init(leaf0.m_agg_program);
+    if (unlikely(!interp->Init(leaf0.m_agg_program))) {
+      jam();
+      /* Without its buffer block the interpreter would fail every row
+       * with 1869: out of query memory (temporary) unless the block was
+       * allocated and the program itself was rejected. */
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          interp->has_buf_block()
+                              ? DbspjErr::InvalidRequest
+                              : DbspjErr::OutOfQueryMemory,
+                          __LINE__, key, cteIndex);
+      return;
+    }
     if (state->m_num_leaves > 1) {
       interp->setTotalAggResults(state->m_total_agg_results);
       interp->cacheMultiLeafAggOps(state->m_leaf_programs,
@@ -3638,7 +3661,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       if (unlikely(ret != 0)) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
+                            ret == ZJOIN_AGG_ALLOC_MEM_FAILED
+                                ? DbspjErr::OutOfQueryMemory
+                                : DbspjErr::InvalidRequest,
+                            __LINE__, key, cteIndex);
         return;
       }
     }
@@ -3669,8 +3695,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       per_thread_budget = 4;
     }
     for (Uint32 i = 0; i < num_threads; i++) {
-      void *page = lc_ndbd_pool_malloc(MEM_CHUNK_SIZE, RG_QUERY_MEMORY,
-                                       getThreadId(), false);
+      void *page = lc_ndbd_pool_malloc(sizeof(JoinAggInterpreter),
+                                       RG_QUERY_MEMORY, getThreadId(), false);
       if (unlikely(page == nullptr)) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
@@ -3683,7 +3709,15 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                                       0,
                                       getThreadId());
       arr[i] = interp;
-      interp->Init(leaf0.m_agg_program);
+      if (unlikely(!interp->Init(leaf0.m_agg_program))) {
+        jam();
+        sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                            interp->has_buf_block()
+                                ? DbspjErr::InvalidRequest
+                                : DbspjErr::OutOfQueryMemory,
+                            __LINE__, key, cteIndex);
+        return;
+      }
       if (state->m_num_leaves > 1) {
         interp->setTotalAggResults(state->m_total_agg_results);
         interp->cacheMultiLeafAggOps(state->m_leaf_programs,
@@ -3697,7 +3731,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         if (unlikely(ret != 0)) {
           jam();
           sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                              DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
+                              ret == ZJOIN_AGG_ALLOC_MEM_FAILED
+                                  ? DbspjErr::OutOfQueryMemory
+                                  : DbspjErr::InvalidRequest,
+                              __LINE__, key, cteIndex);
           return;
         }
       }
@@ -3870,6 +3907,31 @@ DblqhProxy::execJOIN_AGG_RELEASE_REQ(Signal *signal) {
   if (state != nullptr) {
     jam();
     state->m_release_started = true;
+    /* The teardown below frees what the owner LDM works on, so no owner
+     * work may be in progress and no peer group may still be on its way
+     * to the state:
+     *  - DBTC sends RELEASE only after every COMPLETE_REQ it sent was
+     *    answered (close_scan_req defers until then; the stale-SETUP
+     *    reclaim follows the same close). The owner answers CONF only
+     *    when done: COMPLETED, or CTE_READY once every peer's FINAL_REP
+     *    count was applied, so nothing is left in flight to it. It
+     *    answers REF only with the state failed (ERROR).
+     *  - JOIN_AGG_NODE_FAIL_REP reclaims only states outside the owner
+     *    phases, after every LDM stopped its continuations for the
+     *    failed coordinator (NODE_FAIL_ABORT).
+     * Neither teardown nor the pool resets m_state, so a late
+     * REDISTRIBUTE_REQ (a peer's group sent before that peer aborted)
+     * finds ERROR / NODE_FAIL_ABORT and is REFed without being queued or
+     * merged. A path that refuses a CTE COMPLETE while the state lives
+     * must therefore fail the state, not only the request. */
+#ifdef VM_TRACE
+    {
+      const JoinAggregationState::State phase = state->m_state.load();
+      ndbassert(phase != JoinAggregationState::FINALIZING &&
+                phase != JoinAggregationState::SENDING_RESULTS &&
+                phase != JoinAggregationState::CTE_REDISTRIBUTING);
+    }
+#endif
     /* RONDB-1120 P0: unregister the identity at RELEASE processing
      * time — NOT at the end of the CONTINUEB-sliced teardown — so a
      * back-to-back query on the same transaction can re-register
@@ -4062,7 +4124,7 @@ DblqhProxy::execCONTINUEB(Signal *signal) {
       const Uint32 requestId = signal->theData[3];
       const Uint32 cteIndex = signal->theData[4];
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          ZJOIN_AGG_STATE_NOT_FOUND, __LINE__, RNIL,
+                          ZJOIN_AGG_SETUP_NOT_RECEIVED, __LINE__, RNIL,
                           cteIndex);
       break;
     }

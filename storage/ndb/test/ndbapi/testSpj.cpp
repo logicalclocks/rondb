@@ -40,7 +40,7 @@
 
 static int faultToInject = 0;
 
-enum faultsToInject { FI_START = 17001, FI_END = 17531 };
+enum faultsToInject { FI_START = 17001, FI_END = 17534 };
 
 int runLoadTable(NDBT_Context *ctx, NDBT_Step *step) {
   int records = ctx->getNumRecords();
@@ -136,7 +136,8 @@ int runLookupJoinError(NDBT_Context *ctx, NDBT_Step *step) {
                             // failed
       7234,   // sendSignal(DIH_SCAN_GET_NODES_CONF) -> import() failed (DIH)
       17510,  // random failure when allocating section memory
-      17520, 17521  // failure (+random) from ::checkTableError()
+      17520, 17521,  // failure (+random) from ::checkTableError()
+      17534          // do_init: per-node arrays -> OutOfQueryMemory (F27)
   };
   loops = faultToInject ? 1 : sizeof(lookupFaults) / sizeof(int);
 
@@ -238,7 +239,8 @@ int runScanJoinError(NDBT_Context *ctx, NDBT_Step *step) {
       17122, 17130, 17131,  // sendSignal(DIH_SCAN_GET_NODES_REQ) -> import()
                             // failed
       17510,                // random failure when allocating section memory
-      17520, 17521  // failure (+random) from TableRecord::checkTableError()
+      17520, 17521,  // failure (+random) from TableRecord::checkTableError()
+      17534          // do_init: per-node arrays -> OutOfQueryMemory (F27)
   };
   loops = faultToInject ? 1 : sizeof(scanFaults) / sizeof(int);
 

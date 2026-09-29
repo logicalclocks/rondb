@@ -163,6 +163,11 @@ while($iter)
 --echo failure affects all connections
 --echo but not in a permanent way
 
+# Upstream expects 1296/1297 from statements run after the bounce. A
+# statement that is running when a data node processes the disconnect is
+# instead aborted by the node failure (e.g. 4028), which RonDB maps to
+# 1205 (RONDB-224). Which one a statement sees depends on timing.
+
 --connection $main_conn
 --echo Main : Main
 
@@ -172,15 +177,15 @@ while($iter)
 --echo Show query fails
 --let $query=select * from t1 LIMIT 1;
 --source include/wait_for_query_to_fail.inc
---error 1296,1297
+--error 1205,1296,1297
 select * from t1 LIMIT 1;
 
 --echo Show dml fails
---error 1296,1297
+--error 1205,1296,1297
 insert into t1 values (1);
 
 --echo Show DDL fails
---error 1296,1297
+--error 1205,1296,1297
 create table test.t2 (a int primary key) engine=ndb;
 
 --source include/ndb_not_readonly.inc
@@ -194,15 +199,15 @@ create table test.t2 (a int primary key) engine=ndb;
 --echo Query will fail during BI reinit
 --let $query=select * from t1 LIMIT 1;
 --source include/wait_for_query_to_fail.inc
---error 1296,1297
+--error 1205,1296,1297
 select * from t1 LIMIT 1;
 
 --echo DML will fail during BI reinit
---error 1296,1297
+--error 1205,1296,1297
 insert into t1 values (1);
 
 --echo Show DDL fails
---error 1296,1297
+--error 1205,1296,1297
 create table test.t2 (a int primary key) engine=ndb;
 
 --connection $main_conn
@@ -217,15 +222,15 @@ create table test.t2 (a int primary key) engine=ndb;
 --echo Query will fail during BI reinit
 --let $query=select * from t1 LIMIT 1;
 --source include/wait_for_query_to_fail.inc
---error 1296,1297
+--error 1205,1296,1297
 select * from t1 LIMIT 1;
 
 --echo DML will fail during BI reinit
---error 1296,1297
+--error 1205,1296,1297
 insert into t1 values (1);
 
 --echo Show DDL fails
---error 1296,1297
+--error 1205,1296,1297
 create table test.t2 (a int primary key) engine=ndb;
 
 --connection $main_conn

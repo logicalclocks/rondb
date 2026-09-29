@@ -55,6 +55,7 @@ constexpr const char* const usageHelp =
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
 #include "rdrs_dal.hpp"
+#include "ronsql_worker_pool.hpp"
 #include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
 
 #include <cstdio>
@@ -88,6 +89,9 @@ static MysqlHandle* g_mysql_router_handle = nullptr;
 static ServerThread* g_mysql_router_thread = nullptr;
 static bool g_mysql_router_running = false;
 static int g_exit_code = 0;
+/* Stack size of the REST (drogon IO loop) threads and of the RonSQL
+ * workers that execute their statements. */
+static constexpr Uint32 kRestThreadStackSize = 8 * 1024 * 1024;
 TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 static volatile sig_atomic_t g_in_exit = 0;
@@ -95,6 +99,12 @@ static volatile sig_atomic_t g_in_exit = 0;
 static void do_exit() {
   // todo Set shutdown flag in RDRS2 connection pool
   if (g_drogon_running) {
+    if (g_ronsql_worker_pool != nullptr) {
+      /* While the IO loops still run: queued RonSQL requests get a 503 and
+       * the running ones finish, so every response is sent. */
+      printf("Stopping RonSQL workers...\n");
+      g_ronsql_worker_pool->stop();
+    }
     printf("Quitting Drogon...\n");
     drogon::app().quit();
     return;
@@ -107,6 +117,11 @@ static void do_exit() {
     _exit(g_exit_code);
   }
   g_in_exit = 1;
+  if (g_ronsql_worker_pool != nullptr) {
+    // Before the schema cache and the RonDB connections go away.
+    delete g_ronsql_worker_pool;
+    g_ronsql_worker_pool = nullptr;
+  }
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
     jsonParsers = nullptr;
@@ -481,20 +496,25 @@ int main(int argc, char *argv[]) {
       globalConfigs.rest.numThreads : 0;
   Uint32 num_purge_threads = globalConfigs.rest.enable ?
       RDRSRonDBConnectionPool::kNoTTLPurgeThreads : 0;
+  Uint32 num_ronsql_workers = globalConfigs.rest.enable ?
+      globalConfigs.ronsql.numThreads : 0;
+  Uint32 ronsql_worker_thread_offset =
+    num_rdrs_threads + num_rondis_threads + num_mysql_router_threads;
   Uint32 tot_num_threads =
     num_rdrs_threads + num_rondis_threads +
-    num_mysql_router_threads + num_purge_threads;
+    num_mysql_router_threads + num_ronsql_workers + num_purge_threads;
   /**
-   * The RDRS server, the Rondis server, the MySQL router and the
-   * TTL purge threads all share the same cluster connections. The
-   * RDRS server can also use the metadata connection to connect to
-   * another cluster.
+   * The RDRS server, the Rondis server, the MySQL router, the RonSQL
+   * workers and the TTL purge threads all share the same cluster
+   * connections. The RDRS server can also use the metadata connection
+   * to connect to another cluster.
    *
    * The threads maintained in g_rondbConnection are using thread
    * ranges to map threads to Ndb objects. The first set of Ndb
    * objects are used by the RDRS server, the next set of Ndb objects
    * are used by the Rondis server, then the MySQL router threads,
-   * and the last Ndb objects are used by the TTL purge object.
+   * then the RonSQL workers, and the last Ndb objects are used by the
+   * TTL purge object.
    */
   // connect to rondb for all services
   g_rondbConnection = new RonDBConnection(globalConfigs.ronDB,
@@ -697,13 +717,34 @@ int main(int argc, char *argv[]) {
       }
     }
 
+    /*
+     * RonSQL workers (m3_run6_plan.md B2): /ronsql statements execute
+     * here instead of on the IO loop that received them, so a long
+     * statement cannot stall the other connections of that loop.
+     */
+    if (num_ronsql_workers > 0) {
+      g_ronsql_worker_pool =
+        new RonSQLWorkerPool(num_ronsql_workers,
+                             globalConfigs.ronsql.maxQueuedRequests,
+                             ronsql_worker_thread_offset,
+                             kRestThreadStackSize);
+      if (!g_ronsql_worker_pool->start()) {
+        std::cerr << "Failed to start the RonSQL worker threads.\n";
+        g_exit_code = 1;
+        do_exit();
+      }
+      printf("Started %u RonSQL worker threads (queue limit %u)\n",
+             num_ronsql_workers,
+             globalConfigs.ronsql.maxQueuedRequests);
+    }
+
     drogon::app().addListener(globalConfigs.rest.serverIP,
                               globalConfigs.rest.serverPort,
                               globalConfigs.security.tls.enableTLS,
                               globalConfigs.security.tls.certificateFile,
                               globalConfigs.security.tls.privateKeyFile);
     drogon::app().setThreadNum(globalConfigs.rest.numThreads);
-    drogon::app().setThreadStackSize(8 * 1024 * 1024);
+    drogon::app().setThreadStackSize(kRestThreadStackSize);
     // Install Internal.maxReqSize as the HTTP server's client body
     // limit.  Without this, drogon's built-in 1 MB default silently
     // SHADOWED the configurable limit: any request over 1 MB was

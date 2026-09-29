@@ -58,9 +58,20 @@ F8 was a framework fixture issue and is already fixed.
   Index ranges per key needed; the fs_hw plan pins record the table scan as observed.
 - [ ] F13 (bench.md): snowflake point reads cost ~350 µs of CTE_SCAN round trips over the
   2–3 PK reads MySQL does (483–525 µs vs 120–172 µs).
-- [ ] F14 (spec_fuzz.md): a snowflake CTE body keyed by a VARCHAR entity key
+- [x] F14 (spec_fuzz.md): a snowflake CTE body keyed by a VARCHAR entity key
   returns no rows through CTE_SCAN (`customers_str_1` root); the body alone and
   the integer-keyed twin work. Found by the E6 fuzzer, seed 1.
+  Root cause (WP-F F3, 2026-09-23): RonSQL passed `encode_constant`'s
+  length-prefixed VARCHAR bytes to `NdbQueryBuilder::constValue(ptr, len)`,
+  which adds the prefix itself, so every VARCHAR bound or key of a pushed
+  query was doubly prefixed (the standalone aggregate uses the old API, which
+  takes the prefixed form); the query-root KEYINFO path of the API
+  (`serializeConstOp`) added one more.  Fix in the F3 change set
+  (`query_const_value`, `serializeConstOp`, `NdbCharConstOperandImpl::convertVChar`),
+  regression in `ronsql_in_list_spj`.  Confirmed 2026-09-24 (spec seed 1
+  known-wrong 2 → 0, envelope seed 1 nine cases → PASS); fuzzer markers
+  retired.  Framework follow-up (WP-E): string-keyed snowflake cases and
+  manifest rows `R-S7-str` / `R-S8-str`.
 - [ ] F15 (envelope_fuzz.md): data node crash in DBSPJ `sendJoinAggNullRow` /
   `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
   LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope

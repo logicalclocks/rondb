@@ -1,0 +1,111 @@
+--source include/have_ndb.inc
+
+--echo ############################################################
+--echo # RONDB-1124: pushed GROUP BY under real QueryMemory pressure
+--echo ############################################################
+--echo #
+--echo # Fragments keep their groups resident until QueryMemory runs short
+--echo # (ndb_pushdown_agg_qmem.cnf keeps it small). These scans need several
+--echo # times what QueryMemory can hold, so they only complete if every
+--echo # fragment detects the pressure, drains its groups and resumes, and
+--echo # the API merges the groups sent more than once. push_agg_compare.inc
+--echo # runs every query with pushdown OFF and ON and fails unless both
+--echo # return the same rows.
+--echo #
+
+--disable_query_log
+CREATE TABLE seq_n (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+SET SESSION cte_max_recursion_depth = 100000;
+INSERT INTO seq_n
+  WITH RECURSIVE seq(n) AS (SELECT 0 UNION ALL SELECT n + 1 FROM seq WHERE n < 79999)
+  SELECT n FROM seq;
+
+# 80000 rows. (g, pad) has 50000 groups of about 1 KB each, 30000 of them
+# with two rows; h has 20000 groups of 4 rows with a 900-byte MAX(pad).
+CREATE TABLE t_qm (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  h INT NOT NULL,
+  pad VARCHAR(900) CHARACTER SET latin1 COLLATE latin1_bin NOT NULL,
+  v INT NOT NULL
+) ENGINE=NDB;
+let $i = 0;
+while ($i < 4)
+{
+  eval INSERT INTO t_qm
+    SELECT n, n % 50000, n % 20000,
+           CONCAT(LPAD(n % 50000, 6, '0'), REPEAT('q', 894)), n % 1000
+    FROM seq_n WHERE n >= $i * 20000 AND n < ($i + 1) * 20000;
+  inc $i;
+}
+--enable_query_log
+
+--echo ############################################################
+--echo # A: one scan at a time
+--echo ############################################################
+--let $pac_label = A1 50000 groups with a 900-byte key
+--let $pac_query = SELECT g, COUNT(*), SUM(v) FROM t_qm GROUP BY g, pad
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--let $pac_label = A2 20000 groups with a 900-byte MAX payload
+--let $pac_query = SELECT h, COUNT(*), MAX(pad) FROM t_qm GROUP BY h
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # B: four concurrent scans share QueryMemory
+--echo ############################################################
+--disable_query_log
+--let $b_query = SELECT g, COUNT(*), SUM(v) FROM t_qm GROUP BY g, pad
+--let $b_dir = $MYSQLTEST_VARDIR/tmp
+SET ndb_pushdown_aggregate = OFF;
+--sorted_result
+--output $b_dir/push_agg_qmem_off.txt
+--eval $b_query
+connect (con1,localhost,root,,test);
+connect (con2,localhost,root,,test);
+connect (con3,localhost,root,,test);
+connect (con4,localhost,root,,test);
+connection con1;
+SET ndb_pushdown_aggregate = ON;
+send_eval $b_query;
+connection con2;
+SET ndb_pushdown_aggregate = ON;
+send_eval $b_query;
+connection con3;
+SET ndb_pushdown_aggregate = ON;
+send_eval $b_query;
+connection con4;
+SET ndb_pushdown_aggregate = ON;
+send_eval $b_query;
+connection con1;
+--sorted_result
+--output $b_dir/push_agg_qmem_1.txt
+reap;
+connection con2;
+--sorted_result
+--output $b_dir/push_agg_qmem_2.txt
+reap;
+connection con3;
+--sorted_result
+--output $b_dir/push_agg_qmem_3.txt
+reap;
+connection con4;
+--sorted_result
+--output $b_dir/push_agg_qmem_4.txt
+reap;
+connection default;
+disconnect con1;
+disconnect con2;
+disconnect con3;
+disconnect con4;
+--diff_files $b_dir/push_agg_qmem_off.txt $b_dir/push_agg_qmem_1.txt
+--diff_files $b_dir/push_agg_qmem_off.txt $b_dir/push_agg_qmem_2.txt
+--diff_files $b_dir/push_agg_qmem_off.txt $b_dir/push_agg_qmem_3.txt
+--diff_files $b_dir/push_agg_qmem_off.txt $b_dir/push_agg_qmem_4.txt
+--remove_files_wildcard $b_dir push_agg_qmem_*.txt
+--enable_query_log
+--echo # B1: 4 concurrent pushed scans match the non-pushed result
+
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t_qm;
+DROP TABLE seq_n;

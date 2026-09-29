@@ -106,6 +106,10 @@ SELECT COUNT(*) FROM ttl_backup.sz3;
 --let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM ttl_backup.sz1
 --source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
 
+# sz2 has its own row timestamps; wait for its expiry independently.
+--let $ttl_wait_condition = SELECT COUNT(*) = 1 FROM ttl_backup.sz2
+--source suite/ndb_ttl_rpl/include/ttl_wait_expired.inc
+
 # Verify: sz1=1 (row 3), sz2=1 (row 3), sz3=4
 SELECT col_a, col_c FROM ttl_backup.sz1;
 SELECT col_a, col_c FROM ttl_backup.sz2;

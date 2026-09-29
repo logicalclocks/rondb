@@ -565,10 +565,10 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
     while (i < m_n_gb_cols && m_cur_pos < m_prog_len) {
       m_gb_cols[i++] = m_prog[m_cur_pos++];
     }
-    /* m_gb_map_buf was placement-new'd by initBufBlock. */
-    m_gb_map_buf->clear();
+    /* m_gb_map_buf was placement-new'd by initBufBlock; growth segments
+     * are allocated on this interpreter's thread id. */
     m_gb_map = m_gb_map_buf;
-    m_gb_map->init(JOIN_AGG_HASH_BUCKET_COUNT);
+    m_gb_map->init(m_thread_id);
   }
 
   if (m_n_agg_results) {
@@ -2225,6 +2225,7 @@ MemChunk* AggInterpreterBase::allocNewChunk() {
   chunk->used = 0;
   chunk->live_groups = 0;
   chunk->group_list = nullptr;
+  chunk->owner = this;
   chunk->next = m_chunks;
   chunk->prev = nullptr;
   if (m_chunks != nullptr) {
@@ -2270,20 +2271,26 @@ void AggInterpreterBase::freeGroupData(char* ptr) {
   MemChunk* chunk = reinterpret_cast<MemChunk*>(raw - offset - sizeof(MemChunk));
   chunk->live_groups--;
   if (chunk->live_groups == 0) {
+    /* Unlink from the owner's list: a group moved by mergeFrom is freed
+     * through the target interpreter (teardown of slot 0 after an abort
+     * in the middle of a batched merge) while its chunk is still on the
+     * source's list; unlinking from this interpreter's list corrupted it
+     * and left the source to free the chunk again. */
+    AggInterpreterBase* const own = chunk->owner;
     if (chunk->prev != nullptr) {
       chunk->prev->next = chunk->next;
     } else {
-      m_chunks = chunk->next;
+      own->m_chunks = chunk->next;
     }
     if (chunk->next != nullptr) {
       chunk->next->prev = chunk->prev;
     } else {
-      m_chunks_tail = chunk->prev;
+      own->m_chunks_tail = chunk->prev;
     }
-    if (m_current_chunk == chunk) {
-      m_current_chunk = m_chunks;
+    if (own->m_current_chunk == chunk) {
+      own->m_current_chunk = own->m_chunks;
     }
-    m_total_chunk_bytes -= MEM_CHUNK_SIZE;
+    own->m_total_chunk_bytes -= MEM_CHUNK_SIZE;
     lc_ndbd_pool_free(chunk);
   }
 }
@@ -2873,6 +2880,11 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
       return false;  /* More groups remain — caller re-schedules. */
     }
   }
+  /* The map is empty: return its growth segments (bounded by
+   * GBHashTable::MAX_SEGMENTS; none unless the table grew). */
+  if (m_gb_map != nullptr) {
+    m_gb_map->release();
+  }
   /* Phase 2: scalar (no-GROUP-BY) string winners + m_string_results
    * metadata array.  One-shot; idempotent on re-entry. */
   if (m_agg_results != nullptr && m_string_results != nullptr) {
@@ -2986,10 +2998,26 @@ AggInterpreterBase::~AggInterpreterBase() {
     lc_ndbd_pool_free(m_column_meta_hash);
     m_column_meta_hash = nullptr;
   }
+  /* The group table lives inside m_buf_block; its growth segments are
+   * separate allocations. */
+  if (m_gb_map_buf != nullptr) {
+    m_gb_map_buf->release();
+  }
   if (m_buf_block != nullptr) {
     lc_ndbd_pool_free(m_buf_block);
     m_buf_block = nullptr;
   }
+}
+
+/* GBHashTable growth (AggHashTable.hpp): bucket segments and their
+ * directory come from query memory like the group chunks.  A failed
+ * allocation stops the table's growth; the query continues. */
+void* agg_gb_segment_alloc(size_t bytes, Uint32 thread_id) {
+  return lc_ndbd_pool_malloc(bytes, RG_QUERY_MEMORY, thread_id, false);
+}
+
+void agg_gb_segment_free(void* ptr) {
+  lc_ndbd_pool_free(ptr);
 }
 
 /*

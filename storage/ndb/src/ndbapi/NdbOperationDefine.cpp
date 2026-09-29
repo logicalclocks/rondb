@@ -1222,14 +1222,23 @@ int NdbOperation::handleOperationOptions(const OperationType type,
                                          const Uint32 sizeOfOptions,
                                          NdbOperation *op) {
   /* Check options size for versioning... */
+  OperationOptions compatOpts;
   if (unlikely((sizeOfOptions != 0) &&
                (sizeOfOptions != sizeof(OperationOptions)))) {
     // Handle different sized OperationOptions
     // Probably smaller is old version, larger is new version.
-
-    // No other versions currently supported
-    // Invalid or unsupported OperationOptions structure
-    return 4297;
+    if (sizeOfOptions == offsetof(OperationOptions, aggregationCode)) {
+      /* The layout before OO_AGGREGATION (RONDB-1124): identical up to
+       * the new last member. */
+      memcpy(&compatOpts, opts, sizeOfOptions);
+      compatOpts.aggregationCode = nullptr;
+      compatOpts.optionsPresent &=
+          ~Uint64(OperationOptions::OO_AGGREGATION);
+      opts = &compatOpts;
+    } else {
+      // Invalid or unsupported OperationOptions structure
+      return 4297;
+    }
   }
 
   bool isScanTakeoverOp = (op->m_key_record == nullptr);
@@ -1599,6 +1608,41 @@ int NdbOperation::handleOperationOptions(const OperationType type,
   }
   if (opts->optionsPresent & OperationOptions::OO_BATCH_UNSAFE_FLAG) {
     op->theBatchUnsafeFlag = 1;
+  }
+  if (opts->optionsPresent & OperationOptions::OO_AGGREGATION) {
+    /* Aggregation on a primary-key read (RONDB-1124): a committed read
+     * through the primary key whose only result is the aggregation
+     * record.  Read-mask columns and blobs are refused when the signals
+     * are built (buildSignalsNdbRecord). */
+    const NdbAggregator *agg = opts->aggregationCode;
+    if (type != ReadRequest || isScanTakeoverOp ||
+        (op->m_key_record->flags & NdbRecord::RecIsIndex) ||
+        op->theLockMode != LM_CommittedRead ||
+        (opts->optionsPresent &
+         (OperationOptions::OO_GETVALUE | OperationOptions::OO_GET_FINAL_VALUE |
+          OperationOptions::OO_LOCKHANDLE)) ||
+        op->theReceiver.m_firstRecAttr != nullptr) {
+      return 4574;
+    }
+    if (agg == nullptr || !agg->finalized()) {
+      return 4560;  // NdbAggregator::Finalize() not called
+    }
+    if (agg->table_impl() != op->m_currentTable) {
+      return 241;  // Invalid schema object version
+    }
+    if (!ndbd_support_pk_read_aggregation(
+            op->theNdbCon->getNdb()->getMinDbNodeVersion())) {
+      return 4575;
+    }
+    if (agg->disk_columns()) {
+      op->m_flags &= ~Uint8(OF_NO_DISK);
+    }
+    NdbRecAttr *ra = op->theReceiver.getValue(nullptr, nullptr);
+    if (ra == nullptr) {
+      return 4000;  // Memory allocation error
+    }
+    op->m_read_aggregation_code = agg;
+    op->m_read_aggregation_rec_attr = ra;
   }
   return 0;
 }

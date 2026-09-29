@@ -123,6 +123,7 @@ Number of output lines, including header: 13
 == Explain Query ==
 == Phase rows ==
 rows=12
+fetched within bound
 == Expected result ==
 SELECT o_orderkey, o_orderdate FROM orders
 ORDER BY o_orderdate DESC LIMIT 12|
@@ -154,6 +155,7 @@ Number of output lines, including header: 12
 
 == Phase rows ==
 rows=11
+fetched within bound
 == Expected result ==
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 11|
@@ -252,7 +254,7 @@ NULL
 NULL
 NULL
 
-=== poi-8: LIMIT 260 crosses a fragment batch boundary under the ordered merge ===
+=== poi-8: LIMIT 260 under the ordered merge, then early close ===
 == Query ==
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 260;
@@ -266,6 +268,7 @@ Number of output lines, including header: 261
 
 == Phase rows ==
 rows=260
+fetched within bound
 == Expected result ==
 SELECT o_orderdate FROM orders
 ORDER BY o_orderdate LIMIT 260|
@@ -530,6 +533,26 @@ o_orderdate
 1995-05-10
 1995-05-10
 1995-05-11
+
+=== poi-19: one fragment refills its batch mid-merge (LIMIT above BatchSize) ===
+== Query ==
+SELECT d FROM ob_skew ORDER BY d LIMIT 400;
+
+Number of output lines, including header: 401
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Phase rows ==
+rows=400
+== Expected result (summary; the order is strict-diffed above) ==
+SELECT COUNT(*), MIN(d), MAX(d)
+FROM (SELECT d FROM ob_skew ORDER BY d LIMIT 400) AS t|
+COUNT(*)	MIN(d)	MAX(d)
+400	1	400
 
 === poi-9: equality prefix with reversed conjunct order + range on the ORDER BY column ===
 == Query ==

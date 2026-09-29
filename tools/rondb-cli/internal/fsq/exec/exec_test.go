@@ -117,7 +117,8 @@ func TestClassify(t *testing.T) {
 		t.Error("400 without a RonSQL body is a request error")
 	}
 	// RONDB-1124: the class decides the status; a 400 with the RonSQL
-	// framing is a clean rejection, 413 too, 503 is retryable.
+	// framing is a clean rejection, 413 too, 503 is retryable only when
+	// it is an exhausted retry budget of temporary errors.
 	if o, _ := Classify(400, "[syntax] Caught exception: Syntax error."); o != CleanReject {
 		t.Error("400 syntax")
 	}
@@ -129,6 +130,9 @@ func TestClassify(t *testing.T) {
 	}
 	if o, _ := Classify(503, "[resource] Caught RonSQLRetryableError after 10 attempts: x"); o != Retryable {
 		t.Error("503")
+	}
+	if o, _ := Classify(503, "[resource] Caught exception: Out of memory."); o != CleanReject {
+		t.Error("503 permanent resource error is not retried")
 	}
 	if o, _ := Classify(500, "[internal] Caught exception: Failed writing aggregation program. Please report a bug."); o != CleanReject {
 		t.Error("500 internal keeps the permanent outcome")

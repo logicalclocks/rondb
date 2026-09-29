@@ -77,6 +77,14 @@ WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 
+# The single-group form above runs flattened into the single-table
+# aggregate (RONDB-1124 C2); an outer COUNT(*) keeps it on the CTE path.
+--echo CTE extrema preserve FLOAT on the CTE path
+--write_file $QUERY_FILE
+WITH a AS (SELECT g, MIN(f) AS lo, MAX(f) AS hi, SUM(f) AS sf, AVG(f) AS af FROM float_format WHERE g = 1 GROUP BY g) SELECT COUNT(*) AS n, MIN(lo) AS lo, MAX(hi) AS hi, MIN(sf) AS sf, MAX(af) AS af FROM a;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
 # a's g = 1 bound turns b's source into a constant-key CTE lookup.
 # That lookup must be scheduled as b's materialization root.
 --echo Chained CTE projection preserves each display type

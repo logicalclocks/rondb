@@ -509,13 +509,7 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 			case exec.OK:
 				rep := canon.Compare(myResp.Result, rr.Result, canon.Options{Ordered: ordered, Tolerance: o.tolerance})
 				if !rep.Equal {
-					if strings.HasPrefix(sqlText, "WITH `b` AS (") && stringRootKey(c) && len(rr.Result.Rows) == 0 && len(myResp.Result.Rows) > 0 {
-						// F14: the string-keyed snowflake body yields nothing through CTE_SCAN.
-						worst("KNOWN-WRONG", "F14: "+rep.Reason)
-						res.Finding = cases.Known["F14"].Finding
-					} else {
-						worst("WRONG-RESULT", rep.Reason)
-					}
+					worst("WRONG-RESULT", rep.Reason)
 					if res.Diff == "" {
 						res.Diff = rep.Diff
 					}
@@ -569,22 +563,6 @@ func runFuzzCase(ctx context.Context, c fuzz.Case, my vectorQuerier, rd vectorQu
 		}
 	}
 	return res
-}
-
-// stringRootKey reports whether the case's entity key is a string column.
-func stringRootKey(c fuzz.Case) bool {
-	if len(c.KeyNames) == 0 || len(c.View.Joins) == 0 {
-		return false
-	}
-	for _, fg := range c.View.FGs {
-		if fg.ID != c.View.Joins[0].FG {
-			continue
-		}
-		if f, ok := fg.Feature(c.KeyNames[0]); ok {
-			return spec.BaseType(f.Type) == "string"
-		}
-	}
-	return false
 }
 
 // fuzzStructFields returns the collect struct fields of the join that

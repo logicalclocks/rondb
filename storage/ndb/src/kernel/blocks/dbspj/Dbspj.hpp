@@ -1494,7 +1494,9 @@ class Dbspj : public SimulatedBlock {
       RT_AGGREGATE = 0x80  // Request contains aggregation (only leaf sends to API)
       ,
       RT_AGG_ANCESTOR_MATCH = 0x100,  // Match tracking for intermediate agg ancestors
-      RT_CTE_PHASE = 0x200    // CTE materialization scans in progress
+      RT_CTE_PHASE = 0x200,   // CTE materialization scans in progress
+      RT_REQUESTER_FAILED = 0x400  // Scan: the requesting TC's node failed,
+                                   // no SCAN_NEXTREQ can arrive any more
     };
 
     enum RequestState {
@@ -1744,13 +1746,16 @@ class Dbspj : public SimulatedBlock {
   void cteOwnerNodes(const Request *req, Uint32 cteIdx,
                      NdbNodeBitmask &mask) const;
 
-  void do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
+  // False when query memory for the per-node arrays is exhausted; the
+  // Request is then fully initialized for cleanup() (F27).
+  bool do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
   void handle_early_lqhkey_ref(Signal *, const LqhKeyReq *, Uint32 err);
   void sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef);
   void sendTCKEYCONF(Signal *signal, Uint32 len, Uint32 ref, Uint32 routeRef);
 
-  void do_init(Request *, const ScanFragReq *, Uint32 senderRef);
+  bool do_init(Request *, const ScanFragReq *, Uint32 senderRef);
+  bool alloc_request_node_arrays(Request *);
   void store_scan(Ptr<Request>);
   void handle_early_scanfrag_ref(Signal *, const ScanFragReq *, Uint32 err);
 

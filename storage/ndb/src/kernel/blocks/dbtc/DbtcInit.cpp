@@ -461,17 +461,20 @@ void Dbtc::initRecords(const ndb_mgm_configuration_iterator *mgm_cfg) {
   }
   c_gcpRecordList.init();
 
-  /* Phase L (C): per-aggregation completion record pool.  Reserved
-   * size 0 — records only allocated for queries with JoinAgg /
-   * CTE materialization, so they're rare.  See cte_filter_phase_l.md. */
-  c_aggCompleteRecordPool.init(AggCompleteRecord::TYPE_ID, pc, 0,
+  /* Phase L (C): per-aggregation completion record pool, for queries
+   * with JoinAgg / CTE materialization (cte_filter_phase_l.md).  One
+   * static record (its page) is reserved at start: with none, the
+   * first seize took a transient page, which a TransientPool never
+   * releases, so the first such query on a TC instance raised the idle
+   * TRANSACTION_MEMORY for good. */
+  c_aggCompleteRecordPool.init(AggCompleteRecord::TYPE_ID, pc, 1,
                                 UINT32_MAX);
   while (c_aggCompleteRecordPool.startup()) {
     refresh_watch_dog();
   }
 
-  c_cteScanFragHandlePool.init(CteScanFragHandle::TYPE_ID, pc, 0,
-                               UINT32_MAX);
+  c_cteScanFragHandlePool.init(CteScanFragHandle::TYPE_ID, pc, 1,
+                               UINT32_MAX);  // static page: as above
   while (c_cteScanFragHandlePool.startup()) {
     refresh_watch_dog();
   }

@@ -2,21 +2,27 @@
 # placeholder sweeper.
 #
 # DBLQH error insert 5139 leaves ONE SETUP identity unfilled on every
-# data node and sends SETUP_REF 1251 after 200 ms, allowing DBTC's SETUP
+# data node and sends SETUP_REF 1274 after 200 ms, allowing DBTC's SETUP
 # accounting to drain (it clears itself once it fired). The
 # consumer signals that raced ahead of that SETUP park on an identity
 # placeholder that is never filled, so the 10 ms sweeper answers each of
-# them with STATE_NOT_FOUND (1251): the query fails with 1251 instead of
-# hanging.  The failure happens before any row is delivered, so RonSQL
-# retries and the retried attempt (the insert has cleared) must return
-# the MySQL result: ronsql_cli's stderr shows the 1251 of the first
-# attempt, its stdout is diffed against the mysql client.  The leak
-# dumps then verify that the placeholders and park records are gone,
-# and a clean comparison follows.
+# them with SETUP_NOT_RECEIVED (1274): the query fails with 1274 instead
+# of hanging.  1274 is a temporary error (a late or lost SETUP is a race,
+# not an internal error) and the failure happens before any row is
+# delivered, so RonSQL retries (it retries temporary errors only) and the
+# retried attempt (the insert has cleared) must return the MySQL result:
+# ronsql_cli's stderr shows the temporary 1274 of the first attempt, its
+# stdout is diffed against the mysql client.  cps-2 repeats this through
+# RDRS with JSON output and a pass-through main SELECT: the JSON '[' used
+# to be written before the first batch, which counted as delivered
+# output, so the 1274 was not retried (ronsql_fs_ng2r2.ronsql_fs_vectors,
+# V-S8).  The leak dumps then verify that the placeholders and park
+# records are gone, and a clean comparison follows.
 
 --source include/have_ndb.inc
 --source include/have_debug.inc
 --source include/have_ndb_debug.inc
+--source include/have_util_curl.inc
 
 --disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
@@ -33,12 +39,12 @@ call mtr.add_suppression("Participant timeout");
 --source suite/ronsql_cte/include/cte_data.inc
 
 --echo
---echo === cps-1: one SETUP rejected late (5139), the first attempt fails with 1251 ===
+--echo === cps-1: one SETUP rejected late (5139), the first attempt fails with 1274 ===
 --exec $NDB_MGM -e "ALL ERROR 5139" > /dev/null
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio FROM orders GROUP BY o_custkey) SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio) FROM customer AS c JOIN cust ON cust.k = c.c_custkey GROUP BY c.c_mktsegment;' > $MYSQL_TMP_DIR/cte_park_sweeper.out 2> $MYSQL_TMP_DIR/cte_park_sweeper.err
 --exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
---exec grep -q "code 1251" $MYSQL_TMP_DIR/cte_park_sweeper.err
---echo The first attempt failed with NDB error 1251 (parked consumers swept)
+--exec grep -qF 'NDB Temporary error 1274,' $MYSQL_TMP_DIR/cte_park_sweeper.err
+--echo The first attempt failed with the temporary NDB error 1274 (parked consumers swept)
 --exec $MYSQL --default-character-set=utf8mb4 -D test -e 'WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS norders, SUM(o_shippriority) AS prio FROM orders GROUP BY o_custkey) SELECT c.c_mktsegment, SUM(cust.norders), SUM(cust.prio) FROM customer AS c JOIN cust ON cust.k = c.c_custkey GROUP BY c.c_mktsegment;' > $MYSQL_TMP_DIR/cte_park_sweeper.mysql
 --exec (head -n 1 $MYSQL_TMP_DIR/cte_park_sweeper.out && tail -n +2 $MYSQL_TMP_DIR/cte_park_sweeper.out | sort) > $MYSQL_TMP_DIR/cte_park_sweeper.out.sorted
 --exec (head -n 1 $MYSQL_TMP_DIR/cte_park_sweeper.mysql && tail -n +2 $MYSQL_TMP_DIR/cte_park_sweeper.mysql | sort) > $MYSQL_TMP_DIR/cte_park_sweeper.mysql.sorted
@@ -51,7 +57,30 @@ call mtr.add_suppression("Participant timeout");
 --remove_file $MYSQL_TMP_DIR/cte_park_sweeper.mysql.sorted
 
 --echo
---echo === cps-2: leak checks (each dump crashes its node on a leak) ===
+--echo === cps-2: the same through RDRS as JSON with a pass-through main SELECT ===
+# The first attempt fails with 1274 before any row; RDRS must retry it
+# (attempts=2 in x-ronsql-phases) and return the rows of a clean run.
+# The JSON body is one line: split it into one row per line and sort,
+# since the row order of a scan is not fixed.
+--exec printf '%s' '{"query":"WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS norders FROM orders GROUP BY o_custkey) SELECT c.c_custkey, c.c_mktsegment, cust.norders FROM customer AS c JOIN cust ON cust.k = c.c_custkey;","database":"test","outputFormat":"JSON"}' > $MYSQL_TMP_DIR/cte_park_sweeper_json.body
+--exec $NDB_MGM -e "ALL ERROR 5139" > /dev/null
+--exec curl -s -X POST -H "Content-Type: application/json" -D $MYSQL_TMP_DIR/cte_park_sweeper_json.hdr -o $MYSQL_TMP_DIR/cte_park_sweeper_json.out -w 'HTTP %{http_code}\n' http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cte_park_sweeper_json.body
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+--exec grep -io 'attempts=[0-9]*' $MYSQL_TMP_DIR/cte_park_sweeper_json.hdr
+--exec curl -s -X POST -H "Content-Type: application/json" -o $MYSQL_TMP_DIR/cte_park_sweeper_json.clean -w 'HTTP %{http_code}\n' http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cte_park_sweeper_json.body
+--exec perl -pe 's/\[\{/[\n{/; s/\}\]/}\n]/; s/\},\{/}\n{/g' $MYSQL_TMP_DIR/cte_park_sweeper_json.out | sort > $MYSQL_TMP_DIR/cte_park_sweeper_json.out.sorted
+--exec perl -pe 's/\[\{/[\n{/; s/\}\]/}\n]/; s/\},\{/}\n{/g' $MYSQL_TMP_DIR/cte_park_sweeper_json.clean | sort > $MYSQL_TMP_DIR/cte_park_sweeper_json.clean.sorted
+--exec diff -u --label clean.json $MYSQL_TMP_DIR/cte_park_sweeper_json.clean.sorted --label retried.json $MYSQL_TMP_DIR/cte_park_sweeper_json.out.sorted
+--echo The retried attempt returned the rows of a clean run
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.body
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.hdr
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.out
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.clean
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.out.sorted
+--remove_file $MYSQL_TMP_DIR/cte_park_sweeper_json.clean.sorted
+
+--echo
+--echo === cps-3: leak checks (each dump crashes its node on a leak) ===
 --exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
 --exec $NDB_MGM -e "ALL DUMP 2362" > /dev/null
 --exec $NDB_MGM -e "ALL DUMP 2363" > /dev/null
@@ -59,7 +88,7 @@ call mtr.add_suppression("Participant timeout");
 --exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
 
 --echo
---echo === cps-3: the same query without the insert ===
+--echo === cps-4: the same query without the insert ===
 DELIMITER |;
 let $QUERY=
 WITH cust AS (

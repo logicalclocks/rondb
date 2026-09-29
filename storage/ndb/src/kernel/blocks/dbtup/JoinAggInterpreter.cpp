@@ -53,7 +53,7 @@
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 #undef DEBUG_PA_INTERP
 #define DEBUG_AGG 1
-#define DEBUG_CTE 1
+//#define DEBUG_CTE 1
 #endif
 #define DEBUG_PA_INTERP_PART_ID 0
 
@@ -87,6 +87,12 @@
  * AggInterpreterBase (AggInterpreterBase.{hpp,cpp}) and are reached here via
  * inherited name lookup.  See agg_interpreter_unification_plan.md, Step 1.
  */
+
+static void extractAggOps(const Uint32* prog, Uint32 prog_len,
+                          Uint32 agg_prog_start_pos,
+                          Uint8* agg_ops, Uint32 n_agg_results,
+                          const Uint16* avg_hidden_map,
+                          Uint32 n_visible_results);
 
 bool JoinAggInterpreter::Init(const Uint32* prog) {
   if (m_inited) {
@@ -288,6 +294,24 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
           break;
       }
     }
+  }
+
+  /* A new group's COUNT slots start at 0 too: ProcessRec's group
+   * prologue reads the per-slot ops cached here.  The interpreter's
+   * Count() sets a COUNT slot on the group's first row even when the
+   * value is NULL, but the JIT branches over COUNT on a NULL column
+   * (nb_convert_loads in ndb_jit_bridge.c), so a group whose values
+   * were all NULL kept an undefined slot, and a CTE consumer read
+   * COUNT(col) as NULL instead of 0.  The API maps an undefined COUNT
+   * to 0 (RONDB-831), but CTE results never pass through the API.
+   * Multi-leaf programs overwrite the cache with the combined layout
+   * in cacheMultiLeafAggOps.  m_agg_ops_cached stays false: the leaf
+   * switch reads it as the multi-leaf marker, and the merge-time
+   * extraction recomputes the same ops. */
+  if (m_n_gb_cols > 0) {
+    extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
+                  m_cached_agg_ops, m_n_agg_results,
+                  m_avg_hidden_map, m_n_visible_results);
   }
 
   /* Validate embedded interpreter blocks (Step 3b — shared helper). */
@@ -1041,6 +1065,14 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
       assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
       for (Uint32 i = 0; i < m_n_agg_results; i++) {
+        if (m_cached_agg_ops[i] == kOpCount) {
+          /* COUNT starts at 0, see Init. */
+          agg_res_ptr[i].type = NDB_TYPE_BIGINT;
+          agg_res_ptr[i].value.val_uint64 = 0;
+          agg_res_ptr[i].is_unsigned = true;
+          agg_res_ptr[i].is_null = false;
+          continue;
+        }
         agg_res_ptr[i].type = NDB_TYPE_UNDEFINED;
         agg_res_ptr[i].value.val_int64 = 0;
         agg_res_ptr[i].is_unsigned = false;
@@ -1595,25 +1627,30 @@ static Int32 decodeRedistributionStringSlots(
     Uint32 thread_id) {
   const char* p = appended;
   const char* end = appended + appended_len;
-  for (Uint32 i = 0; i < n_agg_results; i++) {
+  Int32 err = 0;
+  Uint32 i = 0;
+  for (; i < n_agg_results; i++) {
     if (!isStringAggType(slots[i].type) ||
         slots[i].is_null ||
         slots[i].value.val_ptr == nullptr) {
       continue;
     }
     if (p + sizeof(Uint32) > end) {
-      return ZAGG_OTHER_ERROR;
+      err = ZAGG_OTHER_ERROR;
+      break;
     }
     const Uint32 byte_size = *reinterpret_cast<const Uint32*>(p);
     p += sizeof(Uint32);
     const Uint32 padded = (byte_size + 3) & ~3U;
     if (p + padded > end) {
-      return ZAGG_OTHER_ERROR;
+      err = ZAGG_OTHER_ERROR;
+      break;
     }
     const Uint32 prefix = (string_results != nullptr) ?
         string_results[i].prefix_bytes : stringPrefixBytes(slots[i].type);
     if (byte_size < prefix) {
-      return ZAGG_OTHER_ERROR;
+      err = ZAGG_OTHER_ERROR;
+      break;
     }
     const Uint32 payload_len = byte_size - prefix;
     Uint32 alloc_size = (4 + byte_size + 15) & ~15U;
@@ -1621,7 +1658,8 @@ static Int32 decodeRedistributionStringSlots(
     char* dst_buf = static_cast<char*>(
         lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY, thread_id, false));
     if (dst_buf == nullptr) {
-      return ZAGG_ALLOC_MEM_FAILED;
+      err = ZAGG_ALLOC_MEM_FAILED;
+      break;
     }
     Uint16* hdr = reinterpret_cast<Uint16*>(dst_buf);
     hdr[0] = static_cast<Uint16>(payload_len);
@@ -1632,7 +1670,17 @@ static Int32 decodeRedistributionStringSlots(
     slots[i].value.val_ptr = dst_buf;
     p += padded;
   }
-  return 0;
+  if (err != 0) {
+    /* The slots from i on still carry the sender's pointer values (only
+     * a presence flag here, addresses on another node): clear them so
+     * the caller's cleanup frees only the buffers decoded above. */
+    for (; i < n_agg_results; i++) {
+      if (isStringAggType(slots[i].type)) {
+        slots[i].value.val_ptr = nullptr;
+      }
+    }
+  }
+  return err;
 }
 
 static void extractAggOps(const Uint32* prog, Uint32 prog_len,
@@ -1737,48 +1785,64 @@ Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
     return 0;
   }
 
+  /* Drain `other` in bucket order (popNext resumes where the previous
+   * batch stopped).  The two tables grow independently (linear hashing,
+   * AggHashTable.hpp), so a group's bucket in this table is its source
+   * bucket only while both have the same geometry; otherwise it is
+   * rehashed on this table. */
   const Uint32 v_len = val_len();
-  const Uint32 nbuckets = m_gb_map->bucketCount();
   Uint32 count = 0;
-  for (Uint32 b = 0; b < nbuckets; b++) {
-    while (!other->m_gb_map->bucketEmpty(b)) {
-      char* other_data = other->m_gb_map->popBucketHead(b);
-      Uint32 other_key_len =
-        *reinterpret_cast<Uint32*>(other_data - JoinGBHashTable::OVERHEAD +
-                                   JoinGBHashTable::KEY_LEN_OFFSET);
+  Uint32 src_b = 0;
+  char* other_data;
+  while ((other_data = other->m_gb_map->popNext(&src_b)) != nullptr) {
+    Uint32 other_key_len =
+      *reinterpret_cast<Uint32*>(other_data - JoinGBHashTable::OVERHEAD +
+                                 JoinGBHashTable::KEY_LEN_OFFSET);
 
-      char* my_data = m_gb_map->findInBucket(b, other_data, other_key_len);
-      if (my_data != nullptr) {
-        AggResItem *other_items =
-          reinterpret_cast<AggResItem *>(other_data + other_key_len);
-        AggResItem *my_items =
-          reinterpret_cast<AggResItem *>(my_data + other_key_len);
-        Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
-                                      m_cached_agg_ops, m_string_results,
-                                      m_thread_id, true);
-        if (ret != 0) {
-          g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
-                               ret);
-          other->freeGroupData(other_data);
-          return ret;
-        }
+    const Uint32 b = m_gb_map->sameGeometry(*other->m_gb_map)
+        ? src_b
+        : m_gb_map->hashKey(other_data, other_key_len,
+                            xfrm_buf, xfrm_buf_len);
+    char* my_data = m_gb_map->findInBucket(b, other_data, other_key_len);
+    if (my_data != nullptr) {
+      AggResItem *other_items =
+        reinterpret_cast<AggResItem *>(other_data + other_key_len);
+      AggResItem *my_items =
+        reinterpret_cast<AggResItem *>(my_data + other_key_len);
+      Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
+                                    m_cached_agg_ops, m_string_results,
+                                    m_thread_id, true);
+      /* The merge moved every winning string value into my_items and
+       * cleared it in other_items; the losing values are still owned
+       * by the source group, which leaves `other` here: free them with
+       * it (the popped group is no longer reachable by teardown). */
+      other->freeGroupStringSlots(other_items);
+      if (ret != 0) {
+        g_eventLogger->debug("mergeFrom group accumulator merge failed: %d",
+                             ret);
         other->freeGroupData(other_data);
-      } else {
-        m_gb_map->insertRaw(other_data, xfrm_buf, xfrm_buf_len);
-        m_result_size += other_key_len + v_len;
+        return ret;
       }
-      count++;
+      other->freeGroupData(other_data);
+    } else {
+      m_gb_map->insertRawInBucket(b, other_data, xfrm_buf, xfrm_buf_len);
+      m_result_size += other_key_len + v_len;
+    }
+    count++;
 
-      if (max_groups > 0 && count >= max_groups &&
-          !other->m_gb_map->empty()) {
-        m_n_groups = m_gb_map->size();
-        remaining = other->m_gb_map->size();
-        return 0;
-      }
+    if (max_groups > 0 && count >= max_groups &&
+        !other->m_gb_map->empty()) {
+      m_n_groups = m_gb_map->size();
+      remaining = other->m_gb_map->size();
+      return 0;
     }
   }
 
   if (other->m_chunks != nullptr) {
+    /* The moved groups' chunks become ours (MemChunk::owner). */
+    for (MemChunk* c = other->m_chunks; c != nullptr; c = c->next) {
+      c->owner = this;
+    }
     other->m_chunks_tail->next = m_chunks;
     if (m_chunks != nullptr) {
       m_chunks->prev = other->m_chunks_tail;
@@ -1873,7 +1937,16 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
   } else {
     /* New key — allocate and insert */
     char *new_group = allocGroupData(keyLen + v_len, keyLen);
-    if (new_group == nullptr) return -1;  /* Memory allocation failure */
+    if (new_group == nullptr) {
+      /* Out of query memory: a temporary error, unlike the -1 returns
+       * above for a malformed request. */
+      if (payload_len > 0) {
+        for (Uint32 i = 0; i < m_n_agg_results; i++) {
+          freeStringAggSlot(&local_items[i]);
+        }
+      }
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
 
     memcpy(new_group, key, keyLen);
     if (payload_len > 0) {
@@ -1888,7 +1961,11 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
           Int32 ret = copyStringAggSlot(&dst_items[i], &src_const_items[i],
                                         m_string_results, i, m_thread_id);
           if (ret != 0) {
-            for (Uint32 j = 0; j < m_n_agg_results; j++) {
+            /* Only slots before i hold copies of their own; slot i is
+             * null and the later slots still alias local_items (the
+             * memcpy above), which are freed below — freeing them here
+             * too was a double free. */
+            for (Uint32 j = 0; j < i; j++) {
               freeStringAggSlot(&dst_items[j]);
             }
             freeGroupData(new_group);

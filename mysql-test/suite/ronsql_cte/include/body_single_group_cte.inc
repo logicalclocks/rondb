@@ -22,14 +22,17 @@
 #
 # Case map:
 #   sg-1  fs_point native: scalar re-aggregation over the single-group
-#         CTE + EXPLAIN pin of the [single-group body] tag
+#         CTE — since RONDB-1124 C2 flattened into the single-table
+#         aggregate over the body (EXPLAIN pin of the flatten, no CTE
+#         section); sg-14 keeps the same shape on the CTE path
 #   sg-2  INNER join consumer: one hit, 299 misses -> COUNT=1, SUM=5
 #   sg-3  LEFT JOIN consumer: 300 rows, SUM counts only the hit
 #   sg-4  empty group (no rows match the bound key), INNER -> COUNT=0
 #   sg-5  empty group, LEFT JOIN -> 300 rows, SUM NULL
 #   sg-6  pass-through main over the CTE_SCAN root
 #   sg-7  multi-column GROUP BY, both columns equality-bound
-#   sg-8  AVG output in a single-group body (finalize on the owner)
+#   sg-8  AVG output in a single-group body — flattened like sg-1
+#         (a single-table AVG); sg-15 keeps the owner-side finalize
 #   sg-9  composition with body ORDER BY/LIMIT (no-op at one group)
 #   sg-10 repeated-miss fan-out (G2a): empty CTE joined against all
 #         300 customers — every probe misses, later ones served from
@@ -43,6 +46,11 @@
 #         row-delivery CTE_LOOKUP leaf, same key probed once per order
 #         of custkey 42 — later hits served from the DBSPJ row-payload
 #         cache with per-parent patched correlation
+#   sg-14 sg-1 plus an outer COUNT(*), which the flatten does not take:
+#         the G4 keyed-probe root on a HIT + [single-group body] pin
+#   sg-15 sg-8 plus an outer COUNT(*): AVG finalized on the owner
+#   sg-16 sg-1 over the missing customer, flattened: every output NULL
+#         (the body COUNT(*) runs as SUM(1), so MAX(n) is NULL, not 0)
 #   sg-c1 control: partially-bound GROUP BY (second GB column unbound)
 #         — NOT flagged (EXPLAIN absence pin), normal path, results
 #         identical
@@ -79,7 +87,9 @@ SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
        MAX(cf.d2) AS md2
 FROM cf;|
 --source suite/ronsql/include/ronsql_explain.inc
---exec grep -qF '[single-group body]' $EXPLAIN_FILE
+--exec grep -qF "CTE 'cf' flattened into a single-table aggregate" $EXPLAIN_FILE
+--error 1
+--exec grep -qF 'CTE definitions:' $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --echo == Expected result ==
 --sorted_result
@@ -288,6 +298,74 @@ WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n
             FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
 SELECT o.o_orderkey AS okey, o.o_custkey AS ck, cf.n AS n
 FROM orders AS o JOIN cf ON cf.k = o.o_custkey|
+
+--echo
+--echo === sg-14: sg-1 plus an outer COUNT(*) — kept on the CTE path ===
+# The flatten takes only MIN / MAX mains, so this runs the G4 keyed-probe
+# root on a HIT (sg-11 covers the miss) and keeps the tag pin sg-1 had.
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+                   MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+       MAX(cf.d2) AS md2
+FROM cf;|
+--source suite/ronsql/include/ronsql_compare.inc
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_sg_14.out
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+                   MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+       MAX(cf.d2) AS md2
+FROM cf;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[single-group body]' $EXPLAIN_FILE
+--error 1
+--exec grep -qF 'flattened into a single-table aggregate' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+                   MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+       MAX(cf.d2) AS md2
+FROM cf|
+
+--echo
+--echo === sg-15: sg-8 plus an outer COUNT(*) — AVG finalized on the owner ===
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a, COUNT(*) AS n
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.a) AS ma, MAX(cf.n) AS mn
+FROM cf;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, AVG(o_totalprice) AS a, COUNT(*) AS n
+            FROM orders WHERE o_custkey = 42 GROUP BY o_custkey)
+SELECT COUNT(*) AS c, MAX(cf.a) AS ma, MAX(cf.n) AS mn
+FROM cf|
+
+--echo
+--echo === sg-16: sg-1 over the missing customer, flattened — all NULL ===
+let $QUERY=
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+                   MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+            FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+       MAX(cf.d2) AS md2
+FROM cf;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH cf AS (SELECT o_custkey AS k, COUNT(*) AS n, SUM(o_totalprice) AS s,
+                   MIN(o_orderdate) AS d1, MAX(o_orderdate) AS d2
+            FROM orders WHERE o_custkey = 9999 GROUP BY o_custkey)
+SELECT MAX(cf.n) AS mn, MAX(cf.s) AS ms, MIN(cf.d1) AS md1,
+       MAX(cf.d2) AS md2
+FROM cf|
 
 --echo
 --echo === sg-c1: control — partially-bound GROUP BY is NOT flagged ===

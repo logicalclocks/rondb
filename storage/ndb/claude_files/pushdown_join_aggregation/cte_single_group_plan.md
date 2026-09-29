@@ -7,6 +7,20 @@ sg-11/sg-12); G2b IMPLEMENTED (September 2026, no version gate per
 maintainer direction — pending user build + Test 29 + regression);
 G5 benchmarks pending.**
 
+**RONDB-1124 C2 (September 2026, not yet built or run): the fs_point
+shape itself no longer takes this path.**  MIN / MAX over one
+single-group CTE is flattened at parse time into the single-table
+aggregate over the body (`RonSQLPreparer::flatten_single_group_cte`,
+fs_ronsql/m3_run6_plan.md C2): over at most one group, MIN(c) / MAX(c)
+is c, and a body COUNT(*) becomes SUM(1) so the empty group stays NULL.
+Everything else this plan built still serves the single-group CTEs the
+flatten does not take (joins, outer COUNT / SUM / AVG, COUNT(expr),
+pass-through mains).  The sg family keeps the G4 keyed-probe root and
+the owner-side AVG covered through sg-14 / sg-15 (sg-1 / sg-8 plus an
+outer COUNT(*)); sg-1 now pins the flatten, sg-16 its empty group, and
+the `fs_point_cte` bench entry measures the CTE path that fs_point used
+to take.
+
 G2b outcome notes — the row-payload cache protocol extension, shipped
 as designed in the G2 audit:
 - **Wire**: `CteLookupReq::CTE_LOOKUP_CACHE_FILL_FLAG` (0x8);

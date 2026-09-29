@@ -42,10 +42,6 @@ var Known = map[string]*Expect{
 	// Intentional 64-bit SUM range difference: local and merged overflow must
 	// report 1860. MySQL widens to DECIMAL; wrapped values are never accepted.
 	"F6": {Finding: "F6", Pattern: "NDB Permanent error 1860,"},
-	// A snowflake template whose CTE body is keyed by a VARCHAR entity key
-	// returns no rows through CTE_SCAN although the body alone returns its
-	// group (E6, findings/spec_fuzz.md).  Detected structurally by the fuzzer.
-	"F14": {Finding: "F14", Pattern: "snowflake CTE body keyed by a VARCHAR entity key returns no rows"},
 }
 
 // WrongValue pins the observed mismatch of a single-row fixture. All

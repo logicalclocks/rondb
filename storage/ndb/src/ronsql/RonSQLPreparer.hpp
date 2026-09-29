@@ -48,6 +48,7 @@ struct yy_buffer_state;
 // <NdbApi.hpp>, so forward-declare the handful of types we reference from
 // this header. Full definitions are included in RonSQLPreparer.cpp.
 class NdbQueryBuilder;
+class NdbQueryOperand;
 class NdbQueryOperationDef;
 class NdbQueryOptions;
 
@@ -298,6 +299,18 @@ private:
     // pass-through path (index == NULL candidates never qualify).
     bool index_order = false;
     bool index_order_desc = false;
+    // WP-F F2 (m3_wpf_plan.md §2.4): an IN-shaped conjunct consumed as
+    // an equality bound with several values — one index range per
+    // distinct value (SF_MultiRange), every other bound repeated in
+    // each range.  in_cond_idx is the conjunct's index in the caller's
+    // conjunct list (-1 = no IN list), in_col_idx its column (m_columns
+    // index), in_values the literals in list order after
+    // de-duplication (in_count of them; in_total before).
+    int in_cond_idx = -1;
+    Uint32 in_col_idx = 0;
+    struct ConditionalExpression** in_values = NULL;
+    Uint32 in_count = 0;
+    Uint32 in_total = 0;
   };
   enum class CteKeyCoverage {
     ExactOrdered,
@@ -349,6 +362,25 @@ private:
   bool m_pk_lookup_has_residual = false;
   struct ConditionalExpression** m_pk_lookup_const = NULL;
   int* m_pk_lookup_cond_map = NULL;
+  // WP-F F1a (m3_wpf_plan.md §2.3): an IN-shaped conjunct on one PK
+  // column turns the single-row lookup into N lookups in one
+  // transaction.  m_pk_lookup_in_col is that column's PK ordinal (-1 =
+  // plain single-row lookup), m_pk_lookup_in_cond_idx the conjunct's
+  // index in m_toplevel_conditions, m_pk_lookup_in_values the literals
+  // in list order after de-duplication by the column's comparison
+  // (arena array, m_pk_lookup_in_count entries; m_pk_lookup_in_total is
+  // the count before de-duplication, for EXPLAIN).  m_pk_lookup_const
+  // holds the first value for that column as a placeholder; the
+  // execute arm substitutes per operation.
+  int m_pk_lookup_in_col = -1;
+  int m_pk_lookup_in_cond_idx = -1;
+  struct ConditionalExpression** m_pk_lookup_in_values = NULL;
+  Uint32 m_pk_lookup_in_count = 0;
+  Uint32 m_pk_lookup_in_total = 0;
+  // WP-F F3: QueryTree words the IN ranges of this query's SPJ roots
+  // (CTE body roots, join root) take so far; capped by
+  // SPJ_IN_RANGE_WORDS_MAX (select_root_scan_config).
+  Uint32 m_spj_in_range_words = 0;
 
   // SELECT-list subquery aggregation (multi-leaf pushdown)
   struct SelectSubqueryLeaf {
@@ -397,6 +429,10 @@ private:
   // single-table pass-through statement ({NULL, 0} when no collapse ran);
   // reported by EXPLAIN.
   LexCString m_collapsed_cte = LexCString{NULL, 0};
+  // RONDB-1124 (m3_run6_plan.md C2): name of the single-group CTE
+  // flatten_single_group_cte() folded into a single-table aggregate
+  // ({NULL, 0} when no flatten ran); reported by EXPLAIN.
+  LexCString m_flattened_cte = LexCString{NULL, 0};
   // True for aggregating queries (the only ones RonSQL fully supports).
   // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
   // shape that Phase E.3 enables — drives the pass-through delivery
@@ -460,6 +496,15 @@ private:
    * pass-through ORDER BY scan serves it.  Parse-time AST rewrite; a
    * no-op for every other shape. */
   void collapse_collect_cte();
+  /* RONDB-1124 (m3_run6_plan.md C2): fold MIN / MAX over one single-group
+   * CTE (the fs_point form) into the single-table aggregate over the
+   * body's table and WHERE.  Parse-time AST rewrite, run before the main
+   * aggregates are bound to their compiler; a no-op for every other
+   * shape. */
+  void flatten_single_group_cte();
+  bool where_binds_name_to_literal(const ConditionalExpression* ce,
+                                   const LexCString& name,
+                                   const LexCString& alias) const;
   static bool ce_has_subquery(const ConditionalExpression* ce);
   void enforce_single_row_cte_body(const CteDefinition* cte,
                                    QueryScope& scope);
@@ -552,6 +597,37 @@ private:
   // emit-supported types, falling back to the scan-config path
   // (always correct) when the program cannot be carried.
   bool detect_pk_lookup();
+  // Every RonSQL query requires all data nodes to be 26.10.0 or later
+  // (ndbd_support_ronsql); throws a 503-class error otherwise.
+  void check_data_node_version();
+  // WP-F F1b: an aggregate over an IN list on the primary key as N
+  // committed key reads carrying the aggregation program (OO_AGGREGATION),
+  // merged into `aggregator` like per-fragment scan partials.
+  void execute_pk_lookup_aggregate(NdbAggregator* aggregator);
+  // WP-F: raise one key read's own error (the transaction error may
+  // belong to another read of the batch, e.g. 626 for a missing key).
+  [[noreturn]] void throw_key_read_error(const NdbError& op_err,
+                                         const char* what);
+  // Raise the error of one failed operation or pushed query by its NDB
+  // classification, as handle_ronsql_exception does for a transaction
+  // error: rate limit (RLE), temporary (RRE, unless rows were already
+  // streamed) or permanent with its error class and code (RPE).  Only a
+  // temporary error is retried; an internal error is not.  `where`
+  // labels the err-stream line.  Callers route schema errors first.
+  [[noreturn]] void throw_classified_ndb_error(const NdbError& err,
+                                               const char* what,
+                                               const char* where);
+  // WP-F: recognise `col IN (…)` (an OR tree of `col = literal` leaves
+  // on one column); see the definition for the contract.
+  bool match_in_shape(struct ConditionalExpression* ce, Uint32* col_idx,
+                      struct ConditionalExpression** out, Uint32 cap,
+                      Uint32* count);
+  // WP-F: de-duplicate IN-list literals by the column's comparison
+  // (type + charset), keeping list order; false when a literal cannot
+  // be encoded for the column or the type has no comparator.
+  bool dedup_in_values(const NdbDictionary::Column* col,
+                       struct ConditionalExpression** values, Uint32 total,
+                       Uint32* count);
   // `defer_force_check` (Phase 4b): skip build_scan_config_candidates'
   // FORCE INDEX satisfiability throws so the ORDER BY index pass can
   // still qualify the forced index; plan_index_and_filter then runs
@@ -597,8 +673,10 @@ private:
   // m_scan_config, bounds from condition_handling_map (with the
   // documented inverted BoundType mapping), residual conjuncts applied
   // as an NdbScanFilter.  Returns the configured operation; the caller
-  // attaches aggregation or getValue()s and executes.
-  NdbScanOperation* open_single_table_scan_op();
+  // attaches aggregation or getValue()s and executes.  batch_rows is the
+  // per-fragment batch in rows (0 = the NDB API default, BatchSize); the
+  // pass-through drain passes the LIMIT of a streamed LIMIT.
+  NdbScanOperation* open_single_table_scan_op(Uint32 batch_rows = 0);
   // Phase 1 W3: projection-only single-table execution — PK-lookup arm
   // (NoDataFound = empty result) or scan drain arm, both feeding the
   // pass-through printer.
@@ -644,7 +722,8 @@ private:
       const TableRef* hint,
       bool defer_force_check = false,
       const NdbDictionary::Table* table = NULL,
-      bool allow_nullable_high_bound = false);
+      bool allow_nullable_high_bound = false,
+      bool allow_in_ranges = false);
   // True if `index` is named in the table ref's index-hint list (case
   // insensitive).  Used to apply FORCE/USE/IGNORE INDEX.
   static bool index_named_in_hint(const NdbDictionary::Index* index,
@@ -670,6 +749,11 @@ private:
   void select_root_scan_config(QueryScope& scope,
                                ConditionalExpression* where_ce,
                                const TableRef* hint);
+  // WP-F F3: QueryTree words of an IN-list candidate's ranges as
+  // NdbQueryBuilder serializes them (one P_DATA block per range).
+  Uint32 spj_in_range_words(const ScanConfig& sc,
+                            DynamicArray<ConditionalExpression*>& conds,
+                            const NdbDictionary::Table* tab);
   // True when every primary-key column of scope's root table has an
   // equality against a constant among the root-classified WHERE
   // conjuncts (join_where_ce[0]) — the shapes emit_root_op serves
@@ -882,6 +966,11 @@ private:
                            struct ConditionalExpression* ce);
   raw_value encode_constant(struct ConditionalExpression *ce,
                             const NdbDictionary::Column* col);
+  // A pushed-query constant for `col` from encode_constant's bytes (F14:
+  // NdbQueryBuilder::constValue(ptr, len) takes a variable-size value
+  // without its length prefix).
+  const NdbQueryOperand* query_const_value(NdbQueryBuilder* qb, raw_value rv,
+                                           const NdbDictionary::Column* col);
   struct ConditionalExpression* simplify_ce(struct ConditionalExpression* ce,
                                             int maxdepth);
   // D11: lower a `GREATEST(...) <cmp> const` / `LEAST(...) <cmp> const`

@@ -59,6 +59,7 @@
 #define QRY_NEST_NOT_SUPPORTED 4829
 #define QRY_TABLE_HAVE_NO_FRAGMENTS 4830
 #define QRY_BAD_FRAGMENT_DATA 4831
+#define QRY_MULTI_RANGE_BOUND 4832
 
 #include <Bitmask.hpp>
 #include <Vector.hpp>
@@ -687,6 +688,22 @@ class NdbQueryIndexScanOperationDefImpl : public NdbQueryScanOperationDefImpl {
 
   const IndexBound *getBounds() const override { return &m_bound; }
 
+  // One range of a (possibly multi-range) bound; range 0 is m_bound.
+  struct RangeBound {
+    NdbQueryOperandImpl *const *low;
+    NdbQueryOperandImpl *const *high;
+    Uint32 lowKeys, highKeys;
+    bool lowIncl, highIncl;
+  };
+  Uint32 getNoOfRanges() const { return 1 + m_extraRanges.size(); }
+  RangeBound getRange(Uint32 r) const;
+
+  // Append the constant bound entries of range 'range' as KEYINFO words
+  // (BoundType, AttributeHeader, value), the first word stamped with the
+  // range length and number.  Multi-range bounds only.
+  int appendConstRange(Uint32Buffer &buffer, const RangeBound &range,
+                       Uint32 rangeNo) const;
+
   bool hasParamInPruneKey() const override { return m_paramInPruneKey; }
 
  protected:
@@ -696,12 +713,14 @@ class NdbQueryIndexScanOperationDefImpl : public NdbQueryScanOperationDefImpl {
   Uint32 appendPrunePattern(Uint32Buffer &serializedDef) override;
 
  private:
-  explicit NdbQueryIndexScanOperationDefImpl(const NdbIndexImpl &index,
-                                             const NdbTableImpl &table,
-                                             const NdbQueryIndexBound *bound,
-                                             const NdbQueryOptionsImpl &options,
-                                             const char *ident, Uint32 opNo,
-                                             Uint32 internalOpNo, int &error);
+  explicit NdbQueryIndexScanOperationDefImpl(
+      const NdbIndexImpl &index, const NdbTableImpl &table,
+      const NdbQueryIndexBound *const bounds[], Uint32 noOfBounds,
+      const NdbQueryOptionsImpl &options, const char *ident, Uint32 opNo,
+      Uint32 internalOpNo, int &error);
+
+  // Bind the operands of range 'range' to the index columns.
+  int bindRangeOperands(const RangeBound &range);
 
   // Append pattern for creating a single bound value to serialized code.
   // 'keyNo' is the index column this bound value applies to; it is stamped
@@ -719,6 +738,17 @@ class NdbQueryIndexScanOperationDefImpl : public NdbQueryScanOperationDefImpl {
 
   /** True if there is a set of bounds.*/
   IndexBound m_bound;
+
+  /**
+   * Ranges 1..n-1 of a multi-range bound (scanIndex() with noOfBounds > 1);
+   * their operands are kept flat in m_rangeOperands.
+   */
+  struct ExtraRange {
+    Uint32 lowPos, lowKeys, highPos, highKeys;
+    bool lowIncl, highIncl;
+  };
+  Vector<ExtraRange> m_extraRanges;
+  Vector<NdbQueryOperandImpl *> m_rangeOperands;
 
   /**
    * True if scan is prunable and there are NdbQueryParamOperands in the

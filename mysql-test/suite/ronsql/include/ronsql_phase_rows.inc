@@ -12,9 +12,19 @@
 # sort must drain every matching row before it can sort — so `rows=` tells
 # the two apart even though both print identical, correctly ordered output.
 #
+# Optional $EXPECT_FETCHED_MAX bounds the header's `fetched=` token (rows
+# the NDB API received: what the data nodes shipped, not what the drain
+# consumed).  A streamed LIMIT n asks each fragment for at most n rows per
+# batch (m3_run6_plan.md C3), so the caller passes n x fragments; the
+# default BatchSize would fetch up to BatchSize rows per fragment.  The
+# count depends on the fragment count, so only the verdict line
+# "fetched within bound" is recorded; a violation prints the count and
+# fails the test.
+#
 # Inputs: $QUERY or $QUERY_FILE (as ronsql_compare.inc / ronsql_explain.inc;
-# a QUERY_FILE is removed afterwards), $EXPECT_ROWS.  Resets $QUERY and
-# $EXPECT_ROWS.  Requires RDRS built with RONSQL_PHASE_STATS (the default).
+# a QUERY_FILE is removed afterwards), $EXPECT_ROWS, optional
+# $EXPECT_FETCHED_MAX.  Resets $QUERY, $EXPECT_ROWS and $EXPECT_FETCHED_MAX.
+# Requires RDRS built with RONSQL_PHASE_STATS (the default).
 --source include/have_util_curl.inc
 --echo == Phase rows ==
 if ($EXPECT_ROWS=='')
@@ -41,6 +51,32 @@ if ($QUERY=='')
 # Print the drained-row token (recorded in the baseline), then assert it.
 --exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/ronsql-phase-hdrs | tr -d '\r' | sed -r 's/.*,(rows=[0-9]+),.*/\1/'
 --exec grep -i '^x-ronsql-phases:' $MYSQL_TMP_DIR/ronsql-phase-hdrs | tr -d '\r' | grep -qF ',rows=$EXPECT_ROWS,'
+if ($EXPECT_FETCHED_MAX!='')
+{
+  --let RONSQL_PHASE_HDRS=$MYSQL_TMP_DIR/ronsql-phase-hdrs
+  --let RONSQL_FETCHED_MAX=$EXPECT_FETCHED_MAX
+  --perl
+  use strict;
+  use warnings;
+  my $max = $ENV{RONSQL_FETCHED_MAX};
+  open(my $fh, '<', $ENV{RONSQL_PHASE_HDRS})
+    or die "ronsql_phase_rows: open $ENV{RONSQL_PHASE_HDRS}: $!\n";
+  my $fetched;
+  while (my $line = <$fh>) {
+    $fetched = $1 if $line =~ /^x-ronsql-phases:.*[:,\s]fetched=(\d+)/i;
+  }
+  close($fh);
+  if (!defined $fetched) {
+    print "x-ronsql-phases carries no fetched= token\n";
+    exit 1;
+  }
+  if ($fetched > $max) {
+    print "fetched=$fetched exceeds $max\n";
+    exit 1;
+  }
+  print "fetched within bound\n";
+  EOF
+}
 --remove_file $MYSQL_TMP_DIR/ronsql-query.sql
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body-1
@@ -54,3 +90,4 @@ if ($QUERY=='')
 }
 --let $QUERY=
 --let $EXPECT_ROWS=
+--let $EXPECT_FETCHED_MAX=

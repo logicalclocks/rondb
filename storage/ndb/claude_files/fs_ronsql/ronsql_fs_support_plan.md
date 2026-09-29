@@ -51,7 +51,7 @@ does not.
 | F5, F21, F2 | DECIMAL aggregation on the DOUBLE path | WRONG VALUE (>2^53), topology-dependent digit, scale formatting | yes (decimal money features) | WP-D2 |
 | F6, F22 | BIGINT SUM overflow: per-fragment 1860 vs unchecked merge | clean error on small clusters, wrapped value on large | yes (sum over bigint) | WP-D3 (overflow overhaul, separate task) |
 | F3, F4 | AVG / FLOAT display rules | formatting (tolerated by the canonicalizer) | yes | WP-D4 |
-| F14 | CTE body bound on a VARCHAR primary key | WRONG RESULT (no rows) | yes (string entity keys + snowflake) — not yet in the manifest | WP-E |
+| F14 | CTE body bound on a VARCHAR primary key | WRONG RESULT (no rows) — FIXED 2026-09-24 in WP-F F3 (double VARCHAR length prefix on pushed-query constants) | yes (string entity keys + snowflake) — not yet in the manifest | WP-E (engine part done) |
 | F12 | planner: IN list → table scan | PERFORMANCE 200–1000× | yes (batch serving, 10–1000 keys) | WP-F |
 | F13 | CTE_SCAN + PK_LOOKUP round trips | PERFORMANCE 3–4× | yes (every snowflake point read) | WP-G |
 | F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH | no (LEFT JOIN onto an aggregated CTE) | WP-H |
@@ -201,6 +201,12 @@ materialization (`QueryPlanner` / CTE body root construction) and reuse
 the standalone bound builder. Add a kernel-side or API-side regression
 with a VARCHAR PK.
 
+**Status (2026-09-24).** Engine part done within WP-F F3: the divergence
+was a doubled VARCHAR length prefix on every pushed-query constant
+(`NdbQueryBuilder::constValue(ptr, len)` takes the value without it), not
+the CTE materialization; spec fuzzer `known-wrong` 2 → 0 and the F14
+markers retired. The framework additions below remain.
+
 **Evidence.** Spec fuzzer `known-wrong` (F14) to 0, `Known["F14"]` retired;
 framework: add string-keyed snowflake cases (`S7-1hop-str`, `S8-chains-str`)
 and manifest rows `R-S7-str` / `R-S8-str` so the requirements report covers
@@ -286,7 +292,7 @@ plan; the fs framework's `.bench_sql` runs are the acceptance check.
 |---|---|---|
 | **M1 — emitted branches served** (detail: `m1_plan.md`) — **DONE 2026-09-15 on RONDB-1124** | error codes (M1.0), D1 (F9), B (F1), A (F0), C (F7) | requirements report (`requirements_reports/2026-09-15/`): R-S6, R-F1, R-A2-binary SUPPORTED on base / jit / ng2r2; only R-A5-types left (F4/F5/F6); RonSQL errors carry 400/413/503/500 by class |
 | **M2 — 64-bit numeric fidelity** (detail: `m2_plan.md`) | D3 checked overflow, D4 display; D2 deferred | base / jit / ng2r2 / ng4r2 verify the limited contract; retain unmet exact-DECIMAL requirements |
-| **M3 — serving performance** | F (F12), G (F13) | `fs_hw` targets met, plan pins re-recorded, `benchmarks.md` §8 run 4 |
+| **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
 

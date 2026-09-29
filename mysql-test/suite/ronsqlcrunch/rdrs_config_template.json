@@ -7,7 +7,8 @@
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
-                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ],
+      "ConnectionPoolSize": @RonDBConnectionPoolSize
   },
   "Security": {
     "InsecureAllowAll": @InsecureAllowAll,

@@ -1,0 +1,64 @@
+
+[*] RonSQL Benchmark core_scan_agg: 1 threads × 16 requests = 16 total requests
+[*] Full table scan, scalar aggregates over lineitem (6M rows at sf 1): data-node scan + aggregation throughput, the JIT's best case
+
+SELECT COUNT(*), SUM(l_extendedprice), SUM(l_quantity), MIN(l_shipdate), MAX(l_shipdate)
+FROM lineitem;
+
+[*] Warmup: 498.51ms, 1 result rows
+[*] Warmup phases (µs): parse=10,analyze=1,load=8,plan=1,compile=4,prepare=26,subquery=0,ndbprep=2,send=0,firstbatch=498073,drain=0,print=12,execute=498093,rows=0,attempts=1
+
+[*] Warmup plan (EXPLAIN):
+Query parse tree:
+SELECT
+  Out_0:`COUNT(*)`
+   = A0:Count(1)
+  Out_1:`SUM(l_extendedprice)`
+   = A1:Sum(`l_extendedprice`)
+  Out_2:`SUM(l_quantity)`
+   = A2:Sum(`l_quantity`)
+  Out_3:`MIN(l_shipdate)`
+   = A3:Min(`l_shipdate`)
+  Out_4:`MAX(l_shipdate)`
+   = A4:Max(`l_shipdate`)
+FROM lineitem
+
+Aggregation program (9 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C00 r00 = C00:`l_extendedprice`
+Sum    A01  r00 A01:SUM <- r00:`l_extendedprice`
+Load   r00  C01 r00 = C01:`l_quantity`
+Sum    A02  r00 A02:SUM <- r00:`l_quantity`
+Load   r00  C02 r00 = C02:`l_shipdate`
+Min    A03  r00 A03:MIN <- r00:`l_shipdate`
+Max    A04  r00 A04:MAX <- r00:`l_shipdate`
+
+Execute as table scan.
+No filters.
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 17 instructions.
+
+   Progress: 15/16 requests (93.8%), errors=0, 1.5 queries/sec
+
+[OK] RonSQL Benchmark core_scan_agg completed in 10.40s
+   Requests: 16 (errors: 0)
+   Throughput: 1.54 queries/sec
+   Latency: min=495.23ms avg=650.08ms max=810.49ms p95=808.05ms p99=808.05ms p99.9=808.05ms
+
+   Phase breakdown (server-side, 16/16 requests sampled):
+     phase               avg        p95        p99        max
+     parse            9.50us    11.00us    11.00us    11.00us
+     analyze          0.44us     1.00us     1.00us     1.00us
+     load            21.19us    10.00us    10.00us   208.00us
+     plan             1.06us     2.00us     2.00us     5.00us
+     compile          4.50us     5.00us     5.00us     6.00us
+     prepare         38.56us    31.00us    31.00us   227.00us
+     ndbprep          1.31us     2.00us     2.00us     2.00us
+     firstbatch     649.79ms   807.75ms   807.75ms   810.24ms
+     print           12.00us    14.00us    14.00us    17.00us
+     execute        649.81ms   807.77ms   807.77ms   810.26ms
+     rows drained 0.0 per request
+

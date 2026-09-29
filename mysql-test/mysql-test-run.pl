@@ -290,6 +290,8 @@ our @RONDB_SUITES = qw(
   ndb
   ndbcluster
   ndb_binlog
+  ndb_cte
+  ndb_cte_ng2r2
   ndb_ddl
   ndb_opt
   ndb_push_agg

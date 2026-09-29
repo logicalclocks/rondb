@@ -68,7 +68,7 @@ static AggregationError g_errors_[] = {
   {kErrAggNoUsed, "Aggregation id is already used"},
   {kErrEmptyProgram, "Empty program"},
   {kErrAlreadyFinalized, "Already finalized"},
-  {kErrTooBigResult, "Single aggregation result could be larger than 8K bytes"},
+  {kErrTooBigResult, "Single aggregation result could be larger than 16K bytes"},
   {kErrTooBigProgram, "Aggregation program should be less than 4K bytes"},
   {kErrTooManyGroupbyCols, "Number of group by columns should be less than 128"},
   {kErrEmptyAggResult, "Empty aggregation"},

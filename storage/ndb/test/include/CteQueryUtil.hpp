@@ -118,13 +118,15 @@ struct Result {
   Uint64 queryMillis;  // wall time from execute() to the end of fetching
   Uint64 closeMillis;  // wall time spent in NdbQuery::close()
   int ndbError;      // NDB error code on a runtime failure
+  NdbError::Status ndbErrorStatus;  // its status (TemporaryError: retry)
   int closeError;    // NDB error observed after explicit query close
   const char *failedAt;
   Int64 aggCount;    // ScanAggMain / OuterAggMain: COUNT(*)
   Int64 aggSum;      // ScanAggMain / OuterAggMain: SUM(val)
   Result()
       : tcNodeId(0), rows(0), queryMillis(0), closeMillis(0), ndbError(0),
-        closeError(0), failedAt(""), aggCount(0), aggSum(0) {}
+        ndbErrorStatus(NdbError::Success), closeError(0), failedAt(""),
+        aggCount(0), aggSum(0) {}
 };
 
 /* SUM(val) an aggregating main shape must return over `rows` loaded
@@ -431,6 +433,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   if (trans == nullptr) {
     res.failedAt = "startTransaction";
     res.ndbError = ndb->getNdbError().code;
+    res.ndbErrorStatus = ndb->getNdbError().status;
     queryDef->destroy();
     return -1;
   }
@@ -438,6 +441,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   if (query == nullptr) {
     res.failedAt = "createQuery";
     res.ndbError = trans->getNdbError().code;
+    res.ndbErrorStatus = trans->getNdbError().status;
     trans->close();
     queryDef->destroy();
     return -1;
@@ -486,9 +490,11 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   const NDB_TICKS execStart = NdbTick_getCurrentTicks();
   if (trans->execute(NdbTransaction::NoCommit) != 0) {
     res.failedAt = "execute";
-    res.ndbError = trans->getNdbError().code != 0
-                       ? trans->getNdbError().code
-                       : query->getNdbError().code;
+    const NdbError &err = trans->getNdbError().code != 0
+                              ? trans->getNdbError()
+                              : query->getNdbError();
+    res.ndbError = err.code;
+    res.ndbErrorStatus = err.status;
     res.queryMillis =
         NdbTick_Elapsed(execStart, NdbTick_getCurrentTicks()).milliSec();
     trans->close();
@@ -513,6 +519,7 @@ static inline int runQuery(Ndb *ndb, const Options &opt, Result &res) {
   } else if (outcome == NdbQuery::NextResult_error) {
     res.failedAt = "nextResult";
     res.ndbError = query->getNdbError().code;
+    res.ndbErrorStatus = query->getNdbError().status;
     rc = -1;
   }
   if (aggMain && rc == 0) {

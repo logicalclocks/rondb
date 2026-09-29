@@ -96,7 +96,6 @@ var Expectations = []Expectation{
 	{Construct: "cross-table-where", Reject: true, Pattern: "Cross-table WHERE", Note: "a WHERE atom comparing columns of two tables outside the supported forms"},
 	{Construct: "syntax", Reject: true, Pattern: "Syntax error", Note: "implicit alias, DISTINCT, BETWEEN, OFFSET, UNION, RIGHT JOIN: outside the grammar"},
 	{Construct: "having", Reject: true, Pattern: "Could not find column", AltPatterns: []string{"Got record with fewer aggregates than expected"}, TaggedOnly: true, Finding: "F17", Note: "HAVING is unsupported (corrected-envelope): it rejects with 'Could not find column' (alias not resolved), or, with ORDER BY on an aggregate alias + LIMIT, the internal 'Got record with fewer aggregates than expected. Please report a bug.' error (F17)"},
-	{Construct: "string-snowflake", KnownWrong: true, Finding: "F14", Note: "a snowflake CTE body keyed by a VARCHAR entity key returns no rows (known wrong)"},
 }
 
 // ExpectationFor returns the table row of a construct.
@@ -400,8 +399,9 @@ func (es *envSampler) ctePerFG() {
 	es.tag("cte-root")
 }
 
-// snowflake: the S7 / S8b shapes from a CTE root; string roots are the F14
-// known-wrong pattern; batch mode projects the root key.
+// snowflake: the S7 / S8b shapes from a CTE root; string roots bind the CTE
+// body on a VARCHAR key (F14, fixed in WP-F F3: compared strictly now);
+// batch mode projects the root key.
 func (es *envSampler) snowflake(left bool) {
 	root, key, keyLit := "customers_1", "customer_id", es.oneKey()
 	if es.pct(20) {
