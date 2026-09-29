@@ -1,5 +1,5 @@
 # body_lastn_agg.inc — aggregates over the last N rows of an entity
-# (count-based windows), WP-J phases J0 and J1 of
+# (count-based windows), WP-J phases J0, J1 and J2 of
 # storage/ndb/claude_files/fs_ronsql/ronsql_fs_support_plan.md.
 #
 # The natural statement
@@ -28,7 +28,11 @@
 # J1 (RonSQLPreparer::rewrite_lastn_cte_bodies) rewrites the natural
 # statement into the J0 form at parse time; every case therefore also runs
 # the natural statement itself on RonSQL (== J1 ==), and lastn-P1 pins the
-# rewrite in EXPLAIN.  J2 (streaming fast path) must keep these results.
+# rewrite in EXPLAIN.  J2 (select_cte_body_lastn_scan) reads at most N rows
+# per fragment when the body's index scan delivers the ORDER BY order: every
+# natural statement over customer_id = K below runs on it (lastn-P1 pins the
+# EXPLAIN annotation), the hand-written J0 forms keep the full grouped scan,
+# and lastn-15 / lastn-16 keep J1 without J2.
 #
 # SET DETERMINISM: event_time is the last primary-key column, so it is
 # unique per customer and the ORDER BY decides the kept set exactly.
@@ -70,6 +74,8 @@
 #   12 INNER JOIN onto a dimension, GROUP BY a dimension column
 #   13 LEFT JOIN onto a dimension (dangling merchant ids)
 #   14 the last N rows joined to a dimension, projection-only main
+#   15 ORDER BY a non-index column: J1 without the J2 per-fragment limit
+#   16 no index bound (last N over all customers): J1 only
 --source include/have_ndb.inc
 --disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
@@ -131,6 +137,7 @@ SELECT AVG(amount) AS av FROM t;
 EOF
 --source suite/ronsql/include/ronsql_explain.inc
 --exec grep -qF "CTE 't' served as the last N rows" $EXPLAIN_FILE
+--exec grep -qF "[last-N DESC maxRows=10 per fragment]" $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 
 --echo
@@ -525,6 +532,66 @@ WITH t AS (SELECT customer_id, event_time, amount,
            ORDER BY event_time DESC LIMIT 5)
 SELECT t.event_time, t.amount, m.mcc
 FROM t JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id;
+EOF
+--source suite/ronsql_cte/include/lastn_twin_check.inc
+--let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lastn-15: ORDER BY a non-index column (J1 without the J2 limit) ===
+# amount is distinct within customer 5, so the kept set is exact.
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_lastn_15.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/lastn_15e.sql
+--write_file $QUERY_FILE
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY amount DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(amount) AS mn FROM t;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 't' served as the last N rows" $EXPLAIN_FILE
+--error 1
+--exec grep -qF "[last-N" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let LASTN_NATURAL_FILE=$MYSQL_TMP_DIR/lastn_15_nat.sql
+--write_file $LASTN_NATURAL_FILE
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY amount DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(amount) AS mn FROM t;
+EOF
+--let LASTN_J0_FILE=$MYSQL_TMP_DIR/lastn_15_j0.sql
+--write_file $LASTN_J0_FILE
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 5
+           GROUP BY customer_id, event_time, amount
+           ORDER BY amount DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(amount) AS mn FROM t;
+EOF
+--source suite/ronsql_cte/include/lastn_twin_check.inc
+--let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lastn-16: the last 10 rows over all customers (no index bound, J1 only) ===
+# event_time is distinct across customers 2..9 (60 * i + 7 * c minutes).
+--let LASTN_NATURAL_FILE=$MYSQL_TMP_DIR/lastn_16_nat.sql
+--write_file $LASTN_NATURAL_FILE
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE fee >= 0 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(event_time) AS oldest FROM t;
+EOF
+--let LASTN_J0_FILE=$MYSQL_TMP_DIR/lastn_16_j0.sql
+--write_file $LASTN_J0_FILE
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE fee >= 0
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(event_time) AS oldest FROM t;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE

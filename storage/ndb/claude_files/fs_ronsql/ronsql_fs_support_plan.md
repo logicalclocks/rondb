@@ -448,24 +448,54 @@ rewrite in EXPLAIN (lastn-P1) and the missing-key rejection (lastn-P2),
 spreads lastn-12 over three `mcc` groups, and adds lastn-14 (the last N
 rows joined to a dimension, projection-only main).
 
-*J2 — streaming fast path: collect scan + aggregation in the RonSQL
-layer.* For a main query that only aggregates the CTE (scalar, optionally
-GROUP BY on CTE columns, no joins), run the body as the collect scan
-(ordered index scan, batch = LIMIT, ordered merge, stop at N) and
-evaluate the main aggregates in the RonSQL layer over the ≤ N merged
-rows. Reads at most N × fragments rows, so cost is expected near collect
-(~80 µs) rather than growing with the history. The evaluator is new code
-and must reproduce the pushdown semantics exactly: COUNT(*) /
-COUNT(col) NULL rules, checked 64-bit integer SUM (error 1860, M2),
-DOUBLE SUM, AVG as SUM / COUNT with the M2 display scale, MIN / MAX with
-column collation for strings and temporal types, the DECIMAL
-conversion rules (WP-D2), and GREATEST / LEAST folds if the emitter uses
-them. J1 stays the path for everything J2 does not cover (joins).
+*J2 — per-fragment limit on the ordered body scan (revised 2026-09-29).*
+The first design (collect scan plus a new aggregation evaluator in the
+RonSQL layer) is replaced by one that keeps every aggregate in the kernel.
+When a J1-rewritten body's index scan delivers the ORDER BY order within
+each fragment, only a fragment's first N rows can be among the global last
+N: any row of the global top N is in the top N of its own fragment. So
+each fragment scan may stop after N delivered rows, and the kernel's CTE
+top-N keeps the global N from at most N × fragments groups.
+
+The mechanism exists: Phase I.10 serves scalar MIN/MAX CTE bodies with an
+ordered index scan and `NdbQueryOptions::setMaxRows`, a per-fragment row
+limit after which DBSPJ closes the fragment scan, and puts the aggregation
+on a self-join `readTuple` leaf. The leaf is needed because rows
+aggregated in place on the scan are never reported to DBSPJ and would not
+count towards maxRows. J2 uses the same shape with the body's bounds and
+residual filter on the scan root (`emit_index_scan_root`), so only
+matching rows count, and the J1 grouped aggregation on the leaf.
+
+`select_cte_body_lastn_scan()` (called in `plan_cte_bodies` after the root
+scan config and the I.10 check) applies it when all of these hold:
+- the CTE was rewritten by J1;
+- the body is a single-op body whose root is the INDEX_SCAN chosen by
+  `select_root_scan_config`, with one range (an IN-list multi-range scan
+  delivers each range in order, but not the ranges);
+- LIMIT >= 1;
+- `body_index_serves_orderby()` holds: the ORDER BY columns are stored
+  columns of the root table matching the index columns in order, all in
+  one direction, where index columns bound by equality may be skipped.
+  This is the body-scope twin of `index_serves_orderby()`.
+
+For the Hopsworks layout, PRIMARY KEY (entity, event_time) with the entity
+bound and ORDER BY event_time DESC, that is always the case, with or
+without a time window. EXPLAIN adds `[last-N DESC maxRows=N per fragment]`
+to the body root line. Anything else keeps the J1 plan: an ORDER BY on a
+non-index column (lastn-15), or no index bound (lastn-16).
+
+*J2 status (2026-09-29): written, not built.* Tests are in
+`ronsql_cte_dd_lastn_agg`. Every natural statement over customer_id = K
+now runs on J2, while the hand-written J0 forms keep the full grouped
+scan and are compared against the same MySQL results. lastn-P1 pins the
+EXPLAIN annotation; lastn-15 pins its absence. The benefit is to be
+measured with the `fs_hw_agg_last10` / `_last100` bench entries (not yet
+added).
 
 *J3 — last N enriched with a dimension, then aggregated* (e.g. distinct
 merchant categories among the last 20 transactions). J1 serves it
-functionally. A fast path would add batched primary-key lookups for the
-≤ N merged rows before the J2 evaluation. Only after J2 has numbers.
+functionally. J2's limited body scan already applies to it (lastn-12..14);
+what remains is the join from the CTE, which reads at most N rows.
 
 *J4 — batch (last N per entity for an IN list).* Needs a per-key
 ordered range with a per-key limit, which the multi-range scan (WP-F F2)
@@ -490,12 +520,13 @@ requirements row, vector oracle fold, fuzzer production, fs_hw entry.
 - J1: the same cases written naturally, strict-diffed against MySQL;
   EXPLAIN pins the rewrite; clean rejects for ORDER BY on a non-key
   column, string MIN/MAX as the ORDER BY key and OFFSET.
-- J2: the J1 cases on the fast path; `fetched=` ≤ N × fragments
-  (`$EXPECT_FETCHED_MAX`); a checked-SUM overflow case (1860) and a
-  string MIN/MAX collation case; J0 vs J2 differential over the spec
-  fuzzer's last-N productions; bench entries `fs_hw_agg_last10` /
-  `fs_hw_agg_last100` against the MySQL twin, recorded in
-  `benchmarks.md` §8.
+- J2: the J1 cases on the limited scan, with the J0 forms (full grouped
+  scan) as the differential and EXPLAIN pins for the annotation and its
+  absence. `fetched=` does not apply: the body rows stay in the kernel.
+  Aggregate semantics are unchanged, since the kernel still computes
+  them. Bench entries `fs_hw_agg_last10` / `fs_hw_agg_last100` go
+  against the MySQL twin and the J1-only plan (e.g. an ORDER BY that the
+  index does not serve), recorded in `benchmarks.md` §8.
 - Hopsworks: golden fixture for the new definition, requirement row
   SUPPORTED on base / jit / ng2r2.
 
@@ -508,7 +539,7 @@ requirements row, vector oracle fold, fuzzer production, fs_hw entry.
 | **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
-| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 streaming fast path; J3 / J4 after J2's numbers | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
+| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 per-fragment limit on the ordered body scan; J3 / J4 after J2's numbers | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
 
 M1 is small and high-value: D1 is a one-line fix, B and C are contained,
 and A maps onto an execution path that already exists. M2 now focuses on
@@ -560,5 +591,5 @@ snowflake and batch are faster through MySQL).
 | I F10/F11 | separate track | ndbcluster pushdown |
 | J0 last-N stop-gap | days (tests only) | TIMESTAMP GROUP BY key, main-scope AVG over a CTE |
 | J1 last-N rewrite | ~1 week | planner only, like WP-A; cost grows with the entity's history |
-| J2 last-N fast path | 2–3 weeks | new API-side aggregate evaluator must match pushdown semantics exactly |
+| J2 last-N fast path | days (written 2026-09-29) | reuses the I.10 ordered-scan + maxRows + self-join-leaf shape; no new aggregation code |
 | J3 / J4 | after J2 | batched lookups; per-key limited ranges; Hopsworks decisions |

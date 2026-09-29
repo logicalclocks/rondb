@@ -645,3 +645,78 @@ Number of output lines, including header: 5
 
 
 
+
+=== lastn-15: ORDER BY a non-index column (J1 without the J2 limit) ===
+== Explain Query ==
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY amount DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(amount) AS mn FROM t;
+== Natural statement result (MySQL) ==
+n	s	mn
+5	3830	740
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 5
+           GROUP BY customer_id, event_time, amount
+           ORDER BY amount DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(amount) AS mn FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== J1: the natural statement on RonSQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 5 ORDER BY amount DESC LIMIT 5)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(amount) AS mn FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== lastn-16: the last 10 rows over all customers (no index bound, J1 only) ===
+== Natural statement ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE fee >= 0 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(event_time) AS oldest FROM t;
+== Natural statement result (MySQL) ==
+n	s	oldest
+10	2852	2026-05-31 22:25:00
+== J0 form: same result on MySQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE fee >= 0
+           GROUP BY customer_id, event_time, amount
+           ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(event_time) AS oldest FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== J1: the natural statement on RonSQL ==
+== Query ==
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE fee >= 0 ORDER BY event_time DESC LIMIT 10)
+SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(event_time) AS oldest FROM t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+

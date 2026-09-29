@@ -259,6 +259,11 @@ private:
     DynamicArray<ScanConfig> body_scan_config_candidates;
     ScanConfig* body_scan_config = NULL;
     MinMaxKind body_minmax_kind = MinMaxKind::NONE;
+    // RONDB-1124 WP-J J2: a last-N body (rewrite_lastn_cte_bodies) whose
+    // index scan delivers its ORDER BY order reads at most this many rows
+    // per fragment (0 = no limit), ordered as body_lastn_desc says.
+    Uint32 body_lastn_max_rows = 0;
+    bool body_lastn_desc = false;
 
     QueryScope(ArenaMalloc* amalloc)
       : join_plan(),
@@ -434,11 +439,13 @@ private:
   // ({NULL, 0} when no flatten ran); reported by EXPLAIN.
   LexCString m_flattened_cte = LexCString{NULL, 0};
   // RONDB-1124 WP-J J1: CTEs rewrite_lastn_cte_bodies() turned into
-  // one-group-per-row bodies (the first MAX_LASTN_CTES_REPORTED names are
-  // kept for EXPLAIN; m_num_lastn_ctes counts all of them).
-  static constexpr Uint32 MAX_LASTN_CTES_REPORTED = 8;
-  LexCString m_lastn_ctes[MAX_LASTN_CTES_REPORTED] = {};
+  // one-group-per-row bodies (the first MAX_LASTN_CTES_REPORTED are kept,
+  // for EXPLAIN and the J2 scan selection; m_num_lastn_ctes counts all of
+  // them).
+  static constexpr Uint32 MAX_LASTN_CTES_REPORTED = 16;
+  const CteDefinition* m_lastn_ctes[MAX_LASTN_CTES_REPORTED] = {};
   Uint32 m_num_lastn_ctes = 0;
+  bool is_lastn_cte(const CteDefinition* cte) const;
   // True for aggregating queries (the only ones RonSQL fully supports).
   // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
   // shape that Phase E.3 enables — drives the pass-through delivery
@@ -784,6 +791,17 @@ private:
       const NdbDictionary::Column* col);
   void select_cte_body_minmax_index(QueryScope& scope,
                                      const CteDefinition* cte);
+  /* RONDB-1124 WP-J J2: a last-N body whose chosen index scan delivers
+   * its ORDER BY order reads at most LIMIT rows per fragment (ordered
+   * scan + maxRows, aggregation on a self-join leaf); sets
+   * scope.body_lastn_max_rows / body_lastn_desc. */
+  void select_cte_body_lastn_scan(QueryScope& scope,
+                                  const CteDefinition* cte);
+  bool body_index_serves_orderby(const QueryScope& scope,
+                                 const SelectStatement* body,
+                                 const NdbDictionary::Index* index,
+                                 const int* condition_handling_map,
+                                 bool& descending) const;
   void analyze_ctes();
   void build_cte_scopes();
   bool* collect_scope_column_refs(const SelectStatement& stmt);
