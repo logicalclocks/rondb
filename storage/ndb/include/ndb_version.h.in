@@ -1269,6 +1269,29 @@ ndbd_support_2k_api_nodes(Uint32 x) {
 }
 
 /*
+ * Support for node ids 2040..8191 (the "8k tier").
+ *
+ * Introduced in the 26.02 release line at 26.02.11. NOTE: 26.02.10 was
+ * released WITHOUT this feature, so the cutoff must not be lowered
+ * to 10.
+ *
+ * NOTE: this predicate is intentionally branch-aware and conservative.
+ * Only release lines KNOWN to carry the feature return true; every other
+ * version (including numerically higher lines that may not contain the
+ * feature) returns false.
+ *
+ * No release with higher release number than 26.02 are released
+ * without this feature, so it is safe to simply compare with
+ * 26.02.11.
+ */
+#define NDBD_SUPPORT_8K_API_NODES_2602 NDB_MAKE_VERSION(26,2,11)
+static inline
+bool
+ndbd_support_8k_api_nodes(Uint32 x) {
+  return x >= NDBD_SUPPORT_8K_API_NODES_2602;
+}
+
+/*
  * QMGR honors the ArbitrationRankWait config parameter, preferring
  * rank-1 arbitrators (typically ndb_mgmd) over rank-2 fallbacks for
  * up to ArbitrationRankWait milliseconds, and demoting a rank-2

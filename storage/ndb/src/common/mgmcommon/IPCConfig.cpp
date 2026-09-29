@@ -105,20 +105,28 @@ bool IPCConfig::configureTransporters(Uint32 nodeId,
    * or allow connections from these nodes until we have received
    * word that they are being activated. Also non-existing nodes
    * are set to non-active just in case.
+   *
+   * One pass over the node sections, then the remaining node ids. The
+   * previous loop did a linear iterator find() for every id up to
+   * ABS_MAX_NODES: 8191 x 8191 comparisons at the 8k node id ceiling.
    */
-  for (int i= 1; i < ABS_MAX_NODES; i++)
   {
+    NodeBitmask configured;
     ndb_mgm_configuration_iterator iter(config, CFG_SECTION_NODE);
-    if (!iter.find(CFG_NODE_ID, i))
-    {
+    for (iter.first(); iter.valid(); iter.next()) {
+      Uint32 node_id = 0;
+      if (iter.get(CFG_NODE_ID, &node_id)) continue;
+      if (node_id == 0 || node_id >= ABS_MAX_NODES) continue;
       Uint32 is_active = 1;
       iter.get(CFG_NODE_ACTIVE, &is_active);
-      tr.set_active_node(i, is_active, !transporter_to_self);
+      tr.set_active_node(node_id, is_active, !transporter_to_self);
+      configured.set(node_id);
     }
-    else
-    {
-      /* Nodes not existing will be set as not active nodes. */
-      tr.set_active_node(i, 0, false);
+    for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
+      if (!configured.get(i)) {
+        /* Nodes not existing will be set as not active nodes. */
+        tr.set_active_node(i, 0, false);
+      }
     }
   }
 

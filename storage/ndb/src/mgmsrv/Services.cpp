@@ -38,6 +38,7 @@
 #include <ConfigValues.hpp>
 #include <Vector.hpp>
 #include <mgmapi_configuration.hpp>
+#include "../mgmapi/mgmapi_internal.h"
 #include "../mgmapi/ndb_logevent.hpp"
 #include "MgmAuth.hpp"
 #include "Services.hpp"
@@ -772,14 +773,17 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
     }
   }
 
-  bool compatible;
+  /**
+   * Only the node type is validated here. The client's version is not
+   * judged: a node's version compatibility is verified when it registers
+   * with the data nodes (API_REGREQ), and the one version dependent rule
+   * for allocating an id is the node id range gate below. Clients of other
+   * versions, and testMgm which sends version 1, rely on this.
+   */
   switch (nodetype) {
     case NODE_TYPE_MGM:
     case NODE_TYPE_API:
-      compatible = ndbCompatible_mgmt_api(NDB_VERSION, version);
-      break;
     case NODE_TYPE_DB:
-      compatible = ndbCompatible_mgmt_ndb(NDB_VERSION, version);
       break;
     default:
       m_output->println("result: unknown nodetype %d", nodetype);
@@ -804,6 +808,40 @@ void MgmApiSession::get_nodeid(Parser_t::Context &,
     m_output->println("result: illegal nodeid %u", nodeid);
     m_output->println("%s", "");
     return;
+  }
+
+  {
+    /**
+     * Version gates for high node ids, after the range check so that an id
+     * outside the range is "illegal nodeid" whoever asks, and before the
+     * allocation so that an old client is refused up front, both when the
+     * requested id itself needs a newer version and when the configuration
+     * contains high node ids (in the latter case the client would
+     * otherwise get a reservation only to be refused at config fetch,
+     * leaving a dangling reservation behind).
+     */
+    const NodeId max_node_id = m_mgmsrv.get_max_node_id();
+    const char *reject = nullptr;
+    if (nodeid > OLD_MAX_NODES && !ndbd_support_2k_api_nodes(version)) {
+      reject = "Requested nodeid requires a version supporting"
+               " node ids above 255";
+    } else if (nodeid > PREV_MAX_NODES && !ndbd_support_8k_api_nodes(version)) {
+      reject = "Requested nodeid requires a version supporting"
+               " node ids above 2039";
+    } else if (max_node_id > OLD_MAX_NODES &&
+               !ndbd_support_2k_api_nodes(version)) {
+      reject = "Configuration has node ids above 255,"
+               " node version lacks support";
+    } else if (max_node_id > PREV_MAX_NODES &&
+               !ndbd_support_8k_api_nodes(version)) {
+      reject = "Configuration has node ids above 2039,"
+               " node version lacks support";
+    }
+    if (reject != nullptr) {
+      m_output->println("result: %s", reject);
+      m_output->println("%s", "");
+      return;
+    }
   }
 
   NodeId tmp = nodeid;
@@ -1140,14 +1178,22 @@ void MgmApiSession::getConfig(Parser_t::Context &, const class Properties &args,
   SLEEP_ERROR_INSERTED(1);
   m_output->println("get config reply");
 
-  if (!ndbd_support_2k_api_nodes(version) &&
-      m_mgmsrv.get_max_node_id() > OLD_MAX_NODES) {
-    m_output->println(
-      "result: %s",
-      "Configuration has high node ids, incompatible versions");
-    m_output->print("\n");
-    require(false);
-    return;
+  {
+    /**
+     * Refuse to hand out a configuration containing node ids the client
+     * cannot handle. NOTE: this must be a clean protocol error; the old
+     * refusal path ended in require(false) which killed mgmd on any
+     * old-client fetch.
+     */
+    const NodeId max_node_id = m_mgmsrv.get_max_node_id();
+    if ((max_node_id > OLD_MAX_NODES && !ndbd_support_2k_api_nodes(version)) ||
+        (max_node_id > PREV_MAX_NODES && !ndbd_support_8k_api_nodes(version))) {
+      m_output->println(
+        "result: %s",
+        "Configuration has high node ids, incompatible versions");
+      m_output->print("\n");
+      return;
+    }
   }
 
   BaseString pack64, error;
@@ -2734,6 +2780,17 @@ static bool clear_dynamic_ports_from_config(Config *config) {
   return true;
 }
 
+/**
+ * Upper bound for a packed+base64 configuration accepted by 'set config'.
+ * The historic 1 MiB cap is too small for configurations with high node
+ * ids: a minimal config with ~8000 API slots measures ~824 KB (v2 packed,
+ * base64) and realistic configs (hostnames, per-node parameters, more
+ * data nodes) exceed 1 MiB. Keep a hard bound to avoid unbounded
+ * allocation from a misbehaving client. The value is defined in
+ * mgmapi_internal.h so that testMgm checks against the same bound.
+ */
+static constexpr Uint32 MAX_CONFIG_BASE64_LEN = NDB_MGM_MAX_CONFIG_BASE64_LEN;
+
 void MgmApiSession::setConfig_v1(Parser_t::Context &ctx,
                                  Properties const &args) {
   setConfig(ctx, args, false);
@@ -2764,8 +2821,8 @@ void MgmApiSession::setConfig(Parser_t::Context &ctx, Properties const &args,
   }
 
   args.get("Content-Length", &len64);
-  if (len64 == 0 || len64 > (1024 * 1024)) {
-    result.assfmt("Illegal config length size %d", len64);
+  if (len64 == 0 || len64 > MAX_CONFIG_BASE64_LEN) {
+    result.assfmt("Illegal config length size %u", len64);
     goto done;
   }
   len64 += 1;  // Trailing \n

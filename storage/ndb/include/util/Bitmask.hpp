@@ -1381,6 +1381,34 @@ inline Uint32 BitmaskPOD<size>::toArray(Uint8 *dst, Uint32 len) const {
   return BitmaskImpl::toArray(dst, len, size, this->rep.data);
 }
 
+/**
+ * bitmask_assign_checked - assign a bitmask received from an untrusted
+ * source (e.g. a signal section) into a fixed-size mask.
+ *
+ * Unlike BitmaskPOD::assign(sz, src), this validates that the source
+ * length fits in the destination BEFORE copying anything, and zero-fills
+ * the words above the copied length so the destination is fully defined.
+ *
+ * @param dst  destination bitmask
+ * @param src  source words (must point at len readable words)
+ * @param len  number of source words
+ * @return true if assigned; false if len exceeds the destination size,
+ *         in which case the destination is left unmodified
+ */
+template <unsigned size>
+[[nodiscard]] inline bool bitmask_assign_checked(BitmaskPOD<size> &dst,
+                                                 const Uint32 src[],
+                                                 Uint32 len) {
+  if (len > size) {
+    return false;
+  }
+  BitmaskImpl::assign(len, dst.rep.data, src);
+  for (Uint32 i = len; i < size; i++) {
+    dst.rep.data[i] = 0;
+  }
+  return true;
+}
+
 template <unsigned size>
 class Bitmask : public BitmaskPOD<size> {
  public:

@@ -65,9 +65,15 @@
  * WHEN MAX_NODES IS CHANGED, IT SHOULD BE CHANGED ALSO
  **************************************************************************/
 #define OLD_MAX_NODES 255
+/**
+ * Highest node id supported by the previous (2k) tier, see
+ * ndbd_support_2k_api_nodes() / ndbd_support_8k_api_nodes().
+ * Used for version gating of node ids above this value.
+ */
+#define PREV_MAX_NODES 2039
 #define MAX_NODES (SimulatedBlock::get_max_nodeid())
-#define ABS_MAX_NODES 2040
-#define MAX_NODES_ID 2039
+#define ABS_MAX_NODES 8192
+#define MAX_NODES_ID 8191
 
 /**
  * MAX_API_NODES = MAX_NODES - No of NDB Nodes in use

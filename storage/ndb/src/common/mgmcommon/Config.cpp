@@ -219,6 +219,18 @@ bool Config::pack64_v2(BaseString &encoded, Uint32 node_id) const {
   return pack64_encode(encoded, buf);
 }
 
+Config *Config::create_node_copy(Uint32 node_id) const {
+  UtilBuffer buf;
+  if (m_configuration->m_config_values.pack_v2(buf, node_id) == 0) {
+    return nullptr;
+  }
+  ConfigValuesFactory cvf;
+  if (!cvf.unpack_v2_buf(buf)) {
+    return nullptr;
+  }
+  return new Config(cvf.getConfigValues());
+}
+
 enum diff_types {
   DT_DIFF,             // Value differed
   DT_MISSING_VALUE,    // Value didn't exist

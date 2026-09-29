@@ -277,6 +277,11 @@ inline bool ConfigValuesFactory::put(Uint32 key, const char *val) {
 
 inline Uint32 ConfigValues::pack_v1(UtilBuffer &buf) const {
   Uint32 len = get_v1_packed_size();
+  if (unlikely(len == 0)) {
+    // Configuration cannot be represented in the v1 packed format
+    // (too many sections for its 14-bit section id field)
+    return 0;
+  }
   void *tmp = buf.append(len);
   if (unlikely(tmp == nullptr)) {
     return 0;

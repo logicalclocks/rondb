@@ -273,18 +273,18 @@ int NdbInfoScanNodes::receive(void) {
       }
 
       case GSN_NODE_FAILREP: {
-        const NodeFailRep *const rep =
-            CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
-        Uint32 len = NodeFailRep::getNodeMaskLength(sig->getLength());
-        const Uint32 *nbm;
-        if (sig->header.m_noOfSections >= 1) {
-          assert(len == 0);
-          nbm = sig->ptr[0].p;
-          len = sig->ptr[0].sz;
-        } else {
-          assert(len == NodeBitmask::Size);  // only full length in ndbapi
-          nbm = rep->theAllNodes;
-        }
+        /**
+         * Section form only, see ClusterMgr::execNODE_FAILREP: NODE_FAILREP
+         * reaches an NDB API client only through ClusterMgr's re-broadcast,
+         * which carries the failed nodes as one section holding a packed
+         * NodeBitmask. The legacy inline layouts are decoded there and never
+         * forwarded. The section holds exactly ptr[0].sz words, which is the
+         * only valid scan bound.
+         */
+        assert(NodeFailRep::getNodeMaskLength(sig->getLength()) == 0);
+        assert(sig->header.m_noOfSections == 1);
+        const Uint32 len = sig->ptr[0].sz;
+        const Uint32 *nbm = sig->ptr[0].p;
         if (BitmaskImpl::safe_get(len, nbm, m_node_id)) {
           DBUG_PRINT("info",
                      ("Node %d where scan was runnig failed", m_node_id));

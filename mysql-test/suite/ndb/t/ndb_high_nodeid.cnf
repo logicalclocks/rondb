@@ -1,0 +1,81 @@
+# Schema distribution and basic operation with API node ids above the
+# old 2039 limit (MAX_NODES_ID raised to 8191).
+#
+# mysqld.1.1 connects using ONLY high node ids (8191/2040/8000) while
+# mysqld.2.1 uses the last legacy id (2039) plus low ids, so schema
+# distribution runs with a mixed set of low and high id participants.
+# Free ndbapi slots cover the 64-word mask boundary ids (2047/2048)
+# and 4096.
+!include include/default_mysqld.cnf
+!include include/default_ndbd.cnf
+
+[cluster_config.1]
+ndbd=,
+ndb_mgmd=
+mysqld=,
+ndbapi=,,,,,,
+DefaultOperationRedoProblemAction=queue
+
+[cluster_config.mysqld.1.1]
+NodeId=8191
+Dedicated=1
+
+[cluster_config.mysqld.2.1]
+NodeId=2039
+Dedicated=1
+
+[cluster_config.ndbapi.1.1]
+NodeId=2040
+Dedicated=1
+
+[cluster_config.ndbapi.2.1]
+NodeId=8000
+Dedicated=1
+
+[cluster_config.ndbapi.3.1]
+NodeId=63
+Dedicated=1
+
+[cluster_config.ndbapi.4.1]
+NodeId=127
+Dedicated=1
+
+# NdbAPI slots free for use by any NdbAPI connection (tools etc.)
+
+[cluster_config.ndbapi.5.1]
+NodeId=2047
+
+[cluster_config.ndbapi.6.1]
+NodeId=2048
+
+[cluster_config.ndbapi.7.1]
+NodeId=4096
+
+[mysqld]
+# Make all mysqlds use cluster
+ndbcluster
+ndb-wait-connected=30
+ndb-wait-setup=120
+ndb-cluster-connection-pool=3
+ndb-extra-logging=99
+local-infile=true
+
+[mysqld.1.1]
+# All connection pool node ids above the old 2039 limit
+ndb-cluster-connection-pool-nodeids=8191,2040,8000
+skip-log-bin
+skip-log-replica-updates
+
+[mysqld.2.1]
+# All connection pool node ids at or below the old 2039 limit
+ndb-cluster-connection-pool-nodeids=2039,63,127
+skip-log-bin
+skip-log-replica-updates
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYSOCK=                 @mysqld.1.1.socket
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port
+
+NDB_BACKUP_DIR=                @cluster_config.ndbd.1.1.BackupDataDir
