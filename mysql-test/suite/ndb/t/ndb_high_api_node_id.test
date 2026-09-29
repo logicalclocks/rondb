@@ -1,8 +1,8 @@
 --source include/have_ndb.inc
 --source include/have_debug.inc
 
---let $unsubscribe_message= Ignoring unsubscribe from node 2040. The maximum supported node ID is 2039
---let $subscribe_message= Ignoring subscribe from node 2040. The maximum supported node ID is 2039
+--let $unsubscribe_message= Ignoring unsubscribe from node 8192. The maximum supported node ID is 8191
+--let $subscribe_message= Ignoring subscribe from node 8192. The maximum supported node ID is 8191
 --eval CALL mtr.add_suppression("$unsubscribe_message")
 --eval CALL mtr.add_suppression("$subscribe_message")
 
@@ -16,7 +16,7 @@ SET @@GLOBAL.debug="+d,ndb_test_high_api_node_id";
 # 'ndb_test_high_api_node_id', the handling of that event injects subscribe/
 # unsubscribe reports with out-of-range node ids, testing:
 # - unsubscribe of an API node with ID higher than the maximum supported by
-#   cluster (MAX_NODES_ID + 1 = 2040);
+#   cluster (MAX_NODES_ID + 1 = 8192);
 # - subscribe of an API node with ID higher than the highest API node ID defined
 #   in configuration;
 # - subscribe of an API node with ID higher than the maximum supported by

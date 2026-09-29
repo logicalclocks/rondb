@@ -43,7 +43,18 @@
  * Note that this is used in a lot of signals
  */
 #define _NODE_BITMASK_SIZE_255 8
-#define _NODE_BITMASK_SIZE 64
+#define _NODE_BITMASK_SIZE 256
+
+/**
+ * Frozen legacy size (64 words = 2048 bits) of the all-node bitmask as it
+ * was when node ids 256..2039 were introduced (RONDB-914).
+ *
+ * MUST NOT change: legacy fixed-length wire constants (e.g.
+ * NodeFailRep::SignalLengthLong_v1) and legacy embedded signal layouts are
+ * derived from this value. Deriving them from _NODE_BITMASK_SIZE would
+ * silently change the legacy wire format whenever the mask grows.
+ */
+#define _NODE_BITMASK_SIZE_2K 64
 
 /**
  * No. of 32 bits words needed to store a node bitmask
@@ -61,7 +72,24 @@
  *   containing all the transporters in the system
  *   Both NDB nodes and API, MGM... nodes
  */
-#define _TRP_BITMASK_SIZE 68
+#define _TRP_BITMASK_SIZE 260
+
+/**
+ * No of 32 bits words needed to store a transporter bitmask in an NDB API
+ * or MGM client (trp_client / TransporterFacade).
+ *
+ * Clients never use multi transporters and only have transporters to the
+ * data nodes, to other MGM nodes (ndb_mgmd only) and to themselves, so 256
+ * transporter ids are ample: 144 data nodes plus the loopback transporter
+ * plus over a hundred management servers. The bound is enforced in
+ * TransporterFacade::configure(), which fails cleanly if a configuration
+ * would ever need more transporters than this.
+ *
+ * These masks are purely in-process state, never sent in a signal or
+ * written to disk, so the size is independent of _TRP_BITMASK_SIZE which
+ * must cover the multi transporters of a data node as well.
+ */
+#define _CLIENT_TRP_BITMASK_SIZE 8
 
 /**
  * No of 32 bits words needed to store a node bitmask
@@ -92,11 +120,15 @@
 
 typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE> NodeBitmask;
 typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE_255> NodeBitmask255;
+typedef Bitmask<(unsigned int)_NODE_BITMASK_SIZE_2K> NodeBitmask2K;
 typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE> NodeBitmaskPOD;
 typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE_255> NodeBitmask255POD;
+typedef BitmaskPOD<(unsigned int)_NODE_BITMASK_SIZE_2K> NodeBitmask2KPOD;
 
 typedef Bitmask<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmask;
 typedef BitmaskPOD<(unsigned int)_TRP_BITMASK_SIZE> TrpBitmaskPOD;
+
+typedef Bitmask<(unsigned int)_CLIENT_TRP_BITMASK_SIZE> ClientTrpBitmask;
 
 typedef Bitmask<(unsigned int)_NDB_NODE_BITMASK_SIZE> NdbNodeBitmask;
 typedef BitmaskPOD<(unsigned int)_NDB_NODE_BITMASK_SIZE> NdbNodeBitmaskPOD;
@@ -117,6 +149,11 @@ typedef Bitmask<(unsigned int)_NDB_NODE_BITMASK_SIZE_48_NODES> NdbNodeBitmask48;
 
 #if (__NNBM_SZ > _NDB_NODE_BITMASK_SIZE)
 #error "ABS_MAX_NDB_NODES can not fit into NDB_NODE_BITMASK_SIZE"
+#endif
+
+/* A client has at least one transporter per data node plus its loopback */
+#if ((_CLIENT_TRP_BITMASK_SIZE * 32) <= ABS_MAX_NDB_NODES)
+#error "ClientTrpBitmask can not hold every data node plus the loopback"
 #endif
 
 /**

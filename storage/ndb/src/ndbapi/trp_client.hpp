@@ -46,10 +46,13 @@ class trp_client : TransporterSendBufferHandle {
 
  public:
   /**
-   * The clients does not use MultiTransporters. Thus the max number
-   * of client transporters are limited by 'ABS_MAX_NODES'.
+   * Clients never use MultiTransporters and only have transporters to
+   * the data nodes, to other MGM nodes (ndb_mgmd) and to themselves, so
+   * the client transporter ids are bounded by the ClientTrpBitmask size
+   * (see NodeBitmask.hpp). TransporterFacade::configure() fails if a
+   * configuration would need more transporters than this.
    */
-  static constexpr Uint32 MAX_TRPS = ABS_MAX_NODES;
+  static constexpr Uint32 MAX_TRPS = _CLIENT_TRP_BITMASK_SIZE * 32;
 
   trp_client();
   ~trp_client() override;
@@ -67,7 +70,7 @@ class trp_client : TransporterSendBufferHandle {
   void wakeup();
 
   // Called under m_mutex protection
-  void set_enabled_send(const TrpBitmask &trps);
+  void set_enabled_send(const ClientTrpBitmask &trps);
   void enable_send(TrpId trp);
   void disable_send(TrpId trp);
 
@@ -179,25 +182,35 @@ private:
     NdbCondition *m_condition;
   } m_poll;
 
-  TrpBitmask m_enabled_trps_mask;
+  ClientTrpBitmask m_enabled_trps_mask;
 
   /**
    * This is used for sending.
    * m_send_trps_* are the transporters we have pending unflushed
    * messages to. (In m_send_buffers, indexed by the 'trps')
+   *
+   * m_send_buffers[] and m_send_trps_list[] hold m_num_trp_ids
+   * entries and grow on demand (see ensure_send_buffer_capacity()):
+   * a client only pays for the transporter ids it actually sends to,
+   * instead of embedding one entry per possible transporter id (~213 KB
+   * at the former 8192 id ceiling) in every trp_client (one per Ndb
+   * object).
    */
-  TrpBitmask m_send_trps_mask;
+  ClientTrpBitmask m_send_trps_mask;
   Uint32 m_send_trps_cnt;
-  TrpId m_send_trps_list[MAX_TRPS];
+  Uint32 m_num_trp_ids;
+  TrpId *m_send_trps_list;
 
   TFBuffer *m_send_buffers;
+
+  bool ensure_send_buffer_capacity(TrpId trp_id);
 
   /**
    * The m_flushed_trps_mask are the aggregated set of transporters
    * we have flushed messages to, which are yet not known to
    * have been (force-)sent by the transporter.
    */
-  TrpBitmask m_flushed_trps_mask;
+  ClientTrpBitmask m_flushed_trps_mask;
 };
 
 class PollGuard {
