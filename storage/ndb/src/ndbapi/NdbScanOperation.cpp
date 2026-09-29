@@ -137,6 +137,14 @@ int NdbScanOperation::init(const NdbTableImpl *tab,
   m_scanFinalisedOk = false;
   m_readTuplesCalled = false;
   m_interpretedCodeOldApi = nullptr;
+  /* Scan operations are pooled and recycled; the aggregation-code pointer
+   * refers to a CALLER-owned NdbAggregator whose lifetime ends with the
+   * query that set it (e.g. RonSQL). Without this reset a recycled
+   * operation still carries the previous user's dangling pointer, so the
+   * next plain scan reads a freed aggregator in addAggregationCode()
+   * (observed as a wild memmove -> SIGBUS) and flags an ordinary scan as
+   * a pushdown-aggregation scan in SCAN_TABREQ. */
+  m_aggregation_code = nullptr;
   m_pruneState = SPS_UNKNOWN;
   m_pruningKeyPartitionId = false;
 
