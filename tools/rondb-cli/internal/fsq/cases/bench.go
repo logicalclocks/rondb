@@ -60,6 +60,7 @@ type BenchEntry struct {
 // BenchPlaceholderLegend documents the request-time placeholders.
 const BenchPlaceholderLegend = "Placeholders per request: {KEY} random customer in 1..max (KeySQL); {KEYS:n} n distinct customers; " +
 	"{SKEY}/{SKEYS:n} string keys of customers 1..max/10; {ACCT} random account in 1..max/2 with {CUR} one of its currencies; " +
+	"{TXKEY:n} random customer with exactly n transactions_1 rows (a data.NTxClass count); " +
 	"{NOW-7d} etc. the TIMESTAMP literal FS_NOW minus the window"
 
 // BenchEntries generates the fs_hw registry for the database cfg.DB (the
@@ -189,6 +190,32 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 			add(BenchEntry{Name: "fs_hw_collect5_twin", Shape: "S6 twin", Description: "production MySQL collect statement (ROW_NUMBER window, rank <= 5)", Rows: "<= 5", MySQLOnly: true, SQL: twin(g)})
 		}
 	}
+	// WP-J (ronsql_fs_support_plan.md): aggregates over the newest N rows of
+	// an entity, a future Hopsworks shape (S11).  J1 rewrites the natural
+	// statement into a one-group-per-row CTE over the whole history (the J2
+	// per-fragment limit measured slower and is off).  The _grouped entry is
+	// the hand-written J0 form of the same statement: the CTE-plan baseline
+	// that a fast path must beat.  {TXKEY:300} picks customers with the
+	// longest history, so cost growth with history length shows.
+	lastN := func(key string, n int) string {
+		return fmt.Sprintf("WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee` FROM `transactions_1` "+
+			"WHERE `customer_id` = %s ORDER BY `event_time` DESC LIMIT %d) "+
+			"SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;", key, n)
+	}
+	lastNGrouped := func(key string, n int) string {
+		return fmt.Sprintf("WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee`, COUNT(*) AS `grp_rows` FROM `transactions_1` "+
+			"WHERE `customer_id` = %s GROUP BY `customer_id`, `event_time`, `amount`, `fee` ORDER BY `event_time` DESC LIMIT %d) "+
+			"SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;", key, n)
+	}
+	lastNPins := []string{"served as the last N rows", "Body root: INDEX_SCAN using PRIMARY"}
+	add(BenchEntry{Name: "fs_hw_agg_last10", Shape: "S11", Description: "COUNT / AVG / MAX over the newest 10 rows (future shape; WP-J J1 rewrite)",
+		Rows: "1", SQL: lastN("{KEY}", 10), PlanPins: lastNPins})
+	add(BenchEntry{Name: "fs_hw_agg_last100", Shape: "S11", Description: "the same over the newest 100 rows",
+		Rows: "1", SQL: lastN("{KEY}", 100), PlanPins: lastNPins})
+	add(BenchEntry{Name: "fs_hw_agg_last10_tx300", Shape: "S11", Description: "newest 10 rows of customers with 300 rows (the longest history)",
+		Rows: "1", SQL: lastN("{TXKEY:300}", 10), PlanPins: lastNPins})
+	add(BenchEntry{Name: "fs_hw_agg_last10_tx300_grouped", Shape: "S11 J0", Description: "J0 grouped form of fs_hw_agg_last10_tx300: all 300 rows grouped, then the top 10 (the CTE-plan baseline)",
+		Rows: "1", SQL: lastNGrouped("{TXKEY:300}", 10), PlanPins: []string{"Body root: INDEX_SCAN using PRIMARY"}})
 	if g, ok := emitted("fs_hw_snow1_point", b.snowflakeView("hw-s1", 1, spec.JoinInner, false), 0); ok {
 		add(BenchEntry{Name: "fs_hw_snow1_point", Shape: "S7", Description: "snowflake 1-hop INNER (customer -> region)", Rows: "<= 1", SQL: ronsql(g, 0), PlanPins: snowPins})
 		add(BenchEntry{Name: "fs_hw_snow1_twin", Shape: "S7 twin", Description: "production MySQL nested join, 1 hop", Rows: "<= 1", MySQLOnly: true, SQL: twin(g)})
@@ -336,7 +363,7 @@ func RenderBenchRegistry(entries []BenchEntry) string {
 
 // ---- request-time placeholders --------------------------------------------------
 
-var benchPlaceholder = regexp.MustCompile(`\{(KEY|KEYS:[0-9]+|SKEY|SKEYS:[0-9]+|ACCT|CUR|NOW-[0-9]+[hds])\}`)
+var benchPlaceholder = regexp.MustCompile(`\{(KEY|KEYS:[0-9]+|TXKEY:[0-9]+|SKEY|SKEYS:[0-9]+|ACCT|CUR|NOW-[0-9]+[hds])\}`)
 
 // ResolveBenchPlaceholders substitutes every fs_hw placeholder of sql for
 // one request.  maxKey is the customer domain E (KeySQL); the account
@@ -364,6 +391,9 @@ func ResolveBenchPlaceholders(sql string, rng *rand.Rand, maxKey int, now time.T
 		case strings.HasPrefix(tok, "KEYS:"):
 			n, _ := strconv.Atoi(tok[5:])
 			return joinInts(distinctKeys(rng, maxKey, n))
+		case strings.HasPrefix(tok, "TXKEY:"):
+			n, _ := strconv.Atoi(tok[6:])
+			return strconv.Itoa(txClassKey(rng, maxKey, n))
 		case tok == "SKEY":
 			return bind.Str(data.CustomerKey(int64(rng.Intn(strDomain) + 1)))
 		case strings.HasPrefix(tok, "SKEYS:"):
@@ -423,6 +453,33 @@ func distinctKeys(rng *rand.Rand, max, n int) []int {
 		}
 	}
 	return out
+}
+
+// txClassKey draws a customer in 1..max with exactly n transactions_1 rows:
+// the row count is a class of c mod 16 (data.NTxClass), so the customer is
+// 16k + r for a residue r of that count.  A count no class has, or a domain
+// too small to hold one, falls back to a uniform key (the registry test
+// checks that every entry's count is a class count).
+func txClassKey(rng *rand.Rand, max, n int) int {
+	var residues []int
+	for r, cnt := range data.NTxClass {
+		if cnt == n && r <= max {
+			residues = append(residues, r)
+		}
+	}
+	if len(residues) == 0 {
+		return rng.Intn(max) + 1
+	}
+	r := residues[rng.Intn(len(residues))]
+	lo := 0
+	if r == 0 {
+		lo = 1 // customer 0 does not exist
+	}
+	hi := (max - r) / 16
+	if hi < lo {
+		return rng.Intn(max) + 1
+	}
+	return 16*(lo+rng.Intn(hi-lo+1)) + r
 }
 
 func joinInts(vs []int) string {

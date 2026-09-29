@@ -70,8 +70,12 @@ statement from `fsq/mysqltwin`.
 | `fs_hw_composite_point` | S9 | `SELECT COUNT(*) AS count, SUM(delta) AS delta_sum FROM balance_hist_1 WHERE account_id = {ACCT} AND currency = {CUR} AND event_time >= {NOW-90d};` | ACCT, CUR, NOW-90d | 1 |
 | `fs_hw_hash_point` | S1 on hash-only PK | `fs_hw_agg_point` over `transactions_hash_1` | KEY | 1 |
 | `fs_hw_sessions_window2h` | S2, TIMESTAMP(3) + ttl index | `SELECT COUNT(*) AS count, SUM(duration) AS duration_sum FROM sessions_1 WHERE customer_id = {KEY} AND event_time >= {NOW-2h};` | KEY, NOW-2h | 1 |
+| `fs_hw_agg_last10` | S11 (future, WP-J) | `WITH t AS (SELECT customer_id, event_time, amount, fee FROM transactions_1 WHERE customer_id = {KEY} ORDER BY event_time DESC LIMIT 10) SELECT COUNT(amount) AS amount_count, AVG(amount) AS amount_avg, MAX(fee) AS fee_max FROM t;` (J1 rewrite) | KEY | 1 |
+| `fs_hw_agg_last100` | S11 | the same with `LIMIT 100` | KEY | 1 |
+| `fs_hw_agg_last10_tx300` | S11 | `fs_hw_agg_last10` for customers with 300 rows | TXKEY:300 | 1 |
+| `fs_hw_agg_last10_tx300_grouped` | S11 J0 | the J0 form of `fs_hw_agg_last10_tx300`: the body grouped by every column plus `COUNT(*)`, which reads all 300 rows (the CTE-plan baseline a fast path must beat) | TXKEY:300 | 1 |
 
-Twenty-five entries. Names are stable identifiers (the shape ids in
+Twenty-five entries, plus the four WP-J entries (2026-09-29). Names are stable identifiers (the shape ids in
 `shape_catalog.md` are the cross-reference); the exact SQL is whatever
 the emitter produces for the corresponding case, and a golden dump
 (`fsq/cases/testdata/fs_hw_registry.golden`) lets reviewers read it
@@ -92,6 +96,7 @@ driven by the case's parameter list:
 | `{SKEY}` | a customer in the target string-history domain `1..E/10`, rendered by `fsq/data`; explicit miss cases separate | new |
 | `{SKEYS:n}` | list of `n` | new |
 | `{ACCT}`, `{CUR}` | random account and one of its currencies (`1 + a mod 3` choices) | new |
+| `{TXKEY:n}` | random customer with exactly `n` `transactions_1` rows: `16k + r` for a residue `r` with `NTxClass[r] = n` (`data_model.md` §4); falls back to `{KEY}` when no class has `n` rows or the domain is too small | WP-J (2026-09-29) |
 | `{NOW-7d}` | TIMESTAMP literal `FS_NOW − 7 days` (also `1h`, `2h`, `30d`, `90d`) | new; `--now` overrides `FS_NOW` |
 
 Keys are drawn uniformly, so about 1/16 of point reads hit a customer
@@ -198,6 +203,31 @@ Filled by E5 from the first matrix run (interpreter and JIT arms,
 1 and 8 threads, sf 1, `ronsqlcrunch` topology). Stored as
 `bench_results/<date>-<build>.md` next to this file (report.md copy,
 ≤ 30 KB) plus the `results.json`.
+
+### WP-J spot run — 2026-09-29, the user's cluster, sf 1, 1 thread × 5000 requests
+
+Measured to decide J2 (`ronsql_fs_support_plan.md` WP-J). Build and
+cluster configuration were not recorded, so compare the ratios, not the
+absolute times.
+
+| entry | plan | avg | p99 | q/s | firstbatch avg |
+|---|---|---|---|---|---|
+| `fs_hw_agg_last10_tx300` | J2 (≤ 10 rows per fragment, self-join leaf) | 2.54 ms | 3.02 ms | 393 | 2.35 ms |
+| `fs_hw_agg_last10_tx300_grouped` | J1 grouped body, all 300 rows | 1.90 ms | 3.96 ms | 526 | 1.72 ms |
+| `fs_hw_agg_last10_tx300` on MySQL (`.bench_sql`) | derived table, reverse PK range | 0.62 ms | 0.78 ms | 1604 | — |
+| `fs_hw_snow1_point` | CTE, one group, join main | 0.80 ms | 1.11 ms | 1247 | 0.62 ms |
+| `fs_hw_collect5` | ordered index scan, LIMIT 5, no CTE | 0.40 ms | 0.60 ms | 2496 | 0.24 ms |
+
+Reading:
+- The CTE protocol's fixed cost is about 0.6 ms (`snow1_point`).
+- J1 adds about 3.5 µs per history row: one group per row, redistribution
+  to the owner, top-N at finalize, and the main aggregation's rounds.
+- J2 adds about 17 µs per kept row: the self-join lookup that carries the
+  aggregation. It is therefore slower than J1 unless the history is far
+  longer than N × fragments, and it is switched off.
+- A path without the CTE protocol, the collect scan plus aggregation in
+  the RonSQL layer, is bounded below by `collect5`'s 0.40 ms. That is
+  below MySQL's 0.62 ms.
 
 ### Run 4 — 2026-09-22, benchmark computer (Linux), full registry (M3.0 census), sf 1, `ronsql` vs `mysqld_nopush`, 1 thread complete, 8 threads stopped early
 
