@@ -264,6 +264,17 @@ INSERT INTO `data_source` SET
   `metrics` = NULL,
   `dimensions` = NULL,
   `spreadsheet_id` = NULL;
+INSERT INTO `data_source` SET
+  `id` = 19,
+  `query` = NULL,
+  `database_name` = NULL,
+  `group_name` = NULL,
+  `table_name` = NULL,
+  `path` = NULL,
+  `connector_id` = NULL,
+  `metrics` = NULL,
+  `dimensions` = NULL,
+  `spreadsheet_id` = NULL;
 
 
 
@@ -675,6 +686,28 @@ INSERT INTO `feature_group` SET
   `ttl` = NULL,
   `ttl_enabled` = 0,
   `sink_enabled` = 0;
+INSERT INTO `feature_group` SET
+  `id` = 3091,
+  `name` = 'avro_strings',
+  `feature_store_id` = 1091,
+  `created` = '2026-09-29 10:00:00',
+  `creator` = 10000,
+  `version` = 1,
+  `description` = NULL,
+  `feature_group_type` = 2,
+  `on_demand_feature_group_id` = NULL,
+  `cached_feature_group_id` = NULL,
+  `stream_feature_group_id` = 2068,
+  `event_time` = NULL,
+  `online_enabled` = 1,
+  `topic_name` = NULL,
+  `notification_topic_name` = NULL,
+  `deprecated` = 0,
+  `for_log` = 0,
+  `data_source_id` = 19,
+  `ttl` = NULL,
+  `ttl_enabled` = 0,
+  `sink_enabled` = 0;
 
 
 
@@ -999,6 +1032,14 @@ INSERT INTO `feature_view` SET
   `creator` = 10000,
   `version` = 1,
   `description` = '';
+INSERT INTO `feature_view` SET
+  `id` = 4122,
+  `name` = 'avro_strings',
+  `feature_store_id` = 1091,
+  `created` = '2026-09-29 10:00:00',
+  `creator` = 10000,
+  `version` = 1,
+  `description` = '';
 
 
 
@@ -1293,6 +1334,10 @@ INSERT INTO `schemas` SET
   `id` = 32,
   `schema` = '{\"type\":\"record\",\"name\":\"fg2_1\",\"namespace\":\"project_featurestore.db\",\"fields\":[{\"name\":\"id\",\"type\":[\"null\",\"long\"]},{\"name\":\"ts\",\"type\":[\"null\",{\"type\":\"int\",\"logicalType\":\"date\"}]},{\"name\":\"col2\",\"type\":[\"null\",\"double\"]}]}',
   `project_id` = 1004;
+INSERT INTO `schemas` SET
+  `id` = 33,
+  `schema` = '{\"type\":\"record\",\"name\":\"avro_strings_1\",\"namespace\":\"test_ken_featurestore.db\",\"fields\":[{\"name\":\"id\",\"type\":[\"null\",\"long\"]},{\"name\":\"tags\",\"type\":[\"null\",{\"type\":\"array\",\"items\":[\"null\",\"string\"]}]}]}',
+  `project_id` = 1001;
 
 
 
@@ -1868,6 +1913,16 @@ INSERT INTO `serving_key` SET
   `required` = 1,
   `feature_view_id` = 24,
   `type` = 'bigint';
+INSERT INTO `serving_key` SET
+  `id` = 1529,
+  `prefix` = NULL,
+  `feature_name` = 'id',
+  `join_on` = NULL,
+  `join_index` = 0,
+  `feature_group_id` = 3091,
+  `required` = 1,
+  `feature_view_id` = 4122,
+  `type` = NULL;
 
 
 
@@ -1909,6 +1964,9 @@ INSERT INTO `stream_feature_group` SET
   `timetravel_format` = 1;
 INSERT INTO `stream_feature_group` SET
   `id` = 2067,
+  `timetravel_format` = 1;
+INSERT INTO `stream_feature_group` SET
+  `id` = 2068,
   `timetravel_format` = 1;
 
 INSERT INTO `subjects` SET
@@ -1995,6 +2053,13 @@ INSERT INTO `subjects` SET
   `schema_id` = 32,
   `project_id` = 1004,
   `created_on` = '2025-10-15 12:19:21';
+INSERT INTO `subjects` SET
+  `id` = 33,
+  `subject` = 'avro_strings_1',
+  `version` = 1,
+  `schema_id` = 33,
+  `project_id` = 1001,
+  `created_on` = '2026-09-29 10:00:00';
 
 
 
@@ -4212,6 +4277,32 @@ INSERT INTO `training_dataset_feature` SET
   `training_helper_column` = 0,
   `feature_view_id` = 4121,
   `on_demand_transformation` = NULL;
+INSERT INTO `training_dataset_feature` SET
+  `id` = 5185,
+  `training_dataset` = NULL,
+  `feature_group` = 3091,
+  `name` = 'id',
+  `type` = 'bigint',
+  `td_join` = 5143,
+  `idx` = 0,
+  `label` = 0,
+  `inference_helper_column` = 0,
+  `training_helper_column` = 0,
+  `feature_view_id` = 4122,
+  `on_demand_transformation` = NULL;
+INSERT INTO `training_dataset_feature` SET
+  `id` = 5186,
+  `training_dataset` = NULL,
+  `feature_group` = 3091,
+  `name` = 'tags',
+  `type` = 'array<string>',
+  `td_join` = 5143,
+  `idx` = 1,
+  `label` = 0,
+  `inference_helper_column` = 0,
+  `training_helper_column` = 0,
+  `feature_view_id` = 4122,
+  `on_demand_transformation` = NULL;
 
 
 
@@ -4898,6 +4989,20 @@ INSERT INTO `training_dataset_join` SET
   `parent_idx` = 0,
   `prefix` = 'fg2_',
   `feature_view_id` = 4121,
+  `lookback_key` = NULL,
+  `lookback_start_window` = NULL,
+  `lookback_end_window` = NULL;
+INSERT INTO `training_dataset_join` SET
+  `id` = 5143,
+  `training_dataset` = NULL,
+  `feature_group` = 3091,
+  `left_feature_group` = NULL,
+  `feature_group_commit_id` = NULL,
+  `type` = 0,
+  `idx` = 0,
+  `parent_idx` = 0,
+  `prefix` = NULL,
+  `feature_view_id` = 4122,
   `lookback_key` = NULL,
   `lookback_start_window` = NULL,
   `lookback_end_window` = NULL;

@@ -39,8 +39,12 @@ import (
 //
 // fsdb002.sample_complex_type_1 holds an array<bigint> feature `array` and
 // a struct<int1:bigint,int2:bigint> feature `struct`, both served by
-// feature view sample_complex_type; the expected values are the fixture
-// bytes decoded by hand.
+// feature view sample_complex_type.  fsdb002.avro_strings_1 holds an
+// array<string> feature `tags` with non-ASCII strings, a NULL value and a
+// null element, served by feature view avro_strings.  fsdb002.sample_1_1
+// shares the bigint key id1 with sample_complex_type_1 (ids 9, 23, 56 and
+// 73 are in both).  The expected values are the fixture bytes decoded by
+// hand.
 
 func ronsqlAvroRequest(t *testing.T, database, query, format string) (int, http.Header, string) {
 	t.Helper()
@@ -65,13 +69,19 @@ func ronsqlAvroRequest(t *testing.T, database, query, format string) (int, http.
 	return resp.StatusCode, resp.Header, string(respBody)
 }
 
-// ronsqlAvroRows runs query with JSON output and returns the decoded rows.
-func ronsqlAvroRows(t *testing.T, query string) []map[string]interface{} {
+// ronsqlAvroRows runs query with output format JSON or JSON_ASCII and
+// returns the decoded rows.
+func ronsqlAvroRows(t *testing.T, query, format string) []map[string]interface{} {
 	t.Helper()
-	status, _, body := ronsqlAvroRequest(t, testdbs.FSDB002, query, "JSON")
+	status, _, body := ronsqlAvroRequest(t, testdbs.FSDB002, query, format)
 	if status != http.StatusOK {
 		t.Fatalf("status %d, want 200; body: %s", status, body)
 	}
+	return decodeRows(t, body)
+}
+
+func decodeRows(t *testing.T, body string) []map[string]interface{} {
+	t.Helper()
 	var result struct {
 		Data []map[string]interface{} `json:"data"`
 	}
@@ -114,10 +124,35 @@ func TestAvroJSON(t *testing.T) {
 		{"lower-case",
 			"SELECT avro(t.`array`) AS a FROM sample_complex_type_1 AS t WHERE t.id1 = 5;",
 			`[{"a":[55,14]}]`},
+		// Pushed join: sample_1_1 scan, sample_complex_type_1 key lookup.
+		{"inner-join",
+			"SELECT s.id1, s.data1, AVRO(c.`array`) AS a, AVRO(c.`struct`) AS st " +
+				"FROM sample_1_1 AS s JOIN sample_complex_type_1 AS c ON c.id1 = s.id1 " +
+				"ORDER BY s.id1;",
+			`[{"id1":9,"data1":2,"a":[5,25],"st":{"int1":15,"int2":41}},
+			  {"id1":23,"data1":14,"a":[92,94],"st":{"int1":75,"int2":54}},
+			  {"id1":56,"data1":12,"a":[86,22],"st":{"int1":14,"int2":86}},
+			  {"id1":73,"data1":17,"a":[97,98],"st":{"int1":61,"int2":72}}]`},
+		// Id 12 has no sample_complex_type_1 row: the NULL-extended row
+		// decodes to null.
+		{"left-join-null",
+			"SELECT s.id1, AVRO(c.`array`) AS a " +
+				"FROM sample_1_1 AS s LEFT JOIN sample_complex_type_1 AS c ON c.id1 = s.id1 " +
+				"WHERE s.id1 >= 9 AND s.id1 <= 12 ORDER BY s.id1;",
+			`[{"id1":9,"a":[5,25]},{"id1":12,"a":null}]`},
+		{"stored-null",
+			"SELECT id, AVRO(tags) AS tags FROM avro_strings_1 WHERE id = 2;",
+			`[{"id":2,"tags":null}]`},
+		{"null-element",
+			"SELECT id, AVRO(tags) AS tags FROM avro_strings_1 WHERE id = 3;",
+			`[{"id":3,"tags":["plain",null]}]`},
+		{"non-ascii",
+			"SELECT id, AVRO(tags) AS tags FROM avro_strings_1 WHERE id = 1;",
+			`[{"id":1,"tags":["h\u00e9llo","\u65e5\u672c","\ud83d\ude00"]}]`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ronsqlAvroRows(t, tc.query)
+			got := ronsqlAvroRows(t, tc.query, "JSON")
 			want := jsonRows(t, tc.want)
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("rows %v, want %v", got, want)
@@ -127,15 +162,70 @@ func TestAvroJSON(t *testing.T) {
 }
 
 func TestAvroText(t *testing.T) {
-	status, _, body := ronsqlAvroRequest(t, testdbs.FSDB002,
-		"SELECT id1, AVRO(`array`) AS a, AVRO(`struct`) AS s FROM sample_complex_type_1 WHERE id1 = 3;",
-		"TEXT")
+	cases := []struct {
+		name   string
+		query  string
+		format string
+		want   string
+	}{
+		{"header",
+			"SELECT id1, AVRO(`array`) AS a, AVRO(`struct`) AS s FROM sample_complex_type_1 WHERE id1 = 3;",
+			"TEXT",
+			"id1\ta\ts\n3\t[72,84]\t{\"int1\":51,\"int2\":53}\n"},
+		{"left-join-null",
+			"SELECT s.id1, AVRO(c.`array`) AS a " +
+				"FROM sample_1_1 AS s LEFT JOIN sample_complex_type_1 AS c ON c.id1 = s.id1 " +
+				"WHERE s.id1 >= 9 AND s.id1 <= 12 ORDER BY s.id1;",
+			"TEXT_NOHEADER",
+			"9\t[5,25]\n12\tNULL\n"},
+		{"stored-null-and-null-element",
+			"SELECT id, AVRO(tags) AS tags FROM avro_strings_1 WHERE id >= 2 ORDER BY id;",
+			"TEXT_NOHEADER",
+			"2\tNULL\n3\t[\"plain\",null]\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, _, body := ronsqlAvroRequest(t, testdbs.FSDB002, tc.query, tc.format)
+			if status != http.StatusOK {
+				t.Fatalf("status %d, want 200; body: %s", status, body)
+			}
+			if body != tc.want {
+				t.Errorf("body %q, want %q", body, tc.want)
+			}
+		})
+	}
+}
+
+// JSON_ASCII \u-escapes the non-ASCII characters of decoded strings,
+// including a surrogate pair for a character above U+FFFF, and decodes to
+// the same rows as JSON.
+func TestAvroJSONASCII(t *testing.T) {
+	query := "SELECT id, AVRO(tags) AS tags FROM avro_strings_1 ORDER BY id;"
+	status, header, body := ronsqlAvroRequest(t, testdbs.FSDB002, query, "JSON_ASCII")
 	if status != http.StatusOK {
 		t.Fatalf("status %d, want 200; body: %s", status, body)
 	}
-	want := "id1\ta\ts\n3\t[72,84]\t{\"int1\":51,\"int2\":53}\n"
-	if body != want {
-		t.Errorf("body %q, want %q", body, want)
+	if ct := header.Get("Content-Type"); !strings.Contains(ct, "charset=US-ASCII") {
+		t.Errorf("Content-Type %q lacks charset=US-ASCII", ct)
+	}
+	for i := 0; i < len(body); i++ {
+		if body[i] >= 0x80 {
+			t.Fatalf("byte %d of the body is not ASCII: %q", i, body)
+		}
+	}
+	for _, escaped := range []string{`h\u00e9llo`, `\u65e5\u672c`, `\ud83d\ude00`} {
+		if !strings.Contains(body, escaped) {
+			t.Errorf("body lacks %s: %s", escaped, body)
+		}
+	}
+	want := jsonRows(t, `[{"id":1,"tags":["héllo","日本","😀"]},
+		{"id":2,"tags":null},
+		{"id":3,"tags":["plain",null]}]`)
+	if got := decodeRows(t, body); !reflect.DeepEqual(got, want) {
+		t.Errorf("JSON_ASCII rows %v, want %v", got, want)
+	}
+	if got := ronsqlAvroRows(t, query, "JSON"); !reflect.DeepEqual(got, want) {
+		t.Errorf("JSON rows %v, want %v", got, want)
 	}
 }
 
