@@ -89,6 +89,17 @@ class Config {
   bool pack64_v2(BaseString &, Uint32 node_id = 0) const;
 
   /*
+    Create a copy holding every node and default section but only the
+    connection sections where 'node_id' is one of the two endpoints, i.e.
+    the configuration a data node or API node receives. Only those
+    sections are serialized and parsed, so unlike Config(const Config*)
+    followed by pack64_v2(node_id) the cost does not grow with the
+    connection sections of every other node (about a million at 8k API
+    node slots). Returns nullptr on failure.
+  */
+  Config *create_node_copy(Uint32 node_id) const;
+
+  /*
     Compare against another config and return a list of
     differences in a Properties object
   */

@@ -56,7 +56,8 @@ void NDBT_Thread::create(NDBT_ThreadSet *thread_set, int thread_no) {
   const char *name = strdup(buf);
   require(name != 0);
 
-  unsigned stacksize = 512 * 1024;
+  // 2 MB like the NDBT step threads, see NDBT_TestCaseImpl1::startStepInThread
+  unsigned stacksize = 2 * 1024 * 1024;
   NDB_THREAD_PRIO prio = NDB_THREAD_PRIO_LOW;
   m_thread =
       NdbThread_Create(NDBT_Thread_run, (void **)this, stacksize, name, prio);

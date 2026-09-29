@@ -5,7 +5,7 @@ MaxNoOfConcurrentTransactions= 2048
 MaxNoOfConcurrentOperations=   10000
 MaxNoOfConcurrentScans=        64
 BatchSizePerLocalScan=         64
-DataMemory=                    30M
+DataMemory=                    3000M
 Diskless=                      0
 TimeBetweenWatchDogCheck=      30000
 MaxNoOfOrderedIndexes=         128
@@ -17,7 +17,7 @@ FragmentLogFileSize=           64M
 DiskPageBufferMemory=          4M
 SharedGlobalMemory=            20M
 LongMessageBuffer=             32M
-RedoBuffer=                    4M
+RedoBuffer=                    48M
 BackupDataBufferSize=          2M
 BackupLogBufferSize=           2M
 TwoPassInitialNodeRestartCopy=1
@@ -33,7 +33,7 @@ Checksum=1
 # map, so any MTR test that provokes the leak fails also on production
 # builds where the ndbassert leak checks are compiled out.
 CrashOnLeakedLcpScannedBit=1
-SpinMethod=CostBasedSpinning
+SpinMethod=StaticSpinning
 AutomaticThreadConfig=0
 AutomaticMemoryConfig=0
 PartitionsPerNode=4

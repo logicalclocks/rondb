@@ -23,6 +23,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include <time.h>
+#include <memory>
 #include "util/require.h"
 
 #include <NdbDir.hpp>
@@ -929,7 +930,22 @@ void ConfigManager::execCONFIG_CHANGE_IMPL_REQ(SignalSender &ss,
     }
 
     case ConfigChangeImplReq::Commit:
+      /**
+       * commitConfigChange() notifies the subscribers, i.e.
+       * MgmtSrvr::config_changed(), which reconfigures the
+       * TransporterFacade and thereby takes the ClusterMgr lock, a
+       * trp_client lock. Release our own trp_client lock (the
+       * SignalSender) meanwhile: the poll owner delivering a signal to
+       * ClusterMgr holds that lock and may for_each() the signal to every
+       * client, which blocks on ours, so holding it here deadlocks the
+       * mgmd whenever e.g. an API_REGCONF arrives during the change
+       * (seen as 'set config' timing out in testMgm SetConfig).
+       * m_config_mutex stays held; signals arriving meanwhile are queued
+       * on the SignalSender and handled by the next waitFor().
+       */
+      ss.unlock();
       commitConfigChange();
+      ss.lock();
 
       // All nodes has agreed on config -> CONFIRMED
       m_config_state = CS_CONFIRMED;
@@ -1978,17 +1994,22 @@ ConfigManager::run()
       }
 
       case GSN_NODE_FAILREP: {
-        const NodeFailRep *rep = CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
-        assert(sig->getLength() >= NodeFailRep::SignalLengthLong);
+        // Only read by an assert, hence unused in a release build
+        [[maybe_unused]] const NodeFailRep *rep =
+            CAST_CONSTPTR(NodeFailRep, sig->getDataPtr());
+        /**
+         * Section form only, see ClusterMgr::execNODE_FAILREP: NODE_FAILREP
+         * reaches an NDB API client only through ClusterMgr's re-broadcast,
+         * which carries the failed nodes as one section holding a packed
+         * NodeBitmask. The legacy inline layouts are decoded there and never
+         * forwarded. The section holds exactly ptr[0].sz words, which is the
+         * only valid scan bound.
+         */
+        assert(NodeFailRep::getNodeMaskLength(sig->getLength()) == 0);
+        assert(sig->header.m_noOfSections == 1);
 
         NodeBitmask nodeMap;
-        Uint32 len = NodeFailRep::getNodeMaskLength(sig->getLength());
-        if (sig->header.m_noOfSections >= 1) {
-          assert(len == 0);
-          nodeMap.assign(sig->ptr[0].sz, sig->ptr[0].p);
-        } else {
-          nodeMap.assign(len, rep->theAllNodes);
-        }
+        nodeMap.assign(sig->ptr[0].sz, sig->ptr[0].p);
         assert(rep->noOfNodes == nodeMap.count());
         nodeMap.bitAND(m_all_mgm);
 
@@ -2320,7 +2341,8 @@ bool ConfigManager::get_packed_config(ndb_mgm_node_type nodetype,
       break;
 
     default:
-      error.assign("get_packed_config, unknown config state: %d",
+      // assign(const char*, size_t) would truncate to m_config_state chars
+      error.assfmt("get_packed_config, unknown config state: %d",
                    m_config_state);
       return false;
       break;
@@ -2329,8 +2351,50 @@ bool ConfigManager::get_packed_config(ndb_mgm_node_type nodetype,
   require(m_config != 0);
   if (buf64) {
     if (v2) {
+      if (node_id != 0) {
+        NodeBitmask all_mgm;
+        m_config->get_nodemask(all_mgm, NDB_MGM_NODE_TYPE_MGM);
+        if (all_mgm.get(node_id) == false) {
+          /**
+           * Data node or API node: hand out only its own connection
+           * sections (ConfigObject::pack_v2 with node_id). Build the
+           * filtered copy straight from m_config; the previous code first
+           * took a full copy (pack and unpack of every section) on every
+           * request, which with 8k API node slots meant serializing about
+           * a million connection sections per node connect. Set the
+           * dynamic ports in the small copy as is done for the full
+           * configuration below; the previous per node path left them
+           * out, so every client asked the mgmd for each dynamic port at
+           * connect time. Nothing is cached for these requests, the
+           * filtered copy is small.
+           */
+          std::unique_ptr<Config> node_config(
+              m_config->create_node_copy(node_id));
+          if (node_config == nullptr) {
+            error.assfmt("get_packed_config, failed to create config for "
+                         "node %u", node_id);
+            return false;
+          }
+          if (!m_dynamic_ports.set_in_config(node_config.get())) {
+            error.assfmt("get_packed_config, failed to set dynamic ports in "
+                         "config for node %u", node_id);
+            return false;
+          }
+          if (!node_config->pack64_v2(*buf64)) {
+            error.assfmt("get_packed_config, failed to pack config for "
+                         "node %u", node_id);
+            return false;
+          }
+          return true;
+        }
+      }
+      /**
+       * Full configuration: management servers and requests without a
+       * node id (ndb_config, the mgm client). Packed on first use and
+       * cached until the next configuration change; no longer built as a
+       * side effect of the per node requests above.
+       */
       if (!m_packed_config_v2.length()) {
-        // No packed config exist, generate a new one
         Config config_copy(m_config);
         if (!m_dynamic_ports.set_in_config(&config_copy)) {
           error.assign(
@@ -2340,18 +2404,6 @@ bool ConfigManager::get_packed_config(ndb_mgm_node_type nodetype,
         if (!config_copy.pack64_v2(m_packed_config_v2)) {
           error.assign("get_packed_config, failed to pack config_copy");
           return false;
-        }
-      }
-      if (node_id != 0) {
-        NodeBitmask all_mgm;
-        m_config->get_nodemask(all_mgm, NDB_MGM_NODE_TYPE_MGM);
-        if (all_mgm.get(node_id) == false) {
-          BaseString tmp;
-          Config config_copy(m_config);
-          if (config_copy.pack64_v2(tmp, node_id)) {
-            buf64->assign(tmp, tmp.length());
-            return true;
-          }
         }
       }
       buf64->assign(m_packed_config_v2, m_packed_config_v2.length());
