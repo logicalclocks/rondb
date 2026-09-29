@@ -1,3 +1,4 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 SELECT customer_id, COUNT(*) AS n_rows, COUNT(amount) AS n_amount,
@@ -645,3 +646,7 @@ Number of output lines, including header: 5
 
 
 
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_cte_dd_lastn_agg_jit_fallback_delta;
+ronsql_cte_dd_lastn_agg_jit_fallback_delta
+0

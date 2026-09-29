@@ -10,9 +10,9 @@
 # ronsql_compare.inc on the J0 file, which closes the chain
 #   RonSQL(J0) = MySQL(J0) = MySQL(natural).
 #
-# Prints the natural statement and its MySQL result.  Removes the natural
-# file; the J0 file is left for the caller (ronsql_compare.inc removes it
-# as its QUERY_FILE).
+# Prints the natural statement and its MySQL result.  Both files are left
+# for the caller: ronsql_compare.inc runs the J0 file and then (J1) the
+# natural file on RonSQL, removing each as its QUERY_FILE.
 --echo == Natural statement ==
 --cat_file $LASTN_NATURAL_FILE
 --exec $MYSQL --default-character-set=utf8mb4 --init-command-add='SET time_zone = "+00:00";' -D test < $LASTN_NATURAL_FILE > $MYSQL_TMP_DIR/lastn_nat.out
@@ -27,4 +27,3 @@
 --remove_file $MYSQL_TMP_DIR/lastn_j0.out
 --remove_file $MYSQL_TMP_DIR/lastn_nat.sorted
 --remove_file $MYSQL_TMP_DIR/lastn_j0.sorted
---remove_file $LASTN_NATURAL_FILE

@@ -433,6 +433,12 @@ private:
   // flatten_single_group_cte() folded into a single-table aggregate
   // ({NULL, 0} when no flatten ran); reported by EXPLAIN.
   LexCString m_flattened_cte = LexCString{NULL, 0};
+  // RONDB-1124 WP-J J1: CTEs rewrite_lastn_cte_bodies() turned into
+  // one-group-per-row bodies (the first MAX_LASTN_CTES_REPORTED names are
+  // kept for EXPLAIN; m_num_lastn_ctes counts all of them).
+  static constexpr Uint32 MAX_LASTN_CTES_REPORTED = 8;
+  LexCString m_lastn_ctes[MAX_LASTN_CTES_REPORTED] = {};
+  Uint32 m_num_lastn_ctes = 0;
   // True for aggregating queries (the only ones RonSQL fully supports).
   // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
   // shape that Phase E.3 enables — drives the pass-through delivery
@@ -496,6 +502,14 @@ private:
    * pass-through ORDER BY scan serves it.  Parse-time AST rewrite; a
    * no-op for every other shape. */
   void collapse_collect_cte();
+  /* RONDB-1124 WP-J J1: rewrite a non-aggregating CTE body with LIMIT that
+   * selects its table's whole primary key (the last N rows of an entity,
+   * aggregated or joined by the main query) into GROUP BY every output
+   * plus a hidden COUNT(*), so each row is one group and the kernel's
+   * grouped-CTE ORDER BY / LIMIT keeps the last N.  Parse-time AST
+   * rewrite with a dictionary lookup of the body's table; a no-op for
+   * every other shape, in ParseOnly mode and without a connection. */
+  void rewrite_lastn_cte_bodies();
   /* RONDB-1124 (m3_run6_plan.md C2): fold MIN / MAX over one single-group
    * CTE (the fs_point form) into the single-table aggregate over the
    * body's table and WHERE.  Parse-time AST rewrite, run before the main

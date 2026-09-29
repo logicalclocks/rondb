@@ -385,8 +385,9 @@ regression cases lastn-W1..W3 added. Second run, with the fix: lastn-7..11
 and W1..W3 pass, including string and temporal MIN/MAX in the main query,
 main GROUP BY on a CTE output and a chained CTE. lastn-12 (INNER JOIN
 onto `lastn_merchants`) failed on the MAX() widening described above, so
-every J0 body now uses the GROUP-BY-every-column form. Third run pending:
-all cases, since the J0 text changed.
+every J0 body now uses the GROUP-BY-every-column form. Third run: every
+case passes; the base result is committed in `3ab0fcd1df2` (the mirrors
+are recorded with J1).
 
 The test: `mysql-test/suite/ronsql_cte/include/body_lastn_agg.inc`, run by
 `ronsql_cte_dd_lastn_agg` in `ronsql_cte`, the four `_ng*` layouts and
@@ -395,7 +396,8 @@ The test: `mysql-test/suite/ronsql_cte/include/body_lastn_agg.inc`, run by
 dimension. `lastn_twin_check.inc` diffs MySQL's natural statement against
 MySQL's J0 form; `ronsql_compare.inc` then strict-diffs RonSQL against
 MySQL on the J0 form. Cases:
-- lastn-P1 pins today's rejection of the natural statement.
+- lastn-P1 pinned the rejection of the natural statement; since J1 it
+  pins the rewrite in EXPLAIN.
 - lastn-1..8 are the core: the aggregate set, N above the row count, no
   rows, NULLs, LIMIT 1, oldest N, a time window tighter than N, and a
   residual filter.
@@ -406,19 +408,45 @@ MySQL on the J0 form. Cases:
   GROUP BY on a CTE output, a chained CTE, and INNER / LEFT joins onto
   the dimension.
 
-*J1 — parse-time rewrite of the natural statement into J0.* Recognize
-exactly one CTE whose body reads one real table, has plain-column outputs,
-ORDER BY on primary-key columns only, LIMIT >= 1, and no GROUP BY,
-HAVING, aggregate or subquery. The main query must aggregate or join over
-that CTE (the pure projection stays WP-A's collapse). Rewrite the body
-into the J0 form: GROUP BY every output column plus any primary-key
-column the outputs lack (added as a hidden output), with a hidden
-COUNT(*). Output names and types stay as written. The 128-column GROUP BY
-limit is far above any feature group's width, and BLOB / TEXT columns are
-rejected as they are today. Restricting ORDER BY to primary-key
-columns keeps the kept set unique, which guarantees the same answer as
-MySQL (ties on a non-unique ORDER BY column are ambiguous on both
-engines). EXPLAIN reports the rewrite. Planner-only, like WP-A.
+*J1 — parse-time rewrite of the natural statement into J0.*
+`RonSQLPreparer::rewrite_lastn_cte_bodies()`, called in `parse()` after
+`collapse_collect_cte()` and before the CTE aggregate registration and
+`analyze_ctes()`. A CTE body is rewritten when all of these hold
+(anything else keeps today's rules):
+- ORDER BY and LIMIT are present; without ORDER BY the kept rows are
+  arbitrary.
+- The CTE is read only as a FROM root, by the main query or a later CTE
+  body. As a join child it would be probed by a subset of its GROUP BY
+  keys, the partial-key CTE lookup behind F18. A main query rooted on it
+  must aggregate or join; a projection-only main over the CTE alone is
+  WP-A's collapse and keeps its rules (`ronsql_cte_collect_collapse`
+  cc-P1, cc-P4, cc-P5 unchanged).
+- The body reads one real table with plain, distinct column outputs and
+  no GROUP BY, HAVING, joins, aggregates, arithmetic or subqueries.
+- The WHERE does not bind the whole primary key by equality with
+  constants; such a body has at most one row and stays on the
+  CTE_SINGLE_ROW path (obc-19 / obc-20 unchanged).
+- Every primary-key column is an output. Otherwise the statement is
+  rejected, naming the missing columns (lastn-P2).
+
+The rewrite sets GROUP BY to every output in output order and appends a
+hidden `COUNT(*) AS ronsql$lastn_rows`, in a new aggregate compiler for
+the body. Output names and types stay as written. The primary key needs
+the dictionary, which `load()` only fetches after the CTE analysis, so
+the function looks the body's table up itself, and only for bodies that
+already match the rest of the pattern. There is no rewrite in ParseOnly
+mode or without a connection. EXPLAIN reports `CTE 't' served as the
+last N rows: …` (lastn-P1 pins it). Known limits: an ORDER BY on a column
+the body does not select gets the grouped-body rejection (non-output
+ORDER BY column), and ties on a non-unique ORDER BY column make the kept
+set arbitrary on both engines. The 128-column GROUP BY limit is far above
+any feature group's width.
+
+*J1 status (2026-09-29): written, not built.* `ronsql_cte_dd_lastn_agg`
+now also runs every natural statement on RonSQL (`== J1 ==`), pins the
+rewrite in EXPLAIN (lastn-P1) and the missing-key rejection (lastn-P2),
+spreads lastn-12 over three `mcc` groups, and adds lastn-14 (the last N
+rows joined to a dimension, projection-only main).
 
 *J2 — streaming fast path: collect scan + aggregation in the RonSQL
 layer.* For a main query that only aggregates the CTE (scalar, optionally

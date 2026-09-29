@@ -1,14 +1,14 @@
 # body_lastn_agg.inc — aggregates over the last N rows of an entity
-# (count-based windows), WP-J phase J0 of
+# (count-based windows), WP-J phases J0 and J1 of
 # storage/ndb/claude_files/fs_ronsql/ronsql_fs_support_plan.md.
 #
 # The natural statement
 #   WITH t AS (SELECT ... FROM lastn_tx WHERE customer_id = K
 #              ORDER BY event_time DESC LIMIT N)
 #   SELECT AVG(amount), ... FROM t;
-# is rejected by RonSQL today (lastn-P1): a non-aggregating CTE body is
-# only served as a single-row key lookup, and collapse_collect_cte only
-# takes a projection-only main query.
+# was rejected by RonSQL before WP-J J1: a non-aggregating CTE body was only
+# served as a single-row key lookup, and collapse_collect_cte only takes a
+# projection-only main query.
 #
 # J0 expresses the same set with the existing kernel top-N for grouped CTE
 # bodies: GROUP BY every output column, the full primary key (customer_id,
@@ -25,9 +25,10 @@
 # with lastn_twin_check.inc (the two MySQL results must be identical) and
 # ronsql_compare.inc on the J0 text (strict diff).
 #
-# J1 (planner rewrite of the natural statement into the J0 form) flips
-# lastn-P1 from a rejection into a result; J2 (streaming fast path) keeps
-# these results.
+# J1 (RonSQLPreparer::rewrite_lastn_cte_bodies) rewrites the natural
+# statement into the J0 form at parse time; every case therefore also runs
+# the natural statement itself on RonSQL (== J1 ==), and lastn-P1 pins the
+# rewrite in EXPLAIN.  J2 (streaming fast path) must keep these results.
 #
 # SET DETERMINISM: event_time is the last primary-key column, so it is
 # unique per customer and the ORDER BY decides the kept set exactly.
@@ -41,7 +42,8 @@
 #   customers 5..8: 40 rows      i mod 4 = 1 (i = 1, 5, 9 among the newest 10)
 # amount = 100 + (37c + 13i) mod 900, fee = (11c + 7i) mod 50 - 10,
 # category cycles grocery/travel/fuel/dining, merchant_id = 1 + (5c + 3i)
-# mod 12 with lastn_merchants holding 1..10 (11 and 12 dangle).
+# mod 12 with lastn_merchants holding 1..10 (11 and 12 dangle) and
+# mcc = 5000 + merchant_id mod 4.
 #
 # ORDER: the core aggregate cases and the W constant-width regressions
 # come first; string MIN/MAX, main-query
@@ -49,7 +51,8 @@
 # follow, so a first failure there still leaves the core recorded.
 #
 # Case map:
-#   P1 the natural statement is rejected today (flips with J1)
+#   P1 the natural statement is served by the J1 rewrite (EXPLAIN pin)
+#   P2 a LIMIT body without the whole primary key is rejected, naming it
 #   1  COUNT(*), COUNT, SUM, MIN, MAX, AVG over the newest 10 of 25 rows
 #   2  N above the row count (3 rows, LIMIT 10)
 #   3  entity with no rows: COUNT 0, the rest NULL
@@ -66,6 +69,7 @@
 #   11 distinct categories among the last 20 (chained CTE)
 #   12 INNER JOIN onto a dimension, GROUP BY a dimension column
 #   13 LEFT JOIN onto a dimension (dangling merchant ids)
+#   14 the last N rows joined to a dimension, projection-only main
 --source include/have_ndb.inc
 --disable_warnings
 call mtr.add_suppression("Schema dist coordinator detected timeout");
@@ -108,7 +112,7 @@ INSERT INTO lastn_tx
   FROM ents JOIN s ON s.i < ents.n|
 INSERT INTO lastn_merchants
   WITH RECURSIVE s (m) AS (SELECT 1 UNION ALL SELECT m + 1 FROM s WHERE m < 10)
-  SELECT m, 5000 + MOD(m, 3) FROM s|
+  SELECT m, 5000 + MOD(m, 4) FROM s|
 --enable_query_log
 SELECT customer_id, COUNT(*) AS n_rows, COUNT(amount) AS n_amount,
        MIN(event_time) AS oldest, MAX(event_time) AS newest
@@ -117,9 +121,22 @@ FROM lastn_tx GROUP BY customer_id ORDER BY customer_id|
 DELIMITER ;|
 
 --echo
---echo === lastn-P1 (rejection today): the natural statement ===
+--echo === lastn-P1: the natural statement is served by the J1 rewrite ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_lastn_p1.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/lastn_p1.sql
+--write_file $QUERY_FILE
+WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx
+           WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10)
+SELECT AVG(amount) AS av FROM t;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 't' served as the last N rows" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === lastn-P2 (rejection): a LIMIT body without the whole primary key ===
 --error 1
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT customer_id, event_time, amount FROM lastn_tx WHERE customer_id = 3 ORDER BY event_time DESC LIMIT 10) SELECT AVG(amount) AS av FROM t;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT customer_id, amount FROM lastn_tx WHERE customer_id = 3 ORDER BY amount DESC LIMIT 10) SELECT AVG(amount) AS av FROM t;' 2>&1
 
 --echo
 --echo === lastn-1: COUNT(*), COUNT, SUM, MIN, MAX, AVG over the newest 10 of 25 rows ===
@@ -146,6 +163,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-2: N above the row count (3 rows, LIMIT 10) ===
@@ -165,6 +185,9 @@ SELECT COUNT(*) AS n, SUM(amount) AS s, AVG(amount) AS av FROM t;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
@@ -190,6 +213,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-4: NULLs in the aggregated column ===
@@ -214,6 +240,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-5: LIMIT 1, the latest values ===
@@ -236,6 +265,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-6: oldest N, ORDER BY event_time ASC LIMIT 5 ===
@@ -255,6 +287,9 @@ SELECT COUNT(*) AS n, SUM(amount) AS s, MIN(fee) AS fee_min FROM t;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
@@ -278,6 +313,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-8: residual filter on a non-key column + LIMIT ===
@@ -300,6 +338,9 @@ FROM t;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
@@ -359,6 +400,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-10: main-query GROUP BY a non-key column of the last-N CTE ===
@@ -379,6 +423,9 @@ SELECT category, COUNT(*) AS n, SUM(amount) AS s FROM t GROUP BY category;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
@@ -401,6 +448,9 @@ SELECT COUNT(*) AS n_categories, MAX(n) AS top_category_count FROM g;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
@@ -427,6 +477,9 @@ EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
 --source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
 
 --echo
 --echo === lastn-13: LEFT JOIN onto a dimension (dangling merchant ids) ===
@@ -449,6 +502,35 @@ FROM t LEFT JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id;
 EOF
 --source suite/ronsql_cte/include/lastn_twin_check.inc
 --let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === lastn-14: the last N rows enriched from a dimension, projection only ===
+--let LASTN_NATURAL_FILE=$MYSQL_TMP_DIR/lastn_14_nat.sql
+--write_file $LASTN_NATURAL_FILE
+WITH t AS (SELECT customer_id, event_time, amount, merchant_id FROM lastn_tx
+           WHERE customer_id = 8 ORDER BY event_time DESC LIMIT 5)
+SELECT t.event_time, t.amount, m.mcc
+FROM t JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id;
+EOF
+--let LASTN_J0_FILE=$MYSQL_TMP_DIR/lastn_14_j0.sql
+--write_file $LASTN_J0_FILE
+WITH t AS (SELECT customer_id, event_time, amount,
+                  merchant_id, COUNT(*) AS grp_rows
+           FROM lastn_tx WHERE customer_id = 8
+           GROUP BY customer_id, event_time, amount, merchant_id
+           ORDER BY event_time DESC LIMIT 5)
+SELECT t.event_time, t.amount, m.mcc
+FROM t JOIN lastn_merchants AS m ON m.merchant_id = t.merchant_id;
+EOF
+--source suite/ronsql_cte/include/lastn_twin_check.inc
+--let QUERY_FILE=$LASTN_J0_FILE
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == J1: the natural statement on RonSQL ==
+--let QUERY_FILE=$LASTN_NATURAL_FILE
 --source suite/ronsql/include/ronsql_compare.inc
 
 --disable_query_log

@@ -610,6 +610,13 @@ RonSQLPreparer::parse()
     // RONDB-1124 M1.3: the Hopsworks collect CTE form becomes the plain
     // single-table ORDER BY / LIMIT statement before the gate below sees it.
     collapse_collect_cte();
+    // RONDB-1124 WP-J J1: a last-N CTE body that the main query aggregates
+    // or joins becomes a one-group-per-row grouped body.  After the
+    // collapse (a projection-only main keeps the streaming single-table
+    // path) and after detect_single_row_ctes() (whose candidacy it clears
+    // for the bodies it rewrites), before the CTE aggregate registration
+    // below and analyze_ctes().
+    rewrite_lastn_cte_bodies();
     if (!m_is_aggregate_query)
     {
       // Phase E.3: allow the narrowly-supported projection-only main
@@ -2202,6 +2209,214 @@ RonSQLPreparer::collapse_collect_cte()
   root.limit = body->limit;
   root.cte_list = NULL;
   m_collapsed_cte = cte->name;
+}
+
+/*
+ * RONDB-1124 WP-J J1 (ronsql_fs_support_plan.md): the last N rows of an
+ * entity as a CTE that the main query aggregates or joins, e.g.
+ *
+ *   WITH t AS (SELECT customer_id, event_time, amount FROM tx
+ *              WHERE customer_id = 42 ORDER BY event_time DESC LIMIT 10)
+ *   SELECT AVG(amount) FROM t;
+ *
+ * A non-aggregating body is otherwise only served as a single-row key
+ * lookup, and collapse_collect_cte() only takes a projection-only main over
+ * one CTE.  The body is rewritten here into the J0 form proven by
+ * ronsql_cte_dd_lastn_agg: every output column becomes a GROUP BY key and a
+ * hidden COUNT(*) is appended.  When the outputs include every primary key
+ * column each group is exactly one row, so the kernel's grouped-CTE
+ * ORDER BY / LIMIT (analyze_cte_body_orderby_limit) keeps exactly the rows
+ * the natural statement keeps.  GROUP BY keys keep their source types;
+ * carrying non-key columns as MAX(col) would widen them (INT to BIGINT, …)
+ * and break joins on them (F29).
+ *
+ * Pattern, per CTE (anything else keeps today's rules):
+ *  - ORDER BY and LIMIT present (without ORDER BY the kept rows are
+ *    arbitrary);
+ *  - read only as a FROM root, by the main query or a later CTE body,
+ *    never as a join child (that would probe it by a subset of its GROUP
+ *    BY keys, the partial-key CTE lookup of F18); a main query rooted on
+ *    it aggregates or joins (a projection-only main over the CTE alone is
+ *    collapse_collect_cte()'s shape);
+ *  - no GROUP BY, HAVING, joins, aggregate or arithmetic expressions
+ *    (body->agg == NULL) or subqueries in the body; FROM one real table;
+ *  - every output a plain column, no column twice;
+ *  - the WHERE does not bind the whole primary key by equality with
+ *    constants: such a body has at most one row and stays on the
+ *    CTE_SINGLE_ROW path (detect_single_row_ctes);
+ *  - every primary key column is an output; otherwise the statement is
+ *    rejected here, naming the missing columns.
+ *
+ * The primary key needs the dictionary, which load() fetches after the
+ * CTE analysis; the table is looked up here, and only for bodies that
+ * already match the rest of the pattern.  Without a connection (EXPLAIN
+ * without a cluster) or in ParseOnly mode nothing is rewritten.
+ */
+void
+RonSQLPreparer::rewrite_lastn_cte_bodies()
+{
+  if (m_parse_only || m_conf.ndb == NULL) return;
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  SelectStatement& root = m_context.ast_root;
+  NdbDictionary::Dictionary* dict = NULL;
+  for (CteDefinition* cte = m_context.ast_root.cte_list; cte != NULL;
+       cte = cte->next)
+  {
+    SelectStatement* body = cte->stmt;
+    if (body == NULL || body->limit < 0) continue;
+    // Without ORDER BY the kept rows are arbitrary; that shape keeps
+    // today's rules (collect_collapse cc-P4).
+    if (body->orderby_columns == NULL) continue;
+
+    // The CTE must be read only as a FROM root: by the main query or by a
+    // later CTE body.  As a join child it would be probed by a subset of
+    // its GROUP BY keys (a partial-key CTE lookup, F18), and a
+    // projection-only main over the CTE alone is collapse_collect_cte()'s
+    // shape and keeps its rules (collect_collapse cc-P1, cc-P5).
+    bool used_as_root = false;
+    bool used_as_child = false;
+    if (root.root_table != NULL && root.root_table->name == cte->name)
+    {
+      used_as_root = true;
+      if (!m_is_aggregate_query && root.joins == NULL) continue;
+    }
+    for (const JoinClause* jc = root.joins; jc != NULL; jc = jc->next)
+      if (jc->table.name == cte->name) used_as_child = true;
+    for (const CteDefinition* other = m_context.ast_root.cte_list;
+         other != NULL; other = other->next)
+    {
+      if (other == cte || other->stmt == NULL) continue;
+      if (other->stmt->root_table != NULL &&
+          other->stmt->root_table->name == cte->name)
+        used_as_root = true;
+      for (const JoinClause* jc = other->stmt->joins; jc != NULL;
+           jc = jc->next)
+        if (jc->table.name == cte->name) used_as_child = true;
+    }
+    if (!used_as_root || used_as_child) continue;
+    if (body->groupby_columns != NULL || body->having_expression != NULL ||
+        body->agg != NULL || body->joins != NULL ||
+        body->root_table == NULL || body->outputs == NULL)
+      continue;
+    if (find_cte_definition(body->root_table->name) != NULL) continue;
+    if (ce_has_subquery(body->where_expression)) continue;
+    bool plain_distinct = true;
+    for (const Outputs* o = body->outputs; o != NULL && plain_distinct;
+         o = o->next)
+    {
+      if (o->type != Outputs::Type::COLUMN)
+      {
+        plain_distinct = false;
+        break;
+      }
+      for (const Outputs* p = o->next; p != NULL; p = p->next)
+        if (p->type == Outputs::Type::COLUMN &&
+            p->column.col_idx == o->column.col_idx)
+        {
+          plain_distinct = false;
+          break;
+        }
+    }
+    if (!plain_distinct) continue;
+
+    if (dict == NULL) dict = m_conf.ndb->getDictionary();
+    const NdbDictionary::Table* tab =
+        dict->getTable(body->root_table->name.c_str());
+    if (tab == NULL) continue;  // load() reports the missing table
+    const int nkeys = tab->getNoOfPrimaryKeys();
+    if (nkeys <= 0 || nkeys > NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY) continue;
+
+    ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
+    collect_pk_equalities(body->where_expression, tab, pk_const, NULL);
+    bool whole_pk_bound = true;
+    for (int k = 0; k < nkeys && whole_pk_bound; k++)
+    {
+      const ConditionalExpression* c = pk_const[k];
+      if (c == NULL ||
+          (c->op != T_INT && c->op != T_FLOAT && c->op != T_STRING &&
+           c->op != I_MYSQL_TIME))
+        whole_pk_bound = false;
+    }
+    if (whole_pk_bound) continue;  // single-row body
+
+    const LexCString& body_alias = body->root_table->alias;
+    std::string missing;
+    for (int k = 0; k < nkeys; k++)
+    {
+      const char* pk_name = tab->getPrimaryKey(k);
+      bool found = false;
+      for (const Outputs* o = body->outputs; o != NULL && !found;
+           o = o->next)
+      {
+        const LexCString& q = m_column_qualifiers[o->column.col_idx];
+        if (q.c_str() != NULL && !(q == body_alias)) continue;
+        found = (pk_name != NULL &&
+                 strcmp(m_columns[o->column.col_idx].c_str(), pk_name) == 0);
+      }
+      if (!found)
+      {
+        if (!missing.empty()) missing += ", ";
+        missing += "`";
+        missing += (pk_name != NULL) ? pk_name : "?";
+        missing += "`";
+      }
+    }
+    if (!missing.empty())
+    {
+      err << "CTE '" << cte->name.c_str() << "' has LIMIT but no aggregate"
+             " functions or GROUP BY.  Such a body is served as the last N"
+             " rows when it selects every primary key column of table '"
+          << tab->getName() << "', so that each row is its own group"
+             " (missing: " << missing << ")." << std::endl;
+      throw RonSQLPermanentError(
+          "Non-aggregating LIMIT CTE body does not select the whole"
+          " primary key.");
+    }
+
+    // Rewrite: GROUP BY every output, in output order, plus COUNT(*).
+    GroupbyColumns* gb_head = NULL;
+    GroupbyColumns* gb_tail = NULL;
+    Outputs* last = NULL;
+    for (Outputs* o = body->outputs; o != NULL; o = o->next)
+    {
+      GroupbyColumns* gb = m_amalloc->alloc_exc<GroupbyColumns>(1);
+      gb->col_idx = o->column.col_idx;
+      gb->next = NULL;
+      if (gb_tail == NULL) gb_head = gb;
+      else gb_tail->next = gb;
+      gb_tail = gb;
+      last = o;
+    }
+    RonSQLPreparer* _this = this;
+    std::function<const char*(uint)> column_idx_to_name =
+      [_this](Uint32 idx) -> const char*
+      {
+        return _this->column_idx_to_name(idx).c_str();
+      };
+    AggregationAPICompiler* agg =
+      new (m_amalloc->alloc_exc<AggregationAPICompiler>(1))
+        AggregationAPICompiler(column_idx_to_name,
+                               *m_conf.out_stream,
+                               *m_conf.err_stream,
+                               m_amalloc);
+    static const char cnt_name[] = "ronsql$lastn_rows";
+    Outputs* cnt = m_amalloc->alloc_exc<Outputs>(1);
+    cnt->type = Outputs::Type::AGGREGATE;
+    cnt->output_name = LexString(cnt_name, sizeof(cnt_name) - 1);
+    cnt->aggregate.fun = T_COUNT;
+    cnt->aggregate.arg = agg->ConstantInteger(1);
+    cnt->aggregate.agg_index = 0;
+    cnt->aggregate.implicit_scalar_pair_op = false;
+    cnt->next = NULL;
+    last->next = cnt;
+    body->groupby_columns = gb_head;
+    body->agg = agg;
+    body->is_single_row_cte = false;
+    if (m_num_lastn_ctes < MAX_LASTN_CTES_REPORTED)
+      m_lastn_ctes[m_num_lastn_ctes] = cte->name;
+    m_num_lastn_ctes++;
+  }
 }
 
 // flatten_single_group_cte(): a parse-time twin of find_const_equality_for()
@@ -16999,6 +17214,16 @@ RonSQLPreparer::print()
         << "' flattened into a single-table aggregate: MIN / MAX over a"
            " single-group body (every GROUP BY column bound to a constant)"
            " run as the body's aggregates over its table and WHERE.\n\n";
+  }
+  // RONDB-1124 WP-J J1: last-N CTE bodies served as grouped bodies
+  // (rewrite_lastn_cte_bodies).
+  for (Uint32 i = 0; i < m_num_lastn_ctes && i < MAX_LASTN_CTES_REPORTED;
+       i++) {
+    out << "CTE '" << m_lastn_ctes[i].c_str()
+        << "' served as the last N rows: its non-aggregating body with"
+           " LIMIT is grouped by every output column (the whole primary key"
+           " included, so each row is one group) and the kernel keeps the"
+           " ORDER BY / LIMIT top N.\n\n";
   }
 
   // Print CTE definitions
