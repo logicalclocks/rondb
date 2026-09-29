@@ -131,6 +131,11 @@ public:
     size_t m_err_len = 0;
     int m_subquery_depth = 0;
     AggregationAPICompiler* m_inner_agg = NULL;
+    // Authorization inventory (see m_access_scopes): recording is on only
+    // while bison runs, so post-parse AST rewrites add nothing to it.
+    bool m_collect_access = false;
+    Uint32 m_access_scope = 0;       // scope being parsed
+    Uint32 m_access_ctes_done = 0;   // CTE bodies parsed so far
   public:
     Context(RonSQLPreparer& parser):
       m_parser(parser)
@@ -164,7 +169,13 @@ public:
     // AVRO.  Throws when AVRO() is used inside a CTE body or subquery.
     bool avro_output(LexCString function_name, LexLocation name_loc,
                      Outputs* output);
-    void enter_subquery();
+    // is_cte_body: the body is a WITH-list entry rather than a subquery.
+    void enter_subquery(bool is_cte_body = false);
+    // Record a table reference / a column reference that is not registered
+    // through (qualified_)column_name_to_idx (ON conditions) for
+    // authorization.
+    void note_table_ref(const TableRef* ref);
+    void note_column_ref(LexCString qualifier, LexCString column);
     // Returns the AggregationAPICompiler that was active inside the
     // subquery/CTE body just exited (or NULL if none was created because
     // the body had no aggregate expressions). Callers save the pointer on
@@ -193,6 +204,36 @@ private:
   DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
   DynamicArray<bool> m_col_is_alias; /* true for ORDER BY alias references */
   DynamicArray<Outputs*> m_avro_outputs; /* AVRO(column) outputs, RONDB-1135 */
+  /*
+   * Authorization inventory: every table and column reference exactly as
+   * written, recorded by the grammar actions while bison runs, i.e. before
+   * any AST rewrite. Scope 0 is the main SELECT; every CTE body and
+   * subquery opens a new scope. resolve_access() turns it into
+   * m_accessed_tables / m_accessed_columns.
+   */
+  struct AccessScope
+  {
+    Uint32 enclosing;     // scope parsing returns to; the main SELECT: 0
+    bool is_cte_body;     // a CTE body cannot see its enclosing scope
+    Uint32 visible_ctes;  // leading WITH-list entries visible in this scope
+  };
+  struct AccessTableRef
+  {
+    Uint32 scope;
+    LexCString database;  // {NULL, 0} if unqualified
+    LexCString name;
+    LexCString alias;
+  };
+  struct AccessColumnRef
+  {
+    Uint32 scope;
+    LexCString qualifier; // {NULL, 0} if unqualified
+    LexCString column;
+  };
+  DynamicArray<AccessScope> m_access_scopes;
+  DynamicArray<AccessTableRef> m_access_table_refs;
+  DynamicArray<AccessColumnRef> m_access_column_refs;
+  DynamicArray<LexCString> m_access_cte_names; /* WITH list, in order */
   const NdbDictionary::Dictionary* m_dict = NULL;
 
   // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
@@ -467,15 +508,39 @@ public:
   RonSQLPreparer(RonSQLExecParams conf);
   /*
    * Parse-only construction: lexes and parses the SQL but never touches NDB
-   * (conf.ndb may be NULL). Exposes the referenced table and columns via the
-   * getters below so the REST layer can authorize the query before full
-   * preparation. execute() cannot be called on a parse-only instance.
+   * (conf.ndb may be NULL). Exposes every table and column the statement
+   * reads via the getters below so the REST layer can authorize the query
+   * before full preparation. execute() cannot be called on a parse-only
+   * instance. `database` is the database the statement will run in; a table
+   * qualified with any other database is rejected.
    */
-  struct ParseOnly {};
-  RonSQLPreparer(RonSQLExecParams conf, ParseOnly);
-  LexCString get_table_name();
-  const DynamicArray<LexCString>& get_referenced_columns();
+  struct ParseOnly
+  {
+    const char* database;
+  };
+  RonSQLPreparer(RonSQLExecParams conf, ParseOnly parse_only);
+  /*
+   * Every base table the statement reads - FROM, JOIN, CTE bodies and
+   * subqueries; CTE references are not tables - each once, all in the
+   * database the statement runs in. get_accessed_columns() lists the
+   * columns read from each, possibly none (e.g. COUNT(*)). A column is
+   * listed under every table it may belong to, so that no read escapes
+   * authorization; see resolve_access().
+   */
+  struct AccessedColumn
+  {
+    Uint32 table_idx;   // index into get_accessed_tables()
+    LexCString column;
+  };
+  const DynamicArray<LexCString>& get_accessed_tables();
+  const DynamicArray<AccessedColumn>& get_accessed_columns();
 private:
+  DynamicArray<LexCString> m_accessed_tables;
+  DynamicArray<AccessedColumn> m_accessed_columns;
+  void check_table_qualifiers(const char* database);
+  void resolve_access();
+  bool access_is_cte(const LexCString& name, Uint32 scope) const;
+  void add_accessed_column(Uint32 table_idx, const LexCString& column);
   void configure();
   void parse();
   void resolve_orderby_aliases();

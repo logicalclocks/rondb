@@ -553,7 +553,7 @@ column(s) — the MySQL 1044 / 1142 / 1143 analogues, returned as HTTP **401**.
 | feature-store | `feature_store_ctrl.cpp` | via `authenticate(FeatureViewMetadata&)` — FV store visibility + every constituent FG's online table and the exact served feature columns (spine FGs: metadata-only) |
 | batch feature-store | `batch_feature_store_ctrl.cpp` | the **same** `authenticate(FeatureViewMetadata&)` overload |
 | scan | `scan_read_ctrl.cpp` | read columns + filter columns + index key columns → one request |
-| RonSQL | `ronsql_ctrl.cpp` | parse-only pass extracts the table + every referenced column (SELECT/agg/WHERE/GROUP BY/ORDER BY) → one request |
+| RonSQL | `ronsql_ctrl.cpp` | parse-only pass (`RonSQLPreparer::resolve_access()`) extracts every base table read — FROM, JOIN, CTE bodies, subqueries; CTE references are not tables — and the columns read from each (SELECT/agg/WHERE/GROUP BY/ORDER BY/ON). A qualified column goes to the tables its qualifier names; an unqualified one to every table of its scope, plus enclosing scopes for a subquery → one request per table. A database qualifier other than the request's database is rejected (400) |
 
 ### 9.3 Why the per-controller diffs differ
 

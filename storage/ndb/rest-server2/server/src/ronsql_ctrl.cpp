@@ -308,29 +308,43 @@ void RonSQLCtrl::ronsql(
   if (globalConfigs.security.apiKey.useHopsworksAPIKeys) {
     auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     /*
-     * Parse the query (no NDB access) to learn the referenced table and
-     * columns, then authorize against the caller's grants using the same
-     * ladder as the other endpoints: full database, whole table or column
-     * subset. A parse failure is reported like an execution-time parse
-     * failure; the schema is never touched before authorization succeeds.
+     * Parse the query (no NDB access) to learn every table it reads -
+     * FROM, JOIN, CTE bodies and subqueries - and the columns it reads from
+     * each, then authorize each table against the caller's grants using
+     * the same ladder as the other endpoints: full database, whole table
+     * or column subset. A parse failure is reported like an execution-time
+     * parse failure; the schema is never touched before authorization
+     * succeeds.
      */
     try {
-      RonSQLPreparer parser(params, RonSQLPreparer::ParseOnly{});
-      LexCString table = parser.get_table_name();
-      const DynamicArray<LexCString>& referenced_columns =
-        parser.get_referenced_columns();
-      std::vector<std::string_view> columns;
-      columns.reserve(referenced_columns.size());
-      for (Uint32 i = 0; i < referenced_columns.size(); i++) {
-        columns.push_back(std::string_view(referenced_columns[i].str,
-                                           referenced_columns[i].len));
+      RonSQLPreparer parser(params,
+                            RonSQLPreparer::ParseOnly{database.c_str()});
+      const DynamicArray<LexCString>& tables = parser.get_accessed_tables();
+      const DynamicArray<RonSQLPreparer::AccessedColumn>& accessed_columns =
+        parser.get_accessed_columns();
+      std::vector<std::vector<std::string_view>> columns(tables.size());
+      for (Uint32 i = 0; i < accessed_columns.size(); i++) {
+        const RonSQLPreparer::AccessedColumn& col = accessed_columns[i];
+        columns[col.table_idx].push_back(
+          std::string_view(col.column.str, col.column.len));
       }
-      TableAccessRequest accessReq;
-      accessReq.db = database;
-      accessReq.table = std::string_view(table.str, table.len);
-      accessReq.columns = &columns;
-      status = authenticate(api_key,
-                            std::vector<TableAccessRequest>{accessReq});
+      std::vector<TableAccessRequest> accessReqs;
+      accessReqs.reserve(tables.size() + 1);
+      for (Uint32 i = 0; i < tables.size(); i++) {
+        TableAccessRequest accessReq;
+        accessReq.db = database;
+        accessReq.table = std::string_view(tables[i].str, tables[i].len);
+        accessReq.columns = &columns[i];
+        accessReqs.push_back(accessReq);
+      }
+      if (accessReqs.empty()) {
+        // A statement that parses always reads a table; should one not,
+        // fail closed: only full-database access admits it.
+        TableAccessRequest accessReq;
+        accessReq.db = database;
+        accessReqs.push_back(accessReq);
+      }
+      status = authenticate(api_key, accessReqs);
     }
     catch (RonSQLPermanentError& e) {
       /*

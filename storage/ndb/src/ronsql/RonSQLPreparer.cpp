@@ -159,6 +159,10 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_col_is_inner(conf.amalloc),
   m_col_is_alias(conf.amalloc),
   m_avro_outputs(conf.amalloc),
+  m_access_scopes(conf.amalloc),
+  m_access_table_refs(conf.amalloc),
+  m_access_column_refs(conf.amalloc),
+  m_access_cte_names(conf.amalloc),
   m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
@@ -167,7 +171,9 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_select_subquery_leaves(conf.amalloc),
   m_merged_leaves(conf.amalloc),
   m_subquery_infos(conf.amalloc),
-  m_cte_scopes(conf.amalloc)
+  m_cte_scopes(conf.amalloc),
+  m_accessed_tables(conf.amalloc),
+  m_accessed_columns(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
@@ -181,6 +187,8 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     PERF_TS(t_parse_start);
     STAT_TS(m_conf.phase_stats, s_parse_start);
     parse();
+    check_table_qualifiers(m_conf.ndb != NULL ?
+                             m_conf.ndb->getDatabaseName() : NULL);
     resolve_orderby_aliases();
     PERF_TS(t_parse_end);
     PERF_LOG("  parse", t_parse_start, t_parse_end);
@@ -224,7 +232,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   }
 }
 
-RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly):
+RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly parse_only):
   m_conf(conf),
   m_parse_only(true),
   m_amalloc(conf.amalloc),
@@ -234,6 +242,10 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly):
   m_col_is_inner(conf.amalloc),
   m_col_is_alias(conf.amalloc),
   m_avro_outputs(conf.amalloc),
+  m_access_scopes(conf.amalloc),
+  m_access_table_refs(conf.amalloc),
+  m_access_column_refs(conf.amalloc),
+  m_access_cte_names(conf.amalloc),
   m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
@@ -242,12 +254,16 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly):
   m_select_subquery_leaves(conf.amalloc),
   m_merged_leaves(conf.amalloc),
   m_subquery_infos(conf.amalloc),
-  m_cte_scopes(conf.amalloc)
+  m_cte_scopes(conf.amalloc),
+  m_accessed_tables(conf.amalloc),
+  m_accessed_columns(conf.amalloc)
 {
   ndbrequire(m_status == Status::BEGIN);
   try {
     configure();
     parse();
+    check_table_qualifiers(parse_only.database);
+    resolve_access();
     m_status = Status::PARSED;
   }
   catch (...) {
@@ -256,18 +272,147 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly):
   }
 }
 
-LexCString
-RonSQLPreparer::get_table_name()
+const DynamicArray<LexCString>&
+RonSQLPreparer::get_accessed_tables()
 {
-  ndbrequire(m_status == Status::PARSED || m_status == Status::PREPARED);
-  return m_context.ast_root.table;
+  ndbrequire(m_status == Status::PARSED);
+  return m_accessed_tables;
 }
 
-const DynamicArray<LexCString>&
-RonSQLPreparer::get_referenced_columns()
+const DynamicArray<RonSQLPreparer::AccessedColumn>&
+RonSQLPreparer::get_accessed_columns()
 {
-  ndbrequire(m_status == Status::PARSED || m_status == Status::PREPARED);
-  return m_columns;
+  ndbrequire(m_status == Status::PARSED);
+  return m_accessed_columns;
+}
+
+/*
+ * The preparer opens every table in the database of the Ndb object and
+ * ignores a database qualifier, so `other_db.t` would silently read `t` of
+ * the current database - and be authorized as such. Reject the qualifier
+ * instead. NULL `database` (EXPLAIN without a cluster connection) checks
+ * nothing.
+ */
+void
+RonSQLPreparer::check_table_qualifiers(const char* database)
+{
+  if (database == NULL) return;
+  const size_t db_len = strlen(database);
+  for (Uint32 i = 0; i < m_access_table_refs.size(); i++)
+  {
+    const AccessTableRef& ref = m_access_table_refs[i];
+    if (ref.database.str == NULL) continue;
+    if (ref.database.len == db_len &&
+        memcmp(ref.database.str, database, db_len) == 0) continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("Table ") + ref.database.c_str() + "." +
+        ref.name.c_str() + " is qualified with a database other than " +
+        database + ", the database the statement runs in. Cross-database "
+        "table references are not supported.");
+  }
+}
+
+/*
+ * Whether a table reference `name` in `scope` names a CTE rather than a
+ * table: only WITH-list entries visible there count, like the preparer's
+ * build_cte_scopes() - a CTE body sees the CTEs declared before it, the
+ * main SELECT and its subqueries see all of them. Compared exactly, like
+ * find_cte_definition().
+ */
+bool
+RonSQLPreparer::access_is_cte(const LexCString& name, Uint32 scope) const
+{
+  Uint32 visible = m_access_scopes[scope].visible_ctes;
+  for (Uint32 i = 0; i < m_access_cte_names.size() && i < visible; i++)
+  {
+    if (m_access_cte_names[i] == name) return true;
+  }
+  return false;
+}
+
+void
+RonSQLPreparer::add_accessed_column(Uint32 table_idx,
+                                    const LexCString& column)
+{
+  for (Uint32 i = 0; i < m_accessed_columns.size(); i++)
+  {
+    if (m_accessed_columns[i].table_idx == table_idx &&
+        m_accessed_columns[i].column == column) return;
+  }
+  m_accessed_columns.push(AccessedColumn{table_idx, column});
+}
+
+/*
+ * Authorization: turn the inventory recorded while bison ran into the base
+ * tables the statement reads and the columns it reads from each. It works
+ * on the statement as written - the AST rewrites in parse() preserve
+ * semantics - and errs towards attributing a column to more tables, never
+ * fewer, so that no read escapes authorization:
+ *  - A table reference is a CTE reference if it names a CTE visible in its
+ *    scope (access_is_cte()), otherwise a base table of the database the
+ *    statement runs in.
+ *  - q.col, including both sides of an ON condition, is attributed to
+ *    every base table referenced anywhere in the statement under alias or
+ *    name q. When q names only CTE references, col is a CTE output: the
+ *    columns it is computed from were recorded in the CTE body. A q that
+ *    names nothing is treated like an unqualified column.
+ *  - An unqualified col is attributed to every base table of its scope
+ *    and, for a subquery, of every enclosing scope (a correlated reference
+ *    may resolve there). A CTE body sees only its own tables. An
+ *    unqualified col in a scope without base tables is a CTE output.
+ */
+void
+RonSQLPreparer::resolve_access()
+{
+  const Uint32 num_refs = m_access_table_refs.size();
+  // Index into m_accessed_tables per table reference, -1 for a CTE.
+  Int32* ref_table = m_amalloc->alloc_exc<Int32>(num_refs > 0 ? num_refs : 1);
+  for (Uint32 r = 0; r < num_refs; r++)
+  {
+    const AccessTableRef& ref = m_access_table_refs[r];
+    if (access_is_cte(ref.name, ref.scope))
+    {
+      ref_table[r] = -1;
+      continue;
+    }
+    Uint32 t = 0;
+    while (t < m_accessed_tables.size() && !(m_accessed_tables[t] == ref.name))
+      t++;
+    if (t == m_accessed_tables.size()) m_accessed_tables.push(ref.name);
+    ref_table[r] = Int32(t);
+  }
+  for (Uint32 c = 0; c < m_access_column_refs.size(); c++)
+  {
+    const AccessColumnRef& col = m_access_column_refs[c];
+    if (col.qualifier.str != NULL)
+    {
+      bool matched = false;
+      for (Uint32 r = 0; r < num_refs; r++)
+      {
+        const AccessTableRef& ref = m_access_table_refs[r];
+        if (!(ref.alias == col.qualifier) && !(ref.name == col.qualifier))
+          continue;
+        matched = true;
+        if (ref_table[r] >= 0) add_accessed_column(Uint32(ref_table[r]),
+                                                   col.column);
+      }
+      // A SELECT without FROM qualifies columns with scalar CTE names.
+      if (matched || access_is_cte(col.qualifier, col.scope)) continue;
+    }
+    Uint32 scope = col.scope;
+    while (true)
+    {
+      for (Uint32 r = 0; r < num_refs; r++)
+      {
+        if (m_access_table_refs[r].scope == scope && ref_table[r] >= 0)
+          add_accessed_column(Uint32(ref_table[r]), col.column);
+      }
+      const AccessScope& s = m_access_scopes[scope];
+      if (scope == 0 || s.is_cte_body) break;
+      scope = s.enclosing;
+    }
+  }
 }
 
 // require or fail without retry
@@ -512,15 +657,27 @@ void
 RonSQLPreparer::parse()
 {
   std::basic_ostream<char>& err = *m_conf.err_stream;
+  // Scope 0 of the authorization inventory: the main SELECT, which sees
+  // every CTE.
+  m_access_scopes.push(AccessScope{0, false, ~Uint32(0)});
+  m_context.m_access_scope = 0;
+  m_context.m_collect_access = true;
   int parse_result = rsqlp_parse(m_scanner); /* datatype to match declaration
                                               * int yyparse (yyscan_t scanner)
                                               * in RonDBSQLParser.y.cpp, which
                                               * is generated by bison in
                                               * build_parser.sh
                                               */
+  m_context.m_collect_access = false;
   if (parse_result == 0)
   {
     ndbrequire(m_context.m_err_state == ErrState::NONE);
+    // The WITH list as written, before the rewrites below can drop entries.
+    for (const CteDefinition* cte = m_context.ast_root.cte_list;
+         cte != NULL; cte = cte->next)
+    {
+      m_access_cte_names.push(cte->name);
+    }
     // RONDB-1124 (m3_run6_plan.md C2): MIN / MAX over one single-group CTE
     // (the fs_point form) becomes the single-table aggregate over the body.
     // It swaps the main compiler for the body's, so it must run before the
@@ -1909,8 +2066,8 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         // Note: ast_root.table (the FROM name LexString set once by
         // the parser) deliberately keeps the pre-rewrite name — the
         // shipped aggregate-path rewrite always left it stale, and
-        // its consumers (get_table_name(), ParseOnly) read the
-        // original FROM name.
+        // its consumers read the original FROM name.  (Authorization
+        // does not read the AST; see resolve_access().)
       }
     }
   }
@@ -17935,6 +18092,7 @@ static const char* interval_type_name(TokenKind interval_type)
 Uint32
 RonSQLPreparer::Context::column_name_to_idx(LexCString col_name)
 {
+  note_column_ref(LexCString{NULL, 0}, col_name);
   DynamicArray<LexCString>& columns = m_parser.m_columns;
   DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
   DynamicArray<bool>& is_inner = m_parser.m_col_is_inner;
@@ -17957,6 +18115,7 @@ Uint32
 RonSQLPreparer::Context::qualified_column_name_to_idx(
     LexCString table_qualifier, LexCString col_name)
 {
+  note_column_ref(table_qualifier, col_name);
   DynamicArray<LexCString>& columns = m_parser.m_columns;
   DynamicArray<LexCString>& qualifiers = m_parser.m_column_qualifiers;
   DynamicArray<bool>& is_inner = m_parser.m_col_is_inner;
@@ -18088,10 +18247,21 @@ RonSQLPreparer::Context::get_agg()
 }
 
 void
-RonSQLPreparer::Context::enter_subquery()
+RonSQLPreparer::Context::enter_subquery(bool is_cte_body)
 {
   m_subquery_depth++;
   m_inner_agg = NULL;
+  if (m_collect_access)
+  {
+    // A CTE body sees the CTEs declared before it, a subquery what its
+    // enclosing scope sees.
+    DynamicArray<AccessScope>& scopes = m_parser.m_access_scopes;
+    Uint32 visible_ctes = is_cte_body ? m_access_ctes_done
+                                      : scopes[m_access_scope].visible_ctes;
+    Uint32 scope = scopes.size();
+    scopes.push(AccessScope{m_access_scope, is_cte_body, visible_ctes});
+    m_access_scope = scope;
+  }
 }
 
 AggregationAPICompiler*
@@ -18101,7 +18271,30 @@ RonSQLPreparer::Context::leave_subquery()
   m_subquery_depth--;
   AggregationAPICompiler* out = m_inner_agg;
   m_inner_agg = NULL;
+  if (m_collect_access)
+  {
+    const AccessScope& scope = m_parser.m_access_scopes[m_access_scope];
+    if (scope.is_cte_body) m_access_ctes_done++;
+    m_access_scope = scope.enclosing;
+  }
   return out;
+}
+
+void
+RonSQLPreparer::Context::note_table_ref(const TableRef* ref)
+{
+  if (!m_collect_access) return;
+  m_parser.m_access_table_refs.push(
+      AccessTableRef{m_access_scope, ref->database, ref->name, ref->alias});
+}
+
+void
+RonSQLPreparer::Context::note_column_ref(LexCString qualifier,
+                                         LexCString column)
+{
+  if (!m_collect_access) return;
+  m_parser.m_access_column_refs.push(
+      AccessColumnRef{m_access_scope, qualifier, column});
 }
 
 ArenaMalloc*
