@@ -26,6 +26,7 @@
 #define STORAGE_NDB_SRC_RONSQL_RONSQLCOMMON_HPP 1
 
 #include <cstring>
+#include <string>
 #include "Ndb.hpp"
 #include "NdbOperation.hpp"
 #include "mysql_time.h"
@@ -101,6 +102,45 @@ struct RonSQLPhaseStats
   Uint32 attempts = 0;      // ronsql_op attempts (1 = no retry)
 };
 
+/*
+ * RONDB-1135: AVRO(column) in the SELECT list of a pass-through query.
+ * Hopsworks stores complex features (arrays, structs) Avro-encoded in
+ * BINARY / VARBINARY columns.  A plain projection of such a column prints
+ * the raw bytes (base64 under JSON); AVRO(column) instead prints the JSON
+ * value the Avro decoding gives, the same value the RDRS feature_store and
+ * batch_feature_store endpoints return for the feature.
+ *
+ * The table of the column names the Hopsworks feature group, whose Avro
+ * schema RDRS has in its feature store metadata cache, and the decoder is
+ * a Go library linked into RDRS, so RonSQL leaves both to its embedder
+ * through this interface.  Without one (RonSQLExecParams::avro_decoder ==
+ * NULL, e.g. ronsql_cli) a query using AVRO() fails as unsupported.
+ *
+ * Both methods report a failure by throwing RonSQLPermanentError (declared
+ * below) with a message naming the column.
+ */
+class RonSQLAvroDecoder
+{
+public:
+  virtual ~RonSQLAvroDecoder() {}
+  /*
+   * Prepare time: find the Avro schema of `column` of table `table` in
+   * `database`.  Returns a handle for decode(), valid until this decoder is
+   * destroyed.
+   */
+  virtual const void* prepare_column(const char* database,
+                                     const char* table,
+                                     const char* column) = 0;
+  /*
+   * Print time: decode one non-NULL value of a prepared column, replacing
+   * `json` with the JSON text of the decoded value (UTF-8).
+   */
+  virtual void decode(const void* column_handle,
+                      const unsigned char* bytes,
+                      size_t len,
+                      std::string& json) = 0;
+};
+
 struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
@@ -153,6 +193,9 @@ struct RonSQLExecParams
   RonSQLPhaseStats* phase_stats = nullptr;  // Optional: per-phase timing sink
                                             // (captured only when non-NULL and
                                             // RONSQL_PHASE_STATS is compiled in)
+  RonSQLAvroDecoder* avro_decoder = NULL;   // Optional: enables AVRO() in the
+                                            // SELECT list (RONDB-1135), only
+                                            // used with RDRS
   // RONDB-1124 (output): set by ronsql_op when the statement fails
   // permanently, so the HTTP layer can report the error class (status code,
   // X-RonSQL-Error-Class) and the NDB error code (X-RonSQL-NDB-Error)

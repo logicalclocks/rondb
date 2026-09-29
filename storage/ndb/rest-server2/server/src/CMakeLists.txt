@@ -59,6 +59,7 @@ file(GLOB_RECURSE SRC
         rdrs_rondb_connection.cpp
         rdrs_rondb_connection_pool.cpp
         retry_handler.cpp
+        ronsql_avro.cpp
         ronsql_ctrl.cpp
         ronsql_worker_pool.cpp
         tls_util.cpp

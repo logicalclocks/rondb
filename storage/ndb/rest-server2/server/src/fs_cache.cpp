@@ -242,6 +242,126 @@ void fs_metadata_update_cache(
   return g_fs_metadata_cache->update_cache(data, entry, errorCode);
 }
 
+const metadata::AvroDecoder* fs_cache_get_complex_feature_decoder(
+  const std::string &fsName,
+  const std::string &fgTable,
+  const std::string &featureName,
+  FSCacheEntry** entry) {
+  *entry = nullptr;
+  if (g_fs_metadata_cache == nullptr) {
+    return nullptr;
+  }
+  return g_fs_metadata_cache->get_complex_feature_decoder(fsName,
+                                                          fgTable,
+                                                          featureName,
+                                                          entry);
+}
+
+/*
+ * RONDB-1135: the m_complex_features key of feature featureName of the
+ * feature group with online table fgTable in feature store fsName.  NUL
+ * separated, identifiers contain no NUL.
+ */
+static std::string complex_feature_key(const std::string &fsName,
+                                       const std::string &fgTable,
+                                       const std::string &featureName) {
+  std::string key;
+  key.reserve(fsName.size() + fgTable.size() + featureName.size() + 2);
+  key.append(fsName).push_back('\0');
+  key.append(fgTable).push_back('\0');
+  key.append(featureName);
+  return key;
+}
+
+/*
+ * Call f(key, decoder) for each complex feature that data has a
+ * registered Avro decoder for.  The online table of version v of feature
+ * group fg is "<fg>_<v>", in the database named after its feature store.
+ */
+template <typename F>
+static void for_each_complex_feature(const metadata::FeatureViewMetadata *data,
+                                     F f) {
+  if (data->complexFeatures.empty()) {
+    return;
+  }
+  for (const metadata::FeatureGroupFeatures &fgf : data->featureGroupFeatures) {
+    const std::string fgTable =
+      fgf.featureGroupName + "_" + std::to_string(fgf.featureGroupVersion);
+    for (const metadata::FeatureMetadata &feature : fgf.features) {
+      auto it = data->complexFeatures.find(
+        metadata::GetFeatureIndexKeyByFeature(feature));
+      if (it != data->complexFeatures.end()) {
+        f(complex_feature_key(fgf.featureStoreName, fgTable, feature.name),
+          &it->second);
+      }
+    }
+  }
+}
+
+void FSMetadataCache::index_complex_features(FSCacheEntry *entry,
+                                             Uint32 key_cache_id) {
+  if (entry->m_data == nullptr) {
+    return;
+  }
+  for_each_complex_feature(entry->m_data,
+    [&](std::string &&key, const metadata::AvroDecoder *decoder) {
+      m_complex_features[key_cache_id].emplace(
+        std::move(key), ComplexFeatureRef{entry, decoder});
+    });
+}
+
+void FSMetadataCache::unindex_complex_features(FSCacheEntry *entry,
+                                               Uint32 key_cache_id) {
+  if (entry->m_data == nullptr) {
+    return;
+  }
+  auto &index = m_complex_features[key_cache_id];
+  for_each_complex_feature(entry->m_data,
+    [&](std::string &&key, const metadata::AvroDecoder *) {
+      auto range = index.equal_range(key);
+      for (auto it = range.first; it != range.second; ++it) {
+        if (it->second.entry == entry) {
+          index.erase(it);
+          break;
+        }
+      }
+    });
+}
+
+const metadata::AvroDecoder*
+FSMetadataCache::get_complex_feature_decoder(const std::string &fsName,
+                                             const std::string &fgTable,
+                                             const std::string &featureName,
+                                             FSCacheEntry **entry) {
+  *entry = nullptr;
+  const std::string key = complex_feature_key(fsName, fgTable, featureName);
+  for (Uint32 i = 0; i < NUM_FS_CACHES; i++) {
+    NdbMutex_Lock(m_rwLock[i]);
+    if (m_stopped) {
+      NdbMutex_Unlock(m_rwLock[i]);
+      return nullptr;
+    }
+    auto range = m_complex_features[i].equal_range(key);
+    for (auto it = range.first; it != range.second; ++it) {
+      FSCacheEntry *cacheEntry = it->second.entry;
+      // Same reference taking as get_fs_metadata.  An entry evicted while
+      // in use stays indexed but IS_INVALID until it is deleted.
+      NdbMutex_Lock(cacheEntry->m_waitLock);
+      if (cacheEntry->m_state == FSCacheEntry::IS_VALID) {
+        cacheEntry->m_ref_count++;
+        const metadata::AvroDecoder *decoder = it->second.decoder;
+        NdbMutex_Unlock(cacheEntry->m_waitLock);
+        NdbMutex_Unlock(m_rwLock[i]);
+        *entry = cacheEntry;
+        return decoder;
+      }
+      NdbMutex_Unlock(cacheEntry->m_waitLock);
+    }
+    NdbMutex_Unlock(m_rwLock[i]);
+  }
+  return nullptr;
+}
+
 metadata::FeatureViewMetadata*
 FSMetadataCache::get_fs_metadata(const std::string &fs_key,
                                  FSCacheEntry** entry) {
@@ -369,6 +489,14 @@ void FSMetadataCache::update_cache(
 #endif
   NdbCondition_Broadcast(entry->m_waitCond);
   NdbMutex_Unlock(entry->m_waitLock);
+  if (data != nullptr) {
+    /* m_rwLock is taken before m_waitLock everywhere, so index after
+     * releasing the latter.  The caller holds a reference on the entry,
+     * so it cannot leave m_fs_cache in between. */
+    NdbMutex_Lock(m_rwLock[entry->m_key_cache_id]);
+    index_complex_features(entry, entry->m_key_cache_id);
+    NdbMutex_Unlock(m_rwLock[entry->m_key_cache_id]);
+  }
   return;
 }
 
@@ -426,6 +554,7 @@ void FSMetadataCache::cache_entry_updater(Uint32 key_cache_id) {
       if (first_entry->m_ref_count == 0) {
         DEB_FS("FS Key %s deleted (shutdown)", first_entry->m_key.c_str());
         m_fs_cache[key_cache_id].erase(first_entry->m_key);
+        unindex_complex_features(first_entry, key_cache_id);
         if (first_entry->m_data != nullptr &&
             first_entry->m_data->complexFeatures.size() != 0) {
           for (auto& [key, val] : first_entry->m_data->complexFeatures) {
@@ -492,6 +621,7 @@ void FSMetadataCache::load_single_feature_view(const std::string &fsName,
       return;
     }
     m_fs_cache[key_cache_id].erase(existing_it);
+    unindex_complex_features(existing, key_cache_id);
     NdbMutex_Unlock(existing->m_waitLock);
     NdbMutex_Lock(m_queueLock[key_cache_id]);
     remove_entry(existing, key_cache_id);
@@ -549,6 +679,7 @@ void FSMetadataCache::load_single_feature_view(const std::string &fsName,
   newEntry->m_errorCode = nullptr;
   newEntry->m_state = FSCacheEntry::IS_VALID;
   m_fs_cache[key_cache_id][cacheKey] = newEntry;
+  index_complex_features(newEntry, key_cache_id);
 
   NdbMutex_Lock(m_queueLock[key_cache_id]);
   insert_last(newEntry, key_cache_id);
@@ -674,6 +805,7 @@ void FSMetadataCache::evict_entry(const std::string &cacheKey) {
 
   // ref_count == 0 and not IS_FILLING: safe to delete immediately
   m_fs_cache[key_cache_id].erase(it);
+  unindex_complex_features(entry, key_cache_id);
 
   // Remove from linked list while still holding m_rwLock to prevent
   // cache_entry_updater from finding this entry via m_first_cache_entry.

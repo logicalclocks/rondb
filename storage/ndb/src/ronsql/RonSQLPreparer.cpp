@@ -34,6 +34,7 @@
 #include "RonSQLPreparer.hpp"
 #include <iostream>
 #include <sstream>
+#include <cctype>
 #include <cstdlib>
 #include <cerrno>
 #include <climits>
@@ -157,6 +158,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_column_qualifiers(conf.amalloc),
   m_col_is_inner(conf.amalloc),
   m_col_is_alias(conf.amalloc),
+  m_avro_outputs(conf.amalloc),
   m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
@@ -212,6 +214,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     STAT_TS(m_conf.phase_stats, s_compile_end);
     STAT_SET(m_conf.phase_stats, compile_us, s_compile_start, s_compile_end);
     determine_explain();
+    prepare_avro_outputs();
     PERF_LOG("  prepare total", t_prep_start, t_compile_end);
     m_status = Status::PREPARED;
   }
@@ -230,6 +233,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf, ParseOnly):
   m_column_qualifiers(conf.amalloc),
   m_col_is_inner(conf.amalloc),
   m_col_is_alias(conf.amalloc),
+  m_avro_outputs(conf.amalloc),
   m_main_scope(conf.amalloc),
   m_indexes(conf.amalloc),
   m_toplevel_conditions(conf.amalloc),
@@ -1013,6 +1017,9 @@ RonSQLPreparer::parse()
     break;
   case ErrState::INVALID_FRAGS_PER_WORKER:
     msg = "FRAGS_PER_WORKER must be a positive integer.";
+    break;
+  case ErrState::UNKNOWN_FUNCTION:
+    msg = "Unknown function. The only non-aggregate function RonSQL supports in the SELECT list is AVRO(column).";
     break;
   case ErrState::PARSER_ERROR:
     if (m_sql.len == 0)
@@ -7727,6 +7734,97 @@ RonSQLPreparer::determine_explain()
     // content type.
     *m_conf.do_explain = do_explain;
   }
+}
+
+bool
+RonSQLPreparer::is_avro_output(const Outputs* o) const
+{
+  for (Uint32 i = 0; i < m_avro_outputs.size(); i++)
+  {
+    if (m_avro_outputs[i] == o) return true;
+  }
+  return false;
+}
+
+/*
+ * RONDB-1135: validate the AVRO(column) outputs, look up the Avro schema of
+ * each column through the embedder's decoder and give the pass-through
+ * printer one decoder handle per output position (NULL for the other
+ * outputs).  Outputs are matched by node, so an AST rewrite that keeps the
+ * nodes (collapse_collect_cte) keeps them AVRO() outputs.
+ */
+void
+RonSQLPreparer::prepare_avro_outputs()
+{
+  if (m_avro_outputs.size() == 0) return;
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  // Binary columns print only on the pass-through path; an aggregate query
+  // can project a column only as a GROUP BY column.
+  if (m_is_aggregate_query)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "AVRO() is only supported in queries without aggregation.");
+  }
+  // EXPLAIN without a cluster connection resolves no columns.
+  if (m_main_scope.resolved_columns == NULL) return;
+  // EXPLAIN prints no values, so it needs no schemas.
+  const bool need_schemas = !m_do_explain;
+  if (need_schemas && m_conf.avro_decoder == NULL)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "AVRO() is only supported by the RDRS /ronsql endpoint.");
+  }
+  Uint32 num_outputs = 0;
+  for (Outputs* o = m_context.ast_root.outputs; o != NULL; o = o->next)
+    num_outputs++;
+  const void** handles = m_amalloc->alloc_exc<const void*>(num_outputs);
+  Uint32 pos = 0;
+  for (Outputs* o = m_context.ast_root.outputs; o != NULL;
+       o = o->next, pos++)
+  {
+    handles[pos] = NULL;
+    if (!is_avro_output(o)) continue;
+    ndbrequire(o->type == Outputs::Type::COLUMN);
+    const Uint32 col_idx = o->column.col_idx;
+    const QueryScope::ResolvedColumnRef& ref =
+        m_main_scope.resolved_columns[col_idx];
+    if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+        ref.dict_column == NULL)
+    {
+      err << "AVRO(" << quoted_identifier(m_columns[col_idx].c_str())
+          << "): the argument is not a table column.\n";
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::UNSUPPORTED,
+          "AVRO() of a CTE output is not supported.");
+    }
+    const NdbDictionary::Column* col = ref.dict_column;
+    switch (col->getType())
+    {
+    case NdbDictionary::Column::Binary:
+    case NdbDictionary::Column::Varbinary:
+    case NdbDictionary::Column::Longvarbinary:
+      break;
+    default:
+      err << "AVRO(" << quoted_identifier(col->getName())
+          << "): the column is not BINARY or VARBINARY.\n";
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::SEMANTIC,
+          "AVRO() requires a BINARY or VARBINARY column.");
+    }
+    if (!need_schemas) continue;
+    const NdbDictionary::Table* table =
+        is_join_query() ? m_main_scope.join_plan.ops[ref.join_op_idx].table
+                        : m_main_scope.table;
+    require_bug(table != NULL, "AVRO(): no table for a stored column.");
+    handles[pos] = m_conf.avro_decoder->prepare_column(
+        m_conf.ndb->getDatabaseName(), table->getName(), col->getName());
+    require_bug(handles[pos] != NULL,
+                "AVRO(): the decoder returned no column handle.");
+  }
+  if (need_schemas)
+    m_resultprinter->set_avro_decoder(m_conf.avro_decoder, handles);
 }
 
 void
@@ -17333,6 +17431,8 @@ RonSQLPreparer::print()
     case Outputs::Type::COLUMN:
       {
         Uint32 col_idx = outputs->column.col_idx;
+        if (is_avro_output(outputs))
+          out << "CLIENT-SIDE AVRO DECODING: ";
         out << "C" << col_idx << ":"
             << quoted_identifier(column_idx_to_name(col_idx)) << '\n';
       }
@@ -17873,6 +17973,35 @@ RonSQLPreparer::Context::qualified_column_name_to_idx(
   qualifiers.push(table_qualifier);
   is_inner.push(in_subquery);
   return sz;
+}
+
+bool
+RonSQLPreparer::Context::avro_output(LexCString function_name,
+                                     LexLocation name_loc,
+                                     Outputs* output)
+{
+  // Function names are case insensitive, as in MySQL.
+  static const char avro[] = "AVRO";
+  bool is_avro = function_name.len == sizeof(avro) - 1;
+  for (size_t i = 0; is_avro && i < function_name.len; i++)
+  {
+    is_avro = toupper((unsigned char)function_name.str[i]) == avro[i];
+  }
+  if (!is_avro)
+  {
+    set_err_state(ErrState::UNKNOWN_FUNCTION, name_loc.begin,
+                  size_t(name_loc.end - name_loc.begin));
+    return false;
+  }
+  if (m_subquery_depth > 0)
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "AVRO() is only supported in the SELECT list of the outer query,"
+        " not in a CTE body or subquery.");
+  }
+  m_parser.m_avro_outputs.push(output);
+  return true;
 }
 
 LexCString

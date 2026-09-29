@@ -413,6 +413,29 @@ nonaliased_output:
                                           $$->output_name = $3;
                                           $$->next = NULL;
                                         }
+/* RONDB-1135: AVRO(column) prints the Avro-decoded JSON value of a binary
+ * column.  The output is a plain COLUMN output; Context::avro_output
+ * records it so the preparer can look up the column's schema.  The
+ * function name is an identifier rather than a keyword so that `avro`
+ * stays usable as an unquoted column name. */
+| identifier_c T_LEFT identifier_c T_RIGHT
+                                        {
+                                          initptr($$);
+                                          $$->type = Outputs::Type::COLUMN;
+                                          $$->column.col_idx = context->column_name_to_idx($3);
+                                          $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
+                                          $$->next = NULL;
+                                          if (!context->avro_output($1, @1, $$)) YYERROR;
+                                        }
+| identifier_c T_LEFT identifier_c T_DOT identifier_c T_RIGHT
+                                        {
+                                          initptr($$);
+                                          $$->type = Outputs::Type::COLUMN;
+                                          $$->column.col_idx = context->qualified_column_name_to_idx($3, $5);
+                                          $$->output_name = LexString{(@$).begin, size_t((@$).end - (@$).begin)};
+                                          $$->next = NULL;
+                                          if (!context->avro_output($1, @1, $$)) YYERROR;
+                                        }
 | aggfun T_LEFT arith_expr T_RIGHT      { init_aggfun($$, @$, $1, $3); }
 | T_COUNT T_LEFT arith_expr T_RIGHT     {
                                           // This needs to be a separate rule from the "aggfun..."

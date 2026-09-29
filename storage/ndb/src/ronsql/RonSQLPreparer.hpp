@@ -114,6 +114,7 @@ public:
     LEX_LITERAL_FLOAT_INVALID,
     TOO_LONG_UNALIASED_OUTPUT,
     INVALID_FRAGS_PER_WORKER,
+    UNKNOWN_FUNCTION,
     PARSER_ERROR,
   };
   /*
@@ -157,6 +158,12 @@ public:
     struct ArithExprList* append_arg_list(
         struct ArithExprList* list,
         AggregationAPICompiler::Expr* x);
+    // RONDB-1135: `output` was parsed from `function_name(column)` in a
+    // SELECT list.  Records it as an AVRO() output and returns true, or sets
+    // an UNKNOWN_FUNCTION error state and returns false when the name is not
+    // AVRO.  Throws when AVRO() is used inside a CTE body or subquery.
+    bool avro_output(LexCString function_name, LexLocation name_loc,
+                     Outputs* output);
     void enter_subquery();
     // Returns the AggregationAPICompiler that was active inside the
     // subquery/CTE body just exited (or NULL if none was created because
@@ -185,6 +192,7 @@ private:
   DynamicArray<LexCString> m_column_qualifiers; /* table qualifier per col_idx */
   DynamicArray<bool> m_col_is_inner; /* true for columns from inner subqueries */
   DynamicArray<bool> m_col_is_alias; /* true for ORDER BY alias references */
+  DynamicArray<Outputs*> m_avro_outputs; /* AVRO(column) outputs, RONDB-1135 */
   const NdbDictionary::Dictionary* m_dict = NULL;
 
   // Cross-table WHERE filters (e.g., WHERE l.price > o.min_price).
@@ -852,6 +860,8 @@ private:
   void build_agg_linked_projections();
   void build_cte_linked_projections();
   void determine_explain();
+  bool is_avro_output(const Outputs* o) const;
+  void prepare_avro_outputs();
   bool unload_schema();
   void handle_ronsql_exception(std::exception_ptr eptr);
 

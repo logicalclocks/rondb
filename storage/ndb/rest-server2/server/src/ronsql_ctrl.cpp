@@ -30,6 +30,7 @@
 #include "rate_limit.hpp"
 #include <metrics.hpp>
 #include "storage/ndb/src/ronsql/RdrsSchemaCache.hpp"
+#include "ronsql_avro.hpp"
 #include "ronsql_worker_pool.hpp"
 #include <cstdio>
 #include <memory>
@@ -184,6 +185,9 @@ class RonSQLRequest final : public RonSQLWorkerPool::Job {
 #ifdef RONSQL_PHASE_STATS
   RonSQLPhaseStats phase_stats;
 #endif
+  // AVRO() decoding (RONDB-1135); holds the prepared columns' schemas
+  // until the request is done.
+  RdrsRonSQLAvroDecoder avro_decoder;
   // Internal.MaxRespSize bounds the accumulated response body
   // (0 = unlimited).  The engine's printers never inspect stream state,
   // so past the cap the drain keeps running with writes silently
@@ -269,6 +273,7 @@ void RonSQLCtrl::ronsql(
    * its main.cc lifecycle survived; only this handoff was lost, so
    * every query paid the ~400 µs listIndexes() slow path). */
   params.schema_cache = g_schema_cache;
+  params.avro_decoder = &request->avro_decoder;
 #ifdef RONSQL_PHASE_STATS
   params.phase_stats = &request->phase_stats;
 #endif
