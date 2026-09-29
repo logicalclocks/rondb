@@ -132,6 +132,43 @@ F8 was a framework fixture issue and is already fixed.
   link through a converted value or reject cleanly at plan time with a
   permanent error naming the type mismatch. Not needed by WP-J (J0 / J1
   carry non-key columns as GROUP BY keys, which keep their types).
+- [ ] F30 (2026-09-30, WP-J spot run, `.bench_sql
+  fs_hw_agg_last10_tx300_grouped`): mysqld with single-table aggregation
+  pushdown (`ndb_pushdown_aggregate=ON`, default OFF; on in the
+  `ronsqlcrunch` config and the user's benchmark cluster) fails on the J0
+  grouped form with `Error 1296 (HY000): Got error 4120 'Scan already
+  complete' from NDBCLUSTER`. Repro (fs_bench, customer 31 has 300 rows):
+  `WITH t AS (SELECT customer_id, event_time, amount, fee, COUNT(*) AS
+  grp_rows FROM transactions_1 WHERE customer_id = 31 GROUP BY
+  customer_id, event_time, amount, fee ORDER BY event_time DESC LIMIT 10)
+  SELECT COUNT(amount), AVG(amount), MAX(fee) FROM t`. RonSQL runs it
+  correctly; the MTR twin checks pass because their mysqld keeps the
+  default OFF.
+  - Mechanism, from code reading (`ha_ndbcluster.cc`,
+    `ha_ndbcluster_push_agg.cc`), not yet confirmed in a debugger: the
+    optimizer serves GROUP BY + ORDER BY with a reverse scan of PRIMARY and
+    no sort. `ndb_push_single_table_aggregation()` replaces that scan with
+    `DoAggregation()`, which drains every row, merges the groups on the API
+    side and completes the scan. The first group returns;
+    `ha_ndbcluster::index_prev()` has no `m_stm_aggregator` branch (nor has
+    `index_next_same()`; only `index_next()`, `read_range_next()` and
+    `rnd_next()` do), so it calls `next_result()` on the completed scan:
+    4120.
+  - Suspected silent wrong result: the push never checks whether the plan
+    relies on index order. The pushed groups come back in the
+    `NdbAggregator` map order (memcmp of the group key; little-endian
+    integers do not sort numerically), so the ASC variant, which goes
+    through the dispatched `index_next()`, may keep the wrong 10 groups.
+    To confirm: run both directions with the pushdown ON and OFF and
+    compare, and `EXPLAIN FORMAT=TREE` to see the plan.
+  - Fix: do not push (single-table or join aggregation) when the plan uses
+    an ordered index for GROUP BY / ORDER BY (`JOIN::m_ordered_index_usage
+    != ORDERED_INDEX_VOID`, or a descending / sorted scan with no later
+    sort); make `index_prev()` / `index_next_same()` read the pushed result
+    or fail cleanly as a backstop. Regression test: the grouped form in
+    both directions with `ndb_pushdown_aggregate=ON`, compared with OFF.
+  - Not a WP-J blocker: the benchmark compares RonSQL on the grouped form
+    and MySQL only on the natural statements.
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
   error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
   X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,
