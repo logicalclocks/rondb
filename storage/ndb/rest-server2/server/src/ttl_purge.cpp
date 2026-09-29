@@ -1812,9 +1812,9 @@ retry_trx:
       }
       /*
        * Transaction may be failed by the schema changing,
-       * here we getTable() to get the latest NdbObject(the
-       * previous has already been removed by removeCachedObject()
-       * in the 'err' handling
+       * here we getTable() to get the latest NdbObject (the previous one
+       * was invalidated in the table_err handling, so this fetch goes to
+       * DICT and returns 723 for a table that is gone).
        */
       ttl_tab = dict->getTable(table_str.c_str());
       if (ttl_tab == nullptr) {
@@ -2426,7 +2426,19 @@ table_err:
         UpdateStatus(TTLPurgeStatus::State::kError);
         break;
       } else if (purge_trx_started) {
-        dict->removeCachedTable(table_str.c_str());
+        /**
+         * The failed scan may mean the table was dropped or replaced out of
+         * band (no ndb_schema event, reconcile possibly disabled).
+         * removeCachedTable() only releases this Ndb's reference and leaves
+         * the global cache entry valid, so the refetch at retry_trx would
+         * get the same stale object, fail the same way and burn the whole
+         * retry budget into a worker escalation. Invalidate instead, as the
+         * escalation path below already does, so the refetch goes to DICT:
+         * a dropped table then yields 723 and is classified there, a
+         * replaced one yields the new incarnation and the retry proceeds.
+         */
+        dict->invalidateTable(table_str.c_str());
+        dict->invalidateIndex(kTTLPurgeIndexName, table_str.c_str());
         goto retry_trx;
       } else {
         // Pre-transaction error: skip this table and try the next one.

@@ -1242,6 +1242,22 @@ void ConfigObject::create_v1_data_node_sections(Uint32 **v1_ptr,
 }
 
 Uint32 ConfigObject::get_v1_packed_size() const {
+  /**
+   * The v1 packed format stores section ids in a 14-bit field
+   * (OLD_KP_SECTION_MASK). The v1 layout uses
+   * 5 + #node sections + #comm sections section ids in total (header,
+   * node pointer, system pointer, system and comm pointer sections plus
+   * one section per node and per connection). A configuration with more
+   * sections than fit in 14 bits (possible with node ids up to 8191)
+   * cannot be represented in the v1 format: return 0 so that callers
+   * fail the pack cleanly instead of aborting on the require() in
+   * ConfigSection::create_v1_entry_key().
+   */
+  const Uint32 total_v1_sections =
+      5 + m_num_node_sections + m_num_comm_sections;
+  if (unlikely(total_v1_sections > (OLD_KP_SECTION_MASK + 1))) {
+    return 0;
+  }
   Uint32 v1_len_words = 0;
   v1_len_words += 2;                          // Magic content
   v1_len_words += (3 * 2);                    // Section 0

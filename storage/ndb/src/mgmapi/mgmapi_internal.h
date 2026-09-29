@@ -30,6 +30,17 @@
 #include "util/NdbSocket.h"
 
 /**
+ * Upper bound on the base64 encoded configuration a management server
+ * accepts in 'set config' (its Content-Length). A hard bound is kept to
+ * avoid unbounded allocation from a misbehaving client. The historic 1 MiB
+ * cap is too small for configurations with high node ids: a minimal config
+ * with ~8000 API slots is ~824 KB (v2 packed, base64) and realistic ones
+ * exceed 1 MiB. Defined here so that the server (Services.cpp) and testMgm
+ * check against the same bound.
+ */
+static constexpr unsigned NDB_MGM_MAX_CONFIG_BASE64_LEN = 12 * 1024 * 1024;
+
+/**
  * Set an integer parameter for a connection
  *
  * @param handle the NDB management handle.

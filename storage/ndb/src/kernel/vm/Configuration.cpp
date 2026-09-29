@@ -1052,6 +1052,57 @@ Configuration::get_send_buffer(const ndb_mgm_configuration_iterator *p)
     Uint32 num_threads = get_num_threads();
     mem = globalTransporterRegistry.get_total_max_send_buffer();
     mem += (Uint64(2) * MBYTE64 * num_threads);
+    /**
+     * The sum above grows with the number of configured transporters
+     * (SendBufferMemory, default 8 MByte, per transporter). With
+     * thousands of configured API node slots that reaches tens of
+     * GBytes, which a node with a few CPUs can never fill: send data
+     * is produced by the block threads, so the number of CPUs bounds
+     * how much send buffer can meaningfully be in use at any time.
+     * Cap the automatically derived value at 32 MByte per CPU, with a
+     * floor of 1 GByte so that clusters of ~128 transporters or fewer
+     * (every normal cluster size) keep exactly the traditional sizing
+     * regardless of CPU count. An explicitly configured
+     * TotalSendBufferMemory (branch above) is never capped.
+     *
+     * This function is called both when computing the
+     * RG_TRANSPORTER_BUFFERS reservation and when computing the
+     * SharedGlobalMemory contribution; those must be derived from the
+     * same numbers. The CPU count reported by the HW info layer can
+     * change at runtime (cgroup CPU-limit changes are reflected on
+     * reload), so read it once and cache it for all later calls.
+     */
+    static Uint32 cached_num_cpus = 0;
+    if (cached_num_cpus == 0)
+    {
+      struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
+      cached_num_cpus =
+        hwinfo->cpu_cnt ? hwinfo->cpu_cnt : hwinfo->cpu_cnt_max;
+    }
+    const Uint32 num_cpus = cached_num_cpus;
+    if (num_cpus != 0)
+    {
+      Uint64 cpu_bound = Uint64(32) * MBYTE64 * Uint64(num_cpus);
+      cpu_bound = MAX(cpu_bound, Uint64(1024) * MBYTE64);
+      if (mem > cpu_bound)
+      {
+        /* Log once; this function is called from several places */
+        static bool cap_logged = false;
+        if (!cap_logged)
+        {
+          cap_logged = true;
+          g_eventLogger->info(
+              "Automatic send buffer size %llu MBytes (from %u transporters)"
+              " capped to %llu MBytes based on %u CPUs, set"
+              " TotalSendBufferMemory to override",
+              mem / MBYTE64,
+              globalTransporterRegistry.get_transporter_count(),
+              cpu_bound / MBYTE64,
+              num_cpus);
+        }
+        mem = cpu_bound;
+      }
+    }
   }
   return mem;
 }
@@ -1361,11 +1412,30 @@ Uint64
 Configuration::compute_static_overhead()
 {
   /**
-   * Overhead from DBDIH pages, DBINFO, DBUTIL, DBDICT, block overhead
-   * 122 MByte from mt.cpp. Schema transaction memory.
+   * Overhead from DBDIH pages, DBINFO, DBUTIL, DBDICT, block overhead and
+   * schema transaction memory.
+   *
+   * The mt.cpp share used to be a fixed 122 MByte inside a 208 MByte
+   * constant, estimated in 2021 with 906 block thread slots and 352
+   * transporter ids. Since then thr_data has grown and the transporter id
+   * indexed arrays are sized from the configured max node id and the
+   * thread counts, so that share is computed from the real struct sizes
+   * and the configuration instead (mt_get_static_memory_usage()).
    */
-  Uint64 static_overhead = Uint64(208) * MBYTE64;
+  Uint64 static_overhead = Uint64(86) * MBYTE64;
   Uint32 num_threads = get_num_threads();
+  {
+    const Uint32 num_trp_ids =
+        mt_get_num_trp_ids_for_max_nodeid(SimulatedBlock::get_max_nodeid());
+    const Uint64 mt_usage = mt_get_static_memory_usage(
+        num_trp_ids, num_threads, globalData.ndbMtReceiveThreads);
+    g_eventLogger->info("Static overhead from mt.cpp is %llu MBytes "
+                        "(%u transporter ids, %u block threads, "
+                        "%u receive threads)",
+                        mt_usage / MBYTE64, num_trp_ids, num_threads,
+                        globalData.ndbMtReceiveThreads);
+    static_overhead += mt_usage;
+  }
   static_overhead += // Small memory allocations
     ((num_threads) * MBYTE64);
   Uint32 num_send_threads = globalData.ndbMtSendThreads;

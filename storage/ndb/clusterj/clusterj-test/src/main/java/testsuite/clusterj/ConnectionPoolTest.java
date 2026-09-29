@@ -227,7 +227,10 @@ public class ConnectionPoolTest extends AbstractClusterJTest {
         Properties modifiedProperties = new Properties();
         modifiedProperties.putAll(props);
         modifiedProperties.put(Constants.PROPERTY_CLUSTER_CONNECT_RETRIES, 0);
-        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "2048");
+        // Must exceed MAX_NODES_ID (8191): the mgmd then rejects the id as
+        // "illegal nodeid", whereas an unused id inside the range fails later
+        // as "No node defined with id=..." without the expected word.
+        modifiedProperties.put(Constants.PROPERTY_CONNECTION_POOL_NODEIDS, "8192");
         try {
             ClusterJHelper.getSessionFactory(modifiedProperties);
         } catch (ClusterJFatalUserException ex) {

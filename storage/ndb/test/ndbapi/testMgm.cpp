@@ -37,6 +37,10 @@
 #include "util/TlsKeyManager.hpp"
 #include "util/require.h"
 
+#include <algorithm>
+#include <memory>
+#include <vector>
+
 /*
   Tests that only need the mgmd(s) started
 
@@ -999,9 +1003,12 @@ int runTestStatusUntilStopped(NDBT_Context *ctx, NDBT_Step *step) {
 
 static bool get_nodeid(NdbMgmd &mgmd, const Properties &args,
                        Properties &reply) {
-  // Fill in default values of other args
+  // Fill in default values of other args. Announce our real version: the
+  // mgmd's node id gates judge the announced version against the node ids in
+  // the cluster configuration (this test cluster has ids above 255), so the
+  // upstream placeholder 1 would be refused before any check is reached.
   Properties call_args(args);
-  if (!call_args.contains("version")) call_args.put("version", 1);
+  if (!call_args.contains("version")) call_args.put("version", NDB_VERSION);
   if (!call_args.contains("nodetype")) call_args.put("nodetype", 1);
   if (!call_args.contains("nodeid")) call_args.put("nodeid", 1);
   if (!call_args.contains("user")) call_args.put("user", "mysqld");
@@ -1616,9 +1623,14 @@ static bool check_set_config_invalid_content_encoding(NdbMgmd &mgmd) {
 static bool check_set_config_too_large_content_length(NdbMgmd &mgmd) {
   g_info << __func__ << endl;
   Properties args;
-  args.put("Content-Length", 1024 * 1024 + 1);
+  // One byte above the bound the mgmd enforces (shared definition, so the
+  // test follows when the bound changes)
+  const Uint32 too_large = NDB_MGM_MAX_CONFIG_BASE64_LEN + 1;
+  args.put("Content-Length", too_large);
+  BaseString expected;
+  expected.assfmt("Illegal config length size %u", too_large);
   return set_config_result_contains(mgmd, args, BaseString(""),
-                                    "Illegal config length size 1048577");
+                                    expected.c_str());
 }
 
 static bool check_set_config_too_small_content_length(NdbMgmd &mgmd) {
@@ -1898,28 +1910,50 @@ static bool check_connection_parameter_invalid_nodeid(NdbMgmd &mgmd) {
   return true;
 }
 
+// Collect the node ids of the configuration, ascending, and the lowest NDB
+// node id. Used to ask the mgmd only about connections that can exist: one
+// synchronous round trip per id costs tens of milliseconds, so a loop over
+// all ABS_MAX_NODES (8192) ids took several minutes per call.
+static bool get_config_node_ids(const Config &conf,
+                                std::vector<Uint32> &node_ids,
+                                Uint32 &first_ndb_node) {
+  node_ids.clear();
+  first_ndb_node = 0;
+  ConfigIter iter(&conf, CFG_SECTION_NODE);
+  for (iter.first(); iter.valid(); iter.next()) {
+    Uint32 nodeId = 0, nodeType = 0;
+    if (iter.get(CFG_NODE_ID, &nodeId) != 0) continue;
+    if (nodeId == 0 || nodeId >= ABS_MAX_NODES) continue;
+    node_ids.push_back(nodeId);
+    if (iter.get(CFG_TYPE_OF_SECTION, &nodeType) == 0 &&
+        nodeType == NDB_MGM_NODE_TYPE_NDB &&
+        (first_ndb_node == 0 || nodeId < first_ndb_node)) {
+      first_ndb_node = nodeId;
+    }
+  }
+  std::sort(node_ids.begin(), node_ids.end());
+  return !node_ids.empty();
+}
+
 static bool check_connection_parameter(NdbMgmd &mgmd) {
   // Find a NDB node with dynamic port
   Config conf;
   if (!mgmd.get_config(conf)) return false;
 
+  // Only the configured node ids can have a connection, so ask the
+  // mgmd about those instead of every id below ABS_MAX_NODES.
+  std::vector<Uint32> node_ids;
   Uint32 nodeId1 = 0;
-  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
-    Uint32 nodeType;
-    ConfigIter iter(&conf, CFG_SECTION_NODE);
-    if (iter.find(CFG_NODE_ID, i) == 0 &&
-        iter.get(CFG_TYPE_OF_SECTION, &nodeType) == 0 &&
-        nodeType == NDB_MGM_NODE_TYPE_NDB) {
-      nodeId1 = i;
-      break;
-    }
+  if (!get_config_node_ids(conf, node_ids, nodeId1) || nodeId1 == 0) {
+    g_err << "Failed to find a NDB node in the configuration" << endl;
+    return false;
   }
 
   NodeId otherNodeId = 0;
   BaseString original_value;
 
   // Get current value of first connection between mgmd and other node
-  for (int nodeId = 1; nodeId < ABS_MAX_NODES; nodeId++) {
+  for (const Uint32 nodeId : node_ids) {
     g_info << "Checking if connection between " << nodeId1 << " and " << nodeId
            << " exists" << endl;
 
@@ -2183,8 +2217,13 @@ static bool check_set_ports_mgmapi(NdbMgmd &mgmd) {
   int ret;
   int nodeid = 1;
   unsigned num_ports = 1;
-  ndb_mgm_dynamic_port ports[ABS_MAX_NODES * 10];
-  static_assert(ABS_MAX_NODES < NDB_ARRAY_SIZE(ports));
+  // Heap allocated: ABS_MAX_NODES * 10 entries is 640 KB at the 8192 node id
+  // ceiling, more than a step thread's stack should be asked to hold
+  constexpr unsigned kNumPorts = ABS_MAX_NODES * 10;
+  static_assert(ABS_MAX_NODES < kNumPorts);
+  std::unique_ptr<ndb_mgm_dynamic_port[]> ports_buf(
+      new ndb_mgm_dynamic_port[kNumPorts]);
+  ndb_mgm_dynamic_port *const ports = ports_buf.get();
   ports[0].nodeid = 1;
   ports[0].port = -1;
 
@@ -2257,7 +2296,7 @@ static bool check_set_ports_mgmapi(NdbMgmd &mgmd) {
 
   ndbout_c("Many many ports");
   nodeid = 1;
-  num_ports = NDB_ARRAY_SIZE(ports); // <<
+  num_ports = kNumPorts; // <<
   for (unsigned i = 0; i < num_ports; i++) {
     ports[i].nodeid = i + 1;
     ports[i].port = -37;
@@ -2272,8 +2311,10 @@ static bool check_set_ports_mgmapi(NdbMgmd &mgmd) {
 
 // Return name value pair of nodeid/ports which can be sent
 // verbatim back to ndb_mgmd
-static bool get_all_ports(NdbMgmd &mgmd, Uint32 nodeId1, BaseString &values) {
-  for (int nodeId = 1; nodeId < ABS_MAX_NODES; nodeId++) {
+static bool get_all_ports(NdbMgmd &mgmd, Uint32 nodeId1,
+                          const std::vector<Uint32> &node_ids,
+                          BaseString &values) {
+  for (const Uint32 nodeId : node_ids) {
     Properties args;
     args.put("node1", nodeId1);
     args.put("node2", nodeId);
@@ -2289,7 +2330,7 @@ static bool get_all_ports(NdbMgmd &mgmd, Uint32 nodeId1, BaseString &values) {
       g_err << "Failed to get value" << endl;
       return false;
     }
-    values.appfmt("%d=%s\n", nodeId, value.c_str());
+    values.appfmt("%u=%s\n", nodeId, value.c_str());
   }
   return true;
 }
@@ -2299,23 +2340,18 @@ static bool check_set_ports(NdbMgmd &mgmd) {
   Config conf;
   if (!mgmd.get_config(conf)) return false;
 
+  std::vector<Uint32> node_ids;
   Uint32 nodeId1 = 0;
-  for (Uint32 i = 1; i < ABS_MAX_NODES; i++) {
-    Uint32 nodeType;
-    ConfigIter iter(&conf, CFG_SECTION_NODE);
-    if (iter.find(CFG_NODE_ID, i) == 0 &&
-        iter.get(CFG_TYPE_OF_SECTION, &nodeType) == 0 &&
-        nodeType == NDB_MGM_NODE_TYPE_NDB) {
-      nodeId1 = i;
-      break;
-    }
+  if (!get_config_node_ids(conf, node_ids, nodeId1) || nodeId1 == 0) {
+    g_err << "Failed to find a NDB node in the configuration" << endl;
+    return false;
   }
 
   g_err << "Using NDB node with id: " << nodeId1 << endl;
 
   g_err << "Get original values of dynamic ports" << endl;
   BaseString original_values;
-  if (!get_all_ports(mgmd, nodeId1, original_values)) {
+  if (!get_all_ports(mgmd, nodeId1, node_ids, original_values)) {
     g_err << "Failed to get all original values" << endl;
     return false;
   }
@@ -2359,7 +2395,7 @@ static bool check_set_ports(NdbMgmd &mgmd) {
   g_err << "Compare new values of dynamic ports" << endl;
   {
     BaseString current_values;
-    if (!get_all_ports(mgmd, nodeId1, current_values)) {
+    if (!get_all_ports(mgmd, nodeId1, node_ids, current_values)) {
       g_err << "Failed to get all current values" << endl;
       return false;
     }
@@ -2398,7 +2434,7 @@ static bool check_set_ports(NdbMgmd &mgmd) {
   g_err << "Check restored values" << endl;
   {
     BaseString current_values;
-    if (!get_all_ports(mgmd, nodeId1, current_values)) {
+    if (!get_all_ports(mgmd, nodeId1, node_ids, current_values)) {
       g_err << "Failed to get all current values" << endl;
       return false;
     }

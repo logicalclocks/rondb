@@ -207,6 +207,8 @@ TransporterReceiveData::TransporterReceiveData()
     m_read_transporters(),
     m_has_data_transporters(),
     m_bad_data_transporters(),
+    m_handle_trps(),
+    m_trp_words(1),
     m_last_trp_id(0),
     m_stop_trp_id(0)
 {
@@ -220,6 +222,7 @@ TransporterReceiveData::TransporterReceiveData()
   m_read_transporters.clear();
   m_has_data_transporters.clear();
   m_bad_data_transporters.clear();
+  m_handle_trps.clear();  // words above m_trp_words are never written again
 
 #if defined(HAVE_EPOLL_CREATE)
   m_epoll_fd = -1;
@@ -361,6 +364,7 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
       localNodeId(0),
       maxTransporters(_maxTransporters),
       nTransporters(0),
+      m_trp_words(1),
       nTCPTransporters(0),
       nSHMTransporters(0),
       nRDMATransporters(0),
@@ -389,8 +393,15 @@ TransporterRegistry::TransporterRegistry(TransporterCallback *callback,
   performStates = new PerformState[maxTransporters];
   nodeActiveStates    = new bool              [ABS_MAX_NODES];
   ioStates = new IOState[maxTransporters];
-  peerUpIndicators = new bool[maxTransporters];
-  connectingTime = new Uint32[maxTransporters];
+  /**
+   * peerUpIndicators and connectingTime are indexed by node id (see
+   * indicate_node_up(), get_and_clear_node_up_indicator() and the
+   * backoff_* helpers), not by transporter id, and are initialized in
+   * the ABS_MAX_NODES loop below. They must therefore not be sized by
+   * maxTransporters, which a client registry sets far below ABS_MAX_NODES.
+   */
+  peerUpIndicators = new bool[ABS_MAX_NODES];
+  connectingTime = new Uint32[ABS_MAX_NODES];
   m_disconnect_errnum = new int[maxTransporters];
   m_disconnect_enomem_error = new Uint32[maxTransporters];
   m_error_states = new ErrorState[maxTransporters];
@@ -720,8 +731,10 @@ bool TransporterRegistry::connect_server(NdbSocket &&socket, BaseString &msg,
                          multi_transporter_instance));
   */
 
-  // Check that nodeid is in range before accessing the arrays
-  if (nodeId < 0 || nodeId > (int)ABS_MAX_NODES) {
+  // Check that nodeid is in range before accessing the arrays.
+  // The arrays are sized ABS_MAX_NODES, so the valid range is
+  // 0 < nodeId < ABS_MAX_NODES (the previous check was off by one).
+  if (nodeId <= 0 || nodeId >= (int)ABS_MAX_NODES) {
     /* Strange, log it */
     msg.assfmt(
         "Ignored connection attempt as client "
@@ -895,7 +908,10 @@ bool TransporterRegistry::connect_server(NdbSocket &&socket, BaseString &msg,
 void TransporterRegistry::insert_allTransporters(Transporter *t) {
   TrpId trp_id = t->getTransporterIndex();
   if (trp_id == 0) {
+    /* Ids are 1..maxTransporters-1, never overrun the id indexed arrays */
+    require(nTransporters + 1 < maxTransporters);
     nTransporters++;
+    publish_trp_words();
     require(allTransporters[nTransporters] == nullptr);
     allTransporters[nTransporters] = t;
     t->setTransporterIndex(nTransporters);
@@ -933,7 +949,8 @@ bool TransporterRegistry::configureTransporter(
   assert(localNodeId);
   assert(config->localNodeId == localNodeId);
 
-  if (remoteNodeId > ABS_MAX_NODES) return false;
+  // Arrays are sized ABS_MAX_NODES: valid ids are < ABS_MAX_NODES
+  if (remoteNodeId >= ABS_MAX_NODES) return false;
 
   Transporter *t = theNodeIdTransporters[remoteNodeId];
   if (t != nullptr) {
@@ -944,6 +961,22 @@ bool TransporterRegistry::configureTransporter(
 
   DEBUG("Configuring transporter from " << localNodeId << " to "
                                         << remoteNodeId);
+
+  /**
+   * Transporter ids are assigned sequentially from 1 (id 0 is reserved)
+   * and index arrays of maxTransporters entries. Refuse to create the
+   * transporter rather than overrun them. The caller (IPCConfig) logs the
+   * failed node pair and fails the whole configuration, so an API or MGM
+   * client with more transporters than TransporterFacade::MAX_TRPS fails
+   * to start instead of corrupting memory.
+   */
+  if (unlikely(nTransporters + 1 >= maxTransporters)) {
+    g_eventLogger->error(
+        "Node %u can not create a transporter to node %u, all %u "
+        "transporter id slots are in use",
+        localNodeId, remoteNodeId, maxTransporters - 1);
+    return false;
+  }
 
   switch (config->type) {
     case tt_TCP_TRANSPORTER:
@@ -1012,6 +1045,7 @@ bool TransporterRegistry::createTCPTransporter(
     TransporterConfiguration *config) {
   TCP_Transporter *t = nullptr;
   /* Don't use index 0, special use case for extra transporters */
+  assert(nTransporters + 1 < maxTransporters);  // checked by caller
   config->transporterIndex = nTransporters + 1;
   if (config->remoteNodeId == config->localNodeId) {
     t = new Loopback_Transporter(*this, config);
@@ -1028,6 +1062,7 @@ bool TransporterRegistry::createTCPTransporter(
 
   // Put the transporter in the transporter arrays
   nTransporters++;
+  publish_trp_words();
   allTransporters[nTransporters] = t;
   theTCPTransporters[nTCPTransporters] = t;
   theNodeIdTransporters[t->getRemoteNodeId()] = t;
@@ -1044,6 +1079,7 @@ bool TransporterRegistry::createSHMTransporter(TransporterConfiguration *config
   DBUG_ENTER("TransporterRegistry::createTransporter SHM");
 
   /* Don't use index 0, special use case for extra  transporters */
+  assert(nTransporters + 1 < maxTransporters);  // checked by caller
   config->transporterIndex = nTransporters + 1;
 
   SHM_Transporter *t = new SHM_Transporter(
@@ -1057,6 +1093,7 @@ bool TransporterRegistry::createSHMTransporter(TransporterConfiguration *config
 
   // Put the transporter in the transporter arrays
   nTransporters++;
+  publish_trp_words();
   allTransporters[nTransporters] = t;
   theSHMTransporters[nSHMTransporters] = t;
   theNodeIdTransporters[t->getRemoteNodeId()] = t;
@@ -1095,6 +1132,7 @@ bool TransporterRegistry::createRDMATransporter(
   DBUG_ENTER("TransporterRegistry::createTransporter RDMA");
 
   /* Don't use index 0, special use case for extra transporters */
+  assert(nTransporters + 1 < maxTransporters);  // checked by caller
   config->transporterIndex = nTransporters + 1;
 
   /* Match SHM_Transporter style: tolerate (impossible) NULL return from
@@ -1110,6 +1148,7 @@ bool TransporterRegistry::createRDMATransporter(
 
   // Put the transporter in the transporter arrays
   nTransporters++;
+  publish_trp_words();
   allTransporters[nTransporters] = t;
   theRDMATransporters[nRDMATransporters] = t;
   theNodeIdTransporters[t->getRemoteNodeId()] = t;
@@ -1767,6 +1806,17 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
   Uint32 retVal = 0;
 
   /**
+   * Width of the receive masks for this round, see
+   * TransporterReceiveData::m_trp_words. Checked in debug builds: no
+   * bit may be set above the width in any mask we scan.
+   */
+  recvdata.m_trp_words = m_trp_words.load(std::memory_order_acquire);
+  assert(recvdata.trps_upper_words_clear(recvdata.m_read_transporters));
+  assert(recvdata.trps_upper_words_clear(recvdata.m_recv_socket_transporters));
+  assert(recvdata.trps_upper_words_clear(recvdata.m_has_data_transporters));
+  assert(recvdata.trps_upper_words_clear(recvdata.m_handled_transporters));
+
+  /**
    * It is important that we read data from transporters in a fair
    * manner. Thus it is important that not one transporter gets more
    * attention than others. To achieve this we decide which transporters
@@ -1849,8 +1899,8 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * we don't lose indications of data from those transporters
    * we will set m_has_data_transporters on those.
    */
-  if (!(recvdata.m_read_transporters.isclear() &&
-        recvdata.m_recv_socket_transporters.isclear()))
+  if (!(recvdata.trps_isclear(recvdata.m_read_transporters) &&
+        recvdata.trps_isclear(recvdata.m_recv_socket_transporters)))
   {
     /**
      * There is still transporters from previous pollReceive iteration
@@ -1868,7 +1918,7 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
    * This might entail a sleep waiting for transporters to receive on their
    * socket (all transporters have a socket, even the SHM transporter).
    */
-  if (!recvdata.m_has_data_transporters.isclear())
+  if (!recvdata.trps_isclear(recvdata.m_has_data_transporters))
   {
     /**
      * Don't wait for sockets to receive data, we are already
@@ -1969,8 +2019,9 @@ Uint32 TransporterRegistry::pollReceive(Uint32 timeOutMillis,
     retVal |= res;
   }
 #endif
-  recvdata.m_read_transporters.bitOR(recvdata.m_has_data_transporters);
-  recvdata.m_has_data_transporters.clear();
+  recvdata.trps_bitOR(recvdata.m_read_transporters,
+                      recvdata.m_has_data_transporters);
+  recvdata.trps_clear(recvdata.m_has_data_transporters);
   Uint32 stop_trp_id = recvdata.m_stop_trp_id;
   recvdata.m_last_trp_id = 0;
   recvdata.m_stop_trp_id = 0;
@@ -2266,6 +2317,8 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
   TransporterReceiveWatchdog guard(recvdata);
   assert((receiveHandle == &recvdata) || (receiveHandle == nullptr));
   bool stopReceiving = false;
+  /* Width of the receive masks for this round, see pollReceive() */
+  recvdata.m_trp_words = m_trp_words.load(std::memory_order_acquire);
 
   if (recvdata.m_recv_socket_transporters.get(0))
   {
@@ -2333,13 +2386,20 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
    *  advantage of this small optimization is not worth the risk.
    */
   NDB_TICKS last_recv = NdbTick_getCurrentTicks();
-  TrpBitmask handle_trps(recvdata.m_recv_socket_transporters);
+  /**
+   * Working set for this round: transporters with data on their socket
+   * plus those with data left over from the previous round. Persistent
+   * member so that only the m_trp_words words in use are written and
+   * scanned, see TransporterReceiveData::m_trp_words.
+   */
+  TrpBitmask &handle_trps = recvdata.m_handle_trps;
+  recvdata.trps_assign(handle_trps, recvdata.m_recv_socket_transporters);
   bool stop_unpacking = false;
-  handle_trps.bitOR(recvdata.m_read_transporters);
+  recvdata.trps_bitOR(handle_trps, recvdata.m_read_transporters);
   Uint32 trp_id = recvdata.m_last_trp_id;
   Uint32 rec_bytes = 0;
   Uint32 loop_count = 0;
-  while ((trp_id = handle_trps.find_next(trp_id + 1)) !=
+  while ((trp_id = recvdata.trps_find_next(handle_trps, trp_id + 1)) !=
             BitmaskImpl::NotFound)
   {
     assert(recvdata.m_transporters.get(trp_id));
@@ -2746,7 +2806,7 @@ TransporterRegistry::performReceive(TransporterReceiveHandle& recvdata,
       }
     }
   }
-  recvdata.m_handled_transporters.clear();
+  recvdata.trps_clear(recvdata.m_handled_transporters);
   recvdata.m_last_trp_id = 0;
   return (Uint32)(stopReceiving || stop_unpacking);
 }
@@ -2856,7 +2916,7 @@ void TransporterRegistry::printState() {
   ndbout << "-- TransporterRegistry -- " << endl
          << endl
          << "Transporters = " << nTransporters << endl;
-  for (TrpId trpId = 1; trpId <= maxTransporters; trpId++) {
+  for (TrpId trpId = 1; trpId <= nTransporters; trpId++) {
     if (allTransporters[trpId] != nullptr) {
       const NodeId remoteNodeId = allTransporters[trpId]->getRemoteNodeId();
       ndbout << "Transporter: " << trpId << " remoteNodeId: " << remoteNodeId
@@ -3993,7 +4053,12 @@ TransporterRegistry::start_service(SocketServer& socket_server,
     addr.set_port(port);
     if (!socket_server.setup(transporter_service, &addr)) {
       DBUG_PRINT("info", ("Trying new port"));
-      port = 0;
+      /*
+       * Ask the OS for a new port. The dynamic port this node used before it
+       * went down is not reserved for it while it is down, so some other
+       * process may well have taken it in the meantime.
+       */
+      addr.set_port(0);
       if (t.m_s_service_port > 0 ||
           !socket_server.setup(transporter_service, &addr)) {
         /*
@@ -4006,7 +4071,7 @@ TransporterRegistry::start_service(SocketServer& socket_server,
             Ndb_combine_address_port(buf,
                                      sizeof(buf),
                                      t.m_interface,
-                                     t.m_s_service_port);
+                                     port);
         g_eventLogger->error("Unable to setup transporter service port: %s!\n"
                              "Please check if the port is already used,\n"
                              "(perhaps the Node is already running)",
@@ -4101,13 +4166,13 @@ TransporterRegistry::get_send_transporter_id(NodeId nodeId, BlockNumber bno)
 }
 
 Transporter* TransporterRegistry::get_node_transporter(NodeId nodeId) const {
-  assert(nodeId <= ABS_MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   return theNodeIdTransporters[nodeId];
 }
 
 Multi_Transporter *TransporterRegistry::get_node_multi_transporter(
     NodeId nodeId) const {
-  assert(nodeId <= ABS_MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   return theNodeIdMultiTransporters[nodeId];
 }
 
@@ -4119,7 +4184,7 @@ Multi_Transporter *TransporterRegistry::get_node_multi_transporter(
  */
 Transporter *TransporterRegistry::get_node_base_transporter(
     NodeId nodeId) const {
-  assert(nodeId <= ABS_MAX_NODES);
+  assert(nodeId < ABS_MAX_NODES);
   Transporter *t = theNodeIdTransporters[nodeId];
   assert(t == nullptr || !t->isPartOfMultiTransporter());
   return t;
