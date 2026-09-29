@@ -645,6 +645,25 @@ Order of work:
 
 Effort: 1–2 weeks.
 
+*J5 step 1 status (2026-09-29): written, not built.* The new header
+`storage/ndb/include/util/AggColumnLoad.hpp` holds `aggTypeSupported`,
+`aggIsUnsignedType`, `aggAlignedType`, `aggLoadColumnValue` and
+`aggStringPayload`, with errors returned as an `AggLoadStatus` the kernel
+maps to its `ZAGG_*` codes.
+- `AggInterpreterBase::loadColumnTypedFromBuf` calls the decode.
+  `TypeSupported`, `IsUnsigned` and `AlignedType` delegate to the shared
+  functions.
+- The string capture (charset, declared size, read high-water mark) stays
+  in the kernel and uses `aggStringPayload`.
+- The JIT bridge (`DbtupJitGlue.cpp`) keeps its own numeric decode for its
+  register layout. A later cleanup could make it call the helper.
+- The new unit test `AggColumnLoad-t` (`src/ndbapi/AggColumnLoadTest.cpp`)
+  covers every integer width signed and unsigned at their limits,
+  FLOAT / DOUBLE, DATE / YEAR / packed DATETIME2 and TIMESTAMP2 at
+  several fraction widths, DECIMAL signed and unsigned at scale 0 and 2
+  (plus the negative-unsigned conversion error), NULL, the string payload
+  helper and an unsupported type.
+
 Later (J5b and beyond):
 - **Main GROUP BY over the last N.** The group key must be encoded
   exactly as the kernel encodes GB keys, collation included, which is a
