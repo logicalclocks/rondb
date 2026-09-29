@@ -70,6 +70,9 @@ type REST struct {
 	// REST.MaxKeepaliveRequests / REST.IdleConnectionTimeoutS.
 	MaxKeepaliveRequests   uint32
 	IdleConnectionTimeoutS uint32
+	// Directory for temporary request-body files; empty keeps Drogon's
+	// default of ./uploads. Mirrors REST.UploadPath.
+	UploadPath string
 }
 
 func (g *REST) Validate() error {

@@ -66,6 +66,7 @@ func newWithDefaults() AllConfigs {
 			ProbePort:              4407,
 			MaxKeepaliveRequests:   0,
 			IdleConnectionTimeoutS: 0,
+			UploadPath:             "",
 		},
 		RonDB: RonDB{
 			Mgmds: []Mgmd{

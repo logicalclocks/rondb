@@ -150,6 +150,15 @@ CLASS
     " GET/HEAD of the ping and health endpoints, always without"
     " authentication. TLS mirrors the main REST listener, except a client"
     " certificate is never required.")
+ CM(std::string, uploadPath, UploadPath, "",
+    "Directory for the HTTP server's temporary request-body files: at"
+    " startup it creates 256 subdirectories under <UploadPath>/tmp and any"
+    " request body larger than the in-memory limit is buffered in a file"
+    " there. Empty (the default) keeps the built-in location, ./uploads"
+    " relative to the working directory. Set this to a writable directory"
+    " when the working directory is not writable, otherwise startup logs"
+    " 256 'Permission denied' errors and oversized request bodies are"
+    " silently read as empty.")
  PROBLEM(!enable, "REST must be enabled")
  PROBLEM(serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
