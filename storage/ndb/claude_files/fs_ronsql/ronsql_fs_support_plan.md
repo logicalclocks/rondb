@@ -512,29 +512,147 @@ CTE and combined with a comma join (lastn-17). A last-N CTE joined as a
 child keeps the rejection.
 
 *J5 — the fast path: collect scan plus aggregation in the RonSQL layer
-(next, agreed 2026-09-29).* The same run bounds the cost:
-- the CTE protocol's fixed cost is about 0.6 ms (`fs_hw_snow1_point`);
-- the ordered collect scan costs 0.40 ms (`fs_hw_collect5`), below
-  MySQL's 0.62 ms.
+(next, agreed 2026-09-29; design, not implemented).*
 
-Scope: a main query that aggregates one J1 last-N CTE directly (scalar or
-GROUP BY on CTE columns, aggregate arguments plain CTE columns, no joins,
-no main WHERE). The body runs as the collect scan: `collapse_collect_cte`'s
-single-table ORDER BY / LIMIT path, streaming in index order or with the
-buffered sort. Each delivered row is fed to an `NdbAggregator` as a
-one-row partial result, so the existing merge code computes the
-aggregates: checked 64-bit SUM (1860), string MIN/MAX with collation,
-COUNT and NULL rules. `ResultPrinter` prints them as for the kernel path.
+Why. The WP-J spot run (`benchmarks.md` §8) puts the CTE protocol's fixed
+cost at about 0.6 ms (`fs_hw_snow1_point`), and J1 adds about 3.5 µs per
+history row on top. The ordered collect scan costs 0.40 ms
+(`fs_hw_collect5`), below MySQL's 0.62 ms. A path that reads the last N
+rows that way and aggregates them without the CTE protocol is expected
+near the collect cost: about 1.5× faster than MySQL and 4–5× faster than
+J1 on 300-row histories.
 
-The new code is the per-row conversion of a column value into the
-kernel's accumulator type, which must mirror `AggInterpreter`
-(`AlignedType`). The J0/J1 results of `ronsql_cte_dd_lastn_agg` are its
-differential; EXPLAIN reports the path.
+Scope, v1:
+- The statement has exactly one CTE, and the main query reads FROM it
+  alone: no joins, WHERE, GROUP BY, HAVING, ORDER BY or LIMIT on the main
+  query.
+- Every main output is `COUNT(*)`, or `COUNT` / `SUM` / `MIN` / `MAX` /
+  `AVG` of a plain column of the CTE. No arithmetic or GREATEST/LEAST in
+  the arguments, so the main aggregation program holds only `Load`s and
+  aggregate instructions.
+- The body has `collapse_collect_cte()`'s shape: one real table, plain
+  and distinct columns, ORDER BY and LIMIT >= 1, and no GROUP BY, HAVING,
+  aggregates or subqueries.
+- Unlike J1, the body need not select the primary key: J5 aggregates the
+  delivered rows themselves, so no grouping trick is involved.
+- Everything else keeps J1 (joins, main GROUP BY, several CTEs) or
+  today's rules.
 
-Multi-branch extension, after J5: several independent last-N branches
-combined with a comma join (lastn-17's shape). Their collect scans are
-defined in one transaction and executed together, then aggregated per
-branch and combined. Joins over a last-N CTE stay on J1.
+Execution:
+1. **Recognition and rewrite (parse time).** A new
+   `route_lastn_aggregate_to_api()` runs before
+   `rewrite_lastn_cte_bodies()`, so J1 never sees a J5 statement.
+   - It rewrites like `collapse_collect_cte()`. The root takes the body's
+     table, WHERE, ORDER BY and LIMIT; the CTE list is dropped; the main
+     outputs' column references are redirected to the body's columns
+     (the collapse's col_idx remapping). The main aggregates are then
+     registered against the base table, as for a single-table aggregate.
+   - It sets a new `m_api_side_aggregation`, so the aggregation program is
+     never attached to the scan.
+2. **Scan.** `execute_single_table_passthrough()` runs unchanged:
+   - the PK-lookup arm, index-order streaming with batch = LIMIT, or the
+     buffered client-side sort;
+   - LIMIT applied after the ordered merge, or after the sort.
+
+   Its three print sites (PK arm, streaming, sorted output) go through a
+   row sink: print today, aggregate under J5. The scan reads the columns
+   the program loads.
+3. **Aggregation.** The main `NdbAggregator` is built from the compiled
+   program exactly as for the pushdown path, but never attached to a
+   scan. For each delivered row, and for each aggregate slot:
+   - decode the slot's source column into a `Register` with the shared
+     decoder (item 5);
+   - turn it into a one-row partial `AggResItem`: COUNT becomes 1, or 0
+     for NULL; SUM / MIN / MAX get the decoded register, with `is_null`
+     for NULL;
+   - pass all slots to `NdbAggregator::MergeLocalGroup()` (item 4).
+
+   The existing merge rules then do the arithmetic, exactly as they merge
+   partials from the data nodes. That covers checked 64-bit SUM (error
+   1860), DOUBLE SUM, MIN/MAX across signedness, and string MIN/MAX with
+   the column collation. AVG is the main scope's SUM + COUNT
+   decomposition, printed with `PRINT_AVG` as today.
+4. **NDB API: `NdbAggregator::MergeLocalGroup(gb_key, gb_len, items)`.**
+   Factored out of `ProcessRes`' per-group body: insert or merge, the
+   RONDB-831 COUNT fixup, and the NULL / first-contribution handling.
+   `ProcessRes` calls it, so there is one merge path.
+   - String slots arrive with caller-owned `val_ptr` buffers in the
+     `resolveStringSlots` layout, and an insert copies them.
+   - It returns 0 or the NDB error code (1860).
+   - The scalar case (`n_gb_cols == 0`) is the only one J5 v1 uses.
+5. **Shared decode.** The per-type switch of
+   `AggInterpreterBase::loadColumnTypedFromBuf` moves into one inline
+   helper in `NdbAggregationCommon.hpp` (or a new sibling header), which
+   the kernel and the API both call:
+   ```
+   aggLoadColumn(type, is_unsigned, precision, scale, data, byte_size,
+                 is_null, Register* out, decimal_t* scratch) -> error
+   ```
+   - It covers integer widths, unsigned, DATE / YEAR / DATETIME2 / TIME2
+     / TIMESTAMP2 as packed unsigned values, FLOAT / DOUBLE, DECIMAL
+     through `bin2decimal` / `decimal2double` / `decimal2longlong`, and
+     strings.
+   - For the kernel this is a pure refactor: same behaviour, still
+     inline.
+   - The row bytes J5 decodes come from `NdbRecAttr`, which carries the
+     same NDB storage format as the kernel's attribute read. So the value
+     conversion is shared code, not a mirror.
+6. **Output.** The existing aggregate `ResultPrinter` path prints the
+   aggregator's result, so display rules (AVG scale, DECIMAL scale, FLOAT)
+   are the pushdown path's.
+7. **EXPLAIN.** A line such as `CTE 't' aggregated in RonSQL over the
+   ORDER BY / LIMIT scan of its body (last N rows)`, after the collapse's
+   scan-plan lines.
+
+To confirm while implementing:
+- **The empty scalar result.** An entity with no rows must print COUNT 0
+  and NULL for the rest, as the pushdown path does. Check how
+  `ResultPrinter` handles an aggregator that received no group, or feed
+  one all-NULL partial.
+- **The string register layout.** Check the kernel's CHAR / VARCHAR load
+  (pointer and length) and its conversion to the merge layout.
+- **The 1860 surfacing.** A merge error in the API must produce the same
+  RonSQL error class, HTTP status and message as the kernel-detected
+  overflow.
+- **The kernel refactor.** It must leave the JIT's load lowering
+  untouched, and every aggregate suite unchanged: ronsql, ronsql_jit,
+  ronsql_cte*, ronsql_fs* and the ndb pushdown-agg tests.
+
+Tests:
+- **`ronsql_cte_dd_lastn_agg`.**
+  - The natural statements in scope run J5. That is lastn-1..9, 15 (the
+    buffered-sort arm) and 16 (a table scan with sort). Their J0 forms
+    keep the kernel path, which is the differential, and everything is
+    compared with MySQL.
+  - lastn-P1 pins the J5 EXPLAIN line.
+  - New cases: DECIMAL(12,2), DOUBLE and FLOAT columns (added to
+    `lastn_tx`); a BIGINT SUM overflow (1860 raised by the API merge); a
+    string MIN/MAX across a case-insensitive tie ('Grocery' vs
+    'grocery'); a body whose WHERE binds the whole primary key (the PK
+    arm); a body without the primary key in its outputs.
+- **`NdbAggregatorMerge-t`.** `MergeLocalGroup` cases for insert, merge,
+  NULLs, COUNT, overflow and strings.
+- **Benchmarks.** `fs_hw_agg_last10`, `_last100` and `_last10_tx300` pin
+  the J5 line. The target is `fs_hw_collect5` plus a few tens of µs, and
+  below MySQL. The `_tx300_grouped` entry stays the CTE-plan baseline.
+
+Order of work:
+1. The shared decode refactor, kernel side only, with the aggregate
+   suites green.
+2. `MergeLocalGroup` plus its unit tests.
+3. The RonSQL route, row sink and EXPLAIN, with the lastn tests.
+4. The benchmark pins and a spot run.
+
+Effort: 1–2 weeks.
+
+Later (J5b and beyond):
+- **Main GROUP BY over the last N.** The group key must be encoded
+  exactly as the kernel encodes GB keys, collation included, which is a
+  separate risk.
+- **Several independent last-N branches combined with a comma join**
+  (lastn-17's shape). Their scans are defined in one transaction and
+  executed together, then aggregated per branch and combined.
+- **Joins over a last-N CTE** stay on J1.
 
 *J2 benchmarks (2026-09-29).* Four `fs_hw` entries (`benchmarks.md` §2):
 - `fs_hw_agg_last10` and `fs_hw_agg_last100` use `{KEY}`, the serving mix
