@@ -531,6 +531,12 @@ int main(int argc, char *argv[]) {
                             globalConfigs.security.tls.privateKeyFile);
   drogon::app().setThreadNum(globalConfigs.rest.numThreads);
   drogon::app().setThreadStackSize(8 * 1024 * 1024);
+  /* Drogon buffers oversized request bodies in files under
+   * <uploadPath>/tmp/ and pre-creates that tree at startup, so the path
+   * must be writable; empty keeps Drogon's default of ./uploads. */
+  if (!globalConfigs.rest.uploadPath.empty()) {
+    drogon::app().setUploadPath(globalConfigs.rest.uploadPath);
+  }
   /* Connection-lifetime limits (0 = disabled): closing long-lived
    * keep-alive connections periodically lets a Kubernetes Service - which
    * balances per TCP connection, not per request - redistribute clients
