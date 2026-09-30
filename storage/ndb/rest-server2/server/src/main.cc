@@ -543,11 +543,13 @@ int main(int argc, char *argv[]) {
   if (!globalConfigs.rest.uploadPath.empty()) {
     drogon::app().setUploadPath(globalConfigs.rest.uploadPath);
   }
-  /* Connection-lifetime limits (0 = disabled): closing long-lived
-   * keep-alive connections periodically lets a Kubernetes Service - which
-   * balances per TCP connection, not per request - redistribute clients
-   * across pods, so a post-restart connection pile-up on the first-ready
-   * pod levels out. Drogon itself treats 0 as "no limit". */
+  /* Connection-lifetime limits: closing long-lived keep-alive connections
+   * periodically lets a Kubernetes Service - which balances per TCP
+   * connection, not per request - redistribute clients across pods, so a
+   * post-restart connection pile-up on the first-ready pod levels out.
+   * MaxKeepaliveRequests 0 means no limit (Drogon treats 0 that way);
+   * IdleConnectionTimeoutS 0 keeps Drogon's built-in 60 second idle
+   * timeout - it does NOT disable idle closing, hence the guarded call. */
   drogon::app().setKeepaliveRequestsNumber(
     globalConfigs.rest.maxKeepaliveRequests);
   if (globalConfigs.rest.idleConnectionTimeoutS > 0) {

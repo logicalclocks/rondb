@@ -66,7 +66,9 @@ type REST struct {
 	// mirrors REST.ProbeEnable / REST.ProbePort in config_structs_def.hpp.
 	ProbeEnable bool
 	ProbePort   uint16
-	// Connection-lifetime limits on the main port; 0 = disabled. Mirror
+	// Connection-lifetime limits on the main port. 0 disables the
+	// per-connection request limit, but keeps the server's built-in 60s
+	// idle timeout (it does not disable idle closing). Mirror
 	// REST.MaxKeepaliveRequests / REST.IdleConnectionTimeoutS.
 	MaxKeepaliveRequests   uint32
 	IdleConnectionTimeoutS uint32
