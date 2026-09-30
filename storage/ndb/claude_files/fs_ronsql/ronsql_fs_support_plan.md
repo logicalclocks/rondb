@@ -60,7 +60,7 @@ does not.
 | F19 | CTE_SCAN as outer-join child now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
 | F17 | HAVING + ORDER BY + LIMIT | internal error instead of a clean reject | no (HAVING unsupported) | WP-H |
 | F16 | AVG over a non-numeric column | generic "report a bug" message | no | WP-H |
-| F10, F11 | mysqld pushdown aggregation (ndbcluster) | mysqld CRASH / error 4120 | MySQL path of `queryOnline` | WP-I (separate track) |
+| F10, F11 | mysqld pushdown aggregation (ndbcluster) | mysqld CRASH / error 4120 — F10 fix written 2026-09-30 (no push over several ranges; pushed scans unordered) | MySQL path of `queryOnline` | WP-I (separate track) |
 | F20 | NDB API dictionary cache (RONDB-1092 follow-up) | RDRS CRASH | — | FIXED (`76cc05701c6`), backport recommended |
 | F8 | framework rule (collation-equal MIN/MAX) | — | — | done |
 | — | RonSQL planner: aggregate or join over a non-aggregating LIMIT CTE (count-based window, e.g. AVG of the last 10 rows) | UNSUPPORTED, clean reject | no (new shape; Hopsworks rejects collect + aggregate: `AGGREGATE_WITH_COLLECT`) | WP-J |

@@ -1,0 +1,131 @@
+--source include/have_ndb.inc
+
+# F10 (mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md): with
+# ndb_pushdown_aggregate=ON, the feature-store batch statement
+#   SELECT customer_key, COUNT(amount), SUM(amount)
+#   FROM transactions_str_1 WHERE customer_key IN (<100 keys>)
+#   GROUP BY customer_key
+# crashed mysqld: require() in NdbSqlUtil::likeLongvarchar under
+# NdbIndexScanOperation::next_result_ord_ndbrecord <- DoAggregation.
+#  - The GROUP BY took its order from PRIMARY, so ordered_index_scan()
+#    asked for a sorted scan.  Under a pushed aggregation the receive
+#    buffers hold aggregate records, not index rows; the API's sorted
+#    merge compared them as index keys and read a garbage VARCHAR length.
+#    A pushed aggregation is now read unordered: its groups come back in
+#    NdbAggregator's order anyway, and ndb_aggregate_order_from_index()
+#    (F30) keeps the push off plans that need the index order.
+#  - With the aggregation pushed, MRR is off and every range of the IN
+#    list was its own aggregating scan into the same NdbAggregator, which
+#    is only reset at the end of the statement: later ranges returned the
+#    groups of earlier ones again, and a group or scalar aggregate that
+#    spans ranges came back once per range.  An access that reads several
+#    ranges in one execution (IN list, key OR NULL) is no longer pushed
+#    (ndb_aggregate_reads_ranges_separately()); unpushed MySQL was also
+#    the faster plan for these lists in the fs_hw benchmarks.
+#
+# r-* read several ranges: pushed=0 and the same rows as the unpushed run.
+# s-* read one range, including the VARCHAR PRIMARY range that the sorted
+# merge could not compare: they stay pushed and must match.  c-1 is a
+# table scan control.  FORCE INDEX keeps the range plans on this small
+# data set.  Rows of one key spread over all fragments (the whole primary
+# key is the partition key), so a pushed scan merges several fragments.
+
+CREATE TABLE ts (
+  skey VARCHAR(20) NOT NULL,
+  seq INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (skey, seq)
+) ENGINE=NDB;
+
+CREATE TABLE ti (
+  k INT NOT NULL,
+  seq INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (k, seq)
+) ENGINE=NDB;
+
+CREATE TABLE tn (
+  id INT NOT NULL,
+  nk INT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (id),
+  INDEX ix_nk (nk)
+) ENGINE=NDB;
+
+INSERT INTO ts
+  WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 239)
+  SELECT CONCAT('k', LPAD(1 + i DIV 20, 2, '0')), 1 + MOD(i, 20), MOD(i * 7, 11) FROM s;
+INSERT INTO ti
+  WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 239)
+  SELECT 1 + i DIV 20, 1 + MOD(i, 20), MOD(i * 7, 11) FROM s;
+INSERT INTO tn
+  WITH RECURSIVE s (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 60)
+  SELECT i, IF(MOD(i, 5) = 0, NULL, MOD(i, 4)), MOD(i * 3, 13) FROM s;
+
+--echo ############################################################
+--echo # r-1: the F10 statement shape, a VARCHAR key IN list
+--echo ############################################################
+--let $pac_label = r-1
+--let $pac_query = SELECT skey, COUNT(v) AS c, SUM(v) AS sv FROM ts FORCE INDEX (PRIMARY) WHERE skey IN ('k01', 'k03', 'k04', 'k06', 'k07', 'k09', 'k10', 'k12') GROUP BY skey
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # r-2: an integer key IN list, GROUP BY the key
+--echo ############################################################
+--let $pac_label = r-2
+--let $pac_query = SELECT k, COUNT(*) AS c, SUM(v) AS sv, MAX(seq) AS mx FROM ti FORCE INDEX (PRIMARY) WHERE k IN (2, 3, 5, 7, 11) GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # r-3: a scalar aggregate over an IN list
+--echo ############################################################
+--let $pac_label = r-3
+--let $pac_query = SELECT COUNT(*) AS n, SUM(v) AS sv, MIN(v) AS mn FROM ti FORCE INDEX (PRIMARY) WHERE k IN (2, 3, 5, 7, 11)
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # r-4: an IN list, GROUP BY a column whose groups span ranges
+--echo ############################################################
+--let $pac_label = r-4
+--let $pac_query = SELECT v, COUNT(*) AS c, SUM(seq) AS ss FROM ti FORCE INDEX (PRIMARY) WHERE k IN (2, 3, 5, 7, 11) GROUP BY v
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # r-5: key OR NULL on a nullable index
+--echo ############################################################
+--let $pac_label = r-5
+--let $pac_query = SELECT COUNT(*) AS n, SUM(v) AS sv FROM tn FORCE INDEX (ix_nk) WHERE nk = 3 OR nk IS NULL
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # s-1: one VARCHAR PRIMARY range, GROUP BY the key
+--echo ############################################################
+--let $pac_label = s-1
+--let $pac_query = SELECT skey, COUNT(*) AS c, SUM(v) AS sv FROM ts FORCE INDEX (PRIMARY) WHERE skey BETWEEN 'k03' AND 'k07' GROUP BY skey
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # s-2: one VARCHAR key, GROUP BY the key
+--echo ############################################################
+--let $pac_label = s-2
+--let $pac_query = SELECT skey, COUNT(*) AS c, SUM(v) AS sv FROM ts FORCE INDEX (PRIMARY) WHERE skey = 'k05' GROUP BY skey
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # s-3: one integer PRIMARY range, GROUP BY the key
+--echo ############################################################
+--let $pac_label = s-3
+--let $pac_query = SELECT k, SUM(v) AS sv FROM ti FORCE INDEX (PRIMARY) WHERE k BETWEEN 3 AND 7 GROUP BY k
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # c-1 (control): table scan, GROUP BY the VARCHAR key
+--echo ############################################################
+--let $pac_label = c-1
+--let $pac_query = SELECT skey, COUNT(*) AS c, SUM(v) AS sv FROM ts GROUP BY skey
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE ts;
+DROP TABLE ti;
+DROP TABLE tn;

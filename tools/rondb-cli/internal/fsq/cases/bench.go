@@ -244,7 +244,7 @@ func BenchEntries(cfg Config) ([]BenchEntry, error) {
 		add(BenchEntry{Name: "fs_hw_strkey_point", Shape: "S10", Description: "point aggregate over a VARCHAR entity key", Rows: "1", SQL: ronsql(g, 0), PlanPins: indexPins})
 	}
 	if g, ok := emitted("fs_hw_strkey_batch100", b.aggView("hw-strb", data.TTxStr, "s_", batchAgg, nil, true, nil), 100); ok {
-		add(BenchEntry{Name: "fs_hw_strkey_batch100", Shape: "S10+S3", Description: "batch of 100 string keys (WP-F F2: one index range per key; F10 crashes the pushed mysqld arm)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: rangePins})
+		add(BenchEntry{Name: "fs_hw_strkey_batch100", Shape: "S10+S3", Description: "batch of 100 string keys (WP-F F2: one index range per key; mysqld does not push the aggregation of an IN list, F10)", Rows: "<= 100", SQL: ronsql(g, 0), PlanPins: rangePins})
 	}
 	hist := spec.AggSpec{{Key: "*", Fns: []string{"count"}}, {Key: "delta", Fns: []string{"sum"}}}
 	if g, ok := emitted("fs_hw_composite_point", b.aggView("hw-hist", data.TBalanceHist, "b_", hist, i64p(90*day), false, nil), 0); ok {

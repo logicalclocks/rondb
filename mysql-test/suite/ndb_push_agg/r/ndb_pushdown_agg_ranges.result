@@ -1,0 +1,68 @@
+CREATE TABLE ts (
+skey VARCHAR(20) NOT NULL,
+seq INT NOT NULL,
+v INT NOT NULL,
+PRIMARY KEY (skey, seq)
+) ENGINE=NDB;
+CREATE TABLE ti (
+k INT NOT NULL,
+seq INT NOT NULL,
+v INT NOT NULL,
+PRIMARY KEY (k, seq)
+) ENGINE=NDB;
+CREATE TABLE tn (
+id INT NOT NULL,
+nk INT NULL,
+v INT NOT NULL,
+PRIMARY KEY (id),
+INDEX ix_nk (nk)
+) ENGINE=NDB;
+INSERT INTO ts
+WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 239)
+SELECT CONCAT('k', LPAD(1 + i DIV 20, 2, '0')), 1 + MOD(i, 20), MOD(i * 7, 11) FROM s;
+INSERT INTO ti
+WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 239)
+SELECT 1 + i DIV 20, 1 + MOD(i, 20), MOD(i * 7, 11) FROM s;
+INSERT INTO tn
+WITH RECURSIVE s (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 60)
+SELECT i, IF(MOD(i, 5) = 0, NULL, MOD(i, 4)), MOD(i * 3, 13) FROM s;
+############################################################
+# r-1: the F10 statement shape, a VARCHAR key IN list
+############################################################
+# r-1: pushed=0 rows=8
+############################################################
+# r-2: an integer key IN list, GROUP BY the key
+############################################################
+# r-2: pushed=0 rows=5
+############################################################
+# r-3: a scalar aggregate over an IN list
+############################################################
+# r-3: pushed=0 rows=1
+############################################################
+# r-4: an IN list, GROUP BY a column whose groups span ranges
+############################################################
+# r-4: pushed=0 rows=11
+############################################################
+# r-5: key OR NULL on a nullable index
+############################################################
+# r-5: pushed=0 rows=1
+############################################################
+# s-1: one VARCHAR PRIMARY range, GROUP BY the key
+############################################################
+# s-1: pushed=1 rows=5
+############################################################
+# s-2: one VARCHAR key, GROUP BY the key
+############################################################
+# s-2: pushed=1 rows=1
+############################################################
+# s-3: one integer PRIMARY range, GROUP BY the key
+############################################################
+# s-3: pushed=1 rows=5
+############################################################
+# c-1 (control): table scan, GROUP BY the VARCHAR key
+############################################################
+# c-1: pushed=1 rows=12
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE ts;
+DROP TABLE ti;
+DROP TABLE tn;

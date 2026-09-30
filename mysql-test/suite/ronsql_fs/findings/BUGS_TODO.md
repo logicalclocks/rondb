@@ -50,6 +50,38 @@ F8 was a framework fixture issue and is already fixed.
   ordered-scan sorted merge) on a pushed aggregate with a VARCHAR GROUP BY key and
   an IN list (`fs_hw_strkey_batch100`, pushdown ON). Run the fs_hw matrix with
   `--engines ronsql,mysqld_nopush` until fixed.
+  - Cause (2026-09-30, code reading), two faults in the single-table push
+    (`ha_ndbcluster_push_agg.cc`, `ha_ndbcluster::ordered_index_scan`):
+    - The GROUP BY took its order from PRIMARY, so the scan was asked for
+      `SF_OrderByFull`. `DoAggregation()` drains it through `nextResult()`,
+      whose sorted merge compares each fragment's current row by the index
+      key, but under a pushed aggregation the receive buffers hold aggregate
+      records. An integer key compared garbage harmlessly; a VARCHAR key read
+      a garbage length and hit the `require` in `likeLongvarchar`.
+    - With `m_stm_aggregator` set, MRR is off, so every range of the IN list
+      is its own `read_range_first()` → `ordered_index_scan()` →
+      `DoAggregation()` into the same `NdbAggregator`, which is deleted only
+      in `reset()` at the end of the statement. Its group map keeps earlier
+      ranges' groups (they come back again), and a group or scalar aggregate
+      that spans ranges comes back once per range: wrong results for integer
+      keys too, never seen because the pushed arm only benchmarked them.
+  - Fix written, not yet built:
+    - `ndb_aggregate_reads_ranges_separately()`: no single-table push when
+      the access reads several ranges in one execution (INDEX_RANGE_SCAN
+      with more than one range, REF_OR_NULL, index merge). One range stays
+      pushed. Unpushed MySQL was the faster plan for these lists anyway
+      (F12: 1.8 ms vs 10 ms pushed for 100 keys).
+    - `ordered_index_scan()` never asks for a sorted scan when the
+      aggregation is pushed; F30's `ndb_aggregate_order_from_index()` keeps
+      the push off plans that need the index order.
+    - Regression `ndb_push_agg.ndb_pushdown_agg_ranges` + JIT mirror: r-1..r-5
+      (IN lists incl. the F10 VARCHAR shape, a scalar and a cross-range
+      GROUP BY, key OR NULL) pushed=0; s-1..s-3 (one range, incl. a VARCHAR
+      PRIMARY range) stay pushed; each compared with pushdown OFF.
+  - Related, not fixed: a single-range pushed aggregate that runs more than
+    once in one statement (a correlated subquery) reuses the same
+    `NdbAggregator` too, and nothing resets it between executions. Untested;
+    worth a test before relying on pushdown in correlated subqueries.
 - [ ] F11 (bench.md): pushed point aggregates fail with NDB error 4120 'Scan already
   complete' (`fs_hw_agg_point`, `_filter`, `strkey_point` at sf 1); unpushed and the
   windowed / GREATEST variants work.

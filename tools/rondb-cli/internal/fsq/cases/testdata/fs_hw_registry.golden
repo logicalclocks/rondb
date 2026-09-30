@@ -140,7 +140,7 @@ SELECT COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum`, MAX(`am
 -- plan pins: Execute as index scan. | Index: `PRIMARY`
 
 === fs_hw_strkey_batch100 [S10+S3] ronsql+mysql rows=<= 100
--- batch of 100 string keys (WP-F F2: one index range per key; F10 crashes the pushed mysqld arm)
+-- batch of 100 string keys (WP-F F2: one index range per key; mysqld does not push the aggregation of an IN list, F10)
 SELECT `customer_key`, COUNT(`amount`) AS `amount_count`, SUM(`amount`) AS `amount_sum` FROM `transactions_str_1` WHERE `customer_key` IN ({SKEYS:100}) GROUP BY `customer_key`;
 -- plan pins: Execute as index scan. | Index: `PRIMARY` | SF_MultiRange
 
