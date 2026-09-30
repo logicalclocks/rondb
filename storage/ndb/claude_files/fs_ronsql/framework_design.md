@@ -259,7 +259,8 @@ type Outcome int // OK, CleanReject, Retryable, Timeout, Crash, Error
 - **RDRS** (`rdrs.go`): `POST /<APIVersion>/ronsql` with
   `{query, database, outputFormat:"JSON", explainMode:"ALLOW"|"FORCE"}`
   through `client.RestClient.PostWithHeader` (header
-  `x-ronsql-phases`); per-request timeout from `--timeout`. RDRS
+  `x-ronsql-phases`, opt-in: the query request sends
+  `x-ronsql-phases: 1`); per-request timeout from `--timeout`. RDRS
   answers every RonSQL error with HTTP 500 and a text body
   (`ronsql_operation.cpp`): `Caught exception: <msg>` for a
   `RonSQLPermanentError` → `CleanReject`; `Caught RonSQLRetryableError

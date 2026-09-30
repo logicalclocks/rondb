@@ -138,8 +138,10 @@ func (c *RestClient) Post(endpoint string, body interface{}) ([]byte, time.Durat
 
 // PostWithHeader sends a POST request with JSON body and returns the
 // response together with the value of the named response header (empty
-// string when the header is absent). Used by the RonSQL benchmarks to read
-// the x-ronsql-phases per-phase timing header.
+// string when the header is absent). The header is also sent on the
+// request, with value "1": RDRS returns an opt-in response header such as
+// x-ronsql-phases (per-phase RonSQL timings, used by the RonSQL
+// benchmarks) only when the request carries it.
 func (c *RestClient) PostWithHeader(endpoint string, body interface{}, header string) ([]byte, string, time.Duration, error) {
 	return c.doRequest(http.MethodPost, endpoint, body, header)
 }
@@ -151,8 +153,9 @@ func (c *RestClient) Delete(endpoint string, body interface{}) ([]byte, time.Dur
 }
 
 // doRequest sends an HTTP request with JSON body and returns the response.
-// When header is non-empty, the value of that response header is returned
-// as well (empty string when absent).
+// When header is non-empty, it is sent on the request with value "1" and
+// the value of that response header is returned as well (empty string
+// when absent).
 func (c *RestClient) doRequest(method, endpoint string, body interface{}, header string) ([]byte, string, time.Duration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
 	defer cancel()
@@ -170,6 +173,9 @@ func (c *RestClient) doRequest(method, endpoint string, body interface{}, header
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
 		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	if header != "" {
+		req.Header.Set(header, "1")
 	}
 
 	start := time.Now()

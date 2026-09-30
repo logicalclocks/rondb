@@ -57,7 +57,8 @@ the CONDITIONS block.  The family's EXPLAIN greps are FATAL.
 **Runtime verification (not just the plan).**  EXPLAIN greps prove what
 the preparer chose; they cannot prove the drain actually streamed.  Every
 case therefore also runs `suite/ronsql/include/ronsql_phase_rows.inc`,
-which POSTs the query to RDRS, prints the `rows=` token of the
+which POSTs the query to RDRS (asking for the opt-in header with
+`x-ronsql-phases: 1`), prints the `rows=` token of the
 `x-ronsql-phases` header (`RonSQLPhaseStats::rows_drained` — rows the
 RonSQL result loop fetched) into the baseline and asserts it with a
 fatal grep.  The index-order path drains exactly min(LIMIT, matching

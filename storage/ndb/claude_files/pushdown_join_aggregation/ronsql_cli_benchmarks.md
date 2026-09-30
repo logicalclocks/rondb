@@ -285,15 +285,23 @@ the CLI-generated data where the official values would match nothing:
 
 **Implemented** (RonSQL-side; see `test_benchmark_extension_plan.md` Phase
 B2/B3). When RDRS is built with `RONSQL_PHASE_STATS` (default on, kill
-switch in `RonSQLPerf.hpp`), every successful `/ronsql` response carries
-an `x-ronsql-phases` header with per-request phase timings in µs,
-captured at the pre-existing PERF_TS boundaries via a `RonSQLPhaseStats`
-sink on `RonSQLExecParams` (null for ronsql_cli — a null test per phase
-boundary is the only cost for callers that don't ask):
+switch in `RonSQLPerf.hpp`), a successful `/ronsql` response carries an
+`x-ronsql-phases` header with per-request phase timings in µs, captured
+at the pre-existing PERF_TS boundaries via a `RonSQLPhaseStats` sink on
+`RonSQLExecParams`.
+
+**Opt-in (since 2026-09-30).** The header is returned only when the
+request carries an `x-ronsql-phases` request header with a value other
+than `0` or `false` (convention: `x-ronsql-phases: 1`).  Without it RDRS
+leaves the sink NULL (`ronsql_phases_requested()` in `ronsql_ctrl.cpp`),
+so no timings are captured and no header is sent — the same null test
+per phase boundary ronsql_cli pays.  Previously every successful
+response carried it, which was overkill for production clients.
 
 ```
 parse=…,analyze=…,load=…,plan=…,compile=…,prepare=…,subquery=…,
-ndbprep=…,send=…,firstbatch=…,drain=…,print=…,execute=…,rows=…,attempts=…
+ndbprep=…,send=…,firstbatch=…,drain=…,print=…,execute=…,rows=…,
+attempts=…,fetched=…,queue=…,loop=…,worker=…,close=…
 ```
 
 - `parse/analyze/load/plan/compile` split the RonSQLPreparer constructor
@@ -308,14 +316,23 @@ ndbprep=…,send=…,firstbatch=…,drain=…,print=…,execute=…,rows=…,att
 - `print` = ResultPrinter formatting; `execute` = execute() total.
 - Retry semantics: **last attempt wins**; `attempts` counts ronsql_op
   attempts (1 = no retry).
+- `fetched` = rows the NDB API received (`Ndb::ReadRowCount` delta,
+  `m3_run6_plan.md` C3); `queue` = µs waiting for a RonSQL worker,
+  `loop` = receiving REST thread, `worker` = RonSQL worker that ran it
+  (0 = IO loop; `m3_run6_plan.md` B2); `close` = µs closing the scans,
+  the pushed query and the transaction (part of `execute`; an early
+  scan close waits for the data nodes).
 
-`.bench_ronsql` reads the header per request and prints a per-phase
+`.bench_ronsql` asks for the header on every request (`PostWithHeader`
+sends `x-ronsql-phases: 1`), reads it and prints a per-phase
 avg/p95/p99/max table after the end-to-end results (plus the warmup's
 raw values); end-to-end latency minus `prepare`+`execute` approximates
 RDRS/HTTP overhead. `fs_floor` is the fixed-cost floor to compare
-against. Header format is pinned by
-`mysql-test/suite/ronsql/t/ronsql_phase_stats.test` and parsed by
-`ronsql_bench.go` (`parseRonSQLPhases`).
+against. Header format and the opt-in (no header without the request
+header, or with `0` / `false`) are pinned by
+`mysql-test/suite/ronsql/t/ronsql_phase_stats.test`; the header is parsed
+by `ronsql_bench.go` (`phaseSamples.Record`).  Any other client that reads
+it (MTR includes, `fsq/exec`, scripts) must send the request header.
 
 ### Next step: data-node-side phase counters
 

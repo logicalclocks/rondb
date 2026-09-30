@@ -327,6 +327,14 @@ Design decisions (as decided in review):
   load / plan / compile; the drain splits into firstbatch (wait for the
   first result row ≈ data-node execution incl. CTE materialization) and
   drain (remaining transfer), plus a drained-rows counter.
+- **Amended 2026-09-30 — opt-in per request.**  Originally every
+  successful response carried the header; that was overkill for
+  production clients.  RDRS now wires the sink (and so captures and
+  emits anything) only when the request carries an `x-ronsql-phases`
+  request header whose value is not `0` / `false` (convention
+  `x-ronsql-phases: 1`; `ronsql_phases_requested()` in
+  `ronsql_ctrl.cpp`).  The response header is emitted iff
+  `params.phase_stats != NULL`.  Still no request-schema change.
 
 Struct `RonSQLPhaseStats` (all µs, monotonic clock):
 
@@ -363,13 +371,15 @@ markers, which stay untouched):
 | `RonSQLPreparer.cpp` `execute_join()` | qb->prepare → ndbprep_us; trans->execute → send_us; nextResult loop → drain_us; print_result → print_us; passthrough drain → drain_us |
 | `RonSQLPreparer.cpp` `execute_single_table_passthrough()` | (added after the RONDB-1108 non-agg-phase0 rebase) scan arm: ndbprep/send/firstbatch/drain/rows like execute_passthrough_drain; PK-lookup arm: ndbprep = op definition, firstbatch = execute(Commit) fused, rows 0/1 |
 | `ronsql_operation.cpp` `ronsql_op` | prepare_us / execute_us / attempts |
-| `ronsql_ctrl.cpp` | stack `RonSQLPhaseStats`, wire into params, on success `resp->addHeader("x-ronsql-phases", "parse=…,load=…,compile=…,prepare=…,subquery=…,ndbprep=…,send=…,drain=…,print=…,execute=…,attempts=…")` |
+| `ronsql_ctrl.cpp` | stack `RonSQLPhaseStats`, wire into params (since 2026-09-30 only when the request carries `x-ronsql-phases`), on success `resp->addHeader("x-ronsql-phases", "parse=…,load=…,compile=…,prepare=…,subquery=…,ndbprep=…,send=…,drain=…,print=…,execute=…,attempts=…")` |
 
 ### Phase B3 — phase timing, CLI side (Go)
 
 - `internal/client/rest.go`: `PostWithHeader(endpoint, body, header)` →
   `([]byte, string, time.Duration, error)`; `doRequest` refactors onto a
-  shared internal that optionally captures one response header.
+  shared internal that optionally captures one response header.  Since
+  the 2026-09-30 opt-in it also sends that header on the request (value
+  `1`), which is what makes RDRS return it.
 - `internal/shell/ronsql_bench.go`:
   - parse `x-ronsql-phases` into `map[string]int64`;
   - per-phase `LatencyCollector`s fed from every timed request (and the
@@ -388,6 +398,10 @@ Small table + one aggregate query POSTed with `curl -s -D <hdrfile>
 value with a perl regex (`^parse=\d+,load=\d+,…,attempts=\d+$` →
 echo "format OK") so the .result stays stable. One CTE query variant checks
 ndbprep/send/drain are nonzero-capable without printing raw numbers.
+Since the 2026-09-30 opt-in every positive case sends
+`-H "x-ronsql-phases: 1"`, and a "Not requested" section pins that no
+header comes back without the request header or with `0` / `false`
+(status still 200).
 
 ### Phase B5 — data-node-side phase counters (DEFERRED, separate plan)
 

@@ -165,7 +165,10 @@ type ronsqlRequest struct {
 	OutputFormat string `json:"outputFormat,omitempty"`
 }
 
-func (r *RDRS) post(ctx context.Context, req ronsqlRequest) (status int, body []byte, phases string, latency time.Duration, err error) {
+// post sends one /ronsql request. With wantPhases the request asks RDRS for
+// the opt-in x-ronsql-phases response header, whose value is returned as
+// phases (empty when not asked for, or when RDRS does not send it).
+func (r *RDRS) post(ctx context.Context, req ronsqlRequest, wantPhases bool) (status int, body []byte, phases string, latency time.Duration, err error) {
 	payload, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, r.base+"/"+r.version+"/ronsql", bytes.NewReader(payload))
 	if err != nil {
@@ -174,6 +177,9 @@ func (r *RDRS) post(ctx context.Context, req ronsqlRequest) (status int, body []
 	httpReq.Header.Set("Content-Type", "application/json")
 	if r.apiKey != "" {
 		httpReq.Header.Set("X-API-Key", r.apiKey)
+	}
+	if wantPhases {
+		httpReq.Header.Set("x-ronsql-phases", "1")
 	}
 	start := time.Now()
 	resp, err := r.client.Do(httpReq)
@@ -278,7 +284,7 @@ func (r *RDRS) Query(ctx context.Context, sqlText string) Response {
 	const attempts = 4
 	var last Response
 	for i := 0; i < attempts; i++ {
-		status, body, phases, latency, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "JSON"})
+		status, body, phases, latency, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "JSON"}, true)
 		if err != nil {
 			out := Timeout
 			if !errors.Is(err, context.DeadlineExceeded) && !isTimeout(err) {
@@ -320,7 +326,7 @@ func isTimeout(err error) bool {
 
 // Header runs the statement with TEXT output and returns the header line.
 func (r *RDRS) Header(ctx context.Context, sqlText string) ([]string, error) {
-	status, body, _, _, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "TEXT"})
+	status, body, _, _, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "TEXT"}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +338,7 @@ func (r *RDRS) Header(ctx context.Context, sqlText string) ([]string, error) {
 
 // Explain returns the RonSQL EXPLAIN output (explainMode FORCE).
 func (r *RDRS) Explain(ctx context.Context, sqlText string) (string, error) {
-	status, body, _, _, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "FORCE", OutputFormat: "TEXT"})
+	status, body, _, _, err := r.post(ctx, ronsqlRequest{Query: sqlText, Database: r.database, ExplainMode: "FORCE", OutputFormat: "TEXT"}, false)
 	if err != nil {
 		return "", err
 	}
@@ -346,7 +352,7 @@ func (r *RDRS) Explain(ctx context.Context, sqlText string) (string, error) {
 func (r *RDRS) Probe(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	status, body, _, _, err := r.post(ctx, ronsqlRequest{Query: r.probeSQL, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "TEXT"})
+	status, body, _, _, err := r.post(ctx, ronsqlRequest{Query: r.probeSQL, Database: r.database, ExplainMode: "ALLOW", OutputFormat: "TEXT"}, false)
 	if err != nil {
 		return err
 	}

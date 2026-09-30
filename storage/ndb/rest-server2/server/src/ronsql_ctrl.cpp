@@ -34,6 +34,7 @@
 #include "ronsql_worker_pool.hpp"
 #include <cstdio>
 #include <memory>
+#include <strings.h>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_SQL_CTRL 1
@@ -56,6 +57,21 @@
 using std::endl;
 
 #ifdef RONSQL_PHASE_STATS
+#define RONSQL_PHASES_HEADER "x-ronsql-phases"
+
+/*
+ * The x-ronsql-phases response header is opt-in: a client asks for it by
+ * sending an x-ronsql-phases request header with any value other than "0"
+ * or "false" (e.g. "x-ronsql-phases: 1").  Without it no phase timings are
+ * captured (RonSQLExecParams::phase_stats stays NULL) and no header is
+ * returned.
+ */
+static bool ronsql_phases_requested(const drogon::HttpRequestPtr &req) {
+  const std::string &value = req->getHeader(RONSQL_PHASES_HEADER);
+  if (value.empty() || value == "0") return false;
+  return strcasecmp(value.c_str(), "false") != 0;
+}
+
 /*
  * Serialize per-request phase timings for the x-ronsql-phases response
  * header.  All values are microseconds (last ronsql_op attempt); rows is
@@ -281,7 +297,11 @@ void RonSQLCtrl::ronsql(
   params.schema_cache = g_schema_cache;
   params.avro_decoder = &request->avro_decoder;
 #ifdef RONSQL_PHASE_STATS
-  params.phase_stats = &request->phase_stats;
+  // Capture phase timings only for a client that asked for them; a NULL
+  // sink also tells RonSQLRequest::execute to omit the response header.
+  if (ronsql_phases_requested(req)) {
+    params.phase_stats = &request->phase_stats;
+  }
 #endif
 
   std::string& database = reqStruct.database;
@@ -571,9 +591,11 @@ void RonSQLRequest::execute(Uint32 ndb_thread_index) {
     }
     DEB_TRACE();
 #ifdef RONSQL_PHASE_STATS
-    resp->addHeader("x-ronsql-phases",
-                    ronsql_phase_stats_header(phase_stats, queue_wait_us,
-                                              loop_index, worker));
+    if (params.phase_stats != nullptr) {
+      resp->addHeader(RONSQL_PHASES_HEADER,
+                      ronsql_phase_stats_header(phase_stats, queue_wait_us,
+                                                loop_index, worker));
+    }
 #endif
     // Move — out_str came from CappedOStream::take(), avoiding one of
     // the full-body copies of the old ostringstream flow.

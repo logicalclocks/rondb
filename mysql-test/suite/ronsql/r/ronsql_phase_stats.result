@@ -54,4 +54,15 @@ a	b
 == Normalized header (values masked to N) ==
 x-ronsql-phases: parse=N,analyze=N,load=N,plan=N,compile=N,prepare=N,subquery=N,ndbprep=N,send=N,firstbatch=N,drain=N,print=N,execute=N,rows=N,attempts=N,fetched=N,queue=N,loop=N,worker=N,close=N
 
+=== Not requested: no header ===
+== No request header: status, header count (must be 0) ==
+HTTP 200
+0
+== x-ronsql-phases: 0: status, header count (must be 0) ==
+HTTP 200
+0
+== x-ronsql-phases: false: status, header count (must be 0) ==
+HTTP 200
+0
+
 === Cleanup ===

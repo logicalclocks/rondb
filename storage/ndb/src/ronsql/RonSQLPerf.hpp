@@ -25,9 +25,10 @@
  *    Enabled by default; comment out the #define to compile out all phase
  *    capture and the RDRS x-ronsql-phases response header.  Capture is
  *    additionally guarded at runtime on the caller having supplied a
- *    RonSQLPhaseStats sink via RonSQLExecParams::phase_stats (RDRS does;
- *    ronsql_cli and the parse-only authorization path do not), so callers
- *    without a sink pay one null test per phase boundary.
+ *    RonSQLPhaseStats sink via RonSQLExecParams::phase_stats (RDRS does
+ *    when the request carries an x-ronsql-phases header; ronsql_cli and
+ *    the parse-only authorization path do not), so callers without a
+ *    sink pay one null test per phase boundary.
  *
  *    Usage (stats is a RonSQLPhaseStats*, may be NULL):
  *      STAT_TS(stats, s0);
