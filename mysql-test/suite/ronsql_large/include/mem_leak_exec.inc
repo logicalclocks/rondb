@@ -164,6 +164,7 @@ sub run_one {
                      '--max-time', '300', '-o', "$p.out", '-D', "$p.hdr",
                      '-w', '%{http_code}', '-X', 'POST',
                      '-H', 'Content-Type: application/json',
+                     '-H', 'x-ronsql-phases: 1',
                      '--data-binary', "\@$s->{base}.body", $url);
     my $code = -e "$p.code" ? slurp("$p.code") : '';
     $code =~ s/\s+//g;

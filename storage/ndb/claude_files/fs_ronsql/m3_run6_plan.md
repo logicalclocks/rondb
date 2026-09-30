@@ -538,6 +538,18 @@ worker ≥ 1 assertion.  Not done: queue metrics in Prometheus, `queue` in
 the rondb-cli breakdown, a head-of-line regression test (long statement
 next to pk-reads on one loop).
 
+*Follow-up (2026-09-30): `x-ronsql-phases` is opt-in.*  Sending it on
+every response was overkill; RDRS now captures phase stats and returns
+the header only when the request carries `x-ronsql-phases` with a value
+other than `0` / `false` (`ronsql_phases_requested()` in
+`ronsql_ctrl.cpp`; no request header = NULL sink = no capture cost).
+Clients updated to ask for it: rondb-cli `PostWithHeader`
+(`.bench_ronsql`, so the matrix driver's report C is unaffected),
+`fsq/exec` `Query`, and the MTR readers (`ronsql_phase_stats`,
+`ronsql_phase_rows.inc`, `cte_park_sweeper`, `mem_leak_exec.inc`).
+`ronsql_phase_stats` (ronsql + ronsql_jit) gains a "Not requested"
+section (no header without the request header, or with `0` / `false`).
+
 **B3. Triage.**  Flag cases whose http+client share of execute exceeds
 10 % (loop collision) or compare server execute percentiles; the current
 triage calls them REGRESSION.

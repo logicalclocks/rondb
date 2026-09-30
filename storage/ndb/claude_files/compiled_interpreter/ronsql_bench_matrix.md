@@ -124,7 +124,8 @@ and an ETA. Raw CLI output per case lands in `<out>/cases/*.txt`.
   mysqld/ronsql, for both compiler arms and both mysqld modes.
 - **C. RonSQL, where the time goes** — the server-side phases RDRS
   returns in the `x-ronsql-phases` header (`RONSQL_PHASE_STATS`,
-  default on): parse, analyze, load (NDB dictionary), plan, compile,
+  default on; opt-in per request since 2026-09-30, and `.bench_ronsql`
+  asks for it on every request): parse, analyze, load (NDB dictionary), plan, compile,
   ndbprep, send, firstbatch (data-node execution until the first result
   row; for single-table aggregates the whole DoAggregation), drain,
   print, plus prepare / execute totals, `http+client` = client latency -

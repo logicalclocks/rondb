@@ -4386,13 +4386,14 @@ Common parameters:
      .bench_sql all 1 10             Run every SQL query sequentially
 
    Phase breakdown: when RDRS is built with RONSQL_PHASE_STATS (the
-   default), every RonSQL response carries an x-ronsql-phases header with
-   per-phase server-side timings (parse/analyze/load/plan/compile,
-   subquery, ndbprep/send/firstbatch/drain/print/close, in µs; close is
-   the scan and transaction close, which waits for the data nodes when a
-   LIMIT stops a scan early). .bench_ronsql
-   aggregates them and prints an avg/p95/p99/max table per phase after the
-   end-to-end results; the warmup request prints its raw phase values.
+   default), a RonSQL request carrying an x-ronsql-phases header gets an
+   x-ronsql-phases response header with per-phase server-side timings
+   (parse/analyze/load/plan/compile, subquery, ndbprep/send/firstbatch/
+   drain/print/close, in µs; close is the scan and transaction close,
+   which waits for the data nodes when a LIMIT stops a scan early).
+   .bench_ronsql asks for it on every request, aggregates the values and
+   prints an avg/p95/p99/max table per phase after the end-to-end results;
+   the warmup request prints its raw phase values.
    End-to-end latency minus prepare+execute approximates REST/HTTP
    overhead. fs_floor (COUNT(*) over 5 rows) is the fixed-cost floor to
    compare other queries against.

@@ -64,7 +64,7 @@ call mtr.add_suppression("Participant timeout");
 # since the row order of a scan is not fixed.
 --exec printf '%s' '{"query":"WITH cust AS (SELECT o_custkey AS k, COUNT(*) AS norders FROM orders GROUP BY o_custkey) SELECT c.c_custkey, c.c_mktsegment, cust.norders FROM customer AS c JOIN cust ON cust.k = c.c_custkey;","database":"test","outputFormat":"JSON"}' > $MYSQL_TMP_DIR/cte_park_sweeper_json.body
 --exec $NDB_MGM -e "ALL ERROR 5139" > /dev/null
---exec curl -s -X POST -H "Content-Type: application/json" -D $MYSQL_TMP_DIR/cte_park_sweeper_json.hdr -o $MYSQL_TMP_DIR/cte_park_sweeper_json.out -w 'HTTP %{http_code}\n' http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cte_park_sweeper_json.body
+--exec curl -s -X POST -H "Content-Type: application/json" -H "x-ronsql-phases: 1" -D $MYSQL_TMP_DIR/cte_park_sweeper_json.hdr -o $MYSQL_TMP_DIR/cte_park_sweeper_json.out -w 'HTTP %{http_code}\n' http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cte_park_sweeper_json.body
 --exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
 --exec grep -io 'attempts=[0-9]*' $MYSQL_TMP_DIR/cte_park_sweeper_json.hdr
 --exec curl -s -X POST -H "Content-Type: application/json" -o $MYSQL_TMP_DIR/cte_park_sweeper_json.clean -w 'HTTP %{http_code}\n' http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/cte_park_sweeper_json.body
