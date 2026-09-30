@@ -400,6 +400,18 @@ sub fix_bind_address_rdrs {
   return "0.0.0.0";
 }
 
+# Writable per-instance directory for REST.UploadPath (@uploadpath in the
+# config templates): the HTTP server buffers request bodies larger than its
+# in-memory threshold (64KiB) in files under <UploadPath>/tmp/, so the tests
+# must exercise that path against a writable directory - production rdrs got
+# this wrong (unwritable working directory) and silently read oversized
+# bodies as empty.
+sub fix_rdrs_upload_path {
+  my ($self, $config, $group_name, $group) = @_;
+  my $dir = $self->{ARGS}->{vardir};
+  return "$dir/tmp/$group_name.uploads";
+}
+
 my @rdrs_rules = (
   { '#host'         => \&fix_host },
   { '#log-output'   => \&fix_log_rdrs },
@@ -409,6 +421,7 @@ my @rdrs_rules = (
   { 'port'          => \&fix_port },
   { 'rondisport'    => \&fix_rondis_port },
   { 'probeport'     => \&fix_probe_port },
+  { 'uploadpath'    => \&fix_rdrs_upload_path },
   { 'std-data'      => \&fix_std_data },
 );
 
