@@ -588,7 +588,7 @@ DELIMITER ;|
 # (<= 1-row) body is accepted and dropped — the SET is unchanged and
 # derived-table order is unspecified in MySQL too.  Body ORDER BY +
 # LIMIT coverage lives in ronsql_cte_dd_orderby_limit_cte (obc-19/20).
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_custkey AS k FROM orders WHERE o_orderkey = 77 ORDER BY o_custkey) SELECT c.c_custkey FROM customer AS c JOIN r ON r.k = c.c_custkey;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_custkey AS k FROM orders WHERE o_orderkey = 77 ORDER BY o_custkey) SELECT c.c_custkey FROM customer AS c JOIN r ON r.k = c.c_custkey;'
 
 --echo
 --echo === srb-P7 (rejection): duplicate output columns ===
