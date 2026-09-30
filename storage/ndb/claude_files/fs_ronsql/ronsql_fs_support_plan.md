@@ -765,9 +765,18 @@ spot run in `benchmarks.md` §8.
 - On the same RDRS binary, `fs_hw_agg_last10_tx300` takes 217 µs with J5
   and 603 µs with the J1 plan (the `_grouped` entry): 2.8×.
 - MySQL runs the natural statement in 157 µs, 1.38× ahead of J5.
-- About 76 µs of J5's server time is the presumed early scan close, which
-  is not yet a phase of its own. That is the next lever, for J5 and the
-  collect path alike: measure it, then avoid the wait.
+- About 76 µs of J5's server time was the early scan close. The new
+  `close` phase (`8d5e0376268`) measured it at 73 µs.
+- Fix committed 2026-09-30: RDRS closes a LIMIT-stopped scan's
+  transaction after the reply (`RonSQLExecParams::deferred_close`,
+  `ronsql_dal_finish`; `benchmarks.md` §8). It covers J5 and every
+  single-table pass-through LIMIT (collect, fs_latest).
+  - `tx300` at one thread: 217 → 168 µs (MySQL 155).
+  - At 4 threads J5 is ahead of MySQL: 13624 against 12782 q/s.
+  - A 128-row minimum batch was tried and rejected, because it adds
+    data-node work under concurrency.
+  - The rest of the close is left to an asynchronous NDB API close or a
+    per-fragment row limit in the data nodes.
 - `fs_hw_agg_last10`, `_last100` and `_last10_tx300` now pin three things:
   the J5 EXPLAIN line, `Execute as index scan.`, and the descending
   index-order line.

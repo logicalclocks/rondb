@@ -250,6 +250,62 @@ Reading:
     (m3_run6_plan.md C3) ships fewer rows, but it leaves every fragment
     with more than LIMIT rows open, and `NdbScanOperation::close_impl`
     then sends the close and waits for one more round trip.
+  - Fix chosen: close after the reply (2026-09-30, committed; ronsql,
+    ronsql_cte, ronsql_fs and ronsql_large suites green).
+    - Through RDRS, a single-table scan stopped at its LIMIT is no longer
+      closed before the response.
+    - The executor hands the open transaction back
+      (`RonSQLExecParams::deferred_close`). `ronsql_dal` keeps the Ndb
+      object, and `RonSQLRequest::execute` closes the transaction in
+      `ronsql_dal_finish()` after `callback()` has handed the response to
+      drogon.
+    - The batch stays at LIMIT, so C3's saving is kept. `close` then reads
+      about 0 for such requests.
+    - Expected: `fs_hw_agg_last10_tx300` about 145 µs, `fs_hw_collect5`
+      about 30 µs less on average.
+  - Measured with the close after the reply (same cluster, same day):
+
+    | entry | avg | p99 | q/s | firstbatch | close | execute |
+    |---|---|---|---|---|---|---|
+    | `fs_hw_agg_last10_tx300` | 168 µs (was 217) | 294 µs (was 406) | 5805 (was 4515) | 97 µs (was 80) | 0 (was 73) | 105 µs (was 161) |
+    | `fs_hw_collect5` | 156 µs (was 165) | 300 µs | 6260 | 91 µs (was 77) | 0.1 µs (was 31) | 97 µs (was 114) |
+    | `fs_hw_agg_last100` (never closes) | 128 µs (was 123) | 317 µs | 7584 | 71 µs (was 70) | 0.3 µs | 78 µs (was 77) |
+    | `fs_hw_agg_last10_tx300` on MySQL | 155 µs | 357 µs | 6418 | | | |
+
+    - The gain is smaller than the close: 49 of 73 µs on `tx300` and 9 of
+      31 µs on `collect5`.
+    - Only the entries that used to close got a slower `firstbatch`. At
+      one client thread the deferred close overlaps the next request's
+      first round trip: the data nodes serve both, and in the NDB API a
+      second waiting thread means a hand-over between the poll owner and
+      the waiter.
+    - J5 is now below MySQL at p99 and 8 % above it on average.
+    - At 4 client threads (same build, 4 × 5000) J5 is ahead:
+
+      | `fs_hw_agg_last10_tx300`, T=4 | avg | p99 | q/s | firstbatch | execute |
+      |---|---|---|---|---|---|
+      | RonSQL J5, close after the reply | 286 µs | 479 µs | 13624 | 163 µs | 174 µs |
+      | MySQL | 311 µs | 483 µs | 12782 | | |
+
+      The data nodes are the shared resource here: `firstbatch` is 163 µs
+      at T=4 against 97 µs at T=1.
+  - Rejected: a minimum batch (`max(LIMIT, 128)` rows per fragment). It
+    would end short histories in their first batch with no close, as
+    mysqld's default batch does, but only by making the data nodes read
+    and ship rows nobody uses. That costs throughput as soon as several
+    queries run at once. The proper way to get both small batches and no
+    close is a per-fragment row limit in the data nodes (the fragment
+    stops after N rows and reports the scan complete), as DBSPJ's
+    `setMaxRows` does for pushed queries; plain scans do not have it yet.
+  - Open alternatives for the rest:
+    - An asynchronous close in the NDB API. The close is sent without
+      waiting, the transaction is parked on a per-Ndb closing list, the
+      close confirmation is recorded by whichever thread receives it (no
+      waiter to signal), and the owner reaps it at its next API call. It
+      frees the worker time and the poll hand-over, but leaves the
+      data-node close work.
+    - The per-fragment row limit in the data nodes, which removes the
+      close altogether.
 
 ### WP-J spot run — 2026-09-29, the user's cluster, sf 1, 1 thread × 5000 requests
 

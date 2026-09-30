@@ -8833,7 +8833,7 @@ RonSQLPreparer::execute()
       // RONDB-1124 WP-J J5: the last N rows read by the pass-through scan,
       // aggregated in RonSQL.
       execute_api_side_aggregate();
-      cleanup_trans();
+      finish_trans();
       return;
     }
 
@@ -8841,7 +8841,7 @@ RonSQLPreparer::execute()
       // Phase 1 (non_aggregate_phase_1.md): projection-only
       // single-table queries — plain-API pass-through execution.
       execute_single_table_passthrough();
-      cleanup_trans();
+      finish_trans();
       return;
     }
 
@@ -10255,7 +10255,13 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
     m_conf.phase_stats->rows_drained = row_count;
   }
 #endif
-  if (limit_reached) {
+  if (limit_reached && m_conf.deferred_close != NULL) {
+    // The scan is left open: the caller closes the transaction after its
+    // reply (RonSQLExecParams::deferred_close), and closing it closes the
+    // scan.  The close would otherwise wait one more round trip for the
+    // data nodes whenever a fragment holds more rows than the batch.
+    m_defer_close = true;
+  } else if (limit_reached) {
     // Early close (Phase 2): release the still-open scan instead of
     // draining its remaining batches.
     STAT_TS(m_conf.phase_stats, s_close_start);
@@ -10290,6 +10296,17 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   if (header_emitted) {
     m_resultprinter->print_passthrough_finish(m_conf.out_stream);
   }
+}
+
+void
+RonSQLPreparer::finish_trans() {
+  if (m_defer_close && m_trans != NULL) {
+    ndbrequire(m_conf.deferred_close != NULL);
+    *m_conf.deferred_close = m_trans;
+    m_trans = NULL;
+    return;
+  }
+  cleanup_trans();
 }
 
 void

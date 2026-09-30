@@ -284,11 +284,33 @@ RS_Status ronsql_dal(const char* database,
   DEB_TRACE();
   ndb_object->setDatabaseName(saved_database_name.c_str());
   ep->ndb = NULL;
+  if (ep->deferred_close != NULL && *ep->deferred_close != NULL) {
+    // The executor left a transaction open to be closed after the reply
+    // (RonSQLExecParams::deferred_close): keep the Ndb object until
+    // ronsql_dal_finish() has closed it.
+    assert(status.http_code == SUCCESS);
+    ep->deferred_ndb = ndb_object;
+    return status;
+  }
   rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object,
                                            &status,
                                            threadIndex);
   DEB_TRACE();
   return status;
+}
+
+void ronsql_dal_finish(RonSQLExecParams* ep, unsigned int threadIndex) {
+  assert(ep != nullptr);
+  Ndb* ndb_object = ep->deferred_ndb;
+  if (ndb_object == NULL) return;
+  assert(ep->deferred_close != NULL && *ep->deferred_close != NULL);
+  // Closing the transaction closes the scan it left open; this is the
+  // round trip the reply no longer waits for.
+  ndb_object->closeTransaction(*ep->deferred_close);
+  *ep->deferred_close = NULL;
+  ep->deferred_ndb = NULL;
+  RS_Status status = RS_OK;
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb_object, &status, threadIndex);
 }
 
 /**
