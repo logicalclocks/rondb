@@ -14163,6 +14163,116 @@ linked_source_is_leaf_ancestor(const JoinPlan& plan, Uint32 leaf_idx,
   return false;                                    // malformed chain — reject
 }
 
+// SQL name of an NDB column type, for error messages.
+static const char*
+ndb_column_type_name(NdbDictionary::Column::Type type)
+{
+  switch (type) {
+  case NdbDictionary::Column::Tinyint:         return "TINYINT";
+  case NdbDictionary::Column::Tinyunsigned:    return "TINYINT UNSIGNED";
+  case NdbDictionary::Column::Smallint:        return "SMALLINT";
+  case NdbDictionary::Column::Smallunsigned:   return "SMALLINT UNSIGNED";
+  case NdbDictionary::Column::Mediumint:       return "MEDIUMINT";
+  case NdbDictionary::Column::Mediumunsigned:  return "MEDIUMINT UNSIGNED";
+  case NdbDictionary::Column::Int:             return "INT";
+  case NdbDictionary::Column::Unsigned:        return "INT UNSIGNED";
+  case NdbDictionary::Column::Bigint:          return "BIGINT";
+  case NdbDictionary::Column::Bigunsigned:     return "BIGINT UNSIGNED";
+  case NdbDictionary::Column::Float:           return "FLOAT";
+  case NdbDictionary::Column::Double:          return "DOUBLE";
+  case NdbDictionary::Column::Decimal:         return "DECIMAL";
+  case NdbDictionary::Column::Decimalunsigned: return "DECIMAL UNSIGNED";
+  case NdbDictionary::Column::Char:            return "CHAR";
+  case NdbDictionary::Column::Varchar:
+  case NdbDictionary::Column::Longvarchar:     return "VARCHAR";
+  case NdbDictionary::Column::Binary:          return "BINARY";
+  case NdbDictionary::Column::Varbinary:
+  case NdbDictionary::Column::Longvarbinary:   return "VARBINARY";
+  case NdbDictionary::Column::Date:            return "DATE";
+  case NdbDictionary::Column::Datetime:
+  case NdbDictionary::Column::Datetime2:       return "DATETIME";
+  case NdbDictionary::Column::Timestamp:
+  case NdbDictionary::Column::Timestamp2:      return "TIMESTAMP";
+  case NdbDictionary::Column::Time:
+  case NdbDictionary::Column::Time2:           return "TIME";
+  case NdbDictionary::Column::Year:            return "YEAR";
+  default:                                     return "another type";
+  }
+}
+
+// F29: NdbQueryBuilder links a parent column into a child key only when
+// the two are identically declared — type, precision, scale, length and
+// character set (NdbLinkedOperandImpl::bindOperand); pushed joins do not
+// convert linked values.  QueryPlanner::plan checks the real-table pairs.
+// A pair with a CTE side can only be checked here, once the virtual
+// tables exist; it used to surface as "Failed to create child
+// operation."  The usual cause is a CTE aggregate output: the kernel
+// carries every MIN / MAX / SUM / COUNT result as 8 bytes, so MAX over an
+// INT column is a BIGINT output and cannot key an INT column.
+void
+RonSQLPreparer::check_cte_join_key_types(
+    const JoinPlan& plan, Uint32 op_idx,
+    NdbDictionary::Table** cteVirtualTables)
+{
+  const JoinOp& op = plan.ops[op_idx];
+  // The column `name` of op `idx`: its table's, or its CTE's virtual
+  // table's.  Sets is_cte_agg when it is a CTE aggregate output.
+  auto column_of = [&](Uint32 idx, const char* name,
+                       bool& is_cte_agg) -> const NdbDictionary::Column* {
+    const JoinOp& o = plan.ops[idx];
+    is_cte_agg = false;
+    if (o.table != NULL) return o.table->getColumn(name);
+    if (o.cte_def == NULL || cteVirtualTables == NULL ||
+        cteVirtualTables[idx] == NULL)
+      return NULL;
+    const size_t name_len = strlen(name);
+    for (const Outputs* out = o.cte_def->stmt->outputs; out != NULL;
+         out = out->next) {
+      if (out->output_name.len == name_len &&
+          strncmp(out->output_name.str, name, name_len) == 0) {
+        is_cte_agg = (out->type == Outputs::Type::AGGREGATE);
+        break;
+      }
+    }
+    return cteVirtualTables[idx]->getColumn(name);
+  };
+  for (Uint32 k = 0; k < op.num_key_cols; k++) {
+    const Uint32 parent_idx = op.key_parent_op_idx[k];
+    if (op.table != NULL && plan.ops[parent_idx].table != NULL)
+      continue;  // real-table pair: checked by QueryPlanner::plan
+    bool parent_is_agg = false;
+    bool child_is_agg = false;
+    const NdbDictionary::Column* parent_col =
+        column_of(parent_idx, op.parent_key_col_names[k], parent_is_agg);
+    const NdbDictionary::Column* child_col =
+        column_of(op_idx, op.child_key_col_names[k], child_is_agg);
+    if (parent_col == NULL || child_col == NULL)
+      continue;  // the query builder reports what it cannot resolve
+    if (child_col->getType() == parent_col->getType() &&
+        child_col->getPrecision() == parent_col->getPrecision() &&
+        child_col->getScale() == parent_col->getScale() &&
+        child_col->getLength() == parent_col->getLength() &&
+        child_col->getCharset() == parent_col->getCharset())
+      continue;
+    ndbrequire(m_conf.err_stream != NULL);
+    std::basic_ostream<char>& err = *m_conf.err_stream;
+    err << "Join columns '" << plan.ops[parent_idx].alias.c_str() << "."
+        << op.parent_key_col_names[k] << "' ("
+        << ndb_column_type_name(parent_col->getType()) << ") and '"
+        << op.alias.c_str() << "." << op.child_key_col_names[k] << "' ("
+        << ndb_column_type_name(child_col->getType())
+        << ") must have identical type, precision, scale, length and"
+           " character set: NDB pushed joins do not convert linked values.";
+    if (parent_is_agg || child_is_agg) {
+      err << " A CTE MIN, MAX, SUM or COUNT output is carried as a 64-bit"
+             " value (BIGINT, BIGINT UNSIGNED or DOUBLE) whatever the type"
+             " of the aggregated column; a GROUP BY column keeps its type.";
+    }
+    err << "\n";
+    throw RonSQLPermanentError("Join column type mismatch.");
+  }
+}
+
 // Emit every non-root op in scope.join_plan: linked keys from the parent,
 // optional WHERE filter, optional aggregator attachment (multi-leaf if
 // leafAggs[i] is non-null, else single-leaf at plan.agg_leaf_idx), and
@@ -14318,6 +14428,12 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       }
     }
 
+    // F29: key types with a CTE side, before the builder binds the keys.
+    // A CTE_LOOKUP child checks them in its arm below, after its key
+    // shape checks, which report a wrong or partial key more precisely.
+    if (op.type != JoinOp::CTE_LOOKUP)
+      check_cte_join_key_types(plan, i, cteVirtualTables);
+
     switch (op.type) {
     case JoinOp::PK_LOOKUP:
       opDefs[i] = qb->readTuple(op.table, keys, &opts);
@@ -14425,6 +14541,7 @@ RonSQLPreparer::emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
       require_prm(coverage.state != CteKeyCoverage::ExactPermuted,
                   "CTE lookup keys were not ordered by the virtual "
                   "primary key.  Please report a bug.");
+      check_cte_join_key_types(plan, i, cteVirtualTables);
       Uint32 numResultCols = 0;
       for (const Outputs* o = op.cte_def->stmt->outputs; o; o = o->next)
         numResultCols++;

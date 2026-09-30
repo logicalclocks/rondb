@@ -1,0 +1,122 @@
+# RONDB-1121 finding F29 (WP-J J0, first form of lastn-12): a join whose
+# key has a CTE side with a different type from its partner failed with the
+# internal error "Failed to create child operation."
+#
+# NDB pushed joins link a parent column into a child key only when both
+# are identically declared (NdbLinkedOperandImpl::bindOperand): no implicit
+# conversion.  QueryPlanner checks the real-table pairs; a pair with a CTE
+# side is now checked in RonSQLPreparer::check_cte_join_key_types and
+# rejected with a permanent error that names both columns and types.  The
+# usual cause is a CTE MIN / MAX / SUM / COUNT output, which the kernel
+# carries as 8 bytes: MAX over an INT column is a BIGINT output.
+#
+#   f29-1  MAX(INT) output keys an INT PK (CTE parent)     -> rejected
+#   f29-2  MAX(INT) output keys a BIGINT PK                -> runs, = MySQL
+#   f29-3  BIGINT column keys a CTE grouped by INT
+#          (CTE_LOOKUP child)                              -> rejected
+#   f29-4  the GROUP BY carrier (J0 form) keeps INT        -> runs, = MySQL
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# Joins: compare the mysql client against RDRS only (the ronsql suite's CTE
+# convention).
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE f29_tx (
+  id          INT NOT NULL,
+  grp         INT NOT NULL,
+  merchant_id INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+CREATE INDEX idx_f29_tx_grp ON f29_tx (grp);
+
+CREATE TABLE f29_m_int (
+  merchant_id INT NOT NULL,
+  mcc         INT NOT NULL,
+  PRIMARY KEY (merchant_id)
+) ENGINE=NDB;
+
+CREATE TABLE f29_m_big (
+  merchant_id BIGINT NOT NULL,
+  mcc         INT NOT NULL,
+  PRIMARY KEY (merchant_id)
+) ENGINE=NDB;
+
+INSERT INTO f29_tx VALUES (1,1,1), (2,1,2), (3,2,2), (4,2,3), (5,3,1);
+INSERT INTO f29_m_int VALUES (1,5001), (2,5002), (3,5003);
+INSERT INTO f29_m_big VALUES (1,5001), (2,5002), (3,5003);
+
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === f29-1: MAX(INT) CTE output joined to an INT key — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT grp, MAX(merchant_id) AS merchant_id FROM f29_tx GROUP BY grp) SELECT m.mcc, COUNT(*) AS n FROM t JOIN f29_m_int AS m ON m.merchant_id = t.merchant_id GROUP BY m.mcc;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo === f29-2: MAX(INT) CTE output joined to a BIGINT key ===
+let $QUERY=
+WITH t AS (SELECT grp, MAX(merchant_id) AS merchant_id
+FROM f29_tx GROUP BY grp)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_big AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp, MAX(merchant_id) AS merchant_id
+FROM f29_tx GROUP BY grp)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_big AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc|
+
+DELIMITER ;|
+
+--echo
+--echo === f29-3: BIGINT column joined to a CTE grouped by INT — permanent rejection ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH t AS (SELECT merchant_id, COUNT(*) AS n FROM f29_tx GROUP BY merchant_id) SELECT b.mcc, SUM(t.n) AS n FROM f29_m_big AS b JOIN t ON t.merchant_id = b.merchant_id GROUP BY b.mcc;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo === f29-4: GROUP BY carrier (J0 form) keeps the INT type ===
+let $QUERY=
+WITH t AS (SELECT grp, merchant_id, COUNT(*) AS c
+FROM f29_tx GROUP BY grp, merchant_id)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_int AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH t AS (SELECT grp, merchant_id, COUNT(*) AS c
+FROM f29_tx GROUP BY grp, merchant_id)
+SELECT m.mcc, COUNT(*) AS n
+FROM t JOIN f29_m_int AS m ON m.merchant_id = t.merchant_id
+GROUP BY m.mcc|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE f29_tx;
+DROP TABLE f29_m_int;
+DROP TABLE f29_m_big;
+--enable_query_log

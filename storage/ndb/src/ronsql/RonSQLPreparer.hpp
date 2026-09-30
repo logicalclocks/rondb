@@ -1009,6 +1009,10 @@ private:
       NdbQueryOptions& rootOpts);
   void build_cte_virtual_tables(const JoinPlan& plan,
                                 NdbDictionary::Table** out);
+  // F29: reject a linked join key with a CTE side whose two columns are
+  // not identically declared (see the definition).
+  void check_cte_join_key_types(const JoinPlan& plan, Uint32 op_idx,
+                                NdbDictionary::Table** cteVirtualTables);
   void emit_child_ops(NdbQueryBuilder* qb, QueryScope& scope,
                       const NdbQueryOperationDef** opDefs,
                       NdbAggregator* singleAgg,
