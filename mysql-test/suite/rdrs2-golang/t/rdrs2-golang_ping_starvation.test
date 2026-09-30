@@ -20,11 +20,16 @@
 # including a simulated Kubernetes liveness verdict (probe timeout 2s,
 # period 5s, failureThreshold 4 - the shipped rondb-helm settings).
 #
-# This is a measurement harness, not a regression gate: it passes unless the
-# infrastructure itself fails (server unreachable, restart commands fail).
+# By default the driver is a regression gate: the probe port must answer in
+# EVERY mode (zero simulated probe failures, blackout under the probe
+# timeout), and the main port must stay within measured-plus-margin blackout
+# bounds in the announced-departure modes (graceful/abort/sigkill); under
+# freeze the main port is reporting-only - its continued blackout is the
+# proof the harness still bites. The timing report is written either way.
 # Knobs (all via environment):
+#   STARV_ASSERT        1 = assert the gates (default), 0 = reporting only
 #   STARV_WORKERS       concurrent load workers (default 32)
-#   STARV_RESTART_MODE  graceful | abort       (default graceful)
+#   STARV_RESTART_MODE  graceful | abort | sigkill | freeze (default graceful)
 #   STARV_BATCH         batch size per request, 0 = single pk-read (default 0)
 #   STARV_BASELINE_S / STARV_RECOVERY_S  phase lengths (default 15s each)
 
