@@ -12,28 +12,59 @@ use strict;
 use warnings;
 use HTTP::Tiny;
 
-my %rdrs_port;
+my %rdrs_rest_key;
 
-sub _rdrs_port {
-  my ($server) = @_;
-  return $rdrs_port{$server} if defined $rdrs_port{$server};
+# Extract one key from the REST object of the generated config. The block is
+# isolated first: Rondis has its own "ServerPort", and REST itself holds two
+# ports (ServerPort and ProbePort), so a bare key match could hit the wrong
+# one.
+sub _rdrs_rest_key {
+  my ($server, $key) = @_;
+  return $rdrs_rest_key{"$server.$key"}
+    if defined $rdrs_rest_key{"$server.$key"};
   my $cfg = "$ENV{MYSQLTEST_VARDIR}/${server}_config.json";
   open(my $fh, '<', $cfg) or die "Cannot open $cfg: $!\n";
   local $/;
   my $json = <$fh>;
   close($fh);
-  # Anchor on the REST object: a config with Rondis enabled has a second
-  # "ServerPort" and the bare key could match the wrong one.
-  ($rdrs_port{$server}) =
-    $json =~ /"REST"\s*:\s*\{[^{}]*"ServerPort"\s*:\s*(\d+)/
-    or die "No REST.ServerPort found in $cfg\n";
-  return $rdrs_port{$server};
+  my ($block) = $json =~ /"REST"\s*:\s*\{([^{}]*)\}/
+    or die "No REST object found in $cfg\n";
+  ($rdrs_rest_key{"$server.$key"}) = $block =~ /"\Q$key\E"\s*:\s*(\d+)/
+    or die "No REST.$key found in $cfg\n";
+  return $rdrs_rest_key{"$server.$key"};
+}
+
+sub _rdrs_port {
+  my ($server) = @_;
+  return _rdrs_rest_key($server, 'ServerPort');
+}
+
+# The dedicated probe listener of the same server (REST.ProbePort). Serves
+# only ping and health, never authenticated, and must answer even when the
+# main port's threads are all blocked.
+sub _rdrs_probe_port {
+  my ($server) = @_;
+  return _rdrs_rest_key($server, 'ProbePort');
 }
 
 sub _health_status {
   my $ua = HTTP::Tiny->new(timeout => 5);
   my $res = $ua->get(
     'http://127.0.0.1:' . _rdrs_port('rdrs.1.1') . '/0.1.0/health');
+  return $res->{status};
+}
+
+sub _probe_health_status {
+  my $ua = HTTP::Tiny->new(timeout => 5);
+  my $res = $ua->get(
+    'http://127.0.0.1:' . _rdrs_probe_port('rdrs.1.1') . '/0.1.0/health');
+  return $res->{status};
+}
+
+sub _probe_ping_status {
+  my $ua = HTTP::Tiny->new(timeout => 5);
+  my $res = $ua->get(
+    'http://127.0.0.1:' . _rdrs_probe_port('rdrs.1.1') . '/0.1.0/ping');
   return $res->{status};
 }
 
@@ -96,12 +127,48 @@ sub poll_health {
   });
 }
 
+# Both-port invariant, checked at every health checkpoint:
+# - /ping on the probe port answers 200 no matter what state the cluster is
+#   in - it is the liveness probe and must never fail.
+# - /health must reach the wanted status on BOTH the main port and the probe
+#   port. The two read the same state, so they must agree; polling until
+#   both agree tolerates the instant where one has seen a transition the
+#   other has not.
+sub poll_health_both {
+  my ($want, $max_seconds, $what) = @_;
+  _poll($what, $max_seconds, sub {
+    my $ping = _probe_ping_status();
+    die "probe-port ping returned HTTP $ping: the probe port must always"
+      . " answer 200\n" if $ping != 200;
+    my $main_st = _health_status();
+    my $probe_st = _probe_health_status();
+    return ($main_st == $want && $probe_st == $want)
+      ? 'ok' : "health=$main_st probe_health=$probe_st";
+  });
+}
+
 sub poll_health_with_poke {
   my ($want, $max_seconds, $what) = @_;
   _poll($what, $max_seconds, sub {
     _poke_pkread();
     my $st = _health_status();
     return $st == $want ? 'ok' : "health=$st";
+  });
+}
+
+# poll_health_both plus the pk-read poke that exercises the production
+# reconnection trigger (see _poke_pkread).
+sub poll_health_both_with_poke {
+  my ($want, $max_seconds, $what) = @_;
+  _poll($what, $max_seconds, sub {
+    _poke_pkread();
+    my $ping = _probe_ping_status();
+    die "probe-port ping returned HTTP $ping: the probe port must always"
+      . " answer 200\n" if $ping != 200;
+    my $main_st = _health_status();
+    my $probe_st = _probe_health_status();
+    return ($main_st == $want && $probe_st == $want)
+      ? 'ok' : "health=$main_st probe_health=$probe_st";
   });
 }
 

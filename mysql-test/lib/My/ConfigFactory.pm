@@ -111,6 +111,21 @@ sub fix_rondis_port {
   return $self->{HOSTS}->{$hostname}++;
 }
 
+# The rdrs2 dedicated probe listener (REST.ProbePort). Every rdrs2 instance
+# needs its own: the port is referenced from the config-json-template via
+# @probeport, and multiple rdrs2 processes run concurrently in one test.
+# A group may set probe-disabled=true (for templates that set
+# ProbeEnable=false, e.g. to test authenticated ping/health on the main
+# port); no port is allocated then and mtr does not wait for one to open.
+sub fix_probe_port {
+  my ($self, $config, $group_name, $group) = @_;
+  if (($group->if_exist('probe-disabled') // '') eq 'true') {
+    return ''
+  }
+  my $hostname = $group->value('#host');
+  return $self->{HOSTS}->{$hostname}++;
+}
+
 sub fix_admin_port {
   my ($self, $config, $group_name, $group) = @_;
   my $hostname = $group->value('#host');
@@ -385,6 +400,18 @@ sub fix_bind_address_rdrs {
   return "0.0.0.0";
 }
 
+# Writable per-instance directory for REST.UploadPath (@uploadpath in the
+# config templates): the HTTP server buffers request bodies larger than its
+# in-memory threshold (64KiB) in files under <UploadPath>/tmp/, so the tests
+# must exercise that path against a writable directory - production rdrs got
+# this wrong (unwritable working directory) and silently read oversized
+# bodies as empty.
+sub fix_rdrs_upload_path {
+  my ($self, $config, $group_name, $group) = @_;
+  my $dir = $self->{ARGS}->{vardir};
+  return "$dir/tmp/$group_name.uploads";
+}
+
 my @rdrs_rules = (
   { '#host'         => \&fix_host },
   { '#log-output'   => \&fix_log_rdrs },
@@ -393,6 +420,8 @@ my @rdrs_rules = (
   { 'bind-address'  => \&fix_bind_address_rdrs },
   { 'port'          => \&fix_port },
   { 'rondisport'    => \&fix_rondis_port },
+  { 'probeport'     => \&fix_probe_port },
+  { 'uploadpath'    => \&fix_rdrs_upload_path },
   { 'std-data'      => \&fix_std_data },
 );
 
