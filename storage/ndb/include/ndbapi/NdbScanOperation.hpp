@@ -434,6 +434,27 @@ class NdbScanOperation : public NdbOperation {
   void close(bool forceSend = false, bool releaseOp = false);
 
   /**
+   * Close the scan and release the operation without waiting for the data
+   * nodes to confirm the close (RonDB).
+   *
+   * close() sends the close request for every fragment scan that is still
+   * open and then waits one round trip for its confirmation before the
+   * scan transaction can be reused.  closeNoWait() sends the requests and
+   * returns: the Ndb object keeps the operation and its scan transaction
+   * and finishes the close at its next startTransaction() or
+   * closeTransaction(), or when it is deleted, once the confirmation has
+   * arrived.  Useful when a scan is stopped early (a LIMIT reached) and the
+   * thread has other work to do than waiting.
+   *
+   * The scan must have been executed.  When a close cannot be left
+   * unconfirmed (batches still on their way, a continuous scan, an error,
+   * a data node failure) or nothing is open at the data nodes, it behaves
+   * as close(true, true).  Either way the operation must not be used
+   * afterwards, and it no longer belongs to its transaction.
+   */
+  void closeNoWait();
+
+  /**
    * Lock current tuple
    *
    * @return an NdbOperation or NULL.
@@ -579,6 +600,14 @@ class NdbScanOperation : public NdbOperation {
   void release() override;
   
   int close_impl(bool forceSend, PollGuard *poll_guard);
+
+  /* RonDB F31 (closeNoWait): the sending half of close_impl(), and the
+   * completion check and release of a parked close. */
+  bool close_send_nowait(PollGuard *poll_guard);
+  bool parked_close_done(bool wait, PollGuard *poll_guard);
+  void release_parked_close();
+  /* Next scan in NdbImpl::m_parked_scan_closes. */
+  NdbScanOperation *m_next_parked_close;
 
   /* Helper for NdbScanFilter to allocate an InterpretedCode
    * object owned by the Scan operation

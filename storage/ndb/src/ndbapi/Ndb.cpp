@@ -257,6 +257,10 @@ void Ndb::doDisconnect() {
   NdbTransaction *tNdbCon;
   CHECK_STATUS_MACRO_VOID;
 
+  // RonDB F31: finish the no-wait scan closes, waiting for their
+  // confirmations, before the transactions are released below.
+  reapParkedScanCloses(true);
+
   /**
    * Clean up active NdbTransactions by releasing all NdbOperations,
    * ScanOperations, and NdbQuery owned by it. Release of
@@ -1058,6 +1062,12 @@ NdbTransaction *Ndb::startTransactionLocal(Uint32 aPriority, Uint32 nodeId,
   };);
 #endif
 
+  // RonDB F31: finish the no-wait scan closes already confirmed, which
+  // also returns their scan transactions to the idle connections.
+  if (unlikely(theImpl->m_parked_scan_closes != nullptr)) {
+    reapParkedScanCloses(false);
+  }
+
   if (unlikely(theRemainingStartTransactions == 0)) {
     theError.code = 4006;
     DBUG_RETURN(nullptr);
@@ -1152,6 +1162,11 @@ void Ndb::closeTransaction(NdbTransaction *aConnection) {
   }  // if
   CHECK_STATUS_MACRO_VOID;
 
+  // RonDB F31: finish the no-wait scan closes already confirmed.
+  if (unlikely(theImpl->m_parked_scan_closes != nullptr)) {
+    reapParkedScanCloses(false);
+  }
+
   tCon = theTransactionList;
   theRemainingStartTransactions++;
 
@@ -1232,6 +1247,42 @@ void Ndb::closeTransaction(NdbTransaction *aConnection) {
   }  // if
   DBUG_VOID_RETURN;
 }  // Ndb::closeTransaction()
+
+/*
+ * RonDB F31 (NdbScanOperation::closeNoWait): finish the parked scan closes
+ * whose close the data nodes have confirmed (or whose data node failed),
+ * releasing each operation and closing its scan transaction as close()
+ * does.  With wait, finish all of them, waiting for the confirmations.
+ * Called from startTransactionLocal() and closeTransaction(), which the
+ * release itself calls again (closeTransaction on the scan transaction):
+ * that nested call does nothing.
+ */
+void Ndb::reapParkedScanCloses(bool wait) {
+  NdbImpl *impl = theImpl;
+  if (impl->m_parked_scan_closes == nullptr || impl->m_reaping_scan_closes) {
+    return;
+  }
+  impl->m_reaping_scan_closes = true;
+  NdbScanOperation **pp = &impl->m_parked_scan_closes;
+  while (*pp != nullptr) {
+    NdbScanOperation *op = *pp;
+    bool done;
+    {
+      PollGuard poll_guard(*impl);
+      done = op->parked_close_done(wait, &poll_guard);
+      // Cleared under the client lock, which the receiving thread holds
+      // when it reads the flag (Ndbif).
+      if (done) op->theNdbCon->m_scan_close_nowait = false;
+    }
+    if (done) {
+      *pp = op->m_next_parked_close;
+      op->release_parked_close();
+    } else {
+      pp = &op->m_next_parked_close;
+    }
+  }
+  impl->m_reaping_scan_closes = false;
+}
 
 /****************************************************************************
 int getBlockNumber(void);

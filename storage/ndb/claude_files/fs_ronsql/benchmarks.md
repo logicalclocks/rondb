@@ -297,6 +297,32 @@ Reading:
     close is a per-fragment row limit in the data nodes (the fragment
     stops after N rows and reports the scan complete), as DBSPJ's
     `setMaxRows` does for pushed queries; plain scans do not have it yet.
+  - F31, `NdbScanOperation::closeNoWait()` (2026-09-30, replaces the close
+    after the reply). The close request is sent, and the Ndb object
+    finishes the close at its next transaction.
+
+    | `fs_hw_agg_last10_tx300` | avg | p99 | q/s | firstbatch | close | execute |
+    |---|---|---|---|---|---|---|
+    | T=1, `close()` (before) | 217 µs | 406 µs | 4515 | 80 µs | 73 µs | 161 µs |
+    | T=1, close after the reply | 168 µs | 294 µs | 5805 | 97 µs | 0 | 105 µs |
+    | T=1, `closeNoWait` | 163 µs | 295 µs | 5963 | 93 µs | 3.7 µs | 103 µs |
+    | T=1, MySQL | 155 µs | 357 µs | 6418 | | | |
+    | T=4, close after the reply | 286 µs | 479 µs | 13624 | 163 µs | 0 | 174 µs |
+    | T=4, `closeNoWait` | 283 µs | 450 µs | 13788 | 158 µs | 5.9 µs | 175 µs |
+    | T=4, MySQL | 311 µs | 483 µs | 12782 | | | |
+
+    - `fs_hw_collect5` at T=1: 154.5 µs average (p99 286, 6309 q/s,
+      `firstbatch` 88.5, `close` 1.9, `execute` 96.8). That is against
+      165 µs with `close()` (close 31 µs, execute 114 µs) and 155.8 µs
+      with the close after the reply; MySQL's collect5 was 120 µs in the
+      same day's first session.
+    - `close` is now sending the request and the Ndb bookkeeping (a few
+      µs), not the round trip.
+    - `firstbatch` at one thread stays 13 µs above the scan that did not
+      close (80 µs): the data nodes still close the previous scan while the
+      next one starts. Only the per-fragment row limit removes that work.
+    - Against MySQL: 5 % slower on average at one thread, faster at p99,
+      and 8 % more throughput at four threads.
   - Open alternatives for the rest:
     - An asynchronous close in the NDB API (TODO F31 in
       `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`). The close is

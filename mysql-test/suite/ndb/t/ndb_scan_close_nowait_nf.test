@@ -1,0 +1,51 @@
+--source include/have_ndb.inc
+# Error insert 8316 (DBTC).
+--source include/have_ndb_debug.inc
+
+# RonDB F31 (suite/ronsql_fs/findings/BUGS_TODO.md): node failure under
+# parked NdbScanOperation::closeNoWait() closes.  testScan
+# -nScanCloseNoWaitNodeFailure holds every scan close 3 s in DBTC (error
+# insert 8316), parks ordered-scan closes on two Ndb objects alternately
+# on the victim and on the surviving data node as TC, and kills the victim.
+# The survivor fails its scans with fragments on the victim (SCAN_TABREF)
+# while their closes are held.  The first Ndb object keeps working and
+# finishes the closes of the failed node without a TC round trip, the
+# second is deleted with its parked closes and returns, and after the node
+# restart both kinds of scan work again.
+
+# NDBT creates TEST_DB.T1 directly through the NDB API. Keep both
+# mysqlds stopped so metadata discovery cannot import the API table.
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+--connection default
+--echo # Shutting down mysqld 1
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo # Shutting down mysqld 2
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+let NDBAPITEST_NAME=testScan;
+let NDBAPITEST_ARGS=-nScanCloseNoWaitNodeFailure -l1 T1;
+let NDBAPITEST_CLEANUP_QUERY=;
+
+--source suite/ndb/include/run_ndbapitest.inc
+
+# NDBT drops T1 before reporting success.
+--connection default
+--echo # Starting mysqld 1
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--connection s2
+--echo # Starting mysqld 2
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--connection default
+--disconnect s2

@@ -92,10 +92,7 @@ struct RonSQLPhaseStats
   Uint64 close_us = 0;      // scan / query close and closeTransaction,
                             // summed: an early close (LIMIT reached with
                             // fragment scans still open) waits for the
-                            // data nodes; part of execute_us.  A close
-                            // deferred until after the reply
-                            // (RonSQLExecParams::deferred_close) is not
-                            // in it.
+                            // data nodes; part of execute_us
   Uint64 execute_us = 0;    // RonSQLPreparer::execute total
   Uint64 rows_drained = 0;  // rows pulled from the NDB API (aggregate
                             // records on the agg path, result rows on the
@@ -156,18 +153,6 @@ struct RonSQLExecParams
   bool* do_explain = NULL; // If not NULL, use this to inform the caller whether
                            // we EXPLAIN. This is needed by RDRS to determine
                            // content type.
-  // RONDB-1124 (benchmarks.md §8): when not NULL, the caller closes the
-  // transaction after answering.  A single-table scan stopped at its LIMIT
-  // with fragment scans still open would otherwise wait one more round
-  // trip for the close before the reply goes out.  On success the executor
-  // may then leave that transaction open and store it here, instead of
-  // closing it; the caller must pass it to Ndb::closeTransaction (which
-  // closes the scan) before it reuses or returns the Ndb object.  Error
-  // paths always close at once and leave it NULL.
-  NdbTransaction** deferred_close = NULL;
-  // Used by the RDRS data access layer (ronsql_dal): the Ndb object kept
-  // back until the deferred transaction is closed (ronsql_dal_finish).
-  Ndb* deferred_ndb = NULL;
   RdrsSchemaCache* schema_cache = nullptr;  // Optional: avoids dict->listIndexes()
   RonSQLPhaseStats* phase_stats = nullptr;  // Optional: per-phase timing sink
                                             // (captured only when non-NULL and

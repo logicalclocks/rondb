@@ -72,6 +72,7 @@ NdbScanOperation::NdbScanOperation(Ndb *aNdb, NdbOperation::Type aType)
   m_interpretedCodeOldApi = nullptr;
   m_aggregation_code = nullptr;
   m_continousScan = false;
+  m_next_parked_close = nullptr;
 }
 
 NdbScanOperation::~NdbScanOperation() {
@@ -2577,6 +2578,212 @@ void NdbScanOperation::close(bool forceSend, bool releaseOp) {
   assert(tNdb->theRemainingStartTransactions > 0);
   tNdb->theRemainingStartTransactions--;
   DBUG_VOID_RETURN;
+}
+
+/*
+ * RonDB F31 (mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md): close
+ * without waiting for the close confirmation.
+ *
+ * close() -> close_impl() sends SCAN_NEXTREQ with the close flag for every
+ * fragment scan still open and then waits (wait_scan) until TC has
+ * confirmed each one; only then may the scan transaction go back to the
+ * idle connections of its node.  The confirmation itself is executed by
+ * whichever thread receives it (the receive thread, or the thread
+ * receiving for all waiters), which updates this operation's receiver
+ * counts under the client lock; the wakeup exists only because the owner
+ * waits.  closeNoWait() therefore sends the requests, detaches the
+ * operation from the user's transaction and parks it with its scan
+ * transaction on NdbImpl::m_parked_scan_closes.  Ndb::reapParkedScanCloses()
+ * finishes it at the owner's next startTransaction() / closeTransaction()
+ * (or waits for it when the Ndb object is deleted).
+ *
+ * Only the plain case is parked: an executed scan without a kernel error,
+ * no batch on its way (m_sent_receivers_count == 0: close_impl() would
+ * first wait for those), not a continuous scan (four receivers per
+ * fragment with their own state machine) and a live data node.  Anything
+ * else, or a scan with nothing open at the data nodes, takes close().
+ */
+void NdbScanOperation::closeNoWait() {
+  NdbTransaction *tTransCon = m_transConnection;
+  bool parked = false;
+  if (theNdbCon != nullptr && tTransCon != nullptr) {
+    PollGuard poll_guard(*theNdb->theImpl);
+    parked = close_send_nowait(&poll_guard);
+  }
+  if (!parked) {
+    close(true, true);
+    return;
+  }
+
+  // Detach from the user's transaction without releasing: the Ndb keeps
+  // the operation until its scan transaction is closed.
+  bool unlinked [[maybe_unused]];
+  NdbIndexScanOperation *tOp = static_cast<NdbIndexScanOperation *>(this);
+  if (theStatus != WaitResponse) {
+    unlinked = tTransCon->unlinkScanOperation(
+        &tTransCon->m_theFirstScanOperation,
+        &tTransCon->m_theLastScanOperation, tOp);
+  } else {
+    unlinked = tTransCon->unlinkScanOperation(
+        &tTransCon->m_firstExecutedScanOp, nullptr, tOp);
+  }
+  assert(unlinked);
+  m_transConnection = nullptr;
+
+  NdbImpl *impl = theNdb->theImpl;
+  m_next_parked_close = impl->m_parked_scan_closes;
+  impl->m_parked_scan_closes = this;
+}
+
+/*
+ * The sending half of close_impl(), called with the client locked.
+ * Returns true when close requests are outstanding and the caller parks
+ * the scan.  Returns false without changing any state when the scan is not
+ * eligible or nothing is open at the data nodes; close() then does the
+ * whole close (close_impl() must not run on receiver lists this method
+ * already rearranged).
+ */
+bool NdbScanOperation::close_send_nowait(PollGuard *poll_guard) {
+  NdbImpl *impl = theNdb->theImpl;
+  const Uint32 nodeId = theNdbCon->theDBnode;
+  if (!m_executed || m_continousScan || m_kernel_error_code != 0 ||
+      theError.code == 4008 || m_sent_receivers_count != 0 ||
+      theNdbCon->theNodeSequence != impl->getNodeSequence(nodeId)) {
+    return false;
+  }
+
+  // The receivers close_impl() would close: for an ordered scan those
+  // right of m_current_api_receiver (the ones left of it were sent their
+  // next request already), otherwise every api receiver; plus the conf'ed.
+  const Uint32 first = m_ordered ? m_current_api_receiver : 0;
+  const Uint32 api =
+      m_ordered ? theParallelism - m_current_api_receiver : m_api_receivers_count;
+  const Uint32 conf = m_conf_receivers_count;
+  bool open = false;
+  for (Uint32 i = 0; i < api && !open; i++) {
+    open = (m_api_receivers[first + i]->m_tcPtrI != RNIL);
+  }
+  for (Uint32 i = 0; i < conf && !open; i++) {
+    open = (m_conf_receivers[i]->m_tcPtrI != RNIL);
+  }
+  if (!open) return false;
+
+  // As close_impl(): move the conf'ed receivers after the api ones so that
+  // send_next_scan() closes all of them.
+  if (m_ordered) {
+    memmove(m_api_receivers, m_api_receivers + m_current_api_receiver,
+            api * sizeof(char *));
+  }
+  memcpy(m_api_receivers + api, m_conf_receivers, conf * sizeof(char *));
+  m_api_receivers_count = api + conf;
+  m_conf_receivers_count = 0;
+
+  if (send_next_scan(api + conf, true) == -1) {
+    // As close_impl(): the kernel side cannot be reached; the API objects
+    // are recycled when the parked close is finished.
+    m_api_receivers_count = 0;
+    m_sent_receivers_count = 0;
+    theNdbCon->theReleaseOnClose = true;
+  } else {
+    poll_guard->flush_send();
+  }
+  // From here on this scan transaction's SCAN_TABCONF must not wake the
+  // Ndb's waiter (Ndbif): nobody waits for it.
+  theNdbCon->m_scan_close_nowait = true;
+  return true;
+}
+
+/*
+ * Whether a parked close is finished, called with the client locked.
+ * With wait, waits for it as close_impl() does (timeout: 4008 and a forced
+ * release; node failure: release on close).
+ */
+bool NdbScanOperation::parked_close_done(bool wait, PollGuard *poll_guard) {
+  NdbImpl *impl = theNdb->theImpl;
+  const Uint32 nodeId = theNdbCon->theDBnode;
+  const Uint32 timeout = impl->get_waitfor_timeout();
+  if (wait) {
+    // The waiter must be woken by the confirmation now.
+    theNdbCon->m_scan_close_nowait = false;
+  }
+  for (;;) {
+    if (theNdbCon->theNodeSequence != impl->getNodeSequence(nodeId)) {
+      // The data node failed: nothing is left on the kernel side.
+      m_api_receivers_count = 0;
+      m_conf_receivers_count = 0;
+      m_sent_receivers_count = 0;
+      theNdbCon->theReleaseOnClose = true;
+      return true;
+    }
+    // A SCAN_TABREF arriving now (the TC failed the scan itself) leaves a
+    // dummy conf'ed receiver when it wants a close (execCLOSE_SCAN_REP).
+    // Our close was sent before it, and answers it: the TC confirms with
+    // SCAN_TABCONF(EndOfData), which clears the dummy.  As in the final
+    // wait of close_impl(), nothing is re-sent.
+    if (m_sent_receivers_count + m_api_receivers_count +
+            m_conf_receivers_count ==
+        0) {
+      return true;
+    }
+    if (!wait) return false;
+    const int ret = poll_guard->wait_scan(3 * timeout, nodeId, true,
+                                          &impl->m_start_time);
+    if (ret == -1) {
+      // No setErrorCode(4008): it records the error on m_transConnection,
+      // which a parked close no longer has; the operation is released now.
+      g_eventLogger->info(
+          "NdbScanOperation::parked_close_done() 4008 on connection %d."
+          "   Failed to close scan after timeout.",
+          theNdbCon->ptr2int());
+      m_api_receivers_count = 0;
+      m_conf_receivers_count = 0;
+      m_sent_receivers_count = 0;
+      theNdbCon->theForceReleaseOnClose = true;
+      return true;
+    }
+    if (ret == -2) {
+      m_api_receivers_count = 0;
+      m_conf_receivers_count = 0;
+      m_sent_receivers_count = 0;
+      theNdbCon->theReleaseOnClose = true;
+      return true;
+    }
+  }
+}
+
+/*
+ * Release a finished parked close: what close_impl() does first and
+ * close() does after it, then the release close(releaseOp) does.  "this"
+ * is returned to the free list here.
+ */
+void NdbScanOperation::release_parked_close() {
+  if (theOperationType == OpenRangeScanRequest) {
+    reinterpret_cast<NdbIndexScanOperation *>(this)->releaseIndexBoundsOldApi();
+  }
+  freeInterpretedCodeOldApi();
+  for (Uint32 i = 0; i < m_allocated_receivers; i++) {
+    m_receivers[i]->release();
+  }
+  if (m_scan_buffer) {
+    delete[] m_scan_buffer;
+    m_scan_buffer = nullptr;
+  }
+
+  NdbTransaction *tCon = theNdbCon;
+  Ndb *tNdb = theNdb;
+  theNdbCon = nullptr;
+  m_transConnection = nullptr;
+  m_next_parked_close = nullptr;
+
+  NdbIndexScanOperation *tOp = static_cast<NdbIndexScanOperation *>(this);
+  tOp->release();
+  tNdb->releaseScanOperation(tOp);
+
+  // Close the scan transaction, as close() does.
+  tNdb->closeTransaction(tCon);
+  tNdb->theImpl->decClientStat(Ndb::TransCloseCount, 1); /* Correct stats */
+  assert(tNdb->theRemainingStartTransactions > 0);
+  tNdb->theRemainingStartTransactions--;
 }
 
 void NdbScanOperation::execCLOSE_SCAN_REP(Uint32 errorCode,

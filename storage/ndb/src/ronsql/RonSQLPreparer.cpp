@@ -8706,7 +8706,7 @@ RonSQLPreparer::execute()
       // RONDB-1124 WP-J J5: the last N rows read by the pass-through scan,
       // aggregated in RonSQL.
       execute_api_side_aggregate();
-      finish_trans();
+      cleanup_trans();
       return;
     }
 
@@ -8714,7 +8714,7 @@ RonSQLPreparer::execute()
       // Phase 1 (non_aggregate_phase_1.md): projection-only
       // single-table queries — plain-API pass-through execution.
       execute_single_table_passthrough();
-      finish_trans();
+      cleanup_trans();
       return;
     }
 
@@ -10128,17 +10128,23 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
     m_conf.phase_stats->rows_drained = row_count;
   }
 #endif
-  if (limit_reached && m_conf.deferred_close != NULL) {
-    // The scan is left open: the caller closes the transaction after its
-    // reply (RonSQLExecParams::deferred_close), and closing it closes the
-    // scan.  The close would otherwise wait one more round trip for the
-    // data nodes whenever a fragment holds more rows than the batch.
-    m_defer_close = true;
-  } else if (limit_reached) {
+  if (limit_reached) {
     // Early close (Phase 2): release the still-open scan instead of
-    // draining its remaining batches.
+    // draining its remaining batches.  closeNoWait (RonDB F31) sends the
+    // close and returns: waiting for the data nodes to confirm it cost one
+    // more round trip whenever a fragment still held rows (73 µs of
+    // fs_hw_agg_last10_tx300, benchmarks.md §8); the Ndb object finishes
+    // the close at its next transaction.  The operation, and the NdbRecAttr
+    // values of `attrs`, must not be used afterwards, so the JSON framing
+    // of an empty result (LIMIT 0), which reads the column descriptors
+    // from `attrs`, is emitted first.
+    if (is_json && !header_emitted && api_rows == NULL) {
+      m_resultprinter->print_passthrough_header(attrs, num_cols,
+                                                m_conf.out_stream);
+      header_emitted = true;
+    }
     STAT_TS(m_conf.phase_stats, s_close_start);
-    scanOp->close();
+    scanOp->closeNoWait();
     STAT_TS(m_conf.phase_stats, s_close_end);
     STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
   } else {
@@ -10169,17 +10175,6 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   if (header_emitted) {
     m_resultprinter->print_passthrough_finish(m_conf.out_stream);
   }
-}
-
-void
-RonSQLPreparer::finish_trans() {
-  if (m_defer_close && m_trans != NULL) {
-    ndbrequire(m_conf.deferred_close != NULL);
-    *m_conf.deferred_close = m_trans;
-    m_trans = NULL;
-    return;
-  }
-  cleanup_trans();
 }
 
 void

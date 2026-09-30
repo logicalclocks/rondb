@@ -198,7 +198,7 @@ Next DBLQH 5155
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
-Next DBTC 8316 (RonDB)
+Next DBTC 8317 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -730,6 +730,12 @@ DBTC node failure take over testing (RonDB)
       closes in flight. Emits JOIN_AGG_SETUP_CONF_AFTER_CANCEL (cleared
       after use). PK-9 requires JOIN_AGG_SETUP_CONF_DEFERRED, not a
       stale-SETUP reclaim.
+8316: Delay every API scan close (SCAN_NEXTREQ with the stop flag, short
+      signal from another node) 3 s by re-sending it to DBTC, marked
+      (stopScan bit value 4) and carrying the API's reference, which is
+      restored on arrival; stays set until cleared.
+      testScan -nScanCloseNoWaitNodeFailure fails the data node while the
+      NdbScanOperation::closeNoWait() closes are parked (RonDB F31).
 
 
 TRPMAN

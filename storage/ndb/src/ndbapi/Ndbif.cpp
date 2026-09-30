@@ -730,7 +730,11 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
         sz = tLen - ScanTabConf::SignalLength;
       }
       tReturnCode = tCon->receiveSCAN_TABCONF(aSignal, sig_ptr, sz);
-      if (tReturnCode != -1 && tWaitState == WAIT_SCAN) {
+      // RonDB F31: the confirmation of a close nobody waits for
+      // (NdbScanOperation::closeNoWait) must not wake a waiter that waits
+      // for another operation; it only updates the parked scan's counts.
+      if (tReturnCode != -1 && tWaitState == WAIT_SCAN &&
+          !tCon->m_scan_close_nowait) {
         tNewState = NO_WAIT;
       }
       DBUG_PRINT("info", ("tReturnCode: %u, tWaitState: %u, tNewState: %u",
@@ -959,7 +963,9 @@ void NdbImpl::trp_deliver_signal(const NdbApiSignal *aSignal,
 #endif
       ) {
         tReturnCode = tCon->receiveSCAN_TABREF(aSignal);
-        if (tReturnCode != -1 && tWaitState == WAIT_SCAN) {
+        // RonDB F31: as for SCAN_TABCONF above.
+        if (tReturnCode != -1 && tWaitState == WAIT_SCAN &&
+            !tCon->m_scan_close_nowait) {
           tNewState = NO_WAIT;
         }
         break;

@@ -1087,6 +1087,10 @@ class NdbTransaction {
   bool releaseScanOperation(NdbIndexScanOperation **listhead,
                             NdbIndexScanOperation **listtail,
                             NdbIndexScanOperation *op);
+  // Remove op from the list without releasing it (RonDB F31).
+  bool unlinkScanOperation(NdbIndexScanOperation **listhead,
+                           NdbIndexScanOperation **listtail,
+                           NdbIndexScanOperation *op);
   void releaseLockHandles();
 
   // Set the transaction identity of the transaction
@@ -1219,6 +1223,11 @@ class NdbTransaction {
   Uint32 theNodeSequence;       // The sequence no of the db node
   bool theReleaseOnClose;       // Data node gone, recycle API object
   bool theForceReleaseOnClose;  // Data node out of sync, force TC release
+  // RonDB F31: the scan transaction of a scan closed with
+  // NdbScanOperation::closeNoWait(), whose close confirmation nobody waits
+  // for: its SCAN_TABCONF / SCAN_TABREF must not wake the Ndb's waiter
+  // (Ndbif), which by then waits for another operation.
+  bool m_scan_close_nowait;
 
   /**
    * handle transaction spanning

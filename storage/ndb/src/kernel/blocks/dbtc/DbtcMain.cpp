@@ -19398,6 +19398,37 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
 
   jamEntryDebug();
 
+#ifdef ERROR_INSERT
+  /**
+   * 8316 (RonDB F31): hold an API's scan close 3 s by sending it back to
+   * ourselves, so that NdbScanOperation::closeNoWait() leaves the close
+   * parked long enough to fail a data node under it
+   * (testScan -nScanCloseNoWaitNodeFailure).  Short signals from another
+   * node (an API) only.  The held signal is marked with stopScan bit value
+   * 4 and carries the API's reference in an extra last word; when it comes
+   * back, sender and length are restored, so that it is processed, and
+   * answered, as the API's own request (the "Confirming scan close" and
+   * "Wrong transid" replies go to the sender).  The restore does not
+   * depend on 8316 still being set.
+   */
+  if (req->stopScan & 4) {
+    jam();
+    const Uint32 len = signal->getLength() - 1;
+    signal->header.theSendersBlockRef = signal->theData[len];
+    signal->setLength(len);
+    signal->theData[1] &= ~Uint32(4);
+  } else if (ERROR_INSERTED(8316) && stopScan && !sent_from_queue &&
+             refToNode(signal->getSendersBlockRef()) != getOwnNodeId() &&
+             signal->getNoOfSections() == 0 && signal->getLength() < 25) {
+    jam();
+    const Uint32 len = signal->getLength();
+    signal->theData[len] = signal->getSendersBlockRef();
+    signal->theData[1] |= 4;
+    sendSignalWithDelay(cownref, GSN_SCAN_NEXTREQ, signal, 3000, len + 1);
+    return;
+  }
+#endif
+
   SectionHandle handle(this, signal);
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = req->apiConnectPtr;
