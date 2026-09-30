@@ -931,6 +931,110 @@ var ronsqlTests = []ronsqlTest{
 		httpCode:       http.StatusUnauthorized,
 		errMsgContains: denySpendCol,
 	},
+	// Multi-table statements: every table read - FROM, JOIN, CTE body or
+	// subquery - is authorized, and each column against the table it
+	// belongs to. CTE references are not tables.
+	// A1: a full-store grant serves a JOIN.
+	{
+		scenario:      "A1_userb_join",
+		apiKey:        testdbs.USERB_API_KEY,
+		query:         "SELECT SUM(t.total_spend_30d) FROM usera_customers_fg_1 AS c JOIN usera_transactions_fg_1 AS t ON t.customer_id = c.customer_id WHERE c.customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: transactionsTable,
+		validateCol:   "total_spend_30d",
+	},
+	// B4: userd's customers grant does not open transactions through a
+	// JOIN, a CTE body or a subquery.
+	{
+		scenario:       "B4_userd_join_unshared_table",
+		apiKey:         testdbs.USERD_API_KEY,
+		query:          "SELECT SUM(t.total_spend_30d) FROM usera_customers_fg_1 AS c JOIN usera_transactions_fg_1 AS t ON t.customer_id = c.customer_id WHERE c.customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyTxTable,
+	},
+	{
+		scenario:       "B4_userd_cte_unshared_table",
+		apiKey:         testdbs.USERD_API_KEY,
+		query:          "WITH s AS (SELECT customer_id AS k, SUM(total_spend_30d) AS t FROM usera_transactions_fg_1 GROUP BY customer_id) SELECT s.k, SUM(s.t) FROM usera_customers_fg_1 AS c JOIN s ON s.k = c.customer_id GROUP BY s.k;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyTxTable,
+	},
+	// A CTE named after a granted table is still a CTE: its body is what
+	// is read.
+	{
+		scenario:       "B4_userd_cte_named_as_granted_table",
+		apiKey:         testdbs.USERD_API_KEY,
+		query:          "WITH usera_customers_fg_1 AS (SELECT MAX(total_spend_30d) AS m FROM usera_transactions_fg_1) SELECT m FROM usera_customers_fg_1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyTxTable,
+	},
+	{
+		scenario:       "B4_userd_subquery_unshared_table",
+		apiKey:         testdbs.USERD_API_KEY,
+		query:          "SELECT SUM(age) FROM usera_customers_fg_1 WHERE age > (SELECT MIN(total_spend_30d) FROM usera_transactions_fg_1);",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denyTxTable,
+	},
+	// B1: a CTE over the granted table serves; the CTE name is no table.
+	{
+		scenario: "B1_userd_cte_granted_table",
+		apiKey:   testdbs.USERD_API_KEY,
+		query:    "WITH s AS (SELECT customer_id AS k, SUM(age) AS a FROM usera_customers_fg_1 GROUP BY customer_id) SELECT s.k, SUM(s.a) FROM usera_customers_fg_1 AS c JOIN s ON s.k = c.customer_id GROUP BY s.k;",
+		httpCode: http.StatusOK,
+	},
+	// E2: usere has customers whole and transactions {num_transactions_30d,
+	// customer_id}. A JOIN reading only granted columns serves.
+	{
+		scenario:      "E2_usere_join_granted_columns",
+		apiKey:        testdbs.USERE_API_KEY,
+		query:         "SELECT SUM(t.num_transactions_30d) FROM usera_customers_fg_1 AS c JOIN usera_transactions_fg_1 AS t ON t.customer_id = c.customer_id WHERE c.customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: transactionsTable,
+		validateCol:   "num_transactions_30d",
+	},
+	// E2: an ungranted column of the joined table is rejected, although
+	// the FROM table is granted whole.
+	{
+		scenario:       "E2_usere_join_ungranted_column",
+		apiKey:         testdbs.USERE_API_KEY,
+		query:          "SELECT SUM(t.total_spend_30d) FROM usera_customers_fg_1 AS c JOIN usera_transactions_fg_1 AS t ON t.customer_id = c.customer_id WHERE c.customer_id = 1;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denySpendCol,
+	},
+	// E2: an unqualified column in a JOIN may belong to either table, so
+	// it must be granted on both.
+	{
+		scenario:       "E2_usere_join_unqualified_ungranted_column",
+		apiKey:         testdbs.USERE_API_KEY,
+		query:          "SELECT SUM(t.num_transactions_30d) FROM usera_customers_fg_1 AS c JOIN usera_transactions_fg_1 AS t ON t.customer_id = c.customer_id WHERE total_spend_30d > 0;",
+		httpCode:       http.StatusUnauthorized,
+		errMsgContains: denySpendCol,
+	},
+	// E2: CTE body columns are checked against the body's table only - age
+	// is not granted on transactions, the main SELECT's table.
+	{
+		scenario: "E2_usere_cte_body_scope",
+		apiKey:   testdbs.USERE_API_KEY,
+		query:    "WITH s AS (SELECT customer_id AS k, SUM(age) AS a FROM usera_customers_fg_1 GROUP BY customer_id) SELECT s.k, SUM(s.a) FROM usera_transactions_fg_1 AS t JOIN s ON s.k = t.customer_id GROUP BY s.k;",
+		httpCode: http.StatusOK,
+	},
+	// A database qualifier naming the request's database is accepted; any
+	// other is rejected rather than silently read from the request's one.
+	{
+		scenario:      "owner_qualified_same_db",
+		apiKey:        testdbs.USERA_API_KEY,
+		query:         "SELECT SUM(age) FROM usera_project.usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:      http.StatusOK,
+		validateTable: customersTable,
+		validateCol:   "age",
+	},
+	{
+		scenario:       "owner_qualified_other_db",
+		apiKey:         testdbs.USERA_API_KEY,
+		query:          "SELECT SUM(age) FROM userb_project.usera_customers_fg_1 WHERE customer_id = 1;",
+		httpCode:       http.StatusBadRequest,
+		errMsgContains: "Cross-database table references are not supported",
+	},
 }
 
 func Test_Sharing_RonSQL(t *testing.T) {

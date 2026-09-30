@@ -319,7 +319,7 @@ cte_list:
 
 cte_def:
   identifier_c T_AS T_LEFT
-  { context->enter_subquery(); }
+  { context->enter_subquery(/*is_cte_body*/true); }
   T_SELECT outputlist T_FROM table_ref join_list where_opt
   groupby_opt having_opt orderby_opt limit_opt
   T_RIGHT
@@ -518,6 +518,7 @@ table_ref:
     $$ = $1;
     $$->hint_kind = $2.kind;
     $$->hint_indexes = $2.list;
+    context->note_table_ref($$);
   }
 
 table_ref_base:
@@ -654,6 +655,9 @@ join_condition_list:
 join_condition:
   identifier_c T_DOT identifier_c T_EQUALS identifier_c T_DOT identifier_c
   {
+    /* ON columns bypass column_name_to_idx; record them for authorization. */
+    context->note_column_ref($1, $3);
+    context->note_column_ref($5, $7);
     initptr($$);
     $$->child_table = $1;
     $$->child_column = $3;
