@@ -20,7 +20,9 @@ package ping
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"os"
 	"strings"
 	"testing"
@@ -60,8 +62,9 @@ func TestMainPortAuthenticatedPingAndHealth(t *testing.T) {
 
 	client := testutils.SetupHttpClient(t)
 	for _, endpoint := range []string{config.PING_OPERATION, config.HEALTH_OPERATION} {
-		url := fmt.Sprintf("http://%s:%d/%s/%s",
-			testutils.ConnectHost(conf.REST.ServerIP), conf.REST.ServerPort,
+		url := fmt.Sprintf("http://%s/%s/%s",
+			net.JoinHostPort(testutils.ConnectHost(conf.REST.ServerIP),
+				strconv.Itoa(int(conf.REST.ServerPort))),
 			version.API_VERSION, endpoint)
 		for _, tc := range []struct {
 			name   string
