@@ -2800,11 +2800,23 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
     }
 
     /**
-     * Outer-join CTE_LOOKUP agg-leaf: buffer the scan ancestor's rows
+     * Outer-join CTE_LOOKUP agg-leaf: buffer the DIRECT parent's rows
      * in MAP layout so execCTE_LOOKUP_REF(GROUP_NOT_FOUND) can resolve
      * the unmatched parent via getBufferedRow() using the correlation
      * echoed back in CteLookupRef, then inject a NULL row into the
      * downstream JoinAggInterpreter via sendJoinAggNullRow (Phase 5).
+     * The leaf's attrParamPattern is relative to its direct parent
+     * (P_ATTRINFO = a parent column, P_PARENT(n) = n levels above the
+     * parent), so the NULL row must be expanded from the direct
+     * parent's row, as the probe's key and linked columns were.  The
+     * parent is the scan ancestor for a single outer join; in a chain
+     * (scan -> outer CTE_LOOKUP -> outer CTE_LOOKUP leaf) it is the
+     * intermediate, whose row-shaped outer-chain rows are otherwise
+     * gone once they have driven the leaf's probe.  Expanding from the
+     * scan ancestor's row instead walked P_PARENT past the root
+     * (ndbassert in appendFromParent, fs_ronsql finding F15).
+     * Only a leaf with a scan ancestor NULL-extends a miss (a root
+     * probe feeds zero rows), hence the scan-ancestor search.
      * Regular lookup agg-leaves don't need this: they use the
      * completion-time sweep in handleAggAncestorComplete iterating
      * a COLLECTION_LIST.
@@ -2829,7 +2841,10 @@ Dbspj::validateAggregateFlags(Build_context &ctx, Ptr<Request> requestPtr) {
         }
         if (found) {
           jam();
-          scanAncestorPtr.p->m_bits |=
+          Ptr<TreeNode> leafParentPtr;
+          ndbrequire(m_treenode_pool.getPtr(leafParentPtr,
+                                            treeNodePtr.p->m_parentPtrI));
+          leafParentPtr.p->m_bits |=
               TreeNode::T_BUFFER_ROW | TreeNode::T_BUFFER_MAP;
         }
       }
@@ -7239,23 +7254,16 @@ void Dbspj::cte_lookup_send(Signal *signal, Ptr<Request> requestPtr,
         const bool missAggFeed =
             (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) != 0;
         /* Root probes (no scan ancestor) have no parent row to
-         * NULL-extend — mirror the REF arm's root guard. */
+         * NULL-extend — mirror the REF arm's root guard.  The parent
+         * row is still in hand here: NULL-extend rowRef itself, as the
+         * NULL-key arm above does. */
         if (missOuterJoin && missAggFeed &&
             treeNodePtr.p->m_scanAncestorPtrI != RNIL) {
           jam();
-          Ptr<TreeNode> scanAncestorPtr;
-          ndbrequire(m_treenode_pool.getPtr(
-              scanAncestorPtr, treeNodePtr.p->m_scanAncestorPtrI));
-          ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_ANY);
-          ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MAP);
-          RowPtr parentRow;
-          getBufferedRow(scanAncestorPtr,
-                         (treeNodePtr.p->m_send.m_correlation >> 16),
-                         &parentRow);
           ndbassert(treeNodePtr.p->m_node_no < 64);
           const Uint64 nullNodes = 1ULL << treeNodePtr.p->m_node_no;
           Uint32 nerr = sendJoinAggNullRow(signal, requestPtr, treeNodePtr,
-                                           parentRow,
+                                           rowRef,
                                            /*parentLevelAdjust=*/0,
                                            nullNodes);
           if (unlikely(nerr != 0)) {
@@ -7673,8 +7681,7 @@ void Dbspj::execCTE_LOOKUP_CONF(Signal *signal) {
  *
  * GROUP_NOT_FOUND: no matching group in the CTE hash table (or the filter
  * rejected the group — DBLQH maps filter-reject to GROUP_NOT_FOUND too).
- * Handling by mode (see body for details; agg-feed NULL-row injection is
- * not yet wired — tracked alongside testCteNdbApiOuterJoin Test 5).
+ * Handling by mode: see the body.
  * Other errors abort the request.
  */
 void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
@@ -7729,8 +7736,8 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   //   Outer join + agg-feed (T_AGGREGATE_LEAF): inject a NULL row into
   //     the enclosing CTE's aggregator so the parent row still
   //     contributes. Parent row is resolved by the correlation echoed
-  //     back in CteLookupRef; build-plan ensures T_BUFFER_MAP on the
-  //     scan ancestor so getBufferedRow works here.
+  //     back in CteLookupRef; build-plan ensures T_BUFFER_ROW +
+  //     T_BUFFER_MAP on the direct parent so getBufferedRow works here.
   ndbassert(refCorrelation != ~Uint32(0));  // DBLQH echoed something
 
   /* G2a probe-outcome cache: a GROUP_NOT_FOUND for the fill probe
@@ -7766,14 +7773,21 @@ void Dbspj::execCTE_LOOKUP_REF(Signal *signal) {
   if (isOuterJoin && isAggFeed &&
       treeNodePtr.p->m_scanAncestorPtrI != RNIL) {
     jam();
-    Ptr<TreeNode> scanAncestorPtr;
-    ndbrequire(m_treenode_pool.getPtr(scanAncestorPtr,
-                                       treeNodePtr.p->m_scanAncestorPtrI));
-    ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_ANY);
-    ndbassert(scanAncestorPtr.p->m_bits & TreeNode::T_BUFFER_MAP);
+    /* The probe was driven by a row of the DIRECT parent and its
+     * attrParamPattern is relative to that node, so resolve that row:
+     * the probe correlation is (parentCorr << 16) | (parentCorr &
+     * 0xFFFF) and the parent's map is keyed by parentCorr & 0xFFFF.
+     * When the parent is not the scan ancestor (a chain of outer
+     * CTE_LOOKUPs), expanding from the scan ancestor's row walked
+     * P_PARENT past the root (F15). */
+    Ptr<TreeNode> parentPtr;
+    ndbrequire(m_treenode_pool.getPtr(parentPtr,
+                                       treeNodePtr.p->m_parentPtrI));
+    ndbassert(parentPtr.p->m_bits & TreeNode::T_BUFFER_ROW);
+    ndbassert(parentPtr.p->m_bits & TreeNode::T_BUFFER_MAP);
 
     RowPtr parentRow;
-    getBufferedRow(scanAncestorPtr, (refCorrelation >> 16), &parentRow);
+    getBufferedRow(parentPtr, (refCorrelation >> 16), &parentRow);
 
     /* Mark this CTE_LOOKUP node's own columns as NULL in the expanded
      * linked-attr payload — there is no lookup result row to pull them

@@ -72,10 +72,16 @@ F8 was a framework fixture issue and is already fixed.
   known-wrong 2 → 0, envelope seed 1 nine cases → PASS); fuzzer markers
   retired.  Framework follow-up (WP-E): string-keyed snowflake cases and
   manifest rows `R-S7-str` / `R-S8-str`.
-- [ ] F15 (envelope_fuzz.md): data node crash in DBSPJ `sendJoinAggNullRow` /
+- [x] F15 (envelope_fuzz.md): data node crash in DBSPJ `sendJoinAggNullRow` /
   `appendFromParent` (`DbspjMain.cpp:15201`, error 2343 failed ndbassert) on a
   LEFT JOIN from a CTE feeding a join-aggregation leaf. Found by the E7 envelope
   fuzzer, seed 1; isolate with `--threads 1`. Pushdown join aggregation (RONDB-733).
+  Root cause (2026-09-30): the leaf's CTE_LOOKUP_REF miss NULL-extended the scan
+  root's row instead of its direct parent's (a chained LEFT-joined CTE), so
+  `P_PARENT` walked above the root. Fix in `DbspjMain.cpp` (buffer the leaf's
+  direct parent, NULL-extend its row); regression
+  `ronsql_cte{,_ng2r2}.ronsql_cte_dd_outer_chain_miss`, both green 2026-09-30.
+  Hazard retired; `cte-per-fg` emits LEFT joins again (60 % per CTE).
 - [x] F22 (smoke.md): unchecked BIGINT SUM merge fixed by `8f064822249`,
   with passing distributed and RonSQL regressions (`bd9c41158cd`,
   `2f618dae6bf`). The framework no longer exempts wrapped results.
