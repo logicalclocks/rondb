@@ -559,6 +559,7 @@ private:
   DynamicArray<LexCString> m_accessed_tables;
   DynamicArray<AccessedColumn> m_accessed_columns;
   void check_table_qualifiers(const char* database);
+  void reject_qualified_cte_references();
   void resolve_access();
   bool access_is_cte(const LexCString& name, Uint32 scope) const;
   void add_accessed_column(Uint32 table_idx, const LexCString& column);

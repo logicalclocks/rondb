@@ -191,7 +191,7 @@ DELIMITER ;|
 # cross-join FROM automatically.  MySQL doesn't accept this
 # spelling, so this is a RonSQL-only behavioural test recorded
 # directly via ronsql_cli.
---exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t), min_v AS (SELECT MIN(v) AS lo FROM scalar_t) SELECT GREATEST(max_v.hi, min_v.lo) AS biggest;' 2>&1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH max_v AS (SELECT MAX(v) AS hi FROM scalar_t), min_v AS (SELECT MIN(v) AS lo FROM scalar_t) SELECT GREATEST(max_v.hi, min_v.lo) AS biggest;'
 
 DELIMITER |;
 

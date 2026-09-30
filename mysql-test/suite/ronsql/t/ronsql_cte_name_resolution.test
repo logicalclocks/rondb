@@ -141,6 +141,60 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT c0.val, SUM(c0.s) FROM c0 GROUP BY c0.val;' 2>&1
 
+# A CTE belongs to no database: in MySQL a db-qualified table reference
+# names the stored table, never a CTE (include/with_non_recursive.inc,
+# "db. prefix in FROM doesn't resolve to QN").  RonSQL used to ignore the
+# prefix and read the CTE; it now rejects the reference.
+
+--echo
+--echo
+--echo === Test 8: db-qualified CTE name in FROM is rejected ===
+--echo Expected error: Qualified CTE name
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT c0.k, SUM(c0.s) FROM test.c0 GROUP BY c0.k;' 2>&1
+
+--echo
+--echo
+--echo === Test 9: db-qualified CTE name in JOIN is rejected ===
+--echo Expected error: Qualified CTE name
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT o.k, SUM(c0.s) FROM nr_other AS o JOIN test.c0 ON c0.k = o.k GROUP BY o.k;' 2>&1
+
+--echo
+--echo
+--echo === Test 10: db-qualified earlier CTE in a later CTE body is rejected ===
+--echo Expected error: Qualified CTE name
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k), c1 AS (SELECT k AS k, SUM(s) AS ss FROM test.c0 GROUP BY k) SELECT c1.k, SUM(c1.ss) FROM c1 GROUP BY c1.k;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 11: db-qualified stored table beside a CTE still reads the table ===
+
+let $QUERY=
+WITH c0 AS (
+  SELECT k AS k, SUM(val) AS s
+  FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM test.nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH c0 AS (
+  SELECT k AS k, SUM(val) AS s
+  FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM test.nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k|
+
+DELIMITER ;|
+
 --echo
 --echo === Cleanup ===
 
