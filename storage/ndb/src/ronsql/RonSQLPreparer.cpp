@@ -315,6 +315,38 @@ RonSQLPreparer::check_table_qualifiers(const char* database)
 }
 
 /*
+ * A CTE belongs to no database, so in MySQL a database-qualified table
+ * reference never names one: in `WITH qn AS (...) SELECT ... FROM test.qn`
+ * the FROM reads the stored table test.qn (mysql-test/include/
+ * with_non_recursive.inc: "db. prefix in FROM doesn't resolve to QN").
+ * RonSQL resolves CTEs by name alone - find_cte_definition(),
+ * QueryPlanner::findCte(), the parse-time rewrites and access_is_cte() -
+ * so the prefix was ignored and the CTE read instead. Serving the stored
+ * table would need every one of those lookups, and authorization, to agree
+ * on the qualifier; reject the reference instead. Runs on the inventory as
+ * written, before any rewrite, with the same scoping as access_is_cte().
+ */
+void
+RonSQLPreparer::reject_qualified_cte_references()
+{
+  for (Uint32 i = 0; i < m_access_table_refs.size(); i++)
+  {
+    const AccessTableRef& ref = m_access_table_refs[i];
+    if (ref.database.str == NULL) continue;
+    if (!access_is_cte(ref.name, ref.scope)) continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("Table ") + ref.database.c_str() + "." +
+        ref.name.c_str() + " is qualified with a database, so it names the "
+        "stored table " + ref.name.c_str() + ", not the CTE " +
+        ref.name.c_str() + " (a CTE has no database). Reading a stored "
+        "table that has the name of a CTE in the same statement is not "
+        "supported. Remove the qualifier to read the CTE, or rename the "
+        "CTE to read the table.");
+  }
+}
+
+/*
  * Whether a table reference `name` in `scope` names a CTE rather than a
  * table: only WITH-list entries visible there count, like the preparer's
  * build_cte_scopes() - a CTE body sees the CTEs declared before it, the
@@ -679,6 +711,8 @@ RonSQLPreparer::parse()
     {
       m_access_cte_names.push(cte->name);
     }
+    // Before the rewrites below resolve CTE names without the qualifier.
+    reject_qualified_cte_references();
     // RONDB-1124 (m3_run6_plan.md C2): MIN / MAX over one single-group CTE
     // (the fs_point form) becomes the single-table aggregate over the body.
     // It swaps the main compiler for the body's, so it must run before the

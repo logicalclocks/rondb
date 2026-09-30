@@ -102,6 +102,55 @@ Column 'c0.val' not found in table or CTE 'c0'.
 Error handling: RPE
 ronsql_cli caught exception: Column not found.
 
+
+=== Test 8: db-qualified CTE name in FROM is rejected ===
+Expected error: Qualified CTE name
+Error handling: RPE
+ronsql_cli caught exception: Table test.c0 is qualified with a database, so it names the stored table c0, not the CTE c0 (a CTE has no database). Reading a stored table that has the name of a CTE in the same statement is not supported. Remove the qualifier to read the CTE, or rename the CTE to read the table.
+
+
+=== Test 9: db-qualified CTE name in JOIN is rejected ===
+Expected error: Qualified CTE name
+Error handling: RPE
+ronsql_cli caught exception: Table test.c0 is qualified with a database, so it names the stored table c0, not the CTE c0 (a CTE has no database). Reading a stored table that has the name of a CTE in the same statement is not supported. Remove the qualifier to read the CTE, or rename the CTE to read the table.
+
+
+=== Test 10: db-qualified earlier CTE in a later CTE body is rejected ===
+Expected error: Qualified CTE name
+Error handling: RPE
+ronsql_cli caught exception: Table test.c0 is qualified with a database, so it names the stored table c0, not the CTE c0 (a CTE has no database). Reading a stored table that has the name of a CTE in the same statement is not supported. Remove the qualifier to read the CTE, or rename the CTE to read the table.
+
+
+=== Test 11: db-qualified stored table beside a CTE still reads the table ===
+== Query ==
+WITH c0 AS (
+SELECT k AS k, SUM(val) AS s
+FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM test.nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c0 AS (
+SELECT k AS k, SUM(val) AS s
+FROM nr_base GROUP BY k)
+SELECT c0.k, SUM(o.val) AS total
+FROM test.nr_other AS o
+JOIN c0 ON c0.k = o.k
+GROUP BY c0.k|
+k	total
+10	100
+20	200
+30	300
+
 === Cleanup ===
 DROP TABLE nr_other;
 DROP TABLE nr_base;
