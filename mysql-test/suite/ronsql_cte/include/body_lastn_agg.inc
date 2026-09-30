@@ -19,7 +19,8 @@
 # carrier: a CTE MIN/MAX output is widened to the wire type (INT -> BIGINT,
 # FLOAT -> DOUBLE, DECIMAL -> BIGINT / DOUBLE, temporal -> 8-byte
 # unsigned), and a widened INT join key fails the pushed join's operand
-# type check ("Failed to create child operation", first run of lastn-12).
+# type check (F29: "Failed to create child operation" on the first run of
+# lastn-12, now the clean "Join column type mismatch." rejection).
 # Every case checks the chain
 #   RonSQL(J0) = MySQL(J0) = MySQL(natural)
 # with lastn_twin_check.inc (the two MySQL results must be identical) and

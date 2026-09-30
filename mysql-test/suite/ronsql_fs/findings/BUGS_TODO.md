@@ -174,7 +174,7 @@ F8 was a framework fixture issue and is already fixed.
   built: the exact width is returned from a zeroed widest-size buffer.
   Regression cases lastn-W1 (PK lookup), W2 (IN on the TIMESTAMP key) and
   W3 (single-row CTE keyed on it).
-- [ ] F29 (2026-09-29, WP-J J0 first form, lastn-12): a join whose key is a
+- [x] F29 (2026-09-29, WP-J J0 first form, lastn-12): a join whose key is a
   CTE MIN/MAX output over a narrower integer column fails with an internal
   error. Repro: `WITH t AS (SELECT customer_id, event_time,
   MAX(merchant_id) AS merchant_id FROM lastn_tx WHERE customer_id = 8
@@ -189,6 +189,24 @@ F8 was a framework fixture issue and is already fixed.
   link through a converted value or reject cleanly at plan time with a
   permanent error naming the type mismatch. Not needed by WP-J (J0 / J1
   carry non-key columns as GROUP BY keys, which keep their types).
+  - Wider than MIN/MAX: any linked key with a CTE side. QueryPlanner's
+    real-table pre-check ("Join column type mismatch.") skipped CTE key
+    sources, and nothing checked them later; the reverse direction, a
+    real column keying a CTE_LOOKUP whose GROUP BY column has another
+    type, failed the same way (`lookupCte` binds with the same rule).
+  - FIXED 2026-09-30 with the clean reject.
+    `RonSQLPreparer::check_cte_join_key_types`, called per child op in
+    `emit_child_ops` once the virtual tables exist (for a CTE_LOOKUP
+    child after its key-shape checks, so a wrong-column or partial key
+    keeps its own message), applies bindOperand's
+    rule (type, precision, scale, length, charset) to every key with a CTE
+    side and throws `Join column type mismatch.`, naming both columns and
+    their types, and explaining the 64-bit carrying of CTE aggregate
+    outputs when one side is one. Converting in the link (the NDB API's
+    own "TODO: Allow and autoconvert compatible datatypes") would need a
+    new DBSPJ key-pattern op and is not done. Regression
+    `ronsql_cte.cte_join_key_types` (f29-1..4: both reject directions,
+    MAX(INT) keying a BIGINT key, the GROUP BY carrier).
 - [x] F30 (2026-09-30, WP-J spot run, `.bench_sql
   fs_hw_agg_last10_tx300_grouped`): mysqld with single-table aggregation
   pushdown (`ndb_pushdown_aggregate=ON`, default OFF; on in the

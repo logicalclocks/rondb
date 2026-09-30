@@ -417,7 +417,9 @@ QueryPlanner::plan(
      * BLOB/TEXT can never be linked.  Failing here gives a clean
      * permanent error instead of a runtime NDB error from
      * NdbQueryBuilder's linkedValue/bindOperand.  CTE operands are
-     * skipped — virtual-table typing is handled by the CTE machinery.
+     * skipped: their virtual tables do not exist yet, and
+     * RonSQLPreparer::check_cte_join_key_types applies the same rule to
+     * them at emit time (F29).
      * Per-key parent sources: each key checks against its own
      * key-source op's table.
      */
@@ -427,7 +429,7 @@ QueryPlanner::plan(
       {
         const JoinOp &key_parent = out.ops[childOp.key_parent_op_idx[k]];
         if (key_parent.table == NULL)
-          continue;  /* CTE key source — CTE machinery handles typing */
+          continue;  /* CTE key source: check_cte_join_key_types */
         const NdbDictionary::Column *child_col =
             childOp.table->getColumn(childOp.child_key_col_names[k]);
         const NdbDictionary::Column *parent_col =
