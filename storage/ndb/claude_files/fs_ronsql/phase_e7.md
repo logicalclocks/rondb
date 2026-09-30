@@ -148,7 +148,8 @@ opt-in via `--include-hazards`); `snow-left` still provides the
 `left-join` construct (projection-only main, no join-aggregation leaf,
 verified safe in E3/E4).  A `reject-unexpected` also showed on case 8's
 line (`Table not found.`) — an artifact of the node dying mid-request,
-not a separate finding.
+not a separate finding.  (2026-09-30: F15 fixed in DBSPJ; the hazard is
+retired and `cte-per-fg` LEFT-joins each CTE with probability 60 % again.)
 
 ### Run 3 — envelope matrix after the F15 fix (2026-09-11)
 

@@ -55,7 +55,7 @@ does not.
 | F14 | CTE body bound on a VARCHAR primary key | WRONG RESULT (no rows) — FIXED 2026-09-24 in WP-F F3 (double VARCHAR length prefix on pushed-query constants) | yes (string entity keys + snowflake) — not yet in the manifest | WP-E (engine part done) |
 | F12 | planner: IN list → table scan | PERFORMANCE 200–1000× | yes (batch serving, 10–1000 keys) | WP-F |
 | F13 | CTE_SCAN + PK_LOOKUP round trips | PERFORMANCE 3–4× | yes (every snowflake point read) | WP-G |
-| F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH | no (LEFT JOIN onto an aggregated CTE) | WP-H |
+| F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH — FIXED 2026-09-30 (the miss NULL-extends the leaf's direct parent row) | no (LEFT JOIN onto an aggregated CTE) | WP-H |
 | F18 | partial-key CTE lookup now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
 | F19 | CTE_SCAN as outer-join child now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
 | F17 | HAVING + ORDER BY + LIMIT | internal error instead of a clean reject | no (HAVING unsupported) | WP-H |
@@ -260,6 +260,12 @@ Ordered by consequence:
    aggregation). Fix the null-row emission for a CTE_LOOKUP leaf or
    reject the shape cleanly; until then it is a hazard in
    `fuzz/hazards.go` (F15) and `cte-per-fg` emits INNER only.
+   **Fixed 2026-09-30**: the leaf's tree parent is the first
+   CTE_LOOKUP (a chain), and the miss NULL-extended the scan root's
+   row; DBSPJ now buffers and NULL-extends the direct parent's row
+   (`envelope_fuzz.md` F15). Evidence: `ronsql_cte{,_ng2r2}.
+   ronsql_cte_dd_outer_chain_miss` green.  The hazard is retired and
+   `cte-per-fg` LEFT-joins each CTE with probability 60 % again.
 2. **F18 / F19** silent wrong results that replaced clean rejections:
    a partial-key CTE lookup (`Partial CTE lookup key not supported`) and
    `CTE_SCAN` as an outer-join child now run and return wrong rows /

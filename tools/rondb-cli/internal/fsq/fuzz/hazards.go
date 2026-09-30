@@ -43,11 +43,6 @@ type Hazard struct {
 // Hazards lists the translations; the unit test checks that every open
 // HANG / CRASH row of the discovery log has one.
 var Hazards = []Hazard{
-	{"F15", "CRASH", "aggregating main LEFT JOINs a CTE_LOOKUP whose key misses (null row into the join-aggregation leaf, DbspjMain.cpp:15201)",
-		"WITH `tx` AS (SELECT `customer_id` AS `k`, COUNT(*) AS `n`, SUM(`amount`) AS `s` FROM `transactions_1` WHERE `customer_id` IN (1012, 644, 91, 172, 486, 400, 1467, 880, 338, 1829) GROUP BY `customer_id`), " +
-			"`se` AS (SELECT `customer_id` AS `k`, COUNT(*) AS `n`, SUM(`duration`) AS `s` FROM `sessions_1` WHERE `customer_id` IN (1012, 644, 91, 172, 486, 400, 1467, 880, 338, 1829) GROUP BY `customer_id`) " +
-			"SELECT `c`.`customer_id` AS `customer_id`, MAX(`tx`.`n`) AS `tx_n`, SUM(`tx`.`s`) AS `tx_s`, MAX(`se`.`n`) AS `se_n`, SUM(`se`.`s`) AS `se_s` " +
-			"FROM `customers_1` AS `c` LEFT JOIN `tx` ON `tx`.`k` = `c`.`customer_id` LEFT JOIN `se` ON `se`.`k` = `c`.`customer_id` GROUP BY `c`.`customer_id`;", false},
 	{"D3", "HANG", "projection-only main SELECT over a CTE_LOOKUP child (no main aggregation)",
 		"WITH `ord` AS (SELECT `customer_id` AS `k`, COUNT(*) AS `n`, MIN(`amount`) AS `mn` FROM `transactions_1` WHERE `customer_id` IN (1, 2, 3, 4, 5) GROUP BY `customer_id`) " +
 			"SELECT `ord`.`k` AS `k`, `ord`.`n` AS `n`, `ord`.`mn` AS `mn` FROM `customers_1` AS `c` JOIN `ord` ON `ord`.`k` = `c`.`customer_id`;", false},

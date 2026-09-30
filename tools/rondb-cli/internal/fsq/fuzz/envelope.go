@@ -376,11 +376,20 @@ func (es *envSampler) ctePerFG() {
 	if es.pct(70) {
 		// entity table root, CTE lookups as children
 		sel = append(sel, "`c`.`customer_id` AS `customer_id`")
+		left := false
 		for _, c := range ctes {
-			// INNER only: an aggregating main that LEFT JOINs a CTE_LOOKUP crashes
-			// the data node on a missing key (F15, hazards.go).
-			joins = append(joins, "JOIN "+q(c.name)+" ON "+qc(c.name, "k")+" = `c`.`customer_id`")
+			// LEFT is the feature-view default: a key the IN list leaves out
+			// NULL-extends into the join-aggregation leaf, through a chain of
+			// CTE_LOOKUPs when several CTEs are LEFT-joined (F15, fixed).
+			jt := "JOIN"
+			if es.pct(60) {
+				jt, left = "LEFT JOIN", true
+			}
+			joins = append(joins, jt+" "+q(c.name)+" ON "+qc(c.name, "k")+" = `c`.`customer_id`")
 			sel = append(sel, "MAX("+qc(c.name, "n")+") AS "+q(c.name+"_n"), "SUM("+qc(c.name, c.out)+") AS "+q(c.name+"_s"))
+		}
+		if left {
+			es.tag("left-join")
 		}
 		es.c.SQL = "WITH " + strings.Join(with, ", ") + " SELECT " + strings.Join(sel, ", ") + " FROM `customers_1` AS `c` " +
 			strings.Join(joins, " ") + " GROUP BY `c`.`customer_id`;"
