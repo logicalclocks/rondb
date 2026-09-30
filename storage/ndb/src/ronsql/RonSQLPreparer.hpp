@@ -509,11 +509,6 @@ private:
    * point must not be retried: a transparent retry repeats the rows
    * already delivered (RONDB-1120 finding F-6). */
   bool m_output_started = false;
-  /* Set when the single-table pass-through stopped its scan at the LIMIT
-   * with fragment scans still open and the caller closes the transaction
-   * after replying (RonSQLExecParams::deferred_close): the scan close is
-   * then skipped and finish_trans() hands the transaction over. */
-  bool m_defer_close = false;
 
   // One QueryScope per CTE in ast_root.cte_list, in declaration order.
   // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.
@@ -979,9 +974,6 @@ public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
   void cleanup_trans();
-  // The success-path close: hands the transaction to the caller when
-  // m_defer_close is set, and closes it otherwise.
-  void finish_trans();
   void execute_subqueries();
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);

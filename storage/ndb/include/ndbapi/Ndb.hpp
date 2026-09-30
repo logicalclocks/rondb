@@ -2189,6 +2189,11 @@ class Ndb {
   // and seize it to theConIdleList
   void releaseConnectToNdb(NdbTransaction *);
 
+  // RonDB F31: finish the scans closed with
+  // NdbScanOperation::closeNoWait() whose close the data nodes have
+  // confirmed; with wait, finish all of them, waiting as close() does.
+  void reapParkedScanCloses(bool wait);
+
   // Release a connection to idle list
   void releaseNdbCon(NdbTransaction *);
 

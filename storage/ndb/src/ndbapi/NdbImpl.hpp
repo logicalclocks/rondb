@@ -197,6 +197,16 @@ class NdbImpl : public trp_client {
 
   NdbWaiter theWaiter;
 
+  /**
+   * RonDB F31: scans closed with NdbScanOperation::closeNoWait(), whose
+   * close requests are sent and not yet known to be confirmed.  Each keeps
+   * its scan transaction until Ndb::reapParkedScanCloses() finishes it.
+   * Owned by the Ndb's user thread; the counters it checks are updated by
+   * the receiving thread under the client lock.
+   */
+  NdbScanOperation *m_parked_scan_closes;
+  bool m_reaping_scan_closes;
+
   WakeupHandler *wakeHandler;
 
   /**

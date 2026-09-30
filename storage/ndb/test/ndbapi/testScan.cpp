@@ -2774,6 +2774,262 @@ static Uint32 getTransactionObjectCount(Ndb *pNdb) {
   return 0;
 }
 
+/*
+ * RonDB F31: NdbScanOperation::closeNoWait().  One scan is started and
+ * stopped after a few rows; small batches leave the fragment scans open, so
+ * the close is sent and parked, and the next transaction on the Ndb object
+ * finishes it.  Table scans and ordered index scans (both directions)
+ * alternate.  Checks:
+ *  - the scans keep working after many parked closes (their scan
+ *    transactions are reused), and a full scan reads every row;
+ *  - the NdbTransaction objects in use stay bounded: parked closes are
+ *    finished, not piling up;
+ *  - no TC resources leak (TcResourceSnapshot / TcResourceCheckLeak);
+ *  - deleting an Ndb object with parked closes waits for them.
+ */
+static int scanStopCloseNoWait(Ndb *pNdb, const NdbDictionary::Table *pTab,
+                               const NdbDictionary::Index *pIdx, int variant,
+                               int stop_after, Uint32 tcNode = 0) {
+  // With tcNode, the TC is that data node (a hint: another one is used if
+  // it is down); the scan transaction runs on the same TC (Ndb::hupp).
+  NdbTransaction *pTrans = (tcNode != 0) ? pNdb->startTransaction(tcNode, 0)
+                                         : pNdb->startTransaction();
+  if (pTrans == nullptr) {
+    NDB_ERR(pNdb->getNdbError());
+    return NDBT_FAILED;
+  }
+  NdbScanOperation *pOp = nullptr;
+  int rc;
+  // Typed, so that NdbIndexScanOperation's readTuples(lm, batch, parallel,
+  // bool order_by, ...) overload does not also match.
+  const Uint32 parallel = 0;  // every fragment
+  const Uint32 batch = 1;     // one row per fragment and batch
+  if (pIdx != nullptr && variant != 0) {
+    NdbIndexScanOperation *pIOp = pTrans->getNdbIndexScanOperation(pIdx);
+    pOp = pIOp;
+    const Uint32 flags =
+        NdbScanOperation::SF_OrderBy |
+        (variant == 2 ? (Uint32)NdbScanOperation::SF_Descending : 0);
+    rc = (pIOp == nullptr)
+             ? -1
+             : pIOp->readTuples(NdbOperation::LM_CommittedRead, flags,
+                                parallel, batch);
+  } else {
+    pOp = pTrans->getNdbScanOperation(pTab);
+    rc = (pOp == nullptr)
+             ? -1
+             : pOp->readTuples(NdbOperation::LM_CommittedRead, 0, parallel,
+                               batch);
+  }
+  if (rc != 0 || pOp->getValue(pTab->getColumn(0)->getName()) == nullptr) {
+    NDB_ERR(pTrans->getNdbError());
+    pNdb->closeTransaction(pTrans);
+    return NDBT_FAILED;
+  }
+  if (pTrans->execute(NdbTransaction::NoCommit) != 0) {
+    NDB_ERR(pTrans->getNdbError());
+    pNdb->closeTransaction(pTrans);
+    return NDBT_FAILED;
+  }
+  int rows = 0;
+  while (rows < stop_after && (rc = pOp->nextResult(true)) == 0) rows++;
+  if (rc == -1) {
+    NDB_ERR(pTrans->getNdbError());
+    pNdb->closeTransaction(pTrans);
+    return NDBT_FAILED;
+  }
+  pOp->closeNoWait();
+  pNdb->closeTransaction(pTrans);
+  return NDBT_OK;
+}
+
+int runScanCloseNoWait(NDBT_Context *ctx, NDBT_Step *step) {
+  const NdbDictionary::Table *pTab = ctx->getTab();
+  const int loops = ctx->getNumLoops() * 200;
+  const int records = ctx->getNumRecords();
+  Ndb *pNdb = GETNDB(step);
+  const NdbDictionary::Index *pIdx =
+      pNdb->getDictionary()->getIndex(orderedPkIdxName, pTab->getName());
+  NdbRestarter restarter;
+
+  int savesnapshot = DumpStateOrd::TcResourceSnapshot;
+  Uint32 checksnapshot = DumpStateOrd::TcResourceCheckLeak;
+  NdbSleep_SecSleep(3);
+  restarter.dumpStateAllNodes(&savesnapshot, 1);
+
+  for (int i = 0; i < loops && !ctx->isTestStopped(); i++) {
+    if (scanStopCloseNoWait(pNdb, pTab, pIdx, i % 3, i % 5) != NDBT_OK) {
+      g_err << "scan " << i << " failed" << endl;
+      return NDBT_FAILED;
+    }
+  }
+
+  HugoTransactions hugoTrans(*pTab);
+  if (hugoTrans.scanReadRecords(pNdb, records) != 0) {
+    return NDBT_FAILED;
+  }
+  // scanReadRecords started transactions, which finished every parked
+  // close; what is left in use are the idle connections.
+  const Uint32 inUse = getTransactionObjectCount(pNdb);
+  g_info << "NdbTransaction objects in use after " << loops
+         << " parked closes: " << inUse << endl;
+  if (inUse > 32) {
+    g_err << "Parked closes were not finished: " << inUse
+          << " NdbTransaction objects in use" << endl;
+    return NDBT_FAILED;
+  }
+
+  // An Ndb object deleted with parked closes waits for them.
+  {
+    Ndb *pNdb2 = new Ndb(&ctx->m_cluster_connection, "TEST_DB");
+    if (pNdb2->init() != 0 || pNdb2->waitUntilReady(30) != 0) {
+      NDB_ERR(pNdb2->getNdbError());
+      delete pNdb2;
+      return NDBT_FAILED;
+    }
+    const NdbDictionary::Table *pTab2 =
+        pNdb2->getDictionary()->getTable(pTab->getName());
+    const NdbDictionary::Index *pIdx2 =
+        pNdb2->getDictionary()->getIndex(orderedPkIdxName, pTab->getName());
+    for (int v = 0; v < 3; v++) {
+      if (pTab2 == nullptr ||
+          scanStopCloseNoWait(pNdb2, pTab2, pIdx2, v, 1) != NDBT_OK) {
+        delete pNdb2;
+        return NDBT_FAILED;
+      }
+    }
+    delete pNdb2;
+  }
+
+  pNdb->getDictionary()->forceGCPWait(1);
+  if (Ndb_internal::send_dump_state_all(pNdb, &checksnapshot, 1) != 0) {
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
+/*
+ * RonDB F31: parked closes whose data node fails before it confirms them.
+ * Error insert 8316 holds every close request 3 s in DBTC, so the closes
+ * stay parked.  Each Ndb object parks ordered-scan closes (both
+ * directions) alternately on the victim data node and on a surviving one
+ * as TC; the victim is then killed, which the API sees at once
+ * (ClusterMgr::set_node_dead counts the node's connection generation up).
+ *  - Closes on the victim: finished without a TC round trip (release on
+ *    close).
+ *  - Closes on the survivor whose scan had fragments on the victim: the
+ *    TC fails the scan itself (SCAN_TABREF, close needed) while the close
+ *    is held; the held close is the one the TC waits for, and its
+ *    SCAN_TABCONF(EndOfData) finishes the parked close.
+ *  - Ndb A keeps working throughout; its next transactions finish its
+ *    parked closes as they are confirmed.
+ *  - Ndb B is deleted with parked closes on both nodes: the waiting reap
+ *    returns (node failure, and the held closes of the survivor).
+ *  - After the node is back, both kinds of scan work again.
+ * Not covered: the 4008 timeout.
+ */
+int runScanCloseNoWaitNodeFailure(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.getNumDbNodes() < 2) {
+    g_err << "[SKIPPED] Test requires at least 2 data nodes" << endl;
+    return NDBT_SKIPPED;
+  }
+  const NdbDictionary::Table *pTab = ctx->getTab();
+  const int records = ctx->getNumRecords();
+  HugoTransactions hugoTrans(*pTab);
+  int result = NDBT_OK;
+
+  for (int loop = 0; loop < ctx->getNumLoops() && result == NDBT_OK;
+       loop++) {
+    if (restarter.insertErrorInAllNodes(8316) != 0) {
+      g_err << "Failed to insert error 8316" << endl;
+      return NDBT_FAILED;
+    }
+    Ndb *ndbs[2] = {nullptr, nullptr};
+    const NdbDictionary::Table *tabs[2] = {nullptr, nullptr};
+    const NdbDictionary::Index *idxs[2] = {nullptr, nullptr};
+    for (int n = 0; n < 2; n++) {
+      ndbs[n] = new Ndb(&ctx->m_cluster_connection, "TEST_DB");
+      if (ndbs[n]->init() != 0 || ndbs[n]->waitUntilReady(30) != 0) {
+        NDB_ERR(ndbs[n]->getNdbError());
+        result = NDBT_FAILED;
+        break;
+      }
+      tabs[n] = ndbs[n]->getDictionary()->getTable(pTab->getName());
+      idxs[n] = ndbs[n]->getDictionary()->getIndex(orderedPkIdxName,
+                                                    pTab->getName());
+      if (tabs[n] == nullptr || idxs[n] == nullptr) {
+        NDB_ERR(ndbs[n]->getDictionary()->getNdbError());
+        result = NDBT_FAILED;
+        break;
+      }
+    }
+
+    // Park ordered-scan closes, held by 8316, on both Ndb objects: even i
+    // on the victim, odd i on the survivor as TC, ASC and DESC on each.
+    int victim = restarter.getDbNodeId(loop % 2);
+    const int survivor = restarter.getDbNodeId(1 - (loop % 2));
+    bool killed = false;
+    for (int i = 0; i < 6 && result == NDBT_OK; i++) {
+      const Uint32 tc = (Uint32)((i % 2 == 0) ? victim : survivor);
+      for (int n = 0; n < 2 && result == NDBT_OK; n++) {
+        result = scanStopCloseNoWait(ndbs[n], tabs[n], idxs[n],
+                                     1 + ((i / 2) % 2), 1, tc);
+      }
+    }
+
+    if (result == NDBT_OK) {
+      g_info << "Killing node " << victim << " under parked closes (TC "
+             << victim << " and " << survivor << ")" << endl;
+      killed = (restarter.restartOneDbNode(victim, false, true, true) == 0);
+      if (!killed || restarter.waitNodesNoStart(&victim, 1) != 0) {
+        g_err << "Failed to kill node " << victim << endl;
+        result = NDBT_FAILED;
+      }
+    }
+
+    // Ndb A keeps working; its parked closes are finished as it goes.
+    if (result == NDBT_OK && hugoTrans.scanReadRecords(ndbs[0], records) != 0) {
+      g_err << "Scan on Ndb A failed after the node failure" << endl;
+      result = NDBT_FAILED;
+    }
+    if (result == NDBT_OK) {
+      const Uint32 inUse = getTransactionObjectCount(ndbs[0]);
+      g_info << "Ndb A: " << inUse << " NdbTransaction objects in use" << endl;
+      if (inUse > 32) {
+        g_err << "Parked closes were not finished after the node failure"
+              << endl;
+        result = NDBT_FAILED;
+      }
+    }
+
+    // Ndb B is deleted with parked closes on both nodes.
+    delete ndbs[1];
+    ndbs[1] = nullptr;
+
+    restarter.insertErrorInAllNodes(0);
+    if (killed) {
+      if (restarter.startNodes(&victim, 1) != 0 ||
+          restarter.waitClusterStarted() != 0) {
+        g_err << "Failed to restart node " << victim << endl;
+        result = NDBT_FAILED;
+      }
+    }
+
+    // After the restart, both kinds of scan work again on Ndb A.
+    for (int v = 0; v < 3 && result == NDBT_OK; v++) {
+      result = scanStopCloseNoWait(ndbs[0], tabs[0], idxs[0], v, 2);
+    }
+    if (result == NDBT_OK && hugoTrans.scanReadRecords(ndbs[0], records) != 0) {
+      g_err << "Scan on Ndb A failed after the restart" << endl;
+      result = NDBT_FAILED;
+    }
+    delete ndbs[0];
+  }
+  restarter.insertErrorInAllNodes(0);
+  return result;
+}
+
 static void checkScanErrorAction(NdbTransaction *pTrans,
                                  NdbScanOperation *pScan,
                                  NdbRestarter *restarter, int when, int what) {
@@ -3736,6 +3992,28 @@ TESTCASE("ScanStartRestart", "Test behaviour of scan start during restart") {
   STEPS(runScanRead, 200);                // Lots of scans
   STEP(runRestarter9999);                 // Abrupt restarts
   FINALIZER(runClearErrorOnAll);
+}
+
+TESTCASE("ScanCloseNoWait",
+         "RonDB F31: close scans stopped early without waiting for the close "
+         "confirmation (NdbScanOperation::closeNoWait); the Ndb object "
+         "finishes the parked closes, no TC resources leak") {
+  INITIALIZER(createOrderedPkIndex);
+  INITIALIZER(runLoadTable);
+  STEP(runScanCloseNoWait);
+  FINALIZER(createOrderedPkIndex_Drop);
+  FINALIZER(runClearTable);
+}
+
+TESTCASE("ScanCloseNoWaitNodeFailure",
+         "RonDB F31: the data node fails under parked no-wait scan closes "
+         "(error insert 8316 holds the closes); the Ndb objects release them "
+         "and keep working, and deleting an Ndb object with them returns") {
+  INITIALIZER(createOrderedPkIndex);
+  INITIALIZER(runLoadTable);
+  STEP(runScanCloseNoWaitNodeFailure);
+  FINALIZER(createOrderedPkIndex_Drop);
+  FINALIZER(runClearTable);
 }
 
 NDBT_TESTSUITE_END(testScan)

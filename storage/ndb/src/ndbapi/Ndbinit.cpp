@@ -231,6 +231,8 @@ NdbImpl::NdbImpl(Ndb_cluster_connection *ndb_cluster_connection, Ndb &ndb)
 #endif
       theNoOfDBnodes(0),
       theWaiter(this),
+      m_parked_scan_closes(nullptr),
+      m_reaping_scan_closes(false),
       wakeHandler(nullptr),
       m_ev_op(nullptr),
       customData(0),

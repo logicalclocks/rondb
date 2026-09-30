@@ -197,7 +197,7 @@ F8 was a framework fixture issue and is already fixed.
     than RonSQL on the same grouped form, which keeps the CTE plan.
     - Controls c-1..c-3 (ORDER BY an aggregate, GROUP BY without ORDER BY,
       one row) stay pushed.
-- [ ] F31 (TODO, performance, 2026-09-30): do not wait for the scan close
+- [x] F31 (DONE, performance, 2026-09-30): do not wait for the scan close
   confirmation in the user thread.
   - Today: a scan stopped early (a pass-through LIMIT with fragment scans
     still open) is closed by `NdbScanOperation::close_impl`, which sends
@@ -242,6 +242,79 @@ F8 was a framework fixture issue and is already fixed.
     stays; only a per-fragment row limit in the data nodes (a fragment
     stops after N rows and reports the scan complete, like DBSPJ's
     `setMaxRows` for pushed queries) removes the close altogether.
+  - Status (2026-09-30): done. Built and benchmarked (`benchmarks.md`
+    §8); `ndb.ndb_scan_close_nowait`, `ndb.ndb_scan_close_nowait_nf` (after
+    the fixes below) and the RonSQL suites pass.
+    - NDB API, `NdbScanOperation::closeNoWait()`:
+      - `close_send_nowait()` is the sending half of `close_impl()`. It
+        runs under the client lock and first checks, without changing
+        state, that something is open at the data nodes.
+      - The operation is unlinked from the user's transaction
+        (`NdbTransaction::unlinkScanOperation`) and parked on
+        `NdbImpl::m_parked_scan_closes` with its scan transaction.
+      - `Ndb::reapParkedScanCloses()` runs from `startTransactionLocal()`,
+        `closeTransaction()`, and `doDisconnect()` (the last one waits).
+        It uses `parked_close_done()` (node failure, timeout) and
+        `release_parked_close()` (the tail of `close()`).
+      - A `SCAN_TABREF` during a parked close (the TC failed the scan
+        itself) needs nothing more: the close already sent is the one the
+        TC waits for, and its `SCAN_TABCONF(EndOfData)` finishes the parked
+        close, as in the final wait of `close_impl()`.
+      - `NdbTransaction::m_scan_close_nowait` keeps `Ndbif` from waking
+        the waiter on `SCAN_TABCONF` / `SCAN_TABREF` for a parked scan.
+      - Falls back to `close()`: not executed, a continuous scan, batches
+        in flight, a kernel error, 4008, or a failed data node.
+      - Batches in flight rule out most unordered scans (a LIMIT without
+        ORDER BY), which request the next batches of all fragments before
+        returning rows. Ordered scans (J5, collect) wait for each batch
+        before returning rows, so they have nothing in flight and park.
+    - RonSQL: the single-table pass-through early close calls
+      `closeNoWait()`; the JSON framing of an empty result is emitted
+      before it.
+    - The close-after-reply plumbing of `1e7a1d9a27e`
+      (`RonSQLExecParams::deferred_close`, `ronsql_dal_finish`, the
+      request guard) is removed: the reply now waits only for the close
+      request to be sent. `ronsql_cli` gets the same behaviour.
+    - Not covered: the pushed-query drain (`NdbQuery::close` in
+      `execute_join`).
+    - Test: `testScan -nScanCloseNoWait` (MTR `ndb.ndb_scan_close_nowait`).
+      Table scans and ordered index scans in both directions are stopped
+      after 0-4 rows with batch 1; the test checks full reads afterwards,
+      bounded NdbTransaction objects, deleting an Ndb with parked closes,
+      and the TC resource snapshot check.
+    - Node failure: `testScan -nScanCloseNoWaitNodeFailure` (MTR
+      `ndb.ndb_scan_close_nowait_nf`, debug builds).
+      - New DBTC error insert 8316 holds every API scan close 3 s, so
+        ordered-scan closes stay parked. Two Ndb objects park them
+        alternately on the victim and on the survivor as TC, then the
+        victim is killed. `ClusterMgr::set_node_dead` counts the node's
+        connection generation up, which `parked_close_done()` sees.
+      - The survivor fails its scans that had fragments on the victim
+        (`SCAN_TABREF`, close needed) while their closes are held.
+      - Ndb A keeps scanning and finishes the parked closes, those of the
+        failed node without a TC round trip. Its NdbTransaction objects
+        stay bounded.
+      - Ndb B is deleted with parked closes on both nodes: the waiting reap
+        returns.
+      - After the node restart both kinds of scan work again.
+      - First run (debug build) hung 6 minutes in the waiting reap of
+        Ndb B, then segfaulted. Three bugs:
+        - 8316 re-held its own re-sent close forever: the check
+          `refToBlock(sender) != DBTC` is true for DBTC instances 1-3
+          (the instance bits are part of the block number), so the
+          survivor never processed the closes. Now: only signals from
+          another node are held; the held one is marked (stopScan bit
+          value 4) and carries the API's reference, which is restored on
+          arrival, so the "Confirming scan close" and "Wrong transid"
+          replies still go to the API.
+        - `parked_close_done()` sent a second close after a
+          `SCAN_TABREF` (close needed). `close_impl()` never does: the
+          first close answers it. The duplicate could reach a reused TC
+          record. Removed.
+        - The 4008 path called `setErrorCode(4008)`, which records the
+          error on `m_transConnection` (nullptr for a parked close): the
+          segfault. Removed; the log line stays.
+    - Not covered by a test: the 4008 timeout of a waiting reap.
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
   error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
   X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,

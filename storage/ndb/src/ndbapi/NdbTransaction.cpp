@@ -329,6 +329,7 @@ NdbTransaction::NdbTransaction(Ndb *aNdb)
       theDBnode(0),
       theReleaseOnClose(false),
       theForceReleaseOnClose(false),
+      m_scan_close_nowait(false),
       // Scan operations
       m_waitForReply(true),
       m_theFirstScanOperation(nullptr),
@@ -421,6 +422,7 @@ int NdbTransaction::init() {
 
   theScanningOp           = nullptr;
   m_scanningQuery         = nullptr;
+  m_scan_close_nowait     = false;
 
   theFirstExecOpInList	  = nullptr;
   theLastExecOpInList	  = nullptr;
@@ -1944,6 +1946,17 @@ void NdbTransaction::releaseScanOperations(NdbIndexScanOperation *cursorOp) {
 bool NdbTransaction::releaseScanOperation(NdbIndexScanOperation **listhead,
                                           NdbIndexScanOperation **listtail,
                                           NdbIndexScanOperation *op) {
+  if (unlinkScanOperation(listhead, listtail, op)) {
+    op->release();
+    theNdb->releaseScanOperation(op);
+    return true;
+  }
+  return false;
+}
+
+bool NdbTransaction::unlinkScanOperation(NdbIndexScanOperation **listhead,
+                                         NdbIndexScanOperation **listtail,
+                                         NdbIndexScanOperation *op) {
   if (*listhead == op) {
     *listhead = (NdbIndexScanOperation *)op->theNext;
     if (listtail && *listtail == op) {
@@ -1973,8 +1986,6 @@ bool NdbTransaction::releaseScanOperation(NdbIndexScanOperation **listhead,
       theErrorLine = 0;
       theErrorOperation = nullptr;
     }
-    op->release();
-    theNdb->releaseScanOperation(op);
     return true;
   }
   
