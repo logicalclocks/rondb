@@ -50,11 +50,17 @@ constexpr const char* const usageHelp =
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
 #include "probe_server.hpp"
+#include "logger.hpp"
 
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <iostream>
+#include <thread>
 #include <sys/errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <csignal>
 
@@ -554,11 +560,57 @@ int main(int argc, char *argv[]) {
     for (auto &address : addresses) {
       printf("RDRS Server running on %s\n", address.toIpPort().c_str());
     }
-    /* Both probe-port endpoints require this for a 200: neither a startup
-     * probe (ping) nor a readiness probe (health) may pass before the main
-     * port accepts connections. This advice runs once the event loops are
-     * up. */
-    g_drogon_up.store(true, std::memory_order_release);
+    /* Both probe-port endpoints require g_drogon_up for a 200: neither a
+     * startup probe (ping) nor a readiness probe (health) may pass before
+     * the main port accepts connections. This advice runs immediately
+     * BEFORE ListenerManager::startListening() (same queued main-loop
+     * lambda), and each listener's listen() is then queued to its own IO
+     * loop - so setting the flag here directly would open a window where
+     * probes pass while the main port still refuses connections. Latch the
+     * flag from a one-shot thread that confirms the ground truth instead:
+     * a real TCP connect to the main port. A plain connect suffices under
+     * TLS too (acceptance happens before any handshake). */
+    std::thread([]() {
+      std::string ip = globalConfigs.rest.serverIP;
+      bool v6 = ip.find(':') != std::string::npos;
+      if (ip == "0.0.0.0") ip = "127.0.0.1";
+      if (ip == "::") ip = "::1";
+      /* Bounded: if the connect never succeeds something is fatally wrong
+       * with the listener and do_exit() will tear the process down anyway;
+       * do not wedge the latch thread forever. */
+      for (int attempt = 0; attempt < 3000; attempt++) {
+        int fd = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
+        if (fd >= 0) {
+          bool connected = false;
+          if (v6) {
+            struct sockaddr_in6 addr;
+            std::memset(&addr, 0, sizeof(addr));
+            addr.sin6_family = AF_INET6;
+            addr.sin6_port = htons(globalConfigs.rest.serverPort);
+            ::inet_pton(AF_INET6, ip.c_str(), &addr.sin6_addr);
+            connected = ::connect(fd, (struct sockaddr *)&addr,
+                                  sizeof(addr)) == 0;
+          } else {
+            struct sockaddr_in addr;
+            std::memset(&addr, 0, sizeof(addr));
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(globalConfigs.rest.serverPort);
+            ::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+            connected = ::connect(fd, (struct sockaddr *)&addr,
+                                  sizeof(addr)) == 0;
+          }
+          ::close(fd);
+          if (connected) {
+            g_drogon_up.store(true, std::memory_order_release);
+            return;
+          }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      rdrs_logger::error(
+        "Main REST port never accepted a connection; probe endpoints stay "
+        "at 503");
+    }).detach();
   });
   drogon::app().setIntSignalHandler([]() {
     handle_signal(SIGINT);
