@@ -1,0 +1,126 @@
+# WHERE conditions on the right side of a LEFT JOIN of real tables.
+#
+# RonSQL classifies each WHERE conjunct by table and pushes a conjunct on
+# a joined table into that table's operation as its filter.  For a LEFT
+# JOIN that filter acts as part of the join condition: a match that fails
+# it is NULL-extended and its parent row kept, where WHERE removes it.
+# A conjunct that rejects NULL is safe, because the join is promoted to
+# INNER first (a NULL-extended row fails it anyway).  A conjunct that can
+# hold for the NULL-extended row, like c.v IS NULL, returned the wrong
+# rows; it is now rejected.  LIKE and NOT over a NULL-rejecting test are
+# now recognized as rejecting NULL and promote the join to INNER.
+#
+# lj-1 also covers the WHERE classification of LIKE: it had no case in
+# classify_ce_table_resolved, so a LIKE on a joined table counted as a
+# constant condition and was filtered on the ROOT table with the joined
+# column's attribute number (NDB error 40 when that root column has no
+# LIKE comparator, a filter on the wrong column when it has one).
+#
+# The CTE form (LEFT JOIN cte ... WHERE cte.col IS NULL) is unaffected:
+# it becomes an anti-join or is rejected in the CTE_LOOKUP filter.
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE lj_parent (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE lj_child (
+  id   INT NOT NULL,
+  label VARCHAR(20) NULL,
+  v    INT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+# Parents 7 and 8 have no child; children 2, 3 and 5 carry NULLs.
+INSERT INTO lj_parent VALUES (1,1),(2,0),(3,1),(4,0),(5,1),(6,0),(7,1),(8,0);
+INSERT INTO lj_child VALUES
+  (1,'apple',10),(2,'banana',NULL),(3,NULL,30),
+  (4,'avocado',5),(5,NULL,NULL),(6,'cherry',5);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === lj-0: LEFT JOIN without WHERE (control) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), COUNT(c.id), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), COUNT(c.id), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+GROUP BY p.grp|
+
+--echo
+--echo === lj-1: LIKE on the right side rejects NULL (promoted to INNER) ===
+# The string literal needs the query file: ronsql_compare.inc passes
+# $QUERY to the shell inside single quotes.
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.label LIKE 'a%'
+GROUP BY p.grp;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE c.label LIKE 'a%'
+GROUP BY p.grp|
+
+--echo
+--echo === lj-2: NOT (col IS NULL) rejects NULL (promoted to INNER) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT (c.v IS NULL)
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT (c.v IS NULL)
+GROUP BY p.grp|
+
+DELIMITER ;|
+
+--echo
+--echo === lj-r1 (rejection): col IS NULL on the right side ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE c.v IS NULL GROUP BY p.grp;' 2>&1
+
+--echo
+--echo === lj-r2 (rejection): IS NULL in an OR on the right side ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE c.v IS NULL OR c.v > 20 GROUP BY p.grp;' 2>&1
+
+--echo
+--echo === lj-r3 (rejection): NOT (col IS NOT NULL) on the right side ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE NOT (c.v IS NOT NULL) GROUP BY p.grp;' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE lj_child;
+DROP TABLE lj_parent;
+--enable_warnings
+--enable_query_log

@@ -478,6 +478,7 @@ RonSQLPreparer::classify_ce_table_resolved(
   case T_GT:
   case T_LE:
   case T_LT:
+  case T_LIKE:
   case T_PLUS:
   case T_MINUS:
   case T_MULTIPLY:
@@ -3486,6 +3487,27 @@ is_null_rejecting(const ConditionalExpression* ce)
   case T_IS:
     // IS NOT NULL rejects NULL; IS NULL preserves NULL.
     return !ce->is.null;
+  case T_LIKE:
+    // LIKE with a NULL operand is NULL.
+    return true;
+  case T_NOT:
+  case T_EXCLAMATION:
+  {
+    // NOT of NULL is NULL, so NOT over a test that is NULL for a NULL
+    // column still rejects it; NOT (col IS NULL) is col IS NOT NULL.
+    const ConditionalExpression* arg = ce->args.left;
+    if (arg == NULL) return false;
+    switch (arg->op) {
+    case T_EQUALS: case T_NOT_EQUALS:
+    case T_LT: case T_LE: case T_GT: case T_GE:
+    case T_LIKE:
+      return true;
+    case T_IS:
+      return arg->is.null;
+    default:
+      return false;
+    }
+  }
   case T_AND:
     // AND is null-rejecting if at least one branch is — the whole
     // AND evaluates to FALSE/NULL when that branch does.
@@ -3592,6 +3614,31 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
     {
       op.match_type = JoinOp::INNER;
     }
+  }
+
+  // A WHERE conjunct still on a LEFT-joined table here can hold for its
+  // NULL-extended row (e.g. col IS NULL).  The table's op can only apply
+  // it as its own filter, i.e. as part of the join condition: a match
+  // that fails it is NULL-extended and kept, where WHERE removes the
+  // parent row.  emit_cte_lookup_filter rejects this for a CTE_LOOKUP;
+  // reject it for every other op until post-join filtering exists.
+  for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
+  {
+    const JoinOp& op = scope.join_plan.ops[t];
+    if (op.match_type != JoinOp::LEFT_OUTER ||
+        op.type == JoinOp::CTE_LOOKUP ||
+        scope.join_where_ce[t] == NULL)
+      continue;
+    std::basic_ostream<char>& err = *m_conf.err_stream;
+    err << "WHERE condition on '" << op.alias.c_str()
+        << "' is not supported: '" << op.alias.c_str()
+        << "' is the right side of a LEFT JOIN and the condition can hold"
+           " for its NULL-extended rows (as col IS NULL does). RonSQL would"
+           " apply it as part of the join condition, keeping rows the WHERE"
+           " should remove." << std::endl;
+    throw RonSQLPermanentError(
+        "WHERE on a LEFT JOIN's right side that holds for NULL is not "
+        "supported.");
   }
 }
 
