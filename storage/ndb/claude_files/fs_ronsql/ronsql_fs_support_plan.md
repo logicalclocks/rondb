@@ -56,7 +56,7 @@ does not.
 | F12 | planner: IN list → table scan | PERFORMANCE 200–1000× | yes (batch serving, 10–1000 keys) | WP-F |
 | F13 | CTE_SCAN + PK_LOOKUP round trips | PERFORMANCE 3–4× | yes (every snowflake point read) | WP-G |
 | F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH — FIXED 2026-09-30 (the miss NULL-extends the leaf's direct parent row) | no (LEFT JOIN onto an aggregated CTE) | WP-H |
-| F18 | partial-key CTE lookup now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
+| F18 | partial-key CTE lookup now runs | WRONG RESULT (regression from a clean reject) — fixed 2026-09-30: an index/table scan below a CTE_SCAN root is rejected at prepare time (unfinished Phase N.1 shape) | no | WP-H |
 | F19 | CTE_SCAN as outer-join child now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
 | F17 | HAVING + ORDER BY + LIMIT | internal error instead of a clean reject | no (HAVING unsupported) | WP-H |
 | F16 | AVG over a non-numeric column | generic "report a bug" message | no | WP-H |
@@ -272,6 +272,15 @@ Ordered by consequence:
    diverging output. Either restore the guards or implement the
    semantics; the envelope fuzzer's `KnownWrong` rows flip to `PASS` or
    back to `CLEAN-REJECT` accordingly.
+   F18 (fixed 2026-09-30): no guard was lost. The I.16b/c
+   partial-key rewrite puts the CTE at the root and demotes the original
+   root to a child; when that child is joined on a primary-key prefix or
+   a non-unique index it is an INDEX_SCAN below a CTE_SCAN, the kernel
+   shape Phase N.1 (`pushdown_join_aggregation/cte_filter_phase_n1.md`)
+   never finished. `validate_cte_execution_shapes()` rejects an index or
+   table scan below a CTE_SCAN root, whether the rewrite produced it or
+   the statement was written that way; the `cte-partial-key` row is
+   `CLEAN-REJECT` again. Implementing N.1 is the way to run it.
 3. **F17** HAVING with ORDER BY on an aggregate alias and LIMIT throws
    `Got record with fewer aggregates than expected. Please report a
    bug.`; plain HAVING rejects with `Could not find column`. Reject

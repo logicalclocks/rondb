@@ -482,6 +482,11 @@ private:
   // flatten_single_group_cte() folded into a single-table aggregate
   // ({NULL, 0} when no flatten ran); reported by EXPLAIN.
   LexCString m_flattened_cte = LexCString{NULL, 0};
+  // RONDB-1121 F18: alias of the original root that
+  // maybe_rewrite_partial_key_cte_root() demoted to a child of the
+  // promoted CTE ({NULL, 0} when no rewrite ran); names the partial
+  // key in validate_cte_execution_shapes()' rejection.
+  LexCString m_partial_key_demoted_alias = LexCString{NULL, 0};
   // RONDB-1124 WP-J J1: CTEs rewrite_lastn_cte_bodies() turned into
   // one-group-per-row bodies (the first MAX_LASTN_CTES_REPORTED are kept,
   // for EXPLAIN; m_num_lastn_ctes counts all of them).
@@ -899,11 +904,11 @@ private:
   void resolve_cte_output_columns();
   void resolve_cte_output_columns_for_scope(QueryScope& scope);
   /**
-   * Reject CTE shapes the kernel/SPJ doesn't currently support.
-   * Defensive tripwire — see cte_filter_phase_g.md.  Today only
-   * blocks CTE_SCAN-as-outer-join-child (which the planner doesn't
-   * emit, so this never fires from SQL — but a planner regression
-   * would surface here as a clean error instead of a runtime crash).
+   * Reject CTE shapes the kernel/SPJ doesn't currently support:
+   * CTE_SCAN as an outer-join child (a defensive tripwire — the
+   * planner doesn't emit it; see cte_filter_phase_g.md) and an index
+   * or table scan below a CTE_SCAN root (RONDB-1121 F18: unfinished
+   * Phase N.1, wrong results).
    */
   void validate_cte_execution_shapes();
   /**
