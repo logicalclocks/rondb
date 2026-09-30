@@ -132,7 +132,7 @@ F8 was a framework fixture issue and is already fixed.
   link through a converted value or reject cleanly at plan time with a
   permanent error naming the type mismatch. Not needed by WP-J (J0 / J1
   carry non-key columns as GROUP BY keys, which keep their types).
-- [ ] F30 (2026-09-30, WP-J spot run, `.bench_sql
+- [x] F30 (2026-09-30, WP-J spot run, `.bench_sql
   fs_hw_agg_last10_tx300_grouped`): mysqld with single-table aggregation
   pushdown (`ndb_pushdown_aggregate=ON`, default OFF; on in the
   `ronsqlcrunch` config and the user's benchmark cluster) fails on the J0
@@ -191,8 +191,10 @@ F8 was a framework fixture issue and is already fixed.
       report pushed=0. o-4 is the descending read that failed with 4120.
     - o-1 / o-2 keep the F30 grouped-CTE shape. On the test data the
       optimizer sorts that body, so they stay pushed (pushed=1) and still
-      match. The fs_bench plan without a sort is the one o-4 covers; to be
-      confirmed on the benchmark cluster after the mysqld rebuild.
+      match. The fs_bench plan without a sort is the one o-4 covers.
+  - Confirmed 2026-09-30 on the benchmark cluster after the mysqld rebuild:
+    `.bench_sql fs_hw_agg_last10_tx300_grouped` runs. It is slightly faster
+    than RonSQL on the same grouped form, which keeps the CTE plan.
     - Controls c-1..c-3 (ORDER BY an aggregate, GROUP BY without ORDER BY,
       one row) stay pushed.
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:

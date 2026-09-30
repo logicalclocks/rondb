@@ -206,6 +206,39 @@ Filled by E5 from the first matrix run (interpreter and JIT arms,
 `bench_results/<date>-<build>.md` next to this file (report.md copy,
 ≤ 30 KB) plus the `results.json`.
 
+### WP-J J5 spot run — 2026-09-30, the user's cluster, sf 1, 1 thread × 5000 requests
+
+J5 on and off on the same RDRS binary. "Off" is the hand-written grouped form,
+which is exactly what J1 made of the natural statement before J5.
+
+| entry | plan | avg | p99 | q/s | execute avg | firstbatch avg |
+|---|---|---|---|---|---|---|
+| `fs_hw_agg_last10_tx300_grouped` | J5 off: CTE plan, all 300 rows grouped, top 10 at finalize | 603 µs | 791 µs | 1646 | 529 µs | 509 µs |
+| `fs_hw_agg_last10_tx300` | J5: ordered PRIMARY scan (SF_OrderBy, descending, batch 10), aggregated in RonSQL | 217 µs | 406 µs | 4515 | 162 µs | 82 µs |
+| `fs_hw_agg_last10_tx300` on MySQL (`.bench_sql`) | derived table, reverse PRIMARY range, LIMIT 10 | 157 µs | 271 µs | 6316 | — | — |
+
+Reading:
+- J5 is 2.8× faster on average and in throughput for 300-row histories.
+  Both plan pins held: the J5 line, the index scan, and the descending
+  index order.
+- MySQL is still ahead: 157 µs against 217 µs, 1.38×. J5's server-side
+  `execute` (162 µs) alone equals MySQL's whole round trip.
+- Outside the server phases (HTTP, JSON, client) the cost is about 50 µs
+  for J5 and 67 µs for the CTE plan.
+- About 76 µs of J5's `execute` is in no listed phase: `firstbatch` 82 µs
+  plus send, drain and print about 5 µs, out of 162 µs.
+  - Presumed cause: the early scan close. A 300-row customer has about 75
+    rows per fragment, so every fragment's scan is still open when LIMIT
+    is reached, and `scanOp->close()` waits for one more round trip.
+  - An earlier session of the same day fits this: `last100`, whose batch
+    of 100 completes every fragment, showed no gap; `last10` over the
+    `{KEY}` mix showed 15 µs; `collect5` showed 33 µs.
+  - Not yet measured as its own phase. Avoiding it would put J5 near
+    140 µs, below MySQL, and would help every pass-through LIMIT query.
+    mysqld closes its scan the same way (`cursor->close(force_send,
+    true)` in `ha_ndbcluster::close_scan()`), so how it stays at 157 µs
+    is part of the question.
+
 ### WP-J spot run — 2026-09-29, the user's cluster, sf 1, 1 thread × 5000 requests
 
 Measured to decide J2 (`ronsql_fs_support_plan.md` WP-J). Build and

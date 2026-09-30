@@ -760,7 +760,14 @@ built in memory exactly as `ProcessRes` merges one from the wire.
 
 *J5 step 3 committed `bf75969256c`.*
 
-*J5 step 4 status (2026-09-30): pins written, spot run pending.*
+*J5 step 4 status (2026-09-30): done.* Pins committed `9b63e0b8b1f`;
+spot run in `benchmarks.md` §8.
+- On the same RDRS binary, `fs_hw_agg_last10_tx300` takes 217 µs with J5
+  and 603 µs with the J1 plan (the `_grouped` entry): 2.8×.
+- MySQL runs the natural statement in 157 µs, 1.38× ahead of J5.
+- About 76 µs of J5's server time is the presumed early scan close, which
+  is not yet a phase of its own. That is the next lever, for J5 and the
+  collect path alike: measure it, then avoid the wait.
 - `fs_hw_agg_last10`, `_last100` and `_last10_tx300` now pin three things:
   the J5 EXPLAIN line, `Execute as index scan.`, and the descending
   index-order line.
