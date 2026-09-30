@@ -101,8 +101,33 @@ F8 was a framework fixture issue and is already fixed.
   Still worth a run: the batchpkread Go suite (TestUnloadSchema) under ASAN.
 - [ ] F18 (envelope_fuzz.md): a partial-key CTE lookup now runs (was rejected)
   and returns the wrong row count. Silent correctness regression. E7 fuzzer, seed 2.
-- [ ] F19 (envelope_fuzz.md): CTE_SCAN as an outer-join child now runs (was
-  rejected) with a divergent result. E7 fuzzer, seed 2.
+- [x] F19 (envelope_fuzz.md): CTE_SCAN as an outer-join child now runs (was
+  rejected) with a divergent result. E7 fuzzer, seed 2. FIXED 2026-09-30.
+  - Misnamed: the planner makes every CTE child a CTE_LOOKUP. The probe
+    (`merchants_1 AS m LEFT JOIN t ON t.k = m.merchant_id WHERE
+    m.merchant_id = 1 GROUP BY m.mcc`, t grouped by merchant) is a
+    LEFT-joined CTE_LOOKUP under a PK-bound root. On a miss RonSQL
+    returned no row (an empty result, hence "output names differ") where
+    MySQL returns `(mcc, NULL)`.
+  - Cause: an aggregating main query of a CTE-containing statement takes
+    a `readTuple` root when the WHERE binds the root's PK
+    (`emit_root_op`, the fpw-6 shape); a key-bound or single-group CTE
+    root takes a `lookupCte` root (I.7 / G4). DBSPJ builds the
+    NULL-extended row for an outer CTE_LOOKUP miss from the parent row
+    buffered on the nearest scan ancestor (`execCTE_LOOKUP_REF`;
+    `handleAggAncestorComplete` for an outer intermediate); under a
+    lookup root there is none, the injection is skipped, and the parent
+    row drops out of the aggregate. Pass-through queries are unaffected
+    (the API NULL-fills).
+  - Fix (2026-09-30, tests pass): `emit_root_op` gives an
+    aggregating scope with a LEFT / ANTI_JOIN child a scan root (a
+    PK-bound ordered-index scan, a filtered table scan for a hash-only PK,
+    scanCte for a CTE root). The filtered scalar CTE root has only the
+    lookup form and is rejected cleanly (`Outer join below a filtered
+    scalar CTE root not supported.`). Regression
+    `ronsql_cte.cte_lookup_root_outer` (f19-1..8); the fuzzer's F19
+    known-wrong row is retired, and the seed-1 envelope SUMMARY is now
+    `clean-reject=20 pass=180` (the one known-wrong case was this probe).
 - [ ] F17 (envelope_fuzz.md): HAVING + ORDER BY (aggregate alias) + LIMIT →
   internal error `Got record with fewer aggregates than expected. Please report a
   bug.`; plain HAVING rejects cleanly. Found by the E7 envelope fuzzer.

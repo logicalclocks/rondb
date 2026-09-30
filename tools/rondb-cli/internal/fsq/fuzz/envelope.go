@@ -85,7 +85,6 @@ func (e Expectation) Matches(message string) bool {
 // unit test checks every pattern against the engine sources.
 var Expectations = []Expectation{
 	{Construct: "cte-partial-key", KnownWrong: true, Finding: "F18", Note: "partial-key CTE lookup (binds fewer than all virtual-key columns): the engine now runs it (it used to reject with 'Partial CTE lookup key not supported') and returns the wrong row count"},
-	{Construct: "cte-scan-outer-child", KnownWrong: true, Finding: "F19", Note: "CTE_SCAN as an outer-join child: the engine now runs it (it used to reject with 'CTE_SCAN as outer-join child is not supported') and its result diverges from MySQL"},
 	{Construct: "join-no-index", Reject: true, Pattern: "no suitable index on join columns", Note: "a join column without a usable index"},
 	{Construct: "orderby-in-subquery", Reject: true, Pattern: "ORDER BY / LIMIT in a subquery is not supported", Note: "ORDER BY / LIMIT inside an IN (subquery)"},
 	{Construct: "greatest-eq-where", Reject: true, Pattern: "GREATEST/LEAST with = or !=", Note: "GREATEST/LEAST compared with = or != in WHERE"},
@@ -526,6 +525,9 @@ func (es *envSampler) probe() {
 		es.c.SQL = "WITH `x` AS (SELECT `account_id` AS `k1`, `currency` AS `k2`, COUNT(*) AS `n` FROM `balance_hist_1` GROUP BY `account_id`, `currency`) " +
 			"SELECT `b`.`account_id`, SUM(`x`.`n`) AS `n` FROM `balances_1` AS `b` JOIN `x` ON `x`.`k1` = `b`.`account_id` GROUP BY `b`.`account_id`;"
 	case 1:
+		// Planned as a LEFT-joined CTE_LOOKUP under a PK-lookup root, not a
+		// CTE_SCAN (the tag is historical).  F19, fixed: the lookup root
+		// dropped the missed parent row; the case now compares strictly.
 		es.tag("probe", "cte-scan-outer-child")
 		es.c.SQL = "WITH `t` AS (SELECT `merchant_id` AS `k`, COUNT(*) AS `n` FROM `transactions_1` WHERE `customer_id` = " + k + " GROUP BY `merchant_id`) " +
 			"SELECT `m`.`mcc`, SUM(`t`.`n`) AS `n` FROM `merchants_1` AS `m` LEFT JOIN `t` ON `t`.`k` = `m`.`merchant_id` WHERE `m`.`merchant_id` = 1 GROUP BY `m`.`mcc`;"

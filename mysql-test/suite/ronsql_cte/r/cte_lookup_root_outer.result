@@ -1,0 +1,177 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== f19-1: ordered-PK root LEFT JOIN cte, miss ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 GROUP BY o.cat|
+cat	n
+9	NULL
+
+=== f19-2: ordered-PK root LEFT JOIN cte, hit ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 2 GROUP BY o.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, SUM(t.n) AS n
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 2 GROUP BY o.cat|
+cat	n
+1	2
+
+=== f19-3: hash-PK root LEFT JOIN cte, miss ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT h.cat, SUM(t.n) AS n
+FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
+WHERE h.id = 4 GROUP BY h.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT h.cat, SUM(t.n) AS n
+FROM f19_hash AS h LEFT JOIN t ON t.k = h.id
+WHERE h.id = 4 GROUP BY h.cat|
+cat	n
+2	NULL
+
+=== f19-4: scalar aggregate, ordered-PK root LEFT JOIN cte, miss ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT COUNT(*) AS c, SUM(t.s) AS s
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT COUNT(*) AS c, SUM(t.s) AS s
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5|
+c	s
+1	NULL
+
+=== f19-5: anti-join form (WHERE t.k IS NULL), ordered-PK root, miss ===
+== Query ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, COUNT(*) AS c
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH t AS (SELECT grp AS k, COUNT(*) AS n, SUM(val) AS s
+FROM f19_src GROUP BY grp)
+SELECT o.cat, COUNT(*) AS c
+FROM f19_ord AS o LEFT JOIN t ON t.k = o.id
+WHERE o.id = 5 AND t.k IS NULL GROUP BY o.cat|
+cat	c
+9	1
+
+=== f19-6: key-bound CTE root (I.7) LEFT JOIN cte, miss ===
+== Query ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT a.k, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k
+WHERE a.k = 3 GROUP BY a.k|
+k	m
+3	NULL
+
+=== f19-7: single-group CTE root (G4) LEFT JOIN cte, miss ===
+== Query ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH a AS (SELECT grp AS k, COUNT(*) AS n FROM f19_src
+WHERE grp = 3 GROUP BY grp),
+b AS (SELECT cat AS k, COUNT(*) AS m FROM f19_ord GROUP BY cat)
+SELECT COUNT(*) AS c, SUM(b.m) AS m
+FROM a LEFT JOIN b ON b.k = a.k|
+c	m
+1	NULL
+
+=== f19-8: filtered scalar CTE root LEFT JOIN cte — permanent rejection ===
+An outer join below a scalar CTE root with a WHERE clause is not supported in an aggregate query: the root is a single-row CTE lookup, which cannot NULL-extend the outer join's misses.
+Error handling: RPE
+ronsql_cli caught exception: Outer join below a filtered scalar CTE root not supported.
+
+=== Cleanup ===

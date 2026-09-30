@@ -11824,6 +11824,21 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
   return def;
 }
 
+// F19: true when a child of the plan is outer-joined — a LEFT JOIN, or
+// its Phase K ANTI_JOIN form — so that a miss must still feed its
+// parent row, NULL-extended, to the aggregation.
+static bool
+plan_has_outer_child(const JoinPlan& plan)
+{
+  for (Uint32 i = 1; i < plan.num_ops; i++)
+  {
+    if (plan.ops[i].match_type == JoinOp::LEFT_OUTER ||
+        plan.ops[i].match_type == JoinOp::ANTI_JOIN)
+      return true;
+  }
+  return false;
+}
+
 // Emit the root scan/lookup/index-scan for the scope's plan. Chooses PK
 // lookup when WHERE fully covers the PK and no child is a scan; ordered
 // index scan with equality bounds when PK-covered with a scan child;
@@ -11838,6 +11853,22 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
 {
   JoinPlan& plan = scope.join_plan;
   NdbQueryOptions rootOpts;
+
+  // F19: an aggregating scope with an outer-joined child needs a SCAN
+  // root.  DBSPJ builds the NULL-extended row for a miss from the parent
+  // row buffered on the nearest scan ancestor: execCTE_LOOKUP_REF for a
+  // CTE_LOOKUP miss, handleAggAncestorComplete for an outer intermediate.
+  // Under a lookup root (readTuple, lookupCte) there is no scan
+  // ancestor, both skip the injection, and the parent row silently
+  // drops out of the aggregate: `m LEFT JOIN cte ON cte.k = m.pk WHERE
+  // m.pk = 1 GROUP BY m.x` returned no row where MySQL returns (x, NULL).
+  // A real-table outer LEAF alone would be safe (DBLQH NULL-extends its
+  // key-not-found itself), but the check does not tell the cases apart:
+  // the scan roots below cost a PK-bound index scan (or a filtered scan)
+  // in place of the single-row lookup.
+  const bool outer_agg_needs_scan_root =
+      (singleAgg != NULL || scope.agg != NULL) &&
+      plan_has_outer_child(plan);
 
   // Statement-level FRAGS_PER_WORKER hint: bundle N root fragments per
   // SPJ worker for aggregate pushed queries.  Applied to the main-query
@@ -11890,6 +11921,21 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
         (plan.ops[0].cte_def != NULL &&
          plan.ops[0].cte_def->stmt->groupby_columns == NULL &&
          !root_cte_is_single_row);
+    // F19: the filtered scalar root below has only the lookupCte form,
+    // which would drop the misses of an outer-joined child (see
+    // outer_agg_needs_scan_root); reject the shape instead.
+    if (root_cte_is_scalar && scope.join_where_ce[0] != NULL &&
+        outer_agg_needs_scan_root)
+    {
+      ndbrequire(m_conf.err_stream != NULL);
+      *m_conf.err_stream
+          << "An outer join below a scalar CTE root with a WHERE clause"
+             " is not supported in an aggregate query: the root is a"
+             " single-row CTE lookup, which cannot NULL-extend the"
+             " outer join's misses.\n";
+      throw RonSQLPermanentError(
+          "Outer join below a filtered scalar CTE root not supported.");
+    }
     if (root_cte_is_scalar && scope.join_where_ce[0] != NULL)
     {
       NdbInterpretedCode code(cteVirtualTables[0]);
@@ -12085,7 +12131,11 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
       }
     }
 
-    if (root_pk_covered && !root_has_scan_child)
+    // F19: with an outer-joined child in an aggregating scope, the key
+    // lookup root falls back to the scanCte below (the WHERE, if any, as
+    // its filter) — see outer_agg_needs_scan_root.
+    if (root_pk_covered && !root_has_scan_child &&
+        !outer_agg_needs_scan_root)
     {
       const NdbQueryOperand* lookup_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
       for (int k = 0; k < root_nkeys; k++)
@@ -12288,11 +12338,13 @@ RonSQLPreparer::emit_root_op(NdbQueryBuilder* qb, QueryScope& scope,
   // Emit the readTuple root only when nothing aggregates here
   // (pass-through main query), or when this is the main scope of a
   // CTE-containing query — the CTE materialisation scan makes the
-  // compound query scan-rooted (the proven fpw-6 shape).  CTE-body
-  // scopes always aggregate and may themselves be op[0], so they
-  // always take the scan fallbacks.
+  // compound query scan-rooted (the proven fpw-6 shape) — unless an
+  // outer-joined child needs a scan root (F19, outer_agg_needs_scan_root).
+  // CTE-body scopes always aggregate and may themselves be op[0], so
+  // they always take the scan fallbacks.
   bool lookup_root_supported = (singleAgg == NULL && scope.agg == NULL);
-  if (!lookup_root_supported && &scope == &m_main_scope)
+  if (!lookup_root_supported && &scope == &m_main_scope &&
+      !outer_agg_needs_scan_root)
   {
     for (Uint32 ci = 0; ci < plan.num_ops; ci++)
     {
