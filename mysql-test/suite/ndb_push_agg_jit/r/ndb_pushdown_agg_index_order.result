@@ -1,0 +1,75 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+CREATE TABLE tq (
+k INT NOT NULL,
+seq INT NOT NULL,
+v INT NOT NULL,
+PRIMARY KEY (k, seq)
+) ENGINE=NDB;
+INSERT INTO tq
+WITH RECURSIVE s (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 300)
+SELECT 1, i, MOD(i * 7, 101) FROM s;
+INSERT INTO tq VALUES (2, 1, 5), (2, 2, 6), (2, 3, 7), (2, 4, 8), (2, 5, 9);
+############################################################
+# o-1: the F30 statement shape, last 10 by DESC in a grouped CTE
+############################################################
+# o-1: pushed=1
+n	s	mn	mx
+10	2955	291	300
+############################################################
+# o-2: the same, first 10 by ASC
+############################################################
+# o-2: pushed=1
+n	s	mn	mx
+10	55	1	10
+############################################################
+# o-3: GROUP BY seq ORDER BY seq LIMIT 5 on the PRIMARY order
+############################################################
+# o-3: pushed=0
+seq	sv
+1	7
+2	14
+3	21
+4	28
+5	35
+############################################################
+# o-4: the same, DESC
+############################################################
+# o-4: pushed=0
+seq	sv
+300	80
+299	73
+298	66
+297	59
+296	52
+############################################################
+# o-5: whole-index order, no bound
+############################################################
+# o-5: pushed=0
+k	seq	sv
+1	1	7
+1	2	14
+1	3	21
+1	4	28
+1	5	35
+############################################################
+# c-1 (control): ORDER BY an aggregate, sorted after the push
+############################################################
+# c-1: pushed=1
+v	c
+5	4
+6	4
+7	4
+############################################################
+# c-2 (control): GROUP BY on the index order without ORDER BY
+############################################################
+# c-2: pushed=1 rows=5
+############################################################
+# c-3 (control): one row over an index range
+############################################################
+# c-3: pushed=1 rows=1
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE tq;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_pushdown_agg_index_order_jit_fallback_delta;
+ndb_pushdown_agg_index_order_jit_fallback_delta
+0

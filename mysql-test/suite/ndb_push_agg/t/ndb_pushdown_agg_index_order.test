@@ -1,0 +1,103 @@
+--source include/have_ndb.inc
+
+# F30 (mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md): a pushed
+# aggregation returns its groups in NdbAggregator's own order (the group map
+# compares key bytes, and little-endian integers do not sort numerically),
+# not in the order of the scan it replaces.  When the plan takes the ORDER
+# BY from the index order of that scan, with no sort after it, pushing broke
+# the query:
+#  - a descending plan failed with 1296 / 4120 'Scan already complete': the
+#    next group was read with index_prev(), which read the drained scan;
+#  - an ascending plan kept the wrong groups under LIMIT.
+# The ORDER BY may also have been folded into the GROUP BY by the optimizer
+# (an ORDER BY that is a prefix of the GROUP BY), as in the WP-J J0 grouped
+# form of "the last N rows" (o-1, o-2).
+#
+# The fix keeps such aggregations on the server
+# (ndb_aggregate_order_from_index).  o-3..o-5 read PRIMARY in order with no
+# sort after the scan: they report pushed=0 and match the unpushed run row
+# for row (before the fix o-4 failed with 4120).  o-1 / o-2 keep the F30
+# statement shape; on this data the optimizer sorts the grouped CTE body,
+# so they stay pushed and must still match (on fs_bench the same shape read
+# PRIMARY backwards with no sort, the o-4 plan).  The c-* controls, whose
+# order comes from a sort or does not matter, stay pushed.
+#
+# k = 1 holds seq 1..300, which crosses 256, where the little-endian byte
+# order and the numeric order part; k = 2 holds seq 1..5.
+
+CREATE TABLE tq (
+  k INT NOT NULL,
+  seq INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (k, seq)
+) ENGINE=NDB;
+
+INSERT INTO tq
+  WITH RECURSIVE s (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM s WHERE i < 300)
+  SELECT 1, i, MOD(i * 7, 101) FROM s;
+INSERT INTO tq VALUES (2, 1, 5), (2, 2, 6), (2, 3, 7), (2, 4, 8), (2, 5, 9);
+
+--echo ############################################################
+--echo # o-1: the F30 statement shape, last 10 by DESC in a grouped CTE
+--echo ############################################################
+--let $poc_label = o-1
+--let $poc_row = 2
+--let $poc_query = WITH t AS (SELECT k, seq, v, COUNT(*) AS c FROM tq FORCE INDEX (PRIMARY) WHERE k = 1 GROUP BY k, seq, v ORDER BY seq DESC LIMIT 10) SELECT COUNT(*) AS n, SUM(seq) AS s, MIN(seq) AS mn, MAX(seq) AS mx FROM t
+--source suite/ndb_push_agg/include/push_agg_ordered_compare.inc
+
+--echo ############################################################
+--echo # o-2: the same, first 10 by ASC
+--echo ############################################################
+--let $poc_label = o-2
+--let $poc_row = 2
+--let $poc_query = WITH t AS (SELECT k, seq, v, COUNT(*) AS c FROM tq FORCE INDEX (PRIMARY) WHERE k = 1 GROUP BY k, seq, v ORDER BY seq ASC LIMIT 10) SELECT COUNT(*) AS n, SUM(seq) AS s, MIN(seq) AS mn, MAX(seq) AS mx FROM t
+--source suite/ndb_push_agg/include/push_agg_ordered_compare.inc
+
+--echo ############################################################
+--echo # o-3: GROUP BY seq ORDER BY seq LIMIT 5 on the PRIMARY order
+--echo ############################################################
+--let $poc_label = o-3
+--let $poc_row = 1
+--let $poc_query = SELECT seq, SUM(v) AS sv FROM tq FORCE INDEX (PRIMARY) WHERE k = 1 GROUP BY seq ORDER BY seq LIMIT 5
+--source suite/ndb_push_agg/include/push_agg_ordered_compare.inc
+
+--echo ############################################################
+--echo # o-4: the same, DESC
+--echo ############################################################
+--let $poc_label = o-4
+--let $poc_row = 1
+--let $poc_query = SELECT seq, SUM(v) AS sv FROM tq FORCE INDEX (PRIMARY) WHERE k = 1 GROUP BY seq ORDER BY seq DESC LIMIT 5
+--source suite/ndb_push_agg/include/push_agg_ordered_compare.inc
+
+--echo ############################################################
+--echo # o-5: whole-index order, no bound
+--echo ############################################################
+--let $poc_label = o-5
+--let $poc_row = 1
+--let $poc_query = SELECT k, seq, SUM(v) AS sv FROM tq FORCE INDEX (PRIMARY) GROUP BY k, seq ORDER BY k, seq LIMIT 5
+--source suite/ndb_push_agg/include/push_agg_ordered_compare.inc
+
+--echo ############################################################
+--echo # c-1 (control): ORDER BY an aggregate, sorted after the push
+--echo ############################################################
+--let $poc_label = c-1
+--let $poc_row = 1
+--let $poc_query = SELECT v, COUNT(*) AS c FROM tq GROUP BY v ORDER BY c DESC, v LIMIT 3
+--source suite/ndb_push_agg/include/push_agg_ordered_compare.inc
+
+--echo ############################################################
+--echo # c-2 (control): GROUP BY on the index order without ORDER BY
+--echo ############################################################
+--let $pac_label = c-2
+--let $pac_query = SELECT seq, SUM(v) AS sv FROM tq FORCE INDEX (PRIMARY) WHERE k = 2 GROUP BY seq
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # c-3 (control): one row over an index range
+--echo ############################################################
+--let $pac_label = c-3
+--let $pac_query = SELECT COUNT(*) AS n, SUM(v) AS sv, MAX(seq) AS mx FROM tq WHERE k = 1
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE tq;

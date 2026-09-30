@@ -169,6 +169,32 @@ F8 was a framework fixture issue and is already fixed.
     both directions with `ndb_pushdown_aggregate=ON`, compared with OFF.
   - Not a WP-J blocker: the benchmark compares RonSQL on the grouped form
     and MySQL only on the natural statements.
+  - Fix committed 2026-09-30:
+    - `ndb_aggregate_order_from_index(join, root_path)`
+      (`ha_ndbcluster_push_agg.cc`) is true when three things hold: the
+      block groups (`JOIN::group_list` is not empty), the statement has an
+      ORDER BY (`query_block->order_list`), and no SORT lies on the path
+      from the root down to the table access.
+      - It reads `order_list` rather than `JOIN::order` because
+        `optimize_distinct_group_order()` folds an ORDER BY that is a
+        prefix of the GROUP BY into it and clears `JOIN::order`. That is
+        exactly the J0 grouped form.
+      - `ndbcluster_push_to_engine()` then pushes neither the join
+        aggregation nor the single-table aggregation.
+    - Backstop: `ha_ndbcluster::next_result()` serves every row of a pushed
+      single-table aggregation from the aggregator. That covers
+      `index_prev()` and `index_next_same()` as well.
+  - Test: `ndb_push_agg.ndb_pushdown_agg_index_order` plus its JIT
+    mirror (JIT fallback delta 0). Integer keys cross 256. Every case must
+    return the same rows in the same order as with pushdown OFF.
+    - o-3..o-5 read PRIMARY in order with no sort, in both directions, and
+      report pushed=0. o-4 is the descending read that failed with 4120.
+    - o-1 / o-2 keep the F30 grouped-CTE shape. On the test data the
+      optimizer sorts that body, so they stay pushed (pushed=1) and still
+      match. The fs_bench plan without a sort is the one o-4 covers; to be
+      confirmed on the benchmark cluster after the mysqld rebuild.
+    - Controls c-1..c-3 (ORDER BY an aggregate, GROUP BY without ORDER BY,
+      one row) stay pushed.
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
   error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
   X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,
