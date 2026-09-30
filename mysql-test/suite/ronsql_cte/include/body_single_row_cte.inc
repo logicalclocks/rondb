@@ -65,7 +65,8 @@
 #   P7 duplicate output columns (FROM-root consumer): falls through to
 #      analyze_ctes' "must contain at least one aggregate function."
 #      (first pin of that message)
-#   P8 HAVING inside the body: same fall-through rejection
+#   P8 HAVING inside the body -> analyze_ctes' HAVING-in-a-CTE-body
+#      rejection (HAVING is never applied in CTE bodies)
 #   P9 unknown column as a lookup key -> the new single-row
 #      WrongColumns message
 #   P10 no-FROM qualified reference -> single-row CTEs excluded from
@@ -600,8 +601,8 @@ DELIMITER ;|
 
 --echo
 --echo === srb-P8 (rejection): HAVING inside the body ===
-# HAVING is parsed but not applied in CTE bodies, so a HAVING-carrying
-# body must not silently become a single-row CTE.
+# HAVING is never applied in CTE bodies, so analyze_ctes rejects a
+# HAVING-carrying body before single-row candidacy could matter.
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH r AS (SELECT o_custkey AS a FROM orders WHERE o_orderkey = 77 HAVING a > 0) SELECT a FROM r;' 2>&1
 

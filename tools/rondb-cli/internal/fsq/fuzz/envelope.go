@@ -94,7 +94,7 @@ var Expectations = []Expectation{
 	{Construct: "index-hint-joined", Reject: true, Pattern: "Index hints (FORCE/USE/IGNORE INDEX) are only supported on the", Note: "an index hint on a joined table"},
 	{Construct: "cross-table-where", Reject: true, Pattern: "Cross-table WHERE", Note: "a WHERE atom comparing columns of two tables outside the supported forms"},
 	{Construct: "syntax", Reject: true, Pattern: "Syntax error", Note: "implicit alias, DISTINCT, BETWEEN, OFFSET, UNION, RIGHT JOIN: outside the grammar"},
-	{Construct: "having", Reject: true, Pattern: "Could not find column", AltPatterns: []string{"Got record with fewer aggregates than expected"}, TaggedOnly: true, Finding: "F17", Note: "HAVING is unsupported (corrected-envelope): it rejects with 'Could not find column' (alias not resolved), or, with ORDER BY on an aggregate alias + LIMIT, the internal 'Got record with fewer aggregates than expected. Please report a bug.' error (F17)"},
+	{Construct: "having", Reject: true, Pattern: "HAVING can only reference aggregate functions", TaggedOnly: true, Note: "HAVING on the alias of an aggregate output: HAVING supports aggregate functions (and SELECT-list subquery aliases) only, and rejects any other identifier before column resolution, whatever ORDER BY / LIMIT accompanies it (was 'Could not find column', or the F17 internal error with ORDER BY on the alias + LIMIT)"},
 }
 
 // ExpectationFor returns the table row of a construct.
@@ -475,9 +475,10 @@ func (es *envSampler) havingOrder() {
 	where := q("customer_id") + " IN (" + es.keyList(5+es.rng.IntN(20)) + ")"
 	sql := "SELECT `customer_id`, COUNT(*) AS `n`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE " + where + " GROUP BY `customer_id`"
 	having, order := es.pct(70), es.pct(80)
-	// HAVING is unsupported (a clean reject, F17); ORDER BY on a GROUP BY column
-	// or an aggregate alias + LIMIT is supported and passes.  A HAVING case
-	// rejects whatever ORDER BY accompanies it, so the "having" tag carries it.
+	// HAVING on an aggregate alias is a clean reject (HAVING takes aggregate
+	// functions only); ORDER BY on a GROUP BY column or an aggregate alias +
+	// LIMIT is supported and passes.  A HAVING case rejects whatever ORDER BY
+	// accompanies it, so the "having" tag carries it.
 	switch {
 	case having:
 		es.tag("having")

@@ -147,9 +147,16 @@ F8 was a framework fixture issue and is already fixed.
     `ronsql_cte.cte_lookup_root_outer` (f19-1..8); the fuzzer's F19
     known-wrong row is retired, and the seed-1 envelope SUMMARY is now
     `clean-reject=20 pass=180` (the one known-wrong case was this probe).
-- [ ] F17 (envelope_fuzz.md): HAVING + ORDER BY (aggregate alias) + LIMIT →
+- [x] F17 (envelope_fuzz.md): HAVING + ORDER BY (aggregate alias) + LIMIT →
   internal error `Got record with fewer aggregates than expected. Please report a
   bug.`; plain HAVING rejects cleanly. Found by the E7 envelope fuzzer.
+  Root cause (2026-09-30): a HAVING identifier is read as the aggregate register
+  numbered like its column index (`having_agg.agg_index` shares a union with
+  `col_idx`); the same bug made a plain column in HAVING compare against an
+  unrelated aggregate value. Fix: `validate_having_references` rejects every
+  HAVING identifier except a SELECT-list subquery alias. Also fixed: HAVING in a
+  CTE body was parsed but never applied; `analyze_ctes` now rejects it.
+  Regression `ronsql.ronsql_having_refs`, srb-P8 re-pinned. Verified 2026-09-30.
 - [ ] F16 (envelope_fuzz.md): AVG over a VARCHAR column reports the generic
   `Failed writing aggregation program. Please report a bug.` instead of the
   specific `AVG over string columns is not supported.` guard (which fires for

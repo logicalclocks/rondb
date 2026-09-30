@@ -2888,7 +2888,9 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
   default:
     abort();
   }
-  if (m_has_orderby)
+  // m_has_orderby is also set by HAVING alone (to buffer the groups), which
+  // leaves nothing to sort by.
+  if (m_has_orderby && m_orderby_specs.size() > 0)
   {
     out << "Result sorted by ";
     DynamicArray<LexCString>& column_names = *m_column_names;

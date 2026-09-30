@@ -1,0 +1,54 @@
+# HAVING operands RonSQL cannot apply are rejected at prepare time.
+#
+# 1. HAVING inside a CTE body was parsed but never applied: the kernel
+#    materializes every group, so the body returned the groups HAVING
+#    should have removed.  analyze_ctes now rejects it.
+# 2. ResultPrinter evaluates HAVING over the aggregate registers only.  A
+#    plain column (or the alias of an ordinary aggregate output) in HAVING
+#    kept its column index, which shares storage with the aggregate
+#    register index, so it was compared as an unrelated aggregate value, or
+#    failed with "Got record with fewer aggregates than expected" when no
+#    such register existed (fs_ronsql finding F17).  It is now rejected
+#    before column resolution with one message.  The output alias of a
+#    SELECT-list subquery aggregate stays supported (ronsql_subquery_agg).
+#
+# No NDB connection is needed: both checks run before the dictionary load.
+
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let PARSE_TEST=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 -e
+
+--echo ===== Aggregate functions in HAVING are supported =====
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having count(*) > 1 and sum(b) < 100;'
+
+--echo ===== GROUP BY column in HAVING =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having a > 1;'
+
+--echo ===== GROUP BY column beside an aggregate in HAVING =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having count(*) > 1 and a > 3;'
+
+--echo ===== GROUP BY column under IS NULL in HAVING =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having a is null;'
+
+--echo ===== Qualified column in HAVING of a join =====
+--error 1
+--exec $PARSE_TEST 'select t.a, sum(u.b) from tbl as t join tbl2 as u on u.k = t.a group by t.a having t.a > 1;'
+
+--echo ===== Alias of an aggregate output in HAVING =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) as n from tbl group by a having n > 2;'
+
+--echo ===== Alias in HAVING with ORDER BY on it and LIMIT (F17) =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) as n from tbl group by a having n > 2 order by n desc, a asc limit 9;'
+
+--echo ===== HAVING inside a CTE body =====
+--error 1
+--exec $PARSE_TEST 'with c as (select a as k, count(*) as n from tbl group by a having count(*) > 1) select sum(c.n) from c;'
