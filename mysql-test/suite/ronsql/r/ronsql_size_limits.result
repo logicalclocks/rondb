@@ -8,8 +8,8 @@ request refused with 413
 s_id
 7
 
-=== rl-3: response over MaxRespSize -> 500 + clean error ===
-response refused with 500 + MaxRespSize message
+=== rl-3: response over MaxRespSize -> 413 + clean error ===
+response refused with 413 + MaxRespSize message
 
 === rl-4: same query + LIMIT -> 200 under the cap ===
 s_pad

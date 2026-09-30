@@ -194,35 +194,40 @@ AggregationAPICompiler::new_expr(ExprOp op,
     case ExprOp::Add:
       if (int64_add_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " + " << arg2 << ").\n";
-        throw RonSQLPermanentError("Overflow in integer constant folding.");
+        throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                                   "Overflow in integer constant folding.");
       }
       result = arg1 + arg2;
       break;
     case ExprOp::Minus:
       if (int64_sub_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " - " << arg2 << ").\n";
-        throw RonSQLPermanentError("Overflow in integer constant folding.");
+        throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                                   "Overflow in integer constant folding.");
       }
       result = arg1 - arg2;
       break;
     case ExprOp::Mul:
       if (int64_mul_overflow(arg1, arg2)) {
         m_err << "Overflow when attempting to fold constant expression (" << arg1 << " * " << arg2 << ").\n";
-        throw RonSQLPermanentError("Overflow in integer constant folding.");
+        throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                                   "Overflow in integer constant folding.");
       }
       result = arg1 * arg2;
       break;
     case ExprOp::DivInt:
       if (arg2 == 0) {
         m_err << "Divide by zero when attempting to fold constant expression (" << arg1 << " DIV " << arg2 << ").\n";
-        throw RonSQLPermanentError("Divide by zero in integer constant folding.");
+        throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                   "Divide by zero in integer constant folding.");
       }
       result = arg1 / arg2;
       break;
     case ExprOp::Rem:
       if (arg2 == 0) {
         m_err << "Divide by zero when attempting to fold constant expression (" << arg1 << " % " << arg2 << ").\n";
-        throw RonSQLPermanentError("Divide by zero in integer constant folding.");
+        throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                   "Divide by zero in integer constant folding.");
       }
       result = arg1 % arg2;
       break;
