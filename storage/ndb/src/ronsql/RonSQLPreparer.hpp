@@ -888,6 +888,7 @@ private:
   void select_cte_body_minmax_index(QueryScope& scope,
                                      const CteDefinition* cte);
   void analyze_ctes();
+  void validate_having_references();
   void build_cte_scopes();
   bool* collect_scope_column_refs(const SelectStatement& stmt);
   void mark_scope_column_ref(bool* refs, Uint32 col_idx) const;

@@ -58,7 +58,7 @@ does not.
 | F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH — FIXED 2026-09-30 (the miss NULL-extends the leaf's direct parent row) | no (LEFT JOIN onto an aggregated CTE) | WP-H |
 | F18 | partial-key CTE lookup now runs | WRONG RESULT (regression from a clean reject) — fixed 2026-09-30: an index/table scan below a CTE_SCAN root is rejected at prepare time (unfinished Phase N.1 shape) | no | WP-H |
 | F19 | CTE_SCAN as outer-join child now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
-| F17 | HAVING + ORDER BY + LIMIT | internal error instead of a clean reject | no (HAVING unsupported) | WP-H |
+| F17 | HAVING + ORDER BY + LIMIT | internal error instead of a clean reject — FIXED 2026-09-30 (HAVING identifiers rejected; same root cause as a plain column in HAVING comparing against an aggregate) | no (HAVING unsupported) | WP-H |
 | F16 | AVG over a non-numeric column | generic "report a bug" message | no | WP-H |
 | F10, F11 | mysqld pushdown aggregation (ndbcluster) | mysqld CRASH / error 4120 | MySQL path of `queryOnline` | WP-I (separate track) |
 | F20 | NDB API dictionary cache (RONDB-1092 follow-up) | RDRS CRASH | — | FIXED (`76cc05701c6`), backport recommended |
@@ -285,6 +285,13 @@ Ordered by consequence:
    `Got record with fewer aggregates than expected. Please report a
    bug.`; plain HAVING rejects with `Could not find column`. Reject
    HAVING uniformly (one message) until it is supported.
+   **Fixed 2026-09-30**: HAVING identifiers were
+   read as aggregate registers (union with `col_idx`), which also made a
+   plain column in HAVING compare against an unrelated aggregate. Every
+   HAVING identifier except a SELECT-list subquery alias is now rejected
+   with `HAVING can only reference aggregate functions`; HAVING inside a
+   CTE body, parsed but never applied, is rejected too
+   (`ronsql.ronsql_having_refs`).
 4. **F16** AVG over a string / temporal column falls through to `Failed
    writing aggregation program. Please report a bug.` although the
    specific guards exist; route these types to the guards.

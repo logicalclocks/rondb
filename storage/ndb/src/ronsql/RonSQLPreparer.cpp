@@ -196,6 +196,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     STAT_TS(m_conf.phase_stats, s_parse_end);
     STAT_SET(m_conf.phase_stats, parse_us, s_parse_start, s_parse_end);
     analyze_ctes();
+    validate_having_references();
     analyze_subqueries();
     analyze_select_subqueries();
     PERF_TS(t_load_start);
@@ -6795,6 +6796,19 @@ RonSQLPreparer::analyze_ctes()
 
   for (; cte != NULL; cte = cte->next)
   {
+    /* HAVING in a CTE body is parsed (its aggregates even join the body's
+     * program) but never applied: the kernel materializes every group and
+     * no path filters them.  Reject it instead of returning the groups it
+     * should have removed. */
+    if (cte->stmt->having_expression != NULL)
+    {
+      err << "HAVING inside CTE '" << cte->name.c_str()
+          << "' is not supported. It is only supported at the main SELECT"
+             " level; accepting it here would silently ignore it, changing"
+             " results compared to MySQL." << std::endl;
+      throw RonSQLPermanentError("HAVING in a CTE body is not supported.");
+    }
+
     /* ORDER BY / LIMIT in CTE bodies is applied in the kernel at the
      * CTE finalize barrier (cte_orderby_limit_plan.md) — validate the
      * shape and convert output-alias ORDER BY names before scope
@@ -6860,6 +6874,92 @@ RonSQLPreparer::analyze_ctes()
       }
     }
   }
+}
+
+/*
+ * ResultPrinter evaluates HAVING over the aggregate registers only: an
+ * aggregate function reads its own register, and an identifier reads the
+ * register in having_agg.agg_index.  compile() sets that index only for the
+ * output alias of a SELECT-list subquery aggregate.  Any other identifier -
+ * a GROUP BY column, another column, or the alias of an ordinary aggregate
+ * output - keeps its col_idx, which shares storage with having_agg.agg_index,
+ * so it was compared as the aggregate register numbered like the column, or,
+ * when no such register exists, failed with "Got record with fewer
+ * aggregates than expected" (fs_ronsql finding F17).  Reject it here, before
+ * column resolution, so every such HAVING fails with the same message.
+ */
+void
+RonSQLPreparer::validate_having_references()
+{
+  const ConditionalExpression* having = m_context.ast_root.having_expression;
+  if (having == NULL)
+    return;
+  std::set<std::string> subquery_aliases;
+  for (const Outputs* out = m_context.ast_root.outputs; out != NULL;
+       out = out->next)
+  {
+    if (out->type == Outputs::Type::SUBQUERY_AGG &&
+        out->output_name.str != NULL && out->output_name.len > 0)
+    {
+      subquery_aliases.insert(std::string(out->output_name.str,
+                                          out->output_name.len));
+    }
+  }
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  std::function<void(const ConditionalExpression*)> check =
+      [&](const ConditionalExpression* ce) {
+    if (ce == NULL)
+      return;
+    switch (ce->op)
+    {
+    case T_IDENTIFIER:
+    {
+      const Uint32 c = ce->col_idx;
+      ndbrequire(c < m_columns.size());
+      const bool qualified = (m_column_qualifiers[c].str != NULL);
+      const std::string name(m_columns[c].str, m_columns[c].len);
+      if (!qualified && subquery_aliases.count(name) > 0)
+        return;
+      err << "HAVING can only reference aggregate functions, such as"
+             " COUNT(*) or SUM(col), and constants; '";
+      if (qualified)
+        err << std::string(m_column_qualifiers[c].str,
+                           m_column_qualifiers[c].len) << ".";
+      err << name << "' is not an aggregate. Filter GROUP BY columns in"
+             " WHERE, and repeat an aggregate instead of using its output"
+             " alias." << std::endl;
+      throw RonSQLPermanentError(
+          "HAVING can only reference aggregate functions.");
+    }
+    case T_IS:
+      check(ce->is.arg);
+      return;
+    case T_AND:
+    case T_OR:
+    case T_EQUALS:
+    case T_NOT_EQUALS:
+    case T_GT:
+    case T_GE:
+    case T_LT:
+    case T_LE:
+    case T_PLUS:
+    case T_MINUS:
+    case T_MULTIPLY:
+    case T_SLASH:
+      check(ce->args.left);
+      check(ce->args.right);
+      return;
+    case T_NOT:
+    case T_EXCLAMATION:
+      check(ce->args.left);
+      return;
+    default:
+      // Aggregates (having_agg), constants and subqueries have no
+      // column operand to check here.
+      return;
+    }
+  };
+  check(having);
 }
 
 /* Single-row CTE bodies: the parse-time candidacy

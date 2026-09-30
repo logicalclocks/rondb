@@ -852,9 +852,9 @@ Error handling: RPE
 ronsql_cli caught exception: CTE without aggregate function.
 
 === srb-P8 (rejection): HAVING inside the body ===
-CTE 'r' must contain at least one aggregate function.
+HAVING inside CTE 'r' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
 Error handling: RPE
-ronsql_cli caught exception: CTE without aggregate function.
+ronsql_cli caught exception: HAVING in a CTE body is not supported.
 
 === srb-P9 (rejection): unknown column as a lookup key ===
 CTE lookup key references a column that is not an output of the single-row CTE.

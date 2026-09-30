@@ -1,0 +1,53 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+===== Aggregate functions in HAVING are supported =====
+Query parse tree:
+SELECT
+  Out_0:`a`
+   = C0:`a`
+  Out_1:`count(*)`
+   = A0:Count(1)
+FROM tbl
+GROUP BY
+  C0:`a`
+
+Aggregation program (4 instructions):
+Instr. DEST SRC DESCRIPTION
+LoadI  r00  I00 r00 = I00:1
+Count  A00  r00 A00:COUNT <- r00:1
+Load   r00  C01 r00 = C01:`b`
+Sum    A01  r00 A01:SUM <- r00:`b`
+
+No NDB connection, so no index scan analysis.
+
+Output in mysql-style tab separated format.
+The program for post-processing and output has 9 instructions.
+
+===== GROUP BY column in HAVING =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== GROUP BY column beside an aggregate in HAVING =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== GROUP BY column under IS NULL in HAVING =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Qualified column in HAVING of a join =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 't.a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Alias of an aggregate output in HAVING =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'n' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Alias in HAVING with ORDER BY on it and LIMIT (F17) =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'n' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== HAVING inside a CTE body =====
+HAVING inside CTE 'c' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
+Error handling: RPE
+ronsql_cli caught exception: HAVING in a CTE body is not supported.
