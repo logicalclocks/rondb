@@ -370,6 +370,24 @@ TEST_F(ProbeServerHttpTest, GetWithBodyIs400AndClose) {
   EXPECT_TRUE(hasHeader(resp, "connection: close")) << resp;
 }
 
+/* Repeated Content-Length headers are rejected outright: a later value
+ * overriding an earlier one is the classic request-smuggling ambiguity,
+ * and a "0" repeat would otherwise mask real body bytes that then desync
+ * the connection as the next request. */
+TEST_F(ProbeServerHttpTest, DuplicateContentLengthIs400AndClose) {
+  std::string resp = httpExchange(
+    "GET " + std::string(PING_PATH) + " HTTP/1.1\r\nHost: x\r\n"
+    "Content-Length: 3\r\nContent-Length: 0\r\n\r\nabc");
+  EXPECT_EQ(statusLine(resp), "HTTP/1.1 400 Bad Request");
+  EXPECT_TRUE(hasHeader(resp, "connection: close")) << resp;
+  /* Same, values agreeing - still ambiguous per RFC 7230 3.3.2. */
+  resp = httpExchange(
+    "GET " + std::string(PING_PATH) + " HTTP/1.1\r\nHost: x\r\n"
+    "Content-Length: 0\r\nContent-Length: 0\r\n\r\n");
+  EXPECT_EQ(statusLine(resp), "HTTP/1.1 400 Bad Request");
+  EXPECT_TRUE(hasHeader(resp, "connection: close")) << resp;
+}
+
 TEST_F(ProbeServerHttpTest, ChunkedIs400AndClose) {
   std::string resp = httpExchange(
     "GET " + std::string(PING_PATH) + " HTTP/1.1\r\nHost: x\r\n"

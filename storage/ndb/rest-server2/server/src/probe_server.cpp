@@ -155,6 +155,7 @@ bool parseRequest(const char *data, size_t headerEnd, ParsedRequest *req) {
   req->keep_alive = req->http11;
 
   size_t pos = lineEnd + 1;
+  bool seen_content_length = false;
   while (pos < headerEnd) {
     size_t next = block.find('\n', pos);
     if (next == std::string::npos) {
@@ -175,6 +176,15 @@ bool parseRequest(const char *data, size_t headerEnd, ParsedRequest *req) {
     std::string name = trimmed(line.substr(0, colon));
     std::string value = trimmed(line.substr(colon + 1));
     if (iequals(name, "content-length")) {
+      /* Repeated Content-Length headers make the body length ambiguous
+       * (request smuggling / connection desync, RFC 7230 3.3.2): a later
+       * value would silently override an earlier one and leave unread
+       * body bytes to be parsed as the NEXT request. Reject the request
+       * even when the repeated values agree. */
+      if (seen_content_length) {
+        return false;
+      }
+      seen_content_length = true;
       char *end = nullptr;
       unsigned long long cl = strtoull(value.c_str(), &end, 10);
       if (end == value.c_str() || *end != '\0') {
