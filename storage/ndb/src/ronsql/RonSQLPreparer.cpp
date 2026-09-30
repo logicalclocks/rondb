@@ -2075,6 +2075,7 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         // Promote the matched CTE TableRef to root.  TableRef in
         // the AST root is a pointer; copy the value in.
         *m_context.ast_root.root_table = match->table;
+        m_partial_key_demoted_alias = original_root_alias;
         // Note: ast_root.table (the FROM name LexString set once by
         // the parser) deliberately keeps the pre-rewrite name — the
         // shipped aggregate-path rewrite always left it stale, and
@@ -7051,18 +7052,30 @@ RonSQLPreparer::resolve_cte_output_columns()
   resolve_cte_output_columns_for_scope(m_main_scope);
 }
 
-// Reject CTE shapes that aren't supported end-to-end.  Defensive
-// tripwire — today only flags CTE_SCAN-as-outer-join-child, a shape
+// Reject CTE shapes that aren't supported end-to-end.
+//
+// CTE_SCAN as an outer-join child: a defensive tripwire for a shape
 // the planner doesn't currently produce (CTE children always become
 // CTE_LOOKUP — see QueryPlanner.cpp:160).  A planner regression that
 // started selecting CTE_SCAN for a non-root op under LEFT JOIN would
 // otherwise reach DBSPJ and surface as a runtime crash; this guard
 // turns it into a clean RonSQLPermanentError at prepare time.  See
 // cte_filter_phase_g.md.
+//
+// An index or table scan below a CTE_SCAN root (RONDB-1121 F18): the
+// kernel's scanCte parent + scanIndex child path is unfinished
+// (cte_filter_phase_n1.md, Phase N.1) and returns wrong results — the
+// F18 fuzzer case, an aggregate over the ~800 CTE rows, lost 171 of
+// its 400 groups.  The planner produces it when a table is joined to a
+// CTE root on columns that are not its primary key or a unique key,
+// either as written or after the I.16b/c partial-key rewrite demotes
+// the original root below the promoted CTE.  Lookup children (PK /
+// unique / CTE_LOOKUP) are unaffected; Hopsworks snowflake templates
+// only join a child on its full primary key.  Lift together with N.1.
 void
 RonSQLPreparer::validate_cte_execution_shapes()
 {
-  auto check_plan = [](const JoinPlan& plan) {
+  auto check_plan = [this](const JoinPlan& plan, const CteDefinition* body) {
     for (Uint32 i = 1; i < plan.num_ops; i++) {
       const JoinOp& op = plan.ops[i];
       if (op.type == JoinOp::CTE_SCAN &&
@@ -7071,11 +7084,45 @@ RonSQLPreparer::validate_cte_execution_shapes()
             "CTE_SCAN as outer-join child is not supported by NDB.");
       }
     }
+    if (plan.num_ops < 2 || plan.ops[0].type != JoinOp::CTE_SCAN) return;
+    const char* cte_name = plan.ops[0].cte_def->name.c_str();
+    for (Uint32 i = 1; i < plan.num_ops; i++) {
+      const JoinOp& op = plan.ops[i];
+      if (op.type != JoinOp::INDEX_SCAN && op.type != JoinOp::TABLE_SCAN)
+        continue;
+      const char* alias = op.alias.c_str();
+      const char* table = op.table->getName();
+      std::string msg;
+      if (body == NULL && m_partial_key_demoted_alias.len > 0 &&
+          op.alias == m_partial_key_demoted_alias) {
+        msg = std::string("Partial CTE lookup key not supported.  The join"
+                          " binds only part of the GROUP BY key of CTE '") +
+              cte_name + "', so the CTE is scanned and '" + alias +
+              "' (table " + table + ") is read for each CTE row, but '" +
+              alias + "' is not joined on its primary key or a unique key,"
+              " and a scan below a CTE scan is not supported.  Join on"
+              " every GROUP BY column of the CTE, or on a primary key or"
+              " unique key of '" + alias + "'.";
+      } else {
+        msg = std::string(body == NULL ? "" : "In the body of CTE '") +
+              (body == NULL ? "" : body->name.c_str()) +
+              (body == NULL ? "" : "': ") +
+              "A scan below a CTE scan is not supported: '" + alias +
+              "' (table " + table + ") is joined below the scan of CTE '" +
+              cte_name + "' on columns that are not its primary key or a"
+              " unique key.  Join it on its primary key or a unique key,"
+              " or make it the root and join the CTE on every GROUP BY"
+              " column.";
+      }
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg);
+    }
   };
-  check_plan(m_main_scope.join_plan);
-  for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
+  check_plan(m_main_scope.join_plan, NULL);
+  Uint32 c = 0;
+  for (const CteDefinition* cte = m_context.ast_root.cte_list;
+       cte != NULL && c < m_cte_scopes.size(); cte = cte->next, c++) {
     if (m_cte_scopes[c] != NULL) {
-      check_plan(m_cte_scopes[c]->join_plan);
+      check_plan(m_cte_scopes[c]->join_plan, cte);
     }
   }
 }

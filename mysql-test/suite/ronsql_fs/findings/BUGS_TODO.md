@@ -99,8 +99,27 @@ F8 was a framework fixture issue and is already fixed.
   detach_local_reference` (+ null guards in getIndex / park_stale_object);
   regression `testDict -n InvalidateParkedByPointer` OK; fs suites green ×3.
   Still worth a run: the batchpkread Go suite (TestUnloadSchema) under ASAN.
-- [ ] F18 (envelope_fuzz.md): a partial-key CTE lookup now runs (was rejected)
+- [x] F18 (envelope_fuzz.md): a partial-key CTE lookup now runs (was rejected)
   and returns the wrong row count. Silent correctness regression. E7 fuzzer, seed 2.
+  Root cause (2026-09-30): not a lost guard. The I.16b/c rewrite
+  (`maybe_rewrite_partial_key_cte_root`) promotes the CTE to a CTE_SCAN
+  root and demotes `balances_1` to a child joined on `account_id`, a
+  prefix of its primary key, so the child is an INDEX_SCAN below the CTE
+  scan: the scanCte parent + scanIndex child shape of the unfinished
+  Phase N.1 (`pushdown_join_aggregation/cte_filter_phase_n1.md`), never
+  run by an MTR test (the rewrite tests all demote to a PK_LOOKUP).
+  FIXED 2026-09-30: `validate_cte_execution_shapes()` rejects
+  an index or table scan below a CTE_SCAN root at prepare time, with the
+  I.16a `Partial CTE lookup key not supported.` wording when the scan is
+  the rewrite's demoted root and a generic message otherwise (the same
+  shape written with the CTE as root). Lookup children are unaffected;
+  Hopsworks snowflakes only join on a child's full primary key.
+  Regression: `ronsql.ronsql_cte_partial_key` Tests 11-13,
+  `ronsql.ronsql_parser_cte` (rewrite pin moved to a PK-keyed demoted
+  root, plus two rejections); the fuzzer row `cte-partial-key` is a
+  clean reject again. Envelope seed 2 (1000 cases) rerun: the four
+  `cte-partial-key` cases are CLEAN-REJECT (F18); the hand-written MTR
+  results pass. Implementing N.1 lifts the rejection.
 - [x] F19 (envelope_fuzz.md): CTE_SCAN as an outer-join child now runs (was
   rejected) with a divergent result. E7 fuzzer, seed 2. FIXED 2026-09-30.
   - Misnamed: the planner makes every CTE child a CTE_LOOKUP. The probe

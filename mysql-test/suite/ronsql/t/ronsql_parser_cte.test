@@ -351,9 +351,22 @@ EOF
 # A partial-key INNER join to a multi-key CTE whose parent is the root is
 # NOT rejected: the Phase I.16b/c pre-pass swaps the CTE to the root
 # (CTE_SCAN) and demotes the original root to a child.  Pin that rewrite
-# in the plan output.
+# in the plan output.  The demoted root is joined on its primary key, so
+# it becomes a PK_LOOKUP child.
 --echo ===== Partial-key INNER join to a multi-key CTE triggers the I.16 root rewrite =====
---exec $PARSE_OK 'WITH mk AS (SELECT grp AS g1, val AS g2, COUNT(*) AS cnt FROM pt2 GROUP BY grp, val) SELECT MAX(mk.cnt), COUNT(*) FROM pt1 AS p JOIN mk ON mk.g1 = p.b;'
+--exec $PARSE_OK 'WITH mk AS (SELECT grp AS g1, val AS g2, COUNT(*) AS cnt FROM pt2 GROUP BY grp, val) SELECT MAX(mk.cnt), COUNT(*) FROM pt1 AS p JOIN mk ON mk.g1 = p.a;'
+
+# RONDB-1121 F18: joined on a non-unique index column (p.b) the demoted
+# root would be an INDEX_SCAN child of the CTE scan, which returned
+# wrong results (unfinished Phase N.1); rejected at prepare time, so
+# EXPLAIN FORCE rejects too.  The same shape written with the CTE as the
+# root gets the generic message.
+--echo ===== Partial-key INNER join whose demoted root needs an index scan is rejected (F18) =====
+--error 1
+--exec $PARSE_REJECT 'WITH mk AS (SELECT grp AS g1, val AS g2, COUNT(*) AS cnt FROM pt2 GROUP BY grp, val) SELECT MAX(mk.cnt), COUNT(*) FROM pt1 AS p JOIN mk ON mk.g1 = p.b;'
+--echo ===== CTE root with an index-scan child is rejected =====
+--error 1
+--exec $PARSE_REJECT 'WITH mk AS (SELECT grp AS g1, val AS g2, COUNT(*) AS cnt FROM pt2 GROUP BY grp, val) SELECT MAX(mk.cnt), COUNT(*) FROM mk JOIN pt1 AS p ON p.b = mk.g1;'
 
 # LEFT OUTER on the multikey-CTE join itself cannot be root-rewritten;
 # it stays on the I.16a permanent rejection.  That rejection is raised

@@ -84,7 +84,7 @@ func (e Expectation) Matches(message string) bool {
 // Expectations is the expectation table (random_generator.md §5.3); the
 // unit test checks every pattern against the engine sources.
 var Expectations = []Expectation{
-	{Construct: "cte-partial-key", KnownWrong: true, Finding: "F18", Note: "partial-key CTE lookup (binds fewer than all virtual-key columns): the engine now runs it (it used to reject with 'Partial CTE lookup key not supported') and returns the wrong row count"},
+	{Construct: "cte-partial-key", Reject: true, Pattern: "Partial CTE lookup key not supported", Finding: "F18", Note: "partial-key CTE lookup (binds fewer than all virtual-key columns) whose demoted root would be an index scan below the CTE scan: rejected since the F18 fix (it ran and returned the wrong row count)"},
 	{Construct: "join-no-index", Reject: true, Pattern: "no suitable index on join columns", Note: "a join column without a usable index"},
 	{Construct: "orderby-in-subquery", Reject: true, Pattern: "ORDER BY / LIMIT in a subquery is not supported", Note: "ORDER BY / LIMIT inside an IN (subquery)"},
 	{Construct: "greatest-eq-where", Reject: true, Pattern: "GREATEST/LEAST with = or !=", Note: "GREATEST/LEAST compared with = or != in WHERE"},

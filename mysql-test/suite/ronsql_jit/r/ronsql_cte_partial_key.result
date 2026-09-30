@@ -227,6 +227,21 @@ ronsql_cli caught exception: CTE lookup key references a CTE output column that 
 === Test 10: partial-key CTE join to non-root parent — rejected ===
 Error handling: RPE
 ronsql_cli caught exception: Partial CTE lookup key not supported.  The virtual CTE primary key matches the CTE body's GROUP BY column list and the join must bind every key column.  Workaround: place the multi-key CTE on the joined root and join the smaller table to it.
+
+
+=== Test 11: partial CTE key, demoted root joined on a PK prefix — rejected (F18) ===
+Error handling: RPE
+ronsql_cli caught exception: Partial CTE lookup key not supported.  The join binds only part of the GROUP BY key of CTE 'pairs', so the CTE is scanned and 'b' (table cte_bal) is read for each CTE row, but 'b' is not joined on its primary key or a unique key, and a scan below a CTE scan is not supported.  Join on every GROUP BY column of the CTE, or on a primary key or unique key of 'b'.
+
+
+=== Test 12: partial CTE key, projection-only, demoted root on a secondary index — rejected ===
+Error handling: RPE
+ronsql_cli caught exception: Partial CTE lookup key not supported.  The join binds only part of the GROUP BY key of CTE 'pairs', so the CTE is scanned and 'o' (table cte_orders) is read for each CTE row, but 'o' is not joined on its primary key or a unique key, and a scan below a CTE scan is not supported.  Join on every GROUP BY column of the CTE, or on a primary key or unique key of 'o'.
+
+
+=== Test 13: CTE root joined to a table on a secondary index — rejected ===
+Error handling: RPE
+ronsql_cli caught exception: A scan below a CTE scan is not supported: 'o' (table cte_orders) is joined below the scan of CTE 'pc' on columns that are not its primary key or a unique key.  Join it on its primary key or a unique key, or make it the root and join the CTE on every GROUP BY column.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_partial_key_jit_fallback_delta;
 ronsql_cte_partial_key_jit_fallback_delta

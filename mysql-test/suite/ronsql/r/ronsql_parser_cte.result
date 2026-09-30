@@ -715,9 +715,8 @@ CTE definitions:
 Join plan (2 operations):
 ├─ 0: [ROOT] CTE_SCAN CTE:mk AS mk
 │    CTE outputs: g1, g2, cnt
-╰─ 1: [INNER] INDEX_SCAN pt1 AS p  <- mk
-     Index: idx_pt1_b(b)
-     Key: b = mk.g1
+╰─ 1: [INNER] PK_LOOKUP pt1 AS p  <- mk
+     Key: a = mk.g1
      ** Aggregation leaf **
 
 Query parse tree:
@@ -739,6 +738,12 @@ Count  A01  r00 A01:COUNT <- r00:1
 Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
+===== Partial-key INNER join whose demoted root needs an index scan is rejected (F18) =====
+Error handling: RPE
+ronsql_cli caught exception: Partial CTE lookup key not supported.  The join binds only part of the GROUP BY key of CTE 'mk', so the CTE is scanned and 'p' (table pt1) is read for each CTE row, but 'p' is not joined on its primary key or a unique key, and a scan below a CTE scan is not supported.  Join on every GROUP BY column of the CTE, or on a primary key or unique key of 'p'.
+===== CTE root with an index-scan child is rejected =====
+Error handling: RPE
+ronsql_cli caught exception: A scan below a CTE scan is not supported: 'p' (table pt1) is joined below the scan of CTE 'mk' on columns that are not its primary key or a unique key.  Join it on its primary key or a unique key, or make it the root and join the CTE on every GROUP BY column.
 ===== Partial-key LEFT join to a multi-key CTE is rejected (I.16a, at execution) =====
 Error handling: RPE
 ronsql_cli caught exception: Partial CTE lookup key not supported.  The virtual CTE primary key matches the CTE body's GROUP BY column list and the join must bind every key column.  Workaround: place the multi-key CTE on the joined root and join the smaller table to it.
