@@ -1,5 +1,5 @@
 # body_lastn_agg.inc — aggregates over the last N rows of an entity
-# (count-based windows), WP-J phases J0, J1 (J2 off) and J5 of
+# (count-based windows), WP-J phases J0, J1 and J5 of
 # storage/ndb/claude_files/fs_ronsql/ronsql_fs_support_plan.md.
 #
 # The natural statement
@@ -34,10 +34,8 @@
 # runs the natural statement itself on RonSQL, labelled with the path that
 # serves it (== J5 == or == J1 ==); for the J5 cases the J0 form is the
 # kernel-side differential.  lastn-P1 pins J5 in EXPLAIN and lastn-P1b J1.
-# J2 (select_cte_body_lastn_scan, a per-fragment row limit with the
-# aggregation on a self-join leaf) is switched off because it measured
-# slower than J1 (kLastNPerFragmentLimit); lastn-P1 and lastn-15 pin the
-# absence of its EXPLAIN annotation.
+# (J2, a per-fragment row limit with the aggregation on a self-join leaf,
+# measured slower than J1 and was removed.)
 #
 # SET DETERMINISM: event_time is the last primary-key column, so it is
 # unique per customer and the ORDER BY decides the kept set exactly.
@@ -89,7 +87,7 @@
 #   12 INNER JOIN onto a dimension, GROUP BY a dimension column
 #   13 LEFT JOIN onto a dimension (dangling merchant ids)
 #   14 the last N rows joined to a dimension, projection-only main
-#   15 ORDER BY a non-index column (EXPLAIN: no J2 annotation)
+#   15 ORDER BY a non-index column (EXPLAIN: the client-side sort arm)
 #   16 no index bound (last N over all customers)
 #   17 two last-N branches (two entities) aggregated in their own CTEs and
 #      combined with a comma join: several rewritten CTEs in one statement
@@ -174,7 +172,7 @@ DELIMITER ;|
 --echo === lastn-P1: the natural statement is served by J5 ===
 # The CTE is folded into its body's ordered index scan (SF_OrderBy,
 # descending, batch = LIMIT) and aggregated in RonSQL: no J1 rewrite, no
-# CTE protocol, no J2 annotation.
+# CTE protocol.
 --let $EXPLAIN_FILE=$MYSQL_TMP_DIR/expl_lastn_p1.out
 --let QUERY_FILE=$MYSQL_TMP_DIR/lastn_p1.sql
 --write_file $QUERY_FILE
@@ -189,8 +187,6 @@ EOF
 --exec grep -qF "served as the last N rows" $EXPLAIN_FILE
 --error 1
 --exec grep -qF "CTE definitions:" $EXPLAIN_FILE
---error 1
---exec grep -qF "[last-N" $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 
 --echo
@@ -625,8 +621,6 @@ EOF
 --source suite/ronsql/include/ronsql_explain.inc
 --exec grep -qF "CTE 't' aggregated in RonSQL over the ORDER BY / LIMIT scan" $EXPLAIN_FILE
 --exec grep -qF "ORDER BY: client-side sort" $EXPLAIN_FILE
---error 1
---exec grep -qF "[last-N" $EXPLAIN_FILE
 --remove_file $EXPLAIN_FILE
 --let LASTN_NATURAL_FILE=$MYSQL_TMP_DIR/lastn_15_nat.sql
 --write_file $LASTN_NATURAL_FILE

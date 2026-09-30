@@ -5120,130 +5120,6 @@ RonSQLPreparer::select_cte_body_minmax_index(QueryScope& scope,
 }
 
 bool
-RonSQLPreparer::is_lastn_cte(const CteDefinition* cte) const
-{
-  for (Uint32 i = 0; i < m_num_lastn_ctes && i < MAX_LASTN_CTES_REPORTED;
-       i++)
-    if (m_lastn_ctes[i] == cte) return true;
-  return false;
-}
-
-// The CTE-body twin of index_serves_orderby(): true when a scan of
-// `index`, bounded as `condition_handling_map` says over
-// scope.body_toplevel_conditions, delivers each fragment's rows in the
-// body's ORDER BY order.  Index columns carrying an equality bound are
-// constant within the scanned range and may be skipped; every ORDER BY
-// entry must be a stored column of the body's root table, and all must
-// share one direction.
-bool
-RonSQLPreparer::body_index_serves_orderby(const QueryScope& scope,
-                                          const SelectStatement* body,
-                                          const NdbDictionary::Index* index,
-                                          const int* condition_handling_map,
-                                          bool& descending) const
-{
-  const OrderbyColumns* first = body->orderby_columns;
-  if (index == NULL || first == NULL || scope.resolved_columns == NULL)
-    return false;
-  const bool desc = !first->ascending;
-  const Uint32 ncols = index->getNoOfColumns();
-  const Uint32 num_conds = scope.body_toplevel_conditions.size();
-  auto eq_bound = [&](Uint32 pos) -> bool {
-    if (condition_handling_map == NULL) return false;
-    for (Uint32 i = 0; i < num_conds; i++) {
-      if (condition_handling_map[i] == (int)pos &&
-          scope.body_toplevel_conditions[i]->op == T_EQUALS)
-        return true;
-    }
-    return false;
-  };
-  Uint32 pos = 0;
-  for (const OrderbyColumns* ob = first; ob != NULL; ob = ob->next) {
-    if (ob->ascending == desc) return false;  // mixed directions
-    Uint32 col_idx;
-    if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
-      const Outputs* o = body->outputs;
-      for (Uint32 i = 0; o != NULL && i < ob->output_idx; i++) o = o->next;
-      if (o == NULL || o->type != Outputs::Type::COLUMN) return false;
-      col_idx = o->column.col_idx;
-    } else {
-      col_idx = ob->col_idx;
-    }
-    if (col_idx >= m_columns.size()) return false;
-    const QueryScope::ResolvedColumnRef& R = scope.resolved_columns[col_idx];
-    if (R.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
-        R.join_op_idx != 0 || R.dict_column == NULL)
-      return false;
-    const char* want = R.dict_column->getName();
-    while (pos < ncols &&
-           strcmp(index->getColumn(pos)->getName(), want) != 0 &&
-           eq_bound(pos))
-      pos++;
-    if (pos >= ncols || strcmp(index->getColumn(pos)->getName(), want) != 0)
-      return false;
-    pos++;
-  }
-  descending = desc;
-  return true;
-}
-
-/*
- * RONDB-1124 WP-J J2 (ronsql_fs_support_plan.md): a last-N body
- * (rewrite_lastn_cte_bodies) otherwise reads the entity's whole history
- * and materializes one group per row before the kernel's CTE top-N keeps
- * N of them.  When the body's chosen index scan delivers the ORDER BY
- * order within each fragment, only a fragment's first N rows can be among
- * the global last N (any row of the global top N is in the top N of its
- * own fragment), so each fragment scan may stop after N delivered rows:
- * the Phase I.10 shape, an ordered index scan with maxRows (a per-fragment
- * limit, NdbQueryOptions::setMaxRows) and the aggregation on a self-join
- * leaf, because rows aggregated in place on the scan are never reported
- * to DBSPJ and would not count towards maxRows.  The residual filter stays
- * on the scan root, so only matching rows count.  The kernel's top-N then
- * keeps the global N from at most N x fragments groups; every aggregate is
- * still computed by the kernel.
- *
- * Applies to a single-op body whose root is the INDEX_SCAN chosen by
- * select_root_scan_config (one range: an IN-list multi-range scan
- * delivers each range in order but not the ranges) with LIMIT >= 1.
- * Everything else keeps the J1 plan.
- *
- * OFF (kLastNPerFragmentLimit): measured slower than the J1 plan it
- * replaces (2026-09-29, last 10 of 300 rows, 1 thread: 2.54 ms average
- * against 1.90 ms for the J1 grouped form; ronsql_fs_support_plan.md WP-J
- * J2).  Every row the limited scan keeps goes through the self-join leaf
- * lookup (~17 us per row), while the J1 body groups its rows in place
- * (~3.5 us per row), so J2 only wins for histories far longer than
- * N x fragments, which RonSQL cannot see at plan time.  Kept for such
- * workloads and for a kernel-side limit on in-place aggregation scans,
- * which would remove the leaf.
- */
-static constexpr bool kLastNPerFragmentLimit = false;
-
-void
-RonSQLPreparer::select_cte_body_lastn_scan(QueryScope& scope,
-                                           const CteDefinition* cte)
-{
-  if (!kLastNPerFragmentLimit) return;
-  if (cte == NULL || cte->stmt == NULL || !is_lastn_cte(cte)) return;
-  const SelectStatement* body = cte->stmt;
-  if (body->limit < 1 || body->limit > (Int64)0xFFFFFFFF) return;
-  const JoinPlan& plan = scope.join_plan;
-  if (plan.num_ops != 1 || plan.ops[0].type != JoinOp::INDEX_SCAN) return;
-  const ScanConfig* sc = scope.body_scan_config;
-  if (sc == NULL || sc->index == NULL || sc->index != plan.ops[0].index)
-    return;
-  if (sc->in_cond_idx >= 0) return;
-  if (scope.body_minmax_kind != QueryScope::MinMaxKind::NONE) return;
-  bool desc = false;
-  if (!body_index_serves_orderby(scope, body, sc->index,
-                                 sc->condition_handling_map, desc))
-    return;
-  scope.body_lastn_max_rows = (Uint32)body->limit;
-  scope.body_lastn_desc = desc;
-}
-
-bool
 RonSQLPreparer::decimal_minmax_fits_64bit(
     NdbDictionary::Column::Type type,
     Int32 precision,
@@ -6938,9 +6814,6 @@ RonSQLPreparer::build_cte_scopes()
     // Phase I.10: scalar MIN/MAX over a NOT NULL indexed column can
     // materialise through a full ordered index scan with maxRows=1.
     select_cte_body_minmax_index(*scope, cte);
-    // WP-J J2: a last-N body whose index scan delivers its ORDER BY
-    // order reads at most LIMIT rows per fragment.
-    select_cte_body_lastn_scan(*scope, cte);
     m_cte_scopes.push(scope);
 
     if (prev != NULL) {
@@ -10801,36 +10674,6 @@ RonSQLPreparer::execute_join()
           cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
           require_run(cteOpDefs[1] != NULL,
                       "Failed to create CTE body self-join leaf.");
-        } else if (cs.body_lastn_max_rows > 0) {
-          // WP-J J2 (select_cte_body_lastn_scan): the last-N body reads at
-          // most LIMIT rows per fragment in ORDER BY order.  Bounds and the
-          // residual filter stay on the root (emit_index_scan_root), so
-          // only matching rows count towards maxRows; the aggregation
-          // moves to a self-join leaf, as in the I.10 branch above.
-          rootOpts.setOrdering(cs.body_lastn_desc
-                                   ? NdbQueryOptions::ScanOrdering_descending
-                                   : NdbQueryOptions::ScanOrdering_ascending);
-          rootOpts.setMaxRows(cs.body_lastn_max_rows);
-          cteOpDefs[0] = emit_index_scan_root(qb, cs, srcTab, idx, rootOpts);
-          require_run(cteOpDefs[0] != NULL,
-                      "Failed to create last-N CTE body index-scan root.");
-
-          const NdbQueryOperand* keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
-          int nkeys = srcTab->getNoOfPrimaryKeys();
-          for (int k = 0; k < nkeys; k++) {
-            const char* pk_name = srcTab->getPrimaryKey(k);
-            keys[k] = qb->linkedValue(cteOpDefs[0], pk_name);
-            require_run(keys[k] != NULL,
-                        "Failed to create last-N CTE body self-join key.");
-          }
-          keys[nkeys] = nullptr;
-          NdbQueryOptions leafOpts;
-          leafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
-          require_run(leafOpts.setAggregation(*cteAgg) == 0,
-                      "Failed to attach aggregator to last-N CTE body leaf.");
-          cteOpDefs[1] = qb->readTuple(srcTab, keys, &leafOpts);
-          require_run(cteOpDefs[1] != NULL,
-                      "Failed to create last-N CTE body self-join leaf.");
         } else {
           // Aggregator directly on the index-scan root — same in-place
           // feed as the TABLE_SCAN branch; bounds and residual filter
@@ -18095,11 +17938,6 @@ RonSQLPreparer::print()
           } else if (cte_scope->body_minmax_kind ==
                      QueryScope::MinMaxKind::MAX_DESC) {
             out << " [I.10 MAX_DESC maxRows=1]";
-          }
-          if (cte_scope->body_lastn_max_rows > 0) {
-            out << " [last-N " << (cte_scope->body_lastn_desc ? "DESC" : "ASC")
-                << " maxRows=" << cte_scope->body_lastn_max_rows
-                << " per fragment]";
           }
           out << '\n';
         }

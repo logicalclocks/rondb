@@ -298,12 +298,13 @@ Reading:
     stops after N rows and reports the scan complete), as DBSPJ's
     `setMaxRows` does for pushed queries; plain scans do not have it yet.
   - Open alternatives for the rest:
-    - An asynchronous close in the NDB API. The close is sent without
-      waiting, the transaction is parked on a per-Ndb closing list, the
-      close confirmation is recorded by whichever thread receives it (no
-      waiter to signal), and the owner reaps it at its next API call. It
-      frees the worker time and the poll hand-over, but leaves the
-      data-node close work.
+    - An asynchronous close in the NDB API (TODO F31 in
+      `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`). The close is
+      sent without waiting, the transaction is parked on a per-Ndb closing
+      list, the close confirmation is recorded by whichever thread
+      receives it (no waiter to signal), and the owner reaps it at its
+      next API call. It frees the worker time and the poll hand-over, but
+      leaves the data-node close work.
     - The per-fragment row limit in the data nodes, which removes the
       close altogether.
 

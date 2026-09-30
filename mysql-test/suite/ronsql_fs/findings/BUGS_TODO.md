@@ -197,6 +197,51 @@ F8 was a framework fixture issue and is already fixed.
     than RonSQL on the same grouped form, which keeps the CTE plan.
     - Controls c-1..c-3 (ORDER BY an aggregate, GROUP BY without ORDER BY,
       one row) stay pushed.
+- [ ] F31 (TODO, performance, 2026-09-30): do not wait for the scan close
+  confirmation in the user thread.
+  - Today: a scan stopped early (a pass-through LIMIT with fragment scans
+    still open) is closed by `NdbScanOperation::close_impl`, which sends
+    the close and blocks in `wait_scan()` until TC confirms
+    (`SCAN_TABCONF`, one round trip). The transaction and its TC connect
+    record are only reusable after that. That was 73 µs of
+    `fs_hw_agg_last10_tx300`'s 161 µs execute (`benchmarks.md` §8).
+    - Since `1e7a1d9a27e`, RDRS closes after the reply
+      (`RonSQLExecParams::deferred_close`). The reply no longer waits, but
+      the RonSQL worker still does.
+    - The deferred close then overlaps the next request's first batch: a
+      second thread waiting in the NDB API means a hand-over between the
+      thread receiving for all waiters and the waiter, about +17 µs of
+      `firstbatch` at one client thread.
+  - Why it is doable: the close confirmation is executed by whichever
+    thread receives it (the receive thread or the thread currently
+    receiving for all waiters), which updates the scan's receiver counts
+    under the Ndb's client lock. The wakeup (`Ndbif.cpp`, `GSN_SCAN_TABCONF`
+    → `theWaiter.signal(NO_WAIT)`) happens only because the owner waits in
+    `WAIT_SCAN`. The receiving thread must not hand the transaction back
+    itself, because the Ndb free lists belong to the owning thread; but it
+    does not need to.
+  - Sketch: an asynchronous close in the NDB API.
+    - The close sends the close request (`send_next_scan(…, true)`) and
+      returns. The transaction goes on a per-Ndb closing list instead of
+      back to `theConnectionArray[node]`, so its TC record is not reused
+      while TC still has the scan open.
+    - `Ndbif` must not signal the waiter for a transaction on the closing
+      list. Otherwise the owner, already waiting on the next query's scan,
+      gets a spurious wakeup.
+    - The owner reaps finished closes at its next API call
+      (`startTransaction` / `closeTransaction`) and moves them to the idle
+      pool. An unfinished one makes `startTransaction` use another idle
+      connection; each Ndb object then keeps one or two extra.
+    - Also handle: node failure releasing transactions on the closing list;
+      the Ndb destructor, and RDRS returning an Ndb object to its pool,
+      waiting for or cleaning up pending closes; the 4008 scan timeout;
+      statistics.
+    - NDB API tests: async close, node failure during the close, Ndb
+      teardown with closes pending.
+  - Gain: the worker time and the hand-over. The data-node close work
+    stays; only a per-fragment row limit in the data nodes (a fragment
+    stops after N rows and reports the scan complete, like DBSPJ's
+    `setMaxRows` for pushed queries) removes the close altogether.
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
   error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
   X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,

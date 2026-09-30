@@ -499,11 +499,13 @@ Every row the limited scan keeps goes through the self-join lookup, about
 wins for histories far longer than N × fragments. RonSQL cannot see that
 at plan time.
 
-`select_cte_body_lastn_scan()` returns at once
-(`kLastNPerFragmentLimit = false`). The code stays for such workloads and
-for a kernel-side row limit on in-place aggregation scans, which would
-remove the self-join leaf. lastn-P1 and lastn-15 pin the absent EXPLAIN
-annotation.
+*J2 removed (2026-09-30).* It was switched off, and J5 now serves the
+common shape, so the code was deleted: `select_cte_body_lastn_scan`,
+`body_index_serves_orderby`, the `QueryScope` fields, the emit branch and
+the EXPLAIN annotation. Git history (`83046377ccb`) keeps it. It remains
+the working example of a per-fragment row limit (`setMaxRows` on an
+ordered `scanIndex` root) for the kernel-side limit that plain scans lack
+(`benchmarks.md` §8).
 
 *J1 with several CTEs.* Each CTE in the WITH list is judged on its own.
 Several last-N CTEs in one statement are all rewritten when each is read
@@ -853,7 +855,7 @@ requirements row, vector oracle fold, fuzzer production, fs_hw entry.
 | **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
 | **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
-| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 per-fragment limit (off: slower), J5 collect scan + RonSQL-layer aggregation; J3 / J4 later | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
+| **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 per-fragment limit (removed: slower), J5 collect scan + RonSQL-layer aggregation; J3 / J4 later | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
 
 M1 is small and high-value: D1 is a one-line fix, B and C are contained,
 and A maps onto an execution path that already exists. M2 now focuses on
@@ -905,6 +907,6 @@ snowflake and batch are faster through MySQL).
 | I F10/F11 | separate track | ndbcluster pushdown |
 | J0 last-N stop-gap | days (tests only) | TIMESTAMP GROUP BY key, main-scope AVG over a CTE |
 | J1 last-N rewrite | ~1 week | planner only, like WP-A; cost grows with the entity's history |
-| J2 per-fragment limit | done, off | measured slower than J1 (self-join leaf per kept row) |
+| J2 per-fragment limit | removed | measured slower than J1 (self-join leaf per kept row) |
 | J5 collect scan + RonSQL-layer aggregation | 1–2 weeks | per-row conversion to the kernel's accumulator types must mirror AggInterpreter exactly |
 | J3 / J4 | after J2 | batched lookups; per-key limited ranges; Hopsworks decisions |
