@@ -60,6 +60,15 @@ constexpr size_t kMaxConnections = 128;
  * timeout: a client slower than this has already failed its probe. */
 constexpr auto kRequestDeadline = std::chrono::seconds(2);
 constexpr double kSweepIntervalS = 0.5;
+/* One read callback serves at most this many pipelined requests; beyond it
+ * (with more still buffered) the connection is closed. Kubelet sends ONE
+ * request per connection and ordinary keep-alive clients wait for each
+ * response, so only a client blasting requests without reading can hit
+ * this - and unbounded, one such connection could monopolize the single
+ * loop thread (worst case ~20ms per /health while a reconnection rebuild
+ * holds connectionMutex) and starve the very probes this port exists to
+ * answer. */
+constexpr size_t kMaxPipelinedRequests = 64;
 /* Fully idle (no bytes at all) connections are closed by trantor's timing
  * wheel after this many seconds. */
 constexpr size_t kIdleTimeoutS = 10;
@@ -432,7 +441,10 @@ void ProbeServer::onMessage(const trantor::TcpConnectionPtr &conn,
   /* Trantor delivers one callback per read; a single callback may carry a
    * partial request, several pipelined requests, or both. Parse until no
    * complete header block remains - returning with a complete request
-   * still buffered would hang it until the client sends more. */
+   * still buffered would hang it until the client sends more (no new
+   * callback fires for already-received bytes), which is also why the
+   * pipeline bound below closes instead of deferring. */
+  size_t served = 0;
   while (true) {
     size_t readable = buffer->readableBytes();
     if (readable == 0) {
@@ -527,6 +539,15 @@ void ProbeServer::onMessage(const trantor::TcpConnectionPtr &conn,
       /* shutdown(), never forceClose(): forceClose drops the send buffer
        * and would truncate the response a kubelet is reading. */
       buffer->retrieveAll();
+      conn->shutdown();
+      return;
+    }
+    if (++served >= kMaxPipelinedRequests && buffer->readableBytes() > 0) {
+      /* Pipeline-abuse bound (see kMaxPipelinedRequests): the answers
+       * already sent flush through shutdown(); the unread rest is dropped
+       * with the connection. */
+      buffer->retrieveAll();
+      state.has_partial = false;
       conn->shutdown();
       return;
     }

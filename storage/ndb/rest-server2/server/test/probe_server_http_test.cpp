@@ -305,6 +305,38 @@ TEST_F(ProbeServerHttpTest, PipelinedKeepAlive) {
   EXPECT_TRUE(hasHeader(resp.substr(0, second), "connection: keep-alive"));
 }
 
+/* One read callback serves at most kMaxPipelinedRequests before closing
+ * the connection: kubelet never pipelines, so only an abusive client
+ * blasting requests without reading responses hits this - unbounded, one
+ * connection could monopolize the single loop thread and starve the very
+ * probes the port exists for. The burst is large enough that any plausible
+ * split into read callbacks still carries one over-limit callback. */
+TEST_F(ProbeServerHttpTest, PipelineFloodIsCutOff) {
+  int fd = dialProbe(g_probe_port);
+  ASSERT_GE(fd, 0);
+  std::string one = "GET " + std::string(PING_PATH) + " HTTP/1.1\r\n"
+                    "Host: x\r\n\r\n";
+  constexpr size_t kBurst = 1000;
+  std::string burst;
+  burst.reserve(one.size() * kBurst);
+  for (size_t i = 0; i < kBurst; i++) {
+    burst += one;
+  }
+  writeAll(fd, burst);
+  std::string resp = readAvailable(fd, 5000);
+  ::close(fd);
+  size_t served = 0;
+  for (size_t pos = resp.find("HTTP/1.1 200 OK"); pos != std::string::npos;
+       pos = resp.find("HTTP/1.1 200 OK", pos + 1)) {
+    served++;
+  }
+  EXPECT_GE(served, 1U) << resp.substr(0, 200);
+  EXPECT_LT(served, kBurst) << "pipeline flood was never cut off";
+  /* Other clients must be served while and after the flood. */
+  EXPECT_EQ(statusLine(httpExchange(kubeProbeRequest(PING_PATH))),
+            "HTTP/1.1 200 OK");
+}
+
 /* A request arriving one byte at a time (many read callbacks per request)
  * must still be answered. */
 TEST_F(ProbeServerHttpTest, ByteAtATime) {
