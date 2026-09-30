@@ -215,6 +215,76 @@ run_test('Go tests (with TLS and server-side cert)');
 $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
 run_smoke_tests('Go tests (without TLS, one simple test per package)');
 
+# ---------------------------------------------------------------------------
+# C++ tests (gtest binaries from storage/ndb/rest-server2/server/test).
+#
+# They connect to the cluster directly through the NDB API and reuse the
+# databases the Go tests above seeded, so they MUST run here - after the Go
+# tests, but before the cleanup section below drops those databases.
+#
+# The same constant-output convention as run_test applies: on success only
+# "PASS" is printed so the recorded result is stable; each binary's full
+# gtest output is streamed to the log file, and echoed to the MTR console
+# only on failure.
+# ---------------------------------------------------------------------------
+my @cpp_tests = ('probe_server_http_test',    # probe-port HTTP conformance
+                                              # (cluster-free, fast)
+                 'error_handling_test',       # pure error-classification tests
+                 'reconnect_test',            # RONDB-1104 reconnection cycle
+                 'api_key_test',
+                 'feature_store_test',
+                 'probe_server_cluster_test'  # probe-port startup contract +
+                                              # /health under contention
+                );
+
+# Source builds place binaries in runtime_output_directory, packaged
+# builds in bin; multi-config generators add a configuration subdirectory.
+my $bindir = $ENV{'MYSQL_BINDIR'} // $MYSQL_BASEDIR;
+my @bin_candidates;
+foreach my $dir ('runtime_output_directory', 'bin') {
+    push(@bin_candidates, File::Spec->catdir($bindir, $dir));
+    foreach my $cfg ('Release', 'RelWithDebInfo', 'Debug') {
+        push(@bin_candidates, File::Spec->catdir($bindir, $dir, $cfg));
+    }
+}
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_NO_TLS'};
+log_line("## C++ tests\n");
+foreach my $test (@cpp_tests) {
+    my ($exe) = grep { -x $_ }
+                map { File::Spec->catfile($_, $test) } @bin_candidates;
+    if (!defined $exe) {
+        # Every listed binary is built whenever WITH_RDRS is on, which this
+        # suite requires, so a missing one is a broken or stale build
+        # directory - not an optional test program. Skipping it would drop
+        # its coverage while the section still printed PASS: a stale build
+        # tree really can contain some of these binaries and not others (a
+        # partial `make <target>` after adding a test does exactly that).
+        print "## C++ tests\n";
+        print "FAIL: test binary '$test' not found under: @bin_candidates\n";
+        exit 1;
+    }
+    log_line("### $exe\n");
+    # NOTE: the redirect makes perl run this through `sh -c`, and the shell
+    # reports a signal death as exit code 128+N, so a crashing test binary
+    # fails the check below. Do NOT "simplify" this to list-form system()
+    # or a bare command: a direct signal death then yields $? >> 8 == 0 and
+    # a crash would silently PASS.
+    system("\"$exe\" >> \"$go_log_file\" 2>&1");
+    my $exit_code = $? >> 8;
+    if ($exit_code == 0) {
+        next;
+    }
+
+    print "## C++ tests\n";
+    print "FAIL: `$test` exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit $exit_code;
+}
+print "## C++ tests\n";
+print "PASS\n";
+
 exit 0;
 END_OF_PERL
 

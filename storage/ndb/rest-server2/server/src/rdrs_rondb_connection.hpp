@@ -42,13 +42,37 @@ class RDRSRonDBConnection {
  private:
   Uint32 magic = 0;
   /* connectionMutex protects everything except stats. connectionInfoMutex
-   * protects only stats. When used in combination, order of (un)locking is
+   * serializes stats WRITERS (multi-field transitions such as the
+   * shutdown/reconnection handshakes stay mutually exclusive). When used in
+   * combination, order of (un)locking is
    * 1) connectionMutex
    * 2) connectionInfoMutex
-   */
+   *
+   * stats READS need no mutex: every field is individually atomic, because
+   * health probes read them and both mutexes are held for unbounded time
+   * elsewhere - connectionMutex across Connect()/Shutdown() rebuilds, and
+   * connectionInfoMutex across GetNdbObject()'s Ndb creation and Shutdown()'s
+   * object teardown. A lock-free read may straddle a multi-field transition;
+   * a health probe tolerates that. */
   NdbMutex *connectionMutex;
   NdbMutex *connectionInfoMutex;
-  RonDB_Stats stats;
+  /* Same fields as the public RonDB_Stats (rdrs_dal.h), each atomic. Kept as
+   * ONE copy - written in place by the existing code paths - rather than a
+   * mutex-protected struct mirrored into atomics, so no writer can forget
+   * the mirror. ndb_objects_available is maintained at the list mutation
+   * sites (under connectionMutex), not recomputed from the list on read:
+   * reading availableNdbObjects.size() outside connectionMutex is a race. */
+  struct AtomicRonDBStats {
+    std::atomic<unsigned int> ndb_objects_created{0};
+    std::atomic<unsigned int> ndb_objects_deleted{0};
+    std::atomic<unsigned int> ndb_objects_count{0};
+    std::atomic<unsigned int> ndb_objects_available{0};
+    std::atomic<STATE> connection_state{DISCONNECTED};
+    std::atomic<bool> is_shutdown{false};
+    std::atomic<bool> is_shutting_down{false};
+    std::atomic<bool> is_reconnection_in_progress{false};
+  };
+  AtomicRonDBStats stats;
 
   Ndb_cluster_connection *ndbConnection;
   /* Ndb_cluster_connection::get_connect_count() as of the last time this
@@ -118,7 +142,9 @@ class RDRSRonDBConnection {
   void ReturnNDBObjectToPool(Ndb *ndb_object, RS_Status *status);
 
   /**
-   * Get status
+   * Get status. Lock-free: safe from any thread at any time, including
+   * while a rebuild holds the connection mutexes. Fields are read
+   * individually, so the snapshot may straddle a transition in progress.
    */
   void GetStats(RonDB_Stats&);
 

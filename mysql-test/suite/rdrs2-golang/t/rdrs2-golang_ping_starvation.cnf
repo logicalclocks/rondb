@@ -1,0 +1,29 @@
+# Config for rdrs2-golang_ping_starvation: same cluster and rdrs servers as
+# the rest of the suite, plus:
+# - pinned data-node ids, exported to the test so it can restart ONE node,
+# - the no-auth rdrs.3.1 runs with a deliberately tiny Drogon thread pool and
+#   explicit transient-error retry settings (see the .test for why).
+!include suite/rdrs2-golang/my.cnf
+
+[cluster_config.ndbd.1.1]
+NodeId=1
+
+[cluster_config.ndbd.2.1]
+NodeId=2
+
+# Small thread pool inverts the production scale (64 threads, 50-60 clients):
+# a handful of loops + more concurrent requests than loops means every loop
+# is occupied the moment a data-node restart makes operations block/retry.
+# NumThreads minimum is 2 (RDRS_MIN_NUM_THREADS); retry knobs are the shipped
+# defaults so the measured stall includes the DATA_OP_RETRY_HANDLER usleep
+# backoff. Set OpRetryOnTransientErrorsCount=0 to measure without it.
+[rdrs.3.1]
+config-json-template=suite/rdrs2-golang/rdrs_config_template_starvation.json
+NumThreads=4
+OpRetryOnTransientErrorsCount=3
+OpRetryInitialDelayInMS=500
+
+[ENV]
+NDB_NDBD_1_NODEID=             @cluster_config.ndbd.1.1.NodeId
+NDB_NDBD_2_NODEID=             @cluster_config.ndbd.2.1.NodeId
+RDRS_STARV_NUM_THREADS=        @rdrs.3.1.NumThreads
