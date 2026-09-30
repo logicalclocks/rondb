@@ -62,7 +62,9 @@ using std::endl;
  * the rows the NDB API received.  queue is the time the request waited
  * for a RonSQL worker, loop the REST (IO loop) thread that received it and
  * worker the RonSQL worker that ran it (from 1; 0 = ran on the IO loop,
- * RonSQL.NumThreads = 0).  Field order and names are pinned by
+ * RonSQL.NumThreads = 0).  close is the time spent closing scans, the
+ * pushed query and the transaction (part of execute; an early scan close
+ * waits for the data nodes).  Field order and names are pinned by
  * mysql-test/suite/ronsql/t/ronsql_phase_stats and parsed by
  * tools/rondb-cli (ronsql_bench.go); a new field goes last.
  */
@@ -76,7 +78,7 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
            "prepare=%llu,subquery=%llu,ndbprep=%llu,send=%llu,"
            "firstbatch=%llu,drain=%llu,print=%llu,execute=%llu,"
            "rows=%llu,attempts=%u,fetched=%llu,"
-           "queue=%llu,loop=%u,worker=%u",
+           "queue=%llu,loop=%u,worker=%u,close=%llu",
            (unsigned long long)s.parse_us,
            (unsigned long long)s.analyze_us,
            (unsigned long long)s.load_us,
@@ -95,7 +97,8 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
            (unsigned long long)s.rows_fetched,
            (unsigned long long)queue_us,
            (unsigned)loop,
-           (unsigned)worker);
+           (unsigned)worker,
+           (unsigned long long)s.close_us);
   return std::string(buf);
 }
 #endif  // RONSQL_PHASE_STATS

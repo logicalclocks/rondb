@@ -233,11 +233,23 @@ Reading:
   - An earlier session of the same day fits this: `last100`, whose batch
     of 100 completes every fragment, showed no gap; `last10` over the
     `{KEY}` mix showed 15 µs; `collect5` showed 33 µs.
-  - Not yet measured as its own phase. Avoiding it would put J5 near
-    140 µs, below MySQL, and would help every pass-through LIMIT query.
-    mysqld closes its scan the same way (`cursor->close(force_send,
-    true)` in `ha_ndbcluster::close_scan()`), so how it stays at 157 µs
-    is part of the question.
+  - Confirmed with the new `close` phase (same day, same binary plus the
+    phase):
+
+    | entry | firstbatch | close | execute |
+    |---|---|---|---|
+    | `fs_hw_agg_last10_tx300` | 80 µs | 73 µs | 161 µs |
+    | `fs_hw_agg_last100` | 70 µs | 0.3 µs | 77 µs |
+    | `fs_hw_collect5` | 77 µs | 31 µs avg, 80 µs p95 | 114 µs |
+
+  - Why MySQL does not pay it: mysqld sets no batch size on the ordered
+    index scan (`ha_ndbcluster::ordered_index_scan`, no `SO_BATCH`), so
+    each fragment gets the NDB default of up to 990 rows. A 300-row
+    customer has about 75 rows per fragment, so every fragment finishes in
+    its first batch and the close has nothing to do. RonSQL's batch = LIMIT
+    (m3_run6_plan.md C3) ships fewer rows, but it leaves every fragment
+    with more than LIMIT rows open, and `NdbScanOperation::close_impl`
+    then sends the close and waits for one more round trip.
 
 ### WP-J spot run — 2026-09-29, the user's cluster, sf 1, 1 thread × 5000 requests
 

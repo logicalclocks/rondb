@@ -8786,6 +8786,8 @@ RonSQLPreparer::execute()
   ndbrequire(m_status == Status::PREPARED);
   DEB_TRACE();
   Ndb* ndb = m_conf.ndb;
+  // close_us sums every close of this attempt (STAT_ADD).
+  STAT_COUNT(m_conf.phase_stats, close_us, 0);
   DEB_TRACE();
   try {
     if (m_do_explain) {
@@ -10256,7 +10258,10 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   if (limit_reached) {
     // Early close (Phase 2): release the still-open scan instead of
     // draining its remaining batches.
+    STAT_TS(m_conf.phase_stats, s_close_start);
     scanOp->close();
+    STAT_TS(m_conf.phase_stats, s_close_end);
+    STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
   } else {
     require_run(rc == 1, "Single-table pass-through scan failed.");
   }
@@ -10292,7 +10297,10 @@ RonSQLPreparer::cleanup_trans() {
   if (m_trans) {
     Ndb* ndb = m_conf.ndb;
     ndbrequire(ndb);
+    STAT_TS(m_conf.phase_stats, s_close_start);
     DBGV(ndb->closeTransaction(m_trans));
+    STAT_TS(m_conf.phase_stats, s_close_end);
+    STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
     m_trans = NULL;
   }
 }
@@ -10995,8 +11003,12 @@ RonSQLPreparer::execute_join()
     STAT_SET(m_conf.phase_stats, print_us, s_result_start, s_result_done);
   }
 
-  // Cleanup
+  // Cleanup.  For a pass-through drain that stopped at its LIMIT this
+  // closes the still-open scan.
+  STAT_TS(m_conf.phase_stats, s_close_start);
   query->close();
+  STAT_TS(m_conf.phase_stats, s_close_end);
+  STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
   queryDef->destroy();
   qb->destroy();
 

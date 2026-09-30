@@ -73,12 +73,17 @@ static inline uint64_t ronsql_perf_now_us() {
 #define STAT_COUNT(stats, field, value) do { \
   if ((stats) != nullptr) (stats)->field = (value); \
 } while (0)
+// Adds (t1 - t0) to a field that sums several intervals (close_us).
+#define STAT_ADD(stats, field, t0, t1) do { \
+  if ((stats) != nullptr) (stats)->field += (t1) - (t0); \
+} while (0)
 
 #else
 
 #define STAT_TS(stats, var)             do {} while (0)
 #define STAT_SET(stats, field, t0, t1)  do {} while (0)
 #define STAT_COUNT(stats, field, value) do {} while (0)
+#define STAT_ADD(stats, field, t0, t1)  do {} while (0)
 
 #endif  // RONSQL_PHASE_STATS
 

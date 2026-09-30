@@ -4388,7 +4388,9 @@ Common parameters:
    Phase breakdown: when RDRS is built with RONSQL_PHASE_STATS (the
    default), every RonSQL response carries an x-ronsql-phases header with
    per-phase server-side timings (parse/analyze/load/plan/compile,
-   subquery, ndbprep/send/firstbatch/drain/print, in µs). .bench_ronsql
+   subquery, ndbprep/send/firstbatch/drain/print/close, in µs; close is
+   the scan and transaction close, which waits for the data nodes when a
+   LIMIT stops a scan early). .bench_ronsql
    aggregates them and prints an avg/p95/p99/max table per phase after the
    end-to-end results; the warmup request prints its raw phase values.
    End-to-end latency minus prepare+execute approximates REST/HTTP

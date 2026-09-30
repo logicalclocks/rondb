@@ -89,6 +89,10 @@ struct RonSQLPhaseStats
   Uint64 firstbatch_us = 0; // wait for the first result row / DoAggregation
   Uint64 drain_us = 0;      // drain of the remaining result rows
   Uint64 print_us = 0;      // result formatting into the output stream
+  Uint64 close_us = 0;      // scan / query close and closeTransaction,
+                            // summed: an early close (LIMIT reached with
+                            // fragment scans still open) waits for the
+                            // data nodes; part of execute_us
   Uint64 execute_us = 0;    // RonSQLPreparer::execute total
   Uint64 rows_drained = 0;  // rows pulled from the NDB API (aggregate
                             // records on the agg path, result rows on the

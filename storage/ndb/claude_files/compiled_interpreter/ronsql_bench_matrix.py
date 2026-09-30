@@ -88,7 +88,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, '..', '..', '..', '..'))
 
 PHASES = ['parse', 'analyze', 'load', 'plan', 'compile', 'prepare', 'subquery',
-          'ndbprep', 'send', 'firstbatch', 'drain', 'print', 'execute']
+          'ndbprep', 'send', 'firstbatch', 'drain', 'print', 'close', 'execute']
 JIT_COLS = ['programs_compiled', 'programs_reused', 'programs_fallback',
             'rows_executed', 'compile_ns_total']
 MYSQLD_STATUS = ['Ndb_api_wait_nanos_count', 'Ndb_api_wait_exec_complete_count',
