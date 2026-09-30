@@ -37,6 +37,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <future>
 #include <string>
 #include <vector>
 #include <util/require.h>
@@ -360,6 +361,14 @@ bool ProbeServer::Start() {
   });
 
   m_server->start();
+  /* TcpServer::start() only queues its listen() onto the loop; wait for
+   * that queued work to run so callers (and the first kubelet probe) never
+   * see ECONNREFUSED from a Start() that already returned success. */
+  {
+    std::promise<void> listening;
+    loop->runInLoop([&listening]() { listening.set_value(); });
+    listening.get_future().wait();
+  }
   m_started = true;
   rdrs_logger::info(
     "Probe listener (ping/health, no auth) running on " + ip + ":" +
@@ -457,7 +466,11 @@ void ProbeServer::onMessage(const trantor::TcpConnectionPtr &conn,
       status = 400;
       body = "Bad Request";
       close_after = true;
-    } else if (req.has_chunked || req.has_body) {
+    } else {
+    /* HEAD is GET-without-a-body for EVERY outcome (400/404/405 included),
+     * matching the main port; only an unparseable request leaves it unset. */
+    head = (req.method == "HEAD");
+    if (req.has_chunked || req.has_body) {
       /* GET/HEAD with a body: answer like the main port's controllers
        * ("request should be empty") but close instead of resynchronizing -
        * skipping an unread body safely is not worth the parser surface. */
@@ -473,7 +486,6 @@ void ProbeServer::onMessage(const trantor::TcpConnectionPtr &conn,
       body = "Method Not Allowed";
       close_after = !req.keep_alive;
     } else {
-      head = (req.method == "HEAD");
       if (req.target == PING_PATH) {
         /* Same counters as the main port's endpoints: one ping/health
          * metric regardless of listener. */
@@ -493,6 +505,7 @@ void ProbeServer::onMessage(const trantor::TcpConnectionPtr &conn,
         body = (status == 200) ? "1" : "0";
       }
       close_after = !req.keep_alive;
+    }
     }
 
     /* parseRequest sets consumed to the full header block unconditionally,
