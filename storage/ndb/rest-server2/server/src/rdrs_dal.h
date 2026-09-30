@@ -237,6 +237,15 @@ RS_Status ronsql_dal(const char* database,
                      unsigned int threadIndex);
 
 /**
+ * Close a RonSQL transaction whose close was deferred until after the
+ * reply (RonSQLExecParams::deferred_close, RONDB-1124) and return the Ndb
+ * object ronsql_dal() kept back for it.  Call it after the response has
+ * been handed over, with the same threadIndex; a no-op when nothing was
+ * deferred.
+ */
+void ronsql_dal_finish(struct RonSQLExecParams*, unsigned int threadIndex);
+
+/**
  * Returns statistis about RonDB connection
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats);

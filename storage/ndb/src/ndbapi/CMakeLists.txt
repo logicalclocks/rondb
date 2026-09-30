@@ -97,3 +97,7 @@ NDB_ADD_TEST(SectionIterators-t SectionIterators.cpp NdbApiSignal.cpp)
 
 # Standalone numeric boundary and API merge failure/recovery tests.
 NDB_ADD_TEST(NdbAggregatorMerge-t NdbAggregatorMergeTest.cpp LIBS ndbclient_static)
+
+# The column decode shared by the DBTUP aggregation interpreters and
+# aggregation in the RonSQL layer (include/util/AggColumnLoad.hpp).
+NDB_ADD_TEST(AggColumnLoad-t AggColumnLoadTest.cpp LIBS ndbclient_static)

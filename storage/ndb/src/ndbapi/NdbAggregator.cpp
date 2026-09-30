@@ -361,6 +361,198 @@ static Int32 mergeNumericResult(AggResItem* dst, const AggResItem& src,
   return aggMergeNumericSlot(dst, src, op);
 }
 
+void NdbAggregator::fixupCountSlots(AggResItem* slots) const {
+  // RONDB-831: COUNT() over zero rows should result in 0, not NULL.
+  // Therefore, replace NULLs/UNDEFINED with 0 for all COUNT results.
+  for (Uint32 i = 0; i < n_agg_results_; i++) {
+    if (agg_ops_[i] == kOpCount) {
+      AggResItem* item = slots + i;
+      if (item->is_null || item->type == NDB_TYPE_UNDEFINED) {
+        item->type = NDB_TYPE_BIGINT;
+        item->is_unsigned = 1;
+        item->is_null = false;
+        item->value.val_uint64 = 0;
+      }
+    }
+  }
+}
+
+// Phase I.6 (F.2-K.5d): release any string val_ptr buffers in `owned`
+// that the merge did not transfer into `dst`.  A first-contribution slot
+// has its val_ptr handed off by assignment; for those, the pointers
+// compare equal and the buffer is kept.
+void NdbAggregator::freeUntransferredStrings(AggResItem* owned,
+                                             const AggResItem* dst) const {
+  for (Uint32 i = 0; i < n_agg_results_; i++) {
+    const Uint32 t = owned[i].type;
+    if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
+         t == NDB_TYPE_LONGVARCHAR) &&
+        owned[i].value.val_ptr != nullptr &&
+        owned[i].value.val_ptr != dst[i].value.val_ptr) {
+      delete[] static_cast<char*>(owned[i].value.val_ptr);
+    }
+  }
+}
+
+Int32 NdbAggregator::mergeGroupSlots(AggResItem* dst, const AggResItem* src,
+                                     AggResItem* owned_src) {
+  Int32 merge_error = 0;
+  for (Uint32 i = 0; i < n_agg_results_; i++) {
+    DEB_TRACE();
+    // Handle NDB_TYPE_UNDEFINED and NULL cases before merging.
+    // Mirrors kernel mergeAccumulators() logic.
+    if (src[i].type == NDB_TYPE_UNDEFINED) {
+      continue;
+    }
+    if (isStringType(src[i].type)) {
+      mergeStringSlot(&dst[i], &src[i], i);
+      continue;
+    }
+    if (dst[i].type == NDB_TYPE_UNDEFINED) {
+      dst[i] = src[i];
+      continue;
+    }
+    if (src[i].is_null) {
+      DEB_TRACE();
+      continue;
+    }
+    if (dst[i].is_null) {
+      DEB_TRACE();
+      dst[i] = src[i];
+      continue;
+    }
+    // Both sides are non-null numeric partials.  Mixed BIGINT
+    // signedness (or BIGINT-vs-DOUBLE) between a group's partials
+    // is legitimate when CASE arms differ in type and different
+    // nodes' rows took different arms — merge with the shared
+    // signedness/promotion-correct helper (see mergeScalarSlots and
+    // NdbAggregationCommon.hpp; big-06 finding).
+    assert((src[i].type == NDB_TYPE_BIGINT ||
+            src[i].type == NDB_TYPE_DOUBLE) &&
+           (dst[i].type == NDB_TYPE_BIGINT ||
+            dst[i].type == NDB_TYPE_DOUBLE));
+    DEB_TRACE();
+    merge_error = mergeNumericResult(&dst[i], src[i], agg_ops_[i]);
+    if (merge_error != 0) break;
+  }
+  // Release every owned string, including slots not visited after a
+  // failed numeric merge, before returning the NDB error.
+  if (owned_src != nullptr) {
+    freeUntransferredStrings(owned_src, dst);
+  }
+  return merge_error;
+}
+
+Int32 NdbAggregator::mergeScalarSlots(const AggResItem* src,
+                                      AggResItem* owned_src) {
+  assert(agg_results_ != nullptr);
+  AggResItem* dst = agg_results_;
+  Int32 merge_error = 0;
+  for (Uint32 i = 0; i < n_agg_results_; i++) {
+    DEB_TRACE();
+    // Phase I.6: allow CHAR / VARCHAR / Longvarchar through the
+    // per-slot type check and merge them with charset-aware compare.
+    const bool is_string_type =
+        (src[i].type == NDB_TYPE_CHAR ||
+         src[i].type == NDB_TYPE_VARCHAR ||
+         src[i].type == NDB_TYPE_LONGVARCHAR);
+    if (is_string_type) {
+      mergeStringSlot(&dst[i], &src[i], i);
+    } else if (src[i].type == NDB_TYPE_UNDEFINED || src[i].is_null) {
+      // Empty/NULL partial slot (e.g. a node whose scan fed no rows)
+      // contributes nothing.
+      DEB_TRACE();
+    } else if (dst[i].type == NDB_TYPE_UNDEFINED || dst[i].is_null) {
+      DEB_TRACE();
+      dst[i] = src[i];
+    } else {
+      DEB_TRACE();
+      // Both slots non-null numeric partials.  They may legitimately
+      // disagree in BIGINT signedness — or BIGINT-vs-DOUBLE — when a
+      // CASE expression's arms differ in type and different nodes'
+      // rows took different arms (big-06: the old assert here
+      // rejected exactly that and aborted the RDRS process at 8
+      // nodes).  aggMergeNumericSlot applies the same signedness-OR
+      // / value-domain / DOUBLE-promotion rules, including checked
+      // BIGINT SUM shared with the distributed merger.
+      assert((src[i].type == NDB_TYPE_BIGINT ||
+              src[i].type == NDB_TYPE_DOUBLE) &&
+             (dst[i].type == NDB_TYPE_BIGINT ||
+              dst[i].type == NDB_TYPE_DOUBLE));
+      merge_error = mergeNumericResult(&dst[i], src[i], agg_ops_[i]);
+      if (merge_error != 0) break;
+    }
+  }
+  // As in the grouped path, clean up owned strings before failing.
+  if (owned_src != nullptr) {
+    freeUntransferredStrings(owned_src, dst);
+  }
+  return merge_error;
+}
+
+void NdbAggregator::copyStringSlots(AggResItem* slots, Uint32 n_slots) {
+  for (Uint32 i = 0; i < n_slots; i++) {
+    const Uint32 t = slots[i].type;
+    if (t != NDB_TYPE_CHAR && t != NDB_TYPE_VARCHAR &&
+        t != NDB_TYPE_LONGVARCHAR) {
+      continue;
+    }
+    if (slots[i].is_null || slots[i].value.val_ptr == nullptr) {
+      // Never let a NULL slot's pointer reach a free.
+      assert(slots[i].is_null);
+      slots[i].value.val_ptr = nullptr;
+      continue;
+    }
+    const char* src = static_cast<const char*>(slots[i].value.val_ptr);
+    const Uint16 payload_len = *reinterpret_cast<const Uint16*>(src);
+    const Uint32 prefix = (t == NDB_TYPE_CHAR) ? 0
+                        : (t == NDB_TYPE_VARCHAR) ? 1 : 2;
+    const Uint32 byte_size = prefix + payload_len;
+    // Same layout and allocation rounding as resolveStringSlots.
+    Uint32 alloc_size = (4 + byte_size + 15) & ~15U;
+    if (alloc_size < 16) alloc_size = 16;
+    char* dst = new char[alloc_size];
+    Uint16* hdr = reinterpret_cast<Uint16*>(dst);
+    hdr[0] = payload_len;
+    hdr[1] = static_cast<Uint16>(alloc_size - 4);
+    memcpy(dst + 4, src + 4, byte_size);
+    slots[i].value.val_ptr = dst;
+  }
+}
+
+Int32 NdbAggregator::MergeLocalGroup(const char* gb_key, Uint32 gb_len,
+                                     const AggResItem* items) {
+  assert(finalized_);
+  assert((n_gb_cols_ == 0) == (gb_key == nullptr));
+  assert(gb_len % 4 == 0);
+  assert(n_agg_results_ <= MAX_AGG_N_RESULTS);
+  // A private copy whose string buffers belong to this merge, exactly
+  // like a wire partial after resolveStringSlots.
+  AggResItem local[MAX_AGG_N_RESULTS];
+  memcpy(local, items, n_agg_results_ * sizeof(AggResItem));
+  copyStringSlots(local, n_agg_results_);
+  if (n_gb_cols_ == 0) {
+    return mergeScalarSlots(local, local);
+  }
+  GBHashEntry entry{const_cast<char*>(gb_key), gb_len};
+  auto iter = gb_map_->find(entry);
+  if (iter != gb_map_->end()) {
+    return mergeGroupSlots(reinterpret_cast<AggResItem*>(iter->second.ptr),
+                           local, local);
+  }
+  // A new group: one block holding the key and the slots, as ProcessRes
+  // allocates it; the slots take over the string buffers.
+  const Uint32 agg_array_len = n_agg_results_ * sizeof(AggResItem);
+  char* agg_rec = new char[gb_len + agg_array_len];
+  memcpy(agg_rec, gb_key, gb_len);
+  memcpy(agg_rec + gb_len, local, agg_array_len);
+  fixupCountSlots(reinterpret_cast<AggResItem*>(agg_rec + gb_len));
+  gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
+      GBHashEntry{agg_rec, gb_len},
+      GBHashEntry{agg_rec + gb_len, agg_array_len}));
+  return 0;
+}
+
 Int32 NdbAggregator::ProcessRes(char* buf) {
 #ifdef DEBUG_NDBAGGREGATOR
   {
@@ -487,19 +679,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
           resolveStringSlots(slots, n_agg_results, appended);
         }
 
-        // RONDB-831: COUNT() over zero rows should result in 0, not NULL.
-        // Therefore, replace NULLs/UNDEFINED with 0 for all COUNT results.
-        for (Uint32 i = 0; i < n_agg_results_; i++) {
-          if (agg_ops_[i] == kOpCount) {
-            AggResItem* item = reinterpret_cast<AggResItem*>(new_aggs.ptr) + i;
-            if (item->is_null || item->type == NDB_TYPE_UNDEFINED) {
-              item->type = NDB_TYPE_BIGINT;
-              item->is_unsigned = 1;
-              item->is_null = false;
-              item->value.val_uint64 = 0;
-            }
-          }
-        }
+        fixupCountSlots(reinterpret_cast<AggResItem*>(new_aggs.ptr));
 
         gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
               new_entry, new_aggs));
@@ -532,60 +712,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       }
       if (need_merge) {
         DEB_TRACE();
-        Int32 merge_error = 0;
-        for (Uint32 i = 0; i < n_agg_results; i++) {
-          DEB_TRACE();
-          // Handle NDB_TYPE_UNDEFINED and NULL cases before merging.
-          // Mirrors kernel mergeAccumulators() logic.
-          if (res[i].type == NDB_TYPE_UNDEFINED) {
-            continue;
-          }
-          if (isStringType(res[i].type)) {
-            mergeStringSlot(&agg_res_ptr[i], &res[i], i);
-            continue;
-          }
-          if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED) {
-            agg_res_ptr[i] = res[i];
-            continue;
-          }
-          if (res[i].is_null) {
-            DEB_TRACE();
-            continue;
-          }
-          if (agg_res_ptr[i].is_null) {
-            DEB_TRACE();
-            agg_res_ptr[i] = res[i];
-            continue;
-          }
-          // Both sides are non-null numeric partials.  Mixed BIGINT
-          // signedness (or BIGINT-vs-DOUBLE) between a group's partials
-          // is legitimate when CASE arms differ in type and different
-          // nodes' rows took different arms — merge with the shared
-          // signedness/promotion-correct helper (see the scalar branch
-          // below and NdbAggregationCommon.hpp; big-06 finding).
-          assert((res[i].type == NDB_TYPE_BIGINT ||
-                  res[i].type == NDB_TYPE_DOUBLE) &&
-                 (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||
-                  agg_res_ptr[i].type == NDB_TYPE_DOUBLE));
-          DEB_TRACE();
-          merge_error =
-              mergeNumericResult(&agg_res_ptr[i], res[i], agg_ops_[i]);
-          if (merge_error != 0) break;
-        }
-        if (wire_has_strings) {
-          for (Uint32 i = 0; i < n_agg_results; i++) {
-            Uint32 t = local_res[i].type;
-            if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-                 t == NDB_TYPE_LONGVARCHAR) &&
-                local_res[i].value.val_ptr != nullptr &&
-                local_res[i].value.val_ptr !=
-                    agg_res_ptr[i].value.val_ptr) {
-              delete[] static_cast<char*>(local_res[i].value.val_ptr);
-            }
-          }
-        }
-        // Release every decoded string above, including slots not visited
-        // after a failed numeric merge, before returning the NDB error.
+        const Int32 merge_error = mergeGroupSlots(
+            agg_res_ptr, res, wire_has_strings ? local_res : nullptr);
         if (merge_error != 0) return -merge_error;
       }
 #if defined(PA_CHECK) && !defined(NDEBUG)
@@ -636,18 +764,16 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
     assert(wire_has_strings ||
            agg_res_len == n_agg_results_ * sizeof(AggResItem));
     assert(agg_results_ != nullptr);
-    AggResItem* agg_res_ptr = agg_results_;
     const AggResItem* res = reinterpret_cast<const AggResItem*>(
                          &data_buf[parse_pos/* + (gb_cols_len >> 2)*/]);
 
     // Phase I.6 (F.2-K.5d): for AGG_CHAR_RESULT, deep-copy res to a
     // local buffer and fix up each string slot's val_ptr (zero on
     // the wire) to point to a freshly-allocated local buffer.  The
-    // first-contribution merge step (`agg_res_ptr[i] = res[i]` when
-    // agg_res_ptr is_null/UNDEFINED) then transfers ownership of the
-    // val_ptr to agg_results_; any val_ptrs that were not transferred
-    // are released after the loop.  Multi-source string MIN/MAX
-    // merge (when both sides are non-null) is K.5d-2.
+    // first-contribution merge step in mergeScalarSlots (`dst[i] =
+    // src[i]` when the slot is NULL / UNDEFINED) then transfers ownership
+    // of the val_ptr to agg_results_; any val_ptrs that were not
+    // transferred are released there.
     AggResItem local_res[MAX_AGG_N_RESULTS];
     if (wire_has_strings) {
       memcpy(local_res, res, n_agg_results_ * sizeof(AggResItem));
@@ -658,62 +784,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       res = local_res;
     }
 
-    Int32 merge_error = 0;
-    for (Uint32 i = 0; i < n_agg_results; i++) {
-      DEB_TRACE();
-      // Phase I.6: allow CHAR / VARCHAR / Longvarchar through the
-      // per-slot type check and merge them with charset-aware compare.
-      const bool is_string_type =
-          (res[i].type == NDB_TYPE_CHAR ||
-           res[i].type == NDB_TYPE_VARCHAR ||
-           res[i].type == NDB_TYPE_LONGVARCHAR);
-      if (is_string_type) {
-        mergeStringSlot(&agg_res_ptr[i], &res[i], i);
-      } else if (res[i].type == NDB_TYPE_UNDEFINED || res[i].is_null) {
-        // Empty/NULL partial slot (e.g. a node whose scan fed no rows)
-        // contributes nothing.
-        DEB_TRACE();
-      } else if (agg_res_ptr[i].type == NDB_TYPE_UNDEFINED ||
-                 agg_res_ptr[i].is_null) {
-        DEB_TRACE();
-        agg_res_ptr[i] = res[i];
-      } else {
-        DEB_TRACE();
-        // Both slots non-null numeric partials.  They may legitimately
-        // disagree in BIGINT signedness — or BIGINT-vs-DOUBLE — when a
-        // CASE expression's arms differ in type and different nodes'
-        // rows took different arms (big-06: the old assert here
-        // rejected exactly that and aborted the RDRS process at 8
-        // nodes).  aggMergeNumericSlot applies the same signedness-OR
-        // / value-domain / DOUBLE-promotion rules, including checked
-        // BIGINT SUM shared with the distributed merger.
-        assert((res[i].type == NDB_TYPE_BIGINT ||
-                res[i].type == NDB_TYPE_DOUBLE) &&
-               (agg_res_ptr[i].type == NDB_TYPE_BIGINT ||
-                agg_res_ptr[i].type == NDB_TYPE_DOUBLE));
-        merge_error =
-            mergeNumericResult(&agg_res_ptr[i], res[i], agg_ops_[i]);
-        if (merge_error != 0) break;
-      }
-    }
-    // Phase I.6 (F.2-K.5d): release any string val_ptr buffers in
-    // local_res that were not transferred into agg_results_.  A
-    // first-contribution slot has its val_ptr handed off via
-    // `agg_res_ptr[i] = res[i]`; for those, the pointers compare
-    // equal and we keep them.
-    if (wire_has_strings) {
-      for (Uint32 i = 0; i < n_agg_results; i++) {
-        Uint32 t = local_res[i].type;
-        if ((t == NDB_TYPE_CHAR || t == NDB_TYPE_VARCHAR ||
-             t == NDB_TYPE_LONGVARCHAR) &&
-            local_res[i].value.val_ptr != nullptr &&
-            local_res[i].value.val_ptr !=
-                agg_res_ptr[i].value.val_ptr) {
-          delete[] static_cast<char*>(local_res[i].value.val_ptr);
-        }
-      }
-    }
-    // As in the grouped path, clean up decoded strings before failing.
+    const Int32 merge_error =
+        mergeScalarSlots(res, wire_has_strings ? local_res : nullptr);
     if (merge_error != 0) return -merge_error;
     DEB_TRACE();
     parse_pos += ((/*gb_cols_len + */agg_res_len) >> 2);

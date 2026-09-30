@@ -482,6 +482,22 @@ private:
   // flatten_single_group_cte() folded into a single-table aggregate
   // ({NULL, 0} when no flatten ran); reported by EXPLAIN.
   LexCString m_flattened_cte = LexCString{NULL, 0};
+  // RONDB-1124 WP-J J1: CTEs rewrite_lastn_cte_bodies() turned into
+  // one-group-per-row bodies (the first MAX_LASTN_CTES_REPORTED are kept,
+  // for EXPLAIN; m_num_lastn_ctes counts all of them).
+  static constexpr Uint32 MAX_LASTN_CTES_REPORTED = 16;
+  const CteDefinition* m_lastn_ctes[MAX_LASTN_CTES_REPORTED] = {};
+  Uint32 m_num_lastn_ctes = 0;
+  // RONDB-1124 WP-J J5: set by route_lastn_aggregate_to_api() when the main
+  // aggregates are computed in RonSQL over the rows of the body's ORDER BY /
+  // LIMIT scan.  The root then carries the body's table, WHERE, ORDER BY and
+  // LIMIT (they drive the scan, not the one result row), and
+  // m_api_agg_cte names the folded CTE for EXPLAIN ({NULL, 0} otherwise).
+  bool m_api_side_aggregation = false;
+  LexCString m_api_agg_cte = LexCString{NULL, 0};
+  // The main aggregation program's per-row step run in RonSQL (defined in
+  // RonSQLPreparer.cpp).
+  class ApiRowAggregation;
   // True for aggregating queries (the only ones RonSQL fully supports).
   // Set to false in parse() for the narrow projection-only-over-CTE_SCAN
   // shape that Phase E.3 enables — drives the pass-through delivery
@@ -493,6 +509,11 @@ private:
    * point must not be retried: a transparent retry repeats the rows
    * already delivered (RONDB-1120 finding F-6). */
   bool m_output_started = false;
+  /* Set when the single-table pass-through stopped its scan at the LIMIT
+   * with fragment scans still open and the caller closes the transaction
+   * after replying (RonSQLExecParams::deferred_close): the scan close is
+   * then skipped and finish_trans() hands the transaction over. */
+  bool m_defer_close = false;
 
   // One QueryScope per CTE in ast_root.cte_list, in declaration order.
   // Pointers because QueryScope holds a DynamicArray — non-trivially-copyable.
@@ -569,6 +590,21 @@ private:
    * pass-through ORDER BY scan serves it.  Parse-time AST rewrite; a
    * no-op for every other shape. */
   void collapse_collect_cte();
+  /* RONDB-1124 WP-J J1: rewrite a non-aggregating CTE body with LIMIT that
+   * selects its table's whole primary key (the last N rows of an entity,
+   * aggregated or joined by the main query) into GROUP BY every output
+   * plus a hidden COUNT(*), so each row is one group and the kernel's
+   * grouped-CTE ORDER BY / LIMIT keeps the last N.  Parse-time AST
+   * rewrite with a dictionary lookup of the body's table; a no-op for
+   * every other shape, in ParseOnly mode and without a connection. */
+  void rewrite_lastn_cte_bodies();
+  /* RONDB-1124 WP-J J5: aggregates over one last-N CTE read alone by the
+   * main query run as the body's single-table ORDER BY / LIMIT scan, with
+   * the main aggregates computed in RonSQL over the delivered rows
+   * (m_api_side_aggregation).  Parse-time AST rewrite, run before the main
+   * aggregates are bound to their compiler and before
+   * rewrite_lastn_cte_bodies(); a no-op for every other shape. */
+  void route_lastn_aggregate_to_api();
   /* RONDB-1124 (m3_run6_plan.md C2): fold MIN / MAX over one single-group
    * CTE (the fs_point form) into the single-table aggregate over the
    * body's table and WHERE.  Parse-time AST rewrite, run before the main
@@ -752,17 +788,25 @@ private:
   NdbScanOperation* open_single_table_scan_op(Uint32 batch_rows = 0);
   // Phase 1 W3: projection-only single-table execution — PK-lookup arm
   // (NoDataFound = empty result) or scan drain arm, both feeding the
-  // pass-through printer.
-  void execute_single_table_passthrough();
+  // pass-through printer.  With api_rows (WP-J J5) the same arms read the
+  // columns the main aggregation program loads and hand each delivered
+  // row to api_rows instead of printing it.
+  void execute_single_table_passthrough(ApiRowAggregation* api_rows = NULL);
+  // WP-J J5: the aggregate over the last N rows (m_api_side_aggregation).
+  void execute_api_side_aggregate();
+  // cols[0..num_cols) are the column registry indexes read per row, in
+  // attrs order.
   void register_passthrough_getvalues(NdbOperation* op,
                                       const NdbRecAttr** attrs,
+                                      const Uint32* cols,
                                       Uint32 num_cols);
   // PK+residual follow-up: the NdbRecord-lookup twin of
-  // register_passthrough_getvalues — same outputs walk and checks, but
+  // register_passthrough_getvalues — same column walk and checks, but
   // fills OO_GETVALUE GetValueSpec entries (an NdbRecord operation
   // cannot take RecAttr getValue() calls; the specs' recAttr results
   // are the same NdbRecAttr* the printer consumes).
   void build_passthrough_getvalue_specs(NdbOperation::GetValueSpec* gets,
+                                        const Uint32* cols,
                                         Uint32 num_cols);
   // Shared scan-config candidate generator used by both the
   // single-table path (`generate_scan_config_candidates`) and the
@@ -935,6 +979,9 @@ public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
   void cleanup_trans();
+  // The success-path close: hands the transaction to the caller when
+  // m_defer_close is set, and closes it otherwise.
+  void finish_trans();
   void execute_subqueries();
   void substitute_subquery_results();
   void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);

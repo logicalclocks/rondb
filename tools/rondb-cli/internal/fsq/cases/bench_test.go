@@ -27,10 +27,12 @@ package cases
 
 import (
 	"flag"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -58,14 +60,15 @@ func benchEntries(t *testing.T) map[string]BenchEntry {
 
 func TestBenchEntriesCatalog(t *testing.T) {
 	entries := benchEntries(t)
-	if len(entries) != 26 {
-		t.Fatalf("%d entries, want 26 (benchmarks.md §2)", len(entries))
+	if len(entries) != 30 {
+		t.Fatalf("%d entries, want 30 (benchmarks.md §2)", len(entries))
 	}
 	for _, name := range []string{"fs_hw_floor", "fs_hw_agg_point", "fs_hw_agg_window7d", "fs_hw_agg_greatest", "fs_hw_agg_filter",
 		"fs_hw_agg_batch10", "fs_hw_agg_batch100", "fs_hw_agg_batch1000", "fs_hw_agg_batch100_window", "fs_hw_collect5", "fs_hw_collect50",
 		"fs_hw_collect5_cte", "fs_hw_collect50_cte", "fs_hw_collect5_twin", "fs_hw_snow1_point", "fs_hw_snow2_point", "fs_hw_snow1_batch100", "fs_hw_snow2_left_chain",
 		"fs_hw_snow2_left_single", "fs_hw_snow1_twin", "fs_hw_snow2_twin", "fs_hw_strkey_point", "fs_hw_strkey_batch100", "fs_hw_composite_point",
-		"fs_hw_hash_point", "fs_hw_sessions_window2h"} {
+		"fs_hw_hash_point", "fs_hw_sessions_window2h",
+		"fs_hw_agg_last10", "fs_hw_agg_last100", "fs_hw_agg_last10_tx300", "fs_hw_agg_last10_tx300_grouped"} {
 		if _, ok := entries[name]; !ok {
 			t.Errorf("missing entry %s", name)
 		}
@@ -98,6 +101,21 @@ func TestBenchEntriesCatalog(t *testing.T) {
 	check("fs_hw_strkey_batch100", "IN ({SKEYS:100})")
 	check("fs_hw_composite_point", "WHERE `account_id` = {ACCT} AND `currency` = {CUR} AND `event_time` >= {NOW-90d};")
 	check("fs_hw_hash_point", "FROM `transactions_hash_1`")
+	check("fs_hw_agg_last10", "WITH t AS (SELECT `customer_id`, `event_time`, `amount`, `fee` FROM `transactions_1` WHERE `customer_id` = {KEY} ORDER BY `event_time` DESC LIMIT 10) SELECT COUNT(`amount`) AS `amount_count`, AVG(`amount`) AS `amount_avg`, MAX(`fee`) AS `fee_max` FROM t;")
+	check("fs_hw_agg_last100", "ORDER BY `event_time` DESC LIMIT 100) SELECT")
+	check("fs_hw_agg_last10_tx300", "WHERE `customer_id` = {TXKEY:300} ORDER BY `event_time` DESC LIMIT 10)")
+	check("fs_hw_agg_last10_tx300_grouped", "COUNT(*) AS `grp_rows` FROM `transactions_1` WHERE `customer_id` = {TXKEY:300} GROUP BY `customer_id`, `event_time`, `amount`, `fee` ORDER BY `event_time` DESC LIMIT 10)")
+	for _, name := range []string{"fs_hw_agg_last10_tx300", "fs_hw_agg_last10_tx300_grouped"} {
+		for _, m := range regexp.MustCompile(`\{TXKEY:([0-9]+)\}`).FindAllStringSubmatch(entries[name].SQL, -1) {
+			isClass := false
+			for _, cnt := range data.NTxClass {
+				isClass = isClass || strconv.Itoa(cnt) == m[1]
+			}
+			if !isClass {
+				t.Errorf("%s: {TXKEY:%s} is not a transactions_1 row-count class", name, m[1])
+			}
+		}
+	}
 	check("fs_hw_sessions_window2h", "FROM `sessions_1` WHERE `customer_id` = {KEY} AND `event_time` >= {NOW-2h};")
 	if entries["fs_hw_collect5"].SQL == entries["fs_hw_collect5_cte"].SQL || strings.Contains(entries["fs_hw_collect5"].SQL, "WITH") {
 		t.Error("collect5 must be the direct form")
@@ -204,6 +222,28 @@ func TestResolveBenchPlaceholders(t *testing.T) {
 	}
 	if s := ResolveBenchPlaceholders("{SKEYS:100}", rng, 1000, now); strings.Count(s, "'") != 200 {
 		t.Errorf("100 quoted string keys expected: %s", s)
+	}
+	for _, n := range []int{300, 100, 5, 0} {
+		for i := 0; i < 200; i++ {
+			k, err := strconv.Atoi(ResolveBenchPlaceholders(fmt.Sprintf("{TXKEY:%d}", n), rng, 100000, now))
+			if err != nil || k < 1 || k > 100000 {
+				t.Fatalf("{TXKEY:%d}: key %d outside 1..100000 (%v)", n, k, err)
+			}
+			if got := data.NTx(int64(k)); got != n {
+				t.Fatalf("{TXKEY:%d}: customer %d has %d rows", n, k, got)
+			}
+		}
+	}
+	for i := 0; i < 50; i++ {
+		if k, _ := strconv.Atoi(ResolveBenchPlaceholders("{TXKEY:300}", rng, 15, now)); k != 15 {
+			t.Fatalf("{TXKEY:300} in 1..15 must be customer 15: %d", k)
+		}
+		if k, _ := strconv.Atoi(ResolveBenchPlaceholders("{TXKEY:300}", rng, 10, now)); k < 1 || k > 10 {
+			t.Fatalf("{TXKEY:300} without such a customer must fall back into 1..10: %d", k)
+		}
+		if k, _ := strconv.Atoi(ResolveBenchPlaceholders("{TXKEY:7}", rng, 1000, now)); k < 1 || k > 1000 {
+			t.Fatalf("{TXKEY:7} (no such class) must fall back into 1..1000: %d", k)
+		}
 	}
 	if k := ResolveBenchPlaceholders("{KEY}", rng, 0, now); k != "1" {
 		t.Errorf("empty domain must still produce key 1: %s", k)

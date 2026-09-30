@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from ronsql_bench_matrix import case_file_statement, cluster_summary  # noqa: E402
 
 PHASE_COLS = ['parse', 'analyze', 'load', 'plan', 'compile', 'ndbprep', 'send',
-              'firstbatch', 'drain', 'print']
+              'firstbatch', 'drain', 'print', 'close']
 MYSQL_ENGINES = ['mysqld_nopush', 'mysqld']
 RE_PIN = re.compile(r'plan pin', re.IGNORECASE)
 

@@ -1119,16 +1119,18 @@ func countRonSQLResultRows(data []byte) int {
 // ronsqlPhasesHeader is the RDRS response header carrying per-request
 // RonSQL phase timings, emitted when the server is compiled with
 // RONSQL_PHASE_STATS (the default; see RonSQLPerf.hpp). Value format:
-// "parse=12,analyze=3,load=45,...,rows=8,attempts=1,fetched=40" — timing
-// fields in microseconds, last ronsql_op attempt; rows/attempts/fetched
-// are counters (fetched: rows the NDB API received, rows: rows drained).
+// "parse=12,analyze=3,load=45,...,rows=8,attempts=1,fetched=40,...,close=9"
+// — timing fields in microseconds, last ronsql_op attempt; rows/attempts/
+// fetched are counters (fetched: rows the NDB API received, rows: rows
+// drained). close (scan, query and transaction close, part of execute)
+// comes last in the header.
 const ronsqlPhasesHeader = "x-ronsql-phases"
 
 // ronsqlPhaseOrder is the canonical display order of the timing fields.
 var ronsqlPhaseOrder = []string{
 	"parse", "analyze", "load", "plan", "compile", "prepare",
 	"subquery", "ndbprep", "send", "firstbatch", "drain", "print",
-	"execute",
+	"close", "execute",
 }
 
 // ronsqlPhaseIndex maps a timing field to its ronsqlPhaseOrder position.

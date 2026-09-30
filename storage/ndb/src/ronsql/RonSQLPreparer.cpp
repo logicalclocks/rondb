@@ -52,6 +52,7 @@
 #include <my_base.h>
 #include "decimal.h"
 #include <decimal_utils.hpp>
+#include <AggColumnLoad.hpp>
 #include <kernel/Interpreter.hpp>
 #include <ndb_version.h>
 #include <kernel/signaldata/QueryTree.hpp>
@@ -683,6 +684,10 @@ RonSQLPreparer::parse()
     // It swaps the main compiler for the body's, so it must run before the
     // loop below binds the main aggregates.
     flatten_single_group_cte();
+    // RONDB-1124 WP-J J5: aggregates over one last-N CTE become the body's
+    // ORDER BY / LIMIT scan with the aggregation in RonSQL.  It gives the
+    // main aggregates a new compiler, so it too runs before the loop below.
+    route_lastn_aggregate_to_api();
     /* We have already provided columns and expressions to the
      * AggregationAPICompiler. E.g. in `SELECT Max(col1 + col2)`, m_main_scope.agg already
      * knows about `col1`, `col2` and `col1 + col2`. Here, we let m_main_scope.agg know about
@@ -771,6 +776,13 @@ RonSQLPreparer::parse()
     // RONDB-1124 M1.3: the Hopsworks collect CTE form becomes the plain
     // single-table ORDER BY / LIMIT statement before the gate below sees it.
     collapse_collect_cte();
+    // RONDB-1124 WP-J J1: a last-N CTE body that the main query aggregates
+    // or joins becomes a one-group-per-row grouped body.  After the
+    // collapse (a projection-only main keeps the streaming single-table
+    // path) and after detect_single_row_ctes() (whose candidacy it clears
+    // for the bodies it rewrites), before the CTE aggregate registration
+    // below and analyze_ctes().
+    rewrite_lastn_cte_bodies();
     if (!m_is_aggregate_query)
     {
       // Phase E.3: allow the narrowly-supported projection-only main
@@ -2339,7 +2351,9 @@ RonSQLPreparer::collapse_collect_cte()
         }
       }
     }
-    mark_scope_column_ref(live, ob->col_idx);
+    // A column qualified above can be a new registry entry, past `live`
+    // (and never inner, so nothing to un-flag).
+    if (ob->col_idx < num_cols) mark_scope_column_ref(live, ob->col_idx);
   }
   mark_scope_column_refs_ce(live, body->where_expression);
   for (Uint32 i = 0; i < num_cols; i++)
@@ -2366,6 +2380,440 @@ RonSQLPreparer::collapse_collect_cte()
   root.limit = body->limit;
   root.cte_list = NULL;
   m_collapsed_cte = cte->name;
+}
+
+/*
+ * RONDB-1124 WP-J J1 (ronsql_fs_support_plan.md): the last N rows of an
+ * entity as a CTE that the main query aggregates or joins, e.g.
+ *
+ *   WITH t AS (SELECT customer_id, event_time, amount FROM tx
+ *              WHERE customer_id = 42 ORDER BY event_time DESC LIMIT 10)
+ *   SELECT AVG(amount) FROM t;
+ *
+ * A non-aggregating body is otherwise only served as a single-row key
+ * lookup, and collapse_collect_cte() only takes a projection-only main over
+ * one CTE.  The body is rewritten here into the J0 form proven by
+ * ronsql_cte_dd_lastn_agg: every output column becomes a GROUP BY key and a
+ * hidden COUNT(*) is appended.  When the outputs include every primary key
+ * column each group is exactly one row, so the kernel's grouped-CTE
+ * ORDER BY / LIMIT (analyze_cte_body_orderby_limit) keeps exactly the rows
+ * the natural statement keeps.  GROUP BY keys keep their source types;
+ * carrying non-key columns as MAX(col) would widen them (INT to BIGINT, …)
+ * and break joins on them (F29).
+ *
+ * Pattern, per CTE (anything else keeps today's rules):
+ *  - ORDER BY and LIMIT present (without ORDER BY the kept rows are
+ *    arbitrary);
+ *  - read only as a FROM root, by the main query or a later CTE body,
+ *    never as a join child (that would probe it by a subset of its GROUP
+ *    BY keys, the partial-key CTE lookup of F18); a main query rooted on
+ *    it aggregates or joins (a projection-only main over the CTE alone is
+ *    collapse_collect_cte()'s shape);
+ *  - no GROUP BY, HAVING, joins, aggregate or arithmetic expressions
+ *    (body->agg == NULL) or subqueries in the body; FROM one real table;
+ *  - every output a plain column, no column twice;
+ *  - the WHERE does not bind the whole primary key by equality with
+ *    constants: such a body has at most one row and stays on the
+ *    CTE_SINGLE_ROW path (detect_single_row_ctes);
+ *  - every primary key column is an output; otherwise the statement is
+ *    rejected here, naming the missing columns.
+ *
+ * The primary key needs the dictionary, which load() fetches after the
+ * CTE analysis; the table is looked up here, and only for bodies that
+ * already match the rest of the pattern.  Without a connection (EXPLAIN
+ * without a cluster) or in ParseOnly mode nothing is rewritten.
+ *
+ * Aggregates over one last-N CTE read alone (J5's scope) never get here:
+ * route_lastn_aggregate_to_api() already folded that CTE into its scan.
+ */
+void
+RonSQLPreparer::rewrite_lastn_cte_bodies()
+{
+  if (m_parse_only || m_conf.ndb == NULL) return;
+  std::basic_ostream<char>& err = *m_conf.err_stream;
+  SelectStatement& root = m_context.ast_root;
+  NdbDictionary::Dictionary* dict = NULL;
+  for (CteDefinition* cte = m_context.ast_root.cte_list; cte != NULL;
+       cte = cte->next)
+  {
+    SelectStatement* body = cte->stmt;
+    if (body == NULL || body->limit < 0) continue;
+    // Without ORDER BY the kept rows are arbitrary; that shape keeps
+    // today's rules (collect_collapse cc-P4).
+    if (body->orderby_columns == NULL) continue;
+
+    // The CTE must be read only as a FROM root: by the main query or by a
+    // later CTE body.  As a join child it would be probed by a subset of
+    // its GROUP BY keys (a partial-key CTE lookup, F18), and a
+    // projection-only main over the CTE alone is collapse_collect_cte()'s
+    // shape and keeps its rules (collect_collapse cc-P1, cc-P5).
+    bool used_as_root = false;
+    bool used_as_child = false;
+    if (root.root_table != NULL && root.root_table->name == cte->name)
+    {
+      used_as_root = true;
+      if (!m_is_aggregate_query && root.joins == NULL) continue;
+    }
+    for (const JoinClause* jc = root.joins; jc != NULL; jc = jc->next)
+      if (jc->table.name == cte->name) used_as_child = true;
+    for (const CteDefinition* other = m_context.ast_root.cte_list;
+         other != NULL; other = other->next)
+    {
+      if (other == cte || other->stmt == NULL) continue;
+      if (other->stmt->root_table != NULL &&
+          other->stmt->root_table->name == cte->name)
+        used_as_root = true;
+      for (const JoinClause* jc = other->stmt->joins; jc != NULL;
+           jc = jc->next)
+        if (jc->table.name == cte->name) used_as_child = true;
+    }
+    if (!used_as_root || used_as_child) continue;
+    if (body->groupby_columns != NULL || body->having_expression != NULL ||
+        body->agg != NULL || body->joins != NULL ||
+        body->root_table == NULL || body->outputs == NULL)
+      continue;
+    if (find_cte_definition(body->root_table->name) != NULL) continue;
+    if (ce_has_subquery(body->where_expression)) continue;
+    bool plain_distinct = true;
+    for (const Outputs* o = body->outputs; o != NULL && plain_distinct;
+         o = o->next)
+    {
+      if (o->type != Outputs::Type::COLUMN)
+      {
+        plain_distinct = false;
+        break;
+      }
+      for (const Outputs* p = o->next; p != NULL; p = p->next)
+        if (p->type == Outputs::Type::COLUMN &&
+            p->column.col_idx == o->column.col_idx)
+        {
+          plain_distinct = false;
+          break;
+        }
+    }
+    if (!plain_distinct) continue;
+
+    if (dict == NULL) dict = m_conf.ndb->getDictionary();
+    const NdbDictionary::Table* tab =
+        dict->getTable(body->root_table->name.c_str());
+    if (tab == NULL) continue;  // load() reports the missing table
+    const int nkeys = tab->getNoOfPrimaryKeys();
+    if (nkeys <= 0 || nkeys > NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY) continue;
+
+    ConditionalExpression* pk_const[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY];
+    for (int k = 0; k < nkeys; k++) pk_const[k] = NULL;
+    collect_pk_equalities(body->where_expression, tab, pk_const, NULL);
+    bool whole_pk_bound = true;
+    for (int k = 0; k < nkeys && whole_pk_bound; k++)
+    {
+      const ConditionalExpression* c = pk_const[k];
+      if (c == NULL ||
+          (c->op != T_INT && c->op != T_FLOAT && c->op != T_STRING &&
+           c->op != I_MYSQL_TIME))
+        whole_pk_bound = false;
+    }
+    if (whole_pk_bound) continue;  // single-row body
+
+    const LexCString& body_alias = body->root_table->alias;
+    std::string missing;
+    for (int k = 0; k < nkeys; k++)
+    {
+      const char* pk_name = tab->getPrimaryKey(k);
+      bool found = false;
+      for (const Outputs* o = body->outputs; o != NULL && !found;
+           o = o->next)
+      {
+        const LexCString& q = m_column_qualifiers[o->column.col_idx];
+        if (q.c_str() != NULL && !(q == body_alias)) continue;
+        found = (pk_name != NULL &&
+                 strcmp(m_columns[o->column.col_idx].c_str(), pk_name) == 0);
+      }
+      if (!found)
+      {
+        if (!missing.empty()) missing += ", ";
+        missing += "`";
+        missing += (pk_name != NULL) ? pk_name : "?";
+        missing += "`";
+      }
+    }
+    if (!missing.empty())
+    {
+      err << "CTE '" << cte->name.c_str() << "' has LIMIT but no aggregate"
+             " functions or GROUP BY.  Such a body is served as the last N"
+             " rows when it selects every primary key column of table '"
+          << tab->getName() << "', so that each row is its own group"
+             " (missing: " << missing << ")." << std::endl;
+      throw RonSQLPermanentError(
+          "Non-aggregating LIMIT CTE body does not select the whole"
+          " primary key.");
+    }
+
+    // Rewrite: GROUP BY every output, in output order, plus COUNT(*).
+    GroupbyColumns* gb_head = NULL;
+    GroupbyColumns* gb_tail = NULL;
+    Outputs* last = NULL;
+    for (Outputs* o = body->outputs; o != NULL; o = o->next)
+    {
+      GroupbyColumns* gb = m_amalloc->alloc_exc<GroupbyColumns>(1);
+      gb->col_idx = o->column.col_idx;
+      gb->next = NULL;
+      if (gb_tail == NULL) gb_head = gb;
+      else gb_tail->next = gb;
+      gb_tail = gb;
+      last = o;
+    }
+    RonSQLPreparer* _this = this;
+    std::function<const char*(uint)> column_idx_to_name =
+      [_this](Uint32 idx) -> const char*
+      {
+        return _this->column_idx_to_name(idx).c_str();
+      };
+    AggregationAPICompiler* agg =
+      new (m_amalloc->alloc_exc<AggregationAPICompiler>(1))
+        AggregationAPICompiler(column_idx_to_name,
+                               *m_conf.out_stream,
+                               *m_conf.err_stream,
+                               m_amalloc);
+    static const char cnt_name[] = "ronsql$lastn_rows";
+    Outputs* cnt = m_amalloc->alloc_exc<Outputs>(1);
+    cnt->type = Outputs::Type::AGGREGATE;
+    cnt->output_name = LexString(cnt_name, sizeof(cnt_name) - 1);
+    cnt->aggregate.fun = T_COUNT;
+    cnt->aggregate.arg = agg->ConstantInteger(1);
+    cnt->aggregate.agg_index = 0;
+    cnt->aggregate.implicit_scalar_pair_op = false;
+    cnt->next = NULL;
+    last->next = cnt;
+    body->groupby_columns = gb_head;
+    body->agg = agg;
+    body->is_single_row_cte = false;
+    if (m_num_lastn_ctes < MAX_LASTN_CTES_REPORTED)
+      m_lastn_ctes[m_num_lastn_ctes] = cte;
+    m_num_lastn_ctes++;
+  }
+}
+
+/*
+ * RONDB-1124 WP-J J5 (ronsql_fs_support_plan.md): the fast path for
+ *
+ *   WITH t AS (SELECT customer_id, event_time, amount FROM tx
+ *              WHERE customer_id = 42 ORDER BY event_time DESC LIMIT 10)
+ *   SELECT COUNT(*), AVG(amount) FROM t;
+ *
+ * The CTE protocol costs about 0.6 ms per statement, while the body alone
+ * is the collect scan collapse_collect_cte() already serves (an ordered
+ * index scan with SF_OrderBy and batch = LIMIT, or the buffered sort).  So
+ * the statement runs as that scan, and the main aggregates are computed in
+ * RonSQL over the delivered rows (execute_api_side_aggregate) with the
+ * kernel's column decode and NdbAggregator's merge rules.
+ *
+ * Pattern (anything else keeps J1 or today's rules):
+ *  - exactly one CTE, and the main query reads FROM it alone: no joins,
+ *    WHERE, GROUP BY, HAVING, ORDER BY or LIMIT;
+ *  - every main output is COUNT, SUM, MIN, MAX or AVG of a plain column of
+ *    the CTE (bare or qualified with the CTE alias), or COUNT of a
+ *    constant (COUNT(*)); no arithmetic, so the main program holds only
+ *    loads and aggregates;
+ *  - the body has collapse_collect_cte()'s shape: one real table, plain
+ *    output columns with distinct names, ORDER BY on table columns and
+ *    LIMIT >= 1, no GROUP BY, HAVING, aggregates or subqueries.
+ * Unlike J1 the body need not select the primary key: the delivered rows
+ * are aggregated themselves, not grouped.
+ *
+ * Rewrite: the main outputs get a new compiler whose loads name the body
+ * columns their CTE outputs select (COUNT(*) keeps its constant); the
+ * root takes the body's table, WHERE, ORDER BY and LIMIT; the CTE list is
+ * dropped.  Column registry as in collapse_collect_cte().
+ */
+void
+RonSQLPreparer::route_lastn_aggregate_to_api()
+{
+  SelectStatement& root = m_context.ast_root;
+  CteDefinition* cte = root.cte_list;
+  if (cte == NULL || cte->next != NULL) return;
+  SelectStatement* body = cte->stmt;
+
+  // Main: FROM the CTE alone, aggregate outputs only.
+  if (root.root_table == NULL || !(root.root_table->name == cte->name))
+    return;
+  if (root.joins != NULL || root.where_expression != NULL ||
+      root.groupby_columns != NULL || root.having_expression != NULL ||
+      root.orderby_columns != NULL || root.limit >= 0 ||
+      root.outputs == NULL || m_main_scope.agg == NULL)
+    return;
+
+  // Body: one real table, non-aggregating, ORDER BY + LIMIT >= 1.
+  if (body == NULL || body->root_table == NULL || body->joins != NULL ||
+      body->groupby_columns != NULL || body->having_expression != NULL ||
+      body->agg != NULL || body->outputs == NULL ||
+      body->orderby_columns == NULL || body->limit < 1)
+    return;
+  if (find_cte_definition(body->root_table->name) != NULL) return;
+  if (ce_has_subquery(body->where_expression)) return;
+  for (const Outputs* o = body->outputs; o != NULL; o = o->next)
+  {
+    if (o->type != Outputs::Type::COLUMN) return;
+    for (const Outputs* p = o->next; p != NULL; p = p->next)
+      if (p->output_name == o->output_name) return;  // ambiguous name
+  }
+  const LexCString& body_alias = body->root_table->alias;
+  for (const OrderbyColumns* ob = body->orderby_columns; ob != NULL;
+       ob = ob->next)
+  {
+    if (ob->kind != OrderbyColumns::Kind::TABLE_COLUMN) return;
+    const LexCString& q = m_column_qualifiers[ob->col_idx];
+    if (q.c_str() != NULL && !(q == body_alias)) return;
+  }
+
+  // Every main output aggregates a body output, or is COUNT of a constant
+  // (matches[k] == NULL).
+  AggregationAPICompiler* old_agg = m_main_scope.agg;
+  Uint32 num_main = 0;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next) num_main++;
+  const Outputs** matches = m_amalloc->alloc_exc<const Outputs*>(num_main);
+  num_main = 0;
+  for (const Outputs* o = root.outputs; o != NULL; o = o->next)
+  {
+    const AggregationAPICompiler::Expr* arg = NULL;
+    bool is_count = false;
+    if (o->type == Outputs::Type::AGGREGATE)
+    {
+      if (o->aggregate.implicit_scalar_pair_op) return;
+      arg = o->aggregate.arg;
+      is_count = (o->aggregate.fun == T_COUNT);
+    }
+    else if (o->type == Outputs::Type::AVG)
+    {
+      arg = o->avg.arg;
+    }
+    else
+    {
+      return;  // a plain column, or a subquery
+    }
+    if (arg == NULL) return;
+    const Outputs* match = NULL;
+    if (arg->isLoadConstantInt())
+    {
+      if (!is_count) return;
+    }
+    else if (arg->isLoad())
+    {
+      const Uint32 idx = arg->getLoadIdx();
+      const LexCString& q = m_column_qualifiers[idx];
+      if (q.c_str() != NULL && !(q == root.root_table->alias)) return;
+      for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+      {
+        if (lex_name_eq(bo->output_name, m_columns[idx]))
+        {
+          match = bo;
+          break;
+        }
+      }
+      if (match == NULL) return;  // the CTE path reports the unknown column
+    }
+    else
+    {
+      return;
+    }
+    matches[num_main++] = match;
+  }
+
+  // ---- Rewrite.
+  RonSQLPreparer* _this = this;
+  std::function<const char*(uint)> column_idx_to_name =
+    [_this](Uint32 idx) -> const char*
+    {
+      return _this->column_idx_to_name(idx).c_str();
+    };
+  AggregationAPICompiler* agg =
+    new (m_amalloc->alloc_exc<AggregationAPICompiler>(1))
+      AggregationAPICompiler(column_idx_to_name,
+                             *m_conf.out_stream,
+                             *m_conf.err_stream,
+                             m_amalloc);
+  const Uint32 num_cols = m_columns.size();
+  bool* live = m_amalloc->alloc_exc<bool>(num_cols);
+  for (Uint32 i = 0; i < num_cols; i++) live[i] = false;
+  // The main's own references to CTE outputs (num_cols: none, COUNT(*)).
+  Uint32* old_main = m_amalloc->alloc_exc<Uint32>(num_main);
+  Uint32 k = 0;
+  for (Outputs* o = root.outputs; o != NULL; o = o->next, k++)
+  {
+    AggregationAPICompiler::Expr** arg_slot =
+        (o->type == Outputs::Type::AVG) ? &o->avg.arg : &o->aggregate.arg;
+    const AggregationAPICompiler::Expr* arg = *arg_slot;
+    if (matches[k] == NULL)
+    {
+      old_main[k] = num_cols;  // no reference
+      *arg_slot = agg->ConstantInteger(
+          old_agg->m_constants[arg->getConstantIdx()].int_64);
+      continue;
+    }
+    old_main[k] = arg->getLoadIdx();
+    const Uint32 body_idx = matches[k]->column.col_idx;
+    *arg_slot = agg->Load(body_idx);
+    mark_scope_column_ref(live, body_idx);
+  }
+  for (OrderbyColumns* ob = body->orderby_columns; ob != NULL; ob = ob->next)
+  {
+    if (m_column_qualifiers[ob->col_idx].c_str() == NULL)
+    {
+      // A bare name that is a body output alias means that output's
+      // column in the body's scope.
+      const LexCString& name = m_columns[ob->col_idx];
+      for (const Outputs* bo = body->outputs; bo != NULL; bo = bo->next)
+      {
+        if (lex_name_eq(bo->output_name, name))
+        {
+          ob->col_idx = bo->column.col_idx;
+          break;
+        }
+      }
+    }
+    if (m_column_qualifiers[ob->col_idx].c_str() == NULL)
+    {
+      // resolve_orderby_aliases() would bind a bare name to a root output
+      // alias of the same name (here always an aggregate); pin the entry
+      // to the table column by qualifying it.
+      const LexCString& cname = m_columns[ob->col_idx];
+      for (const Outputs* o = root.outputs; o != NULL; o = o->next)
+      {
+        if (lex_name_eq(o->output_name, cname))
+        {
+          ob->col_idx = m_context.qualified_column_name_to_idx(body_alias,
+                                                                cname);
+          break;
+        }
+      }
+    }
+    // A column qualified above can be a new registry entry, past `live`
+    // (and never inner, so nothing to un-flag).
+    if (ob->col_idx < num_cols) mark_scope_column_ref(live, ob->col_idx);
+  }
+  mark_scope_column_refs_ce(live, body->where_expression);
+  for (Uint32 i = 0; i < num_cols; i++)
+  {
+    if (live[i] && i < m_col_is_inner.size())
+      m_col_is_inner[i] = false;
+  }
+  for (Uint32 i = 0; i < num_main; i++)
+  {
+    Uint32 idx = old_main[i];
+    if (idx >= num_cols || live[idx]) continue;
+    while (m_col_is_alias.size() <= idx)
+      m_col_is_alias.push(false);
+    m_col_is_alias[idx] = true;
+  }
+
+  m_main_scope.agg = agg;
+  root.root_table = body->root_table;
+  root.table = body->table;
+  root.where_expression = body->where_expression;
+  root.orderby_columns = body->orderby_columns;
+  root.limit = body->limit;
+  root.cte_list = NULL;
+  m_api_side_aggregation = true;
+  m_api_agg_cte = cte->name;
 }
 
 // flatten_single_group_cte(): a parse-time twin of find_const_equality_for()
@@ -3837,9 +4285,10 @@ RonSQLPreparer::plan_index_and_filter()
   // (SF_OrderBy streaming) instead of the Phase 3 buffered sort.  The
   // generator's FORCE INDEX satisfiability throws are deferred past
   // the ORDER BY pass so a forced index that serves only the ORDER BY
-  // still counts as usable.
+  // still counts as usable.  WP-J J5 runs the same scan (its ORDER BY
+  // and LIMIT pick the rows it aggregates).
   const bool passthrough_orderby =
-      (!m_is_aggregate_query &&
+      ((!m_is_aggregate_query || m_api_side_aggregation) &&
        m_context.ast_root.orderby_columns != NULL);
   // Add scan config candidates, including both index scans and table scan. This
   // will guarantee that we get at least one candidate.
@@ -4211,13 +4660,16 @@ RonSQLPreparer::detect_pk_lookup()
   for (int k = 0; k < nkeys; k++) {
     if (pk_const[k] == NULL) return false;  // partial PK cover
   }
-  if (m_is_aggregate_query && in_col < 0) return false;  // see above
+  // WP-J J5 reads rows like a pass-through, so it takes the single-key
+  // lookup too (a body whose WHERE binds the whole primary key).
+  const bool reads_rows = (!m_is_aggregate_query || m_api_side_aggregation);
+  if (!reads_rows && in_col < 0) return false;  // see above
   Uint32 in_count = 0;
   if (in_col >= 0) {
     // F1a keeps a pass-through ORDER BY on the scan path: the scan arm
     // owns the client-side sort (m3_wpf_plan.md F1a).  An aggregate's
     // ORDER BY is applied by the ResultPrinter on either path.
-    if (!m_is_aggregate_query &&
+    if (reads_rows &&
         m_context.ast_root.orderby_columns != NULL) return false;
     // De-duplicate by the column's own comparison (dedup_in_values); a
     // literal the key encoder rejects sends the whole WHERE to the scan
@@ -7701,9 +8153,19 @@ RonSQLPreparer::compile()
   // formatter helpers instead — Phase 0b gives them the same column
   // metadata so temporal / DECIMAL outputs format correctly.
   if (m_is_aggregate_query) {
+    // WP-J J5: the root's ORDER BY and LIMIT pick the rows the scan
+    // aggregates, not rows of the one-row result; the printer gets the
+    // statement without them.
+    SelectStatement* printed = &m_context.ast_root;
+    if (m_api_side_aggregation) {
+      printed = new (m_amalloc->alloc_exc<SelectStatement>(1))
+        SelectStatement(m_context.ast_root);
+      printed->orderby_columns = NULL;
+      printed->limit = -1;
+    }
     m_resultprinter = new (m_amalloc->alloc_exc<ResultPrinter>(1))
       ResultPrinter(m_amalloc,
-                    &m_context.ast_root,
+                    printed,
                     &m_columns,
                     build_result_column_metadata(),
                     m_conf.output_format,
@@ -8452,6 +8914,8 @@ RonSQLPreparer::execute()
   ndbrequire(m_status == Status::PREPARED);
   DEB_TRACE();
   Ndb* ndb = m_conf.ndb;
+  // close_us sums every close of this attempt (STAT_ADD).
+  STAT_COUNT(m_conf.phase_stats, close_us, 0);
   DEB_TRACE();
   try {
     if (m_do_explain) {
@@ -8493,11 +8957,19 @@ RonSQLPreparer::execute()
       return;
     }
 
+    if (m_api_side_aggregation) {
+      // RONDB-1124 WP-J J5: the last N rows read by the pass-through scan,
+      // aggregated in RonSQL.
+      execute_api_side_aggregate();
+      finish_trans();
+      return;
+    }
+
     if (!m_is_aggregate_query) {
       // Phase 1 (non_aggregate_phase_1.md): projection-only
       // single-table queries — plain-API pass-through execution.
       execute_single_table_passthrough();
-      cleanup_trans();
+      finish_trans();
       return;
     }
 
@@ -8714,6 +9186,8 @@ bool
 RonSQLPreparer::is_count_star_only_query()
 {
   if (m_has_ctes || m_has_subqueries) return false;
+  // WP-J J5: COUNT(*) over the last N rows counts the scan's rows.
+  if (m_api_side_aggregation) return false;
   if (is_join_query() || !m_is_aggregate_query) return false;
   const SelectStatement& ast = m_context.ast_root;
   if (ast.where_expression != NULL) return false;
@@ -8987,16 +9461,14 @@ RonSQLPreparer::open_single_table_scan_op(Uint32 batch_rows)
 void
 RonSQLPreparer::register_passthrough_getvalues(NdbOperation* op,
                                                const NdbRecAttr** attrs,
+                                               const Uint32* cols,
                                                Uint32 num_cols)
 {
   require_run(m_main_scope.resolved_columns != NULL,
               "Single-table pass-through: missing resolved columns.");
-  Uint32 i = 0;
-  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
-       o = o->next, i++) {
-    ndbrequire(o->type == Outputs::Type::COLUMN);
+  for (Uint32 i = 0; i < num_cols; i++) {
     const QueryScope::ResolvedColumnRef& col_ref =
-        m_main_scope.resolved_columns[o->column.col_idx];
+        m_main_scope.resolved_columns[cols[i]];
     require_prm(col_ref.kind ==
                     QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                 "Single-table pass-through: output is not a stored column.");
@@ -9006,30 +9478,26 @@ RonSQLPreparer::register_passthrough_getvalues(NdbOperation* op,
     require_run(attrs[i] != NULL,
                 "Single-table pass-through: getValue() failed.");
   }
-  ndbrequire(i == num_cols);
 }
 
 void
 RonSQLPreparer::build_passthrough_getvalue_specs(
-    NdbOperation::GetValueSpec* gets, Uint32 num_cols)
+    NdbOperation::GetValueSpec* gets, const Uint32* cols, Uint32 num_cols)
 {
   /*
    * The NdbRecord-lookup twin of register_passthrough_getvalues: the
-   * identical outputs walk and checks, filling OO_GETVALUE specs
+   * identical column walk and checks, filling OO_GETVALUE specs
    * instead of calling getValue() (an NdbRecord operation cannot take
-   * RecAttr reads directly).  The walk preserves the outputs-order ==
+   * RecAttr reads directly).  The walk preserves the cols-order ==
    * attrs-order contract the printer metadata lookup relies on.  The
    * spec array is arena-allocated (alloc_exc runs no constructors), so
    * every field is set explicitly.
    */
   require_run(m_main_scope.resolved_columns != NULL,
               "Single-table pass-through: missing resolved columns.");
-  Uint32 i = 0;
-  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
-       o = o->next, i++) {
-    ndbrequire(o->type == Outputs::Type::COLUMN);
+  for (Uint32 i = 0; i < num_cols; i++) {
     const QueryScope::ResolvedColumnRef& col_ref =
-        m_main_scope.resolved_columns[o->column.col_idx];
+        m_main_scope.resolved_columns[cols[i]];
     require_prm(col_ref.kind ==
                     QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                 "Single-table pass-through: output is not a stored column.");
@@ -9041,7 +9509,275 @@ RonSQLPreparer::build_passthrough_getvalue_specs(
     gets[i].m_startPos = 0;
     gets[i].m_size = 0;
   }
-  ndbrequire(i == num_cols);
+}
+
+/*
+ * RONDB-1124 WP-J J5 (route_lastn_aggregate_to_api): the main aggregation
+ * program's per-row step, run in RonSQL over the rows the single-table
+ * ORDER BY / LIMIT scan delivers.  The program holds only loads, moves and
+ * aggregates, and each row goes through it as through the kernel's
+ * interpreter starting from empty accumulators:
+ *  - a load decodes the column into the register the kernel would hold,
+ *    with the kernel's own decode (aggLoadColumnValue, AggColumnLoad.hpp);
+ *    NdbRecAttr carries the storage format the kernel reads;
+ *  - an aggregate turns the register into the one-row partial the kernel
+ *    would build: COUNT 1, or 0 for NULL; SUM / MIN / MAX the register,
+ *    NULL included; a string MIN / MAX its length prefix and payload, and
+ *    nothing for NULL (AggInterpreterBase::minMaxString).
+ * NdbAggregator::MergeLocalGroup merges the partials with the rules that
+ * merge the data nodes' partials: checked 64-bit SUM (1860), DOUBLE
+ * promotion, mixed signedness, string MIN / MAX in the column collation.
+ */
+class RonSQLPreparer::ApiRowAggregation
+{
+public:
+  // fallback_col: a stored column the scan reads when the program loads
+  // none (COUNT(*) alone), since the pass-through reads at least one.
+  ApiRowAggregation(NdbAggregator* aggregator,
+                    const AggregationAPICompiler* agg,
+                    const QueryScope::ResolvedColumnRef* resolved,
+                    Uint32 fallback_col,
+                    ArenaMalloc* amalloc);
+  // The column registry indexes each row carries, in attrs order.
+  const Uint32* columns() const { return m_cols; }
+  Uint32 num_columns() const { return m_num_cols; }
+  // Merges one delivered row.  Returns 0, or the NDB error code the kernel
+  // raises for the same failure (1860 when a SUM leaves its range).
+  Int32 add_row(const NdbRecAttr* const* attrs);
+private:
+  NdbAggregator* m_aggregator;
+  const AggregationAPICompiler* m_agg;
+  Uint32* m_cols;
+  Uint32 m_num_cols = 0;
+  Uint32* m_load_slot;  // per instruction: a Load's attrs slot
+  Uint32 m_num_slots = 0;  // aggregate slots
+  // String MIN / MAX partials of one row, [Uint16 payload_len][Uint16
+  // capacity][length prefix + payload] each; MergeLocalGroup copies them.
+  char* m_str_buf = NULL;
+  Uint32 m_str_buf_len = 0;
+  decimal_digit_t m_decimal_buf[9];
+  decimal_t m_decimal;
+};
+
+RonSQLPreparer::ApiRowAggregation::ApiRowAggregation(
+    NdbAggregator* aggregator,
+    const AggregationAPICompiler* agg,
+    const QueryScope::ResolvedColumnRef* resolved,
+    Uint32 fallback_col,
+    ArenaMalloc* amalloc)
+  : m_aggregator(aggregator), m_agg(agg)
+{
+  typedef AggregationAPICompiler::SVMInstrType T;
+  const DynamicArray<AggregationAPICompiler::Instr>& program = agg->m_program;
+  const Uint32 n = program.size();
+  m_cols = amalloc->alloc_exc<Uint32>(n + 1);
+  m_load_slot = amalloc->alloc_exc<Uint32>(n == 0 ? 1 : n);
+  Uint32 num_minmax = 0;
+  Uint32 max_string_bytes = 0;
+  for (Uint32 pc = 0; pc < n; pc++) {
+    const AggregationAPICompiler::Instr& instr = program[pc];
+    m_load_slot[pc] = 0;
+    switch (instr.type) {
+    case T::Load: {
+      require_bug(instr.dest < REGS, "J5: load register out of range.");
+      const QueryScope::ResolvedColumnRef& ref = resolved[instr.src];
+      require_bug(ref.kind ==
+                      QueryScope::ResolvedColumnRef::Kind::StoredColumn &&
+                  ref.dict_column != NULL,
+                  "J5: aggregation load is not a stored column.");
+      Uint32 slot = 0;
+      while (slot < m_num_cols && m_cols[slot] != instr.src) slot++;
+      if (slot == m_num_cols) m_cols[m_num_cols++] = instr.src;
+      m_load_slot[pc] = slot;
+      const NdbDictionary::Column::Type type = ref.dict_column->getType();
+      if (type == NdbDictionary::Column::Char ||
+          type == NdbDictionary::Column::Varchar ||
+          type == NdbDictionary::Column::Longvarchar) {
+        const Uint32 bytes = ref.dict_column->getSizeInBytes();
+        if (bytes > max_string_bytes) max_string_bytes = bytes;
+      }
+      break;
+    }
+    case T::LoadConstantInteger:
+      require_bug(instr.dest < REGS && instr.src < agg->m_constants.size(),
+                  "J5: constant load out of range.");
+      break;
+    case T::Mov:
+      require_bug(instr.dest < REGS && instr.src < REGS,
+                  "J5: register out of range.");
+      break;
+    case T::Min:
+    case T::Max:
+      num_minmax++;
+      [[fallthrough]];
+    case T::Sum:
+    case T::Count:
+      require_bug(instr.dest < MAX_AGG_N_RESULTS && instr.src < REGS,
+                  "J5: aggregate slot out of range.");
+      if (instr.dest + 1 > m_num_slots) m_num_slots = instr.dest + 1;
+      break;
+    default:
+      require_bug(false,
+                  "J5: unexpected instruction in the aggregation program.");
+    }
+  }
+  require_bug(m_num_slots > 0, "J5: no aggregate in the program.");
+  if (m_num_cols == 0) {
+    require_bug(resolved[fallback_col].kind ==
+                    QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+                "J5: the ORDER BY column is not a stored column.");
+    m_cols[m_num_cols++] = fallback_col;
+  }
+  if (num_minmax > 0) {
+    // Room for every MIN / MAX of a row; each partial is 8-byte aligned.
+    m_str_buf_len = num_minmax * (((4 + max_string_bytes) + 7) & ~7U);
+    m_str_buf = reinterpret_cast<char*>(
+        amalloc->alloc_exc<Uint64>(m_str_buf_len / 8));
+  }
+  m_decimal.buf = m_decimal_buf;
+  m_decimal.len = 9;
+}
+
+Int32
+RonSQLPreparer::ApiRowAggregation::add_row(const NdbRecAttr* const* attrs)
+{
+  typedef AggregationAPICompiler::SVMInstrType T;
+  Register regs[REGS] = {};
+  // A register loaded from a string column: its bytes in the row.
+  struct StringRef {
+    const Uint8* data;
+    Uint16 prefix_bytes;
+    Uint16 payload_len;
+  } strs[REGS] = {};
+  AggResItem items[MAX_AGG_N_RESULTS];
+  for (Uint32 i = 0; i < m_num_slots; i++) {
+    items[i].type = NDB_TYPE_UNDEFINED;
+    items[i].value.val_int64 = 0;
+    items[i].is_unsigned = false;
+    items[i].is_null = true;
+  }
+  Uint32 str_pos = 0;
+  const DynamicArray<AggregationAPICompiler::Instr>& program = m_agg->m_program;
+  for (Uint32 pc = 0; pc < program.size(); pc++) {
+    const AggregationAPICompiler::Instr& instr = program[pc];
+    switch (instr.type) {
+    case T::Load: {
+      const NdbRecAttr* ra = attrs[m_load_slot[pc]];
+      const NdbDictionary::Column* col = ra->getColumn();
+      const DataType type = static_cast<DataType>(col->getType());
+      const Uint8* data = reinterpret_cast<const Uint8*>(ra->aRef());
+      const Uint32 size = ra->get_size_in_bytes();
+      const AggLoadStatus status = aggLoadColumnValue(
+          type, aggIsUnsignedType(type), col->getPrecision(),
+          col->getScale(), data, size, ra->isNULL() != 0, &m_decimal,
+          &regs[instr.dest]);
+      switch (status) {
+      case AggLoadStatus::Ok:
+        break;
+      case AggLoadStatus::String: {
+        StringRef& sr = strs[instr.dest];
+        sr.data = data;
+        // CHAR: NdbRecAttr holds the whole declared width, as the
+        // kernel's attribute read does.
+        aggStringPayload(type, data, size, &sr.prefix_bytes,
+                         &sr.payload_len);
+        break;
+      }
+      // The kernel's codes for the same failures (Dbtup.hpp ZAGG_*).
+      case AggLoadStatus::WrongType:
+        return 1866;
+      case AggLoadStatus::DecimalParseOverflow:
+        return 1862;
+      case AggLoadStatus::DecimalParseError:
+        return 1863;
+      case AggLoadStatus::DecimalConvOverflow:
+        return 1864;
+      case AggLoadStatus::DecimalConvError:
+        return 1865;
+      }
+      break;
+    }
+    case T::LoadConstantInteger: {
+      Register& r = regs[instr.dest];
+      r.type = NDB_TYPE_BIGINT;
+      r.value.val_int64 = m_agg->m_constants[instr.src].int_64;
+      r.is_unsigned = false;
+      r.is_null = false;
+      break;
+    }
+    case T::Mov:
+      regs[instr.dest] = regs[instr.src];
+      strs[instr.dest] = strs[instr.src];
+      break;
+    case T::Count: {
+      AggResItem& item = items[instr.dest];
+      item.type = NDB_TYPE_BIGINT;
+      item.value.val_uint64 = regs[instr.src].is_null ? 0 : 1;
+      item.is_unsigned = true;
+      item.is_null = false;
+      break;
+    }
+    case T::Sum:
+      items[instr.dest] = regs[instr.src];
+      break;
+    case T::Min:
+    case T::Max: {
+      const Register& r = regs[instr.src];
+      if (r.type != NDB_TYPE_CHAR && r.type != NDB_TYPE_VARCHAR &&
+          r.type != NDB_TYPE_LONGVARCHAR) {
+        items[instr.dest] = r;
+        break;
+      }
+      if (r.is_null) break;  // the slot stays empty
+      const StringRef& sr = strs[instr.src];
+      const Uint32 bytes = sr.prefix_bytes + sr.payload_len;
+      ndbrequire(str_pos + 4 + bytes <= m_str_buf_len);
+      char* buf = m_str_buf + str_pos;
+      str_pos += ((4 + bytes) + 7) & ~7U;
+      Uint16* hdr = reinterpret_cast<Uint16*>(buf);
+      hdr[0] = sr.payload_len;
+      hdr[1] = static_cast<Uint16>(bytes);
+      memcpy(buf + 4, sr.data, bytes);
+      AggResItem& item = items[instr.dest];
+      item.type = r.type;
+      item.value.val_ptr = buf;
+      item.is_unsigned = false;
+      item.is_null = false;
+      break;
+    }
+    default:
+      abort();  // rejected by the constructor
+    }
+  }
+  return m_aggregator->MergeLocalGroup(nullptr, 0, items);
+}
+
+void
+RonSQLPreparer::execute_api_side_aggregate()
+{
+  /*
+   * RONDB-1124 WP-J J5.  The NdbAggregator is built from the compiled
+   * program exactly as for the pushdown scan (so the same column and
+   * operation checks apply), but it is never sent: it holds the merged
+   * result of the rows the scan delivers, and the aggregate printer prints
+   * it as it prints a pushdown result.
+   */
+  NdbAggregator aggregator(m_main_scope.table);
+  DBGV(programAggregator(&aggregator));
+  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+  // The body's ORDER BY is required (route_lastn_aggregate_to_api), and
+  // its first column is the one read when the program loads none.
+  ndbrequire(m_context.ast_root.orderby_columns != NULL);
+  ApiRowAggregation api_rows(&aggregator, m_main_scope.agg,
+                             m_main_scope.resolved_columns,
+                             m_context.ast_root.orderby_columns->col_idx,
+                             m_amalloc);
+  execute_single_table_passthrough(&api_rows);
+  aggregator.PrepareResults();
+  STAT_TS(m_conf.phase_stats, s_print_start);
+  m_resultprinter->print_result(&aggregator, m_conf.out_stream);
+  STAT_TS(m_conf.phase_stats, s_print_end);
+  STAT_SET(m_conf.phase_stats, print_us, s_print_start, s_print_end);
 }
 
 /*
@@ -9144,17 +9880,14 @@ buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
   }
 }
 
-/* Sort the buffered rows and print the first min(limit, n).  The TSV
- * header stays deferred until the first printed row (LIMIT 0 or an
- * empty result prints nothing); JSON's '[' was emitted by the caller
- * before draining and `header_emitted` reflects that. */
+/* Sort the buffered rows and pass the first min(limit, n) to
+ * row_fn(row, i) in order. */
+template <typename RowFn>
 static void
-sort_and_print_passthrough_rows(PassthroughSortBuffer& buf,
+for_each_sorted_passthrough_row(PassthroughSortBuffer& buf,
                                 const PassthroughSortKey* keys, Uint32 nkeys,
-                                Uint32 num_cols, Int64 limit,
-                                ArenaMalloc* amalloc, ResultPrinter* printer,
-                                bool& header_emitted,
-                                std::basic_ostream<char>* out)
+                                Int64 limit, ArenaMalloc* amalloc,
+                                RowFn row_fn)
 {
   Uint32 n = buf.rows.size();
   if (n == 0) return;
@@ -9172,21 +9905,38 @@ sort_and_print_passthrough_rows(PassthroughSortBuffer& buf,
   else
     std::sort(arr, arr + n, less);
   for (Uint32 i = 0; i < print_count; i++) {
-    const NdbRecAttr* const* row =
-        const_cast<const NdbRecAttr* const*>(arr[i]);
-    if (!header_emitted) {
-      printer->print_passthrough_header(row, num_cols, out);
-      header_emitted = true;
-    }
-    printer->print_passthrough_row(row, num_cols, /*is_first_row=*/(i == 0),
-                                   out);
+    row_fn(const_cast<const NdbRecAttr* const*>(arr[i]), i);
   }
+}
+
+/* Sort the buffered rows and print the first min(limit, n).  The TSV
+ * header stays deferred until the first printed row (LIMIT 0 or an
+ * empty result prints nothing); JSON's '[' was emitted by the caller
+ * before draining and `header_emitted` reflects that. */
+static void
+sort_and_print_passthrough_rows(PassthroughSortBuffer& buf,
+                                const PassthroughSortKey* keys, Uint32 nkeys,
+                                Uint32 num_cols, Int64 limit,
+                                ArenaMalloc* amalloc, ResultPrinter* printer,
+                                bool& header_emitted,
+                                std::basic_ostream<char>* out)
+{
+  for_each_sorted_passthrough_row(
+      buf, keys, nkeys, limit, amalloc,
+      [&](const NdbRecAttr* const* row, Uint32 i) {
+        if (!header_emitted) {
+          printer->print_passthrough_header(row, num_cols, out);
+          header_emitted = true;
+        }
+        printer->print_passthrough_row(row, num_cols,
+                                       /*is_first_row=*/(i == 0), out);
+      });
 }
 
 }  // namespace
 
 void
-RonSQLPreparer::execute_single_table_passthrough()
+RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
 {
   /*
    * Phase 1 (non_aggregate_phase_1.md, W3): projection-only
@@ -9198,6 +9948,10 @@ RonSQLPreparer::execute_single_table_passthrough()
    * header until the first row so empty results produce no output,
    * matching the mysql client baseline ronsql_compare.inc diffs
    * against.
+   *
+   * WP-J J5 (api_rows != NULL): the same arms read the columns the main
+   * aggregation program loads, and each row that would be printed goes
+   * to api_rows instead; nothing is printed here.
    */
   Ndb* ndb = m_conf.ndb;
   ndbrequire(m_trans == NULL);
@@ -9205,12 +9959,37 @@ RonSQLPreparer::execute_single_table_passthrough()
   require_run(m_trans != NULL, "Failed to start transaction.");
   ndbrequire(m_main_scope.table != NULL);
 
+  // The column registry indexes read per row, in attrs order.
+  const Uint32* cols;
   Uint32 num_cols = 0;
-  for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
-       o = o->next) {
-    num_cols++;
+  if (api_rows != NULL) {
+    cols = api_rows->columns();
+    num_cols = api_rows->num_columns();
+  } else {
+    for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+         o = o->next) {
+      num_cols++;
+    }
+    Uint32* output_cols = m_amalloc->alloc_exc<Uint32>(num_cols);
+    Uint32 i = 0;
+    for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
+         o = o->next, i++) {
+      ndbrequire(o->type == Outputs::Type::COLUMN);
+      output_cols[i] = o->column.col_idx;
+    }
+    cols = output_cols;
   }
   ndbrequire(num_cols > 0);
+  // WP-J J5: merge one delivered row, raising a failed merge (1860) as the
+  // pushdown scan raises it.
+  auto aggregate_row = [&](const NdbRecAttr* const* row) {
+    const Int32 ret = api_rows->add_row(row);
+    if (ret != 0) {
+      throw_classified_ndb_error(m_conf.ndb->getNdbError(ret),
+                                 "Failed to execute scan aggregation.",
+                                 "aggregation in RonSQL");
+    }
+  };
   // Phase 3 (ronsql_orderby_limit_plan.md): ORDER BY on the
   // pass-through path — count entries up front so `attrs` has room for
   // ORDER BY-only extra slots on the scan arm.  The PK-lookup arm
@@ -9335,7 +10114,7 @@ RonSQLPreparer::execute_single_table_passthrough()
                                     static_cast<const char*>(rv.val))) == 0,
                       "Failed to set primary key value for lookup.");
         }
-        register_passthrough_getvalues(op, attrs_n, num_cols);
+        register_passthrough_getvalues(op, attrs_n, cols, num_cols);
         exec_ops[n] = op;
       } else {
         char* key_row = m_amalloc->alloc_exc<char>(rowlen);
@@ -9357,7 +10136,7 @@ RonSQLPreparer::execute_single_table_passthrough()
         }
         NdbOperation::GetValueSpec* gets =
             m_amalloc->alloc_exc<NdbOperation::GetValueSpec>(num_cols);
-        build_passthrough_getvalue_specs(gets, num_cols);
+        build_passthrough_getvalue_specs(gets, cols, num_cols);
         NdbOperation::OperationOptions opts;
         memset(&opts, 0, sizeof(opts));
         opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED |
@@ -9419,7 +10198,7 @@ RonSQLPreparer::execute_single_table_passthrough()
       }
     }
     Uint32 row_count = 0;
-    if (is_json) {
+    if (is_json && api_rows == NULL) {
       m_resultprinter->print_passthrough_header(op_attrs, num_cols,
                                                 m_conf.out_stream);
       header_emitted = true;
@@ -9440,6 +10219,11 @@ RonSQLPreparer::execute_single_table_passthrough()
         continue;
       }
       const NdbRecAttr** attrs_n = op_attrs + (size_t)n * num_cols;
+      if (api_rows != NULL) {
+        aggregate_row(attrs_n);
+        row_count++;
+        continue;
+      }
       if (!header_emitted) {
         m_resultprinter->print_passthrough_header(attrs_n, num_cols,
                                                   m_conf.out_stream);
@@ -9475,7 +10259,7 @@ RonSQLPreparer::execute_single_table_passthrough()
                                          (Int64)0xFFFFFFFF);
   }
   NdbScanOperation* scanOp = open_single_table_scan_op(batch_rows);
-  register_passthrough_getvalues(scanOp, attrs, num_cols);
+  register_passthrough_getvalues(scanOp, attrs, cols, num_cols);
   // Phase 3: resolve ORDER BY sort keys BEFORE execute.  A sort column
   // already in the SELECT reuses its output slot; others get an extra
   // getValue in a slot after the outputs (fetched for the comparator,
@@ -9489,6 +10273,10 @@ RonSQLPreparer::execute_single_table_passthrough()
          ob != NULL; ob = ob->next) {
       Uint32 slot;
       if (ob->kind == OrderbyColumns::Kind::OUTPUT_REF) {
+        // route_lastn_aggregate_to_api() qualifies every ORDER BY name a
+        // main output alias could capture.
+        require_bug(api_rows == NULL,
+                    "J5: ORDER BY resolved to a SELECT output.");
         require_prm(ob->output_idx < num_cols,
                     "ORDER BY alias resolves outside the SELECT outputs.");
         slot = ob->output_idx;
@@ -9499,13 +10287,11 @@ RonSQLPreparer::execute_single_table_passthrough()
                         QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                     "ORDER BY column is not a stored-table column.");
         bool found = false;
-        Uint32 oi = 0;
         slot = 0;
-        for (const Outputs* o = m_context.ast_root.outputs; o != NULL;
-             o = o->next, oi++) {
+        for (Uint32 ci = 0; ci < num_cols; ci++) {
           if (same_resolved_column(
-                  R, m_main_scope.resolved_columns[o->column.col_idx])) {
-            slot = oi;
+                  R, m_main_scope.resolved_columns[cols[ci]])) {
+            slot = ci;
             found = true;
             break;
           }
@@ -9568,6 +10354,12 @@ RonSQLPreparer::execute_single_table_passthrough()
       row_count++;
       continue;
     }
+    if (api_rows != NULL) {
+      aggregate_row(attrs);
+      row_count++;
+      if (limit >= 0 && (Int64)row_count >= limit) limit_reached = true;
+      continue;
+    }
     if (!header_emitted) {
       m_resultprinter->print_passthrough_header(attrs, num_cols,
                                                 m_conf.out_stream);
@@ -9591,12 +10383,28 @@ RonSQLPreparer::execute_single_table_passthrough()
     m_conf.phase_stats->rows_drained = row_count;
   }
 #endif
-  if (limit_reached) {
+  if (limit_reached && m_conf.deferred_close != NULL) {
+    // The scan is left open: the caller closes the transaction after its
+    // reply (RonSQLExecParams::deferred_close), and closing it closes the
+    // scan.  The close would otherwise wait one more round trip for the
+    // data nodes whenever a fragment holds more rows than the batch.
+    m_defer_close = true;
+  } else if (limit_reached) {
     // Early close (Phase 2): release the still-open scan instead of
     // draining its remaining batches.
+    STAT_TS(m_conf.phase_stats, s_close_start);
     scanOp->close();
+    STAT_TS(m_conf.phase_stats, s_close_end);
+    STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
   } else {
     require_run(rc == 1, "Single-table pass-through scan failed.");
+  }
+  if (sorting && api_rows != NULL) {
+    // WP-J J5: aggregate the first min(limit, n) rows in sort order.
+    for_each_sorted_passthrough_row(
+        sort_buf, sort_keys, n_sort_keys, limit, m_amalloc,
+        [&](const NdbRecAttr* const* row, Uint32) { aggregate_row(row); });
+    return;
   }
   if (sorting) {
     // Phase 3: sort the buffered rows and print the first
@@ -9607,6 +10415,7 @@ RonSQLPreparer::execute_single_table_passthrough()
                                     m_resultprinter, header_emitted,
                                     m_conf.out_stream);
   }
+  if (api_rows != NULL) return;
   if (is_json && !header_emitted) {
     m_resultprinter->print_passthrough_header(attrs, num_cols,
                                               m_conf.out_stream);
@@ -9618,11 +10427,25 @@ RonSQLPreparer::execute_single_table_passthrough()
 }
 
 void
+RonSQLPreparer::finish_trans() {
+  if (m_defer_close && m_trans != NULL) {
+    ndbrequire(m_conf.deferred_close != NULL);
+    *m_conf.deferred_close = m_trans;
+    m_trans = NULL;
+    return;
+  }
+  cleanup_trans();
+}
+
+void
 RonSQLPreparer::cleanup_trans() {
   if (m_trans) {
     Ndb* ndb = m_conf.ndb;
     ndbrequire(ndb);
+    STAT_TS(m_conf.phase_stats, s_close_start);
     DBGV(ndb->closeTransaction(m_trans));
+    STAT_TS(m_conf.phase_stats, s_close_end);
+    STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
     m_trans = NULL;
   }
 }
@@ -10295,8 +11118,12 @@ RonSQLPreparer::execute_join()
     STAT_SET(m_conf.phase_stats, print_us, s_result_start, s_result_done);
   }
 
-  // Cleanup
+  // Cleanup.  For a pass-through drain that stopped at its LIMIT this
+  // closes the still-open scan.
+  STAT_TS(m_conf.phase_stats, s_close_start);
   query->close();
+  STAT_TS(m_conf.phase_stats, s_close_end);
+  STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
   queryDef->destroy();
   qb->destroy();
 
@@ -14748,8 +15575,26 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                    " literals and calls to DATE_ADD and"
                                    " DATE_SUB are supported.");
     }
+    // The buffer has the widest size (DATETIME(6) / TIMESTAMP(6)) and is
+    // zeroed: NdbInterpretedCode::branch_col reads the column's own size
+    // from it, whatever rv.len says.
     uchar* bindate = m_amalloc->alloc_exc<uchar>(binlen);
+    memset(bindate, 0, binlen);
     int precision = col->getPrecision();
+    // rv.len must be the column's width: the integer part (DATETIME2 5
+    // bytes, TIMESTAMP2 4) plus (precision + 1) / 2 fraction bytes, as
+    // my_datetime_packed_to_binary / my_timestamp_to_binary write it.
+    // The key-row paths memcpy rv.len bytes into the column's NdbRecord
+    // slot, and NdbQueryBuilder::constValue(ptr, len) requires exactly
+    // getSizeInBytes() for a fixed-size column.  Returning the widest size
+    // overran a TIMESTAMP(0) key slot by 3 bytes and failed CTE-body bounds
+    // on it with 4803 (WP-J lastn-7).  Same fix as DATE's binlen = 3.
+    Uint32 retlen = binlen;
+    if (type == NdbDictionary::Column::Type::Datetime2)
+      retlen = 5 + static_cast<Uint32>(precision + 1) / 2;
+    else if (type == NdbDictionary::Column::Type::Timestamp2)
+      retlen = 4 + static_cast<Uint32>(precision + 1) / 2;
+    require_run(retlen <= binlen, "Temporal precision out of range.");
     int warnings = 0;
     if (unlikely(mt.time_type != timetype)) {
       throw RonSQLMaybeStaleSchema("DATE/DATETIME/TIMESTAMP column compared to"
@@ -14811,7 +15656,7 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     default:
       abort();
     }
-    return raw_value{bindate, binlen};
+    return raw_value{bindate, retlen};
   }
   throw RonSQLPermanentError("Bug in RonSQLPreparer::encode_constant");
 }
@@ -17237,6 +18082,25 @@ RonSQLPreparer::print()
            " single-group body (every GROUP BY column bound to a constant)"
            " run as the body's aggregates over its table and WHERE.\n\n";
   }
+  // RONDB-1124 WP-J J5: the last-N CTE aggregated in RonSQL
+  // (route_lastn_aggregate_to_api).
+  if (m_api_agg_cte.c_str() != NULL) {
+    out << "CTE '" << m_api_agg_cte.c_str()
+        << "' aggregated in RonSQL over the ORDER BY / LIMIT scan of its"
+           " body (last N rows): the scan below delivers the rows and the"
+           " main aggregates are computed over them, without the CTE"
+           " protocol.\n\n";
+  }
+  // RONDB-1124 WP-J J1: last-N CTE bodies served as grouped bodies
+  // (rewrite_lastn_cte_bodies).
+  for (Uint32 i = 0; i < m_num_lastn_ctes && i < MAX_LASTN_CTES_REPORTED;
+       i++) {
+    out << "CTE '" << m_lastn_ctes[i]->name.c_str()
+        << "' served as the last N rows: its non-aggregating body with"
+           " LIMIT is grouped by every output column (the whole primary key"
+           " included, so each row is one group) and the kernel keeps the"
+           " ORDER BY / LIMIT top N.\n\n";
+  }
 
   // Print CTE definitions
   if (m_has_ctes) {
@@ -17842,9 +18706,10 @@ RonSQLPreparer::print()
   // Phase 4b (ronsql_orderby_limit_plan.md): pass-through ORDER BY
   // strategy — index order (SF_OrderBy streaming) vs the Phase 3
   // buffered client-side sort.  Aggregate queries sort in the
-  // ResultPrinter and report that below.
-  if (!m_is_aggregate_query && ast_root.orderby_columns != NULL &&
-      m_conf.ndb != NULL) {
+  // ResultPrinter and report that below; WP-J J5's ORDER BY is its
+  // scan's.
+  if ((!m_is_aggregate_query || m_api_side_aggregation) &&
+      ast_root.orderby_columns != NULL && m_conf.ndb != NULL) {
     if (m_pk_lookup) {
       out << "ORDER BY: single-row primary key lookup, no sort needed.\n";
     } else if (m_scan_config != NULL && m_scan_config->index_order) {

@@ -48,6 +48,7 @@
 #include "signaldata/TransIdAI.hpp"
 #include "include/my_byteorder.h"
 #include "AggInterpreterBase.hpp"
+#include <AggColumnLoad.hpp>
 #include "Dbtup.hpp"
 #include "DbtupJitGlue.hpp"   /* dbtup_jit_release_agg (Phase 8 Slice 3c) */
 #include "InterpreterCommonOp.hpp"
@@ -122,15 +123,8 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
     return ZAGG_COL_TYPE_UNSUPPORTED;
   }
 
-  Int32 decimal_info = 0;
   Int32 precision = 0;
   Int32 scale = 0;
-  Int32 dec_ret = E_DEC_OK;
-  Uint8* dec_buf_ptr = nullptr;
-  double dec_val_dbl = 0;
-  longlong dec_val_ll = 0;
-  ulonglong dec_val_ull = 0;
-
   if (type == NDB_TYPE_DECIMAL ||
       type == NDB_TYPE_DECIMALUNSIGNED) {
     if (unlikely(exec_pos >= m_prog_len)) {
@@ -139,277 +133,54 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
           class_name, exec_pos, m_prog_len);
       return ZAGG_OTHER_ERROR;
     }
-    decimal_info =
+    const Int32 decimal_info =
         sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
     precision = decimal_info >> 16;
     scale = decimal_info & 0xFFFF;
   }
 
-  ResetRegister(&m_registers[reg_index]);
-  m_registers[reg_index].type = AlignedType(type, scale);
-  m_registers[reg_index].is_unsigned = is_unsigned;
-  m_registers[reg_index].is_null = header->isNULL();
-  if (m_registers[reg_index].is_null) {
-    PA_INTERP_TRACE(m_frag_id,
-                    "Load NULL, type: %u",
-                    m_registers[reg_index].type);
-    m_registers[reg_index].value.val_int64 = 0;
-    return 0;
+  /* The value decode is shared with aggregation in the RonSQL layer
+   * (include/util/AggColumnLoad.hpp, RONDB-1124 WP-J J5), so both turn a
+   * stored value into the same register.  Strings come back as
+   * AggLoadStatus::String and are captured below. */
+  Uint8* const data =
+      reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
+  const AggLoadStatus load_status = aggLoadColumnValue(
+      type, is_unsigned, precision, scale, data, header->getByteSize(),
+      header->isNULL(), &m_decimal, &m_registers[reg_index]);
+  switch (load_status) {
+    case AggLoadStatus::Ok:
+      PA_INTERP_TRACE(m_frag_id,
+                      "Load type %u null %u value 0x%llx",
+                      type, (Uint32)m_registers[reg_index].is_null,
+                      (unsigned long long)
+                          m_registers[reg_index].value.val_uint64);
+      return 0;
+    case AggLoadStatus::String:
+      break;
+    case AggLoadStatus::WrongType:
+      return ZAGG_LOAD_COL_WRONG_TYPE;
+    case AggLoadStatus::DecimalParseOverflow:
+    case AggLoadStatus::DecimalParseError:
+    case AggLoadStatus::DecimalConvOverflow:
+    case AggLoadStatus::DecimalConvError: {
+      char log_buf[128];
+      sprintf(log_buf, "Error while decoding decimal: ");
+      for (Uint32 i = 0; i < header->getByteSize(); i++) {
+        sprintf(log_buf + strlen(log_buf), "%x ", *(data + i));
+      }
+      DEB_AGG(("%s", log_buf));
+      if (load_status == AggLoadStatus::DecimalParseOverflow)
+        return ZAGG_DECIMAL_PARSE_OVERFLOW;
+      if (load_status == AggLoadStatus::DecimalParseError)
+        return ZAGG_DECIMAL_PARSE_ERROR;
+      if (load_status == AggLoadStatus::DecimalConvOverflow)
+        return ZAGG_DECIMAL_CONV_OVERFLOW;
+      return ZAGG_DECIMAL_CONV_ERROR;
+    }
   }
 
   switch (type) {
-    case NDB_TYPE_TINYINT:
-      m_registers[reg_index].value.val_int64 =
-          *reinterpret_cast<Int8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_TINYINT %lld",
-                      m_registers[reg_index].value.val_int64);
-      return 0;
-    case NDB_TYPE_SMALLINT:
-      m_registers[reg_index].value.val_int64 =
-          sint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_SMALLINT %lld",
-                      m_registers[reg_index].value.val_int64);
-      return 0;
-    case NDB_TYPE_MEDIUMINT:
-      m_registers[reg_index].value.val_int64 =
-          sint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_MEDIUM %lld",
-                      m_registers[reg_index].value.val_int64);
-      return 0;
-    case NDB_TYPE_INT:
-      m_registers[reg_index].value.val_int64 =
-          sint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_INT %lld",
-                      m_registers[reg_index].value.val_int64);
-      return 0;
-    case NDB_TYPE_BIGINT:
-      m_registers[reg_index].value.val_int64 =
-          sint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_BIGINT %lld",
-                      m_registers[reg_index].value.val_int64);
-      return 0;
-    case NDB_TYPE_TINYUNSIGNED:
-      m_registers[reg_index].value.val_uint64 =
-          *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_TINYUNSIGNED %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_SMALLUNSIGNED:
-      m_registers[reg_index].value.val_uint64 =
-          uint2korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_SMALLUNSIGNED %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_MEDIUMUNSIGNED:
-      m_registers[reg_index].value.val_uint64 =
-          uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_MEDIUMUNSIGNED %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_DATE:
-      // D17: identical to MEDIUMUNSIGNED — a DATE is stored as the
-      // 3-byte little-endian packed value w = (year<<9)|(month<<5)|day.
-      // Register type is BIGINT (AlignedType) with is_unsigned set, so
-      // unsigned MIN/MAX over w == DATE MIN/MAX.  RonSQL unpacks the
-      // resulting w back to YYYY-MM-DD for display.
-      m_registers[reg_index].value.val_uint64 =
-          uint3korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_DATE %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_YEAR:
-      // Temporal: YEAR is a single unsigned byte (year - 1900, 0 = 0000).
-      // Identical to TINYUNSIGNED; RonSQL adds the 1900 offset for display.
-      m_registers[reg_index].value.val_uint64 =
-          *reinterpret_cast<Uint8*>(&m_attr_read_buf[m_attr_read_pos + 1]);
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_YEAR %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_DATETIME2:
-    case NDB_TYPE_TIME2:
-    case NDB_TYPE_TIMESTAMP2: {
-      // Temporal: DATETIME2 (5+flen bytes), TIME2 (3+flen bytes) and
-      // TIMESTAMP2 (4+flen bytes) are
-      // stored big-endian in MySQL's memcmp-comparable packed binary, where
-      // flen = (1+precision)/2.  Read the column's exact byte width (from the
-      // AttributeHeader — no padding, getByteSize == 5+flen / 3+flen) MSB-first
-      // into the register so the unsigned compare reproduces memcmp order
-      // (== chronological order).  RonSQL reconstructs the bytes from this
-      // value and decodes via my_*_packed_from_binary for display.
-      const unsigned char* src = reinterpret_cast<const unsigned char*>(
-          &m_attr_read_buf[m_attr_read_pos + 1]);
-      const Uint32 nbytes = header->getByteSize();
-      Uint64 v = 0;
-      for (Uint32 i = 0; i < nbytes; i++) {
-        v = (v << 8) | static_cast<Uint64>(src[i]);
-      }
-      m_registers[reg_index].value.val_uint64 = v;
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_DATETIME2/TIME2 (%u bytes) %llu",
-                      nbytes, m_registers[reg_index].value.val_uint64);
-      return 0;
-    }
-    case NDB_TYPE_UNSIGNED:
-      m_registers[reg_index].value.val_uint64 =
-          uint4korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_UNSIGNED %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_BIGUNSIGNED:
-      m_registers[reg_index].value.val_uint64 =
-          uint8korr(reinterpret_cast<char*>(&m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_BIGUNSIGNED %llu",
-                      m_registers[reg_index].value.val_uint64);
-      return 0;
-    case NDB_TYPE_FLOAT:
-      m_registers[reg_index].value.val_double =
-          floatget(reinterpret_cast<unsigned char*>(
-                &m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_FLOAT %lf",
-                      m_registers[reg_index].value.val_double);
-      return 0;
-    case NDB_TYPE_DOUBLE:
-      m_registers[reg_index].value.val_double =
-          doubleget(reinterpret_cast<unsigned char*>(
-                &m_attr_read_buf[m_attr_read_pos + 1]));
-      PA_INTERP_TRACE(m_frag_id,
-                      "Load NDB_TYPE_DOUBLE %lf",
-                      m_registers[reg_index].value.val_double);
-      return 0;
-    case NDB_TYPE_DECIMAL:
-      assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-          header->getByteSize());
-      dec_ret = bin2decimal(reinterpret_cast<const uchar*>(
-                    &m_attr_read_buf[m_attr_read_pos + 1]),
-                &m_decimal, precision, scale);
-      if (dec_ret != E_DEC_OK) {
-        dec_buf_ptr = reinterpret_cast<Uint8*>(
-            &m_attr_read_buf[m_attr_read_pos + 1]);
-        char log_buf[128];
-        sprintf(log_buf, "Error while parsing decimal: ");
-        for (Uint32 i = 0; i < header->getByteSize(); i++) {
-          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-        }
-        DEB_AGG(("%s", log_buf));
-        if (dec_ret == E_DEC_OVERFLOW) {
-          return ZAGG_DECIMAL_PARSE_OVERFLOW;
-        } else {
-          return ZAGG_DECIMAL_PARSE_ERROR;
-        }
-      }
-      assert(m_registers[reg_index].is_unsigned == false);
-      if (scale != 0) {
-        assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
-        dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
-        m_registers[reg_index].value.val_double = dec_val_dbl;
-      } else {
-        assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
-        dec_ret = decimal2longlong(&m_decimal, &dec_val_ll);
-        m_registers[reg_index].value.val_int64 = dec_val_ll;
-      }
-      if (dec_ret != E_DEC_OK) {
-        dec_buf_ptr = reinterpret_cast<Uint8*>(
-            &m_attr_read_buf[m_attr_read_pos + 1]);
-        char log_buf[128];
-        sprintf(log_buf, "Error while converting decimal: ");
-        for (Uint32 i = 0; i < header->getByteSize(); i++) {
-          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-        }
-        DEB_AGG(("%s", log_buf));
-        if (dec_ret == E_DEC_OVERFLOW) {
-          return ZAGG_DECIMAL_CONV_OVERFLOW;
-        } else {
-          return ZAGG_DECIMAL_CONV_ERROR;
-        }
-      }
-#ifdef DEBUG_PA_INTERP
-      if (scale != 0) {
-        PA_INTERP_TRACE(m_frag_id,
-                        "Load NDB_TYPE_DECIMAL[double] %lf",
-                        m_registers[reg_index].value.val_double);
-      } else {
-        PA_INTERP_TRACE(m_frag_id,
-                        "Load NDB_TYPE_DECIMAL[int64] %lld",
-                        m_registers[reg_index].value.val_int64);
-      }
-#endif
-      return 0;
-
-    case NDB_TYPE_DECIMALUNSIGNED:
-      assert(static_cast<Uint32>(decimal_bin_size(precision, scale)) ==
-          header->getByteSize());
-      dec_ret = bin2decimal(reinterpret_cast<const uchar*>(
-                    &m_attr_read_buf[m_attr_read_pos + 1]),
-                &m_decimal, precision, scale);
-      if (dec_ret != E_DEC_OK) {
-        dec_buf_ptr = reinterpret_cast<Uint8*>(
-            &m_attr_read_buf[m_attr_read_pos + 1]);
-        char log_buf[128];
-        sprintf(log_buf, "Error while parsing decimal: ");
-        for (Uint32 i = 0; i < header->getByteSize(); i++) {
-          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-        }
-        DEB_AGG(("%s", log_buf));
-        if (dec_ret == E_DEC_OVERFLOW) {
-          return ZAGG_DECIMAL_PARSE_OVERFLOW;
-        } else {
-          return ZAGG_DECIMAL_PARSE_ERROR;
-        }
-      }
-      assert(m_registers[reg_index].is_unsigned == true);
-      if (unlikely(m_decimal.sign)) {
-        return ZAGG_DECIMAL_CONV_ERROR;
-      }
-      if (scale != 0) {
-        assert(m_registers[reg_index].type == NDB_TYPE_DOUBLE);
-        dec_ret = decimal2double(&m_decimal, &dec_val_dbl);
-        m_registers[reg_index].value.val_double = dec_val_dbl;
-      } else {
-        assert(m_registers[reg_index].type == NDB_TYPE_BIGINT);
-        dec_ret = decimal2ulonglong(&m_decimal, &dec_val_ull);
-        m_registers[reg_index].value.val_uint64 = dec_val_ull;
-      }
-      if (dec_ret != E_DEC_OK) {
-        dec_buf_ptr = reinterpret_cast<Uint8*>(
-            &m_attr_read_buf[m_attr_read_pos + 1]);
-        char log_buf[128];
-        sprintf(log_buf, "Error while converting decimal: ");
-        for (Uint32 i = 0; i < header->getByteSize(); i++) {
-          sprintf(log_buf + strlen(log_buf), "%x ", *(dec_buf_ptr + i));
-        }
-        DEB_AGG(("%s", log_buf));
-        if (dec_ret == E_DEC_OVERFLOW) {
-          return ZAGG_DECIMAL_CONV_OVERFLOW;
-        } else {
-          return ZAGG_DECIMAL_CONV_ERROR;
-        }
-      }
-#ifdef DEBUG_PA_INTERP
-      if (scale != 0) {
-        PA_INTERP_TRACE(m_frag_id,
-                        "Load NDB_TYPE_DECIMALUNSIGNED[double] %lf",
-                        m_registers[reg_index].value.val_double);
-      } else {
-        PA_INTERP_TRACE(m_frag_id,
-                        "Load NDB_TYPE_DECIMALUNSIGEND[uint64] %llu",
-                        m_registers[reg_index].value.val_uint64);
-      }
-#endif
-      return 0;
-
     case NDB_TYPE_CHAR:
     case NDB_TYPE_VARCHAR:
     case NDB_TYPE_LONGVARCHAR: {
@@ -442,23 +213,13 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
       } else {
         return ZAGG_LOAD_COL_WRONG_TYPE;
       }
-      const Uint16 prefix =
-          (type == NDB_TYPE_CHAR) ? 0 :
-          (type == NDB_TYPE_VARCHAR) ? 1 : 2;
-      char* base = reinterpret_cast<char*>(
-          &m_attr_read_buf[m_attr_read_pos + 1]);
+      char* base = reinterpret_cast<char*>(data);
+      Uint16 prefix;
       Uint16 payload_len;
-      if (type == NDB_TYPE_CHAR) {
-        payload_len = static_cast<Uint16>(
-            attrDescriptor != nullptr ? declared :
-            header->getByteSize());
-      } else if (type == NDB_TYPE_VARCHAR) {
-        payload_len = static_cast<Uint16>(static_cast<Uint8>(base[0]));
-      } else {
-        payload_len = static_cast<Uint16>(
-            static_cast<Uint8>(base[0]) |
-            (static_cast<Uint16>(static_cast<Uint8>(base[1])) << 8));
-      }
+      aggStringPayload(type, data,
+                       attrDescriptor != nullptr ? declared
+                                                 : header->getByteSize(),
+                       &prefix, &payload_len);
       StringResult& sr = m_register_string_data[reg_index];
       sr.ptr = base;
       sr.length = payload_len;
@@ -759,130 +520,20 @@ bool AggInterpreterBase::OptimizeProgram() {
   return true;
 }
 
+// The type lists and the value decode live in include/util/AggColumnLoad.hpp,
+// shared with aggregation in the RonSQL layer (RONDB-1124 WP-J J5).
 bool AggInterpreterBase::TypeSupported(DataType type) {
-  switch (type) {
-    case NDB_TYPE_TINYINT:
-    case NDB_TYPE_SMALLINT:
-    case NDB_TYPE_MEDIUMINT:
-    case NDB_TYPE_INT:
-    case NDB_TYPE_BIGINT:
-
-    case NDB_TYPE_TINYUNSIGNED:
-    case NDB_TYPE_SMALLUNSIGNED:
-    case NDB_TYPE_MEDIUMUNSIGNED:
-    case NDB_TYPE_UNSIGNED:
-    case NDB_TYPE_BIGUNSIGNED:
-
-    case NDB_TYPE_FLOAT:
-    case NDB_TYPE_DOUBLE:
-
-    case NDB_TYPE_DECIMAL:
-    case NDB_TYPE_DECIMALUNSIGNED:
-
-    // D17: MIN/MAX over DATE.  A DATE is a 3-byte little-endian
-    // uint3korr packed value (w = (year<<9)|(month<<5)|day) that is
-    // monotonic with chronological order, so it is handled exactly
-    // like NDB_TYPE_MEDIUMUNSIGNED at the numeric level (unsigned,
-    // AlignedType → BIGINT).  Only the result *display* differs —
-    // RonSQL unpacks w → YYYY-MM-DD.  Sum/Avg over DATE stay rejected
-    // (meaningless); see cte_date_minmax_plan.md.
-    case NDB_TYPE_DATE:
-
-    // Temporal extension: YEAR (1-byte unsigned, like TINYUNSIGNED),
-    // and DATETIME2 / TIME2 (big-endian memcmp-comparable packed bytes,
-    // read MSB-first into the register so unsigned compare == memcmp ==
-    // chronological order).  All three reduce to an unsigned integer for
-    // MIN/MAX; RonSQL decodes the result for display.  Sum/Avg rejected.
-    // TIMESTAMP2 is also big-endian memcmp-comparable; its on-disk epoch
-    // ordering is absolute (timezone-independent), so MIN/MAX is exact and
-    // TZ only matters at display time (handled in RonSQL).
-    case NDB_TYPE_YEAR:
-    case NDB_TYPE_DATETIME2:
-    case NDB_TYPE_TIME2:
-    case NDB_TYPE_TIMESTAMP2:
-
-    // Phase I.6 (F.2): MIN/MAX over CHAR / VARCHAR / Longvarchar.
-    // Sum is rejected separately (see Sum()).  Count is
-    // type-agnostic and works for any column type.  String
-    // value handling lives in MinString / MaxString and the
-    // m_string_results sidecar — see cte_filter_phase_i6_varchar.md.
-    case NDB_TYPE_CHAR:
-    case NDB_TYPE_VARCHAR:
-    case NDB_TYPE_LONGVARCHAR:
-      return true;
-    default:
-      return false;
-  }
-  return false;
+  return aggTypeSupported(type);
 }
 
 bool AggInterpreterBase::IsUnsigned(DataType type) {
-  switch (type) {
-    case NDB_TYPE_TINYUNSIGNED:
-    case NDB_TYPE_SMALLUNSIGNED:
-    case NDB_TYPE_MEDIUMUNSIGNED:
-    case NDB_TYPE_UNSIGNED:
-    case NDB_TYPE_BIGUNSIGNED:
-    case NDB_TYPE_DECIMALUNSIGNED:
-    // D17: DATE packed value is an unsigned 3-byte integer; the
-    // unsigned compare path (val_uint64) sorts 0000-00-00 (w=0)
-    // lowest, as MySQL DATE MIN/MAX requires.
-    case NDB_TYPE_DATE:
-    // Temporal extension: YEAR / DATETIME2 / TIME2 / TIMESTAMP2 all compare
-    // as unsigned (big-endian memcmp order for the "2" types).
-    case NDB_TYPE_YEAR:
-    case NDB_TYPE_DATETIME2:
-    case NDB_TYPE_TIME2:
-    case NDB_TYPE_TIMESTAMP2:
-      return true;
-    default:
-      return false;
-  }
-  return false;
+  return aggIsUnsignedType(type);
 }
 
 DataType AggInterpreterBase::AlignedType(DataType type, int scale) {
-  switch (type) {
-    case NDB_TYPE_TINYINT:
-    case NDB_TYPE_SMALLINT:
-    case NDB_TYPE_MEDIUMINT:
-    case NDB_TYPE_INT:
-    case NDB_TYPE_BIGINT:
-
-    case NDB_TYPE_TINYUNSIGNED:
-    case NDB_TYPE_SMALLUNSIGNED:
-    case NDB_TYPE_MEDIUMUNSIGNED:
-    case NDB_TYPE_UNSIGNED:
-    case NDB_TYPE_BIGUNSIGNED:
-
-    // D17: DATE is held as the unsigned 3-byte packed value in a
-    // BIGINT register (is_unsigned set via IsUnsigned).
-    case NDB_TYPE_DATE:
-    // Temporal extension: YEAR (1 byte) and DATETIME2 / TIME2 / TIMESTAMP2
-    // (big-endian packed value) are likewise held as an unsigned BIGINT.
-    case NDB_TYPE_YEAR:
-    case NDB_TYPE_DATETIME2:
-    case NDB_TYPE_TIME2:
-    case NDB_TYPE_TIMESTAMP2:
-
-      return NDB_TYPE_BIGINT;
-    case NDB_TYPE_FLOAT:
-    case NDB_TYPE_DOUBLE:
-      return NDB_TYPE_DOUBLE;
-    case NDB_TYPE_DECIMAL:
-    case NDB_TYPE_DECIMALUNSIGNED:
-      return scale == 0 ? NDB_TYPE_BIGINT : NDB_TYPE_DOUBLE;
-
-    // Phase I.6 (F.2): string MIN/MAX preserves the source type —
-    // wire format stays as the source's [length_prefix][payload].
-    case NDB_TYPE_CHAR:
-    case NDB_TYPE_VARCHAR:
-    case NDB_TYPE_LONGVARCHAR:
-      return type;
-    default:
-      assert(0);
-  }
-  return NDB_TYPE_UNDEFINED;
+  const DataType aligned = aggAlignedType(type, scale);
+  assert(aligned != NDB_TYPE_UNDEFINED);
+  return aligned;
 }
 
 void AggInterpreterBase::PrintValue(const AggResItem* res, char* log_buf) {

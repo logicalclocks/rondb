@@ -333,6 +333,20 @@ class NdbAggregator {
   // results on failure and report the error through the scan/query.
   Int32 ProcessRes(char* buf);
 
+  // Merges one partial result that was not received from a data node --
+  // e.g. one row aggregated in the RonSQL layer (RONDB-1124 WP-J J5) --
+  // exactly as ProcessRes merges a partial read from the wire.
+  // gb_key / gb_len is the group key in the wire's group-by encoding (a
+  // multiple of 4 bytes), or nullptr / 0 when there is no GROUP BY.
+  // items holds one AggResItem per aggregate slot; a non-NULL string
+  // slot's val_ptr points to a caller-owned buffer laid out as
+  // [Uint16 payload_len][Uint16 capacity][length prefix + payload], which
+  // the aggregator copies.  Returns 0, or the positive NDB error code of a
+  // failed merge (1860, SUM out of range); as after a failed ProcessRes,
+  // the result must then be abandoned.
+  Int32 MergeLocalGroup(const char* gb_key, Uint32 gb_len,
+                        const AggResItem* items);
+
   bool LoadColumn(const char* name, Uint32 reg_id);
   bool LoadColumn(Int32 col_id, Uint32 reg_id);
   bool LoadLinkedColumn(Uint32 position, Uint32 reg_id,
@@ -443,6 +457,19 @@ class NdbAggregator {
   void mergeStringSlot(AggResItem *dst,
                        const AggResItem *src,
                        Uint32 agg_id);
+  // The per-slot merges shared by ProcessRes and MergeLocalGroup: a
+  // partial `src` into one existing group's slots, and into the scalar
+  // agg_results_.  `owned_src` is `src` when its string val_ptrs were
+  // allocated for this merge (resolveStringSlots, copyStringSlots) and
+  // nullptr otherwise; string buffers the merge did not take over are
+  // released.  Return 0 or the NDB error code of a failed numeric merge.
+  Int32 mergeGroupSlots(AggResItem* dst, const AggResItem* src,
+                        AggResItem* owned_src);
+  Int32 mergeScalarSlots(const AggResItem* src, AggResItem* owned_src);
+  // RONDB-831: a new group's COUNT slots start at 0, never NULL.
+  void fixupCountSlots(AggResItem* slots) const;
+  void freeUntransferredStrings(AggResItem* owned,
+                                const AggResItem* dst) const;
   const NdbTableImpl* table_impl_;
   Uint32 buffer_[MAX_VEC_SEARCH_PROGRAM_WORD_SIZE];
 
@@ -480,6 +507,11 @@ class NdbAggregator {
   // array within an agg_rec block).  Cheap no-op for non-string
   // slots and null string slots.
   static void freeStringSlots(AggResItem* slots, Uint32 n_slots);
+
+  // MergeLocalGroup: replace each non-NULL string slot's caller-owned
+  // val_ptr with a copy in the resolveStringSlots layout, owned by the
+  // aggregator like a wire result's; NULL string slots get nullptr.
+  static void copyStringSlots(AggResItem* slots, Uint32 n_slots);
 
   bool finalized_;
   bool finished_;

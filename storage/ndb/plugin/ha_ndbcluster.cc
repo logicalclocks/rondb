@@ -3474,6 +3474,12 @@ inline int ha_ndbcluster::next_result(uchar *buf) {
 
   if (m_active_cursor) {
     TTL_HANDLER_TRACE(m_share->table_name, "ha_ndbcluster::next_result");
+    // A pushed single-table aggregation drained and merged the scan when it
+    // started; every further row comes from the aggregator, whichever read
+    // call asks.  index_next(), read_range_next() and rnd_next() branch to
+    // it themselves; this also covers index_prev() and index_next_same(),
+    // which read the completed scan and failed with 4120 (F30).
+    if (m_stm_aggregator != nullptr) return ndb_fetch_stm_aggregate(this);
     while ((res = fetch_next(m_active_cursor)) == 0) {
       DBUG_PRINT("info", ("One more record found"));
 
@@ -15523,8 +15529,14 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   // conditions that must be evaluated before aggregation — impossible when
   // NDB returns pre-aggregated results.  Fully-pushed filters (which will
   // be eliminated by fixup_pushed_access_paths) are safe and allowed.
+  //
+  // Neither aggregation is pushed when the plan takes the output order
+  // from the scan's index order (F30): the pushed groups come back in
+  // NdbAggregator's own order.
+  const bool order_from_index =
+      ndb_aggregate_order_from_index(join, root_path);
   bool has_pushed_aggregation = false;
-  if (THDVAR(thd, join_pushdown_aggregate) &&
+  if (THDVAR(thd, join_pushdown_aggregate) && !order_from_index &&
       !ndb_has_unpushable_filter_for_aggregate(root_path)) {
     const bool allow_outer_join =
         THDVAR(thd, join_pushdown_aggregate_outer_join);
@@ -15533,7 +15545,8 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
   }
 
   // Check if single-table aggregation can be pushed.
-  if (!has_pushed_aggregation && THDVAR(thd, pushdown_aggregate)) {
+  if (!has_pushed_aggregation && !order_from_index &&
+      THDVAR(thd, pushdown_aggregate)) {
     has_pushed_aggregation =
         ndb_push_single_table_aggregation(thd, join, pushed_builder);
   }

@@ -68,6 +68,23 @@ class NdbScanOperation;
 bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path);
 
 /**
+ * Check whether the query block takes its output order from the order in
+ * which the table access delivers rows (F30 in
+ * mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md).  A pushed aggregation
+ * returns its groups in NdbAggregator's own order (its group map compares
+ * the key bytes), not in index order, so it must not replace such a scan:
+ * an ascending plan would keep the wrong rows under LIMIT, and a descending
+ * one reads the next group with index_prev().
+ *
+ * True when the block groups (so it returns more than one row), the
+ * statement has an ORDER BY, and no SORT lies on the path from the root
+ * down to the table access.
+ *
+ * @return true if aggregation must not be pushed
+ */
+bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path);
+
+/**
  * Entry point for aggregation pushdown.
  * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
  *

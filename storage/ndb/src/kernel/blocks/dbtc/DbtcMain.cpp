@@ -22610,6 +22610,46 @@ void Dbtc::execDUMP_STATE_ORD(Signal *signal) {
         g_eventLogger->info("DUMP 2560: scanPtr.i=%u state=%u joinAgg=%u",
                             scanptr.i, (Uint32)scanptr.p->scanState,
                             (Uint32)scanptr.p->m_joinAgg);
+        /* Where the scan is stuck: the join-agg bookkeeping, its
+         * fragment lists and the owning API connection. */
+        Uint32 running = 0, queued = 0, delivered = 0;
+        {
+          ScanFragRecPtr f;
+          Local_ScanFragRec_dllist run(c_scan_frag_pool,
+                                       scanptr.p->m_running_scan_frags);
+          for (run.first(f); !f.isNull(); run.next(f)) running++;
+          Local_ScanFragRec_dllist que(c_scan_frag_pool,
+                                       scanptr.p->m_queued_scan_frags);
+          for (que.first(f); !f.isNull(); que.next(f)) queued++;
+          Local_ScanFragRec_dllist del(c_scan_frag_pool,
+                                       scanptr.p->m_delivered_scan_frags);
+          for (del.first(f); !f.isNull(); del.next(f)) delivered++;
+        }
+        ApiConnectRecordPtr api;
+        api.i = scanptr.p->scanApiRec;
+        Uint32 apiState = RNIL;
+        Uint32 apiNode = 0;
+        if (api.i != RNIL && c_apiConnectRecordPool.getValidPtr(api)) {
+          apiState = (Uint32)api.p->apiConnectstate;
+          apiNode = refToNode(api.p->ndbapiBlockref);
+        }
+        g_eventLogger->info(
+            "DUMP 2560:   setupState=%u setupOutstanding=%u aggError=%u"
+            " phaseFailed=%u cteAborting=%u closeReq=%u numCtes=%u"
+            " cteStarted=0x%llx cteReady=0x%llx aggRecords=%u"
+            " releaseOutstanding=%u cteReportsExpected=%u frags running=%u"
+            " queued=%u delivered=%u api=%u apiState=%u apiNode=%u",
+            (Uint32)scanptr.p->m_aggSetupState,
+            scanptr.p->m_aggSetupOutstanding, scanptr.p->m_aggErrorCode,
+            (Uint32)scanptr.p->m_aggPhaseFailed,
+            (Uint32)scanptr.p->m_cteAborting,
+            (Uint32)scanptr.p->m_close_scan_req, scanptr.p->m_numCtes,
+            (unsigned long long)scanptr.p->m_cteStartedMask,
+            (unsigned long long)scanptr.p->m_cteReadyMask,
+            scanptr.p->m_aggRecordsCount,
+            scanptr.p->m_aggReleaseOutstanding,
+            scanptr.p->m_cteScanReportsExpected, running, queued, delivered,
+            api.i, apiState, apiNode);
         leaked++;
       }
     }

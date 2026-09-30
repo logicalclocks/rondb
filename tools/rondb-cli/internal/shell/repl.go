@@ -4388,7 +4388,9 @@ Common parameters:
    Phase breakdown: when RDRS is built with RONSQL_PHASE_STATS (the
    default), every RonSQL response carries an x-ronsql-phases header with
    per-phase server-side timings (parse/analyze/load/plan/compile,
-   subquery, ndbprep/send/firstbatch/drain/print, in µs). .bench_ronsql
+   subquery, ndbprep/send/firstbatch/drain/print/close, in µs; close is
+   the scan and transaction close, which waits for the data nodes when a
+   LIMIT stops a scan early). .bench_ronsql
    aggregates them and prints an avg/p95/p99/max table per phase after the
    end-to-end results; the warmup request prints its raw phase values.
    End-to-end latency minus prepare+execute approximates REST/HTTP
@@ -4441,6 +4443,25 @@ Common parameters:
      ./mtr --suite=rdrs2-ronsqltpch ronsql_bench_setup --start-and-exit
      grep ServerPort var/rdrs.1.1_config.json    (RDRS REST port, no-TLS)
    then connect: rondb --mysql-port <mysqld port> --rdrs-port <port> --no-rondis
+
+5. Feature-store serving benchmarks (fs_hw) - Hopsworks-shaped statements
+   The statements the Hopsworks online feature store sends (point and batch
+   aggregates, collect-newest-N, snowflake joins, aggregates over the last N
+   rows), run on the fs_bench database. .bench_sql runs the same text, plus
+   the MySQL production twins (*_twin), through the MySQL server.
+   Prerequisite: .fs_load (creates fs_bench; SF=1 is 100k customers, ~5.4M
+   rows, about 4 GB DataMemory; SF=0.1 still has 300-row histories).
+
+     .fs_load 1                      Load fs_bench at scale 1 (8 threads, 500 rows/INSERT)
+     .bench_ronsql fs_hw 1 200       Every fs_hw entry, 1 thread x 200 requests
+     .bench_ronsql fs_hw_collect5 1 5000        Newest 5 rows of one customer
+     .bench_ronsql fs_hw_agg_last10 1 5000      Aggregates over the newest 10 rows
+     .bench_sql fs_hw_agg_last10 1 5000         The same statement via MySQL
+     .query_ronsql fs_hw_agg_last10             Print the statement and its placeholders
+     .fs_drop                        Drop fs_bench
+
+   Each entry carries plan pins: the warmup EXPLAIN is checked against them
+   and a warning is printed when the plan differs.
 
 Tips:
   .client N     Set a client ID prefix so multiple CLI instances can benchmark

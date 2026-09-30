@@ -63,7 +63,9 @@ using std::endl;
  * the rows the NDB API received.  queue is the time the request waited
  * for a RonSQL worker, loop the REST (IO loop) thread that received it and
  * worker the RonSQL worker that ran it (from 1; 0 = ran on the IO loop,
- * RonSQL.NumThreads = 0).  Field order and names are pinned by
+ * RonSQL.NumThreads = 0).  close is the time spent closing scans, the
+ * pushed query and the transaction (part of execute; an early scan close
+ * waits for the data nodes).  Field order and names are pinned by
  * mysql-test/suite/ronsql/t/ronsql_phase_stats and parsed by
  * tools/rondb-cli (ronsql_bench.go); a new field goes last.
  */
@@ -77,7 +79,7 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
            "prepare=%llu,subquery=%llu,ndbprep=%llu,send=%llu,"
            "firstbatch=%llu,drain=%llu,print=%llu,execute=%llu,"
            "rows=%llu,attempts=%u,fetched=%llu,"
-           "queue=%llu,loop=%u,worker=%u",
+           "queue=%llu,loop=%u,worker=%u,close=%llu",
            (unsigned long long)s.parse_us,
            (unsigned long long)s.analyze_us,
            (unsigned long long)s.load_us,
@@ -96,7 +98,8 @@ static std::string ronsql_phase_stats_header(const RonSQLPhaseStats& s,
            (unsigned long long)s.rows_fetched,
            (unsigned long long)queue_us,
            (unsigned)loop,
-           (unsigned)worker);
+           (unsigned)worker,
+           (unsigned long long)s.close_us);
   return std::string(buf);
 }
 #endif  // RONSQL_PHASE_STATS
@@ -203,6 +206,9 @@ class RonSQLRequest final : public RonSQLWorkerPool::Job {
   const Uint32 loop_index;  // REST thread that received the request
   Uint32 worker = 0;        // RonSQL worker, 0 = executed on the IO loop
   Uint64 queue_wait_us = 0;
+  // A transaction the executor left open to be closed after the reply
+  // (RonSQLExecParams::deferred_close); execute() closes it.
+  NdbTransaction* deferred_trans = nullptr;
 };
 
 void RonSQLRequest::reply_unavailable(const std::string &why) {
@@ -440,6 +446,18 @@ void RonSQLRequest::execute(Uint32 ndb_thread_index) {
   }
 
   DEB_TRACE();
+  // RONDB-1124 (benchmarks.md §8): a single-table scan stopped at its
+  // LIMIT with fragment scans still open is closed after the reply rather
+  // than before it; the close waits one more round trip for the data
+  // nodes.  The guard runs when this function returns, after callback()
+  // has handed the response to drogon, which sends it on the connection's
+  // IO loop while this thread closes the transaction.
+  params.deferred_close = &deferred_trans;
+  struct DeferredClose {
+    RonSQLExecParams* params;
+    Uint32 thread_index;
+    ~DeferredClose() { ronsql_dal_finish(params, thread_index); }
+  } deferred_close{&params, ndb_thread_index};
   status = ronsql_dal(database.c_str(),
                       &params,
                       ndb_thread_index);

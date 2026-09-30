@@ -70,8 +70,12 @@ statement from `fsq/mysqltwin`.
 | `fs_hw_composite_point` | S9 | `SELECT COUNT(*) AS count, SUM(delta) AS delta_sum FROM balance_hist_1 WHERE account_id = {ACCT} AND currency = {CUR} AND event_time >= {NOW-90d};` | ACCT, CUR, NOW-90d | 1 |
 | `fs_hw_hash_point` | S1 on hash-only PK | `fs_hw_agg_point` over `transactions_hash_1` | KEY | 1 |
 | `fs_hw_sessions_window2h` | S2, TIMESTAMP(3) + ttl index | `SELECT COUNT(*) AS count, SUM(duration) AS duration_sum FROM sessions_1 WHERE customer_id = {KEY} AND event_time >= {NOW-2h};` | KEY, NOW-2h | 1 |
+| `fs_hw_agg_last10` | S11 (future, WP-J) | `WITH t AS (SELECT customer_id, event_time, amount, fee FROM transactions_1 WHERE customer_id = {KEY} ORDER BY event_time DESC LIMIT 10) SELECT COUNT(amount) AS amount_count, AVG(amount) AS amount_avg, MAX(fee) AS fee_max FROM t;` (J5: the collect scan, aggregated in RonSQL) | KEY | 1 |
+| `fs_hw_agg_last100` | S11 | the same with `LIMIT 100` | KEY | 1 |
+| `fs_hw_agg_last10_tx300` | S11 | `fs_hw_agg_last10` for customers with 300 rows | TXKEY:300 | 1 |
+| `fs_hw_agg_last10_tx300_grouped` | S11 J0 | the J0 form of `fs_hw_agg_last10_tx300`: the body grouped by every column plus `COUNT(*)`, which reads all 300 rows and keeps the CTE plan (the baseline J5 is measured against) | TXKEY:300 | 1 |
 
-Twenty-five entries. Names are stable identifiers (the shape ids in
+Twenty-five entries, plus the four WP-J entries (2026-09-29). Names are stable identifiers (the shape ids in
 `shape_catalog.md` are the cross-reference); the exact SQL is whatever
 the emitter produces for the corresponding case, and a golden dump
 (`fsq/cases/testdata/fs_hw_registry.golden`) lets reviewers read it
@@ -92,6 +96,7 @@ driven by the case's parameter list:
 | `{SKEY}` | a customer in the target string-history domain `1..E/10`, rendered by `fsq/data`; explicit miss cases separate | new |
 | `{SKEYS:n}` | list of `n` | new |
 | `{ACCT}`, `{CUR}` | random account and one of its currencies (`1 + a mod 3` choices) | new |
+| `{TXKEY:n}` | random customer with exactly `n` `transactions_1` rows: `16k + r` for a residue `r` with `NTxClass[r] = n` (`data_model.md` §4); falls back to `{KEY}` when no class has `n` rows or the domain is too small | WP-J (2026-09-29) |
 | `{NOW-7d}` | TIMESTAMP literal `FS_NOW − 7 days` (also `1h`, `2h`, `30d`, `90d`) | new; `--now` overrides `FS_NOW` |
 
 Keys are drawn uniformly, so about 1/16 of point reads hit a customer
@@ -189,6 +194,8 @@ change:
 | `fs_hw_snow1_batch100` | observed: `Body root: TABLE_SCAN` (the IN list on the CTE body, F12), then CTE_SCAN + PK_LOOKUP |
 | `fs_hw_snow2_left_single` | `[LEFT JOIN] PK_LOOKUP` ×2 (observed) |
 | `fs_hw_hash_point` | `Execute as table scan.` (no ordered index) — the point of the entry; not yet observed (run 1 stopped before it) |
+| `fs_hw_agg_last10`, `_last100`, `_last10_tx300` | `CTE 't' aggregated in RonSQL over the ORDER BY / LIMIT scan …` (WP-J J5), `Execute as index scan.`, `ORDER BY: index order (SF_OrderBy | SF_Descending …` — the collect scan without `Result limited to N rows.` (the LIMIT belongs to the scan) |
+| `fs_hw_agg_last10_tx300_grouped` | `Body root: INDEX_SCAN using PRIMARY` (the J0 CTE plan) |
 
 ---
 
@@ -198,6 +205,133 @@ Filled by E5 from the first matrix run (interpreter and JIT arms,
 1 and 8 threads, sf 1, `ronsqlcrunch` topology). Stored as
 `bench_results/<date>-<build>.md` next to this file (report.md copy,
 ≤ 30 KB) plus the `results.json`.
+
+### WP-J J5 spot run — 2026-09-30, the user's cluster, sf 1, 1 thread × 5000 requests
+
+J5 on and off on the same RDRS binary. "Off" is the hand-written grouped form,
+which is exactly what J1 made of the natural statement before J5.
+
+| entry | plan | avg | p99 | q/s | execute avg | firstbatch avg |
+|---|---|---|---|---|---|---|
+| `fs_hw_agg_last10_tx300_grouped` | J5 off: CTE plan, all 300 rows grouped, top 10 at finalize | 603 µs | 791 µs | 1646 | 529 µs | 509 µs |
+| `fs_hw_agg_last10_tx300` | J5: ordered PRIMARY scan (SF_OrderBy, descending, batch 10), aggregated in RonSQL | 217 µs | 406 µs | 4515 | 162 µs | 82 µs |
+| `fs_hw_agg_last10_tx300` on MySQL (`.bench_sql`) | derived table, reverse PRIMARY range, LIMIT 10 | 157 µs | 271 µs | 6316 | — | — |
+
+Reading:
+- J5 is 2.8× faster on average and in throughput for 300-row histories.
+  Both plan pins held: the J5 line, the index scan, and the descending
+  index order.
+- MySQL is still ahead: 157 µs against 217 µs, 1.38×. J5's server-side
+  `execute` (162 µs) alone equals MySQL's whole round trip.
+- Outside the server phases (HTTP, JSON, client) the cost is about 50 µs
+  for J5 and 67 µs for the CTE plan.
+- About 76 µs of J5's `execute` is in no listed phase: `firstbatch` 82 µs
+  plus send, drain and print about 5 µs, out of 162 µs.
+  - Presumed cause: the early scan close. A 300-row customer has about 75
+    rows per fragment, so every fragment's scan is still open when LIMIT
+    is reached, and `scanOp->close()` waits for one more round trip.
+  - An earlier session of the same day fits this: `last100`, whose batch
+    of 100 completes every fragment, showed no gap; `last10` over the
+    `{KEY}` mix showed 15 µs; `collect5` showed 33 µs.
+  - Confirmed with the new `close` phase (same day, same binary plus the
+    phase):
+
+    | entry | firstbatch | close | execute |
+    |---|---|---|---|
+    | `fs_hw_agg_last10_tx300` | 80 µs | 73 µs | 161 µs |
+    | `fs_hw_agg_last100` | 70 µs | 0.3 µs | 77 µs |
+    | `fs_hw_collect5` | 77 µs | 31 µs avg, 80 µs p95 | 114 µs |
+
+  - Why MySQL does not pay it: mysqld sets no batch size on the ordered
+    index scan (`ha_ndbcluster::ordered_index_scan`, no `SO_BATCH`), so
+    each fragment gets the NDB default of up to 990 rows. A 300-row
+    customer has about 75 rows per fragment, so every fragment finishes in
+    its first batch and the close has nothing to do. RonSQL's batch = LIMIT
+    (m3_run6_plan.md C3) ships fewer rows, but it leaves every fragment
+    with more than LIMIT rows open, and `NdbScanOperation::close_impl`
+    then sends the close and waits for one more round trip.
+  - Fix chosen: close after the reply (2026-09-30, committed; ronsql,
+    ronsql_cte, ronsql_fs and ronsql_large suites green).
+    - Through RDRS, a single-table scan stopped at its LIMIT is no longer
+      closed before the response.
+    - The executor hands the open transaction back
+      (`RonSQLExecParams::deferred_close`). `ronsql_dal` keeps the Ndb
+      object, and `RonSQLRequest::execute` closes the transaction in
+      `ronsql_dal_finish()` after `callback()` has handed the response to
+      drogon.
+    - The batch stays at LIMIT, so C3's saving is kept. `close` then reads
+      about 0 for such requests.
+    - Expected: `fs_hw_agg_last10_tx300` about 145 µs, `fs_hw_collect5`
+      about 30 µs less on average.
+  - Measured with the close after the reply (same cluster, same day):
+
+    | entry | avg | p99 | q/s | firstbatch | close | execute |
+    |---|---|---|---|---|---|---|
+    | `fs_hw_agg_last10_tx300` | 168 µs (was 217) | 294 µs (was 406) | 5805 (was 4515) | 97 µs (was 80) | 0 (was 73) | 105 µs (was 161) |
+    | `fs_hw_collect5` | 156 µs (was 165) | 300 µs | 6260 | 91 µs (was 77) | 0.1 µs (was 31) | 97 µs (was 114) |
+    | `fs_hw_agg_last100` (never closes) | 128 µs (was 123) | 317 µs | 7584 | 71 µs (was 70) | 0.3 µs | 78 µs (was 77) |
+    | `fs_hw_agg_last10_tx300` on MySQL | 155 µs | 357 µs | 6418 | | | |
+
+    - The gain is smaller than the close: 49 of 73 µs on `tx300` and 9 of
+      31 µs on `collect5`.
+    - Only the entries that used to close got a slower `firstbatch`. At
+      one client thread the deferred close overlaps the next request's
+      first round trip: the data nodes serve both, and in the NDB API a
+      second waiting thread means a hand-over between the poll owner and
+      the waiter.
+    - J5 is now below MySQL at p99 and 8 % above it on average.
+    - At 4 client threads (same build, 4 × 5000) J5 is ahead:
+
+      | `fs_hw_agg_last10_tx300`, T=4 | avg | p99 | q/s | firstbatch | execute |
+      |---|---|---|---|---|---|
+      | RonSQL J5, close after the reply | 286 µs | 479 µs | 13624 | 163 µs | 174 µs |
+      | MySQL | 311 µs | 483 µs | 12782 | | |
+
+      The data nodes are the shared resource here: `firstbatch` is 163 µs
+      at T=4 against 97 µs at T=1.
+  - Rejected: a minimum batch (`max(LIMIT, 128)` rows per fragment). It
+    would end short histories in their first batch with no close, as
+    mysqld's default batch does, but only by making the data nodes read
+    and ship rows nobody uses. That costs throughput as soon as several
+    queries run at once. The proper way to get both small batches and no
+    close is a per-fragment row limit in the data nodes (the fragment
+    stops after N rows and reports the scan complete), as DBSPJ's
+    `setMaxRows` does for pushed queries; plain scans do not have it yet.
+  - Open alternatives for the rest:
+    - An asynchronous close in the NDB API (TODO F31 in
+      `mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md`). The close is
+      sent without waiting, the transaction is parked on a per-Ndb closing
+      list, the close confirmation is recorded by whichever thread
+      receives it (no waiter to signal), and the owner reaps it at its
+      next API call. It frees the worker time and the poll hand-over, but
+      leaves the data-node close work.
+    - The per-fragment row limit in the data nodes, which removes the
+      close altogether.
+
+### WP-J spot run — 2026-09-29, the user's cluster, sf 1, 1 thread × 5000 requests
+
+Measured to decide J2 (`ronsql_fs_support_plan.md` WP-J). Build and
+cluster configuration were not recorded, so compare the ratios, not the
+absolute times.
+
+| entry | plan | avg | p99 | q/s | firstbatch avg |
+|---|---|---|---|---|---|
+| `fs_hw_agg_last10_tx300` | J2 (≤ 10 rows per fragment, self-join leaf) | 2.54 ms | 3.02 ms | 393 | 2.35 ms |
+| `fs_hw_agg_last10_tx300_grouped` | J1 grouped body, all 300 rows | 1.90 ms | 3.96 ms | 526 | 1.72 ms |
+| `fs_hw_agg_last10_tx300` on MySQL (`.bench_sql`) | derived table, reverse PK range | 0.62 ms | 0.78 ms | 1604 | — |
+| `fs_hw_snow1_point` | CTE, one group, join main | 0.80 ms | 1.11 ms | 1247 | 0.62 ms |
+| `fs_hw_collect5` | ordered index scan, LIMIT 5, no CTE | 0.40 ms | 0.60 ms | 2496 | 0.24 ms |
+
+Reading:
+- The CTE protocol's fixed cost is about 0.6 ms (`snow1_point`).
+- J1 adds about 3.5 µs per history row: one group per row, redistribution
+  to the owner, top-N at finalize, and the main aggregation's rounds.
+- J2 adds about 17 µs per kept row: the self-join lookup that carries the
+  aggregation. It is therefore slower than J1 unless the history is far
+  longer than N × fragments, and it is switched off.
+- A path without the CTE protocol, the collect scan plus aggregation in
+  the RonSQL layer, is bounded below by `collect5`'s 0.40 ms. That is
+  below MySQL's 0.62 ms.
 
 ### Run 4 — 2026-09-22, benchmark computer (Linux), full registry (M3.0 census), sf 1, `ronsql` vs `mysqld_nopush`, 1 thread complete, 8 threads stopped early
 

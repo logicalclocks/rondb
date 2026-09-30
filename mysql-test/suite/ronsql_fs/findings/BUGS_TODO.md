@@ -104,6 +104,144 @@ F8 was a framework fixture issue and is already fixed.
   `Failed writing aggregation program. Please report a bug.` instead of the
   specific `AVG over string columns is not supported.` guard (which fires for
   temporal AVG). Found by the E7 envelope fuzzer. Functionally a clean reject.
+- [ ] F28 (2026-09-29, WP-J J0 test `ronsql_cte.ronsql_cte_dd_lastn_agg` lastn-7):
+  `RonSQLPreparer::encode_constant` returned the widest length for every
+  DATETIME / TIMESTAMP constant (8 / 7 bytes) instead of the column's width
+  (5 / 4 + (precision + 1) / 2). A CTE body range on a TIMESTAMP(0) key
+  failed with `Failed to create index-scan root: Incompatible datatype
+  specified in operand argument (4803)`, because `NdbQueryBuilder::constValue`
+  requires exactly `getSizeInBytes()` for fixed-size columns. The key-row
+  paths (`memcpy(dst, rv.val, rv.len)` for PK lookups and IN-list lookups)
+  overran the 4-byte slot by 3 bytes. Single-table windowed aggregates were
+  unaffected (`setBound` takes the column's length). Fix written, not yet
+  built: the exact width is returned from a zeroed widest-size buffer.
+  Regression cases lastn-W1 (PK lookup), W2 (IN on the TIMESTAMP key) and
+  W3 (single-row CTE keyed on it).
+- [ ] F29 (2026-09-29, WP-J J0 first form, lastn-12): a join whose key is a
+  CTE MIN/MAX output over a narrower integer column fails with an internal
+  error. Repro: `WITH t AS (SELECT customer_id, event_time,
+  MAX(merchant_id) AS merchant_id FROM lastn_tx WHERE customer_id = 8
+  GROUP BY customer_id, event_time ORDER BY event_time DESC LIMIT 10)
+  SELECT m.mcc, COUNT(*) FROM t JOIN lastn_merchants AS m ON m.merchant_id
+  = t.merchant_id GROUP BY m.mcc` gives `[internal] Caught exception:
+  Failed to create child operation.` Cause: `build_cte_virtual_tables`
+  widens a MIN/MAX output to the wire type (INT → BIGINT), and
+  `NdbLinkedOperandImpl::bindOperand` requires identical parent and child
+  types (QRY_OPERAND_HAS_WRONG_TYPE). The same applies to FLOAT → DOUBLE,
+  DECIMAL → BIGINT / DOUBLE and temporal → Bigunsigned outputs. Either
+  link through a converted value or reject cleanly at plan time with a
+  permanent error naming the type mismatch. Not needed by WP-J (J0 / J1
+  carry non-key columns as GROUP BY keys, which keep their types).
+- [x] F30 (2026-09-30, WP-J spot run, `.bench_sql
+  fs_hw_agg_last10_tx300_grouped`): mysqld with single-table aggregation
+  pushdown (`ndb_pushdown_aggregate=ON`, default OFF; on in the
+  `ronsqlcrunch` config and the user's benchmark cluster) fails on the J0
+  grouped form with `Error 1296 (HY000): Got error 4120 'Scan already
+  complete' from NDBCLUSTER`. Repro (fs_bench, customer 31 has 300 rows):
+  `WITH t AS (SELECT customer_id, event_time, amount, fee, COUNT(*) AS
+  grp_rows FROM transactions_1 WHERE customer_id = 31 GROUP BY
+  customer_id, event_time, amount, fee ORDER BY event_time DESC LIMIT 10)
+  SELECT COUNT(amount), AVG(amount), MAX(fee) FROM t`. RonSQL runs it
+  correctly; the MTR twin checks pass because their mysqld keeps the
+  default OFF.
+  - Mechanism, from code reading (`ha_ndbcluster.cc`,
+    `ha_ndbcluster_push_agg.cc`), not yet confirmed in a debugger: the
+    optimizer serves GROUP BY + ORDER BY with a reverse scan of PRIMARY and
+    no sort. `ndb_push_single_table_aggregation()` replaces that scan with
+    `DoAggregation()`, which drains every row, merges the groups on the API
+    side and completes the scan. The first group returns;
+    `ha_ndbcluster::index_prev()` has no `m_stm_aggregator` branch (nor has
+    `index_next_same()`; only `index_next()`, `read_range_next()` and
+    `rnd_next()` do), so it calls `next_result()` on the completed scan:
+    4120.
+  - Suspected silent wrong result: the push never checks whether the plan
+    relies on index order. The pushed groups come back in the
+    `NdbAggregator` map order (memcmp of the group key; little-endian
+    integers do not sort numerically), so the ASC variant, which goes
+    through the dispatched `index_next()`, may keep the wrong 10 groups.
+    To confirm: run both directions with the pushdown ON and OFF and
+    compare, and `EXPLAIN FORMAT=TREE` to see the plan.
+  - Fix: do not push (single-table or join aggregation) when the plan uses
+    an ordered index for GROUP BY / ORDER BY (`JOIN::m_ordered_index_usage
+    != ORDERED_INDEX_VOID`, or a descending / sorted scan with no later
+    sort); make `index_prev()` / `index_next_same()` read the pushed result
+    or fail cleanly as a backstop. Regression test: the grouped form in
+    both directions with `ndb_pushdown_aggregate=ON`, compared with OFF.
+  - Not a WP-J blocker: the benchmark compares RonSQL on the grouped form
+    and MySQL only on the natural statements.
+  - Fix committed 2026-09-30:
+    - `ndb_aggregate_order_from_index(join, root_path)`
+      (`ha_ndbcluster_push_agg.cc`) is true when three things hold: the
+      block groups (`JOIN::group_list` is not empty), the statement has an
+      ORDER BY (`query_block->order_list`), and no SORT lies on the path
+      from the root down to the table access.
+      - It reads `order_list` rather than `JOIN::order` because
+        `optimize_distinct_group_order()` folds an ORDER BY that is a
+        prefix of the GROUP BY into it and clears `JOIN::order`. That is
+        exactly the J0 grouped form.
+      - `ndbcluster_push_to_engine()` then pushes neither the join
+        aggregation nor the single-table aggregation.
+    - Backstop: `ha_ndbcluster::next_result()` serves every row of a pushed
+      single-table aggregation from the aggregator. That covers
+      `index_prev()` and `index_next_same()` as well.
+  - Test: `ndb_push_agg.ndb_pushdown_agg_index_order` plus its JIT
+    mirror (JIT fallback delta 0). Integer keys cross 256. Every case must
+    return the same rows in the same order as with pushdown OFF.
+    - o-3..o-5 read PRIMARY in order with no sort, in both directions, and
+      report pushed=0. o-4 is the descending read that failed with 4120.
+    - o-1 / o-2 keep the F30 grouped-CTE shape. On the test data the
+      optimizer sorts that body, so they stay pushed (pushed=1) and still
+      match. The fs_bench plan without a sort is the one o-4 covers.
+  - Confirmed 2026-09-30 on the benchmark cluster after the mysqld rebuild:
+    `.bench_sql fs_hw_agg_last10_tx300_grouped` runs. It is slightly faster
+    than RonSQL on the same grouped form, which keeps the CTE plan.
+    - Controls c-1..c-3 (ORDER BY an aggregate, GROUP BY without ORDER BY,
+      one row) stay pushed.
+- [ ] F31 (TODO, performance, 2026-09-30): do not wait for the scan close
+  confirmation in the user thread.
+  - Today: a scan stopped early (a pass-through LIMIT with fragment scans
+    still open) is closed by `NdbScanOperation::close_impl`, which sends
+    the close and blocks in `wait_scan()` until TC confirms
+    (`SCAN_TABCONF`, one round trip). The transaction and its TC connect
+    record are only reusable after that. That was 73 µs of
+    `fs_hw_agg_last10_tx300`'s 161 µs execute (`benchmarks.md` §8).
+    - Since `1e7a1d9a27e`, RDRS closes after the reply
+      (`RonSQLExecParams::deferred_close`). The reply no longer waits, but
+      the RonSQL worker still does.
+    - The deferred close then overlaps the next request's first batch: a
+      second thread waiting in the NDB API means a hand-over between the
+      thread receiving for all waiters and the waiter, about +17 µs of
+      `firstbatch` at one client thread.
+  - Why it is doable: the close confirmation is executed by whichever
+    thread receives it (the receive thread or the thread currently
+    receiving for all waiters), which updates the scan's receiver counts
+    under the Ndb's client lock. The wakeup (`Ndbif.cpp`, `GSN_SCAN_TABCONF`
+    → `theWaiter.signal(NO_WAIT)`) happens only because the owner waits in
+    `WAIT_SCAN`. The receiving thread must not hand the transaction back
+    itself, because the Ndb free lists belong to the owning thread; but it
+    does not need to.
+  - Sketch: an asynchronous close in the NDB API.
+    - The close sends the close request (`send_next_scan(…, true)`) and
+      returns. The transaction goes on a per-Ndb closing list instead of
+      back to `theConnectionArray[node]`, so its TC record is not reused
+      while TC still has the scan open.
+    - `Ndbif` must not signal the waiter for a transaction on the closing
+      list. Otherwise the owner, already waiting on the next query's scan,
+      gets a spurious wakeup.
+    - The owner reaps finished closes at its next API call
+      (`startTransaction` / `closeTransaction`) and moves them to the idle
+      pool. An unfinished one makes `startTransaction` use another idle
+      connection; each Ndb object then keeps one or two extra.
+    - Also handle: node failure releasing transactions on the closing list;
+      the Ndb destructor, and RDRS returning an Ndb object to its pool,
+      waiting for or cleaning up pending closes; the 4008 scan timeout;
+      statistics.
+    - NDB API tests: async close, node failure during the close, Ndb
+      teardown with closes pending.
+  - Gain: the worker time and the hand-over. The data-node close work
+    stays; only a per-fragment row limit in the data nodes (a fragment
+    stops after N rows and reports the scan complete, like DBSPJ's
+    `setMaxRows` for pushed queries) removes the close altogether.
 - [x] HTTP status: distinguish invalid SQL/syntax from server failures — RONDB-1124 M1.0:
   error classes → 400/413/503/500, `[<class>]` body prefix, X-RonSQL-Error-Class /
   X-RonSQL-NDB-Error headers; verified (rdrs2-golang_gotest incl. TestErrorStatusByClass,

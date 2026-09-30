@@ -1517,6 +1517,41 @@ bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path) {
   return false;
 }
 
+bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path) {
+  // An implicitly grouped block (no GROUP BY left after remove_const())
+  // returns one row, which has no order.
+  if (join->group_list.empty()) return false;
+  // The statement's ORDER BY.  JOIN::order is not enough: when the ORDER BY
+  // is a prefix of the GROUP BY, optimize_distinct_group_order() moves its
+  // directions into the GROUP BY and clears JOIN::order, and the GROUP BY
+  // index order then delivers it.
+  if (join->query_block->order_list.elements == 0) return false;
+  while (path != nullptr) {
+    switch (path->type) {
+      case AccessPath::SORT:
+        return false;  // the pushed groups are sorted after the scan
+      case AccessPath::LIMIT_OFFSET:
+        path = path->limit_offset().child;
+        break;
+      case AccessPath::FILTER:
+        path = path->filter().child;
+        break;
+      case AccessPath::AGGREGATE:
+        path = path->aggregate().child;
+        break;
+      case AccessPath::NESTED_LOOP_JOIN:
+        path = path->nested_loop_join().outer;
+        break;
+      default:
+        // The table access, reached without a sort: its index order is the
+        // output order.  Also any node whose ordering this walk does not
+        // model, conservatively.
+        return true;
+    }
+  }
+  return true;
+}
+
 bool ndb_push_aggregation(THD *, const JOIN *join,
                           ndb_pushed_builder_ctx &builder,
                           bool allow_outer_join) {

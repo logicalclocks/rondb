@@ -21,6 +21,7 @@
 #include "NdbDictionaryImpl.hpp"
 #include <kernel/AttributeHeader.hpp>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -491,6 +492,132 @@ static bool runResultBatchCases() {
   return checkBatchRecords(records, expected);
 }
 
+/* MergeLocalGroup (RONDB-1124 WP-J J5): the partials of runCase built in
+ * memory, as aggregation in the RonSQL layer builds one per row, and
+ * merged with the same results as ProcessRes gives for the wire form. */
+static std::vector<char> localString(Uint32 stringType, char value) {
+  const Uint32 prefix = stringType == NDB_TYPE_CHAR ? 0 :
+                        stringType == NDB_TYPE_VARCHAR ? 1 : 2;
+  std::vector<char> buf(16, 0);
+  const Uint16 hdr[2] = {1, static_cast<Uint16>(buf.size() - 4)};
+  memcpy(buf.data(), hdr, sizeof(hdr));
+  if (prefix != 0) buf[4] = 1;
+  buf[4 + prefix] = value;
+  return buf;
+}
+
+static void makeLocalItems(AggResItem items[3], Uint32 stringType,
+                           bool nullStrings, std::vector<char>& first,
+                           std::vector<char>& last, Int64 number) {
+  memset(items, 0, 3 * sizeof(AggResItem));
+  items[0].type = items[2].type = stringType;
+  items[0].is_null = items[2].is_null = nullStrings;
+  items[0].value.val_ptr = nullStrings ? nullptr : first.data();
+  items[2].value.val_ptr = nullStrings ? nullptr : last.data();
+  items[1].type = NDB_TYPE_BIGINT;
+  items[1].value.val_int64 = number;
+}
+
+static bool runLocalCase(bool grouped, Uint32 stringType,
+                         Uint32 ownershipCase) {
+  const bool nullSeed = ownershipCase == 2;
+  const char before = ownershipCase == 1 ? 'z' : 'a';
+  NdbDictionary::Column stringColumn("s");
+  stringColumn.setType(
+      static_cast<NdbDictionary::Column::Type>(stringType));
+  stringColumn.setLength(stringType == NDB_TYPE_LONGVARCHAR ? 300 : 8);
+  stringColumn.setCharset(&my_charset_bin);
+  const NdbDictionary::Column *columns[] = {
+    &stringColumn, nullptr, &stringColumn
+  };
+  std::vector<Uint32> program(8 + Uint32(grouped) + 3, 0);
+  program[1] = (Uint32(grouped) << 16) | 3;
+  if (grouped) program[8] = NDB_TYPE_INT;
+  const Uint32 instructions = 8 + Uint32(grouped);
+  program[instructions] = Uint32(kOpMin) << 26;
+  program[instructions + 1] = (Uint32(kOpSum) << 26) | 1;
+  program[instructions + 2] = (Uint32(kOpMax) << 26) | 2;
+  // The group key of makePacket's grouped records: one INT column, 7.
+  const Uint32 key[2] = {AttributeHeader(0, sizeof(Int32)).m_value, 7};
+  const char *gbKey =
+      grouped ? reinterpret_cast<const char *>(key) : nullptr;
+  const Uint32 gbLen = grouped ? sizeof(key) : 0;
+
+  auto seedFirst = localString(stringType, 'm');
+  auto seedLast = localString(stringType, 'm');
+  auto contribFirst = localString(stringType, before);
+  auto contribLast = localString(stringType, 'z');
+  AggResItem seed[3], contribution[3];
+
+  {
+    // SUM out of range: 1860, as ProcessRes reports -1860.  The copies
+    // made for the merge are released (run with ASan/LSan to check).
+    NdbAggregator agg(nullptr);
+    agg.initForResults(program.data(), program.size(), nullptr, 0, columns, 3);
+    makeLocalItems(seed, stringType, nullSeed, seedFirst, seedLast,
+                   INT64_MAX);
+    makeLocalItems(contribution, stringType, false, contribFirst,
+                   contribLast, 1);
+    CHECK(agg.MergeLocalGroup(gbKey, gbLen, seed) == 0);
+    CHECK(agg.MergeLocalGroup(gbKey, gbLen, contribution) == 1860);
+  }
+
+  {
+    NdbAggregator agg(nullptr);
+    agg.initForResults(program.data(), program.size(), nullptr, 0, columns, 3);
+    makeLocalItems(seed, stringType, nullSeed, seedFirst, seedLast, 10);
+    makeLocalItems(contribution, stringType, false, contribFirst,
+                   contribLast, 20);
+    CHECK(agg.MergeLocalGroup(gbKey, gbLen, seed) == 0);
+    CHECK(agg.MergeLocalGroup(gbKey, gbLen, contribution) == 0);
+    // The aggregator keeps copies: the caller's buffers are its own.
+    for (auto *buf : {&seedFirst, &seedLast, &contribFirst, &contribLast})
+      std::fill(buf->begin() + 4, buf->end(), 'q');
+    agg.PrepareResults();
+    auto row = agg.FetchResultRecord();
+    CHECK(!row.end());
+    CHECK(checkString(row.FetchAggregationResult(),
+                      ownershipCase == 1 ? 'm' : 'a'));
+    auto sum = row.FetchAggregationResult();
+    CHECK(!sum.end() && !sum.is_null());
+    CHECK(sum.type() == NdbDictionary::Column::Bigint);
+    CHECK(sum.data_int64() == 30);
+    CHECK(checkString(row.FetchAggregationResult(), 'z'));
+    CHECK(row.FetchAggregationResult().end());
+    CHECK(agg.FetchResultRecord().end());
+  }
+  return true;
+}
+
+static bool runLocalCountCase() {
+  // A new group's COUNT slot starts at 0 (RONDB-831), then per-row
+  // partials of 1 add up.
+  const NdbDictionary::Column *columns[] = {nullptr};
+  std::vector<Uint32> program(8 + 1 + 1, 0);
+  program[1] = (Uint32(1) << 16) | 1;
+  program[8] = NDB_TYPE_INT;
+  program[9] = Uint32(kOpCount) << 26;
+  const Uint32 key[2] = {AttributeHeader(0, sizeof(Int32)).m_value, 7};
+  NdbAggregator agg(nullptr);
+  agg.initForResults(program.data(), program.size(), nullptr, 0, columns, 1);
+  AggResItem undefinedCount = {};
+  undefinedCount.type = NDB_TYPE_UNDEFINED;
+  undefinedCount.is_null = true;
+  CHECK(agg.MergeLocalGroup(reinterpret_cast<const char *>(key),
+                            sizeof(key), &undefinedCount) == 0);
+  AggResItem one = unsignedSlot(1);
+  CHECK(agg.MergeLocalGroup(reinterpret_cast<const char *>(key),
+                            sizeof(key), &one) == 0);
+  CHECK(agg.MergeLocalGroup(reinterpret_cast<const char *>(key),
+                            sizeof(key), &one) == 0);
+  agg.PrepareResults();
+  auto row = agg.FetchResultRecord();
+  CHECK(!row.end());
+  CHECK(checkValue(row.FetchAggregationResult(), unsignedSlot(2)));
+  CHECK(agg.FetchResultRecord().end());
+  return true;
+}
+
 int main() {
   if (ndb_init() != 0) return 1;
   bool passed = runNumericCases();
@@ -505,13 +632,20 @@ int main() {
                   unsigned(grouped), type, ownershipCase);
           passed = false;
         }
+        if (!runLocalCase(grouped, type, ownershipCase)) {
+          fprintf(stderr, "local grouped=%u type=%u ownershipCase=%u\n",
+                  unsigned(grouped), type, ownershipCase);
+          passed = false;
+        }
       }
     }
   }
+  if (!runLocalCountCase()) passed = false;
   ndb_end(0);
   printf("%s\n", passed
       ? "PASSED: result-size boundaries, bounded result batches, "
-        "numeric boundaries and 18 string failure/recovery cases"
+        "numeric boundaries, 18 string failure/recovery cases and "
+        "19 MergeLocalGroup cases"
       : "FAILED");
   return passed ? 0 : 1;
 }
