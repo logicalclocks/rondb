@@ -7018,7 +7018,11 @@ RonSQLPreparer::validate_having_references()
       err << name << "' is not an aggregate. Filter GROUP BY columns in"
              " WHERE, and repeat an aggregate instead of using its output"
              " alias." << std::endl;
+      // Valid SQL (MySQL resolves the alias or column) that RonSQL does
+      // not run: "unsupported", not the internal class the wording
+      // would get from ronsql_classify_message.
       throw RonSQLPermanentError(
+          RonSQLErrorClass::UNSUPPORTED,
           "HAVING can only reference aggregate functions.");
     }
     case T_IS:
