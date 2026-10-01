@@ -13,8 +13,8 @@
 #            prefix's meta row and a slot: the purge leaves expired rows
 #            behind until the INSERT commits.
 #   Phase 3: the same with ttl_index (index scan purge): not blocked.
-#   Phase 4: the lock is held until the purge worker gives up after its
-#            retries, quits and is restarted (current behaviour).
+#   Phase 4: the lock is held past the point where the purge worker used
+#            to give up after its retries: it keeps running.
 # Each phase checks the purged rows, the physical rows and the purge
 # worker's timeout messages in the rdrs2 log while the lock is held, then
 # commits and checks that the purge recovers and reclaims every expired row.
@@ -28,7 +28,8 @@ CREATE DATABASE ttl_lw;
 
 # Counts of purge worker messages in the rdrs2 log since the last
 # ttl_purge_mark_rdrs_log.inc, as $lw_timeouts (nextResult/execute
-# failures), $lw_escalations (worker quits after its retries)
+# failures), $lw_escalations (worker quits after its retries), $lw_skips
+# (tables skipped until the next round after a transaction timeout)
 --let $lw_count_log = $MYSQL_TMP_DIR/_lw_count.inc
 --write_file $MYSQL_TMP_DIR/_lw_count.pl
 use strict;
@@ -38,14 +39,15 @@ open my $f, '<', "$ENV{MYSQL_TMP_DIR}/_rdrs_log_offset.txt" or die;
 my $off = <$f>; chomp $off; close $f;
 open my $l, '<', $log or die;
 seek($l, $off, 0);
-my ($t, $e) = (0, 0);
+my ($t, $e, $s) = (0, 0, 0);
 while (my $line = <$l>) {
   $t++ if $line =~ /\[TTL PWorker\] Failed to (nextResult|execute)/;
   $e++ if $line =~ /\[TTL PWorker\] Has retried for/;
+  $s++ if $line =~ /\[TTL PWorker\] Transaction on table .* timed out .*skipping it until the next round/;
 }
 close $l;
 open my $o, '>', "$ENV{MYSQL_TMP_DIR}/_lw_count.inc" or die;
-print $o "--let \$lw_timeouts = $t\n--let \$lw_escalations = $e\n";
+print $o "--let \$lw_timeouts = $t\n--let \$lw_escalations = $e\n--let \$lw_skips = $s\n";
 close $o;
 EOF
 
@@ -338,14 +340,15 @@ COMMIT;
 DROP TABLE ttl_lw.rbi;
 
 --echo #
---echo # Phase 4: a lock held until the purge worker gives up on its retries
+--echo # Phase 4: a lock held longer than the old retry limit of the purge worker
 --echo #
 
 CREATE TABLE ttl_lw.t4 (
     id INT NOT NULL PRIMARY KEY,
     ttl_col DATETIME,
     data VARCHAR(100)
-) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col"
+  PARTITION BY KEY(id) PARTITIONS 1;
 CREATE INDEX ttl_index ON ttl_lw.t4 (ttl_col);
 --let $wait_db = ttl_lw
 --let $wait_table = t4
@@ -368,38 +371,30 @@ SELECT id, data FROM ttl_lw.t4 WHERE id = 1 FOR UPDATE;
 
 --source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
 --source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
-# Wait (up to 120 s) for the purge worker's "Has retried for" message
---perl
-use strict;
-use warnings;
-my $log = "$ENV{MYSQLTEST_VARDIR}/log/rdrs.1.1.log";
-open my $f, '<', "$ENV{MYSQL_TMP_DIR}/_rdrs_log_offset.txt" or die;
-my $off = <$f>; chomp $off; close $f;
-my $found = 0;
-for (my $i = 0; $i < 120 && !$found; $i++) {
-  open my $l, '<', $log or die;
-  seek($l, $off, 0);
-  while (my $line = <$l>) {
-    if ($line =~ /\[TTL PWorker\] Has retried for/) { $found = 1; last; }
-  }
-  close $l;
-  sleep 1 unless $found;
-}
-open my $o, '>', "$ENV{MYSQL_TMP_DIR}/_lw_esc.inc" or die;
-print $o "--let \$lw_esc_found = $found\n";
-close $o;
-EOF
---source $MYSQL_TMP_DIR/_lw_esc.inc
+# Hold the lock for 40 s, well past the 11 timeouts (~25 s) after which
+# the purge worker used to give up
+--sleep 40
 --exec perl $MYSQL_TMP_DIR/_lw_count.pl
 --source $lw_count_log
-# Current behaviour: after kMaxTrxRetryTimes (10) retries on the same table
-# the purge worker quits (state error, every cached TTL table invalidated)
-# and the schema watcher restarts it
---let $assert_text = phase 4: the purge worker gave up after its retries
---let $assert_cond = $lw_esc_found = 1
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p4_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p4_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p4_state = $json_value
+# A lock wait timeout skips the table until the next round and is not
+# counted as a failure, so the purge worker never gives up on it. t4 has
+# one partition, so the locked row is met every round
+--let $assert_text = phase 4: repeated timeouts while the lock is held
+--let $assert_cond = $lw_timeouts >= 2
 --source include/assert.inc
---let $assert_text = phase 4: more than 10 timeouts before it gave up
---let $assert_cond = $lw_timeouts >= 11
+--let $assert_text = phase 4: the table was skipped until the next round on each timeout
+--let $assert_cond = $lw_skips >= 2
+--source include/assert.inc
+--let $assert_text = phase 4: the purge worker did not give up
+--let $assert_cond = $lw_escalations = 0
+--source include/assert.inc
+--let $assert_text = phase 4: the purge worker kept running
+--let $assert_cond = "$p4_state" = "running"
 --source include/assert.inc
 
 --connection con_lock
@@ -413,7 +408,7 @@ COMMIT;
 --let $json_file = $MYSQL_TMP_DIR/lw_p4_after.json
 --let $json_field = state
 --source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
---let $assert_text = phase 4: running again after the commit
+--let $assert_text = phase 4: running after the commit
 --let $assert_cond = "$json_value" = "running"
 --source include/assert.inc
 
