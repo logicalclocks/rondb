@@ -585,5 +585,27 @@ CREATE TABLE test.t24f (
   );
 
 --echo #
+--echo # Case 25: no declared PRIMARY KEY - blocked
+--echo #
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nopk (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# A UNIQUE key with ring_idx last is not a PRIMARY KEY either (client_id
+# is nullable, so MySQL does not promote the key to the PRIMARY KEY)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nopk (
+    client_id INT,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    UNIQUE KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--echo #
 --echo # Done
 --echo #

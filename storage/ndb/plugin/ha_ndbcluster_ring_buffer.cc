@@ -293,7 +293,11 @@ const char *validate_columns_mysql(const TABLE *table, const Spec &spec) {
   }
   if (!found_idx) return "Ring index column not found in table";
 
-  KEY *pk = &table->s->key_info[0];
+  /* A table without a declared PRIMARY KEY gets a hidden NDB key that
+     ring_idx cannot be part of (and may have no keys at all). */
+  if (table->s->primary_key == MAX_KEY)
+    return "Ring buffer table requires a PRIMARY KEY";
+  KEY *pk = &table->s->key_info[table->s->primary_key];
   uint last_pk_idx = pk->user_defined_key_parts - 1;
   if (my_strcasecmp(system_charset_info,
                     pk->key_part[last_pk_idx].field->field_name,

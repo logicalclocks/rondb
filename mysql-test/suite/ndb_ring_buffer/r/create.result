@@ -538,5 +538,23 @@ PARTITION p1 VALUES IN (3, 4)
 );
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK supports only KEY partitioning'
 #
+# Case 25: no declared PRIMARY KEY - blocked
+#
+CREATE TABLE test.rb_nopk (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer table requires a PRIMARY KEY'
+CREATE TABLE test.rb_nopk (
+client_id INT,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+UNIQUE KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer table requires a PRIMARY KEY'
+#
 # Done
 #
