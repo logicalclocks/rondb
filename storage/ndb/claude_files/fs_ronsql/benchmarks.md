@@ -188,10 +188,10 @@ change:
 | entry | expected RonSQL plan facts |
 |---|---|
 | `fs_hw_agg_point`, `_window7d`, `_greatest`, `_filter`, `strkey_point`, `composite_point`, `sessions_window2h` | `Execute as index scan.` + `` Index: `PRIMARY` `` (observed run 1: goodness 110001 / 110111, 1 or 2 bounds) |
-| `fs_hw_agg_batch*`, `strkey_batch100` | **observed run 1: `Execute as table scan.` for every list size** (F12) — pinned as observed, so a planner fix (index ranges per key) shows up as a pin warning and explains the latency drop |
+| `fs_hw_agg_batch*`, `strkey_batch100` | `Execute as index scan.`, `` Index: `PRIMARY` ``, `SF_MultiRange` — one index range per key (WP-F F2; observed run 6: `Ranges: 10 / 100 / 1000 (IN list on … distinct; SF_MultiRange)`). Run 1–4 pinned the observed `Execute as table scan.` (F12) |
 | `fs_hw_collect5/50` | `Execute as index scan.`, `ORDER BY: index order (SF_OrderBy | SF_Descending merge of the fragment scans, streamed, no client-side sort).`, `Result limited to N rows.` (observed) |
 | `fs_hw_snow1/2_point`, `snow2_left_chain` | `Body root: INDEX_SCAN using PRIMARY`, `[ROOT] CTE_SCAN CTE:b AS b`, `[INNER] PK_LOOKUP regions_1 AS j2` (+ `countries_1 AS j3`) (observed) |
-| `fs_hw_snow1_batch100` | observed: `Body root: TABLE_SCAN` (the IN list on the CTE body, F12), then CTE_SCAN + PK_LOOKUP |
+| `fs_hw_snow1_batch100` | `Body root: INDEX_SCAN using PRIMARY`, `ranges (IN list on `customer_id``, `[ROOT] CTE_SCAN`, `[INNER] PK_LOOKUP` (WP-F F3; observed run 6: 100 ranges). Run 1–4: `Body root: TABLE_SCAN` (F12) |
 | `fs_hw_snow2_left_single` | `[LEFT JOIN] PK_LOOKUP` ×2 (observed) |
 | `fs_hw_hash_point` | `Execute as table scan.` (no ordered index) — the point of the entry; not yet observed (run 1 stopped before it) |
 | `fs_hw_agg_last10`, `_last100`, `_last10_tx300` | `CTE 't' aggregated in RonSQL over the ORDER BY / LIMIT scan …` (WP-J J5), `Execute as index scan.`, `ORDER BY: index order (SF_OrderBy | SF_Descending …` — the collect scan without `Result limited to N rows.` (the LIMIT belongs to the scan) |
@@ -358,6 +358,29 @@ Reading:
 - A path without the CTE protocol, the collect scan plus aggregation in
   the RonSQL layer, is bounded below by `collect5`'s 0.40 ms. That is
   below MySQL's 0.62 ms.
+
+### Census run 6 — 2026-09-24, benchmark computer (Linux), WP-F batch shapes, 8 threads, `ronsql` vs `mysqld_nopush`
+
+The census rerun after WP-F (`m3_run6_plan.md`; artifacts outside the
+tree in `census_run6/`). Configuration as run 4, not X0: NumCPUs=4
+(2 LDM threads per node), unpinned. `fs_hw` ran at sf 0.1, `core` at
+sf 1; 8 client threads, interpreter OFF. Average latency per request:
+
+| entry | target (`m3_wpf_plan.md` §0) | RonSQL | mysqld nopush | MySQL / RonSQL | plan |
+|---|---:|---:|---:|---:|---|
+| core_in_pk100 | ≤ 1 ms | 460 µs | 444 µs | 0.96× | `Execute as 100 aggregating primary key lookups` |
+| core_in_idx100 | ≤ 10 ms | 2.15 ms | 4.60 ms | 2.14× | `Ranges: 100` on `o_custkey` |
+| agg_batch10 | ≤ 2 ms | 352 µs | 709 µs | 2.01× | `Ranges: 10 … SF_MultiRange` |
+| agg_batch100 | ≤ 15 ms | 2.60 ms | 7.83 ms | 3.01× | `Ranges: 100` |
+| agg_batch100_window | ≤ 15 ms | 2.20 ms | 6.15 ms | 2.80× | `Ranges: 100` |
+| agg_batch1000 | ≤ 200 ms | 23.46 ms | 185 ms | 7.91× | `Ranges: 1000` |
+| strkey_batch100 | ≤ 15 ms | 4.14 ms | 8.81 ms | 2.13× | `Ranges: 100` on `customer_key` |
+| snow1_batch100 | ≤ 10 ms | 969 µs | 4.03 ms | 4.16× | CTE body `INDEX_SCAN`, 100 ranges |
+
+Every WP-F target is met and F12 / F23 are closed (`findings/bench.md`);
+run 4 had 216 ms / 989 ms / 8.73 s for agg_batch10 / 100 / 1000 at 1
+thread. Further runs (e.g. sf 1 at 1 thread on the 15-LDM X0
+configuration) are separate benchmark tasks.
 
 ### Run 4 — 2026-09-22, benchmark computer (Linux), full registry (M3.0 census), sf 1, `ronsql` vs `mysqld_nopush`, 1 thread complete, 8 threads stopped early
 

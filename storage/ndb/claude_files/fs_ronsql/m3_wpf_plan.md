@@ -23,6 +23,14 @@ OR-chain scan filters under F1a / F2 / F1b / F3; not attributed per
 case (the counter counts per compile attempt).  Then the census rerun
 for the §0 targets.**
 
+**Status 2026-10-01: done.** Census run 6 (2026-09-24, benchmark
+computer, 8 threads, NumCPUs=4; `fs_hw` sf 0.1, `core` sf 1) meets every
+§0 target — `benchmarks.md` §8 has the table — with `SF_MultiRange`
+plans, one range per key, and the pins expect them (§7). `findings/bench.md`
+F12 and F23 closed. Further benchmark runs (e.g. the 15-LDM
+configuration at sf 1, 1 thread) are separate tasks; the JIT mirror's
+fallback delta of 96 above is still unattributed.
+
 ## 0. Contract and targets
 
 Hopsworks batch serving sends `WHERE <entity key> IN (k1, …, kn) GROUP

@@ -100,11 +100,22 @@ F8 was a framework fixture issue and is already fixed.
     filter, a key with no rows) stay pushed and match pushdown OFF; they
     pass (2026-10-01). To confirm on fs_bench: `.bench_sql fs_hw_agg_point`
     with `ndb_pushdown_aggregate=ON`.
-- [ ] F12 (bench.md): RonSQL executes `IN (k1..kn)` as a table scan with an OR filter:
+- [x] F12 (bench.md): RonSQL executes `IN (k1..kn)` as a table scan with an OR filter:
   S3 batch serving is 200–1000× slower than MySQL (204 ms for 10 keys, 4.4 s for 1000).
   Index ranges per key needed; the fs_hw plan pins record the table scan as observed.
-- [ ] F13 (bench.md): snowflake point reads cost ~350 µs of CTE_SCAN round trips over the
+  FIXED by WP-F (`m3_wpf_plan.md`, as F23): `0a34cea7cf9` (F1a PK lookups),
+  `a52a7498d78` (F2 multi-range scans, F1b aggregating PK reads), `dd46e068447`
+  (F3 CTE bodies / join roots). Census run 6 (2026-09-24, benchmark computer, 8
+  threads, 4 LDMs): every batch plan is `SF_MultiRange` with one range per key, and
+  every `m3_wpf_plan.md` §0 target is met — agg_batch10 / 100 / 1000 352 µs /
+  2.60 ms / 23.5 ms (MySQL nopush 709 µs / 7.83 ms / 185 ms, sf 0.1), core_in_pk100
+  460 µs (sf 1). Pins now expect the ranges. Closed; further benchmark runs
+  (e.g. the 15-LDM configuration) are separate tasks.
+- [x] F13 (bench.md): snowflake point reads cost ~350 µs of CTE_SCAN round trips over the
   2–3 PK reads MySQL does (483–525 µs vs 120–172 µs).
+  CLOSED 2026-09-22 (census run 4, benchmark computer): 192–227 µs after the
+  RONDB-1120 CTE work, −60 %; run 6 (8 threads) 334 / 382 µs for snow1 / snow2.
+  The single-SPJ-tree design (WP-G) stays an optional step towards ~100 µs.
 - [x] F14 (spec_fuzz.md): a snowflake CTE body keyed by a VARCHAR entity key
   returns no rows through CTE_SCAN (`customers_str_1` root); the body alone and
   the integer-keyed twin work. Found by the E6 fuzzer, seed 1.
@@ -228,7 +239,7 @@ F8 was a framework fixture issue and is already fixed.
     MIN / MAX, which the API does not refuse. Regression
     `ronsql.ronsql_avg_sum_types` (f16-1..7); the fuzzer's avg-string /
     avg-temporal expectations now match the specific messages.
-- [ ] F28 (2026-09-29, WP-J J0 test `ronsql_cte.ronsql_cte_dd_lastn_agg` lastn-7):
+- [x] F28 (2026-09-29, WP-J J0 test `ronsql_cte.ronsql_cte_dd_lastn_agg` lastn-7):
   `RonSQLPreparer::encode_constant` returned the widest length for every
   DATETIME / TIMESTAMP constant (8 / 7 bytes) instead of the column's width
   (5 / 4 + (precision + 1) / 2). A CTE body range on a TIMESTAMP(0) key
@@ -237,10 +248,11 @@ F8 was a framework fixture issue and is already fixed.
   requires exactly `getSizeInBytes()` for fixed-size columns. The key-row
   paths (`memcpy(dst, rv.val, rv.len)` for PK lookups and IN-list lookups)
   overran the 4-byte slot by 3 bytes. Single-table windowed aggregates were
-  unaffected (`setBound` takes the column's length). Fix written, not yet
-  built: the exact width is returned from a zeroed widest-size buffer.
+  unaffected (`setBound` takes the column's length). FIXED in `3ab0fcd1df2`:
+  the exact width is returned from a zeroed widest-size buffer.
   Regression cases lastn-W1 (PK lookup), W2 (IN on the TIMESTAMP key) and
-  W3 (single-row CTE keyed on it).
+  W3 (single-row CTE keyed on it), recorded green in all six `ronsql_cte`
+  mirrors and kept green through the later WP-J re-records.
 - [x] F29 (2026-09-29, WP-J J0 first form, lastn-12): a join whose key is a
   CTE MIN/MAX output over a narrower integer column fails with an internal
   error. Repro: `WITH t AS (SELECT customer_id, event_time,
@@ -544,9 +556,17 @@ F8 was a framework fixture issue and is already fixed.
   separately: --golden compares MySQL-only DTOs on both MySQL paths, but
   neither golden nor vector mode executes the pk-read fallback or scan
   twin. Absent templates do not establish why Hopsworks gated them.
-- [ ] E8: implement requirements mode (--requirements). This flag still
+- [x] E8: implement requirements mode (--requirements). This flag still
   adds no checks; successful selected L1 or L2 regression checks do not
   establish full Hopsworks requirements acceptance.
+  DONE (E8, `phase_e8.md`): `.fs_verify --requirements`
+  (`internal/shell/fs_requirements.go`) resolves the `req-v1` manifest and runs
+  L1, L2 and Java conformance per requirement. Reports in
+  `requirements_reports/2026-09-12` and `2026-09-15` (base, JIT, ng2r2). The
+  2026-09-15 reports: 15 SUPPORTED, 4 HOPSWORKS-GATED, 1 UNSUPPORTED (R-A5-types:
+  EDGE-decimal-large and EDGE-float-rounding KNOWN-WRONG, EDGE-big-overflow
+  REJECT(expected)), so acceptance=FAIL as designed. F4 (FLOAT) was fixed after
+  that run; the remaining gap is F5 (DECIMAL) and F6's intended range difference.
 - [ ] Report deferred modes explicitly when requested without making
   their absence fail otherwise successful regression runs.
 
