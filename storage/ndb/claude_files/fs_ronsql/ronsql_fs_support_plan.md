@@ -28,6 +28,14 @@ The generator's contract is the requirements manifest (`cases/requirements.go`,
    | R-A2-binary | F7 | binary / complex feature projected through a snowflake template |
    | R-A5-types | F4, F5, F6, F9 | FLOAT display, DECIMAL beyond 2^53, BIGINT SUM overflow, temporal MIN/MAX in JSON |
 
+   Status (requirements reports 2026-09-15, base / JIT / ng2r2 identical):
+   R-S6, R-F1 and R-A2-binary are SUPPORTED (F0, F1, F7 fixed); only
+   R-A5-types stays UNSUPPORTED — EDGE-decimal-large and
+   EDGE-float-rounding KNOWN-WRONG, EDGE-big-overflow REJECT(expected).
+   No temporal JSON case (F9) is among the failures, and F4 was fixed
+   after the run (`df820fa3540`, 2026-09-17), so the remaining gap is F5
+   (exact DECIMAL, WP-D2) and F6's intended range difference.
+
 2. The regression suites stay green three times (`ronsql_fs`, `ronsql_fs_jit`
    strict-armed, `ronsql_fs_ng2r2`), the fuzzers report no unclassified
    failure, and every expectation-table entry retired by a fix is removed
@@ -53,8 +61,8 @@ does not.
 | F6, F22 | BIGINT SUM overflow: per-fragment 1860 vs unchecked merge | clean error on small clusters, wrapped value on large | yes (sum over bigint) | WP-D3 (overflow overhaul, separate task) |
 | F3, F4 | AVG / FLOAT display rules | formatting (tolerated by the canonicalizer) | yes | WP-D4 |
 | F14 | CTE body bound on a VARCHAR primary key | WRONG RESULT (no rows) — FIXED 2026-09-24 in WP-F F3 (double VARCHAR length prefix on pushed-query constants) | yes (string entity keys + snowflake) — not yet in the manifest | WP-E (engine part done) |
-| F12 | planner: IN list → table scan | PERFORMANCE 200–1000× | yes (batch serving, 10–1000 keys) | WP-F |
-| F13 | CTE_SCAN + PK_LOOKUP round trips | PERFORMANCE 3–4× | yes (every snowflake point read) | WP-G |
+| F12 | planner: IN list → table scan | PERFORMANCE 200–1000× — FIXED 2026-09-24 by WP-F (as F23): PK lookups / one index range per key; census run 6 meets every target on the 4-LDM configuration | yes (batch serving, 10–1000 keys) | WP-F |
+| F13 | CTE_SCAN + PK_LOOKUP round trips | PERFORMANCE 3–4× — CLOSED 2026-09-22 (run 4: 192–227 µs after the RONDB-1120 CTE work) | yes (every snowflake point read) | WP-G |
 | F15 | DBSPJ join-aggregation null row over a CTE_LOOKUP miss | DATA NODE CRASH — FIXED 2026-09-30 (the miss NULL-extends the leaf's direct parent row) | no (LEFT JOIN onto an aggregated CTE) | WP-H |
 | F18 | partial-key CTE lookup now runs | WRONG RESULT (regression from a clean reject) — fixed 2026-09-30: an index/table scan below a CTE_SCAN root is rejected at prepare time (unfinished Phase N.1 shape) | no | WP-H |
 | F19 | CTE_SCAN as outer-join child now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
@@ -236,6 +244,16 @@ CTE bodies. Keep the OR-filter fallback for non-key columns. Measure with
 batch1000 ≤ 300 ms, batch10 ≤ 3 ms; plan pins show index ranges, not a
 table scan. Evidence: pins re-recorded, `benchmarks.md` §8 run 4.
 
+**Status (2026-09-24): done** — as F23 in `m3_wpf_plan.md` (tighter
+targets, §0): PK lookups for complete-PK lists, one index range per key
+for prefix and secondary-index lists, on single tables, CTE bodies and
+join roots (`0a34cea7cf9`, `a52a7498d78`, `dd46e068447`). Census run 6
+(8 threads, 4 LDMs; `fs_hw` at sf 0.1): agg_batch10 / 100 / 1000 352 µs /
+2.60 ms / 23.5 ms, strkey_batch100 4.14 ms, snow1_batch100 969 µs —
+every target met, RonSQL 2–8× faster than mysqld nopush; plan pins
+expect `SF_MultiRange` (`benchmarks.md` §7, §8). Further benchmark
+runs (e.g. the 15-LDM configuration) are separate tasks.
+
 ### WP-G — Snowflake round trips (F13) — P2
 
 **Need.** Every snowflake point read (S7 INNER, S8 per-chain LEFT, S8b)
@@ -249,6 +267,12 @@ children inside one SPJ tree instead of scan + materialize + scan. The
 batch variant (`snow1_batch100`) follows from WP-F. Target: ≤ 1.5× MySQL
 (≈ 200 µs at 1 thread); the JIT arm is already in place for the compiled
 path. Evidence: `fs_hw_snow*` pins and timings, `benchmarks.md` §8.
+
+**Status: F13 closed 2026-09-22** without this design: the RONDB-1120 CTE
+work (identity addressing, overlapped `JOIN_AGG_SETUP`, single-word feed
+signals) brought snowflake point reads to 192–227 µs in run 4 (−60 %).
+The single-SPJ-tree execution stays optional, for the ~100 µs floor;
+the batch variant is served by WP-F F3 (snow1_batch100 969 µs in run 6).
 
 ### WP-H — Envelope hardening — P3 (not emitted; reachable by any client)
 
