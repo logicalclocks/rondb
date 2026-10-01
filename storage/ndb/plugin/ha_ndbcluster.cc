@@ -10304,6 +10304,18 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
           return create.failed_illegal_create_option(
               "Cannot change ring buffer size; use DROP+CREATE to resize");
         }
+        /* The copy would keep every row as it is: no meta rows, slots
+           outside 1..size, a ring_idx = 0 row taken for a meta row. No
+           NDB table under the old name (709/723): a table of another
+           engine; any other lookup error is reported as such. */
+        if (old_tab == nullptr && old_tab_g.getNdbError().code != 709 &&
+            old_tab_g.getNdbError().code != 723) {
+          return create.failed_in_NDB(old_tab_g.getNdbError());
+        }
+        if (old_tab == nullptr || !old_tab->isRingBuffer()) {
+          return create.failed_illegal_create_option(
+              "Cannot enable ring buffer via ALTER; use DROP+CREATE");
+        }
       }
       found_ring_buffer = true;
       ring_buffer_size = rb_spec.size;
@@ -17286,8 +17298,11 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
       }
       /* off on non-ring-buffer table — no-op, ignore */
     } else {
-      if (old_tab->isRingBuffer() &&
-          rb_spec.size != old_tab->getRingBufferSize()) {
+      if (!old_tab->isRingBuffer()) {
+        *reason = "Cannot enable ring buffer via ALTER; use DROP+CREATE";
+        return true;
+      }
+      if (rb_spec.size != old_tab->getRingBufferSize()) {
         *reason = "Cannot change ring buffer size; use DROP+CREATE to resize";
         return true;
       }

@@ -303,3 +303,48 @@ SELECT client_id, ring_idx, val FROM test.rb_repart ORDER BY ring_idx;
 
 DROP TABLE test.rb_repart;
 
+
+--echo #
+--echo # Case 9: enabling MAX_ROWS_PER_PK on an ordinary or non-NDB table via ALTER - blocked
+--echo #
+# The copy would keep every row as it is: no meta rows, slots outside
+# 1..size, a ring_idx = 0 row taken for a meta row. DROP+CREATE instead.
+CREATE TABLE test.rb_plain (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB;
+INSERT INTO test.rb_plain VALUES (1, 0, NULL, 'a'), (1, 7, NULL, 'b'),
+                                 (1, 50, NULL, 'c'), (2, 3, NULL, 'd');
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_plain COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_plain ALGORITHM=COPY, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_plain ALGORITHM=INPLACE, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# The table is unchanged: still an ordinary table with the same rows
+SHOW CREATE TABLE test.rb_plain;
+SELECT client_id, ring_idx, val FROM test.rb_plain ORDER BY client_id, ring_idx;
+INSERT INTO test.rb_plain (client_id, val) VALUES (3, 'e');
+SELECT client_id, ring_idx, val FROM test.rb_plain WHERE client_id = 3;
+
+DROP TABLE test.rb_plain;
+
+# The same from a table of another engine (no NDB table to compare with)
+CREATE TABLE test.rb_innodb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = InnoDB;
+INSERT INTO test.rb_innodb VALUES (1, 0, NULL, 'a'), (1, 7, NULL, 'b');
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_innodb ENGINE = NDB,
+    COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb_innodb;
+DROP TABLE test.rb_innodb;

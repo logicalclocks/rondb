@@ -279,3 +279,62 @@ client_id	ring_idx	val
 1	2	e
 1	3	f
 DROP TABLE test.rb_repart;
+#
+# Case 9: enabling MAX_ROWS_PER_PK on an ordinary or non-NDB table via ALTER - blocked
+#
+CREATE TABLE test.rb_plain (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(20),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB;
+INSERT INTO test.rb_plain VALUES (1, 0, NULL, 'a'), (1, 7, NULL, 'b'),
+(1, 50, NULL, 'c'), (2, 3, NULL, 'd');
+ALTER TABLE test.rb_plain COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Cannot enable ring buffer via ALTER; use DROP+CREATE'
+ALTER TABLE test.rb_plain ALGORITHM=COPY, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Cannot enable ring buffer via ALTER; use DROP+CREATE'
+ALTER TABLE test.rb_plain ALGORITHM=INPLACE, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: Cannot enable ring buffer via ALTER; use DROP+CREATE. Try ALGORITHM=COPY.
+SHOW CREATE TABLE test.rb_plain;
+Table	Create Table
+rb_plain	CREATE TABLE `rb_plain` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `val` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+SELECT client_id, ring_idx, val FROM test.rb_plain ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+1	0	a
+1	7	b
+1	50	c
+2	3	d
+INSERT INTO test.rb_plain (client_id, val) VALUES (3, 'e');
+SELECT client_id, ring_idx, val FROM test.rb_plain WHERE client_id = 3;
+client_id	ring_idx	val
+3	0	e
+DROP TABLE test.rb_plain;
+CREATE TABLE test.rb_innodb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(20),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = InnoDB;
+INSERT INTO test.rb_innodb VALUES (1, 0, NULL, 'a'), (1, 7, NULL, 'b');
+ALTER TABLE test.rb_innodb ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Cannot enable ring buffer via ALTER; use DROP+CREATE'
+SHOW CREATE TABLE test.rb_innodb;
+Table	Create Table
+rb_innodb	CREATE TABLE `rb_innodb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `val` varchar(20) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+DROP TABLE test.rb_innodb;
