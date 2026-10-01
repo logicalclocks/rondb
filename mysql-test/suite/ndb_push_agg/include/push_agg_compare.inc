@@ -16,7 +16,9 @@
 --let $pac_on = $MYSQLTEST_VARDIR/tmp/push_agg_compare_on.txt
 SET ndb_pushdown_aggregate = ON;
 --let $pac_extra = query_get_value("EXPLAIN $pac_query", Extra, 1)
---let $pac_pushed = `SELECT LOCATE('Using pushed aggregation', '$pac_extra') > 0`
+# Double quotes: Extra shows a pushed condition's string literals in single
+# quotes.
+--let $pac_pushed = `SELECT LOCATE('Using pushed aggregation', "$pac_extra") > 0`
 SET ndb_pushdown_aggregate = OFF;
 --let $pac_rows = `SELECT COUNT(*) FROM ($pac_query) AS pac_rows`
 --sorted_result

@@ -18,7 +18,9 @@
 --let $poc_on = $MYSQLTEST_VARDIR/tmp/push_agg_ordered_on.txt
 SET ndb_pushdown_aggregate = ON;
 --let $poc_extra = query_get_value("EXPLAIN $poc_query", Extra, $poc_row)
---let $poc_pushed = `SELECT LOCATE('Using pushed aggregation', '$poc_extra') > 0`
+# Double quotes: Extra shows a pushed condition's string literals in single
+# quotes.
+--let $poc_pushed = `SELECT LOCATE('Using pushed aggregation', "$poc_extra") > 0`
 SET ndb_pushdown_aggregate = OFF;
 --output $poc_off
 --eval $poc_query

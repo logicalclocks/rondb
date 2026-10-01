@@ -85,6 +85,21 @@ bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path);
 bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path);
 
 /**
+ * Check whether the table access reads several ranges or key sets in one
+ * execution (F10 in mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md): an
+ * INDEX_RANGE_SCAN with more than one range (an IN list), REF_OR_NULL, or
+ * an index merge.  With the aggregation pushed the handler reads them
+ * without MRR, one aggregating scan per range into the same NdbAggregator,
+ * so later ranges return the groups of earlier ones again, and a group or
+ * a scalar aggregate that spans ranges comes back once per range.  A single
+ * range stays pushable.
+ *
+ * @return true if single-table aggregation must not be pushed
+ */
+bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
+                                           const AccessPath *path);
+
+/**
  * Entry point for aggregation pushdown.
  * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
  *

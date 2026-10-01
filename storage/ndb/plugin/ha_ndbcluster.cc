@@ -3914,8 +3914,16 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
 
     if (lm == NdbOperation::LM_Read)
       options.scan_flags |= NdbScanOperation::SF_KeyInfo;
-    if (sorted) options.scan_flags |= NdbScanOperation::SF_OrderByFull;
-    if (descending) options.scan_flags |= NdbScanOperation::SF_Descending;
+    // A pushed aggregation is read unordered (F10): its receive buffers
+    // hold aggregate records, not index rows, so the sorted merge compared
+    // garbage as index keys (a VARCHAR key failed a require in
+    // NdbSqlUtil::likeLongvarchar), and its groups come back in
+    // NdbAggregator's order anyway.  ndb_aggregate_order_from_index() keeps
+    // the push off plans that need the index order.
+    if (m_stm_aggregator == nullptr) {
+      if (sorted) options.scan_flags |= NdbScanOperation::SF_OrderByFull;
+      if (descending) options.scan_flags |= NdbScanOperation::SF_Descending;
+    }
 
     /* Partition pruning */
     if (m_use_partition_pruning && m_user_defined_partitioning &&
@@ -15544,9 +15552,12 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
         ndb_push_aggregation(thd, join, pushed_builder, allow_outer_join);
   }
 
-  // Check if single-table aggregation can be pushed.
+  // Check if single-table aggregation can be pushed.  Not when the access
+  // reads several ranges in one execution (F10): without MRR each range is
+  // its own aggregating scan into the same NdbAggregator.
   if (!has_pushed_aggregation && !order_from_index &&
-      THDVAR(thd, pushdown_aggregate)) {
+      THDVAR(thd, pushdown_aggregate) &&
+      !ndb_aggregate_reads_ranges_separately(join, root_path)) {
     has_pushed_aggregation =
         ndb_push_single_table_aggregation(thd, join, pushed_builder);
   }

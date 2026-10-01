@@ -39,6 +39,7 @@
 #include "sql/item_cmpfunc.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
+#include "sql/join_optimizer/walk_access_paths.h"
 #include "sql/sql_optimizer.h"
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
@@ -1550,6 +1551,30 @@ bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path) {
     }
   }
   return true;
+}
+
+bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
+                                           const AccessPath *path) {
+  bool separate = false;
+  WalkAccessPaths(path, join, WalkAccessPathPolicy::ENTIRE_QUERY_BLOCK,
+                  [&separate](const AccessPath *p, const JOIN *) {
+                    switch (p->type) {
+                      case AccessPath::INDEX_RANGE_SCAN:
+                        if (p->index_range_scan().num_ranges > 1)
+                          separate = true;
+                        break;
+                      case AccessPath::REF_OR_NULL:
+                      case AccessPath::INDEX_MERGE:
+                      case AccessPath::ROWID_INTERSECTION:
+                      case AccessPath::ROWID_UNION:
+                        separate = true;
+                        break;
+                      default:
+                        break;
+                    }
+                    return separate;
+                  });
+  return separate;
 }
 
 bool ndb_push_aggregation(THD *, const JOIN *join,

@@ -50,8 +50,9 @@ the reference on every entry, and the production twins (`fs_hw_*_twin`,
 
 55 RonSQL-capable entries. Every entry runs on `ronsql` and on
 `mysqld_nopush` (the unpushed MySQL server is the reference baseline for
-the Hopsworks shapes since run 3: the pushed arm crashes on F10 and fails
-F11), at 1 thread (latency) and 8 threads (throughput on this laptop's
+the Hopsworks shapes since run 3: the pushed arm crashed on F10 and failed
+F11, both fixed 2026-10-01; an IN list is no longer pushed, so on the
+batch entries the pushed arm now runs the unpushed plan), at 1 thread (latency) and 8 threads (throughput on this laptop's
 8-thread ceiling), with the compiled interpreter OFF and ON, interleaved
 per query so cache warm-up cannot masquerade as a JIT effect.
 

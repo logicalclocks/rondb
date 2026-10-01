@@ -46,13 +46,60 @@ F8 was a framework fixture issue and is already fixed.
   `ronsql.ronsql_temporal_json`. Malformed JSON is still decoded as an
   error, never a successful result; the F9 exemption (`KNOWN-ERROR`) is
   retired.
-- [ ] F10 (bench.md): mysqld crashes (`NdbSqlUtil::likeLongvarchar` require in the
+- [x] F10 (bench.md): mysqld crashes (`NdbSqlUtil::likeLongvarchar` require in the
   ordered-scan sorted merge) on a pushed aggregate with a VARCHAR GROUP BY key and
-  an IN list (`fs_hw_strkey_batch100`, pushdown ON). Run the fs_hw matrix with
-  `--engines ronsql,mysqld_nopush` until fixed.
-- [ ] F11 (bench.md): pushed point aggregates fail with NDB error 4120 'Scan already
+  an IN list (`fs_hw_strkey_batch100`, pushdown ON). FIXED 2026-10-01; the fs_hw
+  matrix no longer needs `--engines ronsql,mysqld_nopush` to avoid it.
+  - Cause (2026-09-30, code reading), two faults in the single-table push
+    (`ha_ndbcluster_push_agg.cc`, `ha_ndbcluster::ordered_index_scan`):
+    - The GROUP BY took its order from PRIMARY, so the scan was asked for
+      `SF_OrderByFull`. `DoAggregation()` drains it through `nextResult()`,
+      whose sorted merge compares each fragment's current row by the index
+      key, but under a pushed aggregation the receive buffers hold aggregate
+      records. An integer key compared garbage harmlessly; a VARCHAR key read
+      a garbage length and hit the `require` in `likeLongvarchar`.
+    - With `m_stm_aggregator` set, MRR is off, so every range of the IN list
+      is its own `read_range_first()` → `ordered_index_scan()` →
+      `DoAggregation()` into the same `NdbAggregator`, which is deleted only
+      in `reset()` at the end of the statement. Its group map keeps earlier
+      ranges' groups (they come back again), and a group or scalar aggregate
+      that spans ranges comes back once per range: wrong results for integer
+      keys too, never seen because the pushed arm only benchmarked them.
+  - Fix (2026-10-01, tests pass):
+    - `ndb_aggregate_reads_ranges_separately()`: no single-table push when
+      the access reads several ranges in one execution (INDEX_RANGE_SCAN
+      with more than one range, REF_OR_NULL, index merge). One range stays
+      pushed. Unpushed MySQL was the faster plan for these lists anyway
+      (F12: 1.8 ms vs 10 ms pushed for 100 keys).
+    - `ordered_index_scan()` never asks for a sorted scan when the
+      aggregation is pushed; F30's `ndb_aggregate_order_from_index()` keeps
+      the push off plans that need the index order.
+    - Regression `ndb_push_agg.ndb_pushdown_agg_ranges` + JIT mirror: r-1..r-5
+      (IN lists incl. the F10 VARCHAR shape, a scalar and a cross-range
+      GROUP BY, key OR NULL) pushed=0; s-1..s-3 (one range, incl. a VARCHAR
+      PRIMARY range) stay pushed; each compared with pushdown OFF.
+  - Related, not fixed: a single-range pushed aggregate that runs more than
+    once in one statement (a correlated subquery) reuses the same
+    `NdbAggregator` too, and nothing resets it between executions. Untested;
+    worth a test before relying on pushdown in correlated subqueries.
+- [x] F11 (bench.md): pushed point aggregates fail with NDB error 4120 'Scan already
   complete' (`fs_hw_agg_point`, `_filter`, `strkey_point` at sf 1); unpushed and the
   windowed / GREATEST variants work.
+  - Cause (2026-10-01, code reading): the same read-after-drain as F30. The
+    equality on the key prefix is a REF on PRIMARY: `index_read()` starts the
+    pushed single-table aggregation, whose `DoAggregation()` drains and
+    completes the scan, and MySQL reads the next row with `index_next_same()`,
+    which had no aggregator branch and called `fetch_next()` on the completed
+    scan: 4120. The window bound makes it a range scan, whose
+    `read_range_next()` had the branch; the GREATEST set is not pushed.
+  - Fixed by F30's backstop (`3b2787828d0`): `next_result()` serves every row
+    of a pushed single-table aggregation from the aggregator, which covers
+    `index_next_same()`. F30's control c-3 (`WHERE k = 1`, scalar, pushed)
+    already ran this shape. Regression `ndb_push_agg.ndb_pushdown_agg_ranges`
+    p-1..p-4: the F11 forms (integer and VARCHAR key prefix, a non-key
+    filter, a key with no rows) stay pushed and match pushdown OFF; they
+    pass (2026-10-01). To confirm on fs_bench: `.bench_sql fs_hw_agg_point`
+    with `ndb_pushdown_aggregate=ON`.
 - [ ] F12 (bench.md): RonSQL executes `IN (k1..kn)` as a table scan with an OR filter:
   S3 batch serving is 200–1000× slower than MySQL (204 ms for 10 keys, 4.4 s for 1000).
   Index ranges per key needed; the fs_hw plan pins record the table scan as observed.
