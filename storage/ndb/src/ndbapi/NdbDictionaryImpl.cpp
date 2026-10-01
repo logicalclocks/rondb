@@ -4386,6 +4386,15 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
     m_error.code = 794;  // Schema feature requires data node upgrade
     DBUG_RETURN(-1);
   }
+  /* Same for ring buffer tables (an old node would create an ordinary
+     table without the ring write guards) and TTL on them. */
+  if (impl.isRingBuffer() &&
+      (!ndbd_support_ring_buffer(ndb.getMinDbNodeVersion()) ||
+       (impl.isTTLEnabled() &&
+        !ndbd_support_ttl_ring_buffer(ndb.getMinDbNodeVersion())))) {
+    m_error.code = 794;  // Schema feature requires data node upgrade
+    DBUG_RETURN(-1);
+  }
 
   if (impl.m_fragmentType == NdbDictionary::Object::HashMapPartition) {
     const bool partition_count_known =
