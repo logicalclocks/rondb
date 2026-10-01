@@ -204,10 +204,30 @@ F8 was a framework fixture issue and is already fixed.
   HAVING identifier except a SELECT-list subquery alias. Also fixed: HAVING in a
   CTE body was parsed but never applied; `analyze_ctes` now rejects it.
   Regression `ronsql.ronsql_having_refs`, srb-P8 re-pinned. Verified 2026-09-30.
-- [ ] F16 (envelope_fuzz.md): AVG over a VARCHAR column reports the generic
+- [x] F16 (envelope_fuzz.md): AVG over a VARCHAR column reports the generic
   `Failed writing aggregation program. Please report a bug.` instead of the
   specific `AVG over string columns is not supported.` guard (which fires for
   temporal AVG). Found by the E7 envelope fuzzer. Functionally a clean reject.
+  - Also a 500: "Please report a bug" forces the class internal.
+  - Cause: the specific AVG guards live only in `build_cte_virtual_tables`
+    (CTE outputs). A main-query AVG / SUM reaches `NdbAggregator::Sum`,
+    which refuses a string or temporal register with its own codes
+    (`kErrUnsupportedStringOperation` / `kErrUnsupportedTemporalOperation`),
+    and `programAggregator_do_or_fail` threw the generic bug message. A
+    type the interpreter cannot load at all (BINARY, BLOB, BIT, the old
+    temporal formats) failed the same way at `LoadColumn`.
+  - FIXED 2026-10-01:
+    `RonSQLPreparer::throw_sum_avg_emit_error` translates the two codes at
+    the Sum sites (single table, join) and the CTE Avg site into `AVG / SUM
+    over string columns is not supported.` / `... over temporal columns is
+    not supported — only MIN / MAX / COUNT.` (class unsupported; AVG when
+    the failed slot is an AVG output's sum slot); `kErrUnSupportedColumn`
+    at LoadColumn becomes `Aggregation over a column of this type is not
+    supported.` Arithmetic feeding SUM / AVG is covered too (the register
+    keeps the column's type). Not covered: arithmetic on a string inside
+    MIN / MAX, which the API does not refuse. Regression
+    `ronsql.ronsql_avg_sum_types` (f16-1..7); the fuzzer's avg-string /
+    avg-temporal expectations now match the specific messages.
 - [ ] F28 (2026-09-29, WP-J J0 test `ronsql_cte.ronsql_cte_dd_lastn_agg` lastn-7):
   `RonSQLPreparer::encode_constant` returned the widest length for every
   DATETIME / TIMESTAMP constant (8 / 7 bytes) instead of the column's width
@@ -466,11 +486,10 @@ F8 was a framework fixture issue and is already fixed.
     frags_per_worker_plan.md); 30 recorded results updated for the
     wording. Tests: rdrs2 `TestErrorStatusByClass` (join without index,
     constant-folding overflow), `ronsql.ronsql_size_limits` rl-3 (413).
-  - Left: F16 (AVG over VARCHAR, "Failed writing aggregation program.
-    Please report a bug.") and F17 (HAVING + ORDER BY + LIMIT) are user
-    errors still reported as internal bugs; they need guards, not
-    classes. The EXPLAIN `[I.10 …]` tags keep their phase names (pinned
-    by ronsql_cte_minmax_index).
+  - F16 and F17, the user errors reported as internal bugs that needed
+    guards rather than classes, are fixed in their own entries. The
+    EXPLAIN `[I.10 …]` tags keep their phase names (pinned by
+    ronsql_cte_minmax_index).
 - [ ] Observation (2026-09-14, unrelated to RONDB-1124): one run of `ronsql.ronsql_join`
   Test 3 (`SELECT o.o_custkey, MIN(l.l_price), MAX(l.l_price) FROM orders AS o JOIN
   lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey`) aborted `ronsql_cli` on

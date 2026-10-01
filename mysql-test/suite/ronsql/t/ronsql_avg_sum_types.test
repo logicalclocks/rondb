@@ -1,0 +1,92 @@
+# RONDB-1121 finding F16 (envelope fuzzer, probes avg-string / avg-temporal):
+# AVG over a VARCHAR or temporal column in the main query was rejected with
+# the generic "Failed writing aggregation program. Please report a bug."
+# (HTTP 500, class internal) instead of the specific message a CTE output
+# gets from build_cte_virtual_tables.
+#
+# NdbAggregator::Sum / Avg refuse a string or temporal register with their
+# own error codes; RonSQLPreparer::throw_sum_avg_emit_error now names the
+# construct (AVG when the failed slot is an AVG output's sum slot, SUM
+# otherwise; class unsupported).  A column type the aggregation interpreter
+# cannot load at all (VARBINARY here) is reported as unsupported too.
+#
+#   f16-1  AVG(VARCHAR), single table     f16-4  SUM(DATE), single table
+#   f16-2  SUM(VARCHAR), single table     f16-5  AVG(VARCHAR), join leaf
+#   f16-3  AVG(DATE), single table        f16-6  AVG(VARBINARY)
+#   f16-7  control: COUNT / MAX over the VARCHAR column still run
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE f16_t (
+  id  INT NOT NULL,
+  s   VARCHAR(16) NOT NULL,
+  d   DATE NOT NULL,
+  bin VARBINARY(16) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO f16_t VALUES
+  (1, 'apple',  '2026-01-05', 0x01),
+  (2, 'banana', '2025-12-31', 0x02),
+  (3, 'cherry', '2026-03-01', 0x03);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === f16-1: AVG over a VARCHAR column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT AVG(s) AS a FROM f16_t;' 2>&1
+
+--echo
+--echo === f16-2: SUM over a VARCHAR column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(s) AS a FROM f16_t;' 2>&1
+
+--echo
+--echo === f16-3: AVG over a DATE column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT AVG(d) AS a FROM f16_t;' 2>&1
+
+--echo
+--echo === f16-4: SUM over a DATE column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(d) AS a FROM f16_t;' 2>&1
+
+--echo
+--echo === f16-5: AVG over a VARCHAR column of a join leaf ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a.id, AVG(b.s) AS x FROM f16_t AS a JOIN f16_t AS b ON b.id = a.id GROUP BY a.id;' 2>&1
+
+--echo
+--echo === f16-6: AVG over a VARBINARY column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT AVG(bin) AS a FROM f16_t;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo === f16-7: control: COUNT and MAX over the VARCHAR column ===
+let $QUERY=
+SELECT COUNT(s) AS c, MAX(s) AS mx FROM f16_t;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT COUNT(s) AS c, MAX(s) AS mx FROM f16_t|
+
+DELIMITER ;|
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE f16_t;
+--enable_query_log

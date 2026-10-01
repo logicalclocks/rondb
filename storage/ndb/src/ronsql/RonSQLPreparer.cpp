@@ -16477,6 +16477,39 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 
 #define programAggregator_do_or_fail(CALL) \
   require_prm(CALL, "Failed writing aggregation program. Please report a bug.")
+
+// F16: NdbAggregator refuses Sum, and Avg, over a string or temporal
+// register (kErrUnsupportedStringOperation /
+// kErrUnsupportedTemporalOperation), whether the column is the argument
+// itself or feeds arithmetic (a register keeps the loaded column's type).
+// That is an unsupported construct, not a bug: name it, as
+// build_cte_virtual_tables does for a CTE output.  The main query splits
+// AVG into Sum + Count, so the failed slot `agg_id` being an AVG output's
+// sum slot makes the message say AVG.  Any other failure keeps the
+// generic bug message.
+void
+RonSQLPreparer::throw_sum_avg_emit_error(NdbAggregator* aggregator,
+                                         const SelectStatement& stmt,
+                                         Uint32 agg_id, bool is_avg)
+{
+  const Uint32 errnum = aggregator->GetError().errno_;
+  if (errnum != kErrUnsupportedStringOperation &&
+      errnum != kErrUnsupportedTemporalOperation)
+    throw RonSQLPermanentError(
+        "Failed writing aggregation program. Please report a bug.");
+  for (const Outputs* o = stmt.outputs; o != NULL && !is_avg; o = o->next)
+  {
+    if (o->type == Outputs::Type::AVG && o->avg.agg_index_sum == agg_id)
+      is_avg = true;
+  }
+  std::string msg = is_avg ? "AVG" : "SUM";
+  msg += (errnum == kErrUnsupportedStringOperation)
+      ? " over string columns is not supported."
+      : " over temporal columns is not supported — only MIN / MAX / "
+        "COUNT.";
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg);
+}
+
 void
 RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
 {
@@ -16521,6 +16554,12 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
         err << "Failed writing aggregation program "
                "when attempting to load column "
             << quoted_identifier(m_columns[src]) << endl;
+        // F16: a type the aggregation interpreter cannot load (BINARY,
+        // BLOB, BIT, the old temporal formats) is unsupported, not a bug.
+        // Still MaybeStaleSchema: a reload may find the type changed.
+        if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
+          throw RonSQLMaybeStaleSchema(
+              "Aggregation over a column of this type is not supported.");
         throw RonSQLMaybeStaleSchema("Failed writing aggregation program");
       }
       break;
@@ -16551,7 +16590,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       programAggregator_do_or_fail(aggregator->Mod(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Sum:
-      programAggregator_do_or_fail(aggregator->Sum(dest, src));
+      if (!aggregator->Sum(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::Min:
       programAggregator_do_or_fail(aggregator->Min(dest, src));
@@ -17403,6 +17443,10 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
           err << "Failed writing aggregation program "
                  "when attempting to load column "
               << quoted_identifier(m_columns[src]) << endl;
+          // F16: see programAggregator's Load arm.
+          if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
+            throw RonSQLMaybeStaleSchema(
+                "Aggregation over a column of this type is not supported.");
           throw RonSQLMaybeStaleSchema(
               "Failed writing aggregation program");
         }
@@ -17435,7 +17479,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       programAggregator_do_or_fail(aggregator->Mod(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Sum:
-      programAggregator_do_or_fail(aggregator->Sum(dest, src));
+      if (!aggregator->Sum(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::Min:
       programAggregator_do_or_fail(aggregator->Min(dest, src));
@@ -17450,7 +17495,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       // cte_avg_plan.md V4 (C3): one visible DOUBLE slot; the kernel's
       // kOpAvg adds the hidden COUNT companion and divides on the
       // owner after the CTE redistribute completes.
-      programAggregator_do_or_fail(aggregator->Avg(dest, src));
+      if (!aggregator->Avg(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, true);
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
     case AggregationAPICompiler::SVMInstrType::Least2:

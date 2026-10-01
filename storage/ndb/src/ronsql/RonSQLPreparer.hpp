@@ -1112,6 +1112,11 @@ private:
                               NdbAggregator* aggregator,
                               NdbDictionary::Table* const* cteVirtualTables
                                   = NULL);
+  // F16: a failed Sum / Avg emit; names an unsupported SUM / AVG over a
+  // string or temporal column (see the definition).  Always throws.
+  [[noreturn]] void throw_sum_avg_emit_error(NdbAggregator* aggregator,
+                                             const SelectStatement& stmt,
+                                             Uint32 agg_id, bool is_avg);
   Uint32 embedded_filter_expr_word_count(QueryScope& scope,
                                          struct ConditionalExpression* ce,
                                          Uint32 leaf_idx);
