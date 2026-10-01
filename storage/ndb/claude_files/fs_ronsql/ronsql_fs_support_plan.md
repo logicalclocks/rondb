@@ -60,7 +60,7 @@ does not.
 | F19 | CTE_SCAN as outer-join child now runs | WRONG RESULT (regression from a clean reject) | no | WP-H |
 | F17 | HAVING + ORDER BY + LIMIT | internal error instead of a clean reject | no (HAVING unsupported) | WP-H |
 | F16 | AVG over a non-numeric column | generic "report a bug" message | no | WP-H |
-| F10, F11 | mysqld pushdown aggregation (ndbcluster) | mysqld CRASH / error 4120 — F10 fix written 2026-09-30 (no push over several ranges; pushed scans unordered) | MySQL path of `queryOnline` | WP-I (separate track) |
+| F10, F11 | mysqld pushdown aggregation (ndbcluster) | mysqld CRASH / error 4120 — FIXED 2026-10-01: F10 no push over several ranges, pushed scans unordered; F11 by F30's `next_result()` backstop | MySQL path of `queryOnline` | WP-I (done) |
 | F20 | NDB API dictionary cache (RONDB-1092 follow-up) | RDRS CRASH | — | FIXED (`76cc05701c6`), backport recommended |
 | F8 | framework rule (collation-equal MIN/MAX) | — | — | done |
 | — | RonSQL planner: aggregate or join over a non-aggregating LIMIT CTE (count-based window, e.g. AVG of the last 10 rows) | UNSUPPORTED, clean reject | no (new shape; Hopsworks rejects collect + aggregate: `AGGREGATE_WITH_COLLECT`) | WP-J |
@@ -292,16 +292,34 @@ Ordered by consequence:
    `fuzz/hazards.go` — tracked by the CTE plan, listed here because the
    `--include-hazards` run reproduces them on this schema.
 
-### WP-I — mysqld pushdown aggregation (F10, F11) — separate track
+### WP-I — mysqld pushdown aggregation (F10, F11) — DONE 2026-10-01
 
 Hopsworks' `queryOnline` path goes through MySQL; with
-`ndb_pushdown_aggregate=ON` a VARCHAR `GROUP BY` with an IN list crashes
+`ndb_pushdown_aggregate=ON` a VARCHAR `GROUP BY` with an IN list crashed
 mysqld in `NdbSqlUtil::likeLongvarchar` (F10) and a pushed point aggregate
-fails with NDB 4120 `Scan already complete` (F11). Both are ndbcluster
-(`ha_ndbcluster`) issues, reproduced by `.bench_sql fs_hw` with pushdown
-on; the F10 comparator failure is the same `require` as F1's, so WP-B's
-string-buffer fix may share a root. Track in the pushdown-aggregation
-plan; the fs framework's `.bench_sql` runs are the acceptance check.
+failed with NDB 4120 `Scan already complete` (F11). Both were ndbcluster
+(`ha_ndbcluster`) issues in the single-table aggregation push, reproduced
+by `.bench_sql fs_hw` with pushdown on. F10 did not share F1's root: the
+`require` fired because the sorted merge of an ordered scan compared
+aggregate records as index keys.
+
+- F10 (RONDB-1124): a pushed aggregation is read unordered, and an access
+  that reads several ranges in one execution (an IN list, key OR NULL,
+  index merge) is no longer pushed. Without MRR every range had been its
+  own aggregating scan into one `NdbAggregator`, which also repeated
+  earlier groups and split groups that span ranges (wrong results for
+  integer keys too).
+- F11: the point aggregate is a REF read whose second row came from
+  `index_next_same()` on the drained scan; F30's `next_result()` backstop
+  serves it from the aggregator.
+- Evidence: `ndb_push_agg.ndb_pushdown_agg_ranges` (+ JIT mirror) passes:
+  r-1..r-5 multi-range unpushed, s-1..s-3 single ranges and p-1..p-4 the
+  F11 point forms pushed, each equal to pushdown OFF. Remaining check: a
+  `.bench_sql fs_hw` run of the pushed arm (the IN-list batches now run
+  unpushed there, which was the faster plan anyway).
+- Open, related: a single-range pushed aggregate that runs more than once
+  in one statement (a correlated subquery) reuses the `NdbAggregator`
+  without a reset (`BUGS_TODO.md` F10).
 
 ### WP-J — Aggregates over the last N rows (count-based windows) — new shape
 
@@ -869,7 +887,7 @@ requirements row, vector oracle fold, fuzzer production, fs_hw entry.
 | **M2 — 64-bit numeric fidelity** (detail: `m2_plan.md`) | D3 checked overflow, D4 display; D2 deferred | base / jit / ng2r2 / ng4r2 verify the limited contract; retain unmet exact-DECIMAL requirements |
 | **M3 — serving performance** (census: `m3_plan.md`; experiments: `m3_experiments.md`; WP-F detail: `m3_wpf_plan.md`) | F (F12 → F23, first), then F24 many-group aggregation, F25 idle-wake stall, throughput; G (F13) closed by RONDB-1120 (192–227 µs); F27 node failure investigated in parallel | `fs_hw` and `core` targets met (`m3_wpf_plan.md` §0), plan pins re-recorded, `benchmarks.md` §8 |
 | **M4 — hardening** | E (F14 + manifest rows), H (F15, F18, F19, F17, F16) | spec fuzzer `known-wrong` = 0, envelope fuzzer `known-wrong` = 0, hazards list shrinks |
-| **parallel** | I (F10, F11) | `.bench_sql fs_hw` with pushdown on, no crash / no 4120 |
+| **parallel** — **DONE 2026-10-01** | I (F10, F11) | `ndb_push_agg.ndb_pushdown_agg_ranges` passes; `.bench_sql fs_hw` with pushdown on, no crash / no 4120, still to rerun |
 | **M5 — count-based windows** (new shape, with Hopsworks) | J: J0 verify the stop-gap form, J1 rewrite, J2 per-fragment limit (removed: slower), J5 collect scan + RonSQL-layer aggregation; J3 / J4 later | `ronsql_cte_dd_lastn_agg` + mirrors strict against MySQL, `fs_hw_agg_last10` / `_last100` recorded, S11 requirement SUPPORTED once Hopsworks emits it |
 
 M1 is small and high-value: D1 is a one-line fix, B and C are contained,
@@ -907,7 +925,7 @@ snowflake and batch are faster through MySQL).
 | package | effort | risk |
 |---|---|---|
 | D1 F9 | hours | none |
-| B F1 | days | kernel + API string buffers; F10 may share the root |
+| B F1 | days | kernel + API string buffers (F10 turned out to be a separate cause) |
 | A F0 | ~1 week | planner recognition only; no new execution path |
 | C F7 | ~1 week | JSON encoding contract with the Hopsworks client |
 | E F14 | days | bound encoding on the CTE body root |
@@ -919,7 +937,7 @@ snowflake and batch are faster through MySQL).
 | H F15 | 1 week | DBSPJ null-row path |
 | H F18/F19 | days (restore guards) / weeks (implement) | choose per shape |
 | H F17/F16 | hours | messages / guards |
-| I F10/F11 | separate track | ndbcluster pushdown |
+| I F10/F11 | done 2026-10-01 | ndbcluster pushdown |
 | J0 last-N stop-gap | days (tests only) | TIMESTAMP GROUP BY key, main-scope AVG over a CTE |
 | J1 last-N rewrite | ~1 week | planner only, like WP-A; cost grows with the entity's history |
 | J2 per-fragment limit | removed | measured slower than J1 (self-join leaf per kept row) |

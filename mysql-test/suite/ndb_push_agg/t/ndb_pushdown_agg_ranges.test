@@ -23,6 +23,14 @@
 #    (ndb_aggregate_reads_ranges_separately()); unpushed MySQL was also
 #    the faster plan for these lists in the fs_hw benchmarks.
 #
+# F11: the fs_hw point aggregates (COUNT / SUM / MAX / MIN over
+# WHERE <key prefix> = k, with and without a filter, integer and VARCHAR
+# keys) failed with 1296 / 4120 'Scan already complete'.  The equality is
+# a REF on the PRIMARY prefix: index_read() starts the pushed aggregation,
+# which drains the scan, and the next row came from index_next_same(),
+# which read the completed scan.  F30's next_result() backstop serves it
+# from the aggregator; p-* pin the F11 statement forms.
+#
 # r-* read several ranges: pushed=0 and the same rows as the unpushed run.
 # s-* read one range, including the VARCHAR PRIMARY range that the sorted
 # merge could not compare: they stay pushed and must match.  c-1 is a
@@ -123,6 +131,34 @@ INSERT INTO tn
 --echo ############################################################
 --let $pac_label = c-1
 --let $pac_query = SELECT skey, COUNT(*) AS c, SUM(v) AS sv FROM ts GROUP BY skey
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # p-1: F11 point aggregate, integer key prefix
+--echo ############################################################
+--let $pac_label = p-1
+--let $pac_query = SELECT COUNT(v) AS c, SUM(v) AS sv, MAX(v) AS mx, MIN(seq) AS mn FROM ti WHERE k = 4
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # p-2: F11 point aggregate, VARCHAR key prefix
+--echo ############################################################
+--let $pac_label = p-2
+--let $pac_query = SELECT COUNT(v) AS c, SUM(v) AS sv, MAX(v) AS mx, MIN(seq) AS mn FROM ts WHERE skey = 'k08'
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # p-3: F11 point aggregate with a filter on a non-key column
+--echo ############################################################
+--let $pac_label = p-3
+--let $pac_query = SELECT COUNT(v) AS c, SUM(v) AS sv, MAX(seq) AS mx FROM ti WHERE k = 4 AND v > 3
+--source suite/ndb_push_agg/include/push_agg_compare.inc
+
+--echo ############################################################
+--echo # p-4: F11 point aggregate over a key with no rows
+--echo ############################################################
+--let $pac_label = p-4
+--let $pac_query = SELECT COUNT(v) AS c, SUM(v) AS sv, MAX(v) AS mx FROM ti WHERE k = 99
 --source suite/ndb_push_agg/include/push_agg_compare.inc
 
 SET ndb_pushdown_aggregate = DEFAULT;

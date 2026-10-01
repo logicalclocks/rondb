@@ -63,6 +63,22 @@ SELECT i, IF(MOD(i, 5) = 0, NULL, MOD(i, 4)), MOD(i * 3, 13) FROM s;
 # c-1 (control): table scan, GROUP BY the VARCHAR key
 ############################################################
 # c-1: pushed=1 rows=12
+############################################################
+# p-1: F11 point aggregate, integer key prefix
+############################################################
+# p-1: pushed=1 rows=1
+############################################################
+# p-2: F11 point aggregate, VARCHAR key prefix
+############################################################
+# p-2: pushed=1 rows=1
+############################################################
+# p-3: F11 point aggregate with a filter on a non-key column
+############################################################
+# p-3: pushed=1 rows=1
+############################################################
+# p-4: F11 point aggregate over a key with no rows
+############################################################
+# p-4: pushed=1 rows=1
 SET ndb_pushdown_aggregate = DEFAULT;
 DROP TABLE ts;
 DROP TABLE ti;

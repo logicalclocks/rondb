@@ -469,6 +469,15 @@ reads of the unpushed path; it also cannot run three point entries
 (F11) and crashes on the string-key batch (F10).  For the Hopsworks
 shapes the unpushed MySQL server is the reference baseline.
 
+Update 2026-10-01: F10 and F11 are fixed (`findings/BUGS_TODO.md`).  The
+pushed batch timings above measured a push that was also wrong: without
+MRR every IN-list range was its own aggregating scan into one
+`NdbAggregator`, so later ranges returned earlier groups again.  An access
+that reads several ranges is no longer pushed, so the pushed arm runs the
+batch entries unpushed; the point entries (F11) and `strkey_batch100`
+(F10) run on it again.  A rerun of the pushed arm over the full set is
+still to be recorded.
+
 ### Run 1 — 2026-09-11, `prod_build`, macOS (Apple silicon), `ronsqlcrunch` topology, sf 1, 1 thread, interpreter OFF (JIT ON within noise)
 
 Stored as `bench_results/2026-09-11-prod_build-run1/` (`report.md`,
