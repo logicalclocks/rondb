@@ -650,6 +650,13 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
                      "(unknown version)");
       return -1;
     }
+    if (m_batch_meta.next_pos < 1 || m_batch_meta.next_pos > m_ring_buffer_size ||
+        m_batch_meta.count > m_ring_buffer_size) {
+      // next_pos 0 would write the data row onto the meta row
+      setError(4357, "Corrupt ring_meta value in ring buffer meta row "
+                     "(out of range)");
+      return -1;
+    }
   } else if (read_err.code == 626) {
     // Meta row not found - first insert for this PK prefix. The read op carries
     // m_noErrorPropagation, so the expected 626 never reached the transaction

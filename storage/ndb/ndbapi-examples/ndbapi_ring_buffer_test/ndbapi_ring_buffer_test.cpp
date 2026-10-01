@@ -3085,6 +3085,38 @@ static bool test_corrupt_meta_rejected(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(addRowMustFail("bad_null"),
               "addRow on NULL meta must fail with 4357");
 
+  // (d)-(f) Well-formed version 1 values whose fields are out of range for
+  // the size-3 ring: next_pos 0 (would write the data row onto the meta
+  // row's key), next_pos 4 (a slot outside 1..3), count 4 (more rows than
+  // the ring holds). The NDB API writer and a SQL INSERT must both fail.
+  struct BadRange {
+    const char *tag;
+    Uint32 next_pos;
+    Uint32 count;
+  };
+  const BadRange bad_ranges[] = {
+      {"bad_next0", 0, 3}, {"bad_next4", 4, 3}, {"bad_count4", 1, 4}};
+  for (const BadRange &b : bad_ranges) {
+    unsigned char bad_range[32];
+    memset(bad_range, 0, sizeof(bad_range));
+    int2store(bad_range + 0, 1);  // version
+    int4store(bad_range + 4, b.next_pos);
+    int4store(bad_range + 8, b.count);
+    int8store(bad_range + 16, 3);  // total_inserts
+    TEST_ASSERT(writeRawMeta(bad_range, sizeof(bad_range), false),
+                std::string("corrupt meta (") + b.tag + ")");
+    TEST_ASSERT(addRowMustFail(b.tag),
+                std::string("addRow on ") + b.tag + " meta must fail with 4357");
+    const int sql_rc = mysql_query(
+        mysql, "INSERT INTO test.rb_t30 (client_id, event_data) "
+               "VALUES (1, 'sql_bad_range')");
+    std::cerr << "  (" << b.tag << " SQL INSERT: rc=" << sql_rc << " "
+              << mysql_error(mysql) << ")" << std::endl;
+    TEST_ASSERT(sql_rc != 0 && strstr(mysql_error(mysql), "4357") != nullptr,
+                std::string("SQL INSERT on ") + b.tag +
+                    " meta must fail with 4357");
+  }
+
   // The data rows themselves must be untouched by all of the above.
   auto rows = readDataRows(mysql, "rb_t30", 1);
   TEST_ASSERT(rows.size() == 3,

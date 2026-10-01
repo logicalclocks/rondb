@@ -841,7 +841,10 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
           meta_corrupt = true;
         } else {
           meta.unpack((const uchar *)meta_str.ptr());
-          if (meta.version != RING_META_VERSION) {
+          if (meta.version != RING_META_VERSION ||
+              meta.next_pos < 1 || meta.next_pos > ring_buffer_size ||
+              meta.count > ring_buffer_size) {
+            /* next_pos 0 would write the data row onto the meta row */
             meta_corrupt = true;
           } else {
             ring_full = (meta.count >= ring_buffer_size);
