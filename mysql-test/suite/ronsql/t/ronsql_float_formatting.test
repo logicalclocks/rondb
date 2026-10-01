@@ -1,4 +1,12 @@
 --source include/have_ndb.inc
+# Transient NDB schema-distribution warnings (as in the rest of the suite);
+# query log off so the result file is unchanged.
+--disable_query_log
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+--enable_query_log
 --let strict_diff=yes
 --let suppress_ronsql_cli=
 --let QUERY=
