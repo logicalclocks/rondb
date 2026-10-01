@@ -619,3 +619,51 @@ SELECT id, ring_idx, val FROM test.rb_pkup WHERE id = 2;
 id	ring_idx	val
 2	1	updated
 DROP TABLE test.rb_pkup;
+#
+# Case 39: DELETE WHERE with a non-deterministic predicate - blocked
+#
+CREATE TABLE test.rb_rand (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val INT,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+INSERT INTO test.rb_rand (client_id, val) VALUES (1, 1), (1, 2), (1, 3), (2, 4);
+DELETE FROM test.rb_rand WHERE client_id = 1 AND RAND() < 0.5;
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+DELETE FROM test.rb_rand WHERE client_id = FLOOR(RAND() * 3);
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+CREATE FUNCTION test.rb_pick(c INT) RETURNS INT NOT DETERMINISTIC NO SQL
+BEGIN
+RETURN c;
+END|
+DELETE FROM test.rb_rand WHERE client_id = test.rb_pick(1);
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+DROP FUNCTION test.rb_pick;
+CREATE FUNCTION test.rb_pick_det(c INT) RETURNS INT DETERMINISTIC NO SQL
+BEGIN
+RETURN IF(RAND() < 0.5, c, 0);
+END|
+DELETE FROM test.rb_rand WHERE client_id = test.rb_pick_det(1);
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+DROP FUNCTION test.rb_pick_det;
+CREATE VIEW test.rb_rand_idx AS SELECT * FROM test.rb_rand WHERE ring_idx > 1;
+CREATE VIEW test.rb_rand_rnd AS
+SELECT * FROM test.rb_rand WHERE client_id = 1 AND RAND() < 0.5;
+DELETE FROM test.rb_rand_idx;
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+DELETE FROM test.rb_rand_rnd;
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+DROP VIEW test.rb_rand_idx, test.rb_rand_rnd;
+SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+1	1	1
+1	2	2
+1	3	3
+2	1	4
+DELETE FROM test.rb_rand WHERE client_id = 1 + 0;
+SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+2	1	4
+DROP TABLE test.rb_rand;

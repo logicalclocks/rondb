@@ -164,6 +164,11 @@ bool check_ring_buffer_delete_condition(const TABLE *table,
     }
     case Item::FUNC_ITEM: {
       const Item_func *func = down_cast<const Item_func *>(item);
+      /* A stored function or UDF is non-deterministic whatever it is
+         declared as (DETERMINISTIC is not checked against the body). */
+      if (func->functype() == Item_func::FUNC_SP ||
+          func->functype() == Item_func::UDF_FUNC)
+        return false;
       for (uint i = 0; i < func->argument_count(); i++) {
         const Item *arg = func->arguments()[i];
         if (!check_ring_buffer_delete_condition(table, ring_idx_field_index,
@@ -197,6 +202,9 @@ namespace ndb_ring_buffer {
 bool delete_where_allowed(const TABLE *table, unsigned ring_idx_field_index,
                           const Item *cond) {
   if (cond == nullptr) return true; /* bare DELETE: clears entire table, safe */
+  /* RAND() or a NOT DETERMINISTIC stored function would pick the data rows
+     and the meta row of one prefix independently. */
+  if (cond->is_non_deterministic()) return false;
   const KEY *pk_info = table->key_info + table->s->primary_key;
   return check_ring_buffer_delete_condition(table, ring_idx_field_index,
                                             pk_info, cond);

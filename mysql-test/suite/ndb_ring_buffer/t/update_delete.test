@@ -729,3 +729,62 @@ UPDATE test.rb_pkup SET val = 'updated' WHERE id = 2;
 SELECT id, ring_idx, val FROM test.rb_pkup WHERE id = 2;
 
 DROP TABLE test.rb_pkup;
+
+--echo #
+--echo # Case 39: DELETE WHERE with a non-deterministic predicate - blocked
+--echo #
+# RAND() (or a NOT DETERMINISTIC stored function) would pick data rows and
+# the meta row of one prefix independently and leave a ring whose meta row
+# no longer describes its rows.
+CREATE TABLE test.rb_rand (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val INT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+INSERT INTO test.rb_rand (client_id, val) VALUES (1, 1), (1, 2), (1, 3), (2, 4);
+
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = 1 AND RAND() < 0.5;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = FLOOR(RAND() * 3);
+
+DELIMITER |;
+CREATE FUNCTION test.rb_pick(c INT) RETURNS INT NOT DETERMINISTIC NO SQL
+BEGIN
+  RETURN c;
+END|
+DELIMITER ;|
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = test.rb_pick(1);
+DROP FUNCTION test.rb_pick;
+
+# A stored function declared DETERMINISTIC is not trusted either
+DELIMITER |;
+CREATE FUNCTION test.rb_pick_det(c INT) RETURNS INT DETERMINISTIC NO SQL
+BEGIN
+  RETURN IF(RAND() < 0.5, c, 0);
+END|
+DELIMITER ;|
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = test.rb_pick_det(1);
+DROP FUNCTION test.rb_pick_det;
+
+# Through a view: the view's WHERE is checked as well (ring_idx was
+# rejected before, RAND() in a view is new)
+CREATE VIEW test.rb_rand_idx AS SELECT * FROM test.rb_rand WHERE ring_idx > 1;
+CREATE VIEW test.rb_rand_rnd AS
+    SELECT * FROM test.rb_rand WHERE client_id = 1 AND RAND() < 0.5;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand_idx;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand_rnd;
+DROP VIEW test.rb_rand_idx, test.rb_rand_rnd;
+
+# Nothing was deleted; a deterministic prefix DELETE still works
+SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
+DELETE FROM test.rb_rand WHERE client_id = 1 + 0;
+SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
+
+DROP TABLE test.rb_rand;
