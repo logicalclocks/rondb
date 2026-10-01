@@ -156,6 +156,17 @@ Uint32 AdvancePartition(Uint32 part_id, Uint32 part_count, Uint32 table_hash,
   }
   return part_count > 0 ? (part_id + 1) % part_count : 0;
 }
+
+/*
+ * The timeouts a purge scan and its NoCommit execute return when they
+ * wait too long: mostly a row locked by another transaction, but also a
+ * slow or failed data node (274), the worker's own scan left idle (296) or
+ * the general transaction timeout (266); the API cannot tell these apart.
+ * Other timeouts (e.g. 237 at commit) keep the retry path.
+ */
+bool IsTransactionTimeout(int code) {
+  return code == 266 || code == 274 || code == 296;
+}
 }  // namespace
 
 TTLPurger::TTLPurger() :
@@ -1341,6 +1352,7 @@ enum SpecialShardVal {
 
 void TTLPurger::PurgeWorkerJob() {
   bool purge_trx_started = false;
+  int timeout_code = 0;
   bool update_objects = false;
   std::map<std::string, TTLInfo> local_ttl_cache;
   Int32 shard = -1;
@@ -2071,27 +2083,6 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          if (trans->getNdbError().code == 296) {
-            /*
-             * if the TransactionInactiveTimeout is set too small,
-             * error 296(Time-out in NDB, probably caused by deadlock)
-             * may happen, change the batch size to the minimum and retry
-             */
-            iter->second.batch_size = local_config.min_batch_size;
-            g_eventLogger->warning("[TTL PWorker] Changed the purgine batch "
-                                   "size of table %s to the minimum size %u, "
-                                   "Retry...",
-                                   ttl_tab->getName(),
-                                   iter->second.batch_size);
-            // Another purge worker is likely on this partition right now
-            // (lock wait / scan takeover). Back off to the next partition
-            // this node may purge instead of piling onto the contended one;
-            // the skipped partition is revisited on a later rotation or
-            // drained by the contending node.
-            iter->second.part_id = AdvancePartition(
-                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
-                n_purge_nodes, shard);
-          }
 	  goto table_err;
         }
         /**
@@ -2236,27 +2227,6 @@ retry_trx:
                                  ttl_tab->getName(),
                                  trans->getNdbError().code,
                                  trans->getNdbError().message);
-          if (trans->getNdbError().code == 296) {
-            /*
-             * if the TransactionInactiveTimeout is set too small,
-             * error 296(Time-out in NDB, probably caused by deadlock)
-             * may happen, change the batch size to the minimum and retry
-             */
-            iter->second.batch_size = local_config.min_batch_size;
-            g_eventLogger->warning("[TTL PWorker] Changed the purgine batch "
-                                   "size of table %s to the minimum size %u, "
-                                   "Retry...",
-                                   ttl_tab->getName(),
-                                   iter->second.batch_size);
-            // Another purge worker is likely on this partition right now
-            // (lock wait / scan takeover). Back off to the next partition
-            // this node may purge instead of piling onto the contended one;
-            // the skipped partition is revisited on a later rotation or
-            // drained by the contending node.
-            iter->second.part_id = AdvancePartition(
-                iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
-                n_purge_nodes, shard);
-          }
 	  goto table_err;
         }
         /**
@@ -2361,9 +2331,37 @@ retry_trx:
 	      ++iter;
 	      continue;
 table_err:
+      timeout_code = (purge_trx_started && trans != nullptr &&
+                      IsTransactionTimeout(trans->getNdbError().code))
+                         ? trans->getNdbError().code
+                         : 0;
       if (trans != nullptr) {
         worker_ndb_->closeTransaction(trans);
         trans = nullptr;
+      }
+      if (timeout_code != 0) {
+        /*
+         * The transaction timed out, usually because a row this scan
+         * wanted is locked (by a user transaction or another purge worker)
+         * for longer than the deadlock detection timeout. Retrying at once
+         * would wait on the same lock again and escalate to a worker
+         * restart, and every table after this one would wait too; a
+         * restart does not help a slow or failed node either. Skip the
+         * table for this round instead: minimum batch size, next
+         * partition, not counted as a failure. The table is revisited in
+         * the next round.
+         */
+        iter->second.batch_size = local_config.min_batch_size;
+        iter->second.part_id = AdvancePartition(
+            iter->second.part_id, ttl_tab->getPartitionCount(), hash_val,
+            n_purge_nodes, shard);
+        g_eventLogger->warning("[TTL PWorker] Transaction on table %s timed "
+                               "out (error %d), skipping it until the next "
+                               "round",
+                               iter->first.c_str(), timeout_code);
+        purge_trx_started = false;
+        ++iter;
+        continue;
       }
       trx_failure_times++;
       if (purge_worker_exit_) {
