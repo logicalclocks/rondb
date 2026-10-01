@@ -478,17 +478,21 @@ void RonSQLRequest::execute(Uint32 ndb_thread_index) {
     // Internal.MaxRespSize exceeded: the accumulated body was capped
     // (writes past the cap were dropped), so the partial output is
     // useless — discard it and fail cleanly.  A genuine execution
-    // error (status != 200) takes precedence below instead.
+    // error (status != 200) takes precedence below instead.  The result
+    // exceeds a configured limit, so this is the class "limit" and 413
+    // like any other too-large result, not a server failure (500).
     DEB_TRACE();
     std::ostringstream msg;
-    msg << rdrsErrorMessage(ERROR_RESPONSE_TOO_LARGE)
+    msg << "[limit] " << rdrsErrorMessage(ERROR_RESPONSE_TOO_LARGE)
         << " (Internal.MaxRespSize = "
         << globalConfigs.internal.maxRespSize
         << " bytes). Narrow the query or add LIMIT, or raise"
            " Internal.MaxRespSize in the RDRS configuration.\n";
-    resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+    resp->setStatusCode(
+        static_cast<drogon::HttpStatusCode>(PAYLOAD_TOO_LARGE));
     resp->setContentTypeCodeAndCustomString(
       drogon::CT_TEXT_PLAIN, "content-type: text/plain; charset=utf-8; \r\n");
+    resp->addHeader("X-RonSQL-Error-Class", "limit");
     resp->setBody(msg.str());
     callback(resp);
     DEB_TRACE();

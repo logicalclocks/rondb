@@ -1,0 +1,45 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== f16-1: AVG over a VARCHAR column ===
+Error handling: RPE
+ronsql_cli caught exception: AVG over string columns is not supported.
+
+=== f16-2: SUM over a VARCHAR column ===
+Error handling: RPE
+ronsql_cli caught exception: SUM over string columns is not supported.
+
+=== f16-3: AVG over a DATE column ===
+Error handling: RPE
+ronsql_cli caught exception: AVG over temporal columns is not supported — only MIN / MAX / COUNT.
+
+=== f16-4: SUM over a DATE column ===
+Error handling: RPE
+ronsql_cli caught exception: SUM over temporal columns is not supported — only MIN / MAX / COUNT.
+
+=== f16-5: AVG over a VARCHAR column of a join leaf ===
+Error handling: RPE
+ronsql_cli caught exception: AVG over string columns is not supported.
+
+=== f16-6: AVG over a VARBINARY column ===
+Failed writing aggregation program when attempting to load column `bin`
+Error handling: RMS->RPE
+ronsql_cli caught exception: Aggregation over a column of this type is not supported.
+
+=== f16-7: control: COUNT and MAX over the VARCHAR column ===
+== Query ==
+SELECT COUNT(s) AS c, MAX(s) AS mx FROM f16_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(s) AS c, MAX(s) AS mx FROM f16_t|
+c	mx
+3	cherry
+
+=== Cleanup ===

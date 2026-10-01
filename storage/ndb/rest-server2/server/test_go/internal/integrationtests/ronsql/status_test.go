@@ -48,6 +48,12 @@ func TestErrorStatusByClass(t *testing.T) {
 		{"semantic-column", "SELECT COUNT(no_such_column) AS n FROM tiny_tbl;", http.StatusBadRequest, "semantic", "Could not find column"},
 		{"unsupported", "WITH t AS (SELECT pk, val_1 FROM tiny_tbl WHERE val_1 > 3) SELECT pk FROM t;",
 			http.StatusBadRequest, "unsupported", "Non-aggregating CTE body"},
+		// Both were "[internal]" 500s: a join key with no usable index
+		// (val_2 leads no index) and a constant-folding overflow.
+		{"unsupported-join-index", "SELECT COUNT(*) AS n FROM tiny_tbl AS a JOIN tiny_tbl AS b ON b.val_2 = a.pk;",
+			http.StatusBadRequest, "unsupported", "No suitable index for join columns"},
+		{"semantic-overflow", "SELECT SUM(922337203685477580*11) AS s FROM tiny_tbl;",
+			http.StatusBadRequest, "semantic", "Overflow in integer constant folding"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -17,8 +17,8 @@
 # Case map (rl-N):
 #   1  request body > maxReqSize -> HTTP 413 (refused before assembly)
 #   2  small valid request on the same capped instance -> 200 + rows
-#   3  response > MaxRespSize -> HTTP 500 + ERROR_RESPONSE_TOO_LARGE
-#      message naming the cap
+#   3  response > MaxRespSize -> HTTP 413, error class "limit" +
+#      ERROR_RESPONSE_TOO_LARGE message naming the cap
 #   4  same query + LIMIT -> 200 (body under the cap)
 
 --source include/have_ndb.inc
@@ -75,16 +75,18 @@ EOF
 --remove_file $MYSQL_TMP_DIR/rl2_hdrs
 
 --echo
---echo === rl-3: response over MaxRespSize -> 500 + clean error ===
+--echo === rl-3: response over MaxRespSize -> 413 + clean error ===
 --let BODY_FILE=$MYSQL_TMP_DIR/rl3_body.json
 --write_file $BODY_FILE
 {"query":"SELECT s_id, s_pad FROM szt;","database":"test","outputFormat":"TEXT"}
 EOF
 --exec curl -s -o $MYSQL_TMP_DIR/rl3_out -D $MYSQL_TMP_DIR/rl3_hdrs -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$BODY_FILE
---exec grep -qE "^HTTP/[0-9.]+ 500" $MYSQL_TMP_DIR/rl3_hdrs
+--exec grep -qE "^HTTP/[0-9.]+ 413" $MYSQL_TMP_DIR/rl3_hdrs
+--exec grep -qiE "^X-RonSQL-Error-Class: limit" $MYSQL_TMP_DIR/rl3_hdrs
+--exec grep -qF "[limit] Response exceeds the configured MaxRespSize" $MYSQL_TMP_DIR/rl3_out
 --exec grep -qF "Response exceeds the configured MaxRespSize" $MYSQL_TMP_DIR/rl3_out
 --exec grep -qF "Internal.MaxRespSize = 65536" $MYSQL_TMP_DIR/rl3_out
---echo response refused with 500 + MaxRespSize message
+--echo response refused with 413 + MaxRespSize message
 --remove_file $BODY_FILE
 --remove_file $MYSQL_TMP_DIR/rl3_out
 --remove_file $MYSQL_TMP_DIR/rl3_hdrs

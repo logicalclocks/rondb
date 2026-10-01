@@ -510,7 +510,8 @@ inline RonSQLErrorClass ronsql_classify_message(const char* msg) {
       has("exceeded") || has("exceeds"))
     return RonSQLErrorClass::LIMIT;
   if (has("not supported") || has("not yet supported") || has("feature not implemented") ||
-      has("not implemented") || has("Unsupported") || has("only supported") ||
+      has("not implemented") || has("Unsupported") || has("unsupported") ||
+      has("only supported") || has("supports only") || has("support only") ||
       has("cannot be used") || has("is not a single-row key lookup") ||
       has("cannot be projected") || has("cannot be applied"))
     return RonSQLErrorClass::UNSUPPORTED;
@@ -524,7 +525,8 @@ inline RonSQLErrorClass ronsql_classify_message(const char* msg) {
       has("is not a") || has("is not in") || has("invalid") || has("Invalid") ||
       has("contradiction") || has("without") || has("no FROM") || has("no aggregate") ||
       has("Not an aggregate") || has("Ungrouped") || has("not in GROUP BY") ||
-      has("not a body output") || has("LIMIT 0") || has("failed") || has("Failed to execute"))
+      has("not a body output") || has("LIMIT 0") || has("failed") || has("Failed to execute") ||
+      has("string literal") || has("String literal"))
     return RonSQLErrorClass::SEMANTIC;
   return RonSQLErrorClass::INTERNAL;
 }

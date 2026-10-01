@@ -299,7 +299,7 @@ QueryPlanner::plan(
               << "branches. Multi-table ON conditions are supported only "
               << "when the referenced tables lie on a single ancestor "
               << "chain." << std::endl;
-          throw RonSQLPermanentError(
+          throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
               "ON parents not on one ancestor chain.");
         }
       }
@@ -348,7 +348,7 @@ QueryPlanner::plan(
               << " for table '" << child_table_name
               << "'. Create a primary key, unique index, or ordered "
               << "index on the join columns." << std::endl;
-          throw RonSQLPermanentError(
+          throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
               "No suitable index for join columns.");
         }
       }
@@ -450,7 +450,8 @@ QueryPlanner::plan(
         {
           err << "BLOB/TEXT columns cannot be used as join columns."
               << std::endl;
-          throw RonSQLPermanentError("BLOB/TEXT join column.");
+          throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                     "BLOB/TEXT join column.");
         }
         if (child_col->getType() != parent_col->getType() ||
             child_col->getPrecision() != parent_col->getPrecision() ||

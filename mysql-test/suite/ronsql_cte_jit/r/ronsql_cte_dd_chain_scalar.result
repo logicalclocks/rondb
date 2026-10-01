@@ -1634,7 +1634,7 @@ ronsql_cli caught exception: CTE has non-aggregate columns without GROUP BY.
 
 === cs-probe-6 (rejection): top-level GREATEST over an ordinary column ===
 Error handling: RPE
-ronsql_cli caught exception: GREATEST/LEAST column operand must be an integer type.  Float / Decimal / VARCHAR operands are not yet supported (deferred to I.5 v3 / I.6).
+ronsql_cli caught exception: GREATEST/LEAST column operand must be an integer type.  Float / Decimal / VARCHAR operands are not yet supported.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_dd_chain_scalar_jit_fallback_delta;
 ronsql_cte_dd_chain_scalar_jit_fallback_delta

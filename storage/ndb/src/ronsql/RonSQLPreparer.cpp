@@ -460,6 +460,16 @@ require_prm(bool condition, const char* msg)
 // require or fail without retry, claiming it's a bug
 #define require_bug(x, msg) require_prm(x, msg " Please report a bug.")
 
+// require or fail without retry: valid SQL that RonSQL does not run.  The
+// explicit class ("unsupported", HTTP 400) does not depend on the wording
+// matching ronsql_classify_message.
+static inline void
+require_unsupported(bool condition, const char* msg)
+{
+  if (likely(condition)) return;
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg);
+}
+
 // require or investigate schema version
 static inline void
 require_sch(bool condition, const char* msg)
@@ -1065,8 +1075,7 @@ RonSQLPreparer::parse()
                "SELECTs: single-table, left-deep join chains over real tables and/or\n"
                "complete-key CTE lookups (INNER / LEFT JOIN), comma cross-joins of\n"
                "scalar CTEs, and CTE_SCAN roots — all without GROUP BY /\n"
-               "expressions (ORDER BY and LIMIT are supported).  See\n"
-               "non_aggregate_pushdown_plan.md for the broader roadmap.\n";
+               "expressions (ORDER BY and LIMIT are supported).\n";
         throw RonSQLPermanentError("Not an aggregate query.");
       }
     }
@@ -7009,7 +7018,11 @@ RonSQLPreparer::validate_having_references()
       err << name << "' is not an aggregate. Filter GROUP BY columns in"
              " WHERE, and repeat an aggregate instead of using its output"
              " alias." << std::endl;
+      // Valid SQL (MySQL resolves the alias or column) that RonSQL does
+      // not run: "unsupported", not the internal class the wording
+      // would get from ronsql_classify_message.
       throw RonSQLPermanentError(
+          RonSQLErrorClass::UNSUPPORTED,
           "HAVING can only reference aggregate functions.");
     }
     case T_IS:
@@ -8304,7 +8317,13 @@ RonSQLPreparer::compile()
       ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::COMPILED);
     } else {
       ndbrequire(m_main_scope.agg->getStatus() == AggregationAPICompiler::Status::FAILED);
-      throw RonSQLPermanentError("Failed to compile aggregation program.");
+      // The compiler fails only when it runs out of registers: a
+      // statement-complexity limit, not a bug.
+      throw RonSQLPermanentError(
+          RonSQLErrorClass::LIMIT,
+          "Failed to compile aggregation program: the aggregate "
+          "expressions need more registers than the aggregation "
+          "interpreter has.");
     }
   }
 
@@ -8321,7 +8340,10 @@ RonSQLPreparer::compile()
     } else {
       ndbrequire(cte_agg->getStatus() == AggregationAPICompiler::Status::FAILED);
       throw RonSQLPermanentError(
-          "Failed to compile CTE aggregation program.");
+          RonSQLErrorClass::LIMIT,
+          "Failed to compile CTE aggregation program: the aggregate "
+          "expressions need more registers than the aggregation "
+          "interpreter has.");
     }
   }
 
@@ -13743,11 +13765,11 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     bool is_cmp = (atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
                    atom->op == T_LT || atom->op == T_LE ||
                    atom->op == T_GT || atom->op == T_GE);
-    require_prm(is_cmp,
+    require_unsupported(is_cmp,
                 "CTE_LOOKUP filter supports only simple comparisons "
                 "(=, !=, <, <=, >, >=), IS NULL / IS NOT NULL, and "
-                "DNF combinations of these — column expressions and "
-                "non-DNF nesting will be added in a later phase.");
+                "DNF combinations of these; column expressions and "
+                "other nesting are not supported.");
 
     ConditionalExpression* left = atom->args.left;
     ConditionalExpression* right = atom->args.right;
@@ -13840,7 +13862,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       const bool l_str = is_string_t(type_l);
       const bool r_str = is_string_t(type_r);
       if (l_str || r_str) {
-        require_prm(l_str && r_str,
+        require_unsupported(l_str && r_str,
                     "CTE_LOOKUP filter col-vs-col: cannot compare a "
                     "string operand against a non-string operand — "
                     "cast one side or compare against a constant.");
@@ -13905,7 +13927,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
         return;
       }
 
-      require_prm(is_typed_reg_loadable(type_l) &&
+      require_unsupported(is_typed_reg_loadable(type_l) &&
                   is_typed_reg_loadable(type_r),
                   "CTE_LOOKUP filter col-vs-col: only integer, FLOAT, "
                   "DOUBLE, DATE and matching string operands are "
@@ -13968,11 +13990,10 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
       const_side = left;
       swapped = true;
     } else {
-      require_prm(false,
+      require_unsupported(false,
                   "CTE_LOOKUP filter supports only column-vs-constant "
                   "and same-CTE column-vs-column comparisons; "
-                  "expressions on either side will be added in a "
-                  "later phase.");
+                  "expressions on either side are not supported.");
     }
 
     Uint32 col_idx = col_side->col_idx;
@@ -14160,16 +14181,13 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                     vt == NdbDictionary::Column::Longvarchar,
                     "CTE_LOOKUP filter on MIN/MAX of this column type "
                     "not yet supported.  Numeric (BIGINT / DOUBLE) and "
-                    "CHAR / VARCHAR / Longvarchar are accepted; DECIMAL "
-                    "MIN/MAX outputs go through the BIGINT/DOUBLE "
-                    "widening path (Phase I.6 F.1).");
+                    "CHAR / VARCHAR outputs are accepted; a DECIMAL "
+                    "MIN/MAX output is carried as BIGINT or DOUBLE.");
       } else {
-        require_prm(fun == T_SUM || fun == T_COUNT,
+        require_unsupported(fun == T_SUM || fun == T_COUNT,
                     "CTE_LOOKUP filter on aggregate output: only SUM, "
-                    "COUNT, and numeric MIN/MAX are supported.  AVG "
-                    "and DECIMAL aggregates need DECIMAL precision/scale "
-                    "encoding in the inline opcode — deferred to "
-                    "follow-up work.");
+                    "COUNT, AVG and numeric MIN/MAX outputs are "
+                    "supported.");
       }
       use_inline_path = true;
     } else if (o->type == Outputs::Type::AVG) {
@@ -14319,7 +14337,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
   for (Uint32 di = 0; di < num_disjuncts; di++) {
     ConditionalExpression* d = disjuncts[di];
     require_prm(d != NULL, "CTE_LOOKUP filter: NULL disjunct.");
-    require_prm(!contains_or_below_top_level(d),
+    require_unsupported(!contains_or_below_top_level(d),
                 "CTE_LOOKUP filter: only top-level OR / DNF is supported. "
                 "Convert '(A OR B) AND C' to DNF or split into UNION.");
 
@@ -16463,6 +16481,39 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 
 #define programAggregator_do_or_fail(CALL) \
   require_prm(CALL, "Failed writing aggregation program. Please report a bug.")
+
+// F16: NdbAggregator refuses Sum, and Avg, over a string or temporal
+// register (kErrUnsupportedStringOperation /
+// kErrUnsupportedTemporalOperation), whether the column is the argument
+// itself or feeds arithmetic (a register keeps the loaded column's type).
+// That is an unsupported construct, not a bug: name it, as
+// build_cte_virtual_tables does for a CTE output.  The main query splits
+// AVG into Sum + Count, so the failed slot `agg_id` being an AVG output's
+// sum slot makes the message say AVG.  Any other failure keeps the
+// generic bug message.
+void
+RonSQLPreparer::throw_sum_avg_emit_error(NdbAggregator* aggregator,
+                                         const SelectStatement& stmt,
+                                         Uint32 agg_id, bool is_avg)
+{
+  const Uint32 errnum = aggregator->GetError().errno_;
+  if (errnum != kErrUnsupportedStringOperation &&
+      errnum != kErrUnsupportedTemporalOperation)
+    throw RonSQLPermanentError(
+        "Failed writing aggregation program. Please report a bug.");
+  for (const Outputs* o = stmt.outputs; o != NULL && !is_avg; o = o->next)
+  {
+    if (o->type == Outputs::Type::AVG && o->avg.agg_index_sum == agg_id)
+      is_avg = true;
+  }
+  std::string msg = is_avg ? "AVG" : "SUM";
+  msg += (errnum == kErrUnsupportedStringOperation)
+      ? " over string columns is not supported."
+      : " over temporal columns is not supported — only MIN / MAX / "
+        "COUNT.";
+  throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, msg);
+}
+
 void
 RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
 {
@@ -16507,6 +16558,12 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
         err << "Failed writing aggregation program "
                "when attempting to load column "
             << quoted_identifier(m_columns[src]) << endl;
+        // F16: a type the aggregation interpreter cannot load (BINARY,
+        // BLOB, BIT, the old temporal formats) is unsupported, not a bug.
+        // Still MaybeStaleSchema: a reload may find the type changed.
+        if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
+          throw RonSQLMaybeStaleSchema(
+              "Aggregation over a column of this type is not supported.");
         throw RonSQLMaybeStaleSchema("Failed writing aggregation program");
       }
       break;
@@ -16537,7 +16594,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
       programAggregator_do_or_fail(aggregator->Mod(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Sum:
-      programAggregator_do_or_fail(aggregator->Sum(dest, src));
+      if (!aggregator->Sum(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::Min:
       programAggregator_do_or_fail(aggregator->Min(dest, src));
@@ -16828,7 +16886,7 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
   Uint32 total_atom_words = 0;
   for (Uint32 a = 0; a < atoms.size(); a++) {
     ConditionalExpression* atom = atoms[a];
-    require_prm(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+    require_unsupported(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
                 atom->op == T_LT || atom->op == T_LE ||
                 atom->op == T_GT || atom->op == T_GE,
                 "Cross-table WHERE filter atom: only =, !=, <, <=, >, >= "
@@ -17049,6 +17107,7 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
               << "' in CTE body '" << cte->name.c_str()
               << "' is not yet supported." << std::endl;
           throw RonSQLPermanentError(
+              RonSQLErrorClass::UNSUPPORTED,
               "CTE body ORDER BY over a string MIN/MAX output.");
         }
       }
@@ -17062,6 +17121,7 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
       err << "ORDER BY over subquery output in CTE body '"
           << cte->name.c_str() << "' is not supported." << std::endl;
       throw RonSQLPermanentError(
+          RonSQLErrorClass::UNSUPPORTED,
           "CTE body ORDER BY over a subquery output.");
     }
 
@@ -17387,6 +17447,10 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
           err << "Failed writing aggregation program "
                  "when attempting to load column "
               << quoted_identifier(m_columns[src]) << endl;
+          // F16: see programAggregator's Load arm.
+          if (aggregator->GetError().errno_ == kErrUnSupportedColumn)
+            throw RonSQLMaybeStaleSchema(
+                "Aggregation over a column of this type is not supported.");
           throw RonSQLMaybeStaleSchema(
               "Failed writing aggregation program");
         }
@@ -17419,7 +17483,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       programAggregator_do_or_fail(aggregator->Mod(dest, src));
       break;
     case AggregationAPICompiler::SVMInstrType::Sum:
-      programAggregator_do_or_fail(aggregator->Sum(dest, src));
+      if (!aggregator->Sum(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::Min:
       programAggregator_do_or_fail(aggregator->Min(dest, src));
@@ -17434,7 +17499,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
       // cte_avg_plan.md V4 (C3): one visible DOUBLE slot; the kernel's
       // kOpAvg adds the hidden COUNT companion and divides on the
       // owner after the CTE redistribute completes.
-      programAggregator_do_or_fail(aggregator->Avg(dest, src));
+      if (!aggregator->Avg(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, true);
       break;
     case AggregationAPICompiler::SVMInstrType::Greatest2:
     case AggregationAPICompiler::SVMInstrType::Least2:
@@ -17879,7 +17945,7 @@ RonSQLPreparer::validate_greatest_least_pair_loads()
                 t == NdbDictionary::Column::Bigunsigned,
                 "GREATEST/LEAST column operand must be an integer "
                 "type.  Float / Decimal / VARCHAR operands are not "
-                "yet supported (deferred to I.5 v3 / I.6).");
+                "yet supported.");
   }
 }
 
@@ -18098,7 +18164,7 @@ RonSQLPreparer::generate_embedded_condition(
   for (Uint32 a = 0; a < atoms.size(); a++)
   {
     ConditionalExpression* atom = atoms[a];
-    require_prm(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
+    require_unsupported(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
                 atom->op == T_LT || atom->op == T_LE ||
                 atom->op == T_GT || atom->op == T_GE,
                 "CASE condition atom: only =, !=, <, <=, >, >= "
@@ -18143,13 +18209,12 @@ RonSQLPreparer::generate_embedded_condition(
       require_prm(info.lhs.kind != SideKind::InlineLinked &&
                   info.rhs.kind != SideKind::InlineLinked,
                   "CASE condition with two CTE-leaf columns is not yet "
-                  "supported (deferred to I.5 v5 — needs an inline-typed "
-                  "register-load opcode).");
-      require_prm(can_load_typed_reg(info.lhs.col) &&
+                  "supported.");
+      require_unsupported(can_load_typed_reg(info.lhs.col) &&
                   can_load_typed_reg(info.rhs.col),
                   "Column-vs-column CASE / GREATEST / LEAST currently "
-                  "supports integer + float / double types only "
-                  "(VARCHAR / DECIMAL deferred to I.6).");
+                  "supports integer and FLOAT / DOUBLE operands only; "
+                  "VARCHAR and DECIMAL operands are not supported.");
       // Word counts (Phase I.5 v5: linked side is now one word —
       // READ_LINKED_COLUMN_TO_REG):
       //   LeafTable side       → 1 word (READ_ATTR_INTO_REG)
@@ -18456,7 +18521,7 @@ RonSQLPreparer::print()
   if (m_context.ast_root.frags_per_worker > 0) {
     out << "FRAGS_PER_WORKER = " << m_context.ast_root.frags_per_worker
         << " (requested; the NDB API normalizes to a power of two <= 8 and"
-           " may clamp or ignore it, see frags_per_worker_plan.md)\n\n";
+           " may clamp or ignore it)\n\n";
   }
 
   // RONDB-1124 M1.3: the collect form ran as its body (collapse_collect_cte).

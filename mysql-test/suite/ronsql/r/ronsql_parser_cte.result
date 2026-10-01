@@ -556,7 +556,7 @@ Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
 ===== FRAGS_PER_WORKER statement head on a CTE join query =====
-FRAGS_PER_WORKER = 4 (requested; the NDB API normalizes to a power of two <= 8 and may clamp or ignore it, see frags_per_worker_plan.md)
+FRAGS_PER_WORKER = 4 (requested; the NDB API normalizes to a power of two <= 8 and may clamp or ignore it)
 
 CTE definitions:
   CTE[0] agg2 — source: pt2
@@ -591,7 +591,7 @@ Output in mysql-style tab separated format.
 The program for post-processing and output has 8 instructions.
 
 ===== EXPLAIN FRAGS_PER_WORKER combination =====
-FRAGS_PER_WORKER = 2 (requested; the NDB API normalizes to a power of two <= 8 and may clamp or ignore it, see frags_per_worker_plan.md)
+FRAGS_PER_WORKER = 2 (requested; the NDB API normalizes to a power of two <= 8 and may clamp or ignore it)
 
 CTE definitions:
   CTE[0] agg2 — source: pt2
