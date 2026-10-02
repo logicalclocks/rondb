@@ -222,6 +222,35 @@ void HttpServer::onMessage(const TcpConnectionPtr &conn, MsgBuffer *buf)
             req->setPeerCertificate(conn->peerCertificate());
             // TODO: maybe call onRequests() directly in stream mode
             requests.push_back(req);
+            // RonDB patch (drogon-keepalive-graceful-close.patch): at this
+            // point numberOfRequestsParsed() is THIS request's ordinal on
+            // the connection (reset() keeps the counter). When it reaches
+            // the keep-alive cap: serve exactly this request with
+            // "Connection: close" (every response path derives that from
+            // req->keepAlive(), and both sendResponse and sendResponses
+            // shut the connection down only after writing a close-marked
+            // response), stop the parser, and discard any pipelined bytes
+            // beyond it - per Connection: close semantics the client
+            // re-issues those on a new connection. Marking per ordinal here
+            // rather than in onRequests() keeps a pipelined batch that
+            // straddles the cap correct: requests before the cap stay
+            // keep-alive and are all answered; the capped one is always the
+            // last dispatched. Skipped in stream mode, where the request is
+            // pushed at headers-complete and stopping the parser here would
+            // discard its own still-arriving body (a stream-mode connection
+            // is instead cut by the backstop in onRequests once past the
+            // cap).
+            if (!req->isStreamMode() &&
+                HttpAppFrameworkImpl::instance().keepaliveRequestsNumber() >
+                    0 &&
+                requestParser->numberOfRequestsParsed() >=
+                    HttpAppFrameworkImpl::instance().keepaliveRequestsNumber())
+            {
+                req->setKeepAlive(false);
+                requestParser->stop();
+                buf->retrieveAll();
+                break;
+            }
         }
         if (parseRes == 1 || parseRes == 2)
         {
@@ -317,8 +346,14 @@ void HttpServer::onRequests(
         return;
     }
 
+    // RonDB patch (drogon-keepalive-graceful-close.patch): '>' instead of
+    // '>=': the request that reaches the cap is served, with
+    // "Connection: close" set at the parse boundary in onMessage(), which
+    // also stops the parser at exactly the cap - so this check can no
+    // longer fire for the batch containing the capped request ('>=' would
+    // have dropped that whole batch unanswered). Kept as a backstop only.
     if (HttpAppFrameworkImpl::instance().keepaliveRequestsNumber() > 0 &&
-        requestParser->numberOfRequestsParsed() >=
+        requestParser->numberOfRequestsParsed() >
             HttpAppFrameworkImpl::instance().keepaliveRequestsNumber())
     {
         requestParser->stop();

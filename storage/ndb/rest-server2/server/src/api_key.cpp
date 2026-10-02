@@ -1045,6 +1045,7 @@ void APIKeyCache::event_watcher_job() {
   NdbRecAttr *expiry_val = nullptr;
   NdbRecAttr *prefix_pre_val = nullptr;
   unsigned expiry_prec = 0;
+  bool has_expiry = false;
 
 retry:
   ndb = nullptr;
@@ -1079,21 +1080,35 @@ retry:
       goto err;
     }
 
+    /* Pre-V73 Hopsworks schemas (<= 4.8) have no expiry column: API keys
+     * never expire there. Tolerate its absence exactly like the DAL
+     * readers do; if the table is later ALTERed to add it, the resulting
+     * event teardown sends us back through retry: and we pick it up. */
     const NdbDictionary::Column *expiry_col = tab->getColumn("expiry");
-    if (expiry_col == nullptr) {
-      g_eventLogger->warning(
-        "[API Key Event] Failed to get expiry column "
-        "(schema may have changed). Retry...");
-      goto err;
-    }
-    expiry_prec = expiry_col->getPrecision();
+    has_expiry = (expiry_col != nullptr);
+    expiry_prec = has_expiry ? expiry_col->getPrecision() : 0;
 
     NdbDictionary::Event event(EVENT_NAME);
     event.setTable(*tab);
     event.addTableEvent(NdbDictionary::Event::TE_INSERT);
     event.addTableEvent(NdbDictionary::Event::TE_UPDATE);
     event.addTableEvent(NdbDictionary::Event::TE_DELETE);
+    /* A copying ALTER (e.g. the V73 migration adding api_key.expiry)
+     * DROPs the underlying table and recreates it. Without subscribing to
+     * DROP/ALTER the subscription dies silently - pollEvents() just goes
+     * quiet forever - and live key propagation is lost until a process
+     * restart. Subscribe to them and treat them as teardown below, so the
+     * watcher re-subscribes against the new table (and picks up any
+     * added/removed expiry column via the dictionary re-read). */
+    event.addTableEvent(NdbDictionary::Event::TE_DROP);
+    event.addTableEvent(NdbDictionary::Event::TE_ALTER);
     event.mergeEvents(true);
+    /* DDL events (TE_DROP/TE_ALTER) are only delivered when the event is
+     * created with the ER_DDL report option - subscribing to them alone is
+     * not enough (verified live: without this flag the drop is never
+     * reported and the subscription still dies silently). ER_UPDATED (the
+     * default, value 0) stays in effect for row events. */
+    event.setReportOptions(NdbDictionary::Event::ER_DDL);
     for (int col = 0; col < tab->getNoOfColumns(); col++) {
       event.addEventColumn(col);
     }
@@ -1128,7 +1143,7 @@ retry:
   secret_val = ev_op->getValue("secret");
   salt_val = ev_op->getValue("salt");
   user_id_val = ev_op->getValue("user_id");
-  expiry_val = ev_op->getValue("expiry");
+  expiry_val = has_expiry ? ev_op->getValue("expiry") : nullptr;
 
   // Pre-values must be registered for all columns that have after-values.
   // NDB requires matching getValue/getPreValue pairs to properly consume
@@ -1138,12 +1153,14 @@ retry:
   (void)ev_op->getPreValue("secret");
   (void)ev_op->getPreValue("salt");
   (void)ev_op->getPreValue("user_id");
-  (void)ev_op->getPreValue("expiry");
+  if (has_expiry) {
+    (void)ev_op->getPreValue("expiry");
+  }
 
   // Null-check all NdbRecAttr pointers (schema may have changed)
   if (id_val == nullptr || prefix_val == nullptr ||
       secret_val == nullptr || salt_val == nullptr ||
-      user_id_val == nullptr || expiry_val == nullptr ||
+      user_id_val == nullptr || (has_expiry && expiry_val == nullptr) ||
       prefix_pre_val == nullptr) {
     g_eventLogger->warning(
       "[API Key Event] Failed to register event columns "
@@ -1230,8 +1247,9 @@ retry:
           std::string salt(salt_start, salt_bytes);
 
           int user_id = user_id_val->int32_value();
-          long long expiry_epoch = datetime_attr_to_epoch(expiry_val,
-                                                          expiry_prec);
+          // No expiry column (pre-V73 schema) => key never expires.
+          long long expiry_epoch = (expiry_val != nullptr)
+              ? datetime_attr_to_epoch(expiry_val, expiry_prec) : 0;
 
           g_eventLogger->info(
             "[API Key Event] INSERT detected for prefix: %s",
@@ -1323,6 +1341,13 @@ retry:
           m_rwLock[key_cache_id].unlock_shared();
           break;
         }
+        case NdbDictionary::Event::TE_DROP:
+        case NdbDictionary::Event::TE_ALTER:
+          g_eventLogger->info(
+            "[API Key Event] api_key table %s; re-subscribing...",
+            op->getEventType() == NdbDictionary::Event::TE_DROP
+              ? "dropped (or copying-ALTERed)" : "altered");
+          goto err;
         case NdbDictionary::Event::TE_CLUSTER_FAILURE:
         case NdbDictionary::Event::TE_STOP:
         case NdbDictionary::Event::TE_INCONSISTENT:

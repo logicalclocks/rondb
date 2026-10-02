@@ -116,7 +116,7 @@ RS_Status find_project_id(const int feature_store_id, Int32 *project_id) {
     status = find_project_id_int(ndb_object, feature_store_id, project_id);
     HandleSchemaErrors(ndb_object,
                        status,
-                       {std::make_tuple(HOPSWORKS, PROJECT)});
+                       {std::make_tuple(HOPSWORKS, FEATURE_STORE)});
   )
   rdrsRonDBConnectionPool->ReturnMetadataNdbObject(ndb_object, &status);
   return status;
@@ -1591,7 +1591,8 @@ RS_Status find_on_demand_feature_group(int id, OnDemandFeatureGroup *odfg) {
   /* clang-format off */
   METADATA_OP_RETRY_HANDLER(
     status = find_on_demand_feature_group_int(ndb_object, id, odfg);
-    HandleSchemaErrors(ndb_object, status, {std::make_tuple(HOPSWORKS, SCHEMAS)});
+    HandleSchemaErrors(ndb_object, status,
+                       {std::make_tuple(HOPSWORKS, ON_DEMAND_FEATURE_GROUP)});
   )
   /* clang-format on */
 

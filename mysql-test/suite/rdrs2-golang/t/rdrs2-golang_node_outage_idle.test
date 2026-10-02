@@ -41,7 +41,7 @@ perl END_OF_PERL;
 use strict;
 use warnings;
 require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
-poll_health(200, 60, 'initial health');
+poll_health_both(200, 60, 'initial health');
 print "health: up\n";
 poll_data_readable(60, 'initial data read');
 print "data: row served before outage\n";
@@ -58,7 +58,7 @@ perl END_OF_PERL;
 use strict;
 use warnings;
 require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
-poll_health(503, 120, 'health during outage');
+poll_health_both(503, 120, 'health during outage');
 print "health: down during outage\n";
 END_OF_PERL
 
@@ -73,7 +73,7 @@ perl END_OF_PERL;
 use strict;
 use warnings;
 require "$ENV{MYSQL_TEST_DIR}/suite/rdrs2-golang/include/outage_http.pl";
-poll_health(200, 180, 'health after recovery without traffic');
+poll_health_both(200, 180, 'health after recovery without traffic');
 print "health: recovered while idle\n";
 END_OF_PERL
 

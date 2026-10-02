@@ -554,6 +554,15 @@ class HttpRequestImpl : public HttpRequest
         return keepAlive_;
     }
 
+    // RonDB patch (drogon-keepalive-graceful-close.patch): lets the server
+    // mark the request that reaches the keep-alive request cap so its
+    // response carries "Connection: close" instead of the NEXT request
+    // being dropped without an answer.
+    void setKeepAlive(bool on)
+    {
+        keepAlive_ = on;
+    }
+
     bool isOnSecureConnection() const noexcept override
     {
         return isOnSecureConnection_;
