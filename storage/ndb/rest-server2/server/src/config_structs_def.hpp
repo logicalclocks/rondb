@@ -180,9 +180,9 @@ CLASS
     " silently read as empty.")
  PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
- PROBLEM(probeEnable && probePort == 0,
+ PROBLEM(enable && probeEnable && probePort == 0,
          "REST probe port cannot be zero when ProbeEnable is set")
- PROBLEM(probeEnable && probePort == serverPort,
+ PROBLEM(enable && probeEnable && probePort == serverPort,
          "REST probe port must differ from the REST server port")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "
@@ -628,10 +628,13 @@ CLASS
          ".RateLimit.Enable requires .Security.APIKey.UseHopsworksAPIKeys:"
          " the identity is derived from the request's API key, so without"
          " API keys no request would be rate limited")
- PROBLEM(rest.probeEnable && rondis.enable &&
+ /* The probe listener only runs with REST enabled (main.cc), so its rules
+  * are moot, and must not reject a config, when REST is disabled. */
+ PROBLEM(rest.enable && rest.probeEnable && rondis.enable &&
          rest.probePort == rondis.serverPort,
          ".REST.ProbePort must differ from .Rondis.ServerPort")
- PROBLEM(rest.probeEnable && security.apiKey.useHopsworksAPIKeys &&
+ PROBLEM(rest.enable && rest.probeEnable &&
+         security.apiKey.useHopsworksAPIKeys &&
          (rest.pingRequiresAuth || rest.healthRequiresAuth),
          ".REST.ProbeEnable cannot be combined with PingRequiresAuth or"
          " HealthRequiresAuth: the probe port serves ping and health WITHOUT"

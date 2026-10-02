@@ -125,11 +125,6 @@ static void do_exit() {
     _exit(g_exit_code);
   }
   g_in_exit = 1;
-  if (g_ronsql_worker_pool != nullptr) {
-    // Before the schema cache and the RonDB connections go away.
-    delete g_ronsql_worker_pool;
-    g_ronsql_worker_pool = nullptr;
-  }
   /* First: join the probe listener thread before anything it reads is torn
    * down (it reaches the connection pool through get_rondb_stats). do_exit
    * is the single funnel for every startup-failure path too, so this also
@@ -138,6 +133,11 @@ static void do_exit() {
     g_probe_server->Stop();
     delete g_probe_server;
     g_probe_server = nullptr;
+  }
+  if (g_ronsql_worker_pool != nullptr) {
+    // Before the schema cache and the RonDB connections go away.
+    delete g_ronsql_worker_pool;
+    g_ronsql_worker_pool = nullptr;
   }
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
@@ -876,6 +876,9 @@ int main(int argc, char *argv[]) {
     g_drogon_running = true;
     drogon::app().run();
     g_drogon_running = false;
+    /* The main port no longer accepts; both probe-port endpoints go back to
+     * 503 for the remainder of the teardown. */
+    g_drogon_up.store(false, std::memory_order_release);
   } else {
     // REST is disabled — block until signal received.
     // MySQL router and/or Rondis are running in their own threads.

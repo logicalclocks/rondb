@@ -2,7 +2,8 @@
   "PIDFile": "@pid-file",
   "REST": {
     "ServerIP": "@bind-address",
-    "ServerPort": @port
+    "ServerPort": @port,
+    "ProbePort": @probeport
   },
   "Rondis": {
     "Enable": true,

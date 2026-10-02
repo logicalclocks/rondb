@@ -126,9 +126,12 @@ sub fix_myrouter_port {
 # A group may set probe-disabled=true (for templates that set
 # ProbeEnable=false, e.g. to test authenticated ping/health on the main
 # port); no port is allocated then and mtr does not wait for one to open.
+# The same holds for enable-rest=false: rdrs2 starts the probe listener
+# only together with the REST server.
 sub fix_probe_port {
   my ($self, $config, $group_name, $group) = @_;
-  if (($group->if_exist('probe-disabled') // '') eq 'true') {
+  if (($group->if_exist('probe-disabled') // '') eq 'true' ||
+      ($group->if_exist('enable-rest') // 'true') eq 'false') {
     return ''
   }
   my $hostname = $group->value('#host');
