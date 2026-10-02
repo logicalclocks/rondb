@@ -1039,7 +1039,12 @@ sub run_test_server ($$$) {
   my $num_saved_datadir = 0; # Number of datadirs saved in vardir/log/ so far.
 
   # Scheduler variables
-  my $max_ndb = $ENV{MTR_MAX_NDB} || $childs / 2;
+  # NDB tests may use every worker by default (upstream halves this). A
+  # worker that asks for a test while the limit is reached gets BYE and
+  # exits for good, so with an NDB-only test list a lower limit permanently
+  # shrinks the run to that many workers. MTR_MAX_NDB still lowers it, e.g.
+  # when memory only allows fewer concurrent clusters.
+  my $max_ndb = $ENV{MTR_MAX_NDB} || $childs;
   $max_ndb = $childs if $max_ndb > $childs;
   $max_ndb = 1       if $max_ndb < 1;
   my $num_ndb_tests = 0;
