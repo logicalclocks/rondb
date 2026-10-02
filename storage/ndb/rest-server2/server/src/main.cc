@@ -57,12 +57,19 @@ constexpr const char* const usageHelp =
 #include "rdrs_dal.hpp"
 #include "ronsql_worker_pool.hpp"
 #include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
+#include "probe_server.hpp"
+#include "logger.hpp"
 
 #include <cstdio>
 #include <cstring>
+#include <chrono>
 #include <iostream>
 #include <sstream>
+#include <thread>
 #include <sys/errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <csignal>
 
@@ -92,6 +99,7 @@ static int g_exit_code = 0;
 /* Stack size of the REST (drogon IO loop) threads and of the RonSQL
  * workers that execute their statements. */
 static constexpr Uint32 kRestThreadStackSize = 8 * 1024 * 1024;
+static ProbeServer* g_probe_server = nullptr;
 TTLPurger* g_ttl_purger = nullptr;
 NdbMutex *globalConfigsMutex = nullptr;
 static volatile sig_atomic_t g_in_exit = 0;
@@ -121,6 +129,15 @@ static void do_exit() {
     // Before the schema cache and the RonDB connections go away.
     delete g_ronsql_worker_pool;
     g_ronsql_worker_pool = nullptr;
+  }
+  /* First: join the probe listener thread before anything it reads is torn
+   * down (it reaches the connection pool through get_rondb_stats). do_exit
+   * is the single funnel for every startup-failure path too, so this also
+   * covers a probe server left running when a later init step fails. */
+  if (g_probe_server != nullptr) {
+    g_probe_server->Stop();
+    delete g_probe_server;
+    g_probe_server = nullptr;
   }
   if (jsonParsers != nullptr) {
     delete[] jsonParsers;
@@ -474,6 +491,24 @@ int main(int argc, char *argv[]) {
     // Initialize Scan Metrics buffer
     initScanMetrics();
 
+    /* Start the probe listener before the RonDB connect below, which can
+     * block for a minute: binding early makes a port conflict fail fast and
+     * keeps "starting" (503) distinguishable from "dead" (connection refused)
+     * for the whole startup window. Both endpoints answer 503 until the
+     * server can actually serve: /ping until Drogon is up (g_drogon_up), so
+     * the startup probe can use this port with main-port semantics; /health
+     * additionally until the pool exists and reports ready data nodes. */
+    if (globalConfigs.rest.probeEnable) {
+      /* Config validation has already rejected ProbeEnable combined with
+       * Ping/HealthRequiresAuth, so the probe port serving without
+       * authentication can never contradict the configured auth policy. */
+      g_probe_server = new ProbeServer();
+      if (!g_probe_server->Start()) {
+        g_exit_code = 1;
+        do_exit();
+      }
+    }
+
     // Initialize JSON parsers
     assert(jsonParsers == nullptr);
     jsonParsers = new JSONParser[globalConfigs.rest.numThreads];
@@ -745,6 +780,27 @@ int main(int argc, char *argv[]) {
                               globalConfigs.security.tls.privateKeyFile);
     drogon::app().setThreadNum(globalConfigs.rest.numThreads);
     drogon::app().setThreadStackSize(kRestThreadStackSize);
+    /* Drogon buffers oversized request bodies in files under
+     * <uploadPath>/tmp/ and pre-creates that tree at startup, so the path
+     * must be writable; empty keeps Drogon's default of ./uploads. */
+    if (!globalConfigs.rest.uploadPath.empty()) {
+      drogon::app().setUploadPath(globalConfigs.rest.uploadPath);
+    }
+
+    /* Connection-lifetime limits: closing long-lived keep-alive connections
+     * periodically lets a Kubernetes Service - which balances per TCP
+     * connection, not per request - redistribute clients across pods, so a
+     * post-restart connection pile-up on the first-ready pod levels out.
+     * MaxKeepaliveRequests 0 means no limit (Drogon treats 0 that way);
+     * IdleConnectionTimeoutS 0 keeps Drogon's built-in 60 second idle
+     * timeout - it does NOT disable idle closing, hence the guarded call. */
+    drogon::app().setKeepaliveRequestsNumber(
+      globalConfigs.rest.maxKeepaliveRequests);
+    if (globalConfigs.rest.idleConnectionTimeoutS > 0) {
+      drogon::app().setIdleConnectionTimeout(
+        globalConfigs.rest.idleConnectionTimeoutS);
+    }
+
     // Install Internal.maxReqSize as the HTTP server's client body
     // limit.  Without this, drogon's built-in 1 MB default silently
     // SHADOWED the configurable limit: any request over 1 MB was
@@ -759,6 +815,57 @@ int main(int argc, char *argv[]) {
       for (auto &address : addresses) {
         printf("RDRS Server running on %s\n", address.toIpPort().c_str());
       }
+      /* Both probe-port endpoints require g_drogon_up for a 200: neither a
+       * startup probe (ping) nor a readiness probe (health) may pass before
+       * the main port accepts connections. This advice runs immediately
+       * BEFORE ListenerManager::startListening() (same queued main-loop
+       * lambda), and each listener's listen() is then queued to its own IO
+       * loop - so setting the flag here directly would open a window where
+       * probes pass while the main port still refuses connections. Latch the
+       * flag from a one-shot thread that confirms the ground truth instead:
+       * a real TCP connect to the main port. A plain connect suffices under
+       * TLS too (acceptance happens before any handshake). */
+      std::thread([]() {
+        std::string ip = globalConfigs.rest.serverIP;
+        bool v6 = ip.find(':') != std::string::npos;
+        if (ip == "0.0.0.0") ip = "127.0.0.1";
+        if (ip == "::") ip = "::1";
+        /* Bounded: if the connect never succeeds something is fatally wrong
+         * with the listener and do_exit() will tear the process down anyway;
+         * do not wedge the latch thread forever. */
+        for (int attempt = 0; attempt < 3000; attempt++) {
+          int fd = ::socket(v6 ? AF_INET6 : AF_INET, SOCK_STREAM, 0);
+          if (fd >= 0) {
+            bool connected = false;
+            if (v6) {
+              struct sockaddr_in6 addr;
+              std::memset(&addr, 0, sizeof(addr));
+              addr.sin6_family = AF_INET6;
+              addr.sin6_port = htons(globalConfigs.rest.serverPort);
+              ::inet_pton(AF_INET6, ip.c_str(), &addr.sin6_addr);
+              connected = ::connect(fd, (struct sockaddr *)&addr,
+                                    sizeof(addr)) == 0;
+            } else {
+              struct sockaddr_in addr;
+              std::memset(&addr, 0, sizeof(addr));
+              addr.sin_family = AF_INET;
+              addr.sin_port = htons(globalConfigs.rest.serverPort);
+              ::inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+              connected = ::connect(fd, (struct sockaddr *)&addr,
+                                    sizeof(addr)) == 0;
+            }
+            ::close(fd);
+            if (connected) {
+              g_drogon_up.store(true, std::memory_order_release);
+              return;
+            }
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        rdrs_logger::error(
+          "Main REST port never accepted a connection; probe endpoints stay "
+          "at 503");
+      }).detach();
     });
     drogon::app().setIntSignalHandler([]() {
       handle_signal(SIGINT);

@@ -122,15 +122,68 @@ CLASS
  CM(unsigned, numThreads, NumThreads, 64,
     "Number of threads handling REST requests.")
  CM(bool, healthRequiresAuth, HealthRequiresAuth, false,
-    "Set to true to require authentication for the health endpoint.")
+    "Set to true to require authentication for the health endpoint on the"
+    " main port (ServerPort). The probe port (ProbePort) never"
+    " authenticates, so this setting is rejected at startup unless"
+    " ProbeEnable is false; see ProbeEnable.")
  ALIAS(healthRequiresAuth, HealthRequiresAuth, HealthRequiresAPIKey)
  CM(bool, pingRequiresAuth, PingRequiresAuth, false,
-    "Set to true to require authentication for the ping endpoint.")
+    "Set to true to require authentication for the ping endpoint on the"
+    " main port (ServerPort). The probe port (ProbePort) never"
+    " authenticates, so this setting is rejected at startup unless"
+    " ProbeEnable is false; see ProbeEnable.")
  ALIAS(pingRequiresAuth, PingRequiresAuth, PingRequiresAPIKey)
  CM(bool, useSingleTransaction, UseSingleTransaction, true,
     "Set to true to use single transaction for entire batch.")
+ CM(unsigned, maxKeepaliveRequests, MaxKeepaliveRequests, 0,
+    "Maximum number of requests served over one keep-alive connection on"
+    " the main port before the server closes it; 0 (the default) disables"
+    " the limit. A Kubernetes Service balances per TCP connection, not per"
+    " request, so long-lived pooled connections stick to whichever pod they"
+    " first landed on - after a fleet restart the first-ready pod keeps"
+    " most of the load forever. With a limit, every close forces the client"
+    " to reconnect and be re-balanced, and the busiest pod sheds"
+    " connections fastest, so skew levels out on its own. Does not apply to"
+    " the probe port.")
+ CM(unsigned, idleConnectionTimeoutS, IdleConnectionTimeoutS, 0,
+    "Seconds a keep-alive connection on the main port may sit idle before"
+    " the server closes it; 0 (the default) keeps the built-in 60 second"
+    " timeout. Complements MaxKeepaliveRequests for clients that hold"
+    " connections open but send rarely. Does not apply to the probe port.")
+ CM(bool, probeEnable, ProbeEnable, true,
+    "Whether to serve ping and health on a dedicated probe port. The probe"
+    " port runs on its own thread so it keeps answering while every request"
+    " thread is busy or blocked, which is what Kubernetes probes need. The"
+    " auth contract: the probe port is ALWAYS unauthenticated - API-key"
+    " validation reads RonDB and can stall for tens of seconds - while the"
+    " main port (ServerPort) endpoints honour PingRequiresAuth and"
+    " HealthRequiresAuth. Combining ProbeEnable with either of those flags"
+    " (with UseHopsworksAPIKeys) is therefore rejected at startup: if"
+    " authenticated ping or health is required, set this to false and use"
+    " the main port, accepting that its endpoints share the request"
+    " threads. Ping on the probe port answers 503 until the main port"
+    " accepts connections and 200 forever after, so a Kubernetes startup"
+    " probe can use it with main-port semantics.")
+ CM(Uint16, probePort, ProbePort, 4407,
+    "TCP port of the dedicated probe listener (see ProbeEnable). Serves only"
+    " GET/HEAD of the ping and health endpoints, always without"
+    " authentication. TLS mirrors the main REST listener, except a client"
+    " certificate is never required.")
+ CM(std::string, uploadPath, UploadPath, "",
+    "Directory for the HTTP server's temporary request-body files: at"
+    " startup it creates 256 subdirectories under <UploadPath>/tmp and any"
+    " request body larger than the in-memory limit is buffered in a file"
+    " there. Empty (the default) keeps the built-in location, ./uploads"
+    " relative to the working directory. Set this to a writable directory"
+    " when the working directory is not writable, otherwise startup logs"
+    " 256 'Permission denied' errors and oversized request bodies are"
+    " silently read as empty.")
  PROBLEM(enable && serverIP.empty(), "REST server IP cannot be empty")
  PROBLEM(serverPort == 0, "REST server port cannot be zero")
+ PROBLEM(probeEnable && probePort == 0,
+         "REST probe port cannot be zero when ProbeEnable is set")
+ PROBLEM(probeEnable && probePort == serverPort,
+         "REST probe port must differ from the REST server port")
  PROBLEM(numThreads < RDRS_MIN_NUM_THREADS,
          "Number of REST threads cannot be less than "
          MACRO_TO_STRING_CONSTANT(RDRS_MIN_NUM_THREADS))
@@ -575,6 +628,17 @@ CLASS
          ".RateLimit.Enable requires .Security.APIKey.UseHopsworksAPIKeys:"
          " the identity is derived from the request's API key, so without"
          " API keys no request would be rate limited")
+ PROBLEM(rest.probeEnable && rondis.enable &&
+         rest.probePort == rondis.serverPort,
+         ".REST.ProbePort must differ from .Rondis.ServerPort")
+ PROBLEM(rest.probeEnable && security.apiKey.useHopsworksAPIKeys &&
+         (rest.pingRequiresAuth || rest.healthRequiresAuth),
+         ".REST.ProbeEnable cannot be combined with PingRequiresAuth or"
+         " HealthRequiresAuth: the probe port serves ping and health WITHOUT"
+         " authentication, because API-key validation reads RonDB and can"
+         " stall for tens of seconds - exactly what a probe endpoint must"
+         " never do. Set .REST.ProbeEnable=false to keep authenticated"
+         " ping/health on the main port.")
  CLASSDEFS
  (
   static AllConfigs get_all();

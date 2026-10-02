@@ -41,6 +41,32 @@ func TestHealth(t *testing.T) {
 
 }
 
+// Both-port invariant: /health answers 200 with the byte-identical body "1"
+// on the main port and on the dedicated probe port, under both API
+// versions. The two read the same wait-free state, so on a healthy cluster
+// they must agree.
+func TestHealthBothPorts(t *testing.T) {
+	conf := config.GetAll()
+	if !conf.REST.Enable {
+		t.Skip("REST disabled")
+	}
+	urls := map[string]string{
+		"main":    testutils.NewHealthURL(),
+		"main v2": testutils.NewHealthURLV2(),
+	}
+	if conf.REST.ProbeEnable {
+		urls["probe"] = testutils.NewProbeHealthURL()
+		urls["probe v2"] = testutils.NewProbeHealthURLV2()
+	}
+	for name, url := range urls {
+		_, respBody := testclient.SendHttpRequest(t, config.HEALTH_HTTP_VERB,
+			url, "", "", http.StatusOK)
+		if string(respBody) != "1" {
+			t.Fatalf("%s port health: body %q, want \"1\"", name, string(respBody))
+		}
+	}
+}
+
 func getHealthHttp(t *testing.T) *api.HealthResponse {
 	body := ""
 	url := testutils.NewHealthURL()

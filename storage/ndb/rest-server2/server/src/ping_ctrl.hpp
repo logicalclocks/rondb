@@ -22,7 +22,6 @@
 
 #include "rdrs_dal.h"
 #include "constants.hpp"
-#include "base_ctrl.hpp"
 
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>
@@ -31,6 +30,7 @@ class PingCtrl : public drogon::HttpController<PingCtrl> {
  public:
   METHOD_LIST_BEGIN
   ADD_METHOD_TO(PingCtrl::ping, PING_PATH, drogon::Get);
+  ADD_METHOD_TO(PingCtrl::ping, PING_PATH_V2, drogon::Get);
   METHOD_LIST_END
 
   static void ping(

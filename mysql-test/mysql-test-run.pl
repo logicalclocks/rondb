@@ -5502,6 +5502,7 @@ sub run_testcase ($) {
     foreach my $rdrs (rdrss()) {
       my $msg = $rdrs->name() .
                "  RDRS port " . $rdrs->value('port') .
+               ", probe port " . ($rdrs->if_exist('probeport') // '-') .
                ", rondis port " . $rdrs->value('rondisport');
       if (($rdrs->if_exist('enable-myrouter') // '') eq 'true') {
         $msg .= ", myrouter port " . $rdrs->value('myrouterport');
@@ -7212,6 +7213,16 @@ sub rdrs_start ($$) {
     my $myrouterport = $rdrs->value('myrouterport');
     if (!sleep_until_port_opened($myrouterport, $opt_start_timeout, $host)) {
       mtr_error("Failed while waiting for MySQL router TCP server $host:$myrouterport to open.");
+    }
+  }
+
+  # The dedicated probe listener (REST.ProbePort, resolved from @probeport in
+  # the config template). It starts before the NDB connection, so this wait
+  # is quick; failing it means the listener could not bind.
+  if (($rdrs->if_exist('probeport') // '') ne '') {
+    my $probeport = $rdrs->value('probeport');
+    if (!sleep_until_port_opened($probeport, $opt_start_timeout, $host)) {
+      mtr_error("Failed while waiting for probe TCP server $host:$probeport to open.");
     }
   }
 

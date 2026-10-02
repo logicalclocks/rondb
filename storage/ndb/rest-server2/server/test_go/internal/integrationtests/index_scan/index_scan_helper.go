@@ -407,9 +407,8 @@ func ExecuteUsingMySQLServer(t *testing.T, database string, table string, query 
 // NewIndexScanURL creates a URL for the index scan endpoint
 func NewIndexScanURL(db string, table string) string {
 	conf := config.GetAll()
-	url := fmt.Sprintf("%s:%d/%s/%s/%s/scan",
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
+	url := fmt.Sprintf("%s/%s/%s/%s/scan",
+		testutils.HostPort(conf.REST.ServerIP, conf.REST.ServerPort),
 		version.API_VERSION,
 		db,
 		table,

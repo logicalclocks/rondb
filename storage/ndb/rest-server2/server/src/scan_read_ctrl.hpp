@@ -21,7 +21,6 @@
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_SCAN_READ_CTRL_HPP_
 
 #include "rdrs_dal.h"
-#include "base_ctrl.hpp"
 #include "constants.hpp"
 
 #include <drogon/drogon.h>
