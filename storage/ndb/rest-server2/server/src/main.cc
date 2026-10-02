@@ -288,8 +288,8 @@ static bool mysql_router_ronsql_handler(
 
 /*
   Graceful shutdown. Only safe to call from a normal execution context, i.e.
-  from the Drogon event loop once Drogon is running, never from a POSIX
-  signal handler.
+  from the Drogon event loop once Drogon is running, or from main()'s wait
+  loop when REST is disabled - never from a POSIX signal handler.
 */
 static void handle_signal(int signal) {
   switch (signal) {
@@ -334,8 +334,16 @@ static void write_stdout(const char *msg) {
   released by the kernel.
 
   Once Drogon is running it installs its own handlers and invokes
-  handle_signal() from the event loop, where the full teardown is safe.
+  handle_signal() from the event loop, where the full teardown is safe. With
+  REST disabled Drogon never runs and this handler stays installed, so once
+  startup is done (g_startup_done) it only records the signal in
+  g_pending_signal; main()'s wait loop then runs the same graceful
+  handle_signal(). A second signal while that teardown runs still takes the
+  immediate exit below, so a teardown that hangs can always be cut short.
 */
+static volatile sig_atomic_t g_startup_done = 0;
+static volatile sig_atomic_t g_pending_signal = 0;
+
 static void handle_signal_async(int signal) {
   switch (signal) {
     case SIGHUP:
@@ -344,19 +352,29 @@ static void handle_signal_async(int signal) {
     case SIGPIPE:
       write_stdout("Received and ignored SIGPIPE.\n");
       return;
-    case SIGINT:
-      write_stdout("Received SIGINT during startup, exiting.\n");
-      break;
-    case SIGQUIT:
-      write_stdout("Received SIGQUIT during startup, exiting.\n");
-      break;
-    case SIGTERM:
-      write_stdout("Received SIGTERM during startup, exiting.\n");
-      break;
     default:
-      write_stdout("Received unexpected signal during startup, exiting.\n");
       break;
   }
+  if (g_startup_done && g_pending_signal == 0) {
+    g_pending_signal = signal;
+    return;
+  }
+  switch (signal) {
+    case SIGINT:
+      write_stdout("Received SIGINT");
+      break;
+    case SIGQUIT:
+      write_stdout("Received SIGQUIT");
+      break;
+    case SIGTERM:
+      write_stdout("Received SIGTERM");
+      break;
+    default:
+      write_stdout("Received unexpected signal");
+      break;
+  }
+  write_stdout(g_startup_done ? " during shutdown, exiting immediately.\n"
+                              : " during startup, exiting.\n");
   if (g_pidfile != nullptr) {
     unlink(g_pidfile);
   }
@@ -882,11 +900,16 @@ int main(int argc, char *argv[]) {
   } else {
     // REST is disabled — block until signal received.
     // MySQL router and/or Rondis are running in their own threads.
-    // The signal() handlers call do_exit() → exit(), terminating the process.
+    // handle_signal_async() records the signal; shut down gracefully from
+    // here, outside signal context. The signal may be handled on any
+    // thread, so it does not always cut this sleep short; the 1s poll
+    // bounds the latency.
+    g_startup_done = 1;
     printf("REST server disabled, running.\n");
-    for (;;) {
+    while (g_pending_signal == 0) {
       sleep(1);
     }
+    handle_signal(g_pending_signal);  // Does not return.
   }
   do_exit();
 }
