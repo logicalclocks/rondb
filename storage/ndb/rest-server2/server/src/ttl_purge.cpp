@@ -272,14 +272,9 @@ void TTLPurger::SchemaWatcherJob() {
   bool init_event_succ = false;
   NdbDictionary::Dictionary* dict = nullptr;
   const NdbDictionary::Table* schema_tab = nullptr;
-  const NdbDictionary::Table* schema_res_tab = nullptr;
   NdbEventOperation* ev_op = nullptr;
   NdbEventOperation* op = nullptr;
   NdbDictionary::Dictionary::List list;
-  // NDB VARBINARY on-wire format: 1-byte length prefix + data.
-  // setValue("message", ...) reads the length byte and then that many data
-  // bytes from the buffer; a bare C string literal is mis-sized.
-  const char message_buf[] = {6, 'A', 'P', 'I', '_', 'O', 'K'};
 #ifdef DEBUG_EVENT
   Uint32 event_nums = 0;
 #endif
@@ -295,7 +290,6 @@ retry:
   init_event_succ = false;
   dict = nullptr;
   schema_tab = nullptr;
-  schema_res_tab = nullptr;
   ev_op = nullptr;
   op = nullptr;
   // Init event
@@ -341,23 +335,17 @@ retry:
                              dict->getNdbError().message);
       goto err;
     }
-    dict->invalidateTable(kSchemaResTabName);
-    schema_res_tab = dict->getTable(kSchemaResTabName);
-    if (schema_res_tab == nullptr) {
-      g_eventLogger->warning("[TTL SWatcher] Failed to get system table: %s"
-                             ", error: %d(%s). Retry...",
-                             kSchemaResTabName,
-                             dict->getNdbError().code,
-                             dict->getNdbError().message);
-      goto err;
-    }
 
+    /* Our own event, not mysqld's REPL$mysql/ndb_schema (see
+     * kSchemaEventName): subscribing to it never makes this node a schema
+     * distribution participant, so no schema op ever waits for us and we
+     * never acknowledge one. No ER_SUBSCRIBE: we have no use for reports of
+     * the other rdrs instances subscribing. */
     NdbDictionary::Event my_event(kSchemaEventName);
     my_event.setTable(*schema_tab);
     my_event.addTableEvent(NdbDictionary::Event::TE_ALL);
     my_event.mergeEvents(true);
     my_event.setReportOptions(NdbDictionary::Event::ER_ALL |
-                              NdbDictionary::Event::ER_SUBSCRIBE |
                               NdbDictionary::Event::ER_DDL);
     const int n_cols = schema_tab->getNoOfColumns();
     for (int i = 0; i < n_cols; i++) {
@@ -376,22 +364,33 @@ retry:
     NdbDictionary::Event_ptr ev(dict->getEvent(kSchemaEventName));
     if (ev) {
       init_event_succ = true;
-    } else {
-      if (dict->getNdbError().code == NDB_INVALID_SCHEMA_OBJECT &&
-          dict->dropEvent(my_event.getName(), 1)) {
-        g_eventLogger->warning("[TTL SWatcher] Failed to drop the old event"
-                               ", error: %d(%s). Retry...",
+    } else if (dict->getNdbError().code == NDB_INVALID_SCHEMA_OBJECT) {
+      /* Our event outlived the ndb_schema table it was created on (the
+       * table was recreated). It is rdrs-owned, so replace it; instances
+       * still on the old one get TE_DROP from the table drop and resubscribe
+       * to the new one. */
+      if (dict->dropEvent(my_event.getName(), 1)) {
+        g_eventLogger->warning("[TTL SWatcher] Failed to drop the stale event"
+                               " %s, error: %d(%s). Retry...",
+                               kSchemaEventName,
                                dict->getNdbError().code,
                                dict->getNdbError().message);
         goto err;
       }
-      g_eventLogger->warning("[TTL SWatcher] Failed to get the event"
-                             ", error: %d(%s). "
-                             "Dropped the old one and retry...",
+      g_eventLogger->warning("[TTL SWatcher] Dropped the stale event %s,"
+                             " recreating it", kSchemaEventName);
+    } else {
+      g_eventLogger->warning("[TTL SWatcher] Failed to get the event %s"
+                             ", error: %d(%s). Retry...",
+                             kSchemaEventName,
                              dict->getNdbError().code,
                              dict->getNdbError().message);
+      goto err;
     }
   } while (!exit_ && !init_event_succ);
+  if (!init_event_succ) {
+    goto err;  // Shutting down.
+  }
 
   // Create event operation
   if ((ev_op = watcher_ndb_->createEventOperation(kSchemaEventName))
@@ -425,6 +424,8 @@ retry:
                            ev_op->getNdbError().message);
     goto err;
   }
+  g_eventLogger->info("[TTL SWatcher] Subscribed to %s.%s changes via event %s",
+                      kSystemDBName, kSchemaTableName, kSchemaEventName);
 
   // The PurgeWorker requested a retry from the beginning.
   // Invalidate the previous table objects to avoid using outdated ones.
@@ -542,15 +543,12 @@ retry:
         std::string table_str;
         std::string query_str_pre;
         std::string query_str;
-        Uint32 node_id = 0;
+        // node_id/id/schema_op_id are only parsed for DEB_EVENT tracing: the
+        // watcher is not a schema distribution participant and never acks.
+        [[maybe_unused]] Uint32 node_id = 0;
         Uint32 type = 0;
         [[maybe_unused]] Uint32 id = 0;
-        Uint32 schema_op_id = 0;
-        NdbTransaction* trans = nullptr;
-        NdbOperation* top = nullptr;
-        bool clear_slock = false;
-        bool trx_succ = false;
-        Uint32 trx_failure_times = 0;
+        [[maybe_unused]] Uint32 schema_op_id = 0;
         bool cache_updated = false;
         DEB_EVENT("----------------------------");
         switch (op->getEventType()) {
@@ -566,20 +564,15 @@ retry:
           case NdbDictionary::Event::TE_DELETE:
             /*
              * A row delete on ndb_schema is the coordinator cleaning up a
-             * COMPLETED schema operation -- there is nothing to parse, apply
-             * or acknowledge (mysqld participants ignore these deletes too).
+             * COMPLETED schema operation -- there is nothing to parse or
+             * apply (mysqld participants ignore these deletes too).
              * Crucially, the after-image RecAttrs are NOT populated for a
              * delete event: they still hold the PREVIOUS event's values, or
              * nothing at all right after a (re)subscribe. Falling through to
-             * the parser acted on that stale/uninitialized data (type,
-             * node_id, schema_op_id, db/table names): in the normal op
-             * sequence the stale type happened to be SOT_CLEAR_SLOCK from
-             * the coordinator's final update, which accidentally skipped the
-             * ACK; but a cleanup delete without that predecessor, or as the
-             * first event seen, could write a junk ndb_schema_result row,
-             * rerun a cache update for a stale table (a failing getTable
-             * there restarts the whole watcher), or build names from
-             * uninitialized length bytes.
+             * the parser would act on that stale/uninitialized data (type,
+             * db/table names): rerun a cache update for a stale table (a
+             * failing getTable there restarts the whole watcher), or build
+             * names from uninitialized length bytes.
              */
             break;
           case NdbDictionary::Event::TE_INSERT:
@@ -709,7 +702,6 @@ retry:
             DEB_EVENT("----------------------------");
 
             // Check event and update local cache in nessary
-            clear_slock = false;
             cache_updated = false;
             switch (type) {
               case SCHEMA_OP_TYPE::SOT_RENAME_TABLE:
@@ -806,91 +798,14 @@ retry:
                   cache_updated = UpdateLocalCache(db_str, table_str, tab);
                   break;
                 }
-              case SCHEMA_OP_TYPE::SOT_CLEAR_SLOCK:
-                clear_slock = true;
-                break;
               default:
                 break;
             }
 
             // Only purge worker can set cache_updated_ to false;
             if (cache_updated) {
-              // TODO(Zhao) Is it better to put it after
-              // notify ndb_schema_result?
               cache_updated_ = true;
             }
-
-            if (clear_slock) {
-              continue;
-            }
-
-            trx_succ = false;
-            trx_failure_times = 0;
-            do {
-              trans = watcher_ndb_->startTransaction();
-              if (trans == nullptr) {
-                g_eventLogger->warning("[TTL SWatcher] Failed to start "
-                                       "transaction"
-                                       ", error: %d(%s). Retry...",
-                                       watcher_ndb_->getNdbError().code,
-                                       watcher_ndb_->getNdbError().message);
-                goto trx_err;
-              }
-              top = trans->getNdbOperation(schema_res_tab);
-              if (top == nullptr) {
-                g_eventLogger->warning("[TTL SWatcher] Failed to get the Ndb "
-                                       "operation"
-                                       ", error: %d(%s). Retry...",
-                                       trans->getNdbError().code,
-                                       trans->getNdbError().message);
-                goto trx_err;
-              }
-              if (top->insertTuple() != 0 ||
-                  /*Ndb_schema_result_table::COL_NODEID*/
-                  top->equal("nodeid", node_id) != 0 ||
-                  /*Ndb_schema_result_table::COL_SCHEMA_OP_ID*/
-                  top->equal("schema_op_id", schema_op_id) != 0 ||
-                  /*Ndb_schema_result_table::COL_PARTICIPANT_NODEID*/
-                  top->equal("participant_nodeid",
-                                watcher_ndb_->getNodeId()) != 0 ||
-                  /*Ndb_schema_result_table::COL_RESULT*/
-                  top->setValue("result", 0) != 0 ||
-                  /*Ndb_schema_result_table::COL_MESSAGE*/
-                  top->setValue("message", message_buf) != 0) {
-                g_eventLogger->warning("[TTL SWatcher] Failed to insert tuple "
-                                       ", error: %d(%s). Retry...",
-                                       top->getNdbError().code,
-                                       top->getNdbError().message);
-                goto trx_err;
-              }
-              if (trans->execute(NdbTransaction::Commit,
-                    NdbOperation::DefaultAbortOption,
-                    1 /*force send*/) != 0) {
-                g_eventLogger->warning("[TTL SWatcher] Failed to the execute "
-                                       "transaction"
-                                       ", error: %d(%s). Retry...",
-                                       trans->getNdbError().code,
-                                       trans->getNdbError().message);
-                goto trx_err;
-              } else {
-                trx_succ = true;
-              }
-trx_err:
-              if (trans != nullptr) {
-                watcher_ndb_->closeTransaction(trans);
-              }
-              if (!trx_succ) {
-                trx_failure_times++;
-                if (trx_failure_times > 10) {
-                  goto err;
-                } else {
-                  if (exit_) {
-                    goto err;
-                  }
-                  sleep(1);
-                }
-              }
-            } while (!trx_succ);
             break;
           default:
             break;
@@ -932,9 +847,10 @@ err:
   }
   ev_op = nullptr;
   op = nullptr;
-  if (dict != nullptr) {
-    dict->dropEvent(kSchemaEventName);
-  }
+  /* Never drop the event here: it is shared with the other rdrs instances,
+   * which stay subscribed. (Dropping mysqld's REPL$mysql/ndb_schema, as this
+   * path once did, splits mysqld's own schema distribution subscription.)
+   * Dropping our event operation above is all the cleanup needed. */
   // Stop purge worker
   purge_worker_exit_ = true;
   if (purge_worker_running_) {
@@ -956,7 +872,9 @@ err:
 
   if (!exit_) {
     sleep(2);
-    goto retry;
+    if (!exit_) {  // Do not resubscribe if shutdown began during the sleep.
+      goto retry;
+    }
   }
   g_eventLogger->info("[TTL SWatcher] Exited");
   return;

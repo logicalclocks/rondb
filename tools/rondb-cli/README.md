@@ -267,9 +267,11 @@ Golden-mode options (inside the `-e` command):
   The report's parent directory must already exist. Existing report files
   and paths inside the corpus (including directory symlink aliases) are refused.
 - `--fixture NAME` selects the exact fixture name, without `.json`.
-- `--timeout 30s` bounds setup, connection/probe operations and each query;
-  it is not a whole-run deadline. `--cleanup-timeout 30s` gives cleanup a
-  separate deadline, including after cancellation.
+- `--timeout 30s` bounds connection/probe operations and each query; it is
+  not a whole-run deadline. `--cleanup-timeout 125s` gives cleanup a separate
+  deadline, including after cancellation. Fixture setup and cleanup run DDL,
+  which can wait out NDB's 120 s schema distribution timeout, so both always
+  get at least 125 s regardless of these options.
 - `--tolerance 1e-9` controls floating-point comparison tolerance.
 - `--allow-reject` permits unexpected clean SQL rejections, reported
   separately. It never accepts malformed JSON, transport errors or mismatches.

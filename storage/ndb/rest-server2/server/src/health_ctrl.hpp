@@ -22,7 +22,6 @@
 
 #include "rdrs_dal.h"
 #include "constants.hpp"
-#include "base_ctrl.hpp"
 
 #include <drogon/drogon.h>
 #include <drogon/HttpSimpleController.h>

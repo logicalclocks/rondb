@@ -155,9 +155,8 @@ var tpchQueries = []struct {
 
 func ronsqlURL() string {
 	conf := config.GetAll()
-	url := fmt.Sprintf("%s:%d/%s/ronsql",
-		conf.REST.ServerIP,
-		conf.REST.ServerPort,
+	url := fmt.Sprintf("%s/%s/ronsql",
+		testutils.HostPort(conf.REST.ServerIP, conf.REST.ServerPort),
 		version.API_VERSION,
 	)
 	if conf.Security.TLS.EnableTLS {

@@ -148,16 +148,58 @@ int g_num_threads = 0;
 #define MYSQL_READY_TIMEOUT_SECONDS 120
 // Sleep interval between retries (in seconds)
 #define MYSQL_READY_RETRY_INTERVAL 2
+// Read/write timeout of the table-creation connection (in seconds). It must
+// outlast ndb_schema_dist_timeout (120 s by default): an NDB DDL can wait
+// that long for a slow schema distribution participant and still succeed,
+// and a client timeout firing first only turns that into a lost connection.
+#define MYSQL_DDL_TIMEOUT_SECONDS 130
 
-// Helper function to execute a query with retry for NDB not-ready errors
+struct RondisMysqlTarget {
+  const char *host;
+  Uint32 port;
+  const char *user;
+  const char *password;
+};
+
+// Allocates a handle with the options every table-creation connection needs,
+// including the reconnects below. Returns nullptr when out of memory.
+static MYSQL *init_rondis_mysql() {
+  MYSQL *conn = mysql_init(nullptr);
+  if (conn == nullptr) {
+    return nullptr;
+  }
+  // Force TCP protocol instead of Unix socket (avoids socket not found errors)
+  unsigned int protocol = MYSQL_PROTOCOL_TCP;
+  unsigned int connect_timeout = 10;
+  unsigned int ddl_timeout = MYSQL_DDL_TIMEOUT_SECONDS;
+  mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
+  mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout);
+  mysql_options(conn, MYSQL_OPT_READ_TIMEOUT, &ddl_timeout);
+  mysql_options(conn, MYSQL_OPT_WRITE_TIMEOUT, &ddl_timeout);
+  return conn;
+}
+
+static bool connect_rondis_mysql(MYSQL *conn, const RondisMysqlTarget &target) {
+  return mysql_real_connect(conn, target.host, target.user, target.password,
+                            nullptr, target.port, nullptr, 0) != nullptr;
+}
+
+// Helper function to execute a query with retry for NDB not-ready errors.
+// A lost connection (2006/2013, e.g. the server restarted) is replaced by a
+// new one before retrying, which is safe as every statement here is
+// idempotent (IF NOT EXISTS). *conn may change, and is nullptr only if a new
+// handle could not be allocated.
 // Returns 0 on success, -1 on permanent failure
-int execute_query_with_retry(MYSQL *conn, const char *query, int *elapsed_seconds) {
+static int execute_query_with_retry(MYSQL **conn,
+                                    const RondisMysqlTarget &target,
+                                    const char *query,
+                                    int *elapsed_seconds) {
   while (*elapsed_seconds < MYSQL_READY_TIMEOUT_SECONDS) {
-    if (mysql_query(conn, query) == 0) {
+    if (mysql_query(*conn, query) == 0) {
       return 0;  // Success
     }
 
-    unsigned int err = mysql_errno(conn);
+    unsigned int err = mysql_errno(*conn);
     // Error codes that indicate NDB is not ready yet or temporary issues:
     // 157 = ER_GET_ERRNO with NDB error (cluster not ready)
     // 1005 = Can't create table (often NDB not ready)
@@ -173,9 +215,22 @@ int execute_query_with_retry(MYSQL *conn, const char *query, int *elapsed_second
         err == 4009 || err == 1412 || err == 2006 || err == 2013 ||
         err == 1205 || err == 1213) {
       printf("NDB/MySQL not ready, retrying in %d seconds: %s (error %u)\n",
-             MYSQL_READY_RETRY_INTERVAL, mysql_error(conn), err);
+             MYSQL_READY_RETRY_INTERVAL, mysql_error(*conn), err);
       sleep(MYSQL_READY_RETRY_INTERVAL);
       *elapsed_seconds += MYSQL_READY_RETRY_INTERVAL;
+      if (err == 2006 || err == 2013) {
+        // The connection is gone; resending on it would only fail again.
+        mysql_close(*conn);
+        *conn = init_rondis_mysql();
+        if (*conn == nullptr) {
+          printf("Failed to reinitialize MySQL connection\n");
+          return -1;
+        }
+        if (!connect_rondis_mysql(*conn, target)) {
+          // The next mysql_query fails with 2006 and retries the reconnect.
+          printf("Reconnecting to MySQL failed: %s\n", mysql_error(*conn));
+        }
+      }
       continue;
     }
 
@@ -185,7 +240,7 @@ int execute_query_with_retry(MYSQL *conn, const char *query, int *elapsed_second
     }
 
     // Permanent error
-    printf("Permanent error executing query: %s (error %u)\n", mysql_error(conn), err);
+    printf("Permanent error executing query: %s (error %u)\n", mysql_error(*conn), err);
     return -1;
   }
   printf("Timeout waiting for query to succeed after %d seconds\n", *elapsed_seconds);
@@ -197,36 +252,18 @@ int create_rondis_tables(const char *mysql_host,
                          const char *mysql_user,
                          const char *mysql_password,
                          Uint32 num_databases) {
-  MYSQL *conn = mysql_init(nullptr);
+  const RondisMysqlTarget target{mysql_host, mysql_port, mysql_user,
+                                 mysql_password};
+  MYSQL *conn = init_rondis_mysql();
   if (conn == nullptr) {
     printf("Failed to initialize MySQL connection\n");
     return -1;
   }
 
-  // Force TCP protocol instead of Unix socket (avoids socket not found errors)
-  unsigned int protocol = MYSQL_PROTOCOL_TCP;
-  mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
-
-  // Set timeouts to avoid hanging indefinitely
-  // NDB DDL operations can take several seconds, so use generous timeouts
-  unsigned int connect_timeout = 10;  // 10 seconds for connection
-  unsigned int read_timeout = 60;     // 60 seconds for read (DDL can be slow)
-  unsigned int write_timeout = 60;    // 60 seconds for write
-  mysql_options(conn, MYSQL_OPT_CONNECT_TIMEOUT, &connect_timeout);
-  mysql_options(conn, MYSQL_OPT_READ_TIMEOUT, &read_timeout);
-  mysql_options(conn, MYSQL_OPT_WRITE_TIMEOUT, &write_timeout);
-
   // Retry connecting to MySQL with timeout
   int elapsed_seconds = 0;
   while (elapsed_seconds < MYSQL_READY_TIMEOUT_SECONDS) {
-    if (mysql_real_connect(conn,
-                           mysql_host,
-                           mysql_user,
-                           mysql_password,
-                           nullptr,
-                           mysql_port,
-                           nullptr,
-                           0) != nullptr) {
+    if (connect_rondis_mysql(conn, target)) {
       break;  // Connected successfully
     }
 
@@ -237,12 +274,11 @@ int create_rondis_tables(const char *mysql_host,
 
     // Reinitialize connection for retry
     mysql_close(conn);
-    conn = mysql_init(nullptr);
+    conn = init_rondis_mysql();
     if (conn == nullptr) {
       printf("Failed to reinitialize MySQL connection\n");
       return -1;
     }
-    mysql_options(conn, MYSQL_OPT_PROTOCOL, &protocol);
   }
 
   if (elapsed_seconds >= MYSQL_READY_TIMEOUT_SECONDS) {
@@ -321,7 +357,7 @@ int create_rondis_tables(const char *mysql_host,
              REDIS_DB_NAME, db_id);
     printf("Executing: %s\n", query);
     fflush(stdout);
-    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+    if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create database %s_%u: %s\n",
              REDIS_DB_NAME, db_id, mysql_error(conn));
       mysql_close(conn);
@@ -347,7 +383,7 @@ int create_rondis_tables(const char *mysql_host,
       "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
       REDIS_DB_NAME, db_id, KEY_TABLE_NAME,
       MAX_KEY_VALUE_LEN, INLINE_VALUE_LEN);
-    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+    if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, KEY_TABLE_NAME, mysql_error(conn));
       mysql_close(conn);
@@ -369,7 +405,7 @@ int create_rondis_tables(const char *mysql_host,
       ") ENGINE NDB CHARSET=latin1 "
       "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
       REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, MAX_KEY_VALUE_LEN);
-    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+    if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, mysql_error(conn));
       mysql_close(conn);
@@ -387,7 +423,7 @@ int create_rondis_tables(const char *mysql_host,
       "  PRIMARY KEY (redis_key_id) USING HASH"
       ") ENGINE NDB CHARSET=latin1",
       REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME);
-    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+    if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, HSET_KEY_ID_SEQUENCE_TABLE_NAME,
              mysql_error(conn));
@@ -409,7 +445,7 @@ int create_rondis_tables(const char *mysql_host,
       ") ENGINE NDB CHARSET=latin1 "
       "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
       REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, EXTENSION_VALUE_LEN);
-    if (execute_query_with_retry(conn, query, &elapsed_seconds) != 0) {
+    if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
              REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, mysql_error(conn));
       mysql_close(conn);

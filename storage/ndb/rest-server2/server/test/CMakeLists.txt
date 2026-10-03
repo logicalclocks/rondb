@@ -34,6 +34,15 @@ NDB_ADD_EXECUTABLE(
   STATIC_NDBCLIENT
 )
 
+# Probe-listener tests. probe_server_http_test is cluster-free (pure HTTP
+# conformance of the dedicated probe port); probe_server_cluster_test needs
+# a running cluster like the other tests here.
+NDB_ADD_EXECUTABLE(probe_server_http_test probe_server_http_test.cpp
+                   STATIC_NDBCLIENT)
+
+NDB_ADD_EXECUTABLE(probe_server_cluster_test probe_server_cluster_test.cpp
+                   STATIC_NDBCLIENT)
+
 TARGET_LINK_LIBRARIES(
 	api_key_test
 	gtest_main
@@ -65,6 +74,22 @@ TARGET_LINK_LIBRARIES(
   pthread
 )
 
+# Both probe tests define their own main() (they need setup before gtest
+# runs), so they link gtest only, not gtest_main.
+TARGET_LINK_LIBRARIES(
+  probe_server_http_test
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
+TARGET_LINK_LIBRARIES(
+  probe_server_cluster_test
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
 # The C++ tests do not seed the cluster and embed no SQL fixtures. The test
 # databases are created by the Go test suite from
 # test_go/resources/testdbs (the single source of truth) - run any Go
@@ -74,3 +99,5 @@ add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)
 add_test(NAME error_handling_test COMMAND error_handling_test)
 add_test(NAME reconnect_test COMMAND reconnect_test)
+add_test(NAME probe_server_http_test COMMAND probe_server_http_test)
+add_test(NAME probe_server_cluster_test COMMAND probe_server_cluster_test)

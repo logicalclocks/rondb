@@ -1,0 +1,606 @@
+# ronsql_cte_feature_store_docs.test — the examples of the RonSQL
+# documentation chapter "On-demand Transformations in a Feature Store"
+# (rondb-docs, latex/ronsql_feature_store.tex), run on RonSQL through RDRS
+# and compared with MySQL (ronsql_compare.inc, strict diff).
+#
+# Purpose: never document a statement that does not work.  The statements
+# of the "=== Example N ===" sections are copied verbatim from the
+# documentation; when an example changes there, change it here too, and
+# add a section for every new example.
+#
+# Some examples also pin, with EXPLAIN, the execution the documentation
+# describes:
+#   1  the last-N CTE is aggregated in RonSQL over its ORDER BY / LIMIT scan
+#   2  the last-N CTE is collapsed into the pass-through ORDER BY scan
+#   6  the last-N CTE grouped by a later CTE is served as the last N rows
+#   7  the dimension table joined onto the CTE is a primary key lookup
+#   9  two last-N CTEs, both index scans of the primary key with ORDER BY
+#      ... LIMIT, aggregated by two more CTEs and combined by the main query
+#   13 the candidate items are read with an index scan on idx_category
+# Examples 10 and 13 end with ORDER BY ... LIMIT in the main query; they are
+# compared without sorting, so the row order is checked too.
+#
+# DATA: all examples assume the request is made at 2026-09-29 12:00:00 UTC.
+#   transactions_1: card 4242 has 60 transactions, row i at 11:58 minus
+#     20 i^2 minutes (i = 0 newest): 2 in the last hour, 6 today, 9 in the
+#     last 24 hours, 23 in the last 7 days, 47 in the last 30 days.  Today's
+#     rows i = 0 and i = 2 are larger than every amount of the previous 90
+#     days (Example 4); rows with i mod 5 = 0 are in DE, the others in the
+#     home country SE (Example 5).  merchant_id = 1 + 7i mod 12, and
+#     merchants_1 holds merchants 1..10, so 11 and 12 find no merchant.
+#     Card 5555 has 30 transactions with amounts above 2000, interleaved
+#     in time, so a missing cc_num filter changes every result.
+#   clicks_1: user 17 has 40 clicks, row i at 11:59 minus 7 i^2 + 5 i
+#     minutes; the 38 clicks of the last 7 days fall in categories 1..6 with
+#     12, 9, 7, 5, 3 and 2 clicks, so the top 5 and top 3 have no ties.
+#     User 18 has 25 clicks, all in category 6.
+#   items_1: items 101..140; 101..108 are the candidates of Examples 11 and
+#     12 (categories 1 2 3 4 5 1 6 3), the others are in category 5.
+#     popularity = 7 item mod 101 is distinct, so ORDER BY popularity has
+#     no ties.
+#   item_views_1 / purchases_1: views of items 101 102 103 105 106 and
+#     purchases of items 101 102 103, so items 104 and 105 get NULL from
+#     a LEFT JOIN in Example 12.
+#   sensor_readings_1: sensors 11..15, a reading every 5 minutes for
+#     3 hours; sensor 15 is outside the IN list of Example 15.
+# Amounts, prices and readings are multiples of 1/4, so SUM and AVG are
+# exact in double precision and do not depend on the accumulation order.
+--source include/have_ndb.inc
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+DELIMITER |;
+
+--disable_query_log
+SET time_zone = '+00:00'|
+CREATE TABLE transactions_1 (
+  cc_num       BIGINT NOT NULL,
+  event_time   TIMESTAMP NOT NULL,
+  amount       DOUBLE NOT NULL,
+  merchant_id  INT NOT NULL,
+  country      CHAR(2) NOT NULL,
+  PRIMARY KEY (cc_num, event_time)
+) ENGINE=NDB|
+CREATE TABLE cards_1 (
+  cc_num        BIGINT NOT NULL,
+  credit_limit  DOUBLE NOT NULL,
+  home_country  CHAR(2) NOT NULL,
+  PRIMARY KEY (cc_num)
+) ENGINE=NDB|
+CREATE TABLE merchants_1 (
+  merchant_id        INT NOT NULL,
+  mcc                INT NOT NULL,
+  fraud_reports_90d  INT NOT NULL,
+  PRIMARY KEY (merchant_id)
+) ENGINE=NDB|
+CREATE TABLE clicks_1 (
+  user_id      BIGINT NOT NULL,
+  event_time   TIMESTAMP NOT NULL,
+  item_id      BIGINT NOT NULL,
+  category_id  INT NOT NULL,
+  dwell_ms     INT NOT NULL,
+  PRIMARY KEY (user_id, event_time)
+) ENGINE=NDB|
+CREATE TABLE items_1 (
+  item_id      BIGINT NOT NULL,
+  category_id  INT NOT NULL,
+  price        DOUBLE NOT NULL,
+  popularity   INT NOT NULL,
+  PRIMARY KEY (item_id),
+  INDEX idx_category (category_id)
+) ENGINE=NDB|
+CREATE TABLE item_views_1 (
+  item_id     BIGINT NOT NULL,
+  event_time  TIMESTAMP NOT NULL,
+  user_id     BIGINT NOT NULL,
+  PRIMARY KEY (item_id, event_time, user_id)
+) ENGINE=NDB|
+CREATE TABLE purchases_1 (
+  item_id     BIGINT NOT NULL,
+  event_time  TIMESTAMP NOT NULL,
+  user_id     BIGINT NOT NULL,
+  PRIMARY KEY (item_id, event_time, user_id)
+) ENGINE=NDB|
+CREATE TABLE user_profile_1 (
+  user_id    BIGINT NOT NULL,
+  max_price  DOUBLE NOT NULL,
+  PRIMARY KEY (user_id)
+) ENGINE=NDB|
+CREATE TABLE sensor_readings_1 (
+  sensor_id    INT NOT NULL,
+  event_time   TIMESTAMP NOT NULL,
+  temperature  DOUBLE NOT NULL,
+  vibration    DOUBLE NOT NULL,
+  PRIMARY KEY (sensor_id, event_time)
+) ENGINE=NDB|
+INSERT INTO transactions_1
+  WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 59)
+  SELECT 4242,
+         TIMESTAMP'2026-09-29 11:58:00' - INTERVAL (s.i * s.i * 20) MINUTE,
+         CASE s.i WHEN 0 THEN 750.5 WHEN 2 THEN 980.25
+                  ELSE 10 + MOD(s.i * 37, 491) + MOD(s.i, 4) * 0.25 END,
+         1 + MOD(s.i * 7, 12),
+         IF(MOD(s.i, 5) = 0, 'DE', 'SE')
+  FROM s|
+INSERT INTO transactions_1
+  WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 29)
+  SELECT 5555,
+         TIMESTAMP'2026-09-29 11:59:00' - INTERVAL (s.i * 97) MINUTE,
+         2000 + MOD(s.i * 53, 300) + 0.5,
+         1 + MOD(s.i * 5, 12),
+         IF(MOD(s.i, 3) = 0, 'SE', 'NO')
+  FROM s|
+INSERT INTO cards_1 VALUES (4242, 2000, 'SE'), (5555, 5000, 'NO')|
+INSERT INTO merchants_1
+  WITH RECURSIVE s (m) AS (SELECT 1 UNION ALL SELECT m + 1 FROM s WHERE m < 10)
+  SELECT m, 5000 + MOD(m, 4), MOD(m * 3, 7) FROM s|
+INSERT INTO clicks_1
+  WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 39)
+  SELECT 17,
+         TIMESTAMP'2026-09-29 11:59:00' - INTERVAL (s.i * s.i * 7 + s.i * 5) MINUTE,
+         100 + MOD(s.i, 9),
+         CASE WHEN MOD(s.i * 13, 38) < 12 THEN 1
+              WHEN MOD(s.i * 13, 38) < 21 THEN 2
+              WHEN MOD(s.i * 13, 38) < 28 THEN 3
+              WHEN MOD(s.i * 13, 38) < 33 THEN 4
+              WHEN MOD(s.i * 13, 38) < 36 THEN 5
+              ELSE 6 END,
+         1000 + MOD(s.i * 37, 900)
+  FROM s|
+INSERT INTO clicks_1
+  WITH RECURSIVE s (i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM s WHERE i < 24)
+  SELECT 18,
+         TIMESTAMP'2026-09-29 11:57:00' - INTERVAL (s.i * 61) MINUTE,
+         200 + s.i, 6, 500 + s.i
+  FROM s|
+INSERT INTO items_1
+  WITH RECURSIVE s (it) AS (SELECT 101 UNION ALL SELECT it + 1 FROM s WHERE it < 140)
+  SELECT it,
+         CASE it WHEN 101 THEN 1 WHEN 102 THEN 2 WHEN 103 THEN 3 WHEN 104 THEN 4
+                 WHEN 106 THEN 1 WHEN 107 THEN 6 WHEN 108 THEN 3 ELSE 5 END,
+         10 + MOD(it * 17, 90) + 0.5,
+         MOD(it * 7, 101)
+  FROM s|
+INSERT INTO item_views_1
+  WITH RECURSIVE s (j) AS (SELECT 0 UNION ALL SELECT j + 1 FROM s WHERE j < 29),
+  its (it) AS (SELECT 101 UNION ALL SELECT 102 UNION ALL SELECT 103
+               UNION ALL SELECT 105 UNION ALL SELECT 106)
+  SELECT its.it,
+         TIMESTAMP'2026-09-29 11:59:00'
+           - INTERVAL ((its.it - 100) * 2 + s.j * s.j * 2) MINUTE,
+         1000 + s.j
+  FROM its CROSS JOIN s|
+INSERT INTO purchases_1
+  WITH RECURSIVE s (j) AS (SELECT 0 UNION ALL SELECT j + 1 FROM s WHERE j < 9),
+  its (it) AS (SELECT 101 UNION ALL SELECT 102 UNION ALL SELECT 103)
+  SELECT its.it,
+         TIMESTAMP'2026-09-29 11:30:00' - INTERVAL (s.j * 5 + its.it - 100) HOUR,
+         2000 + s.j
+  FROM its CROSS JOIN s|
+INSERT INTO user_profile_1 VALUES (17, 60), (18, 30)|
+INSERT INTO sensor_readings_1
+  WITH RECURSIVE r (k) AS (SELECT 0 UNION ALL SELECT k + 1 FROM r WHERE k < 35),
+  sn (s) AS (SELECT 11 UNION ALL SELECT 12 UNION ALL SELECT 13
+             UNION ALL SELECT 14 UNION ALL SELECT 15)
+  SELECT sn.s,
+         TIMESTAMP'2026-09-29 11:58:00' - INTERVAL (r.k * 5 + sn.s - 10) MINUTE,
+         60 + MOD(r.k * 7 + sn.s * 3, 25) + MOD(r.k, 2) * 0.5,
+         MOD(r.k * 11 + sn.s, 40) / 4e0
+  FROM sn CROSS JOIN r|
+--enable_query_log
+SELECT cc_num, COUNT(*) AS n_rows, MIN(event_time) AS oldest,
+       MAX(event_time) AS newest
+FROM transactions_1 GROUP BY cc_num ORDER BY cc_num|
+SELECT user_id, COUNT(*) AS n_rows FROM clicks_1 GROUP BY user_id ORDER BY user_id|
+SELECT category_id, COUNT(*) AS n_items FROM items_1
+GROUP BY category_id ORDER BY category_id|
+SELECT item_id, COUNT(*) AS n_views FROM item_views_1
+GROUP BY item_id ORDER BY item_id|
+SELECT item_id, COUNT(*) AS n_purchases FROM purchases_1
+GROUP BY item_id ORDER BY item_id|
+SELECT sensor_id, COUNT(*) AS n_readings FROM sensor_readings_1
+GROUP BY sensor_id ORDER BY sensor_id|
+
+DELIMITER ;|
+
+--echo
+--echo === Example 1: Average of the last 10 transactions ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/fs_docs_explain_1.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_1.sql
+--write_file $QUERY_FILE
+WITH last10 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 10)
+SELECT COUNT(*) AS n_tx, AVG(amount) AS avg_amount,
+       MAX(amount) AS max_amount
+FROM last10;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 'last10' aggregated in RonSQL over the ORDER BY / LIMIT scan of its body" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_1.sql
+--write_file $QUERY_FILE
+WITH last10 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 10)
+SELECT COUNT(*) AS n_tx, AVG(amount) AS avg_amount,
+       MAX(amount) AS max_amount
+FROM last10;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 2: The last 5 transactions as a sequence ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/fs_docs_explain_2.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_2.sql
+--write_file $QUERY_FILE
+WITH last5 AS (
+  SELECT cc_num, event_time, amount, merchant_id, country
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 5)
+SELECT event_time, amount, merchant_id, country
+FROM last5;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 'last5' collapsed into the pass-through ORDER BY scan" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_2.sql
+--write_file $QUERY_FILE
+WITH last5 AS (
+  SELECT cc_num, event_time, amount, merchant_id, country
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 5)
+SELECT event_time, amount, merchant_id, country
+FROM last5;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 3: Transaction velocity in several time windows ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_3.sql
+--write_file $QUERY_FILE
+WITH w1h AS (
+  SELECT COUNT(*) AS n_1h, SUM(amount) AS amt_1h
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-09-29 11:00:00'),
+     w24h AS (
+  SELECT COUNT(*) AS n_24h, SUM(amount) AS amt_24h
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-09-28 12:00:00'),
+     w7d AS (
+  SELECT COUNT(*) AS n_7d, MAX(amount) AS max_amount_7d
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-09-22 12:00:00')
+SELECT w1h.n_1h, w1h.amt_1h, w24h.n_24h, w24h.amt_24h,
+       w7d.n_7d, w7d.max_amount_7d
+FROM w1h, w24h, w7d;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 4: Spending above the 90-day maximum ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_4.sql
+--write_file $QUERY_FILE
+WITH hist AS (
+  SELECT MAX(amount) AS max_amount_90d
+  FROM transactions_1
+  WHERE cc_num = 4242
+    AND event_time >= '2026-07-01 00:00:00'
+    AND event_time < '2026-09-29 00:00:00')
+SELECT COUNT(*) AS n_above_max, SUM(t.amount) AS amt_above_max
+FROM transactions_1 AS t, hist
+WHERE t.cc_num = 4242
+  AND t.event_time >= '2026-09-29 00:00:00'
+  AND t.amount > hist.max_amount_90d;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 5: Transactions abroad ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_5.sql
+--write_file $QUERY_FILE
+WITH card AS (
+  SELECT home_country
+  FROM cards_1
+  WHERE cc_num = 4242)
+SELECT COUNT(*) AS n_abroad_24h
+FROM transactions_1 AS t, card
+WHERE t.cc_num = 4242
+  AND t.event_time >= '2026-09-28 12:00:00'
+  AND t.country <> card.home_country;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 6: Distinct merchants in the last 50 transactions ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/fs_docs_explain_6.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_6.sql
+--write_file $QUERY_FILE
+WITH last50 AS (
+  SELECT cc_num, event_time, merchant_id
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 50),
+     per_merchant AS (
+  SELECT merchant_id, COUNT(*) AS n
+  FROM last50
+  GROUP BY merchant_id)
+SELECT COUNT(*) AS n_merchants, MAX(n) AS max_tx_one_merchant
+FROM per_merchant;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 'last50' served as the last N rows" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_6.sql
+--write_file $QUERY_FILE
+WITH last50 AS (
+  SELECT cc_num, event_time, merchant_id
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 50),
+     per_merchant AS (
+  SELECT merchant_id, COUNT(*) AS n
+  FROM last50
+  GROUP BY merchant_id)
+SELECT COUNT(*) AS n_merchants, MAX(n) AS max_tx_one_merchant
+FROM per_merchant;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 7: Exposure to risky merchants ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/fs_docs_explain_7.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_7.sql
+--write_file $QUERY_FILE
+WITH m30 AS (
+  SELECT merchant_id, COUNT(*) AS n_tx, SUM(amount) AS amt
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-08-30 12:00:00'
+  GROUP BY merchant_id)
+SELECT COUNT(*) AS n_merchants_30d,
+       SUM(m30.amt) AS amt_30d,
+       MAX(m.fraud_reports_90d) AS max_merchant_fraud_reports
+FROM m30
+JOIN merchants_1 AS m ON m.merchant_id = m30.merchant_id;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "PK_LOOKUP merchants_1 AS m" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_7.sql
+--write_file $QUERY_FILE
+WITH m30 AS (
+  SELECT merchant_id, COUNT(*) AS n_tx, SUM(amount) AS amt
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-08-30 12:00:00'
+  GROUP BY merchant_id)
+SELECT COUNT(*) AS n_merchants_30d,
+       SUM(m30.amt) AS amt_30d,
+       MAX(m.fraud_reports_90d) AS max_merchant_fraud_reports
+FROM m30
+JOIN merchants_1 AS m ON m.merchant_id = m30.merchant_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 8: Merchant categories of the last 20 transactions ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_8.sql
+--write_file $QUERY_FILE
+WITH last20 AS (
+  SELECT cc_num, event_time, amount, merchant_id
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 20)
+SELECT m.mcc, COUNT(*) AS n_tx, SUM(last20.amount) AS amt
+FROM last20
+JOIN merchants_1 AS m ON m.merchant_id = last20.merchant_id
+GROUP BY m.mcc;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 9: Recent spending compared with a longer baseline ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/fs_docs_explain_9.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_9.sql
+--write_file $QUERY_FILE
+WITH last5 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 5),
+     last50 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 50),
+     recent AS (
+  SELECT COUNT(*) AS n_recent, SUM(amount) AS sum_recent,
+         MAX(amount) AS max_recent
+  FROM last5),
+     baseline AS (
+  SELECT COUNT(*) AS n_baseline, SUM(amount) AS sum_baseline,
+         MAX(amount) AS max_baseline
+  FROM last50)
+SELECT recent.n_recent, recent.sum_recent, recent.max_recent,
+       baseline.n_baseline, baseline.sum_baseline, baseline.max_baseline
+FROM recent, baseline;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "CTE 'last5' served as the last N rows" $EXPLAIN_FILE
+--exec grep -qF "CTE 'last50' served as the last N rows" $EXPLAIN_FILE
+--exec grep -qxE " +ORDER BY .* DESC LIMIT 5" $EXPLAIN_FILE
+--exec grep -qxE " +ORDER BY .* DESC LIMIT 50" $EXPLAIN_FILE
+--echo Last-N CTE bodies read with an index scan of the primary key:
+--exec grep -c "Body root: INDEX_SCAN using PRIMARY" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_9.sql
+--write_file $QUERY_FILE
+WITH last5 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 5),
+     last50 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 50),
+     recent AS (
+  SELECT COUNT(*) AS n_recent, SUM(amount) AS sum_recent,
+         MAX(amount) AS max_recent
+  FROM last5),
+     baseline AS (
+  SELECT COUNT(*) AS n_baseline, SUM(amount) AS sum_baseline,
+         MAX(amount) AS max_baseline
+  FROM last50)
+SELECT recent.n_recent, recent.sum_recent, recent.max_recent,
+       baseline.n_baseline, baseline.sum_baseline, baseline.max_baseline
+FROM recent, baseline;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 10: Favourite categories of a user ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_10.sql
+--write_file $QUERY_FILE
+SELECT category_id, COUNT(*) AS n_clicks,
+       SUM(dwell_ms) AS total_dwell_ms
+FROM clicks_1
+WHERE user_id = 17 AND event_time >= '2026-09-22 12:00:00'
+GROUP BY category_id
+ORDER BY n_clicks DESC
+LIMIT 5;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 11: Candidates from the favourite categories ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_11.sql
+--write_file $QUERY_FILE
+WITH top_categories AS (
+  SELECT category_id, COUNT(*) AS n_clicks
+  FROM clicks_1
+  WHERE user_id = 17 AND event_time >= '2026-09-22 12:00:00'
+  GROUP BY category_id
+  ORDER BY n_clicks DESC, category_id
+  LIMIT 3)
+SELECT i.item_id, i.category_id, top_categories.n_clicks
+FROM items_1 AS i
+JOIN top_categories ON top_categories.category_id = i.category_id
+WHERE i.item_id IN (101, 102, 103, 104, 105, 106, 107, 108);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 12: Real-time popularity of candidate items ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_12.sql
+--write_file $QUERY_FILE
+WITH views_1h AS (
+  SELECT item_id, COUNT(*) AS n_views
+  FROM item_views_1
+  WHERE item_id IN (101, 102, 103, 104, 105)
+    AND event_time >= '2026-09-29 11:00:00'
+  GROUP BY item_id),
+     purchases_24h AS (
+  SELECT item_id, COUNT(*) AS n_purchases
+  FROM purchases_1
+  WHERE item_id IN (101, 102, 103, 104, 105)
+    AND event_time >= '2026-09-28 12:00:00'
+  GROUP BY item_id)
+SELECT i.item_id, i.price, i.popularity,
+       views_1h.n_views, purchases_24h.n_purchases
+FROM items_1 AS i
+LEFT JOIN views_1h ON views_1h.item_id = i.item_id
+LEFT JOIN purchases_24h ON purchases_24h.item_id = i.item_id
+WHERE i.item_id IN (101, 102, 103, 104, 105);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 13: Candidates within the user's price range ===
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/fs_docs_explain_13.out
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_13.sql
+--write_file $QUERY_FILE
+WITH user_pref AS (
+  SELECT max_price
+  FROM user_profile_1
+  WHERE user_id = 17)
+SELECT i.item_id, i.price, i.popularity
+FROM items_1 AS i, user_pref
+WHERE i.category_id = 5 AND i.price <= user_pref.max_price
+ORDER BY i.popularity DESC
+LIMIT 10;
+EOF
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF "[ROOT] INDEX_SCAN items_1 AS i" $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_13.sql
+--write_file $QUERY_FILE
+WITH user_pref AS (
+  SELECT max_price
+  FROM user_profile_1
+  WHERE user_id = 17)
+SELECT i.item_id, i.price, i.popularity
+FROM items_1 AS i, user_pref
+WHERE i.category_id = 5 AND i.price <= user_pref.max_price
+ORDER BY i.popularity DESC
+LIMIT 10;
+EOF
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 14: Category profile of the current session ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_14.sql
+--write_file $QUERY_FILE
+WITH recent_clicks AS (
+  SELECT user_id, event_time, category_id, dwell_ms
+  FROM clicks_1
+  WHERE user_id = 17
+  ORDER BY event_time DESC
+  LIMIT 20)
+SELECT category_id, COUNT(*) AS n_clicks,
+       SUM(dwell_ms) AS total_dwell_ms
+FROM recent_clicks
+GROUP BY category_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Example 15: Sensor statistics for a machine ===
+--let QUERY_FILE=$MYSQL_TMP_DIR/fs_docs_15.sql
+--write_file $QUERY_FILE
+SELECT sensor_id,
+       MIN(temperature) AS min_temperature,
+       MAX(temperature) AS max_temperature,
+       AVG(vibration) AS avg_vibration
+FROM sensor_readings_1
+WHERE sensor_id IN (11, 12, 13, 14)
+  AND event_time >= '2026-09-29 11:00:00'
+GROUP BY sensor_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+DROP TABLE transactions_1, cards_1, merchants_1, clicks_1, items_1,
+  item_views_1, purchases_1, user_profile_1, sensor_readings_1;
