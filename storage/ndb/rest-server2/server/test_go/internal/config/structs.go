@@ -62,6 +62,19 @@ type REST struct {
 	Enable     bool
 	ServerIP   string
 	ServerPort uint16
+	// Dedicated probe listener (ping/health only, never authenticated);
+	// mirrors REST.ProbeEnable / REST.ProbePort in config_structs_def.hpp.
+	ProbeEnable bool
+	ProbePort   uint16
+	// Connection-lifetime limits on the main port. 0 disables the
+	// per-connection request limit, but keeps the server's built-in 60s
+	// idle timeout (it does not disable idle closing). Mirror
+	// REST.MaxKeepaliveRequests / REST.IdleConnectionTimeoutS.
+	MaxKeepaliveRequests   uint32
+	IdleConnectionTimeoutS uint32
+	// Directory for temporary request-body files; empty keeps Drogon's
+	// default of ./uploads. Mirrors REST.UploadPath.
+	UploadPath string
 }
 
 // RateLimit mirrors the server's top-level .RateLimit section (RONDB-978):
@@ -87,6 +100,9 @@ func (g *REST) Validate() error {
 			return errors.New("the REST server IP cannot be empty")
 		} else if g.ServerPort == 0 {
 			return errors.New("the REST server port cannot be empty")
+		}
+		if g.ProbeEnable && g.ProbePort == 0 {
+			return errors.New("the REST probe port cannot be empty")
 		}
 	}
 	return nil

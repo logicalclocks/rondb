@@ -3,17 +3,14 @@
   "REST": {
     "ServerIP": "@bind-address",
     "ServerPort": @port,
-    "ProbePort": @probeport,
-    "UploadPath": "@uploadpath"
-  },
-  "RateLimit": {
-    "Enable": @RateLimitEnable,
-    "Identity": "apikey",
-    "FullAPIKey": false
+    "NumThreads": @NumThreads,
+    "ProbePort": @probeport
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
-                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ],
+      "OpRetryOnTransientErrorsCount": @OpRetryOnTransientErrorsCount,
+      "OpRetryInitialDelayInMS": @OpRetryInitialDelayInMS
   },
   "Security": {
     "InsecureAllowAll": @InsecureAllowAll,

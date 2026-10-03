@@ -55,7 +55,9 @@
     $node_ids_config = qq(,\n    "NodeIDs": [$node_ids_str]);
   }
 
-  # Find a free port for the REST server
+  # Find free ports for the REST server and its dedicated probe listener.
+  # Both sockets are held open until both ports are known so the two cannot
+  # collide with each other.
   my $sock = IO::Socket::INET->new(
     LocalAddr => 'localhost',
     LocalPort => 0,
@@ -64,13 +66,23 @@
     ReuseAddr => 1,
   ) or die "Cannot create socket to find free port: $!";
   my $rest_port = $sock->sockport();
+  my $probe_sock = IO::Socket::INET->new(
+    LocalAddr => 'localhost',
+    LocalPort => 0,
+    Proto     => 'tcp',
+    Listen    => 1,
+    ReuseAddr => 1,
+  ) or die "Cannot create socket to find free probe port: $!";
+  my $probe_port = $probe_sock->sockport();
   $sock->close();
+  $probe_sock->close();
 
   my $config = qq({
   "PIDFile": "$pid_file",
   "REST": {
     "ServerIP": "localhost",
-    "ServerPort": $rest_port
+    "ServerPort": $rest_port,
+    "ProbePort": $probe_port
   },
   "RonDB": {
     "Mgmds": [{"IP": "localhost", "Port": $mgmd_port}]$node_ids_config,
