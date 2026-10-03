@@ -4287,7 +4287,7 @@ Internal benchmark commands (T=threads, N=requests, R=rows/req, W=write%, S=seco
                                          UNTESTED / FAILED per requirement; refuses --allow-reject; --req R-S1,R-S7 --fixtures DIR
                                          --engine-commit H --label TEXT --json P
     .fs_verify --golden DIR --json NEW_FILE  Run Java-captured SQL, Go MySQL twins and RonSQL; creates/drops isolated golden databases
-                                         [--fixture NAME --timeout 30s --cleanup-timeout 30s --tolerance 1e-9 --allow-reject --quiet]
+                                         [--fixture NAME --timeout 30s --cleanup-timeout 125s --tolerance 1e-9 --allow-reject --quiet]
     .fs_emit_mtr <dir> --cases           Also write suite/ronsql_fs/t/ronsql_fs_templates.test from the case matrix
     .fs_fuzz spec --seed S --count N     Spec-level fuzzer: seeded feature-view specs through the emitter gates, L1 on both
                                          engines (--vectors adds L2; --direct-collect runs the S6b form; --shrink; --dump-dir P;

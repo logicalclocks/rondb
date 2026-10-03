@@ -550,6 +550,14 @@ type goldenRuntime struct {
 	Open func(context.Context) (goldenSession, error)
 }
 
+// goldenDDLTimeout is the least time fixture setup and cleanup get, whatever
+// --timeout and --cleanup-timeout say: both run DDL (CREATE/DROP DATABASE,
+// CREATE TABLE), and NDB schema distribution can take its whole
+// ndb_schema_dist_timeout (120 s by default) waiting for a slow participant
+// before the statement returns. A shorter client deadline turns that into a
+// spurious fixture failure and leaves the outcome of a CREATE uncertain.
+const goldenDDLTimeout = 125 * time.Second
+
 type goldenRunOptions struct {
 	timeout, cleanupTimeout time.Duration
 	// The caller selects policy per fixture/request, not globally by SQL text.
@@ -663,7 +671,8 @@ func runGoldenFixture(ctx context.Context, fixture emit.GoldenFixture,
 		}
 		if owned != nil {
 			// Preserve context values, but not cancellation or its deadline.
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), o.cleanupTimeout)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx),
+				max(o.cleanupTimeout, goldenDDLTimeout))
 			defer cancel()
 			err := owned.Cleanup(cleanupCtx)
 			result.RemainingDatabases = owned.Databases()
@@ -677,7 +686,7 @@ func runGoldenFixture(ctx context.Context, fixture emit.GoldenFixture,
 			}
 		}
 	}()
-	setupCtx, cancel := context.WithTimeout(ctx, o.timeout)
+	setupCtx, cancel := context.WithTimeout(ctx, max(o.timeout, goldenDDLTimeout))
 	owned, err = runtime.Load(setupCtx, fixture.FGs)
 	if err == nil {
 		err = setupCtx.Err()
@@ -909,7 +918,7 @@ type goldenCLIOptions struct {
 func parseGoldenOptions(a fsArgs) (goldenCLIOptions, error) {
 	o := goldenCLIOptions{dir: a.str("golden", ""), fixture: a.str("fixture", ""),
 		jsonPath: a.str("json", ""), timeout: 30 * time.Second,
-		cleanupTimeout: 30 * time.Second, tolerance: 1e-9}
+		cleanupTimeout: goldenDDLTimeout, tolerance: 1e-9}
 	for name := range a.flags {
 		switch name {
 		case "golden", "fixture", "json", "timeout", "cleanup-timeout", "tolerance", "allow-reject", "quiet":
