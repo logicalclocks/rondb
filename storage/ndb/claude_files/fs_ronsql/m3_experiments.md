@@ -137,9 +137,17 @@ that explains every observation; to verify):
   TC's `SCAN_TABCONF` rarely overlaps the rows' send); gone at 8 threads
   (threads rarely sleep).
 
-Fix: `750c2d3f530` (`mt_receiver_thread_main` sleeps only in a round
-that executed no signals and received nothing, so the round before a
-sleep runs the `do_send(must_send = true)` that sets `m_force_send`).
+Fix, first variant `750c2d3f530`: `mt_receiver_thread_main` sleeps only
+in a round that executed no signals and received nothing, so the round
+before a sleep runs the `do_send(must_send = true)` that sets
+`m_force_send`. Mac arms A / B (2026-10-05, `census_nospin.cnf`, one run
+each): the ~1.2 ms data-node stalls are gone (`firstbatch` max at T=1
+1.19-1.32 ms in A, 0.20-0.35 ms in B), but on the Mac they are < 1 % of
+requests; averages moved +1.5..+13 % at T=1 and -5..-15 % at T=8 (not
+conclusive). Narrower variant (arm X on the Mac): only a round that did
+work *and* left sends registered with the thread loops once more; every
+other round sleeps as before, so the extra round is paid only in the F25
+case.
 
 Verification (user-run). Configurations in `mysql-test/suite/ronsqlcrunch`,
 all with NumCPUs=4 and no CPU binding (runs 4 / 6) unless noted:

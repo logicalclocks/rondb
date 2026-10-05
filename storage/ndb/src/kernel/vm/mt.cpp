@@ -7930,18 +7930,22 @@ mt_receiver_thread_main(void *thr_arg) {
      *    recv_yield, so no need to do it before everything as well.
      * 4) There are no 'min_spin' configured or min_spin has elapsed
      * 5) Job buffer isn't full
-     * 6) This round executed no signals and the last poll received
-     *    nothing, whether we spin or not. A round that did work loops
-     *    once more, so that the 'about to sleep' do_send(must_send)
-     *    above runs before we sleep: when another thread holds the send
-     *    lock of a transporter, must_send sets m_force_send and the lock
-     *    holder sends our data. The busy-round do_send only re-registers
-     *    the transporter with us, and sleeping here would hold that data
-     *    back until pollReceive times out after 1 ms (F25: a TCKEYCONF
-     *    queued next to the LDM thread's TRANSID_AI). Block threads
-     *    already never yield in a round that executed signals.
+     * 6) A round that did work left no sends registered with us. The
+     *    busy-round do_send above does not set m_force_send: when
+     *    another thread holds a transporter's send lock it re-registers
+     *    the transporter with us, and the lock holder sends only what it
+     *    had fetched. Sleeping now would hold that data back until
+     *    pollReceive times out after 1 ms (F25: a TCKEYCONF queued next
+     *    to the LDM thread's TRANSID_AI). Loop once more instead: the next
+     *    round with nothing to do runs the 'about to sleep'
+     *    do_send(must_send), which sets m_force_send so the lock holder
+     *    sends our data. Rounds without registered sends sleep as before,
+     *    and a round that did no work may sleep with sends registered (a
+     *    full transporter, no send progress).
      * We will not check spin timer until we have checked the
-     * transporters at least one loop and discovered no data.
+     * transporters at least one loop and discovered no data. We also
+     * ensure that we have not executed any signals before we start
+     * the actual spin timer.
      */
     Uint32 delay = 0;
     Uint32 num_events = 0;
@@ -7952,14 +7956,16 @@ mt_receiver_thread_main(void *thr_arg) {
         pending_send  == false &&       // 2)
         send_sum == 0 &&                // 2)
         !buffersFull &&                 // 5)
-        sum == 0 &&                     // 6)
-        !has_received &&                // 6)
+        !(selfptr->m_pending_send_count > 0 &&  // 6)
+          (sum != 0 || has_received)) &&
         (min_spin_timer_us == 0 ||      // 4)
-         check_recv_yield(selfptr,
-                          recvdata,
-                          min_spin_timer_us,
-                          num_events,
-                          before)))
+         (sum == 0 &&
+          !has_received &&
+          check_recv_yield(selfptr,
+                           recvdata,
+                           min_spin_timer_us,
+                           num_events,
+                           before))))
     {
       delay = 1; // 1 ms
     }
