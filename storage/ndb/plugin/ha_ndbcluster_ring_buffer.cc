@@ -312,6 +312,13 @@ const char *validate_columns_mysql(const TABLE *table, const Spec &spec) {
                     spec.idx_col_name.c_str())) {
     return "Ring index column must be the last column of the PRIMARY KEY";
   }
+  /* NDB orders key columns by column position, so ring_idx must also come
+     after the other primary key columns in the table definition. */
+  const uint ring_idx_pos = pk->key_part[last_pk_idx].field->field_index();
+  for (uint i = 0; i < last_pk_idx; i++) {
+    if (pk->key_part[i].field->field_index() > ring_idx_pos)
+      return "Ring index column must be declared after the other PK columns";
+  }
 
   /* ring_meta column: VARBINARY with length >= META_SIZE, nullable. */
   bool found_meta = false;

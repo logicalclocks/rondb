@@ -607,5 +607,16 @@ CREATE TABLE test.rb_nopk (
 ) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
+--echo # Case 26: ring_idx declared before another primary key column - blocked
+--echo #
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_order (
+    ring_idx INT NOT NULL DEFAULT 0,
+    a INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (a, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--echo #
 --echo # Done
 --echo #

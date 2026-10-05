@@ -556,5 +556,15 @@ UNIQUE KEY (client_id, ring_idx)
 ) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer table requires a PRIMARY KEY'
 #
+# Case 26: ring_idx declared before another primary key column - blocked
+#
+CREATE TABLE test.rb_order (
+ring_idx INT NOT NULL DEFAULT 0,
+a INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (a, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must be declared after the other PK columns'
+#
 # Done
 #
