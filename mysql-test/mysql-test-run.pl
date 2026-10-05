@@ -1039,7 +1039,12 @@ sub run_test_server ($$$) {
   my $num_saved_datadir = 0; # Number of datadirs saved in vardir/log/ so far.
 
   # Scheduler variables
-  my $max_ndb = $ENV{MTR_MAX_NDB} || $childs / 2;
+  # NDB tests may use every worker by default (upstream halves this). A
+  # worker that asks for a test while the limit is reached gets BYE and
+  # exits for good, so with an NDB-only test list a lower limit permanently
+  # shrinks the run to that many workers. MTR_MAX_NDB still lowers it, e.g.
+  # when memory only allows fewer concurrent clusters.
+  my $max_ndb = $ENV{MTR_MAX_NDB} || $childs;
   $max_ndb = $childs if $max_ndb > $childs;
   $max_ndb = 1       if $max_ndb < 1;
   my $num_ndb_tests = 0;
@@ -5502,6 +5507,7 @@ sub run_testcase ($) {
     foreach my $rdrs (rdrss()) {
       my $msg = $rdrs->name() .
                "  RDRS port " . $rdrs->value('port') .
+               ", probe port " . ($rdrs->if_exist('probeport') // '-') .
                ", rondis port " . $rdrs->value('rondisport');
       if (($rdrs->if_exist('enable-myrouter') // '') eq 'true') {
         $msg .= ", myrouter port " . $rdrs->value('myrouterport');
@@ -7212,6 +7218,16 @@ sub rdrs_start ($$) {
     my $myrouterport = $rdrs->value('myrouterport');
     if (!sleep_until_port_opened($myrouterport, $opt_start_timeout, $host)) {
       mtr_error("Failed while waiting for MySQL router TCP server $host:$myrouterport to open.");
+    }
+  }
+
+  # The dedicated probe listener (REST.ProbePort, resolved from @probeport in
+  # the config template). It starts before the NDB connection, so this wait
+  # is quick; failing it means the listener could not bind.
+  if (($rdrs->if_exist('probeport') // '') ne '') {
+    my $probeport = $rdrs->value('probeport');
+    if (!sleep_until_port_opened($probeport, $opt_start_timeout, $host)) {
+      mtr_error("Failed while waiting for probe TCP server $host:$probeport to open.");
     }
   }
 

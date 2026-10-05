@@ -37,6 +37,7 @@
 #include <my_base.h>
 #include <unistd.h>
 #include <NdbApi.hpp>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <EventLogger.hpp>
@@ -75,6 +76,15 @@ extern EventLogger *g_eventLogger;
 
 RDRSRonDBConnectionPool *rdrsRonDBConnectionPool = nullptr;
 
+/* The probe server's thread calls get_rondb_stats() and
+ * get_num_ready_data_nodes() from before init() runs until after
+ * shutdown_connection() - unlike every other user of the plain global
+ * above, whose threads are started only after init() returns. Publish the
+ * pool to the probe path through this atomic so those two windows read a
+ * clean nullptr (reported as "unhealthy") instead of racing on a plain
+ * pointer store. */
+static std::atomic<RDRSRonDBConnectionPool *> probeVisiblePool{nullptr};
+
 RS_Status init(unsigned int numThreads, unsigned int num_data_connections) {
   // disable buffered stdout
   setbuf(stdout, NULL);
@@ -91,6 +101,11 @@ RS_Status init(unsigned int numThreads, unsigned int num_data_connections) {
 
 RS_Status start_reconnect_watchdog() {
   rdrsRonDBConnectionPool->StartReconnectWatchdog();
+  /* This runs last in init_rondb_connection(), once every connection
+   * exists - the same precondition the watchdog needs (GetStats and
+   * GetMinReadyDataNodes dereference the connections unconditionally), so
+   * only now may the probe path see the pool. */
+  probeVisiblePool.store(rdrsRonDBConnectionPool, std::memory_order_release);
   return RS_OK;
 }
 
@@ -157,8 +172,15 @@ RS_Status set_metadata_cluster_op_retry_props(
 }
 
 RS_Status shutdown_connection() {
+  /* Unpublish from the probe path first; the probe server itself is joined
+   * before this runs (do_exit ordering), so this is a backstop, not the
+   * primary guarantee. */
+  probeVisiblePool.store(nullptr, std::memory_order_release);
   rdrsRonDBConnectionPool->shutdown();
   delete rdrsRonDBConnectionPool;
+  /* Null the dangling global: get_rondb_stats()/get_num_ready_data_nodes()
+   * may still be reached during the remaining teardown. */
+  rdrsRonDBConnectionPool = nullptr;
   return RS_OK;
 }
 
@@ -292,10 +314,20 @@ RS_Status ronsql_dal(const char* database,
 }
 
 /**
- * Returns statistis about RonDB connection
+ * Returns statistis about RonDB connection.
+ * Never blocks and is safe before init() and after shutdown_connection():
+ * without a pool it reports a disconnected server, so /health answers 503
+ * rather than crashing or hanging. Called from the probe server's thread.
  */
 RS_Status get_rondb_stats(RonDB_Stats *stats) {
-  RonDB_Stats ret = rdrsRonDBConnectionPool->GetStats();
+  RDRSRonDBConnectionPool *pool =
+    probeVisiblePool.load(std::memory_order_acquire);
+  if (unlikely(pool == nullptr)) {
+    memset(stats, 0, sizeof(RonDB_Stats));
+    stats->connection_state = DISCONNECTED;
+    return RS_OK;
+  }
+  RonDB_Stats ret = pool->GetStats();
   stats->ndb_objects_created = ret.ndb_objects_created;
   stats->ndb_objects_deleted = ret.ndb_objects_deleted;
   stats->ndb_objects_count = ret.ndb_objects_count;
@@ -307,8 +339,15 @@ RS_Status get_rondb_stats(RonDB_Stats *stats) {
   return RS_OK;
 }
 
+/* Same availability contract as get_rondb_stats(); -1 keeps the existing
+ * "no usable cluster connection at all" meaning. */
 int get_num_ready_data_nodes() {
-  return rdrsRonDBConnectionPool->GetMinReadyDataNodes();
+  RDRSRonDBConnectionPool *pool =
+    probeVisiblePool.load(std::memory_order_acquire);
+  if (unlikely(pool == nullptr)) {
+    return -1;
+  }
+  return pool->GetMinReadyDataNodes();
 }
 
 void*

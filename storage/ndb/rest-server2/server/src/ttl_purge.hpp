@@ -106,10 +106,20 @@ struct TTLTableMetrics {
 
 class TTLPurger {
  public:
-  static constexpr const char* kSchemaEventName = "REPL$mysql/ndb_schema";
+  /*
+   * The schema watcher's OWN event on mysql.ndb_schema, shared by all rdrs
+   * instances and never dropped by them. It must not be mysqld's
+   * "REPL$mysql/ndb_schema": subscribers of that event are schema
+   * distribution participants, and an NDB API client subscribing without
+   * the global schema lock can be counted as a participant for a schema op
+   * whose row then falls before its start epoch - the op waits out
+   * ndb_schema_dist_timeout (120 s) for an ack that never comes. On a
+   * separate event the watcher still sees every ndb_schema change but no
+   * coordinator ever waits for it; the TTL cache is eventually consistent.
+   */
+  static constexpr const char* kSchemaEventName = "RDRS_TTL$mysql/ndb_schema";
   static constexpr const char* kSystemDBName = "mysql";
   static constexpr const char* kSchemaTableName = "ndb_schema";
-  static constexpr const char* kSchemaResTabName = "ndb_schema_result";
   static constexpr const char* kTTLPurgeNodesTabName = "ttl_purge_nodes";
 
   /*

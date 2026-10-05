@@ -3,28 +3,28 @@
   "REST": {
     "ServerIP": "@bind-address",
     "ServerPort": @port,
-    "ProbePort": @probeport
+    "ProbeEnable": false,
+    "PingRequiresAuth": true,
+    "HealthRequiresAuth": true,
+    "MaxKeepaliveRequests": 5
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
                    "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
   },
   "Security": {
-    "InsecureAllowAll": true,
+    "InsecureAllowAll": false,
     "TLS": {
-      "EnableTLS": @EnableTLS,
-      "RequireAndVerifyClientCert": false,
-      "CertificateFile": "@std-data/hopsworks_fake_certificates/hw_service_and_intermediate.pem",
-      "PrivateKeyFile": "@std-data/hopsworks_fake_certificates/hw_service.key",
-      "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
+      "EnableTLS": false,
+      "RequireAndVerifyClientCert": false
     },
     "APIKey": {
-      "UseHopsworksAPIKeys": false
+      "UseHopsworksAPIKeys": true,
+      "CacheRefreshIntervalMS": 5000
     }
   },
   "Log": {
-    "Level": "INFO",
-    "LogQueries": true
+    "Level": "INFO"
   },
   "Testing": {
     "MySQL": {

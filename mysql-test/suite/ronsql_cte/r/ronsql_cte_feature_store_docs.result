@@ -1,0 +1,388 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+SELECT cc_num, COUNT(*) AS n_rows, MIN(event_time) AS oldest,
+MAX(event_time) AS newest
+FROM transactions_1 GROUP BY cc_num ORDER BY cc_num|
+cc_num	n_rows	oldest	newest
+4242	60	2026-08-12 03:38:00	2026-09-29 11:58:00
+5555	30	2026-09-27 13:06:00	2026-09-29 11:59:00
+SELECT user_id, COUNT(*) AS n_rows FROM clicks_1 GROUP BY user_id ORDER BY user_id|
+user_id	n_rows
+17	40
+18	25
+SELECT category_id, COUNT(*) AS n_items FROM items_1
+GROUP BY category_id ORDER BY category_id|
+category_id	n_items
+1	2
+2	1
+3	2
+4	1
+5	33
+6	1
+SELECT item_id, COUNT(*) AS n_views FROM item_views_1
+GROUP BY item_id ORDER BY item_id|
+item_id	n_views
+101	30
+102	30
+103	30
+105	30
+106	30
+SELECT item_id, COUNT(*) AS n_purchases FROM purchases_1
+GROUP BY item_id ORDER BY item_id|
+item_id	n_purchases
+101	10
+102	10
+103	10
+SELECT sensor_id, COUNT(*) AS n_readings FROM sensor_readings_1
+GROUP BY sensor_id ORDER BY sensor_id|
+sensor_id	n_readings
+11	36
+12	36
+13	36
+14	36
+15	36
+
+=== Example 1: Average of the last 10 transactions ===
+== Explain Query ==
+== Query ==
+WITH last10 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 10)
+SELECT COUNT(*) AS n_tx, AVG(amount) AS avg_amount,
+       MAX(amount) AS max_amount
+FROM last10;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 2: The last 5 transactions as a sequence ===
+== Explain Query ==
+== Query ==
+WITH last5 AS (
+  SELECT cc_num, event_time, amount, merchant_id, country
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 5)
+SELECT event_time, amount, merchant_id, country
+FROM last5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Example 3: Transaction velocity in several time windows ===
+== Query ==
+WITH w1h AS (
+  SELECT COUNT(*) AS n_1h, SUM(amount) AS amt_1h
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-09-29 11:00:00'),
+     w24h AS (
+  SELECT COUNT(*) AS n_24h, SUM(amount) AS amt_24h
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-09-28 12:00:00'),
+     w7d AS (
+  SELECT COUNT(*) AS n_7d, MAX(amount) AS max_amount_7d
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-09-22 12:00:00')
+SELECT w1h.n_1h, w1h.amt_1h, w24h.n_24h, w24h.amt_24h,
+       w7d.n_7d, w7d.max_amount_7d
+FROM w1h, w24h, w7d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 4: Spending above the 90-day maximum ===
+== Query ==
+WITH hist AS (
+  SELECT MAX(amount) AS max_amount_90d
+  FROM transactions_1
+  WHERE cc_num = 4242
+    AND event_time >= '2026-07-01 00:00:00'
+    AND event_time < '2026-09-29 00:00:00')
+SELECT COUNT(*) AS n_above_max, SUM(t.amount) AS amt_above_max
+FROM transactions_1 AS t, hist
+WHERE t.cc_num = 4242
+  AND t.event_time >= '2026-09-29 00:00:00'
+  AND t.amount > hist.max_amount_90d;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 5: Transactions abroad ===
+== Query ==
+WITH card AS (
+  SELECT home_country
+  FROM cards_1
+  WHERE cc_num = 4242)
+SELECT COUNT(*) AS n_abroad_24h
+FROM transactions_1 AS t, card
+WHERE t.cc_num = 4242
+  AND t.event_time >= '2026-09-28 12:00:00'
+  AND t.country <> card.home_country;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 6: Distinct merchants in the last 50 transactions ===
+== Explain Query ==
+== Query ==
+WITH last50 AS (
+  SELECT cc_num, event_time, merchant_id
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 50),
+     per_merchant AS (
+  SELECT merchant_id, COUNT(*) AS n
+  FROM last50
+  GROUP BY merchant_id)
+SELECT COUNT(*) AS n_merchants, MAX(n) AS max_tx_one_merchant
+FROM per_merchant;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 7: Exposure to risky merchants ===
+== Explain Query ==
+== Query ==
+WITH m30 AS (
+  SELECT merchant_id, COUNT(*) AS n_tx, SUM(amount) AS amt
+  FROM transactions_1
+  WHERE cc_num = 4242 AND event_time >= '2026-08-30 12:00:00'
+  GROUP BY merchant_id)
+SELECT COUNT(*) AS n_merchants_30d,
+       SUM(m30.amt) AS amt_30d,
+       MAX(m.fraud_reports_90d) AS max_merchant_fraud_reports
+FROM m30
+JOIN merchants_1 AS m ON m.merchant_id = m30.merchant_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 8: Merchant categories of the last 20 transactions ===
+== Query ==
+WITH last20 AS (
+  SELECT cc_num, event_time, amount, merchant_id
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 20)
+SELECT m.mcc, COUNT(*) AS n_tx, SUM(last20.amount) AS amt
+FROM last20
+JOIN merchants_1 AS m ON m.merchant_id = last20.merchant_id
+GROUP BY m.mcc;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Example 9: Recent spending compared with a longer baseline ===
+== Explain Query ==
+Last-N CTE bodies read with an index scan of the primary key:
+2
+== Query ==
+WITH last5 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 5),
+     last50 AS (
+  SELECT cc_num, event_time, amount
+  FROM transactions_1
+  WHERE cc_num = 4242
+  ORDER BY event_time DESC
+  LIMIT 50),
+     recent AS (
+  SELECT COUNT(*) AS n_recent, SUM(amount) AS sum_recent,
+         MAX(amount) AS max_recent
+  FROM last5),
+     baseline AS (
+  SELECT COUNT(*) AS n_baseline, SUM(amount) AS sum_baseline,
+         MAX(amount) AS max_baseline
+  FROM last50)
+SELECT recent.n_recent, recent.sum_recent, recent.max_recent,
+       baseline.n_baseline, baseline.sum_baseline, baseline.max_baseline
+FROM recent, baseline;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Example 10: Favourite categories of a user ===
+== Query ==
+SELECT category_id, COUNT(*) AS n_clicks,
+       SUM(dwell_ms) AS total_dwell_ms
+FROM clicks_1
+WHERE user_id = 17 AND event_time >= '2026-09-22 12:00:00'
+GROUP BY category_id
+ORDER BY n_clicks DESC
+LIMIT 5;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Example 11: Candidates from the favourite categories ===
+== Query ==
+WITH top_categories AS (
+  SELECT category_id, COUNT(*) AS n_clicks
+  FROM clicks_1
+  WHERE user_id = 17 AND event_time >= '2026-09-22 12:00:00'
+  GROUP BY category_id
+  ORDER BY n_clicks DESC, category_id
+  LIMIT 3)
+SELECT i.item_id, i.category_id, top_categories.n_clicks
+FROM items_1 AS i
+JOIN top_categories ON top_categories.category_id = i.category_id
+WHERE i.item_id IN (101, 102, 103, 104, 105, 106, 107, 108);
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Example 12: Real-time popularity of candidate items ===
+== Query ==
+WITH views_1h AS (
+  SELECT item_id, COUNT(*) AS n_views
+  FROM item_views_1
+  WHERE item_id IN (101, 102, 103, 104, 105)
+    AND event_time >= '2026-09-29 11:00:00'
+  GROUP BY item_id),
+     purchases_24h AS (
+  SELECT item_id, COUNT(*) AS n_purchases
+  FROM purchases_1
+  WHERE item_id IN (101, 102, 103, 104, 105)
+    AND event_time >= '2026-09-28 12:00:00'
+  GROUP BY item_id)
+SELECT i.item_id, i.price, i.popularity,
+       views_1h.n_views, purchases_24h.n_purchases
+FROM items_1 AS i
+LEFT JOIN views_1h ON views_1h.item_id = i.item_id
+LEFT JOIN purchases_24h ON purchases_24h.item_id = i.item_id
+WHERE i.item_id IN (101, 102, 103, 104, 105);
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Example 13: Candidates within the user's price range ===
+== Explain Query ==
+== Query ==
+WITH user_pref AS (
+  SELECT max_price
+  FROM user_profile_1
+  WHERE user_id = 17)
+SELECT i.item_id, i.price, i.popularity
+FROM items_1 AS i, user_pref
+WHERE i.category_id = 5 AND i.price <= user_pref.max_price
+ORDER BY i.popularity DESC
+LIMIT 10;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+
+=== Example 14: Category profile of the current session ===
+== Query ==
+WITH recent_clicks AS (
+  SELECT user_id, event_time, category_id, dwell_ms
+  FROM clicks_1
+  WHERE user_id = 17
+  ORDER BY event_time DESC
+  LIMIT 20)
+SELECT category_id, COUNT(*) AS n_clicks,
+       SUM(dwell_ms) AS total_dwell_ms
+FROM recent_clicks
+GROUP BY category_id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Example 15: Sensor statistics for a machine ===
+== Query ==
+SELECT sensor_id,
+       MIN(temperature) AS min_temperature,
+       MAX(temperature) AS max_temperature,
+       AVG(vibration) AS avg_vibration
+FROM sensor_readings_1
+WHERE sensor_id IN (11, 12, 13, 14)
+  AND event_time >= '2026-09-29 11:00:00'
+GROUP BY sensor_id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+DROP TABLE transactions_1, cards_1, merchants_1, clicks_1, items_1,
+item_views_1, purchases_1, user_profile_1, sensor_readings_1;

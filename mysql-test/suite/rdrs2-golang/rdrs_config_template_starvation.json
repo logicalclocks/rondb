@@ -3,26 +3,17 @@
   "REST": {
     "ServerIP": "@bind-address",
     "ServerPort": @port,
+    "NumThreads": @NumThreads,
     "ProbePort": @probeport
-  },
-  "Rondis": {
-    "Enable": true,
-    "ServerIP": "@bind-address",
-    "ServerPort": @rondisport,
-    "NumThreads": 16,
-    "NumDatabases": 1,
-    "CreateTables": false,
-    "RequireTablesOnStartup": false,
-    "MySQLHost": "@mysqld.1.1.#host",
-    "MySQLPort": @mysqld.1.1.port,
-    "MySQLUser": "root",
-    "MySQLPassword": ""
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
-                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ]
+                   "Port": @cluster_config.ndb_mgmd.1.1.PortNumber } ],
+      "OpRetryOnTransientErrorsCount": @OpRetryOnTransientErrorsCount,
+      "OpRetryInitialDelayInMS": @OpRetryInitialDelayInMS
   },
   "Security": {
+    "InsecureAllowAll": @InsecureAllowAll,
     "TLS": {
       "EnableTLS": @EnableTLS,
       "RequireAndVerifyClientCert": false,
@@ -31,9 +22,9 @@
       "RootCACertFile": "@std-data/hopsworks_fake_certificates/hw_root.pem"
     },
     "APIKey": {
-      "UseHopsworksAPIKeys": false
-    },
-    "InsecureAllowAll": true
+      "UseHopsworksAPIKeys": @UseHopsworksAPIKeys,
+      "CacheRefreshIntervalMS": 5000
+    }
   },
   "Log": {
     "Level": "INFO"

@@ -2,7 +2,9 @@
   "PIDFile": "@pid-file",
   "REST": {
     "ServerIP": "@bind-address",
-    "ServerPort": @port
+    "ServerPort": @port,
+    "ProbePort": @probeport,
+    "UploadPath": "@uploadpath"
   },
   "RateLimit": {
     "Enable": @RateLimitEnable,

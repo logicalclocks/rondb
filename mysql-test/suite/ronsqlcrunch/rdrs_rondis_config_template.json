@@ -3,6 +3,7 @@
   "REST": {
     "ServerIP": "@bind-address",
     "ServerPort": @port,
+    "ProbePort": @probeport,
     "NumThreads": @RESTNumThreads
   },
   "Rondis": {

@@ -233,6 +233,7 @@ RS_Status RDRSRonDBConnection::GetNdbObject(Ndb **ndb_object) {
     } else {
       *ndb_object = availableNdbObjects.front();
       availableNdbObjects.pop_front();
+      stats.ndb_objects_available = availableNdbObjects.size();
     }
     NdbMutex_Unlock(connectionMutex);
     NdbMutex_Unlock(connectionInfoMutex);
@@ -252,6 +253,7 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
                              ndb_object) != allAvailableNdbObjects.end();
     if (likely(tracked)) {
       availableNdbObjects.push_back(ndb_object);
+      stats.ndb_objects_available = availableNdbObjects.size();
     }
     NdbMutex_Unlock(connectionMutex);
     if (unlikely(!tracked)) {
@@ -276,26 +278,27 @@ void RDRSRonDBConnection::ReturnNDBObjectToPool(Ndb *ndb_object,
 }
 
 int RDRSRonDBConnection::GetNumReadyDataNodes() {
-  /* connectionMutex is held for tens of seconds only while the cluster
+  /* Health probes call this and must never wait, so nothing here may take a
+   * blocking lock. The state fields are atomics - read them lock-free.
+   *
+   * connectionMutex is held for tens of seconds only while the cluster
    * connection is rebuilt: Connect()'s wait_until_ready() and the
    * delete ndbConnection in Shutdown(). Those windows are exactly what the
    * state below describes, so check it first and never wait for them.
-   * connectionInfoMutex is safe to wait on: its longest critical section is
-   * the teardown's Ndb-object deletion loop, bounded by the object count.
    *
-   * Every other holder keeps the mutex for microseconds, and one of them is
-   * on the hot path: the metadata Ndb objects are not thread-cached, so
-   * GetMetadataNdbObject/ReturnMetadataNdbObject take this mutex on every
-   * API-key validation and every feature store metadata read. A failed
-   * try-lock there means contention, NOT an unavailable cluster - reporting
-   * 0 would flap /health on a healthy but busy server - so retry briefly
-   * instead of guessing. */
+   * The try-lock below still matters: ndbConnection is deleted under
+   * connectionMutex, so touching it without the lock is a use-after-free.
+   * Every holder outside a rebuild keeps that mutex for microseconds, and
+   * one of them is on the hot path: the metadata Ndb objects are not
+   * thread-cached, so GetMetadataNdbObject/ReturnMetadataNdbObject take it
+   * on every API-key validation and every feature store metadata read. A
+   * failed try-lock there means contention, NOT an unavailable cluster -
+   * reporting 0 would flap /health on a healthy but busy server - so retry
+   * briefly instead of guessing. */
   {
-    NdbMutex_Lock(connectionInfoMutex);
     const bool unavailable = stats.is_shutdown || stats.is_shutting_down ||
                              stats.is_reconnection_in_progress ||
                              stats.connection_state != CONNECTED;
-    NdbMutex_Unlock(connectionInfoMutex);
     if (unlikely(unavailable)) {
       return 0;
     }
@@ -323,11 +326,10 @@ int RDRSRonDBConnection::GetNumReadyDataNodes() {
 
 bool RDRSRonDBConnection::IsStranded() {
   {
-    NdbMutex_Lock(connectionInfoMutex);
+    /* Lock-free reads; see the stats declaration. */
     const bool going_away = stats.is_shutdown || stats.is_shutting_down;
     const bool reconnecting = stats.is_reconnection_in_progress;
     const bool connected = stats.connection_state == CONNECTED;
-    NdbMutex_Unlock(connectionInfoMutex);
     if (going_away || reconnecting) {
       return false;
     }
@@ -376,11 +378,17 @@ bool RDRSRonDBConnection::IsStranded() {
 }
 
 void RDRSRonDBConnection::GetStats(RonDB_Stats &ret) {
-  NdbMutex_Lock(connectionInfoMutex);
-  stats.ndb_objects_available = availableNdbObjects.size();
-  ret = stats;
-  NdbMutex_Unlock(connectionInfoMutex);
-  return;
+  /* No mutex: health probes call this and must never wait (see the stats
+   * declaration). ndb_objects_available is maintained at the list mutation
+   * sites, so no list access is needed here. */
+  ret.ndb_objects_created = stats.ndb_objects_created;
+  ret.ndb_objects_deleted = stats.ndb_objects_deleted;
+  ret.ndb_objects_count = stats.ndb_objects_count;
+  ret.ndb_objects_available = stats.ndb_objects_available;
+  ret.connection_state = stats.connection_state;
+  ret.is_shutdown = stats.is_shutdown;
+  ret.is_shutting_down = stats.is_shutting_down;
+  ret.is_reconnection_in_progress = stats.is_reconnection_in_progress;
 }
 
 RS_Status RDRSRonDBConnection::Shutdown(bool end) {
