@@ -137,17 +137,46 @@ that explains every observation; to verify):
   TC's `SCAN_TABCONF` rarely overlaps the rows' send); gone at 8 threads
   (threads rarely sleep).
 
-Verification, cheapest first:
-1. Run 7 and run 5 (both with separate block threads; the data is on the
-   benchmark computer): `core_pk_lookup` / `fs_floor` at T=1 should show
-   the slow share near 0.
-2. `NumCPUs=4` with `SpinMethod=StaticSpinning`: the stall should go.
-3. The fix in `mt_receiver_thread_main`: do not sleep while
-   `selfptr->m_pending_send_count > 0` (or require `sum == 0 &&
-   !has_received` whatever the spin setting), so the next loop runs the
-   `must_send` `do_send`, which sets `m_force_send` when the lock is held.
-   Measure `.bench_ronsql core_pk_lookup 1 20000` and `.bench_sql
-   core_pk_lookup 1 20000` on `NumCPUs=4` before and after.
+Fix: `750c2d3f530` (`mt_receiver_thread_main` sleeps only in a round
+that executed no signals and received nothing, so the round before a
+sleep runs the `do_send(must_send = true)` that sets `m_force_send`).
+
+Verification (user-run). Configurations in `mysql-test/suite/ronsqlcrunch`,
+all with NumCPUs=4 and no CPU binding (runs 4 / 6) unless noted:
+`census.cnf` (adaptive spinning, the default), `census_nospin.cnf`
+(`StaticSpinning`, `SchedulerSpinTimer=0`: spinning forced off, the F25
+path every time), `census_spin50.cnf` (spinning forced on: the control),
+`census_benchbox.cnf` (NumCPUs=8, pinned; separate block threads).
+
+| arm | ndbmtd | config | expected at T=1 (`core_pk_lookup`, both engines) |
+|---|---|---|---|
+| A | base | `census_nospin.cnf` | slow mode present (p95 ~1.1 ms, avg ≫ min) |
+| B | fix | `census_nospin.cnf` | gone: p95 < 200 µs, p99 < 300 µs |
+| C | base | `census_spin50.cnf` | gone (control: the mechanism needs spinning off) |
+| D | base | `census.cnf` | as runs 4 / 6 (~35 % slow) on the benchmark computer |
+| E | fix | `census.cnf` | gone |
+| F | fix | `census_benchbox.cnf` | as run 7 at T=1 and T=8 (no regression) |
+
+Per arm (base = `ndbmtd` of `26.10-main`, fix = this branch; only
+`ndbmtd` differs, so rebuild just that target between arms):
+
+```
+python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+    --build prod_build --load both --sf 1 \
+    --queries core_pk_lookup,fs_floor,fs_latest,fs_hw_floor,fs_hw_agg_point \
+    --engines ronsql,mysqld_nopush --compiler off \
+    --threads 1,8 --requests 20000 \
+    --cpubind mysql-test/suite/ronsqlcrunch/<config> \
+    --out ~/f25_<arm>
+```
+
+(on the benchmark computer prefix `taskset -c 24-31` and add
+`--client-cpus 24-31`; with `census_benchbox.cnf` also `--expect-ldm 4`).
+Read `cases/off_{ronsql,mysqld_nopush}_<entry>_T1.txt`: `Latency: min= avg=
+p95= p99=` and, for RonSQL, the `firstbatch` phase; the slow share is
+about (avg − min) / 1 ms. At T=8 compare q/s in `report.md` §A (fix within
+±5 % of base). A > 5 % slow share left in B or E means a second cause;
+then X1 steps 2–4 (C-states first).
 
 ## X2. F24 — where the many-group cost is
 

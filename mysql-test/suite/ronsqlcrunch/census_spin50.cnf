@@ -1,0 +1,19 @@
+# census.cnf (NumCPUs=4, no CPU binding: the layout of census runs 4 and
+# 6, where four receive threads host every block) with spinning forced
+# ON: StaticSpinning with a 50 us spin timer.  The control: a receive
+# thread then never sleeps in a round that did work, fix or not, so the
+# ~1 ms slow mode must be absent in both builds.
+# F25 verification, storage/ndb/claude_files/fs_ronsql/m3_experiments.md X1.
+#
+#   python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+#       --build prod_build --queries core_pk_lookup ... \
+#       --cpubind mysql-test/suite/ronsqlcrunch/census_spin50.cnf ...
+
+[cluster_config.1]
+TotalMemoryConfig=12G
+DataMemory=6G
+SpinMethod=StaticSpinning
+SchedulerSpinTimer=50
+
+[rdrs.1.1]
+RonDBConnectionPoolSize=2
