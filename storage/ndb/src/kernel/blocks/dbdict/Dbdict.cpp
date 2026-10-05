@@ -6867,6 +6867,15 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
          visit without loading disk pages (mysqld DDL enforces this too). */
       tabRequire(attrDesc.AttributeStorageType != NDB_STORAGETYPE_DISK,
                  CreateTableRef::InvalidFormat);
+      /* On a ring buffer table the writers store the TTL maximum in the
+         meta row's TTL column, so it cannot be part of the key. Checked
+         for API requests only: a table created before this rule must
+         still load at restart (and can then be dropped). */
+      tabRequire(tableDesc.RingIdxColumnNo == RNIL ||
+                     !attrDesc.AttributeKeyFlag ||
+                     (parseP->requestType != DictTabInfo::CreateTableFromAPI &&
+                      parseP->requestType != DictTabInfo::AlterTableFromAPI),
+                 CreateTableRef::InvalidFormat);
       ttl_column_seen = true;
       g_eventLogger->info("[DICT]TTL validation on TTL attrId passed. "
                           "attrId: %u",

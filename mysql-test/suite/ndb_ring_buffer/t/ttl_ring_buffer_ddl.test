@@ -185,5 +185,38 @@ SELECT COUNT(*) FROM test.rb_vcol;
 DROP TABLE test.rb_vcol;
 
 --echo #
+--echo # Case 10: the TTL column must not be a primary key column
+--echo #
+# The writers store the TTL maximum in the meta row's TTL column; in a key
+# column that would put every prefix's meta row under the same key.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_ttl_pk (
+    ts TIMESTAMP NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    v INT,
+    PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# Nor can ALTER move the TTL to a primary key column
+CREATE TABLE test.rb_ttl_pk (
+    k_ts TIMESTAMP NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    PRIMARY KEY (k_ts, ring_idx)
+) ENGINE = NDB
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_ttl_pk
+  COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_ttl_pk ALGORITHM=INPLACE,
+  COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb_ttl_pk;
+DROP TABLE test.rb_ttl_pk;
+
+--echo #
 --echo # Done
 --echo #

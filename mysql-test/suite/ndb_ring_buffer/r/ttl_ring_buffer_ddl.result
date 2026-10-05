@@ -263,5 +263,41 @@ COUNT(*)
 0
 DROP TABLE test.rb_vcol;
 #
+# Case 10: the TTL column must not be a primary key column
+#
+CREATE TABLE test.rb_ttl_pk (
+ts TIMESTAMP NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+v INT,
+PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column cannot be a PRIMARY KEY column of a ring table'
+CREATE TABLE test.rb_ttl_pk (
+k_ts TIMESTAMP NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+PRIMARY KEY (k_ts, ring_idx)
+) ENGINE = NDB
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ALTER TABLE test.rb_ttl_pk
+COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column cannot be a PRIMARY KEY column of a ring table'
+ALTER TABLE test.rb_ttl_pk ALGORITHM=INPLACE,
+COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: TTL column cannot be a PRIMARY KEY column of a ring table. Try ALGORITHM=COPY.
+SHOW CREATE TABLE test.rb_ttl_pk;
+Table	Create Table
+rb_ttl_pk	CREATE TABLE `rb_ttl_pk` (
+  `k_ts` timestamp NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`k_ts`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta'
+DROP TABLE test.rb_ttl_pk;
+#
 # Done
 #

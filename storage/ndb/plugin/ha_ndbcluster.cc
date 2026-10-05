@@ -10330,6 +10330,19 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
      meta rows written before with a zero TTL column; disabling makes
      deleteOldest legal on a ring with purged holes). Message <= 64 chars:
      ER_ILLEGAL_HA_CREATE_OPTION clips the option string. */
+  /* The writers store the TTL maximum in the meta row's TTL column; in a
+     primary key column that moves every prefix's meta row to one key. */
+  if (found_ring_buffer && found_ttl &&
+      table->s->primary_key != MAX_KEY) {
+    const KEY &pk = table->s->key_info[table->s->primary_key];
+    for (uint i = 0; i < pk.user_defined_key_parts; i++) {
+      if (!my_strcasecmp(system_charset_info, pk.key_part[i].field->field_name,
+                         ttl_column.c_str())) {
+        return create.failed_illegal_create_option(
+            "TTL column cannot be a PRIMARY KEY column of a ring table");
+      }
+    }
+  }
   if (found_ring_buffer && thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
     const char *orig_db = thd->lex->query_block->get_table_list()->db;
     const char *orig_name =
@@ -17321,6 +17334,15 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
       old_tab->isTTLEnabled() != new_tab->isTTLEnabled()) {
     *reason = "Cannot enable/disable TTL on a ring table; use DROP+CREATE";
     return true;
+  }
+  /* See the CREATE path: the TTL column of a ring table is not a key. */
+  if (new_tab->isRingBuffer() && new_tab->isTTLEnabled()) {
+    const NdbDictionary::Column *ttl_col =
+        new_tab->getColumn(static_cast<int>(new_tab->getTTLColumnNo()));
+    if (ttl_col != nullptr && ttl_col->getPrimaryKey()) {
+      *reason = "TTL column cannot be a PRIMARY KEY column of a ring table";
+      return true;
+    }
   }
 
   /* Mutual exclusion: fully replicated and MAX_ROWS_PER_PK (the
