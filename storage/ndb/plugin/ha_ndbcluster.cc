@@ -842,7 +842,7 @@ static int handle_row_conflict(
     const NdbRecord *data_rec, const uchar *old_row, const uchar *new_row,
     enum_conflicting_op_type op_type, enum_conflict_cause conflict_cause,
     const NdbError &conflict_error, NdbTransaction *conflict_trans,
-    const MY_BITMAP *write_set, Uint64 transaction_id);
+    const MY_BITMAP *write_set, Uint64 transaction_id, bool ring_buffer);
 
 // Error code returned when "refresh occurs on a refreshed row"
 static constexpr int ERROR_OP_AFTER_REFRESH_OP = 920;
@@ -4402,7 +4402,8 @@ int ha_ndbcluster::prepare_conflict_detection(
                                 m_share->table_name, "Transaction", key_rec,
                                 data_rec, old_data, new_data, conflicting_op,
                                 TRANS_IN_CONFLICT, noRealConflictError, trans,
-                                write_set, transaction_id);
+                                write_set, transaction_id,
+                                m_table->isRingBuffer());
       if (unlikely(res)) {
         return res;
       }
@@ -4557,6 +4558,7 @@ int ha_ndbcluster::prepare_conflict_detection(
   ex_data.op_type = op_type;
   ex_data.reflected_operation = op_is_marked_as_reflected;
   ex_data.trans_id = transaction_id;
+  ex_data.ring_buffer = m_table->isRingBuffer();
 
   // Save the row data for possible conflict resolution after execute()
   if (old_data) {
@@ -4792,7 +4794,7 @@ static int handle_conflict_op_error(Ndb_applier *const applier,
             ORIG_TRANSID not available for
             non-transactional conflict detection.
           */
-          Ndb_binlog_extra_row_info::InvalidTransactionId);
+          Ndb_binlog_extra_row_info::InvalidTransactionId, ex_data.ring_buffer);
 
       return res;
     } else {
@@ -5211,7 +5213,7 @@ int ha_ndbcluster::primary_key_cmp(const uchar *old_row, const uchar *new_row) {
 
 static Ndb_exceptions_data StaticRefreshExceptionsData = {
     nullptr, nullptr, nullptr,     nullptr, nullptr,
-    nullptr, nullptr, REFRESH_ROW, false,   0};
+    nullptr, nullptr, REFRESH_ROW, false,   0, false};
 
 static int handle_row_conflict(
     Ndb_applier *const applier, NDB_CONFLICT_FN_SHARE *cfn_share,
@@ -5219,7 +5221,7 @@ static int handle_row_conflict(
     const NdbRecord *data_rec, const uchar *old_row, const uchar *new_row,
     enum_conflicting_op_type op_type, enum_conflict_cause conflict_cause,
     const NdbError &conflict_error, NdbTransaction *conflict_trans,
-    const MY_BITMAP *write_set, Uint64 transaction_id) {
+    const MY_BITMAP *write_set, Uint64 transaction_id, bool ring_buffer) {
   DBUG_TRACE;
 
   const uchar *row = (op_type == DELETE_ROW) ? old_row : new_row;
@@ -5337,6 +5339,11 @@ static int handle_row_conflict(
       NdbOperation::OperationOptions options;
       options.optionsPresent = NdbOperation::OperationOptions::OO_CUSTOMDATA |
                                NdbOperation::OperationOptions::OO_ANYVALUE;
+      /* The ring write guard refuses a refresh without the ring flag. */
+      if (ring_buffer) {
+        options.optionsPresent |=
+            NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+      }
       options.customData = &StaticRefreshExceptionsData;
       options.anyValue = 0;
 

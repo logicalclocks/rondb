@@ -165,6 +165,7 @@ struct Ndb_exceptions_data {
   enum_conflicting_op_type op_type;
   bool reflected_operation;
   Uint64 trans_id;
+  bool ring_buffer; /* a refresh of the row needs the ring buffer flag */
 };
 
 enum enum_conflict_fn_table_flags { CFF_NONE = 0, CFF_REFRESH_ROWS = 1 };
