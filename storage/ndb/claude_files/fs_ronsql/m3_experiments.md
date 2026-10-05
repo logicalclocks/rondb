@@ -137,17 +137,17 @@ that explains every observation; to verify):
   TC's `SCAN_TABCONF` rarely overlaps the rows' send); gone at 8 threads
   (threads rarely sleep).
 
-Fix, first variant `750c2d3f530`: `mt_receiver_thread_main` sleeps only
-in a round that executed no signals and received nothing, so the round
-before a sleep runs the `do_send(must_send = true)` that sets
-`m_force_send`. Mac arms A / B (2026-10-05, `census_nospin.cnf`, one run
-each): the ~1.2 ms data-node stalls are gone (`firstbatch` max at T=1
-1.19-1.32 ms in A, 0.20-0.35 ms in B), but on the Mac they are < 1 % of
-requests; averages moved +1.5..+13 % at T=1 and -5..-15 % at T=8 (not
-conclusive). Narrower variant (arm X on the Mac): only a round that did
-work *and* left sends registered with the thread loops once more; every
-other round sleeps as before, so the extra round is paid only in the F25
-case.
+Fix `a22b016ab15` (the branch's net change against `26.10-main`): in
+`mt_receiver_thread_main` a round that did work (executed signals or
+received data) and whose busy-round `do_send` left transporters
+registered with the thread (another thread held their send lock) does
+not sleep; it loops once more, and the next idle round's
+`do_send(must_send = true)` sets `m_force_send`, so the lock holder sends
+the data. Every other round sleeps as before; a round that did no work
+may sleep with sends registered (a full transporter), so that case cannot
+busy-loop. It replaces the first variant `750c2d3f530` (no sleep in any
+round that did work), arm B below, which made every working round pay
+one more loop.
 
 Verification (user-run). Configurations in `mysql-test/suite/ronsqlcrunch`,
 all with NumCPUs=4 and no CPU binding (runs 4 / 6) unless noted:
@@ -158,8 +158,8 @@ path every time), `census_spin50.cnf` (spinning forced on: the control),
 
 | arm | ndbmtd | config | expected at T=1 (`core_pk_lookup`, both engines) |
 |---|---|---|---|
-| A | base | `census_nospin.cnf` | slow mode present (p95 ~1.1 ms, avg ≫ min) |
-| B | fix | `census_nospin.cnf` | gone: p95 < 200 µs, p99 < 300 µs |
+| A | base | `census_nospin.cnf` | ~1.2 ms events; on the Mac rare (< 1 %, max / p99.9 only) |
+| B / X | fix (B `750c2d3f530`, X `a22b016ab15`) | `census_nospin.cnf` | no ~1 ms events; averages as A |
 | C | base | `census_spin50.cnf` | gone (control: the mechanism needs spinning off) |
 | D | base | `census.cnf` | as runs 4 / 6 (~35 % slow) on the benchmark computer |
 | E | fix | `census.cnf` | gone |
@@ -185,6 +185,38 @@ p95= p99=` and, for RonSQL, the `firstbatch` phase; the slow share is
 about (avg − min) / 1 ms. At T=8 compare q/s in `report.md` §A (fix within
 ±5 % of base). A > 5 % slow share left in B or E means a second cause;
 then X1 steps 2–4 (C-states first).
+
+**Results, Mac (2026-10-05, MacBook Pro, Apple silicon, `census_nospin.cnf`,
+sf 1, 20 000 requests per thread, one run per arm; `~/f25_{A,B,X}`).**
+Arm A did not show a slow mode: with spinning off the stall is < 1 % of
+requests on the Mac (35 % of PK reads on the benchmark computer), so it
+appears only in the tail. At T=1 every A case has a ~1.2 ms request, no
+B or X case has one:
+
+| T=1, end to end | A p99.9 / max | B p99.9 / max | X p99.9 / max |
+|---|---|---|---|
+| RonSQL core_pk_lookup | 235 µs / 1.23 ms | 228 µs / 365 µs | 210 µs / 363 µs |
+| RonSQL fs_floor | 1.24 ms / 1.38 ms | 404 µs / 690 µs | 324 µs / 536 µs |
+| RonSQL fs_latest | 1.20 ms / 1.40 ms | 430 µs / 669 µs | 368 µs / 783 µs |
+| RonSQL fs_hw_floor | 276 µs / 1.43 ms | 272 µs / 340 µs | 235 µs / 355 µs |
+| RonSQL fs_hw_agg_point | 293 µs / 1.32 ms | 252 µs / 384 µs | 259 µs / 367 µs |
+| MySQL core_pk_lookup | 187 µs / 1.28 ms | 161 µs / 282 µs | 158 µs / 266 µs |
+| MySQL fs_floor | 253 µs / 1.22 ms | 241 µs / 410 µs | 276 µs / 464 µs |
+| MySQL fs_latest | 2.03 ms / 3.89 ms | 1.49 ms / 1.70 ms | 1.13 ms / 1.38 ms |
+| MySQL fs_hw_floor | 213 µs / 1.25 ms | 186 µs / 284 µs | 200 µs / 310 µs |
+| MySQL fs_hw_agg_point | 238 µs / 1.29 ms | 226 µs / 323 µs | 215 µs / 337 µs |
+
+Server side (RonSQL `firstbatch`, T=1) the maximum was 1.19–1.32 ms in
+A, 0.20–0.35 ms in B, 0.14–0.40 ms in X. Averages: B was +1.5..+13 %
+over A at T=1 (`fs_latest` `firstbatch` 109 → 124 µs) and -5..-15 % at
+T=8; X is within about ±3 % of A or better everywhere (`fs_latest` 106
+µs; RonSQL `fs_floor` -11 % and MySQL `fs_floor` +8 % at T=1, a small
+scan that varies both ways between runs). At T=8 p99.9 agrees within
+about ±3 % across the arms and the maxima (~1–1.7 ms) are queueing, not
+the F25 quantum. Conclusion: X removes the ~1 ms events without the cost
+of B. Open: arms D / E / F on the benchmark computer (the size of the
+win where F25 is frequent, and the run-7 layout); a small T=1 cost below
+~3 % would need interleaved repeats to rule out.
 
 ## X2. F24 — where the many-group cost is
 

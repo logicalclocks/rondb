@@ -521,6 +521,9 @@ F8 was a framework fixture issue and is already fixed.
   send-lock try without `m_force_send` is followed by the 1 ms epoll sleep when
   spinning is off. To verify with runs 5 / 7 (separate block threads) and a
   `NumCPUs=4` before / after measurement of the proposed `mt.cpp` fix.
+  Fix `a22b016ab15` (branch RONDB-1124-f25): on the Mac with spinning forced
+  off every ~1.2 ms event at T=1 is gone and averages are unchanged (X1
+  Results). Open: arms D / E / F on the benchmark computer.
 - [ ] NDB API adaptive send never defers (found 2026-10-05 while reading F25):
   `TransporterFacade::add_to_poll_queue` has `if (m_poll_waiters >
   m_max_poll_waiters) m_max_poll_waiters;` — the assignment is missing since
