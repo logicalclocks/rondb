@@ -1,6 +1,6 @@
 # TTL on Ring Buffer Tables: What You Gain and What You Trade
 
-Status: v1.0, 2026-09-22. Companion to `design.md` in this directory, which holds the
+Status: v1.1, 2026-10-02. Companion to `design.md` in this directory, which holds the
 engineering design. This document describes the v1 behaviour as agreed on 2026-09-16 from
 the point of view of someone who creates, writes to and reads from such a table. Implemented
 on `consolidate_RingBufferTable_26.05`; error numbers and messages below are the shipped ones.
@@ -11,8 +11,8 @@ A Ring Buffer Table keeps the newest N rows per key prefix. A TTL table hides ro
 are older than a fixed time. Today a table can be one or the other, not both. With this
 feature a table can be both: it keeps at most N rows per prefix, hides every row whose TTL
 has passed, and the existing TTL purger removes the hidden rows from memory. Writers and
-readers use the same SQL statements, NDB API calls and ClusterJ calls as before. What you
-give up is listed in section 5: the `deleteOldest` queue-consumer call, an exact `count`
+readers use the same SQL statements, NDB API calls and ClusterJ calls as before; NDB API
+and ClusterJ inserts must set every column (section 3.2). What you give up is listed in section 5: the `deleteOldest` queue-consumer call, an exact `count`
 in the ring meta row, and the ability to add or remove TTL on a ring table after creation.
 
 ## 2. Creating a TTL ring table
@@ -36,11 +36,18 @@ Rules that already apply to each feature on its own still apply:
 
 - The TTL column is a DATETIME or TIMESTAMP column, not virtual, not hidden, not stored on
   disk. NULL in the TTL column means the row never expires.
-- `ring_idx` is an INT and the last column of the primary key. `ring_meta` is a VARBINARY
+- The table has a declared PRIMARY KEY. `ring_idx` is an INT, the last column of the
+  primary key, and declared after the other primary key columns. `ring_meta` is a VARBINARY
   column that the writers own. Neither may carry an index.
-- No foreign keys. No user-defined PARTITION BY. The ring size cannot be changed later.
+- No foreign keys. No user-defined PARTITION BY. The ring size cannot be changed later, and
+  ALTER TABLE cannot turn an existing table into a ring table ("Cannot enable ring buffer
+  via ALTER; use DROP+CREATE").
 
-Two rules are new:
+Three rules are new:
+
+- The TTL column must not be part of the primary key. The writers store the maximum
+  timestamp in the meta row's TTL column (section 5.7); in a key column that would move the
+  meta row away from its prefix.
 
 - The TTL index is recommended. Name it exactly `ttl_index` and put the TTL column first.
   Without it every purge round scans the whole table; with it a round on a table with nothing
@@ -97,12 +104,25 @@ SELECT COUNT(*) FROM user_events WHERE user_id = 7;
 -- Allowed. Moves the row's expiry.
 UPDATE user_events SET ts = NOW(6) WHERE user_id = 7 AND ring_idx = 42;
 
--- Allowed. Removes every row of the prefix including the hidden meta row; the ring restarts.
+-- Allowed. Removes the prefix's live rows and its hidden meta row; the ring restarts at
+-- slot 1. Expired rows not purged yet stay (hidden) until the purger or the ring removes them.
 DELETE FROM user_events WHERE user_id = 7;
 ```
 
-The NDB API `NdbRingBufferWriter` and the ClusterJ `RingBufferWriter` insert exactly as they
-do on a plain ring table. The NDB API writer's `deleteOldest` call returns error 4358 on a
+A DELETE on a ring table may filter only on the primary key columns before `ring_idx`, and
+its WHERE must be deterministic: `RAND()`, stored functions and UDFs are rejected.
+
+The NDB API `NdbRingBufferWriter` and the ClusterJ `RingBufferWriter` insert as they do on a
+plain ring table, with one extra rule: on a TTL ring every insert must set every column of
+the table except `ring_idx` and `ring_meta` (NDB API error 4359, "Inserts on a ring buffer
+table with TTL must set every column"). When the ring wraps, an insert overwrites an
+occupied slot, and a column left out would keep the overwritten row's value, including a TTL
+value that may already have passed. ClusterJ cannot write BLOB/TEXT columns on ring tables;
+on a wrap such a column keeps the overwritten row's value, so use SQL for TTL ring tables
+with BLOB/TEXT columns. SQL INSERTs always write every column (omitted columns get their
+default). Two SQL INSERTs into a new prefix at the same moment can both find no meta row; one
+of them then fails with a deadlock error ("try restarting transaction") and must be
+retried, also with INSERT IGNORE. The NDB API writer's `deleteOldest` call returns error 4358 on a
 TTL ring table, see section 5.1 (the ClusterJ writer has no `deleteOldest`).
 
 ## 4. What you gain
@@ -160,6 +180,8 @@ table; use DROP+CREATE"; the way to change them is to create a new table and cop
 The same rule holds for the raw NDB API's `alterTable` (error 741). Adding TTL later would leave existing meta rows with a
 zero timestamp inside the TTL index, and removing it would make `deleteOldest` legal on a
 ring that already has holes. The ring size cannot change either, which is an existing rule.
+ALTER may move TTL to another column. That re-evaluates every row against the new column:
+rows that had expired under the old column can become visible again.
 
 ### 5.4 Ring order and TTL order are independent
 
@@ -198,6 +220,14 @@ prefixes that are not busy. A transaction that inserts several rows into one pre
 rare cases, form a lock cycle with the purge scan; the transaction deadlock timeout resolves
 it and the transaction must be retried. Plain TTL tables have the same exposure today.
 
+The reverse also happens on a table without `ttl_index`. The purge then scans the whole
+table, and an INSERT transaction that is still open holds its prefix's meta row and new
+slot; the purge waits for those locks, times out after the deadlock detection timeout, and
+leaves that table for the next round. With `ttl_index` the purge visits only expired rows,
+so an open INSERT does not block it. A user transaction that keeps an expired row locked has
+the same effect on that row's table. In both cases the purger goes on with the other tables
+and retries the blocked one every round; it does not stop or restart.
+
 ### 5.7 What you see in the meta row
 
 With the session variable `ndb_ring_buffer_show_meta` set, SELECT returns the hidden meta
@@ -224,6 +254,8 @@ Existing plain ring tables and plain TTL tables are unaffected by the upgrade.
   or the ring overwrites them. Nothing becomes visible that should not be.
 - **Replication.** Purge deletes replicate as row deletes. The replica's own purger may have
   removed the row already; the applier ignores that, so both sides converge to the same rows.
+  An insert that overwrites a slot is logged as a row write, not an update, so a replica
+  whose purger already removed that slot re-creates it.
 - **Backup and restore.** A backup contains expired rows that have not been purged yet, as it
   does for any TTL table. After restore they are hidden and the purger removes them.
 - **Restarts.** Node and system restarts restore rows and meta rows as they were, including
@@ -247,8 +279,9 @@ receiving inserts.
 **Does the TTL column have to increase from one insert to the next?** No. See section 5.4 for
 what happens when it does not.
 
-**Can I use TTL ring tables from ClusterJ?** Yes, with the same `RingBufferWriter`. Only
-`deleteOldest` is rejected.
+**Can I use TTL ring tables from ClusterJ?** Yes, with the same `RingBufferWriter`. Every
+insert must set every column (section 3.2); BLOB/TEXT columns cannot be written from
+ClusterJ on ring tables. The ClusterJ writer has no `deleteOldest`.
 
 ## 8. Under the hood, briefly
 
@@ -256,7 +289,9 @@ Three small kernel changes make the combination safe. The ring meta row is exemp
 TTL check, so its zero or maximum timestamp can never make it disappear. Deletes that are
 restricted to expired rows, which is what the purger issues, are allowed through the guard
 that otherwise blocks direct writes to ring tables. And the rule that rejected the combined
-DDL is removed. The writers make two changes: they store the maximum timestamp in the meta
-row's TTL column, and they reject `deleteOldest` on TTL rings. The purger is not changed at
-all. The engineering design, the correctness arguments and the rejected alternatives are in
+DDL is removed. The writers make three changes: they store the maximum timestamp in the meta
+row's TTL column, they require every column on inserts into TTL rings, and they reject
+`deleteOldest` on TTL rings. The purger treats a TTL ring like any TTL table; one general
+change applies to every TTL table: when a purge scan times out waiting for a lock, the
+purger skips that table until its next round instead of retrying it at once. The engineering design, the correctness arguments and the rejected alternatives are in
 `design_ttl_ring_buffer_table.md`.
