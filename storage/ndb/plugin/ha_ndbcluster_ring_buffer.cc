@@ -453,6 +453,30 @@ static void ring_buffer_set_meta_ttl_max(TABLE *table,
   bitmap_set_bit(meta_mask, ttl_field->field_index());
 }
 
+/*
+ * A ring batch (data writes + meta insert/update) runs with AO_IgnoreError,
+ * so a failed meta write can leave the data writes applied. Two writers can
+ * both see no meta row for a new prefix: the second one's meta insert fails
+ * with a duplicate key after its slot write overwrote the first one's row.
+ * INSERT IGNORE / LOAD DATA (or a condition handler in a stored program)
+ * would let that commit. When the meta write failed, mark the transaction
+ * for rollback and report an error the SQL layer may ignore as a deadlock,
+ * so the client retries. A failure of a data write (e.g. a unique index
+ * violation) keeps its own error.
+ */
+static int ring_batch_error(const NdbOperation *meta_op, int error) {
+  if (meta_op == nullptr || meta_op->getNdbError().code == 0) return error;
+  thd_mark_transaction_to_rollback(current_thd, 1);
+  switch (error) {
+    case HA_ERR_FOUND_DUPP_KEY:
+    case HA_ERR_FOUND_DUPP_UNIQUE:
+    case HA_ERR_ROW_IS_REFERENCED:
+    case HA_ERR_NO_REFERENCED_ROW:
+      return HA_ERR_LOCK_DEADLOCK;
+  }
+  return error;
+}
+
 int ha_ndbcluster::flush_ring_buffer_batch() {
   DBUG_TRACE;
   if (!m_rb_batch_active) return 0;
@@ -575,7 +599,7 @@ int ha_ndbcluster::flush_ring_buffer_batch() {
 
   if (execute_no_commit(thd_ndb, trans, false) != 0) {
     m_rb_batch_active = false;
-    return ndb_err(trans);
+    return ring_batch_error(meta_op, ndb_err(trans));
   }
 
   m_rb_batch_active = false;
@@ -1079,7 +1103,7 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
 
       /* Execute data write + meta insert/update together */
       if (execute_no_commit(thd_ndb, trans, false) != 0) {
-        ret = ndb_err(trans);
+        ret = ring_batch_error(meta_op, ndb_err(trans));
         goto cleanup;
       }
     }
