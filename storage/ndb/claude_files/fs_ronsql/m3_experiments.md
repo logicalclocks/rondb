@@ -101,7 +101,53 @@ p99 of each step.
    `nodeSelection`) — if the share drops to the scan's, the idle thread
    was node 2's TC.
 
-**Result.** (empty)
+**Result.** No measurement yet. Code analysis 2026-10-05 (a hypothesis
+that explains every observation; to verify):
+
+- *Thread layout.* Runs 4 and 6 ran `AutomaticThreadConfig` with
+  `NumCPUs=4`: `thr_config.cpp` gives 4 receive threads and no LDM, TC,
+  main or send threads, so every block instance runs in a receive thread.
+  An idle receive thread sleeps in `pollReceive(1)` (`mt.cpp`,
+  `mt_receiver_thread_main`: `delay = 1; // 1 ms`), the only 1 ms timer
+  on the request path; block threads sleep 10 ms, the API's poll and send
+  threads 10 ms.
+- *The lost send.* A primary-key read makes two threads of one data node
+  send to the same API at almost the same moment: the thread with the LDM
+  instance sends `TRANSID_AI`, the thread with the TC instance
+  `TCKEYCONF`. The second one runs `do_send(must_send = false)` in the
+  receive loop's busy branch; when `trylock(&sb->m_send_lock)` fails it
+  only re-registers the transporter in its own pending list (no
+  `m_force_send`), and with no progress `do_send` returns false. The lock
+  holder's `TCP_Transporter::doSend` sends the snapshot it fetched before
+  that data arrived and returns `remain > 0` about the snapshot only, so
+  it sees no more work and, with `m_force_send` 0, unlocks.
+- *The 1 ms sleep.* With `min_spin_timer_us == 0` the receive loop sets
+  `delay = 1` even in an iteration that executed signals (`sum > 0`); with
+  spinning it requires `sum == 0 && !has_received`. Spinning is adaptive
+  (`LatencyOptimisedSpinning`) and is 0 when `thrman` sees no gain or a
+  shared environment — the normal state at 1 thread. So the TC thread
+  enters `epoll_wait(1 ms)` with `TCKEYCONF` still queued, nothing wakes
+  it (the API is waiting for that reply), and its next loop sends after
+  ~1.05 ms. Block threads never sleep in an iteration that executed
+  signals and always run `do_send(must_send = true)` first, so layouts
+  with separate block threads (NumCPUs >= 8) should not show it.
+- *It fits the data:* a fixed ~1 ms quantum (a timeout, not a slow
+  wake-up); both engines (the data node is shared); PK reads ~35 % (TC
+  and LDM in different threads of the same node), pruned scans < 1 % (the
+  TC's `SCAN_TABCONF` rarely overlaps the rows' send); gone at 8 threads
+  (threads rarely sleep).
+
+Verification, cheapest first:
+1. Run 7 and run 5 (both with separate block threads; the data is on the
+   benchmark computer): `core_pk_lookup` / `fs_floor` at T=1 should show
+   the slow share near 0.
+2. `NumCPUs=4` with `SpinMethod=StaticSpinning`: the stall should go.
+3. The fix in `mt_receiver_thread_main`: do not sleep while
+   `selfptr->m_pending_send_count > 0` (or require `sum == 0 &&
+   !has_received` whatever the spin setting), so the next loop runs the
+   `must_send` `do_send`, which sets `m_force_send` when the lock is held.
+   Measure `.bench_ronsql core_pk_lookup 1 20000` and `.bench_sql
+   core_pk_lookup 1 20000` on `NumCPUs=4` before and after.
 
 ## X2. F24 — where the many-group cost is
 

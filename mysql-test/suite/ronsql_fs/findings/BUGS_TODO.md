@@ -502,6 +502,67 @@ F8 was a framework fixture issue and is already fixed.
     guards rather than classes, are fixed in their own entries. The
     EXPLAIN `[I.10 …]` tags keep their phase names (pinned by
     ronsql_cte_minmax_index).
+- [ ] F24 (bench.md): aggregation with many groups. (a) CTE / join aggregation:
+  fixes 1-5 done 2026-09-24 (`39ebf4b30cc` linear-hashing group table,
+  `61c04d45e4a` redistribution resumes at its bucket, `2671e046dee` merge adopts
+  the largest per-thread table, `92e7f26cade` no per-row atomic, `462026d0cf8`
+  batched redistribution); run 6: offline_fs_scalar 993 -> 168 ms, tpch q2 / q13 /
+  q22 ~1.1 s -> 113-139 ms. Next for (a): split the per-node owner role so these
+  queries scale with LDMs. (b) Drained single-table aggregates
+  (`core_group_many`, 1.03 s vs 161-168 ms through the CTE path): ~1 M partials
+  reach the API merge; `m3_run6_plan.md` C1. Targets: core_group_many <= 2x
+  core_group_few, tpch_q2 <= MySQL.
+- [ ] F25 (bench.md): a ~1 ms idle-wake stall on a share of requests, both engines
+  (sets the serving p99). Diagnose on the benchmark computer: CPU idle states,
+  data-node spinning, or the NDB API receive path (`m3_experiments.md` X1).
+  Code analysis 2026-10-05 (`m3_experiments.md` X1 Result): likely a send left
+  queued by a receive thread that then sleeps in `pollReceive(1 ms)` — in the
+  `NumCPUs=4` layout every block runs in a receive thread, and a failed
+  send-lock try without `m_force_send` is followed by the 1 ms epoll sleep when
+  spinning is off. To verify with runs 5 / 7 (separate block threads) and a
+  `NumCPUs=4` before / after measurement of the proposed `mt.cpp` fix.
+- [ ] NDB API adaptive send never defers (found 2026-10-05 while reading F25):
+  `TransporterFacade::add_to_poll_queue` has `if (m_poll_waiters >
+  m_max_poll_waiters) m_max_poll_waiters;` — the assignment is missing since
+  `bf9fadc2e1a` (RONDB-564), so `m_use_poll_waiters` stays 0 and rule 2 of
+  `do_send_adaptive` always sends at once. Latency is unaffected; the intended
+  batching under many client threads never happens. Fix: `m_max_poll_waiters =
+  m_poll_waiters;`, then measure throughput at T=8 / T=64.
+- [ ] F27 (bench.md, P0): data node failure under concurrent many-group CTE
+  queries. (a) DBSPJ `do_init` stopped the node on exhausted query memory: fixed
+  in `914cbf9bbb7` (OutOfQueryMemory REF, error insert 17534). (b) 1869 instead of
+  a temporary memory error: SETUP now answers 20008 and the join-aggregation
+  out-of-memory paths report 20008 / 1870 (temporary); the eviction
+  `ndbrequire` on an empty table is gone (`m3_run6_plan.md` A2). Census run 6:
+  offline_fs_batch completes at T=8 (run 4 lost its data nodes, run 5 failed with
+  1869). Open: (c) the query-memory budget of many-group CTE queries (tpch_q2
+  ~110 MB per query; `m3_run6_plan.md` C5); confirm (a) / (b) closed and update
+  `bench.md`.
+- [x] F32 (2026-09-30, review): a WHERE condition on the right side of a LEFT
+  JOIN of real tables was pushed into that table's operation as its filter, i.e.
+  applied as part of the join condition; `b.col IS NULL` kept rows WHERE removes.
+  A LIKE on any joined table counted as a constant condition and was filtered on
+  the root with the joined column's attribute number (NDB error 40, or a wrong
+  column). Fixed in `37f537465b0` (PR #1125): such conditions are rejected,
+  LIKE and NOT over a NULL-rejecting test promote the join to INNER, and LIKE is
+  classified by its operands. Regression `ronsql.ronsql_left_join_where`.
+- [ ] Suspect (2026-10-05, code reading, unverified): `classify_ce_table_resolved`
+  still has no case for `T_GREATEST` / `T_LEAST` (lowered only later, in
+  `simplify_ce`) or for the left operand of `I_IN_SUBQUERY`, so a WHERE such as
+  `GREATEST(c.a, c.b) > 5` or `c.x IN (SELECT ...)` on a joined table would count
+  as a constant condition and be filtered on the root, as LIKE was (F32).
+  Verify with a join whose child holds the columns (integer, NOT NULL for
+  GREATEST), compared with MySQL.
+- [ ] Follow-ups to clean rejections (features, not bugs):
+  - Real-table anti-join: `LEFT JOIN b ... WHERE b.col IS NULL` with `b.col NOT
+    NULL` is now rejected (F32); it could run as `ANTI_JOIN` (MatchNullOnly) as
+    the CTE form does, once aggregating joins are known not to feed matched rows.
+  - HAVING on GROUP BY columns or on the alias of an ordinary aggregate output
+    (rejected since F17's fix): needs typed comparisons in `ResultPrinter`
+    (its HAVING evaluator works in doubles).
+  - HAVING inside a CTE body (rejected since F17's fix): would be applied at the
+    CTE finalize barrier, after the cross-node merge.
+  - EXPLAIN does not show the HAVING condition.
 - [ ] Observation (2026-09-14, unrelated to RONDB-1124): one run of `ronsql.ronsql_join`
   Test 3 (`SELECT o.o_custkey, MIN(l.l_price), MAX(l.l_price) FROM orders AS o JOIN
   lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey`) aborted `ronsql_cli` on
@@ -569,6 +630,20 @@ F8 was a framework fixture issue and is already fixed.
   that run; the remaining gap is F5 (DECIMAL) and F6's intended range difference.
 - [ ] Report deferred modes explicitly when requested without making
   their absence fail otherwise successful regression runs.
+- [ ] Stale CTE hazards: `mysql-test/suite/ronsql_cte/findings/_discovery_log.md`
+  still marks D3, D4, D5, D12, D18, D19, D20 and D23 DISABLED, but RONDB-1072
+  resolved them in June 2026 (`e5c34e39ce4` D3, `bcbab15fd1d` D4 / D12,
+  `ea50c8a56e3` D5 guard and D19 / D20, `77629762cb4` D6 / D18 / D23) and their
+  cases run green (filter-12 / -13, agg-11, J14, J18, MM17; J16 pins D5's
+  rejection). `fuzz/hazards.go` translated them from the log on 2026-09-11, so
+  every remaining hazard is probably a fixed shape. Run `.fs_fuzz envelope
+  --include-hazards` (F15 no longer takes the cluster down), update the log rows
+  with their commits, and move the passing shapes into the regular productions.
+- [ ] Envelope fuzzer coverage gaps seen while fixing F17 / F32: `having-order`
+  emits only `HAVING <alias> > k` (always a rejection), so supported HAVING over
+  aggregate functions is never fuzzed; no production puts a WHERE condition on
+  the right side of a LEFT JOIN of real tables, or LIKE / GREATEST on a joined
+  table (filters are single-table only).
 
 ## Shape reporting
 
