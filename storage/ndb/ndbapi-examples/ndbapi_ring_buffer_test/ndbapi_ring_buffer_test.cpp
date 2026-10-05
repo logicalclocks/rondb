@@ -3761,6 +3761,51 @@ static bool test_ttl_ring_only_expired_delete(Ndb *ndb, MYSQL *mysql) {
               "only-expired + ignore-TTL delete of the meta row should be "
               "rejected with 4360, got " + std::to_string(err));
 
+  // (f) a row this transaction has already locked is read with TTL ignored
+  //     (read what you locked); an only-expired delete of it must still
+  //     check expiry: a live row and the meta row stay
+  auto lock_then_delete = [&](Uint32 slot, const char *what) -> int {
+    h.fillRow(rowbuf, 1, "");
+    setInt32(rowbuf, ridx, slot);
+    NdbTransaction *trans = ndb->startTransaction(table);
+    if (!trans) return -1;
+    NdbOperation::OperationOptions show_meta;
+    memset(&show_meta, 0, sizeof(show_meta));
+    show_meta.optionsPresent =
+        NdbOperation::OperationOptions::OO_RING_BUFFER_SHOW_META;
+    const NdbOperation *rop =
+        trans->readTuple(h.record, rowbuf, h.record, rowbuf,
+                         NdbOperation::LM_Exclusive, nullptr, &show_meta,
+                         sizeof(show_meta));
+    if (!rop || trans->execute(NdbTransaction::NoCommit) != 0) {
+      int e = trans->getNdbError().code;
+      ndb->closeTransaction(trans);
+      return e ? -e : -1;
+    }
+    const NdbOperation *dop =
+        trans->deleteTuple(h.record, rowbuf, h.record, nullptr, nullptr,
+                           &only_expired, sizeof(only_expired));
+    if (!dop) {
+      int e = trans->getNdbError().code;
+      ndb->closeTransaction(trans);
+      return e ? e : -1;
+    }
+    int rc = trans->execute(NdbTransaction::Commit);
+    int e = rc == 0 ? 0 : trans->getNdbError().code;
+    std::cerr << "  (" << what << ": rc=" << rc << " err=" << e << ")"
+              << std::endl;
+    ndb->closeTransaction(trans);
+    return e;
+  };
+  err = lock_then_delete(2, "lock live row, only-expired delete");
+  TEST_ASSERT(err == 626,
+              "only-expired delete of a locked live row should be 626, got " +
+                  std::to_string(err));
+  err = lock_then_delete(0, "lock meta row, only-expired delete");
+  TEST_ASSERT(err == 626,
+              "only-expired delete of the locked meta row should be 626, got " +
+                  std::to_string(err));
+
   rows = readDataRows(mysql, "rb_t35", 1);
   TEST_ASSERT(rows.size() == 1 && rows[0].ring_idx == 2 &&
                   rows[0].data == "live",

@@ -10539,7 +10539,14 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                       "been set as 1, so keep it! "
                       "table id: %u",
                       tabptr.i);
-    } else if (regTcPtr.p->ttl_ignore != 1 && signal->theData[5] == 1) {
+    } else if (regTcPtr.p->ttl_ignore != 1 && signal->theData[5] == 1 &&
+               !(regTcPtr.p->ttl_only_expired && regTcPtr.p->indTakeOver != ZTRUE &&
+                 is_ring_buffer_table(regTcPtr.p->tableref))) {
+      /* An only-expired key operation on a ring buffer table keeps its
+         expiry check even when this transaction already holds the row
+         lock: otherwise it would delete a live row or the meta row. The
+         TTL purge's take-over deletes keep the ignore (the only-expired
+         scan already verified expiry under that lock). */
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
                       "ACCKEYCONF is 1 and the related "
                       "Dblqh::TcConnectionrec::ttl_ignore is 0, "
@@ -11788,7 +11795,14 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
                       "been set as 1, so keep it! "
                       "table id: %u",
                       tabptr.i);
-    } else if (regTcPtr->ttl_ignore != 1 && signal->theData[5] == 1) {
+    } else if (regTcPtr->ttl_ignore != 1 && signal->theData[5] == 1 &&
+               !(regTcPtr->ttl_only_expired && regTcPtr->indTakeOver != ZTRUE &&
+                 is_ring_buffer_table(regTcPtr->tableref))) {
+      /* An only-expired key operation on a ring buffer table keeps its
+         expiry check even when this transaction already holds the row
+         lock: otherwise it would delete a live row or the meta row. The
+         TTL purge's take-over deletes keep the ignore (the only-expired
+         scan already verified expiry under that lock). */
       TTL_RONDB_TRACE(tabptr.i, "Dblqh::execACCKEYCONF[2], ttl_ignore in "
                       "ACCKEYCONF is 1 and the related "
                       "Dblqh::TcConnectionrec::ttl_ignore is 0, "
