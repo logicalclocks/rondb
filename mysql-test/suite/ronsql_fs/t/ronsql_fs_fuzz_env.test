@@ -4,7 +4,10 @@
 # feature group, LEFT chains from a CTE, IN lists, filters, HAVING /
 # ORDER BY / LIMIT, CTE-body ORDER BY, known-unsupported probes), run on
 # MySQL and RonSQL (RDRS), compared typed and classified against the
-# expectation table (random_generator.md §5.3).  Hazards are off.  Only
+# expectation table (random_generator.md §5.3).  A second pass runs 120
+# cases (seed 2) of the real-join production (WHERE conditions on a joined
+# real table, INNER / LEFT: the F32 / F32b shapes) and the former-hazard
+# production (the fixed discovery-log hazards).  Hazards are off.  Only
 # the SUMMARY line, any SIGNATURE lines and failing CASE lines are
 # printed (--quiet); a failing case makes the command exit non-zero.
 # Findings: suite/ronsql_fs/findings/envelope_fuzz.md.
@@ -29,6 +32,10 @@ call mtr.add_suppression("Participant timeout");
 --echo
 --echo === Envelope-level fuzz: seed 1, 200 cases, hazards off ===
 --exec $FS -e ".fs_fuzz envelope --seed 1 --count 200 --db test --sf 0.01 --threads 4 --dump-dir $MYSQLTEST_VARDIR/log/fs_fuzz_env --quiet"
+
+--echo
+--echo === Envelope-level fuzz: seed 2, 120 cases of real-join and former-hazard ===
+--exec $FS -e ".fs_fuzz envelope --seed 2 --count 120 --only real-join,former-hazard --db test --sf 0.01 --threads 4 --dump-dir $MYSQLTEST_VARDIR/log/fs_fuzz_env_join --quiet"
 
 --echo
 --echo === Cleanup ===

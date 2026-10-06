@@ -264,3 +264,20 @@ Send the last few `CASE` lines: the `CRASH` line names the statement.
 Once F15 has its minimal repro, its shape moves to `fuzz/hazards.go` (out
 of the default productions), so the default envelope run no longer takes
 the cluster down and the MTR record can be produced.
+
+## env-v2 (2026-10-06)
+
+The envelope generator is version `env-v2` (case ids `env-v2-<seed>-<i>`):
+
+- `real-join` (weight 8): customers_1 JOIN / LEFT JOIN regions_1 with one
+  WHERE condition on the joined table (comparison, LIKE, GREATEST, LEAST, XOR,
+  NOT (IS NULL), IS NULL, an OR with IS NULL, IN (subquery)), the F32 / F32b
+  shapes no other production built.
+- `former-hazard` (weight 4): the translations of the fixed discovery-log
+  hazards (D3, D4, D5, D6, D12, D18, D19, D20, D23, `fuzz/hazards.go`
+  `FormerHazards`); `Hazards` is empty until a new HANG / CRASH row opens.
+- `having-order` emits HAVING over aggregate functions (`having-agg`) as well
+  as the rejected alias form.
+- New expectation rows: `left-join-where-null`, `subquery-joined`,
+  `fanout-sibling`, `colcol-mixed-type` (probe: the D4 translation's INT vs
+  BIGINT comparison).
