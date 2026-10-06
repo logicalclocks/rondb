@@ -543,6 +543,16 @@ F8 was a framework fixture issue and is already fixed.
   `do_send_adaptive` always sends at once. Latency is unaffected; the intended
   batching under many client threads never happens. Fix: `m_max_poll_waiters =
   m_poll_waiters;`, then measure throughput at T=8 / T=64.
+- [x] Every scanned row read the whole slowdown NodeBitmask (found 2026-10-06 in the
+  F24 data-node profile): `Dblqh::scanTupkeyConfLab` checked
+  `get_status_slowdown().isclear()` before testing the API node's bit, and with
+  node ids up to 8191 `isclear()` reads 256 words when no transporter is slowed
+  down (64 on 25.10-26.05, 8 on 24.10). ~19 % of the data nodes' busy samples
+  during core_group_many, ~100 ns per row. Fixed in `9640795ba3c` (tests only the
+  API node's bit; cherry-picks cleanly to 24.10-26.10). Mac, T=1, against F24:
+  RonSQL core_group_few / _2k / _many 175 / 168 / 305 -> 147 / 146 / 269 ms; MySQL
+  without pushdown 437 / 1283 / 1346 -> 409 / 1141 / 1203 ms (ndb wait -26 /
+  -136 / -137 ms); the loop's self samples fell from 20 % to 1.2 % of busy.
 - [ ] F27 (bench.md, P0): data node failure under concurrent many-group CTE
   queries. (a) DBSPJ `do_init` stopped the node on exhausted query memory: fixed
   in `914cbf9bbb7` (OutOfQueryMemory REF, error insert 17534). (b) 1869 instead of

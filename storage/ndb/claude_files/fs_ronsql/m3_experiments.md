@@ -291,6 +291,16 @@ core_group_few) is met on the Mac. The gain (~95 ms) exceeds the ~67 ms
 the merge took: probably the slow merge also delayed the data nodes,
 which waited for the API before sending more (not verified).
 
+The self-time view of the same data-node profile showed one more cost,
+not group-related: ~20 % of busy samples on one line of
+`Dblqh::scanTupkeyConfLab`, `get_status_slowdown().isclear()`, which
+reads all 256 words of the NodeBitmask for every scanned row. Fixed in
+`9640795ba3c` (test only the API node's bit). Against F24
+(`~/slowdown_fix` vs `~/f24_hash`): core_group_few / _2k / _many 175 /
+168 / 305 -> 147 / 146 / 269 ms, MySQL without pushdown -28 / -141 /
+-143 ms; the line's self samples fell to 1.2 % of busy. With both
+fixes core_group_many went from 401 to 269 ms.
+
 ## X3. Throughput of the point shapes
 
 **Question.** At 8 clients on run 4's configuration `fs_point` reached
