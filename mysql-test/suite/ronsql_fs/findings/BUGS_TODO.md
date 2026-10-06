@@ -549,13 +549,19 @@ F8 was a framework fixture issue and is already fixed.
   column). Fixed in `37f537465b0` (PR #1125): such conditions are rejected,
   LIKE and NOT over a NULL-rejecting test promote the join to INNER, and LIKE is
   classified by its operands. Regression `ronsql.ronsql_left_join_where`.
-- [ ] Suspect (2026-10-05, code reading, unverified): `classify_ce_table_resolved`
-  still has no case for `T_GREATEST` / `T_LEAST` (lowered only later, in
-  `simplify_ce`) or for the left operand of `I_IN_SUBQUERY`, so a WHERE such as
-  `GREATEST(c.a, c.b) > 5` or `c.x IN (SELECT ...)` on a joined table would count
-  as a constant condition and be filtered on the root, as LIKE was (F32).
-  Verify with a join whose child holds the columns (integer, NOT NULL for
-  GREATEST), compared with MySQL.
+- [x] F32b (2026-10-06, code reading confirmed, regression test recorded):
+  `classify_ce_table_resolved` counted every operator without a case as a
+  constant, so on a joined table XOR, GREATEST / LEAST (lowered only later, in
+  `simplify_ce`), the outer side of `IN (subquery)` (including a correlated
+  EXISTS, rewritten to IN on the outer column) and a correlated scalar
+  subquery went to the root table's filter, where `apply_filter_cmp` uses the
+  joined column's attribute number against the root (as LIKE did, F32).  They
+  are now classified by their operands; a subquery condition on a joined table
+  is rejected, since its result replaces the node only at execution time and is
+  known to reach the root table's filter only.  Regression
+  `ronsql.ronsql_join_where_classify` (tables laid out so the old behaviour
+  filters different rows; jw-5 is the first IN (subquery) on a join's root in
+  the suite).
 - [ ] Follow-ups to clean rejections (features, not bugs):
   - Real-table anti-join: `LEFT JOIN b ... WHERE b.col IS NULL` with `b.col NOT
     NULL` is now rejected (F32); it could run as `ANTI_JOIN` (MatchNullOnly) as

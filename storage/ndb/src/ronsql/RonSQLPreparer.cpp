@@ -492,6 +492,12 @@ require_run(bool condition, const char* msg)
  *   >= 0 : all columns belong to that table index
  *     -1 : no column references (constant-only subtree)
  *     -2 : columns span multiple tables (cross-table condition)
+ *
+ * Every operator with operands must have a case here: the default
+ * counts a node as a constant, and a constant conjunct is filtered on
+ * the root table, where apply_filter_cmp uses a joined column's
+ * attribute number against the root (F32: LIKE; then XOR, GREATEST /
+ * LEAST and the outer side of IN (subquery) / correlated subqueries).
  */
 Int32
 RonSQLPreparer::classify_ce_table_resolved(
@@ -513,6 +519,7 @@ RonSQLPreparer::classify_ce_table_resolved(
     return (Int32)ref.join_op_idx;
   }
   case T_OR:
+  case T_XOR:
   case T_AND:
   case T_EQUALS:
   case T_NOT_EQUALS:
@@ -521,6 +528,12 @@ RonSQLPreparer::classify_ce_table_resolved(
   case T_LE:
   case T_LT:
   case T_LIKE:
+  // GREATEST / LEAST hold their argument list (T_COMMA nodes: item in
+  // args.left, the rest in args.right) in args.left; simplify_ce lowers
+  // them only after this classification.
+  case T_GREATEST:
+  case T_LEAST:
+  case T_COMMA:
   case T_PLUS:
   case T_MINUS:
   case T_MULTIPLY:
@@ -551,10 +564,23 @@ RonSQLPreparer::classify_ce_table_resolved(
     return classify_ce_table_resolved(scope, ce->interval.arg);
   case T_EXTRACT:
     return classify_ce_table_resolved(scope, ce->extract.arg);
-  case T_EXISTS:
   case I_IN_SUBQUERY:
+    // The subquery is uncorrelated (a correlated EXISTS was rewritten
+    // to IN with the outer correlation column as expr); the outer
+    // expression decides the table.
+    return classify_ce_table_resolved(scope, ce->in_subquery.expr);
+  case I_CORR_SCALAR:
+  {
+    Int32 cmp_t = classify_ce_table_resolved(scope, ce->corr_scalar.cmp_expr);
+    Int32 key_t = classify_ce_table_resolved(scope, ce->corr_scalar.key_expr);
+    if (cmp_t == -1) return key_t;
+    if (key_t == -1) return cmp_t;
+    if (cmp_t == key_t) return cmp_t;
+    return -2;
+  }
+  case T_EXISTS:
   case I_SUBQUERY:
-    return -1;  // Subqueries are treated as constants
+    return -1;  // Uncorrelated subqueries are constants
   default:
     // Constants, strings, etc. — no column reference
     return -1;
@@ -3338,6 +3364,22 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
     Int32 table_idx = classify_ce_table_resolved(scope, conjuncts[i]);
+
+    // A subquery's result replaces its node only at execution time
+    // (substitute_subquery_results), after this split and after the
+    // joined tables' index bounds were chosen from their conjuncts.
+    // That is known to reach the root table's filter only; until it is
+    // shown to reach a joined table's, reject the condition there (it
+    // used to count as a constant and filter the root table with the
+    // joined column's attribute number, as LIKE did, F32).
+    if (table_idx > 0 && ce_has_subquery(conjuncts[i]))
+    {
+      throw RonSQLPermanentError(
+          "A WHERE condition with a subquery (IN (SELECT ...), EXISTS or a "
+          "correlated subquery) on a column of a joined table is not "
+          "supported; only conditions on the first table in FROM can use "
+          "a subquery.");
+    }
 
     if (table_idx == -2)
     {
