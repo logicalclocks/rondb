@@ -1597,12 +1597,18 @@ void Dbacc::execACCKEYREQ(Signal *signal, Uint32 opPtrI,
                           tcOprec,
                           tcBlockref));
 
-          release_frag_mutex_hash(fragrecptr.p, hash);
-
+          /* Write m_lockTime and update LockStats BEFORE releasing the
+           * fragment mutex: once the mutex is free other threads (this
+           * may be a query thread) can see this operation as lock owner,
+           * and LockStats readers assume a visible operation carries a
+           * valid timestamp. The LockStats counters are also protected
+           * by the fragment mutex. */
           fragrecptr.p->m_lockStats.req_start_imm_ok(
               (opbits & Operationrec::OP_LOCK_MODE) != ZREADLOCK,
               opP->m_lockTime,
               getHighResTimer());
+
+          release_frag_mutex_hash(fragrecptr.p, hash);
         }
         else
         {
@@ -2642,10 +2648,12 @@ void Dbacc::insertelementLab(Signal *signal, Page8Ptr bucketPageptr,
                    tcOprec,
                    tcBlockref));
 
-  release_frag_mutex_hash(fragrecptr.p, hash);
+  /* Timestamp before the mutex release, as in accIsLockedLab(): LockStats
+   * readers assume a visible operation carries a valid timestamp. */
   fragrecptr.p->m_lockStats.req_start_imm_ok(true /* Exclusive */,
                                              opP->m_lockTime,
                                              getHighResTimer());
+  release_frag_mutex_hash(fragrecptr.p, hash);
   c_tup->prepareTUPKEYREQ(localKey.m_page_no,
                           localKey.m_page_idx,
                           fragrecptr.p->tupFragptr);
