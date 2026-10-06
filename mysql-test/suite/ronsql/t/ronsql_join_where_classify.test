@@ -1,0 +1,175 @@
+# WHERE conjuncts on a joined table whose operator had no case in
+# RonSQLPreparer::classify_ce_table_resolved (the F32 class, after LIKE).
+#
+# RonSQL splits the WHERE by table and pushes each conjunct into its
+# table's operation as a filter; a conjunct without column references
+# counts as a constant and goes to the root table.  The classifier's
+# default counted every unlisted operator as a constant, so XOR,
+# GREATEST / LEAST (lowered only later, by simplify_ce) and the outer
+# side of IN (subquery) on a joined table were filtered on the ROOT table
+# with the joined column's attribute number: a filter on the wrong column
+# (or an NDB error when the types differ).  They are now classified by
+# their operands.  A subquery condition on a joined table is rejected:
+# its result replaces the node only at execution time, and that is known
+# to reach the root table's filter only.
+#
+# The tables are laid out so that the old behaviour shows: jw_child.a and
+# jw_child.b have the attribute numbers of jw_parent.grp and jw_parent.a,
+# with different values.  Every column is NOT NULL: RonSQL lowers
+# GREATEST / LEAST in WHERE to an OR / AND of per-argument comparisons,
+# which differs from MySQL for a NULL argument (MySQL returns NULL).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE jw_parent (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  a   INT NOT NULL,
+  b   INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE jw_child (
+  id INT NOT NULL,
+  a  INT NOT NULL,
+  b  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE jw_keys (
+  k INT NOT NULL,
+  PRIMARY KEY USING HASH (k)
+) ENGINE=NDB;
+
+# GREATEST(c.a, c.b) > 5 holds for children 1, 3, 4, 6, 8; the same test
+# on the root's columns with those attribute numbers (GREATEST(p.grp,
+# p.a) > 5) for parents 2, 4, 6, 8.
+INSERT INTO jw_parent VALUES
+  (1,1,0,0),(2,0,9,9),(3,1,0,9),(4,0,9,0),(5,1,2,2),(6,0,7,7),(7,1,1,1),(8,0,8,8);
+INSERT INTO jw_child VALUES
+  (1,9,1),(2,1,1),(3,6,2),(4,2,8),(5,3,3),(6,7,7),(7,0,0),(8,5,6);
+INSERT INTO jw_keys VALUES (7),(9);
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === jw-0: comparison on the joined table (control) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE c.a > 5
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE c.a > 5
+GROUP BY p.grp|
+
+--echo
+--echo === jw-1: GREATEST on the joined table ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE GREATEST(c.a, c.b) > 5
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE GREATEST(c.a, c.b) > 5
+GROUP BY p.grp|
+
+--echo
+--echo === jw-2: LEAST on the joined table ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE LEAST(c.a, c.b) <= 2
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE LEAST(c.a, c.b) <= 2
+GROUP BY p.grp|
+
+--echo
+--echo === jw-3: XOR on the joined table ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE (c.a > 5) XOR (c.b > 5)
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE (c.a > 5) XOR (c.b > 5)
+GROUP BY p.grp|
+
+--echo
+--echo === jw-4: GREATEST on the root and on the joined table ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE GREATEST(p.a, p.b) > 5 AND GREATEST(c.a, c.b) > 5
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE GREATEST(p.a, p.b) > 5 AND GREATEST(c.a, c.b) > 5
+GROUP BY p.grp|
+
+--echo
+--echo === jw-5: IN (subquery) on the root table (the supported side) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE p.a IN (SELECT k FROM jw_keys)
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.a), SUM(c.b)
+FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id
+WHERE p.a IN (SELECT k FROM jw_keys)
+GROUP BY p.grp|
+
+DELIMITER ;|
+
+--echo
+--echo === jw-r1 (rejection): IN (subquery) on the joined table ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id WHERE c.a IN (SELECT k FROM jw_keys) GROUP BY p.grp;' 2>&1
+
+--echo
+--echo === jw-r2 (rejection): correlated EXISTS on the joined table ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id WHERE EXISTS (SELECT k.k FROM jw_keys AS k WHERE k.k = c.a) GROUP BY p.grp;' 2>&1
+
+--disable_query_log
+--disable_warnings
+DROP TABLE jw_keys;
+DROP TABLE jw_child;
+DROP TABLE jw_parent;
+--enable_warnings
+--enable_query_log
