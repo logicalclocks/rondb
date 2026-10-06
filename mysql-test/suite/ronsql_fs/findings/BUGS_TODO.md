@@ -639,20 +639,36 @@ F8 was a framework fixture issue and is already fixed.
   that run; the remaining gap is F5 (DECIMAL) and F6's intended range difference.
 - [ ] Report deferred modes explicitly when requested without making
   their absence fail otherwise successful regression runs.
-- [ ] Stale CTE hazards: `mysql-test/suite/ronsql_cte/findings/_discovery_log.md`
-  still marks D3, D4, D5, D12, D18, D19, D20 and D23 DISABLED, but RONDB-1072
-  resolved them in June 2026 (`e5c34e39ce4` D3, `bcbab15fd1d` D4 / D12,
-  `ea50c8a56e3` D5 guard and D19 / D20, `77629762cb4` D6 / D18 / D23) and their
-  cases run green (filter-12 / -13, agg-11, J14, J18, MM17; J16 pins D5's
-  rejection). `fuzz/hazards.go` translated them from the log on 2026-09-11, so
-  every remaining hazard is probably a fixed shape. Run `.fs_fuzz envelope
-  --include-hazards` (F15 no longer takes the cluster down), update the log rows
-  with their commits, and move the passing shapes into the regular productions.
-- [ ] Envelope fuzzer coverage gaps seen while fixing F17 / F32: `having-order`
-  emits only `HAVING <alias> > k` (always a rejection), so supported HAVING over
-  aggregate functions is never fuzzed; no production puts a WHERE condition on
-  the right side of a LEFT JOIN of real tables, or LIKE / GREATEST on a joined
-  table (filters are single-table only).
+- [x] Stale CTE hazards (2026-10-06, verified: `ronsql_fs_fuzz_env` and its jit /
+  ng2r2 / ng4r2 mirrors green):
+  `mysql-test/suite/ronsql_cte/findings/_discovery_log.md` rows D3, D4, D5, D6,
+  D12, D18, D19, D20 and D23 are closed with their commits (`e5c34e39ce4` D3,
+  `bcbab15fd1d` + `088d8b25537` D4 / D12 (col-vs-col, supported for identical
+  types since RONDB-1107), `ea50c8a56e3` D5 rejection and D19 / D20,
+  `77629762cb4` D6 / D18 / D23) and the MTR cases that run them.
+  `fuzz/hazards.go` has no open hazard left; the translations moved to
+  `FormerHazards`, run by the new `former-hazard` envelope production (D5 as the
+  `fanout-sibling` rejection; D4 compares INT with INT, its old INT-vs-BIGINT
+  form is the `colcol-mixed-type` probe).  The hazard test now parses bold ids
+  (`**D6**` was never read).  D18 is translated over `customers_1.tier`, not
+  `transactions_1.category`: the first run compared MAX over category's
+  collation-equal `travel` / `Travel` (MySQL `Travel`, RonSQL `travel`, the F8
+  rule); a unit test now rejects MIN / MAX over category or device in any
+  compared envelope case or former hazard.
+- [x] Envelope fuzzer coverage gaps seen while fixing F17 / F32 (2026-10-06,
+  verified on all four arms: seed 1 186 pass / 14 clean-reject, seed 2 100 /
+  20, JIT fallback delta 0): `having-order` also emits HAVING over aggregate
+  functions (`having-agg`, must match MySQL); the new `real-join` production
+  joins customers_1 to regions_1 (INNER / LEFT) with one WHERE condition on the
+  joined table: comparison, LIKE, GREATEST, LEAST, XOR, NOT (IS NULL), IS NULL,
+  an OR with IS NULL, IN (subquery).  Expectation rows `left-join-where-null`
+  (F32), `subquery-joined` (F32b), `fanout-sibling` (D5), `colcol-mixed-type`
+  (D4).  Case ids are `env-v2-…`; the recorded `ronsql_fs_fuzz_env` summary
+  changes.
+- [ ] XOR on a LEFT JOIN's right side is rejected although MySQL treats it as
+  NULL-rejecting: `is_null_rejecting` has no XOR case (an XOR is NULL when an
+  operand is a comparison on a NULL column).  Small feature; the fuzzer tags it
+  `left-join-where-null` meanwhile.
 
 ## Shape reporting
 

@@ -43,8 +43,11 @@ import (
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/data"
 )
 
-// EnvVersion is part of every envelope case id.
-const EnvVersion = "env-v1"
+// EnvVersion is part of every envelope case id.  v2 (2026-10-06): the
+// real-join and former-hazard productions, HAVING over aggregate
+// functions and the colcol-mixed-type probe change what every seed
+// generates.
+const EnvVersion = "env-v2"
 
 // Expectation is one row of the expectation table: a construct present in
 // a statement and the RonSQL outcome it implies.
@@ -95,6 +98,10 @@ var Expectations = []Expectation{
 	{Construct: "cross-table-where", Reject: true, Pattern: "Cross-table WHERE", Note: "a WHERE atom comparing columns of two tables outside the supported forms"},
 	{Construct: "syntax", Reject: true, Pattern: "Syntax error", Note: "implicit alias, DISTINCT, BETWEEN, OFFSET, UNION, RIGHT JOIN: outside the grammar"},
 	{Construct: "having", Reject: true, Pattern: "HAVING can only reference aggregate functions", TaggedOnly: true, Note: "HAVING on the alias of an aggregate output: HAVING supports aggregate functions (and SELECT-list subquery aliases) only, and rejects any other identifier before column resolution, whatever ORDER BY / LIMIT accompanies it (was 'Could not find column', or the F17 internal error with ORDER BY on the alias + LIMIT)"},
+	{Construct: "left-join-where-null", Reject: true, Pattern: "WHERE on a LEFT JOIN's right side that holds for NULL is not", Finding: "F32", Note: "a WHERE condition on the right side of a LEFT JOIN of real tables that RonSQL cannot prove NULL-rejecting (IS NULL, an OR with IS NULL, XOR): the table's operation could only apply it as part of the join condition"},
+	{Construct: "subquery-joined", Reject: true, Pattern: "A WHERE condition with a subquery", Finding: "F32b", Note: "IN (subquery) / EXISTS / a correlated subquery on a joined table's column: its result replaces the node only at execution time and is known to reach the root table's filter only"},
+	{Construct: "fanout-sibling", Reject: true, Pattern: "Aggregation references a column from a join branch that is not an", Finding: "D5", Note: "an aggregation over a CTE_LOOKUP child grouped by a real-table sibling under the same parent (fan-out across a non-ancestor sibling; it crashed RDRS before the guard)"},
+	{Construct: "colcol-mixed-type", Reject: true, Pattern: "requires columns of identical type, precision, length, scale", Finding: "D4", Note: "column-vs-column comparison in a CTE-body WHERE between columns of different types (INT vs BIGINT): supported only for identical types since RONDB-1107"},
 }
 
 // ExpectationFor returns the table row of a construct.
@@ -149,6 +156,7 @@ var Productions = []struct {
 }{
 	{"single-agg", 15}, {"collect-direct", 10}, {"cte-per-fg", 20}, {"snow-inner", 15}, {"snow-left", 10},
 	{"batch-in", 8}, {"filters", 8}, {"having-order", 6}, {"cte-body-orderby", 4}, {"probe", 4},
+	{"real-join", 8}, {"former-hazard", 4},
 }
 
 // EnvGen samples envelope cases.
@@ -202,6 +210,10 @@ func (e *EnvGen) Case(seed uint64, i int, only map[string]bool) EnvCase {
 		es.cteBodyOrderBy()
 	case "probe":
 		es.probe()
+	case "real-join":
+		es.realJoin()
+	case "former-hazard":
+		es.formerHazard()
 	}
 	c.Signature = c.Production + "|" + strings.Join(c.Constructs, ",")
 	return c
@@ -475,17 +487,27 @@ func (es *envSampler) havingOrder() {
 	where := q("customer_id") + " IN (" + es.keyList(5+es.rng.IntN(20)) + ")"
 	sql := "SELECT `customer_id`, COUNT(*) AS `n`, SUM(`amount`) AS `amount_sum` FROM `transactions_1` WHERE " + where + " GROUP BY `customer_id`"
 	having, order := es.pct(70), es.pct(80)
+	aggHaving := having && es.pct(50)
 	// HAVING on an aggregate alias is a clean reject (HAVING takes aggregate
-	// functions only); ORDER BY on a GROUP BY column or an aggregate alias +
-	// LIMIT is supported and passes.  A HAVING case rejects whatever ORDER BY
-	// accompanies it, so the "having" tag carries it.
+	// functions only); HAVING over aggregate functions, and ORDER BY on a
+	// GROUP BY column or an aggregate alias + LIMIT, are supported and pass.
+	// An alias HAVING case rejects whatever ORDER BY accompanies it, so the
+	// "having" tag carries it.
 	switch {
-	case having:
+	case having && !aggHaving:
 		es.tag("having")
 	case order:
 		es.tag("orderby-limit")
 	}
-	if having {
+	switch {
+	case aggHaving:
+		es.tag("having-agg")
+		sql += " HAVING " + []string{
+			"COUNT(*) > " + strconv.Itoa(es.rng.IntN(6)),
+			"SUM(`amount`) > " + strconv.Itoa(500*(1+es.rng.IntN(10))),
+			"COUNT(*) >= " + strconv.Itoa(1+es.rng.IntN(4)) + " AND MAX(`fee`) < " + strconv.Itoa(10+es.rng.IntN(40)),
+		}[es.rng.IntN(3)]
+	case having:
 		sql += " HAVING `n` > " + strconv.Itoa(es.rng.IntN(6))
 	}
 	if order {
@@ -520,7 +542,7 @@ func (es *envSampler) cteBodyOrderBy() {
 // probe: one known-unsupported construct (§5.3) that must reject cleanly.
 func (es *envSampler) probe() {
 	k := es.oneKey()
-	switch es.choose(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1) {
+	switch es.choose(1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1) {
 	case 0:
 		es.tag("probe", "cte-partial-key")
 		es.c.SQL = "WITH `x` AS (SELECT `account_id` AS `k1`, `currency` AS `k2`, COUNT(*) AS `n` FROM `balance_hist_1` GROUP BY `account_id`, `currency`) " +
@@ -571,8 +593,98 @@ func (es *envSampler) probe() {
 			"SELECT COUNT(*) AS `n` FROM `transactions_1` WHERE `customer_id` = " + k + " UNION SELECT COUNT(*) AS `n` FROM `sessions_1` WHERE `customer_id` = " + k + ";",
 			"WITH `b` AS (SELECT `region_id`, COUNT(*) AS `hw_cnt` FROM `customers_1` WHERE `customer_id` = " + k + " GROUP BY `region_id`) SELECT `j2`.`region_name` AS `r` FROM `b` RIGHT JOIN `regions_1` AS `j2` ON `j2`.`region_id` = `b`.`region_id`;",
 		}[es.rng.IntN(6)]
-	default:
+	case 11:
 		es.tag("probe", "orderby-in-subquery")
 		es.c.SQL = "SELECT COUNT(*) AS `n` FROM `transactions_1` WHERE `customer_id` IN (SELECT `customer_id` FROM `customers_1` WHERE `region_id` = 5 ORDER BY `customer_id`);"
+	default:
+		// The D4 hazard's translation (INT fee vs BIGINT amount).
+		es.tag("probe", "colcol-mixed-type")
+		es.c.SQL = "WITH `liq` AS (SELECT `merchant_id` AS `k`, COUNT(*) AS `n`, SUM(`amount`) AS `q` FROM `transactions_1` WHERE `fee` < `amount` GROUP BY `merchant_id`) " +
+			"SELECT `m`.`mcc` AS `mcc`, SUM(`liq`.`n`) AS `n`, SUM(`liq`.`q`) AS `q` FROM `merchants_1` AS `m` JOIN `liq` ON `liq`.`k` = `m`.`merchant_id` GROUP BY `m`.`mcc`;"
 	}
+}
+
+// realJoin: an aggregating join of two real tables, customers_1 AS c and
+// regions_1 AS r, INNER or LEFT, with one WHERE condition on the joined
+// table r — the shapes of F32 / F32b, which no other production builds
+// (its filters are single-table): comparison, LIKE, GREATEST / LEAST and
+// XOR on a joined table, NOT / IS NULL / OR on a LEFT JOIN's right side,
+// IN (subquery) on a joined column.  The data has misses on both hops:
+// customers with no region (c mod 13 = 0) or a dangling one (c mod 29 =
+// 0), regions with no country (r mod 17 = 0).  On a LEFT JOIN a
+// condition RonSQL proves NULL-rejecting (comparison, LIKE, GREATEST /
+// LEAST compared with a constant, NOT over a comparison or IS NULL)
+// promotes the join to INNER and must match MySQL; IS NULL, an OR with
+// IS NULL and XOR are rejected (XOR is NULL-rejecting in MySQL; RonSQL
+// does not prove it).
+func (es *envSampler) realJoin() {
+	es.tag("real-join")
+	left := es.pct(50)
+	jt := "JOIN"
+	if left {
+		jt = "LEFT JOIN"
+		es.tag("left-join")
+	}
+	r := func(n string) string { return qc("r", n) }
+	popK := strconv.Itoa(12345 * (1 + es.rng.IntN(199)))
+	where := qc("c", "customer_id") + " IN (" + es.keyList(5+es.rng.IntN(26)) + ")"
+	if es.pct(30) {
+		es.tag("greatest-where")
+		where += " AND GREATEST(" + qc("c", "age") + ", " + qc("c", "credit_score") + ") > " + strconv.Itoa(300+es.rng.IntN(551))
+	}
+	var atom string
+	leftRejects := false
+	switch es.choose(20, 15, 10, 5, 10, 10, 10, 10, 10) {
+	case 0:
+		es.tag("joined-cmp")
+		atom = r("population") + " > " + popK
+	case 1:
+		es.tag("joined-like")
+		atom = r("region_name") + " LIKE 'Region " + strconv.Itoa(1+es.rng.IntN(9)) + "%'"
+	case 2:
+		es.tag("joined-greatest")
+		atom = "GREATEST(" + r("region_id") + ", " + r("country_id") + ") > " + strconv.Itoa(1+es.rng.IntN(60))
+	case 3:
+		es.tag("joined-least")
+		atom = "LEAST(" + r("region_id") + ", " + r("country_id") + ") <= " + strconv.Itoa(1+es.rng.IntN(60))
+	case 4:
+		es.tag("joined-xor")
+		// Parenthesized as a whole: XOR binds looser than AND (MySQL and
+		// RonSQL alike), so a bare atom would XOR the whole preceding WHERE.
+		atom = "((" + r("population") + " > " + popK + ") XOR (" + r("country_id") + " > " + strconv.Itoa(1+es.rng.IntN(40)) + "))"
+		leftRejects = true
+	case 5:
+		es.tag("joined-not-isnull")
+		atom = "NOT (" + r("country_id") + " IS NULL)"
+	case 6:
+		es.tag("joined-is-null")
+		atom = r("country_id") + " IS NULL"
+		leftRejects = true
+	case 7:
+		es.tag("joined-or-isnull")
+		atom = "(" + r("country_id") + " IS NULL OR " + r("population") + " > " + popK + ")"
+		leftRejects = true
+	default:
+		// Rejected on INNER and LEFT alike, before the LEFT JOIN check.
+		es.tag("subquery-joined")
+		atom = r("country_id") + " IN (SELECT `k`.`country_id` FROM `countries_1` AS `k`)"
+	}
+	if left && leftRejects {
+		es.tag("left-join-where-null")
+	}
+	es.c.SQL = "SELECT " + qc("c", "region_id") + " AS `rid`, COUNT(*) AS `n`, COUNT(" + r("region_id") + ") AS `nr`, SUM(" + r("population") +
+		") AS `pop`, MAX(" + r("country_id") + ") AS `mc` FROM `customers_1` AS `c` " + jt + " `regions_1` AS `r` ON " + r("region_id") +
+		" = " + qc("c", "region_id") + " WHERE " + where + " AND " + atom + " GROUP BY " + qc("c", "region_id") + ";"
+}
+
+// formerHazard: the translation of a fixed hazard row (hazards.go), run as
+// a regular case: compared with MySQL, or expected to reject when the fix
+// was a clean rejection.
+func (es *envSampler) formerHazard() {
+	h := FormerHazards[es.rng.IntN(len(FormerHazards))]
+	es.tag("former-hazard", "former-hazard-"+h.ID)
+	if h.Construct != "" {
+		es.tag(h.Construct)
+	}
+	es.c.SQL = h.SQL
 }
