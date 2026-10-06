@@ -32,6 +32,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1381,13 +1382,12 @@ func (lc *LatencyCollector) GetTotalStats() (min, max, avg, p95, p99, p999 time.
 	copy(latencies, lc.totalLatencies)
 	lc.mu.Unlock()
 
+	// calculateLatencyStats sorts latencies in place.
 	minV, maxV, avgV, p99V, cnt := calculateLatencyStats(latencies)
 	if cnt == 0 {
 		return 0, 0, 0, 0, 0, 0, 0
 	}
 
-	// Sort for percentile calculation
-	sortDurations(latencies)
 	p95V := percentile(latencies, 95)
 	p999V := percentile(latencies, 99.9)
 
@@ -1484,27 +1484,12 @@ func calculateLatencyStats(latencies []time.Duration) (min, max, avg, p99 time.D
 	return min, max, avg, p99, count
 }
 
-// sortDurations sorts a slice of durations in place
+// sortDurations sorts a slice of durations in place.  The latency tables
+// sort every end-to-end and per-phase sample of a run (8 threads × 20000
+// requests = 160000 each), so this must be O(n log n): the former
+// selection sort took minutes per table at that size.
 func sortDurations(d []time.Duration) {
-	// Simple insertion sort for small slices, otherwise use stdlib
-	if len(d) < 100 {
-		for i := 1; i < len(d); i++ {
-			for j := i; j > 0 && d[j] < d[j-1]; j-- {
-				d[j], d[j-1] = d[j-1], d[j]
-			}
-		}
-	} else {
-		// Use a proper sort
-		for i := 0; i < len(d); i++ {
-			minIdx := i
-			for j := i + 1; j < len(d); j++ {
-				if d[j] < d[minIdx] {
-					minIdx = j
-				}
-			}
-			d[i], d[minIdx] = d[minIdx], d[i]
-		}
-	}
+	slices.Sort(d)
 }
 
 // percentile returns the p-th percentile from sorted durations

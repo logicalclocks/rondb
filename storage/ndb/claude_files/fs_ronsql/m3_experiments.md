@@ -101,7 +101,122 @@ p99 of each step.
    `nodeSelection`) — if the share drops to the scan's, the idle thread
    was node 2's TC.
 
-**Result.** (empty)
+**Result.** No measurement yet. Code analysis 2026-10-05 (a hypothesis
+that explains every observation; to verify):
+
+- *Thread layout.* Runs 4 and 6 ran `AutomaticThreadConfig` with
+  `NumCPUs=4`: `thr_config.cpp` gives 4 receive threads and no LDM, TC,
+  main or send threads, so every block instance runs in a receive thread.
+  An idle receive thread sleeps in `pollReceive(1)` (`mt.cpp`,
+  `mt_receiver_thread_main`: `delay = 1; // 1 ms`), the only 1 ms timer
+  on the request path; block threads sleep 10 ms, the API's poll and send
+  threads 10 ms.
+- *The lost send.* A primary-key read makes two threads of one data node
+  send to the same API at almost the same moment: the thread with the LDM
+  instance sends `TRANSID_AI`, the thread with the TC instance
+  `TCKEYCONF`. The second one runs `do_send(must_send = false)` in the
+  receive loop's busy branch; when `trylock(&sb->m_send_lock)` fails it
+  only re-registers the transporter in its own pending list (no
+  `m_force_send`), and with no progress `do_send` returns false. The lock
+  holder's `TCP_Transporter::doSend` sends the snapshot it fetched before
+  that data arrived and returns `remain > 0` about the snapshot only, so
+  it sees no more work and, with `m_force_send` 0, unlocks.
+- *The 1 ms sleep.* With `min_spin_timer_us == 0` the receive loop sets
+  `delay = 1` even in an iteration that executed signals (`sum > 0`); with
+  spinning it requires `sum == 0 && !has_received`. Spinning is adaptive
+  (`LatencyOptimisedSpinning`) and is 0 when `thrman` sees no gain or a
+  shared environment — the normal state at 1 thread. So the TC thread
+  enters `epoll_wait(1 ms)` with `TCKEYCONF` still queued, nothing wakes
+  it (the API is waiting for that reply), and its next loop sends after
+  ~1.05 ms. Block threads never sleep in an iteration that executed
+  signals and always run `do_send(must_send = true)` first, so layouts
+  with separate block threads (NumCPUs >= 8) should not show it.
+- *It fits the data:* a fixed ~1 ms quantum (a timeout, not a slow
+  wake-up); both engines (the data node is shared); PK reads ~35 % (TC
+  and LDM in different threads of the same node), pruned scans < 1 % (the
+  TC's `SCAN_TABCONF` rarely overlaps the rows' send); gone at 8 threads
+  (threads rarely sleep).
+
+Fix `a22b016ab15` (the branch's net change against `26.10-main`): in
+`mt_receiver_thread_main` a round that did work (executed signals or
+received data) and whose busy-round `do_send` left transporters
+registered with the thread (another thread held their send lock) does
+not sleep; it loops once more, and the next idle round's
+`do_send(must_send = true)` sets `m_force_send`, so the lock holder sends
+the data. Every other round sleeps as before; a round that did no work
+may sleep with sends registered (a full transporter), so that case cannot
+busy-loop. It replaces the first variant `750c2d3f530` (no sleep in any
+round that did work), arm B below, which made every working round pay
+one more loop.
+
+Verification (user-run). Configurations in `mysql-test/suite/ronsqlcrunch`,
+all with NumCPUs=4 and no CPU binding (runs 4 / 6) unless noted:
+`census.cnf` (adaptive spinning, the default), `census_nospin.cnf`
+(`StaticSpinning`, `SchedulerSpinTimer=0`: spinning forced off, the F25
+path every time), `census_spin50.cnf` (spinning forced on: the control),
+`census_benchbox.cnf` (NumCPUs=8, pinned; separate block threads).
+
+| arm | ndbmtd | config | expected at T=1 (`core_pk_lookup`, both engines) |
+|---|---|---|---|
+| A | base | `census_nospin.cnf` | ~1.2 ms events; on the Mac rare (< 1 %, max / p99.9 only) |
+| B / X | fix (B `750c2d3f530`, X `a22b016ab15`) | `census_nospin.cnf` | no ~1 ms events; averages as A |
+| C | base | `census_spin50.cnf` | gone (control: the mechanism needs spinning off) |
+| D | base | `census.cnf` | as runs 4 / 6 (~35 % slow) on the benchmark computer |
+| E | fix | `census.cnf` | gone |
+| F | fix | `census_benchbox.cnf` | as run 7 at T=1 and T=8 (no regression) |
+
+Per arm (base = `ndbmtd` of `26.10-main`, fix = this branch; only
+`ndbmtd` differs, so rebuild just that target between arms):
+
+```
+python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py \
+    --build prod_build --load both --sf 1 \
+    --queries core_pk_lookup,fs_floor,fs_latest,fs_hw_floor,fs_hw_agg_point \
+    --engines ronsql,mysqld_nopush --compiler off \
+    --threads 1,8 --requests 20000 \
+    --cpubind mysql-test/suite/ronsqlcrunch/<config> \
+    --out ~/f25_<arm>
+```
+
+(on the benchmark computer prefix `taskset -c 24-31` and add
+`--client-cpus 24-31`; with `census_benchbox.cnf` also `--expect-ldm 4`).
+Read `cases/off_{ronsql,mysqld_nopush}_<entry>_T1.txt`: `Latency: min= avg=
+p95= p99=` and, for RonSQL, the `firstbatch` phase; the slow share is
+about (avg − min) / 1 ms. At T=8 compare q/s in `report.md` §A (fix within
+±5 % of base). A > 5 % slow share left in B or E means a second cause;
+then X1 steps 2–4 (C-states first).
+
+**Results, Mac (2026-10-05, MacBook Pro, Apple silicon, `census_nospin.cnf`,
+sf 1, 20 000 requests per thread, one run per arm; `~/f25_{A,B,X}`).**
+Arm A did not show a slow mode: with spinning off the stall is < 1 % of
+requests on the Mac (35 % of PK reads on the benchmark computer), so it
+appears only in the tail. At T=1 every A case has a ~1.2 ms request, no
+B or X case has one:
+
+| T=1, end to end | A p99.9 / max | B p99.9 / max | X p99.9 / max |
+|---|---|---|---|
+| RonSQL core_pk_lookup | 235 µs / 1.23 ms | 228 µs / 365 µs | 210 µs / 363 µs |
+| RonSQL fs_floor | 1.24 ms / 1.38 ms | 404 µs / 690 µs | 324 µs / 536 µs |
+| RonSQL fs_latest | 1.20 ms / 1.40 ms | 430 µs / 669 µs | 368 µs / 783 µs |
+| RonSQL fs_hw_floor | 276 µs / 1.43 ms | 272 µs / 340 µs | 235 µs / 355 µs |
+| RonSQL fs_hw_agg_point | 293 µs / 1.32 ms | 252 µs / 384 µs | 259 µs / 367 µs |
+| MySQL core_pk_lookup | 187 µs / 1.28 ms | 161 µs / 282 µs | 158 µs / 266 µs |
+| MySQL fs_floor | 253 µs / 1.22 ms | 241 µs / 410 µs | 276 µs / 464 µs |
+| MySQL fs_latest | 2.03 ms / 3.89 ms | 1.49 ms / 1.70 ms | 1.13 ms / 1.38 ms |
+| MySQL fs_hw_floor | 213 µs / 1.25 ms | 186 µs / 284 µs | 200 µs / 310 µs |
+| MySQL fs_hw_agg_point | 238 µs / 1.29 ms | 226 µs / 323 µs | 215 µs / 337 µs |
+
+Server side (RonSQL `firstbatch`, T=1) the maximum was 1.19–1.32 ms in
+A, 0.20–0.35 ms in B, 0.14–0.40 ms in X. Averages: B was +1.5..+13 %
+over A at T=1 (`fs_latest` `firstbatch` 109 → 124 µs) and -5..-15 % at
+T=8; X is within about ±3 % of A or better everywhere (`fs_latest` 106
+µs; RonSQL `fs_floor` -11 % and MySQL `fs_floor` +8 % at T=1, a small
+scan that varies both ways between runs). At T=8 p99.9 agrees within
+about ±3 % across the arms and the maxima (~1–1.7 ms) are queueing, not
+the F25 quantum. Conclusion: X removes the ~1 ms events without the cost
+of B. Open: arms D / E / F on the benchmark computer (the size of the
+win where F25 is frequent, and the run-7 layout); a small T=1 cost below
+~3 % would need interleaved repeats to rule out.
 
 ## X2. F24 — where the many-group cost is
 
