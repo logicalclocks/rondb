@@ -584,6 +584,20 @@ per request, raise the flush threshold, or route many-group single-table
 aggregates through the JoinAgg per-thread table.  Then `print` (79–108
 ms, TEXT output) is a third of the cost.
 
+*Status 2026-10-06:* the flush cause is gone since 2026-09-26: a fragment
+keeps its groups until query memory runs low (`7b9f9959b7a`) and sends
+16 KB result batches (`f562608d14c`, with `89928a208f9` and the tests in
+`d5d9417de18`).  On the Mac (4 LDM threads, sf 1, T=1): core_group_few /
+_2k / _many 171 / 169 / 401 ms; the target is 342 ms.  Profiles of the
+401 ms (X2 Result): ~299 ms waiting for the data nodes (~130 ms more than
+core_group_few, mostly the per-row cache miss on the group's record in
+`findInBucket`), ~67 ms API merge of which ~44 ms `std::map`, ~30 ms
+print.  Fix 6 (branch RONDB-1124-f24): the `NdbAggregator` merge uses
+a hash index and sorts once for output.  Measured on the Mac:
+core_group_many 401 → 305 ms (firstbatch 365 → 270 ms), core_group_few
+and _2k unchanged, so the ≤ 2× core_group_few target is met there.
+F24 closed 2026-10-06.
+
 **C2. fs_point** (439 vs 210 µs at T=8; firstbatch 264 µs vs mysqld's
 45 µs NDB wait): an aggregate over one grouped single-table CTE with no
 join pays the CTE/JoinAgg protocol (~150–200 µs).  Flatten it in the

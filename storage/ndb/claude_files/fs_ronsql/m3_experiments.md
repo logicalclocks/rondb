@@ -252,7 +252,44 @@ data nodes for CTE bodies), or the CTE materialization?
 package (`m3_plan.md` §6.6 item 3); target `core_group_many` ≤ 2×
 `core_group_few`, `tpch_q2` ≤ MySQL.
 
-**Result.** (empty)
+**Result (2026-10-06, Mac, 4 LDM threads, sf 1, T=1).** Measured after
+the 2026-09-26 changes to the drained path (groups kept until query
+memory runs low, `7b9f9959b7a`; 16 KB result batches, `f562608d14c`).
+
+1. *Curve:* core_group_few / _2k / _many 171 / 169 / 401 ms (MySQL
+   without pushdown 436 / 1264 / 1354 ms). Flat to 2.4 k groups, then
+   +230 ms at 150 k: the 09-26 changes removed the per-4 KB flush that
+   made 2.4 k groups cost 511 ms in run 6.
+2. *Split* (macOS `sample`, ~20 requests per window). rdrs2, per
+   request: waiting for the data nodes (`PollGuard::wait_for_input_in_loop`)
+   ~299 ms (75 %); API merge `NdbAggregator::ProcessRes` ~67 ms (17 %),
+   of which `std::map` tree operations and `GBHashEntryCmp` ~44 ms;
+   `print_result` ~30 ms (7 %); `~NdbAggregator` ~5 ms. Both ndbmtd
+   workers (~8 000 busy samples each): `AggInterpreter::ProcessRec`
+   44–45 %; in it `GBHashTable::findInBucket` 19 % (almost all `memcmp`,
+   the first touch of the group's record in a ~15 MB per-fragment table:
+   the table grows at load factor one with an xxhash of the key, so the
+   first entry usually matches, and the miss is one every row pays to
+   update its accumulators), `PrepareAggResIfNeeded` 5–6 %, `splitOne` +
+   `hashKeyFull` ~3 %; `bin2decimal` + `decimal2double` ~5 % (SUM over
+   DECIMAL, not group-related). The rest is the scan and row reads that
+   core_group_few pays too.
+3. *CTE against drained:* not repeated on the Mac; run 6 has the CTE
+   form at 161–168 ms (`offline_fs_scalar` 168 ms).
+4. *Fragments:* not run (the Mac has 4 LDM threads).
+
+Decision: the data nodes hold most of the samples, but their
+many-group-specific part (~130 ms) is bound by one cache miss per row;
+only smaller group records or prefetching could cut it. The API merge
+(~67 ms, ~44 ms of it the ordered map) is the contained lever: fix 6
+(branch RONDB-1124-f24) merges through a hash index over the groups and
+sorts once in `PrepareResults`, keeping the output order. Measured
+(`~/f24_hash` against `~/f24_now`): core_group_many 401 → 305 ms (min
+386 → 292, p95 413 → 342, firstbatch 365 → 270 ms); core_group_few and
+_2k unchanged (175 / 168 ms); MySQL unchanged. The target (≤ 2×
+core_group_few) is met on the Mac. The gain (~95 ms) exceeds the ~67 ms
+the merge took: probably the slow merge also delayed the data nodes,
+which waited for the API before sending more (not verified).
 
 ## X3. Throughput of the point shapes
 

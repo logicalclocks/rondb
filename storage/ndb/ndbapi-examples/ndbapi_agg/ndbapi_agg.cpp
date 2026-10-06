@@ -574,20 +574,21 @@ int scan_aggregation(Ndb * myNdb, MYSQL& mysql, bool validation)
 
     if (validation) {
       bool valid = true;
-      fprintf(stderr, "Num of groups: %lu\n", aggregator.gb_map()->size());
-      for (auto iter = aggregator.gb_map()->begin();
-          iter != aggregator.gb_map()->end(); iter++) {
-        std::string value_cchar = std::string(iter->first.ptr +
+      fprintf(stderr, "Num of groups: %u\n", aggregator.n_groups());
+      for (Uint32 g = 0; g < aggregator.n_groups(); g++) {
+        const GBHashEntry gb_key = aggregator.group_key(g);
+        const GBHashEntry gb_res = aggregator.group_result(g);
+        std::string value_cchar = std::string(gb_key.ptr +
             sizeof(AttributeHeader) + 1, 10);
-        assert(iter->first.ptr + sizeof(AttributeHeader) + 12 +
+        assert(gb_key.ptr + sizeof(AttributeHeader) + 12 +
             sizeof(AttributeHeader) + 4 ==
-            iter->second.ptr);
+            gb_res.ptr);
         Int32 cmedium =
-          sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12);
+          sint3korr(gb_key.ptr + 2 * sizeof(AttributeHeader) + 12);
         std::string value_cmedium = std::to_string(
-            sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12));
+            sint3korr(gb_key.ptr + 2 * sizeof(AttributeHeader) + 12));
 
-        AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
+        AggResItem* item = reinterpret_cast<AggResItem*>(gb_res.ptr);
         Uint64 agg_1 = item[0].value.val_uint64;
         double agg_2 = item[1].value.val_double;
         double agg_3 = item[2].value.val_double;
@@ -839,20 +840,21 @@ int scan_index_aggregation(Ndb *myNdb, MYSQL& mysql, bool validation) {
 
   if (validation) {
     bool valid = true;
-    fprintf(stderr, "Num of groups: %lu\n", aggregator.gb_map()->size());
-    for (auto iter = aggregator.gb_map()->begin();
-        iter != aggregator.gb_map()->end(); iter++) {
-      std::string value_cchar = std::string(iter->first.ptr +
+    fprintf(stderr, "Num of groups: %u\n", aggregator.n_groups());
+    for (Uint32 g = 0; g < aggregator.n_groups(); g++) {
+      const GBHashEntry gb_key = aggregator.group_key(g);
+      const GBHashEntry gb_res = aggregator.group_result(g);
+      std::string value_cchar = std::string(gb_key.ptr +
           sizeof(AttributeHeader) + 1, 10);
-      assert(iter->first.ptr + sizeof(AttributeHeader) + 12 +
+      assert(gb_key.ptr + sizeof(AttributeHeader) + 12 +
           sizeof(AttributeHeader) + 4 ==
-          iter->second.ptr);
+          gb_res.ptr);
       Int32 cmedium =
-        sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12);
+        sint3korr(gb_key.ptr + 2 * sizeof(AttributeHeader) + 12);
       std::string value_cmedium = std::to_string(
-          sint3korr(iter->first.ptr + 2 * sizeof(AttributeHeader) + 12));
+          sint3korr(gb_key.ptr + 2 * sizeof(AttributeHeader) + 12));
 
-      AggResItem* item = reinterpret_cast<AggResItem*>(iter->second.ptr);
+      AggResItem* item = reinterpret_cast<AggResItem*>(gb_res.ptr);
       Uint64 agg_1 = item[0].value.val_uint64;
       double agg_2 = item[1].value.val_double;
       double agg_3 = item[2].value.val_double;
