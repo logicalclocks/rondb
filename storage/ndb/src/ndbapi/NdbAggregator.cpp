@@ -27,6 +27,10 @@
 #include <simsimd/simsimd.h>
 #include <NdbSqlUtil.hpp>
 #include <my_dbug.h>
+#include <util/rondb_hash.hpp>
+#include "mysql/strings/m_ctype.h"
+#include <algorithm>
+#include <utility>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_NDBAGGREGATOR 1
@@ -111,8 +115,20 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
     Uint32 byteSize1 = ah1.getByteSize();
     Uint32 byteSize2 = ah2.getByteSize();
 
-    int ret = NdbSqlUtil::getType(ctx->col_meta[i].typeId).m_cmp(
-                ctx->col_meta[i].cs, data1, byteSize1, data2, byteSize2);
+    /* A linked column without metadata has type Undefined, which has no
+     * comparison method: compare its bytes. */
+    NdbSqlUtil::Cmp* cmp =
+        NdbSqlUtil::getType(ctx->col_meta[i].typeId).m_cmp;
+    int ret;
+    if (cmp != nullptr) {
+      ret = cmp(ctx->col_meta[i].cs, data1, byteSize1, data2, byteSize2);
+    } else {
+      ret = memcmp(data1, data2,
+                   byteSize1 < byteSize2 ? byteSize1 : byteSize2);
+      if (ret == 0 && byteSize1 != byteSize2) {
+        ret = byteSize1 < byteSize2 ? -1 : 1;
+      }
+    }
     if (ret != 0) {
       return ret < 0;
     }
@@ -126,7 +142,7 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 
 NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   table_impl_(nullptr), n_gb_cols_(0), n_agg_results_(0),
-  agg_results_(nullptr), gb_map_(nullptr),
+  agg_results_(nullptr), result_pos_(0), gb_cmp_(nullptr),
   finalized_(false), finished_(false),
   reusable_program_(false),
   curr_prog_pos_(PROGRAM_HEADER_SIZE),
@@ -150,6 +166,9 @@ NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
     memset(reg_columns_, 0, sizeof(reg_columns_));
     memset(agg_columns_, 0, sizeof(agg_columns_));
     memset(reg_types_, NDB_TYPE_UNDEFINED, sizeof(reg_types_));
+    /* Finalize fills col_meta only for columns with metadata; the others
+     * stay Undefined / no charset (byte comparison). */
+    memset(&gb_cmp_ctx_, 0, sizeof(gb_cmp_ctx_));
 }
 
 NdbAggregator::~NdbAggregator() {
@@ -159,13 +178,10 @@ NdbAggregator::~NdbAggregator() {
     freeStringSlots(agg_results_, n_agg_results_);
   }
   delete[] agg_results_;
-  if (gb_map_) {
-    for (auto iter = gb_map_->begin(); iter != gb_map_->end(); iter++) {
-      AggResItem* slots = reinterpret_cast<AggResItem*>(iter->second.ptr);
-      freeStringSlots(slots, n_agg_results_);
-      delete[] iter->first.ptr;
-    }
-    delete gb_map_;
+  for (const MergeGroup& g : groups_) {
+    AggResItem* slots = reinterpret_cast<AggResItem*>(g.rec + g.key_len);
+    freeStringSlots(slots, n_agg_results_);
+    delete[] g.rec;
   }
   if (vec_result_) {
     while (!vec_result_->empty()) {
@@ -190,10 +206,8 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   n_gb_cols_ = programBuffer[1] >> 16;
   n_agg_results_ = programBuffer[1] & 0xFFFF;
 
-  // Allocate gb_map if GROUP BY is used
-  if (n_gb_cols_ > 0 && gb_map_ == nullptr) {
-    gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>();
-  }
+  // GROUP BY groups merge into groups_; with gb_cmp_ still nullptr
+  // (not built by Finalize) keys compare as bytes.
 
   // Allocate agg_results for non-GROUP-BY case
   if (n_gb_cols_ == 0 && agg_results_ == nullptr && n_agg_results_ > 0) {
@@ -520,6 +534,167 @@ void NdbAggregator::copyStringSlots(AggResItem* slots, Uint32 n_slots) {
   }
 }
 
+// Folds one column's hash into a GROUP BY key hash.
+static inline Uint64 foldGroupHash(Uint64 hash, Uint64 col_hash) {
+  return hash ^ (col_hash + 0x9e3779b97f4a7c15ULL + (hash << 6) +
+                 (hash >> 2));
+}
+
+// The splitmix64 finalizer: spreads every input bit over both the index
+// bits (low) and the tag (high 32 bits) of a group_slots_ entry.
+static inline Uint64 mixGroupHash(Uint64 h) {
+  h ^= h >> 30;
+  h *= 0xbf58476d1ce4e5b9ULL;
+  h ^= h >> 27;
+  h *= 0x94d049bb133111ebULL;
+  h ^= h >> 31;
+  return h;
+}
+
+// Places group number g in the first free slot of its probe sequence.
+static inline void placeGroupSlot(std::vector<Uint64>& slots, Uint64 hash,
+                                  Uint32 g) {
+  const Uint64 mask = slots.size() - 1;
+  Uint64 i = hash & mask;
+  while (slots[i] != 0) {
+    i = (i + 1) & mask;
+  }
+  slots[i] = (hash & 0xFFFFFFFF00000000ULL) | (Uint64(g) + 1);
+}
+
+Uint64 NdbAggregator::hashGroupKey(const char* key, Uint32 key_len) const {
+  if (gb_cmp_ == nullptr || gb_cmp_->n_cols == 0 || gb_cmp_->all_binary_cmp) {
+    return rondb_xxhash_std(key, key_len);
+  }
+  /* Keys that GBHashEntryCmp finds equal must hash alike: a string with
+   * a charset hashes by its collation's hash_sort (after the trailing
+   * space strip cmpChar does for a NO_PAD CHAR), a float or double -0.0
+   * as 0.0, a NULL as one constant, and every other value by its bytes. */
+  const char* p = key;
+  [[maybe_unused]] const char* end = key + key_len;
+  Uint64 hash = 0;
+  for (Uint32 i = 0; i < gb_cmp_->n_cols; i++) {
+    assert(p + sizeof(Uint32) <= end);
+    const AttributeHeader ah(*reinterpret_cast<const Uint32*>(p));
+    if (ah.isNULL()) {
+      hash = foldGroupHash(hash, 0xdeadbeefdeadbeefULL);
+      p += sizeof(Uint32);
+      continue;
+    }
+    const char* data = p + sizeof(Uint32);
+    const Uint32 byte_size = ah.getByteSize();
+    const Uint32 type_id = gb_cmp_->col_meta[i].typeId;
+    const CHARSET_INFO* cs = gb_cmp_->col_meta[i].cs;
+    Uint64 col_hash;
+    switch (type_id) {
+      case NdbSqlUtil::Type::Char:
+      case NdbSqlUtil::Type::Varchar:
+      case NdbSqlUtil::Type::Longvarchar:
+      case NdbSqlUtil::Type::Varbinary:
+      case NdbSqlUtil::Type::Longvarbinary: {
+        Uint32 lb = 0;
+        Uint32 len = byte_size;
+        if (!NdbSqlUtil::get_var_length(type_id, data, byte_size, lb, len)) {
+          lb = 0;
+          len = byte_size;
+        }
+        const char* src = data + lb;
+        if (cs == nullptr) {
+          col_hash = rondb_xxhash_std(src, len);
+          break;
+        }
+        if (type_id == NdbSqlUtil::Type::Char && cs->pad_attribute == NO_PAD) {
+          len = static_cast<Uint32>(cs->cset->lengthsp(cs, src, len));
+        }
+        // The seeds the server's hash_sort callers use.
+        uint64_t nr1 = 1;
+        uint64_t nr2 = 4;
+        if (cs->coll->hash_sort != nullptr) {
+          cs->coll->hash_sort(cs, reinterpret_cast<const uint8_t*>(src), len,
+                              &nr1, &nr2);
+        }
+        col_hash = nr1;
+        break;
+      }
+      case NdbSqlUtil::Type::Float: {
+        float v;
+        memcpy(&v, data, sizeof(v));
+        if (v == 0.0f) v = 0.0f;
+        col_hash = rondb_xxhash_std(reinterpret_cast<const char*>(&v),
+                                    sizeof(v));
+        break;
+      }
+      case NdbSqlUtil::Type::Double: {
+        double v;
+        memcpy(&v, data, sizeof(v));
+        if (v == 0.0) v = 0.0;
+        col_hash = rondb_xxhash_std(reinterpret_cast<const char*>(&v),
+                                    sizeof(v));
+        break;
+      }
+      default:
+        col_hash = rondb_xxhash_std(data, byte_size);
+        break;
+    }
+    hash = foldGroupHash(hash, col_hash);
+    p += sizeof(Uint32) + ah.getDataSize() * sizeof(Uint32);
+  }
+  return mixGroupHash(hash);
+}
+
+bool NdbAggregator::groupKeysEqual(const char* k1, Uint32 len1,
+                                   const char* k2, Uint32 len2) const {
+  if (gb_cmp_ == nullptr || gb_cmp_->n_cols == 0 || gb_cmp_->all_binary_cmp) {
+    return len1 == len2 && memcmp(k1, k2, len1) == 0;
+  }
+  const GBHashEntryCmp cmp(gb_cmp_);
+  const GBHashEntry e1{const_cast<char*>(k1), len1};
+  const GBHashEntry e2{const_cast<char*>(k2), len2};
+  return !cmp(e1, e2) && !cmp(e2, e1);
+}
+
+AggResItem* NdbAggregator::findGroup(const char* key, Uint32 key_len,
+                                     Uint64 hash) const {
+  if (group_slots_.empty()) {
+    return nullptr;
+  }
+  const Uint64 mask = group_slots_.size() - 1;
+  const Uint64 tag = hash >> 32;
+  for (Uint64 i = hash & mask; ; i = (i + 1) & mask) {
+    const Uint64 slot = group_slots_[i];
+    if (slot == 0) {
+      return nullptr;
+    }
+    if ((slot >> 32) == tag) {
+      const MergeGroup& g = groups_[static_cast<Uint32>(slot) - 1];
+      if (groupKeysEqual(key, key_len, g.rec, g.key_len)) {
+        return reinterpret_cast<AggResItem*>(g.rec + g.key_len);
+      }
+    }
+  }
+}
+
+void NdbAggregator::insertGroup(char* rec, Uint32 key_len, Uint32 aggs_len,
+                                Uint64 hash) {
+  // At most half the slots in use keeps the probe sequences short.
+  if ((groups_.size() + 1) * 2 > group_slots_.size()) {
+    growGroupIndex();
+  }
+  const Uint32 g = static_cast<Uint32>(groups_.size());
+  groups_.push_back(MergeGroup{rec, key_len, aggs_len, hash});
+  placeGroupSlot(group_slots_, hash, g);
+}
+
+void NdbAggregator::growGroupIndex() {
+  const size_t n_slots =
+      group_slots_.empty() ? 64 : group_slots_.size() * 2;
+  group_slots_.assign(n_slots, 0);
+  groups_.reserve(n_slots / 2);
+  for (Uint32 g = 0; g < groups_.size(); g++) {
+    placeGroupSlot(group_slots_, groups_[g].hash, g);
+  }
+}
+
 Int32 NdbAggregator::MergeLocalGroup(const char* gb_key, Uint32 gb_len,
                                      const AggResItem* items) {
   assert(finalized_);
@@ -534,11 +709,10 @@ Int32 NdbAggregator::MergeLocalGroup(const char* gb_key, Uint32 gb_len,
   if (n_gb_cols_ == 0) {
     return mergeScalarSlots(local, local);
   }
-  GBHashEntry entry{const_cast<char*>(gb_key), gb_len};
-  auto iter = gb_map_->find(entry);
-  if (iter != gb_map_->end()) {
-    return mergeGroupSlots(reinterpret_cast<AggResItem*>(iter->second.ptr),
-                           local, local);
+  const Uint64 hash = hashGroupKey(gb_key, gb_len);
+  AggResItem* slots = findGroup(gb_key, gb_len, hash);
+  if (slots != nullptr) {
+    return mergeGroupSlots(slots, local, local);
   }
   // A new group: one block holding the key and the slots, as ProcessRes
   // allocates it; the slots take over the string buffers.
@@ -547,9 +721,7 @@ Int32 NdbAggregator::MergeLocalGroup(const char* gb_key, Uint32 gb_len,
   memcpy(agg_rec, gb_key, gb_len);
   memcpy(agg_rec + gb_len, local, agg_array_len);
   fixupCountSlots(reinterpret_cast<AggResItem*>(agg_rec + gb_len));
-  gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-      GBHashEntry{agg_rec, gb_len},
-      GBHashEntry{agg_rec + gb_len, agg_array_len}));
+  insertGroup(agg_rec, gb_len, agg_array_len, hash);
   return 0;
 }
 
@@ -618,10 +790,10 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       Uint32 gb_cols_len = data_buf[parse_pos] >> 16;
       Uint32 agg_res_len = data_buf[parse_pos++] & 0xFFFF;
 
-      GBHashEntry entry{const_cast<char*>(
-          reinterpret_cast<const char*>(&data_buf[parse_pos])),
-                  gb_cols_len};
-      auto iter = gb_map_->find(entry);
+      const char* gb_key =
+          reinterpret_cast<const char*>(&data_buf[parse_pos]);
+      const Uint64 gb_hash = hashGroupKey(gb_key, gb_cols_len);
+      AggResItem* found = findGroup(gb_key, gb_cols_len, gb_hash);
 #ifdef DEBUG_JOIN_AGG_API
       const Uint32 key_words = (gb_cols_len + 3) >> 2;
       const Uint32 key0 = key_words > 0 ? data_buf[parse_pos] : 0;
@@ -634,22 +806,17 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
                        "gb_cols_len=%u agg_res_len=%u key_words=%u "
                        "key[0]=0x%x key[1]=0x%x action=%s "
                        "agg0_type=%u agg0_unsigned=%u agg0_null=%u "
-                       "agg0_i64=%lld agg0_u64=%llu gb_map_size=%zu\n",
+                       "agg0_i64=%lld agg0_u64=%llu groups=%zu\n",
                        rowNo, parse_pos, gb_cols_len, agg_res_len,
                        key_words, key0, key1,
-                       iter != gb_map_->end() ? "merge" : "insert",
+                       found != nullptr ? "merge" : "insert",
                        agg0.type, agg0.is_unsigned, agg0.is_null,
                        (long long)agg0.value.val_int64,
                        (unsigned long long)agg0.value.val_uint64,
-                       gb_map_->size());
+                       groups_.size());
 #endif
-      if (iter != gb_map_->end()) {
-        // header = reinterpret_cast<AttributeHeader*>(iter->first.ptr);
-        agg_res_ptr = reinterpret_cast<AggResItem*>(iter->second.ptr);
-        // fprintf(stderr, "[PA DEBUG] Found GBHashEntry, id: %u, byte_size: %u, "
-        //     "data_size: %u, is_null: %u\n",
-        //     header->getAttributeId(), header->getByteSize(),
-        //     header->getDataSize(), header->isNULL());
+      if (found != nullptr) {
+        agg_res_ptr = found;
         need_merge = true;
 #ifdef DEBUG_JOIN_AGG_API
         DEB_JOIN_AGG_API("[AGG_API] ProcessRes merging: rowNo=%u "
@@ -665,7 +832,6 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
         memcpy(agg_rec, reinterpret_cast<const char*>(&data_buf[parse_pos]),
             gb_cols_len + agg_res_len);
         const Uint32 agg_array_len = n_agg_results * sizeof(AggResItem);
-        GBHashEntry new_entry{agg_rec, gb_cols_len};
         GBHashEntry new_aggs{agg_rec + gb_cols_len, agg_array_len};
 
         // Phase I.6 (F.2-K.5d): replace each string slot's wire
@@ -681,14 +847,13 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
 
         fixupCountSlots(reinterpret_cast<AggResItem*>(new_aggs.ptr));
 
-        gb_map_->insert(std::pair<GBHashEntry, GBHashEntry>(
-              new_entry, new_aggs));
+        insertGroup(agg_rec, gb_cols_len, agg_array_len, gb_hash);
         agg_res_ptr = reinterpret_cast<AggResItem*>(new_aggs.ptr);
 #ifdef DEBUG_JOIN_AGG_API
         DEB_JOIN_AGG_API("[AGG_API] ProcessRes inserted: rowNo=%u "
-                         "key[0]=0x%x key[1]=0x%x gb_map_size=%zu "
+                         "key[0]=0x%x key[1]=0x%x groups=%zu "
                          "agg_ptr=%p\n",
-                         rowNo, key0, key1, gb_map_->size(),
+                         rowNo, key0, key1, groups_.size(),
                          static_cast<void*>(agg_res_ptr));
 #endif
       }
@@ -1464,8 +1629,7 @@ bool NdbAggregator::Finalize() {
       }
     }
     gb_cmp_ctx_.all_binary_cmp = all_binary;
-    gb_map_ = new std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>(
-                      GBHashEntryCmp(&gb_cmp_ctx_));
+    gb_cmp_ = &gb_cmp_ctx_;
   }
   if (single_row_mode_ && (n_agg_results_ != 0 || n_gb_cols_ == 0)) {
     /* The single-row CTE projection contract is GROUP BY columns only:
@@ -1539,7 +1703,42 @@ bool NdbAggregator::Finalize() {
 
 void NdbAggregator::PrepareResults() {
   if (n_gb_cols_) {
-    iter_ = gb_map_->begin();
+    /* The groups in GBHashEntryCmp order, as the std::map this merge
+     * replaced returned them.  With byte comparison an 8-byte prefix of
+     * the key, read big-endian, orders like memcmp; equal prefixes fall
+     * back to the full comparison. */
+    const GBHashEntryCmp cmp(gb_cmp_);
+    const Uint32 n = static_cast<Uint32>(groups_.size());
+    result_order_.resize(n);
+    for (Uint32 i = 0; i < n; i++) result_order_[i] = i;
+    const bool binary = gb_cmp_ == nullptr || gb_cmp_->n_cols == 0 ||
+                        gb_cmp_->all_binary_cmp;
+    if (binary) {
+      std::vector<std::pair<Uint64, Uint32>> keyed(n);
+      for (Uint32 i = 0; i < n; i++) {
+        const MergeGroup& g = groups_[i];
+        Uint64 prefix = 0;
+        const Uint32 len = g.key_len < 8 ? g.key_len : 8;
+        for (Uint32 b = 0; b < len; b++) {
+          prefix |= Uint64(static_cast<unsigned char>(g.rec[b]))
+                    << (56 - 8 * b);
+        }
+        keyed[i] = std::make_pair(prefix, i);
+      }
+      std::sort(keyed.begin(), keyed.end(),
+                [&](const std::pair<Uint64, Uint32>& a,
+                    const std::pair<Uint64, Uint32>& b) {
+                  if (a.first != b.first) return a.first < b.first;
+                  return cmp(group_key(a.second), group_key(b.second));
+                });
+      for (Uint32 i = 0; i < n; i++) result_order_[i] = keyed[i].second;
+    } else {
+      std::sort(result_order_.begin(), result_order_.end(),
+                [&](Uint32 a, Uint32 b) {
+                  return cmp(group_key(a), group_key(b));
+                });
+    }
+    result_pos_ = 0;
   } else if (agg_results_ != nullptr) {
     // RONDB-831 (scalar analog): COUNT() over zero rows must read 0, not
     // NULL.  The GROUP BY path applies this fixup at group-insert time
@@ -1571,10 +1770,9 @@ NdbAggregator::ResultRecord NdbAggregator::FetchResultRecord() {
   }
 
   if (n_gb_cols_) {
-    if (iter_ != gb_map_->end()) {
-      NdbAggregator::ResultRecord rec(this, iter_->first, iter_->second, false);
-      iter_++;
-      return rec;
+    if (result_pos_ < result_order_.size()) {
+      const Uint32 g = result_order_[result_pos_++];
+      return ResultRecord(this, group_key(g), group_result(g), false);
     }
   } else {
     if (!result_record_fetched_) {

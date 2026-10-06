@@ -29,6 +29,7 @@
 #include "NdbRecAttr.hpp"
 #include <map>
 #include <queue>
+#include <vector>
 
 class NdbTableImpl;
 
@@ -305,8 +306,8 @@ class NdbAggregator {
   /**
    * Initialize this aggregator for receiving results, given a program buffer.
    * Reads the program header to set n_gb_cols, n_agg_results, and allocates
-   * the gb_map if needed. Must be called before ProcessRes() when the
-   * aggregator was not built with GroupBy/Sum/etc. calls.
+   * the scalar result slots if needed. Must be called before ProcessRes()
+   * when the aggregator was not built with GroupBy/Sum/etc. calls.
    *
    * @param gbColumns  Optional array of NdbDictionary::Column pointers for
    *                   each GROUP BY column (local and linked).  Provides full
@@ -394,8 +395,18 @@ class NdbAggregator {
   void PrepareResults();
   ResultRecord FetchResultRecord();
 
-  const std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map() {
-    return gb_map_;
+  // GROUP BY groups merged so far, in arrival order (FetchResultRecord
+  // returns them in GROUP BY key order after PrepareResults).  Group i's
+  // key is group_key(i) and its AggResItem array group_result(i).
+  Uint32 n_groups() const {
+    return static_cast<Uint32>(groups_.size());
+  }
+  GBHashEntry group_key(Uint32 i) const {
+    return GBHashEntry{groups_[i].rec, groups_[i].key_len};
+  }
+  GBHashEntry group_result(Uint32 i) const {
+    return GBHashEntry{groups_[i].rec + groups_[i].key_len,
+                       groups_[i].aggs_len};
   }
 
   class VectorSearchResult {
@@ -468,6 +479,19 @@ class NdbAggregator {
   Int32 mergeScalarSlots(const AggResItem* src, AggResItem* owned_src);
   // RONDB-831: a new group's COUNT slots start at 0, never NULL.
   void fixupCountSlots(AggResItem* slots) const;
+
+  /* GROUP BY merge (F24).  A hash index over groups_, with the equality
+   * of the GBHashEntryCmp the groups are later sorted by: gb_cmp_ is
+   * nullptr (binary comparison) for an aggregator set up by
+   * initForResults, &gb_cmp_ctx_ after Finalize. */
+  Uint64 hashGroupKey(const char* key, Uint32 key_len) const;
+  bool groupKeysEqual(const char* k1, Uint32 len1,
+                      const char* k2, Uint32 len2) const;
+  // The group's AggResItem array, or nullptr when the key is new.
+  AggResItem* findGroup(const char* key, Uint32 key_len, Uint64 hash) const;
+  // Adds a group whose record `rec` (key, then slots) this aggregator owns.
+  void insertGroup(char* rec, Uint32 key_len, Uint32 aggs_len, Uint64 hash);
+  void growGroupIndex();
   void freeUntransferredStrings(AggResItem* owned,
                                 const AggResItem* dst) const;
   const NdbTableImpl* table_impl_;
@@ -490,7 +514,26 @@ class NdbAggregator {
   Uint32 n_agg_results_;
   AggResItem* agg_results_;
   Uint32 agg_ops_[MAX_AGG_N_RESULTS];
-  std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>* gb_map_;
+
+  /* GROUP BY groups (F24).  ProcessRes / MergeLocalGroup merge every
+   * per-fragment partial into these: groups_ in arrival order, each one
+   * record `rec` holding the key and then the AggResItem slots;
+   * group_slots_ an open-addressing index over them, a slot being 0
+   * (empty) or (hash tag << 32 | group number + 1); result_order_ the
+   * group numbers in GBHashEntryCmp order, built by PrepareResults.
+   * This replaced a std::map, whose ordered inserts cost ~17 key
+   * comparisons per partial with 150 k groups. */
+  struct MergeGroup {
+    char* rec;
+    Uint32 key_len;
+    Uint32 aggs_len;
+    Uint64 hash;
+  };
+  std::vector<MergeGroup> groups_;
+  std::vector<Uint64> group_slots_;
+  std::vector<Uint32> result_order_;
+  Uint32 result_pos_;
+  GBCmpContext* gb_cmp_;
 
   // Phase I.6 (F.2-K.5d): for AGG_CHAR_RESULT wire results, walk the
   // appended string-payload region and replace each string slot's
@@ -518,7 +561,6 @@ class NdbAggregator {
   bool reusable_program_;
   Uint32 curr_prog_pos_;
   Uint32 instructions_length_;
-  std::map<GBHashEntry, GBHashEntry, GBHashEntryCmp>::iterator iter_;
 
   AggregationError error_;
   void SetError(Uint32 err_no) {

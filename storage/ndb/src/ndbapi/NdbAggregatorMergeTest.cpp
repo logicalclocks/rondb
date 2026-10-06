@@ -618,6 +618,69 @@ static bool runLocalCountCase() {
   return true;
 }
 
+/* F24: GROUP BY a latin1_swedish_ci string, COUNT per group, merged
+ * through the hash index.  Keys equal under the collation ('a', 'A',
+ * 'a ') must reach one group, and the rows come in collation order. */
+static std::vector<Uint32> collationKey(Uint32 type, const char *text) {
+  const Uint32 kCharLength = 4;
+  std::vector<unsigned char> bytes;
+  if (type == NDB_TYPE_CHAR) {
+    bytes.assign(kCharLength, ' ');
+    memcpy(bytes.data(), text, strlen(text));
+  } else {
+    bytes.push_back(static_cast<unsigned char>(strlen(text)));
+    bytes.insert(bytes.end(), text, text + strlen(text));
+  }
+  std::vector<Uint32> key(1 + (bytes.size() + 3) / 4, 0);
+  key[0] = AttributeHeader(0, Uint32(bytes.size())).m_value;
+  memcpy(key.data() + 1, bytes.data(), bytes.size());
+  return key;
+}
+
+static bool runCollationCase(Uint32 type) {
+  NdbDictionary::Column column("s");
+  column.setType(static_cast<NdbDictionary::Column::Type>(type));
+  column.setLength(type == NDB_TYPE_CHAR ? 4 : 8);
+  column.setCharset(&my_charset_latin1);
+  NdbAggregator agg(nullptr);
+  CHECK(agg.GroupByLinked(0, &column));
+  CHECK(agg.LoadInt64(1, 0));
+  CHECK(agg.Count(0, 0));
+  CHECK(agg.Finalize());
+
+  const AggResItem one = unsignedSlot(1);
+  auto merge = [&](const char *text) {
+    const std::vector<Uint32> key = collationKey(type, text);
+    return agg.MergeLocalGroup(reinterpret_cast<const char *>(key.data()),
+                               key.size() * sizeof(Uint32), &one) == 0;
+  };
+  for (const char *text : {"b", "a", "A", "B ", "a "}) {
+    CHECK(merge(text));
+  }
+  // 300 more groups, each in two cases, grow the index past its first
+  // 64 slots.
+  for (Uint32 i = 0; i < 300; i++) {
+    char lower[4] = {char('c' + i / 26 % 20), char('a' + i % 26), 0, 0};
+    char upper[4] = {char(lower[0] - 'a' + 'A'), char(lower[1] - 'a' + 'A'),
+                     0, 0};
+    CHECK(merge(lower));
+    CHECK(merge(upper));
+  }
+  CHECK(agg.n_groups() == 302);
+
+  agg.PrepareResults();
+  Uint32 rows = 0;
+  for (auto row = agg.FetchResultRecord(); !row.end();
+       row = agg.FetchResultRecord()) {
+    // 'a', 'A' and 'a ' first, then 'b' and 'B '.
+    const Uint64 expected = rows == 0 ? 3 : 2;
+    CHECK(checkValue(row.FetchAggregationResult(), unsignedSlot(expected)));
+    rows++;
+  }
+  CHECK(rows == 302);
+  return true;
+}
+
 int main() {
   if (ndb_init() != 0) return 1;
   bool passed = runNumericCases();
@@ -641,11 +704,17 @@ int main() {
     }
   }
   if (!runLocalCountCase()) passed = false;
+  for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR)}) {
+    if (!runCollationCase(type)) {
+      fprintf(stderr, "collation type=%u\n", type);
+      passed = false;
+    }
+  }
   ndb_end(0);
   printf("%s\n", passed
       ? "PASSED: result-size boundaries, bounded result batches, "
-        "numeric boundaries, 18 string failure/recovery cases and "
-        "19 MergeLocalGroup cases"
+        "numeric boundaries, 18 string failure/recovery cases, "
+        "19 MergeLocalGroup cases and 2 collation merge cases"
       : "FAILED");
   return passed ? 0 : 1;
 }

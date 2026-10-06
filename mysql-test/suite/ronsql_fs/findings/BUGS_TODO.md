@@ -502,7 +502,7 @@ F8 was a framework fixture issue and is already fixed.
     guards rather than classes, are fixed in their own entries. The
     EXPLAIN `[I.10 …]` tags keep their phase names (pinned by
     ronsql_cte_minmax_index).
-- [ ] F24 (bench.md): aggregation with many groups. (a) CTE / join aggregation:
+- [x] F24 (bench.md): aggregation with many groups. (a) CTE / join aggregation:
   fixes 1-5 done 2026-09-24 (`39ebf4b30cc` linear-hashing group table,
   `61c04d45e4a` redistribution resumes at its bucket, `2671e046dee` merge adopts
   the largest per-thread table, `92e7f26cade` no per-row atomic, `462026d0cf8`
@@ -512,6 +512,18 @@ F8 was a framework fixture issue and is already fixed.
   (`core_group_many`, 1.03 s vs 161-168 ms through the CTE path): ~1 M partials
   reach the API merge; `m3_run6_plan.md` C1. Targets: core_group_many <= 2x
   core_group_few, tpch_q2 <= MySQL.
+  2026-10-06: the partial flood of (b) was fixed on 2026-09-26 (`7b9f9959b7a`
+  groups kept until query memory runs low, `f562608d14c` 16 KB result batches,
+  `89928a208f9`, `d5d9417de18`). Mac: core_group_few / _2k / _many 171 / 169 /
+  401 ms (target 342). Profiles (`m3_experiments.md` X2 Result): ~299 ms data
+  nodes (the many-group part is a cache miss per row in `findInBucket`), ~67 ms
+  API merge (~44 ms `std::map`), ~30 ms print. Fix 6 (branch RONDB-1124-f24):
+  hash-index merge in `NdbAggregator`, one sort for output order: Mac
+  core_group_many 401 -> 305 ms, core_group_few / _2k unchanged, target met.
+  Closed 2026-10-06: both targets are met (core_group_many 305 ms <= 2x
+  core_group_few on the Mac; tpch_q2 113-139 ms vs MySQL 274 ms in run 6).
+  Further speed-ups are separate tasks: the per-node owner split for (a), the
+  per-row group-record cache miss on the data nodes.
 - [ ] F25 (bench.md): a ~1 ms idle-wake stall on a share of requests, both engines
   (sets the serving p99). Diagnose on the benchmark computer: CPU idle states,
   data-node spinning, or the NDB API receive path (`m3_experiments.md` X1).
@@ -531,6 +543,16 @@ F8 was a framework fixture issue and is already fixed.
   `do_send_adaptive` always sends at once. Latency is unaffected; the intended
   batching under many client threads never happens. Fix: `m_max_poll_waiters =
   m_poll_waiters;`, then measure throughput at T=8 / T=64.
+- [x] Every scanned row read the whole slowdown NodeBitmask (found 2026-10-06 in the
+  F24 data-node profile): `Dblqh::scanTupkeyConfLab` checked
+  `get_status_slowdown().isclear()` before testing the API node's bit, and with
+  node ids up to 8191 `isclear()` reads 256 words when no transporter is slowed
+  down (64 on 25.10-26.05, 8 on 24.10). ~19 % of the data nodes' busy samples
+  during core_group_many, ~100 ns per row. Fixed in `9640795ba3c` (tests only the
+  API node's bit; cherry-picks cleanly to 24.10-26.10). Mac, T=1, against F24:
+  RonSQL core_group_few / _2k / _many 175 / 168 / 305 -> 147 / 146 / 269 ms; MySQL
+  without pushdown 437 / 1283 / 1346 -> 409 / 1141 / 1203 ms (ndb wait -26 /
+  -136 / -137 ms); the loop's self samples fell from 20 % to 1.2 % of busy.
 - [ ] F27 (bench.md, P0): data node failure under concurrent many-group CTE
   queries. (a) DBSPJ `do_init` stopped the node on exhausted query memory: fixed
   in `914cbf9bbb7` (OutOfQueryMemory REF, error insert 17534). (b) 1869 instead of

@@ -27030,17 +27030,16 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   jamDebug();
   jamDataDebug(scanPtr->m_curr_batch_size_rows);
   jamDataDebug(scanPtr->scan_acc_index);
-  const NodeBitmask &all = globalTransporterRegistry.get_status_slowdown();
-  if (unlikely(!all.isclear())) {
-    if (all.get(refToNode(scanptr.p->scanApiBlockref))) {
-      /**
-       * End scan batch if transporter-buffer are in slowdown state
-       *
-       */
-      scanPtr->m_stop_batch = 1;
-
-      c_scanSlowDowns++;
-    }
+  /**
+   * End scan batch if the transporter buffer to the API node is in
+   * slowdown state.  Test only that node's bit: this runs for every
+   * scanned row, and isclear() reads the whole NodeBitmask (one word per
+   * 32 node ids) when no transporter is slowed down.
+   */
+  if (unlikely(globalTransporterRegistry.get_status_slowdown().get(
+          refToNode(scanptr.p->scanApiBlockref)))) {
+    scanPtr->m_stop_batch = 1;
+    c_scanSlowDowns++;
   }
 
   bool debug_pa_print = false;
