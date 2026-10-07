@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <algorithm>
+#include <utility>
 #include "redis_conn.h"
 #include <ndbapi/NdbApi.hpp>
 #include <ndbapi/Ndb.hpp>
@@ -331,6 +332,18 @@ void release_mset(struct GetControl *get_ctrl) {
       assert(get_ctrl->m_num_transactions > 0);
       get_ctrl->m_num_transactions--;
     }
+    // The copy of the value made by rondb_mset, or for SET ... GET
+    // the old value read by the GET phase.
+    if (key_storage[i].m_value_ptr != nullptr) {
+      free(key_storage[i].m_value_ptr);
+    }
+  }
+  if (get_ctrl->m_parked_value_ptr != nullptr) {
+    free(get_ctrl->m_parked_value_ptr);
+  }
+  // Allocated by get_complex_rows in the GET phase of SET ... GET.
+  if (get_ctrl->m_value_rows != nullptr) {
+    free(get_ctrl->m_value_rows);
   }
   assert(get_ctrl->m_num_transactions == 0);
   free(get_ctrl);
@@ -641,7 +654,7 @@ void rondb_del(Ndb *ndb,
     malloc(sizeof(struct GetControl));
   if (get_ctrl == nullptr) {
     assign_generic_err_to_response(response, FAILED_MALLOC);
-    free(get_ctrl);
+    free(key_storage);
     return;
   }
   get_ctrl->m_ndb = ndb;
@@ -2833,12 +2846,13 @@ void rondb_mset(Ndb *ndb,
     malloc(sizeof(struct GetControl));
   if (get_ctrl == nullptr) {
     assign_generic_err_to_response(response, FAILED_MALLOC);
-    free(get_ctrl);
+    free(key_storage);
     return;
   }
   get_ctrl->m_ndb = ndb;
   get_ctrl->m_key_store = key_storage;
   get_ctrl->m_value_rows = nullptr;
+  get_ctrl->m_parked_value_ptr = nullptr;
   get_ctrl->m_next_value_row = 0;
   get_ctrl->m_num_transactions = 0;
   get_ctrl->m_num_keys_requested = num_keys;
@@ -2873,6 +2887,7 @@ void rondb_mset(Ndb *ndb,
     key_storage[i].m_close_flag = false;
     key_storage[i].m_get_ctrl = get_ctrl;
     key_storage[i].m_trans = nullptr;
+    key_storage[i].m_value_ptr = nullptr;
     const char *key_str = argv[arg_index_key].c_str();
     Uint32 key_len = argv[arg_index_key].size();
     if (memcmp(key_str, "key:__rand_int__", 16) == 0) {
@@ -2884,12 +2899,17 @@ void rondb_mset(Ndb *ndb,
     if (argv[arg_index_val].size() > REDIS_MAX_VALUE_LEN) {
       RONDIS_SECURITY_EVENT("rondis_oversize_value");
       assign_generic_err_to_response(response, REDIS_VALUE_TOO_LARGE);
+      // Keys after i are not initialised yet, release only 0..i.
+      get_ctrl->m_num_keys_requested = i + 1;
+      release_mset(get_ctrl);
       return;
     }
-    // todo fix memory handling for m_value_ptr
+    // Freed by release_mset.
     key_storage[i].m_value_ptr = (char*)malloc(argv[arg_index_val].size() + 1);
     if (key_storage[i].m_value_ptr == nullptr) {
       assign_generic_err_to_response(response, FAILED_MALLOC);
+      get_ctrl->m_num_keys_requested = i + 1;
+      release_mset(get_ctrl);
       return;
     }
     memcpy(key_storage[i].m_value_ptr,
@@ -2972,6 +2992,10 @@ void rondb_mset(Ndb *ndb,
   if (get_cmd_part) {
     assert(!is_hash_command);
     assert(num_keys == 1);
+    // The GET phase reads a multi-row old value into m_value_ptr
+    // (send_value_read), so park the new value until it is done.
+    get_ctrl->m_parked_value_ptr = key_storage[0].m_value_ptr;
+    key_storage[0].m_value_ptr = nullptr;
     int ret_code = rondb_get_func(ndb,
                                   tab,
                                   response,
@@ -2979,6 +3003,9 @@ void rondb_mset(Ndb *ndb,
                                   get_ctrl,
                                   key_storage,
                                   num_keys);
+    // set_rows writes from m_value_ptr: put the new value back and
+    // park the old value (if any) until the reply.
+    std::swap(key_storage[0].m_value_ptr, get_ctrl->m_parked_value_ptr);
     if (ret_code != 0) {
       release_mset(get_ctrl);
       return;
@@ -3047,6 +3074,8 @@ void rondb_mset(Ndb *ndb,
     for (Uint32 i = 0; i < num_keys; i++) {
       key_storage[i].m_key_state = key_storage[i].m_get_key_state;
     }
+    // rondb_get_response reads a multi-row old value from m_value_ptr.
+    std::swap(key_storage[0].m_value_ptr, get_ctrl->m_parked_value_ptr);
     int ret_code = rondb_get_response(response,
                                       key_storage,
                                       num_keys);
@@ -3156,7 +3185,12 @@ static int send_value_read(std::string *response,
                            struct KeyStorage *key_store,
                            struct GetControl *get_ctrl) {
   if (key_store->m_num_rw_rows == 0) {
-    /* Before we read the data we need to allocate memory for the row */
+    /**
+     * Before we read the data we need to allocate memory for the row.
+     * m_value_ptr is empty here, SET ... GET parks its new value in
+     * GetControl::m_parked_value_ptr during the GET phase.
+     */
+    assert(key_store->m_value_ptr == nullptr);
     key_store->m_value_ptr = (char*)
       malloc(key_store->m_get_value_size);
     if (key_store->m_value_ptr == nullptr) {
@@ -3282,6 +3316,14 @@ static int get_complex_rows(Ndb *ndb,
       prepare_read_transaction(&key_storage[inx]);
     }
   }
+  // rondb_get_func calls us once per batch of MAX_PARALLEL_KEY_OPS keys.
+  // The previous batch has completed all its reads, so its value rows
+  // are no longer used. The new array is sized for this batch only, so
+  // value row indexes restart from 0.
+  if (get_ctrl->m_value_rows != nullptr) {
+    free(get_ctrl->m_value_rows);
+  }
+  get_ctrl->m_next_value_row = 0;
   get_ctrl->m_value_rows = (struct value_table*)malloc(
     num_complex_reads * MAX_PARALLEL_VALUE_RWS *
     sizeof(struct value_table));
@@ -4178,8 +4220,11 @@ void rondb_getrange_command(Ndb *ndb,
     return;
   }
   Int64 start, end;
-  if (get_int64(argv[2], response, &start) == false) return;
-  if (get_int64(argv[3], response, &end) == false) return;
+  if (get_int64(argv[2], response, &start) == false ||
+      get_int64(argv[3], response, &end) == false) {
+    release_mget(get_ctrl);
+    return;
+  }
   int ret_code = rondb_get_func(ndb,
                                 tab,
                                 response,
@@ -4235,12 +4280,15 @@ void rondb_getrange_command(Ndb *ndb,
     response->reserve(tot_ret_len);
   } catch (const std::exception &e) {
     assign_generic_err_to_response(response, FAILED_MALLOC);
+    release_mget(get_ctrl);
     return;
   }
   response->append((const char*)&buf[0], header_len);
   if (value_ptr)
     response->append(&value_ptr[start], ret_len);
   response->append("\r\n");
+  // value_ptr points into key_store, so release only after the append.
+  release_mget(get_ctrl);
   return;
 }
 
@@ -4284,6 +4332,7 @@ void rondb_setrange_command(Ndb *ndb,
   if (end > MAX_REDIS_ROW_SIZE) {
     RONDIS_SECURITY_EVENT("rondis_oversize_value");
     assign_generic_err_to_response(response, REDIS_OFFSET_OUT_OF_RANGE);
+    free(key_store);
     return;
   }
   if (!setup_transaction(ndb,
