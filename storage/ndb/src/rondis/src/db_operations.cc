@@ -1278,27 +1278,10 @@ int update_expiry_string_atomic(Ndb *ndb,
                                ndb->getNdbError());
     return -1;
   }
-  // Op 1: string_keys update (AbortOnError so missing string row
-  // 626s the trans and short-circuits the hset_keys op too).
-  // mask 0x80 = expiry_date in the std::map iteration order of
-  // init_key_records' read_all_column_map.
-  const Uint32 mask_str = 0x80;
-  const unsigned char *mask_str_ptr = (const unsigned char *)&mask_str;
-  const NdbOperation *op_str = trans->updateTuple(
-    pk_key_record[database_id],
-    (const char *)&key_row_str,
-    entire_key_record[database_id],
-    (char *)&key_row_str,
-    mask_str_ptr);
-  if (op_str == nullptr) {
-    ndb->closeTransaction(trans);
-    assign_ndb_err_to_response(response,
-                               FAILED_GET_OP,
-                               trans->getNdbError());
-    return -1;
-  }
-  // Op 2: hset_keys update (AO_IgnoreError so a missing registry
-  // row does not block the string-side update).
+  // Op 1: hset_keys update (AO_IgnoreError so a missing registry
+  // row does not block the string-side update). It goes first, in a
+  // NoCommit round trip of its own (lock order, see
+  // KeyState::HsetLockSent).
   // mask 0x8 = expiry_date in entire_hset_key_record.
   const Uint32 mask_hset = 0x8;
   const unsigned char *mask_hset_ptr = (const unsigned char *)&mask_hset;
@@ -1315,10 +1298,38 @@ int update_expiry_string_atomic(Ndb *ndb,
     &opts_hset,
     sizeof(opts_hset));
   if (op_hset == nullptr) {
-    ndb->closeTransaction(trans);
     assign_ndb_err_to_response(response,
                                FAILED_GET_OP,
                                trans->getNdbError());
+    ndb->closeTransaction(trans);
+    return -1;
+  }
+  trans->execute(NdbTransaction::NoCommit, NdbOperation::AbortOnError);
+  int hset_code = trans->getNdbError().code;
+  if (hset_code != 0 && hset_code != 626) {
+    assign_ndb_err_to_response(response,
+                               "Failed to execute atomic expire update",
+                               trans->getNdbError());
+    ndb->closeTransaction(trans);
+    return hset_code;
+  }
+  // Op 2: string_keys update (AbortOnError so a missing string row
+  // 626s the trans and rolls back the hset_keys update too).
+  // mask 0x80 = expiry_date in the std::map iteration order of
+  // init_key_records' read_all_column_map.
+  const Uint32 mask_str = 0x80;
+  const unsigned char *mask_str_ptr = (const unsigned char *)&mask_str;
+  const NdbOperation *op_str = trans->updateTuple(
+    pk_key_record[database_id],
+    (const char *)&key_row_str,
+    entire_key_record[database_id],
+    (char *)&key_row_str,
+    mask_str_ptr);
+  if (op_str == nullptr) {
+    assign_ndb_err_to_response(response,
+                               FAILED_GET_OP,
+                               trans->getNdbError());
+    ndb->closeTransaction(trans);
     return -1;
   }
   trans->execute(NdbTransaction::Commit, NdbOperation::AbortOnError);
@@ -1908,6 +1919,126 @@ void prepare_write_transaction(struct KeyStorage *key_store) {
                                            (void*)key_store);
 }
 
+static void
+hset_first_callback(int result, NdbTransaction *trans, void *aObject) {
+  struct KeyStorage *key_store = (struct KeyStorage*)aObject;
+  struct GetControl *get_ctrl = key_store->m_get_ctrl;
+  (void)result;
+  assert(trans == key_store->m_trans);
+  assert(get_ctrl->m_num_transactions > 0);
+  assert(key_store->m_key_state == KeyState::HsetLockSent);
+  int code = trans->getNdbError().code;
+  // READ_ERROR comes from an AO_IgnoreError delete or update of an
+  // hset_keys row that does not exist: nothing to lock, carry on.
+  if (code != 0 && code != READ_ERROR) {
+    key_store->m_key_state = KeyState::CompletedFailed;
+    get_ctrl->m_num_keys_failed++;
+    if (get_ctrl->m_error_code == 0) {
+      get_ctrl->m_error_code = code;
+    }
+    key_store->m_close_flag = true;
+  } else {
+    key_store->m_key_state = KeyState::HsetLocked;
+  }
+  assert(get_ctrl->m_num_keys_outstanding > 0);
+  get_ctrl->m_num_keys_outstanding--;
+}
+
+void prepare_hset_first_transaction(struct KeyStorage *key_store) {
+  key_store->m_key_state = KeyState::HsetLockSent;
+  key_store->m_trans->executeAsynchPrepare(NdbTransaction::NoCommit,
+                                           &hset_first_callback,
+                                           (void*)key_store);
+}
+
+int execute_hset_string_claim_first(NdbTransaction *trans,
+                                    const NdbDictionary::Table *tab_hset,
+                                    const char *key_str,
+                                    Uint32 key_len,
+                                    bool set_ttl,
+                                    bool keep_ttl,
+                                    Int32 expire_at,
+                                    Uint32 database_id,
+                                    std::string *response,
+                                    NdbRecAttr **out_old_id_attr,
+                                    NdbRecAttr **out_old_expiry_attr) {
+  if (add_hset_string_claim_op(trans,
+                               tab_hset,
+                               key_str,
+                               key_len,
+                               set_ttl,
+                               keep_ttl,
+                               expire_at,
+                               database_id,
+                               response,
+                               out_old_id_attr,
+                               nullptr,
+                               out_old_expiry_attr) != 0) {
+    return -1;
+  }
+  if (trans->execute(NdbTransaction::NoCommit,
+                     NdbOperation::AbortOnError) != 0 ||
+      trans->getNdbError().code != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to claim the key in hset_keys",
+                               trans->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
+/**
+ * Exclusive lock on the hset_keys row of a hash, in a NoCommit round
+ * trip of its own, before a write of one of its field rows (lock
+ * order, see KeyState::HsetLockSent). A missing row is not an error.
+ */
+static int execute_hset_lock_read_first(NdbTransaction *trans,
+                                        const char *hash_name,
+                                        Uint32 hash_name_len,
+                                        Uint32 database_id,
+                                        std::string *response) {
+  struct hset_key_table key_row;
+  key_row.null_bits = 0;
+  memcpy(&key_row.redis_key[2], hash_name, hash_name_len);
+  set_length(&key_row.redis_key[0], hash_name_len);
+  // Same columns as add_hdel_lock_read_op: redis_key_id, field_count.
+  const Uint32 mask = 0x6;
+  const unsigned char *mask_ptr = (const unsigned char *)&mask;
+  NdbOperation::OperationOptions opts;
+  std::memset(&opts, 0, sizeof(opts));
+  opts.optionsPresent |= NdbOperation::OperationOptions::OO_ABORTOPTION;
+  opts.abortOption = NdbOperation::AO_IgnoreError;
+  const NdbOperation *op = trans->readTuple(
+    pk_hset_key_record[database_id],
+    (const char *)&key_row,
+    entire_hset_key_record[database_id],
+    (char *)&key_row,
+    NdbOperation::LM_Exclusive,
+    mask_ptr,
+    &opts,
+    sizeof(opts));
+  if (op == nullptr) {
+    assign_ndb_err_to_response(response,
+                               "Failed to add hset_keys lock-read op",
+                               trans->getNdbError());
+    return -1;
+  }
+  int exec_rc = trans->execute(NdbTransaction::NoCommit,
+                               NdbOperation::AbortOnError);
+  int code = trans->getNdbError().code;
+  if (code == READ_ERROR) {
+    // No hset_keys row (AO_IgnoreError): nothing to lock.
+    return 0;
+  }
+  if (exec_rc != 0 || code != 0) {
+    assign_ndb_err_to_response(response,
+                               "Failed to lock the hash in hset_keys",
+                               trans->getNdbError());
+    return -1;
+  }
+  return 0;
+}
+
 void commit_write_transaction(struct KeyStorage *key_store) {
   key_store->m_trans->executeAsynchPrepare(NdbTransaction::Commit,
                                            &write_callback,
@@ -2427,8 +2558,53 @@ void incr_decr_key_row(std::string *response,
   if (get_dirty_incr_decr_flag(worker_id))
     opts.optionsPresent |= NdbOperation::OperationOptions::OO_DIRTY_FLAG;
 
-  /* Define the actual operation to be sent to RonDB data node. */
   Uint32 database_id = get_current_database(worker_id);
+  const bool is_string_counter =
+    (key_row->redis_key_id == STRING_REDIS_KEY_ID);
+  const bool is_hash_counter = !is_string_counter;
+  const NdbDictionary::Table *hset_tab = nullptr;
+  // Capture the old hset_keys.redis_key_id from the dual-claim's
+  // UPDATE-on-hash branch. Redis counters do not replace hashes:
+  // after the NoCommit drain, a non-zero old id becomes WRONGTYPE
+  // and the caller closes the still-uncommitted transaction.
+  NdbRecAttr *string_claim_old_id_attr = nullptr;
+  {
+    const NdbDictionary::Dictionary *dict = ndb->getDictionary();
+    hset_tab = dict ? dict->getTable(HSET_KEY_TABLE_NAME) : nullptr;
+    if (hset_tab == nullptr) {
+      assign_ndb_err_to_response(response,
+                                 "Failed to get hset_keys table",
+                                 ndb->getNdbError());
+      return;
+    }
+    // Lock the hset_keys row before the counter row, in a round trip
+    // of its own (see KeyState::HsetLockSent): the string claim for a
+    // string counter, an exclusive read of the hash's row for a hash
+    // counter, which may bump field_count before committing.
+    if (is_string_counter) {
+      if (execute_hset_string_claim_first(
+            trans,
+            hset_tab,
+            &key_row->redis_key[2],
+            get_length(&key_row->redis_key[0]),
+            false,
+            true,
+            0,
+            database_id,
+            response,
+            &string_claim_old_id_attr) != 0) {
+        return;
+      }
+    } else if (execute_hset_lock_read_first(trans,
+                                            hash_name,
+                                            hash_name_len,
+                                            database_id,
+                                            response) != 0) {
+      return;
+    }
+  }
+
+  /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
     pk_key_record[database_id],
     (const char *)key_row,
@@ -2442,41 +2618,6 @@ void incr_decr_key_row(std::string *response,
                                "Failed to create NdbOperation",
                                trans->getNdbError());
     return;
-  }
-
-  const bool is_string_counter =
-    (key_row->redis_key_id == STRING_REDIS_KEY_ID);
-  const bool is_hash_counter = !is_string_counter;
-  const NdbDictionary::Table *hset_tab = nullptr;
-  // Capture the old hset_keys.redis_key_id from the dual-claim's
-  // UPDATE-on-hash branch. Redis counters do not replace hashes:
-  // after the NoCommit drain, a non-zero old id becomes WRONGTYPE
-  // and the caller closes the still-uncommitted transaction.
-  NdbRecAttr *string_claim_old_id_attr = nullptr;
-  if (is_string_counter || is_hash_counter) {
-    const NdbDictionary::Dictionary *dict = ndb->getDictionary();
-    hset_tab = dict ? dict->getTable(HSET_KEY_TABLE_NAME) : nullptr;
-    if (hset_tab == nullptr) {
-      assign_ndb_err_to_response(response,
-                                 "Failed to get hset_keys table",
-                                 ndb->getNdbError());
-      return;
-    }
-    if (is_string_counter) {
-      if (add_hset_string_claim_op(trans,
-                                   hset_tab,
-                                   &key_row->redis_key[2],
-                                   get_length(&key_row->redis_key[0]),
-                                   false,
-                                   true,
-                                   0,
-                                   database_id,
-                                   response,
-                                   &string_claim_old_id_attr,
-                                   nullptr) != 0) {
-        return;
-      }
-    }
   }
 
   /*
@@ -2729,6 +2870,24 @@ void execute_set_range_simple(std::string *response,
   opts.numExtraGetFinalValues = 1;
   opts.extraGetFinalValues = getvals;
 
+  // Capture the dual-claim's old hset_keys redis_key_id. SETRANGE
+  // follows Redis WRONGTYPE semantics on hashes, unlike SET. The
+  // claim goes first, in a round trip of its own (lock order, see
+  // KeyState::HsetLockSent).
+  NdbRecAttr *string_claim_old_id_attr = nullptr;
+  ret_code = execute_hset_string_claim_first(trans,
+                                             hset_tab,
+                                             key_store->m_key_str,
+                                             key_store->m_key_len,
+                                             false,
+                                             true,
+                                             0,
+                                             database_id,
+                                             response,
+                                             &string_claim_old_id_attr);
+  if (ret_code != 0) {
+    return;
+  }
   /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
     pk_key_record[database_id],
@@ -2742,23 +2901,6 @@ void execute_set_range_simple(std::string *response,
     assign_ndb_err_to_response(response,
                                "Failed to create NdbOperation",
                                trans->getNdbError());
-    return;
-  }
-  // Capture the dual-claim's old hset_keys redis_key_id. SETRANGE
-  // follows Redis WRONGTYPE semantics on hashes, unlike SET.
-  NdbRecAttr *string_claim_old_id_attr = nullptr;
-  ret_code = add_hset_string_claim_op(trans,
-                                      hset_tab,
-                                      key_store->m_key_str,
-                                      key_store->m_key_len,
-                                      false,
-                                      true,
-                                      0,
-                                      database_id,
-                                      response,
-                                      &string_claim_old_id_attr,
-                                      nullptr);
-  if (ret_code != 0) {
     return;
   }
   // NoCommit so we can read OUTPUT_INDEX_0 before committing. If
@@ -2844,6 +2986,24 @@ int write_key_row_setrange(std::string *response,
   opts.numExtraGetFinalValues = 2;
   opts.extraGetFinalValues = getvals;
 
+  // Capture the dual-claim's old hset_keys redis_key_id. SETRANGE
+  // follows Redis WRONGTYPE semantics on hashes, unlike SET. The
+  // claim goes first, in a round trip of its own (lock order, see
+  // KeyState::HsetLockSent).
+  NdbRecAttr *string_claim_old_id_attr = nullptr;
+  ret_code = execute_hset_string_claim_first(trans,
+                                             hset_tab,
+                                             key_store->m_key_str,
+                                             key_store->m_key_len,
+                                             false,
+                                             true,
+                                             0,
+                                             database_id,
+                                             response,
+                                             &string_claim_old_id_attr);
+  if (ret_code != 0) {
+    return -1;
+  }
   /* Define the actual operation to be sent to RonDB data node. */
   const NdbOperation *op = trans->writeTuple(
     pk_key_record[database_id],
@@ -2857,23 +3017,6 @@ int write_key_row_setrange(std::string *response,
     assign_ndb_err_to_response(response,
                                "Failed to create NdbOperation",
                                trans->getNdbError());
-    return -1;
-  }
-  // Capture the dual-claim's old hset_keys redis_key_id. SETRANGE
-  // follows Redis WRONGTYPE semantics on hashes, unlike SET.
-  NdbRecAttr *string_claim_old_id_attr = nullptr;
-  ret_code = add_hset_string_claim_op(trans,
-                                      hset_tab,
-                                      key_store->m_key_str,
-                                      key_store->m_key_len,
-                                      false,
-                                      true,
-                                      0,
-                                      database_id,
-                                      response,
-                                      &string_claim_old_id_attr,
-                                      nullptr);
-  if (ret_code != 0) {
     return -1;
   }
   if (key_store->m_trans->execute(NdbTransaction::NoCommit) != 0) {

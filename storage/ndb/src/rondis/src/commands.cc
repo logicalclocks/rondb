@@ -469,6 +469,36 @@ static int send_next_delete_batch(std::string *response,
   return 0;
 }
 
+/**
+ * Send the string_keys delete of every key whose hset_keys delete has
+ * completed its own round trip (KeyState::HsetLocked); from there the
+ * key follows the complex delete path of send_next_delete_batch.
+ */
+static int send_deletes_after_hset_lock(std::string *response,
+                                        const NdbDictionary::Table *tab,
+                                        struct KeyStorage *key_storage,
+                                        struct GetControl *get_ctrl,
+                                        Uint32 current_index,
+                                        Uint32 loop_count,
+                                        Uint32 &current_finished) {
+  for (Uint32 i = 0; i < loop_count; i++) {
+    Uint32 inx = current_index + i;
+    if (key_storage[inx].m_key_state != KeyState::HsetLocked) {
+      continue;
+    }
+    int ret_code = prepare_complex_delete_row(response,
+                                              tab,
+                                              &key_storage[inx]);
+    if (ret_code != 0) return 1;
+    key_storage[inx].m_key_state = KeyState::MultiRow;
+    get_ctrl->m_num_keys_outstanding++;
+    prepare_complex_delete_transaction(&key_storage[inx]);
+    assert(current_finished > 0);
+    current_finished--;
+  }
+  return 0;
+}
+
 static int del_complex_rows(Ndb *ndb,
                             const NdbDictionary::Table *tab,
                             std::string *response,
@@ -491,27 +521,32 @@ static int del_complex_rows(Ndb *ndb,
         return 1;
       }
       get_ctrl->m_num_transactions++;
+      // Phase 1.10c.2: pair the string_keys delete (with ext-row
+      // cleanup) with a hset_keys delete on the same trans. The
+      // ext-row sweep finishes during the NoCommit phase below; the
+      // final commit ships all of { string_keys delete + N value
+      // deletes + hset_keys delete } atomically. The hset_keys
+      // delete goes first, in a round trip of its own (lock order,
+      // see KeyState::HsetLockSent); send_deletes_after_hset_lock
+      // then sends the string_keys delete.
+      if (redis_key_id == STRING_REDIS_KEY_ID) {
+        int ret_code = add_hset_string_delete_op(key_storage[inx].m_trans,
+                                                 get_ctrl->m_hset_key_tab,
+                                                 key_storage[inx].m_key_str,
+                                                 key_storage[inx].m_key_len,
+                                                 get_ctrl->m_database_id,
+                                                 response);
+        if (ret_code != 0) {
+          return 1;
+        }
+        prepare_hset_first_transaction(&key_storage[inx]);
+        continue;
+      }
       int ret_code = prepare_complex_delete_row(response,
                                                 tab,
                                                 &key_storage[inx]);
       if (ret_code != 0) {
         return 1;
-      }
-      // Phase 1.10c.2: pair the string_keys delete (with ext-row
-      // cleanup) with a hset_keys delete on the same trans. The
-      // ext-row sweep finishes during the NoCommit phase below; the
-      // final commit ships all of { string_keys delete + N value
-      // deletes + hset_keys delete } atomically.
-      if (redis_key_id == STRING_REDIS_KEY_ID) {
-        ret_code = add_hset_string_delete_op(key_storage[inx].m_trans,
-                                             get_ctrl->m_hset_key_tab,
-                                             key_storage[inx].m_key_str,
-                                             key_storage[inx].m_key_len,
-                                             get_ctrl->m_database_id,
-                                             response);
-        if (ret_code != 0) {
-          return 1;
-        }
       }
       prepare_complex_delete_transaction(&key_storage[inx]);
     } else {
@@ -546,12 +581,20 @@ static int del_complex_rows(Ndb *ndb,
       finished, current_finished_in_loop, ndb));
     current_finished_in_loop += finished;
     if (get_ctrl->m_num_keys_failed > 0) return 0;
-    int ret_code = send_next_delete_batch(response,
-                                          key_storage,
-                                          get_ctrl,
-                                          current_index,
-                                          loop_count,
-                                          current_finished_in_loop);
+    int ret_code = send_deletes_after_hset_lock(response,
+                                                tab,
+                                                key_storage,
+                                                get_ctrl,
+                                                current_index,
+                                                loop_count,
+                                                current_finished_in_loop);
+    if (ret_code != 0) return 1;
+    ret_code = send_next_delete_batch(response,
+                                      key_storage,
+                                      get_ctrl,
+                                      current_index,
+                                      loop_count,
+                                      current_finished_in_loop);
     DEB_DEL_CMD(("Next delete batch sent, keys out: %u,"
                  "current_finished_in_loop: %u\n",
       get_ctrl->m_num_keys_outstanding, current_finished_in_loop));
@@ -1942,68 +1985,133 @@ static bool needs_hash_replace(const struct KeyStorage *key_store) {
 }
 
 /**
- * Phase B for plain SET / MSET (no NX / XX, no GET).
- *
- * Instead of waiting for the NoCommit of every key in the batch before
- * committing any of them, move each key on to its next write step as
- * soon as its own NoCommit has completed. Every key has its own
- * transaction, so a key that holds its row locks while it waits for
- * another key's NoCommit can deadlock with a concurrent MSET that locks
- * the same keys in another order. NDB sees no deadlock between two
- * transactions of different keys, so only TransactionDeadlockDetection-
- * Timeout breaks it. Plain SET / MSET makes no decision across keys
- * before committing, so there is no reason to hold the locks.
- *
- * Keys that replace a hash are left in MultiRowRWValue: the Phase B.5
- * scan executes synchronously and so must run with nothing outstanding
- * on the Ndb object, and Phase C / D then commit them.
- *
- * After a failure no further steps are queued, but we still wait for
- * every outstanding execute so that no transaction is closed while in
- * flight. Keys committed before the failure stay committed.
+ * Wait for num_pending outstanding executes on ndb to complete.
  */
-static int set_rows_commit_each_key(Ndb *ndb,
-                                    std::string *response,
-                                    struct KeyStorage *key_storage,
-                                    struct GetControl *get_ctrl,
-                                    Uint32 loop_count,
-                                    Uint32 current_index) {
-  // Phase A queued one NoCommit per key.
-  Uint32 num_pending = loop_count;
-  get_ctrl->m_num_keys_multi_rows = loop_count;
-  get_ctrl->m_num_bytes_outstanding = 0;
-  int ret_code = 0;
-  do {
+static void drain_pending(Ndb *ndb, Uint32 num_pending) {
+  while (num_pending > 0) {
     int min_finished = 1;
     int finished = execute_ndb(ndb, min_finished, __LINE__);
     assert(finished >= 0);
     assert((Uint32)finished <= num_pending);
     num_pending -= (Uint32)finished;
-    if (ret_code != 0 || get_ctrl->m_num_keys_failed > 0) {
-      continue;
-    }
-    for (Uint32 i = 0; i < loop_count; i++) {
+  }
+}
+
+/**
+ * Send the string_keys write of a key whose hset_keys claim has
+ * completed its own round trip (KeyState::HsetLocked), as a NoCommit
+ * handled by write_callback.
+ */
+static int send_key_row_write(std::string *response,
+                              const NdbDictionary::Table *tab,
+                              Uint64 redis_key_id,
+                              struct KeyStorage *key_store,
+                              struct GetControl *get_ctrl) {
+  assert(key_store->m_key_state == KeyState::HsetLocked);
+  Uint32 row_state = 0;
+  SetType requested_set_type = key_store->m_set_type;
+  if (redis_key_id == STRING_REDIS_KEY_ID &&
+      (requested_set_type == IsInsert || requested_set_type == IsUpdate)) {
+    // NX/XX must test key existence across the unified namespace,
+    // not just string_keys. Stage a tentative write, then decide
+    // after the hset_keys claim tells us whether a hash existed.
+    key_store->m_set_type = IsWrite;
+  }
+  int ret_code = write_data_to_key_op(response,
+                                      tab,
+                                      key_store,
+                                      redis_key_id,
+                                      row_state,
+                                      get_ctrl->m_database_id);
+  key_store->m_set_type = requested_set_type;
+  if (ret_code != 0) {
+    return 1;
+  }
+  // Until write_callback has run the key is in no state that the
+  // dispatch loops act on.
+  key_store->m_key_state = KeyState::NotCompleted;
+  get_ctrl->m_num_keys_outstanding++;
+  prepare_write_transaction(key_store);
+  return 0;
+}
+
+/**
+ * Phase B for plain SET / MSET (no NX / XX, no GET).
+ *
+ * Instead of waiting for every key of the batch before going on to
+ * the next round trip, move each key on as soon as its own previous
+ * round trip has completed: from its hset_keys claim to its string_keys
+ * write, and from that write to its commit, or to its extension-row
+ * writes or deletes. Every key has its own transaction, so a key that
+ * holds its row locks while it waits for another key can deadlock with
+ * a concurrent MSET that locks the same keys in another order. NDB sees
+ * no deadlock between two transactions of different keys, so only
+ * TransactionDeadlockDetectionTimeout breaks it. Plain SET / MSET makes
+ * no decision across keys before committing, so there is no reason to
+ * hold the locks.
+ *
+ * Keys that replace a hash are left in MultiRowRWValue: the Phase B.5
+ * scan executes synchronously and so must run with nothing outstanding
+ * on the Ndb object, and Phase C / D then commit them.
+ *
+ * After a failure no further round trips are queued, but we still wait
+ * for every outstanding execute so that no transaction is closed while
+ * in flight. Keys committed before the failure stay committed.
+ */
+static int set_rows_commit_each_key(Ndb *ndb,
+                                    const NdbDictionary::Table *tab,
+                                    std::string *response,
+                                    Uint64 redis_key_id,
+                                    struct KeyStorage *key_storage,
+                                    struct GetControl *get_ctrl,
+                                    Uint32 loop_count,
+                                    Uint32 current_index,
+                                    Uint32 num_claims) {
+  // Phase A queued one hset_keys claim per key.
+  Uint32 num_pending = num_claims;
+  get_ctrl->m_num_keys_multi_rows = loop_count;
+  get_ctrl->m_num_bytes_outstanding = 0;
+  int ret_code = 0;
+  for (;;) {
+    for (Uint32 i = 0;
+         i < loop_count &&
+           ret_code == 0 &&
+           get_ctrl->m_num_keys_failed == 0;
+         i++) {
       Uint32 inx = current_index + i;
-      if (key_storage[inx].m_key_state != KeyState::MultiRowRWValue ||
-          needs_hash_replace(&key_storage[inx])) {
-        continue;
-      }
-      // Only extension-row steps are throttled, and only while other
-      // steps are in flight, so this loop always makes progress.
-      if (!write_step_is_commit(&key_storage[inx]) &&
-          num_pending > 0 &&
-          get_ctrl->m_num_bytes_outstanding > MAX_OUTSTANDING_BYTES) {
-        continue;
-      }
-      ret_code = send_next_write_step(response,
-                                      &key_storage[inx],
+      struct KeyStorage *key_store = &key_storage[inx];
+      if (key_store->m_key_state == KeyState::HsetLocked) {
+        ret_code = send_key_row_write(response,
+                                      tab,
+                                      redis_key_id,
+                                      key_store,
                                       get_ctrl);
-      if (ret_code != 0) {
-        break;
+      } else if (key_store->m_key_state == KeyState::MultiRowRWValue &&
+                 !needs_hash_replace(key_store)) {
+        // Only extension-row steps are throttled, and only while other
+        // round trips are in flight, so this loop always makes progress.
+        if (!write_step_is_commit(key_store) &&
+            num_pending > 0 &&
+            get_ctrl->m_num_bytes_outstanding > MAX_OUTSTANDING_BYTES) {
+          continue;
+        }
+        ret_code = send_next_write_step(response, key_store, get_ctrl);
+      } else {
+        continue;
       }
-      num_pending++;
+      if (ret_code == 0) {
+        num_pending++;
+      }
     }
-  } while (num_pending > 0);
+    if (num_pending == 0) {
+      break;
+    }
+    int min_finished = 1;
+    int finished = execute_ndb(ndb, min_finished, __LINE__);
+    assert(finished >= 0);
+    assert((Uint32)finished <= num_pending);
+    num_pending -= (Uint32)finished;
+  }
   return ret_code;
 }
 
@@ -2037,7 +2145,8 @@ static int set_rows(Ndb *ndb,
                     struct GetControl *get_ctrl,
                     Uint32 loop_count,
                     Uint32 current_index) {
-  // Phase A - submit NoCommit for every key.
+  // Phase A - submit the hset_keys claim of every key.
+  Uint32 num_claims = 0;
   for (Uint32 i = 0; i < loop_count; i++) {
     Uint32 inx = current_index + i;
     key_storage[inx].m_rondb_key = 0;
@@ -2076,87 +2185,95 @@ static int set_rows(Ndb *ndb,
         return 1;
       }
       get_ctrl->m_num_transactions++;
-    }
-    Uint32 row_state = 0;
-    SetType requested_set_type = key_storage[inx].m_set_type;
-    if (redis_key_id == STRING_REDIS_KEY_ID &&
-        (requested_set_type == IsInsert || requested_set_type == IsUpdate)) {
-      // NX/XX must test key existence across the unified namespace,
-      // not just string_keys. Stage a tentative write, then decide
-      // after the hset_keys claim tells us whether a hash existed.
-      key_storage[inx].m_set_type = IsWrite;
-    }
-    int ret_code = write_data_to_key_op(response,
-                                        tab,
-                                        &key_storage[inx],
-                                        redis_key_id,
-                                        row_state,
-                                        get_ctrl->m_database_id);
-    key_storage[inx].m_set_type = requested_set_type;
-    if (ret_code != 0) {
-      return 1;
-    }
-    // Phase 1.10c.1: namespace-unification claim. Stage an
-    // hset_keys UPSERT on the same trans so the dual write
-    // (string_keys + hset_keys) is atomic.
-    // Phase 1.10c.7b: capture the dual-claim's old hset_keys
-    // redis_key_id per key. After Phase B drain, any key whose
-    // captured value is non-zero means SET hit a hash and we run
-    // a silent-replace scan-with-delete on that key's trans
-    // before the regular Phase C/D dispatch.
-    key_storage[inx].m_rec_attr_string_claim_old_id = nullptr;
-    key_storage[inx].m_rec_attr_string_claim_old_expiry = nullptr;
-    if (redis_key_id == STRING_REDIS_KEY_ID) {
-      // Phase 1.10c.4: mirror SET's expiry_date onto the hset_keys
-      // row so EXISTS / TYPE can single-probe and still honor TTL
-      // filtering. Phase 1.10c.5: KEEPTTL preserves the existing
-      // hset_keys.expiry_date on UPDATE.
-      ret_code = add_hset_string_claim_op(
-        key_storage[inx].m_trans,
-        get_ctrl->m_hset_key_tab,
-        key_storage[inx].m_key_str,
-        key_storage[inx].m_key_len,
-        key_storage[inx].m_set_ttl,
-        key_storage[inx].m_keep_ttl,
-        (Int32)key_storage[inx].m_expire_at,
-        get_ctrl->m_database_id,
-        response,
-        &key_storage[inx].m_rec_attr_string_claim_old_id,
-        nullptr,
-        &key_storage[inx].m_rec_attr_string_claim_old_expiry);
-      if (ret_code != 0) {
-        return 1;
+      // Phase 1.10c.1: namespace-unification claim. Stage an
+      // hset_keys UPSERT on the same trans so the dual write
+      // (string_keys + hset_keys) is atomic.
+      // Phase 1.10c.7b: capture the dual-claim's old hset_keys
+      // redis_key_id per key. After Phase B drain, any key whose
+      // captured value is non-zero means SET hit a hash and we run
+      // a silent-replace scan-with-delete on that key's trans
+      // before the regular Phase C/D dispatch.
+      // The claim is sent first, in a NoCommit round trip of its own;
+      // send_key_row_write sends the string_keys write once it is
+      // done (lock order, see KeyState::HsetLockSent).
+      key_storage[inx].m_rec_attr_string_claim_old_id = nullptr;
+      key_storage[inx].m_rec_attr_string_claim_old_expiry = nullptr;
+      if (redis_key_id == STRING_REDIS_KEY_ID) {
+        // Phase 1.10c.4: mirror SET's expiry_date onto the hset_keys
+        // row so EXISTS / TYPE can single-probe and still honor TTL
+        // filtering. Phase 1.10c.5: KEEPTTL preserves the existing
+        // hset_keys.expiry_date on UPDATE.
+        int ret_code = add_hset_string_claim_op(
+          key_storage[inx].m_trans,
+          get_ctrl->m_hset_key_tab,
+          key_storage[inx].m_key_str,
+          key_storage[inx].m_key_len,
+          key_storage[inx].m_set_ttl,
+          key_storage[inx].m_keep_ttl,
+          (Int32)key_storage[inx].m_expire_at,
+          get_ctrl->m_database_id,
+          response,
+          &key_storage[inx].m_rec_attr_string_claim_old_id,
+          nullptr,
+          &key_storage[inx].m_rec_attr_string_claim_old_expiry);
+        if (ret_code != 0) {
+          return 1;
+        }
+        prepare_hset_first_transaction(&key_storage[inx]);
+        num_claims++;
+        continue;
       }
     }
-    prepare_write_transaction(&key_storage[inx]);
+    // SET ... GET: rondb_mset took the claim on this transaction
+    // before the get-phase read.
+    key_storage[inx].m_key_state = KeyState::HsetLocked;
   }
 
-  // Phase B - drain NoCommit callbacks. write_callback decrements
-  // m_num_keys_outstanding on both success and error paths.
-  get_ctrl->m_num_keys_outstanding = loop_count;
+  // Phase B - drain the claims and the NoCommit writes. The claim and
+  // write callbacks decrement m_num_keys_outstanding on both success
+  // and error paths.
+  get_ctrl->m_num_keys_outstanding = num_claims;
   Uint32 current_finished_in_loop = 0;
   const bool plain_set =
     redis_key_id == STRING_REDIS_KEY_ID &&
     !get_ctrl->m_get_cmd_part &&
     key_storage[current_index].m_set_type == IsWrite;
   if (plain_set) {
-    // Commits each key as soon as its NoCommit is done, see
-    // set_rows_commit_each_key. Only keys that replace a hash are
-    // left for Phase B.5 - D below.
+    // Writes and commits each key as soon as its own previous round
+    // trip is done, see set_rows_commit_each_key. Only keys that
+    // replace a hash are left for Phase B.5 - D below.
     int ret_code = set_rows_commit_each_key(ndb,
+                                            tab,
                                             response,
+                                            redis_key_id,
                                             key_storage,
                                             get_ctrl,
                                             loop_count,
-                                            current_index);
+                                            current_index,
+                                            num_claims);
     if (ret_code != 0) return 1;
   } else {
-    do {
-      int min_finished = 1;
-      int finished = execute_ndb(ndb, min_finished, __LINE__);
-      assert(finished >= 0);
-      current_finished_in_loop += finished;
-    } while (current_finished_in_loop < loop_count);
+    drain_pending(ndb, num_claims);
+    if (get_ctrl->m_num_keys_failed > 0) return 0;
+    Uint32 num_writes = 0;
+    int ret_code = 0;
+    for (Uint32 i = 0; i < loop_count; i++) {
+      Uint32 inx = current_index + i;
+      if (key_storage[inx].m_key_state != KeyState::HsetLocked) {
+        continue;
+      }
+      ret_code = send_key_row_write(response,
+                                    tab,
+                                    redis_key_id,
+                                    &key_storage[inx],
+                                    get_ctrl);
+      if (ret_code != 0) {
+        break;
+      }
+      num_writes++;
+    }
+    drain_pending(ndb, num_writes);
+    if (ret_code != 0) return 1;
   }
 
   if (get_ctrl->m_num_keys_failed > 0) return 0;
@@ -3102,6 +3219,37 @@ void rondb_mset(Ndb *ndb,
   if (get_cmd_part) {
     assert(!is_hash_command);
     assert(num_keys == 1);
+    // Take the hset_keys claim before the get-phase locked read of the
+    // string_keys row, on the transaction that the read and the write
+    // then share (lock order, see KeyState::HsetLockSent).
+    // get_complex_rows reuses this transaction, and set_rows does not
+    // claim again on it.
+    if (!setup_one_transaction(ndb,
+                               response,
+                               redis_key_id,
+                               &key_storage[0],
+                               tab)) {
+      release_mset(get_ctrl);
+      return;
+    }
+    get_ctrl->m_num_transactions++;
+    key_storage[0].m_rec_attr_string_claim_old_id = nullptr;
+    key_storage[0].m_rec_attr_string_claim_old_expiry = nullptr;
+    if (execute_hset_string_claim_first(
+          key_storage[0].m_trans,
+          get_ctrl->m_hset_key_tab,
+          key_storage[0].m_key_str,
+          key_storage[0].m_key_len,
+          key_storage[0].m_set_ttl,
+          key_storage[0].m_keep_ttl,
+          (Int32)key_storage[0].m_expire_at,
+          get_ctrl->m_database_id,
+          response,
+          &key_storage[0].m_rec_attr_string_claim_old_id,
+          &key_storage[0].m_rec_attr_string_claim_old_expiry) != 0) {
+      release_mset(get_ctrl);
+      return;
+    }
     // The GET phase reads a multi-row old value into m_value_ptr
     // (send_value_read), so park the new value until it is done.
     get_ctrl->m_parked_value_ptr = key_storage[0].m_value_ptr;
@@ -3409,14 +3557,20 @@ static int get_complex_rows(Ndb *ndb,
     if (key_storage[inx].m_key_state == KeyState::MultiRow) {
       num_complex_reads++;
       DEB_MGET_CMD(("Start complex read of key id %u\n", inx));
-      if (!setup_one_transaction(ndb,
-                                 response,
-                                 redis_key_id,
-                                 &key_storage[inx],
-                                 tab)) {
-        return 1;
+      // SET ... GET arrives with the transaction on which rondb_mset
+      // took the hset_keys claim; the read must use it.
+      if (key_storage[inx].m_trans == nullptr) {
+        if (!setup_one_transaction(ndb,
+                                   response,
+                                   redis_key_id,
+                                   &key_storage[inx],
+                                   tab)) {
+          return 1;
+        }
+        get_ctrl->m_num_transactions++;
+      } else {
+        assert(get_ctrl->m_is_set_command);
       }
-      get_ctrl->m_num_transactions++;
       if (prepare_get_key_row(response,
                               &key_storage[inx],
                               get_ctrl->m_is_set_command,
