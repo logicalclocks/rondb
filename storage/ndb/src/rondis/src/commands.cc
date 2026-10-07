@@ -4330,8 +4330,11 @@ void rondb_getrange_command(Ndb *ndb,
     return;
   }
   Int64 start, end;
-  if (get_int64(argv[2], response, &start) == false ||
-      get_int64(argv[3], response, &end) == false) {
+  if (get_int64(argv[2], response, &start) == false) {
+    release_mget(get_ctrl);
+    return;
+  }
+  if (get_int64(argv[3], response, &end) == false) {
     release_mget(get_ctrl);
     return;
   }
