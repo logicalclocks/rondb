@@ -217,9 +217,11 @@ func TestHazardTranslationsCoverOpenLogRows(t *testing.T) {
 }
 
 // The real-join production reaches every condition form, and the
-// expectation table decides each outcome: a LEFT JOIN rejects IS NULL, an
-// OR with IS NULL and XOR on its right side; IN (subquery) on the joined
-// table rejects on both join types; everything else must match MySQL.
+// expectation table decides each outcome: a LEFT JOIN rejects IS NULL and
+// an OR with IS NULL on its right side; IN (subquery) on the joined table
+// rejects on both join types; everything else must match MySQL (XOR on a
+// LEFT JOIN's right side too, since its comparison operand is NULL for
+// the NULL-extended row).
 func TestRealJoinOutcomes(t *testing.T) {
 	g := envGen()
 	only := map[string]bool{"real-join": true}
@@ -238,7 +240,7 @@ func TestRealJoinOutcomes(t *testing.T) {
 			if !reject || e.Construct != "subquery-joined" {
 				t.Errorf("%s: IN (subquery) on the joined table must expect subquery-joined: %+v\n%s", c.ID, e, c.SQL)
 			}
-		case left && (has["joined-xor"] || has["joined-is-null"] || has["joined-or-isnull"]):
+		case left && (has["joined-is-null"] || has["joined-or-isnull"]):
 			if !reject || e.Construct != "left-join-where-null" {
 				t.Errorf("%s: LEFT JOIN with a condition RonSQL cannot prove NULL-rejecting must expect left-join-where-null: %+v\n%s", c.ID, e, c.SQL)
 			}

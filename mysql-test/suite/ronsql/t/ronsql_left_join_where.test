@@ -16,6 +16,13 @@
 # column's attribute number (NDB error 40 when that root column has no
 # LIKE comparator, a filter on the wrong column when it has one).
 #
+# lj-3 / lj-4: XOR is NULL when either operand is NULL, so an XOR (or NOT
+# over one) with an operand that is certainly NULL for the NULL-extended
+# row, such as a comparison on the right side's column, rejects that row
+# and promotes the join to INNER, as MySQL computes it (it was rejected).
+# An XOR of IS NULL tests is never NULL and can hold for the NULL-extended
+# row: lj-r4 pins its rejection.
+#
 # The CTE form (LEFT JOIN cte ... WHERE cte.col IS NULL) is unaffected:
 # it becomes an anti-join or is rejected in the CTE_LOOKUP filter.
 
@@ -101,6 +108,36 @@ FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
 WHERE NOT (c.v IS NULL)
 GROUP BY p.grp|
 
+--echo
+--echo === lj-3: XOR with a comparison on the right side rejects NULL (promoted to INNER) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE (c.v > 5) XOR (c.id > 3)
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE (c.v > 5) XOR (c.id > 3)
+GROUP BY p.grp|
+
+--echo
+--echo === lj-4: NOT over that XOR rejects NULL (promoted to INNER) ===
+let $QUERY=
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT ((c.v > 5) XOR (c.id > 4))
+GROUP BY p.grp;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT ((c.v > 5) XOR (c.id > 4))
+GROUP BY p.grp|
+
 DELIMITER ;|
 
 --echo
@@ -117,6 +154,11 @@ DELIMITER ;|
 --echo === lj-r3 (rejection): NOT (col IS NOT NULL) on the right side ===
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE NOT (c.v IS NOT NULL) GROUP BY p.grp;' 2>&1
+
+--echo
+--echo === lj-r4 (rejection): XOR of IS NULL tests on the right side (TRUE for the NULL-extended row) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id WHERE (c.v IS NULL) XOR (c.id IS NOT NULL) GROUP BY p.grp;' 2>&1
 
 --disable_query_log
 --disable_warnings

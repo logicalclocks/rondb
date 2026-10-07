@@ -68,6 +68,51 @@ grp	COUNT(*)	SUM(c.v)
 0	2	10
 1	2	40
 
+=== lj-3: XOR with a comparison on the right side rejects NULL (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE (c.v > 5) XOR (c.id > 3)
+GROUP BY p.grp;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE (c.v > 5) XOR (c.id > 3)
+GROUP BY p.grp|
+grp	COUNT(*)	SUM(c.v)
+0	2	10
+1	2	40
+
+=== lj-4: NOT over that XOR rejects NULL (promoted to INNER) ===
+== Query ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT ((c.v > 5) XOR (c.id > 4))
+GROUP BY p.grp;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT p.grp, COUNT(*), SUM(c.v)
+FROM lj_parent AS p LEFT JOIN lj_child AS c ON c.id = p.id
+WHERE NOT ((c.v > 5) XOR (c.id > 4))
+GROUP BY p.grp|
+grp	COUNT(*)	SUM(c.v)
+0	1	5
+
 === lj-r1 (rejection): col IS NULL on the right side ===
 WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
 Error handling: RPE
@@ -79,6 +124,11 @@ Error handling: RPE
 ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
 
 === lj-r3 (rejection): NOT (col IS NOT NULL) on the right side ===
+WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
+Error handling: RPE
+ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.
+
+=== lj-r4 (rejection): XOR of IS NULL tests on the right side (TRUE for the NULL-extended row) ===
 WHERE condition on 'c' is not supported: 'c' is the right side of a LEFT JOIN and the condition can hold for its NULL-extended rows (as col IS NULL does). RonSQL would apply it as part of the join condition, keeping rows the WHERE should remove.
 Error handling: RPE
 ronsql_cli caught exception: WHERE on a LEFT JOIN's right side that holds for NULL is not supported.

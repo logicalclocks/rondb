@@ -3556,6 +3556,48 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
   }
 }
 
+// True when the expression is certainly NULL once its column references
+// are NULL (the NULL-extended row of a LEFT JOIN's right side): a column,
+// and every operator that propagates a NULL operand — arithmetic,
+// comparison, LIKE, NOT, XOR, GREATEST / LEAST, date arithmetic; AND and
+// OR only when both operands are NULL (NULL AND FALSE is FALSE, NULL OR
+// TRUE is TRUE).  IS [NOT] NULL is never NULL; constants and subqueries
+// are not known to be.
+static bool
+is_null_for_null_columns(const ConditionalExpression* ce)
+{
+  if (ce == NULL) return false;
+  switch (ce->op) {
+  case T_IDENTIFIER:
+    return true;
+  case T_NOT:
+  case T_EXCLAMATION:
+    return is_null_for_null_columns(ce->args.left);
+  case T_INTERVAL:
+    return is_null_for_null_columns(ce->interval.arg);
+  case T_EXTRACT:
+    return is_null_for_null_columns(ce->extract.arg);
+  case T_AND:
+  case T_OR:
+    return is_null_for_null_columns(ce->args.left) &&
+           is_null_for_null_columns(ce->args.right);
+  case T_XOR:
+  case T_EQUALS: case T_NOT_EQUALS:
+  case T_LT: case T_LE: case T_GT: case T_GE:
+  case T_LIKE:
+  case T_GREATEST: case T_LEAST: case T_COMMA:
+  case T_PLUS: case T_MINUS: case T_MULTIPLY: case T_SLASH:
+  case T_DIV: case T_MODULO:
+  case T_BITWISE_OR: case T_BITWISE_AND: case T_BITWISE_XOR:
+  case T_BITSHIFT_LEFT: case T_BITSHIFT_RIGHT:
+  case T_DATE_ADD: case T_DATE_SUB:
+    return is_null_for_null_columns(ce->args.left) ||
+           is_null_for_null_columns(ce->args.right);
+  default:
+    return false;
+  }
+}
+
 // Predicate is null-rejecting if it evaluates to FALSE/NULL whenever
 // any of its column references is NULL.  Used by Phase J's LEFT-to-
 // INNER promotion: a LEFT JOIN with a null-rejecting WHERE conjunct
@@ -3575,6 +3617,11 @@ is_null_rejecting(const ConditionalExpression* ce)
   case T_LIKE:
     // LIKE with a NULL operand is NULL.
     return true;
+  case T_XOR:
+    // XOR is NULL when either operand is NULL, so it rejects the
+    // NULL-extended row when one operand is certainly NULL for it.
+    return is_null_for_null_columns(ce->args.left) ||
+           is_null_for_null_columns(ce->args.right);
   case T_NOT:
   case T_EXCLAMATION:
   {
@@ -3589,6 +3636,8 @@ is_null_rejecting(const ConditionalExpression* ce)
       return true;
     case T_IS:
       return arg->is.null;
+    case T_XOR:
+      return is_null_for_null_columns(arg);
     default:
       return false;
     }

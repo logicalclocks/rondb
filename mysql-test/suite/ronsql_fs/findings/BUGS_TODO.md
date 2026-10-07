@@ -687,10 +687,14 @@ F8 was a framework fixture issue and is already fixed.
   (F32), `subquery-joined` (F32b), `fanout-sibling` (D5), `colcol-mixed-type`
   (D4).  Case ids are `env-v2-…`; the recorded `ronsql_fs_fuzz_env` summary
   changes.
-- [ ] XOR on a LEFT JOIN's right side is rejected although MySQL treats it as
-  NULL-rejecting: `is_null_rejecting` has no XOR case (an XOR is NULL when an
-  operand is a comparison on a NULL column).  Small feature; the fuzzer tags it
-  `left-join-where-null` meanwhile.
+- [x] XOR on a LEFT JOIN's right side (2026-10-07, verified: ronsql, ronsql_cte
+  and the four ronsql_fs_fuzz_env arms green; seed 2 now 104 pass / 16 clean-reject): it was rejected
+  although MySQL treats it as NULL-rejecting.  `is_null_rejecting` now accepts
+  an XOR (and NOT over one) with an operand certainly NULL for the NULL-extended
+  row (`is_null_for_null_columns`: a column under operators that propagate
+  NULL); an XOR of IS NULL tests can be TRUE there and stays rejected.
+  `ronsql.ronsql_left_join_where` lj-3 / lj-4 compare with MySQL, lj-r4 pins the
+  rejection; the fuzzer's LEFT JOIN XOR cases must now match MySQL.
 
 ## Shape reporting
 
