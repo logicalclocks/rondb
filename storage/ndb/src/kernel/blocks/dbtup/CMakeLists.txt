@@ -27,5 +27,9 @@
 # verdict of the original mysys/my_time.cc calendar path.
 NDB_ADD_TEST(ttl_expiry-t ttl_expiry-t.cpp LIBS ndbgeneral)
 
+# GROUP BY hash table (AggHashTable.hpp): linear-hashing growth and the
+# growth hint (m3_run6_plan.md D1a), with its own segment allocator.
+NDB_ADD_TEST(gb_hash_table-t gb_hash_table-t.cpp LIBS ndbgeneral ndbportlib)
+
 # RONDB-1056 — JIT arena substrate (Phase 0).
 ADD_SUBDIRECTORY(jit)

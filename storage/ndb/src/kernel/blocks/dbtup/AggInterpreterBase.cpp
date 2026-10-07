@@ -35,6 +35,7 @@
  * Include set and ordering mirror AggInterpreter.cpp (whence these bodies
  * came) so the kernels see exactly the symbols they did before.
  */
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -61,6 +62,33 @@
 #include "../dblqh/Dblqh.hpp"
 
 #define JAM_FILE_ID 572
+
+/*
+ * Group-table size hints (m3_run6_plan.md D1a), one table per data node.
+ * A program that built large GROUP BY tables leaves their size here when
+ * they are torn down (only tables that outgrew the inline buckets, last
+ * writer wins); its next execution's tables take that many buckets at
+ * their first split instead of splitting their way up (GBHashTable::
+ * setGrowthHint).  The key hashes the program words and the table id: a
+ * repeated statement (RonSQL, prepared statements) finds its hint, any
+ * other statement grows as before.  Lock-free: a slot holds the key's
+ * upper 32 bits and the group count in one word, so a reader sees a
+ * matching pair or nothing; programs sharing a slot overwrite each
+ * other's hint, which only costs the pre-sizing.
+ */
+static constexpr Uint32 GB_SIZE_HINT_SLOTS = 1024;
+static std::atomic<Uint64> g_gb_size_hints[GB_SIZE_HINT_SLOTS];
+
+static Uint32 gb_size_hint_lookup(Uint64 key) {
+  const Uint64 slot =
+      g_gb_size_hints[key % GB_SIZE_HINT_SLOTS].load(std::memory_order_relaxed);
+  return (slot >> 32) == (key >> 32) ? static_cast<Uint32>(slot) : 0;
+}
+
+static void gb_size_hint_record(Uint64 key, Uint32 groups) {
+  g_gb_size_hints[key % GB_SIZE_HINT_SLOTS].store(
+      ((key >> 32) << 32) | groups, std::memory_order_relaxed);
+}
 
 /*
  * DEBUG_PA_INTERP / DEBUG_AGG machinery (off by default).  The kernels'
@@ -333,6 +361,11 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
      * are allocated on this interpreter's thread id. */
     m_gb_map = m_gb_map_buf;
     m_gb_map->init(m_thread_id);
+    m_size_hint_key =
+        rondb_xxhash_std(reinterpret_cast<const char*>(m_prog),
+                         m_prog_len * sizeof(Uint32)) ^
+        (static_cast<Uint64>(m_table_id) * 0x9e3779b97f4a7c15ULL);
+    m_gb_map->setGrowthHint(gb_size_hint_lookup(m_size_hint_key));
   }
 
   if (m_n_agg_results) {
@@ -2535,8 +2568,15 @@ bool AggInterpreterBase::tearDownChunk(Uint32 max_count) {
     }
   }
   /* The map is empty: return its growth segments (bounded by
-   * GBHashTable::MAX_SEGMENTS; none unless the table grew). */
+   * GBHashTable::MAX_SEGMENTS; none unless the table grew).  A table
+   * that grew on its own rows leaves that size as the next execution's
+   * hint. */
   if (m_gb_map != nullptr) {
+    const Uint32 rows_peak = m_size_hint_from_rows ? m_gb_map->peakSize()
+                                                   : m_size_hint_rows_peak;
+    if (rows_peak > JOIN_AGG_HASH_BUCKET_COUNT) {
+      gb_size_hint_record(m_size_hint_key, rows_peak);
+    }
     m_gb_map->release();
   }
   /* Phase 2: scalar (no-GROUP-BY) string winners + m_string_results

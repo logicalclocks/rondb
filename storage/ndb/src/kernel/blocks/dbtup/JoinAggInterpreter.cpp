@@ -1032,8 +1032,13 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
     }
 
     Uint32 len_in_char = m_attr_read_pos * sizeof(Uint32);
-    char* found = m_gb_map->find(reinterpret_cast<char*>(m_attr_read_buf),
-                                 len_in_char, xfrm_buf, xfrm_buf_len);
+    /* One hash per row: a new group is inserted into the bucket the
+     * lookup used (nothing changes the table in between). */
+    const Uint32 gb_bucket = m_gb_map->hashKey(
+        reinterpret_cast<char*>(m_attr_read_buf), len_in_char,
+        xfrm_buf, xfrm_buf_len);
+    char* found = m_gb_map->findInBucket(
+        gb_bucket, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
       agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
@@ -1059,7 +1064,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
                         m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
 
-      m_gb_map->insert(agg_rec, len_in_char, xfrm_buf, xfrm_buf_len);
+      m_gb_map->insertRawInBucket(gb_bucket, agg_rec, xfrm_buf, xfrm_buf_len);
       m_n_groups = m_gb_map->size();
       agg_res_ptr = reinterpret_cast<AggResItem*>(agg_rec + len_in_char);
 
@@ -1785,6 +1790,7 @@ Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
     return 0;
   }
 
+  endRowsPhase();  // other threads' groups join ours
   /* Drain `other` in bucket order (popNext resumes where the previous
    * batch stopped).  The two tables grow independently (linear hashing,
    * AggHashTable.hpp), so a group's bucket in this table is its source
@@ -1910,8 +1916,12 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
     src_const_items = local_items;
   }
 
-  /* Look up key in local hash table */
-  char* found = m_gb_map->find(key, keyLen, xfrm_buf, xfrm_buf_len);
+  endRowsPhase();  // another node's groups join ours
+  /* Look up key in local hash table; a new group goes into the same
+   * bucket (one hash per redistributed group). */
+  const Uint32 gb_bucket = m_gb_map->hashKey(key, keyLen,
+                                             xfrm_buf, xfrm_buf_len);
+  char* found = m_gb_map->findInBucket(gb_bucket, key, keyLen);
 
   if (found != nullptr) {
     /* Key exists — merge accumulators */
@@ -1983,7 +1993,7 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
       memcpy(new_group + keyLen, accumulators, v_len);
     }
 
-    m_gb_map->insert(new_group, keyLen, xfrm_buf, xfrm_buf_len);
+    m_gb_map->insertRawInBucket(gb_bucket, new_group, xfrm_buf, xfrm_buf_len);
     m_n_groups = m_gb_map->size();
     m_result_size += keyLen + v_len;
   }

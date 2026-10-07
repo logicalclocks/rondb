@@ -193,6 +193,9 @@ class DumpStateOrd {
     LqhDumpJoinAggIdentity = 2363,  // Verify identity table + park pool empty
     LqhDumpCteRedistPages = 2364,  // Verify all redistribution pages freed
     LqhDumpJoinAggParkStats = 2365,  // Report parks per GSN (test statistics)
+    // 1 / 0: log every join aggregation's per-thread group tables at
+    // COMPLETE and its merged table at CTE_READY (m3_run6_plan.md D2a)
+    LqhJoinAggMemTrace = 2366,
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,

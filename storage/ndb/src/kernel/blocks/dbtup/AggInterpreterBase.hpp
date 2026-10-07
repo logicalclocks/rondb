@@ -111,6 +111,16 @@ class AggInterpreterBase : public PushdownInterpreter {
    * path only when the map is potentially non-empty.
    */
   void beginTeardown() { m_tearing_down = true; }
+  /* The table starts taking in other tables' groups (merge or
+   * redistribution): freeze the size its own rows built, the size hint
+   * tearDownChunk records (m3_run6_plan.md D1a). */
+  void endRowsPhase() {
+    if (m_size_hint_from_rows) {
+      m_size_hint_rows_peak =
+          (m_gb_map != nullptr) ? m_gb_map->peakSize() : 0;
+      m_size_hint_from_rows = false;
+    }
+  }
   bool isTearingDown() const { return m_tearing_down; }
   bool tearDownChunk(Uint32 max_groups);
 
@@ -140,6 +150,8 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_gb_cols_buf(nullptr), m_agg_results_buf(nullptr),
       m_gb_map_buf(nullptr), m_buf_block(nullptr),
       m_tearing_down(false), m_prog_reusable(false),
+      m_size_hint_key(0), m_size_hint_rows_peak(0),
+      m_size_hint_from_rows(true),
       m_chunks(nullptr), m_chunks_tail(nullptr),
       m_current_chunk(nullptr), m_total_chunk_bytes(0),
       m_memory_budget(0), m_budget_increment(0),
@@ -222,6 +234,8 @@ class AggInterpreterBase : public PushdownInterpreter {
   static constexpr Uint16 AVG_NO_HIDDEN = 0xFFFF;
   const AggResItem* agg_results() const { return m_agg_results; }
   Uint64 processed_rows() const { return m_processed_rows; }
+  /* Query memory in this interpreter's group-record chunks. */
+  Uint32 chunk_bytes() const { return m_total_chunk_bytes; }
   /* Init() failed for want of query memory when this is still false;
    * with the block allocated the program itself was rejected. */
   bool has_buf_block() const { return m_buf_block != nullptr; }
@@ -675,6 +689,17 @@ class AggInterpreterBase : public PushdownInterpreter {
   /* prog[3] bit 0 (AGG_PROG_FLAG_REUSABLE), parsed in
    * peekProgramHeader — see prog_reusable(). */
   bool m_prog_reusable;
+  /* m3_run6_plan.md D1a: key of this program's group-table size hint
+   * (a hash of the program words and the table id), set with the
+   * GROUP BY table in initSharedAfterAlloc; tearDownChunk records the
+   * table's peak size under it for the next execution. */
+  Uint64 m_size_hint_key;
+  /* False once the table takes in other tables' groups (a merge
+   * target or a redistribution receiver, endRowsPhase): from then on its
+   * size is not what this thread's rows built, so the hint is the peak
+   * it had reached by then (m_size_hint_rows_peak). */
+  Uint32 m_size_hint_rows_peak;
+  bool m_size_hint_from_rows;
 
   /* Step 2a — chunk allocator state lifted from JoinAggInterpreter.
    * MEM_CHUNK_SIZE pages are allocated lazily on first allocGroupData;
