@@ -1,0 +1,101 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# EXPLAIN of a CTE body with a join prints the body's join plan ("Body
+# join plan"), operation by operation as the main statement's "Join
+# plan": access, index, join key.  Before, only "Body root:" was printed,
+# so it did not show how the joined table was reached (the filter-first
+# TPC-H rewrites tpch_q2_ff / tpch_q22_ff, m3_run6_plan.md C7, depend on
+# a child index scan on the join key).
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-cte-body-join-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE jx_parent (
+  id  INT NOT NULL,
+  grp INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX idx_grp (grp)
+) ENGINE=NDB;
+
+CREATE TABLE jx_child (
+  cid INT NOT NULL,
+  pid INT NOT NULL,
+  val BIGINT NOT NULL,
+  PRIMARY KEY USING HASH (cid),
+  INDEX idx_pid (pid)
+) ENGINE=NDB;
+
+INSERT INTO jx_parent VALUES (1, 1), (2, 1), (3, 2), (4, 1);
+INSERT INTO jx_child VALUES
+  (10, 1, 5), (11, 1, 7), (12, 2, 3), (13, 3, 100),
+  (14, 4, 1), (15, 4, 2), (16, 4, 3), (17, 5, 9);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 1: CTE body parent JOIN child (child reached through idx_pid) ===
+
+let $QUERY=
+WITH pc AS (
+  SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+  FROM jx_parent AS p JOIN jx_child AS c ON c.pid = p.id
+  WHERE p.grp = 1
+  GROUP BY p.id)
+SELECT COUNT(*), SUM(pc.n), SUM(pc.s) FROM pc;|
+--source suite/ronsql/include/ronsql_compare.inc
+let $QUERY=
+WITH pc AS (
+  SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+  FROM jx_parent AS p JOIN jx_child AS c ON c.pid = p.id
+  WHERE p.grp = 1
+  GROUP BY p.id)
+SELECT COUNT(*), SUM(pc.n), SUM(pc.s) FROM pc;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'CTE[0] pc — source: jx_parent (with joins)' $EXPLAIN_FILE
+--exec grep -qF 'Body join plan (2 operations):' $EXPLAIN_FILE
+--exec grep -qF '1: [INNER] INDEX_SCAN jx_child AS c  <- p' $EXPLAIN_FILE
+--exec grep -qF 'Index: idx_pid(pid)' $EXPLAIN_FILE
+--exec grep -qF 'Key: pid = p.id' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo == Expected result ==
+--sorted_result
+WITH pc AS (
+  SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+  FROM jx_parent AS p JOIN jx_child AS c ON c.pid = p.id
+  WHERE p.grp = 1
+  GROUP BY p.id)
+SELECT COUNT(*), SUM(pc.n), SUM(pc.s) FROM pc|
+
+--echo
+--echo
+--echo === Test 2: single-table CTE body: no body join plan ===
+
+let $QUERY=
+WITH pg AS (SELECT grp AS g, COUNT(*) AS n FROM jx_parent GROUP BY grp)
+SELECT COUNT(*), SUM(pg.n) FROM pg;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body root: ' $EXPLAIN_FILE
+--error 1
+--exec grep -qF 'Body join plan' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE jx_child;
+DROP TABLE jx_parent;
+--enable_query_log

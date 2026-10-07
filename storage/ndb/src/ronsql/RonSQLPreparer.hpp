@@ -1191,6 +1191,7 @@ private:
                                                 Uint32 cidx);
   void print_result_json(NdbAggregator* aggregator);
   void print();
+  void print_join_plan_ops(QueryScope& scope, const char* line_prefix);
   void print(struct ConditionalExpression* ce,
              LexString prefix);
 

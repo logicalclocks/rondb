@@ -1,0 +1,34 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+
+=== Test 1: CTE body parent JOIN child (child reached through idx_pid) ===
+== Query ==
+WITH pc AS (
+SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+FROM jx_parent AS p JOIN jx_child AS c ON c.pid = p.id
+WHERE p.grp = 1
+GROUP BY p.id)
+SELECT COUNT(*), SUM(pc.n), SUM(pc.s) FROM pc;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Explain Query ==
+== Expected result ==
+WITH pc AS (
+SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+FROM jx_parent AS p JOIN jx_child AS c ON c.pid = p.id
+WHERE p.grp = 1
+GROUP BY p.id)
+SELECT COUNT(*), SUM(pc.n), SUM(pc.s) FROM pc|
+COUNT(*)	SUM(pc.n)	SUM(pc.s)
+3	6	21
+
+
+=== Test 2: single-table CTE body: no body join plan ===
+== Explain Query ==

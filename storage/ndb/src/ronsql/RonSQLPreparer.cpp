@@ -18604,6 +18604,208 @@ RonSQLPreparer::generate_embedded_condition(
 }
 #undef programAggregator_do_or_fail
 
+/**
+ * The operations of a join plan, one tree line each with its access, index,
+ * key, bounds and residual filter: the main statement's "Join plan" and a
+ * CTE body's "Body join plan" (line_prefix indents every line).
+ */
+void
+RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
+{
+  std::basic_ostream<char>& out = *m_conf.out_stream;
+  const JoinPlan& jp = scope.join_plan;
+  for (Uint32 i = 0; i < jp.num_ops; i++) {
+    const JoinOp& op = jp.ops[i];
+    bool is_last = (i + 1 == jp.num_ops);
+    out << line_prefix << (is_last ? "╰─ " : "├─ ") << i << ": ";
+    if (op.is_root) {
+      out << "[ROOT] ";
+    } else {
+      switch (op.match_type) {
+      case JoinOp::INNER:      out << "[INNER] ";      break;
+      case JoinOp::LEFT_OUTER: out << "[LEFT JOIN] ";   break;
+      case JoinOp::SEMI_JOIN:  out << "[SEMI] ";        break;
+      case JoinOp::ANTI_JOIN:  out << "[ANTI] ";        break;
+      }
+    }
+    switch (op.type) {
+    case JoinOp::TABLE_SCAN:     out << "TABLE_SCAN ";    break;
+    case JoinOp::INDEX_SCAN:     out << "INDEX_SCAN ";    break;
+    case JoinOp::PK_LOOKUP:      out << "PK_LOOKUP ";     break;
+    case JoinOp::UNIQUE_LOOKUP:  out << "UNIQUE_LOOKUP "; break;
+    case JoinOp::CTE_LOOKUP:     out << "CTE_LOOKUP ";    break;
+    case JoinOp::CTE_SCAN:       out << "CTE_SCAN ";      break;
+    }
+    if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
+      out << "CTE:" << op.cte_def->name.c_str();
+    } else {
+      out << op.table->getName();
+    }
+    if (op.alias.len > 0) out << " AS " << op.alias.c_str();
+    // Phase 3 (W2): show the topology — a star and a chain used to
+    // print identically.  No recorded baseline contains this print
+    // (it goes to ronsql_explain.inc's $EXPLAIN_FILE), so the
+    // annotation is baseline-safe.
+    if (!op.is_root) {
+      out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
+    }
+    out << '\n';
+    const std::string indent_str =
+        std::string(line_prefix) + (is_last ? "   " : "│  ");
+    const char *indent = indent_str.c_str();
+    if ((op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) &&
+        op.cte_def != NULL) {
+      out << indent << "  CTE outputs: ";
+      Uint32 oc = 0;
+      for (const Outputs *o = op.cte_def->stmt->outputs; o; o = o->next) {
+        if (oc > 0) out << ", ";
+        out << std::string(o->output_name.str, o->output_name.len);
+        oc++;
+      }
+      out << '\n';
+    }
+    if (op.index != NULL) {
+      out << indent << "  Index: " << op.index->getName() << "(";
+      for (Uint32 c = 0; c < op.index->getNoOfColumns(); c++) {
+        if (c > 0) out << ", ";
+        out << op.index->getColumn(c)->getName();
+      }
+      out << ")\n";
+    }
+    // Root scan-config conditions (join_root_index_scan_plan.md):
+    // show bound-vs-filter routing for a scan-config-selected
+    // index-scan root, in the same style as the single-table
+    // CONDITIONS block.
+    if (op.is_root && op.index != NULL &&
+        scope.body_scan_config != NULL &&
+        scope.body_scan_config->index == op.index) {
+      const ScanConfig& sc = *scope.body_scan_config;
+      Uint32 cond_cnt = scope.body_toplevel_conditions.size();
+      Uint32 filter_cnt = 0;
+      for (Uint32 ci = 0; ci < cond_cnt; ci++) {
+        if (sc.condition_handling_map[ci] == -1) filter_cnt++;
+      }
+      Uint32 bound_cnt = cond_cnt - filter_cnt;
+      if (sc.in_cond_idx >= 0) {
+        // WP-F F3: an IN list on the root's index, one range per value.
+        out << indent << "  Ranges: " << sc.in_count << " (IN list on "
+            << quoted_identifier(m_columns[sc.in_col_idx].c_str()) << ": "
+            << sc.in_total << " values, " << sc.in_count << " distinct"
+            << (sc.in_count > 1 ? "; multi-range" : "") << ")\n";
+      }
+      out << indent << "  CONDITIONS (" << bound_cnt << " bound"
+          << (bound_cnt == 1 ? "" : "s");
+      if (filter_cnt > 0) {
+        out << " and " << filter_cnt << " filter"
+            << (filter_cnt == 1 ? "" : "s");
+      }
+      out << "):\n";
+      LexString outer = LexString{indent, strlen(indent)}
+                            .concat(LexString{"  ", 2}, m_amalloc);
+      for (Uint32 ci = 0; ci < cond_cnt; ci++) {
+        bool cond_last = (ci + 1 == cond_cnt);
+        out << outer << (cond_last ? "╰─ " : "├─ ");
+        int handling = sc.condition_handling_map[ci];
+        Uint32 labellen;
+        if (handling == -1) {
+          out << "FILTER: ";
+          labellen = 11;
+        } else {
+          out << "INDEX[" << handling << "]: ";
+          labellen = 13;
+          if (handling > 9) {
+            labellen++;
+          }
+        }
+        // Continuation prefix: op indent + tree continuation +
+        // spaces aligning under the label (same widths as the
+        // single-table CONDITIONS block).
+        LexString cont = outer.concat(
+            cond_last ? LexString{"              ", labellen}
+                      : LexString{"│             ", labellen + 2},
+            m_amalloc);
+        if ((int)ci == sc.in_cond_idx) {
+          out << quoted_identifier(m_columns[sc.in_col_idx].c_str())
+              << " IN (" << sc.in_total << " values, " << sc.in_count
+              << " distinct)\n";
+        } else {
+          print(scope.body_toplevel_conditions[ci], cont);
+        }
+      }
+    }
+    if (!op.is_root && op.num_key_cols > 0) {
+      out << indent << "  Key: ";
+      for (Uint32 k = 0; k < op.num_key_cols; k++) {
+        if (k > 0) out << ", ";
+        // Per-key parent sources: print each key's own source alias
+        // (byte-identical to the old parent_op_idx print for every
+        // single-parent plan).
+        out << op.child_key_col_names[k] << " = "
+            << jp.ops[op.key_parent_op_idx[k]].alias.c_str()
+            << "." << op.parent_key_col_names[k];
+      }
+      out << '\n';
+    }
+    if (op.num_low_bounds > 0 || op.num_high_bounds > 0) {
+      // child_bounds: a const_cond bound prints its constant value;
+      // parent-linked bounds print alias.column as before.
+      auto print_bound_source = [&](const JoinOp::RangeBound& rb) {
+        if (rb.const_cond == NULL) {
+          out << jp.ops[rb.parent_op_idx].alias.c_str()
+              << "." << rb.parent_col_name;
+          return;
+        }
+        const ConditionalExpression* c = rb.const_cond->args.right;
+        switch (c->op) {
+        case T_INT:
+          out << c->constant_integer;
+          break;
+        case T_FLOAT:
+          out << c->constant_float.dbl;
+          break;
+        case T_STRING:
+          out << '\'';
+          out.write(c->string.str, c->string.len);
+          out << '\'';
+          break;
+        default:
+          out << "<const>";
+          break;
+        }
+      };
+      out << indent << "  Bounds:";
+      for (Uint32 b = 0; b < op.num_low_bounds; b++) {
+        out << " " << op.low_bounds[b].child_col_name
+            << (op.low_bounds[b].inclusive ? " >= " : " > ");
+        print_bound_source(op.low_bounds[b]);
+      }
+      for (Uint32 b = 0; b < op.num_high_bounds; b++) {
+        out << " " << op.high_bounds[b].child_col_name
+            << (op.high_bounds[b].inclusive ? " <= " : " < ");
+        print_bound_source(op.high_bounds[b]);
+      }
+      out << '\n';
+    }
+    // child_bounds: make the residual visible next to the bounds so
+    // an EXPLAIN grep can pin bound-vs-filter routing per op (real
+    // tables only — CTE ops route WHERE to the jump-table filter).
+    if (!op.is_root && op.table != NULL &&
+        scope.join_where_ce[i] != NULL) {
+      out << indent << "  Residual filter: yes\n";
+    }
+    if (jp.num_agg_leaves > 0) {
+      for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
+        if (jp.agg_leaf_indices[a] == i) {
+          out << indent << "  ** Aggregation leaf **\n";
+          break;
+        }
+      }
+    } else if (jp.agg_leaf_idx == i && !op.is_root) {
+      out << indent << "  ** Aggregation leaf **\n";
+    }
+  }
+}
+
 void
 RonSQLPreparer::print()
 {
@@ -18743,6 +18945,11 @@ RonSQLPreparer::print()
             out << " [I.10 MAX_DESC maxRows=1]";
           }
           out << '\n';
+          if (cte_scope->join_plan.num_ops > 1) {
+            out << "    Body join plan (" << cte_scope->join_plan.num_ops
+                << " operations):\n";
+            print_join_plan_ops(*cte_scope, "      ");
+          }
         }
       }
     }
@@ -18751,196 +18958,9 @@ RonSQLPreparer::print()
 
   // Print join plan at the top for multi-table queries
   if (m_conf.ndb != NULL && m_scan_config == NULL && m_main_scope.join_plan.num_ops > 1) {
-    const JoinPlan& jp = m_main_scope.join_plan;
-    out << "Join plan (" << jp.num_ops << " operations):\n";
-    for (Uint32 i = 0; i < jp.num_ops; i++) {
-      const JoinOp& op = jp.ops[i];
-      bool is_last = (i + 1 == jp.num_ops);
-      out << (is_last ? "╰─ " : "├─ ") << i << ": ";
-      if (op.is_root) {
-        out << "[ROOT] ";
-      } else {
-        switch (op.match_type) {
-        case JoinOp::INNER:      out << "[INNER] ";      break;
-        case JoinOp::LEFT_OUTER: out << "[LEFT JOIN] ";   break;
-        case JoinOp::SEMI_JOIN:  out << "[SEMI] ";        break;
-        case JoinOp::ANTI_JOIN:  out << "[ANTI] ";        break;
-        }
-      }
-      switch (op.type) {
-      case JoinOp::TABLE_SCAN:     out << "TABLE_SCAN ";    break;
-      case JoinOp::INDEX_SCAN:     out << "INDEX_SCAN ";    break;
-      case JoinOp::PK_LOOKUP:      out << "PK_LOOKUP ";     break;
-      case JoinOp::UNIQUE_LOOKUP:  out << "UNIQUE_LOOKUP "; break;
-      case JoinOp::CTE_LOOKUP:     out << "CTE_LOOKUP ";    break;
-      case JoinOp::CTE_SCAN:       out << "CTE_SCAN ";      break;
-      }
-      if (op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) {
-        out << "CTE:" << op.cte_def->name.c_str();
-      } else {
-        out << op.table->getName();
-      }
-      if (op.alias.len > 0) out << " AS " << op.alias.c_str();
-      // Phase 3 (W2): show the topology — a star and a chain used to
-      // print identically.  No recorded baseline contains this print
-      // (it goes to ronsql_explain.inc's $EXPLAIN_FILE), so the
-      // annotation is baseline-safe.
-      if (!op.is_root) {
-        out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
-      }
-      out << '\n';
-      const char *indent = is_last ? "   " : "│  ";
-      if ((op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) &&
-          op.cte_def != NULL) {
-        out << indent << "  CTE outputs: ";
-        Uint32 oc = 0;
-        for (const Outputs *o = op.cte_def->stmt->outputs; o; o = o->next) {
-          if (oc > 0) out << ", ";
-          out << std::string(o->output_name.str, o->output_name.len);
-          oc++;
-        }
-        out << '\n';
-      }
-      if (op.index != NULL) {
-        out << indent << "  Index: " << op.index->getName() << "(";
-        for (Uint32 c = 0; c < op.index->getNoOfColumns(); c++) {
-          if (c > 0) out << ", ";
-          out << op.index->getColumn(c)->getName();
-        }
-        out << ")\n";
-      }
-      // Root scan-config conditions (join_root_index_scan_plan.md):
-      // show bound-vs-filter routing for a scan-config-selected
-      // index-scan root, in the same style as the single-table
-      // CONDITIONS block.
-      if (op.is_root && op.index != NULL &&
-          m_main_scope.body_scan_config != NULL &&
-          m_main_scope.body_scan_config->index == op.index) {
-        const ScanConfig& sc = *m_main_scope.body_scan_config;
-        Uint32 cond_cnt = m_main_scope.body_toplevel_conditions.size();
-        Uint32 filter_cnt = 0;
-        for (Uint32 ci = 0; ci < cond_cnt; ci++) {
-          if (sc.condition_handling_map[ci] == -1) filter_cnt++;
-        }
-        Uint32 bound_cnt = cond_cnt - filter_cnt;
-        if (sc.in_cond_idx >= 0) {
-          // WP-F F3: an IN list on the root's index, one range per value.
-          out << indent << "  Ranges: " << sc.in_count << " (IN list on "
-              << quoted_identifier(m_columns[sc.in_col_idx].c_str()) << ": "
-              << sc.in_total << " values, " << sc.in_count << " distinct"
-              << (sc.in_count > 1 ? "; multi-range" : "") << ")\n";
-        }
-        out << indent << "  CONDITIONS (" << bound_cnt << " bound"
-            << (bound_cnt == 1 ? "" : "s");
-        if (filter_cnt > 0) {
-          out << " and " << filter_cnt << " filter"
-              << (filter_cnt == 1 ? "" : "s");
-        }
-        out << "):\n";
-        LexString outer = LexString{indent, strlen(indent)}
-                              .concat(LexString{"  ", 2}, m_amalloc);
-        for (Uint32 ci = 0; ci < cond_cnt; ci++) {
-          bool cond_last = (ci + 1 == cond_cnt);
-          out << outer << (cond_last ? "╰─ " : "├─ ");
-          int handling = sc.condition_handling_map[ci];
-          Uint32 labellen;
-          if (handling == -1) {
-            out << "FILTER: ";
-            labellen = 11;
-          } else {
-            out << "INDEX[" << handling << "]: ";
-            labellen = 13;
-            if (handling > 9) {
-              labellen++;
-            }
-          }
-          // Continuation prefix: op indent + tree continuation +
-          // spaces aligning under the label (same widths as the
-          // single-table CONDITIONS block).
-          LexString cont = outer.concat(
-              cond_last ? LexString{"              ", labellen}
-                        : LexString{"│             ", labellen + 2},
-              m_amalloc);
-          if ((int)ci == sc.in_cond_idx) {
-            out << quoted_identifier(m_columns[sc.in_col_idx].c_str())
-                << " IN (" << sc.in_total << " values, " << sc.in_count
-                << " distinct)\n";
-          } else {
-            print(m_main_scope.body_toplevel_conditions[ci], cont);
-          }
-        }
-      }
-      if (!op.is_root && op.num_key_cols > 0) {
-        out << indent << "  Key: ";
-        for (Uint32 k = 0; k < op.num_key_cols; k++) {
-          if (k > 0) out << ", ";
-          // Per-key parent sources: print each key's own source alias
-          // (byte-identical to the old parent_op_idx print for every
-          // single-parent plan).
-          out << op.child_key_col_names[k] << " = "
-              << jp.ops[op.key_parent_op_idx[k]].alias.c_str()
-              << "." << op.parent_key_col_names[k];
-        }
-        out << '\n';
-      }
-      if (op.num_low_bounds > 0 || op.num_high_bounds > 0) {
-        // child_bounds: a const_cond bound prints its constant value;
-        // parent-linked bounds print alias.column as before.
-        auto print_bound_source = [&](const JoinOp::RangeBound& rb) {
-          if (rb.const_cond == NULL) {
-            out << jp.ops[rb.parent_op_idx].alias.c_str()
-                << "." << rb.parent_col_name;
-            return;
-          }
-          const ConditionalExpression* c = rb.const_cond->args.right;
-          switch (c->op) {
-          case T_INT:
-            out << c->constant_integer;
-            break;
-          case T_FLOAT:
-            out << c->constant_float.dbl;
-            break;
-          case T_STRING:
-            out << '\'';
-            out.write(c->string.str, c->string.len);
-            out << '\'';
-            break;
-          default:
-            out << "<const>";
-            break;
-          }
-        };
-        out << indent << "  Bounds:";
-        for (Uint32 b = 0; b < op.num_low_bounds; b++) {
-          out << " " << op.low_bounds[b].child_col_name
-              << (op.low_bounds[b].inclusive ? " >= " : " > ");
-          print_bound_source(op.low_bounds[b]);
-        }
-        for (Uint32 b = 0; b < op.num_high_bounds; b++) {
-          out << " " << op.high_bounds[b].child_col_name
-              << (op.high_bounds[b].inclusive ? " <= " : " < ");
-          print_bound_source(op.high_bounds[b]);
-        }
-        out << '\n';
-      }
-      // child_bounds: make the residual visible next to the bounds so
-      // an EXPLAIN grep can pin bound-vs-filter routing per op (real
-      // tables only — CTE ops route WHERE to the jump-table filter).
-      if (!op.is_root && op.table != NULL &&
-          m_main_scope.join_where_ce[i] != NULL) {
-        out << indent << "  Residual filter: yes\n";
-      }
-      if (jp.num_agg_leaves > 0) {
-        for (Uint32 a = 0; a < jp.num_agg_leaves; a++) {
-          if (jp.agg_leaf_indices[a] == i) {
-            out << indent << "  ** Aggregation leaf **\n";
-            break;
-          }
-        }
-      } else if (jp.agg_leaf_idx == i && !op.is_root) {
-        out << indent << "  ** Aggregation leaf **\n";
-      }
-    }
+    out << "Join plan (" << m_main_scope.join_plan.num_ops
+        << " operations):\n";
+    print_join_plan_ops(m_main_scope, "");
     out << '\n';
   }
 
