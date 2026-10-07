@@ -2153,6 +2153,12 @@ static int set_rows(Ndb *ndb,
   for (Uint32 i = 0; i < loop_count; i++) {
     Uint32 inx = current_index + i;
     key_storage[inx].m_rondb_key = 0;
+    // The GET phase of SET ... GET leaves the row counts of the old
+    // value in the key; the write must start from the new value's.
+    // rondb_get_response does not use them.
+    key_storage[inx].m_num_rows = 0;
+    key_storage[inx].m_num_rw_rows = 0;
+    key_storage[inx].m_num_current_rw_rows = 0;
     Uint32 value_len = key_storage[inx].m_set_value_size;
     if (value_len > INLINE_VALUE_LEN) {
       // Compute extension-row layout and allocate a fresh rondb_key
