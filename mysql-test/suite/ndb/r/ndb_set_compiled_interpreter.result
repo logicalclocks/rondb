@@ -4,10 +4,11 @@ SET ndb_pushdown_aggregate=ON;
 Configuration updated for all data nodes
 CompiledInterpreter set to OFF on all data nodes
 
-select node_id, config_value
-from ndbinfo.config_values
-where config_param = 709
-order by node_id;
+select cv.node_id, cv.config_value
+from ndbinfo.config_values cv, ndbinfo.config_params cp
+where cv.config_param = cp.param_number and
+cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 node_id	config_value
 1	0
 2	0
@@ -21,10 +22,11 @@ jit_programs_delta_when_off
 Configuration updated for all data nodes
 CompiledInterpreter set to ON on all data nodes
 
-select node_id, config_value
-from ndbinfo.config_values
-where config_param = 709
-order by node_id;
+select cv.node_id, cv.config_value
+from ndbinfo.config_values cv, ndbinfo.config_params cp
+where cv.config_param = cp.param_number and
+cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 node_id	config_value
 1	2
 2	2
@@ -38,20 +40,22 @@ jit_program_compiled_when_on
 Configuration updated for node 1
 CompiledInterpreter set to AUTO on node 1
 
-select node_id, config_value
-from ndbinfo.config_values
-where config_param = 709
-order by node_id;
+select cv.node_id, cv.config_value
+from ndbinfo.config_values cv, ndbinfo.config_params cp
+where cv.config_param = cp.param_number and
+cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 node_id	config_value
 1	1
 2	2
 Configuration updated for all data nodes
 CompiledInterpreter set to OFF on all data nodes
 
-select node_id, config_value
-from ndbinfo.config_values
-where config_param = 709
-order by node_id;
+select cv.node_id, cv.config_value
+from ndbinfo.config_values cv, ndbinfo.config_params cp
+where cv.config_param = cp.param_number and
+cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 node_id	config_value
 1	0
 2	0
@@ -62,20 +66,22 @@ Invalid value: 'maybe'. Use OFF, AUTO or ON (or 0, 1, 2)
 Usage: <id> SET <parameter> <value>
 Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel, CompiledInterpreter
 
-select node_id, config_value
-from ndbinfo.config_values
-where config_param = 709
-order by node_id;
+select cv.node_id, cv.config_value
+from ndbinfo.config_values cv, ndbinfo.config_params cp
+where cv.config_param = cp.param_number and
+cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 node_id	config_value
 1	0
 2	0
 Configuration updated for all data nodes
 CompiledInterpreter set to OFF on all data nodes
 
-select node_id, config_value
-from ndbinfo.config_values
-where config_param = 709
-order by node_id;
+select cv.node_id, cv.config_value
+from ndbinfo.config_values cv, ndbinfo.config_params cp
+where cv.config_param = cp.param_number and
+cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 node_id	config_value
 1	0
 2	0

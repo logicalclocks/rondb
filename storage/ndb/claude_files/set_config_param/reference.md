@@ -25,9 +25,9 @@ All paths are relative to `storage/ndb/`.
 | Parameter | Key | Type | Runtime dispatch in the data node |
 |-----------|-----|------|-----------------------------------|
 | `MaxDiskWriteSpeed` | `CFG_DB_MAX_DISK_WRITE_SPEED` (639) | CI_INT64 | `SET_CONFIG_PARAM_REQ` -> Cmvmi -> `DUMP BackupMaxWriteSpeed64` to BACKUP |
-| `EnableProactiveDeadlockDetection` | `CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION` (708) | CI_BOOL | client sends `DUMP DumpStateOrd::DeadlockDetection` per node (DBTC/DBACC) |
+| `EnableProactiveDeadlockDetection` | `CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION` (709) | CI_BOOL | client sends `DUMP DumpStateOrd::DeadlockDetection` per node (DBTC/DBACC) |
 | `RdmaLogLevel` | `CFG_RDMA_LOG_LEVEL` (533) | CI_INT | client sends `DUMP 103020` (`CmvmiSetRdmaLogLevel`) per node |
-| `CompiledInterpreter` | `CFG_DB_COMPILED_INTERPRETER` (709) | CI_ENUM `OFF`/`AUTO`/`ON` = 0/1/2 | `SET_CONFIG_PARAM_REQ` -> Cmvmi -> `dbtup_jit_set_mode()` (RONDB-1056 JIT mode word, consulted at every compile decision; already compiled programs stay cached) |
+| `CompiledInterpreter` | `CFG_DB_COMPILED_INTERPRETER` (710) | CI_ENUM `OFF`/`AUTO`/`ON` = 0/1/2 | `SET_CONFIG_PARAM_REQ` -> Cmvmi -> `dbtup_jit_set_mode()` (RONDB-1056 JIT mode word, consulted at every compile decision; already compiled programs stay cached) |
 
 `ndb_mgm -e "ALL SET CompiledInterpreter OFF"` / `"1 SET CompiledInterpreter on"` / `"ALL SET CompiledInterpreter 2"` — enum names are case-insensitive, numbers accepted. MTR: `mysql-test/suite/ndb/t/ndb_set_compiled_interpreter.test` (the others: `ndb_config_set.test`).
 
