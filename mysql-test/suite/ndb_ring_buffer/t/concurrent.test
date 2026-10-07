@@ -322,6 +322,119 @@ SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 20 AND ring_idx = 0;
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
+# Case 11: whole-ring DELETE while an INSERT transaction on the same prefix
+# is open. The rows of one ring are spread over all fragments (the table
+# is distributed on the full PK), so the DELETE's scans of the other
+# fragments do not wait for the INSERT. Rows the INSERT writes into an
+# already scanned fragment would survive the DELETE without a meta row.
+# The DELETE must lock the meta row before it scans: then it waits for
+# the INSERT to commit and removes every row of the prefix.
+###############################################################################
+
+--echo #
+--echo # Case 11: whole-ring DELETE waits for an open INSERT on the prefix
+--echo #
+
+--connection default
+CREATE TABLE test.rb_l1 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    v INT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=20@ring_idx@ring_meta";
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 1);
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 2);
+
+--connection con2
+--send DELETE FROM test.rb_l1 WHERE client_id = 1
+
+--connection con1
+# Let con2's DELETE start its scans before the remaining inserts.
+--sleep 1
+--let $i = 3
+while ($i <= 12) {
+  --eval INSERT INTO test.rb_l1 (client_id, v) VALUES (1, $i)
+  --inc $i
+}
+COMMIT;
+
+--connection con2
+--reap
+
+--connection default
+--echo # No row of prefix 1 may survive, data or meta
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id = 1;
+SET ndb_ring_buffer_show_meta = OFF;
+--echo # The next insert starts a fresh ring at slot 1
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 100);
+SELECT ring_idx, v FROM test.rb_l1 WHERE client_id = 1 ORDER BY ring_idx;
+
+--echo # Same with a prepared DELETE: the prefix value is a parameter
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 1);
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 2);
+
+--connection con2
+PREPARE del_prefix FROM 'DELETE FROM test.rb_l1 WHERE client_id = ?';
+SET @prefix = 2;
+--send EXECUTE del_prefix USING @prefix
+
+--connection con1
+--sleep 1
+--let $i = 3
+while ($i <= 12) {
+  --eval INSERT INTO test.rb_l1 (client_id, v) VALUES (2, $i)
+  --inc $i
+}
+COMMIT;
+
+--connection con2
+--reap
+DEALLOCATE PREPARE del_prefix;
+
+--connection default
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id = 2;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo # Same with IN (): the DELETE locks the meta row of every listed prefix
+INSERT INTO test.rb_l1 (client_id, v) VALUES (3, 1);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 1);
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 2);
+
+--connection con2
+--send DELETE FROM test.rb_l1 WHERE client_id IN (3, 4, 5)
+
+--connection con1
+--sleep 1
+--let $i = 3
+while ($i <= 12) {
+  --eval INSERT INTO test.rb_l1 (client_id, v) VALUES (4, $i)
+  --inc $i
+}
+COMMIT;
+
+--connection con2
+--reap
+
+--connection default
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id IN (3, 4);
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_l1;
+
+###############################################################################
 # Cleanup
 ###############################################################################
 

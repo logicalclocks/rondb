@@ -211,23 +211,23 @@ SELECT client_id, HEX(ring_meta) FROM test.rb_del WHERE ring_idx = 0 ORDER BY cl
 SET ndb_ring_buffer_show_meta = OFF;
 --eval $physical_rb_del
 
-# Bare DELETE: the visible row and the meta row of prefix 6 go, the three
-# expired rows (5.1, 5.2, 6.2) stay
+# DELETE of both prefixes: the visible row and the meta row of prefix 6
+# go, the three expired rows (5.1, 5.2, 6.2) stay
 --enable_info
-DELETE FROM test.rb_del;
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
 --disable_info
 --eval $physical_rb_del
 
 # With ttl_expired_rows_visible_in_delete the DELETE scan sees expired
-# rows: a prefix DELETE removes prefix 5's two expired rows, a bare DELETE
-# the last one
+# rows: a prefix DELETE removes prefix 5's two expired rows, a DELETE of
+# both prefixes the last one
 SET SESSION ttl_expired_rows_visible_in_delete = 1;
 --enable_info
 DELETE FROM test.rb_del WHERE client_id = 5;
 --disable_info
 --eval $physical_rb_del
 --enable_info
-DELETE FROM test.rb_del;
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
 --disable_info
 --eval $physical_rb_del
 SET SESSION ttl_expired_rows_visible_in_delete = 0;

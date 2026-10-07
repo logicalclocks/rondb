@@ -169,7 +169,7 @@ SELECT client_id, ring_idx, label, LENGTH(notes) AS note_len,
 --echo # Case 7: Bulk INSERT with TEXT/BLOB columns
 --echo #
 
-DELETE FROM test.rb_mixed;
+TRUNCATE TABLE test.rb_mixed;
 
 INSERT INTO test.rb_mixed (client_id, label, notes, attachment)
     VALUES (1, 'Bulk A', REPEAT('bulk_a_note ', 50), REPEAT(x'AA', 100)),

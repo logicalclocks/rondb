@@ -6005,8 +6005,23 @@ bool ha_ndbcluster::start_bulk_delete() {
         m_is_bulk_delete = false;
         return 1;
       }
+    } else if (!ndb_ring_buffer::delete_where_pins_prefixes(table, ring_idx_fi,
+                                                            where)) {
+      if (!m_thd_ndb->get_applier()) {
+        my_error(ER_ILLEGAL_HA, MYF(0), ndb_ring_buffer::DELETE_NOT_PINNED_MSG);
+        m_is_bulk_delete = false;
+        return 1;
+      }
     } else {
       m_ring_buffer_delete_allowed = true;
+      if (!m_thd_ndb->get_applier()) {
+        const int error = ring_buffer_lock_delete_prefix(where);
+        if (error != 0) {
+          print_error(error, MYF(0));
+          m_is_bulk_delete = false;
+          return 1;
+        }
+      }
     }
   }
 
@@ -6137,19 +6152,26 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
     const uint ring_idx_fi = m_table_map->get_field_for_column(ring_idx_col_no);
     const Item *where = thd->lex->query_block->where_cond();
     if (ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where) &&
-        ndb_ring_buffer::delete_statement_shape_allowed(thd)) {
+        ndb_ring_buffer::delete_statement_shape_allowed(thd) &&
+        ndb_ring_buffer::delete_where_pins_prefixes(table, ring_idx_fi,
+                                                    where)) {
       m_ring_buffer_delete_allowed = true;
     }
   }
   if (m_table->isRingBuffer() &&
       !m_ring_buffer_delete_allowed &&
       !m_thd_ndb->get_applier()) {
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const uint ring_idx_fi = m_table_map->get_field_for_column(ring_idx_col_no);
+    const Item *where = thd->lex->query_block->where_cond();
     my_error(ER_ILLEGAL_HA, MYF(0),
-             ndb_ring_buffer::delete_statement_shape_allowed(thd)
+             !ndb_ring_buffer::delete_statement_shape_allowed(thd)
+                 ? "DELETE on ring-buffer table cannot use LIMIT, ORDER BY, "
+                   "or multi-table DELETE"
+             : !ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where)
                  ? "DELETE WHERE on ring-buffer table may only reference "
                    "PK-prefix columns (excluding ring_idx)"
-                 : "DELETE on ring-buffer table cannot use LIMIT, ORDER BY, "
-                   "or multi-table DELETE");
+                 : ndb_ring_buffer::DELETE_NOT_PINNED_MSG);
     return HA_ERR_UNSUPPORTED;
   }
 

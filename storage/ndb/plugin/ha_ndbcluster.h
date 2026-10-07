@@ -510,6 +510,7 @@ class ha_ndbcluster : public handler, public Partition_handler {
                     bool batched_update);
   int ndb_ring_buffer_write_row(uchar *record);
   int flush_ring_buffer_batch();
+  int ring_buffer_lock_delete_prefix(const Item *cond);
 
   bool start_bulk_delete() override;
   int end_bulk_delete() override;

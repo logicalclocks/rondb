@@ -187,7 +187,7 @@ SET ndb_ring_buffer_show_meta = OFF;
 SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
 physical_rows
 5
-DELETE FROM test.rb_del;
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
 affected rows: 2
 SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
 physical_rows
@@ -198,7 +198,7 @@ affected rows: 2
 SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
 physical_rows
 1
-DELETE FROM test.rb_del;
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
 affected rows: 1
 SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
 physical_rows

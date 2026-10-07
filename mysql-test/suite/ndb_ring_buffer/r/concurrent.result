@@ -195,6 +195,90 @@ HEX(ring_meta)
 0100000004000000030000000000000003000000000000000000000000000000
 SET ndb_ring_buffer_show_meta = OFF;
 #
+# Case 11: whole-ring DELETE waits for an open INSERT on the prefix
+#
+CREATE TABLE test.rb_l1 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+v INT,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=20@ring_idx@ring_meta";
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 1);
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 2);
+DELETE FROM test.rb_l1 WHERE client_id = 1;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 3);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 4);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 5);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 6);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 7);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 8);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 9);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 10);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 11);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 12);
+COMMIT;
+# No row of prefix 1 may survive, data or meta
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id = 1;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+# The next insert starts a fresh ring at slot 1
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 100);
+SELECT ring_idx, v FROM test.rb_l1 WHERE client_id = 1 ORDER BY ring_idx;
+ring_idx	v
+1	100
+# Same with a prepared DELETE: the prefix value is a parameter
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 1);
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 2);
+PREPARE del_prefix FROM 'DELETE FROM test.rb_l1 WHERE client_id = ?';
+SET @prefix = 2;
+EXECUTE del_prefix USING @prefix;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 3);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 4);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 5);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 6);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 7);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 8);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 9);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 10);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 11);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 12);
+COMMIT;
+DEALLOCATE PREPARE del_prefix;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id = 2;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+# Same with IN (): the DELETE locks the meta row of every listed prefix
+INSERT INTO test.rb_l1 (client_id, v) VALUES (3, 1);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 1);
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 2);
+DELETE FROM test.rb_l1 WHERE client_id IN (3, 4, 5);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 3);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 4);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 5);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 6);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 7);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 8);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 9);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 10);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 11);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 12);
+COMMIT;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id IN (3, 4);
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_l1;
+#
 # Cleanup
 #
 DROP TABLE test.rb;

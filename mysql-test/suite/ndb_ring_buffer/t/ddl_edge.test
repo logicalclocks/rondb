@@ -231,8 +231,10 @@ INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r6
 SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
     WHERE region = 'US-East' AND client_id = 1 ORDER BY ring_idx;
 
-# DELETE by partial PK prefix (region only)
+# DELETE by partial PK prefix (region only) is rejected; name the rings
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_mixed_pk WHERE region = 'US-East';
+DELETE FROM test.rb_mixed_pk WHERE region = 'US-East' AND client_id IN (1, 2);
 
 SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
     ORDER BY region, client_id, ring_idx;
@@ -281,8 +283,12 @@ DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 100;
 SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
     ORDER BY region, dept, user_id, ring_idx;
 
-# DELETE by partial prefix (region only)
+# DELETE by partial prefix (region only) is rejected; delete the
+# remaining rings of region 1 by their full prefix
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_4pk WHERE region = 1;
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 200;
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 20 AND user_id = 100;
 
 SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
     ORDER BY region, dept, user_id, ring_idx;

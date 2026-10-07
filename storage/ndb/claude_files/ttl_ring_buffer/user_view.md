@@ -109,8 +109,25 @@ UPDATE user_events SET ts = NOW(6) WHERE user_id = 7 AND ring_idx = 42;
 DELETE FROM user_events WHERE user_id = 7;
 ```
 
-A DELETE on a ring table may filter only on the primary key columns before `ring_idx`, and
-its WHERE must be deterministic: `RAND()`, stored functions and UDFs are rejected.
+A DELETE on a ring table must name the rings it deletes, and nothing else: its WHERE is an
+AND of conditions that give every primary key column before `ring_idx` with `=`, or one of
+them with `IN (...)`, and has no other condition. The values are literals, constant
+expressions, prepared-statement parameters, stored-program variables or user variables, of
+the column's kind (a number for a numeric column, a string for a string column, compared in
+the column's collation; a string or a date/time value for a temporal column; a TIMESTAMP
+column only with a UTC or fixed-offset session time zone, since across a DST change one
+local time is two instants; not an ENUM column whose members, or a member and the empty
+string, are equal under its collation, and not a SET column), appear directly (not wrapped,
+as in `CAST(? AS SIGNED)`) and convert exactly to the column type. RAND(), stored functions,
+UDFs, functions with side effects such as `RELEASE_LOCK()` and variable assignments are
+rejected. Ranges, `OR`, a partial prefix, extra conditions and a DELETE without WHERE are
+rejected ("DELETE on ring-buffer table must give every PK-prefix column with = or IN"); use
+TRUNCATE TABLE to clear the table. Such a DELETE waits for INSERTs into its prefixes that
+are in progress and removes all of their rows. One case is not covered: a DELETE of a prefix
+that has no rows yet can race the first INSERT into it, and a row of that INSERT can then
+survive the DELETE until the ring overwrites its slot. A transaction that inserts into
+several prefixes can deadlock with a DELETE of several prefixes; one of them then fails with
+a deadlock error and can be retried.
 
 The NDB API `NdbRingBufferWriter` and the ClusterJ `RingBufferWriter` insert as they do on a
 plain ring table, with one extra rule: on a TTL ring every insert must set every column of

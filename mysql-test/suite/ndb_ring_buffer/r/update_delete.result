@@ -141,10 +141,13 @@ ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may onl
 DELETE FROM test.rb WHERE client_id = 1 AND event_data = 'ev_C';
 ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
 #
-# Case 14: DELETE without WHERE (full table) - allowed
-# Clears all data rows + meta rows for all PK prefixes
+# Case 14: DELETE without WHERE (full table) - rejected
+# It could not lock the rings it deletes; TRUNCATE clears all data
+# rows + meta rows for all PK prefixes
 #
 DELETE FROM test.rb;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+TRUNCATE TABLE test.rb;
 SELECT client_id, ring_idx, event_data FROM test.rb
 ORDER BY client_id, ring_idx;
 client_id	ring_idx	event_data
@@ -190,11 +193,13 @@ ORDER BY region, client_id, ring_idx;
 region	client_id	ring_idx	event_data
 1	200	1	c
 #
-# Case 17: Partial PK prefix - allowed (deletes all client_ids in region)
+# Case 17: Partial PK prefix - rejected; name the rings of the region
 #
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 200, 'r1c200');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (2, 300, 'r2c300');
 DELETE FROM test.rb_multi WHERE region = 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_multi WHERE region = 1 AND client_id IN (100, 200);
 SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
 ORDER BY region, client_id, ring_idx;
 region	client_id	ring_idx	event_data
@@ -215,12 +220,14 @@ WHERE region = 2 AND client_id IN (300, 400) AND ring_idx = 0;
 region	client_id	ring_idx
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 19: DELETE with range on PK column - allowed
+# Case 19: DELETE with range on PK column - rejected, IN () allowed
 #
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 100, 'r3c100');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 200, 'r3c200');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 300, 'r3c300');
 DELETE FROM test.rb_multi WHERE region = 3 AND client_id > 100;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_multi WHERE region = 3 AND client_id IN (200, 300);
 SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
 WHERE region = 3 ORDER BY client_id, ring_idx;
 region	client_id	ring_idx	event_data
@@ -391,18 +398,22 @@ INSERT INTO test.rb_del (id, val) VALUES (3, 'c');
 INSERT INTO test.rb_del (id, val) VALUES (4, 'd');
 INSERT INTO test.rb_del (id, val) VALUES (5, 'e');
 #
-# Case 30: DELETE with OR on PK columns - allowed
+# Case 30: DELETE with OR on PK columns - rejected, IN () allowed
 #
 DELETE FROM test.rb_del WHERE id = 1 OR id = 2;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_del WHERE id IN (1, 2);
 SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
 id	ring_idx	val
 3	1	c
 4	1	d
 5	1	e
 #
-# Case 31: DELETE with BETWEEN on PK column - allowed
+# Case 31: DELETE with BETWEEN on PK column - rejected, IN () allowed
 #
 DELETE FROM test.rb_del WHERE id BETWEEN 3 AND 4;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_del WHERE id IN (3, 4);
 SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
 id	ring_idx	val
 5	1	e
@@ -416,12 +427,13 @@ ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may onl
 #
 DELETE FROM test.rb_del WHERE id = 5;
 DELETE FROM test.rb_del;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
 DELETE FROM test.rb_del WHERE id = 999;
 SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
 id	ring_idx	val
 DROP TABLE test.rb_del;
 #
-# Case 34: Bare DELETE on multi-column PK table - allowed
+# Case 34: Bare DELETE on multi-column PK table - rejected, TRUNCATE
 #
 CREATE TABLE test.rb_multi2 (
 region INT NOT NULL,
@@ -436,6 +448,8 @@ INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 10, 'a');
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 20, 'b');
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (2, 30, 'c');
 DELETE FROM test.rb_multi2;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+TRUNCATE TABLE test.rb_multi2;
 SELECT region, client_id, ring_idx, val FROM test.rb_multi2
 ORDER BY region, client_id, ring_idx;
 region	client_id	ring_idx	val
@@ -667,3 +681,207 @@ SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
 client_id	ring_idx	val
 2	1	4
 DROP TABLE test.rb_rand;
+#
+# Case 40: DELETE must name its rings - every PK-prefix column with =
+# (or one column with IN); other forms are rejected
+#
+CREATE TABLE test.rb_pin (
+region INT NOT NULL,
+code VARCHAR(10) NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(20),
+PRIMARY KEY (region, code, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_pin (region, code, val) VALUES (1, 'a', 'r1a');
+INSERT INTO test.rb_pin (region, code, val) VALUES (1, 'b', 'r1b');
+INSERT INTO test.rb_pin (region, code, val) VALUES (2, 'a', 'r2a');
+INSERT INTO test.rb_pin (region, code, val) VALUES (2, '1', 'r2_1');
+DELETE FROM test.rb_pin WHERE region = 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region IN (1, 2) AND code IN ('a', 'b');
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region = 1 AND code NOT IN ('a', 'b');
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region = 2 AND code = 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE 1 = 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region = '1abc' AND code = 'a';
+ERROR 22007: Truncated incorrect DOUBLE value: '1abc'
+SET @d = 1e0;
+DELETE FROM test.rb_pin WHERE region = @d AND code = 'a';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'a' AND RELEASE_LOCK(CONCAT('rb_pin', region));
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'a' AND IS_FREE_LOCK(CONCAT('rb_pin', code));
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+SET @v = 0;
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'a' AND (@v := @v + 1) < 3;
+ERROR HY000: Table storage engine for 'DELETE WHERE on ring-buffer table may only reference PK-prefix columns (excluding ring_idx)' doesn't have this option
+SELECT LAST_INSERT_ID(0);
+LAST_INSERT_ID(0)
+0
+DELETE FROM test.rb_pin WHERE region IN (1, 2) AND code = 'a' AND LAST_INSERT_ID(LAST_INSERT_ID() + region) < 3;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region IN (1, 2) AND code = 'a' AND region > 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+SET @s = '2';
+DELETE FROM test.rb_pin WHERE region = @s AND code = 'a';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+SELECT region, code, ring_idx, val FROM test.rb_pin ORDER BY region, code, ring_idx;
+region	code	ring_idx	val
+1	a	1	r1a
+1	b	1	r1b
+2	1	1	r2_1
+2	a	1	r2a
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'A' COLLATE utf8mb4_bin;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_pin WHERE region = 1 AND code = DATE'2020-01-01';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+SELECT region, code, ring_idx, val FROM test.rb_pin ORDER BY region, code, ring_idx;
+region	code	ring_idx	val
+1	a	1	r1a
+1	b	1	r1b
+2	1	1	r2_1
+2	a	1	r2a
+DELETE FROM test.rb_pin WHERE region = 1 AND code IN ('a', 'b', 'zz');
+PREPARE del_pin FROM 'DELETE FROM test.rb_pin WHERE code = ? AND region IN (?, ?)';
+SET @c = 'a', @r1 = 2, @r2 = 3;
+EXECUTE del_pin USING @c, @r1, @r2;
+DEALLOCATE PREPARE del_pin;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT region, code, ring_idx, val FROM test.rb_pin ORDER BY region, code, ring_idx;
+region	code	ring_idx	val
+2	1	0	NULL
+2	1	1	r2_1
+SET ndb_ring_buffer_show_meta = OFF;
+CREATE PROCEDURE test.rb_pin_del(c VARCHAR(10))
+BEGIN
+DECLARE r INT DEFAULT 2;
+DELETE FROM test.rb_pin WHERE region = r AND code = c;
+END|
+CALL test.rb_pin_del('1');
+DROP PROCEDURE test.rb_pin_del;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_pin;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_pin;
+CREATE TABLE test.rb_dt (
+ts DATETIME(6) NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(20),
+PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_dt (ts, val) VALUES ('2026-01-01 10:00:00.000001', 'a');
+SET @f = 20260101100000.000001e0;
+DELETE FROM test.rb_dt WHERE ts = @f;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+SET @i = 20260101100000;
+DELETE FROM test.rb_dt WHERE ts = @i;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_dt WHERE ts = '2026-01-01 10:00:00.000001';
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_dt;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_dt;
+CREATE TABLE test.rb_ts (
+ts TIMESTAMP NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(20),
+PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SET time_zone = '+00:00';
+INSERT INTO test.rb_ts (ts, val) VALUES ('2026-01-01 10:00:00', 'a');
+SET time_zone = 'SYSTEM';
+DELETE FROM test.rb_ts WHERE ts = '2026-01-01 10:00:00';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+SET time_zone = '+00:00';
+DELETE FROM test.rb_ts WHERE ts = '2026-01-01 10:00:00';
+SET time_zone = DEFAULT;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_ts;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_ts;
+SET SESSION sql_mode = '';
+CREATE TABLE test.rb_enum_dup (
+e ENUM('a', 'A') NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+PRIMARY KEY (e, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+Warnings:
+Note	1291	Column 'e' has duplicated value 'a' in ENUM
+SET SESSION sql_mode = DEFAULT;
+INSERT INTO test.rb_enum_dup (e) VALUES (1), (2);
+DELETE FROM test.rb_enum_dup WHERE e = 'a';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DROP TABLE test.rb_enum_dup;
+CREATE TABLE test.rb_enum_empty (
+e ENUM('', 'x') NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+PRIMARY KEY (e, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_enum_empty (e) VALUES ('x');
+DELETE FROM test.rb_enum_empty WHERE e = '';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DROP TABLE test.rb_enum_empty;
+CREATE TABLE test.rb_set_empty (
+s SET('') NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+PRIMARY KEY (s, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_set_empty (s) VALUES ('');
+DELETE FROM test.rb_set_empty WHERE s = '';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DROP TABLE test.rb_set_empty;
+CREATE TABLE test.rb_set (
+s SET('x', 'y') NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+PRIMARY KEY (s, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_set (s) VALUES ('x,y');
+DELETE FROM test.rb_set WHERE s = 'x,y';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+TRUNCATE TABLE test.rb_set;
+DROP TABLE test.rb_set;
+INSERT INTO test.rb_enum_big (e) VALUES ('m1'), ('m2999'), ('m3000');
+DELETE FROM test.rb_enum_big WHERE e IN ('m1', 'm2999');
+SELECT e, ring_idx FROM test.rb_enum_big ORDER BY e, ring_idx;
+e	ring_idx
+m3000	1
+DROP TABLE test.rb_enum_big;
+CREATE TABLE test.rb_enum (
+e ENUM('x', 'y') NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+PRIMARY KEY (e, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_enum (e) VALUES ('x'), ('y');
+DELETE FROM test.rb_enum WHERE e = 'x';
+SET ndb_ring_buffer_show_meta = ON;
+SELECT e, ring_idx FROM test.rb_enum ORDER BY e, ring_idx;
+e	ring_idx
+y	0
+y	1
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_enum;

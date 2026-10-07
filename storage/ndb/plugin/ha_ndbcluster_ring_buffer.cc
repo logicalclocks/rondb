@@ -32,19 +32,23 @@
 #include "storage/ndb/plugin/ha_ndbcluster_ring_buffer.h"
 #include "storage/ndb/plugin/ha_ndbcluster.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "my_dbug.h"
 #include "my_time.h"
 #include "mysql/strings/m_ctype.h"
+#include "sql/error_handler.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
 #include "sql/key.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
 #include "sql/table.h"
+#include "sql/tztime.h"
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
 #include "storage/ndb/plugin/ndb_modifiers.h"
 #include "storage/ndb/plugin/ndb_table_map.h"
@@ -169,6 +173,8 @@ bool check_ring_buffer_delete_condition(const TABLE *table,
       if (func->functype() == Item_func::FUNC_SP ||
           func->functype() == Item_func::UDF_FUNC)
         return false;
+      /* `@v := expr` changes from row to row */
+      if (func->functype() == Item_func::SUSERVAR_FUNC) return false;
       for (uint i = 0; i < func->argument_count(); i++) {
         const Item *arg = func->arguments()[i];
         if (!check_ring_buffer_delete_condition(table, ring_idx_field_index,
@@ -190,21 +196,237 @@ bool check_ring_buffer_delete_condition(const TABLE *table,
       return true;
     }
     default:
-      if (item->const_item() || item->type() == Item::PARAM_ITEM) return true;
+      /* Constants, statement parameters and stored program variables are
+         fixed for the statement */
+      return item->const_item() || item->type() == Item::PARAM_ITEM ||
+             item->type() == Item::ROUTINE_FIELD_ITEM;
+  }
+}
+
+/*
+ * The values a ring DELETE's WHERE pins the PK prefix columns to, from
+ * `col = value`, multiple equalities and `col IN (values)` inside an AND.
+ * Any other condition sets `other`: only the pins may select the rows,
+ * so nothing evaluated per row can delete part of a pinned ring.
+ */
+struct Prefix_values {
+  Item *values[MAX_REF_PARTS] = {};
+  Item_func_in *in = nullptr; /* at most one part pinned by an IN list */
+  uint in_part = MAX_REF_PARTS;
+  bool other = false;
+};
+
+/*
+ * A value that selects exactly one key of the column: fixed for the
+ * statement (a constant expression, a statement parameter, a stored
+ * program variable or a user variable read) and compared in the column's
+ * own domain. A string column compared with a non-string value matches
+ * several stored strings ('1', '01'); a numeric column compared with a
+ * string or floating-point value is compared as DOUBLE, where one value
+ * can match several keys above 2^53. A value must appear directly: an
+ * expression around a parameter or variable (CAST(? AS SIGNED)) is not
+ * accepted.
+ */
+/* An ENUM in which one string names several stored values: two members
+   equal under the column's collation (non-strict DDL allows ENUM('a','A')
+   under a _ci collation), or a member equal to the empty string, which is
+   also the implicit empty value (ENUM('', 'x')).
+   The members and the empty string are sorted once with the collation and
+   neighbours compared, O(n log n) per column. */
+bool enum_is_ambiguous(const Field *field) {
+  const TYPELIB *lib = down_cast<const Field_enum *>(field)->typelib;
+  const CHARSET_INFO *cs = field->charset();
+  std::vector<std::pair<const uchar *, size_t>> names;
+  names.reserve(lib->count + 1);
+  names.emplace_back(pointer_cast<const uchar *>(""), 0);
+  for (size_t i = 0; i < lib->count; i++) {
+    names.emplace_back(pointer_cast<const uchar *>(lib->type_names[i]),
+                       lib->type_lengths[i]);
+  }
+  const auto cmp = [cs](const std::pair<const uchar *, size_t> &a,
+                        const std::pair<const uchar *, size_t> &b) {
+    return cs->coll->strnncollsp(cs, a.first, a.second, b.first, b.second);
+  };
+  std::sort(names.begin(), names.end(),
+            [&cmp](const auto &a, const auto &b) { return cmp(a, b) < 0; });
+  for (size_t i = 1; i < names.size(); i++) {
+    if (cmp(names[i - 1], names[i]) == 0) return true;
+  }
+  return false;
+}
+
+bool value_matches_one_key(const Field *field, const Item *item) {
+  const Item *value = item->real_item();
+  const bool fixed =
+      value->const_item() || value->type() == Item::PARAM_ITEM ||
+      value->type() == Item::ROUTINE_FIELD_ITEM ||
+      (value->type() == Item::FUNC_ITEM &&
+       down_cast<const Item_func *>(value)->functype() ==
+           Item_func::GUSERVAR_FUNC);
+  if (!fixed) return false;
+  switch (field->result_type()) {
+    case STRING_RESULT:
+      if (is_temporal_type(field->type())) {
+        /* A TIMESTAMP compares in the session time zone: across a DST
+           fall-back one local time is two stored instants. Only UTC and
+           fixed-offset zones map it to one key. */
+        if (field->type() == MYSQL_TYPE_TIMESTAMP) {
+          const Time_zone::tz_type tz =
+              field->table->in_use->time_zone()->get_timezone_type();
+          if (tz != Time_zone::TZ_UTC && tz != Time_zone::TZ_OFFSET)
+            return false;
+        }
+        /* A number makes it a DOUBLE comparison, which loses microseconds
+           (DATETIME(6) = 20260101100000) */
+        return value->result_type() == STRING_RESULT ||
+               is_temporal_type(value->data_type());
+      }
+      /* A temporal or JSON value switches to that comparison ('2020-01-01'
+         and '20200101' are the same date). The collation of the comparison
+         is checked by compares_in_column_collation(). */
+      return value->result_type() == STRING_RESULT &&
+             !is_temporal_type(value->data_type()) &&
+             value->data_type() != MYSQL_TYPE_JSON;
+    case INT_RESULT:
+    case DECIMAL_RESULT:
+      return value->result_type() == INT_RESULT ||
+             value->result_type() == DECIMAL_RESULT;
+    default:
+      return true;
+  }
+}
+
+int prefix_part(const TABLE *table, const KEY *pk, const Field *field) {
+  if (field->table != table) return -1;
+  for (uint i = 0; i < pk->user_defined_key_parts; i++) {
+    if (pk->key_part[i].field->field_index() == field->field_index())
+      return i;
+  }
+  return -1;
+}
+
+/* The comparison of a string column runs in the column's collation; an
+   explicit COLLATE can make it case or accent sensitive, and then it
+   selects only some rows of a ring whose prefix the column's collation
+   treats as one key. */
+bool compares_in_column_collation(const Item_func *func, const Field *field) {
+  return field->result_type() != STRING_RESULT ||
+         is_temporal_type(field->type()) ||
+         func->compare_collation() == field->charset();
+}
+
+void collect_prefix_values(const TABLE *table, const KEY *pk, Item *item,
+                           Prefix_values *pv) {
+  const auto set_value = [&](const Field *field, Item *value) {
+    const int i = prefix_part(table, pk, field);
+    if (i < 0 || !value_matches_one_key(field, value)) return false;
+    if (pv->values[i] == nullptr) pv->values[i] = value;
+    return true;
+  };
+  if (item->type() == Item::COND_ITEM) {
+    Item_cond *cond = down_cast<Item_cond *>(item);
+    if (cond->functype() != Item_func::COND_AND_FUNC) {
+      pv->other = true;
+      return;
+    }
+    for (Item &arg : *cond->argument_list()) {
+      collect_prefix_values(table, pk, &arg, pv);
+    }
+    return;
+  }
+  if (item->type() != Item::FUNC_ITEM) {
+    pv->other = true;
+    return;
+  }
+  Item_func *func = down_cast<Item_func *>(item);
+  if (func->functype() == Item_func::EQ_FUNC) {
+    Item *a = func->arguments()[0]->real_item();
+    Item *b = func->arguments()[1]->real_item();
+    if (a->type() != Item::FIELD_ITEM) std::swap(a, b);
+    if (a->type() != Item::FIELD_ITEM ||
+        !compares_in_column_collation(func,
+                                      down_cast<Item_field *>(a)->field) ||
+        !set_value(down_cast<Item_field *>(a)->field, b))
+      pv->other = true;
+  } else if (func->functype() == Item_func::MULT_EQUAL_FUNC) {
+    Item_equal *equal = down_cast<Item_equal *>(func);
+    Item *value = equal->const_arg();
+    if (value == nullptr) {
+      pv->other = true;
+      return;
+    }
+    for (Item_field &field : equal->get_fields()) {
+      if (!set_value(field.field, value)) pv->other = true;
+    }
+  } else if (func->functype() == Item_func::IN_FUNC) {
+    Item_func_in *in = down_cast<Item_func_in *>(func);
+    Item *a = in->arguments()[0]->real_item();
+    const Field *field = a->type() == Item::FIELD_ITEM
+                             ? down_cast<Item_field *>(a)->field
+                             : nullptr;
+    const int i = field != nullptr ? prefix_part(table, pk, field) : -1;
+    bool ok = !in->negated && pv->in == nullptr && i >= 0 &&
+              compares_in_column_collation(in, field);
+    for (uint j = 1; ok && j < in->argument_count(); j++) {
+      ok = value_matches_one_key(field, in->arguments()[j]);
+    }
+    if (!ok) {
+      pv->other = true;
+      return;
+    }
+    pv->in = in;
+    pv->in_part = i;
+  } else {
+    pv->other = true;
+  }
+}
+
+/* Every PK prefix column is pinned to a value or (one part) an IN list,
+   and the WHERE has no other condition */
+bool prefix_pinned(const KEY *pk, uint ring_idx_field_index,
+                   const Prefix_values &pv) {
+  if (pv.other) return false;
+  for (uint i = 0; i < pk->user_defined_key_parts; i++) {
+    const Field *field = pk->key_part[i].field;
+    if (field->field_index() == ring_idx_field_index) continue;
+    if (pv.values[i] == nullptr && i != pv.in_part) return false;
+    /* A SET value is a combination of members; distinct combinations can
+       compare equal as strings (a member holding a fullwidth comma equals
+       'a,b' under an _ai_ci collation), so a SET prefix is never pinned. */
+    if (field->real_type() == MYSQL_TYPE_SET) return false;
+    if (field->real_type() == MYSQL_TYPE_ENUM && enum_is_ambiguous(field))
       return false;
   }
+  return true;
 }
 
 }  // anonymous namespace
 
 namespace ndb_ring_buffer {
 
+bool delete_where_pins_prefixes(const TABLE *table,
+                                unsigned ring_idx_field_index,
+                                const Item *cond) {
+  if (cond == nullptr) return false;
+  const KEY *pk = table->key_info + table->s->primary_key;
+  Prefix_values pv;
+  collect_prefix_values(table, pk, const_cast<Item *>(cond), &pv);
+  return prefix_pinned(pk, ring_idx_field_index, pv);
+}
+
 bool delete_where_allowed(const TABLE *table, unsigned ring_idx_field_index,
                           const Item *cond) {
-  if (cond == nullptr) return true; /* bare DELETE: clears entire table, safe */
+  if (cond == nullptr) return true; /* bare DELETE: see delete_where_pins_prefixes */
   /* RAND() or a NOT DETERMINISTIC stored function would pick the data rows
-     and the meta row of one prefix independently. */
+     and the meta row of one prefix independently; so would a system
+     function whose value can change from row to row (RELEASE_LOCK(),
+     IS_FREE_LOCK(), SLEEP(), UUID(), ...). Those mark the statement unsafe
+     for statement-based binlogging; the top-level query block is not
+     marked UNCACHEABLE_SIDEEFFECT. */
   if (cond->is_non_deterministic()) return false;
+  if (table->in_use->lex->is_stmt_unsafe(
+          LEX::BINLOG_STMT_UNSAFE_SYSTEM_FUNCTION))
+    return false;
   const KEY *pk_info = table->key_info + table->s->primary_key;
   return check_ring_buffer_delete_condition(table, ring_idx_field_index,
                                             pk_info, cond);
@@ -475,6 +697,99 @@ static int ring_batch_error(const NdbOperation *meta_op, int error) {
       return HA_ERR_LOCK_DEADLOCK;
   }
   return error;
+}
+
+/*
+ * Whole-ring DELETE: the rows of one ring are spread over all fragments,
+ * and the scan locks them one by one. An INSERT that holds the meta row
+ * can write a slot into a fragment the scan has already passed; that row
+ * would survive the DELETE without a meta row. The WHERE pins the
+ * prefixes (delete_where_pins_prefixes); lock their meta rows before the
+ * scan: an INSERT holding one commits first and all its rows are then
+ * seen by the scan, and a later INSERT waits on the meta row until the
+ * DELETE commits. A prefix without a meta row (626) is not locked: the
+ * DELETE can still race the first insert into an empty prefix.
+ */
+int ha_ndbcluster::ring_buffer_lock_delete_prefix(const Item *cond) {
+  DBUG_TRACE;
+  if (cond == nullptr) return 0;
+  const KEY *pk = table->key_info + table_share->primary_key;
+  const uint ring_idx_fi =
+      m_table_map->get_field_for_column(m_table->getRingIdxColumnNo());
+  Prefix_values pv;
+  collect_prefix_values(table, pk, const_cast<Item *>(cond), &pv);
+  if (!prefix_pinned(pk, ring_idx_fi, pv)) return 0;
+  const bool use_in =
+      pv.in != nullptr && pv.values[pv.in_part] == nullptr;
+  const uint n_keys = use_in ? pv.in->argument_count() - 1 : 1;
+
+  int error = 0;
+  NdbTransaction *trans = get_transaction(error);
+  if (trans == nullptr) return error;
+
+  /* Send operations batched by earlier statements with their own error
+     handling: the lock reads below ignore errors of everything they
+     execute. */
+  if (m_thd_ndb->m_unsent_bytes &&
+      execute_no_commit(m_thd_ndb, trans, false) != 0) {
+    return ndb_err(trans);
+  }
+
+  THD *thd = table->in_use;
+  for (uint k = 0; k < n_keys; k++) {
+    /* Build the meta row key in record[0]. NULL matches no row and is
+       skipped. A value that does not convert exactly ('1abc' for an INT
+       column still matches 1) fails the DELETE: its rows could not be
+       locked. Warnings of the conversion are not the DELETE's, but an
+       error (e.g. from a constant subquery) fails it. */
+    Ignore_warnings_error_handler no_warnings;
+    thd->push_internal_handler(&no_warnings);
+    const enum_check_fields saved_check = thd->check_for_truncated_fields;
+    thd->check_for_truncated_fields = CHECK_FIELD_IGNORE;
+    my_bitmap_map *old_map =
+        dbug_tmp_use_all_columns(table, table->write_set);
+    bool is_null = false;
+    bool exact = true;
+    for (uint i = 0; i < pk->user_defined_key_parts && !is_null && exact;
+         i++) {
+      Field *field = pk->key_part[i].field;
+      if (field->field_index() == ring_idx_fi) {
+        field->store(0, true);
+        continue;
+      }
+      Item *value = (use_in && i == pv.in_part) ? pv.in->arguments()[k + 1]
+                                                 : pv.values[i];
+      is_null = value->is_null();
+      exact = is_null || value->save_in_field(field, false) == TYPE_OK;
+    }
+    dbug_tmp_restore_column_map(table->write_set, old_map);
+    thd->check_for_truncated_fields = saved_check;
+    thd->pop_internal_handler();
+    if (thd->is_error()) return HA_ERR_GENERIC;
+    if (!exact) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "DELETE on ring-buffer table: a PK-prefix value does not "
+               "convert exactly to the column type");
+      return HA_ERR_GENERIC;
+    }
+    if (is_null) continue;
+
+    NdbOperation::OperationOptions opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.optionsPresent = NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+    const NdbOperation *op = trans->readTuple(
+        m_index[table_share->primary_key].ndb_unique_record_row,
+        (const char *)table->record[0], m_ndb_record,
+        (char *)table->record[1], NdbOperation::LM_Exclusive, nullptr, &opts,
+        sizeof(opts));
+    if (op == nullptr) return ndb_err(trans);
+    if (execute_no_commit(m_thd_ndb, trans, true /* ignore_no_key */) != 0) {
+      return ndb_err(trans);
+    }
+    const int code = op->getNdbError().code;
+    if (code != 0 && code != 626) return ndb_err(trans);
+  }
+  return 0;
 }
 
 int ha_ndbcluster::flush_ring_buffer_batch() {

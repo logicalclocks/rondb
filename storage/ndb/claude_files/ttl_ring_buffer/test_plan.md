@@ -91,10 +91,12 @@ C. Replication of the purge
 
 D. Writers and SQL DML
 - D1 handler paths: DONE `ttl_ring_buffer_dml` (multi-row INSERT, LOAD DATA, INSERT ...
-  SELECT, INSERT with a unique dup, scan UPDATE, DELETE forms, bare DELETE, TRUNCATE,
+  SELECT, INSERT with a unique dup, scan UPDATE, prefix and IN DELETEs, TRUNCATE,
   transactions, OPTIMIZE). REPLACE and INSERT ... ON DUPLICATE KEY UPDATE are rejected on
   every ring table (`insert.test` Cases 8-9); DELETE by ring_idx is blocked
   (`update_delete.test` Case 12), so "DELETE by PK of an expired row" does not exist.
+  A DELETE must name its prefixes with = or IN (`update_delete.test` Case 40); it locks
+  their meta rows first (`concurrent.test` Case 11).
 - D2 NdbRingBufferWriter with a record lacking the TTL column, explicit TTL values:
   DONE Test 36 (b) (record without the TTL column: meta TTL column NULL, K1 keeps it
   live, a later SQL insert sets the maximum). Explicit TTL values per row are ordinary

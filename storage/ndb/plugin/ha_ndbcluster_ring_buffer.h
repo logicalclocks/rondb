@@ -99,11 +99,29 @@ const char *apply_columns_ndb(NdbDictionary::Table *new_tab,
 /**
   Check whether a DELETE on a ring-buffer table is allowed.
   Requires a WHERE clause where every Item_field references a PK-prefix
-  column (not ring_idx, not any non-PK column). Accepts @a cond == nullptr
-  (bare DELETE: full-table clear, always allowed).
+  column (not ring_idx, not any non-PK column). Accepts @a cond == nullptr;
+  delete_where_pins_prefixes() rejects it.
 */
 bool delete_where_allowed(const TABLE *table, unsigned ring_idx_field_index,
                           const Item *cond);
+
+/**
+  Check that the WHERE names the rings it deletes: an AND of conditions
+  that give every PK-prefix column with `=` (or, for one column, `IN`) and
+  a value fixed for the statement, compared in the column's domain, and
+  nothing else. The DELETE locks the meta row of each such prefix before
+  it scans; ranges, OR, other conditions and a missing WHERE could not be
+  locked or could delete part of a ring, and are rejected (TRUNCATE TABLE
+  clears the table).
+*/
+bool delete_where_pins_prefixes(const TABLE *table,
+                                unsigned ring_idx_field_index,
+                                const Item *cond);
+
+/** Error text when delete_where_pins_prefixes() fails */
+constexpr const char *DELETE_NOT_PINNED_MSG =
+    "DELETE on ring-buffer table must give every PK-prefix column with = or "
+    "IN; use TRUNCATE TABLE to clear the table";
 
 /**
   Check the DELETE statement shape. The WHERE walker alone cannot see

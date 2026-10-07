@@ -204,6 +204,8 @@ US-East	1	1	r6
 US-East	1	2	r2
 US-East	1	3	r5
 DELETE FROM test.rb_mixed_pk WHERE region = 'US-East';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_mixed_pk WHERE region = 'US-East' AND client_id IN (1, 2);
 SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
 ORDER BY region, client_id, ring_idx;
 region	client_id	ring_idx	data
@@ -252,6 +254,9 @@ region	dept	user_id	ring_idx	event
 1	20	100	1	ev_D
 2	10	100	1	ev_E
 DELETE FROM test.rb_4pk WHERE region = 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 200;
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 20 AND user_id = 100;
 SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
 ORDER BY region, dept, user_id, ring_idx;
 region	dept	user_id	ring_idx	event

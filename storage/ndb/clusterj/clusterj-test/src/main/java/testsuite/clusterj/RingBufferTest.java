@@ -1026,7 +1026,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_notnull");
+            clearRingTable(stmt, "ring_buffer_notnull", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
@@ -1124,7 +1124,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_ttl");
+            clearRingTable(stmt, "ring_buffer_ttl", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
@@ -1239,7 +1239,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_ttl_dt");
+            clearRingTable(stmt, "ring_buffer_ttl_dt", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
@@ -3030,7 +3030,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_notnull");
+            clearRingTable(stmt, "ring_buffer_notnull", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore
@@ -3615,13 +3615,33 @@ public class RingBufferTest extends AbstractClusterJTest {
         System.out.println("[FLUSH-TEST] clean_after_failure=true");
     }
 
+    /** Delete every ring of a ring buffer table. A ring DELETE must name
+     *  its prefixes, so collect them first, with the meta rows visible. */
+    private static void clearRingTable(Statement stmt, String table,
+            String prefixCol) throws SQLException {
+        stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+        StringBuilder in = new StringBuilder();
+        ResultSet rs = stmt.executeQuery(
+                "SELECT DISTINCT " + prefixCol + " FROM " + table);
+        while (rs.next()) {
+            if (in.length() > 0) in.append(',');
+            in.append(rs.getLong(1));
+        }
+        rs.close();
+        stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+        if (in.length() > 0) {
+            stmt.execute("DELETE FROM " + table + " WHERE " + prefixCol
+                    + " IN (" + in + ")");
+        }
+    }
+
     private void cleanupViaSql() {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_sensor");
-            stmt.execute("DELETE FROM ring_buffer_ttl");
-            stmt.execute("DELETE FROM ring_buffer_ttl_dt");
+            clearRingTable(stmt, "ring_buffer_sensor", "sensor_id");
+            clearRingTable(stmt, "ring_buffer_ttl", "client_id");
+            clearRingTable(stmt, "ring_buffer_ttl_dt", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
