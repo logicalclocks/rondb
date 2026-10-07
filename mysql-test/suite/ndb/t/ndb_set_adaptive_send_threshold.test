@@ -1,0 +1,93 @@
+-- source include/have_ndb.inc
+
+#
+# AdaptiveSendThreshold, an [api] / [mysqld] parameter (config param 898)
+# that chooses between latency and throughput for the NDB API's sends,
+# set online with the MGM client SET command.  0 (the default) sends
+# every request at once; N > 0 uses adaptive send while N or more threads
+# waited for replies within the last 10 ms.
+#
+# The management server has no connection to the API nodes: the request
+# goes to the data nodes, whose QMGR forwards it to their connected API
+# nodes.  An API node logs the new value when it changes, which is what
+# this test waits for; ndb_config shows the value saved by the
+# management server.
+#
+
+--let $api_node_id= query_get_value(SHOW STATUS LIKE 'Ndb_cluster_node_id', Value, 1)
+
+#
+# Test 1: ALL SET -- every API node (both mysqlds) takes the value and
+# the management server saves it
+#
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 16"
+
+--let $wait_timeout= 30
+--let $grep_pattern= AdaptiveSendThreshold set to 16: adaptive send
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--source include/wait_for_pattern_in_file.inc
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.2.1.err
+--source include/wait_for_pattern_in_file.inc
+
+--replace_result $api_node_id API_NODE_ID
+--exec $NDB_CONFIG --nodeid=$api_node_id --type=mysqld --query=nodeid,AdaptiveSendThreshold 2> /dev/null
+
+#
+# Test 2: SET on one API node; with threshold 1 its sends take the
+# adaptive path whenever another thread waits for a reply, and queries
+# still return their results
+#
+--replace_result $api_node_id API_NODE_ID
+--exec $NDB_MGM -e "$api_node_id SET AdaptiveSendThreshold 1"
+
+--let $grep_pattern= AdaptiveSendThreshold set to 1: adaptive send
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--source include/wait_for_pattern_in_file.inc
+
+--replace_result $api_node_id API_NODE_ID
+--exec $NDB_CONFIG --nodeid=$api_node_id --type=mysqld --query=nodeid,AdaptiveSendThreshold 2> /dev/null
+
+CREATE TABLE t1 (pk INT NOT NULL PRIMARY KEY, a INT NOT NULL) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20),(3,30),(4,40);
+UPDATE t1 SET a = a + 1 WHERE pk > 2;
+SELECT pk, a FROM t1 ORDER BY pk;
+SELECT COUNT(*), SUM(a) FROM t1;
+DROP TABLE t1;
+
+#
+# Test 3: Error cases
+#
+
+# A data node id: AdaptiveSendThreshold belongs to the API nodes
+--error 255
+--exec $NDB_MGM -e "1 SET AdaptiveSendThreshold 16"
+
+# Above the 0..65535 range
+--error 255
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 65536"
+
+# Not a number
+--error 255
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold abc"
+
+# Missing value
+--error 255
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold"
+
+# The saved value is unchanged by the failed commands
+--replace_result $api_node_id API_NODE_ID
+--exec $NDB_CONFIG --nodeid=$api_node_id --type=mysqld --query=nodeid,AdaptiveSendThreshold 2> /dev/null
+
+#
+# Test 4: Restore the default (0, latency) on all API nodes
+#
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 0"
+
+--let $grep_pattern= AdaptiveSendThreshold set to 0: every send goes out at once
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--source include/wait_for_pattern_in_file.inc
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.2.1.err
+--source include/wait_for_pattern_in_file.inc
+
+--replace_result $api_node_id API_NODE_ID
+--exec $NDB_CONFIG --nodeid=$api_node_id --type=mysqld --query=nodeid,AdaptiveSendThreshold 2> /dev/null

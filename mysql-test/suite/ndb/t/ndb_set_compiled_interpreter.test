@@ -9,7 +9,9 @@
 # also asserts the runtime effect through ndbinfo.jit, which needs a
 # pushed-down aggregation.
 #
-# config_param 709 = CFG_DB_COMPILED_INTERPRETER; values 0=OFF (config
+# CompiledInterpreter is looked up by name in ndbinfo.config_params: its
+# id (CFG_DB_COMPILED_INTERPRETER) moved 708 -> 709 -> 710 in merges, and
+# a fixed 709 read EnableProactiveDeadlockDetection.  Values 0=OFF (config
 # default since 2026-09-08), 1=AUTO, 2=ON.  AUTO/ON are only accepted on
 # x86_64 / aarch64 data nodes (the only CPUs with a JIT backend); this
 # test runs there.
@@ -25,10 +27,11 @@ SET ndb_pushdown_aggregate=ON;
 --exec $NDB_MGM -e "ALL SET CompiledInterpreter OFF"
 
 --sorted_result
-select node_id, config_value
-  from ndbinfo.config_values
-  where config_param = 709
-  order by node_id;
+select cv.node_id, cv.config_value
+  from ndbinfo.config_values cv, ndbinfo.config_params cp
+  where cv.config_param = cp.param_number and
+        cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 
 #
 # Test 2: with the JIT OFF a pushed-down aggregation compiles (and reuses)
@@ -47,10 +50,11 @@ SELECT CAST((SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) -
 --exec $NDB_MGM -e "ALL SET CompiledInterpreter ON"
 
 --sorted_result
-select node_id, config_value
-  from ndbinfo.config_values
-  where config_param = 709
-  order by node_id;
+select cv.node_id, cv.config_value
+  from ndbinfo.config_values cv, ndbinfo.config_params cp
+  where cv.config_param = cp.param_number and
+        cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT SUM(a) FROM t1;
@@ -63,18 +67,20 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --exec $NDB_MGM -e "1 SET CompiledInterpreter auto"
 
 --sorted_result
-select node_id, config_value
-  from ndbinfo.config_values
-  where config_param = 709
-  order by node_id;
+select cv.node_id, cv.config_value
+  from ndbinfo.config_values cv, ndbinfo.config_params cp
+  where cv.config_param = cp.param_number and
+        cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 
 --exec $NDB_MGM -e "ALL SET CompiledInterpreter 0"
 
 --sorted_result
-select node_id, config_value
-  from ndbinfo.config_values
-  where config_param = 709
-  order by node_id;
+select cv.node_id, cv.config_value
+  from ndbinfo.config_values cv, ndbinfo.config_params cp
+  where cv.config_param = cp.param_number and
+        cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 
 #
 # Test 5: Error cases
@@ -94,10 +100,11 @@ select node_id, config_value
 
 # Verify config unchanged after the failed commands
 --sorted_result
-select node_id, config_value
-  from ndbinfo.config_values
-  where config_param = 709
-  order by node_id;
+select cv.node_id, cv.config_value
+  from ndbinfo.config_values cv, ndbinfo.config_params cp
+  where cv.config_param = cp.param_number and
+        cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 
 #
 # Test 6: Restore the config default (OFF)
@@ -105,9 +112,10 @@ select node_id, config_value
 --exec $NDB_MGM -e "ALL SET CompiledInterpreter OFF"
 
 --sorted_result
-select node_id, config_value
-  from ndbinfo.config_values
-  where config_param = 709
-  order by node_id;
+select cv.node_id, cv.config_value
+  from ndbinfo.config_values cv, ndbinfo.config_params cp
+  where cv.config_param = cp.param_number and
+        cp.param_name = 'CompiledInterpreter'
+  order by cv.node_id;
 
 DROP TABLE t1;

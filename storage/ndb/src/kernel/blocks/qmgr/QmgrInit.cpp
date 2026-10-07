@@ -44,6 +44,8 @@ void Qmgr::initData() {
   m_ref_set_up_multi_trp_req = 0;
   m_activate_state = ActivateState::IDLE;
   m_activate_outstanding = 0;
+  m_set_api_param_key = 0;
+  m_set_api_param_applied = 0;
   m_activate_node_id = 0;
   m_activate_ref = 0;
   m_activate_success = false;
@@ -284,6 +286,10 @@ Qmgr::Qmgr(Block_context &ctx) : SimulatedBlock(QMGR, ctx) {
   addRecSignal(GSN_SET_HOSTNAME_REQ, &Qmgr::execSET_HOSTNAME_REQ);
   addRecSignal(GSN_SET_HOSTNAME_CONF, &Qmgr::execSET_HOSTNAME_CONF);
   addRecSignal(GSN_SET_HOSTNAME_REF, &Qmgr::execSET_HOSTNAME_REF);
+
+  addRecSignal(GSN_SET_CONFIG_PARAM_REQ, &Qmgr::execSET_CONFIG_PARAM_REQ);
+  addRecSignal(GSN_SET_CONFIG_PARAM_CONF, &Qmgr::execSET_CONFIG_PARAM_CONF);
+  addRecSignal(GSN_SET_CONFIG_PARAM_REF, &Qmgr::execSET_CONFIG_PARAM_REF);
 
   // Arbitration signals
   addRecSignal(GSN_ARBIT_PREPREQ, &Qmgr::execARBIT_PREPREQ);

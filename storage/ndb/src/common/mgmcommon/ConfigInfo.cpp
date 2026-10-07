@@ -1988,6 +1988,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     {CFG_API_VERBOSE, "ApiVerbose", "API", "Tracelevel for API nodes.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, nullptr, "0", "100"},
 
+    {CFG_API_ADAPTIVE_SEND_THRESHOLD, "AdaptiveSendThreshold", "API",
+     "Latency or throughput for the NDB API's sends to the data nodes. "
+     "0 (default) sends every request at once: the lowest and most "
+     "predictable latency. N > 0 switches a cluster connection to "
+     "adaptive send while it has had N or more threads waiting for "
+     "replies within the last 10 ms: a small send may then wait up to "
+     "200 microseconds for the send thread, so that it goes out together "
+     "with others (more throughput under many concurrent clients, a "
+     "higher latency tail). 16 is a reasonable value for throughput. "
+     "Can be changed online with the management client: "
+     "<id> SET AdaptiveSendThreshold N, or ALL SET for every API node",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "65535"},
+
     /****************************************************************************
      * MGM
      ***************************************************************************/

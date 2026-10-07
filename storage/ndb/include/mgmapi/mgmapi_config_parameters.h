@@ -443,6 +443,8 @@
 #define CFG_CONNECT_BACKOFF_MAX_TIME 807
 #define CFG_START_CONNECT_BACKOFF_MAX_TIME 808
 #define CFG_API_VERBOSE               809
+/* RonDB API parameters count down from 899, clear of upstream's 8xx */
+#define CFG_API_ADAPTIVE_SEND_THRESHOLD 898
 #define CFG_API_CONTINOUS_SCAN        899
 
 /**

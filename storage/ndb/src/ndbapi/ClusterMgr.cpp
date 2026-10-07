@@ -56,6 +56,7 @@
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/SetConfigParam.hpp>
 #include <signaldata/CreateDatabase.hpp>
 #include <signaldata/DropDatabase.hpp>
 #include <signaldata/QueryDatabase.hpp>
@@ -771,6 +772,86 @@ void ClusterMgr::threadMain() {
 }
 
 /**
+ * Online SET of a parameter of this API node (management client
+ * "<id> SET AdaptiveSendThreshold N" or "ALL SET ..."), forwarded by QMGR
+ * on each data node (Qmgr::execSET_CONFIG_PARAM_REQ): one copy arrives
+ * per data node, and applying a value again changes nothing.  The value
+ * is also saved in the management server's configuration, read at the
+ * next connect (TransporterFacade::configure).
+ */
+void ClusterMgr::execSET_CONFIG_PARAM_REQ(const NdbApiSignal *signal)
+{
+  const SetConfigParamReq *const req =
+    CAST_CONSTPTR(SetConfigParamReq, signal->getDataPtr());
+  const NodeId senderNodeId = refToNode(signal->theSendersBlockRef);
+  /* Only a data node's QMGR changes our configuration */
+  if (signal->getLength() < SetConfigParamReq::ApiSignalLength ||
+      senderNodeId == 0 || senderNodeId >= ABS_MAX_NODES ||
+      getNodeInfo(senderNodeId).m_info.m_type != NodeInfo::DB ||
+      refToNode(req->senderRef) != senderNodeId)
+  {
+    g_eventLogger->warning("SET_CONFIG_PARAM_REQ from node %u ignored",
+                           senderNodeId);
+    return;
+  }
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 configKey = req->configParamKey;
+  const Uint64 configValue = (Uint64(req->configParamValueHigh) << 32) |
+                             Uint64(req->configParamValueLow);
+  Uint32 errorCode = 0;
+  switch (configKey) {
+    case CFG_API_ADAPTIVE_SEND_THRESHOLD: {
+      if (configValue > 65535) {  // the ConfigInfo maximum
+        errorCode = 1;
+        break;
+      }
+      const Uint32 threshold = Uint32(configValue);
+      if (theFacade.get_adaptive_send_threshold() != threshold) {
+        theFacade.set_adaptive_send_threshold(threshold);
+        if (threshold == 0) {
+          g_eventLogger->info("AdaptiveSendThreshold set to 0: every send"
+                              " goes out at once (latency)");
+        } else {
+          g_eventLogger->info("AdaptiveSendThreshold set to %u: adaptive send"
+                              " from %u waiting threads (throughput)",
+                              threshold, threshold);
+        }
+      }
+      break;
+    }
+    default:
+      errorCode = 2;  // not a parameter this API node can change online
+      break;
+  }
+
+  const Uint32 ownRef = numberToRef(API_CLUSTERMGR, theFacade.ownId());
+  NdbApiSignal reply(ownRef);
+  reply.theReceiversBlockNumber = refToMain(senderRef);
+  reply.theTrace = 0;
+  if (errorCode == 0) {
+    SetConfigParamConf *const conf =
+      CAST_PTR(SetConfigParamConf, reply.getDataPtrSend());
+    reply.theVerId_signalNumber = GSN_SET_CONFIG_PARAM_CONF;
+    reply.theLength = SetConfigParamConf::SignalLength;
+    conf->senderRef = ownRef;
+    conf->configParamKey = configKey;
+  } else {
+    g_eventLogger->warning("SET_CONFIG_PARAM_REQ: config key %u value %llu"
+                           " rejected (error %u)",
+                           configKey, (unsigned long long)configValue,
+                           errorCode);
+    SetConfigParamRef *const ref =
+      CAST_PTR(SetConfigParamRef, reply.getDataPtrSend());
+    reply.theVerId_signalNumber = GSN_SET_CONFIG_PARAM_REF;
+    reply.theLength = SetConfigParamRef::SignalLength;
+    ref->senderRef = ownRef;
+    ref->configParamKey = configKey;
+    ref->errorCode = errorCode;
+  }
+  safe_sendSignal(&reply, senderNodeId);
+}
+
+/**
  * We're holding the trp_client lock while performing poll from
  * ClusterMgr. So we always execute all the execSIGNAL-methods in
  * ClusterMgr with protection other methods that use the trp_client
@@ -801,6 +882,10 @@ void ClusterMgr::trp_deliver_signal(const NdbApiSignal *sig,
 
     case GSN_ACTIVATE_REQ:
       execACTIVATE_REQ(theData);
+      break;
+
+    case GSN_SET_CONFIG_PARAM_REQ:
+      execSET_CONFIG_PARAM_REQ(sig);
       break;
 
     case GSN_DEACTIVATE_REQ:

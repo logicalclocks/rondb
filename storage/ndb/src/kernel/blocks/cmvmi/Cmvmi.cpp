@@ -3516,6 +3516,36 @@ void Cmvmi::execSET_CONFIG_PARAM_REQ(Signal *signal)
   Uint64 configValue = (Uint64(req->configParamValueHigh) << 32) |
                         Uint64(req->configParamValueLow);
 
+  if (SetConfigParamReq::forApiNodes(configKey))
+  {
+    jam();
+    /**
+     * A parameter of the API nodes (e.g. AdaptiveSendThreshold): QMGR
+     * forwards it to the connected API nodes and answers mgmd itself.
+     * The data node's own ConfigValues has no such entry to update.
+     */
+    if (signal->getLength() < SetConfigParamReq::ApiSignalLength)
+    {
+      jam();
+      SetConfigParamRef* ref = (SetConfigParamRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->configParamKey = configKey;
+      ref->errorCode = 3;  // API node parameter without a target node id
+      sendSignal(senderRef,
+                 GSN_SET_CONFIG_PARAM_REF,
+                 signal,
+                 SetConfigParamRef::SignalLength,
+                 JBB);
+      return;
+    }
+    sendSignal(QMGR_REF,
+               GSN_SET_CONFIG_PARAM_REQ,
+               signal,
+               SetConfigParamReq::ApiSignalLength,
+               JBB);
+    return;
+  }
+
   /**
    * Dispatch to the appropriate block based on the config parameter.
    * A case that rejects the value replies with SET_CONFIG_PARAM_REF and

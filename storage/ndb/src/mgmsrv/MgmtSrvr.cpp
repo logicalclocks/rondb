@@ -1600,6 +1600,11 @@ MgmtSrvr::set_config_param_request(
   DBUG_PRINT("enter", ("Set config param: key=%u value=%llu for node %d",
              configKey, configValue, nodeId));
 
+  if (SetConfigParamReq::forApiNodes(configKey))
+  {
+    DBUG_RETURN(set_api_config_param_request(nodeId, configKey, configValue));
+  }
+
   SignalSender ss(theFacade);
   SimpleSignal ssig;
   ss.lock(); // lock will be released on exit
@@ -1687,6 +1692,125 @@ MgmtSrvr::set_config_param_request(
       report_unknown_signal(signal);
       DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
     }
+  }
+  DBUG_RETURN(error_code);
+}
+
+/**
+ * Set a parameter of the API nodes (SetConfigParamReq::forApiNodes) on
+ * API node nodeId, or on all API nodes when nodeId is 0.  We have no
+ * transporter to the API nodes, so the request goes to every data node
+ * that can forward it; QMGR there passes it to its connected API nodes
+ * and answers with how many took the value.  A single API node must be
+ * reached through at least one data node; ALL succeeds when every data
+ * node answered without error, even with no API node connected (the
+ * saved configuration still applies at their next start).
+ */
+int
+MgmtSrvr::set_api_config_param_request(int nodeId,
+                                       Uint32 configKey,
+                                       Uint64 configValue)
+{
+  DBUG_ENTER("MgmtSrvr::set_api_config_param_request");
+  if (nodeId != 0 &&
+      (nodeId < 0 || nodeId >= ABS_MAX_NODES ||
+       getNodeType(NodeId(nodeId)) != NDB_MGM_NODE_TYPE_API))
+  {
+    DBUG_RETURN(NODE_NOT_API_NODE);
+  }
+
+  SignalSender ss(theFacade);
+  SimpleSignal ssig;
+  ss.lock(); // lock will be released on exit
+  SetConfigParamReq* const req = CAST_PTR(SetConfigParamReq,
+                                          ssig.getDataPtrSend());
+  ssig.set(ss,
+           TestOrd::TraceAPI,
+           CMVMI,
+           GSN_SET_CONFIG_PARAM_REQ,
+           SetConfigParamReq::ApiSignalLength);
+  req->senderRef = ss.getOwnRef();
+  req->configParamKey = configKey;
+  req->configParamValueHigh = Uint32(configValue >> 32);
+  req->configParamValueLow = Uint32(configValue & 0xFFFFFFFF);
+  req->targetNodeId = Uint32(nodeId);
+
+  int failed = 0;
+  NodeBitmask nodes;
+  {
+    NodeId dataNodeId = 0;
+    while (getNextNodeId(&dataNodeId, NDB_MGM_NODE_TYPE_NDB))
+    {
+      if (okToSendTo(dataNodeId, true) != 0)
+        continue;
+      /* An older data node would take the key as one of its own */
+      if (!ndbd_support_api_set_config_param(
+              getNodeInfo(dataNodeId).m_info.m_version))
+        continue;
+      SendStatus result = ss.sendSignal(dataNodeId, &ssig);
+      if (result == SEND_OK)
+        nodes.set(dataNodeId);
+      else
+        failed++;
+    }
+  }
+  if (nodes.isclear())
+  {
+    DBUG_RETURN(failed > 0 ? SEND_OR_RECEIVE_FAILED
+                           : FAILED_SET_CONFIG_PARAM_REQUEST);
+  }
+  int error_code = 0;
+  Uint32 applied = 0;
+  while (!nodes.isclear())
+  {
+    SimpleSignal *signal = ss.waitFor();
+    int gsn = signal->readSignalNumber();
+    switch (gsn) {
+    case GSN_SET_CONFIG_PARAM_REF:
+    {
+      const SetConfigParamRef* ref =
+        CAST_CONSTPTR(SetConfigParamRef, signal->getDataPtr());
+      nodes.clear(refToNode(ref->senderRef));
+      error_code = FAILED_SET_CONFIG_PARAM_REQUEST;
+      break;
+    }
+    case GSN_SET_CONFIG_PARAM_CONF:
+    {
+      const SetConfigParamConf* conf =
+        CAST_CONSTPTR(SetConfigParamConf, signal->getDataPtr());
+      nodes.clear(refToNode(conf->senderRef));
+      if (signal->getLength() >= SetConfigParamConf::ApiSignalLength)
+        applied += conf->apiNodesApplied;
+      break;
+    }
+    case GSN_NF_COMPLETEREP:
+    {
+      const NFCompleteRep * rep = CAST_CONSTPTR(NFCompleteRep,
+                                                signal->getDataPtr());
+      if (rep->failedNodeId <= nodes.max_size())
+        nodes.clear(rep->failedNodeId); // clear the failed node
+      break;
+    }
+    case GSN_NODE_FAILREP:
+    {
+      NodeBitmask mask;
+      node_failrep_get_mask(signal, mask);
+      nodes.bitANDC(mask);
+      break;
+    }
+    case GSN_API_REGCONF:
+    case GSN_TAKE_OVERTCCONF:
+    case GSN_CONNECT_REP:
+      continue;
+    default:
+      report_unknown_signal(signal);
+      DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
+    }
+  }
+  if (error_code == 0 && nodeId != 0 && applied == 0)
+  {
+    /* Not connected to any data node, or a version without online SET */
+    error_code = FAILED_SET_CONFIG_PARAM_REQUEST;
   }
   DBUG_RETURN(error_code);
 }

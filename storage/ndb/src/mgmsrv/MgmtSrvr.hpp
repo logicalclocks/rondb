@@ -252,6 +252,9 @@ class MgmtSrvr : private ConfigSubscriber, public trp_client {
    */
   int set_config_param_request(int nodeId, Uint32 configKey,
                                Uint64 configValue);
+  /* The same for a parameter of the API nodes, routed via the data nodes */
+  int set_api_config_param_request(int nodeId, Uint32 configKey,
+                                   Uint64 configValue);
 
   /**
    *   Restart a list of nodes

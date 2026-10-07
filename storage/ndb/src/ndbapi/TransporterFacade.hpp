@@ -120,6 +120,19 @@ class TransporterFacade : public TransporterCallback,
   void setSendThreadInterval(Uint32 ms);
   Uint32 getSendThreadInterval(void) const;
 
+  /**
+   * AdaptiveSendThreshold: 0 = every send goes out at once; N > 0 =
+   * adaptive send while N or more threads waited for replies within the
+   * last 10 ms (m_use_poll_waiters).  From the config at connect, and
+   * online through SET_CONFIG_PARAM_REQ (ClusterMgr).
+   */
+  void set_adaptive_send_threshold(Uint32 threshold) {
+    m_adaptive_send_threshold.store(threshold, std::memory_order_relaxed);
+  }
+  Uint32 get_adaptive_send_threshold() const {
+    return m_adaptive_send_threshold.load(std::memory_order_relaxed);
+  }
+
   Uint32 mapRefToIdx(Uint32 blockReference) const;
 
   // Only sends to nodes which are alive
@@ -740,6 +753,7 @@ private:
   /* Calculate max poll waiters */
   volatile Uint32 m_max_poll_waiters;
   Uint32 m_use_poll_waiters;
+  std::atomic<Uint32> m_adaptive_send_threshold{0};
 
   Ndb_cluster_connection_impl *m_ndb_cluster_connection;
 

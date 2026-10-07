@@ -1,0 +1,41 @@
+Configuration updated for all API nodes
+AdaptiveSendThreshold set to 16 on all API nodes
+
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 16: adaptive send]
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 16: adaptive send]
+API_NODE_ID,16
+Configuration updated for node API_NODE_ID
+AdaptiveSendThreshold set to 1 on node API_NODE_ID
+
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 1: adaptive send]
+API_NODE_ID,1
+CREATE TABLE t1 (pk INT NOT NULL PRIMARY KEY, a INT NOT NULL) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,10),(2,20),(3,30),(4,40);
+UPDATE t1 SET a = a + 1 WHERE pk > 2;
+SELECT pk, a FROM t1 ORDER BY pk;
+pk	a
+1	10
+2	20
+3	31
+4	41
+SELECT COUNT(*), SUM(a) FROM t1;
+COUNT(*)	SUM(a)
+4	102
+DROP TABLE t1;
+Node 1 found, but with wrong node type
+AdaptiveSendThreshold is an API node parameter: node 1 is not an API node
+
+AdaptiveSendThreshold must be an integer between 0 and 65535 (0 = send at once, N = adaptive send from N waiting threads)
+
+AdaptiveSendThreshold must be an integer between 0 and 65535 (0 = send at once, N = adaptive send from N waiting threads)
+
+Usage: <id> SET <parameter> <value>
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel, CompiledInterpreter, AdaptiveSendThreshold
+
+API_NODE_ID,1
+Configuration updated for all API nodes
+AdaptiveSendThreshold set to 0 on all API nodes
+
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 0: every send goes out at once]
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 0: every send goes out at once]
+API_NODE_ID,0
