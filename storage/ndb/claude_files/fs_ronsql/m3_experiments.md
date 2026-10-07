@@ -214,9 +214,8 @@ T=8; X is within about ±3 % of A or better everywhere (`fs_latest` 106
 scan that varies both ways between runs). At T=8 p99.9 agrees within
 about ±3 % across the arms and the maxima (~1–1.7 ms) are queueing, not
 the F25 quantum. Conclusion: X removes the ~1 ms events without the cost
-of B. Open: arms D / E / F on the benchmark computer (the size of the
-win where F25 is frequent, and the run-7 layout); a small T=1 cost below
-~3 % would need interleaved repeats to rule out.
+of B. F25 closed 2026-10-06 (`a22b016ab15`, PR #1133); arms D / E / F on
+the benchmark computer were dropped as not needed.
 
 ## X2. F24 — where the many-group cost is
 

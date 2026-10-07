@@ -524,7 +524,7 @@ F8 was a framework fixture issue and is already fixed.
   core_group_few on the Mac; tpch_q2 113-139 ms vs MySQL 274 ms in run 6).
   Further speed-ups are separate tasks: the per-node owner split for (a), the
   per-row group-record cache miss on the data nodes.
-- [ ] F25 (bench.md): a ~1 ms idle-wake stall on a share of requests, both engines
+- [x] F25 (bench.md): a ~1 ms idle-wake stall on a share of requests, both engines
   (sets the serving p99). Diagnose on the benchmark computer: CPU idle states,
   data-node spinning, or the NDB API receive path (`m3_experiments.md` X1).
   Code analysis 2026-10-05 (`m3_experiments.md` X1 Result): likely a send left
@@ -535,7 +535,9 @@ F8 was a framework fixture issue and is already fixed.
   `NumCPUs=4` before / after measurement of the proposed `mt.cpp` fix.
   Fix `a22b016ab15` (branch RONDB-1124-f25): on the Mac with spinning forced
   off every ~1.2 ms event at T=1 is gone and averages are unchanged (X1
-  Results). Open: arms D / E / F on the benchmark computer.
+  Results). Closed 2026-10-06 with `a22b016ab15` (PR #1133): the mechanism is
+  found and fixed and the Mac arms confirm it; arms D / E / F on the benchmark
+  computer are not needed.
 - [ ] NDB API adaptive send never defers (found 2026-10-05 while reading F25):
   `TransporterFacade::add_to_poll_queue` has `if (m_poll_waiters >
   m_max_poll_waiters) m_max_poll_waiters;` — the assignment is missing since
