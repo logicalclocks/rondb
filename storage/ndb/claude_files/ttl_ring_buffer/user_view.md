@@ -254,7 +254,11 @@ Existing plain ring tables and plain TTL tables are unaffected by the upgrade.
 - **Replication.** Purge deletes replicate as row deletes. The replica's own purger may have
   removed the row already; the applier ignores that, so both sides converge to the same rows.
   An insert that overwrites a slot is logged as a row write, not an update, so a replica
-  whose purger already removed that slot re-creates it.
+  whose purger already removed that slot re-creates it. Conflict functions (`NDB$MAX`,
+  `NDB$EPOCH2` and the others in `mysql.ndb_replication`) are not supported on ring tables:
+  CREATE TABLE fails with "Conflict functions are not supported on ring buffer tables". A
+  ring table that such a row matches later (after RENAME TABLE, TRUNCATE, ALTER or a
+  restart) is replicated without the conflict function, and mysqld logs a warning.
 - **Backup and restore.** A backup contains expired rows that have not been purged yet, as it
   does for any TTL table. After restore they are hidden and the purger removes them.
 - **Restarts.** Node and system restarts restore rows and meta rows as they were, including

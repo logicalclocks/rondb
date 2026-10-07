@@ -6579,11 +6579,9 @@ int Ndb_binlog_thread::handle_data_event(const NdbEventOperation *pOp,
           that DBACC turns into an update, so the event is an UPDATE. Log it
           as a write (after image only) even with "use update": a replica
           whose TTL purge already removed the slot must re-create the row
-          instead of dropping a missing-key update (idempotent apply). This
-          also holds for a table with a conflict function: conflict
-          detection assumes concurrent writers of one row, which the ring
-          buffer's single-writer meta protocol excludes, and the update
-          events it would need would lose the row on a purged replica.
+          instead of dropping a missing-key update (idempotent apply).
+          Conflict functions are not used on ring buffer tables
+          (setup_conflict_fn): they would apply these writes as inserts.
         */
         const bool ring_buffer_write = pOp->getTable()->isRingBuffer();
         if (table->s->primary_key != MAX_KEY &&

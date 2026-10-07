@@ -10482,6 +10482,17 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     return HA_WRONG_CREATE_OPTION;
   }
 
+  /* Ring meta updates and wraps are logged as writes onto existing rows,
+     which conflict detection treats as conflicts (see setup_conflict_fn).
+     Only a new table is refused: TRUNCATE (which has already dropped the
+     table) and the copy of an ALTER keep the table and drop the conflict
+     function in setup_conflict_fn. */
+  if (found_ring_buffer && conflict_fn != nullptr &&
+      thd_sql_command(thd) == SQLCOM_CREATE_TABLE) {
+    return create.failed_illegal_create_option(
+        "Conflict functions are not supported on ring buffer tables");
+  }
+
   // Use mysql.ndb_replication settings when creating table
   if (conflict_fn != nullptr) {
     switch (conflict_fn->type) {

@@ -302,9 +302,11 @@ No `Ring_meta` format change in v1. `reserved_2` stays free for a future max-TTL
   `ndb_log_update_as_write = 0` (or a USE_UPDATE binlog type) it would be logged as an
   update row event, and a replica whose purger already removed the slot would drop the
   missing-key update (idempotent apply) while its meta row advances. The injector logs
-  ring buffer table events as write row events regardless of that setting, also for a
-  table with a conflict function (conflict detection assumes concurrent writers of one
-  row, which the single-writer meta protocol excludes). With `ndb_log_updated_only` the
+  ring buffer table events as write row events regardless of that setting. Conflict
+  functions are rejected at CREATE of a ring buffer table, and setup_conflict_fn drops
+  them for a ring table that a mysql.ndb_replication row matches later: conflict
+  detection applies write row events as inserts, so every meta update and every wrap
+  would be treated as a conflict and the replica ring would stop advancing. With `ndb_log_updated_only` the
   after image carries the written columns only; the every-column rule (W3, 5.4) makes
   that the whole row.
 - The pre-existing "ZINSERT_TTL not REDO-safe" hazard is not reachable from ring writers
