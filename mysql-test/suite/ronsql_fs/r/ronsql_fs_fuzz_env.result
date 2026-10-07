@@ -6,6 +6,6 @@ call mtr.add_suppression("Participant timeout");
 SUMMARY fuzz-envelope seed=1 cases=200 clean-reject=14 pass=186
 
 === Envelope-level fuzz: seed 2, 120 cases of real-join and former-hazard ===
-SUMMARY fuzz-envelope seed=2 cases=120 clean-reject=20 pass=100
+SUMMARY fuzz-envelope seed=2 cases=120 clean-reject=16 pass=104
 
 === Cleanup ===

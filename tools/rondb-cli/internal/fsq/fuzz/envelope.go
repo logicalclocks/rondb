@@ -98,7 +98,7 @@ var Expectations = []Expectation{
 	{Construct: "cross-table-where", Reject: true, Pattern: "Cross-table WHERE", Note: "a WHERE atom comparing columns of two tables outside the supported forms"},
 	{Construct: "syntax", Reject: true, Pattern: "Syntax error", Note: "implicit alias, DISTINCT, BETWEEN, OFFSET, UNION, RIGHT JOIN: outside the grammar"},
 	{Construct: "having", Reject: true, Pattern: "HAVING can only reference aggregate functions", TaggedOnly: true, Note: "HAVING on the alias of an aggregate output: HAVING supports aggregate functions (and SELECT-list subquery aliases) only, and rejects any other identifier before column resolution, whatever ORDER BY / LIMIT accompanies it (was 'Could not find column', or the F17 internal error with ORDER BY on the alias + LIMIT)"},
-	{Construct: "left-join-where-null", Reject: true, Pattern: "WHERE on a LEFT JOIN's right side that holds for NULL is not", Finding: "F32", Note: "a WHERE condition on the right side of a LEFT JOIN of real tables that RonSQL cannot prove NULL-rejecting (IS NULL, an OR with IS NULL, XOR): the table's operation could only apply it as part of the join condition"},
+	{Construct: "left-join-where-null", Reject: true, Pattern: "WHERE on a LEFT JOIN's right side that holds for NULL is not", Finding: "F32", Note: "a WHERE condition on the right side of a LEFT JOIN of real tables that RonSQL cannot prove NULL-rejecting (IS NULL, an OR with IS NULL): the table's operation could only apply it as part of the join condition"},
 	{Construct: "subquery-joined", Reject: true, Pattern: "A WHERE condition with a subquery", Finding: "F32b", Note: "IN (subquery) / EXISTS / a correlated subquery on a joined table's column: its result replaces the node only at execution time and is known to reach the root table's filter only"},
 	{Construct: "fanout-sibling", Reject: true, Pattern: "Aggregation references a column from a join branch that is not an", Finding: "D5", Note: "an aggregation over a CTE_LOOKUP child grouped by a real-table sibling under the same parent (fan-out across a non-ancestor sibling; it crashed RDRS before the guard)"},
 	{Construct: "colcol-mixed-type", Reject: true, Pattern: "requires columns of identical type, precision, length, scale", Finding: "D4", Note: "column-vs-column comparison in a CTE-body WHERE between columns of different types (INT vs BIGINT): supported only for identical types since RONDB-1107"},
@@ -613,10 +613,9 @@ func (es *envSampler) probe() {
 // customers with no region (c mod 13 = 0) or a dangling one (c mod 29 =
 // 0), regions with no country (r mod 17 = 0).  On a LEFT JOIN a
 // condition RonSQL proves NULL-rejecting (comparison, LIKE, GREATEST /
-// LEAST compared with a constant, NOT over a comparison or IS NULL)
-// promotes the join to INNER and must match MySQL; IS NULL, an OR with
-// IS NULL and XOR are rejected (XOR is NULL-rejecting in MySQL; RonSQL
-// does not prove it).
+// LEAST compared with a constant, NOT over a comparison or IS NULL, XOR
+// with a comparison operand) promotes the join to INNER and must match
+// MySQL; IS NULL and an OR with IS NULL are rejected.
 func (es *envSampler) realJoin() {
 	es.tag("real-join")
 	left := es.pct(50)
@@ -652,7 +651,6 @@ func (es *envSampler) realJoin() {
 		// Parenthesized as a whole: XOR binds looser than AND (MySQL and
 		// RonSQL alike), so a bare atom would XOR the whole preceding WHERE.
 		atom = "((" + r("population") + " > " + popK + ") XOR (" + r("country_id") + " > " + strconv.Itoa(1+es.rng.IntN(40)) + "))"
-		leftRejects = true
 	case 5:
 		es.tag("joined-not-isnull")
 		atom = "NOT (" + r("country_id") + " IS NULL)"
