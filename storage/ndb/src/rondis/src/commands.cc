@@ -1933,8 +1933,11 @@ static int send_next_write_batch(std::string *response,
   }
   for (Uint32 i = 0; i < loop_count; i++) {
     Uint32 inx = current_index + i;
-    if (get_ctrl->m_num_bytes_outstanding > MAX_OUTSTANDING_BYTES) {
-      assert(get_ctrl->m_num_keys_outstanding > 0);
+    // Throttle only while something is outstanding: Phase D of set_rows
+    // stops waiting once nothing is in flight, so a sweep that queued
+    // nothing would leave the remaining keys uncommitted.
+    if (get_ctrl->m_num_bytes_outstanding > MAX_OUTSTANDING_BYTES &&
+        get_ctrl->m_num_keys_outstanding > 0) {
       return 0;
     }
     if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
@@ -2401,9 +2404,13 @@ static int set_rows(Ndb *ndb,
   if (num_dispatch == 0) {
     return 0;
   }
-  get_ctrl->m_num_keys_outstanding = num_dispatch;
-  get_ctrl->m_num_bytes_outstanding =
-    num_dispatch * (sizeof(struct key_table) - MAX_KEY_VALUE_LEN);
+  // Phase B has drained every round trip, so nothing is outstanding;
+  // send_next_write_batch counts each round trip it queues. Starting
+  // the byte count at a per-key estimate instead put a batch of 127
+  // keys or more over MAX_OUTSTANDING_BYTES before anything was sent,
+  // and nothing was ever committed.
+  get_ctrl->m_num_keys_outstanding = 0;
+  get_ctrl->m_num_bytes_outstanding = 0;
   // Credit the NoCommit callbacks that already fired in Phase B
   // (send_next_write_batch decrements this counter for each key it
   // dispatches). Without the credit the dispatch-consumes-credit
