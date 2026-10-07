@@ -748,6 +748,59 @@ WHERE cust_orders.order_cnt IS NULL AND c.c_acctbal > 0.00
 GROUP BY c.c_nationkey
 ORDER BY c.c_nationkey;`,
 	},
+	// Filter-first variants (m3_run6_plan.md C7). The rewrites above
+	// aggregate a whole table into the CTE (all of partsupp, all of
+	// orders); MySQL's official Q2 / Q22 filter first and probe. These
+	// restrict the CTE body by the outer filter with a join rooted at the
+	// filtered table, reaching the aggregated table through a key prefix
+	// (partsupp's primary key, idx_orders_custkey). RonSQL cannot write
+	// it as IN (SELECT ...) in the body: subqueries are not supported in
+	// CTE bodies, and an IN-subquery result is capped at 1000 values.
+	{
+		Name:        "tpch_q2_ff",
+		SQLName:     "cte_tpch_q2_ff",
+		Category:    benchCatTPCHCte,
+		Description: "Q2 filter-first: tpch_q2 with the CTE body restricted to the size-15 parts (part JOIN partsupp), same result",
+		Database:    "tpch",
+		SQL: `WITH min_cost AS (
+  SELECT pt.p_partkey AS pk, MIN(ps.ps_supplycost) AS mc, COUNT(*) AS supplier_cnt
+  FROM part AS pt JOIN partsupp AS ps ON ps.ps_partkey = pt.p_partkey
+  WHERE pt.p_size = 15
+  GROUP BY pt.p_partkey)
+SELECT p.p_mfgr, COUNT(*), MIN(min_cost.mc), MAX(min_cost.mc), SUM(min_cost.supplier_cnt)
+FROM part AS p JOIN min_cost ON min_cost.pk = p.p_partkey
+WHERE p.p_size = 15
+GROUP BY p.p_mfgr
+ORDER BY p.p_mfgr
+LIMIT 100;`,
+	},
+	{
+		Name:        "tpch_q22_ff",
+		SQLName:     "cte_tpch_q22_ff",
+		Category:    benchCatTPCHCte,
+		Description: "Q22 filter-first: official Q22's customer filter (7 phone country codes, balance above ~the average) in the outer query and the CTE body (customer JOIN orders), anti-join",
+		Database:    "tpch",
+		// 5000.00 stands for official Q22's AVG(c_acctbal) over the positive
+		// balances of those countries: the CLI generator draws c_acctbal
+		// uniformly from -999.99 to 9999.00, whose positive part averages
+		// ~5000 (subqueries do not run in a CTE body).
+		SQL: `WITH cust_orders AS (
+  SELECT cu.c_custkey AS k, COUNT(*) AS order_cnt
+  FROM customer AS cu JOIN orders AS o ON o.o_custkey = cu.c_custkey
+  WHERE cu.c_acctbal > 5000.00
+    AND (cu.c_phone LIKE '13-%' OR cu.c_phone LIKE '31-%' OR cu.c_phone LIKE '23-%'
+         OR cu.c_phone LIKE '29-%' OR cu.c_phone LIKE '30-%' OR cu.c_phone LIKE '18-%'
+         OR cu.c_phone LIKE '17-%')
+  GROUP BY cu.c_custkey)
+SELECT c.c_nationkey, COUNT(*), SUM(c.c_acctbal), MAX(c.c_acctbal)
+FROM customer AS c LEFT JOIN cust_orders ON cust_orders.k = c.c_custkey
+WHERE cust_orders.order_cnt IS NULL AND c.c_acctbal > 5000.00
+  AND (c.c_phone LIKE '13-%' OR c.c_phone LIKE '31-%' OR c.c_phone LIKE '23-%'
+       OR c.c_phone LIKE '29-%' OR c.c_phone LIKE '30-%' OR c.c_phone LIKE '18-%'
+       OR c.c_phone LIKE '17-%')
+GROUP BY c.c_nationkey
+ORDER BY c.c_nationkey;`,
+	},
 
 	// ---------------------------------------------------------------
 	// Official TPC-H formulations (MySQL only). Structure is faithful

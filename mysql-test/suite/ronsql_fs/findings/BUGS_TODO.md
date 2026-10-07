@@ -583,7 +583,10 @@ F8 was a framework fixture issue and is already fixed.
   offline_fs_batch completes at T=8 (run 4 lost its data nodes, run 5 failed with
   1869). Open: (c) the query-memory budget of many-group CTE queries (tpch_q2
   ~110 MB per query; `m3_run6_plan.md` C5); confirm (a) / (b) closed and update
-  `bench.md`.
+  `bench.md`. 2026-10-07 Mac (`~/c7_mac`): (c) reproduced: tpch_q2 at T=8
+  got NDB error 1870 on 25 of 439 requests after 10 retries, query memory
+  peaking at 414 MB over both nodes; the filter-first tpch_q2_ff (C7) peaks at
+  30 MB and does not fail.
 - [x] F32 (2026-09-30, review): a WHERE condition on the right side of a LEFT
   JOIN of real tables was pushed into that table's operation as its filter, i.e.
   applied as part of the join condition; `b.col IS NULL` kept rows WHERE removes.
@@ -605,6 +608,23 @@ F8 was a framework fixture issue and is already fixed.
   `ronsql.ronsql_join_where_classify` (tables laid out so the old behaviour
   filters different rows; jw-5 is the first IN (subquery) on a join's root in
   the suite).
+- [ ] F33 (2026-10-07, code reading while preparing C7; not run): a subquery in a
+  CTE body's WHERE (`IN (SELECT ...)`, a scalar subquery, EXISTS) parses but is
+  not supported, and is not rejected either. The parser's `Context` keeps one
+  `m_inner_agg` pointer, not a stack: the body's SELECT list registers its
+  aggregator before its WHERE is parsed, and the nested `subquery` rule's
+  `enter_subquery()` resets the pointer, so the CTE gets `stmt->agg = NULL`
+  (RonSQLParser.y cte_def / subquery, RonSQLPreparer.cpp
+  `Context::enter_subquery`). Execution then reaches `assert(scope.agg !=
+  NULL)` in `programAggregator_join` (abort in debug, NULL dereference in
+  release). Even with the pointer kept, `analyze_subqueries` /
+  `execute_subqueries` / `substitute_subquery_results` handle only the main
+  WHERE / HAVING, and `apply_filter` has no subquery case ("Non-boolean term in
+  WHERE condition"). Fix: reject a subquery in a CTE body cleanly at prepare
+  time (and make `m_inner_agg` a stack), or implement body subqueries. Also
+  note IN-subquery results are capped at 1000 values and run as an OR-chain scan
+  filter, never as index ranges. `ronsql_cte_subquery.test` NEXT-PHASE notes
+  the body case as unproven.
 - [ ] Follow-ups to clean rejections (features, not bugs):
   - Real-table anti-join: `LEFT JOIN b ... WHERE b.col IS NULL` with `b.col NOT
     NULL` is now rejected (F32); it could run as `ANTI_JOIN` (MatchNullOnly) as
