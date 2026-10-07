@@ -234,7 +234,7 @@ W3. (Review fix, 2026-09-22.) A slot write is a `writeTuple`, which DBACC turns 
     handler writes every stored column of a ring data row (5.4), so it never has the
     problem. The writer's column counts now follow the columns present in the NdbRecord
     (a record lacking a NOT NULL column no longer reads uninitialised metadata) and a
-    record missing a primary key column is rejected (4000).
+    record missing a primary key column is rejected (4118).
 
 No `Ring_meta` format change in v1. `reserved_2` stays free for a future max-TTL field.
 

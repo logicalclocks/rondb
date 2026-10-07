@@ -131,12 +131,12 @@ NdbRingBufferWriter::NdbRingBufferWriter(const NdbDictionary::Table *table,
   m_error_message[0] = '\0';
 
   if (!table || !ndbRecord || !trans) {
-    setError(4000, "NdbRingBufferWriter: null argument");
+    setError(4118, "NdbRingBufferWriter: null argument");
     return;
   }
 
   if (!table->isRingBuffer()) {
-    setError(4000, "NdbRingBufferWriter: table is not a ring buffer table");
+    setError(4118, "NdbRingBufferWriter: table is not a ring buffer table");
     return;
   }
 
@@ -187,7 +187,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
       m_table->getColumn(m_ring_meta_col_no);
 
   if (!ring_idx_col || !ring_meta_col) {
-    setError(4000, "NdbRingBufferWriter: ring columns not found in table");
+    setError(4118, "NdbRingBufferWriter: ring columns not found in table");
     return -1;
   }
 
@@ -198,7 +198,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
   const NdbRecord::Attr *idx_attr =
       findAttrByAttrId(m_ndb_record, ring_idx_attr_id);
   if (!idx_attr) {
-    setError(4000,
+    setError(4118,
              "NdbRingBufferWriter: ring_idx column not found in NdbRecord");
     return -1;
   }
@@ -213,7 +213,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
   const NdbRecord::Attr *meta_attr =
       findAttrByAttrId(m_ndb_record, ring_meta_attr_id);
   if (!meta_attr) {
-    setError(4000,
+    setError(4118,
              "NdbRingBufferWriter: ring_meta column not found in NdbRecord");
     return -1;
   }
@@ -300,7 +300,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
   if (pk_idx != pk_prefix_count) {
     m_num_pk_prefix_cols = pk_idx;
     m_num_notnull_cols = nn_idx;
-    setError(4000,
+    setError(4118,
              "NdbRingBufferWriter: a primary key column is missing from the "
              "NdbRecord");
     return -1;
@@ -786,7 +786,7 @@ const NdbOperation *NdbRingBufferWriter::addRow(
   }
 
   if (!rowBuffer || !userMask) {
-    setError(4000, "NdbRingBufferWriter::addRow: null argument");
+    setError(4118, "NdbRingBufferWriter::addRow: null argument");
     return nullptr;
   }
 
@@ -906,7 +906,7 @@ int NdbRingBufferWriter::deleteOldest(const char *pkPrefixRow,
   }
 
   if (!pkPrefixRow || !outActual) {
-    setError(4000, "NdbRingBufferWriter::deleteOldest: null argument");
+    setError(4118, "NdbRingBufferWriter::deleteOldest: null argument");
     return -1;
   }
 

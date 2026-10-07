@@ -99,7 +99,9 @@ class NdbRingBufferWriter {
    * @param trans     Active NdbTransaction (must already be started)
    *
    * Check getErrorCode() after construction - non-zero means the table
-   * is not a ring buffer table or metadata could not be cached.
+   * is not a ring buffer table or metadata could not be cached. Misuse
+   * (a null argument, a non-ring table, an NdbRecord missing a primary
+   * key or ring column) is reported as 4118 "Parameter error in API call".
    */
   NdbRingBufferWriter(const NdbDictionary::Table *table,
                       const NdbRecord *ndbRecord, NdbTransaction *trans);

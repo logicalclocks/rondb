@@ -194,7 +194,7 @@ worse by TTL), one a documented bypass now closed, one a release decision:
   `ttl_ring_buffer_dml` Case 10, NDB API Test 36 (b)(c), ClusterJ testTtlRing.
 - NdbRingBufferWriter column counts (High): counts from the table, arrays filled from the
   record -> uninitialised entries with a partial record. Fix: counts follow the record, a
-  missing PK column is rejected (4000).
+  missing PK column is rejected (4118).
 - Replication with ndb_log_update_as_write = 0 (High): a wrap is an UPDATE event; a
   replica that purged the slot would drop it. Fix: ring tables are logged as write row
   events. Test: `ndb_rpl_ring_buffer` Case 17 (replica-side purge simulated with an

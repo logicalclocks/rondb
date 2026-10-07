@@ -740,8 +740,8 @@ static bool test_error_non_ring_table(Ndb *ndb, MYSQL *mysql) {
 
   {
     NdbRingBufferWriter writer(table, record, trans);
-    TEST_ASSERT(writer.getErrorCode() != 0,
-                "should fail for non-ring table");
+    TEST_ASSERT(writer.getErrorCode() == 4118,
+                "non-ring table: parameter error 4118");
   }
 
   ndb->closeTransaction(trans);
