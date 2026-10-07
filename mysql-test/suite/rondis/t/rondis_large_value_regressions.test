@@ -1,0 +1,78 @@
+--source include/have_ndb.inc
+--source suite/rondis/include/rondis_setup.inc
+
+#
+# Regression tests for writes of values larger than INLINE_VALUE_LEN
+# (4096 bytes), which Rondis stores in extension rows of 29500 bytes.
+#
+# - SET ... GET over an old value with extension rows. The GET phase
+#   left the old value's row counts in place for the write, so a new
+#   inline value was stored with the old row count (a debug build
+#   asserted in send_delete_write), and a new large value had its
+#   extension rows skipped or misplaced.
+# - MSET of 127 or more keys that each replace a hash. The byte
+#   throttle in set_rows Phase C stopped the batch before any key was
+#   committed, while MSET still answered OK.
+#
+# Large values are generated with perl and fed to redis-cli on stdin.
+# Values are compared by length (wc -c counts redis-cli's newline too)
+# and by the number of bytes other than the expected character.
+# mysqltest expands $ in --exec, so the commands avoid it.
+#
+
+--let $old_value_file = $MYSQLTEST_VARDIR/tmp/rondis_large_value_old.txt
+
+--echo #
+--echo # SET ... GET: old value with one extension row, new value
+--echo # inline.
+--echo #
+--exec perl -e 'print "SET big1 ", "a" x 10000, "\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET big1 small GET > $old_value_file
+--exec wc -c < $old_value_file | tr -d ' '
+--exec tr -d 'a\n' < $old_value_file | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big1
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big1
+
+--echo #
+--echo # SET ... GET: old value with one extension row, new value with
+--echo # three.
+--echo #
+--exec perl -e 'print "SET big2 ", "a" x 10000, "\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec perl -e 'print "SET big2 ", "b" x 70000, " GET\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT > $old_value_file
+--exec wc -c < $old_value_file | tr -d ' '
+--exec tr -d 'a\n' < $old_value_file | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big2 | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big2 | tr -d 'b\n' | wc -c | tr -d ' '
+
+--echo #
+--echo # SET ... GET: old value with three extension rows, new value
+--echo # with one.
+--echo #
+--exec perl -e 'print "SET big3 ", "c" x 70000, "\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec perl -e 'print "SET big3 ", "d" x 10000, " GET\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT > $old_value_file
+--exec wc -c < $old_value_file | tr -d ' '
+--exec tr -d 'c\n' < $old_value_file | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big3
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big3 | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big3 | tr -d 'd\n' | wc -c | tr -d ' '
+
+--echo #
+--echo # MSET of 200 keys that each replace a hash: all 200 must be
+--echo # strings afterwards.
+--echo #
+--exec seq 1 200 | sed 's/.*/HSET hk:& f v/' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT > /dev/null
+--exec seq 1 200 | sed 's/.*/TYPE hk:&/' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT | grep -c -x hash
+--exec seq 1 200 | sed 's/.*/hk:& s&/' | paste -s -d ' ' - | sed 's/^/MSET /' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec seq 1 200 | sed 's/.*/TYPE hk:&/' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT | grep -c -x string
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET hk:150
+
+--echo #
+--echo # Cleanup.
+--echo #
+--remove_file $old_value_file
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL big1 big2 big3
+
+--disable_query_log
+DROP DATABASE IF EXISTS redis_0;
+--enable_query_log
