@@ -47,6 +47,7 @@ Usage (from the repo root):
       [--queries all|fs|offline_fs|tpch_cte|tpch_official|name,name,...]
       [--engines ronsql,mysqld,mysqld_nopush] [--compiler off,on]
       [--cpubind FILE] [--client-cpus 16-19] [--expect-ldm N] [--rondis] [--rdrs-threads 64]
+      [--num-cpus N] [--partitions-per-node N]
       [--toggle auto|set|restart] [--no-load] [--keep-cluster]
       [--no-start --mysql-port P --mysql-sock S --rdrs-port P --connectstring C]
       [--no-mem-probe | --mem-sample 1.0 --mem-settle 1.0]
@@ -56,12 +57,13 @@ Usage (from the repo root):
   --stop      = only stop a cluster left running by --keep-cluster
 
 Before the first case the driver reads what the cluster is (ndbinfo
-thread counts and NumCPUs per data node, the CPU set of every server
-process on Linux, the loaded row counts) into results.json meta.cluster
-and the report header, warns about a NumCPUs that does not match the
-data-node CPU sets and about CPU sets shared between data nodes, servers
-and the client, and with --expect-ldm N stops when a data node does not
-run N LDM threads.  Every case records the statement it ran; the report
+thread counts, NumCPUs and PartitionsPerNode per data node, the CPU set
+of every server process on Linux, the loaded row counts, the fragment
+counts of the scanned tables, the API nodes' AdaptiveSendThreshold) into
+results.json meta.cluster and the report header, warns about a NumCPUs
+that does not match the data-node CPU sets and about CPU sets shared
+between data nodes, servers and the client, and with --expect-ldm N stops
+when a data node does not run N LDM threads.  Every case records the statement it ran; the report
 marks a MySQL case whose statement differs from its RonSQL pair's.
 
 Outputs: <out>/results.json (every case, all parsed numbers),
@@ -376,9 +378,10 @@ def cluster_summary(facts):
     parts = []
     for node, n in sorted((facts.get('nodes') or {}).items(), key=lambda kv: int(kv[0])):
         thr = n.get('threads') or {}
-        parts.append('node %s: %s; NumCPUs %s' % (
+        parts.append('node %s: %s; NumCPUs %s%s' % (
             node, ', '.join('%s %d' % (k, thr[k]) for k in sorted(thr)) or 'no threads',
-            n.get('NumCPUs', '?')))
+            n.get('NumCPUs', '?'),
+            ', PartitionsPerNode %s' % n['PartitionsPerNode'] if 'PartitionsPerNode' in n else ''))
     procs = facts.get('procs')
     if procs is None:
         parts.append('process CPU sets unknown (%s)' % (facts.get('procs_note') or 'not Linux'))
@@ -388,6 +391,13 @@ def cluster_summary(facts):
     data = facts.get('data') or {}
     if data:
         parts.append('data: ' + ', '.join('%s %d rows' % (k, v) for k, v in sorted(data.items())))
+    frags = facts.get('fragments') or {}
+    if frags:
+        parts.append('fragments: ' + ', '.join('%s %d' % (k, v) for k, v in sorted(frags.items())))
+    for param, vals in sorted((facts.get('api') or {}).items()):
+        distinct = sorted(set(vals.values()))
+        parts.append('%s %s' % (param, distinct[0] if len(distinct) == 1 else
+                                ', '.join('node %s %s' % (k, vals[k]) for k in sorted(vals, key=int))))
     return '; '.join(parts)
 
 
@@ -428,6 +438,8 @@ class Cluster:
         parts.append('[cluster_config.1]\nCompiledInterpreter=%s\n' % mode)
         if self.a.num_cpus:
             parts.append('[cluster_config.1]\nNumCPUs=%d\n' % self.a.num_cpus)
+        if self.a.partitions_per_node:
+            parts.append('[cluster_config.1]\nPartitionsPerNode=%d\n' % self.a.partitions_per_node)
         path = os.path.join(self.a.out, 'cluster', 'extra_%s.cnf' % mode.lower())
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, 'w') as f:
@@ -599,7 +611,7 @@ class Cluster:
             for node, pname, val in self.sql(
                     "SELECT v.node_id, p.param_name, v.config_value FROM ndbinfo.config_values AS v "
                     "JOIN ndbinfo.config_params AS p ON p.param_number = v.config_param "
-                    "WHERE p.param_name IN ('NumCPUs', 'AutomaticThreadConfig')"):
+                    "WHERE p.param_name IN ('NumCPUs', 'AutomaticThreadConfig', 'PartitionsPerNode')"):
                 f['nodes'].setdefault(str(int(node)), {'threads': {}})[pname] = val
         except RuntimeError:
             pass
@@ -611,9 +623,50 @@ class Cluster:
         rule = self.tpch_custkey_rule_orders()
         if rule is not None:
             f['data']['tpch.orders of customers 3,6,9'] = rule
+        f['fragments'] = self.fragment_counts()
+        f['api'] = self.api_params()
         f['procs'], f['procs_note'] = self.proc_cpus()
         f['cpus'] = cpu_topology()
         return f
+
+    FRAGMENT_TABLES = ('tpch/def/orders', 'tpch/def/partsupp', 'fs_bench/def/transactions_1')
+
+    def fragment_counts(self):
+        """{table: fragments} of the tables the scan-heavy cases read
+        (ndbinfo.memory_per_fragment; PartitionsPerNode x data nodes for
+        tables created without PARTITION BY): a single scan uses one
+        thread per fragment, so this bounds a query's scan parallelism."""
+        out = {}
+        try:
+            for name, cnt in self.sql(
+                    "SELECT fq_name, COUNT(DISTINCT fragment_num) FROM ndbinfo.memory_per_fragment "
+                    "WHERE fq_name IN (%s) GROUP BY fq_name"
+                    % ', '.join("'%s'" % t for t in self.FRAGMENT_TABLES)):
+                out[name.replace('/def/', '.')] = int(cnt)
+        except (RuntimeError, ValueError):
+            pass
+        return out
+
+    def api_params(self):
+        """{param: {api node id: value}} of the API-node parameters that
+        change NDB API behaviour (AdaptiveSendThreshold, settable online
+        with ndb_mgm SET), read from the management server's current
+        configuration with ndb_config; {} when it cannot be read."""
+        try:
+            ndb_config = which_bin(self.build, 'ndb_config')
+        except RuntimeError:
+            return {}
+        rc, out = run([ndb_config, '-c', self.connectstring, '--type=api',
+                       '--query=nodeid,AdaptiveSendThreshold', '--fields=:', '--rows=,'],
+                      check=False, quiet=True)
+        if rc != 0:
+            return {}
+        vals = {}
+        for row in out.strip().split(','):
+            node, _, val = row.strip().partition(':')
+            if node.isdigit() and val.strip().isdigit():
+                vals[node] = int(val)
+        return {'AdaptiveSendThreshold': vals} if vals else {}
 
     def proc_cpus(self):
         """({label: Cpus_allowed_list}, None) for the ndbmtd / mysqld / rdrs2
@@ -1658,6 +1711,9 @@ def parse_args():
     ap.add_argument('--cpubind', help='cpubind.cnf (mtr --defaults-extra-file; see suite/ronsqlcrunch/cpubind.cnf)')
     ap.add_argument('--client-cpus', help='taskset CPU list for the rondb-cli benchmark client (Linux)')
     ap.add_argument('--num-cpus', type=int, help='override NumCPUs for the data nodes')
+    ap.add_argument('--partitions-per-node', type=int,
+                    help='PartitionsPerNode for the data nodes (default: RonDB\'s 2, i.e. 4 fragments per table '
+                         'on 2 data nodes); takes effect for tables created after the start, so load the data')
     ap.add_argument('--expect-ldm', type=int,
                     help='LDM threads every data node must run (ndbinfo.threads); a mismatch stops the matrix '
                          'before the first case (the census passes 4 with census_benchbox.cnf)')

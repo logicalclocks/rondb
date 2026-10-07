@@ -1,4 +1,4 @@
-# M3 after census run 6 — work plan
+# M3 after census runs 6 and 7 — work plan
 
 Census run 6 (2026-09-24, benchmark computer, artifacts in
 `/Users/mikael/census_run6/`: `census_run6_{core,fs,fs_hw,tpch_cte}` on one
@@ -573,6 +573,10 @@ taskset -c 24-31 python3 storage/ndb/claude_files/compiled_interpreter/ronsql_be
     --client-cpus 24-31 --expect-ldm 4 --keep-cluster --out ~/census_run7
 ```
 
+*Done 2026-10-07* (`/Users/mikael/census_run7`, by category on one kept
+cluster, plus data-node profiles and an adaptive-send arm): results and
+follow-ups in section D.
+
 ## C. Specific queries (third)
 
 **C1. core_group_many / core_group_2k — F24 (b).**  1.03 s single request
@@ -691,7 +695,8 @@ unknown: park / identity pools?).
 876 MB of query memory at 8 threads (~110 MB per query, ~550 B per group
 for a 5-row result).  Reduce the per-group footprint or budget admission;
 confirm offline_fs_wide now fails with 20008 / 1870 (temporary, 503)
-instead of 1869.
+instead of 1869.  *Run 7: continued as D2; offline_fs_wide no longer
+runs out of query memory on census_benchbox.cnf (see D).*
 
 **C6. core_in_pk100** per-read aggregation cost (ndbprep 59 vs 15 µs,
 firstbatch 296 vs 181 µs against the pass-through twin) — low priority.
@@ -757,3 +762,360 @@ row counts): tpch_q2 and tpch_q2_ff return identical rows, and RonSQL and
 MySQL agree on tpch_q2_ff and tpch_q22_ff.  EXPLAIN shows the Q2 body
 rooted at part (TABLE_SCAN, "with joins") but does not list a CTE body's
 child operations.
+
+## D. After census run 7 (fourth)
+
+Census run 7 (2026-10-07, benchmark computer, 26.10-main at 84cd872e889,
+census_benchbox.cnf: 4 LDM threads per node on the intended CPU sets,
+TPC-H data with the corrected order rule; artifacts in
+`/Users/mikael/census_run7/`: `core`, `fs`, `fs_hw`, `tpch_cte`,
+`tpch_official`, `core_repeat`, `offline_fs` on one kept cluster, then
+`prof/`, `asend_0` / `asend_16`, `triage.md`, `idle_after_30s.txt`) is the
+baseline for what follows: the first full census whose configuration is
+recorded.
+
+### What run 7 established
+
+- **Clean run.**  Every case ran without errors or retries, both data
+  nodes stayed up, every case returned query memory to its starting
+  level; idle QUERY_MEMORY 30 s after the last case: 35 pages (~1.1 MB)
+  per node.
+- **RonSQL vs MySQL (no pushdown), 63 queries.**  RonSQL is faster at T=1
+  on 54 (median latency ratio 0.40) and has more q/s at T=8 on 58 (median
+  MySQL/RonSQL 0.52).  Behind: the snowflake points 1.18–1.35× at T=1
+  (C4); fs_floor / fs_hw_floor 1.2× at T=1 and 1.15× at T=8 (the ~60 µs
+  REST path); fs_point_cte 1.21× (the CTE-path twin, kept on purpose);
+  core_in_pk100 1.05× (C6); fs_history 1.28× in q/s at T=8 (2000 rows
+  per request, probably RDRS output work on its 4 E-cores; not verified).
+  fs_hw_hash_point takes ~100 ms on both engines: its table has a HASH
+  primary key, which cannot serve the customer_id prefix.
+- **Against run 6c (same configuration and data).**  RonSQL TPC-H at T=1
+  −8..−18 % (q2 139 → 116 ms, q13 181 → 152, q22 188 → 155), at T=8
+  +5..+27 % q/s; MySQL −2..−7 % at T=1 (the slowdown-bitmask fix
+  9640795ba3c helps both engines).
+- **Confirmed on the box.**  F25: core_pk_lookup p99 141 µs, p99.9 338 µs
+  (run 4: p95 1.08 ms).  C3: fs_latest fetches 400 rows, firstbatch 78 µs,
+  217 µs against MySQL's 672.  C2: fs_point 130 µs, 37.6k vs 18.7k q/s at
+  T=8.  B2 / B4: RonSQL point shapes reach ~7.5 of 8 effective clients
+  (run 6: 6.1–7.1).  F24: core_group_many is 202 ms in the data nodes plus
+  71 ms of RDRS printing 100k rows on E-cores, 1.72× core_group_few
+  without the print.
+- **Noise.**  Three repeats of core_scan_agg / core_scan_filter spread
+  ±5 % at T=1 and ±10 % at T=8; run 6's +18–20 % is the configuration
+  change plus noise.
+- **F27.**  offline_fs_wide completes at T=8 with 1.0 GB of query memory
+  per node (61 % of global memory): census_benchbox.cnf's
+  TotalMemoryConfig=12G leaves room, so the census no longer exercises the
+  out-of-memory path.  (a) / (b) rest on their MTR tests (error insert
+  17534); (c) continues as D2.
+- **Adaptive send** (`asend_0` vs `asend_16`, one run each, run 7 point
+  set).  mysqld at T=64: fs_floor / fs_hw_floor +10 % q/s with p99 −24 /
+  −26 %, core_pk_lookup +4 % (p99 −4 %), fs_hw_agg_point +2 % (p99 −4 %),
+  fs_latest −2 % (noise level); T=8 unchanged; RonSQL unchanged everywhere.
+  The Mac had shown p99 +3–5 %.  D4 chooses the default.
+
+### Data-node profiles (`prof/`)
+
+perf with LBR call stacks (`cpu_core/cycles`, 199 Hz, 12 s inside a 25 s
+case) on both ndbmtd processes, with ndbinfo.threadstat (per-thread CPU
+time and OS thread id) before and after: tpch_q2, q11 and q13 at T=1 and
+tpch_q2 at T=8.  `ronsql_perf_categories.py` (next to the matrix driver)
+splits a self-time report by each sample's call chain into scan, scan
+aggregation, owner merge, redistribution send / apply, CTE lookup, spin
+and other, per thread.
+
+1. **The owner phase (merge + redistribution) is smaller than
+   estimated.**  q2 at T=1: 8.4 % of data-node cycles, ~39 ms CPU per
+   query, ~19 ms per node, in a run that perf slowed from 116 to 129 ms
+   (the estimate from the T=1 / T=8 throughput ratios was ~35 ms).  q13
+   and q11: ~1 %.  An ideal 4-way split of the owner role would save
+   ~13 ms on q2 (−11 %) and nothing at T=8, where it moves work rather
+   than removing it.  **Skipped** (decision 2026-10-07).
+2. **A single query uses half the LDM threads.**  q2 at T=1 keeps ~3.6
+   of the 14 measured threads busy, 23 % of it spinning; on each node two
+   LDM threads run at 42–48 % and the other two at ~20 %.  The census
+   configuration sets no PartitionsPerNode, so RonDB's default of 2 gives
+   every table 4 fragments and each node scans 2 at a time.  At T=8 the
+   work spreads to the other LDM, TC and receive threads (query threads),
+   but one query never has more than 4 scanning threads.  D3.
+3. **At T=8 a q2 query costs ~70 % more CPU than at T=1, mostly in the
+   group hash table.**  Per query, both nodes: total 461 → 700 ms
+   (spinning included), `GBHashTable::findInBucket` 31 → 103 ms,
+   `GBHashTable::splitOne` 14 → 53 ms, owner phase 39 → 94 ms, and ~25 ms
+   more fragment-mutex locking in `Dbtup::scanNext` (query-thread scans).
+   The operations are the same and each costs ~3× more: eight concurrent
+   q2 queries hold ~920 MB of query memory per node (84 MB for one) and
+   hyperthread siblings share every core.  Throughput is bound by the
+   group table's memory traffic: D1 and D2.
+
+### D1. Group-table growth (item 1)
+
+`GBHashTable` (`dbtup/AggHashTable.hpp`) starts with 1024 inline buckets
+(256 on the drained single-table path) and, past load factor one, splits
+one bucket per insert (linear hashing).  Every per-thread table of a
+many-group query is built from empty: a q2 scan table of ~137k groups does
+~136k splits, and a split walks one chain and recomputes `hashKeyFull`
+for every entry in it (entries do not store their hash), about two extra
+entry visits per group over the table's life.  At T=8 `splitOne` is 7.5 %
+of data-node cycles (6 % under the scan, the rest in merges).  Besides,
+every new group is hashed twice (`find`, then `insert`, in
+`JoinAggInterpreter::ProcessRec` and `mergeOneGroup`), and `mergeFrom`
+rehashes every source group when the two tables' geometries differ, which
+they nearly always do.
+
+- **D1a. Pre-size from the previous execution.**  A per-node table of
+  size hints (lock-free: a few hundred 64-bit atomic slots holding a key
+  tag and a group count), keyed by the aggregation program words and the
+  table id.  Recorded from the per-thread tables' peak sizes when the
+  owner starts the merge, and when a drained aggregation tears down;
+  applied when a per-thread table is created: the bucket count becomes
+  the hint rounded up to whole segments, in a valid linear-hashing state
+  (low mask the largest power of two below it, split pointer the rest),
+  with the segments zeroed.  A repeated statement (benchmarks, RonSQL,
+  prepared statements: the program words are identical) then builds its
+  scan tables without splitting; any other statement grows as today.
+  Bounded by MAX_SEGMENTS and query memory (a failed allocation falls back
+  to the inline buckets).  The buckets are allocated at the first row
+  instead of progressively: the same final memory for the same statement.
+- **D1b. Hash once per new group.**  `ProcessRec` and `mergeOneGroup`
+  compute the bucket once and insert into it (`findInBucket` +
+  `insertRawInBucket`, as `mergeFrom` already does).
+- **D1c (only if D1a / D1b leave enough).  Store the bucket hash in the
+  record header.**  The key length and the chunk offset fit 16 bits each
+  (a record must fit one 32 KB chunk), so splits and cross-geometry merges
+  stop rehashing; this matters most for charset keys (strnxfrm per hash).
+- **Measure.**  The F24 set (core_group_few / _2k / _many) and tpch_q2 /
+  q13 / offline_fs_scalar at T=1 and T=8, first and second execution.
+  Expected on q2 at T=8: ~5–6 % of data-node CPU (the splits under the
+  scan); less at T=1.  Tests: the large-CTE and leak suites (growth,
+  eviction, teardown, merge) and a hint test (two executions, the second
+  pre-sized, identical results; a hint larger than query memory allows
+  falls back to the inline buckets).
+
+*Status 2026-10-07: D1a and D1b written; MTR green (user, 2026-10-07);
+box measurement in run 7b below.*
+- `GBHashTable` tracks its peak size and takes a growth hint
+  (`setGrowthHint`).  At the first split, while the table is still at its
+  inline geometry, `growToHint` allocates the hinted bucket count (whole
+  segments, zeroed, capped at MAX_SEGMENTS) and rehashes the at most
+  BUCKET_COUNT + 1 entries it holds.  Each entry lands in a bucket
+  congruent to its old one modulo BUCKET_COUNT, at the same or a higher
+  index, so the resumable-walk guarantee still holds.  A failed
+  allocation frees what the jump took and drops the hint; the table then
+  splits as before.  So the jump happens only in tables that outgrow the
+  inline buckets.  That matters because DblqhProxy creates a table for
+  every query worker (7 per node here) at SETUP, and most stay small.
+- The hints live in `AggInterpreterBase.cpp`: 1024 atomic slots per data
+  node, each holding the key's upper 32 bits and a group count, keyed by
+  xxhash(program words) ^ table id.  `initSharedAfterAlloc` applies the
+  hint and `tearDownChunk` records the peak the table's own rows built.
+  `endRowsPhase` freezes that peak when the table starts taking in other
+  tables' groups (`mergeFrom` target, `mergeOneGroup` receiver).  Merged
+  totals are thus never recorded, and a lone per-node table still
+  records its scan size.  Tables that never outgrew the inline buckets
+  record nothing.  With identical hints, two per-thread tables share a
+  geometry, so `mergeFrom` reuses the source bucket instead of rehashing.
+- D1b: `JoinAggInterpreter::ProcessRec`, `AggInterpreter::ProcessRec` and
+  `mergeOneGroup` hash once (`hashKey` + `findInBucket` +
+  `insertRawInBucket`).
+- New unit test `gb_hash_table-t` (dbtup, `NDB_ADD_TEST`), with its own
+  segment allocator that can fail one allocation.  It covers growth
+  without a hint, the jump (geometry, bucket congruence, no split up to
+  the hint, splitting after it), a hint at or below BUCKET_COUNT, a
+  hint dropped by `init`, a failed allocation at each step of the jump
+  (directory, segment 1, segment 2), the MAX_SEGMENTS cap, shared
+  geometry under equal hints, and the peak across erase and release.
+
+### D2. Group-record footprint and memory per query (item 2, C5)
+
+A group record is a 24-byte header (chunk-list link, hash link, key
+length, chunk offset), the key (AttributeHeader and value words) and one
+24-byte `Register` per aggregate slot (type, value, is_unsigned, is_null),
+allocated at 8-byte alignment in 32 KB chunks.  q2's CTE record (one INT
+key, MIN and COUNT) is 24 + 8 + 48 = 80 bytes, so most row updates touch
+two cache lines; a slot's type and signedness are the same for every group
+of a program.  Memory per query is partial tables per node × groups per
+table × record size: per node, q2 84 MB at T=1 (q13 48, q22 43,
+offline_fs_wide 110, offline_fs_batch 82) and 919 MB at T=8.
+
+- **D2a. Account first.**  A per-query breakdown (records, bucket
+  segments, chunk slack, per-thread tables per node with their sizes,
+  string slots) from a counter or a one-off DUMP, for q2, q13 and
+  offline_fs_wide; and how many per-thread tables one fragment's rows
+  reach when query threads share the scan.  The QUERY_MEMORY figures
+  are whole 2 MB lc_ndbd_pool segments pinned per thread pool, not bytes
+  (A6 analysis).  The real bytes therefore have to be counted on the
+  tables themselves.
+  *Written 2026-10-07 (not built):* `ALL DUMP 2366 1` / `0`
+  (`LqhJoinAggMemTrace`) turns on a `JOIN_AGG_MEM` line in the data-node
+  log for every join aggregation.  At COMPLETE it lists each per-thread
+  table that got rows (worker index, rows, groups, chunk KB, bucket KB);
+  at CTE_READY it shows the merged table.
+- **Pool sharing (found while writing D2a).**  DblqhProxy constructs
+  every per-thread JoinAggInterpreter with its own `getThreadId()` and
+  calls `initChunkAllocator(getThreadId(), ...)`.  So all of a join
+  aggregation's group chunks and bucket segments come from the SETUP
+  thread's lc pool, whichever worker allocates them.  That is the
+  cross-thread pool the A-status allocator race runs on ("open idea:
+  per-LDM pools").  D2d: allocate each per-thread table's memory on its
+  own worker's thread id.  This removes the shared pool mutex and its
+  segment race, and changes how the segments are pinned per pool.
+- **D2b. Compact slots.**  8-byte values, with the per-slot type kept once
+  per program and a per-group null bitmap; records padded to 64 bytes when
+  they fit one cache line.  q2: 80 → at most 64 bytes, one line per row
+  update.  Everything that reads `Register` slots today (the interpreter
+  kernels, the JIT glue's accumulator copy in and out,
+  `mergeAccumulators`, redistribution with `v_len` bytes on the wire, the
+  result batches to the API) either converts at the boundary or changes
+  with it; a wire change needs a version gate.
+- **D2c. Fewer partial copies** (only if D2a shows many partial tables per
+  node): what keeping one fragment's rows in one per-thread table gains,
+  against the parallelism it costs.
+- **D2d. Per-worker pools** for the per-thread tables' chunks and bucket
+  segments (see Pool sharing above).  Before writing it, confirm the
+  worker-to-thread-id mapping in DblqhProxy and that every free is
+  thread-agnostic.
+
+### D3. PartitionsPerNode=4 on a subset of queries
+
+Not the full census: the query set S of run 7b (the many-group CTEs, the
+drained path, a plain scan and two point controls), RonSQL only, on two
+fresh clusters of the same build, PartitionsPerNode 2 (the default) and 4
+(`--partitions-per-node 4`, new; tables are created after the start, so
+the data is reloaded).  The driver now records
+PartitionsPerNode, the fragment counts of orders / partsupp /
+transactions_1 and the API nodes' AdaptiveSendThreshold in meta.cluster,
+and the triage reports differences.  Expected: scan-bound queries get
+faster at T=1 (every LDM thread scans), against more partial tables to
+merge and more query memory per query; T=8 decides whether it pays.
+
+### D4. AdaptiveSendThreshold default
+
+Run 7 shows adaptive send helping mysqld at 64 clients, while the default
+is still 0 (send at once).  Sweep 0 / 4 / 8 / 16 / 32 at 8 / 32 / 64
+clients on three point shapes (core_pk_lookup, fs_floor, fs_point) with
+both engines, in two passes of opposite order against drift (run 7b
+below).  With a connection pool of 2 per process
+there are ~T/2 waiters per connection, so each value engages from a
+different client count; RDRS runs RonSQL on 16 workers (≤ ~8 waiters per
+connection), so 4 and 8 also engage for RonSQL.  Choose the default from
+q/s and p99 across client counts, then change the ConfigInfo default and
+the parameter documentation.
+
+### Box run 7b: D1, D2a, D3, D4 (reduced)
+
+One build with D1 and D2a, two clusters, RonSQL only except the D4 sweep,
+and TPC-H data only.  The offline_fs queries read `tpch.orders` too, and
+the D4 point set uses `fs_point` (orders) instead of `fs_hw_agg_point`.
+The run has five parts:
+
+- **D1, against run 7 (same configuration and data).**  The query set S,
+  11 queries:
+  - many-group CTEs: tpch_q2 / q13 / q22, offline_fs_scalar,
+    offline_fs_wide (7 aggregates, the widest record);
+  - the few-group CTE control: tpch_q11;
+  - the drained single-table path: core_group_few / _many;
+  - controls: the plain scan core_scan_agg, and core_pk_lookup and
+    fs_floor (an all-fragment scan of the 5-row region table).
+
+  RonSQL only, because MySQL is unchanged (its T=1 tpch_q2 alone takes
+  6 s per request).
+- **The mechanism.**  One profile of tpch_q2 at T=8, compared with run 7's
+  `prof/q2_T8`: `splitOne` should fall from 7.5 % of data-node cycles.
+- **D2a.**  The DUMP 2366 trace for tpch_q2, q13 and offline_fs_wide at
+  T=1 and T=8, 2 requests each.
+- **D4.**  AdaptiveSendThreshold 0 / 4 / 8 / 16 / 32 at 8 / 32 / 64
+  clients, on core_pk_lookup, fs_floor and fs_point, both engines.  Two
+  passes in opposite order against drift: 180 cases.
+- **D3.**  Set S again on a PartitionsPerNode=4 cluster, compared with
+  the PartitionsPerNode=2 arm of the same build.
+
+About 1–1.25 hours, including two TPC-H loads.
+
+```bash
+cd ~/mysql_trees/rondb_2604
+python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build --stop
+git fetch && git checkout RONDB-1124-run7 && git pull
+(cd prod_build && make -j$(nproc))
+
+R=~/census_run7b
+M=storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py
+T=storage/ndb/claude_files/compiled_interpreter/ronsql_bench_triage.py
+BIN=prod_build/runtime_output_directory
+B="taskset -c 24-31 python3 $M --build prod_build --sf 1 --seconds 10 \
+   --compiler off --mem-settle 5 \
+   --cpubind mysql-test/suite/ronsqlcrunch/census_benchbox.cnf \
+   --client-cpus 24-31 --expect-ldm 4"
+S=tpch_q2,tpch_q11,tpch_q13,tpch_q22,offline_fs_scalar,offline_fs_wide,core_group_few,core_group_many,core_scan_agg,core_pk_lookup,fs_floor
+POINTS=core_pk_lookup,fs_floor,fs_point
+
+attach() {   # sets ATTACH, CS and SOCK for the running cluster
+  eval "$(python3 - <<'PY'
+import configparser, json
+v = 'prod_build/mysql-test/var'
+cp = configparser.ConfigParser(strict=False, allow_no_value=True, interpolation=None, delimiters=('=',))
+cp.optionxform = str
+cp.read(v + '/my.cnf')
+m = cp['mysqld.1.1']
+cs = cp['mysql_cluster.1']['ndb_connectstring']
+port = json.load(open(v + '/rdrs.1.1_config.json'))['REST']['ServerPort']
+print("ATTACH='--no-start --no-load --mysql-port %s --mysql-sock %s --rdrs-port %s --connectstring %s'"
+      % (m['port'], m['socket'], port, cs))
+print("CS='%s'" % cs)
+print("SOCK='%s'" % m['socket'])
+PY
+)"
+}
+
+# 1. D1: set S at PartitionsPerNode 2 (the default), fresh cluster, TPC-H only
+$B --engines ronsql --threads 1,8 --queries $S --load tpch --keep-cluster --out $R/ppn2
+attach
+
+# 2. The mechanism: tpch_q2 at T=8 under perf (LBR, as in run 7)
+mkdir -p $R/prof
+thr() { $BIN/mysql -uroot -S $SOCK -e "SELECT node_id, thr_no, thr_nm, os_tid, os_now, os_ru_utime, os_ru_stime FROM ndbinfo.threadstat" > $1; }
+P=$R/prof/q2_T8
+$B $ATTACH --engines ronsql --queries tpch_q2 --threads 8 --seconds 25 --out $P.bench > $P.log 2>&1 &
+sleep 8; thr $P.thr0.tsv
+taskset -c 24-31 perf record -e cpu_core/cycles/ -F 199 --call-graph lbr -p $(pgrep -d, -x ndbmtd) -o $P.data -- sleep 12
+thr $P.thr1.tsv; wait
+perf report -i $P.data --no-children --sort pid,sym --stdio --percent-limit 0.2 > $P.self.txt 2>/dev/null
+perf report -i $P.data --children --sort sym -g none --stdio --percent-limit 0.3 > $P.children.txt 2>/dev/null
+
+# 3. D2a: the per-table memory trace
+$BIN/ndb_mgm -c $CS -e "ALL DUMP 2366 1"
+for t in 1 8; do
+  $B $ATTACH --engines ronsql --queries tpch_q2,tpch_q13,offline_fs_wide --threads $t --requests 2 --out $R/d2a_T$t
+done
+$BIN/ndb_mgm -c $CS -e "ALL DUMP 2366 0"
+grep -rh --include='*.log' JOIN_AGG_MEM prod_build/mysql-test/var > $R/d2a_trace.txt
+wc -l $R/d2a_trace.txt
+
+# 4. D4: the AdaptiveSendThreshold sweep, two passes in opposite order
+for pass in 1 2; do
+  if [ $pass = 1 ]; then vals="0 4 8 16 32"; else vals="32 16 8 4 0"; fi
+  for a in $vals; do
+    $BIN/ndb_mgm -c $CS -e "ALL SET AdaptiveSendThreshold $a"
+    $B $ATTACH --engines ronsql,mysqld_nopush --threads 8,32,64 --seconds 8 \
+       --queries $POINTS --out $R/asend_${a}_p$pass
+  done
+done
+$BIN/ndb_mgm -c $CS -e "ALL SET AdaptiveSendThreshold 0"
+python3 $M --build prod_build --stop
+
+# 5. D3: set S at PartitionsPerNode 4, fresh cluster (reloads TPC-H)
+$B --engines ronsql --threads 1,8 --queries $S --load tpch --partitions-per-node 4 --out $R/ppn4
+python3 $T $R/ppn4 --baseline $R/ppn2 --all-baseline --out $R/ppn4_vs_ppn2.md
+
+tar --exclude='*.data' -czf ~/census_run7b.tar.gz -C ~ census_run7b
+```
+
+**Check before trusting the results:**
+- **Partition arms.**  `ppn2/report.md` shows `PartitionsPerNode 2` and
+  `tpch.orders 4` / `tpch.partsupp 4` fragments; `ppn4/report.md` shows
+  `PartitionsPerNode 4` and 8 fragments.
+- **Sweep.**  Every `asend_*` header shows its own `AdaptiveSendThreshold`.
+- **Trace.**  `d2a_trace.txt` has COMPLETE and CTE_READY lines for both
+  nodes.
+
+If perf fails, skip part 2: nothing after it depends on it.

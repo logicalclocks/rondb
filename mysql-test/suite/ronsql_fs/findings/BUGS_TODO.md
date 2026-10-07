@@ -524,6 +524,19 @@ F8 was a framework fixture issue and is already fixed.
   core_group_few on the Mac; tpch_q2 113-139 ms vs MySQL 274 ms in run 6).
   Further speed-ups are separate tasks: the per-node owner split for (a), the
   per-row group-record cache miss on the data nodes.
+  2026-10-07 (census run 7 profiles, `m3_run6_plan.md` D): the owner phase is
+  ~8 % of data-node CPU on tpch_q2 (~19 ms per node per query at T=1) and ~1 %
+  on q13 / q11; a split would gain ~11 % on q2 at T=1 and nothing at T=8, so
+  it is skipped. At T=8 the group hash table dominates (`findInBucket` 15 %,
+  `splitOne` 7.5 % of data-node CPU): D1 (table growth) and D2 (record
+  footprint) below.
+- [ ] Group hash table under concurrency (census run 7, `m3_run6_plan.md` D1 /
+  D2): a tpch_q2 query costs ~70 % more data-node CPU at T=8 than at T=1, the
+  same operations at ~3x the cost (eight queries hold ~920 MB of query memory
+  per node). D1: pre-size per-thread group tables from the previous execution
+  of the same program, hash each new group once (and maybe store the hash in
+  the record). D2: account the memory of a query, then compact the 24-byte
+  `Register` slots (q2's record 80 -> <= 64 bytes, one cache line per row).
 - [x] F25 (bench.md): a ~1 ms idle-wake stall on a share of requests, both engines
   (sets the serving p99). Diagnose on the benchmark computer: CPU idle states,
   data-node spinning, or the NDB API receive path (`m3_experiments.md` X1).
@@ -564,6 +577,12 @@ F8 was a framework fixture issue and is already fixed.
   `ndb.ndb_set_adaptive_send_threshold`. Done 2026-10-07: MTR green (with
   ndb_config_set, ndb_set_compiled_interpreter and the activate /
   location-domain tests that share the QMGR state machine).
+- [ ] AdaptiveSendThreshold default (census run 7, 2026-10-07): on the benchmark
+  computer 16 against 0 gives mysqld at T=64 +10 % q/s with p99 -24 / -26 % on
+  fs_floor / fs_hw_floor, +2..+4 % on core_pk_lookup / fs_hw_agg_point, -2 % on
+  fs_latest (noise level); T=8 and RonSQL unchanged (the Mac had shown p99
+  +3..+5 %). Enable it by default; the value comes from the sweep in
+  `m3_run6_plan.md` D4 (0 / 4 / 8 / 16 / 32 at 8 to 64 clients).
 - [x] Every scanned row read the whole slowdown NodeBitmask (found 2026-10-06 in the
   F24 data-node profile): `Dblqh::scanTupkeyConfLab` checked
   `get_status_slowdown().isclear()` before testing the API node's bit, and with
@@ -587,6 +606,11 @@ F8 was a framework fixture issue and is already fixed.
   got NDB error 1870 on 25 of 439 requests after 10 retries, query memory
   peaking at 414 MB over both nodes; the filter-first tpch_q2_ff (C7) peaks at
   30 MB and does not fail.
+  Census run 7 (2026-10-07, census_benchbox.cnf, TotalMemoryConfig=12G): every
+  many-group CTE completes at T=8 without an error, both data nodes up;
+  offline_fs_wide peaks at 1.0 GB of query memory per node (61 % of global
+  memory), so the census no longer reaches the out-of-memory path and (a) /
+  (b) rest on their MTR tests. (c) is `m3_run6_plan.md` D2.
 - [x] F32 (2026-09-30, review): a WHERE condition on the right side of a LEFT
   JOIN of real tables was pushed into that table's operation as its filter, i.e.
   applied as part of the join condition; `b.col IS NULL` kept rows WHERE removes.
