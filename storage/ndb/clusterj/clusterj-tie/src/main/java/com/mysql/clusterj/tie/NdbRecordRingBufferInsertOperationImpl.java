@@ -25,7 +25,6 @@
 
 package com.mysql.clusterj.tie;
 
-import com.mysql.clusterj.ClusterJUserException;
 
 import com.mysql.clusterj.core.store.Table;
 
@@ -51,15 +50,8 @@ public class NdbRecordRingBufferInsertOperationImpl extends NdbRecordOperationIm
 
     @Override
     public void endDefinition() {
-        // The ring writer cannot drive blob handles; without this check
-        // a set BLOB/TEXT value would be silently dropped.
-        if (!activeBlobs.isEmpty()) {
-            throw new ClusterJUserException(
-                    "Ring buffer table " + tableName
-                    + ": BLOB/TEXT columns cannot be written via ClusterJ;"
-                    + " use SQL INSERT or leave the column unset");
-        }
-        // Get the ring buffer writer (cached per table per transaction)
+        // Get the ring buffer writer (cached per table per transaction);
+        // it refuses ring tables with BLOB/TEXT columns.
         RingBufferWriter writer = clusterTransaction.getRingBufferWriter(storeTable);
 
         // Prepare the buffer for the writer

@@ -22,7 +22,7 @@ Successfully initialized schema.
 [DO-META]   [3] timestamp_val
 [DO-META]   [4] sensor_value
 [SWALLOW-TEST] surfaced=true seedName=seed abortedRingRows=0
-[BLOB-TEST] rejected=true
+[BLOB-TEST] set_rejected=true unset_rejected=true slot1=old_1/note_1
 [AI-TEST] distinct_prefixes=true
 [FLUSH-TEST] clean_after_failure=true
 [CONCURRENT-META] ClusterJ find(ring_idx=0) = NOT FOUND (expected)

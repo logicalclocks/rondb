@@ -34,7 +34,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.mysql.clusterj.ClusterJFatalInternalException;
-import com.mysql.clusterj.ClusterJUserException;
 
 import com.mysql.clusterj.core.store.Blob;
 import com.mysql.clusterj.core.store.Column;
@@ -268,14 +267,7 @@ public class NdbRecordOperationImpl implements Operation {
         // This path is reached by the SmartValueHandler / DTO cache flow
         // which calls insert() directly, bypassing NdbRecordRingBufferInsertOperationImpl.
         if (storeTable.isRingBuffer()) {
-            // The ring writer cannot drive blob handles; without this check
-            // a set BLOB/TEXT value would be silently dropped.
-            if (!activeBlobs.isEmpty()) {
-                throw new ClusterJUserException(
-                        "Ring buffer table " + tableName
-                        + ": BLOB/TEXT columns cannot be written via ClusterJ;"
-                        + " use SQL INSERT or leave the column unset");
-            }
+            // The writer refuses ring tables with BLOB/TEXT columns.
             RingBufferWriter writer = clusterTransactionImpl.getRingBufferWriter(storeTable);
             writer.addRow(valueBuffer, mask);
             return null;

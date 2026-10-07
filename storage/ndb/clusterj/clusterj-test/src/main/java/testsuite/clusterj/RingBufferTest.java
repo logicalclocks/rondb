@@ -3412,68 +3412,78 @@ public class RingBufferTest extends AbstractClusterJTest {
         cleanupViaSql();
     }
 
-    /** A SET blob/TEXT column on a ring buffer insert must fail loudly with
-     *  a clear message - the ring write path cannot drive blob handles, so
-     *  the value would otherwise be silently dropped (or fail with a raw NDB
-     *  error). An UNSET blob column must keep working. */
+    /** ClusterJ cannot write ring buffer tables that have BLOB/TEXT
+     *  columns: the ring write path cannot drive blob handles, and a slot
+     *  write that leaves the blob column out keeps the overwritten row's
+     *  value on a wrap. Both a set and an unset blob column are rejected,
+     *  and the rejected insert leaves the ring unchanged. */
     private void testBlobColumnRejected() {
-        boolean threw = false;
-        String exMsg = "";
-        tx.begin();
+        final String expected =
+                "ClusterJ cannot write ring buffer tables with BLOB/TEXT columns";
+        String setMsg = persistBlobRow(70, "payload_v1", "note_a");
+        errorIfNotEqual("[BLOB-TEST] set blob: clear rejection", true,
+                setMsg != null && setMsg.contains(expected));
+
+        // Fill prefix 71 through SQL so the next insert wraps onto slot 1.
         try {
-            DynamicObject d = session.newInstance(RingBlobDTO.class);
-            setBlobFields(d, 70, "payload_v1", "note_a");
-            session.makePersistent(d);
-            tx.commit();
-        } catch (Exception e) {
-            threw = true;
-            exMsg = e.getMessage() == null ? "" : e.getMessage();
-            if (tx.isActive()) {
-                tx.rollback();
+            getConnection();
+            Statement stmt = connection.createStatement();
+            for (int i = 1; i <= 3; i++) {
+                stmt.execute("INSERT INTO ring_buffer_blob (client_id, payload, note)"
+                        + " VALUES (71, 'old_" + i + "', 'note_" + i + "')");
             }
+            stmt.close();
+        } catch (SQLException e) {
+            error("[BLOB-TEST] SQL fill failed: " + e.getMessage());
         }
-        errorIfNotEqual("[BLOB-TEST] blob set on ring insert throws", true,
-                threw);
-        errorIfNotEqual("[BLOB-TEST] clear rejection message", true,
-                exMsg.contains("BLOB/TEXT columns cannot be written"));
+        String unsetMsg = persistBlobRow(71, null, "note_new");
+        errorIfNotEqual("[BLOB-TEST] unset blob: clear rejection", true,
+                unsetMsg != null && unsetMsg.contains(expected));
 
-        // control: leaving the blob column unset works
-        tx.begin();
-        DynamicObject d2 = session.newInstance(RingBlobDTO.class);
-        setBlobFields(d2, 70, null, "note_b");
-        session.makePersistent(d2);
-        tx.commit();
-
+        String slot1 = "";
         try {
             getConnection();
             Statement stmt = connection.createStatement();
             ResultSet rs = stmt.executeQuery(
-                    "SELECT ring_idx, payload, note FROM ring_buffer_blob"
-                    + " WHERE client_id = 70 ORDER BY ring_idx");
-            int rows = 0;
-            int slot = -1;
-            String payload = "not-null-sentinel";
-            String note = "";
-            while (rs.next()) {
-                rows++;
-                if (rows == 1) {
-                    slot = rs.getInt(1);
-                    payload = rs.getString(2);
-                    note = rs.getString(3);
-                }
+                    "SELECT payload, note FROM ring_buffer_blob"
+                    + " WHERE client_id = 71 AND ring_idx = 1");
+            if (rs.next()) {
+                slot1 = rs.getString(1) + "/" + rs.getString(2);
             }
             rs.close();
+            rs = stmt.executeQuery(
+                    "SELECT COUNT(*) FROM ring_buffer_blob WHERE client_id = 70");
+            rs.next();
+            errorIfNotEqual("[BLOB-TEST] no row inserted for prefix 70", 0,
+                    rs.getInt(1));
+            rs.close();
             stmt.close();
-            errorIfNotEqual("[BLOB-TEST] only the control row inserted", 1,
-                    rows);
-            errorIfNotEqual("[BLOB-TEST] control row slot", 1, slot);
-            errorIfNotEqual("[BLOB-TEST] control payload is NULL", true,
-                    payload == null);
-            errorIfNotEqual("[BLOB-TEST] control note", "note_b", note);
         } catch (SQLException e) {
             error("[BLOB-TEST] JDBC verification failed: " + e.getMessage());
         }
-        System.out.println("[BLOB-TEST] rejected=" + threw);
+        errorIfNotEqual("[BLOB-TEST] slot 1 unchanged after rejected wrap",
+                "old_1/note_1", slot1);
+        System.out.println("[BLOB-TEST] set_rejected=" + (setMsg != null)
+                + " unset_rejected=" + (unsetMsg != null)
+                + " slot1=" + slot1);
+    }
+
+    /** Persist one RingBlobDTO row; returns the exception message (empty
+     *  string if it has none) or null when the insert committed. */
+    private String persistBlobRow(int clientId, String payload, String note) {
+        tx.begin();
+        try {
+            DynamicObject d = session.newInstance(RingBlobDTO.class);
+            setBlobFields(d, clientId, payload, note);
+            session.makePersistent(d);
+            tx.commit();
+            return null;
+        } catch (Exception e) {
+            if (tx.isActive()) {
+                tx.rollback();
+            }
+            return e.getMessage() == null ? "" : e.getMessage();
+        }
     }
 
     /** AUTO_INCREMENT PK-prefix works on the default (SmartValueHandler)

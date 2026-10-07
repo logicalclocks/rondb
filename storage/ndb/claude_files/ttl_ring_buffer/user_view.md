@@ -117,9 +117,8 @@ plain ring table, with one extra rule: on a TTL ring every insert must set every
 the table except `ring_idx` and `ring_meta` (NDB API error 4359, "Inserts on a ring buffer
 table with TTL must set every column"). When the ring wraps, an insert overwrites an
 occupied slot, and a column left out would keep the overwritten row's value, including a TTL
-value that may already have passed. ClusterJ cannot write BLOB/TEXT columns on ring tables;
-on a wrap such a column keeps the overwritten row's value, so use SQL for TTL ring tables
-with BLOB/TEXT columns. SQL INSERTs always write every column (omitted columns get their
+value that may already have passed. ClusterJ cannot write ring tables that have BLOB/TEXT
+columns; use SQL for them. SQL INSERTs always write every column (omitted columns get their
 default). Two SQL INSERTs into a new prefix at the same moment can both find no meta row; one
 of them then fails with a deadlock error ("try restarting transaction") and must be
 retried, also with INSERT IGNORE. The NDB API writer's `deleteOldest` call returns error 4358 on a
@@ -280,8 +279,8 @@ receiving inserts.
 what happens when it does not.
 
 **Can I use TTL ring tables from ClusterJ?** Yes, with the same `RingBufferWriter`. Every
-insert must set every column (section 3.2); BLOB/TEXT columns cannot be written from
-ClusterJ on ring tables. The ClusterJ writer has no `deleteOldest`.
+insert must set every column (section 3.2); ring tables with BLOB/TEXT columns cannot be
+written from ClusterJ. The ClusterJ writer has no `deleteOldest`.
 
 ## 8. Under the hood, briefly
 

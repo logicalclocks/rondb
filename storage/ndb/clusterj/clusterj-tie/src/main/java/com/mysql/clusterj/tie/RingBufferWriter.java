@@ -153,9 +153,7 @@ class RingBufferWriter {
      *  set in each row's mask (a slot write onto an occupied slot is an
      *  update; an unset column would keep the overwritten row's value, and a
      *  replica whose purge removed the slot could not rebuild the row).
-     *  BLOB/TEXT columns are exempt: ClusterJ cannot write them on a ring
-     *  buffer table at all (see NdbRecordOperationImpl), so on a wrap they
-     *  keep the overwritten row's value; use SQL for such tables.
+     *  Tables with BLOB/TEXT columns are refused by the constructor.
      *  Empty on a table without TTL. */
     private final Column[] requiredColumns;
 
@@ -190,6 +188,18 @@ class RingBufferWriter {
         if (!storeTable.isRingBuffer()) {
             throw new ClusterJUserException(
                     "Table " + storeTable.getName() + " is not a ring buffer table");
+        }
+        // The ring write path cannot drive blob handles, and a slot write
+        // that leaves a blob column out keeps the overwritten row's value on
+        // a wrap. Refuse the table instead of writing stale BLOB/TEXT values.
+        for (String name : storeTable.getColumnNames()) {
+            Column col = storeTable.getColumn(name);
+            if (col.isLob()) {
+                throw new ClusterJUserException("Ring buffer table "
+                        + storeTable.getName() + " has BLOB/TEXT column "
+                        + col.getName() + "; ClusterJ cannot write ring buffer"
+                        + " tables with BLOB/TEXT columns, use SQL");
+            }
         }
 
         this.ringBufferSize = storeTable.getRingBufferSize();
