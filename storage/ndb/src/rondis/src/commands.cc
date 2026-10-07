@@ -1845,6 +1845,39 @@ static int send_value_write(std::string *response,
   return 0;
 }
 
+/**
+ * True when the next write step of a key in MultiRowRWValue is the
+ * commit alone: neither the new nor the old value has extension rows.
+ */
+static bool write_step_is_commit(const struct KeyStorage *key_store) {
+  return key_store->m_num_rows == 0 && key_store->m_prev_num_rows == 0;
+}
+
+/**
+ * Queue the next write step of a key whose previous step has completed
+ * (KeyState::MultiRowRWValue): the commit, the next extension rows of
+ * the new value, or the delete of the old value's surplus extension
+ * rows followed by the commit. Each step queues exactly one
+ * asynchronous execute on the key's transaction.
+ */
+static int send_next_write_step(std::string *response,
+                                struct KeyStorage *key_store,
+                                struct GetControl *get_ctrl) {
+  assert(key_store->m_key_state == KeyState::MultiRowRWValue);
+  if (write_step_is_commit(key_store)) {
+    get_ctrl->m_num_keys_outstanding++;
+    commit_write_value_transaction(key_store);
+    DEB_DEL_CMD(("Commit with no value rows"));
+    key_store->m_key_state = KeyState::MultiRowRWAll;
+    return 0;
+  }
+  if (key_store->m_num_rows > 0 &&
+      key_store->m_num_rows > key_store->m_num_rw_rows) {
+    return send_value_write(response, key_store, get_ctrl);
+  }
+  return send_delete_write(response, key_store, get_ctrl);
+}
+
 static int send_next_write_batch(std::string *response,
                                  struct KeyStorage *key_storage,
                                  struct GetControl *get_ctrl,
@@ -1862,32 +1895,12 @@ static int send_next_write_batch(std::string *response,
       return 0;
     }
     if (key_storage[inx].m_key_state == KeyState::MultiRowRWValue) {
-      if (key_storage[inx].m_num_rows == 0 &&
-        key_storage[inx].m_prev_num_rows == 0) {
-        get_ctrl->m_num_keys_outstanding++;
-        commit_write_value_transaction(&key_storage[inx]);
-        assert(current_finished > 0);
-        current_finished--;
-        DEB_DEL_CMD(("Commit with no value rows"));
-        key_storage[inx].m_key_state = KeyState::MultiRowRWAll;
-        continue;
-      }
-      if (key_storage[inx].m_num_rows > 0 &&
-          key_storage[inx].m_num_rows > key_storage[inx].m_num_rw_rows) {
-        int ret_code = send_value_write(response,
-                                        &key_storage[inx],
-                                        get_ctrl);
-        if (ret_code != 0) return 1;
-        assert(current_finished > 0);
-        current_finished--;
-      } else {
-        int ret_code = send_delete_write(response,
-                                         &key_storage[inx],
-                                         get_ctrl);
-        if (ret_code != 0) return 1;
-        assert(current_finished > 0);
-        current_finished--;
-      }
+      int ret_code = send_next_write_step(response,
+                                          &key_storage[inx],
+                                          get_ctrl);
+      if (ret_code != 0) return 1;
+      assert(current_finished > 0);
+      current_finished--;
     }
   }
   return 0;
@@ -1918,11 +1931,91 @@ static bool get_phase_found_string_value(enum KeyState state) {
          state == KeyState::CompletedMultiRow;
 }
 
+/**
+ * True when the dual-claim of a SET found a hash on the name, which
+ * Phase B.5 of set_rows must remove before the key is committed.
+ */
+static bool needs_hash_replace(const struct KeyStorage *key_store) {
+  NdbRecAttr *old_id_attr = key_store->m_rec_attr_string_claim_old_id;
+  return old_id_attr != nullptr &&
+         old_id_attr->u_64_value() != STRING_REDIS_KEY_ID;
+}
+
+/**
+ * Phase B for plain SET / MSET (no NX / XX, no GET).
+ *
+ * Instead of waiting for the NoCommit of every key in the batch before
+ * committing any of them, move each key on to its next write step as
+ * soon as its own NoCommit has completed. Every key has its own
+ * transaction, so a key that holds its row locks while it waits for
+ * another key's NoCommit can deadlock with a concurrent MSET that locks
+ * the same keys in another order. NDB sees no deadlock between two
+ * transactions of different keys, so only TransactionDeadlockDetection-
+ * Timeout breaks it. Plain SET / MSET makes no decision across keys
+ * before committing, so there is no reason to hold the locks.
+ *
+ * Keys that replace a hash are left in MultiRowRWValue: the Phase B.5
+ * scan executes synchronously and so must run with nothing outstanding
+ * on the Ndb object, and Phase C / D then commit them.
+ *
+ * After a failure no further steps are queued, but we still wait for
+ * every outstanding execute so that no transaction is closed while in
+ * flight. Keys committed before the failure stay committed.
+ */
+static int set_rows_commit_each_key(Ndb *ndb,
+                                    std::string *response,
+                                    struct KeyStorage *key_storage,
+                                    struct GetControl *get_ctrl,
+                                    Uint32 loop_count,
+                                    Uint32 current_index) {
+  // Phase A queued one NoCommit per key.
+  Uint32 num_pending = loop_count;
+  get_ctrl->m_num_keys_multi_rows = loop_count;
+  get_ctrl->m_num_bytes_outstanding = 0;
+  int ret_code = 0;
+  do {
+    int min_finished = 1;
+    int finished = execute_ndb(ndb, min_finished, __LINE__);
+    assert(finished >= 0);
+    assert((Uint32)finished <= num_pending);
+    num_pending -= (Uint32)finished;
+    if (ret_code != 0 || get_ctrl->m_num_keys_failed > 0) {
+      continue;
+    }
+    for (Uint32 i = 0; i < loop_count; i++) {
+      Uint32 inx = current_index + i;
+      if (key_storage[inx].m_key_state != KeyState::MultiRowRWValue ||
+          needs_hash_replace(&key_storage[inx])) {
+        continue;
+      }
+      // Only extension-row steps are throttled, and only while other
+      // steps are in flight, so this loop always makes progress.
+      if (!write_step_is_commit(&key_storage[inx]) &&
+          num_pending > 0 &&
+          get_ctrl->m_num_bytes_outstanding > MAX_OUTSTANDING_BYTES) {
+        continue;
+      }
+      ret_code = send_next_write_step(response,
+                                      &key_storage[inx],
+                                      get_ctrl);
+      if (ret_code != 0) {
+        break;
+      }
+      num_pending++;
+    }
+  } while (num_pending > 0);
+  return ret_code;
+}
+
 // Unified HSET / MSET / SET write pipeline. All keys go through:
 //   Phase A - submit NoCommit on string_keys via the complex
 //             interpreter (write_key_row_no_commit).
 //   Phase B - drain the NoCommit callbacks; every successful key
 //             lands in MultiRowRWValue with its trans still open.
+//             Plain SET / MSET (no NX / XX, no GET) instead moves each
+//             key on to Phase C/D steps as soon as its own NoCommit is
+//             done, see set_rows_commit_each_key; only keys that
+//             replace a hash wait for Phase B.5.
 //   Phase C - dispatch: fast-path commit for inline-only keys
 //             (m_num_rows == 0 && m_prev_num_rows == 0), or queue
 //             extension-row writes / deletes for keys that need
@@ -2042,12 +2135,29 @@ static int set_rows(Ndb *ndb,
   // m_num_keys_outstanding on both success and error paths.
   get_ctrl->m_num_keys_outstanding = loop_count;
   Uint32 current_finished_in_loop = 0;
-  do {
-    int min_finished = 1;
-    int finished = execute_ndb(ndb, min_finished, __LINE__);
-    assert(finished >= 0);
-    current_finished_in_loop += finished;
-  } while (current_finished_in_loop < loop_count);
+  const bool plain_set =
+    redis_key_id == STRING_REDIS_KEY_ID &&
+    !get_ctrl->m_get_cmd_part &&
+    key_storage[current_index].m_set_type == IsWrite;
+  if (plain_set) {
+    // Commits each key as soon as its NoCommit is done, see
+    // set_rows_commit_each_key. Only keys that replace a hash are
+    // left for Phase B.5 - D below.
+    int ret_code = set_rows_commit_each_key(ndb,
+                                            response,
+                                            key_storage,
+                                            get_ctrl,
+                                            loop_count,
+                                            current_index);
+    if (ret_code != 0) return 1;
+  } else {
+    do {
+      int min_finished = 1;
+      int finished = execute_ndb(ndb, min_finished, __LINE__);
+      assert(finished >= 0);
+      current_finished_in_loop += finished;
+    } while (current_finished_in_loop < loop_count);
+  }
 
   if (get_ctrl->m_num_keys_failed > 0) return 0;
 
