@@ -808,6 +808,15 @@ int ha_ndbcluster::ndb_ring_buffer_write_row(uchar *record) {
     uchar *meta_result = table->record[1];
     memcpy(meta_result, record, table->s->reclength);
 
+    /* Send operations batched by earlier statements with their own error
+       handling: the meta read below ignores errors of everything it
+       executes. */
+    if (thd_ndb->m_unsent_bytes &&
+        execute_no_commit(thd_ndb, trans, false) != 0) {
+      ret = ndb_err(trans);
+      goto cleanup;
+    }
+
     ring_idx_field->store(0, true);
 
     NdbOperation::OperationOptions read_opts;
