@@ -28,6 +28,7 @@
 #include <cstring>
 
 #include <NdbOperation.hpp>
+#include <NdbSqlUtil.hpp>
 #include <NdbTransaction.hpp>
 
 #include "API.hpp"
@@ -66,6 +67,10 @@ void NdbRingBufferWriter::Ring_meta::init_first_insert() {
   reserved_2 = 0;
 }
 
+// Online ring-buffer resize is disabled (rejected authoritatively in DBDICT,
+// with the SQL layer's parse_comment validator as a front-end check), so
+// post-grow stale-meta states cannot arise here and the formula needs no
+// grow-adjustment.
 void NdbRingBufferWriter::Ring_meta::advance(Uint32 ring_size) {
   next_pos = (next_pos % ring_size) + 1;
   if (count < ring_size) count++;
@@ -104,6 +109,10 @@ NdbRingBufferWriter::NdbRingBufferWriter(const NdbDictionary::Table *table,
       m_num_pk_prefix_cols(0),
       m_notnull_cols(nullptr),
       m_num_notnull_cols(0),
+      m_has_ttl_col(false),
+      m_ttl_col_is_timestamp(false),
+      m_ttl_col_prec(0),
+      m_required_mask(nullptr),
       m_meta_mask(nullptr),
       m_mask_byte_size(0),
       m_row_size(0),
@@ -117,16 +126,17 @@ NdbRingBufferWriter::NdbRingBufferWriter(const NdbDictionary::Table *table,
       m_error_code(0) {
   memset(&m_ring_idx_info, 0, sizeof(m_ring_idx_info));
   memset(&m_ring_meta_info, 0, sizeof(m_ring_meta_info));
+  memset(&m_ttl_col_info, 0, sizeof(m_ttl_col_info));
   memset(&m_batch_meta, 0, sizeof(m_batch_meta));
   m_error_message[0] = '\0';
 
   if (!table || !ndbRecord || !trans) {
-    setError(4000, "NdbRingBufferWriter: null argument");
+    setError(4118, "NdbRingBufferWriter: null argument");
     return;
   }
 
   if (!table->isRingBuffer()) {
-    setError(4000, "NdbRingBufferWriter: table is not a ring buffer table");
+    setError(4118, "NdbRingBufferWriter: table is not a ring buffer table");
     return;
   }
 
@@ -155,6 +165,7 @@ NdbRingBufferWriter::~NdbRingBufferWriter() {
   delete[] m_pk_prefix_cols;
   delete[] m_notnull_cols;
   delete[] m_meta_mask;
+  delete[] m_required_mask;
   delete[] m_meta_row_buffer;
   delete[] m_data_row_buffer;
   delete[] m_key_row_buffer;
@@ -176,7 +187,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
       m_table->getColumn(m_ring_meta_col_no);
 
   if (!ring_idx_col || !ring_meta_col) {
-    setError(4000, "NdbRingBufferWriter: ring columns not found in table");
+    setError(4118, "NdbRingBufferWriter: ring columns not found in table");
     return -1;
   }
 
@@ -187,7 +198,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
   const NdbRecord::Attr *idx_attr =
       findAttrByAttrId(m_ndb_record, ring_idx_attr_id);
   if (!idx_attr) {
-    setError(4000,
+    setError(4118,
              "NdbRingBufferWriter: ring_idx column not found in NdbRecord");
     return -1;
   }
@@ -202,7 +213,7 @@ int NdbRingBufferWriter::initColumnMetadata() {
   const NdbRecord::Attr *meta_attr =
       findAttrByAttrId(m_ndb_record, ring_meta_attr_id);
   if (!meta_attr) {
-    setError(4000,
+    setError(4118,
              "NdbRingBufferWriter: ring_meta column not found in NdbRecord");
     return -1;
   }
@@ -282,6 +293,21 @@ int NdbRingBufferWriter::initColumnMetadata() {
     }
   }
 
+  // Only columns present in the NdbRecord were populated: keep the counts
+  // in step with the arrays (a stale first-pass count would make the meta
+  // mask and the meta row buffer read uninitialised ColumnInfo entries).
+  // The PK prefix must be complete: the meta row is keyed by it.
+  if (pk_idx != pk_prefix_count) {
+    m_num_pk_prefix_cols = pk_idx;
+    m_num_notnull_cols = nn_idx;
+    setError(4118,
+             "NdbRingBufferWriter: a primary key column is missing from the "
+             "NdbRecord");
+    return -1;
+  }
+  m_num_pk_prefix_cols = pk_idx;
+  m_num_notnull_cols = nn_idx;
+
   // Build pre-computed meta column mask
   // Mask format: byte array indexed by attrId, bit (attrId & 7) in byte
   // (attrId >> 3)
@@ -311,6 +337,59 @@ int NdbRingBufferWriter::initColumnMetadata() {
   for (Uint32 i = 0; i < m_num_notnull_cols; i++) {
     Uint32 aid = m_notnull_cols[i].attr_id;
     m_meta_mask[aid >> 3] |= (1 << (aid & 7));
+  }
+
+  // TTL table: a slot write onto an occupied slot is an update, so a
+  // column absent from the write keeps the overwritten row's value; for
+  // the TTL column that hides the new row behind an expired value, and
+  // for any column it leaves a replica whose purge removed the slot
+  // unable to rebuild the row. Every column of the table must therefore
+  // be in the NdbRecord, and every column except ring_idx/ring_meta must
+  // be set in each row's mask (checked in addRow against
+  // m_required_mask). The meta row carries the TTL type maximum (see
+  // setTTLColumnMaxInBuffer).
+  if (m_table->isTTLEnabled()) {
+    m_required_mask = new unsigned char[m_mask_byte_size];
+    memset(m_required_mask, 0, m_mask_byte_size);
+    for (int i = 0; i < num_cols; i++) {
+      const NdbDictionary::Column *col = m_table->getColumn(i);
+      if (!col) continue;
+      const Uint32 attr_id = col->getAttrId();
+      if (!findAttrByAttrId(m_ndb_record, attr_id)) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "NdbRingBufferWriter: column %s is missing from the "
+                 "NdbRecord; inserts on a TTL ring buffer table must supply "
+                 "every column",
+                 col->getName());
+        setError(4359, msg);
+        return -1;
+      }
+      if (attr_id == ring_idx_attr_id || attr_id == ring_meta_attr_id)
+        continue;
+      m_required_mask[attr_id >> 3] |= (1 << (attr_id & 7));
+    }
+    const NdbDictionary::Column *ttl_col =
+        m_table->getColumn(m_table->getTTLColumnNo());
+    const NdbRecord::Attr *rec_attr =
+        ttl_col ? findAttrByAttrId(m_ndb_record, ttl_col->getAttrId())
+                : nullptr;
+    if (rec_attr &&
+        (ttl_col->getType() == NdbDictionary::Column::Timestamp2 ||
+         ttl_col->getType() == NdbDictionary::Column::Datetime2)) {
+      m_has_ttl_col = true;
+      m_ttl_col_is_timestamp =
+          (ttl_col->getType() == NdbDictionary::Column::Timestamp2);
+      m_ttl_col_prec = ttl_col->getPrecision();
+      m_ttl_col_info.attr_id = rec_attr->attrId;
+      m_ttl_col_info.offset = rec_attr->offset;
+      m_ttl_col_info.max_size = rec_attr->maxSize;
+      m_ttl_col_info.nullbit_byte_offset = rec_attr->nullbit_byte_offset;
+      m_ttl_col_info.nullbit_bit_in_byte = rec_attr->nullbit_bit_in_byte;
+      m_ttl_col_info.flags = rec_attr->flags;
+      const Uint32 aid = rec_attr->attrId;
+      m_meta_mask[aid >> 3] |= (1 << (aid & 7));
+    }
   }
 
   return 0;
@@ -392,6 +471,40 @@ void NdbRingBufferWriter::zeroNotNullColumnsInBuffer(char *buf) const {
   }
 }
 
+/*
+ * Meta row TTL column = type maximum (TIMESTAMP '2038-01-19 03:14:07' UTC,
+ * DATETIME '9999-12-31 23:59:59'), regardless of nullability, so that the
+ * meta row's entry in an ordered index on the TTL column sorts after every
+ * purge candidate. Not needed for correctness: DBTUP never expires a ring
+ * meta row whatever this column holds.
+ */
+void NdbRingBufferWriter::setTTLColumnMaxInBuffer(char *buf) const {
+  if (!m_has_ttl_col) return;
+  const ColumnInfo &ci = m_ttl_col_info;
+  if (ci.flags & NdbRecord::IsNullable) {
+    buf[ci.nullbit_byte_offset] &= ~(1 << ci.nullbit_bit_in_byte);
+  }
+  unsigned char *dst = reinterpret_cast<unsigned char *>(buf + ci.offset);
+  memset(dst, 0, ci.max_size);
+  if (m_ttl_col_is_timestamp) {
+    NdbSqlUtil::Timestamp2 ts;
+    ts.second = 0x7FFFFFFF;
+    ts.fraction = 0;
+    NdbSqlUtil::pack_timestamp2(ts, dst, m_ttl_col_prec);
+  } else {
+    NdbSqlUtil::Datetime2 dt;
+    dt.sign = 1;  // positive
+    dt.year = 9999;
+    dt.month = 12;
+    dt.day = 31;
+    dt.hour = 23;
+    dt.minute = 59;
+    dt.second = 59;
+    dt.fraction = 0;
+    NdbSqlUtil::pack_datetime2(dt, dst, m_ttl_col_prec);
+  }
+}
+
 bool NdbRingBufferWriter::pkPrefixMatches(const char *row1,
                                           const char *row2) const {
   for (Uint32 i = 0; i < m_num_pk_prefix_cols; i++) {
@@ -438,7 +551,7 @@ void NdbRingBufferWriter::buildDataMask(const unsigned char *userMask,
 }
 
 // ---------------------------------------------------------------
-// readMetaRow — read the meta row (ring_idx=0) with exclusive lock
+// readMetaRow - read the meta row (ring_idx=0) with exclusive lock
 // ---------------------------------------------------------------
 
 int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
@@ -467,19 +580,26 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
     return -1;
   }
 
+  // Ignore ONLY this meta-read's error (the expected 626 on the first insert
+  // for a PK prefix) and keep it off the transaction-level error, so any
+  // unrelated operations the caller batched into the same transaction retain
+  // their own errors. Mirrors NdbBlob's optional head-read idiom. read_op is
+  // const only because readTuple returns a const handle; NdbRingBufferWriter
+  // is a friend of NdbOperation.
+  const_cast<NdbOperation *>(read_op)->m_noErrorPropagation = true;
+
   m_trans->execute(NdbTransaction::NoCommit,
                    NdbOperation::DefaultAbortOption);
 
   /*
-   * Check the operation-level error, not the transaction error.
-   * With AO_IgnoreError, the transaction may report the 626 as a
-   * transaction-level error, but the operation still carries the
-   * per-operation status.  Error 626 means "tuple not found" which
-   * is the expected case for the first insert on a PK prefix.
+   * Check the operation-level error: with m_noErrorPropagation set above,
+   * the meta read's error never reaches the transaction at all - only the
+   * operation carries it.  Error 626 means "tuple not found", which is
+   * the expected case for the first insert on a PK prefix.
    */
   const NdbError &read_err = read_op->getNdbError();
   if (read_err.code == 0) {
-    // Meta row found — unpack it
+    // Meta row found - unpack it
     m_batch_meta_existed = true;
 
     // Check if ring_meta is null
@@ -490,50 +610,58 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
            (1 << m_ring_meta_info.nullbit_bit_in_byte)) != 0;
     }
 
+    /*
+     * A meta row whose ring_meta is NULL, too short, or of an unknown
+     * version is corrupt - fail instead of silently re-initializing.
+     * Re-init would reset count/total_inserts and turn every existing
+     * data row into a phantom the ring no longer tracks.
+     */
     if (meta_is_null) {
-      // Meta row exists but ring_meta is null — re-init
-      m_batch_meta.init_first_insert();
+      setError(4357, "Corrupt ring_meta value in ring buffer meta row "
+                     "(NULL)");
+      return -1;
+    }
+
+    // Read the packed meta value
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(
+        m_meta_row_buffer + m_ring_meta_info.offset);
+    Uint32 data_len = 0;
+    const unsigned char *data_ptr = nullptr;
+
+    if (m_ring_meta_info.flags & NdbRecord::IsVar1ByteLen) {
+      data_len = p[0];
+      data_ptr = p + 1;
+    } else if (m_ring_meta_info.flags & NdbRecord::IsVar2ByteLen) {
+      data_len = uint2korr(p);
+      data_ptr = p + 2;
     } else {
-      // Read the packed meta value
-      const unsigned char *p = reinterpret_cast<const unsigned char *>(
-          m_meta_row_buffer + m_ring_meta_info.offset);
-      Uint32 data_len = 0;
-      const unsigned char *data_ptr = nullptr;
+      data_len = m_ring_meta_info.max_size;
+      data_ptr = p;
+    }
 
-      if (m_ring_meta_info.flags & NdbRecord::IsVar1ByteLen) {
-        data_len = p[0];
-        data_ptr = p + 1;
-      } else if (m_ring_meta_info.flags & NdbRecord::IsVar2ByteLen) {
-        data_len = uint2korr(p);
-        data_ptr = p + 2;
-      } else {
-        data_len = m_ring_meta_info.max_size;
-        data_ptr = p;
-      }
-
-      if (data_len < RING_META_SIZE) {
-        // Corrupted — re-init
-        m_batch_meta.init_first_insert();
-      } else {
-        m_batch_meta.unpack(data_ptr);
-
-        // Grow adjustment: after ALTER TABLE increases ring_size,
-        // next_pos may point to an occupied slot
-        bool ring_full =
-            (m_batch_meta.count >= m_ring_buffer_size);
-        if (!ring_full && m_batch_meta.next_pos <= m_batch_meta.count) {
-          m_batch_meta.next_pos = m_batch_meta.count + 1;
-        }
-      }
+    if (data_len < RING_META_SIZE) {
+      setError(4357, "Corrupt ring_meta value in ring buffer meta row "
+                     "(too short)");
+      return -1;
+    }
+    m_batch_meta.unpack(data_ptr);
+    if (m_batch_meta.version != RING_META_VERSION) {
+      setError(4357, "Corrupt ring_meta value in ring buffer meta row "
+                     "(unknown version)");
+      return -1;
+    }
+    if (m_batch_meta.next_pos < 1 || m_batch_meta.next_pos > m_ring_buffer_size ||
+        m_batch_meta.count > m_ring_buffer_size) {
+      // next_pos 0 would write the data row onto the meta row
+      setError(4357, "Corrupt ring_meta value in ring buffer meta row "
+                     "(out of range)");
+      return -1;
     }
   } else if (read_err.code == 626) {
-    // Meta row not found — first insert for this PK prefix.
-    // The 626 propagates to theError.code via setOperationErrorCode().
-    // Clear it and release the completed read so subsequent writeTuple
-    // calls on this transaction are not rejected.
-    m_trans->theCommitStatus = NdbTransaction::Started;
-    m_trans->theError.code = 0;
-    m_trans->releaseCompletedOpsAndQueries();
+    // Meta row not found - first insert for this PK prefix. The read op carries
+    // m_noErrorPropagation, so the expected 626 never reached the transaction
+    // error; no transaction cleanup is needed and unrelated operations in the
+    // same transaction keep their own errors (see the meta read above).
     m_batch_meta_existed = false;
     m_batch_meta.init_first_insert();
   } else {
@@ -545,7 +673,7 @@ int NdbRingBufferWriter::readMetaRow(const char *rowBuffer) {
 }
 
 // ---------------------------------------------------------------
-// writeDataRow — queue a writeTuple for one data row
+// writeDataRow - queue a writeTuple for one data row
 // ---------------------------------------------------------------
 
 const NdbOperation *NdbRingBufferWriter::writeDataRow(
@@ -585,7 +713,7 @@ const NdbOperation *NdbRingBufferWriter::writeDataRow(
 }
 
 // ---------------------------------------------------------------
-// writeMetaRow — insert or update the meta row
+// writeMetaRow - insert or update the meta row
 // ---------------------------------------------------------------
 
 int NdbRingBufferWriter::writeMetaRow() {
@@ -609,6 +737,9 @@ int NdbRingBufferWriter::writeMetaRow() {
 
   // Zero NOT NULL non-blob user columns in meta buffer
   zeroNotNullColumnsInBuffer(m_meta_row_buffer);
+
+  // TTL ring: the meta row's TTL column holds the type maximum
+  setTTLColumnMaxInBuffer(m_meta_row_buffer);
 
   NdbOperation::OperationOptions meta_opts;
   memset(&meta_opts, 0, sizeof(meta_opts));
@@ -642,25 +773,55 @@ int NdbRingBufferWriter::writeMetaRow() {
 }
 
 // ---------------------------------------------------------------
-// addRow — main entry point
+// addRow - main entry point
 // ---------------------------------------------------------------
 
 const NdbOperation *NdbRingBufferWriter::addRow(
     const char *rowBuffer, const unsigned char *userMask) {
   if (m_error_code != 0) {
-    return nullptr;  // constructor failed
-  }
-
-  if (!rowBuffer || !userMask) {
-    setError(4000, "NdbRingBufferWriter::addRow: null argument");
+    // Constructor or an earlier operation failed. The writer is bound to
+    // one NdbTransaction, so there is no meaningful recovery: the caller
+    // must roll back the transaction and construct a new writer.
     return nullptr;
   }
 
-  // Debug: clear any stale error from previous operations
-  m_error_code = 0;
-  m_error_message[0] = '\0';
+  if (!rowBuffer || !userMask) {
+    setError(4118, "NdbRingBufferWriter::addRow: null argument");
+    return nullptr;
+  }
 
-  // Path A: batch hit — same PK prefix as current batch
+  // TTL ring: every column except ring_idx/ring_meta must be part of
+  // every row written (see m_required_mask). Columns absent from the
+  // mask keep the overwritten slot's value on a wrap: for the TTL column
+  // that hides the new row behind an expired value, for any column it
+  // leaves a replica whose purge removed the slot unable to rebuild the
+  // row.
+  if (m_required_mask) {
+    for (Uint32 b = 0; b < m_mask_byte_size; b++) {
+      const unsigned char missing = m_required_mask[b] & ~userMask[b];
+      if (missing == 0) continue;
+      Uint32 aid = b * 8;
+      while (((missing >> (aid & 7)) & 1) == 0) aid++;
+      const char *name = "?";
+      for (int i = 0; i < m_table->getNoOfColumns(); i++) {
+        const NdbDictionary::Column *col = m_table->getColumn(i);
+        if (col && static_cast<Uint32>(col->getAttrId()) == aid) {
+          name = col->getName();
+          break;
+        }
+      }
+      char msg[256];
+      snprintf(msg, sizeof(msg),
+               "NdbRingBufferWriter::addRow: column %s is not in the column "
+               "mask; inserts on a TTL ring buffer table must set every "
+               "column",
+               name);
+      setError(4359, msg);
+      return nullptr;
+    }
+  }
+
+  // Path A: batch hit - same PK prefix as current batch
   if (m_batch_active) {
     if (pkPrefixMatches(rowBuffer, m_pk_prefix_buffer)) {
       // Advance meta in memory and queue data write (no execute)
@@ -668,13 +829,13 @@ const NdbOperation *NdbRingBufferWriter::addRow(
       return op;
     }
 
-    // PK prefix changed — flush old batch
+    // PK prefix changed - flush old batch
     if (flush() != 0) {
       return nullptr;
     }
   }
 
-  // Path B: new batch — read meta row, queue first data write
+  // Path B: new batch - read meta row, queue first data write
   if (readMetaRow(rowBuffer) != 0) {
     return nullptr;
   }
@@ -695,7 +856,7 @@ const NdbOperation *NdbRingBufferWriter::addRow(
 }
 
 // ---------------------------------------------------------------
-// flush — finalize pending batch
+// flush - finalize pending batch
 // ---------------------------------------------------------------
 
 int NdbRingBufferWriter::flush() {
@@ -706,4 +867,133 @@ int NdbRingBufferWriter::flush() {
   int ret = writeMetaRow();
   m_batch_active = false;
   return ret;
+}
+
+// ---------------------------------------------------------------
+// computeOldestSlot - math: ring_idx (1-based) of the i-th oldest row
+// ---------------------------------------------------------------
+
+Uint32 NdbRingBufferWriter::computeOldestSlot(const Ring_meta &meta,
+                                              Uint32 i, Uint32 ring_size) {
+  /*
+   * tail = ring_idx of the oldest data row.
+   *   - Full ring (count == ring_size): the slot about to be overwritten
+   *     by the next insert IS the oldest, so tail = next_pos.
+   *   - Partial ring: oldest sits behind next_pos by (count) slots,
+   *     wrapping at ring_size.  Underflow-safe because next_pos >= 1
+   *     and count <= ring_size, so the addition stays >= 0 in Uint32.
+   */
+  Uint32 tail;
+  if (meta.count >= ring_size) {
+    tail = meta.next_pos;
+  } else {
+    tail = ((meta.next_pos + ring_size - meta.count - 1) % ring_size) + 1;
+  }
+  // Walk i slots forward from tail, wrapping at ring_size
+  return ((tail - 1 + i) % ring_size) + 1;
+}
+
+// ---------------------------------------------------------------
+// deleteOldest - public entry point
+// ---------------------------------------------------------------
+
+int NdbRingBufferWriter::deleteOldest(const char *pkPrefixRow,
+                                      Uint32 maxN, Uint32 *outActual) {
+  if (m_error_code != 0) {
+    // Constructor or an earlier operation failed - see addRow(): the
+    // caller must roll back the transaction and construct a new writer.
+    return -1;
+  }
+
+  if (!pkPrefixRow || !outActual) {
+    setError(4118, "NdbRingBufferWriter::deleteOldest: null argument");
+    return -1;
+  }
+
+  /*
+   * A TTL ring buffer table has no deleteOldest: the TTL purge removes
+   * expired rows in scan order, so the oldest slots may already be empty
+   * and the visible rows no longer form a contiguous span. Consumers use
+   * ring_idx / total_inserts offsets instead.
+   */
+  *outActual = 0;
+  if (m_table->isTTLEnabled()) {
+    setError(4358, "NdbRingBufferWriter::deleteOldest: not supported on a "
+                   "ring buffer table with TTL");
+    return -1;
+  }
+
+  // maxN == 0 is a pure no-op: don't take the exclusive meta lock (or
+  // even flush) for a call that cannot delete anything.
+  if (maxN == 0) {
+    return 0;
+  }
+
+  // Auto-flush any pending insert batch - its meta write must be applied
+  // (executed) before we read the meta row here, or we'd see stale state.
+  if (m_batch_active) {
+    if (flush() != 0) return -1;
+  }
+
+  // Read meta with LM_Exclusive - serializes with concurrent inserts /
+  // delete-oldest on the same PK prefix until the txn commits.
+  if (readMetaRow(pkPrefixRow) != 0) return -1;
+
+  // Empty ring (no meta row, or meta exists with count=0): no-op success.
+  if (!m_batch_meta_existed || m_batch_meta.count == 0) {
+    return 0;
+  }
+
+  const Uint32 popN =
+      (maxN < m_batch_meta.count) ? maxN : m_batch_meta.count;
+
+  // Cache PK prefix so writeMetaRow() can build the meta row's key.
+  memcpy(m_pk_prefix_buffer, pkPrefixRow, m_row_size);
+
+  NdbOperation::OperationOptions del_opts;
+  memset(&del_opts, 0, sizeof(del_opts));
+  del_opts.optionsPresent =
+      NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+
+  /*
+   * Queue one deleteTuple per oldest slot.  buildSignalsNdbRecord copies
+   * the key buffer at call time, so we can reuse m_data_row_buffer
+   * across iterations.  m_data_row_buffer gets the full pkPrefixRow
+   * memcpy'd in (sets PK columns; non-PK column values are irrelevant
+   * for deleteTuple key extraction) plus ring_idx overwritten per slot.
+   */
+  for (Uint32 i = 0; i < popN; i++) {
+    Uint32 slot =
+        computeOldestSlot(m_batch_meta, i, m_ring_buffer_size);
+
+    memcpy(m_data_row_buffer, pkPrefixRow, m_row_size);
+    setRingIdxInBuffer(m_data_row_buffer, slot);
+
+    const NdbOperation *del_op = m_trans->deleteTuple(
+        m_ndb_record, m_data_row_buffer, m_ndb_record,
+        nullptr,  // result row
+        nullptr,  // result mask
+        &del_opts, sizeof(NdbOperation::OperationOptions));
+
+    if (!del_op) {
+      const NdbError &err = m_trans->getNdbError();
+      setError(err.code, err.message);
+      return -1;
+    }
+  }
+
+  /*
+   * Update meta: count -= popN.  next_pos and total_inserts unchanged
+   * - that's what makes subsequent inserts refill the freed slots in
+   * arrival order with no permanent hole.
+   */
+  m_batch_meta.count -= popN;
+
+  // writeMetaRow uses m_pk_prefix_buffer + m_batch_meta_existed (true,
+  // so it issues updateTuple) and finishes with execute(NoCommit) -
+  // single round-trip flushes the queued deletes plus the meta update.
+  if (writeMetaRow() != 0) return -1;
+
+  *outActual = popN;
+  return 0;
 }

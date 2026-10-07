@@ -74,4 +74,10 @@ public interface Table {
     /** Get the ring_meta system column; null if not a ring buffer */
     Column getRingMetaColumn();
 
+    /** Does this table have TTL enabled? */
+    boolean isTTLEnabled();
+
+    /** Get the TTL column; null if TTL is not enabled */
+    Column getTTLColumn();
+
 }

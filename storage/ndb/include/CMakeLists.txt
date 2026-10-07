@@ -100,6 +100,7 @@ SET(NDB_NDBAPI_HEADERS
   ndbapi/NdbInterpretedCode.hpp
   ndbapi/NdbAggregator.hpp
   ndbapi/NdbAggregationCommon.hpp
+  ndbapi/NdbRingBufferWriter.hpp
   )
 
 SET(NDB_MGMAPI_HEADERS

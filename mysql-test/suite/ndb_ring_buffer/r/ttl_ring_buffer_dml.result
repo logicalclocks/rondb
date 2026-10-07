@@ -1,0 +1,361 @@
+SET time_zone = '+00:00';
+#
+# Case 1: multi-row INSERT fills and wraps over expired slots like live ones
+#
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb (client_id, ts, val) VALUES
+(1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1'),
+(1, NOW(), 'live_2'),
+(1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_3'),
+(1, NOW(), 'live_4');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	4	live_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000001000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'wrap_5'), (1, NOW(), 'wrap_6');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	wrap_5
+1	2	wrap_6
+1	4	live_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000003000000040000000000000006000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+5
+#
+# Case 2: LOAD DATA - rows loaded with a past TTL value occupy their slots invisibly
+#
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_ttl_load.csv'
+    INTO TABLE test.rb (client_id, ts, val);
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	val
+2	2	load_live_2
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 2 AND ring_idx = 0;
+HEX(ring_meta)
+0100000004000000030000000000000003000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 3: INSERT ... SELECT copies the visible rows only (no expired rows, no meta rows)
+#
+INSERT INTO test.rb (client_id, ts, val)
+SELECT 3, ts, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	val
+3	1	wrap_5
+3	2	wrap_6
+3	3	live_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 3 AND ring_idx = 0;
+HEX(ring_meta)
+0100000004000000030000000000000003000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 4: unique index - an expired row keeps its unique value until the ring overwrites the slot
+#
+CREATE TABLE test.rb_u (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+code INT NOT NULL,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 100);
+SELECT id, ring_idx, code FROM test.rb_u ORDER BY ring_idx;
+id	ring_idx	code
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 100);
+ERROR 23000: Duplicate entry '100' for key 'rb_u.idx_code'
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 200);
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 300);
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 100);
+SELECT id, ring_idx, code FROM test.rb_u ORDER BY ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	200
+1	3	300
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_u WHERE id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_u;
+#
+# Case 5: scan UPDATE matches visible rows only; a NULL TTL value never expires
+#
+UPDATE test.rb SET val = CONCAT(val, '_u') WHERE client_id = 1;
+affected rows: 3
+info: Rows matched: 3  Changed: 3  Warnings: 0
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	wrap_5_u
+1	2	wrap_6_u
+1	4	live_4_u
+UPDATE test.rb SET ts = NULL WHERE client_id = 1 AND ring_idx = 3;
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+UPDATE test.rb SET ts = NULL WHERE client_id = 1 AND ring_idx = 4;
+UPDATE test.rb SET ts = DATE_SUB(NOW(), INTERVAL 5 HOUR) WHERE client_id = 1 AND ring_idx = 1;
+SELECT client_id, ring_idx, val, ts IS NULL AS never_expires FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val	never_expires
+1	2	wrap_6_u	0
+1	4	live_4_u	1
+#
+# Case 6: a NULL-TTL row is overwritten by the ring like any other slot
+#
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'over_7'), (1, NOW(), 'over_8');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	wrap_6_u
+1	3	over_7
+1	4	over_8
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000001000000040000000000000008000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 7: DELETE forms leave expired rows behind; ttl_expired_rows_visible_in_delete removes them
+#
+CREATE TABLE test.rb_del (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_del (client_id, ts, val) VALUES
+(5, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p5_exp_1'),
+(5, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p5_exp_2'),
+(5, NOW(), 'p5_live_3'),
+(6, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p6_exp_1'),
+(6, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p6_exp_2');
+SELECT client_id, ring_idx, val FROM test.rb_del ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+5	3	p5_live_3
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+7
+DELETE FROM test.rb_del WHERE client_id = 6;
+affected rows: 1
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+6
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
+affected rows: 2
+SELECT COUNT(*) FROM test.rb_del;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_del;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+4
+INSERT INTO test.rb_del (client_id, ts, val) VALUES (6, NOW(), 'p6_fresh_1');
+SELECT client_id, ring_idx, val FROM test.rb_del ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+6	1	p6_fresh_1
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM test.rb_del WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+6	0100000002000000010000000000000001000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+5
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
+affected rows: 2
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+3
+SET SESSION ttl_expired_rows_visible_in_delete = 1;
+DELETE FROM test.rb_del WHERE client_id = 5;
+affected rows: 2
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+1
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
+affected rows: 1
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+0
+SET SESSION ttl_expired_rows_visible_in_delete = 0;
+INSERT INTO test.rb_del (client_id, ts, val) VALUES
+(7, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p7_exp_1'),
+(7, NOW(), 'p7_live_2');
+TRUNCATE TABLE test.rb_del;
+SELECT COUNT(*) FROM test.rb_del;
+COUNT(*)
+0
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del';
+physical_rows
+0
+INSERT INTO test.rb_del (client_id, ts, val) VALUES (7, NOW(), 'after_truncate');
+SELECT client_id, ring_idx, val FROM test.rb_del ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+7	1	after_truncate
+DROP TABLE test.rb_del;
+#
+# Case 8: a rolled-back INSERT over an expired slot leaves the slot expired and the meta row unchanged
+#
+BEGIN;
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'txn_9');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	txn_9
+1	2	wrap_6_u
+1	3	over_7
+1	4	over_8
+ROLLBACK;
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	wrap_6_u
+1	3	over_7
+1	4	over_8
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000001000000040000000000000008000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+BEGIN;
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'txn_10');
+COMMIT;
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	txn_10
+1	2	wrap_6_u
+1	3	over_7
+1	4	over_8
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000002000000040000000000000009000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 9: OPTIMIZE TABLE with expired rows present
+#
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+13
+OPTIMIZE TABLE test.rb;
+Table	Op	Msg_type	Msg_text
+test.rb	optimize	status	OK
+SELECT client_id, COUNT(*) AS visible FROM test.rb GROUP BY client_id ORDER BY client_id;
+client_id	visible
+1	4
+2	1
+3	3
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+13
+DROP TABLE test.rb;
+#
+# Case 10: an INSERT that omits columns writes their defaults into the slot it overwrites
+#
+CREATE TABLE test.rb_omit (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+note VARCHAR(20) DEFAULT 'dflt',
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+INSERT INTO test.rb_omit (client_id, ts, val, note) VALUES
+(1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1', 'old_note_1'),
+(1, NOW(), 'live_2', 'old_note_2');
+SELECT client_id, ring_idx, val, note FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note
+1	2	live_2	old_note_2
+INSERT INTO test.rb_omit (client_id, val) VALUES (1, 'wrap_3');
+SELECT client_id, ring_idx, val, note, ts IS NULL AS ts_null FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	ts_null
+1	1	wrap_3	dflt	1
+1	2	live_2	old_note_2	0
+INSERT INTO test.rb_omit (client_id, ts, val) VALUES (1, NOW(), 'wrap_4'), (1, NOW(), 'wrap_5');
+SELECT client_id, ring_idx, val, note FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note
+1	1	wrap_5	dflt
+1	2	wrap_4	dflt
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_omit_load.csv'
+    INTO TABLE test.rb_omit (client_id, val);
+SELECT client_id, ring_idx, val, note, ts IS NULL AS ts_null FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	ts_null
+1	1	wrap_5	dflt	0
+1	2	load_6	dflt	1
+DROP TABLE test.rb_omit;
+#
+# Case 11: the meta row's TTL column is the type maximum after multi-row INSERTs too
+#
+CREATE TABLE test.rb_batch (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+CREATE TABLE test.rb_batch_nn (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts DATETIME NOT NULL DEFAULT '2000-01-01 00:00:00',
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_batch (client_id, ts, val) VALUES (1, NOW(), 'a'), (1, NOW(), 'b');
+INSERT INTO test.rb_batch (client_id, ts, val) VALUES (2, NOW(), 'a');
+INSERT INTO test.rb_batch (client_id, ts, val) VALUES (2, NOW(), 'b'), (2, NOW(), 'c');
+INSERT INTO test.rb_batch_nn (client_id, ts, val) VALUES (1, NOW(), 'a'), (1, NOW(), 'b');
+INSERT INTO test.rb_batch_nn (client_id, ts, val) VALUES (2, NOW(), 'a');
+INSERT INTO test.rb_batch_nn (client_id, ts, val) VALUES (2, NOW(), 'b'), (2, NOW(), 'c');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ts FROM test.rb_batch WHERE ring_idx = 0 ORDER BY client_id;
+client_id	ts
+1	2038-01-19 03:14:07
+2	2038-01-19 03:14:07
+SELECT client_id, ts FROM test.rb_batch_nn WHERE ring_idx = 0 ORDER BY client_id;
+client_id	ts
+1	9999-12-31 23:59:59
+2	9999-12-31 23:59:59
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT client_id, COUNT(*) AS visible FROM test.rb_batch GROUP BY client_id ORDER BY client_id;
+client_id	visible
+1	2
+2	3
+SELECT client_id, COUNT(*) AS visible FROM test.rb_batch_nn GROUP BY client_id ORDER BY client_id;
+client_id	visible
+1	2
+2	3
+DROP TABLE test.rb_batch;
+DROP TABLE test.rb_batch_nn;
+#
+# Done
+#

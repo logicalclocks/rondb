@@ -276,6 +276,8 @@ public class NdbDictionary extends Wrapper
         int/*_Uint32_*/ getRingBufferSize() /*_const_*/;
         int/*_Uint32_*/ getRingIdxColumnNo() /*_const_*/;
         int/*_Uint32_*/ getRingMetaColumnNo() /*_const_*/;
+        boolean isTTLEnabled() /*_const_*/;
+        int/*_Uint32_*/ getTTLColumnNo() /*_const_*/;
     }
     static public class Table extends Object implements TableConst
     {
@@ -319,6 +321,8 @@ public class NdbDictionary extends Wrapper
         public final native int/*_Uint32_*/ getRingBufferSize() /*_const_*/;
         public final native int/*_Uint32_*/ getRingIdxColumnNo() /*_const_*/;
         public final native int/*_Uint32_*/ getRingMetaColumnNo() /*_const_*/;
+        public final native boolean isTTLEnabled() /*_const_*/;
+        public final native int/*_Uint32_*/ getTTLColumnNo() /*_const_*/;
         static public native Table create(String/*_const char *_*/ name /*_= ""_*/); // MMM non-final, support for derivation
         static public native Table create(TableConst/*_const Table &_*/ table); // MMM non-final, support for derivation
         static public /*_virtual_*/ native void delete(Table p0); // MMM non-final, support for derivation

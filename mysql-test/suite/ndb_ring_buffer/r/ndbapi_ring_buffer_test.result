@@ -29,8 +29,8 @@ CREATE DATABASE IF NOT EXISTS test;
   PASS: Multiple wraps in single batch
 [Test 13] Multi-column PK prefix
   PASS: Multi-column PK prefix
-[Test 14] Unique dup — same PK prefix
-  PASS: Unique dup — same PK prefix
+[Test 14] Unique dup - same PK prefix
+  PASS: Unique dup - same PK prefix
 [Test 15] Unique wrap collision
   PASS: Unique wrap collision
 [Test 16] Freed unique value reuse
@@ -38,10 +38,49 @@ CREATE DATABASE IF NOT EXISTS test;
 [Test 17] Concurrent same-prefix inserts
   Data rows: 5
   Total rows (with meta): 6
+  Meta: count=5 total_inserts=40
   PASS: Concurrent same-prefix inserts
+[Test 18] deleteOldest - basic partial ring
+  PASS: deleteOldest - basic partial ring
+[Test 19] deleteOldest - clamp + idempotent on drained
+  PASS: deleteOldest - clamp + idempotent on drained
+[Test 20] deleteOldest - empty table
+  PASS: deleteOldest - empty table
+[Test 21] deleteOldest - after wrap
+  PASS: deleteOldest - after wrap
+[Test 22] deleteOldest - refill order (no-hole proof)
+  PASS: deleteOldest - refill order (no-hole proof)
+[Test 23] deleteOldest - multi-prefix isolation
+  PASS: deleteOldest - multi-prefix isolation
+[Test 24] raw-API ring buffer resize rejected
+  PASS: raw-API ring buffer resize rejected
+[Test 25] meta-read absorb preserves unrelated op error
+  PASS: meta-read absorb preserves unrelated op error
+[Test 26] refreshTuple on ring buffer table blocked
+  PASS: refreshTuple on ring buffer table blocked
+[Test 27] DICT validates ring metadata on create
+  PASS: DICT validates ring metadata on create
+[Test 28] DICT rules for TTL / fully-replicated + ring combos
+  PASS: DICT rules for TTL / fully-replicated + ring combos
+[Test 29] add-fragment ALTER on ring buffer table rejected
+  PASS: add-fragment ALTER on ring buffer table rejected
+[Test 30] corrupt ring_meta rejected
+  PASS: corrupt ring_meta rejected
+[Test 31] deleteOldest - maxN=0, auto-flush, ring_size=1
+  PASS: deleteOldest - maxN=0, auto-flush, ring_size=1
+[Test 32] deleteOldest - blob table
+  PASS: deleteOldest - blob table
+[Test 33] TTL ring - meta TTL column = max, deleteOldest rejected
+  PASS: TTL ring - meta TTL column = max, deleteOldest rejected
+[Test 34] TTL ring - meta row never expires (zero TTL column)
+  PASS: TTL ring - meta row never expires (zero TTL column)
+[Test 35] TTL ring - only-expired delete passes the ring write guard
+  PASS: TTL ring - only-expired delete passes the ring write guard
+[Test 36] TTL ring - TIMESTAMP(3) meta maximum, every column mandatory
+  PASS: TTL ring - TIMESTAMP(3) meta maximum, every column mandatory
 
 === Results ===
-Passed: 17
+Passed: 36
 Failed: 0
 #
 # Done

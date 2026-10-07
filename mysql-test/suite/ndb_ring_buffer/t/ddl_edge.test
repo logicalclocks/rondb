@@ -8,7 +8,7 @@
 --source include/have_ndb.inc
 
 ###############################################################################
-# Case 1: CREATE TABLE ... LIKE — preserves MAX_ROWS_PER_PK
+# Case 1: CREATE TABLE ... LIKE - preserves MAX_ROWS_PER_PK
 ###############################################################################
 
 --echo #
@@ -65,12 +65,12 @@ CREATE TABLE test.rb_src (
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_A');
 INSERT INTO test.rb_src (id, val) VALUES (1, 'src_B');
 
-# CREATE AS SELECT creates a new table — it should NOT be a ring buffer
+# CREATE AS SELECT creates a new table - it should NOT be a ring buffer
 # It copies the data but not the NDB_TABLE comment semantics
 CREATE TABLE test.rb_as_sel ENGINE=NDB AS
     SELECT id, ring_idx, val FROM test.rb_src WHERE id = 1;
 
-# The new table is a regular NDB table — no MAX_ROWS_PER_PK in SHOW CREATE
+# The new table is a regular NDB table - no MAX_ROWS_PER_PK in SHOW CREATE
 SHOW CREATE TABLE test.rb_as_sel;
 
 # Should contain the selected rows
@@ -171,7 +171,7 @@ DROP TABLE test.rb_varchar;
 ###############################################################################
 
 --echo #
---echo # Case 5: CHAR PK prefix — fixed-length string
+--echo # Case 5: CHAR PK prefix - fixed-length string
 --echo #
 
 CREATE TABLE test.rb_char (
@@ -231,8 +231,10 @@ INSERT INTO test.rb_mixed_pk (region, client_id, data) VALUES ('US-East', 1, 'r6
 SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
     WHERE region = 'US-East' AND client_id = 1 ORDER BY ring_idx;
 
-# DELETE by partial PK prefix (region only)
+# DELETE by partial PK prefix (region only) is rejected; name the rings
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_mixed_pk WHERE region = 'US-East';
+DELETE FROM test.rb_mixed_pk WHERE region = 'US-East' AND client_id IN (1, 2);
 
 SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
     ORDER BY region, client_id, ring_idx;
@@ -244,7 +246,7 @@ DROP TABLE test.rb_mixed_pk;
 ###############################################################################
 
 --echo #
---echo # Case 7: 4-column composite PK — 3 prefix columns + ring_idx
+--echo # Case 7: 4-column composite PK - 3 prefix columns + ring_idx
 --echo #
 
 CREATE TABLE test.rb_4pk (
@@ -281,8 +283,12 @@ DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 100;
 SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
     ORDER BY region, dept, user_id, ring_idx;
 
-# DELETE by partial prefix (region only)
+# DELETE by partial prefix (region only) is rejected; delete the
+# remaining rings of region 1 by their full prefix
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_4pk WHERE region = 1;
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 200;
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 20 AND user_id = 100;
 
 SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
     ORDER BY region, dept, user_id, ring_idx;
@@ -290,7 +296,7 @@ SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
 DROP TABLE test.rb_4pk;
 
 ###############################################################################
-# Case 8: SHOW TABLE STATUS — row count
+# Case 8: SHOW TABLE STATUS - row count
 ###############################################################################
 
 --echo #
@@ -316,10 +322,9 @@ INSERT INTO test.rb_status (id, val) VALUES (2, 'c');
 --replace_column 2 # 3 # 4 # 5 # 6 # 7 # 8 # 9 # 10 # 11 # 12 # 13 # 14 # 15 # 16 # 17 # 18 #
 SHOW TABLE STATUS FROM test LIKE 'rb_status';
 
-# Known limitation: bare SELECT COUNT(*) without WHERE uses NDB's
-# handler::records() fast path which returns the physical row count
-# (includes meta rows).  COUNT(*) with a WHERE clause uses a scan
-# that correctly filters meta rows.
+# Bare SELECT COUNT(*) must not include the hidden meta rows: the
+# instant row-count fast path is disabled for ring buffer tables, so
+# the count comes from a scan that filters meta rows.
 SELECT COUNT(*) AS visible_rows FROM test.rb_status;
 
 DROP TABLE test.rb_status;
@@ -356,11 +361,11 @@ SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT
 DROP TABLE test.rb_is;
 
 ###############################################################################
-# Case 10: DROP COLUMN that is ring_idx or ring_meta — should error
+# Case 10: DROP COLUMN that is ring_idx or ring_meta - should error
 ###############################################################################
 
 --echo #
---echo # Case 10: ALTER TABLE DROP ring_idx/ring_meta columns — blocked
+--echo # Case 10: ALTER TABLE DROP ring_idx/ring_meta columns - blocked
 --echo #
 
 CREATE TABLE test.rb_drop_col (
@@ -418,7 +423,7 @@ INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_B');
 SELECT id, ring_idx, val FROM test.rb_trigger ORDER BY ring_idx;
 SELECT log_id, logged_id, logged_val FROM test.trigger_log ORDER BY log_id;
 
-# Wrap — trigger still fires
+# Wrap - trigger still fires
 INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_C');
 INSERT INTO test.rb_trigger (id, val) VALUES (1, 'trig_D');
 
@@ -430,11 +435,11 @@ DROP TABLE test.trigger_log;
 DROP TABLE test.rb_trigger;
 
 ###############################################################################
-# Case 12: CREATE TABLE with index on ring buffer internal columns — blocked
+# Case 12: CREATE TABLE with index on ring buffer internal columns - blocked
 ###############################################################################
 
 --echo #
---echo # Case 12: CREATE TABLE with index on ring_idx — blocked
+--echo # Case 12: CREATE TABLE with index on ring_idx - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -449,7 +454,7 @@ CREATE TABLE test.rb_idx_on_internal (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
---echo # Case 13: CREATE TABLE with index on ring_meta — blocked
+--echo # Case 13: CREATE TABLE with index on ring_meta - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -464,7 +469,7 @@ CREATE TABLE test.rb_idx_on_meta (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
---echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+--echo # Case 14: CREATE TABLE with UNIQUE index on ring_idx - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -479,7 +484,7 @@ CREATE TABLE test.rb_uniq_on_internal (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
---echo # Case 15: CREATE TABLE with composite index including ring_idx — blocked
+--echo # Case 15: CREATE TABLE with composite index including ring_idx - blocked
 --echo #
 
 --error ER_CANT_CREATE_TABLE
@@ -494,11 +499,11 @@ CREATE TABLE test.rb_composite_idx (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 ###############################################################################
-# Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns — blocked
+# Case 16: ALTER TABLE ADD INDEX on ring buffer internal columns - blocked
 ###############################################################################
 
 --echo #
---echo # Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+--echo # Case 16: ALTER TABLE ADD INDEX on ring_idx - blocked
 --echo #
 
 CREATE TABLE test.rb_alter_idx (
@@ -526,5 +531,70 @@ INSERT INTO test.rb_alter_idx (id, val) VALUES (1, 'test_B');
 SELECT id, ring_idx, val FROM test.rb_alter_idx ORDER BY ring_idx;
 
 DROP TABLE test.rb_alter_idx;
+
+--echo #
+--echo # Case 17: OPTIMIZE TABLE - reclaims var parts, no 940
+--echo #
+
+CREATE TABLE test.rb_opt (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(2000),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb_opt (id, val) VALUES (1, REPEAT('x', 2000));
+INSERT INTO test.rb_opt (id, val) VALUES (1, REPEAT('y', 2000));
+INSERT INTO test.rb_opt (id, val) VALUES (2, REPEAT('z', 2000));
+# shrink a var part so OPTIMIZE has something to move
+UPDATE test.rb_opt SET val = 'small' WHERE id = 1 AND ring_idx = 1;
+
+OPTIMIZE TABLE test.rb_opt;
+
+# Data unchanged and ring still works afterwards
+SELECT id, ring_idx, LENGTH(val) AS len FROM test.rb_opt ORDER BY id, ring_idx;
+INSERT INTO test.rb_opt (id, val) VALUES (1, 'post_opt');
+SELECT id, ring_idx, LEFT(val, 8) AS v FROM test.rb_opt WHERE id = 1 ORDER BY ring_idx;
+
+DROP TABLE test.rb_opt;
+
+--echo #
+--echo # Case 18: STORAGE DISK user column - ring works end-to-end
+--echo #
+
+# PK and internal ring columns are always in-memory; a disk-stored user
+# column composes with the ring paths (insert, wrap, meta, delete).
+CREATE LOGFILE GROUP lg_rb ADD UNDOFILE 'lg_rb_undo.dat'
+    INITIAL_SIZE 16M UNDO_BUFFER_SIZE 1M ENGINE NDB;
+CREATE TABLESPACE ts_rb ADD DATAFILE 'ts_rb_data.dat'
+    USE LOGFILE GROUP lg_rb INITIAL_SIZE 32M ENGINE NDB;
+
+CREATE TABLE test.rb_disk (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    payload VARCHAR(200) STORAGE DISK,
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB
+  TABLESPACE ts_rb
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'a');
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'b');
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'c');
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'd');
+SELECT id, ring_idx, payload FROM test.rb_disk ORDER BY id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, HEX(ring_meta) FROM test.rb_disk WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+DELETE FROM test.rb_disk WHERE id = 1;
+SELECT COUNT(*) FROM test.rb_disk;
+DROP TABLE test.rb_disk;
+
+ALTER TABLESPACE ts_rb DROP DATAFILE 'ts_rb_data.dat';
+DROP TABLESPACE ts_rb;
+DROP LOGFILE GROUP lg_rb ENGINE NDB;
 
 --echo # Done.

@@ -32,7 +32,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 --echo #
 
 --echo #
---echo # Case 1: UPDATE user column on data row — allowed
+--echo # Case 1: UPDATE user column on data row - allowed
 --echo #
 
 UPDATE test.rb SET event_data = 'updated_A'
@@ -42,7 +42,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
 --echo #
---echo # Case 2: UPDATE user column via scan (no ring_idx in WHERE) — allowed
+--echo # Case 2: UPDATE user column via scan (no ring_idx in WHERE) - allowed
 --echo #
 
 UPDATE test.rb SET event_data = 'scan_update'
@@ -52,21 +52,21 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
 --echo #
---echo # Case 3: UPDATE ring_idx column — blocked
+--echo # Case 3: UPDATE ring_idx column - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 UPDATE test.rb SET ring_idx = 5 WHERE client_id = 1 AND ring_idx = 1;
 
 --echo #
---echo # Case 4: UPDATE ring_meta column — blocked
+--echo # Case 4: UPDATE ring_meta column - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 UPDATE test.rb SET ring_meta = 'bad' WHERE client_id = 1 AND ring_idx = 1;
 
 --echo #
---echo # Case 5: UPDATE meta row (ring_idx=0) — blocked
+--echo # Case 5: UPDATE meta row (ring_idx=0) - blocked
 --echo # Need show_meta=ON to make the scan see the meta row
 --echo #
 
@@ -96,7 +96,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 2 ORDER BY ring_idx;
 
 --echo #
---echo # Case 8: UPDATE non-existent row — 0 rows affected, no error
+--echo # Case 8: UPDATE non-existent row - 0 rows affected, no error
 --echo #
 
 UPDATE test.rb SET event_data = 'ghost'
@@ -105,7 +105,7 @@ UPDATE test.rb SET event_data = 'ghost'
 SELECT ROW_COUNT();
 
 --echo #
---echo # Case 9: UPDATE ring_idx + user column together — blocked
+--echo # Case 9: UPDATE ring_idx + user column together - blocked
 --echo # (ring_idx in write_set triggers block even if user col also present)
 --echo #
 
@@ -118,7 +118,7 @@ UPDATE test.rb SET ring_idx = 9, event_data = 'sneaky'
 --echo #
 
 --echo #
---echo # Case 10: DELETE with full PK prefix — allowed
+--echo # Case 10: DELETE with full PK prefix - allowed
 --echo # Deletes all data rows + meta row for client_id=2
 --echo #
 
@@ -145,25 +145,28 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 2 ORDER BY ring_idx;
 
 --echo #
---echo # Case 12: DELETE individual row (ring_idx in WHERE) — blocked
+--echo # Case 12: DELETE individual row (ring_idx in WHERE) - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 DELETE FROM test.rb WHERE client_id = 1 AND ring_idx = 1;
 
 --echo #
---echo # Case 13: DELETE with non-PK column in WHERE — blocked
+--echo # Case 13: DELETE with non-PK column in WHERE - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 DELETE FROM test.rb WHERE client_id = 1 AND event_data = 'ev_C';
 
 --echo #
---echo # Case 14: DELETE without WHERE (full table) — allowed
---echo # Clears all data rows + meta rows for all PK prefixes
+--echo # Case 14: DELETE without WHERE (full table) - rejected
+--echo # It could not lock the rings it deletes; TRUNCATE clears all data
+--echo # rows + meta rows for all PK prefixes
 --echo #
 
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb;
+TRUNCATE TABLE test.rb;
 
 # Verify table is completely empty
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -214,20 +217,22 @@ SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
     ORDER BY region, client_id, ring_idx;
 
 --echo #
---echo # Case 17: Partial PK prefix — allowed (deletes all client_ids in region)
+--echo # Case 17: Partial PK prefix - rejected; name the rings of the region
 --echo #
 
 # Re-populate region=1, client_id=200 (was deleted in Case 16)
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (1, 200, 'r1c200');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (2, 300, 'r2c300');
 
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_multi WHERE region = 1;
+DELETE FROM test.rb_multi WHERE region = 1 AND client_id IN (100, 200);
 
 SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
     ORDER BY region, client_id, ring_idx;
 
 --echo #
---echo # Case 18: DELETE with IN() on PK column — allowed
+--echo # Case 18: DELETE with IN() on PK column - allowed
 --echo #
 
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (2, 400, 'r2c400');
@@ -245,34 +250,36 @@ SELECT region, client_id, ring_idx FROM test.rb_multi
 SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
---echo # Case 19: DELETE with range on PK column — allowed
+--echo # Case 19: DELETE with range on PK column - rejected, IN () allowed
 --echo #
 
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 100, 'r3c100');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 200, 'r3c200');
 INSERT INTO test.rb_multi (region, client_id, event_data) VALUES (3, 300, 'r3c300');
 
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_multi WHERE region = 3 AND client_id > 100;
+DELETE FROM test.rb_multi WHERE region = 3 AND client_id IN (200, 300);
 
 SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
     WHERE region = 3 ORDER BY client_id, ring_idx;
 
 --echo #
---echo # Case 20: DELETE with non-PK column in WHERE — blocked
+--echo # Case 20: DELETE with non-PK column in WHERE - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 DELETE FROM test.rb_multi WHERE region = 3 AND event_data = 'r3c100';
 
 --echo #
---echo # Case 21: DELETE with ring_idx in WHERE — blocked
+--echo # Case 21: DELETE with ring_idx in WHERE - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 DELETE FROM test.rb_multi WHERE region = 3 AND client_id = 100 AND ring_idx = 1;
 
 --echo #
---echo # Case 22: DELETE non-existent prefix — allowed (0 rows, no error)
+--echo # Case 22: DELETE non-existent prefix - allowed (0 rows, no error)
 --echo #
 
 DELETE FROM test.rb_multi WHERE region = 99 AND client_id = 99;
@@ -338,7 +345,7 @@ CREATE TABLE test.rb_full (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-# Fill ring: 5 inserts on size=3 → ring wraps, slots 1-3 hold last 3 values
+# Fill ring: 5 inserts on size=3 -> ring wraps, slots 1-3 hold last 3 values
 INSERT INTO test.rb_full (id, data) VALUES (1, 'a');
 INSERT INTO test.rb_full (id, data) VALUES (1, 'b');
 INSERT INTO test.rb_full (id, data) VALUES (1, 'c');
@@ -378,7 +385,7 @@ INSERT INTO test.rb_upd (client_id, event_data) VALUES (2, 'b1');
 INSERT INTO test.rb_upd (client_id, event_data) VALUES (2, 'b2');
 
 --echo #
---echo # Case 26: UPDATE without WHERE — all data rows updated
+--echo # Case 26: UPDATE without WHERE - all data rows updated
 --echo #
 
 UPDATE test.rb_upd SET event_data = 'blanket';
@@ -387,7 +394,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb_upd
     ORDER BY client_id, ring_idx;
 
 --echo #
---echo # Case 27: UPDATE ring_meta + user column together — blocked
+--echo # Case 27: UPDATE ring_meta + user column together - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
@@ -449,36 +456,41 @@ INSERT INTO test.rb_del (id, val) VALUES (4, 'd');
 INSERT INTO test.rb_del (id, val) VALUES (5, 'e');
 
 --echo #
---echo # Case 30: DELETE with OR on PK columns — allowed
+--echo # Case 30: DELETE with OR on PK columns - rejected, IN () allowed
 --echo #
 
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_del WHERE id = 1 OR id = 2;
+DELETE FROM test.rb_del WHERE id IN (1, 2);
 
 SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
 
 --echo #
---echo # Case 31: DELETE with BETWEEN on PK column — allowed
+--echo # Case 31: DELETE with BETWEEN on PK column - rejected, IN () allowed
 --echo #
 
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_del WHERE id BETWEEN 3 AND 4;
+DELETE FROM test.rb_del WHERE id IN (3, 4);
 
 SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
 
 --echo #
---echo # Case 32: DELETE with mixed PK/non-PK in OR — blocked
+--echo # Case 32: DELETE with mixed PK/non-PK in OR - blocked
 --echo #
 
 --error ER_ILLEGAL_HA
 DELETE FROM test.rb_del WHERE id = 5 OR val = 'e';
 
 --echo #
---echo # Case 33: DELETE on empty table — allowed (0 rows)
+--echo # Case 33: DELETE on empty table - allowed (0 rows)
 --echo #
 
 # Clear remaining data
 DELETE FROM test.rb_del WHERE id = 5;
 
-# Bare DELETE on now-empty table
+# Bare DELETE is rejected, also on an empty table
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_del;
 
 # WHERE DELETE on empty table
@@ -489,7 +501,7 @@ SELECT id, ring_idx, val FROM test.rb_del ORDER BY id, ring_idx;
 DROP TABLE test.rb_del;
 
 --echo #
---echo # Case 34: Bare DELETE on multi-column PK table — allowed
+--echo # Case 34: Bare DELETE on multi-column PK table - rejected, TRUNCATE
 --echo #
 
 CREATE TABLE test.rb_multi2 (
@@ -506,7 +518,9 @@ INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 10, 'a');
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (1, 20, 'b');
 INSERT INTO test.rb_multi2 (region, client_id, val) VALUES (2, 30, 'c');
 
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_multi2;
+TRUNCATE TABLE test.rb_multi2;
 
 SELECT region, client_id, ring_idx, val FROM test.rb_multi2
     ORDER BY region, client_id, ring_idx;
@@ -537,7 +551,7 @@ CREATE TABLE test.rb_cycle (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-# Fill and wrap (ring_size=3, 4 inserts → wraps once)
+# Fill and wrap (ring_size=3, 4 inserts -> wraps once)
 INSERT INTO test.rb_cycle (id, data) VALUES (1, 'a');
 INSERT INTO test.rb_cycle (id, data) VALUES (1, 'b');
 INSERT INTO test.rb_cycle (id, data) VALUES (1, 'c');
@@ -562,7 +576,7 @@ SELECT id, ring_idx, data FROM test.rb_cycle ORDER BY ring_idx;
 DROP TABLE test.rb_cycle;
 
 --echo #
---echo # Case 36: DELETE with LIMIT (high enough to cover all rows)
+--echo # Case 36: DELETE with LIMIT, ORDER BY, or multi-table form - blocked
 --echo #
 
 CREATE TABLE test.rb_limit (
@@ -578,19 +592,440 @@ INSERT INTO test.rb_limit (id, val) VALUES (1, 'x');
 INSERT INTO test.rb_limit (id, val) VALUES (1, 'y');
 INSERT INTO test.rb_limit (id, val) VALUES (2, 'z');
 
-# LIMIT large enough to cover all matching rows — same effect as no LIMIT
+# LIMIT can delete a strict subset of a ring; "large enough" cannot be
+# validated at statement level - all LIMIT forms are rejected
+--error ER_ILLEGAL_HA
 DELETE FROM test.rb_limit WHERE id = 1 LIMIT 100;
+
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_limit LIMIT 1;
+
+# ORDER BY selects rows before the handler validates - rejected
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_limit WHERE id = 1 ORDER BY val LIMIT 1;
+
+# ORDER BY without LIMIT is conservatively rejected too
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_limit WHERE id = 1 ORDER BY val;
+
+# Multi-table DELETE restricts the deleted set via the join - rejected
+CREATE TABLE test.plain_join (id INT PRIMARY KEY) ENGINE = NDB;
+INSERT INTO test.plain_join VALUES (1);
+--error ER_ILLEGAL_HA
+DELETE test.rb_limit FROM test.rb_limit JOIN test.plain_join
+    ON test.rb_limit.id = test.plain_join.id;
+DROP TABLE test.plain_join;
+
+# Contents unchanged by the rejected statements
+SELECT id, ring_idx, val FROM test.rb_limit ORDER BY id, ring_idx;
+
+# Plain prefix DELETE still works, meta row goes with it
+DELETE FROM test.rb_limit WHERE id = 1;
 
 SELECT id, ring_idx, val FROM test.rb_limit ORDER BY id, ring_idx;
 
-# Verify meta row for id=1 is also gone
 SET ndb_ring_buffer_show_meta = ON;
 SELECT id, ring_idx FROM test.rb_limit WHERE id = 1 AND ring_idx = 0;
 SET ndb_ring_buffer_show_meta = OFF;
 
-# Re-INSERT after LIMIT delete works
-INSERT INTO test.rb_limit (id, val) VALUES (1, 'after_limit');
+# Re-INSERT after prefix delete works
+INSERT INTO test.rb_limit (id, val) VALUES (1, 'after_delete');
 
 SELECT id, ring_idx, val FROM test.rb_limit ORDER BY id, ring_idx;
 
 DROP TABLE test.rb_limit;
+
+--echo #
+--echo # Case 37: DELETE on ring-buffer table with DELETE triggers - blocked
+--echo #
+
+CREATE TABLE test.rb_trig (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_trig (id, val) VALUES (1, 'a');
+INSERT INTO test.rb_trig (id, val) VALUES (1, 'b');
+INSERT INTO test.rb_trig (id, val) VALUES (1, 'c');
+
+# An AFTER DELETE trigger suppresses the bulk-delete path: the scan would
+# open before DELETE validation runs, so the hidden meta row would survive
+# a prefix delete with stale count/next_pos. Rejected.
+CREATE TRIGGER test.rb_trig_ad AFTER DELETE ON test.rb_trig
+    FOR EACH ROW SET @del_cnt = IFNULL(@del_cnt, 0) + 1;
+SET @del_cnt = 0;
+
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_trig WHERE id = 1;
+
+# Trigger never fired, contents unchanged
+SELECT @del_cnt;
+SELECT id, ring_idx, val FROM test.rb_trig ORDER BY ring_idx;
+
+DROP TRIGGER test.rb_trig_ad;
+
+# A BEFORE DELETE trigger keeps the bulk path but would fire for the
+# hidden meta row too - rejected the same way.
+CREATE TRIGGER test.rb_trig_bd BEFORE DELETE ON test.rb_trig
+    FOR EACH ROW SET @del_cnt = IFNULL(@del_cnt, 0) + 1;
+
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_trig WHERE id = 1;
+
+SELECT @del_cnt;
+SELECT id, ring_idx, val FROM test.rb_trig ORDER BY ring_idx;
+
+DROP TRIGGER test.rb_trig_bd;
+
+# Without triggers the same DELETE works: data and meta both removed
+DELETE FROM test.rb_trig WHERE id = 1;
+SELECT COUNT(*) AS remaining FROM test.rb_trig;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS meta_rows FROM test.rb_trig WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# Re-insert starts at slot 1
+INSERT INTO test.rb_trig (id, val) VALUES (1, 'restart');
+SELECT id, ring_idx, val FROM test.rb_trig ORDER BY ring_idx;
+
+DROP TABLE test.rb_trig;
+
+--echo #
+--echo # Case 38: UPDATE of primary-key columns - blocked
+--echo #
+
+CREATE TABLE test.rb_pkup (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_pkup (id, val) VALUES (1, 'a');
+INSERT INTO test.rb_pkup (id, val) VALUES (1, 'b');
+INSERT INTO test.rb_pkup (id, val) VALUES (2, 'c');
+
+# Changing the PK prefix would take the delete+insert path: the delete
+# half corrupts ring meta and the insert half is rejected anyway.
+# Blocked up-front with a clear message.
+--error ER_ILLEGAL_HA
+UPDATE test.rb_pkup SET id = 2 WHERE id = 1;
+
+--error ER_ILLEGAL_HA
+UPDATE test.rb_pkup SET id = id + 10;
+
+# ring_idx keeps its specific message (also a PK column)
+--error ER_ILLEGAL_HA
+UPDATE test.rb_pkup SET ring_idx = 5 WHERE id = 1;
+
+# Contents unchanged
+SELECT id, ring_idx, val FROM test.rb_pkup ORDER BY id, ring_idx;
+
+# NDB cannot roll back a single statement: the failed UPDATE marks the
+# whole transaction for rollback (see ndbcluster_rollback), so the
+# earlier INSERT is lost too. Generic NDB semantics, pinned here -
+# the SELECT returns no row.
+BEGIN;
+INSERT INTO test.rb_pkup (id, val) VALUES (3, 'txn_survivor');
+--error ER_ILLEGAL_HA
+UPDATE test.rb_pkup SET id = 9 WHERE id = 1;
+COMMIT;
+SELECT id, ring_idx, val FROM test.rb_pkup WHERE id = 3;
+
+# User-column UPDATE still works
+UPDATE test.rb_pkup SET val = 'updated' WHERE id = 2;
+SELECT id, ring_idx, val FROM test.rb_pkup WHERE id = 2;
+
+DROP TABLE test.rb_pkup;
+
+--echo #
+--echo # Case 39: DELETE WHERE with a non-deterministic predicate - blocked
+--echo #
+# RAND() (or a NOT DETERMINISTIC stored function) would pick data rows and
+# the meta row of one prefix independently and leave a ring whose meta row
+# no longer describes its rows.
+CREATE TABLE test.rb_rand (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val INT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+INSERT INTO test.rb_rand (client_id, val) VALUES (1, 1), (1, 2), (1, 3), (2, 4);
+
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = 1 AND RAND() < 0.5;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = FLOOR(RAND() * 3);
+
+DELIMITER |;
+CREATE FUNCTION test.rb_pick(c INT) RETURNS INT NOT DETERMINISTIC NO SQL
+BEGIN
+  RETURN c;
+END|
+DELIMITER ;|
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = test.rb_pick(1);
+DROP FUNCTION test.rb_pick;
+
+# A stored function declared DETERMINISTIC is not trusted either
+DELIMITER |;
+CREATE FUNCTION test.rb_pick_det(c INT) RETURNS INT DETERMINISTIC NO SQL
+BEGIN
+  RETURN IF(RAND() < 0.5, c, 0);
+END|
+DELIMITER ;|
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand WHERE client_id = test.rb_pick_det(1);
+DROP FUNCTION test.rb_pick_det;
+
+# Through a view: the view's WHERE is checked as well (ring_idx was
+# rejected before, RAND() in a view is new)
+CREATE VIEW test.rb_rand_idx AS SELECT * FROM test.rb_rand WHERE ring_idx > 1;
+CREATE VIEW test.rb_rand_rnd AS
+    SELECT * FROM test.rb_rand WHERE client_id = 1 AND RAND() < 0.5;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand_idx;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_rand_rnd;
+DROP VIEW test.rb_rand_idx, test.rb_rand_rnd;
+
+# Nothing was deleted; a deterministic prefix DELETE still works
+SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
+DELETE FROM test.rb_rand WHERE client_id = 1 + 0;
+SELECT client_id, ring_idx, val FROM test.rb_rand ORDER BY client_id, ring_idx;
+
+DROP TABLE test.rb_rand;
+
+--echo #
+--echo # Case 40: DELETE must name its rings - every PK-prefix column with =
+--echo # (or one column with IN); other forms are rejected
+--echo #
+
+CREATE TABLE test.rb_pin (
+    region INT NOT NULL,
+    code VARCHAR(10) NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (region, code, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_pin (region, code, val) VALUES (1, 'a', 'r1a');
+INSERT INTO test.rb_pin (region, code, val) VALUES (1, 'b', 'r1b');
+INSERT INTO test.rb_pin (region, code, val) VALUES (2, 'a', 'r2a');
+INSERT INTO test.rb_pin (region, code, val) VALUES (2, '1', 'r2_1');
+
+# Only part of the prefix
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1;
+# Two IN lists
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region IN (1, 2) AND code IN ('a', 'b');
+# NOT IN
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1 AND code NOT IN ('a', 'b');
+# A number for a string column matches '1', '01', '1.0'
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 2 AND code = 1;
+# A constant TRUE WHERE
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE 1 = 1;
+# A value that does not convert exactly. Strict mode fails the
+# comparison; otherwise the optimizer folds '1abc' to 1 before the handler.
+--error ER_TRUNCATED_WRONG_VALUE
+DELETE FROM test.rb_pin WHERE region = '1abc' AND code = 'a';
+# A floating-point value for an integer column is compared as DOUBLE (a
+# literal such as 1e0 is folded to 1 by the optimizer; a variable is not)
+SET @d = 1e0;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = @d AND code = 'a';
+# Functions with side effects and variable assignments can change per row
+# (with constant arguments the optimizer evaluates them once; with a column
+# argument they run for every row)
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'a' AND RELEASE_LOCK(CONCAT('rb_pin', region));
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'a' AND IS_FREE_LOCK(CONCAT('rb_pin', code));
+SET @v = 0;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'a' AND (@v := @v + 1) < 3;
+# Any condition besides the pins is rejected, e.g. LAST_INSERT_ID(expr),
+# which changes per row. (With `region = 1` the optimizer substitutes the
+# constant and evaluates such a condition once; with IN it cannot.)
+SELECT LAST_INSERT_ID(0);
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region IN (1, 2) AND code = 'a' AND LAST_INSERT_ID(LAST_INSERT_ID() + region) < 3;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region IN (1, 2) AND code = 'a' AND region > 1;
+# A string variable for a numeric column is compared as DOUBLE
+SET @s = '2';
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = @s AND code = 'a';
+SELECT region, code, ring_idx, val FROM test.rb_pin ORDER BY region, code, ring_idx;
+
+# A string compared under another collation or as a date matches other
+# strings: an explicit COLLATE different from the column's, a DATE value
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1 AND code = 'A' COLLATE utf8mb4_bin;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_pin WHERE region = 1 AND code = DATE'2020-01-01';
+SELECT region, code, ring_idx, val FROM test.rb_pin ORDER BY region, code, ring_idx;
+
+# Allowed: = on every prefix column, IN on one of them, prepared values
+DELETE FROM test.rb_pin WHERE region = 1 AND code IN ('a', 'b', 'zz');
+PREPARE del_pin FROM 'DELETE FROM test.rb_pin WHERE code = ? AND region IN (?, ?)';
+SET @c = 'a', @r1 = 2, @r2 = 3;
+EXECUTE del_pin USING @c, @r1, @r2;
+DEALLOCATE PREPARE del_pin;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT region, code, ring_idx, val FROM test.rb_pin ORDER BY region, code, ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# Stored-program variables as values
+DELIMITER |;
+CREATE PROCEDURE test.rb_pin_del(c VARCHAR(10))
+BEGIN
+  DECLARE r INT DEFAULT 2;
+  DELETE FROM test.rb_pin WHERE region = r AND code = c;
+END|
+DELIMITER ;|
+CALL test.rb_pin_del('1');
+DROP PROCEDURE test.rb_pin_del;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_pin;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_pin;
+
+# A number for a DATETIME(6) prefix is compared as DOUBLE (microseconds
+# are lost), whether floating-point or integer
+CREATE TABLE test.rb_dt (
+    ts DATETIME(6) NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_dt (ts, val) VALUES ('2026-01-01 10:00:00.000001', 'a');
+SET @f = 20260101100000.000001e0;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_dt WHERE ts = @f;
+SET @i = 20260101100000;
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_dt WHERE ts = @i;
+DELETE FROM test.rb_dt WHERE ts = '2026-01-01 10:00:00.000001';
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_dt;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_dt;
+
+# A TIMESTAMP prefix compares in the session time zone: across a DST
+# fall-back one local time is two stored instants. Only UTC and fixed
+# offsets are accepted.
+CREATE TABLE test.rb_ts (
+    ts TIMESTAMP NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SET time_zone = '+00:00';
+INSERT INTO test.rb_ts (ts, val) VALUES ('2026-01-01 10:00:00', 'a');
+SET time_zone = 'SYSTEM';
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_ts WHERE ts = '2026-01-01 10:00:00';
+SET time_zone = '+00:00';
+DELETE FROM test.rb_ts WHERE ts = '2026-01-01 10:00:00';
+SET time_zone = DEFAULT;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_ts;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_ts;
+
+# An ENUM whose members are equal under its collation (allowed by
+# non-strict DDL): one string matches several ordinals. A plain ENUM works.
+SET SESSION sql_mode = '';
+CREATE TABLE test.rb_enum_dup (
+    e ENUM('a', 'A') NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (e, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SET SESSION sql_mode = DEFAULT;
+INSERT INTO test.rb_enum_dup (e) VALUES (1), (2);
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_enum_dup WHERE e = 'a';
+DROP TABLE test.rb_enum_dup;
+# A member equal to the empty string is also ambiguous: '' names both the
+# member and the implicit empty value (SET prefixes are always rejected)
+CREATE TABLE test.rb_enum_empty (
+    e ENUM('', 'x') NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (e, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_enum_empty (e) VALUES ('x');
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_enum_empty WHERE e = '';
+DROP TABLE test.rb_enum_empty;
+CREATE TABLE test.rb_set_empty (
+    s SET('') NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (s, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_set_empty (s) VALUES ('');
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_set_empty WHERE s = '';
+DROP TABLE test.rb_set_empty;
+# Any SET prefix: distinct member combinations can compare equal as strings
+CREATE TABLE test.rb_set (
+    s SET('x', 'y') NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (s, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_set (s) VALUES ('x,y');
+--error ER_ILLEGAL_HA
+DELETE FROM test.rb_set WHERE s = 'x,y';
+TRUNCATE TABLE test.rb_set;
+DROP TABLE test.rb_set;
+# A large ENUM is checked once per statement
+--let $members = 'm1'
+--let $i = 2
+while ($i <= 3000) {
+  --let $members = $members,'m$i'
+  --inc $i
+}
+--disable_query_log
+--eval CREATE TABLE test.rb_enum_big (e ENUM($members) NOT NULL, ring_idx INT NOT NULL DEFAULT 0, ring_meta VARBINARY(64), PRIMARY KEY (e, ring_idx)) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+--enable_query_log
+INSERT INTO test.rb_enum_big (e) VALUES ('m1'), ('m2999'), ('m3000');
+DELETE FROM test.rb_enum_big WHERE e IN ('m1', 'm2999');
+SELECT e, ring_idx FROM test.rb_enum_big ORDER BY e, ring_idx;
+DROP TABLE test.rb_enum_big;
+CREATE TABLE test.rb_enum (
+    e ENUM('x', 'y') NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (e, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_enum (e) VALUES ('x'), ('y');
+DELETE FROM test.rb_enum WHERE e = 'x';
+SET ndb_ring_buffer_show_meta = ON;
+SELECT e, ring_idx FROM test.rb_enum ORDER BY e, ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_enum;

@@ -145,7 +145,7 @@ Alice	1	alice_fresh
 Bob	1	bob_1
 DROP TABLE test.rb_varchar;
 #
-# Case 5: CHAR PK prefix — fixed-length string
+# Case 5: CHAR PK prefix - fixed-length string
 #
 CREATE TABLE test.rb_char (
 code CHAR(10) NOT NULL,
@@ -204,13 +204,15 @@ US-East	1	1	r6
 US-East	1	2	r2
 US-East	1	3	r5
 DELETE FROM test.rb_mixed_pk WHERE region = 'US-East';
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_mixed_pk WHERE region = 'US-East' AND client_id IN (1, 2);
 SELECT region, client_id, ring_idx, data FROM test.rb_mixed_pk
 ORDER BY region, client_id, ring_idx;
 region	client_id	ring_idx	data
 US-West	1	1	r3
 DROP TABLE test.rb_mixed_pk;
 #
-# Case 7: 4-column composite PK — 3 prefix columns + ring_idx
+# Case 7: 4-column composite PK - 3 prefix columns + ring_idx
 #
 CREATE TABLE test.rb_4pk (
 region INT NOT NULL,
@@ -252,6 +254,9 @@ region	dept	user_id	ring_idx	event
 1	20	100	1	ev_D
 2	10	100	1	ev_E
 DELETE FROM test.rb_4pk WHERE region = 1;
+ERROR HY000: Table storage engine for 'DELETE on ring-buffer table must give every PK-prefix column with = or IN; use TRUNCATE TABLE to clear the table' doesn't have this option
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 10 AND user_id = 200;
+DELETE FROM test.rb_4pk WHERE region = 1 AND dept = 20 AND user_id = 100;
 SELECT region, dept, user_id, ring_idx, event FROM test.rb_4pk
 ORDER BY region, dept, user_id, ring_idx;
 region	dept	user_id	ring_idx	event
@@ -276,7 +281,7 @@ Name	Engine	Version	Row_format	Rows	Avg_row_length	Data_length	Max_data_length	I
 rb_status	#	#	#	#	#	#	#	#	#	#	#	#	#	#	#	#	#
 SELECT COUNT(*) AS visible_rows FROM test.rb_status;
 visible_rows
-4
+3
 DROP TABLE test.rb_status;
 #
 # Case 9: INFORMATION_SCHEMA.TABLES for ring-buffer table
@@ -307,7 +312,7 @@ ring_meta	varbinary	YES	NULL
 val	varchar	YES	NULL
 DROP TABLE test.rb_is;
 #
-# Case 10: ALTER TABLE DROP ring_idx/ring_meta columns — blocked
+# Case 10: ALTER TABLE DROP ring_idx/ring_meta columns - blocked
 #
 CREATE TABLE test.rb_drop_col (
 id INT NOT NULL,
@@ -371,7 +376,7 @@ DROP TRIGGER test.rb_after_ins;
 DROP TABLE test.trigger_log;
 DROP TABLE test.rb_trigger;
 #
-# Case 12: CREATE TABLE with index on ring_idx — blocked
+# Case 12: CREATE TABLE with index on ring_idx - blocked
 #
 CREATE TABLE test.rb_idx_on_internal (
 id INT NOT NULL,
@@ -384,7 +389,7 @@ INDEX idx_ring_idx (ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_idx_on_internal' (use SHOW WARNINGS for more info).
 #
-# Case 13: CREATE TABLE with index on ring_meta — blocked
+# Case 13: CREATE TABLE with index on ring_meta - blocked
 #
 CREATE TABLE test.rb_idx_on_meta (
 id INT NOT NULL,
@@ -397,7 +402,7 @@ INDEX idx_ring_meta (ring_meta)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_idx_on_meta' (use SHOW WARNINGS for more info).
 #
-# Case 14: CREATE TABLE with UNIQUE index on ring_idx — blocked
+# Case 14: CREATE TABLE with UNIQUE index on ring_idx - blocked
 #
 CREATE TABLE test.rb_uniq_on_internal (
 id INT NOT NULL,
@@ -410,7 +415,7 @@ UNIQUE INDEX idx_ring_idx_uniq (ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_uniq_on_internal' (use SHOW WARNINGS for more info).
 #
-# Case 15: CREATE TABLE with composite index including ring_idx — blocked
+# Case 15: CREATE TABLE with composite index including ring_idx - blocked
 #
 CREATE TABLE test.rb_composite_idx (
 id INT NOT NULL,
@@ -423,7 +428,7 @@ INDEX idx_val_ring (val, ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 ERROR HY000: Can't create table 'rb_composite_idx' (use SHOW WARNINGS for more info).
 #
-# Case 16: ALTER TABLE ADD INDEX on ring_idx — blocked
+# Case 16: ALTER TABLE ADD INDEX on ring_idx - blocked
 #
 CREATE TABLE test.rb_alter_idx (
 id INT NOT NULL,
@@ -445,4 +450,72 @@ id	ring_idx	val
 1	1	test_A
 1	2	test_B
 DROP TABLE test.rb_alter_idx;
+#
+# Case 17: OPTIMIZE TABLE - reclaims var parts, no 940
+#
+CREATE TABLE test.rb_opt (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(2000),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_opt (id, val) VALUES (1, REPEAT('x', 2000));
+INSERT INTO test.rb_opt (id, val) VALUES (1, REPEAT('y', 2000));
+INSERT INTO test.rb_opt (id, val) VALUES (2, REPEAT('z', 2000));
+UPDATE test.rb_opt SET val = 'small' WHERE id = 1 AND ring_idx = 1;
+OPTIMIZE TABLE test.rb_opt;
+Table	Op	Msg_type	Msg_text
+test.rb_opt	optimize	status	OK
+SELECT id, ring_idx, LENGTH(val) AS len FROM test.rb_opt ORDER BY id, ring_idx;
+id	ring_idx	len
+1	1	5
+1	2	2000
+2	1	2000
+INSERT INTO test.rb_opt (id, val) VALUES (1, 'post_opt');
+SELECT id, ring_idx, LEFT(val, 8) AS v FROM test.rb_opt WHERE id = 1 ORDER BY ring_idx;
+id	ring_idx	v
+1	1	small
+1	2	yyyyyyyy
+1	3	post_opt
+DROP TABLE test.rb_opt;
+#
+# Case 18: STORAGE DISK user column - ring works end-to-end
+#
+CREATE LOGFILE GROUP lg_rb ADD UNDOFILE 'lg_rb_undo.dat'
+    INITIAL_SIZE 16M UNDO_BUFFER_SIZE 1M ENGINE NDB;
+CREATE TABLESPACE ts_rb ADD DATAFILE 'ts_rb_data.dat'
+    USE LOGFILE GROUP lg_rb INITIAL_SIZE 32M ENGINE NDB;
+CREATE TABLE test.rb_disk (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+payload VARCHAR(200) STORAGE DISK,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB
+TABLESPACE ts_rb
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'a');
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'b');
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'c');
+INSERT INTO test.rb_disk (id, payload) VALUES (1, 'd');
+SELECT id, ring_idx, payload FROM test.rb_disk ORDER BY id, ring_idx;
+id	ring_idx	payload
+1	1	d
+1	2	b
+1	3	c
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, HEX(ring_meta) FROM test.rb_disk WHERE ring_idx = 0;
+id	ring_idx	HEX(ring_meta)
+1	0	0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+DELETE FROM test.rb_disk WHERE id = 1;
+SELECT COUNT(*) FROM test.rb_disk;
+COUNT(*)
+0
+DROP TABLE test.rb_disk;
+ALTER TABLESPACE ts_rb DROP DATAFILE 'ts_rb_data.dat';
+DROP TABLESPACE ts_rb;
+DROP LOGFILE GROUP lg_rb ENGINE NDB;
 # Done.

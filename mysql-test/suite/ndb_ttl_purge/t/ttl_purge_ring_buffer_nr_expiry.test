@@ -1,0 +1,165 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_ring_buffer_nr_expiry.test
+#
+# An initial node restart of a ring buffer table with TTL while rows cross
+# their expiry, the purge runs and writers wrap into the purged slots.
+# ttl_purge_ring_buffer_restart restarts with rows that expired and were
+# purged before the restart; here the expiry and the purge happen while the
+# node is down and while it copies its fragments back.
+#   1. Seed 10 prefixes (ring size 8): 5 rows that expire 25 s later, 2
+#      live rows.
+#   2. Node 2 is stopped (initial). The 5 rows expire and the purge deletes
+#      them on node 1 alone. Each prefix gets a live row in slot 8 and wraps
+#      into slots 1-2 with 2 rows that expire 8 s later.
+#   3. Node 2 starts (copies its fragments from node 1) while a writer adds 3
+#      live rows per prefix (slots 3-5, 2 s apart) and the purge deletes the
+#      short-lived rows of slots 1-2.
+#   4. Settled: both replicas hold the same rows (10 meta + 60 live), every
+#      prefix shows slots 3-8 and the same meta row (next_pos 6, count 8,
+#      total_inserts 13).
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbn;
+
+CREATE TABLE ttl_rbn.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbn.rb (ttl_col);
+
+# n single-row autocommit INSERTs into each of prefixes 1-10 whose ttl_col is
+# NOW() + secs (TTL 5 s: the row expires secs + 5 s later)
+DELIMITER |;
+CREATE PROCEDURE ttl_rbn.ins(IN n INT, IN secs INT, IN tag VARCHAR(20))
+BEGIN
+  DECLARE i INT DEFAULT 0;
+  DECLARE p INT;
+  WHILE i < n DO
+    SET p = 1;
+    WHILE p <= 10 DO
+      INSERT INTO ttl_rbn.rb (client_id, ttl_col, data)
+          VALUES (p, DATE_ADD(NOW(), INTERVAL secs SECOND), CONCAT(tag, '_', i));
+      SET p = p + 1;
+    END WHILE;
+    SET i = i + 1;
+  END WHILE;
+END|
+# rounds of one live row per prefix, 2 s apart
+CREATE PROCEDURE ttl_rbn.writer(IN rounds INT, IN tag VARCHAR(20))
+BEGIN
+  DECLARE r INT DEFAULT 0;
+  WHILE r < rounds DO
+    CALL ttl_rbn.ins(1, 3600, CONCAT(tag, r));
+    DO SLEEP(2);
+    SET r = r + 1;
+  END WHILE;
+END|
+DELIMITER ;|
+
+--let $wait_db = ttl_rbn
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--exec $ttl_purge_put_config '{"enabled":true,"min_batch_size":5,"max_batch_size":50,"sleep_interval_ms":100}' > /dev/null 2>&1
+
+--let $physical = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbn/def/rb' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbn/def/rb'
+
+--echo #
+--echo # 1. Seed: 5 rows per prefix that expire 25 s later, 2 live rows
+--echo #
+
+CALL ttl_rbn.ins(5, 20, 'a');
+CALL ttl_rbn.ins(2, 3600, 'l1');
+
+--echo #
+--echo # 2. Node 2 down (initial restart): the rows expire and are purged on node 1, writers wrap
+--echo #
+
+--exec $NDB_MGM -e "2 RESTART -n -i" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=1 --not-started >> $NDB_TOOLS_OUTPUT
+
+# The 50 short-lived rows expire and the purge deletes them: 10 meta + 20 live
+--let $wait_timeout = 120
+--let $wait_condition = SELECT COUNT(*) = 20 FROM ttl_rbn.rb
+--source include/wait_condition.inc
+--let $wait_condition = SELECT SUM(fixed_elem_count) = 30 FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbn/def/rb'
+--source include/wait_condition.inc
+
+# Slot 8 live, then the rings wrap into the purged slots 1-2 with rows
+# that expire 8 s later (next_pos 3, total_inserts 10)
+CALL ttl_rbn.ins(1, 3600, 'l2');
+CALL ttl_rbn.ins(2, 3, 'b');
+SELECT COUNT(*) AS visible_before_start FROM ttl_rbn.rb WHERE data LIKE 'l%';
+
+--echo #
+--echo # 3. Node 2 starts while a writer fills slots 3-5 and the purge deletes slots 1-2
+--echo #
+
+connect (con_w, localhost, root, , test);
+--send CALL ttl_rbn.writer(3, 'w')
+--connection default
+--exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+--connection con_w
+--reap
+--disconnect con_w
+--connection default
+
+--echo #
+--echo # 4. Settled: both replicas hold the same rows
+--echo #
+
+--let $wait_timeout = 120
+--let $wait_condition = SELECT SUM(fixed_elem_count) = 140 FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbn/def/rb'
+--source include/wait_condition.inc
+--let $rows = `$physical`
+--let $assert_text = 70 physical rows per replica (10 meta + 60 live)
+--let $assert_cond = $rows = 70
+--source include/assert.inc
+SELECT node_id, SUM(fixed_elem_count) AS physical_rows FROM ndbinfo.memory_per_fragment
+    WHERE fq_name = 'ttl_rbn/def/rb' GROUP BY node_id ORDER BY node_id;
+
+SELECT COUNT(*) AS visible FROM ttl_rbn.rb;
+SELECT ring_idx, LEFT(data, 2) AS batch, COUNT(*) AS prefixes FROM ttl_rbn.rb
+    GROUP BY ring_idx, batch ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+# next_pos 6, count 8, total_inserts 13 on all 10 meta rows
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbn.rb WHERE ring_idx = 0
+    GROUP BY meta ORDER BY meta;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The restarted node serves reads alone: stop node 1, read, restart it
+--exec $NDB_MGM -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=2 --not-started >> $NDB_TOOLS_OUTPUT
+SELECT COUNT(*) AS visible_from_node_2 FROM ttl_rbn.rb;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbn.rb WHERE ring_idx = 0
+    GROUP BY meta ORDER BY meta;
+SET ndb_ring_buffer_show_meta = OFF;
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+# The rings continue: slot 6 of every prefix
+CALL ttl_rbn.ins(1, 3600, 'after');
+SELECT ring_idx, COUNT(*) AS prefixes FROM ttl_rbn.rb WHERE data LIKE 'after%' GROUP BY ring_idx;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP PROCEDURE ttl_rbn.ins;
+DROP PROCEDURE ttl_rbn.writer;
+DROP TABLE ttl_rbn.rb;
+DROP DATABASE ttl_rbn;
+--remove_file $NDB_TOOLS_OUTPUT
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

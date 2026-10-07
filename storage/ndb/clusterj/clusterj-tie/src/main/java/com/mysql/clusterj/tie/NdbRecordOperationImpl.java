@@ -267,6 +267,7 @@ public class NdbRecordOperationImpl implements Operation {
         // This path is reached by the SmartValueHandler / DTO cache flow
         // which calls insert() directly, bypassing NdbRecordRingBufferInsertOperationImpl.
         if (storeTable.isRingBuffer()) {
+            // The writer refuses ring tables with BLOB/TEXT columns.
             RingBufferWriter writer = clusterTransactionImpl.getRingBufferWriter(storeTable);
             writer.addRow(valueBuffer, mask);
             return null;

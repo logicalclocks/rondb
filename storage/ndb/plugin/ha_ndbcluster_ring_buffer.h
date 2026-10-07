@@ -22,10 +22,10 @@
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 /*
-  Ring Buffer Table — support code extracted from ha_ndbcluster.cc to keep
+  Ring Buffer Table - support code extracted from ha_ndbcluster.cc to keep
   that file's delta against upstream minimal. Member function bodies
   (ha_ndbcluster::ndb_ring_buffer_write_row and ::flush_ring_buffer_batch)
-  live in the corresponding .cc file alongside these helpers — they are
+  live in the corresponding .cc file alongside these helpers - they are
   declared in ha_ndbcluster.h.
 */
 
@@ -37,15 +37,15 @@
 
 /*
   NdbDictionary is a class (not a namespace) with nested Table/Column.
-  The public API below takes NdbDictionary::Table* by pointer — we need
+  The public API below takes NdbDictionary::Table* by pointer - we need
   the full declaration for that to work from both consumer TUs.
 */
 #include "storage/ndb/include/ndbapi/NdbDictionary.hpp"
 
 class Item;
-class TABLE;
+struct TABLE;
 class THD;
-struct KEY;
+class KEY;
 struct NDB_Modifier;
 
 namespace ndb_ring_buffer {
@@ -99,11 +99,36 @@ const char *apply_columns_ndb(NdbDictionary::Table *new_tab,
 /**
   Check whether a DELETE on a ring-buffer table is allowed.
   Requires a WHERE clause where every Item_field references a PK-prefix
-  column (not ring_idx, not any non-PK column). Accepts @a cond == nullptr
-  (bare DELETE: full-table clear, always allowed).
+  column (not ring_idx, not any non-PK column). Accepts @a cond == nullptr;
+  delete_where_pins_prefixes() rejects it.
 */
 bool delete_where_allowed(const TABLE *table, unsigned ring_idx_field_index,
                           const Item *cond);
+
+/**
+  Check that the WHERE names the rings it deletes: an AND of conditions
+  that give every PK-prefix column with `=` (or, for one column, `IN`) and
+  a value fixed for the statement, compared in the column's domain, and
+  nothing else. The DELETE locks the meta row of each such prefix before
+  it scans; ranges, OR, other conditions and a missing WHERE could not be
+  locked or could delete part of a ring, and are rejected (TRUNCATE TABLE
+  clears the table).
+*/
+bool delete_where_pins_prefixes(const TABLE *table,
+                                unsigned ring_idx_field_index,
+                                const Item *cond);
+
+/** Error text when delete_where_pins_prefixes() fails */
+constexpr const char *DELETE_NOT_PINNED_MSG =
+    "DELETE on ring-buffer table must give every PK-prefix column with = or "
+    "IN; use TRUNCATE TABLE to clear the table";
+
+/**
+  Check the DELETE statement shape. The WHERE walker alone cannot see
+  LIMIT, ORDER BY, or the multi-table DELETE form - each of which can
+  remove a strict subset of a ring and corrupt or orphan the meta row.
+*/
+bool delete_statement_shape_allowed(const THD *thd);
 
 /**
   Decide whether a scan on a ring-buffer-capable table should surface the

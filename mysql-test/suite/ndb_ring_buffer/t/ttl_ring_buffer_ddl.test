@@ -1,0 +1,222 @@
+# ttl_ring_buffer_ddl.test
+#
+# DDL on a ring buffer table with TTL (MAX_ROWS_PER_PK + TTL), with expired
+# rows present: CREATE TABLE ... LIKE / AS SELECT, RENAME TABLE, a comment
+# that sets another modifier (re-injection of TTL and the ring), the TTL
+# column rename guard, a change of the TTL seconds (visibility follows the
+# new value, nothing is deleted), a copying ALTER (the copy scan does not
+# see expired rows, so they are dropped; the meta row is copied as is) and
+# an ordered index on a user column. The DDL rules themselves (enable or
+# disable TTL, ring size) are in alter.test Case 7.
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--let $physical_rb = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb'
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+# Slot 1 expired (2 h old with TTL 1 h), slots 2 and 3 live (30 min old)
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1');
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_2');
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_3');
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+# next_pos 4, count 3, total_inserts 3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 1: CREATE TABLE ... LIKE keeps TTL and the ring
+--echo #
+
+CREATE TABLE test.rb_like LIKE test.rb;
+SHOW CREATE TABLE test.rb_like;
+INSERT INTO test.rb_like (client_id, ts, val) VALUES (1, NOW(), 'like_a');
+SELECT client_id, ring_idx, val FROM test.rb_like ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts FROM test.rb_like WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_like;
+
+--echo #
+--echo # Case 2: CREATE TABLE ... AS SELECT copies the visible rows into a plain table
+--echo #
+
+CREATE TABLE test.rb_cp ENGINE = NDB AS SELECT client_id, ring_idx, ts, val FROM test.rb;
+SELECT client_id, ring_idx, val FROM test.rb_cp ORDER BY ring_idx;
+DROP TABLE test.rb_cp;
+
+--echo #
+--echo # Case 3: RENAME TABLE keeps TTL and the ring; the ring continues
+--echo #
+
+RENAME TABLE test.rb TO test.rb_renamed;
+SHOW CREATE TABLE test.rb_renamed;
+INSERT INTO test.rb_renamed (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_4');
+SELECT client_id, ring_idx, val FROM test.rb_renamed ORDER BY ring_idx;
+RENAME TABLE test.rb_renamed TO test.rb;
+# next_pos 1, count 4, total_inserts 4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 4: a comment that sets only another modifier keeps TTL and the ring (online)
+--echo #
+
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=READ_BACKUP=1";
+SHOW CREATE TABLE test.rb;
+# The wrap takes slot 1 (the expired slot)
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_5');
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+# next_pos 2, count 4, total_inserts 5
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 5: the TTL column rename guard applies; rename plus re-bind in one statement works
+--echo #
+
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb RENAME COLUMN ts TO ts2;
+ALTER TABLE test.rb RENAME COLUMN ts TO ts2, COMMENT="NDB_TABLE=TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb;
+# The handler writes the meta row's TTL column by its new position
+INSERT INTO test.rb (client_id, ts2, val) VALUES (2, NOW(), 'p2_a');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts2 FROM test.rb WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+DELETE FROM test.rb WHERE client_id = 2;
+
+--echo #
+--echo # Case 6: changing the TTL seconds changes visibility, not physical presence
+--echo #
+
+# All four rows of prefix 1 are 30 min old: live with TTL 3600
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+--eval $physical_rb
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=60@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SELECT COUNT(*) FROM test.rb;
+--eval $physical_rb
+# A longer TTL makes them visible again: expiry is a comparison, not a state
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=36000@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb;
+
+--echo #
+--echo # Case 7: a copying ALTER drops expired rows (the copy scan does not see them) and copies the meta row as is
+--echo #
+
+UPDATE test.rb SET ts2 = DATE_SUB(NOW(), INTERVAL 5 HOUR) WHERE client_id = 1 AND ring_idx = 1;
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+# 1 meta row + 4 slots
+--eval $physical_rb
+ALTER TABLE test.rb ALGORITHM=COPY, ADD COLUMN extra INT DEFAULT 0;
+SHOW CREATE TABLE test.rb;
+SELECT client_id, ring_idx, val, extra FROM test.rb ORDER BY ring_idx;
+# 1 meta row + 3 slots: the expired slot 1 was not copied; the meta row
+# still says count 4 (a span), next_pos 2, total_inserts 5
+--eval $physical_rb
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts2, HEX(ring_meta) FROM test.rb WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+# The ring continues at slot 2
+INSERT INTO test.rb (client_id, ts2, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'after_copy');
+SELECT client_id, ring_idx, val, extra FROM test.rb ORDER BY ring_idx;
+--eval $physical_rb
+
+--echo #
+--echo # Case 8: an ordered index on a user column hides expired rows and meta rows
+--echo #
+
+UPDATE test.rb SET ts2 = DATE_SUB(NOW(), INTERVAL 5 HOUR) WHERE client_id = 1 AND ring_idx = 3;
+ALTER TABLE test.rb ADD INDEX idx_val (val);
+SELECT client_id, ring_idx, val FROM test.rb FORCE INDEX (idx_val) WHERE val >= 'a' ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val FROM test.rb FORCE INDEX (idx_val) WHERE val >= 'a' ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+ALTER TABLE test.rb DROP INDEX idx_val;
+
+DROP TABLE test.rb;
+
+--echo #
+--echo # Case 9: a virtual generated column before the ring and TTL columns
+--echo #
+
+# Virtual generated columns exist in MySQL only, so the NDB column numbers
+# of ring_idx, ring_meta and the TTL column differ from their MySQL field
+# numbers; the handler maps them.
+CREATE TABLE test.rb_vcol (
+    client_id INT NOT NULL,
+    twice INT AS (client_id * 2) VIRTUAL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_vcol (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1');
+INSERT INTO test.rb_vcol (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_vcol (client_id, ts, val) VALUES (1, NOW(), 'live_3'), (1, NOW(), 'wrap_4');
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+# next_pos 2, count 3, total_inserts 4; the meta row's TTL column is the maximum
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_vcol WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+UPDATE test.rb_vcol SET val = 'live_2u' WHERE client_id = 1 AND ring_idx = 2;
+--enable_info
+DELETE FROM test.rb_vcol WHERE client_id = 1;
+--disable_info
+SELECT COUNT(*) FROM test.rb_vcol;
+DROP TABLE test.rb_vcol;
+
+--echo #
+--echo # Case 10: the TTL column must not be a primary key column
+--echo #
+# The writers store the TTL maximum in the meta row's TTL column; in a key
+# column that would put every prefix's meta row under the same key.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_ttl_pk (
+    ts TIMESTAMP NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    v INT,
+    PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# Nor can ALTER move the TTL to a primary key column
+CREATE TABLE test.rb_ttl_pk (
+    k_ts TIMESTAMP NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    PRIMARY KEY (k_ts, ring_idx)
+) ENGINE = NDB
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_ttl_pk
+  COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_ttl_pk ALGORITHM=INPLACE,
+  COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb_ttl_pk;
+DROP TABLE test.rb_ttl_pk;
+
+--echo #
+--echo # Done
+--echo #

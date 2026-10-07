@@ -1,0 +1,369 @@
+# ttl_ring_buffer_dml.test
+#
+# SQL DML paths on a ring buffer table with TTL (MAX_ROWS_PER_PK + TTL)
+# beyond the single-row statements of ttl_ring_buffer.test: multi-row
+# INSERT, LOAD DATA, INSERT ... SELECT, a unique index whose owner row has
+# expired, scan UPDATE over expired rows, NULL TTL values, the DELETE forms
+# and what they leave behind, ttl_expired_rows_visible_in_delete,
+# transactions, TRUNCATE and OPTIMIZE.
+#
+# An expired row is invisible but stays physically until the ring
+# overwrites its slot or the TTL purge (suite ndb_ttl_purge) reclaims it.
+# The physical row count is read from ndbinfo.memory_per_fragment (all
+# replicas summed, divided by the replica count of fragment 0; meta rows
+# included).
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+--let $physical_rb = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb'
+--let $physical_rb_del = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_del'
+
+--echo #
+--echo # Case 1: multi-row INSERT fills and wraps over expired slots like live ones
+--echo #
+
+CREATE TABLE test.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+# Slots 1 and 3 expired (2 h old with TTL 1 h), slots 2 and 4 live; the
+# ring is full: next_pos 1, count 4, total_inserts 4
+INSERT INTO test.rb (client_id, ts, val) VALUES
+    (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1'),
+    (1, NOW(), 'live_2'),
+    (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_3'),
+    (1, NOW(), 'live_4');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The next two rows take slots 1 (expired) and 2 (live) alike; slot 3
+# stays expired and invisible. next_pos 3, count 4, total_inserts 6.
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'wrap_5'), (1, NOW(), 'wrap_6');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+# 1 meta row + 4 slots
+--eval $physical_rb
+
+--echo #
+--echo # Case 2: LOAD DATA - rows loaded with a past TTL value occupy their slots invisibly
+--echo #
+
+--write_file $MYSQLTEST_VARDIR/tmp/rb_ttl_load.csv
+2	2000-01-01 00:00:00	load_exp_1
+2	2037-01-01 00:00:00	load_live_2
+2	2000-01-01 00:00:00	load_exp_3
+EOF
+
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+eval LOAD DATA LOCAL INFILE '$MYSQLTEST_VARDIR/tmp/rb_ttl_load.csv'
+    INTO TABLE test.rb (client_id, ts, val);
+--remove_file $MYSQLTEST_VARDIR/tmp/rb_ttl_load.csv
+
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 2 ORDER BY ring_idx;
+# next_pos 4, count 3, total_inserts 3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 2 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 3: INSERT ... SELECT copies the visible rows only (no expired rows, no meta rows)
+--echo #
+
+INSERT INTO test.rb (client_id, ts, val)
+    SELECT 3, ts, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 3 ORDER BY ring_idx;
+# next_pos 4, count 3, total_inserts 3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 3 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 4: unique index - an expired row keeps its unique value until the ring overwrites the slot
+--echo #
+
+CREATE TABLE test.rb_u (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 100);
+SELECT id, ring_idx, code FROM test.rb_u ORDER BY ring_idx;
+
+# The expired owner of code 100 (slot 1) is still physically present: a
+# different slot cannot take the value (same rule as on a plain TTL table)
+--error ER_DUP_ENTRY
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 100);
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 200);
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 300);
+
+# The wrap writes slot 1 itself: the same primary key replaces the expired
+# owner and its unique entry
+INSERT INTO test.rb_u (id, ts, code) VALUES (1, NOW(), 100);
+SELECT id, ring_idx, code FROM test.rb_u ORDER BY ring_idx;
+# next_pos 2, count 3, total_inserts 4 (the rejected INSERT left no trace)
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_u WHERE id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_u;
+
+--echo #
+--echo # Case 5: scan UPDATE matches visible rows only; a NULL TTL value never expires
+--echo #
+
+# Prefix 1: slots 1, 2, 4 visible, slot 3 expired
+--enable_info
+UPDATE test.rb SET val = CONCAT(val, '_u') WHERE client_id = 1;
+--disable_info
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+
+# An expired row is not matched, so it cannot be revived through UPDATE
+--enable_info
+UPDATE test.rb SET ts = NULL WHERE client_id = 1 AND ring_idx = 3;
+--disable_info
+
+# A live row's TTL column set to NULL: the row never expires. Slot 1 is
+# expired explicitly; the NULL row stays visible.
+UPDATE test.rb SET ts = NULL WHERE client_id = 1 AND ring_idx = 4;
+UPDATE test.rb SET ts = DATE_SUB(NOW(), INTERVAL 5 HOUR) WHERE client_id = 1 AND ring_idx = 1;
+SELECT client_id, ring_idx, val, ts IS NULL AS never_expires FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+
+--echo #
+--echo # Case 6: a NULL-TTL row is overwritten by the ring like any other slot
+--echo #
+
+# next_pos 3: the next two inserts take slot 3 (expired) and slot 4 (NULL TTL)
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'over_7'), (1, NOW(), 'over_8');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+# next_pos 1, count 4, total_inserts 8
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 7: DELETE forms leave expired rows behind; ttl_expired_rows_visible_in_delete removes them
+--echo #
+
+CREATE TABLE test.rb_del (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+# Prefix 5: slots 1, 2 expired, slot 3 live. Prefix 6: slots 1, 2 expired.
+INSERT INTO test.rb_del (client_id, ts, val) VALUES
+    (5, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p5_exp_1'),
+    (5, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p5_exp_2'),
+    (5, NOW(), 'p5_live_3'),
+    (6, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p6_exp_1'),
+    (6, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p6_exp_2');
+SELECT client_id, ring_idx, val FROM test.rb_del ORDER BY client_id, ring_idx;
+# 2 meta rows + 5 slots
+--eval $physical_rb_del
+
+# A prefix whose rows have all expired: the DELETE removes its meta row
+# only (1 affected row); the two expired rows stay
+--enable_info
+DELETE FROM test.rb_del WHERE client_id = 6;
+--disable_info
+--eval $physical_rb_del
+
+# IN () over both prefixes: prefix 5 gives its live row and its meta row,
+# prefix 6 has nothing visible left (2 affected rows)
+--enable_info
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
+--disable_info
+SELECT COUNT(*) FROM test.rb_del;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_del;
+SET ndb_ring_buffer_show_meta = OFF;
+# Only the four expired rows remain, without meta rows
+--eval $physical_rb_del
+
+# Re-INSERT into prefix 6: a fresh meta row (next_pos 2, count 1,
+# total_inserts 1); slot 1 overwrites the leftover expired row, slot 2's
+# leftover stays until its turn
+INSERT INTO test.rb_del (client_id, ts, val) VALUES (6, NOW(), 'p6_fresh_1');
+SELECT client_id, ring_idx, val FROM test.rb_del ORDER BY client_id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM test.rb_del WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+--eval $physical_rb_del
+
+# DELETE of both prefixes: the visible row and the meta row of prefix 6
+# go, the three expired rows (5.1, 5.2, 6.2) stay
+--enable_info
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
+--disable_info
+--eval $physical_rb_del
+
+# With ttl_expired_rows_visible_in_delete the DELETE scan sees expired
+# rows: a prefix DELETE removes prefix 5's two expired rows, a DELETE of
+# both prefixes the last one
+SET SESSION ttl_expired_rows_visible_in_delete = 1;
+--enable_info
+DELETE FROM test.rb_del WHERE client_id = 5;
+--disable_info
+--eval $physical_rb_del
+--enable_info
+DELETE FROM test.rb_del WHERE client_id IN (5, 6);
+--disable_info
+--eval $physical_rb_del
+SET SESSION ttl_expired_rows_visible_in_delete = 0;
+
+# TRUNCATE drops expired rows as well
+INSERT INTO test.rb_del (client_id, ts, val) VALUES
+    (7, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p7_exp_1'),
+    (7, NOW(), 'p7_live_2');
+TRUNCATE TABLE test.rb_del;
+SELECT COUNT(*) FROM test.rb_del;
+--eval $physical_rb_del
+INSERT INTO test.rb_del (client_id, ts, val) VALUES (7, NOW(), 'after_truncate');
+SELECT client_id, ring_idx, val FROM test.rb_del ORDER BY client_id, ring_idx;
+DROP TABLE test.rb_del;
+
+--echo #
+--echo # Case 8: a rolled-back INSERT over an expired slot leaves the slot expired and the meta row unchanged
+--echo #
+
+# Prefix 1: slot 1 expired (Case 5), next_pos 1
+BEGIN;
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'txn_9');
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+ROLLBACK;
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+# next_pos 1, count 4, total_inserts 8 (unchanged)
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+BEGIN;
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, NOW(), 'txn_10');
+COMMIT;
+SELECT client_id, ring_idx, val FROM test.rb WHERE client_id = 1 ORDER BY ring_idx;
+# next_pos 2, count 4, total_inserts 9
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 9: OPTIMIZE TABLE with expired rows present
+--echo #
+
+# 3 meta rows + prefix 1: 4 slots, prefix 2: 3 slots, prefix 3: 3 slots
+--eval $physical_rb
+OPTIMIZE TABLE test.rb;
+SELECT client_id, COUNT(*) AS visible FROM test.rb GROUP BY client_id ORDER BY client_id;
+--eval $physical_rb
+
+DROP TABLE test.rb;
+
+--echo #
+--echo # Case 10: an INSERT that omits columns writes their defaults into the slot it overwrites
+--echo #
+
+# A ring insert is written with writeTuple, which becomes an update when the
+# slot is still occupied. Every stored column is written, so an omitted
+# column gets its default (or NULL) instead of keeping the overwritten
+# row's value; on a TTL ring an inherited expired TTL value would hide the
+# new row.
+CREATE TABLE test.rb_omit (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    note VARCHAR(20) DEFAULT 'dflt',
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+
+INSERT INTO test.rb_omit (client_id, ts, val, note) VALUES
+    (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1', 'old_note_1'),
+    (1, NOW(), 'live_2', 'old_note_2');
+SELECT client_id, ring_idx, val, note FROM test.rb_omit ORDER BY ring_idx;
+
+# Slot 1 (expired) is overwritten by a row without ts and note: the row is
+# visible (ts NULL never expires) and note is the default
+INSERT INTO test.rb_omit (client_id, val) VALUES (1, 'wrap_3');
+SELECT client_id, ring_idx, val, note, ts IS NULL AS ts_null FROM test.rb_omit ORDER BY ring_idx;
+
+# Slot 2 (live) is overwritten by a multi-row INSERT without note
+INSERT INTO test.rb_omit (client_id, ts, val) VALUES (1, NOW(), 'wrap_4'), (1, NOW(), 'wrap_5');
+SELECT client_id, ring_idx, val, note FROM test.rb_omit ORDER BY ring_idx;
+
+# LOAD DATA without note and without ts behaves the same
+--write_file $MYSQLTEST_VARDIR/tmp/rb_omit_load.csv
+1	load_6
+EOF
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+eval LOAD DATA LOCAL INFILE '$MYSQLTEST_VARDIR/tmp/rb_omit_load.csv'
+    INTO TABLE test.rb_omit (client_id, val);
+--remove_file $MYSQLTEST_VARDIR/tmp/rb_omit_load.csv
+SELECT client_id, ring_idx, val, note, ts IS NULL AS ts_null FROM test.rb_omit ORDER BY ring_idx;
+DROP TABLE test.rb_omit;
+
+--echo #
+--echo # Case 11: the meta row's TTL column is the type maximum after multi-row INSERTs too
+--echo #
+
+CREATE TABLE test.rb_batch (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+CREATE TABLE test.rb_batch_nn (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts DATETIME NOT NULL DEFAULT '2000-01-01 00:00:00',
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+# Prefix 1 created by a multi-row INSERT, prefix 2 by a single-row INSERT
+# then extended by a multi-row INSERT
+INSERT INTO test.rb_batch (client_id, ts, val) VALUES (1, NOW(), 'a'), (1, NOW(), 'b');
+INSERT INTO test.rb_batch (client_id, ts, val) VALUES (2, NOW(), 'a');
+INSERT INTO test.rb_batch (client_id, ts, val) VALUES (2, NOW(), 'b'), (2, NOW(), 'c');
+INSERT INTO test.rb_batch_nn (client_id, ts, val) VALUES (1, NOW(), 'a'), (1, NOW(), 'b');
+INSERT INTO test.rb_batch_nn (client_id, ts, val) VALUES (2, NOW(), 'a');
+INSERT INTO test.rb_batch_nn (client_id, ts, val) VALUES (2, NOW(), 'b'), (2, NOW(), 'c');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ts FROM test.rb_batch WHERE ring_idx = 0 ORDER BY client_id;
+SELECT client_id, ts FROM test.rb_batch_nn WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT client_id, COUNT(*) AS visible FROM test.rb_batch GROUP BY client_id ORDER BY client_id;
+SELECT client_id, COUNT(*) AS visible FROM test.rb_batch_nn GROUP BY client_id ORDER BY client_id;
+DROP TABLE test.rb_batch;
+DROP TABLE test.rb_batch_nn;
+
+--echo #
+--echo # Done
+--echo #

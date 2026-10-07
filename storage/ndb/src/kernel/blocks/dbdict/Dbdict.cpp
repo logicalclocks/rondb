@@ -1248,11 +1248,17 @@ void Dbdict::packTableIntoPages(SimpleProperties::Writer &w,
   DEB_HASH(("1: dict_tab(%u) HashFunctionFlag: %u",
             tablePtr.p->tableId,
             ((tablePtr.p->m_bits & TableRecord::TR_HashFunction) != 0)));
-  w.add(DictTabInfo::TTLSec, tablePtr.p->ttlSec);
-  w.add(DictTabInfo::TTLColumnNo, tablePtr.p->ttlColumnNo);
-  w.add(DictTabInfo::RingBufferSize, tablePtr.p->ringBufferSize);
-  w.add(DictTabInfo::RingIdxColumnNo, tablePtr.p->ringIdxColNo);
-  w.add(DictTabInfo::RingMetaColumnNo, tablePtr.p->ringMetaColNo);
+  /* Optional properties - the unpack side defaults them to RNIL, so only
+     pack them when set instead of adding 5 words to every table def. */
+  if (tablePtr.p->ttlSec != RNIL || tablePtr.p->ttlColumnNo != RNIL) {
+    w.add(DictTabInfo::TTLSec, tablePtr.p->ttlSec);
+    w.add(DictTabInfo::TTLColumnNo, tablePtr.p->ttlColumnNo);
+  }
+  if (tablePtr.p->ringBufferSize != RNIL) {
+    w.add(DictTabInfo::RingBufferSize, tablePtr.p->ringBufferSize);
+    w.add(DictTabInfo::RingIdxColumnNo, tablePtr.p->ringIdxColNo);
+    w.add(DictTabInfo::RingMetaColumnNo, tablePtr.p->ringMetaColNo);
+  }
 
   D("packTableIntoPages: tableId: "
     << tablePtr.p->tableId << " tablePtr.i = " << tablePtr.i
@@ -6465,6 +6471,33 @@ void Dbdict::handleTabInfoInit(Signal *signal, SchemaTransPtr &trans_ptr,
   tablePtr.p->ringIdxColNo = c_tableDesc.RingIdxColumnNo;
   tablePtr.p->ringMetaColNo = c_tableDesc.RingMetaColumnNo;
 
+  /**
+   * Ring buffer metadata is validated here (and per-column in
+   * handleTabInfo) because the raw NDB API bypasses the MySQL-layer
+   * checks. The write guard, meta-row filter and meta-row detection in
+   * TUP all depend on these invariants.
+   */
+  if (c_tableDesc.RingBufferSize != RNIL) {
+    jam();
+    tabRequire(c_tableDesc.RingBufferSize >= 1 &&
+                   c_tableDesc.RingBufferSize <= 0x7FFFFFFF,
+               CreateTableRef::InvalidFormat);
+    tabRequire(c_tableDesc.RingIdxColumnNo != RNIL &&
+                   c_tableDesc.RingMetaColumnNo != RNIL,
+               CreateTableRef::InvalidFormat);
+    /* TTL and ring buffer may be combined: DBTUP treats the meta row as
+       never expiring (checkTTL is skipped for it) and lets the TTL purge's
+       only-expired deletes through the ring write guard. */
+    /* Fully-replicated copy triggers carry no ring-buffer flag. */
+    tabRequire((tablePtr.p->m_bits & TableRecord::TR_FullyReplicated) == 0,
+               CreateTableRef::InvalidFormat);
+  } else {
+    /* No half-configured ring tables. */
+    tabRequire(c_tableDesc.RingIdxColumnNo == RNIL &&
+                   c_tableDesc.RingMetaColumnNo == RNIL,
+               CreateTableRef::InvalidFormat);
+  }
+
   g_eventLogger->info("[DICT]s< parsed c_tableDesc , table_id: %u, "
                       "TTL sec: %u, TTL column no: %u",
                       tablePtr.p->tableId,
@@ -6686,6 +6719,11 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
 
   Uint32 counts[] = {0, 0, 0, 0, 0};
 
+  /* Ring buffer column validation state (checked after the loop). */
+  Uint32 ringIdxMatches = 0;
+  Uint32 ringMetaMatches = 0;
+  Uint32 lastKeyAttrId = RNIL;
+
   bool disk_based = false;
   bool ttl_column_seen = false;
   for (Uint32 i = 0; i < attrCount; i++) {
@@ -6829,10 +6867,48 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
          visit without loading disk pages (mysqld DDL enforces this too). */
       tabRequire(attrDesc.AttributeStorageType != NDB_STORAGETYPE_DISK,
                  CreateTableRef::InvalidFormat);
+      /* On a ring buffer table the writers store the TTL maximum in the
+         meta row's TTL column, so it cannot be part of the key. Checked
+         for API requests only: a table created before this rule must
+         still load at restart (and can then be dropped). */
+      tabRequire(tableDesc.RingIdxColumnNo == RNIL ||
+                     !attrDesc.AttributeKeyFlag ||
+                     (parseP->requestType != DictTabInfo::CreateTableFromAPI &&
+                      parseP->requestType != DictTabInfo::AlterTableFromAPI),
+                 CreateTableRef::InvalidFormat);
       ttl_column_seen = true;
       g_eventLogger->info("[DICT]TTL validation on TTL attrId passed. "
                           "attrId: %u",
                           attrPtr.p->attributeId);
+    }
+    if (tableDesc.RingIdxColumnNo != RNIL &&
+        attrPtr.p->attributeId == tableDesc.RingIdxColumnNo) {
+      jam();
+      /* ring_idx must be a 4-byte integer primary key column. */
+      tabRequire(attrDesc.AttributeExtType == DictTabInfo::ExtInt ||
+                     attrDesc.AttributeExtType == DictTabInfo::ExtUnsigned,
+                 CreateTableRef::InvalidFormat);
+      tabRequire(attrDesc.AttributeKeyFlag, CreateTableRef::InvalidFormat);
+      ringIdxMatches++;
+    }
+    if (tableDesc.RingMetaColumnNo != RNIL &&
+        attrPtr.p->attributeId == tableDesc.RingMetaColumnNo) {
+      jam();
+      /* ring_meta must be a nullable VARBINARY(>= 32) non-key column
+         (32 = the packed ring management state size). */
+      tabRequire(attrDesc.AttributeExtType == DictTabInfo::ExtVarbinary ||
+                     attrDesc.AttributeExtType ==
+                         DictTabInfo::ExtLongvarbinary,
+                 CreateTableRef::InvalidFormat);
+      tabRequire(attrDesc.AttributeNullableFlag,
+                 CreateTableRef::InvalidFormat);
+      tabRequire(!attrDesc.AttributeKeyFlag, CreateTableRef::InvalidFormat);
+      tabRequire(attrDesc.AttributeExtLength >= 32,
+                 CreateTableRef::InvalidFormat);
+      ringMetaMatches++;
+    }
+    if (attrDesc.AttributeKeyFlag) {
+      lastKeyAttrId = attrPtr.p->attributeId;
     }
     attrPtr.p->autoIncrement = attrDesc.AttributeAutoIncrement;
     {
@@ -6965,6 +7041,19 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
   tabRequire(keyLength > 0, CreateTableRef::InvalidPrimaryKeySize);
   tabRequire(keyCount <= MAX_ATTRIBUTES_IN_INDEX,
              CreateTableRef::InvalidPrimaryKeySize);
+
+  if (tableDesc.RingIdxColumnNo != RNIL ||
+      tableDesc.RingMetaColumnNo != RNIL) {
+    jam();
+    /* Both ring columns must reference existing columns (an out-of-range
+       column number would make TUP's meta-row detection read an arbitrary
+       word of every row), and ring_idx must be the last primary key
+       column - the meta-row key layout depends on it. */
+    tabRequire(ringIdxMatches == 1, CreateTableRef::InvalidFormat);
+    tabRequire(ringMetaMatches == 1, CreateTableRef::InvalidFormat);
+    tabRequire(tableDesc.RingIdxColumnNo == lastKeyAttrId,
+               CreateTableRef::InvalidFormat);
+  }
 
   if (tablePtr.p->m_tablespace_id != RNIL || counts[3] || counts[4]) {
     FilegroupPtr tablespacePtr;
@@ -9843,6 +9932,16 @@ void Dbdict::alterTable_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
     setError(error, AlterTableRef::UnsupportedChange, __LINE__);
     return;
   }
+  if (AlterTableReq::getRingBufferSizeFlag(impl_req->changeMask)) {
+    jam();
+    // Online change of the ring buffer size (or the ring_idx/ring_meta column
+    // numbers) is not supported: existing meta rows pack ManagedState for the
+    // original ring size, so a resize would leave them inconsistent. The MySQL
+    // handler already rejects this, but the raw NDB API (setRingBufferSize +
+    // alterTable) reaches DICT directly, so reject it here too.
+    setError(error, AlterTableRef::UnsupportedChange, __LINE__);
+    return;
+  }
 
   // save it for abort code
 
@@ -9927,6 +10026,24 @@ void Dbdict::alterTable_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
   impl_req->ringBufferSize = newTablePtr.p->ringBufferSize;
   impl_req->ringIdxColumnNo = newTablePtr.p->ringIdxColNo;
   impl_req->ringMetaColumnNo = newTablePtr.p->ringMetaColNo;
+  if (tablePtr.p->ringBufferSize != RNIL) {
+    jam();
+    /* TTL on a ring buffer table is a creation-time property: the TTL
+       seconds may change, but TTL cannot be enabled or disabled on an
+       existing ring buffer table (enabling leaves meta rows written before
+       with a zero TTL column, disabling makes deleteOldest legal on a ring
+       with purged holes). The MySQL handler rejects this too; the raw NDB
+       API (setTTLSec + alterTable) reaches DICT directly. */
+    const bool old_ttl = (tablePtr.p->ttlSec != RNIL &&
+                          tablePtr.p->ttlColumnNo != RNIL);
+    const bool new_ttl = (impl_req->ttlSec != RNIL &&
+                          impl_req->ttlColumnNo != RNIL);
+    if (old_ttl != new_ttl) {
+      jam();
+      setError(error, AlterTableRef::UnsupportedChange, __LINE__);
+      return;
+    }
+  }
   g_eventLogger->info("[DICT], alterTable_parse(), AlterTableReq on Table "
                        "%u, [%u, %u]",
                        impl_req->tableId,
@@ -10118,6 +10235,19 @@ void Dbdict::alterTable_parse(Signal *signal, bool master, SchemaOpPtr op_ptr,
      * for some future release to handle. For now it isn't supported to do
      * this change.
      */
+    setError(error, AlterTableRef::UnsupportedChange, __LINE__);
+    return;
+  }
+  if ((AlterTableReq::getAddFragFlag(impl_req->changeMask) ||
+       AlterTableReq::getReorgFragFlag(impl_req->changeMask)) &&
+      tablePtr.p->ringBufferSize != RNIL) {
+    jam();
+    // Adding fragments / reorganizing partitions is not supported on ring
+    // buffer tables: the reorg triggers and DBUTIL copy writes carry no
+    // ring-buffer flag (940 mid-schema-transaction) and the reorg scan
+    // hides the meta rows, so moved fragments would silently lose them.
+    // The MySQL handler already rejects this; the raw NDB API reaches
+    // DICT directly, so reject it here too.
     setError(error, AlterTableRef::UnsupportedChange, __LINE__);
     return;
   }
@@ -11749,6 +11879,9 @@ void Dbdict::alterTable_toCommitComplete(Signal *signal, SchemaOpPtr op_ptr,
   req->noOfNewAttr = impl_req->noOfNewAttr;
   req->newNoOfCharsets = impl_req->newNoOfCharsets;
   req->newNoOfKeyAttrs = impl_req->newNoOfKeyAttrs;
+  /* Inside SignalLength - don't send them uninitialized. */
+  req->ttlSec = impl_req->ttlSec;
+  req->ttlColumnNo = impl_req->ttlColumnNo;
   req->connectPtr = RNIL;
 
   Uint32 blockIndex = alterTabPtr.p->m_blockIndex;  // ref
@@ -12227,6 +12360,9 @@ void Dbdict::alterTable_abortToLocal(Signal *signal, SchemaOpPtr op_ptr) {
   req->noOfNewAttr = impl_req->noOfNewAttr;
   req->newNoOfCharsets = impl_req->newNoOfCharsets;
   req->newNoOfKeyAttrs = impl_req->newNoOfKeyAttrs;
+  /* Inside SignalLength - don't send them uninitialized. */
+  req->ttlSec = impl_req->ttlSec;
+  req->ttlColumnNo = impl_req->ttlColumnNo;
 
   Callback c = {safe_cast(&Dbdict::alterTable_abortFromLocal),
                 op_ptr.p->op_key};

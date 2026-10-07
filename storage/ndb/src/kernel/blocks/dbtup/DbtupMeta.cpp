@@ -1647,9 +1647,11 @@ void Dbtup::handleAlterTableCommit(Signal *signal, const AlterTabReq *req,
     releaseAlterTabOpRec(regAlterTabOpPtr);
   }
 
-  /* Ring Buffer-only ALTER (no AddAttr). */
-  if (!AlterTableReq::getAddAttrFlag(req->changeMask) &&
-      AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+  /* Ring Buffer-only ALTER (no AddAttr). An else-if mirroring the prepare
+     path's chain: prepare seizes a single AlterTabOperation, so commit must
+     release it exactly once even if both mask bits arrive together. */
+  else if (!AlterTableReq::getAddAttrFlag(req->changeMask) &&
+           AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
     jam();
     AlterTabOperationPtr regAlterTabOpPtr;
     regAlterTabOpPtr.i = req->connectPtr;

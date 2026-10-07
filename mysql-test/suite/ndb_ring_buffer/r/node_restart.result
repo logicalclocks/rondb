@@ -14,7 +14,7 @@ INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_B');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
 #
-# Case 1: Single node restart — data survives
+# Case 1: Single node restart - data survives
 #
 SELECT client_id, ring_idx, event_data FROM test.rb
 ORDER BY client_id, ring_idx;
@@ -41,7 +41,7 @@ client_id	ring_idx
 2	1
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 2: System restart — data survives
+# Case 2: System restart - data survives
 #
 SELECT client_id, ring_idx, event_data FROM test.rb
 ORDER BY client_id, ring_idx;
@@ -111,6 +111,84 @@ rb	CREATE TABLE `rb` (
   `event_data` varchar(100) DEFAULT NULL,
   PRIMARY KEY (`client_id`,`ring_idx`)
 ) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+#
+# Case 5: writes while node 1 down, reads from recovered node 1
+#
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_E');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+3	1	w_E
+3	2	w_B
+3	3	w_C
+3	4	w_D
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 3 AND ring_idx = 0;
+HEX(ring_meta)
+0100000002000000040000000000000005000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_F');
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+3	1	w_E
+3	2	w_F
+3	3	w_C
+3	4	w_D
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+3	1	w_E
+3	2	w_F
+3	3	w_C
+3	4	w_D
+#
+# Case 6: TTL ring - expired slot and meta row survive a system restart
+#
+SET time_zone = '+00:00';
+CREATE TABLE test.rb_ttl (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 DAY), 'future_3');
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	future_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE ring_idx = 0;
+client_id	ring_idx	ts	HEX(ring_meta)
+1	0	2038-01-19 03:14:07	0100000004000000030000000000000003000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	future_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE ring_idx = 0;
+client_id	ring_idx	ts	HEX(ring_meta)
+1	0	2038-01-19 03:14:07	0100000004000000030000000000000003000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_4');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_5');
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	wrap_5
+1	2	live_2
+1	3	future_3
+1	4	live_4
+DROP TABLE test.rb_ttl;
 #
 # Cleanup
 #

@@ -19,7 +19,7 @@ CREATE TABLE test.rb (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 --echo #
---echo # Case 1: Single-row insert — first insert for PK prefix
+--echo # Case 1: Single-row insert - first insert for PK prefix
 --echo # Expected: ring_idx=1 assigned, meta row created
 --echo #
 
@@ -43,7 +43,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 3: Ring wraps — oldest entry overwritten
+--echo # Case 3: Ring wraps - oldest entry overwritten
 --echo # 5th insert should overwrite slot 1
 --echo #
 
@@ -55,7 +55,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 4: Additional wrap — slot 2 overwritten
+--echo # Case 4: Additional wrap - slot 2 overwritten
 --echo #
 
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
@@ -65,7 +65,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 5: Different PK prefix — independent ring
+--echo # Case 5: Different PK prefix - independent ring
 --echo #
 
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_A');
@@ -123,7 +123,7 @@ SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
---echo # Case 11: Ring size = 1 (single slot — every insert overwrites)
+--echo # Case 11: Ring size = 1 (single slot - every insert overwrites)
 --echo #
 
 CREATE TABLE test.rb1 (
@@ -174,6 +174,132 @@ SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
     ORDER BY region, client_id, ring_idx;
 
 DROP TABLE test.rb_multi;
+
+--echo #
+--echo # Case 13: INSERT IGNORE with a unique-index duplicate - pinned
+--echo #
+
+# Pins current semantics: IGNORE does NOT downgrade a unique violation
+# on a ring insert to a warning. The ring write is a multi-operation NDB
+# transaction (meta read + data write + meta write), so the constraint
+# violation aborts the whole NDB transaction and IGNORE's continue-path
+# surfaces it at commit as error 125 "Transaction has been rolled back".
+# State stays consistent: nothing is inserted, meta unchanged, and later
+# inserts work. (A plain INSERT gets the cleaner ER_DUP_ENTRY.)
+
+CREATE TABLE test.rb_ignore (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    code INT NOT NULL,
+    PRIMARY KEY (id, ring_idx),
+    UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 100);
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 200);
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 300);
+
+# Plain INSERT duplicating a live unique value: clean duplicate error
+--error ER_DUP_ENTRY
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 200);
+SELECT id, ring_idx, code FROM test.rb_ignore ORDER BY id, ring_idx;
+
+# INSERT IGNORE duplicating a live unique value: fails at commit
+--error ER_ERROR_DURING_COMMIT
+INSERT IGNORE INTO test.rb_ignore (id, code) VALUES (1, 200);
+SELECT id, ring_idx, code FROM test.rb_ignore ORDER BY id, ring_idx;
+
+# INSERT IGNORE with a fresh value still works and wraps
+INSERT IGNORE INTO test.rb_ignore (id, code) VALUES (1, 400);
+SELECT id, ring_idx, code FROM test.rb_ignore ORDER BY id, ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, HEX(ring_meta) FROM test.rb_ignore WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+DROP TABLE test.rb_ignore;
+
+--echo #
+--echo # Case 14: an INSERT that omits columns writes their defaults into the slot it overwrites
+--echo #
+
+# A wrap writes the occupied slot with writeTuple, which becomes an update.
+# Every stored column is written, blob columns included, so an omitted
+# column gets its default or NULL instead of keeping the overwritten row's
+# value.
+CREATE TABLE test.rb_omit (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    note VARCHAR(20) DEFAULT 'dflt',
+    num INT,
+    doc TEXT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+
+INSERT INTO test.rb_omit (client_id, val, note, num, doc) VALUES
+    (1, 'old_1', 'old_note_1', 11, 'old_doc_1'),
+    (1, 'old_2', 'old_note_2', 22, 'old_doc_2');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+
+# Slot 1 is overwritten by a row with val only
+INSERT INTO test.rb_omit (client_id, val) VALUES (1, 'wrap_3');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+
+# Slot 2 is overwritten by a multi-row INSERT that sets num only; slot 1
+# again by its second row
+INSERT INTO test.rb_omit (client_id, val, num) VALUES (1, 'wrap_4', 44), (1, 'wrap_5', 55);
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+
+# LOAD DATA with val only behaves the same
+--write_file $MYSQLTEST_VARDIR/tmp/rb_omit_load.csv
+1	load_6
+EOF
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+eval LOAD DATA LOCAL INFILE '$MYSQLTEST_VARDIR/tmp/rb_omit_load.csv'
+    INTO TABLE test.rb_omit (client_id, val);
+--remove_file $MYSQLTEST_VARDIR/tmp/rb_omit_load.csv
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+DROP TABLE test.rb_omit;
+
+--echo #
+--echo # Case 15: a virtual generated column before the ring columns
+--echo #
+
+# Virtual generated columns exist in MySQL only, so the NDB column numbers
+# of ring_idx and ring_meta differ from their MySQL field numbers; the
+# handler maps them.
+CREATE TABLE test.rb_vcol (
+    client_id INT NOT NULL,
+    twice INT AS (client_id * 2) VIRTUAL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_2');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_3'), (1, 'wrap_4');
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+# next_pos 2, count 3, total_inserts 4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_vcol WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+# The ring column guards still apply
+--error ER_ILLEGAL_HA
+INSERT INTO test.rb_vcol (client_id, ring_idx, val) VALUES (1, 5, 'bad');
+UPDATE test.rb_vcol SET val = 'v_2u' WHERE client_id = 1 AND ring_idx = 2;
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+--enable_info
+DELETE FROM test.rb_vcol WHERE client_id = 1;
+--disable_info
+SELECT COUNT(*) FROM test.rb_vcol;
+DROP TABLE test.rb_vcol;
 
 --echo #
 --echo # Cleanup

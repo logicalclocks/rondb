@@ -106,6 +106,12 @@ class TableImpl implements Table {
     private Column ringIdxColumn = null;
     private Column ringMetaColumn = null;
 
+    /** TTL enabled? */
+    private boolean ttlEnabled = false;
+
+    /** The TTL column; null if TTL is not enabled */
+    private Column ttlColumn = null;
+
     public TableImpl(TableConst ndbTable, String[] indexNames) {
         this.ndbTable = ndbTable;
         this.tableName = ndbTable.getName();
@@ -156,6 +162,12 @@ class TableImpl implements Table {
             this.ringMetaColumn = columnImpls[ringMetaColNo];
         } else {
             this.ringBufferSize = 0;
+        }
+        // TTL detection (a ring buffer table may have TTL: the writer then
+        // fills the meta row's TTL column with the type maximum)
+        this.ttlEnabled = ndbTable.isTTLEnabled();
+        if (ttlEnabled) {
+            this.ttlColumn = columnImpls[ndbTable.getTTLColumnNo()];
         }
     }
 
@@ -257,6 +269,14 @@ class TableImpl implements Table {
 
     public Column getRingMetaColumn() {
         return ringMetaColumn;
+    }
+
+    public boolean isTTLEnabled() {
+        return ttlEnabled;
+    }
+
+    public Column getTTLColumn() {
+        return ttlColumn;
     }
 
 }

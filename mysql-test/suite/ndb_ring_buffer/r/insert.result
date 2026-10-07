@@ -10,7 +10,7 @@ PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 #
-# Case 1: Single-row insert — first insert for PK prefix
+# Case 1: Single-row insert - first insert for PK prefix
 # Expected: ring_idx=1 assigned, meta row created
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_A');
@@ -33,7 +33,7 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 3: Ring wraps — oldest entry overwritten
+# Case 3: Ring wraps - oldest entry overwritten
 # 5th insert should overwrite slot 1
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_E');
@@ -46,7 +46,7 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 4: Additional wrap — slot 2 overwritten
+# Case 4: Additional wrap - slot 2 overwritten
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -58,7 +58,7 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 5: Different PK prefix — independent ring
+# Case 5: Different PK prefix - independent ring
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'client2_B');
@@ -110,7 +110,7 @@ client_id	ring_idx	HEX(ring_meta)
 1	0	0100000003000000040000000000000006000000000000000000000000000000
 SET ndb_ring_buffer_show_meta = OFF;
 #
-# Case 11: Ring size = 1 (single slot — every insert overwrites)
+# Case 11: Ring size = 1 (single slot - every insert overwrites)
 #
 CREATE TABLE test.rb1 (
 pk INT NOT NULL,
@@ -158,6 +158,124 @@ region	client_id	ring_idx	event_data
 1	100	2	r1c100_B
 1	200	1	r1c200_A
 DROP TABLE test.rb_multi;
+#
+# Case 13: INSERT IGNORE with a unique-index duplicate - pinned
+#
+CREATE TABLE test.rb_ignore (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+code INT NOT NULL,
+PRIMARY KEY (id, ring_idx),
+UNIQUE INDEX idx_code (code)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 100);
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 200);
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 300);
+INSERT INTO test.rb_ignore (id, code) VALUES (1, 200);
+ERROR 23000: Duplicate entry '200' for key 'rb_ignore.idx_code'
+SELECT id, ring_idx, code FROM test.rb_ignore ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	200
+1	3	300
+INSERT IGNORE INTO test.rb_ignore (id, code) VALUES (1, 200);
+ERROR HY000: Got error 125 - 'Transaction has been rolled back' during COMMIT
+SELECT id, ring_idx, code FROM test.rb_ignore ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	100
+1	2	200
+1	3	300
+INSERT IGNORE INTO test.rb_ignore (id, code) VALUES (1, 400);
+SELECT id, ring_idx, code FROM test.rb_ignore ORDER BY id, ring_idx;
+id	ring_idx	code
+1	1	400
+1	2	200
+1	3	300
+SET ndb_ring_buffer_show_meta = ON;
+SELECT id, ring_idx, HEX(ring_meta) FROM test.rb_ignore WHERE ring_idx = 0;
+id	ring_idx	HEX(ring_meta)
+1	0	0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_ignore;
+#
+# Case 14: an INSERT that omits columns writes their defaults into the slot it overwrites
+#
+CREATE TABLE test.rb_omit (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+note VARCHAR(20) DEFAULT 'dflt',
+num INT,
+doc TEXT,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+INSERT INTO test.rb_omit (client_id, val, note, num, doc) VALUES
+(1, 'old_1', 'old_note_1', 11, 'old_doc_1'),
+(1, 'old_2', 'old_note_2', 22, 'old_doc_2');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	old_1	old_note_1	11	old_doc_1
+1	2	old_2	old_note_2	22	old_doc_2
+INSERT INTO test.rb_omit (client_id, val) VALUES (1, 'wrap_3');
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	wrap_3	dflt	NULL	NULL
+1	2	old_2	old_note_2	22	old_doc_2
+INSERT INTO test.rb_omit (client_id, val, num) VALUES (1, 'wrap_4', 44), (1, 'wrap_5', 55);
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	wrap_5	dflt	55	NULL
+1	2	wrap_4	dflt	44	NULL
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_omit_load.csv'
+    INTO TABLE test.rb_omit (client_id, val);
+SELECT client_id, ring_idx, val, note, num, doc FROM test.rb_omit ORDER BY ring_idx;
+client_id	ring_idx	val	note	num	doc
+1	1	wrap_5	dflt	55	NULL
+1	2	load_6	dflt	NULL	NULL
+DROP TABLE test.rb_omit;
+#
+# Case 15: a virtual generated column before the ring columns
+#
+CREATE TABLE test.rb_vcol (
+client_id INT NOT NULL,
+twice INT AS (client_id * 2) VIRTUAL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_2');
+INSERT INTO test.rb_vcol (client_id, val) VALUES (1, 'v_3'), (1, 'wrap_4');
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+client_id	twice	ring_idx	val
+1	2	1	wrap_4
+1	2	2	v_2
+1	2	3	v_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_vcol WHERE ring_idx = 0;
+client_id	ring_idx	HEX(ring_meta)
+1	0	0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_vcol (client_id, ring_idx, val) VALUES (1, 5, 'bad');
+ERROR HY000: Table storage engine for 'Cannot specify ring_idx column in INSERT on ring-buffer table' doesn't have this option
+UPDATE test.rb_vcol SET val = 'v_2u' WHERE client_id = 1 AND ring_idx = 2;
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+client_id	twice	ring_idx	val
+1	2	1	wrap_4
+1	2	2	v_2u
+1	2	3	v_3
+DELETE FROM test.rb_vcol WHERE client_id = 1;
+affected rows: 4
+SELECT COUNT(*) FROM test.rb_vcol;
+COUNT(*)
+0
+DROP TABLE test.rb_vcol;
 #
 # Cleanup
 #

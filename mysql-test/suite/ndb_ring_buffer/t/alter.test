@@ -1,7 +1,8 @@
 # ndb_ring_buffer_alter.test
 #
 # Tests for ALTER TABLE on ring-buffer tables:
-# grow (allowed), shrink (blocked), disable (blocked).
+# size changes (blocked), disable (blocked), unrelated ALTERs preserved.
+# Online ring-buffer resize is disabled; resize requires DROP+CREATE.
 
 --source include/have_ndb.inc
 
@@ -25,80 +26,55 @@ INSERT INTO test.rb_alter (id, data) VALUES (1, 'c');
 SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
 
 --echo #
---echo # Case 1: Grow ring_size 3 → 6 — allowed
---echo #
-
-ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
-
-# Verify existing data is preserved
-SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
-
---echo #
---echo # Case 2: After grow, inserts fill empty slots first (no overwrite)
---echo #
-
-INSERT INTO test.rb_alter (id, data) VALUES (1, 'd');
-
-SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
-
-# Fill remaining slots
-INSERT INTO test.rb_alter (id, data) VALUES (1, 'e');
-INSERT INTO test.rb_alter (id, data) VALUES (1, 'f');
-
-SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
-
---echo #
---echo # Case 3: Ring wraps at new size (7th insert overwrites slot 1)
---echo #
-
-INSERT INTO test.rb_alter (id, data) VALUES (1, 'g');
-
-SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
-
---echo #
---echo # Case 4: Shrink blocked — 6 → 3
+--echo # Case 1: Grow blocked - 3 -> 6
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
-ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
 
 --echo #
---echo # Case 5: Shrink blocked — 6 → 1
+--echo # Case 2: Shrink blocked - 3 -> 1
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
 ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
 
 --echo #
---echo # Case 6: Disable blocked — MAX_ROWS_PER_PK=off
+--echo # Case 3: Disable blocked - MAX_ROWS_PER_PK=off
 --echo #
 
 --error ER_ILLEGAL_HA_CREATE_OPTION
 ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=off";
 
 --echo #
---echo # Case 7: Same size — no-op, no error
+--echo # Case 4: Same size - no-op, no error
 --echo #
 
-ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 # Verify data unchanged
 SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
 
 --echo #
---echo # Case 8: Grow further — 6 → 10
+--echo # Case 4b: Adding FULLY_REPLICATED to a ring-buffer table is rejected
 --echo #
 
-ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=10@ring_idx@ring_meta";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_alter COMMENT="NDB_TABLE=FULLY_REPLICATED=1,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-INSERT INTO test.rb_alter (id, data) VALUES (1, 'h');
+--echo #
+--echo # Case 4c: INSERT after the rejected ALTERs - ring intact at size 3
+--echo #
 
+# The wrap to slot 1 proves the original ring size survived every
+# rejected ALTER above.
+INSERT INTO test.rb_alter (id, data) VALUES (1, 'd');
 SELECT id, ring_idx, data FROM test.rb_alter ORDER BY ring_idx;
 
 DROP TABLE test.rb_alter;
 
 --echo #
---echo # Case 9: Preserve ring buffer on unrelated ALTER (ADD COLUMN)
+--echo # Case 5: Preserve ring buffer on unrelated ALTER (ADD COLUMN)
 --echo #
 
 CREATE TABLE test.rb_preserve (
@@ -124,218 +100,251 @@ SELECT id, ring_idx, val, extra FROM test.rb_preserve
 DROP TABLE test.rb_preserve;
 
 --echo #
---echo # Case 10: Multiple PK prefixes — grow preserves all rings
+--echo # Case 6: REORGANIZE PARTITION / ADD PARTITION - blocked
 --echo #
 
-CREATE TABLE test.rb_multi (
-    region INT NOT NULL,
+# The kernel reorg copy machinery carries no ring-buffer flag, so real
+# data movement aborts mid-schema-transaction with error 940, and the
+# reorg copy scan would drop hidden meta rows. Reject at DDL instead.
+
+CREATE TABLE test.rb_reorg (
     client_id INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
-    data VARCHAR(50),
-    PRIMARY KEY (region, client_id, ring_idx)
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY KEY(client_id);
 
-INSERT INTO test.rb_multi (region, client_id, data) VALUES (1, 100, 'r1c100_a');
-INSERT INTO test.rb_multi (region, client_id, data) VALUES (1, 100, 'r1c100_b');
-INSERT INTO test.rb_multi (region, client_id, data) VALUES (2, 200, 'r2c200_a');
+INSERT INTO test.rb_reorg (client_id, val) VALUES (1, 'a');
+INSERT INTO test.rb_reorg (client_id, val) VALUES (1, 'b');
+INSERT INTO test.rb_reorg (client_id, val) VALUES (1, 'c');
+INSERT INTO test.rb_reorg (client_id, val) VALUES (2, 'x');
 
-# Grow 2 → 5
-ALTER TABLE test.rb_multi COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 2;
 
-# Both rings preserved
-SELECT region, client_id, ring_idx, data FROM test.rb_multi
-    ORDER BY region, client_id, ring_idx;
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_reorg ALGORITHM=INPLACE, REORGANIZE PARTITION;
 
-# Insert expands into new slots (not wrapping)
-INSERT INTO test.rb_multi (region, client_id, data) VALUES (1, 100, 'r1c100_c');
+# Contents unchanged by the rejected statements
+SELECT client_id, ring_idx, val FROM test.rb_reorg ORDER BY client_id, ring_idx;
 
-SELECT region, client_id, ring_idx, data FROM test.rb_multi
-    WHERE region = 1 AND client_id = 100 ORDER BY ring_idx;
+# Without ALGORITHM the server falls back to COPY - a full rebuild that
+# copies data AND meta rows verbatim. That path is safe and stays allowed.
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_reorg WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
 
-DROP TABLE test.rb_multi;
+ALTER TABLE test.rb_reorg ADD PARTITION PARTITIONS 2;
 
---echo #
---echo # Case 11: Grow on not-full ring (perfect — no caveat)
---echo #
+# Meta rows survived the copy byte-for-byte
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_reorg WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT client_id, ring_idx, val FROM test.rb_reorg ORDER BY client_id, ring_idx;
 
-CREATE TABLE test.rb_notfull (
-    id INT NOT NULL,
+# Ring state continues (4th insert wraps to slot 1, count stays 3)
+INSERT INTO test.rb_reorg (client_id, val) VALUES (1, 'wrap_d');
+SELECT client_id, ring_idx, val FROM test.rb_reorg
+    WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_reorg WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# Inplace partition management still rejected on the repartitioned table
+# (bare REORGANIZE now stops at the SQL layer: the partition count became
+# explicit after ADD PARTITION, so probe with ADD PARTITION instead)
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_reorg ALGORITHM=INPLACE, ADD PARTITION PARTITIONS 1;
+
+DROP TABLE test.rb_reorg;
+
+# Bare REORGANIZE PARTITION on an implicitly partitioned ring table is
+# rejected the same way (today a no-op, but after add-node scale-out it
+# would move data through the unflagged copy path)
+
+CREATE TABLE test.rb_reorg_i (
+    client_id INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
-    data VARCHAR(50),
-    PRIMARY KEY (id, ring_idx)
-) ENGINE = NDB,
-  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
-
-# Only 2 inserts in a size-4 ring (not full)
-INSERT INTO test.rb_notfull (id, data) VALUES (1, 'x');
-INSERT INTO test.rb_notfull (id, data) VALUES (1, 'y');
-
-# Grow 4 → 8
-ALTER TABLE test.rb_notfull COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
-
-# Next insert goes to slot 3 (sequential, no adjustment needed)
-INSERT INTO test.rb_notfull (id, data) VALUES (1, 'z');
-
-SELECT id, ring_idx, data FROM test.rb_notfull ORDER BY ring_idx;
-
-DROP TABLE test.rb_notfull;
-
---echo #
---echo # Case 12: Grow on heavily wrapped ring (next_pos in middle)
---echo # ring_size=3, 8 inserts → wraps multiple times
---echo # After 8 inserts: slots hold values 7(1), 8(2), 6(3)
---echo # Meta: next_pos=3, count=3 (oldest is slot 3 = value 6)
---echo #
-
-CREATE TABLE test.rb_wrap (
-    id INT NOT NULL,
-    ring_idx INT NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(64),
-    data VARCHAR(50),
-    PRIMARY KEY (id, ring_idx)
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v1');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v2');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v3');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v4');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v5');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v6');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v7');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v8');
+INSERT INTO test.rb_reorg_i (client_id, val) VALUES (1, 'a');
 
-SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_reorg_i ALGORITHM=INPLACE, REORGANIZE PARTITION;
 
-# Grow 3 → 6
-ALTER TABLE test.rb_wrap COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
+INSERT INTO test.rb_reorg_i (client_id, val) VALUES (1, 'b');
+SELECT client_id, ring_idx, val FROM test.rb_reorg_i ORDER BY ring_idx;
 
-# Next insert should go to slot 4 (first empty), not overwrite any slot
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v9');
-
-SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
-
-# Fill slot 5 and 6
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v10');
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v11');
-
-SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
-
-# Ring now full at size 6. Next insert overwrites (wrapping resumes)
-INSERT INTO test.rb_wrap (id, data) VALUES (1, 'v12');
-
-SELECT id, ring_idx, data FROM test.rb_wrap ORDER BY ring_idx;
-
-DROP TABLE test.rb_wrap;
+DROP TABLE test.rb_reorg_i;
 
 --echo #
---echo # Case 13: Sequential grows — 2 → 4 → 8
+--echo # Case 7: TTL on a ring buffer table is a creation-time property
 --echo #
 
-CREATE TABLE test.rb_seq (
-    id INT NOT NULL,
+# Enabling TTL on an existing ring buffer table is rejected (meta rows
+# written so far carry a zero TTL column); the message goes through
+# ER_ILLEGAL_HA_CREATE_OPTION on the copy path.
+CREATE TABLE test.rb_ttl (
+    client_id INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
-    data VARCHAR(50),
-    PRIMARY KEY (id, ring_idx)
-) ENGINE = NDB,
-  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
-
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'a');
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'b');
-
-# Ring full at size 2: a(1), b(2), next_pos=1
-SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
-
-# First grow: 2 → 4
-ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
-
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'c');
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'd');
-
-# Slots 3,4 filled. Ring full at size 4.
-SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
-
-# Second grow: 4 → 8
-ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
-
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'e');
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'f');
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'g');
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'h');
-
-# Slots 5-8 filled. Ring full at size 8.
-SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
-
-# Verify wrapping works at new size
-INSERT INTO test.rb_seq (id, data) VALUES (1, 'i');
-
-SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
-
-DROP TABLE test.rb_seq;
-
---echo #
---echo # Case 14: Grow on ring_size=1 (edge case)
---echo #
-
-CREATE TABLE test.rb_one (
-    id INT NOT NULL,
-    ring_idx INT NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(64),
-    data VARCHAR(50),
-    PRIMARY KEY (id, ring_idx)
-) ENGINE = NDB,
-  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
-
-INSERT INTO test.rb_one (id, data) VALUES (1, 'only');
-
-SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
-
-# Grow 1 → 3
-ALTER TABLE test.rb_one COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-
-# Next insert should go to slot 2 (empty), not overwrite slot 1
-INSERT INTO test.rb_one (id, data) VALUES (1, 'second');
-
-SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
-
-INSERT INTO test.rb_one (id, data) VALUES (1, 'third');
-
-SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
-
-# Ring full, 4th insert wraps
-INSERT INTO test.rb_one (id, data) VALUES (1, 'fourth');
-
-SELECT id, ring_idx, data FROM test.rb_one ORDER BY ring_idx;
-
-DROP TABLE test.rb_one;
-
---echo #
---echo # Case 15: Bulk insert after grow — batch path uses empty slots
---echo #
-
-CREATE TABLE test.rb_bulk (
-    id INT NOT NULL,
-    ring_idx INT NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(64),
-    data VARCHAR(50),
-    PRIMARY KEY (id, ring_idx)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-INSERT INTO test.rb_bulk (id, data) VALUES (1, 'x'), (1, 'y'), (1, 'z');
+INSERT INTO test.rb_ttl (client_id, val) VALUES (1, 'a');
 
-SELECT id, ring_idx, data FROM test.rb_bulk ORDER BY ring_idx;
+# TTL added alongside the ring comment
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_ttl COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta,TTL=3600@created_at";
 
-# Grow 3 → 6
-ALTER TABLE test.rb_bulk COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
+# TTL replacing the ring comment (comment re-injection keeps the ring
+# modifier alive, so this still enables TTL on a ring table)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_ttl COMMENT="NDB_TABLE=TTL=3600@created_at";
 
-# Bulk insert 3 rows — should fill slots 4, 5, 6
-INSERT INTO test.rb_bulk (id, data) VALUES (1, 'b1'), (1, 'b2'), (1, 'b3');
+# The inplace path rejects it with its own reason
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_ttl ALGORITHM=INPLACE, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta,TTL=3600@created_at";
 
-SELECT id, ring_idx, data FROM test.rb_bulk ORDER BY ring_idx;
+# Comment unchanged, table still writable
+SHOW CREATE TABLE test.rb_ttl;
+INSERT INTO test.rb_ttl (client_id, val) VALUES (1, 'b');
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
 
-DROP TABLE test.rb_bulk;
+DROP TABLE test.rb_ttl;
+
+# On a TTL ring buffer table the TTL seconds may change, TTL cannot be
+# disabled (deleteOldest would become legal on a ring with purged holes).
+CREATE TABLE test.rb_ttl2 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    created_at TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@created_at,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_ttl2 (client_id, created_at, val) VALUES (1, NOW(), 'a');
+
+# TTL seconds change: allowed
+ALTER TABLE test.rb_ttl2 COMMENT="NDB_TABLE=TTL=7200@created_at,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb_ttl2;
+
+# TTL=OFF: rejected on both paths
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_ttl2 COMMENT="NDB_TABLE=TTL=OFF,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_ttl2 ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=OFF,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# A comment without the TTL modifier keeps it (re-injection): no change
+ALTER TABLE test.rb_ttl2 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb_ttl2;
+
+# Data untouched, ring continues
+INSERT INTO test.rb_ttl2 (client_id, created_at, val) VALUES (1, NOW(), 'b');
+SELECT client_id, ring_idx, val FROM test.rb_ttl2 ORDER BY ring_idx;
+
+DROP TABLE test.rb_ttl2;
+
+--echo #
+--echo # Case 8: repartition via ALTER ... PARTITION BY
+--echo #
+
+# Repartitioning to a user-defined scheme is rejected (the COPY alter
+# re-enters CREATE, where non-KEY partitioning on a ring buffer table is
+# refused - without the guard the copy succeeded but the table became
+# write-dead: every INSERT failed with NDB 4544). Repartitioning to KEY
+# is allowed and preserves ring state through the copy.
+
+CREATE TABLE test.rb_repart (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_repart (client_id, val) VALUES (1, 'a');
+INSERT INTO test.rb_repart (client_id, val) VALUES (1, 'b');
+INSERT INTO test.rb_repart (client_id, val) VALUES (1, 'c');
+INSERT INTO test.rb_repart (client_id, val) VALUES (1, 'd');
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_repart PARTITION BY RANGE (client_id) (
+    PARTITION p0 VALUES LESS THAN (100),
+    PARTITION p1 VALUES LESS THAN MAXVALUE
+  );
+
+# Table unchanged and still writable after the rejected repartition
+SELECT client_id, ring_idx, val FROM test.rb_repart ORDER BY ring_idx;
+INSERT INTO test.rb_repart (client_id, val) VALUES (1, 'e');
+SELECT client_id, ring_idx, val FROM test.rb_repart ORDER BY ring_idx;
+
+# Repartition to KEY: allowed, ring state preserved through the copy
+ALTER TABLE test.rb_repart PARTITION BY KEY(client_id) PARTITIONS 2;
+SELECT client_id, ring_idx, val FROM test.rb_repart ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_repart WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_repart (client_id, val) VALUES (1, 'f');
+SELECT client_id, ring_idx, val FROM test.rb_repart ORDER BY ring_idx;
+
+DROP TABLE test.rb_repart;
+
+
+--echo #
+--echo # Case 9: enabling MAX_ROWS_PER_PK on an ordinary or non-NDB table via ALTER - blocked
+--echo #
+# The copy would keep every row as it is: no meta rows, slots outside
+# 1..size, a ring_idx = 0 row taken for a meta row. DROP+CREATE instead.
+CREATE TABLE test.rb_plain (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB;
+INSERT INTO test.rb_plain VALUES (1, 0, NULL, 'a'), (1, 7, NULL, 'b'),
+                                 (1, 50, NULL, 'c'), (2, 3, NULL, 'd');
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_plain COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_plain ALGORITHM=COPY, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
+ALTER TABLE test.rb_plain ALGORITHM=INPLACE, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# The table is unchanged: still an ordinary table with the same rows
+SHOW CREATE TABLE test.rb_plain;
+SELECT client_id, ring_idx, val FROM test.rb_plain ORDER BY client_id, ring_idx;
+INSERT INTO test.rb_plain (client_id, val) VALUES (3, 'e');
+SELECT client_id, ring_idx, val FROM test.rb_plain WHERE client_id = 3;
+
+DROP TABLE test.rb_plain;
+
+# The same from a table of another engine (no NDB table to compare with)
+CREATE TABLE test.rb_innodb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(20),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = InnoDB;
+INSERT INTO test.rb_innodb VALUES (1, 0, NULL, 'a'), (1, 7, NULL, 'b');
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE test.rb_innodb ENGINE = NDB,
+    COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb_innodb;
+DROP TABLE test.rb_innodb;

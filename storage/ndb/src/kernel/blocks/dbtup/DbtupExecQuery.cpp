@@ -3160,9 +3160,22 @@ int Dbtup::handleReadReq(
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(READ) handleReadReq TTL check");
-    // Read execution ran prepare_read() before dispatching here.
-    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/true,
-                       &has_error, &err_no);
+    if (unlikely(is_ring_buffer_meta_tuple(regTabPtr,
+                                           req_struct->m_tuple_ptr))) {
+      /*
+       * Ring buffer meta rows never expire. Their TTL column carries no
+       * row timestamp (the type maximum from current writers, zero or
+       * NULL from older ones), so treat the row as live without reading
+       * it. The meta-row filter below decides whether this reader may see
+       * it; an only-expired scan (TTL purge) skips it as live.
+       */
+      jamDebug();
+      cmp_ret = 1;
+    } else {
+      // Read execution ran prepare_read() before dispatching here.
+      cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/true,
+                         &has_error, &err_no);
+    }
     if (!has_error) {
       if (_regOperPtr->ttl_only_expired == 0) {
         if (cmp_ret <= 0) {
@@ -3526,10 +3539,22 @@ int Dbtup::handleUpdateReq(Signal* signal,
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(UPDATE) handleUpdateReq TTL check");
-    // Write execution skips prepare_read(); checkTTL prepares the var/dyn
-    // metadata itself iff the TTL column is DYNAMIC-format.
-    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
-                       &has_error, &err_no);
+    if (unlikely(is_ring_buffer_meta_tuple(regTabPtr,
+                                           req_struct->m_tuple_ptr))) {
+      /*
+       * Ring buffer meta rows never expire (see handleReadReq). A
+       * duplicate meta INSERT that DBACC converted into a TTL upsert
+       * therefore takes the live + ZINSERT_TTL branch below and returns
+       * 630, as on a plain ring table, instead of resetting the meta row.
+       */
+      jamDebug();
+      cmp_ret = 1;
+    } else {
+      // Write execution skips prepare_read(); checkTTL prepares the var/dyn
+      // metadata itself iff the TTL column is DYNAMIC-format.
+      cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
+                         &has_error, &err_no);
+    }
     if (!has_error) {
       if (cmp_ret <= 0 && operPtrP->op_type != ZINSERT_TTL) {
         /*
@@ -4776,10 +4801,21 @@ int Dbtup::handleDeleteReq(Signal* signal,
     int cmp_ret = 0;
     TTL_RONDB_TRACE(req_struct->fragPtrP->fragTableId,
                     "(DELETE) handleDeleteReq TTL check");
-    // Write execution skips prepare_read(); checkTTL prepares the var/dyn
-    // metadata itself iff the TTL column is DYNAMIC-format.
-    cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
-                       &has_error, &err_no);
+    if (unlikely(is_ring_buffer_meta_tuple(regTabPtr,
+                                           req_struct->m_tuple_ptr))) {
+      /*
+       * Ring buffer meta rows never expire (see handleReadReq): a normal
+       * delete of the meta row proceeds, an only-expired delete reports
+       * it as not found.
+       */
+      jamDebug();
+      cmp_ret = 1;
+    } else {
+      // Write execution skips prepare_read(); checkTTL prepares the var/dyn
+      // metadata itself iff the TTL column is DYNAMIC-format.
+      cmp_ret = checkTTL(regTabPtr, req_struct, /*var_data_prepared=*/false,
+                         &has_error, &err_no);
+    }
     if (!has_error) {
       if (unlikely(regOperPtr->ttl_only_expired == 1)) {
         /*

@@ -28,7 +28,9 @@ package testsuite.clusterj;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -47,6 +49,8 @@ import com.mysql.clusterj.query.Predicate;
 import com.mysql.clusterj.query.PredicateOperand;
 
 import testsuite.clusterj.model.RingBufferNotNull;
+import testsuite.clusterj.model.RingBufferTtl;
+import testsuite.clusterj.model.RingBufferTtlDt;
 import testsuite.clusterj.model.RingBufferSensor;
 
 /**
@@ -114,6 +118,46 @@ public class RingBufferTest extends AbstractClusterJTest {
                     + "PRIMARY KEY (client_id, ring_idx)"
                     + ") ENGINE=ndbcluster"
                     + " COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+            stmt.execute("DROP TABLE IF EXISTS ring_buffer_blob");
+            stmt.execute("CREATE TABLE ring_buffer_blob ("
+                    + "client_id INT NOT NULL,"
+                    + "ring_idx INT NOT NULL DEFAULT 0,"
+                    + "ring_meta VARBINARY(64),"
+                    + "payload TEXT,"
+                    + "note VARCHAR(50),"
+                    + "PRIMARY KEY (client_id, ring_idx)"
+                    + ") ENGINE=ndbcluster"
+                    + " COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+            stmt.execute("DROP TABLE IF EXISTS ring_buffer_ttl");
+            stmt.execute("CREATE TABLE ring_buffer_ttl ("
+                    + "client_id INT NOT NULL,"
+                    + "ring_idx INT NOT NULL DEFAULT 0,"
+                    + "ring_meta VARBINARY(64),"
+                    + "ts TIMESTAMP NULL,"
+                    + "val VARCHAR(50),"
+                    + "PRIMARY KEY (client_id, ring_idx)"
+                    + ") ENGINE=ndbcluster"
+                    + " COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+            stmt.execute("DROP TABLE IF EXISTS ring_buffer_ttl_dt");
+            stmt.execute("CREATE TABLE ring_buffer_ttl_dt ("
+                    + "client_id INT NOT NULL,"
+                    + "ring_idx INT NOT NULL DEFAULT 0,"
+                    + "ring_meta VARBINARY(64),"
+                    + "ts DATETIME NULL,"
+                    + "val VARCHAR(50),"
+                    + "PRIMARY KEY (client_id, ring_idx),"
+                    + "INDEX ttl_index (ts)"
+                    + ") ENGINE=ndbcluster"
+                    + " COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
+            stmt.execute("DROP TABLE IF EXISTS ring_buffer_autoinc");
+            stmt.execute("CREATE TABLE ring_buffer_autoinc ("
+                    + "id INT NOT NULL AUTO_INCREMENT,"
+                    + "ring_idx INT NOT NULL DEFAULT 0,"
+                    + "ring_meta VARBINARY(64),"
+                    + "val VARCHAR(50),"
+                    + "PRIMARY KEY (id, ring_idx)"
+                    + ") ENGINE=ndbcluster"
+                    + " COMMENT='NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta'");
             stmt.close();
         } catch (Exception ex) {
             throw new RuntimeException("Failed to create ring_buffer_sensor table", ex);
@@ -172,7 +216,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         testDtoCacheReadAfterInsert();
         testDtoCacheWithoutCache();
 
-        // P4: DynamicObject reflection path — schema-driven DTOs used by
+        // P4: DynamicObject reflection path - schema-driven DTOs used by
         // frameworks (e.g. Hopsworks Feature Store) that don't know the
         // table shape at compile time. Distinct from the annotation-interface
         // path: top-half goes through columnMetadata + set(int, Object)
@@ -186,14 +230,29 @@ public class RingBufferTest extends AbstractClusterJTest {
         testDynamicObjectDtoCacheInsert();
         testDynamicObjectNotNullColumns();
         // Round out DTO-layer parity with the annotation-interface path:
-        // read, update, delete, query — each exercises a DTO code path
+        // read, update, delete, query - each exercises a DTO code path
         // distinct from the write-only coverage above.
         testDynamicObjectRead();
         testDynamicObjectUpdate();
         testDynamicObjectDelete();
         testDynamicObjectQueryScan();
 
-        // Concurrent tests (SamePrefix runs last — its normalized state
+        // Regression: an unrelated operation's error in the same transaction as
+        // a ring insert must not be swallowed by the meta-read execute round.
+        testUnrelatedErrorNotSwallowed();
+
+        // Blob rejection, auto-increment prefix, and flush-failure state
+        testBlobColumnRejected();
+        testAutoIncrementPrefix();
+        testFlushBatchFailureThenCommit();
+        // TTL ring buffer table: meta row TTL column, expiry, ring continues
+        testTtlRing();
+        // TTL ring with a DATETIME TTL column: annotation interface,
+        // DynamicObject and concurrent writers
+        testTtlRingDatetime();
+        testTtlRingDatetimeConcurrent();
+
+        // Concurrent tests (SamePrefix runs last - its normalized state
         // is checked by the SQL diagnostic queries in the .test file)
         testConcurrentDifferentPrefixes();
         testConcurrentWithSessionCache();
@@ -967,7 +1026,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_notnull");
+            clearRingTable(stmt, "ring_buffer_notnull", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
@@ -1052,6 +1111,335 @@ public class RingBufferTest extends AbstractClusterJTest {
         errorIfNotEqual("NOT NULL wrap: slot 3 name", "charlie", s3.getName());
         errorIfNotEqual("NOT NULL wrap: slot 3 score", 77, s3.getScore());
         tx.commit();
+    }
+
+    /**
+     * Ring buffer table with TTL (ring_buffer_ttl, MAX_ROWS_PER_PK=3, TTL 1 h
+     * on ts). RingBufferWriter fills the meta row's ts with the TIMESTAMP
+     * maximum (setTTLColumnMax) so that the meta row's entry in an index on
+     * ts sorts past every purge range; an expired row keeps its slot but is
+     * invisible; inserts continue past it.
+     */
+    private void testTtlRing() {
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            clearRingTable(stmt, "ring_buffer_ttl", "client_id");
+            stmt.close();
+        } catch (Throwable t) {
+            // ignore - table might be empty
+        }
+
+        long now = System.currentTimeMillis();
+        // Slot 1 expired two hours ago, slot 2 live
+        tx.begin();
+        RingBufferTtl r1 = session.newInstance(RingBufferTtl.class);
+        r1.setClientId(1);
+        r1.setTs(new Timestamp(now - 2L * 3600L * 1000L));
+        r1.setVal("expired");
+        session.makePersistent(r1);
+        RingBufferTtl r2 = session.newInstance(RingBufferTtl.class);
+        r2.setClientId(1);
+        r2.setTs(new Timestamp(now));
+        r2.setVal("live");
+        session.makePersistent(r2);
+        tx.commit();
+
+        // SQL view: one visible row (slot 2); meta row ts = TIMESTAMP maximum
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("SET time_zone = '+00:00'");
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT ring_idx, val FROM ring_buffer_ttl"
+                    + " WHERE client_id = 1 AND ring_idx > 0 ORDER BY ring_idx");
+            int visible = 0;
+            while (rs.next()) {
+                visible++;
+                errorIfNotEqual("TTL ring: visible slot", 2, rs.getInt("ring_idx"));
+                errorIfNotEqual("TTL ring: visible val", "live", rs.getString("val"));
+            }
+            rs.close();
+            errorIfNotEqual("TTL ring: one visible row", 1, visible);
+
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            rs = stmt.executeQuery(
+                    "SELECT DATE_FORMAT(ts, '%Y-%m-%d %H:%i:%s') AS ts_str"
+                    + " FROM ring_buffer_ttl WHERE client_id = 1 AND ring_idx = 0");
+            if (rs.next()) {
+                errorIfNotEqual("TTL ring meta: ts = TIMESTAMP maximum",
+                        "2038-01-19 03:14:07", rs.getString("ts_str"));
+            } else {
+                error("TTL ring: meta row not found");
+            }
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("TTL ring SQL check failed: " + ex.getMessage());
+        }
+
+        // The ring continues in slot 3; the expired slot 1 is invisible
+        tx.begin();
+        RingBufferTtl r3 = session.newInstance(RingBufferTtl.class);
+        r3.setClientId(1);
+        r3.setTs(new Timestamp(now));
+        r3.setVal("live3");
+        session.makePersistent(r3);
+        tx.commit();
+
+        tx.begin();
+        RingBufferTtl s1 = session.find(RingBufferTtl.class, new Object[]{1, 1});
+        RingBufferTtl s2 = session.find(RingBufferTtl.class, new Object[]{1, 2});
+        RingBufferTtl s3 = session.find(RingBufferTtl.class, new Object[]{1, 3});
+        errorIfNotEqual("TTL ring: expired slot 1 invisible", true, s1 == null);
+        errorIfNotEqual("TTL ring: slot 2 val", "live", s2 == null ? null : s2.getVal());
+        errorIfNotEqual("TTL ring: slot 3 val", "live3", s3 == null ? null : s3.getVal());
+        tx.commit();
+
+        // A TTL ring insert must set every column: a slot write onto an
+        // occupied slot is an update, an inherited expired TTL value would
+        // hide the new row, and a replica whose purge removed the slot could
+        // not rebuild it. Rejected before anything is written.
+        boolean rejected = false;
+        tx.begin();
+        try {
+            RingBufferTtl noTs = session.newInstance(RingBufferTtl.class);
+            noTs.setClientId(1);
+            noTs.setVal("no_ts");
+            session.makePersistent(noTs);
+            tx.commit();
+        } catch (ClusterJException ex) {
+            rejected = ex.getMessage() != null
+                    && ex.getMessage().contains("must set every column");
+            if (tx.isActive()) {
+                tx.rollback();
+            }
+        }
+        errorIfNotEqual("TTL ring: insert without the TTL column rejected", true, rejected);
+        tx.begin();
+        RingBufferTtl s3b = session.find(RingBufferTtl.class, new Object[]{1, 3});
+        RingBufferTtl s4 = session.find(RingBufferTtl.class, new Object[]{1, 4});
+        errorIfNotEqual("TTL ring: slot 3 unchanged after the rejected insert", "live3",
+                s3b == null ? null : s3b.getVal());
+        errorIfNotEqual("TTL ring: no slot 4 after the rejected insert", true, s4 == null);
+        tx.commit();
+    }
+
+    /**
+     * Ring buffer table with TTL on a DATETIME column (ring_buffer_ttl_dt,
+     * MAX_ROWS_PER_PK=3, TTL 1 h, ttl_index on ts). RingBufferWriter packs
+     * the DATETIME maximum 9999-12-31 23:59:59 into the meta row's ts, so
+     * the meta row sorts last in ttl_index. Rows written through the
+     * annotation interface and through DynamicObject; the expired row is
+     * invisible to SQL and to find(). The TTL values are one day away from
+     * now, so the JVM time zone does not matter.
+     */
+    private void testTtlRingDatetime() {
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            clearRingTable(stmt, "ring_buffer_ttl_dt", "client_id");
+            stmt.close();
+        } catch (Throwable t) {
+            // ignore - table might be empty
+        }
+
+        long now = System.currentTimeMillis();
+        long day = 24L * 3600L * 1000L;
+        // Slot 1 expired a day ago, slot 2 live (annotation interface)
+        tx.begin();
+        RingBufferTtlDt r1 = session.newInstance(RingBufferTtlDt.class);
+        r1.setClientId(1);
+        r1.setTs(new Timestamp(now - day));
+        r1.setVal("dt_expired");
+        session.makePersistent(r1);
+        RingBufferTtlDt r2 = session.newInstance(RingBufferTtlDt.class);
+        r2.setClientId(1);
+        r2.setTs(new Timestamp(now + day));
+        r2.setVal("dt_live");
+        session.makePersistent(r2);
+        tx.commit();
+
+        // Slot 3 live (DynamicObject)
+        tx.begin();
+        DynamicObject d = session.newInstance(RingTtlDtDTO.class);
+        ColumnMetadata[] meta = d.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("client_id"))  d.set(i, 1);
+            else if (n.equals("ts"))    d.set(i, new Timestamp(now + day));
+            else if (n.equals("val"))   d.set(i, "dt_do_live");
+            else if (n.equals("ring_idx") || n.equals("ring_meta")) {
+                // system-managed
+            } else {
+                error("Unexpected column in ring_buffer_ttl_dt: " + n);
+            }
+        }
+        session.makePersistent(d);
+        tx.commit();
+
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT ring_idx, val FROM ring_buffer_ttl_dt"
+                    + " WHERE client_id = 1 ORDER BY ring_idx");
+            StringBuilder visible = new StringBuilder();
+            while (rs.next()) {
+                visible.append(rs.getInt("ring_idx")).append(':')
+                        .append(rs.getString("val")).append(' ');
+            }
+            rs.close();
+            errorIfNotEqual("TTL ring DATETIME: visible rows",
+                    "2:dt_live 3:dt_do_live ", visible.toString());
+
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            rs = stmt.executeQuery(
+                    "SELECT DATE_FORMAT(ts, '%Y-%m-%d %H:%i:%s') AS ts_str, HEX(ring_meta) AS m"
+                    + " FROM ring_buffer_ttl_dt WHERE client_id = 1 AND ring_idx = 0");
+            if (rs.next()) {
+                errorIfNotEqual("TTL ring DATETIME meta: ts = DATETIME maximum",
+                        "9999-12-31 23:59:59", rs.getString("ts_str"));
+                String m = rs.getString("m");
+                errorIfNotEqual("TTL ring DATETIME meta: next_pos", 1L, metaFieldLE(m, 4, 4));
+                errorIfNotEqual("TTL ring DATETIME meta: count", 3L, metaFieldLE(m, 8, 4));
+                errorIfNotEqual("TTL ring DATETIME meta: total_inserts", 3L, metaFieldLE(m, 16, 8));
+            } else {
+                error("TTL ring DATETIME: meta row not found");
+            }
+            rs.close();
+            // Through ttl_index the meta row is found at the maximum, after
+            // every data row
+            rs = stmt.executeQuery(
+                    "SELECT ring_idx FROM ring_buffer_ttl_dt FORCE INDEX (ttl_index)"
+                    + " WHERE ts >= '2000-01-01' ORDER BY ts");
+            StringBuilder order = new StringBuilder();
+            while (rs.next()) {
+                order.append(rs.getInt("ring_idx")).append(' ');
+            }
+            rs.close();
+            String o = order.toString();
+            errorIfNotEqual("TTL ring DATETIME: meta row last in ttl_index", true,
+                    o.equals("2 3 0 ") || o.equals("3 2 0 "));
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("TTL ring DATETIME SQL check failed: " + ex.getMessage());
+        }
+
+        // find(): the expired slot is invisible; the wrap overwrites it
+        tx.begin();
+        RingBufferTtlDt s1 = session.find(RingBufferTtlDt.class, new Object[]{1, 1});
+        errorIfNotEqual("TTL ring DATETIME: expired slot 1 invisible", true, s1 == null);
+        tx.commit();
+        tx.begin();
+        RingBufferTtlDt r4 = session.newInstance(RingBufferTtlDt.class);
+        r4.setClientId(1);
+        r4.setTs(new Timestamp(now + day));
+        r4.setVal("dt_wrap");
+        session.makePersistent(r4);
+        tx.commit();
+        tx.begin();
+        RingBufferTtlDt w1 = session.find(RingBufferTtlDt.class, new Object[]{1, 1});
+        errorIfNotEqual("TTL ring DATETIME: wrap into slot 1", "dt_wrap",
+                w1 == null ? null : w1.getVal());
+        tx.commit();
+    }
+
+    /**
+     * Concurrent ClusterJ writers on one prefix of the DATETIME TTL ring:
+     * NUM_THREADS threads x INSERTS_PER_THREAD inserts, every row live. No
+     * meta update may be lost (total_inserts), every slot holds a live row
+     * and the meta row keeps the DATETIME maximum.
+     */
+    private void testTtlRingDatetimeConcurrent() {
+        final int clientId = 2;
+        final long now = System.currentTimeMillis();
+        final long day = 24L * 3600L * 1000L;
+        final CountDownLatch startLatch = new CountDownLatch(1);
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int t = 0; t < NUM_THREADS; t++) {
+            final int threadIdx = t;
+            Thread thread = new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        startLatch.await();
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    try {
+                        for (int i = 0; i < INSERTS_PER_THREAD; i++) {
+                            // Concurrent first inserts of a prefix can fail
+                            // with 630 on the meta row; retry like
+                            // testConcurrentSamePrefix
+                            boolean inserted = false;
+                            for (int attempt = 0; attempt < 3 && !inserted; attempt++) {
+                                Session s = sessionFactory.getSession();
+                                try {
+                                    Transaction t = s.currentTransaction();
+                                    t.begin();
+                                    RingBufferTtlDt row = s.newInstance(RingBufferTtlDt.class);
+                                    row.setClientId(clientId);
+                                    row.setTs(new Timestamp(now + day));
+                                    row.setVal("c" + threadIdx + "_" + i);
+                                    s.makePersistent(row);
+                                    t.commit();
+                                    inserted = true;
+                                } catch (ClusterJException ex) {
+                                    if (attempt == 2) {
+                                        throw ex;
+                                    }
+                                } finally {
+                                    s.close();
+                                }
+                            }
+                        }
+                    } catch (Throwable ex) {
+                        error("TTL ring DATETIME concurrent thread " + threadIdx
+                                + ": " + ex.getMessage());
+                    }
+                }
+            });
+            threads.add(thread);
+            thread.start();
+        }
+        startLatch.countDown();
+        joinThreads(threads);
+
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT COUNT(*) AS n FROM ring_buffer_ttl_dt WHERE client_id = " + clientId);
+            rs.next();
+            errorIfNotEqual("TTL ring DATETIME concurrent: 3 visible rows", 3, rs.getInt("n"));
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            rs = stmt.executeQuery(
+                    "SELECT DATE_FORMAT(ts, '%Y-%m-%d %H:%i:%s') AS ts_str, HEX(ring_meta) AS m"
+                    + " FROM ring_buffer_ttl_dt WHERE client_id = " + clientId
+                    + " AND ring_idx = 0");
+            if (rs.next()) {
+                long total = NUM_THREADS * INSERTS_PER_THREAD;
+                String m = rs.getString("m");
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: ts = DATETIME maximum",
+                        "9999-12-31 23:59:59", rs.getString("ts_str"));
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: total_inserts",
+                        total, metaFieldLE(m, 16, 8));
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: count", 3L,
+                        metaFieldLE(m, 8, 4));
+                errorIfNotEqual("TTL ring DATETIME concurrent meta: next_pos",
+                        total % 3 + 1, metaFieldLE(m, 4, 4));
+            } else {
+                error("TTL ring DATETIME concurrent: meta row not found");
+            }
+            rs.close();
+            stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            stmt.close();
+        } catch (Exception ex) {
+            error("TTL ring DATETIME concurrent SQL check failed: " + ex.getMessage());
+        }
     }
 
     /**
@@ -1347,9 +1735,9 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
 
         // After 13 inserts with ring_size=5, slots cycle through:
-        // i=0→s1, i=1→s2, i=2→s3, i=3→s4, i=4→s5,
-        // i=5→s1, i=6→s2, i=7→s3, i=8→s4, i=9→s5,
-        // i=10→s1, i=11→s2, i=12→s3
+        // i=0->s1, i=1->s2, i=2->s3, i=3->s4, i=4->s5,
+        // i=5->s1, i=6->s2, i=7->s3, i=8->s4, i=9->s5,
+        // i=10->s1, i=11->s2, i=12->s3
         // Final: Slot 1=i10(ts=32010,val=10), Slot 2=i11(ts=32011,val=11),
         //        Slot 3=i12(ts=32012,val=12), Slot 4=i8(ts=32008,val=8),
         //        Slot 5=i9(ts=32009,val=9)
@@ -1929,7 +2317,7 @@ public class RingBufferTest extends AbstractClusterJTest {
                         + " slot " + slot + " not null", true, r != null);
             }
             // Last 5 inserts: indices 5..9 map to slots that wrap
-            // After 10 inserts: slot layout is insert 5→s1, 6→s2, 7→s3, 8→s4, 9→s5
+            // After 10 inserts: slot layout is insert 5->s1, 6->s2, 7->s3, 8->s4, 9->s5
             for (int slot = 1; slot <= RING_SIZE; slot++) {
                 long expectedTs = 60000L + t * 1000
                         + (INSERTS_PER_THREAD - RING_SIZE) + (slot - 1);
@@ -1968,7 +2356,7 @@ public class RingBufferTest extends AbstractClusterJTest {
                         for (int i = 0; i < INSERTS_PER_THREAD; i++) {
                             // Retry loop: concurrent first-inserts for the same
                             // PK prefix can fail with NDB error 630 (duplicate
-                            // meta row).  This is expected — NDB cannot lock a
+                            // meta row).  This is expected - NDB cannot lock a
                             // non-existent row, so two transactions may both see
                             // 626 and race on insertTuple.  Retry with a fresh
                             // session like a real application should.
@@ -2055,6 +2443,36 @@ public class RingBufferTest extends AbstractClusterJTest {
         errorIfNotEqual("Concurrent same prefix: meta row NOT visible via find()",
                 null, metaDirect);
         tx.commit();
+
+        // Meta invariant: no concurrent meta update may be lost. With
+        // NUM_THREADS x INSERTS_PER_THREAD successful commits the packed
+        // meta must show exactly that many total_inserts, a full ring
+        // (count == RING_SIZE) and the correspondingly advanced next_pos.
+        // Read via JDBC BEFORE anything else writes to this prefix.
+        try {
+            getConnection();
+            Statement mstmt = connection.createStatement();
+            mstmt.execute("SET ndb_ring_buffer_show_meta = 1");
+            ResultSet mrs = mstmt.executeQuery(
+                    "SELECT HEX(ring_meta) AS h FROM ring_buffer_sensor"
+                    + " WHERE sensor_id = " + sensorId + " AND ring_idx = 0");
+            errorIfNotEqual("Concurrent same prefix: meta row present via SQL",
+                    true, mrs.next());
+            String metaHex = mrs.getString("h");
+            mrs.close();
+            mstmt.execute("SET ndb_ring_buffer_show_meta = 0");
+            mstmt.close();
+            long expectedTotal = (long) NUM_THREADS * INSERTS_PER_THREAD;
+            errorIfNotEqual("Concurrent same prefix: total_inserts"
+                    + " (lost meta update?)",
+                    expectedTotal, metaFieldLE(metaHex, 16, 8));
+            errorIfNotEqual("Concurrent same prefix: meta count",
+                    (long) RING_SIZE, metaFieldLE(metaHex, 8, 4));
+            errorIfNotEqual("Concurrent same prefix: meta next_pos",
+                    (expectedTotal % RING_SIZE) + 1, metaFieldLE(metaHex, 4, 4));
+        } catch (SQLException e) {
+            error("Concurrent same prefix meta check: " + e.getMessage());
+        }
 
         // Use RingBufferWriter's readMetaRow (has OO_RING_BUFFER_OP + LM_Exclusive)
         // to check if meta row exists at NDB level
@@ -2328,7 +2746,29 @@ public class RingBufferTest extends AbstractClusterJTest {
         @Override public String table() { return "ring_buffer_notnull"; }
     }
 
-    // ring_idx and ring_meta are system-managed — leaving their mask bits
+    /** Plain (non-ring) table, used as the "unrelated" op in
+     *  testUnrelatedErrorNotSwallowed(). PK on id gives a deterministic 630
+     *  on a duplicate insert. */
+    public static class BasicDTO extends DynamicObject {
+        @Override public String table() { return "t_basic"; }
+    }
+
+    /** Ring table with a nullable TEXT column (blob-backed). */
+    public static class RingBlobDTO extends DynamicObject {
+        @Override public String table() { return "ring_buffer_blob"; }
+    }
+
+    /** Ring table with TTL on a DATETIME column. */
+    public static class RingTtlDtDTO extends DynamicObject {
+        @Override public String table() { return "ring_buffer_ttl_dt"; }
+    }
+
+    /** Ring table whose PK prefix is AUTO_INCREMENT. */
+    public static class RingAutoIncDTO extends DynamicObject {
+        @Override public String table() { return "ring_buffer_autoinc"; }
+    }
+
+    // ring_idx and ring_meta are system-managed - leaving their mask bits
     // clear lets RingBufferWriter own them (same convention as the
     // annotation-interface tests, which never call setRingIdx()).
     private void setSensorFields(DynamicObject e, int sensorId, long ts, double val) {
@@ -2361,7 +2801,49 @@ public class RingBufferTest extends AbstractClusterJTest {
         }
     }
 
-    /** Dump columnMetadata for ring_buffer_sensor — shows the reflection
+    private void setBasicFields(DynamicObject e, int id, String name, int age, int magic) {
+        ColumnMetadata[] meta = e.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("id"))         e.set(i, id);
+            else if (n.equals("name"))  e.set(i, name);
+            else if (n.equals("age"))   e.set(i, age);
+            else if (n.equals("magic")) e.set(i, magic);
+            else error("Unexpected column in t_basic: " + n);
+        }
+    }
+
+    private void setBlobFields(DynamicObject e, int clientId, String payload,
+            String note) {
+        ColumnMetadata[] meta = e.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("client_id"))    e.set(i, clientId);
+            else if (n.equals("payload")) { if (payload != null) e.set(i, payload); }
+            else if (n.equals("note"))    { if (note != null) e.set(i, note); }
+            else if (n.equals("ring_idx") || n.equals("ring_meta")) {
+                // system-managed
+            } else {
+                error("Unexpected column in ring_buffer_blob: " + n);
+            }
+        }
+    }
+
+    private void setAutoIncFields(DynamicObject e, String val) {
+        ColumnMetadata[] meta = e.columnMetadata();
+        for (int i = 0; i < meta.length; i++) {
+            String n = meta[i].name();
+            if (n.equals("val"))          e.set(i, val);
+            else if (n.equals("id") || n.equals("ring_idx")
+                    || n.equals("ring_meta")) {
+                // id: allocated by auto-increment; ring cols system-managed
+            } else {
+                error("Unexpected column in ring_buffer_autoinc: " + n);
+            }
+        }
+    }
+
+    /** Dump columnMetadata for ring_buffer_sensor - shows the reflection
      *  view a framework client would see, and asserts all expected
      *  columns (including system-managed ones) are exposed. */
     private void testDynamicObjectColumnMetadata() {
@@ -2406,7 +2888,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** 7 inserts, ring_size=5 — same wrap pattern as testFillRing.
+    /** 7 inserts, ring_size=5 - same wrap pattern as testFillRing.
      *  Final: slot 1=42005, 2=42006, 3=42002, 4=42003, 5=42004. */
     private void testDynamicObjectFillRing() {
         cleanup();
@@ -2431,7 +2913,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** 3 rows, same PK, one transaction — batched by RingBufferWriter. */
+    /** 3 rows, same PK, one transaction - batched by RingBufferWriter. */
     private void testDynamicObjectBatchInsert() {
         cleanup();
         tx.begin();
@@ -2452,7 +2934,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** 8 rows (ring_size=5) in one transaction — exercises multiple
+    /** 8 rows (ring_size=5) in one transaction - exercises multiple
      *  batchMeta.advance() wraps before flushBatch. Final: slot 1=44005,
      *  2=44006, 3=44007, 4=44003, 5=44004. */
     private void testDynamicObjectBatchExceedingRingSize() {
@@ -2479,7 +2961,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** Prefix change within one transaction — forces flushBatch() for
+    /** Prefix change within one transaction - forces flushBatch() for
      *  the first prefix and a fresh readMetaRow() for the second. */
     private void testDynamicObjectMixedPrefixes() {
         cleanup();
@@ -2512,8 +2994,8 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** DynamicObject + DTO cache (releaseCache) — routes through
-     *  SmartValueHandler → NdbRecordOperationImpl.insert(), i.e. the
+    /** DynamicObject + DTO cache (releaseCache) - routes through
+     *  SmartValueHandler -> NdbRecordOperationImpl.insert(), i.e. the
      *  Path B that triggers the isRingBuffer() guard rather than the
      *  NdbRecordRingBufferInsertOperationImpl subclass. */
     private void testDynamicObjectDtoCacheInsert() {
@@ -2548,7 +3030,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_notnull");
+            clearRingTable(stmt, "ring_buffer_notnull", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore
@@ -2607,7 +3089,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         }
     }
 
-    /** Read back via DynamicObject path — exercises `e.get(i)` through
+    /** Read back via DynamicObject path - exercises `e.get(i)` through
      *  `DynamicObjectDelegateImpl`, not the annotated-getter proxy.
      *  Writes go through DynamicObject and reads also go through
      *  DynamicObject, so both halves of the value buffer are
@@ -2651,11 +3133,11 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** Update via DynamicObject — `session.updatePersistent(dto)` where
+    /** Update via DynamicObject - `session.updatePersistent(dto)` where
      *  the DTO's mask bits are set via `set(i, val)` for a subset of
      *  columns. Parallels `testUpdateViaClusterJ`: update path is NOT
      *  intercepted by ring buffer code, so either it succeeds or throws
-     *  — ring state must remain intact either way. */
+     *  - ring state must remain intact either way. */
     private void testDynamicObjectUpdate() {
         cleanup();
         tx.begin();
@@ -2710,7 +3192,7 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** Delete via DynamicObject — parallels `testDeleteViaClusterJ`:
+    /** Delete via DynamicObject - parallels `testDeleteViaClusterJ`:
      *  ring buffer delete without OO_RING_BUFFER_OP may fail; if it
      *  does, other slots stay intact; ring must still accept new
      *  inserts afterward. */
@@ -2761,9 +3243,9 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
-    /** QueryBuilder + QueryDomainType<RingSensorDTO> — for DynamicObject
+    /** QueryBuilder + QueryDomainType<RingSensorDTO> - for DynamicObject
      *  types, `dobj.get()` uses the SQL column name directly (not a
-     *  JavaBean property name — that's the annotation-interface form).
+     *  JavaBean property name - that's the annotation-interface form).
      *  Confirms the kernel meta-row filter also applies to scans driven
      *  through the reflection type. */
     private void testDynamicObjectQueryScan() {
@@ -2823,6 +3305,94 @@ public class RingBufferTest extends AbstractClusterJTest {
         tx.commit();
     }
 
+    /**
+     * Regression guard for the ClusterJ meta-read execute round swallowing an
+     * unrelated operation's error. RingBufferWriter.readMetaRow() executes the
+     * pending round; the fix runs it with DefaultAbortOption (so each queued op
+     * keeps its own abort option) and throws when the round fails. The old code
+     * forced AO_IgnoreError at the execute level, which silently swallowed the
+     * real error of any other operation batched into that round.
+     *
+     * One transaction: (1) a plain-table insert that duplicates a seeded PK
+     * (deterministic 630, left pending), then (2) a ring insert for a FRESH
+     * prefix, which forces the meta-read round. That round executes the pending
+     * duplicate too. Before the fix the 630 was swallowed, the commit succeeded,
+     * and the plain row was silently lost; after the fix a ClusterJ exception
+     * surfaces and nothing is committed.
+     */
+    private void testUnrelatedErrorNotSwallowed() {
+        cleanup();
+        // Reset the plain table and seed the row the duplicate will collide with.
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("DELETE FROM t_basic");
+            stmt.execute("INSERT INTO t_basic (id, name, age, magic)"
+                    + " VALUES (7000, 'seed', 1, 1)");
+            stmt.close();
+        } catch (Exception ex) {
+            error("Unrelated-error test: seeding t_basic failed: " + ex.getMessage());
+            return;
+        }
+
+        boolean surfaced = false;
+        tx.begin();
+        try {
+            DynamicObject dup = session.newInstance(BasicDTO.class);
+            setBasicFields(dup, 7000, "dup", 2, 2);   // duplicate id=7000 -> 630
+            session.makePersistent(dup);              // pending, not yet executed
+
+            DynamicObject sensor = session.newInstance(RingSensorDTO.class);
+            setSensorFields(sensor, 7100, 71000L, 71.5);  // fresh prefix
+            session.makePersistent(sensor);           // forces the meta-read round
+
+            tx.commit();
+        } catch (ClusterJException ex) {
+            surfaced = true;
+            try {
+                tx.rollback();
+            } catch (ClusterJException ignore) {
+                // transaction already aborted by the failed round
+            }
+        }
+        // Transaction state may be invalid after the aborted round; reopen the
+        // session (same convention as testTransactionRollback).
+        session.close();
+        session = sessionFactory.getSession();
+        tx = session.currentTransaction();
+
+        // Post-conditions verified via SQL: the seeded row is unchanged and the
+        // aborted transaction committed no data row for the fresh ring prefix.
+        String seedName = null;
+        int abortedRingRows = -1;
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT name FROM t_basic WHERE id = 7000");
+            if (rs.next()) seedName = rs.getString(1);
+            rs.close();
+            rs = stmt.executeQuery(
+                    "SELECT COUNT(*) FROM ring_buffer_sensor WHERE sensor_id = 7100");
+            if (rs.next()) abortedRingRows = rs.getInt(1);
+            rs.close();
+            stmt.execute("DELETE FROM t_basic");
+            stmt.close();
+        } catch (Exception ex) {
+            error("Unrelated-error test: post-check failed: " + ex.getMessage());
+        }
+
+        System.out.println("[SWALLOW-TEST] surfaced=" + surfaced
+                + " seedName=" + seedName
+                + " abortedRingRows=" + abortedRingRows);
+        errorIfNotEqual("Unrelated op error must surface, not be swallowed",
+                true, surfaced);
+        errorIfNotEqual("Seed row survives the aborted transaction",
+                "seed", seedName);
+        errorIfNotEqual("Aborted transaction committed no ring data row",
+                0, abortedRingRows);
+    }
+
     // =======================================================================
     // Helpers
     // =======================================================================
@@ -2842,14 +3412,252 @@ public class RingBufferTest extends AbstractClusterJTest {
         cleanupViaSql();
     }
 
+    /** ClusterJ cannot write ring buffer tables that have BLOB/TEXT
+     *  columns: the ring write path cannot drive blob handles, and a slot
+     *  write that leaves the blob column out keeps the overwritten row's
+     *  value on a wrap. Both a set and an unset blob column are rejected,
+     *  and the rejected insert leaves the ring unchanged. */
+    private void testBlobColumnRejected() {
+        final String expected =
+                "ClusterJ cannot write ring buffer tables with BLOB/TEXT columns";
+        String setMsg = persistBlobRow(70, "payload_v1", "note_a");
+        errorIfNotEqual("[BLOB-TEST] set blob: clear rejection", true,
+                setMsg != null && setMsg.contains(expected));
+
+        // Fill prefix 71 through SQL so the next insert wraps onto slot 1.
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            for (int i = 1; i <= 3; i++) {
+                stmt.execute("INSERT INTO ring_buffer_blob (client_id, payload, note)"
+                        + " VALUES (71, 'old_" + i + "', 'note_" + i + "')");
+            }
+            stmt.close();
+        } catch (SQLException e) {
+            error("[BLOB-TEST] SQL fill failed: " + e.getMessage());
+        }
+        String unsetMsg = persistBlobRow(71, null, "note_new");
+        errorIfNotEqual("[BLOB-TEST] unset blob: clear rejection", true,
+                unsetMsg != null && unsetMsg.contains(expected));
+
+        String slot1 = "";
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT payload, note FROM ring_buffer_blob"
+                    + " WHERE client_id = 71 AND ring_idx = 1");
+            if (rs.next()) {
+                slot1 = rs.getString(1) + "/" + rs.getString(2);
+            }
+            rs.close();
+            rs = stmt.executeQuery(
+                    "SELECT COUNT(*) FROM ring_buffer_blob WHERE client_id = 70");
+            rs.next();
+            errorIfNotEqual("[BLOB-TEST] no row inserted for prefix 70", 0,
+                    rs.getInt(1));
+            rs.close();
+            stmt.close();
+        } catch (SQLException e) {
+            error("[BLOB-TEST] JDBC verification failed: " + e.getMessage());
+        }
+        errorIfNotEqual("[BLOB-TEST] slot 1 unchanged after rejected wrap",
+                "old_1/note_1", slot1);
+        System.out.println("[BLOB-TEST] set_rejected=" + (setMsg != null)
+                + " unset_rejected=" + (unsetMsg != null)
+                + " slot1=" + slot1);
+    }
+
+    /** Persist one RingBlobDTO row; returns the exception message (empty
+     *  string if it has none) or null when the insert committed. */
+    private String persistBlobRow(int clientId, String payload, String note) {
+        tx.begin();
+        try {
+            DynamicObject d = session.newInstance(RingBlobDTO.class);
+            setBlobFields(d, clientId, payload, note);
+            session.makePersistent(d);
+            tx.commit();
+            return null;
+        } catch (Exception e) {
+            if (tx.isActive()) {
+                tx.rollback();
+            }
+            return e.getMessage() == null ? "" : e.getMessage();
+        }
+    }
+
+    /** AUTO_INCREMENT PK-prefix works on the default (SmartValueHandler)
+     *  path: the auto-increment block in NdbRecordOperationImpl.insert()
+     *  runs before the ring branch, so each unset-id persist gets its own
+     *  prefix. (The generic getInsertOperation/endDefinition path has no
+     *  auto-increment support for ANY table - plain or ring - so there is
+     *  no ring-specific gap there.) */
+    private void testAutoIncrementPrefix() {
+        tx.begin();
+        DynamicObject a = session.newInstance(RingAutoIncDTO.class);
+        setAutoIncFields(a, "ai_1");
+        session.makePersistent(a);
+        DynamicObject b = session.newInstance(RingAutoIncDTO.class);
+        setAutoIncFields(b, "ai_2");
+        session.makePersistent(b);
+        tx.commit();
+
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT id, ring_idx, val FROM ring_buffer_autoinc"
+                    + " ORDER BY id");
+            int rows = 0;
+            int id1 = 0, id2 = 0, slot1 = -1, slot2 = -1;
+            while (rs.next()) {
+                rows++;
+                if (rows == 1) { id1 = rs.getInt(1); slot1 = rs.getInt(2); }
+                if (rows == 2) { id2 = rs.getInt(1); slot2 = rs.getInt(2); }
+            }
+            rs.close();
+            stmt.close();
+            errorIfNotEqual("[AI-TEST] two rows", 2, rows);
+            errorIfNotEqual("[AI-TEST] first id allocated", true, id1 > 0);
+            errorIfNotEqual("[AI-TEST] distinct prefixes", true, id2 > id1);
+            errorIfNotEqual("[AI-TEST] first slot", 1, slot1);
+            errorIfNotEqual("[AI-TEST] second slot", 1, slot2);
+        } catch (SQLException e) {
+            error("[AI-TEST] JDBC verification failed: " + e.getMessage());
+        }
+        System.out.println("[AI-TEST] distinct_prefixes=true");
+    }
+
+    /** A failed batch flush must clear the batch state. Pre-fix, the
+     *  commit-time flush re-executed the stale batch on the already-aborted
+     *  transaction, masking the real error with a secondary "ring buffer"
+     *  exception. */
+    private void testFlushBatchFailureThenCommit() {
+        cleanup();
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            stmt.execute("DELETE FROM t_basic");
+            stmt.execute("INSERT INTO t_basic (id, name, age, magic)"
+                    + " VALUES (7200, 'seed', 1, 1)");
+            stmt.close();
+        } catch (Exception ex) {
+            error("[FLUSH-TEST] seeding t_basic failed: " + ex.getMessage());
+            return;
+        }
+
+        tx.begin();
+        DynamicObject s1 = session.newInstance(RingSensorDTO.class);
+        setSensorFields(s1, 72, 72000L, 72.0);
+        session.makePersistent(s1);
+        DynamicObject s2 = session.newInstance(RingSensorDTO.class);
+        setSensorFields(s2, 72, 72001L, 72.1);
+        session.makePersistent(s2);
+
+        DynamicObject dup = session.newInstance(BasicDTO.class);
+        setBasicFields(dup, 7200, "dup", 2, 2);
+        session.makePersistent(dup);   // pending duplicate -> 630 at flush
+
+        boolean flushThrew = false;
+        try {
+            // prefix switch flushes the client 72 batch together with the
+            // pending duplicate -> the execute fails
+            DynamicObject s3 = session.newInstance(RingSensorDTO.class);
+            setSensorFields(s3, 73, 73000L, 73.0);
+            session.makePersistent(s3);
+        } catch (Exception e) {
+            flushThrew = true;
+        }
+        errorIfNotEqual("[FLUSH-TEST] flush failure surfaced", true,
+                flushThrew);
+
+        String commitMsg = "";
+        try {
+            tx.commit();
+        } catch (Exception e) {
+            commitMsg = e.getMessage() == null ? "" : e.getMessage();
+            if (tx.isActive()) {
+                tx.rollback();
+            }
+        }
+        errorIfNotEqual("[FLUSH-TEST] no stale ring flush at commit", false,
+                commitMsg.toLowerCase().contains("ring buffer"));
+
+        // the session must be cleanly usable afterwards
+        tx.begin();
+        DynamicObject s4 = session.newInstance(RingSensorDTO.class);
+        setSensorFields(s4, 72, 72002L, 72.2);
+        session.makePersistent(s4);
+        tx.commit();
+
+        try {
+            getConnection();
+            Statement stmt = connection.createStatement();
+            ResultSet rs = stmt.executeQuery(
+                    "SELECT ring_idx, timestamp_val FROM ring_buffer_sensor"
+                    + " WHERE sensor_id = 72 ORDER BY ring_idx");
+            int rows = 0;
+            int slot = -1;
+            long ts = 0;
+            while (rs.next()) {
+                rows++;
+                if (rows == 1) { slot = rs.getInt(1); ts = rs.getLong(2); }
+            }
+            rs.close();
+            stmt.close();
+            errorIfNotEqual("[FLUSH-TEST] only the clean row present", 1,
+                    rows);
+            errorIfNotEqual("[FLUSH-TEST] clean row slot", 1, slot);
+            errorIfNotEqual("[FLUSH-TEST] clean row value", 72002L, ts);
+        } catch (SQLException e) {
+            error("[FLUSH-TEST] JDBC verification failed: " + e.getMessage());
+        }
+        System.out.println("[FLUSH-TEST] clean_after_failure=true");
+    }
+
+    /** Delete every ring of a ring buffer table. A ring DELETE must name
+     *  its prefixes, so collect them first, with the meta rows visible. */
+    private static void clearRingTable(Statement stmt, String table,
+            String prefixCol) throws SQLException {
+        stmt.execute("SET ndb_ring_buffer_show_meta = 1");
+        StringBuilder in = new StringBuilder();
+        ResultSet rs = stmt.executeQuery(
+                "SELECT DISTINCT " + prefixCol + " FROM " + table);
+        while (rs.next()) {
+            if (in.length() > 0) in.append(',');
+            in.append(rs.getLong(1));
+        }
+        rs.close();
+        stmt.execute("SET ndb_ring_buffer_show_meta = 0");
+        if (in.length() > 0) {
+            stmt.execute("DELETE FROM " + table + " WHERE " + prefixCol
+                    + " IN (" + in + ")");
+        }
+    }
+
     private void cleanupViaSql() {
         try {
             getConnection();
             Statement stmt = connection.createStatement();
-            stmt.execute("DELETE FROM ring_buffer_sensor");
+            clearRingTable(stmt, "ring_buffer_sensor", "sensor_id");
+            clearRingTable(stmt, "ring_buffer_ttl", "client_id");
+            clearRingTable(stmt, "ring_buffer_ttl_dt", "client_id");
             stmt.close();
         } catch (Throwable t) {
             // ignore - table might be empty
         }
+    }
+
+    /** Parse a little-endian unsigned field out of a HEX(ring_meta) string.
+     *  byte_off/nbytes follow the packed Ring_meta layout (version @0/2,
+     *  next_pos @4/4, count @8/4, total_inserts @16/8). */
+    private static long metaFieldLE(String hex, int byteOff, int nBytes) {
+        long val = 0;
+        for (int j = 0; j < nBytes; j++) {
+            int pos = (byteOff + j) * 2;
+            if (hex == null || pos + 2 > hex.length()) break;
+            val |= Long.parseLong(hex.substring(pos, pos + 2), 16) << (8 * j);
+        }
+        return val;
     }
 }

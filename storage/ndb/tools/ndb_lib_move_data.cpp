@@ -698,6 +698,12 @@ int Ndb_move_data::move_row() {
     op.updateop = op.updatetrans->getNdbOperation(m_target);
     CHK2(op.updateop != 0, (op.updatetrans->getNdbError()));
     CHK2(op.updateop->insertTuple() == 0, (op.updateop->getNdbError()));
+    /* Staging rows (data and meta) are copied verbatim into a ring
+       buffer target; without the ring flag DBTUP rejects them with
+       error 940. The staging source itself is always a plain table. */
+    if (m_target->isRingBuffer()) {
+      op.updateop->set_ring_buffer_op();
+    }
 
     for (int j = 0; j <= 1; j++) {
       for (int i1 = 0; i1 < attrcount1; i1++) {

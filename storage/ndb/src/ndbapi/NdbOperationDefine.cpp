@@ -1586,6 +1586,15 @@ int NdbOperation::handleOperationOptions(const OperationType type,
     op->theSimpleIndicator = 1;
   }
   if (opts->optionsPresent & OperationOptions::OO_TTL_ONLY_EXPIRED) {
+    /*
+     * Only-expired together with ignore-TTL would skip both the expiry
+     * check and, on a ring buffer table, the ring write guard (which
+     * admits only-expired deletes for the TTL purge). The purge itself
+     * inherits its flags from the scan, never from these options.
+     */
+    if (opts->optionsPresent & OperationOptions::OO_TTL_IGNORE) {
+      return 4360;
+    }
     op->m_flags |= OF_TTL_ONLY_EXPIRED;
   }
   if (opts->optionsPresent & OperationOptions::OO_RING_BUFFER_OP) {

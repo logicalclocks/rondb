@@ -20,7 +20,7 @@
  *
  * Demonstrates that when two transactions concurrently call
  * NdbRingBufferWriter::addRow() for the same PK prefix and no meta
- * row exists yet, both see error 626 (tuple not found) — NDB cannot
+ * row exists yet, both see error 626 (tuple not found) - NDB cannot
  * lock a non-existent row.  At flush() time, only one insertTuple
  * for the meta row succeeds; the other fails with error 630
  * (duplicate tuple).
@@ -47,7 +47,7 @@
 #include <atomic>
 
 // ---------------------------------------------------------------
-// Barrier — blocks N threads until all arrive
+// Barrier - blocks N threads until all arrive
 // ---------------------------------------------------------------
 
 class Barrier {
@@ -182,7 +182,7 @@ struct MysqlThreadResult {
 };
 
 // ---------------------------------------------------------------
-// Writer thread — each runs its own Ndb + transaction
+// Writer thread - each runs its own Ndb + transaction
 // ---------------------------------------------------------------
 
 static void writer_thread(Ndb_cluster_connection *conn, Barrier *barrier,
@@ -264,14 +264,14 @@ static void writer_thread(Ndb_cluster_connection *conn, Barrier *barrier,
   }
 
   std::cout << "  [Thread " << thread_id
-            << "] addRow succeeded — readMetaRow saw 626 (no meta row)"
+            << "] addRow succeeded - readMetaRow saw 626 (no meta row)"
             << std::endl;
 
   // ---- BARRIER: wait for both threads to complete addRow ----
   // At this point both have seen 626 and prepared an insertTuple path.
   barrier->wait();
 
-  // ---- Phase 2: flush() — one insertTuple should win, one should lose ----
+  // ---- Phase 2: flush() - one insertTuple should win, one should lose ----
   int ret = writer.flush();
   result->flush_ok = (ret == 0);
   result->error_code = writer.getErrorCode();
@@ -279,7 +279,7 @@ static void writer_thread(Ndb_cluster_connection *conn, Barrier *barrier,
 
   if (ret == 0) {
     std::cout << "  [Thread " << thread_id
-              << "] flush succeeded — meta insertTuple won the race"
+              << "] flush succeeded - meta insertTuple won the race"
               << std::endl;
     // Try to commit
     if (trans->execute(NdbTransaction::Commit) == 0) {
@@ -291,7 +291,7 @@ static void writer_thread(Ndb_cluster_connection *conn, Barrier *barrier,
                 << trans->getNdbError().message << std::endl;
     }
   } else {
-    std::cout << "  [Thread " << thread_id << "] flush failed — error "
+    std::cout << "  [Thread " << thread_id << "] flush failed - error "
               << writer.getErrorCode() << ": " << writer.getErrorMessage()
               << std::endl;
   }
@@ -303,7 +303,7 @@ static void writer_thread(Ndb_cluster_connection *conn, Barrier *barrier,
 }
 
 // ---------------------------------------------------------------
-// MySQL writer thread — each opens its own connection
+// MySQL writer thread - each opens its own connection
 // ---------------------------------------------------------------
 
 static void mysql_writer_thread(const char *host, unsigned int port,
@@ -430,24 +430,24 @@ static bool test_mysql_concurrent(MYSQL *admin_conn, const char *host,
   // Each iteration: both can succeed (no race), or one succeeds + one gets 1062
   // So total_success should be between iterations_ran and 2*iterations_ran
   if (total_success >= iterations_ran && total_success <= 2 * iterations_ran) {
-    std::cout << "CHECK: Each PK prefix has at least one successful INSERT — OK"
+    std::cout << "CHECK: Each PK prefix has at least one successful INSERT - OK"
               << std::endl;
   } else {
-    std::cout << "CHECK: Unexpected success count — FAIL" << std::endl;
+    std::cout << "CHECK: Unexpected success count - FAIL" << std::endl;
     pass = false;
   }
 
   if (total_other == 0) {
-    std::cout << "CHECK: No unexpected errors — OK" << std::endl;
+    std::cout << "CHECK: No unexpected errors - OK" << std::endl;
   } else {
-    std::cout << "CHECK: Got " << total_other << " unexpected errors — FAIL"
+    std::cout << "CHECK: Got " << total_other << " unexpected errors - FAIL"
               << std::endl;
     pass = false;
   }
 
   if (total_dup > 0) {
     std::cout << "CHECK: Race manifested in " << total_dup << "/" << NUM_ITERATIONS
-              << " iterations — error 1062 (ER_DUP_ENTRY) confirmed" << std::endl;
+              << " iterations - error 1062 (ER_DUP_ENTRY) confirmed" << std::endl;
     std::cout << std::endl;
     std::cout << "RESULT: MySQL returns error 1062 (Duplicate entry '...' for "
                  "key 'PRIMARY')"
@@ -574,10 +574,10 @@ int main(int argc, char **argv) {
 
     // Both addRow should succeed (both see 626, which is handled)
     if (result_a.addRow_ok && result_b.addRow_ok) {
-      std::cout << "CHECK: Both addRow() succeeded (both saw 626) — OK"
+      std::cout << "CHECK: Both addRow() succeeded (both saw 626) - OK"
                 << std::endl;
     } else {
-      std::cout << "CHECK: Expected both addRow() to succeed — FAIL"
+      std::cout << "CHECK: Expected both addRow() to succeed - FAIL"
                 << std::endl;
       pass = false;
     }
@@ -586,17 +586,17 @@ int main(int argc, char **argv) {
     flush_success = (result_a.flush_ok ? 1 : 0) +
                     (result_b.flush_ok ? 1 : 0);
     if (flush_success == 1) {
-      std::cout << "CHECK: Exactly one flush() succeeded, one failed — OK"
+      std::cout << "CHECK: Exactly one flush() succeeded, one failed - OK"
                 << std::endl;
     } else if (flush_success == 2) {
-      std::cout << "CHECK: Both flush() succeeded — this means the race did "
+      std::cout << "CHECK: Both flush() succeeded - this means the race did "
                    "not manifest (timing-dependent)."
                 << std::endl;
       std::cout << "       Re-run the test to reproduce. If consistently both "
                    "succeed, the analysis may need revisiting."
                 << std::endl;
     } else {
-      std::cout << "CHECK: Both flush() failed — unexpected — FAIL"
+      std::cout << "CHECK: Both flush() failed - unexpected - FAIL"
                 << std::endl;
       pass = false;
     }
@@ -607,11 +607,11 @@ int main(int argc, char **argv) {
     if (!loser.flush_ok) {
       if (loser.error_code == 630) {
         std::cout
-            << "CHECK: Losing thread got error 630 (Duplicate tuple) — OK"
+            << "CHECK: Losing thread got error 630 (Duplicate tuple) - OK"
             << std::endl;
       } else {
         std::cout << "CHECK: Losing thread got error " << loser.error_code
-                  << " (expected 630) — UNEXPECTED" << std::endl;
+                  << " (expected 630) - UNEXPECTED" << std::endl;
       }
     }
 
@@ -619,16 +619,16 @@ int main(int argc, char **argv) {
     int data_count = countDataRows(&mysql, "rb_concurrent", 1);
     std::cout << "CHECK: Data rows for client_id=1: " << data_count;
     if (flush_success == 1 && data_count == 1) {
-      std::cout << " — OK (winner wrote 1 row)" << std::endl;
+      std::cout << " - OK (winner wrote 1 row)" << std::endl;
     } else if (flush_success == 2 && data_count >= 1) {
-      std::cout << " — OK (no race manifested, both committed)" << std::endl;
+      std::cout << " - OK (no race manifested, both committed)" << std::endl;
     } else {
-      std::cout << " — unexpected count" << std::endl;
+      std::cout << " - unexpected count" << std::endl;
     }
 
     std::cout << std::endl;
     if (pass && flush_success == 1) {
-      std::cout << "RESULT: Race condition confirmed — NDB cannot lock a "
+      std::cout << "RESULT: Race condition confirmed - NDB cannot lock a "
                    "non-existent row."
                 << std::endl;
       std::cout << "        LM_Exclusive in readMetaRow() does not protect the "
@@ -642,7 +642,7 @@ int main(int argc, char **argv) {
              "retry."
           << std::endl;
     } else if (flush_success == 2) {
-      std::cout << "RESULT: Both transactions succeeded — the race did not "
+      std::cout << "RESULT: Both transactions succeeded - the race did not "
                    "manifest this run."
                 << std::endl;
       std::cout << "        This is possible if one thread's flush() completed "

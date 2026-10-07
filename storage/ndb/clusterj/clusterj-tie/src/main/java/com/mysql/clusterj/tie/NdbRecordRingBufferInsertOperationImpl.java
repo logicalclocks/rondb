@@ -25,6 +25,7 @@
 
 package com.mysql.clusterj.tie;
 
+
 import com.mysql.clusterj.core.store.Table;
 
 /**
@@ -49,7 +50,8 @@ public class NdbRecordRingBufferInsertOperationImpl extends NdbRecordOperationIm
 
     @Override
     public void endDefinition() {
-        // Get the ring buffer writer (cached per table per transaction)
+        // Get the ring buffer writer (cached per table per transaction);
+        // it refuses ring tables with BLOB/TEXT columns.
         RingBufferWriter writer = clusterTransaction.getRingBufferWriter(storeTable);
 
         // Prepare the buffer for the writer

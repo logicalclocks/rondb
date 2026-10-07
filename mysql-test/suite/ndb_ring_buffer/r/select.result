@@ -40,7 +40,7 @@ SELECT COUNT(*) FROM test.rb WHERE client_id = 1;
 COUNT(*)
 4
 #
-# Case 4: SET ndb_ring_buffer_show_meta = ON — scan shows meta rows
+# Case 4: SET ndb_ring_buffer_show_meta = ON - scan shows meta rows
 #
 SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -53,14 +53,14 @@ client_id	ring_idx	event_data
 1	3	event_C
 1	4	event_D
 #
-# Case 5: SET ndb_ring_buffer_show_meta = ON — PK lookup on ring_idx=0 works
+# Case 5: SET ndb_ring_buffer_show_meta = ON - PK lookup on ring_idx=0 works
 #
 SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 WHERE client_id = 1 AND ring_idx = 0;
 client_id	ring_idx	HEX(ring_meta)
 1	0	0100000002000000040000000000000005000000000000000000000000000000
 #
-# Case 6: SET ndb_ring_buffer_show_meta = OFF — meta hidden again
+# Case 6: SET ndb_ring_buffer_show_meta = OFF - meta hidden again
 #
 SET ndb_ring_buffer_show_meta = OFF;
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -75,7 +75,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 WHERE client_id = 1 AND ring_idx = 0;
 client_id	ring_idx	event_data
 #
-# Case 7: Multiple PK prefixes — all meta hidden
+# Case 7: Multiple PK prefixes - all meta hidden
 #
 SELECT client_id, ring_idx, event_data FROM test.rb
 ORDER BY client_id, ring_idx;
@@ -87,7 +87,7 @@ client_id	ring_idx	event_data
 2	1	client2_A
 2	2	client2_B
 #
-# Case 8: Ring after wrap — meta still hidden, all data visible
+# Case 8: Ring after wrap - meta still hidden, all data visible
 # Insert one more to trigger another wrap
 #
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'event_F');
@@ -125,6 +125,71 @@ SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 WHERE client_id = 3 AND ring_idx = 0;
 client_id	ring_idx	HEX(ring_meta)
 3	0	0100000002000000010000000000000001000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 11: COUNT(*) invariant - bare COUNT excludes meta rows and equals
+#          the sum of per-prefix data counts; show_meta exposes exactly
+#          one meta row per prefix
+#
+SELECT COUNT(*) AS bare_count FROM test.rb;
+bare_count
+7
+SELECT COUNT(*) AS where_all_prefixes FROM test.rb WHERE client_id IN (1, 2, 3);
+where_all_prefixes
+7
+SELECT
+(SELECT COUNT(*) FROM test.rb WHERE client_id = 1) +
+(SELECT COUNT(*) FROM test.rb WHERE client_id = 2) +
+(SELECT COUNT(*) FROM test.rb WHERE client_id = 3) AS sum_per_prefix;
+sum_per_prefix
+7
+SELECT CASE WHEN (SELECT COUNT(*) FROM test.rb) =
+(SELECT COUNT(*) FROM test.rb WHERE client_id = 1)
++ (SELECT COUNT(*) FROM test.rb WHERE client_id = 2)
++ (SELECT COUNT(*) FROM test.rb WHERE client_id = 3)
+THEN 'MATCH' ELSE 'MISMATCH' END AS bare_eq_sum_per_prefix;
+bare_eq_sum_per_prefix
+MATCH
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS with_meta FROM test.rb;
+with_meta
+10
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 12: locking reads (FOR UPDATE / FOR SHARE) keep meta hidden
+#
+BEGIN;
+SELECT COUNT(*) AS for_update_count FROM test.rb FOR UPDATE;
+for_update_count
+7
+SELECT client_id, ring_idx FROM test.rb
+WHERE client_id = 1 AND ring_idx = 0 FOR UPDATE;
+client_id	ring_idx
+COMMIT;
+BEGIN;
+SELECT COUNT(*) AS for_share_count FROM test.rb LOCK IN SHARE MODE;
+for_share_count
+7
+SELECT client_id, ring_idx FROM test.rb
+WHERE client_id = 1 AND ring_idx = 0 LOCK IN SHARE MODE;
+client_id	ring_idx
+COMMIT;
+#
+# Case 13: show_meta is read-only - data-changing scans skip meta
+#
+SET ndb_ring_buffer_show_meta = ON;
+UPDATE test.rb SET event_data = CONCAT(event_data, '_u') WHERE client_id = 1;
+SELECT client_id, ring_idx, event_data FROM test.rb
+WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	event_data
+1	0	NULL
+1	1	event_E_u
+1	2	event_F_u
+1	3	event_C_u
+1	4	event_D_u
+DELETE FROM test.rb WHERE client_id = 3;
+SELECT client_id, ring_idx FROM test.rb WHERE client_id = 3 AND ring_idx = 0;
+client_id	ring_idx
 SET ndb_ring_buffer_show_meta = OFF;
 #
 # Cleanup

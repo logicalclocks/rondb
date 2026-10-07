@@ -48,7 +48,8 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
           "DistributionKeyPartIdFlag: %u "
           "NoDisk: %u Spj: %u MultiFrag: %u\n "
           ", PassQueueFlag: %u, AggregationFlag: %u,"
-          " TTLIgnoreFragFlag: %u, ParOrdScanFlag: %u",
+          " TTLIgnoreFragFlag: %u, ParOrdScanFlag: %u,"
+          " RingBufferShowMetaFlag: %u",
           sig->getScanBatch(requestInfo),
           sig->getLockMode(requestInfo), sig->getKeyinfoFlag(requestInfo),
           sig->getHoldLockFlag(requestInfo), sig->getRangeScanFlag(requestInfo),
@@ -62,7 +63,8 @@ bool printSCANTABREQ(FILE *output, const Uint32 *theData, Uint32 len,
           sig->getPassQueueingFlag(requestInfo),
           sig->getAggregation(requestInfo),
           sig->getTTLIgnoreFlag(requestInfo),
-          sig->getParallelOrderedScanFlag(requestInfo));
+          sig->getParallelOrderedScanFlag(requestInfo),
+          sig->getRingBufferShowMetaFlag(requestInfo));
 
   if (sig->getDistributionKeyFlag(requestInfo))
     fprintf(output, " DKey: %x", sig->distributionKey);

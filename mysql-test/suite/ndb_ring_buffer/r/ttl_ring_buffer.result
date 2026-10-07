@@ -1,0 +1,159 @@
+SET time_zone = '+00:00';
+#
+# Case 1: visibility follows TTL, the meta row never expires
+#
+CREATE TABLE test.rb_ttl (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 DAY), 'future_3');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	future_3
+SELECT COUNT(*) FROM test.rb_ttl WHERE client_id = 1;
+COUNT(*)
+2
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 1 AND ring_idx = 0;
+client_id	ring_idx	ts	HEX(ring_meta)
+1	0	2038-01-19 03:14:07	0100000004000000030000000000000003000000000000000000000000000000
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	0	NULL
+1	2	live_2
+1	3	future_3
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 2: the ring overwrites an expired slot like any other slot
+#
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_4');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_5');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	wrap_5
+1	2	live_2
+1	3	future_3
+1	4	live_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000002000000040000000000000005000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 3: the TTL column of a data row may be updated; expired rows are invisible to UPDATE
+#
+UPDATE test.rb_ttl SET ts = DATE_SUB(NOW(), INTERVAL 3 HOUR) WHERE client_id = 1 AND ring_idx = 2;
+affected rows: 1
+info: Rows matched: 1  Changed: 1  Warnings: 0
+UPDATE test.rb_ttl SET val = 'no_such_row' WHERE client_id = 1 AND ring_idx = 2;
+affected rows: 0
+info: Rows matched: 0  Changed: 0  Warnings: 0
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	wrap_5
+1	3	future_3
+1	4	live_4
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_6');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	wrap_5
+1	2	wrap_6
+1	3	future_3
+1	4	live_4
+#
+# Case 4: DATETIME TTL column - meta row carries the DATETIME maximum
+#
+CREATE TABLE test.rb_ttl_dt (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts DATETIME,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_ttl_dt (client_id, ts, val) VALUES (7, NOW(), 'a');
+INSERT INTO test.rb_ttl_dt (client_id, ts, val) VALUES (7, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_b');
+SELECT client_id, ring_idx, val FROM test.rb_ttl_dt ORDER BY ring_idx;
+client_id	ring_idx	val
+7	1	a
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts FROM test.rb_ttl_dt WHERE ring_idx = 0;
+client_id	ring_idx	ts
+7	0	9999-12-31 23:59:59
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_ttl_dt;
+#
+# Case 5: prefix DELETE with an expired slot, then the ring starts over
+#
+UPDATE test.rb_ttl SET ts = DATE_SUB(NOW(), INTERVAL 3 HOUR) WHERE client_id = 1 AND ring_idx = 4;
+DELETE FROM test.rb_ttl WHERE client_id = 1;
+affected rows: 4
+SELECT COUNT(*) FROM test.rb_ttl WHERE client_id = 1;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_ttl WHERE client_id = 1;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_ttl' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_ttl';
+physical_rows
+1
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_3');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_4');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	fresh_1
+1	2	fresh_2
+1	3	fresh_3
+1	4	fresh_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000001000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 6: a prefix whose rows are all expired keeps its meta row
+#
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (2, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_x');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (2, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_y');
+SELECT client_id, COUNT(*) FROM test.rb_ttl GROUP BY client_id ORDER BY client_id;
+client_id	COUNT(*)
+1	4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	HEX(ring_meta)
+2	0	0100000003000000020000000000000002000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (2, NOW(), 'live_z');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 2 ORDER BY ring_idx;
+client_id	ring_idx	val
+2	3	live_z
+#
+# Case 7: an ordered index on the TTL column is allowed and hides meta rows
+#
+CREATE INDEX ttl_index ON test.rb_ttl (ts);
+SELECT client_id, ring_idx, val FROM test.rb_ttl FORCE INDEX (ttl_index)
+WHERE ts > DATE_SUB(NOW(), INTERVAL 1 HOUR) ORDER BY client_id, ring_idx;
+client_id	ring_idx	val
+1	1	fresh_1
+1	2	fresh_2
+1	3	fresh_3
+1	4	fresh_4
+2	3	live_z
+DROP INDEX ttl_index ON test.rb_ttl;
+DROP TABLE test.rb_ttl;
+#
+# Done
+#
