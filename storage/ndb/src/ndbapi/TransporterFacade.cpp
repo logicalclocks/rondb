@@ -936,6 +936,12 @@ void TransporterFacade::wakeup_send_thread(void) {
  * tries to collect flushed send buffers from multiple
  * clients, before actually sending them all together
  *
+ * It is used only when the API node favours throughput:
+ * AdaptiveSendThreshold N > 0 and N or more threads waited
+ * for replies within the last 10 ms (m_use_poll_waiters, see
+ * trp_client::do_forceSend).  With the default 0 every send
+ * goes out at once (try_send_all).
+ *
  * We use two different mechanisms for sending buffered
  * messages:
  *
@@ -1810,6 +1816,10 @@ bool TransporterFacade::configure(NodeId nodeId,
 
   Uint32 auto_reconnect = 1;
   iter.get(CFG_AUTO_RECONNECT, &auto_reconnect);
+
+  Uint32 adaptive_send_threshold = 0;
+  iter.get(CFG_API_ADAPTIVE_SEND_THRESHOLD, &adaptive_send_threshold);
+  set_adaptive_send_threshold(adaptive_send_threshold);
 
   const char *priospec = nullptr;
   if (iter.get(CFG_HB_THREAD_PRIO, &priospec) == 0) {
@@ -3311,7 +3321,7 @@ void TransporterFacade::add_to_poll_queue(
   m_poll_queue_tail = clnt;
   m_poll_waiters++;
   if (m_poll_waiters > m_max_poll_waiters)
-    m_max_poll_waiters;
+    m_max_poll_waiters = m_poll_waiters;
 }
 
 void TransporterFacade::remove_from_poll_queue(trp_client *const arr[],

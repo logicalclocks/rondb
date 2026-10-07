@@ -64,7 +64,7 @@ Invalid value: '3'. Use OFF, AUTO or ON (or 0, 1, 2)
 Invalid value: 'maybe'. Use OFF, AUTO or ON (or 0, 1, 2)
 
 Usage: <id> SET <parameter> <value>
-Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel, CompiledInterpreter
+Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel, CompiledInterpreter, AdaptiveSendThreshold
 
 select cv.node_id, cv.config_value
 from ndbinfo.config_values cv, ndbinfo.config_params cp

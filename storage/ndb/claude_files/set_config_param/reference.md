@@ -28,6 +28,7 @@ All paths are relative to `storage/ndb/`.
 | `EnableProactiveDeadlockDetection` | `CFG_DB_ENABLE_PROACTIVE_DEADLOCK_DETECTION` (709) | CI_BOOL | client sends `DUMP DumpStateOrd::DeadlockDetection` per node (DBTC/DBACC) |
 | `RdmaLogLevel` | `CFG_RDMA_LOG_LEVEL` (533) | CI_INT | client sends `DUMP 103020` (`CmvmiSetRdmaLogLevel`) per node |
 | `CompiledInterpreter` | `CFG_DB_COMPILED_INTERPRETER` (710) | CI_ENUM `OFF`/`AUTO`/`ON` = 0/1/2 | `SET_CONFIG_PARAM_REQ` -> Cmvmi -> `dbtup_jit_set_mode()` (RONDB-1056 JIT mode word, consulted at every compile decision; already compiled programs stay cached) |
+| `AdaptiveSendThreshold` (API node) | `CFG_API_ADAPTIVE_SEND_THRESHOLD` (898) | CI_INT 0..65535, default 0 | API path: mgmd -> CMVMI -> QMGR -> `API_CLUSTERMGR` -> `TransporterFacade::set_adaptive_send_threshold()`; 0 = send at once (latency), N = adaptive send from N waiting threads (throughput). `<api id> SET` / `ALL SET` (all API nodes). MTR: `ndb.ndb_set_adaptive_send_threshold` |
 
 `ndb_mgm -e "ALL SET CompiledInterpreter OFF"` / `"1 SET CompiledInterpreter on"` / `"ALL SET CompiledInterpreter 2"` — enum names are case-insensitive, numbers accepted. MTR: `mysql-test/suite/ndb/t/ndb_set_compiled_interpreter.test` (the others: `ndb_config_set.test`).
 

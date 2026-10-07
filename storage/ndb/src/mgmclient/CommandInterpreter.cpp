@@ -167,6 +167,8 @@ class CommandInterpreter {
   int executeSetRdmaLogLevel(int processId, const char *value_str, bool all);
   int executeSetCompiledInterpreter(int processId, const char *value_str,
                                     bool all);
+  int executeSetAdaptiveSendThreshold(int processId, const char *value_str,
+                                      bool all);
   Uint64 parse_size_value(const char *str, bool &ok);
   int executeSetDomain(int processId, const char *parameters, bool all);
   int executeHostname(int processId, const char *parameters, bool all);
@@ -533,9 +535,10 @@ static const char* helpTextSet =
 "---------------------------------------------------------------------------\n"
 " RonDB -- Management Client -- Help for SET command\n"
 "---------------------------------------------------------------------------\n"
-"SET Set a configuration parameter on a running data node\n\n"
+"SET Set a configuration parameter on a running data node or API node\n\n"
 "<id> SET <param> <value>    Set configuration parameter <param> to <value>\n"
-"                            on node <id>. Use ALL to set on all data nodes.\n\n"
+"                            on node <id>. Use ALL to set on all data nodes\n"
+"                            (on all API nodes for an API node parameter).\n\n"
 "Supported parameters:\n"
 "  MaxDiskWriteSpeed          Max bytes/sec for LCP and backup disk writes.\n"
 "                             Value supports K, M, G suffixes (e.g., 100M).\n"
@@ -550,7 +553,15 @@ static const char* helpTextSet =
 "                             Value: OFF, AUTO or ON (also 0, 1, 2).\n"
 "                             Updates the saved config and applies to the\n"
 "                             next program compile on running nodes now;\n"
-"                             already compiled programs keep running.\n\n"
+"                             already compiled programs keep running.\n"
+"  AdaptiveSendThreshold      API node parameter ([api] / [mysqld]): latency\n"
+"                             or throughput of the NDB API's sends.\n"
+"                             0 = send at once (default, lowest latency);\n"
+"                             N = adaptive send while N or more threads wait\n"
+"                             for replies (16 for throughput). Range 0-65535.\n"
+"                             <id> must be an API node id; ALL sets it on\n"
+"                             every API node. Updates the saved config and\n"
+"                             the running API nodes, through the data nodes.\n\n"
 "Examples:\n"
 "  ALL SET MaxDiskWriteSpeed 100M    Set on all data nodes to 100 MB/s\n"
 "  1 SET MaxDiskWriteSpeed 50M       Set on node 1 to 50 MB/s\n"
@@ -559,6 +570,8 @@ static const char* helpTextSet =
 "  ALL SET CompiledInterpreter AUTO  JIT every eligible program (x86_64 /\n"
 "                                    aarch64 data nodes only; others reject)\n"
 "  1 SET CompiledInterpreter OFF     Back to the default (interpreter) on node 1\n"
+"  ALL SET AdaptiveSendThreshold 16  Favour throughput on all API nodes\n"
+"  51 SET AdaptiveSendThreshold 0    Back to the default (latency) on API node 51\n"
 ;
 
 static const char* helpTextHostname =
@@ -2833,7 +2846,7 @@ CommandInterpreter::executeSet(int processId,
     ndbout_c("Usage: <id> SET <parameter> <value>");
     ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
              "EnableProactiveDeadlockDetection, RdmaLogLevel, "
-             "CompiledInterpreter");
+             "CompiledInterpreter, AdaptiveSendThreshold");
     return -1;
   }
 
@@ -2846,7 +2859,7 @@ CommandInterpreter::executeSet(int processId,
     ndbout_c("Usage: <id> SET <parameter> <value>");
     ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
              "EnableProactiveDeadlockDetection, RdmaLogLevel, "
-             "CompiledInterpreter");
+             "CompiledInterpreter, AdaptiveSendThreshold");
     return -1;
   }
 
@@ -2872,10 +2885,15 @@ CommandInterpreter::executeSet(int processId,
     return executeSetCompiledInterpreter(processId, value_str, all);
   }
 
+  if (native_strcasecmp(param_name, "AdaptiveSendThreshold") == 0)
+  {
+    return executeSetAdaptiveSendThreshold(processId, value_str, all);
+  }
+
   ndbout_c("Unknown SET parameter: '%s'", param_name);
   ndbout_c("Supported parameters: MaxDiskWriteSpeed, "
            "EnableProactiveDeadlockDetection, RdmaLogLevel, "
-           "CompiledInterpreter");
+           "CompiledInterpreter, AdaptiveSendThreshold");
   return -1;
 }
 
@@ -3322,6 +3340,132 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
   else
     ndbout_c("CompiledInterpreter set to %s on node %d", mode_name, processId);
 
+  return 0;
+}
+
+int
+CommandInterpreter::executeSetAdaptiveSendThreshold(int processId,
+                                                    const char *value_str,
+                                                    bool all)
+{
+  /*
+   * AdaptiveSendThreshold is an API node parameter ([api] / [mysqld]):
+   * 0 = every NDB API send goes out at once (latency, the default);
+   * N = adaptive send while N or more threads wait for replies
+   * (throughput).
+   */
+  if (value_str == nullptr || *value_str == '\0')
+  {
+    ndbout_c("Usage: <api id>|ALL SET AdaptiveSendThreshold <0..65535>");
+    return -1;
+  }
+  errno = 0;
+  char *end_ptr = nullptr;
+  long parsed = strtol(value_str, &end_ptr, 10);
+  if (errno != 0 || end_ptr == value_str || *end_ptr != '\0' ||
+      parsed < 0 || parsed > 65535)
+  {
+    ndbout_c("AdaptiveSendThreshold must be an integer between 0 and 65535 "
+             "(0 = send at once, N = adaptive send from N waiting threads)");
+    return -1;
+  }
+  const Uint32 new_value = (Uint32)parsed;
+
+  /*
+   * Step 1: Update the permanent configuration on the management server so
+   * the value survives API node (re)starts: every API section for ALL,
+   * else the section of API node <id> (an error for any other node type).
+   */
+  ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
+                                                          NDB_VERSION);
+  if (conf == 0)
+  {
+    ndbout_c("Could not get configuration");
+    printError();
+    return -1;
+  }
+
+  ConfigValues::Iterator iter(conf->m_config_values);
+  bool found_any = false;
+  if (all)
+  {
+    for (int i = 0; i < ABS_MAX_NODES; i++)
+    {
+      if (!iter.openSection(CFG_SECTION_NODE, i))
+        continue;
+      Uint32 node_type = 0;
+      iter.get(CFG_TYPE_OF_SECTION, &node_type);
+      if (node_type == (Uint32)NODE_TYPE_API)
+      {
+        iter.set(CFG_API_ADAPTIVE_SEND_THRESHOLD, new_value);
+        found_any = true;
+      }
+      iter.closeSection();
+    }
+  }
+  else
+  {
+    if (!get_node_section(iter, processId, NODE_TYPE_API))
+    {
+      ndbout_c("AdaptiveSendThreshold is an API node parameter: node %d is "
+               "not an API node", processId);
+      ndb_mgm_destroy_configuration(conf);
+      return -1;
+    }
+    iter.set(CFG_API_ADAPTIVE_SEND_THRESHOLD, new_value);
+    iter.closeSection();
+    found_any = true;
+  }
+
+  if (!found_any)
+  {
+    ndbout_c("No API nodes found in configuration");
+    ndb_mgm_destroy_configuration(conf);
+    return -1;
+  }
+
+  int ret_code = ndb_mgm_set_configuration(m_mgmsrv, conf);
+  ndb_mgm_destroy_configuration(conf);
+  if (ret_code != 0)
+  {
+    ndbout_c("Failed to update configuration");
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("Configuration updated for all API nodes");
+  else
+    ndbout_c("Configuration updated for node %d", processId);
+
+  /*
+   * Step 2: Apply it on the running API nodes.  The management server has
+   * no connection to them: it goes through the data nodes, which forward
+   * it to their connected API nodes.
+   */
+  ret_code = ndb_mgm_set_config_param(m_mgmsrv,
+                                      all ? 0 : processId,
+                                      CFG_API_ADAPTIVE_SEND_THRESHOLD,
+                                      new_value);
+  if (ret_code < 0)
+  {
+    if (all)
+      ndbout_c("Warning: Configuration saved but failed to update the "
+               "running API nodes. They take it at their next start.");
+    else
+      ndbout_c("Warning: Configuration saved but API node %d was not "
+               "updated: it is not connected, or its version cannot change "
+               "AdaptiveSendThreshold online. It takes the value at its "
+               "next start.", processId);
+    printError();
+    return -1;
+  }
+
+  if (all)
+    ndbout_c("AdaptiveSendThreshold set to %u on all API nodes", new_value);
+  else
+    ndbout_c("AdaptiveSendThreshold set to %u on node %d", new_value,
+             processId);
   return 0;
 }
 

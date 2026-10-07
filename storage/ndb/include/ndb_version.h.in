@@ -1558,4 +1558,20 @@ ndbd_replica_rowid_forwarding(Uint32 x) {
   }
   return false;
 }
+
+/**
+ * Online SET of an API node parameter (AdaptiveSendThreshold): a data
+ * node forwards SET_CONFIG_PARAM_REQ from mgmd to its API nodes (QMGR),
+ * and an API node applies it and answers (ClusterMgr).  mgmd sends such a
+ * request only to data nodes of this version, and QMGR forwards it only
+ * to API nodes of this version: an older API node ignores the signal and
+ * would never answer.  Present from the 26.10 series; a backport to an
+ * older series adds its floor here.
+ */
+#define NDBD_API_SET_CONFIG_PARAM_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_support_api_set_config_param(Uint32 x) {
+  return x >= NDBD_API_SET_CONFIG_PARAM_2610;
+}
 #endif

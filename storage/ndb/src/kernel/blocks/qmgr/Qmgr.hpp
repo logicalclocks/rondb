@@ -562,6 +562,10 @@ class Qmgr : public SimulatedBlock {
   void sendSET_DOMAIN_ID_REF(Signal*, Uint32, Uint32, NodeId, Uint32, Uint32);
 
   void execSET_HOSTNAME_REQ(Signal*);
+  // Online SET of an API node parameter (SetConfigParamReq::forApiNodes)
+  void execSET_CONFIG_PARAM_REQ(Signal*);
+  void execSET_CONFIG_PARAM_CONF(Signal*);
+  void execSET_CONFIG_PARAM_REF(Signal*);
   void execSET_HOSTNAME_CONF(Signal*);
   void execSET_HOSTNAME_REF(Signal*);
 
@@ -580,12 +584,17 @@ class Qmgr : public SimulatedBlock {
   void handle_activate_failed_node(Signal*, NodeRecPtr);
   bool send_activate_node(NodeRecPtr nodePtr);
   bool send_location_domain_id_node(NodeRecPtr nodePtr);
+  bool send_api_config_param_node(NodeRecPtr nodePtr);
+  bool accept_api_config_param_reply(Signal*, Uint32 senderNodeId);
+  void sendSET_CONFIG_PARAM_REF(Signal*, Uint32 ref, Uint32 key,
+                                Uint32 errorCode);
   void handle_activate_receive(Uint32, Uint32);
 
   void check_activate_finished(Signal*);
   void check_deactivate_finished(Signal*);
   void check_set_hostname_finished(Signal*);
   void check_set_location_domain_id_finished(Signal*);
+  void check_set_api_config_param_finished(Signal*);
 
   enum ActivateState
   {
@@ -593,7 +602,8 @@ class Qmgr : public SimulatedBlock {
     HANDLE_ACTIVATE = 1,
     HANDLE_DEACTIVATE = 2,
     HANDLE_SET_HOSTNAME = 3,
-    HANDLE_SET_DOMAIN_ID = 4
+    HANDLE_SET_DOMAIN_ID = 4,
+    HANDLE_SET_API_CONFIG_PARAM = 5
   };
   ActivateState m_activate_state;
 
@@ -622,6 +632,14 @@ class Qmgr : public SimulatedBlock {
   bool m_activate_success;
 
   Uint32 m_activate_error_code;
+
+  /**
+   * HANDLE_SET_API_CONFIG_PARAM: the parameter being set on the API
+   * nodes (m_activate_node_id is the target, 0 for all) and how many
+   * of them have taken the value so far.
+   */
+  Uint32 m_set_api_param_key;
+  Uint32 m_set_api_param_applied;
 
   // Arbitration signals
   void execARBIT_CFG(Signal *signal, NodeBitmaskPOD);

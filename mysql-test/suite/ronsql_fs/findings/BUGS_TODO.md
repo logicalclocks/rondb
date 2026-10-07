@@ -538,13 +538,32 @@ F8 was a framework fixture issue and is already fixed.
   Results). Closed 2026-10-06 with `a22b016ab15` (PR #1133): the mechanism is
   found and fixed and the Mac arms confirm it; arms D / E / F on the benchmark
   computer are not needed.
-- [ ] NDB API adaptive send never defers (found 2026-10-05 while reading F25):
+- [x] NDB API adaptive send never defers (found 2026-10-05 while reading F25):
   `TransporterFacade::add_to_poll_queue` has `if (m_poll_waiters >
   m_max_poll_waiters) m_max_poll_waiters;` — the assignment is missing since
-  `bf9fadc2e1a` (RONDB-564), so `m_use_poll_waiters` stays 0 and rule 2 of
-  `do_send_adaptive` always sends at once. Latency is unaffected; the intended
-  batching under many client threads never happens. Fix: `m_max_poll_waiters =
-  m_poll_waiters;`, then measure throughput at T=8 / T=64.
+  `bf9fadc2e1a` (RONDB-564), so `m_use_poll_waiters` stays 0 and
+  `trp_client::do_forceSend` always takes its `< 16` branch (`try_send_all`):
+  `do_send_adaptive` is never called. Latency is unaffected; the intended
+  batching from 16 concurrent poll waiters upward never happens. On every
+  branch from 24.10. `do_forceSend` always returns 1, so `DeferredSendsCount`
+  cannot show deferrals either way. Fix (2026-10-06, branch
+  RONDB-1124-f25-close-adaptive-send): `m_max_poll_waiters = m_poll_waiters;`.
+  Measured on the Mac (census.cnf, pool 2 per process; `~/asend_nofix` vs
+  `~/asend_base`, which has the fix): mysqld at T=64 +7..+12 % q/s, avg -9 %,
+  p99 +3..+5 % (fs_hw_agg_point +52 %, one run); RonSQL unchanged; T=1 / T=8
+  identical paths. A counting build (`~/asend_diag`) showed rdrs2 never above 10
+  waiters per connection (so never adaptive) and mysqld at T=64 adaptive in
+  67-75 % of the 10 ms windows with 33-35 waiters; ~63 % of its adaptive sends
+  found their data already sent, ~25 % of the rest went out at once, ~75 % went
+  to the send thread (~200 us when it had to wake it). Since it trades latency
+  for throughput, it became a choice: new `[api]` / `[mysqld]` parameter
+  `AdaptiveSendThreshold` (0 = send at once, the default and the behaviour
+  since 2023; N = adaptive from N waiting threads), settable online with
+  `<api id>|ALL SET AdaptiveSendThreshold N` through the data nodes
+  (`claude_files/set_config_param/architecture.md`). MTR
+  `ndb.ndb_set_adaptive_send_threshold`. Done 2026-10-07: MTR green (with
+  ndb_config_set, ndb_set_compiled_interpreter and the activate /
+  location-domain tests that share the QMGR state machine).
 - [x] Every scanned row read the whole slowdown NodeBitmask (found 2026-10-06 in the
   F24 data-node profile): `Dblqh::scanTupkeyConfLab` checked
   `get_status_slowdown().isclear()` before testing the API node's bit, and with

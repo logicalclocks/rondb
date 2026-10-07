@@ -267,7 +267,13 @@ trp_client::do_forceSend(bool forceSend) {
   (void)forceSend;
   flush_send_buffers();
 
-  if (m_facade->m_use_poll_waiters < 16) {
+  /**
+   * AdaptiveSendThreshold 0 (the default) favours latency: always send at
+   * once.  N > 0 favours throughput: while N or more threads waited for
+   * replies within the last 10 ms, sends follow the adaptive rules.
+   */
+  const Uint32 threshold = m_facade->get_adaptive_send_threshold();
+  if (threshold == 0 || m_facade->m_use_poll_waiters < threshold) {
     m_facade->try_send_all(m_flushed_trps_mask);
   } else {
     m_facade->do_send_adaptive(m_flushed_trps_mask);

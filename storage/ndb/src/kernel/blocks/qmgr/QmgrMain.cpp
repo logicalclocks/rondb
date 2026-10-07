@@ -67,6 +67,7 @@
 #include <signaldata/Activate.hpp>
 #include <signaldata/SetHostname.hpp>
 #include <signaldata/SetDomainId.hpp>
+#include <signaldata/SetConfigParam.hpp>
 #include <Configuration.hpp>
 #ifdef _WIN32
 #include <ws2tcpip.h>
@@ -4217,6 +4218,12 @@ void Qmgr::handle_activate_failed_node(Signal *signal, NodeRecPtr nodePtr)
       check_set_location_domain_id_finished(signal);
       break;
     }
+    case ActivateState::HANDLE_SET_API_CONFIG_PARAM:
+    {
+      /* The failed API node counts as not having taken the value */
+      check_set_api_config_param_finished(signal);
+      break;
+    }
     default:
     {
       ndbabort();
@@ -4250,6 +4257,231 @@ bool Qmgr::send_location_domain_id_node(NodeRecPtr nodePtr)
     return true;
   }
   return false;
+}
+
+/**
+ * Online SET of an API node parameter (SetConfigParamReq::forApiNodes,
+ * e.g. AdaptiveSendThreshold).  mgmd sends SET_CONFIG_PARAM_REQ to CMVMI
+ * on every data node, CMVMI hands it to us, and we forward it to
+ * API_CLUSTERMGR on each connected API node (or only on targetNodeId),
+ * then answer mgmd with the number of API nodes that took the value.  It
+ * shares the activate state machine: one such request at a time, the
+ * per-node m_activate_ongoing flag, and the node failure handling
+ * (handle_activate_failed_node).  An API node failing meanwhile counts as
+ * not having taken the value; it reads the saved value at its next start.
+ */
+bool Qmgr::send_api_config_param_node(NodeRecPtr nodePtr)
+{
+  /* API nodes only: neither data nodes nor management servers */
+  const NodeInfo &info = getNodeInfo(nodePtr.i);
+  return info.getType() == NodeInfo::API &&
+         ndbd_support_api_set_config_param(info.m_version) &&
+         nodePtr.p->phase == ZAPI_ACTIVE &&
+         nodePtr.p->failState == NORMAL;
+}
+
+void Qmgr::sendSET_CONFIG_PARAM_REF(Signal *signal,
+                                    Uint32 ref,
+                                    Uint32 key,
+                                    Uint32 errorCode)
+{
+  SetConfigParamRef *const sigRef =
+    (SetConfigParamRef *)signal->getDataPtrSend();
+  sigRef->senderRef = reference();
+  sigRef->configParamKey = key;
+  sigRef->errorCode = errorCode;
+  sendSignal(ref, GSN_SET_CONFIG_PARAM_REF, signal,
+             SetConfigParamRef::SignalLength, JBB);
+}
+
+void Qmgr::execSET_CONFIG_PARAM_REQ(Signal *signal)
+{
+  jamEntry();
+  /* Only our own CMVMI hands us these (Cmvmi::execSET_CONFIG_PARAM_REQ) */
+  const Uint32 sender = signal->getSendersBlockRef();
+  if (refToMain(sender) != CMVMI || refToNode(sender) != getOwnNodeId() ||
+      signal->getLength() < SetConfigParamReq::ApiSignalLength)
+  {
+    jam();
+    g_eventLogger->warning("SET_CONFIG_PARAM_REQ from 0x%x (length %u)"
+                           " ignored: QMGR takes it only from its own CMVMI",
+                           signal->getSendersBlockRef(),
+                           signal->getLength());
+    return;
+  }
+  const SetConfigParamReq *const req =
+    (const SetConfigParamReq *)signal->getDataPtr();
+  const Uint32 senderRef = req->senderRef;
+  const Uint32 configKey = req->configParamKey;
+  const Uint32 valueHigh = req->configParamValueHigh;
+  const Uint32 valueLow = req->configParamValueLow;
+  const Uint32 targetNodeId = req->targetNodeId;
+
+  if (!SetConfigParamReq::forApiNodes(configKey) ||
+      targetNodeId >= MAX_NODES)
+  {
+    jam();
+    sendSET_CONFIG_PARAM_REF(signal, senderRef, configKey, 4);
+    return;
+  }
+  if (m_activate_state != ActivateState::IDLE)
+  {
+    jam();
+    g_eventLogger->info("SET_CONFIG_PARAM_REQ for API nodes (key %u) refused:"
+                        " another activate / hostname / parameter request"
+                        " is in progress (state %u)",
+                        configKey, Uint32(m_activate_state));
+    sendSET_CONFIG_PARAM_REF(signal, senderRef, configKey, 5);
+    return;
+  }
+
+  m_activate_state = ActivateState::HANDLE_SET_API_CONFIG_PARAM;
+  m_activate_ref = senderRef;
+  m_activate_node_id = targetNodeId;
+  m_activate_success = true;
+  m_activate_error_code = 0;
+  m_set_api_param_key = configKey;
+  m_set_api_param_applied = 0;
+
+  for (NodeId nodeId = 1; nodeId < MAX_NODES; nodeId++)
+  {
+    if (targetNodeId != 0 && nodeId != targetNodeId)
+    {
+      continue;
+    }
+    NodeRecPtr nodePtr;
+    nodePtr.i = Uint32(nodeId);
+    ptrAss(nodePtr, nodeRec);
+    if (send_api_config_param_node(nodePtr))
+    {
+      jam();
+      jamLine(nodePtr.i);
+      /* The signal buffer still holds the request: rewrite it whole */
+      SetConfigParamReq *const fwd =
+        (SetConfigParamReq *)signal->getDataPtrSend();
+      fwd->senderRef = reference();
+      fwd->configParamKey = configKey;
+      fwd->configParamValueHigh = valueHigh;
+      fwd->configParamValueLow = valueLow;
+      fwd->targetNodeId = targetNodeId;
+      sendSignal(numberToRef(API_CLUSTERMGR, nodePtr.i),
+                 GSN_SET_CONFIG_PARAM_REQ,
+                 signal,
+                 SetConfigParamReq::ApiSignalLength,
+                 JBB);
+      m_activate_outstanding++;
+      nodePtr.p->m_activate_ongoing = true;
+    }
+  }
+  g_eventLogger->info("SET_CONFIG_PARAM_REQ: config key %u = %llu sent to %u"
+                      " API node(s)%s",
+                      configKey,
+                      (unsigned long long)((Uint64(valueHigh) << 32) |
+                                           Uint64(valueLow)),
+                      m_activate_outstanding,
+                      targetNodeId == 0 ? "" : " (one target)");
+  check_set_api_config_param_finished(signal);
+}
+
+/**
+ * A reply is taken only from an API node this request is waiting for;
+ * anything else (no request in progress, a node we did not ask, a reply
+ * for another parameter) is logged and ignored, never asserted on, since
+ * an API node sends it.
+ */
+bool Qmgr::accept_api_config_param_reply(Signal *signal, Uint32 senderNodeId)
+{
+  const SetConfigParamConf *const conf =
+    (const SetConfigParamConf *)signal->getDataPtr();
+  if (m_activate_state == ActivateState::HANDLE_SET_API_CONFIG_PARAM &&
+      senderNodeId > 0 && senderNodeId < MAX_NODES &&
+      signal->getLength() >= SetConfigParamConf::SignalLength &&
+      conf->configParamKey == m_set_api_param_key)
+  {
+    NodeRecPtr nodePtr;
+    nodePtr.i = senderNodeId;
+    ptrAss(nodePtr, nodeRec);
+    if (nodePtr.p->m_activate_ongoing)
+    {
+      return true;
+    }
+  }
+  g_eventLogger->warning("Unexpected SET_CONFIG_PARAM reply (gsn %u) from"
+                         " node %u ignored (state %u)",
+                         signal->header.theVerId_signalNumber,
+                         senderNodeId,
+                         Uint32(m_activate_state));
+  return false;
+}
+
+void Qmgr::execSET_CONFIG_PARAM_CONF(Signal *signal)
+{
+  jamEntry();
+  const Uint32 senderNodeId = refToNode(signal->getSendersBlockRef());
+  if (!accept_api_config_param_reply(signal, senderNodeId))
+  {
+    jam();
+    return;
+  }
+  handle_activate_receive(senderNodeId, m_activate_node_id);
+  m_set_api_param_applied++;
+  check_set_api_config_param_finished(signal);
+}
+
+void Qmgr::execSET_CONFIG_PARAM_REF(Signal *signal)
+{
+  jamEntry();
+  const Uint32 senderNodeId = refToNode(signal->getSendersBlockRef());
+  if (!accept_api_config_param_reply(signal, senderNodeId))
+  {
+    jam();
+    return;
+  }
+  const SetConfigParamRef *const ref =
+    (const SetConfigParamRef *)signal->getDataPtr();
+  const Uint32 errorCode =
+    signal->getLength() >= SetConfigParamRef::SignalLength ? ref->errorCode
+                                                           : 0;
+  g_eventLogger->info("SET_CONFIG_PARAM_REF from API node %u: config key %u,"
+                      " error %u",
+                      senderNodeId, m_set_api_param_key, errorCode);
+  handle_activate_receive(senderNodeId, m_activate_node_id);
+  m_activate_success = false;
+  m_activate_error_code = errorCode;
+  check_set_api_config_param_finished(signal);
+}
+
+void Qmgr::check_set_api_config_param_finished(Signal *signal)
+{
+  if (m_activate_outstanding != 0)
+  {
+    jam();
+    return;
+  }
+  if (m_activate_success)
+  {
+    jam();
+    SetConfigParamConf *const conf =
+      (SetConfigParamConf *)signal->getDataPtrSend();
+    conf->senderRef = reference();
+    conf->configParamKey = m_set_api_param_key;
+    conf->apiNodesApplied = m_set_api_param_applied;
+    sendSignal(m_activate_ref, GSN_SET_CONFIG_PARAM_CONF, signal,
+               SetConfigParamConf::ApiSignalLength, JBB);
+  }
+  else
+  {
+    jam();
+    sendSET_CONFIG_PARAM_REF(signal, m_activate_ref, m_set_api_param_key,
+                             m_activate_error_code);
+  }
+  m_activate_state = ActivateState::IDLE;
+  m_activate_node_id = 0;
+  m_activate_ref = 0;
+  m_activate_success = false;
+  m_activate_error_code = 0;
+  m_set_api_param_key = 0;
+  m_set_api_param_applied = 0;
 }
 
 void Qmgr::handle_activate_receive(Uint32 nodeId, Uint32 handleNodeId)

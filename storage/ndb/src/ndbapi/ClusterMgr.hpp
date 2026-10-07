@@ -349,6 +349,7 @@ class ClusterMgr : public trp_client {
   void execSET_DOMAIN_ID_REQ  (const Uint32 * theData);
   void execSET_HOSTNAME_REQ(const NdbApiSignal*, const LinearSectionPtr ptr[]);
   void execACTIVATE_REQ  (const Uint32 * theData);
+  void execSET_CONFIG_PARAM_REQ(const NdbApiSignal *signal);
   void execDEACTIVATE_REQ  (const Uint32 * theData);
   void execAPI_REGREQ    (const Uint32 * theData);
   void execAPI_REGCONF   (const NdbApiSignal*, const LinearSectionPtr ptr[]);

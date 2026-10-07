@@ -1,6 +1,8 @@
 # SET Config Param — How to Add a New Parameter
 
-Only **2 files** need changes (the signal plumbing is already in place).
+Only **2 files** need changes for a data node parameter (the signal plumbing is already in place).
+
+**An API node parameter** (`[api]` / `[mysqld]`) takes the API path instead (architecture.md, "API Node Parameters"): add its key to `SetConfigParamReq::forApiNodes()` (`SetConfigParam.hpp`), a case in `ClusterMgr::execSET_CONFIG_PARAM_REQ` that applies it on the API node, the read at connect in `TransporterFacade::configure` (or `Ndb_cluster_connection_impl::configure`), and a client command that updates the API sections (`executeSetAdaptiveSendThreshold` is the model). CMVMI, QMGR and mgmd need no change.
 
 ## Step 1: Cmvmi.cpp — Add Runtime Dispatch
 
