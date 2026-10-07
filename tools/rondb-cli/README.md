@@ -346,7 +346,9 @@ rondb-cli includes built-in benchmarks for Rondis, SQL, and REST API (RDRS). Use
 The RonSQL benchmarks include Feature-Store-style queries (`fs_*`: CTE feature
 groups over one table or a simple join, joined to an entity table via scans and
 key lookups) and TPC-H queries rewritten with CTEs (`tpch_q2`, `tpch_q11`,
-`tpch_q13`, `tpch_q15`, `tpch_q22`). They require TPC-H data loaded via
+`tpch_q13`, `tpch_q15`, `tpch_q22`, and the filter-first variants
+`tpch_q2_ff` / `tpch_q22_ff`, whose CTE body is restricted by the outer
+filter). They require TPC-H data loaded via
 `.load_tpch`. Latencies are reported with microsecond precision (min/avg/max,
 p95/p99/p99.9). Note: if the `tpch` database was loaded with an older CLI
 version, run `.drop_tpch` and reload to pick up the secondary indexes the

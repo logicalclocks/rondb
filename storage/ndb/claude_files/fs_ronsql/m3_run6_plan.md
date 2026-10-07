@@ -711,3 +711,49 @@ it, or as a planner rewrite that pushes an equi-joined outer filter into
 the CTE body.  Measure against `tpch_q2_official` / `tpch_q22_official`
 on the reloaded data (B1c), T=1 and T=8; keep the current rewrites as the
 whole-table variants.
+
+*Status 2026-10-07: registry variants added and measured on the Mac.*  `IN (SELECT
+...)` in the CTE body is not an option: subqueries run only for the main
+statement's WHERE / HAVING, and a body-level one loses the body's
+aggregator at parse time (BUGS_TODO F33); an IN-subquery result is also
+capped at 1000 values (Q2 has ~4k size-15 parts, Q22 ~19k filtered
+customers at sf 1) and becomes an OR chain in the scan filter, which
+reads the whole table anyway.  The bodies are written as joins rooted at
+the filtered table instead, which RonSQL supports (child index scan on
+the join-key prefix):
+- `tpch_q2_ff` / `cte_tpch_q2_ff`: `part JOIN partsupp ON ps_partkey =
+  p_partkey WHERE p_size = 15`, grouped by p_partkey: ~4k parts and their
+  ~16k partsupp rows instead of all 800k; same result as `tpch_q2`.
+- `tpch_q22_ff` / `cte_tpch_q22_ff`: official Q22's customer filter (phone
+  country codes 13, 31, 23, 29, 30, 18, 17 and `c_acctbal > 5000.00`, the
+  CLI data's average positive balance, since the AVG subquery cannot run
+  in a body) in both the outer query and `customer JOIN orders ON
+  o_custkey = c_custkey`: ~19k customers and their orders instead of all
+  1.5M orders.  Groups by c_nationkey like `tpch_q22` (no SUBSTRING), so
+  it is not result-comparable with the official statement.
+Both join `tpch_cte`, so run 7 measures them with the rest.
+
+Mac (`~/c7_mac`, census.cnf, sf 1, avg latency / q/s; MySQL without
+pushdown; row counts agree between the engines):
+
+| query | RonSQL T=1 | RonSQL T=8 | MySQL T=1 | MySQL T=8 |
+|---|---:|---:|---:|---:|
+| tpch_q2 (whole table) | 171 ms | 1288 ms, 5.5 q/s, 25 of 439 failed (1870) | 9.9 s | 21.3 s |
+| tpch_q2_ff | **42 ms** | **180 ms, 44.2 q/s** | 467 ms | 886 ms, 8.8 q/s |
+| tpch_q2_official | – | – | 684 ms | 1337 ms, 5.8 q/s |
+| tpch_q22 (whole table) | 495 ms | 2728 ms, 2.8 q/s | 1230 ms | 1805 ms, 4.2 q/s |
+| tpch_q22_ff | **124 ms** | **727 ms, 10.9 q/s** | 549 ms | 2218 ms, 3.5 q/s |
+| tpch_q22_official | – | – | 316 ms | 1167 ms, 6.8 q/s |
+
+Filter-first is 4.1× (Q2) and 4.0× (Q22) faster than the whole-table
+rewrites for one request, and RonSQL's filter-first versions now beat
+MySQL's official SQL: Q2 16× at T=1 and 7.6× the q/s at T=8, Q22 2.5×
+at T=1 and 1.6× the q/s at T=8.  Query memory peaks (both nodes) drop
+from 414 to 30 MB (Q2, T=8) and from 306 to 48 MB (Q22, T=8).  The
+whole-table tpch_q2 at T=8 hit NDB error 1870 (Failed to allocate
+memory) on 25 requests after 10 retries: F27 (c), reproduced on the Mac.
+Results checked once with ronsql_cli / mysql (the bench compares only
+row counts): tpch_q2 and tpch_q2_ff return identical rows, and RonSQL and
+MySQL agree on tpch_q2_ff and tpch_q22_ff.  EXPLAIN shows the Q2 body
+rooted at part (TABLE_SCAN, "with joins") but does not list a CTE body's
+child operations.
