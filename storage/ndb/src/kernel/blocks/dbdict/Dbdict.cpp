@@ -30,6 +30,7 @@
 #include <utility>
 #include "my_sys.h"
 #include "mysql/strings/m_ctype.h"
+#include "strings/str_uca_type.h"
 
 #define DBDICT_C
 #include "Dbdict.hpp"
@@ -960,6 +961,10 @@ void Dbdict::execCONTINUEB(Signal *signal) {
     case ZNEXT_GET_TAB_REQ:
       jam();
       startNextGetTabInfoReq(signal);
+      break;
+    case ZCOLLATION_WEIGHTS:
+      jam();
+      continueCollationWeights(signal);
       break;
     case ZNSL_FK_REPORT: {
       jam();
@@ -2486,6 +2491,9 @@ Dbdict::Dbdict(Block_context &ctx)
 
   addRecSignal(GSN_LIST_TABLES_REQ, &Dbdict::execLIST_TABLES_REQ);
   addRecSignal(GSN_LIST_TABLES_CONF, &Dbdict::execLIST_TABLES_CONF);
+
+  addRecSignal(GSN_GET_COLLATION_INFO_REQ,
+               &Dbdict::execGET_COLLATION_INFO_REQ);
 
   addRecSignal(GSN_DROP_TABLE_REQ, &Dbdict::execDROP_TABLE_REQ);
 
@@ -13217,6 +13225,768 @@ void Dbdict::sendLIST_TABLES_CONF(Signal *signal, ListTablesReq *req) {
       tableDataWriter.first();
       tableNamesWriter.first();
     }
+  }
+}
+
+/**
+ * GET_COLLATION_INFO_REQ, see signaldata/GetCollationInfo.hpp.  Any node
+ * may send it, normally an API node, so every field and the section are
+ * checked, and a request failing a check is refused with
+ * GET_COLLATION_INFO_REF.  A request is a few words and a section of at
+ * most MaxNameWords, so it is never fragmented: a fragment is refused
+ * rather than given an entry in the fragment hash.
+ *
+ * The lookup goes through mysys as table parsing does (handleTabInfo): the
+ * collation is initialised on its first use on this node, and a
+ * compiled-in collation needs no file.  A request WithWeights goes on in
+ * startCollationWeights.
+ */
+void Dbdict::execGET_COLLATION_INFO_REQ(Signal *signal) {
+  jamEntry();
+  SectionHandle handle(this, signal);
+  const BlockReference senderBlockRef = signal->getSendersBlockRef();
+  const Uint32 length = signal->getLength();
+  const bool fragmented = (signal->header.m_fragmentInfo != 0);
+  signal->header.m_fragmentInfo = 0;
+
+  /* Copy out the request, the reply is built in the same signal */
+  GetCollationInfoReq req;
+  static_assert(sizeof(req) == 4 * GetCollationInfoReq::SignalLength);
+  std::memset(&req, 0, sizeof(req));
+  std::memcpy(&req, signal->getDataPtr(),
+              4 * std::min(length, GetCollationInfoReq::SignalLength));
+
+  if (unlikely(fragmented || length < GetCollationInfoReq::SignalLength)) {
+    jam();
+    releaseSections(handle);
+    sendGET_COLLATION_INFO_REF(signal, senderBlockRef, req,
+                               GetCollationInfoRef::InvalidSignal);
+    return;
+  }
+  /**
+   * The reply goes to senderRef.  It has to be on the node that sent the
+   * request, else a request could make us send a reply to a block on a
+   * third node.
+   */
+  if (unlikely(refToNode(req.senderRef) != refToNode(senderBlockRef))) {
+    jam();
+    releaseSections(handle);
+    sendGET_COLLATION_INFO_REF(signal, senderBlockRef, req,
+                               GetCollationInfoRef::InvalidSenderRef);
+    return;
+  }
+
+  const bool withWeights =
+      (req.requestFlags & GetCollationInfoReq::WithWeights) != 0;
+  Uint32 errorCode = 0;
+  if (unlikely((req.requestFlags &
+                ~Uint32(GetCollationInfoReq::WithWeights)) != 0)) {
+    jam();
+    errorCode = GetCollationInfoRef::InvalidRequestType;
+  } else if (withWeights && unlikely(req.weightsPosition ==
+                                     GetCollationInfoReq::AllWeightsSent)) {
+    jam();
+    errorCode = GetCollationInfoRef::InvalidWeightsRequest;
+  }
+
+  const CHARSET_INFO *cs = nullptr;
+  if (errorCode == 0) {
+    switch (req.requestType) {
+      case GetCollationInfoReq::ById:
+        jam();
+        if (unlikely(handle.m_cnt != 0)) {
+          jam();
+          errorCode = GetCollationInfoRef::InvalidSignal;
+        } else if (unlikely(req.collationId == 0 ||
+                            req.collationId >= MY_ALL_CHARSETS_SIZE)) {
+          jam();
+          errorCode = GetCollationInfoRef::InvalidCollationId;
+        } else {
+          cs = get_charset(req.collationId, MYF(0));
+          if (cs == nullptr) {
+            jam();
+            errorCode = GetCollationInfoRef::UnknownCollation;
+          }
+        }
+        break;
+      case GetCollationInfoReq::ByCollationName:
+      case GetCollationInfoReq::ByCharsetName: {
+        jam();
+        char name[GetCollationInfoReq::MaxNameLength + 1];
+        errorCode = readCollationInfoName(handle, req.nameLength, name);
+        if (errorCode != 0) {
+          jam();
+          break;
+        }
+        if (req.requestType == GetCollationInfoReq::ByCollationName) {
+          cs = get_charset_by_name(name, MYF(0));
+          if (cs == nullptr) {
+            jam();
+            errorCode = GetCollationInfoRef::UnknownCollation;
+          }
+        } else {
+          cs = get_charset_by_csname(name, MY_CS_PRIMARY, MYF(0));
+          if (cs == nullptr) {
+            jam();
+            errorCode = GetCollationInfoRef::UnknownCharset;
+          }
+        }
+        break;
+      }
+      default:
+        jam();
+        errorCode = GetCollationInfoRef::InvalidRequestType;
+        break;
+    }
+  }
+  releaseSections(handle);
+
+  /**
+   * MySQL's names are shorter than MY_CS_NAME_SIZE; a collation defined
+   * by a charset file is not taken on trust, as the CONF carries both
+   * names in a buffer sized by MaxNameLength.
+   */
+  if (errorCode == 0 &&
+      unlikely(strlen(cs->csname) > GetCollationInfoReq::MaxNameLength ||
+               strlen(cs->m_coll_name) >
+                   GetCollationInfoReq::MaxNameLength)) {
+    jam();
+    errorCode = GetCollationInfoRef::UnknownCollation;
+  }
+  if (errorCode != 0) {
+    jam();
+    sendGET_COLLATION_INFO_REF(signal, req.senderRef, req, errorCode);
+    return;
+  }
+  if (withWeights) {
+    jam();
+    startCollationWeights(signal, req, cs);
+    return;
+  }
+  sendGET_COLLATION_INFO_CONF(signal, req.senderRef, req.senderData, cs);
+}
+
+/**
+ * Copy the name of a GET_COLLATION_INFO_REQ from section NAME into name,
+ * NUL-terminated.  Returns 0, or the GetCollationInfoRef error code that
+ * refuses the request.  The caller releases the sections.
+ */
+Uint32 Dbdict::readCollationInfoName(SectionHandle &handle, Uint32 nameLength,
+                                     char *name) {
+  SegmentedSectionPtr namePtr;
+  if (unlikely(handle.m_cnt != 1 ||
+               !handle.getSection(namePtr, GetCollationInfoReq::NAME) ||
+               namePtr.sz > GetCollationInfoReq::MaxNameWords)) {
+    jam();
+    return GetCollationInfoRef::InvalidSignal;
+  }
+  if (unlikely(nameLength == 0 ||
+               nameLength > GetCollationInfoReq::MaxNameLength ||
+               nameLength > 4 * namePtr.sz)) {
+    jam();
+    return GetCollationInfoRef::InvalidName;
+  }
+  Uint32 nameWords[GetCollationInfoReq::MaxNameWords];
+  copy(nameWords, namePtr);
+  std::memcpy(name, nameWords, nameLength);
+  name[nameLength] = '\0';
+  if (unlikely(std::memchr(name, '\0', nameLength) != nullptr)) {
+    jam();
+    return GetCollationInfoRef::InvalidName;
+  }
+  return 0;
+}
+
+/**
+ * Section NAMES of a GET_COLLATION_INFO_CONF: the two names, each
+ * followed by a NUL, into names (2 * MaxNameWords words).  Returns the
+ * words written.
+ */
+Uint32 Dbdict::writeCollationNames(Uint32 *names, const CHARSET_INFO *cs) {
+  const Uint32 charsetNameLength = Uint32(strlen(cs->csname));
+  const Uint32 collationNameLength = Uint32(strlen(cs->m_coll_name));
+  ndbrequire(charsetNameLength <= GetCollationInfoReq::MaxNameLength &&
+             collationNameLength <= GetCollationInfoReq::MaxNameLength);
+  std::memset(names, 0, 4 * 2 * GetCollationInfoReq::MaxNameWords);
+  char *const namesChars = reinterpret_cast<char *>(names);
+  std::memcpy(namesChars, cs->csname, charsetNameLength);
+  std::memcpy(namesChars + charsetNameLength + 1, cs->m_coll_name,
+              collationNameLength);
+  return (charsetNameLength + 1 + collationNameLength + 1 + 3) / 4;
+}
+
+/* The words of a GET_COLLATION_INFO_CONF, without any weights */
+void Dbdict::fillCollationInfoConf(GetCollationInfoConf *conf,
+                                   Uint32 senderData,
+                                   const CHARSET_INFO *cs) {
+  Uint32 flags = 0;
+  if (cs->state & MY_CS_PRIMARY) flags |= GetCollationInfoConf::Primary;
+  if (cs->state & MY_CS_BINSORT) flags |= GetCollationInfoConf::Binary;
+  if (cs->state & MY_CS_UNICODE) flags |= GetCollationInfoConf::Unicode;
+  if (cs->state & MY_CS_CSSORT) flags |= GetCollationInfoConf::CaseSensitive;
+  if (cs->state & MY_CS_PUREASCII) flags |= GetCollationInfoConf::PureAscii;
+  if (cs->pad_attribute == NO_PAD) flags |= GetCollationInfoConf::NoPad;
+
+  conf->senderData = senderData;
+  conf->collationId = cs->number;
+  conf->primaryCollationId = get_charset_number(cs->csname, MY_CS_PRIMARY);
+  conf->binaryCollationId = get_charset_number(cs->csname, MY_CS_BINSORT);
+  conf->flags = flags;
+  conf->mbMinLen = cs->mbminlen;
+  conf->mbMaxLen = cs->mbmaxlen;
+  conf->strxfrmMultiply = cs->strxfrm_multiply;
+  conf->setCaseMultiply(cs->caseup_multiply, cs->casedn_multiply);
+  conf->padChar = cs->pad_char;
+  conf->levelsForCompare = cs->levels_for_compare;
+  conf->minSortChar = Uint32(cs->min_sort_char);
+  conf->maxSortChar = Uint32(cs->max_sort_char);
+  conf->setNameLengths(Uint32(strlen(cs->csname)),
+                       Uint32(strlen(cs->m_coll_name)));
+  conf->weightEntries = 0;
+  conf->weightsLength = 0;
+  conf->contractionEntries = 0;
+  conf->contractionsLength = 0;
+  conf->nextWeightsPosition = GetCollationInfoReq::AllWeightsSent;
+}
+
+void Dbdict::sendGET_COLLATION_INFO_CONF(Signal *signal,
+                                         BlockReference receiverRef,
+                                         Uint32 senderData,
+                                         const CHARSET_INFO *cs) {
+  Uint32 names[2 * GetCollationInfoReq::MaxNameWords];
+  const Uint32 namesWords = writeCollationNames(names, cs);
+  GetCollationInfoConf *const conf =
+      (GetCollationInfoConf *)signal->getDataPtrSend();
+  fillCollationInfoConf(conf, senderData, cs);
+
+  LinearSectionPtr ptr[3];
+  ptr[GetCollationInfoConf::NAMES].p = names;
+  ptr[GetCollationInfoConf::NAMES].sz = namesWords;
+  sendSignal(receiverRef, GSN_GET_COLLATION_INFO_CONF, signal,
+             GetCollationInfoConf::SignalLength, JBB, ptr, 1);
+}
+
+void Dbdict::sendGET_COLLATION_INFO_REF(Signal *signal,
+                                        BlockReference receiverRef,
+                                        const GetCollationInfoReq &req,
+                                        Uint32 errorCode) {
+  GetCollationInfoRef *const ref =
+      (GetCollationInfoRef *)signal->getDataPtrSend();
+  ref->senderData = req.senderData;
+  ref->errorCode = errorCode;
+  ref->requestType = req.requestType;
+  ref->collationId = req.collationId;
+  sendSignal(receiverRef, GSN_GET_COLLATION_INFO_REF, signal,
+             GetCollationInfoRef::SignalLength, JBB);
+}
+
+/**
+ * GET_COLLATION_INFO_REQ WithWeights.  The CONF from req.weightsPosition
+ * is built in slices of CONTINUEB ZCOLLATION_WEIGHTS: the code points of
+ * the character set in order, gathered into runs (GetCollationInfoWeight),
+ * then the contractions, until the CONF holds CollationWeights::
+ * ResponseBytes or all weights.  The buffer is query memory, below 2 MB
+ * as one allocation has to be.
+ */
+void Dbdict::startCollationWeights(Signal *signal,
+                                   const GetCollationInfoReq &req,
+                                   const CHARSET_INFO *cs) {
+  CollationWeights &cw = c_collationWeights;
+  if (cw.m_state != CollationWeights::Idle) {
+    jam();
+    sendGET_COLLATION_INFO_REF(signal, req.senderRef, req,
+                               GetCollationInfoRef::Busy);
+    return;
+  }
+  const NodeId receiverNodeId = refToNode(req.senderRef);
+  cw.m_state = CollationWeights::Building;
+  cw.m_req = req;
+  cw.m_receiverConnectCount =
+      (receiverNodeId == 0 || receiverNodeId == getOwnNodeId())
+          ? 0
+          : getNodeInfo(receiverNodeId).m_connectCount;
+  cw.m_cs = cs;
+  cw.m_position = req.weightsPosition;
+  cw.m_buf = nullptr;
+  cw.m_size = 0;
+  cw.m_used = 0;
+  cw.m_weightEntries = 0;
+  cw.m_weightsLength = 0;
+  cw.m_contractionEntries = 0;
+  cw.m_contractionsLength = 0;
+  cw.m_runCount = 0;
+
+  Uint32 names[2 * GetCollationInfoReq::MaxNameWords];
+  const Uint32 namesWords = writeCollationNames(names, cs);
+  if (reserveCollationWeights(4 * namesWords) != CW_OK) {
+    jam();
+    endCollationWeights(signal, GetCollationInfoRef::OutOfMemory);
+    return;
+  }
+  std::memcpy(cw.m_buf, names, 4 * namesWords);
+  cw.m_used = 4 * namesWords;
+  cw.m_weightsStart = cw.m_used;
+
+  signal->theData[0] = ZCOLLATION_WEIGHTS;
+  sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+}
+
+/* CONTINUEB ZCOLLATION_WEIGHTS */
+void Dbdict::continueCollationWeights(Signal *signal) {
+  CollationWeights &cw = c_collationWeights;
+  ndbrequire(cw.m_state == CollationWeights::Building ||
+             cw.m_state == CollationWeights::ReadyToSend);
+  if (!collationWeightsReceiverAlive()) {
+    jam();
+    endCollationWeights(signal, 0);
+    return;
+  }
+  if (cw.m_state == CollationWeights::Building) {
+    jam();
+    buildCollationWeights(signal);
+    return;
+  }
+  sendCollationWeights(signal);
+}
+
+/**
+ * The requester is still connected, and has not reconnected since it
+ * asked.
+ */
+bool Dbdict::collationWeightsReceiverAlive() {
+  const CollationWeights &cw = c_collationWeights;
+  const NodeId nodeId = refToNode(cw.m_req.senderRef);
+  if (nodeId == 0 || nodeId == getOwnNodeId()) {
+    return true;
+  }
+  const NodeInfo &nodeInfo = getNodeInfo(nodeId);
+  return nodeInfo.m_connected &&
+         nodeInfo.m_connectCount == cw.m_receiverConnectCount;
+}
+
+/**
+ * One slice of building the CONF.  A code point costs one unit when the
+ * character set does not have it and WeighCost when its weight string is
+ * computed, so a slice weighs about 8000 characters, a couple of
+ * milliseconds of strnxfrm.
+ */
+void Dbdict::buildCollationWeights(Signal *signal) {
+  CollationWeights &cw = c_collationWeights;
+  const CHARSET_INFO *cs = cw.m_cs;
+  const bool unicode = (cs->state & MY_CS_UNICODE) != 0;
+  constexpr Uint32 WeighCost = 16;
+  constexpr Uint32 SliceCost = 8192 * WeighCost;
+  Uint32 cost = 0;
+  CollationWeightsResult res = CW_OK;
+  while (cw.m_position < GetCollationInfoReq::ContractionsPosition &&
+         cost < SliceCost) {
+    const Uint32 codePoint = cw.m_position;
+    Uint8 encoded[CollationWeights::MaxEncodedLength];
+    const int encodedLength =
+        cs->cset->wc_mb(cs, codePoint, encoded, encoded + sizeof(encoded));
+    my_wc_t decoded = 0;
+    if (encodedLength <= 0 ||
+        cs->cset->mb_wc(cs, &decoded, encoded, encoded + encodedLength) !=
+            encodedLength ||
+        decoded != codePoint) {
+      /* Not a character of the character set */
+      cost++;
+      cw.m_position++;
+      continue;
+    }
+    cost += WeighCost;
+    Uint8 weight[CollationWeights::MaxWeightLength];
+    const size_t weightLength = cs->coll->strnxfrm(
+        cs, weight, sizeof(weight), 1, encoded, encodedLength, 0);
+    res = addCollationWeight(codePoint, encoded,
+                             unicode ? 0 : Uint32(encodedLength), weight,
+                             Uint32(weightLength));
+    if (res != CW_OK) {
+      jam();
+      break;
+    }
+    cw.m_position++;
+  }
+
+  if (res == CW_OK &&
+      cw.m_position < GetCollationInfoReq::ContractionsPosition) {
+    jam();
+    /* More code points in the next slice */
+    signal->theData[0] = ZCOLLATION_WEIGHTS;
+    sendSignal(reference(), GSN_CONTINUEB, signal, 1, JBB);
+    return;
+  }
+  if (res == CW_OK && cw.m_runCount != 0) {
+    jam();
+    /* All code points done, the last run ends */
+    res = writeCollationWeightRun();
+  }
+  if (res == CW_NO_MEMORY) {
+    jam();
+    endCollationWeights(signal, GetCollationInfoRef::OutOfMemory);
+    return;
+  }
+  if (res == CW_FULL) {
+    jam();
+    /* The run that did not fit starts the next CONF */
+    cw.m_position = cw.m_runFirst;
+  }
+  cw.m_runCount = 0;
+
+  /* Each kind of entries is padded to whole words, the buffer is too */
+  cw.m_weightsLength = cw.m_used - cw.m_weightsStart;
+  while ((cw.m_used % 4) != 0) cw.m_buf[cw.m_used++] = 0;
+  cw.m_contractionsStart = cw.m_used;
+
+  if (res == CW_OK) {
+    jam();
+    const MY_UCA_INFO *uca = cs->uca;
+    if (uca != nullptr && uca->have_contractions &&
+        uca->contraction_nodes != nullptr) {
+      jam();
+      Uint32 path[GetCollationInfoContraction::MaxCodePoints];
+      Uint32 index = 0;
+      res = writeCollationContractions(uca->contraction_nodes, path, 0, index);
+    }
+    if (res == CW_NO_MEMORY) {
+      jam();
+      endCollationWeights(signal, GetCollationInfoRef::OutOfMemory);
+      return;
+    }
+    if (res == CW_OK) {
+      jam();
+      cw.m_position = GetCollationInfoReq::AllWeightsSent;
+    }
+  }
+  cw.m_contractionsLength = cw.m_used - cw.m_contractionsStart;
+  while ((cw.m_used % 4) != 0) cw.m_buf[cw.m_used++] = 0;
+
+  cw.m_state = CollationWeights::ReadyToSend;
+  sendCollationWeights(signal);
+}
+
+/**
+ * Make room for bytes more in the buffer.  CW_FULL when the CONF would
+ * pass its limit, CW_NO_MEMORY when the buffer cannot grow.  The limit is
+ * whole words, so padding the entries never passes it.
+ */
+Dbdict::CollationWeightsResult Dbdict::reserveCollationWeights(Uint32 bytes) {
+  CollationWeights &cw = c_collationWeights;
+  if (cw.m_used + bytes > CollationWeights::ResponseBytes) {
+    jam();
+    return CW_FULL;
+  }
+  if (cw.m_used + bytes <= cw.m_size) {
+    return CW_OK;
+  }
+  jam();
+  Uint32 size = (cw.m_size == 0) ? 64 * 1024 : 2 * cw.m_size;
+  while (size < cw.m_used + bytes) size *= 2;
+  size = std::min(size, CollationWeights::ResponseBytes);
+  Uint8 *const buf = static_cast<Uint8 *>(
+      lc_ndbd_pool_malloc(size, RG_QUERY_MEMORY, getThreadId(), false));
+  if (buf == nullptr) {
+    jam();
+    return CW_NO_MEMORY;
+  }
+  if (cw.m_buf != nullptr) {
+    std::memcpy(buf, cw.m_buf, cw.m_used);
+    lc_ndbd_pool_free(cw.m_buf);
+  }
+  cw.m_buf = buf;
+  cw.m_size = size;
+  return CW_OK;
+}
+
+/**
+ * Add a character to the run being gathered, or end that run (writing
+ * it) and start a new one with the character.
+ */
+Dbdict::CollationWeightsResult Dbdict::addCollationWeight(
+    Uint32 codePoint, const Uint8 *encoded, Uint32 encodedLength,
+    const Uint8 *weight, Uint32 weightLength) {
+  CollationWeights &cw = c_collationWeights;
+  if (cw.m_runCount != 0) {
+    if (extendsCollationWeightRun(codePoint, encoded, encodedLength, weight,
+                                  weightLength)) {
+      cw.m_runCount++;
+      return CW_OK;
+    }
+    const CollationWeightsResult res = writeCollationWeightRun();
+    if (res != CW_OK) {
+      jam();
+      return res;
+    }
+  }
+  ndbrequire(encodedLength <= CollationWeights::MaxEncodedLength &&
+             weightLength <= CollationWeights::MaxWeightLength);
+  cw.m_runFirst = codePoint;
+  cw.m_runCount = 1;
+  cw.m_runStepOffset = GetCollationInfoWeight::NoStep;
+  cw.m_runEncodedLength = encodedLength;
+  cw.m_runWeightLength = weightLength;
+  std::memcpy(cw.m_runEncoded, encoded, encodedLength);
+  std::memcpy(cw.m_runWeight, weight, weightLength);
+  return CW_OK;
+}
+
+static inline Uint32 readBigEndian16(const Uint8 *p) {
+  return (Uint32(p[0]) << 8) | Uint32(p[1]);
+}
+
+/**
+ * Whether the character is the next of the run, see
+ * GetCollationInfoWeight: its code point, encoding and weight string are
+ * those of the run's first character stepped by the run's count.  The
+ * second character fixes where the weight string steps.
+ */
+bool Dbdict::extendsCollationWeightRun(Uint32 codePoint, const Uint8 *encoded,
+                                       Uint32 encodedLength,
+                                       const Uint8 *weight,
+                                       Uint32 weightLength) {
+  CollationWeights &cw = c_collationWeights;
+  const Uint32 k = cw.m_runCount;
+  if (codePoint != cw.m_runFirst + k ||
+      k >= GetCollationInfoWeight::MaxCount ||
+      encodedLength != cw.m_runEncodedLength ||
+      weightLength != cw.m_runWeightLength) {
+    return false;
+  }
+  if (encodedLength != 0) {
+    Uint64 first = 0;
+    Uint64 next = 0;
+    for (Uint32 i = 0; i < encodedLength; i++) {
+      first = (first << 8) | cw.m_runEncoded[i];
+      next = (next << 8) | encoded[i];
+    }
+    if (next != first + k) {
+      return false;
+    }
+  }
+  const Uint8 *const firstWeight = cw.m_runWeight;
+  if (k == 1) {
+    if (std::memcmp(weight, firstWeight, weightLength) == 0) {
+      cw.m_runStepOffset = GetCollationInfoWeight::NoStep;
+      return true;
+    }
+    /* The differing bytes have to be a 16-bit number one higher */
+    Uint32 firstDiff = 0;
+    while (weight[firstDiff] == firstWeight[firstDiff]) firstDiff++;
+    Uint32 lastDiff = weightLength - 1;
+    while (weight[lastDiff] == firstWeight[lastDiff]) lastDiff--;
+    if (lastDiff == 0 || firstDiff + 1 < lastDiff ||
+        lastDiff - 1 >= GetCollationInfoWeight::NoStep) {
+      return false;
+    }
+    const Uint32 offset = lastDiff - 1;
+    if (readBigEndian16(weight + offset) !=
+        readBigEndian16(firstWeight + offset) + 1) {
+      return false;
+    }
+    cw.m_runStepOffset = offset;
+    return true;
+  }
+  if (cw.m_runStepOffset == GetCollationInfoWeight::NoStep) {
+    return std::memcmp(weight, firstWeight, weightLength) == 0;
+  }
+  const Uint32 offset = cw.m_runStepOffset;
+  return readBigEndian16(weight + offset) ==
+             readBigEndian16(firstWeight + offset) + k &&
+         std::memcmp(weight, firstWeight, offset) == 0 &&
+         std::memcmp(weight + offset + 2, firstWeight + offset + 2,
+                     weightLength - offset - 2) == 0;
+}
+
+/* Write the run being gathered as a weight entry */
+Dbdict::CollationWeightsResult Dbdict::writeCollationWeightRun() {
+  CollationWeights &cw = c_collationWeights;
+  const Uint32 bytes = GetCollationInfoWeight::HeaderLength +
+                       cw.m_runEncodedLength + cw.m_runWeightLength;
+  const CollationWeightsResult res = reserveCollationWeights(bytes);
+  if (res != CW_OK) {
+    jam();
+    return res;
+  }
+  Uint8 *p = cw.m_buf + cw.m_used;
+  p[0] = Uint8(cw.m_runFirst >> 16);
+  p[1] = Uint8(cw.m_runFirst >> 8);
+  p[2] = Uint8(cw.m_runFirst);
+  p[3] = Uint8(cw.m_runCount >> 16);
+  p[4] = Uint8(cw.m_runCount >> 8);
+  p[5] = Uint8(cw.m_runCount);
+  p[6] = Uint8(cw.m_runCount > 1 ? cw.m_runStepOffset
+                                 : GetCollationInfoWeight::NoStep);
+  p[7] = Uint8(cw.m_runEncodedLength);
+  p[8] = Uint8(cw.m_runWeightLength >> 8);
+  p[9] = Uint8(cw.m_runWeightLength);
+  p += GetCollationInfoWeight::HeaderLength;
+  std::memcpy(p, cw.m_runEncoded, cw.m_runEncodedLength);
+  std::memcpy(p + cw.m_runEncodedLength, cw.m_runWeight,
+              cw.m_runWeightLength);
+  cw.m_used += bytes;
+  cw.m_weightEntries++;
+  return CW_OK;
+}
+
+/**
+ * Write the contractions of a UCA collation's trie from the position
+ * cw.m_position on, depth first: a node's own contraction before those
+ * of its children, then the previous-context pairs of a first code
+ * point.  index counts every contraction passed, written or not.  On
+ * CW_FULL cw.m_position is the contraction that did not fit.
+ */
+Dbdict::CollationWeightsResult Dbdict::writeCollationContractions(
+    const void *contractionNodes, Uint32 *path, Uint32 depth,
+    Uint32 &index) {
+  const std::vector<MY_CONTRACTION> &nodes =
+      *static_cast<const std::vector<MY_CONTRACTION> *>(contractionNodes);
+  for (const MY_CONTRACTION &node : nodes) {
+    path[depth] = Uint32(node.ch);
+    CollationWeightsResult res = CW_OK;
+    if (depth > 0 && node.is_contraction_tail) {
+      res = writeCollationContraction(path, depth + 1, 0, index++);
+      if (res != CW_OK) return res;
+    }
+    if (depth + 1 < GetCollationInfoContraction::MaxCodePoints) {
+      res = writeCollationContractions(&node.child_nodes, path, depth + 1,
+                                       index);
+      if (res != CW_OK) return res;
+    }
+    if (depth == 0) {
+      for (const MY_CONTRACTION &previous : node.child_nodes_context) {
+        if (!previous.is_contraction_tail) continue;
+        const Uint32 pair[2] = {Uint32(previous.ch), Uint32(node.ch)};
+        res = writeCollationContraction(
+            pair, 2, GetCollationInfoContraction::PreviousContext, index++);
+        if (res != CW_OK) return res;
+      }
+    }
+  }
+  return CW_OK;
+}
+
+/* Write contraction number index, unless sent before or not encodable */
+Dbdict::CollationWeightsResult Dbdict::writeCollationContraction(
+    const Uint32 *codePoints, Uint32 count, Uint32 flags, Uint32 index) {
+  CollationWeights &cw = c_collationWeights;
+  const Uint32 position = GetCollationInfoReq::ContractionsPosition + index;
+  if (position < cw.m_position) {
+    return CW_OK;
+  }
+  const CHARSET_INFO *cs = cw.m_cs;
+  Uint8 encoded[GetCollationInfoContraction::MaxCodePoints *
+                CollationWeights::MaxEncodedLength];
+  Uint32 encodedLength = 0;
+  for (Uint32 i = 0; i < count; i++) {
+    const int length =
+        cs->cset->wc_mb(cs, codePoints[i], encoded + encodedLength,
+                        encoded + sizeof(encoded));
+    if (length <= 0) {
+      jam();
+      return CW_OK;
+    }
+    encodedLength += length;
+  }
+  Uint8 weight[CollationWeights::MaxWeightLength];
+  const Uint32 weightLength = Uint32(cs->coll->strnxfrm(
+      cs, weight, sizeof(weight), count, encoded, encodedLength, 0));
+
+  const Uint32 bytes =
+      GetCollationInfoContraction::HeaderLength + 3 * count + weightLength;
+  const CollationWeightsResult res = reserveCollationWeights(bytes);
+  if (res != CW_OK) {
+    jam();
+    if (res == CW_FULL) cw.m_position = position;
+    return res;
+  }
+  Uint8 *p = cw.m_buf + cw.m_used;
+  p[0] = Uint8(count);
+  p[1] = Uint8(flags);
+  p[2] = Uint8(weightLength >> 8);
+  p[3] = Uint8(weightLength);
+  p += GetCollationInfoContraction::HeaderLength;
+  for (Uint32 i = 0; i < count; i++, p += 3) {
+    p[0] = Uint8(codePoints[i] >> 16);
+    p[1] = Uint8(codePoints[i] >> 8);
+    p[2] = Uint8(codePoints[i]);
+  }
+  std::memcpy(p, weight, weightLength);
+  cw.m_used += bytes;
+  cw.m_contractionEntries++;
+  return CW_OK;
+}
+
+/**
+ * Send the CONF built as one fragmented signal from the buffer, which
+ * collationWeightsSent frees after the last fragment.  sendFragmentedSignal
+ * needs a free record for that, so wait for one if there is none.
+ */
+void Dbdict::sendCollationWeights(Signal *signal) {
+  CollationWeights &cw = c_collationWeights;
+  if (getNoOfFreeFragmentSendRecords() == 0) {
+    jam();
+    signal->theData[0] = ZCOLLATION_WEIGHTS;
+    sendSignalWithDelay(reference(), GSN_CONTINUEB, signal, 10, 1);
+    return;
+  }
+  /**
+   * A fragment with pieces of both sections carries the CONF, their 2
+   * section numbers and the fragment id, and sendSignal counts the 2
+   * section pointers too, against the 25 words of a signal.
+   */
+  static_assert(sizeof(GetCollationInfoConf) ==
+                4 * GetCollationInfoConf::SignalLength);
+  static_assert(GetCollationInfoConf::SignalLength + 2 + 1 + 2 <= 25);
+  GetCollationInfoConf *const conf =
+      (GetCollationInfoConf *)signal->getDataPtrSend();
+  fillCollationInfoConf(conf, cw.m_req.senderData, cw.m_cs);
+  conf->weightEntries = cw.m_weightEntries;
+  conf->weightsLength = cw.m_weightsLength;
+  conf->contractionEntries = cw.m_contractionEntries;
+  conf->contractionsLength = cw.m_contractionsLength;
+  conf->nextWeightsPosition = cw.m_position;
+
+  LinearSectionPtr ptr[3];
+  ptr[GetCollationInfoConf::NAMES].p = reinterpret_cast<Uint32 *>(cw.m_buf);
+  ptr[GetCollationInfoConf::NAMES].sz = cw.m_weightsStart / 4;
+  Uint32 noOfSections = 1;
+  if (cw.m_used > cw.m_weightsStart) {
+    jam();
+    ptr[GetCollationInfoConf::WEIGHTS].p =
+        reinterpret_cast<Uint32 *>(cw.m_buf + cw.m_weightsStart);
+    ptr[GetCollationInfoConf::WEIGHTS].sz =
+        (cw.m_used - cw.m_weightsStart) / 4;
+    noOfSections = 2;
+  }
+  cw.m_state = CollationWeights::Sending;
+  Callback callback = {safe_cast(&Dbdict::collationWeightsSent), 0};
+  sendFragmentedSignal(cw.m_req.senderRef, GSN_GET_COLLATION_INFO_CONF,
+                       signal, GetCollationInfoConf::SignalLength, JBB, ptr,
+                       noOfSections, callback);
+}
+
+/* The last fragment is sent, or the requester failed meanwhile */
+void Dbdict::collationWeightsSent(Signal *signal, Uint32, Uint32) {
+  jam();
+  ndbrequire(c_collationWeights.m_state == CollationWeights::Sending);
+  endCollationWeights(signal, 0);
+}
+
+/* Free the buffer, and refuse the request when errorCode != 0 */
+void Dbdict::endCollationWeights(Signal *signal, Uint32 errorCode) {
+  CollationWeights &cw = c_collationWeights;
+  if (cw.m_buf != nullptr) {
+    lc_ndbd_pool_free(cw.m_buf);
+    cw.m_buf = nullptr;
+  }
+  cw.m_size = 0;
+  cw.m_used = 0;
+  cw.m_runCount = 0;
+  cw.m_state = CollationWeights::Idle;
+  if (errorCode != 0) {
+    jam();
+    sendGET_COLLATION_INFO_REF(signal, cw.m_req.senderRef, cw.m_req,
+                               errorCode);
   }
 }
 

@@ -89,6 +89,7 @@
 #include <signaldata/DropTable.hpp>
 #include <signaldata/DropTrig.hpp>
 #include <signaldata/DropTrigImpl.hpp>
+#include <signaldata/GetCollationInfo.hpp>
 #include <signaldata/GetTabInfo.hpp>
 #include <signaldata/HashMapImpl.hpp>
 #include <signaldata/IndexStatSignal.hpp>
@@ -111,6 +112,8 @@
 #include "TransientPool.hpp"
 #include "TransientSlotPool.hpp"
 
+struct CHARSET_INFO;
+
 #define JAM_FILE_ID 464
 
 #ifdef DBDICT_C
@@ -132,6 +135,7 @@
 #define ZDICT_CONNECT_LOOP 12
 #define ZDICT_DISCONNECT_LOOP 13
 #define ZNSL_FK_REPORT 14
+#define ZCOLLATION_WEIGHTS 15
 
 
 /*--------------------------------------------------------------*/
@@ -1042,6 +1046,8 @@ class Dbdict : public SimulatedBlock {
 
   void execLIST_TABLES_REQ(Signal *signal);
   void execLIST_TABLES_CONF(Signal *signal);
+
+  void execGET_COLLATION_INFO_REQ(Signal *signal);
 
   // Index signals
   void execCREATE_INDX_REQ(Signal *signal);
@@ -4988,6 +4994,100 @@ class Dbdict : public SimulatedBlock {
                            Uint32 &parentObjectType, Uint32 &parentObjectId);
 
   void sendLIST_TABLES_CONF(Signal *signal, ListTablesReq *);
+
+  Uint32 readCollationInfoName(SectionHandle &handle, Uint32 nameLength,
+                               char *name);
+  Uint32 writeCollationNames(Uint32 *names, const CHARSET_INFO *cs);
+  void fillCollationInfoConf(GetCollationInfoConf *conf, Uint32 senderData,
+                             const CHARSET_INFO *cs);
+  void sendGET_COLLATION_INFO_CONF(Signal *signal, BlockReference receiverRef,
+                                   Uint32 senderData,
+                                   const CHARSET_INFO *cs);
+  void sendGET_COLLATION_INFO_REF(Signal *signal, BlockReference receiverRef,
+                                  const GetCollationInfoReq &req,
+                                  Uint32 errorCode);
+
+  /**
+   * The GET_COLLATION_INFO_REQ with WithWeights being served.  Its CONF
+   * is built in slices (CONTINUEB ZCOLLATION_WEIGHTS) in one buffer of
+   * query memory, then sent as one fragmented signal from that buffer,
+   * which is freed when the last fragment is sent.  One request at a
+   * time: another is refused with Busy.
+   */
+  struct CollationWeights {
+    enum State { Idle, Building, ReadyToSend, Sending };
+    static constexpr Uint32 MaxWeightLength = 1024;  // strnxfrm output
+    static constexpr Uint32 MaxEncodedLength = 8;     // wc_mb output
+    /**
+     * The most bytes of sections in a CONF; small in debug builds so that
+     * a collation takes many CONFs, which tests their continuation.  It
+     * holds the names and the largest entry.
+     */
+#ifdef VM_TRACE
+    static constexpr Uint32 ResponseBytes = 4096;
+#else
+    static constexpr Uint32 ResponseBytes =
+        GetCollationInfoReq::MaxWeightsResponseBytes;
+#endif
+    static_assert(ResponseBytes <= GetCollationInfoReq::MaxWeightsResponseBytes);
+    static_assert(ResponseBytes % 4 == 0);
+
+    State m_state{Idle};
+    GetCollationInfoReq m_req{};  // for the CONF or REF
+    Uint32 m_receiverConnectCount{0};
+    const CHARSET_INFO *m_cs{nullptr};
+    Uint32 m_position{0};  // next code point, or contraction position
+
+    /* NAMES, then WEIGHTS: weight entries and contraction entries */
+    Uint8 *m_buf{nullptr};
+    Uint32 m_size{0};  // bytes allocated
+    Uint32 m_used{0};  // bytes written
+    Uint32 m_weightsStart{0};
+    Uint32 m_weightEntries{0};
+    Uint32 m_weightsLength{0};
+    Uint32 m_contractionsStart{0};
+    Uint32 m_contractionEntries{0};
+    Uint32 m_contractionsLength{0};
+
+    /* The run of code points being gathered, written when it ends */
+    Uint32 m_runFirst{0};
+    Uint32 m_runCount{0};  // 0 when there is none
+    Uint32 m_runStepOffset{0};
+    Uint32 m_runEncodedLength{0};
+    Uint32 m_runWeightLength{0};
+    Uint8 m_runEncoded[MaxEncodedLength];
+    Uint8 m_runWeight[MaxWeightLength];
+  };
+  CollationWeights c_collationWeights;
+
+  enum CollationWeightsResult { CW_OK, CW_FULL, CW_NO_MEMORY };
+
+  void startCollationWeights(Signal *signal, const GetCollationInfoReq &req,
+                             const CHARSET_INFO *cs);
+  void continueCollationWeights(Signal *signal);
+  void buildCollationWeights(Signal *signal);
+  void sendCollationWeights(Signal *signal);
+  void collationWeightsSent(Signal *signal, Uint32 callbackData,
+                            Uint32 returnCode);
+  void endCollationWeights(Signal *signal, Uint32 errorCode);
+  bool collationWeightsReceiverAlive();
+  CollationWeightsResult reserveCollationWeights(Uint32 bytes);
+  CollationWeightsResult addCollationWeight(Uint32 codePoint,
+                                            const Uint8 *encoded,
+                                            Uint32 encodedLength,
+                                            const Uint8 *weight,
+                                            Uint32 weightLength);
+  bool extendsCollationWeightRun(Uint32 codePoint, const Uint8 *encoded,
+                                 Uint32 encodedLength, const Uint8 *weight,
+                                 Uint32 weightLength);
+  CollationWeightsResult writeCollationWeightRun();
+  /* contractionNodes: a std::vector<MY_CONTRACTION> (strings/str_uca_type.h) */
+  CollationWeightsResult writeCollationContractions(
+      const void *contractionNodes, Uint32 *path, Uint32 depth,
+      Uint32 &index);
+  CollationWeightsResult writeCollationContraction(const Uint32 *codePoints,
+                                                   Uint32 count, Uint32 flags,
+                                                   Uint32 index);
 
   Uint32 c_outstanding_sub_startstop;
   NdbNodeBitmask c_sub_startstop_lock;

@@ -37,7 +37,7 @@
  * version there signal may be sent. The signal number must remain reserved and
  * handled by receiver until that version is no longer supported.
  */
-const GlobalSignalNumber MAX_GSN = 983;
+const GlobalSignalNumber MAX_GSN = 986;
 
 struct GsnName {
   GlobalSignalNumber gsn;
@@ -1334,4 +1334,9 @@ extern const GlobalSignalNumber NO_OF_SIGNAL_NAMES;
 
 /* Cancel pending CTE completion on an owner LDM (DBTC -> DBLQH). */
 #define GSN_JOIN_AGG_CANCEL_REQ        983
+
+/* Character set and collation of a data node (API -> DBDICT), version gated */
+#define GSN_GET_COLLATION_INFO_REQ      984
+#define GSN_GET_COLLATION_INFO_CONF     985
+#define GSN_GET_COLLATION_INFO_REF      986
 #endif
