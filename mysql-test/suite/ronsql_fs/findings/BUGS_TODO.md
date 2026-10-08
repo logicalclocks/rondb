@@ -577,12 +577,16 @@ F8 was a framework fixture issue and is already fixed.
   `ndb.ndb_set_adaptive_send_threshold`. Done 2026-10-07: MTR green (with
   ndb_config_set, ndb_set_compiled_interpreter and the activate /
   location-domain tests that share the QMGR state machine).
-- [ ] AdaptiveSendThreshold default (census run 7, 2026-10-07): on the benchmark
+- [x] AdaptiveSendThreshold default (census run 7, 2026-10-07): on the benchmark
   computer 16 against 0 gives mysqld at T=64 +10 % q/s with p99 -24 / -26 % on
   fs_floor / fs_hw_floor, +2..+4 % on core_pk_lookup / fs_hw_agg_point, -2 % on
   fs_latest (noise level); T=8 and RonSQL unchanged (the Mac had shown p99
   +3..+5 %). Enable it by default; the value comes from the sweep in
   `m3_run6_plan.md` D4 (0 / 4 / 8 / 16 / 32 at 8 to 64 clients).
+  Sweep (run 7b, 2026-10-08): 4, 8 and 16 identical (mysqld T=64 fs_floor +10 %
+  q/s, p99 -25 %; T=32 <= +3 %, p99 +0..+3 %; T=8 and RonSQL unchanged), 32
+  about half. Default now 16 (ConfigInfo, the NDB API fallback for older
+  management servers; `ndb.ndb_set_adaptive_send_threshold` re-recorded).
 - [x] Every scanned row read the whole slowdown NodeBitmask (found 2026-10-06 in the
   F24 data-node profile): `Dblqh::scanTupkeyConfLab` checked
   `get_status_slowdown().isclear()` before testing the API node's bit, and with

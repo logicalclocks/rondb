@@ -753,7 +753,7 @@ private:
   /* Calculate max poll waiters */
   volatile Uint32 m_max_poll_waiters;
   Uint32 m_use_poll_waiters;
-  std::atomic<Uint32> m_adaptive_send_threshold{0};
+  std::atomic<Uint32> m_adaptive_send_threshold{16};  // configure() sets it
 
   Ndb_cluster_connection_impl *m_ndb_cluster_connection;
 
