@@ -96,7 +96,9 @@ void ndbd_alloc_touch_mem(void * p, size_t sz, volatile Uint32 * watchCounter, b
  *   This call allocates a memory area of exactly the requested size.
  *   It carries a pool id that identifies the global memory pool to
  *   allocate the memory from. In practice the memory will always be
- *   extended to be a multiple of 16 bytes.
+ *   extended to be a multiple of 16 bytes.  An area comes from one 2 MByte
+ *   memory segment, so a size of 0, or above the segment less its header
+ *   and the area's 16 bytes of overhead, returns 0.
  *
  * lc_ndbd_pool_free
  *   Parameters:
