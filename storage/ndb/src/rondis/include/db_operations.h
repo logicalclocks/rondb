@@ -96,6 +96,25 @@ int add_hset_string_delete_op(NdbTransaction *trans,
                               Uint32 key_len,
                               Uint32 database_id,
                               std::string *response);
+
+/* hset_keys-first lock order, see KeyState::HsetLockSent.
+ * prepare_hset_first_transaction sends the hset_keys op already
+ * defined on key_store->m_trans as a NoCommit round trip of its own;
+ * its callback moves the key to HsetLocked, or to CompletedFailed.
+ * execute_hset_string_claim_first does the same synchronously for the
+ * string claim of a single-key command. */
+void prepare_hset_first_transaction(struct KeyStorage *key_store);
+int execute_hset_string_claim_first(NdbTransaction *trans,
+                                    const NdbDictionary::Table *tab_hset,
+                                    const char *key_str,
+                                    Uint32 key_len,
+                                    bool set_ttl,
+                                    bool keep_ttl,
+                                    Int32 expire_at,
+                                    Uint32 database_id,
+                                    std::string *response,
+                                    NdbRecAttr **out_old_id_attr = nullptr,
+                                    NdbRecAttr **out_old_expiry_attr = nullptr);
 int add_hset_field_count_set_op(NdbTransaction *trans,
                                 const NdbDictionary::Table *tab_hset,
                                 const char *hash_name,

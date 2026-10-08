@@ -186,7 +186,18 @@ enum KeyState {
     // the interpreted-code program). Not a failure: Redis-canonical
     // reply is the nil bulk string. Only ever set on the single-key
     // plain SET path (MSET / HSET do not expose conditional flags).
-    CompletedConditionalFail = 11
+    CompletedConditionalFail = 11,
+    // A write's first round trip, carrying only its hset_keys op, is
+    // in flight. Every command that writes a name in both string_keys
+    // and hset_keys takes the hset_keys row lock first, in a round trip
+    // of its own, as HSET does: sent in one batch the two row locks are
+    // taken in parallel on different partitions, and two writers of the
+    // same name can each get one of them and wait for the other until
+    // TransactionDeadlockDetectionTimeout.
+    HsetLockSent = 12,
+    // The hset_keys round trip has completed; the string_keys ops of
+    // the key can be sent.
+    HsetLocked = 13
 };
 
 #define MAX_PARALLEL_KEY_OPS 256
@@ -273,6 +284,12 @@ struct GetControl {
     int m_worker_id;
     struct KeyStorage *m_key_store;
     struct value_table *m_value_rows;
+    // SET ... GET only: the value buffer that is not currently in
+    // m_key_store[0].m_value_ptr. The GET phase reads the old value into
+    // m_value_ptr, so the new SET value is parked here meanwhile; while
+    // set_rows writes the new value, the old value read by the GET phase
+    // is parked here until the reply. Freed by release_mset.
+    char *m_parked_value_ptr;
     Uint32 m_next_value_row;
     Uint32 m_num_transactions;
     Uint32 m_num_keys_requested;

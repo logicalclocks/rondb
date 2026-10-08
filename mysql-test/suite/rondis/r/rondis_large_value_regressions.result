@@ -1,0 +1,41 @@
+#
+# SET ... GET: old value with one extension row, new value
+# inline.
+#
+OK
+10001
+0
+5
+small
+#
+# SET ... GET: old value with one extension row, new value with
+# three.
+#
+OK
+10001
+0
+70000
+70001
+0
+#
+# SET ... GET: old value with three extension rows, new value
+# with one.
+#
+OK
+70001
+0
+10000
+10001
+0
+#
+# MSET of 200 keys that each replace a hash: all 200 must be
+# strings afterwards.
+#
+200
+OK
+200
+s150
+#
+# Cleanup.
+#
+3
