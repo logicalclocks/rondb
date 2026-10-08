@@ -32,6 +32,10 @@
 #include "Dbtup.hpp"             // Dbtup::KeyReqStruct (nested) — needed by initGBTypes
 #include "decimal.h"
 
+/* Group-table size hints (m3_run6_plan.md D1a, DUMP 2367): 0 = not
+ * applied, 1 = applied, 2 = forget them all.  AggInterpreterBase.cpp. */
+void agg_gb_size_hints_control(Uint32 mode);
+
 /* Phase 4 RONDB-1056: forward-declare the JIT engine's per-row
  * entry-pointer typedef so AggInterpreterBase can hold one without
  * pulling jit1.h transitively. The .cpp pulls jit1.h for the real

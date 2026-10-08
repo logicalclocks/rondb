@@ -196,6 +196,9 @@ class DumpStateOrd {
     // 1 / 0: log every join aggregation's per-thread group tables at
     // COMPLETE and its merged table at CTE_READY (m3_run6_plan.md D2a)
     LqhJoinAggMemTrace = 2366,
+    // GROUP BY table size hints (m3_run6_plan.md D1a): 0 = not applied
+    // (still recorded), 1 = applied (the default), 2 = forget them all
+    LqhGroupTableSizeHints = 2367,
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,

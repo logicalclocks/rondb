@@ -1119,3 +1119,124 @@ tar --exclude='*.data' -czf ~/census_run7b.tar.gz -C ~ census_run7b
   nodes.
 
 If perf fails, skip part 2: nothing after it depends on it.
+
+### Run 7b results (2026-10-08, `/Users/mikael/census_run7b`)
+
+- **D1 works on the join-aggregation path.**
+  - The mechanism: `splitOne` is gone from the tpch_q2 T=8 profile (7.5 %
+    of data-node cycles in run 7), and so is the separate `hashKeyFull`;
+    data-node CPU per q2 query is −13 % (2.80 vs 3.22 G cycles).
+  - Against run 7 (same configuration and data), T=8 q/s: tpch_q2 +12 %,
+    offline_fs_scalar +14 %, offline_fs_wide +10 %, q13 / q22 / q11
+    +3–4 %.  T=1 stays within ±6 % (noise).
+  - Open: the drained single-table path.  core_group_many is −13 % at T=8
+    (+7 % average, +2 % minimum at T=1); core_group_few, which D1 cannot
+    change (3 groups), is −7 % at T=8, so part of it is session drift.
+    Run 7c settles it with an A/B on one cluster (DUMP 2367 turns the
+    hints off and on).
+- **D2a: no trace.**  The DUMP 2366 handler sat inside the
+  `VM_TRACE || ERROR_INSERT` block with the test-only join-aggregation
+  DUMPs, so the prod build compiled it out.  It now comes before that
+  block; rerun in 7c.
+- **D4: AdaptiveSendThreshold.**
+  - Thresholds 4, 8 and 16 give identical results:
+    - mysqld at T=64: fs_floor +10 % q/s with p99 −25 %, core_pk_lookup
+      +4 % / p99 −4 %, fs_point +2 % / p99 −2–3 %;
+    - at T=32: ≤ +3 % q/s, p99 +0–3 %;
+    - at T=8: no change;
+    - RonSQL: no change at any value (≤ 1 %).
+  - 32 gives about half the T=64 gain: it only engages at the top with a
+    connection pool of 2.  The two passes agree within 1 %.
+  - The sweep's report headers do not show the threshold: the driver
+    called `ndb_config --type=api`, which ndb_config rejects; it now uses
+    `--type=mysqld`.  The mysqld differences show that each SET took
+    effect.
+  - **Decision: default 16** (the RONDB-564 design value).  It engages
+    only at high concurrency, with the same gain as 4 or 8 there.
+    ConfigInfo default 16, the NDB API fallback 16 for management servers
+    that predate the parameter, and `ndb.ndb_set_adaptive_send_threshold`
+    sets 8 first (an API node logs only a change) and ends on 16.
+- **D3: PartitionsPerNode 4 against 2** (same D1 build, set S).
+  - Gains: the orders / partsupp CTEs with at most 100k groups — q13,
+    q22, offline_fs_scalar, q11 — are −14..−18 % at T=1 and +10..+20 %
+    q/s at T=8.
+  - No change: tpch_q2 (200k groups), ±1 %.
+  - Losses at T=8:
+    - core_scan_agg −24 % (and not faster at T=1 with twice the
+      fragments, +2 %);
+    - core_group_many −17 %;
+    - offline_fs_wide: 16 of 296 requests failed with the temporary
+      20008 / 1870 out-of-memory errors (HTTP 503), −28 % q/s, p99
+      8.1 s, query memory 1.0 GB per node.  The data nodes stayed up:
+      F27 (a) / (b) behave as designed on the box.
+  - Query memory per query grows with the fragment count
+    (offline_fs_wide T=1 124 → 212 MB).
+  - **Conclusion:** a trade-off, not a default; the census keeps
+    PartitionsPerNode 2.  Why a single core_scan_agg does not get faster
+    with twice the fragments (2 → 4 scanning threads per node) is open:
+    thread placement on hyperthread siblings, or another per-scan limit.
+
+### Box run 7c: the D1 A/B and the D2a trace (short)
+
+One cluster (PartitionsPerNode 2, TPC-H only).  D1 A/B: hints applied or
+not (DUMP 2367 1 / 0) in the order off, on, on, off against drift.  The
+queries are core_group_many (the open question), core_group_few (the
+control), and tpch_q2 / tpch_q13 / offline_fs_scalar (the CTE path).
+Then the D2a trace.  About 30 minutes with the load.
+
+```bash
+cd ~/mysql_trees/rondb_2604
+python3 storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py --build prod_build --stop
+git pull && (cd prod_build && make -j$(nproc))
+R=~/census_run7c
+M=storage/ndb/claude_files/compiled_interpreter/ronsql_bench_matrix.py
+BIN=prod_build/runtime_output_directory
+B="taskset -c 24-31 python3 $M --build prod_build --sf 1 --seconds 10 --engines ronsql \
+   --compiler off --mem-settle 5 \
+   --cpubind mysql-test/suite/ronsqlcrunch/census_benchbox.cnf \
+   --client-cpus 24-31 --expect-ldm 4"
+AB=core_group_many,core_group_few,tpch_q2,tpch_q13,offline_fs_scalar
+attach() {   # sets ATTACH and CS for the running cluster
+  eval "$(python3 - <<'PY'
+import configparser, json
+v = 'prod_build/mysql-test/var'
+cp = configparser.ConfigParser(strict=False, allow_no_value=True, interpolation=None, delimiters=('=',))
+cp.optionxform = str
+cp.read(v + '/my.cnf')
+m = cp['mysqld.1.1']
+cs = cp['mysql_cluster.1']['ndb_connectstring']
+port = json.load(open(v + '/rdrs.1.1_config.json'))['REST']['ServerPort']
+print("ATTACH='--no-start --no-load --mysql-port %s --mysql-sock %s --rdrs-port %s --connectstring %s'"
+      % (m['port'], m['socket'], port, cs))
+print("CS='%s'" % cs)
+PY
+)"
+}
+# start + load + one warm pass that records the hints
+$B --threads 1 --queries $AB --load tpch --keep-cluster --out $R/warm
+attach
+n=0
+for arm in off on on off; do
+  n=$((n+1))
+  if [ $arm = on ]; then h=1; else h=0; fi
+  $BIN/ndb_mgm -c $CS -e "ALL DUMP 2367 $h"
+  $B $ATTACH --threads 1,8 --queries $AB --out $R/ab_${n}_$arm
+done
+$BIN/ndb_mgm -c $CS -e "ALL DUMP 2367 1"
+$BIN/ndb_mgm -c $CS -e "ALL DUMP 2366 1"
+for t in 1 8; do
+  $B $ATTACH --queries tpch_q2,tpch_q13,offline_fs_wide --threads $t --requests 2 --out $R/d2a_T$t
+done
+$BIN/ndb_mgm -c $CS -e "ALL DUMP 2366 0"
+grep -rh --include='*.log' 'JOIN_AGG_MEM\|GROUP_TABLE_SIZE_HINTS\|JOIN_AGG_MEM_TRACE' prod_build/mysql-test/var > $R/d2a_trace.txt
+wc -l $R/d2a_trace.txt
+python3 $M --build prod_build --stop
+tar -czf ~/census_run7c.tar.gz -C ~ census_run7c
+```
+
+**Check before trusting the results:**
+- **Default.**  The report headers show `AdaptiveSendThreshold 16`.
+- **Trace.**  `d2a_trace.txt` has a `[GROUP_TABLE_SIZE_HINTS ...]` line
+  for each switch (the infoEvent goes to the cluster log, which the grep
+  also covers), the `JOIN_AGG_MEM_TRACE on` line, and COMPLETE /
+  CTE_READY lines from both data nodes.

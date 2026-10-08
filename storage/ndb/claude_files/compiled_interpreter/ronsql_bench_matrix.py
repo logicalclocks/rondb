@@ -656,7 +656,9 @@ class Cluster:
             ndb_config = which_bin(self.build, 'ndb_config')
         except RuntimeError:
             return {}
-        rc, out = run([ndb_config, '-c', self.connectstring, '--type=api',
+        # --type=mysqld selects every API node ([mysqld] and [api]);
+        # ndb_config rejects --type=api ("Unknown node type").
+        rc, out = run([ndb_config, '-c', self.connectstring, '--type=mysqld',
                        '--query=nodeid,AdaptiveSendThreshold', '--fields=:', '--rows=,'],
                       check=False, quiet=True)
         if rc != 0:

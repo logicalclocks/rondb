@@ -44079,6 +44079,33 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
   DumpStateOrd *const dumpState = (DumpStateOrd *)&signal->theData[0];
   Uint32 arg = dumpState->args[0];
 
+  /* Not test-only like the join-aggregation DUMPs below: the memory
+   * trace is for production builds (benchmark runs). */
+  if (arg == DumpStateOrd::LqhJoinAggMemTrace) {
+    jam();
+    /* Every instance receives it; the flag is per data node. */
+    const bool on = signal->getLength() < 2 || signal->theData[1] != 0;
+    g_join_agg_mem_trace.store(on, std::memory_order_relaxed);
+    if (instance() == 1 && !m_is_query_block) {
+      infoEvent("[JOIN_AGG_MEM_TRACE node=%u %s]", getOwnNodeId(),
+                on ? "on" : "off");
+    }
+    return;
+  }
+  if (arg == DumpStateOrd::LqhGroupTableSizeHints) {
+    jam();
+    /* Process-wide like the trace; every instance gets it, which only
+     * repeats an idempotent store. */
+    const Uint32 mode = signal->getLength() >= 2 ? signal->theData[1] : 1;
+    agg_gb_size_hints_control(mode);
+    if (instance() == 1 && !m_is_query_block) {
+      infoEvent("[GROUP_TABLE_SIZE_HINTS node=%u %s]", getOwnNodeId(),
+                mode == 2 ? "cleared"
+                          : (mode != 0 ? "applied" : "not applied"));
+    }
+    return;
+  }
+
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   if (signal->theData[0] == DumpStateOrd::LqhDumpJoinAggStates) {
     jam();
@@ -44159,17 +44186,6 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
       /* Instance 1 checked both the identity table and park records. */
       infoEvent("[JOIN_AGG_LEAK_CHECK_OK node=%u dump=%u cookie=%u]",
                 getOwnNodeId(), arg, signal->theData[1]);
-    }
-    return;
-  }
-  if (arg == DumpStateOrd::LqhJoinAggMemTrace) {
-    jam();
-    /* Every instance receives it; the flag is per data node. */
-    const bool on = signal->getLength() < 2 || signal->theData[1] != 0;
-    g_join_agg_mem_trace.store(on, std::memory_order_relaxed);
-    if (instance() == 1 && !m_is_query_block) {
-      infoEvent("[JOIN_AGG_MEM_TRACE node=%u %s]", getOwnNodeId(),
-                on ? "on" : "off");
     }
     return;
   }

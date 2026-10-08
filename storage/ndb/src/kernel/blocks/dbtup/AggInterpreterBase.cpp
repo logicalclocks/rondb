@@ -78,8 +78,25 @@
  */
 static constexpr Uint32 GB_SIZE_HINT_SLOTS = 1024;
 static std::atomic<Uint64> g_gb_size_hints[GB_SIZE_HINT_SLOTS];
+static std::atomic<bool> g_gb_size_hints_applied{true};
+
+/* DUMP 2367 (Dblqh): 0 = hints are recorded but not applied (an A/B
+ * against splitting on one running cluster), 1 = applied (the default),
+ * 2 = forget every hint (the next execution grows as a first one). */
+void agg_gb_size_hints_control(Uint32 mode) {
+  if (mode == 2) {
+    for (Uint32 i = 0; i < GB_SIZE_HINT_SLOTS; i++) {
+      g_gb_size_hints[i].store(0, std::memory_order_relaxed);
+    }
+    return;
+  }
+  g_gb_size_hints_applied.store(mode != 0, std::memory_order_relaxed);
+}
 
 static Uint32 gb_size_hint_lookup(Uint64 key) {
+  if (!g_gb_size_hints_applied.load(std::memory_order_relaxed)) {
+    return 0;
+  }
   const Uint64 slot =
       g_gb_size_hints[key % GB_SIZE_HINT_SLOTS].load(std::memory_order_relaxed);
   return (slot >> 32) == (key >> 32) ? static_cast<Uint32>(slot) : 0;
