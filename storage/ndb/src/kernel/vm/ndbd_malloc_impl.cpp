@@ -2807,8 +2807,8 @@ int main(int argc, char **argv) {
   {
     perf_test(sz, run_time);
   }
-  booking_test();
   lc_ndbd_malloc_test();
+  booking_test();
   ndb_end(0);
 }
 
@@ -3201,7 +3201,7 @@ typedef struct lc_long_lived_memory_base LC_LONG_LIVED_MEMORY_BASE;
 #define MIN_SHORT_AREA_SIZE_IN_WORDS 16
 
 #define MAX_FREE_SHORT_AREAS 0
-#define MAX_FREE_LONG_AREAS 0
+#define MAX_FREE_LONG_AREAS 1
 #define NUM_FREE_AREA_LISTS 10
 #define POS_MEMORY_AREA_EMPTY 255
 #define THREAD_ID_MASK (0x7FF)
@@ -4283,6 +4283,7 @@ default_map_thread_id(lc_uint32 map_pool_id)
 }
 
 static std::atomic<int> num_mallocs;
+static std::atomic<int> num_backend_mallocs;
 
 static void*
 default_malloc_backend(size_t size,
@@ -4294,6 +4295,7 @@ default_malloc_backend(size_t size,
   (void)booking_key;
   *i_val = 0;
   num_mallocs++;
+  num_backend_mallocs++;
   return malloc(size);
 }
 
@@ -4735,6 +4737,21 @@ init_lc_ndbd_memory_pool(unsigned int num_pools,
 void
 stop_lc_ndbd_memory_pool()
 {
+  /* Return the cached empty segments to the backend */
+  for (lc_uint32 i = 0; i < glob_num_map_pools; i++)
+  {
+    LC_LONG_LIVED_MEMORY_BASE *base_ptr = &glob_long_lived_memory_base[i];
+    while (base_ptr->m_full_first_free != nullptr)
+    {
+      LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr = base_ptr->m_full_first_free;
+      base_ptr->m_full_first_free = mem_area_ptr->m_next_ptr;
+      base_ptr->m_num_full_free_areas--;
+      glob_long_mempool_backend.lc_free_backend(mem_area_ptr,
+                                                MEMORY_SEGMENT_SIZE,
+                                                base_ptr->m_pool_id,
+                                                mem_area_ptr->m_i_val);
+    }
+  }
   free(glob_short_lived_memory_base);
   free(glob_long_lived_memory_base);
 }
@@ -4897,6 +4914,10 @@ simple_single_thread_long_small_test()
  * list 8. Free pages 1-8, they merge into a second list 8 area which
  * is first in the list. Then allocate 8 more pages. They fit in the
  * segment, so no second segment may be fetched.
+ *
+ * The first segment may be one that an earlier test emptied and left
+ * cached in the base (MAX_FREE_LONG_AREAS), so the carve fetches at
+ * most one segment and freeing everything may keep it cached.
  */
 static void
 long_segment_position_test()
@@ -4912,7 +4933,8 @@ long_segment_position_test()
     ptrs[i] = lc_ndbd_pool_malloc(malloc_size, 0, 0, 0);
     require(ptrs[i] != nullptr);
   }
-  require(num_mallocs.load() == start_mallocs + 1);
+  require(num_mallocs.load() <= start_mallocs + 1);
+  int segment_mallocs = num_mallocs.load();
   for (lc_uint32 i = 1; i <= 8; i++)
   {
     lc_ndbd_pool_free(ptrs[i]);
@@ -4923,13 +4945,13 @@ long_segment_position_test()
     ptrs[i] = lc_ndbd_pool_malloc(malloc_size, 0, 0, 0);
     require(ptrs[i] != nullptr);
   }
-  require(num_mallocs.load() == start_mallocs + 1);
+  require(num_mallocs.load() == segment_mallocs);
   for (lc_uint32 i = 0; i < num_pages + num_extra; i++)
   {
     if (ptrs[i] != nullptr)
       lc_ndbd_pool_free(ptrs[i]);
   }
-  require(num_mallocs.load() == start_mallocs);
+  require(num_mallocs.load() <= segment_mallocs);
 }
 
 static void
@@ -5474,6 +5496,28 @@ test_get_array_pos()
   require(!error);
 }
 
+/**
+ * One live allocation at a time on one pool and thread, as when LCP restore
+ * allocates and frees a copy tuple per row from RG_TRANSACTION_MEMORY. The
+ * emptied segment must be kept for reuse, so only the first malloc may reach
+ * the backend.
+ */
+static void
+single_live_alloc_reuses_segment_test()
+{
+  printf("Test single live allocation reuses its segment\n");
+  int start_backend_mallocs = num_backend_mallocs.load();
+  for (lc_uint32 i = 0; i < 1000; i++)
+  {
+    void *ptr = lc_ndbd_pool_malloc(1024, RG_TRANSACTION_MEMORY, 0, 0);
+    require(ptr != nullptr);
+    lc_ndbd_pool_free(ptr);
+  }
+  int backend_mallocs = num_backend_mallocs.load() - start_backend_mallocs;
+  printf("backend mallocs: %d\n", backend_mallocs);
+  require(backend_mallocs <= 1);
+}
+
 static void
 lc_ndbd_malloc_test()
 {
@@ -5486,6 +5530,7 @@ lc_ndbd_malloc_test()
                            nullptr);
   num_mallocs = 0;
   test_get_array_pos();
+  single_live_alloc_reuses_segment_test();
   simple_single_thread_long_test();
   simple_single_thread_long_small_test();
   long_segment_position_test();

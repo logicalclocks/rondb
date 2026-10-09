@@ -1,0 +1,19 @@
+CREATE TABLE test.t1 (
+id  INT PRIMARY KEY,
+v   INT,
+pad VARCHAR(64)
+) ENGINE=NDB;
+# --- load rows in batches of 10000
+SELECT COUNT(*) FROM test.t1;
+COUNT(*)
+160000
+# --- LCP so that the restart restores the rows from LCP files
+# --- remember the data node log sizes; only lines written after this
+#     point belong to the restart below
+# --- system restart
+SELECT COUNT(*) FROM test.t1;
+COUNT(*)
+160000
+# --- restore rate of test.t1 from the restart's log lines
+LCP restore restored the table and met the minimum rate
+DROP TABLE test.t1;

@@ -1,0 +1,189 @@
+# ==========================================================================
+# LCP restore row rate (RONDB-878 follow-up)
+# ==========================================================================
+#
+# The local LCP restore executes one row operation at a time per LDM:
+#   Restore::execute_operation -> LQHKEYREQ -> DBTUP handleInsertReq
+#     -> alloc_copy_tuple -> lc_ndbd_pool_malloc        (RG_TRANSACTION_MEMORY)
+#   commit -> finalize_commit -> free_copy_tuple -> lc_ndbd_pool_free
+# Since RONDB-878 the copy tuple comes from the lc long-lived pool instead of
+# c_undo_buffer. With a single outstanding operation the copy tuple is the
+# only allocation in its 2 MB segment; with MAX_FREE_LONG_AREAS == 0 the
+# emptied segment is returned to the global memory manager at every commit
+# and a new one is allocated for the next row. In VM_TRACE / ERROR_INSERT
+# builds both transitions memset the whole 2 MB segment (0xF6 on alloc,
+# 0xF5 on release), so each restored row costs about 4 MB of memset.
+#
+# Observed on a 2-node rig: 26.05 restores at ~650k row operations/s per
+# fragment, 26.10 at ~4.6k row operations/s.
+#
+# The test loads a table, takes an LCP, does a system restart and computes
+# the aggregate restore rate for that table from the data node logs
+# (sum of row operations / sum of millis over its fragments). It fails if
+# the rate is below $min_rate. On the MTR config the unfixed build restores
+# ~1.1k and the fixed build ~170k row operations/s; the threshold sits between
+# them with ~10x margin on both sides. It also requires that the restore really
+# restored the rows from the LCP (not from the REDO log), so a pass cannot
+# come from an empty restore.
+#
+# Only meaningful on builds with VM_TRACE or ERROR_INSERT; release builds
+# skip the poison fills and keep only the cheaper per-row round trip.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+let $rows_per_batch = 10000;
+let $batches = 16;
+let $min_rate = 20000;
+
+CREATE TABLE test.t1 (
+  id  INT PRIMARY KEY,
+  v   INT,
+  pad VARCHAR(64)
+) ENGINE=NDB;
+
+--echo # --- load rows in batches of $rows_per_batch
+--disable_query_log
+CREATE TABLE test.digits (d INT PRIMARY KEY) ENGINE=InnoDB;
+INSERT INTO test.digits VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+let $b = 0;
+while ($b < $batches)
+{
+  eval INSERT INTO test.t1
+    SELECT $b * $rows_per_batch + a.d + 10*b.d + 100*c.d + 1000*e.d + 1,
+           a.d, REPEAT('x', 32)
+    FROM test.digits a, test.digits b, test.digits c, test.digits e;
+  inc $b;
+}
+DROP TABLE test.digits;
+--enable_query_log
+SELECT COUNT(*) FROM test.t1;
+
+let $table_id = `SELECT id FROM ndbinfo.dict_obj_info
+                 WHERE fq_name = 'test/def/t1'`;
+
+--echo # --- LCP so that the restart restores the rows from LCP files
+# Wait for "Local checkpoint N completed" in the cluster log with N newer
+# than any before the dump. A per-fragment last_lcp_id is not enough: if the
+# system restart finds the LCP marked ongoing in the sysfile, DIH invalidates
+# every replica LCP newer than the last completed one.
+let LCP_RATE_VARDIR = $MYSQLTEST_VARDIR;
+let LCP_RATE_LCP_ID = $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_rate.lcp_id;
+--perl
+use strict;
+my $max = 0;
+foreach my $f (glob("$ENV{LCP_RATE_VARDIR}/mysql_cluster.1/ndb_mgmd.*/*_cluster.log")) {
+  open(my $fh, '<', $f) or die "open $f: $!";
+  while (<$fh>) { $max = $1 if /Local checkpoint (\d+) completed/ && $1 > $max; }
+  close($fh);
+}
+open(my $out, '>', $ENV{LCP_RATE_LCP_ID}) or die "open lcp id: $!";
+print $out "$max\n";
+close($out);
+EOF
+--exec $NDB_MGM -e "all dump 7099" > /dev/null 2>&1
+--perl
+use strict;
+open(my $in, '<', $ENV{LCP_RATE_LCP_ID}) or die "open lcp id: $!";
+my $before = <$in>;
+close($in);
+chomp $before;
+for (my $i = 0; $i < 240; $i++) {
+  foreach my $f (glob("$ENV{LCP_RATE_VARDIR}/mysql_cluster.1/ndb_mgmd.*/*_cluster.log")) {
+    open(my $fh, '<', $f) or die "open $f: $!";
+    while (<$fh>) {
+      exit(0) if /Local checkpoint (\d+) completed/ && $1 > $before;
+    }
+    close($fh);
+  }
+  select(undef, undef, undef, 0.5);
+}
+die "No LCP newer than $before completed within 120 s after dump 7099\n";
+EOF
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_rate.lcp_id
+
+--echo # --- remember the data node log sizes; only lines written after this
+--echo #     point belong to the restart below
+let LCP_RATE_OFFSETS = $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_rate.offsets;
+--perl
+use strict;
+my $vardir = $ENV{LCP_RATE_VARDIR};
+open(my $out, '>', $ENV{LCP_RATE_OFFSETS}) or die "open offsets: $!";
+foreach my $f (glob("$vardir/mysql_cluster.1/ndbd.*/*.log")) {
+  print $out "$f\t", (-s $f), "\n";
+}
+close($out);
+EOF
+
+--echo # --- system restart
+--exec $NDB_MGM -e "all restart -n" > /dev/null 2>&1
+--exec $NDB_WAITER --not-started --timeout=120 > /dev/null 2>&1
+--exec $NDB_MGM -e "all start" > /dev/null 2>&1
+--exec $NDB_WAITER --timeout=600 > /dev/null 2>&1
+
+--source include/ndb_wait_connected.inc
+--disable_query_log
+--disable_result_log
+let $mysql_errno= 1;
+let $counter= 600;
+while ($mysql_errno)
+{
+  --error 0,1296,4009
+  SELECT COUNT(*) FROM test.t1;
+  if ($mysql_errno)
+  {
+    if (!$counter)
+    {
+      die Timed out waiting for test.t1 to become queryable after restart;
+    }
+    dec $counter;
+    --sleep 0.1
+  }
+}
+--enable_result_log
+--enable_query_log
+SELECT COUNT(*) FROM test.t1;
+
+--echo # --- restore rate of test.t1 from the restart's log lines
+let LCP_RATE_TABLE_ID = $table_id;
+let LCP_RATE_MIN = $min_rate;
+expr $min_rows = $rows_per_batch * $batches;
+let LCP_RATE_MIN_ROWS = $min_rows;
+--perl
+use strict;
+my $tab = $ENV{LCP_RATE_TABLE_ID};
+my %off;
+open(my $in, '<', $ENV{LCP_RATE_OFFSETS}) or die "open offsets: $!";
+while (<$in>) { chomp; my ($f, $s) = split /\t/; $off{$f} = $s; }
+close($in);
+my ($rows, $ops, $millis, $frags) = (0, 0, 0, 0);
+foreach my $f (glob("$ENV{LCP_RATE_VARDIR}/mysql_cluster.1/ndbd.*/*.log")) {
+  open(my $fh, '<', $f) or die "open $f: $!";
+  seek($fh, $off{$f} // 0, 0);
+  while (<$fh>) {
+    if (/Restored T${tab}F(\d+) LCP (\d+) rows, (\d+) row operations, (\d+) millis/) {
+      $rows += $2; $ops += $3; $millis += $4; $frags++;
+    }
+  }
+  close($fh);
+}
+$millis = 1 if $millis == 0;
+my $rate = int($ops * 1000 / $millis);
+print STDERR "LCP restore of T${tab}: $frags fragments, $rows rows, "
+           . "$ops row operations, $millis millis, $rate row operations/s\n";
+# Each row is restored once per replica, so at least min_rows in total.
+if ($rows < $ENV{LCP_RATE_MIN_ROWS}) {
+  die "LCP restore restored only $rows rows of T${tab} ($frags fragments); "
+    . "expected at least $ENV{LCP_RATE_MIN_ROWS}. The LCP did not capture "
+    . "the table, so the test did not measure the restore path.\n";
+}
+if ($rate < $ENV{LCP_RATE_MIN}) {
+  die "LCP restore too slow: $rate row operations/s for T${tab} "
+    . "($ops row operations in $millis millis over $frags fragments), "
+    . "expected at least $ENV{LCP_RATE_MIN}\n";
+}
+print "LCP restore restored the table and met the minimum rate\n";
+EOF
+
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_rate.offsets
+DROP TABLE test.t1;
