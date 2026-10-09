@@ -1,0 +1,15 @@
+-- source include/have_ndb.inc
+
+# Starts the cluster of the ndb suite with the management server and its
+# two data nodes on fixed ports (1186, 11861 and 11862, see
+# ndb_setup_fixed_ports.cnf), to capture its NDB traffic with Wireshark.
+# It tests nothing.
+#
+# Start the cluster and keep it running with
+#   ./mtr --suite=ndb ndb_setup_fixed_ports --start
+# and capture on the loopback interface with the capture filter
+#   tcp port 1186 or tcp port 11861 or tcp port 11862
+# or the display filter
+#   tcp.port in {1186 11861 11862}
+
+SELECT 1;
