@@ -2088,11 +2088,10 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
           Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
           if (csNumber != 0) {
             thrjamDebug(jamBuf);
-            if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
-                         all_charsets[csNumber] == nullptr)) {
+            info.cs = NdbSqlUtil::get_collation(csNumber);
+            if (unlikely(info.cs == nullptr)) {
               return ZAGG_OTHER_ERROR;
             }
-            info.cs = all_charsets[csNumber];
           }
         } else {
           thrjamDebug(jamBuf);
@@ -2113,7 +2112,10 @@ Int32 JoinAggInterpreter::initGBTypesForNullLocal(EmulatedJamBuffer *jamBuf) {
             info.cs = nullptr;
             if (meta->csNumber != 0) {
               thrjamDebug(jamBuf);
-              info.cs = all_charsets[meta->csNumber];
+              info.cs = NdbSqlUtil::get_collation(meta->csNumber);
+              if (unlikely(info.cs == nullptr)) {
+                return ZAGG_OTHER_ERROR;
+              }
             }
           } else {
             g_eventLogger->debug("initGBTypesForNullLocal: missing metadata "

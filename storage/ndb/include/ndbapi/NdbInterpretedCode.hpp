@@ -962,8 +962,9 @@ class NdbInterpretedCode {
    *
    * Server-side: the new opcode BRANCH_MEM_OP_ARG_INLINE_TYPE
    * resolves the type via NdbSqlUtil::getType(typeId) and the
-   * charset via all_charsets[csNumber] (the kernel charset registry
-   * populated by Dbdict / DbtupMeta), bypassing tablerec[] entirely.
+   * charset via NdbSqlUtil::get_collation(csNumber), which initialises
+   * a collation that no table on the data node uses, bypassing
+   * tablerec[] entirely.  An unknown csNumber fails the program.
    *
    * v1 supports numeric and CHAR/VARCHAR types; rejects DECIMAL
    * (precision/scale not yet encoded inline) and BLOB/TEXT.

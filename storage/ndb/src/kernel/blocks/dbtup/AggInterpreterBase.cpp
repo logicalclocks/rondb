@@ -208,7 +208,10 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
         declared = CteLinkedAttr::decodeMaxBytes(linked_word0);
         const Uint32 csNumber = CteLinkedAttr::decodeCsNumber(linked_word1);
         if (csNumber != 0) {
-          cs = all_charsets[csNumber];
+          cs = NdbSqlUtil::get_collation(csNumber);
+          if (unlikely(cs == nullptr)) {
+            return ZAGG_OTHER_ERROR;
+          }
         }
       } else {
         return ZAGG_LOAD_COL_WRONG_TYPE;
@@ -2022,7 +2025,10 @@ Int32 AggInterpreterBase::initGBTypes(
         Uint32 csNumber = CteLinkedAttr::decodeCsNumber(word1);
         if (csNumber != 0) {
           thrjamDebug(jamBuf);
-          info.cs = all_charsets[csNumber];
+          info.cs = NdbSqlUtil::get_collation(csNumber);
+          if (unlikely(info.cs == nullptr)) {
+            return ZAGG_OTHER_ERROR;
+          }
         }
       } else {
         thrjamDebug(jamBuf);
@@ -2043,7 +2049,10 @@ Int32 AggInterpreterBase::initGBTypes(
           info.cs = nullptr;
           if (meta->csNumber != 0) {
             thrjamDebug(jamBuf);
-            info.cs = all_charsets[meta->csNumber];
+            info.cs = NdbSqlUtil::get_collation(meta->csNumber);
+            if (unlikely(info.cs == nullptr)) {
+              return ZAGG_OTHER_ERROR;
+            }
           }
           const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
           info.cmpFn = sqlType.m_cmp;
@@ -2163,11 +2172,10 @@ Int32 AggInterpreterBase::initGBTypesFromMetadata(
       info.maxBytes = maxBytes;
       info.cs = nullptr;
       if (csNumber != 0) {
-        if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
-                     all_charsets[csNumber] == nullptr)) {
+        info.cs = NdbSqlUtil::get_collation(csNumber);
+        if (unlikely(info.cs == nullptr)) {
           return ZAGG_OTHER_ERROR;
         }
-        info.cs = all_charsets[csNumber];
       }
       const NdbSqlUtil::Type &sqlType = NdbSqlUtil::getType(info.typeId);
       info.cmpFn = sqlType.m_cmp;
@@ -2266,11 +2274,10 @@ Int32 AggInterpreterBase::initStringAggSlotFromMetadata(
 
   const CHARSET_INFO *cs = nullptr;
   if (csNumber != 0) {
-    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
-                 all_charsets[csNumber] == nullptr)) {
+    cs = NdbSqlUtil::get_collation(csNumber);
+    if (unlikely(cs == nullptr)) {
       return ZAGG_OTHER_ERROR;
     }
-    cs = all_charsets[csNumber];
   }
 
   if (m_string_results == nullptr) {
@@ -2303,11 +2310,9 @@ Int32 AggInterpreterBase::initLoadColumnMetaFromMetadata(
   if (unlikely(programOffset == RNIL)) {
     return ZAGG_OTHER_ERROR;
   }
-  if (csNumber != 0) {
-    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
-                 all_charsets[csNumber] == nullptr)) {
-      return ZAGG_OTHER_ERROR;
-    }
+  if (csNumber != 0 &&
+      unlikely(NdbSqlUtil::get_collation(csNumber) == nullptr)) {
+    return ZAGG_OTHER_ERROR;
   }
 
   for (Uint32 i = 0; i < m_load_column_meta_count; i++) {
@@ -2376,11 +2381,9 @@ Int32 AggInterpreterBase::initColumnMetaFromMetadata(
   if (tableId == RNIL || tableId == 0 || tableVersion == 0) {
     return 0;
   }
-  if (csNumber != 0) {
-    if (unlikely(csNumber >= NDB_ARRAY_SIZE(all_charsets) ||
-                 all_charsets[csNumber] == nullptr)) {
-      return ZAGG_OTHER_ERROR;
-    }
+  if (csNumber != 0 &&
+      unlikely(NdbSqlUtil::get_collation(csNumber) == nullptr)) {
+    return ZAGG_OTHER_ERROR;
   }
 
   if (m_column_meta == nullptr) {

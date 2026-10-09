@@ -30,6 +30,8 @@
 #include <cmath>
 
 #include "my_byteorder.h"
+#include "my_sys.h"
+#include "mysql/strings/collations.h"
 #include "mysql/strings/m_ctype.h"
 
 /*
@@ -957,6 +959,31 @@ Uint32 NdbSqlUtil::strnxfrm_hash_len(const CHARSET_INFO *cs, unsigned maxLen) {
   return 0;
 }
 
+/**
+ * mysys puts every collation it knows in all_charsets once the collation
+ * library is set up, but initialises a collation only when it is looked
+ * up by id or name (get_charset() returns the default one as it is).  A
+ * table's collations are looked up when DBDICT parses the table; one sent
+ * in a pushed-down program may be used by no table on this node, and
+ * all_charsets then gives it uninitialised: a UCA collation with a
+ * tailoring without its weights.
+ */
+const CHARSET_INFO *NdbSqlUtil::get_collation(Uint32 csNumber) {
+  if (unlikely(csNumber == 0 || csNumber >= MY_ALL_CHARSETS_SIZE)) {
+    return nullptr;
+  }
+  const CHARSET_INFO *cs = all_charsets[csNumber];
+  if (likely(cs != nullptr && (cs->state & MY_CS_READY) != 0)) {
+    return cs;
+  }
+  /* Sets up the collation library once; nullptr for an unknown id */
+  if (get_charset(csNumber, MYF(0)) == nullptr) {
+    return nullptr;
+  }
+  /* Initialises the collation, the default one too, under a mutex */
+  return mysql::collation::find_by_id(csNumber);
+}
+
 #if defined(WORDS_BIGENDIAN) || defined(VM_TRACE)
 
 static void determineParams(Uint32 typeId, Uint32 typeLog2Size,
@@ -1766,6 +1793,44 @@ static void testrun() {
   looptimestamp2();
 }
 
+/*
+ * get_collation initialises a collation that nothing has looked up: once
+ * the collation library is set up, all_charsets lists it uninitialised.
+ * utf8mb4_es_trad_0900_ai_ci (270) sorts "ch" after "cz" only with its
+ * tailoring; the root collation it is based on sorts it before.
+ */
+static void testcollation() {
+  ll0("testcollation");
+  chk1(NdbSqlUtil::get_collation(0) == nullptr);
+  chk1(NdbSqlUtil::get_collation(MY_ALL_CHARSETS_SIZE) == nullptr);
+  chk1(NdbSqlUtil::get_collation(0xFFFF) == nullptr);
+
+  /* Sets up the collation library */
+  const CHARSET_INFO *root = get_charset_by_name("utf8mb4_0900_ai_ci", MYF(0));
+  chk1(root != nullptr);
+  const uchar *ch = reinterpret_cast<const uchar *>("ch");
+  const uchar *cz = reinterpret_cast<const uchar *>("cz");
+  chk1(root->coll->strnncollsp(root, ch, 2, cz, 2) < 0);
+
+  const Uint32 es_trad = 270;
+  const CHARSET_INFO *listed = all_charsets[es_trad];
+  chk1(listed != nullptr && (listed->state & MY_CS_READY) == 0);
+  const CHARSET_INFO *cs = NdbSqlUtil::get_collation(es_trad);
+  chk1(cs == listed && (cs->state & MY_CS_READY) != 0);
+  chk1(strcmp(cs->m_coll_name, "utf8mb4_es_trad_0900_ai_ci") == 0);
+  chk1(cs->coll->strnncollsp(cs, ch, 2, cz, 2) > 0);
+  chk1(NdbSqlUtil::get_collation(es_trad) == cs);
+
+  /* The default collation, which get_charset() leaves uninitialised */
+  const CHARSET_INFO *latin1 = NdbSqlUtil::get_collation(8);
+  chk1(latin1 != nullptr && (latin1->state & MY_CS_READY) != 0);
+
+  /* An id without a collation */
+  if (get_charset(2047, MYF(0)) == nullptr) {
+    chk1(NdbSqlUtil::get_collation(2047) == nullptr);
+  }
+}
+
 static int testmain() {
   ndb_init();
 #ifdef NDB_USE_GET_ENV
@@ -1784,6 +1849,7 @@ static int testmain() {
 #ifdef VM_TRACE
   signal(SIGABRT, SIG_DFL);
 #endif
+  testcollation();  // once: it checks first-time initialisation
   if (seed == 0)
     ll0("random seed: loop number");
   else {
