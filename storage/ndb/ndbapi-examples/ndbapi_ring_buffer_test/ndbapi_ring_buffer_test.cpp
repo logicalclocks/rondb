@@ -363,7 +363,7 @@ static bool test_single_insert(Ndb *ndb, MYSQL *mysql) {
   delete[] mask;
 
   // Verify
-  auto rows = readDataRows(mysql, "rb_t1", 42);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t1", 42);
   TEST_ASSERT(rows.size() == 1, "expected 1 row");
   TEST_ASSERT(rows[0].ring_idx == 1, "ring_idx should be 1");
   TEST_ASSERT(rows[0].data == "hello", "data should be 'hello'");
@@ -423,14 +423,14 @@ static bool test_fill_ring(Ndb *ndb, MYSQL *mysql) {
   delete[] rowbuf;
   delete[] mask;
 
-  auto rows = readDataRows(mysql, "rb_t2", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t2", 1);
   TEST_ASSERT(rows.size() == 5,
               "expected 5 data rows, got " + std::to_string(rows.size()));
 
   // row_0 and row_1 should be overwritten; row_2..row_6 should survive
   bool found_row_2 = false, found_row_6 = false;
   bool found_row_0 = false;
-  for (const auto &r : rows) {
+  for (const DataRow &r : rows) {
     if (r.data == "row_2") found_row_2 = true;
     if (r.data == "row_6") found_row_6 = true;
     if (r.data == "row_0") found_row_0 = true;
@@ -483,7 +483,7 @@ static bool test_multiple_prefixes(Ndb *ndb, MYSQL *mysql) {
     NdbRingBufferWriter writer(table, h.record, trans);
     TEST_ASSERT(writer.getErrorCode() == 0, "writer init");
 
-    for (const auto &ins : inserts) {
+    for (const Ins &ins : inserts) {
       h.fillRow(rowbuf, ins.cid, ins.data);
       const NdbOperation *op = writer.addRow(rowbuf, mask);
       TEST_ASSERT(op != nullptr,
@@ -500,12 +500,12 @@ static bool test_multiple_prefixes(Ndb *ndb, MYSQL *mysql) {
   delete[] mask;
 
   // cid=10: 4 inserts into ring_size=3, 3 should survive
-  auto rows_10 = readDataRows(mysql, "rb_t3", 10);
+  std::vector<DataRow> rows_10 = readDataRows(mysql, "rb_t3", 10);
   TEST_ASSERT(rows_10.size() == 3,
               "cid=10: expected 3, got " + std::to_string(rows_10.size()));
 
   // cid=20: 2 inserts into ring_size=3, 2 should survive
-  auto rows_20 = readDataRows(mysql, "rb_t3", 20);
+  std::vector<DataRow> rows_20 = readDataRows(mysql, "rb_t3", 20);
   TEST_ASSERT(rows_20.size() == 2,
               "cid=20: expected 2, got " + std::to_string(rows_20.size()));
 
@@ -556,7 +556,7 @@ static bool test_batch_insert(Ndb *ndb, MYSQL *mysql) {
   delete[] rowbuf;
   delete[] mask;
 
-  auto rows = readDataRows(mysql, "rb_t4", 100);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t4", 100);
   TEST_ASSERT(rows.size() == 10,
               "expected 10, got " + std::to_string(rows.size()));
 
@@ -564,7 +564,7 @@ static bool test_batch_insert(Ndb *ndb, MYSQL *mysql) {
     char expected[32];
     snprintf(expected, sizeof(expected), "batch_%d", i);
     bool found = false;
-    for (const auto &r : rows) {
+    for (const DataRow &r : rows) {
       if (r.data == expected) {
         found = true;
         break;
@@ -704,7 +704,7 @@ static bool test_ring_size_1(Ndb *ndb, MYSQL *mysql) {
   delete[] rowbuf;
   delete[] mask;
 
-  auto rows = readDataRows(mysql, "rb_t6", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t6", 1);
   TEST_ASSERT(rows.size() == 1,
               "expected 1 row, got " + std::to_string(rows.size()));
   TEST_ASSERT(rows[0].data == "third",
@@ -789,7 +789,7 @@ static bool test_multi_transaction(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows1 = readDataRows(mysql, "rb_t8", 1);
+  std::vector<DataRow> rows1 = readDataRows(mysql, "rb_t8", 1);
   TEST_ASSERT(rows1.size() == 2,
               "after tx1: expected 2, got " + std::to_string(rows1.size()));
 
@@ -810,7 +810,7 @@ static bool test_multi_transaction(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows2 = readDataRows(mysql, "rb_t8", 1);
+  std::vector<DataRow> rows2 = readDataRows(mysql, "rb_t8", 1);
   TEST_ASSERT(rows2.size() == 4,
               "after tx2: expected 4, got " + std::to_string(rows2.size()));
 
@@ -831,14 +831,14 @@ static bool test_multi_transaction(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows3 = readDataRows(mysql, "rb_t8", 1);
+  std::vector<DataRow> rows3 = readDataRows(mysql, "rb_t8", 1);
   TEST_ASSERT(rows3.size() == 5,
               "after tx3: expected 5, got " + std::to_string(rows3.size()));
 
   // Verify that tx1 data was overwritten and tx3 data survives
   bool found_tx3_2 = false;
   bool found_tx1_0 = false;
-  for (const auto &r : rows3) {
+  for (const DataRow &r : rows3) {
     if (r.data == "tx3_2") found_tx3_2 = true;
     if (r.data == "tx1_0") found_tx1_0 = true;
   }
@@ -1005,14 +1005,14 @@ static bool test_delete_reinsert(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows1 = readDataRows(mysql, "rb_t10", 1);
+  std::vector<DataRow> rows1 = readDataRows(mysql, "rb_t10", 1);
   TEST_ASSERT(rows1.size() == 4,
               "phase1: expected 4, got " + std::to_string(rows1.size()));
 
   // Phase 2: Delete all rows for client_id=1 via SQL
   mysql_exec(mysql, "DELETE FROM test.rb_t10 WHERE client_id=1");
 
-  auto rows2 = readDataRows(mysql, "rb_t10", 1);
+  std::vector<DataRow> rows2 = readDataRows(mysql, "rb_t10", 1);
   TEST_ASSERT(rows2.size() == 0,
               "after delete: expected 0, got " + std::to_string(rows2.size()));
 
@@ -1039,7 +1039,7 @@ static bool test_delete_reinsert(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows3 = readDataRows(mysql, "rb_t10", 1);
+  std::vector<DataRow> rows3 = readDataRows(mysql, "rb_t10", 1);
   TEST_ASSERT(rows3.size() == 2,
               "phase3: expected 2, got " + std::to_string(rows3.size()));
 
@@ -1102,7 +1102,7 @@ static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows1 = readDataRows(mysql, "rb_t11", 1);
+  std::vector<DataRow> rows1 = readDataRows(mysql, "rb_t11", 1);
   TEST_ASSERT(rows1.size() == 2,
               "after tx1: expected 2, got " + std::to_string(rows1.size()));
 
@@ -1124,13 +1124,13 @@ static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
   }
 
   // Verify: only the 2 committed rows should exist
-  auto rows2 = readDataRows(mysql, "rb_t11", 1);
+  std::vector<DataRow> rows2 = readDataRows(mysql, "rb_t11", 1);
   TEST_ASSERT(rows2.size() == 2,
               "after rollback: expected 2, got " +
                   std::to_string(rows2.size()));
 
   bool found_rolled_back = false;
-  for (const auto &r : rows2) {
+  for (const DataRow &r : rows2) {
     if (r.data.find("rolled_back") != std::string::npos)
       found_rolled_back = true;
   }
@@ -1148,13 +1148,13 @@ static bool test_rollback(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows3 = readDataRows(mysql, "rb_t11", 1);
+  std::vector<DataRow> rows3 = readDataRows(mysql, "rb_t11", 1);
   TEST_ASSERT(rows3.size() == 3,
               "after tx3: expected 3, got " + std::to_string(rows3.size()));
 
   // The new row should be at ring_idx=3 (continuing from the committed state)
   bool found_after = false;
-  for (const auto &r : rows3) {
+  for (const DataRow &r : rows3) {
     if (r.data == "after_rollback") {
       TEST_ASSERT(r.ring_idx == 3,
                   "after_rollback should be at ring_idx=3, got " +
@@ -1218,7 +1218,7 @@ static bool test_multi_wrap_batch(Ndb *ndb, MYSQL *mysql) {
   delete[] rowbuf;
   delete[] mask;
 
-  auto rows = readDataRows(mysql, "rb_t12", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t12", 1);
   TEST_ASSERT(rows.size() == 3,
               "expected 3, got " + std::to_string(rows.size()));
 
@@ -1226,7 +1226,7 @@ static bool test_multi_wrap_batch(Ndb *ndb, MYSQL *mysql) {
   // Slots: wrap_7->idx1, wrap_8->idx2, wrap_9->idx3
   bool found_7 = false, found_8 = false, found_9 = false;
   bool found_0 = false;
-  for (const auto &r : rows) {
+  for (const DataRow &r : rows) {
     if (r.data == "wrap_7") found_7 = true;
     if (r.data == "wrap_8") found_8 = true;
     if (r.data == "wrap_9") found_9 = true;
@@ -1316,7 +1316,7 @@ static bool test_multi_col_pk_prefix(Ndb *ndb, MYSQL *mysql) {
     NdbRingBufferWriter writer(table, record, trans);
     TEST_ASSERT(writer.getErrorCode() == 0, "writer init");
 
-    for (const auto &ins : inserts) {
+    for (const Ins &ins : inserts) {
       memset(rowbuf, 0, row_size);
       setInt32(rowbuf, region_attr, ins.region);
       setInt32(rowbuf, cid_attr, ins.cid);
@@ -1525,7 +1525,7 @@ static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows1 = readUniqueRows(mysql, "rb_t14", 1);
+  std::vector<UniqueDataRow> rows1 = readUniqueRows(mysql, "rb_t14", 1);
   TEST_ASSERT(rows1.size() == 2, "after tx1: expected 2 rows");
 
   // Insert duplicate 'AAA' for same PK prefix - must fail
@@ -1570,7 +1570,7 @@ static bool test_unique_dup_same_prefix(Ndb *ndb, MYSQL *mysql) {
   }
 
   // Verify original rows are intact
-  auto rows2 = readUniqueRows(mysql, "rb_t14", 1);
+  std::vector<UniqueDataRow> rows2 = readUniqueRows(mysql, "rb_t14", 1);
   TEST_ASSERT(rows2.size() == 2, "original rows intact");
   TEST_ASSERT(rows2[0].code == "AAA" && rows2[1].code == "BBB",
               "original data intact");
@@ -1624,7 +1624,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows1 = readUniqueRows(mysql, "rb_t15", 1);
+  std::vector<UniqueDataRow> rows1 = readUniqueRows(mysql, "rb_t15", 1);
   TEST_ASSERT(rows1.size() == 3, "after fill: expected 3 rows");
 
   // 4th insert wraps to slot 1: AAA freed, DDD takes its place - should succeed
@@ -1642,7 +1642,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
   }
 
   // Verify: slot1=DDD, slot2=BBB, slot3=CCC
-  auto rows2 = readUniqueRows(mysql, "rb_t15", 1);
+  std::vector<UniqueDataRow> rows2 = readUniqueRows(mysql, "rb_t15", 1);
   TEST_ASSERT(rows2.size() == 3, "after wrap1: expected 3 rows");
   TEST_ASSERT(rows2[0].code == "DDD", "slot1 should be DDD");
   TEST_ASSERT(rows2[1].code == "BBB", "slot2 should be BBB");
@@ -1669,7 +1669,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
   }
 
   // Verify state unchanged after failed insert
-  auto rows3 = readUniqueRows(mysql, "rb_t15", 1);
+  std::vector<UniqueDataRow> rows3 = readUniqueRows(mysql, "rb_t15", 1);
   TEST_ASSERT(rows3.size() == 3, "after failed wrap: expected 3 rows");
   TEST_ASSERT(rows3[0].code == "DDD", "slot1 still DDD");
   TEST_ASSERT(rows3[1].code == "BBB", "slot2 still BBB");
@@ -1690,7 +1690,7 @@ static bool test_unique_wrap_collision(Ndb *ndb, MYSQL *mysql) {
   }
 
   // Verify: slot1=DDD, slot2=EEE, slot3=CCC
-  auto rows4 = readUniqueRows(mysql, "rb_t15", 1);
+  std::vector<UniqueDataRow> rows4 = readUniqueRows(mysql, "rb_t15", 1);
   TEST_ASSERT(rows4.size() == 3, "after retry: expected 3 rows");
   TEST_ASSERT(rows4[0].code == "DDD", "slot1 DDD after retry");
   TEST_ASSERT(rows4[1].code == "EEE", "slot2 EEE after retry");
@@ -1774,11 +1774,11 @@ static bool test_unique_freed_reuse(Ndb *ndb, MYSQL *mysql) {
   }
 
   // Verify: id=1 has DDD/BBB/CCC, id=2 has AAA
-  auto rows = readUniqueRows(mysql, "rb_t16");
+  std::vector<UniqueDataRow> rows = readUniqueRows(mysql, "rb_t16");
   TEST_ASSERT(rows.size() == 4, "expected 4 rows total");
 
   bool found_id2_AAA = false;
-  for (const auto &r : rows) {
+  for (const UniqueDataRow &r : rows) {
     if (r.id == 2 && r.code == "AAA") found_id2_AAA = true;
   }
   TEST_ASSERT(found_id2_AAA, "id=2 should have AAA");
@@ -1830,7 +1830,7 @@ static bool test_concurrent_same_prefix(Ndb_cluster_connection *conn,
   std::atomic<int> ready_count{0};
   std::atomic<bool> go{false};
 
-  auto thread_fn = [&](int thread_id) {
+  std::function<void(int)> thread_fn = [&](int thread_id) {
     Ndb ndb(conn, "test");
     if (ndb.init() != 0) {
       std::cerr << "  Thread " << thread_id << " Ndb init failed" << std::endl;
@@ -1915,12 +1915,12 @@ static bool test_concurrent_same_prefix(Ndb_cluster_connection *conn,
   while (ready_count.load() < NUM_THREADS) {}
   go.store(true);
 
-  for (auto &t : threads) t.join();
+  for (std::thread &t : threads) t.join();
 
   TEST_ASSERT(errors.load() == 0, "no thread errors");
 
   // Verify: 5 data rows should exist
-  auto rows = readDataRows(mysql, "rb_t17", CLIENT_ID);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t17", CLIENT_ID);
   std::cout << "  Data rows: " << rows.size() << std::endl;
   TEST_ASSERT((int)rows.size() == 5, "expected 5 data rows");
 
