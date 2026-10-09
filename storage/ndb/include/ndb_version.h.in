@@ -1574,4 +1574,19 @@ bool
 ndbd_support_api_set_config_param(Uint32 x) {
   return x >= NDBD_API_SET_CONFIG_PARAM_2610;
 }
+
+/**
+ * GET_COLLATION_INFO_REQ/CONF/REF: an API node asks DBDICT on a data node
+ * which character set and collation it has under a collation id or name
+ * (signaldata/GetCollationInfo.hpp).  An older data node takes the unknown
+ * signal number as a fatal error, so the request may only be sent to data
+ * nodes of this version.  Present from the 26.10 series; a backport to an
+ * older series adds its floor here.
+ */
+#define NDBD_GET_COLLATION_INFO_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_support_get_collation_info(Uint32 x) {
+  return x >= NDBD_GET_COLLATION_INFO_2610;
+}
 #endif

@@ -1,0 +1,20 @@
+!include suite/ndb/my.cnf
+
+# The management server and the data nodes listen on fixed ports instead
+# of ones chosen at start, so that a capture (Wireshark) can be set up
+# for them beforehand:
+#   management server (NodeId 3): 1186
+#   data node 1 (NodeId 1):       11861
+#   data node 2 (NodeId 2):       11862
+# Every node connects to the management server on its port.  The API
+# nodes (mysqld, NDB API programs) connect to a data node on its port,
+# and the data nodes connect to each other on one of them.
+
+[cluster_config.ndb_mgmd.1.1]
+PortNumber=1186
+
+[cluster_config.ndbd.1.1]
+ServerPort=11861
+
+[cluster_config.ndbd.2.1]
+ServerPort=11862

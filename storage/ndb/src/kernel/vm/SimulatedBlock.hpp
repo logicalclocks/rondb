@@ -1103,6 +1103,15 @@ class alignas(NDB_CL) SimulatedBlock
   Uint32 simBlockNodeFailure(Signal *signal, Uint32 failedNodeId,
                              Callback &cb = TheEmptyCallback);
 
+  /**
+   * Free records for sendFragmentedSignal, which needs one until its last
+   * fragment is sent (and fails an ndbrequire without).  A block that
+   * starts such sends on request of other nodes can check this first.
+   */
+  Uint32 getNoOfFreeFragmentSendRecords() const {
+    return c_fragmentSendPool.getNoOfFree();
+  }
+
   /**********************************************************
    * Fragmented signals structures
    */

@@ -148,6 +148,13 @@ class NdbSqlUtil {
   static Uint32 strnxfrm_hash_len(const CHARSET_INFO *cs, unsigned maxLen);
 
   /**
+   * The collation with id csNumber, initialised, or nullptr when there is
+   * no such collation (0 is none).  Use it, not all_charsets, for a
+   * collation id that came in a request rather than from a table.
+   */
+  static const CHARSET_INFO *get_collation(Uint32 csNumber);
+
+  /**
    * Convert attribute data to/from network byte order
    * This method converts the passed data of the passed type
    * between host and network byte order.

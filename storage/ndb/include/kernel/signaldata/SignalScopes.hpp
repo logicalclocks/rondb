@@ -141,6 +141,9 @@
   X(GSN_GCP_PREPARE, Remote)                                                   \
   X(GSN_LCP_FRAG_ORD, Remote)                                                  \
   X(GSN_COPY_FRAGREQ, Remote)                                                  \
+  /* Only DBDICT sends these, as replies; a data node never receives one */   \
+  X(GSN_GET_COLLATION_INFO_CONF, Remote)                                       \
+  X(GSN_GET_COLLATION_INFO_REF, Remote)                                        \
   /* ============= Management (DB or MGM, never API) ================= */     \
   X(GSN_START_ORD, Management)                                                 \
   X(GSN_STOP_REQ, Management)                                                  \
@@ -158,6 +161,7 @@
   X(GSN_API_REGREQ, External)                                                  \
   X(GSN_SUB_START_REQ, External)                                               \
   X(GSN_DUMP_STATE_ORD, External)                                              \
+  X(GSN_GET_COLLATION_INFO_REQ, External)                                      \
   /* ===== Unclassified (audited, sender set could not be traced) ===== */     \
   /* Same runtime effect as absence from this list; an entry here records   */ \
   /* that the GSN was looked at and deliberately left open. None so far.    */

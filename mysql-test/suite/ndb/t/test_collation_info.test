@@ -1,0 +1,18 @@
+--source include/have_ndb.inc
+
+# GET_COLLATION_INFO_REQ / CONF / REF: an API node asks DBDICT on a data
+# node which character set and collation it has under a collation id, a
+# collation name or a character set name.
+#
+# Runs the NDB API test program testCollationInfo, which asks every data
+# node for every collation by id, collation name and character set name,
+# compares each answer with its own collation library, fetches the weights
+# of a set of collations (in fragmented CONFs, several when they pass the
+# response size) and checks the weight string of every character and
+# contraction the same way, and checks that malformed requests are
+# refused with the expected GET_COLLATION_INFO_REF error code.  The
+# program creates no tables.
+
+let NDBAPITEST_NAME=testCollationInfo;
+let NDBAPITEST_ARGS=--stop-on-error;
+--source suite/ndb/include/run_ndbapitest.inc

@@ -5919,10 +5919,7 @@ int Dbtup::evalBranchMemForJit(const Uint32 *inst) {
     attrLen = (meta >> 16) & 0xFFFF;
     const Uint32 csNumber = meta & 0xFFFF;
     if (csNumber != 0) {
-      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
-        return -40;
-      }
-      cs = all_charsets[csNumber];
+      cs = NdbSqlUtil::get_collation(csNumber);
       if (unlikely(cs == nullptr)) {
         return -40;
       }
@@ -9107,11 +9104,7 @@ struct Dbtup::InterpreterContext {
 
     const CHARSET_INFO* cs = nullptr;
     if (csNumber != 0) {
-      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
-        thrjam(ctx.tup->jamBuffer());
-        return -40;
-      }
-      cs = all_charsets[csNumber];
+      cs = NdbSqlUtil::get_collation(csNumber);
       if (unlikely(cs == nullptr)) {
         thrjam(ctx.tup->jamBuffer());
         return -40;
@@ -9224,11 +9217,7 @@ struct Dbtup::InterpreterContext {
 
     const CHARSET_INFO* cs = nullptr;
     if (csNumber != 0) {
-      if (unlikely(csNumber >= MY_ALL_CHARSETS_SIZE)) {
-        thrjam(ctx.tup->jamBuffer());
-        return -40;
-      }
-      cs = all_charsets[csNumber];
+      cs = NdbSqlUtil::get_collation(csNumber);
       if (unlikely(cs == nullptr)) {
         thrjam(ctx.tup->jamBuffer());
         return -40;

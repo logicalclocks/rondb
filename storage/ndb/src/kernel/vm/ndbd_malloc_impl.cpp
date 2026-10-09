@@ -2367,7 +2367,15 @@ Test_mem_manager::Test_mem_manager(Uint32 tot_mem, Uint32 data_mem,
   const Uint32 reserved_mem = data_mem + trans_mem + data_mem2 + trans_mem2;
   assert(tot_mem >= reserved_mem);
 
-  Resource_limit rl;
+  /**
+   * Resource_limit has no constructor; set_resource_limit also takes
+   * m_max_high_prio and m_prio_memory from it.  The test accounting has
+   * no priority levels: every resource group may use all shared memory,
+   * with no high priority limit.
+   */
+  Resource_limit rl{};
+  rl.m_max_high_prio = Resource_limit::HIGHEST_LIMIT;
+  rl.m_prio_memory = Resource_limit::ULTRA_HIGH_PRIO_MEMORY;
   // Data memory
   rl.m_min = data_mem;
   rl.m_max = rl.m_min;
@@ -3243,7 +3251,12 @@ struct lc_long_lived_memory_area
 #define MAX_FREE_MEMORY_SIZE_IN_WORDS \
   ((MEMORY_SEGMENT_SIZE_IN_WORDS - MALLOC_OVERHEAD_IN_WORDS) - \
    (sizeof(lc_long_lived_memory_area) / 4))
-#define MAX_MEMORY_ALLOC_SIZE_IN_WORDS (1024 * 1024)
+/**
+ * The largest long-lived allocation: the free area of an empty memory
+ * segment, a little less than MEMORY_SEGMENT_SIZE.  No segment can serve
+ * a larger one.
+ */
+#define MAX_MEMORY_ALLOC_SIZE_IN_WORDS MAX_FREE_MEMORY_SIZE_IN_WORDS
 
 struct lc_long_lived_memory_base
 {
@@ -3520,6 +3533,29 @@ lc_mempool_long_lived_pool_malloc(size_t size_in_words,
        * memory segment to a new free list of memory areas.
        */
       LC_LONG_LIVED_MEMORY_AREA *mem_area_ptr = base_ptr->m_first_free[i];
+      if (i == NUM_FREE_AREA_LISTS - 1 &&
+          size_in_words > (lc_uint32(1) << (2 * i)))
+      {
+        /**
+         * List i (i > 0) holds free areas larger than 4^i words, and
+         * start_pos is chosen so that every area in it fits the request,
+         * except in the last list, where start_pos is capped: a request
+         * above 4^9 words (1 MB) may not fit an area there.  Such an area
+         * is larger than half a memory segment, so a segment has at most
+         * one: use the first segment whose one fits, or fetch a new
+         * segment, whose free area fits any request up to
+         * MAX_MEMORY_ALLOC_SIZE_IN_WORDS.
+         */
+        while (mem_area_ptr != nullptr &&
+               mem_area_ptr->m_first_free[i]->size_area < size_in_words)
+        {
+          mem_area_ptr = mem_area_ptr->m_next_ptr;
+        }
+        if (mem_area_ptr == nullptr)
+        {
+          continue;
+        }
+      }
       lc_uint32 new_pos = i;
       lc_uint32 old_pos = new_pos;
       void *ret_mem = lc_memseg_malloc(size_in_words,
@@ -4954,6 +4990,45 @@ long_segment_position_test()
   require(num_mallocs.load() <= segment_mallocs);
 }
 
+/**
+ * Test case for allocations above 4^9 words (1 MB), larger than the
+ * smallest free area the last free list may hold.  Such an allocation
+ * crashed in a require when the first segment in that list had a free
+ * area too small for it, and above a whole segment's free area (but up
+ * to 4 MB) always.
+ *
+ * Allocate 600 kB from a fresh segment, which leaves a free area of about
+ * 1.4 MB in the last list.  A 1.6 MB allocation does not fit in it and
+ * has to come from a second segment.  Then the largest allocation there
+ * is takes a segment of its own, and anything larger returns nullptr.
+ */
+static void
+long_large_alloc_test()
+{
+  printf("Long malloc large allocation test\n");
+  const size_t max_size = 4 * size_t(MAX_MEMORY_ALLOC_SIZE_IN_WORDS);
+  int start_mallocs = num_mallocs.load();
+
+  void *small = lc_ndbd_pool_malloc(600 * 1024, 0, 0, 0);
+  require(small != nullptr);
+  require(num_mallocs.load() == start_mallocs + 1);
+  void *large = lc_ndbd_pool_malloc(1600 * 1024, 0, 0, 1);
+  require(large != nullptr);
+  require(num_mallocs.load() == start_mallocs + 2);
+  void *largest = lc_ndbd_pool_malloc(max_size, 0, 0, 1);
+  require(largest != nullptr);
+  require(num_mallocs.load() == start_mallocs + 3);
+
+  require(lc_ndbd_pool_malloc(max_size + 16, 0, 0, 0) == nullptr);
+  require(lc_ndbd_pool_malloc(4 * 1024 * 1024, 0, 0, 0) == nullptr);
+  require(num_mallocs.load() == start_mallocs + 3);
+
+  lc_ndbd_pool_free(largest);
+  lc_ndbd_pool_free(large);
+  lc_ndbd_pool_free(small);
+  require(num_mallocs.load() == start_mallocs);
+}
+
 static void
 many_single_thread_short_test(void **mem_area)
 {
@@ -5534,6 +5609,7 @@ lc_ndbd_malloc_test()
   simple_single_thread_long_test();
   simple_single_thread_long_small_test();
   long_segment_position_test();
+  long_large_alloc_test();
   printf("num_mallocs: %d\n", num_mallocs.load());
   many_malloc_single_thread_long_test();
   printf("num_mallocs: %d\n", num_mallocs.load());
