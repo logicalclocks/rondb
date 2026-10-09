@@ -1,0 +1,7 @@
+!include suite/ndb/my.cnf
+
+[cluster_config.1]
+DataMemory=200M
+# Print the per-fragment "LDM instance N: Restored TxFy LCP ..." lines
+# (already the default in VM_TRACE / ERROR_INSERT builds).
+FullRestartLogs=1
