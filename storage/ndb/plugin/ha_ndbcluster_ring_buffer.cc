@@ -216,6 +216,13 @@ struct Prefix_values {
   bool other = false;
 };
 
+typedef std::pair<const uchar *, size_t> Enum_name;
+
+int compare_enum_names(const CHARSET_INFO *cs, const Enum_name &a,
+                       const Enum_name &b) {
+  return cs->coll->strnncollsp(cs, a.first, a.second, b.first, b.second);
+}
+
 /*
  * A value that selects exactly one key of the column: fixed for the
  * statement (a constant expression, a statement parameter, a stored
@@ -236,21 +243,19 @@ struct Prefix_values {
 bool enum_is_ambiguous(const Field *field) {
   const TYPELIB *lib = down_cast<const Field_enum *>(field)->typelib;
   const CHARSET_INFO *cs = field->charset();
-  std::vector<std::pair<const uchar *, size_t>> names;
+  std::vector<Enum_name> names;
   names.reserve(lib->count + 1);
   names.emplace_back(pointer_cast<const uchar *>(""), 0);
   for (size_t i = 0; i < lib->count; i++) {
     names.emplace_back(pointer_cast<const uchar *>(lib->type_names[i]),
                        lib->type_lengths[i]);
   }
-  const auto cmp = [cs](const std::pair<const uchar *, size_t> &a,
-                        const std::pair<const uchar *, size_t> &b) {
-    return cs->coll->strnncollsp(cs, a.first, a.second, b.first, b.second);
-  };
   std::sort(names.begin(), names.end(),
-            [&cmp](const auto &a, const auto &b) { return cmp(a, b) < 0; });
+            [cs](const Enum_name &a, const Enum_name &b) {
+              return compare_enum_names(cs, a, b) < 0;
+            });
   for (size_t i = 1; i < names.size(); i++) {
-    if (cmp(names[i - 1], names[i]) == 0) return true;
+    if (compare_enum_names(cs, names[i - 1], names[i]) == 0) return true;
   }
   return false;
 }
@@ -315,14 +320,16 @@ bool compares_in_column_collation(const Item_func *func, const Field *field) {
          func->compare_collation() == field->charset();
 }
 
+bool set_prefix_value(const TABLE *table, const KEY *pk, Prefix_values *pv,
+                      const Field *field, Item *value) {
+  const int i = prefix_part(table, pk, field);
+  if (i < 0 || !value_matches_one_key(field, value)) return false;
+  if (pv->values[i] == nullptr) pv->values[i] = value;
+  return true;
+}
+
 void collect_prefix_values(const TABLE *table, const KEY *pk, Item *item,
                            Prefix_values *pv) {
-  const auto set_value = [&](const Field *field, Item *value) {
-    const int i = prefix_part(table, pk, field);
-    if (i < 0 || !value_matches_one_key(field, value)) return false;
-    if (pv->values[i] == nullptr) pv->values[i] = value;
-    return true;
-  };
   if (item->type() == Item::COND_ITEM) {
     Item_cond *cond = down_cast<Item_cond *>(item);
     if (cond->functype() != Item_func::COND_AND_FUNC) {
@@ -346,7 +353,8 @@ void collect_prefix_values(const TABLE *table, const KEY *pk, Item *item,
     if (a->type() != Item::FIELD_ITEM ||
         !compares_in_column_collation(func,
                                       down_cast<Item_field *>(a)->field) ||
-        !set_value(down_cast<Item_field *>(a)->field, b))
+        !set_prefix_value(table, pk, pv, down_cast<Item_field *>(a)->field,
+                          b))
       pv->other = true;
   } else if (func->functype() == Item_func::MULT_EQUAL_FUNC) {
     Item_equal *equal = down_cast<Item_equal *>(func);
@@ -356,7 +364,8 @@ void collect_prefix_values(const TABLE *table, const KEY *pk, Item *item,
       return;
     }
     for (Item_field &field : equal->get_fields()) {
-      if (!set_value(field.field, value)) pv->other = true;
+      if (!set_prefix_value(table, pk, pv, field.field, value))
+        pv->other = true;
     }
   } else if (func->functype() == Item_func::IN_FUNC) {
     Item_func_in *in = down_cast<Item_func_in *>(func);

@@ -41,6 +41,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <functional>
 
 // ---------------------------------------------------------------
 // Test infrastructure
@@ -2041,7 +2042,7 @@ static bool test_delete_oldest_basic(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows = readDataRows(mysql, "rb_t18", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t18", 1);
   TEST_ASSERT(rows.size() == 2,
               "expected 2 rows, got " + std::to_string(rows.size()));
   TEST_ASSERT(rows[0].ring_idx == 2, "survivor at slot 2");
@@ -2100,7 +2101,7 @@ static bool test_delete_oldest_drain_idempotent(Ndb *ndb, MYSQL *mysql) {
   }
 
   // 0 data rows remain, but meta row stays (count=0).
-  auto rows = readDataRows(mysql, "rb_t19", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t19", 1);
   TEST_ASSERT(rows.size() == 0, "expected 0 data rows");
   int total = countAllRows(mysql, "rb_t19", 1);
   TEST_ASSERT(total == 1,
@@ -2205,7 +2206,7 @@ static bool test_delete_oldest_after_wrap(Ndb *ndb, MYSQL *mysql) {
 
   // Sanity: post-wrap survivors are row_2..row_6.
   {
-    auto rows = readDataRows(mysql, "rb_t21", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t21", 1);
     TEST_ASSERT(rows.size() == 5, "expected 5 survivors after wrap");
     // Slot 1 = row_5 (insert#6), slot 2 = row_6 (insert#7), slot 3 = row_2
     // (insert#3, oldest), slot 4 = row_3, slot 5 = row_4.
@@ -2242,7 +2243,7 @@ static bool test_delete_oldest_after_wrap(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto rows = readDataRows(mysql, "rb_t21", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t21", 1);
   TEST_ASSERT(rows.size() == 2,
               "expected 2 survivors, got " + std::to_string(rows.size()));
   TEST_ASSERT(rows[0].ring_idx == 1 && rows[0].data == "row_5",
@@ -2303,7 +2304,7 @@ static bool test_delete_oldest_refill_order(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(insertN(ndb, table, h, rowbuf, mask, 1, "post", 2),
               "insert 2 post-pop");
 
-  auto rows = readDataRows(mysql, "rb_t22", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t22", 1);
   TEST_ASSERT(rows.size() == 5,
               "expected 5 rows, got " + std::to_string(rows.size()));
   // Slots 1,2 = post_0, post_1 (the refilled ones).
@@ -2367,12 +2368,12 @@ static bool test_delete_oldest_multi_prefix(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
 
-  auto r1 = readDataRows(mysql, "rb_t23", 1);
+  std::vector<DataRow> r1 = readDataRows(mysql, "rb_t23", 1);
   TEST_ASSERT(r1.size() == 1, "cid=1 should have 1 row left");
   TEST_ASSERT(r1[0].ring_idx == 3 && r1[0].data == "a_2",
               "cid=1 survivor is slot 3 / a_2");
 
-  auto r2 = readDataRows(mysql, "rb_t23", 2);
+  std::vector<DataRow> r2 = readDataRows(mysql, "rb_t23", 2);
   TEST_ASSERT(r2.size() == 3, "cid=2 must be untouched (3 rows)");
   TEST_ASSERT(r2[0].data == "b_0" && r2[1].data == "b_1" &&
                   r2[2].data == "b_2",
@@ -2449,7 +2450,7 @@ static bool test_alter_ring_size_rejected(Ndb *ndb, MYSQL *mysql) {
   unsigned char *mask2 = h2.newUserMask(check);
   TEST_ASSERT(insertN(ndb, check, h2, rowbuf2, mask2, 1, "row", 2),
               "insert after rejected alter");
-  auto rows = readDataRows(mysql, "rb_t24", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t24", 1);
   TEST_ASSERT(rows.size() == 3,
               "expected 3 rows after rejected alter, got " +
                   std::to_string(rows.size()));
@@ -2833,11 +2834,13 @@ static bool test_dict_rejects_ttl_and_fr_combo(Ndb *ndb, MYSQL *mysql) {
   // Helper: an alterTable that must be rejected with the given code and
   // must leave the table's TTL state unchanged. Counted like the create
   // sub-case so one red run shows every outcome.
-  auto expect_alter_rejected = [&](const char *tabname,
-                                   const NdbDictionary::Table *old,
-                                   const NdbDictionary::Table &newTab,
-                                   const char *what, int expected_code,
-                                   bool ttl_after) {
+  std::function<void(const char *, const NdbDictionary::Table *,
+                     const NdbDictionary::Table &, const char *, int, bool)>
+      expect_alter_rejected = [&](const char *tabname,
+                                  const NdbDictionary::Table *old,
+                                  const NdbDictionary::Table &newTab,
+                                  const char *what, int expected_code,
+                                  bool ttl_after) {
     int rc = dict->alterTable(*old, newTab);
     std::cerr << "  (" << what << ": rc=" << rc << " err="
               << dict->getNdbError().code << " "
@@ -2945,7 +2948,7 @@ static bool test_dict_rejects_add_fragment(Ndb *ndb, MYSQL *mysql) {
   unsigned char *mask = h.newUserMask(check);
   TEST_ASSERT(insertN(ndb, check, h, rowbuf, mask, 1, "row", 1),
               "insert after rejected alter");
-  auto rows = readDataRows(mysql, "rb_t29", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t29", 1);
   TEST_ASSERT(rows.size() == 1, "expected 1 row after rejected alter, got " +
                                     std::to_string(rows.size()));
 
@@ -3000,8 +3003,8 @@ static bool test_corrupt_meta_rejected(Ndb *ndb, MYSQL *mysql) {
   buildMask(table, meta_only_mask, h.mask_size, meta_cols, 1);
 
   // Raw flagged update of the meta row's ring_meta column.
-  auto writeRawMeta = [&](const unsigned char *val, Uint32 len,
-                          bool set_null) -> bool {
+  std::function<bool(const unsigned char *, Uint32, bool)> writeRawMeta =
+      [&](const unsigned char *val, Uint32 len, bool set_null) -> bool {
     NdbTransaction *t = ndb->startTransaction(table);
     if (!t) return false;
     h.fillRow(rowbuf, 1, "");  // client_id=1, ring_idx=0 (memset)
@@ -3027,7 +3030,8 @@ static bool test_corrupt_meta_rejected(Ndb *ndb, MYSQL *mysql) {
   };
 
   // addRow on the corrupted table must fail with 4357.
-  auto addRowMustFail = [&](const char *tag) -> bool {
+  std::function<bool(const char *)> addRowMustFail =
+      [&](const char *tag) -> bool {
     NdbTransaction *t = ndb->startTransaction(table);
     if (!t) return false;
     NdbRingBufferWriter writer(table, h.record, t);
@@ -3118,7 +3122,7 @@ static bool test_corrupt_meta_rejected(Ndb *ndb, MYSQL *mysql) {
   }
 
   // The data rows themselves must be untouched by all of the above.
-  auto rows = readDataRows(mysql, "rb_t30", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t30", 1);
   TEST_ASSERT(rows.size() == 3,
               "expected 3 untouched data rows, got " +
                   std::to_string(rows.size()));
@@ -3176,7 +3180,7 @@ static bool test_delete_oldest_edges(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
   {
-    auto rows = readDataRows(mysql, "rb_t31", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t31", 1);
     TEST_ASSERT(rows.size() == 3, "maxN=0 must not delete anything");
   }
 
@@ -3205,7 +3209,7 @@ static bool test_delete_oldest_edges(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
   {
-    auto rows = readDataRows(mysql, "rb_t31", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t31", 1);
     TEST_ASSERT(rows.size() == 2,
                 "expected 2 rows, got " + std::to_string(rows.size()));
     TEST_ASSERT(rows[0].ring_idx == 3 && rows[0].data == "row_2",
@@ -3231,7 +3235,7 @@ static bool test_delete_oldest_edges(Ndb *ndb, MYSQL *mysql) {
   TEST_ASSERT(insertN(ndb, t1, h1, rowbuf1, mask1, 1, "row", 3),
               "insert 3 rows into size-1 ring");
   {
-    auto rows = readDataRows(mysql, "rb_t31b", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t31b", 1);
     TEST_ASSERT(rows.size() == 1 && rows[0].ring_idx == 1 &&
                     rows[0].data == "row_2",
                 "size-1 ring holds only the last row");
@@ -3250,13 +3254,13 @@ static bool test_delete_oldest_edges(Ndb *ndb, MYSQL *mysql) {
     ndb->closeTransaction(trans);
   }
   {
-    auto rows = readDataRows(mysql, "rb_t31b", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t31b", 1);
     TEST_ASSERT(rows.size() == 0, "size-1 ring drained");
   }
   TEST_ASSERT(insertN(ndb, t1, h1, rowbuf1, mask1, 1, "re", 1),
               "refill size-1 ring");
   {
-    auto rows = readDataRows(mysql, "rb_t31b", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t31b", 1);
     TEST_ASSERT(rows.size() == 1 && rows[0].ring_idx == 1 &&
                     rows[0].data == "re_0",
                 "size-1 ring refilled at slot 1");
@@ -3268,7 +3272,7 @@ static bool test_delete_oldest_edges(Ndb *ndb, MYSQL *mysql) {
              "INSERT INTO test.rb_t31b (client_id, event_data) "
              "VALUES (1, 'sql_after')");
   {
-    auto rows = readDataRows(mysql, "rb_t31b", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t31b", 1);
     TEST_ASSERT(rows.size() == 1 && rows[0].ring_idx == 1 &&
                     rows[0].data == "sql_after",
                 "SQL INSERT overwrote slot 1 of the size-1 ring");
@@ -3504,7 +3508,7 @@ static bool test_ttl_ring_writer_and_delete_oldest(Ndb *ndb, MYSQL *mysql) {
 
   TEST_ASSERT(insertN(ndb, table, h, rowbuf, mask, 1, "row", 3),
               "insert 3 rows");
-  auto rows = readDataRows(mysql, "rb_t33", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t33", 1);
   TEST_ASSERT(rows.size() == 3,
               "expected 3 rows, got " + std::to_string(rows.size()));
 
@@ -3629,7 +3633,7 @@ static bool test_ttl_ring_meta_never_expires(Ndb *ndb, MYSQL *mysql) {
               "total_inserts should be 2 (ring continued), got " +
                   std::to_string(metaFieldLE(hex, 16, 8)));
   TEST_ASSERT(metaFieldLE(hex, 8, 4) == 2, "count should be 2");
-  auto rows = readDataRows(mysql, "rb_t34", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t34", 1);
   TEST_ASSERT(rows.size() == 2 && rows[1].ring_idx == 2,
               "second row should sit in slot 2");
   // The writer's meta update restored the maximum
@@ -3670,7 +3674,7 @@ static bool test_ttl_ring_only_expired_delete(Ndb *ndb, MYSQL *mysql) {
   mysql_exec(mysql,
              "INSERT INTO test.rb_t35 (client_id, event_data, ts) VALUES "
              "(1, 'live', NOW())");
-  auto rows = readDataRows(mysql, "rb_t35", 1);
+  std::vector<DataRow> rows = readDataRows(mysql, "rb_t35", 1);
   TEST_ASSERT(rows.size() == 1 && rows[0].ring_idx == 2 &&
                   rows[0].data == "live",
               "only the live row (slot 2) should be visible");
@@ -3696,9 +3700,11 @@ static bool test_ttl_ring_only_expired_delete(Ndb *ndb, MYSQL *mysql) {
 
   // Issue one NdbRecord deleteTuple of (1, slot) and return the error code
   // (0 on success).
-  auto delete_slot = [&](Uint32 slot,
-                         const NdbOperation::OperationOptions *opts,
-                         const char *what) -> int {
+  std::function<int(Uint32, const NdbOperation::OperationOptions *,
+                    const char *)>
+      delete_slot = [&](Uint32 slot,
+                        const NdbOperation::OperationOptions *opts,
+                        const char *what) -> int {
     h.fillRow(rowbuf, 1, "");
     setInt32(rowbuf, ridx, slot);
     NdbTransaction *trans = ndb->startTransaction(table);
@@ -3764,7 +3770,8 @@ static bool test_ttl_ring_only_expired_delete(Ndb *ndb, MYSQL *mysql) {
   // (f) a row this transaction has already locked is read with TTL ignored
   //     (read what you locked); an only-expired delete of it must still
   //     check expiry: a live row and the meta row stay
-  auto lock_then_delete = [&](Uint32 slot, const char *what) -> int {
+  std::function<int(Uint32, const char *)> lock_then_delete =
+      [&](Uint32 slot, const char *what) -> int {
     h.fillRow(rowbuf, 1, "");
     setInt32(rowbuf, ridx, slot);
     NdbTransaction *trans = ndb->startTransaction(table);
@@ -3976,7 +3983,7 @@ static bool test_ttl_ring_precision_and_partial_record(Ndb *ndb,
     }
     delete[] rowbuf;
     delete[] mask;
-    auto rows = readDataRows(mysql, "rb_t36", 1);
+    std::vector<DataRow> rows = readDataRows(mysql, "rb_t36", 1);
     TEST_ASSERT(rows.size() == 2, "the rejected row must not be written");
     TEST_ASSERT(metaFieldLE(readMetaHex(mysql, "rb_t36", 1), 16, 8) == 2,
                 "total_inserts must stay 2");
