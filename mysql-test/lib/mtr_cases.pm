@@ -1079,6 +1079,91 @@ sub skip_test {
   $tinfo->{'comment'} = $comment;
 }
 
+# Expand a CPU list such as "0-3,8" into a list of CPU ids.
+sub expand_cpu_list {
+  my $list = shift;
+
+  my @cpus;
+  foreach my $range (split(/,/, $list)) {
+    $range =~ s/\s+//g;
+    if ($range =~ /^(\d+)-(\d+)$/) {
+      push(@cpus, $1 .. $2);
+    } elsif ($range =~ /^(\d+)$/) {
+      push(@cpus, $1);
+    }
+  }
+  return @cpus;
+}
+
+# Return a hash of the CPUs that are online and that this process may run
+# on, these are the CPUs a child process can be bound to with taskset.
+# Return undef when this isn't known, i.e. when not on Linux.
+my $available_cpus;
+
+sub get_available_cpus {
+  return undef if $^O ne 'linux';
+  return $available_cpus if defined $available_cpus;
+
+  my %allowed;
+  if (open(my $fh, '<', "/proc/self/status")) {
+    while (my $line = <$fh>) {
+      if ($line =~ /^Cpus_allowed_list:\s*(\S+)/) {
+        $allowed{$_} = 1 foreach (expand_cpu_list($1));
+      }
+    }
+    close($fh);
+  }
+  if (open(my $fh, '<', "/sys/devices/system/cpu/online")) {
+    my $online = <$fh>;
+    close($fh);
+    if (defined $online) {
+      chomp($online);
+      my %online = map { $_ => 1 } expand_cpu_list($online);
+      foreach my $cpu (keys %allowed) {
+        delete $allowed{$cpu} unless $online{$cpu};
+      }
+    }
+  }
+  $available_cpus = \%allowed;
+  return $available_cpus;
+}
+
+# Return the CPUs used in cpubind options of the test's config files that
+# aren't available, sorted and separated by ",". Return an empty string if
+# all of them are available or no cpubind option is used.
+my %cpubind_missing_cache;
+
+sub cpubind_missing_cpus {
+  my $tinfo = shift;
+
+  my @paths = grep { defined $_ && -f $_ }
+    ($tinfo->{template_path}, $tinfo->{extra_template_path});
+  my $key = join('|', @paths);
+  return $cpubind_missing_cache{$key}
+    if exists $cpubind_missing_cache{$key};
+
+  my %cpus;
+  foreach my $path (@paths) {
+    my $config = eval { My::Config->new($path) };
+    next unless defined $config;
+    foreach my $group ($config->groups()) {
+      my $value = $group->if_exist('cpubind');
+      next unless defined $value;
+      $cpus{$_} = 1 foreach (expand_cpu_list($value));
+    }
+  }
+
+  my $missing = "";
+  if (%cpus) {
+    my $available = get_available_cpus();
+    my @missing = sort { $a <=> $b }
+      grep { !defined $available || !$available->{$_} } keys %cpus;
+    $missing = join(',', @missing);
+  }
+  $cpubind_missing_cache{$key} = $missing;
+  return $missing;
+}
+
 # Loop through the list of test cases and marks those that should be
 # skipped if incompatible with what the server supports etc or update
 # the test settings if necessary.
@@ -1533,6 +1618,13 @@ sub collect_one_test_case {
     return $tinfo;
   }
 
+  # Skip before any server is started, the test's .cnf may use Linux only
+  # options such as cpubind (taskset)
+  if ($tinfo->{'need_linux'} && $^O ne 'linux') {
+    skip_test($tinfo, "Needs Linux");
+    return $tinfo;
+  }
+
   # Find config file to use if not already selected in <testname>.opt file
   if (defined $defaults_file) {
     # Using same config file for all tests
@@ -1564,6 +1656,14 @@ sub collect_one_test_case {
   if (defined $defaults_extra_file) {
     $defaults_extra_file = get_bld_path($defaults_extra_file);
     $tinfo->{extra_template_path} = $defaults_extra_file;
+  }
+
+  # A process bound with cpubind (taskset) fails to start if any of its
+  # CPUs is offline or not usable, skip the test instead
+  my $missing_cpus = cpubind_missing_cpus($tinfo);
+  if ($missing_cpus ne "") {
+    skip_test($tinfo, "Needs CPUs $missing_cpus for cpubind");
+    return $tinfo;
   }
 
   if (!$::start_only or @::opt_cases) {
@@ -1649,6 +1749,7 @@ my @tags = (
   [ "include/ndb_rpl_init_source_replica.inc", "ndb_test",       1 ],
   [ "federated.inc",                "federated_test", 1 ],
   [ "include/not_windows.inc",      "not_windows",    1 ],
+  [ "include/linux.inc",            "need_linux",     1 ],
   [ "include/not_parallel.inc",     "not_parallel",   1 ],
 
   # Tests with below .inc file are considered to be group replication tests
