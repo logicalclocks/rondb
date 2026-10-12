@@ -533,10 +533,18 @@ F8 was a framework fixture issue and is already fixed.
 - [ ] Group hash table under concurrency (census run 7, `m3_run6_plan.md` D1 /
   D2): a tpch_q2 query costs ~70 % more data-node CPU at T=8 than at T=1, the
   same operations at ~3x the cost (eight queries hold ~920 MB of query memory
-  per node). D1: pre-size per-thread group tables from the previous execution
+  over both nodes). D1: pre-size per-thread group tables from the previous execution
   of the same program, hash each new group once (and maybe store the hash in
   the record). D2: account the memory of a query, then compact the 24-byte
   `Register` slots (q2's record 80 -> <= 64 bytes, one cache line per row).
+  D1 done (2026-10-08, `123862cde57`): hints on vs off on one cluster (run 7c)
+  give tpch_q2 +11.7 % q/s at T=8, q13 +3.8 %, offline_fs_scalar +4.7 %,
+  the single-table path unchanged. D2a done (DUMP 2366 trace): 2 per-thread
+  tables per node, records 56 / 80 / 200 B (q13 / q2 / offline_fs_wide),
+  merged CTE tables keep their holes until teardown. Potential TODOs, not
+  scheduled (2026-10-12): D2b compact slots (measure with a padding probe
+  first), compacting the CTE during the redistribution walk, per-worker
+  pools (D2d); details in `m3_run6_plan.md` "Run 7c results".
 - [x] F25 (bench.md): a ~1 ms idle-wake stall on a share of requests, both engines
   (sets the serving p99). Diagnose on the benchmark computer: CPU idle states,
   data-node spinning, or the NDB API receive path (`m3_experiments.md` X1).
@@ -612,8 +620,9 @@ F8 was a framework fixture issue and is already fixed.
   30 MB and does not fail.
   Census run 7 (2026-10-07, census_benchbox.cnf, TotalMemoryConfig=12G): every
   many-group CTE completes at T=8 without an error, both data nodes up;
-  offline_fs_wide peaks at 1.0 GB of query memory per node (61 % of global
-  memory), so the census no longer reaches the out-of-memory path and (a) /
+  offline_fs_wide peaks at 1.0 GB of query memory over both nodes (global
+  memory at most 61 % on a node), so the census no longer reaches the
+  out-of-memory path and (a) /
   (b) rest on their MTR tests. (c) is `m3_run6_plan.md` D2.
 - [x] F32 (2026-09-30, review): a WHERE condition on the right side of a LEFT
   JOIN of real tables was pushed into that table's operation as its filter, i.e.

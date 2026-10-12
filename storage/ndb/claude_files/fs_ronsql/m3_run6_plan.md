@@ -693,7 +693,9 @@ unknown: park / identity pools?).
 
 **C5. Memory per many-group CTE query** (F27 (c)): tpch_q2 peaks at
 876 MB of query memory at 8 threads (~110 MB per query, ~550 B per group
-for a 5-row result).  Reduce the per-group footprint or budget admission;
+for a 5-row result; *2026-10-08: these are sums over both data nodes, as
+the driver's QM columns add them up, so about half per node; the group
+records themselves are 56–201 B, see run 7c*).  Reduce the per-group footprint or budget admission;
 confirm offline_fs_wide now fails with 20008 / 1870 (temporary, 503)
 instead of 1869.  *Run 7: continued as D2; offline_fs_wide no longer
 runs out of query memory on census_benchbox.cnf (see D).*
@@ -804,7 +806,8 @@ recorded.
   ±5 % at T=1 and ±10 % at T=8; run 6's +18–20 % is the configuration
   change plus noise.
 - **F27.**  offline_fs_wide completes at T=8 with 1.0 GB of query memory
-  per node (61 % of global memory): census_benchbox.cnf's
+  over both nodes (~0.5 GB per node; global memory peaked at 61 % on a
+  node): census_benchbox.cnf's
   TotalMemoryConfig=12G leaves room, so the census no longer exercises the
   out-of-memory path.  (a) / (b) rest on their MTR tests (error insert
   17534); (c) continues as D2.
@@ -844,7 +847,8 @@ and other, per thread.
    `GBHashTable::splitOne` 14 → 53 ms, owner phase 39 → 94 ms, and ~25 ms
    more fragment-mutex locking in `Dbtup::scanNext` (query-thread scans).
    The operations are the same and each costs ~3× more: eight concurrent
-   q2 queries hold ~920 MB of query memory per node (84 MB for one) and
+   q2 queries hold ~920 MB of query memory over both nodes (84 MB for
+   one; the report's QM columns sum the data nodes) and
    hyperthread siblings share every core.  Throughput is bound by the
    group table's memory traffic: D1 and D2.
 
@@ -935,7 +939,8 @@ allocated at 8-byte alignment in 32 KB chunks.  q2's CTE record (one INT
 key, MIN and COUNT) is 24 + 8 + 48 = 80 bytes, so most row updates touch
 two cache lines; a slot's type and signedness are the same for every group
 of a program.  Memory per query is partial tables per node × groups per
-table × record size: per node, q2 84 MB at T=1 (q13 48, q22 43,
+table × record size.  Summed over both nodes (the report's QM columns
+add the data nodes up), q2 holds 84 MB at T=1 (q13 48, q22 43,
 offline_fs_wide 110, offline_fs_batch 82) and 919 MB at T=8.
 
 - **D2a. Account first.**  A per-query breakdown (records, bucket
@@ -1167,10 +1172,10 @@ If perf fails, skip part 2: nothing after it depends on it.
     - core_group_many −17 %;
     - offline_fs_wide: 16 of 296 requests failed with the temporary
       20008 / 1870 out-of-memory errors (HTTP 503), −28 % q/s, p99
-      8.1 s, query memory 1.0 GB per node.  The data nodes stayed up:
+      8.1 s, query memory 1.0 GB over both nodes.  The data nodes stayed up:
       F27 (a) / (b) behave as designed on the box.
   - Query memory per query grows with the fragment count
-    (offline_fs_wide T=1 124 → 212 MB).
+    (offline_fs_wide T=1 124 → 212 MB over both nodes).
   - **Conclusion:** a trade-off, not a default; the census keeps
     PartitionsPerNode 2.  Why a single core_scan_agg does not get faster
     with twice the fragments (2 → 4 scanning threads per node) is open:
@@ -1240,3 +1245,102 @@ tar -czf ~/census_run7c.tar.gz -C ~ census_run7c
   for each switch (the infoEvent goes to the cluster log, which the grep
   also covers), the `JOIN_AGG_MEM_TRACE on` line, and COMPLETE /
   CTE_READY lines from both data nodes.
+
+### Run 7c results (2026-10-08, `/Users/mikael/census_run7c`)
+
+- **Defaults.**  Every report header shows `AdaptiveSendThreshold 16`:
+  the new default, and the driver now reads it.
+- **D1 A/B (hints off, on, on, off on one cluster).**  Hints on against
+  off:
+
+  | query | T=8 q/s | T=1 avg |
+  |---|---|---|
+  | tpch_q2 | +11.7 % (13.3 / 13.2 → 14.9 / 14.7) | −7 % |
+  | tpch_q13 | +3.8 % | −1 % |
+  | offline_fs_scalar | +4.7 % | −3 % |
+  | core_group_many | +4 % (noisy: 6.2 / 6.6 → 6.0 / 7.3) | +3 % (min equal) |
+  | core_group_few (control) | +0 % | −2 % |
+
+  The hints do not hurt the single-table path, so run 7b's drop there
+  was session drift.  D1 is done.
+- **D2a trace** (both nodes, T=1 and T=8; 240 COMPLETE and 120 CTE_READY
+  lines):
+  - **Per-thread tables.**  A CTE body fills one per-thread table per
+    scanned fragment: 2 per node (1 when one thread scanned both), at
+    T=8 too, because a fragment scan stays on its thread.  The main
+    query's small aggregation uses all 7 workers.  D2c (fewer partial
+    copies) is therefore moot.
+  - **Record bytes** (chunk bytes / groups): q13 56 B, q2 80 B,
+    offline_fs_wide 201 B, as the layout predicts (24-byte header, key,
+    24 bytes per slot).  There is no slack while the tables build.
+  - **Per node at COMPLETE.**  q13 5–10 MB of records, q2 14–21 MB,
+    offline_fs_wide 19–38 MB; buckets 0.8–2.1 MB.  Each orders-based
+    table holds ~98 % of the node's 100k groups (97.6k), so a merge
+    halves them.  q2's tables hold 137–187k groups each.
+  - **After the merge and redistribution (CTE_READY)** the merged table
+    still holds every source chunk: q2's 100k groups sit in 15–21 MB
+    (156–226 B per group), offline_fs_wide's in 220–780 B per group.  The
+    holes come from merged duplicates and from groups sent to the other
+    node, and they stay until teardown, i.e. through the main query.
+  - **Against the measured query memory** (the report sums both nodes,
+    so halve it):
+    - at T=1 the records are about half of a query's per-node query
+      memory (q2 ~40 MB per node; q11, with 1–2 MB of records, ~7 MB);
+    - at T=8, eight q2 queries' records (8 × 16–23 MB) are 30–45 % of
+      the 405–460 MB per node.  The rest grows faster than the records.  The
+      prime suspect, not yet measured, is lc-pool segment fragmentation:
+      every per-thread table of a join aggregation allocates from the
+      SETUP thread's pool (D2d).
+- **D2, what is left: potential TODOs, not scheduled** (decision
+  2026-10-12: record them and do nothing about them for now).
+  - **D2b, compact slots** (the CPU lever, the largest of the three).
+    Only stored group records change.  Each slot becomes an 8-byte value
+    plus a meta byte (type in 5 bits, is_unsigned, is_null), the meta
+    bytes padded to 8, so q13 56 → 48 B, q2 80 → 56 B (one 64-byte
+    line), offline_fs_wide 200 → 96 B (2 lines instead of 4).  The
+    type stays per group because it can differ between groups
+    (UNDEFINED until the first value, a DOUBLE or BIGINT SUM partial),
+    so the conversion is lossless.  The 24-byte `Register` stays the
+    working and wire format: no NDB API, redistribution-signal or
+    version-gate change.
+    - Touch points, about 25–35 sites in ~6 files:
+      - the `ProcessRec` prologue / epilogue in both interpreters
+        (unpack into a stack array that the interpreter loop, the JIT
+        glue and the JIT helpers keep using unchanged; pack back
+        after);
+      - group creation (length, COUNT = 0 / NULL initial slots,
+        `val_len`, `m_result_size`, `read_length`);
+      - `mergeFrom` / `mergeAccumulators` / `mergeOneGroup`;
+      - the redistribution send, string payload included;
+      - results to the API (drained batches, the join-aggregation
+        main-query results in DblqhMain, evictions, NULL-extended
+        rows);
+      - the CTE scan / lookup feeds and the AVG and ORDER BY / LIMIT
+        finalizes;
+      - teardown's string frees.
+    - Size: about 500–800 lines plus a unit test of the converter, ~3–4×
+      D1, 2–3 MTR rounds, one box run.  The risk is a missed site that
+      reads compact bytes as a `Register`.  All slot access then goes
+      through two converter functions, the remaining uses get a grep
+      audit, and debug builds check the meta byte.
+    - Cost: ~1–2 ns per slot per row to unpack and pack a record that is
+      already in cache.
+    - Expected gain: unmeasured.  Memory −30 % (q2) to −50 % (wide).  CPU
+      perhaps 0–10 % for q2 at T=8 (the adjacent-line prefetch may
+      already hide its second line) and 10–20 % for offline_fs_wide.
+    - **Measure first** if it is taken up: a padding probe, a DUMP that
+      adds N bytes to every new group record (~20 lines), with q2, q13
+      and offline_fs_wide at T=1 / T=8 for padding 0 / 64 / 128 (a
+      short box run).  If 64 extra bytes cost q2 little, compaction will
+      not gain much on it either.
+  - **Compact the CTE during the redistribution walk.**  The walk already
+    visits every group and decides keep or send.  Moving a kept record
+    to a fresh chunk there is a memcpy of a record already in cache
+    plus one bucket-chain pointer update (no rehash).  The sent records
+    are freed, so the old chunks empty and are released during the walk,
+    which also lowers the peak.  q2: ~100k moves per node at ~20–30 ns,
+    2–3 ms of CPU per node per query (~1 %).  The CTE then holds ~8
+    instead of 15–21 MB per node through the main query.  A separate
+    pass after CTE_READY would cost more and briefly hold both copies.
+  - **D2d, per-worker pools**, after an lc-pool segment view (A5) has
+    confirmed the fragmentation suspicion.
