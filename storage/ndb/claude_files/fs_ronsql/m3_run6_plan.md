@@ -330,6 +330,24 @@ through except the mle-e5126 step below (the re-check is new, rerun).
   while reading the allocator: a lockless fetch whose backend allocation
   fails returns without decrementing m_num_active_global_malloc, so every
   later fetch of that pool holds the mutex (not fixed).
+- 2026-10-12: 26.10-main's 06475c5d4bd (lc pool: MAX_FREE_LONG_AREAS 1)
+  keeps one emptied 2 MB segment per (resource group, thread) base,
+  charged as used.  ronsql_large_mem_leak_join then failed its first-use
+  check with exactly such steps (mlj-1: QUERY_MEMORY +64 / +128,
+  TRANSACTION_MEMORY +384..+448 pages per node).  New DUMP 104005
+  (`PrimeLcSegmentCache`, THRMAN): every block thread leaves one emptied
+  segment cached in its QUERY_MEMORY and TRANSACTION_MEMORY bases
+  (`lc_ndbd_pool_prime_segment_cache`: allocate the largest area, which
+  only an empty segment holds, and free it).  mem_leak_init.inc and
+  ndb_pushdown_agg_drain run it before their baselines, so a cached
+  segment is never counted as first-use growth, and the checks stay as
+  strict as before.  Also seen in every leak test: a one-page
+  TRANSACTION_MEMORY one-off that some nodes allocate late (2356 → 2357,
+  never more); it failed `ronsql_large_mem_leak` once, in a measured
+  round (mlk-5 round 2, node 1), then passed on the rerun.  The harness
+  now records `ndbinfo.ndb$pools` with every baseline and lists the
+  pools whose size changed under a LEAK, so the next occurrence names
+  the pool to warm up.
 - A2 DBSPJ RS_ABORTED (2026-09-25, written, not built): a real leak.  A
   scan request waiting for SCAN_NEXTREQ (RS_WAITING) when its TC's node
   dies was parked as an RS_ABORTED tombstone for a SCAN_NEXTREQ that

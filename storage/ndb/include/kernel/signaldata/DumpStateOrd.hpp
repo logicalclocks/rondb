@@ -120,6 +120,10 @@ class DumpStateOrd {
     SetAllowedSpinOverhead = 104002,
     SetSpintimePerCall = 104003,
     EnableAdaptiveSpinning = 104004,
+    // Every block thread leaves one emptied lc pool segment cached for
+    // QUERY_MEMORY and TRANSACTION_MEMORY, so idle levels measured
+    // afterwards include the cache (memory-leak tests)
+    PrimeLcSegmentCache = 104005,
     _THRMANMax = 104999,
 
     _TRIXMin = 105000,

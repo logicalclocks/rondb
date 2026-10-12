@@ -4045,6 +4045,21 @@ lc_merge_free(lc_uint32 *left_mem,
 
 /* This method is part of external interface */
 void
+lc_ndbd_pool_prime_segment_cache(Uint32 pool_id, Uint32 thread_id)
+{
+  /* The largest area a segment can give, rounded down to the allocation
+   * granularity: no segment with a live area left can hold it. */
+  const size_t bytes = (size_t(MAX_MEMORY_ALLOC_SIZE_IN_WORDS) * 4) &
+                       ~size_t(MIN_LONG_AREA_SIZE - 1);
+  void *mem = lc_ndbd_pool_malloc(bytes, pool_id, thread_id, false);
+  if (mem != nullptr)
+  {
+    lc_ndbd_pool_free(mem);
+  }
+}
+
+/* This method is part of external interface */
+void
 lc_ndbd_pool_free(void *mem)
 {
   lc_uint32 *uint32_mem = (lc_uint32*)mem;
