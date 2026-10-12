@@ -1,0 +1,154 @@
+# ttl_ring_buffer.test
+#
+# DML semantics of a ring buffer table with TTL (MAX_ROWS_PER_PK + TTL):
+# visibility follows TTL, the ring meta row never expires and carries the
+# TTL column's type maximum, expired slots are overwritten by the ring like
+# any other slot, and the TTL column of data rows may be updated. Physical
+# reclamation by the TTL purge needs the REST server and is covered by
+# ndb_ttl_purge.ttl_purge_ring_buffer.
+
+--source include/have_ndb.inc
+
+# The meta row's TIMESTAMP maximum is printed: fix the session time zone.
+SET time_zone = '+00:00';
+
+--echo #
+--echo # Case 1: visibility follows TTL, the meta row never expires
+--echo #
+
+CREATE TABLE test.rb_ttl (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+# Slot 1 expired (2 h old with TTL 1 h), slot 2 live, slot 3 far future
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 DAY), 'future_3');
+
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+SELECT COUNT(*) FROM test.rb_ttl WHERE client_id = 1;
+
+# The meta row (ring_idx 0) is visible with show_meta: it never expires and
+# its TTL column holds the TIMESTAMP maximum. The expired data row stays
+# hidden (the TTL check runs before the meta-row filter).
+# Ring_meta: version 1, next_pos 4, count 3, total_inserts 3.
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 1 AND ring_idx = 0;
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 2: the ring overwrites an expired slot like any other slot
+--echo #
+
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_4');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_5');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+
+# next_pos 2, count 4, total_inserts 5
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 3: the TTL column of a data row may be updated; expired rows are invisible to UPDATE
+--echo #
+
+--enable_info
+UPDATE test.rb_ttl SET ts = DATE_SUB(NOW(), INTERVAL 3 HOUR) WHERE client_id = 1 AND ring_idx = 2;
+UPDATE test.rb_ttl SET val = 'no_such_row' WHERE client_id = 1 AND ring_idx = 2;
+--disable_info
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+
+# The ring overwrites the now-expired slot 2 on its turn
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_6');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+
+--echo #
+--echo # Case 4: DATETIME TTL column - meta row carries the DATETIME maximum
+--echo #
+
+CREATE TABLE test.rb_ttl_dt (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts DATETIME,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_ttl_dt (client_id, ts, val) VALUES (7, NOW(), 'a');
+INSERT INTO test.rb_ttl_dt (client_id, ts, val) VALUES (7, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_b');
+SELECT client_id, ring_idx, val FROM test.rb_ttl_dt ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts FROM test.rb_ttl_dt WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_ttl_dt;
+
+--echo #
+--echo # Case 5: prefix DELETE with an expired slot, then the ring starts over
+--echo #
+
+# Expire slot 4; the DELETE removes the 3 visible rows and the meta row
+# (4 affected rows: the prefix-delete scan surfaces the meta row), the
+# expired row stays physically (invisible) until the ring overwrites it:
+# one physical row left (all replicas summed / replica count).
+UPDATE test.rb_ttl SET ts = DATE_SUB(NOW(), INTERVAL 3 HOUR) WHERE client_id = 1 AND ring_idx = 4;
+--enable_info
+DELETE FROM test.rb_ttl WHERE client_id = 1;
+--disable_info
+SELECT COUNT(*) FROM test.rb_ttl WHERE client_id = 1;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_ttl WHERE client_id = 1;
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_ttl' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb_ttl';
+
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_3');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'fresh_4');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 1 ORDER BY ring_idx;
+
+# next_pos 1 (wrapped), count 4, total_inserts 4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Case 6: a prefix whose rows are all expired keeps its meta row
+--echo #
+
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (2, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_x');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (2, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_y');
+SELECT client_id, COUNT(*) FROM test.rb_ttl GROUP BY client_id ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb_ttl WHERE client_id = 2 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The ring continues for that prefix
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (2, NOW(), 'live_z');
+SELECT client_id, ring_idx, val FROM test.rb_ttl WHERE client_id = 2 ORDER BY ring_idx;
+
+--echo #
+--echo # Case 7: an ordered index on the TTL column is allowed and hides meta rows
+--echo #
+
+CREATE INDEX ttl_index ON test.rb_ttl (ts);
+# The meta rows' index entries (TIMESTAMP maximum) match the range but the
+# meta rows stay hidden; expired rows are filtered.
+SELECT client_id, ring_idx, val FROM test.rb_ttl FORCE INDEX (ttl_index)
+    WHERE ts > DATE_SUB(NOW(), INTERVAL 1 HOUR) ORDER BY client_id, ring_idx;
+DROP INDEX ttl_index ON test.rb_ttl;
+
+DROP TABLE test.rb_ttl;
+
+--echo #
+--echo # Done
+--echo #

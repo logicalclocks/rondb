@@ -61,6 +61,8 @@ bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
     fprintf(output, "(ttl)");
   if (ScanFragReq::getJoinAggFlag(sig->requestInfo))
     fprintf(output, "(join_agg)");
+  if (ScanFragReq::getRingBufferShowMetaFragFlag(sig->requestInfo))
+    fprintf(output, "(ring_meta)");
   if (ScanFragReq::getNoDiskFlag(sig->requestInfo))
     fprintf(output, "(nodisk)");
   else

@@ -116,6 +116,10 @@ bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
       fprintf(output, " ttl_only_expired");
     if (sig->getAggReadFlag(sig->attrLen))
       fprintf(output, " agg_read");
+    if (sig->getRingBufferOpFlag(sig->requestInfo))
+      fprintf(output, " ring_buffer_op");
+    if (sig->getRingBufferShowMetaFlag(sig->requestInfo))
+      fprintf(output, " ring_buffer_show_meta");
 
     fprintf(output, "\n");
   }

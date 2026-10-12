@@ -1,0 +1,181 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_lock_wait_skip.test
+#
+# A row lock held by a user transaction on one TTL table must not stop the
+# purge of the other TTL tables, and must not make the purge worker give up.
+#
+# The purge worker visits the TTL tables in "db/table" order, one batch per
+# table per round. ttl_lws.a_locked comes first and has one partition; a
+# user transaction holds a lock on its only row, which expires while locked.
+# ttl_lws.b_free comes second and has 20 expired rows nobody locks. Every
+# purge scan of a_locked waits for the lock and times out after
+# TransactionDeadlockDetectionTimeout (1200 ms, set in the .cnf).
+# While the lock is held:
+#   - every row of b_free is purged,
+#   - the locked row of a_locked stays,
+#   - the purge worker never gives up ("Has retried for") and stays running.
+# After the commit every expired row is purged.
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_lws;
+
+# Counts of purge worker messages in the rdrs2 log since the last
+# ttl_purge_mark_rdrs_log.inc, as $lw_timeouts (nextResult/execute
+# failures) and $lw_escalations (worker quits after its retries)
+--let $lw_count_log = $MYSQL_TMP_DIR/_lws_count.inc
+--write_file $MYSQL_TMP_DIR/_lws_count.pl
+use strict;
+use warnings;
+my $log = "$ENV{MYSQLTEST_VARDIR}/log/rdrs.1.1.log";
+open my $f, '<', "$ENV{MYSQL_TMP_DIR}/_rdrs_log_offset.txt" or die;
+my $off = <$f>; chomp $off; close $f;
+open my $l, '<', $log or die;
+seek($l, $off, 0);
+my ($t, $e) = (0, 0);
+while (my $line = <$l>) {
+  $t++ if $line =~ /\[TTL PWorker\] Failed to (nextResult|execute)/;
+  $e++ if $line =~ /\[TTL PWorker\] Has retried for/;
+}
+close $l;
+open my $o, '>', "$ENV{MYSQL_TMP_DIR}/_lws_count.inc" or die;
+print $o "--let \$lw_timeouts = $t\n--let \$lw_escalations = $e\n";
+close $o;
+EOF
+
+CREATE TABLE ttl_lws.a_locked (
+    id INT NOT NULL PRIMARY KEY,
+    ttl_col DATETIME,
+    data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col"
+  PARTITION BY KEY(id) PARTITIONS 1;
+CREATE INDEX ttl_index ON ttl_lws.a_locked (ttl_col);
+
+CREATE TABLE ttl_lws.b_free (
+    id INT NOT NULL PRIMARY KEY,
+    ttl_col DATETIME,
+    data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE INDEX ttl_index ON ttl_lws.b_free (ttl_col);
+
+--let $wait_db = ttl_lws
+--let $wait_table = a_locked
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--let $wait_table = b_free
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lws_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lws_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+# The a_locked row expires 7 s after the INSERT; the b_free rows are
+# expired already
+INSERT INTO ttl_lws.a_locked VALUES (1, DATE_ADD(NOW(), INTERVAL 2 SECOND), 'locked');
+--disable_query_log
+--let $i = 1
+while ($i <= 20)
+{
+  --eval INSERT INTO ttl_lws.b_free VALUES ($i, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_$i')
+  --inc $i
+}
+--enable_query_log
+
+connect (con_lock, localhost, root, , test);
+BEGIN;
+SELECT id, data FROM ttl_lws.a_locked WHERE id = 1 FOR UPDATE;
+
+--connection default
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) = 0 FROM ttl_lws.a_locked
+--source include/wait_condition.inc
+
+# Purge on (default configuration) while the lock is held
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+# Wait up to 45 s for b_free to be emptied; the outcome is asserted below
+--let $b_physical_query = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lws/def/b_free' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lws/def/b_free'
+--let $n = 45
+while ($n)
+{
+  --let $b_physical_held = `$b_physical_query`
+  --dec $n
+  if (!$b_physical_held)
+  {
+    --let $n = 0
+  }
+  if ($n)
+  {
+    --sleep 1
+  }
+}
+# Let the purge worker meet the lock a few more times after b_free is empty
+--sleep 10
+
+--exec perl $MYSQL_TMP_DIR/_lws_count.pl
+--source $lw_count_log
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lws_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lws_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $held_state = $json_value
+--let $b_physical_held = `$b_physical_query`
+--let $a_physical_held = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lws/def/a_locked' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lws/def/a_locked'`
+
+--let $assert_text = the purge of a_locked timed out on the locked row
+--let $assert_cond = $lw_timeouts >= 1
+--source include/assert.inc
+--let $assert_text = the locked row of a_locked is left
+--let $assert_cond = $a_physical_held = 1
+--source include/assert.inc
+--let $assert_text = every row of b_free is purged while the lock is held
+--let $assert_cond = $b_physical_held = 0
+--source include/assert.inc
+--let $assert_text = the purge worker did not give up
+--let $assert_cond = $lw_escalations = 0
+--source include/assert.inc
+--let $assert_text = the purge worker is running
+--let $assert_cond = "$held_state" = "running"
+--source include/assert.inc
+
+# Release the lock: the locked row is purged too
+--connection con_lock
+COMMIT;
+--disconnect con_lock
+--connection default
+--let $expected_purge_total = `SELECT $initial_purged + 21`
+--let $purge_wait_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--let $rows = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lws/def/a_locked' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lws/def/a_locked'`
+--let $assert_text = a_locked is empty after the commit
+--let $assert_cond = $rows = 0
+--source include/assert.inc
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lws_after.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lws_after.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = the purge worker is running after the commit
+--let $assert_cond = "$json_value" = "running"
+--source include/assert.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+DROP TABLE ttl_lws.a_locked;
+DROP TABLE ttl_lws.b_free;
+DROP DATABASE ttl_lws;
+--remove_file $MYSQL_TMP_DIR/_lws_count.pl
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

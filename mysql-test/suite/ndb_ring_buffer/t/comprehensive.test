@@ -358,7 +358,7 @@ DROP TABLE test.rb_sel;
 ###############################################################################
 
 --echo #
---echo # Case 22: Insert -> grow -> bulk insert -> update -> delete -> re-insert
+--echo # Case 22: Bulk insert -> update -> delete -> re-insert
 --echo #
 
 CREATE TABLE test.rb_seq (
@@ -368,28 +368,21 @@ CREATE TABLE test.rb_seq (
     data VARCHAR(50),
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
-  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
 
-# Step 1: Fill ring (3 rows)
-INSERT INTO test.rb_seq (id, data) VALUES (1, 's1'), (1, 's2'), (1, 's3');
+# Step 1: Bulk insert 6 rows (fills ring)
+INSERT INTO test.rb_seq (id, data) VALUES (1, 's1'), (1, 's2'), (1, 's3'), (1, 's4'), (1, 's5'), (1, 's6');
 SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 
-# Step 2: Grow 3 -> 6
-ALTER TABLE test.rb_seq COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=6@ring_idx@ring_meta";
-
-# Step 3: Bulk insert into expanded ring (fills slots 4-6)
-INSERT INTO test.rb_seq (id, data) VALUES (1, 's4'), (1, 's5'), (1, 's6');
-SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
-
-# Step 4: Update a data row
+# Step 2: Update a data row
 UPDATE test.rb_seq SET data = 'updated_s3' WHERE id = 1 AND ring_idx = 3;
 SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 
-# Step 5: Delete entire prefix
+# Step 3: Delete entire prefix
 DELETE FROM test.rb_seq WHERE id = 1;
 SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 
-# Step 6: Re-insert (fresh ring at grown size=6)
+# Step 4: Re-insert (fresh ring at size=6)
 INSERT INTO test.rb_seq (id, data) VALUES (1, 'new1'), (1, 'new2');
 SELECT id, ring_idx, data FROM test.rb_seq ORDER BY ring_idx;
 

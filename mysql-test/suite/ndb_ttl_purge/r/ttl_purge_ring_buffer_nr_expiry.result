@@ -1,0 +1,98 @@
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbn;
+CREATE TABLE ttl_rbn.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbn.rb (ttl_col);
+CREATE PROCEDURE ttl_rbn.ins(IN n INT, IN secs INT, IN tag VARCHAR(20))
+BEGIN
+DECLARE i INT DEFAULT 0;
+DECLARE p INT;
+WHILE i < n DO
+SET p = 1;
+WHILE p <= 10 DO
+INSERT INTO ttl_rbn.rb (client_id, ttl_col, data)
+VALUES (p, DATE_ADD(NOW(), INTERVAL secs SECOND), CONCAT(tag, '_', i));
+SET p = p + 1;
+END WHILE;
+SET i = i + 1;
+END WHILE;
+END|
+CREATE PROCEDURE ttl_rbn.writer(IN rounds INT, IN tag VARCHAR(20))
+BEGIN
+DECLARE r INT DEFAULT 0;
+WHILE r < rounds DO
+CALL ttl_rbn.ins(1, 3600, CONCAT(tag, r));
+DO SLEEP(2);
+SET r = r + 1;
+END WHILE;
+END|
+#
+# 1. Seed: 5 rows per prefix that expire 25 s later, 2 live rows
+#
+CALL ttl_rbn.ins(5, 20, 'a');
+CALL ttl_rbn.ins(2, 3600, 'l1');
+#
+# 2. Node 2 down (initial restart): the rows expire and are purged on node 1, writers wrap
+#
+CALL ttl_rbn.ins(1, 3600, 'l2');
+CALL ttl_rbn.ins(2, 3, 'b');
+SELECT COUNT(*) AS visible_before_start FROM ttl_rbn.rb WHERE data LIKE 'l%';
+visible_before_start
+30
+#
+# 3. Node 2 starts while a writer fills slots 3-5 and the purge deletes slots 1-2
+#
+CALL ttl_rbn.writer(3, 'w');
+#
+# 4. Settled: both replicas hold the same rows
+#
+include/assert.inc [70 physical rows per replica (10 meta + 60 live)]
+SELECT node_id, SUM(fixed_elem_count) AS physical_rows FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'ttl_rbn/def/rb' GROUP BY node_id ORDER BY node_id;
+node_id	physical_rows
+1	70
+2	70
+SELECT COUNT(*) AS visible FROM ttl_rbn.rb;
+visible
+60
+SELECT ring_idx, LEFT(data, 2) AS batch, COUNT(*) AS prefixes FROM ttl_rbn.rb
+GROUP BY ring_idx, batch ORDER BY ring_idx;
+ring_idx	batch	prefixes
+3	w0	10
+4	w1	10
+5	w2	10
+6	l1	10
+7	l1	10
+8	l2	10
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbn.rb WHERE ring_idx = 0
+GROUP BY meta ORDER BY meta;
+meta	prefixes
+010000000600000008000000000000000D000000000000000000000000000000	10
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT COUNT(*) AS visible_from_node_2 FROM ttl_rbn.rb;
+visible_from_node_2
+60
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbn.rb WHERE ring_idx = 0
+GROUP BY meta ORDER BY meta;
+meta	prefixes
+010000000600000008000000000000000D000000000000000000000000000000	10
+SET ndb_ring_buffer_show_meta = OFF;
+CALL ttl_rbn.ins(1, 3600, 'after');
+SELECT ring_idx, COUNT(*) AS prefixes FROM ttl_rbn.rb WHERE data LIKE 'after%' GROUP BY ring_idx;
+ring_idx	prefixes
+6	10
+#
+# Cleanup
+#
+DROP PROCEDURE ttl_rbn.ins;
+DROP PROCEDURE ttl_rbn.writer;
+DROP TABLE ttl_rbn.rb;
+DROP DATABASE ttl_rbn;

@@ -2,7 +2,7 @@
 #
 # Tests for MAX_ROWS_PER_PK CREATE TABLE DDL parsing and metadata plumbing.
 # Validates COMMENT syntax, column constraints, SHOW CREATE TABLE round-trip,
-# mutual exclusion with TTL, and DROP TABLE.
+# combination with TTL, and DROP TABLE.
 
 --source include/have_ndb.inc
 
@@ -235,10 +235,11 @@ CREATE TABLE test.t16 (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@nonexistent";
 
 --echo #
---echo # Case 17: Error - TTL and MAX_ROWS_PER_PK mutual exclusion
+--echo # Case 17: TTL and MAX_ROWS_PER_PK combined - success
 --echo #
 
---error ER_ILLEGAL_HA_CREATE_OPTION
+# A TTL ring buffer table: the TTL purge reclaims expired rows, the ring
+# meta row never expires. DML semantics are covered by ttl_ring_buffer.test.
 CREATE TABLE test.t17 (
     client_id INT NOT NULL,
     ring_idx INT NOT NULL DEFAULT 0,
@@ -247,6 +248,69 @@ CREATE TABLE test.t17 (
     PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+
+SHOW CREATE TABLE test.t17;
+DROP TABLE test.t17;
+
+# DATETIME TTL column works the same way
+CREATE TABLE test.t17_dt (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts DATETIME,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+
+DROP TABLE test.t17_dt;
+
+--echo #
+--echo # Case 17b: Error - fully replicated and MAX_ROWS_PER_PK mutual exclusion
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t17b (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=FULLY_REPLICATED=1,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 17c: Error - fully replicated via server default (ndb_fully_replicated=1)
+--echo #            and MAX_ROWS_PER_PK mutual exclusion; FULLY_REPLICATED=0 escapes
+--echo #
+
+SET @save_fr = @@global.ndb_fully_replicated;
+SET GLOBAL ndb_fully_replicated = 1;
+
+# Server default makes the table fully replicated even without a
+# FULLY_REPLICATED comment modifier - the combination must still be rejected.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t17c (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+
+# Escape hatch: FULLY_REPLICATED=0 in the comment overrides the server default,
+# so the ring buffer table can still be created.
+CREATE TABLE test.t17c (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=FULLY_REPLICATED=0,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+DROP TABLE test.t17c;
+
+SET GLOBAL ndb_fully_replicated = @save_fr;
 
 --echo #
 --echo # Case 18: Error - size is not a number
@@ -408,6 +472,150 @@ INSERT INTO test.t23 (client_id, data) VALUES (1, 'e');
 SELECT client_id, row_seq, data FROM test.t23 ORDER BY row_seq;
 
 DROP TABLE test.t23;
+
+--echo #
+--echo # Case 24: explicit PARTITION BY - only [LINEAR] KEY is supported
+--echo #
+
+# NDB-native KEY partitioning routes every op by key hash, so the ring
+# paths (which never set an explicit partition id) work. User-defined
+# partitioning (HASH by expression / RANGE / LIST / subpartitions) needs
+# OO_PARTITION_ID on every op - without the guard every INSERT failed
+# with NDB error 4544 "Wrong partitionInfo type for table".
+
+CREATE TABLE test.t24 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY KEY(client_id) PARTITIONS 4;
+
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'd');
+INSERT INTO test.t24 (client_id, data) VALUES (2, 'x');
+
+SELECT client_id, ring_idx, data FROM test.t24 ORDER BY client_id, ring_idx;
+
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.t24
+    WHERE ring_idx = 0 ORDER BY client_id;
+SET ndb_ring_buffer_show_meta = OFF;
+
+DELETE FROM test.t24 WHERE client_id = 1;
+SELECT client_id, ring_idx, data FROM test.t24 ORDER BY client_id, ring_idx;
+
+DROP TABLE test.t24;
+
+# KEY() with an empty list (= whole PK, including ring_idx) also works:
+# every op is still routed by key hash.
+CREATE TABLE test.t24b (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY KEY() PARTITIONS 4;
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'd');
+SELECT client_id, ring_idx, data FROM test.t24b ORDER BY ring_idx;
+DROP TABLE test.t24b;
+
+# LINEAR KEY is NDB-native as well.
+CREATE TABLE test.t24c (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY LINEAR KEY(client_id) PARTITIONS 4;
+INSERT INTO test.t24c (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t24c (client_id, data) VALUES (1, 'b');
+SELECT client_id, ring_idx, data FROM test.t24c ORDER BY ring_idx;
+DROP TABLE test.t24c;
+
+# User-defined partitioning forms are rejected at CREATE.
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t24d (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY HASH(client_id) PARTITIONS 4;
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t24e (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY RANGE (client_id) (
+    PARTITION p0 VALUES LESS THAN (100),
+    PARTITION p1 VALUES LESS THAN MAXVALUE
+  );
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.t24f (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY LIST (client_id) (
+    PARTITION p0 VALUES IN (1, 2),
+    PARTITION p1 VALUES IN (3, 4)
+  );
+
+--echo #
+--echo # Case 25: no declared PRIMARY KEY - blocked
+--echo #
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nopk (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# A UNIQUE key with ring_idx last is not a PRIMARY KEY either (client_id
+# is nullable, so MySQL does not promote the key to the PRIMARY KEY)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nopk (
+    client_id INT,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    data VARCHAR(100),
+    UNIQUE KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+--echo #
+--echo # Case 26: ring_idx declared before another primary key column - blocked
+--echo #
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_order (
+    ring_idx INT NOT NULL DEFAULT 0,
+    a INT NOT NULL,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (a, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
 --echo #
 --echo # Done

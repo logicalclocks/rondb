@@ -227,7 +227,7 @@ PRIMARY KEY (client_id, ring_idx)
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@nonexistent";
 ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring meta column not found in table'
 #
-# Case 17: Error - TTL and MAX_ROWS_PER_PK mutual exclusion
+# Case 17: TTL and MAX_ROWS_PER_PK combined - success
 #
 CREATE TABLE test.t17 (
 client_id INT NOT NULL,
@@ -237,7 +237,62 @@ ts TIMESTAMP,
 PRIMARY KEY (client_id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'A table cannot be both TTL and MAX_ROWS_PER_PK'
+SHOW CREATE TABLE test.t17;
+Table	Create Table
+t17	CREATE TABLE `t17` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta'
+DROP TABLE test.t17;
+CREATE TABLE test.t17_dt (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts DATETIME,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=60@ts,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+DROP TABLE test.t17_dt;
+#
+# Case 17b: Error - fully replicated and MAX_ROWS_PER_PK mutual exclusion
+#
+CREATE TABLE test.t17b (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=FULLY_REPLICATED=1,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'A table cannot be both fully replicated and MAX_ROWS_PER_PK'
+#
+# Case 17c: Error - fully replicated via server default (ndb_fully_replicated=1)
+#            and MAX_ROWS_PER_PK mutual exclusion; FULLY_REPLICATED=0 escapes
+#
+SET @save_fr = @@global.ndb_fully_replicated;
+SET GLOBAL ndb_fully_replicated = 1;
+CREATE TABLE test.t17c (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'A table cannot be both fully replicated and MAX_ROWS_PER_PK'
+CREATE TABLE test.t17c (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=FULLY_REPLICATED=0,MAX_ROWS_PER_PK=400@ring_idx@ring_meta";
+DROP TABLE test.t17c;
+SET GLOBAL ndb_fully_replicated = @save_fr;
 #
 # Case 18: Error - size is not a number
 #
@@ -304,7 +359,7 @@ content TEXT NOT NULL,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer tables cannot have NOT NULL BLOB/TEXT columns'
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer: no NOT NULL BLOB/TEXT/JSON/GEOMETRY columns'
 CREATE TABLE test.rb_nn_blob2 (
 id INT NOT NULL,
 ring_idx INT NOT NULL DEFAULT 0,
@@ -313,7 +368,7 @@ payload BLOB NOT NULL,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer tables cannot have NOT NULL BLOB/TEXT columns'
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer: no NOT NULL BLOB/TEXT/JSON/GEOMETRY columns'
 #
 # Case 22: Size only - default column names (ring_idx, ring_meta)
 #
@@ -376,6 +431,140 @@ client_id	row_seq	data
 1	2	e
 1	3	c
 DROP TABLE test.t23;
+#
+# Case 24: explicit PARTITION BY - only [LINEAR] KEY is supported
+#
+CREATE TABLE test.t24 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY KEY(client_id) PARTITIONS 4;
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t24 (client_id, data) VALUES (1, 'd');
+INSERT INTO test.t24 (client_id, data) VALUES (2, 'x');
+SELECT client_id, ring_idx, data FROM test.t24 ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	d
+1	2	b
+1	3	c
+2	1	x
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, HEX(ring_meta) FROM test.t24
+WHERE ring_idx = 0 ORDER BY client_id;
+client_id	ring_idx	HEX(ring_meta)
+1	0	0100000002000000030000000000000004000000000000000000000000000000
+2	0	0100000002000000010000000000000001000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+DELETE FROM test.t24 WHERE client_id = 1;
+SELECT client_id, ring_idx, data FROM test.t24 ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+2	1	x
+DROP TABLE test.t24;
+CREATE TABLE test.t24b (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY KEY() PARTITIONS 4;
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'b');
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'c');
+INSERT INTO test.t24b (client_id, data) VALUES (1, 'd');
+SELECT client_id, ring_idx, data FROM test.t24b ORDER BY ring_idx;
+client_id	ring_idx	data
+1	1	d
+1	2	b
+1	3	c
+DROP TABLE test.t24b;
+CREATE TABLE test.t24c (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY LINEAR KEY(client_id) PARTITIONS 4;
+INSERT INTO test.t24c (client_id, data) VALUES (1, 'a');
+INSERT INTO test.t24c (client_id, data) VALUES (1, 'b');
+SELECT client_id, ring_idx, data FROM test.t24c ORDER BY ring_idx;
+client_id	ring_idx	data
+1	1	a
+1	2	b
+DROP TABLE test.t24c;
+CREATE TABLE test.t24d (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY HASH(client_id) PARTITIONS 4;
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK supports only KEY partitioning'
+CREATE TABLE test.t24e (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY RANGE (client_id) (
+PARTITION p0 VALUES LESS THAN (100),
+PARTITION p1 VALUES LESS THAN MAXVALUE
+);
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK supports only KEY partitioning'
+CREATE TABLE test.t24f (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta"
+  PARTITION BY LIST (client_id) (
+PARTITION p0 VALUES IN (1, 2),
+PARTITION p1 VALUES IN (3, 4)
+);
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'MAX_ROWS_PER_PK supports only KEY partitioning'
+#
+# Case 25: no declared PRIMARY KEY - blocked
+#
+CREATE TABLE test.rb_nopk (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer table requires a PRIMARY KEY'
+CREATE TABLE test.rb_nopk (
+client_id INT,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+data VARCHAR(100),
+UNIQUE KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer table requires a PRIMARY KEY'
+#
+# Case 26: ring_idx declared before another primary key column - blocked
+#
+CREATE TABLE test.rb_order (
+ring_idx INT NOT NULL DEFAULT 0,
+a INT NOT NULL,
+ring_meta VARBINARY(64),
+PRIMARY KEY (a, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring index column must be declared after the other PK columns'
 #
 # Done
 #

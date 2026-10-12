@@ -21,6 +21,10 @@ Successfully initialized schema.
 [DO-META]   [2] ring_meta
 [DO-META]   [3] timestamp_val
 [DO-META]   [4] sensor_value
+[SWALLOW-TEST] surfaced=true seedName=seed abortedRingRows=0
+[BLOB-TEST] set_rejected=true unset_rejected=true slot1=old_1/note_1
+[AI-TEST] distinct_prefixes=true
+[FLUSH-TEST] clean_after_failure=true
 [CONCURRENT-META] ClusterJ find(ring_idx=0) = NOT FOUND (expected)
 [CONCURRENT-META] RingBufferWriter probe: meta row EXISTS (insert at next slot succeeded)
 [DIAG] Flushing tables before show_meta check...
@@ -75,6 +79,10 @@ sensor_id	ring_idx	HEX(ring_meta)
 SET ndb_ring_buffer_show_meta = OFF;
 DROP TABLE IF EXISTS ring_buffer_sensor;
 DROP TABLE IF EXISTS ring_buffer_notnull;
+DROP TABLE IF EXISTS ring_buffer_blob;
+DROP TABLE IF EXISTS ring_buffer_autoinc;
+DROP TABLE IF EXISTS ring_buffer_ttl;
+DROP TABLE IF EXISTS ring_buffer_ttl_dt;
 DROP TABLE IF EXISTS a;
 DROP TABLE IF EXISTS allprimitives;
 DROP TABLE IF EXISTS autopkint;

@@ -485,48 +485,6 @@ SELECT id, ring_idx, code FROM test.rb_cross_uniq ORDER BY id, ring_idx;
 DROP TABLE test.rb_cross_uniq;
 
 ###############################################################################
-# Case 16: ALTER TABLE grow preserves NOT NULL + unique index
-###############################################################################
-
---echo #
---echo # Case 16: ALTER TABLE grow with NOT NULL + unique index
---echo #
-
-CREATE TABLE test.rb_grow_nn (
-    id INT NOT NULL,
-    ring_idx INT NOT NULL DEFAULT 0,
-    ring_meta VARBINARY(64),
-    code INT NOT NULL,
-    PRIMARY KEY (id, ring_idx),
-    UNIQUE INDEX idx_code (code)
-) ENGINE = NDB,
-  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 100);
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 200);
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 300);
-
-# Grow ring from 3 to 5
-ALTER TABLE test.rb_grow_nn COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
-
-# Insert into expanded slots
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 400);
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 500);
-
-SELECT id, ring_idx, code FROM test.rb_grow_nn ORDER BY ring_idx;
-
-# Unique constraint still works after grow
---error ER_DUP_ENTRY
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 200);
-
-# Wrap into expanded ring
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 600);
-
-SELECT id, ring_idx, code FROM test.rb_grow_nn ORDER BY ring_idx;
-
-DROP TABLE test.rb_grow_nn;
-
-###############################################################################
 # Case 17: Multiple NOT NULL types + unique + ordered index
 # Tests zero-defaults for VARCHAR (empty string) and INT (0) simultaneously.
 ###############################################################################
@@ -595,6 +553,28 @@ CREATE TABLE test.rb_nn_blob (
     ring_idx INT NOT NULL DEFAULT 0,
     ring_meta VARBINARY(64),
     payload BLOB NOT NULL,
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# JSON NOT NULL -> rejected (blob-backed in NDB)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nn_json (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    doc JSON NOT NULL,
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# GEOMETRY NOT NULL -> rejected (blob-backed in NDB)
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_nn_geom (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    shape GEOMETRY NOT NULL,
     PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";

@@ -1490,6 +1490,26 @@ int setup_conflict_fn(Ndb *ndb, NDB_CONFLICT_FN_SHARE **ppcfn_share,
     return 0;
   }
 
+  /*
+    Ring buffer tables log every meta row update and every slot overwrite
+    as a WRITE_ROW event. Conflict detection applies those as inserts, so
+    each write onto an existing row is treated as a conflict: the replica
+    ring stops advancing, even with a single writer. CREATE TABLE rejects
+    the combination; a ring table that a mysql.ndb_replication row matches
+    later (rename, restart, discovery) is binlogged and applied without
+    the conflict function.
+  */
+  if (ndbtab->isRingBuffer()) {
+    snprintf(msg, msg_len,
+             "Table %s.%s is a ring buffer table: not using conflict "
+             "function %s",
+             dbName, tabName, conflict_fn->name);
+    DBUG_PRINT("info", ("%s", msg));
+    ndb_log_warning("Replica: %s", msg);
+    slave_reset_conflict_fn(*ppcfn_share);
+    return 0;
+  }
+
   /* setup the function */
   switch (conflict_fn->type) {
     case CFT_NDB_MAX:
