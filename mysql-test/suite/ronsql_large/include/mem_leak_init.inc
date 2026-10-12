@@ -42,7 +42,12 @@
 #                        pages here) but not one pinned 2 MB pool segment
 #                        (64 pages), which is how a leaked lc_ndbd_pool
 #                        allocation (string MIN/MAX slots, redistribution
-#                        buffers) shows up.
+#                        buffers) shows up.  An lc pool base keeps one
+#                        emptied segment cached (MAX_FREE_LONG_AREAS 1)
+#                        and it counts as used, so the init primes every
+#                        thread's QUERY_MEMORY and TRANSACTION_MEMORY base
+#                        (DUMP 104005) before any baseline: a cached
+#                        segment is never a first-use step.
 #   $mlk_first_use_tm    the same for TRANSACTION_MEMORY [16]
 #   $mlk_settle_reads    identical 0.5 s readings that define "settled"
 #                        [10 = 5 s: the DBSPJ row-page cache is released
@@ -211,3 +216,9 @@ EOF
 --let MLKE_CLIENTS = $mlk_warmup_clients
 --let MLKE_ACCEPT = ok_or_503
 --source suite/ronsql_large/include/mem_leak_exec.inc
+
+# Every lc pool base keeps one emptied 2 MB segment cached, charged to its
+# resource group (MAX_FREE_LONG_AREAS 1).  Which bases a shape's first
+# executions touch depends on scheduling; prime all of them here so the
+# baselines below already include every cached segment.
+--exec $NDB_MGM -e "ALL DUMP 104005" > /dev/null

@@ -1817,7 +1817,9 @@ bool TransporterFacade::configure(NodeId nodeId,
   Uint32 auto_reconnect = 1;
   iter.get(CFG_AUTO_RECONNECT, &auto_reconnect);
 
-  Uint32 adaptive_send_threshold = 0;
+  /* The ConfigInfo default; a management server older than the
+   * parameter does not send it. */
+  Uint32 adaptive_send_threshold = 16;
   iter.get(CFG_API_ADAPTIVE_SEND_THRESHOLD, &adaptive_send_threshold);
   set_adaptive_send_threshold(adaptive_send_threshold);
 

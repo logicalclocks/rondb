@@ -3,9 +3,9 @@
 #
 # AdaptiveSendThreshold, an [api] / [mysqld] parameter (config param 898)
 # that chooses between latency and throughput for the NDB API's sends,
-# set online with the MGM client SET command.  0 (the default) sends
-# every request at once; N > 0 uses adaptive send while N or more threads
-# waited for replies within the last 10 ms.
+# set online with the MGM client SET command.  N > 0 uses adaptive send
+# while N or more threads waited for replies within the last 10 ms (16,
+# the default); 0 sends every request at once.
 #
 # The management server has no connection to the API nodes: the request
 # goes to the data nodes, whose QMGR forwards it to their connected API
@@ -18,12 +18,13 @@
 
 #
 # Test 1: ALL SET -- every API node (both mysqlds) takes the value and
-# the management server saves it
+# the management server saves it.  The API nodes log only a change, so
+# not the default.
 #
---exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 16"
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 8"
 
 --let $wait_timeout= 30
---let $grep_pattern= AdaptiveSendThreshold set to 16: adaptive send
+--let $grep_pattern= AdaptiveSendThreshold set to 8: adaptive send
 --let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
 --source include/wait_for_pattern_in_file.inc
 --let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.2.1.err
@@ -79,11 +80,20 @@ DROP TABLE t1;
 --exec $NDB_CONFIG --nodeid=$api_node_id --type=mysqld --query=nodeid,AdaptiveSendThreshold 2> /dev/null
 
 #
-# Test 4: Restore the default (0, latency) on all API nodes
+# Test 4: 0 (every send at once) on all API nodes, then the default (16)
+# back on them
 #
 --exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 0"
 
 --let $grep_pattern= AdaptiveSendThreshold set to 0: every send goes out at once
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--source include/wait_for_pattern_in_file.inc
+--let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.2.1.err
+--source include/wait_for_pattern_in_file.inc
+
+--exec $NDB_MGM -e "ALL SET AdaptiveSendThreshold 16"
+
+--let $grep_pattern= AdaptiveSendThreshold set to 16: adaptive send
 --let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.1.1.err
 --source include/wait_for_pattern_in_file.inc
 --let $grep_file= $MYSQLTEST_VARDIR/log/mysqld.2.1.err

@@ -44,6 +44,13 @@ while ($mlk_stable < $mlk_settle_reads)
 --eval DROP TEMPORARY TABLE IF EXISTS mlk_baseline
 --enable_warnings
 --eval CREATE TEMPORARY TABLE mlk_baseline ENGINE=MEMORY SELECT node_id, resource_name, CAST(used AS SIGNED) AS used, IF(resource_name = 'QUERY_MEMORY', $mlk_tol_qm, $mlk_tol_tm) AS tolerance FROM ndbinfo.resources WHERE resource_name IN ('QUERY_MEMORY', 'TRANSACTION_MEMORY')
+# Pool sizes too, for diagnosis only: a LEAK lists the pools whose size
+# changed since this baseline (mem_leak_verify.inc).  --eval, not plain
+# SQL: the tests run under DELIMITER |; \$ keeps ndb$pools literal.
+--disable_warnings
+--eval DROP TEMPORARY TABLE IF EXISTS mlk_pools
+--enable_warnings
+--eval CREATE TEMPORARY TABLE mlk_pools ENGINE=MEMORY SELECT node_id, block_number, block_instance, pool_name, CAST(total AS SIGNED) AS total FROM ndbinfo.ndb\$pools
 --let MLKE_REPORT_LINE = `SELECT CONCAT('$mlk_tag baseline', IF($mlk_unsettled, ' (UNSETTLED)', ''), ' after ', $mlk_polls * 0.5, ' s: ', GROUP_CONCAT(CONCAT('node ', node_id, ' ', IF(resource_name = 'QUERY_MEMORY', 'QM', 'TM'), '=', used) ORDER BY node_id, resource_name SEPARATOR ', '), ' (tolerance QM $mlk_tol_qm TM $mlk_tol_tm)') FROM mlk_baseline`
 --source suite/ronsql_large/include/mem_leak_report.inc
 --let $mlk_nodes = `SELECT COUNT(*) FROM mlk_baseline WHERE resource_name = 'QUERY_MEMORY'`

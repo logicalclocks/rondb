@@ -120,6 +120,10 @@ class DumpStateOrd {
     SetAllowedSpinOverhead = 104002,
     SetSpintimePerCall = 104003,
     EnableAdaptiveSpinning = 104004,
+    // Every block thread leaves one emptied lc pool segment cached for
+    // QUERY_MEMORY and TRANSACTION_MEMORY, so idle levels measured
+    // afterwards include the cache (memory-leak tests)
+    PrimeLcSegmentCache = 104005,
     _THRMANMax = 104999,
 
     _TRIXMin = 105000,
@@ -193,6 +197,12 @@ class DumpStateOrd {
     LqhDumpJoinAggIdentity = 2363,  // Verify identity table + park pool empty
     LqhDumpCteRedistPages = 2364,  // Verify all redistribution pages freed
     LqhDumpJoinAggParkStats = 2365,  // Report parks per GSN (test statistics)
+    // 1 / 0: log every join aggregation's per-thread group tables at
+    // COMPLETE and its merged table at CTE_READY (m3_run6_plan.md D2a)
+    LqhJoinAggMemTrace = 2366,
+    // GROUP BY table size hints (m3_run6_plan.md D1a): 0 = not applied
+    // (still recorded), 1 = applied (the default), 2 = forget them all
+    LqhGroupTableSizeHints = 2367,
 
     TupDumpOneScanRec = 2380,
     TupSaveCopyTupleCount = 2381,

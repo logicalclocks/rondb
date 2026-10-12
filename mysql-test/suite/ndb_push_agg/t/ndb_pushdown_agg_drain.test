@@ -88,6 +88,10 @@ INSERT INTO t_rep
 --let $pac_label = W3 repeating groups, one fragment
 --let $pac_query = SELECT k, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t_rep GROUP BY k
 --source suite/ndb_push_agg/include/push_agg_compare.inc
+# An lc pool base keeps one emptied segment cached and it counts as used:
+# prime every thread's QUERY_MEMORY base so that a base first touched by
+# the forced drains below does not look like growth.
+--exec $NDB_MGM -e "ALL DUMP 104005" >> $NDB_TOOLS_OUTPUT
 --source suite/ndb_push_agg/include/push_agg_qm_settle.inc
 --let $qm_warm = $pa_qm
 
