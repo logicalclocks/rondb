@@ -1,0 +1,21 @@
+SELECT node_id, param_name, config_value
+  FROM ndbinfo.config_values cv, ndbinfo.config_params cp
+  WHERE cv.config_param = cp.param_number AND
+        cp.param_name IN ('AutomaticThreadConfig', 'NumCPUs', 'ExclusiveIoCPUs')
+  ORDER BY node_id, param_name;
+node_id	param_name	config_value
+1	AutomaticThreadConfig	1
+1	ExclusiveIoCPUs	2
+1	NumCPUs	0
+2	AutomaticThreadConfig	1
+2	ExclusiveIoCPUs	2
+2	NumCPUs	0
+Data node 1: 10 CPUs, threads ldm=4 recv=1 send=1 tc=2, each on its own CPU, 2 CPUs exclusive to IO
+Data node 2: 10 CPUs, threads ldm=4 recv=1 send=1 tc=2, each on its own CPU, 2 CPUs exclusive to IO
+# The data nodes work with this thread layout
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 1), (2, 2), (3, 3), (4, 4);
+SELECT COUNT(*) FROM t1;
+COUNT(*)
+4
+DROP TABLE t1;
