@@ -35,12 +35,28 @@ Name:          Ndb.cpp
 #include <NdbSleep.h>
 #include <NdbTick.h>
 #include <ndb_limits.h>
+#include <ndb_version.h>
 #include <BaseString.hpp>
 #include <NdbOut.hpp>
 #include <NdbSqlUtil.hpp>
+#include <random>
 #include <rondb_hash.hpp>
 #include "API.hpp"
 #include "my_config.h"
+
+/**
+ * A release id for TCSEIZEREQ and TCRELEASEREQ: random and never 0,
+ * which stands for none.  A TC connect record is seized rarely, as
+ * transactions reuse idle ones.
+ */
+static Uint32 new_tc_release_id() {
+  thread_local std::mt19937 generator(std::random_device{}());
+  Uint32 releaseId;
+  do {
+    releaseId = Uint32(generator());
+  } while (releaseId == 0);
+  return releaseId;
+}
 
 /****************************************************************************
 void doConnect();
@@ -168,6 +184,13 @@ int Ndb::NDB_connect(Uint32 tNode, Uint32 instance) {
   //************************************************
   tSignal->setData(theMyRef, 2);                // Set my block reference
   tSignal->setData(instance, 3);                // Set requested instance
+  /* A release id for TCRELEASEREQ, to a data node that takes one */
+  tNdbCon->m_tcReleaseId = 0;
+  if (ndbd_support_tc_release_id(theImpl->getNodeNdbVersion(tNode))) {
+    tNdbCon->m_tcReleaseId = new_tc_release_id();
+    tSignal->setData(tNdbCon->m_tcReleaseId, 4);
+    tSignal->setLength(4);
+  }
   tNdbCon->Status(NdbTransaction::Connecting);  // Set status to connecting
   tNdbCon->theDBnode = tNode;
   Uint32 nodeSequence;

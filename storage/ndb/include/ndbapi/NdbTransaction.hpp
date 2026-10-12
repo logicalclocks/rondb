@@ -1184,6 +1184,8 @@ class NdbTransaction {
   Uint32 theNoOfOpCompleted;     // How many operations have completed
   Uint32 theMyRef;               // Our block reference
   Uint32 theTCConPtr;            // Transaction Co-ordinator connection pointer.
+  Uint32 m_tcReleaseId;          // Release id sent in TCSEIZEREQ, for
+                                 // TCRELEASEREQ; 0 if none was sent
   Uint64 theTransactionId;       // theTransactionId of the transaction
   Uint64 theGlobalCheckpointId;  // The global checkpoint identity of the
                                  // transaction

@@ -2370,6 +2370,8 @@ void Dbtc::execTCSEIZEREQ(Signal *signal) {
   jamEntry();
   tapiPointer = signal->theData[0];  /* REQUEST SENDERS CONNECT RECORD POINTER*/
   tapiBlockref = signal->theData[1]; /* SENDERS BLOCK REFERENCE*/
+  /* The release id, from an API node of 26.10.0 or later, see TCRELEASEREQ */
+  const Uint32 releaseId = signal->getLength() > 3 ? signal->theData[3] : 0;
 
   if (signal->getLength() > 2) {
     ndbassert(instance() == signal->theData[2]);
@@ -2445,6 +2447,7 @@ void Dbtc::execTCSEIZEREQ(Signal *signal) {
     jam();
     apiConnectptr.p->ndbapiConnect = tapiPointer;
     apiConnectptr.p->ndbapiBlockref = tapiBlockref;
+    apiConnectptr.p->m_releaseId = releaseId;
     signal->theData[0] = apiConnectptr.p->ndbapiConnect;
     signal->theData[1] = apiConnectptr.i;
     signal->theData[2] = reference();
@@ -2463,6 +2466,16 @@ void Dbtc::execTCSEIZEREQ(Signal *signal) {
 /*                    T C R E L E A S E Q                                   */
 /*                  REQUEST TO RELEASE A CONNECT RECORD                     */
 /****************************************************************************/
+/**
+ * An API node of 26.10.0 or later sends the release id it picked for
+ * TCSEIZEREQ in TCRELEASEREQ too.  A record released already, or being
+ * released, refuses such a request with TCRELEASEREF.  A record not
+ * released is released only by a request with its release id, 0
+ * standing for none on both sides, so an older API node releases a
+ * record it seized as before.  A request with another id is ignored, not
+ * answered: it is not for this record, which may since have been seized
+ * again, by another transaction.
+ */
 void Dbtc::execTCRELEASEREQ(Signal *signal) {
   UintR tapiPointer;
   BlockReference tapiBlockref; /* SENDER BLOCK REFERENCE*/
@@ -2471,11 +2484,16 @@ void Dbtc::execTCRELEASEREQ(Signal *signal) {
   tapiPointer = signal->theData[0];  /* REQUEST SENDERS CONNECT RECORD POINTER*/
   tapiBlockref = signal->theData[1]; /* SENDERS BLOCK REFERENCE*/
   tuserpointer = signal->theData[2];
+  const Uint32 releaseId = signal->getLength() > 3 ? signal->theData[3] : 0;
   ApiConnectRecordPtr apiConnectptr;
   apiConnectptr.i = tapiPointer;
   if (unlikely(!c_apiConnectRecordPool.getValidPtr(apiConnectptr))) {
     jam();
-    ndbassert(false);
+    /**
+     * Released already.  An API node without release ids never sends a
+     * second TCRELEASEREQ; one with them may, and is refused.
+     */
+    ndbassert(releaseId != 0);
     signal->theData[0] = tuserpointer;
     signal->theData[1] = ZINVALID_CONNECTION;
     signal->theData[2] = __LINE__;
@@ -2485,8 +2503,21 @@ void Dbtc::execTCRELEASEREQ(Signal *signal) {
   if (apiConnectptr.p->apiConnectstate == CS_DISCONNECTED ||
       apiConnectptr.p->apiFailState == ApiConnectRecord::AFS_API_DISCONNECTED) {
     jam();
+    if (releaseId != 0) {
+      jam();
+      /* Being released, after an earlier TCRELEASEREQ */
+      signal->theData[0] = tuserpointer;
+      signal->theData[1] = ZINVALID_CONNECTION;
+      signal->theData[2] = __LINE__;
+      sendSignal(tapiBlockref, GSN_TCRELEASEREF, signal, 3, JBB);
+      return;
+    }
     signal->theData[0] = tuserpointer;
     sendSignal(tapiBlockref, GSN_TCRELEASECONF, signal, 1, JBB);
+  } else if (unlikely(apiConnectptr.p->m_releaseId != releaseId)) {
+    jam();
+    /* Not this record's release id */
+    return;
   } else {
     if (tapiBlockref == apiConnectptr.p->ndbapiBlockref) {
       Uint32 dummy_loop_count = 0;
@@ -7611,6 +7642,7 @@ Dbtc::ApiConnectRecord::ApiConnectRecord()
   }
 
   m_transaction_nodes.clear();
+  m_releaseId = 0;
 }
 
 bool Dbtc::seizeApiConnectCopy(Signal *signal,

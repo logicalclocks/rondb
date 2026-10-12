@@ -419,6 +419,11 @@ void Ndb::releaseConnectToNdb(NdbTransaction *a_con) {
   tSignal.setData((tConPtr = a_con->getTC_ConnectPtr()), 1);
   tSignal.setData(theMyRef, 2);
   tSignal.setData(a_con->ptr2int(), 3);
+  if (a_con->m_tcReleaseId != 0) {
+    /* The data node took a release id in TCSEIZEREQ */
+    tSignal.setData(a_con->m_tcReleaseId, 4);
+    tSignal.setLength(4);
+  }
   a_con->Status(NdbTransaction::DisConnecting);
   a_con->theMagicNumber = a_con->getMagicNumber();
   int ret_code = theImpl->sendRecSignal(node_id,

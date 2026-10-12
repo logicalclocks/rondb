@@ -1589,4 +1589,19 @@ bool
 ndbd_support_get_collation_info(Uint32 x) {
   return x >= NDBD_GET_COLLATION_INFO_2610;
 }
+
+/**
+ * TCSEIZEREQ carries a release id, a random number the API node picks,
+ * and TCRELEASEREQ must carry the same one: DBTC ignores a release with
+ * another id, and refuses one of a record released already.  An older
+ * data node expects TCSEIZEREQ and TCRELEASEREQ without it, so the API
+ * sends it only to data nodes of this version; DBTC accepts both without
+ * it, as from an older API node.
+ */
+#define NDBD_TC_RELEASE_ID_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_support_tc_release_id(Uint32 x) {
+  return x >= NDBD_TC_RELEASE_ID_2610;
+}
 #endif

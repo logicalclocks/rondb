@@ -318,6 +318,7 @@ NdbTransaction::NdbTransaction(Ndb *aNdb)
       theNoOfOpCompleted(0),
       theMyRef(0),
       theTCConPtr(0),
+      m_tcReleaseId(0),
       theTransactionId(0),
       theGlobalCheckpointId(0),
       p_latest_trans_gci(nullptr),

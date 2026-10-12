@@ -1340,6 +1340,13 @@ class Dbtc : public SimulatedBlock {
     Uint32 m_executing_trigger_ops;
 
     /**
+     * The release id the API node sent in TCSEIZEREQ, 0 if it sent none:
+     * a TCRELEASEREQ releases the record only with the same one.  See
+     * execTCRELEASEREQ.
+     */
+    Uint32 m_releaseId;
+
+    /**
      * Start of TCKEYREQ signals belonging to this
      * transaction/API connection. It should only be one
      * transaction since an API connection can only handle
