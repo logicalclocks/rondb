@@ -5429,6 +5429,38 @@ Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_getRingMetaColumnNo(
 
 /*
  * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
+ * Method:    isTTLEnabled
+ * Signature: ()Z
+ */
+JNIEXPORT jboolean JNICALL
+Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_isTTLEnabled(
+    JNIEnv *env, jobject obj) {
+  TRACE(
+      "jboolean "
+      "Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_isTTLEnabled("
+      "JNIEnv *, jobject)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbDictionary_Table_ct, ttrait_bool,
+                   &NdbDictionary::Table::isTTLEnabled>(env, obj);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
+ * Method:    getTTLColumnNo
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL
+Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_getTTLColumnNo(
+    JNIEnv *env, jobject obj) {
+  TRACE(
+      "jint "
+      "Java_com_mysql_ndbjtie_ndbapi_NdbDictionary_00024Table_"
+      "getTTLColumnNo(JNIEnv *, jobject)");
+  return gcall_mfr<ttrait_c_m_n_n_NdbDictionary_Table_ct, ttrait_Uint32,
+                   &NdbDictionary::Table::getTTLColumnNo>(env, obj);
+}
+
+/*
+ * Class:     com_mysql_ndbjtie_ndbapi_NdbDictionary_Table
  * Method:    create
  * Signature: (Ljava/lang/String;)Lcom/mysql/ndbjtie/ndbapi/NdbDictionary/Table;
  */

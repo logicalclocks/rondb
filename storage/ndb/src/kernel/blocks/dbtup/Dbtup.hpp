@@ -4598,14 +4598,34 @@ public:
    * which includes Dbtup.hpp; pulling that symbol in here would create a
    * circular header dependency.
    */
+  /**
+   * Invariant note: the replica-applier flag is only carried by the
+   * primary-replica operation; LQH does not forward it to backup
+   * replicas. Applier writes still pass the guard on backups because
+   * ha_ndbcluster couples the applier bypass with OO_RING_BUFFER_OP
+   * (ring_buffer_op below), which IS forwarded. Keep that coupling if
+   * the handler's applier path is ever changed.
+   */
   bool is_ring_buffer_write_blocked(Tablerec *regTabPtr,
                                     Uint32 Roptype,
                                     const Operationrec *regOperPtr,
                                     bool is_replica_applier) {
     if (!is_ring_buffer_table(regTabPtr)) return false;
     if (Roptype != ZINSERT && Roptype != ZWRITE &&
-        Roptype != ZUPDATE && Roptype != ZDELETE) return false;
+        Roptype != ZUPDATE && Roptype != ZDELETE &&
+        Roptype != ZREFRESH) return false;
     if (regOperPtr->ring_buffer_op) return false;
+    /*
+     * An only-expired delete (the TTL purge reclaiming an expired row)
+     * passes without ring_buffer_op. The flag is inherited from the
+     * only-expired scan whose lock the delete takes over, and
+     * handleDeleteReq rejects such a delete on a live row, so it can only
+     * remove an expired data row; that never breaks a ring invariant
+     * (Ring_meta.count is a span of occupied slots, not an exact count).
+     * The NDB API rejects only-expired combined with ignore-TTL (4360), so
+     * an only-expired delete cannot skip the expiry check.
+     */
+    if (Roptype == ZDELETE && regOperPtr->ttl_only_expired) return false;
     return !is_replica_applier;
   }
 

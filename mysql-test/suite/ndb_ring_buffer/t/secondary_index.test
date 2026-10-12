@@ -27,7 +27,7 @@ CREATE TABLE test.rb_idx (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
-# Populate client_id=1 (4 rows — full ring)
+# Populate client_id=1 (4 rows - full ring)
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'login', 10);
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'purchase', 50);
 INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (1, 'login', 20);
@@ -42,7 +42,7 @@ INSERT INTO test.rb_idx (client_id, event_type, amount) VALUES (2, 'purchase', 1
 ###############################################################################
 
 --echo #
---echo # Case 1: SELECT via secondary index on VARCHAR — meta rows hidden
+--echo # Case 1: SELECT via secondary index on VARCHAR - meta rows hidden
 --echo #
 
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
@@ -50,7 +50,7 @@ SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
     ORDER BY client_id, ring_idx;
 
 --echo #
---echo # Case 2: SELECT via secondary index on INT — meta rows hidden
+--echo # Case 2: SELECT via secondary index on INT - meta rows hidden
 --echo #
 
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
@@ -62,7 +62,7 @@ SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
 ###############################################################################
 
 --echo #
---echo # Case 3: COUNT via secondary index — correct count (no meta rows)
+--echo # Case 3: COUNT via secondary index - correct count (no meta rows)
 --echo #
 
 SELECT COUNT(*) AS cnt FROM test.rb_idx WHERE event_type = 'login';
@@ -73,7 +73,7 @@ SELECT COUNT(*) AS cnt FROM test.rb_idx WHERE amount > 0;
 ###############################################################################
 
 --echo #
---echo # Case 4: Range scan via secondary index — meta rows hidden
+--echo # Case 4: Range scan via secondary index - meta rows hidden
 --echo #
 
 SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
@@ -85,7 +85,7 @@ SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
 ###############################################################################
 
 --echo #
---echo # Case 5: After wrap — secondary index scan still filters meta rows
+--echo # Case 5: After wrap - secondary index scan still filters meta rows
 --echo #
 
 # 5th and 6th inserts wrap the ring for client_id=1
@@ -104,11 +104,11 @@ SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
     ORDER BY client_id, ring_idx;
 
 ###############################################################################
-# Case 6: UPDATE via secondary index WHERE — allowed
+# Case 6: UPDATE via secondary index WHERE - allowed
 ###############################################################################
 
 --echo #
---echo # Case 6: UPDATE via secondary index WHERE on user column — allowed
+--echo # Case 6: UPDATE via secondary index WHERE on user column - allowed
 --echo #
 
 UPDATE test.rb_idx SET amount = amount + 1000
@@ -123,7 +123,7 @@ SELECT client_id, ring_idx, event_type, amount FROM test.rb_idx
 ###############################################################################
 
 --echo #
---echo # Case 7: GROUP BY with secondary index — meta rows excluded
+--echo # Case 7: GROUP BY with secondary index - meta rows excluded
 --echo #
 
 SELECT event_type, COUNT(*) AS cnt, SUM(amount) AS total
@@ -136,7 +136,7 @@ SELECT event_type, COUNT(*) AS cnt, SUM(amount) AS total
 ###############################################################################
 
 --echo #
---echo # Case 8: show_meta=ON — meta rows visible even via secondary index scan
+--echo # Case 8: show_meta=ON - meta rows visible even via secondary index scan
 --echo #
 
 SET ndb_ring_buffer_show_meta = ON;
@@ -173,11 +173,11 @@ INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'AAA', 10);
 INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'BBB', 20);
 INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'CCC', 30);
 
-# Lookup via unique index — should work, meta rows hidden
+# Lookup via unique index - should work, meta rows hidden
 SELECT id, ring_idx, code, val FROM test.rb_uniq
     WHERE code = 'BBB';
 
-# After wrap, old code 'AAA' is overwritten — unique constraint allows reuse
+# After wrap, old code 'AAA' is overwritten - unique constraint allows reuse
 INSERT INTO test.rb_uniq (id, code, val) VALUES (1, 'DDD', 40);
 
 SELECT id, ring_idx, code, val FROM test.rb_uniq
@@ -209,7 +209,7 @@ INSERT INTO test.rb_add_idx (id, category) VALUES (2, 'alpha');
 # Add index after data exists
 ALTER TABLE test.rb_add_idx ADD INDEX idx_cat (category);
 
-# Query via new index — meta rows should be hidden
+# Query via new index - meta rows should be hidden
 SELECT id, ring_idx, category FROM test.rb_add_idx
     WHERE category = 'alpha'
     ORDER BY id, ring_idx;
@@ -228,7 +228,7 @@ SELECT id, ring_idx, category FROM test.rb_add_idx
 DROP TABLE test.rb_add_idx;
 
 ###############################################################################
-# Case 11: Duplicate unique value within same PK prefix — ER_DUP_ENTRY
+# Case 11: Duplicate unique value within same PK prefix - ER_DUP_ENTRY
 #
 # Two inserts for the same PK prefix that carry the same unique column value.
 # The second insert must fail with ER_DUP_ENTRY because both data rows
@@ -236,7 +236,7 @@ DROP TABLE test.rb_add_idx;
 ###############################################################################
 
 --echo #
---echo # Case 11: Duplicate unique value in same PK prefix — ER_DUP_ENTRY
+--echo # Case 11: Duplicate unique value in same PK prefix - ER_DUP_ENTRY
 --echo #
 
 CREATE TABLE test.rb_uniq_dup_same (
@@ -268,7 +268,7 @@ INSERT INTO test.rb_uniq_dup_same (id, code, val) VALUES (2, 'BBB', 40);
 DROP TABLE test.rb_uniq_dup_same;
 
 ###############################################################################
-# Case 12: Wrap-time collision — new value matches active slot's unique value
+# Case 12: Wrap-time collision - new value matches active slot's unique value
 #
 # Fill the ring, wrap once successfully, then attempt a wrapping insert whose
 # new unique value collides with a still-active slot.  The overwritten slot's
@@ -276,7 +276,7 @@ DROP TABLE test.rb_uniq_dup_same;
 ###############################################################################
 
 --echo #
---echo # Case 12: Wrap-time collision with active slot — ER_DUP_ENTRY
+--echo # Case 12: Wrap-time collision with active slot - ER_DUP_ENTRY
 --echo #
 
 CREATE TABLE test.rb_uniq_wrap_dup (
@@ -297,20 +297,20 @@ INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'CCC', 30);
 
 SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
 
-# 4th insert wraps to slot 1: AAA freed, DDD takes its place — OK
+# 4th insert wraps to slot 1: AAA freed, DDD takes its place - OK
 INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'DDD', 40);
 
 SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
 
 # 5th insert wraps to slot 2: BBB would be freed, but new value 'CCC'
-# collides with active slot 3 — ER_DUP_ENTRY
+# collides with active slot 3 - ER_DUP_ENTRY
 --error ER_DUP_ENTRY
 INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'CCC', 50);
 
 # Verify state unchanged after failed insert
 SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
 
-# Retry with a non-duplicate value — should succeed at slot 2
+# Retry with a non-duplicate value - should succeed at slot 2
 INSERT INTO test.rb_uniq_wrap_dup (id, code, val) VALUES (1, 'EEE', 50);
 
 SELECT id, ring_idx, code, val FROM test.rb_uniq_wrap_dup ORDER BY ring_idx;
@@ -347,13 +347,13 @@ INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (1, 'CCC', 30);
 # Wrap: slot 1 overwritten, AAA freed
 INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (1, 'DDD', 40);
 
-# AAA was freed by wrap — a different PK prefix can now use it
+# AAA was freed by wrap - a different PK prefix can now use it
 INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (2, 'AAA', 50);
 
 SELECT id, ring_idx, code, val FROM test.rb_uniq_reuse
     ORDER BY id, ring_idx;
 
-# BBB is still active in id=1 slot 2 — cannot reuse
+# BBB is still active in id=1 slot 2 - cannot reuse
 --error ER_DUP_ENTRY
 INSERT INTO test.rb_uniq_reuse (id, code, val) VALUES (2, 'BBB', 60);
 

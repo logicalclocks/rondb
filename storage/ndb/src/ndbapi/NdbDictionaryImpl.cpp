@@ -2836,6 +2836,11 @@ int NdbOptimizeTableHandleImpl::next() {
          */
         Uint32 options = 0 | AttributeHeader::OPTIMIZE_MOVE_VARPART;
         myUpdateOp->setOptimize(options);
+        /* A var-part move on a ring buffer table must carry the ring
+           flag or DBTUP rejects it with error 940. */
+        if (m_table_queue->table->m_ring_buffer_size != RNIL) {
+          myUpdateOp->set_ring_buffer_op();
+        }
         /**
          * nextResult(false) means that the records
          * cached in the NDBAPI are modified before
@@ -4379,6 +4384,15 @@ int NdbDictInterface::createTable(Ndb &ndb, NdbTableImpl &impl) {
    */
   if (impl.getPartitionHashFanout() > 1 &&
       !ndbd_support_partition_hash_fanout(ndb.getMinDbNodeVersion())) {
+    m_error.code = 794;  // Schema feature requires data node upgrade
+    DBUG_RETURN(-1);
+  }
+  /* Same for ring buffer tables (an old node would create an ordinary
+     table without the ring write guards) and TTL on them. */
+  if (impl.isRingBuffer() &&
+      (!ndbd_support_ring_buffer(ndb.getMinDbNodeVersion()) ||
+       (impl.isTTLEnabled() &&
+        !ndbd_support_ttl_ring_buffer(ndb.getMinDbNodeVersion())))) {
     m_error.code = 794;  // Schema feature requires data node upgrade
     DBUG_RETURN(-1);
   }

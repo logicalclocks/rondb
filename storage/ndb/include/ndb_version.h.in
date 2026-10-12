@@ -1469,4 +1469,50 @@ ndbd_replica_rowid_forwarding(Uint32 x) {
   }
   return false;
 }
+
+/**
+ * Support for NDB_TABLE=MAX_ROWS_PER_PK=... (ring buffer tables).
+ *
+ * Ring buffer operations carry flag bits in TCKEYREQ requestInfo and in
+ * the LQHKEYREQ ScanInfo/attrLen word, and rely on DBTUP's write guard
+ * and meta-row filter; older data nodes know none of that - they would
+ * treat ring buffer tables as plain tables and drop the flag bits, so
+ * writes routed through an old TC would fail with error 940 (or bypass
+ * the ring bookkeeping entirely). Ring buffer DDL is therefore only
+ * allowed once EVERY data node runs a version with the feature.
+ *
+ * In this series the feature is present from 26.05.0 on, so a plain
+ * version comparison is sufficient.
+ */
+#define NDBD_SUPPORT_RING_BUFFER NDB_MAKE_VERSION(26,5,0)
+
+static
+inline
+int
+ndbd_support_ring_buffer(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_RING_BUFFER;
+}
+
+/**
+ * TTL on ring buffer tables needs data nodes whose DBTUP treats the ring
+ * meta row as never expiring and lets the TTL purge's only-expired
+ * deletes through the ring write guard. An older data node would purge
+ * the meta row (its TTL column reads as expired) or fail every purge
+ * delete with error 940. The combined DDL is therefore only allowed once
+ * EVERY data node runs a version with that support.
+ *
+ * The value is the first release that ships the DBTUP support. It equals
+ * the ring buffer gate while both ship in the same release; raise it if
+ * the ring buffer feature is released before TTL ring buffer tables.
+ */
+#define NDBD_SUPPORT_TTL_RING_BUFFER NDB_MAKE_VERSION(26,5,0)
+
+static
+inline
+int
+ndbd_support_ttl_ring_buffer(Uint32 x)
+{
+  return x >= NDBD_SUPPORT_TTL_RING_BUFFER;
+}
 #endif

@@ -59,6 +59,8 @@ bool printSCAN_FRAGREQ(FILE *output, const Uint32 *theData, Uint32 len,
     fprintf(output, "(cs)");
   if (ScanFragReq::getTTLOnlyExpiredFragFlag(sig->requestInfo))
     fprintf(output, "(ttl)");
+  if (ScanFragReq::getRingBufferShowMetaFragFlag(sig->requestInfo))
+    fprintf(output, "(ring_meta)");
   if (ScanFragReq::getNoDiskFlag(sig->requestInfo))
     fprintf(output, "(nodisk)");
   else

@@ -8,6 +8,7 @@ Detailed documentation is organized by topic in `claude_files/`. Read the releva
 |-------|-----------|-------------|
 | SET Config Param | `claude_files/set_config_param/` | Adding runtime-settable config parameters via the MGM client SET command |
 | TTL / Error 899 rowid | `claude_files/ttl_899_rowid/` | TTL "leftover rowid" investigation: purge is replica-safe, but rowid-less ZINSERT_TTL/ZWRITE forwarding silently amplifies replica divergence into permanent 899; test plan + hardening proposal |
+| TTL on Ring Buffer Tables | `claude_files/ttl_ring_buffer/` | Design (`design.md`), user view (`user_view.md`) and test coverage map (`test_plan.md`) of TTL + MAX_ROWS_PER_PK tables: meta row never expires (DBTUP), purge deletes pass the ring guard, deleteOldest rejected (4358), TTL is a creation-time property, version gate |
 
 ### set_config_param
 

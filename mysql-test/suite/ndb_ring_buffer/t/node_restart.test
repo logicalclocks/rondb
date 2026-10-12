@@ -29,11 +29,11 @@ INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_C');
 INSERT INTO test.rb (client_id, event_data) VALUES (2, 'ev_X');
 
 ###############################################################################
-# Case 1: Single node restart — data survives
+# Case 1: Single node restart - data survives
 ###############################################################################
 
 --echo #
---echo # Case 1: Single node restart — data survives
+--echo # Case 1: Single node restart - data survives
 --echo #
 
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -55,11 +55,11 @@ SELECT client_id, ring_idx FROM test.rb ORDER BY client_id, ring_idx;
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
-# Case 2: System restart (ALL RESTART) — data survives
+# Case 2: System restart (ALL RESTART) - data survives
 ###############################################################################
 
 --echo #
---echo # Case 2: System restart — data survives
+--echo # Case 2: System restart - data survives
 --echo #
 
 # Verify data before system restart
@@ -136,7 +136,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
-# Continue inserting — ring should keep working
+# Continue inserting - ring should keep working
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'ev_G');
 
 SELECT client_id, ring_idx, event_data FROM test.rb
@@ -144,6 +144,109 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 
 # SHOW CREATE TABLE should preserve ring buffer comment
 SHOW CREATE TABLE test.rb;
+
+###############################################################################
+# Case 5: Writes while a node is down - recovered replica serves them back
+###############################################################################
+
+--echo #
+--echo # Case 5: writes while node 1 down, reads from recovered node 1
+--echo #
+
+# Take node 1 down.
+--exec $NDB_MGM -e "1 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=2 --not-started >> $NDB_TOOLS_OUTPUT
+
+# Write and wrap a fresh prefix while node 1 is down (5 inserts, size 4):
+# node 2 alone holds these changes until node 1 recovers via copy.
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_A');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_B');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_C');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_D');
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_E');
+
+# Bring node 1 back (node recovery copies the missed writes).
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+# Take node 2 down so the recovered node 1 must serve the reads.
+--exec $NDB_MGM -e "2 RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=1 --not-started >> $NDB_TOOLS_OUTPUT
+
+# Rows and the packed meta must have been copied intact: version=1,
+# next_pos=2, count=4, total_inserts=5 (byte-exact).
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 3 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The ring must continue from the recovered state (slot 2 is next).
+INSERT INTO test.rb (client_id, event_data) VALUES (3, 'w_F');
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+
+# Restore full cluster.
+--exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 3 ORDER BY ring_idx;
+
+###############################################################################
+# Case 6: TTL ring buffer table survives a system restart
+###############################################################################
+
+--echo #
+--echo # Case 6: TTL ring - expired slot and meta row survive a system restart
+--echo #
+
+# The meta row's TIMESTAMP maximum is printed: fix the session time zone.
+SET time_zone = '+00:00';
+CREATE TABLE test.rb_ttl (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+# Slot 1 expired, slot 2 live, slot 3 far future
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 DAY), 'future_3');
+
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# System restart
+--exec $NDB_MGM -e "ALL RESTART -N" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER >> $NDB_TOOLS_OUTPUT
+
+--source include/ndb_not_readonly.inc
+
+--connection server2
+--source include/ndb_not_readonly.inc
+--connection server1
+
+# Visible set and meta row unchanged
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The ring continues: slot 4, then the wrap overwrites the expired slot 1
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_4');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_5');
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+
+DROP TABLE test.rb_ttl;
 
 ###############################################################################
 # Cleanup

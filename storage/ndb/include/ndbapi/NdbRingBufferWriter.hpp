@@ -35,12 +35,14 @@ class NdbRecord;
 class NdbOperation;
 
 /**
- * @brief Helper for inserting rows into ring buffer tables via NDB API.
+ * @brief Helper for managing rows in ring buffer tables via NDB API.
  *
- * NdbRingBufferWriter encapsulates the ring buffer INSERT protocol that
- * is normally performed by the MySQL handler (ha_ndbcluster.cc).  It
- * manages the internal ring_idx and ring_meta columns automatically,
- * so the caller only needs to provide user column values.
+ * NdbRingBufferWriter encapsulates the ring buffer INSERT and
+ * DELETE-OLDEST protocols normally performed by (or restricted by) the
+ * MySQL handler (ha_ndbcluster.cc).  It manages the internal ring_idx
+ * and ring_meta columns automatically, so the caller only needs to
+ * provide user column values (for insert) or PK-prefix values (for
+ * delete-oldest).
  *
  * Usage:
  * @code
@@ -51,7 +53,7 @@ class NdbOperation;
  *   NdbRingBufferWriter writer(table, record, trans);
  *
  *   // Fill row buffer with user column values (NdbRecord layout)
- *   // Do NOT set ring_idx or ring_meta — the writer manages those.
+ *   // Do NOT set ring_idx or ring_meta - the writer manages those.
  *   writer.addRow(rowBuffer, userMask);
  *   writer.addRow(rowBuffer2, userMask);  // batches if same PK prefix
  *
@@ -62,10 +64,30 @@ class NdbOperation;
  *
  * The userMask is a byte array indexed by attribute ID (same format as
  * NdbTransaction::insertTuple).  The bits for ring_idx and ring_meta
- * columns must NOT be set — the writer adds them internally.
+ * columns must NOT be set - the writer adds them internally.
+ *
+ * A row is written into its slot with writeTuple: when the slot is still
+ * occupied (the ring has wrapped) the write is an update, and a column
+ * absent from userMask keeps the overwritten row's value.  Set every
+ * column whose value matters.  On a table with TTL every column is
+ * mandatory: the NdbRecord must carry every column of the table (else the
+ * constructor fails with error 4359) and every userMask must include every
+ * column except ring_idx and ring_meta (else addRow() fails with 4359).
+ * An inherited expired TTL value would hide the new row, and the TTL purge
+ * on a replica may have removed the slot, so a replicated slot write must
+ * carry the whole row.
  *
  * For tables with BLOB/TEXT columns, addRow() returns the NdbOperation*
  * so the caller can obtain blob handles via op->getBlobHandle(attrId).
+ *
+ * Error handling: when any method fails (addRow() returns nullptr,
+ * flush()/deleteOldest() return -1), inspect getErrorCode()/
+ * getErrorMessage() and ROLL BACK the transaction - queued ring
+ * operations and the meta update may otherwise commit partially applied
+ * (e.g. deletes without the matching meta count decrement).  A writer
+ * that has reported an error is permanently failed (it is bound to the
+ * one transaction passed at construction); construct a new writer on a
+ * new transaction to continue.
  */
 class NdbRingBufferWriter {
  public:
@@ -76,13 +98,15 @@ class NdbRingBufferWriter {
    * @param ndbRecord NdbRecord for the table (use table->getDefaultRecord())
    * @param trans     Active NdbTransaction (must already be started)
    *
-   * Check getErrorCode() after construction — non-zero means the table
-   * is not a ring buffer table or metadata could not be cached.
+   * Check getErrorCode() after construction - non-zero means the table
+   * is not a ring buffer table or metadata could not be cached. Misuse
+   * (a null argument, a non-ring table, an NdbRecord missing a primary
+   * key or ring column) is reported as 4118 "Parameter error in API call".
    */
   NdbRingBufferWriter(const NdbDictionary::Table *table,
                       const NdbRecord *ndbRecord, NdbTransaction *trans);
 
-  /** Destructor.  Does NOT auto-flush — caller must call flush() explicitly. */
+  /** Destructor.  Does NOT auto-flush - caller must call flush() explicitly. */
   ~NdbRingBufferWriter();
 
   /**
@@ -92,7 +116,8 @@ class NdbRingBufferWriter {
    *                   The writer copies the data internally.
    * @param userMask   Column mask (byte array, indexed by attrId) for the
    *                   columns the user is providing.  Must NOT include
-   *                   ring_idx or ring_meta bits.
+   *                   ring_idx or ring_meta bits; must include every other
+   *                   column on a table with TTL (error 4359 otherwise).
    * @return Pointer to the queued NdbOperation on success (for blob handle
    *         access), or nullptr on error.
    *
@@ -111,6 +136,41 @@ class NdbRingBufferWriter {
    * @return 0 on success, -1 on error.
    */
   int flush();
+
+  /**
+   * Delete the N oldest data rows for a single PK prefix.
+   *
+   * Reads the meta row with exclusive lock, computes which slots hold
+   * the oldest rows from (next_pos, count), queues deleteTuple ops for
+   * those slots, and updates the meta row with count -= N (next_pos
+   * and total_inserts unchanged).  No hole forms: subsequent inserts
+   * land at next_pos and refill the freed slots in arrival order.
+   *
+   * @param pkPrefixRow  Row in NdbRecord layout with PK-prefix columns
+   *                     filled in.  ring_idx is ignored, all other
+   *                     columns ignored.
+   * @param maxN         Maximum rows to delete.  If the ring contains
+   *                     fewer rows, deletes what's available.  Empty
+   *                     ring is not an error - outActual is set to 0.
+   *                     maxN == 0 is a no-op success that does not touch
+   *                     the meta row.
+   * @param outActual    Output: number of rows actually deleted.
+   * @return 0 on success, -1 on error.  On -1 the transaction must be
+   *         rolled back: deletes may already be queued without the
+   *         matching meta update, and committing would leave the meta
+   *         row overcounting.
+   *
+   * A pending addRow() batch on this writer is flushed automatically
+   * before the meta row is read - no explicit flush() call is needed.
+   *
+   * Internally calls execute(NoCommit).  Caller is responsible for
+   * committing the transaction.
+   *
+   * Not available on a ring buffer table with TTL: the TTL purge removes
+   * expired rows in scan order, so the oldest slots may already be empty.
+   * Returns -1 with error 4358 there; the transaction is left untouched.
+   */
+  int deleteOldest(const char *pkPrefixRow, Uint32 maxN, Uint32 *outActual);
 
   /** Get the NDB error code of the last failed operation. */
   int getErrorCode() const { return m_error_code; }
@@ -168,6 +228,14 @@ class NdbRingBufferWriter {
   const NdbOperation *writeDataRow(const char *rowBuffer,
                                    const unsigned char *userMask);
   int writeMetaRow();
+
+  /*
+   * Compute the ring_idx (1-based) of the i-th oldest data row given
+   * the current meta state.  i=0 returns the oldest, i=1 the next
+   * oldest, etc.  Caller must ensure i < count.
+   */
+  static Uint32 computeOldestSlot(const Ring_meta &meta, Uint32 i,
+                                  Uint32 ring_size);
   bool pkPrefixMatches(const char *row1, const char *row2) const;
   void setRingIdxInBuffer(char *buf, Uint32 value) const;
   void setRingMetaNullInBuffer(char *buf) const;
@@ -175,6 +243,7 @@ class NdbRingBufferWriter {
                                 const unsigned char *packed) const;
   void clearRingMetaNullInBuffer(char *buf) const;
   void zeroNotNullColumnsInBuffer(char *buf) const;
+  void setTTLColumnMaxInBuffer(char *buf) const;
   void buildDataMask(const unsigned char *userMask,
                      unsigned char *outMask) const;
   void setError(int code, const char *msg);
@@ -199,6 +268,19 @@ class NdbRingBufferWriter {
   // NOT NULL non-blob non-PK columns (for meta row zero-fill)
   ColumnInfo *m_notnull_cols;
   Uint32 m_num_notnull_cols;
+
+  // TTL column (table with TTL, column present in the NdbRecord): the
+  // meta row carries the type maximum so that its entry in an ordered
+  // index on the TTL column sorts past every purge range.
+  bool m_has_ttl_col;
+  bool m_ttl_col_is_timestamp;  // Timestamp2, else Datetime2
+  Uint32 m_ttl_col_prec;
+  ColumnInfo m_ttl_col_info;
+
+  // TTL table: every column except ring_idx/ring_meta must be set in each
+  // row's userMask (byte array indexed by attrId, m_mask_byte_size bytes);
+  // nullptr on a table without TTL.
+  unsigned char *m_required_mask;
 
   // Pre-built meta column mask (byte array indexed by attrId)
   unsigned char *m_meta_mask;

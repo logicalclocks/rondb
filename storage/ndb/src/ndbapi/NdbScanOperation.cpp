@@ -584,6 +584,13 @@ inline int NdbScanOperation::scanImpl(
   }
   if (options != nullptr &&
       (options->optionsPresent & ScanOptions::SO_TTL_ONLY_EXPIRED)) {
+    /* Take-over operations inherit the scan's TTL flags; only-expired
+       plus ignore-TTL would let them bypass the expiry check and the ring
+       buffer write guard. Rejected as for key operations (4360). */
+    if (m_flags & OF_TTL_IGNORE) {
+      setErrorCodeAbort(4360);
+      return -1;
+    }
     m_flags |= OF_TTL_ONLY_EXPIRED;
   }
   if (options != nullptr &&

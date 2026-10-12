@@ -62,6 +62,7 @@ class NdbOperation {
   friend class NdbScanFilterImpl;
   friend class NdbReceiver;
   friend class NdbBlob;
+  friend class NdbRingBufferWriter;
   friend class BlobBatchChecker;
   friend class OpList;
 #endif

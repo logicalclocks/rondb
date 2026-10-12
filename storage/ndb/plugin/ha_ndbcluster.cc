@@ -55,6 +55,7 @@
 #include "sql/sql_executor.h"  // QEP_TAB
 #include "sql/sql_lex.h"
 #include "sql/sql_plugin_var.h"  // SYS_VAR
+#include "sql/table_trigger_dispatcher.h"  // Table_trigger_dispatcher
 #include "sql/transaction.h"
 #ifndef NDEBUG
 #include "sql/sql_test.h"  // print_where
@@ -841,7 +842,7 @@ static int handle_row_conflict(
     const NdbRecord *data_rec, const uchar *old_row, const uchar *new_row,
     enum_conflicting_op_type op_type, enum_conflict_cause conflict_cause,
     const NdbError &conflict_error, NdbTransaction *conflict_trans,
-    const MY_BITMAP *write_set, Uint64 transaction_id);
+    const MY_BITMAP *write_set, Uint64 transaction_id, bool ring_buffer);
 
 // Error code returned when "refresh occurs on a refreshed row"
 static constexpr int ERROR_OP_AFTER_REFRESH_OP = 920;
@@ -1160,6 +1161,15 @@ void ha_ndbcluster::set_rec_per_key(THD *thd) {
 
 int ha_ndbcluster::records(ha_rows *num_rows) {
   DBUG_TRACE;
+
+  /* Ring buffer: stats.records is the physical row count, which includes
+     the hidden meta rows (one per PK prefix). Use the base-class scan
+     count instead - the scan passes the kernel meta-row filter. The scan
+     branch engages because table_flags() clears HA_COUNT_ROWS_INSTANT
+     for ring buffer tables. */
+  if (m_table != nullptr && m_table->isRingBuffer()) {
+    return handler::records(num_rows);
+  }
 
   // Read fresh stats from NDB (one roundtrip)
   const int error = update_stats(table->in_use, true);
@@ -4392,7 +4402,8 @@ int ha_ndbcluster::prepare_conflict_detection(
                                 m_share->table_name, "Transaction", key_rec,
                                 data_rec, old_data, new_data, conflicting_op,
                                 TRANS_IN_CONFLICT, noRealConflictError, trans,
-                                write_set, transaction_id);
+                                write_set, transaction_id,
+                                m_table->isRingBuffer());
       if (unlikely(res)) {
         return res;
       }
@@ -4547,6 +4558,7 @@ int ha_ndbcluster::prepare_conflict_detection(
   ex_data.op_type = op_type;
   ex_data.reflected_operation = op_is_marked_as_reflected;
   ex_data.trans_id = transaction_id;
+  ex_data.ring_buffer = m_table->isRingBuffer();
 
   // Save the row data for possible conflict resolution after execute()
   if (old_data) {
@@ -4782,7 +4794,7 @@ static int handle_conflict_op_error(Ndb_applier *const applier,
             ORIG_TRANSID not available for
             non-transactional conflict detection.
           */
-          Ndb_binlog_extra_row_info::InvalidTransactionId);
+          Ndb_binlog_extra_row_info::InvalidTransactionId, ex_data.ring_buffer);
 
       return res;
     } else {
@@ -5201,7 +5213,7 @@ int ha_ndbcluster::primary_key_cmp(const uchar *old_row, const uchar *new_row) {
 
 static Ndb_exceptions_data StaticRefreshExceptionsData = {
     nullptr, nullptr, nullptr,     nullptr, nullptr,
-    nullptr, nullptr, REFRESH_ROW, false,   0};
+    nullptr, nullptr, REFRESH_ROW, false,   0, false};
 
 static int handle_row_conflict(
     Ndb_applier *const applier, NDB_CONFLICT_FN_SHARE *cfn_share,
@@ -5209,7 +5221,7 @@ static int handle_row_conflict(
     const NdbRecord *data_rec, const uchar *old_row, const uchar *new_row,
     enum_conflicting_op_type op_type, enum_conflict_cause conflict_cause,
     const NdbError &conflict_error, NdbTransaction *conflict_trans,
-    const MY_BITMAP *write_set, Uint64 transaction_id) {
+    const MY_BITMAP *write_set, Uint64 transaction_id, bool ring_buffer) {
   DBUG_TRACE;
 
   const uchar *row = (op_type == DELETE_ROW) ? old_row : new_row;
@@ -5327,6 +5339,11 @@ static int handle_row_conflict(
       NdbOperation::OperationOptions options;
       options.optionsPresent = NdbOperation::OperationOptions::OO_CUSTOMDATA |
                                NdbOperation::OperationOptions::OO_ANYVALUE;
+      /* The ring write guard refuses a refresh without the ring flag. */
+      if (ring_buffer) {
+        options.optionsPresent |=
+            NdbOperation::OperationOptions::OO_RING_BUFFER_OP;
+      }
       options.customData = &StaticRefreshExceptionsData;
       options.anyValue = 0;
 
@@ -5610,8 +5627,12 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
   if (m_table->isRingBuffer() && !thd_ndb->get_applier()) {
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
     const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
-    Field *ring_idx_field = table->field[ring_idx_col_no];
-    Field *ring_meta_field = table->field[ring_meta_col_no];
+    /* NDB column numbers, mapped to MySQL fields (virtual generated
+       columns shift the numbering) */
+    Field *ring_idx_field =
+        table->field[m_table_map->get_field_for_column(ring_idx_col_no)];
+    Field *ring_meta_field =
+        table->field[m_table_map->get_field_for_column(ring_meta_col_no)];
 
     if (bitmap_is_set(table->write_set, ring_idx_field->field_index())) {
       my_error(ER_ILLEGAL_HA, MYF(0),
@@ -5621,6 +5642,19 @@ int ha_ndbcluster::ndb_update_row(const uchar *old_data, uchar *new_data,
     if (bitmap_is_set(table->write_set, ring_meta_field->field_index())) {
       my_error(ER_ILLEGAL_HA, MYF(0),
                "Cannot update ring_meta on ring-buffer table");
+      return HA_ERR_UNSUPPORTED;
+    }
+
+    /*
+     * Block updates to any primary-key column. A PK update takes the
+     * delete+insert path (ndb_pk_update_row): the delete half bypasses
+     * ring DELETE validation and the insert half is rejected by the ring
+     * write intercept, which aborts the whole transaction with a
+     * misleading "Cannot specify ring_idx column in INSERT" error.
+     */
+    if (bitmap_is_overlapping(table->write_set, m_pk_bitmap_p)) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "Cannot update primary key columns on ring-buffer table");
       return HA_ERR_UNSUPPORTED;
     }
 
@@ -5936,16 +5970,58 @@ bool ha_ndbcluster::start_bulk_delete() {
   if (m_table->isRingBuffer() && !m_ring_buffer_delete_allowed) {
     THD *thd = table->in_use;
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
-    const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
+    const uint ring_idx_fi = m_table_map->get_field_for_column(ring_idx_col_no);
     const Item *where = thd->lex->query_block->where_cond();
-    if (ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where)) {
+    /* DELETE triggers break the meta-row protocol: a BEFORE DELETE
+       trigger fires for the hidden meta row the show-meta scan surfaces,
+       and an AFTER DELETE trigger suppresses this bulk path entirely
+       (the scan then opens without show-meta and the meta row survives
+       the delete with stale count/next_pos). */
+    if (table->triggers != nullptr && table->triggers->has_delete_triggers()) {
+      if (!m_thd_ndb->get_applier()) {
+        my_error(ER_ILLEGAL_HA, MYF(0),
+                 "DELETE on ring-buffer table with DELETE triggers is not "
+                 "supported");
+        m_is_bulk_delete = false;
+        return 1;
+      }
+    } else if (!ndb_ring_buffer::delete_statement_shape_allowed(thd)) {
+      /* Check the statement shape before the WHERE walker: a multi-table
+         DELETE's join condition lands in where_cond() and would otherwise
+         trip the walker with a misleading message. */
+      if (!m_thd_ndb->get_applier()) {
+        my_error(ER_ILLEGAL_HA, MYF(0),
+                 "DELETE on ring-buffer table cannot use LIMIT, ORDER BY, "
+                 "or multi-table DELETE");
+        m_is_bulk_delete = false;
+        return 1;
+      }
+    } else if (!ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi,
+                                                      where)) {
+      if (!m_thd_ndb->get_applier()) {
+        my_error(ER_ILLEGAL_HA, MYF(0),
+                 "DELETE WHERE on ring-buffer table may only reference "
+                 "PK-prefix columns (excluding ring_idx)");
+        m_is_bulk_delete = false;
+        return 1;
+      }
+    } else if (!ndb_ring_buffer::delete_where_pins_prefixes(table, ring_idx_fi,
+                                                            where)) {
+      if (!m_thd_ndb->get_applier()) {
+        my_error(ER_ILLEGAL_HA, MYF(0), ndb_ring_buffer::DELETE_NOT_PINNED_MSG);
+        m_is_bulk_delete = false;
+        return 1;
+      }
+    } else {
       m_ring_buffer_delete_allowed = true;
-    } else if (!m_thd_ndb->get_applier()) {
-      my_error(ER_ILLEGAL_HA, MYF(0),
-               "DELETE WHERE on ring-buffer table may only reference "
-               "PK-prefix columns (excluding ring_idx)");
-      m_is_bulk_delete = false;
-      return 1;
+      if (!m_thd_ndb->get_applier()) {
+        const int error = ring_buffer_lock_delete_prefix(where);
+        if (error != 0) {
+          print_error(error, MYF(0));
+          m_is_bulk_delete = false;
+          return 1;
+        }
+      }
     }
   }
 
@@ -6063,19 +6139,39 @@ int ha_ndbcluster::ndb_delete_row(const uchar *record,
   if (m_table->isRingBuffer() &&
       !m_ring_buffer_delete_allowed &&
       !m_thd_ndb->get_applier()) {
+    /* An AFTER DELETE trigger suppresses start_bulk_delete(): the scan
+       has already opened without show-meta, so the hidden meta row would
+       survive the delete with stale count/next_pos. Reject. */
+    if (table->triggers != nullptr && table->triggers->has_delete_triggers()) {
+      my_error(ER_ILLEGAL_HA, MYF(0),
+               "DELETE on ring-buffer table with DELETE triggers is not "
+               "supported");
+      return HA_ERR_UNSUPPORTED;
+    }
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
-    const uint ring_idx_fi = table->field[ring_idx_col_no]->field_index();
+    const uint ring_idx_fi = m_table_map->get_field_for_column(ring_idx_col_no);
     const Item *where = thd->lex->query_block->where_cond();
-    if (ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where)) {
+    if (ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where) &&
+        ndb_ring_buffer::delete_statement_shape_allowed(thd) &&
+        ndb_ring_buffer::delete_where_pins_prefixes(table, ring_idx_fi,
+                                                    where)) {
       m_ring_buffer_delete_allowed = true;
     }
   }
   if (m_table->isRingBuffer() &&
       !m_ring_buffer_delete_allowed &&
       !m_thd_ndb->get_applier()) {
+    const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
+    const uint ring_idx_fi = m_table_map->get_field_for_column(ring_idx_col_no);
+    const Item *where = thd->lex->query_block->where_cond();
     my_error(ER_ILLEGAL_HA, MYF(0),
-             "DELETE WHERE on ring-buffer table may only reference "
-             "PK-prefix columns (excluding ring_idx)");
+             !ndb_ring_buffer::delete_statement_shape_allowed(thd)
+                 ? "DELETE on ring-buffer table cannot use LIMIT, ORDER BY, "
+                   "or multi-table DELETE"
+             : !ndb_ring_buffer::delete_where_allowed(table, ring_idx_fi, where)
+                 ? "DELETE WHERE on ring-buffer table may only reference "
+                   "PK-prefix columns (excluding ring_idx)"
+                 : ndb_ring_buffer::DELETE_NOT_PINNED_MSG);
     return HA_ERR_UNSUPPORTED;
   }
 
@@ -7475,14 +7571,13 @@ int ha_ndbcluster::end_bulk_insert() {
     const Uint32 ring_idx_col_no = m_table->getRingIdxColumnNo();
     const Uint32 ring_meta_col_no = m_table->getRingMetaColumnNo();
     int rb_err = flush_ring_buffer_batch();
-    bitmap_clear_bit(table->write_set,
-                     table->field[ring_idx_col_no]->field_index());
-    bitmap_clear_bit(table->write_set,
-                     table->field[ring_meta_col_no]->field_index());
-    bitmap_clear_bit(table->read_set,
-                     table->field[ring_idx_col_no]->field_index());
-    bitmap_clear_bit(table->read_set,
-                     table->field[ring_meta_col_no]->field_index());
+    const uint ring_idx_fi = m_table_map->get_field_for_column(ring_idx_col_no);
+    const uint ring_meta_fi =
+        m_table_map->get_field_for_column(ring_meta_col_no);
+    bitmap_clear_bit(table->write_set, ring_idx_fi);
+    bitmap_clear_bit(table->write_set, ring_meta_fi);
+    bitmap_clear_bit(table->read_set, ring_idx_fi);
+    bitmap_clear_bit(table->read_set, ring_meta_fi);
     if (rb_err != 0) {
       set_my_errno(rb_err);
       return rb_err;
@@ -10234,9 +10329,21 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
         Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
         const NDBTAB *old_tab = old_tab_g.get_table();
         if (old_tab && old_tab->isRingBuffer() &&
-            rb_spec.size < old_tab->getRingBufferSize()) {
+            rb_spec.size != old_tab->getRingBufferSize()) {
           return create.failed_illegal_create_option(
-              "Cannot shrink ring buffer size");
+              "Cannot change ring buffer size; use DROP+CREATE to resize");
+        }
+        /* The copy would keep every row as it is: no meta rows, slots
+           outside 1..size, a ring_idx = 0 row taken for a meta row. No
+           NDB table under the old name (709/723): a table of another
+           engine; any other lookup error is reported as such. */
+        if (old_tab == nullptr && old_tab_g.getNdbError().code != 709 &&
+            old_tab_g.getNdbError().code != 723) {
+          return create.failed_in_NDB(old_tab_g.getNdbError());
+        }
+        if (old_tab == nullptr || !old_tab->isRingBuffer()) {
+          return create.failed_illegal_create_option(
+              "Cannot enable ring buffer via ALTER; use DROP+CREATE");
         }
       }
       found_ring_buffer = true;
@@ -10246,10 +10353,36 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
     }
   }
 
-  /* Mutual exclusion: TTL and MAX_ROWS_PER_PK */
-  if (found_ttl && found_ring_buffer) {
-    return create.failed_illegal_create_option(
-        "A table cannot be both TTL and MAX_ROWS_PER_PK");
+  /* TTL on a ring buffer table is a creation-time property: the copy
+     path of ALTER may change the TTL seconds but may not enable or
+     disable TTL on an existing ring buffer table (enabling leaves the
+     meta rows written before with a zero TTL column; disabling makes
+     deleteOldest legal on a ring with purged holes). Message <= 64 chars:
+     ER_ILLEGAL_HA_CREATE_OPTION clips the option string. */
+  /* The writers store the TTL maximum in the meta row's TTL column; in a
+     primary key column that moves every prefix's meta row to one key. */
+  if (found_ring_buffer && found_ttl &&
+      table->s->primary_key != MAX_KEY) {
+    const KEY &pk = table->s->key_info[table->s->primary_key];
+    for (uint i = 0; i < pk.user_defined_key_parts; i++) {
+      if (!my_strcasecmp(system_charset_info, pk.key_part[i].field->field_name,
+                         ttl_column.c_str())) {
+        return create.failed_illegal_create_option(
+            "TTL column cannot be a PRIMARY KEY column of a ring table");
+      }
+    }
+  }
+  if (found_ring_buffer && thd_sql_command(thd) == SQLCOM_ALTER_TABLE) {
+    const char *orig_db = thd->lex->query_block->get_table_list()->db;
+    const char *orig_name =
+        thd->lex->query_block->get_table_list()->table_name;
+    Ndb_table_guard old_tab_g(ndb, orig_db, orig_name);
+    const NDBTAB *old_tab = old_tab_g.get_table();
+    if (old_tab && old_tab->isRingBuffer() &&
+        old_tab->isTTLEnabled() != found_ttl) {
+      return create.failed_illegal_create_option(
+          "Cannot enable/disable TTL on a ring table; use DROP+CREATE");
+    }
   }
   Partition_hash_modifier partition_hash;
   const char *partition_hash_error = nullptr;
@@ -10262,6 +10395,23 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
       ndbd_support_partition_hash_fanout(ndb->getMinDbNodeVersion()) == 0) {
     return create.failed_illegal_create_option(
         "PARTITION_HASH not supported by current data node versions");
+  }
+
+  /*
+   * Ring buffer requires NDB-native partitioning: with user-defined
+   * partitioning (HASH by expression, RANGE, LIST, or subpartitioning)
+   * every operation must carry an explicit partition id, which the ring
+   * buffer write paths do not provide - every INSERT on such a table
+   * fails with error 4544 "Wrong partitionInfo type for table". Implicit
+   * partitioning and explicit [LINEAR] KEY work and stay allowed. Also
+   * covers ALTER ... PARTITION BY, which re-enters here via copy-create.
+   */
+  if (found_ring_buffer && table->part_info != nullptr &&
+      !(table->part_info->part_type == partition_type::HASH &&
+        table->part_info->list_of_part_fields &&
+        !table->part_info->is_sub_partitioned())) {
+    return create.failed_illegal_create_option(
+        "MAX_ROWS_PER_PK supports only KEY partitioning");
   }
 
   NdbDictionary::Object::PartitionBalance part_bal =
@@ -10322,6 +10472,25 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
         "FULLY_REPLICATED not supported by current data node versions");
   }
 
+  /* Verify EVERY data node supports ring buffer tables if requested -
+     an old data node would treat the table as plain and drop the ring
+     flag bits, so writes routed through it would fail with error 940
+     or bypass the ring bookkeeping. Covers CREATE and, via the copy
+     path, ALTER. */
+  if (found_ring_buffer &&
+      ndbd_support_ring_buffer(ndb->getMinDbNodeVersion()) == 0) {
+    return create.failed_illegal_create_option(
+        "MAX_ROWS_PER_PK not supported by current data node versions");
+  }
+
+  /* TTL on a ring buffer table needs data nodes that never expire the
+     meta row and admit the TTL purge's deletes (see ndb_version.h). */
+  if (found_ring_buffer && found_ttl &&
+      ndbd_support_ttl_ring_buffer(ndb->getMinDbNodeVersion()) == 0) {
+    return create.failed_illegal_create_option(
+        "TTL ring buffer not supported by current data node versions");
+  }
+
   // Read mysql.ndb_replication settings for this table, if any
   uint32 binlog_flags;
   const st_conflict_fn_def *conflict_fn = nullptr;
@@ -10333,6 +10502,17 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
                                           &binlog_flags, &conflict_fn, args,
                                           &num_args)) {
     return HA_WRONG_CREATE_OPTION;
+  }
+
+  /* Ring meta updates and wraps are logged as writes onto existing rows,
+     which conflict detection treats as conflicts (see setup_conflict_fn).
+     Only a new table is refused: TRUNCATE (which has already dropped the
+     table) and the copy of an ALTER keep the table and drop the conflict
+     function in setup_conflict_fn. */
+  if (found_ring_buffer && conflict_fn != nullptr &&
+      thd_sql_command(thd) == SQLCOM_CREATE_TABLE) {
+    return create.failed_illegal_create_option(
+        "Conflict functions are not supported on ring buffer tables");
   }
 
   // Use mysql.ndb_replication settings when creating table
@@ -10407,6 +10587,12 @@ int ha_ndbcluster::create(const char *path [[maybe_unused]],
 
     if (use_fully_replicated) {
       /* Fully replicated table */
+      if (found_ring_buffer) {
+        /* The fully-replicated copy trigger does not carry the ring buffer
+           bypass flag, so every write would fail; reject the combination. */
+        return create.failed_illegal_create_option(
+            "A table cannot be both fully replicated and MAX_ROWS_PER_PK");
+      }
       if (mod_read_backup->m_found && !mod_read_backup->m_val_bool) {
         /**
          * Cannot mix FULLY_REPLICATED=1 and READ_BACKUP=0 since
@@ -13897,6 +14083,16 @@ ulonglong ha_ndbcluster::table_flags(void) const {
                 HA_GENERATED_COLUMNS | 0;
 
   /*
+    Bare SELECT COUNT(*) must not use the instant row-count fast path on
+    ring buffer tables: the physical count includes the hidden meta rows
+    (one per PK prefix). Falling back to the scan count respects the
+    kernel meta-row filter. m_table is not yet open on some early calls
+    (handler init); the cached flags are refreshed in ha_external_lock.
+  */
+  if (m_table != nullptr && m_table->isRingBuffer())
+    f &= ~HA_COUNT_ROWS_INSTANT;
+
+  /*
     To allow for logging of NDB tables during stmt based logging;
     flag cabablity, but also turn off flag for OWN_BINLOGGING
   */
@@ -16766,6 +16962,13 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
     }
 
     if (alter_flags & Alter_inplace_info::ALTER_TABLE_REORG) {
+      if (old_tab->isRingBuffer()) {
+        /* The reorg copy machinery carries no ring-buffer flag: moved
+           rows hit the 940 write guard mid-schema-transaction, and the
+           copy scan would drop hidden meta rows. */
+        return inplace_unsupported(
+            ha_alter_info, "Can't reorganize partitions of ring buffer table");
+      }
       const ulonglong curr_max_rows = table_share->max_rows;
       if (curr_max_rows != 0) {
         // No inplace REORGANIZE PARTITION for table with MAX_ROWS
@@ -16777,6 +16980,11 @@ enum_alter_inplace_result ha_ndbcluster::check_inplace_alter_supported(
       new_tab.setFragmentData(nullptr, 0);
     } else if (alter_flags & Alter_inplace_info::ADD_PARTITION) {
       DBUG_PRINT("info", ("Adding partition (%u)", part_info->num_parts));
+      if (old_tab->isRingBuffer()) {
+        // Same reorg copy machinery as ALTER_TABLE_REORG
+        return inplace_unsupported(
+            ha_alter_info, "Can't add partition to ring buffer table");
+      }
       new_tab.setFragmentCount(part_info->num_parts);
       new_tab.setPartitionBalance(
           NdbDictionary::Object::PartitionBalance_Specific);
@@ -17143,9 +17351,12 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
       }
       /* off on non-ring-buffer table — no-op, ignore */
     } else {
-      if (old_tab->isRingBuffer() &&
-          rb_spec.size < old_tab->getRingBufferSize()) {
-        *reason = "Cannot shrink ring buffer size";
+      if (!old_tab->isRingBuffer()) {
+        *reason = "Cannot enable ring buffer via ALTER; use DROP+CREATE";
+        return true;
+      }
+      if (rb_spec.size != old_tab->getRingBufferSize()) {
+        *reason = "Cannot change ring buffer size; use DROP+CREATE to resize";
         return true;
       }
       if (const char *err =
@@ -17156,9 +17367,44 @@ bool ha_ndbcluster::inplace_parse_comment(NdbDictionary::Table *new_tab,
     }
   }
 
-  /* Mutual exclusion: TTL and MAX_ROWS_PER_PK */
-  if (new_tab->isTTLEnabled() && new_tab->isRingBuffer()) {
-    *reason = "A table cannot be both TTL and MAX_ROWS_PER_PK";
+  /* TTL on a ring buffer table is a creation-time property: the TTL
+     seconds may change, TTL may not be enabled or disabled (see the
+     CREATE path, which the copy fallback re-enters). */
+  if (old_tab->isRingBuffer() &&
+      old_tab->isTTLEnabled() != new_tab->isTTLEnabled()) {
+    *reason = "Cannot enable/disable TTL on a ring table; use DROP+CREATE";
+    return true;
+  }
+  /* See the CREATE path: the TTL column of a ring table is not a key. */
+  if (new_tab->isRingBuffer() && new_tab->isTTLEnabled()) {
+    const NdbDictionary::Column *ttl_col =
+        new_tab->getColumn(static_cast<int>(new_tab->getTTLColumnNo()));
+    if (ttl_col != nullptr && ttl_col->getPrimaryKey()) {
+      *reason = "TTL column cannot be a PRIMARY KEY column of a ring table";
+      return true;
+    }
+  }
+
+  /* Mutual exclusion: fully replicated and MAX_ROWS_PER_PK (the
+     fully-replicated copy trigger does not carry the ring buffer
+     bypass flag, so every write would fail). */
+  if (new_tab->isRingBuffer() &&
+      (new_tab->getFullyReplicated() ||
+       (mod_fully_replicated->m_found && mod_fully_replicated->m_val_bool))) {
+    *reason = "A table cannot be both fully replicated and MAX_ROWS_PER_PK";
+    return true;
+  }
+
+  /* Ring buffer DDL requires EVERY data node to support the feature
+     (mirrors the CREATE-side gate; the copy fallback re-checks there). */
+  if (new_tab->isRingBuffer() &&
+      ndbd_support_ring_buffer(ndb->getMinDbNodeVersion()) == 0) {
+    *reason = "MAX_ROWS_PER_PK not supported by current data node versions";
+    return true;
+  }
+  if (new_tab->isRingBuffer() && new_tab->isTTLEnabled() &&
+      ndbd_support_ttl_ring_buffer(ndb->getMinDbNodeVersion()) == 0) {
+    *reason = "TTL ring buffer not supported by current data node versions";
     return true;
   }
 

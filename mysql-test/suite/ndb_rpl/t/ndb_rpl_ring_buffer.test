@@ -7,14 +7,14 @@
 # Key implementation detail: ha_ndbcluster.cc checks
 # !thd_ndb->get_applier() before entering ring buffer write path,
 # so the replica applies replicated rows directly via normal NDB
-# write path — this is correct behavior.
+# write path - this is correct behavior.
 
 --source include/have_ndb.inc
 --source include/have_binlog_format_mixed_or_row.inc
 --source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
 
 ###############################################################################
-# Case 1: CREATE TABLE DDL replicates — SHOW CREATE TABLE on slave
+# Case 1: CREATE TABLE DDL replicates - SHOW CREATE TABLE on slave
 ###############################################################################
 
 --echo #
@@ -39,7 +39,7 @@ CREATE TABLE test.rb (
 SHOW CREATE TABLE test.rb;
 
 ###############################################################################
-# Case 2: Basic INSERT replicates — data visible, meta rows hidden
+# Case 2: Basic INSERT replicates - data visible, meta rows hidden
 ###############################################################################
 
 --echo #
@@ -166,7 +166,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 2 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 7: DELETE replicates — ring cleared on slave
+# Case 7: DELETE replicates - ring cleared on slave
 ###############################################################################
 
 --echo #
@@ -189,7 +189,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 3 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 8: Meta rows on slave — visible with ndb_ring_buffer_show_meta
+# Case 8: Meta rows on slave - visible with ndb_ring_buffer_show_meta
 ###############################################################################
 
 --echo #
@@ -198,23 +198,27 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 
 --connection master
 
-# Check meta rows on master
+# Check meta rows on master - including the packed meta bytes
 SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
+SELECT HEX(ring_meta) FROM test.rb
+    WHERE client_id = 1 AND ring_idx = 0;
 SET ndb_ring_buffer_show_meta = OFF;
 
 --sync_slave_with_master
 --connection slave
 
-# Meta rows should also be present on slave
+# Meta rows should also be present on slave, byte-identical to the master
 SET ndb_ring_buffer_show_meta = ON;
 SELECT client_id, ring_idx FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
+SELECT HEX(ring_meta) FROM test.rb
+    WHERE client_id = 1 AND ring_idx = 0;
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
-# Case 9: TRUNCATE TABLE replicates — slave also cleared
+# Case 9: TRUNCATE TABLE replicates - slave also cleared
 ###############################################################################
 
 --echo #
@@ -266,17 +270,18 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
 ###############################################################################
-# Case 11: ALTER TABLE grow replicates
+# Case 11: ALTER TABLE resize is rejected (online resize disabled)
 ###############################################################################
 
 --echo #
---echo # Case 11: ALTER TABLE grow replicates to slave
+--echo # Case 11: ALTER TABLE resize rejected; table unchanged on both sides
 --echo #
 
 --connection master
 
-# Current ring_size=4, grow to 8
-# Need NOLOGGING=1 in replication setup to match table's current setting
+# Online ring-buffer resize is disabled; this grow must fail and nothing
+# may replicate.
+--error ER_ILLEGAL_HA_CREATE_OPTION
 ALTER TABLE test.rb COMMENT="NDB_TABLE=NOLOGGING=1,MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 
 SHOW CREATE TABLE test.rb;
@@ -284,34 +289,29 @@ SHOW CREATE TABLE test.rb;
 --sync_slave_with_master
 --connection slave
 
-# Slave should have the grown ring_size
+# Slave still has the original ring_size
 SHOW CREATE TABLE test.rb;
 
 ###############################################################################
-# Case 12: INSERT after grow uses new ring size on both master and slave
+# Case 12: INSERT after rejected resize continues at original ring size
 ###############################################################################
 
 --echo #
---echo # Case 12: INSERT after grow uses new ring size
+--echo # Case 12: INSERT after rejected resize continues at ring_size=4
 --echo #
 
 --connection master
 
-# Currently has 2 rows (post_trunc_A, post_trunc_B). Ring size is now 8.
-# Add 6 more to fill ring at new size
+# Currently has 2 rows (post_trunc_A, post_trunc_B). Fill to ring_size=4.
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_C');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_D');
-INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_E');
-INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_F');
-INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_G');
-INSERT INTO test.rb (client_id, event_data) VALUES (1, 'grow_H');
 
-# Ring full at size 8, all 8 slots occupied
+# Ring full at size 4, all 4 slots occupied
 SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
 
-# Wrap at new size
-INSERT INTO test.rb (client_id, event_data) VALUES (1, 'wrap_I');
+# Wrap at the original size - oldest row (post_trunc_A) overwritten
+INSERT INTO test.rb (client_id, event_data) VALUES (1, 'wrap_E');
 
 SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1 ORDER BY ring_idx;
@@ -397,6 +397,295 @@ SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
 SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
 
 ###############################################################################
+# Case 15: Promote-to-source - replica ring continues from replicated state
+###############################################################################
+
+--echo #
+--echo # Case 15: replica promoted to source continues the ring
+--echo #
+
+--connection master
+CREATE TABLE test.rb_promote (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+INSERT INTO test.rb_promote (client_id, event_data) VALUES (1, 'p_A');
+INSERT INTO test.rb_promote (client_id, event_data) VALUES (1, 'p_B');
+
+--sync_slave_with_master
+--connection slave
+
+# Promote: stop replication, write on the former replica. The inserts must
+# continue from the REPLICATED meta position (slot 3, then wrap to 1) -
+# not restart the ring.
+--source include/rpl/stop_replica.inc
+
+INSERT INTO test.rb_promote (client_id, event_data) VALUES (1, 'p_C');
+INSERT INTO test.rb_promote (client_id, event_data) VALUES (1, 'p_D');
+
+SELECT client_id, ring_idx, event_data FROM test.rb_promote
+    WHERE client_id = 1 ORDER BY ring_idx;
+
+# version=1, next_pos=2, count=3, total_inserts=4 (byte-exact)
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb_promote
+    WHERE client_id = 1 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--source include/rpl/start_replica.inc
+
+###############################################################################
+# Case 16: PITR pin - mysqlbinlog | mysql replay of ring buffer row events
+# fails loudly (B17/C12). The replayed Write_rows events apply through a
+# regular client session (no applier) in REPLACE/idempotent row-apply mode,
+# so the ring-buffer write intercept rejects them ("REPLACE is not allowed
+# on ring-buffer tables"): ring buffer binlogs are NOT SQL-replayable.
+# Backup/restore of ring buffer tables must use ndb_restore (mysqldump SQL
+# restore is equally impossible - INSERT listing ring_idx is rejected).
+# The replay session runs with sql_log_bin=0 (standard PITR practice):
+# without it the server re-logs the replayed row event into its own binlog
+# and a downstream replica breaks on the same intercept rejection.
+###############################################################################
+
+--echo #
+--echo # Case 16: binlog replay of ring buffer events fails loudly
+--echo #
+
+--connection master
+
+# The replay failure below is reported in the master's error log with the
+# "Replica SQL:" prefix (BINLOG statement application reuses the applier
+# machinery, "source log FIRST") - expected, suppress for the log check.
+--disable_query_log
+call mtr.add_suppression("Could not execute Write_rows event on table pitr.rb_pitr");
+--enable_query_log
+
+# Rotate so the events land in a fresh, known binlog file.
+FLUSH BINARY LOGS;
+--let $pitr_binlog_file = query_get_value(SHOW BINARY LOG STATUS, File, 1)
+
+CREATE DATABASE pitr;
+CREATE TABLE pitr.rb_pitr (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    event_data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO pitr.rb_pitr (client_id, event_data) VALUES (1, 'binlogged_A');
+INSERT INTO pitr.rb_pitr (client_id, event_data) VALUES (1, 'binlogged_B');
+
+# The slave having applied the rows proves they reached the master binlog.
+--sync_slave_with_master
+--connection slave
+SELECT client_id, ring_idx, event_data FROM pitr.rb_pitr
+    WHERE client_id = 1 ORDER BY ring_idx;
+--connection master
+
+# Seal the events into $pitr_binlog_file, then remove the objects so the
+# replay can re-create them.
+FLUSH BINARY LOGS;
+DROP DATABASE pitr;
+--sync_slave_with_master
+--connection master
+
+--let $MYSQLD_DATADIR = `SELECT @@datadir`
+
+# Replay with sql_log_bin=0: CREATE DATABASE + CREATE TABLE succeed
+# (master-local), the first ring buffer Write_rows event is rejected by
+# the write intercept -> mysql exits 1.
+--error 1
+--exec $MYSQL_BINLOG $MYSQLD_DATADIR/$pitr_binlog_file | $MYSQL --init-command="SET sql_log_bin=0" 2> $MYSQL_TMP_DIR/pitr_replay.err
+
+--let SEARCH_FILE = $MYSQL_TMP_DIR/pitr_replay.err
+--let SEARCH_PATTERN = REPLACE is not allowed on ring-buffer tables
+--source include/search_pattern.inc
+
+--remove_file $MYSQL_TMP_DIR/pitr_replay.err
+
+# The failed replay stopped after the DDL: table re-created, but EMPTY.
+SELECT COUNT(*) AS replayed_rows FROM pitr.rb_pitr;
+
+# The replay was not binlogged, so the re-created pitr db exists only on
+# the master - drop it master-locally too.
+SET sql_log_bin = 0;
+DROP DATABASE pitr;
+SET sql_log_bin = 1;
+--sync_slave_with_master
+--connection master
+
+###############################################################################
+# Case 14: TTL ring buffer table replicates
+###############################################################################
+
+--echo #
+--echo # Case 14: TTL ring buffer table - DDL, visibility and meta row replicate
+--echo #
+
+--connection master
+SET time_zone = '+00:00';
+CREATE TABLE test.rb_ttl (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+
+# Slot 1 expired, slots 2 and 3 live. The expired row replicates as a
+# physical row and is invisible on both sides; the meta row (TTL column =
+# TIMESTAMP maximum) replicates byte-identical.
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_1');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 DAY), 'future_3');
+
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--sync_slave_with_master
+--connection slave
+SET time_zone = '+00:00';
+SHOW CREATE TABLE test.rb_ttl;
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_ttl WHERE ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The ring wraps over the expired slot on the master; the replica follows
+--connection master
+INSERT INTO test.rb_ttl (client_id, ts, val) VALUES (1, NOW(), 'wrap_4');
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+
+--sync_slave_with_master
+--connection slave
+SELECT client_id, ring_idx, val FROM test.rb_ttl ORDER BY ring_idx;
+--connection master
+
+###############################################################################
+# Case 17: ring writes are logged as writes even with ndb_log_update_as_write=0
+###############################################################################
+
+--echo #
+--echo # Case 17: a wrap is logged as a write even with ndb_log_update_as_write = 0
+--echo #
+
+# A wrap writes an occupied slot with writeTuple, which the data nodes turn
+# into an update, so the change event is an UPDATE. With
+# ndb_log_update_as_write = 0 the injector would log it as an update row
+# event; a replica whose TTL purge already removed the expired slot would
+# drop the missing-key update (idempotent apply) and lose the new row while
+# the meta row advances. Ring buffer tables are therefore logged as write
+# row events regardless of the setting. The replica-side purge is simulated
+# with a local, unlogged delete of the expired slot (with its meta row).
+--connection master
+SET GLOBAL ndb_log_update_as_write = 0;
+CREATE TABLE test.rb_uaw (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ts TIMESTAMP NULL,
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=1@ring_idx@ring_meta";
+INSERT INTO test.rb_uaw (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'expired_1');
+--sync_slave_with_master
+
+--connection slave
+SET SESSION sql_log_bin = 0;
+SET SESSION ttl_expired_rows_visible_in_delete = 1;
+DELETE FROM test.rb_uaw WHERE client_id = 1;
+SET SESSION ttl_expired_rows_visible_in_delete = 0;
+SET SESSION sql_log_bin = 1;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS replica_rows_after_purge FROM test.rb_uaw;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The wrap on the source (slot 1 and the meta row are updates there)
+--connection master
+INSERT INTO test.rb_uaw (client_id, ts, val) VALUES (1, NOW(), 'wrap_2');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+--sync_slave_with_master
+
+# The replica re-created both rows from the write row events
+--connection slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--connection master
+DROP TABLE test.rb_uaw;
+SET GLOBAL ndb_log_update_as_write = 1;
+--sync_slave_with_master
+--connection master
+
+###############################################################################
+# Case 18: the same for a ring buffer table without TTL
+###############################################################################
+
+--echo #
+--echo # Case 18: a wrap on a ring without TTL is logged as a write with ndb_log_update_as_write = 0
+--echo #
+
+# Without TTL nothing removes a replica's slot by itself; a local, unlogged
+# prefix DELETE on the replica stands in for any replica-side divergence.
+# The wrap still arrives as write row events and re-creates the slot and
+# the meta row.
+--connection master
+SET GLOBAL ndb_log_update_as_write = 0;
+CREATE TABLE test.rb_uaw_plain (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=2@ring_idx@ring_meta";
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'v_1');
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'v_2');
+--sync_slave_with_master
+
+--connection slave
+SET SESSION sql_log_bin = 0;
+DELETE FROM test.rb_uaw_plain WHERE client_id = 1;
+SET SESSION sql_log_bin = 1;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) AS replica_rows_after_delete FROM test.rb_uaw_plain;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The wrap on the source (slot 1 and the meta row are updates there)
+--connection master
+INSERT INTO test.rb_uaw_plain (client_id, val) VALUES (1, 'wrap_3');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw_plain ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+--sync_slave_with_master
+
+# The replica re-created slot 1 and the meta row from the write row events
+--connection slave
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val, HEX(ring_meta) FROM test.rb_uaw_plain ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--connection master
+DROP TABLE test.rb_uaw_plain;
+SET GLOBAL ndb_log_update_as_write = 1;
+--sync_slave_with_master
+--connection master
+
+###############################################################################
 # Cleanup
 ###############################################################################
 
@@ -406,8 +695,10 @@ SELECT id, ring_idx, code FROM test.rb_nn_uniq ORDER BY id, ring_idx;
 
 --connection master
 DROP TABLE test.rb;
+DROP TABLE test.rb_ttl;
 DROP TABLE test.rb_bulk;
 DROP TABLE test.rb_nn_uniq;
+DROP TABLE test.rb_promote;
 --sync_slave_with_master
 
 --source include/rpl/deinit.inc

@@ -20,7 +20,7 @@ CREATE TABLE test.rb (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
 
 --echo #
---echo # Case 1: Multi-row INSERT, same PK prefix — fills 3 of 4 slots
+--echo # Case 1: Multi-row INSERT, same PK prefix - fills 3 of 4 slots
 --echo # Path B (first row) + Path A (rows 2-3), single meta write at end
 --echo #
 
@@ -32,7 +32,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 2: Continue multi-row INSERT — fills ring and wraps
+--echo # Case 2: Continue multi-row INSERT - fills ring and wraps
 --echo # 4th insert fills slot 4, 5th wraps to overwrite slot 1
 --echo #
 
@@ -54,7 +54,7 @@ SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
---echo # Case 4: Multi-row INSERT, different PK prefixes — independent rings
+--echo # Case 4: Multi-row INSERT, different PK prefixes - independent rings
 --echo # Each prefix triggers Path B (meta read), no Path A hits
 --echo #
 
@@ -90,7 +90,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 7: Single-statement full wrap — more rows than ring_size
+--echo # Case 7: Single-statement full wrap - more rows than ring_size
 --echo # 6 inserts on ring_size=4: slots 1-4 fill, then 1-2 overwritten
 --echo # Expected final: 1=w5, 2=w6, 3=w3, 4=w4
 --echo #
@@ -112,7 +112,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 --echo #
---echo # Case 9: Single-row INSERT after bulk — verify Path C still works
+--echo # Case 9: Single-row INSERT after bulk - verify Path C still works
 --echo # and batch state is clean (m_rb_batch_active=false)
 --echo #
 
@@ -164,7 +164,7 @@ SET ndb_ring_buffer_show_meta = OFF;
 
 --echo #
 --echo # Case 12: Mixed same-prefix and different-prefix in one statement
---echo # (500, 500, 600, 600, 500) — flush on each prefix change
+--echo # (500, 500, 600, 600, 500) - flush on each prefix change
 --echo #
 
 INSERT INTO test.rb (client_id, event_data)
@@ -217,7 +217,7 @@ SET ndb_ring_buffer_show_meta = OFF;
 DROP TABLE test.rb;
 
 --echo #
---echo # Case 15: Bulk INSERT with ring_size=1 — every insert overwrites
+--echo # Case 15: Bulk INSERT with ring_size=1 - every insert overwrites
 --echo #
 
 CREATE TABLE test.rb1 (
@@ -262,7 +262,7 @@ CREATE TABLE test.rb_multi (
 ) ENGINE = NDB,
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
 
-# Same prefix (1,100) — batch hit on all 3 rows
+# Same prefix (1,100) - batch hit on all 3 rows
 INSERT INTO test.rb_multi (region, client_id, event_data)
     VALUES (1, 100, 'a'), (1, 100, 'b'), (1, 100, 'c');
 
@@ -270,7 +270,7 @@ SELECT region, client_id, ring_idx, event_data FROM test.rb_multi
     WHERE region = 1 AND client_id = 100
     ORDER BY ring_idx;
 
-# Different second PK column — prefix mismatch despite same region
+# Different second PK column - prefix mismatch despite same region
 INSERT INTO test.rb_multi (region, client_id, event_data)
     VALUES (1, 100, 'd'), (1, 200, 'e'), (1, 100, 'f');
 
@@ -315,8 +315,8 @@ DROP TABLE test.src;
 DROP TABLE test.rb2;
 
 --echo #
---echo # Case 18: Large batch same-prefix — stress batch-full flush
---echo # 50 rows into ring_size=4 — wraps many times, tests
+--echo # Case 18: Large batch same-prefix - stress batch-full flush
+--echo # 50 rows into ring_size=4 - wraps many times, tests
 --echo # add_row_check_if_batch_full triggering mid-batch flush
 --echo #
 

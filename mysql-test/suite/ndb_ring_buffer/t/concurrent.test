@@ -24,11 +24,11 @@ CREATE TABLE test.rb (
   COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=8@ring_idx@ring_meta";
 
 ###############################################################################
-# Case 1: Two sessions inserting to DIFFERENT PK prefixes — no conflict
+# Case 1: Two sessions inserting to DIFFERENT PK prefixes - no conflict
 ###############################################################################
 
 --echo #
---echo # Case 1: Two sessions inserting to different PK prefixes — no conflict
+--echo # Case 1: Two sessions inserting to different PK prefixes - no conflict
 --echo #
 
 connect(con1, localhost, root,,test);
@@ -59,7 +59,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 ###############################################################################
 
 --echo #
---echo # Case 2: Two sessions inserting to same PK prefix — sequential
+--echo # Case 2: Two sessions inserting to same PK prefix - sequential
 --echo #
 
 --connection con1
@@ -86,7 +86,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
 --echo #
 
 # client_id=3 already has 4 rows, ring_size=8
-# Each session adds 2 more → 8 total (ring full)
+# Each session adds 2 more -> 8 total (ring full)
 --connection con1
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_5');
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'fill_6');
@@ -102,7 +102,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 3
     ORDER BY ring_idx;
 
-# Now wrap — each session adds 1 more
+# Now wrap - each session adds 1 more
 --connection con1
 INSERT INTO test.rb (client_id, event_data) VALUES (3, 'wrap_9');
 
@@ -123,11 +123,11 @@ SELECT client_id, ring_idx, HEX(ring_meta) FROM test.rb
 SET ndb_ring_buffer_show_meta = OFF;
 
 ###############################################################################
-# Case 4: One session inserts while another reads — no meta leak
+# Case 4: One session inserts while another reads - no meta leak
 ###############################################################################
 
 --echo #
---echo # Case 4: One session inserts, another reads — meta rows never visible
+--echo # Case 4: One session inserts, another reads - meta rows never visible
 --echo #
 
 --connection con1
@@ -156,7 +156,7 @@ SELECT COUNT(*) AS cnt FROM test.rb WHERE client_id = 4;
 ###############################################################################
 
 --echo #
---echo # Case 5: Transaction isolation — committed data visible to other session
+--echo # Case 5: Transaction isolation - committed data visible to other session
 --echo #
 
 --connection con1
@@ -172,11 +172,11 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     ORDER BY ring_idx;
 
 ###############################################################################
-# Case 6: Transaction: INSERT + ROLLBACK — other session sees nothing
+# Case 6: Transaction: INSERT + ROLLBACK - other session sees nothing
 ###############################################################################
 
 --echo #
---echo # Case 6: Transaction isolation — rolled back data not visible
+--echo # Case 6: Transaction isolation - rolled back data not visible
 --echo #
 
 --connection con1
@@ -217,7 +217,7 @@ SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1
     ORDER BY ring_idx;
 
-# Re-insert from different session — fresh ring
+# Re-insert from different session - fresh ring
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_A');
 INSERT INTO test.rb (client_id, event_data) VALUES (1, 'reborn_B');
 
@@ -246,6 +246,193 @@ INSERT INTO test.rb (client_id, event_data) VALUES (1, 'after_update');
 SELECT client_id, ring_idx, event_data FROM test.rb
     WHERE client_id = 1
     ORDER BY ring_idx;
+
+###############################################################################
+# Case 9: Two transactions racing the FIRST insert for a fresh prefix
+###############################################################################
+
+--echo #
+--echo # Case 9: concurrent first-insert on a fresh prefix
+--echo #
+
+# con1 inserts the first row for prefix 9 and holds the transaction open -
+# its uncommitted meta-row insert holds the meta row lock. con2's insert
+# for the same prefix must wait on that lock and continue cleanly after
+# con1 commits (second slot, no duplicate-key error on the hidden meta row).
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb (client_id, event_data) VALUES (9, 'racer1');
+
+--connection con2
+--send INSERT INTO test.rb (client_id, event_data) VALUES (9, 'racer2')
+
+--connection con1
+# give con2 time to reach the meta-row lock queue
+--sleep 1
+COMMIT;
+
+--connection con2
+--reap
+
+--connection default
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 9
+    ORDER BY ring_idx;
+
+###############################################################################
+# Case 10: Overlapping explicit transactions on ONE prefix - meta totals
+###############################################################################
+
+--echo #
+--echo # Case 10: overlapping transactions on one prefix, meta byte-exact
+--echo #
+
+# con1 opens a transaction and inserts the first row for fresh prefix 20 -
+# the uncommitted meta row insert holds the meta lock. con2's autocommit
+# insert for the same prefix queues on that lock. con1 adds a second row in
+# the same transaction and commits; con2 then proceeds. Slot order is
+# deterministic: con1's rows take slots 1,2 and con2's row slot 3.
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb (client_id, event_data) VALUES (20, 'txn1_a');
+
+--connection con2
+--send INSERT INTO test.rb (client_id, event_data) VALUES (20, 'txn2_x')
+
+--connection con1
+# give con2 time to reach the meta-row lock queue
+--sleep 1
+INSERT INTO test.rb (client_id, event_data) VALUES (20, 'txn1_b');
+COMMIT;
+
+--connection con2
+--reap
+
+--connection default
+SELECT client_id, ring_idx, event_data FROM test.rb
+    WHERE client_id = 20
+    ORDER BY ring_idx;
+
+# The packed meta must account for every commit: version=1, next_pos=4,
+# count=3, total_inserts=3 (little-endian fields, byte-exact).
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 20 AND ring_idx = 0;
+SET ndb_ring_buffer_show_meta = OFF;
+
+###############################################################################
+# Case 11: whole-ring DELETE while an INSERT transaction on the same prefix
+# is open. The rows of one ring are spread over all fragments (the table
+# is distributed on the full PK), so the DELETE's scans of the other
+# fragments do not wait for the INSERT. Rows the INSERT writes into an
+# already scanned fragment would survive the DELETE without a meta row.
+# The DELETE must lock the meta row before it scans: then it waits for
+# the INSERT to commit and removes every row of the prefix.
+###############################################################################
+
+--echo #
+--echo # Case 11: whole-ring DELETE waits for an open INSERT on the prefix
+--echo #
+
+--connection default
+CREATE TABLE test.rb_l1 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    v INT,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=20@ring_idx@ring_meta";
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 1);
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 2);
+
+--connection con2
+--send DELETE FROM test.rb_l1 WHERE client_id = 1
+
+--connection con1
+# Let con2's DELETE start its scans before the remaining inserts.
+--sleep 1
+--let $i = 3
+while ($i <= 12) {
+  --eval INSERT INTO test.rb_l1 (client_id, v) VALUES (1, $i)
+  --inc $i
+}
+COMMIT;
+
+--connection con2
+--reap
+
+--connection default
+--echo # No row of prefix 1 may survive, data or meta
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id = 1;
+SET ndb_ring_buffer_show_meta = OFF;
+--echo # The next insert starts a fresh ring at slot 1
+INSERT INTO test.rb_l1 (client_id, v) VALUES (1, 100);
+SELECT ring_idx, v FROM test.rb_l1 WHERE client_id = 1 ORDER BY ring_idx;
+
+--echo # Same with a prepared DELETE: the prefix value is a parameter
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 1);
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (2, 2);
+
+--connection con2
+PREPARE del_prefix FROM 'DELETE FROM test.rb_l1 WHERE client_id = ?';
+SET @prefix = 2;
+--send EXECUTE del_prefix USING @prefix
+
+--connection con1
+--sleep 1
+--let $i = 3
+while ($i <= 12) {
+  --eval INSERT INTO test.rb_l1 (client_id, v) VALUES (2, $i)
+  --inc $i
+}
+COMMIT;
+
+--connection con2
+--reap
+DEALLOCATE PREPARE del_prefix;
+
+--connection default
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id = 2;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo # Same with IN (): the DELETE locks the meta row of every listed prefix
+INSERT INTO test.rb_l1 (client_id, v) VALUES (3, 1);
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 1);
+
+--connection con1
+BEGIN;
+INSERT INTO test.rb_l1 (client_id, v) VALUES (4, 2);
+
+--connection con2
+--send DELETE FROM test.rb_l1 WHERE client_id IN (3, 4, 5)
+
+--connection con1
+--sleep 1
+--let $i = 3
+while ($i <= 12) {
+  --eval INSERT INTO test.rb_l1 (client_id, v) VALUES (4, $i)
+  --inc $i
+}
+COMMIT;
+
+--connection con2
+--reap
+
+--connection default
+SET ndb_ring_buffer_show_meta = ON;
+SELECT COUNT(*) FROM test.rb_l1 WHERE client_id IN (3, 4);
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_l1;
 
 ###############################################################################
 # Cleanup

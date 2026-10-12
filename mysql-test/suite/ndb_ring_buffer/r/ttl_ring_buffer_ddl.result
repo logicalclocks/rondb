@@ -1,0 +1,303 @@
+SET time_zone = '+00:00';
+CREATE TABLE test.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1');
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_2');
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_3');
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	live_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000004000000030000000000000003000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 1: CREATE TABLE ... LIKE keeps TTL and the ring
+#
+CREATE TABLE test.rb_like LIKE test.rb;
+SHOW CREATE TABLE test.rb_like;
+Table	Create Table
+rb_like	CREATE TABLE `rb_like` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+INSERT INTO test.rb_like (client_id, ts, val) VALUES (1, NOW(), 'like_a');
+SELECT client_id, ring_idx, val FROM test.rb_like ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	like_a
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts FROM test.rb_like WHERE ring_idx = 0;
+client_id	ring_idx	ts
+1	0	2038-01-19 03:14:07
+SET ndb_ring_buffer_show_meta = OFF;
+DROP TABLE test.rb_like;
+#
+# Case 2: CREATE TABLE ... AS SELECT copies the visible rows into a plain table
+#
+CREATE TABLE test.rb_cp ENGINE = NDB AS SELECT client_id, ring_idx, ts, val FROM test.rb;
+SELECT client_id, ring_idx, val FROM test.rb_cp ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	live_3
+DROP TABLE test.rb_cp;
+#
+# Case 3: RENAME TABLE keeps TTL and the ring; the ring continues
+#
+RENAME TABLE test.rb TO test.rb_renamed;
+SHOW CREATE TABLE test.rb_renamed;
+Table	Create Table
+rb_renamed	CREATE TABLE `rb_renamed` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+INSERT INTO test.rb_renamed (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_4');
+SELECT client_id, ring_idx, val FROM test.rb_renamed ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	live_3
+1	4	live_4
+RENAME TABLE test.rb_renamed TO test.rb;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000001000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 4: a comment that sets only another modifier keeps TTL and the ring (online)
+#
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=READ_BACKUP=1";
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,TTL=3600@ts,MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+INSERT INTO test.rb (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'live_5');
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	live_5
+1	2	live_2
+1	3	live_3
+1	4	live_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) FROM test.rb WHERE client_id = 1 AND ring_idx = 0;
+HEX(ring_meta)
+0100000002000000040000000000000005000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Case 5: the TTL column rename guard applies; rename plus re-bind in one statement works
+#
+ALTER TABLE test.rb RENAME COLUMN ts TO ts2;
+ERROR 0A000: Renaming the TTL column without updating the TTL comment is not supported. Reason: It's used as the TTL column. Try renaming it and updating the comment in one ALTER TABLE ... COMMENT='NDB_TABLE=TTL=<seconds>@<new name>' statement.
+ALTER TABLE test.rb RENAME COLUMN ts TO ts2, COMMENT="NDB_TABLE=TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts2` timestamp NULL DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+INSERT INTO test.rb (client_id, ts2, val) VALUES (2, NOW(), 'p2_a');
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts2 FROM test.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	ring_idx	ts2
+1	0	2038-01-19 03:14:07
+2	0	2038-01-19 03:14:07
+SET ndb_ring_buffer_show_meta = OFF;
+DELETE FROM test.rb WHERE client_id = 2;
+#
+# Case 6: changing the TTL seconds changes visibility, not physical presence
+#
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	live_5
+1	2	live_2
+1	3	live_3
+1	4	live_4
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+5
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=60@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SELECT COUNT(*) FROM test.rb;
+COUNT(*)
+0
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+5
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=36000@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val
+1	1	live_5
+1	2	live_2
+1	3	live_3
+1	4	live_4
+ALTER TABLE test.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts2` timestamp NULL DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+#
+# Case 7: a copying ALTER drops expired rows (the copy scan does not see them) and copies the meta row as is
+#
+UPDATE test.rb SET ts2 = DATE_SUB(NOW(), INTERVAL 5 HOUR) WHERE client_id = 1 AND ring_idx = 1;
+SELECT client_id, ring_idx, val FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	live_2
+1	3	live_3
+1	4	live_4
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+5
+ALTER TABLE test.rb ALGORITHM=COPY, ADD COLUMN extra INT DEFAULT 0;
+SHOW CREATE TABLE test.rb;
+Table	Create Table
+rb	CREATE TABLE `rb` (
+  `client_id` int NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts2` timestamp NULL DEFAULT NULL,
+  `val` varchar(50) DEFAULT NULL,
+  `extra` int DEFAULT '0',
+  PRIMARY KEY (`client_id`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=READ_BACKUP=1,TTL=3600@ts2,MAX_ROWS_PER_PK=4@ring_idx@ring_meta'
+SELECT client_id, ring_idx, val, extra FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val	extra
+1	2	live_2	0
+1	3	live_3	0
+1	4	live_4	0
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts2, HEX(ring_meta) FROM test.rb WHERE ring_idx = 0;
+client_id	ring_idx	ts2	HEX(ring_meta)
+1	0	2038-01-19 03:14:07	0100000002000000040000000000000005000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO test.rb (client_id, ts2, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 30 MINUTE), 'after_copy');
+SELECT client_id, ring_idx, val, extra FROM test.rb ORDER BY ring_idx;
+client_id	ring_idx	val	extra
+1	2	after_copy	0
+1	3	live_3	0
+1	4	live_4	0
+SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb' AND fragment_num = 0) AS physical_rows FROM ndbinfo.memory_per_fragment WHERE fq_name = 'test/def/rb';
+physical_rows
+4
+#
+# Case 8: an ordered index on a user column hides expired rows and meta rows
+#
+UPDATE test.rb SET ts2 = DATE_SUB(NOW(), INTERVAL 5 HOUR) WHERE client_id = 1 AND ring_idx = 3;
+ALTER TABLE test.rb ADD INDEX idx_val (val);
+SELECT client_id, ring_idx, val FROM test.rb FORCE INDEX (idx_val) WHERE val >= 'a' ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	after_copy
+1	4	live_4
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, val FROM test.rb FORCE INDEX (idx_val) WHERE val >= 'a' ORDER BY ring_idx;
+client_id	ring_idx	val
+1	2	after_copy
+1	4	live_4
+SET ndb_ring_buffer_show_meta = OFF;
+ALTER TABLE test.rb DROP INDEX idx_val;
+DROP TABLE test.rb;
+#
+# Case 9: a virtual generated column before the ring and TTL columns
+#
+CREATE TABLE test.rb_vcol (
+client_id INT NOT NULL,
+twice INT AS (client_id * 2) VIRTUAL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+val VARCHAR(50),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_vcol (client_id, ts, val) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'exp_1');
+INSERT INTO test.rb_vcol (client_id, ts, val) VALUES (1, NOW(), 'live_2');
+INSERT INTO test.rb_vcol (client_id, ts, val) VALUES (1, NOW(), 'live_3'), (1, NOW(), 'wrap_4');
+SELECT client_id, twice, ring_idx, val FROM test.rb_vcol ORDER BY ring_idx;
+client_id	twice	ring_idx	val
+1	2	1	wrap_4
+1	2	2	live_2
+1	2	3	live_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, ring_idx, ts, HEX(ring_meta) FROM test.rb_vcol WHERE ring_idx = 0;
+client_id	ring_idx	ts	HEX(ring_meta)
+1	0	2038-01-19 03:14:07	0100000002000000030000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+UPDATE test.rb_vcol SET val = 'live_2u' WHERE client_id = 1 AND ring_idx = 2;
+DELETE FROM test.rb_vcol WHERE client_id = 1;
+affected rows: 4
+SELECT COUNT(*) FROM test.rb_vcol;
+COUNT(*)
+0
+DROP TABLE test.rb_vcol;
+#
+# Case 10: the TTL column must not be a primary key column
+#
+CREATE TABLE test.rb_ttl_pk (
+ts TIMESTAMP NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+v INT,
+PRIMARY KEY (ts, ring_idx)
+) ENGINE = NDB
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column cannot be a PRIMARY KEY column of a ring table'
+CREATE TABLE test.rb_ttl_pk (
+k_ts TIMESTAMP NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ts TIMESTAMP NULL,
+PRIMARY KEY (k_ts, ring_idx)
+) ENGINE = NDB
+COMMENT="NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ALTER TABLE test.rb_ttl_pk
+COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'TTL column cannot be a PRIMARY KEY column of a ring table'
+ALTER TABLE test.rb_ttl_pk ALGORITHM=INPLACE,
+COMMENT="NDB_TABLE=TTL=3600@k_ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR 0A000: ALGORITHM=INPLACE is not supported. Reason: TTL column cannot be a PRIMARY KEY column of a ring table. Try ALGORITHM=COPY.
+SHOW CREATE TABLE test.rb_ttl_pk;
+Table	Create Table
+rb_ttl_pk	CREATE TABLE `rb_ttl_pk` (
+  `k_ts` timestamp NOT NULL,
+  `ring_idx` int NOT NULL DEFAULT '0',
+  `ring_meta` varbinary(64) DEFAULT NULL,
+  `ts` timestamp NULL DEFAULT NULL,
+  PRIMARY KEY (`k_ts`,`ring_idx`)
+) ENGINE=ndbcluster DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='NDB_TABLE=TTL=3600@ts,MAX_ROWS_PER_PK=3@ring_idx@ring_meta'
+DROP TABLE test.rb_ttl_pk;
+#
+# Done
+#
