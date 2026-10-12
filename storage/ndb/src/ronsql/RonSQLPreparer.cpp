@@ -40,11 +40,10 @@
 #include <climits>
 #include <algorithm>
 #include <vector>
-#include <map>
-#include <set>
 #include <string>
 #include <functional>
 #include <string>
+#include <string_view>
 #include "define_formatter.hpp"
 #include "my_time.h"
 #include "mysql_time.h"
@@ -3173,8 +3172,8 @@ RonSQLPreparer::register_cte_filter_linked_projs(QueryScope& scope)
     if (!plan.ops[i].needs_parent_linked_attrs) continue;
     ConditionalExpression* ce = scope.join_where_ce[i];
     if (ce == NULL) continue;
-    std::function<void(ConditionalExpression*)> walk =
-        [&](ConditionalExpression* e) {
+    auto walk =
+        [&](auto& self, ConditionalExpression* e) -> void {
       if (e == NULL) return;
       if (e->op == T_IDENTIFIER) {
         const QueryScope::ResolvedColumnRef& r =
@@ -3190,17 +3189,17 @@ RonSQLPreparer::register_cte_filter_linked_projs(QueryScope& scope)
       case T_AND: case T_OR:
       case T_EQUALS: case T_NOT_EQUALS:
       case T_LT: case T_LE: case T_GT: case T_GE:
-        walk(e->args.left);
-        walk(e->args.right);
+        self(self, e->args.left);
+        self(self, e->args.right);
         return;
       case T_IS:
-        walk(e->is.arg);
+        self(self, e->is.arg);
         return;
       default:
         return;  // constants and anything else carry no column refs
       }
     };
-    walk(ce);
+    walk(walk, ce);
   }
 }
 
@@ -3392,16 +3391,16 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
       // Flatten OR into atoms (single comparison = 1 atom).
       ConditionalExpression* or_atoms[32];
       Uint32 num_atoms = 0;
-      std::function<void(ConditionalExpression*)> flatten_or =
-          [&](ConditionalExpression* node) {
+      auto flatten_or =
+          [&](auto& self, ConditionalExpression* node) -> void {
         if (node->op == T_OR) {
-          flatten_or(node->args.left);
-          flatten_or(node->args.right);
+          self(self, node->args.left);
+          self(self, node->args.right);
         } else if (num_atoms < 32) {
           or_atoms[num_atoms++] = node;
         }
       };
-      flatten_or(ce);
+      flatten_or(flatten_or, ce);
 
       // Validate each atom: must be a comparison where each side
       // references at most one table, expression depth within limits,
@@ -3984,7 +3983,7 @@ RonSQLPreparer::assign_child_index_bounds(QueryScope& scope)
     // every existing plan is stable.
     if (m_dict != NULL)
     {
-      std::vector<const NdbDictionary::Index*> candidates;
+      DynamicArray<const NdbDictionary::Index*> candidates(m_amalloc);
       QueryPlanner::collectOrderedIndexCandidates(
           m_dict, op.table, op.child_key_col_names, op.num_key_cols,
           m_conf.schema_cache, database, candidates);
@@ -4276,8 +4275,8 @@ RonSQLPreparer::build_agg_linked_projections()
   // Add linked projections for cross-table WHERE filter columns that are
   // not on the leaf table.  Walk expression trees to find all column refs
   // (supports arithmetic expressions like col + 1 > other_col * 2).
-  std::function<void(ConditionalExpression*)> register_linked_projs =
-      [&](ConditionalExpression* ce) {
+  auto register_linked_projs =
+      [&](auto& self, ConditionalExpression* ce) -> void {
     if (ce == NULL) return;
     if (ce->op == T_IDENTIFIER) {
       Uint32 cidx = ce->col_idx;
@@ -4295,15 +4294,15 @@ RonSQLPreparer::build_agg_linked_projections()
         ce->op == T_STRING || ce->op == T_NULL)
       return;
     // Binary ops (T_PLUS, T_MINUS, T_MULTIPLY, comparisons, etc.)
-    if (ce->args.left != NULL) register_linked_projs(ce->args.left);
-    if (ce->args.right != NULL) register_linked_projs(ce->args.right);
+    if (ce->args.left != NULL) self(self, ce->args.left);
+    if (ce->args.right != NULL) self(self, ce->args.right);
   };
   for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
   {
     CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
     if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
-    register_linked_projs(ctf.ce->args.left);
-    register_linked_projs(ctf.ce->args.right);
+    register_linked_projs(register_linked_projs, ctf.ce->args.left);
+    register_linked_projs(register_linked_projs, ctf.ce->args.right);
   }
 
   // Add linked projections for CASE condition columns on parent tables.
@@ -4402,8 +4401,8 @@ RonSQLPreparer::build_cte_linked_projections()
     }
 
     // Cross-table WHERE filter columns on non-leaf tables
-    std::function<void(ConditionalExpression*)> register_from_ce =
-        [&](ConditionalExpression* ce) {
+    auto register_from_ce =
+        [&](auto& self, ConditionalExpression* ce) -> void {
       if (ce == NULL) return;
       if (ce->op == T_IDENTIFIER) {
         Uint32 cidx = ce->col_idx;
@@ -4419,14 +4418,14 @@ RonSQLPreparer::build_cte_linked_projections()
       if (ce->op == T_INT || ce->op == T_FLOAT ||
           ce->op == T_STRING || ce->op == T_NULL)
         return;
-      if (ce->args.left != NULL) register_from_ce(ce->args.left);
-      if (ce->args.right != NULL) register_from_ce(ce->args.right);
+      if (ce->args.left != NULL) self(self, ce->args.left);
+      if (ce->args.right != NULL) self(self, ce->args.right);
     };
     for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++) {
       CrossTableFilter& ctf = scope.cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;
-      register_from_ce(ctf.ce->args.left);
-      register_from_ce(ctf.ce->args.right);
+      register_from_ce(register_from_ce, ctf.ce->args.left);
+      register_from_ce(register_from_ce, ctf.ce->args.right);
     }
   }
 }
@@ -4583,16 +4582,25 @@ RonSQLPreparer::match_in_shape(struct ConditionalExpression* ce,
   bool have_col = false;
   const char* col_name = NULL;
   Uint32 col = 0;
-  std::vector<ConditionalExpression*> stack;
-  stack.push_back(ce);
-  while (!stack.empty()) {
-    ConditionalExpression* node = stack.back();
-    stack.pop_back();
+  // The walk's stack, in the arena: a left-deep OR chain of n literals
+  // keeps up to n + 1 nodes on it.
+  Uint32 stack_cap = 16;
+  Uint32 depth = 0;
+  ConditionalExpression** stack =
+      m_amalloc->alloc_exc<ConditionalExpression*>(stack_cap);
+  stack[depth++] = ce;
+  while (depth > 0) {
+    ConditionalExpression* node = stack[--depth];
     if (node == NULL) return false;
     if (node->op == T_OR) {
+      if (depth + 2 > stack_cap) {
+        stack = m_amalloc->realloc_exc<ConditionalExpression*>(
+            stack, 2 * stack_cap, stack_cap);
+        stack_cap *= 2;
+      }
       // Right first, so the leaves pop in list order.
-      stack.push_back(node->args.right);
-      stack.push_back(node->args.left);
+      stack[depth++] = node->args.right;
+      stack[depth++] = node->args.left;
       continue;
     }
     if (node->op != T_EQUALS) return false;
@@ -4668,15 +4676,18 @@ RonSQLPreparer::dedup_in_values(const NdbDictionary::Column* col,
     return false;
   }
   const void* cs = col->getCharset();
-  std::vector<Uint32> order(total);
+  Uint32* order = m_amalloc->alloc_exc<Uint32>(total);
   for (Uint32 v = 0; v < total; v++) order[v] = v;
-  std::stable_sort(order.begin(), order.end(),
-                   [&](Uint32 a, Uint32 b) {
-                     return (*sql_type.m_cmp)(cs, enc[a].val,
+  // Equal keys stay in list order through the position tie-break, as a
+  // stable sort would keep them, without std::stable_sort's heap buffer.
+  std::sort(order, order + total,
+            [&](Uint32 a, Uint32 b) {
+              const int c = (*sql_type.m_cmp)(cs, enc[a].val,
                                               (unsigned)enc[a].len,
                                               enc[b].val,
-                                              (unsigned)enc[b].len) < 0;
-                   });
+                                              (unsigned)enc[b].len);
+              return c < 0 || (c == 0 && a < b);
+            });
   bool* dup = m_amalloc->alloc_exc<bool>(total);
   for (Uint32 v = 0; v < total; v++) dup[v] = false;
   for (Uint32 v = 1; v < total; v++) {
@@ -5935,6 +5946,147 @@ RonSQLPreparer::check_cte_body_col_vs_col(const QueryScope& scope,
   }
 }
 
+namespace {
+/*
+ * A NUL-terminated string built in the statement's arena, for the SQL
+ * text decorrelate_exists() and decorrelate_scalar() write for the inner
+ * query.  The buffer doubles as it grows; ArenaMalloc::realloc extends it
+ * in place while it is the arena's last allocation.
+ */
+class ArenaSqlBuilder
+{
+public:
+  explicit ArenaSqlBuilder(ArenaMalloc* amalloc) : m_amalloc(amalloc) {}
+  ArenaSqlBuilder& operator<<(std::string_view s)
+  {
+    const size_t need = m_len + s.size() + 1;
+    if (need > m_cap)
+    {
+      size_t cap = (m_cap == 0) ? 128 : m_cap;
+      while (cap < need) cap *= 2;
+      require_prm(cap <= UINT32_MAX, "Rewritten subquery SQL too large.");
+      m_buf = (m_buf == NULL)
+          ? m_amalloc->alloc_exc<char>((Uint32)cap)
+          : m_amalloc->realloc_exc<char>(m_buf, (Uint32)cap, (Uint32)m_cap);
+      m_cap = cap;
+    }
+    if (!s.empty()) memcpy(m_buf + m_len, s.data(), s.size());
+    m_len += s.size();
+    m_buf[m_len] = '\0';
+    return *this;
+  }
+  char* str()
+  {
+    if (m_buf == NULL) *this << "";
+    return m_buf;
+  }
+  size_t len() const { return m_len; }
+private:
+  ArenaMalloc* m_amalloc;
+  char* m_buf = NULL;
+  size_t m_len = 0;
+  size_t m_cap = 0;
+};
+
+/*
+ * Append " WHERE <conjuncts>" to sql: the AND conjuncts of the WHERE
+ * clause of inner_sql (an inner SELECT's original text) except the
+ * correlation predicate, the one naming both outer_col_name and
+ * inner_col_name around an '='.  Nothing is appended when no conjunct is
+ * left or inner_sql has no WHERE.  Textual and fragile, but enough for
+ * simple shapes like "l_orderkey = o_id AND l_quantity > 20"; the pieces
+ * are std::string_view slices of inner_sql, so nothing is copied.
+ */
+void
+append_non_correlation_where(ArenaSqlBuilder& sql,
+                             std::string_view inner_sql,
+                             const char* outer_col_name,
+                             const char* inner_col_name)
+{
+  // Find WHERE keyword (case-insensitive)
+  size_t where_pos = std::string_view::npos;
+  for (size_t p = 0; p + 5 <= inner_sql.size(); p++)
+  {
+    if ((inner_sql[p] == 'W' || inner_sql[p] == 'w') &&
+        (inner_sql[p+1] == 'H' || inner_sql[p+1] == 'h') &&
+        (inner_sql[p+2] == 'E' || inner_sql[p+2] == 'e') &&
+        (inner_sql[p+3] == 'R' || inner_sql[p+3] == 'r') &&
+        (inner_sql[p+4] == 'E' || inner_sql[p+4] == 'e') &&
+        (p + 5 == inner_sql.size() || inner_sql[p+5] == ' '))
+    {
+      where_pos = p;
+      break;
+    }
+  }
+  if (where_pos == std::string_view::npos)
+    return;
+
+  // Extract the WHERE clause text (everything after "WHERE ")
+  std::string_view where_text = inner_sql.substr(where_pos + 6);
+
+  // Strip GROUP BY / ORDER BY / LIMIT if present
+  for (const char* kw : {"GROUP BY", "ORDER BY", "LIMIT",
+                          "group by", "order by", "limit"})
+  {
+    size_t kw_pos = where_text.find(kw);
+    if (kw_pos != std::string_view::npos)
+      where_text = where_text.substr(0, kw_pos);
+  }
+
+  // Trim trailing whitespace
+  while (!where_text.empty() &&
+         (where_text.back() == ' ' || where_text.back() == '\n' ||
+          where_text.back() == '\r' || where_text.back() == '\t'))
+    where_text.remove_suffix(1);
+
+  // Now split by AND and remove the correlation predicate.
+  // The correlation predicate contains both the outer column name
+  // and the inner column name connected by '='.
+  bool first = true;
+  size_t pos = 0;
+  while (pos < where_text.size())
+  {
+    // Find next AND (case-insensitive)
+    size_t and_pos = std::string_view::npos;
+    for (size_t p = pos; p + 3 <= where_text.size(); p++)
+    {
+      if ((where_text[p] == 'A' || where_text[p] == 'a') &&
+          (where_text[p+1] == 'N' || where_text[p+1] == 'n') &&
+          (where_text[p+2] == 'D' || where_text[p+2] == 'd') &&
+          (p == 0 || where_text[p-1] == ' ') &&
+          (p + 3 >= where_text.size() || where_text[p+3] == ' '))
+      {
+        and_pos = p;
+        break;
+      }
+    }
+    std::string_view part;
+    if (and_pos == std::string_view::npos)
+    {
+      part = where_text.substr(pos);
+      pos = where_text.size();
+    }
+    else
+    {
+      part = where_text.substr(pos, and_pos - pos);
+      pos = and_pos + 3; // skip "AND"
+    }
+    // Trim
+    while (!part.empty() && part.front() == ' ') part.remove_prefix(1);
+    while (!part.empty() && part.back() == ' ') part.remove_suffix(1);
+    if (part.empty()) continue;
+
+    // Check if this part is the correlation predicate
+    if (part.find(outer_col_name) != std::string_view::npos &&
+        part.find(inner_col_name) != std::string_view::npos &&
+        part.find('=') != std::string_view::npos)
+      continue;
+    sql << (first ? " WHERE " : " AND ") << part;
+    first = false;
+  }
+}
+}  // namespace
+
 void
 RonSQLPreparer::decorrelate_exists()
 {
@@ -6107,8 +6259,8 @@ RonSQLPreparer::decorrelate_exists()
     bool has_alias = (inner_stmt->root_table != NULL &&
                       !(inner_alias == inner_stmt->table));
 
-    // Build inner SQL string
-    std::ostringstream sql;
+    // Build inner SQL string, in the arena
+    ArenaSqlBuilder sql(m_amalloc);
     sql << "SELECT MIN(" << inner_col_name << ")"
         << " FROM " << inner_table_name;
     if (has_alias)
@@ -6133,114 +6285,17 @@ RonSQLPreparer::decorrelate_exists()
 
       ndbrequire(inner_stmt->sql_begin != NULL &&
                  inner_stmt->sql_end != NULL);
-      std::string inner_sql(inner_stmt->sql_begin,
-                            inner_stmt->sql_end - inner_stmt->sql_begin);
-
-      // Find WHERE keyword (case-insensitive)
-      size_t where_pos = std::string::npos;
-      for (size_t p = 0; p + 5 <= inner_sql.size(); p++)
-      {
-        if ((inner_sql[p] == 'W' || inner_sql[p] == 'w') &&
-            (inner_sql[p+1] == 'H' || inner_sql[p+1] == 'h') &&
-            (inner_sql[p+2] == 'E' || inner_sql[p+2] == 'e') &&
-            (inner_sql[p+3] == 'R' || inner_sql[p+3] == 'r') &&
-            (inner_sql[p+4] == 'E' || inner_sql[p+4] == 'e') &&
-            (p + 5 == inner_sql.size() || inner_sql[p+5] == ' '))
-        {
-          where_pos = p;
-          break;
-        }
-      }
-
-      if (where_pos != std::string::npos)
-      {
-        // Extract the WHERE clause text (everything after "WHERE ")
-        std::string where_text = inner_sql.substr(where_pos + 6);
-
-        // Strip GROUP BY / ORDER BY / LIMIT if present
-        for (const char* kw : {"GROUP BY", "ORDER BY", "LIMIT",
-                                "group by", "order by", "limit"})
-        {
-          size_t kw_pos = where_text.find(kw);
-          if (kw_pos != std::string::npos)
-            where_text = where_text.substr(0, kw_pos);
-        }
-
-        // Trim trailing whitespace
-        while (!where_text.empty() &&
-               (where_text.back() == ' ' || where_text.back() == '\n' ||
-                where_text.back() == '\r' || where_text.back() == '\t'))
-          where_text.pop_back();
-
-        // Now split by AND and remove the correlation predicate.
-        // The correlation predicate contains both the outer column name
-        // and the inner column name connected by '='.
-        const char* outer_col_name = m_columns[outer_col_idx].c_str();
-        std::vector<std::string> and_parts;
-        size_t pos = 0;
-        while (pos < where_text.size())
-        {
-          // Find next AND (case-insensitive)
-          size_t and_pos = std::string::npos;
-          for (size_t p = pos; p + 3 <= where_text.size(); p++)
-          {
-            if ((where_text[p] == 'A' || where_text[p] == 'a') &&
-                (where_text[p+1] == 'N' || where_text[p+1] == 'n') &&
-                (where_text[p+2] == 'D' || where_text[p+2] == 'd') &&
-                (p == 0 || where_text[p-1] == ' ') &&
-                (p + 3 >= where_text.size() || where_text[p+3] == ' '))
-            {
-              and_pos = p;
-              break;
-            }
-          }
-          std::string part;
-          if (and_pos == std::string::npos)
-          {
-            part = where_text.substr(pos);
-            pos = where_text.size();
-          }
-          else
-          {
-            part = where_text.substr(pos, and_pos - pos);
-            pos = and_pos + 3; // skip "AND"
-          }
-          // Trim
-          while (!part.empty() && part.front() == ' ') part.erase(0, 1);
-          while (!part.empty() && part.back() == ' ') part.pop_back();
-          if (part.empty()) continue;
-
-          // Check if this part is the correlation predicate
-          bool is_correlation = false;
-          if (part.find(outer_col_name) != std::string::npos &&
-              part.find(inner_col_name) != std::string::npos &&
-              part.find('=') != std::string::npos)
-          {
-            is_correlation = true;
-          }
-          if (!is_correlation)
-            and_parts.push_back(part);
-        }
-
-        if (!and_parts.empty())
-        {
-          sql << " WHERE ";
-          for (size_t p = 0; p < and_parts.size(); p++)
-          {
-            if (p > 0) sql << " AND ";
-            sql << and_parts[p];
-          }
-        }
-      }
+      append_non_correlation_where(
+          sql,
+          std::string_view(inner_stmt->sql_begin,
+                           inner_stmt->sql_end - inner_stmt->sql_begin),
+          m_columns[outer_col_idx].c_str(), inner_col_name);
     }
 
     sql << " GROUP BY " << inner_col_name;
 
-    std::string sql_str = sql.str();
-    size_t sql_len = sql_str.size();
-    char* sql_buf = m_amalloc->alloc_exc<char>(sql_len + 1);
-    memcpy(sql_buf, sql_str.c_str(), sql_len);
-    sql_buf[sql_len] = '\0';
+    size_t sql_len = sql.len();
+    char* sql_buf = sql.str();
 
     // Create a new inner SelectStatement for the IN subquery
     SelectStatement* new_inner = m_amalloc->alloc_exc<SelectStatement>(1);
@@ -6331,16 +6386,16 @@ is_comparison_op(TokenKind op)
 }
 
 static void
-parse_subquery_value(const std::string& str, SubqueryResult& val)
+parse_subquery_value(const char* str, SubqueryResult& val)
 {
-  if (str == "NULL")
+  if (strcmp(str, "NULL") == 0)
   {
     val.is_null = true;
     return;
   }
   char* endptr = NULL;
   errno = 0;
-  long long ll = strtoll(str.c_str(), &endptr, 10);
+  long long ll = strtoll(str, &endptr, 10);
   if (endptr != NULL && *endptr == '\0' && errno == 0)
   {
     val.is_null = false;
@@ -6349,7 +6404,7 @@ parse_subquery_value(const std::string& str, SubqueryResult& val)
     return;
   }
   errno = 0;
-  double dbl = strtod(str.c_str(), &endptr);
+  double dbl = strtod(str, &endptr);
   if (endptr != NULL && *endptr == '\0' && errno == 0)
   {
     val.is_null = false;
@@ -6359,6 +6414,31 @@ parse_subquery_value(const std::string& str, SubqueryResult& val)
   }
   throw RonSQLPermanentError(
       "Correlated scalar subquery returned a non-numeric value.");
+}
+
+/*
+ * Return the next non-empty line of a subquery's TEXT_NOHEADER output in
+ * [*pos, end), NUL-terminated in place (the '\n' and any trailing '\r'
+ * are overwritten), and advance *pos past it; NULL when none is left.
+ * Lines are split on '\n' and blank ones skipped, as std::getline over
+ * the output did, but without a std::string per line.  *end must be
+ * writable: the output's own terminator.
+ */
+static char*
+next_subquery_output_line(char** pos, char* end)
+{
+  while (*pos < end)
+  {
+    char* line = *pos;
+    char* nl = static_cast<char*>(memchr(line, '\n', end - line));
+    char* line_end = (nl != NULL) ? nl : end;
+    *pos = (nl != NULL) ? nl + 1 : end;
+    while (line_end > line && line_end[-1] == '\r') line_end--;
+    if (line_end == line) continue;
+    *line_end = '\0';
+    return line;
+  }
+  return NULL;
 }
 
 void
@@ -6582,11 +6662,11 @@ RonSQLPreparer::decorrelate_scalar()
     // Extract aggregate expression from original inner SQL
     ndbrequire(inner_stmt->sql_begin != NULL &&
                inner_stmt->sql_end != NULL);
-    std::string inner_sql(inner_stmt->sql_begin,
-                          inner_stmt->sql_end - inner_stmt->sql_begin);
+    const std::string_view inner_sql(
+        inner_stmt->sql_begin, inner_stmt->sql_end - inner_stmt->sql_begin);
 
     // Find the text between "SELECT " and " FROM"
-    size_t select_pos = std::string::npos;
+    size_t select_pos = std::string_view::npos;
     for (size_t p = 0; p + 6 <= inner_sql.size(); p++)
     {
       if ((inner_sql[p] == 'S' || inner_sql[p] == 's') &&
@@ -6601,10 +6681,10 @@ RonSQLPreparer::decorrelate_scalar()
         break;
       }
     }
-    require_prm(select_pos != std::string::npos,
+    require_prm(select_pos != std::string_view::npos,
                 "Could not find SELECT in inner subquery.");
 
-    size_t from_pos = std::string::npos;
+    size_t from_pos = std::string_view::npos;
     for (size_t p = select_pos + 7; p + 4 <= inner_sql.size(); p++)
     {
       if ((inner_sql[p] == 'F' || inner_sql[p] == 'f') &&
@@ -6618,16 +6698,16 @@ RonSQLPreparer::decorrelate_scalar()
         break;
       }
     }
-    require_prm(from_pos != std::string::npos,
+    require_prm(from_pos != std::string_view::npos,
                 "Could not find FROM in inner subquery.");
 
-    std::string agg_expr = inner_sql.substr(select_pos + 7,
-                                             from_pos - select_pos - 7);
+    std::string_view agg_expr = inner_sql.substr(select_pos + 7,
+                                                  from_pos - select_pos - 7);
     // Trim
     while (!agg_expr.empty() && agg_expr.front() == ' ')
-      agg_expr.erase(0, 1);
+      agg_expr.remove_prefix(1);
     while (!agg_expr.empty() && agg_expr.back() == ' ')
-      agg_expr.pop_back();
+      agg_expr.remove_suffix(1);
 
     const char* inner_table_name = inner_stmt->table.c_str();
     LexCString inner_alias = inner_stmt->root_table != NULL
@@ -6636,113 +6716,24 @@ RonSQLPreparer::decorrelate_scalar()
     bool has_alias = (inner_stmt->root_table != NULL &&
                       !(inner_alias == inner_stmt->table));
 
-    // Build rewritten inner SQL
-    std::ostringstream sql;
+    // Build rewritten inner SQL, in the arena
+    ArenaSqlBuilder sql(m_amalloc);
     sql << "SELECT " << inner_col_name << ", " << agg_expr
         << " FROM " << inner_table_name;
     if (has_alias)
       sql << " AS " << inner_alias.c_str();
 
-    // Handle non-correlation WHERE predicates
+    // Handle non-correlation WHERE predicates: the original WHERE text
+    // without the correlation predicate
     if (num_non_corr > 0)
-    {
-      // Extract original WHERE text and strip correlation predicate
-      size_t where_pos = std::string::npos;
-      for (size_t p = 0; p + 5 <= inner_sql.size(); p++)
-      {
-        if ((inner_sql[p] == 'W' || inner_sql[p] == 'w') &&
-            (inner_sql[p+1] == 'H' || inner_sql[p+1] == 'h') &&
-            (inner_sql[p+2] == 'E' || inner_sql[p+2] == 'e') &&
-            (inner_sql[p+3] == 'R' || inner_sql[p+3] == 'r') &&
-            (inner_sql[p+4] == 'E' || inner_sql[p+4] == 'e') &&
-            (p + 5 == inner_sql.size() || inner_sql[p+5] == ' '))
-        {
-          where_pos = p;
-          break;
-        }
-      }
-
-      if (where_pos != std::string::npos)
-      {
-        std::string where_text = inner_sql.substr(where_pos + 6);
-
-        // Strip GROUP BY / ORDER BY / LIMIT
-        for (const char* kw : {"GROUP BY", "ORDER BY", "LIMIT",
-                                "group by", "order by", "limit"})
-        {
-          size_t kw_pos = where_text.find(kw);
-          if (kw_pos != std::string::npos)
-            where_text = where_text.substr(0, kw_pos);
-        }
-
-        while (!where_text.empty() &&
-               (where_text.back() == ' ' || where_text.back() == '\n' ||
-                where_text.back() == '\r' || where_text.back() == '\t'))
-          where_text.pop_back();
-
-        const char* outer_col_name = m_columns[outer_col_idx].c_str();
-        std::vector<std::string> and_parts;
-        size_t pos = 0;
-        while (pos < where_text.size())
-        {
-          size_t and_pos = std::string::npos;
-          for (size_t p = pos; p + 3 <= where_text.size(); p++)
-          {
-            if ((where_text[p] == 'A' || where_text[p] == 'a') &&
-                (where_text[p+1] == 'N' || where_text[p+1] == 'n') &&
-                (where_text[p+2] == 'D' || where_text[p+2] == 'd') &&
-                (p == 0 || where_text[p-1] == ' ') &&
-                (p + 3 >= where_text.size() || where_text[p+3] == ' '))
-            {
-              and_pos = p;
-              break;
-            }
-          }
-          std::string part;
-          if (and_pos == std::string::npos)
-          {
-            part = where_text.substr(pos);
-            pos = where_text.size();
-          }
-          else
-          {
-            part = where_text.substr(pos, and_pos - pos);
-            pos = and_pos + 3;
-          }
-          while (!part.empty() && part.front() == ' ') part.erase(0, 1);
-          while (!part.empty() && part.back() == ' ') part.pop_back();
-          if (part.empty()) continue;
-
-          bool is_correlation = false;
-          if (part.find(outer_col_name) != std::string::npos &&
-              part.find(inner_col_name) != std::string::npos &&
-              part.find('=') != std::string::npos)
-          {
-            is_correlation = true;
-          }
-          if (!is_correlation)
-            and_parts.push_back(part);
-        }
-
-        if (!and_parts.empty())
-        {
-          sql << " WHERE ";
-          for (size_t p = 0; p < and_parts.size(); p++)
-          {
-            if (p > 0) sql << " AND ";
-            sql << and_parts[p];
-          }
-        }
-      }
-    }
+      append_non_correlation_where(sql, inner_sql,
+                                   m_columns[outer_col_idx].c_str(),
+                                   inner_col_name);
 
     sql << " GROUP BY " << inner_col_name;
 
-    std::string sql_str = sql.str();
-    size_t sql_len = sql_str.size();
-    char* sql_buf = m_amalloc->alloc_exc<char>(sql_len + 1);
-    memcpy(sql_buf, sql_str.c_str(), sql_len);
-    sql_buf[sql_len] = '\0';
+    size_t sql_len = sql.len();
+    char* sql_buf = sql.str();
 
     // Create new inner SelectStatement
     SelectStatement* new_inner = m_amalloc->alloc_exc<SelectStatement>(1);
@@ -7058,6 +7049,25 @@ RonSQLPreparer::analyze_ctes()
 }
 
 /*
+ * The SELECT-list output of the given type whose alias is name, the last
+ * one if several are: a linear search of the (short) SELECT list in place
+ * of a std::set or std::map of std::string copies of the aliases.
+ */
+static const Outputs*
+find_output_alias(const Outputs* outputs, Outputs::Type type,
+                  const LexString& name)
+{
+  const Outputs* found = NULL;
+  for (const Outputs* out = outputs; out != NULL; out = out->next)
+  {
+    if (out->type == type && out->output_name.str != NULL &&
+        out->output_name.len > 0 && out->output_name == name)
+      found = out;
+  }
+  return found;
+}
+
+/*
  * ResultPrinter evaluates HAVING over the aggregate registers only: an
  * aggregate function reads its own register, and an identifier reads the
  * register in having_agg.agg_index.  compile() sets that index only for the
@@ -7075,20 +7085,9 @@ RonSQLPreparer::validate_having_references()
   const ConditionalExpression* having = m_context.ast_root.having_expression;
   if (having == NULL)
     return;
-  std::set<std::string> subquery_aliases;
-  for (const Outputs* out = m_context.ast_root.outputs; out != NULL;
-       out = out->next)
-  {
-    if (out->type == Outputs::Type::SUBQUERY_AGG &&
-        out->output_name.str != NULL && out->output_name.len > 0)
-    {
-      subquery_aliases.insert(std::string(out->output_name.str,
-                                          out->output_name.len));
-    }
-  }
+  const Outputs* outputs = m_context.ast_root.outputs;
   std::basic_ostream<char>& err = *m_conf.err_stream;
-  std::function<void(const ConditionalExpression*)> check =
-      [&](const ConditionalExpression* ce) {
+  auto check = [&](auto& self, const ConditionalExpression* ce) -> void {
     if (ce == NULL)
       return;
     switch (ce->op)
@@ -7098,14 +7097,15 @@ RonSQLPreparer::validate_having_references()
       const Uint32 c = ce->col_idx;
       ndbrequire(c < m_columns.size());
       const bool qualified = (m_column_qualifiers[c].str != NULL);
-      const std::string name(m_columns[c].str, m_columns[c].len);
-      if (!qualified && subquery_aliases.count(name) > 0)
+      const LexString name(m_columns[c]);
+      if (!qualified &&
+          find_output_alias(outputs, Outputs::Type::SUBQUERY_AGG, name) !=
+              NULL)
         return;
       err << "HAVING can only reference aggregate functions, such as"
              " COUNT(*) or SUM(col), and constants; '";
       if (qualified)
-        err << std::string(m_column_qualifiers[c].str,
-                           m_column_qualifiers[c].len) << ".";
+        err << LexString(m_column_qualifiers[c]) << ".";
       err << name << "' is not an aggregate. Filter GROUP BY columns in"
              " WHERE, and repeat an aggregate instead of using its output"
              " alias." << std::endl;
@@ -7117,7 +7117,7 @@ RonSQLPreparer::validate_having_references()
           "HAVING can only reference aggregate functions.");
     }
     case T_IS:
-      check(ce->is.arg);
+      self(self, ce->is.arg);
       return;
     case T_AND:
     case T_OR:
@@ -7131,12 +7131,12 @@ RonSQLPreparer::validate_having_references()
     case T_MINUS:
     case T_MULTIPLY:
     case T_SLASH:
-      check(ce->args.left);
-      check(ce->args.right);
+      self(self, ce->args.left);
+      self(self, ce->args.right);
       return;
     case T_NOT:
     case T_EXCLAMATION:
-      check(ce->args.left);
+      self(self, ce->args.left);
       return;
     default:
       // Aggregates (having_agg), constants and subqueries have no
@@ -7144,7 +7144,7 @@ RonSQLPreparer::validate_having_references()
       return;
     }
   };
-  check(having);
+  check(check, having);
 }
 
 /* Single-row CTE bodies: the parse-time candidacy
@@ -7926,16 +7926,16 @@ RonSQLPreparer::analyze_select_subqueries()
       // We support: correlation AND filter (any nesting depth)
       ConditionalExpression *conjuncts[32];
       Uint32 num_conjuncts = 0;
-      std::function<void(ConditionalExpression*)> flatten =
-          [&](ConditionalExpression* ce) {
+      auto flatten =
+          [&](auto& self, ConditionalExpression* ce) -> void {
         if (ce->op == T_AND) {
-          flatten(ce->args.left);
-          flatten(ce->args.right);
+          self(self, ce->args.left);
+          self(self, ce->args.right);
         } else if (num_conjuncts < 32) {
           conjuncts[num_conjuncts++] = ce;
         }
       };
-      flatten(inner_where);
+      flatten(flatten, inner_where);
 
       // Find the correlation predicate (equality between inner and outer col)
       LexCString inner_table_name = inner->root_table->alias;
@@ -8063,23 +8063,23 @@ RonSQLPreparer::analyze_select_subqueries()
       // Flatten the inner_filter and classify each conjunct
       ConditionalExpression *filter_conjuncts[32];
       Uint32 num_filter_conjuncts = 0;
-      std::function<void(ConditionalExpression*)> flatten_filter =
-          [&](ConditionalExpression* ce) {
+      auto flatten_filter =
+          [&](auto& self, ConditionalExpression* ce) -> void {
         if (ce->op == T_AND) {
-          flatten_filter(ce->args.left);
-          flatten_filter(ce->args.right);
+          self(self, ce->args.left);
+          self(self, ce->args.right);
         } else if (num_filter_conjuncts < 32) {
           filter_conjuncts[num_filter_conjuncts++] = ce;
         }
       };
-      flatten_filter(inner_filter);
+      flatten_filter(flatten_filter, inner_filter);
 
       LexCString itbl = inner->root_table->alias;
       for (Uint32 fi = 0; fi < num_filter_conjuncts; fi++) {
         // Check if this conjunct references only inner table columns
         bool has_outer_ref = false;
-        std::function<void(ConditionalExpression*)> check_refs =
-            [&](ConditionalExpression* ce) {
+        auto check_refs =
+            [&](auto& self, ConditionalExpression* ce) -> void {
           if (ce == NULL) return;
           if (ce->op == T_IDENTIFIER) {
             Uint32 cidx = ce->col_idx;
@@ -8093,13 +8093,13 @@ RonSQLPreparer::analyze_select_subqueries()
             }
             return;
           }
-          if (ce->op == T_IS) { check_refs(ce->is.arg); return; }
+          if (ce->op == T_IS) { self(self, ce->is.arg); return; }
           if (ce->op == T_INT || ce->op == T_FLOAT ||
               ce->op == T_STRING || ce->op == T_NULL) return;
-          check_refs(ce->args.left);
-          check_refs(ce->args.right);
+          self(self, ce->args.left);
+          self(self, ce->args.right);
         };
-        check_refs(filter_conjuncts[fi]);
+        check_refs(check_refs, filter_conjuncts[fi]);
 
         ConditionalExpression **target =
             has_outer_ref ? &cross_table_filter_ce : &inner_only_filter;
@@ -8129,20 +8129,11 @@ RonSQLPreparer::analyze_select_subqueries()
   // Mark HAVING identifier columns that match output aliases as "inner"
   // so load_join() skips them.  They'll be resolved in compile().
   if (ast.having_expression != NULL) {
-    // Collect output alias names from SUBQUERY_AGG outputs
-    std::set<std::string> alias_names;
-    for (Outputs *out = ast.outputs; out != NULL; out = out->next) {
-      if (out->type == Outputs::Type::SUBQUERY_AGG &&
-          out->output_name.str != NULL && out->output_name.len > 0) {
-        alias_names.insert(std::string(out->output_name.str,
-                                       out->output_name.len));
-      }
-    }
-    // Walk columns and mark any that match an alias name
+    // Walk columns and mark any that match a SUBQUERY_AGG output alias
     for (Uint32 c = 0; c < m_columns.size(); c++) {
       if (m_column_qualifiers[c].str == NULL &&  // unqualified
-          alias_names.count(std::string(m_columns[c].str,
-                                        m_columns[c].len)) > 0) {
+          find_output_alias(ast.outputs, Outputs::Type::SUBQUERY_AGG,
+                            LexString(m_columns[c])) != NULL) {
         // Ensure m_col_is_inner is large enough
         while (m_col_is_inner.size() <= c)
           m_col_is_inner.push(false);
@@ -8355,45 +8346,41 @@ RonSQLPreparer::compile()
   // based on output alias names.
   if (m_has_select_subqueries &&
       m_context.ast_root.having_expression != NULL) {
-    // Build alias → agg_index map from rewritten outputs
-    std::map<std::string, Uint32> alias_map;
-    for (Outputs *out = m_context.ast_root.outputs; out; out = out->next) {
-      if (out->type == Outputs::Type::AGGREGATE &&
-          out->output_name.str != NULL && out->output_name.len > 0) {
-        std::string name(out->output_name.str, out->output_name.len);
-        alias_map[name] = out->aggregate.agg_index;
-      }
-    }
-    // Walk HAVING expression and resolve identifiers
-    std::function<void(ConditionalExpression*)> resolve_having_aliases =
-        [&](ConditionalExpression* ce) {
+    // Walk HAVING expression and resolve identifiers against the
+    // rewritten AGGREGATE outputs' aliases (the last output of an alias
+    // wins).
+    const Outputs* outputs = m_context.ast_root.outputs;
+    auto resolve_having_aliases =
+        [&](auto& self, ConditionalExpression* ce) -> void {
       if (ce == NULL) return;
       if (ce->op == T_IDENTIFIER) {
         Uint32 col_idx = ce->col_idx;
         if (col_idx < m_columns.size()) {
-          std::string name(m_columns[col_idx].str, m_columns[col_idx].len);
-          auto it = alias_map.find(name);
-          if (it != alias_map.end()) {
-            ce->having_agg.agg_index = it->second;
+          const Outputs* alias_out = find_output_alias(
+              outputs, Outputs::Type::AGGREGATE,
+              LexString(m_columns[col_idx]));
+          if (alias_out != NULL) {
+            ce->having_agg.agg_index = alias_out->aggregate.agg_index;
             // Keep op as T_IDENTIFIER — evaluate_having_value handles it
           }
         }
       }
       if (ce->op == T_IS) {
-        resolve_having_aliases(ce->is.arg);
+        self(self, ce->is.arg);
       } else if (ce->op == T_AND || ce->op == T_OR ||
                  ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
                  ce->op == T_GT || ce->op == T_GE ||
                  ce->op == T_LT || ce->op == T_LE ||
                  ce->op == T_PLUS || ce->op == T_MINUS ||
                  ce->op == T_MULTIPLY || ce->op == T_SLASH) {
-        resolve_having_aliases(ce->args.left);
-        resolve_having_aliases(ce->args.right);
+        self(self, ce->args.left);
+        self(self, ce->args.right);
       } else if (ce->op == T_NOT || ce->op == T_EXCLAMATION) {
-        resolve_having_aliases(ce->args.left);
+        self(self, ce->args.left);
       }
     };
-    resolve_having_aliases(m_context.ast_root.having_expression);
+    resolve_having_aliases(resolve_having_aliases,
+                           m_context.ast_root.having_expression);
   }
 
   // Phase I.5 v2b: reject nullable column operands of GREATEST /
@@ -8801,9 +8788,10 @@ RonSQLPreparer::execute_subqueries()
     size_t inner_len = inner->sql_end - inner->sql_begin;
 
     // Build a standalone SQL buffer with semicolon and two NUL terminators
-    // (flex requirement)
+    // (flex requirement).  It lives in the statement's arena, which
+    // outlives the inner preparer.
     size_t buf_len = inner_len + 1 /* ; */ + 2 /* NUL NUL */;
-    char* buf = new char[buf_len];
+    char* buf = m_amalloc->alloc_exc<char>(buf_len);
     memcpy(buf, inner->sql_begin, inner_len);
     buf[inner_len] = ';';
     buf[inner_len + 1] = '\0';
@@ -8840,24 +8828,24 @@ RonSQLPreparer::execute_subqueries()
       while (!result_str.empty() &&
              (result_str.back() == '\n' || result_str.back() == '\r'))
         result_str.pop_back();
+      // The multi-row shapes split the output into lines in place.
+      char* line_pos = &result_str[0];
+      char* const result_end = line_pos + result_str.size();
 
       if (info.is_corr_scalar)
       {
         // Correlated scalar: parse multi-line output with two tab-separated columns
-        std::istringstream iss(result_str);
-        std::string line;
-        while (std::getline(iss, line))
+        char* line;
+        while ((line = next_subquery_output_line(&line_pos, result_end)) !=
+               NULL)
         {
-          while (!line.empty() && line.back() == '\r') line.pop_back();
-          if (line.empty()) continue;
-          size_t tab_pos = line.find('\t');
-          require_prm(tab_pos != std::string::npos,
+          char* tab = strchr(line, '\t');
+          require_prm(tab != NULL,
                       "Correlated scalar subquery did not return two columns.");
-          std::string key_str = line.substr(0, tab_pos);
-          std::string val_str = line.substr(tab_pos + 1);
+          *tab = '\0';
           CorrelatedPair pair;
-          parse_subquery_value(key_str, pair.key);
-          parse_subquery_value(val_str, pair.val);
+          parse_subquery_value(line, pair.key);
+          parse_subquery_value(tab + 1, pair.val);
           info.corr_values->push(pair);
         }
         if (info.corr_values->size() > 1000)
@@ -8867,14 +8855,12 @@ RonSQLPreparer::execute_subqueries()
       else if (info.is_in_subquery)
       {
         // IN-subquery: parse multi-line output, one value per line
-        std::istringstream iss(result_str);
-        std::string line;
-        while (std::getline(iss, line))
+        char* line;
+        while ((line = next_subquery_output_line(&line_pos, result_end)) !=
+               NULL)
         {
-          while (!line.empty() && line.back() == '\r') line.pop_back();
-          if (line.empty()) continue;
           SubqueryResult val;
-          if (line == "NULL")
+          if (strcmp(line, "NULL") == 0)
           {
             val.is_null = true;
           }
@@ -8882,7 +8868,7 @@ RonSQLPreparer::execute_subqueries()
           {
             char* endptr = NULL;
             errno = 0;
-            long long ll = strtoll(line.c_str(), &endptr, 10);
+            long long ll = strtoll(line, &endptr, 10);
             if (endptr != NULL && *endptr == '\0' && errno == 0)
             {
               val.is_null = false;
@@ -8892,7 +8878,7 @@ RonSQLPreparer::execute_subqueries()
             else
             {
               errno = 0;
-              double dbl = strtod(line.c_str(), &endptr);
+              double dbl = strtod(line, &endptr);
               if (endptr != NULL && *endptr == '\0' && errno == 0)
               {
                 val.is_null = false;
@@ -8951,36 +8937,26 @@ RonSQLPreparer::execute_subqueries()
     }
     catch (const RonSQLPermanentError&)
     {
-      delete[] buf;
       throw;
     }
     catch (const RonSQLRetryableError&)
     {
-      delete[] buf;
       throw;
     }
     catch (const std::bad_alloc&)
     {
-      // Out of memory: free this scope's buffer and let the OOM propagate
-      // so the whole query fails cleanly as out-of-memory (handled by
-      // handle_ronsql_exception) rather than being relabelled as a generic
-      // subquery execution failure below.
-      delete[] buf;
+      // Out of memory: let the OOM propagate so the whole query fails
+      // cleanly as out-of-memory (handled by handle_ronsql_exception)
+      // rather than being relabelled as a generic subquery execution
+      // failure below.
       throw;
     }
     catch (const std::exception& e)
     {
-      delete[] buf;
       std::string msg = "Subquery execution failed: ";
       msg += e.what();
       throw RonSQLPermanentError(msg);
     }
-    catch (...)
-    {
-      delete[] buf;
-      throw;
-    }
-    delete[] buf;
   }
 }
 
@@ -9882,9 +9858,11 @@ public:
   // The column registry indexes each row carries, in attrs order.
   const Uint32* columns() const { return m_cols; }
   Uint32 num_columns() const { return m_num_cols; }
-  // Merges one delivered row.  Returns 0, or the NDB error code the kernel
-  // raises for the same failure (1860 when a SUM leaves its range).
-  Int32 add_row(const NdbRecAttr* const* attrs);
+  // Merges one row, as delivered (NdbRecAttr) or as buffered for an
+  // ORDER BY (PassthroughValue).  Returns 0, or the NDB error code the
+  // kernel raises for the same failure (1860 when a SUM leaves its range).
+  template <class Attr>
+  Int32 add_row(const Attr* const* attrs);
 private:
   NdbAggregator* m_aggregator;
   const AggregationAPICompiler* m_agg;
@@ -9979,8 +9957,9 @@ RonSQLPreparer::ApiRowAggregation::ApiRowAggregation(
   m_decimal.len = 9;
 }
 
+template <class Attr>
 Int32
-RonSQLPreparer::ApiRowAggregation::add_row(const NdbRecAttr* const* attrs)
+RonSQLPreparer::ApiRowAggregation::add_row(const Attr* const* attrs)
 {
   typedef AggregationAPICompiler::SVMInstrType T;
   Register regs[REGS] = {};
@@ -10003,7 +9982,7 @@ RonSQLPreparer::ApiRowAggregation::add_row(const NdbRecAttr* const* attrs)
     const AggregationAPICompiler::Instr& instr = program[pc];
     switch (instr.type) {
     case T::Load: {
-      const NdbRecAttr* ra = attrs[m_load_slot[pc]];
+      const Attr* ra = attrs[m_load_slot[pc]];
       const NdbDictionary::Column* col = ra->getColumn();
       const DataType type = static_cast<DataType>(col->getType());
       const Uint8* data = reinterpret_cast<const Uint8*>(ra->aRef());
@@ -10125,10 +10104,10 @@ RonSQLPreparer::execute_api_side_aggregate()
  * Phase 3 (ronsql_orderby_limit_plan.md): client-side ORDER BY for
  * projection-only shapes.  Rows arrive via per-row NdbRecAttr buffers
  * that are overwritten each fetch, so the drains buffer every row as an
- * array of NdbRecAttr clones (heap; ~PassthroughSortBuffer deletes them
- * on every exit path incl. exceptions), sort with NdbSqlUtil
- * comparators, then print through the unchanged NdbRecAttr-based
- * pass-through printer.  A NULL entry in a stored row denotes SQL NULL
+ * array of PassthroughValue copies in the statement's arena (before, an
+ * NdbRecAttr clone on the heap per value), sort with NdbSqlUtil
+ * comparators, then print through the same pass-through printer the
+ * delivered rows use.  A NULL entry in a stored row denotes SQL NULL
  * from an op-level LEFT JOIN NULL-extended row.  Stored-row layout:
  * slots 0..num_cols-1 are the SELECT outputs (printed); ORDER BY-only
  * columns occupy extra slots after them (sorted on, never printed).
@@ -10142,17 +10121,11 @@ struct PassthroughSortKey {
 };
 
 struct PassthroughSortBuffer {
-  DynamicArray<NdbRecAttr**> rows;
+  DynamicArray<const PassthroughValue**> rows;
   Uint32 num_stored;
   Uint64 bytes = 0;
   PassthroughSortBuffer(ArenaMalloc* am, Uint32 n)
     : rows(am), num_stored(n) {}
-  ~PassthroughSortBuffer() {
-    for (Uint32 r = 0; r < rows.size(); r++) {
-      NdbRecAttr** row = rows[r];
-      for (Uint32 c = 0; c < num_stored; c++) delete row[c];
-    }
-  }
 };
 
 /* Generous fixed caps: the buffered result is unaggregated and
@@ -10164,13 +10137,14 @@ static const Uint64 PASSTHROUGH_SORT_MAX_BYTES = 256 * 1024 * 1024;
 /* NULLs sort first in ASC (MySQL semantics) — same rules as the
  * aggregate path's ResultPrinter::compare_rows GROUP BY-column arm. */
 static int
-compare_passthrough_rows(NdbRecAttr* const* a, NdbRecAttr* const* b,
+compare_passthrough_rows(const PassthroughValue* const* a,
+                         const PassthroughValue* const* b,
                          const PassthroughSortKey* keys, Uint32 nkeys)
 {
   for (Uint32 i = 0; i < nkeys; i++) {
     const PassthroughSortKey& k = keys[i];
-    const NdbRecAttr* va = a[k.slot];
-    const NdbRecAttr* vb = b[k.slot];
+    const PassthroughValue* va = a[k.slot];
+    const PassthroughValue* vb = b[k.slot];
     bool a_null = (va == NULL || va->isNULL());
     bool b_null = (vb == NULL || vb->isNULL());
     if (a_null && b_null) continue;
@@ -10186,10 +10160,9 @@ compare_passthrough_rows(NdbRecAttr* const* a, NdbRecAttr* const* b,
   return 0;
 }
 
-/* Clone one delivered row into the buffer.  `ops` routes the op-level
+/* Copy one delivered row into the buffer.  `ops` routes the op-level
  * LEFT JOIN NULL-row marker (isRowNULL) per slot; NULL for the
- * single-table path.  The row array is pushed before cloning so a
- * mid-row exception still frees the clones made so far. */
+ * single-table path. */
 static void
 buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
                        const NdbRecAttr* const* attrs,
@@ -10207,18 +10180,18 @@ buffer_passthrough_row(PassthroughSortBuffer& buf, ArenaMalloc* amalloc,
     throw RonSQLPermanentError("Pass-through ORDER BY result too large.");
   }
   Uint32 n = buf.num_stored;
-  NdbRecAttr** row = amalloc->alloc_exc<NdbRecAttr*>(n);
-  for (Uint32 c = 0; c < n; c++) row[c] = NULL;
-  buf.rows.push(row);
+  const PassthroughValue** row = amalloc->alloc_exc<const PassthroughValue*>(n);
   for (Uint32 c = 0; c < n; c++) {
     const NdbRecAttr* src = attrs[c];
     if (src == NULL || (ops != NULL && ops[c] != NULL && ops[c]->isRowNULL()))
-      continue;  // stored as SQL NULL
-    row[c] = src->clone();
-    require_run(row[c] != NULL,
-                "Pass-through sort: failed to clone a row value.");
+    {
+      row[c] = NULL;  // stored as SQL NULL
+      continue;
+    }
+    row[c] = PassthroughValue::copy(src, amalloc);
     buf.bytes += row[c]->get_size_in_bytes();
   }
+  buf.rows.push(row);
 }
 
 /* Sort the buffered rows and pass the first min(limit, n) to
@@ -10234,9 +10207,11 @@ for_each_sorted_passthrough_row(PassthroughSortBuffer& buf,
   if (n == 0) return;
   // Copy to a plain array for std::sort (DynamicArray lacks
   // random-access iterators), mirroring print_result_ordered.
-  NdbRecAttr*** arr = amalloc->alloc_exc<NdbRecAttr**>(n);
+  const PassthroughValue*** arr =
+      amalloc->alloc_exc<const PassthroughValue**>(n);
   for (Uint32 i = 0; i < n; i++) arr[i] = buf.rows[i];
-  auto less = [keys, nkeys](NdbRecAttr** ra, NdbRecAttr** rb) {
+  auto less = [keys, nkeys](const PassthroughValue** ra,
+                            const PassthroughValue** rb) {
     return compare_passthrough_rows(ra, rb, keys, nkeys) < 0;
   };
   Uint32 print_count = n;
@@ -10246,7 +10221,7 @@ for_each_sorted_passthrough_row(PassthroughSortBuffer& buf,
   else
     std::sort(arr, arr + n, less);
   for (Uint32 i = 0; i < print_count; i++) {
-    row_fn(const_cast<const NdbRecAttr* const*>(arr[i]), i);
+    row_fn(const_cast<const PassthroughValue* const*>(arr[i]), i);
   }
 }
 
@@ -10264,7 +10239,7 @@ sort_and_print_passthrough_rows(PassthroughSortBuffer& buf,
 {
   for_each_sorted_passthrough_row(
       buf, keys, nkeys, limit, amalloc,
-      [&](const NdbRecAttr* const* row, Uint32 i) {
+      [&](const PassthroughValue* const* row, Uint32 i) {
         if (!header_emitted) {
           printer->print_passthrough_header(row, num_cols, out);
           header_emitted = true;
@@ -10323,7 +10298,7 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
   ndbrequire(num_cols > 0);
   // WP-J J5: merge one delivered row, raising a failed merge (1860) as the
   // pushdown scan raises it.
-  auto aggregate_row = [&](const NdbRecAttr* const* row) {
+  auto aggregate_row = [&](const auto* const* row) {
     const Int32 ret = api_rows->add_row(row);
     if (ret != 0) {
       throw_classified_ndb_error(m_conf.ndb->getNdbError(ret),
@@ -10750,7 +10725,9 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
     // WP-J J5: aggregate the first min(limit, n) rows in sort order.
     for_each_sorted_passthrough_row(
         sort_buf, sort_keys, n_sort_keys, limit, m_amalloc,
-        [&](const NdbRecAttr* const* row, Uint32) { aggregate_row(row); });
+        [&](const PassthroughValue* const* row, Uint32) {
+          aggregate_row(row);
+        });
     return;
   }
   if (sorting) {
@@ -11847,8 +11824,8 @@ RonSQLPreparer::execute_passthrough_drain(NdbQuery* query,
                (int)NdbQuery::NextResult_bufferEmpty));
     if (rc != NdbQuery::NextResult_gotRow) break;
     if (sorting) {
-      // Phase 3: buffer the row (clones; op-level LEFT JOIN NULL rows
-      // stored as SQL NULL) for the post-drain sort.
+      // Phase 3: buffer the row (arena copies; op-level LEFT JOIN NULL
+      // rows stored as SQL NULL) for the post-drain sort.
       buffer_passthrough_row(sort_buf, m_amalloc,
                              const_cast<const NdbRecAttr* const*>(attrs),
                              output_ops, m_conf.err_stream);
@@ -17023,7 +17000,7 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
   Uint32 second_exit_label = emb_len - 3;
   programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
 
-  std::function<Uint32(TokenKind)> reg_branch_opcode =
+  auto reg_branch_opcode =
       [&](TokenKind op) -> Uint32 {
     if (is_and) {
       switch (op) {
@@ -17224,7 +17201,7 @@ RonSQLPreparer::emit_cte_orderby_limit(QueryScope& scope,
              st == NdbDictionary::Column::Longvarchar))
         {
           err << "ORDER BY over string MIN/MAX output '"
-              << std::string(out->output_name.str, out->output_name.len)
+              << out->output_name
               << "' in CTE body '" << cte->name.c_str()
               << "' is not yet supported." << std::endl;
           throw RonSQLPermanentError(
@@ -18181,7 +18158,7 @@ RonSQLPreparer::generate_embedded_condition(
     Uint32 word_count = 0;
   };
 
-  std::function<void(ConditionalExpression*, SideInfo&)> resolve_col_side =
+  auto resolve_col_side =
       [&](ConditionalExpression* col_side, SideInfo& out)
       {
         ndbrequire(col_side->op == T_IDENTIFIER);
@@ -18306,7 +18283,7 @@ RonSQLPreparer::generate_embedded_condition(
       // operands use READ_ATTR_INTO_REG (DBTUP's type-aware loader);
       // linked operands use READ_LINKED_COLUMN_TO_REG (Phase I.5 v5)
       // which decodes by NDB type with correct sign extension.
-      std::function<bool(const NdbDictionary::Column*)> can_load_typed_reg =
+      auto can_load_typed_reg =
           [](const NdbDictionary::Column* c)
       {
         switch (c->getType()) {
@@ -18448,7 +18425,7 @@ RonSQLPreparer::generate_embedded_condition(
     //   _arg  family invert: T_EQ→NE T_NEQ→EQ T_LT→LE T_LE→LT T_GT→GE T_GE→GT
     //   _reg  family direct: T_EQ→EQ T_NEQ→NE T_LT→LT T_LE→LE T_GT→GT T_GE→GE
     //   _reg  family invert: T_EQ→NE T_NEQ→EQ T_LT→GE T_LE→GT T_GT→LE T_GE→LT
-    std::function<Uint32(TokenKind)> cond_for_arg_family =
+    auto cond_for_arg_family =
         [&](TokenKind op) -> Uint32 {
       if (is_and) {
         switch (op) {
@@ -18471,7 +18448,7 @@ RonSQLPreparer::generate_embedded_condition(
         default: abort();
       }
     };
-    std::function<Uint32(TokenKind)> reg_branch_opcode =
+    auto reg_branch_opcode =
         [&](TokenKind op) -> Uint32 {
       if (is_and) {
         switch (op) {
@@ -18503,7 +18480,7 @@ RonSQLPreparer::generate_embedded_condition(
       // across atoms is safe (each atom is self-contained).
       const Uint32 R1 = 1;
       const Uint32 R2 = 2;
-      std::function<void(const SideInfo&, Uint32)> emit_load_into_reg =
+      auto emit_load_into_reg =
           [&](const SideInfo& s, Uint32 reg)
           {
             if (s.kind == SideKind::LeafTable) {
@@ -18680,16 +18657,16 @@ RonSQLPreparer::print_join_plan_ops(QueryScope& scope, const char* line_prefix)
       out << "  <- " << jp.ops[op.parent_op_idx].alias.c_str();
     }
     out << '\n';
-    const std::string indent_str =
-        std::string(line_prefix) + (is_last ? "   " : "│  ");
-    const char *indent = indent_str.c_str();
+    char indent[64];
+    snprintf(indent, sizeof(indent), "%s%s", line_prefix,
+             is_last ? "   " : "│  ");
     if ((op.type == JoinOp::CTE_LOOKUP || op.type == JoinOp::CTE_SCAN) &&
         op.cte_def != NULL) {
       out << indent << "  CTE outputs: ";
       Uint32 oc = 0;
       for (const Outputs *o = op.cte_def->stmt->outputs; o; o = o->next) {
         if (oc > 0) out << ", ";
-        out << std::string(o->output_name.str, o->output_name.len);
+        out << o->output_name;
         oc++;
       }
       out << '\n';
@@ -18902,7 +18879,7 @@ RonSQLPreparer::print()
       Uint32 oc = 0;
       for (const Outputs *o = cte->stmt->outputs; o; o = o->next, oc++) {
         if (oc > 0) out << ", ";
-        out << std::string(o->output_name.str, o->output_name.len);
+        out << o->output_name;
       }
       out << "\n    GROUP BY: ";
       Uint32 gc = 0;
@@ -18930,7 +18907,7 @@ RonSQLPreparer::print()
               for (Uint32 p = 0; o != NULL && p < ob->output_idx;
                    o = o->next, p++) {}
               if (o != NULL)
-                out << std::string(o->output_name.str, o->output_name.len);
+                out << o->output_name;
             } else {
               out << "col_" << ob->col_idx;
             }
@@ -19839,8 +19816,8 @@ RonSQLPreparer::Context::lower_greatest_least_nary(
   // and pair-op operands are recursively walked to surface their
   // leaf Loads.
   bool any_col = false;
-  std::function<void(AggregationAPICompiler::Expr*)> collect_loads =
-      [&](AggregationAPICompiler::Expr* e) -> void
+  auto collect_loads =
+      [&](auto& self, AggregationAPICompiler::Expr* e) -> void
   {
     require_prm(e != NULL,
                 "GREATEST/LEAST: NULL operand.");
@@ -19856,8 +19833,8 @@ RonSQLPreparer::Context::lower_greatest_least_nary(
     }
     if (e->isGreatest2() || e->isLeast2())
     {
-      collect_loads(e->getLeft());
-      collect_loads(e->getRight());
+      self(self, e->getLeft());
+      self(self, e->getRight());
       return;
     }
     require_prm(false,
@@ -19868,7 +19845,7 @@ RonSQLPreparer::Context::lower_greatest_least_nary(
   };
   for (ArithExprList* it = args; it != NULL; it = it->next)
   {
-    collect_loads(it->head);
+    collect_loads(collect_loads, it->head);
   }
   require_prm(any_col,
               "GREATEST/LEAST requires at least one column operand "

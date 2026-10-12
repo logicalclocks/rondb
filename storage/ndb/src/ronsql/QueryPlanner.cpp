@@ -673,7 +673,7 @@ QueryPlanner::collectOrderedIndexCandidates(
     const char *col_names[], Uint32 num_cols,
     RdrsSchemaCache *cache,
     const char *database,
-    std::vector<const NdbDictionary::Index*> &out)
+    DynamicArray<const NdbDictionary::Index*> &out)
 {
   NdbDictionary::Dictionary::List fallback_list;
   const auto cached = getIndexList(dict, table, cache, database, fallback_list);
@@ -702,7 +702,7 @@ QueryPlanner::collectOrderedIndexCandidates(
       if (ci.type != NdbDictionary::Object::OrderedIndex) continue;
       if (ci.state != NdbDictionary::Object::StateOnline) continue;
       const NdbDictionary::Index *idx = checkIndex(ci.name.c_str());
-      if (idx != NULL) out.push_back(idx);
+      if (idx != NULL) out.push(idx);
     }
     return;
   }
@@ -712,6 +712,6 @@ QueryPlanner::collectOrderedIndexCandidates(
     if (elem.type != NdbDictionary::Object::OrderedIndex) continue;
     if (elem.state != NdbDictionary::Object::StateOnline) continue;
     const NdbDictionary::Index *idx = checkIndex(elem.name);
-    if (idx != NULL) out.push_back(idx);
+    if (idx != NULL) out.push(idx);
   }
 }
