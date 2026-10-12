@@ -593,6 +593,39 @@ THRConfig::do_parse_auto(unsigned realtime,
                                   rep_threads,
                                   send_threads,
                                   recv_threads);
+  /**
+   * CPU locking is only performed when CPU information is available and
+   * NumCPUs isn't set, ExclusiveIoCPUs only applies in this case.
+   */
+  struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
+  const bool lock_cpus = hwinfo->is_cpuinfo_available && config_num_cpus == 0;
+  if (exclusive_io_cpus > 0 && !lock_cpus) {
+    g_eventLogger->info("ExclusiveIoCPUs ignored, it requires CPU locking "
+                        "which needs NumCPUs=0 and CPU information");
+    exclusive_io_cpus = 0;
+  }
+  if (exclusive_io_cpus > 0 &&
+      ((exclusive_io_cpus * 4) > num_cpus)) {
+    exclusive_io_cpus = num_cpus / 4;
+    g_eventLogger->info("Max 25 percent of the CPUs can be exclusive to IO, "
+                        "decreased ExclusiveIoCPUs to %u",
+      exclusive_io_cpus);
+  }
+  if (exclusive_io_cpus > 0) {
+    /**
+     * No block threads are bound to the exclusive IO CPUs, so the thread
+     * counts are based on the remaining CPUs. num_cpus still counts all
+     * CPUs since the CPU map below includes the exclusive IO CPUs.
+     */
+    Uint32 block_thread_cpus = num_cpus - exclusive_io_cpus;
+    compute_automatic_thread_config(block_thread_cpus,
+                                    tc_threads,
+                                    ldm_threads,
+                                    main_threads,
+                                    rep_threads,
+                                    send_threads,
+                                    recv_threads);
+  }
   if (!use_tc_threads)
   {
     recv_threads += tc_threads;
@@ -634,7 +667,7 @@ THRConfig::do_parse_auto(unsigned realtime,
     main_threads +
     rep_threads;
   Uint32 calc_num_cpus = num_query_instances + send_threads;
-  require(calc_num_cpus <= num_cpus);
+  require(calc_num_cpus + exclusive_io_cpus <= num_cpus);
 
   unsigned nosend_ldm = 0;
   unsigned nosend_tc = 0;
@@ -687,8 +720,7 @@ THRConfig::do_parse_auto(unsigned realtime,
     add(T_RECV, realtime, spintime, 0);
   }
 
-  struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
-  if (hwinfo->is_cpuinfo_available && config_num_cpus == 0) {
+  if (lock_cpus) {
     /**
      * With CPU information available we will perform CPU locking as well
      * in an automated fashion. We have prepared the HW information such
@@ -710,14 +742,11 @@ THRConfig::do_parse_auto(unsigned realtime,
      * setting NumCPUs. When setting NumCPUs we simply spread on Round
      * Robin groups in an even fashion since there is no knowledge of
      * which L3 cache a Round Robin group belongs to.
+     *
+     * The loop below binds exactly one thread to each CPU that isn't
+     * exclusive to IO, so the thread count must match those CPUs.
      */
-    if (exclusive_io_cpus > 0 &&
-        ((exclusive_io_cpus * 4) > num_cpus)) {
-      exclusive_io_cpus = num_cpus / 4;
-      g_eventLogger->info("Max 25 percent of the CPUs can be exclusive to IO, "
-                          "decreased ExclusiveIoCPUs to %u",
-        exclusive_io_cpus);
-    }
+    require(calc_num_cpus + exclusive_io_cpus == num_cpus);
     num_rr_groups =
       Ndb_CreateCPUMap(num_query_instances, max_rr_group_size, num_cpus);
     Ndb_PrintCPUBindingTopology();
