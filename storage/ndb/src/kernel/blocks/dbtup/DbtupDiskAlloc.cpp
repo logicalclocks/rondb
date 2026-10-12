@@ -793,6 +793,8 @@ Dbtup::disk_page_prealloc(Signal* signal,
      * slot also when equal to the slot limits.
      */
     jam();
+    /* sz includes the index word, the largest disk part fits an empty page */
+    static_assert(MAX_DISK_VAR_SIZE_IN_WORDS + 1 <= Var_page::DATA_WORDS - 1);
     idx = alloc.calc_page_free_bits(sz - 1);
     ndbrequire(idx > 0);
     idx--;
@@ -2267,6 +2269,11 @@ Dbtup::disk_page_undo_update(Signal *signal,
 {
   jam();
 
+  /* The UNDO record holds the full disk part and must fit in one undo page,
+   * v2 undo pages are the smaller ones */
+  static_assert(MAX_DISK_VAR_SIZE_IN_WORDS +
+                    (sizeof(Disk_undo::Update_Free) >> 2) <=
+                File_formats::UNDO_PAGE_WORDS_v2);
   Disk_undo::Update_Free update;
   update.m_page_no = key->m_page_no;
   update.m_file_no_page_idx = key->m_file_no << 16 | key->m_page_idx;

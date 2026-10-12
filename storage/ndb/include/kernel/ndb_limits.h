@@ -124,8 +124,16 @@
 #define MAX_ATTRIBUTES_IN_INDEX 32
 #define MAX_TUPLE_SIZE_IN_WORDS 18000
 #define MAX_FIXED_SIZE_IN_WORDS 4070
-#define MAX_VAR_SIZE_IN_WORDS 8008
-#define MAX_DISK_VAR_SIZE_IN_WORDS 7770
+/**
+ * The in-memory var part and the disk part of a row are each one entry in
+ * a Tup_varsize_page. An empty page has DATA_WORDS - 1 = 8159 free words
+ * and the entry needs one index word. Data nodes before 26.10 refuse parts
+ * above the OLD_ limits, see ndbd_support_large_row_parts().
+ */
+#define MAX_VAR_SIZE_IN_WORDS 8158
+#define MAX_DISK_VAR_SIZE_IN_WORDS 8158
+#define OLD_MAX_VAR_SIZE_IN_WORDS 8008
+#define OLD_MAX_DISK_VAR_SIZE_IN_WORDS 7770
 #define MAX_KEY_SIZE_IN_WORDS 1023
 #define MAX_NULL_BITS 4096
 

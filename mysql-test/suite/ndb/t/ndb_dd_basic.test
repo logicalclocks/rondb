@@ -314,7 +314,7 @@ drop table t1;
 create table t1(
   col1 int unsigned not null primary key,
   col2 int unsigned not null,
-  col3 varchar(31056))
+  col3 varchar(32610))
   tablespace ts1 storage disk
   charset = latin1 engine=ndbcluster;
 show warnings;

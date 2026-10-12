@@ -1589,4 +1589,19 @@ bool
 ndbd_support_get_collation_info(Uint32 x) {
   return x >= NDBD_GET_COLLATION_INFO_2610;
 }
+
+/**
+ * In-memory var parts up to MAX_VAR_SIZE_IN_WORDS and disk parts up to
+ * MAX_DISK_VAR_SIZE_IN_WORDS (ndb_limits.h).  An older data node refuses
+ * parts above OLD_MAX_VAR_SIZE_IN_WORDS and OLD_MAX_DISK_VAR_SIZE_IN_WORDS,
+ * so DBDICT keeps the old limits for tables created or altered while such
+ * a data node is in the cluster.  Present from the 26.10 series; a
+ * backport to an older series adds its floor here.
+ */
+#define NDBD_LARGE_ROW_PARTS_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_support_large_row_parts(Uint32 x) {
+  return x >= NDBD_LARGE_ROW_PARTS_2610;
+}
 #endif

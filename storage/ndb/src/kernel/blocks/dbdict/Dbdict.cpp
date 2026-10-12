@@ -7065,11 +7065,26 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     mm_var_recordLength,
     disk_recordLength));
 
+  /**
+   * Data nodes before 26.10 refuse var parts and disk parts above the old
+   * limits. A table created or altered from the API keeps the old limits
+   * while such a data node is in the cluster. Tables read at restart or
+   * sent from another DICT were checked when they were created.
+   */
+  Uint32 max_var_size = MAX_VAR_SIZE_IN_WORDS;
+  Uint32 max_disk_var_size = MAX_DISK_VAR_SIZE_IN_WORDS;
+  if ((parseP->requestType == DictTabInfo::CreateTableFromAPI ||
+       parseP->requestType == DictTabInfo::AlterTableFromAPI) &&
+      !all_db_nodes_support_large_row_parts()) {
+    jam();
+    max_var_size = OLD_MAX_VAR_SIZE_IN_WORDS;
+    max_disk_var_size = OLD_MAX_DISK_VAR_SIZE_IN_WORDS;
+  }
   tabRequire(fixed_recordLength <= MAX_FIXED_SIZE_IN_WORDS,
              CreateTableRef::TooLargeFixedSizePart);
-  tabRequire(mm_var_recordLength <= MAX_VAR_SIZE_IN_WORDS,
+  tabRequire(mm_var_recordLength <= max_var_size,
              CreateTableRef::TooLargeVarsizePart);
-  tabRequire(disk_recordLength <= MAX_DISK_VAR_SIZE_IN_WORDS,
+  tabRequire(disk_recordLength <= max_disk_var_size,
              CreateTableRef::TooLargeDiskSizePart);
 
   /**
@@ -7112,6 +7127,19 @@ void Dbdict::handleTabInfo(SimpleProperties::Reader &it,
     }
   }
 }  // handleTabInfo()
+
+bool Dbdict::all_db_nodes_support_large_row_parts() {
+  for (Uint32 node = 1; node < MAX_NDB_NODES; node++) {
+    const NodeInfo &nodeInfo = getNodeInfo(node);
+    if (nodeInfo.getType() == NodeInfo::DB && nodeInfo.m_version != 0 &&
+        !ndbd_support_large_row_parts(nodeInfo.m_version)) {
+      jam();
+      jamData(Uint16(node));
+      return false;
+    }
+  }
+  return true;
+}
 
 // MODULE: block/unblock substartstop
 void Dbdict::block_substartstop(Signal *signal, SchemaOpPtr op_ptr) {

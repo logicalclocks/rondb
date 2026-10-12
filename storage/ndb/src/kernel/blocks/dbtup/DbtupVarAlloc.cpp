@@ -499,8 +499,12 @@ Uint32 Dbtup::get_alloc_page(Fragrecord *fragPtr, Uint32 alloc_size) {
   Uint32 start_index;
   PagePtr pagePtr;
 
+  /**
+   * start_index is MAX_FREE_LIST when no free list guarantees enough free
+   * space, then we only check the first 16 entries in the last free list.
+   */
   start_index = calculate_free_list_for_alloc(alloc_size);
-  ndbassert(start_index < MAX_FREE_LIST);
+  ndbassert(start_index <= MAX_FREE_LIST);
   for (Uint32 i = start_index; i < MAX_FREE_LIST; i++) {
     jam();
     if (!fragPtr->free_var_page_array[i].isEmpty()) {
@@ -619,7 +623,13 @@ Uint32 Dbtup::calculate_free_list_impl(Uint32 free_space_size) const {
 }
 
 Uint32 Dbtup::calculate_free_list_for_alloc(Uint32 alloc_size) const {
-  ndbassert(alloc_size <= MAX_EXPANDED_TUPLE_SIZE_IN_WORDS);
+  /**
+   * alloc_size includes the index word. The largest var part plus its
+   * index word must fit in an empty page, its free space is DATA_WORDS - 1,
+   * see Tup_varsize_page::init().
+   */
+  static_assert(MAX_VAR_SIZE_IN_WORDS + 1 <= Var_page::DATA_WORDS - 1);
+  ndbrequire(alloc_size <= Var_page::DATA_WORDS - 1);
   for (Uint32 i = 0; i < MAX_FREE_LIST; i++) {
     jam();
     if (alloc_size <= c_min_list_size[i]) {
@@ -627,10 +637,14 @@ Uint32 Dbtup::calculate_free_list_for_alloc(Uint32 alloc_size) const {
       return i;
     }
   }
-  /* Allocation too big, last free list page should always have space for
-   * biggest possible allocation.
+  /**
+   * No free list guarantees this much free space, this happens for var
+   * parts close to MAX_VAR_SIZE_IN_WORDS. Return MAX_FREE_LIST, the caller
+   * then searches the last free list for a page with enough free space,
+   * otherwise it allocates an empty page.
    */
-  ndbabort();
+  jam();
+  return MAX_FREE_LIST;
 }
 
 Uint64 Dbtup::calculate_used_var_words(Fragrecord *fragPtr) {
