@@ -10937,6 +10937,57 @@ RonSQLPreparer::build_root_residual(
   return true;
 }
 
+namespace {
+/*
+ * The NDB API objects execute_join() builds: the CTE virtual tables and
+ * the per-leaf and per-CTE aggregators (placed in the statement's arena,
+ * so only their destructors run here), the query builder, its query
+ * definition and the query.  The destructor releases them on every exit
+ * from execute_join(), the exceptions included; before, a join query that
+ * failed after building them (a temporary error that ronsql_op retries, a
+ * rate-limit rejection, a stale schema) leaked them all.  The order is the
+ * one the success path always used: the query is closed before its
+ * definition is destroyed (NdbQuery::close() must come first), and the
+ * virtual tables go last, since the aggregators and the definition hold
+ * pointers to their columns.
+ */
+struct JoinQueryObjects
+{
+  JoinQueryObjects(NdbDictionary::Table** vts, NdbAggregator** aggs)
+    : main_vts(vts), leaf_aggs(aggs) {}
+  NdbDictionary::Table** const main_vts;       // [MAX_SPJ_TREE_NODES]
+  NdbAggregator** const leaf_aggs;             // [MAX_SPJ_TREE_NODES]
+  NdbAggregator** cte_aggs = NULL;             // [num_ctes]
+  NdbDictionary::Table** cte_child_vts = NULL; // [num_ctes * MAX_SPJ_...]
+  Uint32 num_ctes = 0;
+  NdbQueryBuilder* qb = NULL;
+  const NdbQueryDef* query_def = NULL;
+  NdbQuery* query = NULL;
+  ~JoinQueryObjects()
+  {
+    if (query != NULL) query->close();
+    if (query_def != NULL) query_def->destroy();
+    if (qb != NULL) qb->destroy();
+    for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
+      if (leaf_aggs[i] != NULL) leaf_aggs[i]->~NdbAggregator();
+    }
+    if (cte_aggs != NULL) {
+      for (Uint32 c = 0; c < num_ctes; c++) {
+        if (cte_aggs[c] != NULL) cte_aggs[c]->~NdbAggregator();
+      }
+    }
+    for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
+      if (main_vts[i] != NULL) main_vts[i]->~Table();
+    }
+    if (cte_child_vts != NULL) {
+      for (Uint32 i = 0; i < num_ctes * MAX_SPJ_TREE_NODES; i++) {
+        if (cte_child_vts[i] != NULL) cte_child_vts[i]->~Table();
+      }
+    }
+  }
+};
+}  // namespace
+
 void
 RonSQLPreparer::execute_join()
 {
@@ -10951,12 +11002,13 @@ RonSQLPreparer::execute_join()
   // the agg leaf's NdbAggregator can be constructed against the right
   // schema even when the leaf is a CTE_LOOKUP (no physical table).
   NdbDictionary::Table* cteVirtualTables[MAX_SPJ_TREE_NODES] = {};
-  build_cte_virtual_tables(plan, cteVirtualTables);
-
   // Build aggregator(s).
   // Multi-leaf: one NdbAggregator per merged leaf, each with its own program.
   // Single-leaf: one NdbAggregator on plan.agg_leaf_idx (existing path).
   NdbAggregator* leafAggs[MAX_SPJ_TREE_NODES] = {};
+  JoinQueryObjects objs(cteVirtualTables, leafAggs);
+  build_cte_virtual_tables(plan, cteVirtualTables);
+
   const NdbDictionary::Table* agg_leaf_table =
       plan.ops[plan.agg_leaf_idx].table;
   if (agg_leaf_table == NULL) {
@@ -10982,7 +11034,9 @@ RonSQLPreparer::execute_join()
       MergedLeaf &merged = m_merged_leaves[ml];
       Uint32 op_idx = merged.plan_op_idx;
       const NdbDictionary::Table* leaf_table = plan.ops[op_idx].table;
-      NdbAggregator* agg = new NdbAggregator(leaf_table);
+      NdbAggregator* agg = new (m_amalloc->alloc_exc<NdbAggregator>(1))
+          NdbAggregator(leaf_table);
+      leafAggs[op_idx] = agg;
 
       // Program GROUP BY columns (all from root → GroupByLinked)
       Uint32 linked_proj_pos = 0;
@@ -11086,7 +11140,6 @@ RonSQLPreparer::execute_join()
       // (handled in programAggregator_join).
 
       require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
-      leafAggs[op_idx] = agg;
     }
   } else if (m_is_aggregate_query) {
     // Single-leaf path (existing)
@@ -11102,6 +11155,7 @@ RonSQLPreparer::execute_join()
   // Build NdbQueryBuilder tree
   NdbQueryBuilder* qb = NdbQueryBuilder::create();
   ndbrequire(qb != NULL);
+  objs.qb = qb;
 
   // Emit CTE subtrees first, in declaration order, so the main query's
   // CTE_LOOKUP / CTE_SCAN references resolve.
@@ -11114,12 +11168,14 @@ RonSQLPreparer::execute_join()
   // NdbDictionary::Table objects alive until the end-of-execute cleanup.
   NdbDictionary::Table** cteChildVTAll = NULL;
   if (m_cte_scopes.size() > 0) {
-    cteAggs = m_amalloc->alloc_exc<NdbAggregator*>(m_cte_scopes.size());
-    cteChildVTAll = m_amalloc->alloc_exc<NdbDictionary::Table*>(
+    cteAggs = m_amalloc->calloc<NdbAggregator*>(m_cte_scopes.size());
+    cteChildVTAll = m_amalloc->calloc<NdbDictionary::Table*>(
         m_cte_scopes.size() * MAX_SPJ_TREE_NODES);
-    for (Uint32 i = 0; i < m_cte_scopes.size() * MAX_SPJ_TREE_NODES; i++) {
-      cteChildVTAll[i] = NULL;
-    }
+    if (unlikely(cteAggs == NULL || cteChildVTAll == NULL))
+      throw std::bad_alloc();
+    objs.cte_aggs = cteAggs;
+    objs.cte_child_vts = cteChildVTAll;
+    objs.num_ctes = m_cte_scopes.size();
     CteDefinition* cte = m_context.ast_root.cte_list;
     for (Uint32 c = 0; c < m_cte_scopes.size();
          c++, cte = cte->next) {
@@ -11146,7 +11202,8 @@ RonSQLPreparer::execute_join()
                     "CTE aggregation leaf is a CTE op but its virtual "
                     "table was not built.");
       }
-      NdbAggregator* cteAgg = new NdbAggregator(cte_leaf_table);
+      NdbAggregator* cteAgg = new (m_amalloc->alloc_exc<NdbAggregator>(1))
+          NdbAggregator(cte_leaf_table);
       cteAggs[c] = cteAgg;
 
       if (cte->stmt->is_single_row_cte) {
@@ -11361,6 +11418,7 @@ RonSQLPreparer::execute_join()
   STAT_TS(m_conf.phase_stats, s_qb_prepare);
   const NdbQueryDef* queryDef = qb->prepare(ndb);
   require_run(queryDef != NULL, "Failed to prepare query.");
+  objs.query_def = queryDef;
   PERF_TS(t_qb_prepared);
   PERF_LOG("  qb->prepare", t_qb_prepare, t_qb_prepared);
   STAT_TS(m_conf.phase_stats, s_qb_prepared);
@@ -11368,6 +11426,7 @@ RonSQLPreparer::execute_join()
 
   NdbQuery* query = m_trans->createQuery(queryDef);
   require_run(query != NULL, "Failed to create query.");
+  objs.query = query;
 
   if (!m_is_aggregate_query) {
     // Phase E.3 / I.8 pass-through path: wire getValue() per output
@@ -11411,16 +11470,14 @@ RonSQLPreparer::execute_join()
     (void)n_rows;
     if (rc == NdbQuery::NextResult_error)
     {
-      // A copy outlives query->close(); its details may point into the
-      // query's storage, so they are dropped (message is static).
+      // A copy outlives query->close() (by objs, on the way out); its
+      // details may point into the query's storage, so they are dropped
+      // (message is static).
       NdbError err = query->getNdbError();
       err.details = NULL;
       std::basic_ostream<char>& errout = *m_conf.err_stream;
       errout << "Join query failed: " << err.message
              << " (code " << err.code << ")" << std::endl;
-      query->close();
-      queryDef->destroy();
-      qb->destroy();
       // Schema errors (e.g. WrongSchemaVersion 20021 from DBSPJ after a
       // concurrent DDL) must invalidate the cached dictionary before retry,
       // otherwise every retry resends the same stale schema version.  Route
@@ -11455,46 +11512,14 @@ RonSQLPreparer::execute_join()
   }
 
   // Cleanup.  For a pass-through drain that stopped at its LIMIT this
-  // closes the still-open scan.
+  // closes the still-open scan; objs releases the rest on return.  The
+  // aggregators and ResultPrinter have been drained by now, so the
+  // virt-table column pointers they cached are no longer needed.
   STAT_TS(m_conf.phase_stats, s_close_start);
   query->close();
+  objs.query = NULL;
   STAT_TS(m_conf.phase_stats, s_close_end);
   STAT_ADD(m_conf.phase_stats, close_us, s_close_start, s_close_end);
-  queryDef->destroy();
-  qb->destroy();
-
-  // Free per-leaf aggregators
-  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
-    if (leafAggs[i] != NULL) {
-      delete leafAggs[i];
-      leafAggs[i] = NULL;
-    }
-  }
-
-  // Free per-CTE aggregators
-  if (cteAggs != NULL) {
-    for (Uint32 c = 0; c < m_cte_scopes.size(); c++) {
-      delete cteAggs[c];
-      cteAggs[c] = NULL;
-    }
-  }
-
-  // Free per-CTE virtual tables last. Aggregators and ResultPrinter have
-  // already been drained, so the cached virt-table column pointers they
-  // used are no longer needed.
-  for (Uint32 i = 0; i < MAX_SPJ_TREE_NODES; i++) {
-    delete cteVirtualTables[i];
-    cteVirtualTables[i] = NULL;
-  }
-  // Same for per-CTE-body child virt tables held alive across qb's lifetime
-  // (chained CTE scanCte ops retain raw pointers into these).
-  if (cteChildVTAll != NULL) {
-    for (Uint32 i = 0;
-         i < m_cte_scopes.size() * MAX_SPJ_TREE_NODES; i++) {
-      delete cteChildVTAll[i];
-      cteChildVTAll[i] = NULL;
-    }
-  }
 }
 
 // Pass-through row delivery for projection-only main SELECTs.
@@ -13099,7 +13124,10 @@ RonSQLPreparer::resolve_chained_column_type(
 // derived from the aggregate function + source column). Column order
 // matches cte->stmt->outputs so attrIds align with cte_col_idx from
 // load_join's name→attrId resolution. out[] is indexed by op-index of the
-// referencing CTE_LOOKUP or CTE_SCAN; non-CTE ops leave NULL.
+// referencing CTE_LOOKUP or CTE_SCAN; non-CTE ops leave NULL.  The tables
+// are placed in the arena and stored in out[] before their columns are
+// built, so the caller (execute_join's JoinQueryObjects) runs their
+// destructors on every exit, a failure while building one included.
 void
 RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
                                           NdbDictionary::Table** out)
@@ -13117,7 +13145,10 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
 
     char vtname[64];
     snprintf(vtname, sizeof(vtname), "__cte_%u", op.cte_def_idx);
-    NdbDictionary::Table* vt = new NdbDictionary::Table(vtname);
+    NdbDictionary::Table* vt =
+        new (m_amalloc->alloc_exc<NdbDictionary::Table>(1))
+            NdbDictionary::Table(vtname);
+    out[i] = vt;
 
     for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next) {
       NdbDictionary::Column vcol;
@@ -13661,7 +13692,6 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         }
       }
     }
-    out[i] = vt;
   }
 }
 
