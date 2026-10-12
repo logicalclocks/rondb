@@ -35,10 +35,15 @@ RdrsSchemaCache::IndexListPtr
 RdrsSchemaCache::getIndexes(
     const NdbDictionary::Dictionary* dict,
     const NdbDictionary::Table* table,
-    const std::string& db,
-    const std::string& table_name) {
+    const char* db,
+    const char* table_name) {
 
-  std::string key = makeKey(db, table_name);
+  // makeKey's format, in a per-thread buffer: once it has grown to the
+  // longest key this thread has looked up, a cache hit allocates nothing.
+  static thread_local std::string key;
+  key.assign(db);
+  key += '/';
+  key += table_name;
   Uint32 tableId = table->getTableId();
   Uint32 schemaVersion = table->getObjectVersion();
   const auto now = std::chrono::steady_clock::now();

@@ -26,8 +26,8 @@
 #define STORAGE_NDB_SRC_RONSQL_QUERYPLANNER_HPP 1
 
 #include <NdbApi.hpp>
-#include <vector>
 #include "RonSQLCommon.hpp"
+#include "DynamicArray.hpp"
 #include "LexString.hpp"
 
 // Max tree nodes in pushed SPJ query (matches NDB_SPJ_MAX_TREE_NODES).
@@ -150,14 +150,15 @@ public:
   // of the first).  Used by the child-bounds index re-selection
   // (next_steps.md item 3): a later candidate can beat the planner's
   // first match when it additionally serves child-local constant or
-  // cross-table bounds.
+  // cross-table bounds.  out is arena-backed (the caller's statement
+  // arena).
   static void
   collectOrderedIndexCandidates(const NdbDictionary::Dictionary *dict,
                                 const NdbDictionary::Table *table,
                                 const char *col_names[], Uint32 num_cols,
                                 RdrsSchemaCache *cache,
                                 const char *database,
-                                std::vector<const NdbDictionary::Index*> &out);
+                                DynamicArray<const NdbDictionary::Index*> &out);
 
 private:
   static bool isPrimaryKey(const NdbDictionary::Table *table,

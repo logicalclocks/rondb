@@ -625,6 +625,41 @@ F8 was a framework fixture issue and is already fixed.
   note IN-subquery results are capped at 1000 values and run as an OR-chain scan
   filter, never as index ranges. `ronsql_cte_subquery.test` NEXT-PHASE notes
   the body case as unproven.
+- [ ] F34 (2026-10-12, memory-allocation review of RonSQL): RonSQL's own
+  per-request allocations now use the request's `ArenaMalloc` or none (the
+  pass-through ORDER BY buffer copies values into the arena instead of
+  `NdbRecAttr::clone()`, plus the subquery, decorrelation, IN-list, HAVING,
+  schema-cache-key and `std::function` sites); `execute_join` no longer leaks
+  its aggregators, CTE virtual tables, query builder and definition when a join
+  query fails (`JoinQueryObjects`). ronsql MTR suites green. Remaining heap
+  allocation sources, outside RonSQL's own code:
+  - (a) `NdbAggregator`, the largest for many-group queries: one `new char[]`
+    per group (`ProcessRes`, `MergeLocalGroup`), one per string MIN / MAX value
+    of every received partial result (`resolveStringSlots`, `copyStringSlots`;
+    freed by `clearStringSlot` when it loses the merge), the `groups_` /
+    `group_slots_` / `result_order_` vectors, the `keyed` vector in
+    `PrepareResults`, and a `delete[]` per group in the destructor. Fix: an
+    `ArenaMalloc` owned by the NdbAggregator for the group records, freed at
+    once in the destructor; no public API change (a `class ArenaMalloc*`
+    member in NdbAggregator.hpp). Keep the string slots on the heap or give
+    them a free list: in an arena every losing slot would stay allocated until
+    the aggregator is destroyed, growing with the rows received. Measure with
+    core_group_many / core_group_2k, as F24 was.
+  - (b) `NdbInterpretedCode` without a caller buffer starts at 2 words and
+    doubles (`have_space_for`, NdbInterpretedCode.cpp), so a 256-word program
+    costs 8 allocations and copies; RonSQL builds 14 such programs (scan
+    filters, residual filters, CTE lookup filters). Fix: either the NDB API
+    starts the buffer at e.g. 64-128 words (helps every NDB API user, mysqld
+    included), or RonSQL passes an arena buffer, which must be
+    `NDB_MAX_SCANFILTER_SIZE_IN_WORDS` (15359 words, ~60 KB) since a supplied
+    buffer cannot grow (error 4518 instead).
+  - (c) `ronsql_op` (ronsql_operation.cpp) retries up to 10 times on the same
+    request arena without resetting it, so a retried statement holds every
+    attempt's parse tree, plan and buffers until the request ends. The arena
+    cannot be reset: `sql_buffer` is allocated in it before the first attempt.
+    Fix: `ArenaMalloc::mark()` / `rewind(mark)` (keep the pages up to the mark,
+    free the later pages and the large allocations made after it), with the
+    mark taken after `sql_buffer`. Low priority: retries are rare.
 - [ ] Follow-ups to clean rejections (features, not bugs):
   - Real-table anti-join: `LEFT JOIN b ... WHERE b.col IS NULL` with `b.col NOT
     NULL` is now rejected (F32); it could run as `ANTI_JOIN` (MatchNullOnly) as

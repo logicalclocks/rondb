@@ -36,6 +36,7 @@
 #include <sql_string.h>
 #include <decimal_utils.hpp>
 #include "my_time.h"
+#include "my_byteorder.h"
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 //#define DEBUG_RONSQLPRINTER 1
@@ -147,9 +148,11 @@ require_sch(bool condition, const char* msg)
 }
 
 // The value bytes of a non-NULL BINARY / VARBINARY / LONGVARBINARY
-// NdbRecAttr.  BINARY(n) is its full padded length, as MySQL returns it.
+// NdbRecAttr (or its PassthroughValue copy).  BINARY(n) is its full
+// padded length, as MySQL returns it.
+template <class Attr>
 static void
-binary_value_bytes(const NdbRecAttr* attr,
+binary_value_bytes(const Attr* attr,
                    const unsigned char** bytes,
                    size_t* len)
 {
@@ -996,12 +999,21 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
           Uint32 prefix = res_a.type() == NdbDictionary::Column::Char ? 0 :
                           res_a.type() == NdbDictionary::Column::Varchar ? 1 :
                           2;
-          std::string raw_a;
-          std::string raw_b;
           if (prefix != 0)
           {
-            raw_a.resize(prefix + len_a);
-            raw_b.resize(prefix + len_b);
+            // The length-prefixed keys go to two scratch buffers in the
+            // arena that every comparison of the sort reuses.
+            const Uint32 need = prefix + (len_a > len_b ? len_a : len_b);
+            if (need > m_cmp_buf_len)
+            {
+              Uint32 cap = (m_cmp_buf_len == 0) ? 64 : m_cmp_buf_len;
+              while (cap < need) cap *= 2;
+              m_cmp_buf_a = m_amalloc->alloc_exc<char>(cap);
+              m_cmp_buf_b = m_amalloc->alloc_exc<char>(cap);
+              m_cmp_buf_len = cap;
+            }
+            char* raw_a = m_cmp_buf_a;
+            char* raw_b = m_cmp_buf_b;
             if (prefix == 1)
             {
               raw_a[0] = static_cast<char>(len_a);
@@ -1016,8 +1028,8 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
             }
             memcpy(&raw_a[prefix], data_a, len_a);
             memcpy(&raw_b[prefix], data_b, len_b);
-            data_a = raw_a.data();
-            data_b = raw_b.data();
+            data_a = raw_a;
+            data_b = raw_b;
           }
           const NdbSqlUtil::Type& sqlType =
               NdbSqlUtil::getType(static_cast<Uint32>(res_a.type()));
@@ -1287,7 +1299,8 @@ print_temporal_packed(std::ostream& out, Uint64 w,
   out << quote << buf << quote;
 }
 
-// Phase E.3 + I.12 helpers: format a single NdbRecAttr value for the
+// Phase E.3 + I.12 helpers: format a single NdbRecAttr value (or its
+// PassthroughValue copy, for a sorted result) for the
 // projection-only pass-through path.  Mirrors the type cases the
 // aggregator path handles in print_record (see Column::data_*) but
 // reads directly from NdbRecAttr instead of NdbAggregator::Column.
@@ -1296,9 +1309,10 @@ print_temporal_packed(std::ostream& out, Uint64 w,
 // I.12 extends the set to CHAR / VARCHAR / Longvarchar so projection-
 // only queries that select a real-table string column alongside CTE
 // columns (testCteNdbApiOuterJoin.cpp Test 1 etc.) work.
+template <class Attr>
 void
 ResultPrinter::print_passthrough_value(std::ostream& out,
-                                       const NdbRecAttr* attr,
+                                       const Attr* attr,
                                        const ColumnMetadata* meta)
 {
   if (attr == NULL || attr->isNULL() == 1) {
@@ -1496,8 +1510,9 @@ ResultPrinter::print_passthrough_value(std::ostream& out,
   }
 }
 
+template <class Attr>
 void
-ResultPrinter::print_passthrough_header(const NdbRecAttr* const* /*attrs*/,
+ResultPrinter::print_passthrough_header(const Attr* const* /*attrs*/,
                                          Uint32 num_cols,
                                          std::basic_ostream<char>* out_stream)
 {
@@ -1538,9 +1553,10 @@ ResultPrinter::set_avro_decoder(RonSQLAvroDecoder* decoder,
   m_avro_handles = handles;
 }
 
+template <class Attr>
 void
 ResultPrinter::print_passthrough_output(std::ostream& out,
-                                        const NdbRecAttr* attr,
+                                        const Attr* attr,
                                         const Outputs* o,
                                         Uint32 pos)
 {
@@ -1555,9 +1571,10 @@ ResultPrinter::print_passthrough_output(std::ostream& out,
 // printed as a JSON value (not a string) under JSON, with \u escapes for
 // non-ASCII characters under JSON_ASCII, and with the batch-mode escaping
 // of a binary value under TEXT.  NULL prints as NULL.
+template <class Attr>
 void
 ResultPrinter::print_avro_value(std::ostream& out,
-                                const NdbRecAttr* attr,
+                                const Attr* attr,
                                 const void* avro_handle)
 {
   if (attr == NULL || attr->isNULL() == 1) {
@@ -1584,8 +1601,9 @@ ResultPrinter::print_avro_value(std::ostream& out,
   }
 }
 
+template <class Attr>
 void
-ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
+ResultPrinter::print_passthrough_row(const Attr* const* attrs,
                                       Uint32 num_cols,
                                       bool is_first_row,
                                       std::basic_ostream<char>* out_stream)
@@ -1618,6 +1636,48 @@ ResultPrinter::print_passthrough_row(const NdbRecAttr* const* attrs,
     }
     out << '\n';
   }
+}
+
+template void ResultPrinter::print_passthrough_header<NdbRecAttr>(
+    const NdbRecAttr* const*, Uint32, std::basic_ostream<char>*);
+template void ResultPrinter::print_passthrough_header<PassthroughValue>(
+    const PassthroughValue* const*, Uint32, std::basic_ostream<char>*);
+template void ResultPrinter::print_passthrough_row<NdbRecAttr>(
+    const NdbRecAttr* const*, Uint32, bool, std::basic_ostream<char>*);
+template void ResultPrinter::print_passthrough_row<PassthroughValue>(
+    const PassthroughValue* const*, Uint32, bool, std::basic_ostream<char>*);
+
+const PassthroughValue*
+PassthroughValue::copy(const NdbRecAttr* src, ArenaMalloc* amalloc)
+{
+  // The error the RonSQLPreparer's require_run gave a failed clone.
+  if (unlikely(src->isNULL() == -1))
+    throw std::runtime_error(
+        "Pass-through sort: failed to clone a row value.");
+  const Uint32 size = src->get_size_in_bytes();
+  const size_t data_len = (size_t(size < 8 ? 8 : size) + 7) & ~size_t(7);
+  void* mem = amalloc->alloc_bytes(sizeof(PassthroughValue) + data_len,
+                                   alignof(Uint64));
+  if (unlikely(mem == NULL)) throw std::bad_alloc();
+  PassthroughValue* v = new (mem) PassthroughValue;
+  v->m_column = src->getColumn();
+  v->m_size = size;
+  char* data = v->aRef();
+  if (size > 0) memcpy(data, src->aRef(), size);
+  memset(data + size, 0, data_len - size);
+  return v;
+}
+
+Int32
+PassthroughValue::medium_value() const
+{
+  return sint3korr(pointer_cast<const uchar*>(aRef()));
+}
+
+Uint32
+PassthroughValue::u_medium_value() const
+{
+  return uint3korr(pointer_cast<const uchar*>(aRef()));
 }
 
 void
