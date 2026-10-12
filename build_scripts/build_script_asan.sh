@@ -1,0 +1,19 @@
+#!/bin/bash
+# Debug build with AddressSanitizer (build_script_debug.sh + WITH_ASAN=1).
+# On Linux ASan includes LeakSanitizer; run MTR with --sanitize.
+set -e
+SRC_DIR=$1
+if [ -z $SRC_DIR ]; then
+    SRC_DIR=./..
+fi
+BISON_SETTING=
+if test "x$BISON_PATH" != "x" ; then
+  BISON_SETTING="-DBISON_EXECUTABLE=$BISON_PATH"
+fi
+
+if ! [ -z "${PREFIX_DIR}" ]; then
+  PREFIX_DIR="-DCMAKE_INSTALL_PREFIX=${PREFIX_DIR}"
+fi
+
+cmake $BISON_SETTING -DWITH_DEBUG=1 -DWITH_ASAN=1 -DWITH_SSL=$OPENSSL_ROOT -DWITH_RDRS=1 -DWITH_NDB=1 -DWITH_NDB_TEST=1 -DWITH_NDBAPI_EXAMPLES=1 -DWITH_ROUTER=0 -DWITH_UNIT_TESTS=1 -DWITH_ERROR_INSERT=1 -DWITH_NDB_JAVA=1 -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE $PREFIX_DIR $SRC_DIR
+make -j$(( $(getconf _NPROCESSORS_ONLN) + 2 ))
