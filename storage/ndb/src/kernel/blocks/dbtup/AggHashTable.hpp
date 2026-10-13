@@ -101,6 +101,17 @@ constexpr Uint32 agg_gb_log2u(Uint32 v) {
  * owner node (hash % nodes) for charset keys, and taking bucket bits
  * from the same end would leave half of each owner's buckets empty.
  *
+ * Growth hint (m3_run6_plan.md D1a): a table that is expected to hold
+ * many groups (the size the same program's tables reached in its
+ * previous execution, setGrowthHint) skips the splitting.  At its first
+ * split — the inline buckets are full, so tables that stay small never
+ * allocate for it — it takes the hinted number of buckets at once and
+ * rehashes the at most ~BUCKET_COUNT entries it holds; growth then goes
+ * on by splitting.  Every entry stays in a bucket congruent to its old
+ * one modulo BUCKET_COUNT, i.e. at the same or a higher index, so the
+ * walk guarantee below holds for this jump too.  A failed allocation
+ * drops the hint and the table splits as before.
+ *
  * Group data layout (GROUP_LINK_OVERHEAD = 24 bytes prepended):
  *   [chunk_next(8)] [hash_next(8)] [key_len(4)] [chunk_offset(4)]
  * Data pointer (from allocGroupData) points past this header.
@@ -155,19 +166,29 @@ class GBHashTable {
 
   GBHashTable()
     : m_dir(nullptr), m_dir_capacity(0), m_nsegs(1), m_size(0),
-      m_bucket_count(BUCKET_COUNT), m_low_mask(BUCKET_COUNT - 1),
-      m_split(0), m_first_hint(0), m_thread_id(0), m_grow_stopped(false),
-      m_col_types(nullptr), m_n_gb_cols(0) {
+      m_peak(0), m_bucket_count(BUCKET_COUNT), m_low_mask(BUCKET_COUNT - 1),
+      m_split(0), m_first_hint(0), m_thread_id(0), m_growth_hint(0),
+      m_grow_stopped(false), m_col_types(nullptr), m_n_gb_cols(0) {
     memset(m_buckets, 0, sizeof(m_buckets));
   }
 
-  /* Empty table with the initial geometry; `thread_id` is the
-   * interpreter's allocation thread for growth segments. */
+  /* Empty table with the initial geometry and no growth hint;
+   * `thread_id` is the interpreter's allocation thread for growth
+   * segments. */
   void init(Uint32 thread_id) {
     release();
     m_thread_id = thread_id;
+    m_growth_hint = 0;
     memset(m_buckets, 0, sizeof(m_buckets));
   }
+
+  /* The number of groups this table is expected to reach (0 = unknown):
+   * at its first split it takes that many buckets at once instead of
+   * splitting its way there (see the class comment). */
+  void setGrowthHint(Uint32 groups) { m_growth_hint = groups; }
+
+  /* The most entries the table has held since init() / release(). */
+  Uint32 peakSize() const { return m_peak; }
 
   /* Forget every entry (callers free the group data themselves) and
    * return to the initial geometry. */
@@ -190,6 +211,7 @@ class GBHashTable {
     m_dir_capacity = 0;
     m_nsegs = 1;
     m_size = 0;
+    m_peak = 0;
     m_bucket_count = BUCKET_COUNT;
     m_low_mask = BUCKET_COUNT - 1;
     m_split = 0;
@@ -340,6 +362,12 @@ class GBHashTable {
   Uint32 size() const { return m_size; }
   bool empty() const { return m_size == 0; }
   Uint32 bucketCount() const { return m_bucket_count; }
+  /* Query memory held for buckets beyond the inline ones: the growth
+   * segments and their directory. */
+  Uint32 segmentBytes() const {
+    return (m_nsegs - 1) * BUCKET_COUNT * Uint32(sizeof(char*)) +
+           m_dir_capacity * Uint32(sizeof(char**));
+  }
 
   /* True when both tables map every hash to the same bucket. */
   bool sameGeometry(const GBHashTable& other) const {
@@ -417,11 +445,13 @@ class GBHashTable {
   Uint32 m_dir_capacity;
   Uint32 m_nsegs;                  // segments in use, segment 0 included
   Uint32 m_size;
+  Uint32 m_peak;                   // largest m_size since init / release
   Uint32 m_bucket_count;           // (m_low_mask + 1) + m_split
   Uint32 m_low_mask;               // bucket mask of the current round
   Uint32 m_split;                  // next bucket of the round to split
   mutable Uint32 m_first_hint;     // lower bound on the first non-empty bucket
   Uint32 m_thread_id;              // allocation thread for segments
+  Uint32 m_growth_hint;            // expected groups; 0 once used or dropped
   bool m_grow_stopped;             // allocation failed or MAX_SEGMENTS reached
   const GBColTypeInfo *m_col_types;
   Uint32 m_n_gb_cols;
@@ -459,6 +489,7 @@ class GBHashTable {
     hashNext(raw) = head;
     head = raw;
     m_size++;
+    if (m_size > m_peak) m_peak = m_size;
     if (b < m_first_hint) m_first_hint = b;
   }
 
@@ -466,7 +497,85 @@ class GBHashTable {
     if (m_size <= m_bucket_count || m_grow_stopped) {
       return;
     }
+    /* m_nsegs == 1: still the initial geometry (the first split adds
+     * segment 1), the only state the jump starts from. */
+    if (m_growth_hint > m_bucket_count && m_nsegs == 1 &&
+        growToHint(xfrm_buf, xfrm_buf_len)) {
+      return;
+    }
     splitOne(xfrm_buf, xfrm_buf_len);
+  }
+
+  /* Take m_growth_hint buckets (rounded up to whole segments, at most
+   * MAX_SEGMENTS) at once and rehash the entries of the inline buckets
+   * into them.  The hint is used once: false (and nothing changed) when
+   * an allocation fails, and the caller splits instead. */
+  bool growToHint(uchar* xfrm_buf, Uint32 xfrm_buf_len) {
+    Uint64 want = (Uint64(m_growth_hint) + SEG_MASK) >> SEG_SHIFT;
+    m_growth_hint = 0;
+    if (want > MAX_SEGMENTS) want = MAX_SEGMENTS;
+    const Uint32 nsegs = Uint32(want);
+    if (nsegs <= 1 || m_dir != nullptr) {
+      return false;  // nothing to gain, or not the initial geometry
+    }
+    Uint32 dir_cap = INITIAL_DIR_CAPACITY;
+    while (dir_cap < nsegs) dir_cap *= 2;
+    if (dir_cap > MAX_SEGMENTS) dir_cap = MAX_SEGMENTS;
+    char*** dir = static_cast<char***>(
+        agg_gb_segment_alloc(dir_cap * sizeof(char**), m_thread_id));
+    if (dir == nullptr) {
+      return false;
+    }
+    dir[0] = m_buckets;
+    for (Uint32 s = 1; s < nsegs; s++) {
+      char** seg = static_cast<char**>(
+          agg_gb_segment_alloc(BUCKET_COUNT * sizeof(char*), m_thread_id));
+      if (seg == nullptr) {
+        for (Uint32 f = 1; f < s; f++) {
+          agg_gb_segment_free(dir[f]);
+        }
+        agg_gb_segment_free(dir);
+        return false;
+      }
+      memset(seg, 0, BUCKET_COUNT * sizeof(char*));
+      dir[s] = seg;
+    }
+    /* Unlink every entry of the inline buckets, then adopt the new
+     * geometry: `count` buckets, the round of the largest power of two
+     * not above it, the rest of the buckets already split. */
+    char* all = nullptr;
+    for (Uint32 b = 0; b < BUCKET_COUNT; b++) {
+      char* e = m_buckets[b];
+      while (e != nullptr) {
+        char* nxt = hashNext(e);
+        hashNext(e) = all;
+        all = e;
+        e = nxt;
+      }
+      m_buckets[b] = nullptr;
+    }
+    const Uint32 count = nsegs << SEG_SHIFT;
+    Uint32 round = BUCKET_COUNT;
+    while ((round << 1) != 0 && (round << 1) <= count) round <<= 1;
+    m_dir = dir;
+    m_dir_capacity = dir_cap;
+    m_nsegs = nsegs;
+    m_bucket_count = count;
+    m_low_mask = round - 1;
+    m_split = count - round;
+    m_first_hint = 0;
+    while (all != nullptr) {
+      char* nxt = hashNext(all);
+      const Uint32 key_len =
+          *reinterpret_cast<Uint32*>(all + KEY_LEN_OFFSET);
+      const Uint32 b = bucketOf(bucketHash(
+          hashKeyFull(all + OVERHEAD, key_len, xfrm_buf, xfrm_buf_len)));
+      char*& head = bucketRef(b);
+      hashNext(all) = head;
+      head = all;
+      all = nxt;
+    }
+    return true;
   }
 
   /* One more segment (and a larger directory when full).  False when

@@ -1,0 +1,108 @@
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbc;
+CREATE TABLE ttl_rbc.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=50@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbc.rb (ttl_col);
+CREATE PROCEDURE ttl_rbc.ins(IN p INT, IN n INT, IN past INT, IN tag VARCHAR(20))
+BEGIN
+DECLARE i INT DEFAULT 0;
+WHILE i < n DO
+IF past = 1 THEN
+INSERT INTO ttl_rbc.rb (client_id, ttl_col, data)
+VALUES (p, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT(tag, '_', i));
+ELSE
+INSERT INTO ttl_rbc.rb (client_id, ttl_col, data)
+VALUES (p, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT(tag, '_', i));
+END IF;
+SET i = i + 1;
+END WHILE;
+END|
+#
+# Phase 1: single-row INSERTs wrap over expired slots while the purge deletes them
+#
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+visible
+0
+include/assert.inc [1020 physical rows after the seed (20 meta + 1000 expired)]
+include/assert.inc [320 physical rows once the purge has settled (20 meta + 300 live)]
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+visible
+300
+SELECT COUNT(*) AS in_slots_1_to_15 FROM ttl_rbc.rb WHERE ring_idx BETWEEN 1 AND 15;
+in_slots_1_to_15
+300
+SELECT COUNT(DISTINCT client_id) AS prefixes FROM ttl_rbc.rb;
+prefixes
+20
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbc.rb WHERE ring_idx = 0
+GROUP BY meta ORDER BY meta;
+meta	prefixes
+0100000010000000320000000000000041000000000000000000000000000000	20
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Phase 2: 10-row INSERT transactions per prefix under the purge
+#
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+visible
+100
+include/assert.inc [1020 physical rows after the second seed (20 meta + 100 live + 900 expired)]
+include/assert.inc [220 physical rows once the purge has settled (20 meta + 200 live)]
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+visible
+200
+SELECT COUNT(*) AS in_slots_11_to_20 FROM ttl_rbc.rb WHERE ring_idx BETWEEN 11 AND 20;
+in_slots_11_to_20
+200
+SELECT client_id, COUNT(*) AS n FROM ttl_rbc.rb GROUP BY client_id HAVING n <> 10;
+client_id	n
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbc.rb WHERE ring_idx = 0
+GROUP BY meta ORDER BY meta;
+meta	prefixes
+0100000015000000320000000000000078000000000000000000000000000000	20
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Phase 3: prefix DELETE and re-INSERT while the purge reclaims the prefix's expired rows
+#
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+visible
+200
+include/assert.inc [1020 physical rows after the third seed (20 meta + 200 live + 800 expired)]
+INSERT INTO ttl_rbc.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_again');
+include/assert.inc [112 physical rows once the purge has settled (11 meta + 101 live)]
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+visible
+101
+SELECT client_id, ring_idx, data FROM ttl_rbc.rb WHERE client_id <= 10 ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	p3_again
+SELECT COUNT(*) AS in_slots_11_to_20 FROM ttl_rbc.rb WHERE client_id > 10 AND ring_idx BETWEEN 11 AND 20;
+in_slots_11_to_20
+100
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbc.rb WHERE ring_idx = 0 AND client_id <= 10 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000002000000010000000000000001000000000000000000000000000000
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbc.rb WHERE ring_idx = 0 AND client_id > 10
+GROUP BY meta ORDER BY meta;
+meta	prefixes
+010000000B0000003200000000000000A0000000000000000000000000000000	10
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO ttl_rbc.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_again_2');
+SELECT client_id, ring_idx, data FROM ttl_rbc.rb WHERE client_id = 1 ORDER BY ring_idx;
+client_id	ring_idx	data
+1	1	p3_again
+1	2	p3_again_2
+#
+# Cleanup
+#
+DROP PROCEDURE ttl_rbc.ins;
+DROP TABLE ttl_rbc.rb;
+DROP DATABASE ttl_rbc;

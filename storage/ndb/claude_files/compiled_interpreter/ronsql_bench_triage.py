@@ -216,6 +216,24 @@ def config_differences(run, base):
     changed = sorted(k for k in set(da) & set(db) if da[k] != db[k])
     if changed:
         diffs.append('loaded rows: ' + ', '.join('%s %d -> %d' % (k, db[k], da[k]) for k in changed))
+    # Recorded since census run 7's follow-ups (run 7 and earlier ran the
+    # defaults, PartitionsPerNode 2 and AdaptiveSendThreshold 0, without
+    # recording them): a value on one side only is reported as a difference.
+    def ppn(c):
+        return '/'.join(sorted({str(v['PartitionsPerNode']) for v in (c.get('nodes') or {}).values()
+                                if 'PartitionsPerNode' in v})) or 'not recorded'
+    if ppn(a) != ppn(b):
+        diffs.append('PartitionsPerNode %s -> %s' % (ppn(b), ppn(a)))
+    fa, fb = a.get('fragments') or {}, b.get('fragments') or {}
+    changed = sorted(k for k in set(fa) & set(fb) if fa[k] != fb[k])
+    if changed:
+        diffs.append('fragments: ' + ', '.join('%s %d -> %d' % (k, fb[k], fa[k]) for k in changed))
+    aa, ab = a.get('api') or {}, b.get('api') or {}
+    def api(c, param):
+        return '/'.join(map(str, sorted(set(c[param].values())))) if param in c else 'not recorded'
+    for param in sorted(set(aa) | set(ab)):
+        if api(aa, param) != api(ab, param):
+            diffs.append('%s %s -> %s' % (param, api(ab, param), api(aa, param)))
     return diffs
 
 

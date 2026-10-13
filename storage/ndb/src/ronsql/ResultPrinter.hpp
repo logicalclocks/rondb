@@ -33,6 +33,58 @@
 #include "LexString.hpp"
 #include "RonSQLCommon.hpp"
 
+class NdbRecAttr;
+
+/*
+ * One pass-through value copied out of its NdbRecAttr into the statement's
+ * arena.  The client-side ORDER BY keeps every row this way (the
+ * NdbRecAttr buffers are overwritten by the next fetch) instead of
+ * cloning each NdbRecAttr on the heap, one or two allocations per value.
+ * It answers the part of the NdbRecAttr interface that the pass-through
+ * printer, the sort and the API-side aggregation read, with the same
+ * results, so their code reads either type.  The value bytes follow the
+ * object, 8-byte aligned and zero-padded to at least 8 bytes.
+ */
+class PassthroughValue
+{
+public:
+  // A copy of src in amalloc.  Throws as NdbRecAttr::clone() fails when
+  // src holds no value (isNULL() == -1).
+  static const PassthroughValue* copy(const NdbRecAttr* src,
+                                      ArenaMalloc* amalloc);
+  const NdbDictionary::Column* getColumn() const { return m_column; }
+  NdbDictionary::Column::Type getType() const { return m_column->getType(); }
+  int isNULL() const { return m_size == 0 ? 1 : 0; }
+  Uint32 get_size_in_bytes() const { return m_size; }
+  char* aRef() const
+  {
+    return const_cast<char*>(reinterpret_cast<const char*>(this + 1));
+  }
+  Int8 int8_value() const { return get<Int8>(); }
+  Uint8 u_8_value() const { return get<Uint8>(); }
+  short short_value() const { return get<short>(); }
+  Uint16 u_short_value() const { return get<Uint16>(); }
+  Int32 medium_value() const;
+  Uint32 u_medium_value() const;
+  Int32 int32_value() const { return get<Int32>(); }
+  Uint32 u_32_value() const { return get<Uint32>(); }
+  Int64 int64_value() const { return get<Int64>(); }
+  Uint64 u_64_value() const { return get<Uint64>(); }
+  float float_value() const { return get<float>(); }
+  double double_value() const { return get<double>(); }
+private:
+  template <typename T> T get() const
+  {
+    T v;
+    memcpy(&v, aRef(), sizeof(v));
+    return v;
+  }
+  const NdbDictionary::Column* m_column;
+  Uint32 m_size;
+};
+static_assert(sizeof(PassthroughValue) % 8 == 0,
+              "PassthroughValue data must stay 8-byte aligned");
+
 class ResultPrinter
 {
 public:
@@ -167,6 +219,11 @@ private:
   };
   DynamicArray<OrderbySpec> m_orderby_specs;
   bool m_has_orderby;
+  // compare_rows' scratch for length-prefixed VARCHAR keys: two arena
+  // buffers of m_cmp_buf_len bytes, grown when a longer key comes.
+  char* m_cmp_buf_a = NULL;
+  char* m_cmp_buf_b = NULL;
+  Uint32 m_cmp_buf_len = 0;
 
   void validate_orderby_columns();
   void compile();
@@ -238,10 +295,16 @@ public:
   // inside [...]; TSV header + row; LIMIT 0 suppression).
   void print_count_star_result(Uint64 count,
                                std::basic_ostream<char>* out_stream);
-  void print_passthrough_header(const class NdbRecAttr* const* attrs,
+  // The pass-through printers read a row as an array of NdbRecAttr (as
+  // delivered) or of PassthroughValue (as buffered for a client-side
+  // ORDER BY); both are instantiated in ResultPrinter.cpp.  A NULL entry
+  // is SQL NULL.
+  template <class Attr>
+  void print_passthrough_header(const Attr* const* attrs,
                                 Uint32 num_cols,
                                 std::basic_ostream<char>* out_stream);
-  void print_passthrough_row(const class NdbRecAttr* const* attrs,
+  template <class Attr>
+  void print_passthrough_row(const Attr* const* attrs,
                              Uint32 num_cols,
                              bool is_first_row,
                              std::basic_ostream<char>* out_stream);
@@ -256,22 +319,35 @@ private:
   // Phase 0b: `meta` (may be NULL) carries the resolved source column's
   // metadata — needed to decode CTE MIN/MAX temporal outputs, which
   // arrive as Bigunsigned virt columns holding the packed value.
+  template <class Attr>
   void print_passthrough_value(std::ostream& out,
-                               const class NdbRecAttr* attr,
+                               const Attr* attr,
                                const ColumnMetadata* meta);
   // One pass-through output value: an AVRO() output when output position
   // `pos` has a decoder handle, otherwise print_passthrough_value.
+  template <class Attr>
   void print_passthrough_output(std::ostream& out,
-                                const class NdbRecAttr* attr,
+                                const Attr* attr,
                                 const struct Outputs* o,
                                 Uint32 pos);
+  template <class Attr>
   void print_avro_value(std::ostream& out,
-                        const class NdbRecAttr* attr,
+                        const Attr* attr,
                         const void* avro_handle);
   // col_idx-indexed metadata lookup for one pass-through output; NULL
   // when no metadata is available or the output is not a plain column.
   const ColumnMetadata* passthrough_column_metadata(
       const struct Outputs* o) const;
 };
+
+// Instantiated in ResultPrinter.cpp.
+extern template void ResultPrinter::print_passthrough_header<NdbRecAttr>(
+    const NdbRecAttr* const*, Uint32, std::basic_ostream<char>*);
+extern template void ResultPrinter::print_passthrough_header<PassthroughValue>(
+    const PassthroughValue* const*, Uint32, std::basic_ostream<char>*);
+extern template void ResultPrinter::print_passthrough_row<NdbRecAttr>(
+    const NdbRecAttr* const*, Uint32, bool, std::basic_ostream<char>*);
+extern template void ResultPrinter::print_passthrough_row<PassthroughValue>(
+    const PassthroughValue* const*, Uint32, bool, std::basic_ostream<char>*);
 
 #endif

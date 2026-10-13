@@ -347,4 +347,37 @@ SELECT id, ring_idx, val FROM test.rb_proc
 DROP PROCEDURE test.fill_ring;
 DROP TABLE test.rb_proc;
 
+--echo #
+--echo # Case 16: LOAD DATA ... REPLACE - blocked
+--echo #
+
+CREATE TABLE test.rb_loadrep (
+    id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    val VARCHAR(50),
+    PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+  COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+
+INSERT INTO test.rb_loadrep (id, val) VALUES (1, 'pre');
+
+--write_file $MYSQLTEST_VARDIR/tmp/rb_loadrep.csv
+1	rep_A
+1	rep_B
+EOF
+
+# REPLACE semantics are meaningless when the user does not control
+# ring_idx; LOAD DATA REPLACE is rejected like REPLACE/IODKU.
+--replace_result $MYSQLTEST_VARDIR MYSQLTEST_VARDIR
+--error ER_ILLEGAL_HA
+eval LOAD DATA LOCAL INFILE '$MYSQLTEST_VARDIR/tmp/rb_loadrep.csv'
+    REPLACE INTO TABLE test.rb_loadrep (id, val);
+
+# Nothing loaded
+SELECT id, ring_idx, val FROM test.rb_loadrep ORDER BY ring_idx;
+
+--remove_file $MYSQLTEST_VARDIR/tmp/rb_loadrep.csv
+DROP TABLE test.rb_loadrep;
+
 --echo # Done.

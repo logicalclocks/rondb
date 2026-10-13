@@ -655,6 +655,49 @@ static int TRACENR_FLAG = 0;
 
 #define JAM_FILE_ID 451
 
+/*
+ * DUMP 2366 1 / 0 (LqhJoinAggMemTrace, m3_run6_plan.md D2a): log the
+ * group tables of every join aggregation — each per-thread table at
+ * COMPLETE (what that thread's rows built, before the merge) and the
+ * merged table at CTE_READY — with their rows, groups and query memory
+ * (group-record chunks, bucket segments).  One flag per data node.
+ */
+static std::atomic<bool> g_join_agg_mem_trace{false};
+
+static void traceJoinAggMem(const char *phase, Uint32 node, Uint32 instance,
+                            const JoinAggregationState *state,
+                            JoinAggInterpreter *const *interps, Uint32 n) {
+  char buf[1024];
+  int pos = snprintf(buf, sizeof(buf), "JOIN_AGG_MEM %s node %u ldm %u key %u %s:",
+                     phase, node, instance, state->m_key,
+                     state->m_cte_mode ? "cte" : "main");
+  Uint32 tables = 0;
+  Uint64 groups = 0, chunk_bytes = 0, bucket_bytes = 0;
+  for (Uint32 i = 0; i < n; i++) {
+    const JoinAggInterpreter *interp = interps[i];
+    if (interp == nullptr) continue;
+    const JoinGBHashTable *map = interp->gb_map();
+    const Uint32 g = (map != nullptr) ? map->size() : 0;
+    const Uint32 b = (map != nullptr) ? map->segmentBytes() : 0;
+    if (g == 0 && interp->processed_rows() == 0) continue;
+    tables++;
+    groups += g;
+    chunk_bytes += interp->chunk_bytes();
+    bucket_bytes += b;
+    if (pos > 0 && pos < int(sizeof(buf))) {
+      pos += snprintf(buf + pos, sizeof(buf) - pos,
+                      " [%u: rows %llu groups %u chunks %u KB buckets %u KB]",
+                      i, (unsigned long long)interp->processed_rows(), g,
+                      interp->chunk_bytes() / 1024, b / 1024);
+    }
+  }
+  g_eventLogger->info("%s total: tables %u groups %llu chunks %llu KB "
+                      "buckets %llu KB",
+                      buf, tables, (unsigned long long)groups,
+                      (unsigned long long)(chunk_bytes / 1024),
+                      (unsigned long long)(bucket_bytes / 1024));
+}
+
 #ifdef NDBD_TRACENR
 static NdbOut *traceopout = 0;
 #define TRACE_OP(regTcPtr, place)                                 \
@@ -3026,6 +3069,20 @@ void Dblqh::execCREATE_TAB_REQ(Signal *signal) {
     jam();
     req->hashFunctionFlag = 0;
   }
+  if (signal->length() < CreateTabReq::NewSignalLengthLDMWithTTL)
+  {
+    jam();
+    /* RNIL = disabled, unlike the zero-fill of the legacy fields above. */
+    req->ttlSec = RNIL;
+    req->ttlColumnNo = RNIL;
+  }
+  if (signal->length() < CreateTabReq::NewSignalLengthLDMWithRingBuffer)
+  {
+    jam();
+    req->ringBufferSize = RNIL;
+    req->ringIdxColumnNo = RNIL;
+    req->ringMetaColumnNo = RNIL;
+  }
   /*
    * CreateTabReq is a local signal, no need to consider
    * the length compatibility.
@@ -5250,6 +5307,31 @@ bool Dblqh::handleLCPSurfacing(Signal *signal) {
   if (AlterTableReq::getReorgFragFlag(req->changeMask)) {
     jam();
     commit_reorg(tablePtr);
+  }
+  /* The deferred commit must apply the staged TTL / ring buffer fields
+     exactly like the non-deferred path in execALTER_TAB_REQ does -
+     otherwise this LDM keeps the stale values until restart. */
+  if (AlterTableReq::getTTLSecFlag(req->changeMask) ||
+      AlterTableReq::getTTLColFlag(req->changeMask)) {
+    jam();
+    tablePtr.p->m_ttl_sec = tablePtr.p->tmp_ttl_sec;
+    tablePtr.p->m_ttl_col_no = tablePtr.p->tmp_ttl_col_no;
+    tablePtr.p->tmp_ttl_sec = RNIL;
+    tablePtr.p->tmp_ttl_col_no = RNIL;
+    g_eventLogger->info("[DBLQH], handleLCPSurfacing, update TTL on table "
+                        "%u, [%u, %u]",
+                        tablePtr.i,
+                        tablePtr.p->m_ttl_sec,
+                        tablePtr.p->m_ttl_col_no);
+  }
+  if (AlterTableReq::getRingBufferSizeFlag(req->changeMask)) {
+    jam();
+    tablePtr.p->m_ring_buffer_size = tablePtr.p->tmp_ring_buffer_size;
+    tablePtr.p->m_ring_idx_col_no = tablePtr.p->tmp_ring_idx_col_no;
+    tablePtr.p->m_ring_meta_col_no = tablePtr.p->tmp_ring_meta_col_no;
+    tablePtr.p->tmp_ring_buffer_size = RNIL;
+    tablePtr.p->tmp_ring_idx_col_no = RNIL;
+    tablePtr.p->tmp_ring_meta_col_no = RNIL;
   }
   Uint32 len = c_keep_alter_tab_req_len;
   EXECUTE_DIRECT(getDBTUP(), GSN_ALTER_TAB_REQ, signal, len);
@@ -11304,7 +11386,14 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                       "been set as 1, so keep it! "
                       "table id: %u",
                       tabptr.i);
-    } else if (regTcPtr.p->ttl_ignore != 1 && signal->theData[5] == 1) {
+    } else if (regTcPtr.p->ttl_ignore != 1 && signal->theData[5] == 1 &&
+               !(regTcPtr.p->ttl_only_expired && regTcPtr.p->indTakeOver != ZTRUE &&
+                 is_ring_buffer_table(regTcPtr.p->tableref))) {
+      /* An only-expired key operation on a ring buffer table keeps its
+         expiry check even when this transaction already holds the row
+         lock: otherwise it would delete a live row or the meta row. The
+         TTL purge's take-over deletes keep the ignore (the only-expired
+         scan already verified expiry under that lock). */
       TTL_RONDB_TRACE(regTcPtr.p->tableref, "Dblqh::execACCKEYCONF[1], ttl_ignore in "
                       "ACCKEYCONF is 1 and the related "
                       "Dblqh::TcConnectionrec::ttl_ignore is 0, "
@@ -11332,7 +11421,10 @@ void Dblqh::exec_acckeyreq(Signal *signal, TcConnectionrecPtr regTcPtr) {
                     regTcPtr.p->ttl_ignore,
                     regTcPtr.p->tableref);
 #else
-    if (!regTcPtr.p->ttl_ignore && signal->theData[5] == 1) {
+    /* Same ring buffer exception as in the TTL_DEBUG chain above. */
+    if (!regTcPtr.p->ttl_ignore && signal->theData[5] == 1 &&
+        !(regTcPtr.p->ttl_only_expired && regTcPtr.p->indTakeOver != ZTRUE &&
+          is_ring_buffer_table(regTcPtr.p->tableref))) {
       regTcPtr.p->ttl_ignore = 1;
     }
 #endif
@@ -12564,7 +12656,14 @@ void Dblqh::execACCKEYCONF(Signal *signal) {
                       "been set as 1, so keep it! "
                       "table id: %u",
                       tabptr.i);
-    } else if (regTcPtr->ttl_ignore != 1 && signal->theData[5] == 1) {
+    } else if (regTcPtr->ttl_ignore != 1 && signal->theData[5] == 1 &&
+               !(regTcPtr->ttl_only_expired && regTcPtr->indTakeOver != ZTRUE &&
+                 is_ring_buffer_table(regTcPtr->tableref))) {
+      /* An only-expired key operation on a ring buffer table keeps its
+         expiry check even when this transaction already holds the row
+         lock: otherwise it would delete a live row or the meta row. The
+         TTL purge's take-over deletes keep the ignore (the only-expired
+         scan already verified expiry under that lock). */
       TTL_RONDB_TRACE(tabptr.i, "Dblqh::execACCKEYCONF[2], ttl_ignore in "
                       "ACCKEYCONF is 1 and the related "
                       "Dblqh::TcConnectionrec::ttl_ignore is 0, "
@@ -20109,6 +20208,10 @@ void Dblqh::execJOIN_AGG_COMPLETE_REQ(Signal *signal) {
         instance(), aggStateKey, (Uint32)state->m_cte_mode));
   if (state->m_strategy == JoinAggregationState::MUTEX_FREE) {
     jam();
+    if (g_join_agg_mem_trace.load(std::memory_order_relaxed)) {
+      traceJoinAggMem("COMPLETE", getOwnNodeId(), instance(), state,
+                      state->m_per_thread_interpreters, state->m_num_threads);
+    }
     /* Merge into the per-thread table holding the most groups rather
      * than into thread 0's: every group of the others is re-inserted
      * into the target, so a small or empty [0] (a thread that scanned
@@ -25349,6 +25452,11 @@ void Dblqh::checkCteReady(Signal *signal, JoinAggregationState *state) {
   DEB_CTE(("(%u) checkCteReady: all nodes done → CTE_READY", instance()));
   AGGT(("AGGT(%u) DBLQH CTE_READY key=%u",
         instance(), state->m_key));
+  if (g_join_agg_mem_trace.load(std::memory_order_relaxed)) {
+    JoinAggInterpreter *result = getJoinAggResultInterpreter(state);
+    traceJoinAggMem("CTE_READY", getOwnNodeId(), instance(), state,
+                    &result, 1);
+  }
   state->m_state.store(JoinAggregationState::CTE_READY);
   ndbrequire(!state->m_cte_complete_reply_sent);
   state->m_cte_complete_reply_sent = true;
@@ -44026,6 +44134,33 @@ void Dblqh::execDUMP_STATE_ORD(Signal *signal) {
   jamEntry();
   DumpStateOrd *const dumpState = (DumpStateOrd *)&signal->theData[0];
   Uint32 arg = dumpState->args[0];
+
+  /* Not test-only like the join-aggregation DUMPs below: the memory
+   * trace is for production builds (benchmark runs). */
+  if (arg == DumpStateOrd::LqhJoinAggMemTrace) {
+    jam();
+    /* Every instance receives it; the flag is per data node. */
+    const bool on = signal->getLength() < 2 || signal->theData[1] != 0;
+    g_join_agg_mem_trace.store(on, std::memory_order_relaxed);
+    if (instance() == 1 && !m_is_query_block) {
+      infoEvent("[JOIN_AGG_MEM_TRACE node=%u %s]", getOwnNodeId(),
+                on ? "on" : "off");
+    }
+    return;
+  }
+  if (arg == DumpStateOrd::LqhGroupTableSizeHints) {
+    jam();
+    /* Process-wide like the trace; every instance gets it, which only
+     * repeats an idempotent store. */
+    const Uint32 mode = signal->getLength() >= 2 ? signal->theData[1] : 1;
+    agg_gb_size_hints_control(mode);
+    if (instance() == 1 && !m_is_query_block) {
+      infoEvent("[GROUP_TABLE_SIZE_HINTS node=%u %s]", getOwnNodeId(),
+                mode == 2 ? "cleared"
+                          : (mode != 0 ? "applied" : "not applied"));
+    }
+    return;
+  }
 
 #if defined(VM_TRACE) || defined(ERROR_INSERT)
   if (signal->theData[0] == DumpStateOrd::LqhDumpJoinAggStates) {

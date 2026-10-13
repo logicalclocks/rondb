@@ -174,6 +174,17 @@ void *lc_ndbd_pool_malloc(size_t size,
 void lc_ndbd_pool_free(void *mem);
 
 /**
+ * Leave one emptied long-lived segment cached in the base of (pool_id,
+ * thread_id), as the base's first segment fetch and release would.
+ * Allocates an area only an empty segment can hold, so it comes from the
+ * cached segment or a new one, and frees it again.  For tests that compare
+ * idle levels: after it every base already holds its cached segment
+ * (MAX_FREE_LONG_AREAS), so a later first use no longer shows up as 64
+ * pages of growth.  Does nothing when memory is short.
+ */
+void lc_ndbd_pool_prime_segment_cache(Uint32 pool_id, Uint32 thread_id);
+
+/**
  * Book memory (in words) for a pool. Returns a booking key > 0 on success,
  * 0 on failure. Booked memory is invisible to non-keyed allocations.
  * See BOOKING_DESIGN.md for details.

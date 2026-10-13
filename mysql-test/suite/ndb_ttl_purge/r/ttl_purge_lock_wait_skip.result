@@ -1,0 +1,34 @@
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_lws;
+CREATE TABLE ttl_lws.a_locked (
+id INT NOT NULL PRIMARY KEY,
+ttl_col DATETIME,
+data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col"
+  PARTITION BY KEY(id) PARTITIONS 1;
+CREATE INDEX ttl_index ON ttl_lws.a_locked (ttl_col);
+CREATE TABLE ttl_lws.b_free (
+id INT NOT NULL PRIMARY KEY,
+ttl_col DATETIME,
+data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE INDEX ttl_index ON ttl_lws.b_free (ttl_col);
+INSERT INTO ttl_lws.a_locked VALUES (1, DATE_ADD(NOW(), INTERVAL 2 SECOND), 'locked');
+BEGIN;
+SELECT id, data FROM ttl_lws.a_locked WHERE id = 1 FOR UPDATE;
+id	data
+1	locked
+include/assert.inc [the purge of a_locked timed out on the locked row]
+include/assert.inc [the locked row of a_locked is left]
+include/assert.inc [every row of b_free is purged while the lock is held]
+include/assert.inc [the purge worker did not give up]
+include/assert.inc [the purge worker is running]
+COMMIT;
+include/assert.inc [a_locked is empty after the commit]
+include/assert.inc [the purge worker is running after the commit]
+#
+# Cleanup
+#
+DROP TABLE ttl_lws.a_locked;
+DROP TABLE ttl_lws.b_free;
+DROP DATABASE ttl_lws;

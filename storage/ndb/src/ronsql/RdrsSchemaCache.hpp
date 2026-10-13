@@ -87,12 +87,15 @@ class RdrsSchemaCache {
    * @param table_name Table name
    * @return Shared pointer to the index vector (kept alive for the
    *         caller even across concurrent refreshes), or nullptr on error
+   *
+   * A cache hit allocates no memory: the lookup key is built in a
+   * per-thread buffer that keeps its capacity across calls.
    */
   IndexListPtr getIndexes(
       const NdbDictionary::Dictionary* dict,
       const NdbDictionary::Table* table,
-      const std::string& db,
-      const std::string& table_name);
+      const char* db,
+      const char* table_name);
 
   /**
    * Invalidate cache entry for a table. Called on schema-related errors

@@ -26,6 +26,7 @@
 
 #include "thrman.hpp"
 #include <mt.hpp>
+#include <ndbd_malloc.hpp>  // lc_ndbd_pool_prime_segment_cache
 #include <signaldata/DbinfoScan.hpp>
 #include <signaldata/DumpStateOrd.hpp>
 #include <signaldata/LoadOrd.hpp>
@@ -5170,6 +5171,16 @@ void Thrman::execDUMP_STATE_ORD(Signal *signal) {
       return;
     }
     set_enable_adaptive_spinning(val1 != 0);
+  } else if (arg == DumpStateOrd::PrimeLcSegmentCache) {
+    /* Every THRMAN instance runs on its own block thread: each primes
+     * the bases of its thread.  An lc pool base keeps one emptied
+     * segment (MAX_FREE_LONG_AREAS), which counts as used memory; after
+     * this the first use of a base no longer raises the idle level. */
+    lc_ndbd_pool_prime_segment_cache(RG_QUERY_MEMORY, getThreadId());
+    lc_ndbd_pool_prime_segment_cache(RG_TRANSACTION_MEMORY, getThreadId());
+    if (instance() == m_main_thrman_instance) {
+      infoEvent("[LC_SEGMENT_CACHE_PRIMED node=%u]", getOwnNodeId());
+    }
   }
   return;
 }

@@ -114,6 +114,9 @@ if ($mlk_verify_failed)
   --let $mlk_wait_s = `SELECT $mlk_polls * 0.5`
   --echo LEAK $mlk_tag: not back within tolerance after $mlk_wait_s s$mlk_note: $mlk_residual
   --eval SELECT r.node_id, r.resource_name, b.used AS baseline_pages, r.used AS now_pages, CAST(r.used AS SIGNED) - b.used AS delta_pages, (CAST(r.used AS SIGNED) - b.used) * 32 AS delta_kb, b.tolerance AS tolerance_pages FROM ndbinfo.resources AS r JOIN mlk_baseline AS b ON b.node_id = r.node_id AND b.resource_name = r.resource_name ORDER BY r.node_id, r.resource_name
+  # The pools whose size changed since the baseline (diagnosis): a pool
+  # that grows by one page shows which records a late one-off belongs to.
+  --eval SELECT p.node_id, p.block_number, p.block_instance, p.pool_name, b.total AS baseline_total, CAST(p.total AS SIGNED) AS now_total FROM ndbinfo.ndb\$pools AS p JOIN mlk_pools AS b ON b.node_id = p.node_id AND b.block_number = p.block_number AND b.block_instance = p.block_instance AND b.pool_name = p.pool_name WHERE CAST(p.total AS SIGNED) <> b.total ORDER BY p.node_id, p.block_number, p.block_instance, p.pool_name
   if (!$mlk_collect)
   {
     # --die does not expand variables: the LEAK line above has the details.

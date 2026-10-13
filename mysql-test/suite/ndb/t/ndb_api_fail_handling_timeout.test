@@ -1,0 +1,93 @@
+###############################################################################
+# ndb_api_fail_handling_timeout
+#
+# ApiFailureHandlingTimeout defaults to 0 (no limit) in RonDB, upstream the
+# default is 600 seconds. When the limit is exceeded the data node shuts
+# itself down. All data nodes start the timer at the same time, so a stall
+# present on all data nodes would shut down the whole cluster.
+#
+#   1. The default, and the value used by each data node, is 0.
+#   2. API failure handling stalled in DBTC (error insert 8126) is reported
+#      by QMGR every 30 seconds with "Limit 0", and no data node shuts down.
+#   3. When the stall ends the failure handling completes and the API node
+#      id can connect again.
+###############################################################################
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+--echo # ApiFailureHandlingTimeout defaults to 0
+SELECT param_name, param_default
+  FROM ndbinfo.config_params
+  WHERE param_name = 'ApiFailureHandlingTimeout';
+
+SELECT node_id, param_name, config_value
+  FROM ndbinfo.config_values cv, ndbinfo.config_params cp
+  WHERE cv.config_param = cp.param_number AND
+        cp.param_name = 'ApiFailureHandlingTimeout'
+  ORDER BY node_id;
+
+# Only look at cluster log lines written after this point
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set";
+  my @logs = glob("$vardir/mysql_cluster.1/ndb_mgmd.1/ndb_*_cluster.log");
+  die "Expected one cluster log, found " . scalar(@logs) . "\n"
+    unless @logs == 1;
+  my $offset_file = "$vardir/tmp/ndb_api_fail_handling_timeout.offset";
+  open(my $fh, '>', $offset_file) or die "Cannot write $offset_file: $!\n";
+  print $fh "$logs[0]\n" . (-s $logs[0]) . "\n";
+  close($fh);
+EOF
+
+--echo # Stall API failure handling in DBTC on all data nodes
+--exec $NDB_MGM -e "all error 8126" >> $NDB_TOOLS_OUTPUT
+
+--echo # Connect and disconnect API node 192, starting its failure handling
+--exec $NDB_SHOW_TABLES --ndb-nodeid=192 >> $NDB_TOOLS_OUTPUT
+
+--echo # Wait for both data nodes to report the delay, with no limit
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set";
+  my $offset_file = "$vardir/tmp/ndb_api_fail_handling_timeout.offset";
+  open(my $fh, '<', $offset_file) or die "Cannot read $offset_file: $!\n";
+  chomp(my $log = <$fh>);
+  chomp(my $offset = <$fh>);
+  close($fh);
+  unlink($offset_file);
+
+  # QMGR reports the delay after 30 seconds
+  my $timeout = 120;
+  my $start = time();
+  my %limit_per_node;
+  while (keys(%limit_per_node) < 2) {
+    if (time() - $start > $timeout) {
+      die "Timeout waiting for the API failure handling delay to be " .
+          "reported by both data nodes\n";
+    }
+    sleep(2);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      if ($line =~ /Node (\d+): Failure handling of api 192 has not completed in \d+ seconds\.\s+Limit (\d+)/) {
+        $limit_per_node{$1} = $2;
+      }
+    }
+    close($lf);
+  }
+  foreach my $node (sort keys %limit_per_node) {
+    print "Data node $node reports the delay with Limit " .
+          "$limit_per_node{$node}\n";
+  }
+EOF
+
+--echo # No data node has shut down
+SELECT node_id, status FROM ndbinfo.nodes ORDER BY node_id;
+
+--echo # Clear the error insert, the failure handling completes
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo # API node 192 can connect again
+--exec $NDB_SHOW_TABLES --ndb-nodeid=192 >> $NDB_TOOLS_OUTPUT
+
+--remove_file $NDB_TOOLS_OUTPUT

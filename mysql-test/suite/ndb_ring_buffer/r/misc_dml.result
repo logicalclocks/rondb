@@ -284,4 +284,23 @@ id	ring_idx	val
 2	3	proc_2
 DROP PROCEDURE test.fill_ring;
 DROP TABLE test.rb_proc;
+#
+# Case 16: LOAD DATA ... REPLACE - blocked
+#
+CREATE TABLE test.rb_loadrep (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+val VARCHAR(50),
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=4@ring_idx@ring_meta";
+INSERT INTO test.rb_loadrep (id, val) VALUES (1, 'pre');
+LOAD DATA LOCAL INFILE 'MYSQLTEST_VARDIR/tmp/rb_loadrep.csv'
+    REPLACE INTO TABLE test.rb_loadrep (id, val);
+ERROR HY000: Table storage engine for 'LOAD DATA REPLACE is not allowed on ring-buffer tables' doesn't have this option
+SELECT id, ring_idx, val FROM test.rb_loadrep ORDER BY ring_idx;
+id	ring_idx	val
+1	1	pre
+DROP TABLE test.rb_loadrep;
 # Done.

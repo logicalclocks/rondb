@@ -1,0 +1,98 @@
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_lw;
+#
+# Phase 1: a user transaction holds a lock on an expired row of a TTL table
+#
+CREATE TABLE ttl_lw.t1 (
+id INT NOT NULL PRIMARY KEY,
+ttl_col DATETIME,
+data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE INDEX ttl_index ON ttl_lw.t1 (ttl_col);
+INSERT INTO ttl_lw.t1 VALUES (1, DATE_ADD(NOW(), INTERVAL 2 SECOND), 'locked');
+BEGIN;
+SELECT id, data FROM ttl_lw.t1 WHERE id = 1 FOR UPDATE;
+id	data
+1	locked
+include/assert.inc [phase 1: 20 rows purged while the lock is held]
+include/assert.inc [phase 1: only the locked row is left]
+include/assert.inc [phase 1: the purge timed out on the locked row]
+include/assert.inc [phase 1: the purge worker kept running]
+COMMIT;
+include/assert.inc [phase 1: running after the commit]
+include/assert.inc [phase 1: every row reclaimed after the commit]
+DROP TABLE ttl_lw.t1;
+#
+# Phase 2: an open INSERT on a TTL ring buffer table without ttl_index (table scan purge)
+#
+CREATE TABLE ttl_lw.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=50@ring_idx@ring_meta";
+SELECT COUNT(*) AS visible FROM ttl_lw.rb;
+visible
+0
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO ttl_lw.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'open_insert');
+include/assert.inc [phase 2: expired rows are left while the INSERT is open]
+include/assert.inc [phase 2: the purge timed out on the open INSERT]
+include/assert.inc [phase 2: the purge worker kept running]
+COMMIT;
+include/assert.inc [phase 2: running after the commit]
+include/assert.inc [phase 2: 5 meta rows and the committed row after the commit]
+SELECT client_id, ring_idx, data FROM ttl_lw.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	11	open_insert
+DROP TABLE ttl_lw.rb;
+#
+# Phase 3: the same open INSERT on a TTL ring buffer table with ttl_index (index scan purge)
+#
+CREATE TABLE ttl_lw.rbi (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=50@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_lw.rbi (ttl_col);
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO ttl_lw.rbi (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'open_insert');
+include/assert.inc [phase 3: all 50 rows purged while the INSERT is open]
+include/assert.inc [phase 3: meta rows and the open row only]
+include/assert.inc [phase 3: no purge timeout]
+include/assert.inc [phase 3: the purge worker kept running]
+COMMIT;
+DROP TABLE ttl_lw.rbi;
+#
+# Phase 4: a lock held longer than the old retry limit of the purge worker
+#
+CREATE TABLE ttl_lw.t4 (
+id INT NOT NULL PRIMARY KEY,
+ttl_col DATETIME,
+data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col"
+  PARTITION BY KEY(id) PARTITIONS 1;
+CREATE INDEX ttl_index ON ttl_lw.t4 (ttl_col);
+INSERT INTO ttl_lw.t4 VALUES (1, DATE_ADD(NOW(), INTERVAL 2 SECOND), 'locked');
+BEGIN;
+SELECT id, data FROM ttl_lw.t4 WHERE id = 1 FOR UPDATE;
+id	data
+1	locked
+include/assert.inc [phase 4: repeated timeouts while the lock is held]
+include/assert.inc [phase 4: the table was skipped until the next round on each timeout]
+include/assert.inc [phase 4: the purge worker did not give up]
+include/assert.inc [phase 4: the purge worker kept running]
+COMMIT;
+include/assert.inc [phase 4: running after the commit]
+#
+# Cleanup
+#
+DROP TABLE ttl_lw.t4;
+DROP DATABASE ttl_lw;

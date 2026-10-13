@@ -1,9 +1,9 @@
 Configuration updated for all API nodes
-AdaptiveSendThreshold set to 16 on all API nodes
+AdaptiveSendThreshold set to 8 on all API nodes
 
-include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 16: adaptive send]
-include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 16: adaptive send]
-API_NODE_ID,16
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 8: adaptive send]
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 8: adaptive send]
+API_NODE_ID,8
 Configuration updated for node API_NODE_ID
 AdaptiveSendThreshold set to 1 on node API_NODE_ID
 
@@ -38,4 +38,9 @@ AdaptiveSendThreshold set to 0 on all API nodes
 
 include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 0: every send goes out at once]
 include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 0: every send goes out at once]
-API_NODE_ID,0
+Configuration updated for all API nodes
+AdaptiveSendThreshold set to 16 on all API nodes
+
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 16: adaptive send]
+include/wait_for_pattern_in_file.inc [AdaptiveSendThreshold set to 16: adaptive send]
+API_NODE_ID,16
