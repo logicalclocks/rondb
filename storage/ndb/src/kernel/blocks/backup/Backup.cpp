@@ -5952,7 +5952,9 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
       jam();
       /* 10073: this node's own stop reply arrived while others are
        * still outstanding - the coordinator's record has finished its
-       * own stop. Record a client abort right here (one-shot).
+       * own stop. Record a client abort right here (one-shot), then
+       * clear the error inserts of the other participants, which
+       * releases the stop replies EI 10072 holds there.
        */
       CLEAR_ERROR_INSERT_VALUE;
       g_eventLogger->info("EI 10073: client abort of backup %u during stop"
@@ -5964,6 +5966,13 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
       ord->senderData = ptr.p->clientData;
       ord->senderRef = reference();
       execABORT_BACKUP_ORD(signal);
+      for (Uint32 n = 1; n < MAX_NDB_NODES; n++) {
+        if (n != getOwnNodeId() && ptr.p->nodes.get(n)) {
+          jam();
+          signal->theData[0] = 0; /* TamperOrd::errorNo: clear */
+          sendSignal(numberToRef(CMVMI, n), GSN_TAMPER_ORD, signal, 1, JBB);
+        }
+      }
     }
 #endif
     return;

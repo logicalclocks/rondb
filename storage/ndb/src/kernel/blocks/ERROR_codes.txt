@@ -933,7 +933,9 @@ Backup Stuff:
        is cleared, so the master completes its own stop and waits for
        this node
 10073: Master: when its own node's STOP_BACKUP reply arrives while other
-       replies are outstanding, record a client abort (one-shot)
+       replies are outstanding, record a client abort, then clear the
+       error inserts of the other participants (releasing a 10072
+       hold) (one-shot)
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 
