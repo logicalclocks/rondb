@@ -1,0 +1,107 @@
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rba;
+CREATE TABLE ttl_rba.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=3600@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rba.rb (ttl_col);
+#
+# Part A: ALTER shortens the TTL from 3600 s to 60 s while the purge runs
+#
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p1_old_1');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p1_old_2');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_3');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p2_old_1');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_live_2');
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	p1_old_1
+1	2	p1_old_2
+1	3	p1_live_3
+2	1	p2_old_1
+2	2	p2_live_2
+ALTER TABLE ttl_rba.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=60@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	3	p1_live_3
+2	2	p2_live_2
+include/assert.inc [Part A: 4 physical rows after the purge (2 meta + 2 live)]
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rba.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000004000000030000000000000003000000000000000000000000000000
+2	0100000003000000020000000000000002000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+#
+# Part B: ALTER lengthens the TTL from 60 s to 3600 s: expired rows come back and are not purged
+#
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p1_old_4');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 10 MINUTE), 'p2_old_3');
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	3	p1_live_3
+2	2	p2_live_2
+ALTER TABLE ttl_rba.rb ALGORITHM=INPLACE, COMMENT="NDB_TABLE=TTL=3600@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	3	p1_live_3
+1	4	p1_old_4
+2	2	p2_live_2
+2	3	p2_old_3
+include/assert.inc [Part B: nothing purged after the TTL was lengthened]
+include/assert.inc [Part B: 6 physical rows (2 meta + 4 live)]
+#
+# Part C: a copying ALTER while the purge runs; the purge follows the new table
+#
+ALTER TABLE ttl_rba.rb ALGORITHM=COPY, ADD COLUMN extra INT;
+SELECT client_id, ring_idx, data, extra FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data	extra
+1	3	p1_live_3	NULL
+1	4	p1_old_4	NULL
+2	2	p2_live_2	NULL
+2	3	p2_old_3	NULL
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rba.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000005000000040000000000000004000000000000000000000000000000
+2	0100000004000000030000000000000003000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p1_exp_5');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 2 HOUR), 'p2_exp_4');
+include/assert.inc [Part C: 6 physical rows after the purge of the copied table]
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	3	p1_live_3
+1	4	p1_old_4
+2	2	p2_live_2
+2	3	p2_old_3
+#
+# Part D: DROP and CREATE with the same name while the purge runs
+#
+DROP TABLE ttl_rba.rb;
+CREATE TABLE ttl_rba.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rba.rb (ttl_col);
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'd_exp_1');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'd_exp_2');
+INSERT INTO ttl_rba.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'd_live_3');
+include/assert.inc [Part D: 2 physical rows after the purge (meta + live)]
+SELECT client_id, ring_idx, data FROM ttl_rba.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	3	d_live_3
+include/assert.inc [Part D: the purge worker is running]
+#
+# Cleanup
+#
+DROP TABLE ttl_rba.rb;
+DROP DATABASE ttl_rba;

@@ -90,6 +90,9 @@ bool printLQHKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
   if (LqhKeyReq::getTTLOnlyExpiredFlag(reqInfo)) fprintf(output, "ttl_only_expire ");
   if (LqhKeyReq::getJoinAggFlag(attrLen)) fprintf(output, "join_agg ");
   if (LqhKeyReq::getAggReadFlag(attrLen)) fprintf(output, "agg_read ");
+  if (LqhKeyReq::getRingBufferOpFlag(attrLen)) fprintf(output, "ring_buffer_op ");
+  if (LqhKeyReq::getRingBufferShowMetaFlag(reqInfo))
+    fprintf(output, "ring_buffer_show_meta ");
 
   fprintf(output, "ScanInfo/noFiredTriggers: H\'%x\n", sig->scanInfo);
 

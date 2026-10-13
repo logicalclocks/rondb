@@ -1,0 +1,261 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_ring_buffer_concurrent.test
+#
+# Ring writers racing the TTL purge on the same prefixes of a ring buffer
+# table with TTL (MAX_ROWS_PER_PK + TTL). Each phase seeds expired rows on
+# 20 prefixes (ring size 50), starts an aggressive purge and writes into the
+# same prefixes while the purge deletes their expired slots:
+#   Phase 1: single-row INSERTs wrap over the expired slots.
+#   Phase 2: one 10-row INSERT per prefix (the transaction holds the meta
+#            lock and up to ten slots; design section 6 allows a deadlock
+#            timeout against a purge batch, so the statement is retried).
+#   Phase 3: prefix DELETE and an immediate re-INSERT.
+# After each phase the test waits until the purge has settled (physical
+# rows = meta rows + live rows) and checks the visible set, the ring meta
+# rows (next_pos, count, total_inserts) and the physical row count: no
+# live row lost, no expired row resurrected, no slot skipped.
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbc;
+
+CREATE TABLE ttl_rbc.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=50@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbc.rb (ttl_col);
+
+# n single-row autocommit INSERTs into prefix p: expired (5 min old with
+# TTL 5 s) when past = 1, live (1 h ahead) otherwise
+DELIMITER |;
+CREATE PROCEDURE ttl_rbc.ins(IN p INT, IN n INT, IN past INT, IN tag VARCHAR(20))
+BEGIN
+  DECLARE i INT DEFAULT 0;
+  WHILE i < n DO
+    IF past = 1 THEN
+      INSERT INTO ttl_rbc.rb (client_id, ttl_col, data)
+          VALUES (p, DATE_SUB(NOW(), INTERVAL 5 MINUTE), CONCAT(tag, '_', i));
+    ELSE
+      INSERT INTO ttl_rbc.rb (client_id, ttl_col, data)
+          VALUES (p, DATE_ADD(NOW(), INTERVAL 1 HOUR), CONCAT(tag, '_', i));
+    END IF;
+    SET i = i + 1;
+  END WHILE;
+END|
+DELIMITER ;|
+
+--let $wait_db = ttl_rbc
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--let $physical = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb'
+
+--echo #
+--echo # Phase 1: single-row INSERTs wrap over expired slots while the purge deletes them
+--echo #
+
+# Purge off while seeding: 20 prefixes x 50 expired rows (rings full,
+# next_pos 1, total_inserts 50)
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+--disable_query_log
+--let $p = 1
+while ($p <= 20)
+{
+  --eval CALL ttl_rbc.ins($p, 50, 1, 'seed1')
+  --inc $p
+}
+--enable_query_log
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+--let $rows = `$physical`
+--let $assert_text = 1020 physical rows after the seed (20 meta + 1000 expired)
+--let $assert_cond = $rows = 1020
+--source include/assert.inc
+
+# Aggressive purge on, then 15 live rows per prefix, round-robin over the
+# prefixes, while the purge drains the expired rows
+--exec $ttl_purge_put_config '{"enabled":true,"min_batch_size":5,"max_batch_size":50,"sleep_interval_ms":100}' > /dev/null 2>&1
+--disable_query_log
+--let $i = 1
+while ($i <= 15)
+{
+  --let $p = 1
+  while ($p <= 20)
+  {
+    --eval CALL ttl_rbc.ins($p, 1, 0, 'p1')
+    --inc $p
+  }
+  --inc $i
+}
+--enable_query_log
+
+# Settled: 20 meta rows + 300 live rows, every expired row reclaimed
+--let $wait_timeout = 180
+--let $wait_condition = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb' AND fragment_num = 0) = 320 FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb'
+--source include/wait_condition.inc
+--let $rows = `$physical`
+--let $assert_text = 320 physical rows once the purge has settled (20 meta + 300 live)
+--let $assert_cond = $rows = 320
+--source include/assert.inc
+
+# The 15 live rows of every prefix sit in slots 1-15; next_pos 16,
+# count 50, total_inserts 65 on all 20 meta rows
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+SELECT COUNT(*) AS in_slots_1_to_15 FROM ttl_rbc.rb WHERE ring_idx BETWEEN 1 AND 15;
+SELECT COUNT(DISTINCT client_id) AS prefixes FROM ttl_rbc.rb;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbc.rb WHERE ring_idx = 0
+    GROUP BY meta ORDER BY meta;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Phase 2: 10-row INSERT transactions per prefix under the purge
+--echo #
+
+# Purge off; 45 expired rows per prefix: slots 16-50, then 1-10 (next_pos
+# 11, total_inserts 110). Slots 11-15 keep their live rows.
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+--disable_query_log
+--let $p = 1
+while ($p <= 20)
+{
+  --eval CALL ttl_rbc.ins($p, 45, 1, 'seed2')
+  --inc $p
+}
+--enable_query_log
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+--let $rows = `$physical`
+--let $assert_text = 1020 physical rows after the second seed (20 meta + 100 live + 900 expired)
+--let $assert_cond = $rows = 1020
+--source include/assert.inc
+
+# Aggressive purge on; one 10-row INSERT per prefix takes slots 11-20:
+# five live slots and five expired slots that the purge is deleting. A
+# deadlock timeout (the transaction waits for a slot the purge batch
+# holds while the purge scan waits for a slot the transaction holds) rolls
+# the statement back; it is retried.
+--exec $ttl_purge_put_config '{"enabled":true,"min_batch_size":5,"max_batch_size":50,"sleep_interval_ms":100}' > /dev/null 2>&1
+--disable_query_log
+--let $p = 1
+while ($p <= 20)
+{
+  --let $done = 0
+  --let $tries = 0
+  while (!$done)
+  {
+    --let $done = 1
+    --inc $tries
+    --error 0,ER_LOCK_WAIT_TIMEOUT,ER_LOCK_DEADLOCK
+    --eval INSERT INTO ttl_rbc.rb (client_id, ttl_col, data) VALUES ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_1'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_2'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_3'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_4'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_5'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_6'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_7'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_8'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_9'), ($p, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_10')
+    if ($mysql_errno)
+    {
+      --let $done = 0
+      if ($tries >= 20)
+      {
+        --die Phase 2: the 10-row INSERT keeps failing with a lock timeout
+      }
+    }
+  }
+  --inc $p
+}
+--enable_query_log
+
+# Settled: 20 meta rows + 200 live rows (slots 11-20 of every prefix)
+--let $wait_timeout = 180
+--let $wait_condition = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb' AND fragment_num = 0) = 220 FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb'
+--source include/wait_condition.inc
+--let $rows = `$physical`
+--let $assert_text = 220 physical rows once the purge has settled (20 meta + 200 live)
+--let $assert_cond = $rows = 220
+--source include/assert.inc
+
+# next_pos 21, count 50, total_inserts 120 on all 20 meta rows
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+SELECT COUNT(*) AS in_slots_11_to_20 FROM ttl_rbc.rb WHERE ring_idx BETWEEN 11 AND 20;
+SELECT client_id, COUNT(*) AS n FROM ttl_rbc.rb GROUP BY client_id HAVING n <> 10;
+SET ndb_ring_buffer_show_meta = ON;
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbc.rb WHERE ring_idx = 0
+    GROUP BY meta ORDER BY meta;
+SET ndb_ring_buffer_show_meta = OFF;
+
+--echo #
+--echo # Phase 3: prefix DELETE and re-INSERT while the purge reclaims the prefix's expired rows
+--echo #
+
+# Purge off; 40 expired rows per prefix: slots 21-50, then 1-10 (next_pos
+# 11, total_inserts 160). Slots 11-20 keep their live rows.
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+--disable_query_log
+--let $p = 1
+while ($p <= 20)
+{
+  --eval CALL ttl_rbc.ins($p, 40, 1, 'seed3')
+  --inc $p
+}
+--enable_query_log
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+--let $rows = `$physical`
+--let $assert_text = 1020 physical rows after the third seed (20 meta + 200 live + 800 expired)
+--let $assert_cond = $rows = 1020
+--source include/assert.inc
+
+# Aggressive purge on; prefixes 1-10 are deleted (their live rows and meta
+# rows go, their expired rows are left to the purge) and prefix 1 gets a
+# new row at once: a fresh meta row and slot 1, whose expired leftover the
+# purge may hold locked at that moment
+--exec $ttl_purge_put_config '{"enabled":true,"min_batch_size":5,"max_batch_size":50,"sleep_interval_ms":100}' > /dev/null 2>&1
+--disable_query_log
+--let $p = 1
+while ($p <= 10)
+{
+  --eval DELETE FROM ttl_rbc.rb WHERE client_id = $p
+  --inc $p
+}
+--enable_query_log
+INSERT INTO ttl_rbc.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_again');
+
+# Settled: prefixes 2-10 empty, prefix 1 = meta + 1 row, prefixes 11-20 =
+# meta + 10 live rows each
+--let $wait_timeout = 180
+--let $wait_condition = SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb' AND fragment_num = 0) = 112 FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_rbc/def/rb'
+--source include/wait_condition.inc
+--let $rows = `$physical`
+--let $assert_text = 112 physical rows once the purge has settled (11 meta + 101 live)
+--let $assert_cond = $rows = 112
+--source include/assert.inc
+
+SELECT COUNT(*) AS visible FROM ttl_rbc.rb;
+SELECT client_id, ring_idx, data FROM ttl_rbc.rb WHERE client_id <= 10 ORDER BY client_id, ring_idx;
+SELECT COUNT(*) AS in_slots_11_to_20 FROM ttl_rbc.rb WHERE client_id > 10 AND ring_idx BETWEEN 11 AND 20;
+SET ndb_ring_buffer_show_meta = ON;
+# Prefix 1: next_pos 2, count 1, total_inserts 1
+SELECT client_id, HEX(ring_meta) FROM ttl_rbc.rb WHERE ring_idx = 0 AND client_id <= 10 ORDER BY client_id;
+# Prefixes 11-20: next_pos 11, count 50, total_inserts 160
+SELECT HEX(ring_meta) AS meta, COUNT(*) AS prefixes FROM ttl_rbc.rb WHERE ring_idx = 0 AND client_id > 10
+    GROUP BY meta ORDER BY meta;
+SET ndb_ring_buffer_show_meta = OFF;
+
+# The ring of a deleted prefix continues from its fresh meta row
+INSERT INTO ttl_rbc.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_again_2');
+SELECT client_id, ring_idx, data FROM ttl_rbc.rb WHERE client_id = 1 ORDER BY ring_idx;
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP PROCEDURE ttl_rbc.ins;
+DROP TABLE ttl_rbc.rb;
+DROP DATABASE ttl_rbc;
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

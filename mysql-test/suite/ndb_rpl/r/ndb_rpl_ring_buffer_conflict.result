@@ -1,0 +1,160 @@
+include/rpl/init_source_replica.inc
+Warnings:
+Note	####	Sending passwords in plain text without SSL/TLS is extremely insecure.
+Note	####	Storing MySQL user name or password information in the connection metadata repository is not secure and is therefore not recommended. Please consider using the USER and PASSWORD connection options for START REPLICA; see the 'START REPLICA Syntax' in the MySQL Manual for more information.
+[connection master]
+CREATE TABLE mysql.ndb_replication
+(db VARBINARY(63),
+table_name VARBINARY(63),
+server_id INT UNSIGNED,
+binlog_type INT UNSIGNED,
+conflict_fn VARBINARY(128),
+PRIMARY KEY USING HASH (db,table_name,server_id))
+ENGINE=NDB PARTITION BY KEY(db,table_name);
+INSERT INTO mysql.ndb_replication VALUES
+("test", "rb_max", 0, NULL, "NDB$MAX(X)"),
+("test", "rb_max_ins", 0, NULL, "NDB$MAX_INS(X)"),
+("test", "rb_old", 0, NULL, "NDB$OLD(X)"),
+("test", "rb_epoch2", 0, 7, "NDB$EPOCH2()"),
+("test", "plain_max", 0, NULL, "NDB$MAX(X)"),
+("test", "rb_renamed", 0, NULL, "NDB$MAX(X)");
+#
+# Case 1: ring buffer tables with a conflict function are rejected
+#
+CREATE TABLE test.rb_max (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+X INT UNSIGNED NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+SHOW WARNINGS;
+Level	Code	Message
+Error	1478	Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+CREATE TABLE test.rb_max_ins (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+X INT UNSIGNED NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+SHOW WARNINGS;
+Level	Code	Message
+Error	1478	Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+CREATE TABLE test.rb_old (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+X INT UNSIGNED NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+SHOW WARNINGS;
+Level	Code	Message
+Error	1478	Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+CREATE TABLE test.rb_epoch2 (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+SHOW WARNINGS;
+Level	Code	Message
+Error	1478	Table storage engine 'ndbcluster' does not support the create option 'Conflict functions are not supported on ring buffer tables'
+#
+# Case 2: a plain table with the same conflict function is accepted
+#
+CREATE TABLE test.plain_max (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+X INT UNSIGNED NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB;
+SHOW WARNINGS;
+Level	Code	Message
+#
+# Case 3: a ring buffer table without a conflict function replicates
+#
+CREATE TABLE test.rb_none (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+X INT UNSIGNED NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+INSERT INTO test.rb_none (client_id, X) VALUES (1, 1);
+INSERT INTO test.rb_none (client_id, X) VALUES (1, 2);
+INSERT INTO test.rb_none (client_id, X) VALUES (1, 3);
+INSERT INTO test.rb_none (client_id, X) VALUES (1, 4);
+INSERT INTO test.rb_none (client_id, X) VALUES (1, 5);
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_none ORDER BY ring_idx;
+client_id	ring_idx	HEX(ring_meta)	X
+1	0	0100000003000000030000000000000005000000000000000000000000000000	0
+1	1	NULL	4
+1	2	NULL	5
+1	3	NULL	3
+SET ndb_ring_buffer_show_meta = 0;
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_none ORDER BY ring_idx;
+client_id	ring_idx	HEX(ring_meta)	X
+1	0	0100000003000000030000000000000005000000000000000000000000000000	0
+1	1	NULL	4
+1	2	NULL	5
+1	3	NULL	3
+SET ndb_ring_buffer_show_meta = 0;
+#
+# Case 4: a ring buffer table renamed to a name with a conflict function
+# replicates without it, and TRUNCATE keeps it
+#
+CREATE TABLE test.rb_later (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+X INT UNSIGNED NOT NULL,
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+RENAME TABLE test.rb_later TO test.rb_renamed;
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 1);
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 2);
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 3);
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 4);
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 5);
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_renamed ORDER BY ring_idx;
+client_id	ring_idx	HEX(ring_meta)	X
+1	0	0100000003000000030000000000000005000000000000000000000000000000	0
+1	1	NULL	4
+1	2	NULL	5
+1	3	NULL	3
+SET ndb_ring_buffer_show_meta = 0;
+# Same rows and meta row as on the source
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_renamed ORDER BY ring_idx;
+client_id	ring_idx	HEX(ring_meta)	X
+1	0	0100000003000000030000000000000005000000000000000000000000000000	0
+1	1	NULL	4
+1	2	NULL	5
+1	3	NULL	3
+SET ndb_ring_buffer_show_meta = 0;
+include/assert.inc [No conflicts counted on the renamed ring table]
+include/assert_grep.inc [Source mysqld dropped the conflict function of the renamed ring table]
+TRUNCATE TABLE test.rb_renamed;
+SET ndb_ring_buffer_show_meta = 1;
+SELECT COUNT(*) FROM test.rb_renamed;
+COUNT(*)
+0
+SET ndb_ring_buffer_show_meta = 0;
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 100);
+SELECT ring_idx, X FROM test.rb_renamed ORDER BY ring_idx;
+ring_idx	X
+1	100
+SELECT ring_idx, X FROM test.rb_renamed ORDER BY ring_idx;
+ring_idx	X
+1	100
+DROP TABLE test.plain_max, test.rb_none, test.rb_renamed;
+DROP TABLE mysql.ndb_replication;
+include/rpl/deinit.inc

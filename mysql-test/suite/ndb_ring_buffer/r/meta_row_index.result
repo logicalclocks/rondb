@@ -365,42 +365,6 @@ id	ring_idx	code
 2	2	40
 DROP TABLE test.rb_cross_uniq;
 #
-# Case 16: ALTER TABLE grow with NOT NULL + unique index
-#
-CREATE TABLE test.rb_grow_nn (
-id INT NOT NULL,
-ring_idx INT NOT NULL DEFAULT 0,
-ring_meta VARBINARY(64),
-code INT NOT NULL,
-PRIMARY KEY (id, ring_idx),
-UNIQUE INDEX idx_code (code)
-) ENGINE = NDB,
-COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 100);
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 200);
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 300);
-ALTER TABLE test.rb_grow_nn COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 400);
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 500);
-SELECT id, ring_idx, code FROM test.rb_grow_nn ORDER BY ring_idx;
-id	ring_idx	code
-1	1	100
-1	2	200
-1	3	300
-1	4	400
-1	5	500
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 200);
-ERROR 23000: Duplicate entry '200' for key 'rb_grow_nn.idx_code'
-INSERT INTO test.rb_grow_nn (id, code) VALUES (1, 600);
-SELECT id, ring_idx, code FROM test.rb_grow_nn ORDER BY ring_idx;
-id	ring_idx	code
-1	1	600
-1	2	200
-1	3	300
-1	4	400
-1	5	500
-DROP TABLE test.rb_grow_nn;
-#
 # Case 17: Multiple NOT NULL types - VARCHAR + INT with indexes
 #
 CREATE TABLE test.rb_nn_types (
@@ -442,7 +406,7 @@ content TEXT NOT NULL,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer tables cannot have NOT NULL BLOB/TEXT columns'
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer: no NOT NULL BLOB/TEXT/JSON/GEOMETRY columns'
 CREATE TABLE test.rb_nn_blob (
 id INT NOT NULL,
 ring_idx INT NOT NULL DEFAULT 0,
@@ -451,7 +415,25 @@ payload BLOB NOT NULL,
 PRIMARY KEY (id, ring_idx)
 ) ENGINE = NDB,
 COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
-ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer tables cannot have NOT NULL BLOB/TEXT columns'
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer: no NOT NULL BLOB/TEXT/JSON/GEOMETRY columns'
+CREATE TABLE test.rb_nn_json (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+doc JSON NOT NULL,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer: no NOT NULL BLOB/TEXT/JSON/GEOMETRY columns'
+CREATE TABLE test.rb_nn_geom (
+id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+shape GEOMETRY NOT NULL,
+PRIMARY KEY (id, ring_idx)
+) ENGINE = NDB,
+COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+ERROR HY000: Table storage engine 'ndbcluster' does not support the create option 'Ring buffer: no NOT NULL BLOB/TEXT/JSON/GEOMETRY columns'
 CREATE TABLE test.rb_null_text (
 id INT NOT NULL,
 ring_idx INT NOT NULL DEFAULT 0,

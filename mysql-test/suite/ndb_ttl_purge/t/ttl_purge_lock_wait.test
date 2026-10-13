@@ -1,0 +1,425 @@
+--source include/have_ndb.inc
+
+# suite/ndb_ttl_purge/t/ttl_purge_lock_wait.test
+#
+# The purge meets rows that a user transaction holds locked. Both purge
+# scans take exclusive row locks; a lock wait that outlasts
+# TransactionDeadlockDetectionTimeout (NDB default 1200 ms, set in the
+# .cnf) fails the purge transaction, which the purge worker retries.
+#   Phase 1: a TTL table with ttl_index; a user transaction holds a lock on
+#            one expired row (locked while live, expired since).
+#   Phase 2: a ring buffer table with TTL and no ttl_index (table scan
+#            purge); a user transaction has an INSERT open, holding the
+#            prefix's meta row and a slot: the purge leaves expired rows
+#            behind until the INSERT commits.
+#   Phase 3: the same with ttl_index (index scan purge): not blocked.
+#   Phase 4: the lock is held past the point where the purge worker used
+#            to give up after its retries: it keeps running.
+# Each phase checks the purged rows, the physical rows and the purge
+# worker's timeout messages in the rdrs2 log while the lock is held, then
+# commits and checks that the purge recovers and reclaims every expired row.
+# The per-test .cnf sets TransactionDeadlockDetectionTimeout to 1200 ms.
+
+--source suite/ndb_ttl_purge/include/ttl_purge_setup.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_lw;
+
+# Counts of purge worker messages in the rdrs2 log since the last
+# ttl_purge_mark_rdrs_log.inc, as $lw_timeouts (nextResult/execute
+# failures), $lw_escalations (worker quits after its retries), $lw_skips
+# (tables skipped until the next round after a transaction timeout)
+--let $lw_count_log = $MYSQL_TMP_DIR/_lw_count.inc
+--write_file $MYSQL_TMP_DIR/_lw_count.pl
+use strict;
+use warnings;
+my $log = "$ENV{MYSQLTEST_VARDIR}/log/rdrs.1.1.log";
+open my $f, '<', "$ENV{MYSQL_TMP_DIR}/_rdrs_log_offset.txt" or die;
+my $off = <$f>; chomp $off; close $f;
+open my $l, '<', $log or die;
+seek($l, $off, 0);
+my ($t, $e, $s) = (0, 0, 0);
+while (my $line = <$l>) {
+  $t++ if $line =~ /\[TTL PWorker\] Failed to (nextResult|execute)/;
+  $e++ if $line =~ /\[TTL PWorker\] Has retried for/;
+  $s++ if $line =~ /\[TTL PWorker\] Transaction on table .* timed out .*skipping it until the next round/;
+}
+close $l;
+open my $o, '>', "$ENV{MYSQL_TMP_DIR}/_lw_count.inc" or die;
+print $o "--let \$lw_timeouts = $t\n--let \$lw_escalations = $e\n--let \$lw_skips = $s\n";
+close $o;
+EOF
+
+--echo #
+--echo # Phase 1: a user transaction holds a lock on an expired row of a TTL table
+--echo #
+
+CREATE TABLE ttl_lw.t1 (
+    id INT NOT NULL PRIMARY KEY,
+    ttl_col DATETIME,
+    data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col";
+CREATE INDEX ttl_index ON ttl_lw.t1 (ttl_col);
+
+--let $wait_db = ttl_lw
+--let $wait_table = t1
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p1_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p1_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+# Row 1 expires 7 s after the INSERT; rows 2-21 are expired already
+INSERT INTO ttl_lw.t1 VALUES (1, DATE_ADD(NOW(), INTERVAL 2 SECOND), 'locked');
+--disable_query_log
+--let $i = 2
+while ($i <= 21)
+{
+  --eval INSERT INTO ttl_lw.t1 VALUES ($i, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_$i')
+  --inc $i
+}
+--enable_query_log
+
+connect (con_lock, localhost, root, , test);
+BEGIN;
+SELECT id, data FROM ttl_lw.t1 WHERE id = 1 FOR UPDATE;
+
+--connection default
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) = 0 FROM ttl_lw.t1
+--source include/wait_condition.inc
+
+# Purge on (default configuration) while the lock is held
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 40
+
+--exec perl $MYSQL_TMP_DIR/_lw_count.pl
+--source $lw_count_log
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p1_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p1_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p1_state = $json_value
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p1_held.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p1_held.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p1_purged_held = `SELECT $json_value - $initial_purged`
+--let $p1_physical_held = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/t1' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/t1'`
+# The other 20 expired rows are reclaimed; the locked row is left and the
+# purge transaction that reaches it times out and is retried
+--let $assert_text = phase 1: 20 rows purged while the lock is held
+--let $assert_cond = $p1_purged_held = 20
+--source include/assert.inc
+--let $assert_text = phase 1: only the locked row is left
+--let $assert_cond = $p1_physical_held = 1
+--source include/assert.inc
+--let $assert_text = phase 1: the purge timed out on the locked row
+--let $assert_cond = $lw_timeouts >= 1
+--source include/assert.inc
+--let $assert_text = phase 1: the purge worker kept running
+--let $assert_cond = "$p1_state" = "running"
+--source include/assert.inc
+
+# Release the lock: every expired row is reclaimed, row 1 included
+--connection con_lock
+COMMIT;
+--disconnect con_lock
+--connection default
+--let $expected_purge_total = `SELECT $initial_purged + 21`
+--let $purge_wait_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p1_after.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p1_after.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = phase 1: running after the commit
+--let $assert_cond = "$json_value" = "running"
+--source include/assert.inc
+--let $rows = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/t1' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/t1'`
+--let $assert_text = phase 1: every row reclaimed after the commit
+--let $assert_cond = $rows = 0
+--source include/assert.inc
+
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+DROP TABLE ttl_lw.t1;
+
+--echo #
+--echo # Phase 2: an open INSERT on a TTL ring buffer table without ttl_index (table scan purge)
+--echo #
+
+CREATE TABLE ttl_lw.rb (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=50@ring_idx@ring_meta";
+
+--let $wait_db = ttl_lw
+--let $wait_table = rb
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p2_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p2_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+# Prefixes 1-5: 10 expired rows each (next_pos 11)
+--disable_query_log
+--let $p = 1
+while ($p <= 5)
+{
+  --let $i = 1
+  while ($i <= 10)
+  {
+    --eval INSERT INTO ttl_lw.rb (client_id, ttl_col, data) VALUES ($p, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_$p-$i')
+    --inc $i
+  }
+  --inc $p
+}
+--enable_query_log
+SELECT COUNT(*) AS visible FROM ttl_lw.rb;
+
+# An open INSERT into prefix 1: it holds the meta row of prefix 1 and slot 11
+connect (con_lock, localhost, root, , test);
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO ttl_lw.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'open_insert');
+
+--connection default
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 40
+
+--exec perl $MYSQL_TMP_DIR/_lw_count.pl
+--source $lw_count_log
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p2_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p2_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p2_state = $json_value
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p2_held.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p2_held.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p2_purged_held = `SELECT $json_value - $initial_purged`
+--let $p2_physical_held = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/rb' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/rb'`
+# The table scan purge waits on the rows the open INSERT holds (the meta
+# row of prefix 1 and its new slot) and times out; expired rows are left
+# behind until the INSERT commits
+--let $assert_text = phase 2: expired rows are left while the INSERT is open
+--let $assert_cond = $p2_physical_held > 6
+--source include/assert.inc
+--let $assert_text = phase 2: the purge timed out on the open INSERT
+--let $assert_cond = $lw_timeouts >= 1
+--source include/assert.inc
+--let $assert_text = phase 2: the purge worker kept running
+--let $assert_cond = "$p2_state" = "running"
+--source include/assert.inc
+
+--connection con_lock
+COMMIT;
+--disconnect con_lock
+--connection default
+--let $expected_purge_total = `SELECT $initial_purged + 50`
+--let $purge_wait_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p2_after.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p2_after.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = phase 2: running after the commit
+--let $assert_cond = "$json_value" = "running"
+--source include/assert.inc
+--let $rows = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/rb' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/rb'`
+--let $assert_text = phase 2: 5 meta rows and the committed row after the commit
+--let $assert_cond = $rows = 6
+--source include/assert.inc
+SELECT client_id, ring_idx, data FROM ttl_lw.rb ORDER BY client_id, ring_idx;
+
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+DROP TABLE ttl_lw.rb;
+
+--echo #
+--echo # Phase 3: the same open INSERT on a TTL ring buffer table with ttl_index (index scan purge)
+--echo #
+
+CREATE TABLE ttl_lw.rbi (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    ttl_col DATETIME,
+    data VARCHAR(100),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=50@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_lw.rbi (ttl_col);
+
+--let $wait_db = ttl_lw
+--let $wait_table = rbi
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p3_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p3_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+--disable_query_log
+--let $p = 1
+while ($p <= 5)
+{
+  --let $i = 1
+  while ($i <= 10)
+  {
+    --eval INSERT INTO ttl_lw.rbi (client_id, ttl_col, data) VALUES ($p, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'expired_$p-$i')
+    --inc $i
+  }
+  --inc $p
+}
+--enable_query_log
+
+connect (con_lock, localhost, root, , test);
+SET time_zone = '+00:00';
+BEGIN;
+INSERT INTO ttl_lw.rbi (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'open_insert');
+
+--connection default
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 40
+
+--exec perl $MYSQL_TMP_DIR/_lw_count.pl
+--source $lw_count_log
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p3_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p3_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p3_state = $json_value
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p3_held.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p3_held.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p3_purged_held = `SELECT $json_value - $initial_purged`
+--let $p3_physical_held = `SELECT SUM(fixed_elem_count) DIV (SELECT COUNT(*) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/rbi' AND fragment_num = 0) FROM ndbinfo.memory_per_fragment WHERE fq_name = 'ttl_lw/def/rbi'`
+# The index scan purge only visits rows whose TTL column is in the expired
+# range; the meta row (TTL maximum) and the new live row are not, so the
+# open INSERT does not block it
+--let $assert_text = phase 3: all 50 rows purged while the INSERT is open
+--let $assert_cond = $p3_purged_held = 50
+--source include/assert.inc
+--let $assert_text = phase 3: meta rows and the open row only
+--let $assert_cond = $p3_physical_held = 6
+--source include/assert.inc
+--let $assert_text = phase 3: no purge timeout
+--let $assert_cond = $lw_timeouts = 0
+--source include/assert.inc
+--let $assert_text = phase 3: the purge worker kept running
+--let $assert_cond = "$p3_state" = "running"
+--source include/assert.inc
+
+--connection con_lock
+COMMIT;
+--disconnect con_lock
+--connection default
+--let $expected_purge_total = `SELECT $initial_purged + 50`
+--let $purge_wait_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--exec $ttl_purge_put_config '{"enabled":false}' > /dev/null 2>&1
+--sleep 2
+DROP TABLE ttl_lw.rbi;
+
+--echo #
+--echo # Phase 4: a lock held longer than the old retry limit of the purge worker
+--echo #
+
+CREATE TABLE ttl_lw.t4 (
+    id INT NOT NULL PRIMARY KEY,
+    ttl_col DATETIME,
+    data VARCHAR(100)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col"
+  PARTITION BY KEY(id) PARTITIONS 1;
+CREATE INDEX ttl_index ON ttl_lw.t4 (ttl_col);
+--let $wait_db = ttl_lw
+--let $wait_table = t4
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_table_detected.inc
+
+--exec $ttl_purge_get_metrics > $MYSQL_TMP_DIR/lw_p4_initial.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p4_initial.json
+--let $json_field = rows_purged_total
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $initial_purged = $json_value
+
+INSERT INTO ttl_lw.t4 VALUES (1, DATE_ADD(NOW(), INTERVAL 2 SECOND), 'locked');
+connect (con_lock, localhost, root, , test);
+BEGIN;
+SELECT id, data FROM ttl_lw.t4 WHERE id = 1 FOR UPDATE;
+--connection default
+--let $wait_timeout = 60
+--let $wait_condition = SELECT COUNT(*) = 0 FROM ttl_lw.t4
+--source include/wait_condition.inc
+
+--source suite/ndb_ttl_purge/include/ttl_purge_mark_rdrs_log.inc
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+# Hold the lock for 40 s, well past the 11 timeouts (~25 s) after which
+# the purge worker used to give up
+--sleep 40
+--exec perl $MYSQL_TMP_DIR/_lw_count.pl
+--source $lw_count_log
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p4_status.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p4_status.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $p4_state = $json_value
+# A lock wait timeout skips the table until the next round and is not
+# counted as a failure, so the purge worker never gives up on it. t4 has
+# one partition, so the locked row is met every round
+--let $assert_text = phase 4: repeated timeouts while the lock is held
+--let $assert_cond = $lw_timeouts >= 2
+--source include/assert.inc
+--let $assert_text = phase 4: the table was skipped until the next round on each timeout
+--let $assert_cond = $lw_skips >= 2
+--source include/assert.inc
+--let $assert_text = phase 4: the purge worker did not give up
+--let $assert_cond = $lw_escalations = 0
+--source include/assert.inc
+--let $assert_text = phase 4: the purge worker kept running
+--let $assert_cond = "$p4_state" = "running"
+--source include/assert.inc
+
+--connection con_lock
+COMMIT;
+--disconnect con_lock
+--connection default
+--let $expected_purge_total = `SELECT $initial_purged + 1`
+--let $purge_wait_timeout = 60
+--source suite/ndb_ttl_purge/include/ttl_purge_wait_rows_purged.inc
+--exec $ttl_purge_get_status > $MYSQL_TMP_DIR/lw_p4_after.json 2>/dev/null
+--let $json_file = $MYSQL_TMP_DIR/lw_p4_after.json
+--let $json_field = state
+--source suite/ndb_ttl_purge/include/ttl_purge_json_parse.inc
+--let $assert_text = phase 4: running after the commit
+--let $assert_cond = "$json_value" = "running"
+--source include/assert.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+
+DROP TABLE ttl_lw.t4;
+DROP DATABASE ttl_lw;
+--remove_file $MYSQL_TMP_DIR/_lw_count.pl
+--source suite/ndb_ttl_purge/include/ttl_purge_reset_config.inc
+--sleep 3
+
+--source suite/ndb_ttl_purge/include/ttl_purge_cleanup_tmp.inc

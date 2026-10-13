@@ -1,0 +1,192 @@
+# ndb_rpl_ring_buffer_conflict.test
+#
+# Conflict functions are not supported on ring buffer tables.
+#
+# A ring insert updates the meta row and, on a wrap, overwrites a slot;
+# both are logged as WRITE_ROW events. A replica with a conflict function
+# applies WRITE_ROW as an insert, so every write onto an existing row is
+# reported as a conflict and dropped (or refreshed back to the source):
+# the replica ring stops advancing after the first insert into a prefix,
+# with one writer and no error. CREATE TABLE of a ring buffer table that
+# matches a conflict function in mysql.ndb_replication is rejected; a ring
+# table that a row matches later (here: after RENAME) is binlogged and
+# applied without the conflict function.
+
+--source include/have_ndb.inc
+--source include/have_binlog_format_mixed_or_row.inc
+--source suite/ndb_rpl/ndb_rpl_init_source_replica.inc
+
+# Suppressions on every server that sets up binlogging of the tables,
+# including the source cluster's second mysqld (TRUNCATE is distributed).
+--disable_query_log
+call mtr.add_suppression("Replica: Table test.rb.* is a ring buffer table: not using conflict function");
+--connection slave
+call mtr.add_suppression("Replica: Table test.rb.* is a ring buffer table: not using conflict function");
+connect (server2,127.0.0.1,root,,test,$MASTER_MYPORT1,);
+--connection server2
+call mtr.add_suppression("Replica: Table test.rb.* is a ring buffer table: not using conflict function");
+--disconnect server2
+--connection master
+--enable_query_log
+
+--connection master
+CREATE TABLE mysql.ndb_replication
+  (db VARBINARY(63),
+   table_name VARBINARY(63),
+   server_id INT UNSIGNED,
+   binlog_type INT UNSIGNED,
+   conflict_fn VARBINARY(128),
+   PRIMARY KEY USING HASH (db,table_name,server_id))
+  ENGINE=NDB PARTITION BY KEY(db,table_name);
+INSERT INTO mysql.ndb_replication VALUES
+  ("test", "rb_max", 0, NULL, "NDB$MAX(X)"),
+  ("test", "rb_max_ins", 0, NULL, "NDB$MAX_INS(X)"),
+  ("test", "rb_old", 0, NULL, "NDB$OLD(X)"),
+  ("test", "rb_epoch2", 0, 7, "NDB$EPOCH2()"),
+  ("test", "plain_max", 0, NULL, "NDB$MAX(X)"),
+  ("test", "rb_renamed", 0, NULL, "NDB$MAX(X)");
+
+--echo #
+--echo # Case 1: ring buffer tables with a conflict function are rejected
+--echo #
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_max (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    X INT UNSIGNED NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW WARNINGS;
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_max_ins (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    X INT UNSIGNED NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW WARNINGS;
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_old (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    X INT UNSIGNED NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW WARNINGS;
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE test.rb_epoch2 (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+SHOW WARNINGS;
+
+--echo #
+--echo # Case 2: a plain table with the same conflict function is accepted
+--echo #
+
+CREATE TABLE test.plain_max (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    X INT UNSIGNED NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB;
+SHOW WARNINGS;
+
+--echo #
+--echo # Case 3: a ring buffer table without a conflict function replicates
+--echo #
+
+CREATE TABLE test.rb_none (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    X INT UNSIGNED NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+--let $i = 1
+while ($i <= 5) {
+  --eval INSERT INTO test.rb_none (client_id, X) VALUES (1, $i)
+  --inc $i
+}
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_none ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = 0;
+--sync_slave_with_master
+
+--connection slave
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_none ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = 0;
+
+--echo #
+--echo # Case 4: a ring buffer table renamed to a name with a conflict function
+--echo # replicates without it, and TRUNCATE keeps it
+--echo #
+
+--connection slave
+--let $conflict_max_before = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_conflict_fn_max', Value, 1)
+
+--connection master
+CREATE TABLE test.rb_later (
+    client_id INT NOT NULL,
+    ring_idx INT NOT NULL DEFAULT 0,
+    ring_meta VARBINARY(64),
+    X INT UNSIGNED NOT NULL,
+    PRIMARY KEY (client_id, ring_idx)
+) ENGINE = NDB, COMMENT="NDB_TABLE=MAX_ROWS_PER_PK=3@ring_idx@ring_meta";
+RENAME TABLE test.rb_later TO test.rb_renamed;
+--sync_slave_with_master
+
+--connection master
+--let $i = 1
+while ($i <= 5) {
+  --eval INSERT INTO test.rb_renamed (client_id, X) VALUES (1, $i)
+  --inc $i
+}
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_renamed ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = 0;
+--sync_slave_with_master
+
+--connection slave
+--echo # Same rows and meta row as on the source
+SET ndb_ring_buffer_show_meta = 1;
+SELECT client_id, ring_idx, HEX(ring_meta), X FROM test.rb_renamed ORDER BY ring_idx;
+SET ndb_ring_buffer_show_meta = 0;
+--let $conflict_max_after = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_conflict_fn_max', Value, 1)
+--let $assert_text = No conflicts counted on the renamed ring table
+--let $assert_cond = $conflict_max_after = $conflict_max_before
+--source include/assert.inc
+
+--let $assert_file = $MYSQLTEST_VARDIR/log/mysqld.1.1.err
+--let $assert_select = Table test.rb_renamed is a ring buffer table: not using conflict function NDB.MAX
+--let $assert_count_condition = >= 1
+--let $assert_text = Source mysqld dropped the conflict function of the renamed ring table
+--source include/assert_grep.inc
+
+--connection master
+TRUNCATE TABLE test.rb_renamed;
+SET ndb_ring_buffer_show_meta = 1;
+SELECT COUNT(*) FROM test.rb_renamed;
+SET ndb_ring_buffer_show_meta = 0;
+INSERT INTO test.rb_renamed (client_id, X) VALUES (1, 100);
+SELECT ring_idx, X FROM test.rb_renamed ORDER BY ring_idx;
+--sync_slave_with_master
+
+--connection slave
+SELECT ring_idx, X FROM test.rb_renamed ORDER BY ring_idx;
+
+--connection master
+DROP TABLE test.plain_max, test.rb_none, test.rb_renamed;
+DROP TABLE mysql.ndb_replication;
+--sync_slave_with_master
+--source include/rpl/deinit.inc

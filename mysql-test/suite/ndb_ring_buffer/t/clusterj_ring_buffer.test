@@ -55,6 +55,10 @@ SET ndb_ring_buffer_show_meta = OFF;
 --disable_warnings
 DROP TABLE IF EXISTS ring_buffer_sensor;
 DROP TABLE IF EXISTS ring_buffer_notnull;
+DROP TABLE IF EXISTS ring_buffer_blob;
+DROP TABLE IF EXISTS ring_buffer_autoinc;
+DROP TABLE IF EXISTS ring_buffer_ttl;
+DROP TABLE IF EXISTS ring_buffer_ttl_dt;
 DROP TABLE IF EXISTS a;
 DROP TABLE IF EXISTS allprimitives;
 DROP TABLE IF EXISTS autopkint;

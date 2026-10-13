@@ -1,0 +1,165 @@
+SET time_zone = '+00:00';
+CREATE DATABASE ttl_rbr;
+CREATE TABLE ttl_rbr.rb (
+client_id INT NOT NULL,
+ring_idx INT NOT NULL DEFAULT 0,
+ring_meta VARBINARY(64),
+ttl_col DATETIME,
+data VARCHAR(100),
+PRIMARY KEY (client_id, ring_idx)
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=5@ttl_col,MAX_ROWS_PER_PK=5@ring_idx@ring_meta";
+CREATE INDEX ttl_index ON ttl_rbr.rb (ttl_col);
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_1');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_2');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p1_exp_3');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_4');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_live_5');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_1');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_2');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_3');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_4');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p2_exp_5');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_live_1');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (3, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p3_live_2');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p4_live_1');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p4_exp_2');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p4_live_3');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (4, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p4_exp_4');
+include/assert.inc [20 physical rows before the purge (4 meta + 16 data)]
+include/assert.inc [10 physical rows after the purge (4 meta + 6 live)]
+# State before the restarts
+SELECT client_id, ring_idx, data FROM ttl_rbr.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	4	p1_live_4
+1	5	p1_live_5
+3	1	p3_live_1
+3	2	p3_live_2
+4	1	p4_live_1
+4	3	p4_live_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbr.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000001000000050000000000000005000000000000000000000000000000
+2	0100000001000000050000000000000005000000000000000000000000000000
+3	0100000003000000020000000000000002000000000000000000000000000000
+4	0100000005000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT node_id, SUM(fixed_elem_count) AS physical_rows FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'ttl_rbr/def/rb' GROUP BY node_id ORDER BY node_id;
+node_id	physical_rows
+1	10
+2	10
+#
+# Case 1: node restart of node 2 - holes, live rows and meta rows unchanged
+#
+SELECT client_id, ring_idx, data FROM ttl_rbr.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	4	p1_live_4
+1	5	p1_live_5
+3	1	p3_live_1
+3	2	p3_live_2
+4	1	p4_live_1
+4	3	p4_live_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbr.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000001000000050000000000000005000000000000000000000000000000
+2	0100000001000000050000000000000005000000000000000000000000000000
+3	0100000003000000020000000000000002000000000000000000000000000000
+4	0100000005000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT node_id, SUM(fixed_elem_count) AS physical_rows FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'ttl_rbr/def/rb' GROUP BY node_id ORDER BY node_id;
+node_id	physical_rows
+1	10
+2	10
+#
+# Case 2: initial node restart of node 2 - the copied fragments carry the holes
+#
+SELECT client_id, ring_idx, data FROM ttl_rbr.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	4	p1_live_4
+1	5	p1_live_5
+3	1	p3_live_1
+3	2	p3_live_2
+4	1	p4_live_1
+4	3	p4_live_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbr.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000001000000050000000000000005000000000000000000000000000000
+2	0100000001000000050000000000000005000000000000000000000000000000
+3	0100000003000000020000000000000002000000000000000000000000000000
+4	0100000005000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT node_id, SUM(fixed_elem_count) AS physical_rows FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'ttl_rbr/def/rb' GROUP BY node_id ORDER BY node_id;
+node_id	physical_rows
+1	10
+2	10
+#
+# Case 3: system restart - holes, live rows and meta rows unchanged
+#
+SET time_zone = '+00:00';
+SELECT client_id, ring_idx, data FROM ttl_rbr.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	4	p1_live_4
+1	5	p1_live_5
+3	1	p3_live_1
+3	2	p3_live_2
+4	1	p4_live_1
+4	3	p4_live_3
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbr.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000001000000050000000000000005000000000000000000000000000000
+2	0100000001000000050000000000000005000000000000000000000000000000
+3	0100000003000000020000000000000002000000000000000000000000000000
+4	0100000005000000040000000000000004000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+SELECT node_id, SUM(fixed_elem_count) AS physical_rows FROM ndbinfo.memory_per_fragment
+WHERE fq_name = 'ttl_rbr/def/rb' GROUP BY node_id ORDER BY node_id;
+node_id	physical_rows
+1	10
+2	10
+#
+# After the restarts: the rings refill over the holes and the purge keeps working
+#
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_new_6');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_new_7');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (1, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p1_new_8');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_new_6');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (2, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p2_new_7');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (4, DATE_ADD(NOW(), INTERVAL 1 HOUR), 'p4_new_5');
+SELECT client_id, ring_idx, data FROM ttl_rbr.rb ORDER BY client_id, ring_idx;
+client_id	ring_idx	data
+1	1	p1_new_6
+1	2	p1_new_7
+1	3	p1_new_8
+1	4	p1_live_4
+1	5	p1_live_5
+2	1	p2_new_6
+2	2	p2_new_7
+3	1	p3_live_1
+3	2	p3_live_2
+4	1	p4_live_1
+4	3	p4_live_3
+4	5	p4_new_5
+SET ndb_ring_buffer_show_meta = ON;
+SELECT client_id, HEX(ring_meta) FROM ttl_rbr.rb WHERE ring_idx = 0 ORDER BY client_id;
+client_id	HEX(ring_meta)
+1	0100000004000000050000000000000008000000000000000000000000000000
+2	0100000003000000050000000000000007000000000000000000000000000000
+3	0100000003000000020000000000000002000000000000000000000000000000
+4	0100000001000000050000000000000005000000000000000000000000000000
+SET ndb_ring_buffer_show_meta = OFF;
+include/assert.inc [16 physical rows after the refill (4 meta + 12 live)]
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p3_exp_3');
+INSERT INTO ttl_rbr.rb (client_id, ttl_col, data) VALUES (3, DATE_SUB(NOW(), INTERVAL 5 MINUTE), 'p3_exp_4');
+include/assert.inc [16 physical rows after the purge of the two new expired rows]
+SELECT client_id, ring_idx, data FROM ttl_rbr.rb WHERE client_id = 3 ORDER BY ring_idx;
+client_id	ring_idx	data
+3	1	p3_live_1
+3	2	p3_live_2
+DROP TABLE ttl_rbr.rb;
+DROP DATABASE ttl_rbr;
