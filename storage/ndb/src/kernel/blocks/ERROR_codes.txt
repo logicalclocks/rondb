@@ -203,7 +203,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10072
+Next BACKUP 10073
 Next PGMAN 11010
 Next DBTUX 12011
 Next SUMA 13063
@@ -929,6 +929,9 @@ Backup Stuff:
        With extra = a backup id, any OTHER worker that receives a
        DEFINE for that id crashes - proving the proxy rejected the
        define before its fan-out
+10072: Hold this participant's STOP_BACKUP_CONF until the error insert
+       is cleared, so the master completes its own stop and waits for
+       this node
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 

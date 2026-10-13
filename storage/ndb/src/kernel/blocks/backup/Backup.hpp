@@ -799,6 +799,14 @@ class Backup : public SimulatedBlock {
      */
     bool m_backup_completed_ok = false;
     /**
+     * Set when cleanup() starts on this record. From then on the record
+     * only waits for its release, and abort orders must leave it alone:
+     * running it through stop processing and cleanup again would remove
+     * the files of the backup it belongs to (state and m_gsn cannot tell
+     * this - a client abort sets m_gsn without starting any cleanup).
+     */
+    bool m_cleanup_started = false;
+    /**
      * Value of m_debris_sweep_next_gen when this attempt started:
      * entries with gen above the floor were recorded by THIS attempt
      * and are the only ones its success verdict may cancel (an older

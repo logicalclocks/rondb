@@ -929,6 +929,172 @@ int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runClientAbortDuringStop(NDBT_Context *ctx, NDBT_Step *step) {
+  /* A client abort while the master collects the stop replies makes the
+   * backup fail: the master's own stop has already completed, so the
+   * abort only records the error, and the failure verdict then orders
+   * every participant - the master's own record included - to remove
+   * its files. EI 10072 holds a non-master participant's stop
+   * confirmation until the insert is cleared, which opens that window.
+   */
+  const Uint32 clientAbortError = 1321; /* AbortBackupOrd::ClientAbort */
+
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  {
+    const int supported = allDataNodesSupportCleanupOrd(restarter);
+    if (supported < 0) return NDBT_FAILED;
+    if (supported == 0) {
+      ctx->stopTest();
+      return NDBT_OK;
+    }
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  const int masterNodeId = restarter.getMasterNodeId();
+  int victim = -1;
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n != masterNodeId) {
+      victim = n;
+      break;
+    }
+  }
+  if (victim == -1) {
+    g_err << "No non-master node found" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Holding node " << victim << " (master " << masterNodeId << ")"
+        << endl;
+
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (backup.backupDirsExist(n) != 0 || backup.backupShellsExist(n) != 0) {
+      g_err << "Baseline not clean on node " << n << endl;
+      return NDBT_FAILED;
+    }
+  }
+
+  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP, 0};
+  NdbLogEventHandle log_handle =
+      ndb_mgm_create_logevent_handle(restarter.handle, filter);
+  if (log_handle == NULL) {
+    g_err << "Failed to create log event handle" << endl;
+    return NDBT_FAILED;
+  }
+
+  if (restarter.insertErrorInNode(victim, 10072) != 0) {
+    g_err << "Error insert 10072 failed" << endl;
+    ndb_mgm_destroy_logevent_handle(&log_handle);
+    return NDBT_FAILED;
+  }
+
+  /* Start without waiting for completion: the victim's confirmation is
+   * held, so the backup cannot complete until the insert is cleared.
+   * The scan of the test table and the stop GCI take a few seconds at
+   * most; after that the master waits for the victim alone.
+   */
+  bool failed = false;
+  unsigned backupId = 0;
+  if (backup.start(backupId, 1 /* wait started */) != 0) {
+    g_err << "ERROR: could not start the backup" << endl;
+    failed = true;
+  } else {
+    NdbSleep_SecSleep(10);
+    g_err << "Aborting backup " << backupId << " from the client" << endl;
+    if (backup.abort(backupId) != 0) {
+      g_err << "ERROR: client abort of backup " << backupId << " failed"
+            << endl;
+      failed = true;
+    }
+    NdbSleep_SecSleep(1);
+  }
+  /* Release the held confirmation. */
+  if (restarter.insertErrorInAllNodes(0) != 0) {
+    g_err << "NOTE: clearing error inserts reported failure" << endl;
+  }
+
+  if (!failed) {
+    Uint32 abortError = 0;
+    struct ndb_logevent event;
+    Uint64 endTime = NdbTick_CurrentMillisecond() + (30 * 1000);
+    while (NdbTick_CurrentMillisecond() < endTime) {
+      int res = ndb_logevent_get_next(log_handle, &event, 500);
+      if (res < 0) break;
+      if (res > 0 && event.type == NDB_LE_BackupAborted) {
+        abortError = event.BackupAborted.error;
+        break;
+      }
+    }
+    if (abortError != clientAbortError) {
+      g_err << "ERROR: expected backup abort error " << clientAbortError
+            << ", observed " << abortError << endl;
+      failed = true;
+    }
+  }
+  ndb_mgm_destroy_logevent_handle(&log_handle);
+  if (failed) return NDBT_FAILED;
+
+  /* Every participant must remove its files, the master included. */
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    int exist = -1;
+    int shells = -1;
+    for (int p = 0; p < 20; p++) {
+      exist = backup.backupDirsExist(n);
+      shells = backup.backupShellsExist(n);
+      if (exist == 0 && shells == 0) break;
+      NdbSleep_MilliSleep(500);
+    }
+    if (exist != 0 || shells != 0) {
+      g_err << "ERROR: BACKUP-* debris remains on node " << n
+            << " after the client abort (content " << exist << ", shells "
+            << shells << ")" << (n == masterNodeId ? " [master]" : "")
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_err << "Node " << n << " is clean" << endl;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "ERROR: cluster not fully started after the aborted backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  /* A successful backup proves the records were released. */
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: backup failing after the client abort" << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Post-abort backup " << backupId << " succeeded" << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "ERROR: final cleanup failed, leaving the post-abort backup"
+          << endl;
+    return NDBT_FAILED;
+  }
+
+  return NDBT_OK;
+}
+
 static int oneDeadParticipantRound(NdbBackup &backup, NdbRestarter &restarter,
                                    int victim, Uint32 eiCode,
                                    unsigned user_backup_id) {
@@ -3693,6 +3859,14 @@ TESTCASE("FragmentRefDuplicate",
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
   STEP(runFragmentRefMidScan);
+}
+TESTCASE("ClientAbortDuringStop",
+         "Check that a client abort while the master collects the stop"
+         " replies removes the backup's files on every node, the master"
+         " included") {
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runClientAbortDuringStop);
 }
 TESTCASE("AbortRemovesAllNodesFiles",
          "Check that an aborted backup removes its files on every"

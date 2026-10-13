@@ -599,6 +599,22 @@ void BackupProxy::execABORT_BACKUP_ORD(Signal *signal) {
                  AbortBackupOrd::SignalLengthDebrisSweep, JBB);
       return;
     }
+    if (requestType == AbortBackupOrd::CleanupFailedBackup) {
+      /* Only the master's BACKUP block orders the removal of a failed
+       * backup's files. Check before the fan-out below: it rewrites
+       * senderRef, so the workers could no longer tell.
+       */
+      const BlockReference senderRef = signal->getSendersBlockRef();
+      if (getNodeInfo(refToNode(senderRef)).getType() != NodeInfo::DB ||
+          refToMain(senderRef) != BACKUP || ord->senderRef != senderRef) {
+        jam();
+        g_eventLogger->info(
+            "BACKUP proxy: ignoring failed-backup cleanup order for"
+            " backup %u from 0x%x",
+            ord->backupId, senderRef);
+        return;
+      }
+    }
   }
 
   bool found = false;

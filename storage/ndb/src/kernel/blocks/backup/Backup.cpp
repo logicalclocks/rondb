@@ -4397,6 +4397,7 @@ void Backup::execBACKUP_REQ(Signal *signal) {
   ptr.p->errorCode = 0;
   ptr.p->m_remove_files_after_cleanup = false;
   ptr.p->m_backup_completed_ok = false;
+  ptr.p->m_cleanup_started = false;
   ptr.p->m_sweep_gen_floor = m_debris_sweep_next_gen;
   ptr.p->m_backup_files_created = false;
   ptr.p->m_backup_files_preexisted = false;
@@ -6490,6 +6491,7 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
   ptr.p->errorCode = 0;
   ptr.p->m_remove_files_after_cleanup = false;
   ptr.p->m_backup_completed_ok = false;
+  ptr.p->m_cleanup_started = false;
   ptr.p->m_sweep_gen_floor = m_debris_sweep_next_gen;
   ptr.p->m_backup_files_created = false;
   ptr.p->m_backup_files_preexisted = false;
@@ -11554,6 +11556,21 @@ void Backup::closeFilesDone(Signal *signal, BackupRecordPtr ptr) {
     conf->noOfLogRecordsLow = conf->noOfLogRecordsHigh = 0;
   }
 
+#ifdef ERROR_INSERT
+  if (ERROR_INSERTED(10072) && !ptr.p->is_lcp()) {
+    jam();
+    /* 10072: hold this participant's stop confirmation until the
+     * insert is cleared, so the master finishes its own stop and then
+     * waits for this node (e.g. for a client abort in that window).
+     */
+    sendSignalAfterErrorCondCleared(ptr.p->senderRef, GSN_STOP_BACKUP_CONF,
+                                    signal, StopBackupConf::SignalLength, JBB,
+                                    nullptr, 10072, 100);
+    ptr.p->m_gsn = GSN_STOP_BACKUP_CONF;
+    ptr.p->slaveState.setState(CLEANING);
+    return;
+  }
+#endif
   sendSignal(ptr.p->senderRef, GSN_STOP_BACKUP_CONF, signal,
              StopBackupConf::SignalLength, JBB);
 
@@ -11589,6 +11606,28 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
   dumpUsedResources();
 #endif
 
+  if (requestType == AbortBackupOrd::CleanupFailedBackup ||
+      requestType == AbortBackupOrd::RemoveFailedBackupFiles ||
+      requestType == AbortBackupOrd::RemoveFailedBackupFilesConf ||
+      requestType == AbortBackupOrd::RemoveFailedBackupFilesRef) {
+    /* The failed-backup cleanup orders only travel between BACKUP
+     * blocks of data nodes, and every sender stamps its own reference
+     * into senderRef. ABORT_BACKUP_ORD as a whole is open to management
+     * nodes (ClientAbort), and an order from anywhere else would make
+     * this node remove backup files.
+     */
+    const BlockReference senderRef = signal->getSendersBlockRef();
+    if (getNodeInfo(refToNode(senderRef)).getType() != NodeInfo::DB ||
+        refToMain(senderRef) != BACKUP || ord->senderRef != senderRef) {
+      jam();
+      g_eventLogger->info(
+          "Backup: ignoring failed-backup cleanup order type=%u for"
+          " backup %u from 0x%x",
+          requestType, backupId, senderRef);
+      return;
+    }
+  }
+
   if (requestType == AbortBackupOrd::RemoveFailedBackupFiles ||
       requestType == AbortBackupOrd::RemoveFailedBackupFilesConf ||
       requestType == AbortBackupOrd::RemoveFailedBackupFilesRef) {
@@ -11602,21 +11641,6 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
           "Backup: ignoring malformed debris sweep signal type=%u"
           " length=%u",
           requestType, signal->getLength());
-      return;
-    }
-    /* Only BACKUP blocks of data nodes send these. ABORT_BACKUP_ORD as
-     * a whole is open to management nodes (ClientAbort), and an order
-     * from anywhere else would make this node unlink backup files.
-     */
-    const BlockReference senderRef = signal->getSendersBlockRef();
-    if (getNodeInfo(refToNode(senderRef)).getType() != NodeInfo::DB ||
-        refToMain(senderRef) != BACKUP ||
-        (requestType == AbortBackupOrd::RemoveFailedBackupFiles &&
-         ord->senderRef != senderRef)) {
-      jam();
-      g_eventLogger->info(
-          "Backup: ignoring debris sweep signal type=%u from 0x%x",
-          requestType, senderRef);
       return;
     }
     if (requestType == AbortBackupOrd::RemoveFailedBackupFiles) {
@@ -11700,23 +11724,6 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
             requestType, backupId, senderData, ptr.p->backupId);
         return;
       }
-      if (ptr.p->slaveState.getState() == CLEANING &&
-          ptr.p->m_gsn == GSN_ABORT_BACKUP_ORD) {
-        jam();
-        /* The record's cleanup has already started, or it stalled there
-         * (a leaked record). A further order for the same id - a
-         * duplicate, or the abort of a new attempt that reused the id
-         * and failed on this occupied slot - must not run it through
-         * stop processing and cleanup again: the second cleanup would
-         * remove the files of the backup the record belongs to, even
-         * when that backup succeeded.
-         */
-        g_eventLogger->info(
-            "Backup: ignoring abort request type=%u for backup %u:"
-            " record %u is already in cleanup",
-            requestType, backupId, senderData);
-        return;
-      }
     } else {
       jam();
 #ifdef DEBUG_ABORT
@@ -11727,6 +11734,26 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
       return;
     }
   }  // if
+
+  if (ptr.p->m_cleanup_started ||
+      (requestType == AbortBackupOrd::ClientAbort &&
+       ptr.p->m_backup_completed_ok)) {
+    jam();
+    /* The record's cleanup has started (or stalled there - a leaked
+     * record), or the backup has completed: nothing is left to abort.
+     * A further order - a duplicate, a client abort after the success
+     * verdict, or the abort of a new attempt that reused the id and
+     * failed on this occupied slot - must neither record an error nor
+     * run the record through stop processing and cleanup again; both
+     * would remove the files of the backup the record belongs to.
+     */
+    g_eventLogger->info(
+        "Backup: ignoring abort request type=%u for backup %u: %s",
+        requestType, backupId,
+        ptr.p->m_cleanup_started ? "its cleanup has started"
+                                 : "it has completed");
+    return;
+  }
 
   const Uint32 previousGsn = ptr.p->m_gsn;
   ptr.p->m_gsn = GSN_ABORT_BACKUP_ORD;
@@ -11877,6 +11904,7 @@ void Backup::dumpUsedResources() {
 }
 
 void Backup::cleanup(Signal *signal, BackupRecordPtr ptr) {
+  ptr.p->m_cleanup_started = true;
   TablePtr tabPtr;
   ptr.p->tables.first(tabPtr);
   cleanupNextTable(signal, ptr, tabPtr);
@@ -11975,13 +12003,17 @@ void Backup::cleanupNextTable(Signal *signal, BackupRecordPtr ptr,
 #endif
 
   if ((ptr.p->checkError() || ptr.p->m_remove_files_after_cleanup) &&
-      ptr.p->m_backup_files_created && !ptr.p->m_backup_files_preexisted) {
+      ptr.p->m_backup_files_created && !ptr.p->m_backup_files_preexisted &&
+      !ptr.p->m_backup_completed_ok) {
     /* Remove the failed backup's fileset — but only one this attempt
      * owns: never a directory whose files already existed (a valid
-     * earlier backup with the same id), and nothing when the failure
-     * struck before any file was created. removeBackup stamps backupId
-     * into the FSREMOVEREQ, so it must still hold the real id here; it
-     * is invalidated when the removal confirms (execFSREMOVECONF).
+     * earlier backup with the same id), nothing when the failure
+     * struck before any file was created, and nothing once the master
+     * rendered the success verdict (an error recorded after it does
+     * not make the completed backup invalid). removeBackup stamps
+     * backupId into the FSREMOVEREQ, so it must still hold the real id
+     * here; it is invalidated when the removal confirms
+     * (execFSREMOVECONF).
      */
     jam();
     removeBackup(signal, ptr);
