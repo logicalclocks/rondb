@@ -36,7 +36,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10057
+Next BACKUP 10065
 Next PGMAN 11010
 Next DBTUX 12010
 Next SUMA 13063
@@ -711,6 +711,31 @@ Backup Stuff:
        Can be supplied with DUMP 13003
        Only works if SCAN_NEXTREQ required ( > 1 batch of
        LCP scan results from fragment)
+10057: As 10045, but without crash insertion, so the LCP data file
+       append error takes the real error-handling path while the scan
+       still owns the file
+10058: As 10044, but non-crashing and only after the LCP fragment scan
+       completed, so the append error hits the data file close path
+       into the LCP row-count check
+10059: As 10058, but only on fragments where the paired row count skew
+       in lcp_write_ctl_file can falsify the row-count check
+10060: Fail the backup scan of the fragment selected by the error
+       insert extra (tableId << 16 | fragmentNo) mid-scan, so the
+       worker sends BACKUP_FRAGMENT_REF while other fragments of the
+       same node are scanning
+10061: As 10060, and the worker sends the BACKUP_FRAGMENT_REF twice
+10062: Leak the backup record at cleanup instead of releasing it
+       (one-shot), so the next backup's DEFINE_BACKUP_REQ hits the
+       seize-failure path; only a node restart frees the record
+10063: As 10036, but only once the backup reached its stop phase (log
+       file trailer), after the other participants confirmed their
+       stop with cleanly closed files (one-shot)
+10064: Hold a received debris sweep order for 15s before its first
+       removal (define barrier stays installed), opening a window for
+       a same-id DEFINE to arrive (one-shot on the holding worker).
+       With extra = a backup id, any OTHER worker that receives a
+       DEFINE for that id crashes - proving the proxy rejected the
+       define before its fan-out
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 

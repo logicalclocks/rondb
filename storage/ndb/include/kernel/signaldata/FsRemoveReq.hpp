@@ -61,6 +61,12 @@ class FsRemoveReq {
    */
   static constexpr Uint32 SignalLength = 8;
 
+  /**
+   * Length including emptyDirectoryOnly. The plain 8-word signal
+   * behaves as emptyDirectoryOnly = 0.
+   */
+  static constexpr Uint32 SignalLengthEmptyDirectoryOnly = 9;
+
  private:
   /**
    * DATA VARIABLES
@@ -83,6 +89,17 @@ class FsRemoveReq {
    * 1 = remove directory specified in fileNumber
    */
   UintR ownDirectory;
+
+  /**
+   * If directory = 1 and ownDirectory = 1
+   *
+   * 0 = remove recursively (rm -rf)
+   * 1 = remove the directory itself only if it is empty (plain rmdir,
+   *     never recursing); a missing or non-empty directory is not an
+   *     error. This is the only removal mode safe on a directory that
+   *     may hold content the sender does not own.
+   */
+  UintR emptyDirectoryOnly;
 };
 
 DECLARE_SIGNAL_SCOPE(GSN_FSREMOVEREQ, Local);

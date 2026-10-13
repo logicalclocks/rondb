@@ -728,6 +728,9 @@ void Ndbfs::execFSREMOVEREQ(Signal *signal) {
   request->action = Request::rmrf;
   request->par.rmrf.directory = req->directory;
   request->par.rmrf.own_directory = req->ownDirectory;
+  request->par.rmrf.empty_directory_only =
+      (signal->getLength() >= FsRemoveReq::SignalLengthEmptyDirectoryOnly) &&
+      (req->emptyDirectoryOnly != 0);
   NDBFS_SET_REQUEST_ERROR(request, 0);
   request->set(userRef, req->userPointer, newId());
   request->file = file;
