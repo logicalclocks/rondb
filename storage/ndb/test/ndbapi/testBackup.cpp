@@ -934,8 +934,7 @@ int runClientAbortDuringStop(NDBT_Context *ctx, NDBT_Step *step) {
    * backup fail: the master's own stop has already completed, so the
    * abort only records the error, and the failure verdict then orders
    * every participant - the master's own record included - to remove
-   * its files. EI 10072 holds a non-master participant's stop
-   * confirmation until the insert is cleared, which opens that window.
+   * its files.
    */
   const Uint32 clientAbortError = 1321; /* AbortBackupOrd::ClientAbort */
 
@@ -993,65 +992,92 @@ int runClientAbortDuringStop(NDBT_Context *ctx, NDBT_Step *step) {
     }
   }
 
-  int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP, 0};
-  NdbLogEventHandle log_handle =
-      ndb_mgm_create_logevent_handle(restarter.handle, filter);
-  if (log_handle == NULL) {
-    g_err << "Failed to create log event handle" << endl;
-    return NDBT_FAILED;
-  }
-
-  if (restarter.insertErrorInNode(victim, 10072) != 0) {
-    g_err << "Error insert 10072 failed" << endl;
-    ndb_mgm_destroy_logevent_handle(&log_handle);
-    return NDBT_FAILED;
-  }
-
-  /* Start without waiting for completion: the victim's confirmation is
-   * held, so the backup cannot complete until the insert is cleared.
-   * The scan of the test table and the stop GCI take a few seconds at
-   * most; after that the master waits for the victim alone.
+  /* EI 10072 holds the victim's stop confirmation, so the master's own
+   * stop reply arrives first; EI 10073 makes the master record a client
+   * abort exactly when its own reply is consumed while the victim's is
+   * outstanding. Abort error 1321 can only come from that hook, so an
+   * aborted backup proves the window was exercised. A completed backup
+   * means the master's own reply came last (the hold was released too
+   * early), and the round is repeated.
    */
-  bool failed = false;
-  unsigned backupId = 0;
-  if (backup.start(backupId, 1 /* wait started */) != 0) {
-    g_err << "ERROR: could not start the backup" << endl;
-    failed = true;
-  } else {
-    NdbSleep_SecSleep(10);
-    g_err << "Aborting backup " << backupId << " from the client" << endl;
-    if (backup.abort(backupId) != 0) {
-      g_err << "ERROR: client abort of backup " << backupId << " failed"
-            << endl;
-      failed = true;
+  bool aborted = false;
+  for (int attempt = 1; attempt <= 5 && !aborted; attempt++) {
+    int filter[] = {15, NDB_MGM_EVENT_CATEGORY_BACKUP, 0};
+    NdbLogEventHandle log_handle =
+        ndb_mgm_create_logevent_handle(restarter.handle, filter);
+    if (log_handle == NULL) {
+      g_err << "Failed to create log event handle" << endl;
+      return NDBT_FAILED;
     }
-    NdbSleep_SecSleep(1);
-  }
-  /* Release the held confirmation. */
-  if (restarter.insertErrorInAllNodes(0) != 0) {
-    g_err << "NOTE: clearing error inserts reported failure" << endl;
-  }
+    if (restarter.insertErrorInNode(victim, 10072) != 0 ||
+        restarter.insertErrorInNode(masterNodeId, 10073) != 0) {
+      g_err << "Error insert 10072/10073 failed" << endl;
+      ndb_mgm_destroy_logevent_handle(&log_handle);
+      restarter.insertErrorInAllNodes(0);
+      return NDBT_FAILED;
+    }
 
-  if (!failed) {
+    /* Start without waiting for completion: the victim's confirmation
+     * is held. The scan of the test table, the stop GCI and the
+     * master's own stop take a few seconds at most.
+     */
+    unsigned backupId = 0;
+    if (backup.start(backupId, 1 /* wait started */) != 0) {
+      g_err << "ERROR: could not start the backup" << endl;
+      ndb_mgm_destroy_logevent_handle(&log_handle);
+      restarter.insertErrorInAllNodes(0);
+      return NDBT_FAILED;
+    }
+    NdbSleep_SecSleep(10);
+    /* Release the held confirmation. */
+    if (restarter.insertErrorInAllNodes(0) != 0) {
+      g_err << "NOTE: clearing error inserts reported failure" << endl;
+    }
+
+    int outcome = 0;
     Uint32 abortError = 0;
     struct ndb_logevent event;
-    Uint64 endTime = NdbTick_CurrentMillisecond() + (30 * 1000);
-    while (NdbTick_CurrentMillisecond() < endTime) {
+    Uint64 endTime = NdbTick_CurrentMillisecond() + (60 * 1000);
+    while (outcome == 0 && NdbTick_CurrentMillisecond() < endTime) {
       int res = ndb_logevent_get_next(log_handle, &event, 500);
       if (res < 0) break;
-      if (res > 0 && event.type == NDB_LE_BackupAborted) {
+      if (res == 0) continue;
+      if (event.type == NDB_LE_BackupAborted) {
+        outcome = NDB_LE_BackupAborted;
         abortError = event.BackupAborted.error;
-        break;
+      } else if (event.type == NDB_LE_BackupCompleted) {
+        outcome = NDB_LE_BackupCompleted;
       }
     }
-    if (abortError != clientAbortError) {
-      g_err << "ERROR: expected backup abort error " << clientAbortError
-            << ", observed " << abortError << endl;
-      failed = true;
+    ndb_mgm_destroy_logevent_handle(&log_handle);
+
+    if (outcome == NDB_LE_BackupCompleted) {
+      g_err << "Attempt " << attempt << ": backup " << backupId
+            << " completed - the master's own stop reply came last,"
+            << " retrying" << endl;
+      if (backup.clearOldBackups() != 0) {
+        g_err << "clearOldBackups failed" << endl;
+        return NDBT_FAILED;
+      }
+      continue;
     }
+    if (outcome != NDB_LE_BackupAborted || abortError != clientAbortError) {
+      g_err << "ERROR: expected backup abort error " << clientAbortError
+            << ", observed " << (outcome == 0 ? 0 : abortError)
+            << (outcome == 0 ? " (no abort or completion reported)" : "")
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_err << "Attempt " << attempt << ": backup " << backupId
+          << " aborted with " << abortError << " during stop collection"
+          << endl;
+    aborted = true;
   }
-  ndb_mgm_destroy_logevent_handle(&log_handle);
-  if (failed) return NDBT_FAILED;
+  if (!aborted) {
+    g_err << "ERROR: the master's own stop reply never arrived first -"
+          << " the stop-collection window was not exercised" << endl;
+    return NDBT_FAILED;
+  }
 
   /* Every participant must remove its files, the master included. */
   for (int i = 0; i < restarter.getNumDbNodes(); i++) {
@@ -1081,6 +1107,7 @@ int runClientAbortDuringStop(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   /* A successful backup proves the records were released. */
+  unsigned backupId = 0;
   if (backup.start(backupId) != 0) {
     g_err << "ERROR: backup failing after the client abort" << endl;
     return NDBT_FAILED;

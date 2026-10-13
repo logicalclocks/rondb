@@ -5947,6 +5947,25 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
 
   if (!haveAllSignals(ptr, GSN_STOP_BACKUP_REQ, nodeId)) {
     jam();
+#ifdef ERROR_INSERT
+    if (ERROR_INSERTED(10073) && nodeId == getOwnNodeId()) {
+      jam();
+      /* 10073: this node's own stop reply arrived while others are
+       * still outstanding - the coordinator's record has finished its
+       * own stop. Record a client abort right here (one-shot).
+       */
+      CLEAR_ERROR_INSERT_VALUE;
+      g_eventLogger->info("EI 10073: client abort of backup %u during stop"
+                          " collection",
+                          ptr.p->backupId);
+      AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtrSend();
+      ord->requestType = AbortBackupOrd::ClientAbort;
+      ord->backupId = ptr.p->backupId;
+      ord->senderData = ptr.p->clientData;
+      ord->senderRef = reference();
+      execABORT_BACKUP_ORD(signal);
+    }
+#endif
     return;
   }
 
