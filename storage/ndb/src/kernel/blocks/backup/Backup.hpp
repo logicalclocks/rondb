@@ -1070,6 +1070,11 @@ class Backup : public SimulatedBlock {
     Uint32 m_phase = SWEEP_FILES;
   };
   DebrisSweep m_debris_sweep;
+  /**
+   * FSREMOVEREQ userPointer of DUMP 22's directory removal: its
+   * confirm belongs to no backup record (RNIL is the debris sweep's).
+   */
+  static constexpr Uint32 DumpRemoveBackupCookie = RNIL - 1;
 
   bool c_encrypted_filesystem;
 

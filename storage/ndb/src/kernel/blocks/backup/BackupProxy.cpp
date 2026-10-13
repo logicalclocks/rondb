@@ -245,9 +245,8 @@ void BackupProxy::execDEFINE_BACKUP_REQ(Signal *signal) {
        * files the sweep is about to unlink, and the doomed attempt's
        * later cleanup could in turn remove a retry's files. Reject
        * before any worker sees it - the sweep is short, a retry
-       * succeeds. (Never for DBLQH's one-time LCP define, which does
-       * not pass through the proxy's backup fan anyway and cannot
-       * handle a REF.)
+       * succeeds. (DBLQH's one-time LCP define goes to its own
+       * worker directly and never reaches this point.)
        */
       g_eventLogger->warning(
           "BACKUP proxy: DEFINE_BACKUP_REQ for backup %u while its"
@@ -519,6 +518,21 @@ void BackupProxy::execABORT_BACKUP_ORD(Signal *signal) {
             "BACKUP proxy: ignoring malformed debris sweep order"
             " length=%u backupId=%u",
             signal->getLength(), ord->backupId);
+        return;
+      }
+      /* Only the master's BACKUP block orders a sweep. ABORT_BACKUP_ORD
+       * as a whole is open to management nodes (ClientAbort), and an
+       * order from anywhere else would make this node unlink backup
+       * files.
+       */
+      const BlockReference senderRef = signal->getSendersBlockRef();
+      if (getNodeInfo(refToNode(senderRef)).getType() != NodeInfo::DB ||
+          refToMain(senderRef) != BACKUP || ord->senderRef != senderRef) {
+        jam();
+        g_eventLogger->info(
+            "BACKUP proxy: ignoring debris sweep order for backup %u"
+            " from 0x%x",
+            ord->backupId, senderRef);
         return;
       }
       if (m_sweep_backup_id != 0 || m_backup_defined_since_start) {

@@ -122,6 +122,15 @@ class NdbBackup : public NdbConfig {
                   int password_length = -1);
 
   std::string getBackupDataDirForNode(int node_id);
+  /**
+   * Run a shell command on the host of the data node (locally, or over
+   * ssh). nodeShellCheck expects the command to print EXIST or NONE and
+   * returns 1 or 0, -1 when it fails or prints anything else;
+   * nodeShellCommand returns 0 when the command succeeds, else -1.
+   * Both return -1 on Windows.
+   */
+  int nodeShellCheck(int node_id, const BaseString &command);
+  int nodeShellCommand(int node_id, const BaseString &command);
   NdbLogEventHandle log_handle;
   BaseString getNdbRestoreBinaryPath();
   char *m_default_encryption_password;

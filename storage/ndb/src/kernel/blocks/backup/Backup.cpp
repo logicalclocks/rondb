@@ -2800,12 +2800,20 @@ void Backup::execDUMP_STATE_ORD(Signal *signal) {
   }
 
   if (signal->theData[0] == 22) {
+    if (signal->getLength() < 2) {
+      jam();
+      return;
+    }
     const Uint32 seq = signal->theData[1];
     FsRemoveReq *req = (FsRemoveReq *)signal->getDataPtrSend();
     req->userReference = reference();
-    req->userPointer = 23;
+    req->userPointer = DumpRemoveBackupCookie;
     req->directory = 1;
     req->ownDirectory = 1;
+    req->fileNumber[0] = 0;
+    req->fileNumber[1] = 0;
+    req->fileNumber[2] = 0;
+    req->fileNumber[3] = 0;
     FsOpenReq::setVersion(req->fileNumber, FsOpenReq::V_BACKUP);
     FsOpenReq::setSuffix(req->fileNumber, FsOpenReq::S_CTL);
     FsOpenReq::v2_setSequence(req->fileNumber, seq);
@@ -5949,12 +5957,22 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
      * part of a valid backup now.
      */
     for (Uint32 i = 0; i < MAX_NDB_NODES; i++) {
-      /* Only entries THIS attempt recorded (gen above the attempt's
-       * floor): an older failed attempt of a reused id still owes its
-       * sweep on a node that stayed down through this attempt.
+      if (m_pending_sweeps[i].backupId != ptr.p->backupId) {
+        continue;
+      }
+      /* Entries THIS attempt recorded (gen above the attempt's floor)
+       * are dropped. An older failed attempt of a reused id still owes
+       * its sweep on a node that stayed down through this attempt, or
+       * whose files of that attempt used another layout - but not on a
+       * node that took part in this attempt with the same layout: its
+       * define created the same leaf files with OM_CREATE_IF_NONE, so
+       * the old debris is gone, and the sweep would now remove this
+       * valid backup's files.
        */
-      if (m_pending_sweeps[i].backupId == ptr.p->backupId &&
-          m_pending_sweeps[i].gen > ptr.p->m_sweep_gen_floor) {
+      const Uint32 parts =
+          MT_BACKUP_FLAG(ptr.p->flags) ? getNodeInfo(i).m_lqh_workers : 0;
+      if (m_pending_sweeps[i].gen > ptr.p->m_sweep_gen_floor ||
+          (ptr.p->nodes.get(i) && m_pending_sweeps[i].totalParts == parts)) {
         jam();
         g_eventLogger->info(
             "Backup: backup %u completed - dropping the debris sweep"
@@ -6344,8 +6362,9 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
      * backup with this very id (ordered at its rejoin): defining a
      * new backup now would open files the sweep is about to unlink.
      * Fail the new backup cleanly - the sweep is millisecond-scale,
-     * a retry succeeds. (Never for DBLQH's one-time LCP define,
-     * which cannot handle a REF.)
+     * a retry succeeds. (Never for DBLQH's one-time LCP define: on a
+     * REF with this code DBLQH would continue its start without an
+     * LCP record.)
      */
     g_eventLogger->warning(
         "DEFINE_BACKUP_REQ for backup %u while its debris sweep is"
@@ -6388,15 +6407,17 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
       if (backupDataLen == ~(Uint32)0) {
         jam();
         /* DBLQH's one-time LCP define at start: an occupied slot here
-         * is unrecoverable state corruption, and DBLQH has no handling
-         * for a REF of it. Keep it fatal.
+         * is state corruption, and on a REF with this code DBLQH would
+         * continue its start without an LCP record. Keep it fatal.
          */
         ndbabort();
       }
-      /* The slot is still occupied: a record leaked by an abort that
-       * never completed its cleanup (e.g. after a master death). Fail
-       * this backup instead of dying with it - the leak is survivable
-       * and only a node restart frees the record.
+      /* The slot is still occupied: this node is still cleaning up
+       * its previous backup while the master already accepted a new
+       * one, or a record leaked by an abort that never completed its
+       * cleanup (e.g. after a master death). Fail this backup instead
+       * of dying with it - a retry succeeds once the cleanup is done,
+       * and only a node restart frees a leaked record.
        */
       BackupRecordPtr stuck;
       ndbrequire(c_backupPool.getPtr(stuck, ptrI));
@@ -11583,6 +11604,21 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
           requestType, signal->getLength());
       return;
     }
+    /* Only BACKUP blocks of data nodes send these. ABORT_BACKUP_ORD as
+     * a whole is open to management nodes (ClientAbort), and an order
+     * from anywhere else would make this node unlink backup files.
+     */
+    const BlockReference senderRef = signal->getSendersBlockRef();
+    if (getNodeInfo(refToNode(senderRef)).getType() != NodeInfo::DB ||
+        refToMain(senderRef) != BACKUP ||
+        (requestType == AbortBackupOrd::RemoveFailedBackupFiles &&
+         ord->senderRef != senderRef)) {
+      jam();
+      g_eventLogger->info(
+          "Backup: ignoring debris sweep signal type=%u from 0x%x",
+          requestType, senderRef);
+      return;
+    }
     if (requestType == AbortBackupOrd::RemoveFailedBackupFiles) {
       jam();
       /* Record-less by design: this node's record of the failed backup
@@ -11662,6 +11698,23 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
             "Backup: ignoring abort request type=%u for backup %u:"
             " record %u belongs to backup %u",
             requestType, backupId, senderData, ptr.p->backupId);
+        return;
+      }
+      if (ptr.p->slaveState.getState() == CLEANING &&
+          ptr.p->m_gsn == GSN_ABORT_BACKUP_ORD) {
+        jam();
+        /* The record's cleanup has already started, or it stalled there
+         * (a leaked record). A further order for the same id - a
+         * duplicate, or the abort of a new attempt that reused the id
+         * and failed on this occupied slot - must not run it through
+         * stop processing and cleanup again: the second cleanup would
+         * remove the files of the backup the record belongs to, even
+         * when that backup succeeded.
+         */
+        g_eventLogger->info(
+            "Backup: ignoring abort request type=%u for backup %u:"
+            " record %u is already in cleanup",
+            requestType, backupId, senderData);
         return;
       }
     } else {
@@ -12309,6 +12362,11 @@ void Backup::execFSREMOVECONF(Signal *signal) {
     jam();
     /* Reserved cookie of the record-less debris sweep. */
     debrisSweepConf(signal);
+    return;
+  }
+  if (ptrI == DumpRemoveBackupCookie) {
+    jam();
+    /* DUMP 22's removal (a REF arrives here too): nothing to do. */
     return;
   }
 

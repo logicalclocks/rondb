@@ -505,18 +505,19 @@ int runFailedBackupLeavesNoFiles(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
-int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
-  /* BACKUP_FRAGMENT_REF carries no table/fragment identity. The master
-   * must identify the REF'd fragment from the sender's LDM instance;
-   * consuming the first in-flight fragment of that node instead marks
-   * another LDM worker's fragment as scanned, and that worker's later
-   * BACKUP_FRAGMENT_CONF kills the master on the scanned==0 ndbrequire.
+int runFragmentRefMidScan(NDBT_Context *ctx, NDBT_Step *step) {
+  /* A worker's BACKUP_FRAGMENT_REF arrives while other fragments of the
+   * same node are still being scanned. The master must consume exactly
+   * the REF'd fragment (the REF carries tableId and fragmentNo) and
+   * keep its send counter right, and the errored worker must end its
+   * file thread before its files close, or FSCLOSECONF's file-flags
+   * check kills it.
    *
    * EI 10067 fails the backup scan of one selected fragment mid-scan
    * (its worker REFs while the node's other fragments are scanning).
    * EI 10068 (property "EICode") additionally duplicates the REF: the
-   * duplicate matches no in-flight fragment and must be a no-op, not
-   * consume another fragment or fabricate an abort reason (1324).
+   * duplicate's fragment is no longer in flight, and the master must
+   * not die on it - it records the error and keeps the abort going.
    */
   const Uint32 eiCode = ctx->getProperty("EICode", Uint32(10067));
 
@@ -541,19 +542,14 @@ int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
-  /* Pick the target fragment: the highest-numbered fragment sharing
-   * its primary node with a lower-numbered fragment. The lower one is
-   * earlier in the master's REF match loop, so in the broken state the
-   * REF consumes it instead of the target.
-   *
-   * The wrong-worker consume needs the sibling to be mid-scan when the
-   * REF arrives, i.e. multithreaded backup with the two fragments on
-   * different LDMs (the record threshold in the error insert plus the
-   * row count keep that window wide). Without those conditions - e.g.
-   * single-threaded backup, where a node has at most one in-flight
-   * fragment and the identity-less match was trivially correct - the
-   * bug cannot manifest and this test degrades to checking the plain
-   * error-abort path.
+  /* Pick the target fragment: preferably the highest-numbered fragment
+   * sharing its primary node with a lower-numbered fragment, so that
+   * with multithreaded backup (the fragments on different LDMs) the
+   * REF arrives while a sibling of the same node is mid-scan - the
+   * record threshold in the error insert plus the row count keep that
+   * window wide. Without such a sibling the highest-numbered fragment
+   * is used: the REF handling and the worker's file close are still
+   * exercised, only without a concurrent sibling scan.
    */
   Ndb *pNdb = GETNDB(step);
   const NdbDictionary::Table *pTab =
@@ -587,10 +583,9 @@ int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
     }
   }
   if (targetFrag < 0) {
+    targetFrag = (int)fragCount - 1;
     g_err << "NOTE: no two fragments share a primary node (" << fragCount
-          << " fragments) - cannot exercise the REF match, skipping" << endl;
-    ctx->stopTest();
-    return NDBT_OK;
+          << " fragments) - the REF arrives without a sibling scan" << endl;
   }
   const Uint32 tableId = (Uint32)pTab->getObjectId();
   if (tableId >= 0x10000 || targetFrag >= 0x10000) {
@@ -641,10 +636,9 @@ int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
     g_err << "Backup failed as intended" << endl;
   }
 
-  /* No node may die. In the broken state the master consumes another
-   * LDM worker's in-flight fragment and dies with error 2341 on that
-   * worker's BACKUP_FRAGMENT_CONF (scanned == 0 ndbrequire), and the
-   * errored worker dies on the FSCLOSECONF file-flags check. Watch
+  /* No node may die. In the broken states the master dies with error
+   * 2341 on the duplicate REF (its fragment is no longer in flight),
+   * and the errored worker dies on the FSCLOSECONF file-flags check. Watch
    * the event stream (catches a crash even if the node auto-restarts
    * before the cluster-state check below), draining a few seconds
    * beyond the abort report for a trailing crash.
@@ -685,14 +679,13 @@ int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
-  /* The abort must report the worker's real error 2810: not 1324
-   * (LogBufferFull fabricated for an unmatched REF) and not a node
-   * failure code.
+  /* The abort must report the worker's real error 2810, not the abort
+   * request type (1324 LogBufferFull) and not a node failure code.
    */
   if (abortError != 2810) {
     g_err << "ERROR: expected backup abort error 2810, observed "
           << abortError
-          << (abortError == 1324 ? " (fabricated LogBufferFull - the"
+          << (abortError == 1324 ? " (the abort request type - the"
                                    " worker's real error was discarded)"
                                  : "")
           << endl;
@@ -716,6 +709,45 @@ int runFragmentRefWrongWorker(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   return NDBT_OK;
+}
+
+/* The failed-backup cleanup orders are version-gated per receiving
+ * node, so their assertions only hold once EVERY data node supports
+ * them. Returns 1 if all data nodes do, 0 if one does not (the caller
+ * skips), -1 on error.
+ */
+static int allDataNodesSupportCleanupOrd(NdbRestarter &restarter) {
+  int minVer = 0;
+  int maxVer = 0;
+  if (restarter.getNodeTypeVersionRange(NDB_MGM_NODE_TYPE_NDB, minVer,
+                                        maxVer) != 0) {
+    g_err << "Failed to get the data node versions" << endl;
+    return -1;
+  }
+  if (!ndbd_backup_failed_cleanup_ord((Uint32)minVer)) {
+    g_err << "NOTE: a data node predates the failed-backup cleanup"
+          << " orders (gated), skipping" << endl;
+    return 0;
+  }
+  return 1;
+}
+
+/* Whether backups on this cluster use the multithreaded layout (one
+ * BACKUP-<id>-PART-<n>-OF-<m> directory per LDM), probed with a
+ * throwaway backup that is removed again. Returns 1 or 0, -1 on error.
+ */
+static int backupIsMultithreaded(NdbBackup &backup, int nodeId) {
+  unsigned backupId = 0;
+  if (backup.start(backupId) != 0) {
+    g_err << "Probe backup failed" << endl;
+    return -1;
+  }
+  const int mt = backup.backupMtDebrisExists(nodeId, backupId);
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed after the probe backup" << endl;
+    return -1;
+  }
+  return mt;
 }
 
 int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
@@ -743,20 +775,10 @@ int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
     return NDBT_FAILED;
   }
 
-  /* The cleanup order is version-gated (the coordinator downgrades it
-   * for nodes below the floor, which then keep their files as before
-   * the fix), so the assertion only holds once the data nodes report
-   * a supporting version.
-   */
   {
-    int version = 0;
-    if (restarter.getMasterNodeVersion(version) != 0) {
-      g_err << "Failed to get master node version" << endl;
-      return NDBT_FAILED;
-    }
-    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
-      g_err << "NOTE: data node version predates the failed-backup"
-            << " cleanup order (gated), skipping" << endl;
+    const int supported = allDataNodesSupportCleanupOrd(restarter);
+    if (supported < 0) return NDBT_FAILED;
+    if (supported == 0) {
       ctx->stopTest();
       return NDBT_OK;
     }
@@ -1021,14 +1043,9 @@ int runDeadParticipantSwept(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   {
-    int version = 0;
-    if (restarter.getMasterNodeVersion(version) != 0) {
-      g_err << "Failed to get master node version" << endl;
-      return NDBT_FAILED;
-    }
-    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
-      g_err << "NOTE: data node version predates the failed-backup"
-            << " cleanup order (gated), skipping" << endl;
+    const int supported = allDataNodesSupportCleanupOrd(restarter);
+    if (supported < 0) return NDBT_FAILED;
+    if (supported == 0) {
       ctx->stopTest();
       return NDBT_OK;
     }
@@ -1054,24 +1071,6 @@ int runDeadParticipantSwept(NDBT_Context *ctx, NDBT_Step *step) {
   }
   g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
         << endl;
-
-  /* The victim is the order's receiver: in a mixed cluster the master
-   * may support the order while the victim does not - the sweep is
-   * then rightly withheld and the assertion cannot hold.
-   */
-  {
-    int version = 0;
-    if (restarter.getNodeVersion(victim, version) != 0) {
-      g_err << "Failed to get victim node version" << endl;
-      return NDBT_FAILED;
-    }
-    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
-      g_err << "NOTE: victim node version predates the failed-backup"
-            << " cleanup order (gated), skipping" << endl;
-      ctx->stopTest();
-      return NDBT_OK;
-    }
-  }
 
   /* Verified clean baseline (also proves the checks themselves work). */
   if (backup.backupDirsExist(victim) != 0 ||
@@ -1106,36 +1105,44 @@ int runDeadParticipantSwept(NDBT_Context *ctx, NDBT_Step *step) {
 
   /* Round 2: a valid single-threaded fileset whose id a failed
    * multithreaded attempt reuses must survive the sweep - the sweep
-   * may only remove the failed attempt's own layout.
+   * may only remove the failed attempt's own layout. Needs backups in
+   * the multithreaded layout: with single-threaded backups the failed
+   * attempt's define would collide with the fabricated fileset.
    */
-  const unsigned fakeId = 900000;
-  if (backup.createStBackupFileset(victim, fakeId) != 0 ||
-      backup.stBackupFilesetExists(victim, fakeId) != 1) {
-    g_err << "Failed to fabricate the single-threaded fileset on node "
-          << victim << endl;
-    return NDBT_FAILED;
+  const int multithreaded = backupIsMultithreaded(backup, victim);
+  if (multithreaded < 0) return NDBT_FAILED;
+  if (multithreaded == 0) {
+    g_err << "NOTE: backups are single-threaded, skipping round 2" << endl;
+  } else {
+    const unsigned fakeId = 900000;
+    if (backup.createStBackupFileset(victim, fakeId) != 0 ||
+        backup.stBackupFilesetExists(victim, fakeId) != 1) {
+      g_err << "Failed to fabricate the single-threaded fileset on node "
+            << victim << endl;
+      return NDBT_FAILED;
+    }
+    if (oneDeadParticipantRound(backup, restarter, victim, eiCode, fakeId) !=
+        0) {
+      return NDBT_FAILED;
+    }
+    int mtDebris = -1;
+    for (int i = 0; i < 30; i++) {
+      mtDebris = backup.backupMtDebrisExists(victim, fakeId);
+      if (mtDebris == 0) break;
+      NdbSleep_MilliSleep(500);
+    }
+    if (mtDebris != 0) {
+      g_err << "ERROR: the failed attempt's part directories remain on node "
+            << victim << " (result " << mtDebris << ")" << endl;
+      return NDBT_FAILED;
+    }
+    if (backup.stBackupFilesetExists(victim, fakeId) != 1) {
+      g_err << "ERROR: the sweep removed the valid single-threaded fileset"
+            << " of backup " << fakeId << " on node " << victim << endl;
+      return NDBT_FAILED;
+    }
+    g_err << "Valid single-threaded fileset survived the sweep" << endl;
   }
-  if (oneDeadParticipantRound(backup, restarter, victim, eiCode, fakeId) !=
-      0) {
-    return NDBT_FAILED;
-  }
-  int mtDebris = -1;
-  for (int i = 0; i < 30; i++) {
-    mtDebris = backup.backupMtDebrisExists(victim, fakeId);
-    if (mtDebris == 0) break;
-    NdbSleep_MilliSleep(500);
-  }
-  if (mtDebris != 0) {
-    g_err << "ERROR: the failed attempt's part directories remain on node "
-          << victim << " (result " << mtDebris << ")" << endl;
-    return NDBT_FAILED;
-  }
-  if (backup.stBackupFilesetExists(victim, fakeId) != 1) {
-    g_err << "ERROR: the sweep removed the valid single-threaded fileset"
-          << " of backup " << fakeId << " on node " << victim << endl;
-    return NDBT_FAILED;
-  }
-  g_err << "Valid single-threaded fileset survived the sweep" << endl;
 
   /* A successful backup proves the cluster and the backup machinery
    * are sane after the crash rounds.
@@ -1182,14 +1189,9 @@ int runSweepBlocksSameIdBackup(NDBT_Context *ctx, NDBT_Step *step) {
   }
 
   {
-    int version = 0;
-    if (restarter.getMasterNodeVersion(version) != 0) {
-      g_err << "Failed to get master node version" << endl;
-      return NDBT_FAILED;
-    }
-    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
-      g_err << "NOTE: data node version predates the failed-backup"
-            << " cleanup order (gated), skipping" << endl;
+    const int supported = allDataNodesSupportCleanupOrd(restarter);
+    if (supported < 0) return NDBT_FAILED;
+    if (supported == 0) {
       ctx->stopTest();
       return NDBT_OK;
     }
@@ -1216,15 +1218,15 @@ int runSweepBlocksSameIdBackup(NDBT_Context *ctx, NDBT_Step *step) {
   g_err << "Victim node " << victim << " (master " << masterNodeId << ")"
         << endl;
 
+  /* The barrier under test guards the proxy's DEFINE fan-out, which
+   * only multithreaded backups use.
+   */
   {
-    int version = 0;
-    if (restarter.getNodeVersion(victim, version) != 0) {
-      g_err << "Failed to get victim node version" << endl;
-      return NDBT_FAILED;
-    }
-    if (!ndbd_backup_failed_cleanup_ord((Uint32)version)) {
-      g_err << "NOTE: victim node version predates the failed-backup"
-            << " cleanup order (gated), skipping" << endl;
+    const int multithreaded = backupIsMultithreaded(backup, victim);
+    if (multithreaded < 0) return NDBT_FAILED;
+    if (multithreaded == 0) {
+      g_err << "NOTE: backups are single-threaded (no define fan-out),"
+            << " skipping" << endl;
       ctx->stopTest();
       return NDBT_OK;
     }
@@ -1458,6 +1460,7 @@ int runStaleRecordFailsDefine(NDBT_Context *ctx, NDBT_Step *step) {
   }
   g_err << "Backup " << backupId << " succeeded (record now leaked on node "
         << victim << ")" << endl;
+  const unsigned leakedId = backupId;
 
   /* The client reply does not wait for participant cleanup, where the
    * error insert fires. Let the cleanup settle before clearing the
@@ -1542,6 +1545,36 @@ int runStaleRecordFailsDefine(NDBT_Context *ctx, NDBT_Step *step) {
 
   if (restarter.waitClusterStarted(60) != 0) {
     g_err << "ERROR: cluster not whole after the failed backup" << endl;
+    return NDBT_FAILED;
+  }
+
+  /* An attempt reusing the leaked record's own backup id fails on the
+   * same occupied slot, and its abort order then names the leaked
+   * record's id: the record must still be left alone - running it
+   * through cleanup again would remove the files of the successful
+   * backup it belongs to.
+   */
+  {
+    unsigned sameId = 0;
+    if (backup.start(sameId, 2, leakedId) == 0) {
+      g_err << "ERROR: backup " << leakedId << " reused its id although"
+            << " the files of that id exist" << endl;
+      return NDBT_FAILED;
+    }
+    NdbSleep_SecSleep(3);
+    const int mt = backup.backupMtDebrisExists(victim, leakedId);
+    const int st = backup.stBackupFilesetExists(victim, leakedId);
+    if (mt != 1 && st != 1) {
+      g_err << "ERROR: the files of backup " << leakedId << " on node "
+            << victim << " are gone after the same-id attempt (mt " << mt
+            << ", st " << st << ")" << endl;
+      return NDBT_FAILED;
+    }
+    g_err << "Files of backup " << leakedId << " survived the same-id"
+          << " attempt" << endl;
+  }
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "ERROR: cluster not whole after the same-id attempt" << endl;
     return NDBT_FAILED;
   }
 
@@ -3644,22 +3677,22 @@ TESTCASE("FailedBackupRemovesFiles",
   INITIALIZER(runLoadTable);
   STEP(runFailedBackupLeavesNoFiles);
 }
-TESTCASE("FragmentRefWrongWorker",
-         "Check that the master matches a BACKUP_FRAGMENT_REF to the"
-         " sender's own fragment, not another LDM worker's in-flight"
-         " one, and reports the worker's real error") {
+TESTCASE("FragmentRefMidScan",
+         "Check that a BACKUP_FRAGMENT_REF arriving while other fragments"
+         " of the node are scanning aborts the backup with the worker's"
+         " real error and no node dies") {
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
-  STEP(runFragmentRefWrongWorker);
+  STEP(runFragmentRefMidScan);
 }
 TESTCASE("FragmentRefDuplicate",
-         "Check that a duplicated BACKUP_FRAGMENT_REF matching no"
-         " in-flight fragment is ignored instead of consuming another"
-         " fragment or fabricating an abort reason") {
+         "Check that a duplicated BACKUP_FRAGMENT_REF, whose fragment is"
+         " no longer in flight, does not kill the master and the backup"
+         " aborts with the worker's real error") {
   TC_PROPERTY("EICode", Uint32(10068));
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
-  STEP(runFragmentRefWrongWorker);
+  STEP(runFragmentRefMidScan);
 }
 TESTCASE("AbortRemovesAllNodesFiles",
          "Check that an aborted backup removes its files on every"

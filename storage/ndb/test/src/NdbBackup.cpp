@@ -109,17 +109,63 @@ int NdbBackup::clearOldBackups() {
   return retCode;
 }
 
-int NdbBackup::backupDirsExist(int node_id) {
-#ifndef _WIN32
-  const std::string path = getBackupDataDirForNode(node_id);
-  if (path.empty()) return -1;
+/* The command run on the data node's host: locally, or over ssh. The
+ * ssh form double-quotes the whole command, so the commands use single
+ * quotes and no shell variables (a $var would be expanded locally).
+ */
+static BaseString nodeHostCommand(const char *host, const BaseString &command) {
+  BaseString cmd;
+  if (!isHostLocal(host)) {
+    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
+               command.c_str());
+  } else {
+    cmd = command;
+  }
+  return cmd;
+}
 
+int NdbBackup::nodeShellCheck(int node_id, const BaseString &command) {
+#ifndef _WIN32
   const char *host;
   if (!getHostName(node_id, &host)) return -1;
 
-  /* Print an unambiguous marker so that a command or transport failure
-   * cannot be mistaken for "no directories".
+  /* The command prints an unambiguous marker, so a command or transport
+   * failure cannot be mistaken for an answer.
    */
+  const BaseString cmd = nodeHostCommand(host, command);
+  FILE *fp = popen(cmd.c_str(), "r");
+  if (fp == NULL) return -1;
+  char buf[16] = {0};
+  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
+  const int rc = pclose(fp);
+  if (!got_line || rc != 0) return -1;
+  if (strncmp(buf, "EXIST", 5) == 0) return 1;
+  if (strncmp(buf, "NONE", 4) == 0) return 0;
+  return -1;
+#else
+  (void)node_id;
+  (void)command;
+  return -1;
+#endif
+}
+
+int NdbBackup::nodeShellCommand(int node_id, const BaseString &command) {
+#ifndef _WIN32
+  const char *host;
+  if (!getHostName(node_id, &host)) return -1;
+  const BaseString cmd = nodeHostCommand(host, command);
+  return system(cmd.c_str()) == 0 ? 0 : -1;
+#else
+  (void)node_id;
+  (void)command;
+  return -1;
+#endif
+}
+
+int NdbBackup::backupDirsExist(int node_id) {
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
   /* Matches backup file CONTENT under any BACKUP-* entry: empty
    * directory shells are expected after scoped removal and do not
    * count as debris. The second find call distinguishes 'no match'
@@ -136,41 +182,15 @@ int NdbBackup::backupDirsExist(int node_id) {
       " >/dev/null; then echo NONE;"
       " else echo FAILED; fi",
       path.c_str(), path.c_str(), path.c_str());
-
-  BaseString cmd;
-  if (!isHostLocal(host)) {
-    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
-               check.c_str());
-  } else {
-    cmd = check;
-  }
-
-  FILE *fp = popen(cmd.c_str(), "r");
-  if (fp == NULL) return -1;
-  char buf[16] = {0};
-  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
-  const int rc = pclose(fp);
-  if (!got_line || rc != 0) return -1;
-  if (strncmp(buf, "EXIST", 5) == 0) return 1;
-  if (strncmp(buf, "NONE", 4) == 0) return 0;
-  return -1;
-#else
-  return -1;
-#endif
+  return nodeShellCheck(node_id, check);
 }
 
 int NdbBackup::backupShellsExist(int node_id) {
-#ifndef _WIN32
   const std::string path = getBackupDataDirForNode(node_id);
   if (path.empty()) return -1;
 
-  const char *host;
-  if (!getHostName(node_id, &host)) return -1;
-
   /* Matches any BACKUP-* directory entry, empty or not: after a
-   * completed removal no shell of this attempt may remain. Same
-   * marker scheme as backupDirsExist so that a command or transport
-   * failure cannot be mistaken for "no directories".
+   * completed removal no shell of this attempt may remain.
    */
   BaseString check;
   check.assfmt(
@@ -181,40 +201,14 @@ int NdbBackup::backupShellsExist(int node_id) {
       " >/dev/null; then echo NONE;"
       " else echo FAILED; fi",
       path.c_str(), path.c_str(), path.c_str());
-
-  BaseString cmd;
-  if (!isHostLocal(host)) {
-    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
-               check.c_str());
-  } else {
-    cmd = check;
-  }
-
-  FILE *fp = popen(cmd.c_str(), "r");
-  if (fp == NULL) return -1;
-  char buf[16] = {0};
-  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
-  const int rc = pclose(fp);
-  if (!got_line || rc != 0) return -1;
-  if (strncmp(buf, "EXIST", 5) == 0) return 1;
-  if (strncmp(buf, "NONE", 4) == 0) return 0;
-  return -1;
-#else
-  return -1;
-#endif
+  return nodeShellCheck(node_id, check);
 }
 
 int NdbBackup::createStBackupFileset(int node_id, unsigned backup_id) {
-#ifndef _WIN32
   const std::string path = getBackupDataDirForNode(node_id);
   if (path.empty()) return -1;
 
-  const char *host;
-  if (!getHostName(node_id, &host)) return -1;
-
-  /* No shell variables: the ssh wrapper double-quotes the whole
-   * command, so a $var would be expanded by the LOCAL shell.
-   * Filenames must match NDBFS exactly (extension table in
+  /* Filenames must match NDBFS exactly (extension table in
    * Filename.cpp: .ctl/.log/.Data) or the fileset does not stand in
    * for a real one.
    */
@@ -227,33 +221,14 @@ int NdbBackup::createStBackupFileset(int node_id, unsigned backup_id) {
       path.c_str(), backup_id, path.c_str(), backup_id, backup_id, node_id,
       path.c_str(), backup_id, backup_id, node_id, path.c_str(), backup_id,
       backup_id, node_id);
-
-  BaseString cmd;
-  if (!isHostLocal(host)) {
-    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
-               make.c_str());
-  } else {
-    cmd = make;
-  }
-  return system(cmd.c_str()) == 0 ? 0 : -1;
-#else
-  return -1;
-#endif
+  return nodeShellCommand(node_id, make);
 }
 
 int NdbBackup::stBackupFilesetExists(int node_id, unsigned backup_id) {
-#ifndef _WIN32
   const std::string path = getBackupDataDirForNode(node_id);
   if (path.empty()) return -1;
 
-  const char *host;
-  if (!getHostName(node_id, &host)) return -1;
-
-  /* Same marker scheme as the other checks: a command or transport
-   * failure must not read as an answer. No shell variables (the ssh
-   * wrapper double-quotes the command); filenames match NDBFS
-   * (.ctl/.log/.Data).
-   */
+  /* Filenames match NDBFS (.ctl/.log/.Data). */
   BaseString check;
   check.assfmt(
       "if [ -f '%s/BACKUP/BACKUP-%u/BACKUP-%u.%d.ctl' ] &&"
@@ -262,36 +237,12 @@ int NdbBackup::stBackupFilesetExists(int node_id, unsigned backup_id) {
       " else echo NONE; fi",
       path.c_str(), backup_id, backup_id, node_id, path.c_str(), backup_id,
       backup_id, node_id, path.c_str(), backup_id, backup_id, node_id);
-
-  BaseString cmd;
-  if (!isHostLocal(host)) {
-    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
-               check.c_str());
-  } else {
-    cmd = check;
-  }
-
-  FILE *fp = popen(cmd.c_str(), "r");
-  if (fp == NULL) return -1;
-  char buf[16] = {0};
-  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
-  const int rc = pclose(fp);
-  if (!got_line || rc != 0) return -1;
-  if (strncmp(buf, "EXIST", 5) == 0) return 1;
-  if (strncmp(buf, "NONE", 4) == 0) return 0;
-  return -1;
-#else
-  return -1;
-#endif
+  return nodeShellCheck(node_id, check);
 }
 
 int NdbBackup::backupMtDebrisExists(int node_id, unsigned backup_id) {
-#ifndef _WIN32
   const std::string path = getBackupDataDirForNode(node_id);
   if (path.empty()) return -1;
-
-  const char *host;
-  if (!getHostName(node_id, &host)) return -1;
 
   BaseString check;
   check.assfmt(
@@ -302,27 +253,7 @@ int NdbBackup::backupMtDebrisExists(int node_id, unsigned backup_id) {
       " >/dev/null; then echo NONE;"
       " else echo FAILED; fi",
       path.c_str(), path.c_str(), backup_id, path.c_str(), backup_id);
-
-  BaseString cmd;
-  if (!isHostLocal(host)) {
-    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
-               check.c_str());
-  } else {
-    cmd = check;
-  }
-
-  FILE *fp = popen(cmd.c_str(), "r");
-  if (fp == NULL) return -1;
-  char buf[16] = {0};
-  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
-  const int rc = pclose(fp);
-  if (!got_line || rc != 0) return -1;
-  if (strncmp(buf, "EXIST", 5) == 0) return 1;
-  if (strncmp(buf, "NONE", 4) == 0) return 0;
-  return -1;
-#else
-  return -1;
-#endif
+  return nodeShellCheck(node_id, check);
 }
 
 int NdbBackup::start(unsigned int &_backup_id, int flags,

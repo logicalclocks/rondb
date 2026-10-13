@@ -783,6 +783,8 @@ ErrorBundle ErrorCodes[] = {
   { 1348, DMEC, AE, "Backup failed to allocate file record (check configuration)" },
   { 1349, DMEC, AE, "Backup failed to allocate attribute record (check configuration)" },
   { 1350, DMEC, TR, "Backup failed: file already exists (use 'START BACKUP <backup id>')" },
+  { 1352, DMEC, TR, "Backup failed: a data node still holds the record of an earlier backup (retry; restart the data node if it persists)" },
+  { 1353, DMEC, TR, "Backup failed: a data node is still removing the files of an earlier failed backup with this id (retry)" },
   { 1329, DMEC, AE, "Backup during software upgrade not supported" },
 
   /**
