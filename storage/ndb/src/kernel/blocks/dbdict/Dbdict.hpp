@@ -4653,6 +4653,7 @@ class Dbdict : public SimulatedBlock {
                          ParseDictTabInfoRecord *, bool checkExist = true);
   void handleTabInfo(SimpleProperties::Reader &it, ParseDictTabInfoRecord *,
                      DictTabInfo::Table &tableDesc);
+  bool all_db_nodes_support_large_row_parts();
 
   void handleAddTableFailure(Signal *signal, Uint32 failureLine,
                              Uint32 tableId);

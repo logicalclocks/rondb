@@ -26,7 +26,7 @@ drop table t2;
 CREATE TABLE t3_too_large_for_ndb(
   col1 int unsigned not null primary key,
   col3 varchar(17000),
-  col4 varchar(15016))
+  col4 varchar(15616))
 charset=latin1 engine=ndbcluster;
 SHOW WARNINGS;
 

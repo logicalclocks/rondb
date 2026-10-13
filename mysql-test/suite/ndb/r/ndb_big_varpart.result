@@ -1,0 +1,99 @@
+CREATE LOGFILE GROUP lg1
+ADD UNDOFILE 'undofile.dat'
+INITIAL_SIZE 32M
+UNDO_BUFFER_SIZE = 16M
+ENGINE = NDB;
+CREATE TABLESPACE ts1
+ADD DATAFILE 'datafile.dat'
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 32M
+ENGINE = NDB;
+#
+# VARCHAR(32614) is the largest in-memory VARCHAR, its var part is
+# MAX_VAR_SIZE_IN_WORDS (8158 words), it fills an empty var page and
+# no DBTUP var page free list guarantees that much free space.
+# VARCHAR(32610) is the largest on-disk VARCHAR, its disk part is
+# MAX_DISK_VAR_SIZE_IN_WORDS (8158 words), it fills an empty disk
+# page. Both are in the same table.
+#
+CREATE TABLE t1 (
+pk INT NOT NULL PRIMARY KEY,
+v VARCHAR(32614) CHARACTER SET latin1 NOT NULL,
+d VARCHAR(32610) CHARACTER SET latin1 NOT NULL STORAGE DISK
+) TABLESPACE ts1 ENGINE = NDB;
+# Insert full rows
+INSERT INTO t1 VALUES (1, REPEAT('a', 32614), REPEAT('A', 32610)),
+(2, REPEAT('b', 32614), REPEAT('B', 32610)),
+(3, REPEAT('c', 32614), REPEAT('C', 32610));
+# Grow a small row to full size
+INSERT INTO t1 VALUES (4, 'd', 'D');
+UPDATE t1 SET v = REPEAT('d', 32614), d = REPEAT('D', 32610) WHERE pk = 4;
+# Shrink a full row and grow it again
+UPDATE t1 SET v = 'e', d = 'E' WHERE pk = 1;
+UPDATE t1 SET v = REPEAT('e', 32614), d = REPEAT('E', 32610) WHERE pk = 1;
+# Delete full rows and insert new ones in the freed space
+DELETE FROM t1 WHERE pk IN (2, 3);
+INSERT INTO t1 VALUES (5, REPEAT('f', 32614), REPEAT('F', 32610)),
+(6, REPEAT('g', 32614), REPEAT('G', 32610));
+# Move var parts
+OPTIMIZE TABLE t1;
+Table	Op	Msg_type	Msg_text
+test.t1	optimize	status	OK
+SELECT pk, LENGTH(v), LEFT(v, 3), RIGHT(v, 3),
+LENGTH(d), LEFT(d, 3), RIGHT(d, 3)
+FROM t1 ORDER BY pk;
+pk	LENGTH(v)	LEFT(v, 3)	RIGHT(v, 3)	LENGTH(d)	LEFT(d, 3)	RIGHT(d, 3)
+1	32614	eee	eee	32610	EEE	EEE
+4	32614	ddd	ddd	32610	DDD	DDD
+5	32614	fff	fff	32610	FFF	FFF
+6	32614	ggg	ggg	32610	GGG	GGG
+DROP TABLE t1;
+# One byte more in memory exceeds the var part limit
+CREATE TABLE t2 (
+pk INT NOT NULL PRIMARY KEY,
+v VARCHAR(32615) CHARACTER SET latin1 NOT NULL
+) ENGINE = NDB;
+ERROR HY000: Can't create table 't2' (use SHOW WARNINGS for more info).
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 941 'In-memory varsize part of row can at most be 32632 bytes, 32032 bytes with data nodes before 26.10' from NDB
+Warning	1296	Failed to commit NDB schema transaction
+Error	1005	Can't create table 't2' (use SHOW WARNINGS for more info).
+# One byte more on disk exceeds the disk part limit
+CREATE TABLE t2 (
+pk INT NOT NULL PRIMARY KEY,
+d VARCHAR(32611) CHARACTER SET latin1 NOT NULL STORAGE DISK
+) TABLESPACE ts1 ENGINE = NDB;
+ERROR HY000: Can't create table 't2' (use SHOW WARNINGS for more info).
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 943 'On-disk part of row can at most be 32632 bytes, 31080 bytes with data nodes before 26.10' from NDB
+Error	1005	Can't create table 't2' (use SHOW WARNINGS for more info).
+#
+# A row of MAX_TUPLE_SIZE_IN_WORDS (18000 words, 72000 bytes).
+# MySQL limits a record to 65535 bytes not counting BLOBs, so the
+# in-memory var part is a BLOB with a 32600 byte inline part
+# (8154 words). The disk part is a VARCHAR(32610) (8153 words) and
+# the fixed part is the INT primary key, 26 BINARY(255) and one
+# BINARY(112) (1693 words).
+#
+# Insert full rows
+# Update all columns of a full row
+pk	b_len	d_len	fixed_len	row_md5
+1	32600	32610	6742	b5e4e8872d2072781ad733825335b2dd
+2	32600	32610	6742	0fa5e534127e8836c29b23a418a99037
+DELETE FROM t3 WHERE pk = 1;
+SELECT COUNT(*) FROM t3;
+COUNT(*)
+1
+DROP TABLE t3;
+# One byte more in the last fixed column makes the row 18001 words
+ERROR HY000: Can't create table 't4' (use SHOW WARNINGS for more info).
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1296	Got error 738 'Record too big' from NDB
+Error	1005	Can't create table 't4' (use SHOW WARNINGS for more info).
+ALTER TABLESPACE ts1
+DROP DATAFILE 'datafile.dat';
+DROP TABLESPACE ts1;
+DROP LOGFILE GROUP lg1 ENGINE = NDB;

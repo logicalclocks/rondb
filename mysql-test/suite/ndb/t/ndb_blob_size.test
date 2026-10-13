@@ -187,26 +187,26 @@ SHOW WARNINGS;
 #--error ER_CANT_CREATE_TABLE
 #CREATE TABLE test.maxlen(
 #                      a int primary key,
-#                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=31049")
+#                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32601")
 # tablespace ts1 storage disk engine=ndb;
 #SHOW WARNINGS;
 
 --error ER_CANT_CREATE_TABLE
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32001") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32601") engine=ndb;
 SHOW WARNINGS;
 
-## Max len for inline Blob is 32032 - (16 + 16[header])
+## Max len for inline Blob is 32632 - (16 + 16[header])
 CREATE TABLE test.maxlen(
                       a int primary key,
-                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32000") engine=ndb;
+                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32600") engine=ndb;
 SHOW WARNINGS;
 
-## Max len for inline disk Blob is 31080 - (16 + 16[header])
+## Max len for inline disk Blob is 32632 - (16 + 16[header])
 #CREATE TABLE test.disk_maxlen(
 #                      a int primary key,
-#                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=31048")
+#                      b blob comment "NDB_COLUMN=BLOB_INLINE_SIZE=32600")
 # tablespace ts1 storage disk engine=ndb;
 #SHOW WARNINGS;
 
