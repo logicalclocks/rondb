@@ -1,0 +1,15 @@
+!include ../my.cnf
+
+[cluster_config.1]
+AutomaticThreadConfig=1
+NumCPUs=0
+ExclusiveIoCPUs=2
+
+# Each data node process is bound to CPUs 0-9 with taskset. Automatic
+# thread config sees these 10 CPUs and locks threads to them, 2 of them
+# exclusive to IO threads.
+[cluster_config.ndbd.1.1]
+cpubind=0-9
+
+[cluster_config.ndbd.2.1]
+cpubind=0-9

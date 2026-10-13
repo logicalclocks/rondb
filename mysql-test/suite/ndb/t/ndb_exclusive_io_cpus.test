@@ -1,0 +1,147 @@
+###############################################################################
+# ndb_exclusive_io_cpus
+#
+# With AutomaticThreadConfig=1 and NumCPUs=0 the data node locks its threads
+# to CPUs. ExclusiveIoCPUs=E reserves E of the CPUs for the IO threads, no
+# block thread or send thread is bound to them. The thread counts must be
+# computed from the remaining CPUs, otherwise E threads are left without a
+# CPU of their own.
+#
+# Each data node is bound to CPUs 0-9 (cpubind in the .cnf), so the threads
+# are sized for 10 - 2 = 8 CPUs: 4 LDM, 2 TC, 1 recv and 1 send thread. The
+# test checks, using the thread start lines in ndbd.log and the CPU affinity
+# in /proc, that each of these threads is locked to its own CPU and that
+# exactly 2 CPUs are left for IO.
+#
+# CPU locking is only available on Linux. The test also needs CPUs 0-9,
+# MTR skips it when any of them is offline or not usable by MTR.
+###############################################################################
+--source include/have_ndb.inc
+--source include/linux.inc
+
+SELECT node_id, param_name, config_value
+  FROM ndbinfo.config_values cv, ndbinfo.config_params cp
+  WHERE cv.config_param = cp.param_number AND
+        cp.param_name IN ('AutomaticThreadConfig', 'NumCPUs', 'ExclusiveIoCPUs')
+  ORDER BY node_id, param_name;
+
+--let $ndb_query= SELECT node_id FROM ndbinfo.processes WHERE node_type = 'NDB' ORDER BY node_id
+--let NDBD_NODE_1= query_get_value($ndb_query, node_id, 1)
+--let NDBD_NODE_2= query_get_value($ndb_query, node_id, 2)
+--let $ndb_query= SELECT process_id FROM ndbinfo.processes WHERE node_type = 'NDB' ORDER BY node_id
+--let NDBD_PID_1= query_get_value($ndb_query, process_id, 1)
+--let NDBD_PID_2= query_get_value($ndb_query, process_id, 2)
+--let $ndb_query= SELECT angel_process_id FROM ndbinfo.processes WHERE node_type = 'NDB' ORDER BY node_id
+--let NDBD_ANGEL_PID_1= query_get_value($ndb_query, angel_process_id, 1)
+--let NDBD_ANGEL_PID_2= query_get_value($ndb_query, angel_process_id, 2)
+--let EXCLUSIVE_IO_CPUS= 2
+
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set";
+  my $exclusive = $ENV{EXCLUSIVE_IO_CPUS};
+
+  sub parse_cpu_list {
+    my ($list) = @_;
+    my %cpus;
+    foreach my $range (split(/,/, $list)) {
+      if ($range =~ /^(\d+)-(\d+)$/) {
+        $cpus{$_} = 1 for ($1 .. $2);
+      } elsif ($range =~ /^(\d+)$/) {
+        $cpus{$1} = 1;
+      } else {
+        die "Cannot parse CPU list '$list'\n";
+      }
+    }
+    return \%cpus;
+  }
+
+  sub cpus_allowed {
+    my ($status_file) = @_;
+    open(my $fh, '<', $status_file) or die "Cannot open $status_file: $!\n";
+    while (my $line = <$fh>) {
+      if ($line =~ /^Cpus_allowed_list:\s*(\S+)/) {
+        close($fh);
+        return parse_cpu_list($1);
+      }
+    }
+    die "No Cpus_allowed_list in $status_file\n";
+  }
+
+  # Thread start lines of the data node process, written after the angel
+  # started it: "thr: <no> tid: <tid> (<type>) cpubind: <cpu>, OK ..."
+  sub thread_lines {
+    my ($pid) = @_;
+    foreach my $log (glob("$vardir/mysql_cluster.1/ndbd.*/ndbd.log")) {
+      open(my $fh, '<', $log) or die "Cannot open $log: $!\n";
+      my @lines;
+      my $found = 0;
+      while (my $line = <$fh>) {
+        if ($line =~ /Angel pid: \d+ started child: (\d+)/) {
+          $found = ($1 == $pid);
+          @lines = ();
+          next;
+        }
+        push(@lines, $line) if $found;
+      }
+      close($fh);
+      return \@lines if $found;
+    }
+    die "No ndbd.log has the start of data node process $pid\n";
+  }
+
+  foreach my $i (1, 2) {
+    my $node = $ENV{"NDBD_NODE_$i"};
+    my $pid = $ENV{"NDBD_PID_$i"};
+    my $angel_pid = $ENV{"NDBD_ANGEL_PID_$i"};
+    my $lines = thread_lines($pid);
+
+    if (grep(/ExclusiveIoCPUs ignored/, @$lines)) {
+      die "Data node $node doesn't lock threads to CPUs, CPU information " .
+          "isn't available\n";
+    }
+
+    # The CPUs from cpubind, the angel process isn't locked any further
+    my $node_cpus = cpus_allowed("/proc/$angel_pid/status");
+    my $num_cpus = scalar(keys(%$node_cpus));
+
+    my %type_count;
+    my %used_cpus;
+    foreach my $line (@$lines) {
+      next unless $line =~ /thr: \d+\s+tid: (\d+)\s+\((\w+)\)(.*)$/;
+      my ($tid, $type, $rest) = ($1, $2, $3);
+      $type_count{$type}++;
+      die "Data node $node: $type thread $tid isn't locked to a CPU\n"
+        unless $rest =~ /cpubind: (\d+)/;
+      my $cpu = $1;
+      my $allowed = cpus_allowed("/proc/$pid/task/$tid/status");
+      my @allowed = sort { $a <=> $b } keys(%$allowed);
+      die "Data node $node: $type thread $tid runs on CPUs " .
+          join(',', @allowed) . ", expected only CPU $cpu\n"
+        unless @allowed == 1 && $allowed[0] == $cpu;
+      die "Data node $node: CPU $cpu isn't one of the data node CPUs\n"
+        unless $node_cpus->{$cpu};
+      die "Data node $node: more than one thread locked to CPU $cpu\n"
+        if $used_cpus{$cpu}++;
+    }
+    my $num_threads = 0;
+    $num_threads += $_ for values(%type_count);
+    my $num_io_cpus = $num_cpus - scalar(keys(%used_cpus));
+    die "Data node $node: $num_threads threads for $num_cpus CPUs with " .
+        "$exclusive exclusive IO CPUs\n"
+      unless $num_threads == $num_cpus - $exclusive;
+    die "Data node $node: $num_io_cpus CPUs without a thread, expected " .
+        "$exclusive\n"
+      unless $num_io_cpus == $exclusive;
+
+    print "Data node $node: $num_cpus CPUs, threads " .
+          join(' ', map { "$_=$type_count{$_}" } sort keys(%type_count)) .
+          ", each on its own CPU, $num_io_cpus CPUs exclusive to IO\n";
+  }
+EOF
+
+--echo # The data nodes work with this thread layout
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 1), (2, 2), (3, 3), (4, 4);
+SELECT COUNT(*) FROM t1;
+DROP TABLE t1;

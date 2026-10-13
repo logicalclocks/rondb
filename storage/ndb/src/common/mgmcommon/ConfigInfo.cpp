@@ -1826,9 +1826,15 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_API_FAILURE_HANDLING_TIMEOUT, "ApiFailureHandlingTimeout", DB_TOKEN,
      "Maximum allowed duration of Api failure handling before escalating "
-     "handling.  0 implies no time limit, minimum usable value is 10.",
+     "handling by shutting down the data node.  0 (default) implies no time "
+     "limit, delays are only logged.  Minimum usable value is 10.",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT,
-     "600",  // 10 minutes
+     /**
+      * Upstream default is 600 seconds. RonDB disables the limit since all
+      * data nodes start the timer at the same time, so a stall present on
+      * all nodes (e.g. in SUMA) would shut down the whole cluster.
+      */
+     "0",
      "0", STR_VALUE(MAX_INT_RNIL)},
 
     /***************************************************************************

@@ -15095,7 +15095,7 @@ TESTCASE("timeout_apifail", "Timeout handling api failure") {
   TC_PROPERTY("ConnectionFailWaitReconnect",
               1);                       // Wait for connection to fully recover
   TC_PROPERTY("DumpSetup", "909 20");   // Reduce Api Failure timeout
-  TC_PROPERTY("DumpClear", "909 600");  // Restore to default
+  TC_PROPERTY("DumpClear", "909 0");    // Restore to default (no limit)
   TC_PROPERTY("ErrorInjections",
               "961, 8125");  // Stall failure handling, soft crash
   TC_PROPERTY("ErrorInjectionNode", ~Uint32(0));  // Choose one

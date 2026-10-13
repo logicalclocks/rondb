@@ -3386,7 +3386,7 @@ void Qmgr::initData(Signal *signal) {
   c_restartPartitionedTimeout = Uint32(~0);
   c_restartFailureTimeout = Uint32(~0);
   c_restartNoNodegroupTimeout = 15000;
-  c_apiFailureTimeoutSecs = 600;
+  c_apiFailureTimeoutSecs = 0;  // No limit, see ApiFailureHandlingTimeout
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &hbDBDB);
   ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_TIMEOUT, &arbitTimeout);
   ndb_mgm_get_int_parameter(p, CFG_DB_ARBIT_METHOD, &arbitMethod);
@@ -5001,9 +5001,10 @@ void Qmgr::checkStartInterface(Signal* signal, NDB_TICKS now)
         } else {
           /* API/MGMD */
 
-          /* Check which timeout value to use */
+          /* Check which timeout value to use, 0 means no limit at all */
           Uint32 maxSeconds = c_apiFailureTimeoutSecs;
-          if (nodePtr.p->failState == WAITING_FOR_API_FAILCONF) {
+          if (maxSeconds > 0 &&
+              nodePtr.p->failState == WAITING_FOR_API_FAILCONF) {
             /* Check if we are waiting for DICT */
             for (Uint32 i = 0; i < NDB_ARRAY_SIZE(nodePtr.p->m_failconf_blocks);
                  i++) {

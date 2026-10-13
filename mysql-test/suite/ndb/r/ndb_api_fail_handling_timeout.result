@@ -1,0 +1,26 @@
+# ApiFailureHandlingTimeout defaults to 0
+SELECT param_name, param_default
+  FROM ndbinfo.config_params
+  WHERE param_name = 'ApiFailureHandlingTimeout';
+param_name	param_default
+ApiFailureHandlingTimeout	0
+SELECT node_id, param_name, config_value
+  FROM ndbinfo.config_values cv, ndbinfo.config_params cp
+  WHERE cv.config_param = cp.param_number AND
+        cp.param_name = 'ApiFailureHandlingTimeout'
+  ORDER BY node_id;
+node_id	param_name	config_value
+1	ApiFailureHandlingTimeout	0
+2	ApiFailureHandlingTimeout	0
+# Stall API failure handling in DBTC on all data nodes
+# Connect and disconnect API node 192, starting its failure handling
+# Wait for both data nodes to report the delay, with no limit
+Data node 1 reports the delay with Limit 0
+Data node 2 reports the delay with Limit 0
+# No data node has shut down
+SELECT node_id, status FROM ndbinfo.nodes ORDER BY node_id;
+node_id	status
+1	STARTED
+2	STARTED
+# Clear the error insert, the failure handling completes
+# API node 192 can connect again
