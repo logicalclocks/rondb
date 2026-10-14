@@ -19776,6 +19776,32 @@ RonSQLPreparer::Context::non_case_operand(AggregationAPICompiler::Expr* e)
   return e;
 }
 
+/*
+ * QueryPlanner::plan takes the left-hand column of each ON equality from the
+ * joined table whatever its qualifier says, so in an aggregate query
+ * `JOIN t AS b ON a.x = a.y` ran as `b.x = a.y`, and authorization charged
+ * x to a rather than to the table it was read from.  Checking here, as
+ * each join clause is parsed, covers the main query, CTE bodies and
+ * subqueries before any rewrite reorders the conditions.
+ */
+void
+RonSQLPreparer::Context::check_join_conditions(
+    const TableRef& table, const JoinCondition* conditions)
+{
+  for (const JoinCondition* jc = conditions; jc != NULL; jc = jc->next)
+  {
+    if (jc->child_table == table.alias)
+      continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("The ON condition ") + jc->child_table.c_str() + "." +
+        jc->child_column.c_str() + " = " + jc->parent_table.c_str() + "." +
+        jc->parent_column.c_str() + " does not have a column of the joined "
+        "table " + table.alias.c_str() + " on the left. Write each ON "
+        "equality as <joined table>.<column> = <earlier table>.<column>.");
+  }
+}
+
 AggregationAPICompiler*
 RonSQLPreparer::Context::get_agg()
 {

@@ -150,6 +150,10 @@ public:
     // as the whole argument of an aggregate function.
     AggregationAPICompiler::Expr* non_case_operand(
         AggregationAPICompiler::Expr* e);
+    // Throws (UNSUPPORTED) unless the left-hand side of every ON equality
+    // in `conditions` is qualified with the alias of the joined `table`.
+    void check_join_conditions(const struct TableRef& table,
+                               const struct JoinCondition* conditions);
     // Phase I.5 v2b — n-ary GREATEST / LEAST.  Operands are folded
     // left-associative into a chain of Greatest2 / Least2 SVM ops.
     // Each operand must be a Load (column ref) or LoadConstantInteger.

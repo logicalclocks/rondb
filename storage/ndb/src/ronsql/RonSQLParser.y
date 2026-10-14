@@ -611,6 +611,7 @@ join_list:
 join_clause:
   T_JOIN table_ref T_ON join_condition_list
   {
+    context->check_join_conditions(*$2, $4);
     initptr($$);
     $$->join_type = JoinClause::INNER_JOIN;
     $$->table = *$2;
@@ -619,6 +620,7 @@ join_clause:
   }
 | T_KW_LEFT T_JOIN table_ref T_ON join_condition_list
   {
+    context->check_join_conditions(*$3, $5);
     initptr($$);
     $$->join_type = JoinClause::LEFT_OUTER_JOIN;
     $$->table = *$3;
@@ -627,6 +629,7 @@ join_clause:
   }
 | T_KW_LEFT T_KW_OUTER T_JOIN table_ref T_ON join_condition_list
   {
+    context->check_join_conditions(*$4, $6);
     initptr($$);
     $$->join_type = JoinClause::LEFT_OUTER_JOIN;
     $$->table = *$4;
