@@ -110,7 +110,10 @@ print "PASS\n";
 # ---------------------------------------------------------------------------
 # C++ tests.
 # ---------------------------------------------------------------------------
-my @cpp_tests = ('probe_server_http_test',    # probe-port HTTP conformance
+my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out, arena
+                                              # cap, untouched parse buffers
+                                              # (cluster-free, fast)
+                 'probe_server_http_test',    # probe-port HTTP conformance
                                               # (cluster-free, fast)
                  'error_handling_test',       # pure error-classification tests
                  'reconnect_test',            # RONDB-1104 reconnection cycle

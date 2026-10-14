@@ -50,6 +50,7 @@ file(GLOB_RECURSE SRC
         pk_read_ctrl.cpp
         pk_read_ctrl.cpp
         probe_server.cpp
+        process_setup.cc
         prometheus_ctrl.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp

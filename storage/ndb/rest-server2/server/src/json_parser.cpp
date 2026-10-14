@@ -187,8 +187,12 @@ RS_Status handle_parse_error(ConfigParseError& e,
 JSONParser* jsonParsers = nullptr;
 
 JSONParser::JSONParser() {
-  buffer = std::make_unique<char[]>(
-    globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING);
+  /* new char[n] default-initialises, so none of the pages are touched until
+   * a request of that size arrives. std::make_unique value-initialised the
+   * array, which made 64 x 4 MiB resident at startup (RONDB-1144). The
+   * parser never reads beyond the request length it is given. */
+  buffer = std::unique_ptr<char[]>(
+    new char[globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING]);
 }
 
 std::unique_ptr<char[]> &JSONParser::get_buffer() {

@@ -50,6 +50,7 @@ constexpr const char* const usageHelp =
 #include "rdrs_rondb_connection_pool.hpp"
 #include "metrics.hpp"
 #include "probe_server.hpp"
+#include "process_setup.hpp"
 #include "logger.hpp"
 
 #include <cstdio>
@@ -253,6 +254,25 @@ int main(int argc, char *argv[]) {
   signal(SIGINT, handle_signal_async);
   signal(SIGQUIT, handle_signal_async);
   signal(SIGTERM, handle_signal_async);
+
+  /* Before the first thread: start_fs_cache() below creates one, and both
+   * settings are inherited by threads from the process (RONDB-1144). The
+   * logger is not configured yet, so a failure goes to stderr. */
+  {
+    ProcessSetupResult setup = rdrs_process_setup();
+#ifdef __linux__
+    if (!setup.thp_disabled) {
+      fprintf(stderr, "Warning: prctl(PR_SET_THP_DISABLE) failed: %s\n",
+              strerror(setup.errno_thp));
+    }
+    if (!setup.arena_max_set) {
+      fprintf(stderr, "Warning: mallopt(M_ARENA_MAX, %d) failed\n",
+              RDRS_MALLOC_ARENA_MAX);
+    }
+#else
+    (void)setup;
+#endif
+  }
 
   ndb_init();
   g_did_ndb_init = true;
