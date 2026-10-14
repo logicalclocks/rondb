@@ -418,6 +418,19 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
       HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
   }
   for (auto operation : operations) {
+    /* RONDB-1144: bound the batch before parsing another operation; an
+     * on-demand array has no cheap size, so the check runs per element and
+     * stops the first operation past the limit. Nothing has been allocated
+     * for the batch yet, so a 413 here costs no buffer. */
+    if (unlikely(reqStructs.size() >=
+                 globalConfigs.internal.maxOperationsPerBatch)) {
+      return CRS_Status(
+        static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k413RequestEntityTooLarge),
+        (std::string("batch exceeds MaxOperationsPerBatch (") +
+         std::to_string(globalConfigs.internal.maxOperationsPerBatch) +
+         ")").c_str()).status;
+    }
     PKReadParams reqStruct;
     simdjson::ondemand::object operationObj;
     error = operation.get(operationObj);
@@ -1293,6 +1306,16 @@ RS_Status JSONParser::batch_feature_store_parse(
     return handle_simdjson_error(error, doc, currentLocation);
   }
   for (auto entry : entries) {
+    /* RONDB-1144: same bound as batch_parse, counted over the entries. */
+    if (unlikely(reqStruct.entries.size() >=
+                 globalConfigs.internal.maxOperationsPerBatch)) {
+      return CRS_Status(
+        static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k413RequestEntityTooLarge),
+        (std::string("batch exceeds MaxOperationsPerBatch (") +
+         std::to_string(globalConfigs.internal.maxOperationsPerBatch) +
+         ")").c_str()).status;
+    }
     simdjson::ondemand::object entryObj;
     error = entry.get(entryObj);
     if (unlikely(error != simdjson::SUCCESS)) {

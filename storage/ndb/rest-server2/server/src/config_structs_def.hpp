@@ -65,9 +65,11 @@
 
 CLASS
 (Internal,
- CM(Uint32, maxReqSize, maxReqSize, 4 * 1024 * 1024,
+ CM(Uint32, maxReqSize, maxReqSize, 1024 * 1024,
     "The maximum HTTP body size for REST requests, in bytes. Must be at least"
-    " 256.")
+    " 256. Also passed to the HTTP server as its body limit, so it is the one"
+    " number that bounds a request body; larger bodies are rejected before"
+    " rdrs2 sees them. Each worker thread keeps a parse buffer of this size.")
  CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
  CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
@@ -83,10 +85,16 @@ CLASS
     "Maximum number of slow scan entries to keep in the circular buffer.")
  CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32, "")
  CM(Uint32, batchMaxSize, BatchMaxSize, 128,
-    "Maximum number of requests contained in a batch request.")
+    "Number of operations of a batch request sent to NDB per execution loop."
+    " Not a cap on the batch size; see MaxOperationsPerBatch.")
+ CM(Uint32, maxOperationsPerBatch, MaxOperationsPerBatch, 512,
+    "Maximum number of operations in one batch request (batch pk-read and"
+    " batch feature store). A larger batch is rejected with HTTP 413 while"
+    " it is parsed, before any buffer is taken.")
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
+ PROBLEM(maxOperationsPerBatch == 0, "MaxOperationsPerBatch must be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")

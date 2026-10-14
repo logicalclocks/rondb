@@ -737,7 +737,15 @@ func TestMaxOpID(t *testing.T) {
 
 func TestLargeBatch(t *testing.T) {
 
+	// BatchMaxSize is the number of operations per NDB execution loop, not a
+	// cap, so a batch larger than it must succeed. The real cap is
+	// Internal.MaxOperationsPerBatch (RONDB-1144), exercised by
+	// batch_limit_test.go; this size must stay below it.
 	batchSize := config.GetAll().Internal.BatchMaxSize + 200
+	if batchSize > config.GetAll().Internal.MaxOperationsPerBatch {
+		t.Fatalf("test size %d exceeds MaxOperationsPerBatch %d", batchSize,
+			config.GetAll().Internal.MaxOperationsPerBatch)
+	}
 
 	subOperations := make([]api.BatchSubOperationTestInfo, batchSize)
 	for i := uint32(0); i < batchSize; i++ {
