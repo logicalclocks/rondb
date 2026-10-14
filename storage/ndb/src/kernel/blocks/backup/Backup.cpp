@@ -4018,6 +4018,13 @@ void Backup::recordDebrisSweep(BackupRecordPtr ptr, Uint32 deadNode) {
      */
     return;
   }
+  if (ptr.p->backupId == 0) {
+    jam();
+    /* Backup id 0 (auto-numbering wraps) cannot be recorded: 0 marks an
+     * empty entry. Its debris stays until manual cleanup.
+     */
+    return;
+  }
   ndbrequire(deadNode < MAX_NDB_NODES);
   PendingDebrisSweep &entry = m_pending_sweeps[deadNode];
   if (entry.backupId != 0 && entry.backupId != ptr.p->backupId) {
@@ -5985,8 +5992,12 @@ void Backup::stopBackupReply(Signal *signal, BackupRecordPtr ptr,
      * failing the backup) must not fire - the dead node's fileset is
      * part of a valid backup now.
      */
-    for (Uint32 i = 0; i < MAX_NDB_NODES; i++) {
-      if (m_pending_sweeps[i].backupId != ptr.p->backupId) {
+    for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+      /* backupId 0 marks an empty entry; backup id 0 itself is valid
+       * (auto-numbering wraps), and is never recorded.
+       */
+      if (m_pending_sweeps[i].backupId == 0 ||
+          m_pending_sweeps[i].backupId != ptr.p->backupId) {
         continue;
       }
       /* Entries THIS attempt recorded (gen above the attempt's floor)
