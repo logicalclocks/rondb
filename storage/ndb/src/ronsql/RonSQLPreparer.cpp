@@ -6879,6 +6879,13 @@ RonSQLPreparer::decorrelate_scalar()
     key_expr->op = T_IDENTIFIER;
     key_expr->col_idx = outer_col_idx;
 
+    // The GROUP BY above has no group for an outer key without inner
+    // rows, where SUM, MIN, MAX and AVG are NULL but COUNT is 0.
+    const Outputs* inner_out = inner_stmt->outputs;
+    const bool corr_count = inner_out != NULL &&
+                            inner_out->type == Outputs::Type::AGGREGATE &&
+                            inner_out->aggregate.fun == T_COUNT;
+
     // Find and update existing SubqueryInfo for this I_SUBQUERY node
     bool found_info = false;
     for (Uint32 si = 0; si < m_subquery_infos.size(); si++)
@@ -6888,6 +6895,7 @@ RonSQLPreparer::decorrelate_scalar()
         m_subquery_infos[si].ce_node = cmp;
         m_subquery_infos[si].inner_stmt = new_inner;
         m_subquery_infos[si].is_corr_scalar = true;
+        m_subquery_infos[si].corr_count = corr_count;
         m_subquery_infos[si].corr_values =
           new (m_amalloc->alloc_exc<DynamicArray<CorrelatedPair>>(1))
             DynamicArray<CorrelatedPair>(m_amalloc);
@@ -6903,6 +6911,7 @@ RonSQLPreparer::decorrelate_scalar()
       info.ce_node = cmp;
       info.inner_stmt = new_inner;
       info.is_corr_scalar = true;
+      info.corr_count = corr_count;
       info.corr_values =
         new (m_amalloc->alloc_exc<DynamicArray<CorrelatedPair>>(1))
           DynamicArray<CorrelatedPair>(m_amalloc);
@@ -9198,18 +9207,20 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
       TokenKind cmp_op = ce->corr_scalar.cmp_op;
       ConditionalExpression* cmp_expr = ce->corr_scalar.cmp_expr;
       ConditionalExpression* key_expr = ce->corr_scalar.key_expr;
-
-      if (info.corr_values->size() == 0)
-      {
-        // Empty: always false
-        ce->op = T_NOT_EQUALS;
-        ce->args.left = cmp_expr;
-        ce->args.right = cmp_expr;
-        return;
-      }
+      auto node = [&](TokenKind op, ConditionalExpression* left,
+                      ConditionalExpression* right) {
+        ConditionalExpression* n =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        n->op = op;
+        n->args.left = left;
+        n->args.right = right;
+        return n;
+      };
 
       // Build OR-chain: (key=k1 AND col OP v1) OR (key=k2 AND col OP v2) ...
+      // and, for COUNT, the AND-chain key != k1 AND key != k2 ...
       ConditionalExpression* result = NULL;
+      ConditionalExpression* no_group = NULL;
       for (Uint32 j = 0; j < info.corr_values->size(); j++)
       {
         CorrelatedPair& pair = (*info.corr_values)[j];
@@ -9235,6 +9246,14 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
         key_eq->op = T_EQUALS;
         key_eq->args.left = key_expr;
         key_eq->args.right = key_const;
+
+        if (info.corr_count)
+        {
+          ConditionalExpression* key_ne =
+            node(T_NOT_EQUALS, key_expr, key_const);
+          no_group = (no_group == NULL) ? key_ne
+                                        : node(T_AND, no_group, key_ne);
+        }
 
         // Build: cmp_expr <cmp_op> val_const
         ConditionalExpression* val_const =
@@ -9280,9 +9299,38 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
         }
       }
 
+      if (info.corr_count)
+      {
+        // COUNT is 0 for an outer key without a group, also for a NULL
+        // key: OR ((key IS NULL OR key != k1 AND ...) AND col OP 0).
+        ConditionalExpression* zero =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        zero->op = T_INT;
+        zero->constant_integer = 0;
+        ConditionalExpression* term = node(cmp_op, cmp_expr, zero);
+        if (no_group != NULL)
+        {
+          const NdbDictionary::Column* key_col =
+            m_main_scope.resolved_columns != NULL
+                ? m_main_scope.resolved_columns[key_expr->col_idx].dict_column
+                : NULL;
+          if (key_col == NULL || key_col->getNullable())
+          {
+            ConditionalExpression* key_is_null =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+            key_is_null->op = T_IS;
+            key_is_null->is.arg = key_expr;
+            key_is_null->is.null = true;
+            no_group = node(T_OR, key_is_null, no_group);
+          }
+          term = node(T_AND, no_group, term);
+        }
+        result = (result == NULL) ? term : node(T_OR, result, term);
+      }
+
       if (result == NULL)
       {
-        // All null: always false
+        // No values, or all null: always false
         ce->op = T_NOT_EQUALS;
         ce->args.left = cmp_expr;
         ce->args.right = cmp_expr;

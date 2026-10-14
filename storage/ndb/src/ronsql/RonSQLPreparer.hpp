@@ -483,6 +483,8 @@ private:
     DynamicArray<SubqueryResult>* in_values = NULL; // Multi-value results
     bool from_exists = false;        // I_IN_SUBQUERY made from [NOT] EXISTS
     bool is_corr_scalar = false;     // true for I_CORR_SCALAR
+    bool corr_count = false;         // I_CORR_SCALAR over COUNT: 0, not
+                                     // NULL, for a key without inner rows
     DynamicArray<CorrelatedPair>* corr_values = NULL; // (key,val) pairs
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;

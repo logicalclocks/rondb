@@ -486,6 +486,31 @@ WHERE NOT ((SELECT SUM(i_id) FROM nq_inner WHERE i_k = o_k) > o_id)
 GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+# A correlated COUNT subquery is 0, not NULL, for an outer row without
+# inner rows, also when the outer key is NULL.
+
+--echo
+--echo === Test 36: Correlated COUNT subquery, outer keys without inner rows ===
+--echo COUNT(*) per i_k: (10,1),(NULL,1),(30,1). Orders 2 and 4 have no inner
+--echo rows and order 3 a NULL o_k, so their COUNT is 0: orders 2, 3 and 4
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE o_id > (SELECT COUNT(*) FROM nq_inner WHERE i_k = o_k)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 37: NOT around a correlated COUNT subquery on the left ===
+--echo COUNT(l_id) where qty>20: (3,2),(5,2), and 0 for orders 1, 2 and 4.
+--echo No count reaches o_custkey, so every order qualifies
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT ((SELECT COUNT(l_id) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20) >= o_custkey)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --echo
 --echo === Cleanup ===
 
