@@ -388,6 +388,79 @@ WHERE o_total > (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l
 GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+# NULL semantics of NOT EXISTS and NOT (x IN (subquery)).  nq_outer row 3
+# has a NULL o_k, and nq_inner row 2 a NULL i_k.  MySQL's NOT EXISTS is
+# TRUE for a NULL outer column, x NOT IN a result holding a NULL is never
+# TRUE, and x NOT IN an empty result is TRUE even for a NULL x.
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE nq_outer (
+  o_id INT NOT NULL,
+  o_k INT NULL,
+  o_amt INT NOT NULL,
+  PRIMARY KEY USING HASH (o_id)
+) ENGINE=NDB|
+CREATE TABLE nq_inner (
+  i_id INT NOT NULL,
+  i_k INT NULL,
+  PRIMARY KEY USING HASH (i_id)
+) ENGINE=NDB|
+INSERT INTO nq_outer VALUES (1, 10, 100), (2, 20, 200), (3, NULL, 300), (4, 40, 400)|
+INSERT INTO nq_inner VALUES (1, 10), (2, NULL), (3, 30)|
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === Test 29: NOT EXISTS with a NULL outer correlation column ===
+--echo Orders 2, 3 (NULL o_k) and 4 have no match
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT EXISTS (SELECT i_id FROM nq_inner WHERE i_k = o_k)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 30: NOT IN a subquery result that holds a NULL ===
+--echo The result is (10, NULL, 30), so no row qualifies
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id))
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 31: NOT IN a subquery result without NULL ===
+--echo The result is (10, 30): orders 2 and 4 (order 3 has a NULL o_k)
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k IN (SELECT MIN(i_k) FROM nq_inner WHERE i_id != 2 GROUP BY i_id))
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 32: NOT IN an empty subquery result ===
+--echo Every order qualifies, also order 3 with a NULL o_k
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k IN (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id))
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 33: IN a subquery result that holds a NULL ===
+--echo Only order 1 matches
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE o_k IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --echo
 --echo === Cleanup ===
 
@@ -395,3 +468,5 @@ DELIMITER ;|
 DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;
+DROP TABLE nq_inner;
+DROP TABLE nq_outer;

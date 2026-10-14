@@ -481,6 +481,7 @@ private:
     bool is_in_subquery = false;     // true for I_IN_SUBQUERY
     ConditionalExpression* in_expr = NULL; // LHS expression (col IN (...))
     DynamicArray<SubqueryResult>* in_values = NULL; // Multi-value results
+    bool from_exists = false;        // I_IN_SUBQUERY made from [NOT] EXISTS
     bool is_corr_scalar = false;     // true for I_CORR_SCALAR
     DynamicArray<CorrelatedPair>* corr_values = NULL; // (key,val) pairs
   };
@@ -1009,7 +1010,10 @@ private:
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();
-  void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
+  // polarity: 1 under an even number of NOTs, -1 under an odd number, and
+  // 0 where the exact truth value matters (XOR, IS, comparisons).
+  void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
+                                      int polarity = 1);
   void execute_join();
   // Pass-through row delivery for projection-only main SELECTs.
   // Originally Phase E.3 (single CTE_SCAN root); generalized in

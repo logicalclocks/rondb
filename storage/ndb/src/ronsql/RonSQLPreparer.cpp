@@ -6412,6 +6412,7 @@ RonSQLPreparer::decorrelate_exists()
     info.in_expr = outer_ref;
     info.in_values = new (m_amalloc->alloc_exc<DynamicArray<SubqueryResult>>(1))
       DynamicArray<SubqueryResult>(m_amalloc);
+    info.from_exists = true;
     m_subquery_infos.push(info);
     m_has_subqueries = true;
 
@@ -9139,7 +9140,8 @@ RonSQLPreparer::substitute_subquery_results()
 }
 
 void
-RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
+RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
+                                               int polarity)
 {
   ConditionalExpression* ce = *ce_ptr;
   if (ce == NULL) return;
@@ -9258,24 +9260,21 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
     {
       if (m_subquery_infos[i].ce_node == ce)
       {
-        DynamicArray<SubqueryResult>* values = m_subquery_infos[i].in_values;
-        ConditionalExpression* in_expr = m_subquery_infos[i].in_expr;
+        const SubqueryInfo& info = m_subquery_infos[i];
+        DynamicArray<SubqueryResult>* values = info.in_values;
+        ConditionalExpression* in_expr = info.in_expr;
 
-        if (values->size() == 0)
-        {
-          // Empty result set: always false via col != col
-          ce->op = T_NOT_EQUALS;
-          ce->args.left = in_expr;
-          ce->args.right = in_expr;
-          return;
-        }
-
-        // Build OR-chain: expr = v1 OR expr = v2 OR ...
+        // Build OR-chain over the non-NULL values: expr = v1 OR expr = v2 OR ...
         ConditionalExpression* result = NULL;
+        bool has_null = false;
         for (Uint32 j = 0; j < values->size(); j++)
         {
           SubqueryResult& val = (*values)[j];
-          if (val.is_null) continue;  // NULL = x is never true
+          if (val.is_null)
+          {
+            has_null = true;  // NULL = x is never true
+            continue;
+          }
 
           ConditionalExpression* const_node =
             m_amalloc->alloc_exc<ConditionalExpression>(1);
@@ -9312,17 +9311,67 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
           }
         }
 
-        if (result == NULL)
+        // MySQL's x IN (values) is TRUE on a match; otherwise NULL when x
+        // is NULL or a value is NULL, and FALSE when there are no values.
+        // A WHERE or HAVING keeps a row only when TRUE.  Where the IN is
+        // not negated, FALSE drops the same rows as NULL, so the OR-chain
+        // and x != x (for no values) do.  Where it is negated, NULL drops
+        // the same rows as TRUE (Kleene NOT / AND / OR give TRUE on NULL
+        // only if they give TRUE on both TRUE and FALSE).  [NOT] EXISTS
+        // is never NULL: NULL values match no row and a NULL x matches
+        // nothing.
+        auto node = [&](TokenKind op, ConditionalExpression* left,
+                        ConditionalExpression* right) {
+          ConditionalExpression* n =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          n->op = op;
+          n->args.left = left;
+          n->args.right = right;
+          return n;
+        };
+        auto is_null = [&](bool null) {
+          ConditionalExpression* n =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          n->op = T_IS;
+          n->is.arg = in_expr;
+          n->is.null = null;
+          return n;
+        };
+        if (polarity == 1)
         {
-          // All values were NULL: always false via col != col
-          ce->op = T_NOT_EQUALS;
-          ce->args.left = in_expr;
-          ce->args.right = in_expr;
+          if (result == NULL)
+            result = node(T_NOT_EQUALS, in_expr, in_expr);
         }
         else
         {
-          *ce = *result;
+          // The TRUE and FALSE below need x IS [NOT] NULL, which the WHERE
+          // filters support on a column and HAVING on an aggregate.
+          require_prm(in_expr->op == T_IDENTIFIER || in_expr->op == T_SUM ||
+                      in_expr->op == T_MIN || in_expr->op == T_MAX ||
+                      in_expr->op == T_COUNT || in_expr->op == T_AVG,
+                      "A negated IN or NOT EXISTS subquery needs a column "
+                      "or an aggregate on the left of IN.");
+          ConditionalExpression* always_false =
+            node(T_AND, is_null(true), is_null(false));
+          if (info.from_exists)
+          {
+            result = (result == NULL)
+                         ? always_false
+                         : node(T_AND, is_null(false), result);
+          }
+          else if (has_null)
+          {
+            require_prm(polarity == -1,
+                        "An IN subquery whose result contains NULL is "
+                        "supported only under AND, OR and NOT.");
+            result = node(T_OR, is_null(true), is_null(false));
+          }
+          else if (result == NULL)
+          {
+            result = always_false;
+          }
         }
+        *ce = *result;
         return;
       }
     }
@@ -9364,13 +9413,22 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
   switch (ce->op)
   {
   case T_IS:
-    substitute_subquery_results_ce(&ce->is.arg);
+    substitute_subquery_results_ce(&ce->is.arg, 0);
     return;
   case T_INTERVAL:
-    substitute_subquery_results_ce(&ce->interval.arg);
+    substitute_subquery_results_ce(&ce->interval.arg, 0);
     return;
   case T_EXTRACT:
-    substitute_subquery_results_ce(&ce->extract.arg);
+    substitute_subquery_results_ce(&ce->extract.arg, 0);
+    return;
+  case T_NOT:
+  case T_EXCLAMATION:
+    substitute_subquery_results_ce(&ce->args.left, -polarity);
+    return;
+  case T_AND:
+  case T_OR:
+    substitute_subquery_results_ce(&ce->args.left, polarity);
+    substitute_subquery_results_ce(&ce->args.right, polarity);
     return;
   case T_IDENTIFIER:
   case T_INT:
@@ -9385,9 +9443,10 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
   case T_NULL:
     return;
   default:
-    // Binary/unary operators: recurse into both sides
-    substitute_subquery_results_ce(&ce->args.left);
-    substitute_subquery_results_ce(&ce->args.right);
+    // Other binary/unary operators (XOR, comparisons, arithmetic) need the
+    // exact value of an operand: recurse into both sides
+    substitute_subquery_results_ce(&ce->args.left, 0);
+    substitute_subquery_results_ce(&ce->args.right, 0);
     return;
   }
 }
