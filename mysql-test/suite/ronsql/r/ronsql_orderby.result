@@ -529,6 +529,66 @@ Number of output lines, including header: 4
 
 
 
+HAVING != on a NULL MAX:
+== Query ==
+SELECT g, MAX(val) AS m
+FROM orderby_avg
+GROUP BY g
+HAVING MAX(val) != 20
+ORDER BY g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+HAVING NOT on a NULL SUM:
+== Query ==
+SELECT g, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+HAVING NOT (SUM(val) > 100)
+ORDER BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+HAVING IS NULL OR a comparison on a NULL AVG:
+== Query ==
+SELECT g, COUNT(val) AS c
+FROM orderby_avg
+GROUP BY g
+HAVING MIN(val) IS NULL OR AVG(val) > 40
+ORDER BY g;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+HAVING division by zero:
+== Query ==
+SELECT g, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+HAVING SUM(val) / (COUNT(*) - 1) >= 0
+ORDER BY g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
 
 
 

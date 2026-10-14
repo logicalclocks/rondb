@@ -274,7 +274,10 @@ private:
   // precision for DATETIME2 / TIME2.
   TemporalDisplay aggregate_arg_temporal(const Outputs* out,
                                          int& fsp) const;
-  bool evaluate_having(const ConditionalExpression* expr);
+  // SQL three-valued logic for HAVING; a group is kept only when TRUE.
+  enum HavingTruth { HAVING_FALSE, HAVING_TRUE, HAVING_UNKNOWN };
+  HavingTruth evaluate_having(const ConditionalExpression* expr);
+  // NaN stands for NULL.
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,
                            Uint32& max_idx);

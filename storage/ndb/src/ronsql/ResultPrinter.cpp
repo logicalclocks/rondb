@@ -1159,7 +1159,7 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
       if (sentinel.data_int64() == 0) continue;
     }
     if (m_query->having_expression != NULL &&
-        !evaluate_having(m_query->having_expression))
+        evaluate_having(m_query->having_expression) != HAVING_TRUE)
     {
       continue;
     }
@@ -2929,28 +2929,58 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
     return evaluate_having_value(expr->args.left) *
            evaluate_having_value(expr->args.right);
   case T_SLASH:
-    return evaluate_having_value(expr->args.left) /
-           evaluate_having_value(expr->args.right);
+  {
+    const double numerator = evaluate_having_value(expr->args.left);
+    const double denominator = evaluate_having_value(expr->args.right);
+    // Division by zero gives NULL in MySQL, not an infinity.
+    if (denominator == 0)
+      return std::numeric_limits<double>::quiet_NaN();
+    return numerator / denominator;
+  }
   default:
     throw RonSQLPermanentError(
       "Unsupported expression type in HAVING clause.");
   }
 }
 
-bool
+// A comparison with a NULL (NaN) operand is UNKNOWN, NOT keeps UNKNOWN, and
+// AND / OR follow SQL, so that e.g. a NULL MAX under `!= 5` or `NOT (> 5)`
+// drops the group as in MySQL.
+ResultPrinter::HavingTruth
 ResultPrinter::evaluate_having(const ConditionalExpression* expr)
 {
   switch (expr->op)
   {
   case T_AND:
-    return evaluate_having(expr->args.left) &&
-           evaluate_having(expr->args.right);
+  {
+    const HavingTruth left = evaluate_having(expr->args.left);
+    if (left == HAVING_FALSE)
+      return HAVING_FALSE;
+    const HavingTruth right = evaluate_having(expr->args.right);
+    if (right == HAVING_FALSE)
+      return HAVING_FALSE;
+    return (left == HAVING_TRUE && right == HAVING_TRUE) ? HAVING_TRUE
+                                                         : HAVING_UNKNOWN;
+  }
   case T_OR:
-    return evaluate_having(expr->args.left) ||
-           evaluate_having(expr->args.right);
+  {
+    const HavingTruth left = evaluate_having(expr->args.left);
+    if (left == HAVING_TRUE)
+      return HAVING_TRUE;
+    const HavingTruth right = evaluate_having(expr->args.right);
+    if (right == HAVING_TRUE)
+      return HAVING_TRUE;
+    return (left == HAVING_FALSE && right == HAVING_FALSE) ? HAVING_FALSE
+                                                           : HAVING_UNKNOWN;
+  }
   case T_NOT:
   case T_EXCLAMATION:
-    return !evaluate_having(expr->args.left);
+  {
+    const HavingTruth arg = evaluate_having(expr->args.left);
+    if (arg == HAVING_UNKNOWN)
+      return HAVING_UNKNOWN;
+    return (arg == HAVING_TRUE) ? HAVING_FALSE : HAVING_TRUE;
+  }
   case T_IS:
   {
     // IS NULL / IS NOT NULL on aggregate result
@@ -2960,35 +2990,40 @@ ResultPrinter::evaluate_having(const ConditionalExpression* expr)
     if (arg->op == T_SUM || arg->op == T_MIN || arg->op == T_MAX ||
         arg->op == T_COUNT || arg->op == T_AVG) {
       bool result_is_null = m_regs_a[arg->having_agg.agg_index].is_null();
-      return is_null_check ? result_is_null : !result_is_null;
+      return (is_null_check == result_is_null) ? HAVING_TRUE : HAVING_FALSE;
     }
     // For identifiers (output aliases), look up in stored registers
     if (arg->op == T_IDENTIFIER) {
       Uint32 agg_idx = arg->having_agg.agg_index;
       bool result_is_null = m_regs_a[agg_idx].is_null();
-      return is_null_check ? result_is_null : !result_is_null;
+      return (is_null_check == result_is_null) ? HAVING_TRUE : HAVING_FALSE;
     }
     throw RonSQLPermanentError(
         "Unsupported expression in HAVING IS [NOT] NULL.");
   }
   case T_GT:
-    return evaluate_having_value(expr->args.left) >
-           evaluate_having_value(expr->args.right);
   case T_GE:
-    return evaluate_having_value(expr->args.left) >=
-           evaluate_having_value(expr->args.right);
   case T_LT:
-    return evaluate_having_value(expr->args.left) <
-           evaluate_having_value(expr->args.right);
   case T_LE:
-    return evaluate_having_value(expr->args.left) <=
-           evaluate_having_value(expr->args.right);
   case T_EQUALS:
-    return evaluate_having_value(expr->args.left) ==
-           evaluate_having_value(expr->args.right);
   case T_NOT_EQUALS:
-    return evaluate_having_value(expr->args.left) !=
-           evaluate_having_value(expr->args.right);
+  {
+    const double left = evaluate_having_value(expr->args.left);
+    const double right = evaluate_having_value(expr->args.right);
+    if (std::isnan(left) || std::isnan(right))
+      return HAVING_UNKNOWN;
+    bool result = false;
+    switch (expr->op)
+    {
+    case T_GT: result = left > right; break;
+    case T_GE: result = left >= right; break;
+    case T_LT: result = left < right; break;
+    case T_LE: result = left <= right; break;
+    case T_EQUALS: result = left == right; break;
+    default: result = left != right; break;
+    }
+    return result ? HAVING_TRUE : HAVING_FALSE;
+  }
   default:
     throw RonSQLPermanentError(
       "Unsupported operator in HAVING clause.");

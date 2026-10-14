@@ -663,6 +663,51 @@ ORDER BY ad DESC, g
 LIMIT 3;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+# HAVING uses SQL three-valued logic: a comparison with a NULL aggregate
+# (group 5) is UNKNOWN, so the group is dropped under != and NOT too, and
+# x / 0 is NULL (group 1 has COUNT(*) - 1 = 0).  These groups used to be
+# kept.
+
+--echo HAVING != on a NULL MAX:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, MAX(val) AS m
+FROM orderby_avg
+GROUP BY g
+HAVING MAX(val) != 20
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo HAVING NOT on a NULL SUM:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+HAVING NOT (SUM(val) > 100)
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo HAVING IS NULL OR a comparison on a NULL AVG:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, COUNT(val) AS c
+FROM orderby_avg
+GROUP BY g
+HAVING MIN(val) IS NULL OR AVG(val) > 40
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo HAVING division by zero:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+HAVING SUM(val) / (COUNT(*) - 1) >= 0
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 #
 # ===== Section E: Unsupported type error tests =====
 #
