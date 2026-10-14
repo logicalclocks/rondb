@@ -97,6 +97,12 @@ struct Column {
   std::vector<char> value;  // Byte array for the value
 };
 
+/* One piece of a value that continues across buffers (RONDB-1144). */
+struct RS_Segment {
+  const char *ptr;
+  Uint32 len;
+};
+
 struct ResultView {
   const char *name_ptr;
   const char *value_ptr;
@@ -104,6 +110,10 @@ struct ResultView {
   Uint32 value_len;
   Uint32 data_type;
   bool quoted_flag;
+  /* nsegs == 0: the value is contiguous at value_ptr. Otherwise it is the
+   * concatenation of segs[0..nsegs), value_len bytes in all. */
+  const RS_Segment *segs;
+  Uint32 nsegs;
 };
 
 class PKReadResponse {
@@ -193,12 +203,27 @@ class PKReadResponseJSON : public PKReadResponse {
                      Uint32 value_len,
                      bool quoted,
                      Uint32 data_type) override {
+    setColumnData(index, name, name_len, value, value_len, quoted, data_type,
+                  nullptr, 0);
+  }
+
+  void setColumnData(Uint32 index,
+                     const char *name,
+                     Uint32 name_len,
+                     const char *value,
+                     Uint32 value_len,
+                     bool quoted,
+                     Uint32 data_type,
+                     const RS_Segment *segs,
+                     Uint32 nsegs) {
     result_view[index].name_ptr = name;
     result_view[index].name_len = name_len;
     result_view[index].value_ptr = value;
     result_view[index].value_len = value_len;
     result_view[index].quoted_flag = quoted;
     result_view[index].data_type = data_type;
+    result_view[index].segs = segs;
+    result_view[index].nsegs = nsegs;
     Uint32 encoded_value_len = value_len;
     if (data_type == RDRS_BINARY_DATATYPE ||
         data_type == RDRS_BIT_DATATYPE) {
@@ -246,18 +271,51 @@ class PKReadResponseJSON : public PKReadResponse {
     return value;
   }
 
+  /* Copy a value's bytes, contiguous or segmented, to dst. */
+  void copyValue(Uint32 index, char *dst) const {
+    const ResultView &rv = result_view[index];
+    if (rv.nsegs == 0) {
+      memcpy(dst, rv.value_ptr, rv.value_len);
+      return;
+    }
+    for (Uint32 s = 0; s < rv.nsegs; s++) {
+      memcpy(dst, rv.segs[s].ptr, rv.segs[s].len);
+      dst += rv.segs[s].len;
+    }
+  }
+
+  /* base64 of a value's bytes, contiguous or segmented, into dst; returns
+   * the encoded length. */
+  size_t encodeValueBase64(Uint32 index, char *dst) const {
+    const ResultView &rv = result_view[index];
+    if (rv.nsegs == 0) {
+      size_t outlen = 0;
+      base64_encode(rv.value_ptr, rv.value_len, dst, &outlen, 0);
+      return outlen;
+    }
+    struct base64_state state;
+    base64_stream_encode_init(&state, 0);
+    size_t total = 0;
+    for (Uint32 s = 0; s < rv.nsegs; s++) {
+      size_t outlen = 0;
+      base64_stream_encode(&state, rv.segs[s].ptr, rv.segs[s].len,
+                           dst + total, &outlen);
+      total += outlen;
+    }
+    size_t outlen = 0;
+    base64_stream_encode_final(&state, dst + total, &outlen);
+    return total + outlen;
+  }
+
   std::vector<char> getValueArray(Uint32 index) {
-    const char *value_ptr = result_view[index].value_ptr;
     Uint32 value_len = result_view[index].value_len;
     bool quoted_flag = result_view[index].quoted_flag;
     if (result_view[index].data_type == RDRS_BINARY_DATATYPE ||
         result_view[index].data_type == RDRS_BIT_DATATYPE) {
       Uint32 encoded_len = ((value_len * 4) / 3) + 3 + 2;
       std::vector<char> vec(encoded_len);
-      char* encode_ptr = &vec[1];
       assert(quoted_flag);
-      size_t encode_len = 0;
-      base64_encode(value_ptr, value_len, encode_ptr, &encode_len, 0);
+      size_t encode_len = encodeValueBase64(index, &vec[1]);
       encode_len += 2;
       vec[0] = '\"';
       vec[encode_len - 1] = '\"';
@@ -267,23 +325,25 @@ class PKReadResponseJSON : public PKReadResponse {
       std::vector<char> vec(value_len + 2);
       vec[0] = '\"';
       vec[value_len + 1] = '\"';
-      std::copy(value_ptr, value_ptr + value_len, vec.begin() + 1);
+      copyValue(index, vec.data() + 1);
       return vec;
     } else {
-      std::vector<char> vec(value_ptr, value_ptr + value_len);
+      std::vector<char> vec(value_len);
+      copyValue(index, vec.data());
       return vec;
     }
   }
 
   std::vector<Uint8> getComplexValue(Uint32 index) {
     assert(result_view[index].quoted_flag);
-    const char *ptr = result_view[index].value_ptr;
     Uint32 len = result_view[index].value_len;
-    std::vector<Uint8> vec(ptr, ptr + len);
+    std::vector<Uint8> vec(len);
+    copyValue(index, reinterpret_cast<char *>(vec.data()));
     return vec;
   }
 
   std::string_view getValue(Uint32 index) const {
+    assert(result_view[index].nsegs == 0);
     std::string_view value(result_view[index].value_ptr,
                            result_view[index].value_len);
     return value;

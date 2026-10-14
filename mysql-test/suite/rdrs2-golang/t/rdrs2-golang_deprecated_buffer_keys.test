@@ -1,0 +1,71 @@
+# RONDB-1144: Internal.ReqBufferSize and Internal.RespBufferSize are
+# deprecated. The buffer sizes are computed from the NDB limits, so a
+# configuration that still sets the keys must load, warn once per key on
+# stderr, and ignore the values. `rdrs2 --print-limits` shows the sizes in
+# effect without a cluster; they must match what the running rdrs.1.1
+# reports through its rdrs_limits metric family.
+#
+# Constant output: PASS lines only, so the recorded result is stable.
+
+--source include/have_ndb.inc
+
+--echo # A config file that still carries the deprecated keys
+--write_file $MYSQL_TMP_DIR/deprecated_buffer_keys.json
+{ "Internal": { "ReqBufferSize": 1024, "RespBufferSize": 1024 } }
+EOF
+
+--echo # print-limits ignores the keys, warns, and agrees with the live server
+perl END_OF_PERL;
+use strict;
+use warnings;
+use HTTP::Tiny;
+
+my $exe = $ENV{'RDRS2_EXE'} or die "RDRS2_EXE not set\n";
+my $tmp = $ENV{'MYSQL_TMP_DIR'};
+my $cfg = "$tmp/deprecated_buffer_keys.json";
+my $err_file = "$tmp/deprecated_buffer_keys.err";
+my $out = `"$exe" --config "$cfg" --print-limits 2>"$err_file"`;
+die "print-limits exited with " . ($? >> 8) . "\n" if $? != 0;
+my ($req)  = $out =~ /"ReqBufferBytes":\s*(\d+)/
+    or die "no ReqBufferBytes in: $out";
+my ($resp) = $out =~ /"RespBufferBytes":\s*(\d+)/
+    or die "no RespBufferBytes in: $out";
+die "ReqBufferBytes is 1024: the deprecated key was honoured\n"
+    if $req == 1024;
+die "RespBufferBytes is 1024: the deprecated key was honoured\n"
+    if $resp == 1024;
+
+open(my $eh, '<', $err_file) or die "$err_file: $!";
+my $err = do { local $/; <$eh> };
+close($eh);
+die "no deprecation warning for ReqBufferSize on stderr:\n$err"
+    unless $err =~ /ReqBufferSize is deprecated/;
+die "no deprecation warning for RespBufferSize on stderr:\n$err"
+    unless $err =~ /RespBufferSize is deprecated/;
+
+# The running plain-HTTP server rdrs.1.1 exports the same values.
+my $json = do {
+    open(my $fh, '<', $ENV{'RDRS_CONFIG_FILE_NO_TLS'}) or die $!;
+    local $/;
+    <$fh>
+};
+# REST.ServerPort, not Rondis' or the probe port: the REST block is the
+# one that carries "ProbePort" too, so anchor on that block.
+my ($port) = $json =~ /"REST"\s*:\s*\{[^}]*?"ServerPort"\s*:\s*(\d+)/s
+    or die "no REST.ServerPort in the rdrs.1.1 config\n";
+my $res = HTTP::Tiny->new(timeout => 10)->get("http://127.0.0.1:$port/metrics");
+die "GET /metrics: $res->{status} $res->{reason}\n" unless $res->{success};
+my ($mreq)  = $res->{content} =~ /rdrs_limits\{name="req_buffer_bytes"\}\s+(\d+)/
+    or die "no req_buffer_bytes in rdrs_limits\n";
+my ($mresp) = $res->{content} =~ /rdrs_limits\{name="resp_buffer_bytes"\}\s+(\d+)/
+    or die "no resp_buffer_bytes in rdrs_limits\n";
+die "print-limits ($req) and metrics ($mreq) disagree on the request buffer\n"
+    if $req != $mreq;
+die "print-limits ($resp) and metrics ($mresp) disagree on the response buffer\n"
+    if $resp != $mresp;
+print "PASS\n";
+exit 0;
+END_OF_PERL
+
+--remove_file $MYSQL_TMP_DIR/deprecated_buffer_keys.json
+--remove_file $MYSQL_TMP_DIR/deprecated_buffer_keys.err

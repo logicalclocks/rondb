@@ -70,8 +70,14 @@ CLASS
     " 256. Also passed to the HTTP server as its body limit, so it is the one"
     " number that bounds a request body; larger bodies are rejected before"
     " rdrs2 sees them. Each worker thread keeps a parse buffer of this size.")
- CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
- CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
+ CM(Uint32, reqBufferSize, ReqBufferSize, 0,
+    "Deprecated and ignored since RONDB-1144: the request buffer size is"
+    " computed from the NDB limits (see rdrs2 --print-limits). Accepted for"
+    " one release so existing configuration files keep working.")
+ CM(Uint32, respBufferSize, RespBufferSize, 0,
+    "Deprecated and ignored since RONDB-1144: the response buffer size is"
+    " computed from the NDB limits (see rdrs2 --print-limits). Accepted for"
+    " one release so existing configuration files keep working.")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
     "Initial buffer reservation for scan response JSON, in bytes. The buffer"
     " will grow automatically if the response exceeds this size.")
@@ -100,6 +106,11 @@ CLASS
     "Seconds a pool must have been idle (free buffers above"
     " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
     " shrinking.")
+ CM(Uint32, startReserveOverride, StartReserveOverride, 0,
+    "Testing knob. Overrides the computed start reserve, the free space a"
+    " buffer must have before a new response or operation request may start"
+    " in it. 0 = computed. Lowering it only causes responses to be rewritten"
+    " in a fresh buffer; it cannot make a result wrong.")
  CM(Uint32, batchMaxSize, BatchMaxSize, 128,
     "Number of operations of a batch request sent to NDB per execution loop."
     " Not a cap on the batch size; see MaxOperationsPerBatch.")
@@ -119,8 +130,6 @@ CLASS
          "MaxBuffers must allow at least two buffers")
  PROBLEM(operationIdMaxSize > MAX_OPERATION_ID_RESERVE,
          "OperationIDMaxSize must be <= 4096")
- PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
- PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")
  PROBLEM(batchMaxSize > 512, "BatchMaxSize should be <= 512")
  PROBLEM(batchMaxSize < 50, "BatchMaxSize should be >= 50")

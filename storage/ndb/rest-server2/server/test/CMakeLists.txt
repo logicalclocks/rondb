@@ -66,6 +66,18 @@ NDB_ADD_EXECUTABLE(buffer_manager_test buffer_manager_test.cpp
 NDB_ADD_EXECUTABLE(limits_test limits_test.cpp
                    STATIC_NDBCLIENT)
 
+# RONDB-1144: the buffer chain and the response writer's spill path.
+NDB_ADD_EXECUTABLE(buffer_chain_test buffer_chain_test.cpp
+                   STATIC_NDBCLIENT)
+
+TARGET_LINK_LIBRARIES(
+  buffer_chain_test
+  gtest_main
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
 TARGET_LINK_LIBRARIES(
   buffer_manager_test
   gtest_main
@@ -137,6 +149,7 @@ TARGET_LINK_LIBRARIES(
 add_test(NAME process_setup_test COMMAND process_setup_test)
 add_test(NAME buffer_manager_test COMMAND buffer_manager_test)
 add_test(NAME limits_test COMMAND limits_test)
+add_test(NAME buffer_chain_test COMMAND buffer_chain_test)
 add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)
 add_test(NAME error_handling_test COMMAND error_handling_test)

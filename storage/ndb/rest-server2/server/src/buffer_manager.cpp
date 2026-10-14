@@ -18,6 +18,7 @@
  */
 
 #include "buffer_manager.hpp"
+#include "buffer_sizes.hpp"
 
 #include <util/require.h>
 
@@ -286,9 +287,9 @@ void RS_BufferArrayManager::init(Uint32 req_bytes, Uint32 resp_bytes,
 
 void RS_BufferArrayManager::init_from_config() {
   const Internal &cfg = globalConfigs.internal;
-  /* Sizes are still the configured value doubled here; the computed sizes
-   * of buffer_sizes.hpp replace them together with buffer chaining. */
-  init(cfg.reqBufferSize * 2, cfg.respBufferSize * 2, cfg.preAllocatedBuffers,
+  /* The sizes are computed from the NDB limits; ReqBufferSize and
+   * RespBufferSize in the configuration are deprecated and ignored. */
+  init(DEFAULT_REQ_BUFFER, DEFAULT_RESP_BUFFER, cfg.preAllocatedBuffers,
        cfg.maxBuffers, cfg.bufferPoolSharePercent, cfg.bufferShrinkAfterS,
        detect_memory_limit());
 }

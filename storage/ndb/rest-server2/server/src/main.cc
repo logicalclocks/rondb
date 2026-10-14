@@ -382,6 +382,19 @@ int main(int argc, char *argv[]) {
    * here, once the configuration and the memory limit are known, rather
    * than at static-initialisation time from compiled-in defaults
    * (RONDB-1144). Before the metrics, which read the derived cap. */
+  if (globalConfigs.internal.reqBufferSize != 0) {
+    std::cerr << "Warning: Internal.ReqBufferSize is deprecated and ignored;"
+              << " request buffers are " << DEFAULT_REQ_BUFFER << " bytes\n";
+  }
+  if (globalConfigs.internal.respBufferSize != 0) {
+    std::cerr << "Warning: Internal.RespBufferSize is deprecated and ignored;"
+              << " response buffers are " << DEFAULT_RESP_BUFFER << " bytes\n";
+  }
+  if (globalConfigs.internal.startReserveOverride != 0) {
+    std::cerr << "Warning: Internal.StartReserveOverride is set to "
+              << globalConfigs.internal.startReserveOverride
+              << " bytes; this is a testing knob\n";
+  }
   rsBufferArrayManager.init_from_config();
 
   if (optPrintLimits) {

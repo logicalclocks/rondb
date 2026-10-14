@@ -19,6 +19,7 @@
 
 #include "batch_feature_store_ctrl.hpp"
 #include "buffer_manager.hpp"
+#include "buffer_chain.hpp"
 #include "constants.hpp"
 #include "encoding.hpp"
 #include "feature_store_ctrl.hpp"
@@ -207,8 +208,10 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   auto features = std::vector<std::vector<std::vector<char>>>();
   auto noOps    = readParams.size();
   ArenaMalloc amalloc(256 * 1024);
-  std::vector<RS_Buffer> reqBuffs(noOps);
-  std::vector<RS_Buffer> respBuffs(noOps);
+  /* RONDB-1144: every buffer this request takes lives in these chains
+   * and is returned when they go out of scope. */
+  RS_BufferChain req_chain(RS_BufferChain::REQ, noOps);
+  RS_BufferChain resp_chain(RS_BufferChain::RESP, noOps);
   if (unlikely(noOps != 0)) {
     // Validate batch pkread
     for (auto readParam : readParams) {
@@ -226,65 +229,47 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     }
     auto dbResponseIntf = getPkReadResponseJson(numPassed, *metadata);
     // Execute batch pkread
-    Uint32 request_buffer_size = globalConfigs.internal.reqBufferSize * 2;
-    Uint32 request_buffer_limit = request_buffer_size / 2;
-    Uint32 current_head = 0;
-    reqBuffs[0] = rsBufferArrayManager.get_req_buffer();
-    respBuffs[0] = rsBufferArrayManager.get_resp_buffer();
-    /* The pool refuses buffers past its cap (RONDB-1144): answer 503 and
-     * give back whichever of the pair was taken. */
-    if (unlikely(reqBuffs[0].buffer == nullptr ||
-                 respBuffs[0].buffer == nullptr)) {
-      release_array_buffers(reqBuffs.data(), respBuffs.data(), 1);
-      resp->setBody("buffer pool exhausted");
+    status = req_chain.take_first();
+    if (likely(status.http_code == SUCCESS)) {
+      status = resp_chain.take_first();
+    }
+    if (unlikely(status.http_code != SUCCESS)) {
+      resp->setBody(std::string(status.message));
       resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
       callback(resp);
       return;
     }
-    Uint32 current_request_buffer_idx = 0;
     for (Uint32 i = 0; i < noOps; i++) {
       if (i > 0) {
-        reqBuffs[i] = getNextReqRS_Buffer(
-          current_head,
-          request_buffer_limit,
-          reqBuffs[current_request_buffer_idx],
-          current_request_buffer_idx,
-          i
-        );
-        if (unlikely(reqBuffs[i].buffer == nullptr)) {
-          release_array_buffers(reqBuffs.data(), respBuffs.data(), i);
-          resp->setBody("buffer pool exhausted");
-          resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
-          callback(resp);
-          return;
+        status = req_chain.next_op_view(
+            i, native_request_upper_bound(readParams[i]));
+        if (unlikely(status.http_code != SUCCESS)) {
+        resp->setBody(std::string(status.message));
+        resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+        callback(resp);
+        return;
         }
       }
-      status = create_native_request(readParams[i],
-                                     (Uint32*)reqBuffs[i].buffer,
-                                     current_head);
+      RS_Buffer &view = req_chain.views()[i];
+      Uint32 consumed = 0;
+      status = create_native_request(readParams[i], view, consumed);
       if (static_cast<drogon::HttpStatusCode>(status.http_code) !=
             drogon::HttpStatusCode::k200OK) {
         resp->setBody(std::string(status.message));
         resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
         callback(resp);
-        release_array_buffers(reqBuffs.data(), respBuffs.data(), i);
         return;
       }
-      UintPtr length_ptr =
-        reinterpret_cast<UintPtr>(reqBuffs[i].buffer) +
-          static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
-      reqBuffs[i].size = *length_ptr_casted;
-      require(reqBuffs[i].buffer + reqBuffs[i].size <=
-              reqBuffs[current_request_buffer_idx].buffer + current_head);
+      view.size = reinterpret_cast<Uint32 *>(view.buffer)[PK_REQ_LENGTH_IDX];
+      req_chain.advance(consumed);
     }
     metricsUpdater.set_key_requests(noOps);
     // pk_batch_read
     status = pk_batch_read((void*)&amalloc,
                            noOps,
                            true,
-                           reqBuffs.data(),
-                           respBuffs.data(),
+                           req_chain.views(),
+                           &resp_chain,
                            currentThreadIndex,
                            rl_identity.empty() ? nullptr : rl_identity.c_str(),
                            (unsigned int)rl_identity.size());
@@ -297,12 +282,12 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       resp->setStatusCode(
         static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
       callback(resp);
-      release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
       return;
     }
     status = process_responses(&amalloc,
-                               respBuffs,
-                               reqBuffs,
+                               resp_chain,
+                               req_chain.views(),
+                               noOps,
                                dbResponseIntf);
     if (unlikely(status.err_file_name[0] != '\0')) {
       auto fsError = TranslateRonDbError(status.http_code, status.message);
@@ -310,7 +295,6 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       resp->setStatusCode(
         static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
       callback(resp);
-      release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
       return;
     }
     std::tie(features, err) = getFeatureValuesMultipleEntries(
@@ -325,7 +309,6 @@ void BatchFeatureStoreCtrl::batch_featureStore(
       resp->setBody(err->Error());
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
-      release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
       return;
     }
   } else {
@@ -362,7 +345,6 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   resp->setBody(std::move(fsRespStr));
   resp->setStatusCode(drogon::HttpStatusCode::k200OK);
   callback(resp);
-  release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
 }
 
 unsigned checkFeatureStatus(

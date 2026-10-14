@@ -23,6 +23,7 @@
 package bufferpool
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -34,6 +35,7 @@ import (
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/internal/testutils"
+	"hopsworks.ai/rdrs2/pkg/api"
 )
 
 const exhaustedMsg = "buffer pool exhausted"
@@ -57,6 +59,11 @@ func requirePoolServer(t *testing.T) testutils.Limits {
 	limits := testutils.GetLimits(t)
 	if want := envInt(t, "RDRS_POOL_MAX_BUFFERS"); limits.MaxBuffers != want {
 		t.Fatalf("MaxBuffers override not applied: rdrs_limits=%d cnf=%d", limits.MaxBuffers, want)
+	}
+	// The .cnf sets the deprecated ReqBufferSize/RespBufferSize to 1024;
+	// the server must have started and ignored them.
+	if limits.ReqBufferBytes == 1024 || limits.RespBufferBytes == 1024 {
+		t.Fatalf("deprecated buffer size keys were honoured: %+v", limits)
 	}
 	return limits
 }
@@ -159,6 +166,59 @@ func TestPoolShrinksAfterIdle(t *testing.T) {
 	if limits.MaxBuffers < prealloc {
 		t.Fatalf("limits inconsistent: MaxBuffers %d < PreAllocatedBuffers %d", limits.MaxBuffers, prealloc)
 	}
+}
+
+// With StartReserveOverride far below the computed reserve, a batch of
+// widest rows lets a response start near the end of a buffer and overflow
+// it; the server rewrites that response in a fresh buffer (rule 5), counts
+// a retry, and every value is still correct.
+func TestRetryWithLoweredStartReserve(t *testing.T) {
+	limits := requirePoolServer(t)
+	if _, ok := os.LookupEnv("RDRS_POOL_START_RESERVE"); !ok {
+		t.Skip("RDRS_POOL_START_RESERVE not set")
+	}
+	spec := testutils.WidestRowSpec(limits)
+	const table = "widest"
+	testutils.CreateWideRowTable(t, poolDB(), table, spec, map[int]byte{1: 1})
+
+	before := testutils.TakePoolSnapshot(t)
+	// Enough widest responses to walk past the end of one buffer.
+	n := int(limits.RespBufferBytes/limits.MinRespBufferBytes) + 2
+	ops := make([]string, n)
+	for i := range ops {
+		ops[i] = fmt.Sprintf(`{"method":"POST","relative-url":"%s/%s/%s","body":{"filters":[{"column":"id","value":1}]}}`,
+			poolDB(), table, config.PK_DB_OPERATION)
+	}
+	body := `{"operations":[` + strings.Join(ops, ",") + `]}`
+	_, resp := testclient.SendHttpRequest(t, config.BATCH_HTTP_VERB, testutils.NewBatchReadURL(), body, "", http.StatusOK)
+	var res api.BatchResponseJSON
+	if err := json.Unmarshal(resp, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if res.Result == nil || len(*res.Result) != n {
+		t.Fatalf("expected %d sub-responses", n)
+	}
+	want := testutils.ExpectedWideValue(spec, 1)
+	for i, sub := range *res.Result {
+		if sub.Code == nil || *sub.Code != http.StatusOK || sub.Body.Data == nil {
+			t.Fatalf("sub-operation %d failed: %v", i, sub.Code)
+		}
+		if len(*sub.Body.Data) != spec.NCols+1 {
+			t.Fatalf("sub-operation %d: %d columns", i, len(*sub.Body.Data))
+		}
+		for c := 0; c < spec.NCols; c++ {
+			raw := (*sub.Body.Data)[spec.ColumnName(c)]
+			var s string
+			if raw == nil || json.Unmarshal(*raw, &s) != nil || s != want {
+				t.Fatalf("sub-operation %d column %d differs", i, c)
+			}
+		}
+	}
+	after := testutils.TakePoolSnapshot(t)
+	if d := testutils.EventDelta(before, after, testutils.PoolResponse, "retry"); d < 1 {
+		t.Fatalf("expected at least one retry with the lowered reserve: %s -> %s", before, after)
+	}
+	testutils.AssertPoolBalanced(t, before)
 }
 
 // Malformed batches after a valid operation: whatever was taken for the

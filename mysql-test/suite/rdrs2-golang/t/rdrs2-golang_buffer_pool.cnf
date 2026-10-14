@@ -5,6 +5,11 @@
 # /proc on Linux. NumThreads x MaxReqSize is the virtual size of the JSON
 # parse buffers; the startup check asserts they are NOT resident, which
 # only means something when that product is large (here 4 x 64 MiB).
+# StartReserveOverride lowers the start reserve far below the computed one
+# so a wide response can start near the end of a buffer and the retry
+# (rewrite in a fresh buffer) gets exercised. ReqBufferSize and
+# RespBufferSize are the deprecated keys: the server must start with them
+# and ignore them, which the driver checks through rdrs_limits.
 !include suite/rdrs2-golang/my.cnf
 
 [rdrs.3.1]
@@ -14,6 +19,9 @@ MaxReqSize=67108864
 MaxBuffers=8
 BufferShrinkAfterS=5
 PreAllocatedBuffers=2
+StartReserveOverride=4096
+ReqBufferSize=1024
+RespBufferSize=1024
 
 [ENV]
 RDRS_CONFIG_FILE_POOL=         @rdrs.3.1.#config-json
@@ -23,3 +31,4 @@ RDRS_POOL_MAX_REQ_SIZE=        @rdrs.3.1.MaxReqSize
 RDRS_POOL_MAX_BUFFERS=         @rdrs.3.1.MaxBuffers
 RDRS_POOL_SHRINK_AFTER_S=      @rdrs.3.1.BufferShrinkAfterS
 RDRS_POOL_PREALLOCATED=        @rdrs.3.1.PreAllocatedBuffers
+RDRS_POOL_START_RESERVE=       @rdrs.3.1.StartReserveOverride

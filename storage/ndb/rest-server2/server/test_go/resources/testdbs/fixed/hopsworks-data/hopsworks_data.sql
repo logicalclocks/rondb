@@ -264,6 +264,18 @@ INSERT INTO `data_source` SET
   `metrics` = NULL,
   `dimensions` = NULL,
   `spreadsheet_id` = NULL;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `data_source` SET
+  `id` = 19,
+  `query` = NULL,
+  `database_name` = NULL,
+  `group_name` = NULL,
+  `table_name` = NULL,
+  `path` = NULL,
+  `connector_id` = NULL,
+  `metrics` = NULL,
+  `dimensions` = NULL,
+  `spreadsheet_id` = NULL;
 
 
 
@@ -675,6 +687,29 @@ INSERT INTO `feature_group` SET
   `ttl` = NULL,
   `ttl_enabled` = 0,
   `sink_enabled` = 0;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `feature_group` SET
+  `id` = 3091,
+  `name` = 'sample_blob',
+  `feature_store_id` = 1091,
+  `created` = '2026-10-14 00:00:00',
+  `creator` = 10000,
+  `version` = 1,
+  `description` = NULL,
+  `feature_group_type` = 2,
+  `on_demand_feature_group_id` = NULL,
+  `cached_feature_group_id` = NULL,
+  `stream_feature_group_id` = 2068,
+  `event_time` = NULL,
+  `online_enabled` = 1,
+  `topic_name` = NULL,
+  `notification_topic_name` = NULL,
+  `deprecated` = 0,
+  `for_log` = 0,
+  `data_source_id` = 19,
+  `ttl` = NULL,
+  `ttl_enabled` = 0,
+  `sink_enabled` = 0;
 
 
 
@@ -996,6 +1031,15 @@ INSERT INTO `feature_view` SET
   `name` = 'sample_share_complex',
   `feature_store_id` = 67,
   `created` = '2023-09-26 10:03:16',
+  `creator` = 10000,
+  `version` = 1,
+  `description` = '';
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `feature_view` SET
+  `id` = 4122,
+  `name` = 'sample_blob',
+  `feature_store_id` = 1091,
+  `created` = '2026-10-14 00:00:00',
   `creator` = 10000,
   `version` = 1,
   `description` = '';
@@ -1868,6 +1912,17 @@ INSERT INTO `serving_key` SET
   `required` = 1,
   `feature_view_id` = 24,
   `type` = 'bigint';
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `serving_key` SET
+  `id` = 1529,
+  `prefix` = NULL,
+  `feature_name` = 'id',
+  `join_on` = NULL,
+  `join_index` = 0,
+  `feature_group_id` = 3091,
+  `required` = 1,
+  `feature_view_id` = 4122,
+  `type` = NULL;
 
 
 
@@ -1909,6 +1964,10 @@ INSERT INTO `stream_feature_group` SET
   `timetravel_format` = 1;
 INSERT INTO `stream_feature_group` SET
   `id` = 2067,
+  `timetravel_format` = 1;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `stream_feature_group` SET
+  `id` = 2068,
   `timetravel_format` = 1;
 
 INSERT INTO `subjects` SET
@@ -4212,6 +4271,33 @@ INSERT INTO `training_dataset_feature` SET
   `training_helper_column` = 0,
   `feature_view_id` = 4121,
   `on_demand_transformation` = NULL;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `training_dataset_feature` SET
+  `id` = 5185,
+  `training_dataset` = NULL,
+  `feature_group` = 3091,
+  `name` = 'id',
+  `type` = 'bigint',
+  `td_join` = 5143,
+  `idx` = 0,
+  `label` = 0,
+  `inference_helper_column` = 0,
+  `training_helper_column` = 0,
+  `feature_view_id` = 4122,
+  `on_demand_transformation` = NULL;
+INSERT INTO `training_dataset_feature` SET
+  `id` = 5186,
+  `training_dataset` = NULL,
+  `feature_group` = 3091,
+  `name` = 'payload',
+  `type` = 'binary',
+  `td_join` = 5143,
+  `idx` = 1,
+  `label` = 0,
+  `inference_helper_column` = 0,
+  `training_helper_column` = 0,
+  `feature_view_id` = 4122,
+  `on_demand_transformation` = NULL;
 
 
 
@@ -4898,6 +4984,21 @@ INSERT INTO `training_dataset_join` SET
   `parent_idx` = 0,
   `prefix` = 'fg2_',
   `feature_view_id` = 4121,
+  `lookback_key` = NULL,
+  `lookback_start_window` = NULL,
+  `lookback_end_window` = NULL;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `training_dataset_join` SET
+  `id` = 5143,
+  `training_dataset` = NULL,
+  `feature_group` = 3091,
+  `left_feature_group` = NULL,
+  `feature_group_commit_id` = NULL,
+  `type` = 0,
+  `idx` = 0,
+  `parent_idx` = 0,
+  `prefix` = NULL,
+  `feature_view_id` = 4122,
   `lookback_key` = NULL,
   `lookback_start_window` = NULL,
   `lookback_end_window` = NULL;

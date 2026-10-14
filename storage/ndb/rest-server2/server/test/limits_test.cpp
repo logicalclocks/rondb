@@ -66,7 +66,7 @@ std::string name_of_max_length(char fill) {
 TEST(Limits, WorstCaseResponseFitsMinRespBuffer) {
   std::vector<char> storage(MIN_RESP_BUFFER);
   RS_Buffer buffer{storage.data(), MIN_RESP_BUFFER, 0};
-  PKRResponse response(&buffer);
+  PKRResponse response(buffer, nullptr, 0);
 
   const std::string op_id(MAX_OPERATION_ID_RESERVE, 'o');
   ASSERT_EQ(response.SetOperationID(op_id.c_str()).http_code, SUCCESS);
@@ -86,6 +86,7 @@ TEST(Limits, WorstCaseResponseFitsMinRespBuffer) {
     const std::string escaped = escape_string(raw);
     ASSERT_EQ(escaped.size(), raw_len * MAX_TEXT_EXPANSION);
     escaped_total += escaped.size();
+    response.SetSlot(col);
     ASSERT_EQ(response
                   .SetColumnData(escaped.c_str(), RDRS_STRING_DATATYPE,
                                  static_cast<Uint32>(escaped.size()))
@@ -141,9 +142,9 @@ TEST(Limits, WorstCaseNamedColumnsRequestFitsMinReqBuffer) {
   }
 
   std::vector<Uint32> storage(MIN_REQ_BUFFER / ADDRESS_SIZE + 1);
+  RS_Buffer view{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER, 0};
   Uint32 consumed = 0;
-  const RS_Status status =
-      create_native_request(params, storage.data(), consumed);
+  const RS_Status status = create_native_request(params, view, consumed);
   ASSERT_EQ(status.http_code, SUCCESS) << status.message;
   EXPECT_LE(consumed, MIN_REQ_BUFFER);
   EXPECT_LE(storage[PK_REQ_LENGTH_IDX], MIN_REQ_BUFFER);
@@ -175,15 +176,14 @@ TEST(Limits, WorstCaseAllColumnsRequestFitsMinReqBuffer) {
   }
 
   std::vector<Uint32> storage(MIN_REQ_BUFFER / ADDRESS_SIZE + 1);
+  RS_Buffer buffer{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER,
+                   0};
   Uint32 consumed = 0;
-  const RS_Status status =
-      create_native_request(params, storage.data(), consumed);
+  const RS_Status status = create_native_request(params, buffer, consumed);
   ASSERT_EQ(status.http_code, SUCCESS) << status.message;
   EXPECT_LE(consumed, MIN_REQ_BUFFER)
       << "encoder reservation for all column names exceeds the minimum";
 
-  RS_Buffer buffer{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER,
-                   0};
   PKRRequest request(&buffer);
   ASSERT_TRUE(request.addReadColumns(MAX_ATTRIBUTES_IN_TABLE));
   const std::string name = name_of_max_length('C');
