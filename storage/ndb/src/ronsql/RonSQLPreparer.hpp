@@ -145,6 +145,11 @@ public:
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
+    // Returns `e` for use as an operand of arithmetic or as an arm of a
+    // CASE.  Throws (UNSUPPORTED) when `e` is a CASE, which compiles only
+    // as the whole argument of an aggregate function.
+    AggregationAPICompiler::Expr* non_case_operand(
+        AggregationAPICompiler::Expr* e);
     // Phase I.5 v2b — n-ary GREATEST / LEAST.  Operands are folded
     // left-associative into a chain of Greatest2 / Least2 SVM ops.
     // Each operand must be a Load (column ref) or LoadConstantInteger.

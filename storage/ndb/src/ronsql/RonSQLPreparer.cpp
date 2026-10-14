@@ -19758,6 +19758,24 @@ RonSQLPreparer::Context::set_err_state(ErrState state,
   }
 }
 
+/*
+ * AggregationAPICompiler compiles a CASE as a branch around the aggregate
+ * update, not as a value, so a CASE anywhere but at the top of an
+ * aggregate argument would reach the arithmetic compiler, which has no
+ * CASE instruction and aborts.
+ */
+AggregationAPICompiler::Expr*
+RonSQLPreparer::Context::non_case_operand(AggregationAPICompiler::Expr* e)
+{
+  if (e != NULL && e->isCase())
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "CASE is supported only as the whole argument of an aggregate "
+        "function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot "
+        "be used in arithmetic or in a THEN or ELSE of another CASE.");
+  return e;
+}
+
 AggregationAPICompiler*
 RonSQLPreparer::Context::get_agg()
 {
