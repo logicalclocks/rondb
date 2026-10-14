@@ -347,6 +347,34 @@ RonSQLPreparer::reject_qualified_cte_references()
 }
 
 /*
+ * Subqueries read stored tables, not CTEs: a WHERE subquery is executed
+ * as a separate statement without the WITH list, and the EXISTS and
+ * correlated-scalar rewrites look the table up in the dictionary. A
+ * subquery that names a CTE visible in its scope would therefore be
+ * authorized as the CTE (resolve_access()) but read the stored table of
+ * that name. Reject the reference instead. Runs on the inventory as
+ * written, before any rewrite, with the same scoping as access_is_cte().
+ */
+void
+RonSQLPreparer::reject_cte_references_in_subqueries()
+{
+  for (Uint32 i = 0; i < m_access_table_refs.size(); i++)
+  {
+    const AccessTableRef& ref = m_access_table_refs[i];
+    const AccessScope& s = m_access_scopes[ref.scope];
+    if (ref.scope == 0 || s.is_cte_body) continue;
+    if (!access_is_cte(ref.name, ref.scope)) continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("A subquery cannot read the CTE ") + ref.name.c_str() +
+        ". Subqueries read stored tables only, and reading a stored table "
+        "that has the name of a CTE in the same statement is not "
+        "supported. Join the CTE in the main query instead, or rename the "
+        "CTE to read the stored table.");
+  }
+}
+
+/*
  * Whether a table reference `name` in `scope` names a CTE rather than a
  * table: only WITH-list entries visible there count, like the preparer's
  * build_cte_scopes() - a CTE body sees the CTEs declared before it, the
@@ -750,6 +778,7 @@ RonSQLPreparer::parse()
     }
     // Before the rewrites below resolve CTE names without the qualifier.
     reject_qualified_cte_references();
+    reject_cte_references_in_subqueries();
     // RONDB-1124 (m3_run6_plan.md C2): MIN / MAX over one single-group CTE
     // (the fs_point form) becomes the single-table aggregate over the body.
     // It swaps the main compiler for the body's, so it must run before the
