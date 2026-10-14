@@ -167,9 +167,9 @@ static void systemInfo(const Configuration &config) {
  * DiskPageBufferMemory.
  *
  * RG_SCHEMA_TRANS_MEMORY:
- * This is a resource that is set to a minimum of 2 MByte. It can be
- * overallocated at any size as long as there is still memory
- * remaining.
+ * This is a resource that is set to a minimum of 4 MByte. It can be
+ * overallocated as a high priority resource, until 94% of the shared
+ * global memory is used.
  *
  * RG_TRANSACTION_MEMORY:
  * This is a resource that is either set to zero size but can be overallocated
@@ -454,17 +454,16 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     }
     g_eventLogger->info("TransactionMemory can expand and use"
                         " SharedGlobalMemory if required"
-                        " until 92%% used");
+                        " until 94%% used");
   }
   {
     Resource_limit rl;
     /*
      * Setting LOW_PRIO_MEMORY makes QUERY_MEMORY a low priority resource
-     * group which can not use the last 10% of shared global page memory
-     * (when the ultra high part has been removed).
+     * group which can not use the last 12% of shared global page memory.
      *
      * For example TRANSACTION_MEMORY will have access to those last
-     * percent of global shared global page memory.
+     * percent of global shared global page memory, down to 6%.
      */
     Uint32 shared_pages_part = (shared_pages / 10) * 3;
     rl.m_min = 0;
@@ -484,7 +483,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
    * memory, it can still grow to use a major part of shared global memory.
    * It is limited to using a maximum of 30% of the shared global memory
    * and will not allocate from it when use of shared global memory reached
-   * more than 90%.
+   * more than 96%.
    */
   Uint64 ReplicationMemory = globalData.theReplicationMemory;
   Uint32 replication_memory =
@@ -525,7 +524,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
                       reserved_schema_memory/32);
   g_eventLogger->info("SchemaMemory can expand and use"
                       " SharedGlobalMemory if required"
-                      " until 94%% used");
+                      " until 92%% used");
 
   Uint32 reserved_backup_schema_memory = backup_schema_memory / 4;
   {

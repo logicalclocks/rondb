@@ -167,8 +167,8 @@ struct Resource_limit {
     LOW_PRIO_MEMORY = 0,
     MEDIUM_PRIO_MEMORY = 1,
     HIGH_PRIO_MEMORY = 2,
-    VERY_HIGH_PRIO_MEMORY = 2,
-    ULTRA_HIGH_PRIO_MEMORY = 3
+    VERY_HIGH_PRIO_MEMORY = 3,
+    ULTRA_HIGH_PRIO_MEMORY = 4
   };
   PrioMemory m_prio_memory;
 };
