@@ -1136,8 +1136,10 @@ my %cpubind_missing_cache;
 sub cpubind_missing_cpus {
   my $tinfo = shift;
 
+  # Look the paths up with map, grep over the hash elements themselves
+  # would create the missing ones as undef in $tinfo
   my @paths = grep { defined $_ && -f $_ }
-    ($tinfo->{template_path}, $tinfo->{extra_template_path});
+    map { $tinfo->{$_} } ('template_path', 'extra_template_path');
   my $key = join('|', @paths);
   return $cpubind_missing_cache{$key}
     if exists $cpubind_missing_cache{$key};
