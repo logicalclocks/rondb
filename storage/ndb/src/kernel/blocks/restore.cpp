@@ -2806,8 +2806,12 @@ void Restore::parse_record(Signal *signal, FilePtr file_ptr, const Uint32 *data,
                                          data+2,
                                          len - 3,
                                          key_start);
-    AttributeHeader::init(attr_start,
-                          AttributeHeader::READ_LCP, 4*(len - 3));
+    /**
+     * The row can be larger than the 15-bit byte size of an
+     * AttributeHeader holds, so the size is 0 and DBTUP takes the rest of
+     * the ATTRINFO as the row, see Dbtup::updateAttributes.
+     */
+    AttributeHeader::init(attr_start, AttributeHeader::READ_LCP, 0);
     Uint32 attrLen = 1 + len - 3;
     file_ptr.p->m_rows_restored_insert++;
     memcpy(attr_start + 1, data + 2, 4 * (len - 3));
@@ -2894,8 +2898,8 @@ void Restore::parse_record(Signal *signal, FilePtr file_ptr, const Uint32 *data,
         Uint32 *const attr_start = key_start + MAX_KEY_SIZE_IN_WORDS;
         Uint32 keyLen = c_tup->read_lcp_keys(file_ptr.p->m_table_id, data + 2,
                                              len - 3, key_start);
-        AttributeHeader::init(attr_start, AttributeHeader::READ_LCP,
-                              4 * (len - 3));
+        // Size 0, the row is the rest of the ATTRINFO, see INSERT_TYPE
+        AttributeHeader::init(attr_start, AttributeHeader::READ_LCP, 0);
         Uint32 attrLen = 1 + len - 3;
         memcpy(attr_start + 1, data + 2, 4 * (len - 3));
         execute_operation(signal, file_ptr, keyLen, attrLen, ZINSERT, gci_id,
@@ -3014,7 +3018,8 @@ void Restore::handle_return_execute_operation(Signal *signal, FilePtr file_ptr,
    */
   keyLen = c_tup->read_lcp_keys(file_ptr.p->m_table_id, data + 2, len - 3,
                                 key_start);
-  AttributeHeader::init(attr_start, AttributeHeader::READ_LCP, 4 * (len - 3));
+  // Size 0, the row is the rest of the ATTRINFO, see parse_record
+  AttributeHeader::init(attr_start, AttributeHeader::READ_LCP, 0);
   memcpy(attr_start + 1, data + 2, 4 * (len - 3));
   rowid_val.m_page_no = data[0];
   rowid_val.m_page_idx = data[1];
