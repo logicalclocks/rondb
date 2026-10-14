@@ -5067,27 +5067,26 @@ int CommandInterpreter::executeStartBackup(char *parameters, bool interactive) {
         return -1;
       }
 
-      if ((i + 1) < sz) {
-        BaseString key, value;
-        if ((args[i + 1].splitKeyValue(key, value)) && (key == "PASSWORD")) {
-          char out[1024];
-          encryption_password = value;
-          Uint32 len = encryption_password.length();
-          const char *passwd = encryption_password.c_str();
+      BaseString key, value;
+      if ((i + 1) < sz && args[i + 1].splitKeyValue(key, value) &&
+          key == "PASSWORD") {
+        char out[1024];
+        encryption_password = value;
+        Uint32 len = encryption_password.length();
+        const char *passwd = encryption_password.c_str();
 
-          if ((len >= 2) && (strchr("\"'", passwd[0])) &&
-              (passwd[0] == passwd[len - 1])) {
-            encryption_password = encryption_password.substr(1, len - 1);
-          } else {
-            BaseString::snprintf(out, sizeof(out),
-                                 "Encryption password should be within"
-                                 " quotes");
-            invalid_command(parameters, out);
-            return -1;
-          }
-          encryption_password_set = true;
-          i++;
+        if ((len >= 2) && (strchr("\"'", passwd[0])) &&
+            (passwd[0] == passwd[len - 1])) {
+          encryption_password = encryption_password.substr(1, len - 1);
+        } else {
+          BaseString::snprintf(out, sizeof(out),
+                               "Encryption password should be within"
+                               " quotes");
+          invalid_command(parameters, out);
+          return -1;
         }
+        encryption_password_set = true;
+        i++;
       } else if (setBackupEncryptionPassword(encryption_password,
                                              encryption_password_set,
                                              interactive) != 0) {
@@ -5506,6 +5505,46 @@ int CommandInterpreter::executeUserDrop(char* parameters) {
   return executeUser(parameters, DROP_USER);
 }
 
+/**
+ * Parse the value of a DATABASE QUOTA or USER parameter.
+ *
+ * Sizes (size_unit set) are given in MBytes or GBytes and must be plain
+ * numbers, a k, M, G or T multiplier would be taken as bytes by mistake.
+ * The other values may use the k, M, G and T multipliers. All values must
+ * be smaller than RNIL, both to fit in 32 bits and since RNIL means
+ * "unchanged" in ALTER.
+ */
+static bool parse_quota_value(const char *cmd, const char *type_str,
+                              const char *key, const char *val_str,
+                              const char *size_unit, Uint32 &out) {
+  if (size_unit != nullptr) {
+    bool plain_number = (*val_str != '\0');
+    for (const char *p = val_str; *p != '\0'; p++) {
+      if (*p < '0' || *p > '9') plain_number = false;
+    }
+    if (!plain_number) {
+      ndbout << "Value of --" << key << " in " << cmd << " " << type_str
+             << " must be a number of " << size_unit
+             << ", without k, M, G or T" << endl;
+      return false;
+    }
+  }
+  Uint64 val = 0;
+  if (!convert_string_to_uint64(val_str, val, false)) {
+    ndbout << "Value in " << cmd << " " << type_str
+           << " must be a number, can be using"
+           << " k, M, G and T, e.g. 1k meaning 1 * 1024" << endl;
+    return false;
+  }
+  if (val >= RNIL) {
+    ndbout << "Value of --" << key << " in " << cmd << " " << type_str
+           << " is too large, it must be smaller than " << RNIL << endl;
+    return false;
+  }
+  out = Uint32(val);
+  return true;
+}
+
 int CommandInterpreter::executeUser(char* parameters, int type) {
   const char *type_str = nullptr;
   if (type == SET_USER) {
@@ -5597,19 +5636,15 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
              << " command missing a value for a key parameter" << endl;
       return -1;
     }
-    Uint64 val = 0;
-    if (!convert_string_to_uint64(val_str, val, false)) {
-      ndbout << "Value in USER "
-             << type_str
-             << " must be a number, can be using"
-             << " k, M, G and T, e.g. 1k meaning 1 * 1024" << endl;
-      return -1;
-    }
     if (native_strncasecmp(key, "--", 2) != 0) {
       ndbout << "Parameters should always start with --" << endl;
       return -1;
     }
     key+= 2; //Move past the --
+    Uint32 val = 0;
+    if (!parse_quota_value("USER", type_str, key, val_str, nullptr, val)) {
+      return -1;
+    }
     if (native_strncasecmp(key,
                         "RATE-PER-SEC",
                         sizeof("RATE-PER-SEC") - 1) == 0) {
@@ -5628,6 +5663,7 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
                         "MAX-PARALLEL-COMPLEX-QUERIES",
                         sizeof("MAX-PARALLEL-COMPLEX-QUERIES") - 1) == 0) {
       max_parallel_complex_queries = val;
+      if (val != 0) found_change = true;
     } else {
       ndbout << "Wrong key: " << key << ", choose one of:" << endl
              << "rate-per-sec, in-memory-size, on-disk-size" << endl
@@ -5952,7 +5988,7 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
   remaining_commands--;
 
   Uint32 in_memory_size = 0; //MBytes
-  Uint32 on_disk_size = 0; // MBytes
+  Uint32 on_disk_size = 0; // GBytes
   Uint32 rate_per_sec = 0;
   Uint32 max_transaction_size = 0;
   Uint32 max_parallel_transactions = 0;
@@ -6001,19 +6037,24 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
              << " command missing a value for a key parameter" << endl;
       return -1;
     }
-    Uint64 val = 0;
-    if (!convert_string_to_uint64(val_str, val, false)) {
-      ndbout << "Value in DATABASE QUOTA "
-             << type_str
-             << " must be a number, can be using"
-             << " k, M, G and T, e.g. 1k meaning 1 * 1024" << endl;
-      return -1;
-    }
     if (native_strncasecmp(key, "--", 2) != 0) {
       ndbout << "Parameters should always start with --" << endl;
       return -1;
     }
     key+= 2; //Move past the --
+    const char *size_unit = nullptr;
+    if (native_strncasecmp(key, "IN-MEMORY-SIZE",
+                           sizeof("IN-MEMORY-SIZE") - 1) == 0) {
+      size_unit = "MBytes";
+    } else if (native_strncasecmp(key, "ON-DISK-SIZE",
+                                  sizeof("ON-DISK-SIZE") - 1) == 0) {
+      size_unit = "GBytes";
+    }
+    Uint32 val = 0;
+    if (!parse_quota_value("DATABASE QUOTA", type_str, key, val_str,
+                           size_unit, val)) {
+      return -1;
+    }
     if (native_strncasecmp(key,
                         "RATE-PER-SEC",
                         sizeof("RATE-PER-SEC") - 1) == 0) {
@@ -6032,6 +6073,7 @@ int CommandInterpreter::executeDatabaseQuota(char* parameters, int type) {
                         "MAX-PARALLEL-COMPLEX-QUERIES",
                         sizeof("MAX-PARALLEL-COMPLEX-QUERIES") - 1) == 0) {
       max_parallel_complex_queries = val;
+      if (val != 0) found_change = true;
     } else if (native_strncasecmp(key,
                         "IN-MEMORY-SIZE",
                         sizeof("IN-MEMORY-SIZE") - 1) == 0) {

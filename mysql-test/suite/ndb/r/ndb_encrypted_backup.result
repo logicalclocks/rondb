@@ -110,6 +110,11 @@ ndb_mgm -e "start backup encrypt password='abba' '"
 Invalid command: backup encrypt password='abba' '
 Type HELP for help.
 
+ndb_mgm -e "start backup encrypt nowait"
+Invalid command: backup encrypt nowait
+Encryption need password
+Type HELP for help.
+
 
 # Test START BACKUP ENCRYPT with password from stdin
 Waiting for completed, this may take several minutes

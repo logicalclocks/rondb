@@ -428,16 +428,25 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_NO_TABLES, "MaxNoOfTables", DB_TOKEN,
-     "Total number of tables stored in the database", ConfigInfo::CI_USED,
-     false, ConfigInfo::CI_INT, "0", "8", STR_VALUE(1000000000)},
+     "Number of tables, added to MaxNoOfOrderedIndexes and"
+     " MaxNoOfUniqueHashIndexes to give the number of table objects;"
+     " only the sum matters (default 0 means 8000 with"
+     " AutomaticMemoryConfig, otherwise 128)",
+     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "8",
+     STR_VALUE(1000000000)},
 
     {CFG_DB_NO_ORDERED_INDEXES, "MaxNoOfOrderedIndexes", DB_TOKEN,
-     "Total number of ordered indexes that can be defined in the system",
+     "Number of ordered indexes, added to MaxNoOfTables and"
+     " MaxNoOfUniqueHashIndexes to give the number of table objects;"
+     " only the sum matters",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "128", "0",
      STR_VALUE(1000000000)},
 
     {CFG_DB_NO_UNIQUE_HASH_INDEXES, "MaxNoOfUniqueHashIndexes", DB_TOKEN,
-     "Total number of unique hash indexes that can be defined in the system",
+     "Number of unique hash indexes, added to MaxNoOfTables and"
+     " MaxNoOfOrderedIndexes to give the number of table objects;"
+     " only the sum matters (default 0 means 2300 with"
+     " AutomaticMemoryConfig, otherwise 64)",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
      STR_VALUE(1000000000)},
 

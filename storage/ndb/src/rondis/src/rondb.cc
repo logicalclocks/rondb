@@ -247,6 +247,12 @@ static int execute_query_with_retry(MYSQL **conn,
   return -1;  // Timeout
 }
 
+/**
+ * The table definitions below must be kept in sync with
+ * storage/ndb/src/rondis/sql/create_rondis_tables.sql and
+ * mysql-test/suite/rondis/include/create_rondis_tables.inc,
+ * and with what table_definitions.cc expects.
+ */
 int create_rondis_tables(const char *mysql_host,
                          Uint32 mysql_port,
                          const char *mysql_user,
@@ -377,10 +383,11 @@ int create_rondis_tables(const char *mysql_host,
       "  value_start VARBINARY(%u) NOT NULL,"
       "  expiry_date TIMESTAMP NULL,"
       "  KEY ttl_index(expiry_date),"
-      "  PRIMARY KEY (redis_key_id, redis_key) USING HASH,"
+      "  PRIMARY KEY (redis_key_id, redis_key),"
       "  UNIQUE KEY (rondb_key) USING HASH"
       ") ENGINE NDB CHARSET=latin1 "
-      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
+      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,"
+      "TTL=0@expiry_date\"",
       REDIS_DB_NAME, db_id, KEY_TABLE_NAME,
       MAX_KEY_VALUE_LEN, INLINE_VALUE_LEN);
     if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
@@ -400,10 +407,14 @@ int create_rondis_tables(const char *mysql_host,
       "CREATE TABLE IF NOT EXISTS %s_%u.%s("
       "  redis_key VARBINARY(%u) NOT NULL,"
       "  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL,"
+      "  field_count INT UNSIGNED NOT NULL DEFAULT 0,"
+      "  expiry_date TIMESTAMP NULL,"
+      "  KEY ttl_index(expiry_date),"
       "  PRIMARY KEY (redis_key) USING HASH,"
       "  UNIQUE KEY (redis_key_id) USING HASH"
       ") ENGINE NDB CHARSET=latin1 "
-      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
+      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,"
+      "TTL=0@expiry_date\"",
       REDIS_DB_NAME, db_id, HSET_KEY_TABLE_NAME, MAX_KEY_VALUE_LEN);
     if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",
@@ -443,7 +454,8 @@ int create_rondis_tables(const char *mysql_host,
       "  KEY ttl_index(expiry_date),"
       "  PRIMARY KEY (rondb_key, ordinal)"
       ") ENGINE NDB CHARSET=latin1 "
-      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8\"",
+      "COMMENT=\"NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,"
+      "TTL=0@expiry_date\"",
       REDIS_DB_NAME, db_id, VALUE_TABLE_NAME, EXTENSION_VALUE_LEN);
     if (execute_query_with_retry(&conn, target, query, &elapsed_seconds) != 0) {
       printf("Failed to create table %s_%u.%s: %s\n",

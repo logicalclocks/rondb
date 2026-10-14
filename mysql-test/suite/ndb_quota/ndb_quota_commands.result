@@ -76,6 +76,20 @@ DATABASE QUOTA GET command failed: Error:
 DATABASE QUOTA GET command failed: Error:
 *   942: Error
 *        Database name too long
+# Sizes are plain numbers of MBytes or GBytes, no k, M, G or T
+Value of --in-memory-size in DATABASE QUOTA SET must be a number of MBytes, without k, M, G or T
+# Values must be smaller than RNIL, they are not truncated
+Value of --rate-per-sec in DATABASE QUOTA SET is too large, it must be smaller than 4294967040
+# --on-disk-size is in GBytes: 1 GByte is more than 80% of a
+# 128 MByte data file
+CREATE LOGFILE GROUP lg_quota ADD UNDOFILE 'lg_quota_undo.dat' INITIAL_SIZE 16M ENGINE NDB;
+CREATE TABLESPACE ts_quota ADD DATAFILE 'ts_quota_data.dat' USE LOGFILE GROUP lg_quota INITIAL_SIZE 128M ENGINE NDB;
+DATABASE QUOTA SET command failed: Error:
+*  1240: Error
+*        Create Database failed
+ALTER TABLESPACE ts_quota DROP DATAFILE 'ts_quota_data.dat';
+DROP TABLESPACE ts_quota;
+DROP LOGFILE GROUP lg_quota ENGINE NDB;
 DROP TABLE IF EXISTS t1, t2;
 CREATE TABLE t1 (
 pk1 INT NOT NULL PRIMARY KEY,
