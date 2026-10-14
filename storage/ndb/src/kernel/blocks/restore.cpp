@@ -171,6 +171,16 @@
 
 #define PAGES LCP_RESTORE_BUFFER
 
+/**
+ * An LCP data file record is a header word, the rowid (2 words), the fixed
+ * part without the tuple header and the var part (see Dbtup::read_lcp), and
+ * in ERROR_INSERT builds a checksum word. Since RONDB-873 a record can be
+ * larger than a page, restore_next then copies it to m_table_buf.
+ */
+static constexpr Uint32 MAX_LCP_RECORD_SIZE_IN_WORDS =
+    4 + MAX_FIXED_SIZE_IN_WORDS + MAX_VAR_SIZE_IN_WORDS;
+static_assert(MAX_LCP_RECORD_SIZE_IN_WORDS <= MAX_WORDS_META_FILE);
+
 Restore::Restore(Block_context &ctx, Uint32 instanceNumber, Uint32 blockNo)
     : SimulatedBlock(blockNo, ctx, instanceNumber),
       m_file_list(m_file_pool),
@@ -2235,8 +2245,8 @@ void Restore::restore_next(Signal *signal, FilePtr file_ptr) {
       len = ntohl(*(page_ptr.p->data + pos)) + 1;
       Uint32 type = len >> 16;
       len &= 0xFFFF;
-      ndbrequire(len < GLOBAL_PAGE_SIZE_WORDS);
-      ndbrequire(header_type < BackupFormat::END_TYPE);
+      ndbrequire(len <= MAX_LCP_RECORD_SIZE_IN_WORDS);
+      ndbrequire(type < BackupFormat::END_TYPE);
       header_type = (BackupFormat::RecordType)type;
     } else {
       jam();
@@ -2310,8 +2320,8 @@ void Restore::restore_next(Signal *signal, FilePtr file_ptr) {
       } else {
         jam();
         /**
-         * A table definition can be larger than one page...
-         * when that happens copy it out to side buffer
+         * A table definition or an LCP record can be larger than one
+         * page... when that happens copy it out to side buffer
          *
          * First copy part belonging to page_ptr
          * Then copy full middle pages (moving forward in page-list)
@@ -2330,9 +2340,12 @@ void Restore::restore_next(Signal *signal, FilePtr file_ptr) {
         dst += first;
 
         /**
-         * Middle
+         * Middle. A record that ends at a page end also moves to the
+         * next page, so that the last part is empty and the next record
+         * starts at position 0 of that page, not at position
+         * GLOBAL_PAGE_SIZE_WORDS of this one.
          */
-        while (len > GLOBAL_PAGE_SIZE_WORDS) {
+        while (len >= GLOBAL_PAGE_SIZE_WORDS) {
           jam();
           memcpy(dst, next_page_ptr.p, 4 * GLOBAL_PAGE_SIZE_WORDS);
           len -= GLOBAL_PAGE_SIZE_WORDS;
