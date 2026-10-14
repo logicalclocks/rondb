@@ -26,6 +26,10 @@ constexpr const char* const usageHelp =
   "--print-config      Print the effective configuration that would be used,\n"
   "                    together with explanations.\n"
   "\n"
+  "--print-limits      Print the sizes and caps rdrs2 derives from the NDB\n"
+  "                    limits it was built with, the configuration and the\n"
+  "                    memory limit of this process, as JSON.\n"
+  "\n"
   "-v, --version       Print version information.\n"
   "\n"
   "-h, --help          Show this usage help.\n"
@@ -51,6 +55,8 @@ constexpr const char* const usageHelp =
 #include "metrics.hpp"
 #include "probe_server.hpp"
 #include "process_setup.hpp"
+#include "buffer_manager.hpp"
+#include "buffer_sizes.hpp"
 #include "logger.hpp"
 
 #include <cstdio>
@@ -108,6 +114,9 @@ static void do_exit() {
     delete[] jsonParsers;
     jsonParsers = nullptr;
   }
+  /* Request handling has stopped by now; unmap the pools' free buffers.
+   * A no-op when init never ran (early startup failures). */
+  rsBufferArrayManager.shutdown();
   if (g_rondis_running) {
     g_rondis_thread->StopThread();
     g_rondis_running = false;
@@ -298,6 +307,7 @@ int main(int argc, char *argv[]) {
 
   bool seenOptConfig = false;
   bool optPrintConfig = false;
+  bool optPrintLimits = false;
   bool optHelp = false;
   bool optVersion = false;
   for (int i = 1; i < argc; ++i) {
@@ -319,6 +329,10 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(argv[i], "--print-config") == 0) {
       optPrintConfig = true;
+      continue;
+    }
+    if (strcmp(argv[i], "--print-limits") == 0) {
+      optPrintLimits = true;
       continue;
     }
     if (strcmp(argv[i], "-h") == 0 ||
@@ -344,7 +358,7 @@ int main(int argc, char *argv[]) {
   if (optHelp) {
     printf("\n%s", usageHelp);
   }
-  if ((optVersion || optHelp) && !optPrintConfig) {
+  if ((optVersion || optHelp) && !optPrintConfig && !optPrintLimits) {
     do_exit();
   }
 
@@ -361,6 +375,35 @@ int main(int argc, char *argv[]) {
   if (optPrintConfig) {
     printJson(globalConfigs, std::cout, 0, true);
     std::cout << '\n';
+    do_exit();
+  }
+
+  /* The buffer pools live in a trivially constructed global and are set up
+   * here, once the configuration and the memory limit are known, rather
+   * than at static-initialisation time from compiled-in defaults
+   * (RONDB-1144). Before the metrics, which read the derived cap. */
+  rsBufferArrayManager.init_from_config();
+
+  if (optPrintLimits) {
+    /* The derived numbers, for operators and for the test suite's
+     * deprecated-keys check. The running server exports the same values as
+     * the rdrs_limits metric family. */
+    std::cout << "{\n"
+              << "  \"MaxColumns\": " << MAX_ATTRIBUTES_IN_TABLE << ",\n"
+              << "  \"MaxRowBytes\": " << MAX_ROW_BYTES << ",\n"
+              << "  \"ReqBufferBytes\": "
+              << rsBufferArrayManager.req_buffer_bytes() << ",\n"
+              << "  \"RespBufferBytes\": "
+              << rsBufferArrayManager.resp_buffer_bytes() << ",\n"
+              << "  \"MinReqBufferBytes\": " << MIN_REQ_BUFFER << ",\n"
+              << "  \"MinRespBufferBytes\": " << MIN_RESP_BUFFER << ",\n"
+              << "  \"MaxOperationsPerBatch\": "
+              << globalConfigs.internal.maxOperationsPerBatch << ",\n"
+              << "  \"MaxBuffers\": " << rsBufferArrayManager.max_buffers()
+              << ",\n"
+              << "  \"MemoryLimitBytes\": "
+              << rsBufferArrayManager.memory_limit_bytes() << "\n"
+              << "}\n";
     do_exit();
   }
 
@@ -585,6 +628,13 @@ int main(int argc, char *argv[]) {
     auto addresses = drogon::app().getListeners();
     for (auto &address : addresses) {
       printf("RDRS Server running on %s\n", address.toIpPort().c_str());
+    }
+    /* The buffer pools shrink from the probe server's sweep timer; without
+     * a probe server, give them a timer on the main loop (RONDB-1144). */
+    if (!globalConfigs.rest.probeEnable) {
+      drogon::app().getLoop()->runEvery(1.0, []() {
+        rsBufferArrayManager.shrink();
+      });
     }
     /* Both probe-port endpoints require g_drogon_up for a 200: neither a
      * startup probe (ping) nor a readiness probe (health) may pass before

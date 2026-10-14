@@ -135,6 +135,15 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   {
     RS_Buffer reqBuff  = rsBufferArrayManager.get_req_buffer();
     RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
+    /* The pool refuses buffers past its cap (RONDB-1144): answer 503 and
+     * give back whichever of the pair was taken. */
+    if (unlikely(reqBuff.buffer == nullptr || respBuff.buffer == nullptr)) {
+      release_array_buffers(&reqBuff, &respBuff, 1);
+      resp->setBody("buffer pool exhausted");
+      resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+      callback(resp);
+      return;
+    }
     Uint32 dummy = 0;
 
     status = create_native_request(reqStruct, (Uint32*)reqBuff.buffer, dummy);

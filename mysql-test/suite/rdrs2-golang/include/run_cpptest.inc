@@ -113,6 +113,10 @@ print "PASS\n";
 my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out, arena
                                               # cap, untouched parse buffers
                                               # (cluster-free, fast)
+                 'buffer_manager_test',       # RONDB-1144 buffer pool cap,
+                                              # shrink, stats (cluster-free)
+                 'limits_test',               # RONDB-1144 buffer minimums vs
+                                              # the real encoders (cluster-free)
                  'probe_server_http_test',    # probe-port HTTP conformance
                                               # (cluster-free, fast)
                  'error_handling_test',       # pure error-classification tests

@@ -18,6 +18,7 @@
  */
 
 #include "pk_data_structs.hpp"
+#include "buffer_sizes.hpp"
 #include "constants.hpp"
 #include "config_structs.hpp"
 #include "error_strings.h"
@@ -348,7 +349,7 @@ int PKReadResponseJSON::to_string_single(char *json_buf,
 
   char code_buf[10];
   int code_char_count = sprintf(&code_buf[0], "%d", code);
-  char encode_buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
+  char encode_buffer[MAX_ROW_BYTES_ENCODED];
   memcpy(buf, &code_buf[0], code_char_count);
   buf += code_char_count;
   memcpy(buf, ",\"operationId\":\"", 16);
@@ -385,7 +386,7 @@ int PKReadResponseJSON::to_string_single(char *json_buf,
         res_view.data_type == RDRS_BIT_DATATYPE) {
       size_t outlen = 0;
       char *encode_buf_ptr = &encode_buffer[0];
-      if (res_view.value_len >= MAX_TUPLE_SIZE_IN_BYTES) {
+      if (res_view.value_len >= MAX_ROW_BYTES) {
         Uint32 value_len = res_view.value_len;
         Uint32 max_encoded_len = ((value_len * 4) / 3) + 3;
         encode_buf_ptr = (char*)amalloc->alloc_bytes(max_encoded_len, 8);
@@ -426,7 +427,7 @@ char* PKReadResponseJSON::to_string_batch(char *buf,
 
   char code_buf[10];
   int code_char_count = sprintf(&code_buf[0], "%d", code);
-  char encode_buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
+  char encode_buffer[MAX_ROW_BYTES_ENCODED];
   memcpy(buf, &code_buf[0], code_char_count);
   buf += code_char_count;
 
@@ -463,7 +464,7 @@ char* PKReadResponseJSON::to_string_batch(char *buf,
           res_view.data_type == RDRS_BIT_DATATYPE) {
         size_t outlen = 0;
         char *encode_buf_ptr = &encode_buffer[0];
-        if (unlikely(res_view.value_len >= MAX_TUPLE_SIZE_IN_BYTES)) {
+        if (unlikely(res_view.value_len >= MAX_ROW_BYTES)) {
           Uint32 value_len = res_view.value_len;
           Uint32 max_encoded_len = ((value_len * 4) / 3) + 3;
           encode_buf_ptr = (char*)amalloc->alloc_bytes(max_encoded_len, 8);

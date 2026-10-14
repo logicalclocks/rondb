@@ -83,7 +83,23 @@ CLASS
     " threshold are recorded in the slow scan buffer. Default is 10000 (10ms).")
  CM(Uint32, slowScanBufferSize, SlowScanBufferSize, 1000,
     "Maximum number of slow scan entries to keep in the circular buffer.")
- CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32, "")
+ CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32,
+    "Buffers of each kind (request and response) mapped at startup and kept"
+    " when the pool shrinks after an idle period.")
+ CM(Uint32, maxBuffers, MaxBuffers, 0,
+    "Cap on the buffers of each kind the pool may hold. 0 derives the cap"
+    " from BufferPoolSharePercent and the memory limit the process runs"
+    " under (cgroup v2 memory.max, cgroup v1 memory.limit_in_bytes, else"
+    " physical RAM). A request that needs a buffer past the cap is answered"
+    " with HTTP 503.")
+ CM(Uint32, bufferPoolSharePercent, BufferPoolSharePercent, 50,
+    "Share of the memory limit reserved for the two buffer pools together"
+    " when MaxBuffers is 0. The rest is left for the parse buffers, the"
+    " per-request arenas, the NDB API and the process itself.")
+ CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 60,
+    "Seconds a pool must have been idle (free buffers above"
+    " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
+    " shrinking.")
  CM(Uint32, batchMaxSize, BatchMaxSize, 128,
     "Number of operations of a batch request sent to NDB per execution loop."
     " Not a cap on the batch size; see MaxOperationsPerBatch.")
@@ -95,6 +111,14 @@ CLASS
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(maxOperationsPerBatch == 0, "MaxOperationsPerBatch must be > 0")
+ PROBLEM(bufferPoolSharePercent < 1 || bufferPoolSharePercent > 90,
+         "BufferPoolSharePercent must be between 1 and 90")
+ PROBLEM(maxBuffers != 0 && maxBuffers < preAllocatedBuffers,
+         "MaxBuffers must be >= PreAllocatedBuffers")
+ PROBLEM(maxBuffers != 0 && maxBuffers < 2,
+         "MaxBuffers must allow at least two buffers")
+ PROBLEM(operationIdMaxSize > MAX_OPERATION_ID_RESERVE,
+         "OperationIDMaxSize must be <= 4096")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")

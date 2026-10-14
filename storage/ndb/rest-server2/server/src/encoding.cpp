@@ -26,6 +26,7 @@
 #include <ArenaMalloc.hpp>
 #include <EventLogger.hpp>
 #include <util/require.h>
+#include "buffer_sizes.hpp"
 #include "error_strings.h"
 #include "status.hpp"
 
@@ -200,13 +201,12 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
      * Need to reserve space in request buffer for column names of all
      * table columns.
      */
-    next_head += head + 
-      1 + // Number of columns stored
-      16 + // Some extra space for security
-      MAX_ATTRIBUTES_IN_TABLE *
-      (1 + // length word
-       MAX_ATTR_NAME_SIZE + // Max column name size
-       2); // Reference to the column info and data type
+    /* REQ_COLNAME_RESERVE is what addReadColumns and addReadColumnName
+     * write for every table column: an offset array, then per column a
+     * type word, a length word, the name and its terminator, 4-aligned.
+     * The old estimate under-counted that layout by about 7% (RONDB-1144);
+     * limits_test checks the two against each other. */
+    next_head += head + REQ_COLNAME_RESERVE;
   }
   // request buffer header
   buf[PK_REQ_OP_TYPE_IDX] = (Uint32)(RDRS_PK_REQ_ID);
@@ -229,10 +229,17 @@ RS_Buffer getNextReqRS_Buffer(Uint32 &current_head,
                               Uint32 index) {
   require(index > 0);
   if (current_head >= request_buffer_limit) {
+    /* Take the buffer before linking it: when the pool is at its cap the
+     * result has buffer == nullptr and the chain must not point at it,
+     * or release would follow the link into an entry that owns nothing
+     * (RONDB-1144). The caller answers 503 on a null buffer. */
+    RS_Buffer reqBuff = rsBufferArrayManager.get_req_buffer();
+    if (unlikely(reqBuff.buffer == nullptr)) {
+      return reqBuff;
+    }
     current_request_buffer.next_allocated_buffer = index;
     current_request_buffer_idx = index;
     current_head = 0;
-    RS_Buffer reqBuff = rsBufferArrayManager.get_req_buffer();
     DEB_ENC("Allocating a new request buffer index = %u, ptr: %p",
       index, reqBuff.buffer);
     return reqBuff;
@@ -253,10 +260,15 @@ RS_Buffer getNextRespRS_Buffer(Uint32 &current_head,
                                Uint32 index) {
   require(index > 0);
   if (current_head >= response_buffer_limit) {
+    /* Same as the request side: take, then link, so a null result from a
+     * capped pool never enters the chain. */
+    RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
+    if (unlikely(respBuff.buffer == nullptr)) {
+      return respBuff;
+    }
     current_response_buffer.next_allocated_buffer = index;
     current_response_buffer_idx = index;
     current_head = 0;
-    RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
     DEB_ENC("Allocating a new response buffer index = %u, ptr: %p",
       index, respBuff.buffer);
     return respBuff;
@@ -276,22 +288,28 @@ void release_array_buffers(RS_Buffer *reqBuffs,
   if (unlikely(numOps == 0)) {
     return;
   }
+  /* Entry 0 is null when the pool refused the first buffer (RONDB-1144);
+   * later entries are never linked unless they own a buffer. */
   Uint32 i = 0;
-  do {
-    Uint32 next_i = respBuffs[i].next_allocated_buffer;
-    DEB_ENC("Release response buffer with index: %u", i);
-    rsBufferArrayManager.return_resp_buffer(respBuffs[i]);
-    i = next_i;
-    require(i < numOps);
-  } while (i != 0);
+  if (respBuffs[0].buffer != nullptr) {
+    do {
+      Uint32 next_i = respBuffs[i].next_allocated_buffer;
+      DEB_ENC("Release response buffer with index: %u", i);
+      rsBufferArrayManager.return_resp_buffer(respBuffs[i]);
+      i = next_i;
+      require(i < numOps);
+    } while (i != 0);
+  }
   i = 0;
-  do {
-    Uint32 next_i = reqBuffs[i].next_allocated_buffer;
-    DEB_ENC("Release request buffer with index: %u", i);
-    rsBufferArrayManager.return_req_buffer(reqBuffs[i]);
-    i = next_i;
-    require(i < numOps);
-  } while (i != 0);
+  if (reqBuffs[0].buffer != nullptr) {
+    do {
+      Uint32 next_i = reqBuffs[i].next_allocated_buffer;
+      DEB_ENC("Release request buffer with index: %u", i);
+      rsBufferArrayManager.return_req_buffer(reqBuffs[i]);
+      i = next_i;
+      require(i < numOps);
+    } while (i != 0);
+  }
 }
 
 RS_Status process_pkread_response(ArenaMalloc *amalloc,

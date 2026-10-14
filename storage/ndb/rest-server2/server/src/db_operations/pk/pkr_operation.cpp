@@ -44,6 +44,7 @@
 #include <my_base.h>
 #include <storage/ndb/include/ndbapi/NdbDictionary.hpp>
 #include <kernel/ndb_limits.h>
+#include "buffer_sizes.hpp"
 #include <ArenaMalloc.hpp>
 #include <util/require.h>
 #include "my_byteorder.h"
@@ -589,7 +590,7 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
   Uint32 current_response_buffer_idx = 0;
   for (size_t i = 0; i < m_numOperations; i++) {
     current_head += response_length;
-    if (i > 0)
+    if (i > 0) {
       respBuffs[i] = getNextRespRS_Buffer(
         current_head,
         response_buffer_limit,
@@ -597,6 +598,16 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
         current_response_buffer_idx,
         i
       );
+      if (unlikely(respBuffs[i].buffer == nullptr)) {
+        /* Pool cap reached (RONDB-1144). Not an NDB error, so the retry
+         * handler does not retry it; the controller passes 503 through.
+         * Buffers taken so far are released by the controller's chain walk,
+         * which never reaches this unlinked entry. */
+        return __RS_ERROR(static_cast<HTTP_CODE>(503), -1, -1, -1, -1,
+                          "buffer pool exhausted", __LINE__,
+                          __MYFILENAME__);
+      }
+    }
     KeyOperation *key_op = &m_key_ops[i];
     PKRResponse *resp =
       new (&key_op->m_resp) PKRResponse(&respBuffs[i]);
@@ -905,7 +916,7 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
       return RS_CLIENT_ERROR(std::string(
         rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
     }
-    if (unlikely(attrBytes > MAX_TUPLE_SIZE_IN_BYTES)) {
+    if (unlikely(attrBytes > MAX_ROW_BYTES)) {
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
         std::string(" DB: ") + std::string(request->DB()) +

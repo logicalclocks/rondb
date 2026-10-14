@@ -28,6 +28,7 @@
 #include <sstream>
 #include <cassert>
 #include <ndb_limits.h>
+#include "buffer_sizes.hpp"
 
 PKRResponse::PKRResponse(const RS_Buffer *respBuff) {
   this->resp = respBuff;
@@ -325,7 +326,7 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
     return RS_SERVER_ERROR(
       std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)) + 
       std::string(" Buffer size: ") +
-      std::to_string(MAX_TUPLE_SIZE_IN_BYTES_ESCAPED) +
+      std::to_string(MAX_ROW_BYTES * MAX_TEXT_EXPANSION) +
       std::string(". Bytes left to copy: ") +
       std::to_string((fromBuff + fromBuffLen) - from_end_pos));
   }

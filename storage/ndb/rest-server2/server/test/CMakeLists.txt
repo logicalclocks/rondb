@@ -57,6 +57,31 @@ TARGET_LINK_LIBRARIES(
   pthread
 )
 
+# RONDB-1144: the request/response buffer pools (cap, shrink, stats,
+# memory-limit detection) and the compile-time buffer minimums checked
+# against the real encoders. Both cluster-free.
+NDB_ADD_EXECUTABLE(buffer_manager_test buffer_manager_test.cpp
+                   STATIC_NDBCLIENT)
+
+NDB_ADD_EXECUTABLE(limits_test limits_test.cpp
+                   STATIC_NDBCLIENT)
+
+TARGET_LINK_LIBRARIES(
+  buffer_manager_test
+  gtest_main
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
+TARGET_LINK_LIBRARIES(
+  limits_test
+  gtest_main
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
 TARGET_LINK_LIBRARIES(
 	api_key_test
 	gtest_main
@@ -110,6 +135,8 @@ TARGET_LINK_LIBRARIES(
 # integration test package before running these binaries.
 
 add_test(NAME process_setup_test COMMAND process_setup_test)
+add_test(NAME buffer_manager_test COMMAND buffer_manager_test)
+add_test(NAME limits_test COMMAND limits_test)
 add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)
 add_test(NAME error_handling_test COMMAND error_handling_test)

@@ -231,9 +231,19 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     Uint32 current_head = 0;
     reqBuffs[0] = rsBufferArrayManager.get_req_buffer();
     respBuffs[0] = rsBufferArrayManager.get_resp_buffer();
+    /* The pool refuses buffers past its cap (RONDB-1144): answer 503 and
+     * give back whichever of the pair was taken. */
+    if (unlikely(reqBuffs[0].buffer == nullptr ||
+                 respBuffs[0].buffer == nullptr)) {
+      release_array_buffers(reqBuffs.data(), respBuffs.data(), 1);
+      resp->setBody("buffer pool exhausted");
+      resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+      callback(resp);
+      return;
+    }
     Uint32 current_request_buffer_idx = 0;
     for (Uint32 i = 0; i < noOps; i++) {
-      if (i > 0)
+      if (i > 0) {
         reqBuffs[i] = getNextReqRS_Buffer(
           current_head,
           request_buffer_limit,
@@ -241,6 +251,14 @@ void BatchFeatureStoreCtrl::batch_featureStore(
           current_request_buffer_idx,
           i
         );
+        if (unlikely(reqBuffs[i].buffer == nullptr)) {
+          release_array_buffers(reqBuffs.data(), respBuffs.data(), i);
+          resp->setBody("buffer pool exhausted");
+          resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+          callback(resp);
+          return;
+        }
+      }
       status = create_native_request(readParams[i],
                                      (Uint32*)reqBuffs[i].buffer,
                                      current_head);
