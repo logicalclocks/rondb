@@ -6468,6 +6468,42 @@ is_comparison_op(TokenKind op)
          op == T_GT || op == T_GE || op == T_LT || op == T_LE;
 }
 
+static TokenKind
+negate_cmp_op(TokenKind op)
+{
+  switch (op)
+  {
+  case T_EQUALS: return T_NOT_EQUALS;
+  case T_NOT_EQUALS: return T_EQUALS;
+  case T_GT: return T_LE;
+  case T_GE: return T_LT;
+  case T_LT: return T_GE;
+  case T_LE: return T_GT;
+  default: ndbrequire(false); return op;
+  }
+}
+
+/*
+ * Return ce with any NOT / ! wrappers removed, and set *negated when
+ * there is an odd number of them.  NOT (a OP b) equals
+ * a negate_cmp_op(OP) b also when a or b is NULL (both are NULL), so a
+ * negated comparison with a correlated scalar subquery is decorrelated
+ * as the comparison with the negated operator, at the top level of WHERE
+ * where a NULL from a missing inner group drops the row as in MySQL.
+ */
+static ConditionalExpression*
+strip_not(ConditionalExpression* ce, bool* negated)
+{
+  *negated = false;
+  while ((ce->op == T_NOT || ce->op == T_EXCLAMATION) &&
+         ce->args.left != NULL)
+  {
+    ce = ce->args.left;
+    *negated = !*negated;
+  }
+  return ce;
+}
+
 static void
 parse_subquery_value(const char* str, SubqueryResult& val)
 {
@@ -6539,9 +6575,11 @@ RonSQLPreparer::decorrelate_scalar()
   bool has_corr_scalar = false;
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    if (!is_comparison_op(conjuncts[i]->op)) continue;
-    ConditionalExpression* left = conjuncts[i]->args.left;
-    ConditionalExpression* right = conjuncts[i]->args.right;
+    bool negated;
+    ConditionalExpression* cmp = strip_not(conjuncts[i], &negated);
+    if (!is_comparison_op(cmp->op)) continue;
+    ConditionalExpression* left = cmp->args.left;
+    ConditionalExpression* right = cmp->args.right;
     if ((left != NULL && left->op == I_SUBQUERY) ||
         (right != NULL && right->op == I_SUBQUERY))
     {
@@ -6619,7 +6657,10 @@ RonSQLPreparer::decorrelate_scalar()
 
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    if (!is_comparison_op(conjuncts[i]->op))
+    // The conjunct is kept as written unless it becomes I_CORR_SCALAR.
+    bool negated;
+    ConditionalExpression* cmp = strip_not(conjuncts[i], &negated);
+    if (!is_comparison_op(cmp->op))
     {
       require_prm(num_kept < MAX_WHERE_CONJUNCTS,
                   "Too many WHERE conjuncts after decorrelation.");
@@ -6627,8 +6668,8 @@ RonSQLPreparer::decorrelate_scalar()
       continue;
     }
 
-    ConditionalExpression* left = conjuncts[i]->args.left;
-    ConditionalExpression* right = conjuncts[i]->args.right;
+    ConditionalExpression* left = cmp->args.left;
+    ConditionalExpression* right = cmp->args.right;
 
     // Determine which side is the subquery
     bool subq_on_left = (left != NULL && left->op == I_SUBQUERY);
@@ -6644,7 +6685,9 @@ RonSQLPreparer::decorrelate_scalar()
 
     ConditionalExpression* subq_child = subq_on_left ? left : right;
     ConditionalExpression* cmp_expr = subq_on_left ? right : left;
-    TokenKind cmp_op = conjuncts[i]->op;
+    TokenKind cmp_op = cmp->op;
+    if (negated)
+      cmp_op = negate_cmp_op(cmp_op);
     // If subquery is on the left, flip: (SELECT ...) < col  means col > (SELECT ...)
     if (subq_on_left)
       cmp_op = flip_cmp_op(cmp_op);
@@ -6842,7 +6885,7 @@ RonSQLPreparer::decorrelate_scalar()
     {
       if (m_subquery_infos[si].ce_node == subq_child)
       {
-        m_subquery_infos[si].ce_node = conjuncts[i];
+        m_subquery_infos[si].ce_node = cmp;
         m_subquery_infos[si].inner_stmt = new_inner;
         m_subquery_infos[si].is_corr_scalar = true;
         m_subquery_infos[si].corr_values =
@@ -6857,7 +6900,7 @@ RonSQLPreparer::decorrelate_scalar()
     {
       // Register new SubqueryInfo
       SubqueryInfo info;
-      info.ce_node = conjuncts[i];
+      info.ce_node = cmp;
       info.inner_stmt = new_inner;
       info.is_corr_scalar = true;
       info.corr_values =
@@ -6868,15 +6911,15 @@ RonSQLPreparer::decorrelate_scalar()
     }
 
     // Transform comparison node in-place to I_CORR_SCALAR
-    conjuncts[i]->op = I_CORR_SCALAR;
-    conjuncts[i]->corr_scalar.cmp_op = cmp_op;
-    conjuncts[i]->corr_scalar.cmp_expr = cmp_expr;
-    conjuncts[i]->corr_scalar.key_expr = key_expr;
-    conjuncts[i]->corr_scalar.stmt = new_inner;
+    cmp->op = I_CORR_SCALAR;
+    cmp->corr_scalar.cmp_op = cmp_op;
+    cmp->corr_scalar.cmp_expr = cmp_expr;
+    cmp->corr_scalar.key_expr = key_expr;
+    cmp->corr_scalar.stmt = new_inner;
 
     require_prm(num_kept < MAX_WHERE_CONJUNCTS,
                 "Too many WHERE conjuncts after decorrelation.");
-    kept[num_kept++] = conjuncts[i];
+    kept[num_kept++] = cmp;
   }
 
   // Rebuild outer WHERE from kept conjuncts

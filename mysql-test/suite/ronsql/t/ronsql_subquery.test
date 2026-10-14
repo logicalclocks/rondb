@@ -461,6 +461,31 @@ WHERE o_k IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id)
 GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+# A correlated scalar subquery is NULL for an outer row without inner rows,
+# so the comparison is NULL under NOT as well and the row is dropped.
+
+--echo
+--echo === Test 34: NOT around a correlated scalar subquery ===
+--echo Inner SUM where qty>20: (3,550),(5,750). Orders 1, 2 and 4 have no
+--echo inner rows. Only order 3 qualifies (NOT 700<550)
+let $QUERY=
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT (o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20))
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 35: NOT around a correlated scalar subquery on the left ===
+--echo SUM(i_id) per i_k: (10,1),(30,3). Orders 2 and 4 have no inner rows,
+--echo order 3 a NULL o_k. Only order 1 qualifies (NOT 1>1)
+let $QUERY=
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT ((SELECT SUM(i_id) FROM nq_inner WHERE i_k = o_k) > o_id)
+GROUP BY o_id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
 --echo
 --echo === Cleanup ===
 
