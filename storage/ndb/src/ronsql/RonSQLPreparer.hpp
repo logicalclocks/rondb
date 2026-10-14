@@ -964,6 +964,10 @@ private:
   bool is_count_star_only_query();
   void execute_count_star_shortcut();
   void merge_same_table_subqueries();
+  bool same_inner_filter(struct ConditionalExpression* a,
+                         const LexCString& alias_a,
+                         struct ConditionalExpression* b,
+                         const LexCString& alias_b);
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();
   void decorrelate_scalar();

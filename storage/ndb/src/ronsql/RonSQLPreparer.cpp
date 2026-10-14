@@ -8068,7 +8068,10 @@ RonSQLPreparer::analyze_select_subqueries()
         if (ce->op == T_AND) {
           self(self, ce->args.left);
           self(self, ce->args.right);
-        } else if (num_filter_conjuncts < 32) {
+        } else {
+          require_prm(num_filter_conjuncts < 32,
+                      "Too many conditions in the WHERE clause of a"
+                      " SELECT-list subquery.");
           filter_conjuncts[num_filter_conjuncts++] = ce;
         }
       };
@@ -8150,11 +8153,95 @@ RonSQLPreparer::analyze_select_subqueries()
 }
 
 /*
+ * same_inner_filter()
+ *
+ * True if the inner-only filters of two SELECT-list subqueries are
+ * structurally identical. Column references must name the same column
+ * and use each subquery's own inner table alias, or no qualifier. Node
+ * kinds not handled here compare as different, so the worst case is a
+ * missed merge, never a wrong result.
+ */
+bool
+RonSQLPreparer::same_inner_filter(ConditionalExpression* a,
+                                  const LexCString& alias_a,
+                                  ConditionalExpression* b,
+                                  const LexCString& alias_b)
+{
+  if (a == NULL || b == NULL) return a == b;
+  if (a->op != b->op) return false;
+  auto same_str = [](const char* s1, size_t l1, const char* s2, size_t l2) {
+    return l1 == l2 && (l1 == 0 || memcmp(s1, s2, l1) == 0);
+  };
+  switch (a->op) {
+  case T_IDENTIFIER: {
+    if (a->col_idx >= m_columns.size() || b->col_idx >= m_columns.size() ||
+        a->col_idx >= m_column_qualifiers.size() ||
+        b->col_idx >= m_column_qualifiers.size())
+      return false;
+    const LexCString& qa = m_column_qualifiers[a->col_idx];
+    const LexCString& qb = m_column_qualifiers[b->col_idx];
+    if ((qa.str == NULL) != (qb.str == NULL)) return false;
+    if (qa.str != NULL &&
+        (!same_str(qa.str, qa.len, alias_a.str, alias_a.len) ||
+         !same_str(qb.str, qb.len, alias_b.str, alias_b.len)))
+      return false;
+    const LexCString& ca = m_columns[a->col_idx];
+    const LexCString& cb = m_columns[b->col_idx];
+    return same_str(ca.str, ca.len, cb.str, cb.len);
+  }
+  case T_INT:
+    return a->constant_integer == b->constant_integer;
+  case T_FLOAT:
+    return same_str(a->constant_float.ls.str, a->constant_float.ls.len,
+                    b->constant_float.ls.str, b->constant_float.ls.len);
+  case T_STRING:
+    return same_str(a->string.str, a->string.len,
+                    b->string.str, b->string.len);
+  case T_NULL:
+    return true;
+  case T_IS:
+    return a->is.null == b->is.null &&
+           same_inner_filter(a->is.arg, alias_a, b->is.arg, alias_b);
+  case T_NOT:
+  case T_EXCLAMATION:
+    return same_inner_filter(a->args.left, alias_a, b->args.left, alias_b);
+  case T_OR:
+  case T_XOR:
+  case T_AND:
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GE:
+  case T_GT:
+  case T_LE:
+  case T_LT:
+  case T_LIKE:
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+  case T_DIV:
+  case T_MODULO:
+  case T_BITWISE_OR:
+  case T_BITWISE_AND:
+  case T_BITSHIFT_LEFT:
+  case T_BITSHIFT_RIGHT:
+  case T_BITWISE_XOR:
+    return same_inner_filter(a->args.left, alias_a, b->args.left, alias_b) &&
+           same_inner_filter(a->args.right, alias_a, b->args.right, alias_b);
+  default:
+    return false;
+  }
+}
+
+/*
  * merge_same_table_subqueries()
  *
  * Group SelectSubqueryLeaf entries by (inner_table_name, inner_join_col,
- * outer_join_col).  Subqueries in the same group share a single leaf node
- * with a combined aggregation program.
+ * outer_join_col) and inner-only filter.  Subqueries in the same group
+ * share a single leaf node with a combined aggregation program.  The
+ * inner-only filter is applied to the shared leaf, so only subqueries
+ * with the same inner-only filter (or none) can share it; cross-table
+ * filters are applied per aggregate and don't prevent merging.
  */
 void
 RonSQLPreparer::merge_same_table_subqueries()
@@ -8189,7 +8276,9 @@ RonSQLPreparer::merge_same_table_subqueries()
                   base.inner_join_col.len) == 0 &&
           base.outer_join_col.len == other.outer_join_col.len &&
           strncmp(base.outer_join_col.str, other.outer_join_col.str,
-                  base.outer_join_col.len) == 0) {
+                  base.outer_join_col.len) == 0 &&
+          same_inner_filter(base.inner_filter, base.inner_table_alias,
+                            other.inner_filter, other.inner_table_alias)) {
         other.merged_leaf_idx = ml_idx;
         other.combined_agg_slot = agg_slot++;
         ml.num_aggs++;
