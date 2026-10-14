@@ -221,6 +221,13 @@ AggregationAPICompiler::new_expr(ExprOp op,
         throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
                                    "Divide by zero in integer constant folding.");
       }
+      // INT64_MIN DIV -1 is INT64_MAX + 1, an overflow as in MySQL and on
+      // the data nodes.  Dividing it in C++ is undefined and traps on x86.
+      if (arg1 == INT64_MIN && arg2 == -1) {
+        m_err << "Overflow when attempting to fold constant expression (" << arg1 << " DIV " << arg2 << ").\n";
+        throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                                   "Overflow in integer constant folding.");
+      }
       result = arg1 / arg2;
       break;
     case ExprOp::Rem:
@@ -229,7 +236,10 @@ AggregationAPICompiler::new_expr(ExprOp op,
         throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
                                    "Divide by zero in integer constant folding.");
       }
-      result = arg1 % arg2;
+      // x % -1 is 0 for every x, INT64_MIN included, as in MySQL and on the
+      // data nodes.  Computing INT64_MIN % -1 in C++ is undefined and traps
+      // on x86.
+      result = (arg2 == -1) ? 0 : arg1 % arg2;
       break;
     default:
       // Unknown operation

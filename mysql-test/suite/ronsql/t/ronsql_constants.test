@@ -27,6 +27,8 @@ call mtr.add_suppression("Participant timeout");
 --exec $PARSE_TEST 'select sum(922337203685477580*11) from tbl;'
 --error 1
 --exec $PARSE_TEST 'select sum(-922337203685477580*11) from tbl;'
+--error 1
+--exec $PARSE_TEST 'select sum((-9223372036854775807-1) DIV -1) from tbl;'
 
 --echo ===== Divide by zero in integer constant folding =====
 --error 1
@@ -56,6 +58,7 @@ SELECT sum( 9223372036854775807)
      , sum(-9223372036854775807 DIV 10)
      , sum( 9223372036854775807  %  10)
      , sum(-9223372036854775807  %  10)
+     , sum((-9223372036854775807-1) % -1)
      , sum( 123456)
      , sum(-123456-1)
      , sum(-123456  +  123456)
