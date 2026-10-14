@@ -1607,6 +1607,27 @@ RonSQLPreparer::load()
   if (m_has_ctes) {
     build_cte_scopes();
     resolve_cte_output_columns();
+    check_deferred_anti_joins();
+  }
+}
+
+void
+RonSQLPreparer::check_deferred_anti_joins()
+{
+  for (Uint32 t = 1; t < m_main_scope.join_plan.num_ops; t++)
+  {
+    const JoinOp& op = m_main_scope.join_plan.ops[t];
+    const ConditionalExpression* where = m_main_scope.anti_join_where_ce[t];
+    if (op.match_type != JoinOp::ANTI_JOIN || where == NULL ||
+        is_anti_join_promotable(m_main_scope, t, where))
+      continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("WHERE ... IS NULL on ") + op.alias.c_str() +
+        " after LEFT JOIN " + op.alias.c_str() + " is supported only on a "
+        "GROUP BY column, a COUNT, or a SUM of a NOT NULL column. A SUM of a "
+        "column that can be NULL is NULL also in a matched group whose "
+        "values are all NULL.");
   }
 }
 
@@ -3687,7 +3708,7 @@ is_null_rejecting(const ConditionalExpression* ce)
 // Phase K: detect the canonical LEFT-anti-join idiom — `LEFT JOIN
 // cte ON ... WHERE cte.col IS NULL` — where every WHERE conjunct is
 // IS NULL on a CTE column that's provably non-NULL on the matched
-// path (GB key, SUM, COUNT).  For such cases ANTI_JOIN is
+// path (GB key, COUNT, SUM of a never-NULL argument).  For such cases ANTI_JOIN is
 // semantically equivalent to MySQL's LEFT JOIN + WHERE filter.
 // emit_child_ops emits setMatchType(MatchNullOnly) which
 // translates to NI_ANTI_JOIN in the QueryTree; DBSPJ's
@@ -3699,14 +3720,16 @@ is_null_rejecting(const ConditionalExpression* ce)
 // MIN/MAX outputs are NOT promotable: AggResItem.is_null
 // legitimately fires when every source value is NULL, so a matched
 // group can have a NULL MIN/MAX.  ANTI_JOIN would skip those
-// matched-but-NULL groups, breaking semantics.  Such cases stay
-// under Phase I.1's defensive reject.
+// matched-but-NULL groups, breaking semantics.  The same holds for a
+// SUM whose argument can be NULL, so a SUM is promotable only when
+// cte_sum_arg_never_null() proves its argument non-NULL.  Such cases
+// stay under Phase I.1's defensive reject.
 //
 // See cte_filter_phase_k.md.
 bool
 RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
                                          Uint32 op_idx,
-                                         const ConditionalExpression* ce)
+                                         const ConditionalExpression* ce) const
 {
   if (ce == NULL) return false;
   if (ce->op == T_AND) {
@@ -3725,7 +3748,9 @@ RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
   if (ref.join_op_idx != op_idx) return false;
 
   // Walk the CTE outputs to the referenced column and check it's a
-  // GB-key (Outputs::Type::COLUMN) or a SUM/COUNT aggregate.
+  // GB-key (Outputs::Type::COLUMN), a COUNT, or a SUM of a never-NULL
+  // argument.  A GB key is non-NULL on the matched path because a
+  // CTE_LOOKUP binds every key column by equality.
   const JoinOp& cte_op = scope.join_plan.ops[op_idx];
   if (cte_op.cte_def == NULL) return false;
   if (ref.cte_def_idx != cte_op.cte_def_idx) return false;
@@ -3735,9 +3760,36 @@ RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
   if (o->type == Outputs::Type::COLUMN) return true;
   if (o->type == Outputs::Type::AGGREGATE) {
     TokenKind fun = o->aggregate.fun;
-    return fun == T_SUM || fun == T_COUNT;
+    if (fun == T_COUNT) return true;
+    if (fun != T_SUM) return false;
+    // The main query is promoted in load_join(), before build_cte_scopes()
+    // plans the CTE bodies; check_deferred_anti_joins() decides then.
+    if (ref.cte_def_idx >= m_cte_scopes.size()) return true;
+    const QueryScope* body = m_cte_scopes[ref.cte_def_idx];
+    return body != NULL &&
+           cte_sum_arg_never_null(*body, o->aggregate.arg);
   }
   return false;
+}
+
+bool
+RonSQLPreparer::cte_sum_arg_never_null(
+    const QueryScope& body,
+    const AggregationAPICompiler::Expr* arg) const
+{
+  if (arg == NULL) return false;
+  if (arg->isLoadConstantInt()) return true;
+  if (!arg->isLoad() || body.resolved_columns == NULL) return false;
+  const QueryScope::ResolvedColumnRef& ref =
+      body.resolved_columns[arg->getLoadIdx()];
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+      ref.dict_column == NULL || ref.dict_column->getNullable())
+    return false;
+  // A column of a table the body LEFT JOINs is NULL in a NULL-extended
+  // row; the root table's columns never are.
+  if (ref.join_op_idx == 0) return true;
+  return ref.join_op_idx < body.join_plan.num_ops &&
+         body.join_plan.ops[ref.join_op_idx].match_type == JoinOp::INNER;
 }
 
 // Standard MySQL optimizer rule: a LEFT OUTER JOIN of A and B can be
@@ -3763,6 +3815,7 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
       // CTE_LOOKUP_ANTI_JOIN_FLAG handling in DBLQH, implements the
       // filter without pushing IS NULL down.
       op.match_type = JoinOp::ANTI_JOIN;
+      scope.anti_join_where_ce[t] = scope.join_where_ce[t];
       scope.join_where_ce[t] = NULL;
     }
   }

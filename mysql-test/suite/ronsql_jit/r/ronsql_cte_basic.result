@@ -978,11 +978,18 @@ GROUP BY c.c_id|
 c_id	SUM(sums.t)
 400	NULL
 
+
+=== Test 31: rejection — LEFT JOIN + WHERE cte.t IS NULL on SUM of a nullable column ===
+Expected error: SUM of a nullable column under IS NULL
+Error handling: RPE
+ronsql_cli caught exception: WHERE ... IS NULL on nsums after LEFT JOIN nsums is supported only on a GROUP BY column, a COUNT, or a SUM of a NOT NULL column. A SUM of a column that can be NULL is NULL also in a matched group whose values are all NULL.
+
 === Cleanup ===
 DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;
 DROP TABLE cte_regions;
+DROP TABLE cte_nullamt;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_basic_jit_fallback_delta;
 ronsql_cte_basic_jit_fallback_delta

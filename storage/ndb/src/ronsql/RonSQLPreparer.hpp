@@ -295,6 +295,9 @@ private:
 
     JoinPlan join_plan;
     ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
+    // The WHERE conjuncts an ANTI_JOIN promotion removed from
+    // join_where_ce, kept for check_deferred_anti_joins().
+    const ConditionalExpression* anti_join_where_ce[MAX_SPJ_TREE_NODES];
     DynamicArray<CrossTableFilter> cross_table_where_filters;
 
     ResolvedColumnRef* resolved_columns = NULL;
@@ -321,6 +324,7 @@ private:
     QueryScope(ArenaMalloc* amalloc)
       : join_plan(),
         join_where_ce(),
+        anti_join_where_ce(),
         cross_table_where_filters(amalloc),
         body_indexes(amalloc),
         body_toplevel_conditions(amalloc),
@@ -666,9 +670,14 @@ private:
   // otherwise.
   void check_cte_body_col_vs_col(const QueryScope& scope,
                                  ConditionalExpression* ce) const;
-  static bool is_anti_join_promotable(const QueryScope& scope,
-                                       Uint32 op_idx,
-                                       const ConditionalExpression* ce);
+  bool is_anti_join_promotable(const QueryScope& scope,
+                               Uint32 op_idx,
+                               const ConditionalExpression* ce) const;
+  // Whether a CTE-body SUM argument is never NULL in a group: an integer
+  // constant, or a NOT NULL column of the body's root table or of a table
+  // it INNER JOINs.
+  bool cte_sum_arg_never_null(const QueryScope& body,
+                              const AggregationAPICompiler::Expr* arg) const;
   // Child-op index bounds (child_bounds feature, next_steps.md items
   // 2+3; formerly assign_cross_table_index_bounds): per non-root
   // INDEX_SCAN op, walk index columns after the join-key prefix and
@@ -901,6 +910,9 @@ private:
   void analyze_ctes();
   void validate_having_references();
   void build_cte_scopes();
+  // Re-checks the main query's ANTI_JOIN promotions once the CTE body
+  // scopes exist, and rejects a SUM output whose argument can be NULL.
+  void check_deferred_anti_joins();
   bool* collect_scope_column_refs(const SelectStatement& stmt);
   void mark_scope_column_ref(bool* refs, Uint32 col_idx) const;
   void mark_scope_column_refs_ce(bool* refs,
