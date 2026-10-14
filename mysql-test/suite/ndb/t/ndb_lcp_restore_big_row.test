@@ -1,0 +1,105 @@
+# ==========================================================================
+# LCP restore of rows larger than a page
+# ==========================================================================
+#
+# Since RONDB-873 the in-memory part of a row (fixed part and var part) can
+# be up to MAX_FIXED_SIZE_IN_WORDS + MAX_VAR_SIZE_IN_WORDS words, so its
+# record in an LCP data file can be larger than a 32 kB page (8192 words).
+# Restore::restore_next refused such records with
+# ndbrequire(len < GLOBAL_PAGE_SIZE_WORDS), and a data node with such a row
+# in its LCP crashed in every node restart and system restart. It also
+# left the read position at the end of the page instead of at the start of
+# the next one after a record larger than a page that ended at a page end.
+#
+# The tables have 16 BINARY(255) columns (1024 words of fixed part) and a
+# VARCHAR whose length sets the LCP record size. A probe table with one row
+# gives the record size for one VARCHAR length and where the first record
+# starts in an LCP data file. ERROR_INSERT builds add a checksum word to
+# each record, so these differ between builds. From them the test chooses
+# the VARCHAR lengths of a small row and three big rows such that the
+# records of the big rows are 8800 words and the first of them ends at the
+# end of the second page of the data file, and checks this in the LCP data
+# files of both data nodes. Then it restarts data node 2 and then the
+# cluster, and after each restart checks that the rows are unchanged.
+#
+# All rows are in one fixed page: the first LCP of a fragment writes one
+# data file per fixed page (up to 8), each with the rows of its pages.
+# --------------------------------------------------------------------------
+
+--source include/have_ndb.inc
+
+let $fixcols = ;
+let $fixvals = ;
+let $fixconcat = ;
+let $n = 1;
+let $count = 16;
+while ($count)
+{
+  let $fixcols = $fixcols, c$n BINARY(255) NOT NULL;
+  let $fixvals = $fixvals, REPEAT(CHAR(64 + $n), 255);
+  let $fixconcat = $fixconcat, c$n;
+  inc $n;
+  dec $count;
+}
+let $rows_md5 = MD5(GROUP_CONCAT(pk, ':', LENGTH(v), ':', MD5(CONCAT(v$fixconcat)) ORDER BY pk));
+
+--echo # Probe: LCP record size of a row with a 30000 byte VARCHAR
+let $probe_v = 30000;
+--disable_query_log
+eval CREATE TABLE t_probe (
+  pk INT NOT NULL PRIMARY KEY
+  $fixcols,
+  v VARCHAR(32614) CHARACTER SET latin1 NOT NULL
+) ENGINE = NDB PARTITION BY KEY(pk) PARTITIONS 1;
+eval INSERT INTO t_probe VALUES (1$fixvals, REPEAT('p', $probe_v));
+--enable_query_log
+--source ndb_lcp_restore_big_row_lcp.inc
+let BIG_ROW_TABLE_ID = `SELECT id FROM ndbinfo.dict_obj_info
+                        WHERE fq_name = 'test/def/t_probe'`;
+let BIG_ROW_PROBE_V = $probe_v;
+let BIG_ROW_MODE = probe;
+--source ndb_lcp_restore_big_row_scan.inc
+--source $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_big_row_lengths.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_big_row_lengths.inc
+
+--echo # A small row and three rows with LCP records above 8192 words, the
+--echo # first of them ends at the end of the second page of the data file
+--disable_query_log
+eval CREATE TABLE t1 (
+  pk INT NOT NULL PRIMARY KEY
+  $fixcols,
+  v VARCHAR(32614) CHARACTER SET latin1 NOT NULL
+) ENGINE = NDB PARTITION BY KEY(pk) PARTITIONS 1;
+eval INSERT INTO t1 VALUES (1$fixvals, REPEAT('a', $v_small));
+eval INSERT INTO t1 VALUES (2$fixvals, REPEAT('b', $v_big));
+eval INSERT INTO t1 VALUES (3$fixvals, REPEAT('c', $v_big));
+eval INSERT INTO t1 VALUES (4$fixvals, REPEAT('d', $v_big));
+let $before = `SELECT $rows_md5 FROM t1`;
+--enable_query_log
+SELECT COUNT(*) FROM t1;
+--source ndb_lcp_restore_big_row_lcp.inc
+let BIG_ROW_TABLE_ID = `SELECT id FROM ndbinfo.dict_obj_info
+                        WHERE fq_name = 'test/def/t1'`;
+let BIG_ROW_MODE = check;
+--source ndb_lcp_restore_big_row_scan.inc
+
+--echo # Node restart: node 2 restores the rows from its LCP
+let $ndb_node_id = 2;
+--source suite/ndb/include/restart_node.inc
+--source include/ndb_not_readonly.inc
+--disable_query_log
+eval SELECT COUNT(*) AS row_count, $rows_md5 = '$before' AS unchanged FROM t1;
+--enable_query_log
+
+--echo # System restart: both data nodes restore the rows from their LCP
+let $waiter_timeout_start = 600;
+--source suite/ndb/include/restart_cluster.inc
+--source include/ndb_not_readonly.inc
+--disable_query_log
+eval SELECT COUNT(*) AS row_count, $rows_md5 = '$before' AS unchanged FROM t1;
+--enable_query_log
+
+DROP TABLE t1, t_probe;
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_big_row.since
+# restart_node.inc and restart_cluster.inc write to $NDB_TOOLS_OUTPUT
+--remove_file $NDB_TOOLS_OUTPUT
