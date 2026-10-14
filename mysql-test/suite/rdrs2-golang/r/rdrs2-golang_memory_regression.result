@@ -1,0 +1,6 @@
+# Database for the load driver
+CREATE DATABASE mem_db;
+# Load driver
+PASS
+# Cleanup
+DROP DATABASE mem_db;

@@ -620,7 +620,7 @@ static_assert(DEFAULT_REQ_BUFFER  &gt;= 2 * MIN_REQ_BUFFER);</code></pre>
 </table></div>
 
 <h3>8.6 Memory regression</h3>
-<p>One MTR test that is the reason for all of this: start rdrs2 with the chart's defaults, run the 400-operation wide-row batch load for 60 seconds, and assert RssAnon never exceeds a threshold derived from the computed sizes and MaxBuffers. Today's code is killed by this load on a 500 MiB limit; the test pins that it stays under.</p>
+<p>One MTR test that is the reason for all of this, rdrs2-golang_memory_regression (Linux only, it reads /proc): a dedicated rdrs2 with MaxBuffers 256, PreAllocatedBuffers 8, BufferShrinkAfterS 30 and 8 threads, the cap a pod with a small memory limit would derive. Two workers POST widest-row batches for 60 seconds while the driver samples RssAnon of the process every 5 seconds. The batch size is not a fixed 400: an operation that names no columns reserves the room for every column name of the table, so the driver computes how many of them share one request buffer from rdrs_limits and sizes the batch so both workers together use half the cap above the preallocation (124 operations on 26.02). Two assertions: once warm, 10 seconds in, no sample exceeds the warm value by more than 10 % plus 32 MiB, which catches a leak; and the final sample is at most idle + MaxBuffers × (ReqBufferBytes + RespBufferBytes) + 64 MiB, which catches a pool that does not honour its cap. Today's code is killed by this load on a 500 MiB limit; the test pins that it stays under. The samples are written to var/log/rdrs2-golang_memory_regression.report.txt.</p>
 
 <h2>9. Branch plan</h2>
 <h3>9.1 Implement on 26.02</h3>
