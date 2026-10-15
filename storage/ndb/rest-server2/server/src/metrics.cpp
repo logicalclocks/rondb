@@ -655,13 +655,15 @@ prometheus::Gauge *httpConnectionCountGauge             = nullptr;
 
 /* RONDB-1144 buffer pool families, additive to the ones above. Index 0 is
  * the request pool, 1 the response pool. The pools keep cumulative event
- * totals; the counters are advanced by the delta since the last scrape. */
+ * totals; the counters are advanced by the growth since the last scrape,
+ * claimed through claim_counter_delta because Drogon serves concurrent
+ * scrapes on different IO threads. */
 constexpr int kPoolCount = 2;
 constexpr int kPoolStateCount = 4;   // in_use, free, peak, allocated
 constexpr int kPoolEventCount = 4;   // rejected, retry, shrunk, allocated
 prometheus::Gauge *bufferPoolGauge[kPoolCount][kPoolStateCount] = {};
 prometheus::Counter *bufferPoolEvent[kPoolCount][kPoolEventCount] = {};
-Int64 bufferPoolEventLast[kPoolCount][kPoolEventCount] = {};
+std::atomic<Int64> bufferPoolEventLast[kPoolCount][kPoolEventCount] = {};
 }  // namespace
 
 void initMetrics() {
@@ -1029,7 +1031,7 @@ void initMetrics() {
       bufferPoolEvent[pool][event] =
         &bufferPoolEventFamily->Add({{"pool", poolNames[pool]},
                                      {"event", eventNames[event]}});
-      bufferPoolEventLast[pool][event] = 0;
+      bufferPoolEventLast[pool][event].store(0);
     }
   }
 
@@ -1294,7 +1296,7 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   metricsCounter->Increment(count);
 
   // Buffer pools (RONDB-1144): gauges from the current state, counters
-  // advanced by the delta of the pools' cumulative totals.
+  // advanced by the growth of the pools' cumulative totals.
   {
     BufferPoolStats poolStats[kPoolCount];
     rsBufferArrayManager.get_req_buffers_stats(poolStats[0]);
@@ -1308,10 +1310,10 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
       const Int64 totals[kPoolEventCount] = {st.rejected, st.retries,
                                              st.shrunk, st.total_allocations};
       for (int event = 0; event < kPoolEventCount; event++) {
-        const Int64 delta = totals[event] - bufferPoolEventLast[pool][event];
+        const Int64 delta =
+          claim_counter_delta(bufferPoolEventLast[pool][event], totals[event]);
         if (delta > 0) {
           bufferPoolEvent[pool][event]->Increment(static_cast<double>(delta));
-          bufferPoolEventLast[pool][event] = totals[event];
         }
       }
     }
@@ -1334,6 +1336,17 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   resp->setBody(os.str());
   resp->setContentTypeString("text/plain; version=0.0.4");
   resp->setStatusCode(drogon::HttpStatusCode::k200OK);
+}
+
+Int64 claim_counter_delta(std::atomic<Int64> &last, Int64 total) {
+  Int64 prev = last.load(std::memory_order_relaxed);
+  /* On failure compare_exchange_weak reloads prev; the loop ends once this
+   * caller moved last to total, or another caller already moved it to
+   * total or beyond (nothing left to claim). */
+  while (total > prev &&
+         !last.compare_exchange_weak(prev, total, std::memory_order_relaxed)) {
+  }
+  return total > prev ? total - prev : 0;
 }
 
 }  // namespace rdrs_metrics

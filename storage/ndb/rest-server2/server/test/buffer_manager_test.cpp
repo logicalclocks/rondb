@@ -19,9 +19,11 @@
 
 /*
  * RONDB-1144: the request/response buffer pools. Cluster-free. Each test
- * uses its own RS_BufferPool or RS_BufferArrayManager with explicit inputs, so the global pool and
- * the configuration play no part; the cap derivation and memory-limit
- * detection are pure functions tested on files in a temp directory.
+ * uses its own RS_BufferPool or RS_BufferArrayManager with explicit
+ * inputs, so the global pool and the configuration play no part; the cap
+ * derivation and memory-limit detection are pure functions tested on files
+ * in a temp directory. The last test drives the /metrics event-counter
+ * update from several threads against a live pool.
  */
 
 #include <gtest/gtest.h>
@@ -33,11 +35,13 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
 
 #include "buffer_manager.hpp"
+#include "metrics.hpp"
 
 /* Owned by main.cc in the server binary; test binaries provide their own
  * (same pattern as error_handling_test.cpp). */
@@ -292,4 +296,50 @@ TEST(BufferArrayManager, InitDerivesCapFromLimit) {
   EXPECT_EQ(mgr.max_buffers(), 16U);
   EXPECT_EQ(mgr.memory_limit_bytes(), 64ULL * kBytes);
   mgr.shutdown();
+}
+
+/* Concurrent /metrics scrapes must count every pool event exactly once.
+ * One thread makes a capped pool refuse buffers (each refusal is a
+ * "rejected" event) while four scrapers read the pool's cumulative stats
+ * and claim the growth through claim_counter_delta, as writeMetrics does,
+ * adding their claims to one counter. Scrapers race each other and may
+ * hold an older total than another; a final scrape after the refusals
+ * stop must leave the counter equal to the pool's rejected total. */
+TEST(BufferPoolMetrics, ConcurrentScrapesCountEachEventOnce) {
+  RS_BufferPool pool;
+  pool.init("test", kBytes, 1, 1, 0);
+  RS_Buffer held = pool.get();
+  ASSERT_NE(held.buffer, nullptr);
+
+  constexpr int kRefusals = 20000;
+  constexpr int kScrapers = 4;
+  std::atomic<Int64> last{0};
+  std::atomic<Int64> counter{0};
+  std::atomic<bool> done{false};
+
+  auto scrape = [&]() {
+    BufferPoolStats st;
+    pool.get_stats(st);
+    counter.fetch_add(rdrs_metrics::claim_counter_delta(last, st.rejected));
+  };
+  std::vector<std::thread> scrapers;
+  for (int i = 0; i < kScrapers; i++) {
+    scrapers.emplace_back([&]() {
+      while (!done.load()) scrape();
+    });
+  }
+  for (int i = 0; i < kRefusals; i++) {
+    ASSERT_EQ(pool.get().buffer, nullptr);
+  }
+  done.store(true);
+  for (auto &t : scrapers) t.join();
+  scrape();
+
+  BufferPoolStats st;
+  pool.get_stats(st);
+  EXPECT_EQ(st.rejected, kRefusals);
+  EXPECT_EQ(counter.load(), kRefusals);
+  EXPECT_EQ(last.load(), kRefusals);
+  pool.put(held);
+  pool.shutdown();
 }

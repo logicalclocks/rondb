@@ -668,6 +668,7 @@ static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &l
 <tr><td>BufferPool.DemandRestartsTheQuietPeriod</td><td>gtest</td><td>A get() that puts more than PreAllocatedBuffers in use restarts the quiet period</td></tr>
 <tr><td>BufferPool.ShrinkDisabledWhenZero</td><td>gtest</td><td>With BufferShrinkAfterS 0 shrink frees nothing</td></tr>
 <tr><td>BufferArrayManager.StatsPerPool</td><td>gtest</td><td>Request and response stats are independent; fails on the old copy-paste</td></tr>
+<tr><td>BufferPoolMetrics.ConcurrentScrapesCountEachEventOnce</td><td>gtest</td><td>Four threads scrape a pool that refuses 20 000 buffers and claim the growth of its rejected total as writeMetrics does; the counter ends exactly at 20 000 (the earlier non-atomic update over-counted under concurrent scrapes)</td></tr>
 <tr><td>BufferArrayManager.DeriveMaxBuffers, DetectMemoryLimitFromCgroupFiles, InitDerivesCapFromLimit</td><td>gtest</td><td>The cap from limit, share and pair size, the MaxBuffers override and the PreAllocatedBuffers + 1 floor; the limit from cgroup v2 and v1 files the test writes, "max" falling through, and physical RAM as the last resort; init keeps the derived cap and the limit</td></tr>
 <tr><td>TestBatchParseErrorAfterValidOpReleasesBuffers</td><td>MTR + Go</td><td>A batch whose first operation is valid and whose second is malformed (value missing, unknown column, body cut off) gets 400, 500 for some simdjson errors, or 200 or 400 for the unknown column; the status is the parser's business, the assertion is that the pool is balanced after each, so chains released on the parse-failure path leak nothing</td></tr>
 <tr><td>TestParseMetricsText</td><td>Go, no server</td><td>The /metrics parser the tests use reads rdrs_buffer_pool, rdrs_buffer_pool_events and rdrs_limits samples from a literal scrape</td></tr>
@@ -714,6 +715,7 @@ static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &l
 <li>rename the design folder to claude_files/RONDB-1143</li>
 <li>self-review: TEXT size guard, dead code, comments match the code</li>
 <li>design docs match the code</li>
+<li>buffer pool event counters stay exact under concurrent scrapes</li>
 </ol>
 <p>The chart change is a separate pull request in rondb-helm, paired with the release that carries this one.</p>
 <h3>9.2 Merge to 26.10</h3>
