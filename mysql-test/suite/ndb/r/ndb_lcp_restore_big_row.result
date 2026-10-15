@@ -1,0 +1,16 @@
+# Probe: LCP record size of a row with a 30000 byte VARCHAR
+# A small row and three rows with LCP records above 8192 words, the
+# first of them ends at the end of the second page of the data file
+SELECT COUNT(*) FROM t1;
+COUNT(*)
+4
+Each data node has an LCP data file with three records above 8192 words, the first of them ends at a page end
+# Node restart: node 2 restores the rows from its LCP
+# Restarting node 2, timeouts: start: 120 seconds, stop: 60 seconds:
+row_count	unchanged
+4	1
+# System restart: both data nodes restore the rows from their LCP
+# System restart:
+row_count	unchanged
+4	1
+DROP TABLE t1, t_probe;

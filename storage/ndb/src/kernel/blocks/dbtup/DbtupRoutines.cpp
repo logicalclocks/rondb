@@ -2012,6 +2012,12 @@ int Dbtup::updateAttributes(KeyReqStruct *req_struct,
     } else if (attributeId == AttributeHeader::READ_LCP &&
                c_started == false) {
       thrjam(req_struct->jamBuffer);
+      /**
+       * The LCP row from Restore is the last attribute and can be larger
+       * than the 15-bit byte size of an AttributeHeader holds, so its
+       * size is the rest of the ATTRINFO, not the size in the header.
+       */
+      sz = inBufLen - inBufIndex - 1;
       update_lcp(req_struct, inBuffer + inBufIndex + 1, sz);
       inBufIndex += 1 + sz;
       req_struct->in_buf_index = inBufIndex;

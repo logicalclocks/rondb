@@ -13,6 +13,8 @@
 [cluster_config.ndb_mgmd.1.1]
 PortNumber=1186
 
+[cluster_config.1]
+DataMemory=100M
 [cluster_config.ndbd.1.1]
 ServerPort=11861
 
