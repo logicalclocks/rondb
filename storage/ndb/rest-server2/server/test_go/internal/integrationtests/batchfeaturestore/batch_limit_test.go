@@ -20,8 +20,8 @@ import (
 	"net/http"
 	"testing"
 
-	"hopsworks.ai/rdrs2/internal/config"
 	fshelper "hopsworks.ai/rdrs2/internal/integrationtests/feature_store"
+	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
@@ -48,7 +48,7 @@ func sampleEntries(t *testing.T, n uint32) ([]string, [][]interface{}) {
 }
 
 func TestBatchFeatureStoreAtOperationLimit(t *testing.T) {
-	limit := config.GetAll().Internal.MaxOperationsPerBatch
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
 	pks, entries := sampleEntries(t, limit)
 	fsReq := CreateBatchFeatureStoreRequest(testdbs.FSDB002, "sample_2", 1, pks, entries, nil, nil)
 	fsResp := GetFeatureStoreResponse(t, fsReq)
@@ -58,7 +58,7 @@ func TestBatchFeatureStoreAtOperationLimit(t *testing.T) {
 }
 
 func TestBatchFeatureStoreOverOperationLimit(t *testing.T) {
-	limit := config.GetAll().Internal.MaxOperationsPerBatch
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
 	pks, entries := sampleEntries(t, limit+1)
 	fsReq := CreateBatchFeatureStoreRequest(testdbs.FSDB002, "sample_2", 1, pks, entries, nil, nil)
 	resp := GetFeatureStoreResponseWithDetail(t, fsReq, "exceeds MaxOperationsPerBatch",

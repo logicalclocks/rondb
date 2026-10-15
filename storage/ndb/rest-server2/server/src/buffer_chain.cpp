@@ -43,7 +43,7 @@ RS_Status pool_exhausted() {
 
 RS_BufferChain::RS_BufferChain(Kind kind, Uint32 num_ops)
     : m_kind(kind), m_num_ops(num_ops) {
-  m_views.assign(num_ops, RS_Buffer{nullptr, 0, kNoOwner});
+  m_views.assign(num_ops, RS_Buffer{nullptr, 0});
   m_view_owner.assign(num_ops, kNoOwner);
 }
 
@@ -96,7 +96,7 @@ RS_Status RS_BufferChain::take_first() {
   if (status.http_code != SUCCESS) {
     return status;
   }
-  m_views[0] = RS_Buffer{m_owners[0].buffer, m_owners[0].size, kNoOwner};
+  m_views[0] = RS_Buffer{m_owners[0].buffer, m_owners[0].size};
   m_view_owner[0] = 0;
   return RS_OK;
 }
@@ -110,8 +110,7 @@ RS_Status RS_BufferChain::next_op_view(Uint32 index, Uint32 need) {
     }
   }
   const RS_Buffer &owner = m_owners[m_cur];
-  m_views[index] = RS_Buffer{owner.buffer + m_head, owner.size - m_head,
-                             kNoOwner};
+  m_views[index] = RS_Buffer{owner.buffer + m_head, owner.size - m_head};
   m_view_owner[index] = m_cur;
   return RS_OK;
 }
@@ -138,7 +137,7 @@ RS_Status RS_BufferChain::restart_op_in_fresh_buffer(Uint32 index) {
     return status;
   }
   const RS_Buffer &owner = m_owners[m_cur];
-  m_views[index] = RS_Buffer{owner.buffer, owner.size, kNoOwner};
+  m_views[index] = RS_Buffer{owner.buffer, owner.size};
   m_view_owner[index] = m_cur;
   return RS_OK;
 }
@@ -158,10 +157,10 @@ void RS_BufferChain::reset_to_first_buffer() {
   m_cur = 0;
   m_head = 0;
   for (Uint32 i = 0; i < m_num_ops; i++) {
-    m_views[i] = RS_Buffer{nullptr, 0, kNoOwner};
+    m_views[i] = RS_Buffer{nullptr, 0};
     m_view_owner[i] = kNoOwner;
   }
-  m_views[0] = RS_Buffer{m_owners[0].buffer, m_owners[0].size, kNoOwner};
+  m_views[0] = RS_Buffer{m_owners[0].buffer, m_owners[0].size};
   m_view_owner[0] = 0;
 }
 

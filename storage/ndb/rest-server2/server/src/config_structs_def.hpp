@@ -99,8 +99,8 @@ CLASS
     " physical RAM). A request that needs a buffer past the cap is answered"
     " with HTTP 503.")
  CM(Uint32, bufferPoolSharePercent, BufferPoolSharePercent, 50,
-    "Share of the memory limit reserved for the two buffer pools together"
-    " when MaxBuffers is 0. The rest is left for the parse buffers, the"
+    "Share of the memory limit the two buffer pools together may grow to"
+    " when MaxBuffers is 0; it sets the cap, nothing is reserved. The rest is left for the parse buffers, the"
     " per-request arenas, the NDB API and the process itself.")
  CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 60,
     "Seconds a pool must have been idle (free buffers above"
@@ -110,7 +110,9 @@ CLASS
     "Testing knob. Overrides the computed start reserve, the free space a"
     " buffer must have before a new response or operation request may start"
     " in it. 0 = computed. Lowering it only causes responses to be rewritten"
-    " in a fresh buffer; it cannot make a result wrong.")
+    " in a fresh buffer; it cannot make a result wrong. Raising it above the"
+    " buffer size gives every operation its own buffer and can exhaust the"
+    " pool (HTTP 503).")
  CM(Uint32, batchMaxSize, BatchMaxSize, 128,
     "Number of operations of a batch request sent to NDB per execution loop."
     " Not a cap on the batch size; see MaxOperationsPerBatch.")
@@ -121,6 +123,7 @@ CLASS
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
+ PROBLEM(maxReqSize < 256, "MaxReqSize should be >= 256")
  PROBLEM(maxOperationsPerBatch == 0, "MaxOperationsPerBatch must be > 0")
  PROBLEM(bufferPoolSharePercent < 1 || bufferPoolSharePercent > 90,
          "BufferPoolSharePercent must be between 1 and 90")

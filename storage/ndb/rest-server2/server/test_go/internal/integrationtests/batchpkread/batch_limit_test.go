@@ -22,6 +22,7 @@ import (
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
+	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/pkg/api"
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
@@ -55,10 +56,10 @@ func intTableOps(n uint32) []api.BatchSubOperationTestInfo {
 }
 
 // A batch of exactly the limit succeeds and every sub-operation is answered.
-// At the default limit the body is about 70 KB, which also crosses Drogon's
+// At the default limit the body is about 130 KB, which also crosses Drogon's
 // 64 KiB in-memory threshold, so the file-buffered body path is covered.
 func TestBatchAtOperationLimit(t *testing.T) {
-	limit := config.GetAll().Internal.MaxOperationsPerBatch
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
 	tests := map[string]api.BatchOperationTestInfo{
 		"at_limit": {
 			HttpCode:   []int{http.StatusOK},
@@ -71,7 +72,7 @@ func TestBatchAtOperationLimit(t *testing.T) {
 // One operation more than the limit is rejected with 413 and a message that
 // names the setting, before any sub-operation runs.
 func TestBatchOverOperationLimit(t *testing.T) {
-	limit := config.GetAll().Internal.MaxOperationsPerBatch
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
 	tests := map[string]api.BatchOperationTestInfo{
 		"over_limit": {
 			HttpCode:       []int{http.StatusRequestEntityTooLarge},

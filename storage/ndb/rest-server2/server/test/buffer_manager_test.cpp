@@ -19,7 +19,7 @@
 
 /*
  * RONDB-1144: the request/response buffer pools. Cluster-free. Each test
- * uses its own RS_BufferPool with explicit inputs, so the global pool and
+ * uses its own RS_BufferPool or RS_BufferArrayManager with explicit inputs, so the global pool and
  * the configuration play no part; the cap derivation and memory-limit
  * detection are pure functions tested on files in a temp directory.
  */
@@ -83,7 +83,6 @@ TEST(BufferPool, PreallocatesAndTracksInUseAndFree) {
   ASSERT_NE(b.buffer, nullptr);
   ASSERT_NE(c.buffer, nullptr);
   EXPECT_EQ(a.size, kBytes);
-  EXPECT_EQ(c.next_allocated_buffer, 0U);
   st = stats_of(pool);
   EXPECT_EQ(st.allocated, 3);
   EXPECT_EQ(st.in_use, 3);
@@ -175,7 +174,8 @@ TEST(BufferPool, ShrinkKeepsInFlightAndWaitsForIdle) {
   RS_Buffer d = pool.get();
   pool.put(c);
   pool.put(d);
-  // Two out, two free above the preallocated one; not idle long enough.
+  // Two out, two free (one above the preallocated count); not idle long
+  // enough.
   EXPECT_EQ(pool.shrink(t0 + 5), 0U);
   BufferPoolStats st = stats_of(pool);
   EXPECT_EQ(st.allocated, 4);
@@ -201,8 +201,8 @@ TEST(BufferPool, ShrinkKeepsInFlightAndWaitsForIdle) {
   pool.shutdown();
 }
 
-/* A get() that dips below the preallocated count restarts the quiet
- * period. The pool reads the clock through now_seconds(), which the test
+/* A get() that puts more than the preallocated count in use restarts the
+ * quiet period. The pool reads the clock through now_seconds(), which the test
  * shifts to place the demand nine seconds into a ten second period. */
 TEST(BufferPool, DemandRestartsTheQuietPeriod) {
   RS_BufferPool pool;

@@ -43,7 +43,7 @@ NDB_ADD_EXECUTABLE(probe_server_http_test probe_server_http_test.cpp
 NDB_ADD_EXECUTABLE(probe_server_cluster_test probe_server_cluster_test.cpp
                    STATIC_NDBCLIENT)
 
-# RONDB-1144: process startup settings (THP opt-out, malloc arena cap,
+# RONDB-1144: process startup settings (THP opt-out,
 # untouched parse buffers). Cluster-free; the observations are Linux-only.
 NDB_ADD_EXECUTABLE(process_setup_test process_setup_test.cpp
                    STATIC_NDBCLIENT)

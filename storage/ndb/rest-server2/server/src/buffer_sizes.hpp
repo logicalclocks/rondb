@@ -23,7 +23,7 @@
 /*
  * RONDB-1144: every size the request/response buffer code depends on,
  * derived at compile time from the NDB limits the data node is built with.
- * No byte count is written here, so a release branch with larger limits
+ * No NDB-derived byte count is written here, so a release branch with larger limits
  * (26.10: 4096 columns, 72000-byte rows) gets correct sizes by building.
  *
  * Vocabulary (see the design document): a response is a fixed header, a
@@ -52,10 +52,6 @@ constexpr Uint32 rdrs_next_pow2(Uint32 n) {
 
 /* The NDB row limit in bytes: every non-blob value of a row together. */
 constexpr Uint32 MAX_ROW_BYTES = MAX_TUPLE_SIZE_IN_WORDS * 4;
-
-/* base64 of a whole row, with room for padding and a terminator. Sizes the
- * stack scratch buffer the JSON stage encodes small values into. */
-constexpr Uint32 MAX_ROW_BYTES_ENCODED = (((MAX_ROW_BYTES / 3) + 1) * 4) + 4;
 
 /* A character column is converted to utf8mb4 (at most 3 bytes per source
  * byte for any single-byte charset) and then JSON-escaped (a control
@@ -90,7 +86,9 @@ constexpr Uint32 MIN_RESP_BUFFER =
 
 /* Largest operation request: header, db and table names, the primary key
  * (count, per column two pointer words plus the name, all key bytes with a
- * length word each), the operation id, and the column-name reservation. */
+ * length word each), the operation id, and the column-name reservation.
+ * A key whose JSON text exceeds the NDB key limit is placed by
+ * native_request_upper_bound instead. */
 constexpr Uint32 MIN_REQ_BUFFER =
     PK_REQ_HEADER_END +
     (2 * rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1)) + ADDRESS_SIZE +

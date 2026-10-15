@@ -183,8 +183,9 @@ func TestRetryWithLoweredStartReserve(t *testing.T) {
 
 	before := testutils.TakePoolSnapshot(t)
 	// Enough widest responses to walk past the end of two buffers. Each
-	// response carries a 16-byte column table entry and the name per
-	// column, and every fill byte escapes to six (\u0001), so its size is
+	// response carries per column a 16-byte column table entry, the escaped
+	// value and up to 8 bytes of terminator and alignment, and every fill
+	// byte escapes to six (\u0001), so its size is
 	// known closely; MinRespBufferBytes would be the worst case for the
 	// limits, not for this row, and on 26.10 the creatable widest row is
 	// much narrower than that worst case.

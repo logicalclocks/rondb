@@ -24,8 +24,8 @@ import (
 
 // RONDB-1144: the widest row a table can have, computed from the limits
 // rdrs2 reports, so the same test exercises 512 columns on 26.02 and 4096
-// on 26.10. The limits that apply, taken from DBDICT (Dbdict.cpp, the
-// create-table checks behind NDB errors 944 and 941) and confirmed by
+// on 26.10. The limits that apply, taken from DBDICT and DBTUP (errors 738
+// and 851 on both versions; 944 and 941 on 26.10 only) and confirmed by
 // creating tables:
 //   - the fixed-size part of a row is bounded by the attribute offset
 //     field: 11 bits (2047 words, error 851) on 26.02, 12 bits on 26.10
@@ -33,17 +33,19 @@ import (
 //     so one layout creates on both; the INT key and a CHAR at its width
 //     rounded up to a word count against it, plus a tuple header and null
 //     bits, for which 16 words of headroom are kept here;
-//   - the in-memory varsize part is at most 32632 bytes: a VARCHAR at its
-//     width plus one length byte rounded up to a word, plus a 2-byte
-//     offset per column and a small header;
+//   - the in-memory varsize part is at most 32632 bytes on 26.10, and
+//     32032 while pre-26.10 data nodes are in the cluster (error 941, 26.10
+//     only); the smaller value is used. It holds a VARCHAR at its width
+//     plus one length byte rounded up to a word, plus a 2-byte offset per
+//     column and a small header;
 //   - MySQL's row cap of 65535 bytes for every engine (HA_MAX_REC_LENGTH),
 //     counting a VARCHAR as its width plus one;
 //   - the NDB row size rdrs2 reports (MaxRowBytes, MAX_TUPLE_SIZE_IN_WORDS),
 //     which DBDICT checks against the whole record in words (error 738),
-//     so with the same word-rounded sizes; on 26.02, where the two part
-//     caps above do not exist yet, this is the one that binds.
-// Neither kind alone reaches 4095 columns (4095 x CHAR(4) already exceeds
-// the fixed part), so the row is NFixed CHAR(Width) columns followed by
+//     so with the same word-rounded sizes; on 26.02, which has no
+//     varsize-part cap, this is the one that binds.
+// Neither kind alone gives the widest width (4095 x CHAR(4) exceeds the
+// fixed part, and VARCHAR alone stops at width 3), so the row is NFixed CHAR(Width) columns followed by
 // VARCHAR(Width) columns, all latin1 NOT NULL, named c0..c(N-1), plus an
 // INT primary key id. Width is the largest one that satisfies every cap:
 // 55 on 26.02 (145 CHAR + 366 VARCHAR, 28 475-byte rows), 7 on 26.10

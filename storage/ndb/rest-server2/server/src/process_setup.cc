@@ -31,9 +31,11 @@ ProcessSetupResult rdrs_process_setup() {
   /* rdrs2 maps a large, sparse address space (per-thread arenas, 8 MiB
    * stacks, the buffer pool). On nodes with transparent_hugepage/enabled
    * set to always, khugepaged collapses those sparse regions into resident
-   * 2 MiB pages until an idle pod reaches its memory limit. The flag is
-   * per process and inherited across fork and exec, so it covers every
-   * thread created after this point regardless of the node setting. */
+   * 2 MiB pages until an idle pod reaches its memory limit. The flag
+   * belongs to the address space (all threads) and is inherited across
+   * fork and exec. Before Linux 5.0 it only applied to mappings created
+   * after the call, so it is set before the first thread maps its stack
+   * and malloc arena. */
   errno = 0;
   if (prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0) {
     result.thp_disabled = true;

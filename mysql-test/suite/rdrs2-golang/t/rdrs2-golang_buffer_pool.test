@@ -9,6 +9,10 @@
 #     the rejected counter moves, nothing leaks, and a small read still works;
 #   - grows the pool above PreAllocatedBuffers and watches rdrs_buffer_pool
 #     on /metrics report it back at PreAllocatedBuffers after the idle period;
+#   - with StartReserveOverride far below the computed reserve, sends a
+#     batch of widest rows and checks that at least one response is
+#     rewritten in a fresh buffer (the retry counter moves) with every
+#     value intact;
 #   - sends malformed batches after a valid operation and checks that every
 #     buffer taken is returned (in_use back to its starting value).
 # The driver reads every limit it needs from the rdrs_limits metric family,

@@ -20,6 +20,8 @@ package pkread
 import (
 	"net/http"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,59 +33,52 @@ import (
 )
 
 // RONDB-1144 benchmarks for the single pk-read response writer. The response
-// buffer shrank from 10 MiB to 512 KiB and a value that does not fit the
+// buffer shrank from 10 MiB to RespBufferBytes (512 KiB on 26.02, 1 MiB on
+// 26.10) and a value that does not fit the
 // room left spills into continuation buffers, which the JSON writer then
 // reads as a segment list. Every size below is taken from the limits rdrs2
-// reports so the same benchmark compares the old and the new binary on one
+// reports (on a binary without rdrs_limits, from RDRS_LIMITS_OVERRIDE; see
+// GetLimits) so the same benchmark compares the old and the new binary on one
 // cluster; the row is prepared once, before the timer, and the benchmark
 // measures read throughput and latency only. Every response must be 200.
 
 const fourMiB = 4 * 1024 * 1024
 
 // runPKReadBenchmark reads testInfo b.N times, one http.Client per
-// go-routine, and reports throughput and latency like BenchmarkSimple.
+// go-routine, and reports throughput and latency like BenchmarkSimple. A
+// failed request fails the benchmark through testutils.ParallelTB instead
+// of hanging it.
 func runPKReadBenchmark(b *testing.B, testInfo api.PKTestInfo) {
-	// Number of total requests
-	numRequests := b.N
-	threadId := 0
-
-	latenciesChannel := make(chan time.Duration, numRequests)
+	var threads atomic.Int32
+	var mu sync.Mutex
+	latencies := make([]time.Duration, 0, b.N)
+	ptb := testutils.ParallelTB{TB: b}
 
 	b.ResetTimer()
 	start := time.Now()
 
-	/*
-		Assuming GOMAXPROCS is not set, a 10-core CPU
-		will run 10 Go-routines here.
-		These 10 Go-routines will split up b.N requests
-		amongst each other. RunParallel() will only be
-		run 10 times then (in contrast to bp.Next()).
-	*/
+	// RunParallel starts GOMAXPROCS go-routines that share the b.N requests.
 	b.RunParallel(func(bp *testing.PB) {
-		threadId++
-
+		threads.Add(1)
 		// One connection per go-routine
-		var httpClient *http.Client
-		httpClient = testutils.SetupHttpClient(b)
-
-		/*
-			Given 10 go-routines and b.N==50, each go-routine
-			will run this 5 times.
-		*/
+		httpClient := testutils.SetupHttpClient(ptb)
 		for bp.Next() {
 			requestStartTime := time.Now()
-			pkRESTTestWithClient(b, httpClient, testInfo, false, false)
-			latenciesChannel <- time.Since(requestStartTime)
+			pkRESTTestWithClient(ptb, httpClient, testInfo, false, false)
+			latency := time.Since(requestStartTime)
+			mu.Lock()
+			latencies = append(latencies, latency)
+			mu.Unlock()
 		}
 	})
 	b.StopTimer()
+	if b.Failed() {
+		return
+	}
+	numRequests := len(latencies)
 
 	requestsPerSecond := float64(numRequests) / time.Since(start).Seconds()
 
-	latencies := make([]time.Duration, numRequests)
-	for i := 0; i < numRequests; i++ {
-		latencies[i] = <-latenciesChannel
-	}
 	sort.Slice(latencies, func(i, j int) bool {
 		return latencies[i] < latencies[j]
 	})
@@ -91,7 +86,7 @@ func runPKReadBenchmark(b *testing.B, testInfo api.PKTestInfo) {
 	p99 := latencies[int(float64(numRequests)*0.99)]
 
 	b.Logf("Number of requests:         %d", numRequests)
-	b.Logf("Number of threads:          %d", threadId)
+	b.Logf("Number of threads:          %d", threads.Load())
 	b.Logf("Throughput:                 %f pk lookups/second", requestsPerSecond)
 	b.Logf("50th percentile latency:    %v μs", p50.Microseconds())
 	b.Logf("99th percentile latency:    %v μs", p99.Microseconds())
@@ -119,8 +114,8 @@ func spillTableRead(cols []string) api.PKTestInfo {
 }
 
 // BenchmarkWidestRow reads the widest row the limits allow with no columns
-// named, so the fixed part of the response is the largest the writer ever
-// produces. A printable fill keeps JSON escaping out of the picture: this
+// named, so the response has the most column entries the writer ever
+// produces (unescaped, so not the largest byte size). A printable fill keeps JSON escaping out of the picture: this
 // is the cost of writing every column entry, not of escaping.
 func BenchmarkWidestRow(b *testing.B) {
 	spec := testutils.WidestRowSpec(testutils.GetLimits(b))
@@ -164,8 +159,9 @@ func BenchmarkBlobSpill(b *testing.B) {
 }
 
 // BenchmarkBlob4MiB reads a blob that spans many continuation buffers. The
-// old binary wrote it into one 10 MiB buffer; the new one chains eight or
-// more 512 KiB buffers and base64-encodes across their boundaries.
+// old binary wrote it into one 10 MiB buffer; the new one chains
+// 4 MiB / RespBufferBytes buffers (eight on 26.02, four on 26.10) and
+// base64-encodes across their boundaries.
 func BenchmarkBlob4MiB(b *testing.B) {
 	spillfixture.SetupSpillTable(b)
 	limits := testutils.GetLimits(b)

@@ -44,9 +44,9 @@
  * rewritten from the start of a fresh owner (rule 5). The destructor
  * returns every owner, so a controller never releases buffers by hand.
  *
- * Owner entries are never mutated by callers; views may be (the request
- * encoders record each operation's length in the view's size), which is
- * why the two live in separate arrays.
+ * Owner entries are never mutated by callers; views may be (the
+ * controllers set each operation's view size to its encoded length), which
+ * is why the two live in separate arrays.
  */
 struct RS_BufferChain {
   enum Kind { REQ, RESP };
@@ -74,8 +74,9 @@ struct RS_BufferChain {
   /* Rule 5: re-place the view of operation index at offset 0 of a fresh
    * owner. The old bytes stay where they are and are simply unused. */
   RS_Status restart_op_in_fresh_buffer(Uint32 index);
-  /* The retry handler runs the whole batch again: return every owner but
-   * the first and start over from its offset 0. */
+  /* create_response calls this before writing, so a retried attempt
+   * starts clean: return every owner but the first and start over from its
+   * offset 0. */
   void reset_to_first_buffer();
   /* Response side: the writer closed the response of operation index.
    * home_len is what it wrote in its view; when it spilled, tail_off is the

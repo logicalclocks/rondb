@@ -48,7 +48,7 @@ import (
 //     more than 10 % plus 32 MiB;
 //   - a bound derived from the computed sizes: the final sample is at most
 //     the idle RSS plus MaxBuffers pairs of buffers plus 64 MiB of slack
-//     for arenas, stacks and the NDB API.
+//     for malloc's per-thread arenas (uncapped), stacks and the NDB API.
 // Linux only (it needs /proc); the MTR test sources include/linux.inc so
 // the Go test is never reached elsewhere, and it skips on its own too.
 

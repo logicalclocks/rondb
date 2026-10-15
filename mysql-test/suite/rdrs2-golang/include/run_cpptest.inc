@@ -110,8 +110,8 @@ print "PASS\n";
 # ---------------------------------------------------------------------------
 # C++ tests.
 # ---------------------------------------------------------------------------
-my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out, arena
-                                              # cap, untouched parse buffers
+my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out,
+                                              # untouched parse buffers
                                               # (cluster-free, fast)
                  'buffer_manager_test',       # RONDB-1144 buffer pool cap,
                                               # shrink, stats (cluster-free)

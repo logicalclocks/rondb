@@ -21,6 +21,8 @@ import (
 	"math/rand"
 	"net/http"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -34,71 +36,61 @@ import (
 
 // RONDB-1144 benchmarks for the batch response writer. A batch no longer
 // gets one 10 MiB response buffer: several sub-responses pack into one
-// 512 KiB buffer, a sub-response that does not fit the room left continues
+// RespBufferBytes buffer (512 KiB on 26.02, 1 MiB on 26.10), a sub-response that does not fit the room left continues
 // in the next buffer of the chain, and a blob larger than that room spills
 // into continuation buffers of its own. Sizes come from the limits rdrs2
-// reports so the same benchmark compares the old and the new binary on one
+// reports (on a binary without rdrs_limits, from RDRS_LIMITS_OVERRIDE; see
+// GetLimits) so the same benchmark compares the old and the new binary on one
 // cluster; rows are prepared once, before the timer. The batch and every
 // sub-operation must answer 200.
 
 // runBatchBenchmark sends b.N batches, one http.Client per go-routine,
 // each go-routine on its own copy of the batch from newBatch so that
 // beforeRequest (when not nil) may rewrite the filters without racing.
-// Throughput and latency are reported like BenchmarkSimple.
+// Throughput and latency are reported like BenchmarkSimple. A failed
+// request fails the benchmark through testutils.ParallelTB instead of
+// hanging it.
 func runBatchBenchmark(
 	b *testing.B,
 	newBatch func() api.BatchOperationTestInfo,
 	beforeRequest func(api.BatchOperationTestInfo),
 ) {
-	// Number of total requests
-	numRequests := b.N
 	batchSize := len(newBatch().Operations)
-	threadId := 0
-
-	latenciesChannel := make(chan time.Duration, numRequests)
+	var threads atomic.Int32
+	var mu sync.Mutex
+	latencies := make([]time.Duration, 0, b.N)
+	ptb := testutils.ParallelTB{TB: b}
 
 	b.ResetTimer()
 	start := time.Now()
 
-	/*
-		Assuming GOMAXPROCS is not set, a 10-core CPU
-		will run 10 Go-routines here.
-		These 10 Go-routines will split up b.N requests
-		amongst each other. RunParallel() will only be
-		run 10 times then (in contrast to bp.Next()).
-	*/
+	// RunParallel starts GOMAXPROCS go-routines that share the b.N requests.
 	b.RunParallel(func(bp *testing.PB) {
-		threadId++
-
+		threads.Add(1)
 		batchTestInfo := newBatch()
-
 		// One connection per go-routine
-		var httpClient *http.Client
-		httpClient = testutils.SetupHttpClient(b)
-
-		/*
-			Given 10 go-routines and b.N==50, each go-routine
-			will run this 5 times.
-		*/
+		httpClient := testutils.SetupHttpClient(ptb)
 		for bp.Next() {
 			if beforeRequest != nil {
 				beforeRequest(batchTestInfo)
 			}
-
 			requestStartTime := time.Now()
-			batchRESTTestWithClient(b, httpClient, batchTestInfo, false, false)
-			latenciesChannel <- time.Since(requestStartTime)
+			batchRESTTestWithClient(ptb, httpClient, batchTestInfo, false, false)
+			latency := time.Since(requestStartTime)
+			mu.Lock()
+			latencies = append(latencies, latency)
+			mu.Unlock()
 		}
 	})
 	b.StopTimer()
+	if b.Failed() {
+		return
+	}
+	numRequests := len(latencies)
 
 	numTotalPkLookups := numRequests * batchSize
 	PkLookupsPerSecond := float64(numTotalPkLookups) / time.Since(start).Seconds()
 
-	latencies := make([]time.Duration, numRequests)
-	for i := 0; i < numRequests; i++ {
-		latencies[i] = <-latenciesChannel
-	}
 	sort.Slice(latencies, func(i, j int) bool {
 		return latencies[i] < latencies[j]
 	})
@@ -107,7 +99,7 @@ func runBatchBenchmark(
 
 	b.Logf("Number of requests:         %d", numRequests)
 	b.Logf("Batch size (per requests):  %d", batchSize)
-	b.Logf("Number of threads:          %d", threadId)
+	b.Logf("Number of threads:          %d", threads.Load())
 	b.Logf("Throughput:                 %f pk lookups/second", PkLookupsPerSecond)
 	b.Logf("50th percentile latency:    %v us", p50.Microseconds())
 	b.Logf("99th percentile latency:    %v us", p99.Microseconds())

@@ -33,14 +33,14 @@ import (
 // with no columns named. Its fixed part is the largest a response can have
 // and must fit the home buffer without a retry. The spec comes from the
 // limits rdrs2 reports: 511 columns on 26.02, 4095 on 26.10. The row's
-// byte size is bounded by NDB's fixed and varsize part caps, not by
-// MaxRowBytes (see WidestRowSpec), so the guard here is on the column
-// count and a usable width, not on bytes.
+// byte size is bounded by NDB's part caps on 26.10 and by MaxRowBytes on
+// 26.02 (see WidestRowSpec), so the guard here is on the column count and
+// a usable width, not on bytes.
 func TestWidestRowFitsHomeBuffer(t *testing.T) {
 	limits := testutils.GetLimits(t)
 	spec := testutils.WidestRowSpec(limits)
 	if spec.NCols != int(limits.MaxColumns)-1 || spec.Width < 4 {
-		t.Fatalf("spec %+v does not use every column: limits %+v", spec, limits)
+		t.Fatalf("spec %+v does not use every column or is narrower than 4: limits %+v", spec, limits)
 	}
 	const table = "widest_row"
 	testutils.CreateWideRowTable(t, testdbs.DB013, table, spec, map[int]byte{1: 1})

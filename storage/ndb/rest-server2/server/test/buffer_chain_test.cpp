@@ -148,7 +148,7 @@ TEST_F(BufferChainTest, ContinuationsAppendAndRestartAndResetReturnBuffers) {
     EXPECT_TRUE(chain.starts_at_offset_zero(1));
     EXPECT_EQ(resp_in_use(), 4);
 
-    // The retry handler starts over: only the first owner stays.
+    // create_response starts over: only the first owner stays.
     chain.reset_to_first_buffer();
     EXPECT_EQ(chain.owner_count(), 1U);
     EXPECT_EQ(resp_in_use(), 1);
@@ -273,7 +273,7 @@ TEST_F(BufferChainTest, ResponseSpillsAcrossBuffersAndKeepsOffsets) {
  * cannot grow reports. */
 TEST_F(BufferChainTest, SpillWithoutChainOverflows) {
   std::vector<char> storage(4096);
-  RS_Buffer view{storage.data(), 4096, 0};
+  RS_Buffer view{storage.data(), 4096};
   PKRResponse resp(view, nullptr, 0);
   ASSERT_EQ(resp.SetNoOfColumns(1).http_code, SUCCESS);
   resp.SetSlot(0);

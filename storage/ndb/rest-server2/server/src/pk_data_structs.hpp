@@ -358,14 +358,11 @@ class PKReadResponseJSON : public PKReadResponse {
   }
   size_t getSizeJson() const { return size_json; }
 
-  int to_string_single(char*,
-                       ArenaMalloc *amalloc,
-                       size_t & size_json) const;
-  char* to_string_batch(char*, ArenaMalloc *amalloc) const;
-  static int batch_to_string(const std::vector<PKReadResponseJSON> &,
-                             char*,
-                             ArenaMalloc *amalloc,
-                             size_t & size_json);
+  void to_string_single(char*, size_t & size_json) const;
+  char* to_string_batch(char*) const;
+  static void batch_to_string(const std::vector<PKReadResponseJSON> &,
+                              char*,
+                              size_t & size_json);
 };
 
 class PKReadResponseWithCodeJSON {

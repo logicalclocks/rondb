@@ -77,7 +77,7 @@ void RS_BufferPool::init(const char *name, Uint32 buffer_bytes,
               i + 1, preallocate, buffer_bytes);
       abort();
     }
-    m_free.push_back(RS_Buffer{mem, buffer_bytes, 0});
+    m_free.push_back(RS_Buffer{mem, buffer_bytes});
     m_stats.allocated++;
     m_stats.total_allocations++;
   }
@@ -100,7 +100,7 @@ void RS_BufferPool::shutdown() {
 
 RS_Buffer RS_BufferPool::get() {
   require(m_mutex != nullptr);
-  RS_Buffer buffer{nullptr, 0, 0};
+  RS_Buffer buffer{nullptr, 0};
   NdbMutex_Lock(m_mutex);
   if (!m_free.empty()) {
     buffer = m_free.back();
@@ -108,7 +108,7 @@ RS_Buffer RS_BufferPool::get() {
   } else if (m_stats.allocated < static_cast<Int64>(m_max)) {
     char *mem = map_buffer(m_bytes);
     if (mem != nullptr) {
-      buffer = RS_Buffer{mem, m_bytes, 0};
+      buffer = RS_Buffer{mem, m_bytes};
       m_stats.allocated++;
       m_stats.total_allocations++;
     }
@@ -118,7 +118,6 @@ RS_Buffer RS_BufferPool::get() {
     NdbMutex_Unlock(m_mutex);
     return buffer;
   }
-  buffer.next_allocated_buffer = 0;
   m_stats.in_use++;
   if (m_stats.in_use > m_stats.peak_in_use) {
     m_stats.peak_in_use = m_stats.in_use;
@@ -136,10 +135,9 @@ RS_Buffer RS_BufferPool::get() {
 void RS_BufferPool::put(RS_Buffer buffer) {
   require(m_mutex != nullptr);
   require(buffer.buffer != nullptr);
-  /* Callers overwrite size with the bytes they used (the request encoders
-   * record each operation's length there); the pool knows its own size. */
+  /* Restore the pool's own size, so a returned buffer always matches what
+   * get() hands out. */
   buffer.size = m_bytes;
-  buffer.next_allocated_buffer = 0;
   NdbMutex_Lock(m_mutex);
   m_free.push_back(buffer);
   m_stats.in_use--;

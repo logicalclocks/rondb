@@ -78,8 +78,9 @@ std::string proc_status_field(const char *key) {
 }  // namespace
 
 /*
- * The THP opt-out is per process and inherited by threads created after
- * the call, which is why main() issues it before start_fs_cache().
+ * The THP opt-out belongs to the address space, so every thread sees it;
+ * main() issues it before start_fs_cache() because before Linux 5.0 it
+ * only applied to mappings created after the call.
  */
 TEST(ProcessSetup, ThpDisabledForProcessAndLaterThreads) {
 #ifdef __linux__
@@ -112,8 +113,8 @@ TEST(ProcessSetup, ThpDisabledForProcessAndLaterThreads) {
 
 /*
  * The per-thread JSON parse buffer must not be resident until used.
- * std::make_unique<char[]> zero-filled it, which made 64 x 4 MiB resident
- * at startup; the plain new char[] does not touch the pages.
+ * std::make_unique<char[]> zero-filled it, which made NumThreads x
+ * MaxReqSize resident at startup (64 x 4 MiB with the old defaults); the plain new char[] does not touch the pages.
  */
 TEST(ProcessSetup, ParseBufferIsNotResidentUntilUsed) {
 #ifdef __linux__

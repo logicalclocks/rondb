@@ -1114,8 +1114,9 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     /* RONDB-1144: a TEXT value is converted to utf8mb4 and JSON-escaped
      * before it is stored, which works on the whole value, so the raw
      * bytes are staged in the request's arena rather than in the response
-     * buffer. The escaped result then goes in like a blob: chunked, and
-     * continuing into the next buffer of the chain when needed. */
+     * buffer. The escaped result then goes in like a blob, through
+     * AppendRawWithSpill, continuing into the next buffer of the chain
+     * when needed. */
     if (unlikely(length > 0xFFFFFFFFULL - 1)) {
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
@@ -1179,6 +1180,14 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
                                                  escaped);
     if (unlikely(text_status.http_code != SUCCESS)) {
       return text_status;
+    }
+    /* Escaping can grow the value up to MAX_TEXT_EXPANSION times, so the
+     * raw-length check above does not bound the escaped size. */
+    if (unlikely(escaped.size() >
+                 0xFFFFFFFFULL - response->CurrentVirtualOffset())) {
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
     }
     text_status = response->BeginRawColumn(RDRS_STRING_DATATYPE);
     if (unlikely(text_status.http_code != SUCCESS)) {

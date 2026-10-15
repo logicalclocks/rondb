@@ -742,9 +742,8 @@ func TestLargeBatch(t *testing.T) {
 	// Internal.MaxOperationsPerBatch (RONDB-1144), exercised by
 	// batch_limit_test.go; this size must stay below it.
 	batchSize := config.GetAll().Internal.BatchMaxSize + 200
-	if batchSize > config.GetAll().Internal.MaxOperationsPerBatch {
-		t.Fatalf("test size %d exceeds MaxOperationsPerBatch %d", batchSize,
-			config.GetAll().Internal.MaxOperationsPerBatch)
+	if limit := testutils.GetLimits(t).MaxOperationsPerBatch; int64(batchSize) > limit {
+		t.Fatalf("test size %d exceeds MaxOperationsPerBatch %d", batchSize, limit)
 	}
 
 	subOperations := make([]api.BatchSubOperationTestInfo, batchSize)

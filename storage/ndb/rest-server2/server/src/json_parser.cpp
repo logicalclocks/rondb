@@ -189,7 +189,8 @@ JSONParser* jsonParsers = nullptr;
 JSONParser::JSONParser() {
   /* new char[n] default-initialises, so none of the pages are touched until
    * a request of that size arrives. std::make_unique value-initialised the
-   * array, which made 64 x 4 MiB resident at startup (RONDB-1144). The
+   * array, which made NumThreads x MaxReqSize resident at startup (64 x 4 MiB
+   * with the old defaults; RONDB-1144). The
    * parser never reads beyond the request length it is given. */
   buffer = std::unique_ptr<char[]>(
     new char[globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING]);

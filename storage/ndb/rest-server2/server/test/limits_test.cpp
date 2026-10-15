@@ -65,7 +65,7 @@ std::string name_of_max_length(char fill) {
  */
 TEST(Limits, WorstCaseResponseFitsMinRespBuffer) {
   std::vector<char> storage(MIN_RESP_BUFFER);
-  RS_Buffer buffer{storage.data(), MIN_RESP_BUFFER, 0};
+  RS_Buffer buffer{storage.data(), MIN_RESP_BUFFER};
   PKRResponse response(buffer, nullptr, 0);
 
   const std::string op_id(MAX_OPERATION_ID_RESERVE, 'o');
@@ -142,7 +142,7 @@ TEST(Limits, WorstCaseNamedColumnsRequestFitsMinReqBuffer) {
   }
 
   std::vector<Uint32> storage(MIN_REQ_BUFFER / ADDRESS_SIZE + 1);
-  RS_Buffer view{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER, 0};
+  RS_Buffer view{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER};
   Uint32 consumed = 0;
   const RS_Status status = create_native_request(params, view, consumed);
   ASSERT_EQ(status.http_code, SUCCESS) << status.message;
@@ -176,8 +176,7 @@ TEST(Limits, WorstCaseAllColumnsRequestFitsMinReqBuffer) {
   }
 
   std::vector<Uint32> storage(MIN_REQ_BUFFER / ADDRESS_SIZE + 1);
-  RS_Buffer buffer{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER,
-                   0};
+  RS_Buffer buffer{reinterpret_cast<char *>(storage.data()), MIN_REQ_BUFFER};
   Uint32 consumed = 0;
   const RS_Status status = create_native_request(params, buffer, consumed);
   ASSERT_EQ(status.http_code, SUCCESS) << status.message;
@@ -213,5 +212,9 @@ TEST(Limits, DerivedSizesFollowTheLimits) {
   if (MAX_ATTRIBUTES_IN_TABLE == 512 && MAX_TUPLE_SIZE_IN_WORDS == 7500) {
     EXPECT_EQ(DEFAULT_RESP_BUFFER, 512U * 1024U);
     EXPECT_EQ(DEFAULT_REQ_BUFFER, 256U * 1024U);
+  }
+  if (MAX_ATTRIBUTES_IN_TABLE == 4096 && MAX_TUPLE_SIZE_IN_WORDS == 18000) {
+    EXPECT_EQ(DEFAULT_RESP_BUFFER, 1024U * 1024U);
+    EXPECT_EQ(DEFAULT_REQ_BUFFER, 2048U * 1024U);
   }
 }

@@ -18,7 +18,6 @@
  */
 
 #include "pk_data_structs.hpp"
-#include "buffer_sizes.hpp"
 #include "constants.hpp"
 #include "config_structs.hpp"
 #include "error_strings.h"
@@ -340,9 +339,8 @@ RS_Status PKReadParams::validate_columns(void) {
     drogon::HttpStatusCode::k200OK)).status;
 }
 
-int PKReadResponseJSON::to_string_single(char *json_buf,
-                                         ArenaMalloc *amalloc,
-                                         size_t &ret_size) const {
+void PKReadResponseJSON::to_string_single(char *json_buf,
+                                          size_t &ret_size) const {
   char *buf = json_buf;
   memcpy(buf, "{\"code\":", 8);
   buf += 8;
@@ -400,12 +398,10 @@ int PKReadResponseJSON::to_string_single(char *json_buf,
   *buf = '\0';
   size_t ret = (size_t)(buf - json_buf);
   ret_size = ret;
-  return 0;
 }
 
 // Indent the JSON string by `indent` spaces.
-char* PKReadResponseJSON::to_string_batch(char *buf,
-                                          ArenaMalloc *amalloc) const {
+char* PKReadResponseJSON::to_string_batch(char *buf) const {
 
   memcpy(buf, "{\"code\":", 8);
   buf += 8;
@@ -462,10 +458,9 @@ char* PKReadResponseJSON::to_string_batch(char *buf,
   return buf;
 }
 
-int PKReadResponseJSON::batch_to_string(
+void PKReadResponseJSON::batch_to_string(
   const std::vector<PKReadResponseJSON> &responses,
   char *json_buf,
-  ArenaMalloc *amalloc,
   size_t &ret_size) {
 
   char *buf = json_buf; 
@@ -480,16 +475,12 @@ int PKReadResponseJSON::batch_to_string(
     first = false;
     *buf = '\n';
     buf++;
-    buf = response.to_string_batch(buf, amalloc);
-    if (unlikely(buf == nullptr)) {
-      return -1;
-    }
+    buf = response.to_string_batch(buf);
   }
   memcpy(buf, "\n]}\n", 4);
   buf += 4;
   *buf = '\0';
   ret_size = (size_t)(buf - json_buf);
-  return 0;
 }
 
 /*** Scan read ***/

@@ -46,7 +46,7 @@ struct BufferPoolStats {
   Int64 in_use;             // handed out and not yet returned
   Int64 peak_in_use;        // highest in_use since init
   Int64 total_allocations;  // mmap calls
-  Int64 rejected;           // get() refused because of the cap
+  Int64 rejected;           // get() refused: cap reached or mmap failed
   Int64 shrunk;             // buffers unmapped by shrink()
   Int64 retries;            // responses rewritten in a fresh buffer
 };
@@ -70,7 +70,7 @@ class RS_BufferPool {
   void shutdown();
 
   /* A buffer with size == buffer_bytes(), or buffer == nullptr and size 0
-   * when the cap is reached (counted as rejected). */
+   * when the cap is reached or mmap fails (both counted as rejected). */
   RS_Buffer get();
   void put(RS_Buffer buffer);
 
@@ -82,8 +82,6 @@ class RS_BufferPool {
 
   Uint32 buffer_bytes() const { return m_bytes; }
   Uint32 max_buffers() const { return m_max; }
-  Uint32 preallocated() const { return m_prealloc; }
-  bool initialized() const { return m_mutex != nullptr; }
 
  private:
   static char *map_buffer(size_t bytes);
@@ -94,8 +92,9 @@ class RS_BufferPool {
   Uint32 m_prealloc = 0;
   Uint32 m_max = 0;
   Uint32 m_shrink_after_s = 0;
-  /* The last time a get() took the pool above preallocate buffers in use,
-   * i.e. the last moment the buffers it grew by were needed. */
+  /* Time of the last get() that left more than preallocate buffers in use
+   * (init time before any), i.e. the last moment the buffers the pool grew
+   * by were needed. */
   Int64 m_last_demand_s = 0;
   std::vector<RS_Buffer> m_free;
   BufferPoolStats m_stats{};
@@ -117,7 +116,6 @@ class RS_BufferArrayManager {
   /* init() from globalConfigs and the detected memory limit. */
   void init_from_config();
   void shutdown();
-  bool initialized() const { return m_initialized; }
 
   RS_Buffer get_req_buffer() { return m_req.get(); }
   RS_Buffer get_resp_buffer() { return m_resp.get(); }

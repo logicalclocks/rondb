@@ -404,7 +404,7 @@ RS_Status PKRResponse::FormatChar(const char *fromBuff, Uint32 fromBuffLen,
     return RS_SERVER_ERROR(
       std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)) +
       std::string(" Buffer size: ") +
-      std::to_string(MAX_ROW_BYTES * MAX_TEXT_EXPANSION) +
+      std::to_string(estimated_bytes) +
       std::string(". Bytes left to copy: ") +
       std::to_string((fromBuff + fromBuffLen) - from_end_pos));
   }

@@ -117,7 +117,8 @@ extern EventLogger *g_eventLogger;
 /* Upper bound of what create_native_request writes for params: every
  * string as a length word, the bytes and a terminator, 4-aligned, plus the
  * pointer tables, plus the column-name reservation when no columns are
- * named. Mirrors the encoder below; limits_test checks the two. */
+ * named. Mirrors the encoder below; limits_test only checks that the worst
+ * case fits MIN_REQ_BUFFER. */
 Uint32 native_request_upper_bound(const PKReadParams &params) {
   Uint64 total = PK_REQ_HEADER_END;
   total += align_word(ADDRESS_SIZE + params.path.db.size() + 1);
@@ -243,7 +244,7 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
     /* REQ_COLNAME_RESERVE is what addReadColumns and addReadColumnName
      * write for every table column: an offset array, then per column a
      * type word, a length word, the name and its terminator, 4-aligned.
-     * The old estimate under-counted that layout by about 7% (RONDB-1144);
+     * The old estimate was about 6% short of that layout (RONDB-1144);
      * limits_test checks the two against each other. */
     next_head += head + REQ_COLNAME_RESERVE;
   }
