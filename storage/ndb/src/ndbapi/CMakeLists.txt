@@ -95,6 +95,10 @@ SET_PROPERTY(SOURCE TransporterFacade.cpp
 
 NDB_ADD_TEST(SectionIterators-t SectionIterators.cpp NdbApiSignal.cpp)
 
+# ndberror_update() returns the first entry for a code, so a duplicate
+# silently shadows the later one.
+NDB_ADD_TEST(ndberror_check-t ndberror_check.cpp)
+
 # Standalone numeric boundary and API merge failure/recovery tests.
 NDB_ADD_TEST(NdbAggregatorMerge-t NdbAggregatorMergeTest.cpp LIBS ndbclient_static)
 
