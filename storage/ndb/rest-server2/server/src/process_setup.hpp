@@ -26,25 +26,16 @@
  * merges cleanly between release branches whose main.cc differ.
  */
 
-/* Upper bound on glibc malloc arenas. Without it every worker thread
- * retains its own 64 MiB arena heap; with 64 threads that is the growth
- * that OOM-killed a 500 MiB pod under wide-row batch load. Two arenas
- * measured a 330 MiB peak under the same load. */
-constexpr int RDRS_MALLOC_ARENA_MAX = 2;
-
 struct ProcessSetupResult {
   bool thp_disabled;   // prctl(PR_SET_THP_DISABLE) succeeded
-  bool arena_max_set;  // mallopt(M_ARENA_MAX) succeeded
   int errno_thp;       // errno when thp_disabled is false, else 0
-  int errno_arena;     // errno when arena_max_set is false, else 0
 };
 
 /*
- * Opt the process out of transparent huge pages and cap the malloc arena
- * count. Must run before any thread is created: the THP flag is inherited
- * by threads from the process, and arenas are assigned on first use.
- * Idempotent. On platforms without these facilities both flags are false
- * and both errnos are 0.
+ * Opt the process out of transparent huge pages. Must run before any
+ * thread is created: the flag is inherited by threads from the process.
+ * Idempotent. On platforms without the facility the flag is false and the
+ * errno is 0.
  */
 ProcessSetupResult rdrs_process_setup();
 

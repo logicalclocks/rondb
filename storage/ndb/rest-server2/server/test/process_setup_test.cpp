@@ -19,8 +19,8 @@
 
 /*
  * RONDB-1144: process startup settings. These tests are cluster-free.
- * The memory observations are Linux-only (prctl, glibc malloc_info,
- * /proc); elsewhere they are skipped, not faked.
+ * The memory observations are Linux-only (prctl, /proc); elsewhere they
+ * are skipped, not faked.
  */
 
 #include <gtest/gtest.h>
@@ -29,18 +29,15 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <fstream>
 #include <string>
 #include <thread>
-#include <vector>
 
 #include "config_structs.hpp"
 #include "json_parser.hpp"
 #include "process_setup.hpp"
 
 #ifdef __linux__
-#include <malloc.h>
 #include <sys/prctl.h>
 #include <unistd.h>
 #endif
@@ -76,27 +73,6 @@ std::string proc_status_field(const char *key) {
   return "";
 }
 
-/* Number of malloc arenas glibc reports, counted from malloc_info's
- * <heap nr="..."> elements. M_ARENA_MAX has no getter, so this is the only
- * observable. */
-int glibc_arena_count() {
-  char *text = nullptr;
-  size_t text_len = 0;
-  FILE *stream = open_memstream(&text, &text_len);
-  if (stream == nullptr) {
-    return -1;
-  }
-  malloc_info(0, stream);
-  fclose(stream);
-  int count = 0;
-  const char *needle = "<heap nr=";
-  for (const char *p = strstr(text, needle); p != nullptr;
-       p = strstr(p + 1, needle)) {
-    count++;
-  }
-  free(text);
-  return count;
-}
 #endif
 
 }  // namespace
@@ -131,40 +107,6 @@ TEST(ProcessSetup, ThpDisabledForProcessAndLaterThreads) {
   EXPECT_FALSE(setup.thp_disabled);
   EXPECT_EQ(setup.errno_thp, 0);
   GTEST_SKIP() << "transparent huge pages are a Linux facility";
-#endif
-}
-
-/*
- * With M_ARENA_MAX in place, 64 threads allocating and freeing at the
- * same time share at most that many arenas instead of creating one each.
- */
-TEST(ProcessSetup, MallocArenaCountIsCapped) {
-#if defined(__linux__) && defined(__GLIBC__)
-  const ProcessSetupResult setup = rdrs_process_setup();
-  ASSERT_TRUE(setup.arena_max_set);
-
-  constexpr int kThreads = 64;
-  constexpr size_t kBlock = 256 * 1024;
-  std::vector<std::thread> threads;
-  threads.reserve(kThreads);
-  for (int i = 0; i < kThreads; i++) {
-    threads.emplace_back([]() {
-      for (int round = 0; round < 8; round++) {
-        void *block = malloc(kBlock);
-        ASSERT_NE(block, nullptr);
-        memset(block, 1, kBlock);
-        free(block);
-      }
-    });
-  }
-  for (auto &thread : threads) {
-    thread.join();
-  }
-  const int arenas = glibc_arena_count();
-  ASSERT_GE(arenas, 1) << "malloc_info unavailable";
-  EXPECT_LE(arenas, RDRS_MALLOC_ARENA_MAX);
-#else
-  GTEST_SKIP() << "glibc malloc arenas are a Linux facility";
 #endif
 }
 

@@ -264,8 +264,8 @@ int main(int argc, char *argv[]) {
   signal(SIGQUIT, handle_signal_async);
   signal(SIGTERM, handle_signal_async);
 
-  /* Before the first thread: start_fs_cache() below creates one, and both
-   * settings are inherited by threads from the process (RONDB-1144). The
+  /* Before the first thread: start_fs_cache() below creates one, and the
+   * setting is inherited by threads from the process (RONDB-1144). The
    * logger is not configured yet, so a failure goes to stderr. */
   {
     ProcessSetupResult setup = rdrs_process_setup();
@@ -273,10 +273,6 @@ int main(int argc, char *argv[]) {
     if (!setup.thp_disabled) {
       fprintf(stderr, "Warning: prctl(PR_SET_THP_DISABLE) failed: %s\n",
               strerror(setup.errno_thp));
-    }
-    if (!setup.arena_max_set) {
-      fprintf(stderr, "Warning: mallopt(M_ARENA_MAX, %d) failed\n",
-              RDRS_MALLOC_ARENA_MAX);
     }
 #else
     (void)setup;

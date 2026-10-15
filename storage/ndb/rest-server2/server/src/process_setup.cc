@@ -22,12 +22,11 @@
 #include <cerrno>
 
 #ifdef __linux__
-#include <malloc.h>
 #include <sys/prctl.h>
 #endif
 
 ProcessSetupResult rdrs_process_setup() {
-  ProcessSetupResult result = {false, false, 0, 0};
+  ProcessSetupResult result = {false, 0};
 #ifdef __linux__
   /* rdrs2 maps a large, sparse address space (per-thread arenas, 8 MiB
    * stacks, the buffer pool). On nodes with transparent_hugepage/enabled
@@ -41,12 +40,13 @@ ProcessSetupResult rdrs_process_setup() {
   } else {
     result.errno_thp = errno;
   }
-  /* mallopt returns 1 on success, 0 on error (and does not set errno). */
-  if (mallopt(M_ARENA_MAX, RDRS_MALLOC_ARENA_MAX) == 1) {
-    result.arena_max_set = true;
-  } else {
-    result.errno_arena = EINVAL;
-  }
+  /* No mallopt(M_ARENA_MAX): an earlier revision capped glibc at two
+   * arenas to bound idle memory. Measured on Linux (64 CPUs, 83 server
+   * threads) that cap serialised the NDB API's per-signal malloc and free
+   * on two mutexes, cost up to 54 % of batch throughput, and retained
+   * MORE memory after a blob burst (two fragmented heaps cannot be
+   * trimmed). With THP disabled the per-thread arenas stay sparse, which
+   * was the real idle cost. */
 #endif
   return result;
 }
