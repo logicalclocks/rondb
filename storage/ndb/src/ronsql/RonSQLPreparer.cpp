@@ -14354,6 +14354,71 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                   "comparisons need a cast or a constant-vs-column "
                   "form.");
 
+      // MIN/MAX over a temporal column is carried as the column's packed
+      // value in a Bigunsigned virt column, so the virt type alone would
+      // let DATE vs MAX(datetime), INT vs MAX(date) or DATE vs COUNT(*)
+      // compare packed encodings against each other or against numbers.
+      // Follow a CTE output (through chained CTEs) to its source column
+      // and accept a temporal operand only as DATE vs DATE, whose packed
+      // values order like the dates.
+      auto source_type = [&](ConditionalExpression* side,
+                             NdbDictionary::Column::Type virt_type) {
+        const QueryScope::ResolvedColumnRef* ref =
+            &scope.resolved_columns[side->col_idx];
+        for (Uint32 hops = 0; hops <= m_cte_scopes.size(); hops++) {
+          if (ref->kind ==
+              QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+            return ref->dict_column != NULL ? ref->dict_column->getType()
+                                            : virt_type;
+          const Outputs* o = ref->cte_output;
+          if (ref->kind !=
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+              o == NULL || ref->cte_def_idx >= m_cte_scopes.size())
+            break;
+          const QueryScope* cs = m_cte_scopes[ref->cte_def_idx];
+          if (cs == NULL || cs->resolved_columns == NULL) break;
+          Uint32 src_col_idx;
+          if (o->type == Outputs::Type::COLUMN) {
+            src_col_idx = o->column.col_idx;
+          } else if (o->type == Outputs::Type::AGGREGATE &&
+                     (o->aggregate.fun == T_MIN ||
+                      o->aggregate.fun == T_MAX) &&
+                     o->aggregate.arg != NULL &&
+                     o->aggregate.arg->isLoad()) {
+            src_col_idx = o->aggregate.arg->getLoadIdx();
+          } else {
+            break;  // COUNT, SUM, AVG: numeric
+          }
+          ref = &cs->resolved_columns[src_col_idx];
+        }
+        return virt_type;
+      };
+      auto is_temporal_t = [](NdbDictionary::Column::Type t) {
+        switch (t) {
+        case NdbDictionary::Column::Date:
+        case NdbDictionary::Column::Datetime:
+        case NdbDictionary::Column::Datetime2:
+        case NdbDictionary::Column::Time:
+        case NdbDictionary::Column::Time2:
+        case NdbDictionary::Column::Timestamp:
+        case NdbDictionary::Column::Timestamp2:
+        case NdbDictionary::Column::Year:
+          return true;
+        default:
+          return false;
+        }
+      };
+      const NdbDictionary::Column::Type src_l = source_type(left, type_l);
+      const NdbDictionary::Column::Type src_r = source_type(right, type_r);
+      require_unsupported(
+          (!is_temporal_t(src_l) && !is_temporal_t(src_r)) ||
+          (src_l == NdbDictionary::Column::Date &&
+           src_r == NdbDictionary::Column::Date),
+          "CTE_LOOKUP filter col-vs-col: a temporal operand is supported "
+          "only as DATE against DATE (a DATE column or MIN/MAX of a DATE "
+          "column) — other temporal types, and a DATE against a number, "
+          "need a cast or a constant-vs-column form.");
+
       // UNKNOWN rejects the row/disjunct: guard both operands' NULL
       // flags before the typed loads (a NULL register would raise
       // ZREGISTER_INIT_ERROR instead of rejecting).
