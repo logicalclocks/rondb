@@ -1193,6 +1193,32 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_custkey, SUM(l.l_quantity) AS total FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id GROUP BY o.o_custkey ORDER BY nonexistent;' 2>&1
 
+# The left-hand side of an ON equality must be a column of the joined
+# table.  The aggregate planner used to read it from the joined table
+# whatever the qualifier said, so Test 61 ran as c.c_id = o.o_custkey,
+# where MySQL reports that orders has no column c_id.
+
+--echo
+--echo
+--echo === Test 61: Error — ON left side qualified with an earlier table ===
+--echo Expected error: ON left side is not the joined table
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_region, COUNT(*) FROM orders AS o JOIN customer AS c ON o.c_id = o.o_custkey GROUP BY c.c_region;' 2>&1
+
+--echo
+--echo
+--echo === Test 62: Error — ON sides written in the other order ===
+--echo Expected error: ON left side is not the joined table
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT c.c_region, COUNT(*) FROM orders AS o JOIN customer AS c ON o.o_custkey = c.c_id GROUP BY c.c_region;' 2>&1
+
+--echo
+--echo
+--echo === Test 63: Error — second ON condition of a LEFT JOIN projection ===
+--echo Expected error: ON left side is not the joined table
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_id, l.l_quantity FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id AND o.o_custkey = o.o_id;' 2>&1
+
 --echo
 --echo === Cleanup ===
 

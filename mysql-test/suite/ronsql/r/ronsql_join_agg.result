@@ -1237,6 +1237,24 @@ Column 'nonexistent' not found in any visible table or CTE.
 Error handling: RPE
 ronsql_cli caught exception: Column not found.
 
+
+=== Test 61: Error — ON left side qualified with an earlier table ===
+Expected error: ON left side is not the joined table
+Error handling: RPE
+ronsql_cli caught exception: The ON condition o.c_id = o.o_custkey does not have a column of the joined table c on the left. Write each ON equality as <joined table>.<column> = <earlier table>.<column>.
+
+
+=== Test 62: Error — ON sides written in the other order ===
+Expected error: ON left side is not the joined table
+Error handling: RPE
+ronsql_cli caught exception: The ON condition o.o_custkey = c.c_id does not have a column of the joined table c on the left. Write each ON equality as <joined table>.<column> = <earlier table>.<column>.
+
+
+=== Test 63: Error — second ON condition of a LEFT JOIN projection ===
+Expected error: ON left side is not the joined table
+Error handling: RPE
+ronsql_cli caught exception: The ON condition o.o_custkey = o.o_id does not have a column of the joined table l on the left. Write each ON equality as <joined table>.<column> = <earlier table>.<column>.
+
 === Cleanup ===
 DROP TABLE line_details;
 DROP TABLE big_lineitem;

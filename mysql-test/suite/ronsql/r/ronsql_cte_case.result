@@ -162,3 +162,67 @@ c_id	SUM(CASE WHEN c.c_region = 1 THEN o.o_amt ELSE 0 END)
 Expected error: CTE aggregate output in CASE condition not yet supported
 Error handling: RPE
 ronsql_cli caught exception: CASE condition referencing a CTE aggregate output is not yet supported; reference a CTE column projection instead, or move the predicate into the CTE body's WHERE clause.
+
+
+=== Test 7: arithmetic inside CASE arms, parentheses around the CASE ===
+== Query ==
+SELECT o_custkey, SUM((CASE WHEN o_amt > 50 THEN o_amt * 2 ELSE -o_amt END)) AS s
+FROM cte_orders
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_custkey, SUM((CASE WHEN o_amt > 50 THEN o_amt * 2 ELSE -o_amt END)) AS s
+FROM cte_orders
+GROUP BY o_custkey|
+o_custkey	s
+100	100
+200	80
+300	180
+
+
+=== Test 8: CASE after an aggregate that saves a copy for a later one ===
+== Query ==
+SELECT o_custkey, SUM(o_amt * 2) AS a, SUM(CASE WHEN o_amt > 45 THEN 1 ELSE 0 END) AS b, SUM(o_amt) AS c
+FROM cte_orders
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o_custkey, SUM(o_amt * 2) AS a, SUM(CASE WHEN o_amt > 45 THEN 1 ELSE 0 END) AS b, SUM(o_amt) AS c
+FROM cte_orders
+GROUP BY o_custkey|
+o_custkey	a	b	c
+100	250	2	125
+200	200	1	100
+300	180	1	90
+
+
+=== Test 9: rejection — CASE as an operand of arithmetic ===
+Expected error: CASE only as the whole aggregate argument
+Error handling: RPE
+ronsql_cli caught exception: CASE is supported only as the whole argument of an aggregate function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot be used in arithmetic or in a THEN or ELSE of another CASE.
+
+
+=== Test 10: rejection — negated CASE in AVG ===
+Expected error: CASE only as the whole aggregate argument
+Error handling: RPE
+ronsql_cli caught exception: CASE is supported only as the whole argument of an aggregate function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot be used in arithmetic or in a THEN or ELSE of another CASE.
+
+
+=== Test 11: rejection — CASE in the ELSE of another CASE ===
+Expected error: CASE only as the whole aggregate argument
+Error handling: RPE
+ronsql_cli caught exception: CASE is supported only as the whole argument of an aggregate function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot be used in arithmetic or in a THEN or ELSE of another CASE.

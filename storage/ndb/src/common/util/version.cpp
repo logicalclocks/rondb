@@ -142,22 +142,22 @@ struct NdbUpGradeCompatible {
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_schema_table[] = {
-  { MAKE_VERSION(26,04,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
+  { NDB_VERSION_D, MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_backup_table[] = {
-  { MAKE_VERSION(26,04,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
+  { NDB_VERSION_D, MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_full[] = {
-  { MAKE_VERSION(26,04,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
+  { NDB_VERSION_D, MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
 struct NdbUpGradeCompatible ndbCompatibleTable_upgrade[] = {
-  { MAKE_VERSION(26,04,NDB_VERSION_BUILD),MAKE_VERSION(22,10,3), UG_Range },
+  { NDB_VERSION_D, MAKE_VERSION(22,10,3), UG_Range },
   { 0, 0, UG_Null }
 };
 
@@ -428,13 +428,17 @@ TAPTEST(ndb_version) {
      (NDB_MYSQL_VERSION_MAJOR * 10000 + NDB_MYSQL_VERSION_MINOR * 100 +
       NDB_MYSQL_VERSION_BUILD));
 
-  /* Check that this node is compatible with 8.0.13 API and data nodes */
+  /* Check that this node is compatible with the oldest supported
+     version, 22.10.3, and not with anything older */
   printf("Testing compatibility\n");
-  Uint32 ver8013 = ndbMakeVersion(8, 0, 13);
-  int c1 = ndbCompatible_ndb_api(NDB_VERSION, ver8013);
-  int c2 = ndbCompatible_api_ndb(NDB_VERSION, ver8013);
-  OK(c1 == 1);
-  OK(c2 == 1);
+  Uint32 ver22103 = ndbMakeVersion(22, 10, 3);
+  Uint32 ver22102 = ndbMakeVersion(22, 10, 2);
+  OK(ndbCompatible_ndb_ndb(NDB_VERSION, ver22103) == 1);
+  OK(ndbCompatible_ndb_api(NDB_VERSION, ver22103) == 1);
+  OK(ndbCompatible_api_ndb(NDB_VERSION, ver22103) == 1);
+  OK(ndbCompatible_ndb_mgmt(NDB_VERSION, ver22103) == 1);
+  OK(ndbCompatible_ndb_backup(NDB_VERSION, ver22103) == 1);
+  OK(ndbCompatible_ndb_ndb(NDB_VERSION, ver22102) == 0);
 
   return 1;  // OK
 }

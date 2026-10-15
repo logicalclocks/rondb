@@ -927,6 +927,33 @@ GROUP BY c.c_id|
 
 DELIMITER ;|
 
+# A SUM over a nullable column is NULL in a matched group whose values
+# are all NULL (customer 100 below), so the anti-join would drop a row
+# MySQL returns.  Such a SUM is not promoted; the query is rejected, as
+# for MIN/MAX.
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE cte_nullamt (
+  n_id INT NOT NULL,
+  n_custkey INT NOT NULL,
+  n_amt INT NULL,
+  PRIMARY KEY USING HASH (n_id)
+) ENGINE=NDB;
+INSERT INTO cte_nullamt VALUES
+  (1, 100, NULL),
+  (2, 100, NULL),
+  (3, 200, 5);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo
+--echo === Test 31: rejection — LEFT JOIN + WHERE cte.t IS NULL on SUM of a nullable column ===
+--echo Expected error: SUM of a nullable column under IS NULL
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH nsums AS (SELECT n_custkey AS k, SUM(n_amt) AS t FROM cte_nullamt GROUP BY n_custkey) SELECT c.c_id, COUNT(*) FROM cte_customer AS c LEFT JOIN nsums ON nsums.k = c.c_id WHERE nsums.t IS NULL GROUP BY c.c_id;' 2>&1
+
 --echo
 --echo === Cleanup ===
 
@@ -934,3 +961,4 @@ DROP TABLE cte_lineitem;
 DROP TABLE cte_customer;
 DROP TABLE cte_orders;
 DROP TABLE cte_regions;
+DROP TABLE cte_nullamt;

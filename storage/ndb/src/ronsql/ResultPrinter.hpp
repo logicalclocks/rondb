@@ -204,21 +204,30 @@ private:
 
   // ORDER BY support
   struct OrderbySpec {
-    enum class Kind { GROUPBY_COL, AGGREGATE };
+    enum class Kind { GROUPBY_COL, AGGREGATE, AVG };
     Kind kind;
     union {
       Uint32 groupby_idx;    // GROUPBY_COL: index into StoredRow.cols
       Uint32 agg_result_idx; // AGGREGATE: index into StoredRow.results
+      Uint32 avg_key_idx;    // AVG: index into StoredRow.avg_keys
     };
     bool ascending;
     CHARSET_INFO* charset; // for string types, NULL otherwise
+    // AVG: the SUM and COUNT slots in StoredRow.results, and the scale
+    // PRINT_AVG prints the average with.
+    Uint32 avg_sum_idx;
+    Uint32 avg_count_idx;
+    int avg_scale;
   };
   struct StoredRow {
     NdbAggregator::Column* cols;    // array of m_num_groupby_cols Column objects
     NdbAggregator::Result* results; // array of m_num_aggregates Result objects
+    double* avg_keys;               // m_num_avg_keys AVG sort keys, or NULL
   };
   DynamicArray<OrderbySpec> m_orderby_specs;
   bool m_has_orderby;
+  // Number of ORDER BY keys that are AVG outputs.
+  Uint32 m_num_avg_keys = 0;
   // compare_rows' scratch for length-prefixed VARCHAR keys: two arena
   // buffers of m_cmp_buf_len bytes, grown when a longer key comes.
   char* m_cmp_buf_a = NULL;
@@ -236,6 +245,10 @@ private:
   StoredRow store_record(NdbAggregator::ResultRecord& record);
   void print_stored_record(StoredRow& row, std::ostream& out);
   int compare_rows(StoredRow& a, StoredRow& b);
+  void set_avg_keys(StoredRow& row);
+  double avg_sort_key(NdbAggregator::Result sum,
+                      NdbAggregator::Result count,
+                      int scale);
   void print_result_ordered(NdbAggregator* aggregator,
                             std::basic_ostream<char>* out_stream);
   void print_float_or_double(std::ostream& out, double value,
@@ -261,7 +274,10 @@ private:
   // precision for DATETIME2 / TIME2.
   TemporalDisplay aggregate_arg_temporal(const Outputs* out,
                                          int& fsp) const;
-  bool evaluate_having(const ConditionalExpression* expr);
+  // SQL three-valued logic for HAVING; a group is kept only when TRUE.
+  enum HavingTruth { HAVING_FALSE, HAVING_TRUE, HAVING_UNKNOWN };
+  HavingTruth evaluate_having(const ConditionalExpression* expr);
+  // NaN stands for NULL.
   double evaluate_having_value(const ConditionalExpression* expr);
   void scan_having_max_agg(const ConditionalExpression* expr,
                            Uint32& max_idx);

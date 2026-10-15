@@ -2297,6 +2297,12 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
       noOfTriggers = 768;
   }
   globalData.theMaxNoOfTriggers = noOfTriggers;
+  /**
+   * MaxNoOfTables, MaxNoOfOrderedIndexes and MaxNoOfUniqueHashIndexes
+   * only matter through their sum, the number of table objects. All
+   * table object pools are sized from noOfMetaTables below, the
+   * individual values never limit anything on their own.
+   */
   if (noOfTables == 0)
   {
     if (automaticMemoryConfig)
@@ -2307,10 +2313,7 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   globalData.theMaxNoOfTables = noOfTables;
   if (noOfOrderedIndexes == 0)
   {
-    if (automaticMemoryConfig)
-      noOfOrderedIndexes = 10000;
-    else
-      noOfOrderedIndexes = 128;
+    noOfOrderedIndexes = 128;
   }
   globalData.theMaxNoOfOrderedIndexes = noOfOrderedIndexes;
   if (noOfUniqueHashIndexes == 0)
@@ -2347,12 +2350,16 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   globalData.theMaxNoOfAttributes += 9;
 
   {
+    /**
+     * Any table object can be an index, so reserve index triggers for
+     * the worst case of all of them being unique hash indexes (I/U/D),
+     * ordered indexes only need one (C).
+     */
     Uint32 neededNoOfTriggers =   /* types: Insert/Update/Delete/Custom */
-      3 * noOfUniqueHashIndexes + /* for unique hash indexes, I/U/D */
+      3 * noOfMetaTables +        /* for unique hash/ordered indexes */
       3 * NDB_MAX_ACTIVE_EVENTS + /* for events in suma, I/U/D */
       3 * noOfMetaTables +        /* for backup, I/U/D */
-      3 * noOfMetaTables +        /* for Fully replicated tables, I/U/D */
-      noOfOrderedIndexes;         /* for ordered indexes, C */
+      3 * noOfMetaTables;         /* for Fully replicated tables, I/U/D */
     if (noOfTriggers < neededNoOfTriggers)
     {
       noOfTriggers = neededNoOfTriggers;

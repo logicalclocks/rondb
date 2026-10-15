@@ -1,0 +1,12 @@
+# Per-test config for rondis_create_tables.test.
+#
+# Same as the suite my.cnf except that rdrs2 uses
+# rondis_create_tables_config_template.json, which sets
+#   .Rondis.CreateTables           = true
+#   .Rondis.RequireTablesOnStartup = true
+# so rdrs2 creates the Rondis tables itself and refuses to start if
+# they are not usable by Rondis.
+!include ../my.cnf
+
+[rdrs.1.1]
+config-json-template=suite/rondis/rondis_create_tables_config_template.json

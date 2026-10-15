@@ -1,0 +1,39 @@
+PONG
+#
+# rdrs2 created all four tables, with TTL on the three that
+# have an expiry_date column.
+#
+SELECT table_name AS name, table_comment AS comment FROM information_schema.tables WHERE table_schema = 'redis_0' ORDER BY table_name;
+name	comment
+hset_key_id_sequence	
+hset_keys	NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date
+string_keys	NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date
+string_values	NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date
+#
+# hset_keys has the field_count and expiry_date columns.
+#
+SELECT column_name AS name, column_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = 'redis_0' AND table_name = 'hset_keys' ORDER BY ordinal_position;
+name	type	nullable
+redis_key	varbinary(3000)	NO
+redis_key_id	bigint unsigned	YES
+field_count	int unsigned	NO
+expiry_date	timestamp	YES
+#
+# The string_keys primary key is an ordered index, not USING HASH.
+#
+SELECT DISTINCT index_name AS name, index_type AS type FROM information_schema.statistics WHERE table_schema = 'redis_0' AND table_name = 'string_keys' AND index_name = 'PRIMARY';
+name	type
+PRIMARY	BTREE
+#
+# Strings, hashes and expiry work on the tables rdrs2 created.
+#
+OK
+hello
+2
+v2
+1
+<positive>
+#
+# Cleanup. Leave redis_0 in place, rdrs2 created it.
+#
+2

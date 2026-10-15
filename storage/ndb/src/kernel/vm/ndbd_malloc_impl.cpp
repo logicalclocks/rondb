@@ -444,7 +444,8 @@ Resource_limits::Resource_limits() {
   // By default allow no low prio usage of shared
   m_low_prio_free_limit = UINT32_MAX;
   m_medium_prio_free_limit = UINT32_MAX;
-  m_ultra_prio_free_limit = 0;
+  m_high_prio_free_limit = 0;
+  m_very_high_prio_free_limit = 0;
   memset(m_limit, 0, sizeof(m_limit));
   // Booking support
   memset(m_bookings, 0, sizeof(m_bookings));

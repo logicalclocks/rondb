@@ -184,7 +184,7 @@ class Resource_limits {
   Uint32 m_low_prio_free_limit;
   Uint32 m_medium_prio_free_limit;
   Uint32 m_high_prio_free_limit;
-  Uint32 m_ultra_prio_free_limit;
+  Uint32 m_very_high_prio_free_limit;
 
   /**
     Per resource group statistics.
@@ -209,37 +209,39 @@ class Resource_limits {
   const Booking* find_booking(Uint32 key) const;
 
   /**
-    Keep 10% of unreserved shared memory only for high priority resource
-    groups. Keep 4% for ultra high priority requests. Up to 90% of the
-    shared global memory also low priority requests will be accepted.
+    The shared global memory is shared by resource groups of five
+    priorities. A group can allocate from it as long as the free part of
+    the shared global memory stays above the limit of its priority, so the
+    last few percent are kept for the higher priorities.
 
-    Ultra high memory are (can use all shared memory):
-      - Backup Schema Memory
+    Ultra high prio memory (can use all of the shared global memory):
       - Disk records
       - Job buffer
       - Send buffers
 
-    The following memories gets a reserved area and never use shared global
+    Very high prio memory (can use up to 96% of shared global memory):
+      - Replication Memory
+      - Backup Schema Memory
+
+    High prio memory (can use up to 94% of shared global memory):
+      - Transaction Memory
+      - Schema Transaction Memory
+
+    Medium prio memory (can use up to 92% of shared global memory):
+      - Schema Memory
+
+    Low prio memory (can use up to 88% of shared global memory):
+      - Query Memory
+
+    The following memories get a reserved area and never use shared global
     memory:
       - Data memory
       - Disk page buffer memory
       - File buffers (REDO buffers)
-      - Undo log buffer
-
-    High prio memory are (can use up to 96% of shared global memory):
-      - Transaction Memory
-      - Replication Memory
-
-    Medium prio memory are (can use up to 92% of shared global memory):
-      - Schema Memory
-      - Schema Transaction Memory
-
-    Low prio memory are (can use up to 88% of shared global memory):
-      - Query Memory
   */
-  static const Uint32 ULTRA_PRIO_FREE_PCT = 4;
-  static const Uint32 VERY_HIGH_PRIO_FREE_PCT = 6;
-  static const Uint32 HIGH_PRIO_FREE_PCT = 8;
+  static const Uint32 VERY_HIGH_PRIO_FREE_PCT = 4;
+  static const Uint32 HIGH_PRIO_FREE_PCT = 6;
+  static const Uint32 MEDIUM_PRIO_FREE_PCT = 8;
   static const Uint32 LOW_PRIO_FREE_PCT = 12;
 
   void dec_in_use(Uint32 cnt);
@@ -1042,9 +1044,9 @@ Uint32 Resource_limits::get_resource_free_shared(Uint32 id) const
   {
     if (rl.m_prio_memory == Resource_limit::VERY_HIGH_PRIO_MEMORY)
     {
-      if (free_shared > m_ultra_prio_free_limit)
+      if (free_shared > m_very_high_prio_free_limit)
       {
-        return (free_shared - m_ultra_prio_free_limit);
+        return (free_shared - m_very_high_prio_free_limit);
       }
       return 0;
     }
@@ -1242,17 +1244,18 @@ inline
 void Resource_limits::set_prio_free_limits(Uint32 res)
 {
   Uint64 shared = m_shared;
-  Uint64 ultra_prio_free_limit = shared * Uint64(ULTRA_PRIO_FREE_PCT);
-  ultra_prio_free_limit /= 100;
-  ultra_prio_free_limit += 1;
-  m_ultra_prio_free_limit = res + Uint32(ultra_prio_free_limit);
+  Uint64 very_high_prio_free_limit =
+    shared * Uint64(VERY_HIGH_PRIO_FREE_PCT);
+  very_high_prio_free_limit /= 100;
+  very_high_prio_free_limit += 1;
+  m_very_high_prio_free_limit = res + Uint32(very_high_prio_free_limit);
 
-  Uint64 high_prio_free_limit = shared * Uint64(VERY_HIGH_PRIO_FREE_PCT);
+  Uint64 high_prio_free_limit = shared * Uint64(HIGH_PRIO_FREE_PCT);
   high_prio_free_limit /= 100;
   high_prio_free_limit += 1;
   m_high_prio_free_limit = Uint32(high_prio_free_limit);
 
-  Uint64 medium_prio_free_limit = shared * Uint64(HIGH_PRIO_FREE_PCT);
+  Uint64 medium_prio_free_limit = shared * Uint64(MEDIUM_PRIO_FREE_PCT);
   medium_prio_free_limit /= 100;
   medium_prio_free_limit += 1;
   m_medium_prio_free_limit = Uint32(medium_prio_free_limit);

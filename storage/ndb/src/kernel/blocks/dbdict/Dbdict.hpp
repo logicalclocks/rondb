@@ -753,9 +753,15 @@ class Dbdict : public SimulatedBlock {
   Uint32 m_current_allocated_memory_quota_mb;
   Uint32 m_allocated_memory_quota_limit;
 
-  Uint32 m_current_allocated_disk_quota_mb;
+  /**
+   * Database disk quotas are given in GBytes, the accounting below is
+   * in MBytes. m_allocated_disk_quota_limit is the total size of all
+   * data files in bytes, the limit in MBytes is 80% of it.
+   */
+  Uint64 m_current_allocated_disk_quota_mb;
   Uint32 m_allocated_disk_quota_limit_mb;
   Uint64 m_allocated_disk_quota_limit;
+  void set_disk_quota_limit_mb();
 
 
   struct File {

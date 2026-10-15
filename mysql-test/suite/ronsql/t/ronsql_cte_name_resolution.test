@@ -195,6 +195,30 @@ GROUP BY c0.k|
 
 DELIMITER ;|
 
+# A subquery reads stored tables, so naming a CTE in it would read the
+# stored table of that name while being authorized as the CTE.
+
+--echo
+--echo
+--echo === Test 12: IN-subquery naming a CTE that shadows a stored table is rejected ===
+--echo Expected error: Subquery reads CTE
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH nr_other AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT COUNT(*) FROM nr_base WHERE k IN (SELECT k FROM nr_other);' 2>&1
+
+--echo
+--echo
+--echo === Test 13: scalar subquery naming a CTE is rejected ===
+--echo Expected error: Subquery reads CTE
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT COUNT(*) FROM nr_base WHERE val > (SELECT MIN(s) FROM c0);' 2>&1
+
+--echo
+--echo
+--echo === Test 14: SELECT-list subquery naming a CTE is rejected ===
+--echo Expected error: Subquery reads CTE
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c0 AS (SELECT k AS k, SUM(val) AS s FROM nr_base GROUP BY k) SELECT b.k, (SELECT SUM(c.s) FROM c0 AS c WHERE c.k = b.k) AS t FROM nr_base AS b;' 2>&1
+
 --echo
 --echo === Cleanup ===
 

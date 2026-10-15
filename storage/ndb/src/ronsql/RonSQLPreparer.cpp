@@ -347,6 +347,34 @@ RonSQLPreparer::reject_qualified_cte_references()
 }
 
 /*
+ * Subqueries read stored tables, not CTEs: a WHERE subquery is executed
+ * as a separate statement without the WITH list, and the EXISTS and
+ * correlated-scalar rewrites look the table up in the dictionary. A
+ * subquery that names a CTE visible in its scope would therefore be
+ * authorized as the CTE (resolve_access()) but read the stored table of
+ * that name. Reject the reference instead. Runs on the inventory as
+ * written, before any rewrite, with the same scoping as access_is_cte().
+ */
+void
+RonSQLPreparer::reject_cte_references_in_subqueries()
+{
+  for (Uint32 i = 0; i < m_access_table_refs.size(); i++)
+  {
+    const AccessTableRef& ref = m_access_table_refs[i];
+    const AccessScope& s = m_access_scopes[ref.scope];
+    if (ref.scope == 0 || s.is_cte_body) continue;
+    if (!access_is_cte(ref.name, ref.scope)) continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("A subquery cannot read the CTE ") + ref.name.c_str() +
+        ". Subqueries read stored tables only, and reading a stored table "
+        "that has the name of a CTE in the same statement is not "
+        "supported. Join the CTE in the main query instead, or rename the "
+        "CTE to read the stored table.");
+  }
+}
+
+/*
  * Whether a table reference `name` in `scope` names a CTE rather than a
  * table: only WITH-list entries visible there count, like the preparer's
  * build_cte_scopes() - a CTE body sees the CTEs declared before it, the
@@ -750,6 +778,7 @@ RonSQLPreparer::parse()
     }
     // Before the rewrites below resolve CTE names without the qualifier.
     reject_qualified_cte_references();
+    reject_cte_references_in_subqueries();
     // RONDB-1124 (m3_run6_plan.md C2): MIN / MAX over one single-group CTE
     // (the fs_point form) becomes the single-table aggregate over the body.
     // It swaps the main compiler for the body's, so it must run before the
@@ -1578,6 +1607,27 @@ RonSQLPreparer::load()
   if (m_has_ctes) {
     build_cte_scopes();
     resolve_cte_output_columns();
+    check_deferred_anti_joins();
+  }
+}
+
+void
+RonSQLPreparer::check_deferred_anti_joins()
+{
+  for (Uint32 t = 1; t < m_main_scope.join_plan.num_ops; t++)
+  {
+    const JoinOp& op = m_main_scope.join_plan.ops[t];
+    const ConditionalExpression* where = m_main_scope.anti_join_where_ce[t];
+    if (op.match_type != JoinOp::ANTI_JOIN || where == NULL ||
+        is_anti_join_promotable(m_main_scope, t, where))
+      continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("WHERE ... IS NULL on ") + op.alias.c_str() +
+        " after LEFT JOIN " + op.alias.c_str() + " is supported only on a "
+        "GROUP BY column, a COUNT, or a SUM of a NOT NULL column. A SUM of a "
+        "column that can be NULL is NULL also in a matched group whose "
+        "values are all NULL.");
   }
 }
 
@@ -3658,7 +3708,7 @@ is_null_rejecting(const ConditionalExpression* ce)
 // Phase K: detect the canonical LEFT-anti-join idiom — `LEFT JOIN
 // cte ON ... WHERE cte.col IS NULL` — where every WHERE conjunct is
 // IS NULL on a CTE column that's provably non-NULL on the matched
-// path (GB key, SUM, COUNT).  For such cases ANTI_JOIN is
+// path (GB key, COUNT, SUM of a never-NULL argument).  For such cases ANTI_JOIN is
 // semantically equivalent to MySQL's LEFT JOIN + WHERE filter.
 // emit_child_ops emits setMatchType(MatchNullOnly) which
 // translates to NI_ANTI_JOIN in the QueryTree; DBSPJ's
@@ -3670,14 +3720,16 @@ is_null_rejecting(const ConditionalExpression* ce)
 // MIN/MAX outputs are NOT promotable: AggResItem.is_null
 // legitimately fires when every source value is NULL, so a matched
 // group can have a NULL MIN/MAX.  ANTI_JOIN would skip those
-// matched-but-NULL groups, breaking semantics.  Such cases stay
-// under Phase I.1's defensive reject.
+// matched-but-NULL groups, breaking semantics.  The same holds for a
+// SUM whose argument can be NULL, so a SUM is promotable only when
+// cte_sum_arg_never_null() proves its argument non-NULL.  Such cases
+// stay under Phase I.1's defensive reject.
 //
 // See cte_filter_phase_k.md.
 bool
 RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
                                          Uint32 op_idx,
-                                         const ConditionalExpression* ce)
+                                         const ConditionalExpression* ce) const
 {
   if (ce == NULL) return false;
   if (ce->op == T_AND) {
@@ -3696,7 +3748,9 @@ RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
   if (ref.join_op_idx != op_idx) return false;
 
   // Walk the CTE outputs to the referenced column and check it's a
-  // GB-key (Outputs::Type::COLUMN) or a SUM/COUNT aggregate.
+  // GB-key (Outputs::Type::COLUMN), a COUNT, or a SUM of a never-NULL
+  // argument.  A GB key is non-NULL on the matched path because a
+  // CTE_LOOKUP binds every key column by equality.
   const JoinOp& cte_op = scope.join_plan.ops[op_idx];
   if (cte_op.cte_def == NULL) return false;
   if (ref.cte_def_idx != cte_op.cte_def_idx) return false;
@@ -3706,9 +3760,36 @@ RonSQLPreparer::is_anti_join_promotable(const QueryScope& scope,
   if (o->type == Outputs::Type::COLUMN) return true;
   if (o->type == Outputs::Type::AGGREGATE) {
     TokenKind fun = o->aggregate.fun;
-    return fun == T_SUM || fun == T_COUNT;
+    if (fun == T_COUNT) return true;
+    if (fun != T_SUM) return false;
+    // The main query is promoted in load_join(), before build_cte_scopes()
+    // plans the CTE bodies; check_deferred_anti_joins() decides then.
+    if (ref.cte_def_idx >= m_cte_scopes.size()) return true;
+    const QueryScope* body = m_cte_scopes[ref.cte_def_idx];
+    return body != NULL &&
+           cte_sum_arg_never_null(*body, o->aggregate.arg);
   }
   return false;
+}
+
+bool
+RonSQLPreparer::cte_sum_arg_never_null(
+    const QueryScope& body,
+    const AggregationAPICompiler::Expr* arg) const
+{
+  if (arg == NULL) return false;
+  if (arg->isLoadConstantInt()) return true;
+  if (!arg->isLoad() || body.resolved_columns == NULL) return false;
+  const QueryScope::ResolvedColumnRef& ref =
+      body.resolved_columns[arg->getLoadIdx()];
+  if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn ||
+      ref.dict_column == NULL || ref.dict_column->getNullable())
+    return false;
+  // A column of a table the body LEFT JOINs is NULL in a NULL-extended
+  // row; the root table's columns never are.
+  if (ref.join_op_idx == 0) return true;
+  return ref.join_op_idx < body.join_plan.num_ops &&
+         body.join_plan.ops[ref.join_op_idx].match_type == JoinOp::INNER;
 }
 
 // Standard MySQL optimizer rule: a LEFT OUTER JOIN of A and B can be
@@ -3734,6 +3815,7 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
       // CTE_LOOKUP_ANTI_JOIN_FLAG handling in DBLQH, implements the
       // filter without pushing IS NULL down.
       op.match_type = JoinOp::ANTI_JOIN;
+      scope.anti_join_where_ce[t] = scope.join_where_ce[t];
       scope.join_where_ce[t] = NULL;
     }
   }
@@ -6330,6 +6412,7 @@ RonSQLPreparer::decorrelate_exists()
     info.in_expr = outer_ref;
     info.in_values = new (m_amalloc->alloc_exc<DynamicArray<SubqueryResult>>(1))
       DynamicArray<SubqueryResult>(m_amalloc);
+    info.from_exists = true;
     m_subquery_infos.push(info);
     m_has_subqueries = true;
 
@@ -6383,6 +6466,42 @@ is_comparison_op(TokenKind op)
 {
   return op == T_EQUALS || op == T_NOT_EQUALS ||
          op == T_GT || op == T_GE || op == T_LT || op == T_LE;
+}
+
+static TokenKind
+negate_cmp_op(TokenKind op)
+{
+  switch (op)
+  {
+  case T_EQUALS: return T_NOT_EQUALS;
+  case T_NOT_EQUALS: return T_EQUALS;
+  case T_GT: return T_LE;
+  case T_GE: return T_LT;
+  case T_LT: return T_GE;
+  case T_LE: return T_GT;
+  default: ndbrequire(false); return op;
+  }
+}
+
+/*
+ * Return ce with any NOT / ! wrappers removed, and set *negated when
+ * there is an odd number of them.  NOT (a OP b) equals
+ * a negate_cmp_op(OP) b also when a or b is NULL (both are NULL), so a
+ * negated comparison with a correlated scalar subquery is decorrelated
+ * as the comparison with the negated operator, at the top level of WHERE
+ * where a NULL from a missing inner group drops the row as in MySQL.
+ */
+static ConditionalExpression*
+strip_not(ConditionalExpression* ce, bool* negated)
+{
+  *negated = false;
+  while ((ce->op == T_NOT || ce->op == T_EXCLAMATION) &&
+         ce->args.left != NULL)
+  {
+    ce = ce->args.left;
+    *negated = !*negated;
+  }
+  return ce;
 }
 
 static void
@@ -6456,9 +6575,11 @@ RonSQLPreparer::decorrelate_scalar()
   bool has_corr_scalar = false;
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    if (!is_comparison_op(conjuncts[i]->op)) continue;
-    ConditionalExpression* left = conjuncts[i]->args.left;
-    ConditionalExpression* right = conjuncts[i]->args.right;
+    bool negated;
+    ConditionalExpression* cmp = strip_not(conjuncts[i], &negated);
+    if (!is_comparison_op(cmp->op)) continue;
+    ConditionalExpression* left = cmp->args.left;
+    ConditionalExpression* right = cmp->args.right;
     if ((left != NULL && left->op == I_SUBQUERY) ||
         (right != NULL && right->op == I_SUBQUERY))
     {
@@ -6536,7 +6657,10 @@ RonSQLPreparer::decorrelate_scalar()
 
   for (Uint32 i = 0; i < num_conjuncts; i++)
   {
-    if (!is_comparison_op(conjuncts[i]->op))
+    // The conjunct is kept as written unless it becomes I_CORR_SCALAR.
+    bool negated;
+    ConditionalExpression* cmp = strip_not(conjuncts[i], &negated);
+    if (!is_comparison_op(cmp->op))
     {
       require_prm(num_kept < MAX_WHERE_CONJUNCTS,
                   "Too many WHERE conjuncts after decorrelation.");
@@ -6544,8 +6668,8 @@ RonSQLPreparer::decorrelate_scalar()
       continue;
     }
 
-    ConditionalExpression* left = conjuncts[i]->args.left;
-    ConditionalExpression* right = conjuncts[i]->args.right;
+    ConditionalExpression* left = cmp->args.left;
+    ConditionalExpression* right = cmp->args.right;
 
     // Determine which side is the subquery
     bool subq_on_left = (left != NULL && left->op == I_SUBQUERY);
@@ -6561,7 +6685,9 @@ RonSQLPreparer::decorrelate_scalar()
 
     ConditionalExpression* subq_child = subq_on_left ? left : right;
     ConditionalExpression* cmp_expr = subq_on_left ? right : left;
-    TokenKind cmp_op = conjuncts[i]->op;
+    TokenKind cmp_op = cmp->op;
+    if (negated)
+      cmp_op = negate_cmp_op(cmp_op);
     // If subquery is on the left, flip: (SELECT ...) < col  means col > (SELECT ...)
     if (subq_on_left)
       cmp_op = flip_cmp_op(cmp_op);
@@ -6753,15 +6879,23 @@ RonSQLPreparer::decorrelate_scalar()
     key_expr->op = T_IDENTIFIER;
     key_expr->col_idx = outer_col_idx;
 
+    // The GROUP BY above has no group for an outer key without inner
+    // rows, where SUM, MIN, MAX and AVG are NULL but COUNT is 0.
+    const Outputs* inner_out = inner_stmt->outputs;
+    const bool corr_count = inner_out != NULL &&
+                            inner_out->type == Outputs::Type::AGGREGATE &&
+                            inner_out->aggregate.fun == T_COUNT;
+
     // Find and update existing SubqueryInfo for this I_SUBQUERY node
     bool found_info = false;
     for (Uint32 si = 0; si < m_subquery_infos.size(); si++)
     {
       if (m_subquery_infos[si].ce_node == subq_child)
       {
-        m_subquery_infos[si].ce_node = conjuncts[i];
+        m_subquery_infos[si].ce_node = cmp;
         m_subquery_infos[si].inner_stmt = new_inner;
         m_subquery_infos[si].is_corr_scalar = true;
+        m_subquery_infos[si].corr_count = corr_count;
         m_subquery_infos[si].corr_values =
           new (m_amalloc->alloc_exc<DynamicArray<CorrelatedPair>>(1))
             DynamicArray<CorrelatedPair>(m_amalloc);
@@ -6774,9 +6908,10 @@ RonSQLPreparer::decorrelate_scalar()
     {
       // Register new SubqueryInfo
       SubqueryInfo info;
-      info.ce_node = conjuncts[i];
+      info.ce_node = cmp;
       info.inner_stmt = new_inner;
       info.is_corr_scalar = true;
+      info.corr_count = corr_count;
       info.corr_values =
         new (m_amalloc->alloc_exc<DynamicArray<CorrelatedPair>>(1))
           DynamicArray<CorrelatedPair>(m_amalloc);
@@ -6785,15 +6920,15 @@ RonSQLPreparer::decorrelate_scalar()
     }
 
     // Transform comparison node in-place to I_CORR_SCALAR
-    conjuncts[i]->op = I_CORR_SCALAR;
-    conjuncts[i]->corr_scalar.cmp_op = cmp_op;
-    conjuncts[i]->corr_scalar.cmp_expr = cmp_expr;
-    conjuncts[i]->corr_scalar.key_expr = key_expr;
-    conjuncts[i]->corr_scalar.stmt = new_inner;
+    cmp->op = I_CORR_SCALAR;
+    cmp->corr_scalar.cmp_op = cmp_op;
+    cmp->corr_scalar.cmp_expr = cmp_expr;
+    cmp->corr_scalar.key_expr = key_expr;
+    cmp->corr_scalar.stmt = new_inner;
 
     require_prm(num_kept < MAX_WHERE_CONJUNCTS,
                 "Too many WHERE conjuncts after decorrelation.");
-    kept[num_kept++] = conjuncts[i];
+    kept[num_kept++] = cmp;
   }
 
   // Rebuild outer WHERE from kept conjuncts
@@ -8068,7 +8203,10 @@ RonSQLPreparer::analyze_select_subqueries()
         if (ce->op == T_AND) {
           self(self, ce->args.left);
           self(self, ce->args.right);
-        } else if (num_filter_conjuncts < 32) {
+        } else {
+          require_prm(num_filter_conjuncts < 32,
+                      "Too many conditions in the WHERE clause of a"
+                      " SELECT-list subquery.");
           filter_conjuncts[num_filter_conjuncts++] = ce;
         }
       };
@@ -8150,11 +8288,95 @@ RonSQLPreparer::analyze_select_subqueries()
 }
 
 /*
+ * same_inner_filter()
+ *
+ * True if the inner-only filters of two SELECT-list subqueries are
+ * structurally identical. Column references must name the same column
+ * and use each subquery's own inner table alias, or no qualifier. Node
+ * kinds not handled here compare as different, so the worst case is a
+ * missed merge, never a wrong result.
+ */
+bool
+RonSQLPreparer::same_inner_filter(ConditionalExpression* a,
+                                  const LexCString& alias_a,
+                                  ConditionalExpression* b,
+                                  const LexCString& alias_b)
+{
+  if (a == NULL || b == NULL) return a == b;
+  if (a->op != b->op) return false;
+  auto same_str = [](const char* s1, size_t l1, const char* s2, size_t l2) {
+    return l1 == l2 && (l1 == 0 || memcmp(s1, s2, l1) == 0);
+  };
+  switch (a->op) {
+  case T_IDENTIFIER: {
+    if (a->col_idx >= m_columns.size() || b->col_idx >= m_columns.size() ||
+        a->col_idx >= m_column_qualifiers.size() ||
+        b->col_idx >= m_column_qualifiers.size())
+      return false;
+    const LexCString& qa = m_column_qualifiers[a->col_idx];
+    const LexCString& qb = m_column_qualifiers[b->col_idx];
+    if ((qa.str == NULL) != (qb.str == NULL)) return false;
+    if (qa.str != NULL &&
+        (!same_str(qa.str, qa.len, alias_a.str, alias_a.len) ||
+         !same_str(qb.str, qb.len, alias_b.str, alias_b.len)))
+      return false;
+    const LexCString& ca = m_columns[a->col_idx];
+    const LexCString& cb = m_columns[b->col_idx];
+    return same_str(ca.str, ca.len, cb.str, cb.len);
+  }
+  case T_INT:
+    return a->constant_integer == b->constant_integer;
+  case T_FLOAT:
+    return same_str(a->constant_float.ls.str, a->constant_float.ls.len,
+                    b->constant_float.ls.str, b->constant_float.ls.len);
+  case T_STRING:
+    return same_str(a->string.str, a->string.len,
+                    b->string.str, b->string.len);
+  case T_NULL:
+    return true;
+  case T_IS:
+    return a->is.null == b->is.null &&
+           same_inner_filter(a->is.arg, alias_a, b->is.arg, alias_b);
+  case T_NOT:
+  case T_EXCLAMATION:
+    return same_inner_filter(a->args.left, alias_a, b->args.left, alias_b);
+  case T_OR:
+  case T_XOR:
+  case T_AND:
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GE:
+  case T_GT:
+  case T_LE:
+  case T_LT:
+  case T_LIKE:
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+  case T_DIV:
+  case T_MODULO:
+  case T_BITWISE_OR:
+  case T_BITWISE_AND:
+  case T_BITSHIFT_LEFT:
+  case T_BITSHIFT_RIGHT:
+  case T_BITWISE_XOR:
+    return same_inner_filter(a->args.left, alias_a, b->args.left, alias_b) &&
+           same_inner_filter(a->args.right, alias_a, b->args.right, alias_b);
+  default:
+    return false;
+  }
+}
+
+/*
  * merge_same_table_subqueries()
  *
  * Group SelectSubqueryLeaf entries by (inner_table_name, inner_join_col,
- * outer_join_col).  Subqueries in the same group share a single leaf node
- * with a combined aggregation program.
+ * outer_join_col) and inner-only filter.  Subqueries in the same group
+ * share a single leaf node with a combined aggregation program.  The
+ * inner-only filter is applied to the shared leaf, so only subqueries
+ * with the same inner-only filter (or none) can share it; cross-table
+ * filters are applied per aggregate and don't prevent merging.
  */
 void
 RonSQLPreparer::merge_same_table_subqueries()
@@ -8189,7 +8411,9 @@ RonSQLPreparer::merge_same_table_subqueries()
                   base.inner_join_col.len) == 0 &&
           base.outer_join_col.len == other.outer_join_col.len &&
           strncmp(base.outer_join_col.str, other.outer_join_col.str,
-                  base.outer_join_col.len) == 0) {
+                  base.outer_join_col.len) == 0 &&
+          same_inner_filter(base.inner_filter, base.inner_table_alias,
+                            other.inner_filter, other.inner_table_alias)) {
         other.merged_leaf_idx = ml_idx;
         other.combined_agg_slot = agg_slot++;
         ml.num_aggs++;
@@ -8968,7 +9192,8 @@ RonSQLPreparer::substitute_subquery_results()
 }
 
 void
-RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
+RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
+                                               int polarity)
 {
   ConditionalExpression* ce = *ce_ptr;
   if (ce == NULL) return;
@@ -8982,18 +9207,20 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
       TokenKind cmp_op = ce->corr_scalar.cmp_op;
       ConditionalExpression* cmp_expr = ce->corr_scalar.cmp_expr;
       ConditionalExpression* key_expr = ce->corr_scalar.key_expr;
-
-      if (info.corr_values->size() == 0)
-      {
-        // Empty: always false
-        ce->op = T_NOT_EQUALS;
-        ce->args.left = cmp_expr;
-        ce->args.right = cmp_expr;
-        return;
-      }
+      auto node = [&](TokenKind op, ConditionalExpression* left,
+                      ConditionalExpression* right) {
+        ConditionalExpression* n =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        n->op = op;
+        n->args.left = left;
+        n->args.right = right;
+        return n;
+      };
 
       // Build OR-chain: (key=k1 AND col OP v1) OR (key=k2 AND col OP v2) ...
+      // and, for COUNT, the AND-chain key != k1 AND key != k2 ...
       ConditionalExpression* result = NULL;
+      ConditionalExpression* no_group = NULL;
       for (Uint32 j = 0; j < info.corr_values->size(); j++)
       {
         CorrelatedPair& pair = (*info.corr_values)[j];
@@ -9019,6 +9246,14 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
         key_eq->op = T_EQUALS;
         key_eq->args.left = key_expr;
         key_eq->args.right = key_const;
+
+        if (info.corr_count)
+        {
+          ConditionalExpression* key_ne =
+            node(T_NOT_EQUALS, key_expr, key_const);
+          no_group = (no_group == NULL) ? key_ne
+                                        : node(T_AND, no_group, key_ne);
+        }
 
         // Build: cmp_expr <cmp_op> val_const
         ConditionalExpression* val_const =
@@ -9064,9 +9299,38 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
         }
       }
 
+      if (info.corr_count)
+      {
+        // COUNT is 0 for an outer key without a group, also for a NULL
+        // key: OR ((key IS NULL OR key != k1 AND ...) AND col OP 0).
+        ConditionalExpression* zero =
+          m_amalloc->alloc_exc<ConditionalExpression>(1);
+        zero->op = T_INT;
+        zero->constant_integer = 0;
+        ConditionalExpression* term = node(cmp_op, cmp_expr, zero);
+        if (no_group != NULL)
+        {
+          const NdbDictionary::Column* key_col =
+            m_main_scope.resolved_columns != NULL
+                ? m_main_scope.resolved_columns[key_expr->col_idx].dict_column
+                : NULL;
+          if (key_col == NULL || key_col->getNullable())
+          {
+            ConditionalExpression* key_is_null =
+              m_amalloc->alloc_exc<ConditionalExpression>(1);
+            key_is_null->op = T_IS;
+            key_is_null->is.arg = key_expr;
+            key_is_null->is.null = true;
+            no_group = node(T_OR, key_is_null, no_group);
+          }
+          term = node(T_AND, no_group, term);
+        }
+        result = (result == NULL) ? term : node(T_OR, result, term);
+      }
+
       if (result == NULL)
       {
-        // All null: always false
+        // No values, or all null: always false
         ce->op = T_NOT_EQUALS;
         ce->args.left = cmp_expr;
         ce->args.right = cmp_expr;
@@ -9087,24 +9351,21 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
     {
       if (m_subquery_infos[i].ce_node == ce)
       {
-        DynamicArray<SubqueryResult>* values = m_subquery_infos[i].in_values;
-        ConditionalExpression* in_expr = m_subquery_infos[i].in_expr;
+        const SubqueryInfo& info = m_subquery_infos[i];
+        DynamicArray<SubqueryResult>* values = info.in_values;
+        ConditionalExpression* in_expr = info.in_expr;
 
-        if (values->size() == 0)
-        {
-          // Empty result set: always false via col != col
-          ce->op = T_NOT_EQUALS;
-          ce->args.left = in_expr;
-          ce->args.right = in_expr;
-          return;
-        }
-
-        // Build OR-chain: expr = v1 OR expr = v2 OR ...
+        // Build OR-chain over the non-NULL values: expr = v1 OR expr = v2 OR ...
         ConditionalExpression* result = NULL;
+        bool has_null = false;
         for (Uint32 j = 0; j < values->size(); j++)
         {
           SubqueryResult& val = (*values)[j];
-          if (val.is_null) continue;  // NULL = x is never true
+          if (val.is_null)
+          {
+            has_null = true;  // NULL = x is never true
+            continue;
+          }
 
           ConditionalExpression* const_node =
             m_amalloc->alloc_exc<ConditionalExpression>(1);
@@ -9141,17 +9402,67 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
           }
         }
 
-        if (result == NULL)
+        // MySQL's x IN (values) is TRUE on a match; otherwise NULL when x
+        // is NULL or a value is NULL, and FALSE when there are no values.
+        // A WHERE or HAVING keeps a row only when TRUE.  Where the IN is
+        // not negated, FALSE drops the same rows as NULL, so the OR-chain
+        // and x != x (for no values) do.  Where it is negated, NULL drops
+        // the same rows as TRUE (Kleene NOT / AND / OR give TRUE on NULL
+        // only if they give TRUE on both TRUE and FALSE).  [NOT] EXISTS
+        // is never NULL: NULL values match no row and a NULL x matches
+        // nothing.
+        auto node = [&](TokenKind op, ConditionalExpression* left,
+                        ConditionalExpression* right) {
+          ConditionalExpression* n =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          n->op = op;
+          n->args.left = left;
+          n->args.right = right;
+          return n;
+        };
+        auto is_null = [&](bool null) {
+          ConditionalExpression* n =
+            m_amalloc->alloc_exc<ConditionalExpression>(1);
+          n->op = T_IS;
+          n->is.arg = in_expr;
+          n->is.null = null;
+          return n;
+        };
+        if (polarity == 1)
         {
-          // All values were NULL: always false via col != col
-          ce->op = T_NOT_EQUALS;
-          ce->args.left = in_expr;
-          ce->args.right = in_expr;
+          if (result == NULL)
+            result = node(T_NOT_EQUALS, in_expr, in_expr);
         }
         else
         {
-          *ce = *result;
+          // The TRUE and FALSE below need x IS [NOT] NULL, which the WHERE
+          // filters support on a column and HAVING on an aggregate.
+          require_prm(in_expr->op == T_IDENTIFIER || in_expr->op == T_SUM ||
+                      in_expr->op == T_MIN || in_expr->op == T_MAX ||
+                      in_expr->op == T_COUNT || in_expr->op == T_AVG,
+                      "A negated IN or NOT EXISTS subquery needs a column "
+                      "or an aggregate on the left of IN.");
+          ConditionalExpression* always_false =
+            node(T_AND, is_null(true), is_null(false));
+          if (info.from_exists)
+          {
+            result = (result == NULL)
+                         ? always_false
+                         : node(T_AND, is_null(false), result);
+          }
+          else if (has_null)
+          {
+            require_prm(polarity == -1,
+                        "An IN subquery whose result contains NULL is "
+                        "supported only under AND, OR and NOT.");
+            result = node(T_OR, is_null(true), is_null(false));
+          }
+          else if (result == NULL)
+          {
+            result = always_false;
+          }
         }
+        *ce = *result;
         return;
       }
     }
@@ -9193,13 +9504,22 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
   switch (ce->op)
   {
   case T_IS:
-    substitute_subquery_results_ce(&ce->is.arg);
+    substitute_subquery_results_ce(&ce->is.arg, 0);
     return;
   case T_INTERVAL:
-    substitute_subquery_results_ce(&ce->interval.arg);
+    substitute_subquery_results_ce(&ce->interval.arg, 0);
     return;
   case T_EXTRACT:
-    substitute_subquery_results_ce(&ce->extract.arg);
+    substitute_subquery_results_ce(&ce->extract.arg, 0);
+    return;
+  case T_NOT:
+  case T_EXCLAMATION:
+    substitute_subquery_results_ce(&ce->args.left, -polarity);
+    return;
+  case T_AND:
+  case T_OR:
+    substitute_subquery_results_ce(&ce->args.left, polarity);
+    substitute_subquery_results_ce(&ce->args.right, polarity);
     return;
   case T_IDENTIFIER:
   case T_INT:
@@ -9214,9 +9534,10 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr)
   case T_NULL:
     return;
   default:
-    // Binary/unary operators: recurse into both sides
-    substitute_subquery_results_ce(&ce->args.left);
-    substitute_subquery_results_ce(&ce->args.right);
+    // Other binary/unary operators (XOR, comparisons, arithmetic) need the
+    // exact value of an operand: recurse into both sides
+    substitute_subquery_results_ce(&ce->args.left, 0);
+    substitute_subquery_results_ce(&ce->args.right, 0);
     return;
   }
 }
@@ -19637,6 +19958,50 @@ RonSQLPreparer::Context::set_err_state(ErrState state,
      */
     ndbrequire((m_err_pos < err_pos) ||
                (m_err_pos == err_pos && m_err_len <= err_len));
+  }
+}
+
+/*
+ * AggregationAPICompiler compiles a CASE as a branch around the aggregate
+ * update, not as a value, so a CASE anywhere but at the top of an
+ * aggregate argument would reach the arithmetic compiler, which has no
+ * CASE instruction and aborts.
+ */
+AggregationAPICompiler::Expr*
+RonSQLPreparer::Context::non_case_operand(AggregationAPICompiler::Expr* e)
+{
+  if (e != NULL && e->isCase())
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "CASE is supported only as the whole argument of an aggregate "
+        "function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot "
+        "be used in arithmetic or in a THEN or ELSE of another CASE.");
+  return e;
+}
+
+/*
+ * QueryPlanner::plan takes the left-hand column of each ON equality from the
+ * joined table whatever its qualifier says, so in an aggregate query
+ * `JOIN t AS b ON a.x = a.y` ran as `b.x = a.y`, and authorization charged
+ * x to a rather than to the table it was read from.  Checking here, as
+ * each join clause is parsed, covers the main query, CTE bodies and
+ * subqueries before any rewrite reorders the conditions.
+ */
+void
+RonSQLPreparer::Context::check_join_conditions(
+    const TableRef& table, const JoinCondition* conditions)
+{
+  for (const JoinCondition* jc = conditions; jc != NULL; jc = jc->next)
+  {
+    if (jc->child_table == table.alias)
+      continue;
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        std::string("The ON condition ") + jc->child_table.c_str() + "." +
+        jc->child_column.c_str() + " = " + jc->parent_table.c_str() + "." +
+        jc->parent_column.c_str() + " does not have a column of the joined "
+        "table " + table.alias.c_str() + " on the left. Write each ON "
+        "equality as <joined table>.<column> = <earlier table>.<column>.");
   }
 }
 

@@ -485,16 +485,27 @@ arith_expr:
   identifier_c                          { $$ = context->get_agg()->Load(context->column_name_to_idx($1)); }
 | identifier_c T_DOT identifier_c      { $$ = context->get_agg()->Load(context->qualified_column_name_to_idx($1, $3)); }
 | T_INT                                 { $$ = context->get_agg()->ConstantInteger($1); }
-| T_MINUS arith_expr                    { $$ = context->get_agg()->Minus(context->get_agg()->ConstantInteger(0), $2); }
+/* A CASE is compiled only as the whole argument of an aggregate function, so
+ * non_case_operand() rejects it as an operand of arithmetic or another CASE. */
+| T_MINUS arith_expr                    { $$ = context->get_agg()->Minus(context->get_agg()->ConstantInteger(0),
+                                                                         context->non_case_operand($2)); }
 | T_LEFT arith_expr T_RIGHT             { $$ = $2; }
-| arith_expr T_PLUS arith_expr          { $$ = context->get_agg()->Add($1, $3); }
-| arith_expr T_MINUS arith_expr         { $$ = context->get_agg()->Minus($1, $3); }
-| arith_expr T_MULTIPLY arith_expr      { $$ = context->get_agg()->Mul($1, $3); }
-| arith_expr T_SLASH arith_expr         { $$ = context->get_agg()->Div($1, $3); }
-| arith_expr T_DIV arith_expr           { $$ = context->get_agg()->DivInt($1, $3); }
-| arith_expr T_MODULO arith_expr        { $$ = context->get_agg()->Rem($1, $3); }
+| arith_expr T_PLUS arith_expr          { $$ = context->get_agg()->Add(context->non_case_operand($1),
+                                                                       context->non_case_operand($3)); }
+| arith_expr T_MINUS arith_expr         { $$ = context->get_agg()->Minus(context->non_case_operand($1),
+                                                                         context->non_case_operand($3)); }
+| arith_expr T_MULTIPLY arith_expr      { $$ = context->get_agg()->Mul(context->non_case_operand($1),
+                                                                       context->non_case_operand($3)); }
+| arith_expr T_SLASH arith_expr         { $$ = context->get_agg()->Div(context->non_case_operand($1),
+                                                                       context->non_case_operand($3)); }
+| arith_expr T_DIV arith_expr           { $$ = context->get_agg()->DivInt(context->non_case_operand($1),
+                                                                          context->non_case_operand($3)); }
+| arith_expr T_MODULO arith_expr        { $$ = context->get_agg()->Rem(context->non_case_operand($1),
+                                                                       context->non_case_operand($3)); }
 | T_CASE T_WHEN cond_expr T_THEN arith_expr T_ELSE arith_expr T_END
-                                        { $$ = context->get_agg()->CaseExpr($3, $5, $7); }
+                                        { $$ = context->get_agg()->CaseExpr($3,
+                                                                            context->non_case_operand($5),
+                                                                            context->non_case_operand($7)); }
 | T_GREATEST T_LEFT arith_expr_list T_RIGHT
                                         { $$ = context->lower_greatest_least_nary($3, /*is_greatest*/true); }
 | T_LEAST T_LEFT arith_expr_list T_RIGHT
@@ -600,6 +611,7 @@ join_list:
 join_clause:
   T_JOIN table_ref T_ON join_condition_list
   {
+    context->check_join_conditions(*$2, $4);
     initptr($$);
     $$->join_type = JoinClause::INNER_JOIN;
     $$->table = *$2;
@@ -608,6 +620,7 @@ join_clause:
   }
 | T_KW_LEFT T_JOIN table_ref T_ON join_condition_list
   {
+    context->check_join_conditions(*$3, $5);
     initptr($$);
     $$->join_type = JoinClause::LEFT_OUTER_JOIN;
     $$->table = *$3;
@@ -616,6 +629,7 @@ join_clause:
   }
 | T_KW_LEFT T_KW_OUTER T_JOIN table_ref T_ON join_condition_list
   {
+    context->check_join_conditions(*$4, $6);
     initptr($$);
     $$->join_type = JoinClause::LEFT_OUTER_JOIN;
     $$->table = *$4;

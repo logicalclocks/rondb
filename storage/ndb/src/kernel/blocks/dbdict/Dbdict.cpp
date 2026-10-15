@@ -562,7 +562,8 @@ void Dbdict::execDBINFO_SCANREQ(Signal *signal) {
            c_noOfMetaTables,
            c_tableRecordPool_.getEntrySize(),
            c_tableRecordPool_.getUsedHi(),
-           {CFG_DB_NO_TABLES, 0, 0, 0},
+           {CFG_DB_NO_TABLES, CFG_DB_NO_ORDERED_INDEXES,
+            CFG_DB_NO_UNIQUE_HASH_INDEXES, 0},
            0},
           {"Trigger Record",
            c_triggerRecordPool_.getUsed(),
@@ -24529,8 +24530,41 @@ void Dbdict::createFile_commit(Signal *signal, SchemaOpPtr op_ptr) {
 
 // CreateFile: COMPLETE
 
+/**
+ * Database disk quotas are given in GBytes, accounted in MBytes.
+ * Saturate rather than wrap for values that cannot be real quotas.
+ */
+static inline Uint64 disk_quota_mb(Uint64 disk_space_size_gb) {
+  if (disk_space_size_gb > (~Uint64(0) >> 10)) return ~Uint64(0);
+  return disk_space_size_gb * 1024;
+}
+
+void Dbdict::set_disk_quota_limit_mb() {
+  Uint64 allocated_disk_quota_mb =
+    m_allocated_disk_quota_limit / (1024 * 1024);
+  allocated_disk_quota_mb *= 8;
+  allocated_disk_quota_mb /= 10;
+  m_allocated_disk_quota_limit_mb = Uint32(allocated_disk_quota_mb);
+}
+
 void Dbdict::createFile_complete(Signal *signal, SchemaOpPtr op_ptr) {
   jam();
+  CreateFileRecPtr createFilePtr;
+  getOpRec(op_ptr, createFilePtr);
+  CreateFileImplReq *impl_req = &createFilePtr.p->m_request;
+
+  /**
+   * Track amount of tablespace area we have access to. This runs once
+   * per created data file, also when the file is recreated during a
+   * restart, and is reversed in dropFile_complete.
+   */
+  FilePtr f_ptr;
+  ndbrequire(find_object(f_ptr, impl_req->file_id));
+  if (f_ptr.p->m_type == DictTabInfo::Datafile) {
+    jam();
+    m_allocated_disk_quota_limit += f_ptr.p->m_file_size;
+    set_disk_quota_limit_mb();
+  }
   sendTransConf(signal, op_ptr);
 }
 
@@ -24541,19 +24575,7 @@ void Dbdict::createFile_fromLocal(Signal *signal, Uint32 op_key, Uint32 ret) {
   ndbrequire(findSchemaOp(op_ptr, createFilePtr, op_key));
 
   if (ret == 0) {
-    FilePtr f_ptr;
     jam();
-
-    /* Track amount of tablespace area we have access to */
-    CreateFileImplReq *impl_req = &createFilePtr.p->m_request;
-    ndbrequire(find_object(f_ptr, impl_req->file_id));
-    m_allocated_disk_quota_limit += f_ptr.p->m_file_size;
-    Uint64 allocated_disk_quota_mb =
-      m_allocated_disk_quota_limit / (1024 * 1024);
-    allocated_disk_quota_mb *= 8;
-    allocated_disk_quota_mb /= 10;
-    m_allocated_disk_quota_limit_mb = Uint32(allocated_disk_quota_mb);
-
     sendTransConf(signal, op_ptr);
   } else {
     jam();
@@ -25364,6 +25386,13 @@ void Dbdict::dropFile_complete(Signal *signal, SchemaOpPtr op_ptr) {
   jam();
   ndbrequire(find_object(f_ptr, impl_req->file_id));
   ndbrequire(find_object(fg_ptr, f_ptr.p->m_filegroup_id));
+  if (f_ptr.p->m_type == DictTabInfo::Datafile) {
+    jam();
+    /* Tablespace area is no longer available for disk quotas */
+    ndbrequire(m_allocated_disk_quota_limit >= f_ptr.p->m_file_size);
+    m_allocated_disk_quota_limit -= f_ptr.p->m_file_size;
+    set_disk_quota_limit_mb();
+  }
   decrease_ref_count(fg_ptr.p->m_obj_ptr_i);
   release_object(f_ptr.p->m_obj_ptr_i);
   c_file_pool.release(f_ptr);
@@ -34267,21 +34296,21 @@ Dbdict::createDatabase_parse(Signal* signal, bool master,
         return;
       }
     }
-    Uint32 available_disk_quota_limit =
-      m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
+    const Uint64 requested_disk_quota_mb = disk_quota_mb(db.DiskSpaceSize);
     if (db.DiskSpaceSize > 0 &&
-        (m_allocated_disk_quota_limit_mb < m_current_allocated_disk_quota_mb ||
-         db.DiskSpaceSize > available_disk_quota_limit)) {
+        (requested_disk_quota_mb > m_allocated_disk_quota_limit_mb ||
+         m_current_allocated_disk_quota_mb >
+           m_allocated_disk_quota_limit_mb - requested_disk_quota_mb)) {
       if (op_ptr.p->m_restart) {
         jam();
         g_eventLogger->info("Database Disk Quota oversubscribed, "
                             "will not fail since it is a restart");
       } else {
         jam();
-        DEB_QUOTAS(("Create Database Disk failed: Requested: %llu, curr: %u,"
-                    " avail: %u",
-          db.InMemorySize,
-          m_current_allocated_memory_quota_mb,
+        DEB_QUOTAS(("Create Database Disk failed: Requested: %llu MBytes,"
+                    " curr: %llu, limit: %u",
+          (unsigned long long)requested_disk_quota_mb,
+          (unsigned long long)m_current_allocated_disk_quota_mb,
           m_allocated_disk_quota_limit_mb));
         setError(error, CreateTableRef::CreateDbNoAvailableDiskQuota, __LINE__);
         return;
@@ -34980,15 +35009,16 @@ void Dbdict::execCOMMIT_DB_CONF(Signal *signal) {
                  m_allocated_memory_quota_limit) ||
                op_ptr.p->m_restart);
 
-    m_current_allocated_disk_quota_mb += db_ptr.p->m_disk_space_size;
+    m_current_allocated_disk_quota_mb +=
+      disk_quota_mb(db_ptr.p->m_disk_space_size);
     ndbrequire((m_current_allocated_disk_quota_mb <=
                  m_allocated_disk_quota_limit_mb) ||
                op_ptr.p->m_restart);
 
     DEB_QUOTAS(("New m_current_allocated_memory_quota_mb = %u MBytes"
-                ", m_current_allocated_disk_quota_mb = %u MBytes",
+                ", m_current_allocated_disk_quota_mb = %llu MBytes",
       m_current_allocated_memory_quota_mb,
-      m_current_allocated_disk_quota_mb));
+      (unsigned long long)m_current_allocated_disk_quota_mb));
   }
   /* Finished commit phase of create database */
   execute(signal, createDbPtr.p->m_callback, db_ptr.p->key);
@@ -35664,13 +35694,15 @@ void Dbdict::dropDatabase_complete(Signal* signal, SchemaOpPtr op_ptr) {
     ndbrequire(m_current_allocated_memory_quota_mb >= db_ptr.p->m_in_memory_size);
     m_current_allocated_memory_quota_mb -= db_ptr.p->m_in_memory_size;
 
-    ndbrequire(m_current_allocated_disk_quota_mb >= db_ptr.p->m_disk_space_size);
-    m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
+    const Uint64 dropped_disk_quota_mb =
+      disk_quota_mb(db_ptr.p->m_disk_space_size);
+    ndbrequire(m_current_allocated_disk_quota_mb >= dropped_disk_quota_mb);
+    m_current_allocated_disk_quota_mb -= dropped_disk_quota_mb;
   }
   DEB_QUOTAS(("New after drop m_current_allocated_memory_quota_mb = %u MBytes"
-              ", m_current_allocated_disk_quota_mb = %u MBytes",
+              ", m_current_allocated_disk_quota_mb = %llu MBytes",
     m_current_allocated_memory_quota_mb,
-    m_current_allocated_disk_quota_mb));
+    (unsigned long long)m_current_allocated_disk_quota_mb));
   c_database_pool.release(db_ptr);
   sendTransConf(signal, op_ptr);
 }
@@ -35946,18 +35978,16 @@ Dbdict::alterDatabase_parse(Signal* signal, bool master,
       }
       if (db.DiskSpaceSize != RNIL &&
           db_ptr.p->m_disk_space_size < db.DiskSpaceSize) {
-        Uint32 increase_disk_quota_mb =
-          db.DiskSpaceSize - db_ptr.p->m_disk_space_size;
-        Uint32 available_disk_quota_limit_mb =
-          m_allocated_disk_quota_limit_mb - m_current_allocated_disk_quota_mb;
-        if (increase_disk_quota_mb > available_disk_quota_limit_mb ||
-              (m_current_allocated_disk_quota_mb >
-                m_allocated_disk_quota_limit_mb)) {
+        const Uint64 increase_disk_quota_mb =
+          disk_quota_mb(db.DiskSpaceSize - db_ptr.p->m_disk_space_size);
+        if (increase_disk_quota_mb > m_allocated_disk_quota_limit_mb ||
+            m_current_allocated_disk_quota_mb >
+              m_allocated_disk_quota_limit_mb - increase_disk_quota_mb) {
           jam();
-          DEB_QUOTAS(("Create Database Disk failed: Requested: %u, curr: %u,"
-                      " avail: %u",
-            increase_disk_quota_mb,
-            m_current_allocated_disk_quota_mb,
+          DEB_QUOTAS(("Alter Database Disk failed: Requested: %llu MBytes,"
+                      " curr: %llu, limit: %u",
+            (unsigned long long)increase_disk_quota_mb,
+            (unsigned long long)m_current_allocated_disk_quota_mb,
             m_allocated_disk_quota_limit_mb));
             setError(error,
                  CreateTableRef::AlterDbNoAvailableDiskQuota,
@@ -36251,9 +36281,11 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
                m_allocated_memory_quota_limit);
 
     ndbrequire(m_current_allocated_disk_quota_mb >=
-               db_ptr.p->m_disk_space_size);
-    m_current_allocated_disk_quota_mb -= db_ptr.p->m_disk_space_size;
-    m_current_allocated_disk_quota_mb += alter_db_ptr.p->m_disk_space_size;
+               disk_quota_mb(db_ptr.p->m_disk_space_size));
+    m_current_allocated_disk_quota_mb -=
+      disk_quota_mb(db_ptr.p->m_disk_space_size);
+    m_current_allocated_disk_quota_mb +=
+      disk_quota_mb(alter_db_ptr.p->m_disk_space_size);
     ndbrequire(m_current_allocated_disk_quota_mb <=
                m_allocated_disk_quota_limit_mb);
   }
@@ -36270,9 +36302,9 @@ Dbdict::execALTER_DB_CONF(Signal *signal)
   db_ptr.p->m_alter_db_ref = RNIL;
 
   DEB_QUOTAS(("ALTER: New m_current_allocated_memory_quota_mb = %u MBytes"
-              ", m_current_allocated_disk_quota_mb = %u MBytes",
+              ", m_current_allocated_disk_quota_mb = %llu MBytes",
     m_current_allocated_memory_quota_mb,
-    m_current_allocated_disk_quota_mb));
+    (unsigned long long)m_current_allocated_disk_quota_mb));
 
   execute(signal, alterDbPtr.p->m_callback, db_ptr.p->key);
 }

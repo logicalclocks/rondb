@@ -297,16 +297,26 @@ ResultPrinter::validate_orderby_columns()
               "ORDER BY column not in GROUP BY clause.");
         }
       }
+      else if (out->type == Outputs::Type::AVG)
+      {
+        // AVG alias — sort by SUM / COUNT, not by either slot alone
+        OrderbySpec spec;
+        spec.kind = OrderbySpec::Kind::AVG;
+        spec.avg_key_idx = m_num_avg_keys++;
+        spec.ascending = ob->ascending;
+        spec.charset = NULL;
+        spec.avg_sum_idx = out->avg.agg_index_sum;
+        spec.avg_count_idx = out->avg.agg_index_count;
+        spec.avg_scale = avg_arg_scale(out);
+        m_orderby_specs.push(spec);
+      }
       else if (out->type == Outputs::Type::AGGREGATE ||
-               out->type == Outputs::Type::AVG ||
                out->type == Outputs::Type::SUBQUERY_AGG)
       {
         // Aggregate alias — sort by aggregate result
-        Uint32 agg_idx = (out->type == Outputs::Type::AVG)
-                             ? out->avg.agg_index_sum
-                             : (out->type == Outputs::Type::SUBQUERY_AGG)
-                                   ? out->subquery_agg.agg_index
-                                   : out->aggregate.agg_index;
+        Uint32 agg_idx = (out->type == Outputs::Type::SUBQUERY_AGG)
+                             ? out->subquery_agg.agg_index
+                             : out->aggregate.agg_index;
         OrderbySpec spec;
         spec.kind = OrderbySpec::Kind::AGGREGATE;
         spec.agg_result_idx = agg_idx;
@@ -704,6 +714,7 @@ ResultPrinter::store_record(NdbAggregator::ResultRecord& record)
          m_num_groupby_cols * sizeof(NdbAggregator::Column));
   memcpy(row.results, m_regs_a,
          m_num_aggregates * sizeof(NdbAggregator::Result));
+  row.avg_keys = NULL;
   return row;
 }
 
@@ -1047,6 +1058,20 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       if (cmp != 0)
         return spec.ascending ? cmp : -cmp;
     }
+    else if (spec.kind == OrderbySpec::Kind::AVG)
+    {
+      const double key_a = a.avg_keys[spec.avg_key_idx];
+      const double key_b = b.avg_keys[spec.avg_key_idx];
+      // NaN is a NULL average
+      const bool null_a = std::isnan(key_a);
+      const bool null_b = std::isnan(key_b);
+      if (null_a && null_b) continue;
+      if (null_a) return spec.ascending ? -1 : 1;
+      if (null_b) return spec.ascending ? 1 : -1;
+      const int cmp = (key_a < key_b) ? -1 : (key_a > key_b) ? 1 : 0;
+      if (cmp != 0)
+        return spec.ascending ? cmp : -cmp;
+    }
     else
     {
       NdbAggregator::Column& col_a = a.cols[spec.groupby_idx];
@@ -1067,6 +1092,48 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
     }
   }
   return 0;
+}
+
+// The AVG sort keys of a row, computed once instead of in every
+// comparison.
+void
+ResultPrinter::set_avg_keys(StoredRow& row)
+{
+  row.avg_keys = m_amalloc->alloc_exc<double>(m_num_avg_keys);
+  for (Uint32 i = 0; i < m_orderby_specs.size(); i++)
+  {
+    const OrderbySpec& spec = m_orderby_specs[i];
+    if (spec.kind != OrderbySpec::Kind::AVG) continue;
+    row.avg_keys[spec.avg_key_idx] =
+        avg_sort_key(row.results[spec.avg_sum_idx],
+                     row.results[spec.avg_count_idx],
+                     spec.avg_scale);
+  }
+}
+
+// The value print_avg_result() prints, or NaN where it prints NULL.  MySQL
+// sorts an AVG by its value at the result scale, so averages that print
+// the same compare equal and the next ORDER BY key breaks the tie.
+double
+ResultPrinter::avg_sort_key(NdbAggregator::Result sum,
+                            NdbAggregator::Result count,
+                            int scale)
+{
+  if (sum.is_null())
+    return std::numeric_limits<double>::quiet_NaN();
+  const double result =
+      convert_result_to_double(sum) / convert_result_to_double(count);
+  if (scale < 0)
+    return result;
+  ndbrequire(scale <= 30);
+  char buffer[FLOATING_POINT_BUFFER];
+  bool error;
+  const size_t len = my_fcvt(result, scale, buffer, &error);
+  if (error)
+    return std::numeric_limits<double>::quiet_NaN();
+  const char* end = buffer + len;
+  int conv_error;
+  return my_strtod(buffer, &end, &conv_error);
 }
 
 void
@@ -1092,10 +1159,12 @@ ResultPrinter::print_result_ordered(NdbAggregator* aggregator,
       if (sentinel.data_int64() == 0) continue;
     }
     if (m_query->having_expression != NULL &&
-        !evaluate_having(m_query->having_expression))
+        evaluate_having(m_query->having_expression) != HAVING_TRUE)
     {
       continue;
     }
+    if (m_num_avg_keys > 0)
+      set_avg_keys(row);
     rows.push(row);
   }
   Uint32 num_rows = rows.size();
@@ -2860,28 +2929,58 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
     return evaluate_having_value(expr->args.left) *
            evaluate_having_value(expr->args.right);
   case T_SLASH:
-    return evaluate_having_value(expr->args.left) /
-           evaluate_having_value(expr->args.right);
+  {
+    const double numerator = evaluate_having_value(expr->args.left);
+    const double denominator = evaluate_having_value(expr->args.right);
+    // Division by zero gives NULL in MySQL, not an infinity.
+    if (denominator == 0)
+      return std::numeric_limits<double>::quiet_NaN();
+    return numerator / denominator;
+  }
   default:
     throw RonSQLPermanentError(
       "Unsupported expression type in HAVING clause.");
   }
 }
 
-bool
+// A comparison with a NULL (NaN) operand is UNKNOWN, NOT keeps UNKNOWN, and
+// AND / OR follow SQL, so that e.g. a NULL MAX under `!= 5` or `NOT (> 5)`
+// drops the group as in MySQL.
+ResultPrinter::HavingTruth
 ResultPrinter::evaluate_having(const ConditionalExpression* expr)
 {
   switch (expr->op)
   {
   case T_AND:
-    return evaluate_having(expr->args.left) &&
-           evaluate_having(expr->args.right);
+  {
+    const HavingTruth left = evaluate_having(expr->args.left);
+    if (left == HAVING_FALSE)
+      return HAVING_FALSE;
+    const HavingTruth right = evaluate_having(expr->args.right);
+    if (right == HAVING_FALSE)
+      return HAVING_FALSE;
+    return (left == HAVING_TRUE && right == HAVING_TRUE) ? HAVING_TRUE
+                                                         : HAVING_UNKNOWN;
+  }
   case T_OR:
-    return evaluate_having(expr->args.left) ||
-           evaluate_having(expr->args.right);
+  {
+    const HavingTruth left = evaluate_having(expr->args.left);
+    if (left == HAVING_TRUE)
+      return HAVING_TRUE;
+    const HavingTruth right = evaluate_having(expr->args.right);
+    if (right == HAVING_TRUE)
+      return HAVING_TRUE;
+    return (left == HAVING_FALSE && right == HAVING_FALSE) ? HAVING_FALSE
+                                                           : HAVING_UNKNOWN;
+  }
   case T_NOT:
   case T_EXCLAMATION:
-    return !evaluate_having(expr->args.left);
+  {
+    const HavingTruth arg = evaluate_having(expr->args.left);
+    if (arg == HAVING_UNKNOWN)
+      return HAVING_UNKNOWN;
+    return (arg == HAVING_TRUE) ? HAVING_FALSE : HAVING_TRUE;
+  }
   case T_IS:
   {
     // IS NULL / IS NOT NULL on aggregate result
@@ -2891,35 +2990,40 @@ ResultPrinter::evaluate_having(const ConditionalExpression* expr)
     if (arg->op == T_SUM || arg->op == T_MIN || arg->op == T_MAX ||
         arg->op == T_COUNT || arg->op == T_AVG) {
       bool result_is_null = m_regs_a[arg->having_agg.agg_index].is_null();
-      return is_null_check ? result_is_null : !result_is_null;
+      return (is_null_check == result_is_null) ? HAVING_TRUE : HAVING_FALSE;
     }
     // For identifiers (output aliases), look up in stored registers
     if (arg->op == T_IDENTIFIER) {
       Uint32 agg_idx = arg->having_agg.agg_index;
       bool result_is_null = m_regs_a[agg_idx].is_null();
-      return is_null_check ? result_is_null : !result_is_null;
+      return (is_null_check == result_is_null) ? HAVING_TRUE : HAVING_FALSE;
     }
     throw RonSQLPermanentError(
         "Unsupported expression in HAVING IS [NOT] NULL.");
   }
   case T_GT:
-    return evaluate_having_value(expr->args.left) >
-           evaluate_having_value(expr->args.right);
   case T_GE:
-    return evaluate_having_value(expr->args.left) >=
-           evaluate_having_value(expr->args.right);
   case T_LT:
-    return evaluate_having_value(expr->args.left) <
-           evaluate_having_value(expr->args.right);
   case T_LE:
-    return evaluate_having_value(expr->args.left) <=
-           evaluate_having_value(expr->args.right);
   case T_EQUALS:
-    return evaluate_having_value(expr->args.left) ==
-           evaluate_having_value(expr->args.right);
   case T_NOT_EQUALS:
-    return evaluate_having_value(expr->args.left) !=
-           evaluate_having_value(expr->args.right);
+  {
+    const double left = evaluate_having_value(expr->args.left);
+    const double right = evaluate_having_value(expr->args.right);
+    if (std::isnan(left) || std::isnan(right))
+      return HAVING_UNKNOWN;
+    bool result = false;
+    switch (expr->op)
+    {
+    case T_GT: result = left > right; break;
+    case T_GE: result = left >= right; break;
+    case T_LT: result = left < right; break;
+    case T_LE: result = left <= right; break;
+    case T_EQUALS: result = left == right; break;
+    default: result = left != right; break;
+    }
+    return result ? HAVING_TRUE : HAVING_FALSE;
+  }
   default:
     throw RonSQLPermanentError(
       "Unsupported operator in HAVING clause.");
@@ -2965,15 +3069,19 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
       }
       else
       {
-        // AGGREGATE: the union holds agg_result_idx, not groupby_idx.
-        // Print the SELECT output alias that produced this aggregate
-        // result when we can find it, else the result index.
+        // AGGREGATE or AVG: the union holds agg_result_idx or avg_key_idx,
+        // not groupby_idx.  Print the SELECT output alias that produced
+        // this aggregate result when we can find it, else the result index.
+        const bool is_avg = spec.kind == OrderbySpec::Kind::AVG;
+        const Uint32 agg_idx = is_avg ? spec.avg_sum_idx : spec.agg_result_idx;
         const char* alias_str = NULL;
         size_t alias_len = 0;
         for (const Outputs* o = m_query->outputs; o != NULL; o = o->next)
         {
-          if (o->type == Outputs::Type::AGGREGATE &&
-              o->aggregate.agg_index == spec.agg_result_idx)
+          if ((!is_avg && o->type == Outputs::Type::AGGREGATE &&
+               o->aggregate.agg_index == agg_idx) ||
+              (is_avg && o->type == Outputs::Type::AVG &&
+               o->avg.agg_index_sum == agg_idx))
           {
             alias_str = o->output_name.str;
             alias_len = o->output_name.len;
@@ -2983,7 +3091,7 @@ ResultPrinter::explain(std::basic_ostream<char>* out_stream)
         if (alias_str != NULL)
           out << quoted_identifier(LexCString(alias_str, alias_len));
         else
-          out << "aggregate result " << spec.agg_result_idx;
+          out << "aggregate result " << agg_idx;
       }
       out << (spec.ascending ? " ASC" : " DESC");
     }

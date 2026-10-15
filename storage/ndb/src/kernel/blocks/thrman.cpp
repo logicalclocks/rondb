@@ -2294,7 +2294,7 @@ Thrman::update_query_distribution(Signal *signal)
     }
     else
     {
-      average_cpu_load_ldm[rr_group] = 0;
+      average_cpu_load[rr_group] = 0;
     }
     if (num_cpu_rr_group_ldm[rr_group] > 0)
     {
@@ -2375,7 +2375,7 @@ Thrman::update_query_distribution(Signal *signal)
   /* Combined LDM+Query threads treated as Query threads */
   Int32 diff_ldm_tc[MAX_RR_GROUPS];
   Int32 diff_ldm_recv[MAX_RR_GROUPS];
-  for (Uint32 rr_group; rr_group < m_num_rr_groups; rr_group++)
+  for (Uint32 rr_group = 0; rr_group < m_num_rr_groups; rr_group++)
   {
     diff_ldm_tc[rr_group] =
       average_cpu_load_ldm[rr_group] - average_cpu_load_tc[rr_group];

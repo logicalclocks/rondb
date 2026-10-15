@@ -47522,7 +47522,7 @@ int Dblqh::IOTracker::tick(Uint32 instance, Uint32 now, Uint32 maxlag,
     m_curr_written_bytes += m_sample_completed_bytes;
     m_curr_elapsed_millis += elapsed;
 
-    Uint32 bps = (1000 * m_sample_completed_bytes) / (elapsed) ? elapsed : 1;
+    Uint32 bps = (1000 * m_sample_completed_bytes) / (elapsed ? elapsed : 1);
     Uint32 lag = bps ? m_sum_outstanding_bytes / bps : 30;
     if (false && lag >= 30) {
       g_eventLogger->info(
@@ -47554,8 +47554,7 @@ int Dblqh::IOTracker::tick(Uint32 instance, Uint32 now, Uint32 maxlag,
        *   increase m_lag_cnt and check if it has reached maxlag_cnt
        */
       Uint32 tmp = m_lag_cnt;
-      // Check precedence in below function - what is it implementing?
-      m_lag_cnt += (lag / (maxlag) ? maxlag : 1);
+      m_lag_cnt += lag / (maxlag ? maxlag : 1);
       if (tmp < maxlag_cnt && m_lag_cnt >= maxlag_cnt) {
         retVal = -1;  // start aborting transactions
       }

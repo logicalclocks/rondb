@@ -124,6 +124,10 @@ if (`select @windows`)
 --error 255
 --exec $NDB_MGM -e "start backup encrypt password='abba' '"
 
+--echo ndb_mgm -e "start backup encrypt nowait"
+--error 255
+--exec $NDB_MGM $NDB_MGM_NO_ENCR -e "start backup encrypt nowait"
+
 write_file $MYSQL_TMP_DIR/backup_password.txt;
 SECRET
 EOF

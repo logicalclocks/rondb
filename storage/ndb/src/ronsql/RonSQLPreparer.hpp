@@ -145,6 +145,15 @@ public:
     ArenaMalloc* get_allocator();
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
+    // Returns `e` for use as an operand of arithmetic or as an arm of a
+    // CASE.  Throws (UNSUPPORTED) when `e` is a CASE, which compiles only
+    // as the whole argument of an aggregate function.
+    AggregationAPICompiler::Expr* non_case_operand(
+        AggregationAPICompiler::Expr* e);
+    // Throws (UNSUPPORTED) unless the left-hand side of every ON equality
+    // in `conditions` is qualified with the alias of the joined `table`.
+    void check_join_conditions(const struct TableRef& table,
+                               const struct JoinCondition* conditions);
     // Phase I.5 v2b — n-ary GREATEST / LEAST.  Operands are folded
     // left-associative into a chain of Greatest2 / Least2 SVM ops.
     // Each operand must be a Load (column ref) or LoadConstantInteger.
@@ -286,6 +295,9 @@ private:
 
     JoinPlan join_plan;
     ConditionalExpression* join_where_ce[MAX_SPJ_TREE_NODES];
+    // The WHERE conjuncts an ANTI_JOIN promotion removed from
+    // join_where_ce, kept for check_deferred_anti_joins().
+    const ConditionalExpression* anti_join_where_ce[MAX_SPJ_TREE_NODES];
     DynamicArray<CrossTableFilter> cross_table_where_filters;
 
     ResolvedColumnRef* resolved_columns = NULL;
@@ -312,6 +324,7 @@ private:
     QueryScope(ArenaMalloc* amalloc)
       : join_plan(),
         join_where_ce(),
+        anti_join_where_ce(),
         cross_table_where_filters(amalloc),
         body_indexes(amalloc),
         body_toplevel_conditions(amalloc),
@@ -468,7 +481,10 @@ private:
     bool is_in_subquery = false;     // true for I_IN_SUBQUERY
     ConditionalExpression* in_expr = NULL; // LHS expression (col IN (...))
     DynamicArray<SubqueryResult>* in_values = NULL; // Multi-value results
+    bool from_exists = false;        // I_IN_SUBQUERY made from [NOT] EXISTS
     bool is_corr_scalar = false;     // true for I_CORR_SCALAR
+    bool corr_count = false;         // I_CORR_SCALAR over COUNT: 0, not
+                                     // NULL, for a key without inner rows
     DynamicArray<CorrelatedPair>* corr_values = NULL; // (key,val) pairs
   };
   DynamicArray<SubqueryInfo> m_subquery_infos;
@@ -560,6 +576,7 @@ private:
   DynamicArray<AccessedColumn> m_accessed_columns;
   void check_table_qualifiers(const char* database);
   void reject_qualified_cte_references();
+  void reject_cte_references_in_subqueries();
   void resolve_access();
   bool access_is_cte(const LexCString& name, Uint32 scope) const;
   void add_accessed_column(Uint32 table_idx, const LexCString& column);
@@ -656,9 +673,14 @@ private:
   // otherwise.
   void check_cte_body_col_vs_col(const QueryScope& scope,
                                  ConditionalExpression* ce) const;
-  static bool is_anti_join_promotable(const QueryScope& scope,
-                                       Uint32 op_idx,
-                                       const ConditionalExpression* ce);
+  bool is_anti_join_promotable(const QueryScope& scope,
+                               Uint32 op_idx,
+                               const ConditionalExpression* ce) const;
+  // Whether a CTE-body SUM argument is never NULL in a group: an integer
+  // constant, or a NOT NULL column of the body's root table or of a table
+  // it INNER JOINs.
+  bool cte_sum_arg_never_null(const QueryScope& body,
+                              const AggregationAPICompiler::Expr* arg) const;
   // Child-op index bounds (child_bounds feature, next_steps.md items
   // 2+3; formerly assign_cross_table_index_bounds): per non-root
   // INDEX_SCAN op, walk index columns after the join-key prefix and
@@ -891,6 +913,9 @@ private:
   void analyze_ctes();
   void validate_having_references();
   void build_cte_scopes();
+  // Re-checks the main query's ANTI_JOIN promotions once the CTE body
+  // scopes exist, and rejects a SUM output whose argument can be NULL.
+  void check_deferred_anti_joins();
   bool* collect_scope_column_refs(const SelectStatement& stmt);
   void mark_scope_column_ref(bool* refs, Uint32 col_idx) const;
   void mark_scope_column_refs_ce(bool* refs,
@@ -964,6 +989,10 @@ private:
   bool is_count_star_only_query();
   void execute_count_star_shortcut();
   void merge_same_table_subqueries();
+  bool same_inner_filter(struct ConditionalExpression* a,
+                         const LexCString& alias_a,
+                         struct ConditionalExpression* b,
+                         const LexCString& alias_b);
   void rewrite_select_subqueries_as_joins();
   void decorrelate_exists();
   void decorrelate_scalar();
@@ -983,7 +1012,10 @@ private:
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();
-  void substitute_subquery_results_ce(ConditionalExpression** ce_ptr);
+  // polarity: 1 under an even number of NOTs, -1 under an odd number, and
+  // 0 where the exact truth value matters (XOR, IS, comparisons).
+  void substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
+                                      int polarity = 1);
   void execute_join();
   // Pass-through row delivery for projection-only main SELECTs.
   // Originally Phase E.3 (single CTE_SCAN root); generalized in

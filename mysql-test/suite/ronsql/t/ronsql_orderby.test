@@ -604,6 +604,111 @@ LIMIT 4;|
 --source suite/ronsql/include/ronsql_compare.inc
 
 #
+# ===== Section D2: ORDER BY the alias of an AVG output =====
+#
+# The groups have different sizes, so ordering by SUM gives another
+# order than ordering by AVG.  Groups 3 and 6 have the same average and
+# group 5 has a NULL average.
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE orderby_avg (
+  pk  INT    NOT NULL,
+  g   INT    NOT NULL,
+  val INT    NULL,
+  d   DOUBLE NULL,
+  PRIMARY KEY USING HASH (pk)
+) ENGINE=NDB|
+--enable_warnings
+INSERT INTO orderby_avg VALUES
+  (1, 1, 90, 45.0),
+  (2, 2, 20, 10.0), (3, 2, 20, 10.0), (4, 2, 20, 10.0),
+  (5, 2, 20, 10.0), (6, 2, 20, 10.0),
+  (7, 3, 30, 15.0), (8, 3, 40, 20.0),
+  (9, 4, 50, 25.0), (10, 4, 50, 25.0), (11, 4, 51, 26.5),
+  (12, 5, NULL, NULL),
+  (13, 6, 35, 17.5), (14, 6, 35, 17.5), (15, 6, 35, 17.5),
+  (16, 6, 35, 17.5)|
+--enable_query_log
+
+--echo
+--echo
+--echo
+--echo ORDER BY AVG alias DESC, g ASC:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, AVG(val) AS a, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+ORDER BY a DESC, g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY AVG alias ASC, g DESC LIMIT 3:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, AVG(val) AS a, COUNT(val) AS c
+FROM orderby_avg
+GROUP BY g
+ORDER BY a ASC, g DESC
+LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo ORDER BY DOUBLE AVG alias DESC, g ASC LIMIT 3:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, AVG(d) AS ad
+FROM orderby_avg
+GROUP BY g
+ORDER BY ad DESC, g
+LIMIT 3;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+# HAVING uses SQL three-valued logic: a comparison with a NULL aggregate
+# (group 5) is UNKNOWN, so the group is dropped under != and NOT too, and
+# x / 0 is NULL (group 1 has COUNT(*) - 1 = 0).  These groups used to be
+# kept.
+
+--echo HAVING != on a NULL MAX:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, MAX(val) AS m
+FROM orderby_avg
+GROUP BY g
+HAVING MAX(val) != 20
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo HAVING NOT on a NULL SUM:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+HAVING NOT (SUM(val) > 100)
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo HAVING IS NULL OR a comparison on a NULL AVG:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, COUNT(val) AS c
+FROM orderby_avg
+GROUP BY g
+HAVING MIN(val) IS NULL OR AVG(val) > 40
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo HAVING division by zero:
+--let $skip_sort=yes
+let $QUERY=
+SELECT g, SUM(val) AS s
+FROM orderby_avg
+GROUP BY g
+HAVING SUM(val) / (COUNT(*) - 1) >= 0
+ORDER BY g;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+#
 # ===== Section E: Unsupported type error tests =====
 #
 
@@ -638,4 +743,5 @@ LIMIT 4;|
 DELIMITER ;|
 --disable_warnings
 DROP TABLE orderby_test;
+DROP TABLE orderby_avg;
 --enable_warnings
