@@ -63,8 +63,8 @@ ol li, ul li { margin: .35rem 0; }
 
 <main>
 <h1>RDRS Memory Changes</h1>
-<p class="lede">Everything rdrs2 needs so that an idle pod stops restarting, a loaded pod stops growing without bound, and a row or blob of any size can be returned. Four code changes, one chart change, full test coverage, implemented on 26.02 and merged to 26.10 without edits.</p>
-<p class="meta">rdrs2 · RONDB-1144 (design under RONDB-1143) · storage/ndb/rest-server2/server/src · facts checked on upstream/26.02-main and upstream/26.10-main · 2026-10-14, revised after the implementation review</p>
+<p class="lede">Everything rdrs2 needs so that an idle pod stops restarting, a loaded pod stops growing without bound, and a row or blob of any size can be returned. Four code changes, one chart change, full test coverage, implemented on 26.02 and merged to 26.10 with one extra commit for the write and delete paths that 26.02 does not have.</p>
+<p class="meta">rdrs2 · RONDB-1144 (design under RONDB-1143) · storage/ndb/rest-server2/server/src · facts checked on upstream/26.02-main and upstream/26.10-main · 2026-10-14, revised after the implementation review and checked against the code on 2026-10-15</p>
 
 <h2>1. Summary</h2>
 <div class="wrap"><table>
@@ -73,7 +73,7 @@ ol li, ul li { margin: .35rem 0; }
 <tr><td>2</td><td>Buffers: sizes computed from the kernel limits, no doubling, blobs spill across a buffer chain</td><td>Every HTTP request holds 12 MiB; a row above 5 MiB fails; 64 threads need 768 MiB just to be busy</td><td>Code reading in section 4; measured idle 326 MiB of which 256 MiB parse buffers</td></tr>
 <tr><td>3</td><td>Pool: a ceiling on the number of buffers, idle shrink, correct stats and metrics</td><td>Pool grows without bound under wide-row traffic and never gives memory back; no metric shows it</td><td>Docker load test: 400-op wide-row batches at 2 req/s OOM-kill a 500 MiB pod in seconds</td></tr>
 <tr><td>4</td><td>Batch: a limit on operations per batch request, checked before any allocation</td><td>One request can take the whole pool; BatchMaxSize looks like a cap but is the execution chunk size</td><td>pkr_operation.cpp:1295, no cap anywhere in the parse path</td></tr>
-<tr><td>5</td><td>Chart: THP wrapper, rdrs.internal keys with rdrs2 names, reject the 22.10 keys</td><td>Customers carry 22.10 settings that render into nothing; none of the above can be switched on from the chart</td><td>helm template at v26.2.19 renders no Internal section from the customer's values</td></tr>
+<tr><td>5</td><td>Chart: THP wrapper, rdrs.internal keys mapped to the rdrs2 names, reject unknown keys including the 22.10 ones</td><td>Customers carry 22.10 settings that render into nothing; none of the above can be switched on from the chart</td><td>helm template at v26.2.19 renders no Internal section from the customer's values</td></tr>
 </table></div>
 <p>Changes 1, 3 and 4 are each a few dozen lines. Change 2 is the real work and has its own full design in section 4. Section 8 lists the tests, section 9 the branch plan, section 10 what is still open.</p>
 
@@ -82,16 +82,16 @@ ol li, ul li { margin: .35rem 0; }
 <pre><code>// process_setup.cc, called first thing in main(), before any thread exists
 ProcessSetupResult rdrs_process_setup() {
 #ifdef __linux__
-  prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);   // per process, inherited by every thread
+  prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0);   // whole address space; before Linux 5.0 only later mappings
 #endif
 }</code></pre>
 <div class="wrap"><table>
 <tr><th>call</th><th>what it fixes</th><th>why this form</th></tr>
 <tr><td>prctl(PR_SET_THP_DISABLE)</td><td>khugepaged collapsing the sparse arenas, stacks and buffer pool of an idle rdrs2 into resident 2 MiB pages until the pod hits its limit</td><td>Works regardless of the node's transparent_hugepage setting, needs no privilege, no node access, no new image; proven at the customer through the perl wrapper that issues the same syscall</td></tr>
-<tr><td>no mallopt(M_ARENA_MAX)</td><td>An earlier revision capped glibc at two arenas against the 278 MiB of arena growth seen at the customer. Measured on Linux on 2026-10-15 (64 CPUs, 83 server threads, release build): the cap serialised the NDB API's per-signal malloc and free on two mutexes, 18 times the context switches, 47 % of CPU in the kernel, up to 54 % less batch throughput; and it retained more memory, 1 032 MiB idle after a 4 MiB-blob burst against 418 MiB uncapped, because two shared heaps fragment and cannot be trimmed. The arena growth at the customer was THP collapsing sparse arenas; with THP disabled they stay sparse (idle 42 MiB measured). So the cap is gone.</td><td>Linux A/B with the cap neutralised: no benchmark slower than the old binary by more than 3.5 %, batch paths 6 to 10 % faster</td></tr>
+<tr><td>no mallopt(M_ARENA_MAX)</td><td>An earlier revision capped glibc at two arenas against the 278 MiB of arena growth seen at the customer. Measured on Linux on 2026-10-15 (64 CPUs, 83 server threads, release build): the cap serialised the NDB API's per-signal malloc and free on two mutexes, 18 times the context switches, 47 % of CPU in the kernel, up to 54 % less batch throughput; and it retained more memory, 1 032 MiB idle after a 4 MiB-blob burst against 418 MiB uncapped, because two shared heaps fragment and cannot be trimmed. The arena growth at the customer was THP collapsing sparse arenas; with THP disabled they stay sparse (43 MiB idle measured). So the cap is gone.</td><td>Linux A/B with the cap neutralised: no benchmark's throughput more than 3.5 % below the old binary (ns/op at most 3.7 % higher), four batch pk-read benchmarks 6 to 10 % faster</td></tr>
 <tr><td>no mallopt(M_MMAP_THRESHOLD)</td><td>An earlier draft pinned glibc's mmap threshold so freed pool buffers would be unmapped. That would also make every batch request mmap and page-fault its 256 KiB arena page, because ArenaMalloc allocates its pages with malloc.</td><td>Dropped. The pool in change 3 allocates its buffers with mmap and frees them with munmap directly, so shrink returns pages to the kernel regardless of glibc's heuristics and the arena keeps its heap behaviour.</td></tr>
 <tr><td>JSONParser buffer allocated without zero-fill</td><td>256 MiB resident at startup: 64 threads × 4 MiB parse buffers, zero-filled by std::make_unique</td><td>std::unique_ptr&lt;char[]&gt;(new char[n]) default-initialises, so pages are touched only when a large request arrives. The server is C++17, so make_unique_for_overwrite is not available. No behaviour change: the parser never reads beyond the request length.</td></tr>
-<tr><td>explicit pool initialisation</td><td>The buffer pool is a global constructed before main() from compiled-in defaults, so the config file's PreAllocatedBuffers never affected preallocation, 384 MiB virtual was reserved before any mallopt, and every unit test linking the server library paid it</td><td>The pool gets a trivial constructor and an explicit init() called from main() after the config is loaded. Part of change 3; listed here because it is a precondition for the mallopt call to matter.</td></tr>
+<tr><td>explicit pool initialisation</td><td>The buffer pool is a global constructed before main() from compiled-in defaults, so the config file's PreAllocatedBuffers never affected preallocation, 384 MiB virtual was reserved at static initialisation, and every unit test linking the server library paid it</td><td>The pool gets a trivial constructor and an explicit init() called from main() after the config is loaded. Part of change 3; listed here because it keeps idle memory low from the first second.</td></tr>
 </table></div>
 <p>The helm chart carries the same prctl as a perl one-liner for images that predate this change. Once a release with the call ships, the chart option stays harmless and can default to off.</p>
 
@@ -104,8 +104,8 @@ ProcessSetupResult rdrs_process_setup() {
 <tr><td>where checked</td><td>In batch_parse, as soon as the operations array has been counted and before any buffer or arena allocation. Same check in the batch feature store parser.</td></tr>
 <tr><td>response</td><td>HTTP 413 with the message "batch exceeds MaxOperationsPerBatch (M)". simdjson on-demand arrays cannot be counted cheaply, so the message names the limit, not the batch size. The HTTP_CODE enum in rdrs_dal.h has no 413, so the parser returns static_cast&lt;HTTP_CODE&gt;(drogon::k413RequestEntityTooLarge), and both batch controllers, which today force 400 on any parse failure, propagate status.http_code instead.</td></tr>
 <tr><td>BatchMaxSize</td><td>Description corrected to "operations per NDB execution loop"; semantics unchanged</td></tr>
-<tr><td>the body limit</td><td>rdrs2 never calls setClientMaxBodySize, so Drogon's default of 1 MiB is the effective body limit and the MaxReqSize check at 4 MiB is never reached. The 1 MiB bound is kept. MaxReqSize's default becomes 1 MiB and rdrs2 passes it to setClientMaxBodySize at startup, so the config key and the enforced limit are the same number. Behaviour at the defaults is unchanged.</td></tr>
-<tr><td>why the body limit is not enough</td><td>An operation that names no columns is about 60 bytes of JSON but reserves 97.5 KiB in the request buffer on 26.02 and 780 KiB on 26.10. With the operation limit of 512 the worst case per batch is 512 × 97.5 KiB = 49 MiB of request buffers on 26.02 and 512 × 780 KiB = 390 MiB on 26.10, while 512 typical operations that name their columns need about 150 KiB. On 26.02 even the worst case fits a 500 MiB pod's pool budget. On 26.10 it does not, and the pool cap answers 503 before any NDB work; that is the one place the deferred column-name reservation would matter.</td></tr>
+<tr><td>the body limit</td><td>rdrs2 never calls setClientMaxBodySize, so Drogon's default of 1 MiB is the effective body limit and the MaxReqSize check at 4 MiB is never reached. The 1 MiB bound is kept. MaxReqSize's default becomes 1 MiB and rdrs2 passes it to setClientMaxBodySize at startup, so the config key and the enforced limit are the same number; a PROBLEM check rejects values below 256 at startup. The JSON key is spelled maxReqSize. Behaviour at the defaults is unchanged.</td></tr>
+<tr><td>why the body limit is not enough</td><td>An operation that names no columns is about 60 bytes of JSON but reserves REQ_COLNAME_RESERVE in the request buffer, 104 KiB on 26.02 and 832 KiB on 26.10, so two of them share one request buffer. With the operation limit of 512 the worst case per batch is 256 request buffers: 256 × 256 KiB = 64 MiB on 26.02 and 256 × 2 MiB = 512 MiB on 26.10. 512 typical operations that name their columns write about 150 KiB, which holds two 256 KiB request buffers on 26.02 (a new operation starts only while 119.3 KiB are free) and one 2 MiB buffer on 26.10. On 26.02 even the worst case fits a 500 MiB pod's pool budget, a cap of about 330 pairs. On 26.10 it does not, with about 83 pairs, and the pool cap answers 503 before any NDB work; that is the one place the deferred column-name reservation would matter.</td></tr>
 <tr><td>relation to the pool cap</td><td>This bounds one request. MaxBuffers in change 3 bounds all requests together. Both are counts, neither is a size.</td></tr>
 </table></div>
 
@@ -119,9 +119,9 @@ ProcessSetupResult rdrs_process_setup() {
 
 <h4>Words used in this document</h4>
 <dl>
-<dt>buffer</dt><dd>One RS_Buffer from the pool, the thing ReqBufferSize and RespBufferSize size. A buffer holds many responses.</dd>
+<dt>buffer</dt><dd>One RS_Buffer from the pool. Its size is computed from the NDB limits; ReqBufferSize and RespBufferSize used to set it and are now ignored. A buffer holds many responses.</dd>
 <dt>response</dt><dd>What one operation writes into a response buffer: a fixed header, a fixed data part, and then its blobs. On the request side each operation writes an operation request, which has a header and a fixed data part and no blobs.</dd>
-<dt>fixed header</dt><dd>The 36-byte header at the start of every response and operation request.</dd>
+<dt>fixed header</dt><dd>The 36-byte header at the start of every response and operation request (on 26.10 the operation request header is 40 bytes).</dd>
 <dt>fixed data part</dt><dd>The column table and every value that is not a blob or text: integers, dates, decimals, strings, binary. Its size has a known maximum.</dd>
 <dt>fixed part</dt><dd>Fixed header plus fixed data part. The whole of it always sits in one buffer.</dd>
 <dt>blob part</dt><dd>The blob and text values of a response. Written after the fixed part. May continue into the next buffers.</dd>
@@ -307,9 +307,9 @@ ProcessSetupResult rdrs_process_setup() {
 <h4>4.3.2 Rule 2: a start reserve instead of the halfway mark</h4>
 <p>Before placing an operation, the writer checks how much of the current buffer is free. If less than the start reserve is free, the operation starts in a fresh buffer. The reserve is the largest fixed part any operation can have, a compile-time constant explained in section 4.4. With that, rule 1 (4.3.1) holds without doubling the buffer.</p>
 <div class="ex"><p class="t">Example, 26.02 limits</p>
-<p>Response buffer 512 KiB, reserve 185 KiB. Operations may start while less than 327 KiB are used. A batch of 200-byte rows starts about 800 operations in one buffer before moving to the next. A batch of 30 KB rows starts 11. The worst possible row, 185 KiB of fixed part, starts at 0 and a second one starts right after it at 185 KiB.</p></div>
+<p>Response buffer 512 KiB, reserve 188.6 KiB. Operations may start while less than 323.4 KiB are used. A batch of 200-byte rows starts about 800 operations in one buffer before moving to the next. A batch of 30 KB rows starts 11. The worst possible row, 188.6 KiB of fixed part, starts at 0 and a second one starts right after it at 188.6 KiB.</p></div>
 
-<p>On the request side the writer knows more than the reserve: the encoder computes each operation's upper bound before writing (section 4.6, create_native_request), and the chain is handed that bound. An operation starts in a fresh buffer when less than the larger of the reserve and its own bound is free. This is what keeps a lowered StartReserveOverride harmless for requests, where there is no rule 5 retry: the pool test's 4 KiB reserve would otherwise let a third column-less operation (106 KiB of name reservation) be placed in the 48 KiB left behind two others and be refused with 400.</p>
+<p>On the request side the writer knows more than the reserve: the encoder computes each operation's upper bound before writing (section 4.6, create_native_request), and the chain is handed that bound. An operation starts in a fresh buffer when less than the larger of the reserve and its own bound is free. This is what keeps a lowered StartReserveOverride harmless for requests, where there is no rule 5 retry: the pool test's 4 KiB reserve would otherwise let a third column-less operation (104 KiB of name reservation) be placed in the 48 KiB left behind two others and be refused with 400.</p>
 
 <h4>4.3.3 Rule 3: blob and text values spill</h4>
 <p>A blob is read from NDB in 32 KiB chunks and copied into the response, as today. When a chunk does not fit, the writer copies the part that fits, fills the buffer to its last byte, takes the next buffer from the pool, links it to the chain, and continues at offset 0. Continuation buffers have no header. The blob's column table entry is the same four words as today: its length, and an address. The address is an offset in the response's virtual stream: the home buffer's bytes first, then that response's continuation buffers in chain order. A first blob therefore has a home-buffer offset as today; a second blob in the same row, which starts inside a continuation buffer, has an offset past the home buffer's end. Values written before the blobs keep plain home offsets, so nothing changes for them.</p>
@@ -364,7 +364,7 @@ ProcessSetupResult rdrs_process_setup() {
     <path d="M260 152 C 330 152, 400 130, 640 130 L 640 98"/>
   </g>
   <text x="20" y="200" font-size="12" fill="var(--muted)">Pass 1 writes c0 and c2. Pass 2 writes c1 and c3 and may spill. Entries keep request order; a NULL blob gets a null entry at its own index.</text>
-  <text x="20" y="220" font-size="12" fill="var(--muted)">The only writer change is that SetColumnData takes the column index instead of counting.</text>
+  <text x="20" y="220" font-size="12" fill="var(--muted)">The only writer change is that a new SetSlot names the column index instead of counting.</text>
 </svg>
 <figcaption>Figure 4. Blobs last. Pass 2 is the only code that can spill, so the spill path exists in exactly the two branches of write_col_to_resp that handle Blob and Text.</figcaption>
 </figure>
@@ -372,7 +372,7 @@ ProcessSetupResult rdrs_process_setup() {
 <h4>4.3.5 Rule 5: a retry, so the start reserve is a heuristic and not a promise</h4>
 <p>The start reserve is computed from limits and code paths. If it is ever wrong, the result must still be right. So if an operation overflows its buffer and did not start at offset 0, the writer takes a fresh buffer and writes that operation again from offset 0, where it has the whole buffer. The row is already in the NDB record; this is a second formatting pass, not a second read. The writer records an overflow flag whenever a capacity check fails, so the retry decision does not depend on matching error text. Only an operation whose fixed part is larger than a whole buffer fails, with the same error as today. Since the buffer size is computed from the same limits, that can only mean the expansion constant is wrong, which is a code fix and not a configuration change.</p>
 <div class="ex"><p class="t">Example</p>
-<p>Suppose a future column type expands text eight times instead of six, and a row's fixed part is 240 KiB where the start reserve expected at most 185 KiB. The operation starts at offset 300 KiB of a 512 KiB buffer, overflows at 512 KiB, is retried at offset 0 of a fresh buffer, and succeeds. Packing lost one partly used buffer. Correctness lost nothing.</p></div>
+<p>Suppose a future column type expands text eight times instead of six, and a row's fixed part is 240 KiB where the start reserve expected at most 188.6 KiB. The operation starts at offset 300 KiB of a 512 KiB buffer, overflows at 512 KiB, is retried at offset 0 of a fresh buffer, and succeeds. Packing lost one partly used buffer. Correctness lost nothing.</p></div>
 
 <h3>4.4 How large must a buffer be? The home buffer question</h3>
 <p>Rule 1 only works if the largest possible fixed part fits in a buffer with room to spare. This section computes that largest fixed part from the limits in the code, shows that it changes between 26.02 and 26.10, and makes the code derive it rather than carry a number.</p>
@@ -393,17 +393,20 @@ ProcessSetupResult rdrs_process_setup() {
 <div class="wrap"><table>
 <tr><th>response</th><th class="num">bytes</th><th>from</th></tr>
 <tr><td>header</td><td class="num">36</td><td>PK_RESP_HEADER_END</td></tr>
+<tr><td>status message</td><td class="num">256</td><td>RS_STATUS_MSG_LEN</td></tr>
+<tr><td>operation id</td><td class="num">4 100</td><td>rdrs_align4(MAX_OPERATION_ID_RESERVE + 1)</td></tr>
 <tr><td>column table, 512 columns</td><td class="num">8 196</td><td>4 + MAX_ATTRIBUTES_IN_TABLE × 16</td></tr>
 <tr><td>values, 30 000 raw bytes × 6</td><td class="num">180 000</td><td>MAX_TUPLE_SIZE_IN_WORDS × 4 × 6</td></tr>
 <tr><td>terminators</td><td class="num">512</td><td>one per value</td></tr>
-<tr><td><strong>largest response fixed part</strong></td><td class="num"><strong>188 744</strong></td><td>about 185 KiB</td></tr>
+<tr><td>alignment</td><td class="num">4</td><td>ADDRESS_SIZE</td></tr>
+<tr><td><strong>largest response fixed part</strong></td><td class="num"><strong>193 104</strong></td><td>about 188.6 KiB, MIN_RESP_BUFFER</td></tr>
 </table></div>
 <div class="wrap"><table>
 <tr><th>operation request</th><th class="num">bytes</th><th>from</th></tr>
-<tr><td>header, db and table names, operation id</td><td class="num">≈ 700</td><td>36 + 2 × 193 + 256</td></tr>
-<tr><td>primary key, 32 columns, 4 092 bytes of key values</td><td class="num">≈ 10 600</td><td>MAX_ATTRIBUTES_IN_INDEX, MAX_KEY_SIZE_IN_WORDS</td></tr>
-<tr><td>read columns, 512 names of 192 bytes with length and type words</td><td class="num">≈ 101 000</td><td>MAX_ATTRIBUTES_IN_TABLE × (1 + MAX_ATTR_NAME_SIZE + 2), same as the column-name reservation made when no columns are named</td></tr>
-<tr><td><strong>largest request fixed part</strong></td><td class="num"><strong>≈ 112 000</strong></td><td>about 110 KiB</td></tr>
+<tr><td>header, db and table names, operation id</td><td class="num">4 540</td><td>36 + 2 × rdrs_align4(4 + 192 + 1) + rdrs_align4(4 + MAX_OPERATION_ID_RESERVE + 1)</td></tr>
+<tr><td>primary key, 32 columns, 4 092 bytes of key values</td><td class="num">11 136</td><td>4 + 32 × (12 + 200) + MAX_KEY_SIZE_IN_WORDS × 4 + 32 × 8</td></tr>
+<tr><td>read columns, 512 names of 192 bytes with offset, type and length words</td><td class="num">106 504</td><td>REQ_COLNAME_RESERVE = 4 + 513 × 4 + 512 × (4 + rdrs_align4(4 + 192 + 1)), the reservation made when no columns are named</td></tr>
+<tr><td><strong>largest request fixed part</strong></td><td class="num"><strong>122 180</strong></td><td>about 119.3 KiB, MIN_REQ_BUFFER</td></tr>
 </table></div>
 <p>With these limits a 512 KiB response buffer and a 256 KiB request buffer hold the worst case with room to pack. Real rows sit far below: 30 KB of ordinary text needs at most 99 KB, and utf8mb4 tables need no conversion at all.</p>
 
@@ -418,7 +421,7 @@ ProcessSetupResult rdrs_process_setup() {
 </table></div>
 
 <figure>
-<svg viewBox="0 0 900 250" role="img" aria-label="The largest response fixed part drawn to scale against buffer sizes: 185 KiB inside a 512 KiB buffer on 26.02, 490 KiB almost filling a 512 KiB buffer on 26.10, so 26.10 needs a 1 MiB buffer">
+<svg viewBox="0 0 900 250" role="img" aria-label="The largest response fixed part drawn to scale against buffer sizes: 188.6 KiB inside a 512 KiB buffer on 26.02, 494.2 KiB almost filling a 512 KiB buffer on 26.10, so 26.10 needs a 1 MiB buffer">
   <g fill="currentColor" font-size="14" font-weight="600">
     <text x="20" y="24">Largest response fixed part, to scale. Full width = 1 MiB.</text>
   </g>
@@ -426,63 +429,116 @@ ProcessSetupResult rdrs_process_setup() {
   <rect x="80" y="40" width="400" height="30" fill="var(--free)" stroke="currentColor"/>
   <rect x="80" y="40" width="7" height="30" fill="var(--fixed)" stroke="var(--fixed-line)"/>
   <rect x="87" y="40" width="137" height="30" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/>
-  <text x="490" y="60" font-size="12" fill="var(--muted)">512 KiB buffer, fixed part 185 KiB, 327 KiB left to pack</text>
+  <text x="490" y="60" font-size="12" fill="var(--muted)">512 KiB buffer, fixed part 188.6 KiB, 323.4 KiB left to pack</text>
   <text x="20" y="116" font-size="13" fill="currentColor">26.10</text>
   <rect x="80" y="100" width="400" height="30" fill="var(--free)" stroke="currentColor"/>
   <rect x="80" y="100" width="51" height="30" fill="var(--fixed)" stroke="var(--fixed-line)"/>
   <rect x="131" y="100" width="332" height="30" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/>
-  <text x="490" y="120" font-size="12" fill="var(--accent)">512 KiB buffer, fixed part 490 KiB, 22 KiB left: too tight</text>
+  <text x="490" y="120" font-size="12" fill="var(--accent)">512 KiB buffer, fixed part 494.2 KiB, 17.8 KiB left: too tight</text>
   <text x="20" y="176" font-size="13" fill="currentColor">26.10</text>
   <rect x="80" y="160" width="800" height="30" fill="var(--free)" stroke="currentColor"/>
   <rect x="80" y="160" width="51" height="30" fill="var(--fixed)" stroke="var(--fixed-line)"/>
   <rect x="131" y="160" width="332" height="30" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/>
-  <text x="470" y="180" font-size="12" fill="var(--muted)">1 MiB buffer, fixed part 490 KiB, 534 KiB left to pack</text>
+  <text x="470" y="180" font-size="12" fill="var(--muted)">1 MiB buffer, fixed part 494.2 KiB, 529.8 KiB left to pack</text>
   <rect x="80" y="214" width="14" height="12" fill="var(--fixed)" stroke="var(--fixed-line)"/><text x="100" y="224" font-size="12" fill="var(--muted)">column table</text>
   <rect x="210" y="214" width="14" height="12" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/><text x="230" y="224" font-size="12" fill="var(--muted)">values as escaped text, worst case</text>
 </svg>
-<figcaption>Figure 5. The home buffer question. A 512 KiB buffer is comfortable on 26.02 and almost full on 26.10, where the column table alone is 64 KiB and the values can reach 422 KiB. The request side is worse on 26.10: 4 096 column names at 192 bytes need about 790 KiB.</figcaption>
+<figcaption>Figure 5. The home buffer question. A 512 KiB buffer is comfortable on 26.02 and almost full on 26.10, where the column table alone is 64 KiB and the values can reach 422 KiB. The request side is worse on 26.10: 4 096 column names at 192 bytes need about 832 KiB.</figcaption>
 </figure>
 
 <div class="wrap"><table>
 <tr><th>largest fixed part</th><th class="num">26.02</th><th class="num">26.10</th></tr>
-<tr><td>response</td><td class="num">188 744 B</td><td class="num">501 672 B</td></tr>
-<tr><td>request</td><td class="num">≈ 112 KB</td><td class="num">≈ 810 KB</td></tr>
+<tr><td>response</td><td class="num">193 104 B</td><td class="num">506 032 B</td></tr>
+<tr><td>request</td><td class="num">122 180 B</td><td class="num">867 656 B</td></tr>
 </table></div>
 <p>So a merge to 26.10 with a hard-coded 512 KiB would still build and still pass every test with ordinary rows, and then fail on the first table with thousands of columns, or on the first read that names no columns on such a table. That is why no size may be typed into the code.</p>
 
 <h4>4.4.4 Derive every size from the limits at compile time</h4>
-<p>rdrs_const.h computes the minimum buffer, the start reserve and the default buffer from the same kernel limits the data node uses. The code never contains a byte count.</p>
-<pre><code>constexpr Uint32 MAX_ROW_BYTES      = MAX_TUPLE_SIZE_IN_WORDS * 4;
-constexpr Uint32 MAX_TEXT_EXPANSION = 6;   // utf8mb4 conversion, then \u00xx escaping
+<p>buffer_sizes.hpp computes the minimum buffer, the start reserve and the default buffer from the same kernel limits the data node uses. The code never contains an NDB-derived byte count. rdrs_const.h only points to it.</p>
+<pre><code>// buffer_sizes.hpp, from MAX_ROW_BYTES to the last static_assert, as at HEAD
+/* The NDB row limit in bytes: every non-blob value of a row together. */
+constexpr Uint32 MAX_ROW_BYTES = MAX_TUPLE_SIZE_IN_WORDS * 4;
 
+/* A character column is converted to utf8mb4 (at most 3 bytes per source
+ * byte for any single-byte charset) and then JSON-escaped (a control
+ * character becomes \u00xx, 6 bytes). A byte that grew to 3 is non-ASCII
+ * and is never escaped, so the two factors do not multiply: 6 is the
+ * ceiling per source byte. */
+constexpr Uint32 MAX_TEXT_EXPANSION = 6;
+
+/* Upper bound accepted for Internal.OperationIDMaxSize, so the operation
+ * id can be counted in the minimums below. */
+constexpr Uint32 MAX_OPERATION_ID_RESERVE = 4096;
+
+/* Space the request encoder reserves for column names when an operation
+ * names none and every table column must be filled in later from the
+ * dictionary: an offset array, then per column a type word, a length word,
+ * the name and its terminator, 4-aligned. Matches what
+ * PKRRequest::addReadColumns/addReadColumnName write. */
+constexpr Uint32 REQ_COLNAME_RESERVE =
+    ADDRESS_SIZE + ((MAX_ATTRIBUTES_IN_TABLE + 1) * ADDRESS_SIZE) +
+    (MAX_ATTRIBUTES_IN_TABLE *
+     (ADDRESS_SIZE + rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1)));
+
+/* Largest fixed part of one response: header, status message, operation
+ * id, column table (count plus four words per column), every value as
+ * escaped text, one terminator per value, alignment slack. */
 constexpr Uint32 MIN_RESP_BUFFER =
-    PK_RESP_HEADER_END + 4 + MAX_ATTRIBUTES_IN_TABLE * 16
-  + MAX_ROW_BYTES * MAX_TEXT_EXPANSION + MAX_ATTRIBUTES_IN_TABLE;
+    PK_RESP_HEADER_END + RS_STATUS_MSG_LEN +
+    rdrs_align4(MAX_OPERATION_ID_RESERVE + 1) + ADDRESS_SIZE +
+    (MAX_ATTRIBUTES_IN_TABLE * 4 * ADDRESS_SIZE) +
+    (MAX_ROW_BYTES * MAX_TEXT_EXPANSION) + MAX_ATTRIBUTES_IN_TABLE +
+    ADDRESS_SIZE;
 
+/* Largest operation request: header, db and table names, the primary key
+ * (count, per column two pointer words plus the name, all key bytes with a
+ * length word each), the operation id, and the column-name reservation.
+ * A key whose JSON text exceeds the NDB key limit is placed by
+ * native_request_upper_bound instead. */
 constexpr Uint32 MIN_REQ_BUFFER =
-    PK_REQ_HEADER_END + 2 * (MAX_ATTR_NAME_SIZE + 1) + 256
-  + MAX_ATTRIBUTES_IN_INDEX * (8 + MAX_ATTR_NAME_SIZE + 1) + MAX_KEY_SIZE_IN_WORDS * 4
-  + 17 + MAX_ATTRIBUTES_IN_TABLE * (1 + MAX_ATTR_NAME_SIZE + 2);
+    PK_REQ_HEADER_END +
+    (2 * rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1)) + ADDRESS_SIZE +
+    (MAX_ATTRIBUTES_IN_INDEX *
+     ((3 * ADDRESS_SIZE) +
+      rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1))) +
+    (MAX_KEY_SIZE_IN_WORDS * 4) + (MAX_ATTRIBUTES_IN_INDEX * 2 * ADDRESS_SIZE) +
+    rdrs_align4(ADDRESS_SIZE + MAX_OPERATION_ID_RESERVE + 1) +
+    REQ_COLNAME_RESERVE;
 
-constexpr Uint32 RESP_START_RESERVE      = MIN_RESP_BUFFER;
-constexpr Uint32 REQ_START_RESERVE       = MIN_REQ_BUFFER;
-constexpr Uint32 DEFAULT_RESP_BUFFER = next_pow2(2 * MIN_RESP_BUFFER);  // the buffer size; not a setting
-constexpr Uint32 DEFAULT_REQ_BUFFER  = next_pow2(2 * MIN_REQ_BUFFER);
+/* A new response (or operation request) may only start in a buffer that
+ * still has this much room; otherwise it goes to a fresh buffer. */
+constexpr Uint32 RESP_START_RESERVE = MIN_RESP_BUFFER;
+constexpr Uint32 REQ_START_RESERVE = MIN_REQ_BUFFER;
 
-static_assert(DEFAULT_RESP_BUFFER &gt;= 2 * MIN_RESP_BUFFER);
-static_assert(DEFAULT_REQ_BUFFER  &gt;= 2 * MIN_REQ_BUFFER);</code></pre>
-<p>The implementation adds two terms the formulas above leave out, the status message (256 bytes) and the operation id, which is a config value bounded by a new PROBLEM check, and uses the corrected column-name reservation from section 4.6. The minimums then evaluate to about 193 KiB and 116 KiB on 26.02; the defaults are unchanged at 512 KiB and 256 KiB.</p>
+/* The buffer sizes: the power of two above twice the minimum, so that
+ * several responses pack into one buffer. Not settings; see the design
+ * document for why a user-chosen value can only be worse. */
+constexpr Uint32 DEFAULT_RESP_BUFFER = rdrs_next_pow2(2 * MIN_RESP_BUFFER);
+constexpr Uint32 DEFAULT_REQ_BUFFER = rdrs_next_pow2(2 * MIN_REQ_BUFFER);
+
+static_assert(DEFAULT_RESP_BUFFER &gt;= 2 * MIN_RESP_BUFFER,
+              "response buffer must hold two worst-case responses");
+static_assert(DEFAULT_REQ_BUFFER &gt;= 2 * MIN_REQ_BUFFER,
+              "request buffer must hold two worst-case operation requests");
+static_assert(DEFAULT_RESP_BUFFER % ADDRESS_SIZE == 0 &amp;&amp;
+              DEFAULT_REQ_BUFFER % ADDRESS_SIZE == 0,
+              "buffer sizes must be word aligned");
+/* A limit increase that outgrows what one buffer can address fails the
+ * build here rather than the first wide read after a merge. */
+static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &lt; (1U &lt;&lt; 30),
+              "a single buffer must stay addressable with 32-bit offsets");</code></pre>
+<p>Compared with the first draft of these formulas, the code adds the status message (RS_STATUS_MSG_LEN, 256 bytes) and the operation id, reserved at MAX_OPERATION_ID_RESERVE (4 096 bytes) because OperationIDMaxSize is a setting bounded by a PROBLEM check at that number, rounds every name to a word, and uses the corrected column-name reservation REQ_COLNAME_RESERVE from section 4.6. rdrs_next_pow2 rounds twice each minimum up to a power of two. On 26.02 the minimums evaluate to 193 104 B (188.6 KiB) and 122 180 B (119.3 KiB), and the buffers are 512 KiB and 256 KiB. MAX_ROW_BYTES replaces the old MAX_TUPLE_SIZE_IN_BYTES; the old MAX_TUPLE_SIZE_IN_BYTES_ENCODED is gone, since nothing sizes a whole-row base64 buffer any more.</p>
 <p>Neither size is user configurable. RespBufferSize today is the only knob that sets the largest row rdrs2 can return, which is the one reason anyone touches it; with spilling that reason is gone, and every other value a user could choose is worse than the computed one. The same holds for ReqBufferSize: an operation request has no blobs and its maximum follows from the limits. So both keys are removed, the server uses DEFAULT_RESP_BUFFER and DEFAULT_REQ_BUFFER, and a new <code>--print-limits</code> flag prints the computed values (print-config is generated from the settings and cannot print a non-setting). Because rdrs2 rejects unknown config keys at startup, the two old keys are still accepted and ignored with a warning for one release so a hand-written config keeps working, then dropped. What the expressions evaluate to, as a check:</p>
 <div class="wrap"><table>
 <tr><th>derived value</th><th class="num">26.02 limits</th><th class="num">26.10 limits</th></tr>
-<tr><td>MIN_RESP_BUFFER, also RESP_START_RESERVE</td><td class="num">188 744 B</td><td class="num">501 672 B</td></tr>
-<tr><td>MIN_REQ_BUFFER, also REQ_START_RESERVE</td><td class="num">≈ 112 KB</td><td class="num">≈ 810 KB</td></tr>
+<tr><td>MIN_RESP_BUFFER, also RESP_START_RESERVE</td><td class="num">193 104 B</td><td class="num">506 032 B</td></tr>
+<tr><td>MIN_REQ_BUFFER, also REQ_START_RESERVE</td><td class="num">122 180 B</td><td class="num">867 656 B</td></tr>
 <tr><td>DEFAULT_RESP_BUFFER</td><td class="num">512 KiB</td><td class="num">1 MiB</td></tr>
 <tr><td>DEFAULT_REQ_BUFFER</td><td class="num">256 KiB</td><td class="num">2 MiB</td></tr>
 </table></div>
 <p>The request side is what makes 26.10 expensive, and only because 192 bytes are reserved per column name before the dictionary is consulted. Sizing that column-name reservation from the real column count and name lengths, which create_response already knows, would bring the request minimum on 26.10 back under 512 KiB. That is a later refinement and does not change the chaining design.</p>
 
-<div class="warn"><p><strong>A bug on 26.10 today, independent of this design.</strong> rdrs2 on 26.10-main still defines MAX_TUPLE_SIZE_IN_BYTES as the literal 7501 × 4 = 30 004 while the kernel allows 72 000. The per-column checks at pkr_operation.cpp:908 and pk_base_operation.cpp:295 reject any CHAR, VARCHAR or binary value above 30 004 bytes with ERROR_TOO_LARGE_ROWS, so a legal 32 614-byte VARCHAR fails in rdrs2 today. Deriving the constant from MAX_TUPLE_SIZE_IN_WORDS, as above, fixes it.</p></div>
+<div class="warn"><p><strong>A bug on 26.10-main, fixed by this change.</strong> Upstream 26.10-main defined MAX_TUPLE_SIZE_IN_BYTES as the literal 7501 × 4 = 30 004 while the kernel allows 72 000. The per-column checks at pkr_operation.cpp:908 and pk_base_operation.cpp:295 rejected any CHAR, VARCHAR or binary value above 30 004 bytes with ERROR_TOO_LARGE_ROWS, so a legal 32 614-byte VARCHAR failed in rdrs2. On RONDB-1144-26-10 those checks use MAX_ROW_BYTES, derived from MAX_TUPLE_SIZE_IN_WORDS (pkr_operation.cpp:957, pk_base_operation.cpp:313).</p></div>
 
 <h3>4.5 What it saves</h3>
 <p>Each row below is one situation, with today's cost next to the proposal's cost on each branch's defaults.</p>
@@ -491,27 +547,27 @@ static_assert(DEFAULT_REQ_BUFFER  &gt;= 2 * MIN_REQ_BUFFER);</code></pre>
 <tr><td>memory held by one HTTP request in flight, any size</td><td class="num">12 MiB</td><td class="num">768 KiB</td><td class="num">3 MiB</td></tr>
 <tr><td>32 preallocated pairs at startup, once touched</td><td class="num">384 MiB</td><td class="num">24 MiB</td><td class="num">96 MiB</td></tr>
 <tr><td>64 threads each with one HTTP request in flight</td><td class="num">768 MiB</td><td class="num">48 MiB</td><td class="num">192 MiB</td></tr>
-<tr><td>a batch of 2 000 reads of 200-byte rows</td><td class="num">12 MiB</td><td class="num">1 MiB, 3 response buffers</td><td class="num">3 MiB, 1 response buffer</td></tr>
-<tr><td>a read returning a 10 MiB blob</td><td class="num">fails</td><td class="num">21 response buffers, 10.8 MiB</td><td class="num">11 response buffers, 11 MiB</td></tr>
+<tr><td>a batch of 512 reads of 200-byte rows (MaxOperationsPerBatch; 2 000 would get 413)</td><td class="num">12 MiB</td><td class="num">1 MiB: 1 response and 2 request buffers</td><td class="num">3 MiB: 1 response and 1 request buffer</td></tr>
+<tr><td>a read returning a 10 MiB blob</td><td class="num">fails</td><td class="num">21 response buffers, 10.8 MiB</td><td class="num">11 response buffers, 13 MiB with the request buffer</td></tr>
 <tr><td>largest row that can be returned</td><td class="num">5 MiB</td><td colspan="2" class="num">any size, bounded by the pool cap MaxBuffers</td></tr>
 </table></div>
-<p>Two things this does not change. The JSON for a blob is built in a per-HTTP-request arena, so a 10 MiB blob still costs about 13.4 MiB there while the response is being written; chaining fixes the pool side only. And the pool still needs a ceiling and an idle shrink, which are separate changes; chaining makes each buffer under that ceiling 12 to 24 times cheaper.</p>
+<p>Two things this does not change. The JSON for a blob is built in a per-HTTP-request arena, so a 10 MiB blob still costs about 13.4 MiB there while the response is being written; chaining fixes the pool side only. And the pool still needs a ceiling and an idle shrink, which are separate changes; chaining makes each request and response pair under that ceiling 16 times cheaper on 26.02 and 4 times cheaper on 26.10.</p>
 
 <h3>4.6 Code changes</h3>
 <p>Every change is inside the existing structure. No new buffer type, no new header field, no change to the JSON on the wire.</p>
 <div class="wrap"><table>
 <tr><th>where</th><th>change</th><th>size</th></tr>
-<tr><td><span class="file">rdrs_const.h</span></td><td>The constexpr block of section 4.4.4. MAX_TUPLE_SIZE_IN_BYTES and MAX_TUPLE_SIZE_IN_BYTES_ENCODED become expressions over MAX_TUPLE_SIZE_IN_WORDS.</td><td>about 20 lines</td></tr>
+<tr><td><span class="file">buffer_sizes.hpp</span> (new)</td><td>The constexpr block of section 4.4.4. MAX_TUPLE_SIZE_IN_BYTES is replaced by MAX_ROW_BYTES over MAX_TUPLE_SIZE_IN_WORDS; MAX_TUPLE_SIZE_IN_BYTES_ENCODED is removed. rdrs_const.h keeps a pointer to the new file.</td><td>about 20 lines</td></tr>
 <tr><td><span class="file">config_structs_def.hpp</span></td><td>ReqBufferSize and RespBufferSize stop being settings. The buffer manager uses DEFAULT_REQ_BUFFER and DEFAULT_RESP_BUFFER. The two keys stay parseable for one release and log a deprecation warning when present. PreAllocatedBuffers, MaxBuffers and the shrink interval remain configurable, since they depend on the pod and not on the row format.</td><td>about 10 lines</td></tr>
-<tr><td><span class="file">buffer_manager.hpp</span> allocate_*</td><td>Allocate the configured size, not twice it.</td><td>2 lines</td></tr>
-<tr><td><span class="file">buffer_chain.hpp/.cpp</span> (new)</td><td>RS_BufferChain owns the growable list of buffers one HTTP request has taken and returns all of them in its destructor. It implements rule 2 (start reserve) when placing the next operation, takes continuation buffers for spills, restarts an operation in a fresh buffer for rule 5, and resets the chain for the retry handler. getNextReqRS_Buffer, getNextRespRS_Buffer and release_array_buffers in encoding.cpp are deleted; their callers use the chain. The halfway computation <code>limit = size / 2</code> disappears from the three controllers.</td><td>about 150 lines new, 70 removed</td></tr>
-<tr><td><span class="file">encoding.cpp</span> create_native_request</td><td>Two fixes the review found. The request encoder has no capacity check at all today (copy_str_to_buffer writes unbounded; a 1 MiB body cannot overrun a 2 MiB view but can overrun a 256 KiB one), so an upper bound is computed from the parsed operation first and answered with 400 "operation too large for request buffer". And the column-name reservation at lines 203 to 209 under-counts the real layout written by addReadColumnName (type word, length word, name, NUL, 4-aligned, plus an offset array: 106 500 B for 512 names, not 99 857), so one constexpr REQ_COLNAME_RESERVE derived from the layout is used by both the encoder and the request minimum.</td><td>about 30 lines</td></tr>
+<tr><td><span class="file">buffer_manager.hpp/.cpp</span> RS_BufferPool</td><td>Map buffers of the computed size with mmap, not twice the configured size; ReqBufferSize and RespBufferSize are ignored.</td><td>part of change 3</td></tr>
+<tr><td><span class="file">buffer_chain.hpp/.cpp</span> (new)</td><td>RS_BufferChain owns the growable list of buffers one HTTP request has taken and returns all of them in its destructor. It implements rule 2 (start reserve) when placing the next operation, takes continuation buffers for spills, restarts an operation in a fresh buffer for rule 5, and resets the chain so a retried attempt starts clean. It keeps its owners, the per-operation views and the owner of each view in arrays of its own, so RS_Buffer loses its next_allocated_buffer field. getNextReqRS_Buffer, getNextRespRS_Buffer and release_array_buffers in encoding.cpp are deleted; their callers use the chain. The halfway computation <code>limit = size / 2</code> disappears from the three controllers.</td><td>about 150 lines new, 70 removed</td></tr>
+<tr><td><span class="file">encoding.cpp</span> create_native_request</td><td>Two fixes the review found. The request encoder has no capacity check at all today (copy_str_to_buffer writes unbounded; a 1 MiB body cannot overrun a 2 MiB view but can overrun a 256 KiB one), so an upper bound is computed from the parsed operation first and answered with 400 "operation too large for request buffer". And the column-name reservation at lines 203 to 209 under-counts the real layout written by addReadColumnName (type word, length word, name, NUL, 4-aligned, plus an offset array: 106 504 B for 512 names, not 99 857), so one constexpr REQ_COLNAME_RESERVE derived from the layout is used by both the encoder and the request minimum.</td><td>about 30 lines</td></tr>
 <tr><td><span class="file">pkr_operation.cpp</span> create_response</td><td>Rule 5: on overflow of an operation that did not start at offset 0, take a fresh buffer and write it again.</td><td>about 12 lines</td></tr>
-<tr><td><span class="file">pkr_response.cpp</span></td><td>PKRResponse stores a copy of its home buffer view, a pointer to the chain and its operation index (it must not hold a pointer into the chain's vector, which grows on spill, and it is arena-allocated and never destructed, so no std:: members). SetColumnDataInt and SetBlobLen take the column index. New: an overflow flag set by every failed capacity check, BeginRawColumn, AppendRawWithSpill (fill the current buffer to its last byte, take the next continuation buffer, continue at 0), and FormatChar (the existing conversion, trim and escape without the capacity check).</td><td>about 80 lines</td></tr>
+<tr><td><span class="file">pkr_response.cpp</span></td><td>PKRResponse stores a copy of its home buffer view, a pointer to the chain and its operation index (it must not hold a pointer into the chain's vector, which grows on spill, and it is arena-allocated and never destructed, so no std:: members). A new SetSlot(colIdx) selects the column table entry the next value fills, and SetBlobLen takes that slot. New: an overflow flag set by every failed capacity check, BeginRawColumn, AppendRawWithSpill (fill the current buffer to its last byte, take the next continuation buffer, continue at 0), and FormatChar (the existing conversion, trim and escape without the capacity check).</td><td>about 80 lines</td></tr>
 <tr><td><span class="file">pkr_operation.cpp</span> append_op_recs</td><td>Rule 4: two passes over the read columns.</td><td>about 10 lines</td></tr>
-<tr><td><span class="file">pkr_operation.cpp</span> Blob and Text branches</td><td>Rule 3: drop the up-front check against the whole value; Blob copies each 32 KiB chunk through AppendRawWithSpill; Text stages into the arena, formats, then writes through AppendRawWithSpill. feature_store.cpp:1316, listed in an earlier draft, is the Avro schema reader with its own malloc and is not a pool user.</td><td>about 20 lines per branch</td></tr>
+<tr><td><span class="file">pkr_operation.cpp</span> Blob and Text branches</td><td>Rule 3: drop the up-front check against the whole value; Blob copies each 32 KiB chunk through AppendRawWithSpill; Text stages into the arena, formats, checks the escaped size against the 32-bit offset space (escaping can grow it six times), then writes through AppendRawWithSpill. feature_store.cpp:1316, listed in an earlier draft, is the Avro schema reader with its own malloc and is not a pool user.</td><td>about 20 lines per branch</td></tr>
 <tr><td><span class="file">encoding.cpp</span> process_pkread_response</td><td>Takes the chain and the operation index instead of a raw buffer pointer (three callers change: batch pk read, pk read, feature store process_responses). For a binary or text column whose addr + len passes the end of the home buffer, build the segment list from the chain.</td><td>about 25 lines</td></tr>
-<tr><td><span class="file">pk_data_structs.cpp</span></td><td>Base64 and plain copy over a segment list. The size estimate at pk_data_structs.hpp:203 already uses the total length.</td><td>about 30 lines</td></tr>
+<tr><td><span class="file">pk_data_structs.hpp</span></td><td>Base64 and plain copy over a segment list (copyValue and encodeValueBase64, with libbase64's streaming API). The size estimate at pk_data_structs.hpp:235 already uses the total length.</td><td>about 30 lines</td></tr>
 </table></div>
 
 <h4>Unchanged</h4>
@@ -524,119 +580,155 @@ static_assert(DEFAULT_REQ_BUFFER  &gt;= 2 * MIN_REQ_BUFFER);</code></pre>
 <tr><th>item</th><th>decision</th></tr>
 <tr><td>initialisation and allocation</td><td>The pool's global gets a trivial constructor and an explicit init() called from main() once the config is loaded (today it is built before main() from compiled-in defaults). Buffers are allocated with mmap and freed with munmap, so shrink returns pages to the kernel without depending on glibc's mmap threshold.</td></tr>
 <tr><td><code>Internal.BufferPoolSharePercent</code></td><td>Default 50. At startup rdrs2 reads the memory limit it runs under, cgroup v2 memory.max, else cgroup v1 memory.limit_in_bytes, else physical RAM, and sets the pool budget to this share of it. The buffer cap is then budget divided by the computed size of one pair, applied to each pool. A 500 MiB pod gets about 330 pairs on 26.02 sizes, a 10 GiB pod about 6 800, with nothing to configure. The other half of the pod is left for the parse buffers, the per-request arenas, the NDB API and the process itself.</td></tr>
-<tr><td><code>Internal.MaxBuffers</code></td><td>Override. Default 0, meaning use the derived cap. A non-zero value replaces it for operators who want an explicit count. get_req_buffer and get_resp_buffer return failure once buffersCount reaches the cap; the two getNext functions in encoding.cpp propagate that and the controller answers HTTP 503 with "buffer pool exhausted". --print-limits shows the cap in effect and the limit it was derived from.</td></tr>
-<tr><td><code>Internal.BufferShrinkAfterS</code></td><td>Default 60. Each pool records the last time its free list was empty or below PreAllocatedBuffers. A shrink call runs from the probe server's existing timer loop (probe_server.cpp:379), and from a one-second Drogon loop timer when probes are disabled, since the probe server only exists when ProbeEnable is true: if the free count exceeds PreAllocatedBuffers and the quiet period has passed, the surplus is taken off the free list under the pool mutex and munmap'ed outside it, down to PreAllocatedBuffers. In-flight buffers are not in the free vector and are never touched.</td></tr>
-<tr><td>stats</td><td>get_req_buffers_stats returns the response stats today (copy-paste at buffer_manager.hpp:152) and nothing calls either. Fixed, and exported through metrics.cpp as new metric families only, names to be agreed in section 10.4: per pool in_use, free, peak, allocated, and counters for rejected, retry (change 2 rule 5) and shrunk. A third family, rdrs_limits, exposes the computed numbers (max columns, max row bytes, request and response buffer bytes, operations per batch, buffer cap, memory limit, start reserve) so the test suite reads the limits from /metrics on whichever branch it runs. No existing metric changes.</td></tr>
+<tr><td><code>Internal.MaxBuffers</code></td><td>Override. Default 0, meaning use the derived cap. A non-zero value replaces it for operators who want an explicit count. A pool refuses a buffer once its allocated count reaches the cap: RS_BufferPool::get returns a null buffer and counts a rejection, RS_BufferChain turns that into HTTP 503 "buffer pool exhausted", and the controller returns it. --print-limits shows the cap in effect and the limit it was derived from.</td></tr>
+<tr><td><code>Internal.BufferShrinkAfterS</code></td><td>Default 60. Each pool records the time of the last get() that left more than PreAllocatedBuffers buffers in use. A shrink call runs from the probe server's existing sweep timer (ProbeServer::sweepStalledRequests), and from a one-second Drogon loop timer when probes are disabled, since the probe server only exists when ProbeEnable is true: if the free count exceeds PreAllocatedBuffers and the quiet period has passed, the surplus is taken off the free list under the pool mutex and munmap'ed outside it, down to PreAllocatedBuffers. In-flight buffers are not in the free vector and are never touched.</td></tr>
+<tr><td>stats</td><td>get_req_buffers_stats returns the response stats today (copy-paste at buffer_manager.hpp:152) and nothing calls either. Fixed, and exported through metrics.cpp as new metric families only, named in section 10.4: per pool in_use, free, peak, allocated, and counters for rejected, retry (change 2 rule 5), shrunk and allocated (mmap calls). A third family, rdrs_limits, exposes the computed numbers (max columns, max row bytes, request and response buffer bytes, the minimum request and response buffer bytes, which are the start reserves unless StartReserveOverride is set, operations per batch, buffer cap, memory limit) so the test suite reads the limits from /metrics on whichever branch it runs. No existing metric changes.</td></tr>
 <tr><td>never freed before</td><td>Buffers were only ever returned to the free vector. Shrink is the first code that deletes one, so the destructor logic and the stats must agree; the pool accounting test in section 8 checks that.</td></tr>
 </table></div>
 
 <h2>6. Change 5: helm chart</h2>
+<p>Committed on rondb-helm branch RONDB-1144 as 349a18a, on top of chart 26.2.21.</p>
 <ul>
-<li><strong>rdrs.disableTransparentHugePages</strong>, default true: the perl prctl wrapper in front of rdrs2. Already drafted as an uncommitted change on top of chart 26.2.21. Stays harmless once rdrs2 makes the call itself.</li>
-<li><strong>rdrs.internal</strong> with the rdrs2 names, each rendered only when set so older images do not reject the key: PreAllocatedBuffers, MaxBuffers, BufferShrinkAfterS, MaxOperationsPerBatch, NumThreads. No buffer size keys, because change 2 computes them.</li>
-<li><strong>Schema rejects the 22.10 keys</strong> bufferSize, maxAllocatedBuffers and gomaxprocs with a message naming the replacement, so a config carried over from the Go server fails helm install loudly instead of rendering into nothing.</li>
-<li><strong>NumThreads</strong> exposed, and the chart's documentation says to size it from the CPU limit. The 64-thread default on a 5 CPU pod is the other half of the memory story and cannot be changed from the chart today.</li>
+<li><strong>rdrs.disableTransparentHugePages</strong>, default true: the perl prctl wrapper in front of rdrs2. Stays harmless once rdrs2 makes the call itself.</li>
+<li><strong>rdrs.internal</strong> in camelCase, each value mapped to its rdrs2 name and rendered only when set, so older images do not reject the key: maxReqSize, scanRespBufferSize, scanTimingEnabled, slowScanThresholdUs, slowScanBufferSize, preAllocatedBuffers, maxBuffers, bufferPoolSharePercent, bufferShrinkAfterS, batchMaxSize, maxOperationsPerBatch and operationIdMaxSize. No buffer size keys, because change 2 computes them. The render fails when a non-zero maxBuffers is below 2 or below preAllocatedBuffers (32 when unset), mirroring rdrs2's startup check.</li>
+<li><strong>Unknown keys are rejected.</strong> The schema sets additionalProperties: false, so the 22.10 keys bufferSize, maxAllocatedBuffers and gomaxprocs fail helm install with the generic schema error. No message names them or their replacement.</li>
+<li><strong>rdrs.rest.numThreads</strong> exposed, documented as part of the pod's memory because every thread holds a parse buffer of maxReqSize bytes. The 64-thread default on a 5 CPU pod is the other half of the memory story.</li>
+<li>The chart README also documents the TTLPurge settings.</li>
 </ul>
 
 <h2>7. Memory, before and after all changes</h2>
 <div class="wrap"><table>
 <tr><th>situation, 500 MiB pod, 64 threads</th><th class="num">today</th><th class="num">after, 26.02</th></tr>
-<tr><td>idle, THP always on the node</td><td class="num">grows to the limit, restart every 14 min</td><td class="num">about 50 MiB, stable</td></tr>
-<tr><td>idle, THP off</td><td class="num">297 to 326 MiB</td><td class="num">about 50 MiB: no zero-filled parse buffers, 24 MiB preallocated pool once touched</td></tr>
+<tr><td>idle, THP always on the node</td><td class="num">grows to the limit, restart every 14 min</td><td class="num">about 45 MiB, stable (43 MiB measured, section 8.6)</td></tr>
+<tr><td>idle, THP off</td><td class="num">297 to 326 MiB</td><td class="num">about 45 MiB (43 MiB measured): no zero-filled parse buffers; the 24 MiB preallocated pool counts only once touched</td></tr>
 <tr><td>64 HTTP requests in flight, small rows</td><td class="num">768 MiB of buffers</td><td class="num">48 MiB of buffers</td></tr>
 <tr><td>400-op wide-row batches at 2 req/s</td><td class="num">OOM-killed in seconds</td><td class="num">bounded by MaxBuffers; 503 instead of a kill</td></tr>
-<tr><td>after a burst, 60 s idle</td><td class="num">peak stays allocated forever</td><td class="num">pool back to PreAllocatedBuffers, pages returned</td></tr>
+<tr><td>after a burst, 60 s idle</td><td class="num">peak stays allocated forever</td><td class="num">pool back to PreAllocatedBuffers, its pages returned; the process measured 418 MiB after the benchmark run against 43 MiB idle, which is glibc heaps, not the pool</td></tr>
 <tr><td>largest row or blob</td><td class="num">5 MiB</td><td class="num">any size under the pool cap</td></tr>
 </table></div>
 <h3>7.1 Pod-level worst case: 64 batches of 512 operations at once</h3>
-<p>The operation limit bounds one batch; the pod is bounded by the cap, not by the thread count. With 64 HTTP requests in flight, each a 512-operation batch, request buffers alone are:</p>
+<p>The operation limit bounds one batch; the pod is bounded by the cap, not by the thread count. With 64 HTTP requests in flight, each a 512-operation batch, the buffers held, counted in whole buffers rather than bytes written, are:</p>
 <div class="wrap"><table>
-<tr><th>64 batches of 512 operations</th><th class="num">26.02</th><th class="num">26.10</th></tr>
-<tr><td>typical, columns named, about 300 B per operation</td><td class="num">10 MiB</td><td class="num">10 MiB</td></tr>
-<tr><td>worst, no columns named, column-name reservation per operation</td><td class="num">3.1 GiB</td><td class="num">24 GiB</td></tr>
-<tr><td>responses on top, if every read returns a widest row</td><td class="num">+ 5.8 GiB</td><td class="num">+ 15 GiB</td></tr>
+<tr><th>64 batches of 512 operations, buffers held</th><th class="num">26.02</th><th class="num">26.10</th></tr>
+<tr><td>typical, columns named, about 300 B per operation: two 256 KiB request buffers per batch on 26.02, one 2 MiB on 26.10</td><td class="num">32 MiB</td><td class="num">128 MiB</td></tr>
+<tr><td>worst, no columns named: two operations share a request buffer, 256 buffers per batch</td><td class="num">4 GiB</td><td class="num">32 GiB</td></tr>
+<tr><td>responses on top, if every read returns a widest row: two per response buffer</td><td class="num">+ 8 GiB</td><td class="num">+ 16 GiB</td></tr>
 </table></div>
-<p>No pod holds the worst case and the design does not try to. The first batches take buffers up to the pool budget and the rest get 503 until buffers return: a 503 storm under abuse, no OOM kill, and full service for the typical case, which a 500 MiB pod holds many times over. On 26.10 the worst case is dominated by the 780 KiB column-name reservation per operation; that is the deferred refinement in section 10.1 and this is the scenario where it would pay off.</p>
-<p>The idle figures after the change are derived from the measured breakdown (parse buffers, arenas, stacks, pool) and need the measurement in section 8 to confirm them.</p>
+<p>No pod holds the worst case and the design does not try to. The first batches take buffers up to the pool budget and the rest get 503 until buffers return: a 503 storm under abuse, no OOM kill, and full service for the typical case, which a 500 MiB pod holds many times over. On 26.10 the worst case is dominated by the 832 KiB column-name reservation per operation; that is the deferred refinement in section 10.1 and this is the scenario where it would pay off.</p>
+<p>The idle figures after the change were confirmed on Linux on 2026-10-15: 43 MiB idle before any load (section 8.6).</p>
 
 <h2>8. Tests</h2>
-<p>rdrs2 has three test layers and all three are used: C++ unit tests in server/test on gtest, the Go integration suite in server/test_go, which the MTR test rdrs2-golang_gotest runs against the suite's servers (every Go package is discovered automatically), and MTR tests in the rdrs2-golang suite that start rdrs2 with their own config where a test needs a small pool or a lowered start reserve. Every new line of code is reached by at least one test below, and every test that depends on a limit reads it from the rdrs_limits family on /metrics. That is what makes the same test file exercise 512 columns on 26.02 and 4 096 columns on 26.10 without edits.</p>
+<p>rdrs2 has three test layers and all three are used: C++ unit tests in server/test on gtest, which the MTR test rdrs2-golang_cpptest runs; the Go integration suite in server/test_go, which the MTR test rdrs2-golang_gotest runs against the suite's servers (every Go package is discovered automatically); and MTR tests in the rdrs2-golang suite that start rdrs2 with their own config where a test needs a small pool or a lowered start reserve (rdrs2-golang_buffer_pool, rdrs2-golang_deprecated_buffer_keys, rdrs2-golang_memory_regression). Every new line of code is reached by at least one test below. Every Go and MTR test that depends on a limit, MaxOperationsPerBatch included, reads it from the rdrs_limits family on /metrics, and the gtests use the same constexprs from buffer_sizes.hpp. That is what makes the same test file exercise 512 columns on 26.02 and 4 096 columns on 26.10 without edits.</p>
 
 <h3>8.1 Change 1, startup</h3>
 <div class="wrap"><table>
 <tr><th>test</th><th>layer</th><th>asserts</th></tr>
-<tr><td>thp_disabled_for_process</td><td>gtest, Linux only</td><td>After the startup helper runs, prctl(PR_GET_THP_DISABLE) returns 1 and /proc/self/status shows THP_enabled: 0; a thread created afterwards sees the same</td></tr>
-<tr><td>mmap_threshold_pinned</td><td>gtest, Linux only</td><td>Allocate and free a 2 MiB block twice; RSS after the second free equals RSS before the first allocation within one page, which fails without the mallopt</td></tr>
-<tr><td>parse_buffer_not_resident</td><td>MTR</td><td>Right after startup with NumThreads 64, RssAnon from /proc/pid/status is below 64 × 4 MiB; fails on today's code at about 256 MiB</td></tr>
-<tr><td>no_anon_huge_pages_under_load</td><td>MTR, Linux only, skipped when THP is not available</td><td>After the wide-row load, AnonHugePages in smaps_rollup is 0</td></tr>
+<tr><td>ProcessSetup.ThpDisabledForProcessAndLaterThreads</td><td>gtest, Linux only</td><td>After the startup helper runs, prctl(PR_GET_THP_DISABLE) returns 1, in the calling thread and in a thread created afterwards, and a second call succeeds too; /proc/self/status shows THP_enabled: 0 where the kernel reports that field. Elsewhere it checks the result fields and skips.</td></tr>
+<tr><td>ProcessSetup.ParseBufferIsNotResidentUntilUsed</td><td>gtest, Linux only</td><td>A 256 MiB parse buffer allocated the way JSONParser allocates it adds less than 4 MiB of resident memory</td></tr>
+<tr><td>rdrs2-golang_buffer_pool, startup block</td><td>MTR, Linux only</td><td>Right after the pool server rdrs.3.1 starts (NumThreads 4, maxReqSize 64 MiB), RssAnon from /proc/pid/status is below NumThreads × maxReqSize = 256 MiB, so the parse buffers are not resident</td></tr>
+<tr><td>rdrs2-golang_buffer_pool, post-load block</td><td>MTR, Linux only</td><td>After the pool driver's load, AnonHugePages in smaps_rollup is 0 whenever smaps can be read. The node's THP mode is logged, not used to skip.</td></tr>
 </table></div>
+<p>No test covers a malloc setting: the arena cap and the mmap threshold were tried and removed (section 2).</p>
 
 <h3>8.2 Change 2, buffers</h3>
 <div class="wrap"><table>
 <tr><th>test</th><th>layer</th><th>asserts</th></tr>
-<tr><td>min_buffer_matches_writer</td><td>gtest</td><td>Build a response in memory with MAX_ATTRIBUTES_IN_TABLE columns and MAX_ROW_BYTES of control characters as VARCHAR through the real PKRResponse writer; its length is at most MIN_RESP_BUFFER. Same for the operation request through the real encoder. This is the test that keeps the formula honest, and it scales with the branch by construction.</td></tr>
-<tr><td>static_asserts</td><td>compile time</td><td>DEFAULT_*_BUFFER ≥ 2 × MIN_*_BUFFER; MIN_RESP_BUFFER below the largest buffer the pool can allocate</td></tr>
-<tr><td>blob_fits_tail_exactly</td><td>Go</td><td>A blob sized so its last byte is the last byte of the home buffer, computed from RespBufferBytes; read alone and in a batch with plain rows before and after; bytes compare equal</td></tr>
-<tr><td>blob_spills_one_byte</td><td>Go</td><td>The previous size plus one; the chain has two buffers</td></tr>
-<tr><td>blob_spans_many_buffers</td><td>Go</td><td>A 10 MiB blob; the chain has ceil(size / RespBufferBytes) + 1 buffers; bytes compare equal</td></tr>
-<tr><td>text_spills</td><td>Go</td><td>Same three sizes for a TEXT column, through the Text branch</td></tr>
-<tr><td>blob_null_and_blob_in_middle</td><td>Go</td><td>Row with int, blob, varchar, text: NULL blob gives a null entry at its own index; non-NULL blob spills and the varchar after it still reads correctly, which proves rule 4</td></tr>
-<tr><td>two_blobs_one_row</td><td>Go</td><td>Both spill; segments of the second start where the first ended</td></tr>
-<tr><td>feature_store_blob_spills</td><td>Go</td><td>A new fixture fsdb002.sample_blob_1 with a LONGBLOB feature and its Hopsworks metadata; the feature store read returns the base64 value correctly at one buffer plus one byte and at two buffers plus one</td></tr>
-<tr><td>batch_packs_many_rows</td><td>Go</td><td>5 000 reads of 200-byte rows: result correct, and the pool metrics show the expected number of buffers taken, computed from the sizes</td></tr>
-<tr><td>widest_row_fits_home_buffer</td><td>Go</td><td>Table with MaxColumns CHAR columns, row of control characters, read with no columns named. Result correct; retries metric 0. On 26.02 this is 511 CHAR(56) columns, on 26.10 4 095 CHAR(16), computed from rdrs_limits and MySQL's 65 535-byte row cap. CHAR, not VARCHAR: NDB caps the in-memory varsize part of a row at 32 632 bytes (error 941), so the widest row has to live in the fixed part.</td></tr>
-<tr><td>retry_on_overflow</td><td>MTR + Go</td><td>The retry cannot be triggered with real rows: a widest row always fits inside the start reserve by construction. So the dedicated pool test server sets Internal.StartReserveOverride, an ordinary config key honoured on every build (lowering the reserve can only cause response retries, never a wrong result; request views are sized by the operation's own bound, rule 2), and a batch of widest rows then starts one near the end of a buffer. Result correct, retry counter at least 1, pool accounting balanced.</td></tr>
-<tr><td>no_blob_batch_unchanged</td><td>Go</td><td>A batch large enough to chain several request and response buffers with no blobs, compared byte for byte with the single-read results</td></tr>
-<tr><td>deprecated_size_keys</td><td>MTR</td><td>A config with ReqBufferSize and RespBufferSize starts, logs one warning each, and --print-limits shows the computed sizes, which also equal rdrs_limits on the running server</td></tr>
+<tr><td>Limits.WorstCaseResponseFitsMinRespBuffer</td><td>gtest</td><td>A response with the longest operation id and status message and every column of the widest table, filled with MAX_ROW_BYTES of control characters already escaped to six bytes each, written through the real PKRResponse writer, fits in MIN_RESP_BUFFER. This keeps the response formula honest, and it scales with the branch by construction.</td></tr>
+<tr><td>Limits.WorstCaseNamedColumnsRequestFitsMinReqBuffer</td><td>gtest</td><td>An operation request with db and table names of maximum length, the widest key over the most key columns, the longest operation id and every table column named at maximum length, built by the real create_native_request, fits in MIN_REQ_BUFFER</td></tr>
+<tr><td>Limits.WorstCaseAllColumnsRequestFitsMinReqBuffer</td><td>gtest</td><td>The same with no columns named: every column name is filled in at maximum length afterwards, the result fits in MIN_REQ_BUFFER, and the encoder's reservation covers what was written</td></tr>
+<tr><td>Limits.DerivedSizesFollowTheLimits</td><td>gtest</td><td>2 × MIN ≤ DEFAULT &lt; 4 × MIN for both buffers; MAX_ROW_BYTES = MAX_TUPLE_SIZE_IN_WORDS × 4; 512 KiB and 256 KiB under the 26.02 limits, 1 MiB and 2 MiB under the 26.10 limits (4 096 columns, 18 000-word rows)</td></tr>
+<tr><td>static_asserts in buffer_sizes.hpp</td><td>compile time</td><td>DEFAULT_*_BUFFER ≥ 2 × MIN_*_BUFFER; both sizes word aligned; MIN_RESP_BUFFER and MIN_REQ_BUFFER below 2<sup>30</sup>, so offsets stay 32-bit</td></tr>
+<tr><td>BufferChainTest.ViewsPackUntilTheReserveThenTakeANewOwner</td><td>gtest</td><td>Views pack into one owner while the start reserve is free behind the previous one, and the next view starts at offset 0 of a new owner once it is not</td></tr>
+<tr><td>BufferChainTest.KnownNeedLargerThanTheReserveTakesANewOwner</td><td>gtest</td><td>On the request side a view whose known bound does not fit behind the previous operation starts in a fresh owner although the reserve alone would have packed it</td></tr>
+<tr><td>BufferChainTest.ContinuationsAppendAndRestartAndResetReturnBuffers</td><td>gtest</td><td>Continuations append owners in order, the next view starts after the spilled bytes, a rule 5 restart takes a fresh owner at offset 0, reset_to_first_buffer keeps only the first owner, and every buffer is back in the pool afterwards</td></tr>
+<tr><td>BufferChainTest.PoolCapIsReportedAs503AndNothingLeaks</td><td>gtest</td><td>The chain takes buffers until the pool's cap refuses, reports 503, and returns every buffer when it is destroyed</td></tr>
+<tr><td>BufferChainTest.ResponseSpillsAcrossBuffersAndKeepsOffsets</td><td>gtest</td><td>A raw column larger than its view fills each continuation buffer to its last byte and records the total length and the virtual offset of its first byte</td></tr>
+<tr><td>BufferChainTest.SpillWithoutChainOverflows</td><td>gtest</td><td>Without a chain a spill is reported as an overflow</td></tr>
+<tr><td>TestBlobSpillBoundarySweep</td><td>Go</td><td>Blob sizes from RespBufferBytes − 80 to RespBufferBytes + 8, which includes a blob ending on the last byte of its home buffer and one byte past it; bytes compare equal; pool balanced</td></tr>
+<tr><td>TestBlobSpillTwoBuffersPlusOne, TestBlobSpill10MiB</td><td>Go</td><td>Blobs of two buffers plus one byte and of 10 MiB; bytes compare equal; pool balanced. The 10 MiB test skips when 10 MiB / RespBufferBytes + 2 exceeds MaxBuffers. No test can see the chain length; equal bytes and a balanced pool are what is asserted.</td></tr>
+<tr><td>TestBatchBlobSpillBetweenPlainRows, TestBatchFourSpillingOps</td><td>Go</td><td>In a batch: a blob of one buffer plus one byte between plain rows, and four operations that each spill; every value correct; pool balanced</td></tr>
+<tr><td>TestTextSpillSizes, TestTextSpillEscapeGrowth, TestTextSpillNull</td><td>Go</td><td>TEXT through the Text branch at RespBufferBytes − 1, exactly, + 1, 2 × RespBufferBytes + 1 and 10 MiB where the cap allows; half a buffer of control characters, whose spill is decided on the escaped length; a NULL TEXT</td></tr>
+<tr><td>TestBlobSpillNull, TestBlobSpillMiddleThenVarchar</td><td>Go</td><td>A NULL blob gives a null entry at its own index; a spilling blob followed by a varchar leaves the varchar correct, which proves rule 4</td></tr>
+<tr><td>TestBlobSpillTwoBlobs</td><td>Go</td><td>Two spilling blobs and a varchar in one row all compare equal, so the second blob's segments start where the first ended</td></tr>
+<tr><td>TestFeatureStoreBlobSpillOneBufferPlusOne, TestFeatureStoreBlobSpillTwoBuffersPlusOne</td><td>Go</td><td>A new fixture fsdb002.sample_blob_1 with a LONGBLOB feature and its Hopsworks metadata; the feature store read returns the base64 value correctly at one buffer plus one byte and at two buffers plus one, checked against MySQL's sha256 of the value</td></tr>
+<tr><td>TestWidestRowFitsHomeBuffer</td><td>Go</td><td>The widest row the limits allow, read with no columns named: result correct, retry counter unchanged, pool balanced. WidestRowSpec builds it from rdrs_limits as MaxColumns − 1 latin1 columns plus an INT key: CHAR(Width) columns followed by VARCHAR(Width) columns, filled with control characters, at the largest width that satisfies NDB's fixed-part cap (2 047 words on 26.02), the varsize-part cap (32 032 bytes, the smaller of the 26.10 values), MySQL's 65 535-byte row and MaxRowBytes. On 26.02 that is 145 CHAR(55) + 366 VARCHAR(55); on 26.10 1 015 CHAR(7) + 3 080 VARCHAR(7). Neither column kind alone gives the widest width.</td></tr>
+<tr><td>TestRetryWithLoweredStartReserve</td><td>MTR + Go</td><td>The retry cannot be triggered with real rows: a widest row always fits inside the start reserve by construction. So the dedicated pool test server sets Internal.StartReserveOverride to 4 096, an ordinary config key honoured on every build (lowering the reserve can only cause response retries, never a wrong result; request views are sized by the operation's own bound, rule 2), and a batch of widest rows chains several response buffers without blobs. Every value correct, retry counter up by at least 1, pool balanced.</td></tr>
+<tr><td>rdrs2-golang_deprecated_buffer_keys</td><td>MTR</td><td>A config with ReqBufferSize and RespBufferSize starts and logs a deprecation warning for each; --print-limits shows the computed sizes, not the configured ones, and they equal rdrs_limits on the running server</td></tr>
 </table></div>
 
 <h3>8.3 Change 3, pool</h3>
 <div class="wrap"><table>
 <tr><th>test</th><th>layer</th><th>asserts</th></tr>
-<tr><td>pool_cap_returns_503</td><td>MTR + Go</td><td>MaxBuffers 8 on the dedicated pool server; a batch of MaxOperationsPerBatch operations that name no columns needs far more request buffers than the cap (each reserves the full column-name allowance), so it gets 503 "buffer pool exhausted"; the rejected counter moves, allocated never exceeds MaxBuffers, every buffer comes back, and a small read right after still answers 200</td></tr>
-<tr><td>pool_accounting_balanced</td><td>Go, after every test above</td><td>Free count after the test equals free count before it; proves every continuation buffer and every retry buffer was returned</td></tr>
-<tr><td>pool_shrinks_when_idle</td><td>MTR + Go</td><td>BufferShrinkAfterS 5, PreAllocatedBuffers 2; batches of growing size push the request pool above PreAllocatedBuffers (503 accepted once the cap is hit), then small reads keep flowing while the test waits up to 3 × BufferShrinkAfterS + 10 s for allocated to return to PreAllocatedBuffers on both pools; the shrunk counter moves. The RSS side is covered by the perl block of the same MTR test on Linux (AnonHugePages 0 after the load), not by the Go test: pool buffers are mmap'ed, so there is no glibc threshold to get wrong.</td></tr>
-<tr><td>pool_does_not_shrink_in_flight</td><td>gtest</td><td>Take buffers, do not return them, trigger shrink: allocated count unchanged</td></tr>
-<tr><td>stats_per_pool</td><td>gtest</td><td>Request and response stats are independent; fails on today's copy-paste</td></tr>
-<tr><td>parse_error_releases_buffers</td><td>MTR + Go</td><td>A batch whose first operation is valid and whose second is malformed (value missing, unknown column, body cut off) returns 400 or, for some simdjson errors, 500; the status is the parser's business, the assertion is that the pool is balanced after each, so chains released on the parse-failure path leak nothing</td></tr>
+<tr><td>TestPoolExhaustedReturns503</td><td>MTR + Go</td><td>MaxBuffers 8 on the dedicated pool server; a batch of MaxOperationsPerBatch operations that name no columns needs far more request buffers than the cap (each reserves the full column-name allowance), so it gets 503 "buffer pool exhausted"; the rejected counter moves, allocated never exceeds MaxBuffers, every buffer comes back, and a small read right after still answers 200</td></tr>
+<tr><td>AssertPoolBalanced</td><td>Go helper, called by every spill, pool and widest-row test</td><td>in_use of both pools returns to its value before the test, which proves every continuation buffer and every retry buffer was returned</td></tr>
+<tr><td>TestPoolShrinksAfterIdle</td><td>MTR + Go</td><td>BufferShrinkAfterS 5, PreAllocatedBuffers 2; batches of growing size push the request pool above PreAllocatedBuffers (503 accepted once the cap is hit), then small reads keep flowing while the test waits up to 3 × BufferShrinkAfterS + 10 s for the request pool's allocated count to return to PreAllocatedBuffers and the response pool's to at most that; the request pool's shrunk counter moves. The RSS side is covered by the perl blocks of the same MTR test on Linux, not by the Go test: pool buffers are mmap'ed, so there is no glibc threshold to get wrong.</td></tr>
+<tr><td>BufferPool.PreallocatesAndTracksInUseAndFree</td><td>gtest</td><td>init maps PreAllocatedBuffers buffers, and allocated, free and in_use follow every get and put</td></tr>
+<tr><td>BufferPool.CapRefusesAndRecovers</td><td>gtest</td><td>At the cap get() returns a null buffer and counts a rejection; a put makes the pool usable again</td></tr>
+<tr><td>BufferPool.ShrinkKeepsInFlightAndWaitsForIdle</td><td>gtest</td><td>Shrink never touches buffers that are out, and frees the surplus only after the quiet period</td></tr>
+<tr><td>BufferPool.DemandRestartsTheQuietPeriod</td><td>gtest</td><td>A get() that puts more than PreAllocatedBuffers in use restarts the quiet period</td></tr>
+<tr><td>BufferPool.ShrinkDisabledWhenZero</td><td>gtest</td><td>With BufferShrinkAfterS 0 shrink frees nothing</td></tr>
+<tr><td>BufferArrayManager.StatsPerPool</td><td>gtest</td><td>Request and response stats are independent; fails on the old copy-paste</td></tr>
+<tr><td>BufferArrayManager.DeriveMaxBuffers, DetectMemoryLimitFromCgroupFiles, InitDerivesCapFromLimit</td><td>gtest</td><td>The cap from limit, share and pair size, the MaxBuffers override and the PreAllocatedBuffers + 1 floor; the limit from cgroup v2 and v1 files the test writes, "max" falling through, and physical RAM as the last resort; init keeps the derived cap and the limit</td></tr>
+<tr><td>TestBatchParseErrorAfterValidOpReleasesBuffers</td><td>MTR + Go</td><td>A batch whose first operation is valid and whose second is malformed (value missing, unknown column, body cut off) gets 400, 500 for some simdjson errors, or 200 or 400 for the unknown column; the status is the parser's business, the assertion is that the pool is balanced after each, so chains released on the parse-failure path leak nothing</td></tr>
+<tr><td>TestParseMetricsText</td><td>Go, no server</td><td>The /metrics parser the tests use reads rdrs_buffer_pool, rdrs_buffer_pool_events and rdrs_limits samples from a literal scrape</td></tr>
 </table></div>
 
 <h3>8.4 Change 4, batch limit</h3>
 <div class="wrap"><table>
 <tr><th>test</th><th>layer</th><th>asserts</th></tr>
-<tr><td>batch_at_limit_ok</td><td>Go</td><td>MaxOperationsPerBatch operations, 512 by default, succeed</td></tr>
-<tr><td>batch_over_limit_413</td><td>Go</td><td>One more operation gives 413 with the message naming both numbers; pool metrics show no buffer was taken</td></tr>
-<tr><td>feature_store_batch_over_limit_413</td><td>Go</td><td>Same through the batch feature store endpoint</td></tr>
+<tr><td>TestBatchAtOperationLimit, TestBatchFeatureStoreAtOperationLimit</td><td>Go</td><td>MaxOperationsPerBatch operations, read from rdrs_limits (512 by default), are answered 200 through batch pk read and batch feature store</td></tr>
+<tr><td>TestBatchOverOperationLimit</td><td>Go</td><td>One more operation gives 413 with "batch exceeds MaxOperationsPerBatch (512)"; the message names the limit only</td></tr>
+<tr><td>TestBatchFeatureStoreOverOperationLimit</td><td>Go</td><td>Same through the batch feature store endpoint, with no response body</td></tr>
+<tr><td>TestLargeBatch</td><td>Go</td><td>An existing test whose batch of BatchMaxSize + 200 operations must stay below MaxOperationsPerBatch, read from rdrs_limits; it fails loudly if a later default would turn it into a 413 test</td></tr>
 </table></div>
 
 <h3>8.5 Change 5, chart</h3>
 <div class="wrap"><table>
 <tr><th>test</th><th>layer</th><th>asserts</th></tr>
-<tr><td>old_keys_rejected</td><td>helm lint / unittest</td><td>Values with rdrs.internal.maxAllocatedBuffers fail schema validation with the replacement named</td></tr>
-<tr><td>new_keys_render_only_when_set</td><td>helm template</td><td>Without rdrs.internal the rendered config has no Internal section; with MaxBuffers set it has exactly that key</td></tr>
-<tr><td>thp_wrapper_in_command</td><td>helm template</td><td>Default values render the perl wrapper in front of rdrs2; disableTransparentHugePages false removes it</td></tr>
+<tr><td>Part 1, defaults</td><td>rdrs-config-test.sh (helm template)</td><td>With default values no optional key or section is rendered, the log level is info, and the perl THP wrapper is in front of rdrs2; disableTransparentHugePages false drops it and rdrs2 still starts</td></tr>
+<tr><td>Part 2, overrides</td><td>rdrs-config-test.sh (helm template)</td><td>Each key alone and with the rest of its section lands in rest_api.json under its rdrs2 name and JSON type (maxBuffers alone renders exactly {"MaxBuffers":256}); the retry keys reach both cluster sections; an explicit null renders nothing</td></tr>
+<tr><td>Part 3, rejections</td><td>rdrs-config-test.sh (helm template)</td><td>Misspelled keys, wrong types and out-of-range values fail the render (additionalProperties: false, so the error is generic); a non-zero maxBuffers below 2 or below preAllocatedBuffers fails with a message naming both</td></tr>
 </table></div>
 
 <h3>8.6 Memory regression</h3>
 <p>One MTR test that is the reason for all of this, rdrs2-golang_memory_regression (Linux only, it reads /proc): a dedicated rdrs2 with MaxBuffers 256, PreAllocatedBuffers 8, BufferShrinkAfterS 30 and 8 threads, the cap a pod with a small memory limit would derive. Two workers POST widest-row batches for 60 seconds while the driver samples RssAnon of the process every 5 seconds. The batch size is not a fixed 400: an operation that names no columns reserves the room for every column name of the table, so the driver computes how many of them share one request buffer from rdrs_limits and sizes the batch so both workers together use half the cap above the preallocation (124 operations on 26.02). Two assertions: once warm, 10 seconds in, no sample exceeds the warm value by more than 10 % plus 32 MiB, which catches a leak; and the final sample is at most idle + MaxBuffers × (ReqBufferBytes + RespBufferBytes) + 64 MiB, which catches a pool that does not honour its cap. Today's code is killed by this load on a 500 MiB limit; the test pins that it stays under. The samples are written to var/log/rdrs2-golang_memory_regression.report.txt.</p>
-<p><strong>Measured on Linux, 2026-10-15</strong> (AlmaLinux 8.10, glibc 2.28, 64 CPUs, release build, all 18 benchmarks run 10 s each against one server, then 75 s idle): the memory regression test passes (RssAnon flat at 40 to 70 MiB under the widest-row batch load, bound 266 MiB). Resident memory of rdrs2 at idle before any load is 43 MiB against 335 MiB for the old binary; the peak of the whole run is set by the 4 MiB-blob benchmark at 1 038 MiB against 1 542 MiB, and after the run the process settles at 418 MiB against 870 MiB. Pod sizing that follows from that with the default NumThreads 64 and BufferPoolSharePercent 50: request 1 GiB and limit 2 GiB where multi-megabyte blobs are read (about 2x headroom over the measured peak); request 512 MiB and limit 1 GiB without large blobs (non-blob peaks stayed at or below 520 MiB). Heavier parallel blob traffic than the benchmarks' default parallelism needs a higher limit.</p>
+<p><strong>Measured on Linux, 2026-10-15</strong> (AlmaLinux 8.10, glibc 2.28, 64 CPUs, release build, all 18 benchmarks run 10 s each against one server, then 75 s idle): the memory regression test passes (RssAnon between 40 and 70 MiB under the widest-row batch load, final 41 MiB, bound 266 MiB). Resident memory of rdrs2 at idle before any load is 43 MiB against 335 MiB for the old binary; the peak of the whole run is set by the 4 MiB-blob benchmark at 1 038 MiB against 1 542 MiB, and after the run the process settles at 418 MiB against 870 MiB. Pod sizing that follows from that with the default NumThreads 64 and BufferPoolSharePercent 50: request 1 GiB and limit 2 GiB where multi-megabyte blobs are read (about 2x headroom over the measured peak); request 512 MiB and limit 1 GiB without large blobs (non-blob peaks stayed at or below 520 MiB). Heavier parallel blob traffic than the benchmarks' default parallelism needs a higher limit.</p>
+<h3>8.7 Benchmarks</h3>
+<p>Eight Go benchmarks cover the chained paths: BenchmarkWidestRow, BenchmarkBlobHalfBuffer, BenchmarkBlobSpill, BenchmarkBlob4MiB and BenchmarkTextHalfBuffer in pkread; BenchmarkMaxOperations, BenchmarkWidestRows16 and BenchmarkBlobSpillInBatch in batchpkread. They send requests from b.RunParallel workers. A failed request fails the benchmark through testutils.ParallelTB, which reports with Errorf and ends only that worker, because FailNow from a worker goroutine would leave the benchmark waiting. The Linux A/B results and the memory measurements are summarised in sections 2 and 8.6.</p>
 
 <h2>9. Branch plan</h2>
 <h3>9.1 Implement on 26.02</h3>
-<p>One pull request from branch RONDB-1144 against 26.02-main, built as four commits in this order so review can follow one change at a time and the rdrs2-golang suite is green after each: startup (change 1), batch limit (change 4), pool (change 3, with the constants header), buffers (change 2). The chart change is a separate pull request in rondb-helm, paired with the release that carries this one.</p>
+<p>One pull request from branch RONDB-1144 against 26.02-main, built so review can follow one change at a time. Its commits, in order, each subject prefixed with RONDB-1144:</p>
+<ol>
+<li>rdrs2 memory changes, design document</li>
+<li>rdrs2 opts out of THP and caps malloc arenas at startup (change 1; the arena cap is removed again in item 11)</li>
+<li>rdrs2 caps the operations in a batch request (change 4)</li>
+<li>rdrs2 buffer pool gets a memory-derived cap, idle shrink and metrics (change 3, with the constants header)</li>
+<li>rdrs2 chains pool buffers so blobs spill instead of failing (change 2)</li>
+<li>rdrs2 memory regression MTR test (Linux only)</li>
+<li>design doc records the 26.10 merge outcome</li>
+<li>widest-row test helper follows NDB's row part caps</li>
+<li>RS_OK no longer formats a message</li>
+<li>benchmarks for the chained response paths</li>
+<li>drop the malloc arena cap</li>
+<li>rename the design folder to claude_files/RONDB-1143</li>
+<li>self-review: TEXT size guard, dead code, comments match the code</li>
+<li>design docs match the code</li>
+</ol>
+<p>The chart change is a separate pull request in rondb-helm, paired with the release that carries this one.</p>
 <h3>9.2 Merge to 26.10</h3>
 <p>The intent is that no size and no test needs retyping, and that every place where 26.10 needs an edit fails to compile rather than silently keeping the old behaviour. What makes that true:</p>
 <ul>
 <li>No size literal in the code. Every buffer size, reserve and minimum is a constexpr over MAX_ATTRIBUTES_IN_TABLE, MAX_TUPLE_SIZE_IN_WORDS, MAX_ATTR_NAME_SIZE, MAX_ATTRIBUTES_IN_INDEX and MAX_KEY_SIZE_IN_WORDS. On 26.10 they evaluate to 1 MiB response and 2 MiB request buffers without anyone typing them.</li>
-<li>No size literal in the tests. The Go and MTR tests build their widest tables from rdrs_limits, so widest_row_fits_home_buffer runs 4 095 columns on 26.10 by itself.</li>
-<li>The static_asserts fail the build if a future limit outgrows what the pool can allocate, so a limit increase is caught at compile time and not at the first wide read.</li>
-<li>The stale MAX_TUPLE_SIZE_IN_BYTES on 26.10, which today rejects legal rows above 30 004 bytes, is replaced by the derived expression and disappears in the merge.</li>
-<li>26.10 has code paths that do not exist on 26.02: batch write and delete controllers, pk_batch_base_operation.cpp with its own halfway rule, and a batch_parse_impl shared by read, write and delete. They call functions this change removes or re-signs (the getNext buffer helpers, release_array_buffers, create_native_request, process_pkread_response, pk_batch_read, the PKRResponse constructor), so the merge fails to compile at exactly those spots and they get the same rule. The operation-limit check moves into batch_parse_impl at the merge.</li>
+<li>No size literal in the tests. The Go and MTR tests build their widest tables from rdrs_limits, so TestWidestRowFitsHomeBuffer runs 4 095 columns on 26.10 by itself.</li>
+<li>The static_asserts fail the build if a future limit outgrows 32-bit buffer offsets (MIN_* below 2<sup>30</sup>), so a limit increase is caught at compile time and not at the first wide read.</li>
+<li>The stale MAX_TUPLE_SIZE_IN_BYTES on 26.10, which rejected legal rows above 30 004 bytes, is replaced by MAX_ROW_BYTES and disappears in the merge.</li>
+<li>26.10 has code paths that do not exist on 26.02: batch write and delete controllers, pk_batch_base_operation.cpp with its own halfway rule, a batch_parse_impl shared by read and delete, and a separate batch write parser. They call functions this change removes or re-signs (the getNext buffer helpers, release_array_buffers, create_native_request, process_pkread_response, pk_batch_read, the PKRResponse constructor), so the merge fails to compile at exactly those spots and they get the same rule. The operation-limit check sits in batch_parse_impl and is added to the write parser at the merge.</li>
 <li>No config file can carry a stale size across the merge, because sizes are not settings.</li>
 </ul>
 <p>What should be verified on 26.10 after the merge: the listed spots compile again with the new rule, the build passes the static_asserts, --print-limits shows 4096, 72000, 1 MiB and 2 MiB, and the full suite is green with no test edited. The only planned 26.10-specific follow-up is the column-name reservation from the dictionary, which lowers the request buffer there from 2 MiB to about 512 KiB; it is a refinement and not a requirement.</p>
 
-<p><strong>Done on 2026-10-15 (branch RONDB-1144-26-10 on 26.10-main 5b41331ce4c).</strong> The six commits cherry-picked with conflicts only where expected: main.cc (26.10 already installs the Drogon body limit and has the router shutdown), the config header (26.10's MaxRespSize and SchemaCacheTTLSecs keys kept, the two buffer size keys deprecated), encoding.cpp (the write encoder sits where the deleted buffer helpers were), and the Hopsworks fixture, where 26.10's avro_strings fixture had taken the same ids, so the sample_blob rows moved to the next free ids. The build then failed at exactly the predicted spots, twelve errors in batch_pk_write_ctrl.cpp, batch_pk_delete_ctrl.cpp, pk_batch_base_operation.cpp and pk_base_operation.cpp, fixed by one further commit that gives the write and delete paths the chain, the two-pass slot-aware writer with the spill branches, a write-request bound of their own, and the batch limit in the write parser. rdrs2 --print-limits shows 4096, 72000, 2 MiB request and 1 MiB response buffers; no size and no test was retyped. New 26.10 tests: the widest write request against its bound (gtest), batch write and delete leaving the pool balanced and answering 413 past the limit, and a batch write naming all 4095 columns of the widest row read back intact.</p>
+<p><strong>Done on 2026-10-15 (branch RONDB-1144-26-10 on 26.10-main 5b41331ce4c).</strong> The first six commits of section 9.1, through the memory regression test, cherry-picked with conflicts only where expected: main.cc (26.10 already installs the Drogon body limit and has the router shutdown), the config header (26.10's MaxRespSize and SchemaCacheTTLSecs keys kept, the two buffer size keys deprecated), encoding.cpp (the write encoder sits where the deleted buffer helpers were), and the Hopsworks fixture, where 26.10's avro_strings fixture had taken the same ids, so the sample_blob rows moved to the next free ids. The build then failed at exactly the predicted spots, twelve errors in batch_pk_write_ctrl.cpp, batch_pk_delete_ctrl.cpp, pk_batch_base_operation.cpp and pk_base_operation.cpp, fixed by one further commit, "26.10: batch write and delete use buffer chains; 4096 columns", placed right after the memory regression test. It gives the write and delete paths the chain, the two-pass slot-aware writer with the spill branches, a write-request bound of their own, and the batch limit in the write parser. It also lets a delete skip the column-name reservation, since a delete never reads all columns; checks row sizes in the shared writer against MAX_ROW_BYTES; and sends the 503 "buffer pool exhausted" of the read and feature store controllers through setErrorResponse, so API 0.2.0 clients get the JSON error body like every other error on that branch. rdrs2 --print-limits shows 4096, 72000, 2 MiB request and 1 MiB response buffers; no size and no test was retyped. New 26.10 tests: Limits.WidestWriteRequestBoundHoldsAndFits (gtest), TestBatchWriteAndDeleteReleaseBuffers, TestBatchWriteOverOperationLimit and TestBatchDeleteOverOperationLimit in bufferpool, and TestBatchWriteWidestRow in batchwrite, which writes all 4 095 columns of the widest row and reads them back intact. Every later commit of section 9.1 through the self-review was then ported in the same order, including the removal of the malloc arena cap and the self-review, so the arena cap is gone on 26.10 too.</p>
 
 <h2>10. What is left</h2>
 <h3>10.1 Deliberately out of scope for this round</h3>
@@ -656,9 +748,9 @@ static_assert(DEFAULT_REQ_BUFFER  &gt;= 2 * MIN_REQ_BUFFER);</code></pre>
 <tr><td>10 GiB</td><td class="num">5 GiB</td><td class="num">≈ 6 800</td><td class="num">≈ 1 700</td></tr>
 </table></div>
 <p>What this is not: it is not a runtime watchdog that reads memory usage on every request. That was part of the earlier broad design and stays in the backlog. One read of the limit at startup is about twenty lines, has no per-request cost, and gives the scaling that matters. If a pod is resized, rdrs2 restarts anyway.</p>
-<p>Tests: a unit test for the derivation with injected limit values and both cgroup layouts, and the MTR check that --print-limits shows the cap and the limit it came from. The pool_cap_returns_503 test sets MaxBuffers explicitly so it does not depend on the test host's memory.</p>
-<h3>10.4 To be discussed before PR 3: metric names</h3>
-<p>No existing metric is renamed, relabelled or removed. The customer's HPA reads rdrs_endpoints_response_status_count and rdrs_endpoints_response_time_summary, and dashboards read the other three existing families, http_request_duration_seconds, rdrs_http_connection_count, rdrs_rondb_connection_state and rdrs_rondb_total_ndb_objects. All stay exactly as they are. The pool metrics are new families only, proposed as one gauge family rdrs_buffer_pool with labels pool=request|response and state=in_use|free|peak|allocated, and one counter family rdrs_buffer_pool_events with labels pool and event=rejected|retry|shrunk. The names are a proposal for discussion; whatever is chosen, additive only.</p>
+<p>Tests: BufferArrayManager.DeriveMaxBuffers, DetectMemoryLimitFromCgroupFiles and InitDerivesCapFromLimit, with injected limit values and both cgroup layouts. --print-limits prints the cap and the limit it came from (MaxBuffers, MemoryLimitBytes); no test checks those two fields. TestPoolExhaustedReturns503 sets MaxBuffers explicitly so it does not depend on the test host's memory.</p>
+<h3>10.4 Metric names</h3>
+<p>No existing metric is renamed, relabelled or removed. The customer's HPA reads rdrs_endpoints_response_status_count, and dashboards read the other four existing families, http_request_duration_seconds, rdrs_http_connection_count, rdrs_rondb_connection_state and rdrs_rondb_total_ndb_objects. All stay exactly as they are. The pool metrics shipped as new families only, under the names proposed here: one gauge family rdrs_buffer_pool with labels pool=request|response and state=in_use|free|peak|allocated; one counter family rdrs_buffer_pool_events with labels pool and event=rejected|retry|shrunk|allocated, where allocated counts mmap calls; and one gauge family rdrs_limits with label name=max_columns|max_row_bytes|req_buffer_bytes|resp_buffer_bytes|min_req_buffer_bytes|min_resp_buffer_bytes|max_operations_per_batch|max_buffers|memory_limit_bytes.</p>
 <h3>10.5 Customer follow-up</h3>
 <p>The tracker cluster's rdrs.internal block should be removed from their values, since it renders into nothing. Their 22.10-era expectation of a 9 GiB ceiling is met by MaxBuffers once the chart exposes it.</p>
 </main>
