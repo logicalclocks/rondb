@@ -182,8 +182,14 @@ func TestRetryWithLoweredStartReserve(t *testing.T) {
 	testutils.CreateWideRowTable(t, poolDB(), table, spec, map[int]byte{1: 1})
 
 	before := testutils.TakePoolSnapshot(t)
-	// Enough widest responses to walk past the end of one buffer.
-	n := int(limits.RespBufferBytes/limits.MinRespBufferBytes) + 2
+	// Enough widest responses to walk past the end of two buffers. Each
+	// response carries a 16-byte column table entry and the name per
+	// column, and every fill byte escapes to six (\u0001), so its size is
+	// known closely; MinRespBufferBytes would be the worst case for the
+	// limits, not for this row, and on 26.10 the creatable widest row is
+	// much narrower than that worst case.
+	perOp := int64(spec.NCols) * (16 + 8 + 6*int64(spec.Width))
+	n := int(2*limits.RespBufferBytes/perOp) + 2
 	ops := make([]string, n)
 	for i := range ops {
 		ops[i] = fmt.Sprintf(`{"method":"POST","relative-url":"%s/%s/%s","body":{"filters":[{"column":"id","value":1}]}}`,

@@ -28,16 +28,19 @@ import (
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
-// RONDB-1144: the widest row the limits allow, every column a VARCHAR full
-// of control characters (six bytes each once escaped), read with no
-// columns named. Its fixed part is the largest a response can have and
-// must fit the home buffer without a retry. The spec comes from the limits
-// rdrs2 reports: 511 columns on 26.02, 4095 on 26.10.
+// RONDB-1144: the widest row the limits allow, every column CHAR or
+// VARCHAR full of control characters (six bytes each once escaped), read
+// with no columns named. Its fixed part is the largest a response can have
+// and must fit the home buffer without a retry. The spec comes from the
+// limits rdrs2 reports: 511 columns on 26.02, 4095 on 26.10. The row's
+// byte size is bounded by NDB's fixed and varsize part caps, not by
+// MaxRowBytes (see WidestRowSpec), so the guard here is on the column
+// count and a usable width, not on bytes.
 func TestWidestRowFitsHomeBuffer(t *testing.T) {
 	limits := testutils.GetLimits(t)
 	spec := testutils.WidestRowSpec(limits)
-	if spec.RowBytes() < int(limits.MaxRowBytes)*9/10 && spec.RowBytes() < 65535*9/10 {
-		t.Fatalf("spec %+v fills only %d bytes of the row", spec, spec.RowBytes())
+	if spec.NCols != int(limits.MaxColumns)-1 || spec.Width < 4 {
+		t.Fatalf("spec %+v does not use every column: limits %+v", spec, limits)
 	}
 	const table = "widest_row"
 	testutils.CreateWideRowTable(t, testdbs.DB013, table, spec, map[int]byte{1: 1})
