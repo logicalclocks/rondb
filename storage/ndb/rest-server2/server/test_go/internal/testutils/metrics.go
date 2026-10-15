@@ -18,10 +18,12 @@ package testutils
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -225,10 +227,23 @@ type Limits struct {
 	MemoryLimitBytes      int64
 }
 
-// GetLimits reads rdrs_limits; every field must be present.
+// GetLimits reads rdrs_limits; every field must be present. A server that
+// predates the family (an rdrs2 without RONDB-1144, benchmarked side by
+// side with a current one) has no limits to report; for that case only,
+// RDRS_LIMITS_OVERRIDE carries the Limits struct as JSON and is used when
+// the family is absent. It never overrides a server that does report.
 func GetLimits(t testing.TB) Limits {
 	t.Helper()
 	m := ScrapeMetrics(t)
+	if !m.Has("rdrs_limits", map[string]string{"name": "max_columns"}) {
+		if raw := os.Getenv("RDRS_LIMITS_OVERRIDE"); raw != "" {
+			var l Limits
+			if err := json.Unmarshal([]byte(raw), &l); err != nil {
+				t.Fatalf("RDRS_LIMITS_OVERRIDE: %v", err)
+			}
+			return l
+		}
+	}
 	get := func(name string) int64 {
 		return m.Get(t, "rdrs_limits", map[string]string{"name": name})
 	}

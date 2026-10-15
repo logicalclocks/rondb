@@ -44,7 +44,7 @@ func plainIntOp() api.BatchSubOp {
 	}
 }
 
-func spillOp(t *testing.T, cols []string) api.BatchSubOp {
+func spillOp(t testing.TB, cols []string) api.BatchSubOp {
 	var body api.PKReadBody
 	if err := json.Unmarshal([]byte(spillfixture.ReadBody(t, cols)), &body); err != nil {
 		t.Fatal(err)
