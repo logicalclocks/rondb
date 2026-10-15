@@ -59,6 +59,64 @@ Number of output lines, including header: 7
 
 
 
+===== String literals in the column's character set =====
+== Query ==
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_latin1 = 'XYZÅÄÖxyzåäö_'
+   OR t_greek = 'ΑΒΓαβγ_'
+   OR t_utf16 = 'ABCabc'
+   OR t_utf16 = '   spaces'
+GROUP BY title;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_latin1 LIKE '%åä%'
+   OR t_greek LIKE 'ΑΒΓ%'
+   OR t_utf16 LIKE 'ABC%'
+GROUP BY title;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_utf16 < 'B'
+GROUP BY title;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+===== Rejection: = with a character latin1 cannot hold =====
+Error handling: RPE
+ronsql_cli caught exception: String literal has a character that column 't_latin1' (character set latin1) cannot hold.
+SELECT title, count(*) FROM encoding_test WHERE t_latin1 = 'Ω' GROUP BY title|
+ERROR HY000: Illegal mix of collations (latin1_swedish_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,COERCIBLE) for operation '='
+===== Rejection: LIKE with a character greek cannot hold =====
+Error handling: RPE
+ronsql_cli caught exception: String literal has a character that column 't_greek' (character set greek) cannot hold.
+SELECT title, count(*) FROM encoding_test WHERE t_greek LIKE '%å%' GROUP BY title|
+ERROR HY000: Illegal mix of collations (greek_general_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,COERCIBLE) for operation 'like'
 Cleanup
 DROP TABLE encoding_test;
 ===== Prepare table for encoding tests for datatype CHAR(50) =====
@@ -119,6 +177,64 @@ Number of output lines, including header: 7
 
 
 
+===== String literals in the column's character set =====
+== Query ==
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_latin1 = 'XYZÅÄÖxyzåäö_'
+   OR t_greek = 'ΑΒΓαβγ_'
+   OR t_utf16 = 'ABCabc'
+   OR t_utf16 = '   spaces'
+GROUP BY title;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_latin1 LIKE '%åä%'
+   OR t_greek LIKE 'ΑΒΓ%'
+   OR t_utf16 LIKE 'ABC%'
+GROUP BY title;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_utf16 < 'B'
+GROUP BY title;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+===== Rejection: = with a character latin1 cannot hold =====
+Error handling: RPE
+ronsql_cli caught exception: String literal has a character that column 't_latin1' (character set latin1) cannot hold.
+SELECT title, count(*) FROM encoding_test WHERE t_latin1 = 'Ω' GROUP BY title|
+ERROR HY000: Illegal mix of collations (latin1_swedish_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,COERCIBLE) for operation '='
+===== Rejection: LIKE with a character greek cannot hold =====
+Error handling: RPE
+ronsql_cli caught exception: String literal has a character that column 't_greek' (character set greek) cannot hold.
+SELECT title, count(*) FROM encoding_test WHERE t_greek LIKE '%å%' GROUP BY title|
+ERROR HY000: Illegal mix of collations (greek_general_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,COERCIBLE) for operation 'like'
 Cleanup
 DROP TABLE encoding_test;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)

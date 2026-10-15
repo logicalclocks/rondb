@@ -83,6 +83,69 @@ let $rdrs_ronsql = curl --no-progress-meter --fail-with-body -X POST
 --let $canonicalization_perl=s/\x00/<00>/g;s/\x03/<03>/g;s/\x08/<08>/g;s/\x0D/<0D>/g;s/\x1A/<1A>/g;s/\x84/<84>/g;s/\x85/<85>/g;s/\x91/<91>/g;s/\x92/<92>/g;s/\x93/<93>/g;s/\x96/<96>/g;s/\xA4/<A4>/g;s/\xA5/<A5>/g;s/\xB1/<B1>/g;s/\xB2/<B2>/g;s/\xB3/<B3>/g;s/\xB6/<B6>/g;s/\xC3/<C3>/g;s/\xCE/<CE>/g;s/\xc1/<C1>/g;s/\xc2/<C2>/g;s/\xc4/<C4>/g;s/\xc5/<C5>/g;s/\xd6/<C6>/g;s/\xe1/<E1>/g;s/\xe2/<E2>/g;s/\xe3/<E3>/g;s/\xe4/<E4>/g;s/\xe5/<E5>/g;s/\xf6/<F6>/g;
 --source suite/ronsql/include/ronsql_compare.inc
 
+# RONSQL-13: a string literal is UTF-8, and RonSQL converts it to the
+# column's character set, as MySQL does.  Copying the UTF-8 bytes matched
+# nothing for non-ASCII text in latin1 and greek, and was wrong even for
+# ASCII text in utf16, where CHAR was also padded with 0x20 bytes.  Each
+# OR arm matches a different row, so a broken arm loses a row.
+--echo ===== String literals in the column's character set =====
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_latin1 = 'XYZÅÄÖxyzåäö_'
+   OR t_greek = 'ΑΒΓαβγ_'
+   OR t_utf16 = 'ABCabc'
+   OR t_utf16 = '   spaces'
+GROUP BY title;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_latin1 LIKE '%åä%'
+   OR t_greek LIKE 'ΑΒΓ%'
+   OR t_utf16 LIKE 'ABC%'
+GROUP BY title;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--let QUERY_FILE=$MYSQL_TMP_DIR/query.sql
+--write_file $QUERY_FILE
+SELECT title
+     , count(*)
+FROM encoding_test
+WHERE t_utf16 < 'B'
+GROUP BY title;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+# A literal with a character that the column's character set cannot hold
+# is rejected, as MySQL rejects it (Illegal mix of collations).
+--echo ===== Rejection: = with a character latin1 cannot hold =====
+--write_file $QUERY_FILE
+SELECT title, count(*) FROM encoding_test WHERE t_latin1 = 'Ω' GROUP BY title;
+EOF
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
+--remove_file $QUERY_FILE
+--error ER_CANT_AGGREGATE_2COLLATIONS
+SELECT title, count(*) FROM encoding_test WHERE t_latin1 = 'Ω' GROUP BY title|
+
+--echo ===== Rejection: LIKE with a character greek cannot hold =====
+--write_file $QUERY_FILE
+SELECT title, count(*) FROM encoding_test WHERE t_greek LIKE '%å%' GROUP BY title;
+EOF
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test < '$QUERY_FILE' 2>&1
+--remove_file $QUERY_FILE
+--error ER_CANT_AGGREGATE_2COLLATIONS
+SELECT title, count(*) FROM encoding_test WHERE t_greek LIKE '%å%' GROUP BY title|
+
 --echo Cleanup
 DELIMITER ;|
 --disable_warnings

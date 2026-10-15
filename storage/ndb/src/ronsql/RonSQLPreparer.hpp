@@ -1123,6 +1123,9 @@ private:
                            struct ConditionalExpression* ce);
   raw_value encode_constant(struct ConditionalExpression *ce,
                             const NdbDictionary::Column* col);
+  // A string literal (UTF-8) converted to the character set of `col`.
+  LexString literal_in_column_charset(LexString lit,
+                                      const NdbDictionary::Column* col);
   // A pushed-query constant for `col` from encode_constant's bytes (F14:
   // NdbQueryBuilder::constValue(ptr, len) takes a variable-size value
   // without its length prefix).

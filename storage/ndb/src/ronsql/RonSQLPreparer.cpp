@@ -49,6 +49,7 @@
 #include "mysql_time.h"
 #include "my_inttypes.h"
 #include <my_base.h>
+#include "mysql/strings/m_ctype.h"
 #include "decimal.h"
 #include <decimal_utils.hpp>
 #include <AggColumnLoad.hpp>
@@ -5851,9 +5852,10 @@ RonSQLPreparer::spj_in_range_words(const ScanConfig& sc,
     const NdbDictionary::Column::ArrayType at = col->getArrayType();
     if (at != NdbDictionary::Column::ArrayTypeFixed && right != NULL &&
         right->op == T_STRING) {
+      // The literal's length in the column's character set (RONSQL-13).
       const Uint32 literal =
           (at == NdbDictionary::Column::ArrayTypeShortVar ? 1 : 2) +
-          (Uint32)right->string.len;
+          (Uint32)literal_in_column_charset(right->string, col).len;
       if (literal < bytes) bytes = literal;
     }
     shared += 2 + (bytes + 3) / 4;
@@ -16159,10 +16161,15 @@ RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
       scope.resolved_columns[left->col_idx];
   require_prm(left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
               "WHERE LIKE filter requires a stored-table column.");
+  require_prm(left_ref.dict_column != NULL,
+              "WHERE LIKE filter has no source column descriptor.");
+  // The kernel matches the pattern in the column's character set.
+  LexString pattern = literal_in_column_charset(right->string,
+                                                left_ref.dict_column);
   require_sch(DBG(filter->cmp(cond,
                                left_ref.attr_id,
-                               right->string.str,
-                               right->string.len)) >= 0,
+                               pattern.str,
+                               pattern.len)) >= 0,
               filter_fail);
 }
 
@@ -16210,6 +16217,48 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
                                  " timestamp with weird delimiters or spaces");
   }
   // todo test nanosecond rounding, see status->nanoseconds
+}
+
+// RONSQL-13: a string literal is UTF-8 (the lexer checks it), but a CHAR,
+// VARCHAR or LONGVARCHAR column holds its own character set, and the
+// kernel compares and LIKE-matches the value in that character set.
+// Convert the literal to it, as MySQL does: the column's collation wins
+// over a literal's, and MySQL rejects a literal that the column's
+// character set cannot hold (ER_CANT_AGGREGATE_2COLLATIONS).  Copying the
+// UTF-8 bytes unchanged matched nothing for non-ASCII text in latin1 or
+// greek, and was wrong even for ASCII text in ucs2, utf16 and utf32.
+LexString
+RonSQLPreparer::literal_in_column_charset(LexString lit,
+                                          const NdbDictionary::Column* col)
+{
+  const CHARSET_INFO* cs = col->getCharset();
+  if (cs == NULL || lit.len == 0 ||
+      my_charset_same(cs, &my_charset_utf8mb4_bin)) {
+    return lit;
+  }
+  if (cs->mbminlen == 1 && (cs->state & MY_CS_NONASCII) == 0) {
+    // ASCII text has the same bytes in an ASCII-based character set.
+    size_t i = 0;
+    while (i < lit.len && static_cast<Uint8>(lit.str[i]) < 0x80) i++;
+    if (i == lit.len) return lit;
+  }
+  // Each character is at least one UTF-8 byte and at most mbmaxlen bytes
+  // in cs, so the buffer holds the whole conversion.
+  require_prm(lit.len <= UINT32_MAX / cs->mbmaxlen,
+              "String literal too large.");
+  const Uint32 cap = static_cast<Uint32>(lit.len * cs->mbmaxlen);
+  char* out = m_amalloc->alloc_exc<char>(cap);
+  unsigned errors = 0;
+  size_t len = my_convert(out, cap, cs, lit.str, lit.len,
+                          &my_charset_utf8mb4_bin, &errors);
+  if (errors != 0) {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::SEMANTIC,
+        std::string("String literal has a character that column '") +
+        col->getName() + "' (character set " + cs->csname +
+        ") cannot hold.");
+  }
+  return LexString{ out, len };
 }
 
 // F14: encode_constant returns the NdbRecord byte format, which for a
@@ -16428,29 +16477,39 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                  " are supported.");
   }
   if (op == T_STRING && tk == STR) {
+    // The bytes of the literal in the column's character set.
+    const LexString lit = literal_in_column_charset(ce->string, col);
     if (lenbytes == 0) {
       // CHAR: fixed-length, right-padded with spaces, no length prefix
       Uint32 col_len = col->getLength();
-      if (ce->string.len > static_cast<size_t>(col_len)) {
+      if (lit.len > static_cast<size_t>(col_len)) {
         throw RonSQLMaybeStaleSchema("CHAR column compared to a string literal"
                                      " that is too long.");
       }
       Uint8* val = m_amalloc->alloc_exc<Uint8>(col_len);
-      memcpy(val, ce->string.str, ce->string.len);
-      memset(val + ce->string.len, ' ', col_len - ce->string.len);
+      memcpy(val, lit.str, lit.len);
+      const CHARSET_INFO* cs = col->getCharset();
+      if (cs != NULL) {
+        // The character set's space, as MySQL pads CHAR: in ucs2, utf16
+        // and utf32 a 0x20 byte is part of another character.
+        cs->cset->fill(cs, reinterpret_cast<char*>(val) + lit.len,
+                       col_len - lit.len, cs->pad_char);
+      } else {
+        memset(val + lit.len, ' ', col_len - lit.len);
+      }
       return raw_value{ val, col_len };
     }
-    if (ce->string.len > static_cast<size_t>(maxlen)) {
+    if (lit.len > static_cast<size_t>(maxlen)) {
       throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
                                    " that is too long. Note that if the column"
                                    " length is less than 256, then the length"
                                    " of the string literal must also be less"
                                    " than 256.");
     }
-    Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + ce->string.len);
-    memcpy(val, &ce->string.len, lenbytes);
-    memcpy(val + lenbytes, ce->string.str, ce->string.len);
-    return raw_value{ val, static_cast<Uint32>(lenbytes + ce->string.len) };
+    Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + lit.len);
+    memcpy(val, &lit.len, lenbytes);
+    memcpy(val + lenbytes, lit.str, lit.len);
+    return raw_value{ val, static_cast<Uint32>(lenbytes + lit.len) };
   }
   if (tk == STR) {
     throw RonSQLMaybeStaleSchema("CHAR/VARCHAR column compared to an"
