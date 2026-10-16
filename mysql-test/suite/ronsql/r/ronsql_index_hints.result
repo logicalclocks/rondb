@@ -131,3 +131,40 @@ ronsql_cli caught exception: FORCE INDEX 'idx_b' cannot be used: no WHERE condit
 === Test 9: index hint on a joined table (rejected) ===
 Error handling: RPE
 ronsql_cli caught exception: Index hints (FORCE/USE/IGNORE INDEX) are only supported on the root table of a query or CTE body, not on a joined table.
+
+
+=== Test 10: partial-key CTE join without a hint (CTE becomes the root) ===
+== Query ==
+WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a)
+SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o JOIN c ON c.k = o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a)
+SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o JOIN c ON c.k = o.id|
+n	s
+6	180
+
+
+=== Test 11: FORCE INDEX on a root demoted by a partial-key CTE join (rejected) ===
+Table 'o' has an index hint, but the join to CTE 'c' binds only part of its GROUP BY key, so the CTE is scanned as the root and 'o' is read by key for each CTE row.
+Error handling: RPE
+ronsql_cli caught exception: An index hint cannot be honored on a table that a partial-key CTE join reads by key. Remove the hint.
+
+
+=== Test 12: USE INDEX on a root demoted by a partial-key CTE join (rejected) ===
+Table 'o' has an index hint, but the join to CTE 'c' binds only part of its GROUP BY key, so the CTE is scanned as the root and 'o' is read by key for each CTE row.
+Error handling: RPE
+ronsql_cli caught exception: An index hint cannot be honored on a table that a partial-key CTE join reads by key. Remove the hint.
+
+
+=== Test 13: IGNORE INDEX on a root demoted by a partial-key CTE join (rejected) ===
+Table 'o' has an index hint, but the join to CTE 'c' binds only part of its GROUP BY key, so the CTE is scanned as the root and 'o' is read by key for each CTE row.
+Error handling: RPE
+ronsql_cli caught exception: An index hint cannot be honored on a table that a partial-key CTE join reads by key. Remove the hint.

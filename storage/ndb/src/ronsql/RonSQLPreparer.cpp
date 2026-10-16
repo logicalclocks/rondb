@@ -2239,6 +2239,24 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         cur = cur->next;
       }
       if (match != NULL) {
+        /* RONSQL-40: the original root becomes a child read by key for
+         * each CTE row, so an index hint on it cannot be honored.  It was
+         * cleared silently: FORCE INDEX neither applied nor failed, and the
+         * lookup could use an index IGNORE INDEX excluded.  Reject it, as
+         * a hint on a joined table is rejected. */
+        const TableRef* root = m_context.ast_root.root_table;
+        if (root->hint_kind != TableRef::HintKind::HINT_NONE) {
+          std::basic_ostream<char>& err = *m_conf.err_stream;
+          err << "Table '" << root->alias.c_str() << "' has an index hint,"
+                 " but the join to CTE '" << match->table.name.c_str()
+              << "' binds only part of its GROUP BY key, so the CTE is"
+                 " scanned as the root and '" << root->alias.c_str()
+              << "' is read by key for each CTE row." << std::endl;
+          throw RonSQLPermanentError(
+              RonSQLErrorClass::UNSUPPORTED,
+              "An index hint cannot be honored on a table that a "
+              "partial-key CTE join reads by key. Remove the hint.");
+        }
         // Splice match out of the joins list.
         if (match_prev == NULL) {
           m_context.ast_root.joins = match->next;
@@ -2250,15 +2268,7 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         // child of the CTE: same conditions as match, flipped.
         JoinClause* new_jc = m_amalloc->alloc_exc<JoinClause>(1);
         new_jc->join_type = JoinClause::INNER_JOIN;
-        new_jc->table = *m_context.ast_root.root_table;
-        // A root index hint does not survive the demotion: on the
-        // aggregate path reject_index_hints_on_joins already ran (the
-        // hint was silently dropped — nothing reads join-clause hints
-        // after it); on the pre-gate parse() call the reject runs
-        // later and would otherwise newly trip on the demoted copy.
-        // Clearing keeps both paths at the established behavior.
-        new_jc->table.hint_kind = TableRef::HintKind::HINT_NONE;
-        new_jc->table.hint_indexes = NULL;
+        new_jc->table = *m_context.ast_root.root_table;  // no hint (above)
         new_jc->conditions = match->conditions;
         for (JoinCondition* jc = new_jc->conditions;
              jc != NULL; jc = jc->next) {
