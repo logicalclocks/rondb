@@ -36,7 +36,6 @@
 struct RS_BufferChain;
 
 struct KeyOperation {
-  ArenaMalloc *m_amalloc;
   Uint32 m_num_pk_columns;
   Uint32 m_num_read_columns;
   Uint32 m_num_table_columns;

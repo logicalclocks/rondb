@@ -37,6 +37,7 @@
 #include "encoding.hpp"
 
 #include <memory>
+#include <new>
 #include <mysql_time.h>
 #include <algorithm>
 #include <tuple>
@@ -111,7 +112,6 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   for (Uint32 i = 0; i < numOps; i++) {
     KeyOperation *key_op = &m_key_ops[i];
     key_op->m_ndbTransaction = nullptr;
-    key_op->m_amalloc = amalloc;
     PKRRequest *req = new (&key_op->m_req) PKRRequest(&reqBuffer[i]);
     m_numOperations = i + 1;
     if (unlikely(ndb_object->setCatalogName(req->DB()) != 0)) {
@@ -1112,18 +1112,22 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
     }
     DEB_NDB_BE("Read col_name: %s, TEXT of length: %llu", col_name, length);
     /* RONDB-1144: a TEXT value is converted to utf8mb4 and JSON-escaped
-     * before it is stored, which works on the whole value, so the raw
-     * bytes are staged in the request's arena rather than in the response
-     * buffer. The escaped result then goes in like a blob, through
-     * AppendRawWithSpill, continuing into the next buffer of the chain
-     * when needed. */
+     * before it is stored, and both steps need the whole value, so the raw
+     * bytes are read into a staging buffer first. It cannot be the
+     * response buffer any more (the value may be larger than what is left
+     * there and spill), and it is local to this branch rather than in the
+     * request's arena so its bytes are freed as soon as the escaped copy
+     * has been written, not at the end of the request. The escaped result
+     * goes in like a blob, through AppendRawWithSpill, continuing into the
+     * next buffer of the chain when needed. */
     if (unlikely(length > 0xFFFFFFFFULL - 1)) {
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
         std::string(" Column: ") + std::string(col_name));
     }
-    char *staging = static_cast<char *>(
-      m_amalloc->alloc_bytes(static_cast<size_t>(length) + 1, 8));
+    std::unique_ptr<char[]> staging_buffer(
+      new (std::nothrow) char[static_cast<size_t>(length)]);
+    char *staging = staging_buffer.get();
     if (unlikely(staging == nullptr)) {
       return RS_SERVER_ERROR(std::string(
         rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
