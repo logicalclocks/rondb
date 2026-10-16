@@ -16522,8 +16522,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   default:
     throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
                                  " condition. Supported types are integer"
-                                 " types, CHAR, VARCHAR, DATE, DATETIME and"
-                                 " TIMESTAMP.");
+                                 " types, FLOAT, DOUBLE, DECIMAL, CHAR,"
+                                 " VARCHAR, DATE, DATETIME and TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
