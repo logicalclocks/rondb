@@ -259,6 +259,12 @@ std::shared_ptr<RestErrorCode>
       /* Rate limit rejections (RONDB-978) keep their 429 status */
       DEB_FS_CTRL("RATE LIMITED");
       fsError = RATE_LIMIT_EXCEEDED->NewMessage(err);
+    } else if (code == drogon::k503ServiceUnavailable) {
+      /* A full buffer pool (RONDB-1144) is overload, not a failed read:
+       * keep the 503 wherever the pool ran dry, including a value that
+       * spills while the batch is read. */
+      DEB_FS_CTRL("SERVICE UNAVAILABLE");
+      fsError = SERVICE_TEMPORARILY_UNAVAILABLE->NewMessage(err);
     } else {
       DEB_FS_CTRL("FAILED");
       fsError = READ_FROM_DB_FAIL->NewMessage(err);

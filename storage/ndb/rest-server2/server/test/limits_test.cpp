@@ -218,3 +218,31 @@ TEST(Limits, DerivedSizesFollowTheLimits) {
     EXPECT_EQ(DEFAULT_REQ_BUFFER, 2048U * 1024U);
   }
 }
+
+/* A spilled blob can be close to 4 GiB (the column offset space), so the
+ * JSON size of its base64 must be computed in 64 bits: from 1 GiB up,
+ * n * 4 wraps in 32 bits and the estimate became a few bytes, so the JSON
+ * writer overran its buffer. base64_encoded_len must equal what libbase64
+ * writes, and setColumnData must count it in full for the largest sizes
+ * (no data is touched; only the estimate is computed). */
+TEST(Limits, JsonSizeOfLargestSpilledBlob) {
+  for (Uint32 n : {0U, 1U, 2U, 3U, 4U, 5U, 6U, 100U, 1000U, 65537U}) {
+    std::vector<char> src(n, '\x5a');
+    std::vector<char> dst(base64_encoded_len(n) + 4);
+    size_t out = 0;
+    base64_encode(src.data(), n, dst.data(), &out, 0);
+    EXPECT_EQ(out, base64_encoded_len(n)) << "n = " << n;
+  }
+  const char name[] = "b";
+  for (Uint64 n : {(1ULL << 30) - 1, 1ULL << 30, 3ULL << 30, 0xFFFFFFFFULL}) {
+    ResultView view[1];
+    PKReadResponseJSON json;
+    json.init(1, view);
+    const size_t before = json.getSizeJson();
+    json.setColumnData(0, name, 1, nullptr, static_cast<Uint32>(n), true,
+                       RDRS_BINARY_DATATYPE);
+    const Uint64 encoded = 4 * ((n + 2) / 3);
+    EXPECT_GE(json.getSizeJson() - before, encoded + 2) << "n = " << n;
+    EXPECT_EQ(base64_encoded_len(n), encoded);
+  }
+}

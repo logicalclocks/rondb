@@ -35,6 +35,7 @@
 #include "buffer_manager.hpp"
 #include "config_structs.hpp"
 #include "db_operations/pk/pkr_response.hpp"
+#include "feature_store_ctrl.hpp"
 #include "rdrs_const.h"
 #include "rdrs_dal.h"
 
@@ -281,4 +282,34 @@ TEST_F(BufferChainTest, SpillWithoutChainOverflows) {
   std::vector<char> value(8192, 'x');
   EXPECT_NE(resp.AppendRawWithSpill(value.data(), 8192).http_code, SUCCESS);
   EXPECT_TRUE(resp.Overflowed());
+}
+
+/* A value that spills while the response is written can run the pool dry
+ * mid-batch. The writer reports 503 "buffer pool exhausted", and the
+ * feature store controllers pass a batch read's error through
+ * TranslateRonDbError, which must keep the 503 (it turned every status
+ * other than 400 and 429 into 500 before). */
+TEST_F(BufferChainTest, SpillExhaustionStays503ThroughFeatureStore) {
+  {
+    RS_BufferChain chain(RS_BufferChain::RESP, 1);
+    ASSERT_EQ(chain.take_first().http_code, SUCCESS);
+    PKRResponse resp(chain.view(0), &chain, 0);
+    ASSERT_EQ(resp.SetOperationID("op").http_code, SUCCESS);
+    ASSERT_EQ(resp.SetNoOfColumns(1).http_code, SUCCESS);
+    ASSERT_EQ(resp.SetStatus(SUCCESS, "OK").http_code, SUCCESS);
+    resp.SetSlot(0);
+    ASSERT_EQ(resp.BeginRawColumn(RDRS_BINARY_DATATYPE).http_code, SUCCESS);
+    std::vector<char> chunk(kResp, '\x01');
+    RS_Status status = RS_OK;
+    for (Uint32 i = 0; i < kMax + 2 && status.http_code == SUCCESS; i++) {
+      status = resp.AppendRawWithSpill(chunk.data(), kResp);
+    }
+    ASSERT_EQ(status.http_code, 503);
+    auto fsError = TranslateRonDbError(status.http_code, status.message);
+    ASSERT_NE(fsError, nullptr);
+    EXPECT_EQ(fsError->GetStatus(), 503);
+    EXPECT_NE(fsError->Error().find("buffer pool exhausted"), std::string::npos)
+        << fsError->Error();
+  }
+  EXPECT_EQ(resp_in_use(), 0);
 }

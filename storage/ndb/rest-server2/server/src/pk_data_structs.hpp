@@ -103,6 +103,13 @@ struct RS_Segment {
   Uint32 len;
 };
 
+/* Exact base64 length of n bytes (4 per started 3-byte group, padded).
+ * 64-bit on purpose: a spilled blob can be close to 4 GiB, and from 1 GiB
+ * up n * 4 no longer fits 32 bits (RONDB-1144). */
+inline Uint64 base64_encoded_len(Uint64 n) {
+  return 4 * ((n + 2) / 3);
+}
+
 struct ResultView {
   const char *name_ptr;
   const char *value_ptr;
@@ -224,12 +231,10 @@ class PKReadResponseJSON : public PKReadResponse {
     result_view[index].data_type = data_type;
     result_view[index].segs = segs;
     result_view[index].nsegs = nsegs;
-    Uint32 encoded_value_len = value_len;
+    Uint64 encoded_value_len = value_len;
     if (data_type == RDRS_BINARY_DATATYPE ||
         data_type == RDRS_BIT_DATATYPE) {
-      encoded_value_len *= 4;
-      encoded_value_len /= 3;
-      encoded_value_len += 2;
+      encoded_value_len = base64_encoded_len(value_len);
     }
     // 8 includes quoting for value
     size_json += (8 + name_len + encoded_value_len);
@@ -312,8 +317,8 @@ class PKReadResponseJSON : public PKReadResponse {
     bool quoted_flag = result_view[index].quoted_flag;
     if (result_view[index].data_type == RDRS_BINARY_DATATYPE ||
         result_view[index].data_type == RDRS_BIT_DATATYPE) {
-      Uint32 encoded_len = ((value_len * 4) / 3) + 3 + 2;
-      std::vector<char> vec(encoded_len);
+      // the encoding plus the two quotes
+      std::vector<char> vec(base64_encoded_len(value_len) + 2);
       assert(quoted_flag);
       size_t encode_len = encodeValueBase64(index, &vec[1]);
       encode_len += 2;

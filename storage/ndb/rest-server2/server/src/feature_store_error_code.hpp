@@ -124,5 +124,7 @@ const std::shared_ptr<RestErrorCode> DESERIALISE_FEATURE_FAIL =
     std::make_shared<RestErrorCode>(19, "Deserialising complex feature failed.", 500, "");
 const std::shared_ptr<RestErrorCode> RATE_LIMIT_EXCEEDED =
     std::make_shared<RestErrorCode>(20, "Rate limit exceeded.", 429, "");
+const std::shared_ptr<RestErrorCode> SERVICE_TEMPORARILY_UNAVAILABLE =
+    std::make_shared<RestErrorCode>(21, "Service temporarily unavailable.", 503, "");
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_ERROR_CODE_HPP_
