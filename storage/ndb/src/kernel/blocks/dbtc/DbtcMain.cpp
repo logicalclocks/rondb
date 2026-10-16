@@ -19583,11 +19583,8 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = apiConnectptr.p->apiScanRec;
   if (!scanRecordPool.getValidPtr(scanptr) || scanptr.i == RNIL) {
-    // How can this happen?
-    // Assert to catch if path is tested, remove if hit and analyzed.
     jam();
     ndbrequire(!sent_from_queue);
-    ndbassert(false);
     releaseSections(handle);
     ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
     ref->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
@@ -19737,6 +19734,22 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     return;
   }
 
+  if (unlikely(scanP->scanState != ScanRecord::RUNNING)) {
+    jam();
+    /* scanError() requires a running scan. Ask the API to close instead,
+     * preserving any outstanding setup or completion work. */
+    setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+    ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
+    ref->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
+    ref->transId1 = transid1;
+    ref->transId2 = transid2;
+    ref->errorCode = ScanFragRef::ZINVALID_SCAN_NEXTREQ;
+    ref->closeNeeded = 1;
+    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_SCAN_TABREF, signal,
+               ScanTabRef::SignalLength, JBB);
+    return;
+  }
+
   ScanFragNextReq tmp;
   tmp.requestInfo = 0;
   tmp.transId1 = apiConnectptr.p->transid[0];
@@ -19752,8 +19765,15 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   for (Uint32 i = 0; i < len; i++) {
     jamDebug();
     scanFragptr.i = signal->theData[i + 25];
-    c_scan_frag_pool.getPtr(scanFragptr);
-    ndbrequire(scanFragptr.p->scanFragState == ScanFragRec::DELIVERED);
+    /* Only resume a fragment handed out by this scan. This also rejects
+     * duplicate pointers, since the first occurrence leaves DELIVERED. */
+    if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragptr) ||
+                 scanFragptr.p->scanRec != scanptr.i ||
+                 scanFragptr.p->scanFragState != ScanFragRec::DELIVERED)) {
+      jam();
+      scanError(signal, scanptr, ScanFragRef::ZINVALID_SCAN_NEXTREQ);
+      return;
+    }
 
     scanFragptr.p->startFragTimer(ctcTimer);
     scanFragptr.p->m_ops = 0;
