@@ -2791,8 +2791,11 @@ int NdbScanOperation::prepareSendScan(Uint32 /*aTC_ConnectPtr*/,
   /* All scans use NdbRecord internally */
   assert(theStatus == UseNdbRecord);
 
-  Uint32 def_max_batch_size = ScanTabReq::getLockMode(reqInfo) == 0 ?
-    MAX_PARALLEL_OP_PER_SCAN_RC : MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK;
+  /* Shared and exclusive scans use the same 10-bit takeover op number. */
+  const bool locking = ScanTabReq::getLockMode(reqInfo) ||
+                       !ScanTabReq::getReadCommittedFlag(reqInfo);
+  const Uint32 def_max_batch_size = locking
+      ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK : MAX_PARALLEL_OP_PER_SCAN_RC;
   /**
    * The number of records sent by each LQH is calculated and the kernel
    * is informed of this number by updating the SCAN_TABREQ signal

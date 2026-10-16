@@ -24,7 +24,7 @@
 
 #include <stdio.h>
 #include <NdbDictionary.hpp>
-#include "ndberror.c"
+#include "ndberror.cpp"
 
 #include <NdbTap.hpp>
 
@@ -34,7 +34,9 @@ TAPTEST(ndberror_check) {
   for (int i = 0; i < NbErrorCodes; i++) {
     for (int j = i + 1; j < NbErrorCodes; j++) {
       if (ErrorCodes[i].code == ErrorCodes[j].code) {
-        fprintf(stderr, "Duplicate error code %u\n", ErrorCodes[i].code);
+        fprintf(stderr, "Duplicate error code %d: \"%s\" and \"%s\"\n",
+                ErrorCodes[i].code, ErrorCodes[i].message,
+                ErrorCodes[j].message);
         ok = 0;
       }
     }

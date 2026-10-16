@@ -1099,7 +1099,7 @@ static int run_dist_test(NDBT_Context *ctx, NDBT_Step *step) {
  * - metadata validation through the direct NDB API (errors 1243/1244)
  * - hinted PK operations agree with DBTC routing (error insert 8050)
  * - ordered index scans with base-key equality prune to the interval
- * - explicit hash-valued scan pruning is rejected with error 2203
+ * - explicit hash-valued scan pruning is rejected with error 2204
  * - fanout = 1 keeps legacy behavior
  *
  * NOTE: error insert 8050 crashes a data node if any scan fragment is
@@ -1763,7 +1763,7 @@ static int run_fanout_interval_scan(NDBT_Context *ctx, NDBT_Step *step) {
 }
 
 /**
- * Explicit hash-valued scan pruning must be rejected with error 2203 on
+ * Explicit hash-valued scan pruning must be rejected with error 2204 on
  * fanout tables, and explicit partition-id scans (SO_PARTITION_ID) keep
  * their existing restriction (error 4546 on non-UserDefined tables).
  */
@@ -1842,7 +1842,7 @@ static int run_fanout_explicit_prune(NDBT_Context *ctx, NDBT_Step *step) {
 
     CHECK(op->setBound(idxRec, ib, &pSpec, sizeof(pSpec)), op);
 
-    /* The scan must be rejected by DBTC with 2203:
+    /* The scan must be rejected by DBTC with 2204:
      * hash-valued one-partition pruning is ambiguous on fanout tables
      */
     int execRc = trans->execute(NdbTransaction::NoCommit);
@@ -1859,9 +1859,9 @@ static int run_fanout_explicit_prune(NDBT_Context *ctx, NDBT_Step *step) {
       errCode = op->getNdbError().code != 0 ? op->getNdbError().code
                                             : trans->getNdbError().code;
     }
-    if (errCode != 2203) {
+    if (errCode != 2204) {
       ndbout << "Explicit hash-valued prune variant " << variant
-             << " failed with " << errCode << " expected 2203" << endl;
+             << " failed with " << errCode << " expected 2204" << endl;
       trans->close();
       return NDBT_FAILED;
     }
@@ -2272,7 +2272,7 @@ TESTCASE("fanout_interval_scan",
   FINALIZER(run_drop_fanout_table);
 }
 TESTCASE("fanout_explicit_prune",
-         "Explicit hash-valued scan pruning is rejected with 2203 on"
+         "Explicit hash-valued scan pruning is rejected with 2204 on"
          " fanout tables, SO_PARTITION_ID keeps its restriction") {
   TC_PROPERTY("Fanout", (unsigned)4);
   INITIALIZER(run_create_fanout_table);
