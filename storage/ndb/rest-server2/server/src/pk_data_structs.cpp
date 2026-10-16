@@ -339,16 +339,14 @@ RS_Status PKReadParams::validate_columns(void) {
     drogon::HttpStatusCode::k200OK)).status;
 }
 
-int PKReadResponseJSON::to_string_single(char *json_buf,
-                                         ArenaMalloc *amalloc,
-                                         size_t &ret_size) const {
+void PKReadResponseJSON::to_string_single(char *json_buf,
+                                          size_t &ret_size) const {
   char *buf = json_buf;
   memcpy(buf, "{\"code\":", 8);
   buf += 8;
 
   char code_buf[10];
   int code_char_count = sprintf(&code_buf[0], "%d", code);
-  char encode_buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
   memcpy(buf, &code_buf[0], code_char_count);
   buf += code_char_count;
   memcpy(buf, ",\"operationId\":\"", 16);
@@ -383,25 +381,11 @@ int PKReadResponseJSON::to_string_single(char *json_buf,
     }
     if (res_view.data_type == RDRS_BINARY_DATATYPE ||
         res_view.data_type == RDRS_BIT_DATATYPE) {
-      size_t outlen = 0;
-      char *encode_buf_ptr = &encode_buffer[0];
-      if (res_view.value_len >= MAX_TUPLE_SIZE_IN_BYTES) {
-        Uint32 value_len = res_view.value_len;
-        Uint32 max_encoded_len = ((value_len * 4) / 3) + 3;
-        encode_buf_ptr = (char*)amalloc->alloc_bytes(max_encoded_len, 8);
-        if (unlikely(encode_buf_ptr == nullptr)) {
-          return -1;
-        }
-      }
-      base64_encode(res_view.value_ptr,
-                    res_view.value_len,
-                    (char *)encode_buf_ptr,
-                    &outlen,
-                    0);
-      memcpy(buf, encode_buf_ptr, outlen);
-      buf += outlen;
+      /* The JSON buffer was sized for the encoded value: encode straight
+       * into it, contiguous or segmented (RONDB-1144). */
+      buf += encodeValueBase64(i, buf);
     } else {
-      memcpy(buf, res_view.value_ptr, res_view.value_len);
+      copyValue(i, buf);
       buf += res_view.value_len;
     }
     if (res_view.quoted_flag) {
@@ -414,19 +398,16 @@ int PKReadResponseJSON::to_string_single(char *json_buf,
   *buf = '\0';
   size_t ret = (size_t)(buf - json_buf);
   ret_size = ret;
-  return 0;
 }
 
 // Indent the JSON string by `indent` spaces.
-char* PKReadResponseJSON::to_string_batch(char *buf,
-                                          ArenaMalloc *amalloc) const {
+char* PKReadResponseJSON::to_string_batch(char *buf) const {
 
   memcpy(buf, "{\"code\":", 8);
   buf += 8;
 
   char code_buf[10];
   int code_char_count = sprintf(&code_buf[0], "%d", code);
-  char encode_buffer[MAX_TUPLE_SIZE_IN_BYTES_ENCODED];
   memcpy(buf, &code_buf[0], code_char_count);
   buf += code_char_count;
 
@@ -461,25 +442,9 @@ char* PKReadResponseJSON::to_string_batch(char *buf,
       }
       if (res_view.data_type == RDRS_BINARY_DATATYPE ||
           res_view.data_type == RDRS_BIT_DATATYPE) {
-        size_t outlen = 0;
-        char *encode_buf_ptr = &encode_buffer[0];
-        if (unlikely(res_view.value_len >= MAX_TUPLE_SIZE_IN_BYTES)) {
-          Uint32 value_len = res_view.value_len;
-          Uint32 max_encoded_len = ((value_len * 4) / 3) + 3;
-          encode_buf_ptr = (char*)amalloc->alloc_bytes(max_encoded_len, 8);
-          if (unlikely(encode_buf_ptr == nullptr)) {
-            return nullptr;
-          }
-        }
-        base64_encode(res_view.value_ptr,
-                      res_view.value_len,
-                      (char *)encode_buf_ptr,
-                      &outlen,
-                      0);
-        memcpy(buf, encode_buf_ptr, outlen);
-        buf += outlen;
+        buf += encodeValueBase64(i, buf);
       } else {
-        memcpy(buf, res_view.value_ptr, res_view.value_len);
+        copyValue(i, buf);
         buf += res_view.value_len;
       }
       if (res_view.quoted_flag) {
@@ -493,10 +458,9 @@ char* PKReadResponseJSON::to_string_batch(char *buf,
   return buf;
 }
 
-int PKReadResponseJSON::batch_to_string(
+void PKReadResponseJSON::batch_to_string(
   const std::vector<PKReadResponseJSON> &responses,
   char *json_buf,
-  ArenaMalloc *amalloc,
   size_t &ret_size) {
 
   char *buf = json_buf; 
@@ -511,16 +475,12 @@ int PKReadResponseJSON::batch_to_string(
     first = false;
     *buf = '\n';
     buf++;
-    buf = response.to_string_batch(buf, amalloc);
-    if (unlikely(buf == nullptr)) {
-      return -1;
-    }
+    buf = response.to_string_batch(buf);
   }
   memcpy(buf, "\n]}\n", 4);
   buf += 4;
   *buf = '\0';
   ret_size = (size_t)(buf - json_buf);
-  return 0;
 }
 
 /*** Scan read ***/

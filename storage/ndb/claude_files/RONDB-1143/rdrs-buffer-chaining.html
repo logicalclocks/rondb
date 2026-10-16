@@ -1,0 +1,547 @@
+<title>RDRS Buffer Chaining</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; figures and tables may be wider and scroll inside their own box. */
+:root {
+  --bg: #f7f6f2;
+  --fg: #1c1b18;
+  --muted: #5e5a52;
+  --rule: #d9d5cc;
+  --panel: #ffffff;
+  --accent: #b2431c;      /* blob bytes */
+  --accent-soft: #f3d9cf;
+  --fixed: #c9ddf0;       /* fixed part of an operation */
+  --fixed-line: #3b6a9a;
+  --free: #efece5;
+  --code-bg: #efece5;
+  --sans: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161614; --fg: #e8e5dd; --muted: #a39e93; --rule: #3a3833; --panel: #1f1e1b;
+    --accent: #e8805a; --accent-soft: #4a2a1e; --fixed: #28405a; --fixed-line: #8fb6dc;
+    --free: #232220; --code-bg: #232220; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161614; --fg: #e8e5dd; --muted: #a39e93; --rule: #3a3833; --panel: #1f1e1b;
+  --accent: #e8805a; --accent-soft: #4a2a1e; --fixed: #28405a; --fixed-line: #8fb6dc;
+  --free: #232220; --code-bg: #232220; color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 16px; line-height: 1.55; padding-inline: 16px; padding-block: 32px 64px; }
+main { max-width: 820px; margin: 0 auto; }
+h1 { font-size: 2rem; font-weight: 600; line-height: 1.15; margin: 0 0 .25rem; text-wrap: balance; }
+h2 { font-size: 1.4rem; font-weight: 600; margin: 2.75rem 0 .75rem; padding-top: 1.25rem; border-top: 1px solid var(--rule); text-wrap: balance; }
+h3 { font-size: 1.1rem; font-weight: 600; margin: 1.75rem 0 .5rem; }
+p, li { max-width: 68ch; }
+.lede { color: var(--muted); margin: 0 0 1rem; font-size: 1.05rem; }
+.meta { font-family: var(--mono); font-size: .8rem; color: var(--muted); margin-bottom: 2rem; }
+code { font-family: var(--mono); font-size: .88em; background: var(--code-bg); padding: .05em .3em; border-radius: 3px; }
+pre { font-family: var(--mono); font-size: .82rem; line-height: 1.45; background: var(--code-bg); padding: .9rem 1rem; border-radius: 4px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; margin: .75rem 0 1.25rem; }
+th, td { text-align: left; vertical-align: top; padding: .45rem .6rem; border: 1px solid var(--rule); }
+th { font-weight: 600; background: var(--panel); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: .85rem; white-space: nowrap; }
+.wrap { overflow-x: auto; }
+figure { margin: 1.25rem 0 1.75rem; }
+figure svg { display: block; width: 100%; height: auto; min-width: 640px; font-family: var(--sans); }
+figcaption { font-size: .88rem; color: var(--muted); margin-top: .5rem; max-width: 68ch; }
+.ex { border-left: 3px solid var(--fixed-line); background: var(--panel); padding: .6rem 1rem; margin: .9rem 0 1.2rem; }
+.ex p { margin: .3rem 0; }
+.ex .t { font-weight: 600; font-size: .85rem; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.warn { border-left: 3px solid var(--accent); background: var(--panel); padding: .6rem 1rem; margin: 1rem 0; }
+.warn p { margin: .3rem 0; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; max-width: 68ch; }
+dt { font-weight: 600; }
+dd { margin: 0; }
+ol li, ul li { margin: .35rem 0; }
+.file { font-family: var(--mono); font-size: .8rem; color: var(--muted); }
+@media (max-width: 520px) { dl { grid-template-columns: 1fr; } }
+</style>
+
+<main>
+<h1>RDRS Buffer Chaining</h1>
+<p class="lede">Why every rdrs2 request holds 12 MiB of buffer today, and how to make buffers small without limiting how large a row or a blob can be. The design must build and work on 26.02 and, after a merge, on 26.10 without anyone editing a size.</p>
+<p class="meta">rdrs2 · storage/ndb/rest-server2/server/src · facts checked on upstream/26.02-main and upstream/26.10-main · 2026-10-14</p>
+
+<h2>1. The problem in one example</h2>
+<p>A batch read of three rows, each 200 bytes, arrives at rdrs2. The server takes one request buffer and one response buffer from its pools. With the default configuration those are 2 MiB and 10 MiB. The batch uses about 1 KB of the request buffer and about 1 KB of the response buffer, holds both until the JSON has been sent, and returns them. For the lifetime of that HTTP request, 12 MiB of memory was reserved to carry 2 KB of data.</p>
+<p>With 64 worker threads, 64 such HTTP requests in flight hold 768 MiB. The pool never frees buffers, so the peak stays allocated. On a 500 MiB pod this is the single largest reason traffic can push rdrs2 past its limit.</p>
+<p>The buffers are this large for one reason: rdrs2 does not know in advance how big a row will be, and a row can contain a blob. So every operation is promised the whole configured size, and the configured size is set to the largest row anyone wants to return, 5 MiB by default.</p>
+<p>The fix is to let a value that does not fit continue into the next buffer. Then the buffer only has to be large enough for the part of a row that is bounded, and blobs can be any size.</p>
+
+<h3>Words used in this document</h3>
+<dl>
+<dt>buffer</dt><dd>One RS_Buffer from the pool. Its size is computed from the NDB limits; ReqBufferSize and RespBufferSize used to set it and are removed. A buffer holds many responses.</dd>
+<dt>response</dt><dd>What one operation writes into a response buffer: a fixed header, a fixed data part, and then its blobs. On the request side each operation writes an operation request, which has a header and a fixed data part and no blobs.</dd>
+<dt>fixed header</dt><dd>The 36-byte header at the start of every response and operation request (on 26.10 the operation request header is 40 bytes).</dd>
+<dt>fixed data part</dt><dd>The column table and every value that is not a blob or text: integers, dates, decimals, strings, binary. Its size has a known maximum.</dd>
+<dt>fixed part</dt><dd>Fixed header plus fixed data part. The whole of it always sits in one buffer.</dd>
+<dt>blob part</dt><dd>The blob and text values of a response. Written after the fixed part. May continue into the next buffers.</dd>
+<dt>home buffer</dt><dd>The buffer that holds a response's fixed part.</dd>
+<dt>buffer chain</dt><dd>The list of buffers one HTTP request has taken, in the order it took them.</dd>
+<dt>spill</dt><dd>Continuing the blob part into the next buffer of the chain when the current one is full.</dd>
+<dt>start reserve</dt><dd>The free space a buffer must have before a new response may start in it. Equal to the largest possible fixed part.</dd>
+</dl>
+
+<h2>2. How buffers are used today</h2>
+
+<h3>2.1 One operation</h3>
+<p>A single primary key read writes one operation request into a request buffer and gets one response back in a response buffer. Each response starts with a 36-byte header of nine 4-byte words. Every address inside a response is an offset from the start of that response, not from the start of the buffer. That is what lets many responses be packed into one buffer.</p>
+
+<figure>
+<svg viewBox="0 0 900 290" role="img" aria-label="A single operation's operation request and response, each with a 36-byte header followed by its own tables and values">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+  </defs>
+  <g fill="currentColor" font-size="14" font-weight="600">
+    <text x="20" y="28">Operation request</text>
+    <text x="20" y="168">Response</text>
+  </g>
+  <g stroke="currentColor" stroke-width="1" fill="none">
+    <rect x="20" y="40" width="860" height="48"/>
+    <line x1="92" y1="40" x2="92" y2="88"/><line x1="200" y1="40" x2="200" y2="88"/><line x1="310" y1="40" x2="310" y2="88"/><line x1="540" y1="40" x2="540" y2="88"/><line x1="620" y1="40" x2="620" y2="88"/>
+  </g>
+  <rect x="21" y="41" width="71" height="46" fill="var(--fixed)"/>
+  <g fill="currentColor" font-size="12" text-anchor="middle">
+    <text x="56" y="60">header</text><text x="56" y="76">36 B</text>
+    <text x="146" y="60">db name</text><text x="146" y="76">≤ 193 B</text>
+    <text x="255" y="60">table name</text><text x="255" y="76">≤ 193 B</text>
+    <text x="425" y="60">primary key</text><text x="425" y="76">count, pointers, (name, value) pairs</text>
+    <text x="580" y="60">op id</text><text x="580" y="76">≤ 256 B</text>
+    <text x="750" y="60">read columns</text><text x="750" y="76">count, pointers, (name, type) pairs</text>
+  </g>
+  <g fill="var(--muted)" font-size="12">
+    <text x="20" y="112">If the request names no columns, space for every column name of the table is reserved here instead:</text>
+    <text x="20" y="130">MAX_ATTRIBUTES_IN_TABLE × (1 + MAX_ATTR_NAME_SIZE + 2) bytes. 97.5 KiB on 26.02, 780 KiB on 26.10.</text>
+  </g>
+  <g stroke="currentColor" stroke-width="1" fill="none">
+    <rect x="20" y="180" width="860" height="48"/>
+    <line x1="92" y1="180" x2="92" y2="228"/><line x1="420" y1="180" x2="420" y2="228"/><line x1="570" y1="180" x2="570" y2="228"/><line x1="710" y1="180" x2="710" y2="228"/>
+  </g>
+  <rect x="21" y="181" width="71" height="46" fill="var(--fixed)"/>
+  <rect x="93" y="181" width="327" height="46" fill="var(--fixed)" opacity=".55"/>
+  <g fill="currentColor" font-size="12" text-anchor="middle">
+    <text x="56" y="200">header</text><text x="56" y="216">36 B</text>
+    <text x="256" y="200">column table</text><text x="256" y="216">count, then per column: len, addr, isNull, type</text>
+    <text x="495" y="200">value c0</text><text x="495" y="216">text + NUL</text>
+    <text x="640" y="200">value c1</text><text x="640" y="216">text + NUL</text>
+    <text x="795" y="200">value c2 …</text>
+  </g>
+  <g stroke="var(--fixed-line)" stroke-width="1.2" fill="none" marker-end="url(#a1)">
+    <path d="M210 228 C 210 262, 495 262, 495 230"/>
+    <path d="M280 228 C 280 276, 640 276, 640 230"/>
+  </g>
+  <text x="20" y="258" font-size="12" fill="var(--muted)">addr = offset of the value inside this response</text>
+  <text x="20" y="276" font-size="12" fill="var(--muted)">entry i describes read column i of the request</text>
+</svg>
+<figcaption>Figure 1. One operation. Column names are only in the operation request; the response column table holds an address per value, so values may be stored in any physical order as long as table entry i matches request column i.</figcaption>
+</figure>
+
+<h3>2.2 A batch</h3>
+<p>A batch takes one request buffer and one response buffer and packs the operation requests and the responses one after another. The controller keeps a heap-side array with one entry per operation that records where that operation's response starts. Nothing about the batch is written inside the buffers.</p>
+<p>Operations are only started in the lower half of a buffer. Once the write position passes the halfway mark, the next operation goes into a fresh buffer from the pool, and the buffer that filled up records which operation opened the new one. That link is the chain. When the HTTP request finishes, release walks the chain from entry 0 and returns every buffer.</p>
+
+<figure>
+<svg viewBox="0 0 900 380" role="img" aria-label="Five operations packed into two 10 MiB response buffers with the halfway rule, the heap array that points at each response, and the chain link between the buffers">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+  </defs>
+  <g fill="currentColor" font-size="14" font-weight="600">
+    <text x="20" y="26">Response buffer A, 10 MiB</text>
+    <text x="20" y="170">Response buffer B, 10 MiB</text>
+    <text x="20" y="300">Heap array, one entry per operation</text>
+  </g>
+  <rect x="20" y="40" width="860" height="56" fill="var(--free)" stroke="currentColor"/>
+  <g fill="var(--fixed)" stroke="var(--fixed-line)">
+    <rect x="20" y="40" width="130" height="56"/><rect x="150" y="40" width="110" height="56"/><rect x="260" y="40" width="150" height="56"/><rect x="410" y="40" width="190" height="56"/>
+  </g>
+  <line x1="450" y1="34" x2="450" y2="102" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <g fill="currentColor" font-size="13" text-anchor="middle">
+    <text x="85" y="73">op 0</text><text x="205" y="73">op 1</text><text x="335" y="73">op 2</text><text x="505" y="73">op 3</text>
+    <text x="740" y="73" fill="var(--muted)">never used</text>
+  </g>
+  <text x="456" y="114" font-size="12" fill="var(--accent)">halfway, 5 MiB</text>
+  <text x="20" y="140" font-size="12" fill="var(--muted)">op 3 started below the mark, so it may run past it. op 4 would start above the mark, so it goes to buffer B.</text>
+  <rect x="20" y="184" width="860" height="56" fill="var(--free)" stroke="currentColor"/>
+  <rect x="20" y="184" width="120" height="56" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <line x1="450" y1="178" x2="450" y2="246" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="80" y="217" font-size="13" fill="currentColor" text-anchor="middle">op 4</text>
+  <text x="520" y="217" font-size="13" fill="var(--muted)" text-anchor="middle">never used</text>
+  <path d="M882 68 C 898 68, 898 212, 882 212" stroke="var(--accent)" stroke-width="1.5" fill="none" marker-end="url(#a2)"/>
+  <text x="20" y="268" font-size="12" fill="var(--muted)">chain: entry 0 says "next buffer was opened by op 4"; entry 4 says "end".</text>
+  <g stroke="currentColor" fill="var(--panel)">
+    <rect x="20" y="314" width="110" height="40"/><rect x="130" y="314" width="110" height="40"/><rect x="240" y="314" width="110" height="40"/><rect x="350" y="314" width="110" height="40"/><rect x="460" y="314" width="110" height="40"/>
+  </g>
+  <g fill="currentColor" font-size="12" text-anchor="middle">
+    <text x="75" y="331">[0] A + 0</text><text x="75" y="347">next = 4</text>
+    <text x="185" y="331">[1] A + 1.5 MiB</text><text x="185" y="347">next unused</text>
+    <text x="295" y="331">[2] A + 2.8 MiB</text><text x="295" y="347">next unused</text>
+    <text x="405" y="331">[3] A + 4.5 MiB</text><text x="405" y="347">next unused</text>
+    <text x="515" y="331">[4] B + 0</text><text x="515" y="347">next = 0, end</text>
+  </g>
+  <g stroke="var(--fixed-line)" stroke-width="1" fill="none" marker-end="url(#a2)">
+    <path d="M75 314 L 75 100"/><path d="M185 314 L 205 100"/><path d="M295 314 L 335 100"/><path d="M405 314 L 505 100"/>
+    <path d="M515 314 L 515 254 L 80 254 L 80 244"/>
+  </g>
+</svg>
+<figcaption>Figure 2. A batch of five operations today. The upper half of every buffer exists only so that an operation started just below the halfway mark can still write a full 5 MiB. The chain field lives in the heap array, not in the buffer.</figcaption>
+</figure>
+
+<h3>2.3 Why a response buffer is 10 MiB</h3>
+<p>When an operation starts, it is told how much it may write: the space left in its buffer, which the halfway rule keeps at 5 MiB or more. Every value is appended with a capacity check, and a blob is checked against the whole remaining space before the first byte is read. If a value does not fit, the batch fails with "Response buffer overflow". Nothing ever continues into another buffer.</p>
+<p>So the configured RespBufferSize is the largest row rdrs2 can return, and the buffer is twice that so the promise survives packing. The number 5 MiB has no documented origin; it came from the first Go server in 2024 and was carried over. Request buffers follow the same rule with ReqBufferSize, 1 MiB doubled to 2 MiB.</p>
+<div class="ex"><p class="t">Example, today</p>
+<p>A batch of 2 000 reads of 200-byte rows needs about 800 KB of response space. It takes one response buffer, fills it to about 800 KB, and holds 10 MiB. A second batch with one 6 MiB blob fails, because 6 MiB is more than the 5 MiB promise, even though 10 MiB are allocated.</p></div>
+
+<h2>3. The proposal</h2>
+<p>Make buffers small. Keep each response's fixed header and fixed data part in one buffer, exactly as today. Let the blob part continue into the next buffer of the chain. Five rules, each with an example.</p>
+
+<figure>
+<svg viewBox="0 0 900 330" role="img" aria-label="Operation 0 with a 10 MiB blob spread over 512 KiB buffers: fixed part in buffer 1, blob bytes filling the rest of buffer 1 and buffers 2 to 21, operation 1 starting in the tail of buffer 21">
+  <defs>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+    <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="var(--muted)" stroke-width="1"/></pattern>
+  </defs>
+  <text x="20" y="26" font-size="14" font-weight="600" fill="currentColor">Response buffers of 512 KiB. op 0 is a row with a 10 MiB blob, op 1 is a plain row.</text>
+  <rect x="20" y="50" width="200" height="60" fill="var(--free)" stroke="currentColor"/>
+  <rect x="20" y="50" width="40" height="60" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="60" y="50" width="160" height="60" fill="var(--accent-soft)" stroke="var(--accent)"/>
+  <rect x="148" y="50" width="72" height="60" fill="url(#hatch)" opacity=".5"/>
+  <g font-size="12" fill="currentColor" text-anchor="middle">
+    <text x="40" y="76">op 0</text><text x="40" y="92">fixed</text>
+    <text x="140" y="76">blob</text><text x="140" y="92">0 … 502 KiB</text>
+  </g>
+  <text x="20" y="130" font-size="12" fill="var(--muted)">buffer 1, home of op 0</text>
+  <rect x="250" y="50" width="200" height="60" fill="var(--accent-soft)" stroke="var(--accent)"/>
+  <rect x="378" y="50" width="72" height="60" fill="url(#hatch)" opacity=".5"/>
+  <text x="350" y="84" font-size="12" fill="currentColor" text-anchor="middle">blob, whole buffer</text>
+  <text x="250" y="130" font-size="12" fill="var(--muted)">buffers 2 … 20, continuation</text>
+  <text x="478" y="88" font-size="22" fill="var(--muted)">…</text>
+  <rect x="520" y="50" width="200" height="60" fill="var(--free)" stroke="currentColor"/>
+  <rect x="520" y="50" width="30" height="60" fill="var(--accent-soft)" stroke="var(--accent)"/>
+  <rect x="550" y="50" width="40" height="60" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="648" y="50" width="72" height="60" fill="url(#hatch)" opacity=".5"/>
+  <g font-size="12" fill="currentColor" text-anchor="middle">
+    <text x="535" y="76">blob</text><text x="535" y="92">end</text>
+    <text x="570" y="76">op 1</text><text x="570" y="92">fixed</text>
+    <text x="655" y="84" fill="var(--muted)">free</text>
+  </g>
+  <text x="520" y="130" font-size="12" fill="var(--muted)">buffer 21, home of op 1</text>
+  <g stroke="var(--accent)" stroke-width="1.5" fill="none" marker-end="url(#a3)">
+    <path d="M221 80 L 248 80"/><path d="M451 80 L 470 80"/><path d="M498 80 L 518 80"/>
+  </g>
+  <text x="740" y="84" font-size="12" fill="var(--muted)">chain order = write order</text>
+  <rect x="20" y="152" width="18" height="12" fill="url(#hatch)" opacity=".5" stroke="currentColor"/>
+  <text x="44" y="163" font-size="12" fill="var(--muted)">start reserve: no response may start here, but blob bytes run through it</text>
+  <text x="20" y="200" font-size="14" font-weight="600" fill="currentColor">How the reader finds the blob of op 0</text>
+  <g stroke="currentColor" fill="var(--panel)"><rect x="20" y="214" width="300" height="28"/><rect x="20" y="242" width="300" height="28"/><rect x="20" y="270" width="300" height="28"/></g>
+  <g font-size="12" fill="currentColor" font-family="var(--mono)">
+    <text x="28" y="233">c0  int      len 4       addr 68</text>
+    <text x="28" y="261">c1  varchar  len 17      addr 73</text>
+    <text x="28" y="289">c2  blob     len 10 MiB  addr 91</text>
+  </g>
+  <g font-size="12" fill="currentColor">
+    <text x="340" y="233">c0, c1: home base + addr. One pointer, as today.</text>
+    <text x="340" y="261">c2: addr + len passes the end of the home buffer, so:</text>
+    <text x="340" y="279">segment 1 = home buffer from addr to its last byte,</text>
+    <text x="340" y="297">then one segment per chain buffer until len bytes are consumed.</text>
+  </g>
+  <text x="20" y="324" font-size="12" fill="var(--muted)">No new field is stored. The writer fills each buffer to its last byte before spilling, so the segment list follows from addr, len and the chain.</text>
+</svg>
+<figcaption>Figure 3. A 10 MiB blob across 21 buffers of 512 KiB. The first 502 KiB sit behind op 0's fixed part in buffer 1, buffers 2 to 20 are full, and 10 KiB land in buffer 21. op 1 starts in buffer 21 because more than the start reserve is free there.</figcaption>
+</figure>
+
+<h3>3.1 Rule 1: a response's fixed part stays in one buffer</h3>
+<p>An operation's header, column table and every bounded value are written into one buffer, its home. The reader resolves them from one base pointer, exactly as today. Nothing changes for integers, dates, decimals, strings, or binary columns.</p>
+<div class="ex"><p class="t">Example</p>
+<p>A feature store row with 40 columns and 30 KB of data has a fixed part of about 31 KB: 36 bytes of header, 644 bytes of column table, and the values as text with terminators. It lands in one buffer, whole.</p></div>
+
+<h3>3.2 Rule 2: a start reserve instead of the halfway mark</h3>
+<p>Before placing an operation, the writer checks how much of the current buffer is free. If less than the start reserve is free, the operation starts in a fresh buffer. The reserve is the largest fixed part any operation can have, a compile-time constant explained in section 4. With that, rule 1 holds without doubling the buffer.</p>
+<div class="ex"><p class="t">Example, 26.02 limits</p>
+<p>Response buffer 512 KiB, reserve 188.6 KiB. Operations may start while less than 323.4 KiB are used. A batch of 200-byte rows starts about 800 operations in one buffer before moving to the next. A batch of 30 KB rows starts 11. The worst possible row, 188.6 KiB of fixed part, starts at 0 and a second one starts right after it at 188.6 KiB.</p></div>
+
+<p>On the request side the writer knows more than the reserve: the encoder computes each operation's upper bound before writing (section 6, create_native_request), and the chain is handed that bound. An operation starts in a fresh buffer when less than the larger of the reserve and its own bound is free. This is what keeps a lowered StartReserveOverride harmless for requests, where there is no rule 5 retry: the pool test's 4 KiB reserve would otherwise let a third column-less operation (104 KiB of name reservation) be placed in the 48 KiB left behind two others and be refused with 400.</p>
+<h3>3.3 Rule 3: blob and text values spill</h3>
+<p>A blob is read from NDB in 32 KiB chunks and copied into the response, as today. When a chunk does not fit, the writer copies the part that fits, fills the buffer to its last byte, takes the next buffer from the pool, links it to the chain, and continues at offset 0. Continuation buffers have no header. The blob's column table entry is the same four words as today: its length, and an address. The address is an offset in the response's virtual stream: the home buffer's bytes first, then that response's continuation buffers in chain order. A first blob therefore has a home-buffer offset as today; a second blob in the same row, which starts inside a continuation buffer, has an offset past the home buffer's end. Values written before the blobs keep plain home offsets, so nothing changes for them.</p>
+<p>TEXT columns take the same path with one difference. Today the Text branch stages the raw bytes in the response buffer and then converts them to utf8mb4, trims and JSON-escapes them into a new string before appending. The conversion works on whole characters, so the escaped output, not the raw bytes, is what spills. The implementation stages the raw TEXT in a buffer local to the Text branch, freed once the escaped copy is written (not in the request's arena, which would hold it until the request ends), runs the existing conversion and escaping, and writes the escaped result through the same write-with-spill primitive the Blob branch uses. The transient cost is the TEXT length in that staging buffer plus the three temporary copies the conversion already makes today, about five times the value for a few milliseconds; a streaming converter that avoids the staging copy is a later refinement.</p>
+<p>The reader is handed the buffer chain and the operation index. It notices that address plus length runs past the end of the home buffer and builds a segment list: the tail of the home buffer, then whole buffers along the chain, until the length is consumed. Base64 encoding of a segmented value is a loop with one encoder state, and the bundled libbase64 already has that streaming API.</p>
+<div class="ex"><p class="t">Example</p>
+<p>Figure 3: a 10 MiB blob with 512 KiB buffers. 502 KiB fit behind the fixed part in buffer 1. Nineteen full buffers follow. The last 10 KiB land in buffer 21. The chain holds 21 buffers for the lifetime of the HTTP request and returns them together.</p></div>
+
+<h3>3.4 Rule 4: blobs are written last</h3>
+<p>Today the writer walks the read columns in request order and writes each value inline. If a blob sat in the middle of the row and spilled, every column after it would land in a continuation buffer and rule 1 would break. Writing blobs first is worse: the fixed part would then follow the blob into whatever buffer it ended in, so the header would be in one buffer and the values in another.</p>
+<p>Writing blobs last costs almost nothing. The column table stores an address per value, so physical order and table order are independent. The writer makes two passes over the read columns, bounded columns first, then blob and text columns. Table entries are filled by column index instead of by write count, so entry i still matches request column i and the reader is untouched.</p>
+
+<figure>
+<svg viewBox="0 0 900 230" role="img" aria-label="Column table in request order with values written in two passes: bounded values first in the home buffer, blob values last and spilling into the next buffer">
+  <defs>
+    <marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="currentColor"/></marker>
+  </defs>
+  <g fill="currentColor" font-size="14" font-weight="600">
+    <text x="20" y="26">Column table, request order</text>
+    <text x="330" y="26">Values in the home buffer</text>
+    <text x="700" y="26">Next buffer</text>
+  </g>
+  <g stroke="currentColor" fill="var(--panel)">
+    <rect x="20" y="40" width="240" height="32"/><rect x="20" y="72" width="240" height="32"/><rect x="20" y="104" width="240" height="32"/><rect x="20" y="136" width="240" height="32"/>
+  </g>
+  <g font-size="12" fill="currentColor" font-family="var(--mono)">
+    <text x="30" y="61">entry 0  c0 int      → A</text>
+    <text x="30" y="93">entry 1  c1 blob     → C</text>
+    <text x="30" y="125">entry 2  c2 varchar  → B</text>
+    <text x="30" y="157">entry 3  c3 text     → D</text>
+  </g>
+  <rect x="330" y="40" width="340" height="56" fill="var(--free)" stroke="currentColor"/>
+  <rect x="330" y="40" width="50" height="56" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="380" y="40" width="70" height="56" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="450" y="40" width="160" height="56" fill="var(--accent-soft)" stroke="var(--accent)"/>
+  <rect x="610" y="40" width="60" height="56" fill="var(--accent-soft)" stroke="var(--accent)"/>
+  <g font-size="12" fill="currentColor" text-anchor="middle">
+    <text x="355" y="64">A</text><text x="355" y="80">c0</text>
+    <text x="415" y="64">B</text><text x="415" y="80">c2</text>
+    <text x="530" y="64">C</text><text x="530" y="80">c1 blob, spills</text>
+    <text x="640" y="64">D</text><text x="640" y="80">c3 text</text>
+  </g>
+  <rect x="700" y="40" width="180" height="56" fill="var(--free)" stroke="currentColor"/>
+  <rect x="700" y="40" width="120" height="56" fill="var(--accent-soft)" stroke="var(--accent)"/>
+  <text x="760" y="72" font-size="12" fill="currentColor" text-anchor="middle">rest of c1</text>
+  <path d="M671 68 L 698 68" stroke="var(--accent)" stroke-width="1.5" fill="none" marker-end="url(#a4)"/>
+  <g stroke="var(--fixed-line)" stroke-width="1" fill="none" marker-end="url(#a4)">
+    <path d="M260 56 L 328 56"/><path d="M260 120 C 300 120, 300 90, 380 90 L 412 90"/>
+  </g>
+  <g stroke="var(--accent)" stroke-width="1" fill="none" marker-end="url(#a4)">
+    <path d="M260 88 C 310 88, 330 112, 450 112 L 530 112 L 530 98"/>
+    <path d="M260 152 C 330 152, 400 130, 640 130 L 640 98"/>
+  </g>
+  <text x="20" y="200" font-size="12" fill="var(--muted)">Pass 1 writes c0 and c2. Pass 2 writes c1 and c3 and may spill. Entries keep request order; a NULL blob gets a null entry at its own index.</text>
+  <text x="20" y="220" font-size="12" fill="var(--muted)">The only writer change is that a new SetSlot names the column index instead of counting.</text>
+</svg>
+<figcaption>Figure 4. Blobs last. Pass 2 is the only code that can spill, so the spill path exists in exactly the two branches of write_col_to_resp that handle Blob and Text.</figcaption>
+</figure>
+
+<h3>3.5 Rule 5: a retry, so the start reserve is a heuristic and not a promise</h3>
+<p>The start reserve is computed from limits and code paths. If it is ever wrong, the result must still be right. So if an operation overflows its buffer and did not start at offset 0, the writer takes a fresh buffer and writes that operation again from offset 0, where it has the whole buffer. The row is already in the NDB record; this is a second formatting pass, not a second read. The writer records an overflow flag whenever a capacity check fails, so the retry decision does not depend on matching error text. Only an operation whose fixed part is larger than a whole buffer fails, with the same error as today. Since the buffer size is computed from the same limits, that can only mean the expansion constant is wrong, which is a code fix and not a configuration change.</p>
+<div class="ex"><p class="t">Example</p>
+<p>Suppose a future column type expands text eight times instead of six, and a row's fixed part is 240 KiB where the start reserve expected at most 188.6 KiB. The operation starts at offset 300 KiB of a 512 KiB buffer, overflows at 512 KiB, is retried at offset 0 of a fresh buffer, and succeeds. Packing lost one partly used buffer. Correctness lost nothing.</p></div>
+
+<h2>4. How large must a buffer be? The home buffer question</h2>
+<p>Rule 1 only works if the largest possible fixed part fits in a buffer with room to spare. This section computes that largest fixed part from the limits in the code, shows that it changes between 26.02 and 26.10, and makes the code derive it rather than carry a number.</p>
+
+<h3>4.1 What is in a fixed part, and how much it can grow</h3>
+<p>The response stores every value as text with a terminator. Numbers, dates and decimals expand a little. Character columns expand a lot, in two steps that both happen inside the response buffer: CHAR and VARCHAR values are converted to utf8mb4, then JSON-escaped. Binary values are copied raw; their base64 happens later, outside the pool.</p>
+<div class="wrap"><table>
+<tr><th>value type</th><th class="num">bytes out per byte in</th><th>why</th></tr>
+<tr><td>character, converted to utf8mb4</td><td class="num">≤ 3</td><td>any single-byte charset maps into the Basic Multilingual Plane; the code allocates for 4 (pkr_response.cpp:286)</td></tr>
+<tr><td>character, then JSON-escaped</td><td class="num">≤ 6</td><td>a control character 0x00 to 0x1f becomes <code>\u00xx</code>; a quote or backslash becomes 2 bytes (mystring.cpp:76)</td></tr>
+<tr><td>character, both steps</td><td class="num">≤ 6</td><td>a byte that converted to 3 is non-ASCII and is never escaped, so the factors do not multiply</td></tr>
+<tr><td>integer, date, decimal</td><td class="num">≤ 21, 30, 69 per value</td><td>std::to_string, MAX_DATE_STRING_REP_LENGTH, DECIMAL_MAX_STR_LEN_IN_BYTES</td></tr>
+<tr><td>binary, varbinary, bit</td><td class="num">1</td><td>raw copy</td></tr>
+</table></div>
+<p>So the worst row is one made entirely of control characters in single-byte VARCHAR columns, which expands six times. Nobody stores that, but the writer must not corrupt memory if someone does, and the retry in rule 5 covers the case where even this estimate is wrong.</p>
+
+<h3>4.2 The largest fixed part on 26.02</h3>
+<div class="wrap"><table>
+<tr><th>response</th><th class="num">bytes</th><th>from</th></tr>
+<tr><td>header</td><td class="num">36</td><td>PK_RESP_HEADER_END</td></tr>
+<tr><td>status message</td><td class="num">256</td><td>RS_STATUS_MSG_LEN</td></tr>
+<tr><td>operation id</td><td class="num">4 100</td><td>rdrs_align4(MAX_OPERATION_ID_RESERVE + 1)</td></tr>
+<tr><td>column table, 512 columns</td><td class="num">8 196</td><td>4 + MAX_ATTRIBUTES_IN_TABLE × 16</td></tr>
+<tr><td>values, 30 000 raw bytes × 6</td><td class="num">180 000</td><td>MAX_TUPLE_SIZE_IN_WORDS × 4 × 6</td></tr>
+<tr><td>terminators</td><td class="num">512</td><td>one per value</td></tr>
+<tr><td>alignment</td><td class="num">4</td><td>ADDRESS_SIZE</td></tr>
+<tr><td><strong>largest response fixed part</strong></td><td class="num"><strong>193 104</strong></td><td>about 188.6 KiB, MIN_RESP_BUFFER</td></tr>
+</table></div>
+<div class="wrap"><table>
+<tr><th>operation request</th><th class="num">bytes</th><th>from</th></tr>
+<tr><td>header, db and table names, operation id</td><td class="num">4 540</td><td>36 + 2 × rdrs_align4(4 + 192 + 1) + rdrs_align4(4 + MAX_OPERATION_ID_RESERVE + 1)</td></tr>
+<tr><td>primary key, 32 columns, 4 092 bytes of key values</td><td class="num">11 136</td><td>4 + 32 × (12 + 200) + MAX_KEY_SIZE_IN_WORDS × 4 + 32 × 8</td></tr>
+<tr><td>read columns, 512 names of 192 bytes with offset, type and length words</td><td class="num">106 504</td><td>REQ_COLNAME_RESERVE = 4 + 513 × 4 + 512 × (4 + rdrs_align4(4 + 192 + 1)), the reservation made when no columns are named</td></tr>
+<tr><td><strong>largest request fixed part</strong></td><td class="num"><strong>122 180</strong></td><td>about 119.3 KiB, MIN_REQ_BUFFER</td></tr>
+</table></div>
+<p>With these limits a 512 KiB response buffer and a 256 KiB request buffer hold the worst case with room to pack. Real rows sit far below: 30 KB of ordinary text needs at most 99 KB, and utf8mb4 tables need no conversion at all.</p>
+
+<h3>4.3 26.10 raises the limits</h3>
+<p>Branch 26.10-main changed two of the limits this computation depends on. RONDB-873 raised the column count, and RONDB-878 with RONDB-1124 raised the row size.</p>
+<div class="wrap"><table>
+<tr><th>limit</th><th class="num">26.02</th><th class="num">26.10</th></tr>
+<tr><td>MAX_ATTRIBUTES_IN_TABLE</td><td class="num">512</td><td class="num">4 096</td></tr>
+<tr><td>MAX_TUPLE_SIZE_IN_WORDS × 4, row bytes</td><td class="num">30 000</td><td class="num">72 000</td></tr>
+<tr><td>largest single latin1 VARCHAR</td><td class="num">≈ 30 000</td><td class="num">32 614</td></tr>
+<tr><td>MAX_ATTRIBUTES_IN_INDEX, MAX_KEY_SIZE_IN_WORDS</td><td class="num">32, 1 023</td><td class="num">unchanged</td></tr>
+</table></div>
+
+<figure>
+<svg viewBox="0 0 900 250" role="img" aria-label="The largest response fixed part drawn to scale against buffer sizes: 188.6 KiB inside a 512 KiB buffer on 26.02, 494.2 KiB almost filling a 512 KiB buffer on 26.10, so 26.10 needs a 1 MiB buffer">
+  <g fill="currentColor" font-size="14" font-weight="600">
+    <text x="20" y="24">Largest response fixed part, to scale. Full width = 1 MiB.</text>
+  </g>
+  <text x="20" y="56" font-size="13" fill="currentColor">26.02</text>
+  <rect x="80" y="40" width="400" height="30" fill="var(--free)" stroke="currentColor"/>
+  <rect x="80" y="40" width="7" height="30" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="87" y="40" width="137" height="30" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/>
+  <text x="490" y="60" font-size="12" fill="var(--muted)">512 KiB buffer, fixed part 188.6 KiB, 323.4 KiB left to pack</text>
+  <text x="20" y="116" font-size="13" fill="currentColor">26.10</text>
+  <rect x="80" y="100" width="400" height="30" fill="var(--free)" stroke="currentColor"/>
+  <rect x="80" y="100" width="51" height="30" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="131" y="100" width="332" height="30" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/>
+  <text x="490" y="120" font-size="12" fill="var(--accent)">512 KiB buffer, fixed part 494.2 KiB, 17.8 KiB left: too tight</text>
+  <text x="20" y="176" font-size="13" fill="currentColor">26.10</text>
+  <rect x="80" y="160" width="800" height="30" fill="var(--free)" stroke="currentColor"/>
+  <rect x="80" y="160" width="51" height="30" fill="var(--fixed)" stroke="var(--fixed-line)"/>
+  <rect x="131" y="160" width="332" height="30" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/>
+  <text x="470" y="180" font-size="12" fill="var(--muted)">1 MiB buffer, fixed part 494.2 KiB, 529.8 KiB left to pack</text>
+  <rect x="80" y="214" width="14" height="12" fill="var(--fixed)" stroke="var(--fixed-line)"/><text x="100" y="224" font-size="12" fill="var(--muted)">column table</text>
+  <rect x="210" y="214" width="14" height="12" fill="var(--fixed)" stroke="var(--fixed-line)" opacity=".55"/><text x="230" y="224" font-size="12" fill="var(--muted)">values as escaped text, worst case</text>
+</svg>
+<figcaption>Figure 5. The home buffer question. A 512 KiB buffer is comfortable on 26.02 and almost full on 26.10, where the column table alone is 64 KiB and the values can reach 422 KiB. The request side is worse on 26.10: 4 096 column names at 192 bytes need about 832 KiB.</figcaption>
+</figure>
+
+<div class="wrap"><table>
+<tr><th>largest fixed part</th><th class="num">26.02</th><th class="num">26.10</th></tr>
+<tr><td>response</td><td class="num">193 104 B</td><td class="num">506 032 B</td></tr>
+<tr><td>request</td><td class="num">122 180 B</td><td class="num">867 656 B</td></tr>
+</table></div>
+<p>So a merge to 26.10 with a hard-coded 512 KiB would still build and still pass every test with ordinary rows, and then fail on the first table with thousands of columns, or on the first read that names no columns on such a table. That is why no size may be typed into the code.</p>
+
+<h3>4.4 Derive every size from the limits at compile time</h3>
+<p>buffer_sizes.hpp computes the minimum buffer, the start reserve and the default buffer from the same kernel limits the data node uses. The code never contains an NDB-derived byte count. rdrs_const.h only points to it.</p>
+<pre><code>// buffer_sizes.hpp, from MAX_ROW_BYTES to the last static_assert, as at HEAD
+/* The NDB row limit in bytes: every non-blob value of a row together. */
+constexpr Uint32 MAX_ROW_BYTES = MAX_TUPLE_SIZE_IN_WORDS * 4;
+
+/* A character column is converted to utf8mb4 (at most 3 bytes per source
+ * byte for any single-byte charset) and then JSON-escaped (a control
+ * character becomes \u00xx, 6 bytes). A byte that grew to 3 is non-ASCII
+ * and is never escaped, so the two factors do not multiply: 6 is the
+ * ceiling per source byte. */
+constexpr Uint32 MAX_TEXT_EXPANSION = 6;
+
+/* Upper bound accepted for Internal.OperationIDMaxSize, so the operation
+ * id can be counted in the minimums below. */
+constexpr Uint32 MAX_OPERATION_ID_RESERVE = 4096;
+
+/* Space the request encoder reserves for column names when an operation
+ * names none and every table column must be filled in later from the
+ * dictionary: an offset array, then per column a type word, a length word,
+ * the name and its terminator, 4-aligned. Matches what
+ * PKRRequest::addReadColumns/addReadColumnName write. */
+constexpr Uint32 REQ_COLNAME_RESERVE =
+    ADDRESS_SIZE + ((MAX_ATTRIBUTES_IN_TABLE + 1) * ADDRESS_SIZE) +
+    (MAX_ATTRIBUTES_IN_TABLE *
+     (ADDRESS_SIZE + rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1)));
+
+/* Largest fixed part of one response: header, status message, operation
+ * id, column table (count plus four words per column), every value as
+ * escaped text, one terminator per value, alignment slack. */
+constexpr Uint32 MIN_RESP_BUFFER =
+    PK_RESP_HEADER_END + RS_STATUS_MSG_LEN +
+    rdrs_align4(MAX_OPERATION_ID_RESERVE + 1) + ADDRESS_SIZE +
+    (MAX_ATTRIBUTES_IN_TABLE * 4 * ADDRESS_SIZE) +
+    (MAX_ROW_BYTES * MAX_TEXT_EXPANSION) + MAX_ATTRIBUTES_IN_TABLE +
+    ADDRESS_SIZE;
+
+/* Largest operation request: header, db and table names, the primary key
+ * (count, per column two pointer words plus the name, all key bytes with a
+ * length word each), the operation id, and the column-name reservation.
+ * A key whose JSON text exceeds the NDB key limit is placed by
+ * native_request_upper_bound instead. */
+constexpr Uint32 MIN_REQ_BUFFER =
+    PK_REQ_HEADER_END +
+    (2 * rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1)) + ADDRESS_SIZE +
+    (MAX_ATTRIBUTES_IN_INDEX *
+     ((3 * ADDRESS_SIZE) +
+      rdrs_align4(ADDRESS_SIZE + MAX_ATTR_NAME_SIZE + 1))) +
+    (MAX_KEY_SIZE_IN_WORDS * 4) + (MAX_ATTRIBUTES_IN_INDEX * 2 * ADDRESS_SIZE) +
+    rdrs_align4(ADDRESS_SIZE + MAX_OPERATION_ID_RESERVE + 1) +
+    REQ_COLNAME_RESERVE;
+
+/* A new response (or operation request) may only start in a buffer that
+ * still has this much room; otherwise it goes to a fresh buffer. */
+constexpr Uint32 RESP_START_RESERVE = MIN_RESP_BUFFER;
+constexpr Uint32 REQ_START_RESERVE = MIN_REQ_BUFFER;
+
+/* The buffer sizes: the power of two above twice the minimum, so that
+ * several responses pack into one buffer. Not settings; see the design
+ * document for why a user-chosen value can only be worse. */
+constexpr Uint32 DEFAULT_RESP_BUFFER = rdrs_next_pow2(2 * MIN_RESP_BUFFER);
+constexpr Uint32 DEFAULT_REQ_BUFFER = rdrs_next_pow2(2 * MIN_REQ_BUFFER);
+
+static_assert(DEFAULT_RESP_BUFFER &gt;= 2 * MIN_RESP_BUFFER,
+              "response buffer must hold two worst-case responses");
+static_assert(DEFAULT_REQ_BUFFER &gt;= 2 * MIN_REQ_BUFFER,
+              "request buffer must hold two worst-case operation requests");
+static_assert(DEFAULT_RESP_BUFFER % ADDRESS_SIZE == 0 &amp;&amp;
+              DEFAULT_REQ_BUFFER % ADDRESS_SIZE == 0,
+              "buffer sizes must be word aligned");
+/* A limit increase that outgrows what one buffer can address fails the
+ * build here rather than the first wide read after a merge. */
+static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &lt; (1U &lt;&lt; 30),
+              "a single buffer must stay addressable with 32-bit offsets");</code></pre>
+<p>Compared with the first draft of these formulas, the code adds the status message (RS_STATUS_MSG_LEN, 256 bytes) and the operation id, reserved at MAX_OPERATION_ID_RESERVE (4 096 bytes) because OperationIDMaxSize is a setting bounded by a PROBLEM check at that number, rounds every name to a word, and uses the corrected column-name reservation REQ_COLNAME_RESERVE from section 6. rdrs_next_pow2 rounds twice each minimum up to a power of two. On 26.02 the minimums evaluate to 193 104 B (188.6 KiB) and 122 180 B (119.3 KiB), and the buffers are 512 KiB and 256 KiB. MAX_ROW_BYTES replaces the old MAX_TUPLE_SIZE_IN_BYTES; the old MAX_TUPLE_SIZE_IN_BYTES_ENCODED is gone, since nothing sizes a whole-row base64 buffer any more.</p>
+<p>Neither size is user configurable. RespBufferSize today is the only knob that sets the largest row rdrs2 can return, which is the one reason anyone touches it; with spilling that reason is gone, and every other value a user could choose is worse than the computed one. The same holds for ReqBufferSize: an operation request has no blobs and its maximum follows from the limits. So both keys are removed, the server uses DEFAULT_RESP_BUFFER and DEFAULT_REQ_BUFFER, and a new <code>--print-limits</code> flag prints the computed values. The two old keys are removed; rdrs2 warns about and ignores a configuration key it does not know, so a file that still sets them starts with a warning naming each. What the expressions evaluate to, as a check:</p>
+<div class="wrap"><table>
+<tr><th>derived value</th><th class="num">26.02 limits</th><th class="num">26.10 limits</th></tr>
+<tr><td>MIN_RESP_BUFFER, also RESP_START_RESERVE</td><td class="num">193 104 B</td><td class="num">506 032 B</td></tr>
+<tr><td>MIN_REQ_BUFFER, also REQ_START_RESERVE</td><td class="num">122 180 B</td><td class="num">867 656 B</td></tr>
+<tr><td>DEFAULT_RESP_BUFFER</td><td class="num">512 KiB</td><td class="num">1 MiB</td></tr>
+<tr><td>DEFAULT_REQ_BUFFER</td><td class="num">256 KiB</td><td class="num">2 MiB</td></tr>
+</table></div>
+<p>The request side is what makes 26.10 expensive, and only because 192 bytes are reserved per column name before the dictionary is consulted. Sizing that column-name reservation from the real column count and name lengths, which create_response already knows, would bring the request minimum on 26.10 back under 512 KiB. That is a later refinement and does not change the chaining design.</p>
+
+<div class="warn"><p><strong>A bug on 26.10-main, fixed by this change.</strong> Upstream 26.10-main defined MAX_TUPLE_SIZE_IN_BYTES as the literal 7501 × 4 = 30 004 while the kernel allows 72 000. The per-column checks at pkr_operation.cpp:908 and pk_base_operation.cpp:295 rejected any CHAR, VARCHAR or binary value above 30 004 bytes with ERROR_TOO_LARGE_ROWS, so a legal 32 614-byte VARCHAR failed in rdrs2. On RONDB-1144-26-10 those checks use MAX_ROW_BYTES, derived from MAX_TUPLE_SIZE_IN_WORDS (pkr_operation.cpp:957, pk_base_operation.cpp:313).</p></div>
+
+<h2>5. What it saves</h2>
+<p>Each row below is one situation, with today's cost next to the proposal's cost on each branch's defaults.</p>
+<div class="wrap"><table>
+<tr><th>situation</th><th class="num">today</th><th class="num">proposal, 26.02</th><th class="num">proposal, 26.10</th></tr>
+<tr><td>memory held by one HTTP request in flight, any size</td><td class="num">12 MiB</td><td class="num">768 KiB</td><td class="num">3 MiB</td></tr>
+<tr><td>preallocated pairs at startup, once touched (today 32 by default, the proposal 128)</td><td class="num">384 MiB</td><td class="num">96 MiB</td><td class="num">384 MiB</td></tr>
+<tr><td>64 threads each with one HTTP request in flight</td><td class="num">768 MiB</td><td class="num">48 MiB</td><td class="num">192 MiB</td></tr>
+<tr><td>a batch of 512 reads of 200-byte rows (MaxOperationsPerBatchRequest; 2 000 would get 413)</td><td class="num">12 MiB</td><td class="num">1 MiB: 1 response and 2 request buffers</td><td class="num">3 MiB: 1 response and 1 request buffer</td></tr>
+<tr><td>a read returning a 10 MiB blob</td><td class="num">fails</td><td class="num">21 response buffers, 10.8 MiB</td><td class="num">11 response buffers, 13 MiB with the request buffer</td></tr>
+<tr><td>largest row that can be returned</td><td class="num">5 MiB</td><td colspan="2" class="num">any size, bounded by the pool cap MaxBuffers</td></tr>
+</table></div>
+<p>Two things this does not change. The JSON for a blob is built in a per-HTTP-request arena, so a 10 MiB blob still costs about 13.4 MiB there while the response is being written; chaining fixes the pool side only. And the pool still needs a ceiling and an idle shrink, which are separate changes; chaining makes each request and response pair under that ceiling 16 times cheaper on 26.02 and 4 times cheaper on 26.10.</p>
+
+<h2>6. Code changes</h2>
+<p>Every change is inside the existing structure. No new buffer type, no new header field, no change to the JSON on the wire.</p>
+<div class="wrap"><table>
+<tr><th>where</th><th>change</th><th>size</th></tr>
+<tr><td><span class="file">buffer_sizes.hpp</span> (new)</td><td>The constexpr block of section 4.4. MAX_TUPLE_SIZE_IN_BYTES is replaced by MAX_ROW_BYTES over MAX_TUPLE_SIZE_IN_WORDS; MAX_TUPLE_SIZE_IN_BYTES_ENCODED is removed. rdrs_const.h keeps a pointer to the new file.</td><td>about 20 lines</td></tr>
+<tr><td><span class="file">config_structs_def.hpp</span></td><td>ReqBufferSize and RespBufferSize stop being settings. The buffer manager uses DEFAULT_REQ_BUFFER and DEFAULT_RESP_BUFFER. The two keys are removed. A configuration that still sets one of them starts with a warning that the key is ignored (rdrs2 warns about and ignores configuration keys it does not know); every installation uses the Helm chart, which never rendered them. PreAllocatedBuffers, MaxBuffers and the shrink interval remain configurable, since they depend on the pod and not on the row format.</td><td>about 10 lines</td></tr>
+<tr><td><span class="file">buffer_manager.hpp/.cpp</span> RS_BufferPool</td><td>Map buffers of the computed size with mmap, not twice the configured size; there is no setting for it.</td><td>part of change 3</td></tr>
+<tr><td><span class="file">buffer_chain.hpp/.cpp</span> (new)</td><td>RS_BufferChain owns the growable list of buffers one HTTP request has taken and returns all of them in its destructor. It implements rule 2 (start reserve) when placing the next operation, takes continuation buffers for spills, restarts an operation in a fresh buffer for rule 5, and resets the chain so a retried attempt starts clean. It keeps its owners, the per-operation views and the owner of each view in arrays of its own, so RS_Buffer loses its next_allocated_buffer field. getNextReqRS_Buffer, getNextRespRS_Buffer and release_array_buffers in encoding.cpp are deleted; their callers use the chain. The halfway computation <code>limit = size / 2</code> disappears from the three controllers.</td><td>about 150 lines new, 70 removed</td></tr>
+<tr><td><span class="file">encoding.cpp</span> create_native_request</td><td>Two fixes the review found. The request encoder has no capacity check at all today (copy_str_to_buffer writes unbounded; a 1 MiB body cannot overrun a 2 MiB view but can overrun a 256 KiB one), so an upper bound is computed from the parsed operation first and answered with 400 "operation too large for request buffer". And the column-name reservation at lines 203 to 209 under-counts the real layout written by addReadColumnName (type word, length word, name, NUL, 4-aligned, plus an offset array: 106 504 B for 512 names, not 99 857), so one constexpr REQ_COLNAME_RESERVE derived from the layout is used by both the encoder and the request minimum.</td><td>about 30 lines</td></tr>
+<tr><td><span class="file">pkr_operation.cpp</span> create_response</td><td>Rule 5: on overflow of an operation that did not start at offset 0, take a fresh buffer and write it again.</td><td>about 12 lines</td></tr>
+<tr><td><span class="file">pkr_response.cpp</span></td><td>PKRResponse stores a copy of its home buffer view, a pointer to the chain and its operation index (it must not hold a pointer into the chain's vector, which grows on spill, and it is arena-allocated and never destructed, so no std:: members). A new SetSlot(colIdx) selects the column table entry the next value fills, and SetBlobLen takes that slot. New: an overflow flag set by every failed capacity check, BeginRawColumn, AppendRawWithSpill (fill the current buffer to its last byte, take the next continuation buffer, continue at 0), and FormatChar (the existing conversion, trim and escape without the capacity check).</td><td>about 80 lines</td></tr>
+<tr><td><span class="file">pkr_operation.cpp</span> append_op_recs</td><td>Rule 4: two passes over the read columns.</td><td>about 10 lines</td></tr>
+<tr><td><span class="file">pkr_operation.cpp</span> Blob and Text branches</td><td>Rule 3: drop the up-front check against the whole value; Blob copies each 32 KiB chunk through AppendRawWithSpill; Text stages into a local buffer, formats, checks the escaped size against the 32-bit offset space (escaping can grow it six times), then writes through AppendRawWithSpill. feature_store.cpp:1316, listed in an earlier draft, is the Avro schema reader with its own malloc and is not a pool user.</td><td>about 20 lines per branch</td></tr>
+<tr><td><span class="file">encoding.cpp</span> process_pkread_response</td><td>Takes the chain and the operation index instead of a raw buffer pointer (three callers change: batch pk read, pk read, feature store process_responses). For a binary or text column whose addr + len passes the end of the home buffer, build the segment list from the chain.</td><td>about 25 lines</td></tr>
+<tr><td><span class="file">pk_data_structs.hpp</span></td><td>Base64 and plain copy over a segment list (copyValue and encodeValueBase64, with libbase64's streaming API). The size estimate uses the total length, and base64_encoded_len computes the encoded size in 64 bits: a spilled blob can be close to 4 GiB, and from 1 GiB up the old 32-bit n × 4 wrapped and undersized the JSON buffer.</td><td>about 30 lines</td></tr>
+</table></div>
+
+<h3>Unchanged</h3>
+<p>The header layout, the column table layout, the per-operation address scheme, the JSON output, the pool's two mutexes, the request-side encoding, and the write path of every bounded column. The reader's sanity check that length does not exceed capacity still holds, because the length field counts home-buffer bytes only.</p>
+
+<h3>Tests</h3>
+<ul>
+<li>Blobs that end on the last byte of a buffer, spill by one byte, span two buffers plus one and 10 MiB, and are NULL, read alone and in a batch with plain rows before and after: TestBlobSpillBoundarySweep, TestBlobSpillTwoBuffersPlusOne, TestBlobSpill10MiB, TestBlobSpillNull, TestBatchBlobSpillBetweenPlainRows.</li>
+<li>The widest row rdrs_limits allows, MaxColumns − 1 CHAR and VARCHAR columns of control characters, read with no columns named: TestWidestRowFitsHomeBuffer. This exercises rule 2 at its bound. Rule 5 is exercised separately by TestRetryWithLoweredStartReserve, which lowers the start reserve on a dedicated server.</li>
+<li>A batch that chains several response buffers with no blobs, every value checked, to show rule 2 alone changes no result: TestRetryWithLoweredStartReserve; and four spilling operations in one batch: TestBatchFourSpillingOps.</li>
+<li>Pool accounting: after each test in_use of both pools equals its value before the test (AssertPoolBalanced), which proves every continuation buffer was returned.</li>
+<li>The Go tests take the limits from the rdrs_limits family on /metrics, so one test file passes on both branches; the gtests use the constexprs directly. <code>rdrs2 --print-limits</code>, a new flag, prints the same values.</li>
+</ul>
+
+<h3>Merge checklist for 26.10</h3>
+<ul>
+<li>No limit-derived size typed as a literal in the new code. The one literal, MAX_OPERATION_ID_RESERVE = 4096, is a bound on the OperationIDMaxSize setting.</li>
+<li>Every size comes from MAX_ATTRIBUTES_IN_TABLE, MAX_TUPLE_SIZE_IN_WORDS, MAX_ATTR_NAME_SIZE, MAX_ATTRIBUTES_IN_INDEX and MAX_KEY_SIZE_IN_WORDS.</li>
+<li>The existing arrays already scale: pk_bitmap_words[MAX_ATTRIBUTES_IN_TABLE / 32] and REQ_COLNAME_RESERVE in buffer_sizes.hpp, used at encoding.cpp:138 and :244, follow the macros.</li>
+<li>The buffer sizes are the constexpr values and not settings, so <code>--print-limits</code> shows the right number on each branch and no config file can carry a stale one across the merge.</li>
+<li>static_asserts that each default is at least twice its minimum, that both sizes are word aligned, and that MIN_RESP_BUFFER and MIN_REQ_BUFFER stay below 2<sup>30</sup> so 32-bit offsets still work; a future limit increase fails the build instead of the first wide read.</li>
+</ul>
+</main>

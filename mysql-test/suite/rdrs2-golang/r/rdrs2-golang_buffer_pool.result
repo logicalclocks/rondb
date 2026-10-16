@@ -1,0 +1,12 @@
+# Tables for the pool driver
+CREATE DATABASE pool_db;
+CREATE TABLE pool_db.small (id INT PRIMARY KEY, val VARCHAR(32) NOT NULL) ENGINE=NDBCLUSTER;
+INSERT INTO pool_db.small VALUES (1, 'x');
+# Startup memory checks (Linux only; PASS elsewhere)
+PASS
+# Pool driver
+PASS
+# Post-load memory checks (Linux only; PASS elsewhere)
+PASS
+# Cleanup
+DROP DATABASE pool_db;

@@ -1,0 +1,22 @@
+# Config for rdrs2-golang_memory_regression (RONDB-1144): the no-auth
+# rdrs.3.1 runs with the pool settings a production pod would get on a
+# small memory limit (a cap of 256 buffers of each kind, 8 preallocated,
+# a 30 second idle shrink) and 8 worker threads, so a sustained wide-row
+# batch load from the Go driver stays inside a bound computed from those
+# numbers. StartReserveOverride 0 means the computed reserve.
+!include suite/rdrs2-golang/my.cnf
+
+[rdrs.3.1]
+config-json-template=suite/rdrs2-golang/rdrs_config_template_pool.json
+NumThreads=8
+MaxHttpReqSize=4194304
+MaxBuffers=256
+BufferShrinkAfterS=30
+PreAllocatedBuffers=8
+StartReserveOverride=0
+
+[ENV]
+RDRS_CONFIG_FILE_MEM=          @rdrs.3.1.#config-json
+RDRS_MEM_PIDFILE=              @rdrs.3.1.pid-file
+RDRS_MEM_MAX_BUFFERS=          @rdrs.3.1.MaxBuffers
+RDRS_MEM_PREALLOCATED=         @rdrs.3.1.PreAllocatedBuffers

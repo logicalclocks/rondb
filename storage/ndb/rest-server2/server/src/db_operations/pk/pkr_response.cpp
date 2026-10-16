@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023, 2025 Hopsworks AB
+ * Copyright (C) 2023, 2026 Hopsworks AB
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -18,6 +18,7 @@
  */
 
 #include "pkr_response.hpp"
+#include "src/buffer_chain.hpp"
 #include "src/mystring.hpp"
 #include "src/rdrs_const.h"
 #include "my_compiler.h"
@@ -28,55 +29,75 @@
 #include <sstream>
 #include <cassert>
 #include <ndb_limits.h>
+#include "buffer_sizes.hpp"
 
-PKRResponse::PKRResponse(const RS_Buffer *respBuff) {
-  this->resp = respBuff;
+PKRResponse::PKRResponse(const RS_Buffer &home, RS_BufferChain *chain,
+                         Uint32 op_index)
+    : m_home(home), m_chain(chain), m_op_index(op_index) {
   this->writeHeader = PK_RESP_HEADER_END;
   this->WriteHeaderField(PK_RESP_OP_TYPE_IDX, RDRS_PK_RESP_ID);
-  this->WriteHeaderField(PK_RESP_CAPACITY_IDX, resp->size);
+  this->WriteHeaderField(PK_RESP_CAPACITY_IDX, m_home.size);
+}
+
+RS_Status PKRResponse::Overflow(const char *what, Uint64 required) {
+  m_overflow = true;
+  return RS_SERVER_ERROR(
+      std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) + " " +
+      what + ". Buffer Remaining Capacity: " +
+      std::to_string(GetRemainingCapacity()) +
+      " Required: " + std::to_string(required));
 }
 
 RS_Status PKRResponse::WriteHeaderField(Uint32 index, Uint32 value) {
-  Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer);
+  Uint32 *b = reinterpret_cast<Uint32 *>(m_home.buffer);
   b[index] = value;
   return RS_OK;
 }
 
 RS_Status PKRResponse::SetStatus(Uint32 value, const char *message) {
   this->WriteHeaderField(PK_RESP_OP_STATUS_IDX, value);
-  return WriteStringHeaderField(PK_RESP_OP_MESSAGE_IDX, message);
+  Uint32 addr = this->writeHeader;
+  RS_Status status = this->Append_cstring(message, strlen(message));
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  this->WriteHeaderField(PK_RESP_OP_MESSAGE_IDX, addr);
+  return RS_OK;
 }
 
 RS_Status PKRResponse::Close(Uint32 &response_length) {
+  /* The length field counts home view bytes only; spilled bytes are
+   * accounted by their column entries. The reader's sanity check
+   * (capacity >= length) therefore holds unchanged. */
   this->WriteHeaderField(PK_RESP_LENGTH_IDX, writeHeader);
   response_length = writeHeader;
+  if (m_chain != nullptr) {
+    m_chain->finish_op(m_op_index, writeHeader, m_spilled, m_tail_off);
+  }
   return RS_OK;
 }
 
 RS_Status PKRResponse::SetOperationID(const char *opID) {
-  return WriteStringHeaderField(PK_RESP_OP_ID_IDX, opID);
-}
-
-RS_Status PKRResponse::WriteStringHeaderField(Uint32 index, const char *str) {
-  if (str == nullptr) {
-    this->WriteHeaderField(index, 0);
-  } else {
-    Uint32 addr = this->writeHeader;
-    RS_Status status = this->Append_cstring(str, strlen(str));
-    if (unlikely(status.http_code != SUCCESS)) {
-      return status;
-    }
-    this->WriteHeaderField(index, addr);
+  if (opID == nullptr) {
+    this->WriteHeaderField(PK_RESP_OP_ID_IDX, 0);
+    return RS_OK;
   }
+  Uint32 addr = this->writeHeader;
+  RS_Status status = this->Append_cstring(opID, strlen(opID));
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  this->WriteHeaderField(PK_RESP_OP_ID_IDX, addr);
   return RS_OK;
 }
 
 RS_Status PKRResponse::Append_cstring(const char *str, Uint32 len) {
   Uint32 strl = len + 1;  // for null terminator
   if (unlikely(strl > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
+    return Overflow("string", strl);
   }
-  memcpy(resp->buffer + writeHeader, str, strl);
+  memcpy(m_home.buffer + writeHeader, str, len);
+  m_home.buffer[writeHeader + len] = '\0';
   writeHeader += strl;
   return RS_OK;
 }
@@ -86,19 +107,18 @@ RS_Status PKRResponse::SetNoOfColumns(Uint32 cols) {
   if (this->writeHeader % ADDRESS_SIZE != 0) {
     this->writeHeader += ADDRESS_SIZE - this->writeHeader % ADDRESS_SIZE;
   }
-  // first index is for column value
-  // second index is for column value length
-  // thrid index is for isNULL
-  // forth index is for data type, e.g., string or non-string data
-
-  // +1 for col count
+  // per column: value length, value address, isNULL, data type; plus the
+  // column count in front
   Uint32 spaceNeeded4Pointers = 1 * ADDRESS_SIZE + (cols * ADDRESS_SIZE * 4);
   if (unlikely(spaceNeeded4Pointers > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
+    return Overflow("column table", spaceNeeded4Pointers);
   }
   Uint32 colAddr = (this->writeHeader);
   WriteHeaderField(PK_RESP_COLS_IDX, colAddr);
-  Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer + colAddr);
+  /* Zeroed so an entry no value was written for reads as a zero-length
+   * value, never as garbage. */
+  memset(m_home.buffer + colAddr, 0, spaceNeeded4Pointers);
+  Uint32 *b = reinterpret_cast<Uint32 *>(m_home.buffer + colAddr);
   b[0] = cols;
   this->writeHeader = (this->writeHeader + spaceNeeded4Pointers);
   this->colsToWrite = cols;
@@ -109,32 +129,29 @@ RS_Status PKRResponse::SetColumnDataNull() {
   return SetColumnDataInt(nullptr, RDRS_UNKNOWN_DATATYPE, 0);
 }
 
-RS_Status PKRResponse::SetColumnData(const char *value,
-                                     Uint32 type,
+RS_Status PKRResponse::SetColumnData(const char *value, Uint32 type,
                                      Uint32 len) {
   return this->SetColumnDataInt(value, type, len);
 }
 
-void PKRResponse::SetBlobLen(Uint32 len) {
-  Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer);
+void PKRResponse::SetBlobLen(Uint32 slot, Uint32 len) {
+  Uint32 *b = reinterpret_cast<Uint32 *>(m_home.buffer);
   Uint32 start = b[PK_RESP_COLS_IDX];
   start += ADDRESS_SIZE;  // skip the count
-  int indexWritten =
-    (start + ((colsWritten - 1) * 4 * ADDRESS_SIZE)) / ADDRESS_SIZE;
+  int indexWritten = (start + (slot * 4 * ADDRESS_SIZE)) / ADDRESS_SIZE;
   b[indexWritten] = len;
 }
 
-RS_Status PKRResponse::SetColumnDataInt(const char *value,
-                                        Uint32 type,
+RS_Status PKRResponse::SetColumnDataInt(const char *value, Uint32 type,
                                         Uint32 len) {
-  // first index is for column name
-  // second index is for column value
+  // first index is for value length
+  // second index is for value address
   // third index is for isNULL
   // fourth index is for data type, e.g., string, int, date etc
-  Uint32 *b = reinterpret_cast<Uint32 *>(this->resp->buffer);
+  Uint32 *b = reinterpret_cast<Uint32 *>(m_home.buffer);
   Uint32 start = b[PK_RESP_COLS_IDX];
   start += ADDRESS_SIZE;  // skip the count
-  int indexWritten = (start + (colsWritten * 4 * ADDRESS_SIZE)) / ADDRESS_SIZE;
+  int indexWritten = (start + (m_slot * 4 * ADDRESS_SIZE)) / ADDRESS_SIZE;
   b[indexWritten] = len;
   if (value == nullptr) {
     b[indexWritten + 1] = 0;                      // value address not set
@@ -150,49 +167,121 @@ RS_Status PKRResponse::SetColumnDataInt(const char *value,
     b[indexWritten + 2] = 0;             // isNULL
     b[indexWritten + 3] = type;          // data type
   }
-  colsWritten++;
+  return RS_OK;
+}
+
+Uint64 PKRResponse::CurrentVirtualOffset() const {
+  if (m_spilled) {
+    return static_cast<Uint64>(m_tail_base) + m_tail_off;
+  }
+  return writeHeader;
+}
+
+RS_Status PKRResponse::BeginRawColumn(Uint32 type) {
+  const Uint64 offset = CurrentVirtualOffset();
+  if (unlikely(offset > 0xFFFFFFFFULL)) {
+    return Overflow("raw column start", offset);
+  }
+  Uint32 *b = reinterpret_cast<Uint32 *>(m_home.buffer);
+  Uint32 start = b[PK_RESP_COLS_IDX];
+  start += ADDRESS_SIZE;
+  int indexWritten = (start + (m_slot * 4 * ADDRESS_SIZE)) / ADDRESS_SIZE;
+  b[indexWritten] = 0;                             // length, set by SetBlobLen
+  b[indexWritten + 1] = static_cast<Uint32>(offset);
+  b[indexWritten + 2] = 0;                         // not NULL
+  b[indexWritten + 3] = type;
+  return RS_OK;
+}
+
+RS_Status PKRResponse::Spill() {
+  if (m_chain == nullptr) {
+    return Overflow("spill without a buffer chain", 0);
+  }
+  Uint32 owner_index = 0;
+  RS_Status status = m_chain->take_continuation(&owner_index);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;  // 503, not an overflow
+  }
+  /* The virtual stream continues where the buffer just filled ended. */
+  m_tail_base += m_spilled ? m_tail.size : m_home.size;
+  m_tail = m_chain->owner(owner_index);
+  m_tail_off = 0;
+  m_spilled = true;
+  return RS_OK;
+}
+
+RS_Status PKRResponse::AppendRawWithSpill(const char *src, Uint32 len) {
+  Uint32 left = len;
+  while (left > 0) {
+    char *dst;
+    Uint32 space;
+    if (m_spilled) {
+      dst = m_tail.buffer + m_tail_off;
+      space = m_tail.size - m_tail_off;
+    } else {
+      dst = m_home.buffer + writeHeader;
+      space = m_home.size - writeHeader;
+    }
+    const Uint32 take = left < space ? left : space;
+    if (take > 0) {
+      memcpy(dst, src, take);
+      src += take;
+      left -= take;
+      if (m_spilled) {
+        m_tail_off += take;
+      } else {
+        writeHeader += take;
+      }
+    }
+    if (left > 0) {
+      /* The current buffer is full to its last byte; continue in the next
+       * one. Filling to the last byte is what lets the reader derive the
+       * segments from the offset, the length and the chain alone. */
+      RS_Status status = Spill();
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;
+      }
+    }
+  }
   return RS_OK;
 }
 
 char *PKRResponse::GetResponseBuffer() {
-  return resp->buffer;
+  return m_home.buffer;
 }
 
-Uint32 PKRResponse::GetMaxCapacity() {
-  return this->resp->size;
+Uint32 PKRResponse::GetMaxCapacity() const {
+  return m_home.size;
 }
 
-Uint32 PKRResponse::GetRemainingCapacity() {
+Uint32 PKRResponse::GetRemainingCapacity() const {
   return GetMaxCapacity() - GetWriteHeader();
 }
 
-Uint32 PKRResponse::GetWriteHeader() {
+Uint32 PKRResponse::GetWriteHeader() const {
   return this->writeHeader;
 }
 
 void *PKRResponse::GetWritePointer() {
-  return resp->buffer + writeHeader;
+  return m_home.buffer + writeHeader;
 }
 
 void PKRResponse::AdvanceWritePointer(Uint32 add) {
   writeHeader += add;
 }
 
-RS_Status PKRResponse::Append_string(std::string value,
-                                     Uint32 type) {
+RS_Status PKRResponse::Append_string(std::string value, Uint32 type) {
   // +1 null terminator
   if (unlikely((value.length() + 1) > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
+    return Overflow("string value", value.length() + 1);
   }
   return SetColumnData(value.c_str(), type, value.size());
 }
 
-RS_Status PKRResponse::Append_bin(const char *buffer,
-                                  Uint32 value_len,
+RS_Status PKRResponse::Append_bin(const char *buffer, Uint32 value_len,
                                   Uint32 type) {
-  if (unlikely(value_len > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(std::string(
-      rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)));
+  if (unlikely(value_len + 1 > GetRemainingCapacity())) {
+    return Overflow("binary value", static_cast<Uint64>(value_len) + 1);
   }
   return SetColumnData(buffer, type, value_len);
 }
@@ -267,19 +356,9 @@ RS_Status PKRResponse::Append_i64(Int64 num) {
   }
 }
 
-RS_Status PKRResponse::Append_char(const char *fromBuff,
-                                   Uint32 fromBuffLen,
-                                   CHARSET_INFO *fromCS,
-                                   bool trimSpaces) {
-  Uint32 extraSpace = 3;  // +1 for null terminator 
-
-  if (unlikely((fromBuffLen + extraSpace) > GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(
-      std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_COPY_FAILED)) +
-      std::string(" Response buffer remaining capacity: ") +
-      std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
-      std::to_string(fromBuffLen + extraSpace));
-  }
+RS_Status PKRResponse::FormatChar(const char *fromBuff, Uint32 fromBuffLen,
+                                  CHARSET_INFO *fromCS, bool trimSpaces,
+                                  std::string &out) {
   //  from_buffer -> printable string  -> escaped string
   // allocate a buffer large enough to hold the formatted string
   const CHARSET_INFO* toCS = &my_charset_utf8mb4_bin;
@@ -315,7 +394,7 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
                          fromCS,
                          6);
     return RS_SERVER_ERROR(
-      std::string(rdrsErrorMessage(ERROR_INVALID_COLUMN_DATA)) + 
+      std::string(rdrsErrorMessage(ERROR_INVALID_COLUMN_DATA)) +
       std::string(" Invalid string: ") +
       std::string(printable_buff));
   } else if (unlikely(from_end_pos < fromBuff + fromBuffLen)) {
@@ -323,9 +402,9 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
       result is longer than UINT_MAX32 and doesn't fit into String
     */
     return RS_SERVER_ERROR(
-      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)) + 
+      std::string(rdrsErrorMessage(ERROR_PROGRAMMING_BUFFER_TOO_SMALL)) +
       std::string(" Buffer size: ") +
-      std::to_string(MAX_TUPLE_SIZE_IN_BYTES_ESCAPED) +
+      std::to_string(estimated_bytes) +
       std::string(". Bytes left to copy: ") +
       std::to_string((fromBuff + fromBuffLen) - from_end_pos));
   }
@@ -337,14 +416,23 @@ RS_Status PKRResponse::Append_char(const char *fromBuff,
       wellFormedString = wellFormedString.substr(0, endpos + 1);
     }
   }
-  std::string escapedstr = escape_string(wellFormedString);
-  // +1 for null terminator 
-  if (unlikely((escapedstr.length() + extraSpace) >= GetRemainingCapacity())) {
-    return RS_SERVER_ERROR(
-      std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_COPY_FAILED)) + 
-      std::string(" Response buffer remaining capacity: ") +
-      std::to_string(GetRemainingCapacity()) + std::string(" Required: ") +
-      std::to_string(escapedstr.length() + extraSpace));
+  out = escape_string(wellFormedString);
+  return RS_OK;
+}
+
+RS_Status PKRResponse::Append_char(const char *fromBuff,
+                                   Uint32 fromBuffLen,
+                                   CHARSET_INFO *fromCS,
+                                   bool trimSpaces) {
+  std::string escapedstr;
+  RS_Status status = FormatChar(fromBuff, fromBuffLen, fromCS, trimSpaces,
+                                escapedstr);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  // +1 for null terminator
+  if (unlikely((escapedstr.length() + 1) > GetRemainingCapacity())) {
+    return Overflow("character value", escapedstr.length() + 1);
   }
   return this->SetColumnData(escapedstr.c_str(),
                              RDRS_STRING_DATATYPE,

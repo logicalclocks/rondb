@@ -210,6 +210,15 @@ func NewBatchReadURL() string {
 	return url
 }
 
+// NewMetricsURL is the Prometheus endpoint: no API version prefix, no API
+// key (RONDB-1144 tests read pool state and limits from it).
+func NewMetricsURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s/metrics", hostPort(conf.REST.ServerIP, conf.REST.ServerPort))
+	appendURLProtocol(&url)
+	return url
+}
+
 func NewFeatureStoreURL() string {
 	conf := config.GetAll()
 	url := fmt.Sprintf("%s/%s/%s",

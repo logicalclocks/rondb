@@ -25,6 +25,7 @@ file(GLOB_RECURSE SRC
         api_key.cpp
         batch_feature_store_ctrl.cpp
         batch_pk_read_ctrl.cpp
+        buffer_chain.cpp
         buffer_manager.cpp
         config_structs.cpp
         connection.cpp
@@ -50,6 +51,7 @@ file(GLOB_RECURSE SRC
         pk_read_ctrl.cpp
         pk_read_ctrl.cpp
         probe_server.cpp
+        process_setup.cc
         prometheus_ctrl.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp

@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <simdjson.h>
 #include <EventLogger.hpp>
@@ -107,17 +108,19 @@ public:
     return false; \
   })
 
-// Define a parser for a struct. All elements will be optional. Will only accept
-// keys that matches an element or begin with "#". Keys beginning with "#" are
-// intended to be used for comments. All other keys will cause an exception.
-#define DEFINE_STRUCT_PARSER(Datatype, ...) \
+// Define a parser for a struct. All elements will be optional. Keys that match
+// an element are parsed, keys beginning with "#" are comments, and any other
+// key runs ON_UNKNOWN_KEY, a statement that sees the key as fkey. On-demand
+// iteration skips the value of a key that is not parsed.
+#define DEFINE_STRUCT_PARSER_ON_UNKNOWN(Datatype, ON_UNKNOWN_KEY, ...) \
   DEFINE_PARSER(Datatype, simdjson::ondemand::object, { \
     for(simdjson::ondemand::field field : value) { \
       std::string_view fkey = field.unescaped_key(false); \
       simdjson::ondemand::value fval = field.value(); \
       __VA_ARGS__ \
-      if (fkey[0] != '#') \
-        throw ConfigParseError("Unexpected key"); \
+      if (fkey[0] != '#') { \
+        ON_UNKNOWN_KEY; \
+      } \
     } \
     return true; \
   }) \
@@ -128,6 +131,23 @@ public:
     } \
     return false; \
   })
+// RonSQL request bodies, the struct parser's only other user: an unknown key is
+// a client error (400). The pk-read, batch, feature store and scan request
+// parsers look their fields up by name and skip any other field.
+#define DEFINE_STRUCT_PARSER(Datatype, ...) \
+  DEFINE_STRUCT_PARSER_ON_UNKNOWN(Datatype, \
+    throw ConfigParseError("Unexpected key \"" + std::string(fkey) + "\""), \
+    __VA_ARGS__)
+
+/* RONDB-1144: the configuration file warns about a key it does not know and
+ * ignores it, so a file written for another rdrs2 version still starts the
+ * server. The logger is not configured while the file is read, hence
+ * stderr, like the other startup warnings. */
+static void warn_unknown_config_key(std::string_view key) {
+  std::cerr << "Warning: ignoring unknown configuration key \"" << key
+            << "\"\n";
+}
+
 #define ELEMENT(TargetVar, SourceKey) \
   if (fkey == #SourceKey) { \
     parse(target.TargetVar, fval); \
@@ -187,8 +207,13 @@ RS_Status handle_parse_error(ConfigParseError& e,
 JSONParser* jsonParsers = nullptr;
 
 JSONParser::JSONParser() {
-  buffer = std::make_unique<char[]>(
-    globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING);
+  /* new char[n] default-initialises, so none of the pages are touched until
+   * a request of that size arrives. std::make_unique value-initialised the
+   * array, which made NumThreads x MaxHttpReqSize resident at startup (64 x 4 MiB
+   * with the old defaults; RONDB-1144). The
+   * parser never reads beyond the request length it is given. */
+  buffer = std::unique_ptr<char[]>(
+    new char[globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING]);
 }
 
 std::unique_ptr<char[]> &JSONParser::get_buffer() {
@@ -414,6 +439,19 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
       HTTP_CODE::CLIENT_ERROR, "No operations defined").status;
   }
   for (auto operation : operations) {
+    /* RONDB-1144: bound the batch before parsing another operation; an
+     * on-demand array has no cheap size, so the check runs per element and
+     * stops the first operation past the limit. Nothing has been allocated
+     * for the batch yet, so a 413 here costs no buffer. */
+    if (unlikely(reqStructs.size() >=
+                 globalConfigs.internal.maxOperationsPerBatchRequest)) {
+      return CRS_Status(
+        static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k413RequestEntityTooLarge),
+        (std::string("batch exceeds MaxOperationsPerBatchRequest (") +
+         std::to_string(globalConfigs.internal.maxOperationsPerBatchRequest) +
+         ")").c_str()).status;
+    }
     PKReadParams reqStruct;
     simdjson::ondemand::object operationObj;
     error = operation.get(operationObj);
@@ -704,7 +742,9 @@ DEFINE_VALUE_PARSER(int, {
  * Parsers for the config structs.
  */
 
-#define CLASS(NAME, ...) DEFINE_STRUCT_PARSER(NAME, __VA_ARGS__)
+#define CLASS(NAME, ...) \
+  DEFINE_STRUCT_PARSER_ON_UNKNOWN(NAME, warn_unknown_config_key(fkey), \
+                                  __VA_ARGS__)
 #define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR, DOCSTRING) \
   ELEMENT(VARIABLENAME, JSONKEYNAME)
 #define ALIAS(ACTUALVARIABLENAME, ACTUALJSONKEYNAME, ALIASJSONKEYNAME) \
@@ -1289,6 +1329,16 @@ RS_Status JSONParser::batch_feature_store_parse(
     return handle_simdjson_error(error, doc, currentLocation);
   }
   for (auto entry : entries) {
+    /* RONDB-1144: same bound as batch_parse, counted over the entries. */
+    if (unlikely(reqStruct.entries.size() >=
+                 globalConfigs.internal.maxOperationsPerBatchRequest)) {
+      return CRS_Status(
+        static_cast<HTTP_CODE>(
+          drogon::HttpStatusCode::k413RequestEntityTooLarge),
+        (std::string("batch exceeds MaxOperationsPerBatchRequest (") +
+         std::to_string(globalConfigs.internal.maxOperationsPerBatchRequest) +
+         ")").c_str()).status;
+    }
     simdjson::ondemand::object entryObj;
     error = entry.get(entryObj);
     if (unlikely(error != simdjson::SUCCESS)) {

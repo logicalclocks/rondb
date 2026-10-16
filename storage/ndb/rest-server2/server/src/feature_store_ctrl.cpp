@@ -24,6 +24,7 @@
 #include "json_parser.hpp"
 #include "encoding.hpp"
 #include "buffer_manager.hpp"
+#include "buffer_chain.hpp"
 #include "pk_data_structs.hpp"
 #include "api_key.hpp"
 #include "rate_limit.hpp"
@@ -258,6 +259,12 @@ std::shared_ptr<RestErrorCode>
       /* Rate limit rejections (RONDB-978) keep their 429 status */
       DEB_FS_CTRL("RATE LIMITED");
       fsError = RATE_LIMIT_EXCEEDED->NewMessage(err);
+    } else if (code == drogon::k503ServiceUnavailable) {
+      /* A full buffer pool (RONDB-1144) is overload, not a failed read:
+       * keep the 503 wherever the pool ran dry, including a value that
+       * spills while the batch is read. */
+      DEB_FS_CTRL("SERVICE UNAVAILABLE");
+      fsError = SERVICE_TEMPORARILY_UNAVAILABLE->NewMessage(err);
     } else {
       DEB_FS_CTRL("FAILED");
       fsError = READ_FROM_DB_FAIL->NewMessage(err);
@@ -538,17 +545,19 @@ void FillPassedFeatures(
 }
 
 RS_Status process_responses(ArenaMalloc *amalloc,
-                            std::vector<RS_Buffer> &respBuffs,
-                            std::vector<RS_Buffer> &reqBuffs,
+                            const RS_BufferChain &resp_chain,
+                            RS_Buffer *req_views,
+                            Uint32 noOps,
                             BatchResponseJSON &response) {
-  for (unsigned int i = 0; i < respBuffs.size(); i++) {
+  for (unsigned int i = 0; i < noOps; i++) {
     auto pkReadResponseWithCode = BatchResponseJSON::CreateNewSubResponse();
     auto pkReadResponse = pkReadResponseWithCode.getBody();
 
     auto subRespStatus =
       process_pkread_response(amalloc,
-                              respBuffs[i].buffer,
-                              &reqBuffs[i],
+                              resp_chain,
+                              i,
+                              &req_views[i],
                               pkReadResponse);
     if (!(subRespStatus.err_file_name[0] == '\0')) {
       std::cerr << "Error: " << subRespStatus.err_file_name << std::endl;
@@ -601,7 +610,7 @@ void FeatureStoreCtrl::featureStore(
   const char *json_str = req->getBody().data();
   DEB_FS_CTRL("\n\n JSON REQUEST: \n %s \n", json_str);
   size_t length        = req->getBody().length();
-  if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+  if (unlikely(length > globalConfigs.internal.maxHttpReqSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -616,7 +625,7 @@ void FeatureStoreCtrl::featureStore(
       simdjson::padded_string_view(
         jsonParser.get_buffer().get(),
         length,
-        globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING),
+        globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING),
         reqStruct);
 
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
@@ -727,42 +736,46 @@ void FeatureStoreCtrl::featureStore(
       }
     }
     auto dbResponseIntf = getPkReadResponseJSON(*metadata);
-    std::vector<RS_Buffer> reqBuffs(noOps);
-    std::vector<RS_Buffer> respBuffs(noOps);
-    Uint32 request_buffer_size = globalConfigs.internal.reqBufferSize * 2;
-    Uint32 request_buffer_limit = request_buffer_size / 2;
-    Uint32 current_head = 0;
-    reqBuffs[0] = rsBufferArrayManager.get_req_buffer();
-    respBuffs[0] = rsBufferArrayManager.get_resp_buffer();
-    Uint32 current_request_buffer_idx = 0;
+    /* RONDB-1144: every buffer this request takes lives in these chains
+     * and is returned when they go out of scope. */
+    RS_BufferChain req_chain(RS_BufferChain::REQ, noOps);
+    RS_BufferChain resp_chain(RS_BufferChain::RESP, noOps);
+    {
+      RS_Status status = req_chain.take_first();
+      if (likely(status.http_code == SUCCESS)) {
+        status = resp_chain.take_first();
+      }
+      if (unlikely(status.http_code != SUCCESS)) {
+        resp->setBody(std::string(status.message));
+        resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+        callback(resp);
+        return;
+      }
+    }
     for (Uint32 i = 0; i < noOps; i++) {
-      if (i > 0)
-        reqBuffs[i]  = getNextReqRS_Buffer(
-          current_head,
-          request_buffer_limit,
-          reqBuffs[current_request_buffer_idx],
-          current_request_buffer_idx,
-          i
-        );
-      RS_Status status =
-        create_native_request(readParams[i],
-                              (Uint32*)reqBuffs[i].buffer,
-                              current_head);
+      RS_Status status = CRS_Status::SUCCESS.status;
+      if (i > 0) {
+        status = req_chain.next_op_view(
+            i, native_request_upper_bound(readParams[i]));
+        if (unlikely(status.http_code != SUCCESS)) {
+        resp->setBody(std::string(status.message));
+        resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+        callback(resp);
+        return;
+        }
+      }
+      RS_Buffer &view = req_chain.views()[i];
+      Uint32 consumed = 0;
+      status = create_native_request(readParams[i], view, consumed);
       if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                      drogon::HttpStatusCode::k200OK)) {
         resp->setBody(std::string(status.message));
         resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
         callback(resp);
-        release_array_buffers(reqBuffs.data(), respBuffs.data(), i);
         return;
       }
-      UintPtr length_ptr =
-        reinterpret_cast<UintPtr>(reqBuffs[i].buffer) +
-        static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
-      reqBuffs[i].size = *length_ptr_casted;
-      require(reqBuffs[i].buffer + reqBuffs[i].size <=
-              reqBuffs[current_request_buffer_idx].buffer + current_head);
+      view.size = reinterpret_cast<Uint32 *>(view.buffer)[PK_REQ_LENGTH_IDX];
+      req_chain.advance(consumed);
     }
     // pk_batch_read
     {
@@ -770,8 +783,8 @@ void FeatureStoreCtrl::featureStore(
       RS_Status status = pk_batch_read((void*)&amalloc,
                                        noOps,
                                        true,
-                                       reqBuffs.data(),
-                                       respBuffs.data(),
+                                       req_chain.views(),
+                                       &resp_chain,
                                        currentThreadIndex,
                                        rl_identity.empty() ? nullptr
                                                            : rl_identity.c_str(),
@@ -785,15 +798,15 @@ void FeatureStoreCtrl::featureStore(
         resp->setStatusCode(
           static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
         callback(resp);
-        release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
         return;
       }
     }
     {
       DEB_FS_CTRL("Process Batch PK Read response for Feature Store request");
       RS_Status status = process_responses(&amalloc,
-                                           respBuffs,
-                                           reqBuffs,
+                                           resp_chain,
+                                           req_chain.views(),
+                                           noOps,
                                            dbResponseIntf);
       if (unlikely(status.err_file_name[0] != '\0')) {
         auto fsError = TranslateRonDbError(status.http_code, status.message);
@@ -801,7 +814,6 @@ void FeatureStoreCtrl::featureStore(
         resp->setStatusCode(
           static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
         callback(resp);
-        release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
         return;
       }
     }
@@ -817,7 +829,6 @@ void FeatureStoreCtrl::featureStore(
       resp->setStatusCode(
         static_cast<drogon::HttpStatusCode>(fsError->GetStatus()));
       callback(resp);
-      release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
       return;
     }
     DEB_FS_CTRL("Get Feature values for  Feature Store request");
@@ -835,7 +846,6 @@ void FeatureStoreCtrl::featureStore(
         resp->setStatusCode(drogon::k500InternalServerError);
       }
       callback(resp);
-      release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
       return;
     }
 
@@ -875,6 +885,5 @@ void FeatureStoreCtrl::featureStore(
     resp->setBody(std::move(respBody));
     resp->setStatusCode(drogon::HttpStatusCode::k200OK);
     callback(resp);
-    release_array_buffers(reqBuffs.data(), respBuffs.data(), noOps);
   }
 }

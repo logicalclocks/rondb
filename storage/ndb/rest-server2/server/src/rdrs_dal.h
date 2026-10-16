@@ -74,7 +74,6 @@ typedef enum DataReturnType {
 typedef struct RS_Buffer {
   char *buffer;       // Buffer
   unsigned int size;  // Buffer size
-  unsigned int next_allocated_buffer;
 } RS_Buffer;
 
 typedef RS_Buffer *pRS_Buffer;
@@ -186,11 +185,16 @@ RS_Status shutdown_connection();
  * We will also need to track if messages become so long that they require
  * a streaming protocol.
  */
+/* RONDB-1144: responses are written into the buffers of the caller's
+ * chain, which grows when a blob or text value spills (see
+ * buffer_chain.hpp). Declared as an opaque struct so this header stays
+ * valid C. */
+struct RS_BufferChain;
 RS_Status pk_batch_read(void *amalloc,
                         unsigned int no_req,
                         bool is_batch,
                         RS_Buffer *req_buffs,
-                        RS_Buffer *resp_buffs,
+                        struct RS_BufferChain *resp_chain,
                         unsigned int threadIndex,
                         const char *rate_limit_identity,
                         unsigned int rate_limit_identity_len);

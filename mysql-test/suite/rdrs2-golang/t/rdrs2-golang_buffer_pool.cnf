@@ -1,0 +1,30 @@
+# Config for rdrs2-golang_buffer_pool (RONDB-1144): same cluster and rdrs
+# servers as the rest of the suite, but the no-auth rdrs.3.1 runs with a
+# tiny, explicitly capped buffer pool and a short idle-shrink period so the
+# Go driver can exhaust the pool, watch it shrink, and check memory from
+# /proc on Linux. NumThreads x MaxHttpReqSize is the virtual size of the JSON
+# parse buffers; the startup check asserts they are NOT resident, which
+# only means something when that product is large (here 4 x 64 MiB).
+# StartReserveOverride lowers the start reserve far below the computed one
+# so a wide response can start near the end of a buffer and the retry
+# (rewrite in a fresh buffer) gets exercised.
+!include suite/rdrs2-golang/my.cnf
+
+[rdrs.3.1]
+config-json-template=suite/rdrs2-golang/rdrs_config_template_pool.json
+NumThreads=4
+MaxHttpReqSize=67108864
+MaxBuffers=8
+BufferShrinkAfterS=5
+PreAllocatedBuffers=2
+StartReserveOverride=4096
+
+[ENV]
+RDRS_CONFIG_FILE_POOL=         @rdrs.3.1.#config-json
+RDRS_POOL_PIDFILE=             @rdrs.3.1.pid-file
+RDRS_POOL_NUM_THREADS=         @rdrs.3.1.NumThreads
+RDRS_POOL_MAX_REQ_SIZE=        @rdrs.3.1.MaxHttpReqSize
+RDRS_POOL_MAX_BUFFERS=         @rdrs.3.1.MaxBuffers
+RDRS_POOL_SHRINK_AFTER_S=      @rdrs.3.1.BufferShrinkAfterS
+RDRS_POOL_PREALLOCATED=        @rdrs.3.1.PreAllocatedBuffers
+RDRS_POOL_START_RESERVE=       @rdrs.3.1.StartReserveOverride

@@ -20,6 +20,9 @@
 #include "prometheus_ctrl.hpp"
 #include "rdrs_dal.h"
 #include "logger.hpp"
+#include "buffer_manager.hpp"
+#include "buffer_sizes.hpp"
+#include "config_structs.hpp"
 
 #include <drogon/HttpTypes.h>
 #include <prometheus/text_serializer.h>
@@ -649,6 +652,18 @@ prometheus::Histogram *rondisHistogram = nullptr;
 prometheus::Gauge *ronDBConnectionStateGauge            = nullptr;
 prometheus::Gauge *ndbObjectsTotalCountGauge            = nullptr;
 prometheus::Gauge *httpConnectionCountGauge             = nullptr;
+
+/* RONDB-1144 buffer pool families, additive to the ones above. Index 0 is
+ * the request pool, 1 the response pool. The pools keep cumulative event
+ * totals; the counters are advanced by the growth since the last scrape,
+ * claimed through claim_counter_delta because Drogon serves concurrent
+ * scrapes on different IO threads. */
+constexpr int kPoolCount = 2;
+constexpr int kPoolStateCount = 4;   // in_use, free, peak, allocated
+constexpr int kPoolEventCount = 4;   // rejected, retry, shrunk, allocated
+prometheus::Gauge *bufferPoolGauge[kPoolCount][kPoolStateCount] = {};
+prometheus::Counter *bufferPoolEvent[kPoolCount][kPoolEventCount] = {};
+std::atomic<Int64> bufferPoolEventLast[kPoolCount][kPoolEventCount] = {};
 }  // namespace
 
 void initMetrics() {
@@ -988,6 +1003,62 @@ void initMetrics() {
     .Help("Number of currently active HTTP connections")
     .Register(*registry)
     .Add({});
+
+  /* RONDB-1144: buffer pool state and events, and the limits rdrs2 derived
+   * at build and startup time. New families only; nothing above changes. */
+  prometheus::Family<prometheus::Gauge> *bufferPoolFamily =
+    &prometheus::BuildGauge()
+      .Name("rdrs_buffer_pool")
+      .Help("Request/response buffer pool state, in buffers")
+      .Register(*registry);
+  prometheus::Family<prometheus::Counter> *bufferPoolEventFamily =
+    &prometheus::BuildCounter()
+      .Name("rdrs_buffer_pool_events")
+      .Help("Request/response buffer pool events since start")
+      .Register(*registry);
+  const char *poolNames[kPoolCount] = {"request", "response"};
+  const char *stateNames[kPoolStateCount] = {"in_use", "free", "peak",
+                                             "allocated"};
+  const char *eventNames[kPoolEventCount] = {"rejected", "retry", "shrunk",
+                                             "allocated"};
+  for (int pool = 0; pool < kPoolCount; pool++) {
+    for (int state = 0; state < kPoolStateCount; state++) {
+      bufferPoolGauge[pool][state] =
+        &bufferPoolFamily->Add({{"pool", poolNames[pool]},
+                                {"state", stateNames[state]}});
+    }
+    for (int event = 0; event < kPoolEventCount; event++) {
+      bufferPoolEvent[pool][event] =
+        &bufferPoolEventFamily->Add({{"pool", poolNames[pool]},
+                                     {"event", eventNames[event]}});
+      bufferPoolEventLast[pool][event].store(0);
+    }
+  }
+
+  prometheus::Family<prometheus::Gauge> *limitsFamily =
+    &prometheus::BuildGauge()
+      .Name("rdrs_limits")
+      .Help("Sizes and caps derived from the NDB limits, the configuration"
+            " and the memory limit; constant for the life of the process")
+      .Register(*registry);
+  const struct { const char *name; double value; } limits[] = {
+    {"max_columns", static_cast<double>(MAX_ATTRIBUTES_IN_TABLE)},
+    {"max_row_bytes", static_cast<double>(MAX_ROW_BYTES)},
+    {"req_buffer_bytes",
+     static_cast<double>(rsBufferArrayManager.req_buffer_bytes())},
+    {"resp_buffer_bytes",
+     static_cast<double>(rsBufferArrayManager.resp_buffer_bytes())},
+    {"min_req_buffer_bytes", static_cast<double>(MIN_REQ_BUFFER)},
+    {"min_resp_buffer_bytes", static_cast<double>(MIN_RESP_BUFFER)},
+    {"max_operations_per_batch_request",
+     static_cast<double>(globalConfigs.internal.maxOperationsPerBatchRequest)},
+    {"max_buffers", static_cast<double>(rsBufferArrayManager.max_buffers())},
+    {"memory_limit_bytes",
+     static_cast<double>(rsBufferArrayManager.memory_limit_bytes())},
+  };
+  for (const auto &limit : limits) {
+    limitsFamily->Add({{"name", limit.name}}).Set(limit.value);
+  }
 }
 
 void setRonDBStats() {
@@ -1224,6 +1295,30 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   count = m_metrics_request_counter.exchange(0, std::memory_order_relaxed);
   metricsCounter->Increment(count);
 
+  // Buffer pools (RONDB-1144): gauges from the current state, counters
+  // advanced by the growth of the pools' cumulative totals.
+  {
+    BufferPoolStats poolStats[kPoolCount];
+    rsBufferArrayManager.get_req_buffers_stats(poolStats[0]);
+    rsBufferArrayManager.get_resp_buffers_stats(poolStats[1]);
+    for (int pool = 0; pool < kPoolCount; pool++) {
+      const BufferPoolStats &st = poolStats[pool];
+      bufferPoolGauge[pool][0]->Set(static_cast<double>(st.in_use));
+      bufferPoolGauge[pool][1]->Set(static_cast<double>(st.free));
+      bufferPoolGauge[pool][2]->Set(static_cast<double>(st.peak_in_use));
+      bufferPoolGauge[pool][3]->Set(static_cast<double>(st.allocated));
+      const Int64 totals[kPoolEventCount] = {st.rejected, st.retries,
+                                             st.shrunk, st.total_allocations};
+      for (int event = 0; event < kPoolEventCount; event++) {
+        const Int64 delta =
+          claim_counter_delta(bufferPoolEventLast[pool][event], totals[event]);
+        if (delta > 0) {
+          bufferPoolEvent[pool][event]->Increment(static_cast<double>(delta));
+        }
+      }
+    }
+  }
+
   // Update RonDB Metrics, including
   // - ndbObjectsTotalCountGauge
   // - ronDBConnectionStateGauge
@@ -1241,6 +1336,17 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
   resp->setBody(os.str());
   resp->setContentTypeString("text/plain; version=0.0.4");
   resp->setStatusCode(drogon::HttpStatusCode::k200OK);
+}
+
+Int64 claim_counter_delta(std::atomic<Int64> &last, Int64 total) {
+  Int64 prev = last.load(std::memory_order_relaxed);
+  /* On failure compare_exchange_weak reloads prev; the loop ends once this
+   * caller moved last to total, or another caller already moved it to
+   * total or beyond (nothing left to claim). */
+  while (total > prev &&
+         !last.compare_exchange_weak(prev, total, std::memory_order_relaxed)) {
+  }
+  return total > prev ? total - prev : 0;
 }
 
 }  // namespace rdrs_metrics

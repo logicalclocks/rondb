@@ -37,6 +37,7 @@
 #include "encoding.hpp"
 
 #include <memory>
+#include <new>
 #include <mysql_time.h>
 #include <algorithm>
 #include <tuple>
@@ -44,6 +45,8 @@
 #include <my_base.h>
 #include <storage/ndb/include/ndbapi/NdbDictionary.hpp>
 #include <kernel/ndb_limits.h>
+#include "buffer_sizes.hpp"
+#include "src/buffer_chain.hpp"
 #include <ArenaMalloc.hpp>
 #include <util/require.h>
 #include "my_byteorder.h"
@@ -568,90 +571,48 @@ RS_Status BatchKeyOperations::execute() {
   return RS_OK;
 }
 
-RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
+RS_Status BatchKeyOperations::create_response(RS_BufferChain &chain) {
   bool found = true;
-  /* On a retried attempt the loop below rebuilds respBuffs[] from
-   * scratch; overflow buffers a previous failed attempt got from
-   * getNextRespRS_Buffer() would be overwritten and leak from the buffer
-   * pool. Walk the previous attempt's chain and return them first. */
-  Uint32 chain = respBuffs[0].next_allocated_buffer;
-  while (chain != 0) {
-    require(chain < m_numOperations);
-    Uint32 next = respBuffs[chain].next_allocated_buffer;
-    rsBufferArrayManager.return_resp_buffer(respBuffs[chain]);
-    chain = next;
-  }
-  respBuffs[0].next_allocated_buffer = 0;
-  Uint32 response_buffer_size = respBuffs[0].size;
-  Uint32 response_buffer_limit = response_buffer_size / 2;
-  Uint32 current_head = 0;
+  /* A retried attempt (DATA_OP_RETRY_HANDLER) rebuilds every response from
+   * scratch: give back the buffers the previous attempt grew the chain by
+   * and start again at the first one. */
+  chain.reset_to_first_buffer();
   Uint32 response_length = 0;
-  Uint32 current_response_buffer_idx = 0;
-  for (size_t i = 0; i < m_numOperations; i++) {
-    current_head += response_length;
-    if (i > 0)
-      respBuffs[i] = getNextRespRS_Buffer(
-        current_head,
-        response_buffer_limit,
-        respBuffs[current_response_buffer_idx],
-        current_response_buffer_idx,
-        i
-      );
+  for (Uint32 i = 0; i < m_numOperations; i++) {
+    if (i > 0) {
+      RS_Status status = chain.next_op_view(i);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;  // 503: pool exhausted
+      }
+    }
     KeyOperation *key_op = &m_key_ops[i];
-    PKRResponse *resp =
-      new (&key_op->m_resp) PKRResponse(&respBuffs[i]);
-    PKRRequest *req = &key_op->m_req;
-    const NdbOperation *op = key_op->m_ndbOperation;
-    resp->SetOperationID(req->OperationId());
-    if (unlikely(req->IsInvalidOp())) {
-      resp->SetStatus(req->GetError().http_code, req->GetError().message);
-      resp->Close(response_length);
-      continue;
-    }
-    resp->SetNoOfColumns(key_op->m_num_read_columns);
-    if (req->ReadColumnsCount() == 0) {
-      DEB_NDB_BE("Build request when all columns requested");
-      Uint32 numColumns = key_op->m_num_table_columns;
-      if (unlikely(!req->addReadColumns(numColumns))) {
-        return RS_SERVER_ERROR(std::string(
-          rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
-      }
-      for (Uint32 k = 0; k < numColumns; k++) {
-        const NdbDictionary::Column *read_col =
-          key_op->m_tableDict->getColumn(k);
-        if (unlikely(req->addReadColumnName(k,
-                                   read_col->getName(),
-                                   DEFAULT_DRT))) {
-          return RS_SERVER_ERROR(std::string(
-            rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    /* Rule 5 (RONDB-1144): the start reserve is a computed bound. If a
+     * response still overflows the room it was given and it did not start
+     * at the beginning of its buffer, write it again from the beginning of
+     * a fresh buffer. A response that overflows a whole buffer fails. */
+    for (Uint32 attempt = 0;; attempt++) {
+      PKRResponse *resp =
+        new (&key_op->m_resp) PKRResponse(chain.view(i), &chain, i);
+      RS_Status status = write_response(i, resp, found, response_length);
+      if (likely(!resp->Overflowed())) {
+        if (unlikely(status.http_code != SUCCESS)) {
+          return status;
         }
+        break;
+      }
+      require(!resp->Spilled());
+      if (attempt > 0 || chain.starts_at_offset_zero(i)) {
+        return status;
+      }
+      rsBufferArrayManager.note_resp_retry();
+      /* addReadColumns moved the request's length; undo before the second
+       * pass rebuilds the column names. */
+      key_op->m_req.resetReadColumns();
+      status = chain.restart_op_in_fresh_buffer(i);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;  // 503: pool exhausted
       }
     }
-    found = true;
-    if (likely(op->getNdbError().classification == NdbError::NoError)) {
-      resp->SetStatus(SUCCESS, "OK");
-    } else if (op->getNdbError().classification == NdbError::NoDataFound) {
-      found = false;
-      resp->SetStatus(NOT_FOUND, "NOT Found");
-    } else {      
-      //  immediately fail the entire batch
-      resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
-      resp->Close(response_length);
-      return RS_RONDB_SERVER_ERROR(
-        op->getNdbError(), std::string("SubOperation ") +
-        std::string(req->OperationId()
-                    ? req->OperationId()
-                    : "(Unidentified Operation)") +
-        std::string(" failed"));
-    }
-    if (likely(found)) {
-      // iterate over all columns
-      RS_Status ret = key_op->append_op_recs(resp, req);
-      if (unlikely(ret.http_code != SUCCESS)) {
-        return ret;
-      }
-    }
-    resp->Close(response_length);
   }
   if (unlikely(!found && !m_isBatch)) {
     return RS_CLIENT_404_ERROR();
@@ -659,14 +620,102 @@ RS_Status BatchKeyOperations::create_response(RS_Buffer *respBuffs) {
   return RS_OK;
 }
 
+RS_Status BatchKeyOperations::write_response(Uint32 i, PKRResponse *resp,
+                                             bool &found,
+                                             Uint32 &response_length) {
+  KeyOperation *key_op = &m_key_ops[i];
+  PKRRequest *req = &key_op->m_req;
+  const NdbOperation *op = key_op->m_ndbOperation;
+  RS_Status status = resp->SetOperationID(req->OperationId());
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  if (unlikely(req->IsInvalidOp())) {
+    status = resp->SetStatus(req->GetError().http_code,
+                             req->GetError().message);
+    if (unlikely(status.http_code != SUCCESS)) {
+      return status;
+    }
+    resp->Close(response_length);
+    return RS_OK;
+  }
+  status = resp->SetNoOfColumns(key_op->m_num_read_columns);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  if (req->ReadColumnsCount() == 0) {
+    DEB_NDB_BE("Build request when all columns requested");
+    Uint32 numColumns = key_op->m_num_table_columns;
+    if (unlikely(!req->addReadColumns(numColumns))) {
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    }
+    for (Uint32 k = 0; k < numColumns; k++) {
+      const NdbDictionary::Column *read_col =
+        key_op->m_tableDict->getColumn(k);
+      if (unlikely(req->addReadColumnName(k,
+                                 read_col->getName(),
+                                 DEFAULT_DRT))) {
+        return RS_SERVER_ERROR(std::string(
+          rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+      }
+    }
+  }
+  found = true;
+  if (likely(op->getNdbError().classification == NdbError::NoError)) {
+    status = resp->SetStatus(SUCCESS, "OK");
+  } else if (op->getNdbError().classification == NdbError::NoDataFound) {
+    found = false;
+    status = resp->SetStatus(NOT_FOUND, "NOT Found");
+  } else {
+    //  immediately fail the entire batch
+    resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
+    resp->Close(response_length);
+    return RS_RONDB_SERVER_ERROR(
+      op->getNdbError(), std::string("SubOperation ") +
+      std::string(req->OperationId()
+                  ? req->OperationId()
+                  : "(Unidentified Operation)") +
+      std::string(" failed"));
+  }
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  if (likely(found)) {
+    // iterate over all columns
+    RS_Status ret = key_op->append_op_recs(resp, req);
+    if (unlikely(ret.http_code != SUCCESS)) {
+      return ret;
+    }
+  }
+  resp->Close(response_length);
+  return RS_OK;
+}
+
+static inline bool is_spillable(const NdbDictionary::Column *col) {
+  const NdbDictionary::Column::Type type = col->getType();
+  return type == NdbDictionary::Column::Blob ||
+         type == NdbDictionary::Column::Text;
+}
+
 RS_Status KeyOperation::append_op_recs(PKRResponse *resp,
                                        PKRRequest *req) {
-  for (Uint32 colIdx = 0; colIdx < m_num_read_columns; colIdx++) {
-    RS_Status ret = write_col_to_resp(colIdx, resp, req);
-    if (unlikely(ret.http_code != SUCCESS)) {
-      DEB_NDB_BE("Failed with colIdx: %u, code: %u, message: %s",
-        colIdx, ret.http_code, ret.message);
-      return ret;
+  /* Rule 4 (RONDB-1144): bounded values first so the whole fixed part
+   * sits in the home buffer, then the blob and text values, which may
+   * spill into continuation buffers. Column table entries keep request
+   * order through SetSlot. */
+  for (int pass = 0; pass < 2; pass++) {
+    for (Uint32 colIdx = 0; colIdx < m_num_read_columns; colIdx++) {
+      if (is_spillable(m_readColumns[colIdx]) != (pass == 1)) {
+        continue;
+      }
+      resp->SetSlot(colIdx);
+      RS_Status ret = write_col_to_resp(colIdx, resp, req);
+      if (unlikely(ret.http_code != SUCCESS)) {
+        DEB_NDB_BE("Failed with colIdx: %u, code: %u, message: %s",
+          colIdx, ret.http_code, ret.message);
+        return ret;
+      }
     }
   }
   return RS_OK;
@@ -905,7 +954,7 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
       return RS_CLIENT_ERROR(std::string(
         rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
     }
-    if (unlikely(attrBytes > MAX_TUPLE_SIZE_IN_BYTES)) {
+    if (unlikely(attrBytes > MAX_ROW_BYTES)) {
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
         std::string(" DB: ") + std::string(request->DB()) +
@@ -963,15 +1012,18 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
           " Type: " + std::to_string(col->getType()));
     }
     DEB_NDB_BE("Read col_name: %s, BLOB of length: %llu", col_name, length);
-    // check for max length
-    // (4 * ceil(input_size / 3))
-    const size_t maxLength = length + 4;
-    if (unlikely(response->GetRemainingCapacity() < maxLength)) {
+    /* RONDB-1144: the raw bytes go into the response in 32 KiB chunks and
+     * continue into the next buffer of the chain when the current one is
+     * full; base64 happens later in the JSON stage. The column entry holds
+     * the total length and the offset of the first byte. */
+    if (unlikely(length > 0xFFFFFFFFULL - response->CurrentVirtualOffset())) {
       return RS_SERVER_ERROR(
-        std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) + 
-        std::string(" Buffer Remaining Capacity: ") +
-        std::to_string(response->GetRemainingCapacity()) +
-        " Required: " + std::to_string(maxLength));
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
+    }
+    RS_Status raw_status = response->BeginRawColumn(RDRS_BINARY_DATATYPE);
+    if (unlikely(raw_status.http_code != SUCCESS)) {
+      return raw_status;
     }
     Uint64 chunk = 0;
     Uint64 total_read = 0;
@@ -1005,17 +1057,10 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         }
         if (bytes > 0) {
           total_read += bytes;
-          if (chunk == 0) {
-            response->Append_string("", RDRS_BINARY_DATATYPE);
-            // This adds a column to the response buffer. Right now the last
-            // byte of the response buffer is '\0'. Remove the last byte and
-            // start appending the base64 data
-            response->AdvanceWritePointer(-1);
+          raw_status = response->AppendRawWithSpill(buffer, bytes);
+          if (unlikely(raw_status.http_code != SUCCESS)) {
+            return raw_status;
           }
-          memcpy((char*)response->GetWritePointer(),
-                 (const char*)buffer,
-                 bytes);
-          response->AdvanceWritePointer(bytes);
         }
       }
     }
@@ -1028,7 +1073,7 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
     }
-    response->SetBlobLen(total_read);
+    response->SetBlobLen(colIdx, static_cast<Uint32>(total_read));
     DEB_NDB_BE("Written a blob of total len: %u",
       (Uint32)total_read);
     return RS_OK;
@@ -1065,18 +1110,29 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         std::string(" Column: ") + std::string(col_name) +
         " Type: " + std::to_string(col->getType()));
     }
-    //+1 for null terminator
-    if (unlikely(response->GetRemainingCapacity() < length + 1)) {
-      return RS_SERVER_ERROR(
-        std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) + 
-        std::string(" Buffer Remaining Capacity: ") +
-        std::to_string(response->GetRemainingCapacity()) +
-        " Required: " + std::to_string(length + 1));
-    }
     DEB_NDB_BE("Read col_name: %s, TEXT of length: %llu", col_name, length);
-    // NOTE: we not allocating a tmp buffer to hold the data
-    // Reusing the reponse buffer
-    char *tmpBuffer = static_cast<char*>(response->GetWritePointer());
+    /* RONDB-1144: a TEXT value is converted to utf8mb4 and JSON-escaped
+     * before it is stored, and both steps need the whole value, so the raw
+     * bytes are read into a staging buffer first. It cannot be the
+     * response buffer any more (the value may be larger than what is left
+     * there and spill), and it is local to this branch rather than in the
+     * request's arena so its bytes are freed as soon as the escaped copy
+     * has been written, not at the end of the request. The escaped result
+     * goes in like a blob, through AppendRawWithSpill, continuing into the
+     * next buffer of the chain when needed. */
+    if (unlikely(length > 0xFFFFFFFFULL - 1)) {
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
+    }
+    std::unique_ptr<char[]> staging_buffer(
+      new (std::nothrow) char[static_cast<size_t>(length)]);
+    char *staging = staging_buffer.get();
+    if (unlikely(staging == nullptr)) {
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    }
+    char *tmpBuffer = staging;
     Uint64 chunk = 0;
     Uint64 total_read = 0;
     for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
@@ -1120,11 +1176,34 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
     }
-    return response->Append_char(
-      static_cast<char *>(response->GetWritePointer()),
-      length,
-      col->getCharset(),
-      false);
+    std::string escaped;
+    RS_Status text_status = response->FormatChar(staging,
+                                                 static_cast<Uint32>(length),
+                                                 col->getCharset(),
+                                                 false,
+                                                 escaped);
+    if (unlikely(text_status.http_code != SUCCESS)) {
+      return text_status;
+    }
+    /* Escaping can grow the value up to MAX_TEXT_EXPANSION times, so the
+     * raw-length check above does not bound the escaped size. */
+    if (unlikely(escaped.size() >
+                 0xFFFFFFFFULL - response->CurrentVirtualOffset())) {
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
+    }
+    text_status = response->BeginRawColumn(RDRS_STRING_DATATYPE);
+    if (unlikely(text_status.http_code != SUCCESS)) {
+      return text_status;
+    }
+    text_status = response->AppendRawWithSpill(
+      escaped.data(), static_cast<Uint32>(escaped.size()));
+    if (unlikely(text_status.http_code != SUCCESS)) {
+      return text_status;
+    }
+    response->SetBlobLen(colIdx, static_cast<Uint32>(escaped.size()));
+    return RS_OK;
   }
   case NdbDictionary::Column::Bit: {
     Uint32 len = col->getLength();
@@ -1245,7 +1324,7 @@ RS_Status BatchKeyOperations::perform_operation(
   Uint32 numOperations,
   bool is_batch,
   RS_Buffer *reqBuffer,
-  RS_Buffer *respBuffer,
+  RS_BufferChain &resp_chain,
   Ndb *ndb_object,
   const char *rate_limit_identity,
   Uint32 rate_limit_identity_len) {
@@ -1276,23 +1355,24 @@ RS_Status BatchKeyOperations::perform_operation(
   while (m_last_key < m_numOperations) {
     /**
      * Handle loop of operations.
-     * 1. Use batchMaxSize as a suggested maximum batch size although not
+     * 1. Use MaxOperationsPerNdbExecute as a suggested maximum batch size
+     *    although not
      *    a hard limit. Preferrably this should be e.g. 128 and is configurable
      * 2. We are allowed to add up to 50 operations to this batch size for the
      *    last loop. The reason for this is to avoid a weird situation where we
-     *    have batchMaxSize and need to send 129 operations. In this case it is
+     *    have MaxOperationsPerNdbExecute and need to send 129 operations. In this case it is
      *    preferrable to run all operations in one loop to avoid that the second
      *    loop only runs one operation. We set the minimum operations to handle
      *    in one loop to 50 as a hard coded constant here.
      * 3. NDB API can handle at most 1024 transactions in parallel and this is
-     *    already way too much, we will set the maximum batchMaxSize to e.g.
+     *    already way too much, we will set the maximum MaxOperationsPerNdbExecute to e.g.
      *    512 to avoid even coming close to this. Experiments have shown that
      *    optimal batch size is around 100 operations. Thus we set the default
      *    to 128.
      */
     Uint32 numOps = m_numOperations;
     Uint32 start = m_first_key;
-    Uint32 max_keys = globalConfigs.internal.batchMaxSize;
+    Uint32 max_keys = globalConfigs.internal.maxOperationsPerNdbExecute;
     Uint32 keys_this_loop = std::min(max_keys, (numOps - start));
     last_key += keys_this_loop;
     Uint32 remaining_keys = numOps - last_key;
@@ -1324,7 +1404,7 @@ RS_Status BatchKeyOperations::perform_operation(
     m_num_sent_operations = 0;
   }
   DEB_NDB_BE("create_response");
-  status = create_response(respBuffer);
+  status = create_response(resp_chain);
   if (unlikely(status.http_code != SUCCESS)) {
     handle_ndb_error(status);
     return status;
