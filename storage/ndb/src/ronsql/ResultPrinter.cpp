@@ -2530,6 +2530,50 @@ print_string(std::ostream& out,
   }
 }
 
+/*
+ * RONSQL-44: a double is printed with the shortest digits that represent
+ * it exactly, in fixed-point notation.  my_fcvt_compact() stops 17 digits
+ * after the decimal point, which is exact only from 0.1 up: below that it
+ * dropped digits, and below about 5e-18 it printed 0.  For a nonzero value
+ * below 0.1, take the shortest exact digits from my_gcvt(), which MySQL
+ * uses for DOUBLE, and write its "d.ddde-NN" form (below 1e-15) in fixed
+ * point.  'to' holds FLOATING_POINT_BUFFER + 1 bytes; the longest result,
+ * -2.2250738585072014e-308, is 327 characters.
+ */
+static size_t
+double_to_fixed(double value, char* to, bool* error)
+{
+  if (!(std::fabs(value) < 0.1) || value == 0.0)
+    return my_fcvt_compact(value, to, error);
+  // Wide enough that my_gcvt() drops no digit in either format.
+  char g[64];
+  const size_t glen =
+      my_gcvt(value, MY_GCVT_ARG_DOUBLE, sizeof(g) - 1, g, error);
+  const char* e = static_cast<const char*>(memchr(g, 'e', glen));
+  if (*error || e == NULL)
+  {
+    memcpy(to, g, glen + 1);
+    return glen;
+  }
+  // [-]d[.ddd]e-NN becomes [-]0.<NN - 1 zeros><digits>.
+  ndbrequire(e[1] == '-');
+  int exponent = 0;
+  for (const char* p = e + 2; *p != '\0'; p++)
+    exponent = exponent * 10 + (*p - '0');
+  const int zeros = exponent - 1;
+  const char* src = g;
+  ndbrequire(3 + zeros + (e - src) <= FLOATING_POINT_BUFFER + 1);
+  char* dst = to;
+  if (*src == '-') *dst++ = *src++;
+  *dst++ = '0';
+  *dst++ = '.';
+  for (int i = 0; i < zeros; i++) *dst++ = '0';
+  for (; src < e; src++)
+    if (*src != '.') *dst++ = *src;
+  *dst = '\0';
+  return dst - to;
+}
+
 inline void
 ResultPrinter::print_float_or_double(std::ostream& out, double value,
                                      bool float_display)
@@ -2537,10 +2581,10 @@ ResultPrinter::print_float_or_double(std::ostream& out, double value,
   char buffer[FLOATING_POINT_BUFFER + 1];
   bool error;
   // Match MySQL's text-protocol FLOAT conversion. SUM/AVG and true DOUBLE
-  // values retain the existing compact double representation.
+  // values are printed exactly in fixed point (double_to_fixed()).
   size_t len = float_display
       ? my_gcvt(value, MY_GCVT_ARG_FLOAT, FLOATING_POINT_BUFFER, buffer, &error)
-      : my_fcvt_compact(value, buffer, &error);
+      : double_to_fixed(value, buffer, &error);
   if (error)
   {
     // value is Inf, -Inf or NaN.
