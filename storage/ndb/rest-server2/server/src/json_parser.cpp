@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <simdjson.h>
 #include <EventLogger.hpp>
@@ -107,17 +108,19 @@ public:
     return false; \
   })
 
-// Define a parser for a struct. All elements will be optional. Will only accept
-// keys that matches an element or begin with "#". Keys beginning with "#" are
-// intended to be used for comments. All other keys will cause an exception.
-#define DEFINE_STRUCT_PARSER(Datatype, ...) \
+// Define a parser for a struct. All elements will be optional. Keys that match
+// an element are parsed, keys beginning with "#" are comments, and any other
+// key runs ON_UNKNOWN_KEY, a statement that sees the key as fkey. On-demand
+// iteration skips the value of a key that is not parsed.
+#define DEFINE_STRUCT_PARSER_ON_UNKNOWN(Datatype, ON_UNKNOWN_KEY, ...) \
   DEFINE_PARSER(Datatype, simdjson::ondemand::object, { \
     for(simdjson::ondemand::field field : value) { \
       std::string_view fkey = field.unescaped_key(false); \
       simdjson::ondemand::value fval = field.value(); \
       __VA_ARGS__ \
-      if (fkey[0] != '#') \
-        throw ConfigParseError("Unexpected key"); \
+      if (fkey[0] != '#') { \
+        ON_UNKNOWN_KEY; \
+      } \
     } \
     return true; \
   }) \
@@ -128,6 +131,23 @@ public:
     } \
     return false; \
   })
+// RonSQL request bodies, the struct parser's only other user: an unknown key is
+// a client error (400). The pk-read, batch, feature store and scan request
+// parsers look their fields up by name and skip any other field.
+#define DEFINE_STRUCT_PARSER(Datatype, ...) \
+  DEFINE_STRUCT_PARSER_ON_UNKNOWN(Datatype, \
+    throw ConfigParseError("Unexpected key \"" + std::string(fkey) + "\""), \
+    __VA_ARGS__)
+
+/* RONDB-1144: the configuration file warns about a key it does not know and
+ * ignores it, so a file written for another rdrs2 version still starts the
+ * server. The logger is not configured while the file is read, hence
+ * stderr, like the other startup warnings. */
+static void warn_unknown_config_key(std::string_view key) {
+  std::cerr << "Warning: ignoring unknown configuration key \"" << key
+            << "\"\n";
+}
+
 #define ELEMENT(TargetVar, SourceKey) \
   if (fkey == #SourceKey) { \
     parse(target.TargetVar, fval); \
@@ -722,7 +742,9 @@ DEFINE_VALUE_PARSER(int, {
  * Parsers for the config structs.
  */
 
-#define CLASS(NAME, ...) DEFINE_STRUCT_PARSER(NAME, __VA_ARGS__)
+#define CLASS(NAME, ...) \
+  DEFINE_STRUCT_PARSER_ON_UNKNOWN(NAME, warn_unknown_config_key(fkey), \
+                                  __VA_ARGS__)
 #define CM(DATATYPE, VARIABLENAME, JSONKEYNAME, INITEXPR, DOCSTRING) \
   ELEMENT(VARIABLENAME, JSONKEYNAME)
 #define ALIAS(ACTUALVARIABLENAME, ACTUALJSONKEYNAME, ALIASJSONKEYNAME) \

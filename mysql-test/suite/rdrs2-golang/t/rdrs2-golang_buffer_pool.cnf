@@ -7,9 +7,7 @@
 # only means something when that product is large (here 4 x 64 MiB).
 # StartReserveOverride lowers the start reserve far below the computed one
 # so a wide response can start near the end of a buffer and the retry
-# (rewrite in a fresh buffer) gets exercised. ReqBufferSize and
-# RespBufferSize are the deprecated keys: the server must start with them
-# and ignore them, which the driver checks through rdrs_limits.
+# (rewrite in a fresh buffer) gets exercised.
 !include suite/rdrs2-golang/my.cnf
 
 [rdrs.3.1]
@@ -20,8 +18,6 @@ MaxBuffers=8
 BufferShrinkAfterS=5
 PreAllocatedBuffers=2
 StartReserveOverride=4096
-ReqBufferSize=1024
-RespBufferSize=1024
 
 [ENV]
 RDRS_CONFIG_FILE_POOL=         @rdrs.3.1.#config-json

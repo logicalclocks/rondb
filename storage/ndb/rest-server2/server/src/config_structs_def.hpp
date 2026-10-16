@@ -70,19 +70,6 @@ CLASS
     " 256. Also passed to the HTTP server as its body limit, so it is the one"
     " number that bounds a request body; larger bodies are rejected before"
     " rdrs2 sees them. Each worker thread keeps a parse buffer of this size.")
- CM(Uint32, maxReqSize, maxReqSize, 0,
-    "Deprecated since RONDB-1144: use MaxHttpReqSize. Still honoured: when"
-    " set and MaxHttpReqSize is left at its default, its value becomes"
-    " MaxHttpReqSize. Accepted for one release so existing configuration"
-    " files keep working.")
- CM(Uint32, reqBufferSize, ReqBufferSize, 0,
-    "Deprecated and ignored since RONDB-1144: the request buffer size is"
-    " computed from the NDB limits (see rdrs2 --print-limits). Accepted for"
-    " one release so existing configuration files keep working.")
- CM(Uint32, respBufferSize, RespBufferSize, 0,
-    "Deprecated and ignored since RONDB-1144: the response buffer size is"
-    " computed from the NDB limits (see rdrs2 --print-limits). Accepted for"
-    " one release so existing configuration files keep working.")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
     "Initial buffer reservation for scan response JSON, in bytes. The buffer"
     " will grow automatically if the response exceeds this size.")
@@ -118,12 +105,6 @@ CLASS
     " in a fresh buffer; it cannot make a result wrong. Raising it above the"
     " buffer size gives every operation its own buffer and can exhaust the"
     " pool (HTTP 503).")
- CM(Uint32, batchMaxSize, BatchMaxSize, 0,
-    "Deprecated and ignored since RONDB-1144: its meaning was split into"
-    " MaxOperationsPerBatchRequest (the cap on a batch request) and"
-    " MaxOperationsPerNdbExecute (operations sent to NDB per execute round)."
-    " Accepted for one release so existing configuration files keep"
-    " working.")
  CM(Uint32, maxOperationsPerBatchRequest, MaxOperationsPerBatchRequest, 512,
     "Maximum number of operations in one batch request (batch pk-read and"
     " batch feature store). A larger batch is rejected with HTTP 413 while"
@@ -137,7 +118,6 @@ CLASS
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(maxHttpReqSize < 256, "MaxHttpReqSize should be >= 256")
- PROBLEM(maxReqSize != 0 && maxReqSize < 256, "maxReqSize should be >= 256")
  PROBLEM(maxOperationsPerBatchRequest == 0,
          "MaxOperationsPerBatchRequest must be > 0")
  PROBLEM(bufferPoolSharePercent < 1 || bufferPoolSharePercent > 90,

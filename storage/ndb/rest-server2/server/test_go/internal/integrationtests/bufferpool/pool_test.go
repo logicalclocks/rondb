@@ -60,11 +60,6 @@ func requirePoolServer(t *testing.T) testutils.Limits {
 	if want := envInt(t, "RDRS_POOL_MAX_BUFFERS"); limits.MaxBuffers != want {
 		t.Fatalf("MaxBuffers override not applied: rdrs_limits=%d cnf=%d", limits.MaxBuffers, want)
 	}
-	// The .cnf sets the deprecated ReqBufferSize/RespBufferSize to 1024;
-	// the server must have started and ignored them.
-	if limits.ReqBufferBytes == 1024 || limits.RespBufferBytes == 1024 {
-		t.Fatalf("deprecated buffer size keys were honoured: %+v", limits)
-	}
 	return limits
 }
 

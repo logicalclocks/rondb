@@ -379,32 +379,6 @@ int main(int argc, char *argv[]) {
    * here, once the configuration and the memory limit are known, rather
    * than at static-initialisation time from compiled-in defaults
    * (RONDB-1144). Before the metrics, which read the derived cap. */
-  if (globalConfigs.internal.reqBufferSize != 0) {
-    std::cerr << "Warning: Internal.ReqBufferSize is deprecated and ignored;"
-              << " request buffers are " << DEFAULT_REQ_BUFFER << " bytes\n";
-  }
-  if (globalConfigs.internal.respBufferSize != 0) {
-    std::cerr << "Warning: Internal.RespBufferSize is deprecated and ignored;"
-              << " response buffers are " << DEFAULT_RESP_BUFFER << " bytes\n";
-  }
-  if (globalConfigs.internal.maxReqSize != 0) {
-    std::cerr << "Warning: Internal.maxReqSize is deprecated; use"
-              << " Internal.MaxHttpReqSize. The request body limit is "
-              << globalConfigs.internal.maxHttpReqSize << " bytes"
-              << (globalConfigs.internal.maxHttpReqSize ==
-                      globalConfigs.internal.maxReqSize
-                    ? " (from maxReqSize)\n"
-                    : " (MaxHttpReqSize; maxReqSize is ignored)\n");
-  }
-  if (globalConfigs.internal.batchMaxSize != 0) {
-    std::cerr << "Warning: Internal.BatchMaxSize is deprecated and ignored;"
-              << " batch requests are capped by"
-              << " Internal.MaxOperationsPerBatchRequest ("
-              << globalConfigs.internal.maxOperationsPerBatchRequest
-              << ") and sent to NDB "
-              << globalConfigs.internal.maxOperationsPerNdbExecute
-              << " operations at a time (Internal.MaxOperationsPerNdbExecute)\n";
-  }
   if (globalConfigs.internal.startReserveOverride != 0) {
     std::cerr << "Warning: Internal.StartReserveOverride is set to "
               << globalConfigs.internal.startReserveOverride
@@ -413,9 +387,8 @@ int main(int argc, char *argv[]) {
   rsBufferArrayManager.init_from_config();
 
   if (optPrintLimits) {
-    /* The derived numbers, for operators and for the test suite's
-     * deprecated-keys check. The running server exports the same values as
-     * the rdrs_limits metric family. */
+    /* The derived numbers, for operators. The running server exports the
+     * same values as the rdrs_limits metric family. */
     std::cout << "{\n"
               << "  \"MaxColumns\": " << MAX_ATTRIBUTES_IN_TABLE << ",\n"
               << "  \"MaxRowBytes\": " << MAX_ROW_BYTES << ",\n"

@@ -12,9 +12,7 @@
     "MaxBuffers": @MaxBuffers,
     "BufferShrinkAfterS": @BufferShrinkAfterS,
     "PreAllocatedBuffers": @PreAllocatedBuffers,
-    "StartReserveOverride": @StartReserveOverride,
-    "ReqBufferSize": @ReqBufferSize,
-    "RespBufferSize": @RespBufferSize
+    "StartReserveOverride": @StartReserveOverride
   },
   "RonDB": {
       "Mgmds": [ { "IP": "@cluster_config.ndb_mgmd.1.1.HostName",
