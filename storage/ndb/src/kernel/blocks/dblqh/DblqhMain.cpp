@@ -18813,9 +18813,12 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   if (unlikely(findTransaction(transid1, transid2, senderData, senderBlockRef,
                                false, false, tcConnectptr) != ZOK)) {
     jam();
-    LQH_DEBUG(senderData
-              << " Received SCAN_NEXTREQ in LQH with close flag when closed");
-    ndbrequire(ScanFragNextReq::getCloseFlag(nextReq->requestInfo));
+    LQH_DEBUG(senderData << " Received SCAN_NEXTREQ for an unknown scan");
+    if (!ScanFragNextReq::getCloseFlag(nextReq->requestInfo)) {
+      jam();
+      send_scan_fragref(signal, transid1, transid2, senderData, senderBlockRef,
+                        ScanFragRef::ZINVALID_SCAN_NEXTREQ);
+    }
     return;
   }
 
