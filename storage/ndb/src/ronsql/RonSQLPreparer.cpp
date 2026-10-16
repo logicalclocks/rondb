@@ -14993,7 +14993,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     require_prm(d != NULL, "CTE_LOOKUP filter: NULL disjunct.");
     require_unsupported(!contains_or_below_top_level(d),
                 "CTE_LOOKUP filter: only top-level OR / DNF is supported. "
-                "Convert '(A OR B) AND C' to DNF or split into UNION.");
+                "Rewrite '(A OR B) AND C' as '(A AND C) OR (B AND C)'.");
 
     ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
     Uint32 num_conjuncts = 0;
