@@ -211,6 +211,22 @@ finalize_aggregator(NdbAggregator* agg, const char* msg)
   }
 }
 
+/*
+ * RONSQL-39: GroupBy() and GroupByLinked() refuse a BLOB or TEXT column
+ * (kErrUnSupportedColumn).  That is an unsupported query, not a bug, so
+ * throw `unsupported` as such.  Any other refusal throws `msg`.
+ */
+static void
+groupby_or_fail(NdbAggregator* agg, bool ok, const char* msg,
+                const char* unsupported =
+                    "GROUP BY on a BLOB or TEXT column is not supported.")
+{
+  if (ok) return;
+  if (agg->GetError().errno_ == kErrUnSupportedColumn)
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, unsupported);
+  throw RonSQLPermanentError(msg);
+}
+
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
   m_amalloc(conf.amalloc),
@@ -8903,8 +8919,14 @@ RonSQLPreparer::build_result_column_metadata()
       continue;
     }
     column_metadata[col_idx].charset = col->getCharset();
-    column_metadata[col_idx].precision = col->getPrecision();
-    column_metadata[col_idx].scale = col->getScale();
+    /* RONSQL-39: a BLOB or TEXT column keeps its inline and part sizes in
+     * precision and scale (256 and 2000 by default).  They failed the
+     * printer's ndbrequire(precision <= 65) for a GROUP BY output, which
+     * aborted the process before GroupBy() could refuse the column. */
+    const bool is_blob = (col->getType() == NdbDictionary::Column::Blob ||
+                          col->getType() == NdbDictionary::Column::Text);
+    column_metadata[col_idx].precision = is_blob ? 0 : col->getPrecision();
+    column_metadata[col_idx].scale = is_blob ? 0 : col->getScale();
     column_metadata[col_idx].has_metadata = true;
     switch (col->getType()) {
     case NdbDictionary::Column::Float:
@@ -11430,14 +11452,15 @@ RonSQLPreparer::execute_join()
             col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
             "Subquery GROUP BY column is not a stored-table column.");
         if (col_ref.join_op_idx == op_idx) {
-          require_prm(agg->GroupBy(col_ref.attr_id),
-                      "Failed to program GroupBy on leaf.");
+          groupby_or_fail(agg, agg->GroupBy(col_ref.attr_id),
+                          "Failed to program GroupBy on leaf.");
         } else {
           require_prm(col_ref.dict_column != NULL,
                       "Subquery linked GROUP BY column descriptor missing.");
-          require_prm(agg->GroupByLinked(linked_proj_pos,
-                                         col_ref.dict_column),
-                      "Failed to program GroupByLinked on leaf.");
+          groupby_or_fail(agg,
+                          agg->GroupByLinked(linked_proj_pos,
+                                             col_ref.dict_column),
+                          "Failed to program GroupByLinked on leaf.");
           linked_proj_pos++;
         }
         groupby = groupby->next;
@@ -11612,9 +11635,10 @@ RonSQLPreparer::execute_join()
                           QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                       "Single-row CTE output did not resolve to a "
                       "stored column.");
-          require_prm(cteAgg->GroupBy((Int32)ref.attr_id),
-                      "Failed to program the single-row CTE projection "
-                      "(BLOB/TEXT columns cannot be projected).");
+          groupby_or_fail(cteAgg, cteAgg->GroupBy((Int32)ref.attr_id),
+                          "Failed to program the single-row CTE projection.",
+                          "A single-row CTE cannot output a BLOB or TEXT "
+                          "column.");
         }
       } else {
         programAggregator_join(cs, *cte->stmt, cteAgg, cteChildVT);
@@ -17166,8 +17190,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
         m_main_scope.resolved_columns[groupby->col_idx];
     require_prm(col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                 "Single-table GROUP BY column is not a stored-table column.");
-    programAggregator_do_or_fail
-      (aggregator->GroupBy(col_ref.attr_id));
+    groupby_or_fail(aggregator, aggregator->GroupBy(col_ref.attr_id),
+                    "Failed writing aggregation program. Please report a bug.");
     groupby = groupby->next;
   }
   // Program aggregations
@@ -17937,8 +17961,9 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         require_prm(
             col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
             "Leaf GROUP BY column is not a stored-table column.");
-        programAggregator_do_or_fail
-          (aggregator->GroupBy(col_ref.attr_id));
+        groupby_or_fail(aggregator, aggregator->GroupBy(col_ref.attr_id),
+                        "Failed writing aggregation program. "
+                        "Please report a bug.");
       }
     }
     else
@@ -17966,9 +17991,11 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
             "Linked GROUP BY column is not a stored-table column.");
         require_prm(col_ref.dict_column != NULL,
                     "Linked GROUP BY column descriptor is missing.");
-        programAggregator_do_or_fail(
-            aggregator->GroupByLinked(linked_proj_pos,
-                                      col_ref.dict_column));
+        groupby_or_fail(aggregator,
+                        aggregator->GroupByLinked(linked_proj_pos,
+                                                  col_ref.dict_column),
+                        "Failed writing aggregation program. "
+                        "Please report a bug.");
       }
       linked_proj_pos++;
     }
