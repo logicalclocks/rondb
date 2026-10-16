@@ -37,6 +37,10 @@
 // todo Increase to 16 if possible
 #define REGS 8
 
+// Aggregate results per SELECT; NdbAggregator::Finalize() accepts fewer
+// than MAX_AGG_N_RESULTS.
+#define MAX_AGGS 255
+
 #define FORALL_ARITHMETIC_OPS(X) \
   X(Add) \
   X(Minus) \

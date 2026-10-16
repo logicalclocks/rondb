@@ -16,9 +16,9 @@ call mtr.add_suppression("Participant timeout");
 #     substitute constants; the CTE join then runs as usual),
 #   - scalar subqueries whose result type is DECIMAL and DOUBLE,
 #   - multiple subqueries + multiple CTEs in one statement.
+#   - rejection of a subquery in a CTE body WHERE or a CASE condition.
 # Uncertain shapes are recorded as NEXT-PHASE probes (never executed):
-# a subquery INSIDE a CTE body, an IN-subquery reading a CTE, and a
-# DATE-typed scalar subquery.
+# an IN-subquery reading a CTE, and a DATE-typed scalar subquery.
 #
 # Same convention as ronsql_cte_basic.test: skip ronsql_cli (which
 # doesn't refresh dictionary cache for join queries) and rely on
@@ -306,20 +306,45 @@ WHERE o.o_total > (SELECT MIN(l_price) FROM sq_li)
 
 DELIMITER ;|
 
+# RONSQL-15: subqueries are executed and replaced by their results only
+# in the main WHERE and HAVING. One in a CTE body's WHERE, or in a CASE
+# condition, was never executed, and its placeholder reached planning
+# and emit. Both are now rejected at prepare time, before the dictionary
+# load.
+--echo
+--echo
+--echo === Test 10: rejection — scalar subquery in a CTE body WHERE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH li_stats AS (SELECT l_ord AS k, COUNT(*) AS n FROM sq_li WHERE l_price > (SELECT MIN(l_price) FROM sq_li) GROUP BY l_ord) SELECT COUNT(*), SUM(li_stats.n) FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id;' 2>&1
+
+--echo
+--echo
+--echo === Test 11: rejection — IN subquery in a CTE body WHERE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH li_stats AS (SELECT l_ord AS k, COUNT(*) AS n FROM sq_li WHERE l_ord IN (SELECT o_id FROM sq_ord WHERE o_cust = 100) GROUP BY l_ord) SELECT COUNT(*), SUM(li_stats.n) FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id;' 2>&1
+
+--echo
+--echo
+--echo === Test 12: rejection — EXISTS in a CTE body WHERE ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH li_stats AS (SELECT l_ord AS k, COUNT(*) AS n FROM sq_li WHERE l_qty > 5 AND EXISTS (SELECT o_id FROM sq_ord WHERE o_total > 600) GROUP BY l_ord) SELECT COUNT(*), SUM(li_stats.n) FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id;' 2>&1
+
+--echo
+--echo
+--echo === Test 13: rejection — scalar subquery in a CASE condition ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(CASE WHEN o_total > (SELECT MIN(l_price) FROM sq_li) THEN 1 ELSE 0 END) FROM sq_ord;' 2>&1
+
+--echo
+--echo
+--echo === Test 14: rejection — scalar subquery in a CASE condition in a CTE body ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT o_cust AS k, SUM(CASE WHEN o_total > (SELECT MIN(l_price) FROM sq_li) THEN 1 ELSE 0 END) AS n FROM sq_ord GROUP BY o_cust) SELECT SUM(c.n) FROM c;' 2>&1
+
 # ---------------------------------------------------------------------
 # NEXT-PHASE probes — uncertain shapes, deliberately NOT executed.
 # Run manually against a disposable cluster before promoting to a MAIN
 # case or a rejection-assert.
-#
-# NEXT-PHASE: scalar subquery INSIDE a CTE body — subquery analysis runs
-# on the main statement; a body-level subquery is unproven and may not
-# be cleanly rejected:
-#   WITH li_stats AS (
-#     SELECT l_ord AS k, COUNT(*) AS n FROM sq_li
-#     WHERE l_price > (SELECT MIN(l_price) FROM sq_li)
-#     GROUP BY l_ord)
-#   SELECT COUNT(*), SUM(li_stats.n)
-#   FROM sq_ord AS o JOIN li_stats ON li_stats.k = o.o_id;
 #
 # NEXT-PHASE: IN-subquery whose inner SELECT reads a CTE:
 #   WITH li_stats AS (

@@ -49,6 +49,7 @@
 #include "mysql_time.h"
 #include "my_inttypes.h"
 #include <my_base.h>
+#include "mysql/strings/m_ctype.h"
 #include "decimal.h"
 #include <decimal_utils.hpp>
 #include <AggColumnLoad.hpp>
@@ -149,6 +150,66 @@ DEFINE_FORMATTER(quoted_identifier, char*, {
 // Make sure that the number of registers in AggregationAPICompiler.hpp matches
 // that in ../../include/ndbapi/NdbAggregationCommon.hpp
 static_assert(REGS == kRegTotal);
+// ... and that the aggregate results limit is the one NdbAggregator enforces.
+static_assert(MAX_AGGS == MAX_AGG_N_RESULTS - 1);
+// The GROUP BY limit NdbAggregator enforces (see check_groupby_limit).
+static constexpr Uint32 MAX_GROUPBY_COLS = MAX_AGG_N_GROUPBY_COLS - 1;
+
+/*
+ * RONSQL-14: NdbAggregator holds at most MAX_GROUPBY_COLS GROUP BY
+ * columns, a documented limit.  Count them before programming, so that a
+ * longer GROUP BY is a limit error and not the aggregator's refusal, which
+ * read as an internal error.
+ */
+static void
+check_groupby_limit(const GroupbyColumns* groupby)
+{
+  Uint32 n = 0;
+  for (; groupby != NULL; groupby = groupby->next) n++;
+  if (n > MAX_GROUPBY_COLS)
+  {
+    throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                               "GROUP BY has more than " +
+                               std::to_string(MAX_GROUPBY_COLS) +
+                               " columns.");
+  }
+}
+
+/*
+ * RONSQL-14: Finalize the aggregator, or throw.  The GROUP BY and
+ * aggregate counts are checked before programming (check_groupby_limit,
+ * AggregationAPICompiler::new_agg), but the size of one group's record
+ * (its GROUP BY columns and aggregate results, at their declared sizes)
+ * and the size of the program are only known here, and exceeding them is
+ * a limit error.  Any other refusal keeps the caller's message.
+ */
+static void
+finalize_aggregator(NdbAggregator* agg, const char* msg)
+{
+  if (agg->Finalize()) return;
+  switch (agg->GetError().errno_)
+  {
+  case kErrTooBigResult:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::LIMIT,
+        "The GROUP BY columns and aggregate results of one group can need "
+        "more than " + std::to_string(MAX_AGG_RESULT_BATCH_BYTES / 1024) +
+        " KB, counted at the declared column sizes.");
+  case kErrTooBigProgram:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::LIMIT,
+        "The aggregate expressions are too large: the aggregation program "
+        "must be shorter than " + std::to_string(MAX_AGG_PROGRAM_WORD_SIZE) +
+        " words.");
+  case kErrTooManyGroupbyCols:
+    throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                               "GROUP BY has more than " +
+                               std::to_string(MAX_GROUPBY_COLS) +
+                               " columns.");
+  default:
+    throw RonSQLPermanentError(msg);
+  }
+}
 
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
@@ -2130,7 +2191,12 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
       JoinClause* match = NULL;
       JoinClause* match_prev = NULL;
       while (cur != NULL) {
-        if (cur->join_type == JoinClause::INNER_JOIN) {
+        // A comma join (no ON conditions) binds no key at all: it is not
+        // a partial-key join, and QueryPlanner::plan rejects it for a
+        // grouped CTE (RONSQL-18).  Swapping it would make the root the
+        // keyless child instead.
+        if (cur->join_type == JoinClause::INNER_JOIN &&
+            cur->conditions != NULL) {
           const CteDefinition* child_cte =
               find_cte_definition(cur->table.name);
           if (child_cte != NULL) {
@@ -5851,9 +5917,10 @@ RonSQLPreparer::spj_in_range_words(const ScanConfig& sc,
     const NdbDictionary::Column::ArrayType at = col->getArrayType();
     if (at != NdbDictionary::Column::ArrayTypeFixed && right != NULL &&
         right->op == T_STRING) {
+      // The literal's length in the column's character set (RONSQL-13).
       const Uint32 literal =
           (at == NdbDictionary::Column::ArrayTypeShortVar ? 1 : 2) +
-          (Uint32)right->string.len;
+          (Uint32)literal_in_column_charset(right->string, col).len;
       if (literal < bytes) bytes = literal;
     }
     shared += 2 + (bytes + 3) / 4;
@@ -7114,6 +7181,21 @@ RonSQLPreparer::analyze_ctes()
              " level; accepting it here would silently ignore it, changing"
              " results compared to MySQL." << std::endl;
       throw RonSQLPermanentError("HAVING in a CTE body is not supported.");
+    }
+
+    /* RONSQL-15: only the subqueries of the main WHERE and HAVING are
+     * found (analyze_subqueries(), decorrelate_exists(),
+     * decorrelate_scalar()), executed and replaced by their results.  One
+     * in a body's WHERE was never executed: its placeholder reached
+     * planning and emit as if it were a constant or a condition.  The
+     * rewrites in parse() leave such a body alone (ce_has_subquery()). */
+    if (ce_has_subquery(cte->stmt->where_expression))
+    {
+      err << "WHERE inside CTE '" << cte->name.c_str()
+          << "' has a subquery. Subqueries are only supported in the WHERE"
+             " and HAVING of the main SELECT." << std::endl;
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 "Subqueries in a CTE body are not supported.");
     }
 
     /* ORDER BY / LIMIT in CTE bodies is applied in the kernel at the
@@ -9648,7 +9730,7 @@ RonSQLPreparer::execute()
      * recompilation (RONDB-1056 Phase 8 Slice 4). */
     aggregator.set_reusable_program(true);
     DBGV(programAggregator(&aggregator));
-    require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+    finalize_aggregator(&aggregator, "Failed to finalize aggregator.");
     if (m_pk_lookup) {
       // WP-F F1b: IN list on the primary key — N aggregating key reads.
       execute_pk_lookup_aggregate(&aggregator);
@@ -10405,7 +10487,7 @@ RonSQLPreparer::execute_api_side_aggregate()
    */
   NdbAggregator aggregator(m_main_scope.table);
   DBGV(programAggregator(&aggregator));
-  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+  finalize_aggregator(&aggregator, "Failed to finalize aggregator.");
   // The body's ORDER BY is required (route_lastn_aggregate_to_api), and
   // its first column is the one read when the program loads none.
   ndbrequire(m_context.ast_root.orderby_columns != NULL);
@@ -11338,6 +11420,7 @@ RonSQLPreparer::execute_join()
 
       // Program GROUP BY columns (all from root → GroupByLinked)
       Uint32 linked_proj_pos = 0;
+      check_groupby_limit(m_context.ast_root.groupby_columns);
       struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
       while (groupby != NULL) {
         Uint32 col_idx = groupby->col_idx;
@@ -11437,13 +11520,13 @@ RonSQLPreparer::execute_join()
       // Sentinel filtering only applies to explicit JOIN + GROUP BY queries
       // (handled in programAggregator_join).
 
-      require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
+      finalize_aggregator(agg, "Failed to finalize leaf aggregator.");
     }
   } else if (m_is_aggregate_query) {
     // Single-leaf path (existing)
     programAggregator_join(m_main_scope, m_context.ast_root, &singleAgg,
                            cteVirtualTables);
-    require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
+    finalize_aggregator(&singleAgg, "Failed to finalize aggregator.");
   }
   // Phase E.3: when !m_is_aggregate_query, singleAgg stays unprogrammed
   // and unfinalized.  emit_root_op will receive NULL and skip
@@ -11512,6 +11595,15 @@ RonSQLPreparer::execute_join()
         // Bodies are single-table by candidacy, so every output
         // resolves to a stored column of the source table.
         cteAgg->SetSingleRowMode();
+        Uint32 n_outputs = 0;
+        for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next)
+          n_outputs++;
+        if (n_outputs > MAX_GROUPBY_COLS) {
+          throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                                     "A single-row CTE has more than " +
+                                     std::to_string(MAX_GROUPBY_COLS) +
+                                     " output columns.");
+        }
         for (const Outputs* o = cte->stmt->outputs; o != NULL;
              o = o->next) {
           const QueryScope::ResolvedColumnRef& ref =
@@ -11530,7 +11622,7 @@ RonSQLPreparer::execute_join()
       /* ORDER BY / LIMIT trailer (cte_orderby_limit_plan.md L4) — must
        * precede Finalize.  True = pass CTE_LIMIT to defineCte below. */
       const bool cteHasLimit = emit_cte_orderby_limit(cs, cte, cteAgg);
-      require_prm(cteAgg->Finalize(), "Failed to finalize CTE aggregator.");
+      finalize_aggregator(cteAgg, "Failed to finalize CTE aggregator.");
 
       qb->beginCteSubtree(c);
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
@@ -14354,6 +14446,71 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
                   "comparisons need a cast or a constant-vs-column "
                   "form.");
 
+      // MIN/MAX over a temporal column is carried as the column's packed
+      // value in a Bigunsigned virt column, so the virt type alone would
+      // let DATE vs MAX(datetime), INT vs MAX(date) or DATE vs COUNT(*)
+      // compare packed encodings against each other or against numbers.
+      // Follow a CTE output (through chained CTEs) to its source column
+      // and accept a temporal operand only as DATE vs DATE, whose packed
+      // values order like the dates.
+      auto source_type = [&](ConditionalExpression* side,
+                             NdbDictionary::Column::Type virt_type) {
+        const QueryScope::ResolvedColumnRef* ref =
+            &scope.resolved_columns[side->col_idx];
+        for (Uint32 hops = 0; hops <= m_cte_scopes.size(); hops++) {
+          if (ref->kind ==
+              QueryScope::ResolvedColumnRef::Kind::StoredColumn)
+            return ref->dict_column != NULL ? ref->dict_column->getType()
+                                            : virt_type;
+          const Outputs* o = ref->cte_output;
+          if (ref->kind !=
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn ||
+              o == NULL || ref->cte_def_idx >= m_cte_scopes.size())
+            break;
+          const QueryScope* cs = m_cte_scopes[ref->cte_def_idx];
+          if (cs == NULL || cs->resolved_columns == NULL) break;
+          Uint32 src_col_idx;
+          if (o->type == Outputs::Type::COLUMN) {
+            src_col_idx = o->column.col_idx;
+          } else if (o->type == Outputs::Type::AGGREGATE &&
+                     (o->aggregate.fun == T_MIN ||
+                      o->aggregate.fun == T_MAX) &&
+                     o->aggregate.arg != NULL &&
+                     o->aggregate.arg->isLoad()) {
+            src_col_idx = o->aggregate.arg->getLoadIdx();
+          } else {
+            break;  // COUNT, SUM, AVG: numeric
+          }
+          ref = &cs->resolved_columns[src_col_idx];
+        }
+        return virt_type;
+      };
+      auto is_temporal_t = [](NdbDictionary::Column::Type t) {
+        switch (t) {
+        case NdbDictionary::Column::Date:
+        case NdbDictionary::Column::Datetime:
+        case NdbDictionary::Column::Datetime2:
+        case NdbDictionary::Column::Time:
+        case NdbDictionary::Column::Time2:
+        case NdbDictionary::Column::Timestamp:
+        case NdbDictionary::Column::Timestamp2:
+        case NdbDictionary::Column::Year:
+          return true;
+        default:
+          return false;
+        }
+      };
+      const NdbDictionary::Column::Type src_l = source_type(left, type_l);
+      const NdbDictionary::Column::Type src_r = source_type(right, type_r);
+      require_unsupported(
+          (!is_temporal_t(src_l) && !is_temporal_t(src_r)) ||
+          (src_l == NdbDictionary::Column::Date &&
+           src_r == NdbDictionary::Column::Date),
+          "CTE_LOOKUP filter col-vs-col: a temporal operand is supported "
+          "only as DATE against DATE (a DATE column or MIN/MAX of a DATE "
+          "column) — other temporal types, and a DATE against a number, "
+          "need a cast or a constant-vs-column form.");
+
       // UNKNOWN rejects the row/disjunct: guard both operands' NULL
       // flags before the typed loads (a NULL register would raise
       // ZREGISTER_INIT_ERROR instead of rejecting).
@@ -16094,10 +16251,15 @@ RonSQLPreparer::apply_filter_like(NdbScanFilter* filter,
       scope.resolved_columns[left->col_idx];
   require_prm(left_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
               "WHERE LIKE filter requires a stored-table column.");
+  require_prm(left_ref.dict_column != NULL,
+              "WHERE LIKE filter has no source column descriptor.");
+  // The kernel matches the pattern in the column's character set.
+  LexString pattern = literal_in_column_charset(right->string,
+                                                left_ref.dict_column);
   require_sch(DBG(filter->cmp(cond,
                                left_ref.attr_id,
-                               right->string.str,
-                               right->string.len)) >= 0,
+                               pattern.str,
+                               pattern.len)) >= 0,
               filter_fail);
 }
 
@@ -16145,6 +16307,48 @@ rondb_str_to_mysql_time(MYSQL_TIME *mt, LexString str) {
                                  " timestamp with weird delimiters or spaces");
   }
   // todo test nanosecond rounding, see status->nanoseconds
+}
+
+// RONSQL-13: a string literal is UTF-8 (the lexer checks it), but a CHAR,
+// VARCHAR or LONGVARCHAR column holds its own character set, and the
+// kernel compares and LIKE-matches the value in that character set.
+// Convert the literal to it, as MySQL does: the column's collation wins
+// over a literal's, and MySQL rejects a literal that the column's
+// character set cannot hold (ER_CANT_AGGREGATE_2COLLATIONS).  Copying the
+// UTF-8 bytes unchanged matched nothing for non-ASCII text in latin1 or
+// greek, and was wrong even for ASCII text in ucs2, utf16 and utf32.
+LexString
+RonSQLPreparer::literal_in_column_charset(LexString lit,
+                                          const NdbDictionary::Column* col)
+{
+  const CHARSET_INFO* cs = col->getCharset();
+  if (cs == NULL || lit.len == 0 ||
+      my_charset_same(cs, &my_charset_utf8mb4_bin)) {
+    return lit;
+  }
+  if (cs->mbminlen == 1 && (cs->state & MY_CS_NONASCII) == 0) {
+    // ASCII text has the same bytes in an ASCII-based character set.
+    size_t i = 0;
+    while (i < lit.len && static_cast<Uint8>(lit.str[i]) < 0x80) i++;
+    if (i == lit.len) return lit;
+  }
+  // Each character is at least one UTF-8 byte and at most mbmaxlen bytes
+  // in cs, so the buffer holds the whole conversion.
+  require_prm(lit.len <= UINT32_MAX / cs->mbmaxlen,
+              "String literal too large.");
+  const Uint32 cap = static_cast<Uint32>(lit.len * cs->mbmaxlen);
+  char* out = m_amalloc->alloc_exc<char>(cap);
+  unsigned errors = 0;
+  size_t len = my_convert(out, cap, cs, lit.str, lit.len,
+                          &my_charset_utf8mb4_bin, &errors);
+  if (errors != 0) {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::SEMANTIC,
+        std::string("String literal has a character that column '") +
+        col->getName() + "' (character set " + cs->csname +
+        ") cannot hold.");
+  }
+  return LexString{ out, len };
 }
 
 // F14: encode_constant returns the NdbRecord byte format, which for a
@@ -16363,29 +16567,39 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
                                  " are supported.");
   }
   if (op == T_STRING && tk == STR) {
+    // The bytes of the literal in the column's character set.
+    const LexString lit = literal_in_column_charset(ce->string, col);
     if (lenbytes == 0) {
       // CHAR: fixed-length, right-padded with spaces, no length prefix
       Uint32 col_len = col->getLength();
-      if (ce->string.len > static_cast<size_t>(col_len)) {
+      if (lit.len > static_cast<size_t>(col_len)) {
         throw RonSQLMaybeStaleSchema("CHAR column compared to a string literal"
                                      " that is too long.");
       }
       Uint8* val = m_amalloc->alloc_exc<Uint8>(col_len);
-      memcpy(val, ce->string.str, ce->string.len);
-      memset(val + ce->string.len, ' ', col_len - ce->string.len);
+      memcpy(val, lit.str, lit.len);
+      const CHARSET_INFO* cs = col->getCharset();
+      if (cs != NULL) {
+        // The character set's space, as MySQL pads CHAR: in ucs2, utf16
+        // and utf32 a 0x20 byte is part of another character.
+        cs->cset->fill(cs, reinterpret_cast<char*>(val) + lit.len,
+                       col_len - lit.len, cs->pad_char);
+      } else {
+        memset(val + lit.len, ' ', col_len - lit.len);
+      }
       return raw_value{ val, col_len };
     }
-    if (ce->string.len > static_cast<size_t>(maxlen)) {
+    if (lit.len > static_cast<size_t>(maxlen)) {
       throw RonSQLMaybeStaleSchema("VARCHAR column compared to a string literal"
                                    " that is too long. Note that if the column"
                                    " length is less than 256, then the length"
                                    " of the string literal must also be less"
                                    " than 256.");
     }
-    Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + ce->string.len);
-    memcpy(val, &ce->string.len, lenbytes);
-    memcpy(val + lenbytes, ce->string.str, ce->string.len);
-    return raw_value{ val, static_cast<Uint32>(lenbytes + ce->string.len) };
+    Uint8* val = m_amalloc->alloc_exc<Uint8>(lenbytes + lit.len);
+    memcpy(val, &lit.len, lenbytes);
+    memcpy(val + lenbytes, lit.str, lit.len);
+    return raw_value{ val, static_cast<Uint32>(lenbytes + lit.len) };
   }
   if (tk == STR) {
     throw RonSQLMaybeStaleSchema("CHAR/VARCHAR column compared to an"
@@ -16944,6 +17158,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   // Program groupby columns
   require_run(m_main_scope.resolved_columns != NULL,
               "Aggregation emit: missing resolved columns.");
+  check_groupby_limit(ast_root.groupby_columns);
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
@@ -17691,6 +17906,7 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
               "Aggregation emit: missing resolved columns.");
   const Uint32 cte_base_pos = leafIsCte ? scope.join_plan.num_linked_projs : 0;
   Uint32 linked_proj_pos = 0;
+  check_groupby_limit(ast_root.groupby_columns);
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
@@ -19977,6 +20193,22 @@ RonSQLPreparer::Context::non_case_operand(AggregationAPICompiler::Expr* e)
         "function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot "
         "be used in arithmetic or in a THEN or ELSE of another CASE.");
   return e;
+}
+
+/*
+ * RONSQL-15: subqueries are executed and replaced by their results only in
+ * the main WHERE and HAVING (analyze_subqueries()).  One in a CASE
+ * condition was never executed, and the CASE compiler took a scalar
+ * subquery's placeholder for a constant of the wrong type.
+ */
+struct ConditionalExpression*
+RonSQLPreparer::Context::case_condition(struct ConditionalExpression* ce)
+{
+  if (RonSQLPreparer::ce_has_subquery(ce))
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "A subquery is not supported in a CASE condition.");
+  return ce;
 }
 
 /*

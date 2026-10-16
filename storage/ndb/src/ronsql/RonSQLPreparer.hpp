@@ -150,6 +150,11 @@ public:
     // as the whole argument of an aggregate function.
     AggregationAPICompiler::Expr* non_case_operand(
         AggregationAPICompiler::Expr* e);
+    // Returns `ce` for use as the condition of a CASE.  Throws
+    // (UNSUPPORTED) when `ce` has a subquery, which is never executed
+    // there.
+    struct ConditionalExpression* case_condition(
+        struct ConditionalExpression* ce);
     // Throws (UNSUPPORTED) unless the left-hand side of every ON equality
     // in `conditions` is qualified with the alias of the joined `table`.
     void check_join_conditions(const struct TableRef& table,
@@ -1123,6 +1128,9 @@ private:
                            struct ConditionalExpression* ce);
   raw_value encode_constant(struct ConditionalExpression *ce,
                             const NdbDictionary::Column* col);
+  // A string literal (UTF-8) converted to the character set of `col`.
+  LexString literal_in_column_charset(LexString lit,
+                                      const NdbDictionary::Column* col);
   // A pushed-query constant for `col` from encode_constant's bytes (F14:
   // NdbQueryBuilder::constValue(ptr, len) takes a variable-size value
   // without its length prefix).

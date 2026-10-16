@@ -23,6 +23,8 @@ call mtr.add_suppression("Participant timeout");
 #   5. Negative test: CTE with non-aggregate column and no
 #      GROUP BY still rejected (kept distinct from the empty-CTE
 #      case).
+#   17-20. Negative tests: comma joins of stored tables and of a
+#      grouped CTE, in the main query and in a CTE body.
 
 --let $suppress_ronsql_cli=yes
 --let $strict_diff=yes
@@ -49,6 +51,16 @@ CREATE TABLE scalar_empty (
   v  BIGINT NOT NULL,
   PRIMARY KEY USING HASH (id)
 ) ENGINE=NDB;
+
+# With an ordered index (the PRIMARY KEY's), which a comma-joined stored
+# table used to be planned to scan without bounds (Tests 17-20).
+CREATE TABLE scalar_o (
+  id INT NOT NULL,
+  w  BIGINT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+
+INSERT INTO scalar_o VALUES (1, 5), (2, 7);
 
 --enable_warnings
 --enable_query_log
@@ -304,7 +316,38 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH g AS (SELECT region AS r, COUNT(*) AS c FROM scalar_t GROUP BY region) SELECT g.c AS x;' 2>&1
 
+# RONSQL-18: a comma join has no ON conditions, and only a CTE without
+# GROUP BY (at most one row) can be joined that way. A stored table got
+# no join keys and was planned as an unbounded child scan: the NDB API
+# refused it ("Failed to create child operation.", an internal error),
+# or, with a CTE in the statement, it ran with no link to its parent. A
+# grouped CTE got a partial-key error. The planner now rejects both.
+--echo
+--echo
+--echo === Test 17: comma join of two stored tables in an aggregate query rejects ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*), SUM(o.w) FROM scalar_t AS t, scalar_o AS o;' 2>&1
+
+--echo
+--echo
+--echo === Test 18: comma join of two stored tables beside a scalar CTE rejects ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(v) AS m FROM scalar_t) SELECT COUNT(*), MAX(s.m) FROM scalar_t AS t, scalar_o AS o, s;' 2>&1
+
+--echo
+--echo
+--echo === Test 19: comma join of a grouped CTE rejects ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH g AS (SELECT region AS r, COUNT(*) AS c FROM scalar_t GROUP BY region) SELECT COUNT(*), SUM(g.c) FROM scalar_t AS t, g;' 2>&1
+
+--echo
+--echo
+--echo === Test 20: comma join of two stored tables in a CTE body rejects ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(t.v) AS m FROM scalar_t AS t, scalar_o AS o) SELECT MAX(s.m) FROM s;' 2>&1
+
 --disable_query_log
 DROP TABLE scalar_t;
 DROP TABLE scalar_empty;
+DROP TABLE scalar_o;
 --enable_query_log

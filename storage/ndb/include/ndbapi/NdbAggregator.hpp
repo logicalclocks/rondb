@@ -568,6 +568,12 @@ class NdbAggregator {
   }
   bool CheckRegs(Uint32 reg_1, Uint32 reg_2);
   bool CheckAggAndReg(Uint32 agg_id, Uint32 reg_id);
+  // False, with kErrTooBigProgram, when `words` more program words do not
+  // fit in buffer_.
+  bool HasRoom(Uint32 words);
+  // False, with kErrTooManyGroupbyCols, when no GROUP BY column can be
+  // added; else HasRoom(1).
+  bool HasGroupByRoom();
   bool result_record_fetched_;
   Uint32 result_size_est_;
   bool disk_columns_;
