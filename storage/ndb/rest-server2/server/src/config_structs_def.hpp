@@ -89,7 +89,7 @@ CLASS
     " threshold are recorded in the slow scan buffer. Default is 10000 (10ms).")
  CM(Uint32, slowScanBufferSize, SlowScanBufferSize, 1000,
     "Maximum number of slow scan entries to keep in the circular buffer.")
- CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32,
+ CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 128,
     "Buffers of each kind (request and response) mapped at startup and kept"
     " when the pool shrinks after an idle period.")
  CM(Uint32, maxBuffers, MaxBuffers, 0,
@@ -113,18 +113,27 @@ CLASS
     " in a fresh buffer; it cannot make a result wrong. Raising it above the"
     " buffer size gives every operation its own buffer and can exhaust the"
     " pool (HTTP 503).")
- CM(Uint32, batchMaxSize, BatchMaxSize, 128,
-    "Number of operations of a batch request sent to NDB per execution loop."
-    " Not a cap on the batch size; see MaxOperationsPerBatch.")
- CM(Uint32, maxOperationsPerBatch, MaxOperationsPerBatch, 512,
+ CM(Uint32, batchMaxSize, BatchMaxSize, 0,
+    "Deprecated and ignored since RONDB-1144: its meaning was split into"
+    " MaxOperationsPerBatchRequest (the cap on a batch request) and"
+    " MaxOperationsPerNdbExecute (operations sent to NDB per execute round)."
+    " Accepted for one release so existing configuration files keep"
+    " working.")
+ CM(Uint32, maxOperationsPerBatchRequest, MaxOperationsPerBatchRequest, 512,
     "Maximum number of operations in one batch request (batch pk-read and"
     " batch feature store). A larger batch is rejected with HTTP 413 while"
     " it is parsed, before any buffer is taken.")
+ CM(Uint32, maxOperationsPerNdbExecute, MaxOperationsPerNdbExecute, 128,
+    "Number of a batch request's operations the data access layer prepares"
+    " and sends to NDB in one execute round (up to 50 more in the last"
+    " round). Not a cap on the batch request; see"
+    " MaxOperationsPerBatchRequest.")
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(maxReqSize < 256, "MaxReqSize should be >= 256")
- PROBLEM(maxOperationsPerBatch == 0, "MaxOperationsPerBatch must be > 0")
+ PROBLEM(maxOperationsPerBatchRequest == 0,
+         "MaxOperationsPerBatchRequest must be > 0")
  PROBLEM(bufferPoolSharePercent < 1 || bufferPoolSharePercent > 90,
          "BufferPoolSharePercent must be between 1 and 90")
  PROBLEM(maxBuffers != 0 && maxBuffers < preAllocatedBuffers,
@@ -134,8 +143,10 @@ CLASS
  PROBLEM(operationIdMaxSize > MAX_OPERATION_ID_RESERVE,
          "OperationIDMaxSize must be <= 4096")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")
- PROBLEM(batchMaxSize > 512, "BatchMaxSize should be <= 512")
- PROBLEM(batchMaxSize < 50, "BatchMaxSize should be >= 50")
+ PROBLEM(maxOperationsPerNdbExecute > 512,
+         "MaxOperationsPerNdbExecute should be <= 512")
+ PROBLEM(maxOperationsPerNdbExecute < 50,
+         "MaxOperationsPerNdbExecute should be >= 50")
 )
 
 CLASS

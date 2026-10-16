@@ -424,12 +424,12 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
      * stops the first operation past the limit. Nothing has been allocated
      * for the batch yet, so a 413 here costs no buffer. */
     if (unlikely(reqStructs.size() >=
-                 globalConfigs.internal.maxOperationsPerBatch)) {
+                 globalConfigs.internal.maxOperationsPerBatchRequest)) {
       return CRS_Status(
         static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k413RequestEntityTooLarge),
-        (std::string("batch exceeds MaxOperationsPerBatch (") +
-         std::to_string(globalConfigs.internal.maxOperationsPerBatch) +
+        (std::string("batch exceeds MaxOperationsPerBatchRequest (") +
+         std::to_string(globalConfigs.internal.maxOperationsPerBatchRequest) +
          ")").c_str()).status;
     }
     PKReadParams reqStruct;
@@ -1309,12 +1309,12 @@ RS_Status JSONParser::batch_feature_store_parse(
   for (auto entry : entries) {
     /* RONDB-1144: same bound as batch_parse, counted over the entries. */
     if (unlikely(reqStruct.entries.size() >=
-                 globalConfigs.internal.maxOperationsPerBatch)) {
+                 globalConfigs.internal.maxOperationsPerBatchRequest)) {
       return CRS_Status(
         static_cast<HTTP_CODE>(
           drogon::HttpStatusCode::k413RequestEntityTooLarge),
-        (std::string("batch exceeds MaxOperationsPerBatch (") +
-         std::to_string(globalConfigs.internal.maxOperationsPerBatch) +
+        (std::string("batch exceeds MaxOperationsPerBatchRequest (") +
+         std::to_string(globalConfigs.internal.maxOperationsPerBatchRequest) +
          ")").c_str()).status;
     }
     simdjson::ondemand::object entryObj;

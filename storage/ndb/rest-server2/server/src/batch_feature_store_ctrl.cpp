@@ -117,8 +117,9 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
                  drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(std::string("Error:") + status.message));
-    /* 400 for malformed input, 413 for a batch over MaxOperationsPerBatch
-     * (RONDB-1144); pass the parser's code through. */
+    /* 400 for malformed input, 413 for a batch over
+     * MaxOperationsPerBatchRequest (RONDB-1144); pass the parser's code
+     * through. */
     resp->setStatusCode(
       static_cast<drogon::HttpStatusCode>(status.http_code));
     callback(resp);

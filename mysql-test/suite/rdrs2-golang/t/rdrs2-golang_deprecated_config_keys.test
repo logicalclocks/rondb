@@ -1,5 +1,7 @@
-# RONDB-1144: Internal.ReqBufferSize and Internal.RespBufferSize are
-# deprecated. The buffer sizes are computed from the NDB limits, so a
+# RONDB-1144: Internal.ReqBufferSize, Internal.RespBufferSize and
+# Internal.BatchMaxSize are deprecated. The buffer sizes are computed from
+# the NDB limits, and BatchMaxSize's meaning moved to
+# MaxOperationsPerBatchRequest and MaxOperationsPerNdbExecute, so a
 # configuration that still sets the keys must load, warn once per key on
 # stderr, and ignore the values. `rdrs2 --print-limits` shows the sizes in
 # effect without a cluster; they must match what the running rdrs.1.1
@@ -10,8 +12,8 @@
 --source include/have_ndb.inc
 
 --echo # A config file that still carries the deprecated keys
---write_file $MYSQL_TMP_DIR/deprecated_buffer_keys.json
-{ "Internal": { "ReqBufferSize": 1024, "RespBufferSize": 1024 } }
+--write_file $MYSQL_TMP_DIR/deprecated_config_keys.json
+{ "Internal": { "ReqBufferSize": 1024, "RespBufferSize": 1024, "BatchMaxSize": 64 } }
 EOF
 
 --echo # print-limits ignores the keys, warns, and agrees with the live server
@@ -22,8 +24,8 @@ use HTTP::Tiny;
 
 my $exe = $ENV{'RDRS2_EXE'} or die "RDRS2_EXE not set\n";
 my $tmp = $ENV{'MYSQL_TMP_DIR'};
-my $cfg = "$tmp/deprecated_buffer_keys.json";
-my $err_file = "$tmp/deprecated_buffer_keys.err";
+my $cfg = "$tmp/deprecated_config_keys.json";
+my $err_file = "$tmp/deprecated_config_keys.err";
 my $out = `"$exe" --config "$cfg" --print-limits 2>"$err_file"`;
 die "print-limits exited with " . ($? >> 8) . "\n" if $? != 0;
 my ($req)  = $out =~ /"ReqBufferBytes":\s*(\d+)/
@@ -34,6 +36,10 @@ die "ReqBufferBytes is 1024: the deprecated key was honoured\n"
     if $req == 1024;
 die "RespBufferBytes is 1024: the deprecated key was honoured\n"
     if $resp == 1024;
+my ($cap) = $out =~ /"MaxOperationsPerBatchRequest":\s*(\d+)/
+    or die "no MaxOperationsPerBatchRequest in: $out";
+die "MaxOperationsPerBatchRequest is 64: BatchMaxSize was honoured\n"
+    if $cap == 64;
 
 open(my $eh, '<', $err_file) or die "$err_file: $!";
 my $err = do { local $/; <$eh> };
@@ -42,6 +48,8 @@ die "no deprecation warning for ReqBufferSize on stderr:\n$err"
     unless $err =~ /ReqBufferSize is deprecated/;
 die "no deprecation warning for RespBufferSize on stderr:\n$err"
     unless $err =~ /RespBufferSize is deprecated/;
+die "no deprecation warning for BatchMaxSize on stderr:\n$err"
+    unless $err =~ /BatchMaxSize is deprecated/;
 
 # The running plain-HTTP server rdrs.1.1 exports the same values.
 my $json = do {
@@ -63,9 +71,13 @@ die "print-limits ($req) and metrics ($mreq) disagree on the request buffer\n"
     if $req != $mreq;
 die "print-limits ($resp) and metrics ($mresp) disagree on the response buffer\n"
     if $resp != $mresp;
+my ($mcap) = $res->{content} =~ /rdrs_limits\{name="max_operations_per_batch_request"\}\s+(\d+)/
+    or die "no max_operations_per_batch_request in rdrs_limits\n";
+die "print-limits ($cap) and metrics ($mcap) disagree on the batch request cap\n"
+    if $cap != $mcap;
 print "PASS\n";
 exit 0;
 END_OF_PERL
 
---remove_file $MYSQL_TMP_DIR/deprecated_buffer_keys.json
---remove_file $MYSQL_TMP_DIR/deprecated_buffer_keys.err
+--remove_file $MYSQL_TMP_DIR/deprecated_config_keys.json
+--remove_file $MYSQL_TMP_DIR/deprecated_config_keys.err

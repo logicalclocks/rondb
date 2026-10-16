@@ -106,13 +106,13 @@ func runBatchBenchmark(
 	b.Log("-------------------------------------------------")
 }
 
-// BenchmarkMaxOperations sends batches of exactly MaxOperationsPerBatch
+// BenchmarkMaxOperations sends batches of exactly MaxOperationsPerBatchRequest
 // reads of the benchmark table, the most sub-requests one request buffer
 // has to parse and the most sub-responses one chain has to pack. The
 // rows are random, as in BenchmarkSimple, whose 200 operations are the
 // comparison point below the limit.
 func BenchmarkMaxOperations(b *testing.B) {
-	batchSize := int(testutils.GetLimits(b).MaxOperationsPerBatch)
+	batchSize := int(testutils.GetLimits(b).MaxOperationsPerBatchRequest)
 	table := "table_1"
 	numRows := testdbs.BENCH_DB_NUM_ROWS
 	col := "id0"

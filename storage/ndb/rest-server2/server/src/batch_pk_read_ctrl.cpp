@@ -96,7 +96,7 @@ void BatchPKReadCtrl::batchPKRead(
       drogon::HttpStatusCode::k200OK)) {
     resp->setBody(std::string(status.message));
     /* The parser answers 400 for malformed input and 413 for a batch over
-     * MaxOperationsPerBatch (RONDB-1144); pass its code through. */
+     * MaxOperationsPerBatchRequest (RONDB-1144); pass its code through. */
     resp->setStatusCode(
       static_cast<drogon::HttpStatusCode>(status.http_code));
     callback(resp);

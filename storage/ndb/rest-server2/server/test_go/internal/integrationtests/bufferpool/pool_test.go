@@ -116,7 +116,7 @@ func TestPoolExhaustedReturns503(t *testing.T) {
 	limits := requirePoolServer(t)
 	before := testutils.TakePoolSnapshot(t)
 
-	sendBatch(t, batchBody(int(limits.MaxOperationsPerBatch), false), exhaustedMsg,
+	sendBatch(t, batchBody(int(limits.MaxOperationsPerBatchRequest), false), exhaustedMsg,
 		http.StatusServiceUnavailable)
 
 	after := testutils.TakePoolSnapshot(t)
@@ -140,7 +140,7 @@ func TestPoolShrinksAfterIdle(t *testing.T) {
 	shrinkAfter := envInt(t, "RDRS_POOL_SHRINK_AFTER_S")
 
 	grown := false
-	for n := 4; n <= int(limits.MaxOperationsPerBatch); n *= 2 {
+	for n := 4; n <= int(limits.MaxOperationsPerBatchRequest); n *= 2 {
 		sendBatch(t, batchBody(n, false), "", http.StatusOK, http.StatusServiceUnavailable)
 		snap := testutils.TakePoolSnapshot(t)
 		if snap.Req.Allocated > prealloc {

@@ -1355,23 +1355,24 @@ RS_Status BatchKeyOperations::perform_operation(
   while (m_last_key < m_numOperations) {
     /**
      * Handle loop of operations.
-     * 1. Use batchMaxSize as a suggested maximum batch size although not
+     * 1. Use MaxOperationsPerNdbExecute as a suggested maximum batch size
+     *    although not
      *    a hard limit. Preferrably this should be e.g. 128 and is configurable
      * 2. We are allowed to add up to 50 operations to this batch size for the
      *    last loop. The reason for this is to avoid a weird situation where we
-     *    have batchMaxSize and need to send 129 operations. In this case it is
+     *    have MaxOperationsPerNdbExecute and need to send 129 operations. In this case it is
      *    preferrable to run all operations in one loop to avoid that the second
      *    loop only runs one operation. We set the minimum operations to handle
      *    in one loop to 50 as a hard coded constant here.
      * 3. NDB API can handle at most 1024 transactions in parallel and this is
-     *    already way too much, we will set the maximum batchMaxSize to e.g.
+     *    already way too much, we will set the maximum MaxOperationsPerNdbExecute to e.g.
      *    512 to avoid even coming close to this. Experiments have shown that
      *    optimal batch size is around 100 operations. Thus we set the default
      *    to 128.
      */
     Uint32 numOps = m_numOperations;
     Uint32 start = m_first_key;
-    Uint32 max_keys = globalConfigs.internal.batchMaxSize;
+    Uint32 max_keys = globalConfigs.internal.maxOperationsPerNdbExecute;
     Uint32 keys_this_loop = std::min(max_keys, (numOps - start));
     last_key += keys_this_loop;
     Uint32 remaining_keys = numOps - last_key;

@@ -27,10 +27,10 @@ import (
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
-// RONDB-1144: Internal.MaxOperationsPerBatch bounds the number of operations
-// in one batch request. It is checked while parsing, before any buffer is
-// taken, and answered with 413. BatchMaxSize is not a cap: it is the number
-// of operations sent to NDB per execution loop.
+// RONDB-1144: Internal.MaxOperationsPerBatchRequest bounds the number of
+// operations in one batch request. It is checked while parsing, before any
+// buffer is taken, and answered with 413. MaxOperationsPerNdbExecute is not
+// a cap: it is the number of operations sent to NDB per execute round.
 
 // intTableOps builds n identical reads of db004.int_table, each expected to
 // succeed.
@@ -59,7 +59,7 @@ func intTableOps(n uint32) []api.BatchSubOperationTestInfo {
 // At the default limit the body is about 130 KB, which also crosses Drogon's
 // 64 KiB in-memory threshold, so the file-buffered body path is covered.
 func TestBatchAtOperationLimit(t *testing.T) {
-	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatchRequest)
 	tests := map[string]api.BatchOperationTestInfo{
 		"at_limit": {
 			HttpCode:   []int{http.StatusOK},
@@ -72,11 +72,11 @@ func TestBatchAtOperationLimit(t *testing.T) {
 // One operation more than the limit is rejected with 413 and a message that
 // names the setting, before any sub-operation runs.
 func TestBatchOverOperationLimit(t *testing.T) {
-	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatchRequest)
 	tests := map[string]api.BatchOperationTestInfo{
 		"over_limit": {
 			HttpCode:       []int{http.StatusRequestEntityTooLarge},
-			ErrMsgContains: "exceeds MaxOperationsPerBatch",
+			ErrMsgContains: "exceeds MaxOperationsPerBatchRequest",
 			Operations:     intTableOps(limit + 1),
 		},
 	}

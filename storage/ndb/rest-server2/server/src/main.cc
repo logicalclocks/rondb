@@ -387,6 +387,15 @@ int main(int argc, char *argv[]) {
     std::cerr << "Warning: Internal.RespBufferSize is deprecated and ignored;"
               << " response buffers are " << DEFAULT_RESP_BUFFER << " bytes\n";
   }
+  if (globalConfigs.internal.batchMaxSize != 0) {
+    std::cerr << "Warning: Internal.BatchMaxSize is deprecated and ignored;"
+              << " batch requests are capped by"
+              << " Internal.MaxOperationsPerBatchRequest ("
+              << globalConfigs.internal.maxOperationsPerBatchRequest
+              << ") and sent to NDB "
+              << globalConfigs.internal.maxOperationsPerNdbExecute
+              << " operations at a time (Internal.MaxOperationsPerNdbExecute)\n";
+  }
   if (globalConfigs.internal.startReserveOverride != 0) {
     std::cerr << "Warning: Internal.StartReserveOverride is set to "
               << globalConfigs.internal.startReserveOverride
@@ -407,8 +416,8 @@ int main(int argc, char *argv[]) {
               << rsBufferArrayManager.resp_buffer_bytes() << ",\n"
               << "  \"MinReqBufferBytes\": " << MIN_REQ_BUFFER << ",\n"
               << "  \"MinRespBufferBytes\": " << MIN_RESP_BUFFER << ",\n"
-              << "  \"MaxOperationsPerBatch\": "
-              << globalConfigs.internal.maxOperationsPerBatch << ",\n"
+              << "  \"MaxOperationsPerBatchRequest\": "
+              << globalConfigs.internal.maxOperationsPerBatchRequest << ",\n"
               << "  \"MaxBuffers\": " << rsBufferArrayManager.max_buffers()
               << ",\n"
               << "  \"MemoryLimitBytes\": "

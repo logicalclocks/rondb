@@ -499,9 +499,9 @@ static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &l
 <div class="wrap"><table>
 <tr><th>situation</th><th class="num">today</th><th class="num">proposal, 26.02</th><th class="num">proposal, 26.10</th></tr>
 <tr><td>memory held by one HTTP request in flight, any size</td><td class="num">12 MiB</td><td class="num">768 KiB</td><td class="num">3 MiB</td></tr>
-<tr><td>32 preallocated pairs at startup, once touched</td><td class="num">384 MiB</td><td class="num">24 MiB</td><td class="num">96 MiB</td></tr>
+<tr><td>preallocated pairs at startup, once touched (today 32 by default, the proposal 128)</td><td class="num">384 MiB</td><td class="num">96 MiB</td><td class="num">384 MiB</td></tr>
 <tr><td>64 threads each with one HTTP request in flight</td><td class="num">768 MiB</td><td class="num">48 MiB</td><td class="num">192 MiB</td></tr>
-<tr><td>a batch of 512 reads of 200-byte rows (MaxOperationsPerBatch; 2 000 would get 413)</td><td class="num">12 MiB</td><td class="num">1 MiB: 1 response and 2 request buffers</td><td class="num">3 MiB: 1 response and 1 request buffer</td></tr>
+<tr><td>a batch of 512 reads of 200-byte rows (MaxOperationsPerBatchRequest; 2 000 would get 413)</td><td class="num">12 MiB</td><td class="num">1 MiB: 1 response and 2 request buffers</td><td class="num">3 MiB: 1 response and 1 request buffer</td></tr>
 <tr><td>a read returning a 10 MiB blob</td><td class="num">fails</td><td class="num">21 response buffers, 10.8 MiB</td><td class="num">11 response buffers, 13 MiB with the request buffer</td></tr>
 <tr><td>largest row that can be returned</td><td class="num">5 MiB</td><td colspan="2" class="num">any size, bounded by the pool cap MaxBuffers</td></tr>
 </table></div>

@@ -216,15 +216,15 @@ func AssertPoolBalanced(t testing.TB, before PoolSnapshot) {
 // Limits is what rdrs2 derived from its build, configuration and memory
 // limit, as exported by the rdrs_limits family.
 type Limits struct {
-	MaxColumns            int64
-	MaxRowBytes           int64
-	ReqBufferBytes        int64
-	RespBufferBytes       int64
-	MinReqBufferBytes     int64
-	MinRespBufferBytes    int64
-	MaxOperationsPerBatch int64
-	MaxBuffers            int64
-	MemoryLimitBytes      int64
+	MaxColumns                   int64
+	MaxRowBytes                  int64
+	ReqBufferBytes               int64
+	RespBufferBytes              int64
+	MinReqBufferBytes            int64
+	MinRespBufferBytes           int64
+	MaxOperationsPerBatchRequest int64
+	MaxBuffers                   int64
+	MemoryLimitBytes             int64
 }
 
 // GetLimits reads rdrs_limits; every field must be present. A server that
@@ -248,15 +248,15 @@ func GetLimits(t testing.TB) Limits {
 		return m.Get(t, "rdrs_limits", map[string]string{"name": name})
 	}
 	return Limits{
-		MaxColumns:            get("max_columns"),
-		MaxRowBytes:           get("max_row_bytes"),
-		ReqBufferBytes:        get("req_buffer_bytes"),
-		RespBufferBytes:       get("resp_buffer_bytes"),
-		MinReqBufferBytes:     get("min_req_buffer_bytes"),
-		MinRespBufferBytes:    get("min_resp_buffer_bytes"),
-		MaxOperationsPerBatch: get("max_operations_per_batch"),
-		MaxBuffers:            get("max_buffers"),
-		MemoryLimitBytes:      get("memory_limit_bytes"),
+		MaxColumns:                   get("max_columns"),
+		MaxRowBytes:                  get("max_row_bytes"),
+		ReqBufferBytes:               get("req_buffer_bytes"),
+		RespBufferBytes:              get("resp_buffer_bytes"),
+		MinReqBufferBytes:            get("min_req_buffer_bytes"),
+		MinRespBufferBytes:           get("min_resp_buffer_bytes"),
+		MaxOperationsPerBatchRequest: get("max_operations_per_batch_request"),
+		MaxBuffers:                   get("max_buffers"),
+		MemoryLimitBytes:             get("memory_limit_bytes"),
 	}
 }
 

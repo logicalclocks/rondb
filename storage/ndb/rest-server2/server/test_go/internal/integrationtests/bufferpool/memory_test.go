@@ -121,8 +121,8 @@ func wideBatchOps(limits testutils.Limits, prealloc int64) int {
 	// Half the cap above the preallocation, split across the workers.
 	buffersPerWorker := (limits.MaxBuffers - prealloc) / 2 / memWorkers
 	ops := buffersPerWorker * perReqBuffer
-	if ops > limits.MaxOperationsPerBatch {
-		ops = limits.MaxOperationsPerBatch
+	if ops > limits.MaxOperationsPerBatchRequest {
+		ops = limits.MaxOperationsPerBatchRequest
 	}
 	if ops < 1 {
 		ops = 1

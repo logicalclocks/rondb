@@ -26,7 +26,7 @@ import (
 )
 
 // RONDB-1144: the batch feature store endpoint enforces the same
-// Internal.MaxOperationsPerBatch as batch pk-read, counted over the entries
+// Internal.MaxOperationsPerBatchRequest as batch pk-read, counted over the entries
 // while parsing and answered with 413 before any lookup starts.
 
 // sampleEntries returns n batch entries that all read the same existing row
@@ -48,7 +48,7 @@ func sampleEntries(t *testing.T, n uint32) ([]string, [][]interface{}) {
 }
 
 func TestBatchFeatureStoreAtOperationLimit(t *testing.T) {
-	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatchRequest)
 	pks, entries := sampleEntries(t, limit)
 	fsReq := CreateBatchFeatureStoreRequest(testdbs.FSDB002, "sample_2", 1, pks, entries, nil, nil)
 	fsResp := GetFeatureStoreResponse(t, fsReq)
@@ -58,10 +58,10 @@ func TestBatchFeatureStoreAtOperationLimit(t *testing.T) {
 }
 
 func TestBatchFeatureStoreOverOperationLimit(t *testing.T) {
-	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatch)
+	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatchRequest)
 	pks, entries := sampleEntries(t, limit+1)
 	fsReq := CreateBatchFeatureStoreRequest(testdbs.FSDB002, "sample_2", 1, pks, entries, nil, nil)
-	resp := GetFeatureStoreResponseWithDetail(t, fsReq, "exceeds MaxOperationsPerBatch",
+	resp := GetFeatureStoreResponseWithDetail(t, fsReq, "exceeds MaxOperationsPerBatchRequest",
 		http.StatusRequestEntityTooLarge)
 	if resp != nil {
 		t.Fatalf("expected no response body on 413, got %s", resp.String())
