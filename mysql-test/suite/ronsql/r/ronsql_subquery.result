@@ -620,6 +620,20 @@ Number of output lines, including header: 6
 
 
 
+=== Test 38: Scalar subquery selecting two columns (rejected) ===
+A scalar subquery selects 2 columns, but it is compared as one value.
+Error handling: RPE
+ronsql_cli caught exception: A scalar subquery must select exactly one column.
+
+=== Test 39: IN subquery selecting two columns (rejected) ===
+An IN subquery selects 2 columns, but IN compares one value with each of its rows.
+Error handling: RPE
+ronsql_cli caught exception: An IN subquery must select exactly one column.
+
+=== Test 40: Scalar subquery returning five rows (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A scalar subquery returned more than one row.
+
 === Cleanup ===
 DROP TABLE empty_table;
 DROP TABLE lineitem;

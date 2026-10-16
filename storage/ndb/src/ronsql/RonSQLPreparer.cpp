@@ -7988,6 +7988,37 @@ RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope,
   resolve_columns_for_scope(scope, stmt, false);
 }
 
+/*
+ * RONSQL-41: a scalar or IN subquery must select exactly one column, as
+ * in MySQL ("Operand should contain 1 column(s)").  The executor parses
+ * each output line as one number, so a second column used to fail as a
+ * non-numeric result.  Checked on the statement as written, before
+ * decorrelate_scalar() rewrites it to select the correlation key too.
+ */
+static void
+require_one_subquery_column(const SelectStatement* stmt, bool is_in,
+                            std::basic_ostream<char>& err)
+{
+  if (stmt == NULL)
+    return;
+  Uint32 count = 0;
+  for (const Outputs* o = stmt->outputs; o != NULL; o = o->next)
+    count++;
+  if (count == 1)
+    return;
+  if (is_in)
+    err << "An IN subquery selects " << count << " columns, but IN"
+           " compares one value with each of its rows." << std::endl;
+  else
+    err << "A scalar subquery selects " << count << " columns, but it is"
+           " compared as one value." << std::endl;
+  throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                             is_in ? "An IN subquery must select exactly"
+                                     " one column."
+                                   : "A scalar subquery must select"
+                                     " exactly one column.");
+}
+
 void
 RonSQLPreparer::analyze_subqueries()
 {
@@ -8010,6 +8041,8 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
      * statement, before any rewrite replaces it. */
     reject_ignored_orderby_limit(ce->subquery.stmt, "a scalar subquery",
                                  NULL);
+    require_one_subquery_column(ce->subquery.stmt, false,
+                                *m_conf.err_stream);
     SubqueryInfo info;
     info.ce_node = ce;
     info.inner_stmt = ce->subquery.stmt;
@@ -8034,6 +8067,8 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   {
     reject_ignored_orderby_limit(ce->in_subquery.stmt, "an IN subquery",
                                  NULL);
+    require_one_subquery_column(ce->in_subquery.stmt, true,
+                                *m_conf.err_stream);
     SubqueryInfo info;
     info.ce_node = ce;
     info.inner_stmt = ce->in_subquery.stmt;
@@ -9237,6 +9272,15 @@ RonSQLPreparer::execute_subqueries()
           throw RonSQLPermanentError(
               "IN-subquery returned more than 1000 values.");
         }
+      }
+      else if (result_str.find('\n') != std::string::npos)
+      {
+        // RONSQL-41: MySQL's "Subquery returns more than 1 row".  The
+        // whole output used to be parsed as one number and failed as a
+        // non-numeric result.
+        throw RonSQLPermanentError(
+            RonSQLErrorClass::SEMANTIC,
+            "A scalar subquery returned more than one row.");
       }
       else if (result_str == "NULL" || result_str.empty())
       {
