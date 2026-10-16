@@ -186,7 +186,17 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       // convert resp to json
       PKReadResponseJSON respJson;
       size_t calc_size_json = 20; // Batch overhead
-      process_pkread_response(&amalloc, resp_chain, 0, &reqBuff, respJson);
+      RS_Status read_status =
+        process_pkread_response(&amalloc, resp_chain, 0, &reqBuff, respJson);
+      /* An internal error (it names a file) leaves the columns unset, so
+       * nothing can be serialised; an operation status such as 404 can. */
+      if (unlikely(read_status.err_file_name[0] != '\0')) {
+        resp->setStatusCode(
+          static_cast<drogon::HttpStatusCode>(read_status.http_code));
+        resp->setBody(std::string(read_status.message));
+        callback(resp);
+        return;
+      }
       calc_size_json += respJson.getSizeJson();
       char *json_buf = (char*)amalloc.alloc_bytes(calc_size_json, 8);
       if (likely(json_buf != nullptr)) {

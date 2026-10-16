@@ -101,8 +101,9 @@ CLASS
  CM(Uint32, startReserveOverride, StartReserveOverride, 0,
     "Testing knob. Overrides the computed start reserve, the free space a"
     " buffer must have before a new response or operation request may start"
-    " in it. 0 = computed. Lowering it only causes responses to be rewritten"
-    " in a fresh buffer; it cannot make a result wrong. Raising it above the"
+    " in it. 0 = computed, otherwise at least the 36-byte response header."
+    " Lowering it only causes responses to be rewritten in a fresh buffer;"
+    " it cannot make a result wrong. Raising it above the"
     " buffer size gives every operation its own buffer and can exhaust the"
     " pool (HTTP 503).")
  CM(Uint32, maxOperationsPerBatchRequest, MaxOperationsPerBatchRequest, 512,
@@ -128,6 +129,11 @@ CLASS
          "MaxBuffers must allow at least two buffers")
  PROBLEM(operationIdMaxSize > MAX_OPERATION_ID_RESERVE,
          "OperationIDMaxSize must be <= 4096")
+ /* A response view starts with an unchecked header write; below that size
+  * the remaining-capacity arithmetic would underflow. */
+ PROBLEM(startReserveOverride != 0 &&
+         startReserveOverride < PK_RESP_HEADER_END,
+         "StartReserveOverride must be 0 or >= 36")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")
  PROBLEM(maxOperationsPerNdbExecute > 512,
          "MaxOperationsPerNdbExecute should be <= 512")

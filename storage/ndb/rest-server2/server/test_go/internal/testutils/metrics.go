@@ -223,6 +223,7 @@ type Limits struct {
 	MinReqBufferBytes            int64
 	MinRespBufferBytes           int64
 	MaxOperationsPerBatchRequest int64
+	MaxOperationsPerNdbExecute   int64
 	MaxBuffers                   int64
 	MemoryLimitBytes             int64
 }
@@ -255,6 +256,7 @@ func GetLimits(t testing.TB) Limits {
 		MinReqBufferBytes:            get("min_req_buffer_bytes"),
 		MinRespBufferBytes:           get("min_resp_buffer_bytes"),
 		MaxOperationsPerBatchRequest: get("max_operations_per_batch_request"),
+		MaxOperationsPerNdbExecute:   get("max_operations_per_ndb_execute"),
 		MaxBuffers:                   get("max_buffers"),
 		MemoryLimitBytes:             get("memory_limit_bytes"),
 	}

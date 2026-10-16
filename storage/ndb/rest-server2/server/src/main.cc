@@ -372,7 +372,7 @@ int main(int argc, char *argv[]) {
   if (optPrintConfig) {
     printJson(globalConfigs, std::cout, 0, true);
     std::cout << '\n';
-    do_exit();
+    if (!optPrintLimits) do_exit();
   }
 
   /* The buffer pools live in a trivially constructed global and are set up
@@ -400,6 +400,8 @@ int main(int argc, char *argv[]) {
               << "  \"MinRespBufferBytes\": " << MIN_RESP_BUFFER << ",\n"
               << "  \"MaxOperationsPerBatchRequest\": "
               << globalConfigs.internal.maxOperationsPerBatchRequest << ",\n"
+              << "  \"MaxOperationsPerNdbExecute\": "
+              << globalConfigs.internal.maxOperationsPerNdbExecute << ",\n"
               << "  \"MaxBuffers\": " << rsBufferArrayManager.max_buffers()
               << ",\n"
               << "  \"MemoryLimitBytes\": "

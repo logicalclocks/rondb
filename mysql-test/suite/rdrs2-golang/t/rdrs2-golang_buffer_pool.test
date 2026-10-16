@@ -113,14 +113,24 @@ $ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_POOL'};
 $ENV{'RDRS_POOL_TEST'}   = '1';
 $ENV{'POOL_DB'}          = 'pool_db';
 
-system("go test -v -count 1 -timeout 15m " .
+# The pool tests skip themselves without the settings above, and a skip
+# exits 0, so each one must report PASS.
+my @pool_tests = qw(TestPoolExhaustedReturns503 TestPoolShrinksAfterIdle
+                    TestRetryWithLoweredStartReserve
+                    TestBatchParseErrorAfterValidOpReleasesBuffers);
+my $run = '^(' . join('|', @pool_tests) . ')$';
+system("go test -v -count 1 -timeout 15m -run '$run' " .
        "hopsworks.ai/rdrs2/internal/integrationtests/bufferpool " .
        ">> \"$go_log_file\" 2>&1");
 my $exit_code = $? >> 8;
-if ($exit_code != 0) {
+my $out = '';
+if (open(my $fh, '<', $go_log_file)) { local $/; $out = <$fh>; close($fh); }
+my @not_passed = grep { $out !~ /--- PASS: $_ / } @pool_tests;
+if ($exit_code != 0 || @not_passed) {
     print "FAIL: pool driver exited with code $exit_code\n";
+    print "Did not pass: @not_passed\n" if @not_passed;
     print "Full log: $go_log_file\n";
-    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    print $out;
     exit 1;
 }
 print "PASS\n";

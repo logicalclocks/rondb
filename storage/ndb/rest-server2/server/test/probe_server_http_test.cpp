@@ -759,6 +759,25 @@ TEST(ProbeConfigTest, ProbePortWithAuthenticatedProbesIsRejected) {
   }
 }
 
+/* A response view begins with a 36-byte header written without a capacity
+ * check, so StartReserveOverride must leave room for it (RONDB-1144). */
+TEST(ProbeConfigTest, StartReserveOverrideBelowResponseHeaderIsRejected) {
+  const AllConfigs saved = globalConfigs;
+  for (Uint32 value : {1U, static_cast<Uint32>(PK_RESP_HEADER_END - 1)}) {
+    AllConfigs c = saved;
+    c.internal.startReserveOverride = value;
+    RS_Status st = AllConfigs::set_all(c);
+    EXPECT_NE(st.http_code, 200) << "StartReserveOverride " << value;
+  }
+  for (Uint32 value : {0U, static_cast<Uint32>(PK_RESP_HEADER_END)}) {
+    AllConfigs c = saved;
+    c.internal.startReserveOverride = value;
+    RS_Status st = AllConfigs::set_all(c);
+    EXPECT_EQ(st.http_code, 200) << st.message;
+  }
+  globalConfigs = saved;
+}
+
 /* A config key this binary does not know is warned about and ignored
  * (RONDB-1144), so a file written for another rdrs2 version still starts
  * the server; the keys it does know are still applied. rdrs2 images that

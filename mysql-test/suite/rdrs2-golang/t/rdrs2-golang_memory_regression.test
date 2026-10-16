@@ -1,8 +1,8 @@
 # RONDB-1144: memory stays bounded under a wide-row batch load.
 #
-# This is the test the whole change exists for. Today's rdrs2 holds 12 MiB
-# of pool buffers per in-flight HTTP request and never returns them, so a
-# wide-row batch load kills a 500 MiB pod within seconds. rdrs.3.1 (no
+# This is the test the whole change exists for. Before RONDB-1144 rdrs2
+# held 12 MiB of pool buffers per in-flight HTTP request and never returned
+# them, so a wide-row batch load killed a 500 MiB pod within seconds. rdrs.3.1 (no
 # auth, plain HTTP; see the companion .cnf) runs with MaxBuffers=256,
 # PreAllocatedBuffers=8 and NumThreads=8. The Go driver
 # (internal/integrationtests/bufferpool, TestMemoryBoundedUnderWideRowBatchLoad)

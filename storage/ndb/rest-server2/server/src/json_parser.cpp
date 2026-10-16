@@ -118,7 +118,7 @@ public:
       std::string_view fkey = field.unescaped_key(false); \
       simdjson::ondemand::value fval = field.value(); \
       __VA_ARGS__ \
-      if (fkey[0] != '#') { \
+      if (fkey.empty() || fkey[0] != '#') { \
         ON_UNKNOWN_KEY; \
       } \
     } \

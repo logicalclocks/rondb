@@ -39,6 +39,7 @@
 #include <memory>
 #include <new>
 #include <mysql_time.h>
+#include <mysql/strings/m_ctype.h>
 #include <algorithm>
 #include <tuple>
 #include <utility>
@@ -1124,6 +1125,15 @@ RS_Status KeyOperation::write_col_to_resp(Uint32 colIdx,
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
         std::string(" Column: ") + std::string(col_name));
+    }
+    /* The escaped value is at least length / mbminlen bytes and all of it
+     * goes into the response pool. A value the pool can never hold is
+     * refused here, as a blob of that size would be, before the staging
+     * and conversion buffers (several times its size) are allocated. */
+    RS_Status pool_status = RS_BufferChain::check_pool_can_hold(
+      length / col->getCharset()->mbminlen);
+    if (unlikely(pool_status.http_code != SUCCESS)) {
+      return pool_status;
     }
     std::unique_ptr<char[]> staging_buffer(
       new (std::nothrow) char[static_cast<size_t>(length)]);

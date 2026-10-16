@@ -90,8 +90,8 @@ func TestBlobSpillNull(t *testing.T) {
 	testutils.AssertPoolBalanced(t, before)
 }
 
-// A blob in the middle of the read set spills, and the varchar after it
-// still reads correctly: blobs are written after the bounded values.
+// A spilling blob requested before a varchar still lets the varchar read
+// correctly: blobs are written after the bounded values.
 func TestBlobSpillMiddleThenVarchar(t *testing.T) {
 	spillfixture.SetupSpillTable(t)
 	size := respBufferBytes(t)

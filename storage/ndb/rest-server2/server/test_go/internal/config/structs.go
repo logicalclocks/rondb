@@ -27,11 +27,7 @@ import (
 
 type Internal struct {
 	PreAllocatedBuffers uint32
-	// RONDB-1144: cap on the operations of one batch request (413 above it)
-	MaxOperationsPerBatchRequest uint32
-	// RONDB-1144: operations sent to NDB per execute round; not a cap
-	MaxOperationsPerNdbExecute uint32
-	OperationIDMaxSize         uint32
+	OperationIDMaxSize  uint32
 }
 
 func (i *Internal) Validate() error {

@@ -41,6 +41,16 @@ RS_Status pool_exhausted() {
 
 }  // namespace
 
+RS_Status RS_BufferChain::check_pool_can_hold(Uint64 bytes) {
+  const Uint64 pool_bytes =
+    static_cast<Uint64>(rsBufferArrayManager.max_buffers()) *
+    rsBufferArrayManager.resp_buffer_bytes();
+  if (bytes > pool_bytes) {
+    return pool_exhausted();
+  }
+  return RS_OK;
+}
+
 RS_BufferChain::RS_BufferChain(Kind kind, Uint32 num_ops)
     : m_kind(kind), m_num_ops(num_ops) {
   m_views.assign(num_ops, RS_Buffer{nullptr, 0});

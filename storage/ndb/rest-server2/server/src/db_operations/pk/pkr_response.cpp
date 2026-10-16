@@ -28,6 +28,8 @@
 #include <iostream>
 #include <sstream>
 #include <cassert>
+#include <memory>
+#include <new>
 #include <ndb_limits.h>
 #include "buffer_sizes.hpp"
 
@@ -365,24 +367,27 @@ RS_Status PKRResponse::FormatChar(const char *fromBuff, Uint32 fromBuffLen,
   Uint64 estimated_bytes =
     (fromBuffLen / fromCS->mbminlen + 1) * toCS->mbmaxlen + 1;
   estimated_bytes = std::min(estimated_bytes, static_cast<Uint64>(UINT_MAX32));
-  std::shared_ptr<char> tempBuff(new char[estimated_bytes],
-                                 [](const char *buff) {
-    delete[] buff;  // Custom deleter to delete the array
-  });
+  /* A TEXT value can make this large (RONDB-1144), so a failed allocation
+   * is an error status, not an exception. */
+  std::unique_ptr<char[]> tempBuff(new (std::nothrow) char[estimated_bytes]);
+  if (unlikely(tempBuff == nullptr)) {
+    return RS_SERVER_ERROR(std::string(
+      rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+  }
   const char *well_formed_error_pos = nullptr;
   const char *cannot_convert_error_pos = nullptr;
   const char *from_end_pos = nullptr;
   const char *error_pos = nullptr;
-  int bytesFormed = well_formed_copy_nchars(toCS,
-                                            tempBuff.get(),
-                                            estimated_bytes,
-                                            fromCS,
-                                            fromBuff,
-                                            fromBuffLen,
-                                            UINT32_MAX,
-                                            &well_formed_error_pos,
-                                            &cannot_convert_error_pos,
-                                            &from_end_pos);
+  size_t bytesFormed = well_formed_copy_nchars(toCS,
+                                               tempBuff.get(),
+                                               estimated_bytes,
+                                               fromCS,
+                                               fromBuff,
+                                               fromBuffLen,
+                                               UINT32_MAX,
+                                               &well_formed_error_pos,
+                                               &cannot_convert_error_pos,
+                                               &from_end_pos);
   error_pos = well_formed_error_pos ?
     well_formed_error_pos : cannot_convert_error_pos;
   if (unlikely(error_pos)) {

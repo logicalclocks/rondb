@@ -1052,6 +1052,8 @@ void initMetrics() {
     {"min_resp_buffer_bytes", static_cast<double>(MIN_RESP_BUFFER)},
     {"max_operations_per_batch_request",
      static_cast<double>(globalConfigs.internal.maxOperationsPerBatchRequest)},
+    {"max_operations_per_ndb_execute",
+     static_cast<double>(globalConfigs.internal.maxOperationsPerNdbExecute)},
     {"max_buffers", static_cast<double>(rsBufferArrayManager.max_buffers())},
     {"memory_limit_bytes",
      static_cast<double>(rsBufferArrayManager.memory_limit_bytes())},

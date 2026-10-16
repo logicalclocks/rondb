@@ -741,9 +741,12 @@ func TestLargeBatch(t *testing.T) {
 	// execute round, not a cap, so a batch larger than it must succeed. The
 	// real cap is Internal.MaxOperationsPerBatchRequest (RONDB-1144),
 	// exercised by batch_limit_test.go; this size must stay below it.
-	batchSize := config.GetAll().Internal.MaxOperationsPerNdbExecute + 200
-	if limit := testutils.GetLimits(t).MaxOperationsPerBatchRequest; int64(batchSize) > limit {
-		t.Fatalf("test size %d exceeds MaxOperationsPerBatchRequest %d", batchSize, limit)
+	// Both numbers come from the server's rdrs_limits.
+	limits := testutils.GetLimits(t)
+	batchSize := uint32(limits.MaxOperationsPerNdbExecute + 200)
+	if int64(batchSize) > limits.MaxOperationsPerBatchRequest {
+		t.Fatalf("test size %d exceeds MaxOperationsPerBatchRequest %d",
+			batchSize, limits.MaxOperationsPerBatchRequest)
 	}
 
 	subOperations := make([]api.BatchSubOperationTestInfo, batchSize)

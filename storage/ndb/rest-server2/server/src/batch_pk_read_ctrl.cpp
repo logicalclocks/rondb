@@ -247,10 +247,10 @@ void BatchPKReadCtrl::batchPKRead(
         status = req_chain.next_op_view(
             i, native_request_upper_bound(reqStructs[i]));
         if (unlikely(status.http_code != SUCCESS)) {
-        resp->setBody(std::string(status.message));
-        resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
-        callback(resp);
-        return;
+          resp->setBody(std::string(status.message));
+          resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+          callback(resp);
+          return;
         }
       }
       RS_Buffer &view = req_chain.views()[i];
@@ -298,11 +298,21 @@ void BatchPKReadCtrl::batchPKRead(
       size_t calc_size_json = 20; // Batch overhead
       for (unsigned int i = 0; i < noOps; i++) {
         PKReadResponseJSON response;
-        process_pkread_response(&amalloc,
-                                resp_chain,
-                                i,
-                                &req_chain.views()[i],
-                                response);
+        RS_Status read_status =
+          process_pkread_response(&amalloc,
+                                  resp_chain,
+                                  i,
+                                  &req_chain.views()[i],
+                                  response);
+        /* An internal error (it names a file) leaves the columns unset, so
+         * nothing can be serialised; an operation status such as 404 can. */
+        if (unlikely(read_status.err_file_name[0] != '\0')) {
+          resp->setStatusCode(
+            static_cast<drogon::HttpStatusCode>(read_status.http_code));
+          resp->setBody(std::string(read_status.message));
+          callback(resp);
+          return;
+        }
         calc_size_json += response.getSizeJson();
         responses.push_back(response);
       }

@@ -746,7 +746,8 @@ void FeatureStoreCtrl::featureStore(
         status = resp_chain.take_first();
       }
       if (unlikely(status.http_code != SUCCESS)) {
-        resp->setBody(std::string(status.message));
+        resp->setBody(SERVICE_TEMPORARILY_UNAVAILABLE->NewMessage(
+          status.message)->Error());
         resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
         callback(resp);
         return;
@@ -758,10 +759,11 @@ void FeatureStoreCtrl::featureStore(
         status = req_chain.next_op_view(
             i, native_request_upper_bound(readParams[i]));
         if (unlikely(status.http_code != SUCCESS)) {
-        resp->setBody(std::string(status.message));
-        resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
-        callback(resp);
-        return;
+          resp->setBody(SERVICE_TEMPORARILY_UNAVAILABLE->NewMessage(
+            status.message)->Error());
+          resp->setStatusCode(drogon::HttpStatusCode::k503ServiceUnavailable);
+          callback(resp);
+          return;
         }
       }
       RS_Buffer &view = req_chain.views()[i];

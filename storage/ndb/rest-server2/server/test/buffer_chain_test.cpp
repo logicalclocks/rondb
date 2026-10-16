@@ -180,6 +180,18 @@ TEST_F(BufferChainTest, PoolCapIsReportedAs503AndNothingLeaks) {
   EXPECT_EQ(req_in_use(), 0);
 }
 
+/* A value larger than the whole response pool could hold is refused
+ * before anything is allocated for it (the TEXT branch asks first); one
+ * that fits the cap is not, and asking takes no buffer. */
+TEST_F(BufferChainTest, ValueBeyondThePoolCapIsRefusedUpFront) {
+  const Uint64 pool_bytes = static_cast<Uint64>(kMax) * kResp;
+  EXPECT_EQ(RS_BufferChain::check_pool_can_hold(pool_bytes).http_code,
+            SUCCESS);
+  EXPECT_EQ(RS_BufferChain::check_pool_can_hold(pool_bytes + 1).http_code,
+            503);
+  EXPECT_EQ(resp_in_use(), 0);
+}
+
 /* A response whose raw column is larger than its view spills into
  * continuation buffers, fills each one to its last byte, and records the
  * total length and the virtual offset of its first byte. */

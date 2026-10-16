@@ -47,10 +47,8 @@ func init() {
 func newWithDefaults() AllConfigs {
 	return AllConfigs{
 		Internal: Internal{
-			PreAllocatedBuffers:          128,
-			MaxOperationsPerBatchRequest: 512,
-			MaxOperationsPerNdbExecute:   128,
-			OperationIDMaxSize:           256,
+			PreAllocatedBuffers: 128,
+			OperationIDMaxSize:  256,
 		},
 		GRPC: GRPC{
 			Enable:     false,

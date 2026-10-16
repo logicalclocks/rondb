@@ -68,6 +68,10 @@ struct RS_BufferChain {
   RS_Status next_op_view(Uint32 index, Uint32 need = 0);
   /* Request side: the encoder wrote bytes at the view; move the head. */
   void advance(Uint32 bytes);
+  /* Response side: 503 when bytes could not fit even if the response pool
+   * held every buffer its cap allows, so a value that can only end in 503
+   * is refused before anything is allocated for it. */
+  static RS_Status check_pool_can_hold(Uint64 bytes);
   /* Response side: append an owner for a spilled value and make it the
    * tail; on success *owner_index is its index. */
   RS_Status take_continuation(Uint32 *owner_index);

@@ -328,12 +328,16 @@ TEST(BufferPoolMetrics, ConcurrentScrapesCountEachEventOnce) {
       while (!done.load()) scrape();
     });
   }
+  // Asserted after the join: returning with the scrapers still running
+  // would end the binary in std::terminate instead of a test failure.
+  int refused = 0;
   for (int i = 0; i < kRefusals; i++) {
-    ASSERT_EQ(pool.get().buffer, nullptr);
+    if (pool.get().buffer == nullptr) refused++;
   }
   done.store(true);
   for (auto &t : scrapers) t.join();
   scrape();
+  ASSERT_EQ(refused, kRefusals);
 
   BufferPoolStats st;
   pool.get_stats(st);
