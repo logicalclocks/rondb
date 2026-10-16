@@ -150,6 +150,66 @@ DEFINE_FORMATTER(quoted_identifier, char*, {
 // Make sure that the number of registers in AggregationAPICompiler.hpp matches
 // that in ../../include/ndbapi/NdbAggregationCommon.hpp
 static_assert(REGS == kRegTotal);
+// ... and that the aggregate results limit is the one NdbAggregator enforces.
+static_assert(MAX_AGGS == MAX_AGG_N_RESULTS - 1);
+// The GROUP BY limit NdbAggregator enforces (see check_groupby_limit).
+static constexpr Uint32 MAX_GROUPBY_COLS = MAX_AGG_N_GROUPBY_COLS - 1;
+
+/*
+ * RONSQL-14: NdbAggregator holds at most MAX_GROUPBY_COLS GROUP BY
+ * columns, a documented limit.  Count them before programming, so that a
+ * longer GROUP BY is a limit error and not the aggregator's refusal, which
+ * read as an internal error.
+ */
+static void
+check_groupby_limit(const GroupbyColumns* groupby)
+{
+  Uint32 n = 0;
+  for (; groupby != NULL; groupby = groupby->next) n++;
+  if (n > MAX_GROUPBY_COLS)
+  {
+    throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                               "GROUP BY has more than " +
+                               std::to_string(MAX_GROUPBY_COLS) +
+                               " columns.");
+  }
+}
+
+/*
+ * RONSQL-14: Finalize the aggregator, or throw.  The GROUP BY and
+ * aggregate counts are checked before programming (check_groupby_limit,
+ * AggregationAPICompiler::new_agg), but the size of one group's record
+ * (its GROUP BY columns and aggregate results, at their declared sizes)
+ * and the size of the program are only known here, and exceeding them is
+ * a limit error.  Any other refusal keeps the caller's message.
+ */
+static void
+finalize_aggregator(NdbAggregator* agg, const char* msg)
+{
+  if (agg->Finalize()) return;
+  switch (agg->GetError().errno_)
+  {
+  case kErrTooBigResult:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::LIMIT,
+        "The GROUP BY columns and aggregate results of one group can need "
+        "more than " + std::to_string(MAX_AGG_RESULT_BATCH_BYTES / 1024) +
+        " KB, counted at the declared column sizes.");
+  case kErrTooBigProgram:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::LIMIT,
+        "The aggregate expressions are too large: the aggregation program "
+        "must be shorter than " + std::to_string(MAX_AGG_PROGRAM_WORD_SIZE) +
+        " words.");
+  case kErrTooManyGroupbyCols:
+    throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                               "GROUP BY has more than " +
+                               std::to_string(MAX_GROUPBY_COLS) +
+                               " columns.");
+  default:
+    throw RonSQLPermanentError(msg);
+  }
+}
 
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
@@ -9650,7 +9710,7 @@ RonSQLPreparer::execute()
      * recompilation (RONDB-1056 Phase 8 Slice 4). */
     aggregator.set_reusable_program(true);
     DBGV(programAggregator(&aggregator));
-    require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+    finalize_aggregator(&aggregator, "Failed to finalize aggregator.");
     if (m_pk_lookup) {
       // WP-F F1b: IN list on the primary key — N aggregating key reads.
       execute_pk_lookup_aggregate(&aggregator);
@@ -10407,7 +10467,7 @@ RonSQLPreparer::execute_api_side_aggregate()
    */
   NdbAggregator aggregator(m_main_scope.table);
   DBGV(programAggregator(&aggregator));
-  require_prm(aggregator.Finalize(), "Failed to finalize aggregator.");
+  finalize_aggregator(&aggregator, "Failed to finalize aggregator.");
   // The body's ORDER BY is required (route_lastn_aggregate_to_api), and
   // its first column is the one read when the program loads none.
   ndbrequire(m_context.ast_root.orderby_columns != NULL);
@@ -11340,6 +11400,7 @@ RonSQLPreparer::execute_join()
 
       // Program GROUP BY columns (all from root → GroupByLinked)
       Uint32 linked_proj_pos = 0;
+      check_groupby_limit(m_context.ast_root.groupby_columns);
       struct GroupbyColumns* groupby = m_context.ast_root.groupby_columns;
       while (groupby != NULL) {
         Uint32 col_idx = groupby->col_idx;
@@ -11439,13 +11500,13 @@ RonSQLPreparer::execute_join()
       // Sentinel filtering only applies to explicit JOIN + GROUP BY queries
       // (handled in programAggregator_join).
 
-      require_prm(agg->Finalize(), "Failed to finalize leaf aggregator.");
+      finalize_aggregator(agg, "Failed to finalize leaf aggregator.");
     }
   } else if (m_is_aggregate_query) {
     // Single-leaf path (existing)
     programAggregator_join(m_main_scope, m_context.ast_root, &singleAgg,
                            cteVirtualTables);
-    require_prm(singleAgg.Finalize(), "Failed to finalize aggregator.");
+    finalize_aggregator(&singleAgg, "Failed to finalize aggregator.");
   }
   // Phase E.3: when !m_is_aggregate_query, singleAgg stays unprogrammed
   // and unfinalized.  emit_root_op will receive NULL and skip
@@ -11514,6 +11575,15 @@ RonSQLPreparer::execute_join()
         // Bodies are single-table by candidacy, so every output
         // resolves to a stored column of the source table.
         cteAgg->SetSingleRowMode();
+        Uint32 n_outputs = 0;
+        for (const Outputs* o = cte->stmt->outputs; o != NULL; o = o->next)
+          n_outputs++;
+        if (n_outputs > MAX_GROUPBY_COLS) {
+          throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                                     "A single-row CTE has more than " +
+                                     std::to_string(MAX_GROUPBY_COLS) +
+                                     " output columns.");
+        }
         for (const Outputs* o = cte->stmt->outputs; o != NULL;
              o = o->next) {
           const QueryScope::ResolvedColumnRef& ref =
@@ -11532,7 +11602,7 @@ RonSQLPreparer::execute_join()
       /* ORDER BY / LIMIT trailer (cte_orderby_limit_plan.md L4) — must
        * precede Finalize.  True = pass CTE_LIMIT to defineCte below. */
       const bool cteHasLimit = emit_cte_orderby_limit(cs, cte, cteAgg);
-      require_prm(cteAgg->Finalize(), "Failed to finalize CTE aggregator.");
+      finalize_aggregator(cteAgg, "Failed to finalize CTE aggregator.");
 
       qb->beginCteSubtree(c);
       const NdbQueryOperationDef* cteOpDefs[MAX_SPJ_TREE_NODES];
@@ -17068,6 +17138,7 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   // Program groupby columns
   require_run(m_main_scope.resolved_columns != NULL,
               "Aggregation emit: missing resolved columns.");
+  check_groupby_limit(ast_root.groupby_columns);
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {
@@ -17815,6 +17886,7 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
               "Aggregation emit: missing resolved columns.");
   const Uint32 cte_base_pos = leafIsCte ? scope.join_plan.num_linked_projs : 0;
   Uint32 linked_proj_pos = 0;
+  check_groupby_limit(ast_root.groupby_columns);
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
   {

@@ -303,6 +303,16 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
   // Since new aggregates are only to be created during programming, the above
   // deduplication should always succeed during compilation.
   require_status(PROGRAMMING);
+  // RONSQL-14: a documented limit, so a limit error rather than the
+  // aggregator's refusal at Finalize().  The main query compiles AVG as a
+  // SUM and a COUNT; a CTE body compiles it as one result.
+  if (m_aggs.size() >= MAX_AGGS)
+  {
+    throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                               "More than " + std::to_string(MAX_AGGS) +
+                               " aggregate results in one SELECT. AVG "
+                               "counts as two, except in a CTE body.");
+  }
   expr->usage++;
   m_aggs.push(agg);
   return m_aggs.size() - 1;
