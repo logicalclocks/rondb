@@ -17390,7 +17390,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   transP->apiScanRec = scanptr.i;
   transP->returncode = 0;
   /* transid[] is already stored, see above */
-  transP->buddyPtr = buddyPtr;
+  /* Use the scan's own API connection when no buddy was supplied. */
+  transP->buddyPtr = (buddyPtr == RNIL ? apiConnectptr.i : buddyPtr);
 
   // The scan is started
   transP->apiConnectstate = CS_START_SCAN;
