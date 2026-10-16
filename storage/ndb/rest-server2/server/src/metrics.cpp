@@ -1054,6 +1054,8 @@ void initMetrics() {
      static_cast<double>(globalConfigs.internal.maxOperationsPerBatchRequest)},
     {"max_operations_per_ndb_execute",
      static_cast<double>(globalConfigs.internal.maxOperationsPerNdbExecute)},
+    {"max_blob_text_value_bytes",
+     static_cast<double>(globalConfigs.internal.maxBlobTextValueBytes)},
     {"max_buffers", static_cast<double>(rsBufferArrayManager.max_buffers())},
     {"memory_limit_bytes",
      static_cast<double>(rsBufferArrayManager.memory_limit_bytes())},

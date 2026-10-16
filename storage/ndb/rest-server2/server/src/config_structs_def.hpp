@@ -70,6 +70,11 @@ CLASS
     " 256. Also passed to the HTTP server as its body limit, so it is the one"
     " number that bounds a request body; larger bodies are rejected before"
     " rdrs2 sees them. Each worker thread keeps a parse buffer of this size.")
+ CM(Uint32, maxBlobTextValueBytes, MaxBlobTextValueBytes, 2 * 1024 * 1024,
+    "Largest BLOB or TEXT value, in stored bytes, that a read returns. An"
+    " operation that reads a larger value fails with HTTP 413 naming the"
+    " column, without reading it; in a batch only that operation fails."
+    " 0 = no limit (the response pool still bounds a value).")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
     "Initial buffer reservation for scan response JSON, in bytes. The buffer"
     " will grow automatically if the response exceeds this size.")

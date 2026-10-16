@@ -259,6 +259,10 @@ std::shared_ptr<RestErrorCode>
       /* Rate limit rejections (RONDB-978) keep their 429 status */
       DEB_FS_CTRL("RATE LIMITED");
       fsError = RATE_LIMIT_EXCEEDED->NewMessage(err);
+    } else if (code == drogon::k413RequestEntityTooLarge) {
+      /* A BLOB or TEXT value above MaxBlobTextValueBytes (RONDB-1144). */
+      DEB_FS_CTRL("VALUE TOO LARGE");
+      fsError = FEATURE_VALUE_TOO_LARGE->NewMessage(err);
     } else if (code == drogon::k503ServiceUnavailable) {
       /* A full buffer pool (RONDB-1144) is overload, not a failed read:
        * keep the 503 wherever the pool ran dry, including a value that

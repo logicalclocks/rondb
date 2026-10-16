@@ -169,6 +169,9 @@ func BenchmarkBlob4MiB(b *testing.B) {
 	if needed > limits.MaxBuffers {
 		b.Skipf("a 4 MiB blob needs %d buffers, pool cap is %d", needed, limits.MaxBuffers)
 	}
+	if limit := limits.MaxBlobTextValueBytes; limit != 0 && fourMiB > limit {
+		b.Skipf("a 4 MiB blob is over MaxBlobTextValueBytes (%d); raise it on the benchmarked server", limit)
+	}
 	testutils.SetBlob(b, spillfixture.DB, spillfixture.Table, "b", spillfixture.RowID,
 		testutils.DeterministicBytes(fourMiB, 23))
 

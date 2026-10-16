@@ -17,10 +17,13 @@
 package pkread
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 
+	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests/spillfixture"
+	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/internal/testutils"
 )
 
@@ -54,7 +57,9 @@ func TestBlobSpillBoundarySweep(t *testing.T) {
 
 func TestBlobSpillTwoBuffersPlusOne(t *testing.T) {
 	spillfixture.SetupSpillTable(t)
-	size := respBufferBytes(t)
+	limits := testutils.GetLimits(t)
+	size := int(limits.RespBufferBytes)
+	testutils.SkipIfOverValueLimit(t, limits, 2*size+1)
 	before := testutils.TakePoolSnapshot(t)
 	want := testutils.DeterministicBytes(2*size+1, 2)
 	testutils.SetBlob(t, spillfixture.DB, spillfixture.Table, "b", spillfixture.RowID, want)
@@ -62,17 +67,51 @@ func TestBlobSpillTwoBuffersPlusOne(t *testing.T) {
 	testutils.AssertPoolBalanced(t, before)
 }
 
-func TestBlobSpill10MiB(t *testing.T) {
+// largestValue is the largest blob or text value a read may return:
+// MaxBlobTextValueBytes, or 10 MiB when the server sets no limit. ok is
+// false when the pool cap could not hold it.
+func largestValue(limits testutils.Limits) (n int, ok bool) {
+	n = tenMiB
+	if limits.MaxBlobTextValueBytes != 0 {
+		n = int(limits.MaxBlobTextValueBytes)
+	}
+	return n, int64(n)/limits.RespBufferBytes+2 <= limits.MaxBuffers
+}
+
+// A blob of exactly MaxBlobTextValueBytes is still returned, spilling over
+// several buffers.
+func TestBlobSpillAtValueLimit(t *testing.T) {
 	spillfixture.SetupSpillTable(t)
-	limits := testutils.GetLimits(t)
-	needed := int64(tenMiB)/limits.RespBufferBytes + 2
-	if needed > limits.MaxBuffers {
-		t.Skipf("a 10 MiB blob needs %d buffers, pool cap is %d", needed, limits.MaxBuffers)
+	n, ok := largestValue(testutils.GetLimits(t))
+	if !ok {
+		t.Skipf("a %d byte blob needs more buffers than the pool cap", n)
 	}
 	before := testutils.TakePoolSnapshot(t)
-	want := testutils.DeterministicBytes(tenMiB, 10)
+	want := testutils.DeterministicBytes(n, 10)
 	testutils.SetBlob(t, spillfixture.DB, spillfixture.Table, "b", spillfixture.RowID, want)
 	spillfixture.ExpectBlob(t, spillfixture.Read(t, []string{"b"}), "b", want)
+	testutils.AssertPoolBalanced(t, before)
+}
+
+// One byte over MaxBlobTextValueBytes, a blob or a text value fails the
+// read with 413 naming the column, and takes no buffer with it.
+func TestBlobTextOverValueLimit(t *testing.T) {
+	spillfixture.SetupSpillTable(t)
+	limit := int(testutils.GetLimits(t).MaxBlobTextValueBytes)
+	if limit == 0 {
+		t.Skip("the server sets no MaxBlobTextValueBytes")
+	}
+	before := testutils.TakePoolSnapshot(t)
+	testutils.SetBlob(t, spillfixture.DB, spillfixture.Table, "b", spillfixture.RowID,
+		testutils.DeterministicBytes(limit+1, 13))
+	testutils.SetBlob(t, spillfixture.DB, spillfixture.Table, "t", spillfixture.RowID,
+		testutils.PrintableBytes(limit+1, 14))
+	url := testutils.NewPKReadURL(spillfixture.DB, spillfixture.Table)
+	for _, col := range []string{"b", "t"} {
+		testclient.SendHttpRequest(t, config.PK_HTTP_VERB, url,
+			spillfixture.ReadBody(t, []string{col, "v"}),
+			"Column "+col+" holds", http.StatusRequestEntityTooLarge)
+	}
 	testutils.AssertPoolBalanced(t, before)
 }
 
@@ -134,9 +173,15 @@ func TestTextSpillSizes(t *testing.T) {
 	spillfixture.SetupSpillTable(t)
 	limits := testutils.GetLimits(t)
 	size := int(limits.RespBufferBytes)
-	sizes := []int{size - 1, size, size + 1, 2*size + 1}
-	if int64(tenMiB)/limits.RespBufferBytes+2 <= limits.MaxBuffers {
-		sizes = append(sizes, tenMiB)
+	var sizes []int
+	for _, n := range []int{size - 1, size, size + 1, 2*size + 1} {
+		// A size over MaxBlobTextValueBytes would be answered 413.
+		if limits.MaxBlobTextValueBytes == 0 || int64(n) <= limits.MaxBlobTextValueBytes {
+			sizes = append(sizes, n)
+		}
+	}
+	if n, ok := largestValue(limits); ok {
+		sizes = append(sizes, n)
 	}
 	before := testutils.TakePoolSnapshot(t)
 	for _, n := range sizes {

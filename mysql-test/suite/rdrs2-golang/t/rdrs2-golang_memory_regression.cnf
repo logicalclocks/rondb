@@ -3,7 +3,8 @@
 # small memory limit (a cap of 256 buffers of each kind, 8 preallocated,
 # a 30 second idle shrink) and 8 worker threads, so a sustained wide-row
 # batch load from the Go driver stays inside a bound computed from those
-# numbers. StartReserveOverride 0 means the computed reserve.
+# numbers. StartReserveOverride 0 means the computed reserve;
+# MaxBlobTextValueBytes is the 2 MiB default.
 !include suite/rdrs2-golang/my.cnf
 
 [rdrs.3.1]
@@ -14,6 +15,7 @@ MaxBuffers=256
 BufferShrinkAfterS=30
 PreAllocatedBuffers=8
 StartReserveOverride=0
+MaxBlobTextValueBytes=2097152
 
 [ENV]
 RDRS_CONFIG_FILE_MEM=          @rdrs.3.1.#config-json

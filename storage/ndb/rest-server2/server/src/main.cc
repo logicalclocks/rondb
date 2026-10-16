@@ -402,6 +402,8 @@ int main(int argc, char *argv[]) {
               << globalConfigs.internal.maxOperationsPerBatchRequest << ",\n"
               << "  \"MaxOperationsPerNdbExecute\": "
               << globalConfigs.internal.maxOperationsPerNdbExecute << ",\n"
+              << "  \"MaxBlobTextValueBytes\": "
+              << globalConfigs.internal.maxBlobTextValueBytes << ",\n"
               << "  \"MaxBuffers\": " << rsBufferArrayManager.max_buffers()
               << ",\n"
               << "  \"MemoryLimitBytes\": "

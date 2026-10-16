@@ -664,6 +664,17 @@ RS_Status BatchKeyOperations::write_response(Uint32 i, PKRResponse *resp,
   }
   found = true;
   if (likely(op->getNdbError().classification == NdbError::NoError)) {
+    /* A BLOB or TEXT value above MaxBlobTextValueBytes fails this
+     * operation alone, before any of its columns is written. */
+    RS_Status size_status = key_op->check_value_sizes();
+    if (unlikely(size_status.http_code != SUCCESS)) {
+      status = resp->SetStatus(size_status.http_code, size_status.message);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;
+      }
+      resp->Close(response_length);
+      return m_isBatch ? RS_OK : size_status;
+    }
     status = resp->SetStatus(SUCCESS, "OK");
   } else if (op->getNdbError().classification == NdbError::NoDataFound) {
     found = false;
@@ -697,6 +708,38 @@ static inline bool is_spillable(const NdbDictionary::Column *col) {
   const NdbDictionary::Column::Type type = col->getType();
   return type == NdbDictionary::Column::Blob ||
          type == NdbDictionary::Column::Text;
+}
+
+RS_Status KeyOperation::check_value_sizes() const {
+  const Uint32 limit = globalConfigs.internal.maxBlobTextValueBytes;
+  if (limit == 0) {
+    return RS_OK;
+  }
+  for (Uint32 colIdx = 0; colIdx < m_num_read_columns; colIdx++) {
+    if (!is_spillable(m_readColumns[colIdx])) {
+      continue;
+    }
+    /* NDB knows the length once the operation has executed. A NULL value,
+     * or a handle that cannot report its length, is left to
+     * write_col_to_resp, which writes the null or reports the error. */
+    NdbBlob *blobHandle = m_blob_handles[colIdx];
+    int isNull = 0;
+    Uint64 length = 0;
+    if (blobHandle->getNull(isNull) != 0 || isNull ||
+        blobHandle->getLength(length) != 0) {
+      continue;
+    }
+    if (length > limit) {
+      const std::string msg =
+        std::string("Column ") + m_readColumns[colIdx]->getName() +
+        " holds " + std::to_string(length) +
+        " bytes, more than MaxBlobTextValueBytes (" + std::to_string(limit) +
+        ")";
+      return __RS_ERROR(static_cast<HTTP_CODE>(413), -1, -1, -1, -1,
+                        msg.c_str(), __LINE__, __MYFILENAME__);
+    }
+  }
+  return RS_OK;
 }
 
 RS_Status KeyOperation::append_op_recs(PKRResponse *resp,

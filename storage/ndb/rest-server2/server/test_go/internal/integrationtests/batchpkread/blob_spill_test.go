@@ -58,6 +58,19 @@ func spillOp(t testing.TB, cols []string) api.BatchSubOp {
 
 func sendOps(t *testing.T, ops []api.BatchSubOp) api.BatchResponseJSON {
 	t.Helper()
+	res := sendOpsAnyCodes(t, ops)
+	for i, sub := range *res.Result {
+		if sub.Code == nil || *sub.Code != http.StatusOK {
+			t.Fatalf("sub-operation %d: code %v", i, sub.Code)
+		}
+	}
+	return res
+}
+
+// sendOpsAnyCodes sends a batch that must succeed as a whole and returns
+// its sub-responses whatever their codes.
+func sendOpsAnyCodes(t *testing.T, ops []api.BatchSubOp) api.BatchResponseJSON {
+	t.Helper()
 	batch := api.BatchOpRequest{Operations: &ops}
 	body, err := json.Marshal(batch)
 	if err != nil {
@@ -70,11 +83,6 @@ func sendOps(t *testing.T, ops []api.BatchSubOp) api.BatchResponseJSON {
 	}
 	if res.Result == nil || len(*res.Result) != len(ops) {
 		t.Fatalf("expected %d sub-responses", len(ops))
-	}
-	for i, sub := range *res.Result {
-		if sub.Code == nil || *sub.Code != http.StatusOK {
-			t.Fatalf("sub-operation %d: code %v", i, sub.Code)
-		}
 	}
 	return res
 }
@@ -122,6 +130,45 @@ func TestBatchFourSpillingOps(t *testing.T) {
 			t.Fatalf("sub-operation %d has no data", i)
 		}
 		spillfixture.ExpectBlob(t, *data, "b", want)
+	}
+	testutils.AssertPoolBalanced(t, before)
+}
+
+// A blob or a text value over MaxBlobTextValueBytes fails its own
+// sub-operation with 413; the plain sub-operations around them still
+// return their rows. Batch sub-responses carry a code and a body but no
+// message, so the code is what identifies the limit.
+func TestBatchOverValueLimitFailsOnlyThatOp(t *testing.T) {
+	spillfixture.SetupSpillTable(t)
+	limit := int(testutils.GetLimits(t).MaxBlobTextValueBytes)
+	if limit == 0 {
+		t.Skip("the server sets no MaxBlobTextValueBytes")
+	}
+	before := testutils.TakePoolSnapshot(t)
+	testutils.SetBlob(t, spillfixture.DB, spillfixture.Table, "b", spillfixture.RowID,
+		testutils.DeterministicBytes(limit+1, 15))
+	testutils.SetBlob(t, spillfixture.DB, spillfixture.Table, "t", spillfixture.RowID,
+		testutils.PrintableBytes(limit+1, 16))
+
+	res := sendOpsAnyCodes(t, []api.BatchSubOp{plainIntOp(), spillOp(t, []string{"b", "v"}),
+		plainIntOp(), spillOp(t, []string{"t", "v"})})
+	for _, i := range []int{0, 2} {
+		sub := (*res.Result)[i]
+		if sub.Code == nil || *sub.Code != http.StatusOK {
+			t.Fatalf("plain sub-operation %d: code %v", i, sub.Code)
+		}
+		if data := sub.Body.Data; data == nil || (*data)["col0"] == nil {
+			t.Fatalf("plain sub-operation %d lost its columns", i)
+		}
+	}
+	for _, i := range []int{1, 3} {
+		over := (*res.Result)[i]
+		if over.Code == nil || *over.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("over-limit sub-operation %d: code %v", i, over.Code)
+		}
+		if over.Body != nil && over.Body.Data != nil && len(*over.Body.Data) != 0 {
+			t.Fatalf("over-limit sub-operation %d returned columns", i)
+		}
 	}
 	testutils.AssertPoolBalanced(t, before)
 }

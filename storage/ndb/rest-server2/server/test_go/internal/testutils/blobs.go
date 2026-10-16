@@ -139,3 +139,16 @@ func run(t testing.TB, stmt string) {
 		t.Fatalf("%s: %v", firstBytes(stmt), err)
 	}
 }
+
+// SkipIfOverValueLimit skips a test that reads a blob or text value of n
+// bytes when the server's MaxBlobTextValueBytes would refuse it with 413.
+// Sizes derived from the response buffer can cross the limit: two buffers
+// plus one byte is 2 MiB + 1 with 26.10's 1 MiB buffers, one byte over the
+// 2 MiB default. TestBlobSpillAtValueLimit covers the largest value that
+// is allowed.
+func SkipIfOverValueLimit(t testing.TB, limits Limits, n int) {
+	t.Helper()
+	if limits.MaxBlobTextValueBytes != 0 && int64(n) > limits.MaxBlobTextValueBytes {
+		t.Skipf("%d bytes is over MaxBlobTextValueBytes (%d)", n, limits.MaxBlobTextValueBytes)
+	}
+}

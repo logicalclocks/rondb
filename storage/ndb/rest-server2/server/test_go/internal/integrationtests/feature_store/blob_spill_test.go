@@ -17,6 +17,7 @@
 package feature_store
 
 import (
+	"net/http"
 	"testing"
 
 	"hopsworks.ai/rdrs2/internal/testutils"
@@ -100,10 +101,35 @@ func TestFeatureStoreBlobSpillOneBufferPlusOne(t *testing.T) {
 }
 
 func TestFeatureStoreBlobSpillTwoBuffersPlusOne(t *testing.T) {
-	size := int(testutils.GetLimits(t).RespBufferBytes)
+	limits := testutils.GetLimits(t)
+	size := int(limits.RespBufferBytes)
+	testutils.SkipIfOverValueLimit(t, limits, 2*size+1)
 	before := testutils.TakePoolSnapshot(t)
 	want := testutils.DeterministicBytes(2*size+1, 2)
 	setBlobFeature(t, want)
 	expectBlobFeature(t, want)
+	testutils.AssertPoolBalanced(t, before)
+}
+
+// A blob feature over MaxBlobTextValueBytes fails the feature vector with
+// 413 and the feature store's "Feature value too large" error.
+func TestFeatureStoreBlobOverValueLimit(t *testing.T) {
+	limit := int(testutils.GetLimits(t).MaxBlobTextValueBytes)
+	if limit == 0 {
+		t.Skip("the server sets no MaxBlobTextValueBytes")
+	}
+	before := testutils.TakePoolSnapshot(t)
+	setBlobFeature(t, testutils.DeterministicBytes(limit+1, 3))
+	fsReq := CreateFeatureStoreRequest(
+		testdbs.FSDB002,
+		blobFeatureView,
+		1,
+		[]string{"id"},
+		[]interface{}{[]byte("1")},
+		nil,
+		nil,
+	)
+	GetFeatureStoreResponseWithDetail(t, fsReq, "Feature value too large",
+		http.StatusRequestEntityTooLarge)
 	testutils.AssertPoolBalanced(t, before)
 }
