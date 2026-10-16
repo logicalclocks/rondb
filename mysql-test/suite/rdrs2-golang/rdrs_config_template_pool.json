@@ -8,7 +8,7 @@
     "UploadPath": "@uploadpath"
   },
   "Internal": {
-    "maxReqSize": @MaxReqSize,
+    "MaxHttpReqSize": @MaxHttpReqSize,
     "MaxBuffers": @MaxBuffers,
     "BufferShrinkAfterS": @BufferShrinkAfterS,
     "PreAllocatedBuffers": @PreAllocatedBuffers,

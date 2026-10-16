@@ -10,7 +10,7 @@
 [rdrs.3.1]
 config-json-template=suite/rdrs2-golang/rdrs_config_template_pool.json
 NumThreads=8
-MaxReqSize=4194304
+MaxHttpReqSize=4194304
 MaxBuffers=256
 BufferShrinkAfterS=30
 PreAllocatedBuffers=8

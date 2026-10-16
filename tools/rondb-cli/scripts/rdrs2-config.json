@@ -1,7 +1,7 @@
 {
     "#comment": "RDRS2 configuration for local RonDB with Rondis enabled",
     "Internal": {
-        "maxReqSize": 4194304,
+        "MaxHttpReqSize": 4194304,
         "PreAllocatedBuffers": 32,
         "MaxOperationsPerNdbExecute": 128
     },

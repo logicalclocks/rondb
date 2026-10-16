@@ -74,7 +74,7 @@ void BatchPKReadCtrl::batchPKRead(
   printf("\n\n JSON REQUEST: \n %s \n", json_str);
 #endif
   size_t length = req->getBody().length();
-  if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+  if (unlikely(length > globalConfigs.internal.maxHttpReqSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -88,7 +88,7 @@ void BatchPKReadCtrl::batchPKRead(
 
   RS_Status status = jsonParser.batch_parse(
       simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
-                                   globalConfigs.internal.maxReqSize +
+                                   globalConfigs.internal.maxHttpReqSize +
                                    simdjson::SIMDJSON_PADDING),
       reqStructs);
 

@@ -114,19 +114,20 @@ TEST(ProcessSetup, ThpDisabledForProcessAndLaterThreads) {
 /*
  * The per-thread JSON parse buffer must not be resident until used.
  * std::make_unique<char[]> zero-filled it, which made NumThreads x
- * MaxReqSize resident at startup (64 x 4 MiB with the old defaults); the plain new char[] does not touch the pages.
+ * MaxHttpReqSize resident at startup (64 x 4 MiB with the old defaults);
+ * the plain new char[] does not touch the pages.
  */
 TEST(ProcessSetup, ParseBufferIsNotResidentUntilUsed) {
 #ifdef __linux__
   constexpr unsigned kBufferBytes = 256U * 1024U * 1024U;
-  const unsigned saved = globalConfigs.internal.maxReqSize;
-  globalConfigs.internal.maxReqSize = kBufferBytes;
+  const unsigned saved = globalConfigs.internal.maxHttpReqSize;
+  globalConfigs.internal.maxHttpReqSize = kBufferBytes;
 
   const long before = resident_bytes();
   JSONParser *parser = new JSONParser();
   const long after = resident_bytes();
   delete parser;
-  globalConfigs.internal.maxReqSize = saved;
+  globalConfigs.internal.maxHttpReqSize = saved;
 
   // Allow for the parser object itself and allocator bookkeeping, but not
   // for the buffer: a zero-filled buffer would add the full 256 MiB.

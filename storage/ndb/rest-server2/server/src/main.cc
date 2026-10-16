@@ -387,6 +387,15 @@ int main(int argc, char *argv[]) {
     std::cerr << "Warning: Internal.RespBufferSize is deprecated and ignored;"
               << " response buffers are " << DEFAULT_RESP_BUFFER << " bytes\n";
   }
+  if (globalConfigs.internal.maxReqSize != 0) {
+    std::cerr << "Warning: Internal.maxReqSize is deprecated; use"
+              << " Internal.MaxHttpReqSize. The request body limit is "
+              << globalConfigs.internal.maxHttpReqSize << " bytes"
+              << (globalConfigs.internal.maxHttpReqSize ==
+                      globalConfigs.internal.maxReqSize
+                    ? " (from maxReqSize)\n"
+                    : " (MaxHttpReqSize; maxReqSize is ignored)\n");
+  }
   if (globalConfigs.internal.batchMaxSize != 0) {
     std::cerr << "Warning: Internal.BatchMaxSize is deprecated and ignored;"
               << " batch requests are capped by"
@@ -620,9 +629,9 @@ int main(int argc, char *argv[]) {
   drogon::app().setThreadNum(globalConfigs.rest.numThreads);
   drogon::app().setThreadStackSize(8 * 1024 * 1024);
   /* Drogon's own body limit defaulted to 1 MiB and was never set, so the
-   * controllers' maxReqSize check (4 MiB until RONDB-1144) was unreachable.
+   * controllers' body-size check (4 MiB until RONDB-1144) was unreachable.
    * Tie the two so the config key is the one number that bounds a body. */
-  drogon::app().setClientMaxBodySize(globalConfigs.internal.maxReqSize);
+  drogon::app().setClientMaxBodySize(globalConfigs.internal.maxHttpReqSize);
   /* Drogon buffers oversized request bodies in files under
    * <uploadPath>/tmp/ and pre-creates that tree at startup, so the path
    * must be writable; empty keeps Drogon's default of ./uploads. */

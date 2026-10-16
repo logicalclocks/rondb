@@ -104,7 +104,7 @@ ProcessSetupResult rdrs_process_setup() {
 <tr><td>where checked</td><td>In batch_parse, as soon as the operations array has been counted and before any buffer or arena allocation. Same check in the batch feature store parser.</td></tr>
 <tr><td>response</td><td>HTTP 413 with the message "batch exceeds MaxOperationsPerBatchRequest (M)". simdjson on-demand arrays cannot be counted cheaply, so the message names the limit, not the batch size. The HTTP_CODE enum in rdrs_dal.h has no 413, so the parser returns static_cast&lt;HTTP_CODE&gt;(drogon::k413RequestEntityTooLarge), and both batch controllers, which today force 400 on any parse failure, propagate status.http_code instead.</td></tr>
 <tr><td>BatchMaxSize</td><td>Deprecated and ignored, with a startup warning, like ReqBufferSize and RespBufferSize. Its two readings get explicit keys: MaxOperationsPerBatchRequest is the cap above, and MaxOperationsPerNdbExecute (default 128, 50 to 512) is what BatchMaxSize really did, the number of operations sent to NDB per execute round</td></tr>
-<tr><td>the body limit</td><td>rdrs2 never calls setClientMaxBodySize, so Drogon's default of 1 MiB is the effective body limit and the MaxReqSize check at 4 MiB is never reached. The 1 MiB bound is kept. MaxReqSize's default becomes 1 MiB and rdrs2 passes it to setClientMaxBodySize at startup, so the config key and the enforced limit are the same number; a PROBLEM check rejects values below 256 at startup. The JSON key is spelled maxReqSize. Behaviour at the defaults is unchanged.</td></tr>
+<tr><td>the body limit</td><td>rdrs2 never calls setClientMaxBodySize, so Drogon's default of 1 MiB is the effective body limit and the MaxReqSize check at 4 MiB is never reached. The 1 MiB bound is kept. The key is renamed MaxHttpReqSize, defaults to 1 MiB and rdrs2 passes it to setClientMaxBodySize at startup, so the config key and the enforced limit are the same number; a PROBLEM check rejects values below 256 at startup. The old key maxReqSize stays accepted and honoured, with a deprecation warning: set alone, its value becomes MaxHttpReqSize; when both are set, MaxHttpReqSize wins. Behaviour at the defaults is unchanged.</td></tr>
 <tr><td>why the body limit is not enough</td><td>An operation that names no columns is about 60 bytes of JSON but reserves REQ_COLNAME_RESERVE in the request buffer, 104 KiB on 26.02 and 832 KiB on 26.10, so two of them share one request buffer. With the operation limit of 512 the worst case per batch is 256 request buffers: 256 × 256 KiB = 64 MiB on 26.02 and 256 × 2 MiB = 512 MiB on 26.10. 512 typical operations that name their columns write about 150 KiB, which holds two 256 KiB request buffers on 26.02 (a new operation starts only while 119.3 KiB are free) and one 2 MiB buffer on 26.10. On 26.02 even the worst case fits a 500 MiB pod's pool budget, a cap of about 330 pairs. On 26.10 it does not, with about 83 pairs, and the pool cap answers 503 before any NDB work; that is the one place the deferred column-name reservation would matter.</td></tr>
 <tr><td>relation to the pool cap</td><td>This bounds one request. MaxBuffers in change 3 bounds all requests together. Both are counts, neither is a size.</td></tr>
 </table></div>
@@ -590,9 +590,9 @@ static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &l
 <p>Committed on rondb-helm branch RONDB-1144 as 349a18a, on top of chart 26.2.21.</p>
 <ul>
 <li><strong>rdrs.disableTransparentHugePages</strong>, default true: the perl prctl wrapper in front of rdrs2. Stays harmless once rdrs2 makes the call itself.</li>
-<li><strong>rdrs.internal</strong> in camelCase, each value mapped to its rdrs2 name and rendered only when set, so older images do not reject the key: maxReqSize, scanRespBufferSize, scanTimingEnabled, slowScanThresholdUs, slowScanBufferSize, preAllocatedBuffers, maxBuffers, bufferPoolSharePercent, bufferShrinkAfterS, maxOperationsPerBatchRequest, maxOperationsPerNdbExecute and operationIdMaxSize. No buffer size keys, because change 2 computes them. The render fails when a non-zero maxBuffers is below 2 or below preAllocatedBuffers (32 when unset), mirroring rdrs2's startup check.</li>
+<li><strong>rdrs.internal</strong> in camelCase, each value mapped to its rdrs2 name and rendered only when set, so older images do not reject the key: maxHttpReqSize, scanRespBufferSize, scanTimingEnabled, slowScanThresholdUs, slowScanBufferSize, preAllocatedBuffers, maxBuffers, bufferPoolSharePercent, bufferShrinkAfterS, maxOperationsPerBatchRequest, maxOperationsPerNdbExecute and operationIdMaxSize. No buffer size keys, because change 2 computes them. The render fails when a non-zero maxBuffers is below 2 or below preAllocatedBuffers (32 when unset), mirroring rdrs2's startup check.</li>
 <li><strong>Unknown keys are rejected.</strong> The schema sets additionalProperties: false, so the 22.10 keys bufferSize, maxAllocatedBuffers and gomaxprocs fail helm install with the generic schema error. No message names them or their replacement.</li>
-<li><strong>rdrs.rest.numThreads</strong> exposed, documented as part of the pod's memory because every thread holds a parse buffer of maxReqSize bytes. The 64-thread default on a 5 CPU pod is the other half of the memory story.</li>
+<li><strong>rdrs.rest.numThreads</strong> exposed, documented as part of the pod's memory because every thread holds a parse buffer of MaxHttpReqSize bytes. The 64-thread default on a 5 CPU pod is the other half of the memory story.</li>
 <li>The chart README also documents the TTLPurge settings.</li>
 </ul>
 
@@ -625,7 +625,7 @@ static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &l
 <tr><th>test</th><th>layer</th><th>asserts</th></tr>
 <tr><td>ProcessSetup.ThpDisabledForProcessAndLaterThreads</td><td>gtest, Linux only</td><td>After the startup helper runs, prctl(PR_GET_THP_DISABLE) returns 1, in the calling thread and in a thread created afterwards, and a second call succeeds too; /proc/self/status shows THP_enabled: 0 where the kernel reports that field. Elsewhere it checks the result fields and skips.</td></tr>
 <tr><td>ProcessSetup.ParseBufferIsNotResidentUntilUsed</td><td>gtest, Linux only</td><td>A 256 MiB parse buffer allocated the way JSONParser allocates it adds less than 4 MiB of resident memory</td></tr>
-<tr><td>rdrs2-golang_buffer_pool, startup block</td><td>MTR, Linux only</td><td>Right after the pool server rdrs.3.1 starts (NumThreads 4, maxReqSize 64 MiB), RssAnon from /proc/pid/status is below NumThreads × maxReqSize = 256 MiB, so the parse buffers are not resident</td></tr>
+<tr><td>rdrs2-golang_buffer_pool, startup block</td><td>MTR, Linux only</td><td>Right after the pool server rdrs.3.1 starts (NumThreads 4, MaxHttpReqSize 64 MiB), RssAnon from /proc/pid/status is below NumThreads × MaxHttpReqSize = 256 MiB, so the parse buffers are not resident</td></tr>
 <tr><td>rdrs2-golang_buffer_pool, post-load block</td><td>MTR, Linux only</td><td>After the pool driver's load, AnonHugePages in smaps_rollup is 0 whenever smaps can be read. The node's THP mode is logged, not used to skip.</td></tr>
 </table></div>
 <p>No test covers a malloc setting: the arena cap and the mmap threshold were tried and removed (section 2).</p>
@@ -719,6 +719,9 @@ static_assert(MIN_RESP_BUFFER &lt; (1U &lt;&lt; 30) &amp;&amp; MIN_REQ_BUFFER &l
 <li>design docs match the code</li>
 <li>buffer pool event counters stay exact under concurrent scrapes</li>
 <li>blobs above 1 GiB size their JSON in 64 bits; feature store keeps 503</li>
+<li>TEXT staging buffer is local to the Text branch</li>
+<li>explicit batch limits; 128 preallocated buffers by default</li>
+<li>maxReqSize is now MaxHttpReqSize</li>
 </ol>
 <p>The chart change is a separate pull request in rondb-helm, paired with the release that carries this one.</p>
 <h3>9.2 Merge to 26.10</h3>

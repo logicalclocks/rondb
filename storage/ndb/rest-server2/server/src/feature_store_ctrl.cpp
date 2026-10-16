@@ -610,7 +610,7 @@ void FeatureStoreCtrl::featureStore(
   const char *json_str = req->getBody().data();
   DEB_FS_CTRL("\n\n JSON REQUEST: \n %s \n", json_str);
   size_t length        = req->getBody().length();
-  if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+  if (unlikely(length > globalConfigs.internal.maxHttpReqSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
@@ -625,7 +625,7 @@ void FeatureStoreCtrl::featureStore(
       simdjson::padded_string_view(
         jsonParser.get_buffer().get(),
         length,
-        globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING),
+        globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING),
         reqStruct);
 
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

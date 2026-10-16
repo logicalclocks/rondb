@@ -75,7 +75,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
          db.data(), table.data(), json_str);
 #endif
   size_t length = req->getBody().length();
-  if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+  if (unlikely(length > globalConfigs.internal.maxHttpReqSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     DEB_PK_CTRL("Error message: Request too large");
@@ -92,7 +92,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       simdjson::padded_string_view(
         jsonParser.get_buffer().get(),
         length,
-        globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING),
+        globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=

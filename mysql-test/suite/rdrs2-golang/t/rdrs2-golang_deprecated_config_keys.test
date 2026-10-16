@@ -1,9 +1,10 @@
-# RONDB-1144: Internal.ReqBufferSize, Internal.RespBufferSize and
-# Internal.BatchMaxSize are deprecated. The buffer sizes are computed from
-# the NDB limits, and BatchMaxSize's meaning moved to
-# MaxOperationsPerBatchRequest and MaxOperationsPerNdbExecute, so a
-# configuration that still sets the keys must load, warn once per key on
-# stderr, and ignore the values. `rdrs2 --print-limits` shows the sizes in
+# RONDB-1144: Internal.ReqBufferSize, Internal.RespBufferSize,
+# Internal.BatchMaxSize and Internal.maxReqSize are deprecated. The buffer
+# sizes are computed from the NDB limits, and BatchMaxSize's meaning moved
+# to MaxOperationsPerBatchRequest and MaxOperationsPerNdbExecute, so a
+# configuration that still sets those keys must load, warn once per key on
+# stderr, and ignore the values. maxReqSize was renamed MaxHttpReqSize and
+# is still honoured: set alone, its value becomes the body limit. `rdrs2 --print-limits` shows the sizes in
 # effect without a cluster; they must match what the running rdrs.1.1
 # reports through its rdrs_limits metric family.
 #
@@ -13,7 +14,7 @@
 
 --echo # A config file that still carries the deprecated keys
 --write_file $MYSQL_TMP_DIR/deprecated_config_keys.json
-{ "Internal": { "ReqBufferSize": 1024, "RespBufferSize": 1024, "BatchMaxSize": 64 } }
+{ "Internal": { "ReqBufferSize": 1024, "RespBufferSize": 1024, "BatchMaxSize": 64, "maxReqSize": 2097152 } }
 EOF
 
 --echo # print-limits ignores the keys, warns, and agrees with the live server
@@ -50,6 +51,8 @@ die "no deprecation warning for RespBufferSize on stderr:\n$err"
     unless $err =~ /RespBufferSize is deprecated/;
 die "no deprecation warning for BatchMaxSize on stderr:\n$err"
     unless $err =~ /BatchMaxSize is deprecated/;
+die "no deprecation warning for maxReqSize, or its value not used:\n$err"
+    unless $err =~ /maxReqSize is deprecated.*body limit is 2097152 bytes \(from maxReqSize\)/;
 
 # The running plain-HTTP server rdrs.1.1 exports the same values.
 my $json = do {

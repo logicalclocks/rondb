@@ -174,6 +174,15 @@ RS_Status AllConfigs::set_all(AllConfigs newConfigs) {
        ("Failed validating config; error: " + e.m_error_message).c_str())
        .status;
   }
+  /* RONDB-1144: maxReqSize was renamed MaxHttpReqSize. A configuration
+   * that still sets only the old key keeps its body limit; when both are
+   * set, MaxHttpReqSize wins. Applied after validation, so a bad value is
+   * reported under the key the configuration used. main.cc warns about
+   * the old key. */
+  if (newConfigs.internal.maxReqSize != 0 &&
+      newConfigs.internal.maxHttpReqSize == Internal().maxHttpReqSize) {
+    newConfigs.internal.maxHttpReqSize = newConfigs.internal.maxReqSize;
+  }
   globalConfigs = newConfigs;
   NdbMutex_Unlock(globalConfigsMutex);
   return CRS_Status::SUCCESS.status;

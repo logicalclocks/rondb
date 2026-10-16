@@ -65,11 +65,16 @@
 
 CLASS
 (Internal,
- CM(Uint32, maxReqSize, maxReqSize, 1024 * 1024,
+ CM(Uint32, maxHttpReqSize, MaxHttpReqSize, 1024 * 1024,
     "The maximum HTTP body size for REST requests, in bytes. Must be at least"
     " 256. Also passed to the HTTP server as its body limit, so it is the one"
     " number that bounds a request body; larger bodies are rejected before"
     " rdrs2 sees them. Each worker thread keeps a parse buffer of this size.")
+ CM(Uint32, maxReqSize, maxReqSize, 0,
+    "Deprecated since RONDB-1144: use MaxHttpReqSize. Still honoured: when"
+    " set and MaxHttpReqSize is left at its default, its value becomes"
+    " MaxHttpReqSize. Accepted for one release so existing configuration"
+    " files keep working.")
  CM(Uint32, reqBufferSize, ReqBufferSize, 0,
     "Deprecated and ignored since RONDB-1144: the request buffer size is"
     " computed from the NDB limits (see rdrs2 --print-limits). Accepted for"
@@ -131,7 +136,8 @@ CLASS
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
- PROBLEM(maxReqSize < 256, "MaxReqSize should be >= 256")
+ PROBLEM(maxHttpReqSize < 256, "MaxHttpReqSize should be >= 256")
+ PROBLEM(maxReqSize != 0 && maxReqSize < 256, "maxReqSize should be >= 256")
  PROBLEM(maxOperationsPerBatchRequest == 0,
          "MaxOperationsPerBatchRequest must be > 0")
  PROBLEM(bufferPoolSharePercent < 1 || bufferPoolSharePercent > 90,
