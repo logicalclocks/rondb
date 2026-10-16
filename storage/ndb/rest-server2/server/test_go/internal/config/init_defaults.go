@@ -47,8 +47,6 @@ func init() {
 func newWithDefaults() AllConfigs {
 	return AllConfigs{
 		Internal: Internal{
-			BufferSize:                   5 * 1024 * 1024,
-			GOMAXPROCS:                   -1,
 			PreAllocatedBuffers:          128,
 			MaxOperationsPerBatchRequest: 512,
 			MaxOperationsPerNdbExecute:   128,

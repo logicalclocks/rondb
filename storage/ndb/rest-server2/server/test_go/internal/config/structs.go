@@ -26,9 +26,7 @@ import (
 )
 
 type Internal struct {
-	BufferSize          uint32
 	PreAllocatedBuffers uint32
-	GOMAXPROCS          int
 	// RONDB-1144: cap on the operations of one batch request (413 above it)
 	MaxOperationsPerBatchRequest uint32
 	// RONDB-1144: operations sent to NDB per execute round; not a cap
@@ -39,10 +37,6 @@ type Internal struct {
 func (i *Internal) Validate() error {
 	if i.PreAllocatedBuffers == 0 {
 		log.Warnf("PreAllocatedBuffers is set to 0. It may impact performance")
-	}
-
-	if i.BufferSize < 256 {
-		return errors.New("BufferSize is too low")
 	}
 
 	return nil
