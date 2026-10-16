@@ -278,6 +278,34 @@ AND o.o_total < (SELECT SUM(l_price) FROM sq_li)|
 COUNT(*)	SUM(li_stats.q)	MAX(li_price.mp)
 5	200	400
 
+
+=== Test 10: rejection — scalar subquery in a CTE body WHERE ===
+WHERE inside CTE 'li_stats' has a subquery. Subqueries are only supported in the WHERE and HAVING of the main SELECT.
+Error handling: RPE
+ronsql_cli caught exception: Subqueries in a CTE body are not supported.
+
+
+=== Test 11: rejection — IN subquery in a CTE body WHERE ===
+WHERE inside CTE 'li_stats' has a subquery. Subqueries are only supported in the WHERE and HAVING of the main SELECT.
+Error handling: RPE
+ronsql_cli caught exception: Subqueries in a CTE body are not supported.
+
+
+=== Test 12: rejection — EXISTS in a CTE body WHERE ===
+WHERE inside CTE 'li_stats' has a subquery. Subqueries are only supported in the WHERE and HAVING of the main SELECT.
+Error handling: RPE
+ronsql_cli caught exception: Subqueries in a CTE body are not supported.
+
+
+=== Test 13: rejection — scalar subquery in a CASE condition ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in a CASE condition.
+
+
+=== Test 14: rejection — scalar subquery in a CASE condition in a CTE body ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in a CASE condition.
+
 === Cleanup ===
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_subquery_jit_fallback_delta;

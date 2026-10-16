@@ -503,7 +503,7 @@ arith_expr:
 | arith_expr T_MODULO arith_expr        { $$ = context->get_agg()->Rem(context->non_case_operand($1),
                                                                        context->non_case_operand($3)); }
 | T_CASE T_WHEN cond_expr T_THEN arith_expr T_ELSE arith_expr T_END
-                                        { $$ = context->get_agg()->CaseExpr($3,
+                                        { $$ = context->get_agg()->CaseExpr(context->case_condition($3),
                                                                             context->non_case_operand($5),
                                                                             context->non_case_operand($7)); }
 | T_GREATEST T_LEFT arith_expr_list T_RIGHT

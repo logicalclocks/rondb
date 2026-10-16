@@ -150,6 +150,11 @@ public:
     // as the whole argument of an aggregate function.
     AggregationAPICompiler::Expr* non_case_operand(
         AggregationAPICompiler::Expr* e);
+    // Returns `ce` for use as the condition of a CASE.  Throws
+    // (UNSUPPORTED) when `ce` has a subquery, which is never executed
+    // there.
+    struct ConditionalExpression* case_condition(
+        struct ConditionalExpression* ce);
     // Throws (UNSUPPORTED) unless the left-hand side of every ON equality
     // in `conditions` is qualified with the alias of the joined `table`.
     void check_join_conditions(const struct TableRef& table,

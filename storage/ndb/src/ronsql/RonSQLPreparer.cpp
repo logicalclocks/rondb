@@ -7178,6 +7178,21 @@ RonSQLPreparer::analyze_ctes()
       throw RonSQLPermanentError("HAVING in a CTE body is not supported.");
     }
 
+    /* RONSQL-15: only the subqueries of the main WHERE and HAVING are
+     * found (analyze_subqueries(), decorrelate_exists(),
+     * decorrelate_scalar()), executed and replaced by their results.  One
+     * in a body's WHERE was never executed: its placeholder reached
+     * planning and emit as if it were a constant or a condition.  The
+     * rewrites in parse() leave such a body alone (ce_has_subquery()). */
+    if (ce_has_subquery(cte->stmt->where_expression))
+    {
+      err << "WHERE inside CTE '" << cte->name.c_str()
+          << "' has a subquery. Subqueries are only supported in the WHERE"
+             " and HAVING of the main SELECT." << std::endl;
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+                                 "Subqueries in a CTE body are not supported.");
+    }
+
     /* ORDER BY / LIMIT in CTE bodies is applied in the kernel at the
      * CTE finalize barrier (cte_orderby_limit_plan.md) — validate the
      * shape and convert output-alias ORDER BY names before scope
@@ -20173,6 +20188,22 @@ RonSQLPreparer::Context::non_case_operand(AggregationAPICompiler::Expr* e)
         "function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot "
         "be used in arithmetic or in a THEN or ELSE of another CASE.");
   return e;
+}
+
+/*
+ * RONSQL-15: subqueries are executed and replaced by their results only in
+ * the main WHERE and HAVING (analyze_subqueries()).  One in a CASE
+ * condition was never executed, and the CASE compiler took a scalar
+ * subquery's placeholder for a constant of the wrong type.
+ */
+struct ConditionalExpression*
+RonSQLPreparer::Context::case_condition(struct ConditionalExpression* ce)
+{
+  if (RonSQLPreparer::ce_has_subquery(ce))
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "A subquery is not supported in a CASE condition.");
+  return ce;
 }
 
 /*
