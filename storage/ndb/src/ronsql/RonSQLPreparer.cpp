@@ -2191,7 +2191,12 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
       JoinClause* match = NULL;
       JoinClause* match_prev = NULL;
       while (cur != NULL) {
-        if (cur->join_type == JoinClause::INNER_JOIN) {
+        // A comma join (no ON conditions) binds no key at all: it is not
+        // a partial-key join, and QueryPlanner::plan rejects it for a
+        // grouped CTE (RONSQL-18).  Swapping it would make the root the
+        // keyless child instead.
+        if (cur->join_type == JoinClause::INNER_JOIN &&
+            cur->conditions != NULL) {
           const CteDefinition* child_cte =
               find_cte_definition(cur->table.name);
           if (child_cte != NULL) {
