@@ -628,6 +628,15 @@ DEFINE_FORMATTER(d2, uint, {
   os << value;
 })
 
+// RONSQL-45: a DATE year is printed with four digits, as in MySQL
+// (0999-01-01, and 0000-00-00 for the zero date).
+DEFINE_FORMATTER(d4, uint, {
+  if (value < 1000) os << '0';
+  if (value < 100) os << '0';
+  if (value < 10) os << '0';
+  os << value;
+})
+
 // Run a range of program commands. When executing store commands
 // (from..m_print_start_idx), record must be non-NULL. When executing
 // print commands (m_print_start_idx..end), out must be non-NULL.
@@ -874,7 +883,7 @@ ResultPrinter::print_stored_record(StoredRow& row, std::ostream& out)
             Uint32 year = date >> 9;
             Uint32 month = (date >> 5) & 0xf;
             Uint32 day = date & 0x1f;
-            out << m_quote << year << "-" << d2(month) << "-" << d2(day) << m_quote;
+            out << m_quote << d4(year) << "-" << d2(month) << "-" << d2(day) << m_quote;
             break;
           }
         case NdbDictionary::Column::Type::Blob:
@@ -2093,8 +2102,7 @@ ResultPrinter::print_record(NdbAggregator::ResultRecord& record, std::ostream& o
             Uint32 year = date >> 9;
             Uint32 month = (date >> 5) & 0xf;
             Uint32 day = date & 0x1f;
-            out << m_quote << year << "-" << d2(month) << "-" << d2(day) << m_quote;
-            // todo There must be a function somewhere that does this, but I can't find it. Maybe in my_time.cc.
+            out << m_quote << d4(year) << "-" << d2(month) << "-" << d2(day) << m_quote;
             break;
           }
         case NdbDictionary::Column::Type::Blob:          ///< Binary large object (see NdbBlob)
