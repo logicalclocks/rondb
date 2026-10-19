@@ -7272,6 +7272,16 @@ Uint32 NdbQueryOperationImpl::getMaxBatchBytes() const {
        */
       if (getParentOperation() != nullptr) {
         batchFrags = rootFragments;
+      } else if (getQuery().m_fragsPerWorker > 1) {
+        /**
+         * Node failures may put all root fragments in one worker.
+         * NdbResultStream::prepare() multiplies this buffer size by
+         * m_fragsPerWorker, so reserve enough extra rows to cover
+         * rootFragments after that multiplication.
+         */
+        const Uint32 fragsPerWorker = getQuery().m_fragsPerWorker;
+        batchFrags =
+            (rootFragments + fragsPerWorker - 1) / fragsPerWorker;
       } else {
         batchFrags = 1;
       }
