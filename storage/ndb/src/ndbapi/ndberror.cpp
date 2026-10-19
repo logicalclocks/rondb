@@ -361,7 +361,6 @@ ErrorBundle ErrorCodes[] = {
   { 247,  DMEC, OL, "Too many operations in a transaction in database" },
   { 248,  DMEC, OL, "Too many concurrent transactions in database" },
   { 929,  DMEC, OL, "Disk quota reached for database, delete data before write again" },
-  { 243,  DMEC, OL, "Rate limit reached and queues are overloaded for database" },
   { 701,  HA_ERR_LOCK_WAIT_TIMEOUT, TO, "System busy with other schema operation" },
   { 711,  HA_ERR_LOCK_WAIT_TIMEOUT, NR, "System busy with node restart, schema operations not allowed" },
   { 410,  DMEC, OL, "REDO log files overloaded (decrease TimeBetweenLocalCheckpoints or increase NoOfFragmentLogFiles)" },
@@ -497,7 +496,6 @@ ErrorBundle ErrorCodes[] = {
   { 897,  DMEC, AE, "Update attempt of primary key via ndbcluster internal api"
                     " (if this occurs via the MySQL server it is a bug,"
                     " please report)" },
-  { 892,  DMEC, AE, "Unsupported type in scan filter" },
   { 1233, DMEC, AE, "Table read-only" },
   { 1235, DMEC, AE, "Create Database failed, no rate limits available" },
   { 1236, DMEC, AE, "Alter Database failed, no rate limits available" },
@@ -535,7 +533,7 @@ ErrorBundle ErrorCodes[] = {
   { 2200,  DMEC, AE, "Dirty reads and dirty writes are supported, not other operation types" },
   { 2201,  DMEC, AE, "Parallel Ordered Index scan flag set requires even number of receiver ids" },
   { 2202,  DMEC, AE, "Parallel Ordered Index scan flag set requires ReadCommittedMode" },
-  { 2203,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
+  { 2204,  DMEC, AE, "Scan pruned to one partition is not supported on table with partition hash fanout" },
 
   /** 
    * Scan application errors
@@ -544,6 +542,8 @@ ErrorBundle ErrorCodes[] = {
   { 244,  DMEC, AE, "Too high concurrency in scan"},
   { 269,  DMEC, AE, "No condition and attributes to read in scan"},
   { 874,  DMEC, AE, "Too much attrinfo (e.g. scan filter) for scan in tuple manager" },
+  { 1230, DMEC, AE, "Invalid scan batch size" },
+  { 2205, DMEC, AE, "Exclusive scan requires keyinfo" },
   { 4600, DMEC, AE, "Transaction is already started"},
   { 4601, DMEC, AE, "Transaction is not started"},
   { 4602, DMEC, AE, "You must call getNdbOperation before executeScan" },
@@ -909,7 +909,6 @@ ErrorBundle ErrorCodes[] = {
   { 4563, DMEC, AE, "Bad in/output index, only index 0-15 exists" },
   { 4564, DMEC, AE, "Bad constant, only 0-63 allowed in branch instructions" },
   { 4565, DMEC, AE, "Bad label offset in branch instruction" },
-  { 4566, DMEC, AE, "Using partial read is only accessible for varbinary and longvarbinary columns" },
   { 4566, DMEC, AE, "Using partial read is only accessible for varbinary and longvarbinary columns" },
   { 4567, DMEC, AE, "Using append in setValueExt is only accessible for varbinary and longvarbinary columns" },
   { 4568, DMEC, AE, "Incorrect combination of OperationOptions optionsPresent, extraGetFinalValue ptr and numExtraGetFinalValues" },

@@ -15987,6 +15987,30 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     goto SCAN_TAB_error;
   }
 
+  {
+    const bool exclusive = ScanTabReq::getLockMode(ri);
+    const bool locking = exclusive || !ScanTabReq::getReadCommittedFlag(ri);
+    if (unlikely(exclusive && !ScanTabReq::getKeyinfoFlag(ri))) {
+      jam();
+      errCode = ScanFragRef::ZKEYINFO_REQUIRED;
+      goto SCAN_TAB_error;
+    }
+
+    /* Match initScanrec's choice of the effective batch size. */
+    Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+    if (batchSizeRows == 0) {
+      batchSizeRows = scanTabReq->first_batch_size;
+    }
+    /* Shared and exclusive scans use the same 10-bit takeover op number. */
+    const Uint32 maxBatchSize = locking ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK
+                                       : MAX_PARALLEL_OP_PER_SCAN_RC;
+    if (unlikely(batchSizeRows == 0 || batchSizeRows > maxBatchSize)) {
+      jam();
+      errCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+      goto SCAN_TAB_error;
+    }
+  }
+
   ptrAss(tabptr, tableRecord);
   if ((aiLength == 0) || (!tabptr.p->checkTable(schemaVersion)) ||
       (scanConcurrency == 0) || (cConcScanCount >= cscanrecFileSize)) {
@@ -16331,7 +16355,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   transP->returncode = 0;
   transP->transid[0] = transid1;
   transP->transid[1] = transid2;
-  transP->buddyPtr = buddyPtr;
+  /* Use the scan's own API connection when no buddy was supplied. */
+  transP->buddyPtr = (buddyPtr == RNIL ? apiConnectptr.i : buddyPtr);
 
   // The scan is started
   transP->apiConnectstate = CS_START_SCAN;
