@@ -1,0 +1,51 @@
+# RONSQL-48: RDRS echoed the operationId of a RonSQL request into the
+# JSON response as decoded by the request parser, without escaping it
+# again, so a quote, a backslash or a control character made the response
+# invalid JSON, and a non-ASCII character was not \u-escaped under
+# JSON_ASCII. The value is now escaped like the column names: a plain token
+# is echoed as is (op-1), special characters are escaped (op-2), and a
+# non-ASCII character is echoed as UTF-8 under JSON (op-3) and \u-escaped
+# under JSON_ASCII (op-4).
+
+--source include/have_ndb.inc
+--source include/have_util_curl.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE opid_t (
+  id INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO opid_t VALUES (1, 10), (2, 20);
+--enable_warnings
+--enable_query_log
+
+let $rdrs_ronsql = curl --no-progress-meter --fail-with-body -X POST
+  -H "Content-Type: application/json"
+  http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql -d;
+
+--echo
+--echo === op-1: a plain token ===
+--exec $rdrs_ronsql '{"query":"SELECT COUNT(*) AS n FROM opid_t;","database":"test","operationId":"op-1.A_b"}'
+
+--echo
+--echo === op-2: a quote, a backslash, a newline, a tab and U+0001 ===
+--exec $rdrs_ronsql '{"query":"SELECT COUNT(*) AS n FROM opid_t;","database":"test","operationId":"q\"b\\s\nn\tt\u0001"}'
+
+--echo
+--echo === op-3: a non-ASCII character under JSON ===
+--exec $rdrs_ronsql '{"query":"SELECT COUNT(*) AS n FROM opid_t;","database":"test","operationId":"caf\u00e9"}'
+
+--echo
+--echo === op-4: a non-ASCII character under JSON_ASCII ===
+--exec $rdrs_ronsql '{"query":"SELECT COUNT(*) AS n FROM opid_t;","database":"test","outputFormat":"JSON_ASCII","operationId":"caf\u00e9"}'
+
+--disable_query_log
+DROP TABLE opid_t;
+--enable_query_log

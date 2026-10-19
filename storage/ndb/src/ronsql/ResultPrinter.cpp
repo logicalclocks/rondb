@@ -2256,6 +2256,22 @@ print_json_ascii(std::ostream& out, const std::string& json)
   }
 }
 
+void
+ronsql_print_json_string(std::ostream& out,
+                         const char* str,
+                         size_t len,
+                         RonSQLExecParams::OutputFormat format)
+{
+  assert(format == RonSQLExecParams::OutputFormat::JSON ||
+         format == RonSQLExecParams::OutputFormat::JSON_ASCII);
+  print_string(out,
+               LexString{str, len},
+               &my_charset_utf8mb4_bin,
+               true,   // json_escape
+               format == RonSQLExecParams::OutputFormat::JSON, // utf8_output
+               false); // trim_space_suffix
+}
+
 // Binary pass-through values under TEXT output: the raw bytes with the
 // escaping the mysql client applies in batch mode (client/mysql.cc
 // tee_write, MY_PRINT_ESC_0 | MY_PRINT_CTRL): NUL, tab, newline and

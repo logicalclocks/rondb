@@ -366,4 +366,13 @@ extern template void ResultPrinter::print_passthrough_row<NdbRecAttr>(
 extern template void ResultPrinter::print_passthrough_row<PassthroughValue>(
     const PassthroughValue* const*, Uint32, bool, std::basic_ostream<char>*);
 
+// Print the UTF-8 string str (without quotes) as the content of a JSON
+// string, escaped like the column names under the JSON output format
+// `format`: under JSON_ASCII, non-ASCII characters are \u-escaped too.
+// RDRS uses it for the operationId it echoes into the response.
+void ronsql_print_json_string(std::ostream& out,
+                              const char* str,
+                              size_t len,
+                              RonSQLExecParams::OutputFormat format);
+
 #endif
