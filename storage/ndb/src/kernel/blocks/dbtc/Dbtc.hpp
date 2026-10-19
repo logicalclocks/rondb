@@ -171,7 +171,8 @@
 
 #define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
-#define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2203
+/* Not 2203, that is TcKeyRef::ReadRateOverflowError */
+#define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2204
 
 // ----------------------------------------
 // Error Codes for transactions
