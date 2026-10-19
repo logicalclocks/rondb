@@ -19575,6 +19575,25 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     return;
   }
 
+  /**
+   * Verify that the signal sender owns this API connect record, as for
+   * TCKEYREQ. A request resent from the rate queue comes from our own
+   * DBTC and was checked when it first arrived.
+   */
+  {
+    const NodeId signalSenderNodeId = refToNode(signal->getSendersBlockRef());
+    if (signalSenderNodeId != getOwnNodeId()) {
+      const NodeId ownerNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+      if (unlikely(signalSenderNodeId != ownerNodeId)) {
+        jam();
+        releaseSections(handle);
+        reportMaliciousSignal(signal, signalSenderNodeId,
+                              VT_SCAN_NEXTREQ_OWNERSHIP);
+        return;
+      }
+    }
+  }
+
   /*******************************************************
    * START THE ACTUAL LOGIC OF SCAN_NEXTREQ.
    ********************************************************/
