@@ -750,6 +750,166 @@ static int backupIsMultithreaded(NdbBackup &backup, int nodeId) {
   return mt;
 }
 
+int runMasterDiesAfterVerdict(NDBT_Context *ctx, NDBT_Step *step) {
+  /* A backup the client was told succeeded must keep its files on
+   * every node when the master dies right after the verdict: on the
+   * participants, whose cleanup (EI 10074) or verdict delivery
+   * (EI 10075) the death overtakes, and on the dead master itself,
+   * which the new master must not order to sweep when it rejoins.
+   * Only the master's record ever knows the verdict was rendered, so
+   * the participants have to assume it may have been.
+   */
+  const int holdEI = (int)ctx->getProperty("HoldEI", Uint32(10074));
+
+  NdbBackup backup;
+  backup.set_default_encryption_password(
+      ctx->getProperty("BACKUP_PASSWORD", (char *)NULL), -1);
+
+  NdbRestarter restarter;
+
+  if (restarter.getNumDbNodes() < 2) {
+    ctx->stopTest();
+    return NDBT_OK;
+  }
+
+  if (restarter.waitClusterStarted(60) != 0) {
+    g_err << "Cluster failed to start" << endl;
+    return NDBT_FAILED;
+  }
+
+  {
+    const int supported = allDataNodesSupportCleanupOrd(restarter);
+    if (supported < 0) return NDBT_FAILED;
+    if (supported == 0) {
+      ctx->stopTest();
+      return NDBT_OK;
+    }
+  }
+
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+
+  const int masterNodeId = restarter.getMasterNodeId();
+  g_err << "Master node " << masterNodeId << ", hold EI " << holdEI << endl;
+
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (backup.backupDirsExist(n) != 0 || backup.backupShellsExist(n) != 0) {
+      g_err << "Baseline not clean on node " << n << endl;
+      return NDBT_FAILED;
+    }
+  }
+
+  /* The hold applies to the participants only: the master's own
+   * workers complete their cleanup, and the backup, before it dies.
+   */
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n == masterNodeId) continue;
+    if (restarter.insertErrorInNode(n, holdEI) != 0) {
+      g_err << "Error insert " << holdEI << " failed on node " << n << endl;
+      restarter.insertErrorInAllNodes(0);
+      return NDBT_FAILED;
+    }
+  }
+
+  unsigned backupId = 0;
+  if (backup.start(backupId) != 0) {
+    g_err << "ERROR: the backup did not complete" << endl;
+    restarter.insertErrorInAllNodes(0);
+    return NDBT_FAILED;
+  }
+  g_err << "Backup " << backupId << " completed, killing master "
+        << masterNodeId << endl;
+
+  if (restarter.restartOneDbNode(masterNodeId, false /* initial */,
+                                 true /* nostart */, true /* abort */) != 0) {
+    g_err << "ERROR: failed to kill node " << masterNodeId << endl;
+    restarter.insertErrorInAllNodes(0);
+    return NDBT_FAILED;
+  }
+  if (restarter.waitNodesNoStart(&masterNodeId, 1) != 0) {
+    g_err << "ERROR: node " << masterNodeId << " did not reach not-started"
+          << endl;
+    restarter.insertErrorInAllNodes(0);
+    return NDBT_FAILED;
+  }
+  /* The participants have seen the failure by now; release the held
+   * cleanups (10074). A dropped verdict (10075) needs no release: the
+   * failure itself drives the participants' self-abort.
+   */
+  NdbSleep_SecSleep(2);
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    int n = restarter.getDbNodeId(i);
+    if (n == masterNodeId) continue;
+    if (restarter.insertErrorInNode(n, 0) != 0) {
+      g_err << "NOTE: clearing the error insert on node " << n
+            << " reported failure" << endl;
+    }
+  }
+
+  /* Every surviving participant must keep its files: a removal would
+   * happen within the cleanup that the release just resumed, so poll
+   * for a while and require the files throughout.
+   */
+  bool failed = false;
+  for (int p = 0; p < 10 && !failed; p++) {
+    NdbSleep_SecSleep(1);
+    for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+      int n = restarter.getDbNodeId(i);
+      if (n == masterNodeId) continue;
+      const int exist = backup.backupDirsExist(n);
+      if (exist != 1) {
+        g_err << "ERROR: node " << n << " no longer holds the files of"
+              << " completed backup " << backupId << " (content " << exist
+              << ") after the master died" << endl;
+        failed = true;
+        break;
+      }
+    }
+  }
+
+  /* The dead master rejoins: the new master must not have recorded a
+   * debris sweep for it.
+   */
+  if (restarter.startNodes(&masterNodeId, 1) != 0 ||
+      restarter.waitClusterStarted(300) != 0) {
+    g_err << "ERROR: failed to restart node " << masterNodeId << endl;
+    return NDBT_FAILED;
+  }
+  for (int p = 0; p < 10 && !failed; p++) {
+    NdbSleep_SecSleep(1);
+    const int exist = backup.backupDirsExist(masterNodeId);
+    if (exist != 1) {
+      g_err << "ERROR: the old master " << masterNodeId
+            << " no longer holds the files of completed backup " << backupId
+            << " (content " << exist << ") after rejoining" << endl;
+      failed = true;
+    }
+  }
+  if (failed) return NDBT_FAILED;
+  g_err << "Backup " << backupId << " kept its files on every node" << endl;
+
+  /* The participants' records must have been released: a further
+   * backup has to succeed.
+   */
+  unsigned nextId = 0;
+  if (backup.start(nextId) != 0) {
+    g_err << "ERROR: a backup after the master failure did not complete"
+          << endl;
+    return NDBT_FAILED;
+  }
+  g_err << "Backup " << nextId << " completed after the master failure"
+        << endl;
+  if (backup.clearOldBackups() != 0) {
+    g_err << "clearOldBackups failed" << endl;
+    return NDBT_FAILED;
+  }
+  return NDBT_OK;
+}
+
 int runAbortRemovesAllNodesFiles(NDBT_Context *ctx, NDBT_Step *step) {
   /* An aborted backup must remove its files on EVERY participant, not
    * only on the errored node and the master. A worker that is not
@@ -3878,6 +4038,23 @@ TESTCASE("ClientAbortDuringStop",
   INITIALIZER(clearOldBackups);
   INITIALIZER(runLoadTable);
   STEP(runClientAbortDuringStop);
+}
+TESTCASE("MasterDiesAfterVerdict",
+         "Check that a backup the client was told succeeded keeps its"
+         " files on every node when the master dies while the"
+         " participants are still cleaning up, and on the master itself"
+         " when it rejoins") {
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runMasterDiesAfterVerdict);
+}
+TESTCASE("MasterDiesAfterVerdictAtStop",
+         "As MasterDiesAfterVerdict, with the participants still waiting"
+         " for the verdict after confirming their stop") {
+  TC_PROPERTY("HoldEI", Uint32(10075));
+  INITIALIZER(clearOldBackups);
+  INITIALIZER(runLoadTable);
+  STEP(runMasterDiesAfterVerdict);
 }
 TESTCASE("AbortRemovesAllNodesFiles",
          "Check that an aborted backup removes its files on every"

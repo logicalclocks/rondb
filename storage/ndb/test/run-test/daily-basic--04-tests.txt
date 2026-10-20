@@ -117,6 +117,14 @@ args: -n ClientAbortDuringStop T1
 max-time: 300
 
 cmd: testBackup
+args: -n MasterDiesAfterVerdict T1
+max-time: 600
+
+cmd: testBackup
+args: -n MasterDiesAfterVerdictAtStop T1
+max-time: 600
+
+cmd: testBackup
 args: -n DeadParticipantSwept T1
 max-time: 600
 

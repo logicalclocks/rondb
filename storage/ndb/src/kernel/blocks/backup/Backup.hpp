@@ -807,6 +807,14 @@ class Backup : public SimulatedBlock {
      */
     bool m_cleanup_started = false;
     /**
+     * Set on a participant when the master died after this node
+     * confirmed its stop but before the verdict arrived: the master may
+     * have completed the backup (and told the client) before dying,
+     * which only its own record knew. The files may belong to a
+     * completed backup, so the self-abort's cleanup must keep them.
+     */
+    bool m_verdict_unknown = false;
+    /**
      * Value of m_debris_sweep_next_gen when this attempt started:
      * entries with gen above the floor were recorded by THIS attempt
      * and are the only ones its success verdict may cancel (an older

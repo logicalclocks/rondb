@@ -2603,6 +2603,19 @@ void Backup::execBACKUP_LOCK_TAB_CONF(Signal *signal) {
     }
     case BackupLockTab::CLEANUP: {
       jam();
+#ifdef ERROR_INSERT
+      if (ERROR_INSERTED(10074) && !ptr.p->is_lcp()) {
+        jam();
+        /* 10074: hold this worker's cleanup at its first table until the
+         * insert is cleared - the window in which a master death must
+         * not make the cleanup remove the files.
+         */
+        sendSignalAfterErrorCondCleared(reference(), GSN_BACKUP_LOCK_TAB_CONF,
+                                        signal, BackupLockTab::SignalLength,
+                                        JBB, nullptr, 10074, 100);
+        return;
+      }
+#endif
       ptr.p->tables.next(tabPtr);
       cleanupNextTable(signal, ptr, tabPtr);
       return;
@@ -3990,7 +4003,7 @@ void Backup::recordDebrisSweep(BackupRecordPtr ptr, Uint32 deadNode) {
    * master's LDM1 worker records - one recorder, one sweep order.
    *
    * Only record when this worker has reached STARTED or later through
-   * the normal flow: the master fans START_BACKUP_REQ only after every
+   * the normal flow: the master sends START_BACKUP_REQ only after every
    * participant confirmed DEFINE, and a confirmed DEFINE proves the
    * dead node CREATED its files in this attempt (files are opened with
    * OM_CREATE_IF_NONE, so a pre-existing fileset - a valid earlier
@@ -4018,6 +4031,22 @@ void Backup::recordDebrisSweep(BackupRecordPtr ptr, Uint32 deadNode) {
      * while the master may still be collecting other stop replies; a
      * death there fails the backup and must be recorded.)
      */
+    return;
+  }
+  if (deadNode == refToNode(ptr.p->masterRef) &&
+      (ptr.p->m_gsn == GSN_STOP_BACKUP_CONF ||
+       (ptr.p->m_cleanup_started && !ptr.p->m_remove_files_after_cleanup))) {
+    jam();
+    /* The dead node is the master and this node has confirmed its stop
+     * (or is already cleaning up after its BackupComplete): the master
+     * may have rendered the success verdict before dying, which only
+     * its own record knew. Its fileset may be part of a completed
+     * backup, so it is left alone rather than swept on its rejoin.
+     */
+    g_eventLogger->info(
+        "Backup: master node %u died after this node confirmed its stop"
+        " of backup %u - its files are not recorded for a sweep",
+        deadNode, ptr.p->backupId);
     return;
   }
   if (ptr.p->backupId == 0) {
@@ -4077,6 +4106,24 @@ void Backup::checkNodeFail(Signal *signal, BackupRecordPtr ptr, NodeId newCoord,
     /**
      * Master died...abort
      */
+    if (ptr.p->m_cleanup_started) {
+      jam();
+      /* The master delivered its verdict (BackupComplete or
+       * CleanupFailedBackup) and this record is only finishing its
+       * cleanup: the remove decision was taken with the order. An error
+       * recorded now would make cleanupNextTable remove the files of a
+       * backup the client may already have been told succeeded.
+       */
+      return;
+    }
+    if (ptr.p->m_gsn == GSN_STOP_BACKUP_CONF) {
+      jam();
+      /* Stop confirmed, verdict not received: the master may have
+       * completed the backup (and told the client) before dying. The
+       * abort below must not remove this node's files.
+       */
+      ptr.p->m_verdict_unknown = true;
+    }
     ptr.p->masterRef = reference();
     ptr.p->senderRef = reference();
     // Each ldm on each node becomes master and sends signals only to self
@@ -4407,6 +4454,7 @@ void Backup::execBACKUP_REQ(Signal *signal) {
   ptr.p->m_remove_files_after_cleanup = false;
   ptr.p->m_backup_completed_ok = false;
   ptr.p->m_cleanup_started = false;
+  ptr.p->m_verdict_unknown = false;
   ptr.p->m_sweep_gen_floor = m_debris_sweep_next_gen;
   ptr.p->m_backup_files_created = false;
   ptr.p->m_backup_files_preexisted = false;
@@ -6533,6 +6581,7 @@ void Backup::execDEFINE_BACKUP_REQ(Signal *signal) {
   ptr.p->m_remove_files_after_cleanup = false;
   ptr.p->m_backup_completed_ok = false;
   ptr.p->m_cleanup_started = false;
+  ptr.p->m_verdict_unknown = false;
   ptr.p->m_sweep_gen_floor = m_debris_sweep_next_gen;
   ptr.p->m_backup_files_created = false;
   ptr.p->m_backup_files_preexisted = false;
@@ -11779,6 +11828,21 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
 
     case AbortBackupOrd::BackupComplete:
       jam();
+#ifdef ERROR_INSERT
+      if (ERROR_INSERTED(10075) && !ptr.p->is_lcp()) {
+        jam();
+        /* 10075: drop this worker's BackupComplete (one-shot), leaving
+         * the record stop-confirmed without a verdict - the window in
+         * which a master death must not make the self-abort remove the
+         * files.
+         */
+        CLEAR_ERROR_INSERT_VALUE;
+        g_eventLogger->info("EI 10075: dropping BackupComplete of backup %u",
+                            backupId);
+        ptr.p->m_gsn = previousGsn;
+        return;
+      }
+#endif
       cleanup(signal, ptr);
       return;
     case AbortBackupOrd::CleanupFailedBackup:
@@ -11962,13 +12026,15 @@ void Backup::cleanupNextTable(Signal *signal, BackupRecordPtr ptr,
 
   if ((ptr.p->checkError() || ptr.p->m_remove_files_after_cleanup) &&
       ptr.p->m_backup_files_created && !ptr.p->m_backup_files_preexisted &&
-      !ptr.p->m_backup_completed_ok) {
+      !ptr.p->m_backup_completed_ok && !ptr.p->m_verdict_unknown) {
     /* Remove the failed backup's fileset — but only one this attempt
      * owns: never a directory whose files already existed (a valid
      * earlier backup with the same id), nothing when the failure
-     * struck before any file was created, and nothing once the master
+     * struck before any file was created, nothing once the master
      * rendered the success verdict (an error recorded after it does
-     * not make the completed backup invalid). removeBackup stamps
+     * not make the completed backup invalid), and nothing when the
+     * master died after this node confirmed its stop (the verdict is
+     * unknown, the backup may have completed). removeBackup stamps
      * backupId into the FSREMOVEREQ, so it must still hold the real id
      * here; it is invalidated when the removal confirms
      * (execFSREMOVECONF).
@@ -11977,6 +12043,13 @@ void Backup::cleanupNextTable(Signal *signal, BackupRecordPtr ptr,
     removeBackup(signal, ptr);
   } else {
     jam();
+    if (ptr.p->m_verdict_unknown && ptr.p->m_backup_files_created) {
+      jam();
+      g_eventLogger->info(
+          "Backup: keeping the files of backup %u: the master died after"
+          " this node confirmed its stop, the backup may have completed",
+          ptr.p->backupId);
+    }
     /*
       report of backup status uses these variables to keep track
       if backup ia running and current state

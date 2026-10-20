@@ -933,6 +933,11 @@ Backup Stuff:
        replies are outstanding, record a client abort, then clear the
        error inserts of the other participants (releasing a 10072
        hold) (one-shot)
+10074: Hold this participant's cleanup at its first table until the
+       error insert is cleared (the window in which the master may die
+       after rendering the verdict)
+10075: Drop this participant's BackupComplete order (one-shot), so the
+       record stays stop-confirmed without a verdict
 
 11001: Send UTIL_SEQUENCE_REF (in master)
 
