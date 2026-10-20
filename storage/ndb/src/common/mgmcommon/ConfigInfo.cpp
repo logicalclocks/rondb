@@ -1431,7 +1431,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_INT, "0", "0", STR_VALUE(MAX_USED_NUM_CPUS)},
 
     {CFG_DB_MT_THREADS, "MaxNoOfExecutionThreads", DB_TOKEN,
-     "For ndbmtd, specify max no of execution threads", ConfigInfo::CI_USED,
+     "For ndbmtd, specify max no of execution threads. Used only when"
+     " AutomaticThreadConfig is false",
+     ConfigInfo::CI_USED,
      CI_RESTART_SYSTEM | CI_RESTART_INITIAL, ConfigInfo::CI_INT, "0", "2",
 #if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
      "8"
@@ -1457,7 +1459,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "For ndbmtd use mt-classic", ConfigInfo::CI_USED, false,
      ConfigInfo::CI_BOOL, nullptr, "false", "true"},
 
-    {CFG_DB_MT_THREAD_CONFIG, "ThreadConfig", DB_TOKEN, "Thread configuration",
+    {CFG_DB_MT_THREAD_CONFIG, "ThreadConfig", DB_TOKEN,
+     "Thread configuration. Used only when AutomaticThreadConfig is false",
      ConfigInfo::CI_USED, CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
      ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
 
@@ -4261,7 +4264,24 @@ static bool checkThreadConfig(InitConfigFileParser::Context &ctx,
     return false;
   }
   if (auto_thread_config) {
-    ;
+    // The data node ignores both with automatic thread configuration, so
+    // say so instead of letting them look effective.
+    const char *ignored_thrconfig = nullptr;
+    if (ctx.m_currentSection->get("ThreadConfig", &ignored_thrconfig) &&
+        ignored_thrconfig != nullptr && ignored_thrconfig[0] != 0) {
+      ctx.reportWarning(
+          "ThreadConfig is ignored since AutomaticThreadConfig is set"
+          " (section starting at line %u). Set AutomaticThreadConfig=false"
+          " to use it.",
+          ctx.m_sectionLineno);
+    }
+    if (maxExecuteThreads) {
+      ctx.reportWarning(
+          "MaxNoOfExecutionThreads is ignored since AutomaticThreadConfig is"
+          " set (section starting at line %u). Set"
+          " AutomaticThreadConfig=false to use it.",
+          ctx.m_sectionLineno);
+    }
   } else if (ctx.m_currentSection->get("ThreadConfig", &thrconfig)) {
     int ret = tmp.do_parse_thrconfig(thrconfig, realtimeScheduler, spinTimer);
     if (ret) {

@@ -1846,6 +1846,16 @@ Configuration::setupConfiguration()
       Uint32 num_cpus = 0;
       iter.get(CFG_DB_NUM_CPUS, &num_cpus);
       g_eventLogger->info("Use automatic thread configuration");
+      if (thrconfigstring != nullptr && thrconfigstring[0] != 0) {
+        g_eventLogger->warning(
+            "ThreadConfig is ignored since AutomaticThreadConfig is set."
+            " Set AutomaticThreadConfig=false to use it.");
+      }
+      if (mtthreads != 0) {
+        g_eventLogger->warning(
+            "MaxNoOfExecutionThreads is ignored since AutomaticThreadConfig"
+            " is set. Set AutomaticThreadConfig=false to use it.");
+      }
       Uint32 use_tc_threads = 1;
       iter.get(CFG_DB_USE_TC_THREADS, &use_tc_threads);
       Uint32 use_ldm_threads = 1;
@@ -1884,7 +1894,13 @@ Configuration::setupConfiguration()
     }
   }
   {
-    if (thrconfigstring) {
+    // With automatic thread configuration, ThreadConfig and
+    // MaxNoOfExecutionThreads were not used, so do not print them as input.
+    if (auto_thread_config != 0) {
+      g_eventLogger->info(
+          "Automatic Thread Config: LockExecuteThreadToCPU: %s => parsed: %s",
+          lockmask ? lockmask : "", m_thr_config.getConfigString());
+    } else if (thrconfigstring) {
       g_eventLogger->info(
           "ThreadConfig: input: %s LockExecuteThreadToCPU: %s => parsed: %s",
           thrconfigstring, lockmask ? lockmask : "",
