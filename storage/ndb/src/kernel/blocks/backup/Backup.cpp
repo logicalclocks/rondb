@@ -5580,13 +5580,26 @@ void Backup::execBACKUP_FRAGMENT_REF(Signal *signal) {
 
   BackupFragmentRef *ref = (BackupFragmentRef *)signal->getDataPtr();
   const Uint32 ptrI = ref->backupPtr;
-  // const Uint32 backupId = ref->backupId;
+  const Uint32 backupId = ref->backupId;
   const Uint32 nodeId = ref->nodeId;
 
   const Uint32 tableId = ref->tableId;
   const Uint32 fragmentNo = ref->fragmentNo;
   BackupRecordPtr ptr;
   ndbrequire(c_backupPool.getPtr(ptr, ptrI));
+
+  if (ptr.p->backupId != backupId) {
+    jam();
+    /* A REF of a backup this record no longer holds (released, or the
+     * slot reused by a new backup): a late REF must neither abort the
+     * new backup with the old error nor reach the table lookup below.
+     */
+    g_eventLogger->info(
+        "Backup: ignoring BACKUP_FRAGMENT_REF for backup %u from node %u:"
+        " record %u holds backup %u",
+        backupId, nodeId, ptrI, ptr.p->backupId);
+    return;
+  }
 
   /*
    * Worker node (nodeId) Failed.
