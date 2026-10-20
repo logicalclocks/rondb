@@ -20544,11 +20544,15 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
      * API has prepared one SPJ worker for each data node that owns a
      * primary partition in the cluster.
      *
-     * What we do is that when we combine several SPJ workers into one
-     * since it is handled locally within one SPJ node we will increase
-     * the batch size of that SPJ worker accordingly to ensure that we
-     * make use of all the available batch size that the NDB API provided
-     * for us.
+     * The NDB API counts the nodes from the table's fragment distribution,
+     * while we group the fragments by their current primary node. After a
+     * node failure the fragments of several SPJ workers can therefore end
+     * up in one SCAN_FRAGREQ. We do not increase its batch size:
+     * batch_size_rows and batch_size_bytes stay the limits the NDB API set
+     * for one worker, and DBSPJ divides them over the fragments it gets.
+     * The NDB API sizes its result buffers for this, with one overshoot
+     * row per root fragment (NdbQueryOperationImpl::getMaxBatchBytes()).
+     * A larger batch size here would overflow those buffers.
      *
      * What we do is that we select the SPJ worker to be set according to
      * the preferred node to execute the query. This means that with
