@@ -1674,8 +1674,9 @@ ndbd_support_ttl_ring_buffer(Uint32 x)
  * debris of a backup that failed while it was dead) and its responses
  * RemoveFailedBackupFilesConf (1332) / RemoveFailedBackupFilesRef
  * (1333). All four ship together; any port must take them together or
- * split this predicate. Nodes without support are never sent 1331 (they
- * would misread its senderData as a record index) and get 1330
+ * split this predicate. Nodes without support are never sent 1331 (its
+ * senderData is RNIL, so one that received it anyway would find no
+ * record and ignore it) and get 1330
  * downgraded to BackupComplete, keeping their partial files exactly as
  * before the fix - mixed-version operation is safe in both directions,
  * full cleanup starts once all data nodes run a supporting version.

@@ -3834,10 +3834,11 @@ void Backup::execNODE_START_REP(Signal *signal) {
    * recorded for it (recordDebrisSweep). The entry stays until the
    * receiver confirms the sweep (RemoveFailedBackupFilesConf), so a
    * node that dies again mid-sweep is re-ordered on its next rejoin
-   * (the removals are idempotent). Version-gated per receiver: an old
-   * node would read the order's senderData as a backup-record index
-   * and could hit a live record, so it is never sent one and keeps
-   * its debris exactly as before the fix (that entry is dropped).
+   * (the removals are idempotent). senderData is RNIL: a node without
+   * the capability looks the order up as a backup record, finds none
+   * and ignores it. Version-gated per receiver all the same, so an old
+   * node is not sent orders it would only ignore; it keeps its debris
+   * exactly as before the fix (that entry is dropped).
    */
   if (started_node < MAX_NDB_NODES &&
       m_pending_sweeps[started_node].backupId != 0) {
@@ -3850,9 +3851,10 @@ void Backup::execNODE_START_REP(Signal *signal) {
       AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtrSend();
       ord->requestType = AbortBackupOrd::RemoveFailedBackupFiles;
       ord->backupId = backupId;
-      ord->senderData = totalParts;
+      ord->senderData = RNIL;
       ord->senderRef = reference();
       ord->sweepGen = gen;
+      ord->totalParts = totalParts;
       /* Via the node's main BACKUP instance: on ndbmtd that is the
        * BackupProxy, which installs the node-wide same-id define
        * barrier before handing the order to LDM1 (on ndbd it is the
@@ -11591,11 +11593,10 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
       jam();
       /* Record-less by design: this node's record of the failed backup
        * died with the node, and a live record here belongs to a
-       * different, running backup - senderData is the failed backup's
-       * part count, not a record index, so this must be handled before
-       * any record lookup.
+       * different, running backup - the order carries no record index
+       * (senderData is RNIL), so it is handled before any record lookup.
        */
-      startDebrisSweep(signal, backupId, senderData, ord->senderRef,
+      startDebrisSweep(signal, backupId, ord->totalParts, ord->senderRef,
                        ord->sweepGen);
       return;
     }
@@ -11656,6 +11657,19 @@ void Backup::execABORT_BACKUP_ORD(Signal *signal) {
     if (c_backupPool.findId(senderData)) {
       jam();
       ndbrequire(c_backupPool.getPtr(ptr, senderData));
+      if (ptr.p->is_lcp()) {
+        jam();
+        /* Record 0 is the LCP record on every LDM (DBLQH defines it
+         * with backupPtr 0). No abort order is meant for it: one that
+         * resolves to it is misrouted or malformed, and acting on it
+         * would run the LCP record through backup stop processing.
+         */
+        g_eventLogger->info(
+            "Backup: ignoring abort request type=%u for backup %u:"
+            " record %u is the LCP record",
+            requestType, backupId, senderData);
+        return;
+      }
       if (ptr.p->backupId != backupId) {
         jam();
         /* The slot holds a different backup's record (e.g. one leaked
@@ -12116,9 +12130,10 @@ void Backup::startDebrisSweep(Signal *signal, Uint32 backupId,
     AbortBackupOrd *ord = (AbortBackupOrd *)signal->getDataPtrSend();
     ord->requestType = AbortBackupOrd::RemoveFailedBackupFilesRef;
     ord->backupId = backupId;
-    ord->senderData = 0;
+    ord->senderData = RNIL;
     ord->senderRef = reference();
     ord->sweepGen = gen;
+    ord->totalParts = 0;
     sendSignal(senderRef, GSN_ABORT_BACKUP_ORD, signal,
                AbortBackupOrd::SignalLengthDebrisSweep, JBB);
     return;
@@ -12287,9 +12302,10 @@ void Backup::debrisSweepConf(Signal *signal) {
                              ? AbortBackupOrd::RemoveFailedBackupFilesRef
                              : AbortBackupOrd::RemoveFailedBackupFilesConf;
       ord->backupId = sweep.m_backup_id;
-      ord->senderData = 0;
+      ord->senderData = RNIL;
       ord->senderRef = reference();
       ord->sweepGen = sweep.m_gen;
+      ord->totalParts = 0;
       sendSignal(sweep.m_order_sender_ref, GSN_ABORT_BACKUP_ORD, signal,
                  AbortBackupOrd::SignalLengthDebrisSweep, JBB);
       sweep.m_active = false;

@@ -272,12 +272,13 @@ class AbortBackupOrd {
   static constexpr Uint32 SignalLength = 4;
   /**
    * RemoveFailedBackupFiles and its responses (Conf/Ref) carry the
-   * sweep generation in a fifth word: backup ids are reusable, so a
-   * response must identify the exact recorded sweep it answers. All
-   * three request types are version-gated behind the same capability,
-   * so every sender of them uses this length.
+   * sweep generation in a fifth word (backup ids are reusable, so a
+   * response must identify the exact recorded sweep it answers) and
+   * the part count of the swept layout in a sixth. All three request
+   * types are version-gated behind the same capability, so every
+   * sender of them uses this length.
    */
-  static constexpr Uint32 SignalLengthDebrisSweep = 5;
+  static constexpr Uint32 SignalLengthDebrisSweep = 6;
 
   enum RequestType {
     ClientAbort = 1321,
@@ -295,9 +296,12 @@ class AbortBackupOrd {
     /**
      * master -> restarted node: sweep the debris of a backup that
      * failed while the receiver was dead. Record-less: backupId is
-     * the failed backup's id and senderData carries the part count
-     * of the receiver's mt layout (0 = single-threaded layout), so
-     * it must be handled before any backup-record lookup.
+     * the failed backup's id, totalParts the part count of the
+     * receiver's mt layout (0 = single-threaded layout), and
+     * senderData is RNIL - never a record index, so a node that looks
+     * the order up as a backup record (one without this capability)
+     * finds nothing and ignores it. Handled before any backup-record
+     * lookup.
      */
     RemoveFailedBackupFiles = 1331,
     /**
@@ -324,7 +328,8 @@ class AbortBackupOrd {
     Uint32 senderData;
   };
   Uint32 senderRef;
-  Uint32 sweepGen;  // only with SignalLengthDebrisSweep
+  Uint32 sweepGen;    // only with SignalLengthDebrisSweep
+  Uint32 totalParts;  // only with SignalLengthDebrisSweep
 };
 
 #undef JAM_FILE_ID
