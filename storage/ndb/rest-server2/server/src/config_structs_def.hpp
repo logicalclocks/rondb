@@ -109,10 +109,11 @@ CLASS
     " NDB API, the process itself and response bodies already handed to the"
     " HTTP server (not counted), so limits below 2 GiB leave too little room"
     " and are warned about at startup.")
- CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 60,
+ CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 300,
     "Seconds a pool must have been idle (free buffers above"
     " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
-    " shrinking.")
+    " shrinking. Five minutes by default, so a pool that serves bursts a few"
+    " minutes apart keeps its buffers instead of remapping them each time.")
  CM(Uint32, startReserveOverride, StartReserveOverride, 0,
     "Testing knob. Overrides the computed start reserve, the free space a"
     " buffer must have before a new response or operation request may start"
