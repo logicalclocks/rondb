@@ -1343,9 +1343,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "hardcoded value of 2MB", ConfigInfo::CI_DEPRECATED, false,
      ConfigInfo::CI_INT, "1M", "256K", STR_VALUE(MAX_INT_RNIL)},
 
-    {CFG_DB_STRING_MEMORY, "StringMemory", DB_TOKEN,
-     "Default size of string memory (1-100 -> %of max, >100 -> actual bytes)",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT,
+    {CFG_DB_STRING_MEMORY, "StringMemory", DB_TOKEN, "SchemaMemory",
+     ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
      STR_VALUE(DEFAULT_STRING_MEMORY), "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_MAX_ALLOCATE, "MaxAllocate", DB_TOKEN, "",

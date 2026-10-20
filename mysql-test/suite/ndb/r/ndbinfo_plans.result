@@ -283,9 +283,9 @@ select state_int_value, state_name from ndb$dblqh_tcconnect_state where state_in
 state_int_value	9
 state_name	LOG_COMMIT_QUEUED_WAIT_SIGNAL
 
-select param_number, param_name from ndb$config_params where param_number = 161;
-param_number	161
-param_name	StringMemory
+select param_number, param_name from ndb$config_params where param_number = 112;
+param_number	112
+param_name	DataMemory
 PRIMARY
 
 ## No row:
