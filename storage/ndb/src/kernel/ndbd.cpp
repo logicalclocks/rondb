@@ -198,10 +198,9 @@ static void systemInfo(const Configuration &config) {
  * RG_REPLICATION_MEMORY:
  * This memory is used by SUMA to store records of changes to be sent out
  * to the clients subscribing to replication events in NDB Cluster.
- * Similar to the RG_QUERY_MEMORY it is a low priority resource, but it can
- * grow as long as there is no memory shortage. It will never decrease
- * below the configured memory size (configure parameter is
- * MaxBufferedEpochBytes).
+ * It can grow into SharedGlobalMemory as long as there is no memory
+ * shortage. It will never decrease below the configured memory size
+ * (configure parameter is ReplicationMemory).
  *
  * RG_SCHEMA_MEMORY:
  * This memory is used to handle memory resources connected to schema
@@ -501,7 +500,7 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     rl.m_prio_memory = Resource_limit::VERY_HIGH_PRIO_MEMORY;
     ed.m_mem_manager->set_resource_limit(rl);
   }
-  g_eventLogger->info("MaxBufferedEpochBytes can use memory from"
+  g_eventLogger->info("ReplicationMemory can use memory from"
                       " SharedGlobalMemory until 96%% used");
 
   Uint32 reserved_schema_memory = schema_memory / 4;

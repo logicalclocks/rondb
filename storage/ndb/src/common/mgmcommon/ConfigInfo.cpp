@@ -1107,7 +1107,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "100", "1", "100000"},
 
     {CFG_DB_MAX_BUFFERED_EPOCH_BYTES, "MaxBufferedEpochBytes", DB_TOKEN,
-     "Max number of bytes available for buffering epochs.",
+     "Epoch buffer memory SUMA keeps allocated instead of returning it to "
+     "SharedGlobalMemory. The buffer itself is limited by ReplicationMemory.",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "500M", "26214400",
      STR_VALUE(MAX_INT_RNIL)},
 
