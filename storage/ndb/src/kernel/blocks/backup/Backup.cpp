@@ -9861,7 +9861,7 @@ void Backup::fragmentCompleted(Signal *signal, BackupFilePtr filePtr,
     signal->theData[1] = filePtr.i;
     signal->theData[2] = errCode;
     sendSignalWithDelay(reference(), GSN_CONTINUEB, signal,
-                        WaitDiskBufferCapacityMillis, 2);
+                        WaitDiskBufferCapacityMillis, 3);
     return;
   }  // if
   OperationRecord &op = filePtr.p->operation;
