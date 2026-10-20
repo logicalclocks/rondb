@@ -28,9 +28,9 @@ import (
 	"hopsworks.ai/rdrs2/resources/testdbs"
 )
 
-// ronsqlBody builds a RonSQL request for an aggregation over db029/tiny_tbl,
-// the same database the index-scan rate limit test bills to. TEXT_NOHEADER
-// keeps the body to the bare aggregate value.
+// ronsqlBody builds a RonSQL request for a query over db029, the same
+// database the index-scan rate limit test bills to. TEXT_NOHEADER keeps the
+// body to the bare result values.
 func ronsqlBody(database string, query string) string {
 	return fmt.Sprintf(`{"query": %q, "database": %q, "outputFormat": "TEXT_NOHEADER"}`,
 		query, database)
@@ -49,9 +49,39 @@ func ronsqlBody(database string, query string) string {
 // into the generic temporary/permanent verdict - the latter answered 500 and
 // burned RonSQL's three retries against an already overflowing bucket.
 func TestRateLimit(t *testing.T) {
+	runRateLimitTest(t, "SELECT SUM(val_1) FROM tiny_tbl;")
+}
+
+// RONSQL-49: RonSQL tagged only the transaction of a single-table aggregate
+// with the rate limit identity. A non-aggregate query and a join started
+// their transactions untagged, so they were never throttled, and a WHERE
+// subquery ran in an inner preparer without the identity.
+
+// TestRateLimitPassthrough: a single-table non-aggregate query.
+func TestRateLimitPassthrough(t *testing.T) {
+	runRateLimitTest(t, "SELECT pk, val_1 FROM tiny_tbl;")
+}
+
+// TestRateLimitJoin: a join query.
+func TestRateLimitJoin(t *testing.T) {
+	runRateLimitTest(t, "SELECT SUM(b.val_2) AS s FROM tiny_tbl AS t "+
+		"JOIN big_tbl AS b ON b.pk = t.pk;")
+}
+
+// TestRateLimitSubquery: an IN subquery. The subquery runs first, so it
+// is often the one that is throttled, and that must be a 429 too, not a
+// "Subquery execution failed" error.
+func TestRateLimitSubquery(t *testing.T) {
+	runRateLimitTest(t, "SELECT SUM(val_1) AS s FROM tiny_tbl "+
+		"WHERE val_1 IN (SELECT MAX(val_1) FROM big_tbl);")
+}
+
+// runRateLimitTest runs the shared endpoint rate limit test with query over
+// db029: a low limit must give some 429s and nothing but 200 and 429.
+func runRateLimitTest(t *testing.T, query string) {
 	testutils.SkipIfRateLimitsDisabled(t)
 
-	reqBody := ronsqlBody(testdbs.DB029, "SELECT SUM(val_1) FROM tiny_tbl;")
+	reqBody := ronsqlBody(testdbs.DB029, query)
 	url := testutils.NewRonSQLURL()
 
 	testutils.RunEndpointRateLimitTest(t, func(client *http.Client) int {

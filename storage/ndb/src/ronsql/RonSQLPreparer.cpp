@@ -9188,6 +9188,10 @@ RonSQLPreparer::execute_subqueries()
       inner_params.out_stream = &oss;
       inner_params.err_stream = &ess;
       inner_params.explain_mode = RonSQLExecParams::ExplainMode::FORBID;
+      // RONSQL-49: the subquery's transactions count against the caller's
+      // rate limits like the main query's.
+      inner_params.rate_limit_identity = m_conf.rate_limit_identity;
+      inner_params.rate_limit_identity_len = m_conf.rate_limit_identity_len;
 
       // Create and execute inner preparer
       {
@@ -9323,6 +9327,11 @@ RonSQLPreparer::execute_subqueries()
     }
     catch (const RonSQLRetryableError&)
     {
+      throw;
+    }
+    catch (const RonSQLRateLimitError&)
+    {
+      // The subquery was throttled: the whole query is (HTTP 429).
       throw;
     }
     catch (const std::bad_alloc&)
@@ -9769,23 +9778,7 @@ RonSQLPreparer::execute()
       return;
     }
 
-    ndbrequire(m_trans == NULL);
-    m_trans = DBG(ndb->startTransaction());
-    require_run(m_trans != NULL, "Failed to start transaction.");
-    if (m_conf.rate_limit_identity != NULL) {
-      /*
-       * RONDB-978: tag the transaction so the data nodes account this query's
-       * usage against the caller's USER rate limits. This also fails while the
-       * caller's client-side rate overflow backoff window is open, so it is a
-       * require_run: the Ndb error investigation turns the rate overflow into
-       * a RonSQLRateLimitError and everything else into the usual
-       * temporary/permanent verdict.
-       */
-      require_run(m_trans->setUserId(m_conf.rate_limit_identity,
-                                     m_conf.rate_limit_identity_len) == 0,
-                  "Rejected or failed to set the rate limit identity on the"
-                  " transaction.");
-    }
+    start_transaction();
     // Since ndb exists, m_main_scope.table should have been initialized in load()
     ndbrequire(m_main_scope.table != NULL);
 
@@ -10748,10 +10741,7 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
    * aggregation program loads, and each row that would be printed goes
    * to api_rows instead; nothing is printed here.
    */
-  Ndb* ndb = m_conf.ndb;
-  ndbrequire(m_trans == NULL);
-  m_trans = DBG(ndb->startTransaction());
-  require_run(m_trans != NULL, "Failed to start transaction.");
+  start_transaction();
   ndbrequire(m_main_scope.table != NULL);
 
   // The column registry indexes read per row, in attrs order.
@@ -11230,6 +11220,28 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
 }
 
 void
+RonSQLPreparer::start_transaction() {
+  Ndb* ndb = m_conf.ndb;
+  ndbrequire(m_trans == NULL);
+  m_trans = DBG(ndb->startTransaction());
+  require_run(m_trans != NULL, "Failed to start transaction.");
+  if (m_conf.rate_limit_identity != NULL) {
+    /*
+     * RONDB-978: tag the transaction so the data nodes account this query's
+     * usage against the caller's USER rate limits. This also fails while the
+     * caller's client-side rate overflow backoff window is open, so it is a
+     * require_run: the Ndb error investigation turns the rate overflow into
+     * a RonSQLRateLimitError and everything else into the usual
+     * temporary/permanent verdict.
+     */
+    require_run(m_trans->setUserId(m_conf.rate_limit_identity,
+                                   m_conf.rate_limit_identity_len) == 0,
+                "Rejected or failed to set the rate limit identity on the"
+                " transaction.");
+  }
+}
+
+void
 RonSQLPreparer::cleanup_trans() {
   if (m_trans) {
     Ndb* ndb = m_conf.ndb;
@@ -11448,9 +11460,7 @@ void
 RonSQLPreparer::execute_join()
 {
   Ndb* ndb = m_conf.ndb;
-  ndbrequire(m_trans == NULL);
-  m_trans = ndb->startTransaction();
-  require_run(m_trans != NULL, "Failed to start transaction.");
+  start_transaction();
 
   JoinPlan& plan = m_main_scope.join_plan;
 
