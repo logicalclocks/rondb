@@ -68,10 +68,46 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET hk:150
 
 --echo #
+--echo # SET ... KEEPTTL of a value with extension rows on a new key.
+--echo # The write reads the expiry date for the extension rows from
+--echo # interpreter output 2, so the INSERT branch of the program must
+--echo # write it: the data node refuses to return an interpreter output
+--echo # that the program did not write (error 946).
+--echo #
+--exec perl -e 'print "SET big4 ", "e" x 10000, " KEEPTTL\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big4
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big4 | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big4 | tr -d 'e\n' | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL big4
+
+--echo #
+--echo # SET ... KEEPTTL of a value with extension rows on an existing
+--echo # key without TTL. Its expiry_date is NULL, writing that to
+--echo # interpreter output 2 failed with error 878.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET big5 small
+--exec perl -e 'print "SET big5 ", "f" x 10000, " KEEPTTL\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big5
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big5 | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big5 | tr -d 'f\n' | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL big5
+
+--echo #
+--echo # SET ... KEEPTTL of a value with extension rows on an existing
+--echo # key with TTL: the TTL is kept (prints 1 when TTL is positive).
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET big6 small EX 100000
+--exec perl -e 'print "SET big6 ", "g" x 10000, " KEEPTTL\n"' | redis-cli -h $RONDIS_HOST -p $RONDIS_PORT
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT STRLEN big6
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big6 | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET big6 | tr -d 'g\n' | wc -c | tr -d ' '
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL big6 | grep -c -E '^[1-9]'
+
+--echo #
 --echo # Cleanup.
 --echo #
 --remove_file $old_value_file
---exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL big1 big2 big3
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL big1 big2 big3 big4 big5 big6
 
 --disable_query_log
 DROP DATABASE IF EXISTS redis_0;

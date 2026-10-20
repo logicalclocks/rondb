@@ -1915,6 +1915,7 @@ int Dbtup::setInputParameters(KeyReqStruct *req_struct,
       Uint64 val = Uint64(low) + (Uint64(high) << 32);
       Uint32 id = attributeId - AttributeHeader::INTERPRETER_INPUT_FIRST;
       m_interpreter_input[id] = val;
+      req_struct->m_interpreter_input_defined |= (1U << id);
 #ifdef TRACE_INTERPRETER
       g_eventLogger->info("(%u)Setting input param(%u) to %llx, low: %x,"
                           " high: %x",
@@ -3499,6 +3500,17 @@ int Dbtup::read_pseudo(const Uint32 *inBuffer, Uint32 inPos,
       if (attrId >= AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST &&
           attrId <= AttributeHeader::READ_INTERPRETER_OUTPUT_LAST) {
         Uint32 inx = attrId - AttributeHeader::READ_INTERPRETER_OUTPUT_FIRST;
+        /**
+         * Only send output slots written by the interpreted program of
+         * this operation, any other slot holds a value from an earlier
+         * operation. This also covers reads in the initial read section
+         * of updates, those are performed before the program executes.
+         */
+        if (unlikely((req_struct->m_interpreter_output_defined &
+                      (1U << inx)) == 0)) {
+          thrjam(req_struct->jamBuffer);
+          return -ZINTERPRETER_OUTPUT_NOT_DEFINED;
+        }
         inx *= 2;
         memcpy(outBuffer + 1, &c_interpreter_output[inx], 8);
         sz = 2;

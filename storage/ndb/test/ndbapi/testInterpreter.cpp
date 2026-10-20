@@ -1307,7 +1307,7 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
   HugoCalculator calc(* pTab);
   calc.equalForRow(pRow, pRowRecord, 0);
 
-  for (Uint32 i = 0; i < 35; i++) {
+  for (Uint32 i = 0; i < 38; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -1784,6 +1784,23 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       code.interpret_exit_ok();
       int ret_code = code.finalise();
       CHK3(ret_code);
+    } else if (i == 35) {
+      /**
+       * Fail on reading input 0 without supplying it, it would
+       * otherwise see the value supplied in i == 33 and i == 34.
+       */
+      code.read_interpreter_input(0, 0);
+      code.write_interpreter_output(0, 0);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
+    } else if (i == 36) {
+      /* Fail on reading output 0 when the program only wrote output 1 */
+      code.load_const_u16(0, 1);
+      code.write_interpreter_output(0, 1);
+      code.interpret_exit_ok();
+      int ret_code = code.finalise();
+      CHK3(ret_code);
     }
 
     NdbOperation::GetValueSpec getvals[2];
@@ -1851,11 +1868,27 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
         NdbScanOperation::ScanOptions::SO_SET_INPUT_PARAM;
       scan_opts.inputParams = &in_param;
       scan_opts.numInputParams = 1;
+    } else if (i == 35 || i == 36) {
+      getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_GET_FINAL_VALUE;
+      opts.extraGetFinalValues = getvals;
+      opts.numExtraGetFinalValues = 1;
+    } else if (i == 37) {
+      /* Fail on reading output 0 in a read without interpreted program */
+      getvals[0].column = NdbDictionary::Column::READ_INTERPRETER_OUTPUT_0;
+      getvals[0].appStorage = nullptr;
+      getvals[0].recAttr = nullptr;
+      opts.optionsPresent = NdbOperation::OperationOptions::OO_GETVALUE;
+      opts.interpretedCode = nullptr;
+      opts.extraGetValues = getvals;
+      opts.numExtraGetValues = 1;
     }
 
     const NdbOperation *pOp = nullptr;
     NdbScanOperation *pScanOp = nullptr;
-    if (i <= 26) {
+    if (i <= 26 || i == 37) {
       pOp = pTrans->readTuple(pRowRecord, (char*)pRow,
                               pRowRecord, (char*)pRow,
                               NdbOperation::LM_Read,
@@ -1955,6 +1988,12 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
     } else if (i == 10 || i == 11) {
       CHK_RET_FAILED(res == -1, pTrans);
       CHK_RET_FAILED(pTrans->getNdbError().code == 875, pTrans);
+    } else if (i == 35) {
+      CHK_RET_FAILED(res == -1, pTrans);
+      CHK_RET_FAILED(pTrans->getNdbError().code == 945, pTrans);
+    } else if (i == 36 || i == 37) {
+      CHK_RET_FAILED(res == -1, pTrans);
+      CHK_RET_FAILED(pTrans->getNdbError().code == 946, pTrans);
     }
     pNdb->closeTransaction(pTrans);
   }

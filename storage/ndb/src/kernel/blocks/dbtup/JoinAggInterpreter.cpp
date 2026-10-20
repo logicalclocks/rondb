@@ -1290,6 +1290,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         req_struct->m_linked_attr_len = m_linked_attr_len;
 
         Uint32 local_tmpArea[16];
+        /* Output slot 0 must be written by this embedded program, not
+         * by an earlier one on the same row. */
+        req_struct->m_interpreter_output_defined &= ~1U;
         int rc = block_tup->interpreterAggEmbedded(
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,
@@ -1311,6 +1314,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         }
         if (rc < 0) return ZAGG_EMBEDDED_INTERP_ERROR;
 
+        if (unlikely((req_struct->m_interpreter_output_defined & 1U) == 0)) {
+          return ZAGG_EMBEDDED_INTERP_ERROR;
+        }
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
         if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
           exec_pos = m_prog_len;
