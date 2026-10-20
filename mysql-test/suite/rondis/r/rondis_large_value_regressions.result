@@ -36,6 +36,39 @@ OK
 200
 s150
 #
+# SET ... KEEPTTL of a value with extension rows on a new key.
+# The write reads the expiry date for the extension rows from
+# interpreter output 2, so the INSERT branch of the program must
+# write it: the data node refuses to return an interpreter output
+# that the program did not write (error 946).
+#
+OK
+10000
+10001
+0
+-1
+#
+# SET ... KEEPTTL of a value with extension rows on an existing
+# key without TTL. Its expiry_date is NULL, writing that to
+# interpreter output 2 failed with error 878.
+#
+OK
+OK
+10000
+10001
+0
+-1
+#
+# SET ... KEEPTTL of a value with extension rows on an existing
+# key with TTL: the TTL is kept (prints 1 when TTL is positive).
+#
+OK
+OK
+10000
+10001
+0
+1
+#
 # Cleanup.
 #
-3
+6

@@ -435,6 +435,8 @@ ErrorBundle ErrorCodes[] = {
   { 942,  DMEC, AE, "Database name too long" },
   { 943,  DMEC, AE, "On-disk part of row can at most be 32632 bytes, 31080 bytes with data nodes before 26.10" },
   { 944,  DMEC, AE, "Fixed size part of row can at most be 16280 bytes" },
+  { 945,  DMEC, AE, "Interpreter read an input parameter not supplied by the operation" },
+  { 946,  DMEC, AE, "Read of interpreter output not written by the interpreted program" },
   { 4000, DMEC, IE, "MEMORY ALLOCATION ERROR" },
   { 4001, DMEC, IE, "Signal Definition Error" },
   { 4005, DMEC, IE, "Internal Error in NdbApi" },
