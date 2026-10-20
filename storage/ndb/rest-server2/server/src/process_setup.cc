@@ -52,3 +52,18 @@ ProcessSetupResult rdrs_process_setup() {
 #endif
   return result;
 }
+
+ProcessSetupResult rdrs_allow_transparent_huge_pages() {
+  ProcessSetupResult result = {true, 0};
+#ifdef __linux__
+  errno = 0;
+  if (prctl(PR_SET_THP_DISABLE, 0, 0, 0, 0) == 0) {
+    result.thp_disabled = false;
+  } else {
+    result.errno_thp = errno;
+  }
+#else
+  result.thp_disabled = false;
+#endif
+  return result;
+}

@@ -112,6 +112,30 @@ TEST(ProcessSetup, ThpDisabledForProcessAndLaterThreads) {
 }
 
 /*
+ * Internal.DisableTransparentHugePages false undoes the startup opt-out
+ * for the whole process, threads included; the opt-out can be made again.
+ */
+TEST(ProcessSetup, ThpCanBeAllowedAgain) {
+#ifdef __linux__
+  ASSERT_TRUE(rdrs_process_setup().thp_disabled);
+  const ProcessSetupResult allowed = rdrs_allow_transparent_huge_pages();
+  EXPECT_FALSE(allowed.thp_disabled) << "errno " << allowed.errno_thp;
+  EXPECT_EQ(prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0), 0);
+  int seen_by_thread = -1;
+  std::thread t([&seen_by_thread]() {
+    seen_by_thread = prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0);
+  });
+  t.join();
+  EXPECT_EQ(seen_by_thread, 0);
+  // Leave the process as the other tests expect it.
+  EXPECT_TRUE(rdrs_process_setup().thp_disabled);
+#else
+  EXPECT_FALSE(rdrs_allow_transparent_huge_pages().thp_disabled);
+  GTEST_SKIP() << "transparent huge pages are a Linux facility";
+#endif
+}
+
+/*
  * The per-thread JSON parse buffer must not be resident until used.
  * std::make_unique<char[]> zero-filled it, which made NumThreads x
  * MaxHttpReqSize resident at startup (64 x 4 MiB with the old defaults);

@@ -89,6 +89,12 @@ CLASS
  CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 128,
     "Buffers of each kind (request and response) mapped at startup and kept"
     " when the pool shrinks after an idle period.")
+ CM(bool, disableTransparentHugePages, DisableTransparentHugePages, true,
+    "Opt rdrs2 out of transparent huge pages (prctl PR_SET_THP_DISABLE)."
+    " On nodes with THP set to always, khugepaged collapses rdrs2's sparse"
+    " memory into resident 2 MiB pages until an idle pod reaches its memory"
+    " limit. The opt-out is made at startup, before the configuration is"
+    " read; false undoes it once the configuration is read.")
  CM(Uint32, maxBuffers, MaxBuffers, 0,
     "Cap on the buffers of each kind the pool may hold. 0 derives the cap"
     " from BufferPoolSharePercent and the memory limit the process runs"

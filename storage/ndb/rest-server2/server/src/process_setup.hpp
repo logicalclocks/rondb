@@ -40,4 +40,14 @@ struct ProcessSetupResult {
  */
 ProcessSetupResult rdrs_process_setup();
 
+/*
+ * Undo the opt-out when the configuration asks for transparent huge pages
+ * (Internal.DisableTransparentHugePages false). Called once the
+ * configuration is read, after threads exist: from Linux 5.0 the flag is
+ * checked per address space, so the whole process gets THP back; before
+ * 5.0 only mappings created after the call do. Same result convention as
+ * rdrs_process_setup, with thp_disabled false on success.
+ */
+ProcessSetupResult rdrs_allow_transparent_huge_pages();
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_PROCESS_SETUP_HPP_

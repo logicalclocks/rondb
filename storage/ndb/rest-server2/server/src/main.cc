@@ -369,6 +369,23 @@ int main(int argc, char *argv[]) {
     do_exit();
   }
 
+  /* The THP opt-out was made before the first thread; the configuration
+   * can only undo it (RONDB-1144). */
+  if (!globalConfigs.internal.disableTransparentHugePages) {
+    ProcessSetupResult thp = rdrs_allow_transparent_huge_pages();
+#ifdef __linux__
+    if (thp.thp_disabled) {
+      std::cerr << "Warning: prctl(PR_SET_THP_DISABLE, 0) failed: "
+                << strerror(thp.errno_thp) << '\n';
+    } else {
+      std::cerr << "Transparent huge pages allowed"
+                << " (Internal.DisableTransparentHugePages is false)\n";
+    }
+#else
+    (void)thp;
+#endif
+  }
+
   if (optPrintConfig) {
     printJson(globalConfigs, std::cout, 0, true);
     std::cout << '\n';
