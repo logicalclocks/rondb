@@ -33,7 +33,10 @@ import (
 // a cap: it is the number of operations sent to NDB per execute round.
 
 // intTableOps builds n identical reads of db004.int_table, each expected to
-// succeed.
+// succeed. Each reads one column, so an operation is 215 bytes of JSON and a
+// batch one past the default limit (4097) is about 880 KB, inside the 1 MiB
+// default MaxHttpReqSize: the request reaches the operation check instead
+// of being refused by the body limit.
 func intTableOps(n uint32) []api.BatchSubOperationTestInfo {
 	ops := make([]api.BatchSubOperationTestInfo, n)
 	for i := uint32(0); i < n; i++ {
@@ -43,20 +46,20 @@ func intTableOps(n uint32) []api.BatchSubOperationTestInfo {
 				RelativeURL: &[]string{string(testdbs.DB004 + "/int_table/" + config.PK_DB_OPERATION)}[0],
 				Body: &api.PKReadBody{
 					Filters:     testclient.NewFiltersKVs("id0", 0, "id1", 0),
-					ReadColumns: testclient.NewReadColumns("col", 2),
+					ReadColumns: testclient.NewReadColumns("col", 1),
 				},
 			},
 			Table:    "int_table",
 			DB:       testdbs.DB004,
 			HttpCode: []int{http.StatusOK},
-			RespKVs:  []interface{}{"col0", "col1"},
+			RespKVs:  []interface{}{"col0"},
 		}
 	}
 	return ops
 }
 
 // A batch of exactly the limit succeeds and every sub-operation is answered.
-// At the default limit the body is about 130 KB, which also crosses Drogon's
+// At the default limit the body is about 880 KB, which also crosses Drogon's
 // 64 KiB in-memory threshold, so the file-buffered body path is covered.
 func TestBatchAtOperationLimit(t *testing.T) {
 	limit := uint32(testutils.GetLimits(t).MaxOperationsPerBatchRequest)

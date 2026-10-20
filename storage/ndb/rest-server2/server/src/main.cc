@@ -405,7 +405,10 @@ int main(int argc, char *argv[]) {
   /* The pool share assumes the rest of the process fits in the remainder
    * of the limit. Below 2 GiB that remainder is too small for the NDB API,
    * the parse buffers and the process baseline plus the response bodies
-   * already handed to Drogon, which the pool does not count. */
+   * already handed to Drogon, which the pool does not count. 2 GiB is the
+   * floor, not a sizing for every load: a batch of up to
+   * MaxOperationsPerBatchRequest wide rows can fill most of a 2 GiB pool,
+   * so workloads that read large batches need a higher limit. */
   if (rsBufferArrayManager.memory_limit_bytes() < (Uint64(2) << 30)) {
     std::cerr << "Warning: the memory limit is "
               << (rsBufferArrayManager.memory_limit_bytes() >> 20)

@@ -108,7 +108,10 @@ CLASS
     " its size for its response. The rest is left for the parse buffers, the"
     " NDB API, the process itself and response bodies already handed to the"
     " HTTP server (not counted), so limits below 2 GiB leave too little room"
-    " and are warned about at startup.")
+    " and are warned about at startup. 2 GiB suits typical traffic;"
+    " workloads that read large batches of wide rows or many feature groups"
+    " need more, or concurrent requests get HTTP 503 while a batch holds"
+    " the pool.")
  CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 300,
     "Seconds a pool must have been idle (free buffers above"
     " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
@@ -122,10 +125,18 @@ CLASS
     " it cannot make a result wrong. Raising it above the"
     " buffer size gives every operation its own buffer and can exhaust the"
     " pool (HTTP 503).")
- CM(Uint32, maxOperationsPerBatchRequest, MaxOperationsPerBatchRequest, 512,
-    "Maximum number of operations in one batch request (batch pk-read and"
-    " batch feature store). A larger batch is rejected with HTTP 413 while"
-    " it is parsed, before any buffer is taken.")
+ CM(Uint32, maxOperationsPerBatchRequest, MaxOperationsPerBatchRequest, 4096,
+    "Maximum number of operations in one batch request: operations of a"
+    " batch pk-read, entries of a batch feature store request (each entry"
+    " reads every feature group of the feature view). A larger batch is"
+    " rejected with HTTP 413 while it is parsed, before any buffer is taken."
+    " 4096 is the batch size the Go REST server accepted. MaxHttpReqSize"
+    " also bounds a batch: at its 1 MiB default, about 4000 batch pk-read"
+    " operations of 250 bytes fit in one body. Batches are packed"
+    " into the shared buffer pool, so the cap does not bound memory; the"
+    " pool does. A batch of wide rows can take most of the pool on its own"
+    " and leave concurrent requests with HTTP 503: for workloads that read"
+    " large batches, raise the memory limit beyond 2 GiB.")
  CM(Uint32, maxOperationsPerNdbExecute, MaxOperationsPerNdbExecute, 128,
     "Number of a batch request's operations the data access layer prepares"
     " and sends to NDB in one execute round (up to 50 more in the last"
