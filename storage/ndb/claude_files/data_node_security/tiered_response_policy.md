@@ -187,7 +187,7 @@ Any Tier B violation from a data node sender (NodeId is type `NODE_TYPE_DB`) is 
 
 ## 7. Complete Violation Catalog
 
-All 26 violation types, in enum order (matches `violation_id` in `ndbinfo.security_violations`).
+All 36 violation types, in enum order (matches `violation_id` in `ndbinfo.security_violations`).
 
 ### DBTC (DbtcMain.cpp)
 
@@ -232,11 +232,37 @@ All 26 violation types, in enum order (matches `violation_id` in `ndbinfo.securi
 |---|---|---|---|---|
 | 25 | VT_FRAGMENT_INVALID_SECTION_NO | fragment_invalid_section_no | **A** | `sectionNo >= 3` — transporter-framing; user-untriggerable |
 
+### DBSPJ (DbspjMain.cpp parseDA)
+
+| ID | Enum | Reason string | Tier | Notes |
+|---|---|---|---|---|
+| 26 | VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS | spj_parent_index_out_of_bounds | **A** | `NI_HAS_PARENT` parent index outside the built-node range |
+| 27 | VT_SPJ_ATTR_LIST_LENGTH_MISMATCH | spj_attr_list_length_mismatch | **B** | `PI_ATTR_LIST` declared length exceeds the param section |
+| 28 | VT_SPJ_SECTION_LENGTH_MISMATCH | spj_section_length_mismatch | **B** | Declared key pattern, interpret program or attr pattern length exceeds its tree/param section |
+| 29 | VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS | spj_key_param_count_out_of_bounds | **A** | Key-param count exceeds `MAX_ATTRIBUTES_IN_TABLE` |
+| 30 | VT_SPJ_SCAN_FRAG_FLAG_INCONSISTENCY | spj_scan_frag_flag_inconsistency | **B** | `SF_PRUNE_PATTERN` count 0 disagrees with the prune-params flags |
+
+### Signal scope (checkSignalSender; SignalScopes.hpp)
+
+| ID | Enum | Reason string | Tier | Notes |
+|---|---|---|---|---|
+| 31 | VT_SIGNAL_SCOPE_LOCAL | signal_scope_local_violation | **A** | Local-scope signal received from another node |
+| 32 | VT_SIGNAL_SCOPE_REMOTE | signal_scope_remote_violation | **A** | Remote-scope signal received from a non-DB node |
+| 33 | VT_SIGNAL_SCOPE_MANAGEMENT | signal_scope_management_violation | **A** | Management-scope signal received from an API node |
+
+### DBTC SCAN_NEXTREQ (DbtcMain.cpp execSCAN_NEXTREQ)
+
+| ID | Enum | Reason string | Tier | Why |
+|---|---|---|---|---|
+| 34 | VT_SCAN_NEXTREQ_OWNERSHIP | scan_nextreq_ownership | **A** | Hijacking — `apiConnectPtr` not owned by the sender |
+
+A receiver id that is not a batch delivered to this scan, or is named twice, is not a violation. DBTC refuses it with error 2206 (`ScanFragRef::ZINVALID_SCAN_NEXTREQ`) and closes the scan, because a bug in the NDB API could send one.
+
 ### Framework-internal
 
 | ID | Enum | Reason string | Tier | Notes |
 |---|---|---|---|---|
-| 26 | VT_UNKNOWN | unknown_violation_type | **A** | Fallback for out-of-range values; fail-secure |
+| 35 | VT_UNKNOWN | unknown_violation_type | **A** | Fallback for out-of-range values; fail-secure |
 
 ---
 

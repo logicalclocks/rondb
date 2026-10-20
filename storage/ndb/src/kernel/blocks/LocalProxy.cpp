@@ -1314,6 +1314,10 @@ void LocalProxy::execDBINFO_SCANCONF(Signal *signal) {
 void LocalProxy::execSYNC_REQ(Signal *signal) {
   jam();
   ndbrequire(c_workers != 0);
+  if (ssQueue<Ss_SYNC_REQ>(signal)) {
+    jam();
+    return;
+  }
   Ss_SYNC_REQ &ss = ssSeize<Ss_SYNC_REQ>();
 
   ss.m_req = *CAST_CONSTPTR(SyncReq, signal->getDataPtr());
