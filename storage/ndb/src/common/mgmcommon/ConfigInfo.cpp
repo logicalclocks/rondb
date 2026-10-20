@@ -2033,7 +2033,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_API_CONTINOUS_SCAN,
     "ContinousScan",
     "API",
-    "Use two receivers per parallelism to enable continous scans",
+    "Use four receivers per fragment scan to enable continuous read "
+    "committed scans",
      ConfigInfo::CI_USED,
      false,
      ConfigInfo::CI_BOOL,

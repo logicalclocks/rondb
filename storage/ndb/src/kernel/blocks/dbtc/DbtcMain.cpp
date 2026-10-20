@@ -16868,10 +16868,11 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   /**
    * Scan parallelism is determined by the number of receiver ids sent
-   * If the flag ParallelOrderedScan is set we will have 2 receiver ids
-   * times the parallelism. This will ensure that we can continue scanning
-   * even after delivering a batch to the NDB API. We will handle this
-   * below after acquiring a scan record.
+   * If the flag ParallelOrderedScan is set we will have 4 receiver ids
+   * times the parallelism, each fragment scan uses its 4 receiver ids in
+   * turn. This will ensure that we can continue scanning even after
+   * delivering a batch to the NDB API. We will handle this below after
+   * acquiring a scan record.
    *
    * For JoinAgg queries, scanParallelism is an explicit field
    * (independent of the number of receiver IDs in section 0).
@@ -17546,13 +17547,15 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->scanApiRec = apiConnectPtr;
   if (ScanTabReq::getParallelOrderedScanFlag(ri)) {
     /**
-     * This new feature introduces a second receiver id for each parallelism.
-     * This enables the scan in each partition to continue while waiting for
-     * DBTC and the NDB API to return SCAN_NEXTREQ. It will decrease latency
-     * for normal scans, also partition pruned scans, but it will have a
-     * significant impact on handling of ordered index scans using OrderBy
-     * flag. In this case the impact might be very significant since we avoid
-     * becoming single-threaded in this case.
+     * This new feature uses four receiver ids for each parallelism, which
+     * the fragment scan uses in turn, one per batch. DBLQH starts scanning
+     * the next batch into the next receiver id as soon as it has sent
+     * SCAN_FRAGCONF. This enables the scan in each partition to continue
+     * while waiting for DBTC and the NDB API to return SCAN_NEXTREQ. It
+     * will decrease latency for normal scans, also partition pruned scans,
+     * but it will have a significant impact on handling of ordered index
+     * scans using OrderBy flag. In this case the impact might be very
+     * significant since we avoid becoming single-threaded in this case.
      */
     if (unlikely((scanParallel & 3) != 0 ||
         scanParallel == 0)) {
