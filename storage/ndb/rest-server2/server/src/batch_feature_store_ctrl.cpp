@@ -330,7 +330,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   fixSpineFGStatus(metadata, featureStatus);
 
   fsResp.status = featureStatus;
-  fsResp.features = features;
+  fsResp.features = std::move(features);
   fsResp.metadata = GetFeatureMetadata(metadata, reqStruct.metadataRequest);
 
   // return detailed response 
@@ -343,7 +343,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
   } else {
     resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
   }
-  std::string fsRespStr = fsResp.to_string();
+  std::string fsRespStr = std::move(fsResp).to_string();
   DEB_BFS_CTRL("JSON response: %s", fsRespStr.c_str());
   resp->setBody(std::move(fsRespStr));
   resp->setStatusCode(drogon::HttpStatusCode::k200OK);

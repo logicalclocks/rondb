@@ -33,6 +33,7 @@
 #include <cstring>
 #include <drogon/HttpTypes.h>
 #include <memory>
+#include <new>
 #include <simdjson.h>
 #include <EventLogger.hpp>
 #include <ArenaMalloc.hpp>
@@ -198,23 +199,28 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
         return;
       }
       calc_size_json += respJson.getSizeJson();
-      char *json_buf = (char*)amalloc.alloc_bytes(calc_size_json, 8);
-      if (likely(json_buf != nullptr)) {
-        size_t size_json;
-        respJson.to_string_single(json_buf, size_json);
-#ifdef DEBUG_PK_CTRL
-        printf("JSON response: len: %u, calc_len: %u: \n %s",
-               (Uint32)size_json,
-               (Uint32)calc_size_json,
-               json_buf);
-#endif
-        std::string json(json_buf, size_json);
-        resp->setBody(std::move(json));
-      } else {
-        amalloc.reset();
+      /* RONDB-1144: the JSON is written straight into the response body,
+       * so one copy of it exists next to the pool buffers it is read from;
+       * the buffer pool's cap counts on that (see derive_max_buffers). */
+      std::string json;
+      try {
+        json.resize(calc_size_json);
+      } catch (const std::bad_alloc &) {
         resp->setBody("Malloc failure");
         resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+        callback(resp);
+        return;
       }
+      size_t size_json;
+      respJson.to_string_single(json.data(), size_json);
+      json.resize(size_json);
+#ifdef DEBUG_PK_CTRL
+      printf("JSON response: len: %u, calc_len: %u: \n %s",
+             (Uint32)size_json,
+             (Uint32)calc_size_json,
+             json.c_str());
+#endif
+      resp->setBody(std::move(json));
     }
     callback(resp);
   }

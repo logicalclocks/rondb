@@ -41,6 +41,7 @@
 #include <unistd.h>
 
 #include "buffer_manager.hpp"
+#include "buffer_sizes.hpp"
 #include "metrics.hpp"
 
 /* Owned by main.cc in the server binary; test binaries provide their own
@@ -292,10 +293,30 @@ TEST(BufferArrayManager, DetectMemoryLimitFromCgroupFiles) {
 TEST(BufferArrayManager, InitDerivesCapFromLimit) {
   RS_BufferArrayManager mgr;
   mgr.init(kBytes, kBytes, 2, 0, 50, 0, 64ULL * kBytes);
-  // 50% of 64 buffers' worth, over 2-buffer pairs: 16.
-  EXPECT_EQ(mgr.max_buffers(), 16U);
+  // 50% of 64 buffers' worth is 32; a 2-buffer pair is charged 7/3 of its
+  // size for the JSON written from it, 14/3 buffers: 6 pairs.
+  EXPECT_EQ(mgr.max_buffers(), 6U);
   EXPECT_EQ(mgr.memory_limit_bytes(), 64ULL * kBytes);
   mgr.shutdown();
+}
+
+/* RONDB-1144: whatever the limit, the derived cap admits no more than its
+ * share once each pair's JSON body (up to 4/3 of the pair, written once)
+ * is counted next to the buffers. 512 MiB is the case from review: 80
+ * reads of 2 MiB blobs used to fit the cap while their JSON did not. */
+TEST(BufferArrayManager, CapKeepsBuffersAndTheirJsonInsideTheShare) {
+  const Uint64 pair = static_cast<Uint64>(DEFAULT_REQ_BUFFER) +
+                      DEFAULT_RESP_BUFFER;
+  for (Uint64 limit : {512ULL << 20, 1ULL << 30, 2ULL << 30, 10ULL << 30}) {
+    RS_BufferArrayManager mgr;
+    mgr.init(DEFAULT_REQ_BUFFER, DEFAULT_RESP_BUFFER, 2, 0, 50, 0, limit);
+    const Uint64 buffers_and_json = mgr.max_buffers() * pair * 7 / 3;
+    EXPECT_LE(buffers_and_json, limit / 2) << "limit " << limit;
+    // and the cap is not needlessly low: one more pair would not fit
+    EXPECT_GT((mgr.max_buffers() + 1) * pair * 7 / 3, limit / 2)
+      << "limit " << limit;
+    mgr.shutdown();
+  }
 }
 
 /* Concurrent /metrics scrapes must count every pool event exactly once.

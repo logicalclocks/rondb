@@ -275,8 +275,16 @@ void RS_BufferArrayManager::init(Uint32 req_bytes, Uint32 resp_bytes,
                                  Uint64 memory_limit_bytes) {
   require(!m_initialized);
   m_memory_limit = memory_limit_bytes;
+  /* A buffer pair is charged 7/3 of its size: the buffers themselves plus
+   * the JSON body written from them, which exists next to them until the
+   * handler returns (RONDB-1144). That body is at most 4/3 of the pair:
+   * values are copied as they are (text is stored escaped, numbers as
+   * text) except binary, which base64 grows by 4/3, and the column names
+   * come from the request buffer. With the body written once, everything
+   * the cap admits stays inside share_percent of the limit. */
+  const Uint64 pair_bytes = static_cast<Uint64>(req_bytes) + resp_bytes;
   m_max = derive_max_buffers(memory_limit_bytes, share_percent,
-                             static_cast<Uint64>(req_bytes) + resp_bytes,
+                             pair_bytes * 7 / 3,
                              max_buffers_override, preallocate);
   m_req.init("request", req_bytes, preallocate, m_max, shrink_after_s);
   m_resp.init("response", resp_bytes, preallocate, m_max, shrink_after_s);

@@ -869,7 +869,7 @@ void FeatureStoreCtrl::featureStore(
       }
     }
 
-    fsResp.features = features;
+    fsResp.features = std::move(features);
     fsResp.status = status;
     if (reqStruct.metadataRequest.featureName ||
         reqStruct.metadataRequest.featureType) {
@@ -884,7 +884,7 @@ void FeatureStoreCtrl::featureStore(
     } else {
       resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
     }
-    std::string respBody = fsResp.to_string();
+    std::string respBody = std::move(fsResp).to_string();
 #ifdef DEBUG_FS_CTRL
     printf("JSON response: %s\n", respBody.c_str());
 #endif

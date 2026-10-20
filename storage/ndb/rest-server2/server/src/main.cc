@@ -385,6 +385,15 @@ int main(int argc, char *argv[]) {
               << " bytes; this is a testing knob\n";
   }
   rsBufferArrayManager.init_from_config();
+  /* The pool share assumes the rest of the process fits in the remainder
+   * of the limit; below 1 GiB the NDB API, the parse buffers and the
+   * process baseline alone can fill it. */
+  if (rsBufferArrayManager.memory_limit_bytes() < (Uint64(1) << 30)) {
+    std::cerr << "Warning: the memory limit is "
+              << (rsBufferArrayManager.memory_limit_bytes() >> 20)
+              << " MiB; rdrs2 needs at least 1 GiB to stay inside it under"
+              << " load\n";
+  }
 
   if (optPrintLimits) {
     /* The derived numbers, for operators. The running server exports the

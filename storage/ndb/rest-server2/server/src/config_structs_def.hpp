@@ -96,9 +96,12 @@ CLASS
     " physical RAM). A request that needs a buffer past the cap is answered"
     " with HTTP 503.")
  CM(Uint32, bufferPoolSharePercent, BufferPoolSharePercent, 50,
-    "Share of the memory limit the two buffer pools together may grow to"
-    " when MaxBuffers is 0; it sets the cap, nothing is reserved. The rest is left for the parse buffers, the"
-    " per-request arenas, the NDB API and the process itself.")
+    "Share of the memory limit the two buffer pools, together with the JSON"
+    " responses written from them, may grow to when MaxBuffers is 0; it"
+    " sets the cap, nothing is reserved. Each buffer pair is charged 7/3 of"
+    " its size for its response. The rest is left for the parse buffers, the"
+    " NDB API and the process itself, so limits below 1 GiB leave too little"
+    " room and are warned about at startup.")
  CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 60,
     "Seconds a pool must have been idle (free buffers above"
     " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
