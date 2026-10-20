@@ -386,12 +386,13 @@ int main(int argc, char *argv[]) {
   }
   rsBufferArrayManager.init_from_config();
   /* The pool share assumes the rest of the process fits in the remainder
-   * of the limit; below 1 GiB the NDB API, the parse buffers and the
-   * process baseline alone can fill it. */
-  if (rsBufferArrayManager.memory_limit_bytes() < (Uint64(1) << 30)) {
+   * of the limit. Below 2 GiB that remainder is too small for the NDB API,
+   * the parse buffers and the process baseline plus the response bodies
+   * already handed to Drogon, which the pool does not count. */
+  if (rsBufferArrayManager.memory_limit_bytes() < (Uint64(2) << 30)) {
     std::cerr << "Warning: the memory limit is "
               << (rsBufferArrayManager.memory_limit_bytes() >> 20)
-              << " MiB; rdrs2 needs at least 1 GiB to stay inside it under"
+              << " MiB; rdrs2 needs at least 2 GiB to stay inside it under"
               << " load\n";
   }
 

@@ -100,8 +100,9 @@ CLASS
     " responses written from them, may grow to when MaxBuffers is 0; it"
     " sets the cap, nothing is reserved. Each buffer pair is charged 7/3 of"
     " its size for its response. The rest is left for the parse buffers, the"
-    " NDB API and the process itself, so limits below 1 GiB leave too little"
-    " room and are warned about at startup.")
+    " NDB API, the process itself and response bodies already handed to the"
+    " HTTP server (not counted), so limits below 2 GiB leave too little room"
+    " and are warned about at startup.")
  CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 60,
     "Seconds a pool must have been idle (free buffers above"
     " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
