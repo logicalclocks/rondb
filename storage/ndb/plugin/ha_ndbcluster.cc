@@ -217,8 +217,9 @@ static MYSQL_THDVAR_BOOL(
 static MYSQL_THDVAR_BOOL(
     use_transactions, /* name */
     PLUGIN_VAR_OPCMDARG,
-    "Use transactions for large inserts, if enabled then large "
-    "inserts will be split into several smaller transactions",
+    "Run each statement as one NDB transaction. If disabled, large "
+    "INSERT statements are committed in batches of smaller transactions "
+    "and cannot be rolled back. LOAD DATA always commits in batches.",
     nullptr, /* check func. */
     nullptr, /* update func. */
     1        /* default */
