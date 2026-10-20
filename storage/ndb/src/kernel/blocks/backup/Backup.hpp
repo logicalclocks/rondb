@@ -1317,8 +1317,7 @@ class Backup : public SimulatedBlock {
   bool check_min_buf_size(BackupRecordPtr ptr, OperationRecord &op);
   bool check_frag_complete(BackupRecordPtr ptr, BackupFilePtr filePtr);
   bool check_error(BackupRecordPtr ptr, BackupFilePtr filePtr);
-  void clear_scan_thread_all_files(BackupRecordPtr ptr, BackupFilePtr filePtr);
-  BackupFilePtr find_lcp_error_file(BackupRecordPtr ptr, BackupFilePtr filePtr);
+  [[noreturn]] void lcp_fatal_file_error(Uint32 errorCode);
   void fragmentCompleted(Signal *, BackupFilePtr, Uint32 errCode = 0);
 
   void backupAllData(Signal *signal, BackupRecordPtr);

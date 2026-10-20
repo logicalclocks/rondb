@@ -1,0 +1,10 @@
+"[shutting down mysqld 1]"
+"[shutting down mysqld 2]"
+# LCP data file write error while the fragment scan is active
+# LCP data file write error after the fragment scan completed
+"[dropping NDBT test table]"
+"[starting mysqld 1]"
+# restart
+"[starting mysqld 2]"
+# restart
+# All LCP file error tests passed

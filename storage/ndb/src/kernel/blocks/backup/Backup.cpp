@@ -9560,67 +9560,6 @@ bool Backup::check_new_scan(BackupRecordPtr ptr, OperationRecord &op,
   return false;
 }
 
-void Backup::clear_scan_thread_all_files(BackupRecordPtr ptr,
-                                         BackupFilePtr filePtr) {
-  /**
-   * The scan thread flag is set on ALL data files of a multi-file
-   * fragment LCP (sendScanFragReq), so every terminal scan exit must
-   * detach it from all of them — a later FSCLOSECONF on a file with
-   * the flag still set fails its file-flags check.
-   */
-  if (ptr.p->is_lcp() && ptr.p->m_num_lcp_files > 1) {
-    for (Uint32 i = 0; i < ptr.p->m_num_lcp_files; i++) {
-      jam();
-      BackupFilePtr loopFilePtr;
-      ndbrequire(c_backupFilePool.getPtr(loopFilePtr, ptr.p->dataFilePtr[i]));
-      loopFilePtr.p->m_flags &= ~(Uint32)BackupFile::BF_SCAN_THREAD;
-    }
-  } else {
-    jam();
-    filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_SCAN_THREAD;
-  }
-}
-
-Backup::BackupFilePtr Backup::find_lcp_error_file(BackupRecordPtr ptr,
-                                                  BackupFilePtr filePtr) {
-  /**
-   * Choose which data file's error to report. Prefer the carrier of
-   * the record's first recorded error (BackupRecord::setErrorCode is
-   * first-wins) so every reporting path agrees on the same error;
-   * fall back to the triggering file, then to any errored file.
-   */
-  if (!ptr.p->is_lcp() || ptr.p->m_num_lcp_files <= 1) {
-    return filePtr;
-  }
-  if (ptr.p->errorCode != 0) {
-    if (filePtr.p->errorCode == ptr.p->errorCode) {
-      return filePtr;
-    }
-    for (Uint32 i = 0; i < ptr.p->m_num_lcp_files; i++) {
-      jam();
-      BackupFilePtr loopFilePtr;
-      ndbrequire(c_backupFilePool.getPtr(loopFilePtr, ptr.p->dataFilePtr[i]));
-      if (loopFilePtr.p->errorCode == ptr.p->errorCode) {
-        jam();
-        return loopFilePtr;
-      }
-    }
-  }
-  if (filePtr.p->errorCode != 0) {
-    return filePtr;
-  }
-  for (Uint32 i = 0; i < ptr.p->m_num_lcp_files; i++) {
-    jam();
-    BackupFilePtr loopFilePtr;
-    ndbrequire(c_backupFilePool.getPtr(loopFilePtr, ptr.p->dataFilePtr[i]));
-    if (loopFilePtr.p->errorCode != 0) {
-      jam();
-      return loopFilePtr;
-    }
-  }
-  return filePtr;
-}
-
 bool Backup::check_frag_complete(BackupRecordPtr ptr, BackupFilePtr filePtr) {
   if (ptr.p->is_lcp() && ptr.p->m_num_lcp_files > 1) {
     for (Uint32 i = 0; i < ptr.p->m_num_lcp_files; i++) {
@@ -9795,14 +9734,9 @@ void Backup::execSCAN_FRAGREF(Signal *signal) {
 
   if (filePtr.p->errorCode != 0) {
     jam();
-    BackupRecordPtr scanErrPtr;
-    ndbrequire(c_backupPool.getPtr(scanErrPtr, filePtr.p->backupPtr));
-    /* A deferred-close file may already carry a filesystem error that
-     * must not be masked by the scan error recorded on this file. */
-    BackupFilePtr errFilePtr = find_lcp_error_file(scanErrPtr, filePtr);
-    clear_scan_thread_all_files(scanErrPtr, filePtr);
+    filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_SCAN_THREAD;
     DEB_LCP(("(%u)execSCAN_FRAGREF(backupFragmentRef)", instance()));
-    backupFragmentRef(signal, errFilePtr);
+    backupFragmentRef(signal, filePtr);
   } else {
     jam();
 
@@ -9910,25 +9844,16 @@ void Backup::execSCAN_FRAGCONF(Signal *signal) {
 void Backup::fragmentCompleted(Signal *signal, BackupFilePtr filePtr,
                                Uint32 errCode) {
   jam();
+  if (filePtr.p->errorCode != 0) {
+    jam();
+    filePtr.p->m_flags &= ~(Uint32)BackupFile::BF_SCAN_THREAD;
+    DEB_LCP(("(%u)fragmentCompleted(backupFragmentRef)", instance()));
+    backupFragmentRef(signal, filePtr);  // Scan completed
+    return;
+  }  // if
 
   BackupRecordPtr ptr;
   ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
-
-  /**
-   * A write error on ANY of the fragment LCP's data files terminates
-   * the fragment scan with the real error. The error is not
-   * necessarily on the scan-owning file: multi-file LCP appends fail
-   * per file, and checkFile defers the close of a failed file until
-   * the scan detaches here.
-   */
-  BackupFilePtr errFilePtr = find_lcp_error_file(ptr, filePtr);
-  if (errFilePtr.p->errorCode != 0) {
-    jam();
-    clear_scan_thread_all_files(ptr, filePtr);
-    DEB_LCP(("(%u)fragmentCompleted(backupFragmentRef)", instance()));
-    backupFragmentRef(signal, errFilePtr);  // Scan completed
-    return;
-  }  // if
 
   if (!check_frag_complete(ptr, filePtr)) {
     jam();
@@ -10495,6 +10420,26 @@ void Backup::checkScan(Signal *signal, BackupRecordPtr ptr,
                       WaitDiskBufferCapacityMillis, 2);
 }
 
+void Backup::lcp_fatal_file_error(Uint32 errorCode) {
+  /**
+   * An LCP file error is fatal for the node: it ended in
+   * Dblqh::execBACKUP_FRAGMENT_REF calling progError before this block
+   * learnt to fail on it directly, and a restart needs no cleanup from
+   * here (Restore only reads data files a valid ctl file refers to, and
+   * the next prepare reopens the data file numbers with OM_TRUNCATE).
+   * Same message and exit-code mapping as DBLQH, so the node reports
+   * the real file system error instead of an internal program error.
+   */
+  char buf[100];
+  BaseString::snprintf(buf, sizeof(buf),
+                       "Unable to store fragment during LCP. NDBFS Error: %u",
+                       errorCode);
+  progError(__LINE__,
+            (errorCode & FsRef::FS_ERR_BIT) ? NDBD_EXIT_AFS_UNKNOWN
+                                            : errorCode,
+            buf);
+}
+
 void Backup::execFSAPPENDREF(Signal *signal) {
   jamEntry();
 
@@ -10514,14 +10459,16 @@ void Backup::execFSAPPENDREF(Signal *signal) {
   BackupRecordPtr ptr;
   ndbrequire(c_backupPool.getPtr(ptr, filePtr.p->backupPtr));
   if (ptr.p->is_lcp()) {
+    jam();
     /**
-     * Log in this case for LCPs, Backups should be able to
-     * handle out of disk space. LCPs could potentially survive for
-     * a while, but will eventually crash or they will hit the
-     * infamous 410 condition.
+     * Backups handle a failed write (out of disk space) through the
+     * abort protocol. For an LCP the failure is fatal by design: fail
+     * here, with the real error, rather than route it through the
+     * fragment scan and the ctl file write first.
      */
     g_eventLogger->info("LCP got FSAPPENDREF, serious error: error code: %u",
                         errCode);
+    lcp_fatal_file_error(errCode);
   }
   checkFile(signal, filePtr);
 }
@@ -10703,35 +10650,8 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
 
     if (ptr.p->is_lcp()) {
       jam();
-      if (ptr.p->slaveState.getState() == STOPPING &&
-          ptr.p->m_save_error_code == 0) {
-        jam();
-        /**
-         * Record the file error where lcp_write_ctl_file's row-count
-         * check sees it. The scan-completion path only saves the scan's
-         * own error code, so a write error arriving after the scan
-         * finished would otherwise trip that check as an internal
-         * program error (2341) whenever the counts also disagree,
-         * masking the real file system error. Restricted to STOPPING:
-         * that is the only window that reaches the row-count check, and
-         * scan completion has just (re)initialized m_save_error_code —
-         * earlier error paths terminate through the fragment scan and
-         * never get here.
-         */
-        ptr.p->m_save_error_code = filePtr.p->errorCode;
-      }
-      if ((filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD) == 0) {
-        jam();
-        /* Close file with error - will delete it */
-        closeFile(signal, ptr, filePtr);
-      }
-      /**
-       * Otherwise the scan thread still owns this file: closing it now
-       * would make FSCLOSECONF fail its file-flags check. The scan
-       * detects the error on its next interaction (check_error) and
-       * terminates the fragment through fragmentCompleted, which
-       * reports the real error to DBLQH.
-       */
+      /* Close file with error - will delete it */
+      closeFile(signal, ptr, filePtr);
     }
 
     return;
@@ -10756,33 +10676,18 @@ void Backup::checkFile(Signal *signal, BackupFilePtr filePtr) {
 
       /* 10064: as 10045, but with no CRASH_INSERTION in execFSAPPENDREF,
        * so the append error takes the real error-handling path while the
-       * scan still owns the file (FSCLOSECONF flags assert).
+       * scan still owns the file.
        * 10065: as 10044, but non-crashing and only after the LCP
        * fragment scan completed (slave state STOPPING, post-scan buffer
-       * flush): the append error hits the data file close path into
-       * lcp_write_ctl_file, whose row-count check must see the file
-       * error and not report an internal program error.
-       * 10066: as 10065, but only on fragments where the paired row
-       * count skew in lcp_write_ctl_file can falsify the row-count
-       * check (see there) — otherwise a fragment with too few records
-       * would take the append error without exercising the check.
+       * flush). Both must end in the node reporting the injected file
+       * system error (2812), never an internal program error.
        */
-      bool skew_effective = false;
-      if (ERROR_INSERTED(10066) && ptr.p->is_lcp()) {
-        BackupFilePtr zeroFilePtr;
-        ndbrequire(
-            c_backupFilePool.getPtr(zeroFilePtr, ptr.p->dataFilePtr[0]));
-        skew_effective = (zeroFilePtr.p->m_lcp_inserts +
-                              zeroFilePtr.p->m_lcp_writes >= 2);
-      }
       if ((ERROR_INSERTED(10044) &&
            !(filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD)) ||
           ((ERROR_INSERTED(10045) ||
             (ERROR_INSERTED(10064) && ptr.p->is_lcp())) &&
            (filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD)) ||
-          ((ERROR_INSERTED(10065) ||
-            (ERROR_INSERTED(10066) && skew_effective)) &&
-           ptr.p->is_lcp() &&
+          (ERROR_INSERTED(10065) && ptr.p->is_lcp() &&
            !(filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD) &&
            ptr.p->slaveState.getState() == STOPPING)) {
         jam();
@@ -16395,6 +16300,24 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
     return;
   }
 
+  if (ptr.p->errorCode != 0) {
+    jam();
+    /**
+     * A file error is recorded on this fragment LCP (a data file close
+     * failure, or an append error on a path that did not fail the node
+     * on the spot). No ctl file may be written for a failed fragment
+     * LCP: its data file is being removed, and a ctl file that survived
+     * a crash in this window would make the restart read it and fail on
+     * the missing data file. The failure is fatal by design, so fail
+     * here with the real error.
+     */
+    g_eventLogger->info(
+        "Fatal : LCP fragment failed with error %u before its ctl file"
+        " write",
+        ptr.p->errorCode);
+    lcp_fatal_file_error(ptr.p->errorCode);
+  }
+
   /**
    * Ensure that we didn't find more rows in LCP than what was
    * in fragment at start of LCP.
@@ -16419,35 +16342,6 @@ void Backup::lcp_write_ctl_file(Signal *signal, BackupRecordPtr ptr) {
    * that the data file exists when we crash and can be used for
    * analysis.
    */
-#ifdef ERROR_INSERT
-  /* 10066: pair the injected append failure (see checkFile) with a row
-   * count skewed on the SAME errored fragment, modelling a count
-   * anomaly coinciding with a file error. The check below must then be
-   * short-circuited by the recorded file error (m_save_error_code) —
-   * without that, the file error is masked as an internal program error.
-   * The chosen value falsifies BOTH count disjuncts whenever
-   * inserts + writes >= 2 (the injection in checkFile only fires on
-   * such fragments): row_count = 0 breaks equality when inserts > 0 and
-   * undercuts inserts + writes; row_count = 1 does the same when
-   * inserts == 0 and writes >= 2. Coupling on errorCode keeps clean
-   * fragments unaffected.
-   */
-  if (ERROR_INSERTED(10066) && ptr.p->errorCode != 0) {
-    BackupFilePtr skewFilePtr;
-    ndbrequire(c_backupFilePool.getPtr(skewFilePtr, ptr.p->dataFilePtr[0]));
-    const Uint64 recs =
-        skewFilePtr.p->m_lcp_inserts + skewFilePtr.p->m_lcp_writes;
-    if (recs >= 2) {
-      jam();
-      ptr.p->m_row_count = (skewFilePtr.p->m_lcp_inserts > 0) ? 0 : 1;
-      g_eventLogger->info(
-          "EI 10066: skewed row_count to %llu on errored fragment"
-          " (inserts: %llu, writes: %llu)",
-          ptr.p->m_row_count, skewFilePtr.p->m_lcp_inserts,
-          skewFilePtr.p->m_lcp_writes);
-    }
-  }
-#endif
   {
     BackupFilePtr dataFilePtr;
     ndbrequire(c_backupFilePool.getPtr(dataFilePtr, ptr.p->dataFilePtr[0]));
@@ -16660,7 +16554,17 @@ void Backup::lcp_write_ctl_file_to_disk(Signal *signal, BackupFilePtr filePtr,
              JBA);
 }
 
-void Backup::execFSWRITEREF(Signal *signal) { ndbabort(); }
+void Backup::execFSWRITEREF(Signal *signal) {
+  jamEntry();
+  /* Only LCP ctl files are written with FSWRITEREQ. A failed ctl file
+   * write (e.g. a full disk) is fatal, and reports the file system
+   * error instead of an internal program error.
+   */
+  FsRef *ref = (FsRef *)signal->getDataPtr();
+  g_eventLogger->info("LCP got FSWRITEREF, serious error: error code: %u",
+                      ref->errorCode);
+  lcp_fatal_file_error(ref->errorCode);
+}
 
 void Backup::execFSWRITECONF(Signal *signal) {
   BackupRecordPtr ptr;
@@ -16711,25 +16615,15 @@ void Backup::finalize_lcp_processing(Signal *signal, BackupRecordPtr ptr) {
   {
     jam();
     /**
-     * The error may sit on any of the multi-file LCP data files, not
-     * necessarily on dataFilePtr[0]. Report the file that carries it.
+     * Only a file close failure gets here with an error (the ctl file's
+     * own FSCLOSEREF, or a data file's on the empty-LCP path): the
+     * record carries the error, a data file not necessarily, so report
+     * the record's code directly.
      */
-    filePtr = find_lcp_error_file(ptr, filePtr);
     g_eventLogger->info(
         "Fatal : LCP Frag scan failed with error %u file error is: %d",
         ptr.p->errorCode, filePtr.p->errorCode);
-    ndbrequire(filePtr.p->errorCode == ptr.p->errorCode);
-
-    if ((filePtr.p->m_flags & BackupFile::BF_SCAN_THREAD) == 0) {
-      jam();
-      /* No active scan thread to 'find' the file error.
-       * Scan is closed, so let's send backupFragmentRef
-       * back to LQH now...
-       */
-      backupFragmentRef(signal, filePtr);
-      return;
-    }
-    ndbabort();
+    lcp_fatal_file_error(ptr.p->errorCode);
   }
 
   /**

@@ -6402,7 +6402,6 @@ enum LCPFSStopCases {
   NdbFsError2,
   NdbFsErrScanActive,
   NdbFsErrAfterScan,
-  NdbFsErrAfterScanSkew,
   NUM_CASES
 };
 
@@ -6492,9 +6491,8 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
       }
       case NdbFsErrScanActive: {
         /* Non-crashing append failure while the LCP scan still owns the
-         * file: exercises the FSCLOSECONF close path after FSAPPENDREF.
-         * The victim must die reporting the injected file system error,
-         * not an internal program error.
+         * file. The victim must die reporting the injected file system
+         * error, not an internal program error.
          */
         if (restarter.insertErrorInNode(victim, 10064) != 0) {
           g_err << "Error insert 10064 failed." << endl;
@@ -6517,9 +6515,8 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
       case NdbFsErrAfterScan: {
         /* Non-crashing append failure after the LCP fragment scan has
          * completed (post-scan buffer flush, small fragments flush only
-         * then): exercises the data file close path into
-         * lcp_write_ctl_file. The victim must die reporting the injected
-         * file system error, not an internal program error.
+         * then). The victim must die reporting the injected file system
+         * error, not an internal program error.
          */
         if (restarter.insertErrorInNode(victim, 10065) != 0) {
           g_err << "Error insert 10065 failed." << endl;
@@ -6538,32 +6535,11 @@ int runTestLcpFsErr(NDBT_Context *ctx, NDBT_Step *step) {
         lcpsRequired = 6;
         break;
       }
-      case NdbFsErrAfterScanSkew: {
-        /* As NdbFsErrAfterScan, but 10066 additionally skews the row
-         * count low on the errored fragment: a count anomaly coinciding
-         * with the file error. The victim must still die reporting the
-         * file system error — the row-count check may only be
-         * short-circuited by the recorded file error, not report an
-         * internal program error.
-         */
-        if (restarter.insertErrorInNode(victim, 10066) != 0) {
-          g_err << "Error insert 10066 failed." << endl;
-          failed = true;
-          break;
-        }
-        {
-          HugoTransactions hugoTrans(*ctx->getTab());
-          (void)hugoTrans.pkUpdateRecords(GETNDB(step), ctx->getNumRecords());
-        }
-        lcpsRequired = 6;
-        break;
-      }
     }
     if (failed) break;
 
     const bool nonCrashingEI = (scenario == NdbFsErrScanActive ||
-                                scenario == NdbFsErrAfterScan ||
-                                scenario == NdbFsErrAfterScanSkew);
+                                scenario == NdbFsErrAfterScan);
 
     g_err << "Triggering LCP..." << endl;
     /* Now trigger LCP, in case the concurrent updates don't. 7099 has
@@ -14933,16 +14909,6 @@ TESTCASE("TestLCPFSErrAfterScan",
          " scan completed is reported as the real file system error") {
   TC_PROPERTY("LCPFSErrFirstCase", Uint32(NdbFsErrAfterScan));
   TC_PROPERTY("LCPFSErrLastCase", Uint32(NdbFsErrAfterScan));
-  INITIALIZER(runLoadTable);
-  STEP(runPkUpdateUntilStopped);
-  STEP(runTestLcpFsErr);
-}
-TESTCASE("TestLCPFSErrAfterScanSkew",
-         "Check that an LCP data file write error after the fragment"
-         " scan completed is reported as the real file system error"
-         " also when the fragment's row count is inconsistent") {
-  TC_PROPERTY("LCPFSErrFirstCase", Uint32(NdbFsErrAfterScanSkew));
-  TC_PROPERTY("LCPFSErrLastCase", Uint32(NdbFsErrAfterScanSkew));
   INITIALIZER(runLoadTable);
   STEP(runPkUpdateUntilStopped);
   STEP(runTestLcpFsErr);
