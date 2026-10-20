@@ -358,22 +358,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      false, ConfigInfo::CI_SECTION, NODE_TYPE_DB},
 
     {CFG_DB_SUBSCRIPTIONS, "MaxNoOfSubscriptions", DB_TOKEN,
-     "Max no of subscriptions (default 0 == MaxNoOfTables)",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
-     STR_VALUE(MAX_INT_RNIL)},
+     "ReplicationMemory", ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
+     "0", "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_CLASSIC_FRAGMENTATION, "ClassicFragmentation", DB_TOKEN,
      "Use classic fragmentation technique", ConfigInfo::CI_USED, false,
      ConfigInfo::CI_BOOL, "false", "false", "true"},
 
     {CFG_DB_SUBSCRIBERS, "MaxNoOfSubscribers", DB_TOKEN,
-     "Max no of subscribers "
-     "(default 0 == 2 * MaxNoOfTables + 2 * 'number of API nodes')",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
-     STR_VALUE(MAX_INT_RNIL)},
+     "ReplicationMemory", ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
+     "0", "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_SUB_OPERATIONS, "MaxNoOfConcurrentSubOperations", DB_TOKEN,
-     "Max no of concurrent subscriber operations", ConfigInfo::CI_USED, false,
+     "ReplicationMemory", ConfigInfo::CI_DEPRECATED, false,
      ConfigInfo::CI_INT, "256", "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_TCPBIND_INADDR_ANY, "TcpBind_INADDR_ANY", DB_TOKEN,
