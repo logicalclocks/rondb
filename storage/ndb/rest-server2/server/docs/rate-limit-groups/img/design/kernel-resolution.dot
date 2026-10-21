@@ -1,0 +1,68 @@
+digraph kernelres {
+  rankdir=LR;
+  graph [fontname="Helvetica", fontsize=11, pad=0.3, nodesep=0.5, ranksep=0.6, bgcolor="white"];
+  node  [shape=plaintext, fontname="Helvetica", fontsize=11];
+  edge  [fontname="Helvetica", fontsize=9, color="#096b67", arrowsize=0.7, penwidth=1.1];
+
+  /* ---- example 1: Mary reads marketing_clicks_1 ---- */
+  in1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>TCKEYREQ arrives</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tagged name<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="10">Marketing_mary01ab</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">table<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="10">marketing.marketing_clicks_1</FONT><BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">(tableId 1042)</FONT></TD></TR>
+</TABLE>>];
+
+  alias1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#096b67"><FONT COLOR="white"><B>USER ALIAS</B> <FONT FACE="Menlo" POINT-SIZE="10">Marketing_mary01ab</FONT> (new)</FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>rule</B></TD><TD BGCOLOR="#edf4f4"><B>charges</B></TD></TR>
+ <TR><TD ALIGN="LEFT">1&nbsp; ON <FONT FACE="Menlo" POINT-SIZE="10">marketing.marketing_clicks_1</FONT></TD><TD PORT="r1"><FONT FACE="Menlo" POINT-SIZE="10">marketing_clicks_rl</FONT></TD></TR>
+ <TR><TD ALIGN="LEFT">2&nbsp; ON <FONT FACE="Menlo" POINT-SIZE="10">marketing</FONT></TD><TD><FONT COLOR="#566574">(none)</FONT></TD></TR>
+ <TR><TD ALIGN="LEFT">3&nbsp; ALL</TD><TD><FONT COLOR="#566574">(none)</FONT></TD></TR>
+ <TR><TD COLSPAN="2" ALIGN="LEFT"><FONT POINT-SIZE="9" COLOR="#566574">First rule that matches wins: table, then database, then ALL.<BR ALIGN="LEFT"/>A plain USER has no rules and is charged directly.</FONT></TD></TR>
+</TABLE>>];
+
+  user1 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>USER</B> <FONT FACE="Menlo" POINT-SIZE="10">marketing_clicks_rl</FONT></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">rate 400,000 µs/s<BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">(2% of a 20-thread node)</FONT></TD></TR>
+</TABLE>>];
+
+  in1 -> alias1 [label="name → object (exact match)"];
+  alias1:r1 -> user1 [label="rule 1 matches tableId 1042"];
+
+  /* ---- example 2: Alice reads anything ---- */
+  in2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#566574"><FONT COLOR="white"><B>TCKEYREQ arrives</B></FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">tagged name<BR ALIGN="LEFT"/><FONT FACE="Menlo" POINT-SIZE="10">Recommender_alice4f2</FONT></TD></TR>
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT">table: any</TD></TR>
+</TABLE>>];
+
+  alias2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD COLSPAN="2" BGCOLOR="#096b67"><FONT COLOR="white"><B>USER ALIAS</B> <FONT FACE="Menlo" POINT-SIZE="10">Recommender_alice4f2</FONT></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4"><B>rule</B></TD><TD BGCOLOR="#edf4f4"><B>charges</B></TD></TR>
+ <TR><TD ALIGN="LEFT">1&nbsp; ALL</TD><TD PORT="r1"><FONT FACE="Menlo" POINT-SIZE="10">recommender_team_rl</FONT></TD></TR>
+</TABLE>>];
+
+  user2 [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#096b67"><FONT COLOR="white"><B>USER</B> <FONT FACE="Menlo" POINT-SIZE="10">recommender_team_rl</FONT></FONT></TD></TR>
+ <TR><TD BGCOLOR="#edf4f4" ALIGN="LEFT">rate 4,000,000 µs/s<BR ALIGN="LEFT"/><FONT POINT-SIZE="9" COLOR="#566574">(20% of a 20-thread node)</FONT></TD></TR>
+</TABLE>>];
+
+  in2 -> alias2;
+  alias2:r1 -> user2 [label="rule ALL matches"];
+
+  note [label=<
+<TABLE BORDER="0" CELLBORDER="1" CELLSPACING="0" CELLPADDING="6" COLOR="#8aa5a3">
+ <TR><TD BGCOLOR="#f1f3f5" ALIGN="LEFT"><FONT COLOR="#566574"><I>The whole transaction sticks to the first group it touches<BR ALIGN="LEFT"/>(ApiConnectRecord::m_queuedDatabasePtrI); later operations on other<BR ALIGN="LEFT"/>tables are charged there too. Dblqh and Dbspj receive the resolved id.</I></FONT></TD></TR>
+</TABLE>>];
+
+  { rank=same; in1; in2; note; }
+  { rank=same; alias1; alias2; }
+  { rank=same; user1; user2; }
+  in1 -> in2 [style=invis];
+  in2 -> note [style=invis];
+}
