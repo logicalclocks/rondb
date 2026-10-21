@@ -819,12 +819,13 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_DB_OS_STATIC_OVERHEAD,
     "OsStaticOverhead",
     DB_TOKEN,
-    "Avoid using this amount of memory by data node",
+    "Memory the data node leaves for the OS when it computes the memory "
+    "size itself; 0 means 1400M, or 500M in a container with a memory limit",
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "1400M",
-    "400M",
+    "0",
+    "0",
     "65536G" },
 
   {

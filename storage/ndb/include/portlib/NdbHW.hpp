@@ -72,6 +72,11 @@ struct ndb_hwinfo {
    * MHz of CPU and Model name of CPU.
    */
   Uint32 is_running_in_container;
+  /**
+   * A cgroup memory limit below the host memory gives hw_memory_size.
+   * is_running_in_container is also set by a CPU quota alone.
+   */
+  Uint32 has_container_memory_limit;
   Uint32 cpu_cnt_max;
   Uint32 cpu_cnt;
   Uint32 total_cpu_capacity;
