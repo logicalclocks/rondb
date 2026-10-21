@@ -127,7 +127,8 @@ rondb_get_func(Ndb *ndb,
 
 static int rondb_get_response(std::string *response,
                               KeyStorage *key_storage,
-                              Uint32 num_keys);
+                              Uint32 num_keys,
+                              bool array_reply);
 
 /**
  * GENERIC SUPPORT MODULE
@@ -3349,7 +3350,8 @@ void rondb_mset(Ndb *ndb,
     std::swap(key_storage[0].m_value_ptr, get_ctrl->m_parked_value_ptr);
     int ret_code = rondb_get_response(response,
                                       key_storage,
-                                      num_keys);
+                                      num_keys,
+                                      false);
     if (ret_code != 0) {
       assign_generic_err_to_response(response, FAILED_MALLOC);
     }
@@ -3806,7 +3808,8 @@ rondb_get_func(Ndb *ndb,
 
 static int rondb_get_response(std::string *response,
                               KeyStorage *key_storage,
-                              Uint32 num_keys) {
+                              Uint32 num_keys,
+                              bool array_reply) {
   Uint64 tot_bytes = 0;
   for (Uint32 i = 0; i < num_keys; i++) {
     struct KeyStorage *key_store = &key_storage[i];
@@ -3834,10 +3837,10 @@ static int rondb_get_response(std::string *response,
   char header_buf[20];
   Uint32 header_len = 0;
   /*
-   * For single-key GET/HGET, return bulk string directly without array wrapper.
-   * For multi-key MGET/HMGET, wrap in array format.
+   * GET/HGET (and SET ... GET) return a bulk string directly without an
+   * array wrapper. MGET/HMGET always return an array, also for one key.
    */
-  if (num_keys > 1) {
+  if (array_reply) {
     header_len = (Uint32)snprintf(header_buf,
                                   sizeof(header_buf),
                                   "*%u\r\n",
@@ -3950,6 +3953,7 @@ void rondb_mget(Ndb *ndb,
                const pink::RedisCmdArgsType &argv,
                std::string *response,
                Uint64 redis_key_id,
+               bool array_reply,
                int worker_id) {
   Uint32 arg_index_start = (redis_key_id == STRING_REDIS_KEY_ID) ? 1 : 2;
   Uint32 num_keys = argv.size() - arg_index_start;
@@ -3988,7 +3992,8 @@ void rondb_mget(Ndb *ndb,
   }
   ret_code = rondb_get_response(response,
                                 key_storage,
-                                num_keys);
+                                num_keys,
+                                array_reply);
   if (ret_code != 0) {
     assign_generic_err_to_response(response, FAILED_MALLOC);
   }
@@ -4007,27 +4012,29 @@ void rondb_get_command(Ndb *ndb,
   if (type_check != 0) {
     return;
   }
-  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
+  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, false, worker_id);
 }
 
 void rondb_mget_command(Ndb *ndb,
                         const pink::RedisCmdArgsType &argv,
                         std::string *response,
                         int worker_id) {
-  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, worker_id);
+  rondb_mget(ndb, argv, response, STRING_REDIS_KEY_ID, true, worker_id);
 }
 
 // Phase 1.10c.6: helper for HGET/HMGET on a hash that does not
 // exist (or is logically empty / expired). Emits the same nil
 // shape rondb_get_response would have built had the per-field
-// reads each returned 626 - bulk $-1\r\n per field for HMGET,
-// or a single $-1\r\n for HGET. Uses rondb_get_redis_key_id's
-// "not found" return path; never creates an hset_keys row.
+// reads each returned 626 - an array of $-1\r\n per field for
+// HMGET (also for one field), or a single $-1\r\n for HGET.
+// Uses rondb_get_redis_key_id's "not found" return path; never
+// creates an hset_keys row.
 static void emit_hash_not_found_mget_reply(
-    const pink::RedisCmdArgsType &argv, std::string *response) {
+    const pink::RedisCmdArgsType &argv, std::string *response,
+    bool array_reply) {
   // HGET argv: [HGET, hash, field]; HMGET argv: [HMGET, hash, f1, f2, ...].
   Uint32 num_fields = (Uint32)argv.size() - 2;
-  if (num_fields == 1) {
+  if (!array_reply) {
     response->append("$-1\r\n");
     return;
   }
@@ -4058,10 +4065,10 @@ void rondb_hget_command(Ndb *ndb,
     return;
   }
   if (ret_code == 1) {
-    emit_hash_not_found_mget_reply(argv, response);
+    emit_hash_not_found_mget_reply(argv, response, false);
     return;
   }
-  rondb_mget(ndb, argv, response, redis_key_id, worker_id);
+  rondb_mget(ndb, argv, response, redis_key_id, false, worker_id);
 }
 
 void rondb_hmget_command(Ndb *ndb,
@@ -4083,10 +4090,10 @@ void rondb_hmget_command(Ndb *ndb,
     return;
   }
   if (ret_code == 1) {
-    emit_hash_not_found_mget_reply(argv, response);
+    emit_hash_not_found_mget_reply(argv, response, true);
     return;
   }
-  rondb_mget(ndb, argv, response, redis_key_id, worker_id);
+  rondb_mget(ndb, argv, response, redis_key_id, true, worker_id);
 }
 
 /**

@@ -42,6 +42,13 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT MGET a missing b gap c
 
 --echo #
+--echo # MGET with one key returns a one-element array, not a bulk
+--echo # string. --no-raw makes redis-cli show the array shape.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT --no-raw MGET a
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT --no-raw MGET missing
+
+--echo #
 --echo # DEL return count: 1 for a hit, 0 for a miss, N for multi-key.
 --echo #
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL k1
