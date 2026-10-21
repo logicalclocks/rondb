@@ -1463,33 +1463,53 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       int ret_code = code.finalise();
       CHK3(ret_code);
     } else if (i == 12) {
-      code.load_const_u16(0, 1);
-      code.write_uint8_reg_to_mem_const(0, 0);
-      code.read_uint8_to_reg_const(1, 0);
-      code.branch_ne(1, 0, 0);
+      /**
+       * write_uintN_reg_to_mem_* need an unsigned (REG_TYPE_UINT)
+       * source register, and load_const_* gives a signed one. So
+       * iterations 12-14 and 16-18 put the value in memory at offset 0,
+       * read it with read_uintN_to_reg_*, write it to offset 8, read it
+       * back and compare with both the value read and the constant.
+       */
+      const Uint8 val = 1;
+      code.load_const_u16(0, 0);
+      code.load_const_mem(0, 1, sizeof(val), (const char*)&val);
+      code.read_uint8_to_reg_const(2, 0);
+      code.write_uint8_reg_to_mem_const(2, 8);
+      code.read_uint8_to_reg_const(1, 8);
+      code.branch_ne(1, 2, 0);
       code.branch_ne_const(1, 1, 0);
       code.interpret_exit_ok();
-      code.def_label(0); 
+      code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
       CHK3(ret_code);
     } else if (i == 13) {
-      code.load_const_u16(0, 256);
-      code.write_uint16_reg_to_mem_const(0, 0);
-      code.read_uint16_to_reg_const(1, 0);
-      code.branch_ne(1, 0, 0);
+      const Uint16 val = 256;
+      code.load_const_u16(0, 0);
+      code.load_const_mem(0, 1, sizeof(val), (const char*)&val);
+      code.read_uint16_to_reg_const(2, 0);
+      code.write_uint16_reg_to_mem_const(2, 8);
+      code.read_uint16_to_reg_const(1, 8);
+      code.branch_ne(1, 2, 0);
+      code.load_const_u16(3, 256);
+      code.branch_ne(1, 3, 0);
       code.interpret_exit_ok();
-      code.def_label(0); 
+      code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
       CHK3(ret_code);
     } else if (i == 14) {
-      code.load_const_u32(0, 0xFFFFFF);
-      code.write_uint32_reg_to_mem_const(0, 0);
-      code.read_uint32_to_reg_const(1, 0);
-      code.branch_ne(1, 0, 0);
+      const Uint32 val = 0xFFFFFF;
+      code.load_const_u16(0, 0);
+      code.load_const_mem(0, 1, sizeof(val), (const char*)&val);
+      code.read_uint32_to_reg_const(2, 0);
+      code.write_uint32_reg_to_mem_const(2, 8);
+      code.read_uint32_to_reg_const(1, 8);
+      code.branch_ne(1, 2, 0);
+      code.load_const_u32(3, 0xFFFFFF);
+      code.branch_ne(1, 3, 0);
       code.interpret_exit_ok();
-      code.def_label(0); 
+      code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
       CHK3(ret_code);
@@ -1504,35 +1524,51 @@ runNewInterpreterTest(NDBT_Context* ctx, NDBT_Step* step)
       int ret_code = code.finalise();
       CHK3(ret_code);
     } else if (i == 16) {
-      code.load_const_u16(0, 10);
-      code.load_const_u16(1, 0);
-      code.write_uint8_reg_to_mem_reg(0, 1);
+      /* As i == 12-14, with the memory offsets in registers 0 and 1 */
+      const Uint8 val = 10;
+      code.load_const_u16(0, 0);
+      code.load_const_mem(0, 1, sizeof(val), (const char*)&val);
+      code.read_uint8_to_reg_reg(3, 0);
+      code.load_const_u16(1, 8);
+      code.write_uint8_reg_to_mem_reg(3, 1);
       code.read_uint8_to_reg_reg(2, 1);
-      code.branch_ne(2, 0, 0);
+      code.branch_ne(2, 3, 0);
+      code.load_const_u16(4, 10);
+      code.branch_ne(2, 4, 0);
       code.interpret_exit_ok();
-      code.def_label(0); 
+      code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
       CHK3(ret_code);
     } else if (i == 17) {
-      code.load_const_u16(0, 256);
-      code.load_const_u16(1, 0);
-      code.write_uint16_reg_to_mem_reg(0, 1);
+      const Uint16 val = 256;
+      code.load_const_u16(0, 0);
+      code.load_const_mem(0, 1, sizeof(val), (const char*)&val);
+      code.read_uint16_to_reg_reg(3, 0);
+      code.load_const_u16(1, 8);
+      code.write_uint16_reg_to_mem_reg(3, 1);
       code.read_uint16_to_reg_reg(2, 1);
-      code.branch_ne(2, 0, 0);
+      code.branch_ne(2, 3, 0);
+      code.load_const_u16(4, 256);
+      code.branch_ne(2, 4, 0);
       code.interpret_exit_ok();
-      code.def_label(0); 
+      code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
       CHK3(ret_code);
     } else if (i == 18) {
-      code.load_const_u32(0, 0xFFFFFF);
-      code.load_const_u16(1, 0);
-      code.write_uint32_reg_to_mem_reg(0, 1);
+      const Uint32 val = 0xFFFFFF;
+      code.load_const_u16(0, 0);
+      code.load_const_mem(0, 1, sizeof(val), (const char*)&val);
+      code.read_uint32_to_reg_reg(3, 0);
+      code.load_const_u16(1, 8);
+      code.write_uint32_reg_to_mem_reg(3, 1);
       code.read_uint32_to_reg_reg(2, 1);
-      code.branch_ne(2, 0, 0);
+      code.branch_ne(2, 3, 0);
+      code.load_const_u32(4, 0xFFFFFF);
+      code.branch_ne(2, 4, 0);
       code.interpret_exit_ok();
-      code.def_label(0); 
+      code.def_label(0);
       code.interpret_exit_nok();
       int ret_code = code.finalise();
       CHK3(ret_code);
