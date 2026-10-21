@@ -268,6 +268,9 @@ const NdbError &Ndb_sql_metadata_api::acquireSnapshotLock(Ndb *ndb,
     tx = ndb->startTransaction();
     err = &ndb->getNdbError();
     if (tx != nullptr) {
+      // The lock is held idle while the snapshot is distributed, so it must
+      // not be aborted by the data node's TransactionInactiveTimeout.
+      tx->setExemptFromInactiveTimeout();
       const NdbOperation *read_op =
           tx->readTuple(keyNdbRecord(), key, noteNdbRecord(), row,
                         NdbOperation::LM_Exclusive);

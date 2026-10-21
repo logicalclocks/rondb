@@ -46,6 +46,12 @@ SELECT VARIABLE_VALUE FROM performance_schema.global_status
 WHERE VARIABLE_NAME = 'Ndb_config_generation';
 SHOW STATUS LIKE 'Ndb_config_generation';
 == 21 == ThreadConfig
+ WARNING  -- at line 12: ThreadConfig is ignored since AutomaticThreadConfig is set (section starting at line 7). Set AutomaticThreadConfig=false to use it.
+ WARNING  -- at line 17: ThreadConfig is ignored since AutomaticThreadConfig is set (section starting at line 12). Set AutomaticThreadConfig=false to use it.
+ WARNING  -- at line 22: ThreadConfig is ignored since AutomaticThreadConfig is set (section starting at line 17). Set AutomaticThreadConfig=false to use it.
+ WARNING  -- at line 22: MaxNoOfExecutionThreads is ignored since AutomaticThreadConfig is set (section starting at line 17). Set AutomaticThreadConfig=false to use it.
+ WARNING  -- at line 27: MaxNoOfExecutionThreads is ignored since AutomaticThreadConfig is set (section starting at line 22). Set AutomaticThreadConfig=false to use it.
+ WARNING  -- at line 31: ThreadConfig is ignored since AutomaticThreadConfig is set (section starting at line 27). Set AutomaticThreadConfig=false to use it.
 1,0-3,main,rep,recv,ldm={count=4} 2,4-8,main,rep,recv,ldm={count=4,cpubind=0-3} 3,,main,rep,recv,ldm={count=4} 4,0-3, 5,,main,rep,recv,ldm,ldm 6,, 7,,
 == 22 == bug14555359
 1,ndbd,3145728 2,ndbd,4194304 3,ndb_mgmd,1048576 4,mysqld,2097152 5,mysqld,0
@@ -90,3 +96,7 @@ NoOfReplicas,1,2
 
 == 31 == ndb_config --config-binary-file=ndb_3_config.bin.1 --system
 3
+== 32 == TransactionInactiveTimeout
+ WARNING  -- at line 11: TransactionInactiveTimeout=0 is not allowed, using 600000 instead (section starting at line 8). The value must be between 1 and 600000.
+ WARNING  -- at line 15: TransactionInactiveTimeout=700000 is not allowed, using 600000 instead (section starting at line 11). The value must be between 1 and 600000.
+1,600000 2,600000 3,60000

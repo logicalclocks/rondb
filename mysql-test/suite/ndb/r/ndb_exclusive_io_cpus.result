@@ -1,8 +1,8 @@
 SELECT node_id, param_name, config_value
-  FROM ndbinfo.config_values cv, ndbinfo.config_params cp
-  WHERE cv.config_param = cp.param_number AND
-        cp.param_name IN ('AutomaticThreadConfig', 'NumCPUs', 'ExclusiveIoCPUs')
-  ORDER BY node_id, param_name;
+FROM ndbinfo.config_values cv, ndbinfo.config_params cp
+WHERE cv.config_param = cp.param_number AND
+cp.param_name IN ('AutomaticThreadConfig', 'NumCPUs', 'ExclusiveIoCPUs')
+ORDER BY node_id, param_name;
 node_id	param_name	config_value
 1	AutomaticThreadConfig	1
 1	ExclusiveIoCPUs	2

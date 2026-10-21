@@ -177,6 +177,16 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
       requestInfo,
       ((m_flags & OF_TTL_ONLY_EXPIRED) != 0) & static_cast<Uint8>(longSignal));
   req->requestInfo = requestInfo;
+
+  /*
+   * NdbTransaction::setExemptFromInactiveTimeout() is carried in the attrLen
+   * word of a long TCKEYREQ; a short TCKEYREQ uses that word for the
+   * attrinfo length, and TCINDXREQ does not carry the flag.
+   */
+  if (theNdbCon->m_exempt_inactive_timeout && longSignal &&
+      theTCREQ->theVerId_signalNumber == GSN_TCKEYREQ) {
+    TcKeyReq::setExemptInactiveTimeoutFlag(req->attrLen, 1);
+  }
 }
 
 int NdbOperation::doSendKeyReq(int aNodeId, GenericSectionPtr *secs,

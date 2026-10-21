@@ -358,22 +358,19 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      false, ConfigInfo::CI_SECTION, NODE_TYPE_DB},
 
     {CFG_DB_SUBSCRIPTIONS, "MaxNoOfSubscriptions", DB_TOKEN,
-     "Max no of subscriptions (default 0 == MaxNoOfTables)",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
-     STR_VALUE(MAX_INT_RNIL)},
+     "ReplicationMemory", ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
+     "0", "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_CLASSIC_FRAGMENTATION, "ClassicFragmentation", DB_TOKEN,
      "Use classic fragmentation technique", ConfigInfo::CI_USED, false,
      ConfigInfo::CI_BOOL, "false", "false", "true"},
 
     {CFG_DB_SUBSCRIBERS, "MaxNoOfSubscribers", DB_TOKEN,
-     "Max no of subscribers "
-     "(default 0 == 2 * MaxNoOfTables + 2 * 'number of API nodes')",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0",
-     STR_VALUE(MAX_INT_RNIL)},
+     "ReplicationMemory", ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
+     "0", "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_SUB_OPERATIONS, "MaxNoOfConcurrentSubOperations", DB_TOKEN,
-     "Max no of concurrent subscriber operations", ConfigInfo::CI_USED, false,
+     "ReplicationMemory", ConfigInfo::CI_DEPRECATED, false,
      ConfigInfo::CI_INT, "256", "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_TCPBIND_INADDR_ANY, "TcpBind_INADDR_ANY", DB_TOKEN,
@@ -822,12 +819,13 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_DB_OS_STATIC_OVERHEAD,
     "OsStaticOverhead",
     DB_TOKEN,
-    "Avoid using this amount of memory by data node",
+    "Memory the data node leaves for the OS when it computes the memory "
+    "size itself; 0 means 1400M, or 500M in a container with a memory limit",
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
-    "1400M",
-    "400M",
+    "0",
+    "0",
     "65536G" },
 
   {
@@ -1110,7 +1108,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "100", "1", "100000"},
 
     {CFG_DB_MAX_BUFFERED_EPOCH_BYTES, "MaxBufferedEpochBytes", DB_TOKEN,
-     "Max number of bytes available for buffering epochs.",
+     "Epoch buffer memory SUMA keeps allocated instead of returning it to "
+     "SharedGlobalMemory. The buffer itself is limited by ReplicationMemory.",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "500M", "26214400",
      STR_VALUE(MAX_INT_RNIL)},
 
@@ -1164,12 +1163,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      DB_TOKEN,
      "Time application can wait before executing another transaction part "
      "(ms).\n"
-     "This is the time the transaction coordinator waits for the application\n"
-     "to execute or send another part (query, statement) of the transaction.\n"
-     "If the application takes too long time, the transaction gets aborted.\n"
-      "Timeout set to 0 means that we don't timeout at all on application wait.\n"
-      "Default is set to around 40 days",
-     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "3600000", "0",
+     "If the application takes too long, the transaction is aborted.\n"
+     "It cannot be disabled: 0 or a value above "
+     STR_VALUE(MAX_TRANSACTION_INACTIVE_TIMEOUT) " (10 minutes) is replaced\n"
+     "with " STR_VALUE(MAX_TRANSACTION_INACTIVE_TIMEOUT)
+     ", and a value below TransactionDeadlockDetectionTimeout acts as\n"
+     "that value. A committed-read scan waiting for the application gets "
+     STR_VALUE(COMMITTED_READ_SCAN_INACTIVE_TIMEOUT) "\n"
+     "(1 hour) and an internal lock transaction, such as the MySQL global\n"
+     "schema lock, gets " STR_VALUE(EXEMPT_TRANSACTION_INACTIVE_TIMEOUT)
+     " (1 week). Default is 60000 (60 seconds).",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "60000", "0",
      STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_TRANSACTION_DEADLOCK_TIMEOUT, "TransactionDeadlockDetectionTimeout",
@@ -1343,9 +1347,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "hardcoded value of 2MB", ConfigInfo::CI_DEPRECATED, false,
      ConfigInfo::CI_INT, "1M", "256K", STR_VALUE(MAX_INT_RNIL)},
 
-    {CFG_DB_STRING_MEMORY, "StringMemory", DB_TOKEN,
-     "Default size of string memory (1-100 -> %of max, >100 -> actual bytes)",
-     ConfigInfo::CI_USED, false, ConfigInfo::CI_INT,
+    {CFG_DB_STRING_MEMORY, "StringMemory", DB_TOKEN, "SchemaMemory",
+     ConfigInfo::CI_DEPRECATED, false, ConfigInfo::CI_INT,
      STR_VALUE(DEFAULT_STRING_MEMORY), "0", STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_MAX_ALLOCATE, "MaxAllocate", DB_TOKEN, "",
@@ -1431,7 +1434,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_INT, "0", "0", STR_VALUE(MAX_USED_NUM_CPUS)},
 
     {CFG_DB_MT_THREADS, "MaxNoOfExecutionThreads", DB_TOKEN,
-     "For ndbmtd, specify max no of execution threads", ConfigInfo::CI_USED,
+     "For ndbmtd, specify max no of execution threads. Used only when"
+     " AutomaticThreadConfig is false",
+     ConfigInfo::CI_USED,
      CI_RESTART_SYSTEM | CI_RESTART_INITIAL, ConfigInfo::CI_INT, "0", "2",
 #if NDB_VERSION_D < NDB_MAKE_VERSION(7, 2, 0)
      "8"
@@ -1457,7 +1462,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "For ndbmtd use mt-classic", ConfigInfo::CI_USED, false,
      ConfigInfo::CI_BOOL, nullptr, "false", "true"},
 
-    {CFG_DB_MT_THREAD_CONFIG, "ThreadConfig", DB_TOKEN, "Thread configuration",
+    {CFG_DB_MT_THREAD_CONFIG, "ThreadConfig", DB_TOKEN,
+     "Thread configuration. Used only when AutomaticThreadConfig is false",
      ConfigInfo::CI_USED, CI_RESTART_SYSTEM | CI_RESTART_INITIAL,
      ConfigInfo::CI_STRING, nullptr, nullptr, nullptr},
 
@@ -2033,7 +2039,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_API_CONTINOUS_SCAN,
     "ContinousScan",
     "API",
-    "Use two receivers per parallelism to enable continous scans",
+    "Use four receivers per fragment scan to enable continuous read "
+    "committed scans",
      ConfigInfo::CI_USED,
      false,
      ConfigInfo::CI_BOOL,
@@ -4043,6 +4050,22 @@ static bool fixShmKey(InitConfigFileParser::Context &ctx, const char *) {
     require(ctx.m_currentSection->get("NodeId1", &id1));
     require(ctx.m_currentSection->get("NodeId2", &id2));
     if (!ctx.m_currentSection->get("ShmKey", &key)) {
+      /**
+       * The generated key has 8 bits for each node id, so it is only
+       * unique for node ids below 256. A larger node id overlaps the
+       * other node id and the port number, two connections can then get
+       * the same key and share one shared memory segment, for example
+       * API nodes 67 and 579 to the same data node with port 1186.
+       * Connections with such node ids must set ShmKey explicitly.
+       */
+      if (id1 > 255 || id2 > 255) {
+        ctx.reportError(
+            "Shared memory connection between node %u and node %u needs "
+            "ShmKey set in an [SHM] section for this node pair, ShmKey is "
+            "only generated for node ids below 256",
+            id1, id2);
+        DBUG_RETURN(false);
+      }
       require(ctx.m_userProperties.get("ShmUniqueId", &key));
       key = key << 16 | (id1 > id2 ? id1 << 8 | id2 : id2 << 8 | id1);
       ctx.m_currentSection->put("ShmKey", key);
@@ -4165,6 +4188,25 @@ static bool checkDbConstraints(InitConfigFileParser::Context &ctx,
     ok = false;
   }
 
+  /**
+   * TransactionInactiveTimeout cannot be disabled or set above
+   * MAX_TRANSACTION_INACTIVE_TIMEOUT: an older configuration with 0 or a
+   * larger value gets the maximum, with a warning.
+   */
+  Uint32 inactiveTimeout = 0;
+  if (ctx.m_currentSection->get("TransactionInactiveTimeout",
+                                &inactiveTimeout) &&
+      (inactiveTimeout == 0 ||
+       inactiveTimeout > MAX_TRANSACTION_INACTIVE_TIMEOUT)) {
+    ctx.reportWarning(
+        "TransactionInactiveTimeout=%u is not allowed, using %u instead "
+        "(section starting at line %u). The value must be between 1 and %u.",
+        inactiveTimeout, Uint32(MAX_TRANSACTION_INACTIVE_TIMEOUT),
+        ctx.m_sectionLineno, Uint32(MAX_TRANSACTION_INACTIVE_TIMEOUT));
+    ctx.m_currentSection->put("TransactionInactiveTimeout",
+                              Uint32(MAX_TRANSACTION_INACTIVE_TIMEOUT), true);
+  }
+
   return ok;
 }
 
@@ -4244,7 +4286,24 @@ static bool checkThreadConfig(InitConfigFileParser::Context &ctx,
     return false;
   }
   if (auto_thread_config) {
-    ;
+    // The data node ignores both with automatic thread configuration, so
+    // say so instead of letting them look effective.
+    const char *ignored_thrconfig = nullptr;
+    if (ctx.m_currentSection->get("ThreadConfig", &ignored_thrconfig) &&
+        ignored_thrconfig != nullptr && ignored_thrconfig[0] != 0) {
+      ctx.reportWarning(
+          "ThreadConfig is ignored since AutomaticThreadConfig is set"
+          " (section starting at line %u). Set AutomaticThreadConfig=false"
+          " to use it.",
+          ctx.m_sectionLineno);
+    }
+    if (maxExecuteThreads) {
+      ctx.reportWarning(
+          "MaxNoOfExecutionThreads is ignored since AutomaticThreadConfig is"
+          " set (section starting at line %u). Set"
+          " AutomaticThreadConfig=false to use it.",
+          ctx.m_sectionLineno);
+    }
   } else if (ctx.m_currentSection->get("ThreadConfig", &thrconfig)) {
     int ret = tmp.do_parse_thrconfig(thrconfig, realtimeScheduler, spinTimer);
     if (ret) {

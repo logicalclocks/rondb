@@ -1,0 +1,40 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== gd-1: GROUP BY a DATE column, unsorted ===
+== Query ==
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d|
+d	n
+0001-02-03	1
+0099-12-31	1
+0999-01-01	2
+2024-05-06	1
+
+=== gd-2: GROUP BY a DATE column with ORDER BY ===
+== Query ==
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d ORDER BY d;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d ORDER BY d|
+d	n
+0001-02-03	1
+0099-12-31	1
+0999-01-01	2
+2024-05-06	1

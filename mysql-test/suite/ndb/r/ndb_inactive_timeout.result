@@ -1,0 +1,26 @@
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 1), (2, 2);
+# An idle transaction holding a row lock is aborted
+BEGIN;
+SELECT * FROM t1 WHERE a = 1 FOR UPDATE;
+a	b
+1	1
+# The row lock is free again
+UPDATE t1 SET b = 10 WHERE a = 1;
+# The next statement of the aborted transaction fails
+SELECT * FROM t1 WHERE a = 1 FOR UPDATE;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+ROLLBACK;
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	10
+2	2
+# A committed-read scan with a reader slower than the timeout completes
+SELECT a, SLEEP(8) AS s FROM t1;
+a	s
+1	0
+2	0
+# A scan holding locks with a reader slower than the timeout is aborted
+SELECT a, SLEEP(8) AS s FROM t1 LOCK IN SHARE MODE;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+DROP TABLE t1;

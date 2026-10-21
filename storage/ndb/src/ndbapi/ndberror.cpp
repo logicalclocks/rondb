@@ -835,7 +835,7 @@ ErrorBundle ErrorCodes[] = {
   { 1421, DMEC, SE, "Partially connected API in NdbOperation::execute()" },
   { 1422, DMEC, SE, "Out of subscription records" },
   { 1423, DMEC, SE, "Out of table records in SUMA" },
-  { 1424, DMEC, SE, "Out of MaxNoOfConcurrentSubOperations" },
+  { 1424, DMEC, SE, "Out of subscriber operation records in SUMA (increase ReplicationMemory)" },
   { 1425, DMEC, SE, "Subscription being defined...while trying to stop subscriber" },
   { 1426, DMEC, SE, "No such subscriber" },
   { 1427, DMEC, NR, "Api node died, when SUB_START_REQ reached node "},
@@ -1223,6 +1223,7 @@ static const ErrorStatusClassification StatusClassificationMapping[] = {
     {ST_P, ND, "No data found"},
     {ST_P, CV, "Constraint violation"},
     {ST_P, SE, "Schema error"},
+    {ST_P, OE, "Schema object already exists"},
     {ST_P, UD, "User defined error"},
     {ST_P, IS, "Insufficient space"},
 

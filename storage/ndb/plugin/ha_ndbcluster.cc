@@ -217,8 +217,9 @@ static MYSQL_THDVAR_BOOL(
 static MYSQL_THDVAR_BOOL(
     use_transactions, /* name */
     PLUGIN_VAR_OPCMDARG,
-    "Use transactions for large inserts, if enabled then large "
-    "inserts will be split into several smaller transactions",
+    "Run each statement as one NDB transaction. If disabled, large "
+    "INSERT statements are committed in batches of smaller transactions "
+    "and cannot be rolled back. LOAD DATA always commits in batches.",
     nullptr, /* check func. */
     nullptr, /* update func. */
     1        /* default */
@@ -289,12 +290,14 @@ static MYSQL_THDVAR_ULONG(
     optimization_delay, /* name */
     PLUGIN_VAR_RQCMDARG,
     "For optimize table, specifies the delay in milliseconds "
-    "for each batch of rows sent.",
+    "for each batch of rows sent. At most 10000, since the scan holds "
+    "row locks during the delay and is aborted by the data nodes' "
+    "TransactionInactiveTimeout (default 60000), which restarts it.",
     nullptr, /* check func. */
     nullptr, /* update func. */
     10,      /* default */
     0,       /* min */
-    100000,  /* max */
+    10000,   /* max */
     0        /* block */
 );
 

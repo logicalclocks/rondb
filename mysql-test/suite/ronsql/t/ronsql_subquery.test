@@ -511,10 +511,34 @@ WHERE NOT ((SELECT COUNT(l_id) FROM lineitem WHERE l_orderkey = o_id AND l_quant
 GROUP BY o_id;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+DELIMITER ;|
+
+# RONSQL-41: a scalar subquery that returned more than one row, or a
+# scalar or IN subquery that selected more than one column, failed with
+# "Subquery returned a non-numeric result." (or "IN-subquery returned a
+# non-numeric result."), since the whole output was parsed as one
+# number. MySQL reports "Subquery returns more than 1 row" and
+# "Operand should contain 1 column(s)". The column count is now checked
+# at prepare time and the row count when the subquery has run.
+
+--echo
+--echo === Test 38: Scalar subquery selecting two columns (rejected) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT l_orderkey, SUM(l_quantity) AS q FROM lineitem WHERE l_quantity > (SELECT MIN(l_quantity), MAX(l_quantity) FROM lineitem) GROUP BY l_orderkey;' 2>&1
+
+--echo
+--echo === Test 39: IN subquery selecting two columns (rejected) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT l_orderkey, SUM(l_price) AS p FROM lineitem WHERE l_orderkey IN (SELECT MIN(l_orderkey), MAX(l_price) FROM lineitem GROUP BY l_orderkey) GROUP BY l_orderkey;' 2>&1
+
+--echo
+--echo === Test 40: Scalar subquery returning five rows (rejected) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT l_orderkey, SUM(l_quantity) AS q FROM lineitem WHERE l_quantity > (SELECT MIN(l_quantity) FROM lineitem GROUP BY l_orderkey) GROUP BY l_orderkey;' 2>&1
+
 --echo
 --echo === Cleanup ===
 
-DELIMITER ;|
 DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;

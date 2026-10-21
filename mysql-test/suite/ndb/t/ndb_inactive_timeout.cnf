@@ -1,0 +1,9 @@
+!include ../my.cnf
+
+[cluster_config]
+# One row per fragment per scan round, so that a scan waits in DBTC for
+# mysqld while it processes each row.
+BatchSize=1
+
+[cluster_config.1]
+TransactionInactiveTimeout=5000

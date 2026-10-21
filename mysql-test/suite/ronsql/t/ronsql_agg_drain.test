@@ -169,7 +169,8 @@ while ($i <= 127)
 # so each SUM needs at least 45 program words: 40 SUMs need at least 1800
 # and 200 SUMs at least 9000. The constants are all different, so no
 # product or SUM is shared. Each SUM is longer than 64 bytes, so it needs
-# an alias.
+# an alias: a1, a2, ... (s1, s2, ... would include s3, and S3 is a MySQL
+# keyword).
 --let $k = 1
 --let $s = 1
 while ($s <= 200)
@@ -185,11 +186,11 @@ while ($s <= 200)
   }
   if ($s == 1)
   {
-    --let $sums = $sum) AS s$s
+    --let $sums = $sum) AS a$s
   }
   if ($s > 1)
   {
-    --let $sums = $sums, $sum) AS s$s
+    --let $sums = $sums, $sum) AS a$s
   }
   if ($s == 40)
   {

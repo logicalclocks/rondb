@@ -457,8 +457,13 @@ void RonSQLRequest::execute(Uint32 ndb_thread_index) {
       out_stream << "{\"data\":\n";
     }
     else {
-      out_stream << "{\"operationId\": \"" << reqStruct.operationId
-                 << "\",\n\"data\":\n";
+      // The parser has decoded the JSON string, so escape it again.
+      out_stream << "{\"operationId\": \"";
+      ronsql_print_json_string(out_stream,
+                               reqStruct.operationId.data(),
+                               reqStruct.operationId.size(),
+                               params.output_format);
+      out_stream << "\",\n\"data\":\n";
     }
   }
 

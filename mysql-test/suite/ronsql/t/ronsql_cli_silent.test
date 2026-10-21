@@ -1,0 +1,39 @@
+# RONSQL-47: ronsql_cli declared --silent with a required argument, so
+# "--silent -e QUERY" took -e as the argument of --silent and then
+# rejected QUERY as a positional argument. --silent, like -s, now takes
+# no argument. Under mtr, stdout is a pipe, so both select TEXT_NOHEADER
+# (si-2, si-3), while the default prints the header line (si-1).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE silent_t (
+  id INT NOT NULL,
+  v INT NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO silent_t VALUES (1, 10), (2, 20);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === si-1: no option, with a header line ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(v) AS t FROM silent_t;' 2>&1
+
+--echo
+--echo === si-2: --silent followed by another option ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --silent -e 'SELECT SUM(v) AS t FROM silent_t;' 2>&1
+
+--echo
+--echo === si-3: -s followed by another option ===
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -s -e 'SELECT SUM(v) AS t FROM silent_t;' 2>&1
+
+--disable_query_log
+DROP TABLE silent_t;
+--enable_query_log

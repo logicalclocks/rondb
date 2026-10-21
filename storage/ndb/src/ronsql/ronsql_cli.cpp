@@ -220,7 +220,7 @@ parse_cmdline_arguments(int argc, char** argv, Config& config)
     {"debug-info", no_argument, 0, 'T'},
     {"database", required_argument, 0, 'D'},
     {"execute", required_argument, 0, 'e'},
-    {"silent", required_argument, 0, 's'},
+    {"silent", no_argument, 0, 's'},
     {"execute-file", required_argument, 0, OPT_EXECUTE_FILE},
     {"connect-string", required_argument, 0, OPT_CONNECT_STRING},
     {"explain-mode", required_argument, 0, OPT_EXPLAIN_MODE},

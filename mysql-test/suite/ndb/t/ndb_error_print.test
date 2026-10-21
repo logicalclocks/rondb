@@ -22,8 +22,10 @@ insert ignore into test.t1 values (5,5), (3,6), (7,7);
 --error 1205
 commit;
 
+# Restore the default TransactionInactiveTimeout (60 s); 0 would mean the
+# 10 minute maximum for the rest of the run
 --disable_result_log
---exec $NDB_MGM -e "ALL DUMP 2508 0"
+--exec $NDB_MGM -e "ALL DUMP 2508 60000"
 --enable_result_log
 
 drop table test.t1;

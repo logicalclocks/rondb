@@ -64,9 +64,12 @@ let $table_id = `SELECT id FROM ndbinfo.dict_obj_info
 
 --echo # --- LCP so that the restart restores the rows from LCP files
 # Wait for "Local checkpoint N completed" in the cluster log with N newer
-# than any before the dump. A per-fragment last_lcp_id is not enough: if the
-# system restart finds the LCP marked ongoing in the sysfile, DIH invalidates
-# every replica LCP newer than the last completed one.
+# than any LCP that started or completed before the dump. An LCP that was
+# already running during the load does not capture the table, so it must not
+# end the wait; the dump makes DIH start the next LCP as soon as it completes.
+# A per-fragment last_lcp_id is not enough: if the system restart finds the
+# LCP marked ongoing in the sysfile, DIH invalidates every replica LCP newer
+# than the last completed one.
 let LCP_RATE_VARDIR = $MYSQLTEST_VARDIR;
 let LCP_RATE_LCP_ID = $MYSQLTEST_VARDIR/tmp/ndb_lcp_restore_rate.lcp_id;
 --perl
@@ -74,7 +77,9 @@ use strict;
 my $max = 0;
 foreach my $f (glob("$ENV{LCP_RATE_VARDIR}/mysql_cluster.1/ndb_mgmd.*/*_cluster.log")) {
   open(my $fh, '<', $f) or die "open $f: $!";
-  while (<$fh>) { $max = $1 if /Local checkpoint (\d+) completed/ && $1 > $max; }
+  while (<$fh>) {
+    $max = $1 if /Local checkpoint (\d+) (?:started|completed)/ && $1 > $max;
+  }
   close($fh);
 }
 open(my $out, '>', $ENV{LCP_RATE_LCP_ID}) or die "open lcp id: $!";

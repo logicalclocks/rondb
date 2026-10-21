@@ -2373,7 +2373,7 @@ void Suma::execDBINFO_SCANREQ(Signal *signal) {
            c_subscriberPool.getSize(),
            c_subscriberPool.getEntrySize(),
            c_subscriberPool.getUsedHi(),
-           {CFG_DB_SUBSCRIBERS, CFG_DB_SUBSCRIPTIONS, CFG_DB_NO_TABLES, 0},
+           {0, 0, 0, 0},
            0},
           {"Table",
            c_tablePool.getUsed(),
@@ -2387,7 +2387,7 @@ void Suma::execDBINFO_SCANREQ(Signal *signal) {
            c_subscriptionPool.getSize(),
            c_subscriptionPool.getEntrySize(),
            c_subscriptionPool.getUsedHi(),
-           {CFG_DB_SUBSCRIPTIONS, CFG_DB_NO_TABLES, 0, 0},
+           {0, 0, 0, 0},
            0},
           {"Sync",
            c_syncPool.getUsed(),
@@ -2408,7 +2408,7 @@ void Suma::execDBINFO_SCANREQ(Signal *signal) {
            c_subOpPool.getSize(),
            c_subOpPool.getEntrySize(),
            c_subOpPool.getUsedHi(),
-           {CFG_DB_SUB_OPERATIONS, 0, 0, 0},
+           {0, 0, 0, 0},
            0},
           {"Page Chunk",
            c_page_chunk_pool.getUsed(),
@@ -7312,7 +7312,7 @@ void Suma::disable_buffering() {
 
   infoEvent(
       "Out of event buffer. Node failure will cause event failures. "
-      "Consider increasing MaxBufferedEpochBytes.");
+      "Consider increasing ReplicationMemory.");
 
   g_eventLogger->info(
       "SUMA Out of event buffer: Disabling buffering. "
@@ -7434,11 +7434,10 @@ void Suma::out_of_buffer_release(Signal *signal, Uint32 buck) {
  * ReplicationMemory even higher although it's unlikely it will be required
  * in any realistic setup.
  *
- * ReplicationMemory can grow using SharedGlobalMemory up to when the
- * memory is used up to 90% of the SharedGlobalMemory. One can still
- * set MaxBufferedEpochBytes to ensure that memory is reserved for this
- * purpose. For normal operation we reserve at most 16 MByte of memory
- * for this purpose.
+ * ReplicationMemory can grow using up to 30% of SharedGlobalMemory, as long
+ * as SharedGlobalMemory is less than 96% used. MaxBufferedEpochBytes does
+ * not limit the buffer: it sets how many pages SUMA keeps allocated (and
+ * half of that free) before it gives free chunks back to the global memory.
  *
  * If more memory is needed temporarily this memory will be released when
  * no longer required to ensure that other parts of the NDB data node can

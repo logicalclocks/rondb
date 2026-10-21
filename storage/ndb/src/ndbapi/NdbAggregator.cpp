@@ -1567,6 +1567,13 @@ bool NdbAggregator::GroupByLinked(Uint32 position,
     SetError(kErrInvalidColumnId);
     return false;
   }
+  /* As GroupBy(): a BLOB or TEXT column cannot be a group key. */
+  NdbDictionary::Column::Type type = parentCol->getType();
+  if (type == NdbDictionary::Column::Blob ||
+      type == NdbDictionary::Column::Text) {
+    SetError(kErrUnSupportedColumn);
+    return false;
+  }
   Uint32 col_id = position | AGG_LINKED_COL_FLAG;
   if (!HasGroupByRoom()) return false;
   buffer_[curr_prog_pos_++] =

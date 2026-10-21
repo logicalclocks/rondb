@@ -1,13 +1,13 @@
 # ApiFailureHandlingTimeout defaults to 0
 SELECT param_name, param_default
-  FROM ndbinfo.config_params
-  WHERE param_name = 'ApiFailureHandlingTimeout';
+FROM ndbinfo.config_params
+WHERE param_name = 'ApiFailureHandlingTimeout';
 param_name	param_default
 ApiFailureHandlingTimeout	0
 SELECT node_id, param_name, config_value
-  FROM ndbinfo.config_values cv, ndbinfo.config_params cp
-  WHERE cv.config_param = cp.param_number AND
-        cp.param_name = 'ApiFailureHandlingTimeout'
+FROM ndbinfo.config_values cv, ndbinfo.config_params cp
+WHERE cv.config_param = cp.param_number AND
+cp.param_name = 'ApiFailureHandlingTimeout'
   ORDER BY node_id;
 node_id	param_name	config_value
 1	ApiFailureHandlingTimeout	0

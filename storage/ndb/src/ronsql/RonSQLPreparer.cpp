@@ -211,6 +211,22 @@ finalize_aggregator(NdbAggregator* agg, const char* msg)
   }
 }
 
+/*
+ * RONSQL-39: GroupBy() and GroupByLinked() refuse a BLOB or TEXT column
+ * (kErrUnSupportedColumn).  That is an unsupported query, not a bug, so
+ * throw `unsupported` as such.  Any other refusal throws `msg`.
+ */
+static void
+groupby_or_fail(NdbAggregator* agg, bool ok, const char* msg,
+                const char* unsupported =
+                    "GROUP BY on a BLOB or TEXT column is not supported.")
+{
+  if (ok) return;
+  if (agg->GetError().errno_ == kErrUnSupportedColumn)
+    throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED, unsupported);
+  throw RonSQLPermanentError(msg);
+}
+
 RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
   m_conf(conf),
   m_amalloc(conf.amalloc),
@@ -2223,6 +2239,24 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         cur = cur->next;
       }
       if (match != NULL) {
+        /* RONSQL-40: the original root becomes a child read by key for
+         * each CTE row, so an index hint on it cannot be honored.  It was
+         * cleared silently: FORCE INDEX neither applied nor failed, and the
+         * lookup could use an index IGNORE INDEX excluded.  Reject it, as
+         * a hint on a joined table is rejected. */
+        const TableRef* root = m_context.ast_root.root_table;
+        if (root->hint_kind != TableRef::HintKind::HINT_NONE) {
+          std::basic_ostream<char>& err = *m_conf.err_stream;
+          err << "Table '" << root->alias.c_str() << "' has an index hint,"
+                 " but the join to CTE '" << match->table.name.c_str()
+              << "' binds only part of its GROUP BY key, so the CTE is"
+                 " scanned as the root and '" << root->alias.c_str()
+              << "' is read by key for each CTE row." << std::endl;
+          throw RonSQLPermanentError(
+              RonSQLErrorClass::UNSUPPORTED,
+              "An index hint cannot be honored on a table that a "
+              "partial-key CTE join reads by key. Remove the hint.");
+        }
         // Splice match out of the joins list.
         if (match_prev == NULL) {
           m_context.ast_root.joins = match->next;
@@ -2234,15 +2268,7 @@ RonSQLPreparer::maybe_rewrite_partial_key_cte_root()
         // child of the CTE: same conditions as match, flipped.
         JoinClause* new_jc = m_amalloc->alloc_exc<JoinClause>(1);
         new_jc->join_type = JoinClause::INNER_JOIN;
-        new_jc->table = *m_context.ast_root.root_table;
-        // A root index hint does not survive the demotion: on the
-        // aggregate path reject_index_hints_on_joins already ran (the
-        // hint was silently dropped — nothing reads join-clause hints
-        // after it); on the pre-gate parse() call the reject runs
-        // later and would otherwise newly trip on the demoted copy.
-        // Clearing keeps both paths at the established behavior.
-        new_jc->table.hint_kind = TableRef::HintKind::HINT_NONE;
-        new_jc->table.hint_indexes = NULL;
+        new_jc->table = *m_context.ast_root.root_table;  // no hint (above)
         new_jc->conditions = match->conditions;
         for (JoinCondition* jc = new_jc->conditions;
              jc != NULL; jc = jc->next) {
@@ -7962,6 +7988,37 @@ RonSQLPreparer::resolve_columns_for_cte_scope(QueryScope& scope,
   resolve_columns_for_scope(scope, stmt, false);
 }
 
+/*
+ * RONSQL-41: a scalar or IN subquery must select exactly one column, as
+ * in MySQL ("Operand should contain 1 column(s)").  The executor parses
+ * each output line as one number, so a second column used to fail as a
+ * non-numeric result.  Checked on the statement as written, before
+ * decorrelate_scalar() rewrites it to select the correlation key too.
+ */
+static void
+require_one_subquery_column(const SelectStatement* stmt, bool is_in,
+                            std::basic_ostream<char>& err)
+{
+  if (stmt == NULL)
+    return;
+  Uint32 count = 0;
+  for (const Outputs* o = stmt->outputs; o != NULL; o = o->next)
+    count++;
+  if (count == 1)
+    return;
+  if (is_in)
+    err << "An IN subquery selects " << count << " columns, but IN"
+           " compares one value with each of its rows." << std::endl;
+  else
+    err << "A scalar subquery selects " << count << " columns, but it is"
+           " compared as one value." << std::endl;
+  throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                             is_in ? "An IN subquery must select exactly"
+                                     " one column."
+                                   : "A scalar subquery must select"
+                                     " exactly one column.");
+}
+
 void
 RonSQLPreparer::analyze_subqueries()
 {
@@ -7984,6 +8041,8 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
      * statement, before any rewrite replaces it. */
     reject_ignored_orderby_limit(ce->subquery.stmt, "a scalar subquery",
                                  NULL);
+    require_one_subquery_column(ce->subquery.stmt, false,
+                                *m_conf.err_stream);
     SubqueryInfo info;
     info.ce_node = ce;
     info.inner_stmt = ce->subquery.stmt;
@@ -8008,6 +8067,8 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   {
     reject_ignored_orderby_limit(ce->in_subquery.stmt, "an IN subquery",
                                  NULL);
+    require_one_subquery_column(ce->in_subquery.stmt, true,
+                                *m_conf.err_stream);
     SubqueryInfo info;
     info.ce_node = ce;
     info.inner_stmt = ce->in_subquery.stmt;
@@ -8903,8 +8964,14 @@ RonSQLPreparer::build_result_column_metadata()
       continue;
     }
     column_metadata[col_idx].charset = col->getCharset();
-    column_metadata[col_idx].precision = col->getPrecision();
-    column_metadata[col_idx].scale = col->getScale();
+    /* RONSQL-39: a BLOB or TEXT column keeps its inline and part sizes in
+     * precision and scale (256 and 2000 by default).  They failed the
+     * printer's ndbrequire(precision <= 65) for a GROUP BY output, which
+     * aborted the process before GroupBy() could refuse the column. */
+    const bool is_blob = (col->getType() == NdbDictionary::Column::Blob ||
+                          col->getType() == NdbDictionary::Column::Text);
+    column_metadata[col_idx].precision = is_blob ? 0 : col->getPrecision();
+    column_metadata[col_idx].scale = is_blob ? 0 : col->getScale();
     column_metadata[col_idx].has_metadata = true;
     switch (col->getType()) {
     case NdbDictionary::Column::Float:
@@ -9121,6 +9188,10 @@ RonSQLPreparer::execute_subqueries()
       inner_params.out_stream = &oss;
       inner_params.err_stream = &ess;
       inner_params.explain_mode = RonSQLExecParams::ExplainMode::FORBID;
+      // RONSQL-49: the subquery's transactions count against the caller's
+      // rate limits like the main query's.
+      inner_params.rate_limit_identity = m_conf.rate_limit_identity;
+      inner_params.rate_limit_identity_len = m_conf.rate_limit_identity_len;
 
       // Create and execute inner preparer
       {
@@ -9206,6 +9277,15 @@ RonSQLPreparer::execute_subqueries()
               "IN-subquery returned more than 1000 values.");
         }
       }
+      else if (result_str.find('\n') != std::string::npos)
+      {
+        // RONSQL-41: MySQL's "Subquery returns more than 1 row".  The
+        // whole output used to be parsed as one number and failed as a
+        // non-numeric result.
+        throw RonSQLPermanentError(
+            RonSQLErrorClass::SEMANTIC,
+            "A scalar subquery returned more than one row.");
+      }
       else if (result_str == "NULL" || result_str.empty())
       {
         info.result.is_null = true;
@@ -9247,6 +9327,11 @@ RonSQLPreparer::execute_subqueries()
     }
     catch (const RonSQLRetryableError&)
     {
+      throw;
+    }
+    catch (const RonSQLRateLimitError&)
+    {
+      // The subquery was throttled: the whole query is (HTTP 429).
       throw;
     }
     catch (const std::bad_alloc&)
@@ -9693,23 +9778,7 @@ RonSQLPreparer::execute()
       return;
     }
 
-    ndbrequire(m_trans == NULL);
-    m_trans = DBG(ndb->startTransaction());
-    require_run(m_trans != NULL, "Failed to start transaction.");
-    if (m_conf.rate_limit_identity != NULL) {
-      /*
-       * RONDB-978: tag the transaction so the data nodes account this query's
-       * usage against the caller's USER rate limits. This also fails while the
-       * caller's client-side rate overflow backoff window is open, so it is a
-       * require_run: the Ndb error investigation turns the rate overflow into
-       * a RonSQLRateLimitError and everything else into the usual
-       * temporary/permanent verdict.
-       */
-      require_run(m_trans->setUserId(m_conf.rate_limit_identity,
-                                     m_conf.rate_limit_identity_len) == 0,
-                  "Rejected or failed to set the rate limit identity on the"
-                  " transaction.");
-    }
+    start_transaction();
     // Since ndb exists, m_main_scope.table should have been initialized in load()
     ndbrequire(m_main_scope.table != NULL);
 
@@ -10672,10 +10741,7 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
    * aggregation program loads, and each row that would be printed goes
    * to api_rows instead; nothing is printed here.
    */
-  Ndb* ndb = m_conf.ndb;
-  ndbrequire(m_trans == NULL);
-  m_trans = DBG(ndb->startTransaction());
-  require_run(m_trans != NULL, "Failed to start transaction.");
+  start_transaction();
   ndbrequire(m_main_scope.table != NULL);
 
   // The column registry indexes read per row, in attrs order.
@@ -11154,6 +11220,28 @@ RonSQLPreparer::execute_single_table_passthrough(ApiRowAggregation* api_rows)
 }
 
 void
+RonSQLPreparer::start_transaction() {
+  Ndb* ndb = m_conf.ndb;
+  ndbrequire(m_trans == NULL);
+  m_trans = DBG(ndb->startTransaction());
+  require_run(m_trans != NULL, "Failed to start transaction.");
+  if (m_conf.rate_limit_identity != NULL) {
+    /*
+     * RONDB-978: tag the transaction so the data nodes account this query's
+     * usage against the caller's USER rate limits. This also fails while the
+     * caller's client-side rate overflow backoff window is open, so it is a
+     * require_run: the Ndb error investigation turns the rate overflow into
+     * a RonSQLRateLimitError and everything else into the usual
+     * temporary/permanent verdict.
+     */
+    require_run(m_trans->setUserId(m_conf.rate_limit_identity,
+                                   m_conf.rate_limit_identity_len) == 0,
+                "Rejected or failed to set the rate limit identity on the"
+                " transaction.");
+  }
+}
+
+void
 RonSQLPreparer::cleanup_trans() {
   if (m_trans) {
     Ndb* ndb = m_conf.ndb;
@@ -11372,9 +11460,7 @@ void
 RonSQLPreparer::execute_join()
 {
   Ndb* ndb = m_conf.ndb;
-  ndbrequire(m_trans == NULL);
-  m_trans = ndb->startTransaction();
-  require_run(m_trans != NULL, "Failed to start transaction.");
+  start_transaction();
 
   JoinPlan& plan = m_main_scope.join_plan;
 
@@ -11430,14 +11516,15 @@ RonSQLPreparer::execute_join()
             col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
             "Subquery GROUP BY column is not a stored-table column.");
         if (col_ref.join_op_idx == op_idx) {
-          require_prm(agg->GroupBy(col_ref.attr_id),
-                      "Failed to program GroupBy on leaf.");
+          groupby_or_fail(agg, agg->GroupBy(col_ref.attr_id),
+                          "Failed to program GroupBy on leaf.");
         } else {
           require_prm(col_ref.dict_column != NULL,
                       "Subquery linked GROUP BY column descriptor missing.");
-          require_prm(agg->GroupByLinked(linked_proj_pos,
-                                         col_ref.dict_column),
-                      "Failed to program GroupByLinked on leaf.");
+          groupby_or_fail(agg,
+                          agg->GroupByLinked(linked_proj_pos,
+                                             col_ref.dict_column),
+                          "Failed to program GroupByLinked on leaf.");
           linked_proj_pos++;
         }
         groupby = groupby->next;
@@ -11612,9 +11699,10 @@ RonSQLPreparer::execute_join()
                           QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                       "Single-row CTE output did not resolve to a "
                       "stored column.");
-          require_prm(cteAgg->GroupBy((Int32)ref.attr_id),
-                      "Failed to program the single-row CTE projection "
-                      "(BLOB/TEXT columns cannot be projected).");
+          groupby_or_fail(cteAgg, cteAgg->GroupBy((Int32)ref.attr_id),
+                          "Failed to program the single-row CTE projection.",
+                          "A single-row CTE cannot output a BLOB or TEXT "
+                          "column.");
         }
       } else {
         programAggregator_join(cs, *cte->stmt, cteAgg, cteChildVT);
@@ -14915,7 +15003,7 @@ RonSQLPreparer::emit_cte_lookup_filter(NdbInterpretedCode& code,
     require_prm(d != NULL, "CTE_LOOKUP filter: NULL disjunct.");
     require_unsupported(!contains_or_below_top_level(d),
                 "CTE_LOOKUP filter: only top-level OR / DNF is supported. "
-                "Convert '(A OR B) AND C' to DNF or split into UNION.");
+                "Rewrite '(A OR B) AND C' as '(A AND C) OR (B AND C)'.");
 
     ConditionalExpression* conjuncts[MAX_WHERE_CONJUNCTS];
     Uint32 num_conjuncts = 0;
@@ -16444,8 +16532,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
   default:
     throw RonSQLMaybeStaleSchema("Unsupported column type in comparison"
                                  " condition. Supported types are integer"
-                                 " types, CHAR, VARCHAR, DATE, DATETIME and"
-                                 " TIMESTAMP.");
+                                 " types, FLOAT, DOUBLE, DECIMAL, CHAR,"
+                                 " VARCHAR, DATE, DATETIME and TIMESTAMP.");
   }
   if (op == T_INT && tk == INT) {
     if (ce->constant_integer < min || ce->constant_integer > max) {
@@ -17166,8 +17254,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
         m_main_scope.resolved_columns[groupby->col_idx];
     require_prm(col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
                 "Single-table GROUP BY column is not a stored-table column.");
-    programAggregator_do_or_fail
-      (aggregator->GroupBy(col_ref.attr_id));
+    groupby_or_fail(aggregator, aggregator->GroupBy(col_ref.attr_id),
+                    "Failed writing aggregation program. Please report a bug.");
     groupby = groupby->next;
   }
   // Program aggregations
@@ -17937,8 +18025,9 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
         require_prm(
             col_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
             "Leaf GROUP BY column is not a stored-table column.");
-        programAggregator_do_or_fail
-          (aggregator->GroupBy(col_ref.attr_id));
+        groupby_or_fail(aggregator, aggregator->GroupBy(col_ref.attr_id),
+                        "Failed writing aggregation program. "
+                        "Please report a bug.");
       }
     }
     else
@@ -17966,9 +18055,11 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
             "Linked GROUP BY column is not a stored-table column.");
         require_prm(col_ref.dict_column != NULL,
                     "Linked GROUP BY column descriptor is missing.");
-        programAggregator_do_or_fail(
-            aggregator->GroupByLinked(linked_proj_pos,
-                                      col_ref.dict_column));
+        groupby_or_fail(aggregator,
+                        aggregator->GroupByLinked(linked_proj_pos,
+                                                  col_ref.dict_column),
+                        "Failed writing aggregation program. "
+                        "Please report a bug.");
       }
       linked_proj_pos++;
     }

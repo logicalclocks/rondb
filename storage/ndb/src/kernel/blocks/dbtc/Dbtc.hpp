@@ -1123,6 +1123,9 @@ class Dbtc : public SimulatedBlock {
       ,TF_SINGLE_EXEC_FLAG = 512
       ,TF_REPLICA_APPLIER = 1024
       ,TF_NOT_OUTSTANDING_FLAG = 2048
+      // Exempt from TransactionInactiveTimeout (TCKEYREQ attrLen bit 17),
+      // gets EXEMPT_TRANSACTION_INACTIVE_TIMEOUT instead
+      ,TF_EXEMPT_INACTIVE_TIMEOUT = 4096
 
       ,TF_END = 0
     };

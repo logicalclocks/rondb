@@ -1014,6 +1014,9 @@ private:
 public:
   void execute(); // todo make sure we can execute several times, do not mutate. Make this a separate object that takes a preparer as const input (This todo from review 2024-08-22 with MR)
 private:
+  // Start m_trans, tagged with the rate limit identity if there is one.
+  // Every transaction of a query is started here.
+  void start_transaction();
   void cleanup_trans();
   void execute_subqueries();
   void substitute_subquery_results();

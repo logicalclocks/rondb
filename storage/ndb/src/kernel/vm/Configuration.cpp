@@ -354,9 +354,9 @@ Configuration::get_total_memory(const ndb_mgm_configuration_iterator *p,
   if (total_memory_size == 0)
   {
     struct ndb_hwinfo *hwinfo = Ndb_GetHWInfo(false);
-    return hwinfo->hw_memory_size;
     total_memory_set = false;
-    globalData.theUseContainerMemoryFlag = hwinfo->is_running_in_container;
+    globalData.theUseContainerMemoryFlag = hwinfo->has_container_memory_limit;
+    return hwinfo->hw_memory_size;
   }
   else
   {
@@ -1142,7 +1142,9 @@ Configuration::compute_os_overhead(
    * running ndbmtd in a VM in the cloud.
    *
    * We remove 1.5% of the total memory, 100 MBytes per thread, in addition
-   * we remove 1.4 GByte to handle smaller VM sizes.
+   * we remove 1.4 GByte to handle smaller VM sizes. In a container with a
+   * memory limit the OS itself lives outside the limit, so there we remove
+   * 500 MBytes instead. OsStaticOverhead overrides this static part.
    */
   Uint64 os_static_overhead = 0;
   ndb_mgm_get_int64_parameter(p, CFG_DB_OS_STATIC_OVERHEAD, &os_static_overhead);
@@ -1151,7 +1153,7 @@ Configuration::compute_os_overhead(
   if (os_static_overhead == 0)
   {
     if (globalData.theUseContainerMemoryFlag) {
-      os_static_overhead = Uint64(200) * MBYTE64;
+      os_static_overhead = Uint64(500) * MBYTE64;
     } else {
       os_static_overhead = Uint64(1400) * MBYTE64;
     }
@@ -1846,6 +1848,16 @@ Configuration::setupConfiguration()
       Uint32 num_cpus = 0;
       iter.get(CFG_DB_NUM_CPUS, &num_cpus);
       g_eventLogger->info("Use automatic thread configuration");
+      if (thrconfigstring != nullptr && thrconfigstring[0] != 0) {
+        g_eventLogger->warning(
+            "ThreadConfig is ignored since AutomaticThreadConfig is set."
+            " Set AutomaticThreadConfig=false to use it.");
+      }
+      if (mtthreads != 0) {
+        g_eventLogger->warning(
+            "MaxNoOfExecutionThreads is ignored since AutomaticThreadConfig"
+            " is set. Set AutomaticThreadConfig=false to use it.");
+      }
       Uint32 use_tc_threads = 1;
       iter.get(CFG_DB_USE_TC_THREADS, &use_tc_threads);
       Uint32 use_ldm_threads = 1;
@@ -1884,7 +1896,13 @@ Configuration::setupConfiguration()
     }
   }
   {
-    if (thrconfigstring) {
+    // With automatic thread configuration, ThreadConfig and
+    // MaxNoOfExecutionThreads were not used, so do not print them as input.
+    if (auto_thread_config != 0) {
+      g_eventLogger->info(
+          "Automatic Thread Config: LockExecuteThreadToCPU: %s => parsed: %s",
+          lockmask ? lockmask : "", m_thr_config.getConfigString());
+    } else if (thrconfigstring) {
       g_eventLogger->info(
           "ThreadConfig: input: %s LockExecuteThreadToCPU: %s => parsed: %s",
           thrconfigstring, lockmask ? lockmask : "",
