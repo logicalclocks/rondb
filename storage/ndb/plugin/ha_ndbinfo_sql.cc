@@ -683,7 +683,7 @@ static struct view {
      " END AS tab_update_status, "
      "CASE tab_lcp_status"
      " WHEN 1 THEN \"ACTIVE\""
-     " WHEN 2 THEN \"wRITING_TO_FILE\""
+     " WHEN 2 THEN \"WRITING_TO_FILE\""
      " WHEN 3 THEN \"COMPLETED\""
      "  ELSE \"Invalid value\""
      " END AS tab_lcp_status, "

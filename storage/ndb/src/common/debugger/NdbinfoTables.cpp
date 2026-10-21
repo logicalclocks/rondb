@@ -25,6 +25,7 @@
 */
 
 #include "Ndbinfo.hpp"
+#include <kernel/ViolationType.hpp>
 
 #define JAM_FILE_ID 239
 
@@ -270,7 +271,7 @@ DECLARE_NDBINFO_TABLE(DISKPAGEBUFFER, 9) = {
 DECLARE_NDBINFO_TABLE(THREADBLOCKS, 4) = {
     {"threadblocks", 4, 0,
      [](const Ndbinfo::Counts &c) {
-       // In this estimate, 18 is the number of single-instance blocks,
+       // In this estimate, 19 is the number of single-instance blocks,
        // and 11 is the number of multi-instance blocks.
        // The result is not exact.
        return c.data_nodes * (19 + (c.instances.lqh * 11));
@@ -1326,7 +1327,11 @@ DECLARE_NDBINFO_TABLE(RDMA_TRANSPORTERS, 17) = {
      {"bytes_received", Ndbinfo::Number64, "Wire bytes received"}}};
 
 DECLARE_NDBINFO_TABLE(SECURITY_VIOLATIONS, 3) = {
-    {"security_violations", 3, 0, [](const Ndbinfo::Counts &) { return 0; },
+    {"security_violations", 3, 0,
+     [](const Ndbinfo::Counts &c) {
+       // Each data node returns the whole catalog
+       return c.data_nodes * NUM_VIOLATION_TYPES;
+     },
      "Static catalog of data node security violation types (data node security)"},
     {{"violation_id", Ndbinfo::Number, "ViolationType enum value"},
      {"tier", Ndbinfo::Number, "0 = Tier A (disconnect), 1 = Tier B (log-only)"},
@@ -1334,7 +1339,10 @@ DECLARE_NDBINFO_TABLE(SECURITY_VIOLATIONS, 3) = {
 
 DECLARE_NDBINFO_TABLE(SECURITY_VIOLATION_COUNTS, 3) = {
     {"security_violation_counts", 3, 0,
-     [](const Ndbinfo::Counts &) { return 0; },
+     [](const Ndbinfo::Counts &c) {
+       // Only violation types with strikes have a row, usually none
+       return c.data_nodes;
+     },
      "Per-violation-type strike counters (data node security)"},
     {{"reporting_node_id", Ndbinfo::Number, "Reporting data node ID"},
      {"violation_id", Ndbinfo::Number, "ViolationType enum value"},

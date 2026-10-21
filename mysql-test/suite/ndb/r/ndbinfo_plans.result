@@ -93,8 +93,8 @@ ndb$processes	34	68
 ndb$rdma_transporters	32	120
 ndb$resources	26	28
 ndb$restart_info	2	100
-ndb$security_violation_counts	0	16
-ndb$security_violations	0	24
+ndb$security_violation_counts	2	16
+ndb$security_violations	72	24
 ndb$stored_tables	100	80
 ndb$table_distribution_status	100	52
 ndb$table_distribution_status_all	200	52
@@ -164,7 +164,7 @@ ndb$membership
 ndb$nodes
 ndb$pgman_time_track_stats
 ndb$resources
-ndb$security_violation_counts
+ndb$security_violations
 ndb$tables
 ndb$test
 ndb$threads
@@ -174,8 +174,6 @@ ndb$transporters
 ## Check that no tables have zero estimates
 SELECT table_name from rowcounts WHERE est_rows = 0;
 table_name
-ndb$security_violation_counts
-ndb$security_violations
 
 DROP TEMPORARY TABLE rowcounts;
 DROP PROCEDURE populate_sizes;
