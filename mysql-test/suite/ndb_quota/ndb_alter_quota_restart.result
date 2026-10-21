@@ -7,7 +7,7 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 DATABASE QUOTA SET successfully executed
 Database Quotas for test
 databaseId = 25
-databaseVersion = 25
+databaseVersion = #
 InMemorySize = 2 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 500
@@ -17,7 +17,7 @@ MaxParallelComplexQueries = 0
 DATABASE QUOTA ALTER successfully executed
 Database Quotas for test
 databaseId = 25
-databaseVersion = 25
+databaseVersion = #
 InMemorySize = 12 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
@@ -34,7 +34,7 @@ Node 1: STARTED
 Node 2: STARTED
 Database Quotas for test
 databaseId = 25
-databaseVersion = 25
+databaseVersion = #
 InMemorySize = 12 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
@@ -43,7 +43,7 @@ MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890
 databaseId = 26
-databaseVersion = 26
+databaseVersion = #
 InMemorySize = 3 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 0
@@ -52,7 +52,7 @@ MaxParallelTransactions = 0
 MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 25
-  databaseVersion = 25
+  databaseVersion = #
   InMemorySize = 12 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 1500
@@ -62,7 +62,7 @@ Database Quotas for test
 
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890
   databaseId = 26
-  databaseVersion = 26
+  databaseVersion = #
   InMemorySize = 3 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 0
@@ -82,7 +82,7 @@ Node 1: STARTED
 Node 2: STARTED
 Database Quotas for test
 databaseId = 25
-databaseVersion = 25
+databaseVersion = #
 InMemorySize = 8 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
@@ -91,7 +91,7 @@ MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890
 databaseId = 26
-databaseVersion = 26
+databaseVersion = #
 InMemorySize = 3 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 0
@@ -100,7 +100,7 @@ MaxParallelTransactions = 0
 MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 25
-  databaseVersion = 25
+  databaseVersion = #
   InMemorySize = 8 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 1500
@@ -110,7 +110,7 @@ Database Quotas for test
 
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890
   databaseId = 26
-  databaseVersion = 26
+  databaseVersion = #
   InMemorySize = 3 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 0
@@ -136,7 +136,7 @@ Node 1: STARTED
 Node 2: STARTED
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890
 databaseId = 26
-databaseVersion = 26
+databaseVersion = #
 InMemorySize = 0 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 0
@@ -145,7 +145,7 @@ MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
 Database Quotas for test
 databaseId = 25
-databaseVersion = 25
+databaseVersion = #
 InMemorySize = 10 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
@@ -154,7 +154,7 @@ MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890_12
 databaseId = 27
-databaseVersion = 27
+databaseVersion = #
 InMemorySize = 0 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 0
@@ -163,7 +163,7 @@ MaxParallelTransactions = 4
 MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 25
-  databaseVersion = 25
+  databaseVersion = #
   InMemorySize = 10 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 1500
@@ -173,7 +173,7 @@ Database Quotas for test
 
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890
   databaseId = 26
-  databaseVersion = 26
+  databaseVersion = #
   InMemorySize = 0 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 0
@@ -183,7 +183,7 @@ Database Quotas for test_1234567890_1234567890_1234567890_1234567890
 
 Database Quotas for test_1234567890_1234567890_1234567890_1234567890_12
   databaseId = 27
-  databaseVersion = 27
+  databaseVersion = #
   InMemorySize = 0 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 0

@@ -1,7 +1,7 @@
 DATABASE QUOTA SET successfully executed
 Database Quotas for test
 databaseId = 13
-databaseVersion = 13
+databaseVersion = #
 InMemorySize = 1 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1000

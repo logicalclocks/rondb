@@ -6606,7 +6606,7 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
           out << endl;
           out << "Database Quotas for " << (const char*)&databaseName[0] << endl;
           out << "databaseId = " << conf->databaseId << endl;
-          out << "databaseVersion = " << conf->databaseId << endl;
+          out << "databaseVersion = " << conf->databaseVersion << endl;
           out << "InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
           out << "DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte" << endl;
           out << "RatePerSec = " << conf->RatePerSec << endl;
@@ -6620,7 +6620,7 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
           out << endl;
           out << "User rate limits for " << (const char*)&databaseName[0] << endl;
           out << "userId = " << conf->databaseId << endl;
-          out << "userVersion = " << conf->databaseId << endl;
+          out << "userVersion = " << conf->databaseVersion << endl;
           out << "RatePerSec = " << conf->RatePerSec << endl;
           out << "MaxTransactionSize = " << conf->MaxTransactionSize << endl;
           out << "MaxParallelTransactions = ";
@@ -6767,7 +6767,7 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
           const char *databaseName = (const char*)signal->ptr[0].p;
           out << "Database Quotas for " << databaseName << endl;
           out << "  databaseId = " << conf->databaseId << endl;
-          out << "  databaseVersion = " << conf->databaseId << endl;
+          out << "  databaseVersion = " << conf->databaseVersion << endl;
           out << "  InMemorySize = " << conf->InMemorySizeMB << " MByte" << endl;
           out << "  DiskSpaceSize = " << conf->DiskSpaceSizeGB << " GByte"
               << endl;
@@ -6782,7 +6782,7 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
           const char *userName = (const char*)signal->ptr[0].p;
           out << "User rate limits for " << userName << endl;
           out << "  userId = " << conf->databaseId << endl;
-          out << "  userVersion = " << conf->databaseId << endl;
+          out << "  userVersion = " << conf->databaseVersion << endl;
           out << "  RatePerSec = " << conf->RatePerSec << endl;
           out << "  MaxTransactionSize = " << conf->MaxTransactionSize << endl;
           out << "  MaxParallelTransactions = ";

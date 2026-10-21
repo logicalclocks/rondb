@@ -1,11 +1,15 @@
 --source include/have_ndb.inc
+# databaseVersion depends on earlier objects with the same id, also in
+# earlier tests, so it is masked
 --exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --in-memory-size=2 --max-transaction-size=4 --max-parallel-transactions=3"
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 50000000 --in-memory-size=100 --on-disk-size=0"
 --exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 500 --in-memory-size=10 --on-disk-size=0"
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA SET test2 --rate-per-sec = 500 --in-memory-size=11 --on-disk-size=0"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test2"
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 15000000 --in-memory-size=100 --on-disk-size=10"
@@ -14,7 +18,9 @@
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 1500 --in-memory-size=12 --on-disk-size=10000"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test2 --rate-per-sec = 1500 --in-memory-size=11"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test2"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA GET test1234567890123456789012345678901234567890"

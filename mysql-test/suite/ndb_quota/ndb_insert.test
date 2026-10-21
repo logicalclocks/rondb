@@ -1,5 +1,8 @@
 --source include/have_ndb.inc
+# databaseVersion depends on earlier objects with the same id, also in
+# earlier tests, so it is masked
 --exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 1000 --in-memory-size=1"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
 --source suite/ndb/t/ndb_insert.test
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test"
