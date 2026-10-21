@@ -1299,6 +1299,27 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           REG2, REG0, REG3, REG7, LEFT_CLOSED_RIGHT_OPEN, 3);
       }
       code.branch_ne_null(REG7, LABEL0);
+
+      /**
+       * An empty array has no intervals, so both interval search types
+       * give NULL. The right closed search used to report the key as
+       * inside an interval at position 0xFFFFFFFE.
+       */
+      code.load_const_u16(REG3, 0);
+      for (Uint32 type = LEFT_CLOSED_RIGHT_OPEN;
+           type <= LEFT_OPEN_RIGHT_CLOSED;
+           type++) {
+        if (i == 70) {
+          code.search_interval_64(REG2, REG0, REG3, REG7, type);
+        } else if (i == 71) {
+          code.search_interval_32(REG2, REG0, REG3, REG7, type);
+        } else if (i == 72) {
+          code.search_interval_16(REG2, REG0, REG3, REG7, type);
+        } else {
+          code.search_interval_odd(REG2, REG0, REG3, REG7, type, 3);
+        }
+        code.branch_ne_null(REG7, LABEL0);
+      }
     }
 
     code.interpret_exit_ok();

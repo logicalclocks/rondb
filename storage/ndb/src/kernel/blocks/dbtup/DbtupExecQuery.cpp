@@ -10001,7 +10001,7 @@ struct Dbtup::InterpreterContext {
                                         TnumElems,
                                         true,
                                         true);
-      if ((ret & 1) == 0) {
+      if (ret == RET_NULL || ((ret & 1) == 0)) {
         ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
       } else {
         ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
@@ -10065,7 +10065,7 @@ struct Dbtup::InterpreterContext {
                                         TnumElems,
                                         true,
                                         true);
-      if ((ret & 1) == 0) {
+      if (ret == RET_NULL || ((ret & 1) == 0)) {
         ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
       } else {
         ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
@@ -10129,7 +10129,7 @@ struct Dbtup::InterpreterContext {
                                         TnumElems,
                                         true,
                                         true);
-      if ((ret & 1) == 0) {
+      if (ret == RET_NULL || ((ret & 1) == 0)) {
         ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
       } else {
         ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
@@ -10203,7 +10203,7 @@ struct Dbtup::InterpreterContext {
                                      TnumberSize,
                                      true,
                                      true);
-      if ((ret & 1) == 0) {
+      if (ret == RET_NULL || ((ret & 1) == 0)) {
         ctx.TregMemBuffer[TretElemsRegister] = NULL_INDICATOR;
       } else {
         ctx.TregMemBuffer[TretElemsRegister] = NOT_NULL_INDICATOR;
