@@ -32,3 +32,9 @@ Could not start backup
 #
 # 8) Should print all
 NDB error code 4008: Receive from NDB failed: Unknown result: Unknown result error
+#
+# 9) Should print "Permanent error" for the "Schema object
+#    already exists" classification, not "Unknown result"
+NDB error code 721: Schema object with given name already exists: Permanent error: Schema object already exists
+NDB error code 746: Event name already exists: Permanent error: Schema object already exists
+NDB error code 4244: Index or table with given name already exists: Permanent error: Schema object already exists

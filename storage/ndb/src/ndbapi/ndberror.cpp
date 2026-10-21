@@ -1223,6 +1223,7 @@ static const ErrorStatusClassification StatusClassificationMapping[] = {
     {ST_P, ND, "No data found"},
     {ST_P, CV, "Constraint violation"},
     {ST_P, SE, "Schema error"},
+    {ST_P, OE, "Schema object already exists"},
     {ST_P, UD, "User defined error"},
     {ST_P, IS, "Insufficient space"},
 
