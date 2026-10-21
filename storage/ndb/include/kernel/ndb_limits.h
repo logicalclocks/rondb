@@ -37,6 +37,12 @@
 
 #define DEFAULT_STRING_MEMORY 6
 /**
+ * Inactive timeout (ms) of a committed-read scan waiting for the application
+ * to ask for more rows. It holds no locks, so a slow reader such as
+ * mysqldump gets one hour instead of TransactionInactiveTimeout.
+ */
+#define COMMITTED_READ_SCAN_INACTIVE_TIMEOUT 3600000
+/**
  * Inactive timeout (ms) of a transaction exempted with
  * NdbTransaction::setExemptFromInactiveTimeout(), such as the MySQL Server
  * global schema lock, which is idle while its DDL runs: one week.

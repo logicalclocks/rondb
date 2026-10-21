@@ -12038,16 +12038,24 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
       /*
         We are waiting for application to continue the transaction. In this
         particular state we will use the application timeout parameter rather
-        than the shorter Deadlock detection timeout.
+        than the shorter Deadlock detection timeout. A committed-read scan
+        holds no locks, so a slow reader (e.g. mysqldump writing to a slow
+        pipe) gets a fixed long limit instead.
       */
+      ScanRecordPtr scanptr;
+      scanptr.i = apiConnectptr.p->apiScanRec;
+      Uint32 appl_timeout_value = c_appl_timeout_value;
+      if (scanptr.i != RNIL && scanRecordPool.getValidPtr(scanptr) &&
+          ScanFragReq::getReadCommittedFlag(scanptr.p->scanRequestInfo)) {
+        jam();
+        appl_timeout_value = COMMITTED_READ_SCAN_INACTIVE_TIMEOUT / 10;
+      }
       if (c_appl_timeout_value == 0 ||
-          (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value) {
+          (ctcTimer - getApiConTimer(apiConnectptr)) <= appl_timeout_value) {
         jam();
         return;
       }  // if
       logTransactionTimeout(signal, TapiConPtr, errCode);
-      ScanRecordPtr scanptr;
-      scanptr.i = apiConnectptr.p->apiScanRec;
       scanRecordPool.getPtr(scanptr);
       scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
       break;
