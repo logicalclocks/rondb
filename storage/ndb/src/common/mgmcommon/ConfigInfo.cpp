@@ -486,7 +486,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      CI_RESTART_SYSTEM, ConfigInfo::CI_BOOL, "false", "false", "true"},
 
     {CFG_DB_MEMLOCK, "LockPagesInMainMemory", DB_TOKEN,
-     "If set to yes, then RonDB data will not be swapped out to disk",
+     "0 means no locking; any non-zero value (1 and 2 behave the same) locks "
+     "the memory of the data node so that it is not swapped out to disk",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "0", "0", "2"},
 
     {CFG_DB_WATCHDOG_INTERVAL, "TimeBetweenWatchDogCheck", DB_TOKEN,
