@@ -186,7 +186,7 @@ DECLARE_NDBINFO_TABLE(LOGSPACES, 7) = {
 
      {"total", Ndbinfo::Number64, "total allocated"},
      {"used", Ndbinfo::Number64, "currently in use"},
-     {"high", Ndbinfo::Number64, "in use high water mark"}}};
+     {"high", Ndbinfo::Number64, "not maintained, always 0"}}};
 
 DECLARE_NDBINFO_TABLE(LOGBUFFERS, 7) = {
     {"logbuffers", 7, 0,
@@ -200,7 +200,9 @@ DECLARE_NDBINFO_TABLE(LOGBUFFERS, 7) = {
 
      {"total", Ndbinfo::Number64, "total allocated"},
      {"used", Ndbinfo::Number64, "currently in use"},
-     {"high", Ndbinfo::Number64, "in use high water mark"}}};
+     {"high", Ndbinfo::Number64,
+      "in use high water mark of BACKUP-DATA and BACKUP-LOG, 0 for REDO and "
+      "DD-UNDO"}}};
 
 DECLARE_NDBINFO_TABLE(RESOURCES, 7) = {
     {"resources", 7, 0,
@@ -212,7 +214,7 @@ DECLARE_NDBINFO_TABLE(RESOURCES, 7) = {
      {"reserved", Ndbinfo::Number, "reserved for this resource"},
      {"used", Ndbinfo::Number, "currently in use"},
      {"max", Ndbinfo::Number, "max available"},
-     {"high", Ndbinfo::Number, "in use high water mark"},
+     {"high", Ndbinfo::Number, "not maintained, always 0"},
      {"spare", Ndbinfo::Number, "spare pages for restart"}}};
 
 DECLARE_NDBINFO_TABLE(COUNTERS, 5) = {
