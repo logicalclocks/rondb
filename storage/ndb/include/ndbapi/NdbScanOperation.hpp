@@ -57,9 +57,17 @@ class NdbScanOperation : public NdbOperation {
    * has to be set if several ranges (bounds) are to be passed.
    */
   enum ScanFlag {
-    /* Scan in TUP order (the order of rows in memory). Table scan only. */
+    /*
+      Scan in TUP order (the order of rows in memory). Table scan only.
+      All table scans are TUP order scans, so this flag has no effect.
+    */
     SF_TupScan = (1 << 16),
-    /* Scan in DISK order (the order of rows on disk). Table scan only. */
+    /*
+      Table scan only. There is no scan in DISK order (the order of rows
+      on disk): the scan runs in TUP order like any other table scan, and
+      the flag only lets it access disk data even if it reads no disk
+      column.
+    */
     SF_DiskScan = (2 << 16),
     /*
       Return rows from an index scan sorted, ordered on the index key.
