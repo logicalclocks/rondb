@@ -793,6 +793,7 @@ static struct view {
      " CASE type"
      "   WHEN 1 THEN \"TCP\""
      "   WHEN 3 THEN \"SHM\""
+     "   WHEN 4 THEN \"RDMA\""
      "   ELSE NULL "
      " END AS type, "
      " heartbeat_interval, "
