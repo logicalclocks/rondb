@@ -8,7 +8,9 @@ ndb_mgmd=
 mysqld=
 ndbapi=,,,
 DataMemory            = 200M
-MaxNoOfOrderedIndexes = 150
+# The ClusterJ schema and the RingBufferTest tables, which stay until the
+# end of the run, need more than 150 ordered indexes
+MaxNoOfOrderedIndexes = 200
 ClassicFragmentation  = 1
 
 [cluster_config.mysqld.1.1]
