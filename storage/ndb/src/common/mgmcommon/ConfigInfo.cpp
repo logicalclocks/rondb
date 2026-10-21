@@ -746,9 +746,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "8",
-    "8",
-    "32" },
+    STR_VALUE(DEF_MAX_RR_GROUP_SIZE),
+    STR_VALUE(MIN_MAX_RR_GROUP_SIZE),
+    STR_VALUE(MAX_RR_GROUP_SIZE) },
 
   {
     CFG_DB_RESTART_BARRIER_TIMEOUT,
