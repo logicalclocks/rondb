@@ -489,6 +489,15 @@ class NdbTransaction {
   int refresh();
 
   /**
+   * Exempt this transaction from the data node's TransactionInactiveTimeout.
+   * It then gets a fixed limit of one week instead. This is meant for
+   * internal transactions that hold a lock row while their owner works,
+   * such as the MySQL Server global schema lock, not for user transactions.
+   * Call it before execute(); data nodes older than this version ignore it.
+   */
+  void setExemptFromInactiveTimeout() { m_exempt_inactive_timeout = true; }
+
+  /**
    * Close transaction
    *
    * @note Equivalent to to calling Ndb::closeTransaction()
@@ -1230,6 +1239,8 @@ class NdbTransaction {
   // for: its SCAN_TABCONF / SCAN_TABREF must not wake the Ndb's waiter
   // (Ndbif), which by then waits for another operation.
   bool m_scan_close_nowait;
+  // Set by setExemptFromInactiveTimeout(), sent in each TCKEYREQ.
+  bool m_exempt_inactive_timeout;
 
   /**
    * handle transaction spanning

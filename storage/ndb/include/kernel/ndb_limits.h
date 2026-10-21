@@ -37,6 +37,12 @@
 
 #define DEFAULT_STRING_MEMORY 6
 /**
+ * Inactive timeout (ms) of a transaction exempted with
+ * NdbTransaction::setExemptFromInactiveTimeout(), such as the MySQL Server
+ * global schema lock, which is idle while its DDL runs: one week.
+ */
+#define EXEMPT_TRANSACTION_INACTIVE_TIMEOUT 604800000
+/**
  * Note that actual value = MAX_NODES - 1,
  *  since NodeId = 0 can not be used
  */

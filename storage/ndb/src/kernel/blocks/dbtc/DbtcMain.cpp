@@ -4505,6 +4505,12 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     /* Aggregation-read flag: bit 16 of the attrLen word, unused by long
      * TCKEYREQ (the AttrInfo length is the section length). */
     regCachePtr->m_agg_read = TcKeyReq::getAggReadFlag(tcKeyReq->attrLen);
+    /* Exempt from TransactionInactiveTimeout: bit 17 of the attrLen word,
+     * long TCKEYREQ only. Cleared by initApiConnectRec at transaction start.
+     */
+    if (TcKeyReq::getExemptInactiveTimeoutFlag(tcKeyReq->attrLen)) {
+      regApiPtr->m_flags |= ApiConnectRecord::TF_EXEMPT_INACTIVE_TIMEOUT;
+    }
   } else {
     TkeyLength = TcKeyReq::getKeyLength(Treqinfo);
     TattrLen = TcKeyReq::getAttrinfoLen(tcKeyReq->attrLen);
@@ -11879,11 +11885,17 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
         /*
         We are waiting for application to continue the transaction. In this
         particular state we will use the application timeout parameter rather
-        than the shorter Deadlock detection timeout.
+        than the shorter Deadlock detection timeout. An exempt transaction
+        (NdbTransaction::setExemptFromInactiveTimeout(), e.g. the MySQL Server
+        global schema lock, idle while its DDL runs) gets a fixed long limit.
         */
+        const Uint32 appl_timeout_value =
+            tc_testbit(apiConnectptr.p->m_flags,
+                       ApiConnectRecord::TF_EXEMPT_INACTIVE_TIMEOUT)
+                ? Uint32(EXEMPT_TRANSACTION_INACTIVE_TIMEOUT / 10)
+                : c_appl_timeout_value;
         if (c_appl_timeout_value == 0 ||
-            (ctcTimer - getApiConTimer(apiConnectptr)) <=
-                c_appl_timeout_value) {
+            (ctcTimer - getApiConTimer(apiConnectptr)) <= appl_timeout_value) {
           jam();
           return;
         }  // if
