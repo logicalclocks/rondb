@@ -45,7 +45,7 @@ type RondisOptions struct {
 	Host     string
 	Port     int
 	Password string
-	TLS      bool
+	TLS      bool // Rondis has no TLS listener, so a TLS connection fails
 }
 
 func NewRondisClient(host string, port int) (*RondisClient, error) {

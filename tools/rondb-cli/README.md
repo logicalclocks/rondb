@@ -132,7 +132,7 @@ rondb> SELECT * FROM redis_0.string_keys
 | `--rondis-port` | `RONDB_RONDIS_PORT` | 6379 | Rondis port |
 | `--mysql-port` | `RONDB_MYSQL_PORT` | 3306 | MySQL port |
 | `--rest-port` | `RONDB_REST_PORT` | 4406 | REST API port (RDRS2) |
-| `--tls` | - | false | Enable TLS for all connections |
+| `--tls` | - | false | Enable TLS for MySQL and the REST API (Rondis has no TLS listener, so add `--no-rondis`) |
 
 ### Authentication
 
@@ -150,8 +150,8 @@ RONDB_MYSQL_USER=admin \
 RONDB_MYSQL_PASSWORD=secret \
 rondb
 
-# Connect with TLS
-rondb --host db.example.com --tls
+# Connect with TLS (MySQL and REST API; Rondis has no TLS listener)
+rondb --host db.example.com --tls --no-rondis
 ```
 
 ## Commands

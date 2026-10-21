@@ -59,7 +59,7 @@ type Config struct {
 	RestPort   int
 	MySQLUser  string
 	MySQLPass  string
-	TLS        bool   // Enable TLS for Rondis and MySQL
+	TLS        bool   // Enable TLS for MySQL (also asked of Rondis, which has no TLS listener)
 	RDRSTLS    bool   // Enable TLS (HTTPS) for RDRS/REST API
 	RDRSAPIKey string // API key for RDRS/REST API authentication
 	Verbose    int    // Verbose level (0=normal, 1=connection info, 2=debug)
@@ -127,7 +127,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
 		fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
 		fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
-		fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
+		fmt.Println(ui.Info("  --tls              Enable TLS for MySQL and REST API (Rondis has no TLS listener)"))
 		fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
 		fmt.Println(ui.Info("  --rdrs-api-key     API key for RDRS/REST API authentication"))
 		fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
@@ -230,7 +230,9 @@ func (s *Shell) connect() error {
 		}
 	}
 
-	// Rondis connection (unless disabled) - optional, don't fail if not available
+	// Rondis connection (unless disabled) - optional, don't fail if not available.
+	// --tls is passed on to Rondis, which has no TLS listener, so the
+	// connection then fails and the message says why.
 	if s.config.NoRondis {
 		if s.verbose >= 1 {
 			fmt.Println("[*] Rondis disabled via --no-rondis")
@@ -253,7 +255,11 @@ func (s *Shell) connect() error {
 			if s.verbose >= 1 {
 				fmt.Printf("[*] Rondis not available: %v\n", err)
 			}
-			fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)))
+			msg := fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)
+			if s.config.TLS {
+				msg += "; Rondis has no TLS listener, so --tls cannot reach it"
+			}
+			fmt.Println(ui.Info(msg))
 			s.rondisClient = nil
 		} else if s.verbose >= 1 {
 			fmt.Println("[*] Rondis connected")
@@ -4477,7 +4483,7 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
 	fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
 	fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
-	fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
+	fmt.Println(ui.Info("  --tls              Enable TLS for MySQL and REST API (Rondis has no TLS listener)"))
 	fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
 		fmt.Println(ui.Info("  --rdrs-api-key     API key for RDRS/REST API authentication"))
 	fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))

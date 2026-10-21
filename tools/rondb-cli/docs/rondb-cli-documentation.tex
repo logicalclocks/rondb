@@ -184,7 +184,7 @@ The RonDB CLI follows a ``3-minute win'' philosophy:
     \item Interactive TUI database browser
     \item Comprehensive benchmarking suite with latency statistics
     \item Multi-line command support
-    \item TLS encryption support
+    \item TLS encryption support for MySQL and the REST API
     \item Environment variable and command-line configuration
     \item Color-coded output with timing information
 \end{itemize}
@@ -230,8 +230,8 @@ go build -o rondb .
 # Connect with MySQL authentication
 ./rondb --host myrondb.example.com --mysql-user admin -p
 
-# Connect with TLS enabled
-./rondb --host myrondb.example.com --tls
+# Connect with TLS enabled (MySQL and REST API; Rondis has no TLS listener)
+./rondb --host myrondb.example.com --tls --no-rondis
 \end{lstlisting}
 
 %=============================================================================
@@ -255,7 +255,7 @@ Flag & Default & Description \\
 --mysql-user & root & MySQL username \\
 --mysql-password & (empty) & MySQL password \\
 -p, --password & false & Prompt for MySQL password \\
---tls & false & Enable TLS for all connections \\
+--tls & false & Enable TLS for MySQL and REST API (not Rondis) \\
 --rdrs-tls & false & Enable TLS for REST API only \\
 --rdrs-api-key & (empty) & API key for REST API authentication \\
 --verbose & 0 & Verbose level \\
@@ -1115,6 +1115,8 @@ query := fmt.Sprintf("SHOW TABLES FROM `%s`",
 
 \section{TLS Configuration}
 
+\texttt{-{}-tls} enables TLS for MySQL and the REST API, \texttt{-{}-rdrs-tls} for the REST API only. Rondis has no TLS listener. \texttt{-{}-tls} is passed on to the Rondis connection as well, so that connection fails and the shell runs without Rondis; use \texttt{-{}-tls} together with \texttt{-{}-no-rondis}, or \texttt{-{}-rdrs-tls} to keep Rondis.
+
 TLS can be enabled for secure connections:
 
 \begin{lstlisting}[language=Go]
@@ -1351,7 +1353,7 @@ Initial release featuring:
     \item Interactive TUI database browser
     \item Comprehensive benchmarking suite
     \item DSL parser for REST API operations
-    \item TLS support for all connections
+    \item TLS support for MySQL and the REST API
     \item API key authentication for REST API
     \item Error collection for benchmarks
     \item Multi-line command support

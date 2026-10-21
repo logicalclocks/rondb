@@ -148,14 +148,19 @@ var statusCmd = &cobra.Command{
 
 		fmt.Println("Checking connections...")
 
-		// Check Rondis (uses general host)
+		// Check Rondis (uses general host). --tls is passed on to Rondis,
+		// which has no TLS listener, so the check then fails.
 		rondisClient, err := client.NewRondisClientWithOptions(client.RondisOptions{
 			Host: host,
 			Port: rondisPort,
 			TLS:  useTLS,
 		})
 		if err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Rondis (%s:%d): %v", host, rondisPort, err)))
+			msg := fmt.Sprintf("Rondis (%s:%d): %v", host, rondisPort, err)
+			if useTLS {
+				msg += " (Rondis has no TLS listener, so --tls cannot reach it)"
+			}
+			fmt.Println(ui.Error(msg))
 		} else {
 			fmt.Println(ui.Success(fmt.Sprintf("Rondis (%s:%d): connected", host, rondisPort)))
 			rondisClient.Close()
@@ -214,7 +219,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&mysqlUser, "mysql-user", "root", "MySQL username")
 	rootCmd.PersistentFlags().StringVar(&mysqlPass, "mysql-password", "", "MySQL password")
 	rootCmd.PersistentFlags().BoolVarP(&promptPass, "password", "p", false, "Prompt for MySQL password")
-	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for all connections")
+	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for MySQL and REST API (Rondis has no TLS listener)")
 	rootCmd.PersistentFlags().BoolVar(&rdrsTLS, "rdrs-tls", false, "Enable TLS (HTTPS) for RDRS/REST API only")
 	rootCmd.PersistentFlags().StringVar(&rdrsAPIKey, "rdrs-api-key", "", "API key for RDRS/REST API authentication")
 	rootCmd.PersistentFlags().IntVar(&verbose, "verbose", 0, "Verbose level (0=normal, 1=connection info, 2=debug)")
