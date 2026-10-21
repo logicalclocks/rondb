@@ -144,22 +144,16 @@ static void systemInfo(const Configuration &config) {
  * also a resource that cannot be overallocated.
  *
  * RG_TRANSPORTER_BUFFERS:
- * This is a resource used for send buffers in ndbmtd. It is set to
- * a size of the sum of TotalSendBufferMemory and ExtraSendBufferMemory.
- * It is a resource that can be overallocated by 25%.
- * TotalSendBufferMemory is by default set to 0. In this the this
- * variable is calculated by summing the send buffer memory per node.
- * The default value per send buffer per node is 2 MByte. So this
- * means that in a system with 4 data nodes and 8 client nodes the
- * data nodes will have 11 * 2 MByte of total memory. The extra
- * memory is by default 0. However for ndbmtd we also add more memory
- * in the extra part. We add 2 MBytes per thread used in the node.
- * So with 4 LDM threads, 2 TC threads, 1 main thread, 1 rep thread,
- * and 2 receive threads then we have 10 threads and allocate another
- * extra 20 MBytes. The user can never set this below 16MByte +
- * 2 MByte per thread + 256 kByte per node. So default setting is
- * 2MByte * (#nodes + #threads) and we can oversubscribe by 25% by
- * using the SharedGlobalMemory.
+ * This is a resource used for send buffers in ndbmtd. Its size is
+ * TotalSendBufferMemory if set. Otherwise it is the sum of
+ * SendBufferMemory over all transporters (8 MByte per TCP transporter
+ * by default) plus 2 MByte per thread, capped at 32 MByte per CPU but
+ * never below 1 GByte, see Configuration::get_send_buffer().
+ * ExtraSendBufferMemory is not used by ndbmtd.
+ * Half of this size is reserved, the other half is added to
+ * SharedGlobalMemory. The resource can be overallocated from
+ * SharedGlobalMemory by at most 50% of its size, and by at most 12.5%
+ * of SharedGlobalMemory.
  *
  * RG_DISK_PAGE_BUFFER:
  * This is a resource that is used for the disk page buffer. It cannot
@@ -359,7 +353,8 @@ static int init_global_memory_manager(EmulatorData &ed, Uint32 *watchCounter) {
     rl.m_min = reserved_sb_pages;
     /**
      * allow over allocation (from SharedGlobalMemory) of up to 50% of
-     *   totally allocated SendBuffer, at most 25% of SharedGlobalMemory.
+     *   totally allocated SendBuffer, at most 12.5% of SharedGlobalMemory
+     *   (shared_pages, which includes the half of SendBuffer added above).
      */
     Uint32 max_use_of_shared_pages = shared_pages / 4;
     const Uint32 sb_max_shared_pages =
