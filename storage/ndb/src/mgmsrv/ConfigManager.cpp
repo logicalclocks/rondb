@@ -1757,7 +1757,16 @@ void ConfigManager::execCONFIG_CHECK_REF(SignalSender &ss, SimpleSignal *sig) {
           g_eventLogger->error("Failed to write the fetched config to disk");
           exit(1);
         }
+        /**
+         * As in execCONFIG_CHANGE_IMPL_REQ(): commit holding
+         * m_config_mutex but not our SignalSender lock, since
+         * commitConfigChange() reconfigures the TransporterFacade, which
+         * takes the ClusterMgr lock.
+         */
+        Guard g(m_config_mutex);
+        ss.unlock();
         commitConfigChange();
+        ss.lock();
         m_config_state = CS_CONFIRMED;
         g_eventLogger->info("The fetched configuration has been saved!");
         m_waiting_for.clear(nodeId);
