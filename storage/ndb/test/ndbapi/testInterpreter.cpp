@@ -624,7 +624,7 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
   Uint32 search_val_left_open_4[7] = {
     RET_NULL, RET_NULL, RET_NULL, RET_NULL, RET_NULL, 0, 0};
 
-  for (Uint32 i = 0; i < 70; i++) {
+  for (Uint32 i = 0; i < 74; i++) {
     ndbout << "i = " << i << endl;
     NdbTransaction* pTrans = pNdb->startTransaction();
     CHK_RET_FAILED(pTrans != 0, pNdb);
@@ -1249,6 +1249,56 @@ runInterpreterLibraryTest(NDBT_Context* ctx, NDBT_Step* step)
           code.branch_ne_null(REG7, LABEL0);
         }
       }
+    } else if (i >= 70 && i <= 73) {
+      /**
+       * Searches must not read past the array, even when the next
+       * number in memory equals the key. Memory holds {2,3,5,7}.
+       * A smaller or equal search for 7 in the 3 elements {2,3,5}
+       * gives 2, and a left closed interval search for 5 in the
+       * 2 elements {2,3} gives NULL.
+       * i == 70: 64 bit, 71: 32 bit, 72: 16 bit, 73: 3 byte numbers.
+       */
+      const Uint64 b64[4] = {2, 3, 5, 7};
+      const Uint32 b32[4] = {2, 3, 5, 7};
+      const Uint16 b16[4] = {2, 3, 5, 7};
+      const char b24[12] = {2, 0, 0, 3, 0, 0, 5, 0, 0, 7, 0, 0};
+      if (i == 70) {
+        code.load_const_mem(REG0, REG1, sizeof(b64), (const char*)&b64[0]);
+      } else if (i == 71) {
+        code.load_const_mem(REG0, REG1, sizeof(b32), (const char*)&b32[0]);
+      } else if (i == 72) {
+        code.load_const_mem(REG0, REG1, sizeof(b16), (const char*)&b16[0]);
+      } else {
+        code.load_const_mem(REG0, REG1, sizeof(b24), &b24[0]);
+      }
+      code.load_const_u16(REG3, 3);
+      code.load_const_u16(REG2, 7);
+      if (i == 70) {
+        code.binary_search_64(REG2, REG0, REG3, REG7, SMALLER_EQUAL_MATCH);
+      } else if (i == 71) {
+        code.binary_search_32(REG2, REG0, REG3, REG7, SMALLER_EQUAL_MATCH);
+      } else if (i == 72) {
+        code.binary_search_16(REG2, REG0, REG3, REG7, SMALLER_EQUAL_MATCH);
+      } else {
+        code.binary_search_odd(
+          REG2, REG0, REG3, REG7, SMALLER_EQUAL_MATCH, 3);
+      }
+      code.branch_eq_null(REG7, LABEL0);
+      code.branch_ne_const(REG7, 2, LABEL0);
+
+      code.load_const_u16(REG3, 2);
+      code.load_const_u16(REG2, 5);
+      if (i == 70) {
+        code.search_interval_64(REG2, REG0, REG3, REG7, LEFT_CLOSED_RIGHT_OPEN);
+      } else if (i == 71) {
+        code.search_interval_32(REG2, REG0, REG3, REG7, LEFT_CLOSED_RIGHT_OPEN);
+      } else if (i == 72) {
+        code.search_interval_16(REG2, REG0, REG3, REG7, LEFT_CLOSED_RIGHT_OPEN);
+      } else {
+        code.search_interval_odd(
+          REG2, REG0, REG3, REG7, LEFT_CLOSED_RIGHT_OPEN, 3);
+      }
+      code.branch_ne_null(REG7, LABEL0);
     }
 
     code.interpret_exit_ok();

@@ -253,6 +253,10 @@ static Uint32 binary_uint64_search_smaller(Uint64 test_ordinal,
     start, end, num_elems, value, test_ordinal, not_include_equal);
 #endif
   if (not_include_equal) {
+    if (start == num_elems) {
+      /* All elements are smaller: nothing past the array may be read */
+      return start - 1;
+    }
     test_position = start * 8;
     memcpy(&value, memory_ptr + test_position, 8);
     if (value != test_ordinal) {
@@ -372,6 +376,10 @@ static Uint32 binary_uint32_search_smaller(Uint32 test_ordinal,
     start, end, num_elems, value, test_ordinal, not_include_equal);
 #endif
   if (not_include_equal) {
+    if (start == num_elems) {
+      /* All elements are smaller: nothing past the array may be read */
+      return start - 1;
+    }
     test_position = start * 4;
     memcpy(&value, memory_ptr + test_position, 4);
     if (value != test_ordinal) {
@@ -495,6 +503,10 @@ static Uint32 binary_uint16_search_smaller(Uint16 test_ordinal,
     }
   }
   if (not_include_equal) {
+    if (start == num_elems) {
+      /* All elements are smaller: nothing past the array may be read */
+      return start - 1;
+    }
     test_position = start * 2;
     memcpy(&value, memory_ptr + test_position, 2);
     if (value != test_ordinal) {
@@ -641,6 +653,10 @@ static Uint32 binary_odd_search_smaller(Uint64 test_ordinal,
     start, end, num_elems, value, test_ordinal, not_include_equal, number_size);
 #endif
   if (not_include_equal) {
+    if (start == num_elems) {
+      /* All elements are smaller: nothing past the array may be read */
+      return start - 1;
+    }
     test_position = start * number_size;
     value = get_odd_sized_number(memory_ptr, test_position, number_size);
     if (value != test_ordinal) {
