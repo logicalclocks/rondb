@@ -3657,6 +3657,8 @@ CommandInterpreter::executeSetDomain(int processId,
     ndb_mgm_destroy_configuration(conf);
     return -1;
   }
+  /* The range of LocationDomainId in ConfigInfo.cpp */
+  const Int64 max_location_domain_id = 16;
   const char *new_location_domain_id_str = command_list[0].c_str();
   Uint32 str_len = strlen(new_location_domain_id_str);
   const char *memory_end = new_location_domain_id_str + str_len;
@@ -3667,9 +3669,10 @@ CommandInterpreter::executeSetDomain(int processId,
                errno == EINVAL ||
                end_ptr != memory_end ||
                val < 0 ||
-               val > MAX_INT)) {
+               val > max_location_domain_id)) {
     iter.closeSection();
-    ndbout_c("Location domain id must be an unsigned no larger than MAX_INT");
+    ndbout_c("Location domain id must be an integer between 0 and %d",
+             int(max_location_domain_id));
     ndb_mgm_destroy_configuration(conf);
     return -1;
   }
