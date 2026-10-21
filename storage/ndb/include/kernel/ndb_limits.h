@@ -37,6 +37,11 @@
 
 #define DEFAULT_STRING_MEMORY 6
 /**
+ * Upper limit of TransactionInactiveTimeout (ms). The timeout cannot be
+ * disabled: 0 or a larger value is replaced with this one.
+ */
+#define MAX_TRANSACTION_INACTIVE_TIMEOUT 600000
+/**
  * Inactive timeout (ms) of a committed-read scan waiting for the application
  * to ask for more rows. It holds no locks, so a slow reader such as
  * mysqldump gets one hour instead of TransactionInactiveTimeout.

@@ -539,7 +539,7 @@ TESTCASE("DontTimeoutTransaction",
 }
 TESTCASE("Bug11290",
          "Setting TransactionInactiveTimeout to 0(zero) "
-         "should result in infinite timeout, and not as "
+         "should result in the maximum timeout (10 minutes), and not as "
          "was the bug, a timeout that is equal to the deadlock timeout") {
   TC_PROPERTY("TransactionInactiveTimeout", (Uint32)0);
   INITIALIZER(runLoadTable);

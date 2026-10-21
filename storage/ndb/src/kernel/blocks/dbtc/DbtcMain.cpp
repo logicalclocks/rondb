@@ -1545,7 +1545,7 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &val);
   cDbHbInterval = (val < 10) ? 10 : val;
 
-  val = 3000;
+  val = 60000;
   ndb_mgm_get_int_parameter(p, CFG_DB_TRANSACTION_INACTIVE_TIMEOUT, &val);
   set_appl_timeout_value(val);
 
@@ -1751,13 +1751,25 @@ void Dbtc::set_timeout_value(Uint32 timeOut) {
 }
 
 void Dbtc::set_appl_timeout_value(Uint32 timeOut) {
-  if (timeOut) {
-    timeOut /= 10;
-    if (timeOut < ctimeOutValue) {
-      jam();
-      c_appl_timeout_value = ctimeOutValue;
-    }  // if
-  }
+  /**
+   * The timeout is in ms and is kept in 10 ms ticks. It cannot be disabled:
+   * 0 or a value above MAX_TRANSACTION_INACTIVE_TIMEOUT (from an older
+   * configuration or DUMP 2508) becomes MAX_TRANSACTION_INACTIVE_TIMEOUT.
+   * It is never less than the deadlock detection timeout and never 0 ticks.
+   */
+  if (timeOut == 0 || timeOut > MAX_TRANSACTION_INACTIVE_TIMEOUT) {
+    jam();
+    timeOut = MAX_TRANSACTION_INACTIVE_TIMEOUT;
+  }  // if
+  timeOut /= 10;
+  if (timeOut < ctimeOutValue) {
+    jam();
+    timeOut = ctimeOutValue;
+  }  // if
+  if (timeOut == 0) {
+    jam();
+    timeOut = 1;
+  }  // if
   c_appl_timeout_value = timeOut;
 }
 

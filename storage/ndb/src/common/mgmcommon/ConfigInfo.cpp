@@ -1162,12 +1162,17 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      DB_TOKEN,
      "Time application can wait before executing another transaction part "
      "(ms).\n"
-     "This is the time the transaction coordinator waits for the application\n"
-     "to execute or send another part (query, statement) of the transaction.\n"
-     "If the application takes too long time, the transaction gets aborted.\n"
-      "Timeout set to 0 means that we don't timeout at all on application wait.\n"
-      "Default is set to around 40 days",
-     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "3600000", "0",
+     "If the application takes too long, the transaction is aborted.\n"
+     "It cannot be disabled: 0 or a value above "
+     STR_VALUE(MAX_TRANSACTION_INACTIVE_TIMEOUT) " (10 minutes) is replaced\n"
+     "with " STR_VALUE(MAX_TRANSACTION_INACTIVE_TIMEOUT)
+     ", and a value below TransactionDeadlockDetectionTimeout acts as\n"
+     "that value. A committed-read scan waiting for the application gets "
+     STR_VALUE(COMMITTED_READ_SCAN_INACTIVE_TIMEOUT) "\n"
+     "(1 hour) and an internal lock transaction, such as the MySQL global\n"
+     "schema lock, gets " STR_VALUE(EXEMPT_TRANSACTION_INACTIVE_TIMEOUT)
+     " (1 week). Default is 60000 (60 seconds).",
+     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "60000", "0",
      STR_VALUE(MAX_INT_RNIL)},
 
     {CFG_DB_TRANSACTION_DEADLOCK_TIMEOUT, "TransactionDeadlockDetectionTimeout",
@@ -4180,6 +4185,25 @@ static bool checkDbConstraints(InitConfigFileParser::Context &ctx,
         " starting at line: %d",
         ((Uint32)~0 - 2), ctx.fname, ctx.m_sectionLineno);
     ok = false;
+  }
+
+  /**
+   * TransactionInactiveTimeout cannot be disabled or set above
+   * MAX_TRANSACTION_INACTIVE_TIMEOUT: an older configuration with 0 or a
+   * larger value gets the maximum, with a warning.
+   */
+  Uint32 inactiveTimeout = 0;
+  if (ctx.m_currentSection->get("TransactionInactiveTimeout",
+                                &inactiveTimeout) &&
+      (inactiveTimeout == 0 ||
+       inactiveTimeout > MAX_TRANSACTION_INACTIVE_TIMEOUT)) {
+    ctx.reportWarning(
+        "TransactionInactiveTimeout=%u is not allowed, using %u instead "
+        "(section starting at line %u). The value must be between 1 and %u.",
+        inactiveTimeout, Uint32(MAX_TRANSACTION_INACTIVE_TIMEOUT),
+        ctx.m_sectionLineno, Uint32(MAX_TRANSACTION_INACTIVE_TIMEOUT));
+    ctx.m_currentSection->put("TransactionInactiveTimeout",
+                              Uint32(MAX_TRANSACTION_INACTIVE_TIMEOUT), true);
   }
 
   return ok;

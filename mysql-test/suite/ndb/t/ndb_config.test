@@ -144,3 +144,9 @@ echo == 31 == ndb_config --config-binary-file=ndb_3_config.bin.1 --system;
 exec $NDB_CONFIG
   --config-binary-file=$MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_3_config.bin.1
   --system --query=PrimaryMGMNode;
+
+echo == 32 == TransactionInactiveTimeout;
+# The timeout cannot be disabled or set above 600000 ms: 0 (from the
+# [ndbd default] section) and 700000 are replaced with 600000, with a warning.
+--replace_regex /.*\[ndb_config\]//
+--exec $NDB_CONFIG --config-file=$MYSQL_TEST_DIR/suite/ndb/ndb_config_inactive_timeout.ini --query=NodeId,TransactionInactiveTimeout --type=ndbd 2>&1

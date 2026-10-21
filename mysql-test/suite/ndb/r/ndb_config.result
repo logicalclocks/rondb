@@ -96,3 +96,7 @@ NoOfReplicas,1,2
 
 == 31 == ndb_config --config-binary-file=ndb_3_config.bin.1 --system
 3
+== 32 == TransactionInactiveTimeout
+ WARNING  -- at line 11: TransactionInactiveTimeout=0 is not allowed, using 600000 instead (section starting at line 8). The value must be between 1 and 600000.
+ WARNING  -- at line 15: TransactionInactiveTimeout=700000 is not allowed, using 600000 instead (section starting at line 11). The value must be between 1 and 600000.
+1,600000 2,600000 3,60000
