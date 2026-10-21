@@ -2086,7 +2086,8 @@ class Ndb {
   Uint64 getClientStat(Uint32 id) const;
   const char *getClientStatName(Uint32 id) const;
 
-  // Set optimized node selection value for this object
+  // Has no effect, kept for API compatibility. The selection of the
+  // transaction coordinator no longer depends on this value.
   void set_optimized_node_selection(int val);
 #endif
 
