@@ -27,12 +27,12 @@ package client
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -63,10 +63,7 @@ func NewRondisClientWithOptions(opts RondisOptions) (*RondisClient, error) {
 	}
 
 	if opts.TLS {
-		redisOpts.TLSConfig = &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true,
-		}
+		redisOpts.TLSConfig = tlsconf.Client()
 	}
 
 	client := redis.NewClient(redisOpts)

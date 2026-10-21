@@ -33,7 +33,6 @@ package exec
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -49,6 +48,8 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 )
 
 // Cell is one result value.
@@ -145,7 +146,7 @@ func NewRDRS(host string, port int, useTLS bool, apiKey, database, apiVersion, p
 	transport := &http.Transport{}
 	if useTLS {
 		scheme = "https"
-		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
+		transport.TLSClientConfig = tlsconf.Client()
 	}
 	if apiVersion == "" {
 		apiVersion = "0.2.0"
@@ -567,7 +568,7 @@ func mysqlDSN(cfg MySQLConfig) string {
 	}
 	if cfg.TLS {
 		tlsOnce.Do(func() {
-			_ = mysql.RegisterTLSConfig("fsqexec", &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})
+			_ = mysql.RegisterTLSConfig("fsqexec", tlsconf.Client())
 		})
 		params.Set("tls", "fsqexec")
 	}

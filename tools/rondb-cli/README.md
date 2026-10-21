@@ -133,6 +133,7 @@ rondb> SELECT * FROM redis_0.string_keys
 | `--mysql-port` | `RONDB_MYSQL_PORT` | 3306 | MySQL port |
 | `--rest-port` | `RONDB_REST_PORT` | 4406 | REST API port (RDRS2) |
 | `--tls` | - | false | Enable TLS for MySQL and the REST API (Rondis has no TLS listener, so add `--no-rondis`) |
+| `--tls-ca` | - | (none) | CA file (PEM) to verify server certificates; without it, server certificates are not verified |
 
 ### Authentication
 
@@ -152,6 +153,9 @@ rondb
 
 # Connect with TLS (MySQL and REST API; Rondis has no TLS listener)
 rondb --host db.example.com --tls --no-rondis
+
+# Connect with TLS and verify the server certificates against a CA
+rondb --host db.example.com --tls --tls-ca ca.pem --no-rondis
 ```
 
 ## Commands
@@ -258,7 +262,8 @@ From `tools/rondb-cli`, after building `rondb`:
 Use `--mysql-host` and `--rdrs-host` for separate endpoints,
 `RONDB_MYSQL_USER` / `RONDB_MYSQL_PASSWORD` for MySQL credentials and
 `RONDB_RDRS_API_KEY` for RDRS authentication. TLS uses the normal CLI flags
-`--tls` or `--rdrs-tls`. Do not disable MySQL or RDRS for a full comparison.
+`--tls` or `--rdrs-tls`, plus `--tls-ca` to verify server certificates. Do not
+disable MySQL or RDRS for a full comparison.
 
 Golden-mode options (inside the `-e` command):
 
