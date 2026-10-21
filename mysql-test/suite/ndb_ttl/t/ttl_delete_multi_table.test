@@ -1,0 +1,65 @@
+# ==========================================================================
+# ttl_expired_rows_visible_in_delete with multi-table DELETE.
+#
+# The variable used to reach only single-table DELETE; multi-table DELETE
+# never set HA_EXTRA_IGNORE_TTL, so it did not see expired rows. Now the
+# tables deleted from see expired rows, while tables that are only read
+# still hide them, as a subquery does in single-table DELETE.
+# ==========================================================================
+
+--source include/have_ndb.inc
+
+SET time_zone = '+00:00';
+
+CREATE TABLE t1 (
+  id INT PRIMARY KEY,
+  a INT,
+  ttl_col TIMESTAMP NULL DEFAULT NULL
+) ENGINE=NDB COMMENT="NDB_TABLE=TTL=2@ttl_col";
+
+CREATE TABLE t2 (
+  id INT PRIMARY KEY,
+  a INT
+) ENGINE=NDB;
+
+INSERT INTO t1 VALUES (1, 1, NOW()), (2, 1, NOW()), (3, 2, NOW()),
+  (4, 2, NOW());
+INSERT INTO t2 VALUES (1, 1), (2, 1), (3, 2), (4, 2);
+
+--let $ttl_wait_condition = SELECT COUNT(*) = 0 FROM t1
+--source suite/ndb_ttl/include/ttl_wait_expired.inc
+
+--echo #
+--echo # With the variable OFF the expired rows are invisible.
+--echo #
+DELETE t1 FROM t1 JOIN t2 ON t1.id = t2.id WHERE t2.a = 1;
+SELECT ROW_COUNT() AS deleted_rows;
+
+--echo #
+--echo # With the variable ON the multi-table DELETE removes them.
+--echo #
+SET ttl_expired_rows_visible_in_delete = ON;
+DELETE t1 FROM t1 JOIN t2 ON t1.id = t2.id WHERE t2.a = 1;
+SELECT ROW_COUNT() AS deleted_rows;
+
+--echo #
+--echo # Also when the deleted table is looked up by a constant key.
+--echo #
+DELETE FROM t1 USING t1, t2 WHERE t1.id = 3 AND t2.id = t1.id;
+SELECT ROW_COUNT() AS deleted_rows;
+
+--echo #
+--echo # A TTL table that is only read still hides its expired rows.
+--echo #
+DELETE t2 FROM t2 JOIN t1 ON t1.id = t2.id;
+SELECT ROW_COUNT() AS deleted_rows;
+SELECT COUNT(*) FROM t2;
+
+--echo #
+--echo # Only row 4 of t1 is left.
+--echo #
+DELETE FROM t1;
+SELECT ROW_COUNT() AS deleted_rows;
+SET ttl_expired_rows_visible_in_delete = OFF;
+
+DROP TABLE t1, t2;
