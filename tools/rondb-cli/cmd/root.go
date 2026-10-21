@@ -46,6 +46,7 @@ var (
 	mysqlHost  string
 	rdrsHost   string
 	rondisPort int
+	rondisDB   int
 	mysqlPort  int
 	restPort   int
 	mysqlUser  string
@@ -76,6 +77,9 @@ var rootCmd = &cobra.Command{
 		if err := setupTLSCA(); err != nil {
 			return err
 		}
+		if rondisDB < 0 {
+			return fmt.Errorf("--rondis-db must not be negative")
+		}
 
 		// Prompt for password if -p flag is used
 		if promptPass {
@@ -101,6 +105,7 @@ var rootCmd = &cobra.Command{
 			MySQLHost:  effectiveMySQLHost,
 			RDRSHost:   effectiveRDRSHost,
 			RondisPort: rondisPort,
+			RondisDB:   rondisDB,
 			MySQLPort:  mysqlPort,
 			RestPort:   restPort,
 			MySQLUser:  mysqlUser,
@@ -148,6 +153,9 @@ var statusCmd = &cobra.Command{
 		if err := setupTLSCA(); err != nil {
 			return err
 		}
+		if rondisDB < 0 {
+			return fmt.Errorf("--rondis-db must not be negative")
+		}
 
 		// Prompt for password if -p flag is used
 		if promptPass {
@@ -176,6 +184,7 @@ var statusCmd = &cobra.Command{
 			Host: host,
 			Port: rondisPort,
 			TLS:  useTLS,
+			DB:   rondisDB,
 		})
 		if err != nil {
 			msg := fmt.Sprintf("Rondis (%s:%d): %v", host, rondisPort, err)
@@ -236,6 +245,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&mysqlHost, "mysql-host", "", "MySQL host (overrides --host)")
 	rootCmd.PersistentFlags().StringVar(&rdrsHost, "rdrs-host", "", "RDRS/REST API host (overrides --host)")
 	rootCmd.PersistentFlags().IntVar(&rondisPort, "rondis-port", 6379, "Rondis port")
+	rootCmd.PersistentFlags().IntVar(&rondisDB, "rondis-db", 0, "Rondis database (a Rondis SELECT typed in the shell goes to MySQL)")
 	rootCmd.PersistentFlags().IntVar(&mysqlPort, "mysql-port", 3306, "MySQL port")
 	rootCmd.PersistentFlags().IntVar(&restPort, "rdrs-port", 4406, "RDRS/REST API port")
 	rootCmd.PersistentFlags().StringVar(&mysqlUser, "mysql-user", "root", "MySQL username")

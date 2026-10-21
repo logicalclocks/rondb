@@ -253,6 +253,7 @@ Flag & Default & Description \\
 --mysql-host & (inherits) & MySQL host (overrides --host) \\
 --rdrs-host & (inherits) & REST API host (overrides --host) \\
 --rondis-port & 6379 & Rondis service port \\
+--rondis-db & 0 & Rondis database \\
 --mysql-port & 3306 & MySQL service port \\
 --rdrs-port & 4406 & REST API service port \\
 --mysql-user & root & MySQL username \\
@@ -573,6 +574,8 @@ RonSQL behavior can be configured using internal commands:
 \section{Rondis (Redis Protocol)}
 
 Rondis provides Redis-compatible commands for key-value operations. Commands are automatically detected by keyword matching.
+
+\texttt{SELECT} is detected as SQL and routed to MySQL, so the Redis \texttt{SELECT} command cannot choose a Rondis database from the shell. Start the CLI with \texttt{-{}-rondis-db N} to use Rondis database \texttt{N}.
 
 \subsection{Supported Commands}
 

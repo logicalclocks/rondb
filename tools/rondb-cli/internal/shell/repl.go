@@ -55,6 +55,7 @@ type Config struct {
 	MySQLHost  string // MySQL host (can be different from Host)
 	RDRSHost   string // RDRS/REST API host (can be different from Host)
 	RondisPort int
+	RondisDB   int // Rondis database (--rondis-db); SELECT itself goes to MySQL
 	MySQLPort  int
 	RestPort   int
 	MySQLUser  string
@@ -122,6 +123,7 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  --mysql-host       MySQL host (overrides --host)"))
 		fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
 		fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
+		fmt.Println(ui.Info("  --rondis-db        Rondis database (default: 0)"))
 		fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
 		fmt.Println(ui.Info("  --rdrs-port        RDRS/REST API port (default: 4406)"))
 		fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
@@ -251,6 +253,7 @@ func (s *Shell) connect() error {
 			Host: s.config.Host,
 			Port: s.config.RondisPort,
 			TLS:  s.config.TLS,
+			DB:   s.config.RondisDB,
 		})
 		if err != nil {
 			if s.verbose >= 1 {
@@ -1559,6 +1562,7 @@ func (s *Shell) createRondisClients(numThreads int) ([]*client.RondisClient, err
 			Host: s.config.Host,
 			Port: s.config.RondisPort,
 			TLS:  s.config.TLS,
+			DB:   s.config.RondisDB,
 		})
 		if err != nil {
 			// Close already created clients
@@ -4171,6 +4175,7 @@ Commands:
     DEL key             Delete a key
     MGET key1 key2      Get multiple values
     INCR key            Increment a counter
+    SELECT goes to MySQL; start with --rondis-db N to use Rondis database N.
 
   SQL queries:
     SELECT * FROM ...   Query tables
@@ -4479,6 +4484,7 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  --mysql-host       MySQL host (overrides --host)"))
 	fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
 	fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
+	fmt.Println(ui.Info("  --rondis-db        Rondis database (default: 0)"))
 	fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
 	fmt.Println(ui.Info("  --rdrs-port        RDRS/REST API port (default: 4406)"))
 	fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))

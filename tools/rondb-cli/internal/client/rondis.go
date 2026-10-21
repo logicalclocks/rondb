@@ -46,6 +46,7 @@ type RondisOptions struct {
 	Port     int
 	Password string
 	TLS      bool // Rondis has no TLS listener, so a TLS connection fails
+	DB       int  // Rondis database, selected on every new pooled connection
 }
 
 func NewRondisClient(host string, port int) (*RondisClient, error) {
@@ -60,6 +61,7 @@ func NewRondisClientWithOptions(opts RondisOptions) (*RondisClient, error) {
 	redisOpts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", opts.Host, opts.Port),
 		Password: opts.Password,
+		DB:       opts.DB,
 	}
 
 	if opts.TLS {

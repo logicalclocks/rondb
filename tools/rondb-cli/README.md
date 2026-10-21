@@ -130,6 +130,7 @@ rondb> SELECT * FROM redis_0.string_keys
 |------|--------------|---------|-------------|
 | `--host` | `RONDB_HOST` | localhost | RonDB host |
 | `--rondis-port` | `RONDB_RONDIS_PORT` | 6379 | Rondis port |
+| `--rondis-db` | - | 0 | Rondis database (the shell sends `SELECT` to MySQL) |
 | `--mysql-port` | `RONDB_MYSQL_PORT` | 3306 | MySQL port |
 | `--rest-port` | `RONDB_REST_PORT` | 4406 | REST API port (RDRS2) |
 | `--tls` | - | false | Enable TLS for MySQL and the REST API (Rondis has no TLS listener, so add `--no-rondis`) |
@@ -175,6 +176,9 @@ HSET hash field value
 HGET hash field
 KEYS pattern
 ```
+
+`SELECT` is routed to MySQL, so the Redis `SELECT` command cannot choose a
+Rondis database from the shell; start rondb with `--rondis-db N` instead.
 
 **SQL queries** - standard MySQL syntax:
 ```
