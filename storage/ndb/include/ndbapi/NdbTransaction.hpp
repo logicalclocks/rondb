@@ -737,8 +737,17 @@ class NdbTransaction {
    * using that index.
    *
    * The key_row passed in defines the primary or unique key of the affected
-   * tuple, and must remain valid until execute() is called. The key_rec must
-   * include all columns of the key.
+   * tuple. The key_rec must include all columns of the key.
+   *
+   * The key_row, and the attr_row (or combined_row) of insertTuple(),
+   * updateTuple() and writeTuple(), are copied when the operation is
+   * defined, also for tables with blobs, so they can be reused as soon as
+   * the call returns.
+   * A result_row (readTuple(), or the optional read row of deleteTuple())
+   * receives the values read, so it and the NdbRecord describing it must
+   * remain valid until the operation is executed (execute() has returned,
+   * or the executeAsynch() callback has been called). Blob data passed
+   * to NdbBlob::setValue() must also remain valid until execute.
    *
    * The mask, if != NULL, defines a subset of attributes to read, update, or
    * insert. Only if (mask[attrId >> 3] & (1<<(attrId & 7))) is set is the
