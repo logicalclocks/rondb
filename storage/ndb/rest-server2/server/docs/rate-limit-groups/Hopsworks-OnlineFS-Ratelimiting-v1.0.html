@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hopsworks OnlineFS Ratelimiting (Version 1.0)</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f8fa; --paper: #fff; --text: #202a33; --muted: #566574;
+    --accent: #096b67; --line: #d7e0e5; --soft: #edf4f4; --code: #eef1f4;
+    --note: #fff7e7; --note-line: #b67a12;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141a1f; --paper: #1b232a; --text: #e6edf2; --muted: #afbec9;
+      --accent: #75d5c9; --line: #3b4a56; --soft: #203634; --code: #27323c;
+      --note: #342c1d; --note-line: #e1b45c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-padding-top: 1.5rem; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 17px/1.65 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 58rem; margin: auto; padding: 3.5rem 2rem 5rem; }
+  header { border-bottom: 2px solid var(--accent); padding-bottom: 1.8rem; }
+  .eyebrow { color: var(--accent); font-size: .8rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { max-width: 24ch; margin: .6rem 0 1rem; font-size: clamp(2rem, 5vw, 2.8rem); line-height: 1.15; letter-spacing: -.025em; }
+  h2 { margin: 3rem 0 1rem; font-size: 1.5rem; line-height: 1.3; letter-spacing: -.015em; }
+  h3 { margin: 1.8rem 0 .65rem; font-size: 1.08rem; line-height: 1.4; }
+  p, ul, ol, dl { max-width: 72ch; margin: 0 0 1rem; }
+  li { margin-bottom: .55rem; }
+  strong { font-weight: 650; }
+  a { color: var(--accent); text-underline-offset: .18em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+  .lead { font-size: 1.18rem; line-height: 1.6; max-width: 64ch; }
+  .meta, figcaption, caption { color: var(--muted); font-size: .88rem; }
+  nav { padding: 1.2rem 0; border-bottom: 1px solid var(--line); }
+  nav ol { display: grid; grid-template-columns: 1fr 1fr; gap: .35rem 2rem; padding-left: 1.3rem; margin: 0; font-size: .92rem; }
+  nav li { margin: 0; }
+  code, pre { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .87em; }
+  code { background: var(--code); border-radius: 3px; padding: .12em .3em; overflow-wrap: anywhere; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; padding: 1rem; overflow-x: auto; line-height: 1.55; margin: 1rem 0; }
+  pre code { padding: 0; background: none; overflow-wrap: normal; }
+  .tablewrap { overflow-x: auto; margin: 1rem 0 1.4rem; }
+  table { width: 100%; border-collapse: collapse; background: var(--paper); font-size: .9rem; }
+  caption { text-align: left; padding: 0 0 .6rem; }
+  th, td { padding: .7rem .8rem; text-align: left; vertical-align: top; border: 1px solid var(--line); }
+  th { background: var(--soft); font-weight: 650; }
+  td p:last-child { margin: 0; }
+  .rows td, .rows th { padding: .45rem .7rem; font-size: .86rem; }
+  .rows caption { font-weight: 650; color: var(--text); font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: .85rem; }
+  .rows caption span { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; font-weight: 400; color: var(--muted); }
+  .note, .example { padding: 1rem 1.2rem; margin: 1.3rem 0; border-radius: 5px; }
+  .note { background: var(--note); border-left: 3px solid var(--note-line); }
+  .example { background: var(--soft); border-left: 3px solid var(--accent); }
+  .note p:last-child, .example p:last-child, .example ol:last-child, .example ul:last-child { margin-bottom: 0; }
+  figure { margin: 1.3rem 0; }
+  figure.erd { margin: 1.4rem 0 1.8rem; }
+  figure.erd img { display: block; width: 100%; height: auto; background: #fff; border: 1px solid var(--line); border-radius: 6px; }
+  .mock { background: var(--paper); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  .mock-title { background: var(--soft); padding: .75rem 1rem; font-weight: 650; }
+  .mock dl { display: grid; grid-template-columns: 7rem 1fr; gap: .75rem; padding: 1rem; margin: 0; }
+  .mock dt { font-weight: 650; }
+  .mock dd { margin: 0; }
+  .mock-footer { border-top: 1px solid var(--line); padding: .75rem 1rem; font-size: .88rem; color: var(--muted); }
+  footer { margin-top: 3rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+  @media (max-width: 640px) {
+    main { padding: 2rem 1rem 3rem; }
+    nav ol { grid-template-columns: 1fr; }
+    th, td { padding: .55rem; }
+    .tablewrap table { min-width: 35rem; }
+    .mock dl { grid-template-columns: 5rem 1fr; }
+  }
+  @media print {
+    :root { color-scheme: light; --bg: #fff; --paper: #fff; --text: #111; --muted: #444; --accent: #075651; --line: #bbb; --soft: #f0f5f4; --code: #f3f3f3; --note: #faf7ef; --note-line: #886020; }
+    body { font-size: 10pt; }
+    main { max-width: none; padding: 0; }
+    nav { display: none; }
+    h2, h3 { break-after: avoid; }
+    h2 { margin-top: 1.8rem; }
+    tr, .note, .example, figure { break-inside: avoid; }
+    .tablewrap { overflow: visible; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <p class="eyebrow">Hopsworks · RonDB · Feature white paper · October 2026</p>
+  <h1>Hopsworks OnlineFS Ratelimiting <span style="font-weight:400;color:var(--muted);font-size:.6em">Version 1.0</span></h1>
+  <p class="lead">Shared database budgets for teams. An administrator can say “this
+  team may use 20% of the online feature store”, or “that team may use 5% when it reads
+  our data”. RonDB then enforces each team’s budget, whether the team’s members connect through the
+  REST server (RDRS) or through the MySQL server.</p>
+  <p>The online feature store is one RonDB cluster shared by every project, every user and
+  every job in a Hopsworks installation. This feature introduces the
+  <strong>rate limit group</strong>: a named budget shared by a set of users or whole
+  projects, applied either to everything they read or to specific feature groups and
+  feature stores. Rate limit group groups are created on one administration page. Work that falls under a
+  rate limit group is slowed down and, if it keeps coming, rejected once the budget is used up;
+  everyone outside the rate limit group is unaffected.</p>
+  <p>This paper describes the problem, the feature, how the limit is applied, a worked
+  scenario, the administration page, what a limited team experiences, and how budgets are
+  planned.</p>
+</header>
+
+<nav aria-label="Contents">
+  <ol>
+    <li><a href="#summary">Summary</a></li>
+    <li><a href="#problem">The problem: one shared cluster, many tenants</a></li>
+    <li><a href="#feature">The feature: rate limit group groups</a></li>
+    <li><a href="#meaning">What a budget of 20% means</a></li>
+    <li><a href="#how">How a limit is applied</a></li>
+    <li><a href="#scenario">A worked scenario</a></li>
+    <li><a href="#admin">Administration</a></li>
+    <li><a href="#experience">What a limited team experiences</a></li>
+    <li><a href="#budgets">Planning budgets</a></li>
+    <li><a href="#multi">Several clusters</a></li>
+    <li><a href="#faq">Questions we expect</a></li>
+  </ol>
+</nav>
+
+<section id="summary">
+<h2>1. Summary</h2>
+<ul>
+  <li><strong>One budget per team, not per key.</strong> A rate limit group is a share
+  of the cluster given to a set of users or projects. Every member’s work draws from the
+  same budget, through both entry points for data: the REST server (RDRS) and the MySQL
+  server.</li>
+  <li><strong>Scoped to data when needed.</strong> A rate limit group can cover everything its
+  members read, or only named feature groups and feature stores. That lets a data owner
+  cap its own hot tables, or cap what a partner project may burn when reading shared
+  data.</li>
+  <li><strong>A ceiling, never a permission.</strong> Rate limit group groups do not grant or revoke
+  access, and they do not reserve capacity. They stop one team from degrading the
+  cluster for the others.</li>
+  <li><strong>Managed in Hopsworks.</strong> One page lists the rate limit group groups, their budgets,
+  who shares them, what they cover, and whether each is live on the cluster.</li>
+  <li><strong>Enforced in RonDB.</strong> Work is metered in CPU time per data node.
+  Over budget, requests are first queued, then rejected with a retryable error.</li>
+</ul>
+</section>
+
+<section id="problem">
+<h2>2. The problem: one shared cluster, many tenants</h2>
+<p>Data in the online feature store is reached through two entry points: the REST server
+(RDRS), for low-latency key lookups with an API key, and the MySQL server, for SQL with a
+database account. Every project and every user share one RonDB cluster behind both. All of
+their work competes for the CPU of the same data nodes, and when one user takes more than
+their share, every other user sees it as latency.</p>
+<p>A limit per identity is the obvious tool, and RonDB can put a budget on a name. The
+question is which name. The natural identities are too fine:</p>
+<ul>
+  <li>A user has several API keys, and creates more at will. A budget per key multiplies
+  with every key.</li>
+  <li>The same user also connects through the MySQL server with a database account, not a
+  key. A budget per key never sees that traffic.</li>
+  <li>Splitting a team’s share evenly across its identities starves the busy one while the
+  idle ones hold capacity nobody uses.</li>
+</ul>
+<p>What an administrator wants to say is “<em>this team</em>, together, may use this
+much”, where a team is a set of people, and sometimes “this team may use this much
+<em>of our data</em>”. That is what a rate limit group expresses.</p>
+</section>
+
+<section id="feature">
+<h2>3. The feature: rate limit group groups</h2>
+<p>A <strong>rate limit group</strong> is a named budget with two lists attached:
+<strong>who</strong> shares it and <strong>what</strong> data it applies to.</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Part</th><th scope="col">What the administrator enters</th></tr></thead>
+  <tbody>
+    <tr><td>Name</td><td>A short name for the budget.</td></tr>
+    <tr><td>Budget</td><td>A percentage of the cluster’s capacity for database work. <a href="#meaning">Section 4</a> explains what a given percentage means.</td></tr>
+    <tr><td>Who</td><td>Login users and/or whole projects. A project means its current members: people who join later are covered automatically, people who leave drop out.</td></tr>
+    <tr><td>What</td><td>Either <em>all accessible data</em>, or a list of feature groups and feature stores. A feature store entry covers every feature group in it, including ones created later.</td></tr>
+  </tbody>
+</table></div>
+<p>Everyone in the rate limit group draws from the same budget, so one busy member can use it all.
+What the rate limit group guarantees is that the <em>rest of the cluster</em> is protected from that
+team. Two things a rate limit group is <em>not</em>:</p>
+<ul>
+  <li><strong>Not a permission.</strong> Listing someone in a rate limit group does not let them
+  read anything they could not read before, and removing a share still blocks them even if
+  a rate limit group names them. Access is decided by project membership and sharing, as before.</li>
+  <li><strong>Not a reservation.</strong> 20% is a ceiling, not capacity set aside for the
+  team. On an idle cluster the team still gets at most 20%; on a busy one it is still
+  allowed up to 20%.</li>
+</ul>
+<p>Rate limit group groups are not tied to the organisation chart. A rate limit group whose members are a set
+of service accounts, another for a set of heavy users, and a small one for a free-tier
+project are the same mechanism with different lists.</p>
+</section>
+
+<section id="meaning">
+<h2>4. What a budget of 20% means</h2>
+<p>Think of each data node as able to do a fixed amount of database work every second.
+A budget is a slice of that. A budget of 20% means the team may use up to one fifth of
+each data node’s work capacity, every second.</p>
+<p>“Work” is what the database actually does, not how many requests arrive. Looking up
+one row is cheap. Writing one row costs about three times as much. Scanning through a
+table costs a little per row examined, so a query that reads one row is cheap and a query
+that scans a million rows is expensive. All of it is counted in the same unit and charged
+to the team’s budget.</p>
+<p>For example, on a data node with 20 CPU cores, if the team did only one kind of work:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Budget</th><th scope="col">Simple lookups</th><th scope="col">or writes</th><th scope="col">or rows scanned</th></tr></thead>
+  <tbody>
+    <tr><td>20%</td><td>about 3 million per second</td><td>about 1 million per second</td><td>about 5 million per second</td></tr>
+    <tr><td>5%</td><td>about 800,000 per second</td><td>about 250,000 per second</td><td>about 1.3 million per second</td></tr>
+    <tr><td>2%</td><td>about 320,000 per second</td><td>about 100,000 per second</td><td>about 500,000 per second</td></tr>
+  </tbody>
+</table></div>
+<p class="meta">Figures are per data node and scale with its size: a node with 40 CPU
+cores gives twice as much, and more nodes give more in total. The administration page
+shows the exact figure for your cluster next to the percentage.</p>
+<p>Three simple facts about a budget:</p>
+<ul>
+  <li><strong>It is shared.</strong> Everyone in the rate limit group, through both entry points,
+  draws from the same budget. One member running a big scan can use it all.</li>
+  <li><strong>It is a ceiling.</strong> The team is never held below its budget and never
+  allowed above it, whatever the rest of the cluster is doing. An idle cluster does not
+  give the team more; a busy cluster does not give it less.</li>
+  <li><strong>It is per data node.</strong> Work spread across the cluster can use the
+  budget on every node; work that piles onto one node hits that node’s limit first.</li>
+</ul>
+</section>
+
+<section id="how">
+<h2>5. How a limit is applied</h2>
+<p>When someone reads or writes a table, RonDB finds the rate limit group that contains both that
+person and that table, and charges the work to it. Four rules cover every case:</p>
+<ol>
+  <li><strong>Both entry points count.</strong> A request through the REST server (RDRS)
+  with an API key and a query through the MySQL server with a database account are charged
+  to the same rate limit group, because both identify the person doing the work. The platform’s own
+  administrative queries are not charged.</li>
+  <li><strong>The more specific group wins.</strong> When a person and a table match more
+  than one rate limit group, a group scoped to that feature group beats a group scoped to
+  its feature store, which beats a group covering all data. The administration page refuses two rate limit group groups that would tie.</li>
+  <li><strong>One transaction, one rate limit group.</strong> A request that touches several tables,
+  such as a feature-view read, is charged as a whole to one rate limit group.</li>
+  <li><strong>Not in a group, not limited.</strong> A person who is in no rate limit group, or
+  a read of data that no group of theirs covers, is not limited.</li>
+</ol>
+<p>Work is measured as CPU time on the data nodes: a small cost per row read, a larger
+one per row written, a cost per row scanned, plus a little per byte moved. Each data node
+lets a group’s total drain at the configured rate. Short bursts pass. Sustained excess is
+first slowed by queueing new transactions, then, if it continues, reads are rejected with
+a temporary error, and writes only under heavy, sustained overload
+(<a href="#experience">section 8</a>).</p>
+</section>
+
+<section id="scenario">
+<h2>6. A worked scenario</h2>
+<p>In Hopsworks, a <strong>project</strong> is a team’s workspace: it has members, and it
+owns a <strong>feature store</strong>, which is the project’s collection of
+<strong>feature groups</strong> (tables of features). A project can share its whole
+feature store, or single feature groups, with other projects, whose members may then read
+that data. The scenario has four projects on one cluster:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Project</th><th scope="col">Members</th><th scope="col">Feature groups it owns</th><th scope="col">Shared with</th></tr></thead>
+  <tbody>
+    <tr><td>Marketing</td><td>Mary, Mike</td><td><code>marketing_clicks</code>, <code>marketing_campaigns</code></td><td>Recommender, Recommender2 (whole store)</td></tr>
+    <tr><td>Sales</td><td>Sam</td><td><code>sales_orders</code></td><td>Recommender (that one feature group)</td></tr>
+    <tr><td>Recommender</td><td>Alice, Ava</td><td><code>recommender_features</code></td><td>nobody</td></tr>
+    <tr><td>Recommender2</td><td>Rosa</td><td><code>recommender2_features</code></td><td>nobody</td></tr>
+  </tbody>
+</table></div>
+<p>The administrator has three requirements, each of which is one rate limit group. Group names are
+free text; the examples end in <code>_rl</code> (for “rate limit”) so that a group is never
+confused with the project or feature group it is named after:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Requirement</th><th scope="col">Rate limit group</th><th scope="col">Who</th><th scope="col">What</th><th scope="col">Budget</th></tr></thead>
+  <tbody>
+    <tr><td>“Recommender gets 20% of the cluster, whatever its members read.”</td><td><code>recommender_team_rl</code></td><td>project Recommender</td><td>all accessible data</td><td>20%</td></tr>
+    <tr><td>“Marketing’s own people may use at most 2% on <code>marketing_clicks</code>, so backfills cannot starve the table that serves production.”</td><td><code>marketing_clicks_rl</code></td><td>Mary, Mike</td><td>feature group <code>marketing_clicks</code></td><td>2%</td></tr>
+    <tr><td>“Recommender2 may use at most 5% when reading Marketing’s data.”</td><td><code>recommender2_marketing_rl</code></td><td>project Recommender2</td><td>feature store <code>marketing</code></td><td>5%</td></tr>
+  </tbody>
+</table></div>
+<p>The first is the classic team share, including data other projects shared with the
+team. The second shows a team capping its <em>own</em> data without any sharing involved.
+The third is a data owner capping a consumer of its shared data. With these three rate limit group groups
+in place:</p>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Who reads what</th><th scope="col">Charged to</th><th scope="col">Why</th></tr></thead>
+  <tbody>
+    <tr><td>Alice reads <code>recommender_features</code></td><td><code>recommender_team_rl</code></td><td>Alice is in project Recommender; the rate limit group covers all data.</td></tr>
+    <tr><td>Alice reads <code>marketing_clicks</code></td><td><code>recommender_team_rl</code></td><td>Same. Borrowed data is no different for an all-data rate limit group.</td></tr>
+    <tr><td>Ava reads <code>sales_orders</code></td><td><code>recommender_team_rl</code></td><td>Same rate limit group; Alice and Ava share the 20%.</td></tr>
+    <tr><td>Mary reads <code>marketing_clicks</code></td><td><code>marketing_clicks_rl</code></td><td>Mary is listed, and so is the feature group.</td></tr>
+    <tr><td>Mary reads <code>marketing_campaigns</code></td><td>none</td><td>Her group covers only <code>marketing_clicks</code>; this read is not limited.</td></tr>
+    <tr><td>Rosa reads <code>marketing_clicks</code></td><td><code>recommender2_marketing_rl</code></td><td>Rosa is in Recommender2; Marketing’s store contains that feature group.</td></tr>
+    <tr><td>Rosa reads <code>marketing_campaigns</code></td><td><code>recommender2_marketing_rl</code></td><td>Same store, same rate limit group.</td></tr>
+    <tr><td>Rosa reads <code>sales_orders</code></td><td>rejected</td><td>Sales never shared with Recommender2. Access is checked before any rate limit group.</td></tr>
+    <tr><td>Sam reads <code>sales_orders</code></td><td>none</td><td>Sam is not in any rate limit group, so his reads are not limited.</td></tr>
+  </tbody>
+</table></div>
+<p><strong>When two rate limit group groups match, the more specific one wins.</strong> Suppose
+Marketing adds a fourth rate limit group, <code>recommender2_clicks_rl</code>: project Recommender2 on feature
+group <code>marketing_clicks</code>, 1%. Rosa reading <code>marketing_clicks</code> now
+matches both the group scoped to the store and the group scoped to the feature group;
+the feature-group scope is more specific, so she is charged to <code>recommender2_clicks_rl</code>. Her reads of
+<code>marketing_campaigns</code> still go to <code>recommender2_marketing_rl</code>. The two
+budgets are separate: the 5% is not a cap on her total.</p>
+<p>The three rate limit group groups add up to 27% of the cluster. The cluster carries one budget per
+rate limit group, not one per person or per key, so a handful of rate limit group groups covers a whole
+organisation.</p>
+</section>
+
+<section id="admin">
+<h2>7. Administration</h2>
+<p>One page under Hopsworks administration: a list of rate limit group groups on the left, and a form for
+the selected rate limit group on the right. The list also shows whether each rate limit group is live on the
+cluster, so an administrator can see when a saved rate limit group has actually been installed.</p>
+<figure class="erd"><img src="img/admin-page-customer.png" alt="Mockup of the admin page: a list of the three example rate limit group groups with their cluster state, the edit form for rec2_on_marketing, and callouts naming the table and column each field writes."><figcaption>Editing the group <code>recommender2_marketing_rl</code> from the scenario. “All accessible data” is an explicit choice; leaving the selected list empty is not how you say “everything”.</figcaption></figure>
+<p>Three details worth knowing:</p>
+<ul>
+  <li><strong>The name is fixed after saving.</strong> It is the identity RonDB meters;
+  renaming would mean dropping and recreating the limit.</li>
+  <li><strong>The budget field shows the converted rate</strong>, so the administrator
+  sees what the cluster will receive (<a href="#budgets">section 9</a>), and the sentence
+  preview restates the rate limit group in words, which is the quickest check that Who and What were
+  filled in as intended.</li>
+  <li><strong>“All accessible data” is an explicit choice.</strong> This protects a team
+  from suddenly being capped on everything because the one feature group in their rate limit group
+  was deleted: such a rate limit group simply matches nothing and is shown as inert.</li>
+</ul>
+<div class="tablewrap"><table>
+  <thead><tr><th scope="col">Cluster column</th><th scope="col">Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><span style="color:#1d7a3a">●</span> installed</td><td>The limit is live on the cluster.</td></tr>
+    <tr><td><span style="color:#b67a12">●</span> pending</td><td>Saved in Hopsworks; the cluster does not have it yet. Until it does, that traffic runs unlimited.</td></tr>
+    <tr><td><span style="color:#b3261e">●</span> refused</td><td>The cluster rejected it because the total budget is already full (<a href="#budgets">section 9</a>). Lower another budget first.</td></tr>
+    <tr><td>○ inert</td><td>A selected-data rate limit group whose data entries are gone (its feature group was deleted). It matches nothing.</td></tr>
+  </tbody>
+</table></div>
+<p>The page refuses two rate limit group groups that would tie, that is, two rate limit group groups at the same level
+that cover the same person and the same data. Who may create rate limit group groups is a product
+decision; a natural split is that administrators create all-data rate limit group groups, while the data
+owner of a feature store or feature group may cap its own data or its consumers.</p>
+</section>
+
+<section id="experience">
+<h2>8. What a limited team experiences</h2>
+<p>RonDB adds up work under the group’s name and lets the total drain at the configured
+rate. Short bursts pass unnoticed. Sustained excess is handled in stages:</p>
+<ol>
+  <li><strong>Slower.</strong> New transactions from the rate limit group are queued for a short
+  time before they start. Latency rises; nothing fails.</li>
+  <li><strong>Reads rejected.</strong> If the excess continues, reads get a temporary
+  error: HTTP 429 from the REST server (RDRS), MySQL error 1297 with the RonDB reason from
+  the MySQL server.</li>
+  <li><strong>Writes rejected</strong> only under heavy, sustained overload.</li>
+</ol>
+<p>Rejections are temporary and carry no risk to data; callers back off and retry. Nobody
+outside the rate limit group is affected, which is the point.</p>
+</section>
+
+<section id="budgets">
+<h2>9. Planning budgets</h2>
+<p>Budgets are percentages of each data node’s capacity for database work
+(<a href="#meaning">section 4</a>), and they add up across rate limit group groups.</p>
+<p><strong>All budgets together may not exceed 50% of a data node.</strong> The reason is
+simple: the meter only counts row operations, the reads, writes and scans a user causes.
+Redo logging, checkpoints, network threads, schema changes, backups and the platform’s own
+unmetered work also need CPU. Half the machine is kept for them, so that even when every
+rate limit group runs at its ceiling the node is not saturated and the limits still mean something.
+Three consequences for planning:</p>
+<ul>
+  <li>A rate limit group counts toward the 50% even while its members are idle. A handful of
+  team-sized rate limit group groups fits comfortably.</li>
+  <li>If a new rate limit group would push the total over 50%, the cluster refuses it and the
+  administration page shows <em>refused</em>. Lower another budget first.</li>
+  <li>Budgets are ceilings, not reservations.</li>
+</ul>
+</section>
+
+<section id="multi">
+<h2>10. Several clusters</h2>
+<p>Some installations give each big project its own RonDB cluster. The owner of a cluster
+then wants to say “that team may use 20% of <em>my</em> cluster, this other team 30%”.
+The same rate limit group groups express that, and nothing in a rate limit group names a cluster: a rate limit group on a
+project’s data is enforced wherever that project’s data lives, and its percentage is a
+percentage of that cluster. A rate limit group on all accessible data means that percentage on each
+cluster. The administration page shows the cluster state per cluster.</p>
+</section>
+
+<section id="faq">
+<h2>11. Questions we expect</h2>
+<dl>
+  <dt><strong>Does a rate limit group restrict who can read what?</strong></dt>
+  <dd>No. Access is decided by project membership and sharing exactly as before. A rate limit group
+  only decides which budget pays for work that is already allowed.</dd>
+  <dt><strong>Someone joins or leaves the team. Do I edit the rate limit group?</strong></dt>
+  <dd>Not if the rate limit group names the project; membership is read live. If the rate limit group names
+  people individually, you edit the list.</dd>
+  <dt><strong>We created version 2 of a feature group that is in a rate limit group.</strong></dt>
+  <dd>A feature-group entry in a rate limit group is one version. Add version 2, or put the feature
+  store in the rate limit group instead; that covers every feature group and version in it,
+  including future ones.</dd>
+  <dt><strong>Can a person be in two rate limit group groups?</strong></dt>
+  <dd>Yes, as long as they do not tie. A person can be capped on one feature group and
+  belong to a team-wide rate limit group; for that table the group scoped to the feature group wins. Two all-data
+  rate limit group groups that both contain the same person are refused.</dd>
+  <dt><strong>A query touches several feature groups, such as a feature view.</strong></dt>
+  <dd>The whole transaction is charged to one rate limit group.</dd>
+  <dt><strong>Is 20% a guarantee?</strong></dt>
+  <dd>No. It is the most the team may use.</dd>
+  <dt><strong>We have several clusters. Does a rate limit group cover all of them?</strong></dt>
+  <dd>An all-data rate limit group means that percentage on each cluster. A rate limit group on specific data
+  is enforced on the cluster that holds the data.</dd>
+</dl>
+</section>
+
+</main>
+</body>
+</html>
