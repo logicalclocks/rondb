@@ -80,6 +80,10 @@ DATABASE QUOTA GET command failed: Error:
 Value of --in-memory-size in DATABASE QUOTA SET must be a number of MBytes, without k, M, G or T
 # Values must be smaller than RNIL, they are not truncated
 Value of --rate-per-sec in DATABASE QUOTA SET is too large, it must be smaller than 4294967040
+# GET, BACKUP and RESTORE need an argument
+Expected a database name as parameter
+Expected DATABASE QUOTA BACKUP file_name in this command
+Expected DATABASE QUOTA RESTORE file_name in this command
 # --on-disk-size is in GBytes: 1 GByte is more than 80% of a
 # 128 MByte data file
 CREATE LOGFILE GROUP lg_quota ADD UNDOFILE 'lg_quota_undo.dat' INITIAL_SIZE 16M ENGINE NDB;

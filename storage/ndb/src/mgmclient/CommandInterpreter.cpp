@@ -5758,6 +5758,10 @@ int CommandInterpreter::executeDatabaseQuotaGet(char* parameters) {
   split_args_with_equal(id, command_list);
 
   Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
+    ndbout << "Expected a database name as parameter" << endl;
+    return -1;
+  }
   if (command_list_size > 2) {
     ndbout << "Expected a database name as parameter, nothing more" << endl;
     return -1;
@@ -5790,6 +5794,11 @@ int CommandInterpreter::executeDatabaseQuotaRestore(char* parameters) {
   split_args_with_equal(id, command_list);
 
   Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
+    ndbout << "Expected DATABASE QUOTA RESTORE file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
   if (command_list_size > 2) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;
@@ -5849,6 +5858,11 @@ int CommandInterpreter::executeDatabaseQuotaBackup(char* parameters) {
   split_args_with_equal(id, command_list);
 
   Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
+    ndbout << "Expected DATABASE QUOTA BACKUP file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
   if (command_list_size > 2) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;

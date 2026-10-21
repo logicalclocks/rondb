@@ -37,6 +37,13 @@
 --echo # Values must be smaller than RNIL, they are not truncated
 --error 255,65280
 --exec $NDB_MGM -e "DATABASE QUOTA SET test3 --rate-per-sec=4294967296"
+--echo # GET, BACKUP and RESTORE need an argument
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA GET"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA BACKUP"
+--error 255,65280
+--exec $NDB_MGM -e "DATABASE QUOTA RESTORE"
 
 --echo # --on-disk-size is in GBytes: 1 GByte is more than 80% of a
 --echo # 128 MByte data file
