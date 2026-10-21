@@ -319,16 +319,24 @@ namespace ndb_ring_buffer {
 bool thdvar_show_meta(THD *thd) { return THDVAR(thd, ring_buffer_show_meta); }
 }  // namespace ndb_ring_buffer
 
-static MYSQL_THDVAR_BOOL(table_no_logging,                 /* name */
-                         PLUGIN_VAR_NOCMDARG, "", nullptr, /* check func. */
-                         nullptr,                          /* update func. */
-                         false                             /* default */
+static MYSQL_THDVAR_BOOL(table_no_logging, /* name */
+                         PLUGIN_VAR_NOCMDARG,
+                         "Create NDB tables without logging, as with "
+                         "NDB_TABLE=NOLOGGING=1: their changes are not "
+                         "written to the REDO log or to checkpoints, so "
+                         "their data is lost when the whole cluster restarts.",
+                         nullptr, /* check func. */
+                         nullptr, /* update func. */
+                         false    /* default */
 );
 
-static MYSQL_THDVAR_BOOL(table_temporary,                  /* name */
-                         PLUGIN_VAR_NOCMDARG, "", nullptr, /* check func. */
-                         nullptr,                          /* update func. */
-                         false                             /* default */
+static MYSQL_THDVAR_BOOL(table_temporary, /* name */
+                         PLUGIN_VAR_NOCMDARG,
+                         "Create NDB tables without logging, the same as "
+                         "ndb_table_no_logging.",
+                         nullptr, /* check func. */
+                         nullptr, /* update func. */
+                         false    /* default */
 );
 
 static MYSQL_THDVAR_UINT(blob_read_batch_bytes, /* name */
@@ -19612,7 +19620,7 @@ static MYSQL_SYSVAR_ULONG(
     row_checksum,         /* name */
     opt_ndb_row_checksum, /* var  */
     PLUGIN_VAR_OPCMDARG,
-    "Create tables with a row checksum, this checks for HW issues at the"
+    "Create tables with a row checksum, this checks for HW issues at the "
     "expense of performance",
     nullptr, /* check func. */
     nullptr, /* update func. */
@@ -19747,7 +19755,7 @@ static MYSQL_SYSVAR_BOOL(
     log_update_minimal,         /* name */
     opt_ndb_log_update_minimal, /* var */
     PLUGIN_VAR_OPCMDARG,
-    "For efficiency, log updates in a minimal format"
+    "For efficiency, log updates in a minimal format. "
     "Log only the primary key value(s) in the before "
     "image. Log only the changed columns in the after "
     "image. This may cause compatibility problems if "
@@ -19777,7 +19785,7 @@ static MYSQL_SYSVAR_BOOL(log_empty_update,         /* name */
                          PLUGIN_VAR_OPCMDARG,
                          "Normally empty updates are filtered away "
                          "before they are logged. However, for read tracking "
-                         "in conflict resolution a hidden pesudo attribute is "
+                         "in conflict resolution a hidden pseudo attribute is "
                          "set which will result in an empty update along with "
                          "special flags set. For this to work empty updates "
                          "have to be allowed.",
@@ -19839,11 +19847,16 @@ static MYSQL_SYSVAR_BOOL(
 );
 
 bool opt_ndb_log_empty_epochs;
-static MYSQL_SYSVAR_BOOL(log_empty_epochs,                 /* name */
-                         opt_ndb_log_empty_epochs,         /* var */
-                         PLUGIN_VAR_OPCMDARG, "", nullptr, /* check func. */
-                         nullptr,                          /* update func. */
-                         0                                 /* default */
+static MYSQL_SYSVAR_BOOL(
+    log_empty_epochs,         /* name */
+    opt_ndb_log_empty_epochs, /* var */
+    PLUGIN_VAR_OPCMDARG,
+    "Commit epochs that have no changes to log instead of skipping them, "
+    "so that they get rows in the ndb_binlog_index table. An epoch with no "
+    "events at all writes nothing to the binary log.",
+    nullptr, /* check func. */
+    nullptr, /* update func. */
+    0        /* default */
 );
 
 static int ndb_log_apply_status_check(THD *thd, SYS_VAR *sys_var, void *save,
@@ -19866,7 +19879,7 @@ static MYSQL_SYSVAR_BOOL(
     log_apply_status,         /* name */
     opt_ndb_log_apply_status, /* var */
     PLUGIN_VAR_OPCMDARG,
-    "Log ndb_apply_status updates from Master in the Binlog",
+    "Log ndb_apply_status updates from the source in the binary log.",
     ndb_log_apply_status_check, /* check func. */
     nullptr,                    /* update func. */
     0                           /* default */
