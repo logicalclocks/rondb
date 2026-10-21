@@ -1020,7 +1020,7 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     // Lazily initialize records if not done at startup
     if (ensure_records_initialized(ndb, database_id) != 0) {
       assign_generic_err_to_response(response,
-        "ERR Failed to initialize Rondis tables");
+        "Failed to initialize Rondis tables");
       return 0;
     }
     DEB_NDB_CMD(("cmd: %s, params: %lu\n", command, argv.size()));
