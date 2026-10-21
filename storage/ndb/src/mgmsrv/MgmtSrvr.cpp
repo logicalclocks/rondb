@@ -1608,6 +1608,22 @@ MgmtSrvr::set_config_param_request(
   SignalSender ss(theFacade);
   SimpleSignal ssig;
   ss.lock(); // lock will be released on exit
+
+  /**
+   * A single node must be a data node that we are connected to, else
+   * nothing is applied and the caller must not be told that it was.
+   * ALL (nodeId 0) skips the data nodes that are down, they take the
+   * value from the saved configuration at their next start.
+   */
+  if (nodeId != 0)
+  {
+    const int result = okToSendTo(NodeId(nodeId), true);
+    if (result != 0)
+    {
+      DBUG_RETURN(result);
+    }
+  }
+
   SetConfigParamReq* const req = CAST_PTR(SetConfigParamReq,
                                           ssig.getDataPtrSend());
   ssig.set(ss,
@@ -1647,6 +1663,7 @@ MgmtSrvr::set_config_param_request(
     DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
   }
   int error_code = 0;
+  Uint32 confirmed = 0;
   while (!nodes.isclear())
   {
     SimpleSignal *signal = ss.waitFor();
@@ -1667,6 +1684,7 @@ MgmtSrvr::set_config_param_request(
         CAST_CONSTPTR(SetConfigParamConf, signal->getDataPtr());
       NodeId senderNodeId = refToNode(conf->senderRef);
       nodes.clear(senderNodeId);
+      confirmed++;
       break;
     }
     case GSN_NF_COMPLETEREP:
@@ -1692,6 +1710,11 @@ MgmtSrvr::set_config_param_request(
       report_unknown_signal(signal);
       DBUG_RETURN(SEND_OR_RECEIVE_FAILED);
     }
+  }
+  if (error_code == 0 && nodeId != 0 && confirmed == 0)
+  {
+    /* The node went down before it took the value */
+    error_code = NO_CONTACT_WITH_PROCESS;
   }
   DBUG_RETURN(error_code);
 }

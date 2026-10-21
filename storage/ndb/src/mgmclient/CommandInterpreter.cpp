@@ -136,6 +136,8 @@ class CommandInterpreter {
   int  executePrompt(char* parameters);
   void executeClusterLog(char* parameters);
 
+  /* type for get_node_section() that accepts every node type */
+  static constexpr Uint32 ANY_NODE_TYPE = ~Uint32(0);
   bool get_node_section(ConfigValues::Iterator & iter,
                         int node_id,
                         Uint32 type);
@@ -2614,7 +2616,7 @@ int CommandInterpreter::executeStop(Vector<BaseString> &command_list,
     {
       int nodeId = node_ids[i];
       ConfigValues::Iterator iter(conf->m_config_values);
-      bool ret = get_node_section(iter, nodeId, 0);
+      bool ret = get_node_section(iter, nodeId, ANY_NODE_TYPE);
       if (!ret)
       {
         printError();
@@ -2720,7 +2722,7 @@ CommandInterpreter::get_node_section(ConfigValues::Iterator & iter,
     ndbout_c("Node %d not found in configuration", node_id);
     return false;
   }
-  if (type == 0)
+  if (type == ANY_NODE_TYPE)
   {
     return true;
   }
@@ -2960,11 +2962,10 @@ CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
     /*
      * Update MaxDiskWriteSpeed for a specific data node.
      */
-    bool ret = get_node_section(iter, processId, 0);
-    if (!ret)
+    if (!get_node_section(iter, processId, NODE_TYPE_DB))
     {
-      printError();
-      ndbout_c("Failed to get configuration of node %d", processId);
+      ndbout_c("MaxDiskWriteSpeed is a data node parameter: node %d is "
+               "not a data node", processId);
       ndb_mgm_destroy_configuration(conf);
       return -1;
     }
@@ -3004,8 +3005,13 @@ CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
                                       new_value);
   if (ret_code < 0)
   {
-    ndbout_c("Warning: Configuration saved but failed to update running "
-             "nodes. Restart nodes for the change to take effect.");
+    if (all)
+      ndbout_c("Warning: Configuration saved but failed to update running "
+               "nodes. Restart nodes for the change to take effect.");
+    else
+      ndbout_c("Warning: Configuration saved but node %d was not updated: "
+               "it is not running, or it failed to apply the value. It "
+               "takes the value at its next start.", processId);
     printError();
     return -1;
   }
@@ -3055,20 +3061,10 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
   }
 
   /*
-   * EnableProactiveDeadlockDetection is a data-node-only parameter, so when a
-   * specific node is given it must be a valid data node id.
-   */
-  if (!all && (processId == 0 || processId > ABS_MAX_NDB_NODES))
-  {
-    ndbout_c("Node %d is not a valid data node id (1..%d)", processId,
-             ABS_MAX_NDB_NODES);
-    return -1;
-  }
-
-  /*
    * Step 1: Update the permanent configuration on the management server so the
-   * value survives node (re)starts.  Only data node sections are searched
-   * (data node ids are within ABS_MAX_NDB_NODES).
+   * value survives node (re)starts.  EnableProactiveDeadlockDetection is a
+   * data-node-only parameter, so only data node sections are updated, and a
+   * specific node must be a data node.
    */
   ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
                                                           NDB_VERSION);
@@ -3084,7 +3080,7 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
 
   if (all)
   {
-    for (int i = 0; i < ABS_MAX_NDB_NODES; i++)
+    for (int i = 0; i < ABS_MAX_NODES; i++)
     {
       if (!iter.openSection(CFG_SECTION_NODE, i))
         continue;
@@ -3102,11 +3098,10 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
   }
   else
   {
-    bool ret = get_node_section(iter, processId, 0);
-    if (!ret)
+    if (!get_node_section(iter, processId, NODE_TYPE_DB))
     {
-      printError();
-      ndbout_c("Failed to get configuration of node %d", processId);
+      ndbout_c("EnableProactiveDeadlockDetection is a data node parameter: "
+               "node %d is not a data node", processId);
       ndb_mgm_destroy_configuration(conf);
       return -1;
     }
@@ -3175,9 +3170,14 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
 
   if (dump_failures != 0)
   {
-    ndbout_c("Warning: configuration saved, but failed to toggle %d running "
-             "node(s). Restart them for the change to take effect.",
-             dump_failures);
+    if (all)
+      ndbout_c("Warning: configuration saved, but failed to toggle %d running "
+               "node(s). Restart them for the change to take effect.",
+               dump_failures);
+    else
+      ndbout_c("Warning: Configuration saved but node %d was not updated: "
+               "it is not running, or it failed to apply the value. It "
+               "takes the value at its next start.", processId);
     return -1;
   }
 
@@ -3232,20 +3232,10 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
   const char *const mode_name = mode_names[new_value];
 
   /*
-   * CompiledInterpreter is a data-node-only parameter, so when a specific
-   * node is given it must be a valid data node id.
-   */
-  if (!all && (processId == 0 || processId > ABS_MAX_NDB_NODES))
-  {
-    ndbout_c("Node %d is not a valid data node id (1..%d)", processId,
-             ABS_MAX_NDB_NODES);
-    return -1;
-  }
-
-  /*
    * Step 1: Update the permanent configuration on the management server so the
-   * value survives node (re)starts.  Only data node sections are searched
-   * (data node ids are within ABS_MAX_NDB_NODES).
+   * value survives node (re)starts.  CompiledInterpreter is a data-node-only
+   * parameter, so only data node sections are updated, and a specific node
+   * must be a data node.
    */
   ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
                                                           NDB_VERSION);
@@ -3261,7 +3251,7 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
 
   if (all)
   {
-    for (int i = 0; i < ABS_MAX_NDB_NODES; i++)
+    for (int i = 0; i < ABS_MAX_NODES; i++)
     {
       if (!iter.openSection(CFG_SECTION_NODE, i))
         continue;
@@ -3279,11 +3269,10 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
   }
   else
   {
-    bool ret = get_node_section(iter, processId, 0);
-    if (!ret)
+    if (!get_node_section(iter, processId, NODE_TYPE_DB))
     {
-      printError();
-      ndbout_c("Failed to get configuration of node %d", processId);
+      ndbout_c("CompiledInterpreter is a data node parameter: node %d is "
+               "not a data node", processId);
       ndb_mgm_destroy_configuration(conf);
       return -1;
     }
@@ -3323,8 +3312,13 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
                                       new_value);
   if (ret_code < 0)
   {
-    ndbout_c("Warning: Configuration saved but failed to update running "
-             "nodes. Restart nodes for the change to take effect.");
+    if (all)
+      ndbout_c("Warning: Configuration saved but failed to update running "
+               "nodes. Restart nodes for the change to take effect.");
+    else
+      ndbout_c("Warning: Configuration saved but node %d was not updated: "
+               "it is not running, or it failed to apply the value. It "
+               "takes the value at its next start.", processId);
     if (new_value != NDB_COMPILED_INTERPRETER_OFF)
     {
       ndbout_c("Note: CompiledInterpreter=%s is only accepted by x86_64 "
@@ -3655,7 +3649,7 @@ CommandInterpreter::executeSetDomain(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -3757,7 +3751,7 @@ CommandInterpreter::executeHostname(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -3867,7 +3861,7 @@ CommandInterpreter::executeActivate(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -4050,7 +4044,7 @@ CommandInterpreter::executeDeactivate(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
