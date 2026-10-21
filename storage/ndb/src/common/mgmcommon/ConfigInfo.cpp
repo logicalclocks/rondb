@@ -4044,6 +4044,22 @@ static bool fixShmKey(InitConfigFileParser::Context &ctx, const char *) {
     require(ctx.m_currentSection->get("NodeId1", &id1));
     require(ctx.m_currentSection->get("NodeId2", &id2));
     if (!ctx.m_currentSection->get("ShmKey", &key)) {
+      /**
+       * The generated key has 8 bits for each node id, so it is only
+       * unique for node ids below 256. A larger node id overlaps the
+       * other node id and the port number, two connections can then get
+       * the same key and share one shared memory segment, for example
+       * API nodes 67 and 579 to the same data node with port 1186.
+       * Connections with such node ids must set ShmKey explicitly.
+       */
+      if (id1 > 255 || id2 > 255) {
+        ctx.reportError(
+            "Shared memory connection between node %u and node %u needs "
+            "ShmKey set in an [SHM] section for this node pair, ShmKey is "
+            "only generated for node ids below 256",
+            id1, id2);
+        DBUG_RETURN(false);
+      }
       require(ctx.m_userProperties.get("ShmUniqueId", &key));
       key = key << 16 | (id1 > id2 ? id1 << 8 | id2 : id2 << 8 | id1);
       ctx.m_currentSection->put("ShmKey", key);

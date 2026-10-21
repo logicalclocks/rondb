@@ -531,6 +531,87 @@ static void test_rdma_api_db_connections(void) {
 }
 #endif
 
+/* Return the ShmKey of the SHM connection between the two nodes, 0 if none */
+static Uint32 get_shm_key(Config *c, Uint32 node1, Uint32 node2) {
+  ConfigIter iter(c, CFG_SECTION_CONNECTION);
+  for (; iter.valid(); iter.next()) {
+    Uint32 section_type = 0;
+    Uint32 node_id1 = 0;
+    Uint32 node_id2 = 0;
+    CHECK(iter.get(CFG_TYPE_OF_SECTION, &section_type) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_1, &node_id1) == 0);
+    CHECK(iter.get(CFG_CONNECTION_NODE_2, &node_id2) == 0);
+    if (section_type != CONNECTION_TYPE_SHM) continue;
+    if (!((node_id1 == node1 && node_id2 == node2) ||
+          (node_id1 == node2 && node_id2 == node1)))
+      continue;
+    Uint32 key = 0;
+    CHECK(iter.get(CFG_SHM_KEY, &key) == 0);
+    return key;
+  }
+  return 0;
+}
+
+static void test_shm_key_node_ids(void) {
+  ndbout_c("test_shm_key_node_ids");
+  // The generated ShmKey has 8 bits for each node id, the low 16 bits
+  // are the higher node id and then the lower node id.
+  Config *c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=67", "HostName=localhost", "[shm]", "NodeId1=1",
+      "NodeId2=67", NULL);
+  CHECK(c);
+  CHECK((get_shm_key(c, 1, 67) & 0xFFFF) == (67 << 8 | 1));
+  delete c;
+
+  // No generated ShmKey for a node id of 256 or more, the key would not
+  // be unique.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=300", "HostName=localhost", "[shm]", "NodeId1=1",
+      "NodeId2=300", NULL);
+  CHECK(c == NULL);
+
+  // An explicit ShmKey is accepted for any node id.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "[ndb_mgmd]", "NodeId=20", "HostName=localhost", "[mysqld]",
+      "NodeId=300", "HostName=localhost", "[shm]", "NodeId1=1",
+      "NodeId2=300", "ShmKey=4711", NULL);
+  CHECK(c);
+  CHECK(get_shm_key(c, 1, 300) == 4711);
+  delete c;
+
+  // UseShm adds SHM connections with a generated ShmKey to API nodes on
+  // the same host as the data node.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "UseShm=true", "[ndb_mgmd]", "NodeId=20", "HostName=localhost",
+      "[mysqld]", "NodeId=67", "HostName=localhost", NULL);
+  CHECK(c);
+  CHECK((get_shm_key(c, 1, 67) & 0xFFFF) == (67 << 8 | 1));
+  delete c;
+
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "UseShm=true", "[ndb_mgmd]", "NodeId=20", "HostName=localhost",
+      "[mysqld]", "NodeId=300", "HostName=localhost", NULL);
+  CHECK(c == NULL);
+
+  // With UseShm, an [SHM] section with ShmKey for the node pair replaces
+  // the generated connection.
+  c = create_config(
+      "[ndbd]", "NodeId=1", "HostName=localhost", "NoOfReplicas=1",
+      "UseShm=true", "[ndb_mgmd]", "NodeId=20", "HostName=localhost",
+      "[mysqld]", "NodeId=300", "HostName=localhost", "[shm]",
+      "NodeId1=1", "NodeId2=300", "ShmKey=4711", NULL);
+  CHECK(c);
+  CHECK(get_shm_key(c, 1, 300) == 4711);
+  delete c;
+}
+
 #include <NdbTap.hpp>
 
 #include <EventLogger.hpp>
@@ -546,6 +627,7 @@ TAPTEST(MgmConfig) {
 #ifdef NDB_RDMA_TRANSPORTER_SUPPORTED
   test_rdma_api_db_connections();
 #endif
+  test_shm_key_node_ids();
   if (false) print_restart_info();
   test_config_v1_with_dyn_ports();
   ndb_end(0);
