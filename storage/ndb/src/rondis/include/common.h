@@ -101,6 +101,7 @@ Uint32 get_length(char* buf);
 #define FAILED_INCRBY_DECRBY_PARAMETER "value is not an integer or out of range"
 #define FAILED_SELECT_COMMAND "Wrong parameter to SELECT command"
 #define FAILED_SELECT_NO_SUCH_DATABASE "DB index is out of range"
+#define FAILED_CLUSTER_UNAVAILABLE "cluster unavailable, try again later"
 
 // NDB interpreted-code runtime error codes that we surface specially.
 // Mirrors entries in storage/ndb/src/kernel/blocks/dbtup/Dbtup.hpp.

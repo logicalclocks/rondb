@@ -585,14 +585,9 @@ void unsupported_command(const pink::RedisCmdArgsType &argv,
 
 void unavailable_cluster(const pink::RedisCmdArgsType &argv,
                          std::string *response) {
-  printf("Cluster unavailble: ");
+  printf("Cluster unavailable: ");
   print_args(argv);
-  char error_message[256];
-  snprintf(error_message,
-           sizeof(error_message),
-           REDIS_UNKNOWN_COMMAND,
-           argv[0].c_str());
-  assign_generic_err_to_response(response, error_message);
+  assign_generic_err_to_response(response, FAILED_CLUSTER_UNAVAILABLE);
 }
 
 void wrong_number_of_arguments(const pink::RedisCmdArgsType &argv,
