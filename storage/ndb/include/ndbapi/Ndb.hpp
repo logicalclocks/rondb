@@ -1226,7 +1226,7 @@ class Ndb {
    * @param  maxNoOfTransactions
    *         Maximum number of parallel
    *         NdbTransaction objects that can be handled by the Ndb object.
-   *         Maximum value is 1024.
+   *         Maximum value is 1024; larger values are reduced to 1024.
    *
    * @note each scan or index scan operation uses one extra
    *       NdbTransaction object
