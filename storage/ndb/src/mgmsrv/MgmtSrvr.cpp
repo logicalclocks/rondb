@@ -6135,6 +6135,13 @@ int MgmtSrvr::check_quota_version(bool is_user) {
   return 0;
 }
 
+/* The result when check_quota_version(is_user) fails */
+static const char *quota_version_error(bool is_user) {
+  if (is_user)
+    return "User rate limits not supported in this cluster, requires 25.10.2";
+  return "Quotas not supported in this cluster, requires 24.10.0";
+}
+
 int
 MgmtSrvr::set_quotas(const char *database_name,
                      bool is_user,
@@ -6154,8 +6161,7 @@ MgmtSrvr::set_quotas(const char *database_name,
   NodeId nodeId;
 
   if ((res = check_quota_version(is_user))) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
+    out << "result: " << quota_version_error(is_user) << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
     return res;
@@ -6286,8 +6292,7 @@ MgmtSrvr::alter_quotas(const char *database_name,
   NodeId nodeId;
 
   if ((res = check_quota_version(is_user))) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
+    out << "result: " << quota_version_error(is_user) << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
     return res;
@@ -6409,8 +6414,7 @@ int MgmtSrvr::drop_quotas(const char *database_name, bool is_user, NdbOut& out) 
   NodeId nodeId;
 
   if ((res = check_quota_version(is_user))) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
+    out << "result: " << quota_version_error(is_user) << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
     return res;
@@ -6528,8 +6532,7 @@ void MgmtSrvr::get_quotas(const char *database_name, bool is_user, NdbOut& out) 
 
   int res;
   if ((res = check_quota_version(is_user))) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
+    out << "result: " << quota_version_error(is_user) << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
     return;
@@ -6687,8 +6690,7 @@ void MgmtSrvr::list_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
 
   int res;
   if ((res = check_quota_version(is_user))) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
+    out << "result: " << quota_version_error(is_user) << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
     return;
@@ -6843,8 +6845,7 @@ void MgmtSrvr::backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out) {
 
   int res;
   if ((res = check_quota_version(is_user))) {
-    out << "result: Quotas not supported in this cluster, requires 24.10.18"
-        << endl;
+    out << "result: " << quota_version_error(is_user) << endl;
     out << "error_code: " << 4572 << endl;
     out << endl;
     return;
