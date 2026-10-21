@@ -1061,6 +1061,9 @@ static int runRestartFD(NDBT_Context *ctx, NDBT_Step *step) {
     info("restart: load1");
     while (!ctx->isTestStopped()) {
       info("restart: load1 at " << upval);
+      // Keep the long transaction alive past TransactionInactiveTimeout
+      // (60 s by default) while the redo log fills
+      ops.refresh();
       NdbError err;
       int cnt = 100 + myRandom48(100);
       CHK1(run_write_ops(ctx, step, cnt, upval, err) == 0);
