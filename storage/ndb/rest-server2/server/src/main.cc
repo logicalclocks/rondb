@@ -452,7 +452,7 @@ int main(int argc, char *argv[]) {
   if (optVersion || optHelp) {
     printf("rdrs2 distributed as part of ");
     ndb_std_print_version();
-    printf("rdrs API supported up to version " API_VERSION "\n");
+    printf("rdrs API supported up to version " API_VERSION_2 "\n");
   }
   if (optHelp) {
     printf("\n%s", usageHelp);
