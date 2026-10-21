@@ -151,7 +151,9 @@ class NdbScanFilter {
    * documentation for NdbOperation::equal().
    * For BinaryConditions LIKE and NOT_LIKE, the value pointed to by val
    * should NOT include initial length bytes.
-   * For LIKE and NOT_LIKE, the % and ? wildcards are supported.
+   * For LIKE and NOT_LIKE, the SQL wildcards % (any sequence of
+   * characters) and _ (exactly one character) are supported, and a
+   * backslash escapes the character that follows it.
    * For bitmask operations, see the bitmask format information against
    * the branch_col_and_mask_eq_mask instruction in NdbInterpretedCode.hpp
    *
