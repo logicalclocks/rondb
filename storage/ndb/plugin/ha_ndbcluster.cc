@@ -19486,7 +19486,12 @@ static int ndb_recv_thread_cpu_mask_check_str(const char *str) {
     return 0;
   }
 
-  if (parse_mask(str, bitmask) < 0) {
+  /*
+    parse_mask() reads each CPU id with sscanf("%u") and ignores what
+    follows it, so e.g. "0x33" would silently mean CPU 0.
+  */
+  if (str[strspn(str, "0123456789,- \t")] != '\0' ||
+      parse_mask(str, bitmask) < 0) {
     ndb_log_info(
         "Trying to set ndb_recv_thread_cpu_mask to"
         " illegal value = %s, ignored",
@@ -19524,7 +19529,8 @@ static MYSQL_SYSVAR_STR(
     opt_ndb_recv_thread_cpu_mask, /* var */
     PLUGIN_VAR_RQCMDARG,
     "CPU mask for locking receiver threads to specific CPU, specified "
-    " as hexadecimal as e.g. 0x33, one CPU is used per receiver thread.",
+    "as a comma-separated list of CPU ids or ranges, e.g. 0,2-3; one CPU "
+    "is used per receiver thread.",
     ndb_recv_thread_cpu_mask_check,       /* check func. */
     ndb_recv_thread_cpu_mask_update_func, /* update func. */
     ndb_recv_thread_cpu_mask_option_buf);
