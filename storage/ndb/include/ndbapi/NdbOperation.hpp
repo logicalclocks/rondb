@@ -1192,7 +1192,7 @@ class NdbOperation {
     Uint32 partitionId;
 
     /* Interpreted code to be executed in this operation
-     * Only supported for update operations currently
+     * Supported for read, update, write and delete operations, not insert
      */
     const NdbInterpretedCode *interpretedCode;
 

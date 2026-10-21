@@ -756,18 +756,30 @@ class NdbTransaction {
    *
    *   Operation type        Supported OperationOptions flags
    *   --------------        --------------------------------
-   *   readTuple             OO_ABORTOPTION, OO_GETVALUE,
+   *   readTuple             OO_GETVALUE, OO_PARTITION_ID, OO_INTERPRETED,
+   *                         OO_LOCKHANDLE (primary key, LM_Read or
+   *                         LM_Exclusive), OO_NOWAIT (not
+   *                         LM_CommittedRead), OO_AGGREGATION (primary
+   *                         key, LM_CommittedRead)
+   *   insertTuple           OO_SETVALUE, OO_PARTITION_ID
+   *   updateTuple           OO_GETVALUE, OO_SETVALUE, OO_GET_FINAL_VALUE,
    *                         OO_PARTITION_ID, OO_INTERPRETED
-   *   insertTuple           OO_ABORTOPTION, OO_SETVALUE,
-   *                         OO_PARTITION_ID, OO_ANYVALUE
-   *   updateTuple           OO_ABORTOPTION, OO_SETVALUE,
+   *   writeTuple            OO_GETVALUE, OO_SETVALUE, OO_GET_FINAL_VALUE,
    *                         OO_PARTITION_ID, OO_INTERPRETED,
-   *                         OO_ANYVALUE
-   *   writeTuple            OO_ABORTOPTION, OO_SETVALUE,
-   *                         OO_PARTITION_ID, OO_ANYVALUE
-   *   deleteTuple           OO_ABORTOPTION, OO_GETVALUE,
-   *                         OO_PARTITION_ID, OO_INTERPRETED,
-   *                         OO_ANYVALUE
+   *                         OO_INTERPRETED_INSERT (with OO_INTERPRETED),
+   *                         OO_DIRTY_FLAG
+   *   deleteTuple           OO_GETVALUE, OO_PARTITION_ID, OO_INTERPRETED
+   *   all of the above      OO_ABORTOPTION, OO_ANYVALUE, OO_CUSTOMDATA,
+   *                         OO_QUEUABLE, OO_NOT_QUEUABLE,
+   *                         OO_DEFERRED_CONSTAINTS, OO_DISABLE_FK,
+   *                         OO_REPLICA_APPLIER, OO_TTL_IGNORE,
+   *                         OO_TTL_ONLY_EXPIRED (not with OO_TTL_IGNORE),
+   *                         OO_SET_INPUT_PARAM (with OO_INTERPRETED),
+   *                         OO_RING_BUFFER_OP, OO_RING_BUFFER_SHOW_META,
+   *                         OO_BATCH_SAFE_FLAG, OO_BATCH_UNSAFE_FLAG
+   *
+   * OO_PARTITION_ID is only allowed for primary key operations on tables
+   * with user-defined partitioning.
    *
    * The sizeOfOptions optional parameter is used to allow this interface
    * to be backwards compatible with previous definitions of the
