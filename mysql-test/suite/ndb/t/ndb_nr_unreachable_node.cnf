@@ -1,0 +1,3 @@
+# The cluster of ndb_sr_unreachable_node: four data nodes in two node
+# groups, data node 3 listens on a fixed port.
+!include ndb_sr_unreachable_node.cnf

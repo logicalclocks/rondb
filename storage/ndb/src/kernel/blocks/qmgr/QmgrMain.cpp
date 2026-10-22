@@ -366,9 +366,7 @@ void Qmgr::execCONTINUEB(Signal *signal) {
         jam();
         return;
       }  // if
-      // regreqMasterTimeLimitLab(signal);
-      failReportLab(signal, c_start.m_startNode, FailRep::ZSTART_IN_REGREQ,
-                    getOwnNodeId());
+      regreqMasterTimeLimitLab(signal);
       return;
     case ZTIMER_HANDLING:
       jam();
@@ -668,14 +666,30 @@ void Qmgr::nsl_report_inclusion_wait() {
    * (execCM_ACKADD completes the step when the last one is in).
    */
   char buf[NodeStartLog::BUF_SIZE];
+  if (cpresident == ZNIL) {
+    /* Our inclusion was aborted, regreqTimeLimitLab reports the retries */
+    return;
+  }
   if (cpresident == getOwnNodeId()) {
+    char including[100];
+    including[0] = 0;
+    if (c_start.m_startNode != 0 && c_start.m_gsn == GSN_CM_ADD) {
+      BaseString::snprintf(including, sizeof(including),
+                           ", including node %u, waiting for CM_ACKADD"
+                           " from nodes %s",
+                           c_start.m_startNode,
+                           BaseString::getPrettyTextShort(
+                               c_start.m_nodes.getNodeBitmask())
+                               .c_str());
+    }
     NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 3,
                        NodeState::ST_ILLEGAL_TYPE, "waiting",
                        (Int64)c_nsl_join_timer.elapsed_sec(),
                        "we are the president, waiting to include the"
-                       " co-starting nodes %s (CM_ADD)",
+                       " co-starting nodes %s (CM_ADD)%s",
                        BaseString::getPrettyTextShort(c_start.m_starting_nodes)
-                           .c_str());
+                           .c_str(),
+                       including);
   } else if (c_start.m_gsn == GSN_CM_NODEINFOREQ && !c_start.m_nodes.done()) {
     NodeStartLog::line(buf, sizeof(buf), NodeStartLog::NSL_JOIN, 3,
                        NodeState::ST_ILLEGAL_TYPE, "waiting",
@@ -1234,6 +1248,27 @@ void Qmgr::execREAD_NODESREF(Signal *signal) {
  *
  * Here the president can complete the inclusion protocol and is ready to
  * receive new nodes into the heartbeat protocol.
+ *
+ * The new node sends CM_NODEINFOREQ only to the nodes it is connected to.
+ * If it cannot connect to one of the nodes included in the heartbeat
+ * protocol, that node never sends CM_ACKADD(Prepare), and the president
+ * refuses every other new node while it waits. So the president
+ * supervises the prepare phase: when it has not completed within
+ * StartPartialTimeout, the president aborts the inclusion
+ * (regreqMasterTimeLimitLab):
+ *
+ * <----CM_ADD(Abort)---------------------------------------------------
+ *                                   <<------CM_ADD(Abort)-----------------
+ *
+ * The nodes forget the new node, which stays connected and goes back to
+ * sending CM_REGREQ. The president includes it again when
+ * StartPartialTimeout has passed. A cluster start goes on without it if
+ * the other nodes can restore all data, else it completes once the new
+ * node or another node of its node group can be included. The president
+ * does not fail the new node since a node failure would make all nodes
+ * that are starting fail as well. Every CM_ACKADD carries the dynamic id
+ * of the attempt, so that the president tells an acknowledgement of an
+ * aborted attempt from one of the next attempt of the same node.
  */
 /*******************************/
 /* CM_INFOCONF                */
@@ -1273,7 +1308,12 @@ extern NdbNodeBitmask g_nowait_nodes;
 extern NodeBitmask g_not_active_nodes;
 
 void Qmgr::cmInfoconf010Lab(Signal *signal) {
-  c_start.m_startKey = 0;
+  /**
+   * A new key per round, so that only the CONTINUEB of this round
+   * continues the CM_REGREQ loop. One of an earlier loop can be pending
+   * when the loop starts again after an aborted inclusion.
+   */
+  c_start.m_startKey++;
   c_start.m_startNode = getOwnNodeId();
   c_start.m_nodes.clearWaitingFor();
   c_start.m_gsn = GSN_CM_REGREQ;
@@ -1546,6 +1586,27 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
     return;
   }
 
+  if (c_aborted_inclusions.get(addNodePtr.i)) {
+    /**
+     * The inclusion of this node was aborted, see
+     * regreqMasterTimeLimitLab. It waits StartPartialTimeout, so that the
+     * other starting nodes are included before a node that may still
+     * lack connections is tried again. It is not kept out longer: a
+     * cluster start that cannot complete without it would then never
+     * complete, also once its connections are up.
+     */
+    const Uint64 elapsed =
+        NdbTick_Elapsed(c_aborted_inclusion_time[addNodePtr.i],
+                        NdbTick_getCurrentTicks())
+            .milliSec();
+    if (elapsed < c_restartPartialTimeout) {
+      jam();
+      DEB_STARTUP(("Aborted inclusion, busy president error"));
+      sendCmRegrefLab(signal, Tblockref, CmRegRef::ZBUSY, startingVersion);
+      return;
+    }
+  }
+
   if (ctoStatus == Q_ACTIVE) {
     jam();
     /**
@@ -1689,13 +1750,17 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
   DEBUG_START2(GSN_CM_ADD, rg, "Prepare");
 
   /**
-   * Set timer
+   * Set timer, see regreqMasterTimeLimitLab. StartPartialTimeout 0 means
+   * wait for ever.
    */
-  return;
-  signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
-  signal->theData[1] = c_start.m_startKey;
-  sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 30000, 2);
-
+  c_start.m_startNodeTime = NdbTick_getCurrentTicks();
+  if (c_restartPartialTimeout != Uint32(~0)) {
+    jam();
+    signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
+    signal->theData[1] = c_start.m_startKey;
+    signal->theData[2] = c_start.m_startNode;
+    sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 1000, 3);
+  }
   return;
 }  // Qmgr::execCM_REGREQ()
 
@@ -2685,11 +2750,21 @@ void Qmgr::regreqTimeLimitLab(Signal *signal) {
       nsl_append_node_list(connected_buf, sizeof(connected_buf), connected);
       nsl_append_node_list(missing_buf, sizeof(missing_buf), missing);
       char detail[384];
+      char state_buf[80];
+      if (c_inclusion_aborted_by != 0) {
+        BaseString::snprintf(state_buf, sizeof(state_buf),
+                             "president node %u aborted our inclusion,"
+                             " retrying",
+                             c_inclusion_aborted_by);
+      } else {
+        BaseString::snprintf(state_buf, sizeof(state_buf),
+                             "no president elected");
+      }
       const int pos = BaseString::snprintf(
           detail, sizeof(detail),
-          "no president elected, connected data nodes [%s],"
+          "%s, connected data nodes [%s],"
           " not connected [%s]",
-          connected_buf, missing_buf);
+          state_buf, connected_buf, missing_buf);
       if (c_nsl_last_regref_node != 0 && pos > 0 &&
           (size_t)pos < sizeof(detail)) {
         BaseString::snprintf(detail + pos, sizeof(detail) - pos,
@@ -2710,6 +2785,247 @@ void Qmgr::regreqTimeLimitLab(Signal *signal) {
     cmInfoconf010Lab(signal);
   }
 }  // Qmgr::regreqTimelimitLab()
+
+/**
+ * Time supervision of the inclusion of a starting node, on the president.
+ * execCM_REGREQ starts it when it accepts the node, it ends when every
+ * node has prepared the inclusion (execCM_ACKADD takes a new start key)
+ * or when the inclusion ends.
+ *
+ * A cluster node prepares the inclusion when it has received the
+ * CM_NODEINFOREQ of the starting node, which the starting node sends over
+ * its transporter connections. Without a connection to one cluster node
+ * the starting node is thus never included, and while the president
+ * waits for it every other starting node is refused with ZBUSY_PRESIDENT.
+ * So after StartPartialTimeout the president aborts the inclusion. It
+ * does so also when the cluster start cannot complete without the node:
+ * a node that cannot connect to every member cannot take part in the
+ * start, and waiting for it would keep out the starting nodes that can.
+ * NDBCNTR does not start a system restart that cannot restore all data.
+ *
+ * The president does not fail the starting node: a node that has not
+ * started fails when another data node fails or disconnects, so in a
+ * cluster start all starting nodes would fail with it. CM_ADD(Abort)
+ * instead makes every node forget the starting node, which stays
+ * connected and asks to be included again, see execCM_REGREQ for when it
+ * is.
+ */
+void Qmgr::regreqMasterTimeLimitLab(Signal *signal) {
+  if (cpresident != getOwnNodeId() || c_start.m_gsn != GSN_CM_ADD) {
+    jam();
+    return;
+  }
+
+  const NDB_TICKS now = NdbTick_getCurrentTicks();
+  if (NdbTick_Elapsed(c_start.m_startNodeTime, now).milliSec() <
+      c_restartPartialTimeout) {
+    jam();
+    signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
+    signal->theData[1] = c_start.m_startKey;
+    signal->theData[2] = c_start.m_startNode;
+    sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 1000, 3);
+    return;
+  }
+
+  NodeRecPtr addNodePtr;
+  addNodePtr.i = c_start.m_startNode;
+  ptrCheckGuard(addNodePtr, MAX_NDB_NODES, nodeRec);
+
+  /**
+   * A cluster node that has not prepared the inclusion has not received
+   * CM_NODEINFOREQ from the starting node. The starting node prepares it
+   * when every cluster node has answered its CM_NODEINFOREQ.
+   */
+  NdbNodeBitmask unreached = c_start.m_nodes.getNodeBitmask();
+  unreached.clear(addNodePtr.i);
+  char what[300];
+  if (unreached.isclear()) {
+    BaseString::snprintf(what, sizeof(what),
+                         "Node %u was not included in the cluster within"
+                         " StartPartialTimeout (%u ms), it has not prepared"
+                         " its inclusion",
+                         addNodePtr.i, c_restartPartialTimeout);
+  } else {
+    BaseString::snprintf(what, sizeof(what),
+                         "Node %u was not included in the cluster within"
+                         " StartPartialTimeout (%u ms), its CM_NODEINFOREQ"
+                         " has not reached node(s) %s, most likely it has no"
+                         " connection to them",
+                         addNodePtr.i, c_restartPartialTimeout,
+                         BaseString::getPrettyText(unreached).c_str());
+  }
+
+  bool can_abort =
+      ndbd_support_cm_add_abort(getNodeInfo(addNodePtr.i).m_version);
+  for (Uint32 i = 1; i < MAX_NDB_NODES && can_abort; i++) {
+    if (c_clusterNodes.get(i) &&
+        !ndbd_support_cm_add_abort(getNodeInfo(i).m_version)) {
+      jam();
+      can_abort = false;
+    }
+  }
+  if (!can_abort) {
+    jam();
+    /* Keep waiting, report again after another StartPartialTimeout */
+    warningEvent("%s. Waiting for it, not all nodes can abort an inclusion",
+                 what);
+    c_start.m_startNodeTime = now;
+    signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
+    signal->theData[1] = c_start.m_startKey;
+    signal->theData[2] = c_start.m_startNode;
+    sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 1000, 3);
+    return;
+  }
+
+  char outcome[400];
+  char reason[300];
+  if (getNodeState().startLevel >= NodeState::SL_STARTED) {
+    jam();
+    BaseString::snprintf(outcome, sizeof(outcome),
+                         "other nodes can join meanwhile");
+  } else if (is_initial_start()) {
+    jam();
+    BaseString::snprintf(outcome, sizeof(outcome),
+                         start_waits_for_node(addNodePtr.i)
+                             ? "the initial start waits for it, it is not"
+                               " in --nowait-nodes"
+                             : "the initial start goes on without it, it is"
+                               " in --nowait-nodes");
+  } else if (check_start_without_node(signal, addNodePtr.i, reason,
+                                      sizeof(reason))) {
+    jam();
+    BaseString::snprintf(outcome, sizeof(outcome),
+                         "the cluster start goes on without it");
+  } else {
+    jam();
+    BaseString::snprintf(outcome, sizeof(outcome),
+                         "the cluster start cannot complete without it, %s",
+                         reason);
+  }
+  warningEvent("%s. Aborting its inclusion, %s, it can join again in %u ms",
+               what, outcome, c_restartPartialTimeout);
+  abort_starting_node(signal, addNodePtr);
+}
+
+/**
+ * An initial start needs every data node that is not in --nowait-nodes,
+ * as in the election (check_startup). The president aborts the inclusion
+ * of such a node all the same, but the start keeps waiting for it.
+ */
+bool Qmgr::start_waits_for_node(Uint32 nodeId) const {
+  return getNodeState().startLevel < NodeState::SL_STARTED &&
+         is_initial_start() && !c_start.m_skip_nodes.get(nodeId);
+}
+
+bool Qmgr::is_initial_start() const {
+  return c_start.m_latest_gci == 0 ||
+         c_start.m_start_type == (1 << NodeState::ST_INITIAL_START);
+}
+
+/**
+ * Can the other nodes of a system restart restore all data without the
+ * starting node nodeId? As checked in the election (check_startup): no
+ * node group without a node with a log, and the same GCI restorable in
+ * every node group. Only for the log of an aborted inclusion, the
+ * inclusion is aborted either way: NDBCNTR does not start a system
+ * restart with a node group missing.
+ */
+bool Qmgr::check_start_without_node(Signal *signal, Uint32 nodeId,
+                                    char *reason, size_t reason_len) {
+  NdbNodeBitmask nodes = c_clusterNodes;
+  nodes.bitOR(c_start.m_starting_nodes);
+  nodes.clear(nodeId);
+  nodes.bitAND(c_start.m_starting_nodes_w_log);
+
+  CheckNodeGroups *sd = (CheckNodeGroups *)&signal->theData[0];
+  sd->blockRef = reference();
+  sd->requestType = CheckNodeGroups::Direct | CheckNodeGroups::ArbitCheck;
+  sd->mask = nodes;
+  EXECUTE_DIRECT(DBDIH, GSN_CHECKNODEGROUPSREQ, signal,
+                 CheckNodeGroups::SignalLengthArbitCheckShort);
+  if (sd->output == CheckNodeGroups::Lose) {
+    jam();
+    BaseString::snprintf(reason, reason_len,
+                         "the other nodes with a log, %s, lack a node group",
+                         BaseString::getPrettyText(nodes).c_str());
+    return false;
+  }
+
+  DihRestartReq *req = CAST_PTR(DihRestartReq, signal->getDataPtrSend());
+  req->senderRef = 0;
+  nodes.copyto(NdbNodeBitmask::Size, req->nodemask);
+  memcpy(req->node_gcis, c_start.m_node_gci, 4 * MAX_NDB_NODES);
+  EXECUTE_DIRECT(DBDIH, GSN_DIH_RESTARTREQ, signal,
+                 DihRestartReq::CheckLength);
+  const Uint32 incompleteng = signal->theData[0];
+  if (incompleteng != ABS_MAX_NDB_NODES) {
+    jam();
+    BaseString::snprintf(reason, reason_len,
+                         "without it the nodes of node group %u cannot"
+                         " restore the GCI of the other node groups",
+                         incompleteng);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Abort the inclusion of the starting node, see regreqMasterTimeLimitLab.
+ * Every node that got CM_ADD(Prepare) gets CM_ADD(Abort) and forgets the
+ * node again, the starting node asks to be included again.
+ */
+void Qmgr::abort_starting_node(Signal *signal, NodeRecPtr addNodePtr) {
+  const Uint32 nodeId = addNodePtr.i;
+  NdbNodeBitmask receivers = c_clusterNodes;
+  receivers.clear(getOwnNodeId());
+  receivers.set(nodeId);
+
+  CmAdd *const cmAdd = (CmAdd *)signal->getDataPtrSend();
+  cmAdd->requestType = CmAdd::Abort;
+  cmAdd->startingNodeId = nodeId;
+  cmAdd->startingVersion = getNodeInfo(nodeId).m_version;
+  cmAdd->startingMysqlVersion = getNodeInfo(nodeId).m_mysql_version;
+  cmAdd->startingDynamicId = addNodePtr.p->ndynamicId;
+  NodeReceiverGroup rg(QMGR, receivers);
+  sendSignal(rg, GSN_CM_ADD, signal, CmAdd::AbortSignalLength, JBA);
+  DEBUG_START2(GSN_CM_ADD, rg, "Abort");
+
+  const bool start_waits = start_waits_for_node(nodeId);
+  forget_aborted_inclusion(addNodePtr, cmAdd->startingDynamicId);
+  c_start.reset();
+
+  /**
+   * The cluster start no longer waits for the node to be included
+   * (execCM_ACKADD), unless it is an initial start that needs it.
+   */
+  if (c_start.m_starting_nodes.get(nodeId) && !start_waits) {
+    jam();
+    c_start.m_starting_nodes.clear(nodeId);
+    if (c_start.m_starting_nodes.isclear()) {
+      jam();
+      sendSttorryLab(signal, true);
+    }
+  }
+}
+
+/**
+ * The inclusion of the node was aborted: back to the state of a connected
+ * node that is not being included, see execCONNECT_REP. The next attempt
+ * sets the version again in CM_REGREQ and CM_NODEINFOREQ.
+ */
+void Qmgr::forget_aborted_inclusion(NodeRecPtr nodePtr, Uint32 dynamicId) {
+  c_aborted_inclusions.set(nodePtr.i);
+  c_aborted_inclusion_dynamic_id[nodePtr.i] = dynamicId;
+  c_aborted_inclusion_time[nodePtr.i] = NdbTick_getCurrentTicks();
+  if (nodePtr.p->phase == ZSTARTING || nodePtr.p->phase == ZINIT) {
+    jam();
+    nodePtr.p->phase = ZINIT;
+    setNodeInfo(nodePtr.i).m_version = 0;
+    setNodeInfo(nodePtr.i).m_mysql_version = 0;
+    recompute_version_info(NodeInfo::DB);
+  }
+  /* In ZFAIL_CLOSING the failure handling of the node goes on */
+}
 
 /**---------------------------------------------------------------------------
  * The new node will take care of giving information about own node and ask
@@ -2744,6 +3060,20 @@ void Qmgr::execCM_NODEINFOCONF(Signal *signal) {
   NodeRecPtr nodePtr;
   nodePtr.i = getOwnNodeId();
   ptrAss(nodePtr, nodeRec);
+  if (c_inclusion_aborted_by != 0 &&
+      (nodePtr.p->phase != ZSTARTING ||
+       c_start.m_gsn != GSN_CM_NODEINFOREQ || nodeId >= MAX_NDB_NODES ||
+       !c_start.m_nodes.isWaitingFor(nodeId))) {
+    jam();
+    /**
+     * The answer to a CM_NODEINFOREQ of an inclusion attempt that the
+     * president aborted, see cm_add_abort_starting_node.
+     */
+    g_eventLogger->info(
+        "Ignoring CM_NODEINFOCONF from node %u of an aborted inclusion",
+        nodeId);
+    return;
+  }
   ndbrequire(nodePtr.p->phase == ZSTARTING);
   ndbrequire(c_start.m_gsn == GSN_CM_NODEINFOREQ);
   c_start.m_nodes.clearWaitingFor(nodeId);
@@ -2811,6 +3141,19 @@ void Qmgr::execCM_NODEINFOREQ(Signal *signal) {
   CmNodeInfoReq *const req = (CmNodeInfoReq *)signal->getDataPtr();
   addNodePtr.i = req->nodeId;
   ptrCheckGuard(addNodePtr, MAX_NDB_NODES, nodeRec);
+  if (c_aborted_inclusions.get(addNodePtr.i) &&
+      req->dynamicId == c_aborted_inclusion_dynamic_id[addNodePtr.i]) {
+    jam();
+    /**
+     * Sent before the node learnt that the president aborted this
+     * inclusion attempt (CM_ADD(Abort)), the next attempt has another
+     * dynamic id. Taking it would prepare the next attempt too early.
+     */
+    g_eventLogger->info(
+        "Ignoring CM_NODEINFOREQ from node %u of an aborted inclusion",
+        addNodePtr.i);
+    return;
+  }
   addNodePtr.p->ndynamicId = req->dynamicId;
   addNodePtr.p->blockRef = signal->getSendersBlockRef();
   setNodeInfo(addNodePtr.i).m_version = req->version;
@@ -2920,10 +3263,20 @@ void Qmgr::sendApiVersionRep(Signal *signal, NodeRecPtr nodePtr) {
 
 void Qmgr::sendCmAckAdd(Signal *signal, Uint32 nodeId,
                         CmAdd::RequestType type) {
+  NodeRecPtr startingNodePtr;
+  startingNodePtr.i = nodeId;
+  ptrCheckGuard(startingNodePtr, MAX_NDB_NODES, nodeRec);
+
   CmAckAdd *cmAckAdd = (CmAckAdd *)signal->getDataPtrSend();
   cmAckAdd->requestType = type;
   cmAckAdd->startingNodeId = nodeId;
   cmAckAdd->senderNodeId = getOwnNodeId();
+  /**
+   * The dynamic id of this inclusion attempt: the starting node has it
+   * from CM_REGCONF, the other nodes from its CM_NODEINFOREQ, which
+   * comes before any acknowledgement of the attempt.
+   */
+  cmAckAdd->startingDynamicId = startingNodePtr.p->ndynamicId;
   sendSignal(cpdistref, GSN_CM_ACKADD, signal, CmAckAdd::SignalLength, JBA);
   DEBUG_START(GSN_CM_ACKADD, cpresident, "");
 
@@ -2933,6 +3286,8 @@ void Qmgr::sendCmAckAdd(Signal *signal, Uint32 nodeId,
     case CmAdd::AddCommit:
     case CmAdd::CommitNew:
       break;
+    case CmAdd::Abort:
+      ndbabort();
   }
 
   signal->theData[0] = nodeId;
@@ -2972,6 +3327,18 @@ void Qmgr::execCM_ADD(Signal *signal) {
 
   DEBUG_START3(signal, type);
 
+  if (type == CmAdd::Abort &&
+      (refToNode(signal->getSendersBlockRef()) != cpresident ||
+       signal->getLength() < CmAdd::AbortSignalLength)) {
+    jam();
+    g_eventLogger->warning(
+        "Ignoring CM_ADD(Abort) of node %u from node %u, length %u, the"
+        " president is node %u",
+        addNodePtr.i, refToNode(signal->getSendersBlockRef()),
+        signal->getLength(), cpresident);
+    return;
+  }
+
   if (nodePtr.p->phase == ZSTARTING) {
     jam();
     /**
@@ -2991,6 +3358,10 @@ void Qmgr::execCM_ADD(Signal *signal) {
          */
         joinedCluster(signal, addNodePtr);
         return;
+      case CmAdd::Abort:
+        jam();
+        cm_add_abort_starting_node(signal);
+        return;
       case CmAdd::AddCommit:
         ndbabort();
     }
@@ -3000,6 +3371,34 @@ void Qmgr::execCM_ADD(Signal *signal) {
     case CmAdd::Prepare:
       cmAddPrepare(signal, addNodePtr, nodePtr.p);
       break;
+    case CmAdd::Abort: {
+      jam();
+      /**
+       * The president gave up including the node before it was committed,
+       * see regreqMasterTimeLimitLab. Forget it again, cmAddPrepare may
+       * also wait for the node to connect (GSN_CM_NODEINFOCONF).
+       */
+      if (addNodePtr.p->phase == ZRUNNING) {
+        jam();
+        g_eventLogger->warning(
+            "Ignoring CM_ADD(Abort) of node %u from president node %u,"
+            " the node is already a member",
+            addNodePtr.i, cpresident);
+        break;
+      }
+      if (c_start.m_gsn == GSN_CM_NODEINFOCONF &&
+          c_start.m_nodes.isWaitingFor(addNodePtr.i)) {
+        jam();
+        c_start.m_gsn = RNIL;
+        c_start.m_nodes.clearWaitingFor();
+      }
+      forget_aborted_inclusion(addNodePtr, cmAdd->startingDynamicId);
+      g_eventLogger->info(
+          "President node %u aborted the inclusion of node %u in the"
+          " cluster",
+          cpresident, addNodePtr.i);
+      break;
+    }
     case CmAdd::AddCommit: {
       jam();
       CRASH_INSERTION(962);
@@ -3038,6 +3437,62 @@ void Qmgr::execCM_ADD(Signal *signal) {
   }
 
 }  // Qmgr::execCM_ADD()
+
+/**
+ * The president aborted our inclusion, see regreqMasterTimeLimitLab: some
+ * cluster nodes have not got our CM_NODEINFOREQ, most likely since we
+ * have no connection to them. Forget the cluster nodes of CM_REGCONF and
+ * ask to be included again as before CM_REGCONF. The president refuses
+ * for StartPartialTimeout, see execCM_REGREQ. A cluster start may go on
+ * without us meanwhile, we then join in a node restart.
+ *
+ * Answers to our CM_NODEINFOREQ can still arrive, execCM_NODEINFOCONF
+ * ignores them.
+ */
+void Qmgr::cm_add_abort_starting_node(Signal *signal) {
+  if (c_start.m_gsn != GSN_CM_NODEINFOREQ) {
+    jam();
+    g_eventLogger->warning(
+        "Ignoring CM_ADD(Abort) from president node %u, our inclusion is"
+        " not being prepared",
+        cpresident);
+    return;
+  }
+
+  const NdbNodeBitmask unanswered = c_start.m_nodes.getNodeBitmask();
+  NdbNodeBitmask unconnected;
+  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+    if (unanswered.get(i) && !c_connectedNodes.get(i)) {
+      unconnected.set(i);
+    }
+  }
+  char buf[300];
+  BaseString::snprintf(
+      buf, sizeof(buf),
+      "President node %u aborted our inclusion in the cluster, nodes %s"
+      " have not answered our CM_NODEINFOREQ, we have no connection to"
+      " node(s) %s. We keep asking to be included",
+      cpresident, BaseString::getPrettyText(unanswered).c_str(),
+      unconnected.isclear() ? "-"
+                            : BaseString::getPrettyText(unconnected).c_str());
+  warningEvent("%s", buf);
+
+  NodeRecPtr nodePtr;
+  for (nodePtr.i = 1; nodePtr.i < MAX_NDB_NODES; nodePtr.i++) {
+    if (!c_clusterNodes.get(nodePtr.i)) continue;
+    ptrAss(nodePtr, nodeRec);
+    if (nodePtr.p->phase == ZRUNNING) {
+      jamLine(nodePtr.i);
+      nodePtr.p->phase = ZINIT;
+    }
+  }
+  c_clusterNodes.clear();
+  c_inclusion_aborted_by = cpresident;
+  cpresident = ZNIL;
+  /* A president exists, take no part in an election */
+  cpresidentAlive = ZTRUE;
+  cmInfoconf010Lab(signal);
+}
 
 void Qmgr::handleEnableComAddCommit(Signal *signal, Uint32 node) {
   sendCmAckAdd(signal, node, CmAdd::AddCommit);
@@ -3180,6 +3635,24 @@ void Qmgr::execCM_ACKADD(Signal *signal) {
     return;
   }  // if
 
+  ptrCheckGuard(addNodePtr, MAX_NDB_NODES, nodeRec);
+  if (signal->getLength() >= CmAckAdd::SignalLength &&
+      cmAckAdd->startingDynamicId != addNodePtr.p->ndynamicId) {
+    jam();
+    /**
+     * An acknowledgement of an earlier attempt to include the same node,
+     * one we aborted (regreqMasterTimeLimitLab). No time limit orders it
+     * before this attempt, the dynamic id tells them apart. A sender
+     * without the dynamic id belongs to a cluster where no inclusion is
+     * aborted, see ndbd_support_cm_add_abort.
+     */
+    g_eventLogger->info(
+        "Ignoring CM_ACKADD from node %u for an aborted inclusion of"
+        " node %u",
+        senderNodePtr.i, addNodePtr.i);
+    return;
+  }
+
   ndbrequire(c_start.m_gsn == GSN_CM_ADD);
   c_start.m_nodes.clearWaitingFor(senderNodePtr.i);
   if (!c_start.m_nodes.done()) {
@@ -3196,6 +3669,12 @@ void Qmgr::execCM_ACKADD(Signal *signal) {
       /*----------------------------------------------------------------------*/
       c_start.m_gsn = GSN_CM_ADD;
       c_start.m_nodes = c_clusterNodes;
+      /**
+       * The commit needs no connections of the new node, it is no longer
+       * possible to abort the inclusion: a new start key ends the time
+       * supervision (regreqMasterTimeLimitLab).
+       */
+      c_start.m_startKey++;
 
       CmAdd *const cmAdd = (CmAdd *)signal->getDataPtrSend();
       cmAdd->requestType = CmAdd::AddCommit;
@@ -3254,6 +3733,10 @@ void Qmgr::execCM_ACKADD(Signal *signal) {
         }
       }
       return;
+    case CmAdd::Abort:
+      /* An abort is not acknowledged */
+      jam();
+      break;
   }  // switch
   ndbabort();
 }  // Qmgr::execCM_ACKADD()
@@ -6995,12 +7478,23 @@ void Qmgr::execREAD_NODESREQ(Signal *signal) {
   Uint32 packed_length2 = c_clusterNodes.getPackedLengthInWords();
   Uint32 packed_length3 = tmp.getPackedLengthInWords();
 
+  /**
+   * After the president aborted our inclusion we know the president
+   * although cpresident is ZNIL until it includes us again. A cluster node
+   * that connects to us meanwhile asks again at once while we answer ZNIL,
+   * see check_readnodes_reply.
+   */
+  const Uint32 president =
+      (cpresident == ZNIL && c_inclusion_aborted_by != 0)
+          ? c_inclusion_aborted_by
+          : cpresident;
+
   if (signal->length() >= ReadNodesReq::SignalLength) {
     jam();
     ReadNodesConf *const readNodes = (ReadNodesConf *)&signal->theData[0];
 
     readNodes->noOfNodes = c_definedNodes.count();
-    readNodes->masterNodeId = cpresident;
+    readNodes->masterNodeId = president;
     readNodes->ndynamicId = nodePtr.p->ndynamicId;
 
     readNodes->definedNodes = c_definedNodes;
@@ -7020,7 +7514,7 @@ void Qmgr::execREAD_NODESREQ(Signal *signal) {
     jam();
     ReadNodesConf_v1 *const readNodes = (ReadNodesConf_v1 *)&signal->theData[0];
     readNodes->noOfNodes = c_definedNodes.count();
-    readNodes->masterNodeId = cpresident;
+    readNodes->masterNodeId = president;
     readNodes->ndynamicId = nodePtr.p->ndynamicId;
 
     c_definedNodes.copyto(NdbNodeBitmask::Size, readNodes->definedNodes);

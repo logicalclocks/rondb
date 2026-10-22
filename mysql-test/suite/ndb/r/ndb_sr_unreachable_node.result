@@ -1,0 +1,34 @@
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+# Shut down the MySQL Servers
+# Restart all data nodes into not started state
+# Block the port of data node 3, node 4 cannot connect to node 3
+# System restart
+# Wait for the system restart to complete without node 3 or node 4,
+# the president and the left out node report the aborted inclusion
+Nodes 1 and 2 and one of nodes 3 and 4 started, the other one is still starting
+President aborted the inclusion: yes
+Left out node was told: yes
+# Unblock the port, the left out node joins in a node restart
+# Start the MySQL Servers
+# restart
+# restart
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+10	55
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	101
+2	102
+3	103
+4	104
+5	105
+6	6
+7	7
+8	8
+9	9
+10	10
+11	11
+DROP TABLE t1;

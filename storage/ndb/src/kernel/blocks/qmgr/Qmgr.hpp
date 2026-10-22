@@ -137,6 +137,11 @@ class Qmgr : public SimulatedBlock {
     Uint32 m_startKey;
     Uint32 m_startNode;
     Uint64 m_startTimeout;
+    /**
+     * President: when the time supervision of the inclusion of
+     * m_startNode started, see regreqMasterTimeLimitLab.
+     */
+    NDB_TICKS m_startNodeTime;
 
     Uint32 m_gsn;
     SignalCounter m_nodes;
@@ -698,7 +703,14 @@ class Qmgr : public SimulatedBlock {
   void closeComConfLab(Signal *signal);
   void apiRegReqLab(Signal *signal);
   void regreqTimeLimitLab(Signal *signal);
-  void regreqTimeMasterLimitLab(Signal *signal);
+  void regreqMasterTimeLimitLab(Signal *signal);
+  bool check_start_without_node(Signal *signal, Uint32 nodeId, char *reason,
+                                size_t reason_len);
+  bool start_waits_for_node(Uint32 nodeId) const;
+  bool is_initial_start() const;
+  void abort_starting_node(Signal *signal, NodeRecPtr addNodePtr);
+  void forget_aborted_inclusion(NodeRecPtr nodePtr, Uint32 dynamicId);
+  void cm_add_abort_starting_node(Signal *signal);
   void cmRegreq010Lab(Signal *signal);
   void cmRegconf010Lab(Signal *signal);
   void sttor010Lab(Signal *signal);
@@ -818,6 +830,20 @@ class Qmgr : public SimulatedBlock {
   bool c_nsl_join_tick_armed;
   void nsl_report_inclusion_wait();
   void nsl_arm_join_tick(Signal *signal);
+
+  /**
+   * Inclusions of starting data nodes that the president aborted with
+   * CM_ADD(Abort), see regreqMasterTimeLimitLab. A late CM_NODEINFOREQ
+   * of an aborted attempt is recognised by its dynamic id and ignored,
+   * as is a late CM_ACKADD on the president. The president includes the
+   * node again when StartPartialTimeout has passed since the abort, so
+   * the other starting nodes are not kept waiting behind it.
+   */
+  NdbNodeBitmask c_aborted_inclusions;
+  Uint32 c_aborted_inclusion_dynamic_id[ABS_MAX_NDB_NODES];
+  NDB_TICKS c_aborted_inclusion_time[ABS_MAX_NDB_NODES];
+  /* Starting node: the president that aborted our inclusion, 0 if none */
+  Uint16 c_inclusion_aborted_by;
 
   Uint16 creadyDistCom;
 

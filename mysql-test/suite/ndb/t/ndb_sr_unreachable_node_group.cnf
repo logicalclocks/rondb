@@ -1,0 +1,35 @@
+!include ../my.cnf
+
+# Six data nodes in three node groups, {1,2}, {3,4} and {5,6}. Data node 4
+# listens on a fixed port, so that the test can block the port with the
+# firewall. Of a data node pair the node with the lower node id is the
+# server, so with the port blocked nodes 5 and 6 cannot connect to node 4,
+# and neither can the API nodes, while node 4 connects to nodes 1, 2 and 3
+# and to the management server.
+#
+# StartPartialTimeout is also how long the president waits for a joining
+# data node to connect to all nodes in the cluster before it aborts its
+# inclusion, a shorter one than the default 30 seconds shortens the test.
+
+[cluster_config.1]
+ndbd=,,,,,
+StartPartialTimeout=15000
+
+[cluster_config.ndbd.1.1]
+NodeId=1
+
+[cluster_config.ndbd.2.1]
+NodeId=2
+
+[cluster_config.ndbd.3.1]
+NodeId=3
+
+[cluster_config.ndbd.4.1]
+NodeId=4
+ServerPort=11879
+
+[cluster_config.ndbd.5.1]
+NodeId=5
+
+[cluster_config.ndbd.6.1]
+NodeId=6
