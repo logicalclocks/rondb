@@ -203,7 +203,7 @@ Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
 Next TRPMAN 9501 // RonDB numbers
-Next BACKUP 10062
+Next BACKUP 10074
 Next PGMAN 11010
 Next DBTUX 12011
 Next SUMA 13063
@@ -904,6 +904,41 @@ Backup Stuff:
 10058: In a participant node abort BACKUP_FRAGMENT_REQ by
        sending execBACKUP_FRAGMENT_REF to master
 10061: Enable error insert 10030 (Backup log buffer o/flow) during scanning
+10064: As 10045, but without crash insertion, so the LCP data file
+       append error takes the real error-handling path while the scan
+       still owns the file
+10065: As 10044, but non-crashing and only after the LCP fragment scan
+       completed (post-scan buffer flush)
+10067: Fail the backup scan of the fragment selected by the error
+       insert extra (tableId << 16 | fragmentNo) mid-scan, so the
+       worker sends BACKUP_FRAGMENT_REF while other fragments of the
+       same node are scanning
+10068: As 10067, and the worker sends the BACKUP_FRAGMENT_REF twice
+10069: Leak the backup record at cleanup instead of releasing it
+       (one-shot), so the next backup's DEFINE_BACKUP_REQ hits the
+       seize-failure path; only a node restart frees the record
+10070: As 10036, but only once the backup reached its stop phase (log
+       file trailer), after the other participants confirmed their
+       stop with cleanly closed files (one-shot)
+10071: Hold a received debris sweep order for 15s before its first
+       removal (define barrier stays installed), opening a window for
+       a same-id DEFINE to arrive (one-shot on the holding worker).
+       With extra = a backup id, any OTHER worker that receives a
+       DEFINE for that id crashes - proving the proxy rejected the
+       define before its fan-out
+10072: Hold this participant's STOP_BACKUP_CONF until the error insert
+       is cleared, so the master completes its own stop and waits for
+       this node
+10073: Master: when its own node's STOP_BACKUP reply arrives while other
+       replies are outstanding, record a client abort, then clear the
+       error inserts of the other participants (releasing a 10072
+       hold) (one-shot)
+10074: Hold this participant's cleanup at its first table until the
+       error insert is cleared (the window in which the master may die
+       after rendering the verdict)
+10075: Drop this participant's BackupComplete order (one-shot), so the
+       record stays stop-confirmed without a verdict
+
 11001: Send UTIL_SEQUENCE_REF (in master)
 
 5028:  Crash when receiving LQHKEYREQ (in non-master)

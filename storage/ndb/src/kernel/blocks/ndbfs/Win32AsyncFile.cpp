@@ -63,6 +63,20 @@ void Win32AsyncFile::rmrfReq(Request *request, const char *src,
     return;
   }
 
+  if (request->par.rmrf.empty_directory_only) {
+    /* Non-recursive removal of one directory level. A directory that
+     * is missing or still holds content (possibly another owner's on
+     * a shared path) is left alone.
+     */
+    if (!RemoveDirectory(src)) {
+      DWORD dwError = GetLastError();
+      if (dwError != ERROR_FILE_NOT_FOUND && dwError != ERROR_PATH_NOT_FOUND &&
+          dwError != ERROR_DIR_NOT_EMPTY)
+        NDBFS_SET_REQUEST_ERROR(request, dwError);
+    }
+    return;
+  }
+
   char path[PATH_MAX];
   strcpy(path, src);
   strcat(path, "\\*");

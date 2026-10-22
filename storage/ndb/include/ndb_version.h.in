@@ -1665,4 +1665,28 @@ ndbd_support_ttl_ring_buffer(Uint32 x)
 {
   return x >= NDBD_SUPPORT_TTL_RING_BUFFER;
 }
+
+/**
+ * Whether the node understands the failed-backup cleanup orders: ONE
+ * capability covering AbortBackupOrd::CleanupFailedBackup (1330, every
+ * alive participant removes the failed backup's files),
+ * RemoveFailedBackupFiles (1331, a rejoining participant sweeps the
+ * debris of a backup that failed while it was dead) and its responses
+ * RemoveFailedBackupFilesConf (1332) / RemoveFailedBackupFilesRef
+ * (1333). All four ship together; any port must take them together or
+ * split this predicate. Nodes without support are never sent 1331 (its
+ * senderData is RNIL, so one that received it anyway would find no
+ * record and ignore it) and get 1330
+ * downgraded to BackupComplete, keeping their partial files exactly as
+ * before the fix - mixed-version operation is safe in both directions,
+ * full cleanup starts once all data nodes run a supporting version.
+ * Present from the 26.10 series; a backport to an older series adds its
+ * floor here.
+ */
+#define NDBD_BACKUP_FAILED_CLEANUP_ORD_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_backup_failed_cleanup_ord(Uint32 x) {
+  return x >= NDBD_BACKUP_FAILED_CLEANUP_ORD_2610;
+}
 #endif

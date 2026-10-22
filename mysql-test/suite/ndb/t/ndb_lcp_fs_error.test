@@ -1,0 +1,87 @@
+# LCP data file write errors are reported as the real file system error
+#
+# Runs the TestLCPFSErrScanActive and TestLCPFSErrAfterScan cases of the
+# testNodeRestart NDBT program. Each case injects a non-crashing
+# FSAPPENDREF on an LCP data file of a random data node (error inserts
+# 10064 and 10065) and asserts, through the NDBStopForced event, that
+# the node dies with the injected error 2812 (NDBD_EXIT_AFS_INVALID_PARAM)
+# instead of 2341 (internal program error).
+#
+# The victim dies of a real error, not an error-insert exit, so with the
+# default StopOnError=1 its angel exits for good and the test could not
+# bring it back; ndb_lcp_fs_error.cnf sets StopOnError=0 so the angel
+# restarts it. That is also why the cases cannot run under autotest,
+# which aborts a test as soon as a data node process is gone.
+#
+# The injection needs error-insert capable ndbmtd binaries, and the
+# testNodeRestart binary is only present in WITH_NDB_TEST builds.
+
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+
+# Locate the testNodeRestart binary next to ndb_mgm, skip if this
+# build does not include the NDBT test programs.
+--perl
+use strict;
+use File::Basename;
+my $mgm = $ENV{'NDB_MGM'} or die "NDB_MGM not set";
+my ($mgm_bin) = split(/\s+/, $mgm);
+my $tnr = dirname($mgm_bin) . "/testNodeRestart";
+my $vardir = $ENV{'MYSQLTEST_VARDIR'} or die "MYSQLTEST_VARDIR not set";
+open(my $f, '>', "$vardir/tmp/tnr_location.inc") or die "$!";
+if (-x $tnr) {
+  print $f "let \$TEST_NODE_RESTART= $tnr;\n";
+} else {
+  print $f "--skip Needs testNodeRestart binary (WITH_NDB_TEST build)\n";
+}
+close($f);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/tnr_location.inc
+
+# The NDBT program creates its test table (TEST_DB.T1) directly via
+# the NDB API. Tables created outside of the MySQL Server crash the
+# MySQL Server, so both MySQL Servers are shut down while the NDBT
+# cases run and started again after the NDBT table has been dropped.
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+
+--connection s1
+--echo "[shutting down mysqld 1]"
+--let $mysqld_name=mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+
+--connection s2
+--echo "[shutting down mysqld 2]"
+--let $mysqld_name=mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+
+--connection default
+
+--echo # LCP data file write error while the fragment scan is active
+--exec $TEST_NODE_RESTART -n TestLCPFSErrScanActive T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+--echo # LCP data file write error after the fragment scan completed
+--exec $TEST_NODE_RESTART -n TestLCPFSErrAfterScan T1 >> $NDB_TOOLS_OUTPUT 2>&1
+
+# The NDBT framework drops its auto-created table when a case
+# completes cleanly, so the table only exists here if the last case
+# left it behind; a missing table is not an error.
+--echo "[dropping NDBT test table]"
+--exec $NDB_DROP_TABLE -d TEST_DB T1 >> $NDB_TOOLS_OUTPUT 2>&1 || true
+
+--echo "[starting mysqld 1]"
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name=mysqld.1.1
+--source include/start_mysqld.inc
+
+--echo "[starting mysqld 2]"
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name=mysqld.2.1
+--source include/start_mysqld.inc
+
+--remove_file $NDB_TOOLS_OUTPUT
+
+--echo # All LCP file error tests passed

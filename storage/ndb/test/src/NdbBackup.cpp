@@ -96,6 +96,7 @@ int NdbBackup::clearOldBackups() {
     ndbout << "buf: " << tmp1.c_str() << endl;
     int res = system(tmp1.c_str());
     ndbout << "res: " << res << endl;
+    if (res && retCode == 0) retCode = res;
 
     ndbout << "buf: " << tmp2.c_str() << endl;
     res = system(tmp2.c_str());
@@ -106,6 +107,153 @@ int NdbBackup::clearOldBackups() {
 #endif
 
   return retCode;
+}
+
+/* The command run on the data node's host: locally, or over ssh. The
+ * ssh form double-quotes the whole command, so the commands use single
+ * quotes and no shell variables (a $var would be expanded locally).
+ */
+static BaseString nodeHostCommand(const char *host, const BaseString &command) {
+  BaseString cmd;
+  if (!isHostLocal(host)) {
+    cmd.assfmt("ssh -o BatchMode=yes -o ConnectTimeout=10 %s \"%s\"", host,
+               command.c_str());
+  } else {
+    cmd = command;
+  }
+  return cmd;
+}
+
+int NdbBackup::nodeShellCheck(int node_id, const BaseString &command) {
+#ifndef _WIN32
+  const char *host;
+  if (!getHostName(node_id, &host)) return -1;
+
+  /* The command prints an unambiguous marker, so a command or transport
+   * failure cannot be mistaken for an answer.
+   */
+  const BaseString cmd = nodeHostCommand(host, command);
+  FILE *fp = popen(cmd.c_str(), "r");
+  if (fp == NULL) return -1;
+  char buf[16] = {0};
+  const bool got_line = (fgets(buf, sizeof(buf), fp) != NULL);
+  const int rc = pclose(fp);
+  if (!got_line || rc != 0) return -1;
+  if (strncmp(buf, "EXIST", 5) == 0) return 1;
+  if (strncmp(buf, "NONE", 4) == 0) return 0;
+  return -1;
+#else
+  (void)node_id;
+  (void)command;
+  return -1;
+#endif
+}
+
+int NdbBackup::nodeShellCommand(int node_id, const BaseString &command) {
+#ifndef _WIN32
+  const char *host;
+  if (!getHostName(node_id, &host)) return -1;
+  const BaseString cmd = nodeHostCommand(host, command);
+  return system(cmd.c_str()) == 0 ? 0 : -1;
+#else
+  (void)node_id;
+  (void)command;
+  return -1;
+#endif
+}
+
+int NdbBackup::backupDirsExist(int node_id) {
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  /* Matches backup file CONTENT under any BACKUP-* entry: empty
+   * directory shells are expected after scoped removal and do not
+   * count as debris. The second find call distinguishes 'no match'
+   * (find exits 0) from an operational failure such as permission
+   * denial (find exits nonzero): a failure must not read as a clean
+   * directory.
+   */
+  BaseString check;
+  check.assfmt(
+      "if [ ! -d '%s/BACKUP' ]; then echo NONE;"
+      " elif find '%s/BACKUP' -path '*BACKUP-*' -type f"
+      " -print -quit | grep -q .; then echo EXIST;"
+      " elif find '%s/BACKUP' -path '*BACKUP-*' -type f"
+      " >/dev/null; then echo NONE;"
+      " else echo FAILED; fi",
+      path.c_str(), path.c_str(), path.c_str());
+  return nodeShellCheck(node_id, check);
+}
+
+int NdbBackup::backupShellsExist(int node_id) {
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  /* Matches any BACKUP-* directory entry, empty or not: after a
+   * completed removal no shell of this attempt may remain.
+   */
+  BaseString check;
+  check.assfmt(
+      "if [ ! -d '%s/BACKUP' ]; then echo NONE;"
+      " elif find '%s/BACKUP' -name 'BACKUP-*' -type d"
+      " -print -quit | grep -q .; then echo EXIST;"
+      " elif find '%s/BACKUP' -name 'BACKUP-*' -type d"
+      " >/dev/null; then echo NONE;"
+      " else echo FAILED; fi",
+      path.c_str(), path.c_str(), path.c_str());
+  return nodeShellCheck(node_id, check);
+}
+
+int NdbBackup::createStBackupFileset(int node_id, unsigned backup_id) {
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  /* Filenames must match NDBFS exactly (extension table in
+   * Filename.cpp: .ctl/.log/.Data) or the fileset does not stand in
+   * for a real one.
+   */
+  BaseString make;
+  make.assfmt(
+      "mkdir -p '%s/BACKUP/BACKUP-%u' &&"
+      " echo fake > '%s/BACKUP/BACKUP-%u/BACKUP-%u.%d.ctl' &&"
+      " echo fake > '%s/BACKUP/BACKUP-%u/BACKUP-%u.%d.log' &&"
+      " echo fake > '%s/BACKUP/BACKUP-%u/BACKUP-%u-0.%d.Data'",
+      path.c_str(), backup_id, path.c_str(), backup_id, backup_id, node_id,
+      path.c_str(), backup_id, backup_id, node_id, path.c_str(), backup_id,
+      backup_id, node_id);
+  return nodeShellCommand(node_id, make);
+}
+
+int NdbBackup::stBackupFilesetExists(int node_id, unsigned backup_id) {
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  /* Filenames match NDBFS (.ctl/.log/.Data). */
+  BaseString check;
+  check.assfmt(
+      "if [ -f '%s/BACKUP/BACKUP-%u/BACKUP-%u.%d.ctl' ] &&"
+      " [ -f '%s/BACKUP/BACKUP-%u/BACKUP-%u.%d.log' ] &&"
+      " [ -f '%s/BACKUP/BACKUP-%u/BACKUP-%u-0.%d.Data' ]; then echo EXIST;"
+      " else echo NONE; fi",
+      path.c_str(), backup_id, backup_id, node_id, path.c_str(), backup_id,
+      backup_id, node_id, path.c_str(), backup_id, backup_id, node_id);
+  return nodeShellCheck(node_id, check);
+}
+
+int NdbBackup::backupMtDebrisExists(int node_id, unsigned backup_id) {
+  const std::string path = getBackupDataDirForNode(node_id);
+  if (path.empty()) return -1;
+
+  BaseString check;
+  check.assfmt(
+      "if [ ! -d '%s/BACKUP' ]; then echo NONE;"
+      " elif find '%s/BACKUP' -name 'BACKUP-%u-PART-*'"
+      " -print -quit | grep -q .; then echo EXIST;"
+      " elif find '%s/BACKUP' -name 'BACKUP-%u-PART-*'"
+      " >/dev/null; then echo NONE;"
+      " else echo FAILED; fi",
+      path.c_str(), path.c_str(), backup_id, path.c_str(), backup_id);
+  return nodeShellCheck(node_id, check);
 }
 
 int NdbBackup::start(unsigned int &_backup_id, int flags,

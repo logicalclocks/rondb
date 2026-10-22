@@ -1,0 +1,26 @@
+!include ../my.cnf
+
+[cluster_config.1]
+# TestLCPFSErrScanActive loads 500k rows so that the LCP data file is
+# written while the fragment scan is still running.
+DataMemory=200M
+# The injected LCP file error kills the victim with a real error (2812),
+# not an error-insert exit, so RestartOnErrorInsert does not apply. With
+# the default StopOnError=1 such a node exits permanently and the test
+# cannot bring it back; with StopOnError=0 the angel restarts it and the
+# recovery step just waits for it to rejoin.
+StopOnError=0
+
+[mysqld]
+# Make all mysqlds use cluster
+ndbcluster
+ndb-wait-connected=20
+ndb-wait-setup=60
+ndb-extra-logging=99
+skip-log-bin
+skip-log-replica-updates
+
+[ENV]
+NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port
