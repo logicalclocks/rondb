@@ -217,6 +217,55 @@ col_a	col_c
 8	8
 SELECT col_a, col_c FROM sz;
 col_a	col_c
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+col_a	col_c
+COMMIT;
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+# Unique index lookup FOR SHARE keeps the base row alive
+BEGIN;
+INSERT INTO sz VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+BEGIN;
+SELECT col_a, col_c FROM sz WHERE col_c = 8 FOR SHARE;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz WHERE col_a = 8;
+col_a	col_c
+8	8
+COMMIT;
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+# Unique index lookup FOR UPDATE keeps the base row alive
+BEGIN;
+INSERT INTO sz VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+(7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+(10, SYSDATE(), 10);
+COMMIT;
+BEGIN;
+SELECT col_a, col_c FROM sz WHERE col_c = 8 FOR UPDATE;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+col_a	col_c
+8	8
+SELECT col_a, col_c FROM sz WHERE col_a = 8;
+col_a	col_c
 8	8
 COMMIT;
 SELECT col_a, col_c FROM sz;

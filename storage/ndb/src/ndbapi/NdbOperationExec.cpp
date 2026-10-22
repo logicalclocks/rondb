@@ -157,6 +157,13 @@ void NdbOperation::setRequestInfoTCKEYREQ(bool lastFlag, bool longSignal) {
       theReadCommittedBaseIndicator & static_cast<Uint8>(longSignal));
   TcKeyReq::setNoWaitFlag(requestInfo, (m_flags & OF_NOWAIT) != 0);
   /*
+   * The lock-free base read flag lives in the attrLen word, which a long
+   * TCKEYREQ leaves unused (a short one carries the attrinfo length there).
+   */
+  if ((m_flags & OF_LOCK_FREE_BASE_READ) != 0 && longSignal) {
+    TcKeyReq::setLockFreeBaseReadFlag(req->attrLen, 1);
+  }
+  /*
    * TTL related.
    * Gated on longSignal like ReadCommittedBase above: the TTL bits (26/28)
    * live inside the short-signal key-length field (bits 20-31), so a short

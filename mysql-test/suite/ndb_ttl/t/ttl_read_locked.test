@@ -188,12 +188,17 @@ DROP TABLE test.sz1;
 # Table sz: UNIQUE KEY(col_c), TTL=5@col_b (global table)
 #
 # Similar to Case 28, but uses the global sz table which has UNIQUE KEY
-# on col_c. The unique index lookup (col_c = 8) acquires a lock implicitly,
-# so that row survives TTL expiry while the transaction is open.
+# on col_c. A read committed unique index lookup (col_c = 8) locks only
+# the hidden unique index row and reads the base row lock-free
+# (RONDB-1146), so it does not keep the base row alive past TTL. A unique
+# index lookup FOR SHARE or FOR UPDATE locks the base row, so that row
+# survives TTL expiry while the transaction is open.
 #
-# Thread A: INSERT 10 rows, verify, SELECT col_c=8 (unique index -> lock),
-#           wait past TTL, verify 1 row survives (the locked one), COMMIT,
-#           re-insert, verify.
+# Thread A: INSERT 10 rows, verify, SELECT col_c=8 (read committed),
+#           wait past TTL, verify no row survives, COMMIT.
+#           Repeat with SELECT col_c=8 FOR SHARE and FOR UPDATE: only the
+#           locked row survives until COMMIT, then it expires.
+#           Re-insert for thread B, verify.
 # Thread B: FOR SHARE on col_a <= 5, wait past TTL, verify locked rows survive.
 #
 # NOTE: Thread A must use SELECT (not COUNT(*)) to check surviving rows.
@@ -228,7 +233,8 @@ SELECT col_a, col_c FROM sz WHERE col_a = 6;
 --sorted_result
 SELECT col_a, col_c FROM sz WHERE col_a >= 6;
 
-# Unique index lookup on col_c = 8 acquires lock on the row implicitly
+# Read committed unique index lookup on col_c = 8: only the unique index
+# row is locked, the base row is read lock-free
 SELECT col_a, col_c FROM sz WHERE col_c = 8;
 
 # Range scan on col_c (non-unique usage) -- no lock acquired
@@ -238,10 +244,67 @@ SELECT col_a, col_c FROM sz WHERE col_c <= 8;
 # Wait past TTL (6s > TTL=5s, total ~8s from insert)
 sleep 6;
 
-# Only 1 row survives: col_c=8 which was locked by the unique index lookup
+# No row survives: no base row is locked by this transaction
+SELECT col_a, col_c FROM sz;
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+
+COMMIT;
+
+# All rows expired
+SELECT col_a, col_c FROM sz;
+
+--echo # Unique index lookup FOR SHARE keeps the base row alive
+BEGIN;
+INSERT INTO sz VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+sleep 2;
+
+BEGIN;
+
+SELECT col_a, col_c FROM sz WHERE col_c = 8 FOR SHARE;
+
+# Wait past TTL (6s > TTL=5s, total ~8s from insert)
+sleep 6;
+
+# Only 1 row survives: col_c=8 which is locked through the unique index
 # NOTE: Must use SELECT (not COUNT(*)) because COUNT(*) uses a different NDB
 # access path that bypasses the TTL lock visibility check.
 SELECT col_a, col_c FROM sz;
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+SELECT col_a, col_c FROM sz WHERE col_a = 8;
+
+COMMIT;
+
+# After releasing locks, all rows expired
+SELECT col_a, col_c FROM sz;
+
+--echo # Unique index lookup FOR UPDATE keeps the base row alive
+BEGIN;
+INSERT INTO sz VALUES
+    (1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+    (4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6),
+    (7, SYSDATE(), 7), (8, SYSDATE(), 8), (9, SYSDATE(), 9),
+    (10, SYSDATE(), 10);
+COMMIT;
+
+sleep 2;
+
+BEGIN;
+
+SELECT col_a, col_c FROM sz WHERE col_c = 8 FOR UPDATE;
+
+# Wait past TTL (6s > TTL=5s, total ~8s from insert)
+sleep 6;
+
+# Only 1 row survives: col_c=8 which is locked through the unique index
+SELECT col_a, col_c FROM sz;
+SELECT col_a, col_c FROM sz WHERE col_c = 8;
+SELECT col_a, col_c FROM sz WHERE col_a = 8;
 
 COMMIT;
 
