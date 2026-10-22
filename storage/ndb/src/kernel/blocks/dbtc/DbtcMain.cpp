@@ -1545,7 +1545,7 @@ void Dbtc::execREAD_CONFIG_REQ(Signal *signal) {
   ndb_mgm_get_int_parameter(p, CFG_DB_HEARTBEAT_INTERVAL, &val);
   cDbHbInterval = (val < 10) ? 10 : val;
 
-  val = 3000;
+  val = 60000;
   ndb_mgm_get_int_parameter(p, CFG_DB_TRANSACTION_INACTIVE_TIMEOUT, &val);
   set_appl_timeout_value(val);
 
@@ -1751,13 +1751,25 @@ void Dbtc::set_timeout_value(Uint32 timeOut) {
 }
 
 void Dbtc::set_appl_timeout_value(Uint32 timeOut) {
-  if (timeOut) {
-    timeOut /= 10;
-    if (timeOut < ctimeOutValue) {
-      jam();
-      c_appl_timeout_value = ctimeOutValue;
-    }  // if
-  }
+  /**
+   * The timeout is in ms and is kept in 10 ms ticks. It cannot be disabled:
+   * 0 or a value above MAX_TRANSACTION_INACTIVE_TIMEOUT (from an older
+   * configuration or DUMP 2508) becomes MAX_TRANSACTION_INACTIVE_TIMEOUT.
+   * It is never less than the deadlock detection timeout and never 0 ticks.
+   */
+  if (timeOut == 0 || timeOut > MAX_TRANSACTION_INACTIVE_TIMEOUT) {
+    jam();
+    timeOut = MAX_TRANSACTION_INACTIVE_TIMEOUT;
+  }  // if
+  timeOut /= 10;
+  if (timeOut < ctimeOutValue) {
+    jam();
+    timeOut = ctimeOutValue;
+  }  // if
+  if (timeOut == 0) {
+    jam();
+    timeOut = 1;
+  }  // if
   c_appl_timeout_value = timeOut;
 }
 
@@ -4505,6 +4517,12 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
     /* Aggregation-read flag: bit 16 of the attrLen word, unused by long
      * TCKEYREQ (the AttrInfo length is the section length). */
     regCachePtr->m_agg_read = TcKeyReq::getAggReadFlag(tcKeyReq->attrLen);
+    /* Exempt from TransactionInactiveTimeout: bit 17 of the attrLen word,
+     * long TCKEYREQ only. Cleared by initApiConnectRec at transaction start.
+     */
+    if (TcKeyReq::getExemptInactiveTimeoutFlag(tcKeyReq->attrLen)) {
+      regApiPtr->m_flags |= ApiConnectRecord::TF_EXEMPT_INACTIVE_TIMEOUT;
+    }
   } else {
     TkeyLength = TcKeyReq::getKeyLength(Treqinfo);
     TattrLen = TcKeyReq::getAttrinfoLen(tcKeyReq->attrLen);
@@ -11879,11 +11897,17 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
         /*
         We are waiting for application to continue the transaction. In this
         particular state we will use the application timeout parameter rather
-        than the shorter Deadlock detection timeout.
+        than the shorter Deadlock detection timeout. An exempt transaction
+        (NdbTransaction::setExemptFromInactiveTimeout(), e.g. the MySQL Server
+        global schema lock, idle while its DDL runs) gets a fixed long limit.
         */
+        const Uint32 appl_timeout_value =
+            tc_testbit(apiConnectptr.p->m_flags,
+                       ApiConnectRecord::TF_EXEMPT_INACTIVE_TIMEOUT)
+                ? Uint32(EXEMPT_TRANSACTION_INACTIVE_TIMEOUT / 10)
+                : c_appl_timeout_value;
         if (c_appl_timeout_value == 0 ||
-            (ctcTimer - getApiConTimer(apiConnectptr)) <=
-                c_appl_timeout_value) {
+            (ctcTimer - getApiConTimer(apiConnectptr)) <= appl_timeout_value) {
           jam();
           return;
         }  // if
@@ -12026,16 +12050,24 @@ void Dbtc::timeOutFoundLab(Signal *signal, Uint32 TapiConPtr, Uint32 errCode) {
       /*
         We are waiting for application to continue the transaction. In this
         particular state we will use the application timeout parameter rather
-        than the shorter Deadlock detection timeout.
+        than the shorter Deadlock detection timeout. A committed-read scan
+        holds no locks, so a slow reader (e.g. mysqldump writing to a slow
+        pipe) gets a fixed long limit instead.
       */
+      ScanRecordPtr scanptr;
+      scanptr.i = apiConnectptr.p->apiScanRec;
+      Uint32 appl_timeout_value = c_appl_timeout_value;
+      if (scanptr.i != RNIL && scanRecordPool.getValidPtr(scanptr) &&
+          ScanFragReq::getReadCommittedFlag(scanptr.p->scanRequestInfo)) {
+        jam();
+        appl_timeout_value = COMMITTED_READ_SCAN_INACTIVE_TIMEOUT / 10;
+      }
       if (c_appl_timeout_value == 0 ||
-          (ctcTimer - getApiConTimer(apiConnectptr)) <= c_appl_timeout_value) {
+          (ctcTimer - getApiConTimer(apiConnectptr)) <= appl_timeout_value) {
         jam();
         return;
       }  // if
       logTransactionTimeout(signal, TapiConPtr, errCode);
-      ScanRecordPtr scanptr;
-      scanptr.i = apiConnectptr.p->apiScanRec;
       scanRecordPool.getPtr(scanptr);
       scanError(signal, scanptr, ZSCANTIME_OUT_ERROR);
       break;
@@ -16868,10 +16900,11 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   /**
    * Scan parallelism is determined by the number of receiver ids sent
-   * If the flag ParallelOrderedScan is set we will have 2 receiver ids
-   * times the parallelism. This will ensure that we can continue scanning
-   * even after delivering a batch to the NDB API. We will handle this
-   * below after acquiring a scan record.
+   * If the flag ParallelOrderedScan is set we will have 4 receiver ids
+   * times the parallelism, each fragment scan uses its 4 receiver ids in
+   * turn. This will ensure that we can continue scanning even after
+   * delivering a batch to the NDB API. We will handle this below after
+   * acquiring a scan record.
    *
    * For JoinAgg queries, scanParallelism is an explicit field
    * (independent of the number of receiver IDs in section 0).
@@ -16976,6 +17009,54 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     jam();
     errCode = 4003;  // Function not implemented
     goto SCAN_TAB_error;
+  }
+
+  {
+    const bool exclusive = ScanTabReq::getLockMode(ri);
+    const bool locking = exclusive || !ScanTabReq::getReadCommittedFlag(ri);
+    if (unlikely(exclusive && !ScanTabReq::getKeyinfoFlag(ri))) {
+      jam();
+      errCode = ScanFragRef::ZKEYINFO_REQUIRED;
+      goto SCAN_TAB_error;
+    }
+
+    /* Match initScanrec's choice of the effective batch size. */
+    Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+    if (batchSizeRows == 0) {
+      batchSizeRows = scanTabReq->first_batch_size;
+    }
+    /* Shared and exclusive scans use the same 10-bit takeover op number. */
+    const Uint32 maxBatchSize = locking ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK
+                                       : MAX_PARALLEL_OP_PER_SCAN_RC;
+    if (unlikely(batchSizeRows == 0 || batchSizeRows > maxBatchSize)) {
+      jam();
+      errCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+      goto SCAN_TAB_error;
+    }
+  }
+
+  {
+    const bool exclusive = ScanTabReq::getLockMode(ri);
+    const bool locking = exclusive || !ScanTabReq::getReadCommittedFlag(ri);
+    if (unlikely(exclusive && !ScanTabReq::getKeyinfoFlag(ri))) {
+      jam();
+      errCode = ScanFragRef::ZKEYINFO_REQUIRED;
+      goto SCAN_TAB_error;
+    }
+
+    /* Match initScanrec's choice of the effective batch size. */
+    Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+    if (batchSizeRows == 0) {
+      batchSizeRows = scanTabReq->first_batch_size;
+    }
+    /* Shared and exclusive scans use the same 10-bit takeover op number. */
+    const Uint32 maxBatchSize = locking ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK
+                                       : MAX_PARALLEL_OP_PER_SCAN_RC;
+    if (unlikely(batchSizeRows == 0 || batchSizeRows > maxBatchSize)) {
+      jam();
+      errCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+      goto SCAN_TAB_error;
+    }
   }
 
   ptrAss(tabptr, tableRecord);
@@ -17366,7 +17447,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   transP->apiScanRec = scanptr.i;
   transP->returncode = 0;
   /* transid[] is already stored, see above */
-  transP->buddyPtr = buddyPtr;
+  /* Use the scan's own API connection when no buddy was supplied. */
+  transP->buddyPtr = (buddyPtr == RNIL ? apiConnectptr.i : buddyPtr);
 
   // The scan is started
   transP->apiConnectstate = CS_START_SCAN;
@@ -17497,13 +17579,15 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->scanApiRec = apiConnectPtr;
   if (ScanTabReq::getParallelOrderedScanFlag(ri)) {
     /**
-     * This new feature introduces a second receiver id for each parallelism.
-     * This enables the scan in each partition to continue while waiting for
-     * DBTC and the NDB API to return SCAN_NEXTREQ. It will decrease latency
-     * for normal scans, also partition pruned scans, but it will have a
-     * significant impact on handling of ordered index scans using OrderBy
-     * flag. In this case the impact might be very significant since we avoid
-     * becoming single-threaded in this case.
+     * This new feature uses four receiver ids for each parallelism, which
+     * the fragment scan uses in turn, one per batch. DBLQH starts scanning
+     * the next batch into the next receiver id as soon as it has sent
+     * SCAN_FRAGCONF. This enables the scan in each partition to continue
+     * while waiting for DBTC and the NDB API to return SCAN_NEXTREQ. It
+     * will decrease latency for normal scans, also partition pruned scans,
+     * but it will have a significant impact on handling of ordered index
+     * scans using OrderBy flag. In this case the impact might be very
+     * significant since we avoid becoming single-threaded in this case.
      */
     if (unlikely((scanParallel & 3) != 0 ||
         scanParallel == 0)) {
@@ -19550,6 +19634,25 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     return;
   }
 
+  /**
+   * Verify that the signal sender owns this API connect record, as for
+   * TCKEYREQ. A request resent from the rate queue comes from our own
+   * DBTC and was checked when it first arrived.
+   */
+  {
+    const NodeId signalSenderNodeId = refToNode(signal->getSendersBlockRef());
+    if (signalSenderNodeId != getOwnNodeId()) {
+      const NodeId ownerNodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
+      if (unlikely(signalSenderNodeId != ownerNodeId)) {
+        jam();
+        releaseSections(handle);
+        reportMaliciousSignal(signal, signalSenderNodeId,
+                              VT_SCAN_NEXTREQ_OWNERSHIP);
+        return;
+      }
+    }
+  }
+
   /*******************************************************
    * START THE ACTUAL LOGIC OF SCAN_NEXTREQ.
    ********************************************************/
@@ -19558,11 +19661,8 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   ScanRecordPtr scanptr;
   scanptr.i = apiConnectptr.p->apiScanRec;
   if (!scanRecordPool.getValidPtr(scanptr) || scanptr.i == RNIL) {
-    // How can this happen?
-    // Assert to catch if path is tested, remove if hit and analyzed.
     jam();
     ndbrequire(!sent_from_queue);
-    ndbassert(false);
     releaseSections(handle);
     ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
     ref->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
@@ -19712,6 +19812,22 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
     return;
   }
 
+  if (unlikely(scanP->scanState != ScanRecord::RUNNING)) {
+    jam();
+    /* scanError() requires a running scan. Ask the API to close instead,
+     * preserving any outstanding setup or completion work. */
+    setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+    ScanTabRef *ref = (ScanTabRef *)&signal->theData[0];
+    ref->apiConnectPtr = apiConnectptr.p->ndbapiConnect;
+    ref->transId1 = transid1;
+    ref->transId2 = transid2;
+    ref->errorCode = ScanFragRef::ZINVALID_SCAN_NEXTREQ;
+    ref->closeNeeded = 1;
+    sendSignal(apiConnectptr.p->ndbapiBlockref, GSN_SCAN_TABREF, signal,
+               ScanTabRef::SignalLength, JBB);
+    return;
+  }
+
   ScanFragNextReq tmp;
   tmp.requestInfo = 0;
   tmp.transId1 = apiConnectptr.p->transid[0];
@@ -19727,8 +19843,15 @@ void Dbtc::execSCAN_NEXTREQ(Signal *signal) {
   for (Uint32 i = 0; i < len; i++) {
     jamDebug();
     scanFragptr.i = signal->theData[i + 25];
-    c_scan_frag_pool.getPtr(scanFragptr);
-    ndbrequire(scanFragptr.p->scanFragState == ScanFragRec::DELIVERED);
+    /* Only resume a fragment handed out by this scan. This also rejects
+     * duplicate pointers, since the first occurrence leaves DELIVERED. */
+    if (unlikely(!c_scan_frag_pool.getValidPtr(scanFragptr) ||
+                 scanFragptr.p->scanRec != scanptr.i ||
+                 scanFragptr.p->scanFragState != ScanFragRec::DELIVERED)) {
+      jam();
+      scanError(signal, scanptr, ScanFragRef::ZINVALID_SCAN_NEXTREQ);
+      return;
+    }
 
     scanFragptr.p->startFragTimer(ctcTimer);
     scanFragptr.p->m_ops = 0;
@@ -20480,11 +20603,15 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
      * API has prepared one SPJ worker for each data node that owns a
      * primary partition in the cluster.
      *
-     * What we do is that when we combine several SPJ workers into one
-     * since it is handled locally within one SPJ node we will increase
-     * the batch size of that SPJ worker accordingly to ensure that we
-     * make use of all the available batch size that the NDB API provided
-     * for us.
+     * The NDB API counts the nodes from the table's fragment distribution,
+     * while we group the fragments by their current primary node. After a
+     * node failure the fragments of several SPJ workers can therefore end
+     * up in one SCAN_FRAGREQ. We do not increase its batch size:
+     * batch_size_rows and batch_size_bytes stay the limits the NDB API set
+     * for one worker, and DBSPJ divides them over the fragments it gets.
+     * The NDB API sizes its result buffers for this, with one overshoot
+     * row per root fragment (NdbQueryOperationImpl::getMaxBatchBytes()).
+     * A larger batch size here would overflow those buffers.
      *
      * What we do is that we select the SPJ worker to be set according to
      * the preferred node to execute the query. This means that with

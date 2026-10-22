@@ -152,6 +152,24 @@ k	total
 20	200
 30	300
 
+
+=== Test 12: IN-subquery naming a CTE that shadows a stored table is rejected ===
+Expected error: Subquery reads CTE
+Error handling: RPE
+ronsql_cli caught exception: A subquery cannot read the CTE nr_other. Subqueries read stored tables only, and reading a stored table that has the name of a CTE in the same statement is not supported. Join the CTE in the main query instead, or rename the CTE to read the stored table.
+
+
+=== Test 13: scalar subquery naming a CTE is rejected ===
+Expected error: Subquery reads CTE
+Error handling: RPE
+ronsql_cli caught exception: A subquery cannot read the CTE c0. Subqueries read stored tables only, and reading a stored table that has the name of a CTE in the same statement is not supported. Join the CTE in the main query instead, or rename the CTE to read the stored table.
+
+
+=== Test 14: SELECT-list subquery naming a CTE is rejected ===
+Expected error: Subquery reads CTE
+Error handling: RPE
+ronsql_cli caught exception: A subquery cannot read the CTE c0. Subqueries read stored tables only, and reading a stored table that has the name of a CTE in the same statement is not supported. Join the CTE in the main query instead, or rename the CTE to read the stored table.
+
 === Cleanup ===
 DROP TABLE nr_other;
 DROP TABLE nr_base;

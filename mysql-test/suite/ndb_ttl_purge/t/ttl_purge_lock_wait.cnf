@@ -3,7 +3,11 @@
 # Identical to the ndb_ttl_purge suite my.cnf except
 # TransactionDeadlockDetectionTimeout, which is the NDB default (1200 ms)
 # instead of the suite's 30000, so that a purge scan waiting for a row
-# locked by a user transaction times out as it does in production.
+# locked by a user transaction times out as it does in production, and
+# TransactionInactiveTimeout, which is the maximum (10 minutes) instead of
+# the default 60 seconds, so that the user transaction holding the row lock
+# is not aborted while the test waits for the purge (which can take longer
+# than 60 seconds).
 !include include/default_mysqld.cnf
 !include include/default_ndbd.cnf
 
@@ -14,6 +18,7 @@ mysqld=,
 ndbapi=,,,,,,,,,,,
 DefaultOperationRedoProblemAction=queue
 TransactionDeadlockDetectionTimeout=1200
+TransactionInactiveTimeout=600000
 
 # NdbAPI nodes intended for use by MySQL server(s).
 

@@ -90,6 +90,9 @@ ronsql_cli caught exception: Overflow in integer constant folding.
 Overflow when attempting to fold constant expression (922337203685477580 * 11).
 Error handling: RPE
 ronsql_cli caught exception: Overflow in integer constant folding.
+Overflow when attempting to fold constant expression (-9223372036854775808 DIV -1).
+Error handling: RPE
+ronsql_cli caught exception: Overflow in integer constant folding.
 ===== Divide by zero in integer constant folding =====
 Divide by zero when attempting to fold constant expression (9223372036854775807 DIV 0).
 Error handling: RPE
@@ -120,6 +123,7 @@ SELECT sum( 9223372036854775807)
 , sum(-9223372036854775807 DIV 10)
 , sum( 9223372036854775807  %  10)
 , sum(-9223372036854775807  %  10)
+, sum((-9223372036854775807-1) % -1)
 , sum( 123456)
 , sum(-123456-1)
 , sum(-123456  +  123456)

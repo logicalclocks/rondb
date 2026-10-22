@@ -241,6 +241,8 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTOO_LARGE_VAR_SIZE_PART 941
 #define ZTOO_LARGE_DISK_VAR_SIZE_PART 943
 #define ZTOO_LARGE_FIXED_SIZE_PART 944
+#define ZINTERPRETER_INPUT_NOT_DEFINED 945
+#define ZINTERPRETER_OUTPUT_NOT_DEFINED 946
 #define MAX_INPUT_PARAMS 16
 
 /*
@@ -2165,6 +2167,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
       ttl_now_sec = 0;
+      m_interpreter_input_defined = 0;
+      m_interpreter_output_defined = 0;
     }
 
     KeyReqStruct(Dbtup *tup, When when)
@@ -2183,6 +2187,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
       ttl_now_sec = 0;
+      m_interpreter_input_defined = 0;
+      m_interpreter_output_defined = 0;
     }
 
     /*
@@ -2209,6 +2215,9 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
      *   m_use_corr_factor      - only read when dispatching CORR_FACTOR*
      *                            pseudo-columns (scan-buffer path)
      *   m_linked_attr_data/len - only read by JoinAggInterpreter READ_LINKED
+     *   m_interpreter_input_defined / m_interpreter_output_defined
+     *                          - only read by the interpreter and by
+     *                            READ_INTERPRETER_OUTPUT pseudo-column reads
      *
      * jamBuffer and m_dbtup_ptr are still set: the former is used by every
      * read function; the latter is reached by handle_partial_read, which is
@@ -2252,6 +2261,8 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
       m_linked_attr_data = nullptr;
       m_linked_attr_len = 0;
       ttl_now_sec = 0;
+      m_interpreter_input_defined = 0;
+      m_interpreter_output_defined = 0;
     }
 
    private:
@@ -2402,6 +2413,20 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool m_ttl_owner_check_bypass;
     bool m_deferred_constraints;
     bool m_disable_fk_checks;
+
+    /*
+     * Bit n is set when interpreter input / output slot n has been
+     * defined by this operation: an input slot when the ATTRINFO input
+     * parameter section supplied it, an output slot when the program
+     * executed WRITE_INTERPRETER_OUTPUT on it. The slot arrays
+     * (Dbtup::m_interpreter_input / c_interpreter_output) are shared
+     * by all operations of the LDM thread and are never cleared, so a
+     * slot not defined by this operation holds a value from an earlier
+     * operation. Reading it is an error, checking the bitmap is cheaper
+     * than clearing the slot arrays for each operation.
+     */
+    Uint32 m_interpreter_input_defined;
+    Uint32 m_interpreter_output_defined;
 
     Signal *signal;
     Uint32 num_fired_triggers;
@@ -4722,8 +4747,16 @@ private:
   Uint32 coutBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cinBuffer[ZATTR_BUFFER_SIZE + 16];
   Uint32 cheapMemory[ZATTR_BUFFER_SIZE + 16];
+  /*
+   * Never cleared, a slot is only valid when its bit is set in
+   * KeyReqStruct::m_interpreter_input_defined / m_interpreter_output_defined.
+   */
   Uint32 c_interpreter_output[2 * AttributeHeader::MaxInterpreterOutputIndex];
   Uint64 m_interpreter_input[AttributeHeader::MaxInterpreterInputIndex];
+  static_assert(AttributeHeader::MaxInterpreterOutputIndex <= 32,
+                "KeyReqStruct::m_interpreter_output_defined is 32 bits");
+  static_assert(AttributeHeader::MaxInterpreterInputIndex <= 32,
+                "KeyReqStruct::m_interpreter_input_defined is 32 bits");
 
   /* Per-LDM-thread scratch buffer for AggInterpreter / JoinAggInterpreter
    * column reads.  Used as `m_attr_read_buf` by ProcessRec:

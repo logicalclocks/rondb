@@ -196,6 +196,25 @@ QueryPlanner::plan(
       childOp.table = child_ndb_table;
     }
 
+    /* RONSQL-18: the comma production is the only join without ON
+     * conditions, and only a CTE without GROUP BY (a scalar or
+     * single-row CTE, at most one row) can be joined that way.  A
+     * stored table got no join keys and was planned as an unbounded
+     * child scan, which the NDB API refuses, or, after a CTE subtree,
+     * runs with no link to its parent; a grouped CTE got a misleading
+     * partial-key error. */
+    if (jc->conditions == NULL &&
+        (cte_match == NULL || cte_match->stmt->groupby_columns != NULL))
+    {
+      err << (cte_match != NULL ? "CTE '" : "Table '") << child_table_name
+          << "' is joined with a comma, without ON conditions. Only a CTE"
+             " without GROUP BY, which has at most one row, can be joined"
+             " that way." << std::endl;
+      throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
+          "Comma cross joins are supported only for CTEs without GROUP BY. "
+          "Join tables and grouped CTEs with JOIN ... ON.");
+    }
+
     Uint32 num_keys = 0;
     Uint32 parent_idx = 0;
     bool found_parent = false;

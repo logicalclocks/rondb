@@ -82,6 +82,8 @@ SHOW STATUS LIKE 'Ndb_config_generation';
 --enable_result_log
 
 echo == 21 == ThreadConfig;
+# AutomaticThreadConfig is on (the default), so each ThreadConfig and
+# MaxNoOfExecutionThreads gets a warning that it is ignored.
 --replace_regex /.*\[ndb_config\]//
 --exec $NDB_CONFIG --config-file=$MYSQL_TEST_DIR/suite/ndb/ndb_config_threadconfig.ini --query=NodeId,LockExecuteThreadToCPU,ThreadConfig 2>&1
 
@@ -142,3 +144,9 @@ echo == 31 == ndb_config --config-binary-file=ndb_3_config.bin.1 --system;
 exec $NDB_CONFIG
   --config-binary-file=$MYSQLTEST_VARDIR/mysql_cluster.1/ndb_mgmd.1/ndb_3_config.bin.1
   --system --query=PrimaryMGMNode;
+
+echo == 32 == TransactionInactiveTimeout;
+# The timeout cannot be disabled or set above 600000 ms: 0 (from the
+# [ndbd default] section) and 700000 are replaced with 600000, with a warning.
+--replace_regex /.*\[ndb_config\]//
+--exec $NDB_CONFIG --config-file=$MYSQL_TEST_DIR/suite/ndb/ndb_config_inactive_timeout.ini --query=NodeId,TransactionInactiveTimeout --type=ndbd 2>&1

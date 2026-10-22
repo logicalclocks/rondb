@@ -8548,12 +8548,17 @@ struct Dbtup::InterpreterContext {
    * Phase I.18: producer.  Interpreter input slots are opaque 8-byte
    * values; mark the destination register as REG_TYPE_INT (signed
    * Int64 is the historical default and bit-identical to
-   * NOT_NULL_INDICATOR). */
+   * NOT_NULL_INDICATOR).  Reading a slot that this operation did not
+   * supply as an input parameter is an error. */
   static inline int handleReadInterpreterInput(InterpreterContext& ctx) {
     Uint32 inputInx = ctx.theInstruction >> 16;
     Int64* value_ptr = (Int64*)(ctx.TregMemBuffer + ctx.theRegister + 2);
     if (unlikely(inputInx >= AttributeHeader::MaxInterpreterInputIndex)) {
       return -ZINPUT_OUTPUT_INDEX_ERROR;
+    }
+    if (unlikely((ctx.req_struct->m_interpreter_input_defined &
+                  (1U << inputInx)) == 0)) {
+      return -ZINTERPRETER_INPUT_NOT_DEFINED;
     }
     memcpy(value_ptr, &ctx.tup->m_interpreter_input[inputInx], 8);
     ctx.TregMemBuffer[ctx.theRegister] = Interpreter::REG_TYPE_INT;
@@ -8564,7 +8569,7 @@ struct Dbtup::InterpreterContext {
    *
    * Phase I.18: type-agnostic writer (interpreter outputs hold any
    * 64-bit value).  Reject float and NULL; signed and unsigned both
-   * fine. */
+   * fine.  Marks the slot as defined so it can be read back. */
   static inline int handleWriteInterpreterOutput(InterpreterContext& ctx) {
     Uint32 valueType = ctx.TregMemBuffer[ctx.theRegister];
     Uint32 outputInx = ctx.theInstruction >> 16;
@@ -8575,6 +8580,7 @@ struct Dbtup::InterpreterContext {
     if (unlikely(outputInx >= AttributeHeader::MaxInterpreterOutputIndex)) {
       return -ZINPUT_OUTPUT_INDEX_ERROR;
     }
+    ctx.req_struct->m_interpreter_output_defined |= (1U << outputInx);
     outputInx *= 2;
     memcpy(&ctx.tup->c_interpreter_output[outputInx], value_ptr, 8);
     return INTERP_CONTINUE;

@@ -113,8 +113,40 @@ SELECT MIN(f) AS lo, MAX(f) AS hi FROM float_format WHERE g = 0;
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 
+# RONSQL-44: a DOUBLE was printed with at most 17 digits after the
+# decimal point, so a value below 0.1 could lose digits, and a value
+# below about 5e-18 printed as 0. DOUBLE output is now the shortest
+# exact digits in fixed point. MySQL prints values below 1e-15 with an
+# exponent, so these queries run through ronsql_cli only.
 --disable_query_log
 --disable_warnings
+CREATE TABLE double_small (
+  pk INT NOT NULL PRIMARY KEY,
+  d DOUBLE NOT NULL
+) ENGINE=NDB;
+--enable_warnings
+INSERT INTO double_small VALUES
+(1, 1e-20),
+(2, -1e-20),
+(3, 1.2345678901234568e-5),
+(4, 0.012345678901234567),
+(5, 0.05),
+(6, 1e-15),
+(7, 1e-16),
+(8, 0.30000000000000004),
+(9, 2.5),
+(10, -2.2250738585072014e-308);
+--enable_query_log
+
+--echo Small DOUBLE aggregates printed exactly in fixed point
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT pk, MIN(d) AS v FROM double_small GROUP BY pk ORDER BY pk;'
+
+--echo Small DOUBLE group keys printed exactly in fixed point
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT d, COUNT(*) AS n FROM double_small GROUP BY d ORDER BY d;'
+
+--disable_query_log
+--disable_warnings
+DROP TABLE double_small;
 DROP TABLE float_format;
 --enable_warnings
 --enable_query_log

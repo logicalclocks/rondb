@@ -583,8 +583,8 @@ void NdbColumnImpl::create_pseudo_columns() {
     NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_13");
   NdbDictionary::Column::INTERPRETER_INPUT_14 = 
     NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_14");
-  NdbDictionary::Column::INTERPRETER_INPUT_15 = 
-    NdbColumnImpl::create_pseudo("NDB$READ_INTERPRETER_OUTPUT_15");
+  NdbDictionary::Column::INTERPRETER_INPUT_15 =
+    NdbColumnImpl::create_pseudo("NDB$INTERPRETER_INPUT_15");
 
   NdbDictionary::Column::VEC_DISTANCE =
       NdbColumnImpl::create_pseudo("NDB$VEC_DISTANCE");

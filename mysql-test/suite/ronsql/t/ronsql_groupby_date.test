@@ -1,0 +1,59 @@
+# RONSQL-45: a DATE GROUP BY column was printed without zero padding
+# of the year: 999-01-01 where MySQL prints 0999-01-01, and 0-00-00 for
+# the zero date. Both GROUP BY printers are covered: unsorted output
+# (gd-1) and output sorted by ORDER BY (gd-2).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE gb_date (
+  id INT NOT NULL,
+  d  DATE NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO gb_date VALUES
+  (1, '0001-02-03'),
+  (2, '0099-12-31'),
+  (3, '0999-01-01'),
+  (4, '0999-01-01'),
+  (5, '2024-05-06');
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === gd-1: GROUP BY a DATE column, unsorted ===
+
+let $QUERY=
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d|
+
+--echo
+--echo === gd-2: GROUP BY a DATE column with ORDER BY ===
+
+let $QUERY=
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d ORDER BY d;|
+--let $skip_sort=yes
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT d, COUNT(*) AS n FROM gb_date GROUP BY d ORDER BY d|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE gb_date;
+--enable_query_log

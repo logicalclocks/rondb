@@ -1,0 +1,30 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== op-1: a plain token ===
+{"operationId": "op-1.A_b",
+"data":
+[{"n":2}
+]
+}
+
+=== op-2: a quote, a backslash, a newline, a tab and U+0001 ===
+{"operationId": "q\"b\\s\nn\tt\u0001",
+"data":
+[{"n":2}
+]
+}
+
+=== op-3: a non-ASCII character under JSON ===
+{"operationId": "café",
+"data":
+[{"n":2}
+]
+}
+
+=== op-4: a non-ASCII character under JSON_ASCII ===
+{"operationId": "caf\u00e9",
+"data":
+[{"n":2}
+]
+}

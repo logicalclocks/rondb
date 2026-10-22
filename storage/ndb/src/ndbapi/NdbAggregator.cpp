@@ -1031,6 +1031,7 @@ bool NdbAggregator::LoadColumn(const char* name, Uint32 reg_id) {
 
   Int32 col_id = col->getAttrId();
   assert((col_id & 0xFFFF0000) == 0);
+  if (!HasRoom(2)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
     encodeLoadColType(type) |
@@ -1080,6 +1081,7 @@ bool NdbAggregator::LoadColumn(Int32 col_id, Uint32 reg_id) {
   }
 
   assert((col_id & 0xFFFF0000) == 0);
+  if (!HasRoom(2)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
     encodeLoadColType(type) |
@@ -1125,6 +1127,7 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
   }
 
   Uint32 col_id = AGG_LINKED_COL_FLAG | position;
+  if (!HasRoom(2)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadCol) << 26 |
     encodeLoadColType(type) |
@@ -1149,6 +1152,7 @@ bool NdbAggregator::LoadLinkedColumn(Uint32 position, Uint32 reg_id,
 }
 
 bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
+  if (!HasRoom(3)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
     (NDB_TYPE_BIGUNSIGNED & 0x1F) << 21 |
@@ -1163,6 +1167,7 @@ bool NdbAggregator::LoadUint64(Uint64 value, Uint32 reg_id) {
 }
 
 bool NdbAggregator::LoadInt64(Int64 value, Uint32 reg_id) {
+  if (!HasRoom(3)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
     (NDB_TYPE_BIGINT & 0x1F) << 21 |
@@ -1177,6 +1182,7 @@ bool NdbAggregator::LoadInt64(Int64 value, Uint32 reg_id) {
 }
 
 bool NdbAggregator::LoadDouble(double value, Uint32 reg_id) {
+  if (!HasRoom(3)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLoadConst) << 26 |
     (NDB_TYPE_DOUBLE & 0x1F) << 21 |
@@ -1199,10 +1205,32 @@ bool NdbAggregator::CheckRegs(Uint32 reg_1, Uint32 reg_2) {
   return true;
 }
 
+bool NdbAggregator::HasRoom(Uint32 words) {
+  /* Finalize() rejects an aggregation program of MAX_AGG_PROGRAM_WORD_SIZE
+   * words or more, but only once it is written: stop at the end of
+   * buffer_ instead of writing past it. */
+  if (curr_prog_pos_ + words > sizeof(buffer_) / sizeof(buffer_[0])) {
+    SetError(kErrTooBigProgram);
+    return false;
+  }
+  return true;
+}
+
+bool NdbAggregator::HasGroupByRoom() {
+  /* gb_columns_ and gb_col_ids_ hold MAX_AGG_N_GROUPBY_COLS entries, and
+   * Finalize() rejects that many GROUP BY columns too. */
+  if (n_gb_cols_ >= MAX_AGG_N_GROUPBY_COLS) {
+    SetError(kErrTooManyGroupbyCols);
+    return false;
+  }
+  return HasRoom(1);
+}
+
 bool NdbAggregator::Mov(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpMov) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1217,6 +1245,7 @@ bool NdbAggregator::Add(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpPlus) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1229,6 +1258,7 @@ bool NdbAggregator::Minus(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpMinus) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1241,6 +1271,7 @@ bool NdbAggregator::Mul(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpMul) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1253,6 +1284,7 @@ bool NdbAggregator::Div(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpDiv) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1265,6 +1297,7 @@ bool NdbAggregator::DivInt(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpDivInt) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1277,6 +1310,7 @@ bool NdbAggregator::Mod(Uint32 reg_1, Uint32 reg_2) {
   if (!CheckRegs(reg_1, reg_2)) {
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpMod) << 26 |
     (reg_1 & 0x0F) << 12 |
@@ -1288,6 +1322,7 @@ bool NdbAggregator::Mod(Uint32 reg_1, Uint32 reg_2) {
 bool NdbAggregator::CheckAggAndReg(Uint32 agg_id, Uint32 reg_id) {
   if (agg_id >= MAX_AGGREGATION_OP_SIZE) {
     SetError(kErrInvalidAggNo);
+    return false;
   }
 
   if (agg_ops_[agg_id] != kOpUnknown) {
@@ -1316,6 +1351,7 @@ bool NdbAggregator::Sum(Uint32 agg_id, Uint32 reg_id) {
     return false;
   }
 
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpSum) << 26 |
     (reg_id & 0x0F) << 16 |
@@ -1333,6 +1369,7 @@ bool NdbAggregator::Max(Uint32 agg_id, Uint32 reg_id) {
     return false;
   }
 
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpMax) << 26 |
     (reg_id & 0x0F) << 16 |
@@ -1350,6 +1387,7 @@ bool NdbAggregator::Min(Uint32 agg_id, Uint32 reg_id) {
     return false;
   }
 
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpMin) << 26 |
     (reg_id & 0x0F) << 16 |
@@ -1367,6 +1405,7 @@ bool NdbAggregator::Count(Uint32 agg_id, Uint32 reg_id) {
     return false;
   }
 
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpCount) << 26 |
     (reg_id & 0x0F) << 16 |
@@ -1402,6 +1441,7 @@ bool NdbAggregator::Avg(Uint32 agg_id, Uint32 reg_id) {
     return false;
   }
 
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpAvg) << 26 |
     (reg_id & 0x0F) << 16 |
@@ -1427,6 +1467,7 @@ bool NdbAggregator::OrderBy(Uint32 idx, bool is_agg_result,
     SetError(kErrInvalidAggNo);
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpOrderBy) << 26 |
     (is_agg_result ? 1u : 0u) << 25 |
@@ -1443,6 +1484,7 @@ bool NdbAggregator::Limit(Uint32 n) {
     SetError(kErrInvalidAggNo);
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
     (kOpLimit) << 26 |
     (n & 0x03FFFFFF);
@@ -1466,6 +1508,7 @@ bool NdbAggregator::GroupBy(const char* name) {
     return false;
   }
   Int32 col_id = col->getAttrId();
+  if (!HasGroupByRoom()) return false;
   buffer_[curr_prog_pos_++] =
       (col_id << 16) | (col->getType() & AGG_GB_COL_TYPE_MASK);
 
@@ -1503,6 +1546,7 @@ bool NdbAggregator::GroupBy(Int32 col_id) {
     }
   }
 
+  if (!HasGroupByRoom()) return false;
   buffer_[curr_prog_pos_++] = raw_col_id << 16;
 
   result_size_est_ +=
@@ -1523,7 +1567,15 @@ bool NdbAggregator::GroupByLinked(Uint32 position,
     SetError(kErrInvalidColumnId);
     return false;
   }
+  /* As GroupBy(): a BLOB or TEXT column cannot be a group key. */
+  NdbDictionary::Column::Type type = parentCol->getType();
+  if (type == NdbDictionary::Column::Blob ||
+      type == NdbDictionary::Column::Text) {
+    SetError(kErrUnSupportedColumn);
+    return false;
+  }
   Uint32 col_id = position | AGG_LINKED_COL_FLAG;
+  if (!HasGroupByRoom()) return false;
   buffer_[curr_prog_pos_++] =
       (col_id << 16) | (parentCol->getType() & AGG_GB_COL_TYPE_MASK);
 
@@ -1539,17 +1591,20 @@ bool NdbAggregator::GroupByLinked(Uint32 position,
 }
 
 bool NdbAggregator::EmbeddedInterp(Uint32 embedded_length) {
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
       (kOpEmbeddedInterp << 26) | (embedded_length & 0xFFFF);
   return true;
 }
 
 bool NdbAggregator::EmitEmbeddedWord(Uint32 word) {
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] = word;
   return true;
 }
 
 bool NdbAggregator::Skip(Uint32 skip_count) {
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] = (kOpSkip << 26) | (skip_count & 0xFFFF);
   return true;
 }
@@ -1559,6 +1614,7 @@ bool NdbAggregator::SetRegNull(Uint32 reg_id) {
     SetError(kErrInvalidRegNo);
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
       (kOpSetRegNull << 26) | ((reg_id & 0x0F) << 16);
   return true;
@@ -1577,6 +1633,7 @@ bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
     SetError(kErrInvalidRegNo);
     return false;
   }
+  if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
       (agg_ops_[agg_id]) << 26 | (reg_id & 0x0F) << 16 | agg_id;
   return true;

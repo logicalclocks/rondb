@@ -2692,6 +2692,10 @@ get_meminfo(struct ndb_hwinfo *hwinfo)
                 (unsigned long long)(host_memory_size / (1024 * 1024)));
         memory_size = host_memory_size;
       }
+      if (memory_size < host_memory_size)
+      {
+        hwinfo->has_container_memory_limit = 1;
+      }
       hwinfo->hw_memory_size = memory_size;
       return 0;
     }

@@ -92,15 +92,136 @@ while ($i)
 --source suite/ronsql/include/ronsql_compare.inc
 
 --echo
---echo === MIN and MAX payloads could need 20 KB: the aggregator refuses ===
+--echo === MIN and MAX payloads could need 20 KB: a limit error ===
 --exec printf '{"query":"SELECT g, MIN(s), MAX(s) FROM t_s10 GROUP BY g;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
 --exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
---exec grep -o 'Failed to finalize aggregator' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected the aggregator to refuse a group over 16 KB"
+--exec grep -oF '[limit] Caught exception: The GROUP BY columns and aggregate results of one group can need more than 16 KB, counted at the declared column sizes.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for a group over 16 KB"
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
 --remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+# RONSQL-14: at most 127 GROUP BY columns and 255 aggregate results per
+# SELECT, and an aggregation program shorter than 1024 words. Exceeding
+# them is a limit error, not an internal one. NdbAggregator used to
+# refuse only in Finalize(), after writing a 129th GROUP BY column past
+# its array, or a program past its 8192-word buffer.
+--disable_query_log
+--disable_warnings
+--let $cols = c1 INT NOT NULL DEFAULT 0
+--let $i = 2
+while ($i <= 128)
+{
+  --let $cols = $cols, c$i INT NOT NULL DEFAULT 0
+  --inc $i
+}
+eval CREATE TABLE t_wide (pk INT NOT NULL PRIMARY KEY, $cols) ENGINE=NDB;
+INSERT INTO t_wide (pk) VALUES (1), (2);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === 127 GROUP BY columns are accepted ===
+--let $gb = c1
+--let $i = 2
+while ($i <= 127)
+{
+  --let $gb = $gb, c$i
+  --inc $i
+}
+--let QUERY = SELECT c1, COUNT(*) FROM t_wide GROUP BY $gb;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === 128 GROUP BY columns are a limit error ===
+--exec printf '{"query":"SELECT c1, COUNT(*) FROM t_wide GROUP BY $gb, c128;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -oF '[limit] Caught exception: GROUP BY has more than 127 columns.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for 128 GROUP BY columns"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+--echo
+--echo === 255 aggregate results are accepted ===
+--let $aggs = SUM(c1)
+--let $i = 2
+while ($i <= 128)
+{
+  --let $aggs = $aggs, SUM(c$i)
+  --inc $i
+}
+--let $i = 1
+while ($i <= 127)
+{
+  --let $aggs = $aggs, MIN(c$i)
+  --inc $i
+}
+--let QUERY = SELECT $aggs FROM t_wide;
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === 256 aggregate results are a limit error ===
+--exec printf '{"query":"SELECT $aggs, MIN(c128) FROM t_wide;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -oF '[limit] Caught exception: More than 255 aggregate results in one SELECT. AVG counts as two, except in a CTE body.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for 256 aggregate results"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+# SUMs of 9 products of c1 and a constant. Each product needs a 3-word
+# constant load and a multiplication, and all but the first an addition,
+# so each SUM needs at least 45 program words: 40 SUMs need at least 1800
+# and 200 SUMs at least 9000. The constants are all different, so no
+# product or SUM is shared. Each SUM is longer than 64 bytes, so it needs
+# an alias: a1, a2, ... (s1, s2, ... would include s3, and S3 is a MySQL
+# keyword).
+--let $k = 1
+--let $s = 1
+while ($s <= 200)
+{
+  --inc $k
+  --let $sum = SUM(c1 * $k
+  --let $t = 2
+  while ($t <= 9)
+  {
+    --inc $k
+    --let $sum = $sum + c1 * $k
+    --inc $t
+  }
+  if ($s == 1)
+  {
+    --let $sums = $sum) AS a$s
+  }
+  if ($s > 1)
+  {
+    --let $sums = $sums, $sum) AS a$s
+  }
+  if ($s == 40)
+  {
+    --let $sums40 = $sums
+  }
+  --inc $s
+}
+
+--echo
+--echo === an aggregation program of 1024 words or more is a limit error ===
+--exec printf '{"query":"SELECT $sums40 FROM t_wide;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -oF '[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected a limit error for a program of 1024 words or more"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+--echo
+--echo === a program beyond the 8192-word buffer fails cleanly ===
+--exec printf '{"query":"SELECT $sums FROM t_wide;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -oF 'Caught exception: Failed writing aggregation program' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected the program writing to stop at the end of the buffer"
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs-body
+--remove_file $MYSQL_TMP_DIR/ronsql-rdrs.out
+
+--echo
+--echo === RDRS still answers ===
+--let QUERY = SELECT COUNT(*), SUM(c128) FROM t_wide;
+--source suite/ronsql/include/ronsql_compare.inc
 --remove_file $EXPLAIN_FILE
 --remove_file $NDB_TOOLS_OUTPUT
 
 --disable_query_log
-DROP TABLE t_mr, t_s10;
+DROP TABLE t_mr, t_s10, t_wide;
 --enable_query_log

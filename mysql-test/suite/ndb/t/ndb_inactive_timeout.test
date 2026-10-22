@@ -1,0 +1,48 @@
+################################################################################
+# ndb_inactive_timeout
+#
+# TransactionInactiveTimeout (5000 ms in the .cnf) aborts a user transaction
+# that holds locks and waits for the application for longer than that.
+# Exceptions:
+#   - A committed-read scan holds no locks; while it waits for a slow reader
+#     it gets one hour instead.
+#   - The global schema lock is exempt (one week). ndb_waiting_for_gsl holds
+#     it idle for longer than the default timeout.
+#
+# BatchSize=1 makes a scan return one row per fragment per round, so SLEEP()
+# on each row keeps the scan waiting for mysqld in DBTC.
+################################################################################
+--source include/have_ndb.inc
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1, 1), (2, 2);
+
+--echo # An idle transaction holding a row lock is aborted
+connect (con1, localhost, root,,);
+BEGIN;
+SELECT * FROM t1 WHERE a = 1 FOR UPDATE;
+--sleep 8
+
+--echo # The row lock is free again
+connection default;
+UPDATE t1 SET b = 10 WHERE a = 1;
+
+--echo # The next statement of the aborted transaction fails
+connection con1;
+--error ER_LOCK_WAIT_TIMEOUT
+SELECT * FROM t1 WHERE a = 1 FOR UPDATE;
+ROLLBACK;
+disconnect con1;
+
+connection default;
+SELECT * FROM t1 ORDER BY a;
+
+--echo # A committed-read scan with a reader slower than the timeout completes
+--sorted_result
+SELECT a, SLEEP(8) AS s FROM t1;
+
+--echo # A scan holding locks with a reader slower than the timeout is aborted
+--error ER_LOCK_WAIT_TIMEOUT
+SELECT a, SLEEP(8) AS s FROM t1 LOCK IN SHARE MODE;
+
+DROP TABLE t1;

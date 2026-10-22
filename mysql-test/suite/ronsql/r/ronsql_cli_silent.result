@@ -1,0 +1,12 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== si-1: no option, with a header line ===
+t
+30
+
+=== si-2: --silent followed by another option ===
+30
+
+=== si-3: -s followed by another option ===
+30

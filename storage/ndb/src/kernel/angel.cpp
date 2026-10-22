@@ -714,7 +714,7 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
       angel_start_failed("could not open the child status pipe");
     }
 
-    int fs_password_fds[2];
+    int fs_password_fds[2] = {-1, -1};
     if (have_password_option) {
       if (pipe(fs_password_fds)) {
         g_eventLogger->error("Failed to create pipe, errno: %d (%s)", errno,
@@ -866,7 +866,9 @@ void angel_run(const char *progname, const Vector<BaseString> &original_args,
 
     // Close the write end of pipes
     close(fds[1]);
-    close(fs_password_fds[1]);
+    // The password pipe exists only with a filesystem password; closing
+    // an unset fd here closed a random descriptor, such as stdout
+    if (have_password_option) close(fs_password_fds[1]);
 
     // Read info from the child's pipe
     char buf[128];

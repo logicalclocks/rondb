@@ -75,7 +75,7 @@ ndb$disk_write_speed_base	488	48
 ndb$diskpagebuffer	10	64
 ndb$diskstat	10	48
 ndb$diskstats_1sec	200	52
-ndb$error_messages	938	52
+ndb$error_messages	940	52
 ndb$frag_locks	400	96
 ndb$frag_mem_use	400	100
 ndb$frag_operations	400	192
@@ -283,9 +283,9 @@ select state_int_value, state_name from ndb$dblqh_tcconnect_state where state_in
 state_int_value	9
 state_name	LOG_COMMIT_QUEUED_WAIT_SIGNAL
 
-select param_number, param_name from ndb$config_params where param_number = 161;
-param_number	161
-param_name	StringMemory
+select param_number, param_name from ndb$config_params where param_number = 112;
+param_number	112
+param_name	DataMemory
 PRIMARY
 
 ## No row:

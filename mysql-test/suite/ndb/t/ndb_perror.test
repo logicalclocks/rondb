@@ -49,4 +49,9 @@
 --echo # 8) Should print all
 --exec $NDB_PERROR --verbose 4008 2>&1
 
+--echo #
+--echo # 9) Should print "Permanent error" for the "Schema object
+--echo #    already exists" classification, not "Unknown result"
+--exec $NDB_PERROR 721 746 4244 2>&1
+
 

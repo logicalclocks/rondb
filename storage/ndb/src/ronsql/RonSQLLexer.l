@@ -115,6 +115,45 @@
   return_err(ERR_TOKEN); \
 } while (0)
 #define context yyextra
+
+/*
+ * RONSQL-46: whether an unquoted word is in keywords_defined_in_mysql. The
+ * [a-z_]{1,18} rule checks the shorter keywords itself; this is for the
+ * words the {UNQUOTED_IDENTIFIER_CHARACTER}+ rule matches, which include the
+ * MySQL keywords longer than 18 characters and those with a digit (INT1,
+ * FLOAT8, S3, X509). Only letters are uppercased, so digits compare as
+ * digits.
+ */
+static bool is_mysql_keyword(const char* text, size_t len)
+{
+  char word[64 + 1];
+  if (len > 64)
+    return false;
+  for (size_t i = 0; i < len; i++)
+  {
+    char c = text[i];
+    if (c >= 'a' && c <= 'z')
+      c = char(c - 'a' + 'A');
+    else if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_'))
+      return false; // No MySQL keyword has '$' or a non-ASCII character.
+    word[i] = c;
+  }
+  word[len] = char(0);
+  Int32 low = 0;
+  Int32 high = (Int32)number_of_keywords_defined_in_mysql - 1;
+  while (low <= high)
+  {
+    Int32 mid = (low + high) / 2;
+    int cmp = strcmp(word, keywords_defined_in_mysql[mid]);
+    if (cmp < 0)
+      high = mid - 1;
+    else if (cmp > 0)
+      low = mid + 1;
+    else
+      return true;
+  }
+  return false;
+}
 %}
 
 /*
@@ -406,12 +445,16 @@ SINGLE_QUOTED_STRING_CHARACTER_EXCEPT_APOSTROPHE_AND_BACKSLASH         [^\0\047\
   * rules matching with equal length, flex selects the one mentioned first. So,
   * since the keywords are defined first, they take precedence.
   */
-  // todo Do we need to check that it is not a reserved keyword?
   yylval->str = LexString{yytext, rsqlp_leng};
   lloc_this_rule();
   if (rsqlp_leng > 64)
   {
     return_err(TOO_LONG_IDENTIFIER);
+  }
+  // A MySQL keyword is not an unquoted identifier, as in the rule above.
+  if (is_mysql_keyword(yytext, rsqlp_leng))
+  {
+    return_err(UNIMPLEMENTED_KEYWORD);
   }
   return T_IDENTIFIER;
 }

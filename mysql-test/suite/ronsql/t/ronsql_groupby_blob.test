@@ -1,0 +1,70 @@
+# RONSQL-39: GROUP BY on a BLOB or TEXT column.
+#
+# With the column in the SELECT list, the printer took the column's
+# inline and part sizes for a DECIMAL precision and scale and failed an
+# ndbrequire: the process aborted. Without it, NdbAggregator::GroupBy()
+# refused the column, and RonSQL reported that as "Failed writing
+# aggregation program. Please report a bug." (HTTP 500, class internal),
+# even on an empty table. GroupByLinked(), used for a GROUP BY column of
+# a joined parent table, did not refuse it at all. Both now refuse it,
+# and RonSQL reports "GROUP BY on a BLOB or TEXT column is not
+# supported." (class unsupported).
+#
+#   gb-1  TEXT, single table          gb-4  TEXT of a join parent (linked)
+#   gb-2  BLOB, single table          gb-5  BLOB not in the SELECT list
+#   gb-3  BLOB of a join leaf
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE gb_t (
+  id  INT NOT NULL,
+  k   INT NOT NULL,
+  txt TEXT,
+  bl  BLOB,
+  PRIMARY KEY (id)
+) ENGINE=NDB;
+INSERT INTO gb_t VALUES
+  (1, 1, 'apple',  0x01),
+  (2, 1, 'banana', 0x02),
+  (3, 2, 'apple',  0x01);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === gb-1: GROUP BY a TEXT column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT txt, COUNT(*) AS n FROM gb_t GROUP BY txt;' 2>&1
+
+--echo
+--echo === gb-2: GROUP BY a BLOB column ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT bl, COUNT(*) AS n FROM gb_t GROUP BY bl;' 2>&1
+
+--echo
+--echo === gb-3: GROUP BY a BLOB column of a join leaf ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT b.bl, COUNT(*) AS n FROM gb_t AS a JOIN gb_t AS b ON b.id = a.id GROUP BY b.bl;' 2>&1
+
+--echo
+--echo === gb-4: GROUP BY a TEXT column of a join parent ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT a.txt, COUNT(*) AS n FROM gb_t AS a JOIN gb_t AS b ON b.id = a.id GROUP BY a.txt;' 2>&1
+
+--echo
+--echo === gb-5: GROUP BY a BLOB column that is not selected ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT COUNT(*) AS n FROM gb_t GROUP BY bl;' 2>&1
+
+--echo
+--echo === Cleanup ===
+
+--disable_query_log
+DROP TABLE gb_t;
+--enable_query_log

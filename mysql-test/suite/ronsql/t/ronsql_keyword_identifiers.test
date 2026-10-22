@@ -1,0 +1,75 @@
+# RONSQL-46: an unquoted identifier may not be a MySQL keyword, but the
+# lexer checked only words of at most 18 characters from [a-z_]. The 37
+# MySQL keywords longer than that (e.g. SQL_CALC_FOUND_ROWS,
+# SECONDARY_ENGINE_ATTRIBUTE) and the 9 with a digit (INT1-INT8, FLOAT4,
+# FLOAT8, S3, X509) were accepted as identifiers. They are now rejected
+# like the other keywords (kw-1 to kw-5), and still work backquoted
+# (kw-6), as does an identifier with a digit that is not a keyword (v1).
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+CREATE TABLE kw_t (
+  `int1` INT NOT NULL,
+  `s3` INT NOT NULL,
+  `sql_calc_found_rows` INT NOT NULL,
+  `secondary_engine_attribute` INT NOT NULL,
+  v1 INT NOT NULL,
+  PRIMARY KEY (`int1`)
+) ENGINE=NDB;
+INSERT INTO kw_t VALUES
+  (1, 10, 100, 1000, 7),
+  (2, 20, 200, 2000, 8);
+--enable_warnings
+--enable_query_log
+
+--echo
+--echo === kw-1: S3, a keyword with a digit ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(s3) AS t FROM kw_t;' 2>&1
+
+--echo
+--echo === kw-2: INT1, a keyword with a digit, reserved in MySQL ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(int1) AS t FROM kw_t;' 2>&1
+
+--echo
+--echo === kw-3: SQL_CALC_FOUND_ROWS, a keyword of 19 characters, reserved in MySQL ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(sql_calc_found_rows) AS t FROM kw_t;' 2>&1
+
+--echo
+--echo === kw-4: SECONDARY_ENGINE_ATTRIBUTE, a keyword of 26 characters ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(secondary_engine_attribute) AS t FROM kw_t;' 2>&1
+
+--echo
+--echo === kw-5: X509 as an output alias ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT SUM(v1) AS x509 FROM kw_t;' 2>&1
+
+DELIMITER |;
+
+--echo
+--echo === kw-6: the same keywords backquoted ===
+
+let $QUERY=
+SELECT SUM(`int1`) AS a, SUM(`s3`) AS b, SUM(`sql_calc_found_rows`) AS c, SUM(`secondary_engine_attribute`) AS d, SUM(v1) AS e FROM kw_t;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+SELECT SUM(`int1`) AS a, SUM(`s3`) AS b, SUM(`sql_calc_found_rows`) AS c, SUM(`secondary_engine_attribute`) AS d, SUM(v1) AS e FROM kw_t|
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE kw_t;
+--enable_query_log

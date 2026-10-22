@@ -1,0 +1,48 @@
+--source include/have_ndb.inc
+
+#
+# rdrs2 creates the Rondis tables itself at startup when
+# Rondis.CreateTables is set, which is the default. The other tests in
+# this suite create the tables from include/create_rondis_tables.inc
+# instead, so this test covers the rdrs2 path. rdrs2 runs with
+# CreateTables and RequireTablesOnStartup (see rondis_create_tables.cnf),
+# so it does not start at all if the tables it creates cannot be used
+# by Rondis.
+#
+# rdrs2 creates redis_0 before the test starts, so the test must not
+# create or drop it.
+#
+
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT PING
+
+--echo #
+--echo # rdrs2 created all four tables, with TTL on the three that
+--echo # have an expiry_date column.
+--echo #
+SELECT table_name AS name, table_comment AS comment FROM information_schema.tables WHERE table_schema = 'redis_0' ORDER BY table_name;
+
+--echo #
+--echo # hset_keys has the field_count and expiry_date columns.
+--echo #
+SELECT column_name AS name, column_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = 'redis_0' AND table_name = 'hset_keys' ORDER BY ordinal_position;
+
+--echo #
+--echo # The string_keys primary key is an ordered index, not USING HASH.
+--echo #
+SELECT DISTINCT index_name AS name, index_type AS type FROM information_schema.statistics WHERE table_schema = 'redis_0' AND table_name = 'string_keys' AND index_name = 'PRIMARY';
+
+--echo #
+--echo # Strings, hashes and expiry work on the tables rdrs2 created.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT SET ct:str hello
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT GET ct:str
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HSET ct:hash f1 v1 f2 v2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HGET ct:hash f2
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT EXPIRE ct:str 1000
+--replace_regex /[0-9]+/<positive>/
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT TTL ct:str
+
+--echo #
+--echo # Cleanup. Leave redis_0 in place, rdrs2 created it.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT DEL ct:str ct:hash

@@ -248,6 +248,30 @@ scalar CTEs, and CTE_SCAN roots — all without GROUP BY /
 expressions (ORDER BY and LIMIT are supported).
 Error handling: RPE
 ronsql_cli caught exception: Not an aggregate query.
+
+
+=== Test 17: comma join of two stored tables in an aggregate query rejects ===
+Table 'scalar_o' is joined with a comma, without ON conditions. Only a CTE without GROUP BY, which has at most one row, can be joined that way.
+Error handling: RPE
+ronsql_cli caught exception: Comma cross joins are supported only for CTEs without GROUP BY. Join tables and grouped CTEs with JOIN ... ON.
+
+
+=== Test 18: comma join of two stored tables beside a scalar CTE rejects ===
+Table 'scalar_o' is joined with a comma, without ON conditions. Only a CTE without GROUP BY, which has at most one row, can be joined that way.
+Error handling: RPE
+ronsql_cli caught exception: Comma cross joins are supported only for CTEs without GROUP BY. Join tables and grouped CTEs with JOIN ... ON.
+
+
+=== Test 19: comma join of a grouped CTE rejects ===
+CTE 'g' is joined with a comma, without ON conditions. Only a CTE without GROUP BY, which has at most one row, can be joined that way.
+Error handling: RPE
+ronsql_cli caught exception: Comma cross joins are supported only for CTEs without GROUP BY. Join tables and grouped CTEs with JOIN ... ON.
+
+
+=== Test 20: comma join of two stored tables in a CTE body rejects ===
+Table 'scalar_o' is joined with a comma, without ON conditions. Only a CTE without GROUP BY, which has at most one row, can be joined that way.
+Error handling: RPE
+ronsql_cli caught exception: Comma cross joins are supported only for CTEs without GROUP BY. Join tables and grouped CTEs with JOIN ... ON.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_scalar_jit_fallback_delta;
 ronsql_cte_scalar_jit_fallback_delta

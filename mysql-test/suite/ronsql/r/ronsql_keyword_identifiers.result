@@ -1,0 +1,53 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== kw-1: S3, a keyword with a digit ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT SUM(s3) AS t FROM kw_t;
+!            ^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== kw-2: INT1, a keyword with a digit, reserved in MySQL ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT SUM(int1) AS t FROM kw_t;
+!            ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== kw-3: SQL_CALC_FOUND_ROWS, a keyword of 19 characters, reserved in MySQL ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT SUM(sql_calc_found_rows) AS t FROM kw_t;
+!            ^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== kw-4: SECONDARY_ENGINE_ATTRIBUTE, a keyword of 26 characters ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT SUM(secondary_engine_attribute) AS t FROM kw_t;
+!            ^^^^^^^^^^^^^^^^^^^^^^^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== kw-5: X509 as an output alias ===
+Syntax error in SQL statement: Unimplemented keyword. If this was intended as an identifier, use backtick quotation.
+> SELECT SUM(v1) AS x509 FROM kw_t;
+!                   ^^^^
+Error handling: RPE
+ronsql_cli caught exception: Syntax error.
+
+=== kw-6: the same keywords backquoted ===
+== Query ==
+SELECT SUM(`int1`) AS a, SUM(`s3`) AS b, SUM(`sql_calc_found_rows`) AS c, SUM(`secondary_engine_attribute`) AS d, SUM(v1) AS e FROM kw_t;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(`int1`) AS a, SUM(`s3`) AS b, SUM(`sql_calc_found_rows`) AS c, SUM(`secondary_engine_attribute`) AS d, SUM(v1) AS e FROM kw_t|
+a	b	c	d	e
+3	30	300	3000	15

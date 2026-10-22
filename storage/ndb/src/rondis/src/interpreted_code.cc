@@ -370,7 +370,20 @@ int write_key_row_no_commit(std::string *response,
                key_store->m_num_rows > 0) {
       const NdbDictionary::Column *expiry_date_col =
         tab->getColumn(KEY_TABLE_COL_expiry_date);
+      /**
+       * A key without TTL has a NULL expiry_date, and the data node
+       * refuses to write a NULL register to an interpreter output
+       * (error 878). Return the no-expiry value already encoded in
+       * m_expire_at (KEEPTTL implies ttl -1) in that case, as the
+       * INSERT branch does.
+       *
+       * Labels must be numbered 0..n-1, LABEL4 is the only label
+       * after LABEL3 and is only defined in this case.
+       */
+      code.load_const_u64(REG7, (Uint32)key_store->m_expire_at);
+      code.branch_col_eq_null(expiry_date_col->getColumnNo(), LABEL4);
       code.read_attr(REG7, expiry_date_col);
+      code.def_label(LABEL4);
       code.write_interpreter_output(REG7, OUTPUT_INDEX_2);
     }
     code.read_attr(REG7, num_rows_col);
@@ -428,6 +441,18 @@ int write_key_row_no_commit(std::string *response,
       code.write_interpreter_output(REG7, OUTPUT_INDEX_1);
     }
     code.write_interpreter_output(REG7, OUTPUT_INDEX_0);
+    if (key_store->m_keep_ttl == true &&
+        key_store->m_num_rows > 0) {
+      /**
+       * write_data_to_key_op reads OUTPUT_INDEX_2 in this case, the
+       * data node refuses to return an output not written by the
+       * program. A new key has no TTL to keep, so return the no-expiry
+       * value already encoded in m_expire_at (KEEPTTL implies ttl -1),
+       * write_callback copies it back into m_expire_at unchanged.
+       */
+      code.load_const_u64(REG5, (Uint32)key_store->m_expire_at);
+      code.write_interpreter_output(REG5, OUTPUT_INDEX_2);
+    }
     // Signal 1 = "new field" for the HSET new-field-count (C10).
     code.load_const_u16(REG5, 1);
     code.write_interpreter_output(REG5, OUTPUT_INDEX_3);

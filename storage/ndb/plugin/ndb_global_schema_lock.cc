@@ -198,6 +198,10 @@ static NdbTransaction *gsl_lock_ext(THD *thd, Ndb *ndb, NdbError &ndb_error,
       ndb_error = ndb->getNdbError();
       return nullptr;
     }
+    // The lock is held idle while the DDL runs (data copy, index build,
+    // schema distribution), so it must not be aborted by the data node's
+    // TransactionInactiveTimeout.
+    trans->setExemptFromInactiveTimeout();
 
     // Get NDB operation
     NdbOperation *op = trans->getNdbOperation(ndbtab);

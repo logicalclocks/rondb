@@ -48,6 +48,21 @@ INSERT INTO cte_orders VALUES
   (4, 200, 40),
   (5, 300, 90);
 
+CREATE TABLE cte_events (
+  e_id INT NOT NULL,
+  e_key INT NOT NULL,
+  e_d DATE NOT NULL,
+  e_dt DATETIME NOT NULL,
+  e_n INT NOT NULL,
+  PRIMARY KEY USING HASH (e_id)
+) ENGINE=NDB;
+
+INSERT INTO cte_events VALUES
+  (1, 1, '2024-01-10', '2024-01-10 10:00:00', 5),
+  (2, 1, '2024-02-15', '2024-02-15 11:00:00', 7),
+  (3, 2, '2024-03-01', '2024-03-01 09:30:00', 3),
+  (4, 2, '2024-01-05', '2024-01-05 08:00:00', 9);
+
 --enable_warnings
 --enable_query_log
 
@@ -394,9 +409,51 @@ JOIN stats ON stats.k = c.c_id
 WHERE stats.first_name < stats.last_name
 GROUP BY stats.k|
 
+# MIN/MAX over a temporal column is carried as the packed value in a
+# Bigunsigned virt column.  DATE against MIN/MAX of a DATE compares
+# packed DATEs, which order like the dates; any other pairing with a
+# temporal operand would compare packed encodings against a different
+# encoding or a number, so it is rejected.
+
+--echo
+--echo
+--echo === Test 11: DATE watermark (real DATE vs MAX(date) of a scalar CTE) ===
+
+let $QUERY=
+WITH s AS (SELECT MAX(e_d) AS d FROM cte_events WHERE e_key = 1)
+SELECT e.e_id
+FROM cte_events AS e, s
+WHERE e.e_d < s.d;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH s AS (SELECT MAX(e_d) AS d FROM cte_events WHERE e_key = 1)
+SELECT e.e_id
+FROM cte_events AS e, s
+WHERE e.e_d < s.d|
+
+--echo
+--echo
+--echo === Test 12a (rejection): DATE vs MAX(datetime) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(e_dt) AS m FROM cte_events) SELECT e.e_id FROM cte_events AS e, s WHERE e.e_d < s.m;' 2>&1
+
+--echo
+--echo
+--echo === Test 12b (rejection): INT vs MAX(date) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT MAX(e_d) AS d FROM cte_events) SELECT e.e_id FROM cte_events AS e, s WHERE e.e_n < s.d;' 2>&1
+
+--echo
+--echo
+--echo === Test 12c (rejection): DATE vs COUNT(*) ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH s AS (SELECT COUNT(*) AS c FROM cte_events) SELECT e.e_id FROM cte_events AS e, s WHERE e.e_d > s.c;' 2>&1
+
 DELIMITER ;|
 
 --disable_query_log
 DROP TABLE cte_orders;
 DROP TABLE cte_customer;
+DROP TABLE cte_events;
 --enable_query_log

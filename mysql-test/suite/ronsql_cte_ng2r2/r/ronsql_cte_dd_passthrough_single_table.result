@@ -683,7 +683,7 @@ o_orderkey	o_clerk
 === st-20: unsupported-type residual -> plan-time scan fallback ===
 == Explain Query ==
 Error handling: RMS->RPE
-ronsql_cli caught exception: Unsupported column type in comparison condition. Supported types are integer types, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
+ronsql_cli caught exception: Unsupported column type in comparison condition. Supported types are integer types, FLOAT, DOUBLE, DECIMAL, CHAR, VARCHAR, DATE, DATETIME and TIMESTAMP.
 
 === st-21: VARCHAR-PK plain lookup ===
 == Query ==

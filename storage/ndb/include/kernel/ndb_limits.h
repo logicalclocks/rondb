@@ -37,6 +37,23 @@
 
 #define DEFAULT_STRING_MEMORY 6
 /**
+ * Upper limit of TransactionInactiveTimeout (ms). The timeout cannot be
+ * disabled: 0 or a larger value is replaced with this one.
+ */
+#define MAX_TRANSACTION_INACTIVE_TIMEOUT 600000
+/**
+ * Inactive timeout (ms) of a committed-read scan waiting for the application
+ * to ask for more rows. It holds no locks, so a slow reader such as
+ * mysqldump gets one hour instead of TransactionInactiveTimeout.
+ */
+#define COMMITTED_READ_SCAN_INACTIVE_TIMEOUT 3600000
+/**
+ * Inactive timeout (ms) of a transaction exempted with
+ * NdbTransaction::setExemptFromInactiveTimeout(), such as the MySQL Server
+ * global schema lock, which is idle while its DDL runs: one week.
+ */
+#define EXEMPT_TRANSACTION_INACTIVE_TIMEOUT 604800000
+/**
  * Note that actual value = MAX_NODES - 1,
  *  since NodeId = 0 can not be used
  */

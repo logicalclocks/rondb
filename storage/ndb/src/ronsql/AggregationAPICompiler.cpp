@@ -221,6 +221,13 @@ AggregationAPICompiler::new_expr(ExprOp op,
         throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
                                    "Divide by zero in integer constant folding.");
       }
+      // INT64_MIN DIV -1 is INT64_MAX + 1, an overflow as in MySQL and on
+      // the data nodes.  Dividing it in C++ is undefined and traps on x86.
+      if (arg1 == INT64_MIN && arg2 == -1) {
+        m_err << "Overflow when attempting to fold constant expression (" << arg1 << " DIV " << arg2 << ").\n";
+        throw RonSQLPermanentError(RonSQLErrorClass::SEMANTIC,
+                                   "Overflow in integer constant folding.");
+      }
       result = arg1 / arg2;
       break;
     case ExprOp::Rem:
@@ -229,7 +236,10 @@ AggregationAPICompiler::new_expr(ExprOp op,
         throw RonSQLPermanentError(RonSQLErrorClass::UNSUPPORTED,
                                    "Divide by zero in integer constant folding.");
       }
-      result = arg1 % arg2;
+      // x % -1 is 0 for every x, INT64_MIN included, as in MySQL and on the
+      // data nodes.  Computing INT64_MIN % -1 in C++ is undefined and traps
+      // on x86.
+      result = (arg2 == -1) ? 0 : arg1 % arg2;
       break;
     default:
       // Unknown operation
@@ -293,6 +303,16 @@ AggregationAPICompiler::new_agg(AggregationAPICompiler::AggType agg_type,
   // Since new aggregates are only to be created during programming, the above
   // deduplication should always succeed during compilation.
   require_status(PROGRAMMING);
+  // RONSQL-14: a documented limit, so a limit error rather than the
+  // aggregator's refusal at Finalize().  The main query compiles AVG as a
+  // SUM and a COUNT; a CTE body compiles it as one result.
+  if (m_aggs.size() >= MAX_AGGS)
+  {
+    throw RonSQLPermanentError(RonSQLErrorClass::LIMIT,
+                               "More than " + std::to_string(MAX_AGGS) +
+                               " aggregate results in one SELECT. AVG "
+                               "counts as two, except in a CTE body.");
+  }
   expr->usage++;
   m_aggs.push(agg);
   return m_aggs.size() - 1;
@@ -581,7 +601,14 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     m_program.push(skip_instr);
     m_pair_op_program_exprs.push(NULL);
 
-    // ELSE arm
+    // ELSE arm.  It runs only when the THEN arm did not, so it must not
+    // reuse a register the THEN arm wrote, such as a value loaded there
+    // or a copy saved there.  Forget all register contents so that the
+    // ELSE arm loads what it needs itself.  Keeping the values from
+    // before the CASE would be correct at runtime, but
+    // dead_code_elimination() treats the program as straight-line code
+    // and would see a THEN arm write as the one feeding the ELSE arm.
+    svm_init();
     m_cases[case_idx].else_start = m_program.size();
     Uint32 else_reg;
     if (!compile(case_expr->right, &else_reg)) return false;
@@ -1025,6 +1052,28 @@ AggregationAPICompiler::dead_code_elimination()
         // Carry over the pair-op Expr tag from the old slot.
         m_pair_op_program_exprs.last_item() = old_pair_op_exprs[i];
       }
+    }
+    // The CASE positions are program indices.  Move each to where the
+    // instruction it points at, or the next kept one, now is.
+    Uint32* new_pos = m_amalloc->alloc_exc<Uint32>(old_program.size() + 1);
+    Uint32 kept = 0;
+    for (Uint32 i=0; i<old_program.size(); i++)
+    {
+      new_pos[i] = kept;
+      if (instr_useful[i])
+      {
+        kept++;
+      }
+    }
+    new_pos[old_program.size()] = kept;
+    for (Uint32 c=0; c<m_cases.size(); c++)
+    {
+      CaseInfo& ci = m_cases[c];
+      ci.then_start = new_pos[ci.then_start];
+      ci.skip_pos = new_pos[ci.skip_pos];
+      ci.else_start = new_pos[ci.else_start];
+      ci.else_end = new_pos[ci.else_end];
+      ndbrequire(m_program[ci.skip_pos].type == SVMInstrType::Skip);
     }
   }
 }

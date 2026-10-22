@@ -18813,9 +18813,12 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   if (unlikely(findTransaction(transid1, transid2, senderData, senderBlockRef,
                                false, false, tcConnectptr) != ZOK)) {
     jam();
-    LQH_DEBUG(senderData
-              << " Received SCAN_NEXTREQ in LQH with close flag when closed");
-    ndbrequire(ScanFragNextReq::getCloseFlag(nextReq->requestInfo));
+    LQH_DEBUG(senderData << " Received SCAN_NEXTREQ for an unknown scan");
+    if (!ScanFragNextReq::getCloseFlag(nextReq->requestInfo)) {
+      jam();
+      send_scan_fragref(signal, transid1, transid2, senderData, senderBlockRef,
+                        ScanFragRef::ZINVALID_SCAN_NEXTREQ);
+    }
     return;
   }
 
@@ -18935,6 +18938,14 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   ScanRecord *const scanPtr = scanptr.p;
   const Uint32 max_rows = nextReq->batch_size_rows;
   const Uint32 max_bytes = nextReq->batch_size_bytes;
+  if (unlikely(max_rows == 0 || max_rows > scanPtr->m_def_max_batch_size)) {
+    jam();
+    tcConnectptr.p->errorCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+    scanPtr->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_IDLE;
+    closeScanRequestLab(signal, tcConnectptr);
+    release_frag_access(prim_tab_fragptr.p);
+    return;
+  }
   scanPtr->m_max_batch_size_bytes = max_bytes;
   {
     /**
@@ -25640,12 +25651,24 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
     /**
      * A write always has to get keyinfo
      */
-    ndbrequire(scanLockMode == 0 || keyinfo);
+    if (unlikely(scanLockMode != 0 && !keyinfo)) {
+      jam();
+      errorCode = ScanFragRef::ZKEYINFO_REQUIRED;
+      releaseSections(handle);
+      goto error_handler;
+    }
 
-    Uint32 def_max_batch_size = (scanLockMode == 0) ?
-      MAX_PARALLEL_OP_PER_SCAN_RC :
-      MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK;
-    ndbrequire(max_rows > 0 && max_rows <= def_max_batch_size);
+    /* LockMode alone does not distinguish shared locks from committed reads. */
+    const bool locking =
+        scanLockMode != 0 || !ScanFragReq::getReadCommittedFlag(reqinfo);
+    const Uint32 def_max_batch_size = locking
+        ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK : MAX_PARALLEL_OP_PER_SCAN_RC;
+    if (unlikely(max_rows == 0 || max_rows > def_max_batch_size)) {
+      jam();
+      errorCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+      releaseSections(handle);
+      goto error_handler;
+    }
 
     // Verify scan type vs table type (both sides are boolean)
     if (unlikely(rangeScan !=
@@ -47522,7 +47545,7 @@ int Dblqh::IOTracker::tick(Uint32 instance, Uint32 now, Uint32 maxlag,
     m_curr_written_bytes += m_sample_completed_bytes;
     m_curr_elapsed_millis += elapsed;
 
-    Uint32 bps = (1000 * m_sample_completed_bytes) / (elapsed) ? elapsed : 1;
+    Uint32 bps = (1000 * m_sample_completed_bytes) / (elapsed ? elapsed : 1);
     Uint32 lag = bps ? m_sum_outstanding_bytes / bps : 30;
     if (false && lag >= 30) {
       g_eventLogger->info(
@@ -47554,8 +47577,7 @@ int Dblqh::IOTracker::tick(Uint32 instance, Uint32 now, Uint32 maxlag,
        *   increase m_lag_cnt and check if it has reached maxlag_cnt
        */
       Uint32 tmp = m_lag_cnt;
-      // Check precedence in below function - what is it implementing?
-      m_lag_cnt += (lag / (maxlag) ? maxlag : 1);
+      m_lag_cnt += lag / (maxlag ? maxlag : 1);
       if (tmp < maxlag_cnt && m_lag_cnt >= maxlag_cnt) {
         retVal = -1;  // start aborting transactions
       }

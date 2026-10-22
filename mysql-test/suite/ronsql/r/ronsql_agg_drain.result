@@ -88,5 +88,53 @@ Number of output lines, including header: 5
 
 
 
-=== MIN and MAX payloads could need 20 KB: the aggregator refuses ===
-Failed to finalize aggregator
+=== MIN and MAX payloads could need 20 KB: a limit error ===
+[limit] Caught exception: The GROUP BY columns and aggregate results of one group can need more than 16 KB, counted at the declared column sizes.
+
+=== 127 GROUP BY columns are accepted ===
+== Query ==
+SELECT c1, COUNT(*) FROM t_wide GROUP BY c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35, c36, c37, c38, c39, c40, c41, c42, c43, c44, c45, c46, c47, c48, c49, c50, c51, c52, c53, c54, c55, c56, c57, c58, c59, c60, c61, c62, c63, c64, c65, c66, c67, c68, c69, c70, c71, c72, c73, c74, c75, c76, c77, c78, c79, c80, c81, c82, c83, c84, c85, c86, c87, c88, c89, c90, c91, c92, c93, c94, c95, c96, c97, c98, c99, c100, c101, c102, c103, c104, c105, c106, c107, c108, c109, c110, c111, c112, c113, c114, c115, c116, c117, c118, c119, c120, c121, c122, c123, c124, c125, c126, c127;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== 128 GROUP BY columns are a limit error ===
+[limit] Caught exception: GROUP BY has more than 127 columns.
+
+=== 255 aggregate results are accepted ===
+== Query ==
+SELECT SUM(c1), SUM(c2), SUM(c3), SUM(c4), SUM(c5), SUM(c6), SUM(c7), SUM(c8), SUM(c9), SUM(c10), SUM(c11), SUM(c12), SUM(c13), SUM(c14), SUM(c15), SUM(c16), SUM(c17), SUM(c18), SUM(c19), SUM(c20), SUM(c21), SUM(c22), SUM(c23), SUM(c24), SUM(c25), SUM(c26), SUM(c27), SUM(c28), SUM(c29), SUM(c30), SUM(c31), SUM(c32), SUM(c33), SUM(c34), SUM(c35), SUM(c36), SUM(c37), SUM(c38), SUM(c39), SUM(c40), SUM(c41), SUM(c42), SUM(c43), SUM(c44), SUM(c45), SUM(c46), SUM(c47), SUM(c48), SUM(c49), SUM(c50), SUM(c51), SUM(c52), SUM(c53), SUM(c54), SUM(c55), SUM(c56), SUM(c57), SUM(c58), SUM(c59), SUM(c60), SUM(c61), SUM(c62), SUM(c63), SUM(c64), SUM(c65), SUM(c66), SUM(c67), SUM(c68), SUM(c69), SUM(c70), SUM(c71), SUM(c72), SUM(c73), SUM(c74), SUM(c75), SUM(c76), SUM(c77), SUM(c78), SUM(c79), SUM(c80), SUM(c81), SUM(c82), SUM(c83), SUM(c84), SUM(c85), SUM(c86), SUM(c87), SUM(c88), SUM(c89), SUM(c90), SUM(c91), SUM(c92), SUM(c93), SUM(c94), SUM(c95), SUM(c96), SUM(c97), SUM(c98), SUM(c99), SUM(c100), SUM(c101), SUM(c102), SUM(c103), SUM(c104), SUM(c105), SUM(c106), SUM(c107), SUM(c108), SUM(c109), SUM(c110), SUM(c111), SUM(c112), SUM(c113), SUM(c114), SUM(c115), SUM(c116), SUM(c117), SUM(c118), SUM(c119), SUM(c120), SUM(c121), SUM(c122), SUM(c123), SUM(c124), SUM(c125), SUM(c126), SUM(c127), SUM(c128), MIN(c1), MIN(c2), MIN(c3), MIN(c4), MIN(c5), MIN(c6), MIN(c7), MIN(c8), MIN(c9), MIN(c10), MIN(c11), MIN(c12), MIN(c13), MIN(c14), MIN(c15), MIN(c16), MIN(c17), MIN(c18), MIN(c19), MIN(c20), MIN(c21), MIN(c22), MIN(c23), MIN(c24), MIN(c25), MIN(c26), MIN(c27), MIN(c28), MIN(c29), MIN(c30), MIN(c31), MIN(c32), MIN(c33), MIN(c34), MIN(c35), MIN(c36), MIN(c37), MIN(c38), MIN(c39), MIN(c40), MIN(c41), MIN(c42), MIN(c43), MIN(c44), MIN(c45), MIN(c46), MIN(c47), MIN(c48), MIN(c49), MIN(c50), MIN(c51), MIN(c52), MIN(c53), MIN(c54), MIN(c55), MIN(c56), MIN(c57), MIN(c58), MIN(c59), MIN(c60), MIN(c61), MIN(c62), MIN(c63), MIN(c64), MIN(c65), MIN(c66), MIN(c67), MIN(c68), MIN(c69), MIN(c70), MIN(c71), MIN(c72), MIN(c73), MIN(c74), MIN(c75), MIN(c76), MIN(c77), MIN(c78), MIN(c79), MIN(c80), MIN(c81), MIN(c82), MIN(c83), MIN(c84), MIN(c85), MIN(c86), MIN(c87), MIN(c88), MIN(c89), MIN(c90), MIN(c91), MIN(c92), MIN(c93), MIN(c94), MIN(c95), MIN(c96), MIN(c97), MIN(c98), MIN(c99), MIN(c100), MIN(c101), MIN(c102), MIN(c103), MIN(c104), MIN(c105), MIN(c106), MIN(c107), MIN(c108), MIN(c109), MIN(c110), MIN(c111), MIN(c112), MIN(c113), MIN(c114), MIN(c115), MIN(c116), MIN(c117), MIN(c118), MIN(c119), MIN(c120), MIN(c121), MIN(c122), MIN(c123), MIN(c124), MIN(c125), MIN(c126), MIN(c127) FROM t_wide;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== 256 aggregate results are a limit error ===
+[limit] Caught exception: More than 255 aggregate results in one SELECT. AVG counts as two, except in a CTE body.
+
+=== an aggregation program of 1024 words or more is a limit error ===
+[limit] Caught exception: The aggregate expressions are too large: the aggregation program must be shorter than 1024 words.
+
+=== a program beyond the 8192-word buffer fails cleanly ===
+Caught exception: Failed writing aggregation program
+
+=== RDRS still answers ===
+== Query ==
+SELECT COUNT(*), SUM(c128) FROM t_wide;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+

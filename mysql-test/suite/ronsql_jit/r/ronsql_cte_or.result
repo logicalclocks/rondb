@@ -266,7 +266,7 @@ k	SUM(sums.t)
 === Test 9: rejection — non-DNF nesting ===
 Expected error: only top-level OR / DNF is supported
 Error handling: RPE
-ronsql_cli caught exception: CTE_LOOKUP filter: only top-level OR / DNF is supported. Convert '(A OR B) AND C' to DNF or split into UNION.
+ronsql_cli caught exception: CTE_LOOKUP filter: only top-level OR / DNF is supported. Rewrite '(A OR B) AND C' as '(A AND C) OR (B AND C)'.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_or_jit_fallback_delta;
 ronsql_cte_or_jit_fallback_delta

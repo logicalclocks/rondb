@@ -331,6 +331,7 @@ NdbTransaction::NdbTransaction(Ndb *aNdb)
       theReleaseOnClose(false),
       theForceReleaseOnClose(false),
       m_scan_close_nowait(false),
+      m_exempt_inactive_timeout(false),
       // Scan operations
       m_waitForReply(true),
       m_theFirstScanOperation(nullptr),
@@ -424,6 +425,7 @@ int NdbTransaction::init() {
   theScanningOp           = nullptr;
   m_scanningQuery         = nullptr;
   m_scan_close_nowait     = false;
+  m_exempt_inactive_timeout = false;
 
   theFirstExecOpInList	  = nullptr;
   theLastExecOpInList	  = nullptr;

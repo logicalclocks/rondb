@@ -473,10 +473,174 @@ Number of output lines, including header: 2
 
 
 
+=== Test 29: NOT EXISTS with a NULL outer correlation column ===
+Orders 2, 3 (NULL o_k) and 4 have no match
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT EXISTS (SELECT i_id FROM nq_inner WHERE i_k = o_k)
+GROUP BY o_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 30: NOT IN a subquery result that holds a NULL ===
+The result is (10, NULL, 30), so no row qualifies
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id))
+GROUP BY o_id;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 31: NOT IN a subquery result without NULL ===
+The result is (10, 30): orders 2 and 4 (order 3 has a NULL o_k)
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k IN (SELECT MIN(i_k) FROM nq_inner WHERE i_id != 2 GROUP BY i_id))
+GROUP BY o_id;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 32: NOT IN an empty subquery result ===
+Every order qualifies, also order 3 with a NULL o_k
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT (o_k IN (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id))
+GROUP BY o_id;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Test 33: IN a subquery result that holds a NULL ===
+Only order 1 matches
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE o_k IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 34: NOT around a correlated scalar subquery ===
+Inner SUM where qty>20: (3,550),(5,750). Orders 1, 2 and 4 have no
+inner rows. Only order 3 qualifies (NOT 700<550)
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT (o_total < (SELECT SUM(l_price) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20))
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 35: NOT around a correlated scalar subquery on the left ===
+SUM(i_id) per i_k: (10,1),(30,3). Orders 2 and 4 have no inner rows,
+order 3 a NULL o_k. Only order 1 qualifies (NOT 1>1)
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE NOT ((SELECT SUM(i_id) FROM nq_inner WHERE i_k = o_k) > o_id)
+GROUP BY o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 36: Correlated COUNT subquery, outer keys without inner rows ===
+COUNT(*) per i_k: (10,1),(NULL,1),(30,1). Orders 2 and 4 have no inner
+rows and order 3 a NULL o_k, so their COUNT is 0: orders 2, 3 and 4
+== Query ==
+SELECT o_id, SUM(o_amt)
+FROM nq_outer
+WHERE o_id > (SELECT COUNT(*) FROM nq_inner WHERE i_k = o_k)
+GROUP BY o_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 37: NOT around a correlated COUNT subquery on the left ===
+COUNT(l_id) where qty>20: (3,2),(5,2), and 0 for orders 1, 2 and 4.
+No count reaches o_custkey, so every order qualifies
+== Query ==
+SELECT o_id, SUM(o_total)
+FROM orders
+WHERE NOT ((SELECT COUNT(l_id) FROM lineitem WHERE l_orderkey = o_id AND l_quantity > 20) >= o_custkey)
+GROUP BY o_id;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+
+=== Test 38: Scalar subquery selecting two columns (rejected) ===
+A scalar subquery selects 2 columns, but it is compared as one value.
+Error handling: RPE
+ronsql_cli caught exception: A scalar subquery must select exactly one column.
+
+=== Test 39: IN subquery selecting two columns (rejected) ===
+An IN subquery selects 2 columns, but IN compares one value with each of its rows.
+Error handling: RPE
+ronsql_cli caught exception: An IN subquery must select exactly one column.
+
+=== Test 40: Scalar subquery returning five rows (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A scalar subquery returned more than one row.
+
 === Cleanup ===
 DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;
+DROP TABLE nq_inner;
+DROP TABLE nq_outer;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_subquery_jit_fallback_delta;
 ronsql_subquery_jit_fallback_delta

@@ -340,6 +340,89 @@ FROM sq_entity AS e
 HAVING sum_val IS NOT NULL|
 
 # =========================================================================
+# Test 14: Same table, different inner-only filters.  Each subquery
+# must apply its own filter, so they must not share a leaf.
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 14: Same table, different inner filters ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+  (SELECT COUNT(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.val > 50) AS cnt_big
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+  (SELECT COUNT(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.val > 50) AS cnt_big
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 15: Same table, one subquery with and one without an inner-only
+# filter, in both orders.  The filter must not leak into the other.
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 15: Filtered and unfiltered subquery on the same table ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all,
+  (SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all,
+  (SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early
+FROM sq_entity AS e|
+
+let $QUERY=
+SELECT e.id,
+  (SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT MAX(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts < 3) AS max_early,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id) AS sum_all
+FROM sq_entity AS e|
+
+# =========================================================================
+# Test 16: Same table, identical inner-only filters under different
+# aliases.  These still share one leaf.
+# =========================================================================
+
+--echo
+--echo
+--echo === Test 16: Same table, identical inner filters ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts > 1) AS min_late
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts > 1) AS sum_late,
+  (SELECT MIN(m2.val) FROM sq_measures AS m2 WHERE m2.entity_id = e.id AND m2.ts > 1) AS min_late
+FROM sq_entity AS e|
+
+# =========================================================================
 
 DELIMITER ;|
 

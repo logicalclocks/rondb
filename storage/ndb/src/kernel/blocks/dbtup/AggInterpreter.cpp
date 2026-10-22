@@ -412,6 +412,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
          * but sized for safety in case handlers use it. */
         Uint32 local_tmpArea[16];
 
+        /* Output slot 0 must be written by this embedded program, not
+         * by an earlier one on the same row. */
+        req_struct->m_interpreter_output_defined &= ~1U;
+
         /* Phase C.3: delegate the embedded user bytecode to the
          * generalised jump-table interpreter with the aggregation
          * handler table and a backward-jump guard.  The old path
@@ -442,6 +446,12 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
         }
 
         /* Read skip_offset written by WRITE_INTERPRETER_OUTPUT in embedded prog */
+        if (unlikely((req_struct->m_interpreter_output_defined & 1U) == 0)) {
+          g_eventLogger->debug("AggInterpreter::ProcessRec "
+              "ZAGG_EMBEDDED_INTERP_ERROR: embedded program exited "
+              "without writing interpreter output 0");
+          return ZAGG_EMBEDDED_INTERP_ERROR;
+        }
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
         if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
           exec_pos = m_prog_len;

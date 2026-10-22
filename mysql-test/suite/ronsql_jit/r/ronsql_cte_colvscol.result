@@ -396,6 +396,45 @@ JOIN stats ON stats.k = c.c_id
 WHERE stats.first_name < stats.last_name
 GROUP BY stats.k|
 k	SUM(stats.k)
+
+
+=== Test 11: DATE watermark (real DATE vs MAX(date) of a scalar CTE) ===
+== Query ==
+WITH s AS (SELECT MAX(e_d) AS d FROM cte_events WHERE e_key = 1)
+SELECT e.e_id
+FROM cte_events AS e, s
+WHERE e.e_d < s.d;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT MAX(e_d) AS d FROM cte_events WHERE e_key = 1)
+SELECT e.e_id
+FROM cte_events AS e, s
+WHERE e.e_d < s.d|
+e_id
+1
+4
+
+
+=== Test 12a (rejection): DATE vs MAX(datetime) ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: a temporal operand is supported only as DATE against DATE (a DATE column or MIN/MAX of a DATE column) — other temporal types, and a DATE against a number, need a cast or a constant-vs-column form.
+
+
+=== Test 12b (rejection): INT vs MAX(date) ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: a temporal operand is supported only as DATE against DATE (a DATE column or MIN/MAX of a DATE column) — other temporal types, and a DATE against a number, need a cast or a constant-vs-column form.
+
+
+=== Test 12c (rejection): DATE vs COUNT(*) ===
+Error handling: RPE
+ronsql_cli caught exception: CTE_LOOKUP filter col-vs-col: a temporal operand is supported only as DATE against DATE (a DATE column or MIN/MAX of a DATE column) — other temporal types, and a DATE against a number, need a cast or a constant-vs-column form.
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_colvscol_jit_fallback_delta;
 ronsql_cte_colvscol_jit_fallback_delta

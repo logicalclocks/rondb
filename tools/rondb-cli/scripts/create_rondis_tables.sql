@@ -23,6 +23,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
+-- Rondis tables for one database; run it after USE redis_<N>.
+-- Keep in sync with storage/ndb/src/rondis/sql/create_rondis_tables.sql.
 CREATE TABLE IF NOT EXISTS string_keys(
   redis_key_id BIGINT UNSIGNED NOT NULL,
   redis_key VARBINARY(3000) NOT NULL,
@@ -35,12 +37,21 @@ CREATE TABLE IF NOT EXISTS string_keys(
   KEY ttl_index(expiry_date),
   PRIMARY KEY (redis_key_id, redis_key),
   UNIQUE KEY (rondb_key) USING HASH
-) ENGINE NDB CHARSET = latin1;
+) ENGINE NDB CHARSET = latin1
+  COMMENT = "NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date";
 CREATE TABLE IF NOT EXISTS hset_keys(
   redis_key VARBINARY(3000) NOT NULL,
-  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  redis_key_id BIGINT UNSIGNED NULL DEFAULT NULL,
+  field_count INT UNSIGNED NOT NULL DEFAULT 0,
+  expiry_date TIMESTAMP,
+  KEY ttl_index(expiry_date),
   PRIMARY KEY (redis_key) USING HASH,
   UNIQUE KEY (redis_key_id) USING HASH
+) ENGINE NDB CHARSET latin1
+  COMMENT = "NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date";
+CREATE TABLE IF NOT EXISTS hset_key_id_sequence(
+  redis_key_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  PRIMARY KEY (redis_key_id) USING HASH
 ) ENGINE NDB CHARSET latin1;
 CREATE TABLE IF NOT EXISTS string_values(
   rondb_key BIGINT UNSIGNED NOT NULL,
@@ -49,5 +60,6 @@ CREATE TABLE IF NOT EXISTS string_values(
   value VARBINARY(29500) NOT NULL,
   KEY ttl_index(expiry_date),
   PRIMARY KEY (rondb_key, ordinal)
-) ENGINE NDB CHARSET latin1;
+) ENGINE NDB CHARSET latin1
+  COMMENT = "NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_8,TTL=0@expiry_date";
 

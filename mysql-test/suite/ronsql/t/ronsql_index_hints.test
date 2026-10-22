@@ -156,6 +156,50 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT a AS k, SUM(v) AS t FROM hint_t GROUP BY a) SELECT o.id FROM hint_t AS o JOIN c AS s USE INDEX (idx_a) ON s.k = o.a WHERE o.a = 10;' 2>&1
 
+# RONSQL-40: an INNER join that binds only part of a CTE's GROUP BY key
+# is run with the CTE as the scanned root, and the original root is read
+# by key for each CTE row. Its index hint was cleared silently, so FORCE
+# INDEX neither applied nor failed. A hint there is now rejected, as on
+# any joined table.
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 10: partial-key CTE join without a hint (CTE becomes the root) ===
+
+let $QUERY=
+WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a)
+SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o JOIN c ON c.k = o.id;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a)
+SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o JOIN c ON c.k = o.id|
+
+DELIMITER ;|
+
+--echo
+--echo
+--echo === Test 11: FORCE INDEX on a root demoted by a partial-key CTE join (rejected) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a) SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o FORCE INDEX (idx_a) JOIN c ON c.k = o.id;' 2>&1
+
+--echo
+--echo
+--echo === Test 12: USE INDEX on a root demoted by a partial-key CTE join (rejected) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a) SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o USE INDEX (idx_a) JOIN c ON c.k = o.id;' 2>&1
+
+--echo
+--echo
+--echo === Test 13: IGNORE INDEX on a root demoted by a partial-key CTE join (rejected) ===
+
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH c AS (SELECT id AS k, a AS ka, SUM(v) AS t FROM hint_t GROUP BY id, a) SELECT COUNT(*) AS n, SUM(c.t) AS s FROM hint_t AS o IGNORE INDEX (idx_a) JOIN c ON c.k = o.id;' 2>&1
+
 --disable_query_log
 DROP TABLE hint_t;
 --enable_query_log

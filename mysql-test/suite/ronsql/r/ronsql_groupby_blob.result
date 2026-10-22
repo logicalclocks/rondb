@@ -1,0 +1,24 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== gb-1: GROUP BY a TEXT column ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gb-2: GROUP BY a BLOB column ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gb-3: GROUP BY a BLOB column of a join leaf ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gb-4: GROUP BY a TEXT column of a join parent ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== gb-5: GROUP BY a BLOB column that is not selected ===
+Error handling: RPE
+ronsql_cli caught exception: GROUP BY on a BLOB or TEXT column is not supported.
+
+=== Cleanup ===

@@ -176,8 +176,8 @@ assert($key == "PRIMARY");
 
 select state_int_value, state_name from ndb$dblqh_tcconnect_state where state_int_value = 9;
 
-select param_number, param_name from ndb$config_params where param_number = 161;
-let $key= query_get_value(explain select param_name from config_params where param_number = 161, key, 1);
+select param_number, param_name from ndb$config_params where param_number = 112;
+let $key= query_get_value(explain select param_name from config_params where param_number = 112, key, 1);
 echo $key;
 assert($key == "PRIMARY");
 
