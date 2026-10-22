@@ -4810,11 +4810,12 @@ int NdbDictInterface::compChangeMask(const NdbTableImpl &old_impl,
      - All existing column definitions except name must be unchanged
      - The new column must be dynamic.
      - The new column must be nullable.
-     - The new column must be memory based.
+     - The new column must be memory based, unless the table has a
+       tablespace.
      - The new column can not be a primary key or distribution key.
      - There must already be at least one existing memory-stored dynamic or
-       variable-sized column (so that the varpart is already allocated) or
-       varPart must be forced
+       variable-sized column, or a disk column in a table with a tablespace
+       (so that the varpart is already allocated), or varPart must be forced
   */
   found_varpart = old_impl.getForceVarPart();
   for (Uint32 i = 0; i < old_sz; i++) {

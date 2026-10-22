@@ -353,7 +353,9 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
      * depends on the where clause and the bound parameter values.
      * 
      * @param context the query context, including the bound parameters
-     * @param limit maximum number of instances to be deleted
+     * @param skip the number of instances to skip before deleting
+     * @param limit the last instance to delete, i.e. skip plus the maximum
+     * number of instances to be deleted (see QueryImpl.setLimits)
      * @return the number of instances deleted
      * @throws ClusterJUserException if not all parameters are bound
      */
@@ -370,9 +372,15 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
         int result = 0;
         int errorCode = 0;
         Index storeIndex;
-        if (skip == Long.MAX_VALUE || limit <= 0) {
+        // nothing to delete if the limits leave no instances; a key lookup
+        // finds at most one instance, so any skip leaves none
+        if (limit <= skip ||
+            (skip > 0 && (scanType == ScanType.PRIMARY_KEY ||
+                          scanType == ScanType.UNIQUE_KEY))) {
             return result;
         }
+        // the scan deletes at most this many instances after skipping
+        long deleteLimit = limit - skip;
         session.startAutoTransaction();
         Operation op = null;
         try {
@@ -428,7 +436,7 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
                     result = session.deletePersistentAll((IndexScanOperation)op,
                                                          false,
                                                          skip,
-                                                         limit);
+                                                         deleteLimit);
                     break;
                 }
 
@@ -446,7 +454,7 @@ public class QueryDomainTypeImpl<T> implements QueryDomainType<T> {
                     result = session.deletePersistentAll((ScanOperation)op,
                                                           false,
                                                           skip,
-                                                          limit);
+                                                          deleteLimit);
                     break;
                 }
 

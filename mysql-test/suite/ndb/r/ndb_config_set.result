@@ -30,6 +30,12 @@ Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaL
 Unknown SET parameter: 'FooBar'
 Supported parameters: MaxDiskWriteSpeed, EnableProactiveDeadlockDetection, RdmaLogLevel, CompiledInterpreter, AdaptiveSendThreshold
 
+Node 3 found, but with wrong node type
+MaxDiskWriteSpeed is a data node parameter: node 3 is not a data node
+
+Node 3 found, but with wrong node type
+EnableProactiveDeadlockDetection is a data node parameter: node 3 is not a data node
+
 select node_id, config_value
 from ndbinfo.config_values
 where config_param = 639

@@ -2227,7 +2227,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
   unsigned int noOfTransactions = 4096;
   unsigned int noOfScanRecords = 256;
   unsigned int noOfLocalScanRecords = 32;
-  unsigned int noBatchSize = 0;
   unsigned int noOfIndexOperations = 8192;
   unsigned int noOfTriggerOperations = 4000;
   unsigned int reservedScanRecords = 256 / 4;
@@ -2255,7 +2254,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
     { CFG_DB_RESERVED_SCANS, &reservedScanRecords, true },
     { CFG_DB_NO_LOCAL_SCANS, &noOfLocalScanRecords, true },
     { CFG_DB_RESERVED_LOCAL_SCANS, &reservedLocalScanRecords, true },
-    { CFG_DB_BATCH_SIZE, &noBatchSize, false },
     { CFG_DB_MAX_NUM_SCHEMA_OBJECTS, &max_schema_objects, false },
     { CFG_DB_NO_TABLES, &noOfTables, false },
     { CFG_DB_NO_ORDERED_INDEXES, &noOfOrderedIndexes, false },
@@ -2424,46 +2422,6 @@ Configuration::calcSizeAlt(ConfigValues * ownConfig)
 
     cfg.put(CFG_DICT_TABLE, noOfMetaTablesDict);
   }
-
-  if (noOfLocalScanRecords == 0) {
-    noOfLocalScanRecords =
-        tcInstances * ldmInstances * (noOfDBNodes * noOfScanRecords) +
-        1 /* NR */ + 1 /* LCP */;
-    if (noOfLocalScanRecords > 100000) {
-      /**
-       * Number of local scan records is clearly very large, this should
-       * only happen in very large clusters with lots of data nodes, lots
-       * of TC instances, lots of LDM instances. In this case it is highly
-       * unlikely that all these resources are allocated simultaneously.
-       * It is still possible to set MaxNoOfLocalScanRecords to a higher
-       * number if desirable.
-       */
-      g_eventLogger->info(
-          "Capped calculation of local scan records to "
-          "100000 from %u, still possible to set"
-          " MaxNoOfLocalScans"
-          " explicitly to go higher",
-          noOfLocalScanRecords);
-      noOfLocalScanRecords = 100000;
-    }
-    if (noOfLocalScanRecords * noBatchSize > 1000000) {
-      /**
-       * Ensure that we don't use up more than 100 MByte of lock operation
-       * records per LDM instance to avoid ridiculous amount of memory
-       * allocated for operation records. We keep old numbers in smaller
-       * configs for easier upgrades.
-       */
-      Uint32 oldBatchSize = noBatchSize;
-      noBatchSize = 1000000 / noOfLocalScanRecords;
-      g_eventLogger->info(
-          "Capped BatchSizePerLocalScan to %u from %u to avoid"
-          " very large memory allocations"
-          ", still possible to set MaxNoOfLocalScans"
-          " explicitly to go higher",
-          noBatchSize, oldBatchSize);
-    }
-  }
-  cfg.put(CFG_LDM_BATCH_SIZE, noBatchSize);
 
   if (noOfLocalOperations == 0) {
     if (noOfOperations == 0)

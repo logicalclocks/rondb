@@ -55,11 +55,12 @@ type Config struct {
 	MySQLHost  string // MySQL host (can be different from Host)
 	RDRSHost   string // RDRS/REST API host (can be different from Host)
 	RondisPort int
+	RondisDB   int // Rondis database (--rondis-db); SELECT itself goes to MySQL
 	MySQLPort  int
 	RestPort   int
 	MySQLUser  string
 	MySQLPass  string
-	TLS        bool   // Enable TLS for Rondis and MySQL
+	TLS        bool   // Enable TLS for MySQL (also asked of Rondis, which has no TLS listener)
 	RDRSTLS    bool   // Enable TLS (HTTPS) for RDRS/REST API
 	RDRSAPIKey string // API key for RDRS/REST API authentication
 	Verbose    int    // Verbose level (0=normal, 1=connection info, 2=debug)
@@ -122,13 +123,15 @@ func RunWithConfig(cfg Config) error {
 		fmt.Println(ui.Info("  --mysql-host       MySQL host (overrides --host)"))
 		fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
 		fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
+		fmt.Println(ui.Info("  --rondis-db        Rondis database (default: 0)"))
 		fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
 		fmt.Println(ui.Info("  --rdrs-port        RDRS/REST API port (default: 4406)"))
 		fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
 		fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
 		fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
-		fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
+		fmt.Println(ui.Info("  --tls              Enable TLS for MySQL and REST API (Rondis has no TLS listener)"))
 		fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
+		fmt.Println(ui.Info("  --tls-ca           CA file (PEM) to verify server certificates (default: not verified)"))
 		fmt.Println(ui.Info("  --rdrs-api-key     API key for RDRS/REST API authentication"))
 		fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
 		fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))
@@ -230,7 +233,9 @@ func (s *Shell) connect() error {
 		}
 	}
 
-	// Rondis connection (unless disabled) - optional, don't fail if not available
+	// Rondis connection (unless disabled) - optional, don't fail if not available.
+	// --tls is passed on to Rondis, which has no TLS listener, so the
+	// connection then fails and the message says why.
 	if s.config.NoRondis {
 		if s.verbose >= 1 {
 			fmt.Println("[*] Rondis disabled via --no-rondis")
@@ -248,12 +253,17 @@ func (s *Shell) connect() error {
 			Host: s.config.Host,
 			Port: s.config.RondisPort,
 			TLS:  s.config.TLS,
+			DB:   s.config.RondisDB,
 		})
 		if err != nil {
 			if s.verbose >= 1 {
 				fmt.Printf("[*] Rondis not available: %v\n", err)
 			}
-			fmt.Println(ui.Info(fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)))
+			msg := fmt.Sprintf("Rondis not available on %s:%d (SQL-only mode)", s.config.Host, s.config.RondisPort)
+			if s.config.TLS {
+				msg += "; Rondis has no TLS listener, so --tls cannot reach it"
+			}
+			fmt.Println(ui.Info(msg))
 			s.rondisClient = nil
 		} else if s.verbose >= 1 {
 			fmt.Println("[*] Rondis connected")
@@ -1552,6 +1562,7 @@ func (s *Shell) createRondisClients(numThreads int) ([]*client.RondisClient, err
 			Host: s.config.Host,
 			Port: s.config.RondisPort,
 			TLS:  s.config.TLS,
+			DB:   s.config.RondisDB,
 		})
 		if err != nil {
 			// Close already created clients
@@ -4164,6 +4175,7 @@ Commands:
     DEL key             Delete a key
     MGET key1 key2      Get multiple values
     INCR key            Increment a counter
+    SELECT goes to MySQL; start with --rondis-db N to use Rondis database N.
 
   SQL queries:
     SELECT * FROM ...   Query tables
@@ -4472,13 +4484,15 @@ func (s *Shell) printHelpStart() {
 	fmt.Println(ui.Info("  --mysql-host       MySQL host (overrides --host)"))
 	fmt.Println(ui.Info("  --rdrs-host        RDRS/REST API host (overrides --host)"))
 	fmt.Println(ui.Info("  --rondis-port      Rondis port (default: 6379)"))
+	fmt.Println(ui.Info("  --rondis-db        Rondis database (default: 0)"))
 	fmt.Println(ui.Info("  --mysql-port       MySQL port (default: 3306)"))
 	fmt.Println(ui.Info("  --rdrs-port        RDRS/REST API port (default: 4406)"))
 	fmt.Println(ui.Info("  --mysql-user       MySQL username (default: root)"))
 	fmt.Println(ui.Info("  --mysql-password   MySQL password (default: empty)"))
 	fmt.Println(ui.Info("  -p, --password     Prompt for MySQL password (silent input)"))
-	fmt.Println(ui.Info("  --tls              Enable TLS for all connections"))
+	fmt.Println(ui.Info("  --tls              Enable TLS for MySQL and REST API (Rondis has no TLS listener)"))
 	fmt.Println(ui.Info("  --rdrs-tls         Enable TLS (HTTPS) for RDRS/REST API only"))
+	fmt.Println(ui.Info("  --tls-ca           CA file (PEM) to verify server certificates (default: not verified)"))
 		fmt.Println(ui.Info("  --rdrs-api-key     API key for RDRS/REST API authentication"))
 	fmt.Println(ui.Info("  --verbose          Verbose level (0=normal, 1=connection info, 2=debug)"))
 	fmt.Println(ui.Info("  --no-mysql         Disable MySQL connection"))

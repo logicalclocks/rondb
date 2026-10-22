@@ -50,3 +50,6 @@ drop table t1;
 --exec $NDB_MGM --execute "232 LOCATION_DOMAIN_ID 0"
 --exec $NDB_MGM --execute "233 LOCATION_DOMAIN_ID 0"
 --exec $NDB_MGM --execute "255 LOCATION_DOMAIN_ID 0"
+# LocationDomainId is 0 to 16
+--error 255
+--exec $NDB_MGM --execute "1 LOCATION_DOMAIN_ID 17"

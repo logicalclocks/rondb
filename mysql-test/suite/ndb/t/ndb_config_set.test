@@ -57,6 +57,13 @@ select node_id, config_value
 --error 255
 --exec $NDB_MGM -e "ALL SET FooBar 100M"
 
+# Data node parameters on a node that is not a data node (node 3 is
+# the management server)
+--error 255
+--exec $NDB_MGM -e "3 SET MaxDiskWriteSpeed 100M"
+--error 255
+--exec $NDB_MGM -e "3 SET EnableProactiveDeadlockDetection 1"
+
 #
 # Test 4: Verify config unchanged after failed error cases
 #

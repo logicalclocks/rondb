@@ -152,6 +152,43 @@ create table allprimitives (
         failOnError();
     }
 
+    public void testDeleteEqualByPrimaryKeySkip() {
+        // a key lookup finds at most one row, so any skip leaves none
+        setLimits(1, 1);
+        deleteEqualQuery("id", "PRIMARY", 8, 0);
+        setLimit(Long.MAX_VALUE);
+        deleteEqualQuery("id", "PRIMARY", 8, 1);
+        failOnError();
+    }
+
+    public void testDeleteRangeByBtreeIndexSkipLimit() {
+        // rows 2 to 8 match; skip 2 of them and delete at most 3
+        setLimits(2, 3);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 1, 9, 3);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 1, 9, 2);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 1, 9, 0);
+        setLimits(1, 0);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 1, 9, 0);
+        setLimit(Long.MAX_VALUE);
+        deleteGreaterThanAndLessThanQuery("int_not_null_btree", "idx_int_not_null_btree", 1, 9, 2);
+        betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 0, 9, 0, 1, 9);
+        failOnError();
+    }
+
+    public void testDeleteRangeByTableScanSkipLimit() {
+        // rows 2 to 8 match; skip 2 of them and delete at most 3
+        setLimits(2, 3);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 1, 9, 3);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 1, 9, 2);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 1, 9, 0);
+        setLimits(1, 0);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 1, 9, 0);
+        setLimit(Long.MAX_VALUE);
+        deleteGreaterThanAndLessThanQuery("int_not_null_none", "none", 1, 9, 2);
+        betweenQuery("int_not_null_btree", "idx_int_not_null_btree", 0, 9, 0, 1, 9);
+        failOnError();
+    }
+
     public void testDeleteEqualByPrimaryKeyAutotransaction() {
         setAutotransaction(true);
         deleteEqualQuery("id", "PRIMARY", 8, 1);

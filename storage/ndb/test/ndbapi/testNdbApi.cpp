@@ -190,6 +190,12 @@ int runTestMaxTransaction(NDBT_Context *ctx, NDBT_Step *step) {
 
     ndbout << i << " connections created" << endl;
 
+    // Ndb::init() reduces the 2048 above to the maximum of 1024
+    if (i > 1024) {
+      ndbout << l << ": more than 1024 transactions created" << endl;
+      result = NDBT_FAILED;
+    }
+
     if (l > 0 && i != oldi) {
       ndbout << l << ": not as many transactions created" << endl
              << i << " != " << oldi << endl;

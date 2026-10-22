@@ -501,8 +501,7 @@ CLASS
  CM(int, maxSizeMb, MaxSizeMb, 100, "")
  CM(int, maxBackups, MaxBackups, 10, "")
  CM(int, maxAge, MaxAge, 30, "")
- CM(bool, logQueries, LogQueries, false,
-    "Log each RonSQL query at INFO level for debugging.")
+ CM(bool, logQueries, LogQueries, false, "Not used.")
  // TODO implement validation
 )
 

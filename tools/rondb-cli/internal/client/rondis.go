@@ -27,12 +27,12 @@ package client
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -45,7 +45,8 @@ type RondisOptions struct {
 	Host     string
 	Port     int
 	Password string
-	TLS      bool
+	TLS      bool // Rondis has no TLS listener, so a TLS connection fails
+	DB       int  // Rondis database, selected on every new pooled connection
 }
 
 func NewRondisClient(host string, port int) (*RondisClient, error) {
@@ -60,13 +61,11 @@ func NewRondisClientWithOptions(opts RondisOptions) (*RondisClient, error) {
 	redisOpts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", opts.Host, opts.Port),
 		Password: opts.Password,
+		DB:       opts.DB,
 	}
 
 	if opts.TLS {
-		redisOpts.TLSConfig = &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true,
-		}
+		redisOpts.TLSConfig = tlsconf.Client()
 	}
 
 	client := redis.NewClient(redisOpts)

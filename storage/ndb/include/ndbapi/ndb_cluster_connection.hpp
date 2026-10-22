@@ -427,8 +427,8 @@ class Ndb_cluster_connection {
   // Get generation of the configuration used to configure the NdbApi
   Uint32 get_config_generation() const;
 
-  // Set optimized node selection value used for Ndb objects created
-  // from this connection.
+  // Has no effect, kept for API compatibility. The selection of the
+  // transaction coordinator no longer depends on this value.
   void set_optimized_node_selection(int val);
 
   unsigned no_db_nodes();

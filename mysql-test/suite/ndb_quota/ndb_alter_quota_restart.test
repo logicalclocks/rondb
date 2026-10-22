@@ -1,4 +1,6 @@
 --source include/have_ndb.inc
+# databaseVersion depends on earlier objects with the same id, also in
+# earlier tests, so it is masked
 CREATE TABLE t100 (a int primary key) engine ndb;
 CREATE TABLE t101 (a int primary key) engine ndb;
 CREATE TABLE t102 (a int primary key) engine ndb;
@@ -7,8 +9,10 @@ CREATE TABLE t104 (a int primary key) engine ndb;
 CREATE TABLE t105 (a int primary key) engine ndb;
 
 --exec $NDB_MGM -e "DATABASE QUOTA SET test --rate-per-sec = 500 --in-memory-size=2 --max-transaction-size=4 --max-parallel-transactions=4"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=12"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
 --exec $NDB_MGM -e "DATABASE QUOTA SET test_1234567890_1234567890_1234567890_1234567890 --in-memory-size=3"
 
@@ -18,8 +22,11 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_MGM -e "1 START"
 --exec $NDB_WAITER
 
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=8"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test_1234567890_1234567890_1234567890_1234567890 --max-transaction-size=2"
@@ -30,8 +37,11 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_MGM -e "1 START"
 --exec $NDB_WAITER
 
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 --exec $NDB_MGM -e "DATABASE QUOTA ALTER test --rate-per-sec = 1500 --in-memory-size=10"
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test_1234567890_1234567890_1234567890_1234567890"
@@ -44,9 +54,13 @@ CREATE TABLE t105 (a int primary key) engine ndb;
 --exec $NDB_MGM -e "ALL START"
 --exec $NDB_WAITER
 
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA GET test_1234567890_1234567890_1234567890_1234567890_12"
+--replace_regex /Version = [0-9]+/Version = #/
 --exec $NDB_MGM -e "DATABASE QUOTA LIST"
 
 --exec $NDB_MGM -e "DATABASE QUOTA DROP test"

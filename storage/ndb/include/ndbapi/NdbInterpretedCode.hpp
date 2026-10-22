@@ -637,19 +637,29 @@ class NdbInterpretedCode {
    *   RegNumElems:
    *     The number of elements in the array
    *   SearchType:
-   *     0 means exact match only
-   *     1 means search for nearest that is smaller
-   *       Another name for this is that it is a rank query.
-   *       This query will never return NULL.
-   *     2 means search for nearest that is larger or equal
-   *       This query finds the successor element.
-   *       This query will never return NULL.
-   *     3 means search for nearest that is smaller or equal
-   *     4 means search for nearest that is larger or equal
+   *     0 means exact match only: the position of the first element
+   *       equal to RegOrdinal, NULL if there is none.
+   *     1 means rank query: the number of elements smaller than
+   *       RegOrdinal, which is also the position of the first element
+   *       that is larger or equal.
+   *     2 means successor query, strictly larger: the position of the
+   *       first element larger than RegOrdinal, which is also the number
+   *       of elements smaller or equal.
+   *     3 means search for nearest that is smaller or equal: the position
+   *       of the first element equal to RegOrdinal, otherwise of the
+   *       largest smaller element, NULL if all elements are larger.
+   *     4 means search for nearest that is larger or equal: the position
+   *       of the last element equal to RegOrdinal, otherwise of the first
+   *       larger element.
+   *     Types 1, 2 and 4 never return NULL for a non-empty array. When no
+   *     element qualifies (no element is larger for type 2, none is
+   *     larger or equal for types 1 and 4) they return RegNumElems.
+   *     Example: for the array {2,3,3,5} and RegOrdinal 3, types 0 to 4
+   *     return 1, 1, 3, 1 and 2.
    * Output:
    *   RegResult:
-   *     The position of the found element
-   *     NULL if no element found
+   *     The position found as described for SearchType, NULL if not
+   *     found (types 0 and 3, or an empty array)
    *
    * search_interval methods
    * -----------------------

@@ -43,6 +43,13 @@
 --exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT HMGET user:1 name missing age gap city
 
 --echo #
+--echo # HMGET with one field returns a one-element array, also for a
+--echo # missing hash. --no-raw makes redis-cli show the array shape.
+--echo #
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT --no-raw HMGET user:1 name
+--exec redis-cli -h $RONDIS_HOST -p $RONDIS_PORT --no-raw HMGET user:999 any
+
+--echo #
 --echo # HMSET - legacy alias, returns +OK (per Redis spec - distinct
 --echo # reply shape from HSET's field-count).
 --echo #

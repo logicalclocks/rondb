@@ -1226,7 +1226,7 @@ class Ndb {
    * @param  maxNoOfTransactions
    *         Maximum number of parallel
    *         NdbTransaction objects that can be handled by the Ndb object.
-   *         Maximum value is 1024.
+   *         Maximum value is 1024; larger values are reduced to 1024.
    *
    * @note each scan or index scan operation uses one extra
    *       NdbTransaction object
@@ -2086,7 +2086,8 @@ class Ndb {
   Uint64 getClientStat(Uint32 id) const;
   const char *getClientStatName(Uint32 id) const;
 
-  // Set optimized node selection value for this object
+  // Has no effect, kept for API compatibility. The selection of the
+  // transaction coordinator no longer depends on this value.
   void set_optimized_node_selection(int val);
 #endif
 

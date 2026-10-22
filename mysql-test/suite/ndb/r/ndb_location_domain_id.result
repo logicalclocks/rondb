@@ -171,3 +171,5 @@ Configuration changed to reflect new location domain id of node 255
 Now changing location domain id in the cluster
 Node 255 now has location domain id 0 in the cluster
 
+Location domain id must be an integer between 0 and 16
+

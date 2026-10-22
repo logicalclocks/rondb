@@ -32,6 +32,12 @@ Alicia
 
 Stockholm
 #
+# HMGET with one field returns a one-element array, also for a
+# missing hash. --no-raw makes redis-cli show the array shape.
+#
+1) "Alicia"
+1) (nil)
+#
 # HMSET - legacy alias, returns +OK (per Redis spec - distinct
 # reply shape from HSET's field-count).
 #

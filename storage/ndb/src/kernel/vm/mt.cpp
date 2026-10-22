@@ -1791,7 +1791,6 @@ struct alignas(NDB_CL) thr_data {
   NdbThread *m_thread;
   Signal *m_signal;
   Uint32 m_sched_responsiveness;
-  Uint32 m_max_send_wakeups_before_assist;
   Uint32 m_max_send_wakeups;
 
 #ifdef ERROR_INSERT
@@ -7601,12 +7600,10 @@ static void init_thread(thr_data *selfptr) {
     tmp.appfmt("%s(%u) ", getBlockName(main), instance);
   }
   /* Report parameters used by thread to node log */
-  tmp.appfmt("realtime=%u, spintime=%u, max_send_wakeups=%u"
-             ", max_send_wakeups_before_assist=%u",
+  tmp.appfmt("realtime=%u, spintime=%u, max_send_wakeups=%u",
              selfptr->m_realtime,
              selfptr->m_conf_spintime_us,
-             selfptr->m_max_send_wakeups,
-             selfptr->m_max_send_wakeups_before_assist);
+             selfptr->m_max_send_wakeups);
 
   g_eventLogger->info("%s", tmp.c_str());
   if (fail) {

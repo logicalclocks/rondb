@@ -1080,9 +1080,9 @@ int Ndb_cluster_connection_impl::init_nodes_vector(
          * numbers provided in the config.
          *
          * One should not set the config of group to
-         * anything smaller than 50 given that data
+         * anything smaller than 30 given that data
          * node neighbour decreases the group number
-         * by 50.
+         * by 30 (DATA_NODE_NEIGHBOUR_PROXIMITY_ADJUSTMENT).
          *
          * If someone has set a node to be in different
          * location domains and they are still running on the

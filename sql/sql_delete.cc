@@ -927,6 +927,18 @@ bool Sql_cmd_delete::execute_inner(THD *thd) {
     my_ok(thd);
     return false;
   }
+  /*
+   * TTL related
+   * As in delete_from_single_table(), let the tables deleted from see
+   * expired rows. Do it before optimizing, since the optimizer may
+   * already read const tables.
+   */
+  if (multitable && thd->variables.ttl_expired_rows_visible_in_delete) {
+    for (Table_ref *tr = lex->query_block->leaf_tables; tr != nullptr;
+         tr = tr->next_leaf) {
+      if (tr->is_deleted()) tr->table->file->ha_extra(HA_EXTRA_IGNORE_TTL);
+    }
+  }
   return multitable ? Sql_cmd_dml::execute_inner(thd)
                     : delete_from_single_table(thd);
 }

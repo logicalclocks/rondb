@@ -126,7 +126,11 @@ public interface Query<E> {
      * remaining 10 results are ignored.
      * <p>
      * Skip must be greater than or equal to 0. Limit must be greater than or equal to 0.
-     * When using deletePersistentAll, skip must be 0.
+     * deletePersistentAll skips the first skip rows found and deletes at most
+     * limit rows. A delete scan is not ordered, so with skip greater than 0
+     * it is not defined which rows are skipped. To delete in batches, use
+     * setLimits(0, batchSize) and call deletePersistentAll until it returns
+     * less than batchSize.
      * @param skip the number of results to skip
      * @param limit the number of results to return after skipping;
      * use Long.MAX_VALUE for no limit.

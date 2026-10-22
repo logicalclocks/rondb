@@ -481,7 +481,7 @@ bool InitConfigFileParser::isEmptyLine(const char *line) const {
 //****************************************************************************
 bool InitConfigFileParser::convertStringToUint64(const char* s, 
                                                  Uint64& val) {
-  return convert_string_to_uint64(s, val);
+  return convert_string_to_uint64(s, val, true);
 }
 
 bool InitConfigFileParser::convertStringToBool(const char *s, bool &val) {

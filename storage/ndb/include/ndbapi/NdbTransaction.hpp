@@ -737,8 +737,17 @@ class NdbTransaction {
    * using that index.
    *
    * The key_row passed in defines the primary or unique key of the affected
-   * tuple, and must remain valid until execute() is called. The key_rec must
-   * include all columns of the key.
+   * tuple. The key_rec must include all columns of the key.
+   *
+   * The key_row, and the attr_row (or combined_row) of insertTuple(),
+   * updateTuple() and writeTuple(), are copied when the operation is
+   * defined, also for tables with blobs, so they can be reused as soon as
+   * the call returns.
+   * A result_row (readTuple(), or the optional read row of deleteTuple())
+   * receives the values read, so it and the NdbRecord describing it must
+   * remain valid until the operation is executed (execute() has returned,
+   * or the executeAsynch() callback has been called). Blob data passed
+   * to NdbBlob::setValue() must also remain valid until execute.
    *
    * The mask, if != NULL, defines a subset of attributes to read, update, or
    * insert. Only if (mask[attrId >> 3] & (1<<(attrId & 7))) is set is the
@@ -756,18 +765,30 @@ class NdbTransaction {
    *
    *   Operation type        Supported OperationOptions flags
    *   --------------        --------------------------------
-   *   readTuple             OO_ABORTOPTION, OO_GETVALUE,
+   *   readTuple             OO_GETVALUE, OO_PARTITION_ID, OO_INTERPRETED,
+   *                         OO_LOCKHANDLE (primary key, LM_Read or
+   *                         LM_Exclusive), OO_NOWAIT (not
+   *                         LM_CommittedRead), OO_AGGREGATION (primary
+   *                         key, LM_CommittedRead)
+   *   insertTuple           OO_SETVALUE, OO_PARTITION_ID
+   *   updateTuple           OO_GETVALUE, OO_SETVALUE, OO_GET_FINAL_VALUE,
    *                         OO_PARTITION_ID, OO_INTERPRETED
-   *   insertTuple           OO_ABORTOPTION, OO_SETVALUE,
-   *                         OO_PARTITION_ID, OO_ANYVALUE
-   *   updateTuple           OO_ABORTOPTION, OO_SETVALUE,
+   *   writeTuple            OO_GETVALUE, OO_SETVALUE, OO_GET_FINAL_VALUE,
    *                         OO_PARTITION_ID, OO_INTERPRETED,
-   *                         OO_ANYVALUE
-   *   writeTuple            OO_ABORTOPTION, OO_SETVALUE,
-   *                         OO_PARTITION_ID, OO_ANYVALUE
-   *   deleteTuple           OO_ABORTOPTION, OO_GETVALUE,
-   *                         OO_PARTITION_ID, OO_INTERPRETED,
-   *                         OO_ANYVALUE
+   *                         OO_INTERPRETED_INSERT (with OO_INTERPRETED),
+   *                         OO_DIRTY_FLAG
+   *   deleteTuple           OO_GETVALUE, OO_PARTITION_ID, OO_INTERPRETED
+   *   all of the above      OO_ABORTOPTION, OO_ANYVALUE, OO_CUSTOMDATA,
+   *                         OO_QUEUABLE, OO_NOT_QUEUABLE,
+   *                         OO_DEFERRED_CONSTAINTS, OO_DISABLE_FK,
+   *                         OO_REPLICA_APPLIER, OO_TTL_IGNORE,
+   *                         OO_TTL_ONLY_EXPIRED (not with OO_TTL_IGNORE),
+   *                         OO_SET_INPUT_PARAM (with OO_INTERPRETED),
+   *                         OO_RING_BUFFER_OP, OO_RING_BUFFER_SHOW_META,
+   *                         OO_BATCH_SAFE_FLAG, OO_BATCH_UNSAFE_FLAG
+   *
+   * OO_PARTITION_ID is only allowed for primary key operations on tables
+   * with user-defined partitioning.
    *
    * The sizeOfOptions optional parameter is used to allow this interface
    * to be backwards compatible with previous definitions of the

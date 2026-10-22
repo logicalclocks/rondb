@@ -242,7 +242,7 @@ struct GlobalData {
     theMaxLocationDomainId = 0;
     std::memset(theLocationDomainId, 0, sizeof(theLocationDomainId));
     std::memset(m_hb_count, 0, sizeof(m_hb_count));
-    theMaxRRGroupSize = MIN_MAX_RR_GROUP_SIZE;
+    theMaxRRGroupSize = DEF_MAX_RR_GROUP_SIZE;
     theMaxSendDelay = 0;
     theNumLqhKeyReqCounts = 0;
     theNumScanFragReqCounts = 0;
