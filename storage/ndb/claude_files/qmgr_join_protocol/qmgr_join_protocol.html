@@ -1,0 +1,929 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QMGR Join Protocol</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a vertical stack of 16:9 slides, each a header, one figure or table, and a footer; signals set in mono, the patch in diff green */
+:root {
+  --bg: #E7ECEF;
+  --slide: #FBFCFD;
+  --ink: #15212B;
+  --muted: #586976;
+  --rule: #C7D1D8;
+  --band: #F0F3F5;
+  --code: #E9EEF1;
+  --new: #17774A;
+  --new-bg: #E1F1E7;
+  --bad: #B02A21;
+  --bad-bg: #F9E5E2;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0C1318; --slide: #131C23; --ink: #E2E9EE; --muted: #93A3AF; --rule: #2B3943;
+    --band: #172129; --code: #1A252D; --new: #52C48D; --new-bg: #143024; --bad: #F08A80; --bad-bg: #3A1B19;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0C1318; --slide: #131C23; --ink: #E2E9EE; --muted: #93A3AF; --rule: #2B3943;
+  --band: #172129; --code: #1A252D; --new: #52C48D; --new-bg: #143024; --bad: #F08A80; --bad-bg: #3A1B19;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--f-body);
+  line-height: 1.45;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 24px 96px;
+}
+.deck { display: grid; gap: 28px; justify-items: center; }
+
+.slide {
+  width: min(100%, 1180px);
+  aspect-ratio: 16 / 9;
+  background: var(--slide);
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  container-type: inline-size;
+  scroll-margin-block: 20px;
+  overflow: hidden;
+}
+.inner {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 1.6cqw;
+  padding: 2.8cqw 3.8cqw 1.8cqw;
+}
+.eyebrow {
+  font-family: var(--f-mono);
+  font-size: clamp(10px, 1.05cqw, 13px);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 .5cqw;
+}
+.eyebrow.new { color: var(--new); }
+h1, h2 {
+  font-family: var(--f-display);
+  font-weight: 600;
+  text-wrap: balance;
+  margin: 0;
+  letter-spacing: -.005em;
+}
+h1 { font-size: clamp(30px, 6.2cqw, 76px); line-height: 1; }
+h2 { font-size: clamp(19px, 2.9cqw, 35px); line-height: 1.1; }
+p, li { font-size: clamp(13px, 1.5cqw, 18px); }
+td { font-size: clamp(12.5px, 1.38cqw, 17px); }
+p { margin: 0; max-width: 62ch; }
+.small { font-size: clamp(11px, 1.2cqw, 15px); color: var(--muted); }
+code, .sig { font-family: var(--f-mono); font-size: .92em; font-weight: 500; }
+.new-t { color: var(--new); }
+.bad-t { color: var(--bad); }
+mark.new { background: var(--new-bg); color: var(--new); padding: 0 .25em; border-radius: 3px; }
+
+.foot {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  border-top: 1px solid var(--rule);
+  padding-top: .9cqw;
+  font-family: var(--f-mono);
+  font-size: clamp(10px, 1cqw, 12px);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.body { min-height: 0; display: grid; gap: 1.6cqw; }
+.cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); align-items: start; gap: 3cqw; }
+.cols.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.cols.fig-left { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: center; }
+.stack { display: grid; gap: 1.1cqw; align-content: start; }
+
+/* Figures */
+.fig { margin: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: .8cqw; color: var(--ink); }
+.fig .scroll { min-height: 0; overflow-x: auto; }
+.fig svg { display: block; width: 100%; height: 100%; }
+.fig figcaption { font-size: clamp(11px, 1.2cqw, 15px); color: var(--muted); max-width: 95ch; }
+.fig text { fill: currentColor; font-family: var(--f-body); font-size: 13px; }
+.fig .sig { font-family: var(--f-mono); font-weight: 500; font-size: 13px; }
+.fig .lbl { paint-order: stroke; stroke: var(--slide); stroke-width: 5px; stroke-linejoin: round; }
+.fig .sub { font-size: 11.5px; fill: var(--muted); }
+.fig.big .sig, .fig.big .lbl:not(.sub) { font-size: 14px; }
+.fig .msg { stroke: currentColor; stroke-width: 1.6; fill: none; }
+.fig .msg.new { stroke: var(--new); stroke-width: 2; }
+.fig .msg.bad { stroke: var(--bad); stroke-width: 2; stroke-dasharray: 6 5; }
+.fig .life { stroke: var(--rule); stroke-width: 1.5; stroke-dasharray: 4 5; }
+.fig .head { fill: var(--slide); stroke: var(--ink); stroke-width: 1.3; }
+.fig .headt { font-family: var(--f-display); font-weight: 600; font-size: 15px; }
+.fig .band { fill: var(--band); }
+.fig .bandl { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .14em; fill: var(--muted); }
+.fig .note { fill: var(--code); stroke: var(--rule); }
+.fig .note.new, .fig .alt { fill: var(--new-bg); stroke: var(--new); }
+.fig .alt { stroke-dasharray: 6 4; }
+.fig .nt { font-size: 12px; }
+.fig text.new, .fig tspan.new { fill: var(--new); }
+.fig text.bad, .fig tspan.bad { fill: var(--bad); }
+.fig .ah { fill: currentColor; }
+.fig .ah-new { fill: var(--new); }
+.fig .ah-bad { fill: var(--bad); }
+.fig .dot { fill: currentColor; }
+.fig .node { fill: var(--slide); stroke: var(--ink); stroke-width: 1.6; }
+.fig .node.x { stroke: var(--bad); stroke-width: 2; }
+.fig .nid { font-family: var(--f-mono); font-weight: 600; font-size: 17px; }
+.fig .link { stroke: var(--muted); stroke-width: 1.4; }
+
+/* Tables */
+.tbl-wrap { min-width: 0; overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; vertical-align: top; padding: .55cqw .8cqw; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--f-mono); font-weight: 500; font-size: clamp(10px, 1.05cqw, 13px); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+tr.new td { background: var(--new-bg); }
+tr.new td:first-child { box-shadow: inset 3px 0 0 var(--new); }
+td code { white-space: nowrap; }
+
+/* Callouts and code */
+.callout { border: 1px solid var(--new); background: var(--new-bg); border-radius: 4px; padding: 1cqw 1.3cqw; }
+.callout.bad { border-color: var(--bad); background: var(--bad-bg); }
+.callout p { max-width: none; }
+pre {
+  margin: 0;
+  background: var(--code);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1cqw 1.3cqw;
+  overflow-x: auto;
+  font-family: var(--f-mono);
+  font-size: clamp(11px, 1.15cqw, 14px);
+  line-height: 1.5;
+}
+pre .bad-t { font-weight: 600; }
+ul.plain { margin: 0; padding: 0; list-style: none; display: grid; gap: .9cqw; }
+ul.plain li { padding-left: 1.2em; position: relative; max-width: 62ch; }
+ul.plain li::before { content: ""; position: absolute; left: 0; top: .62em; width: .45em; height: .45em; background: var(--muted); border-radius: 1px; }
+ul.plain li.new::before { background: var(--new); }
+ul.plain li.bad::before { background: var(--bad); }
+
+/* Title slide */
+.title-body { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 4cqw; align-items: end; }
+.lede { font-size: clamp(15px, 1.9cqw, 23px); max-width: 40ch; margin-top: 1.6cqw; }
+.legend { display: flex; flex-wrap: wrap; gap: .6cqw 1.8cqw; margin-top: 2.2cqw; }
+.legend span { display: inline-flex; align-items: center; gap: .5em; font-size: clamp(12px, 1.3cqw, 16px); }
+.legend i { width: 1.6em; height: .7em; border-radius: 2px; display: inline-block; }
+.toc { margin: 0; padding: 0; list-style: none; display: grid; gap: .1cqw; counter-reset: s 1; }
+.toc li { counter-increment: s; }
+.toc a {
+  display: grid; grid-template-columns: 2.2em 1fr; gap: .4em; align-items: baseline;
+  color: inherit; text-decoration: none;
+  padding: .45cqw .6cqw; border-radius: 3px;
+  font-size: clamp(13px, 1.45cqw, 17px);
+}
+.toc a::before { content: counter(s); font-family: var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.toc a:hover { background: var(--band); }
+.toc a.new { color: var(--new); }
+
+/* Decision rows */
+.rules { display: grid; gap: .8cqw; }
+.rule {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 1.5cqw; align-items: center;
+  border: 1px solid var(--rule); border-radius: 4px; padding: .9cqw 1.2cqw;
+}
+.rule p { max-width: none; }
+.rule .q { font-weight: 600; }
+.pill {
+  font-family: var(--f-mono); font-size: clamp(10px, 1.05cqw, 13px); font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase;
+  padding: .3em .8em; border-radius: 999px; white-space: nowrap;
+  border: 1px solid currentColor;
+}
+.pill.abort { color: var(--new); background: var(--new-bg); }
+.pill.wait { color: var(--muted); }
+.pill.exit { color: var(--ink); }
+
+/* Timelines */
+.lane { display: grid; gap: .7cqw; }
+.lane h3 { margin: 0; font-family: var(--f-display); font-weight: 600; font-size: clamp(14px, 1.6cqw, 20px); }
+.lane h3 code { font-weight: 400; color: var(--muted); font-size: .7em; }
+ol.tl { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: .6cqw; }
+ol.tl li { border-top: 3px solid var(--rule); padding-top: .6cqw; display: grid; gap: .2cqw; align-content: start; }
+ol.tl li.new { border-top-color: var(--new); }
+ol.tl li.bad { border-top-color: var(--bad); }
+ol.tl .t { font-family: var(--f-mono); font-size: clamp(10px, 1.05cqw, 13px); color: var(--muted); font-variant-numeric: tabular-nums; }
+ol.tl li.new .t { color: var(--new); }
+ol.tl li.bad .t { color: var(--bad); }
+ol.tl p { font-size: clamp(11.5px, 1.25cqw, 15px); }
+
+/* Navigation */
+.nav {
+  position: fixed;
+  right: calc(max(16px, env(safe-area-inset-right, 0px)));
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  display: flex; align-items: center; gap: 6px;
+  background: var(--slide); border: 1px solid var(--rule); border-radius: 999px;
+  padding: 4px;
+  font-family: var(--f-mono); font-size: 12px; font-variant-numeric: tabular-nums;
+  box-shadow: 0 2px 10px rgb(0 0 0 / .12);
+}
+.nav button {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 0; background: transparent; color: var(--ink); cursor: pointer;
+  font-size: 16px; line-height: 1;
+}
+.nav button:hover { background: var(--band); }
+.nav button:focus-visible, .toc a:focus-visible { outline: 2px solid var(--new); outline-offset: 2px; }
+.nav output { min-width: 3.6em; text-align: center; color: var(--muted); }
+
+/* Narrow screens: slides grow with their content, wide figures scroll */
+@media (max-width: 1099px) {
+  .slide { aspect-ratio: auto; }
+  .inner { gap: 16px; padding: 20px 18px 14px; }
+  .cols, .cols.even, .cols.fig-left, .title-body { grid-template-columns: minmax(0, 1fr); }
+  .fig .scroll svg { height: auto; min-width: 640px; }
+  .fig .scroll svg.compact { min-width: 420px; }
+  ol.tl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lede { margin-top: 10px; }
+  .legend { margin-top: 14px; }
+  .toc a { padding: 6px; }
+  .rule { padding: 10px 12px; }
+  .callout, pre { padding: 10px 12px; }
+}
+</style>
+</head>
+<body>
+<main class="deck" id="deck">
+
+<!-- 1 · Title -->
+<section class="slide" id="s1" aria-label="Slide 1: QMGR join protocol">
+  <div class="inner">
+    <header>
+      <p class="eyebrow">RonDB · QMGR · RONDB-1148</p>
+    </header>
+    <div class="body title-body">
+      <div>
+        <h1>QMGR join protocol</h1>
+        <p class="lede">How the president includes a starting data node in the cluster, and what the patches add for a node that cannot connect to every member or fails before it has joined.</p>
+        <div class="legend" aria-label="Legend">
+          <span><i style="background: var(--ink)"></i>Protocol as before</span>
+          <span><i style="background: var(--new)"></i>Added by the patches</span>
+          <span><i style="background: var(--bad)"></i>Where it got stuck</span>
+        </div>
+      </div>
+      <nav aria-label="Slides">
+        <p class="eyebrow">In these slides</p>
+        <ol class="toc">
+          <li><a href="#s2">A node id from ndb_mgmd</a></li>
+          <li><a href="#s3">Register with the president</a></li>
+          <li><a href="#s4">The whole inclusion</a></li>
+          <li><a href="#s5">One missing link stopped every start</a></li>
+          <li><a href="#s6" class="new">Aborting an inclusion</a></li>
+          <li><a href="#s7" class="new">When the president aborts</a></li>
+          <li><a href="#s8" class="new">Late signals of an aborted attempt</a></li>
+          <li><a href="#s9" class="new">A node that has not joined may fail</a></li>
+          <li><a href="#s10" class="new">Ask once more, then exit</a></li>
+          <li><a href="#s11">No restart waits for a stalled inclusion</a></li>
+          <li><a href="#s12" class="new">Tests</a></li>
+        </ol>
+      </nav>
+    </div>
+    <footer class="foot"><span>Fix for a system restart that hung with no error (RonDB 26.02.10 report)</span><span>1 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 2 · Node id -->
+<section class="slide" id="s2" aria-label="Slide 2: A node id from ndb_mgmd">
+  <div class="inner">
+    <header>
+      <p class="eyebrow">Phase 0 · Node id</p>
+      <h2>Before it can register, a data node needs a node id from ndb_mgmd</h2>
+    </header>
+    <div class="body cols fig-left">
+      <figure class="fig">
+        <div class="scroll">
+          <svg class="compact" viewBox="0 0 640 440" role="img" aria-label="The angel of data node X asks ndb_mgmd for node id X with get nodeid. ndb_mgmd reserves X locally and sends ALLOC_NODEID_REQ to the president, which answers NotMaster unless it is president and master in DIH. The president asks every data node, which checks that X is not connected and that its failure is handled, and answers ALLOC_NODEID_CONF. The president reserves X for 20 s and confirms to ndb_mgmd, which keeps its reservation 20 s from then or until X connects, and answers the angel. The angel starts the data node process, which then registers with CM_REGREQ.">
+            <defs>
+              <marker id="s2-ah" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+            </defs>
+            <line class="life" x1="70" y1="38" x2="70" y2="440"/>
+            <line class="life" x1="235" y1="38" x2="235" y2="440"/>
+            <line class="life" x1="405" y1="38" x2="405" y2="440"/>
+            <line class="life" x1="572" y1="38" x2="572" y2="440"/>
+            <rect class="head" x="8" y="4" width="124" height="34" rx="3"/>
+            <text class="headt" x="70" y="26" text-anchor="middle">Angel of X</text>
+            <rect class="head" x="173" y="4" width="124" height="34" rx="3"/>
+            <text class="headt" x="235" y="26" text-anchor="middle">ndb_mgmd</text>
+            <rect class="head" x="343" y="4" width="124" height="34" rx="3"/>
+            <text class="headt" x="405" y="26" text-anchor="middle">President P</text>
+            <rect class="head" x="508" y="4" width="128" height="34" rx="3"/>
+            <text class="headt" x="572" y="26" text-anchor="middle">Each data node</text>
+
+            <line class="msg" x1="70" y1="70" x2="233" y2="70" marker-end="url(#s2-ah)"/>
+            <text class="lbl sig" x="152" y="63" text-anchor="middle">get nodeid</text>
+            <rect class="note" x="170" y="80" width="130" height="22" rx="3"/>
+            <text class="nt" x="235" y="95" text-anchor="middle">reserves X locally</text>
+
+            <line class="msg" x1="235" y1="122" x2="403" y2="122" marker-end="url(#s2-ah)"/>
+            <text class="lbl sig" x="320" y="115" text-anchor="middle">ALLOC_NODEID_REQ</text>
+            <rect class="note" x="330" y="132" width="150" height="36" rx="3"/>
+            <text class="nt" x="405" y="147" text-anchor="middle">president and DIH</text>
+            <text class="nt" x="405" y="162" text-anchor="middle">master? else NotMaster</text>
+
+            <line class="msg" x1="405" y1="190" x2="570" y2="190" marker-end="url(#s2-ah)"/>
+            <text class="lbl sig" x="488" y="183" text-anchor="middle">ALLOC_NODEID_REQ</text>
+            <text class="lbl sub" x="488" y="206" text-anchor="middle">not connected, failure handled</text>
+            <line class="msg" x1="572" y1="232" x2="407" y2="232" marker-end="url(#s2-ah)"/>
+            <text class="lbl sig" x="488" y="225" text-anchor="middle">ALLOC_NODEID_CONF</text>
+            <rect class="note" x="330" y="242" width="150" height="22" rx="3"/>
+            <text class="nt" x="405" y="257" text-anchor="middle">reserves X for 20 s</text>
+
+            <line class="msg" x1="405" y1="290" x2="237" y2="290" marker-end="url(#s2-ah)"/>
+            <text class="lbl sig" x="320" y="283" text-anchor="middle">ALLOC_NODEID_CONF</text>
+            <rect class="note new" x="160" y="300" width="150" height="36" rx="3"/>
+            <text class="nt new" x="235" y="315" text-anchor="middle">keeps X 20 s from now,</text>
+            <text class="nt new" x="235" y="330" text-anchor="middle">or until X connects</text>
+
+            <line class="msg" x1="235" y1="360" x2="72" y2="360" marker-end="url(#s2-ah)"/>
+            <text class="lbl sig" x="152" y="353" text-anchor="middle">nodeid: X</text>
+            <rect class="note" x="4" y="370" width="150" height="36" rx="3"/>
+            <text class="nt" x="79" y="385" text-anchor="middle">starts the data node</text>
+            <text class="nt" x="79" y="400" text-anchor="middle">process with node id X</text>
+
+            <line class="msg" x1="70" y1="430" x2="403" y2="430" marker-end="url(#s2-ah)"/>
+            <text class="lbl" x="240" y="423" text-anchor="middle"><tspan class="sig">CM_REGREQ</tspan> · slide 3</text>
+          </svg>
+        </div>
+        <figcaption>QMGR does not check the allocation when X registers: it only keeps two processes from using one node id. Without a node id the angel does not start the data node process, so X never gets to send <code>CM_REGREQ</code>.</figcaption>
+      </figure>
+      <div class="stack">
+        <p>The angel asks before it starts the data node process, and again before every restart of it.</p>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>When ndb_mgmd asks</th><th>Then</th></tr></thead>
+            <tbody>
+              <tr><td>No data node registered, or no president yet</td><td>Reserves X itself at once</td></tr>
+              <tr><td>President, DIH not yet master: a cluster start before start phase 3</td><td>Asks each second, after 20&nbsp;s reserves X itself</td></tr>
+              <tr><td>President and DIH master</td><td>Allocates X as in the figure, refuses while X is connected</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <p><span class="new-t"><b>New:</b></span> ndb_mgmd keeps its reservation from the allocation until X connects, so a second request for X is refused.</p>
+        </div>
+      </div>
+    </div>
+    <footer class="foot"><span>QMGR join protocol · <code>Qmgr::execALLOC_NODEID_REQ</code>, <code>MgmtSrvr::alloc_node_id_req</code></span><span>2 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 3 · Register -->
+<section class="slide" id="s3" aria-label="Slide 3: Register with the president">
+  <div class="inner">
+    <header>
+      <p class="eyebrow">Phase 1 · Register</p>
+      <h2>A starting node asks every data node it is connected to</h2>
+    </header>
+    <div class="body cols">
+      <div class="stack">
+        <p>In QMGR start phase 1 the starting node sends <code>CM_REGREQ</code> to every data node it has a transporter connection to, and again every 3 seconds until the president accepts it with <code>CM_REGCONF</code>.</p>
+        <p>In a cluster start there is no president yet. The nodes elect one in <code>check_startup</code>: among the nodes that can restore the newest GCI, the lowest node id wins. The election waits up to StartPartialTimeout for missing nodes.</p>
+        <p>The president includes one node at a time. While it is including one, it refuses all others.</p>
+        <div class="callout">
+          <p><span class="new-t"><b>New:</b></span> each round of the 3 s loop takes a new start key, so a timer left over from an earlier round cannot start a second loop after an aborted inclusion restarts it.</p>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Answer</th><th>Sent by</th><th>Means</th></tr></thead>
+          <tbody>
+            <tr><td><code>CM_REGCONF</code></td><td>President</td><td>Accepted: carries the president, a dynamic id and the cluster members</td></tr>
+            <tr><td><code>ZELECTION</code></td><td>Node without a president</td><td>An election is going on</td></tr>
+            <tr><td><code>ZNOT_PRESIDENT</code></td><td>Member</td><td>Ask the president</td></tr>
+            <tr><td><code>ZBUSY_PRESIDENT</code></td><td>President</td><td>Busy including another node, try again</td></tr>
+            <tr class="new"><td><code>ZBUSY</code></td><td>President</td><td><span class="new-t">Your inclusion was aborted, ask again when 6 s have passed</span></td></tr>
+          </tbody>
+        </table>
+        <p class="small" style="margin-top: .8cqw">All answers other than <code>CM_REGCONF</code> are <code>CM_REGREF</code> with that cause.</p>
+      </div>
+    </div>
+    <footer class="foot"><span>QMGR join protocol</span><span>3 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 4 · Whole protocol -->
+<section class="slide" id="s4" aria-label="Slide 4: The whole inclusion">
+  <div class="inner">
+    <header>
+      <p class="eyebrow">Phases 1 to 3 · Register, prepare, commit</p>
+      <h2>The whole inclusion of one starting node</h2>
+    </header>
+    <figure class="fig big">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 540" role="img" aria-label="Sequence of signals between the starting node, each cluster member and the president: CM_REGREQ, CM_REGCONF, CM_ADD(Prepare), CM_NODEINFOREQ, CM_NODEINFOCONF, CM_ACKADD(Prepare), CM_ADD(AddCommit), CM_ACKADD(AddCommit), CM_ADD(CommitNew), CM_ACKADD(CommitNew). The patches add a 10 second timer on the prepare phase and an abort branch.">
+          <defs>
+            <marker id="s4-ah" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <!-- phase bands -->
+          <rect class="band" x="0" y="50" width="1000" height="70"/>
+          <rect class="band" x="0" y="322" width="1000" height="218"/>
+          <text class="bandl" x="10" y="66">REGISTER</text>
+          <text class="bandl" x="10" y="138">PREPARE</text>
+          <text class="bandl" x="10" y="338">COMMIT</text>
+          <!-- lifelines -->
+          <line class="life" x1="170" y1="44" x2="170" y2="540"/>
+          <line class="life" x1="500" y1="44" x2="500" y2="540"/>
+          <line class="life" x1="830" y1="44" x2="830" y2="540"/>
+          <rect class="head" x="60" y="4" width="220" height="38" rx="3"/>
+          <text class="headt" x="170" y="28" text-anchor="middle">Starting node X</text>
+          <rect class="head" x="390" y="4" width="220" height="38" rx="3"/>
+          <text class="headt" x="500" y="28" text-anchor="middle">Each cluster member Y</text>
+          <rect class="head" x="720" y="4" width="220" height="38" rx="3"/>
+          <text class="headt" x="830" y="28" text-anchor="middle">President P</text>
+
+          <!-- register -->
+          <line class="msg" x1="170" y1="80" x2="828" y2="80" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="665" y="74" text-anchor="middle">CM_REGREQ</text>
+          <line class="msg" x1="830" y1="108" x2="172" y2="108" marker-end="url(#s4-ah)"/>
+          <text class="lbl" x="665" y="102" text-anchor="middle"><tspan class="sig">CM_REGCONF</tspan> · dynamic id, members</text>
+
+          <!-- prepare -->
+          <line class="msg" x1="830" y1="150" x2="172" y2="150" marker-end="url(#s4-ah)"/>
+          <circle class="dot" cx="500" cy="150" r="4"/>
+          <text class="lbl sig" x="665" y="144" text-anchor="middle">CM_ADD(Prepare)</text>
+          <text class="lbl sub" x="335" y="144" text-anchor="middle">to every member and to X</text>
+          <rect class="note new" x="722" y="160" width="216" height="22" rx="3"/>
+          <text class="nt new" x="830" y="175" text-anchor="middle">timer starts: 10 s</text>
+
+          <line class="msg" x1="170" y1="200" x2="498" y2="200" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="335" y="194" text-anchor="middle">CM_NODEINFOREQ</text>
+          <text class="sub" x="335" y="216" text-anchor="middle">only over connected links</text>
+
+          <line class="msg" x1="500" y1="240" x2="172" y2="240" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="335" y="234" text-anchor="middle">CM_NODEINFOCONF</text>
+          <line class="msg" x1="500" y1="240" x2="828" y2="240" marker-end="url(#s4-ah)"/>
+          <text class="lbl" x="665" y="234" text-anchor="middle"><tspan class="sig">CM_ACKADD(Prepare)</tspan><tspan class="new"> + dynamic id</tspan></text>
+
+          <line class="msg" x1="170" y1="272" x2="828" y2="272" marker-end="url(#s4-ah)"/>
+          <text class="lbl" x="665" y="266" text-anchor="middle"><tspan class="sig">CM_ACKADD(Prepare)</tspan> · after all CONFs</text>
+
+          <rect class="alt" x="44" y="284" width="652" height="30" rx="3"/>
+          <text class="nt new" x="56" y="304"><tspan font-weight="600">alt</tspan>  not prepared within 10 s, or X disconnected: the president aborts with CM_ADD(Abort)</text>
+          <rect class="note new" x="722" y="286" width="216" height="26" rx="3"/>
+          <text class="nt new" x="830" y="303" text-anchor="middle">all prepared: new start key, timer ends</text>
+
+          <!-- commit -->
+          <line class="msg" x1="830" y1="350" x2="502" y2="350" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="665" y="344" text-anchor="middle">CM_ADD(AddCommit)</text>
+          <rect class="note" x="380" y="360" width="240" height="22" rx="3"/>
+          <text class="nt" x="500" y="375" text-anchor="middle">X is a member: open signals, heartbeats</text>
+          <line class="msg" x1="500" y1="400" x2="828" y2="400" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="665" y="394" text-anchor="middle">CM_ACKADD(AddCommit)</text>
+          <rect class="note" x="712" y="410" width="236" height="22" rx="3"/>
+          <text class="nt" x="830" y="425" text-anchor="middle">INCL_NODE_HB_PROTOCOL_REP to DBDIH</text>
+          <line class="msg" x1="830" y1="452" x2="172" y2="452" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="665" y="446" text-anchor="middle">CM_ADD(CommitNew)</text>
+          <rect class="note" x="56" y="462" width="228" height="22" rx="3"/>
+          <text class="nt" x="170" y="477" text-anchor="middle">open signals, QMGR phase 1 done</text>
+          <line class="msg" x1="170" y1="504" x2="828" y2="504" marker-end="url(#s4-ah)"/>
+          <text class="lbl sig" x="665" y="498" text-anchor="middle">CM_ACKADD(CommitNew)</text>
+          <rect class="note" x="722" y="514" width="216" height="22" rx="3"/>
+          <text class="nt" x="830" y="529" text-anchor="middle">done, takes the next CM_REGREQ</text>
+        </svg>
+      </div>
+      <figcaption>A member acknowledges the prepare only when it has both <code>CM_ADD(Prepare)</code> and the starting node's <code>CM_NODEINFOREQ</code>, in either order. <span class="new-t">Every <code>CM_ACKADD</code> now carries the attempt's dynamic id. X has joined once the president starts the commit, before that it may fail without failing others, slide 9.</span></figcaption>
+    </figure>
+    <footer class="foot"><span>QMGR join protocol</span><span>4 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 5 · Stuck -->
+<section class="slide" id="s5" aria-label="Slide 5: One missing link stopped every start">
+  <div class="inner">
+    <header>
+      <p class="eyebrow">Before the patches</p>
+      <h2>One missing link stopped every start</h2>
+    </header>
+    <div class="body cols fig-left">
+      <figure class="fig">
+        <div class="scroll">
+          <svg class="compact" viewBox="0 0 680 384" role="img" aria-label="Starting node 4 has no connection to member node 3, so node 3 never prepares the inclusion, the president waits, and starting node 5 is refused with ZBUSY_PRESIDENT every 3 seconds.">
+            <defs>
+              <marker id="s5-ah" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+              <marker id="s5-ahb" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse"><path class="ah-bad" d="M0,0 L10,5 L0,10 z"/></marker>
+            </defs>
+            <!-- links between members -->
+            <line class="link" x1="290" y1="70" x2="130" y2="210"/>
+            <line class="link" x1="290" y1="70" x2="450" y2="210"/>
+            <line class="link" x1="130" y1="210" x2="450" y2="210"/>
+            <!-- node 4 sends CM_NODEINFOREQ to 1 and 2 -->
+            <line class="msg" x1="290" y1="294" x2="290" y2="98" marker-end="url(#s5-ah)"/>
+            <line class="msg" x1="270" y1="305" x2="152" y2="224" marker-end="url(#s5-ah)"/>
+            <text class="lbl sig" x="206" y="300" text-anchor="end">CM_NODEINFOREQ</text>
+            <!-- missing link 3-4 -->
+            <line class="msg bad" x1="310" y1="306" x2="430" y2="224"/>
+            <line class="msg bad" x1="360" y1="256" x2="380" y2="276" style="stroke-dasharray:none"/>
+            <line class="msg bad" x1="380" y1="256" x2="360" y2="276" style="stroke-dasharray:none"/>
+            <text class="lbl bad" x="392" y="296">no connection</text>
+            <!-- node 5 refused -->
+            <line class="msg" x1="96" y1="62" x2="262" y2="62" marker-end="url(#s5-ah)"/>
+            <text class="lbl sig" x="180" y="54" text-anchor="middle">CM_REGREQ</text>
+            <line class="msg bad" x1="264" y1="80" x2="98" y2="80" marker-end="url(#s5-ahb)" style="stroke-dasharray:none"/>
+            <text class="lbl bad" x="180" y="100" text-anchor="middle"><tspan class="sig">ZBUSY_PRESIDENT</tspan></text>
+            <text class="bad" x="180" y="116" text-anchor="middle" font-size="12">every 3 s, for ever</text>
+            <!-- nodes -->
+            <circle class="node" cx="70" cy="70" r="26"/>
+            <text class="nid" x="70" y="76" text-anchor="middle">5</text>
+            <text class="sub" x="70" y="114" text-anchor="middle">also starting</text>
+            <circle class="node" cx="290" cy="70" r="26"/>
+            <text class="nid" x="290" y="76" text-anchor="middle">1</text>
+            <text class="sub" x="290" y="32" text-anchor="middle">president</text>
+            <text class="lbl" x="326" y="56" font-size="12">waits for CM_ACKADD</text>
+            <text class="lbl" x="326" y="72" font-size="12">from nodes 3 and 4</text>
+            <circle class="node" cx="130" cy="210" r="26"/>
+            <text class="nid" x="130" y="216" text-anchor="middle">2</text>
+            <text class="sub" x="130" y="258" text-anchor="middle">member</text>
+            <circle class="node" cx="450" cy="210" r="26"/>
+            <text class="nid" x="450" y="216" text-anchor="middle">3</text>
+            <text class="sub" x="450" y="258" text-anchor="middle">member</text>
+            <text class="bad" x="486" y="198" font-size="12">never gets the</text>
+            <text class="bad" x="486" y="214" font-size="12">CM_NODEINFOREQ, so</text>
+            <text class="bad" x="486" y="230" font-size="12">no CM_ACKADD(Prepare)</text>
+            <circle class="node x" cx="290" cy="320" r="26"/>
+            <text class="nid" x="290" y="326" text-anchor="middle">4</text>
+            <text class="sub" x="290" y="366" text-anchor="middle">starting, being included</text>
+          </svg>
+        </div>
+        <figcaption>Node 4 also never gets a <code>CM_NODEINFOCONF</code> from node 3, so it never acknowledges either. Only a disconnect of node 4 or of the president ended the wait.</figcaption>
+      </figure>
+      <div class="stack">
+        <ul class="plain">
+          <li class="bad">The president waited with no time limit, and nothing was logged.</li>
+          <li class="bad">The timer meant for this case was dead code, after a <code>return</code>:</li>
+        </ul>
+        <pre><code>  /**
+   * Set timer
+   */
+  <span class="bad-t">return;</span>
+  signal-&gt;theData[0] = ZREGREQ_MASTER_TIMELIMIT;
+  signal-&gt;theData[1] = c_start.m_startKey;
+  sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB,
+                      signal, 30000, 2);</code></pre>
+        <ul class="plain">
+          <li>It would not have helped as written. It fails the starting node, and a node that has not started exits when another data node fails or disconnects. In a cluster start every starting node then exits with error 2308, and the next start stalls the same way.</li>
+        </ul>
+      </div>
+    </div>
+    <footer class="foot"><span>QMGR join protocol</span><span>5 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 6 · Abort -->
+<section class="slide" id="s6" aria-label="Slide 6: Aborting an inclusion">
+  <div class="inner">
+    <header>
+      <p class="eyebrow new">New · CM_ADD(Abort)</p>
+      <h2>After 10 seconds the president aborts the inclusion</h2>
+    </header>
+    <figure class="fig">
+      <div class="scroll">
+        <svg viewBox="0 0 1000 450" role="img" aria-label="When the prepare phase has not completed within 10 seconds, the president checks that it may abort, sends CM_ADD(Abort) with the dynamic id and whether the starting node exits to every member and to the starting node, and all of them forget the inclusion. In a node restart the starting node exits. In a cluster start it asks again with CM_REGREQ, answered ZBUSY for 6 seconds, and exits at a second abort.">
+          <defs>
+            <marker id="s6-ahn" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse"><path class="ah-new" d="M0,0 L10,5 L0,10 z"/></marker>
+            <marker id="s6-ah" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto-start-reverse"><path class="ah" d="M0,0 L10,5 L0,10 z"/></marker>
+          </defs>
+          <rect class="band" x="0" y="50" width="1000" height="102"/>
+          <text class="bandl" x="10" y="66">DECIDE</text>
+          <text class="bandl" x="10" y="174">ABORT</text>
+          <rect class="band" x="0" y="296" width="1000" height="154"/>
+          <text class="bandl" x="10" y="312">RETRY</text>
+          <line class="life" x1="170" y1="44" x2="170" y2="450"/>
+          <line class="life" x1="500" y1="44" x2="500" y2="450"/>
+          <line class="life" x1="830" y1="44" x2="830" y2="450"/>
+          <rect class="head" x="60" y="4" width="220" height="38" rx="3"/>
+          <text class="headt" x="170" y="28" text-anchor="middle">Starting node X</text>
+          <rect class="head" x="390" y="4" width="220" height="38" rx="3"/>
+          <text class="headt" x="500" y="28" text-anchor="middle">Each cluster member Y</text>
+          <rect class="head" x="720" y="4" width="220" height="38" rx="3"/>
+          <text class="headt" x="830" y="28" text-anchor="middle">President P</text>
+
+          <rect class="note new" x="640" y="62" width="352" height="24" rx="3"/>
+          <text class="nt new" x="816" y="78" text-anchor="middle">tick every 1 s until 10 s have passed</text>
+          <rect class="note new" x="640" y="92" width="352" height="24" rx="3"/>
+          <text class="nt new" x="816" y="108" text-anchor="middle">log the members CM_NODEINFOREQ has not reached</text>
+          <rect class="note new" x="640" y="122" width="352" height="24" rx="3"/>
+          <text class="nt new" x="816" y="138" text-anchor="middle">all nodes support Abort? No: log it, wait again</text>
+
+          <line class="msg new" x1="830" y1="182" x2="502" y2="182" marker-end="url(#s6-ahn)"/>
+          <text class="lbl sig new" x="665" y="176" text-anchor="middle">CM_ADD(Abort)</text>
+          <text class="lbl sub" x="665" y="198" text-anchor="middle">dynamic id of the attempt, startingNodeExits</text>
+          <line class="msg new" x1="830" y1="214" x2="172" y2="214" marker-end="url(#s6-ahn)"/>
+          <text class="lbl sig new" x="335" y="208" text-anchor="middle">CM_ADD(Abort)</text>
+
+          <rect class="note new" x="350" y="230" width="300" height="40" rx="3"/>
+          <text class="nt new" x="500" y="246" text-anchor="middle">forget X: not included, version unknown,</text>
+          <text class="nt new" x="500" y="262" text-anchor="middle">remember the dynamic id of the attempt</text>
+          <rect class="note new" x="40" y="230" width="270" height="40" rx="3"/>
+          <text class="nt new" x="175" y="246" text-anchor="middle">node restart or second abort: exit,</text>
+          <text class="nt new" x="175" y="262" text-anchor="middle">else forget the members, ask again</text>
+          <rect class="note new" x="680" y="230" width="312" height="40" rx="3"/>
+          <text class="nt new" x="836" y="246" text-anchor="middle">X leaves the starting nodes (an initial</text>
+          <text class="nt new" x="836" y="262" text-anchor="middle">start keeps it). None left: phase 1 done</text>
+
+          <line class="msg new" x1="170" y1="322" x2="828" y2="322" marker-end="url(#s6-ahn)"/>
+          <text class="lbl" x="665" y="316" text-anchor="middle"><tspan class="sig">CM_REGREQ</tspan> · every 3 s, in a cluster start</text>
+          <line class="msg new" x1="830" y1="350" x2="172" y2="350" marker-end="url(#s6-ahn)"/>
+          <text class="lbl new" x="665" y="344" text-anchor="middle"><tspan class="sig">ZBUSY</tspan> · for 6 s after the abort</text>
+          <line class="msg" x1="170" y1="392" x2="828" y2="392" marker-end="url(#s6-ah)"/>
+          <text class="lbl sig" x="665" y="386" text-anchor="middle">CM_REGREQ</text>
+          <line class="msg" x1="830" y1="420" x2="172" y2="420" marker-end="url(#s6-ah)"/>
+          <text class="lbl" x="665" y="414" text-anchor="middle"><tspan class="sig">CM_REGCONF</tspan> · slide 4 again, a new dynamic id</text>
+        </svg>
+      </div>
+      <figcaption>The president does not fail the starting node, so no node failure handling runs. In a cluster start the node asks once more and exits at a second abort, in a node restart it exits at once, slide 10. The other nodes survive its exit since it has not joined, slide 9.</figcaption>
+    </figure>
+    <footer class="foot"><span>QMGR join protocol · <code>regreqMasterTimeLimitLab</code>, <code>abort_starting_node</code>, <code>cm_add_abort_starting_node</code></span><span>6 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 7 · Decision -->
+<section class="slide" id="s7" aria-label="Slide 7: When the president aborts">
+  <div class="inner">
+    <header>
+      <p class="eyebrow new">New · The decision</p>
+      <h2>After 10 seconds the president always aborts</h2>
+    </header>
+    <div class="body cols">
+      <div class="rules">
+        <div class="rule">
+          <p><span class="q">Every member and X support <code>CM_ADD(Abort)</code>?</span><br><span class="small">26.02.13 and later 26.02 releases, 26.10.0 and later. An older node would keep X half included.</span></p>
+          <span class="pill wait">else wait</span>
+        </div>
+        <div class="rule">
+          <p><span class="q">Node restart</span><br><span class="small">X exits at once, its node restart fails. Other restarting nodes join meanwhile.</span></p>
+          <span class="pill abort">abort</span>
+        </div>
+        <div class="rule">
+          <p><span class="q">System restart</span><br><span class="small">It goes on if the other nodes can restore all data, NDBCNTR checks node groups and GCI. Else it completes once X or another node of its node group joins. X asks once more.</span></p>
+          <span class="pill abort">abort</span>
+        </div>
+        <div class="rule">
+          <p><span class="q">Initial start</span><br><span class="small">The start keeps waiting for X unless it is in <code>--nowait-nodes</code>, so the cluster is not created without it.</span></p>
+          <span class="pill abort">abort</span>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="callout">
+          <p>A node that cannot connect to every member cannot take part in the start. Waiting for it only keeps out the starting nodes that can.</p>
+        </div>
+        <ul class="plain">
+          <li class="new">After the abort the president answers the node's <code>CM_REGREQ</code> with <code>ZBUSY</code> for 6 s, then tries it again. The other starting nodes get in first.</li>
+          <li class="new">The refusal ends after 6 s, also during a cluster start. A start that needs the node, say nodes 5 and 6 of one node group that cannot reach member 4, would otherwise never complete, even once the links are up.</li>
+          <li>The president logs what the abort means: other nodes join, the cluster start goes on, or it cannot complete and why.</li>
+        </ul>
+      </div>
+    </div>
+    <footer class="foot"><span>QMGR join protocol · <code>regreqMasterTimeLimitLab</code>, <code>ndbd_support_cm_add_abort</code></span><span>7 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 8 · Late signals -->
+<section class="slide" id="s8" aria-label="Slide 8: Late signals of an aborted attempt">
+  <div class="inner">
+    <header>
+      <p class="eyebrow new">New · Late signals</p>
+      <h2>Signals of the aborted attempt are recognised and dropped</h2>
+    </header>
+    <div class="body">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Late signal</th><th>Arrives at</th><th>Handling</th></tr></thead>
+          <tbody>
+            <tr class="new"><td><code>CM_NODEINFOREQ</code> sent before X got the abort</td><td>Member</td><td>Ignored: it carries the dynamic id of the aborted attempt. Taking it would prepare the next attempt too early.</td></tr>
+            <tr class="new"><td><code>CM_NODEINFOCONF</code> answering the aborted attempt</td><td>X</td><td>Ignored: X is not waiting for an answer from that node.</td></tr>
+            <tr class="new"><td><code>CM_ACKADD</code> of the aborted attempt</td><td>President</td><td>Ignored: it carries the dynamic id of the aborted attempt, so it does not count for the next attempt.</td></tr>
+            <tr class="new"><td><code>READ_NODESREQ</code> from a member whose link to X comes up</td><td>X</td><td>Answered with the president X knows. An answer of "no president" makes the member ask again at once, in a loop.</td></tr>
+            <tr class="new"><td>CONTINUEB of an earlier <code>CM_REGREQ</code> round</td><td>X</td><td>Ignored: each round takes a new start key.</td></tr>
+            <tr class="new"><td>Timer tick after the prepare completed</td><td>President</td><td>Ignored: the prepare completing takes a new start key.</td></tr>
+            <tr class="new"><td><code>CM_ADD(Abort)</code> not from the president, or too short</td><td>Any node</td><td>Ignored and logged.</td></tr>
+            <tr class="new"><td><code>CM_ADD(Abort)</code> without <code>startingNodeExits</code></td><td>X</td><td>From a president without the follow-up: X asks again.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <footer class="foot"><span>QMGR join protocol · <code>execCM_NODEINFOREQ</code>, <code>execCM_NODEINFOCONF</code>, <code>execREAD_NODESREQ</code>, <code>execCM_ADD</code></span><span>8 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 9 · Failure before joining -->
+<section class="slide" id="s9" aria-label="Slide 9: A node that has not joined may fail">
+  <div class="inner">
+    <header>
+      <p class="eyebrow new">New · Failure before joining</p>
+      <h2>A node that has not joined may fail without failing the others</h2>
+    </header>
+    <div class="body">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>X disconnects, seen by</th><th>Before</th><th>Now</th></tr></thead>
+          <tbody>
+            <tr class="new"><td>President, X in the prepare phase</td><td>Node failure of X, every node that has not started exits</td><td>Aborts the inclusion with <code>CM_ADD(Abort)</code>, no node failure</td></tr>
+            <tr class="new"><td>Member that has prepared X</td><td>The same, decided on its own</td><td>Leaves it to the president: <code>CM_ADD(Abort)</code> forgets X, <code>CM_ADD(AddCommit)</code> or <code>PREP_FAILREQ</code> fails it</td></tr>
+            <tr class="new"><td>Member that has not started</td><td>Exits with error 2308</td><td>Closes the link and goes on starting</td></tr>
+            <tr class="new"><td>Node that has not joined, connected to the president</td><td>Exits</td><td>Goes on asking to be included</td></tr>
+            <tr><td>Node without a president</td><td>Exits</td><td>Exits: it is in the election, which counts the nodes it hears from</td></tr>
+            <tr><td>Any node, once the president commits X</td><td colspan="2">X has joined: a node failure, nodes that have not started exit</td></tr>
+            <tr class="new"><td>Members, when the president fails during the inclusion</td><td>Fail X when it disconnects</td><td>Fail X at once: it exits as it loses its president</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small">A member never decides alone whether X joined: the president may have committed it already (bug#42422).</p>
+    </div>
+    <footer class="foot"><span>QMGR join protocol · <code>start_survives_disconnect</code>, <code>lost_starting_node</code>, <code>fail_starting_nodes</code></span><span>9 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 10 · Retry and exit -->
+<section class="slide" id="s10" aria-label="Slide 10: Ask once more, then exit">
+  <div class="inner">
+    <header>
+      <p class="eyebrow new">New · What the aborted node does</p>
+      <h2>A cluster start asks once more, a node restart exits at once</h2>
+    </header>
+    <div class="body cols">
+      <div class="rules">
+        <div class="rule">
+          <p><span class="q">Cluster start, first abort</span><br><span class="small">X forgets the members and asks again: links that were not up yet get a second chance.</span></p>
+          <span class="pill abort">ask again</span>
+        </div>
+        <div class="rule">
+          <p><span class="q">Cluster start, second abort</span><br><span class="small">Retrying for ever in the same process would not help a node that cannot reach a member, a new process sets up its links from scratch.</span></p>
+          <span class="pill exit">exit</span>
+        </div>
+        <div class="rule">
+          <p><span class="q">Node restart, first abort</span><br><span class="small"><code>CM_ADD(Abort)</code> carries <code>startingNodeExits</code>: the cluster runs without X, its node restart fails.</span></p>
+          <span class="pill exit">exit</span>
+        </div>
+        <div class="callout">
+          <p>X exits with error 6054, Connection setup failed. With StopOnError=0 its angel allocates the node id again and starts it, with the default StopOnError=1 it stays down.</p>
+        </div>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Timer</th><th>Value</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr><td><code>ZREGREQ_LOOP_DELAY</code></td><td>3 s</td><td>A starting node sends <code>CM_REGREQ</code> again</td></tr>
+            <tr class="new"><td><code>ZINCLUSION_TIME_LIMIT</code></td><td>10 s</td><td>X is connected to the president, and retries its other links every 100 ms with a 3 s connect timeout: three connect attempts</td></tr>
+            <tr class="new"><td><code>ZINCLUSION_RETRY_DELAY</code></td><td>6 s</td><td>Two <code>CM_REGREQ</code> rounds, in which every other waiting node asks and gets in first</td></tr>
+            <tr><td>StartPartialTimeout</td><td>30 s</td><td>Only the election, the inclusion no longer uses it</td></tr>
+            <tr class="new"><td>Node id, ndb_mgmd</td><td>20 s</td><td>In a cluster start the president grants node ids from start phase 3 on, before that ndb_mgmd times out and reserves the id itself, slide 2</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <footer class="foot"><span>QMGR join protocol · <code>regreqMasterTimeLimitLab</code>, <code>cm_add_abort_starting_node</code></span><span>10 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 11 · Outcome -->
+<section class="slide" id="s11" aria-label="Slide 11: No restart waits for a stalled inclusion">
+  <div class="inner">
+    <header>
+      <p class="eyebrow">Result · inclusion limit 10 s, retry after 6 s</p>
+      <h2>No restart waits for a stalled inclusion</h2>
+    </header>
+    <div class="body" style="align-content: start; gap: 1.6cqw">
+      <div class="lane">
+        <h3>System restart <code>ndb.ndb_sr_unreachable_node</code></h3>
+        <ol class="tl">
+          <li><span class="t">0 s</span><p>Node 1 wins the election and includes nodes one at a time</p></li>
+          <li class="bad"><span class="t">0 s</span><p>Node X cannot reach a member, its prepare stalls</p></li>
+          <li class="new"><span class="t">10 s</span><p>Abort: X is left out, QMGR phase 1 completes</p></li>
+          <li><span class="t">10 s + restart</span><p>The other three nodes finish the system restart</p></li>
+          <li class="new"><span class="t">16 to 26 s</span><p>X asks once more, is aborted again and exits</p></li>
+          <li><span class="t">link up</span><p>X is included and joins in a node restart</p></li>
+        </ol>
+      </div>
+      <div class="lane">
+        <h3>System restart, a node group cut off <code>ndb.ndb_sr_unreachable_node_group</code></h3>
+        <ol class="tl">
+          <li><span class="t">0 s</span><p>Node 4 is included before nodes 5 and 6</p></li>
+          <li class="bad"><span class="t">0 s</span><p>Nodes 5 and 6 cannot reach node 4</p></li>
+          <li class="new"><span class="t">10, 20 s</span><p>Both are aborted, node group {5,6} is empty</p></li>
+          <li><span class="t">20 s</span><p>NDBCNTR waits, the restart cannot complete</p></li>
+          <li class="new"><span class="t">from 26 s</span><p>5 and 6 exit at the second abort, their angels get the node ids after 20 s</p></li>
+          <li><span class="t">link up</span><p>5 and 6 are included, the system restart completes</p></li>
+        </ol>
+      </div>
+      <div class="lane">
+        <h3>Node restart <code>ndb.ndb_nr_unreachable_node</code></h3>
+        <ol class="tl">
+          <li class="bad"><span class="t">0 s</span><p>Node 4 cannot reach node 3, its prepare stalls</p></li>
+          <li class="bad"><span class="t">0 to 10 s</span><p>Node 2 restarts and gets <code>ZBUSY_PRESIDENT</code></p></li>
+          <li class="new"><span class="t">10 s</span><p>Abort, node 4 exits, node 2 is included</p></li>
+          <li class="new"><span class="t">10 s on</span><p>Node 2 restarts, the angel starts node 4</p></li>
+          <li class="new"><span class="t">each start</span><p>Node 4 exits while the link is missing</p></li>
+          <li><span class="t">link up</span><p>Node 4 is included and joins</p></li>
+        </ol>
+      </div>
+      <p class="small">The tests block new connections to one data node's port with the firewall (pfctl, nft or iptables) and run alone (not_parallel).</p>
+    </div>
+    <footer class="foot"><span>QMGR join protocol</span><span>11 / 12</span></footer>
+  </div>
+</section>
+
+<!-- 12 · Tests -->
+<section class="slide" id="s12" aria-label="Slide 12: Tests">
+  <div class="inner">
+    <header>
+      <p class="eyebrow new">New · MTR tests, suite ndb</p>
+      <h2>Missing links, crashes and stalls while a node is included</h2>
+    </header>
+    <div class="body">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Test</th><th>Fault</th><th>Checks</th></tr></thead>
+          <tbody>
+            <tr class="new"><td><code>ndb_sr_unreachable_node</code></td><td>Firewall, node 4 cannot reach node 3</td><td>The system restart completes without the left out node, which asks once more and exits at the second abort</td></tr>
+            <tr class="new"><td><code>ndb_sr_unreachable_node_group</code></td><td>Firewall, six nodes</td><td>Every stalled inclusion is aborted, also when node group {5,6} is left empty</td></tr>
+            <tr class="new"><td><code>ndb_nr_unreachable_node</code></td><td>Firewall</td><td>Node 4 exits at the first abort, node 2 restarts meanwhile</td></tr>
+            <tr class="new"><td><code>ndb_sr_join_crash</code></td><td>Error 963, crash at <code>CM_REGCONF</code></td><td>Nodes 1 to 3, joined and held in start phase 2, survive, the president aborts</td></tr>
+            <tr class="new"><td><code>ndb_nr_join_crash</code></td><td>Error 963</td><td>Node 2, joined and held, survives the crash of node 4</td></tr>
+            <tr class="new"><td><code>ndb_sr_join_timeout</code></td><td>Error 964, no <code>CM_NODEINFOREQ</code></td><td>Aborted twice, exits with error 6054, the held nodes survive</td></tr>
+            <tr class="new"><td><code>ndb_nr_join_timeout</code></td><td>Error 964</td><td>Exits at the first abort, node 2 survives</td></tr>
+            <tr class="new"><td><code>ndb_nr_join_president_failure</code></td><td>Error 964, president crash</td><td>The other two nodes go on, both nodes join again</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="small">Firewall tests need root or passwordless sudo and run alone. Error insert tests hold nodes with DUMP 71.</p>
+    </div>
+    <footer class="foot"><span>QMGR join protocol</span><span>12 / 12</span></footer>
+  </div>
+</section>
+
+</main>
+
+<div class="nav" role="navigation" aria-label="Slide navigation">
+  <button type="button" id="prev" aria-label="Previous slide">&#8592;</button>
+  <output id="pos" aria-live="polite">1 / 12</output>
+  <button type="button" id="next" aria-label="Next slide">&#8594;</button>
+</div>
+
+<script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var pos = document.getElementById('pos');
+  var current = 0;
+
+  function show(i) {
+    current = Math.max(0, Math.min(slides.length - 1, i));
+    slides[current].scrollIntoView({ block: 'center' });
+    pos.textContent = (current + 1) + ' / ' + slides.length;
+  }
+
+  function nearest() {
+    var mid = window.innerHeight / 2, best = 0, bestDist = Infinity;
+    slides.forEach(function (s, i) {
+      var r = s.getBoundingClientRect();
+      var d = Math.abs((r.top + r.bottom) / 2 - mid);
+      if (d < bestDist) { bestDist = d; best = i; }
+    });
+    return best;
+  }
+
+  window.addEventListener('scroll', function () {
+    current = nearest();
+    pos.textContent = (current + 1) + ' / ' + slides.length;
+  }, { passive: true });
+
+  document.getElementById('prev').addEventListener('click', function () { show(nearest() - 1); });
+  document.getElementById('next').addEventListener('click', function () { show(nearest() + 1); });
+
+  document.addEventListener('keydown', function (e) {
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    var k = e.key;
+    if (k === 'ArrowRight' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) { e.preventDefault(); show(nearest() + 1); }
+    else if (k === 'ArrowLeft' || k === 'PageUp' || (k === ' ' && e.shiftKey)) { e.preventDefault(); show(nearest() - 1); }
+    else if (k === 'Home') { e.preventDefault(); show(0); }
+    else if (k === 'End') { e.preventDefault(); show(slides.length - 1); }
+  });
+
+  var h = (location.hash || '').replace('#', '');
+  if (/^s([1-9]|1[0-2])$/.test(h)) {
+    var idx = parseInt(h.slice(1), 10) - 1;
+    setTimeout(function () { show(idx); }, 0);
+  }
+})();
+</script>
+</body>
+</html>
