@@ -119,7 +119,7 @@ delete from test.t1 where a=5;
 --echo Read committed by UK
 select * from test.t1 where b=3;
 --echo Expect:
---echo 1.  1 * SH on TAB (upgrade)
+--echo 1.  0 * SH on TAB (lock-free base read)
 --echo 2.  1 * SH on UI (upgrade)
 --source ndbinfo_show_locks_delta.inc
 --echo ****************************************************

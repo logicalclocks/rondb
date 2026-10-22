@@ -115,10 +115,10 @@ select * from test.t1 where b=3;
 a	b	c
 3	3	3
 Expect:
-1.  1 * SH on TAB (upgrade)
+1.  0 * SH on TAB (lock-free base read)
 2.  1 * SH on UI (upgrade)
 ex_reqs	ex_imm_oks	ex_wait_oks	ex_wait_fails	sh_reqs	sh_imm_oks	sh_wait_oks	sh_wait_fail	type	main_tab
-0	0	0	0	1	1	0	0	User table	1
+0	0	0	0	0	0	0	0	User table	1
 0	0	0	0	1	1	0	0	Unique hash index	0
 ****************************************************
 Read shared by UK
