@@ -185,6 +185,8 @@ class TcKeyReq {
   static Uint8 getOperationType(const UintR &requestInfo);
   static Uint8 getExecuteFlag(const UintR &requestInfo);
   static Uint8 getReadCommittedBaseFlag(const UintR &TrequestInfo);
+  /* Carried in the attrLen word of a long TCKEYREQ, see "Attr Len" below */
+  static Uint8 getLockFreeBaseReadFlag(const UintR &attrLen);
 
   static Uint16 getKeyLength(const UintR &requestInfo);
   static Uint8 getAIInTcKeyReq(const UintR &requestInfo);
@@ -217,6 +219,7 @@ class TcKeyReq {
   static void setExecuteFlag(UintR &requestInfo, Uint32 flag);
   static void setOperationType(UintR &requestInfo, Uint32 type);
   static void setReadCommittedBaseFlag(UintR &requestInfo, Uint32 flag);
+  static void setLockFreeBaseReadFlag(UintR &attrLen, Uint32 flag);
 
   static void setKeyLength(UintR &requestInfo, Uint32 len);
   static void setAIInTcKeyReq(UintR &requestInfo, Uint32 len);
@@ -447,6 +450,8 @@ class TcKeyReq {
 #define TC_DISABLE_FK_SHIFT (18)
 #define TC_READ_COMMITTED_BASE_SHIFT (20)
 #define TC_NOWAIT_SHIFT (21)
+/* Bit of the attrLen word, not of requestInfo, see "Attr Len" below */
+#define TC_LOCK_FREE_BASE_READ_SHIFT (17)
 
 #define TC_BATCH_SAFE_SHIFT (22)
 #define TC_BATCH_UNSAFE_SHIFT (23)
@@ -504,6 +509,12 @@ class TcKeyReq {
  a = removed was API version no  - 16 Bits -> max 65535
  API version no is more than 16 bits, was not used in kernel
  (removed in 7.3.3, 7.2.14, 7.1.29, 7.0.40, 6.3.53)
+ L = Lock-free base read      -  1 Bit 17 (Long TCKEYREQ only)
+     Only meaningful on TCINDXREQ: the base-table read that follows the
+     unique index lookup is performed without a row lock (read committed),
+     while the unique index row itself is still read with the lock given by
+     the request. Bit 16 is left free: a later release uses it for the
+     aggregation read flag.
 
            1111111111222222222233
  01234567890123456789012345678901
@@ -715,6 +726,16 @@ inline void TcKeyReq::setTakeOverScanFragment(UintR &scanInfo, Uint16 node) {
 inline void TcKeyReq::setTakeOverScanInfo(UintR &scanInfo, Uint32 aScanInfo) {
   //  ASSERT_MAX(aScanInfo, SCAN_INFO_MASK, "TcKeyReq::setTakeOverScanInfo");
   scanInfo |= (aScanInfo << SCAN_INFO_SHIFT);
+}
+
+inline Uint8 TcKeyReq::getLockFreeBaseReadFlag(const UintR &anAttrLen) {
+  return (Uint8)((anAttrLen >> TC_LOCK_FREE_BASE_READ_SHIFT) & 1);
+}
+
+inline void TcKeyReq::setLockFreeBaseReadFlag(UintR &anAttrLen, Uint32 flag) {
+  ASSERT_BOOL(flag, "TcKeyReq::setLockFreeBaseReadFlag");
+  anAttrLen &= ~(1U << TC_LOCK_FREE_BASE_READ_SHIFT);
+  anAttrLen |= (flag << TC_LOCK_FREE_BASE_READ_SHIFT);
 }
 
 inline Uint16 TcKeyReq::getAttrinfoLen(const UintR &anAttrLen) {

@@ -1,0 +1,28 @@
+--source include/have_ndb.inc
+
+# Runs the NDB API test cases for committed reads through a unique hash
+# index against the MTR cluster:
+#  - UkCommittedReadNoBaseLock: the read takes a shared lock on the unique
+#    index row only and does not wait for a lock on the base table row.
+#  - UkCommittedReadInterpretedNotFound: a read rejected by its interpreted
+#    program still gives "no row" (626), not the temporary error.
+#  - UkCommittedReadCommitRace: when the base row of a committed unique index
+#    row has not committed yet (error insert 5160 delays user table commits),
+#    the read gives temporary error 627 instead of "no row".
+#
+# The test program creates and drops its own index on table T1 in TEST_DB.
+
+CREATE DATABASE TEST_DB;
+
+let NDBAPITEST_NAME=testNdbApi;
+let NDBAPITEST_ARGS=-n UkCommittedReadNoBaseLock T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_NAME=testNdbApi;
+let NDBAPITEST_ARGS=-n UkCommittedReadInterpretedNotFound T1;
+--source suite/ndb/include/run_ndbapitest.inc
+
+let NDBAPITEST_NAME=testNdbApi;
+let NDBAPITEST_ARGS=-n UkCommittedReadCommitRace T1;
+let NDBAPITEST_CLEANUP_QUERY=DROP DATABASE TEST_DB;
+--source suite/ndb/include/run_ndbapitest.inc
