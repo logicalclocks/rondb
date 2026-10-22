@@ -101,7 +101,7 @@ struct Protocol6 {
    */
 
   /**
-   * 0 = Big endian (Sparc), 1 = Little endian (Intel)
+   * 0 = Little endian (Intel), 1 = Big endian (Sparc)
    */
   static Uint32 getByteOrder(const Uint32 &word1);
   static Uint32 getCompressed(const Uint32 &word1);

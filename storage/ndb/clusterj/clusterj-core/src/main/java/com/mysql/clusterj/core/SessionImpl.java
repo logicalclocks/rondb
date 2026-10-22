@@ -689,7 +689,8 @@ public class SessionImpl implements SessionSPI, CacheManager, StoreManager {
      * access to the instances and have the ScanFlag.KEY_INFO flag set.
      * @param op the scan operation
      * @param abort abort this transaction on error
-     * @param limit maximum number of instances to be deleted
+     * @param skip number of instances to skip before deleting
+     * @param limit maximum number of instances to be deleted after skipping
      * @return the number of instances deleted
      */
     public int deletePersistentAll(ScanOperation op,

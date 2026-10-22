@@ -324,7 +324,7 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal) {
         if (instance() == m_main_thrman_instance) {
           g_eventLogger->info(
               "Using CostBasedSpinning with max spintime = 100"
-              " and allowed spin overhead 70 percent");
+              " and allowed spin overhead 200 percent");
         }
         val = 200;
         m_enable_adaptive_spinning = true;
@@ -357,8 +357,8 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal) {
         g_eventLogger->info(
             "SpinMethod set to %s, ignored this use either "
             "StaticSpinning, CostBasedSpinning, "
-            "AggressiveSpinning or DatabaseMachineSpinning"
-            ", falling back to default StaticSpinning",
+            "LatencyOptimisedSpinning or DatabaseMachineSpinning"
+            ", falling back to StaticSpinning",
             conf);
       }
     } else {
@@ -372,8 +372,9 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal) {
      * don't use the CPU at full speed, thus other hyperthreads or other CPU
      * cores will have more access to CPU core parts and to the memory
      * subsystem in the CPU.
-     * By default we will even spend an extra 70% of CPU overhead to gain
-     * the desired latency gains.
+     * The SpinMethod decides how much extra CPU overhead we spend to gain
+     * the desired latency gains, from 200% with CostBasedSpinning to
+     * 10000% with DatabaseMachineSpinning.
      *
      * Most of the long work is done by the LDM threads. These threads work
      * for a longer time. The receive thread and the TC threads usually
@@ -389,15 +390,15 @@ void Thrman::execREAD_CONFIG_REQ(Signal *signal) {
      * overhead comes from receive thread and tc thread, the gain with
      * high overhead instead comes from the ldm thread. So we give the
      * ldm thread higher weight for high overhead values. The highest
-     * overhead configurable is 800 and will give the allowed spin overhead
-     * for recv thread to be 860, for tc thread it will 870 and for
-     * the ldm thread it will be 1010.
+     * overhead is MAX_SPIN_OVERHEAD (10000), used by DatabaseMachineSpinning,
+     * and will give the allowed spin overhead for recv thread to be 8220,
+     * for tc thread it will be 9150 and for the ldm thread it will be 12066.
      *
      * This high overhead I will refer to as the database machine mode.
      * It means that we expect the OS to not have to be involved in the
      * database thread operation, thus running more or less 100% load
-     * even at low concurrency is ok, this mode also requires setting
-     * the SchedulerSpinTimer to its maximum value 500.
+     * even at low concurrency is ok, this mode also sets the max spintime
+     * to its maximum value 500.
      */
     set_allowed_spin_overhead(val);
   }

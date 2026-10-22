@@ -31,6 +31,12 @@ OK
 
 3
 #
+# MGET with one key returns a one-element array, not a bulk
+# string. --no-raw makes redis-cli show the array shape.
+#
+1) "1"
+1) (nil)
+#
 # DEL return count: 1 for a hit, 0 for a miss, N for multi-key.
 #
 1

@@ -33,6 +33,7 @@ import (
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/client"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/shell"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/ui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -45,6 +46,7 @@ var (
 	mysqlHost  string
 	rdrsHost   string
 	rondisPort int
+	rondisDB   int
 	mysqlPort  int
 	restPort   int
 	mysqlUser  string
@@ -52,6 +54,7 @@ var (
 	promptPass bool
 	useTLS     bool
 	rdrsTLS    bool
+	tlsCAFile  string // CA file to verify server certificates (--tls-ca)
 	rdrsAPIKey string
 	verbose    int
 	noMySQL    bool
@@ -71,6 +74,13 @@ var rootCmd = &cobra.Command{
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := setupTLSCA(); err != nil {
+			return err
+		}
+		if rondisDB < 0 {
+			return fmt.Errorf("--rondis-db must not be negative")
+		}
+
 		// Prompt for password if -p flag is used
 		if promptPass {
 			pass, err := readPasswordSilent("Enter MySQL password: ")
@@ -95,6 +105,7 @@ var rootCmd = &cobra.Command{
 			MySQLHost:  effectiveMySQLHost,
 			RDRSHost:   effectiveRDRSHost,
 			RondisPort: rondisPort,
+			RondisDB:   rondisDB,
 			MySQLPort:  mysqlPort,
 			RestPort:   restPort,
 			MySQLUser:  mysqlUser,
@@ -112,6 +123,18 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// setupTLSCA makes every TLS connection verify the server certificate
+// against --tls-ca. Without --tls-ca, server certificates are not verified.
+func setupTLSCA() error {
+	if tlsCAFile == "" {
+		return nil
+	}
+	if !useTLS && !rdrsTLS {
+		return fmt.Errorf("--tls-ca needs --tls or --rdrs-tls")
+	}
+	return tlsconf.SetCAFile(tlsCAFile)
+}
+
 // readPasswordSilent prompts for a password without echoing input
 func readPasswordSilent(prompt string) (string, error) {
 	fmt.Print(prompt)
@@ -127,6 +150,13 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Check RonDB connection status",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := setupTLSCA(); err != nil {
+			return err
+		}
+		if rondisDB < 0 {
+			return fmt.Errorf("--rondis-db must not be negative")
+		}
+
 		// Prompt for password if -p flag is used
 		if promptPass {
 			pass, err := readPasswordSilent("Enter MySQL password: ")
@@ -148,14 +178,20 @@ var statusCmd = &cobra.Command{
 
 		fmt.Println("Checking connections...")
 
-		// Check Rondis (uses general host)
+		// Check Rondis (uses general host). --tls is passed on to Rondis,
+		// which has no TLS listener, so the check then fails.
 		rondisClient, err := client.NewRondisClientWithOptions(client.RondisOptions{
 			Host: host,
 			Port: rondisPort,
 			TLS:  useTLS,
+			DB:   rondisDB,
 		})
 		if err != nil {
-			fmt.Println(ui.Error(fmt.Sprintf("Rondis (%s:%d): %v", host, rondisPort, err)))
+			msg := fmt.Sprintf("Rondis (%s:%d): %v", host, rondisPort, err)
+			if useTLS {
+				msg += " (Rondis has no TLS listener, so --tls cannot reach it)"
+			}
+			fmt.Println(ui.Error(msg))
 		} else {
 			fmt.Println(ui.Success(fmt.Sprintf("Rondis (%s:%d): connected", host, rondisPort)))
 			rondisClient.Close()
@@ -209,13 +245,15 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&mysqlHost, "mysql-host", "", "MySQL host (overrides --host)")
 	rootCmd.PersistentFlags().StringVar(&rdrsHost, "rdrs-host", "", "RDRS/REST API host (overrides --host)")
 	rootCmd.PersistentFlags().IntVar(&rondisPort, "rondis-port", 6379, "Rondis port")
+	rootCmd.PersistentFlags().IntVar(&rondisDB, "rondis-db", 0, "Rondis database (a Rondis SELECT typed in the shell goes to MySQL)")
 	rootCmd.PersistentFlags().IntVar(&mysqlPort, "mysql-port", 3306, "MySQL port")
 	rootCmd.PersistentFlags().IntVar(&restPort, "rdrs-port", 4406, "RDRS/REST API port")
 	rootCmd.PersistentFlags().StringVar(&mysqlUser, "mysql-user", "root", "MySQL username")
 	rootCmd.PersistentFlags().StringVar(&mysqlPass, "mysql-password", "", "MySQL password")
 	rootCmd.PersistentFlags().BoolVarP(&promptPass, "password", "p", false, "Prompt for MySQL password")
-	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for all connections")
+	rootCmd.PersistentFlags().BoolVar(&useTLS, "tls", false, "Enable TLS for MySQL and REST API (Rondis has no TLS listener)")
 	rootCmd.PersistentFlags().BoolVar(&rdrsTLS, "rdrs-tls", false, "Enable TLS (HTTPS) for RDRS/REST API only")
+	rootCmd.PersistentFlags().StringVar(&tlsCAFile, "tls-ca", "", "CA file (PEM) to verify server certificates (default: not verified)")
 	rootCmd.PersistentFlags().StringVar(&rdrsAPIKey, "rdrs-api-key", "", "API key for RDRS/REST API authentication")
 	rootCmd.PersistentFlags().IntVar(&verbose, "verbose", 0, "Verbose level (0=normal, 1=connection info, 2=debug)")
 	rootCmd.PersistentFlags().BoolVar(&noMySQL, "no-mysql", false, "Disable MySQL connection")

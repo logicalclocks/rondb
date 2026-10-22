@@ -400,27 +400,10 @@ THRConfig::compute_automatic_thread_config(
     }
 #endif
     /**
-     * We make use of all CPUs, but we avoid using about 10% of the
-     * CPUs in the machine. The idea with this scheme is to ensure
-     * that we have sufficient CPU resources to handle interrupts,
-     * OS kernel execution and the IO threads, connection threads
-     * and other support threads.
-     *
-     * We divide by 10 to derive this number, this means that with
-     * small number of CPUs we will use all CPUs. This is ok since
-     * the main thread, rep thread and some other thread is usually
-     * not fully occupied in those configurations.
-     *
-     * One special area to consider is the use of compressed LCPs,
-     * compressed backups and encrypted file systems. This will
-     * require a heavy CPU burden on the IO threads. This load could
-     * be substantial. In this case we save 25% of the CPUs instead.
-     */
-    /**
-     * The number of recover threads should be such that we have one
-     * recover thread per CPU. However the LDM threads is also used
-     * as recover thread, thus we can decrease the amount of recover
-     * threads with the amount of LDM threads.
+     * We make use of all CPUs, the tables below give one block or send
+     * thread per CPU. The IO threads and other support threads share
+     * these CPUs, unless ExclusiveIoCPUs reserves some CPUs for the IO
+     * threads, see do_parse_auto.
      */
   }
   else

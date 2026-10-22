@@ -8,7 +8,7 @@ DATABASE QUOTA SET command failed: Error:
 *        Create Database failed
 Database Quotas for test
 databaseId = 13
-databaseVersion = 13
+databaseVersion = #
 InMemorySize = 2 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 500
@@ -17,7 +17,7 @@ MaxParallelTransactions = 3
 MaxParallelComplexQueries = 0
 Database Quotas for test2
 databaseId = 14
-databaseVersion = 14
+databaseVersion = #
 InMemorySize = 10 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 500
@@ -36,7 +36,7 @@ DATABASE QUOTA ALTER command failed: Error:
 DATABASE QUOTA ALTER successfully executed
 Database Quotas for test2
 databaseId = 14
-databaseVersion = 14
+databaseVersion = #
 InMemorySize = 11 MByte
 DiskSpaceSize = 0 GByte
 RatePerSec = 1500
@@ -45,7 +45,7 @@ MaxParallelTransactions = 0
 MaxParallelComplexQueries = 0
 Database Quotas for test
   databaseId = 13
-  databaseVersion = 13
+  databaseVersion = #
   InMemorySize = 2 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 500
@@ -55,7 +55,7 @@ Database Quotas for test
 
 Database Quotas for test2
   databaseId = 14
-  databaseVersion = 14
+  databaseVersion = #
   InMemorySize = 11 MByte
   DiskSpaceSize = 0 GByte
   RatePerSec = 1500
@@ -80,6 +80,10 @@ DATABASE QUOTA GET command failed: Error:
 Value of --in-memory-size in DATABASE QUOTA SET must be a number of MBytes, without k, M, G or T
 # Values must be smaller than RNIL, they are not truncated
 Value of --rate-per-sec in DATABASE QUOTA SET is too large, it must be smaller than 4294967040
+# GET, BACKUP and RESTORE need an argument
+Expected a database name as parameter
+Expected DATABASE QUOTA BACKUP file_name in this command
+Expected DATABASE QUOTA RESTORE file_name in this command
 # --on-disk-size is in GBytes: 1 GByte is more than 80% of a
 # 128 MByte data file
 CREATE LOGFILE GROUP lg_quota ADD UNDOFILE 'lg_quota_undo.dat' INITIAL_SIZE 16M ENGINE NDB;

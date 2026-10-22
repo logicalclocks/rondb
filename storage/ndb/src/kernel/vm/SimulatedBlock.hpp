@@ -1968,8 +1968,8 @@ public:
       rr_info->m_lqhkeyreq_distr_signal_index = 0;
     }
     rr_info->m_distribution_signal_size = dist_pos;
-    rr_info->m_lqhkeyreq_to_same_thread = NUM_LQHKEYREQ_COUNTS;
-    rr_info->m_scan_fragreq_to_same_thread = NUM_SCAN_FRAGREQ_COUNTS;
+    rr_info->m_lqhkeyreq_to_same_thread = m_num_lqhkeyreq_counts;
+    rr_info->m_scan_fragreq_to_same_thread = m_num_scan_fragreq_counts;
     rr_info->m_total_weight = 0;
   }
   void count_next_round(DistributionHandler *handle, Uint32 thr_no) {

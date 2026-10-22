@@ -486,7 +486,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      CI_RESTART_SYSTEM, ConfigInfo::CI_BOOL, "false", "false", "true"},
 
     {CFG_DB_MEMLOCK, "LockPagesInMainMemory", DB_TOKEN,
-     "If set to yes, then RonDB data will not be swapped out to disk",
+     "0 means no locking; any non-zero value (1 and 2 behave the same) locks "
+     "the memory of the data node so that it is not swapped out to disk",
      ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "0", "0", "2"},
 
     {CFG_DB_WATCHDOG_INTERVAL, "TimeBetweenWatchDogCheck", DB_TOKEN,
@@ -499,7 +500,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "50", "0", "11000"},
 
     {CFG_DB_MAX_SEND_DELAY, "MaxSendDelay", DB_TOKEN,
-     "Max number of microseconds to delay sending in ndbmtd",
+     "Number of microseconds to delay sending in ndbmtd; 0 means automatic: "
+     "200 microseconds with more than 32 block and send threads, otherwise "
+     "no delay",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "0", "0", "1000"},
 
     {CFG_DB_SCHED_SPIN_TIME, "SchedulerSpinTimer", DB_TOKEN,
@@ -746,9 +749,9 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT,
-    "8",
-    "8",
-    "32" },
+    STR_VALUE(DEF_MAX_RR_GROUP_SIZE),
+    STR_VALUE(MIN_MAX_RR_GROUP_SIZE),
+    STR_VALUE(MAX_RR_GROUP_SIZE) },
 
   {
     CFG_DB_RESTART_BARRIER_TIMEOUT,
@@ -807,7 +810,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_DB_TOTAL_MEMORY_CONFIG,
     "TotalMemoryConfig",
     DB_TOKEN,
-    "Avoid using this amount of memory by data node",
+    "Total memory the data node uses with AutomaticMemoryConfig; 0 means "
+    "the memory of the machine or container, less an OS overhead",
     ConfigInfo::CI_USED,
     false,
     ConfigInfo::CI_INT64,
@@ -1282,13 +1286,12 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
      "Maximum number of parallel backups", ConfigInfo::CI_NOTIMPLEMENTED, false,
      ConfigInfo::CI_INT, "1", "1", "1"},
 
-    {CFG_DB_ENABLE_MT_BACKUP, "EnableMultithreadedBackup", DB_TOKEN,
-     "Enable multi-threaded backup. If the cluster config permits, i.e. if"
-     " all nodes have at least 2 LDMs, all the LDM threads will participate"
-     " in backup. The backup will be written in the mt-backup file format,"
-     " which consists of one subdirectory per LDM thread, where"
-     " each subdirectory contains Ctl, Data and Log backup files.",
-     ConfigInfo::CI_USED, 0, ConfigInfo::CI_INT, "1", "0", "1"},
+    /**
+     * Ignored, backups are multi-threaded whenever all data nodes have at
+     * least 2 LDM threads (see m_cfg_mt_backup in BackupInit.cpp).
+     */
+    {CFG_DB_ENABLE_MT_BACKUP, "EnableMultithreadedBackup", DB_TOKEN, "",
+     ConfigInfo::CI_DEPRECATED, 0, ConfigInfo::CI_INT, "1", "0", "1"},
 
     {CFG_DB_BACKUP_DATADIR, "BackupDataDir", DB_TOKEN,
      "Path to where to store backups", ConfigInfo::CI_USED,
@@ -1322,7 +1325,8 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
 
     {CFG_DB_BACKUP_DISK_WRITE_PCT, "BackupDiskWriteSpeedPct", DB_TOKEN,
      "Percentage of MaxDiskWriteSpeed to reserve for Backup, including "
-     "the Backup log",
+     "the Backup log. Only used by single-threaded backups, which run when "
+     "some data node has only one LDM thread",
      ConfigInfo::CI_USED, false, ConfigInfo::CI_INT, "50", "0", "90"},
 
     {CFG_DB_BACKUP_MEM, "BackupMemory", DB_TOKEN,
@@ -2065,7 +2069,7 @@ const ConfigInfo::ParamInfo ConfigInfo::m_ParamInfo[] = {
     CFG_NODE_PIDFILE_DIR,
     "FileSystemPathPidfile",
     MGM_TOKEN,
-    "Path to directory where the " DB_TOKEN_PRINT " node stores its pid file",
+    "Path to directory where the " MGM_TOKEN_PRINT " node stores its pid file",
     ConfigInfo::CI_USED,
     CI_CHECK_WRITABLE,
     ConfigInfo::CI_STRING,

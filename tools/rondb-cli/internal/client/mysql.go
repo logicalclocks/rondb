@@ -26,13 +26,13 @@
 package client
 
 import (
-	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 )
 
 type MySQLClient struct {
@@ -45,7 +45,7 @@ type MySQLOptions struct {
 	Port     int
 	User     string
 	Password string
-	TLS      bool   // Enable TLS
+	TLS      bool   // Enable TLS (server certificate verified only with --tls-ca)
 	Database string // Default database for the connection (optional)
 }
 
@@ -73,11 +73,7 @@ func NewMySQLClientWithOptions(opts MySQLOptions) (*MySQLClient, error) {
 
 	// Register TLS config if enabled
 	if opts.TLS {
-		tlsConfig := &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true,
-		}
-		mysql.RegisterTLSConfig("custom", tlsConfig)
+		mysql.RegisterTLSConfig("custom", tlsconf.Client())
 		dsn += "?tls=custom"
 	}
 

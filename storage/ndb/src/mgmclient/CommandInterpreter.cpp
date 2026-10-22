@@ -136,6 +136,8 @@ class CommandInterpreter {
   int  executePrompt(char* parameters);
   void executeClusterLog(char* parameters);
 
+  /* type for get_node_section() that accepts every node type */
+  static constexpr Uint32 ANY_NODE_TYPE = ~Uint32(0);
   bool get_node_section(ConfigValues::Iterator & iter,
                         int node_id,
                         Uint32 type);
@@ -345,14 +347,14 @@ static const char* helpText =
 "CLUSTERLOG OFF [<severity>] ...        Disable Cluster logging\n"
 "CLUSTERLOG TOGGLE [<severity>] ...     Toggle severity filter on/off\n"
 "CLUSTERLOG INFO                        Print cluster log information\n"
-"<id> SET <param> <value>               Set config parameter on data node(s)\n"
+"<id> SET <param> <value>               Set config parameter on data or API node(s)\n"
 "<id> LOCATION_DOMAIN_ID [<id>]         Change location domain id of a node\n"
 "<id> HOSTNAME [<hostname/IP>]          Change hostname of a deactivated node\n"
 "<id> ACTIVATE                          Activate a node previously deactivated\n"
 "<id> DEACTIVATE                        Deactivate a node (and stop it)\n"
 "<id> START                             Start data node (started with -n)\n"
-"<id> RESTART [-n] [-i] [-a] [-f]       Restart data or management server node\n"
-"<id> STOP [-a] [-f]                    Stop data or management server node\n"
+"<id> RESTART [-n] [-i] [-a] [-f] [-x]  Restart data or management server node\n"
+"<id> STOP [-a] [-f] [-x]               Stop data or management server node\n"
 "<id> NODELOG DEBUG ON                  Enable Debug logging in node log\n"
 "<id> NODELOG DEBUG OFF                 Disable Debug logging in node log\n"
 "ENTER SINGLE USER MODE <id>            Enter single user mode\n"
@@ -368,7 +370,16 @@ static const char* helpText =
 "DATABASE QUOTA DROP db                 Drop database quotas\n"
 "DATABASE QUOTA GET db                  Get database quotas for specific database\n"
 "DATABASE QUOTA LIST                    Get database quotas for all databases\n"
-"DATABASE QUOTA BACKUP                  Backup database quotas for all databases\n"
+"DATABASE QUOTA BACKUP <file>           Backup database quotas to a file\n"
+"DATABASE QUOTA RESTORE <file>          Restore database quotas from a file\n"
+"USER ...                               Commands used to manage user rate limits\n"
+"USER SET user {<property>=<value>}+    Set user rate limits\n"
+"USER ALTER user {<property>=<value>}+  Alter user rate limits\n"
+"USER DROP user                         Drop user rate limits\n"
+"USER GET user                          Get rate limits for specific user\n"
+"USER LIST                              Get rate limits for all users\n"
+"USER BACKUP <file>                     Backup user rate limits to a file\n"
+"USER RESTORE <file>                    Restore user rate limits from a file\n"
 "QUIT                                   Quit management client\n"
 ;
 
@@ -561,7 +572,12 @@ static const char* helpTextSet =
 "                             for replies (16 for throughput). Range 0-65535.\n"
 "                             <id> must be an API node id; ALL sets it on\n"
 "                             every API node. Updates the saved config and\n"
-"                             the running API nodes, through the data nodes.\n\n"
+"                             the running API nodes, through the data nodes.\n"
+"  RdmaLogLevel               RDMA transporter log output ([rdma] sections):\n"
+"                             0 = errors, 1 = warnings, 2 = info (default),\n"
+"                             3 = debug. Updates the saved config of all RDMA\n"
+"                             connections (of node <id>) and the running data\n"
+"                             nodes.\n\n"
 "Examples:\n"
 "  ALL SET MaxDiskWriteSpeed 100M    Set on all data nodes to 100 MB/s\n"
 "  1 SET MaxDiskWriteSpeed 50M       Set on node 1 to 50 MB/s\n"
@@ -613,7 +629,7 @@ static const char* helpTextDeactivate =
 "---------------------------------------------------------------------------\n"
 " RonDB -- Management Client -- Help for DEACTIVATE command\n"
 "---------------------------------------------------------------------------\n"
-"DEACTIVATE Dectivate a previously deactive node\n\n"
+"DEACTIVATE Deactivate an active node\n\n"
 "<id> DEACTIVATE        Deactivate the node identified by <id>.\n\n"
 "We can deactivate a node currently active. A node can be used temporarily  \n"
 "during a change of the cluster to ensure that we have proper replication   \n"
@@ -645,7 +661,7 @@ static const char* helpTextRestart =
 " RonDB -- Management Client -- Help for RESTART command\n"
 "---------------------------------------------------------------------------\n"
 "RESTART  Restart data or management server node\n\n"
-"<id> RESTART [-n] [-i] [-a] [-f]\n"
+"<id> RESTART [-n] [-i] [-a] [-f] [-x]\n"
 "                   Restart the data or management node <id>(or All data nodes).\n\n"
 "                   -n (--nostart) restarts the node but does not\n"
 "                   make it join the cluster. Use '<id> START' to\n"
@@ -658,7 +674,9 @@ static const char* helpTextRestart =
 "                   INCORRECT USE OF -i WILL CAUSE DATA LOSS!\n\n"
 "                   -a Aborts the node, not syncing GCP.\n\n"
 "                   -f Force restart even if that would mean the\n"
-"                      whole cluster would need to be restarted\n"
+"                      whole cluster would need to be restarted\n\n"
+"                   -x Wait up to 1 hour instead of 5 minutes for\n"
+"                      the management server to reply\n"
 ;
 
 static const char* helpTextStop =
@@ -666,14 +684,16 @@ static const char* helpTextStop =
 " RonDB -- Management Client -- Help for STOP command\n"
 "---------------------------------------------------------------------------\n"
 "STOP  Stop data or management server node\n\n"
-"<id> STOP [-a] [-f]\n"
+"<id> STOP [-a] [-f] [-x]\n"
 "                   Stop the data or management server node <id>.\n\n"
 "                   ALL STOP will just stop all data nodes.\n\n"
 "                   If you desire to also shut down management servers,\n"
 "                   use SHUTDOWN instead.\n\n"
 "                   -a Aborts the node, not syncing GCP.\n\n"
 "                   -f Force stop even if that would mean the\n"
-"                      whole cluster would need to be stopped\n"
+"                      whole cluster would need to be stopped\n\n"
+"                   -x Wait up to 1 hour instead of 5 minutes for\n"
+"                      the management server to reply\n"
 ;
 
 static const char* helpTextEnterSingleUserMode =
@@ -714,25 +734,10 @@ static const char* helpTextStatus =
 "                   e.g.\n"
 "                      ALL STATUS\n"
 "                      1 STATUS\n\n"
-"                   When a node is starting, the start phase will be\n"
-"                   listed.\n\n"
-"                   Start Phase   Meaning\n"
-"                   1             Clear the cluster file system(ndb_<id>_fs). \n"
-"                                 This stage occurs only when the --initial option \n"
-"                                 has been specified.\n"
-"                   2             This stage sets up Cluster connections, establishes \n"
-"                                 inter-node communications and starts Cluster heartbeats.\n"
-"                   3             The arbitrator node is elected.\n"
-"                   4             Initializes a number of internal cluster variables.\n"
-"                   5             For an initial start or initial node restart,\n"
-"                                 the redo log files are created.\n"
-"                   6             If this is an initial start, create internal system tables.\n"
-"                   7             Update internal variables. \n"
-"                   8             In a system restart, rebuild all indexes.\n"
-"                   9             Update internal variables. \n"
-"                   10            The node can be connected by APIs and can receive events.\n"
-"                   11            At this point,event delivery is handed over to\n"
-"                                 the node joining the cluster.\n"
+"                   When a node is starting, the last completed start\n"
+"                   phase will be listed. The start phases are numbered\n"
+"                   from 0 to 9, followed by a few higher phases at the\n"
+"                   end of the start.\n"
 "(see manual for more information)\n"
 ;
 
@@ -746,9 +751,10 @@ static const char* helpTextClusterlog =
 "                   or equal to <level> in the cluster log.\n\n"
 "                   <category> can be any one of the following values:\n"
 "                   STARTUP, SHUTDOWN, STATISTICS, CHECKPOINT, NODERESTART,\n"
-"                   CONNECTION, ERROR, INFO, CONGESTION, DEBUG, or BACKUP. \n\n"
+"                   CONNECTION, ERROR, INFO, CONGESTION, DEBUG, BACKUP,\n"
+"                   or SCHEMA.\n\n"
 "                   <level> is represented by one of the numbers \n"
-"                   from 1 to 15 inclusive, where 1 indicates 'most important' \n"
+"                   from 0 to 15 inclusive, where 0 indicates 'most important' \n"
 "                   and 15 'least important'.\n\n"
 "                   <severity> can be any one of the following values:\n"
 "                   ALERT, CRITICAL, ERROR, WARNING, INFO, DEBUG.\n"
@@ -830,12 +836,13 @@ static const char* helpDatabaseQuota =
 "DATABASE QUOTA DROP Drop quotas and rate limits on a database in RonDB\n\n"
 "DATABASE QUOTA GET Retrieve quota information for specific database\n\n"
 "DATABASE QUOTA LIST Retrieve quota information for all databases\n\n"
-"DATABASE QUOTA BACKUP Backup quota information for all databases\n\n"
+"DATABASE QUOTA BACKUP Backup quota information for all databases to a file\n\n"
+"DATABASE QUOTA RESTORE Restore quota information from a backup file\n\n"
 "  The following properties can be set (altered):\n"
 "    --in-memory-size = VALUE\n"
-"      The maximum size of a database for the in-memory columns\n\n"
+"      The maximum size of a database for the in-memory columns, in MBytes\n\n"
 "    --on-disk-size = VALUE\n"
-"      The maximum size of a database for the on-disk columns\n\n"
+"      The maximum size of a database for the on-disk columns, in GBytes\n\n"
 "    --rate-per-sec = VALUE\n"
 "      The maximum rate per second a database is allowed to perform\n\n"
 "    --max-transaction-size = VALUE\n"
@@ -850,7 +857,7 @@ static const char* helpDatabaseQuota =
 " on-disk-size is based on the number of extents allocated to table fragments.\n"
 " To free resources for on disk columns it is required to drop the table using\n"
 " the extents.\n\n"
-" The default of on-disk-size is 10 times the in-memory-size\n\n"
+" The default of on-disk-size is 0, which means no limit on disk usage\n\n"
 " rate-per-sec is based on a fixed cost per read/write lookup and scans\n"
 " with additional cost per kByte of data transferred to/from RonDB. Using\n"
 " on-disk columns in a lookup will increase the cost of the lookups. Scans\n"
@@ -882,8 +889,9 @@ static const char* helpUser =
 "USER ALTER Alter rate limits on a user in RonDB\n\n"
 "USER DROP Drop rate limit on a user in RonDB\n\n"
 "USER GET Retrieve rate information for specific user\n\n"
-"USER LIST Retrieve quota information for all users\n\n"
-"USER BACKUP Backup quota information for all users\n\n"
+"USER LIST Retrieve rate information for all users\n\n"
+"USER BACKUP Backup rate information for all users to a file\n\n"
+"USER RESTORE Restore rate information from a backup file\n\n"
 "  The following properties can be set (altered):\n"
 "    --rate-per-sec = VALUE\n"
 "      The maximum rate per second a user is allowed to perform\n\n"
@@ -2614,7 +2622,7 @@ int CommandInterpreter::executeStop(Vector<BaseString> &command_list,
     {
       int nodeId = node_ids[i];
       ConfigValues::Iterator iter(conf->m_config_values);
-      bool ret = get_node_section(iter, nodeId, 0);
+      bool ret = get_node_section(iter, nodeId, ANY_NODE_TYPE);
       if (!ret)
       {
         printError();
@@ -2720,7 +2728,7 @@ CommandInterpreter::get_node_section(ConfigValues::Iterator & iter,
     ndbout_c("Node %d not found in configuration", node_id);
     return false;
   }
-  if (type == 0)
+  if (type == ANY_NODE_TYPE)
   {
     return true;
   }
@@ -2960,11 +2968,10 @@ CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
     /*
      * Update MaxDiskWriteSpeed for a specific data node.
      */
-    bool ret = get_node_section(iter, processId, 0);
-    if (!ret)
+    if (!get_node_section(iter, processId, NODE_TYPE_DB))
     {
-      printError();
-      ndbout_c("Failed to get configuration of node %d", processId);
+      ndbout_c("MaxDiskWriteSpeed is a data node parameter: node %d is "
+               "not a data node", processId);
       ndb_mgm_destroy_configuration(conf);
       return -1;
     }
@@ -3004,8 +3011,13 @@ CommandInterpreter::executeSetMaxDiskWriteSpeed(int processId,
                                       new_value);
   if (ret_code < 0)
   {
-    ndbout_c("Warning: Configuration saved but failed to update running "
-             "nodes. Restart nodes for the change to take effect.");
+    if (all)
+      ndbout_c("Warning: Configuration saved but failed to update running "
+               "nodes. Restart nodes for the change to take effect.");
+    else
+      ndbout_c("Warning: Configuration saved but node %d was not updated: "
+               "it is not running, or it failed to apply the value. It "
+               "takes the value at its next start.", processId);
     printError();
     return -1;
   }
@@ -3055,20 +3067,10 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
   }
 
   /*
-   * EnableProactiveDeadlockDetection is a data-node-only parameter, so when a
-   * specific node is given it must be a valid data node id.
-   */
-  if (!all && (processId == 0 || processId > ABS_MAX_NDB_NODES))
-  {
-    ndbout_c("Node %d is not a valid data node id (1..%d)", processId,
-             ABS_MAX_NDB_NODES);
-    return -1;
-  }
-
-  /*
    * Step 1: Update the permanent configuration on the management server so the
-   * value survives node (re)starts.  Only data node sections are searched
-   * (data node ids are within ABS_MAX_NDB_NODES).
+   * value survives node (re)starts.  EnableProactiveDeadlockDetection is a
+   * data-node-only parameter, so only data node sections are updated, and a
+   * specific node must be a data node.
    */
   ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
                                                           NDB_VERSION);
@@ -3084,7 +3086,7 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
 
   if (all)
   {
-    for (int i = 0; i < ABS_MAX_NDB_NODES; i++)
+    for (int i = 0; i < ABS_MAX_NODES; i++)
     {
       if (!iter.openSection(CFG_SECTION_NODE, i))
         continue;
@@ -3102,11 +3104,10 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
   }
   else
   {
-    bool ret = get_node_section(iter, processId, 0);
-    if (!ret)
+    if (!get_node_section(iter, processId, NODE_TYPE_DB))
     {
-      printError();
-      ndbout_c("Failed to get configuration of node %d", processId);
+      ndbout_c("EnableProactiveDeadlockDetection is a data node parameter: "
+               "node %d is not a data node", processId);
       ndb_mgm_destroy_configuration(conf);
       return -1;
     }
@@ -3175,9 +3176,14 @@ CommandInterpreter::executeSetEnableProactiveDeadlockDetection(
 
   if (dump_failures != 0)
   {
-    ndbout_c("Warning: configuration saved, but failed to toggle %d running "
-             "node(s). Restart them for the change to take effect.",
-             dump_failures);
+    if (all)
+      ndbout_c("Warning: configuration saved, but failed to toggle %d running "
+               "node(s). Restart them for the change to take effect.",
+               dump_failures);
+    else
+      ndbout_c("Warning: Configuration saved but node %d was not updated: "
+               "it is not running, or it failed to apply the value. It "
+               "takes the value at its next start.", processId);
     return -1;
   }
 
@@ -3232,20 +3238,10 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
   const char *const mode_name = mode_names[new_value];
 
   /*
-   * CompiledInterpreter is a data-node-only parameter, so when a specific
-   * node is given it must be a valid data node id.
-   */
-  if (!all && (processId == 0 || processId > ABS_MAX_NDB_NODES))
-  {
-    ndbout_c("Node %d is not a valid data node id (1..%d)", processId,
-             ABS_MAX_NDB_NODES);
-    return -1;
-  }
-
-  /*
    * Step 1: Update the permanent configuration on the management server so the
-   * value survives node (re)starts.  Only data node sections are searched
-   * (data node ids are within ABS_MAX_NDB_NODES).
+   * value survives node (re)starts.  CompiledInterpreter is a data-node-only
+   * parameter, so only data node sections are updated, and a specific node
+   * must be a data node.
    */
   ndb_mgm_configuration *conf = ndb_mgm_get_configuration(m_mgmsrv,
                                                           NDB_VERSION);
@@ -3261,7 +3257,7 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
 
   if (all)
   {
-    for (int i = 0; i < ABS_MAX_NDB_NODES; i++)
+    for (int i = 0; i < ABS_MAX_NODES; i++)
     {
       if (!iter.openSection(CFG_SECTION_NODE, i))
         continue;
@@ -3279,11 +3275,10 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
   }
   else
   {
-    bool ret = get_node_section(iter, processId, 0);
-    if (!ret)
+    if (!get_node_section(iter, processId, NODE_TYPE_DB))
     {
-      printError();
-      ndbout_c("Failed to get configuration of node %d", processId);
+      ndbout_c("CompiledInterpreter is a data node parameter: node %d is "
+               "not a data node", processId);
       ndb_mgm_destroy_configuration(conf);
       return -1;
     }
@@ -3323,8 +3318,13 @@ CommandInterpreter::executeSetCompiledInterpreter(int processId,
                                       new_value);
   if (ret_code < 0)
   {
-    ndbout_c("Warning: Configuration saved but failed to update running "
-             "nodes. Restart nodes for the change to take effect.");
+    if (all)
+      ndbout_c("Warning: Configuration saved but failed to update running "
+               "nodes. Restart nodes for the change to take effect.");
+    else
+      ndbout_c("Warning: Configuration saved but node %d was not updated: "
+               "it is not running, or it failed to apply the value. It "
+               "takes the value at its next start.", processId);
     if (new_value != NDB_COMPILED_INTERPRETER_OFF)
     {
       ndbout_c("Note: CompiledInterpreter=%s is only accepted by x86_64 "
@@ -3655,7 +3655,7 @@ CommandInterpreter::executeSetDomain(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -3663,6 +3663,8 @@ CommandInterpreter::executeSetDomain(int processId,
     ndb_mgm_destroy_configuration(conf);
     return -1;
   }
+  /* The range of LocationDomainId in ConfigInfo.cpp */
+  const Int64 max_location_domain_id = 16;
   const char *new_location_domain_id_str = command_list[0].c_str();
   Uint32 str_len = strlen(new_location_domain_id_str);
   const char *memory_end = new_location_domain_id_str + str_len;
@@ -3673,9 +3675,10 @@ CommandInterpreter::executeSetDomain(int processId,
                errno == EINVAL ||
                end_ptr != memory_end ||
                val < 0 ||
-               val > MAX_INT)) {
+               val > max_location_domain_id)) {
     iter.closeSection();
-    ndbout_c("Location domain id must be an unsigned no larger than MAX_INT");
+    ndbout_c("Location domain id must be an integer between 0 and %d",
+             int(max_location_domain_id));
     ndb_mgm_destroy_configuration(conf);
     return -1;
   }
@@ -3757,7 +3760,7 @@ CommandInterpreter::executeHostname(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -3867,7 +3870,7 @@ CommandInterpreter::executeActivate(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -4050,7 +4053,7 @@ CommandInterpreter::executeDeactivate(int processId,
   }
 
   ConfigValues::Iterator iter(conf->m_config_values);
-  bool ret = get_node_section(iter, processId, 0);
+  bool ret = get_node_section(iter, processId, ANY_NODE_TYPE);
   if (!ret)
   {
     printError();
@@ -4286,8 +4289,8 @@ int CommandInterpreter::executeRestart(Vector<BaseString> &command_list,
       extended_timeout = 1;
       continue;
     }
-    ndbout_c("Invalid option: %s. Expecting -A,-N,-I or -F after RESTART",
-             item);
+    ndbout_c("Invalid option: %s. Expecting -A, -N, -I, -F or -X after "
+             "RESTART", item);
     return -1;
   }
 
@@ -4890,7 +4893,8 @@ int CommandInterpreter::executeEventReporting(int processId,
     }
 
     int level;
-    if (!convert(spec[1].c_str(), level)) {
+    if (!convert(spec[1].c_str(), level) || level < 0 ||
+        level > NDB_MGM_MAX_LOGLEVEL) {
       ndbout << "Invalid level: " << spec[1].c_str() << endl;
       continue;
     }
@@ -5583,7 +5587,7 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
   if (remaining_commands == 0) {
     ndbout << "USER "
            << type_str
-           << " should have a database name as parameter at a minimum"
+           << " should have a user name as parameter at a minimum"
            << endl;
     return -1;
   }
@@ -5604,7 +5608,7 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
   for (Uint32 i = 0; user_name[i] != 0; i++) {
     if (user_name[i] == '/') {
       ndbout << "USER " << type_str << " " << user_name
-             << " have a / in the database name, not allowed"
+             << " have a / in the user name, not allowed"
              << endl;
       return -1;
     }
@@ -5666,9 +5670,9 @@ int CommandInterpreter::executeUser(char* parameters, int type) {
       if (val != 0) found_change = true;
     } else {
       ndbout << "Wrong key: " << key << ", choose one of:" << endl
-             << "rate-per-sec, in-memory-size, on-disk-size" << endl
-             << "max-transaction-size, max-parallel-transactions" << endl
-             << "max-parallel-complex-queries" << endl;
+             << "rate-per-sec, max-transaction-size" << endl
+             << "max-parallel-transactions, max-parallel-complex-queries"
+             << endl;
       return -1;
     }
     any_parameter_set = true;
@@ -5754,6 +5758,10 @@ int CommandInterpreter::executeDatabaseQuotaGet(char* parameters) {
   split_args_with_equal(id, command_list);
 
   Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
+    ndbout << "Expected a database name as parameter" << endl;
+    return -1;
+  }
   if (command_list_size > 2) {
     ndbout << "Expected a database name as parameter, nothing more" << endl;
     return -1;
@@ -5786,6 +5794,11 @@ int CommandInterpreter::executeDatabaseQuotaRestore(char* parameters) {
   split_args_with_equal(id, command_list);
 
   Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
+    ndbout << "Expected DATABASE QUOTA RESTORE file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
   if (command_list_size > 2) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;
@@ -5845,6 +5858,11 @@ int CommandInterpreter::executeDatabaseQuotaBackup(char* parameters) {
   split_args_with_equal(id, command_list);
 
   Uint32 command_list_size = command_list.size();
+  if (command_list_size < 2) {
+    ndbout << "Expected DATABASE QUOTA BACKUP file_name";
+    ndbout << " in this command" << endl;
+    return -1;
+  }
   if (command_list_size > 2) {
     ndbout << "Expected only a file parameter in this command" << endl;
     return -1;

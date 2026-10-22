@@ -83,7 +83,8 @@ public class QueryImpl<E> implements Query<E> {
      * remaining 10 results are ignored.
      * <p>
      * Skip must be greater than or equal to 0. Limit must be greater than or equal to 0.
-     * Limits may not be used with deletePersistentAll.
+     * deletePersistentAll skips the first skip rows found and deletes at most
+     * limit rows.
      * <p>
      * The limits as specified by the user are converted here into an internal form
      * where the limit is the last record to deliver instead of the number of records
@@ -99,7 +100,7 @@ public class QueryImpl<E> implements Query<E> {
         }
         this.skip = skip;
         if (Long.MAX_VALUE - skip < limit) {
-            limit = Long.MAX_VALUE;
+            this.limit = Long.MAX_VALUE;
         } else {
             this.limit = limit + skip;
         }

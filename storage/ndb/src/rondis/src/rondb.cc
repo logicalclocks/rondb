@@ -585,14 +585,9 @@ void unsupported_command(const pink::RedisCmdArgsType &argv,
 
 void unavailable_cluster(const pink::RedisCmdArgsType &argv,
                          std::string *response) {
-  printf("Cluster unavailble: ");
+  printf("Cluster unavailable: ");
   print_args(argv);
-  char error_message[256];
-  snprintf(error_message,
-           sizeof(error_message),
-           REDIS_UNKNOWN_COMMAND,
-           argv[0].c_str());
-  assign_generic_err_to_response(response, error_message);
+  assign_generic_err_to_response(response, FAILED_CLUSTER_UNAVAILABLE);
 }
 
 void wrong_number_of_arguments(const pink::RedisCmdArgsType &argv,
@@ -1025,7 +1020,7 @@ int rondb_redis_handler(const pink::RedisCmdArgsType &argv,
     // Lazily initialize records if not done at startup
     if (ensure_records_initialized(ndb, database_id) != 0) {
       assign_generic_err_to_response(response,
-        "ERR Failed to initialize Rondis tables");
+        "Failed to initialize Rondis tables");
       return 0;
     }
     DEB_NDB_CMD(("cmd: %s, params: %lu\n", command, argv.size()));

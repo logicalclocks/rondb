@@ -27,7 +27,6 @@ package data
 
 import (
 	"context"
-	"crypto/tls"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -39,6 +38,7 @@ import (
 	"github.com/go-sql-driver/mysql"
 
 	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/fsq/ddl"
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 )
 
 // Target is a MySQL server the loader connects to.
@@ -73,7 +73,7 @@ var tlsRegistered sync.Once
 func dsn(t Target, db string) string {
 	if t.TLS {
 		tlsRegistered.Do(func() {
-			_ = mysql.RegisterTLSConfig("fsq", &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true})
+			_ = mysql.RegisterTLSConfig("fsq", tlsconf.Client())
 		})
 	}
 	params := url.Values{}

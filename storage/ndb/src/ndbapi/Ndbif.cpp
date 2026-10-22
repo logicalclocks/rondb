@@ -54,6 +54,13 @@
 #endif
 #include <EventLogger.hpp>
 
+/**
+ * The largest maxNoOfTransactions that Ndb::init() uses.
+ * poll_trans() copies the completed transactions into an array of this
+ * size, so more transactions per Ndb object would overflow it.
+ */
+static constexpr int MAX_NDB_TRANSACTIONS = 1024;
+
 /******************************************************************************
  * int init( int aNrOfCon, int aNrOfOp );
  *
@@ -155,6 +162,10 @@ int Ndb::init(int aMaxNoOfTransactions) {
   }
 
   tMaxNoOfTransactions = aMaxNoOfTransactions;
+  if (tMaxNoOfTransactions > MAX_NDB_TRANSACTIONS) {
+    // Larger values are reduced to the maximum, as NdbPool does
+    tMaxNoOfTransactions = MAX_NDB_TRANSACTIONS;
+  }
   theMaxNoOfTransactions = tMaxNoOfTransactions;
   theRemainingStartTransactions = tMaxNoOfTransactions;
   thePreparedTransactionsArray = new NdbTransaction *[tMaxNoOfTransactions];
@@ -1944,7 +1955,7 @@ int Ndb::sendPollNdb(int aMillisecondNumber, int minNoOfEventsToWakeup,
 
 int Ndb::poll_trans(int aMillisecondNumber, int minNoOfEventsToWakeup,
                     PollGuard *pg) {
-  NdbTransaction *tConArray[1024];
+  NdbTransaction *tConArray[MAX_NDB_TRANSACTIONS];
   Uint32 tNoCompletedTransactions;
   if ((minNoOfEventsToWakeup <= 0) ||
       ((Uint32)minNoOfEventsToWakeup > theNoOfSentTransactions)) {

@@ -28,12 +28,13 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/logicalclocks/rondb/tools/rondb-cli/internal/tlsconf"
 )
 
 // APIVersion is the REST API version (0.2.0 returns JSON error responses)
@@ -51,7 +52,7 @@ type RestClient struct {
 type RestOptions struct {
 	Host    string
 	Port    int
-	TLS     bool
+	TLS     bool // Use HTTPS (server certificate verified only with --tls-ca)
 	APIKey  string
 	Timeout time.Duration // Per-request timeout (default 30s if zero)
 }
@@ -75,10 +76,7 @@ func NewRestClientWithOptions(opts RestOptions) (*RestClient, error) {
 
 	transport := &http.Transport{}
 	if opts.TLS {
-		transport.TLSClientConfig = &tls.Config{
-			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true,
-		}
+		transport.TLSClientConfig = tlsconf.Client()
 	}
 
 	timeout := opts.Timeout

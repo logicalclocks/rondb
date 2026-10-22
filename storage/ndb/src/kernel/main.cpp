@@ -61,7 +61,6 @@ static int opt_initial;
 static int opt_no_start;
 static unsigned opt_allocated_nodeid;
 static int opt_angel_pid;
-static int opt_retries;
 static int opt_delay;
 static unsigned long opt_logbuffer_size;
 
@@ -74,6 +73,12 @@ bool g_is_forked = false;
 extern NdbNodeBitmask g_nowait_nodes;
 extern NodeBitmask g_not_active_nodes;
 
+/* opt with the short option id */
+static my_option with_short_option(my_option opt, int id) {
+  opt.id = id;
+  return opt;
+}
+
 static struct my_option my_long_options[] = {
     NdbStdOpt::usage,
     NdbStdOpt::help,
@@ -83,7 +88,8 @@ static struct my_option my_long_options[] = {
     NdbStdOpt::connectstring,
     NdbStdOpt::ndb_nodeid,
     NdbStdOpt::connect_retry_delay,  // used
-    NdbStdOpt::connect_retries,      // used
+    // used, -r is kept from the deprecated ndbd option of the same name
+    with_short_option(NdbStdOpt::connect_retries, 'r'),
     NdbStdOpt::tls_search_path,
     NdbStdOpt::mgm_tls,
     NdbStdOpt::log_timestamps,
@@ -142,12 +148,9 @@ static struct my_option my_long_options[] = {
     {"angel-pid", NDB_OPT_NOSHORT, "INTERNAL: angel process id", &opt_angel_pid,
      nullptr, nullptr, GET_UINT, REQUIRED_ARG, 0, 0, UINT_MAX, nullptr, 0,
      nullptr},
-    { "connect-retries", 'r',
-     "Number of times mgmd is contacted at start. -1: eternal retries",
-     (uchar**) &opt_retries, (uchar**) &opt_retries, 0,
-     GET_INT, REQUIRED_ARG, 0, -1, 65535, 0, 0, 0 },
     { "connect-delay", NDB_OPT_NOSHORT,
-     "Number of seconds between each connection attempt",
+     "Number of seconds between each connection attempt. "
+     "Deprecated, use --connect-retry-delay",
      (uchar**) &opt_delay, (uchar**) &opt_delay, 0,
      GET_INT, REQUIRED_ARG, 0, 0, 3600, 0, 0, 0 },
     {"logbuffer-size", NDB_OPT_NOSHORT,
@@ -277,26 +280,24 @@ int real_main(int argc, char **argv) {
     setOwnProcessInfoAngelPid(opt_angel_pid);
   }
 
+  /**
+   * The command option connect-delay has been deprecated. However to
+   * ensure that scripts that still use it continue to function it
+   * defaults to 0, and if someone sets it to a non-zero value, we use
+   * that value instead of --connect-retry-delay. The deprecated -r is
+   * the short form of --connect-retries. This is done before the angel
+   * starts, so that the angel uses the same values as the data node.
+   */
+  if (opt_delay != 0)
+  {
+    opt_connect_retry_delay = opt_delay;
+  }
+
   if (opt_foreground || opt_allocated_nodeid || opt_report_fd) {
     /**
       This is where we start running the real data node process after
       reading options. This function will never return.
     */
-    /**
-     * The command options connect-retries and connect-delay have been
-     * deprecated. However to ensure that scripts that still use it continue
-     * to function we have made those default to 0, if someone sets them to
-     * a non-zero value, we will use that value instead of the normal
-     * command parameters for setting those variables.
-     */
-    if (opt_retries != 0)
-    {
-      opt_connect_retries = opt_retries;
-    }
-    if (opt_delay != 0)
-    {
-      opt_connect_retry_delay = opt_delay;
-    }
     ndbd_run(opt_foreground, opt_report_fd, opt_ndb_connectstring,
              opt_ndb_nodeid, opt_bind_address, opt_no_start, opt_initial,
              opt_initialstart, opt_allocated_nodeid, opt_connect_retries,

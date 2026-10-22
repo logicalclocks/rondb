@@ -184,7 +184,7 @@ The RonDB CLI follows a ``3-minute win'' philosophy:
     \item Interactive TUI database browser
     \item Comprehensive benchmarking suite with latency statistics
     \item Multi-line command support
-    \item TLS encryption support
+    \item TLS encryption support for MySQL and the REST API
     \item Environment variable and command-line configuration
     \item Color-coded output with timing information
 \end{itemize}
@@ -230,8 +230,11 @@ go build -o rondb .
 # Connect with MySQL authentication
 ./rondb --host myrondb.example.com --mysql-user admin -p
 
-# Connect with TLS enabled
-./rondb --host myrondb.example.com --tls
+# Connect with TLS enabled (MySQL and REST API; Rondis has no TLS listener)
+./rondb --host myrondb.example.com --tls --no-rondis
+
+# Connect with TLS and verify the server certificates against a CA
+./rondb --host myrondb.example.com --tls --tls-ca ca.pem --no-rondis
 \end{lstlisting}
 
 %=============================================================================
@@ -250,13 +253,15 @@ Flag & Default & Description \\
 --mysql-host & (inherits) & MySQL host (overrides --host) \\
 --rdrs-host & (inherits) & REST API host (overrides --host) \\
 --rondis-port & 6379 & Rondis service port \\
+--rondis-db & 0 & Rondis database \\
 --mysql-port & 3306 & MySQL service port \\
 --rdrs-port & 4406 & REST API service port \\
 --mysql-user & root & MySQL username \\
 --mysql-password & (empty) & MySQL password \\
 -p, --password & false & Prompt for MySQL password \\
---tls & false & Enable TLS for all connections \\
+--tls & false & Enable TLS for MySQL and REST API (not Rondis) \\
 --rdrs-tls & false & Enable TLS for REST API only \\
+--tls-ca & (none) & CA file to verify server certificates \\
 --rdrs-api-key & (empty) & API key for REST API authentication \\
 --verbose & 0 & Verbose level \\
 --no-mysql & false & Disable MySQL connection \\
@@ -569,6 +574,8 @@ RonSQL behavior can be configured using internal commands:
 \section{Rondis (Redis Protocol)}
 
 Rondis provides Redis-compatible commands for key-value operations. Commands are automatically detected by keyword matching.
+
+\texttt{SELECT} is detected as SQL and routed to MySQL, so the Redis \texttt{SELECT} command cannot choose a Rondis database from the shell. Start the CLI with \texttt{-{}-rondis-db N} to use Rondis database \texttt{N}.
 
 \subsection{Supported Commands}
 
@@ -1115,16 +1122,25 @@ query := fmt.Sprintf("SHOW TABLES FROM `%s`",
 
 \section{TLS Configuration}
 
-TLS can be enabled for secure connections:
+\texttt{-{}-tls} enables TLS for MySQL and the REST API, \texttt{-{}-rdrs-tls} for the REST API only. Rondis has no TLS listener. \texttt{-{}-tls} is passed on to the Rondis connection as well, so that connection fails and the shell runs without Rondis; use \texttt{-{}-tls} together with \texttt{-{}-no-rondis}, or \texttt{-{}-rdrs-tls} to keep Rondis.
+
+TLS can be enabled for secure connections. All connections share one TLS configuration (\texttt{internal/tlsconf}):
 
 \begin{lstlisting}[language=Go]
+// Without --tls-ca
 tlsConfig := &tls.Config{
     MinVersion:         tls.VersionTLS12,
     InsecureSkipVerify: true,  // For self-signed certs
 }
+
+// With --tls-ca FILE
+tlsConfig := &tls.Config{
+    MinVersion: tls.VersionTLS12,
+    RootCAs:    rootCAs,  // The CA certificates in FILE
+}
 \end{lstlisting}
 
-\textbf{Note:} \texttt{InsecureSkipVerify} is enabled by default for development environments. Production deployments should use proper certificate validation.
+\textbf{Note:} Server certificates are not verified unless \texttt{-{}-tls-ca} is given, so by default TLS only encrypts the traffic. With \texttt{-{}-tls-ca FILE}, the server certificate must be signed by a CA in the PEM file \texttt{FILE} and match the host name that the CLI connects to. \texttt{-{}-tls-ca} needs \texttt{-{}-tls} or \texttt{-{}-rdrs-tls}.
 
 \section{API Key Authentication}
 
@@ -1351,7 +1367,7 @@ Initial release featuring:
     \item Interactive TUI database browser
     \item Comprehensive benchmarking suite
     \item DSL parser for REST API operations
-    \item TLS support for all connections
+    \item TLS support for MySQL and the REST API
     \item API key authentication for REST API
     \item Error collection for benchmarks
     \item Multi-line command support
