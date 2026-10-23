@@ -1,0 +1,28 @@
+!include ../my.cnf
+
+# Four data nodes in two node groups, {1,2} and {3,4}, for the tests of a
+# data node that fails while the president includes it, see
+# ndb_sr_join_crash.
+#
+# A data node whose inclusion the president aborts exits, after the
+# second abort in a system restart and after the first in a node restart.
+# With StopOnError=0 its angel starts it again. A short
+# StartPartialTimeout lets a system restart start without a data node
+# that the test starts later.
+
+[cluster_config.1]
+ndbd=,,,
+StopOnError=0
+StartPartialTimeout=5000
+
+[cluster_config.ndbd.1.1]
+NodeId=1
+
+[cluster_config.ndbd.2.1]
+NodeId=2
+
+[cluster_config.ndbd.3.1]
+NodeId=3
+
+[cluster_config.ndbd.4.1]
+NodeId=4

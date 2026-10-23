@@ -1,0 +1,30 @@
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+# Restart data nodes 2 and 4 into not started state
+# Node 4 does not send CM_NODEINFOREQ
+# Start node 2, it joins and is held in start phase 2
+Node 2 has joined the cluster and is held
+# Start node 4, its inclusion is aborted and it exits
+The president aborted the inclusion: yes
+Node 4 exited at the first abort: yes
+Node 2 went on starting, nodes 1 and 3 went on running: yes
+# Node 2 completes its node restart, node 4 joins without the error insert
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+10	55
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	101
+2	102
+3	103
+4	104
+5	105
+6	6
+7	7
+8	8
+9	9
+10	10
+11	11
+DROP TABLE t1;

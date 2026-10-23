@@ -1292,6 +1292,35 @@ ndbd_support_8k_api_nodes(Uint32 x) {
 }
 
 /*
+ * The QMGR president can abort the inclusion of a starting data node
+ * with CM_ADD(Abort) when the node has not been able to connect to all
+ * cluster nodes within 10 seconds. A node without this support ignores
+ * the abort and keeps the starting node half included, so the president
+ * aborts only when the starting node and every cluster node support it.
+ * A member leaves the fate of a starting node that disconnects to a
+ * president with this support, see Qmgr::lost_starting_node.
+ *
+ * Branch-aware: present in 26.02 from 26.02.13 and in 26.10 from
+ * 26.10.0. A release line in between returns false until it carries the
+ * fix, add its floor here when it does.
+ */
+#define NDBD_SUPPORT_CM_ADD_ABORT_2602 NDB_MAKE_VERSION(26,2,13)
+#define NDBD_SUPPORT_CM_ADD_ABORT_2610 NDB_MAKE_VERSION(26,10,0)
+static inline
+bool
+ndbd_support_cm_add_abort(Uint32 x) {
+  const Uint32 major = (x >> 16) & 0xFF;
+  const Uint32 minor = (x >>  8) & 0xFF;
+  if (major > 26) {
+    return true;
+  }
+  if (major == 26 && minor == 2) {
+    return x >= NDBD_SUPPORT_CM_ADD_ABORT_2602;
+  }
+  return x >= NDBD_SUPPORT_CM_ADD_ABORT_2610;
+}
+
+/*
  * QMGR honors the ArbitrationRankWait config parameter, preferring
  * rank-1 arbitrators (typically ndb_mgmd) over rank-2 fallbacks for
  * up to ArbitrationRankWait milliseconds, and demoting a rank-2

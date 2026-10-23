@@ -576,11 +576,17 @@ private:
     Reservation m_reservations[ABS_MAX_NODES];
 
    public:
+    // Timeout of a reservation that only clear() ends
+    static constexpr unsigned NoTimeout = ~0U;
+
     NodeIdReservations();
     void check_array(NodeId n) const;
     bool get(NodeId n) const;
     void set(NodeId n, unsigned timeout);
+    void restart(NodeId n, unsigned timeout);
     void clear(NodeId n);
+    // True while a request checks the nodeid in the data nodes
+    bool is_checking(NodeId n) const;
     BaseString pretty_str() const;
     bool has_timedout(NodeId n, NDB_TICKS now) const;
   } m_reserved_nodes;
@@ -613,6 +619,7 @@ private:
   void backup_quotas(Uint32 nextDatabaseId, bool is_user, NdbOut& out);
 
   void release_local_nodeid_reservation(NodeId nodeid);
+  void release_failed_nodeid_reservation(NodeId nodeid);
   struct PossibleNode {
     unsigned id;
     BaseString host;

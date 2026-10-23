@@ -38,6 +38,16 @@ void Qmgr::initData() {
   c_nsl_last_regref_node = 0;
   c_nsl_last_regref_code = 0;
   c_nsl_join_tick_armed = false;
+  c_start.m_startKey = 0;
+  c_start.m_startNode = 0;
+  c_aborted_inclusions.clear();
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++) {
+    c_aborted_inclusion_dynamic_id[i] = 0;
+  }
+  c_inclusion_aborted_by = 0;
+  c_known_president = ZNIL;
+  c_lost_starting_nodes.clear();
+  c_start.m_committing = false;
   m_current_switch_multi_trp_node = 0;
   m_get_num_multi_trps_sent = 0;
   m_initial_set_up_multi_trp_done = false;

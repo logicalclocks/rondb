@@ -1,0 +1,130 @@
+#
+# System restart with a data node whose inclusion never completes
+#
+# As ndb_sr_unreachable_node, without a firewall: the starting data node
+# does not send CM_NODEINFOREQ (error insert 964), so no cluster node
+# prepares its inclusion. The president aborts the inclusion when it has
+# not completed within 10 seconds, and includes the node once more
+# 6 seconds later. When that is aborted as well, the node exits and its
+# angel starts it again (StopOnError=0). The nodes of the system restart
+# survive its exit since it has not joined.
+#
+# The cluster has four data nodes in two node groups, {1,2} and {3,4},
+# see ndb_sr_join_crash.cnf. Nodes 1, 2 and 3 start the system restart
+# without node 4 and are held in start phase 2 (DUMP 71 2), so they are
+# members that have not started when node 4 starts. Node 4 is started
+# again by its angel without the error insert and joins.
+#
+
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+
+--echo # Restart all data nodes into not started state
+--exec $NDB_MGM -e "ALL RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+
+--echo # Node 4 does not send CM_NODEINFOREQ
+--exec $NDB_MGM -e "4 ERROR 964" >> $NDB_TOOLS_OUTPUT
+
+# Only look at cluster log lines written from here on
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my @logs = glob("$vardir/mysql_cluster.1/ndb_mgmd.1/ndb_*_cluster.log");
+  die "Expected one cluster log, found " . scalar(@logs) . "\n"
+    unless @logs == 1;
+  my $offset_file = "$vardir/tmp/ndb_sr_join_timeout.offset";
+  open(my $fh, '>', $offset_file) or die "Cannot write $offset_file: $!\n";
+  print $fh "$logs[0]\n" . (-s $logs[0]) . "\n";
+  close($fh);
+EOF
+
+--echo # System restart of nodes 1, 2 and 3, held in start phase 2
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "1 DUMP 71 2" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 DUMP 71 2" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 DUMP 71 2" >> $NDB_TOOLS_OUTPUT
+--perl
+  use strict;
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $timeout = 120;
+  my $start = time();
+  my $out;
+  while (1) {
+    $out = `$mgm -e "ALL STATUS" 2>&1`;
+    my $held = grep { $out =~ /^Node $_: starting \(Last completed phase 1\)/m }
+                    (1, 2, 3);
+    last if $held == 3;
+    die "Timeout waiting for nodes 1, 2 and 3 to complete start phase 1:\n" .
+        $out
+      if time() - $start > $timeout;
+    sleep(1);
+  }
+  print "Nodes 1, 2 and 3 have joined the cluster and are held\n";
+EOF
+
+--echo # Start node 4, its inclusion is aborted twice and it exits
+--exec $NDB_MGM -e "4 START" >> $NDB_TOOLS_OUTPUT
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $offset_file = "$vardir/tmp/ndb_sr_join_timeout.offset";
+  open(my $fh, '<', $offset_file) or die "Cannot read $offset_file: $!\n";
+  chomp(my $log = <$fh>);
+  chomp(my $offset = <$fh>);
+  close($fh);
+  unlink($offset_file);
+  my $timeout = 180;
+  my $start = time();
+  my ($aborted, $asked, $exited, $member_shutdown);
+  while (1) {
+    ($aborted, $asked, $exited, $member_shutdown) = (0, 0, 0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      $aborted++
+        if $line =~ /Node 1: Node 4 was not included in the cluster within 10000 ms, its CM_NODEINFOREQ has not reached node\(s\) .* Aborting its inclusion, the cluster start goes on without it, it can join again in 6000 ms/;
+      $asked++
+        if $line =~ /Node 4: President node 1 aborted our inclusion in the cluster, .*We ask to be included once more/;
+      $exited++
+        if $line =~ /Node 4: Forced node shutdown completed.* Caused by error 6054/;
+      $member_shutdown++
+        if $line =~ /Node (\d+): Forced node shutdown/ && $1 != 4;
+    }
+    close($lf);
+    last if $exited;
+    die "Timeout waiting for node 4 to exit\n" if time() - $start > $timeout;
+    sleep(1);
+  }
+  my $out = `$mgm -e "ALL STATUS" 2>&1`;
+  my $held = grep { $out =~ /^Node $_: starting \(Last completed phase 1\)/m }
+                  (1, 2, 3);
+  print "The president aborted the inclusion twice: " .
+        ($aborted >= 2 ? "yes" : "no") . "\n";
+  print "Node 4 asked once more after the first abort: " .
+        ($asked ? "yes" : "no") . "\n";
+  print "Node 4 exited at the second abort: yes\n";
+  print "Nodes 1, 2 and 3 went on starting: " .
+        ($held == 3 && !$member_shutdown ? "yes" : "no") . "\n";
+EOF
+
+--echo # The system restart completes, node 4 joins without the error insert
+--exec $NDB_MGM -e "1 DUMP 71" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 DUMP 71" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 DUMP 71" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --timeout=300 >> $NDB_TOOLS_OUTPUT
+
+--source include/ndb_not_readonly.inc
+SELECT COUNT(*), SUM(b) FROM t1;
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+
+DROP TABLE t1;
+--remove_file $NDB_TOOLS_OUTPUT

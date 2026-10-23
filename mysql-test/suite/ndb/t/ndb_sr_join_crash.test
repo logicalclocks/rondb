@@ -1,0 +1,147 @@
+#
+# System restart in which a data node fails before it has joined
+#
+# A data node that has not started exits when another data node fails or
+# disconnects, so a starting node that failed while the president
+# included it took every node of the system restart with it. Now a node
+# that has not joined the cluster is allowed to fail: the president
+# aborts its inclusion, the members leave the decision to the president,
+# and they go on starting.
+#
+# The cluster has four data nodes in two node groups, {1,2} and {3,4},
+# see ndb_sr_join_crash.cnf. Nodes 1, 2 and 3 start the system restart
+# without node 4 and are held in start phase 2 (DUMP 71 2), so they are
+# members that have not started. Node 4 then starts and crashes when the
+# president accepts it (error insert 963), before it has sent
+# CM_NODEINFOREQ, and comes back not started (DUMP 2602 1). Nodes 1, 2
+# and 3 complete the system restart, node 4 joins in a node restart.
+#
+# See ndb_nr_join_crash for the same in a node restart and
+# ndb_sr_join_timeout for an inclusion that stalls.
+#
+
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+
+--echo # Restart all data nodes into not started state
+--exec $NDB_MGM -e "ALL RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+
+--echo # Node 4 crashes when the president accepts it, and comes back not started
+--exec $NDB_MGM -e "4 DUMP 2602 1" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "4 ERROR 963" >> $NDB_TOOLS_OUTPUT
+
+# Only look at cluster log lines written from here on
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my @logs = glob("$vardir/mysql_cluster.1/ndb_mgmd.1/ndb_*_cluster.log");
+  die "Expected one cluster log, found " . scalar(@logs) . "\n"
+    unless @logs == 1;
+  my $offset_file = "$vardir/tmp/ndb_sr_join_crash.offset";
+  open(my $fh, '>', $offset_file) or die "Cannot write $offset_file: $!\n";
+  print $fh "$logs[0]\n" . (-s $logs[0]) . "\n";
+  close($fh);
+EOF
+
+--echo # System restart of nodes 1, 2 and 3, held in start phase 2
+--exec $NDB_MGM -e "1 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "1 DUMP 71 2" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 DUMP 71 2" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 DUMP 71 2" >> $NDB_TOOLS_OUTPUT
+--perl
+  use strict;
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $timeout = 120;
+  my $start = time();
+  my $out;
+  while (1) {
+    $out = `$mgm -e "ALL STATUS" 2>&1`;
+    my $held = grep { $out =~ /^Node $_: starting \(Last completed phase 1\)/m }
+                    (1, 2, 3);
+    last if $held == 3;
+    die "Timeout waiting for nodes 1, 2 and 3 to complete start phase 1:\n" .
+        $out
+      if time() - $start > $timeout;
+    sleep(1);
+  }
+  print "Nodes 1, 2 and 3 have joined the cluster and are held\n";
+EOF
+
+--echo # Start node 4, it crashes when it is accepted
+--exec $NDB_MGM -e "4 START" >> $NDB_TOOLS_OUTPUT
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $offset_file = "$vardir/tmp/ndb_sr_join_crash.offset";
+  open(my $fh, '<', $offset_file) or die "Cannot read $offset_file: $!\n";
+  chomp(my $log = <$fh>);
+  chomp(my $offset = <$fh>);
+  close($fh);
+  unlink($offset_file);
+  my $timeout = 120;
+  my $start = time();
+  my ($crashed, $aborted, $member_shutdown, $crashed_at);
+  while (1) {
+    ($crashed, $aborted, $member_shutdown) = (0, 0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      # The crash of an error insert is a restart as DUMP 2602 1 asks,
+      # the angel reports it as a node shutdown, not as a forced one
+      $crashed++
+        if $line =~ /Node 4: Node shutdown completed, restarting, no start\./;
+      $aborted++
+        if $line =~ /Node 1: Node 4 disconnected before it was included in the cluster\. Aborting its inclusion/;
+      $member_shutdown++
+        if $line =~ /Node (\d+): (?:Forced node|Node) shutdown completed/ &&
+           $1 != 4;
+    }
+    close($lf);
+    # Go on looking for a few seconds after the crash, the members must
+    # not fail
+    $crashed_at = time() if $crashed && !defined $crashed_at;
+    last if defined $crashed_at && time() - $crashed_at >= 3;
+    die "Timeout waiting for node 4 to crash\n" if time() - $start > $timeout;
+    sleep(1);
+  }
+  my $out = `$mgm -e "ALL STATUS" 2>&1`;
+  my $held = grep { $out =~ /^Node $_: starting \(Last completed phase 1\)/m }
+                  (1, 2, 3);
+  print "Node 4 crashed before it joined: yes\n";
+  print "The president aborted its inclusion: " .
+        ($aborted ? "yes" : "no") . "\n";
+  print "Nodes 1, 2 and 3 went on starting: " .
+        ($held == 3 && !$member_shutdown ? "yes" : "no") . "\n";
+EOF
+
+# Release the nodes at once. Before the angel restarts node 4 it
+# allocates the node id again, and the president answers that only when
+# it is master in DIH, which it is not while the system restart is held.
+# Without an answer in 20 s the management server reserves the node id
+# by itself, which leaves a window for a second allocation of it.
+--echo # Nodes 1, 2 and 3 complete the system restart
+--exec $NDB_MGM -e "1 DUMP 71" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "2 DUMP 71" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "3 DUMP 71" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=4 --timeout=300 >> $NDB_TOOLS_OUTPUT
+
+--echo # Node 4 comes back not started and joins in a node restart
+--exec $NDB_WAITER --nowait-nodes=1,2,3 --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "4 START" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --timeout=300 >> $NDB_TOOLS_OUTPUT
+
+--source include/ndb_not_readonly.inc
+SELECT COUNT(*), SUM(b) FROM t1;
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+
+DROP TABLE t1;
+--remove_file $NDB_TOOLS_OUTPUT
