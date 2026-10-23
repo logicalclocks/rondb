@@ -18,6 +18,7 @@
  */
 
 #include "config_structs.hpp"
+#include "buffer_sizes.hpp"
 #include "json_parser.hpp"
 #include "constants.hpp"
 #include "mysql_com.h"

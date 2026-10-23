@@ -56,11 +56,7 @@ func TestMain(m *testing.M) {
 	}
 	defer cleanup()
 
-	if conf.Internal.GOMAXPROCS == -1 {
-		runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-	} else {
-		runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
-	}
+	runtime.GOMAXPROCS(runtime.NumCPU() * 2)
 
 	retcode = m.Run()
 }

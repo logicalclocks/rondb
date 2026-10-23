@@ -1,0 +1,71 @@
+# RONDB-1144: memory stays bounded under a wide-row batch load.
+#
+# This is the test the whole change exists for. Before RONDB-1144 rdrs2
+# held 12 MiB of pool buffers per in-flight HTTP request and never returned
+# them, so a wide-row batch load killed a 500 MiB pod within seconds. rdrs.3.1 (no
+# auth, plain HTTP; see the companion .cnf) runs with MaxBuffers=256,
+# PreAllocatedBuffers=8 and NumThreads=8. The Go driver
+# (internal/integrationtests/bufferpool, TestMemoryBoundedUnderWideRowBatchLoad)
+# creates a widest-row table, has two workers POST widest-row batches for
+# a minute, samples RssAnon of the process from /proc every 5 seconds and
+# asserts that it does not creep once warm and that it ends below
+# idle + MaxBuffers x (ReqBufferBytes + RespBufferBytes) + 64 MiB. Every
+# size is read from rdrs_limits, so the bound follows the branch's NDB
+# limits. The samples go to var/log/rdrs2-golang_memory_regression.report.txt.
+#
+# Linux only: it reads /proc/<pid>/status.
+
+--source include/have_ndb.inc
+--source include/linux.inc
+
+--echo # Database for the load driver
+CREATE DATABASE mem_db;
+
+--echo # Load driver
+perl END_OF_PERL;
+use strict;
+use warnings;
+use File::Spec;
+
+my $MYSQL_BASEDIR = $ENV{'MYSQL_BASEDIR'};
+my $TEST_GO_DIR = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb',
+                                     'rest-server2', 'server', 'test_go');
+die "Directory $TEST_GO_DIR does not exist\n" unless -d $TEST_GO_DIR;
+chdir $TEST_GO_DIR or die "Cannot change directory to $TEST_GO_DIR: $!";
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $go_log_file = "$log_dir/rdrs2-golang_memory_regression.output.log";
+if (open(my $trunc, '>', $go_log_file)) { close($trunc); }
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_MEM'};
+$ENV{'RDRS_MEM_TEST'}    = '1';
+$ENV{'RDRS_MEM_REPORT'}  = "$log_dir/rdrs2-golang_memory_regression.report.txt";
+$ENV{'POOL_DB'}          = 'mem_db';
+
+system("go test -v -count 1 -timeout 20m " .
+       "-run '^TestMemoryBoundedUnderWideRowBatchLoad\$' " .
+       "hopsworks.ai/rdrs2/internal/integrationtests/bufferpool " .
+       ">> \"$go_log_file\" 2>&1");
+my $exit_code = $? >> 8;
+if ($exit_code != 0) {
+    print "FAIL: load driver exited with code $exit_code\n";
+    print "Full log: $go_log_file\n";
+    if (open(my $fh, '<', $go_log_file)) { print while <$fh>; close($fh); }
+    exit 1;
+}
+# `go test -run` with a pattern matching no test exits 0; a renamed test
+# must not pass silently.
+my $out = '';
+if (open(my $fh, '<', $go_log_file)) { local $/; $out = <$fh>; close($fh); }
+if ($out !~ /--- PASS: TestMemoryBoundedUnderWideRowBatchLoad/) {
+    print "FAIL: TestMemoryBoundedUnderWideRowBatchLoad did not run or was skipped\n";
+    print $out;
+    exit 1;
+}
+print "PASS\n";
+exit 0;
+END_OF_PERL
+
+--echo # Cleanup
+DROP DATABASE mem_db;

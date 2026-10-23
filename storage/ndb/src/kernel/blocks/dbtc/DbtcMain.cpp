@@ -3825,7 +3825,11 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * These deferred trigger flags are handled in the deferred trigger
    * execution phase at the end of the transaction.
    *
-   * SOF_FK_READ_COMMITTED is never set and is thus no longer in use.
+   * SOF_LOCK_FREE_READ is set by executeIndexOperation on the base table
+   * read of a unique index lookup that the API flagged as lock-free. The
+   * operation is a simple read in TC and is sent to LQH as a dirty read
+   * with the normal protocol flag, so LQH reads without a row lock but
+   * still answers TC.
    *
    * The SOF_REORG_COPY flag, SOF_REORG_DELETE flag are only set when
    * operation originates from DBUTIL. SOF_UTIL_FLAG is set by DBTC when the
@@ -5206,11 +5210,21 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
      * the primary replica has to be used in order to avoid races where
      * an update of the primary replica has not reached backup replicas
      * when the constraint is verified.
+     *
+     * A lock-free read (SOF_LOCK_FREE_READ) is a simple read in TC but
+     * takes no lock in LQH, so it cannot rely on 1); it reads a backup
+     * replica only under 2) or 3), like a Committed read. On a backup
+     * replica a row commits in the complete phase, so the base row of a
+     * unique index lookup may not be committed there yet although its
+     * index row already is; DBTUP reports that as a temporary error
+     * instead of "not found".
      */
+    bool lockFreeRead = Tspecial_op_flags & TcConnectRecord::SOF_LOCK_FREE_READ;
     if (regTcPtr->tcNodedata[0] != cownNodeid &&  // Primary replica is remote, and
         !checkingFKConstraint &&                  // Not verifying a FK-constraint.
         !batchUnsafe &&                           // Not an unsafe batched read
-        ((TopSimple != 0 && TopDirty == 0 && ttl_can_go_to_replica) ||   // 1)
+        ((TopSimple != 0 && TopDirty == 0 && !lockFreeRead &&
+          ttl_can_go_to_replica) ||                                       // 1)
          (TreadBackup != 0 && (TopSimple != 0 || TopDirty != 0)) ||      // 2)
          (TreadBackup != 0 && regCachePtr->m_read_committed_base)))      // 3)
     {
@@ -5623,7 +5637,7 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
   }
 
   if (unlikely(regTcPtr->m_special_op_flags &
-               TcConnectRecord::SOF_FK_READ_COMMITTED)) {
+               TcConnectRecord::SOF_LOCK_FREE_READ)) {
     LqhKeyReq::setNormalProtocolFlag(Tdata10, 1);
     LqhKeyReq::setDirtyFlag(Tdata10, 1);
   }
@@ -23406,6 +23420,8 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   TcKeyReq *const tcIndxReq = &indexOp->tcIndxReq;
   TcKeyReq *const tcKeyReq = (TcKeyReq *)signal->getDataPtrSend();
   Uint32 tcKeyRequestInfo = tcIndxReq->requestInfo;
+  const bool lockFreeBaseRead =
+      TcKeyReq::getLockFreeBaseReadFlag(tcIndxReq->attrLen);
 
   // Find index table
   TcIndexDataPtr indexPtr;
@@ -23435,6 +23451,7 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
 
   tcKeyReq->apiConnectPtr = tcIndxReq->apiConnectPtr;
   tcKeyReq->attrLen = tcIndxReq->attrLen;
+  TcKeyReq::setLockFreeBaseReadFlag(tcKeyReq->attrLen, 0);
   tcKeyReq->tableId = indexData->primaryTableId;
   tcKeyReq->tableSchemaVersion = tabPtr.p->currentSchemaVersion;
   tcKeyReq->transId1 = regApiPtr->transid[0];
@@ -23480,10 +23497,27 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
 
   TcKeyReq::setCommitFlag(tcKeyRequestInfo, 0);
   TcKeyReq::setExecuteFlag(tcKeyRequestInfo, 0);
-  tcKeyReq->requestInfo = tcKeyRequestInfo;
 
   ndbassert(TcKeyReq::getDirtyFlag(tcKeyRequestInfo) == 0);
   ndbassert(TcKeyReq::getSimpleFlag(tcKeyRequestInfo) == 0);
+
+  if (lockFreeBaseRead) {
+    jam();
+    /**
+     * The API only needed the lock on the index row to get a consistent
+     * primary key. Read the base table row as a simple read so that TC
+     * releases it on LQHKEYCONF, and let SOF_LOCK_FREE_READ make LQH read
+     * it without a row lock. Only API requests carry the flag, so this is
+     * never a triggered operation and the flag survives below. The read is still not dirty
+     * in TC, so its result and errors flow through TC as usual.
+     * NoWait only makes sense for a read that takes a lock, and LQH
+     * asserts that a dirty read is not NoWait, so drop it here.
+     */
+    TcKeyReq::setSimpleFlag(tcKeyRequestInfo, 1);
+    tcKeyRequestInfo &= ~(1U << TC_NOWAIT_SHIFT);
+    regApiPtr->m_special_op_flags |= TcConnectRecord::SOF_LOCK_FREE_READ;
+  }
+  tcKeyReq->requestInfo = tcKeyRequestInfo;
 
   /**
    * Decrease lqhkeyreqrec to compensate for addition
