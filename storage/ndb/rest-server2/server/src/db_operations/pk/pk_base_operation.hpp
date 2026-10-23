@@ -49,6 +49,7 @@ struct BaseKeyOperation {
   NdbBlob **m_blob_handles;  // nullptr for delete operations
 
   // Shared methods for column data handling
+  RS_Status check_value_sizes() const;
   RS_Status append_op_recs(PKRResponse *resp, PKRRequest *req);
   RS_Status write_col_to_resp(Uint32 colIdx,
                               PKRResponse *resp,

@@ -379,7 +379,7 @@ RS_Status BatchWriteOperations::perform_operation(
   Uint32 numOperations,
   bool is_batch,
   RS_Buffer *reqBuffer,
-  RS_Buffer *respBuffer,
+  RS_BufferChain &resp_chain,
   Ndb *ndb_object,
   const char *rate_limit_identity,
   Uint32 rate_limit_identity_len) {
@@ -414,7 +414,7 @@ RS_Status BatchWriteOperations::perform_operation(
   while (m_last_key < m_numOperations) {
     Uint32 numOps = m_numOperations;
     Uint32 start = m_first_key;
-    Uint32 max_keys = globalConfigs.internal.batchMaxSize;
+    Uint32 max_keys = globalConfigs.internal.maxOperationsPerNdbExecute;
     Uint32 keys_this_loop = std::min(max_keys, (numOps - start));
     last_key += keys_this_loop;
     Uint32 remaining_keys = numOps - last_key;
@@ -445,7 +445,7 @@ RS_Status BatchWriteOperations::perform_operation(
     m_num_sent_operations = 0;
   }
   DEB_NDB_WRITE("create_response");
-  status = create_response(respBuffer);
+  status = create_response(resp_chain);
   if (unlikely(status.http_code != SUCCESS)) {
     handle_ndb_error(status);
     return status;

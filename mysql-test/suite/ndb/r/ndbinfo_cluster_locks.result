@@ -914,7 +914,7 @@ Unique keys
 ***********
 create table test.t1 (a int primary key, b int, c int, unique(c)) engine=ndb;
 insert into test.t1 values (5,5,5);
-Show UK CR takes shared locks
+Show UK CR takes a shared lock on the unique index row only
 begin;
 select * from test.t1 where c=5;
 a	b	c
@@ -922,10 +922,16 @@ a	b	c
 select * from ndbinfo.ordered_locks order by detail,op;
 mode	state	detail	op	waiting
 S	H	*	READ	0
-S	H	*	READ	0
 select count(distinct tableid) from ndbinfo.cluster_locks;
 count(distinct tableid)
-2
+1
+Expect the lock on the unique hash index, none on the base table
+select t.type_name from ndbinfo.ndb$dict_obj_info o
+join ndbinfo.ndb$dict_obj_types t on o.type = t.type_id
+where o.id in (select distinct tableid from ndbinfo.cluster_locks)
+order by t.type_name;
+type_name
+Unique hash index
 rollback;
 Show UK EX read
 begin;

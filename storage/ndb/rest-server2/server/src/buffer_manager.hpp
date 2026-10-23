@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+ * Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -26,150 +26,138 @@
 #include <NdbMutex.h>
 
 #include <cstdint>
-#include <memory>
 #include <cstring>
-#include <mutex>
 #include <vector>
-#include <stdexcept>
 
-struct MemoryStats {
-  Int64 allocationsCount;
-  Int64 deallocationsCount;
-  Int64 buffersCount;
-  Int64 freeBuffers;
+/*
+ * RONDB-1144: the two pools of fixed-size buffers every pk-read style
+ * request draws from. Each pool maps buffers on demand with mmap, keeps
+ * returned buffers on a free list, refuses to grow past a cap, and unmaps
+ * surplus free buffers after a quiet period. Nothing here is constructed
+ * before main(): the global below is trivially constructed and must be
+ * initialised explicitly once the configuration is loaded.
+ */
+
+/* Counters of one pool. Gauges describe the current state; the last four
+ * are cumulative since init. */
+struct BufferPoolStats {
+  Int64 allocated;          // buffers mapped and owned by the pool
+  Int64 free;               // on the free list
+  Int64 in_use;             // handed out and not yet returned
+  Int64 peak_in_use;        // highest in_use since init
+  Int64 total_allocations;  // mmap calls
+  Int64 rejected;           // get() refused: cap reached or mmap failed
+  Int64 shrunk;             // buffers unmapped by shrink()
+  Int64 retries;            // responses rewritten in a fresh buffer
+};
+
+class RS_BufferPool {
+ public:
+  RS_BufferPool() = default;
+  ~RS_BufferPool();
+  RS_BufferPool(const RS_BufferPool &) = delete;
+  RS_BufferPool &operator=(const RS_BufferPool &) = delete;
+
+  /* buffer_bytes: size of every buffer, a multiple of ADDRESS_SIZE.
+   * preallocate: buffers mapped now and kept by shrink().
+   * max_buffers: get() refuses once this many are mapped; >= preallocate.
+   * shrink_after_s: idle seconds before surplus free buffers are unmapped,
+   * 0 disables shrink. */
+  void init(const char *name, Uint32 buffer_bytes, Uint32 preallocate,
+            Uint32 max_buffers, Uint32 shrink_after_s);
+  /* Unmaps the free list. Buffers still in use are leaked on purpose:
+   * shutdown runs at process exit after request handling has stopped. */
+  void shutdown();
+
+  /* A buffer with size == buffer_bytes(), or buffer == nullptr and size 0
+   * when the cap is reached or mmap fails (both counted as rejected). */
+  RS_Buffer get();
+  void put(RS_Buffer buffer);
+
+  /* Unmap free buffers above the preallocated count if the pool has not
+   * needed them for shrink_after_s seconds. Returns how many were freed. */
+  Uint32 shrink(Int64 now_s);
+  void note_retry();
+  void get_stats(BufferPoolStats &out);
+
+  Uint32 buffer_bytes() const { return m_bytes; }
+  Uint32 max_buffers() const { return m_max; }
+
+ private:
+  static char *map_buffer(size_t bytes);
+  static void unmap_buffer(char *buffer, size_t bytes);
+
+  const char *m_name = "";
+  Uint32 m_bytes = 0;
+  Uint32 m_prealloc = 0;
+  Uint32 m_max = 0;
+  Uint32 m_shrink_after_s = 0;
+  /* Time of the last get() that left more than preallocate buffers in use
+   * (init time before any), i.e. the last moment the buffers the pool grew
+   * by were needed. */
+  Int64 m_last_demand_s = 0;
+  std::vector<RS_Buffer> m_free;
+  BufferPoolStats m_stats{};
+  NdbMutex *m_mutex = nullptr;
 };
 
 class RS_BufferArrayManager {
  public:
-  RS_BufferArrayManager() {
-    if (ADDRESS_SIZE != 4) {
-      throw std::runtime_error("Address size must be 4");
-    }
-    if (globalConfigs.internal.reqBufferSize % ADDRESS_SIZE != 0 ||
-        globalConfigs.internal.respBufferSize % ADDRESS_SIZE != 0) {
-      throw std::runtime_error("Buffer size must be a multiple of 4");
-    }
-    Int64 preAllocateBuffers = globalConfigs.internal.preAllocatedBuffers;
-    reqBuffersStats = {preAllocateBuffers, 0, preAllocateBuffers, 0};
-    respBuffersStats = {preAllocateBuffers, 0, preAllocateBuffers, 0};
-    for (int i = 0; i < preAllocateBuffers; i++) {
-      reqBufferArray.push_back(allocate_req_buffer());
-      respBufferArray.push_back(allocate_resp_buffer());
-    }
-    reqBufferMutex = NdbMutex_Create();
-    respBufferMutex = NdbMutex_Create();
-  }
-
-  RS_BufferArrayManager(const RS_BufferArrayManager &)            = delete;
+  RS_BufferArrayManager() = default;
+  RS_BufferArrayManager(const RS_BufferArrayManager &) = delete;
   RS_BufferArrayManager &operator=(const RS_BufferArrayManager &) = delete;
-  RS_BufferArrayManager(RS_BufferArrayManager &&)                 = delete;
-  RS_BufferArrayManager &operator=(RS_BufferArrayManager &&)      = delete;
 
-  ~RS_BufferArrayManager() {
-    NdbMutex_Lock(reqBufferMutex);
-    NdbMutex_Lock(respBufferMutex);
+  /* Explicit initialisation with every input spelled out; tests use this.
+   * max_buffers_override 0 derives the cap from memory_limit_bytes,
+   * share_percent and the size of one request + response pair. */
+  void init(Uint32 req_bytes, Uint32 resp_bytes, Uint32 preallocate,
+            Uint32 max_buffers_override, Uint32 share_percent,
+            Uint32 shrink_after_s, Uint64 memory_limit_bytes);
+  /* init() from globalConfigs and the detected memory limit. */
+  void init_from_config();
+  void shutdown();
 
-    for (auto &buffer : reqBufferArray) {
-      delete[] buffer.buffer;
-    }
-    for (auto &buffer : respBufferArray) {
-      delete[] buffer.buffer;
-    }
-    NdbMutex_Unlock(reqBufferMutex);
-    NdbMutex_Unlock(respBufferMutex);
-    NdbMutex_Destroy(reqBufferMutex);
-    NdbMutex_Destroy(respBufferMutex);
-  }
+  RS_Buffer get_req_buffer() { return m_req.get(); }
+  RS_Buffer get_resp_buffer() { return m_resp.get(); }
+  void return_req_buffer(RS_Buffer buffer) { m_req.put(buffer); }
+  void return_resp_buffer(RS_Buffer buffer) { m_resp.put(buffer); }
 
-  static RS_Buffer allocate_req_buffer() {
-    auto reqBufferSize = globalConfigs.internal.reqBufferSize * 2;
-    auto buff = RS_Buffer();
-    buff.buffer = new char[reqBufferSize];
-    buff.size = reqBufferSize;
-    buff.next_allocated_buffer = 0;
-    return buff;
-  }
+  /* Called from a periodic timer; cheap when there is nothing to free. */
+  Uint32 shrink();
+  void note_resp_retry() { m_resp.note_retry(); }
 
-  static RS_Buffer allocate_resp_buffer() {
-    auto respBufferSize = globalConfigs.internal.respBufferSize * 2;
-    auto buff = RS_Buffer();
-    buff.buffer = new char[respBufferSize];
-    buff.size = respBufferSize;
-    buff.next_allocated_buffer = 0;
-    return buff;
-  }
+  void get_req_buffers_stats(BufferPoolStats &out) { m_req.get_stats(out); }
+  void get_resp_buffers_stats(BufferPoolStats &out) { m_resp.get_stats(out); }
 
-  RS_Buffer get_req_buffer() {
-    NdbMutex_Lock(reqBufferMutex);
-    auto numBuffersLeft = reqBufferArray.size();
-    if (numBuffersLeft > 0) {
-      auto buffer = reqBufferArray[numBuffersLeft - 1];
-      reqBufferArray.pop_back();
-      NdbMutex_Unlock(reqBufferMutex);
-      return buffer;
-    }
-    auto buffer = allocate_req_buffer();
-    reqBuffersStats.buffersCount++;
-    reqBuffersStats.allocationsCount++;
-    NdbMutex_Unlock(reqBufferMutex);
-    return buffer;
-  }
+  Uint32 req_buffer_bytes() const { return m_req.buffer_bytes(); }
+  Uint32 resp_buffer_bytes() const { return m_resp.buffer_bytes(); }
+  Uint32 max_buffers() const { return m_max; }
+  Uint64 memory_limit_bytes() const { return m_memory_limit; }
 
-  RS_Buffer get_resp_buffer() {
-    NdbMutex_Lock(respBufferMutex);
-    auto numBuffersLeft = respBufferArray.size();
-    if (numBuffersLeft > 0) {
-      auto buffer = respBufferArray[numBuffersLeft - 1];
-      respBufferArray.pop_back();
-      NdbMutex_Unlock(respBufferMutex);
-      return buffer;
-    }
-    auto buffer = allocate_resp_buffer();
-    respBuffersStats.buffersCount++;
-    respBuffersStats.allocationsCount++;
-    NdbMutex_Unlock(respBufferMutex);
-    return buffer;
-  }
-
-  void return_req_buffer(RS_Buffer buffer) {
-    NdbMutex_Lock(reqBufferMutex);
-    buffer.next_allocated_buffer = 0;
-    reqBufferArray.push_back(buffer);
-    NdbMutex_Unlock(reqBufferMutex);
-  }
-
-  void return_resp_buffer(RS_Buffer buffer) {
-    NdbMutex_Lock(respBufferMutex);
-    buffer.next_allocated_buffer = 0;
-    respBufferArray.push_back(buffer);
-    NdbMutex_Unlock(respBufferMutex);
-  }
-
-  void get_req_buffers_stats(MemoryStats &ret) {
-    // update the free buffers count
-    NdbMutex_Lock(reqBufferMutex);
-    reqBuffersStats.freeBuffers = static_cast<Int64>(reqBufferArray.size());
-    ret = respBuffersStats;
-    NdbMutex_Unlock(reqBufferMutex);
-    return;
-  }
-
-  void get_resp_buffers_stats(MemoryStats &ret) {
-    // update the free buffers count
-    NdbMutex_Lock(respBufferMutex);
-    respBuffersStats.freeBuffers = static_cast<Int64>(respBufferArray.size());
-    ret = respBuffersStats;
-    NdbMutex_Unlock(respBufferMutex);
-    return;
-  }
+  /* The memory limit this process runs under: cgroup v2 memory.max, else
+   * cgroup v1 memory.limit_in_bytes, else physical RAM. The paths are
+   * parameters so tests can point them at files of their own. */
+  static Uint64 detect_memory_limit(
+      const char *cgroup_v2_path = "/sys/fs/cgroup/memory.max",
+      const char *cgroup_v1_path =
+          "/sys/fs/cgroup/memory/memory.limit_in_bytes");
+  static Uint64 physical_memory_bytes();
+  /* override when non-zero; otherwise share_percent of limit_bytes divided
+   * by pair_bytes, never below preallocate + 1. */
+  static Uint32 derive_max_buffers(Uint64 limit_bytes, Uint32 share_percent,
+                                   Uint64 pair_bytes, Uint32 override_value,
+                                   Uint32 preallocate);
+  static Int64 now_seconds();
+  /* Tests shift the clock the pools read, to place demand inside a quiet
+   * period without sleeping. */
+  static void set_clock_offset_for_tests(Int64 seconds);
 
  private:
-  std::vector<RS_Buffer> reqBufferArray;
-  std::vector<RS_Buffer> respBufferArray;
-  MemoryStats reqBuffersStats{};
-  MemoryStats respBuffersStats{};
-  NdbMutex *reqBufferMutex;
-  NdbMutex *respBufferMutex;
+  RS_BufferPool m_req;
+  RS_BufferPool m_resp;
+  bool m_initialized = false;
+  Uint32 m_max = 0;
+  Uint64 m_memory_limit = 0;
 };
 
 #define EN_STATUS_MSG_LEN 256

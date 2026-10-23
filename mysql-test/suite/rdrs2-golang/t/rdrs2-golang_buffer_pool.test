@@ -1,0 +1,183 @@
+# RONDB-1144: the request/response buffer pools of rdrs2.
+#
+# rdrs.3.1 (no auth, plain HTTP; see the companion .cnf) runs with a pool
+# capped at MaxBuffers=8 of each kind, PreAllocatedBuffers=2 and a 5 second
+# idle shrink. The Go driver in internal/integrationtests/bufferpool:
+#   - sends a batch whose operations name no columns, so each reserves the
+#     space for every column name of the table and the batch needs more
+#     request buffers than the cap: exactly one 503 "buffer pool exhausted",
+#     the rejected counter moves, nothing leaks, and a small read still works;
+#   - grows the pool above PreAllocatedBuffers and watches rdrs_buffer_pool
+#     on /metrics report it back at PreAllocatedBuffers after the idle period;
+#   - with StartReserveOverride far below the computed reserve, sends a
+#     batch of widest rows and checks that at least one response is
+#     rewritten in a fresh buffer (the retry counter moves) with every
+#     value intact;
+#   - sends malformed batches after a valid operation and checks that every
+#     buffer taken is returned (in_use back to its starting value).
+# The driver reads every limit it needs from the rdrs_limits metric family,
+# so it is the same test on a branch with larger NDB limits.
+#
+# On Linux the perl blocks also read /proc/<pid>/status of rdrs.3.1: THP is
+# disabled for the process, the JSON parse buffers (NumThreads x MaxHttpReqSize,
+# 256 MiB virtual here) are not resident at startup, and after the load no
+# anonymous huge pages are in use. Elsewhere those blocks print PASS after
+# logging the skip; details go to var/log/rdrs2-golang_buffer_pool.proc.log.
+
+--source include/have_ndb.inc
+
+--echo # Tables for the pool driver
+CREATE DATABASE pool_db;
+CREATE TABLE pool_db.small (id INT PRIMARY KEY, val VARCHAR(32) NOT NULL) ENGINE=NDBCLUSTER;
+INSERT INTO pool_db.small VALUES (1, 'x');
+
+--echo # Startup memory checks (Linux only; PASS elsewhere)
+perl END_OF_PERL;
+use strict;
+use warnings;
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $log = "$log_dir/rdrs2-golang_buffer_pool.proc.log";
+open(my $lf, '>>', $log) or die "cannot open $log: $!";
+
+sub read_first_line {
+    my ($path) = @_;
+    open(my $fh, '<', $path) or return undef;
+    my $line = <$fh>;
+    close($fh);
+    chomp $line if defined $line;
+    return $line;
+}
+
+sub proc_status {
+    my ($pid) = @_;
+    my %st;
+    open(my $fh, '<', "/proc/$pid/status") or return undef;
+    while (my $line = <$fh>) {
+        if ($line =~ /^([A-Za-z_]+):\s*(.*)$/) { $st{$1} = $2; }
+    }
+    close($fh);
+    return \%st;
+}
+
+if ($^O ne 'linux') {
+    print $lf "startup: skipped, no /proc on $^O\n";
+    close($lf);
+    print "PASS\n";
+    exit 0;
+}
+my $pid = read_first_line($ENV{'RDRS_POOL_PIDFILE'});
+die "no pid in $ENV{'RDRS_POOL_PIDFILE'}\n" unless defined $pid && $pid =~ /^\d+$/;
+my $st = proc_status($pid) or die "cannot read /proc/$pid/status\n";
+
+# THP opt-out: kernels that report the flag must show it off.
+if (defined $st->{THP_enabled}) {
+    print $lf "startup: THP_enabled=$st->{THP_enabled}\n";
+    die "THP_enabled is $st->{THP_enabled}, expected 0\n"
+        unless $st->{THP_enabled} =~ /^\s*0\s*$/;
+} else {
+    print $lf "startup: THP_enabled not reported by this kernel\n";
+}
+
+# Parse buffers untouched: resident anonymous memory stays well under the
+# NumThreads x MaxHttpReqSize that a zero-filled allocation would make resident.
+my ($rss_kb) = ($st->{RssAnon} // '0') =~ /(\d+)/;
+my $bound_kb = $ENV{'RDRS_POOL_NUM_THREADS'} * $ENV{'RDRS_POOL_MAX_REQ_SIZE'} / 1024;
+print $lf "startup: RssAnon=${rss_kb}kB bound=${bound_kb}kB\n";
+die "RssAnon ${rss_kb}kB >= ${bound_kb}kB: JSON parse buffers are resident\n"
+    if $rss_kb >= $bound_kb;
+close($lf);
+print "PASS\n";
+exit 0;
+END_OF_PERL
+
+--echo # Pool driver
+perl END_OF_PERL;
+use strict;
+use warnings;
+use File::Spec;
+
+my $MYSQL_BASEDIR = $ENV{'MYSQL_BASEDIR'};
+my $TEST_GO_DIR = File::Spec->catdir($MYSQL_BASEDIR, 'storage', 'ndb',
+                                     'rest-server2', 'server', 'test_go');
+die "Directory $TEST_GO_DIR does not exist\n" unless -d $TEST_GO_DIR;
+chdir $TEST_GO_DIR or die "Cannot change directory to $TEST_GO_DIR: $!";
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $go_log_file = "$log_dir/rdrs2-golang_buffer_pool.output.log";
+if (open(my $trunc, '>', $go_log_file)) { close($trunc); }
+
+$ENV{'RDRS_CONFIG_FILE'} = $ENV{'RDRS_CONFIG_FILE_POOL'};
+$ENV{'RDRS_POOL_TEST'}   = '1';
+$ENV{'POOL_DB'}          = 'pool_db';
+
+# The pool tests skip themselves without the settings above, and a skip
+# exits 0, so each one must report PASS.
+my @pool_tests = qw(TestPoolExhaustedReturns503 TestPoolShrinksAfterIdle
+                    TestRetryWithLoweredStartReserve
+                    TestBatchParseErrorAfterValidOpReleasesBuffers);
+my $run = '^(' . join('|', @pool_tests) . ')$';
+system("go test -v -count 1 -timeout 15m -run '$run' " .
+       "hopsworks.ai/rdrs2/internal/integrationtests/bufferpool " .
+       ">> \"$go_log_file\" 2>&1");
+my $exit_code = $? >> 8;
+my $out = '';
+if (open(my $fh, '<', $go_log_file)) { local $/; $out = <$fh>; close($fh); }
+my @not_passed = grep { $out !~ /--- PASS: $_ / } @pool_tests;
+if ($exit_code != 0 || @not_passed) {
+    print "FAIL: pool driver exited with code $exit_code\n";
+    print "Did not pass: @not_passed\n" if @not_passed;
+    print "Full log: $go_log_file\n";
+    print $out;
+    exit 1;
+}
+print "PASS\n";
+exit 0;
+END_OF_PERL
+
+--echo # Post-load memory checks (Linux only; PASS elsewhere)
+perl END_OF_PERL;
+use strict;
+use warnings;
+
+my $log_dir = $ENV{'MYSQLTEST_VARDIR'} ? "$ENV{'MYSQLTEST_VARDIR'}/log"
+                                       : $ENV{'MYSQL_TMP_DIR'};
+my $log = "$log_dir/rdrs2-golang_buffer_pool.proc.log";
+open(my $lf, '>>', $log) or die "cannot open $log: $!";
+if ($^O ne 'linux') {
+    print $lf "post-load: skipped, no /proc on $^O\n";
+    close($lf);
+    print "PASS\n";
+    exit 0;
+}
+open(my $pf, '<', $ENV{'RDRS_POOL_PIDFILE'}) or die "no pidfile: $!";
+my $pid = <$pf>; close($pf); chomp $pid;
+
+# Anonymous huge pages: none, since the process opted out of THP.
+my $huge_kb;
+for my $path ("/proc/$pid/smaps_rollup", "/proc/$pid/smaps") {
+    open(my $fh, '<', $path) or next;
+    my $sum = 0;
+    while (my $line = <$fh>) {
+        if ($line =~ /^AnonHugePages:\s*(\d+)\s*kB/) { $sum += $1; }
+    }
+    close($fh);
+    $huge_kb = $sum;
+    last;
+}
+my $mode = '';
+if (open(my $mf, '<', '/sys/kernel/mm/transparent_hugepage/enabled')) {
+    $mode = <$mf>; close($mf); chomp $mode;
+}
+print $lf "post-load: AnonHugePages=" . ($huge_kb // 'n/a') . "kB thp=[$mode]\n";
+close($lf);
+die "AnonHugePages is ${huge_kb}kB, expected 0\n"
+    if defined $huge_kb && $huge_kb != 0;
+print "PASS\n";
+exit 0;
+END_OF_PERL
+
+--echo # Cleanup
+DROP DATABASE pool_db;

@@ -211,6 +211,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTRY_UPDATE_PRIMARY_KEY 897
 #define ZMUST_BE_ABORTED_ERROR 898
 #define ZTUPLE_DELETED_ERROR 626
+#define ZTUPLE_NOT_YET_COMMITTED_ERROR 627
 #define ZINSERT_ERROR 630
 #define ZOP_AFTER_REFRESH_ERROR 920
 #define ZNO_COPY_TUPLE_MEMORY_ERROR 921
@@ -2403,6 +2404,13 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool last_row;
     bool m_use_rowid;
     bool m_nr_copy_or_redo;
+    /*
+     * Base row read of a unique index lookup that takes no row lock (the
+     * index row was read with a lock, the base row is read committed).
+     * An insert of that row that is not committed here yet is reported as
+     * ZTUPLE_NOT_YET_COMMITTED_ERROR instead of ZTUPLE_DELETED_ERROR.
+     */
+    bool m_lock_free_read;
     /*
      * TTL related (same-transaction unique-dup gap fix). True iff this op carries
      * genuine TTL-ignore provenance (OP_TTL_OWNER_CHECK_BYPASS): recovery,

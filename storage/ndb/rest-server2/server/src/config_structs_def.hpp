@@ -65,12 +65,17 @@
 
 CLASS
 (Internal,
- CM(Uint32, maxReqSize, maxReqSize, 4 * 1024 * 1024,
+ CM(Uint32, maxHttpReqSize, MaxHttpReqSize, 1024 * 1024,
     "The maximum HTTP body size for REST requests, in bytes. Must be at least"
     " 256. This is also installed as the HTTP server's client body limit"
     " (requests above it are refused with 413 before assembly), and it sizes"
-    " the per-REST-thread JSON parse buffers, so NumThreads * maxReqSize"
-    " bytes are pre-allocated.")
+    " the per-REST-thread JSON parse buffers, so NumThreads * MaxHttpReqSize"
+    " bytes are reserved (not resident until used).")
+ CM(Uint32, maxBlobTextValueBytes, MaxBlobTextValueBytes, 2 * 1024 * 1024,
+    "Largest BLOB or TEXT value, in stored bytes, that a read returns. An"
+    " operation that reads a larger value fails with HTTP 413 naming the"
+    " column, without reading it; in a batch only that operation fails."
+    " 0 = no limit (the response pool still bounds a value).")
  CM(Uint32, maxRespSize, MaxRespSize, 64 * 1024 * 1024,
     "The maximum HTTP response body size RDRS will build, in bytes;"
     " 0 = unlimited. Currently enforced on the /ronsql endpoint, whose"
@@ -84,8 +89,6 @@ CLASS
     " alone never detect them (drops self-heal via schema errors)."
     " 0 = never expire (refresh only on schema-version change or"
     " schema-error invalidation).")
- CM(Uint32, reqBufferSize, ReqBufferSize, 1024 * 1024, "")
- CM(Uint32, respBufferSize, RespBufferSize, 5 * 1024 * 1024, "")
  CM(Uint32, scanRespBufferSize, ScanRespBufferSize, 256 * 1024,
     "Initial buffer reservation for scan response JSON, in bytes. The buffer"
     " will grow automatically if the response exceeds this size.")
@@ -97,20 +100,88 @@ CLASS
     " threshold are recorded in the slow scan buffer. Default is 10000 (10ms).")
  CM(Uint32, slowScanBufferSize, SlowScanBufferSize, 1000,
     "Maximum number of slow scan entries to keep in the circular buffer.")
- CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 32, "")
- CM(Uint32, batchMaxSize, BatchMaxSize, 128,
-    "Maximum number of requests contained in a batch request.")
+ CM(Uint32, preAllocatedBuffers, PreAllocatedBuffers, 128,
+    "Buffers of each kind (request and response) mapped at startup and kept"
+    " when the pool shrinks after an idle period.")
+ CM(bool, disableTransparentHugePages, DisableTransparentHugePages, true,
+    "Opt rdrs2 out of transparent huge pages (prctl PR_SET_THP_DISABLE)."
+    " On nodes with THP set to always, khugepaged collapses rdrs2's sparse"
+    " memory into resident 2 MiB pages until an idle pod reaches its memory"
+    " limit. The opt-out is made at startup, before the configuration is"
+    " read; false undoes it once the configuration is read.")
+ CM(Uint32, maxBuffers, MaxBuffers, 0,
+    "Cap on the buffers of each kind the pool may hold. 0 derives the cap"
+    " from BufferPoolSharePercent and the memory limit the process runs"
+    " under (cgroup v2 memory.max, cgroup v1 memory.limit_in_bytes, else"
+    " physical RAM). A request that needs a buffer past the cap is answered"
+    " with HTTP 503.")
+ CM(Uint32, bufferPoolSharePercent, BufferPoolSharePercent, 50,
+    "Share of the memory limit the two buffer pools, together with the JSON"
+    " responses written from them, may grow to when MaxBuffers is 0; it"
+    " sets the cap, nothing is reserved. Each buffer pair is charged 7/3 of"
+    " its size for its response. The rest is left for the parse buffers, the"
+    " NDB API, the process itself and response bodies already handed to the"
+    " HTTP server (not counted), so limits below 2 GiB leave too little room"
+    " and are warned about at startup. 2 GiB suits typical traffic;"
+    " workloads that read large batches of wide rows or many feature groups"
+    " need more, or concurrent requests get HTTP 503 while a batch holds"
+    " the pool.")
+ CM(Uint32, bufferShrinkAfterS, BufferShrinkAfterS, 300,
+    "Seconds a pool must have been idle (free buffers above"
+    " PreAllocatedBuffers unused) before the surplus is unmapped. 0 disables"
+    " shrinking. Five minutes by default, so a pool that serves bursts a few"
+    " minutes apart keeps its buffers instead of remapping them each time.")
+ CM(Uint32, startReserveOverride, StartReserveOverride, 0,
+    "Testing knob. Overrides the computed start reserve, the free space a"
+    " buffer must have before a new response or operation request may start"
+    " in it. 0 = computed, otherwise at least the 36-byte response header."
+    " Lowering it only causes responses to be rewritten in a fresh buffer;"
+    " it cannot make a result wrong. Raising it above the"
+    " buffer size gives every operation its own buffer and can exhaust the"
+    " pool (HTTP 503).")
+ CM(Uint32, maxOperationsPerBatchRequest, MaxOperationsPerBatchRequest, 4096,
+    "Maximum number of operations in one batch request: operations of a"
+    " batch pk-read, pk-write or pk-delete, entries of a batch feature store"
+    " request (each entry reads every feature group of the feature view). A"
+    " larger batch is rejected with HTTP 413 while it is parsed, before any"
+    " buffer is taken. 4096 is the batch size the Go REST server accepted."
+    " MaxHttpReqSize also bounds a batch: at its 1 MiB default, about 4000"
+    " batch pk-read operations of 250 bytes fit in one body. Batches are"
+    " packed into the shared buffer pool, so the cap does not bound memory;"
+    " the pool does. A batch of wide rows can take most of the pool on its"
+    " own and leave concurrent requests with HTTP 503: for workloads that"
+    " read large batches, raise the memory limit beyond 2 GiB.")
+ CM(Uint32, maxOperationsPerNdbExecute, MaxOperationsPerNdbExecute, 128,
+    "Number of a batch request's operations the data access layer prepares"
+    " and sends to NDB in one execute round (up to 50 more in the last"
+    " round). Not a cap on the batch request; see"
+    " MaxOperationsPerBatchRequest.")
  CM(Uint32, operationIdMaxSize, OperationIDMaxSize, 256,
     "Maximum length of operation ID strings.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
- PROBLEM(maxReqSize < 256, "maxReqSize should be >= 256")
+ PROBLEM(maxHttpReqSize < 256, "MaxHttpReqSize should be >= 256")
  PROBLEM(maxRespSize != 0 && maxRespSize < 65536,
          "MaxRespSize should be 0 (unlimited) or >= 65536")
- PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
- PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
+ PROBLEM(maxOperationsPerBatchRequest == 0,
+         "MaxOperationsPerBatchRequest must be > 0")
+ PROBLEM(bufferPoolSharePercent < 1 || bufferPoolSharePercent > 90,
+         "BufferPoolSharePercent must be between 1 and 90")
+ PROBLEM(maxBuffers != 0 && maxBuffers < preAllocatedBuffers,
+         "MaxBuffers must be >= PreAllocatedBuffers")
+ PROBLEM(maxBuffers != 0 && maxBuffers < 2,
+         "MaxBuffers must allow at least two buffers")
+ PROBLEM(operationIdMaxSize > MAX_OPERATION_ID_RESERVE,
+         "OperationIDMaxSize must be <= 4096")
+ /* A response view starts with an unchecked header write; below that size
+  * the remaining-capacity arithmetic would underflow. */
+ PROBLEM(startReserveOverride != 0 &&
+         startReserveOverride < PK_RESP_HEADER_END,
+         "StartReserveOverride must be 0 or >= 36")
  PROBLEM(scanRespBufferSize < 1024, "ScanRespBufferSize should be >= 1024")
- PROBLEM(batchMaxSize > 512, "BatchMaxSize should be <= 512")
- PROBLEM(batchMaxSize < 50, "BatchMaxSize should be >= 50")
+ PROBLEM(maxOperationsPerNdbExecute > 512,
+         "MaxOperationsPerNdbExecute should be <= 512")
+ PROBLEM(maxOperationsPerNdbExecute < 50,
+         "MaxOperationsPerNdbExecute should be >= 50")
 )
 
 CLASS

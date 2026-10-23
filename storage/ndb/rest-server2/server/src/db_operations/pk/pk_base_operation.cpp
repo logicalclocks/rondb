@@ -21,10 +21,14 @@
 #include "NdbBlob.hpp"
 #include "src/error_strings.h"
 #include "src/rdrs_const.h"
+#include "src/buffer_sizes.hpp"
+#include "src/buffer_chain.hpp"
+#include "src/config_structs.hpp"
 #include "src/status.hpp"
 #include "my_compiler.h"
 
 #include <mysql_time.h>
+#include <mysql/strings/m_ctype.h>
 #include <my_base.h>
 #include <my_byteorder.h>
 #include <my_time.h>
@@ -33,6 +37,8 @@
 #include <kernel/ndb_limits.h>
 #include <util/require.h>
 #include <EventLogger.hpp>
+#include <memory>
+#include <new>
 
 extern EventLogger *g_eventLogger;
 
@@ -46,14 +52,62 @@ extern EventLogger *g_eventLogger;
 #define DEB_BASE_OP(...) do { } while (0)
 #endif
 
+static inline bool base_is_spillable(const NdbDictionary::Column *col) {
+  const NdbDictionary::Column::Type type = col->getType();
+  return type == NdbDictionary::Column::Blob ||
+         type == NdbDictionary::Column::Text;
+}
+
+RS_Status BaseKeyOperation::check_value_sizes() const {
+  const Uint32 limit = globalConfigs.internal.maxBlobTextValueBytes;
+  if (limit == 0 || m_blob_handles == nullptr) {
+    return RS_OK;
+  }
+  for (Uint32 colIdx = 0; colIdx < m_num_read_columns; colIdx++) {
+    if (!base_is_spillable(m_readColumns[colIdx])) {
+      continue;
+    }
+    /* NDB knows the length once the operation has executed. A NULL value,
+     * or a handle that cannot report its length, is left to
+     * write_col_to_resp, which writes the null or reports the error. */
+    NdbBlob *blobHandle = m_blob_handles[colIdx];
+    int isNull = 0;
+    Uint64 length = 0;
+    if (blobHandle == nullptr || blobHandle->getNull(isNull) != 0 ||
+        isNull || blobHandle->getLength(length) != 0) {
+      continue;
+    }
+    if (length > limit) {
+      const std::string msg =
+        std::string("Column ") + m_readColumns[colIdx]->getName() +
+        " holds " + std::to_string(length) +
+        " bytes, more than MaxBlobTextValueBytes (" + std::to_string(limit) +
+        ")";
+      return __RS_ERROR(static_cast<HTTP_CODE>(413), -1, -1, -1, -1,
+                        msg.c_str(), __LINE__, __MYFILENAME__);
+    }
+  }
+  return RS_OK;
+}
+
 RS_Status BaseKeyOperation::append_op_recs(PKRResponse *resp,
                                            PKRRequest *req) {
-  for (Uint32 colIdx = 0; colIdx < m_num_read_columns; colIdx++) {
-    RS_Status ret = write_col_to_resp(colIdx, resp, req);
-    if (unlikely(ret.http_code != SUCCESS)) {
-      DEB_BASE_OP("Failed with colIdx: %u, code: %u, message: %s",
-        colIdx, ret.http_code, ret.message);
-      return ret;
+  /* Rule 4 (RONDB-1144): bounded values first so the whole fixed part
+   * of the response sits in the home buffer; blobs and text last, since
+   * they may continue into other buffers. The column table is indexed by
+   * colIdx, so the order of writing does not change the output. */
+  for (int pass = 0; pass < 2; pass++) {
+    for (Uint32 colIdx = 0; colIdx < m_num_read_columns; colIdx++) {
+      if (base_is_spillable(m_readColumns[colIdx]) != (pass == 1)) {
+        continue;
+      }
+      resp->SetSlot(colIdx);
+      RS_Status ret = write_col_to_resp(colIdx, resp, req);
+      if (unlikely(ret.http_code != SUCCESS)) {
+        DEB_BASE_OP("Failed with colIdx: %u, code: %u, message: %s",
+          colIdx, ret.http_code, ret.message);
+        return ret;
+      }
     }
   }
   return RS_OK;
@@ -292,7 +346,7 @@ RS_Status BaseKeyOperation::write_col_to_resp(Uint32 colIdx,
       return RS_CLIENT_ERROR(std::string(
         rdrsErrorMessage(ERROR_UNABLE_TO_READ_DATA)));
     }
-    if (unlikely(attrBytes > MAX_TUPLE_SIZE_IN_BYTES)) {
+    if (unlikely(attrBytes > MAX_ROW_BYTES)) {
       return RS_SERVER_ERROR(
         std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
         std::string(" DB: ") + std::string(request->DB()) +
@@ -355,15 +409,18 @@ RS_Status BaseKeyOperation::write_col_to_resp(Uint32 colIdx,
           " Type: " + std::to_string(col->getType()));
     }
     DEB_BASE_OP("Read col_name: %s, BLOB of length: %llu", col_name, length);
-    // check for max length
-    // (4 * ceil(input_size / 3))
-    const size_t maxLength = length + 4;
-    if (unlikely(response->GetRemainingCapacity() < maxLength)) {
+    /* RONDB-1144: the raw bytes go into the response in 32 KiB chunks and
+     * continue into the next buffer of the chain when the current one is
+     * full; base64 happens later in the JSON stage. The column entry holds
+     * the total length and the offset of the first byte. */
+    if (unlikely(length > 0xFFFFFFFFULL - response->CurrentVirtualOffset())) {
       return RS_SERVER_ERROR(
-        std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) +
-        std::string(" Buffer Remaining Capacity: ") +
-        std::to_string(response->GetRemainingCapacity()) +
-        " Required: " + std::to_string(maxLength));
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
+    }
+    RS_Status raw_status = response->BeginRawColumn(RDRS_BINARY_DATATYPE);
+    if (unlikely(raw_status.http_code != SUCCESS)) {
+      return raw_status;
     }
     Uint64 chunk = 0;
     Uint64 total_read = 0;
@@ -397,17 +454,10 @@ RS_Status BaseKeyOperation::write_col_to_resp(Uint32 colIdx,
         }
         if (bytes > 0) {
           total_read += bytes;
-          if (chunk == 0) {
-            response->Append_string("", RDRS_BINARY_DATATYPE);
-            // This adds a column to the response buffer. Right now the last
-            // byte of the response buffer is '\0'. Remove the last byte and
-            // start appending the base64 data
-            response->AdvanceWritePointer(-1);
+          raw_status = response->AppendRawWithSpill(buffer, bytes);
+          if (unlikely(raw_status.http_code != SUCCESS)) {
+            return raw_status;
           }
-          memcpy((char*)response->GetWritePointer(),
-                 (const char*)buffer,
-                 bytes);
-          response->AdvanceWritePointer(bytes);
         }
       }
     }
@@ -420,7 +470,7 @@ RS_Status BaseKeyOperation::write_col_to_resp(Uint32 colIdx,
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
     }
-    response->SetBlobLen(total_read);
+    response->SetBlobLen(colIdx, static_cast<Uint32>(total_read));
     DEB_BASE_OP("Written a blob of total len: %u",
       (Uint32)total_read);
     return RS_OK;
@@ -462,18 +512,38 @@ RS_Status BaseKeyOperation::write_col_to_resp(Uint32 colIdx,
         std::string(" Column: ") + std::string(col_name) +
         " Type: " + std::to_string(col->getType()));
     }
-    //+1 for null terminator
-    if (unlikely(response->GetRemainingCapacity() < length + 1)) {
-      return RS_SERVER_ERROR(
-        std::string(rdrsErrorMessage(ERROR_RESPONSE_BUFFER_OVERFLOW)) +
-        std::string(" Buffer Remaining Capacity: ") +
-        std::to_string(response->GetRemainingCapacity()) +
-        " Required: " + std::to_string(length + 1));
-    }
     DEB_BASE_OP("Read col_name: %s, TEXT of length: %llu", col_name, length);
-    // NOTE: we not allocating a tmp buffer to hold the data
-    // Reusing the reponse buffer
-    char *tmpBuffer = static_cast<char*>(response->GetWritePointer());
+    /* RONDB-1144: a TEXT value is converted to utf8mb4 and JSON-escaped
+     * before it is stored, and both steps need the whole value, so the raw
+     * bytes are read into a staging buffer first. It cannot be the
+     * response buffer any more (the value may be larger than what is left
+     * there and spill), and it is local to this branch rather than in the
+     * request's arena so its bytes are freed as soon as the escaped copy
+     * has been written, not at the end of the request. The escaped result
+     * goes in like a blob, through AppendRawWithSpill, continuing into the
+     * next buffer of the chain when needed. */
+    if (unlikely(length > 0xFFFFFFFFULL - 1)) {
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
+    }
+    /* The escaped value is at least length / mbminlen bytes and all of it
+     * goes into the response pool. A value the pool can never hold is
+     * refused here, as a blob of that size would be, before the staging
+     * and conversion buffers (several times its size) are allocated. */
+    RS_Status pool_status = RS_BufferChain::check_pool_can_hold(
+      length / col->getCharset()->mbminlen);
+    if (unlikely(pool_status.http_code != SUCCESS)) {
+      return pool_status;
+    }
+    std::unique_ptr<char[]> staging_buffer(
+      new (std::nothrow) char[static_cast<size_t>(length)]);
+    char *staging = staging_buffer.get();
+    if (unlikely(staging == nullptr)) {
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    }
+    char *tmpBuffer = staging;
     Uint64 chunk = 0;
     Uint64 total_read = 0;
     for (chunk = 0; chunk < (length / (BLOB_MAX_FETCH_SIZE)) + 1; chunk++) {
@@ -517,11 +587,34 @@ RS_Status BaseKeyOperation::write_col_to_resp(Uint32 colIdx,
         " Expected to read: " + std::to_string(length) +
         " bytes. Read: " + std::to_string(total_read));
     }
-    return response->Append_char(
-      static_cast<char *>(response->GetWritePointer()),
-      length,
-      col->getCharset(),
-      false);
+    std::string escaped;
+    RS_Status text_status = response->FormatChar(staging,
+                                                 static_cast<Uint32>(length),
+                                                 col->getCharset(),
+                                                 false,
+                                                 escaped);
+    if (unlikely(text_status.http_code != SUCCESS)) {
+      return text_status;
+    }
+    /* Escaping can grow the value up to MAX_TEXT_EXPANSION times, so the
+     * raw-length check above does not bound the escaped size. */
+    if (unlikely(escaped.size() >
+                 0xFFFFFFFFULL - response->CurrentVirtualOffset())) {
+      return RS_SERVER_ERROR(
+        std::string(rdrsErrorMessage(ERROR_TOO_LARGE_ROWS)) +
+        std::string(" Column: ") + std::string(col_name));
+    }
+    text_status = response->BeginRawColumn(RDRS_STRING_DATATYPE);
+    if (unlikely(text_status.http_code != SUCCESS)) {
+      return text_status;
+    }
+    text_status = response->AppendRawWithSpill(
+      escaped.data(), static_cast<Uint32>(escaped.size()));
+    if (unlikely(text_status.http_code != SUCCESS)) {
+      return text_status;
+    }
+    response->SetBlobLen(colIdx, static_cast<Uint32>(escaped.size()));
+    return RS_OK;
   }
   case NdbDictionary::Column::Bit: {
     Uint32 len = col->getLength();

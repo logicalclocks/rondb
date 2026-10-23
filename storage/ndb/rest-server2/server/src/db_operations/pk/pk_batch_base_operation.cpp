@@ -23,6 +23,8 @@
 #include "pkr_response.hpp"
 #include "src/config_structs.hpp"
 #include "src/encoding.hpp"
+#include "src/buffer_chain.hpp"
+#include "src/buffer_manager.hpp"
 #include "src/error_strings.h"
 #include "src/rdrs_const.h"
 #include "src/rdrs_dal.h"
@@ -435,12 +437,12 @@ RS_Status BaseBatchOperations::execute() {
       return RS_OK;
     }
     /*
-     * Batches larger than internal.batchMaxSize are prepared and executed
-     * in chunks (see the perform_operation loop in the derived classes).
-     * All chunks share this one transaction, so intermediate chunks must
-     * execute with NoCommit and only the final chunk commits. Calling
-     * execute(Commit) again on an already committed transaction fails
-     * (with an empty NdbError).
+     * Batches larger than internal.maxOperationsPerNdbExecute are prepared
+     * and executed in chunks (see the perform_operation loop in the derived
+     * classes). All chunks share this one transaction, so intermediate
+     * chunks must execute with NoCommit and only the final chunk commits.
+     * Calling execute(Commit) again on an already committed transaction
+     * fails (with an empty NdbError).
      */
     bool last_chunk = (m_last_key >= m_numOperations);
     NdbTransaction::ExecType exec_type = get_single_transaction_exec_type();
@@ -477,104 +479,156 @@ RS_Status BaseBatchOperations::execute() {
   return RS_OK;
 }
 
-RS_Status BaseBatchOperations::create_response(RS_Buffer *respBuffs) {
+RS_Status BaseBatchOperations::create_response(RS_BufferChain &chain) {
   bool found = true;
-  Uint32 response_buffer_size = respBuffs[0].size;
-  Uint32 response_buffer_limit = response_buffer_size / 2;
-  Uint32 current_head = 0;
   Uint32 response_length = 0;
-  Uint32 current_response_buffer_idx = 0;
-  for (size_t i = 0; i < m_numOperations; i++) {
-    current_head += response_length;
-    if (i > 0)
-      respBuffs[i] = getNextRespRS_Buffer(
-        current_head,
-        response_buffer_limit,
-        respBuffs[current_response_buffer_idx],
-        current_response_buffer_idx,
-        i
-      );
+  /* A retried attempt (DATA_OP_RETRY_HANDLER) rebuilds every response from
+   * the first buffer; continuation and retry buffers of the previous
+   * attempt go back to the pool. */
+  chain.reset_to_first_buffer();
+  for (Uint32 i = 0; i < m_numOperations; i++) {
+    if (i > 0) {
+      RS_Status status = chain.next_op_view(i);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;  // 503: pool exhausted
+      }
+    }
     BaseKeyOperation *key_op = get_key_op(i);
-    PKRResponse *resp =
-      new (&key_op->m_resp) PKRResponse(&respBuffs[i]);
-    PKRRequest *req = &key_op->m_req;
-    const NdbOperation *op = key_op->m_ndbOperation;
-    resp->SetOperationID(req->OperationId());
-    if (unlikely(req->IsInvalidOp())) {
-      resp->SetStatus(req->GetError().http_code, req->GetError().message);
-      resp->Close(response_length);
-      continue;
-    }
-    resp->SetNoOfColumns(key_op->m_num_read_columns);
-    // For read operations with no columns specified, fill in all column names
-    if (supports_read_all_columns() && req->ReadColumnsCount() == 0) {
-      DEB_BATCH_BASE("Build request when all columns requested");
-      Uint32 numColumns = key_op->m_num_table_columns;
-      if (unlikely(!req->addReadColumns(numColumns))) {
-        return RS_SERVER_ERROR(std::string(
-          rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
-      }
-      for (Uint32 k = 0; k < numColumns; k++) {
-        const NdbDictionary::Column *read_col =
-          key_op->m_tableDict->getColumn(k);
-        if (unlikely(req->addReadColumnName(k,
-                                   read_col->getName(),
-                                   DEFAULT_DRT))) {
-          return RS_SERVER_ERROR(std::string(
-            rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    /* Rule 5 (RONDB-1144): the start reserve is a computed bound. If a
+     * response still overflows the room it was placed in, and it did not
+     * start at offset 0, write it again in a fresh buffer. */
+    for (Uint32 attempt = 0;; attempt++) {
+      PKRResponse *resp =
+        new (&key_op->m_resp) PKRResponse(chain.view(i), &chain, i);
+      RS_Status status = write_response(i, resp, found, response_length);
+      if (likely(!resp->Overflowed())) {
+        if (unlikely(status.http_code != SUCCESS)) {
+          return status;
         }
+        break;
+      }
+      require(!resp->Spilled());
+      if (attempt > 0 || chain.starts_at_offset_zero(i)) {
+        return status;
+      }
+      rsBufferArrayManager.note_resp_retry();
+      /* addReadColumns moved the request's length; undo before the second
+       * attempt adds the column names again. */
+      key_op->m_req.resetReadColumns();
+      status = chain.restart_op_in_fresh_buffer(i);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;  // 503: pool exhausted
       }
     }
-    found = true;
-    NdbError::Classification op_error = op->getNdbError().classification;
-    // For multi-transaction mode, the error may be at transaction level rather
-    // than operation level. Check transaction error if operation shows no error.
-    // (In single transaction mode with AO_IgnoreError, operation errors are set
-    // correctly for each operation.)
-    if (unlikely(!m_single_transaction && op_error == NdbError::NoError)) {
-      NdbTransaction *trans = key_op->m_ndbTransaction;
-      if (trans->getNdbError().classification == NdbError::NoDataFound) {
-        op_error = NdbError::NoDataFound;
-      }
-    }
-    if (likely(op_error == NdbError::NoError)) {
-      resp->SetStatus(SUCCESS, "OK");
-    } else if (op_error == NdbError::NoDataFound) {
-      found = false;
-      resp->SetStatus(NOT_FOUND, "NOT Found");
-    } else if (op_error == NdbError::ConstraintViolation) {
-      // Constraint violation (e.g., duplicate key on insert)
-      resp->SetStatus(CONFLICT, op->getNdbError().message);
-      resp->Close(response_length);
-      return RS_RONDB_CONFLICT_ERROR(
-        op->getNdbError(), std::string("SubOperation ") +
-        std::string(req->OperationId()
-                    ? req->OperationId()
-                    : "(Unidentified Operation)") +
-        std::string(" failed"));
-    } else {
-      //  immediately fail the entire batch
-      resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
-      resp->Close(response_length);
-      return RS_RONDB_SERVER_ERROR(
-        op->getNdbError(), std::string("SubOperation ") +
-        std::string(req->OperationId()
-                    ? req->OperationId()
-                    : "(Unidentified Operation)") +
-        std::string(" failed"));
-    }
-    // Append column data if found and columns are requested
-    if (likely(found) && key_op->m_num_read_columns > 0) {
-      RS_Status ret = key_op->append_op_recs(resp, req);
-      if (unlikely(ret.http_code != SUCCESS)) {
-        return ret;
-      }
-    }
-    resp->Close(response_length);
   }
   if (unlikely(!found && !m_isBatch)) {
     return RS_CLIENT_404_ERROR();
   }
+  return RS_OK;
+}
+
+RS_Status BaseBatchOperations::write_response(Uint32 i, PKRResponse *resp,
+                                              bool &found,
+                                              Uint32 &response_length) {
+  BaseKeyOperation *key_op = get_key_op(i);
+  PKRRequest *req = &key_op->m_req;
+  const NdbOperation *op = key_op->m_ndbOperation;
+  RS_Status status = resp->SetOperationID(req->OperationId());
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  if (unlikely(req->IsInvalidOp())) {
+    status = resp->SetStatus(req->GetError().http_code,
+                             req->GetError().message);
+    if (unlikely(status.http_code != SUCCESS)) {
+      return status;
+    }
+    resp->Close(response_length);
+    return RS_OK;
+  }
+  status = resp->SetNoOfColumns(key_op->m_num_read_columns);
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  // For read operations with no columns specified, fill in all column names
+  if (supports_read_all_columns() && req->ReadColumnsCount() == 0) {
+    DEB_BATCH_BASE("Build request when all columns requested");
+    Uint32 numColumns = key_op->m_num_table_columns;
+    if (unlikely(!req->addReadColumns(numColumns))) {
+      return RS_SERVER_ERROR(std::string(
+        rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+    }
+    for (Uint32 k = 0; k < numColumns; k++) {
+      const NdbDictionary::Column *read_col =
+        key_op->m_tableDict->getColumn(k);
+      if (unlikely(req->addReadColumnName(k,
+                                 read_col->getName(),
+                                 DEFAULT_DRT))) {
+        return RS_SERVER_ERROR(std::string(
+          rdrsErrorMessage(ERROR_MEMORY_ALLOCATION_FAILURE)));
+      }
+    }
+  }
+  found = true;
+  NdbError::Classification op_error = op->getNdbError().classification;
+  // For multi-transaction mode, the error may be at transaction level rather
+  // than operation level. Check transaction error if operation shows no error.
+  // (In single transaction mode with AO_IgnoreError, operation errors are set
+  // correctly for each operation.)
+  if (unlikely(!m_single_transaction && op_error == NdbError::NoError)) {
+    NdbTransaction *trans = key_op->m_ndbTransaction;
+    if (trans->getNdbError().classification == NdbError::NoDataFound) {
+      op_error = NdbError::NoDataFound;
+    }
+  }
+  if (likely(op_error == NdbError::NoError)) {
+    /* A BLOB or TEXT value above MaxBlobTextValueBytes fails this
+     * operation alone, before any of its columns is written. */
+    RS_Status size_status = key_op->check_value_sizes();
+    if (unlikely(size_status.http_code != SUCCESS)) {
+      status = resp->SetStatus(size_status.http_code, size_status.message);
+      if (unlikely(status.http_code != SUCCESS)) {
+        return status;
+      }
+      resp->Close(response_length);
+      return m_isBatch ? RS_OK : size_status;
+    }
+    status = resp->SetStatus(SUCCESS, "OK");
+  } else if (op_error == NdbError::NoDataFound) {
+    found = false;
+    status = resp->SetStatus(NOT_FOUND, "NOT Found");
+  } else if (op_error == NdbError::ConstraintViolation) {
+    // Constraint violation (e.g., duplicate key on insert)
+    resp->SetStatus(CONFLICT, op->getNdbError().message);
+    resp->Close(response_length);
+    return RS_RONDB_CONFLICT_ERROR(
+      op->getNdbError(), std::string("SubOperation ") +
+      std::string(req->OperationId()
+                  ? req->OperationId()
+                  : "(Unidentified Operation)") +
+      std::string(" failed"));
+  } else {
+    //  immediately fail the entire batch
+    resp->SetStatus(SERVER_ERROR, op->getNdbError().message);
+    resp->Close(response_length);
+    return RS_RONDB_SERVER_ERROR(
+      op->getNdbError(), std::string("SubOperation ") +
+      std::string(req->OperationId()
+                  ? req->OperationId()
+                  : "(Unidentified Operation)") +
+      std::string(" failed"));
+  }
+  if (unlikely(status.http_code != SUCCESS)) {
+    return status;
+  }
+  // Append column data if found and columns are requested
+  if (likely(found) && key_op->m_num_read_columns > 0) {
+    RS_Status ret = key_op->append_op_recs(resp, req);
+    if (unlikely(ret.http_code != SUCCESS)) {
+      return ret;
+    }
+  }
+  resp->Close(response_length);
   return RS_OK;
 }
 

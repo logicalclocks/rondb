@@ -237,7 +237,8 @@ class FeatureStoreResponse {
   std::vector<FeatureMetadata> metadata;       // json:"metadata"
   FeatureStatus status;                        // json:"status"
   std::vector<DetailedStatus> detailedStatus;  // json:"detailedStatus"
-  std::string to_string() const;
+  /* Consumes the features: each one is freed once it is in the string. */
+  std::string to_string() &&;
   static RS_Status parseFeatureStoreResponse(const std::string &respBody,
                                              FeatureStoreResponse &fsResp);
 };
@@ -249,7 +250,8 @@ class BatchFeatureStoreResponse {
   std::vector<FeatureStatus> status;                        // json:"status"
   // json:"detailedStatus"
   std::vector<std::vector<DetailedStatus>> detailedStatus;
-  std::string to_string() const;
+  /* Consumes the features: each one is freed once it is in the string. */
+  std::string to_string() &&;
   static RS_Status parseBatchFeatureStoreResponse(
     const std::string &respBody, BatchFeatureStoreResponse &fsResp);
 };

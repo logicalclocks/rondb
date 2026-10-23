@@ -278,7 +278,7 @@ static const ErrorEntry errorTable[] = {
     {ERROR_RONSQL_RATE_LIMIT, "RonSQL query rejected: rate limit exceeded"},
     {ERROR_DELETE_OPERATION_FAILED, "Failed to start delete operation."},
     {ERROR_WRITE_OPERATION_FAILED, "Failed to start write operation."},
-    {ERROR_REQUEST_TOO_LARGE, "Request body exceeds the configured maxReqSize"},
+    {ERROR_REQUEST_TOO_LARGE, "Request body exceeds the configured MaxHttpReqSize"},
     {ERROR_RESPONSE_TOO_LARGE, "Response exceeds the configured MaxRespSize"},
     {__MAX_INDEX__, "__MAX_INDEX__ Place holder"}
 };

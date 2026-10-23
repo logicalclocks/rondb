@@ -260,7 +260,7 @@ void RonSQLCtrl::ronsql(
   DEB("JSON REQUEST: %s", json_str);
 
   size_t length        = req->getBody().length();
-  if (length > globalConfigs.internal.maxReqSize) {
+  if (length > globalConfigs.internal.maxHttpReqSize) {
     resp->setBody("Request too large");
     resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
     callback(resp);
@@ -275,7 +275,7 @@ void RonSQLCtrl::ronsql(
       simdjson::padded_string_view(
         jsonParser.get_buffer().get(),
         length,
-        globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING),
+        globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
   if (static_cast<drogon::HttpStatusCode>(status.http_code) !=

@@ -43,8 +43,9 @@ class JSONParser {
   simdjson::ondemand::parser parser;
   simdjson::ondemand::document doc;
   /*
-    We initialize and pre-allocate Internal.MaxReqSize-sized string buffer
-    for each thread, which we could reuse when passing to parser.iterate().
+    We allocate an Internal.MaxHttpReqSize-sized string buffer for each
+    thread, which we could reuse when passing to parser.iterate(). It is not
+    zero-filled, so its pages become resident only as requests use them.
   */
   std::unique_ptr<char[]> buffer;
 

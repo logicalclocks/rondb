@@ -30,24 +30,38 @@
 #include <drogon/drogon.h>
 #include <iostream>
 
-RS_Status create_native_request(PKReadParams &, Uint32*, Uint32&);
-RS_Status create_native_write_request(PKReadParams &, Uint32*, Uint32&);
+struct RS_BufferChain;
+
+/* Encode one operation request into its view. Checks an upper bound of the
+ * encoded size against the view first (RONDB-1144: the encoder itself has
+ * no bounds checks) and answers 400 when it does not fit. consumed is the
+ * number of bytes the view must advance by, including the reservation for
+ * column names when the operation names none and reserve_column_names is
+ * set. */
+RS_Status create_native_request(PKReadParams &, RS_Buffer &view,
+                                Uint32 &consumed,
+                                bool reserve_column_names = true);
+/* The bound create_native_request checks against; the batch controllers
+ * pass it to RS_BufferChain::next_op_view so an operation that does not
+ * fit behind the previous one starts in a fresh buffer.
+ * reserve_column_names: an operation that names no read columns reserves
+ * room for every column name of the table, which the read path fills in
+ * later (REQ_COLNAME_RESERVE). A delete never reads all columns, so its
+ * controller passes false and the operation costs its own bytes only. */
+Uint32 native_request_upper_bound(const PKReadParams &,
+                                  bool reserve_column_names = true);
+/* The write-request encoder (batch pk-write), same contract as
+ * create_native_request: bound checked first, 400 when the operation does
+ * not fit its view, consumed = bytes to advance by. */
+RS_Status create_native_write_request(PKReadParams &, RS_Buffer &view,
+                                      Uint32 &consumed);
+Uint32 native_write_request_upper_bound(const PKReadParams &);
+/* Decode the response of operation op_index from the chain; a blob or text
+ * value that spilled is handed to the JSON stage as a segment list. */
 RS_Status process_pkread_response(ArenaMalloc*,
-                                  void *,
+                                  const RS_BufferChain &resp_chain,
+                                  Uint32 op_index,
                                   RS_Buffer *reqBuff,
                                   PKReadResponseJSON &);
-RS_Buffer getNextReqRS_Buffer(Uint32 &head,
-                              Uint32 request_buffer_limit,
-                              RS_Buffer &current_request_buffer,
-                              Uint32 &current_request_buffer_idx,
-                              Uint32 index);
-RS_Buffer getNextRespRS_Buffer(Uint32 &head,
-                               Uint32 response_buffer_limit,
-                               RS_Buffer &current_response_buffer,
-                               Uint32 &current_response_buffer_idx,
-                               Uint32 index);
-void release_array_buffers(RS_Buffer *req_buffers,
-                           RS_Buffer *resp_buffers,
-                           Uint32 numOps);
 
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_ENCODING_HPP_

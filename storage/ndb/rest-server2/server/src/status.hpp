@@ -119,7 +119,23 @@ inline RS_Status __RS_ERROR_RONDB_CONFLICT(const struct NdbError &error,
 
 #define __MYFILENAME__ __FILE__
 
-#define RS_OK __RS_ERROR(SUCCESS, -1, -1, -1, -1, "", 0, "")
+/* The success status. The response writer returns it two or three times
+ * per column, so it must not go through __RS_ERROR: that constructor
+ * copies two std::strings and formats both with snprintf, which on macOS
+ * takes a locale lock each time, and on a 511-column row those calls were
+ * about a third of the writer's time (RONDB-1144 benchmarks). Nothing is
+ * formatted here: zero-initialised, code fields as __RS_ERROR sets them
+ * for a success, empty message and file name. */
+inline RS_Status __RS_OK() {
+  RS_Status ret{};
+  ret.http_code = SUCCESS;
+  ret.status = -1;
+  ret.classification = -1;
+  ret.code = -1;
+  ret.mysql_code = -1;
+  return ret;
+}
+#define RS_OK __RS_OK()
 
 #define RS_CLIENT_ERROR(msg) __RS_ERROR(CLIENT_ERROR, \
                                         -1, -1, -1, -1, msg, __LINE__, __MYFILENAME__)

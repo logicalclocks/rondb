@@ -21,7 +21,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 	"runtime/pprof"
 	"time"
 
@@ -43,13 +42,6 @@ func profilingEnabled() bool {
 Wraps all unit tests in this package
 */
 func InitialiseTesting(conf config.AllConfigs, createOnlyTheseDBs ...string) (func(), error) {
-
-	/*
-	 This tends to deliver better benchmarking results
-	 e.g. pkreads (but not ping):
-	 runtime.GOMAXPROCS(runtime.NumCPU() * 2)
-	*/
-	runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
 
 	cleanupWrapper := func(cleanupFNs []func()) func() {
 		return func() {

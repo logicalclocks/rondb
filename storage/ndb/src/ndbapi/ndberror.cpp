@@ -379,6 +379,8 @@ ErrorBundle ErrorCodes[] = {
    */
   { 702,  DMEC, IT, "Request to non-master" },
   { 787,  DMEC, IT, "Schema transaction aborted" },
+  { 627,  DMEC, IT, "Unique index base row read raced with its commit, "
+    "retry the transaction" },
   
   /**
    * Internal errors

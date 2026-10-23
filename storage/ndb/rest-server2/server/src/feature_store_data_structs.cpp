@@ -24,17 +24,39 @@
 #include <drogon/HttpTypes.h>
 
 namespace feature_store_data_structs {
-std::string FeatureStoreResponse::to_string() const {
-  std::string res = "{";
+/* RONDB-1144: the features are the bulk of a response and can hold large
+ * blob values. The string is reserved once for all of it, so it never
+ * reallocates (which would hold the old and the new copy at once), and each
+ * feature is freed as soon as it is appended, so its bytes move into the
+ * response instead of existing twice. The buffer pool's cap counts on one
+ * copy (see derive_max_buffers). */
+static size_t metadata_bytes(
+  const std::vector<feature_store_data_structs::FeatureMetadata> &metadata) {
+  size_t bytes = 0;
+  for (const auto &m : metadata) {
+    bytes += m.name.size() + m.type.size() + 48;
+  }
+  return bytes;
+}
+
+std::string FeatureStoreResponse::to_string() && {
+  size_t reserve = 256 + metadata_bytes(metadata) + 64 * detailedStatus.size();
+  for (const auto &feature : features) {
+    reserve += feature.size() + 5;
+  }
+  std::string res;
+  res.reserve(reserve);
+  res += "{";
 
   // Features
   res += "\"features\":[";
-  for (const auto &feature : features) {
+  for (auto &feature : features) {
     if (feature.empty())
       res += "null";
     else
-      res += std::string(feature.begin(), feature.end());
+      res.append(feature.data(), feature.size());
     res += ",";
+    std::vector<char>().swap(feature);
   }
   if (!features.empty()) {
     res.pop_back();
@@ -349,19 +371,32 @@ FeatureStatus fromString(const std::string &status) {
   return FeatureStatus::Error;
 }
 
-std::string BatchFeatureStoreResponse::to_string() const {
-  std::string res = "{";
+std::string BatchFeatureStoreResponse::to_string() && {
+  size_t reserve = 256 + metadata_bytes(metadata) + 32 * status.size();
+  for (const auto &group : detailedStatus) {
+    reserve += 8 + 64 * group.size();
+  }
+  for (const auto &feature : features) {
+    reserve += 3;
+    for (const auto &entry : feature) {
+      reserve += entry.size() + 5;
+    }
+  }
+  std::string res;
+  res.reserve(reserve);
+  res += "{";
 
   // Serialize features
   res += "\"features\":[";
-  for (const auto &feature : features) {
+  for (auto &feature : features) {
     res += "[";
-    for (const auto &entry : feature) {
+    for (auto &entry : feature) {
       if (entry.empty())
         res += "null";
       else
-        res += std::string(entry.begin(), entry.end());
+        res.append(entry.data(), entry.size());
       res += ",";
+      std::vector<char>().swap(entry);
     }
     if (!feature.empty()) {
       res.pop_back();

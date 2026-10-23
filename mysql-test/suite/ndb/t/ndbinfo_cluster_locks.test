@@ -779,12 +779,17 @@ drop table test.t1;
 
 create table test.t1 (a int primary key, b int, c int, unique(c)) engine=ndb;
 insert into test.t1 values (5,5,5);
---echo Show UK CR takes shared locks
+--echo Show UK CR takes a shared lock on the unique index row only
 
 begin;
 select * from test.t1 where c=5;
 select * from ndbinfo.ordered_locks order by detail,op;
 select count(distinct tableid) from ndbinfo.cluster_locks;
+--echo Expect the lock on the unique hash index, none on the base table
+select t.type_name from ndbinfo.ndb$dict_obj_info o
+  join ndbinfo.ndb$dict_obj_types t on o.type = t.type_id
+  where o.id in (select distinct tableid from ndbinfo.cluster_locks)
+  order by t.type_name;
 rollback;
 
 --echo Show UK EX read

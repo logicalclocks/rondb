@@ -23,6 +23,8 @@
 #include "pk_base_operation.hpp"
 #include "src/rdrs_dal.h"
 
+struct RS_BufferChain;
+
 #include <NdbApi.hpp>
 #include <ArenaMalloc.hpp>
 
@@ -65,7 +67,12 @@ class BaseBatchOperations {
   RS_Status setup_transactions(const char *rate_limit_identity,
                                Uint32 rate_limit_identity_len);
   RS_Status execute();
-  RS_Status create_response(RS_Buffer *respBuffer);
+  /* RONDB-1144: responses are placed in the caller's chain (rule 2, the
+   * start reserve) and rewritten in a fresh buffer when one overflows
+   * (rule 5); see buffer_chain.hpp. */
+  RS_Status create_response(RS_BufferChain &chain);
+  RS_Status write_response(Uint32 i, PKRResponse *resp, bool &found,
+                           Uint32 &response_length);
   void close_transaction();
   RS_Status handle_ndb_error(RS_Status status);
 

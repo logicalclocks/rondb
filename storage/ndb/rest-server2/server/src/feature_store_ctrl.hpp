@@ -111,10 +111,12 @@ void FillPassedFeatures(
   std::vector<metadata::FeatureMetadata>> featureMetadataMap,
   const std::unordered_map<std::string, int> &indexLookup);
 
+struct RS_BufferChain;
 RS_Status process_responses(
   ArenaMalloc*,
-  std::vector<RS_Buffer> &respBuffs,
-  std::vector<RS_Buffer> &reqBuffs,
+  const RS_BufferChain &resp_chain,
+  RS_Buffer *req_views,
+  Uint32 noOps,
   BatchResponseJSON &response);
 
 void FillPrimaryKey(

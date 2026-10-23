@@ -7,7 +7,7 @@
   },
   "Internal": {
     "#comment": "Deliberately tiny request/response caps for ronsql_size_limits.test",
-    "maxReqSize": 300,
+    "MaxHttpReqSize": 300,
     "MaxRespSize": 65536
   },
   "RonDB": {

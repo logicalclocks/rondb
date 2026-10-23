@@ -3208,6 +3208,18 @@ const NdbOperation *NdbTransaction::readTuple(
   if (upgraded_lock) {
     DBUG_PRINT("info", ("Set ReadCommittedBase true"));
     op->setReadCommittedBase();
+    /*
+      The upgrade to LM_Read is only needed to reach a consistent primary key
+      through the unique index row. Ask the kernel to read the base table row
+      lock-free (read committed) so that the lookup neither waits for nor
+      deadlocks with writers of that row. Blob handles read the base row
+      again through NdbBlob and rely on the base row lock, so they keep the
+      fully locked read.
+    */
+    if (op->theBlobList == nullptr) {
+      DBUG_PRINT("info", ("Set lock-free base read"));
+      op->m_flags |= NdbOperation::OF_LOCK_FREE_BASE_READ;
+    }
   }
   if (op->theLockMode == NdbOperation::LM_CommittedRead) {
     op->theDirtyIndicator = 1;

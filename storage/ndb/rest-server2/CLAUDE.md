@@ -440,7 +440,7 @@ When creating shared base classes, these includes are commonly needed:
 
 ```cpp
 #include "src/config_structs.hpp"  // globalConfigs
-#include "src/encoding.hpp"        // getNextRespRS_Buffer
+#include "src/encoding.hpp"        // create_native_request, process_pkread_response
 #include "src/rdrs_dal.h"          // RS_Status, RS_Buffer, etc.
 #include "src/error_strings.h"     // rdrsErrorMessage
 #include "src/rdrs_const.h"        // WAITFOR_RESPONSE_TIMEOUT, etc.

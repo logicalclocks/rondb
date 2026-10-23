@@ -5087,3 +5087,105 @@ INSERT INTO `variables` SET
 /*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
 /*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
 
+-- RONDB-1144: feature view sample_blob v1 (ids follow the avro_strings fixture of RONDB-1135).
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `data_source` SET
+  `id` = 20,
+  `query` = NULL,
+  `database_name` = NULL,
+  `group_name` = NULL,
+  `table_name` = NULL,
+  `path` = NULL,
+  `connector_id` = NULL,
+  `metrics` = NULL,
+  `dimensions` = NULL,
+  `spreadsheet_id` = NULL;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `feature_group` SET
+  `id` = 3092,
+  `name` = 'sample_blob',
+  `feature_store_id` = 1091,
+  `created` = '2026-10-14 00:00:00',
+  `creator` = 10000,
+  `version` = 1,
+  `description` = NULL,
+  `feature_group_type` = 2,
+  `on_demand_feature_group_id` = NULL,
+  `cached_feature_group_id` = NULL,
+  `stream_feature_group_id` = 2069,
+  `event_time` = NULL,
+  `online_enabled` = 1,
+  `topic_name` = NULL,
+  `notification_topic_name` = NULL,
+  `deprecated` = 0,
+  `for_log` = 0,
+  `data_source_id` = 20,
+  `ttl` = NULL,
+  `ttl_enabled` = 0,
+  `sink_enabled` = 0;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `feature_view` SET
+  `id` = 4123,
+  `name` = 'sample_blob',
+  `feature_store_id` = 1091,
+  `created` = '2026-10-14 00:00:00',
+  `creator` = 10000,
+  `version` = 1,
+  `description` = '';
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `serving_key` SET
+  `id` = 1530,
+  `prefix` = NULL,
+  `feature_name` = 'id',
+  `join_on` = NULL,
+  `join_index` = 0,
+  `feature_group_id` = 3092,
+  `required` = 1,
+  `feature_view_id` = 4123,
+  `type` = NULL;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `stream_feature_group` SET
+  `id` = 2069,
+  `timetravel_format` = 1;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `training_dataset_feature` SET
+  `id` = 5187,
+  `training_dataset` = NULL,
+  `feature_group` = 3092,
+  `name` = 'id',
+  `type` = 'bigint',
+  `td_join` = 5144,
+  `idx` = 0,
+  `label` = 0,
+  `inference_helper_column` = 0,
+  `training_helper_column` = 0,
+  `feature_view_id` = 4123,
+  `on_demand_transformation` = NULL;
+INSERT INTO `training_dataset_feature` SET
+  `id` = 5188,
+  `training_dataset` = NULL,
+  `feature_group` = 3092,
+  `name` = 'payload',
+  `type` = 'binary',
+  `td_join` = 5144,
+  `idx` = 1,
+  `label` = 0,
+  `inference_helper_column` = 0,
+  `training_helper_column` = 0,
+  `feature_view_id` = 4123,
+  `on_demand_transformation` = NULL;
+-- RONDB-1144: feature view sample_blob v1 over fsdb002.sample_blob_1, one LONGBLOB feature (blob spill tests).
+INSERT INTO `training_dataset_join` SET
+  `id` = 5144,
+  `training_dataset` = NULL,
+  `feature_group` = 3092,
+  `left_feature_group` = NULL,
+  `feature_group_commit_id` = NULL,
+  `type` = 0,
+  `idx` = 0,
+  `parent_idx` = 0,
+  `prefix` = NULL,
+  `feature_view_id` = 4123,
+  `lookback_key` = NULL,
+  `lookback_start_window` = NULL,
+  `lookback_end_window` = NULL;

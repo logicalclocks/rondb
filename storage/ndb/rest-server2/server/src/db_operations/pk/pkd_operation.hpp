@@ -63,7 +63,7 @@ class BatchDeleteOperations : public BaseBatchOperations {
                                Uint32 numOps,
                                bool is_batch,
                                RS_Buffer *reqBuffer,
-                               RS_Buffer *respBuffer,
+                               RS_BufferChain &resp_chain,
                                Ndb *ndb_object,
                                const char *rate_limit_identity,
                                Uint32 rate_limit_identity_len);

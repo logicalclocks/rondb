@@ -41,7 +41,8 @@ import (
 //
 // The padding is whitespace inside the JSON document: legal JSON, counted by
 // the HTTP layer towards the body size, invisible to the parser. This keeps
-// the request within BatchMaxSize while making the BODY arbitrarily large.
+// the request within MaxOperationsPerBatchRequest while making the BODY
+// arbitrarily large.
 func TestBatchBodyLargerThanMemoryThreshold(t *testing.T) {
 	op := api.BatchSubOp{
 		Method: &[]string{config.PK_HTTP_VERB}[0],

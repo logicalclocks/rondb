@@ -1,0 +1,115 @@
+create table t1 (pk int not null primary key, uk int not null, v int,
+unique key(uk) using hash) engine=ndb;
+create table t2 (pk int not null primary key, uk int not null, v int,
+unique key(uk) using hash) engine=ndb
+comment="NDB_TABLE=READ_BACKUP=0";
+insert into t1 values (1,1,1),(2,2,2);
+insert into t2 values (1,1,1),(2,2,2);
+# t1: committed read by unique key while another transaction holds
+# an exclusive lock on the base row through the primary key
+begin;
+select * from t1 where pk = 1 for update;
+pk	uk	v
+1	1	1
+select * from t1 where uk = 1;
+pk	uk	v
+1	1	1
+rollback;
+# t1: the hidden unique index row is still locked, so a committed
+# read by unique key waits for an uncommitted delete of the row
+# (a write locks the index row on every replica, an exclusive read
+# only on the replica it was sent to)
+begin;
+delete from t1 where pk = 2;
+select * from t1 where uk = 2;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+rollback;
+select * from t1 where uk = 2;
+pk	uk	v
+2	2	2
+# t1: an uncommitted update of the base row is not seen, the
+# committed value is returned without waiting
+begin;
+update t1 set v = v + 100 where pk = 1;
+select * from t1 where uk = 1;
+pk	uk	v
+1	1	101
+select * from t1 where uk = 1;
+pk	uk	v
+1	1	1
+rollback;
+# t1: the unique index row of an insert commits before the base
+# row (error insert 5160 delays COMMIT of user table operations).
+# Reading in that window gives a temporary error, not "no row".
+begin;
+insert into t1 values (3,3,3);
+commit;
+select * from t1 where uk = 3;
+ERROR HY000: Got temporary error 627 'Unique index base row read raced with its commit, retry the transaction' from NDBCLUSTER
+select * from t1 where uk = 3;
+pk	uk	v
+3	3	3
+# t1: a committed delete is a plain "no row", not a temporary error
+delete from t1 where pk = 2;
+select * from t1 where uk = 2;
+pk	uk	v
+# t2: committed read by unique key while another transaction holds
+# an exclusive lock on the base row through the primary key
+begin;
+select * from t2 where pk = 1 for update;
+pk	uk	v
+1	1	1
+select * from t2 where uk = 1;
+pk	uk	v
+1	1	1
+rollback;
+# t2: the hidden unique index row is still locked, so a committed
+# read by unique key waits for an uncommitted delete of the row
+# (a write locks the index row on every replica, an exclusive read
+# only on the replica it was sent to)
+begin;
+delete from t2 where pk = 2;
+select * from t2 where uk = 2;
+ERROR HY000: Lock wait timeout exceeded; try restarting transaction
+rollback;
+select * from t2 where uk = 2;
+pk	uk	v
+2	2	2
+# t2: an uncommitted update of the base row is not seen, the
+# committed value is returned without waiting
+begin;
+update t2 set v = v + 100 where pk = 1;
+select * from t2 where uk = 1;
+pk	uk	v
+1	1	101
+select * from t2 where uk = 1;
+pk	uk	v
+1	1	1
+rollback;
+# t2: the unique index row of an insert commits before the base
+# row (error insert 5160 delays COMMIT of user table operations).
+# Reading in that window gives a temporary error, not "no row".
+begin;
+insert into t2 values (3,3,3);
+commit;
+select * from t2 where uk = 3;
+ERROR HY000: Got temporary error 627 'Unique index base row read raced with its commit, retry the transaction' from NDBCLUSTER
+select * from t2 where uk = 3;
+pk	uk	v
+3	3	3
+# t2: a committed delete is a plain "no row", not a temporary error
+delete from t2 where pk = 2;
+select * from t2 where uk = 2;
+pk	uk	v
+# TTL table: an expired row is a plain "no row" through the unique
+# index as well, although its index row still exists
+create table t3 (pk int not null primary key, uk int not null,
+ts timestamp not null, unique key(uk) using hash)
+engine=ndb comment="NDB_TABLE=TTL=1@ts";
+insert into t3 values (1, 1, now() - interval 1 day), (2, 2, now());
+select pk, uk from t3 where uk = 1;
+pk	uk
+select pk, uk from t3 where uk = 2;
+pk	uk
+2	2
+drop table t1, t2, t3;

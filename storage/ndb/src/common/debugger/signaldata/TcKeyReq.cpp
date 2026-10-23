@@ -107,6 +107,9 @@ bool printTCKEYREQ(FILE *output, const Uint32 *theData, Uint32 len,
     if (sig->getNoWaitFlag(sig->requestInfo))
       fprintf(output, " nowait");
 
+    if (sig->getLockFreeBaseReadFlag(sig->attrLen))
+      fprintf(output, " lockfree_base");
+
     if (sig->getPassQueueingFlag(sig->requestInfo))
       fprintf(output, " passQueue");
 

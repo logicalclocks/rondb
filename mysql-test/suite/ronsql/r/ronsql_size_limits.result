@@ -1,7 +1,7 @@
 call mtr.add_suppression("Schema dist coordinator detected timeout");
 call mtr.add_suppression("Participant timeout");
 
-=== rl-1: request body over maxReqSize -> 413 ===
+=== rl-1: request body over MaxHttpReqSize -> 413 ===
 request refused with 413
 
 === rl-2: small request on the capped instance -> 200 ===

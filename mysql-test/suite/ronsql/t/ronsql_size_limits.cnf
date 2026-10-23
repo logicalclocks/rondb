@@ -2,8 +2,8 @@
 #
 # Identical to the ronsql suite my.cnf except that the FIRST rdrs
 # instance uses rdrs_config_template_limits.json, which sets
-#   Internal.maxReqSize  = 300    (requests over 300 bytes -> 413)
-#   Internal.MaxRespSize = 65536  (responses over 64 KiB -> error)
+#   Internal.MaxHttpReqSize = 300    (requests over 300 bytes -> 413)
+#   Internal.MaxRespSize    = 65536  (responses over 64 KiB -> error)
 # so the test can exercise both caps deterministically.  The second
 # rdrs instance keeps the normal template.
 

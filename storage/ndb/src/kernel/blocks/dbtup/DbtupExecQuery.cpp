@@ -1652,7 +1652,21 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     {
       /* Tuple not visible to this read operation */
       jamDebug();
-      terrorCode = ZTUPLE_DELETED_ERROR;
+      if (dirty && is_insert && req_struct->m_lock_free_read) {
+        /**
+         * The base row of a unique index lookup, read without a lock after
+         * its index row was read with one. The index row is committed and
+         * names this row, so an insert of it that is not committed here
+         * can only be the row's own insert whose COMMIT has not been
+         * applied on this replica yet. Report that as a temporary error so
+         * that the API retries instead of seeing no row. A deleted,
+         * expired or filtered row keeps the plain not found error.
+         */
+        jamDebug();
+        terrorCode = ZTUPLE_NOT_YET_COMMITTED_ERROR;
+      } else {
+        terrorCode = ZTUPLE_DELETED_ERROR;
+      }
       break;
     }
 
@@ -2414,6 +2428,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      * ttl_now_sec == 0 and read the clock per op.
      */
     req_struct.ttl_now_sec = lqhScanPtrP->m_ttl_now_sec;
+    req_struct.m_lock_free_read = false;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -2425,6 +2440,9 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     Uint32 applRef = lqhOpPtrP->applRef;
 
     req_struct.dirty_op = dirtyOp;
+    req_struct.m_lock_free_read =
+        (dirtyOp != 0) &&
+        ((flags & Dblqh::TcConnectionrec::OP_NORMAL_PROTOCOL) != 0);
     req_struct.m_use_rowid = row_id;
     req_struct.log_size = attrBufLen;
     req_struct.attrinfo_len = attrBufLen;

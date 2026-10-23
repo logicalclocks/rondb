@@ -1,0 +1,45 @@
+-- source include/have_ndb.inc
+
+# Committed read through a unique hash index locks only the hidden unique
+# index row; the base table row is read without a lock (read committed).
+# Such a read therefore neither waits for nor deadlocks with a transaction
+# holding the base row, while it still waits for a transaction that holds
+# the index row (an uncommitted insert or delete of the row).
+#
+# When the base row's commit has not been applied yet although its index row
+# is committed, the read reports temporary error 627 instead of "no row".
+#
+# Covered for a READ_BACKUP table (suite default) and a non READ_BACKUP
+# table, since the base row read may choose a backup replica for the former.
+
+connect (con1,localhost,root,,);
+connect (con2,localhost,root,,);
+
+connection con1;
+create table t1 (pk int not null primary key, uk int not null, v int,
+                 unique key(uk) using hash) engine=ndb;
+create table t2 (pk int not null primary key, uk int not null, v int,
+                 unique key(uk) using hash) engine=ndb
+                 comment="NDB_TABLE=READ_BACKUP=0";
+insert into t1 values (1,1,1),(2,2,2);
+insert into t2 values (1,1,1),(2,2,2);
+
+let $tab= t1;
+--source ndb_uk_committed_read.inc
+let $tab= t2;
+--source ndb_uk_committed_read.inc
+
+--echo # TTL table: an expired row is a plain "no row" through the unique
+--echo # index as well, although its index row still exists
+connection con1;
+create table t3 (pk int not null primary key, uk int not null,
+                 ts timestamp not null, unique key(uk) using hash)
+                 engine=ndb comment="NDB_TABLE=TTL=1@ts";
+insert into t3 values (1, 1, now() - interval 1 day), (2, 2, now());
+connection con2;
+select pk, uk from t3 where uk = 1;
+select pk, uk from t3 where uk = 2;
+
+connection con1;
+drop table t1, t2, t3;
+--remove_file $NDB_TOOLS_OUTPUT

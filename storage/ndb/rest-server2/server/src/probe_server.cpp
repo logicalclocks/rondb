@@ -18,6 +18,7 @@
  */
 
 #include "probe_server.hpp"
+#include "buffer_manager.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
 #include "logger.hpp"
@@ -566,6 +567,10 @@ void ProbeServer::onMessage(const trantor::TcpConnectionPtr &conn,
 }
 
 void ProbeServer::sweepStalledRequests() {
+  /* RONDB-1144: unmap surplus pool buffers after an idle period, from this
+   * sweep timer; main.cc runs shrink() on its own timer when the probe
+   * server is disabled. One mutex and a compare when idle. */
+  rsBufferArrayManager.shrink();
   const auto now = std::chrono::steady_clock::now();
   /* Collect first, close after: forceClose() runs the disconnect callback
    * synchronously on this same loop thread, and that callback erases from
