@@ -21,7 +21,9 @@
 #include "pk_data_structs.hpp"
 #include "json_parser.hpp"
 #include "encoding.hpp"
+#include "error_response.hpp"
 #include "buffer_manager.hpp"
+#include "buffer_chain.hpp"
 #include "api_key.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
@@ -32,6 +34,7 @@
 #include <cstring>
 #include <drogon/HttpTypes.h>
 #include <memory>
+#include <new>
 #include <simdjson.h>
 #include <EventLogger.hpp>
 #include <ArenaMalloc.hpp>
@@ -74,7 +77,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
          db.data(), table.data(), json_str);
 #endif
   size_t length = req->getBody().length();
-  if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+  if (unlikely(length > globalConfigs.internal.maxHttpReqSize)) {
     auto resp = drogon::HttpResponse::newHttpResponse();
     resp->setBody("Request too large");
     DEB_PK_CTRL("Error message: Request too large");
@@ -91,7 +94,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
       simdjson::padded_string_view(
         jsonParser.get_buffer().get(),
         length,
-        globalConfigs.internal.maxReqSize + simdjson::SIMDJSON_PADDING),
+        globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING),
       reqStruct);
 
   if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
@@ -133,31 +136,39 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
   ArenaMalloc amalloc(64 * 1024);
   // Execute
   {
-    RS_Buffer reqBuff  = rsBufferArrayManager.get_req_buffer();
-    RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
-    Uint32 dummy = 0;
-
-    status = create_native_request(reqStruct, (Uint32*)reqBuff.buffer, dummy);
+    /* RONDB-1144: one operation, one view in each chain; the chains return
+     * the buffers when they go out of scope. */
+    RS_BufferChain req_chain(RS_BufferChain::REQ, 1);
+    RS_BufferChain resp_chain(RS_BufferChain::RESP, 1);
+    status = req_chain.take_first();
+    if (likely(status.http_code == SUCCESS)) {
+      status = resp_chain.take_first();
+    }
+    if (unlikely(status.http_code != SUCCESS)) {
+      setErrorResponse(req, resp, status);  // 503: pool exhausted
+      callback(resp);
+      return;
+    }
+    RS_Buffer &reqBuff = req_chain.views()[0];
+    Uint32 consumed = 0;
+    status = create_native_request(reqStruct, reqBuff, consumed);
     if (unlikely(static_cast<drogon::HttpStatusCode>(status.http_code) !=
           drogon::HttpStatusCode::k200OK)) {
       resp->setBody(std::string(status.message));
       DEB_PK_CTRL("Error message(4): %s", std::string(status.message).c_str());
       resp->setStatusCode(drogon::HttpStatusCode::k400BadRequest);
       callback(resp);
-      release_array_buffers(&reqBuff, &respBuff, 1);
       return;
     }
-    UintPtr length_ptr = reinterpret_cast<UintPtr>(reqBuff.buffer) +
-      static_cast<UintPtr>(PK_REQ_LENGTH_IDX * ADDRESS_SIZE);
-    Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
-    reqBuff.size = *length_ptr_casted;
+    reqBuff.size = reinterpret_cast<Uint32 *>(reqBuff.buffer)[PK_REQ_LENGTH_IDX];
+    req_chain.advance(consumed);
 
     // pk_read
     status = pk_batch_read((void*)&amalloc,
                            1,
                            false,
-                           &reqBuff,
-                           &respBuff,
+                           req_chain.views(),
+                           &resp_chain,
                            currentThreadIndex,
                            rl_identity.empty() ? nullptr : rl_identity.c_str(),
                            (unsigned int)rl_identity.size());
@@ -174,37 +185,41 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
         resp->setContentTypeCode(drogon::CT_APPLICATION_OCTET_STREAM);
       }
       // convert resp to json
-      char *respData = respBuff.buffer;
-
       PKReadResponseJSON respJson;
       size_t calc_size_json = 20; // Batch overhead
-      process_pkread_response(&amalloc, respData, &reqBuff, respJson);
+      RS_Status read_status =
+        process_pkread_response(&amalloc, resp_chain, 0, &reqBuff, respJson);
+      /* An internal error (it names a file) leaves the columns unset, so
+       * nothing can be serialised; an operation status such as 404 can. */
+      if (unlikely(read_status.err_file_name[0] != '\0')) {
+        setErrorResponse(req, resp, read_status);
+        callback(resp);
+        return;
+      }
       calc_size_json += respJson.getSizeJson();
-      char *json_buf = (char*)amalloc.alloc_bytes(calc_size_json, 8);
-      if (likely(json_buf != nullptr)) {
-        size_t size_json;
-        int ret = respJson.to_string_single(json_buf, &amalloc, size_json);
-        if (unlikely(ret < 0)) {
-          amalloc.reset();
-          resp->setBody("Malloc failure");
-          resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
-        } else {
-#ifdef DEBUG_PK_CTRL
-          printf("JSON response: len: %u, calc_len: %u: \n %s",
-                 (Uint32)size_json,
-                 (Uint32)calc_size_json,
-                 json_buf);
-#endif
-          std::string json(json_buf, size_json);
-          resp->setBody(std::move(json));
-        }
-      } else {
-        amalloc.reset();
+      /* RONDB-1144: the JSON is written straight into the response body,
+       * so one copy of it exists next to the pool buffers it is read from;
+       * the buffer pool's cap counts on that (see derive_max_buffers). */
+      std::string json;
+      try {
+        json.resize(calc_size_json);
+      } catch (const std::bad_alloc &) {
         resp->setBody("Malloc failure");
         resp->setStatusCode(drogon::HttpStatusCode::k500InternalServerError);
+        callback(resp);
+        return;
       }
+      size_t size_json;
+      respJson.to_string_single(json.data(), size_json);
+      json.resize(size_json);
+#ifdef DEBUG_PK_CTRL
+      printf("JSON response: len: %u, calc_len: %u: \n %s",
+             (Uint32)size_json,
+             (Uint32)calc_size_json,
+             json.c_str());
+#endif
+      resp->setBody(std::move(json));
     }
     callback(resp);
-    release_array_buffers(&reqBuff, &respBuff, 1);
   }
 }

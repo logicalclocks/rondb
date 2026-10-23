@@ -14761,6 +14761,26 @@ void Dblqh::execCOMMIT(Signal *signal) {
       return;
     }
   }
+  if (ERROR_INSERTED(5160) &&
+      refToMain(signal->getSendersBlockRef()) == DBTC) {
+    /**
+     * Delay COMMIT of user table operations only, so that a unique index
+     * row commits before the base table row it points to. Used to test the
+     * lock-free base read of a unique index lookup during that window.
+     * Only the delivery from DBTC is delayed, the delayed re-delivery is
+     * sent by this block and goes through.
+     */
+    jam();
+    TablerecPtr tablePtr;
+    tablePtr.i = tcConnectptr.p->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    if (DictTabInfo::isTable(tablePtr.p->tableType)) {
+      jam();
+      sendSignalWithDelay(cownref, GSN_COMMIT, signal, 1500,
+                          signal->getLength());
+      return;
+    }
+  }
 
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
   if (likely((tcConnectptr.p->transid[0] == transid1) &&

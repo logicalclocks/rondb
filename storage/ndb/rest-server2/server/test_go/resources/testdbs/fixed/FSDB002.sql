@@ -1339,3 +1339,14 @@ INSERT INTO `avro_strings_1` VALUES
   (1, 0x0206020C68C3A96C6C6F020CE697A5E69CAC0208F09F988000),
   (2, NULL),
   (3, 0x0204020A706C61696E0000);
+
+-- RONDB-1144: one LONGBLOB feature for the feature-store blob spill tests.
+-- The payload is seeded NULL; each test writes its own value and resets it.
+
+CREATE TABLE `sample_blob_1` (
+  `id` bigint NOT NULL,
+  `payload` longblob DEFAULT NULL,
+  PRIMARY KEY (`id`)
+) ENGINE=ndbcluster;
+
+INSERT INTO `sample_blob_1` VALUES (1, NULL);

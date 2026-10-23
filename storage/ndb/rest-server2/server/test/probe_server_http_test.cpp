@@ -772,18 +772,41 @@ TEST(ProbeConfigTest, ProbePortWithAuthenticatedProbesIsRejected) {
   }
 }
 
-/* Pins the exact failure signature of a version-skewed rollout: an rdrs2
- * image that predates REST.ProbePort rejects a config carrying it with
- * "Unexpected key" at startup (this binary's parser is equally strict about
- * keys IT does not know, which is what is asserted here). The rondb-helm
- * runbook matches on this text; if the wording changes, update both. */
-TEST(ProbeConfigTest, UnknownRestKeyIsRejectedWithUnexpectedKey) {
+/* A response view begins with a 36-byte header written without a capacity
+ * check, so StartReserveOverride must leave room for it (RONDB-1144). */
+TEST(ProbeConfigTest, StartReserveOverrideBelowResponseHeaderIsRejected) {
+  const AllConfigs saved = globalConfigs;
+  for (Uint32 value : {1U, static_cast<Uint32>(PK_RESP_HEADER_END - 1)}) {
+    AllConfigs c = saved;
+    c.internal.startReserveOverride = value;
+    RS_Status st = AllConfigs::set_all(c);
+    EXPECT_NE(st.http_code, 200) << "StartReserveOverride " << value;
+  }
+  for (Uint32 value : {0U, static_cast<Uint32>(PK_RESP_HEADER_END)}) {
+    AllConfigs c = saved;
+    c.internal.startReserveOverride = value;
+    RS_Status st = AllConfigs::set_all(c);
+    EXPECT_EQ(st.http_code, 200) << st.message;
+  }
+  globalConfigs = saved;
+}
+
+/* A config key this binary does not know is warned about and ignored
+ * (RONDB-1144), so a file written for another rdrs2 version still starts
+ * the server; the keys it does know are still applied. rdrs2 images that
+ * predate RONDB-1144 instead fail with "Unexpected key" at startup. */
+TEST(ProbeConfigTest, UnknownRestKeyIsWarnedAboutAndIgnored) {
   AllConfigs parsed;
+  testing::internal::CaptureStderr();
   RS_Status st = JSONParser::config_parse(
-    R"({"REST": {"FutureUnknownOption": 1}})", parsed);
-  EXPECT_NE(st.http_code, 200);
-  EXPECT_NE(std::string(st.message).find("Unexpected key"), std::string::npos)
-    << "message was: " << st.message;
+    R"({"REST": {"FutureUnknownOption": {"nested": [1, 2]},
+                 "NumThreads": 7}})", parsed);
+  const std::string err = testing::internal::GetCapturedStderr();
+  EXPECT_EQ(st.http_code, 200) << st.message;
+  EXPECT_EQ(parsed.rest.numThreads, 7U);
+  EXPECT_NE(err.find("ignoring unknown configuration key \"FutureUnknownOption\""),
+            std::string::npos)
+    << "stderr was: " << err;
 }
 
 }  // namespace

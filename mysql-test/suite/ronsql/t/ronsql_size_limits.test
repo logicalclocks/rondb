@@ -2,20 +2,20 @@
 #
 # The companion ronsql_size_limits.cnf points the first rdrs instance
 # ($RDRS_NOKEY_*) at rdrs_config_template_limits.json:
-#   Internal.maxReqSize  = 300    -> the HTTP server refuses larger
-#                                    request bodies with 413 before
-#                                    assembly (drogon setClientMaxBodySize
-#                                    is installed from maxReqSize; its
-#                                    unset 1 MB default used to SHADOW
-#                                    the configurable limit)
-#   Internal.MaxRespSize = 65536  -> the /ronsql endpoint accumulates
-#                                    the response into a capped buffer;
-#                                    past the cap the query fails with a
-#                                    clean error instead of growing
-#                                    server memory with the result set
+#   Internal.MaxHttpReqSize = 300    -> the HTTP server refuses larger
+#                                      request bodies with 413 before
+#                                      assembly (drogon setClientMaxBodySize
+#                                      is installed from MaxHttpReqSize; its
+#                                      unset 1 MB default used to SHADOW
+#                                      the configurable limit)
+#   Internal.MaxRespSize    = 65536  -> the /ronsql endpoint accumulates
+#                                      the response into a capped buffer;
+#                                      past the cap the query fails with a
+#                                      clean error instead of growing
+#                                      server memory with the result set
 #
 # Case map (rl-N):
-#   1  request body > maxReqSize -> HTTP 413 (refused before assembly)
+#   1  request body > MaxHttpReqSize -> HTTP 413 (refused before assembly)
 #   2  small valid request on the same capped instance -> 200 + rows
 #   3  response > MaxRespSize -> HTTP 413, error class "limit" +
 #      ERROR_RESPONSE_TOO_LARGE message naming the cap
@@ -47,7 +47,7 @@ DROP TABLE _d8;
 --enable_query_log
 
 --echo
---echo === rl-1: request body over maxReqSize -> 413 ===
+--echo === rl-1: request body over MaxHttpReqSize -> 413 ===
 # Any body over 300 bytes is refused by the HTTP server before parsing;
 # the SQL inside is whitespace-padded filler that never gets looked at.
 --let BODY_FILE=$MYSQL_TMP_DIR/rl1_body.json

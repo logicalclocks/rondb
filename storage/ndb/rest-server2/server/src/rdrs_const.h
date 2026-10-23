@@ -147,10 +147,8 @@ static inline int bytes_for_ndb_str_len(int ndb_str_len) {
 #define TIME2_MAX_SIZE_IN_BYTES             6
 #define DATETIME_MAX_SIZE_IN_BYTES          8
 #define TIMESTAMP2_MAX_SIZE_IN_BYTES        7
-#define MAX_TUPLE_SIZE_IN_BYTES             7501 * 4
-#define MAX_TUPLE_SIZE_IN_BYTES_ENCODED     40008
-#define MAX_TUPLE_SIZE_IN_BYTES_ESCAPED \
-  MAX_TUPLE_SIZE_IN_BYTES * 2 /*worst cast every character needs to be escaped*/
+/* The row size limits live in buffer_sizes.hpp (MAX_ROW_BYTES and
+ * the buffer minimums), derived from ndb_limits.h so they follow the data node. */
 #define BIT_MAX_SIZE_IN_BYTES         4096 / 8
 #define BIT_MAX_SIZE_IN_BYTES_ENCODED 686
 #define BLOB_MAX_FETCH_SIZE           1024 * 32

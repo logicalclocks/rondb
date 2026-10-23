@@ -1627,6 +1627,11 @@ class NdbOperation {
     OF_NOWAIT = 0x20,
     OF_BLOB_PART_READ = 0x40,
     OF_REPLICA_APPLIER = 0x80,
+    /*
+      Unique index read that was upgraded from LM_CommittedRead: the index
+      row is read with a shared lock, the base table row without a lock.
+    */
+    OF_LOCK_FREE_BASE_READ = 0x1000,
     OF_TTL_IGNORE = 0x100,
     OF_TTL_ONLY_EXPIRED = 0x200,
     OF_RING_BUFFER_OP = 0x400,

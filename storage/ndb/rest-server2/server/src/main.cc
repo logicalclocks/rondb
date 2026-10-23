@@ -26,6 +26,10 @@ constexpr const char* const usageHelp =
   "--print-config      Print the effective configuration that would be used,\n"
   "                    together with explanations.\n"
   "\n"
+  "--print-limits      Print the sizes and caps rdrs2 derives from the NDB\n"
+  "                    limits it was built with, the configuration and the\n"
+  "                    memory limit of this process, as JSON.\n"
+  "\n"
   "-v, --version       Print version information.\n"
   "\n"
   "-h, --help          Show this usage help.\n"
@@ -58,6 +62,9 @@ constexpr const char* const usageHelp =
 #include "ronsql_worker_pool.hpp"
 #include "storage/ndb/src/ronsql/RonSQLCommon.hpp"
 #include "probe_server.hpp"
+#include "process_setup.hpp"
+#include "buffer_manager.hpp"
+#include "buffer_sizes.hpp"
 #include "logger.hpp"
 
 #include <cstdio>
@@ -159,6 +166,9 @@ static void do_exit() {
     delete g_mysql_router_conn_factory;
     g_mysql_router_conn_factory = nullptr;
   }
+  /* Request handling has stopped by now; unmap the pools' free buffers.
+   * A no-op when init never ran (early startup failures). */
+  rsBufferArrayManager.shutdown();
   if (g_rondis_running) {
     g_rondis_thread->StopThread();
     g_rondis_running = false;
@@ -389,6 +399,22 @@ int main(int argc, char *argv[]) {
   signal(SIGQUIT, handle_signal_async);
   signal(SIGTERM, handle_signal_async);
 
+  /* Before the first thread: start_fs_cache() below creates one, and
+   * before Linux 5.0 the setting only applied to mappings created after
+   * the call (RONDB-1144). The
+   * logger is not configured yet, so a failure goes to stderr. */
+  {
+    ProcessSetupResult setup = rdrs_process_setup();
+#ifdef __linux__
+    if (!setup.thp_disabled) {
+      fprintf(stderr, "Warning: prctl(PR_SET_THP_DISABLE) failed: %s\n",
+              strerror(setup.errno_thp));
+    }
+#else
+    (void)setup;
+#endif
+  }
+
   ndb_init();
   g_did_ndb_init = true;
   globalConfigsMutex = NdbMutex_Create();
@@ -411,6 +437,7 @@ int main(int argc, char *argv[]) {
 
   bool seenOptConfig = false;
   bool optPrintConfig = false;
+  bool optPrintLimits = false;
   bool optHelp = false;
   bool optVersion = false;
   for (int i = 1; i < argc; ++i) {
@@ -432,6 +459,10 @@ int main(int argc, char *argv[]) {
     }
     if (strcmp(argv[i], "--print-config") == 0) {
       optPrintConfig = true;
+      continue;
+    }
+    if (strcmp(argv[i], "--print-limits") == 0) {
+      optPrintLimits = true;
       continue;
     }
     if (strcmp(argv[i], "-h") == 0 ||
@@ -457,7 +488,7 @@ int main(int argc, char *argv[]) {
   if (optHelp) {
     printf("\n%s", usageHelp);
   }
-  if ((optVersion || optHelp) && !optPrintConfig) {
+  if ((optVersion || optHelp) && !optPrintConfig && !optPrintLimits) {
     do_exit();
   }
 
@@ -471,9 +502,76 @@ int main(int argc, char *argv[]) {
     do_exit();
   }
 
+  /* The THP opt-out was made before the first thread; the configuration
+   * can only undo it (RONDB-1144). */
+  if (!globalConfigs.internal.disableTransparentHugePages) {
+    ProcessSetupResult thp = rdrs_allow_transparent_huge_pages();
+#ifdef __linux__
+    if (thp.thp_disabled) {
+      std::cerr << "Warning: prctl(PR_SET_THP_DISABLE, 0) failed: "
+                << strerror(thp.errno_thp) << '\n';
+    } else {
+      std::cerr << "Transparent huge pages allowed"
+                << " (Internal.DisableTransparentHugePages is false)\n";
+    }
+#else
+    (void)thp;
+#endif
+  }
+
   if (optPrintConfig) {
     printJson(globalConfigs, std::cout, 0, true);
     std::cout << '\n';
+    if (!optPrintLimits) do_exit();
+  }
+
+  /* The buffer pools live in a trivially constructed global and are set up
+   * here, once the configuration and the memory limit are known, rather
+   * than at static-initialisation time from compiled-in defaults
+   * (RONDB-1144). Before the metrics, which read the derived cap. */
+  if (globalConfigs.internal.startReserveOverride != 0) {
+    std::cerr << "Warning: Internal.StartReserveOverride is set to "
+              << globalConfigs.internal.startReserveOverride
+              << " bytes; this is a testing knob\n";
+  }
+  rsBufferArrayManager.init_from_config();
+  /* The pool share assumes the rest of the process fits in the remainder
+   * of the limit. Below 2 GiB that remainder is too small for the NDB API,
+   * the parse buffers and the process baseline plus the response bodies
+   * already handed to Drogon, which the pool does not count. 2 GiB is the
+   * floor, not a sizing for every load: a batch of up to
+   * MaxOperationsPerBatchRequest wide rows can fill most of a 2 GiB pool,
+   * so workloads that read large batches need a higher limit. */
+  if (rsBufferArrayManager.memory_limit_bytes() < (Uint64(2) << 30)) {
+    std::cerr << "Warning: the memory limit is "
+              << (rsBufferArrayManager.memory_limit_bytes() >> 20)
+              << " MiB; rdrs2 needs at least 2 GiB to stay inside it under"
+              << " load\n";
+  }
+
+  if (optPrintLimits) {
+    /* The derived numbers, for operators. The running server exports the
+     * same values as the rdrs_limits metric family. */
+    std::cout << "{\n"
+              << "  \"MaxColumns\": " << MAX_ATTRIBUTES_IN_TABLE << ",\n"
+              << "  \"MaxRowBytes\": " << MAX_ROW_BYTES << ",\n"
+              << "  \"ReqBufferBytes\": "
+              << rsBufferArrayManager.req_buffer_bytes() << ",\n"
+              << "  \"RespBufferBytes\": "
+              << rsBufferArrayManager.resp_buffer_bytes() << ",\n"
+              << "  \"MinReqBufferBytes\": " << MIN_REQ_BUFFER << ",\n"
+              << "  \"MinRespBufferBytes\": " << MIN_RESP_BUFFER << ",\n"
+              << "  \"MaxOperationsPerBatchRequest\": "
+              << globalConfigs.internal.maxOperationsPerBatchRequest << ",\n"
+              << "  \"MaxOperationsPerNdbExecute\": "
+              << globalConfigs.internal.maxOperationsPerNdbExecute << ",\n"
+              << "  \"MaxBlobTextValueBytes\": "
+              << globalConfigs.internal.maxBlobTextValueBytes << ",\n"
+              << "  \"MaxBuffers\": " << rsBufferArrayManager.max_buffers()
+              << ",\n"
+              << "  \"MemoryLimitBytes\": "
+              << rsBufferArrayManager.memory_limit_bytes() << "\n"
+              << "}\n";
     do_exit();
   }
 
@@ -819,19 +917,26 @@ int main(int argc, char *argv[]) {
         globalConfigs.rest.idleConnectionTimeoutS);
     }
 
-    // Install Internal.maxReqSize as the HTTP server's client body
+    // Install Internal.MaxHttpReqSize as the HTTP server's client body
     // limit.  Without this, drogon's built-in 1 MB default silently
     // SHADOWED the configurable limit: any request over 1 MB was
-    // refused with 413 before assembly regardless of maxReqSize, and
-    // raising maxReqSize had no effect.  With the two aligned, drogon
+    // refused with 413 before assembly regardless of MaxHttpReqSize, and
+    // raising MaxHttpReqSize had no effect.  With the two aligned, drogon
     // refuses over-limit requests with 413 up front and the
-    // per-controller maxReqSize checks remain as backstops.
-    drogon::app().setClientMaxBodySize(globalConfigs.internal.maxReqSize);
+    // per-controller MaxHttpReqSize checks remain as backstops.
+    drogon::app().setClientMaxBodySize(globalConfigs.internal.maxHttpReqSize);
     drogon::app().disableSession();
     drogon::app().registerBeginningAdvice([]() {
       auto addresses = drogon::app().getListeners();
       for (auto &address : addresses) {
         printf("RDRS Server running on %s\n", address.toIpPort().c_str());
+      }
+      /* The buffer pools shrink from the probe server's sweep timer; without
+       * a probe server, give them a timer on the main loop (RONDB-1144). */
+      if (!globalConfigs.rest.probeEnable) {
+        drogon::app().getLoop()->runEvery(1.0, []() {
+          rsBufferArrayManager.shrink();
+        });
       }
       /* Both probe-port endpoints require g_drogon_up for a 200: neither a
        * startup probe (ping) nor a readiness probe (health) may pass before
