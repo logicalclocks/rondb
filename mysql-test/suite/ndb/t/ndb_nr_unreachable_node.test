@@ -5,16 +5,20 @@
 # could not include a restarting data node without a connection to one of
 # the data nodes in the cluster, and it refused every other restarting
 # node meanwhile, so no data node could join the cluster until the
-# connection came up. Now the president aborts the inclusion after
-# StartPartialTimeout (15 seconds here), other restarting nodes join
-# meanwhile, and the node joins once it can connect to all nodes.
+# connection came up. Now the president aborts the inclusion when it has
+# not completed within 10 seconds, and as the cluster has started the
+# node exits at once: its node restart fails. Its angel starts it again
+# (StopOnError=0), until it joins once it can connect to all nodes. Other
+# restarting nodes join meanwhile and survive its exit, also before they
+# have joined themselves.
 #
 # The cluster has four data nodes in two node groups, {1,2} and {3,4}, see
 # ndb_sr_unreachable_node.cnf. Data nodes 2 and 4 are restarted into not
 # started state, then the firewall blocks new connections to the port
 # data node 3 listens on: node 4 cannot connect to node 3. Node 4 starts
 # first, and when the president is including it node 2 starts. Node 2
-# must complete its node restart although node 4 cannot be included. The
+# must complete its node restart although node 4 cannot be included and
+# exits, before node 2 has joined and again while node 2 restarts. The
 # firewall blocks only new connections, so the MySQL Servers keep their
 # connections to node 3.
 #
@@ -92,16 +96,16 @@ EOF
 --exec $NDB_MGM -e "2 START" >> $NDB_TOOLS_OUTPUT
 --exec $NDB_WAITER --nowait-nodes=4 --timeout=300 >> $NDB_TOOLS_OUTPUT
 
---echo # Node 4 is still starting, its inclusion was aborted
+--echo # Node 4 has not started, its inclusion was aborted and it exited
 --perl
   use strict;
   my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
   my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
   my $out = `$mgm -e "4 STATUS" 2>&1`;
   my ($status) = $out =~ /^Node 4: (\S+)/m;
-  die "Node 4 is not starting:\n$out"
-    unless defined $status && $status eq 'starting';
-  print "Node 4 is starting\n";
+  die "Node 4 has started:\n$out"
+    if defined $status && $status eq 'started';
+  print "Node 4 has not started\n";
 
   my $offset_file = "$vardir/tmp/ndb_nr_unreachable_node.offset";
   open(my $fh, '<', $offset_file) or die "Cannot read $offset_file: $!\n";
@@ -109,23 +113,34 @@ EOF
   chomp(my $offset = <$fh>);
   close($fh);
   unlink($offset_file);
-  open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
-  seek($lf, $offset, 0);
-  my $president = 0;
-  my $node4 = 0;
-  while (my $line = <$lf>) {
-    $president++
-      if $line =~ /Node 1: Node 4 was not included in the cluster within StartPartialTimeout \(15000 ms\), .* Aborting its inclusion, other nodes can join meanwhile/;
-    $node4++
-      if $line =~ /Node 4: President node 1 aborted our inclusion in the cluster/;
+  my ($president, $exited, $member_shutdown);
+  my $timeout = 120;
+  my $start = time();
+  while (1) {
+    ($president, $exited, $member_shutdown) = (0, 0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      $president++
+        if $line =~ /Node 1: Node 4 was not included in the cluster within 10000 ms, .* Aborting its inclusion, the cluster has started, its node restart fails/;
+      $exited++
+        if $line =~ /Node 4: Forced node shutdown completed.* Caused by error 6054/;
+      $member_shutdown++
+        if $line =~ /Node (\d+): Forced node shutdown/ && $1 != 4;
+    }
+    close($lf);
+    last if $exited;
+    die "Timeout waiting for node 4 to exit\n" if time() - $start > $timeout;
+    sleep(1);
   }
-  close($lf);
   print "President aborted the inclusion of node 4: " .
         ($president > 0 ? "yes" : "no") . "\n";
-  print "Node 4 was told: " . ($node4 > 0 ? "yes" : "no") . "\n";
+  print "Node 4 exited: yes\n";
+  print "Nodes 1, 2 and 3 went on running: " .
+        ($member_shutdown ? "no" : "yes") . "\n";
 EOF
 
---echo # The cluster serves data while node 4 waits
+--echo # The cluster serves data while node 4 restarts
 --source include/ndb_not_readonly.inc
 SELECT COUNT(*), SUM(b) FROM t1;
 INSERT INTO t1 VALUES (11, 11);

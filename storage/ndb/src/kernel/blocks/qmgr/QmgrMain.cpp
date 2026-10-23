@@ -1254,21 +1254,35 @@ void Qmgr::execREAD_NODESREF(Signal *signal) {
  * protocol, that node never sends CM_ACKADD(Prepare), and the president
  * refuses every other new node while it waits. So the president
  * supervises the prepare phase: when it has not completed within
- * StartPartialTimeout, the president aborts the inclusion
+ * ZINCLUSION_TIME_LIMIT, the president aborts the inclusion
  * (regreqMasterTimeLimitLab):
  *
  * <----CM_ADD(Abort)---------------------------------------------------
  *                                   <<------CM_ADD(Abort)-----------------
  *
- * The nodes forget the new node, which stays connected and goes back to
- * sending CM_REGREQ. The president includes it again when
- * StartPartialTimeout has passed. A cluster start goes on without it if
- * the other nodes can restore all data, else it completes once the new
- * node or another node of its node group can be included. The president
- * does not fail the new node since a node failure would make all nodes
- * that are starting fail as well. Every CM_ACKADD carries the dynamic id
- * of the attempt, so that the president tells an acknowledgement of an
- * aborted attempt from one of the next attempt of the same node.
+ * The nodes forget the new node. When the cluster has started, the new
+ * node exits, its node restart fails. In a cluster start it stays
+ * connected and goes back to sending CM_REGREQ, the president includes it
+ * again when ZINCLUSION_RETRY_DELAY has passed. When that attempt is
+ * aborted as well, the new node exits, its angel starts it again. A
+ * cluster start goes on without it if the other nodes can restore all
+ * data, else it completes once the new node or another node of its node
+ * group can be included. Every CM_ACKADD carries the dynamic id of the
+ * attempt, so that the president tells an acknowledgement of an aborted
+ * attempt from one of the next attempt of the same node.
+ *
+ * A node that has not joined the cluster is allowed to fail. It has
+ * joined when the president has started to commit its inclusion, from
+ * then on its failure is a node failure as before. Before that, the
+ * president aborts its inclusion when it disconnects, and the members
+ * leave the decision to the president (lost_starting_node): members
+ * deciding on their own could disagree whether it had joined
+ * (bug#42422). A member that has not started does not exit when a node
+ * that has not joined disconnects, and neither does a node that has not
+ * joined either but is connected to the president
+ * (start_survives_disconnect): it depends on the members only. A node
+ * without a president is in the election, which counts the nodes it
+ * hears from, and exits.
  */
 /*******************************/
 /* CM_INFOCONF                */
@@ -1350,7 +1364,7 @@ void Qmgr::cmInfoconf010Lab(Signal *signal) {
   signal->theData[0] = ZREGREQ_TIMELIMIT;
   signal->theData[1] = c_start.m_startKey;
   signal->theData[2] = c_start.m_startNode;
-  sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 3000, 3);
+  sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, ZREGREQ_LOOP_DELAY, 3);
 
   creadyDistCom = ZTRUE;
   return;
@@ -1589,8 +1603,8 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
   if (c_aborted_inclusions.get(addNodePtr.i)) {
     /**
      * The inclusion of this node was aborted, see
-     * regreqMasterTimeLimitLab. It waits StartPartialTimeout, so that the
-     * other starting nodes are included before a node that may still
+     * regreqMasterTimeLimitLab. It waits ZINCLUSION_RETRY_DELAY, so that
+     * the other starting nodes are included before a node that may still
      * lack connections is tried again. It is not kept out longer: a
      * cluster start that cannot complete without it would then never
      * complete, also once its connections are up.
@@ -1599,7 +1613,7 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
         NdbTick_Elapsed(c_aborted_inclusion_time[addNodePtr.i],
                         NdbTick_getCurrentTicks())
             .milliSec();
-    if (elapsed < c_restartPartialTimeout) {
+    if (elapsed < ZINCLUSION_RETRY_DELAY) {
       jam();
       DEB_STARTUP(("Aborted inclusion, busy president error"));
       sendCmRegrefLab(signal, Tblockref, CmRegRef::ZBUSY, startingVersion);
@@ -1750,17 +1764,13 @@ void Qmgr::execCM_REGREQ(Signal *signal) {
   DEBUG_START2(GSN_CM_ADD, rg, "Prepare");
 
   /**
-   * Set timer, see regreqMasterTimeLimitLab. StartPartialTimeout 0 means
-   * wait for ever.
+   * Set timer, see regreqMasterTimeLimitLab.
    */
   c_start.m_startNodeTime = NdbTick_getCurrentTicks();
-  if (c_restartPartialTimeout != Uint32(~0)) {
-    jam();
-    signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
-    signal->theData[1] = c_start.m_startKey;
-    signal->theData[2] = c_start.m_startNode;
-    sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 1000, 3);
-  }
+  signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
+  signal->theData[1] = c_start.m_startKey;
+  signal->theData[2] = c_start.m_startNode;
+  sendSignalWithDelay(QMGR_REF, GSN_CONTINUEB, signal, 1000, 3);
   return;
 }  // Qmgr::execCM_REGREQ()
 
@@ -1878,8 +1888,12 @@ void Qmgr::execCM_REGCONF(Signal *signal) {
   ndbrequire(c_start.m_gsn == GSN_CM_REGREQ);
   ndbrequire(myNodePtr.p->phase == ZSTARTING);
 
+  /* Fail before we have joined, see start_survives_disconnect */
+  CRASH_INSERTION(963);
+
   cpdistref = cmRegConf->presidentBlockRef;
   cpresident = cmRegConf->presidentNodeId;
+  c_known_president = cpresident;
   UintR TdynamicId = cmRegConf->dynamicId;
   c_maxDynamicId = TdynamicId & 0xFFFF;
   c_clusterNodes.assign(allNdbNodes);
@@ -2072,6 +2086,11 @@ void Qmgr::check_readnodes_reply(Signal *signal, Uint32 nodeId, Uint32 gsn) {
 
 void Qmgr::sendCmNodeInfoReq(Signal *signal, Uint32 nodeId,
                              const NodeRec *self) {
+  if (ERROR_INSERTED(964)) {
+    jam();
+    /* As without connections, see regreqMasterTimeLimitLab */
+    return;
+  }
   CmNodeInfoReq *const req = (CmNodeInfoReq *)signal->getDataPtrSend();
   req->nodeId = getOwnNodeId();
   req->dynamicId = self->ndynamicId;
@@ -2226,6 +2245,8 @@ void Qmgr::execCM_REGREF(Signal *signal) {
     case CmRegRef::ZBUSY_PRESIDENT:
       jam();
       cpresidentAlive = ZTRUE;
+      /* The sender is the president, see start_survives_disconnect */
+      c_known_president = candidate;
       signal->theData[3] = 0;
       break;
     case CmRegRef::ZNOT_IN_CFG:
@@ -2272,6 +2293,8 @@ void Qmgr::execCM_REGREF(Signal *signal) {
     case CmRegRef::ZNOT_PRESIDENT:
       jam();
       cpresidentAlive = ZTRUE;
+      /* The candidate is the president of the sender */
+      c_known_president = candidate;
       signal->theData[3] = 3;
       break;
     default:
@@ -2797,18 +2820,19 @@ void Qmgr::regreqTimeLimitLab(Signal *signal) {
  * its transporter connections. Without a connection to one cluster node
  * the starting node is thus never included, and while the president
  * waits for it every other starting node is refused with ZBUSY_PRESIDENT.
- * So after StartPartialTimeout the president aborts the inclusion. It
+ * So after ZINCLUSION_TIME_LIMIT the president aborts the inclusion. It
  * does so also when the cluster start cannot complete without the node:
  * a node that cannot connect to every member cannot take part in the
  * start, and waiting for it would keep out the starting nodes that can.
  * NDBCNTR does not start a system restart that cannot restore all data.
  *
  * The president does not fail the starting node: a node that has not
- * started fails when another data node fails or disconnects, so in a
- * cluster start all starting nodes would fail with it. CM_ADD(Abort)
- * instead makes every node forget the starting node, which stays
- * connected and asks to be included again, see execCM_REGREQ for when it
- * is.
+ * started fails when another data node fails, so all starting nodes
+ * would fail with it, also those that have joined. CM_ADD(Abort) instead
+ * makes every node forget the starting node. In a node restart it then
+ * exits, in a cluster start it asks to be included again, see
+ * execCM_REGREQ for when it is, and exits at a second abort, see
+ * cm_add_abort_starting_node.
  */
 void Qmgr::regreqMasterTimeLimitLab(Signal *signal) {
   if (cpresident != getOwnNodeId() || c_start.m_gsn != GSN_CM_ADD) {
@@ -2818,7 +2842,7 @@ void Qmgr::regreqMasterTimeLimitLab(Signal *signal) {
 
   const NDB_TICKS now = NdbTick_getCurrentTicks();
   if (NdbTick_Elapsed(c_start.m_startNodeTime, now).milliSec() <
-      c_restartPartialTimeout) {
+      ZINCLUSION_TIME_LIMIT) {
     jam();
     signal->theData[0] = ZREGREQ_MASTER_TIMELIMIT;
     signal->theData[1] = c_start.m_startKey;
@@ -2842,31 +2866,21 @@ void Qmgr::regreqMasterTimeLimitLab(Signal *signal) {
   if (unreached.isclear()) {
     BaseString::snprintf(what, sizeof(what),
                          "Node %u was not included in the cluster within"
-                         " StartPartialTimeout (%u ms), it has not prepared"
-                         " its inclusion",
-                         addNodePtr.i, c_restartPartialTimeout);
+                         " %u ms, it has not prepared its inclusion",
+                         addNodePtr.i, ZINCLUSION_TIME_LIMIT);
   } else {
     BaseString::snprintf(what, sizeof(what),
                          "Node %u was not included in the cluster within"
-                         " StartPartialTimeout (%u ms), its CM_NODEINFOREQ"
-                         " has not reached node(s) %s, most likely it has no"
-                         " connection to them",
-                         addNodePtr.i, c_restartPartialTimeout,
+                         " %u ms, its CM_NODEINFOREQ has not reached"
+                         " node(s) %s, most likely it has no connection to"
+                         " them",
+                         addNodePtr.i, ZINCLUSION_TIME_LIMIT,
                          BaseString::getPrettyText(unreached).c_str());
   }
 
-  bool can_abort =
-      ndbd_support_cm_add_abort(getNodeInfo(addNodePtr.i).m_version);
-  for (Uint32 i = 1; i < MAX_NDB_NODES && can_abort; i++) {
-    if (c_clusterNodes.get(i) &&
-        !ndbd_support_cm_add_abort(getNodeInfo(i).m_version)) {
-      jam();
-      can_abort = false;
-    }
-  }
-  if (!can_abort) {
+  if (!all_support_cm_add_abort(addNodePtr.i)) {
     jam();
-    /* Keep waiting, report again after another StartPartialTimeout */
+    /* Keep waiting, report again after another ZINCLUSION_TIME_LIMIT */
     warningEvent("%s. Waiting for it, not all nodes can abort an inclusion",
                  what);
     c_start.m_startNodeTime = now;
@@ -2882,7 +2896,7 @@ void Qmgr::regreqMasterTimeLimitLab(Signal *signal) {
   if (getNodeState().startLevel >= NodeState::SL_STARTED) {
     jam();
     BaseString::snprintf(outcome, sizeof(outcome),
-                         "other nodes can join meanwhile");
+                         "the cluster has started, its node restart fails");
   } else if (is_initial_start()) {
     jam();
     BaseString::snprintf(outcome, sizeof(outcome),
@@ -2902,9 +2916,31 @@ void Qmgr::regreqMasterTimeLimitLab(Signal *signal) {
                          "the cluster start cannot complete without it, %s",
                          reason);
   }
-  warningEvent("%s. Aborting its inclusion, %s, it can join again in %u ms",
-               what, outcome, c_restartPartialTimeout);
+  if (getNodeState().startLevel < NodeState::SL_STARTED) {
+    jam();
+    const size_t len = strlen(outcome);
+    BaseString::snprintf(outcome + len, sizeof(outcome) - len,
+                         ", it can join again in %u ms",
+                         ZINCLUSION_RETRY_DELAY);
+  }
+  warningEvent("%s. Aborting its inclusion, %s", what, outcome);
   abort_starting_node(signal, addNodePtr);
+}
+
+/**
+ * Do the starting node and every cluster node support CM_ADD(Abort)?
+ */
+bool Qmgr::all_support_cm_add_abort(Uint32 startingNodeId) const {
+  if (!ndbd_support_cm_add_abort(getNodeInfo(startingNodeId).m_version)) {
+    return false;
+  }
+  for (Uint32 i = 1; i < MAX_NDB_NODES; i++) {
+    if (c_clusterNodes.get(i) &&
+        !ndbd_support_cm_add_abort(getNodeInfo(i).m_version)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -2986,6 +3022,9 @@ void Qmgr::abort_starting_node(Signal *signal, NodeRecPtr addNodePtr) {
   cmAdd->startingVersion = getNodeInfo(nodeId).m_version;
   cmAdd->startingMysqlVersion = getNodeInfo(nodeId).m_mysql_version;
   cmAdd->startingDynamicId = addNodePtr.p->ndynamicId;
+  /* A node restart fails at once, see cm_add_abort_starting_node */
+  cmAdd->startingNodeExits =
+      (getNodeState().startLevel >= NodeState::SL_STARTED) ? 1 : 0;
   NodeReceiverGroup rg(QMGR, receivers);
   sendSignal(rg, GSN_CM_ADD, signal, CmAdd::AbortSignalLength, JBA);
   DEBUG_START2(GSN_CM_ADD, rg, "Abort");
@@ -3213,6 +3252,11 @@ void Qmgr::cmAddPrepare(Signal *signal, NodeRecPtr nodePtr,
 #endif
       return;
     case ZSTARTING:
+      if (c_lost_starting_nodes.get(nodePtr.i)) {
+        jam();
+        /* It has disconnected, see lost_starting_node */
+        return;
+      }
       break;
     case ZRUNNING:
       ndbabort();
@@ -3329,7 +3373,7 @@ void Qmgr::execCM_ADD(Signal *signal) {
 
   if (type == CmAdd::Abort &&
       (refToNode(signal->getSendersBlockRef()) != cpresident ||
-       signal->getLength() < CmAdd::AbortSignalLength)) {
+       signal->getLength() < CmAdd::OldAbortSignalLength)) {
     jam();
     g_eventLogger->warning(
         "Ignoring CM_ADD(Abort) of node %u from node %u, length %u, the"
@@ -3397,6 +3441,12 @@ void Qmgr::execCM_ADD(Signal *signal) {
           "President node %u aborted the inclusion of node %u in the"
           " cluster",
           cpresident, addNodePtr.i);
+      if (c_lost_starting_nodes.get(addNodePtr.i)) {
+        jam();
+        /* Now in ZINIT, see lost_starting_node */
+        c_lost_starting_nodes.clear(addNodePtr.i);
+        node_failed(signal, addNodePtr.i);
+      }
       break;
     }
     case CmAdd::AddCommit: {
@@ -3443,8 +3493,18 @@ void Qmgr::execCM_ADD(Signal *signal) {
  * cluster nodes have not got our CM_NODEINFOREQ, most likely since we
  * have no connection to them. Forget the cluster nodes of CM_REGCONF and
  * ask to be included again as before CM_REGCONF. The president refuses
- * for StartPartialTimeout, see execCM_REGREQ. A cluster start may go on
- * without us meanwhile, we then join in a node restart.
+ * for ZINCLUSION_RETRY_DELAY, see execCM_REGREQ. A cluster start may go
+ * on without us meanwhile, we then join in a node restart.
+ *
+ * In a cluster start we exit when the president aborts our inclusion a
+ * second time, our angel starts us again. Retrying once copes with
+ * connections that were not up yet, and exiting at once would have the
+ * nodes of the cluster start restart. Retrying for ever in this process
+ * would not help a node that still cannot reach a member, the restart
+ * starts its connections from scratch. When the cluster has started, the
+ * president tells us to exit at once: our node restart fails, the
+ * cluster runs without us. The members survive our exit since we have
+ * not joined, see start_survives_disconnect.
  *
  * Answers to our CM_NODEINFOREQ can still arrive, execCM_NODEINFOCONF
  * ignores them.
@@ -3458,6 +3518,9 @@ void Qmgr::cm_add_abort_starting_node(Signal *signal) {
         cpresident);
     return;
   }
+  const CmAdd *const cmAdd = (const CmAdd *)signal->getDataPtr();
+  const bool node_restart = signal->getLength() >= CmAdd::AbortSignalLength &&
+                            cmAdd->startingNodeExits != 0;
 
   const NdbNodeBitmask unanswered = c_start.m_nodes.getNodeBitmask();
   NdbNodeBitmask unconnected;
@@ -3471,11 +3534,24 @@ void Qmgr::cm_add_abort_starting_node(Signal *signal) {
       buf, sizeof(buf),
       "President node %u aborted our inclusion in the cluster, nodes %s"
       " have not answered our CM_NODEINFOREQ, we have no connection to"
-      " node(s) %s. We keep asking to be included",
+      " node(s) %s",
       cpresident, BaseString::getPrettyText(unanswered).c_str(),
       unconnected.isclear() ? "-"
                             : BaseString::getPrettyText(unconnected).c_str());
-  warningEvent("%s", buf);
+  if (node_restart || c_inclusion_aborted_by != 0) {
+    jam();
+    /* See the comment above */
+    char exit_buf[400];
+    BaseString::snprintf(exit_buf, sizeof(exit_buf), "%s. %s, this node exits",
+                         buf,
+                         node_restart
+                             ? "The cluster has started, our node restart"
+                               " fails"
+                             : "It did so also before");
+    g_eventLogger->warning("%s", exit_buf);
+    progError(__LINE__, NDBD_EXIT_CONNECTION_SETUP_FAILED, exit_buf);
+  }
+  warningEvent("%s. We ask to be included once more", buf);
 
   NodeRecPtr nodePtr;
   for (nodePtr.i = 1; nodePtr.i < MAX_NDB_NODES; nodePtr.i++) {
@@ -3488,6 +3564,7 @@ void Qmgr::cm_add_abort_starting_node(Signal *signal) {
   }
   c_clusterNodes.clear();
   c_inclusion_aborted_by = cpresident;
+  c_known_president = cpresident;
   cpresident = ZNIL;
   /* A president exists, take no part in an election */
   cpresidentAlive = ZTRUE;
@@ -3499,6 +3576,15 @@ void Qmgr::handleEnableComAddCommit(Signal *signal, Uint32 node) {
   if (getOwnNodeId() != cpresident) {
     jam();
     c_start.reset();
+  }
+  if (c_lost_starting_nodes.get(node)) {
+    jam();
+    /**
+     * It disconnected before the president committed its inclusion, see
+     * lost_starting_node. It has joined, so it fails as a member.
+     */
+    c_lost_starting_nodes.clear(node);
+    node_failed(signal, node);
   }
 }
 
@@ -3675,6 +3761,7 @@ void Qmgr::execCM_ACKADD(Signal *signal) {
        * supervision (regreqMasterTimeLimitLab).
        */
       c_start.m_startKey++;
+      c_start.m_committing = true;
 
       CmAdd *const cmAdd = (CmAdd *)signal->getDataPtrSend();
       cmAdd->requestType = CmAdd::AddCommit;
@@ -5696,6 +5783,21 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
 
   char buf[500];
   /**
+   * A node that has not joined the cluster may fail without failing our
+   * start, see start_survives_disconnect.
+   */
+  const bool survives = nodeInfo.getType() == NodeInfo::DB &&
+                        getNodeState().startLevel < NodeState::SL_STARTED &&
+                        !getNodeState().getNodeRecovered() &&
+                        start_survives_disconnect(nodeId);
+  if (survives) {
+    jam();
+    g_eventLogger->info(
+        "Node %u disconnected before it joined the cluster, this node goes"
+        " on starting",
+        nodeId);
+  }
+  /**
    * A node that has reached the restart barrier in start phase 110 is
    * fully recovered although it has not yet reported started; it
    * survives the disconnect and participates in the normal node
@@ -5703,7 +5805,7 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
    */
   if (nodeInfo.getType() == NodeInfo::DB &&
       getNodeState().startLevel < NodeState::SL_STARTED &&
-      !getNodeState().getNodeRecovered()) {
+      !getNodeState().getNodeRecovered() && !survives) {
     jam();
     CRASH_INSERTION(932);
     CRASH_INSERTION(938);
@@ -5723,6 +5825,13 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
   if (getNodeInfo(nodeId).getType() != NodeInfo::DB) {
     jam();
     api_failed(signal, nodeId, AFC_Disconnect, 0);
+    return;
+  }
+
+  if (survives && nodePtr.p->phase == ZSTARTING) {
+    jam();
+    /* Neither of us has joined, see start_survives_disconnect */
+    node_failed(signal, nodeId);
     return;
   }
 
@@ -5787,6 +5896,75 @@ void Qmgr::execDISCONNECT_REP(Signal *signal) {
   node_failed(signal, nodeId);
 }  // DISCONNECT_REP
 
+/**
+ * Does a node that has not started survive that the data node nodeId
+ * disconnects? Not when nodeId is a member, the start then fails as
+ * before. A node that has not joined the cluster is allowed to fail, see
+ * the protocol description at CM_INFOCONF. A member survives it, and so
+ * does a node that has not joined either but is connected to the
+ * president: it depends on the members only. A node that knows no
+ * president is in the election, which counts the nodes it hears from.
+ */
+bool Qmgr::start_survives_disconnect(Uint32 nodeId) const {
+  if (c_clusterNodes.get(nodeId)) {
+    return false;
+  }
+  NodeRecPtr myNodePtr;
+  myNodePtr.i = getOwnNodeId();
+  ptrAss(myNodePtr, nodeRec);
+  if (myNodePtr.p->phase == ZRUNNING) {
+    return true;
+  }
+  const Uint32 president =
+      (cpresident != ZNIL) ? Uint32(cpresident) : Uint32(c_known_president);
+  return myNodePtr.p->phase == ZSTARTING && president != ZNIL &&
+         president != nodeId && c_connectedNodes.get(president);
+}
+
+/**
+ * The starting node disconnected before it joined the cluster. Returns
+ * false when it fails as a member (bug#42422): when the president has
+ * started to commit its inclusion, or when not every node can abort an
+ * inclusion.
+ *
+ * The president aborts the inclusion. A member leaves the decision to the
+ * president and keeps the node starting, without a connection, until
+ * CM_ADD(Abort), CM_ADD(AddCommit) or PREP_FAILREQ says what happened to
+ * it: on its own it could decide otherwise than the president, which may
+ * have committed the inclusion already.
+ */
+bool Qmgr::lost_starting_node(Signal *signal, NodeRecPtr nodePtr) {
+  const Uint32 nodeId = nodePtr.i;
+  if (cpresident == getOwnNodeId()) {
+    if (c_start.m_startNode != nodeId || c_start.m_gsn != GSN_CM_ADD ||
+        c_start.m_committing || !all_support_cm_add_abort(nodeId)) {
+      jam();
+      return false;
+    }
+    jam();
+    warningEvent(
+        "Node %u disconnected before it was included in the cluster."
+        " Aborting its inclusion",
+        nodeId);
+    abort_starting_node(signal, nodePtr);
+    /* Now in ZINIT */
+    node_failed(signal, nodeId);
+    return true;
+  }
+  if (cpresident == ZNIL || cprepFailedNodes.get(nodeId) ||
+      !ndbd_support_cm_add_abort(getNodeInfo(cpresident).m_version)) {
+    jam();
+    return false;
+  }
+  jam();
+  c_lost_starting_nodes.set(nodeId);
+  g_eventLogger->info(
+      "Node %u disconnected before it was included in the cluster,"
+      " president node %u decides whether it joined",
+      nodeId, cpresident);
+  return true;
+}
+
 void Qmgr::node_failed(Signal *signal, Uint16 aFailedNode) {
   NodeRecPtr failedNodePtr;
   /**------------------------------------------------------------------------
@@ -5810,6 +5988,10 @@ void Qmgr::node_failed(Signal *signal, Uint16 aFailedNode) {
                     getOwnNodeId());
       return;
     case ZSTARTING:
+      if (lost_starting_node(signal, failedNodePtr)) {
+        jam();
+        return;
+      }
       /**
        * bug#42422
        *   Force "real" failure handling
@@ -5829,6 +6011,20 @@ void Qmgr::node_failed(Signal *signal, Uint16 aFailedNode) {
       return;
     case ZINIT: {
       jam();
+      if (cpresident == getOwnNodeId() &&
+          c_start.m_starting_nodes.get(failedNodePtr.i) &&
+          !start_waits_for_node(failedNodePtr.i)) {
+        jam();
+        /**
+         * A node of the cluster start that is not included disconnected,
+         * the start no longer waits for it, as in abort_starting_node.
+         */
+        c_start.m_starting_nodes.clear(failedNodePtr.i);
+        if (c_start.m_starting_nodes.isclear()) {
+          jam();
+          sendSttorryLab(signal, true);
+        }
+      }
       /*---------------------------------------------------------------------*/
       // The other node is still not in the cluster but disconnected.
       // We must restart communication in three seconds.
@@ -6886,6 +7082,18 @@ void Qmgr::execPREP_FAILREQ(Signal *signal) {
   for (unsigned nodeId = 1; nodeId < MAX_NDB_NODES; nodeId++) {
     if (cprepFailedNodes.get(nodeId)) {
       jam();
+      if (c_lost_starting_nodes.get(nodeId)) {
+        jam();
+        /* The president fails it, see lost_starting_node */
+        c_lost_starting_nodes.clear(nodeId);
+        NodeRecPtr lostNodePtr;
+        lostNodePtr.i = nodeId;
+        ptrAss(lostNodePtr, nodeRec);
+        if (lostNodePtr.p->phase == ZSTARTING) {
+          jam();
+          lostNodePtr.p->phase = ZRUNNING;
+        }
+      }
       failReport(signal, nodeId, (UintR)ZFALSE, FailRep::ZIN_PREP_FAIL_REQ,
                  0); /* Source node not required (or known) here */
     }                // if
@@ -7659,6 +7867,7 @@ void Qmgr::failReport(Signal *signal, Uint16 aFailedNode, UintR aSendFailRep,
 
     failedNodePtr.p->ndynamicId = 0;
     findNeighbours(signal, __LINE__);
+    const bool president_failed = failedNodePtr.i == cpresident;
     if (failedNodePtr.i == cpresident) {
       jam();
       /**--------------------------------------------------------------------
@@ -7747,8 +7956,39 @@ void Qmgr::failReport(Signal *signal, Uint16 aFailedNode, UintR aSendFailRep,
           failedNodePtr.i, FailRep::getFailCauseText(aFailCause), sourceNode,
           BaseString::getPrettyText(survivors).c_str());
     }
+    if (president_failed) {
+      jam();
+      fail_starting_nodes(signal);
+    }
   }  // if
 }  // Qmgr::failReport()
+
+/**
+ * The president failed in a node restart: the started nodes survive it,
+ * the nodes that have not started exit (failReportLab, execPREP_FAILREQ),
+ * so in a cluster start this is not reached. The nodes the president was
+ * including are still starting here, and they exit since they lose their
+ * president. The new president does not go on with their inclusion
+ * (failReport), so they fail here as in bug#42422, also those left to the
+ * failed president (lost_starting_node). They are failed in this node
+ * only: a node that has not sent us CM_NODEINFOREQ has no block reference
+ * to send FAIL_REP to. The other members fail them in the same way, and
+ * CLOSE_COMCONF has the president add them to the node failure
+ * (PREP_FAILREF).
+ */
+void Qmgr::fail_starting_nodes(Signal *signal) {
+  NodeRecPtr nodePtr;
+  for (nodePtr.i = 1; nodePtr.i < MAX_NDB_NODES; nodePtr.i++) {
+    ptrAss(nodePtr, nodeRec);
+    if (nodePtr.p->phase == ZSTARTING) {
+      jamLine(nodePtr.i);
+      c_lost_starting_nodes.clear(nodePtr.i);
+      nodePtr.p->phase = ZRUNNING;
+      failReport(signal, nodePtr.i, (UintR)ZFALSE,
+                 FailRep::ZOTHERNODE_FAILED_DURING_START, getOwnNodeId());
+    }
+  }
+}
 
 /*---------------------------------------------------------------------------*/
 /*       INPUT:  TTDI_DYN_ID                                                 */

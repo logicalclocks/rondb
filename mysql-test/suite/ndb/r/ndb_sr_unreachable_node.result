@@ -5,10 +5,13 @@ INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,
 # Block the port of data node 3, node 4 cannot connect to node 3
 # System restart
 # Wait for the system restart to complete without node 3 or node 4,
-# the president and the left out node report the aborted inclusion
-Nodes 1 and 2 and one of nodes 3 and 4 started, the other one is still starting
+# and for the left out node to exit when its inclusion is aborted
+# once more, the other nodes go on running
+Nodes 1 and 2 and one of nodes 3 and 4 started, the other one did not
 President aborted the inclusion: yes
-Left out node was told: yes
+Left out node asked once more: yes
+Left out node exited at the second abort: yes
+The other nodes went on running: yes
 # Unblock the port, the left out node joins in a node restart
 # Start the MySQL Servers
 # restart

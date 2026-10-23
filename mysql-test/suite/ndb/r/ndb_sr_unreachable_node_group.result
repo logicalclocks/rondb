@@ -8,6 +8,8 @@ INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,
 # president has aborted the inclusions of both nodes 5 and 6
 The president aborted every inclusion that the missing links stalled: yes
 The president waited for a stalled inclusion: no
+A left out node exited at the second abort: yes
+The nodes that joined went on running: yes
 # Unblock the port, all data nodes start
 # Start the MySQL Servers
 # restart

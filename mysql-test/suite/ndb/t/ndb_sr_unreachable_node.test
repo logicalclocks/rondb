@@ -8,8 +8,10 @@
 # to a node in the cluster was thus never included, and as the president
 # includes one node at a time, it refused every other starting node
 # meanwhile: the system restart hung for ever. Now the president aborts the
-# inclusion after StartPartialTimeout (15 seconds here) and tries the node
-# again after another StartPartialTimeout. The other nodes start without
+# inclusion when it has not completed within 10 seconds, and includes the
+# node once more 6 seconds later. When that is aborted as well the node
+# exits, its angel starts it again (StopOnError=0), and the other nodes
+# survive its exit since it has not joined. The other nodes start without
 # it, and it joins in a node restart once it can connect to all nodes. See
 # ndb_nr_unreachable_node for the same in a node restart and
 # ndb_sr_unreachable_node_group for a start that needs the left out nodes.
@@ -80,7 +82,8 @@ EOF
 --exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
 
 --echo # Wait for the system restart to complete without node 3 or node 4,
---echo # the president and the left out node report the aborted inclusion
+--echo # and for the left out node to exit when its inclusion is aborted
+--echo # once more, the other nodes go on running
 --perl
   use strict;
   my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
@@ -104,32 +107,51 @@ EOF
     sleep(1);
   }
   my ($left_out) = grep { $status{$_} ne 'started' } (3, 4);
-  die "Node $left_out is $status{$left_out}, not starting:\n$out"
-    unless $status{$left_out} eq 'starting';
+  my @members = (1, 2, 7 - $left_out);
   print "Nodes 1 and 2 and one of nodes 3 and 4 started," .
-        " the other one is still starting\n";
+        " the other one did not\n";
 
-  # The president and the left out node report the aborted inclusion
+  # The president aborts the inclusion of the left out node, which asks
+  # once more and exits when that is aborted as well
   my $offset_file = "$vardir/tmp/ndb_sr_unreachable_node.offset";
   open(my $fh, '<', $offset_file) or die "Cannot read $offset_file: $!\n";
   chomp(my $log = <$fh>);
   chomp(my $offset = <$fh>);
   close($fh);
   unlink($offset_file);
-  open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
-  seek($lf, $offset, 0);
-  my $president = 0;
-  my $told = 0;
-  while (my $line = <$lf>) {
-    $president++
-      if $line =~ /Node 1: Node $left_out was not included in the cluster within StartPartialTimeout \(15000 ms\), .* Aborting its inclusion, the cluster start goes on without it/;
-    $told++
-      if $line =~ /Node $left_out: President node 1 aborted our inclusion in the cluster/;
+  my ($president, $told, $exited, $member_shutdown);
+  $start = time();
+  while (1) {
+    ($president, $told, $exited, $member_shutdown) = (0, 0, 0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      $president++
+        if $line =~ /Node 1: Node $left_out was not included in the cluster within 10000 ms, .* Aborting its inclusion, the cluster start goes on without it/;
+      $told++
+        if $line =~ /Node $left_out: President node 1 aborted our inclusion in the cluster, .*We ask to be included once more/;
+      $exited++
+        if $line =~ /Node $left_out: Forced node shutdown completed.* Caused by error 6054/;
+      $member_shutdown++
+        if $line =~ /Node (\d+): Forced node shutdown/ && $1 != $left_out;
+    }
+    close($lf);
+    last if $exited;
+    die "Timeout waiting for node $left_out to exit\n"
+      if time() - $start > 120;
+    sleep(1);
   }
-  close($lf);
+  $out = `$mgm -e "ALL STATUS" 2>&1`;
+  my $running = 1;
+  foreach my $node (@members) {
+    $running = 0 unless $out =~ /^Node $node: started/m;
+  }
   print "President aborted the inclusion: " .
         ($president > 0 ? "yes" : "no") . "\n";
-  print "Left out node was told: " . ($told > 0 ? "yes" : "no") . "\n";
+  print "Left out node asked once more: " . ($told > 0 ? "yes" : "no") . "\n";
+  print "Left out node exited at the second abort: yes\n";
+  print "The other nodes went on running: " .
+        ($running && !$member_shutdown ? "yes" : "no") . "\n";
 EOF
 
 --echo # Unblock the port, the left out node joins in a node restart

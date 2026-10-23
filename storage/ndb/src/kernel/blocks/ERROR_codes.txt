@@ -22,7 +22,7 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 
-Next QMGR 963
+Next QMGR 965
 Next NDBCNTR 1030
 Next NDBFS 2002
 Next DBACC 3007
@@ -279,6 +279,11 @@ QMGR
 962:  Crash when receiving CM_ADD(AddCommit) for a joining node, i.e. when
       the running members are marking the joining node as ZRUNNING while
       the joining node itself is still ZSTARTING
+963:  Starting node crashes when it receives CM_REGCONF, before it has
+      sent CM_NODEINFOREQ, so it fails before it has joined the cluster
+964:  Starting node does not send CM_NODEINFOREQ, so the president aborts
+      its inclusion with CM_ADD(Abort) after 10 seconds, as for a node
+      without connections to the cluster nodes
 
 ERROR CODES FOR TESTING NODE FAILURE, FAILURE IN COPY FRAGMENT PROCESS:
 -----------------------------------------------------------------------

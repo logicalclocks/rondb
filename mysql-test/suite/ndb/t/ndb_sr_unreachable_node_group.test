@@ -14,11 +14,13 @@
 # - When node 4 is included before nodes 5 and 6, the inclusions of both
 #   stall and are aborted, although node group {5,6} then has no node:
 #   a node that cannot connect to every member cannot take part in the
-#   start. The president tries them again after StartPartialTimeout, and
-#   the system restart completes once they can connect to node 4.
+#   start. The president tries them once more 6 seconds later, and the
+#   system restart completes once they can connect to node 4.
 # The president once waited for the inclusion of the second of nodes 5
 # and 6 for ever, since the start could not complete without it, and
-# refused the first one until the start had completed.
+# refused the first one until the start had completed. A node whose
+# inclusion is aborted a second time exits and its angel starts it again
+# (StopOnError=0), the nodes that have joined survive its exit.
 #
 # The API nodes cannot connect to node 4, so the MySQL Servers are shut
 # down while the port is blocked. The firewall is changed with pfctl on
@@ -97,7 +99,7 @@ EOF
     open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
     seek($lf, $offset, 0);
     while (my $line = <$lf>) {
-      next unless $line =~ /Node 1: Node (\d+) was not included in the cluster within StartPartialTimeout/;
+      next unless $line =~ /Node 1: Node (\d+) was not included in the cluster within 10000 ms/;
       my $node = $1;
       push(@lines, $line);
       if ($line =~ /Aborting its inclusion/) {
@@ -112,7 +114,7 @@ EOF
 
   my $timeout = 300;
   my $start = time();
-  my ($aborted, $cannot, $waited, $lines, $out, %status);
+  my ($aborted, $cannot, $waited, $lines, $out, %status, @left_out);
   while (1) {
     $out = `$mgm -e "ALL STATUS" 2>&1`;
     %status = ();
@@ -124,16 +126,16 @@ EOF
     my @started = grep { $status{$_} eq 'started' } (1 .. 6);
     if (@started == 5 && $status{4} ne 'started') {
       # The system restart completed without node 4
-      die "Node 4 is $status{4}, not starting:\n$out"
-        unless $status{4} eq 'starting';
       die "Node 4 was left out without an aborted inclusion:\n@$lines"
         unless $aborted->{4};
+      @left_out = (4);
       last;
     }
     if ($aborted->{5} && $aborted->{6} && $cannot) {
       # Node group {5,6} could not be included
       die "Data nodes started without node group {5,6}:\n$out"
         if @started;
+      @left_out = (5, 6);
       last;
     }
     die "Timeout waiting for the restart to complete without node 4 or" .
@@ -145,6 +147,33 @@ EOF
         " stalled: yes\n";
   print "The president waited for a stalled inclusion: " .
         ($waited ? "yes" : "no") . "\n";
+
+  # A left out node exits when its inclusion is aborted a second time,
+  # the nodes that have joined go on
+  my %left_out = map { $_ => 1 } @left_out;
+  my ($exited, $member_shutdown);
+  $start = time();
+  while (1) {
+    ($exited, $member_shutdown) = (0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      next unless $line =~ /Node (\d+): Forced node shutdown/;
+      if ($left_out{$1}) {
+        $exited++ if $line =~ /Caused by error 6054/;
+      } else {
+        $member_shutdown++;
+      }
+    }
+    close($lf);
+    last if $exited;
+    die "Timeout waiting for node(s) @left_out to exit\n"
+      if time() - $start > 120;
+    sleep(1);
+  }
+  print "A left out node exited at the second abort: yes\n";
+  print "The nodes that joined went on running: " .
+        ($member_shutdown ? "no" : "yes") . "\n";
 EOF
 
 --echo # Unblock the port, all data nodes start

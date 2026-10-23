@@ -7,13 +7,16 @@
 # neither can the API nodes, while node 3 connects to nodes 1 and 2 and
 # to the management server.
 #
-# StartPartialTimeout is also how long the president waits for a joining
-# data node to connect to all nodes in the cluster before it aborts its
-# inclusion, a shorter one than the default 30 seconds shortens the test.
+# A data node that the president cannot include exits after the second
+# aborted inclusion in a system restart and after the first in a node
+# restart. With StopOnError=0 its angel starts it again, and
+# MaxStartFailRetries keeps the angel doing so until the test unblocks
+# the port.
 
 [cluster_config.1]
 ndbd=,,,
-StartPartialTimeout=15000
+StopOnError=0
+MaxStartFailRetries=1000
 
 [cluster_config.ndbd.1.1]
 NodeId=1

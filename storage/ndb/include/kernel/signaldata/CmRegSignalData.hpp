@@ -161,7 +161,9 @@ class CmAdd {
 
  public:
   static constexpr Uint32 SignalLength = 4;
-  static constexpr Uint32 AbortSignalLength = 5;
+  static constexpr Uint32 AbortSignalLength = 6;
+  /* Abort without startingNodeExits */
+  static constexpr Uint32 OldAbortSignalLength = 5;
 
  private:
   /**
@@ -180,6 +182,13 @@ class CmAdd {
    * CM_REGCONF, it identifies the CM_NODEINFOREQ of the aborted attempt.
    */
   Uint32 startingDynamicId;
+  /**
+   * Abort only: 1 when the cluster has started, the starting node then
+   * exits at once, its node restart fails. 0 in a cluster start, the
+   * starting node asks to be included once more, see
+   * Qmgr::cm_add_abort_starting_node.
+   */
+  Uint32 startingNodeExits;
 };
 
 class CmAckAdd {

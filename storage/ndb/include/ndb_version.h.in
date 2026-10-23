@@ -1294,10 +1294,11 @@ ndbd_support_8k_api_nodes(Uint32 x) {
 /*
  * The QMGR president can abort the inclusion of a starting data node
  * with CM_ADD(Abort) when the node has not been able to connect to all
- * cluster nodes within StartPartialTimeout. A node without this support
- * ignores the abort and keeps the starting node half included, so the
- * president aborts only when the starting node and every cluster node
- * support it.
+ * cluster nodes within 10 seconds. A node without this support ignores
+ * the abort and keeps the starting node half included, so the president
+ * aborts only when the starting node and every cluster node support it.
+ * A member leaves the fate of a starting node that disconnects to a
+ * president with this support, see Qmgr::lost_starting_node.
  *
  * Branch-aware: present in 26.02 from 26.02.13 and in 26.10 from
  * 26.10.0. A release line in between returns false until it carries the
