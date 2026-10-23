@@ -27,6 +27,8 @@
 #include <ndb_types.h>
 #include <NdbTick.h>
 
+#include <atomic>
+
 // Classes for Updating the endpoints stats
 class PkReadEndPointMetricsUpdater {
  private:
@@ -136,6 +138,14 @@ namespace rdrs_metrics {
 void initMetrics();
 void writeMetrics(drogon::HttpResponsePtr resp);
 void setRonDBStats();
+
+/* RONDB-1144: the share of a cumulative total's growth that this caller
+ * reports. Moves last up to total when total is larger and returns the
+ * difference, else returns 0 and leaves last alone. last only ever grows,
+ * so concurrent /metrics scrapes claim disjoint parts of the growth and a
+ * counter fed by the result counts every event exactly once, even when a
+ * scrape holds an older total than another. */
+Int64 claim_counter_delta(std::atomic<Int64> &last, Int64 total);
 
 }  // namespace rdrs_metrics
 
