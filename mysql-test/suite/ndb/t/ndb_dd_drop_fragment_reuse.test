@@ -1,0 +1,78 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+#
+# Dropping a fragment of a disk data table must also drop its PGMAN
+# fragment record. A record left behind crashes the data node in
+# Pgman::add_fragment (error 2341, !m_fragmentRecordHash.find) when a
+# new disk data table reuses the table id and creates the same fragment
+# in the same LDM instance.
+#
+# Dbtup::drop_fragment_fsremove_done used to read the fragment id after
+# releasing the DBTUP fragment record. When the released record was the
+# last one in its page, the page was returned to the global memory
+# manager, which writes into the page, so PGMAN could be asked to drop
+# the wrong fragment. Builds with ERROR_INSERT or VM_TRACE fill released
+# pages with 0xF5, which makes the problem deterministic, so the test
+# requires such a build.
+#
+# The test creates enough disk data fragments to fill several pages of
+# DBTUP fragment records in each LDM instance, drops all of them so that
+# the pages are released, and then creates the same tables again so that
+# the table ids are reused. Dropping a fragment of a disk data table also
+# checks that PGMAN had a fragment record for it.
+#
+
+CREATE LOGFILE GROUP lg1
+ADD UNDOFILE 'lg1_undofile.dat'
+INITIAL_SIZE 16M
+UNDO_BUFFER_SIZE 1M
+ENGINE NDB;
+
+CREATE TABLESPACE ts1
+ADD DATAFILE 'ts1_datafile.dat'
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 32M
+EXTENT_SIZE 256K
+ENGINE NDB;
+
+# 16 tables with 64 partitions give 256 fragments in each of the 4 LDM
+# instances of the default configuration of this suite.
+let $num_tables = 16;
+
+let $round = 1;
+while ($round <= 2)
+{
+  --echo # Round $round: create $num_tables disk data tables
+  --disable_query_log
+  let $i = 1;
+  while ($i <= $num_tables)
+  {
+    eval CREATE TABLE t$i (a INT PRIMARY KEY, b INT NOT NULL)
+         TABLESPACE ts1 STORAGE DISK ENGINE NDB
+         PARTITION BY KEY(a) PARTITIONS 64;
+    eval INSERT INTO t$i VALUES (1,1), (2,2), (3,3), (4,4);
+    inc $i;
+  }
+  --enable_query_log
+
+  SELECT MIN(fragments) >= 128 AS many_fragments_per_ldm FROM (SELECT node_id, block_instance, COUNT(*) AS fragments FROM ndbinfo.memory_per_fragment WHERE fq_name LIKE 'test/def/t%' GROUP BY node_id, block_instance) AS f;
+  eval SELECT SUM(b) AS sum_b FROM t$num_tables;
+
+  --echo # Round $round: drop all tables
+  --disable_query_log
+  let $i = 1;
+  while ($i <= $num_tables)
+  {
+    eval DROP TABLE t$i;
+    inc $i;
+  }
+  --enable_query_log
+  inc $round;
+}
+
+ALTER TABLESPACE ts1
+DROP DATAFILE 'ts1_datafile.dat';
+DROP TABLESPACE ts1;
+DROP LOGFILE GROUP lg1
+ENGINE NDB;
