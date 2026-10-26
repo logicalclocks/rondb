@@ -139,6 +139,7 @@ ClusterMgr::ClusterMgr(TransporterFacade & _facade):
   m_process_info(nullptr),
   m_cluster_state(CS_waiting_for_clean_cache),
   m_hbCheckInterval(0),
+  m_hbCheckIntervalDbApi(0),
   m_error_print(false),
   m_state_changed(true),
   m_ever_connected(false),
@@ -282,6 +283,7 @@ bool ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
   Uint32 rank = 0;
   Uint32 delay = 0;
   unsigned hbCheckInterval = 0;
+  unsigned hbCheckIntervalDbApi = RNIL;
   Uint32 start_backoff_max_time = 0;
   Uint32 conn_backoff_max_time = 0;
   iter.first();
@@ -289,6 +291,7 @@ bool ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
   iter.get(CFG_NODE_ARBIT_RANK, &rank);
   iter.get(CFG_NODE_ARBIT_DELAY, &delay);
   iter.get(CFG_MGMD_MGMD_HEARTBEAT_INTERVAL, &hbCheckInterval);
+  iter.get(CFG_DB_API_HEARTBEAT_INTERVAL, &hbCheckIntervalDbApi);
   iter.get(CFG_START_CONNECT_BACKOFF_MAX_TIME, &start_backoff_max_time);
   iter.get(CFG_CONNECT_BACKOFF_MAX_TIME, &conn_backoff_max_time);
 
@@ -439,6 +442,7 @@ bool ClusterMgr::configure(Uint32 nodeId, const ndb_mgm_configuration *config) {
 
   // Configure heartbeats.
   m_hbCheckInterval = static_cast<Uint32>(hbCheckInterval);
+  m_hbCheckIntervalDbApi = static_cast<Uint32>(hbCheckIntervalDbApi);
 
   // Configure max backoff time for connection attempts to first
   // data node.
@@ -711,15 +715,34 @@ void ClusterMgr::threadMain() {
 
       if (cm_node.hbCheckInterval == 0 ||
           NdbTick_Compare(now, cm_node.nextHbSend) >= 0) {
-        if (theNode.m_info.m_type != NodeInfo::DB)
+        /*
+          Send the API heartbeat interval override only to unconfirmed data
+          nodes. Ideally this happens only on the first API_REGREQ. Once the
+          data node is confirmed, and for API/MGM receivers, use the shorter
+          signal length since the extra word is not needed.
+        */
+        if (theNode.m_info.m_type != NodeInfo::DB) {
           signal.theReceiversBlockNumber = API_CLUSTERMGR;
-        else
+          signal.theLength = ApiRegReq::SignalLengthWithoutHeartbeatInterval;
+        } else {
           signal.theReceiversBlockNumber = QMGR;
+          signal.theLength =
+              cm_node.is_confirmed()
+                  ? ApiRegReq::SignalLengthWithoutHeartbeatInterval
+                  : ApiRegReq::SignalLength;
+        }
 
 #ifdef DEBUG_REG
         g_eventLogger->info("ClusterMgr: Sending API_REGREQ to node %d",
                             (int)nodeId);
 #endif
+
+        if (theNode.m_info.m_type == NodeInfo::DB && !cm_node.is_confirmed()) {
+          req->apiHeartbeatInterval = m_hbCheckIntervalDbApi;
+        } else {
+          req->apiHeartbeatInterval = RNIL;
+        }
+
         if (nodeId == getOwnNodeId()) {
           /* Set flag to ensure we only send once to ourself */
           m_sent_API_REGREQ_to_myself = true;
@@ -1963,7 +1986,7 @@ void ClusterMgr::execAPI_REGREQ(const Uint32 *theData) {
   conf->mysql_version = NDB_MYSQL_VERSION_D;
 
   /*
-    This is the interval (in centiseonds) at which we want the other node
+    This is the interval (in centiseconds) at which we want the other node
     to send API_REGREQ messages.
   */
   conf->apiHeartbeatInterval = m_hbCheckInterval / 10;

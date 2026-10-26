@@ -100,14 +100,15 @@ table_id	table_name	comment
 52	threadblock_details	which blocks are run in which threads and some internal state details
 53	transporter_details	detailed transporter status
 54	transactions_full	transactions_full
-55	transporter_activity	Histogram over activity on heartbeated transporters
+55	transporter_activity	Histogram over transporter activity using time between received messages
 56	rdma_transporters	RDMA transporter statistics (rows only for RDMA links)
 57	security_violations	Static catalog of data node security violation types (data node security)
 58	security_violation_counts	Per-violation-type strike counters (data node security)
 59	jit	RONDB-1056 JIT code-memory and program-reuse statistics (one row per data node)
+60	trusted_certs	Contents of in-memory TLS trust store
 SELECT COUNT(*) FROM ndb$tables;
 COUNT(*)
-60
+61
 SELECT * FROM ndb$tables WHERE table_id = 2;
 table_id	table_name	comment	rows_estimate
 2	test	for testing	8000
@@ -162,11 +163,12 @@ table_id	table_name	comment
 52	threadblock_details	which blocks are run in which threads and some internal state details
 53	transporter_details	detailed transporter status
 54	transactions_full	transactions_full
-55	transporter_activity	Histogram over activity on heartbeated transporters
+55	transporter_activity	Histogram over transporter activity using time between received messages
 56	rdma_transporters	RDMA transporter statistics (rows only for RDMA links)
 57	security_violations	Static catalog of data node security violation types (data node security)
 58	security_violation_counts	Per-violation-type strike counters (data node security)
 59	jit	RONDB-1056 JIT code-memory and program-reuse statistics (one row per data node)
+60	trusted_certs	Contents of in-memory TLS trust store
 SELECT * FROM ndb$tables WHERE table_name = 'LOGDESTINATION';
 table_id	table_name	comment	rows_estimate
 SELECT COUNT(*) FROM ndb$tables t, ndb$columns c
@@ -246,6 +248,7 @@ table_id	table_name
 4	transporters
 55	transporter_activity
 53	transporter_details
+60	trusted_certs
 
 SELECT table_id, column_id, column_name FROM ndb$columns LIMIT 7;
 table_id	column_id	column_name
@@ -341,6 +344,7 @@ table_id
 57
 58
 59
+60
 
 TRUNCATE ndb$tables;
 ERROR HY000: Table 'ndb$tables' is read only

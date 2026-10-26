@@ -218,6 +218,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZNO_UNDO_BUFFER_MEMORY_ERROR 923
 #define ZOUT_OF_STORED_PROC_MEMORY_ERROR 924
 #define ZOP_DISK_WITH_FLAG_NOT_SET 927
+#define ZTOO_MANY_ROW_VERSIONS_ERROR 947
 
 #define ZINVALID_CHAR_FORMAT 744
 #define ZROWID_ALLOCATED 899
@@ -4691,6 +4692,7 @@ private:
 
   /* read ahead in pages during disk order scan */
   Uint32 m_max_page_read_ahead;
+  Uint16 m_max_row_versions_per_transaction;
 
  public:
   Tablerec *tablerec;
