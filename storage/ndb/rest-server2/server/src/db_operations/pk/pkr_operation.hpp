@@ -33,6 +33,8 @@
 #include <NdbApi.hpp>
 #include <ArenaMalloc.hpp>
 
+struct RS_BufferChain;
+
 struct KeyOperation {
   Uint32 m_num_pk_columns;
   Uint32 m_num_read_columns;
@@ -48,6 +50,7 @@ struct KeyOperation {
   const NdbRecord *m_ndb_record;
   PKRRequest m_req;
   PKRResponse m_resp;
+  RS_Status check_value_sizes() const;
   RS_Status append_op_recs(PKRResponse *resp, PKRRequest *req);
   RS_Status write_col_to_resp(Uint32 colIdx,
                               PKRResponse *resp,
@@ -76,7 +79,7 @@ class BatchKeyOperations {
                                Uint32 numOps,
                                bool is_batch,
                                RS_Buffer *reqBuffer,
-                               RS_Buffer *respBuffer,
+                               RS_BufferChain &resp_chain,
                                Ndb *ndb_object,
                                const char *rate_limit_identity,
                                Uint32 rate_limit_identity_len);
@@ -90,7 +93,11 @@ class BatchKeyOperations {
    RS_Status setup_transactions();
    RS_Status setup_read_operations();
    RS_Status execute();
-   RS_Status create_response(RS_Buffer *respBuffer);
+   /* RONDB-1144: responses are written into the chain's buffers; a
+    * response that overflows a shared buffer is rewritten in a fresh one. */
+   RS_Status create_response(RS_BufferChain &resp_chain);
+   RS_Status write_response(Uint32 index, PKRResponse *resp, bool &found,
+                            Uint32 &response_length);
    RS_Status append_op_recs(Uint32);
    void close_transaction();
    RS_Status abort_request();

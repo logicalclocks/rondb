@@ -27,6 +27,7 @@ file(GLOB_RECURSE SRC
         batch_pk_delete_ctrl.cpp
         batch_pk_read_ctrl.cpp
         batch_pk_write_ctrl.cpp
+        buffer_chain.cpp
         buffer_manager.cpp
         config_structs.cpp
         connection.cpp
@@ -53,6 +54,7 @@ file(GLOB_RECURSE SRC
         pk_read_ctrl.cpp
         pk_read_ctrl.cpp
         probe_server.cpp
+        process_setup.cc
         prometheus_ctrl.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp

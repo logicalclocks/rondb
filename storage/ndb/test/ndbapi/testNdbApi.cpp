@@ -7357,6 +7357,218 @@ int runPkRead2(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Committed read through a unique hash index: the index row is read with a
+ * shared lock, the base table row without a lock. The index is created on
+ * the primary key columns so that any row can be read through it with the
+ * values of its primary key.
+ */
+static char ukOnPkIdxName[255];
+
+static int createUkOnPk(NDBT_Context *ctx, NDBT_Step *step) {
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  BaseString::snprintf(ukOnPkIdxName, sizeof(ukOnPkIdxName), "UKPK_%s",
+                       tab->getName());
+  NdbDictionary::Index idx(ukOnPkIdxName);
+  idx.setTable(tab->getName());
+  idx.setType(NdbDictionary::Index::UniqueHashIndex);
+  for (int c = 0; c < tab->getNoOfColumns(); c++) {
+    const NdbDictionary::Column *col = tab->getColumn(c);
+    if (col->getPrimaryKey()) idx.addIndexColumn(col->getName());
+  }
+  CHECKE(dict->createIndex(idx) == 0, (*dict));
+  return NDBT_OK;
+}
+
+static int dropUkOnPk(NDBT_Context *ctx, NDBT_Step *step) {
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  CHECKE(dict->dropIndex(ukOnPkIdxName, tab->getName()) == 0, (*dict));
+  return NDBT_OK;
+}
+
+/**
+ * Read row 'rowNo' of 'tab' in its own transaction using NdbRecord, with the
+ * key given by 'keyRec' (the table's own record for a primary key read, or
+ * the unique index record for a read through the index) and lock mode 'lm'.
+ * 'row' must be a buffer of the table's default record length; the key
+ * columns are filled in here and the result is left in it. Returns the NDB
+ * error code of the read, 0 on success, and leaves the error in 'err'.
+ */
+static int readRowByRecord(Ndb *ndb, const NdbDictionary::Table *tab,
+                           const NdbRecord *keyRec, int rowNo,
+                           NdbOperation::LockMode lm, Uint8 *row,
+                           NdbError &err) {
+  const NdbRecord *rowRec = tab->getDefaultRecord();
+  HugoCalculator calc(*tab);
+  calc.equalForRow(row, rowRec, rowNo);
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    err = ndb->getNdbError();
+    return err.code;
+  }
+  const NdbOperation *op =
+      trans->readTuple(keyRec, (const char *)row, rowRec, (char *)row, lm);
+  if (op == nullptr) {
+    err = trans->getNdbError();
+    ndb->closeTransaction(trans);
+    return err.code;
+  }
+  // With AO_IgnoreError a failed read is reported on the operation, while an
+  // aborted transaction (such as a lock wait timeout) is reported on the
+  // transaction
+  if (trans->execute(NdbTransaction::Commit, NdbOperation::AO_IgnoreError) ==
+      0) {
+    err = op->getNdbError();
+  } else {
+    err = trans->getNdbError();
+  }
+  ndb->closeTransaction(trans);
+  return err.code;
+}
+
+int runUkCommittedReadNoBaseLock(NDBT_Context *ctx, NDBT_Step *step) {
+  // Wait until the transaction in the other thread holds an exclusive lock
+  // on row 0 through its primary key
+  ctx->getPropertyWait("ReadExecuted", 1);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Index *idx = dict->getIndex(ukOnPkIdxName, tab->getName());
+  CHECKE(idx != nullptr, (*dict));
+  const NdbRecord *pkRec = tab->getDefaultRecord();
+  const NdbRecord *ukRec = idx->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(pkRec);
+  std::unique_ptr<Uint8[]> pkRow(new Uint8[len]());
+  std::unique_ptr<Uint8[]> ukRow(new Uint8[len]());
+  NdbError err;
+
+  // A committed read by primary key never waits for the lock: reference row
+  CHECK(readRowByRecord(ndb, tab, pkRec, 0, NdbOperation::LM_CommittedRead,
+                        pkRow.get(), err) == 0);
+  // A committed read through the unique index must not wait for the base
+  // row lock either, and must return the same committed row
+  CHECK(readRowByRecord(ndb, tab, ukRec, 0, NdbOperation::LM_CommittedRead,
+                        ukRow.get(), err) == 0);
+  CHECK(memcmp(pkRow.get(), ukRow.get(), len) == 0);
+  // A locking read through the unique index still waits for the base row.
+  // Error 266: Time-out in NDB, probably caused by deadlock
+  CHECK(readRowByRecord(ndb, tab, ukRec, 0, NdbOperation::LM_Read,
+                        ukRow.get(), err) == 266);
+  // Signal the other thread that this thread is done reading the locked row
+  ctx->setProperty("ReadExecuted", 2);
+  // Wait until the transaction in the other thread has completed
+  ctx->getPropertyWait("ReadExecuted", 3);
+  // Now the locking read through the unique index succeeds as well
+  CHECK(readRowByRecord(ndb, tab, ukRec, 0, NdbOperation::LM_Read,
+                        ukRow.get(), err) == 0);
+  CHECK(memcmp(pkRow.get(), ukRow.get(), len) == 0);
+  return NDBT_OK;
+}
+
+int runUkCommittedReadInterpretedNok(NDBT_Context *ctx, NDBT_Step *step) {
+  // A committed read through the unique index whose interpreted program
+  // rejects the row must still report "no row" (626), not the temporary
+  // error reserved for a base row whose commit is pending
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Index *idx = dict->getIndex(ukOnPkIdxName, tab->getName());
+  CHECKE(idx != nullptr, (*dict));
+  const NdbRecord *rowRec = tab->getDefaultRecord();
+  const NdbRecord *ukRec = idx->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(rowRec);
+  std::unique_ptr<Uint8[]> row(new Uint8[len]());
+  HugoCalculator calc(*tab);
+  calc.equalForRow(row.get(), rowRec, 0);
+
+  NdbInterpretedCode code(tab);
+  CHECK(code.interpret_exit_nok() == 0);
+  CHECK(code.finalise() == 0);
+  NdbOperation::OperationOptions opts;
+  opts.optionsPresent = NdbOperation::OperationOptions::OO_INTERPRETED;
+  opts.interpretedCode = &code;
+
+  NdbTransaction *trans = ndb->startTransaction();
+  CHECKE(trans != nullptr, (*ndb));
+  const NdbOperation *op = trans->readTuple(
+      ukRec, (const char *)row.get(), rowRec, (char *)row.get(),
+      NdbOperation::LM_CommittedRead, nullptr, &opts, sizeof(opts));
+  CHECKE(op != nullptr, (*trans));
+  CHECK(trans->execute(NdbTransaction::Commit,
+                       NdbOperation::AO_IgnoreError) == 0);
+  const NdbError err = op->getNdbError();
+  ndb->closeTransaction(trans);
+  // Error 626: Tuple did not exist
+  CHECK(err.code == 626);
+  CHECK(err.classification == NdbError::NoDataFound);
+  return NDBT_OK;
+}
+
+int runDelayUserTableCommit(NDBT_Context *ctx, NDBT_Step *step) {
+  // Error insert 5160 delays COMMIT of user table operations in LQH, so a
+  // unique index row commits before the base table row it points to
+  NdbRestarter restarter;
+  CHECK(restarter.insertErrorInAllNodes(5160) == 0);
+  return NDBT_OK;
+}
+
+int runClearErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  CHECK(restarter.insertErrorInAllNodes(0) == 0);
+  return NDBT_OK;
+}
+
+int runInsertRecordCommitDelayed(NDBT_Context *ctx, NDBT_Step *step) {
+  const NdbDictionary::Table *tab = ctx->getTab();
+  HugoOperations hugoOps(*tab);
+  Ndb *ndb = GETNDB(step);
+  CHECK(hugoOps.startTransaction(ndb) == 0);
+  CHECK(hugoOps.pkInsertRecord(ndb, 0, 1) == 0);
+  CHECK(hugoOps.execute_NoCommit(ndb) == 0);
+  // Signal the other thread that the row and its unique index row are
+  // inserted but not committed
+  ctx->setProperty("InsertState", 1);
+  // The commit of the base row is delayed by the error insert, the commit of
+  // the unique index row is not
+  CHECK(hugoOps.execute_Commit(ndb) == 0);
+  CHECK(hugoOps.closeTransaction(ndb) == 0);
+  // Signal the other thread that the transaction has completed
+  ctx->setProperty("InsertState", 2);
+  return NDBT_OK;
+}
+
+int runUkCommittedReadCommitRace(NDBT_Context *ctx, NDBT_Step *step) {
+  // Wait until the transaction in the other thread has inserted the row
+  ctx->getPropertyWait("InsertState", 1);
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  const NdbDictionary::Index *idx = dict->getIndex(ukOnPkIdxName, tab->getName());
+  CHECKE(idx != nullptr, (*dict));
+  const NdbRecord *ukRec = idx->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(tab->getDefaultRecord());
+  std::unique_ptr<Uint8[]> ukRow(new Uint8[len]());
+  NdbError err;
+
+  // The read waits for the unique index row until it commits, then reads
+  // the base row without a lock while its commit is still pending. That is
+  // not "no such row" but a temporary error asking for a retry.
+  // Error 627: Unique index base row read raced with its commit
+  CHECK(readRowByRecord(ndb, tab, ukRec, 0, NdbOperation::LM_CommittedRead,
+                        ukRow.get(), err) == 627);
+  CHECK(err.status == NdbError::TemporaryError);
+  // Wait until the transaction in the other thread has completed
+  ctx->getPropertyWait("InsertState", 2);
+  // The retry finds the committed row
+  CHECK(readRowByRecord(ndb, tab, ukRec, 0, NdbOperation::LM_CommittedRead,
+                        ukRow.get(), err) == 0);
+  return NDBT_OK;
+}
+
 int runDatabaseAndSchemaName(NDBT_Context *ctx, NDBT_Step *) {
   Ndb_cluster_connection *con = &ctx->m_cluster_connection;
 
@@ -7993,6 +8205,38 @@ TESTCASE(
   STEP(runPkRead1);
   STEP(runPkRead2);
   FINALIZER(runClearTable);
+}
+TESTCASE("UkCommittedReadNoBaseLock",
+         "Check that a committed read through a unique index does not wait "
+         "for a lock on the base table row") {
+  TC_PROPERTY("ReadExecuted", Uint32(0));
+  INITIALIZER(createUkOnPk);
+  INITIALIZER(runWriteRecord);
+  STEP(runPkRead1);
+  STEP(runUkCommittedReadNoBaseLock);
+  FINALIZER(runClearTable);
+  FINALIZER(dropUkOnPk);
+}
+TESTCASE("UkCommittedReadInterpretedNotFound",
+         "Check that a committed read through a unique index rejected by its "
+         "interpreted program reports no row, not a temporary error") {
+  INITIALIZER(createUkOnPk);
+  INITIALIZER(runWriteRecord);
+  STEP(runUkCommittedReadInterpretedNok);
+  FINALIZER(runClearTable);
+  FINALIZER(dropUkOnPk);
+}
+TESTCASE("UkCommittedReadCommitRace",
+         "Check that a committed read through a unique index whose base row "
+         "commit is still pending gives a temporary error, not no row") {
+  TC_PROPERTY("InsertState", Uint32(0));
+  INITIALIZER(createUkOnPk);
+  INITIALIZER(runDelayUserTableCommit);
+  STEP(runInsertRecordCommitDelayed);
+  STEP(runUkCommittedReadCommitRace);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runClearTable);
+  FINALIZER(dropUkOnPk);
 }
 TESTCASE("DatabaseAndSchemaName",
          "Test functions depending on database and schema name") {

@@ -540,6 +540,12 @@ Error insertions used to test ACCKEYCONF/ABORT interleaving
       traffic against a fragment while it is being copied. No state or
       protocol transition is changed.
 
+5160: Delay COMMIT of user table operations sent by DBTC by 1500 ms, once
+      per operation, so that the hidden unique index row of an insert or
+      update commits before its base table row. Used to reproduce the
+      window in which a lock-free unique index lookup finds the index row
+      committed but not yet the base row (error 627).
+
 5118: Escalate a replica-rowid-mismatch rejection (error 1245, TTL error 899
       hardening) to ndbabort on the detecting replica (autotest hard stop
       for layout-divergence tests)

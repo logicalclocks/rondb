@@ -58,11 +58,7 @@ func TestMain(m *testing.M) {
 	defer cleanup()
 
 	// Increasing this increases throughput, but can reduce latency if it is too high
-	if conf.Internal.GOMAXPROCS == -1 {
-		runtime.GOMAXPROCS(8)
-	} else {
-		runtime.GOMAXPROCS(conf.Internal.GOMAXPROCS)
-	}
+	runtime.GOMAXPROCS(8)
 
 	retcode = m.Run()
 }
