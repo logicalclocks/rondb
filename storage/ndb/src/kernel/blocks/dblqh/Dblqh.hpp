@@ -3567,7 +3567,7 @@ private:
                          LogPartRecord *logPartPtrP);
   void initFsopenconf(Signal *signal, LogFileRecordPtr &logFilePtr,
                       LogPartRecordPtr &logPartPtr);
-  void initFsrwconf(Signal *signal, bool write,
+  bool initFsrwconf(Signal *signal, bool write,
                     LogFileOperationRecordPtr &lfoPtr,
                     LogPageRecordPtr &logPagePtr, LogFileRecordPtr &logFilePtr,
                     LogPartRecordPtr &logPartPtr);

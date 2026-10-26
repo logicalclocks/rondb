@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2005, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -98,6 +98,8 @@ struct Opts {
   uint tweak;  // whatever's useful
   bool use_table;
 };
+
+static void short_usage_func(void) { ndb_short_usage_sub(nullptr); }
 
 static Opts g_opts;
 static const uint g_maxpk = 1000;
@@ -2140,19 +2142,21 @@ static int doconnect() {
 }
 
 int main(int argc, char **argv) {
-  ndb_init();
+  NDB_INIT(argv[0]);
   const char *progname =
       strchr(argv[0], '/') ? strrchr(argv[0], '/') + 1 : argv[0];
   ndbout << progname;
   for (int i = 1; i < argc; i++) ndbout << " " << argv[i];
   ndbout << endl;
   int ret;
-  ret = handle_options(&argc, &argv, my_long_options, ndb_std_get_one_option);
-  if (ret != 0 || argc != 0 || checkopts() != 0)
-  {
+  Ndb_opts opts(argc, argv, my_long_options);
+  opts.set_usage_funcs(short_usage_func);
+  ret = opts.handle_options();
+  if (ret != 0 || argc != 0 || checkopts() != 0) {
     ndbout << "Failed options" << endl;
     ndbout << "ret = " << ret << " argc == " << argc << endl;
     ndbout << "Return NDBT_FAILED" << endl;
+    opts.usage();
     return NDBT_ProgramExit(NDBT_WRONGARGS);
   }
   if (doconnect() == 0 && runtest() == 0) {
