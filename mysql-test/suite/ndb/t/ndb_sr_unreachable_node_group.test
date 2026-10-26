@@ -1,0 +1,207 @@
+#
+# System restart where the nodes that cannot be included form a node group
+#
+# As ndb_sr_unreachable_node, with six data nodes in three node groups,
+# {1,2}, {3,4} and {5,6}, see ndb_sr_unreachable_node_group.cnf. The
+# firewall blocks the port data node 4 listens on, so nodes 5 and 6 cannot
+# connect to node 4, while all of them connect to nodes 1, 2 and 3.
+#
+# The president includes the starting nodes in the order their CM_REGREQ
+# arrives, which varies from run to run:
+# - When node 5 or node 6 is included before node 4, the inclusion of
+#   node 4 stalls and is aborted, and the system restart completes
+#   without node 4.
+# - When node 4 is included before nodes 5 and 6, the inclusions of both
+#   stall and are aborted, although node group {5,6} then has no node:
+#   a node that cannot connect to every member cannot take part in the
+#   start. The president tries them once more 6 seconds later, and the
+#   system restart completes once they can connect to node 4.
+# The president once waited for the inclusion of the second of nodes 5
+# and 6 for ever, since the start could not complete without it, and
+# refused the first one until the start had completed. A node whose
+# inclusion is aborted a second time exits and its angel starts it again
+# (StopOnError=0), the nodes that have joined survive its exit.
+#
+# The API nodes cannot connect to node 4, so the MySQL Servers are shut
+# down while the port is blocked. The firewall is changed with pfctl on
+# macOS and with nft or iptables on Linux, which needs the test to run as
+# root or passwordless sudo for that command, else the test is skipped,
+# see ndb_sr_unreachable_node.
+#
+
+--source include/have_ndb.inc
+# The test blocks a fixed port with the host's firewall, so it must not
+# run in parallel with other tests
+--source include/not_parallel.inc
+
+--let $ndb_firewall_port= 11879
+--let $ndb_firewall_action= check
+--source suite/ndb/include/ndb_firewall_port.inc
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+
+--echo # Shut down the MySQL Servers
+--connect(s1,127.0.0.1,root,,test,$MASTER_MYPORT,)
+--connect(s2,127.0.0.1,root,,test,$MASTER_MYPORT1,)
+--connection s1
+--let $mysqld_name= mysqld.1.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld1_file_name= $_expect_file_name
+--connection s2
+--let $mysqld_name= mysqld.2.1
+--source include/shutdown_mysqld.inc
+--let $expect_mysqld2_file_name= $_expect_file_name
+--connection default
+
+--echo # Restart all data nodes into not started state
+--exec $NDB_MGM -e "ALL RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+
+--echo # Block the port of data node 4, nodes 5 and 6 cannot connect to node 4
+--let $ndb_firewall_action= block
+--source suite/ndb/include/ndb_firewall_port.inc
+
+# Only look at cluster log lines written from here on
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my @logs = glob("$vardir/mysql_cluster.1/ndb_mgmd.1/ndb_*_cluster.log");
+  die "Expected one cluster log, found " . scalar(@logs) . "\n"
+    unless @logs == 1;
+  my $offset_file = "$vardir/tmp/ndb_sr_unreachable_node_group.offset";
+  open(my $fh, '>', $offset_file) or die "Cannot write $offset_file: $!\n";
+  print $fh "$logs[0]\n" . (-s $logs[0]) . "\n";
+  close($fh);
+EOF
+
+--echo # System restart
+--exec $NDB_MGM -e "ALL START" >> $NDB_TOOLS_OUTPUT
+
+--echo # Wait until the system restart has completed without node 4, or the
+--echo # president has aborted the inclusions of both nodes 5 and 6
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $offset_file = "$vardir/tmp/ndb_sr_unreachable_node_group.offset";
+  open(my $fh, '<', $offset_file) or die "Cannot read $offset_file: $!\n";
+  chomp(my $log = <$fh>);
+  chomp(my $offset = <$fh>);
+  close($fh);
+  unlink($offset_file);
+
+  # The president's reports since the restart began
+  sub read_log {
+    my %aborted;
+    my ($cannot, $waited) = (0, 0);
+    my @lines;
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      next unless $line =~ /Node 1: Node (\d+) was not included in the cluster within 10000 ms/;
+      my $node = $1;
+      push(@lines, $line);
+      if ($line =~ /Aborting its inclusion/) {
+        $aborted{$node}++;
+        $cannot++ if $line =~ /the cluster start cannot complete without it/;
+      }
+      $waited++ if $line =~ /Waiting for it/;
+    }
+    close($lf);
+    return (\%aborted, $cannot, $waited, \@lines);
+  }
+
+  my $timeout = 300;
+  my $start = time();
+  my ($aborted, $cannot, $waited, $lines, $out, %status, @left_out);
+  while (1) {
+    $out = `$mgm -e "ALL STATUS" 2>&1`;
+    %status = ();
+    while ($out =~ /^Node (\d+): (\S+)/mg) {
+      $status{$1} = $2;
+    }
+    $status{$_} //= 'unknown' foreach (1 .. 6);
+    ($aborted, $cannot, $waited, $lines) = read_log();
+    my @started = grep { $status{$_} eq 'started' } (1 .. 6);
+    if (@started == 5 && $status{4} ne 'started') {
+      # The system restart completed without node 4
+      die "Node 4 was left out without an aborted inclusion:\n@$lines"
+        unless $aborted->{4};
+      @left_out = (4);
+      last;
+    }
+    if ($aborted->{5} && $aborted->{6} && $cannot) {
+      # Node group {5,6} could not be included
+      die "Data nodes started without node group {5,6}:\n$out"
+        if @started;
+      @left_out = (5, 6);
+      last;
+    }
+    die "Timeout waiting for the restart to complete without node 4 or" .
+        " for the inclusions of nodes 5 and 6 to be aborted:\n$out\n@$lines"
+      if time() - $start > $timeout;
+    sleep(1);
+  }
+  print "The president aborted every inclusion that the missing links" .
+        " stalled: yes\n";
+  print "The president waited for a stalled inclusion: " .
+        ($waited ? "yes" : "no") . "\n";
+
+  # A left out node exits when its inclusion is aborted a second time,
+  # the nodes that have joined go on
+  my %left_out = map { $_ => 1 } @left_out;
+  my ($exited, $member_shutdown);
+  $start = time();
+  while (1) {
+    ($exited, $member_shutdown) = (0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      next unless $line =~ /Node (\d+): Forced node shutdown/;
+      if ($left_out{$1}) {
+        $exited++ if $line =~ /Caused by error 6054/;
+      } else {
+        $member_shutdown++;
+      }
+    }
+    close($lf);
+    last if $exited;
+    die "Timeout waiting for node(s) @left_out to exit\n"
+      if time() - $start > 120;
+    sleep(1);
+  }
+  print "A left out node exited at the second abort: yes\n";
+  print "The nodes that joined went on running: " .
+        ($member_shutdown ? "no" : "yes") . "\n";
+EOF
+
+--echo # Unblock the port, all data nodes start
+--let $ndb_firewall_action= unblock
+--source suite/ndb/include/ndb_firewall_port.inc
+--exec $NDB_WAITER --timeout=600 >> $NDB_TOOLS_OUTPUT
+
+--echo # Start the MySQL Servers
+--connection s1
+--let $_expect_file_name= $expect_mysqld1_file_name
+--let $mysqld_name= mysqld.1.1
+--source include/start_mysqld.inc
+--connection s2
+--let $_expect_file_name= $expect_mysqld2_file_name
+--let $mysqld_name= mysqld.2.1
+--source include/start_mysqld.inc
+--source include/ndb_not_readonly.inc
+--disconnect s2
+--disconnect s1
+
+--connection default
+--source include/wait_until_connected_again.inc
+--source include/ndb_not_readonly.inc
+
+SELECT COUNT(*), SUM(b) FROM t1;
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+
+DROP TABLE t1;
+--remove_file $NDB_TOOLS_OUTPUT

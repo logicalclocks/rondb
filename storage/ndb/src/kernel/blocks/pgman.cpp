@@ -5485,12 +5485,12 @@ Pgman::get_ordered_list_from_table_id(Uint32 table_id)
   return list;
 }
 
-void Page_cache_client::drop_fragment(Uint32 tableId, Uint32 fragmentId) {
+bool Page_cache_client::drop_fragment(Uint32 tableId, Uint32 fragmentId) {
   assert(m_pgman_proxy == 0);
-  m_pgman->drop_fragment(tableId, fragmentId);
+  return m_pgman->drop_fragment(tableId, fragmentId);
 }
 
-void Pgman::drop_fragment(Uint32 tableId, Uint32 fragmentId) {
+bool Pgman::drop_fragment(Uint32 tableId, Uint32 fragmentId) {
   FragmentRecord key(*this, tableId, fragmentId);
   FragmentRecordPtr fragPtr;
   m_fragmentRecordHash.find(fragPtr, key);
@@ -5505,7 +5505,10 @@ void Pgman::drop_fragment(Uint32 tableId, Uint32 fragmentId) {
     fragList.remove(fragPtr);
     m_fragmentRecordHash.remove(fragPtr);
     m_fragmentRecordPool.release(fragPtr);
+    return true;
   }
+  jam();
+  return false;
 }
 
 void Pgman::insert_fragment_dirty_list(Ptr<Page_entry> ptr, Page_state state,

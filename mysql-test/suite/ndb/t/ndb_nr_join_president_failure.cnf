@@ -1,0 +1,2 @@
+# The cluster of ndb_sr_join_crash: four data nodes in two node groups
+!include ndb_sr_join_crash.cnf

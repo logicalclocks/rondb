@@ -10379,6 +10379,17 @@ void Dbacc::execDBINFO_SCANREQ(Signal *signal) {
           // Loop over all fragments for this table.
           for (; f < MAX_FRAG_PER_LQH; f++)
           {
+            /**
+             * Each fragment has its own fragment id, getNextAccFragid moves
+             * f to the next fragment and getNextAccFragrec returns the
+             * fragment record at f.
+             */
+            fragId = c_lqh->getNextAccFragid(tabPtr.i, f);
+            if (fragId == RNIL)
+            {
+              jam();
+              break;
+            }
             FragmentrecPtr frp;
             frp.i = c_lqh->getNextAccFragrec(tabPtr.i, f);
             if (frp.i != RNIL64)
