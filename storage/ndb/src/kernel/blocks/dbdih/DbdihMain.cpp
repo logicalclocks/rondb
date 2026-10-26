@@ -21603,6 +21603,24 @@ void Dbdih::srPhase2ReadTableLab(Signal *signal, TabRecordPtr tabPtr) {
 
   // sendLoopMacro(COPY_TABREQ, nullRoutine);
 
+  /**
+   * Wait for COPY_TABCONF from every node from the start, as the comment
+   * above says. A node used to be added only when the copy to it had been
+   * sent, so the COPY_TABCONF of an earlier node could complete the table
+   * while the copy to a later node was still going on: the table pages
+   * were released under that copy, and the COPY_TABCONF of the later node
+   * completed the table once more and added its fragments a second time.
+   */
+  ndbrequire(c_COPY_TABREQ_Counter.done());
+  NodeRecordPtr nodePtr;
+  nodePtr.i = cfirstAliveNode;
+  while (nodePtr.i != RNIL) {
+    jam();
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
+    nodePtr.i = nodePtr.p->nextNode;
+  }
+
   breakCopyTableLab(signal, tabPtr, cfirstAliveNode);
   return;
 }  // Dbdih::srPhase2ReadTableLab()
@@ -21628,7 +21646,6 @@ void Dbdih::breakCopyTableLab(Signal *signal, TabRecordPtr tabPtr,
       // AFTER COMPLETING THE WRITE TO DISK THE MASTER WILL ALSO SEND
       // COPY_TABCONF AS ALL THE OTHER NODES.
       /* ------------------------------------------------------------------- */
-      c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
       tabPtr.p->tabUpdateState = TabRecord::US_COPY_TAB_REQ;
       signal->theData[0] = DihContinueB::ZTABLE_UPDATE;
       signal->theData[1] = tabPtr.i;
@@ -21696,11 +21713,10 @@ void Dbdih::copyTableNode(Signal *signal, CopyTableNode *ctn,
           // We have copied the table description to this node.
           // We will now proceed
           // with sending the table description to the next node in the node
-          // list.
+          // list. srPhase2ReadTableLab waits for its COPY_TABCONF.
           /* ------------------------------------------------------------------
            */
           jam();
-          c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
           ctn->ctnTabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
           breakCopyTableLab(signal, ctn->ctnTabPtr, nodePtr.p->nextNode);
           return;

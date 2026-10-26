@@ -57,6 +57,25 @@
 
 /* Delay values, ms -----------------------------*/
 #define ZDELAY_REGREQ 1000
+/**
+ * A starting node sends CM_REGREQ again every ZREGREQ_LOOP_DELAY until
+ * the president includes it.
+ */
+#define ZREGREQ_LOOP_DELAY 3000
+/**
+ * The prepare phase of an inclusion has to complete within
+ * ZINCLUSION_TIME_LIMIT, see Qmgr::regreqMasterTimeLimitLab. A starting
+ * node that the president accepts has a transporter connection to it and
+ * reconnects to a node every 100 ms within the 3 s connect timeout, so it
+ * either reaches every member within a few seconds or not at all.
+ */
+#define ZINCLUSION_TIME_LIMIT 10000
+/**
+ * The president includes a node whose inclusion it aborted again only
+ * when ZINCLUSION_RETRY_DELAY has passed: two CM_REGREQ rounds, in which
+ * every other starting node asks at least once and is included.
+ */
+#define ZINCLUSION_RETRY_DELAY (2 * ZREGREQ_LOOP_DELAY)
 
 /* Type of refuse in CM_NODEINFOREF -------------*/
 #define ZNOT_RUNNING 0
@@ -131,12 +150,23 @@ class Qmgr : public SimulatedBlock {
     void reset() {
       m_startKey++;
       m_startNode = 0;
+      m_committing = false;
       m_gsn = RNIL;
       m_nodes.clearWaitingFor();
     }
     Uint32 m_startKey;
     Uint32 m_startNode;
     Uint64 m_startTimeout;
+    /**
+     * President: when the time supervision of the inclusion of
+     * m_startNode started, see regreqMasterTimeLimitLab.
+     */
+    NDB_TICKS m_startNodeTime;
+    /**
+     * President: every node has prepared the inclusion of m_startNode,
+     * the commit has started. The node counts as joined from here on.
+     */
+    bool m_committing;
 
     Uint32 m_gsn;
     SignalCounter m_nodes;
@@ -698,7 +728,18 @@ class Qmgr : public SimulatedBlock {
   void closeComConfLab(Signal *signal);
   void apiRegReqLab(Signal *signal);
   void regreqTimeLimitLab(Signal *signal);
-  void regreqTimeMasterLimitLab(Signal *signal);
+  void regreqMasterTimeLimitLab(Signal *signal);
+  bool check_start_without_node(Signal *signal, Uint32 nodeId, char *reason,
+                                size_t reason_len);
+  bool start_waits_for_node(Uint32 nodeId) const;
+  bool is_initial_start() const;
+  void abort_starting_node(Signal *signal, NodeRecPtr addNodePtr);
+  void forget_aborted_inclusion(NodeRecPtr nodePtr, Uint32 dynamicId);
+  void cm_add_abort_starting_node(Signal *signal);
+  bool all_support_cm_add_abort(Uint32 startingNodeId) const;
+  bool start_survives_disconnect(Uint32 nodeId) const;
+  bool lost_starting_node(Signal *signal, NodeRecPtr nodePtr);
+  void fail_starting_nodes(Signal *signal);
   void cmRegreq010Lab(Signal *signal);
   void cmRegconf010Lab(Signal *signal);
   void sttor010Lab(Signal *signal);
@@ -818,6 +859,33 @@ class Qmgr : public SimulatedBlock {
   bool c_nsl_join_tick_armed;
   void nsl_report_inclusion_wait();
   void nsl_arm_join_tick(Signal *signal);
+
+  /**
+   * Inclusions of starting data nodes that the president aborted with
+   * CM_ADD(Abort), see regreqMasterTimeLimitLab. A late CM_NODEINFOREQ
+   * of an aborted attempt is recognised by its dynamic id and ignored,
+   * as is a late CM_ACKADD on the president. The president includes the
+   * node again when ZINCLUSION_RETRY_DELAY has passed since the abort, so
+   * the other starting nodes are not kept waiting behind it.
+   */
+  NdbNodeBitmask c_aborted_inclusions;
+  Uint32 c_aborted_inclusion_dynamic_id[ABS_MAX_NDB_NODES];
+  NDB_TICKS c_aborted_inclusion_time[ABS_MAX_NDB_NODES];
+  /* Starting node: the president that aborted our inclusion, 0 if none */
+  Uint16 c_inclusion_aborted_by;
+  /**
+   * Starting node that is not a member: the president it knows of from
+   * CM_REGCONF or CM_REGREF, ZNIL while there is none, see
+   * start_survives_disconnect.
+   */
+  Uint16 c_known_president;
+  /**
+   * Member: starting nodes that disconnected during their inclusion. The
+   * president decides what happens to them, with CM_ADD(Abort), with
+   * CM_ADD(AddCommit) and a node failure, or with PREP_FAILREQ, see
+   * lost_starting_node.
+   */
+  NdbNodeBitmask c_lost_starting_nodes;
 
   Uint16 creadyDistCom;
 
