@@ -1,0 +1,29 @@
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+# Find the president and a data node in the other node group
+# Restart J into not started state, it does not send CM_NODEINFOREQ
+# Start J and wait for P to include it
+P is including J
+# P crashes while it includes J
+P crashed and J exited: yes
+The other two data nodes went on running: yes
+# P and J join again
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+10	55
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	101
+2	102
+3	103
+4	104
+5	105
+6	6
+7	7
+8	8
+9	9
+10	10
+11	11
+DROP TABLE t1;

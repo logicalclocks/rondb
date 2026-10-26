@@ -1,0 +1,37 @@
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+# Restart data nodes 2 and 4 into not started state
+# Block new connections to the port of data node 3
+# Start node 4, it cannot connect to node 3
+# Wait for the president to start including node 4
+The president is including node 4
+# Start node 2 while the president is including node 4
+# Node 4 has not started, its inclusion was aborted and it exited
+Node 4 has not started
+President aborted the inclusion of node 4: yes
+Node 4 exited: yes
+Nodes 1, 2 and 3 went on running: yes
+# The cluster serves data while node 4 restarts
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+10	55
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+# Unblock the port, node 4 joins the cluster
+SELECT COUNT(*), SUM(b) FROM t1;
+COUNT(*)	SUM(b)
+11	566
+SELECT * FROM t1 ORDER BY a;
+a	b
+1	101
+2	102
+3	103
+4	104
+5	105
+6	6
+7	7
+8	8
+9	9
+10	10
+11	11
+DROP TABLE t1;

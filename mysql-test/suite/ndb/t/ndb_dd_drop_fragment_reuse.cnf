@@ -1,0 +1,8 @@
+!include ../my.cnf
+
+[cluster_config]
+# The test creates 1024 fragments in each data node, each fragment
+# allocates a DBACC page from DataMemory and fragment records from
+# schema memory, which can extend into SharedGlobalMemory.
+DataMemory=100M
+SharedGlobalMemory=200M
