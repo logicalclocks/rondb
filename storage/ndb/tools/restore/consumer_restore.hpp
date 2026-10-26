@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2004, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -81,7 +81,8 @@ class BackupRestore : public BackupConsumer {
                 Uint32 data_parallelism, Uint32 log_parallelism)
       : m_ndb(NULL),
         m_cluster_connection(conn),
-        m_fatal_error(false)
+        m_fatal_error(false),
+        m_data_error(false)
 #ifdef ERROR_INSERT
         ,
         m_error_insert(0),
@@ -238,6 +239,8 @@ class BackupRestore : public BackupConsumer {
   void update_next_auto_val(Uint32 orig_table_id, Uint64 next_val);
   bool get_fatal_error();
   void set_fatal_error(bool);
+  bool has_data_error() override;
+  void set_data_error(bool);
   void report_error(restore_callback_t *cb, const NdbError &errObj);
 
   enum Outcome { DONE, RETRY, FAIL };
@@ -295,6 +298,7 @@ class BackupRestore : public BackupConsumer {
   Uint32 m_callbacks_in_use;
   Uint64 m_pk_update_warning_count;
   bool m_fatal_error;
+  bool m_data_error;
 
   /**
    * m_new_table_ids[X] = Y;

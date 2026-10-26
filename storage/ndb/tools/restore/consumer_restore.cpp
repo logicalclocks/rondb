@@ -3489,6 +3489,10 @@ bool BackupRestore::get_fatal_error() { return m_fatal_error; }
 
 void BackupRestore::set_fatal_error(bool err) { m_fatal_error = err; }
 
+bool BackupRestore::has_data_error() { return m_data_error; }
+
+void BackupRestore::set_data_error(bool err) { m_data_error = err; }
+
 void BackupRestore::report_error(restore_callback_t *cb,
                                  const NdbError &errObj) {
   const char *statusStr = "Invalid";
@@ -3856,10 +3860,7 @@ void BackupRestore::cback(int result, restore_callback_t *cb) {
       tuple_a(cb);  // retry
     else {
       // Transaction closed by errorHandler
-      set_fatal_error(true);
-      restoreLogger.log_error(
-          "Restore: Failed to restore data due to a unrecoverable error. "
-          "Exiting...");
+      set_data_error(true);
       if(ga_continue_on_data_errors)
       {
         restoreLogger.log_error("Restore: Failed to restore data due to an "
@@ -4868,7 +4869,7 @@ BackupRestore::Outcome BackupRestore::get_logentry_apply_outcome(
               restoreLogger.log_error(
                   "Error insert NDB_RESTORE_ERROR_INSERT_FAIL_LOG_CONSTRAINT");
               m_error_insert = 0;
-              return FAIL;
+              break;  // Handle as a data error below
             }
 #endif
             /* Constraint violation on log INSERT -> Ignore for idempotent apply
@@ -4887,15 +4888,26 @@ BackupRestore::Outcome BackupRestore::get_logentry_apply_outcome(
           break;
       }
 
-      /* Some other error */
+      /* Some other error, a data error */
+      set_data_error(true);
       if (ga_continue_on_data_errors) {
         /* Skip this log entry and continue (--continue-on-data-errors) */
+        restoreLogger.log_error(
+            "Restore: Failed to restore data from a log entry due to an "
+            "unrecoverable error. Will continue due to "
+            "--continue-on-data-errors.");
         report_error(cb, errObj);
         logErrorWithLogEntry("The log entry that failed to restore is: ",
                              &cb->le);
         return DONE;
       }
-      /* FAIL */
+      restoreLogger.log_error(
+          "Restore: Failed to restore data from a log entry due to an "
+          "unrecoverable error. You could provide --continue-on-data-errors "
+          "to not give up at this point. Exiting...");
+      logErrorWithLogEntry("The log entry that failed to restore is: ",
+                           &cb->le);
+      /* FAIL, cback_logentry() reports the error and cleans up */
       return FAIL;
     }
   }

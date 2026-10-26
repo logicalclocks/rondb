@@ -1,0 +1,73 @@
+********************************************************
+RONDB-429: ndb_restore --continue-on-data-errors
+********************************************************
+Rows that fail to restore with a data error are skipped, the
+restore continues with the remaining rows and the exit code
+still shows failure.
+CREATE TEMPORARY TABLE ndb_restore_output (a varchar(512));
+Data error on DATA restore
+create table test.t1 (a int primary key, b int, c int) engine=ndb;
+insert into test.t1 values (1000,1000,999);
+Starting backup
+Backup started
+Waiting for backup to complete
+Backup completed
+truncate test.t1;
+alter table test.t1 add unique(c);
+Restore with --continue-on-data-errors
+Expect all rows but one restored
+select count(*) from test.t1;
+count(*)
+1000
+Expect 1 continue message
+select count(*) into @msgcount from ndb_restore_output where a like "%Will continue due to --continue-on-data-errors%";
+select @msgcount as 'Count of continue message';
+Count of continue message
+1
+select * from ndb_restore_output where @msgcount != 1;
+a
+Expect no exit message
+select count(*) into @msgcount from ndb_restore_output where a like "%unrecoverable error. Exiting%";
+select @msgcount as 'Count of exit message';
+Count of exit message
+0
+select * from ndb_restore_output where @msgcount != 0;
+a
+Expect 1 data error summary message
+select count(*) into @msgcount from ndb_restore_output where a like "%Failed to restore some data.%";
+select @msgcount as 'Count of summary message';
+Count of summary message
+1
+select * from ndb_restore_output where @msgcount != 1;
+a
+drop table test.t1;
+Data error on LOG restore
+create table test.t1 (a int, b int, c int, primary key (a,b)) engine=ndb partition by key(a);
+Cause backup stall while log open
+Starting backup
+Backup started
+insert into t1 values(999,1000,999);
+Waiting for backup to complete
+Backup completed
+truncate test.t1;
+alter table test.t1 add unique(c);
+Restore with --continue-on-data-errors and error insert on log apply
+Expect the data rows restored, the log insert skipped
+select count(*) from test.t1;
+count(*)
+1000
+Expect 1 log entry continue message
+select count(*) into @msgcount from ndb_restore_output where a like "%log entry due to an unrecoverable error. Will continue%";
+select @msgcount as 'Count of continue message';
+Count of continue message
+1
+select * from ndb_restore_output where @msgcount != 1;
+a
+Expect 1 data error summary message
+select count(*) into @msgcount from ndb_restore_output where a like "%Failed to restore some data.%";
+select @msgcount as 'Count of summary message';
+Count of summary message
+1
+select * from ndb_restore_output where @msgcount != 1;
+a
+drop table test.t1;
