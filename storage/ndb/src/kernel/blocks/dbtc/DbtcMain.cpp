@@ -2705,7 +2705,8 @@ void Dbtc::printState(Signal *signal, int place,
 
 void
 Dbtc::check_tc_hbrep(Signal *signal,
-                     ApiConnectRecordPtr const apiConnectptr)
+                     ApiConnectRecordPtr const apiConnectptr,
+                     bool scan)
 {
   Uint32 TtcTimer = ctcTimer;
   /**
@@ -2715,14 +2716,23 @@ Dbtc::check_tc_hbrep(Signal *signal,
    * Also we don't send it during COMPLETE phase when there is no
    * longer any API node waiting for the COMPLETE phase to finish.
    * This is indicated with the RS_NO_RETURN return signal.
+   *
+   * A scan sends it while LQH or SPJ report progress with SCAN_HBREP
+   * and no rows reach the API, e.g. when no row matches the pushed
+   * condition, or an aggregation that returns its result at the end
+   * of the fragment. SCAN_TABREQ doesn't set returnsignal, so it isn't
+   * checked for a scan.
+   *
+   * Error insert 8317 sends it every second instead.
    */
-  if ((apiConnectptr.p->m_tc_hbrep_timer + 3000) < TtcTimer)
+  const Uint32 interval = ERROR_INSERTED(8317) ? 100 : 3000;
+  if ((apiConnectptr.p->m_tc_hbrep_timer + interval) < TtcTimer)
   {
     Uint32 nodeId = refToNode(apiConnectptr.p->ndbapiBlockref);
     Uint32 version = getNodeInfo(nodeId).m_version;
     apiConnectptr.p->m_tc_hbrep_timer = TtcTimer;
     if (getNodeInfo(nodeId).getType() == NodeInfo::API &&
-        apiConnectptr.p->returnsignal != RS_NO_RETURN &&
+        (scan || apiConnectptr.p->returnsignal != RS_NO_RETURN) &&
         ndbd_support_tc_hbrep_api(version))
     {
       jam();
@@ -12388,6 +12398,7 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
          instance(), scanptr.i, apiConnectptr.i, signal->theData[3],
          senderRef, senderNodeId, signal->theData[1], signal->theData[2],
          refreshed, ctcTimer, rec.p->m_outstanding));
+    check_tc_hbrep(signal, apiConnectptr, true);
     if (rec.p->m_kind == AggCompleteRecord::KIND_CTE &&
         (rec.p->m_errorCode != 0 || scanptr.p->m_cteAborting) &&
         scanptr.p->m_aggSetupState != ScanRecord::AGG_SETUP_CANCELLED) {
@@ -12514,6 +12525,7 @@ void Dbtc::execSCAN_HBREP(Signal *signal) {
          scanFragptr.p->lqhBlockref, senderRef, refToNode(senderRef),
          signal->theData[1], signal->theData[2],
          joinAggCompleteHb, hbRequestId));
+    check_tc_hbrep(signal, apiConnectptr, true);
   } else {
     DEB_SCAN_HB_TRACE(
         ("TC %u : SCAN_HBREP ignored timer off scanPtr=%u scanFragPtr=%u "
@@ -17474,6 +17486,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
    ***********************************************************/
   setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
   updateBuddyTimer(apiConnectptr);
+  // The first TC_HBREP to the API is due in 30 s, see check_tc_hbrep.
+  transP->m_tc_hbrep_timer = ctcTimer;
 
   /***********************************************************
    * WE HAVE NOW RECEIVED ALL REFERENCES TO SCAN OBJECTS IN
@@ -19434,6 +19448,11 @@ void Dbtc::execSCAN_FRAGCONF(Signal *signal) {
     if (unlikely(!ok)) {
       jam();
     }
+    /**
+     * The API gets nothing for an empty fragment, and a fragment that
+     * completes quickly sends no SCAN_HBREP.
+     */
+    check_tc_hbrep(signal, apiConnectptr, true);
     return;
   }
   {

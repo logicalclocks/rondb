@@ -2614,7 +2614,8 @@ class Dbtc : public SimulatedBlock {
   void TCKEY_abort(Signal* signal,
                    int place,
                    ApiConnectRecordPtr apiConnectptr);
-  void check_tc_hbrep(Signal *signal, ApiConnectRecordPtr const apiConnectptr);
+  void check_tc_hbrep(Signal *signal, ApiConnectRecordPtr const apiConnectptr,
+                      bool scan = false);
   void copyFromToLen(UintR* sourceBuffer, UintR* destBuffer, UintR copyLen);
   void sendPackedTCKEYCONF(Signal* signal,
                            HostRecord * ahostptr,

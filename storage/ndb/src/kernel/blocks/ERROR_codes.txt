@@ -198,7 +198,7 @@ Next DBLQH 5155
 Next DBDICT 6229
 Next DBDIH 7251
 Next DBTC 8128
-Next DBTC 8317 (RonDB)
+Next DBTC 8318 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -742,6 +742,10 @@ DBTC node failure take over testing (RonDB)
       restored on arrival; stays set until cleared.
       testScan -nScanCloseNoWaitNodeFailure fails the data node while the
       NdbScanOperation::closeNoWait() closes are parked (RonDB F31).
+
+8317: Send TC_HBREP to the API every second instead of every 30 seconds,
+      also during a scan. ndb_scan_tc_hbrep keeps a scan that finds no rows
+      (5112) running past the API timeout.
 
 
 TRPMAN
