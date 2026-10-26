@@ -78,7 +78,7 @@ struct PromotionRules {
 class BackupRestore : public BackupConsumer {
  public:
   BackupRestore(Ndb_cluster_connection *conn, const char *instance_name,
-                Uint32 parallelism)
+                Uint32 data_parallelism, Uint32 log_parallelism)
       : m_ndb(NULL),
         m_cluster_connection(conn),
         m_fatal_error(false)
@@ -102,9 +102,11 @@ class BackupRestore : public BackupConsumer {
     m_restore_epoch_requested = false;
     m_restore_epoch = false;
     m_delete_epoch_tuple = false;
-    m_parallelism = parallelism;
+    m_parallelism = data_parallelism;
+    m_log_parallelism = log_parallelism;
     m_callback = 0;
     m_free_callback = 0;
+    m_callbacks_in_use = 0;
     m_no_upgrade = false;
     m_tableChangesMask = 0;
     m_preserve_trailing_spaces = false;
@@ -134,7 +136,10 @@ class BackupRestore : public BackupConsumer {
   void logErrorWithLogEntry(const char* prefix, LogEntry const *le);
   virtual void cback(int result, restore_callback_t *cb);
   virtual void cback_logentry(int result, restore_callback_t *cb);
+  void tempErrorHandler(restore_callback_t *cb, const NdbError &error);
   virtual bool errorHandler(restore_callback_t *cb);
+  restore_callback_t *seize_callback(Uint32 parallelism);
+  void release_callback(restore_callback_t *cb);
   bool endOfTuples() override;
   bool logEntry(const LogEntry &) override;
   void logEntry_a(restore_callback_t *cb, bool retry);
@@ -235,6 +240,10 @@ class BackupRestore : public BackupConsumer {
   void set_fatal_error(bool);
   void report_error(restore_callback_t *cb, const NdbError &errObj);
 
+  enum Outcome { DONE, RETRY, FAIL };
+  Outcome get_logentry_apply_outcome(int result, const NdbError &errObj,
+                                     restore_callback_t *cb);
+
   Ndb *m_ndb;
   Ndb_cluster_connection *m_cluster_connection;
 
@@ -277,11 +286,13 @@ class BackupRestore : public BackupConsumer {
   char m_instance_name[INSTANCE_ID_LEN];
 
   Uint32 m_parallelism;
+  Uint32 m_log_parallelism;
   std::atomic<uint32_t> m_transactions{0};
   static_assert(decltype(m_transactions)::is_always_lock_free);
 
   restore_callback_t *m_callback;
   restore_callback_t *m_free_callback;
+  Uint32 m_callbacks_in_use;
   Uint64 m_pk_update_warning_count;
   bool m_fatal_error;
 
@@ -446,6 +457,11 @@ class BackupRestore : public BackupConsumer {
   };
 
   TransScheduler m_transScheduler;
+
+#ifndef NDEBUG
+  /* Used for debug only retry exercises */
+  Uint32 m_fakeRetryCounter;
+#endif
 };
 
 #endif

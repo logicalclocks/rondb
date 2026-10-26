@@ -497,8 +497,8 @@ private:
   bool m_require_cert{false};
   std::atomic<bool> m_arbitrator_startup_gate_enabled{false};
 
-  struct ssl_ctx_st *ssl_ctx() {
-    return theFacade->get_registry()->getTlsKeyManager()->ctx();
+  TlsKeyManager *tlsKeyManager() const {
+    return theFacade->get_registry()->getTlsKeyManager();
   }
 
   bool m_need_restart;

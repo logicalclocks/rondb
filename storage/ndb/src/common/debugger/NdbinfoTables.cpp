@@ -653,7 +653,7 @@ DECLARE_NDBINFO_TABLE(TC_TIME_TRACK_STATS, 15) = {
 DECLARE_NDBINFO_TABLE(CONFIG_VALUES, 3) = {
     {"config_values", 3, 0,
      [](const Ndbinfo::Counts &c) {
-       return c.data_nodes * 193;  // 193 = current number of config parameters
+       return c.data_nodes * 197;  // 197 = current number of config parameters
      },
      "Configuration parameter values"},
     {
@@ -1248,6 +1248,18 @@ DECLARE_NDBINFO_TABLE(CERTIFICATES, 5) = {
      {"serial", Ndbinfo::String, "Certificate serial number"},
      {"expires", Ndbinfo::Number, "Certificate expiration date"}}};
 
+DECLARE_NDBINFO_TABLE(TRUSTED_CERTS, 7) = {
+    {"trusted_certs", 7, 0,
+     [](const Ndbinfo::Counts &c) { return c.data_nodes * 2; },
+     "Contents of in-memory TLS trust store"},
+    {{"node_id", Ndbinfo::Number, "node id"},
+     {"name", Ndbinfo::String, "Certificate subject common name"},
+     {"serial", Ndbinfo::String, "Certificate serial number"},
+     {"expires", Ndbinfo::Number64, "Certificate expiration date"},
+     {"flags", Ndbinfo::Number, "CA flags"},
+     {"use_count", Ndbinfo::Number, "Authorization use count"},
+     {"last_use", Ndbinfo::Number64, "Authorization last use timestamp"}}};
+
 /* Transactions_full == Transactions schema */
 DECLARE_NDBINFO_TABLE(TRANSACTIONS_FULL, 11) = {
     {"transactions_full", 11, 0,
@@ -1278,11 +1290,12 @@ DECLARE_NDBINFO_TABLE(TRANSACTIONS_FULL, 11) = {
 DECLARE_NDBINFO_TABLE(TRANSPORTER_ACTIVITY, 8) = {
     {"transporter_activity", 8, 0,
      [](const Ndbinfo::Counts &c) {
-       // data_nodes * (1 data node trp + all api/mgm nodes) * 10
+       // data_nodes * (1 data node trp + all api/mgm nodes) * 21
        return c.data_nodes * ABS_MAX_NODES *
-              20 /* Trpman::TRP_ACTIVITY_HIST_BIN_COUNT */;
+              21 /* Trpman::TRP_ACTIVITY_HIST_BIN_COUNT */;
      },
-     "Histogram over activity on heartbeated transporters"},
+     "Histogram over transporter activity using time between received "
+     "messages"},
     {
         {"node_id", Ndbinfo::Number, "node id"},
         {"block_instance", Ndbinfo::Number, "Block instance"},
@@ -1393,7 +1406,11 @@ static struct ndbinfo_table_list_entry {
     DBINFOTBL(TRANSPORTER_DETAILS),
     DBINFOTBL(TRANSACTIONS_FULL),
     DBINFOTBL(TRANSPORTER_ACTIVITY),
-    DBINFOTBL(RDMA_TRANSPORTERS)};
+    DBINFOTBL(RDMA_TRANSPORTERS),
+    DBINFOTBL_UNSUPPORTED(SECURITY_VIOLATIONS),
+    DBINFOTBL_UNSUPPORTED(SECURITY_VIOLATION_COUNTS),
+    DBINFOTBL_UNSUPPORTED(JIT),
+    DBINFOTBL(TRUSTED_CERTS)};
 
 static int no_ndbinfo_tables =
     sizeof(ndbinfo_tables) / sizeof(ndbinfo_tables[0]);
