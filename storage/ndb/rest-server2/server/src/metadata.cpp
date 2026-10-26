@@ -173,8 +173,8 @@ static void computeRootFgInfo(FeatureViewMetadata *md) {
     return;
   }
 
-  /* Every joined feature group's serving keys must resolve to a name the
-   * root's serving keys are passed under. */
+  /* Every joined serving key must be derivable from the root row: not
+   * required, and joined on (requiredEntry) a root serving key. */
   std::unordered_set<std::string> rootEntryNames;
   for (const ServingKey &sk : root.primaryKeyMap) {
     for (const std::string &name : ServingKeyEntryNames(sk)) {
@@ -195,12 +195,9 @@ static void computeRootFgInfo(FeatureViewMetadata *md) {
       return;
     }
     for (const ServingKey &sk : fg.primaryKeyMap) {
-      bool resolvable =
-        (!sk.requiredEntry.empty() && rootEntryNames.count(sk.requiredEntry)) ||
-        (!sk.joinOn.empty() && rootEntryNames.count(sk.joinOn)) ||
-        rootEntryNames.count(sk.prefix + sk.featureName) ||
-        (sk.prefix.empty() && rootEntryNames.count(sk.featureName));
-      if (!resolvable) {
+      const std::string &joinColumn =
+        sk.requiredEntry.empty() ? sk.featureName : sk.requiredEntry;
+      if (sk.required || rootEntryNames.count(joinColumn) == 0) {
         return;
       }
     }

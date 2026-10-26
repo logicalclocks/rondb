@@ -69,6 +69,16 @@ std::shared_ptr<FilterNode> cmpStr(const std::string &column,
   return node;
 }
 
+std::shared_ptr<FilterNode> cmpDbl(const std::string &column, double value) {
+  auto node = std::make_shared<FilterNode>();
+  node->type = FilterNode::Type::COMPARE;
+  node->cond = NdbScanFilter::COND_EQ;
+  node->column = column;
+  node->value.kind = Node::ParsedValue::Kind::DOUBLE;
+  node->value.d = value;
+  return node;
+}
+
 std::shared_ptr<FilterNode> isNotNull(const std::string &column) {
   auto node = std::make_shared<FilterNode>();
   node->type = FilterNode::Type::IS_NOT_NULL;
@@ -284,6 +294,25 @@ TEST(FeatureStoreScanDedup, ExactDuplicatesCollapseKeepingOrder) {
   ASSERT_EQ(branches.size(), 2u);
   EXPECT_EQ(str(branches[0].entries["id"]), "1");
   EXPECT_EQ(str(branches[1].entries["id"]), "2");
+}
+
+TEST(FeatureStoreScanDedup, SpellingsOfOneKeyCollapse) {
+  auto md = makeMetadata({"id"});
+  /* 1, "1" and 1.0 select the same row: one branch, first spelling kept */
+  auto root = logic(NdbScanFilter::OR,
+                    cmp("id", NdbScanFilter::COND_EQ, 1),
+                    logic(NdbScanFilter::OR,
+                          cmpStr("id", "1"),
+                          logic(NdbScanFilter::OR,
+                                cmpDbl("id", 1.0),
+                                cmpDbl("id", 1.5))));
+  std::vector<PkBranch> branches;
+  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_EQ(branches.size(), 4u);
+  ASSERT_TRUE(DedupPkBranches(branches));
+  ASSERT_EQ(branches.size(), 2u);
+  EXPECT_EQ(str(branches[0].entries["id"]), "1");
+  EXPECT_EQ(str(branches[1].entries["id"]), "1.5");
 }
 
 TEST(FeatureStoreScanDedup, SameKeyWithResidualIsNotFastPath) {

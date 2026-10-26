@@ -47,6 +47,8 @@
 #include <util/require.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -93,6 +95,35 @@ std::vector<char> FilterValueToJson(const Node::ParsedValue &value) {
   }
   return std::vector<char>(buffer.GetString(),
                            buffer.GetString() + buffer.GetSize());
+}
+
+/*
+ * Canonical text of a primary-key value for branch deduplication. RonDB
+ * coerces the value to the column type, so 42, 42.0 and "42" all select
+ * the same row and must collapse to one branch (D8); the JSON spelling
+ * sent to the batch read is left as the client wrote it.
+ */
+static std::string dedupText(const Node::ParsedValue &value) {
+  switch (value.kind) {
+    case Node::ParsedValue::Kind::INT64:
+      return std::to_string(value.i64);
+    case Node::ParsedValue::Kind::UINT64:
+      return std::to_string(value.u64);
+    case Node::ParsedValue::Kind::DOUBLE: {
+      const double d = value.d;
+      if (std::trunc(d) == d &&
+          d >= -9223372036854775808.0 && d < 9223372036854775808.0) {
+        return std::to_string(static_cast<int64_t>(d));
+      }
+      char buf[32];
+      snprintf(buf, sizeof(buf), "%.17g", d);
+      return buf;
+    }
+    case Node::ParsedValue::Kind::STRING:
+      return value.s;
+    default:
+      return "null";
+  }
 }
 
 /*
@@ -194,14 +225,15 @@ rootServingKeys(const metadata::FeatureViewMetadata &md) {
 static void addEntries(PkBranch &branch,
                        const metadata::FeatureViewMetadata &md,
                        const std::unordered_map<std::string,
-                         std::vector<char>> &pkValues) {
+                         Node::ParsedValue> &pkValues) {
   branch.dedupKey.clear();
   for (const ServingKey &sk : rootServingKeys(md)) {
-    const std::vector<char> &value = pkValues.at(sk.featureName);
-    branch.dedupKey.append(value.begin(), value.end());
+    const Node::ParsedValue &value = pkValues.at(sk.featureName);
+    branch.dedupKey += dedupText(value);
     branch.dedupKey.push_back('\x1f');
+    std::vector<char> json = FilterValueToJson(value);
     for (const std::string &name : metadata::ServingKeyEntryNames(sk)) {
-      branch.entries[name] = value;
+      branch.entries[name] = json;
     }
   }
 }
@@ -228,13 +260,13 @@ static bool collectBranch(const std::shared_ptr<FilterNode> &node,
                           const metadata::FeatureViewMetadata &md,
                           const std::unordered_set<std::string> &pkColumns,
                           PkBranch &branch) {
-  std::unordered_map<std::string, std::vector<char>> pkValues;
+  std::unordered_map<std::string, Node::ParsedValue> pkValues;
   std::string column;
   if (node->type == FilterNode::Type::COMPARE) {
     if (pkColumns.size() != 1 || !isPkEquality(*node, pkColumns, column)) {
       return false;
     }
-    pkValues[column] = FilterValueToJson(node->value);
+    pkValues[column] = node->value;
     branch.residual = nullptr;
   } else if (node->type == FilterNode::Type::LOGIC &&
              node->group == NdbScanFilter::AND) {
@@ -244,7 +276,7 @@ static bool collectBranch(const std::shared_ptr<FilterNode> &node,
     for (const auto &child : leaves) {
       if (isPkEquality(*child, pkColumns, column) &&
           pkValues.find(column) == pkValues.end()) {
-        pkValues[column] = FilterValueToJson(child->value);
+        pkValues[column] = child->value;
       } else {
         residualChildren.push_back(child);
       }
@@ -725,6 +757,20 @@ static RS_Status assembleScanChunk(
     if (rootRow.decodeError) {
       row.status = fsds::FeatureStatus::Error;
     }
+    if (includeDetailedStatus) {
+      size_t pos = 0;
+      for (int k = 0; k < md.rootFgIndex; k++) {
+        if (!md.featureGroupFeatures[k].isSpine()) {
+          pos++;
+        }
+      }
+      fsds::DetailedStatus rootStatus{};
+      rootStatus.featureGroupId =
+        md.featureGroupFeatures[md.rootFgIndex].featureGroupId;
+      rootStatus.httpStatus = static_cast<Int32>(drogon::k200OK);
+      pos = std::min(pos, row.detailedStatus.size());
+      row.detailedStatus.insert(row.detailedStatus.begin() + pos, rootStatus);
+    }
     out.push_back(std::move(row));
   }
   return RS_OK;
@@ -777,15 +823,16 @@ static RS_Status assemblePkChunk(
     return status;
   }
   for (size_t i = 0; i < numEntries && out.size() < limit; i++) {
-    bool rootFound = false;
+    bool rootAbsent = true;
     for (const auto &response : grouped[i]) {
       if (response.getBody().getOperationIdString() == rootFgKey) {
-        rootFound = (response.getBody().getStatusCode() == drogon::k200OK);
+        rootAbsent =
+          (response.getBody().getStatusCode() == drogon::k404NotFound);
         break;
       }
     }
-    if (!rootFound) {
-      continue;  // absent key, or rejected by the residual predicate
+    if (rootAbsent) {
+      continue;
     }
     auto result = GetFeatureValues(grouped[i], branches[begin + i].entries,
                                    md, includeDetailedStatus, use_compressed);

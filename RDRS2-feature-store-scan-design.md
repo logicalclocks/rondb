@@ -2,8 +2,6 @@
 
 > Confluence: https://hopsworks.atlassian.net/wiki/spaces/RONDB/pages/1662550018/RDRS2+feature_store_scan+design
 > (version 1, 2026-09-29). **This file is the working copy.** The Confluence page is a snapshot and will not be updated; all changes and decisions go here.
->
-> Companion document: `RDRS2-feature-scan-design.md` (single Feature Group scan with Avro decoding).
 
 ## 0. Decision log
 
@@ -40,7 +38,7 @@ Typical uses:
 * Your Feature View is a **star schema**: every Feature Group in the view shares the same primary key as the root Feature Group (see §8).
 * You want complex features (`array<…>`, `map<…>`, `struct<…>`) decoded server-side, exactly as `/feature_store` does today.
 
-If you already know the primary keys, `/feature_store` or `/batch_feature_store` are the direct APIs (though `feature_store_scan` with a PK-equality filter now costs the same, §4.1). If you only need one Feature Group and no join, use `feature-scan`.
+If you already know the primary keys, `/feature_store` or `/batch_feature_store` are the direct APIs (though `feature_store_scan` with a PK-equality filter now costs the same, §4.1).
 
 ## 2. Endpoint
 
@@ -355,6 +353,7 @@ The comparison semantics are NDB's own, identical to the scan path, so the two p
 | row returned, some joined FG missing (626) | row with `null`s, `MISSING` |
 | row returned, Avro decode failure | row, `ERROR` |
 | 626 (key not in root FG, or rejected by the residual predicate) | dropped |
+| any other non-200 sub-response on the root op | row, `ERROR` (never mistaken for an absent key) |
 | other NDB error | request fails (§6) |
 
 **Cost of detection.** Linear in the number of filter nodes, no NDB access; the root primary-key column set is already on the cached metadata. Residual compilation is the same cost the scan path pays for its filter.
@@ -363,7 +362,7 @@ The comparison semantics are NDB's own, identical to the scan path, so the two p
 
 `limit` counts **rows produced**, on both paths. On the fast path the candidate set is the list of `OR` branches, so:
 
-1. **Deduplicate entries**, keeping the first occurrence. A key listed twice in an `OR` must yield one row, as a scan would. Two branches that name the **same key with different residuals** (e.g. `(id = 1 AND a > 5) OR (id = 1 AND b < 3)`, or a bare `id = 1` next to `id = 1 AND …`) are not plain duplicates: their union would require merging the residual programs. Such a request is **not** served by the fast path; it falls back to the scan, which evaluates the whole tree as one filter (D10).
+1. **Deduplicate entries**, keeping the first occurrence. A key listed twice in an `OR` must yield one row, as a scan would. Deduplication compares the *value*, not its JSON spelling: `42`, `42.0` and `"42"` select the same row (RonDB coerces to the column type) and collapse to one branch. Two branches that name the **same key with different residuals** (e.g. `(id = 1 AND a > 5) OR (id = 1 AND b < 3)`, or a bare `id = 1` next to `id = 1 AND …`) are not plain duplicates: their union would require merging the residual programs. Such a request is **not** served by the fast path; it falls back to the scan, which evaluates the whole tree as one filter (D10).
 2. **Cap the branch count.** More than `FeatureStoreScanMaxLimit` branches → `400 LIMIT_EXCEEDED`, the same bound a scan has.
 3. **Without a residual predicate and with D7**, a branch yields at most one row, but it may yield none (key absent). So the same chunked loop as below is used; in the common case where every key exists it terminates after `ceil(limit / FeatureStoreScanBatchSize)` chunks.
 4. **Chunked execution.** Process entries in request order in chunks of `FeatureStoreScanBatchSize`. After each chunk, append surviving rows (root op 200) to the output. Stop issuing chunks once the output holds `limit` rows. If the last chunk overshoots, truncate to `limit`. Waste is bounded to one chunk.
@@ -377,7 +376,7 @@ Decoding follows the Feature View metadata, not the request:
 * Every feature in `FeatureViewMetadata.complexFeatures` (any FG, root or joined) whose online column is `VARBINARY`/`LONGVARBINARY` is Avro-decoded and emitted as native JSON (array, object, nested record…).
 * All other features are emitted as `/feature_store` emits them today.
 * There is no way to opt out of decoding on this endpoint. Callers who want raw bytes should use `/scan`.
-* An Avro decode failure marks **that row** `ERROR` (with a `detailedStatus` entry naming the FG) rather than failing the whole response. This mirrors `/batch_feature_store` and differs from `feature-scan`, which short-circuits; the per-row status array makes the softer behaviour possible here.
+* An Avro decode failure marks **that row** `ERROR` (with a `detailedStatus` entry naming the FG) rather than failing the whole response. This mirrors `/batch_feature_store`; the per-row status array makes the softer behaviour possible.
 
 ## 6. Errors
 
@@ -432,9 +431,9 @@ A new `FeatureStoreScanEndPointMetricsUpdater` exposes the endpoint in `/metrics
 
 ### 7.5 Response size (D2, D4)
 
-The size optimisation described in the feature-scan design — positional row arrays plus a single `metadata` list instead of per-row keyed objects — is inherited here through the `BatchFeatureStoreResponse` shape. Column names appear once per response, not once per row; for a ten-feature vector with short values this roughly halves the payload compared with the keyed `/scan` format.
+The response uses positional row arrays plus a single `metadata` list instead of per-row keyed objects, inherited through the `BatchFeatureStoreResponse` shape. Column names appear once per response, not once per row; for a ten-feature vector with short values this roughly halves the payload compared with the keyed `/scan` format.
 
-The feature-scan design additionally drops the per-row `status` field. This endpoint keeps it (D2):
+The per-row `status` field is kept (D2):
 
 * For a single FG every returned row is by definition complete, so `status` carries no information there. For a Feature View it does: a joined FG can have no row for a scanned key, and the client must be able to tell "value is null" from "row was missing".
 * The cost is ~11 bytes per row (`"COMPLETE",`) against vectors that are typically well over 100 bytes, i.e. under 10 %, and it gzips to almost nothing because it is the same string repeated.
@@ -481,7 +480,6 @@ Only when the cluster runs with `useHopsworksAPIKeys = false`, same as the other
 | Endpoint | Path | Row selection | Scope | Decodes complex VARBINARY? | Hopsworks metadata |
 | --- | --- | --- | --- | --- | --- |
 | `/scan` | `/0.1.0/{db}/{table}/scan` | filters / index range | one table | No (base64) | No |
-| `/feature-scan` | `/0.1.0/{db}/{table}/feature-scan` | filters / index range | one Feature Group | Yes | FG-keyed |
 | `/feature_store` | `/0.1.0/feature_store` | primary key (1 entry) | Feature View | Yes | FV-keyed |
 | `/batch_feature_store` | `/0.1.0/batch_feature_store` | primary key (N entries) | Feature View | Yes | FV-keyed |
 | **`/feature_store_scan`** | `/0.1.0/feature_store_scan` | **filters / index range on root FG; PK equality auto-routed to batch path** | **Feature View (star schema)** | **Yes** | **FV-keyed** |

@@ -71,10 +71,12 @@ func Test_FastPath_AbsentKey_NoRow(t *testing.T) {
 func Test_FastPath_Or_DedupAndBranchOrder(t *testing.T) {
 	rows := sampleRows(t, 2)
 	a, b := rows[0].Id1, rows[1].Id1
-	// a OR b OR a(duplicate) OR absent, as a nested binary tree
+	// a OR b OR a(duplicate) OR a as a string OR a as a float OR absent,
+	// as a nested binary tree: every spelling of a key is one branch
 	req := NewScanRequest(fsStar, fvStar, fvVersion).
 		With("filters", OrOf(Cmp("id1", "EQ", a), Cmp("id1", "EQ", b),
-			Cmp("id1", "EQ", a), Cmp("id1", "EQ", 987654321)))
+			Cmp("id1", "EQ", a), Cmp("id1", "EQ", fmt.Sprintf("%d", a)),
+			Cmp("id1", "EQ", float64(a)), Cmp("id1", "EQ", 987654321)))
 	got := GetScanResponse(t, req)
 	ref := GetBatchReference(t, fsStar, fvStar, fvVersion, []string{"id1"}, idEntries([]int64{a, b}))
 	if got.Rows != 2 {
@@ -413,6 +415,21 @@ func Test_MetadataAndOptions(t *testing.T) {
 	if !got.HasKey("status") || len(got.DetailedStatus) != 1 || len(got.DetailedStatus[0]) != 2 {
 		t.Errorf("includeDetailedStatus must give one entry per feature group: %s", canonical(t, got.DetailedStatus))
 	}
+
+	// scan path: the root feature group is read by the scan, not the batch,
+	// but must still get its entry so both paths report one per feature group
+	got = GetScanResponse(t, NewScanRequest(fsStar, fvStar, fvVersion).
+		With("filters", Cmp("data1", "EQ", row.Data1)).
+		With("limit", 1).
+		With("options", map[string]bool{"includeDetailedStatus": true}))
+	if got.Rows != 1 || len(got.DetailedStatus) != 1 || len(got.DetailedStatus[0]) != 2 {
+		t.Fatalf("scan path must give one detailedStatus entry per feature group: %s", canonical(t, got.DetailedStatus))
+	}
+	for i, d := range got.DetailedStatus[0] {
+		if d.HttpStatus != http.StatusOK {
+			t.Errorf("scan path detailedStatus[%d] = %d, want 200", i, d.HttpStatus)
+		}
+	}
 }
 
 // ---- errors ----
@@ -460,6 +477,13 @@ func Test_Errors(t *testing.T) {
 		{"index without ranges", NewScanRequest(fsStar, fvStar, fvVersion).With("index", map[string]interface{}{
 			"name": "idx", "key_columns": []string{"data1"}}),
 			http.StatusBadRequest, "Missing index ranges"},
+		// sample_1n3_joinoncol joins sample_3 on the root's data1 column, not
+		// its primary key: the joined rows cannot be found from a root row
+		{"not star schema", NewScanRequest(testdbs.FSDB001, "sample_1n3_joinoncol", 1).With("filters", Cmp("id1", "EQ", 1)),
+			http.StatusBadRequest, "star schema"},
+		// fv_spine_group's root (join index 0) is the spine feature group
+		{"root fg not online", NewScanRequest(testdbs.FSDB004, "fv_spine_group", 1).With("filters", Cmp("id", "EQ", 1)),
+			http.StatusBadRequest, "online"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
