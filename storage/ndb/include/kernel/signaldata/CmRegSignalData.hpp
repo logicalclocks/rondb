@@ -161,14 +161,34 @@ class CmAdd {
 
  public:
   static constexpr Uint32 SignalLength = 4;
+  static constexpr Uint32 AbortSignalLength = 6;
+  /* Abort without startingNodeExits */
+  static constexpr Uint32 OldAbortSignalLength = 5;
 
  private:
-  enum RequestType { Prepare = 0, AddCommit = 1, CommitNew = 2 };
+  /**
+   * Abort: the president gives up the inclusion of the starting node
+   * before it has been committed, see Qmgr::regreqMasterTimeLimitLab.
+   * Sent only when every receiver supports it, ndbd_support_cm_add_abort.
+   */
+  enum RequestType { Prepare = 0, AddCommit = 1, CommitNew = 2, Abort = 3 };
 
   Uint32 requestType;
   Uint32 startingNodeId;
   Uint32 startingVersion;
   Uint32 startingMysqlVersion;
+  /**
+   * Abort only: the dynamic id the president gave the starting node in
+   * CM_REGCONF, it identifies the CM_NODEINFOREQ of the aborted attempt.
+   */
+  Uint32 startingDynamicId;
+  /**
+   * Abort only: 1 when the cluster has started, the starting node then
+   * exits at once, its node restart fails. 0 in a cluster start, the
+   * starting node asks to be included once more, see
+   * Qmgr::cm_add_abort_starting_node.
+   */
+  Uint32 startingNodeExits;
 };
 
 class CmAckAdd {
@@ -178,12 +198,20 @@ class CmAckAdd {
   friend class Qmgr;
 
  public:
-  static constexpr Uint32 SignalLength = 3;
+  static constexpr Uint32 SignalLength = 4;
+  /* Without startingDynamicId, sent by versions without CM_ADD(Abort) */
+  static constexpr Uint32 OldSignalLength = 3;
 
  private:
   Uint32 senderNodeId;
   Uint32 requestType;  // see CmAdd::RequestType
   Uint32 startingNodeId;
+  /**
+   * The dynamic id the president gave the starting node in CM_REGCONF.
+   * The president ignores an acknowledgement of an inclusion attempt it
+   * has aborted, see Qmgr::execCM_ACKADD.
+   */
+  Uint32 startingDynamicId;
 };
 
 class CmNodeInfoReq {

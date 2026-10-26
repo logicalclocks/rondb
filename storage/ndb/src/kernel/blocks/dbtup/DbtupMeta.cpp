@@ -2792,13 +2792,25 @@ void Dbtup::drop_fragment_fsremove_done(Signal *signal, TablerecPtr tabPtr,
    *   now continue with "next"
    */
   Uint32 logfile_group_id = fragPtr.p->m_logfile_group_id;
+  Uint32 fragId = fragPtr.p->fragmentId;
 
-  remove_frag_from_tab(tabPtr, fragPtr.p->fragmentId);
-  releaseFragrec(fragPtr);
+  remove_frag_from_tab(tabPtr, fragId);
   {
+    /**
+     * Drop the PGMAN fragment record before releasing the fragment
+     * record. The fragment record must not be read after releaseFragrec.
+     * If it was the last record in its page, the page is returned to the
+     * global memory manager, which writes into it.
+     *
+     * Each fragment of a table with disk attributes has a PGMAN fragment
+     * record. If it is not found it would remain in PGMAN and crash the
+     * next add_fragment of a disk data table that reuses the table id.
+     */
     Page_cache_client pgman(this, c_pgman);
-    pgman.drop_fragment(tabPtr.i, fragPtr.p->fragmentId);
+    bool found = pgman.drop_fragment(tabPtr.i, fragId);
+    ndbrequire(found || tabPtr.p->m_no_of_real_disk_attributes == 0);
   }
+  releaseFragrec(fragPtr);
   jam();
   if (tabPtr.p->tableStatus == DROPPING) {
     jam();

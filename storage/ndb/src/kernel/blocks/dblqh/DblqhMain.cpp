@@ -33950,7 +33950,7 @@ Dblqh::getNextAccFragrec(Uint32 tableId,
   Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
   for (Uint32 j = index; j < num_fragments_in_array; j++)
   {
-    fragPtr.i = tabPtr.p->fragrec[index];
+    fragPtr.i = tabPtr.p->fragrec[j];
     if (fragPtr.i != RNIL64)
     {
       thrjamDebug(jamBuf);

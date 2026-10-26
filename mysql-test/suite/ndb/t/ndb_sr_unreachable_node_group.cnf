@@ -1,0 +1,38 @@
+!include ../my.cnf
+
+# Six data nodes in three node groups, {1,2}, {3,4} and {5,6}. Data node 4
+# listens on a fixed port, so that the test can block the port with the
+# firewall. Of a data node pair the node with the lower node id is the
+# server, so with the port blocked nodes 5 and 6 cannot connect to node 4,
+# and neither can the API nodes, while node 4 connects to nodes 1, 2 and 3
+# and to the management server.
+#
+# A data node that the president cannot include exits after the second
+# aborted inclusion in a system restart and after the first in a node
+# restart. With StopOnError=0 its angel starts it again, and
+# MaxStartFailRetries keeps the angel doing so until the test unblocks
+# the port.
+
+[cluster_config.1]
+ndbd=,,,,,
+StopOnError=0
+MaxStartFailRetries=1000
+
+[cluster_config.ndbd.1.1]
+NodeId=1
+
+[cluster_config.ndbd.2.1]
+NodeId=2
+
+[cluster_config.ndbd.3.1]
+NodeId=3
+
+[cluster_config.ndbd.4.1]
+NodeId=4
+ServerPort=11879
+
+[cluster_config.ndbd.5.1]
+NodeId=5
+
+[cluster_config.ndbd.6.1]
+NodeId=6
