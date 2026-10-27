@@ -29,6 +29,15 @@ import (
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/pkg/api"
+	"hopsworks.ai/rdrs2/resources/testdbs"
+)
+
+// The star-schema feature view most tests use: fsdb002 / sample_1n2 v1,
+// sample_1_1 (root, pk id1) joined with sample_2_1 (prefix fg2_) on id1.
+const (
+	fsStar    = testdbs.FSDB002
+	fvStar    = "sample_1n2"
+	fvVersion = 1
 )
 
 // Response of POST /feature_store_scan. `status` and `detailedStatus` are

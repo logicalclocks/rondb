@@ -42,12 +42,6 @@ import (
  *   fsdb001 / sample_1n1_self v1 : sample_1_1 joined with itself (prefix fg1_)
  */
 
-const (
-	fsStar    = testdbs.FSDB002
-	fvStar    = "sample_1n2"
-	fvVersion = 1
-)
-
 // ---- primary-key fast path ----
 
 func Test_FastPath_PkEquality_MatchesBatchFeatureStore(t *testing.T) {
