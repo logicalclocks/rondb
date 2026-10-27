@@ -2418,7 +2418,8 @@ RS_Status JSONParser::feature_store_scan_parse(
     }
   }
 
-  // options: { includeDetailedStatus: bool, includeStatus: bool }
+  // options: { includeDetailedStatus: bool, includeStatus: bool,
+  //            allowTableScan: bool }
   {
     simdjson::ondemand::object options;
     auto optionsVal = reqObject[OPTIONS];
@@ -2426,6 +2427,7 @@ RS_Status JSONParser::feature_store_scan_parse(
         optionsVal.is_null()) {
       reqStruct.optionsRequest.includeDetailedStatus = std::nullopt;
       reqStruct.optionsRequest.includeStatus = std::nullopt;
+      reqStruct.optionsRequest.allowTableScan = std::nullopt;
     } else if (unlikely(optionsVal.error() != simdjson::SUCCESS)) {
       return handle_simdjson_error(optionsVal.error(), doc, currentLocation);
     } else {
@@ -2440,6 +2442,8 @@ RS_Status JSONParser::feature_store_scan_parse(
           target = &reqStruct.optionsRequest.includeDetailedStatus;
         } else if (optionKey == INCLUDE_STATUS) {
           target = &reqStruct.optionsRequest.includeStatus;
+        } else if (optionKey == ALLOW_TABLE_SCAN) {
+          target = &reqStruct.optionsRequest.allowTableScan;
         } else {
           return invalidBody(std::string(optionKey) + std::string(OPTIONS));
         }

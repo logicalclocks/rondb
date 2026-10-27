@@ -17,12 +17,20 @@
 package featurestorescan
 
 import (
+	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"testing"
 
+	"hopsworks.ai/rdrs2/internal/config"
+	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
+	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/pkg/api"
 	"hopsworks.ai/rdrs2/resources/testdbs"
+	"hopsworks.ai/rdrs2/version"
 )
 
 /*
@@ -209,6 +217,9 @@ func Test_ScanPath_NonPkFilter_MatchesBatchFeatureStore(t *testing.T) {
 	if got.Rows != len(ids) {
 		t.Fatalf("expected %d rows with data1=%d, got %d", len(ids), row.Data1, got.Rows)
 	}
+	if got.Warning == "" {
+		t.Errorf("a filter-only request must carry the table-scan warning")
+	}
 	SortByFirstFeature(got.Features)
 	ref := GetBatchReference(t, fsStar, fvStar, fvVersion, []string{"id1"}, idEntries(ids))
 	// statuses were sorted along with the vectors only if we re-align them
@@ -260,6 +271,123 @@ func Test_ScanPath_FullScan_LimitAndWarning(t *testing.T) {
 	}
 }
 
+// URL of the feature_store_scan endpoint of another mtr rdrs2 instance, named
+// by the environment variable holding its config file (see
+// suite/rdrs2-golang/my.cnf). Skips outside mtr.
+func scanURLOfInstance(t *testing.T, envVar string) string {
+	t.Helper()
+	cfgPath := os.Getenv(envVar)
+	if cfgPath == "" {
+		t.Skipf("%s not set (run via mtr --suite=rdrs2-golang)", envVar)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("cannot read %s: %v", cfgPath, err)
+	}
+	var conf config.AllConfigs
+	if err := json.Unmarshal(raw, &conf); err != nil {
+		t.Fatalf("cannot parse %s: %v", cfgPath, err)
+	}
+	if conf.Security.TLS.EnableTLS {
+		t.Fatalf("%s must name a plain-HTTP instance", envVar)
+	}
+	return fmt.Sprintf("http://%s/%s/%s",
+		net.JoinHostPort(testutils.ConnectHost(conf.REST.ServerIP),
+			strconv.Itoa(int(conf.REST.ServerPort))),
+		version.API_VERSION, config.FEATURE_STORE_SCAN_OPERATION)
+}
+
+const tableScanRejected = "scan the whole root feature group"
+
+// Every request shape that reads the whole root table, plus two that do not.
+func tableScanCases(t *testing.T, indexName string) (tableScans, notTableScans []ScanRequest) {
+	t.Helper()
+	row := sampleRows(t, 1)[0]
+	tableScans = []ScanRequest{
+		NewScanRequest(fsStar, fvStar, fvVersion).With("limit", 1),
+		NewScanRequest(fsStar, fvStar, fvVersion).With("filters", Cmp("data1", "EQ", row.Data1)),
+		NewScanRequest(fsStar, fvStar, fvVersion).With("filters", Cmp("id1", "GE", row.Id1)),
+		NewScanRequest(fsStar, fvStar, fvVersion).With("index", map[string]interface{}{
+			"name": indexName, "key_columns": []string{"data1"},
+			"ranges": []interface{}{map[string]interface{}{}}}),
+	}
+	notTableScans = []ScanRequest{
+		NewScanRequest(fsStar, fvStar, fvVersion).With("index", map[string]interface{}{
+			"name": indexName, "key_columns": []string{"data1"},
+			"ranges": []interface{}{map[string]interface{}{
+				"lower": map[string]interface{}{"values": []interface{}{row.Data1}, "inclusive": true},
+				"upper": map[string]interface{}{"values": []interface{}{row.Data1}, "inclusive": true}}}}),
+		NewScanRequest(fsStar, fvStar, fvVersion).With("filters", Cmp("id1", "EQ", row.Id1)),
+	}
+	return tableScans, notTableScans
+}
+
+func withAllowTableScan(req ScanRequest) ScanRequest {
+	return req.With("options", map[string]bool{"allowTableScan": true})
+}
+
+// FeatureStoreScanTableScanPolicy=request (the plain-HTTP mtr instance): a
+// table scan runs only when the request sets options.allowTableScan, and then
+// still carries the warning. The TLS instance the rest of this package uses
+// has policy "allow", so it cannot show this.
+func Test_TableScan_PolicyRequest(t *testing.T) {
+	url := scanURLOfInstance(t, "RDRS_CONFIG_FILE_NO_TLS")
+	execSQL(t, "ALTER TABLE fsdb002.sample_1_1 ADD INDEX idx_fss_policy (data1)")
+	t.Cleanup(func() { execSQL(t, "ALTER TABLE fsdb002.sample_1_1 DROP INDEX idx_fss_policy") })
+	tableScans, notTableScans := tableScanCases(t, "idx_fss_policy")
+
+	for i, req := range tableScans {
+		t.Run(fmt.Sprintf("table scan %d without consent", i), func(t *testing.T) {
+			testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, url,
+				req.String(), "allowTableScan", http.StatusBadRequest)
+		})
+		t.Run(fmt.Sprintf("table scan %d with consent", i), func(t *testing.T) {
+			_, body := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, url,
+				withAllowTableScan(req).String(), "", http.StatusOK)
+			var resp ScanResponse
+			if err := json.Unmarshal(body, &resp); err != nil {
+				t.Fatalf("Unmarshal failed %s; body: %s", err, body)
+			}
+			if resp.Warning == "" {
+				t.Errorf("a consented table scan must still carry the warning")
+			}
+		})
+	}
+	for i, req := range notTableScans {
+		t.Run(fmt.Sprintf("not a table scan %d", i), func(t *testing.T) {
+			testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, url,
+				req.String(), "", http.StatusOK)
+		})
+	}
+}
+
+// FeatureStoreScanTableScanPolicy=reject, the default (the no-auth mtr
+// instance): a table scan is refused even when the request consents.
+func Test_TableScan_PolicyReject(t *testing.T) {
+	url := scanURLOfInstance(t, "RDRS_CONFIG_FILE_NOAUTH")
+	execSQL(t, "ALTER TABLE fsdb002.sample_1_1 ADD INDEX idx_fss_reject (data1)")
+	t.Cleanup(func() { execSQL(t, "ALTER TABLE fsdb002.sample_1_1 DROP INDEX idx_fss_reject") })
+	tableScans, notTableScans := tableScanCases(t, "idx_fss_reject")
+
+	for i, req := range tableScans {
+		for _, c := range []struct {
+			name string
+			req  ScanRequest
+		}{{"without consent", req}, {"with consent", withAllowTableScan(req)}} {
+			t.Run(fmt.Sprintf("table scan %d %s", i, c.name), func(t *testing.T) {
+				testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, url,
+					c.req.String(), tableScanRejected, http.StatusBadRequest)
+			})
+		}
+	}
+	for i, req := range notTableScans {
+		t.Run(fmt.Sprintf("not a table scan %d", i), func(t *testing.T) {
+			testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB, url,
+				req.String(), "", http.StatusOK)
+		})
+	}
+}
+
 func Test_ScanPath_OrderedIndexScan(t *testing.T) {
 	execSQL(t, "ALTER TABLE fsdb002.sample_1_1 ADD INDEX idx_fss_data1 (data1)")
 	t.Cleanup(func() { execSQL(t, "ALTER TABLE fsdb002.sample_1_1 DROP INDEX idx_fss_data1") })
@@ -278,6 +406,9 @@ func Test_ScanPath_OrderedIndexScan(t *testing.T) {
 	got := GetScanResponse(t, req)
 	if got.Rows != 5 {
 		t.Fatalf("expected 5 rows, got %d", got.Rows)
+	}
+	if got.Warning != "" {
+		t.Errorf("a bounded index range is not a table scan; got warning %q", got.Warning)
 	}
 	prev := float64(1 << 62)
 	var ids []int64
@@ -459,6 +590,8 @@ func Test_Errors(t *testing.T) {
 			http.StatusBadRequest, "limit"},
 		{"unknown option", NewScanRequest(fsStar, fvStar, fvVersion).With("options", map[string]bool{"foo": true}),
 			http.StatusBadRequest, "foo"},
+		{"allowTableScan not a bool", NewScanRequest(fsStar, fvStar, fvVersion).With("options", map[string]interface{}{"allowTableScan": "yes"}),
+			http.StatusBadRequest, ""},
 		{"unknown metadata option", NewScanRequest(fsStar, fvStar, fvVersion).With("metadataOptions", map[string]bool{"foo": true}),
 			http.StatusBadRequest, "foo"},
 		{"missing feature view name", ScanRequest{"featureStoreName": fsStar, "featureViewVersion": 1},

@@ -96,6 +96,14 @@ CLASS
  CM(Uint32, featureStoreScanBatchSize, FeatureStoreScanBatchSize, 256,
     "Number of root feature-group rows per pk_batch_read round-trip when a"
     " feature_store_scan request fans out to the joined feature groups.")
+ CM(std::string, featureStoreScanTableScanPolicy,
+    FeatureStoreScanTableScanPolicy, "reject",
+    "Whether a feature_store_scan request may scan the whole online table of"
+    " the root feature group (a request without an index whose filters are"
+    " not primary-key equalities, or an index range with no bounds)."
+    " reject = never, such requests get 400 (the default);"
+    " request = only when the request sets options.allowTableScan to true;"
+    " allow = always. Case-insensitive.")
  //todo warn (preallocatedbuffers == 0, "preAllocatedBuffers should be > 0")
  PROBLEM(reqBufferSize < 256, "ReqBufferSize should be >= 256")
  PROBLEM(respBufferSize < 256, "RespBufferSize should be >= 256")
@@ -108,6 +116,16 @@ CLASS
          "FeatureStoreScanMaxLimit should be >= FeatureStoreScanDefaultLimit")
  PROBLEM(featureStoreScanBatchSize < 1,
          "FeatureStoreScanBatchSize should be >= 1")
+ PROBLEM(!Internal::parseTableScanPolicy(featureStoreScanTableScanPolicy,
+                                         nullptr),
+         "FeatureStoreScanTableScanPolicy should be reject, request or allow")
+ CLASSDEFS
+ (
+  enum class TableScanPolicy { REJECT, REQUEST, ALLOW };
+  static bool parseTableScanPolicy(const std::string &spec,
+                                   TableScanPolicy *out);
+  TableScanPolicy tableScanPolicy() const;
+ )
 )
 
 CLASS

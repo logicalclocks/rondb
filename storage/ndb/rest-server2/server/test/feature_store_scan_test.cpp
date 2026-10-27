@@ -41,6 +41,8 @@ NdbMutex *globalConfigsMutex = nullptr;
 using feature_store_scan::PkBranch;
 using feature_store_scan::DedupPkBranches;
 using feature_store_scan::FilterValueToJson;
+using feature_store_scan::IsTableScan;
+using feature_store_scan::TableScanAllowed;
 using feature_store_scan::ResolveScanColumns;
 using feature_store_scan::TryRewriteToPkBranches;
 
@@ -381,6 +383,69 @@ TEST(FeatureStoreScanResolve, JoinedAndUnknownColumnsAreRejected) {
   err = ResolveScanColumns(scan, md);
   ASSERT_NE(err, nullptr);
   EXPECT_EQ(err->GetCode(), FEATURE_NOT_IN_ROOT_FG->GetCode());
+}
+
+TEST(FeatureStoreScanTableScan, NoIndexIsTableScan) {
+  ScanReadParams scan("", "");
+  EXPECT_TRUE(IsTableScan(scan));
+  scan.filterRoot = cmp("data", NdbScanFilter::COND_GE, 1);
+  EXPECT_TRUE(IsTableScan(scan));
+}
+
+TEST(FeatureStoreScanTableScan, UnboundedRangeIsTableScan) {
+  ScanReadParams scan("", "");
+  IndexScanParams index;
+  index.name = "idx";
+  index.columns = {"data"};
+  index.ranges.emplace_back();  // neither lower nor upper
+  scan.index = std::move(index);
+  EXPECT_TRUE(IsTableScan(scan));
+}
+
+TEST(FeatureStoreScanTableScan, BoundedRangeIsNotTableScan) {
+  ScanReadParams scan("", "");
+  IndexScanParams index;
+  index.name = "idx";
+  index.columns = {"data"};
+  IndexRange lowerOnly;
+  lowerOnly.lower = IndexBound();
+  index.ranges.push_back(std::move(lowerOnly));
+  scan.index = std::move(index);
+  EXPECT_FALSE(IsTableScan(scan));
+  IndexRange unbounded;
+  scan.index->ranges.push_back(std::move(unbounded));
+  EXPECT_TRUE(IsTableScan(scan));  // one unbounded range is enough
+}
+
+TEST(FeatureStoreScanTableScan, PolicyDecidesWithClientConsent) {
+  using Policy = Internal::TableScanPolicy;
+  EXPECT_FALSE(TableScanAllowed(Policy::REJECT, false));
+  EXPECT_FALSE(TableScanAllowed(Policy::REJECT, true));
+  EXPECT_FALSE(TableScanAllowed(Policy::REQUEST, false));
+  EXPECT_TRUE(TableScanAllowed(Policy::REQUEST, true));
+  EXPECT_TRUE(TableScanAllowed(Policy::ALLOW, false));
+  EXPECT_TRUE(TableScanAllowed(Policy::ALLOW, true));
+}
+
+TEST(FeatureStoreScanTableScan, PolicySpellingIsCaseInsensitive) {
+  using Policy = Internal::TableScanPolicy;
+  Policy parsed = Policy::ALLOW;
+  EXPECT_TRUE(Internal::parseTableScanPolicy("reject", &parsed));
+  EXPECT_EQ(parsed, Policy::REJECT);
+  EXPECT_TRUE(Internal::parseTableScanPolicy("Request", &parsed));
+  EXPECT_EQ(parsed, Policy::REQUEST);
+  EXPECT_TRUE(Internal::parseTableScanPolicy("ALLOW", &parsed));
+  EXPECT_EQ(parsed, Policy::ALLOW);
+  EXPECT_TRUE(Internal::parseTableScanPolicy("allow", nullptr));
+  EXPECT_FALSE(Internal::parseTableScanPolicy("", &parsed));
+  EXPECT_FALSE(Internal::parseTableScanPolicy("warn", &parsed));
+  EXPECT_FALSE(Internal::parseTableScanPolicy(" allow", &parsed));
+  EXPECT_EQ(parsed, Policy::ALLOW);  // untouched on failure
+
+  Internal internal;
+  EXPECT_EQ(internal.tableScanPolicy(), Policy::REJECT);  // the default
+  internal.featureStoreScanTableScanPolicy = "Allow";
+  EXPECT_EQ(internal.tableScanPolicy(), Policy::ALLOW);
 }
 
 TEST(FeatureStoreScanResolve, ComplexColumnsAreRejected) {

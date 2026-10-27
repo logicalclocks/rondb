@@ -20,6 +20,7 @@
 #ifndef STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_SCAN_CTRL_HPP_
 #define STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_SCAN_CTRL_HPP_
 
+#include "config_structs.hpp"
 #include "constants.hpp"
 #include "feature_store_error_code.hpp"
 #include "feature_store_scan_data_structs.hpp"
@@ -100,6 +101,12 @@ DedupPkBranches(std::vector<PkBranch> &branches);
 
 std::vector<char>
 FilterValueToJson(const Node::ParsedValue &value);
+
+bool
+IsTableScan(const ScanReadParams &scan);
+
+bool
+TableScanAllowed(Internal::TableScanPolicy policy, bool requestedByClient);
 
 }  // namespace feature_store_scan
 

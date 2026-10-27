@@ -86,6 +86,7 @@ constexpr const char *OPTIONS                  = "options";
 constexpr const char *VALIDATE_PASSED_FEATURES = "validatePassedFeatures";
 constexpr const char *INCLUDE_DETAILED_STATUS  = "includeDetailedStatus";
 constexpr const char *INCLUDE_STATUS           = "includeStatus";
+constexpr const char *ALLOW_TABLE_SCAN         = "allowTableScan";
 constexpr const char *FEATURE_STORE_OPERATION  = "feature_store";
 constexpr const char *SEQUENCE_SEPARATOR       = "#";
 

@@ -13,7 +13,7 @@ Decisions taken after the Confluence snapshot. Each is folded into the relevant 
 | D2 | Keep the per-row `status` array. It is semantically necessary for a Feature View (joined FG rows can be missing); its byte cost is ~11 B/row and compresses to almost nothing. Add `options.includeStatus` (default `true`) so clients that know their view is always complete can switch it off. | §3.4, §3.5, §7.5 |
 | D3 | **Primary-key fast path.** When the filter tree is a full-primary-key equality (or an `OR` of them) and no `index` block is present, rewrite the request to the `/batch_feature_store` execution path. No scan is issued. | §4.1 |
 | D4 | Response-size policy: keep the positional `features` + single `metadata` list shape (already the compact form), honour the existing `UseCompression` config flag, keep `detailedStatus` opt-in. No further field trimming. | §7.5 |
-| D5 | Requests with neither `filters` nor `index` are allowed but return a `warning` field. Not rejected. | §3, §3.4 |
+| D5 | **Table scans are off by default.** A request that would read the whole root table (no `index` and no primary-key fast path, or an index range without bounds) is subject to the server policy `FeatureStoreScanTableScanPolicy`: `reject` (default) → `400 TABLE_SCAN_NOT_ALLOWED`; `request` → runs only if the request sets `options.allowTableScan = true`, else 400; `allow` → always runs. A table scan that runs carries a `warning` field. | §3, §3.4, §3.5, §6, §7.2 |
 | D6 | **Residual predicates on the fast path, in v1.** "Full-PK equality AND other predicates" also takes the fast path: the residual subtree is compiled with the existing scan-filter compiler into an `NdbInterpretedCode` and attached to the root FG's primary-key read (`OO_INTERPRETED`). A rejected row (NDB error 626 on the root op, the reject code `NdbScanFilter` emits in this fork) is dropped. No server-side comparator code. | §4.1 |
 | D7 | **Fast path drops non-existent root keys.** A key with no row in the root FG produces *no output row* on the fast path, exactly as on the scan path. It is never reported as `MISSING`. This makes `limit` accounting and result semantics identical across the two paths. | §4.1, §4.2, §8 |
 | D8 | **`limit` on the fast path counts surviving rows.** Entries are deduplicated, processed in request order in chunks of `FeatureStoreScanBatchSize`, and execution stops once `limit` rows have been produced. Branch count is capped at `FeatureStoreScanMaxLimit`. | §4.2 |
@@ -64,14 +64,14 @@ The request body is the `/batch_feature_store` identification block **without** 
 | `index` | object | no | Ordered index scan on the root Feature Group online table, same shape as `/scan`: `name`, `key_columns`, `ranges[]` with `lower`/`upper` bounds, `order` (`asc`/`desc`). Key columns must be root-FG features. |
 | `limit` | int | no | Maximum number of **root-FG rows** (= feature vectors) returned. Defaults to `FeatureStoreScanDefaultLimit` (proposed 1000); capped at `FeatureStoreScanMaxLimit` (proposed 10000). See §7.2. |
 | `metadataOptions` | object | no | Same as `/feature_store`: `{ "featureName": bool, "featureType": bool }`. Global toggles; default both `null`. |
-| `options` | object | no | `{ "includeDetailedStatus": bool, "includeStatus": bool }`. See §3.5. `validatePassedFeatures` is not accepted (there are no passed features). |
+| `options` | object | no | `{ "includeDetailedStatus": bool, "includeStatus": bool, "allowTableScan": bool }`. See §3.5. `validatePassedFeatures` is not accepted (there are no passed features). |
 
 Fields that are deliberately **absent** compared to the sibling endpoints:
 
 * `entries` / `passedFeatures` (from `/batch_feature_store`) — rows are selected by the scan, not enumerated by the client.
 * `readColumns` (from `/scan`) — the Feature View defines the output columns. Every non-label feature of the view is returned, in Feature View order.
 
-At least one of `filters` or `index` is **recommended** but not required (D5). A request with neither is a full scan of the root FG online table, bounded by `limit`. This is allowed for small tables but the response carries a `warning` (see §3.4).
+Neither `filters` nor `index` is required syntactically, but a request that cannot be served by primary-key reads (§4.1) or by a bounded index range reads the whole root FG online table. Such **table scans are rejected by default** with `400 TABLE_SCAN_NOT_ALLOWED` (D5). The operator chooses per server with `FeatureStoreScanTableScanPolicy` (§7.2): `reject`, `request` (the client must opt in with `options.allowTableScan = true`, §3.5) or `allow`. A table scan that runs is bounded by `limit` and the response carries a `warning` (see §3.4).
 
 ### 3.1 Example schema
 
@@ -262,7 +262,7 @@ Response fields:
 * `status` — one entry per row: `COMPLETE` (every FG returned a row), `MISSING` (at least one non-root FG had no row; those features are `null`), `ERROR` (a per-row failure, e.g. Avro decode; see §5). Rows from spine FGs are always `MISSING`, as today. Omitted entirely when `options.includeStatus = false` (D2).
 * `detailedStatus` — present only when `options.includeDetailedStatus = true`; per row, per FG `{ "httpStatus", "featureGroupId" }`. Same as `/batch_feature_store`.
 * `rows` — number of rows in `features`. Convenience field mirroring `/scan`.
-* `warning` — optional string, emitted only when the request had neither `filters` nor `index` (`"full scan of root feature group; consider adding filters or an index range"`).
+* `warning` — optional string, emitted when the request scanned the whole root table (only possible when `FeatureStoreScanTableScanPolicy` is `allow`, or `request` with `options.allowTableScan = true`; D5): `"full scan of root feature group; consider filtering on the primary key or adding a bounded index range"`.
 
 If `metadataOptions` is omitted, or both flags are `false`, the `metadata` array is present but **empty** (`"metadata": []`), matching `/feature_store`. (`/batch_feature_store` instead emits one `{ "featureName": null, "featureType": null }` entry per feature.) When at least one flag is set the array has one entry per feature, with the unrequested field `null`.
 
@@ -286,6 +286,7 @@ Compare with what `/scan` returns today for the root table alone (keyed objects,
 | `metadataOptions.featureType` | bool | `null` | Populate `metadata[i].featureType` with the Hopsworks offline type. |
 | `options.includeStatus` | bool | `true` | Emit the per-row `status` array. Set to `false` only when the client knows every FG in the view always has a row for every root key (D2). |
 | `options.includeDetailedStatus` | bool | `false` | Emit `detailedStatus` per row / per FG. Implies `includeStatus`. |
+| `options.allowTableScan` | bool | `false` | The client accepts that this request may scan the whole root table. Honoured only when the server's `FeatureStoreScanTableScanPolicy` is `request`; ignored under `allow`, and does not override `reject` (D5). |
 
 Unknown sub-option keys are rejected with `400 ERROR_INVALID_BODY`, same parser strictness as `/feature_store`.
 
@@ -389,6 +390,7 @@ Decoding follows the Feature View metadata, not the request:
 | 400 | `FEATURE_NOT_IN_ROOT_FG` | A filter/index column is not a feature (or PK) of the root Feature Group. |
 | 400 | `FILTER_ON_COMPLEX_FEATURE` | A filter/index column is an Avro-encoded feature. |
 | 400 | `LIMIT_EXCEEDED` | `limit` above `FeatureStoreScanMaxLimit`. |
+| 400 | `TABLE_SCAN_NOT_ALLOWED` | The request would read the whole root table (no `index` and not a primary-key fast path, or an index range with neither `lower` nor `upper`) and the server policy does not let it run: `FeatureStoreScanTableScanPolicy = reject` (the default), or `request` without `options.allowTableScan = true`. The message tells the caller to filter on the primary key or give a bounded index range, and under `request` to set the option. |
 | 400 | (scan validation) | Any error the `/scan` parser and validators produce for `filters` / `index`: logic nodes must have exactly two `args`, `index` must carry `ranges`, unknown index, bad bound arity, type mismatch, … |
 | 400 | (pk validation) | On the fast path: the same primary-key value errors `/feature_store` reports (`WRONG_DATA_TYPE`, …). |
 | 401 / 403 | — | API key invalid or lacks access to a Feature Store of the view. |
@@ -418,6 +420,7 @@ On the **fast path** (§4.1) the cost is exactly that of `/batch_feature_store` 
 | `FeatureStoreScanDefaultLimit` | 1000 | `limit` applied when the request omits it (D9). |
 | `FeatureStoreScanMaxLimit` | 10000 | Hard cap on `limit` and on the number of fast-path branches; larger requests are rejected with 400. Protects the server from unbounded fan-out (D9). |
 | `FeatureStoreScanBatchSize` | 256 | Root rows per `pk_batch_read` round-trip in step 8. |
+| `FeatureStoreScanTableScanPolicy` | `reject` | What happens to a request that reads the whole root table (D5): `reject` → `400 TABLE_SCAN_NOT_ALLOWED`; `request` → runs only when the request sets `options.allowTableScan = true`, otherwise 400; `allow` → always runs. A table scan that runs carries a `warning`. `reject` by default because a table scan's cost is proportional to the table size, not to `limit`, and the cluster pays it before the request can be stopped. The decision is made at plan time, before any NDB work. The value is case-insensitive and parsed into `Internal::TableScanPolicy`; any other spelling is a config error at startup. |
 | `ScanRespBufferSize` | existing | Reused for the root scan buffer. |
 | `UseCompression` | existing (`true`) | Same meaning as for the other endpoints, see §7.5. |
 
@@ -523,10 +526,10 @@ Implemented on branch `26.02-main` (uncommitted), built and exercised against th
 | Metadata | `metadata.{hpp,cpp}` — root FG index, star-schema verdict, root column lookup, PK entry names; computed once per cache entry |
 | Scan reuse | `scan_row_sink.hpp`, `rdrs_dal.{h,cpp}` — `ScanRowSink`, `scan_read_rows()`, `ScanColumnToJson()`, `ScanColumnRawBytes()`, `CompileFilterProgram()`; `/scan` output unchanged |
 | PK residual | `pk_data_structs.hpp` (filter helper declarations), `rdrs_dal.{h,cpp}` (`pk_batch_read(..., op_filters)`), `db_operations/pk/pkr_operation.{hpp,cpp}` (`OO_INTERPRETED` on the root read) |
-| Config | `config_structs_def.hpp` — `FeatureStoreScanDefaultLimit`, `FeatureStoreScanMaxLimit`, `FeatureStoreScanBatchSize` |
-| Errors | `feature_store_error_code.hpp` — codes 21–25 |
+| Config | `config_structs_def.hpp` — `FeatureStoreScanDefaultLimit`, `FeatureStoreScanMaxLimit`, `FeatureStoreScanBatchSize`, `FeatureStoreScanTableScanPolicy` |
+| Errors | `feature_store_error_code.hpp` — codes 21–26 |
 | Metrics | `metrics.{hpp,cpp}` — `FeatureStoreScanEndPointMetricsUpdater`, request/latency/rows/key-request/fast-path counters under endpoint `feature_store_scan` |
-| Tests | Go: `test_go/internal/integrationtests/featurestorescan/` (fast path, residual, dedup, limit, composite key, scan path, ordered index scan, complex types, self-join, options, error table); C++: `test/feature_store_scan_test.cpp` (detection and column resolution, no cluster needed) |
+| Tests | Go: `test_go/internal/integrationtests/featurestorescan/` (fast path, residual, dedup, limit, composite key, scan path, ordered index scan, complex types, self-join, options, error table, table-scan policy against the MTR plain-HTTP server (`FeatureStoreScanTableScanPolicy=request`) and no-auth server (`reject`, the default) while the TLS server runs with `allow`); C++: `test/feature_store_scan_test.cpp` (detection, column resolution, table-scan classification; no cluster needed) |
 
 Behavioural notes discovered while testing, now reflected above: the reject code is 626 (§4.1); logic nodes are binary (Example D, §6); unknown feature view / store return 404 like the sibling endpoints (§6).
 
@@ -539,4 +542,4 @@ Behavioural notes discovered while testing, now reflected above: the reject code
 * [x] Endpoint name → `/feature_store_scan` (D1).
 * [x] Keep per-row `status` → yes, with `options.includeStatus` opt-out (D2).
 * [x] Rewrite full-PK equality to the batch path → yes, in v1 (D3).
-* [x] Filter-less / index-less requests → allowed with `warning` (D5).
+* [x] Table scans → rejected by default; `FeatureStoreScanTableScanPolicy` = `reject` / `request` (client opts in with `options.allowTableScan`) / `allow`; `warning` whenever one runs (D5).

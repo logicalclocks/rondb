@@ -32,12 +32,14 @@ class ScanOptionsRequest {
  public:
   std::optional<bool> includeDetailedStatus;  // json:"includeDetailedStatus"
   std::optional<bool> includeStatus;          // json:"includeStatus"
+  std::optional<bool> allowTableScan;         // json:"allowTableScan"
 };
 
 class ScanOptions {
  public:
   bool includeDetailedStatus = false;
   bool includeStatus = true;
+  bool allowTableScan = false;
 };
 
 /*
@@ -65,6 +67,7 @@ class FeatureStoreScanRequest {
     options.includeStatus =
       optionsRequest.includeStatus.value_or(true) ||
       options.includeDetailedStatus;
+    options.allowTableScan = optionsRequest.allowTableScan.value_or(false);
     return options;
   }
 };

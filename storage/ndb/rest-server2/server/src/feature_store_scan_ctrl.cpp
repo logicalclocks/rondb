@@ -359,6 +359,31 @@ bool DedupPkBranches(std::vector<PkBranch> &branches) {
   return true;
 }
 
+bool IsTableScan(const ScanReadParams &scan) {
+  if (scan.index == std::nullopt) {
+    return true;
+  }
+  for (const IndexRange &range : scan.index->ranges) {
+    if (range.lower == std::nullopt && range.upper == std::nullopt) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool TableScanAllowed(Internal::TableScanPolicy policy,
+                      bool requestedByClient) {
+  switch (policy) {
+    case Internal::TableScanPolicy::ALLOW:
+      return true;
+    case Internal::TableScanPolicy::REQUEST:
+      return requestedByClient;
+    case Internal::TableScanPolicy::REJECT:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace feature_store_scan
 
 using feature_store_scan::PkBranch;
@@ -1009,10 +1034,24 @@ void FeatureStoreScanCtrl::featureStoreScan(
     }
   } else {
     // 7. Scan path
-    if (reqStruct.scan.filterRoot == nullptr &&
-        reqStruct.scan.index == std::nullopt) {
-      warning = "full scan of root feature group; consider adding filters "
-                "or an index range";
+    if (feature_store_scan::IsTableScan(reqStruct.scan)) {
+      const Internal::TableScanPolicy policy =
+        globalConfigs.internal.tableScanPolicy();
+      if (!feature_store_scan::TableScanAllowed(policy,
+                                                options.allowTableScan)) {
+        std::string hint = "Filter on the root feature group's primary key "
+                           "or give a bounded index range";
+        if (policy == Internal::TableScanPolicy::REQUEST) {
+          hint += ", or set options.allowTableScan to true";
+        } else {
+          hint += "; the server's FeatureStoreScanTableScanPolicy is reject";
+        }
+        sendRestError(resp, callback,
+                      TABLE_SCAN_NOT_ALLOWED->NewMessage(hint));
+        return;
+      }
+      warning = "full scan of root feature group; consider filtering on the "
+                "primary key or adding a bounded index range";
     }
     reqStruct.scan.path.db = rootFg.featureStoreName;
     reqStruct.scan.path.table = rootFg.featureGroupName + "_" +
