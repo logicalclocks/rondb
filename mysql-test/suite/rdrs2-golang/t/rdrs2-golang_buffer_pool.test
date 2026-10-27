@@ -20,9 +20,21 @@
 #
 # On Linux the perl blocks also read /proc/<pid>/status of rdrs.3.1: THP is
 # disabled for the process, the JSON parse buffers (NumThreads x MaxHttpReqSize,
-# 256 MiB virtual here) are not resident at startup, and after the load no
-# anonymous huge pages are in use. Elsewhere those blocks print PASS after
-# logging the skip; details go to var/log/rdrs2-golang_buffer_pool.proc.log.
+# 256 MiB virtual here) are not resident at startup, and the load adds no
+# anonymous huge pages. Elsewhere those blocks print PASS after logging the
+# skip; details go to var/log/rdrs2-golang_buffer_pool.proc.log.
+#
+# Why "adds no" rather than "none": the opt-out is made in main(), and
+# memory faulted before that can already be backed by a huge page when THP
+# is "always". The PGO training build (-fprofile-generate, the build the
+# release pipeline runs this suite on) has a 3.6 MiB .bss, written by
+# static initialisers and profile counters before main(), whose aligned
+# 2 MiB window gets a huge page; a plain build's .bss is ~0.3 MiB and never
+# does. PR_SET_THP_DISABLE stops new huge pages (faults and khugepaged)
+# but does not split existing ones, so the post-load count is compared
+# with the startup count. This holds on any kernel that reports
+# THP_enabled, including RHEL 8's 4.18, which has the Linux 5.0 change
+# that applies the opt-out to existing mappings.
 
 --source include/have_ndb.inc
 
@@ -61,6 +73,20 @@ sub proc_status {
     return \%st;
 }
 
+sub anon_huge_kb {
+    my ($pid) = @_;
+    for my $path ("/proc/$pid/smaps_rollup", "/proc/$pid/smaps") {
+        open(my $fh, '<', $path) or next;
+        my $sum = 0;
+        while (my $line = <$fh>) {
+            if ($line =~ /^AnonHugePages:\s*(\d+)\s*kB/) { $sum += $1; }
+        }
+        close($fh);
+        return $sum;
+    }
+    return undef;
+}
+
 if ($^O ne 'linux') {
     print $lf "startup: skipped, no /proc on $^O\n";
     close($lf);
@@ -87,6 +113,15 @@ my $bound_kb = $ENV{'RDRS_POOL_NUM_THREADS'} * $ENV{'RDRS_POOL_MAX_REQ_SIZE'} / 
 print $lf "startup: RssAnon=${rss_kb}kB bound=${bound_kb}kB\n";
 die "RssAnon ${rss_kb}kB >= ${bound_kb}kB: JSON parse buffers are resident\n"
     if $rss_kb >= $bound_kb;
+
+# Huge pages faulted before the opt-out in main(); the post-load check
+# compares against this.
+my $huge_kb = anon_huge_kb($pid);
+print $lf "startup: AnonHugePages=" . ($huge_kb // 'n/a') . "kB\n";
+my $state = "$log_dir/rdrs2-golang_buffer_pool.startup_huge_kb";
+open(my $sf, '>', $state) or die "cannot write $state: $!";
+print $sf ($huge_kb // ''), "\n";
+close($sf);
 close($lf);
 print "PASS\n";
 exit 0;
@@ -155,7 +190,11 @@ if ($^O ne 'linux') {
 open(my $pf, '<', $ENV{'RDRS_POOL_PIDFILE'}) or die "no pidfile: $!";
 my $pid = <$pf>; close($pf); chomp $pid;
 
-# Anonymous huge pages: none, since the process opted out of THP.
+# Anonymous huge pages: none added by the load, since the process opted out
+# of THP. Those faulted before the opt-out may remain (see the header).
+my $state = "$log_dir/rdrs2-golang_buffer_pool.startup_huge_kb";
+open(my $sf, '<', $state) or die "no startup huge page count in $state: $!";
+my $startup_kb = <$sf>; close($sf); chomp $startup_kb;
 my $huge_kb;
 for my $path ("/proc/$pid/smaps_rollup", "/proc/$pid/smaps") {
     open(my $fh, '<', $path) or next;
@@ -171,10 +210,13 @@ my $mode = '';
 if (open(my $mf, '<', '/sys/kernel/mm/transparent_hugepage/enabled')) {
     $mode = <$mf>; close($mf); chomp $mode;
 }
-print $lf "post-load: AnonHugePages=" . ($huge_kb // 'n/a') . "kB thp=[$mode]\n";
+print $lf "post-load: AnonHugePages=" . ($huge_kb // 'n/a') .
+          "kB startup=" . ($startup_kb eq '' ? 'n/a' : $startup_kb) .
+          "kB thp=[$mode]\n";
 close($lf);
-die "AnonHugePages is ${huge_kb}kB, expected 0\n"
-    if defined $huge_kb && $huge_kb != 0;
+die "AnonHugePages grew from ${startup_kb}kB at startup to ${huge_kb}kB " .
+    "after the load: the THP opt-out did not hold\n"
+    if defined $huge_kb && $startup_kb ne '' && $huge_kb > $startup_kb;
 print "PASS\n";
 exit 0;
 END_OF_PERL
