@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -54,6 +54,7 @@
 //#define DEBUG_LCP_SKIP 1
 //#define DEBUG_LCP_SKIP_DELETE 1
 //#define DEBUG_COPY_TUPLE 1
+//#define DEBUG_TUP_ACTIVE_OP_LIST 1
 #endif
 
 #ifdef DEBUG_COPY_TUPLE
@@ -2562,10 +2563,34 @@ void Dbtup::execute_real_commit(Signal *signal, KeyReqStruct &req_struct,
     c_lqh->acquire_frag_commit_access_write_key();
     if (get_tuple_state(leaderOperPtr.p) == TUPLE_PREPARED) {
       OperationrecPtr loopPtr = firstOperPtr;
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      Uint32 tux_commit_ops = 0;
+      Uint32 tux_commit_skipped = 0;
+      const NDB_TICKS tux_commit_start = NdbTick_getCurrentTicks();
+#endif
       /**
        * Execute all tux triggers at first commit
        *   since previous tuple is otherwise removed...
+       *
+       * Expensive same-row path:
+       * executeTuxCommitTriggers()
+       *   -> removeTuxEntries()
+       *     -> DBTUX::execTUX_MAINT_REQ()
+       *       -> readKeyAttrs()
+       *         -> DBTUP::tuxReadAttrsCommon()
+       *           -> may scan the active-op list to find tupVersion
+       * This is similar to the abort path for workloads with many
+       * operations on the same row and ordered indexes.
        */
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      g_eventLogger->info(
+          "DBTUP: TUX commit trigger START inst=%u tab=%u frag=%u row=(%u,%u) "
+          "op=%u next=%u",
+          instance(), regFragPtrP->fragTableId, regFragPtrP->fragmentId,
+          firstOperPtr.p->m_tuple_location.m_page_no,
+          firstOperPtr.p->m_tuple_location.m_page_idx, firstOperPtr.i,
+          firstOperPtr.p->nextActiveOp);
+#endif
       jam();
       goto first;
       while(loopPtr.i != RNIL)
@@ -2577,8 +2602,31 @@ void Dbtup::execute_real_commit(Signal *signal, KeyReqStruct &req_struct,
                                  regFragPtrP,
                                  regTabPtrP);
         set_tuple_state(loopPtr.p, TUPLE_TO_BE_COMMITTED);
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+        tux_commit_ops++;
+        if ((tux_commit_ops & 1023) == 0) {
+          g_eventLogger->info(
+              "DBTUP: TUX commit trigger PROGRESS inst=%u tab=%u frag=%u "
+              "row=(%u,%u) ops=%u skipped=%u current=%u next=%u",
+              instance(), regFragPtrP->fragTableId, regFragPtrP->fragmentId,
+              firstOperPtr.p->m_tuple_location.m_page_no,
+              firstOperPtr.p->m_tuple_location.m_page_idx, tux_commit_ops,
+              tux_commit_skipped, loopPtr.i, loopPtr.p->nextActiveOp);
+        }
+#endif
         loopPtr.i = loopPtr.p->nextActiveOp;
       }
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      g_eventLogger->info(
+          "DBTUP: TUX commit trigger DONE inst=%u tab=%u frag=%u row=(%u,%u) "
+          "ops=%u skipped=%u elapsed_us=%llu",
+          instance(), regFragPtrP->fragTableId, regFragPtrP->fragmentId,
+          firstOperPtr.p->m_tuple_location.m_page_no,
+          firstOperPtr.p->m_tuple_location.m_page_idx, tux_commit_ops,
+          tux_commit_skipped,
+          NdbTick_Elapsed(tux_commit_start, NdbTick_getCurrentTicks())
+              .microSec());
+#endif
     }
   }
   req_struct.m_tuple_ptr = tuple_ptr;

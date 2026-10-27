@@ -1,0 +1,166 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+--source suite/ndb/include/backup_restore_setup.inc
+
+--echo ********************************************************
+--echo RONDB-429: ndb_restore --continue-on-data-errors
+--echo ********************************************************
+--echo Rows that fail to restore with a data error are skipped, the
+--echo restore continues with the remaining rows and the exit code
+--echo still shows failure.
+
+CREATE TEMPORARY TABLE ndb_restore_output (a varchar(512));
+
+--echo Data error on DATA restore
+create table test.t1 (a int primary key, b int, c int) engine=ndb;
+--disable_query_log
+let $i = 0;
+while($i < 1000)
+{
+  eval insert into t1 values ($i, $i, $i);
+  inc $i;
+}
+--enable_query_log
+
+# Have rows 0,0,0 ... 999,999,999
+# Row 1000 has the same value of c as row 999
+insert into test.t1 values (1000,1000,999);
+
+--source suite/ndb/t/ndb_backup_nowait_start.inc
+--source suite/ndb/t/ndb_backup_nowait_wait.inc
+
+truncate test.t1;
+alter table test.t1 add unique(c);
+
+# One of rows 999 and 1000 fails on the unique index, all other rows
+# should be restored and one ndb_restore should exit with failure
+--disable_query_log
+--echo Restore with --continue-on-data-errors
+--let dump_file = $MYSQLTEST_VARDIR/tmp/restore.out
+let $error_result = 0;
+--error 0,1
+--exec $NDB_RESTORE --show-part-id -b $the_backup_id -n 1 -r --continue-on-data-errors $NDB_BACKUPS-$the_backup_id >> $dump_file 2>&1
+if ($__error)
+{
+  let $error_result = 1;
+}
+--error 0,1
+--exec $NDB_RESTORE --show-part-id -b $the_backup_id -n 2 -r --continue-on-data-errors $NDB_BACKUPS-$the_backup_id >> $dump_file 2>&1
+if ($__error)
+{
+  let $error_result = 1;
+}
+
+if (!$error_result)
+{
+  --die One ndb_restore invocation should have failed
+}
+
+eval LOAD DATA INFILE '$dump_file' INTO TABLE ndb_restore_output
+  FIELDS TERMINATED BY '\n';
+--remove_file $dump_file
+
+# Remove Windows line feeds
+UPDATE ndb_restore_output SET a = TRIM(TRAILING "\r" FROM a);
+--enable_query_log
+
+--echo Expect all rows but one restored
+select count(*) from test.t1;
+
+--echo Expect 1 continue message
+select count(*) into @msgcount from ndb_restore_output where a like "%Will continue due to --continue-on-data-errors%";
+select @msgcount as 'Count of continue message';
+select * from ndb_restore_output where @msgcount != 1;
+--echo Expect no exit message
+select count(*) into @msgcount from ndb_restore_output where a like "%unrecoverable error. Exiting%";
+select @msgcount as 'Count of exit message';
+select * from ndb_restore_output where @msgcount != 0;
+--echo Expect 1 data error summary message
+select count(*) into @msgcount from ndb_restore_output where a like "%Failed to restore some data.%";
+select @msgcount as 'Count of summary message';
+select * from ndb_restore_output where @msgcount != 1;
+
+drop table test.t1;
+
+--echo Data error on LOG restore
+# Schema uses composite primary key + partitioning to allow 2 rows fighting
+# over secondary key value to be placed in the same fragment + so restored
+# by the same ndb_restore process + thread, so that the restore proceeds
+# in DATA, LOG order.
+create table test.t1 (a int, b int, c int, primary key (a,b)) engine=ndb partition by key(a);
+--disable_query_log
+let $i = 0;
+while($i < 1000)
+{
+  eval insert into t1 values ($i, $i, $i);
+  inc $i;
+}
+--enable_query_log
+
+--echo Cause backup stall while log open
+--exec $NDB_MGM -e "all error 10040" >> $NDB_TOOLS_OUTPUT
+
+--source suite/ndb/t/ndb_backup_nowait_start.inc
+
+# Give some time for data without extra row to be captured
+--sleep 4
+
+# Insert extra row, should be placed in log only
+insert into t1 values(999,1000,999);
+
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+--source suite/ndb/t/ndb_backup_nowait_wait.inc
+
+truncate test.t1;
+alter table test.t1 add unique(c);
+
+# The log insert of the extra row violates the unique index, error insert 5
+# makes that violation fail instead of being ignored, so it is a data error
+# that --continue-on-data-errors skips.
+--disable_query_log
+--echo Restore with --continue-on-data-errors and error insert on log apply
+truncate table ndb_restore_output;
+--let dump_file = $MYSQLTEST_VARDIR/tmp/restore.out
+let $error_result = 0;
+--error 0,1
+--exec $NDB_RESTORE --show-part-id -b $the_backup_id -n 1 -r --continue-on-data-errors --error-insert=5 $NDB_BACKUPS-$the_backup_id >> $dump_file 2>&1
+if ($__error)
+{
+  let $error_result = 1;
+}
+--error 0,1
+--exec $NDB_RESTORE --show-part-id -b $the_backup_id -n 2 -r --continue-on-data-errors --error-insert=5 $NDB_BACKUPS-$the_backup_id >> $dump_file 2>&1
+if ($__error)
+{
+  let $error_result = 1;
+}
+
+if (!$error_result)
+{
+  --die One ndb_restore invocation should have failed
+}
+
+eval LOAD DATA INFILE '$dump_file' INTO TABLE ndb_restore_output
+  FIELDS TERMINATED BY '\n';
+--remove_file $dump_file
+
+# Remove Windows line feeds
+UPDATE ndb_restore_output SET a = TRIM(TRAILING "\r" FROM a);
+--enable_query_log
+
+--echo Expect the data rows restored, the log insert skipped
+select count(*) from test.t1;
+
+--echo Expect 1 log entry continue message
+select count(*) into @msgcount from ndb_restore_output where a like "%log entry due to an unrecoverable error. Will continue%";
+select @msgcount as 'Count of continue message';
+select * from ndb_restore_output where @msgcount != 1;
+--echo Expect 1 data error summary message
+select count(*) into @msgcount from ndb_restore_output where a like "%Failed to restore some data.%";
+select @msgcount as 'Count of summary message';
+select * from ndb_restore_output where @msgcount != 1;
+
+drop table test.t1;
+
+--source suite/ndb/include/backup_restore_cleanup.inc
+--remove_file $NDB_TOOLS_OUTPUT
