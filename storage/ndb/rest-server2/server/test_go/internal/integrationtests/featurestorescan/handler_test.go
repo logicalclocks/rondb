@@ -548,17 +548,30 @@ func Test_MetadataAndOptions(t *testing.T) {
 	}
 
 	// scan path: the root feature group is read by the scan, not the batch,
-	// but must still get its entry so both paths report one per feature group
+	// but must still get its entry, in the same position and with the same
+	// status the fast path reports for the same row. Most root rows of this
+	// fixture have no sample_2_1 row, so the joined entry is often 404.
 	got = GetScanResponse(t, NewScanRequest(fsStar, fvStar, fvVersion).
 		With("filters", Cmp("data1", "EQ", row.Data1)).
-		With("limit", 1).
+		With("limit", 1000).
 		With("options", map[string]bool{"includeDetailedStatus": true}))
-	if got.Rows != 1 || len(got.DetailedStatus) != 1 || len(got.DetailedStatus[0]) != 2 {
-		t.Fatalf("scan path must give one detailedStatus entry per feature group: %s", canonical(t, got.DetailedStatus))
+	if got.Rows < 1 || len(got.DetailedStatus) != got.Rows {
+		t.Fatalf("scan path must give detailedStatus for each of %d rows: %s", got.Rows, canonical(t, got.DetailedStatus))
 	}
-	for i, d := range got.DetailedStatus[0] {
-		if d.HttpStatus != http.StatusOK {
-			t.Errorf("scan path detailedStatus[%d] = %d, want 200", i, d.HttpStatus)
+	for r, scanned := range got.DetailedStatus {
+		if len(scanned) != 2 {
+			t.Errorf("row %d: %d detailedStatus entries, want one per feature group", r, len(scanned))
+		}
+		id1 := int64(got.Features[r][0].(float64))
+		fast := GetScanResponse(t, NewScanRequest(fsStar, fvStar, fvVersion).
+			With("filters", Cmp("id1", "EQ", id1)).
+			With("options", map[string]bool{"includeDetailedStatus": true}))
+		if fast.Rows != 1 {
+			t.Fatalf("fast path returned %d rows for id1=%d", fast.Rows, id1)
+		}
+		if !equalJSON(t, scanned, fast.DetailedStatus[0]) {
+			t.Errorf("row %d (id1=%d): scan path detailedStatus %s, fast path %s",
+				r, id1, canonical(t, scanned), canonical(t, fast.DetailedStatus[0]))
 		}
 	}
 }
