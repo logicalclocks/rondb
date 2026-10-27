@@ -112,8 +112,15 @@ func GetScanResponse(t *testing.T, req ScanRequest) *ScanResponse {
 
 func GetScanResponseWithDetail(t *testing.T, req ScanRequest, message string, status int) *ScanResponse {
 	t.Helper()
+	return getScanResponseAt(t, testutils.NewFeatureStoreScanURL(), req, message, status)
+}
+
+// getScanResponseAt is GetScanResponseWithDetail against the endpoint at
+// url, for tests that target another mtr rdrs2 instance.
+func getScanResponseAt(t *testing.T, url string, req ScanRequest, message string, status int) *ScanResponse {
+	t.Helper()
 	_, respBody := testclient.SendHttpRequest(t, config.FEATURE_STORE_HTTP_VERB,
-		testutils.NewFeatureStoreScanURL(), req.String(), message, status)
+		url, req.String(), message, status)
 	if int(status/100) != 2 {
 		return nil
 	}

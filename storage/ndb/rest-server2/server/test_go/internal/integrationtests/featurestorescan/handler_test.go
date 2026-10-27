@@ -167,6 +167,22 @@ func Test_FastPath_Limit_TruncatesInBranchOrder(t *testing.T) {
 	ExpectSameVectors(t, got, ref)
 }
 
+// An OR chain of key equalities holds at most 32 keys, because logic
+// nodes are binary and the filter parser allows 32 levels of nesting.
+func Test_FastPath_OrChainBound(t *testing.T) {
+	chain := func(n int) ScanRequest {
+		var leaves []map[string]interface{}
+		for i := 0; i < n; i++ {
+			leaves = append(leaves, Cmp("id1", "EQ", 900000000+i))
+		}
+		return NewScanRequest(fsStar, fvStar, fvVersion).With("filters", OrOf(leaves...))
+	}
+	if got := GetScanResponse(t, chain(32)); got.Rows != 0 {
+		t.Errorf("32 absent keys must give no rows, got %d", got.Rows)
+	}
+	GetScanResponseWithDetail(t, chain(33), "nesting too deep", http.StatusBadRequest)
+}
+
 func Test_CompositePk(t *testing.T) {
 	const fs, fv = testdbs.FSDB001, "sample_3"
 	var id1 int64
