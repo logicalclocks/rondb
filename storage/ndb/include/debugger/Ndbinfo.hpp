@@ -100,7 +100,13 @@ class Ndbinfo {
     TRANSPORTER_DETAILS_TABLEID = 53,
     TRANSACTIONS_FULL_TABLEID = 54,
     TRANSPORTER_ACTIVITY_TABLEID = 55,
-    RDMA_TRANSPORTERS_TABLEID = 56
+    RDMA_TRANSPORTERS_TABLEID = 56,
+    // Table ids used by later RonDB versions, reserved to keep ids
+    // consistent across RonDB versions
+    unsupported_SECURITY_VIOLATIONS_TABLEID = 57,        // RonDB 26.04
+    unsupported_SECURITY_VIOLATION_COUNTS_TABLEID = 58,  // RonDB 26.04
+    unsupported_JIT_TABLEID = 59,                        // RonDB 26.10
+    TRUSTED_CERTS_TABLEID = 60
   };
 
   enum BufferId {

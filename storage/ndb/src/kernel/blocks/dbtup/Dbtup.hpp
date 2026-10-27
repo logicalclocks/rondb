@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -214,6 +214,7 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZNO_UNDO_BUFFER_MEMORY_ERROR 923
 #define ZOUT_OF_STORED_PROC_MEMORY_ERROR 924
 #define ZOP_DISK_WITH_FLAG_NOT_SET 927
+#define ZTOO_MANY_ROW_VERSIONS_ERROR 947
 
 #define ZINVALID_CHAR_FORMAT 744
 #define ZROWID_ALLOCATED 899
@@ -4007,6 +4008,7 @@ public:
 
   /* read ahead in pages during disk order scan */
   Uint32 m_max_page_read_ahead;
+  Uint16 m_max_row_versions_per_transaction;
 
  public:
   Tablerec *tablerec;

@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -121,8 +121,12 @@ void Qmgr::initData() {
 
   Uint32 hbDBAPI = 1500;
   ndb_mgm_get_int_parameter(p, CFG_DB_API_HEARTBEAT_INTERVAL, &hbDBAPI);
+  cdefaultHbApiDelay = hbDBAPI;
 
-  setHbApiDelay(hbDBAPI);
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
+    chbApiDelay[i] = hbDBAPI;
+    hb_api_timer[i].setDelay(0);
+  }
 
   const NDB_TICKS now = NdbTick_getCurrentTicks();  // OJA bug#17757895
   interface_check_timer.setDelay(1000);
