@@ -164,7 +164,14 @@ TARGET_LINK_LIBRARIES(rdrs2_lib
                       trantor
                       simdjson
                       prometheus-cpp::push
-                      ndbclient_so
+                      # Static, like the rdrs2 binary: the tests linking
+                      # this library are STATIC_NDBCLIENT too. Adding
+                      # ndbclient_so gave them two copies of every NdbApi
+                      # global; both copies' constructors and destructors
+                      # ran on the one interposed object, so theApiMutex was
+                      # freed twice at exit (reconnect_test aborted with
+                      # "corrupted size vs. prev_size" after passing).
+                      ndbclient_static
                       ndbgeneral
                       rdrs_string
                       mysqlclient
