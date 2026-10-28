@@ -14,7 +14,7 @@ fi
 
 help() {
   cat <<EOF
-build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d} {-f} {-p}
+build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d} {-f} {-p} {-i}
 
 USAGE
 =====
@@ -35,6 +35,10 @@ build-all.sh {-s path} [-b path] {-o path} {-r}
         By default clusterj artifacts are uploaded as a SNAPSHOT version
 -p      The release is public and it will be copied to /master on the repo server. 
         Otherwise the tarball will be copied to /dev on the repo server.
+-i      Ignore MTR test failures. A release build (-r) runs the MTR suites on
+        the PGO training build and on the final build, and by default fails
+        before creating or deploying the tarball if any test fails. Use this
+        only to knowingly release over a known failure.
 EOF
 }
 
@@ -42,10 +46,11 @@ EOF
 RELEASE_BUILD=false
 RELEASE_FINAL_CLUSTERJ=false
 DEPLOY=false
+IGNORE_TEST_FAILURES=false
 
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:j:rdfp" opt; do
+while getopts ":n:s:b:o:j:rdfpi" opt; do
   case "$opt" in
   s)
     SRC_DIR=$OPTARG
@@ -70,6 +75,9 @@ while getopts ":n:s:b:o:j:rdfp" opt; do
     ;;
   d)
     DEPLOY=true
+    ;;
+  i)
+    IGNORE_TEST_FAILURES=true
     ;;
   *)
     help
@@ -135,10 +143,27 @@ echo "Build Params:
   Deploy:                   $DEPLOY
   Release final clusterj    $RELEASE_FINAL_CLUSTERJ
   Is public release         $IS_PUBLIC_RELEASE
+  Ignore test failures      $IGNORE_TEST_FAILURES
   Number of build threads:  $CORES
   RonDB version:            $RONDB_VERSION
   RonDB version Extra:      $RONDB_VERSION_EXTRA" 
    
+# Called when run_training.sh reports failing tests on build $1. Fails the
+# build, before any tarball is created or deployed, unless -i was given.
+test_failures() {
+  if [ "$IGNORE_TEST_FAILURES" = true ]; then
+    echo "################################################################"
+    echo "## WARNING: MTR tests FAILED on the $1 build."
+    echo "## Continuing because of -i (ignore test failures)."
+    echo "################################################################"
+  else
+    echo "ERROR: MTR tests failed on the $1 build; see the mtr output above."
+    echo "Not creating or deploying a tarball. Fix the tests, or rerun with"
+    echo "-i to knowingly release over the failures."
+    exit 1
+  fi
+}
+
 if [ "$RELEASE_BUILD" = true ]; then
   echo "_____________ BUILDING RONDB. RELEASE: TRUE _____________"
   cd $TEMP_BUILD_DIR_ABS
@@ -147,7 +172,9 @@ if [ "$RELEASE_BUILD" = true ]; then
   $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "TRAIN" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/feedback_build/install_dir
   make -j$CORES
   cd mysql-test
-  $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh
+  echo "_____________ TESTING PGO TRAINING BUILD _____________"
+  $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
+    test_failures "PGO training"
 
   cd $TEMP_BUILD_DIR_ABS
   mkdir -p use_build
@@ -155,6 +182,16 @@ if [ "$RELEASE_BUILD" = true ]; then
   $SRC_DIR_ABS/build_scripts/release_scripts/build_gen.sh "RELEASE" $SRC_DIR_ABS $TEMP_BUILD_DIR_ABS/rondb_bin_use
   make -j$CORES
   make install
+
+  echo "_____________ TESTING RELEASE BUILD _____________"
+  cd $TEMP_BUILD_DIR_ABS/use_build/mysql-test
+  MTR_PARALLEL=$((CORES / 8))
+  if [ $MTR_PARALLEL -lt 1 ]; then
+    MTR_PARALLEL=1
+  fi
+  MTR_EXTRA_ARGS="--parallel=$MTR_PARALLEL" \
+    $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
+    test_failures "release"
 else
   echo "_____________ BUILDING RONDB. RELEASE: FALSE _____________"
   cd $TEMP_BUILD_DIR_ABS
