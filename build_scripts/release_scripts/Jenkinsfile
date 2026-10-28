@@ -12,6 +12,7 @@ pipeline {
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build.')
       booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs. NOTE: for non public releases cluster is not uploaded.")
       booleanParam(name: 'IS_PUBLIC_RELEASE', defaultValue: true, description: 'Public releases are copied to /master and non public releases are copied to /dev on the repo server.')
+      booleanParam(name: 'IGNORE_TEST_FAILURES', defaultValue: false, description: 'A release build fails, before creating or deploying the tarball, if any MTR test fails on the PGO training build or the final build. Enable only to knowingly release over a known failure.')
       booleanParam(name: 'BUILD_RDRS_DOCKER_IMAGE', defaultValue: true, description: 'Enable/disable building RDRS docker image')
 
     }
@@ -79,6 +80,11 @@ pipeline {
                   IS_PUBLIC_RELEASE_ARG="--build-arg IS_PUBLIC_RELEASE=1"
                 fi
 
+                IGNORE_TEST_FAILURES_ARG=
+                if [ "$IGNORE_TEST_FAILURES" = true ]; then
+                  IGNORE_TEST_FAILURES_ARG="--build-arg IGNORE_TEST_FAILURES=1"
+                fi
+
                 DOCKER_FILE_NAME="Dockerfile.${DOCKER_BASE_IMAGE}"
                 echo "Using Dockerfile ${DOCKER_FILE_NAME}"
 
@@ -94,7 +100,8 @@ pipeline {
                   --build-arg DEPLOY_TO_REPO=1 \
                   $RELEASE_TARBALL_ARG \
                   $RELEASE_FINAL_CLUSTERJ_ARG \
-                  $IS_PUBLIC_RELEASE_ARG
+                  $IS_PUBLIC_RELEASE_ARG \
+                  $IGNORE_TEST_FAILURES_ARG
               '''
             }
         }
