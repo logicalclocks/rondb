@@ -119,6 +119,9 @@ my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out,
                                               # the real encoders (cluster-free)
                  'buffer_chain_test',         # RONDB-1144 buffer chain and
                                               # spill path (cluster-free)
+                 'json_parser_test',          # RONDB-1152 bodies rejected
+                                              # before a document exists
+                                              # (cluster-free)
                  'probe_server_http_test',    # probe-port HTTP conformance
                                               # (cluster-free, fast)
                  'error_handling_test',       # pure error-classification tests

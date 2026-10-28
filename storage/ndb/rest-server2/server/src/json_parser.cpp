@@ -238,6 +238,7 @@ RS_Status extract_db_and_table(const std::string_view &,
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
+RS_Status handle_iterate_error(const simdjson::error_code &);
 
 // Is used to perform a primary key read operation.
 RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
@@ -246,7 +247,7 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -419,7 +420,7 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -834,7 +835,7 @@ JSONParser::feature_store_parse(
   const char *currentLocation = nullptr;
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -1169,7 +1170,7 @@ RS_Status JSONParser::batch_feature_store_parse(
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -1581,6 +1582,19 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
     drogon::HttpStatusCode::k400BadRequest),
     ERROR_INVALID_RELATIVE_URL,
     std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+}
+
+/*
+  For an error from parser.iterate() itself. doc then holds no document from
+  this request: on a thread that has not parsed one yet its iterator is null
+  and doc.current_location() dereferences it, so one malformed request (an
+  unclosed string, say) took the server down before authentication. There
+  is no location to report, so report the error alone.
+*/
+RS_Status handle_iterate_error(const simdjson::error_code &error) {
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k400BadRequest),
+    error_message(error), "").status;
 }
 
 RS_Status handle_simdjson_error(const simdjson::error_code &error,
@@ -2103,7 +2117,7 @@ RS_Status JSONParser::scan_parse(simdjson::padded_string_view reqBody,
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
