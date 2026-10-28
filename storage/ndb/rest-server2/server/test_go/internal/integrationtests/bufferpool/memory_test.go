@@ -44,8 +44,13 @@ import (
 // PreAllocatedBuffers=8, BufferShrinkAfterS=30, NumThreads=8) with
 // widest-row batches from two workers for a minute, samples RssAnon from
 // /proc/<pid>/status every few seconds, and asserts two things:
-//   - no creep: once warm (10 s in), no sample exceeds the warm value by
-//     more than 10 % plus 32 MiB;
+//   - no creep: no sample after the warm window (10-30 s in) exceeds the
+//     peak of that window by more than 10 % plus 32 MiB. The peak, not a
+//     single sample: RssAnon swings by the buffers of the batches in
+//     flight (~20 MiB with 768 KiB buffers, ~45 MiB with 3 MiB ones), so a
+//     single warm sample taken at a trough let a normal later peak look
+//     like creep. Peaks are compared with peaks, sampled every second;
+//     memory that is never returned still raises the later peaks;
 //   - a bound derived from the computed sizes: the final sample is at most
 //     the idle RSS plus MaxBuffers pairs of buffers plus 64 MiB of slack
 //     for malloc's per-thread arenas (uncapped), stacks and the NDB API.
@@ -54,8 +59,9 @@ import (
 
 const (
 	memWorkers       = 2
-	memSampleEvery   = 5 * time.Second
+	memSampleEvery   = 1 * time.Second
 	memWarmAfter     = 10 * time.Second
+	memWarmUntil     = 30 * time.Second
 	memCreepFraction = 0.10
 	memCreepSlackKB  = 32 * 1024
 	memBoundSlackKB  = 64 * 1024
@@ -226,11 +232,11 @@ func TestMemoryBoundedUnderWideRowBatchLoad(t *testing.T) {
 
 	pairKB := (limits.ReqBufferBytes + limits.RespBufferBytes) / 1024
 	boundKB := rss0 + limits.MaxBuffers*pairKB + memBoundSlackKB
+	// The peak of the warm window (see the creep check in the header).
 	warmKB := int64(-1)
 	for _, s := range samples {
-		if s.at >= memWarmAfter {
+		if s.at >= memWarmAfter && s.at < memWarmUntil && s.rssKB > warmKB {
 			warmKB = s.rssKB
-			break
 		}
 	}
 
@@ -256,13 +262,14 @@ func TestMemoryBoundedUnderWideRowBatchLoad(t *testing.T) {
 	if n := atomic.LoadInt64(&requests); n < 2*memWorkers {
 		t.Fatalf("too few requests completed (%d) for the load to mean anything", n)
 	}
-	if warmKB < 0 {
-		t.Fatalf("no sample after %s; duration %s too short", memWarmAfter, duration)
+	if warmKB < 0 || duration <= memWarmUntil {
+		t.Fatalf("no samples after the %s-%s warm window; duration %s too short",
+			memWarmAfter, memWarmUntil, duration)
 	}
 	creepLimit := int64(float64(warmKB)*(1+memCreepFraction)) + memCreepSlackKB
 	for _, s := range samples {
-		if s.at >= memWarmAfter && s.rssKB > creepLimit {
-			t.Fatalf("RssAnon crept: %d kB at %.0fs, warm %d kB, limit %d kB", s.rssKB, s.at.Seconds(), warmKB, creepLimit)
+		if s.at >= memWarmUntil && s.rssKB > creepLimit {
+			t.Fatalf("RssAnon crept: %d kB at %.0fs, warm peak %d kB, limit %d kB", s.rssKB, s.at.Seconds(), warmKB, creepLimit)
 		}
 	}
 	if final > boundKB {

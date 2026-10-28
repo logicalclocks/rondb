@@ -36,6 +36,8 @@ Example: ./docker-build.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20
 
 -r    Create release builds. This takes longer
 -d    Deploy to remote repo.hops.works. Hopsworks AB specific
+-i    Ignore MTR test failures of a release build (-r); by default they
+      fail the build. See build_all.sh
 EOF
 }
 
@@ -50,10 +52,11 @@ DOCKERFILE="Dockerfile.oraclelinux9"
 CORES=1
 RELEASE_BUILD=
 DEPLOY=
+IGNORE_TEST_FAILURES=
 
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:f:j:rd" opt; do
+while getopts ":n:s:b:o:f:j:rdi" opt; do
   case "$opt" in
   t)
     DOCKER_IMAGE_NAME=$OPTARG
@@ -78,6 +81,9 @@ while getopts ":n:s:b:o:f:j:rd" opt; do
     ;;
   d)
     DEPLOY="-d"
+    ;;
+  i)
+    IGNORE_TEST_FAILURES="-i"
     ;;
   *)
     help
@@ -183,4 +189,4 @@ docker run --rm \
   --mount type=bind,src=$OUTPUT_DIR_ABS,dst=/rondb-tarball \
   --mount type=bind,src=$BUILD_DIR_ABS,dst=/rondb-bin \
   $DOCKER_IMAGE_NAME \
-  /bin/bash -c "source /root/.bashrc && /rondb-src/build_scripts/release_scripts/build_all.sh -s /rondb-src -b /rondb-bin -o /rondb-tarball -j $CORES $RELEASE_BUILD $DEPLOY"
+  /bin/bash -c "source /root/.bashrc && /rondb-src/build_scripts/release_scripts/build_all.sh -s /rondb-src -b /rondb-bin -o /rondb-tarball -j $CORES $RELEASE_BUILD $DEPLOY $IGNORE_TEST_FAILURES"

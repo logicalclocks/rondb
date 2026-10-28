@@ -257,6 +257,16 @@ TEST_F(ReconnectTest, ContendedConnectionMutexStaysHealthy) {
     });
   }
 
+  /* Probe only once the hammer is running. The probes take about a
+   * millisecond; started right away they could finish before any thread
+   * had taken connectionMutex (seen under ASAN), leaving nothing contended. */
+  const NDB_TICKS hammer_start = NdbTick_getCurrentTicks();
+  while (acquisitions.load() == 0 &&
+         NdbTick_Elapsed(hammer_start, NdbTick_getCurrentTicks()).milliSec() <
+           10 * 1000) {
+    NdbSleep_MilliSleep(1);
+  }
+
   Uint32 unhealthy = 0;
   for (Uint32 probe = 0; probe < NUM_HEALTH_PROBES; probe++) {
     if (get_num_ready_data_nodes() <= 0) {
