@@ -52,6 +52,9 @@ class JSONParser {
  public:
   JSONParser();
   std::unique_ptr<char[]> &get_buffer();
+  // Copies a request body of at most Internal.MaxHttpReqSize bytes into the
+  // buffer and NUL-terminates it.
+  void copy_request(const char *body, size_t length);
   RS_Status pk_parse(simdjson::padded_string_view, PKReadParams &);
   RS_Status batch_parse(simdjson::padded_string_view, std::vector<PKReadParams> &);
   RS_Status scan_parse(simdjson::padded_string_view, ScanReadParams&);

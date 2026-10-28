@@ -210,14 +210,25 @@ JSONParser::JSONParser() {
   /* new char[n] default-initialises, so none of the pages are touched until
    * a request of that size arrives. std::make_unique value-initialised the
    * array, which made NumThreads x MaxHttpReqSize resident at startup (64 x 4 MiB
-   * with the old defaults; RONDB-1144). The
-   * parser never reads beyond the request length it is given. */
+   * with the old defaults; RONDB-1144). Whatever lies past the request is
+   * left over from earlier, longer requests; see copy_request(). */
   buffer = std::unique_ptr<char[]>(
     new char[globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING]);
 }
 
 std::unique_ptr<char[]> &JSONParser::get_buffer() {
   return buffer;
+}
+
+void JSONParser::copy_request(const char *body, size_t length) {
+  memcpy(buffer.get(), body, length);
+  /* The parser stops at length, but a parse error message quotes the body
+   * from the error onwards as a C string (handle_simdjson_error). Without
+   * the terminator that read ran on through an earlier request's bytes,
+   * returning them to this client, and past the end of the buffer when no
+   * NUL came. length <= MaxHttpReqSize, so
+   * the terminator lands in the simdjson padding. */
+  buffer[length] = '\0';
 }
 
 RS_Status extract_db_and_table(const std::string_view &,

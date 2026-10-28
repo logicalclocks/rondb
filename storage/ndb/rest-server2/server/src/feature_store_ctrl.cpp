@@ -622,7 +622,7 @@ void FeatureStoreCtrl::featureStore(
     return;
   }
   DEB_FS_CTRL("Parse Feature Store request");
-  memcpy(jsonParser.get_buffer().get(), json_str, length);
+  jsonParser.copy_request(json_str, length);
   feature_store_data_structs::FeatureStoreRequest reqStruct;
   {
     RS_Status status = jsonParser.feature_store_parse(
