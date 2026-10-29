@@ -125,6 +125,7 @@ my @cpp_tests = ('process_setup_test',        # RONDB-1144 THP opt-out,
                  'reconnect_test',            # RONDB-1104 reconnection cycle
                  'api_key_test',
                  'feature_store_test',
+                 'feature_store_scan_test',
                  'probe_server_cluster_test'  # probe-port startup contract +
                                               # /health under contention
                 );

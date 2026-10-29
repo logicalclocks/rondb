@@ -197,7 +197,8 @@ RS_Status pk_batch_read(void *amalloc,
                         struct RS_BufferChain *resp_chain,
                         unsigned int threadIndex,
                         const char *rate_limit_identity,
-                        unsigned int rate_limit_identity_len);
+                        unsigned int rate_limit_identity_len,
+                        const void *op_filters = nullptr);
 
 /**
  * RonSQL query
@@ -238,12 +239,24 @@ void return_rdrs_ndb_object(void *ndb_object, int thread_index);
 
 class ScanReadParams;
 struct ScanPhaseTiming;
+class ScanRowSink;
 RS_Status scan_read(ScanReadParams& scan_params, unsigned int threadIndex,
                     void* json_string_buf,
                     const char *rate_limit_identity,
                     unsigned int rate_limit_identity_len,
                     uint64_t* rows_fetched_out = nullptr,
                     ScanPhaseTiming* timing = nullptr);
+
+/*
+ * Same scan as scan_read(), but every fetched row is handed to `sink`
+ * instead of being serialized to JSON.
+ */
+RS_Status scan_read_rows(ScanReadParams& scan_params, unsigned int threadIndex,
+                         ScanRowSink* sink,
+                         const char *rate_limit_identity,
+                         unsigned int rate_limit_identity_len,
+                         uint64_t* rows_fetched_out = nullptr,
+                         ScanPhaseTiming* timing = nullptr);
 
 #endif
 

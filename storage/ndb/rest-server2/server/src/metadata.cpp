@@ -24,8 +24,10 @@
 #include "rdrs_dal.hpp"
 #include "fs_cache.hpp"
 
+#include <algorithm>
 #include <optional>
 #include <tuple>
+#include <unordered_set>
 #include <util/require.h>
 #include <EventLogger.hpp>
 
@@ -146,6 +148,74 @@ std::string getFeatureIndexKey(int joinIndex, int fgId, const std::string &f) {
 
 std::string GetFeatureIndexKeyByFeature(const FeatureMetadata &feature) {
   return getFeatureIndexKey(feature.joinIndex, feature.featureGroupId, feature.name);
+}
+
+/*
+ * Populate the feature_store_scan fields of a FeatureViewMetadata: locate
+ * the root feature group and decide whether the view is a star schema.
+ * Computed once per cache entry.
+ */
+static void computeRootFgInfo(FeatureViewMetadata *md) {
+  md->rootFgIndex = -1;
+  md->isStarSchema = false;
+
+  for (size_t i = 0; i < md->featureGroupFeatures.size(); i++) {
+    if (md->featureGroupFeatures[i].joinIndex == 0) {
+      md->rootFgIndex = static_cast<int>(i);
+      break;
+    }
+  }
+  if (md->rootFgIndex < 0) {
+    return;
+  }
+  const FeatureGroupFeatures &root = md->featureGroupFeatures[md->rootFgIndex];
+  if (root.primaryKeyMap.empty()) {
+    return;
+  }
+
+  /* Every joined serving key must be derivable from the root row: not
+   * required, and joined on (requiredEntry) a root serving key. */
+  std::unordered_set<std::string> rootEntryNames;
+  for (const ServingKey &sk : root.primaryKeyMap) {
+    for (const std::string &name : ServingKeyEntryNames(sk)) {
+      rootEntryNames.insert(name);
+    }
+  }
+
+  for (size_t i = 0; i < md->featureGroupFeatures.size(); i++) {
+    if (static_cast<int>(i) == md->rootFgIndex) {
+      continue;
+    }
+    const FeatureGroupFeatures &fg = md->featureGroupFeatures[i];
+    if (fg.isSpine()) {
+      /* Spine feature groups are never read; they do not constrain the join */
+      continue;
+    }
+    if (fg.primaryKeyMap.empty()) {
+      return;
+    }
+    for (const ServingKey &sk : fg.primaryKeyMap) {
+      const std::string &joinColumn =
+        sk.requiredEntry.empty() ? sk.featureName : sk.requiredEntry;
+      if (sk.required || rootEntryNames.count(joinColumn) == 0) {
+        return;
+      }
+    }
+  }
+  md->isStarSchema = true;
+}
+
+std::vector<std::string> ServingKeyEntryNames(const ServingKey &key) {
+  std::vector<std::string> names;
+  for (const std::string &n : {key.requiredEntry,
+                               key.prefix + key.featureName,
+                               key.featureName}) {
+    if (!n.empty() &&
+        std::find(names.begin(), names.end(), n) == names.end()) {
+      names.push_back(n);
+    }
+  }
+  return names;
 }
 
 std::tuple<FeatureViewMetadata*, RS_Status>
@@ -349,6 +419,7 @@ newFeatureViewMetadata(const std::string &featureStoreName,
   metadata->joinKeyMap = joinKeyMap;
   metadata->complexFeatures = complexFeatures;
   metadata->hasSpine = hasSpine;
+  computeRootFgInfo(metadata);
   return {metadata, CRS_Status::SUCCESS.status};
 }
 

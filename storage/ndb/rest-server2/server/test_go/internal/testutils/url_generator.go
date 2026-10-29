@@ -230,6 +230,18 @@ func NewFeatureStoreURL() string {
 	return url
 }
 
+func NewFeatureStoreScanURL() string {
+	conf := config.GetAll()
+	url := fmt.Sprintf("%s:%d/%s/%s",
+		conf.REST.ServerIP,
+		conf.REST.ServerPort,
+		version.API_VERSION,
+		config.FEATURE_STORE_SCAN_OPERATION,
+	)
+	appendURLProtocol(&url)
+	return url
+}
+
 func NewBatchFeatureStoreURL() string {
 	conf := config.GetAll()
 	url := fmt.Sprintf("%s/%s/%s",

@@ -43,6 +43,7 @@
 #   hopsworks.ai/rdrs2/internal/integrationtests/index_scan        # index / range scans
 #   hopsworks.ai/rdrs2/internal/integrationtests/feature_store     # single feature-vector lookups
 #   hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore # batched feature-vector lookups
+#   hopsworks.ai/rdrs2/internal/integrationtests/featurestorescan  # feature vectors selected by scan
 #   hopsworks.ai/rdrs2/internal/integrationtests/sharing           # cross-project feature sharing
 #
 # Example running two of them at once:
@@ -167,6 +168,10 @@ my %smoke_test = (
         => 'Test_GetFeatureVector_Success',
     'hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore'
         => 'Test_GetFeatureVector_Success_1entries',
+    # The plain-HTTP server runs with FeatureStoreScanTableScanPolicy=request,
+    # so the smoke test must be a primary-key fast-path request.
+    'hopsworks.ai/rdrs2/internal/integrationtests/featurestorescan'
+        => 'Test_FastPath_PkEquality_MatchesBatchFeatureStore',
     'hopsworks.ai/rdrs2/internal/integrationtests/sharing'
         => 'Test_Sharing_PKRead',
 );

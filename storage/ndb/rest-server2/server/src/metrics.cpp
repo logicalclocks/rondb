@@ -84,6 +84,7 @@ std::atomic<Uint64> fs_histogram[64];
 std::atomic<Uint64> batch_fs_histogram[64];
 std::atomic<Uint64> ronsql_histogram[64];
 std::atomic<Uint64> index_scan_histogram[64];
+std::atomic<Uint64> fs_scan_histogram[64];
 std::atomic<Uint64> rondis_histogram[61]; // not 64, rondis errors not counted
 
 /*
@@ -96,12 +97,21 @@ std::atomic<Uint64> fs_histogram_total;
 std::atomic<Uint64> batch_fs_histogram_total;
 std::atomic<Uint64> ronsql_histogram_total;
 std::atomic<Uint64> index_scan_histogram_total;
+std::atomic<Uint64> fs_scan_histogram_total;
 std::atomic<Uint64> rondis_histogram_total;
 
 /*
  * Number of rows fetched by finished index scan HTTP requests.
  */
 std::atomic<Uint64> m_rows_fetched_from_index_scan_counter;
+
+/*
+ * feature_store_scan: feature vectors returned, NDB key requests issued by
+ * the fan-out, and requests served by the primary-key fast path.
+ */
+std::atomic<Uint64> m_rows_fetched_from_fs_scan_counter;
+std::atomic<Uint64> m_ndb_key_request_from_fs_scan_counter;
+std::atomic<Uint64> m_fs_scan_fast_path_counter;
 
 /*
  * Histogram boundaries. NAME_histogram[i] holds the number of requests such
@@ -147,6 +157,9 @@ init_metrics_intermediate_variables() {
   for (Uint32 i = 0; i < 64; i++) {
     index_scan_histogram[i] = 0;
   }
+  for (Uint32 i = 0; i < 64; i++) {
+    fs_scan_histogram[i] = 0;
+  }
   for (Uint32 i = 0; i < 61 /* not 64, rondis errors not counted */ ; i++) {
     rondis_histogram[i] = 0;
   }
@@ -157,6 +170,10 @@ init_metrics_intermediate_variables() {
   ronsql_histogram_total = 0;
   index_scan_histogram_total = 0;
   m_rows_fetched_from_index_scan_counter = 0;
+  fs_scan_histogram_total = 0;
+  m_rows_fetched_from_fs_scan_counter = 0;
+  m_ndb_key_request_from_fs_scan_counter = 0;
+  m_fs_scan_fast_path_counter = 0;
   rondis_histogram_total = 0;
 
   for (Uint32 i = 0; i < 10; i++) {
@@ -561,6 +578,56 @@ IndexScanEndPointMetricsUpdater::~IndexScanEndPointMetricsUpdater() {
   index_scan_histogram[hist].fetch_add(1, std::memory_order_relaxed);
 }
 
+FeatureStoreScanEndPointMetricsUpdater::FeatureStoreScanEndPointMetricsUpdater(
+  drogon::HttpResponsePtr response) {
+  m_start_time = NdbTick_getCurrentTicks();
+  m_response = response;
+  m_rows_fetched = 0;
+  m_key_requests = 0;
+  m_fast_path = false;
+}
+
+void
+FeatureStoreScanEndPointMetricsUpdater::set_rows_fetched(Uint64 rows_fetched) {
+  m_rows_fetched = rows_fetched;
+}
+
+void
+FeatureStoreScanEndPointMetricsUpdater::set_key_requests(Uint32 key_requests) {
+  m_key_requests = key_requests;
+}
+
+void
+FeatureStoreScanEndPointMetricsUpdater::set_fast_path(bool fast_path) {
+  m_fast_path = fast_path;
+}
+
+FeatureStoreScanEndPointMetricsUpdater::~FeatureStoreScanEndPointMetricsUpdater() {
+  NDB_TICKS now = NdbTick_getCurrentTicks();
+  Uint64 elapsed_us = NdbTick_Elapsed(m_start_time, now).microSec();
+  int code = static_cast<int>(m_response->getStatusCode());
+  Uint32 hist;
+  if (code >= 200 && code < 300) {
+    /* Same latency buckets as the scan endpoint */
+    hist = calculate_index_scan_index(elapsed_us);
+    fs_scan_histogram_total.fetch_add(elapsed_us, std::memory_order_relaxed);
+    m_rows_fetched_from_fs_scan_counter.fetch_add(
+      m_rows_fetched, std::memory_order_relaxed);
+    m_ndb_key_request_from_fs_scan_counter.fetch_add(
+      m_key_requests, std::memory_order_relaxed);
+    if (m_fast_path) {
+      m_fs_scan_fast_path_counter.fetch_add(1, std::memory_order_relaxed);
+    }
+  } else if (code >= 400 && code < 500) {
+    hist = 61;  // All 4xx client errors
+  } else if (code >= 500) {
+    hist = 62;  // All 5xx server errors
+  } else {
+    hist = 63;  // 1xx, 3xx
+  }
+  fs_scan_histogram[hist].fetch_add(1, std::memory_order_relaxed);
+}
+
 RondisEndPointMetricsUpdater::RondisEndPointMetricsUpdater() {
   m_start_time = NdbTick_getCurrentTicks();
 }
@@ -630,6 +697,14 @@ prometheus::Counter *indexScanReadCounter400 = nullptr;
 prometheus::Counter *indexScanReadCounter500 = nullptr;
 prometheus::Counter *indexScanReadCounterOther = nullptr;
 
+prometheus::Counter *fsScanReadCounter = nullptr;
+prometheus::Counter *fsScanReadCounter400 = nullptr;
+prometheus::Counter *fsScanReadCounter500 = nullptr;
+prometheus::Counter *fsScanReadCounterOther = nullptr;
+prometheus::Counter *fsScanFastPathCounter = nullptr;
+prometheus::Counter *ndbKeyRequestFromFsScanCounter = nullptr;
+prometheus::Counter *rowsFetchedFromFsScanCounter = nullptr;
+
 prometheus::Counter *rondisCmdCounter = nullptr;
 
 prometheus::Counter *ndbKeyRequestFromPkReadCounter = nullptr;
@@ -647,6 +722,7 @@ prometheus::Histogram *fsReadHistogram = nullptr;
 prometheus::Histogram *batchFsReadHistogram = nullptr;
 prometheus::Histogram *ronSQLReadHistogram = nullptr;
 prometheus::Histogram *indexScanReadHistogram = nullptr;
+prometheus::Histogram *fsScanReadHistogram = nullptr;
 prometheus::Histogram *rondisHistogram = nullptr;
 
 prometheus::Gauge *ronDBConnectionStateGauge            = nullptr;
@@ -830,6 +906,37 @@ void initMetrics() {
                           {"method", POST},
                           {"status", "other"}});
 
+  /* RDRS feature_store_scan Request Counters */
+  fsScanReadCounter =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"endpoint", FEATURE_STORE_SCAN},
+                          {"method", POST},
+                          {"status", "200"}});
+
+  fsScanReadCounter400 =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"endpoint", FEATURE_STORE_SCAN},
+                          {"method", POST},
+                          {"status", "400"}});
+
+  fsScanReadCounter500 =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"endpoint", FEATURE_STORE_SCAN},
+                          {"method", POST},
+                          {"status", "500"}});
+
+  fsScanReadCounterOther =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"endpoint", FEATURE_STORE_SCAN},
+                          {"method", POST},
+                          {"status", "other"}});
+
+  fsScanFastPathCounter =
+    &requestCounter->Add({{"api_type", "REST"},
+                          {"endpoint", FEATURE_STORE_SCAN},
+                          {"method", POST},
+                          {"status", "fast_path"}});
+
   /* Rondis Request Counter */
   rondisCmdCounter =
     &requestCounter->Add({{"api_type", "Rondis"},
@@ -858,6 +965,16 @@ void initMetrics() {
   rowsFetchedFromIndexScanCounter =
     &requestCounter->Add({{"api_type", "NDB"},
                           {"caused_by_endpoint", SCAN},
+                          {"endpoint", "rows_fetched"}});
+
+  /* feature_store_scan: NDB key requests of the fan-out and vectors returned */
+  ndbKeyRequestFromFsScanCounter =
+    &requestCounter->Add({{"api_type", "NDB"},
+                          {"caused_by_endpoint", FEATURE_STORE_SCAN},
+                          {"endpoint", "key"}});
+  rowsFetchedFromFsScanCounter =
+    &requestCounter->Add({{"api_type", "NDB"},
+                          {"caused_by_endpoint", FEATURE_STORE_SCAN},
                           {"endpoint", "rows_fetched"}});
 
   /* RDRS ping Request Counter */
@@ -968,6 +1085,11 @@ void initMetrics() {
       &request_duration.Add({{"api_type", "REST"},
                              {"method", "POST"},
                              {"endpoint", SCAN}},
+        hist_boundaries);
+    fsScanReadHistogram =
+      &request_duration.Add({{"api_type", "REST"},
+                             {"method", "POST"},
+                             {"endpoint", FEATURE_STORE_SCAN}},
         hist_boundaries);
   }
   {
@@ -1256,6 +1378,39 @@ void writeMetrics(drogon::HttpResponsePtr resp) {
     0,
     std::memory_order_relaxed);
   rowsFetchedFromIndexScanCounter->Increment(rows_fetched_count);
+
+  // feature_store_scan
+  for (Uint32 i = 0; i < 64; i++) {
+    Uint64 count = fs_scan_histogram[i].exchange(0, std::memory_order_relaxed);
+    hist_counters[i] = count;
+    if (i < 61)
+      hist_counters_dbl[i] = (double)count;
+  }
+  tot_count = 0;
+  for (Uint32 i = 0; i < 61; i++) {
+    tot_count += hist_counters[i];
+  }
+  if (tot_count > 0) {
+    fsScanReadCounter->Increment(tot_count);
+  }
+  if (hist_counters[61] > 0) {
+    fsScanReadCounter400->Increment(hist_counters[61]);
+  }
+  if (hist_counters[62] > 0) {
+    fsScanReadCounter500->Increment(hist_counters[62]);
+  }
+  if (hist_counters[63] > 0) {
+    fsScanReadCounterOther->Increment(hist_counters[63]);
+  }
+  tot_value = fs_scan_histogram_total.exchange(0, std::memory_order_relaxed);
+  fsScanReadHistogram->ObserveMultiple(hist_counters_dbl,
+                                       (double)tot_value / (double)1000000);
+  rowsFetchedFromFsScanCounter->Increment(
+    m_rows_fetched_from_fs_scan_counter.exchange(0, std::memory_order_relaxed));
+  ndbKeyRequestFromFsScanCounter->Increment(
+    m_ndb_key_request_from_fs_scan_counter.exchange(0, std::memory_order_relaxed));
+  fsScanFastPathCounter->Increment(
+    m_fs_scan_fast_path_counter.exchange(0, std::memory_order_relaxed));
 
   // rondis
   for (Uint32 i = 0; i < 61 /* not 64, rondis errors not counted */; i++) {

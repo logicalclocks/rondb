@@ -27,6 +27,7 @@
 #include "src/db_operations/pk/pkr_response.hpp"
 #include "src/buffer_manager.hpp"
 #include "src/error_strings.h"
+#include "src/pk_data_structs.hpp"
 #include "src/logger.hpp"
 #include "src/ndb_api_helper.hpp"
 #include "src/rdrs_const.h"
@@ -73,15 +74,23 @@
 #define DEB_NDB_BE_ERR(...) do { } while (0)
 #endif
 
-BatchKeyOperations::BatchKeyOperations() {
+BatchKeyOperations::BatchKeyOperations()
+  : m_numOperations(0),
+    m_key_ops(nullptr),
+    m_isSuccess(false),
+    m_op_filters(nullptr) {
 }
 
 BatchKeyOperations::~BatchKeyOperations() {
-  if (!m_isSuccess) {
-    for (Uint32 i = 0; i < m_numOperations; i++) {
-      KeyOperation *key_op = &m_key_ops[i];
+  for (Uint32 i = 0; i < m_numOperations; i++) {
+    KeyOperation *key_op = &m_key_ops[i];
+    if (!m_isSuccess) {
       PKRRequest *req = &key_op->m_req;
       req->resetReadColumns();
+    }
+    if (key_op->m_interpreted_code != nullptr) {
+      delete key_op->m_interpreted_code;
+      key_op->m_interpreted_code = nullptr;
     }
   }
 }
@@ -113,6 +122,9 @@ BatchKeyOperations::init_batch_operations(ArenaMalloc *amalloc,
   for (Uint32 i = 0; i < numOps; i++) {
     KeyOperation *key_op = &m_key_ops[i];
     key_op->m_ndbTransaction = nullptr;
+    key_op->m_interpreted_code = nullptr;
+    key_op->m_filter = (m_op_filters != nullptr && m_op_filters[i] != nullptr)
+      ? &m_op_filters[i] : nullptr;
     PKRRequest *req = new (&key_op->m_req) PKRRequest(&reqBuffer[i]);
     m_numOperations = i + 1;
     if (unlikely(ndb_object->setCatalogName(req->DB()) != 0)) {
@@ -501,6 +513,29 @@ RS_Status BatchKeyOperations::setup_read_operations() {
     NdbOperation::OperationOptions opts;
     std::memset(&opts, 0, sizeof(opts));
     opts.optionsPresent |= NdbOperation::OperationOptions::OO_BATCH_SAFE_FLAG;
+    if (unlikely(key_op->m_filter != nullptr)) {
+      std::shared_ptr<FilterNode> &filter_root =
+        *const_cast<std::shared_ptr<FilterNode>*>(key_op->m_filter);
+      if (key_op->m_interpreted_code != nullptr) {
+        delete key_op->m_interpreted_code;
+        key_op->m_interpreted_code = nullptr;
+      }
+      ClearFilterColumns(filter_root);
+      RS_Status filter_status = BindFilterColumns(filter_root,
+                                                  key_op->m_tableDict);
+      if (unlikely(filter_status.http_code != SUCCESS)) {
+        return filter_status;
+      }
+      NdbInterpretedCode *code = new NdbInterpretedCode(*key_op->m_ndb_record);
+      key_op->m_interpreted_code = code;
+      NdbScanFilter scan_filter(code);
+      filter_status = CompileFilterProgram(filter_root, scan_filter);
+      if (unlikely(filter_status.http_code != SUCCESS)) {
+        return filter_status;
+      }
+      opts.optionsPresent |= NdbOperation::OperationOptions::OO_INTERPRETED;
+      opts.interpretedCode = code;
+    }
     const NdbOperation *operation = trans->readTuple(
       key_op->m_ndb_record,
       (const char*)key_op->m_row,
@@ -1380,10 +1415,13 @@ RS_Status BatchKeyOperations::perform_operation(
   RS_BufferChain &resp_chain,
   Ndb *ndb_object,
   const char *rate_limit_identity,
-  Uint32 rate_limit_identity_len) {
+  Uint32 rate_limit_identity_len,
+  const void *op_filters) {
 
   m_rate_limit_identity = rate_limit_identity;
   m_rate_limit_identity_len = rate_limit_identity_len;
+  m_op_filters =
+    static_cast<const std::shared_ptr<FilterNode>*>(op_filters);
   DEB_NDB_BE("init_batch_operations");
   RS_Status status = init_batch_operations(
     amalloc,

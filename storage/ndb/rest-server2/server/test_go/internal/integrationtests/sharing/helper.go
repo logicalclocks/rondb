@@ -28,6 +28,7 @@ import (
 
 	"hopsworks.ai/rdrs2/internal/config"
 	"hopsworks.ai/rdrs2/internal/integrationtests"
+	"hopsworks.ai/rdrs2/internal/integrationtests/featurestorescan"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/internal/testutils"
 	"hopsworks.ai/rdrs2/pkg/api"
@@ -51,6 +52,24 @@ func getFeatureStoreResponseWithKey(t *testing.T, apiKey string,
 		return &fsResp
 	}
 	return nil
+}
+
+// featureStoreScanWithKey is the feature_store_scan twin of
+// getFeatureStoreResponseWithKey.
+func featureStoreScanWithKey(t *testing.T, apiKey string,
+	req featurestorescan.ScanRequest, message string, status int) *featurestorescan.ScanResponse {
+	t.Helper()
+	respCode, respBody := testclient.SendHttpRequestWithAPIKey(
+		t, apiKey, config.FEATURE_STORE_HTTP_VERB, testutils.NewFeatureStoreScanURL(),
+		req.String(), message, status)
+	if respCode != http.StatusOK {
+		return nil
+	}
+	resp := featurestorescan.ScanResponse{}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		t.Fatalf("Unmarshal failed %s ", err)
+	}
+	return &resp
 }
 
 // getBatchFeatureStoreResponseWithKey is the batch-endpoint twin of

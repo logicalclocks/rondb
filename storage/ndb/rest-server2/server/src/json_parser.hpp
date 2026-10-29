@@ -25,6 +25,7 @@
 #include "pk_data_structs.hpp"
 #include "ronsql_data_structs.hpp"
 #include "feature_store_data_structs.hpp"
+#include "feature_store_scan_data_structs.hpp"
 
 #define SIMDJSON_VERBOSE_LOGGING 0
 #include <simdjson.h>
@@ -65,6 +66,9 @@ class JSONParser {
   RS_Status batch_feature_store_parse(
     simdjson::padded_string_view,
     feature_store_data_structs::BatchFeatureStoreRequest &);
+  RS_Status feature_store_scan_parse(
+    simdjson::padded_string_view,
+    feature_store_data_structs::FeatureStoreScanRequest &);
 };
 
 extern JSONParser* jsonParsers;
