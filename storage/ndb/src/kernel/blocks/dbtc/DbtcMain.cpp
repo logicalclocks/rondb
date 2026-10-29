@@ -3825,7 +3825,11 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
    * These deferred trigger flags are handled in the deferred trigger
    * execution phase at the end of the transaction.
    *
-   * SOF_FK_READ_COMMITTED is never set and is thus no longer in use.
+   * SOF_LOCK_FREE_READ is set by executeIndexOperation on the base table
+   * read of a unique index lookup that the API flagged as lock-free. The
+   * operation is a simple read in TC and is sent to LQH as a dirty read
+   * with the normal protocol flag, so LQH reads without a row lock but
+   * still answers TC.
    *
    * The SOF_REORG_COPY flag, SOF_REORG_DELETE flag are only set when
    * operation originates from DBUTIL. SOF_UTIL_FLAG is set by DBTC when the
@@ -5202,11 +5206,21 @@ void Dbtc::tckeyreq050Lab(Signal *signal, CacheRecordPtr const cachePtr,
      * the primary replica has to be used in order to avoid races where
      * an update of the primary replica has not reached backup replicas
      * when the constraint is verified.
+     *
+     * A lock-free read (SOF_LOCK_FREE_READ) is a simple read in TC but
+     * takes no lock in LQH, so it cannot rely on 1); it reads a backup
+     * replica only under 2) or 3), like a Committed read. On a backup
+     * replica a row commits in the complete phase, so the base row of a
+     * unique index lookup may not be committed there yet although its
+     * index row already is; DBTUP reports that as a temporary error
+     * instead of "not found".
      */
+    bool lockFreeRead = Tspecial_op_flags & TcConnectRecord::SOF_LOCK_FREE_READ;
     if (regTcPtr->tcNodedata[0] != cownNodeid &&  // Primary replica is remote, and
         !checkingFKConstraint &&                  // Not verifying a FK-constraint.
         !batchUnsafe &&                           // Not an unsafe batched read
-        ((TopSimple != 0 && TopDirty == 0 && ttl_can_go_to_replica) ||   // 1)
+        ((TopSimple != 0 && TopDirty == 0 && !lockFreeRead &&
+          ttl_can_go_to_replica) ||                                       // 1)
          (TreadBackup != 0 && (TopSimple != 0 || TopDirty != 0)) ||      // 2)
          (TreadBackup != 0 && regCachePtr->m_read_committed_base)))      // 3)
     {
@@ -5618,7 +5632,7 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
   }
 
   if (unlikely(regTcPtr->m_special_op_flags &
-               TcConnectRecord::SOF_FK_READ_COMMITTED)) {
+               TcConnectRecord::SOF_LOCK_FREE_READ)) {
     LqhKeyReq::setNormalProtocolFlag(Tdata10, 1);
     LqhKeyReq::setDirtyFlag(Tdata10, 1);
   }
@@ -7502,6 +7516,7 @@ void Dbtc::commitGciHandling(Signal* signal,
   Ptr<ApiConnectRecord> regApiPtr = apiConnectptr;
   regApiPtr.p->globalcheckpointid = Tgci;
 
+  const bool nfhandling = (c_ongoing_take_over_cnt > 0);
   LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
   if (gcp_list.first(localGcpPointer)) {
     /* IF THIS GLOBAL CHECKPOINT ALREADY EXISTS */
@@ -7513,9 +7528,24 @@ void Dbtc::commitGciHandling(Signal* signal,
         linkApiToGcp(localGcpPointer, regApiPtr);
         return;
       }
-      if (unlikely(regApiPtr.p->globalcheckpointid < localGcpPointer.p->gcpId &&
-                   localGcpPointer.p->gcpNomoretransRec == ZTRUE))
+      if (unlikely(regApiPtr.p->globalcheckpointid < localGcpPointer.p->gcpId))
       {
+        if (nfhandling || localGcpPointer.p->gcpNomoretransRec == ZFALSE)
+        {
+          /*
+           * TC takeover can commit an older GCI after a newer GCI has already
+           * been added. Reopen the older GCI, seizeGcp() links it in sorted
+           * order before the newer GCI.
+           */
+          jam();
+          g_eventLogger->info(
+              "DBTC %u: Reopening GCI %u/%u before %u/%u "
+              "(node failure handling %u)",
+              instance(), Uint32(Tgci >> 32), Uint32(Tgci),
+              Uint32(localGcpPointer.p->gcpId >> 32),
+              Uint32(localGcpPointer.p->gcpId), c_ongoing_take_over_cnt);
+          break;
+        }
         g_eventLogger->info("%u/%u %u/%u",
                  Uint32(regApiPtr.p->globalcheckpointid >> 32),
                  Uint32(regApiPtr.p->globalcheckpointid),
@@ -7588,7 +7618,8 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci, Uint32 line)
    * This makes it easier to handle node failure situations.
    */
   LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
-  Uint32 prev = RNIL;
+  GcpRecordPtr prevPtr;
+  prevPtr.i = RNIL;
   GcpRecordPtr gcpPtr;
   gcp_list.first(gcpPtr);
   while (gcpPtr.i != RNIL)
@@ -7598,16 +7629,16 @@ void Dbtc::seizeGcp(Ptr<GcpRecord> & dst, Uint64 Tgci, Uint32 line)
       jam();
       break;
     }
-    prev = gcpPtr.i;
+    prevPtr = gcpPtr;
     gcp_list.next(gcpPtr);
   }
-  if (gcpPtr.i == RNIL)
+  if (prevPtr.i == RNIL)
   {
-    gcp_list.addLast(localGcpPointer);
+    gcp_list.addFirst(localGcpPointer);
   }
   else
   {
-    gcp_list.insertAfter(localGcpPointer, gcpPtr);
+    gcp_list.insertAfter(localGcpPointer, prevPtr);
   }
   dst = localGcpPointer;
 }  // Dbtc::seizeGcp()
@@ -8001,6 +8032,18 @@ void Dbtc::sendApiCommitSignal(Signal *signal,
 /*-------------------------------------------------------*/
 Ptr<Dbtc::ApiConnectRecord> Dbtc::sendApiCommitAndCopy(
     Signal *signal, ApiConnectRecordPtr const apiConnectptr) {
+  if (ERROR_INSERTED(8133)) {
+    /**
+     * Leave a committed, not completed transaction behind for TC takeover.
+     * The COMPLETE phase is delayed in complete010Lab() using the same
+     * error insert.  Unlike 8055 this does not disconnect the API node.
+     */
+    signal->theData[0] = 9999;
+    sendSignalWithDelay(CMVMI_REF, GSN_NDB_TAMPER, signal, 6000, 1);
+
+    goto err8055;
+  }
+
   if (ERROR_INSERTED(8055)) {
     /**
      * 1) Kill self
@@ -8157,6 +8200,33 @@ void Dbtc::unlinkApiConnect(Ptr<GcpRecord> gcpPtr,
 void Dbtc::complete010Lab(Signal *signal,
                           ApiConnectRecordPtr const apiConnectptr) {
   TcConnectRecordPtr localTcConnectptr;
+#ifdef ERROR_INSERT
+  // Delay complete010Lab once by 10s
+  if (ERROR_INSERTED_CLEAR(8133)) {
+    jam();
+    apiConnectptr.p->counter++;
+    setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+    signal->theData[0] = TcContinueB::ZSEND_COMPLETE_LOOP;
+    signal->theData[1] = apiConnectptr.i;
+    signal->theData[2] = tcConnectptr.i;
+    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10000, 3);
+    return;
+  }
+
+  // Delay complete010Lab once by 10s, leaving error insert set
+  if (ERROR_INSERTED(8134) && ERROR_INSERT_EXTRA == 0) {
+    jam();
+    ERROR_INSERT_EXTRA = 1;
+    apiConnectptr.p->counter++;
+    setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
+    signal->theData[0] = TcContinueB::ZSEND_COMPLETE_LOOP;
+    signal->theData[1] = apiConnectptr.i;
+    signal->theData[2] = tcConnectptr.i;
+    sendSignalWithDelay(cownref, GSN_CONTINUEB, signal, 10000, 3);
+    return;
+  }
+#endif
+
   localTcConnectptr.p = tcConnectptr.p;
   setApiConTimer(apiConnectptr, ctcTimer, __LINE__);
   UintR Tcount = 0;
@@ -11922,6 +11992,18 @@ void Dbtc::execGCP_NOMORETRANS(Signal *signal) {
   Uint32 gci_hi = req->gci_hi;
   tcheckGcpId = gci_lo | (Uint64(gci_hi) << 32);
   const bool nfhandling = (c_ongoing_take_over_cnt > 0);
+
+#ifdef ERROR_INSERT
+  if (nfhandling && ERROR_INSERTED(8134)) {
+    g_eventLogger->info(
+        "DBTC %u: Error insert 8134 delaying GCP_NOMORETRANS %u/%u "
+        "during node failure handling",
+        instance(), gci_hi, gci_lo);
+    sendSignalWithDelay(reference(), GSN_GCP_NOMORETRANS, signal, 1000,
+                        signal->getLength());
+    return;
+  }
+#endif
 
   LocalGcpRecord_list gcp_list(c_gcpRecordPool, c_gcpRecordList);
   GcpRecordPtr gcpPtr;
@@ -16088,6 +16170,30 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     goto SCAN_TAB_error;
   }
 
+  {
+    const bool exclusive = ScanTabReq::getLockMode(ri);
+    const bool locking = exclusive || !ScanTabReq::getReadCommittedFlag(ri);
+    if (unlikely(exclusive && !ScanTabReq::getKeyinfoFlag(ri))) {
+      jam();
+      errCode = ScanFragRef::ZKEYINFO_REQUIRED;
+      goto SCAN_TAB_error;
+    }
+
+    /* Match initScanrec's choice of the effective batch size. */
+    Uint32 batchSizeRows = ScanTabReq::getScanBatch(ri);
+    if (batchSizeRows == 0) {
+      batchSizeRows = scanTabReq->first_batch_size;
+    }
+    /* Shared and exclusive scans use the same 10-bit takeover op number. */
+    const Uint32 maxBatchSize = locking ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK
+                                       : MAX_PARALLEL_OP_PER_SCAN_RC;
+    if (unlikely(batchSizeRows == 0 || batchSizeRows > maxBatchSize)) {
+      jam();
+      errCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+      goto SCAN_TAB_error;
+    }
+  }
+
   ptrAss(tabptr, tableRecord);
   if ((aiLength == 0) || (!tabptr.p->checkTable(schemaVersion)) ||
       (scanConcurrency == 0) || (cConcScanCount >= cscanrecFileSize)) {
@@ -16451,7 +16557,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
   transP->returncode = 0;
   transP->transid[0] = transid1;
   transP->transid[1] = transid2;
-  transP->buddyPtr = buddyPtr;
+  /* Use the scan's own API connection when no buddy was supplied. */
+  transP->buddyPtr = (buddyPtr == RNIL ? apiConnectptr.i : buddyPtr);
 
   // The scan is started
   transP->apiConnectstate = CS_START_SCAN;
@@ -23370,6 +23477,8 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
   TcKeyReq *const tcIndxReq = &indexOp->tcIndxReq;
   TcKeyReq *const tcKeyReq = (TcKeyReq *)signal->getDataPtrSend();
   Uint32 tcKeyRequestInfo = tcIndxReq->requestInfo;
+  const bool lockFreeBaseRead =
+      TcKeyReq::getLockFreeBaseReadFlag(tcIndxReq->attrLen);
 
   // Find index table
   TcIndexDataPtr indexPtr;
@@ -23399,6 +23508,7 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
 
   tcKeyReq->apiConnectPtr = tcIndxReq->apiConnectPtr;
   tcKeyReq->attrLen = tcIndxReq->attrLen;
+  TcKeyReq::setLockFreeBaseReadFlag(tcKeyReq->attrLen, 0);
   tcKeyReq->tableId = indexData->primaryTableId;
   tcKeyReq->tableSchemaVersion = tabPtr.p->currentSchemaVersion;
   tcKeyReq->transId1 = regApiPtr->transid[0];
@@ -23444,10 +23554,27 @@ void Dbtc::executeIndexOperation(Signal *signal, ApiConnectRecord *regApiPtr,
 
   TcKeyReq::setCommitFlag(tcKeyRequestInfo, 0);
   TcKeyReq::setExecuteFlag(tcKeyRequestInfo, 0);
-  tcKeyReq->requestInfo = tcKeyRequestInfo;
 
   ndbassert(TcKeyReq::getDirtyFlag(tcKeyRequestInfo) == 0);
   ndbassert(TcKeyReq::getSimpleFlag(tcKeyRequestInfo) == 0);
+
+  if (lockFreeBaseRead) {
+    jam();
+    /**
+     * The API only needed the lock on the index row to get a consistent
+     * primary key. Read the base table row as a simple read so that TC
+     * releases it on LQHKEYCONF, and let SOF_LOCK_FREE_READ make LQH read
+     * it without a row lock. Only API requests carry the flag, so this is
+     * never a triggered operation and the flag survives below. The read is still not dirty
+     * in TC, so its result and errors flow through TC as usual.
+     * NoWait only makes sense for a read that takes a lock, and LQH
+     * asserts that a dirty read is not NoWait, so drop it here.
+     */
+    TcKeyReq::setSimpleFlag(tcKeyRequestInfo, 1);
+    tcKeyRequestInfo &= ~(1U << TC_NOWAIT_SHIFT);
+    regApiPtr->m_special_op_flags |= TcConnectRecord::SOF_LOCK_FREE_READ;
+  }
+  tcKeyReq->requestInfo = tcKeyRequestInfo;
 
   /**
    * Decrease lqhkeyreqrec to compensate for addition

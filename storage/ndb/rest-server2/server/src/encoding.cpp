@@ -26,6 +26,8 @@
 #include <ArenaMalloc.hpp>
 #include <EventLogger.hpp>
 #include <util/require.h>
+#include "buffer_sizes.hpp"
+#include "buffer_chain.hpp"
 #include "error_strings.h"
 #include "status.hpp"
 
@@ -112,9 +114,48 @@ extern EventLogger *g_eventLogger;
  * | Read column name                    |
  * ---------------------------------------
  */ 
+/* Upper bound of what create_native_request writes for params: every
+ * string as a length word, the bytes and a terminator, 4-aligned, plus the
+ * pointer tables, plus the column-name reservation when no columns are
+ * named. Mirrors the encoder below; limits_test only checks that the worst
+ * case fits MIN_REQ_BUFFER. */
+Uint32 native_request_upper_bound(const PKReadParams &params) {
+  Uint64 total = PK_REQ_HEADER_END;
+  total += align_word(ADDRESS_SIZE + params.path.db.size() + 1);
+  total += align_word(ADDRESS_SIZE + params.path.table.size() + 1);
+  total += ADDRESS_SIZE + params.filters.size() * ADDRESS_SIZE;
+  for (const auto &filter : params.filters) {
+    total += 2 * ADDRESS_SIZE;
+    total += align_word(ADDRESS_SIZE + filter.column.size() + 1);
+    total += align_word(ADDRESS_SIZE + filter.value.size() + 1);
+  }
+  if (!params.operationId.empty()) {
+    total += align_word(ADDRESS_SIZE + params.operationId.size() + 1);
+  }
+  if (!params.readColumns.empty()) {
+    total += ADDRESS_SIZE + params.readColumns.size() * ADDRESS_SIZE;
+    for (const auto &col : params.readColumns) {
+      total += align_word(ADDRESS_SIZE + col.column.size() + 1) + ADDRESS_SIZE;
+    }
+  } else {
+    total += REQ_COLNAME_RESERVE;
+  }
+  return total > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<Uint32>(total);
+}
+
 RS_Status create_native_request(PKReadParams &pkReadParams,
-                                Uint32 *reqBuff,
-                                Uint32 &next_head) {
+                                RS_Buffer &view,
+                                Uint32 &consumed) {
+  const Uint32 bound = native_request_upper_bound(pkReadParams);
+  if (unlikely(bound > view.size)) {
+    return CRS_Status(
+      static_cast<HTTP_CODE>(drogon::HttpStatusCode::k400BadRequest),
+      (std::string("operation too large for request buffer: needs up to ") +
+       std::to_string(bound) + " bytes, " + std::to_string(view.size) +
+       " available").c_str()).status;
+  }
+  Uint32 *reqBuff = reinterpret_cast<Uint32 *>(view.buffer);
+  Uint32 next_head = 0;
   Uint32 *buf = reqBuff;
   Uint32 head = PK_REQ_HEADER_END;
   Uint32 dbOffset = head;
@@ -200,18 +241,18 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
      * Need to reserve space in request buffer for column names of all
      * table columns.
      */
-    next_head += head + 
-      1 + // Number of columns stored
-      16 + // Some extra space for security
-      MAX_ATTRIBUTES_IN_TABLE *
-      (1 + // length word
-       MAX_ATTR_NAME_SIZE + // Max column name size
-       2); // Reference to the column info and data type
+    /* REQ_COLNAME_RESERVE is what addReadColumns and addReadColumnName
+     * write for every table column: an offset array, then per column a
+     * type word, a length word, the name and its terminator, 4-aligned.
+     * The old estimate was about 6% short of that layout (RONDB-1144);
+     * limits_test checks the two against each other. */
+    next_head += head + REQ_COLNAME_RESERVE;
   }
   // request buffer header
   buf[PK_REQ_OP_TYPE_IDX] = (Uint32)(RDRS_PK_REQ_ID);
-  buf[PK_REQ_CAPACITY_IDX] = (Uint32)(globalConfigs.internal.respBufferSize);
+  buf[PK_REQ_CAPACITY_IDX] = (Uint32)(view.size);
   buf[PK_REQ_LENGTH_IDX] = (Uint32)(head);
+  consumed = next_head;
   buf[PK_REQ_FLAGS_IDX] = (Uint32)(0);
   buf[PK_REQ_DB_IDX] = (Uint32)(dbOffset);
   buf[PK_REQ_TABLE_IDX] = (Uint32)(tableOffset);
@@ -222,82 +263,74 @@ RS_Status create_native_request(PKReadParams &pkReadParams,
     drogon::HttpStatusCode::k200OK), "OK").status;
 }
 
-RS_Buffer getNextReqRS_Buffer(Uint32 &current_head,
-                              Uint32 request_buffer_limit,
-                              RS_Buffer &current_request_buffer,
-                              Uint32 &current_request_buffer_idx,
-                              Uint32 index) {
-  require(index > 0);
-  if (current_head >= request_buffer_limit) {
-    current_request_buffer.next_allocated_buffer = index;
-    current_request_buffer_idx = index;
-    current_head = 0;
-    RS_Buffer reqBuff = rsBufferArrayManager.get_req_buffer();
-    DEB_ENC("Allocating a new request buffer index = %u, ptr: %p",
-      index, reqBuff.buffer);
-    return reqBuff;
+/* The segments of a value whose bytes continue past its home view: the tail
+ * of the home view from addr, then whole continuation buffers of the chain
+ * in order, until len bytes are covered. Valid because the writer fills
+ * each buffer to its last byte before spilling (RONDB-1144). */
+static RS_Status build_segments(ArenaMalloc *amalloc,
+                                const RS_BufferChain &chain,
+                                Uint32 op_index,
+                                Uint32 addr,
+                                Uint32 len,
+                                const RS_Segment **segs_out,
+                                Uint32 *nsegs_out) {
+  const RS_Buffer &home = chain.view(op_index);
+  const Uint32 max_segs = 2 + len / chain.owner(0).size + 1;
+  RS_Segment *segs = static_cast<RS_Segment *>(
+    amalloc->alloc_bytes(max_segs * sizeof(RS_Segment), 8));
+  if (unlikely(segs == nullptr)) {
+    std::string msg = "Failed to allocate memory";
+    return CRS_Status(static_cast<HTTP_CODE>(
+      drogon::HttpStatusCode::k500InternalServerError),
+      msg.c_str(), msg).status;
   }
-  RS_Buffer reqBuff;
-  reqBuff.next_allocated_buffer = 0xFFFFFFFF; // Garbage
-  reqBuff.buffer = current_request_buffer.buffer + current_head;
-  reqBuff.size = (globalConfigs.internal.reqBufferSize * 2) - current_head;
-  DEB_ENC("Reuse request buffer index = %u at pos: %u, ptr: %p",
-    index, current_head, reqBuff.buffer);
-  return reqBuff;
-}
-
-RS_Buffer getNextRespRS_Buffer(Uint32 &current_head,
-                               Uint32 response_buffer_limit,
-                               RS_Buffer &current_response_buffer,
-                               Uint32 &current_response_buffer_idx,
-                               Uint32 index) {
-  require(index > 0);
-  if (current_head >= response_buffer_limit) {
-    current_response_buffer.next_allocated_buffer = index;
-    current_response_buffer_idx = index;
-    current_head = 0;
-    RS_Buffer respBuff = rsBufferArrayManager.get_resp_buffer();
-    DEB_ENC("Allocating a new response buffer index = %u, ptr: %p",
-      index, respBuff.buffer);
-    return respBuff;
+  Uint32 nsegs = 0;
+  Uint64 remaining = len;
+  Uint64 virt = addr;          // virtual stream offset of the next byte
+  Uint64 base = 0;             // virtual offset where the current region starts
+  if (virt < home.size) {
+    const Uint32 take = static_cast<Uint32>(
+      std::min<Uint64>(home.size - virt, remaining));
+    segs[nsegs++] = RS_Segment{home.buffer + virt, take};
+    remaining -= take;
+    virt += take;
   }
-  RS_Buffer respBuff;
-  respBuff.next_allocated_buffer = 0xFFFFFFFF; // Garbage
-  respBuff.buffer = current_response_buffer.buffer + current_head;
-  respBuff.size = (globalConfigs.internal.respBufferSize * 2) - current_head;
-  DEB_ENC("Reuse response buffer index = %u at pos: %u, ptr: %p",
-    index, current_head, respBuff.buffer);
-  return respBuff;
-}
-
-void release_array_buffers(RS_Buffer *reqBuffs,
-                           RS_Buffer *respBuffs,
-                           Uint32 numOps) {
-  if (unlikely(numOps == 0)) {
-    return;
+  base = home.size;
+  Uint32 owner = chain.owner_of(op_index) + 1;
+  while (remaining > 0) {
+    if (unlikely(owner >= chain.owner_count() || nsegs >= max_segs)) {
+      std::string msg = "internal server error. spilled value runs past"
+        " the buffer chain";
+      return CRS_Status(static_cast<HTTP_CODE>(
+        drogon::HttpStatusCode::k500InternalServerError),
+        msg.c_str(), msg).status;
+    }
+    const RS_Buffer &buf = chain.owner(owner);
+    if (virt >= base + buf.size) {
+      base += buf.size;
+      owner++;
+      continue;
+    }
+    const Uint32 start = static_cast<Uint32>(virt - base);
+    const Uint32 take = static_cast<Uint32>(
+      std::min<Uint64>(buf.size - start, remaining));
+    segs[nsegs++] = RS_Segment{buf.buffer + start, take};
+    remaining -= take;
+    virt += take;
+    base += buf.size;
+    owner++;
   }
-  Uint32 i = 0;
-  do {
-    Uint32 next_i = respBuffs[i].next_allocated_buffer;
-    DEB_ENC("Release response buffer with index: %u", i);
-    rsBufferArrayManager.return_resp_buffer(respBuffs[i]);
-    i = next_i;
-    require(i < numOps);
-  } while (i != 0);
-  i = 0;
-  do {
-    Uint32 next_i = reqBuffs[i].next_allocated_buffer;
-    DEB_ENC("Release request buffer with index: %u", i);
-    rsBufferArrayManager.return_req_buffer(reqBuffs[i]);
-    i = next_i;
-    require(i < numOps);
-  } while (i != 0);
+  *segs_out = segs;
+  *nsegs_out = nsegs;
+  return RS_OK;
 }
 
 RS_Status process_pkread_response(ArenaMalloc *amalloc,
-                                  void *respBuff,
+                                  const RS_BufferChain &resp_chain,
+                                  Uint32 op_index,
                                   RS_Buffer *reqBuff,
                                   PKReadResponseJSON &response) {
+  void *respBuff = resp_chain.view(op_index).buffer;
   DEB_ENC("process_pk_read_response, respBuff: %p", respBuff);
   PKRRequest req = PKRRequest(reqBuff);
   Uint32 *buf = (Uint32 *)(respBuff);
@@ -359,6 +392,21 @@ RS_Status process_pkread_response(ArenaMalloc *amalloc,
         char * value = (reinterpret_cast<char*>(respBuff) + value_add);
         bool quoted = dataType != RDRS_INTEGER_DATATYPE &&
                       dataType != RDRS_FLOAT_DATATYPE;
+        /* A blob or text value may continue past the home view into the
+         * chain (RONDB-1144): hand it over as segments. */
+        if (static_cast<Uint64>(value_add) + value_len > dataLength) {
+          const RS_Segment *segs = nullptr;
+          Uint32 nsegs = 0;
+          RS_Status seg_status = build_segments(amalloc, resp_chain, op_index,
+                                               value_add, value_len,
+                                               &segs, &nsegs);
+          if (unlikely(seg_status.http_code != SUCCESS)) {
+            return seg_status;
+          }
+          response.setColumnData(i, name, name_len, value, value_len, quoted,
+                                 dataType, segs, nsegs);
+          continue;
+        }
         DEB_ENC("setColumnData(%u) name: %s, name_len: %u,"
                 " value_len: %u, quoted: %u, value: %s",
           i,

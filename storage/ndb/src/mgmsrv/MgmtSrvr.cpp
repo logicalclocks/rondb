@@ -1439,7 +1439,7 @@ int MgmtSrvr::sendStopMgmd(NodeId nodeId,
   NdbMgmHandle h = ndb_mgm_create_handle();
   if (h && connect_string.length() > 0) {
     ndb_mgm_set_connectstring(h, connect_string.c_str());
-    ndb_mgm_set_ssl_ctx(h, ssl_ctx());
+    ndb_mgm_set_ssl_ctx(h, tlsKeyManager()->ctx());
     if (ndb_mgm_connect_tls(h, 1, 0, 0, m_client_tls_req)) {
       DBUG_PRINT("info", ("failed ndb_mgm_connect"));
       ndb_mgm_destroy_handle(&h);
@@ -3954,7 +3954,7 @@ void MgmtSrvr::trp_deliver_signal(const NdbApiSignal *signal,
       const NFCompleteRep *rep =
           CAST_CONSTPTR(NFCompleteRep, signal->getDataPtr());
       /* Clear local nodeid reservation(if any) */
-      release_local_nodeid_reservation(rep->failedNodeId);
+      release_failed_nodeid_reservation(rep->failedNodeId);
 
       clear_connect_address_cache(rep->failedNodeId);
       break;
@@ -4018,7 +4018,7 @@ void MgmtSrvr::trp_deliver_signal(const NdbApiSignal *signal,
         m_config_manager->set_node_failed(i);
 
         /* Clear local nodeid reservation(if any) */
-        release_local_nodeid_reservation(i);
+        release_failed_nodeid_reservation(i);
         clear_connect_address_cache(i);
 
         /* Clear m_master_node when master disconnects */
@@ -4104,6 +4104,15 @@ void MgmtSrvr::NodeIdReservations::set(NodeId n, unsigned timeout) {
   r.m_start = NdbTick_getCurrentTicks();
 }
 
+/* Set the reservation, or set it once more, with its timeout from now */
+void MgmtSrvr::NodeIdReservations::restart(NodeId n, unsigned timeout) {
+  check_array(n);
+
+  Reservation &r = m_reservations[n];
+  r.m_timeout = timeout;
+  r.m_start = NdbTick_getCurrentTicks();
+}
+
 BaseString MgmtSrvr::NodeIdReservations::pretty_str() const {
   const char *sep = "";
   BaseString str;
@@ -4137,10 +4146,32 @@ bool MgmtSrvr::NodeIdReservations::has_timedout(NodeId n, NDB_TICKS now) const {
   return false;
 }
 
+bool MgmtSrvr::NodeIdReservations::is_checking(NodeId n) const {
+  check_array(n);
+
+  return (m_reservations[n].m_timeout == NoTimeout);
+}
+
 void MgmtSrvr::release_local_nodeid_reservation(NodeId nodeid) {
   NdbMutex_Lock(m_reserved_nodes_mutex);
   if (m_reserved_nodes.get(nodeid)) {
     g_eventLogger->debug("Releasing local reservation for nodeid %d", nodeid);
+    m_reserved_nodes.clear(nodeid);
+  }
+  NdbMutex_Unlock(m_reserved_nodes_mutex);
+}
+
+/*
+  Release the reservation of a failed node, but not one that a request
+  holds while it checks in the data nodes if the nodeid can be allocated
+  again. That reservation is for the next start of the node, the failure
+  is of the start before. The request ends it, see try_alloc_from_list().
+*/
+void MgmtSrvr::release_failed_nodeid_reservation(NodeId nodeid) {
+  NdbMutex_Lock(m_reserved_nodes_mutex);
+  if (m_reserved_nodes.get(nodeid) && !m_reserved_nodes.is_checking(nodeid)) {
+    g_eventLogger->debug("Releasing local reservation for failed nodeid %d",
+                         nodeid);
     m_reserved_nodes.clear(nodeid);
   }
   NdbMutex_Unlock(m_reserved_nodes_mutex);
@@ -4761,9 +4792,13 @@ MgmtSrvr::try_alloc_from_list(NodeId& nodeid,
 
     /*
       Reserve the nodeid locally while checking if it can
-      be allocated in the data nodes
+      be allocated in the data nodes. The check can use up the whole
+      timeout when the data nodes give no answer, see
+      alloc_node_id_req(), so the reservation does not time out
+      until the check is done, and a node failure does not release
+      it, see release_failed_nodeid_reservation().
     */
-    m_reserved_nodes.set(id, timeout_ms);
+    m_reserved_nodes.set(id, NodeIdReservations::NoTimeout);
 
     NdbMutex_Unlock(m_reserved_nodes_mutex);
     int res = try_alloc(id, type, timeout_ms, error_code, error_string);
@@ -4778,6 +4813,15 @@ MgmtSrvr::try_alloc_from_list(NodeId& nodeid,
           now reserved in data node
         */
         release_local_nodeid_reservation(id);
+      } else {
+        /*
+          Keep the local reservation until the data node connects,
+          with the timeout from now. A reservation that timed out
+          already would let another request allocate the nodeid once
+          more before the data node connects.
+        */
+        Guard g(m_reserved_nodes_mutex);
+        m_reserved_nodes.restart(id, timeout_ms);
       }
 
       return 0; /* Nodeid allocated */
@@ -4804,6 +4848,14 @@ bool MgmtSrvr::alloc_node_id_impl(NodeId &nodeid, enum ndb_mgm_node_type type,
   if (ERROR_INSERTED(901)) {
     require(nodeid > 0);
     return true;
+  }
+
+  /* Error insert codes starting at 17000 -> temporary DNS error */
+  if (ERROR_INSERTED(17000 + nodeid)) {
+    error_code = NDB_MGM_ALLOCID_CONFIG_RETRY;
+    error_string.appfmt("Error %d inserted", g_errorInsert);
+    g_errorInsert = 0;  // clear error insert; succeed on retry
+    return false;
   }
 
   /* Check the node id request. There are several stages of checks:
@@ -5509,7 +5561,7 @@ bool MgmtSrvr::connect_to_self() {
              m_port);
   ndb_mgm_set_connectstring(mgm_handle, buf.c_str());
 
-  ndb_mgm_set_ssl_ctx(mgm_handle, ssl_ctx());
+  ndb_mgm_set_ssl_ctx(mgm_handle, tlsKeyManager()->ctx());
   if (ndb_mgm_connect_tls(mgm_handle, 0, 0, 0, m_client_tls_req) < 0) {
     g_eventLogger->warning("%d %s", ndb_mgm_get_latest_error(mgm_handle),
                            ndb_mgm_get_latest_error_desc(mgm_handle));

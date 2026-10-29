@@ -13799,6 +13799,26 @@ void Dblqh::execCOMMIT(Signal *signal) {
       return;
     }
   }
+  if (ERROR_INSERTED(5160) &&
+      refToMain(signal->getSendersBlockRef()) == DBTC) {
+    /**
+     * Delay COMMIT of user table operations only, so that a unique index
+     * row commits before the base table row it points to. Used to test the
+     * lock-free base read of a unique index lookup during that window.
+     * Only the delivery from DBTC is delayed, the delayed re-delivery is
+     * sent by this block and goes through.
+     */
+    jam();
+    TablerecPtr tablePtr;
+    tablePtr.i = tcConnectptr.p->tableref;
+    ptrCheckGuard(tablePtr, ctabrecFileSize, tablerec);
+    if (DictTabInfo::isTable(tablePtr.p->tableType)) {
+      jam();
+      sendSignalWithDelay(cownref, GSN_COMMIT, signal, 1500,
+                          signal->getLength());
+      return;
+    }
+  }
 
   ndbassert(m_fragment_lock_status == FRAGMENT_UNLOCKED);
   if (likely((tcConnectptr.p->transid[0] == transid1) &&
@@ -17491,6 +17511,14 @@ void Dblqh::execSCAN_NEXTREQ(Signal *signal) {
   ScanRecord *const scanPtr = scanptr.p;
   const Uint32 max_rows = nextReq->batch_size_rows;
   const Uint32 max_bytes = nextReq->batch_size_bytes;
+  if (unlikely(max_rows == 0 || max_rows > scanPtr->m_def_max_batch_size)) {
+    jam();
+    tcConnectptr.p->errorCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+    scanPtr->m_continous_scan_state = ScanRecord::CONTINOUS_SCAN_IDLE;
+    closeScanRequestLab(signal, tcConnectptr);
+    release_frag_access(prim_tab_fragptr.p);
+    return;
+  }
   scanPtr->m_max_batch_size_bytes = max_bytes;
   {
     /**
@@ -18591,12 +18619,24 @@ void Dblqh::execSCAN_FRAGREQ(Signal *signal) {
     /**
      * A write always has to get keyinfo
      */
-    ndbrequire(scanLockMode == 0 || keyinfo);
+    if (unlikely(scanLockMode != 0 && !keyinfo)) {
+      jam();
+      errorCode = ScanFragRef::ZKEYINFO_REQUIRED;
+      releaseSections(handle);
+      goto error_handler;
+    }
 
-    Uint32 def_max_batch_size = (scanLockMode == 0) ?
-      MAX_PARALLEL_OP_PER_SCAN_RC :
-      MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK;
-    ndbrequire(max_rows > 0 && max_rows <= def_max_batch_size);
+    /* LockMode alone does not distinguish shared locks from committed reads. */
+    const bool locking =
+        scanLockMode != 0 || !ScanFragReq::getReadCommittedFlag(reqinfo);
+    const Uint32 def_max_batch_size = locking
+        ? MAX_PARALLEL_OP_PER_SCAN_WITH_LOCK : MAX_PARALLEL_OP_PER_SCAN_RC;
+    if (unlikely(max_rows == 0 || max_rows > def_max_batch_size)) {
+      jam();
+      errorCode = ScanFragRef::ZWRONG_BATCH_SIZE;
+      releaseSections(handle);
+      goto error_handler;
+    }
 
     // Verify scan type vs table type (both sides are boolean)
     if (unlikely(rangeScan !=
@@ -19827,17 +19867,16 @@ void Dblqh::scanTupkeyConfLab(Signal* signal,
   jamDebug();
   jamDataDebug(scanPtr->m_curr_batch_size_rows);
   jamDataDebug(scanPtr->scan_acc_index);
-  const NodeBitmask &all = globalTransporterRegistry.get_status_slowdown();
-  if (unlikely(!all.isclear())) {
-    if (all.get(refToNode(scanptr.p->scanApiBlockref))) {
-      /**
-       * End scan batch if transporter-buffer are in slowdown state
-       *
-       */
-      scanPtr->m_stop_batch = 1;
-
-      c_scanSlowDowns++;
-    }
+  /**
+   * End scan batch if the transporter buffer to the API node is in
+   * slowdown state.  Test only that node's bit: this runs for every
+   * scanned row, and isclear() reads the whole NodeBitmask (one word per
+   * 32 node ids) when no transporter is slowed down.
+   */
+  if (unlikely(globalTransporterRegistry.get_status_slowdown().get(
+          refToNode(scanptr.p->scanApiBlockref)))) {
+    scanPtr->m_stop_batch = 1;
+    c_scanSlowDowns++;
   }
 
   bool debug_pa_print = false;
@@ -26865,7 +26904,10 @@ void Dblqh::execFSREADCONF(Signal *signal) {
   LogPageRecordPtr logPagePtr;
   LogFileRecordPtr logFilePtr;
   LogPartRecordPtr logPartPtr;
-  initFsrwconf(signal, false, lfoPtr, logPagePtr, logFilePtr, logPartPtr);
+  if (unlikely(!initFsrwconf(signal, false, lfoPtr, logPagePtr, logFilePtr,
+                             logPartPtr))) {
+    ndbabort();
+  }
 
   switch (lfoPtr.p->lfoState) {
     case LogFileOperationRecord::READ_SR_LAST_MBYTE:
@@ -26981,7 +27023,12 @@ void Dblqh::execFSWRITECONF(Signal *signal) {
   LogPageRecordPtr logPagePtr;
   LogFileRecordPtr logFilePtr;
   LogPartRecordPtr logPartPtr;
-  initFsrwconf(signal, true, lfoPtr, logPagePtr, logFilePtr, logPartPtr);
+  if (!unlikely(initFsrwconf(signal, true, lfoPtr, logPagePtr, logFilePtr,
+                             logPartPtr))) {
+    /* Error insertion path */
+    return;
+  }
+
   switch (lfoPtr.p->lfoState) {
     case LogFileOperationRecord::WRITE_SR_INVALIDATE_PAGES:
       jam();
@@ -27143,7 +27190,7 @@ void Dblqh::initFsopenconf(Signal *signal, LogFileRecordPtr &logFilePtr,
 /* =======       INITIATE WHEN RECEIVING FSREADCONF AND FSWRITECONF  ======= */
 /*                                                                           */
 /* ========================================================================= */
-void Dblqh::initFsrwconf(Signal *signal, bool write,
+bool Dblqh::initFsrwconf(Signal *signal, bool write,
                          LogFileOperationRecordPtr &lfoPtr,
                          LogPageRecordPtr &logPagePtr,
                          LogFileRecordPtr &logFilePtr,
@@ -27173,6 +27220,20 @@ void Dblqh::initFsrwconf(Signal *signal, bool write,
     lock_log_part(logPartPtr.p);
   }
   ndbrequire(logPartPtr.p->my_block == this);
+  if (ERROR_INSERTED(5114) &&
+      lfoPtr.p->lfoState == LogFileOperationRecord::LAST_WRITE_IN_FILE) {
+    jam();
+    g_eventLogger->info(
+        "LQH %u delaying LAST_WRITE_IN_FILE CONF on part %u file %u",
+        instance(), lfoPtr.p->logPartPtrI, lfoPtr.p->logFileRec);
+    sendSignalWithDelay(cownref, GSN_FSWRITECONF, signal, 10000,
+                        signal->getLength());
+
+    ndbrequire(write);
+    unlock_log_part(logPartPtr.p);
+
+    return false;
+  }
   totPages = lfoPtr.p->noPagesRw;
   logFilePtr.i = lfoPtr.p->logFileRec;
   ptrCheckGuard(logFilePtr, clogFileFileSize, logFileRecord);
@@ -27191,7 +27252,7 @@ void Dblqh::initFsrwconf(Signal *signal, bool write,
   for (;;) {
     logP.p->logPageWord[ZPOS_IN_WRITING] = 0;
     logP.p->logPageWord[ZPOS_IN_FREE_LIST] = 0;
-    if (noPages == totPages) return;
+    if (noPages == totPages) return true;
     if (write)
       logP.i = logP.p->logPageWord[ZNEXT_PAGE];
     else
@@ -27200,7 +27261,7 @@ void Dblqh::initFsrwconf(Signal *signal, bool write,
                   logPartPtr.p->logPageRecord);
     noPages++;
   }
-
+  return true;
 }  // Dblqh::initFsrwconf()
 
 /* ######################################################################### */
@@ -28496,7 +28557,9 @@ void Dblqh::writeSinglePage(Signal *signal, Uint32 pageNo, Uint32 wordWritten,
   /*       SET TIMER ON THIS LOG PART TO SIGNIFY THAT A */
   /*       LOG RECORD HAS BEEN SENT AT THIS TIME.       */
   /* -------------------------------------------------- */
-  logPartPtrP->logPartTimer = logPartPtrP->logTimer;
+  /* Do not set logPartTimer for metapage writes */
+  const bool metaPage = (pageNo == 0);
+  if (!metaPage) logPartPtrP->logPartTimer = logPartPtrP->logTimer;
 
   FsReadWriteReq *req = (FsReadWriteReq *)signal->getDataPtrSend();
   req->filePointer = logFilePtr.p->fileRef;
@@ -33328,10 +33391,10 @@ void Dblqh::completedLogPage(Signal *signal, Uint32 clpType, Uint32 place,
     twlpNoPages++;
     ptrCheckGuard(wlpLogPagePtr, logPartPtrP->logPageFileSize,
                   logPartPtrP->logPageRecord);
-
+    const Uint32 pageNo = logFilePtr.p->filePosition + twlpNoPages - 1;
+    ndbrequire(pageNo != 0); /* Not file metapage */
     writeDbgInfoPageHeader(wlpLogPagePtr, logFilePtr.p, logPartPtrP, place,
-                           logFilePtr.p->filePosition + twlpNoPages - 1,
-                           ZPAGE_SIZE);
+                           pageNo, ZPAGE_SIZE);
     // Calculate checksum for page
     wlpLogPagePtr.p->logPageWord[ZPOS_CHECKSUM] =
         calcPageCheckSum(wlpLogPagePtr);
@@ -33804,7 +33867,7 @@ Dblqh::getNextAccFragrec(Uint32 tableId,
   Uint32 num_fragments_in_array = tabPtr.p->num_fragments_in_array;
   for (Uint32 j = index; j < num_fragments_in_array; j++)
   {
-    fragPtr.i = tabPtr.p->fragrec[index];
+    fragPtr.i = tabPtr.p->fragrec[j];
     if (fragPtr.i != RNIL64)
     {
       thrjamDebug(jamBuf);

@@ -10261,6 +10261,9 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
   Uint32 failedNodes[ABS_MAX_NDB_NODES];
   jamEntry();
   NodeFailRep *const nodeFail = (NodeFailRep *)&signal->theData[0];
+  NodeFailRep nodeFailCopy;
+  memcpy(&nodeFailCopy, nodeFail, sizeof(NodeFailRep));
+
   NdbNodeBitmask allFailed;
 
   if (signal->getNoOfSections() >= 1) {
@@ -10280,15 +10283,6 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
   Uint32 newMasterId = nodeFail->masterNodeId;
   const Uint32 noOfFailedNodes = nodeFail->noOfNodes;
 
-  /* Send NODE_FAILREP to rest of blocks (not NDBCNTR, QMGR, DBDIH).
-   * Some of them will respond with NF_COMPLETEREP to DBDIH when they handled
-   * the node failure.
-   */
-
-  LinearSectionPtr lsptr[1];
-  lsptr[0].p = allFailed.rep.data;
-  lsptr[0].sz = allFailed.getPackedLengthInWords();
-
   /*-------------------------------------------------------------------------*/
   // The first step is to convert from a bit mask to an array of failed nodes.
   /*-------------------------------------------------------------------------*/
@@ -10302,60 +10296,6 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
   }    // for
   ndbrequire(noOfFailedNodes == index);
   ndbrequire(noOfFailedNodes - 1 < MAX_NDB_NODES);
-
-  sendSignal(DBTC_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength, JBB,
-             lsptr, 1);
-
-  sendSignal(DBLQH_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(DBDICT_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(BACKUP_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(TRIX_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength, JBB,
-             lsptr, 1);
-
-  sendSignal(SUMA_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength, JBB,
-             lsptr, 1);
-
-  sendSignal(DBUTIL_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(DBTUP_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(TSMAN_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(LGMAN_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  sendSignal(DBSPJ_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
-             JBB, lsptr, 1);
-
-  if (globalData.ndbMtQueryWorkers > 0) // Always true
-  {
-    sendSignal(DBQLQH_REF, GSN_NODE_FAILREP, signal,
-               NodeFailRep::SignalLength, JBB, lsptr, 1);
-  } else {
-    /* No query threads, report complete already here */
-    for (i = 0; i < noOfFailedNodes; i++) {
-      jam();
-      NodeRecordPtr TNodePtr;
-      TNodePtr.i = failedNodes[i];
-      ptrCheckGuard(TNodePtr, MAX_NDB_NODES, nodeRecord);
-      /* ----------------------------------------------------------------- */
-      // Report the event that DBQLQH completed node failure handling.
-      /* ----------------------------------------------------------------- */
-      signal->theData[0] = NDB_LE_NodeFailCompleted;
-      signal->theData[1] = DBQLQH;
-      signal->theData[2] = TNodePtr.i;
-      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 3, JBB);
-    }
-  }
 
   if (ERROR_INSERTED(7179) || ERROR_INSERTED(7217)) {
     CLEAR_ERROR_INSERT_VALUE;
@@ -10610,6 +10550,70 @@ void Dbdih::execNODE_FAILREP(Signal *signal) {
     /* The start LCP mutex is released before the LCP round starts */
     ndbassert(c_startLcpMutexHandle.isNull());
     startNextChkpt(signal);
+  }
+
+  /**
+   * Send NODE_FAILREP to rest of blocks (not NDBCNTR, QMGR, DBDIH).
+   * Some of them will respond with NF_COMPLETEREP to DBDIH when they
+   * have handled the node failure.
+   */
+  LinearSectionPtr lsptr[1];
+  lsptr[0].p = allFailed.rep.data;
+  lsptr[0].sz = allFailed.getPackedLengthInWords();
+
+  memcpy(&signal->theData[0], &nodeFailCopy, sizeof(NodeFailRep));
+
+  sendSignal(DBTC_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength, JBB,
+             lsptr, 1);
+
+  sendSignal(DBLQH_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(DBDICT_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(BACKUP_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(TRIX_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength, JBB,
+             lsptr, 1);
+
+  sendSignal(SUMA_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength, JBB,
+             lsptr, 1);
+
+  sendSignal(DBUTIL_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(DBTUP_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(TSMAN_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(LGMAN_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  sendSignal(DBSPJ_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+             JBB, lsptr, 1);
+
+  if (globalData.ndbMtQueryWorkers > 0) {  // Always true
+    sendSignal(DBQLQH_REF, GSN_NODE_FAILREP, signal, NodeFailRep::SignalLength,
+               JBB, lsptr, 1);
+  } else {
+    /* No query threads, report complete already here */
+    for (i = 0; i < noOfFailedNodes; i++) {
+      jam();
+      NodeRecordPtr TNodePtr;
+      TNodePtr.i = failedNodes[i];
+      ptrCheckGuard(TNodePtr, MAX_NDB_NODES, nodeRecord);
+      /* ----------------------------------------------------------------- */
+      // Report the event that DBQLQH completed node failure handling.
+      /* ----------------------------------------------------------------- */
+      signal->theData[0] = NDB_LE_NodeFailCompleted;
+      signal->theData[1] = DBQLQH;
+      signal->theData[2] = TNodePtr.i;
+      sendSignal(CMVMI_REF, GSN_EVENT_REP, signal, 3, JBB);
+    }
   }
 }  // Dbdih::execNODE_FAILREP()
 
@@ -21603,6 +21607,24 @@ void Dbdih::srPhase2ReadTableLab(Signal *signal, TabRecordPtr tabPtr) {
 
   // sendLoopMacro(COPY_TABREQ, nullRoutine);
 
+  /**
+   * Wait for COPY_TABCONF from every node from the start, as the comment
+   * above says. A node used to be added only when the copy to it had been
+   * sent, so the COPY_TABCONF of an earlier node could complete the table
+   * while the copy to a later node was still going on: the table pages
+   * were released under that copy, and the COPY_TABCONF of the later node
+   * completed the table once more and added its fragments a second time.
+   */
+  ndbrequire(c_COPY_TABREQ_Counter.done());
+  NodeRecordPtr nodePtr;
+  nodePtr.i = cfirstAliveNode;
+  while (nodePtr.i != RNIL) {
+    jam();
+    ptrCheckGuard(nodePtr, MAX_NDB_NODES, nodeRecord);
+    c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
+    nodePtr.i = nodePtr.p->nextNode;
+  }
+
   breakCopyTableLab(signal, tabPtr, cfirstAliveNode);
   return;
 }  // Dbdih::srPhase2ReadTableLab()
@@ -21628,7 +21650,6 @@ void Dbdih::breakCopyTableLab(Signal *signal, TabRecordPtr tabPtr,
       // AFTER COMPLETING THE WRITE TO DISK THE MASTER WILL ALSO SEND
       // COPY_TABCONF AS ALL THE OTHER NODES.
       /* ------------------------------------------------------------------- */
-      c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
       tabPtr.p->tabUpdateState = TabRecord::US_COPY_TAB_REQ;
       signal->theData[0] = DihContinueB::ZTABLE_UPDATE;
       signal->theData[1] = tabPtr.i;
@@ -21696,11 +21717,10 @@ void Dbdih::copyTableNode(Signal *signal, CopyTableNode *ctn,
           // We have copied the table description to this node.
           // We will now proceed
           // with sending the table description to the next node in the node
-          // list.
+          // list. srPhase2ReadTableLab waits for its COPY_TABCONF.
           /* ------------------------------------------------------------------
            */
           jam();
-          c_COPY_TABREQ_Counter.setWaitingFor(nodePtr.i);
           ctn->ctnTabPtr.p->tabCopyStatus = TabRecord::CS_IDLE;
           breakCopyTableLab(signal, ctn->ctnTabPtr, nodePtr.p->nextNode);
           return;

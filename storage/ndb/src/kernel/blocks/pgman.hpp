@@ -853,7 +853,7 @@ class Pgman : public SimulatedBlock {
   void update_lsn(Signal *signal, EmulatedJamBuffer *jamBuf, Ptr<Page_entry>,
                   Uint32 block, Uint64 lsn);
   int add_fragment(Uint32 tableId, Uint32 fragmentId);
-  void drop_fragment(Uint32 tableId, Uint32 fragmentId);
+  bool drop_fragment(Uint32 tableId, Uint32 fragmentId);
   void insert_fragment_dirty_list(Ptr<Page_entry>, Page_state,
                                   EmulatedJamBuffer *);
   void remove_fragment_dirty_list(Signal *, Ptr<Page_entry>, Page_state);
@@ -1010,9 +1010,9 @@ class Page_cache_client {
   int add_fragment(Uint32 tableId, Uint32 fragmentId);
 
   /**
-   * Drop fragment record
+   * Drop fragment record, returns false if there was no fragment record
    */
-  void drop_fragment(Uint32 tableId, Uint32 fragmentId);
+  bool drop_fragment(Uint32 tableId, Uint32 fragmentId);
 };
 
 #undef JAM_FILE_ID

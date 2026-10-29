@@ -747,7 +747,18 @@ retry:
     event.setTable(*tab);
     event.addTableEvent(NdbDictionary::Event::TE_INSERT);
     event.addTableEvent(NdbDictionary::Event::TE_DELETE);
+    /* A DROP or copying ALTER of feature_view (e.g. a Hopsworks migration)
+     * drops the table the event is defined on, and without DROP/ALTER in
+     * the subscription it dies silently: pollEvents() goes quiet forever and
+     * the cache stops tracking feature views until a process restart. Treat
+     * both as teardown below and re-subscribe against the new table, as the
+     * API key watcher does. */
+    event.addTableEvent(NdbDictionary::Event::TE_DROP);
+    event.addTableEvent(NdbDictionary::Event::TE_ALTER);
     event.mergeEvents(false);
+    /* DDL events are only delivered with the ER_DDL report option; ER_UPDATED
+     * (the default, value 0) stays in effect for the row events. */
+    event.setReportOptions(NdbDictionary::Event::ER_DDL);
     for (int col = 0; col < tab->getNoOfColumns(); col++) {
       event.addEventColumn(col);
     }
@@ -899,6 +910,13 @@ retry:
           evict_entry(cacheKey);
           break;
         }
+        case NdbDictionary::Event::TE_DROP:
+        case NdbDictionary::Event::TE_ALTER:
+          g_eventLogger->info(
+            "[FS Cache Event] feature_view table %s; re-subscribing...",
+            op->getEventType() == NdbDictionary::Event::TE_DROP
+              ? "dropped (or copying-ALTERed)" : "altered");
+          goto err;
         case NdbDictionary::Event::TE_CLUSTER_FAILURE:
         case NdbDictionary::Event::TE_STOP:
         case NdbDictionary::Event::TE_INCONSISTENT:

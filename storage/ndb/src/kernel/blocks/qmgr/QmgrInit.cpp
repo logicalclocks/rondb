@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -38,6 +38,16 @@ void Qmgr::initData() {
   c_nsl_last_regref_node = 0;
   c_nsl_last_regref_code = 0;
   c_nsl_join_tick_armed = false;
+  c_start.m_startKey = 0;
+  c_start.m_startNode = 0;
+  c_aborted_inclusions.clear();
+  for (Uint32 i = 0; i < ABS_MAX_NDB_NODES; i++) {
+    c_aborted_inclusion_dynamic_id[i] = 0;
+  }
+  c_inclusion_aborted_by = 0;
+  c_known_president = ZNIL;
+  c_lost_starting_nodes.clear();
+  c_start.m_committing = false;
   m_current_switch_multi_trp_node = 0;
   m_get_num_multi_trps_sent = 0;
   m_initial_set_up_multi_trp_done = false;
@@ -111,8 +121,12 @@ void Qmgr::initData() {
 
   Uint32 hbDBAPI = 1500;
   ndb_mgm_get_int_parameter(p, CFG_DB_API_HEARTBEAT_INTERVAL, &hbDBAPI);
+  cdefaultHbApiDelay = hbDBAPI;
 
-  setHbApiDelay(hbDBAPI);
+  for (Uint32 i = 0; i < ABS_MAX_NODES; i++) {
+    chbApiDelay[i] = hbDBAPI;
+    hb_api_timer[i].setDelay(0);
+  }
 
   const NDB_TICKS now = NdbTick_getCurrentTicks();  // OJA bug#17757895
   interface_check_timer.setDelay(1000);

@@ -171,7 +171,8 @@
 
 #define ZSCAN_PAR_RECEIVER_ID_ERROR 2201
 #define ZSCAN_CONTINOUS_SCAN_LOCK_ERROR 2202
-#define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2203
+/* Not 2203, that is TcKeyRef::ReadRateOverflowError */
+#define ZSCAN_PRUNE_PARTITION_HASH_ERROR 2204
 
 // ----------------------------------------
 // Error Codes for transactions
@@ -941,7 +942,8 @@ class Dbtc : public SimulatedBlock {
       SOF_REORG_DELETE = 64,
       SOF_DEFERRED_UK_TRIGGER = 128,  // Op has deferred trigger
       SOF_DEFERRED_FK_TRIGGER = 256,
-      SOF_FK_READ_COMMITTED = 512,    // reply to TC even for dirty read
+      SOF_LOCK_FREE_READ = 512,       // LQH reads without row lock but still
+                                      // replies to TC (normal protocol)
       SOF_FULLY_REPLICATED_TRIGGER = 1024
       ,SOF_UTIL_FLAG = 2048            // Sender to TC is DBUTIL (higher prio)
       ,SOF_BATCH_SAFE = 4096           // Batching is safe for this operation

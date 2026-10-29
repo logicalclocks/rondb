@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2024, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -35,6 +35,7 @@
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
 // #define DEBUG_LCP 1
+// #define DEBUG_TUP_ACTIVE_OP_LIST 1
 #endif
 
 #ifdef DEBUG_LCP
@@ -289,6 +290,18 @@ void Dbtup::do_tup_abortreq(Signal *signal, Uint32 flags) {
     if (!regTabPtr.p->tuxCustomTriggers.isEmpty() &&
         !(flags & ZSKIP_TUX_TRIGGERS)) {
       jam();
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      Uint32 tux_abort_ops = 1;
+      Uint32 tux_abort_skipped = 0;
+      const NDB_TICKS tux_abort_start = NdbTick_getCurrentTicks();
+      g_eventLogger->info(
+          "DBTUP: TUX abort trigger START inst=%u tab=%u frag=%u row=(%u,%u) "
+          "op=%u next=%u",
+          instance(), regFragPtr.p->fragTableId, regFragPtr.p->fragmentId,
+          regOperPtr.p->m_tuple_location.m_page_no,
+          regOperPtr.p->m_tuple_location.m_page_idx, regOperPtr.i,
+          regOperPtr.p->nextActiveOp);
+#endif
       executeTuxAbortTriggers(signal, regOperPtr.p, regFragPtr.p, regTabPtr.p);
 
       OperationrecPtr loopOpPtr;
@@ -301,9 +314,36 @@ void Dbtup::do_tup_abortreq(Signal *signal, Uint32 flags) {
           jam();
           executeTuxAbortTriggers(signal, loopOpPtr.p, regFragPtr.p,
                                   regTabPtr.p);
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+        } else {
+          tux_abort_skipped++;
+#endif
         }
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+        tux_abort_ops++;
+        if ((tux_abort_ops & 1023) == 0) {  // tux_abort_ops % 1024 == 0
+          g_eventLogger->info(
+              "DBTUP: TUX abort trigger PROGRESS inst=%u tab=%u frag=%u "
+              "row=(%u,%u) ops=%u skipped=%u current=%u next=%u",
+              instance(), regFragPtr.p->fragTableId, regFragPtr.p->fragmentId,
+              regOperPtr.p->m_tuple_location.m_page_no,
+              regOperPtr.p->m_tuple_location.m_page_idx, tux_abort_ops,
+              tux_abort_skipped, loopOpPtr.i, loopOpPtr.p->nextActiveOp);
+        }
+#endif
         loopOpPtr.i = loopOpPtr.p->nextActiveOp;
       }
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      g_eventLogger->info(
+          "DBTUP: TUX abort trigger DONE inst=%u tab=%u frag=%u row=(%u,%u) "
+          "ops=%u skipped=%u elapsed_us=%llu",
+          instance(), regFragPtr.p->fragTableId, regFragPtr.p->fragmentId,
+          regOperPtr.p->m_tuple_location.m_page_no,
+          regOperPtr.p->m_tuple_location.m_page_idx, tux_abort_ops,
+          tux_abort_skipped,
+          NdbTick_Elapsed(tux_abort_start, NdbTick_getCurrentTicks())
+              .microSec());
+#endif
     }
 
     /**
@@ -335,6 +375,18 @@ void Dbtup::do_tup_abortreq(Signal *signal, Uint32 flags) {
       handle_disk_row_resize(regOperPtr, regTabPtr.p);
     }
     {
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      Uint32 data_abort_ops = 1;
+      Uint32 data_abort_skipped = 0;
+      const NDB_TICKS data_abort_start = NdbTick_getCurrentTicks();
+      g_eventLogger->info(
+          "DBTUP: data abort operation START inst=%u tab=%u frag=%u "
+          "row=(%u,%u) op=%u next=%u",
+          instance(), regFragPtr.p->fragTableId, regFragPtr.p->fragmentId,
+          regOperPtr.p->m_tuple_location.m_page_no,
+          regOperPtr.p->m_tuple_location.m_page_idx, regOperPtr.i,
+          regOperPtr.p->nextActiveOp);
+#endif
       do_tup_abort_operation(signal, 
                              tuple_ptr,
                              regOperPtr.p,
@@ -356,10 +408,37 @@ void Dbtup::do_tup_abortreq(Signal *signal, Uint32 flags) {
                                  regFragPtr.p,
                                  regTabPtr.p,
                                  full_transaction);
-          set_tuple_state(loopOpPtr.p, TUPLE_ALREADY_ABORTED);      
+          set_tuple_state(loopOpPtr.p, TUPLE_ALREADY_ABORTED);
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+        } else {
+          data_abort_skipped++;
+#endif
         }
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+        data_abort_ops++;
+        if ((data_abort_ops & 1023) == 0) {
+          g_eventLogger->info(
+              "DBTUP: data abort operation PROGRESS inst=%u tab=%u frag=%u "
+              "row=(%u,%u) ops=%u skipped=%u current=%u next=%u",
+              instance(), regFragPtr.p->fragTableId, regFragPtr.p->fragmentId,
+              regOperPtr.p->m_tuple_location.m_page_no,
+              regOperPtr.p->m_tuple_location.m_page_idx, data_abort_ops,
+              data_abort_skipped, loopOpPtr.i, loopOpPtr.p->nextActiveOp);
+        }
+#endif
         loopOpPtr.i = loopOpPtr.p->nextActiveOp;
       }
+#ifdef DEBUG_TUP_ACTIVE_OP_LIST
+      g_eventLogger->info(
+          "DBTUP: data abort operation DONE inst=%u tab=%u frag=%u "
+          "row=(%u,%u) ops=%u skipped=%u elapsed_us=%llu",
+          instance(), regFragPtr.p->fragTableId, regFragPtr.p->fragmentId,
+          regOperPtr.p->m_tuple_location.m_page_no,
+          regOperPtr.p->m_tuple_location.m_page_idx, data_abort_ops,
+          data_abort_skipped,
+          NdbTick_Elapsed(data_abort_start, NdbTick_getCurrentTicks())
+              .microSec());
+#endif
       if (tuple_ptr->m_header_bits & Tuple_header::FREE) {
         jam();
         setInvalidChecksum(tuple_ptr, regTabPtr.p);

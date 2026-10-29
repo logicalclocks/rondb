@@ -24,7 +24,7 @@ import (
 
 // Request
 type BatchOpRequest struct {
-	Operations *[]BatchSubOp `json:"operations" binding:"required,min=1,max=4096,unique,dive"`
+	Operations *[]BatchSubOp `json:"operations" binding:"required,min=1,max=512,unique,dive"`
 }
 
 type BatchSubOp struct {

@@ -1,5 +1,5 @@
 # Copyright (c) 2009, 2026, Oracle and/or its affiliates.
-# Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+# Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License, version 2.0,
@@ -27,7 +27,7 @@
 #
 
 SET(SHARED_LIB_MAJOR_VERSION "25")
-SET(SHARED_LIB_MINOR_VERSION "0")
+SET(SHARED_LIB_MINOR_VERSION "2")
 SET(PROTOCOL_VERSION "10")
 
 # Generate "something" to trigger cmake rerun when MYSQL_VERSION changes
@@ -49,6 +49,18 @@ MACRO(MYSQL_GET_CONFIG_VALUE keyword var)
  ENDIF()
 ENDMACRO()
 
+# Version components feed numeric comparisons and persisted version IDs.
+# Keep the source metadata canonical: zero-padded values like 04 or 00 are
+# rejected instead of being silently normalized.
+MACRO(MYSQL_VALIDATE_VERSION_COMPONENT var label)
+  IF(NOT "${${var}}" MATCHES "^(0|[1-9][0-9]*)$")
+    MESSAGE(FATAL_ERROR "${label} must be a whole number without leading zeroes.")
+  ENDIF()
+ENDMACRO()
+
+MACRO(MYSQL_VALIDATE_MYSQL_VERSION)
+  MYSQL_VALIDATE_VERSION_COMPONENT(UPDATE_VERSION "MYSQL_VERSION_UPDATE")
+ENDMACRO()
 
 # Read mysql version for configure script
 
@@ -56,6 +68,11 @@ MACRO(GET_MYSQL_VERSION)
   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_MAJOR" MAJOR_VERSION)
   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_MINOR" MINOR_VERSION)
   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_PATCH" PATCH_VERSION)
+  MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_UPDATE" UPDATE_VERSION)
+  # An empty update component denotes the normal .0 release.
+  IF("${UPDATE_VERSION}" STREQUAL "")
+    SET(UPDATE_VERSION 0)
+  ENDIF()
   MYSQL_GET_CONFIG_VALUE("MYSQL_VERSION_EXTRA" EXTRA_VERSION)
 
   IF(NOT DEFINED MAJOR_VERSION OR
@@ -75,13 +92,19 @@ MACRO(GET_MYSQL_VERSION)
     MESSAGE(FATAL_ERROR "MYSQL_VERSION_MATURITY can be set to INNOVATION or LTS.")
   ENDIF()
 
-  SET(VERSION
-    "${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION}${EXTRA_VERSION}")
+  MYSQL_VALIDATE_MYSQL_VERSION()
+
+  SET(MYSQL_THREE_PART_VERSION
+    "${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION}")
+  SET(VERSION "${MYSQL_THREE_PART_VERSION}${EXTRA_VERSION}")
+  SET(MYSQL_VERSION_WITH_UPDATE
+    "${MYSQL_THREE_PART_VERSION}.${UPDATE_VERSION}${EXTRA_VERSION}")
   MESSAGE(STATUS "RonDB ${VERSION}")
+  MESSAGE(STATUS "RonDB full version ${MYSQL_VERSION_WITH_UPDATE}")
   SET(MYSQL_BASE_VERSION
     "${MAJOR_VERSION}.${MINOR_VERSION}" CACHE INTERNAL "MySQL Base version")
   SET(MYSQL_NO_DASH_VERSION
-    "${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION}")
+    "${MYSQL_THREE_PART_VERSION}")
   STRING(REGEX REPLACE "^-" "." MYSQL_VERSION_EXTRA_DOT "${EXTRA_VERSION}")
   SET(VERSION_SRC "${VERSION}")
 
@@ -122,7 +145,7 @@ MACRO(GET_MYSQL_VERSION)
     # This might be used when MySQL Cluster is still released as DMR
     # while MySQL Server is already GA.
     SET(MYSQL_CLUSTER_VERSION
-      "${MAJOR_VERSION}.${MINOR_VERSION}.${PATCH_VERSION}")
+      "${MYSQL_THREE_PART_VERSION}")
     IF(DEFINED CLUSTER_EXTRA_VERSION)
       # Using specific MySQL Cluster extra version
       SET(MYSQL_CLUSTER_VERSION

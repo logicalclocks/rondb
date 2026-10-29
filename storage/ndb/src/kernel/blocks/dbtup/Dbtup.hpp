@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -207,12 +207,14 @@ inline const Uint32 *ALIGN_WORD(const void *ptr) {
 #define ZTRY_UPDATE_PRIMARY_KEY 897
 #define ZMUST_BE_ABORTED_ERROR 898
 #define ZTUPLE_DELETED_ERROR 626
+#define ZTUPLE_NOT_YET_COMMITTED_ERROR 627
 #define ZINSERT_ERROR 630
 #define ZOP_AFTER_REFRESH_ERROR 920
 #define ZNO_COPY_TUPLE_MEMORY_ERROR 921
 #define ZNO_UNDO_BUFFER_MEMORY_ERROR 923
 #define ZOUT_OF_STORED_PROC_MEMORY_ERROR 924
 #define ZOP_DISK_WITH_FLAG_NOT_SET 927
+#define ZTOO_MANY_ROW_VERSIONS_ERROR 947
 
 #define ZINVALID_CHAR_FORMAT 744
 #define ZROWID_ALLOCATED 899
@@ -2121,6 +2123,13 @@ Uint32 cnoOfMaxAllocatedTriggerRec;
     bool m_use_rowid;
     bool m_nr_copy_or_redo;
     /*
+     * Base row read of a unique index lookup that takes no row lock (the
+     * index row was read with a lock, the base row is read committed).
+     * An insert of that row that is not committed here yet is reported as
+     * ZTUPLE_NOT_YET_COMMITTED_ERROR instead of ZTUPLE_DELETED_ERROR.
+     */
+    bool m_lock_free_read;
+    /*
      * TTL related (same-transaction unique-dup gap fix). True iff this op carries
      * genuine TTL-ignore provenance (OP_TTL_OWNER_CHECK_BYPASS): recovery,
      * replication apply, or explicit OO_TTL_IGNORE. When true, handleUpdateReq
@@ -3974,6 +3983,7 @@ public:
 
   /* read ahead in pages during disk order scan */
   Uint32 m_max_page_read_ahead;
+  Uint16 m_max_row_versions_per_transaction;
 
  public:
   Tablerec *tablerec;

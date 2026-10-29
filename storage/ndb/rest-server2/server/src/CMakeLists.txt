@@ -25,6 +25,7 @@ file(GLOB_RECURSE SRC
         api_key.cpp
         batch_feature_store_ctrl.cpp
         batch_pk_read_ctrl.cpp
+        buffer_chain.cpp
         buffer_manager.cpp
         config_structs.cpp
         connection.cpp
@@ -51,6 +52,7 @@ file(GLOB_RECURSE SRC
         pk_read_ctrl.cpp
         pk_read_ctrl.cpp
         probe_server.cpp
+        process_setup.cc
         prometheus_ctrl.cpp
         rdrs_dal.cpp
         rdrs_hopsworks_dal.cpp
@@ -163,7 +165,14 @@ TARGET_LINK_LIBRARIES(rdrs2_lib
                       trantor
                       simdjson
                       prometheus-cpp::push
-                      ndbclient_so
+                      # Static, like the rdrs2 binary: the tests linking
+                      # this library are STATIC_NDBCLIENT too. Adding
+                      # ndbclient_so gave them two copies of every NdbApi
+                      # global; both copies' constructors and destructors
+                      # ran on the one interposed object, so theApiMutex was
+                      # freed twice at exit (reconnect_test aborted with
+                      # "corrupted size vs. prev_size" after passing).
+                      ndbclient_static
                       ndbgeneral
                       rdrs_string
                       mysqlclient

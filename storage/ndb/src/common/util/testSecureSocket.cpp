@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2022, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2023, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2023, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -167,10 +167,7 @@ static struct my_option options[] = {
 class EchoSession : public SocketServer::Session {
  public:
   EchoSession(NdbSocket &&s, bool sink, SSL_CTX *ctx)
-      : SocketServer::Session(m_secure_socket),
-    m_sink(sink),
-    m_ssl_ctx(ctx),
-    m_secure_socket(std::move(s)) {}
+      : m_sink(sink), m_ssl_ctx(ctx), m_secure_socket(std::move(s)) {}
   void runSession() override;
 
  private:

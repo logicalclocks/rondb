@@ -1,6 +1,6 @@
 /*
    Copyright (c) 2003, 2026, Oracle and/or its affiliates.
-   Copyright (c) 2021, 2025, Hopsworks and/or its affiliates.
+   Copyright (c) 2021, 2026, Hopsworks and/or its affiliates.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License, version 2.0,
@@ -1193,6 +1193,27 @@ bool Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
     ndbrequire(m_curr_tup->c_operation_pool.getValidPtr(prevOpPtr));
     req_struct->prevOpPtr.p = prevOpPtr.p;
 
+    Uint32 op = regOperPtr.p->op_type;
+    if (op == ZUPDATE || op == ZINSERT) {
+      /*
+       * The new operation has not assigned its own tupVersion yet.
+       * Compare the latest prepared operation with the committed tuple
+       * version in DBTUP's wrapped tuple-version space.
+       */
+      const Uint32 tuple_version =
+          req_struct->m_tuple_ptr->get_tuple_version() & ZTUP_VERSION_MASK;
+      const Uint32 prev_op_version =
+          prevOpPtr.p->op_struct.bit_field.tupVersion & ZTUP_VERSION_MASK;
+      const Uint32 row_versions =
+          (prev_op_version - tuple_version) & ZTUP_VERSION_MASK;
+      ndbrequire(row_versions <= m_max_row_versions_per_transaction);
+      if (unlikely(row_versions >= m_max_row_versions_per_transaction)) {
+        jam();
+        terrorCode = ZTOO_MANY_ROW_VERSIONS_ERROR;
+        return false;
+      }
+    }
+
     regOperPtr.p->op_struct.bit_field.m_wait_log_buffer=
       prevOpPtr.p->op_struct.bit_field.m_wait_log_buffer;
     regOperPtr.p->op_struct.bit_field.m_load_diskpage_on_commit=
@@ -1216,7 +1237,6 @@ bool Dbtup::prepareActiveOpList(OperationrecPtr regOperPtr,
 
     if (prevOpPtr.p->tuple_state == TUPLE_PREPARED)
     {
-      Uint32 op= regOperPtr.p->op_type;
       Uint32 prevOp= prevOpPtr.p->op_type;
       if (prevOp == ZDELETE)
       {
@@ -1372,7 +1392,21 @@ Dbtup::setup_read(KeyReqStruct *req_struct,
     {
       /* Tuple not visible to this read operation */
       jamDebug();
-      terrorCode = ZTUPLE_DELETED_ERROR;
+      if (dirty && is_insert && req_struct->m_lock_free_read) {
+        /**
+         * The base row of a unique index lookup, read without a lock after
+         * its index row was read with one. The index row is committed and
+         * names this row, so an insert of it that is not committed here
+         * can only be the row's own insert whose COMMIT has not been
+         * applied on this replica yet. Report that as a temporary error so
+         * that the API retries instead of seeing no row. A deleted,
+         * expired or filtered row keeps the plain not found error.
+         */
+        jamDebug();
+        terrorCode = ZTUPLE_NOT_YET_COMMITTED_ERROR;
+      } else {
+        terrorCode = ZTUPLE_DELETED_ERROR;
+      }
       break;
     }
 
@@ -2134,6 +2168,7 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
      * ttl_now_sec == 0 and read the clock per op.
      */
     req_struct.ttl_now_sec = lqhScanPtrP->m_ttl_now_sec;
+    req_struct.m_lock_free_read = false;
   } else {
     Uint32 attrBufLen = lqhOpPtrP->totReclenAi;
     Uint32 dirtyOp = lqhOpPtrP->dirtyOp;
@@ -2145,6 +2180,9 @@ bool Dbtup::execTUPKEYREQ(Signal* signal,
     Uint32 applRef = lqhOpPtrP->applRef;
 
     req_struct.dirty_op = dirtyOp;
+    req_struct.m_lock_free_read =
+        (dirtyOp != 0) &&
+        ((flags & Dblqh::TcConnectionrec::OP_NORMAL_PROTOCOL) != 0);
     req_struct.m_use_rowid = row_id;
     req_struct.log_size = attrBufLen;
     req_struct.attrinfo_len = attrBufLen;

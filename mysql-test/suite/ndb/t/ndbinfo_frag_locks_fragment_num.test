@@ -1,0 +1,34 @@
+--source include/have_ndb.inc
+
+#
+# ndbinfo.frag_locks, used by the locks_per_fragment view, must report
+# each fragment with its own fragment number. DBACC used to report the
+# fragment number of the first fragment of a table in an LDM instance
+# for all fragments of that table in the LDM instance.
+#
+# The table has more partitions than there are LDM instances, so each
+# LDM instance holds several fragments of the table.
+#
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE NDB
+PARTITION BY KEY(a) PARTITIONS 16;
+
+--echo # Each fragment replica is reported once, with its own fragment number
+SELECT COUNT(*) = COUNT(DISTINCT node_id, fragment_num) AS unique_fragment_replicas,
+COUNT(DISTINCT fragment_num) AS fragments,
+MIN(fragment_num) AS min_fragment_num,
+MAX(fragment_num) AS max_fragment_num
+FROM ndbinfo.locks_per_fragment
+WHERE fq_name = 'test/def/t1';
+
+--echo # Each fragment is reported by the LDM instance that holds it
+SELECT COUNT(*) AS misplaced_fragments
+FROM ndbinfo.locks_per_fragment AS l
+LEFT JOIN ndbinfo.memory_per_fragment AS m
+ON m.fq_name = l.fq_name AND
+m.node_id = l.node_id AND
+m.block_instance = l.block_instance AND
+m.fragment_num = l.fragment_num
+WHERE l.fq_name = 'test/def/t1' AND m.fq_name IS NULL;
+
+DROP TABLE t1;

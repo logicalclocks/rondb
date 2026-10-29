@@ -1,0 +1,170 @@
+#
+# The president fails while it includes a restarting data node
+#
+# A member that loses the connection to a node being included leaves the
+# decision on it to the president, see ndb_nr_join_crash. When the
+# president fails, the new president does not go on with the inclusion,
+# and the node being included exits as it loses its president. The
+# members then fail that node themselves, so that it can connect and
+# join again.
+#
+# The cluster has four data nodes in two node groups, {1,2} and {3,4},
+# see ndb_sr_join_crash.cnf. A data node J in the other node group than
+# the president P restarts into not started state and starts without
+# sending CM_NODEINFOREQ (error insert 964), so its inclusion stays in
+# the prepare phase. While P includes J, P crashes (error insert 9999).
+# The two other data nodes keep running, P is started again after its
+# crash and J by its angel (StopOnError=0), and both join.
+#
+
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+CREATE TABLE t1 (a INT PRIMARY KEY, b INT) ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,9),(10,10);
+
+--echo # Find the president and a data node in the other node group
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $out = `$mgm -e "SHOW" 2>&1`;
+  my (%group, $president);
+  while ($out =~ /^id=(\d+)\s.*Nodegroup: (\d+)(, \*)?\)/mg) {
+    $group{$1} = $2;
+    $president = $1 if defined $3;
+  }
+  die "No president in:\n$out" unless defined $president;
+  my ($joiner) = sort { $b <=> $a }
+                 grep { $group{$_} != $group{$president} } keys %group;
+  die "No data node outside the node group of node $president:\n$out"
+    unless defined $joiner;
+  my @others = sort { $a <=> $b }
+               grep { $_ != $joiner && $_ != $president } keys %group;
+  my @all_but_joiner = sort { $a <=> $b } grep { $_ != $joiner } keys %group;
+
+  my @logs = glob("$vardir/mysql_cluster.1/ndb_mgmd.1/ndb_*_cluster.log");
+  die "Expected one cluster log, found " . scalar(@logs) . "\n"
+    unless @logs == 1;
+  my $state_file = "$vardir/tmp/ndb_nr_join_president_failure.state";
+  open(my $fh, '>', $state_file) or die "Cannot write $state_file: $!\n";
+  print $fh "$president $joiner @others\n$logs[0]\n";
+  close($fh);
+
+  my $inc_file = "$vardir/tmp/ndb_nr_join_president_failure.inc";
+  open($fh, '>', $inc_file) or die "Cannot write $inc_file: $!\n";
+  print $fh "let \$president= $president;\n";
+  print $fh "let \$joiner= $joiner;\n";
+  print $fh "let \$all_but_joiner= " . join(',', @all_but_joiner) . ";\n";
+  close($fh);
+EOF
+--source $MYSQLTEST_VARDIR/tmp/ndb_nr_join_president_failure.inc
+--remove_file $MYSQLTEST_VARDIR/tmp/ndb_nr_join_president_failure.inc
+
+--echo # Restart J into not started state, it does not send CM_NODEINFOREQ
+--exec $NDB_MGM -e "$joiner RESTART -n" >> $NDB_TOOLS_OUTPUT
+--exec $NDB_WAITER --nowait-nodes=$all_but_joiner --not-started --timeout=120 >> $NDB_TOOLS_OUTPUT
+--exec $NDB_MGM -e "$joiner ERROR 964" >> $NDB_TOOLS_OUTPUT
+
+# Only look at cluster log lines written from here on
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $state_file = "$vardir/tmp/ndb_nr_join_president_failure.state";
+  open(my $fh, '<', $state_file) or die "Cannot read $state_file: $!\n";
+  my @state = <$fh>;
+  close($fh);
+  chomp(@state);
+  open($fh, '>', $state_file) or die "Cannot write $state_file: $!\n";
+  print $fh "$state[0]\n$state[1]\n" . (-s $state[1]) . "\n";
+  close($fh);
+EOF
+
+--echo # Start J and wait for P to include it
+--exec $NDB_MGM -e "$joiner START" >> $NDB_TOOLS_OUTPUT
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $state_file = "$vardir/tmp/ndb_nr_join_president_failure.state";
+  open(my $fh, '<', $state_file) or die "Cannot read $state_file: $!\n";
+  chomp(my $nodes = <$fh>);
+  chomp(my $log = <$fh>);
+  chomp(my $offset = <$fh>);
+  close($fh);
+  my ($president, $joiner) = split(' ', $nodes);
+  my $timeout = 120;
+  my $start = time();
+  while (1) {
+    my $found = 0;
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      $found = 1
+        if $line =~ /Node $joiner: CM_REGCONF president = $president, own Node = $joiner/;
+    }
+    close($lf);
+    last if $found;
+    die "Timeout waiting for node $president to include node $joiner\n"
+      if time() - $start > $timeout;
+    sleep(1);
+  }
+  print "P is including J\n";
+EOF
+
+--echo # P crashes while it includes J
+--exec $NDB_MGM -e "$president ERROR 9999" >> $NDB_TOOLS_OUTPUT
+--perl
+  use strict;
+  my $vardir = $ENV{MYSQLTEST_VARDIR} or die "MYSQLTEST_VARDIR not set\n";
+  my $mgm = $ENV{NDB_MGM} or die "NDB_MGM not set\n";
+  my $state_file = "$vardir/tmp/ndb_nr_join_president_failure.state";
+  open(my $fh, '<', $state_file) or die "Cannot read $state_file: $!\n";
+  chomp(my $nodes = <$fh>);
+  chomp(my $log = <$fh>);
+  chomp(my $offset = <$fh>);
+  close($fh);
+  unlink($state_file);
+  my ($president, $joiner, @others) = split(' ', $nodes);
+  my $timeout = 120;
+  my $start = time();
+  my ($president_crashed, $joiner_exited, $other_shutdown);
+  while (1) {
+    ($president_crashed, $joiner_exited, $other_shutdown) = (0, 0, 0);
+    open(my $lf, '<', $log) or die "Cannot open $log: $!\n";
+    seek($lf, $offset, 0);
+    while (my $line = <$lf>) {
+      # The crash of an error insert is a restart (RestartOnErrorInsert),
+      # the angel reports it as a node shutdown, not as a forced one
+      next unless $line =~ /Node (\d+): (?:Forced node|Node) shutdown completed/;
+      if ($1 == $president) {
+        $president_crashed++;
+      } elsif ($1 == $joiner) {
+        $joiner_exited++;
+      } else {
+        $other_shutdown++;
+      }
+    }
+    close($lf);
+    last if $president_crashed && $joiner_exited;
+    die "Timeout waiting for P to crash and J to exit\n"
+      if time() - $start > $timeout;
+    sleep(1);
+  }
+  my $out = `$mgm -e "ALL STATUS" 2>&1`;
+  my $running = grep { $out =~ /^Node $_: started/m } @others;
+  print "P crashed and J exited: yes\n";
+  print "The other two data nodes went on running: " .
+        ($running == 2 && !$other_shutdown ? "yes" : "no") . "\n";
+EOF
+
+--echo # P and J join again
+--exec $NDB_WAITER --timeout=300 >> $NDB_TOOLS_OUTPUT
+
+--source include/ndb_not_readonly.inc
+SELECT COUNT(*), SUM(b) FROM t1;
+INSERT INTO t1 VALUES (11, 11);
+UPDATE t1 SET b = b + 100 WHERE a <= 5;
+SELECT * FROM t1 ORDER BY a;
+
+DROP TABLE t1;
+--remove_file $NDB_TOOLS_OUTPUT
