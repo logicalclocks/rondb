@@ -3748,6 +3748,26 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   passQueueingFlag = passQueueingFlag &&
                      handle.m_cnt > 0;
 
+#ifdef ERROR_INSERT
+  if (unlikely(ERROR_INSERTED(8160)) && !is_immediate && !passQueueingFlag &&
+      databaseRecordPtr.i != RNIL64 && TstartFlag == 0 &&
+      TcKeyReq::getExecuteFlag(Treqinfo) &&
+      signal->getSendersBlockRef() != reference()) {
+    /**
+     * RONDB-1152 test (testNdbApi RateQueueAbortKeepsExecFlag): hold the
+     * execute-flagged operation of a rate-limited user's transaction for
+     * two seconds so that it is handled after the queue handler has
+     * dequeued and re-sent the operations received before it. It comes
+     * back with this block as sender and then aborts the transaction as a
+     * read rate overflow, see check_tckey_queueing.
+     */
+    jam();
+    sendSignalWithDelay(reference(), GSN_TCKEYREQ, signal, 2000,
+                        signal->getLength(), &handle);
+    return;
+  }
+#endif
+
   if (!is_immediate) {
     if (unlikely(databaseRecordPtr.i != RNIL64 ||
                  apiConnectptr.p->m_queuedDatabasePtrI != RNIL64)) {
@@ -26954,6 +26974,17 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
               queue_record->m_key_length > 5 ?
                 ((Uint32*)first_section_area)[5] : 0xFFFF ));
 
+#ifdef ERROR_INSERT
+    if (unlikely(ERROR_INSERTED(8160))) {
+      /* RONDB-1152 test: keep the re-sent operation in flight for 5 s. */
+      jam();
+      SectionHandle handle(this);
+      ndbrequire(import(&handle, ptr, num_sections));
+      sendSignalWithDelay(reference(), queue_record->m_gsn, signal, 5000,
+                          signal_length, &handle);
+      return;
+    }
+#endif
     sendSignal(reference(), queue_record->m_gsn, signal,
                signal_length, JBB, ptr, num_sections);
 
@@ -28644,6 +28675,29 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
       TcKeyReq::getExecuteFlag(Treqinfo) ? ApiConnectRecord::TF_EXEC_FLAG : 0;
   Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
   if (!passQueueingFlag) {
+#ifdef ERROR_INSERT
+    if (unlikely(ERROR_INSERTED(8160)) && TstartFlag == 0) {
+      /**
+       * RONDB-1152 test: operations of a started transaction are queued as
+       * under m_is_queueing_all, except the execute-flagged one (held back
+       * in execTCKEYREQ) which is rejected as a read rate overflow, as
+       * under m_is_queueing_abort_read, while the re-sent queued operations
+       * are still in flight (held back in send_queued_query).
+       */
+      jam();
+      if (TexecFlag) {
+        jam();
+        releaseSections(handle);
+        db_abort_handling(signal, apiConnectptr, TstartFlag, TexecFlag,
+                          TcKeyRef::ReadRateOverflowError);
+        return false;
+      }
+      ndbrequire(queue_tckeyreq(signal, &handle, databaseRecordPtr,
+                                apiConnectptr));
+      releaseSections(handle);
+      return false;
+    }
+#endif
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
       releaseSections(handle);
