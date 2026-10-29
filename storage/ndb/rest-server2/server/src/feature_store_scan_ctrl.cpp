@@ -20,6 +20,7 @@
 #include "feature_store_scan_ctrl.hpp"
 #include "api_key.hpp"
 #include "batch_feature_store_ctrl.hpp"
+#include "buffer_chain.hpp"
 #include "buffer_manager.hpp"
 #include "config_structs.hpp"
 #include "constants.hpp"
@@ -482,20 +483,16 @@ class RootRowSink : public ScanRowSink {
 
 /*
  * One pk_batch_read round-trip and its buffers. The parsed responses
- * point into the response buffers, so the object must outlive any use of
- * `response`; the buffers are returned to the pool in the destructor.
+ * point into the response chain, so the object must outlive any use of
+ * `response`; the chains return their buffers to the pools when the
+ * object is destroyed (RONDB-1144).
  */
 class PkBatchRun {
  public:
   explicit PkBatchRun(size_t noOps)
-    : m_noOps(noOps), m_allocated(0), m_amalloc(256 * 1024),
-      m_reqBuffs(noOps), m_respBuffs(noOps) {
-  }
-  ~PkBatchRun() {
-    if (m_allocated > 0) {
-      release_array_buffers(m_reqBuffs.data(), m_respBuffs.data(),
-                            m_allocated);
-    }
+    : m_noOps(noOps), m_amalloc(256 * 1024),
+      m_reqChain(RS_BufferChain::REQ, static_cast<Uint32>(noOps)),
+      m_respChain(RS_BufferChain::RESP, static_cast<Uint32>(noOps)) {
   }
   RS_Status run(std::vector<PKReadParams> &readParams,
                 const std::vector<std::shared_ptr<FilterNode>> &opFilters,
@@ -508,38 +505,30 @@ class PkBatchRun {
         return status;
       }
     }
-    Uint32 request_buffer_size = globalConfigs.internal.reqBufferSize * 2;
-    Uint32 request_buffer_limit = request_buffer_size / 2;
-    Uint32 current_head = 0;
-    m_reqBuffs[0] = rsBufferArrayManager.get_req_buffer();
-    m_respBuffs[0] = rsBufferArrayManager.get_resp_buffer();
-    m_allocated = 1;
-    Uint32 current_request_buffer_idx = 0;
+    RS_Status status = m_reqChain.take_first();
+    if (likely(status.http_code == SUCCESS)) {
+      status = m_respChain.take_first();
+    }
+    if (unlikely(status.http_code != SUCCESS)) {
+      return status;
+    }
     for (Uint32 i = 0; i < m_noOps; i++) {
       if (i > 0) {
-        m_reqBuffs[i] = getNextReqRS_Buffer(
-          current_head,
-          request_buffer_limit,
-          m_reqBuffs[current_request_buffer_idx],
-          current_request_buffer_idx,
-          i);
-        m_allocated = i + 1;
+        status = m_reqChain.next_op_view(
+          i, native_request_upper_bound(readParams[i]));
+        if (unlikely(status.http_code != SUCCESS)) {
+          return status;
+        }
       }
-      RS_Status status = create_native_request(readParams[i],
-                                               (Uint32*)m_reqBuffs[i].buffer,
-                                               current_head);
+      RS_Buffer &view = m_reqChain.views()[i];
+      Uint32 consumed = 0;
+      status = create_native_request(readParams[i], view, consumed);
       if (unlikely(status.http_code != SUCCESS)) {
         return status;
       }
-      UintPtr length_ptr =
-        reinterpret_cast<UintPtr>(m_reqBuffs[i].buffer) +
-          static_cast<UintPtr>(PK_REQ_LENGTH_IDX) * ADDRESS_SIZE;
-      Uint32 *length_ptr_casted = reinterpret_cast<Uint32*>(length_ptr);
-      m_reqBuffs[i].size = *length_ptr_casted;
-      require(m_reqBuffs[i].buffer + m_reqBuffs[i].size <=
-              m_reqBuffs[current_request_buffer_idx].buffer + current_head);
+      view.size = reinterpret_cast<Uint32 *>(view.buffer)[PK_REQ_LENGTH_IDX];
+      m_reqChain.advance(consumed);
     }
-    m_allocated = m_noOps;
     bool anyFilter = false;
     for (const auto &f : opFilters) {
       if (f != nullptr) {
@@ -547,12 +536,12 @@ class PkBatchRun {
         break;
       }
     }
-    RS_Status status = pk_batch_read(
+    status = pk_batch_read(
       (void*)&m_amalloc,
       static_cast<unsigned int>(m_noOps),
       true,
-      m_reqBuffs.data(),
-      m_respBuffs.data(),
+      m_reqChain.views(),
+      &m_respChain,
       static_cast<unsigned int>(threadIndex),
       rl_identity.empty() ? nullptr : rl_identity.c_str(),
       (unsigned int)rl_identity.size(),
@@ -561,7 +550,8 @@ class PkBatchRun {
       return status;
     }
     response.Init(static_cast<int>(m_noOps));
-    status = process_responses(&m_amalloc, m_respBuffs, m_reqBuffs, response);
+    status = process_responses(&m_amalloc, m_respChain, m_reqChain.views(),
+                               static_cast<Uint32>(m_noOps), response);
     if (unlikely(status.err_file_name[0] != '\0')) {
       return status;
     }
@@ -571,10 +561,9 @@ class PkBatchRun {
 
  private:
   size_t m_noOps;
-  Uint32 m_allocated;
   ArenaMalloc m_amalloc;
-  std::vector<RS_Buffer> m_reqBuffs;
-  std::vector<RS_Buffer> m_respBuffs;
+  RS_BufferChain m_reqChain;
+  RS_BufferChain m_respChain;
 };
 
 /* Group sub-responses "seq#opId" by seq and strip the prefix */
@@ -900,7 +889,7 @@ void FeatureStoreScanCtrl::featureStoreScan(
   const char *json_str = req->getBody().data();
   DEB_FSS_CTRL("\n\n JSON REQUEST: \n %s \n", json_str);
   size_t length = req->getBody().length();
-  if (unlikely(length > globalConfigs.internal.maxReqSize)) {
+  if (unlikely(length > globalConfigs.internal.maxHttpReqSize)) {
     sendError(resp, callback, drogon::k400BadRequest, "Request too large");
     return;
   }
@@ -909,7 +898,7 @@ void FeatureStoreScanCtrl::featureStoreScan(
   fsds::FeatureStoreScanRequest reqStruct;
   RS_Status status = jsonParser.feature_store_scan_parse(
       simdjson::padded_string_view(jsonParser.get_buffer().get(), length,
-                                   globalConfigs.internal.maxReqSize +
+                                   globalConfigs.internal.maxHttpReqSize +
                                    simdjson::SIMDJSON_PADDING),
       reqStruct);
   if (unlikely(status.http_code != SUCCESS)) {

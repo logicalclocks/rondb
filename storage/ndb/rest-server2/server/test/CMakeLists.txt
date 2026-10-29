@@ -45,13 +45,13 @@ NDB_ADD_EXECUTABLE(probe_server_cluster_test probe_server_cluster_test.cpp
 
 # RONDB-1144: process startup settings (THP opt-out,
 # untouched parse buffers). Cluster-free; the observations are Linux-only.
-NDB_ADD_EXECUTABLE(
-		process_setup_test
-		process_setup_test.cpp
-		feature_store_scan_test
-		feature_store_scan_test.cpp
-		STATIC_NDBCLIENT
-)
+NDB_ADD_EXECUTABLE(process_setup_test process_setup_test.cpp
+                   STATIC_NDBCLIENT)
+
+# RONDB-1142: feature_store_scan pure-logic tests (PK fast-path rewrite,
+# table-scan policy). Cluster-free.
+NDB_ADD_EXECUTABLE(feature_store_scan_test feature_store_scan_test.cpp
+                   STATIC_NDBCLIENT)
 
 TARGET_LINK_LIBRARIES(
   process_setup_test
