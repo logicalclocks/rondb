@@ -7564,6 +7564,79 @@ int runUkCommittedReadCommitRace(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+int runSetRateQueueAbortErrorInsert(NDBT_Context *ctx, NDBT_Step *step) {
+  // Error insert 8160 in DBTC: operations of a started transaction in a
+  // rate-limited database are queued in the rate queue and their re-send is
+  // held for 5 s; the operation carrying the execute flag is held for 2 s
+  // and then rejected as a read rate overflow, so it aborts the transaction
+  // while the re-sent operations are still in flight.
+  NdbRestarter restarter;
+  CHECK(restarter.insertErrorInAllNodes(8160) == 0);
+  return NDBT_OK;
+}
+
+int runRateQueueAbortKeepsExecFlag(NDBT_Context *ctx, NDBT_Step *step) {
+  // RONDB-1152: DBTC aborted a transaction as a read rate overflow after
+  // the operation with the execute flag had been received, while queued
+  // operations of the same transaction were being re-sent by the rate queue
+  // handler. A re-sent operation handled after that cleared the flag that
+  // records that the API is owed a reply, so the abort completed without
+  // TCROLLBACKREP and the API waited until its 4012 timeout. The database
+  // of the test table must have a quota (the MTR wrapper sets one) for its
+  // operations to go through the rate limit checks at all.
+  const NdbDictionary::Table *tab = ctx->getTab();
+  Ndb *ndb = GETNDB(step);
+  const NdbRecord *rowRec = tab->getDefaultRecord();
+  const Uint32 len = NdbDictionary::getRecordRowLength(rowRec);
+  HugoCalculator calc(*tab);
+  std::unique_ptr<Uint8[]> row(new Uint8[len]());
+  calc.equalForRow(row.get(), rowRec, 0);
+
+  NdbTransaction *trans = ndb->startTransaction();
+  CHECKE(trans != nullptr, (*ndb));
+  // First batch: starts the transaction. With the start flag the error
+  // insert leaves it alone.
+  CHECKE(trans->readTuple(rowRec, (const char *)row.get(), rowRec,
+                          (char *)row.get(), NdbOperation::LM_Read) != nullptr,
+         (*trans));
+  CHECKE(trans->execute(NdbTransaction::NoCommit) == 0, (*trans));
+
+  // Second batch: the first two reads are queued and re-sent after 5 s, the
+  // third one carries the execute flag, is handled after 2 s and aborts the
+  // transaction. The reply must come once the abort completes, after the
+  // re-sent operations have been handled.
+  std::unique_ptr<Uint8[]> rows[3];
+  for (int i = 0; i < 3; i++) {
+    rows[i].reset(new Uint8[len]());
+    calc.equalForRow(rows[i].get(), rowRec, 0);
+    CHECKE(trans->readTuple(rowRec, (const char *)rows[i].get(), rowRec,
+                            (char *)rows[i].get(),
+                            NdbOperation::LM_Read) != nullptr,
+           (*trans));
+  }
+  trans->executeAsynchPrepare(NdbTransaction::NoCommit, nullptr, nullptr);
+  ndb->sendPreparedTransactions();
+  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  const int completed = ndb->pollNdb(20000, 1);
+  const Uint64 ms = NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+  if (completed != 1) {
+    g_err << "No reply from DBTC within " << ms
+          << " ms: the abort completed without TCROLLBACKREP" << endl;
+    ndb->closeTransaction(trans);
+    return NDBT_FAILED;
+  }
+  const NdbError err = trans->getNdbError();
+  g_info << "Batch rejected after " << ms << " ms with error " << err.code
+         << endl;
+  // 2203: Read Rate limit reached and queues are overloaded for database
+  CHECK(err.code == 2203);
+  // The reply must have waited for the re-sent operations (held for 5 s),
+  // otherwise the abort did not overlap with them and nothing was tested.
+  CHECK(ms >= 5000);
+  ndb->closeTransaction(trans);
+  return NDBT_OK;
+}
+
 int runDatabaseAndSchemaName(NDBT_Context *ctx, NDBT_Step *) {
   Ndb_cluster_connection *con = &ctx->m_cluster_connection;
 
@@ -8232,6 +8305,16 @@ TESTCASE("UkCommittedReadCommitRace",
   FINALIZER(runClearErrorInsert);
   FINALIZER(runClearTable);
   FINALIZER(dropUkOnPk);
+}
+TESTCASE("RateQueueAbortKeepsExecFlag",
+         "Check that a transaction aborted as a read rate overflow while its "
+         "rate-queued operations are being re-sent still gets its reply "
+         "(needs a database quota on the test database)") {
+  INITIALIZER(runWriteRecord);
+  INITIALIZER(runSetRateQueueAbortErrorInsert);
+  STEP(runRateQueueAbortKeepsExecFlag);
+  FINALIZER(runClearErrorInsert);
+  FINALIZER(runClearTable);
 }
 TESTCASE("DatabaseAndSchemaName",
          "Test functions depending on database and schema name") {
