@@ -3843,7 +3843,21 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   bool isExecutingTrigger = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
   regApiPtr->m_special_op_flags = 0;  // Reset marker
   Uint32 prevExecFlag = regApiPtr->m_flags & ApiConnectRecord::TF_EXEC_FLAG;
-  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag) {
+  /**
+   * RONDB-1152: While the transaction is aborting, TF_EXEC_FLAG means that
+   * the API is owed a TCROLLBACKREP when the abort completes (set by the
+   * operation that carried the execute flag, by TCROLLBACKREQ or by
+   * db_abort_handling). A TCKEYREQ arriving in that state is dropped or
+   * rejected below and starts no batch, so it must not clear the flag.
+   * Without this, a rate-limit queued operation re-sent by the background
+   * queue handler after the execute-flagged operation had already been
+   * received cleared the flag, the abort completed silently and the API
+   * waited for a reply that never came (error 4012 after 360 seconds).
+   */
+  bool isAbortingTrans = (regApiPtr->apiConnectstate == CS_ABORTING ||
+                          regApiPtr->apiConnectstate == CS_RELEASE);
+  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag &&
+      likely(!isAbortingTrans)) {
     /**
      * Only operations originating from NDB API with exec flag not
      * set will clear the Execute flag. This is the first signal
@@ -28667,6 +28681,14 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           TstartFlag,
                           TexecFlag,
                           TcKeyRef::ReadRateOverflowError);
+        /**
+         * RONDB-1152: the operation is done, like the write overflow case
+         * above. Falling through queued the signal again with its sections
+         * already released, which failed and aborted the transaction a
+         * second time, with WriteRateOverflowError replacing the read
+         * overflow error code the API was meant to see.
+         */
+        return false;
       }
     }
     if (unlikely(apiConnectptr.p->m_first_queued_req == nullptr &&
