@@ -1,0 +1,5 @@
+CREATE DATABASE TEST_DB;
+Running command
+Result of command: 0
+Test program success!
+DROP DATABASE TEST_DB;
