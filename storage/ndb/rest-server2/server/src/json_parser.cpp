@@ -210,14 +210,25 @@ JSONParser::JSONParser() {
   /* new char[n] default-initialises, so none of the pages are touched until
    * a request of that size arrives. std::make_unique value-initialised the
    * array, which made NumThreads x MaxHttpReqSize resident at startup (64 x 4 MiB
-   * with the old defaults; RONDB-1144). The
-   * parser never reads beyond the request length it is given. */
+   * with the old defaults; RONDB-1144). Whatever lies past the request is
+   * left over from earlier, longer requests; see copy_request(). */
   buffer = std::unique_ptr<char[]>(
     new char[globalConfigs.internal.maxHttpReqSize + simdjson::SIMDJSON_PADDING]);
 }
 
 std::unique_ptr<char[]> &JSONParser::get_buffer() {
   return buffer;
+}
+
+void JSONParser::copy_request(const char *body, size_t length) {
+  memcpy(buffer.get(), body, length);
+  /* The parser stops at length, but a parse error message quotes the body
+   * from the error onwards as a C string (handle_simdjson_error). Without
+   * the terminator that read ran on through an earlier request's bytes,
+   * returning them to this client, and past the end of the buffer when no
+   * NUL came. length <= MaxHttpReqSize, so
+   * the terminator lands in the simdjson padding. */
+  buffer[length] = '\0';
 }
 
 RS_Status extract_db_and_table(const std::string_view &,
@@ -227,6 +238,7 @@ RS_Status extract_db_and_table(const std::string_view &,
 RS_Status handle_simdjson_error(const simdjson::error_code &,
                                 simdjson::ondemand::document &,
                                 const char *&);
+RS_Status handle_iterate_error(const simdjson::error_code &);
 
 // Is used to perform a primary key read operation.
 RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
@@ -235,7 +247,7 @@ RS_Status JSONParser::pk_parse(simdjson::padded_string_view reqBody,
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -408,7 +420,7 @@ RS_Status JSONParser::batch_parse(simdjson::padded_string_view reqBody,
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -823,7 +835,7 @@ JSONParser::feature_store_parse(
   const char *currentLocation = nullptr;
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -1158,7 +1170,7 @@ RS_Status JSONParser::batch_feature_store_parse(
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;
@@ -1570,6 +1582,19 @@ RS_Status extract_db_and_table(const std::string_view &relativeUrl,
     drogon::HttpStatusCode::k400BadRequest),
     ERROR_INVALID_RELATIVE_URL,
     std::string(rdrsErrorMessage(ERROR_INVALID_RELATIVE_URL))).status;
+}
+
+/*
+  For an error from parser.iterate() itself. doc then holds no document from
+  this request: on a thread that has not parsed one yet its iterator is null
+  and doc.current_location() dereferences it, so one malformed request (an
+  unclosed string, say) took the server down before authentication. There
+  is no location to report, so report the error alone.
+*/
+RS_Status handle_iterate_error(const simdjson::error_code &error) {
+  return CRS_Status(static_cast<HTTP_CODE>(
+    drogon::HttpStatusCode::k400BadRequest),
+    error_message(error), "").status;
 }
 
 RS_Status handle_simdjson_error(const simdjson::error_code &error,
@@ -2092,7 +2117,7 @@ RS_Status JSONParser::scan_parse(simdjson::padded_string_view reqBody,
 
   simdjson::error_code error = parser.iterate(reqBody).get(doc);
   if (unlikely(error != simdjson::SUCCESS)) {
-    return handle_simdjson_error(error, doc, currentLocation);
+    return handle_iterate_error(error);
   }
 
   simdjson::ondemand::object reqObject;

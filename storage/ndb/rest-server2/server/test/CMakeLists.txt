@@ -70,8 +70,21 @@ NDB_ADD_EXECUTABLE(limits_test limits_test.cpp
 NDB_ADD_EXECUTABLE(buffer_chain_test buffer_chain_test.cpp
                    STATIC_NDBCLIENT)
 
+# RONDB-1152: request bodies the JSON parser rejects before it has a
+# document. Cluster-free.
+NDB_ADD_EXECUTABLE(json_parser_test json_parser_test.cpp
+                   STATIC_NDBCLIENT)
+
 TARGET_LINK_LIBRARIES(
   buffer_chain_test
+  gtest_main
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
+TARGET_LINK_LIBRARIES(
+  json_parser_test
   gtest_main
   ndbgeneral
   rdrs2_lib

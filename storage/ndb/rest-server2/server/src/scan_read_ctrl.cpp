@@ -91,7 +91,7 @@ void ScanReadCtrl::ScanRead(
     return;
   }
 
-  memcpy(jsonParser.get_buffer().get(), json_str, length);
+  jsonParser.copy_request(json_str, length);
 
   ScanReadParams reqStruct(db, table);
 

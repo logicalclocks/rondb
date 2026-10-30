@@ -105,7 +105,7 @@ void BatchFeatureStoreCtrl::batch_featureStore(
     return;
   }
 
-  memcpy(jsonParser.get_buffer().get(), json_str, length);
+  jsonParser.copy_request(json_str, length);
 
   feature_store_data_structs::BatchFeatureStoreRequest reqStruct;
   auto status = jsonParser.batch_feature_store_parse(
