@@ -3955,6 +3955,26 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   passQueueingFlag = passQueueingFlag &&
                      handle.m_cnt > 0;
 
+#ifdef ERROR_INSERT
+  if (unlikely(ERROR_INSERTED(8160)) && !is_immediate && !passQueueingFlag &&
+      databaseRecordPtr.i != RNIL64 && TstartFlag == 0 &&
+      TcKeyReq::getExecuteFlag(Treqinfo) &&
+      signal->getSendersBlockRef() != reference()) {
+    /**
+     * RONDB-1152 test (testNdbApi RateQueueAbortKeepsExecFlag): hold the
+     * execute-flagged operation of a rate-limited user's transaction for
+     * two seconds so that it is handled after the queue handler has
+     * dequeued and re-sent the operations received before it. It comes
+     * back with this block as sender and then aborts the transaction as a
+     * read rate overflow, see check_tckey_queueing.
+     */
+    jam();
+    sendSignalWithDelay(reference(), GSN_TCKEYREQ, signal, 2000,
+                        signal->getLength(), &handle);
+    return;
+  }
+#endif
+
   if (!is_immediate) {
     if (unlikely(databaseRecordPtr.i != RNIL64 ||
                  apiConnectptr.p->m_queuedDatabasePtrI != RNIL64)) {
@@ -4050,7 +4070,21 @@ void Dbtc::execTCKEYREQ(Signal *signal) {
   bool isExecutingTrigger = Tspecial_op_flags & TcConnectRecord::SOF_TRIGGER;
   regApiPtr->m_special_op_flags = 0;  // Reset marker
   Uint32 prevExecFlag = regApiPtr->m_flags & ApiConnectRecord::TF_EXEC_FLAG;
-  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag) {
+  /**
+   * RONDB-1152: While the transaction is aborting, TF_EXEC_FLAG means that
+   * the API is owed a TCROLLBACKREP when the abort completes (set by the
+   * operation that carried the execute flag, by TCROLLBACKREQ or by
+   * db_abort_handling). A TCKEYREQ arriving in that state is dropped or
+   * rejected below and starts no batch, so it must not clear the flag.
+   * Without this, a rate-limit queued operation re-sent by the background
+   * queue handler after the execute-flagged operation had already been
+   * received cleared the flag, the abort completed silently and the API
+   * waited for a reply that never came (error 4012 after 360 seconds).
+   */
+  bool isAbortingTrans = (regApiPtr->apiConnectstate == CS_ABORTING ||
+                          regApiPtr->apiConnectstate == CS_RELEASE);
+  if ((!(isExecutingTrigger || isIndexOpReturn)) && prevExecFlag &&
+      likely(!isAbortingTrans)) {
     /**
      * Only operations originating from NDB API with exec flag not
      * set will clear the Execute flag. This is the first signal
@@ -28953,6 +28987,17 @@ Dbtc::send_queued_query(Signal *signal, QueueRecord *queue_record) {
               queue_record->m_key_length > 5 ?
                 ((Uint32*)first_section_area)[5] : 0xFFFF ));
 
+#ifdef ERROR_INSERT
+    if (unlikely(ERROR_INSERTED(8160))) {
+      /* RONDB-1152 test: keep the re-sent operation in flight for 5 s. */
+      jam();
+      SectionHandle handle(this);
+      ndbrequire(import(&handle, ptr, num_sections));
+      sendSignalWithDelay(reference(), queue_record->m_gsn, signal, 5000,
+                          signal_length, &handle);
+      return;
+    }
+#endif
     sendSignal(reference(), queue_record->m_gsn, signal,
                signal_length, JBB, ptr, num_sections);
 
@@ -30643,6 +30688,29 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
       TcKeyReq::getExecuteFlag(Treqinfo) ? ApiConnectRecord::TF_EXEC_FLAG : 0;
   Uint32 passQueueingFlag = TcKeyReq::getPassQueueingFlag(Treqinfo);
   if (!passQueueingFlag) {
+#ifdef ERROR_INSERT
+    if (unlikely(ERROR_INSERTED(8160)) && TstartFlag == 0) {
+      /**
+       * RONDB-1152 test: operations of a started transaction are queued as
+       * under m_is_queueing_all, except the execute-flagged one (held back
+       * in execTCKEYREQ) which is rejected as a read rate overflow, as
+       * under m_is_queueing_abort_read, while the re-sent queued operations
+       * are still in flight (held back in send_queued_query).
+       */
+      jam();
+      if (TexecFlag) {
+        jam();
+        releaseSections(handle);
+        db_abort_handling(signal, apiConnectptr, TstartFlag, TexecFlag,
+                          TcKeyRef::ReadRateOverflowError);
+        return false;
+      }
+      ndbrequire(queue_tckeyreq(signal, &handle, databaseRecordPtr,
+                                apiConnectptr));
+      releaseSections(handle);
+      return false;
+    }
+#endif
     if (unlikely(databaseRecordPtr.p->m_is_queueing_abort)) {
       jam();
       releaseSections(handle);
@@ -30680,6 +30748,14 @@ bool Dbtc::check_tckey_queueing(Signal *signal,
                           TstartFlag,
                           TexecFlag,
                           TcKeyRef::ReadRateOverflowError);
+        /**
+         * RONDB-1152: the operation is done, like the write overflow case
+         * above. Falling through queued the signal again with its sections
+         * already released, which failed and aborted the transaction a
+         * second time, with WriteRateOverflowError replacing the read
+         * overflow error code the API was meant to see.
+         */
+        return false;
       }
     }
     if (unlikely(apiConnectptr.p->m_first_queued_req == nullptr &&
