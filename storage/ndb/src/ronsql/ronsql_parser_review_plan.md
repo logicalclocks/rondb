@@ -29,10 +29,10 @@ Function names identify the durable locations.
 | Items | Status | Commit |
 | --- | --- | --- |
 | I1, I2, I3 | Completed, tested by the user, committed and pushed | 09176e0a3ed |
-| I4 | I4a-I4c approved and applied; validation is user-owned | This OOM commit |
+| I4 | I4a-I4c committed and pushed; full RonSQL suite passed; original I4d fault-injection MTR test passed | cac1d1bf650 (fixes) |
 | C1 | Completed for statement construction and synthetic table defaults | 45a7568faed |
-| C3 | Completed for index names, ON conditions and arithmetic arguments | 45a7568faed |
-| C4 | Completed for the shared child helper and three read-only walkers | 45a7568faed |
+| C3 | Original three list families completed; GROUP/ORDER and output/CTE/join follow-ups applied; user reported all tests passed | 45a7568faed (original work) |
+| C4 | Original helper and three walkers completed; validator and subquery-discovery follow-ups applied; user reported all tests passed | 45a7568faed (original work) |
 | C2 | C2a-C2e approved and applied; validation is user-owned | cfcc91bc44e |
 | C5 | C5a-C5d approved and applied; validation is user-owned | cfcc91bc44e |
 | C6 | C6a-C6b approved and applied; validation is user-owned | cfcc91bc44e |
@@ -158,11 +158,12 @@ Status: added on 2026-10-29 following review of the proposed C2d factory;
 selected for implementation on 2026-10-30 after cleanup commit cfcc91bc44e.
 I4a-I4c were approved and applied on 2026-10-31; the source matches the approved
 patches, including the requested ronsql_parser_alloc name, and git diff --check
-passed. The allocation audit below is recorded. No OOM tests have been added or
-run; building, testing and parser/lexer generation remain user-owned. The user
-requested commit and push on 2026-10-31. These fixes and the audit are included
-in the OOM commit containing this plan; no test result was reported for this
-batch in the conversation.
+passed. These fixes and the allocation audit were committed and pushed in
+cac1d1bf650. On 2026-10-31 the user reported that all tests in the ronsql suite
+passed and requested dedicated allocation-failure tests. The passing suite
+does not validate allocation failure itself. Fault-injection coverage and
+the subsequent user-run results are recorded under I4d. Building, testing and
+parser/lexer generation remain user-owned.
 
 The C2d placement construction itself uses the existing protected path:
 ArenaMalloc::alloc_exc() returns valid storage or throws std::bad_alloc before
@@ -286,6 +287,62 @@ Proposed validation, to be reviewed separately and run by the user:
 - Retain successful-query coverage for each affected path and verify arena
   and transaction cleanup after an injected failure.
 
+#### I4d Deterministic allocation-failure regression tests
+
+Selected by the user on 2026-10-31. All three patches are approved and applied.
+The driver covers both constructors and ronsql_op, enumerates allocation
+failures, checks RESOURCE/503 and no retries, and exercises recovery and
+request isolation. It also preserves the depth-limit SYNTAX/400 diagnostic.
+DECIMAL cases cover signed/unsigned integer and floating literals, preparation
+during IN-list deduplication, and outer comparisons with substituted integer
+and floating scalar-subquery results. Transaction counters are checked while
+the preparer is still alive, so destructor cleanup cannot hide a missing
+cleanup_trans() in the exception handler.
+
+CTest's ronsql_parser_oom_test runs the cluster-free parser and DECIMAL
+ParseOnly cases. MTR's ronsql.ronsql_parser_oom creates its own small NDB fixture
+and runs the entire driver. It rejects missing/skipped test cases and signal
+deaths; detailed gtest output and XML are kept under MYSQLTEST_VARDIR/log
+as ronsql_oom.output.log and ronsql_oom.xml. Successful follow-up queries verify
+reuse of the same Ndb object after injected failures.
+
+On 2026-10-31 the user's run completed all 13 C++ tests with zero failures or
+skips, confirmed by the retained gtest output and XML. MTR's subsequent
+state-preservation check failed because those two diagnostic files were left
+in MYSQL_TMP_DIR. The test now writes them under MYSQLTEST_VARDIR/log, which
+MTR excludes from its directory-content comparison. The user subsequently
+reported that the MTR test passed. On 2026-11-02, after the C3 list-stack
+regressions were added, the user reported that all tests passed.
+The assistant inspected the existing logs but has not built, regenerated the
+parser/lexer, run tests or recorded MTR results.
+
+Implementation sequence:
+
+1. Add a request-local C++ test hook for the three corrected allocation sites.
+   Return NULL at the chosen allocation so the real caller checks and exception
+   translation execute. Count matching allocations after the one-shot failure
+   to detect retries. Do not add a SQL or HTTP input for enabling injection.
+2. Add a C++ regression driver using RonSQLPreparer and the real ronsql_op
+   wrapper. Cover each lexer initialization allocation and successive Bison
+   stack growth allocations in normal and ParseOnly modes. Check the RESOURCE
+   class, OOM diagnostic, HTTP 503 mapping, no retries, and successful reuse.
+3. Add DECIMAL cases and wire the driver into the ronsql MTR suite with a
+   minimal NDB table. Cover integer and floating literals, substituted scalar
+   values, and failures after a transaction opens; check transaction start/close
+   counts and a successful follow-up query.
+
+ParseOnly performs no DECIMAL encoding: its DECIMAL queries must succeed
+without reaching that failpoint. Keep successful deep parsing and depth-limit
+rejection separate from injected Bison OOM. HTTP assertions in the driver use
+the actual operation wrapper and the mapper used by ParseOnly authorization;
+they do not constitute a network-level controller test.
+
+Release request arenas after partial construction and exercise subsequent
+requests. Transaction counters verify transaction cleanup directly; proving
+absence of arena leaks additionally requires a user-run sanitizer/leak checker.
+Fault injection into other AST allocations remains a separate extension of
+the broader validation list above.
+
 ## Cleanup investigations and proposed boundaries
 
 ### C1 Initialize AST nodes through typed factories
@@ -346,7 +403,9 @@ Preserved boundaries for validation and future changes:
 
 ### C3 Make list construction consistent
 
-Status: completed for the three agreed list families in 45a7568faed.
+Status: original three list families completed in 45a7568faed. GROUP/ORDER
+and output/CTE/join follow-ups implemented; the user reported all tests passed
+on 2026-11-02. These follow-ups remain uncommitted.
 
 RonSQLListBuilder stores head/tail pointers and provides constant-time append.
 Separate approved patches converted index-name lists, ON-condition lists and
@@ -356,23 +415,44 @@ Arena ownership, source order, validation and authorization recording remain
 unchanged. The builder has no constructor or default member initializers;
 std::is_trivial checks protect Bison's existing semantic-value copying.
 
-Deferred:
+Follow-up review on 2026-10-31:
 
-- GROUP BY and ORDER BY already construct lists in linear time. Their right
-  recursion can be reviewed separately for parser stack usage.
+- GROUP BY and ORDER BY now use left-recursive RonSQLListBuilder lists. The
+  previous rules were linear-time but retained parser-stack entries for every
+  column. Node construction and column registration still run in source order;
+  clause consumers receive the same linked-list heads. Empty clauses, sort
+  defaults and semantic column limits are unchanged.
 
-- Preserve source order, column-registration order, empty-list rules and sort
-  defaults in any such change.
+- User validation: regenerate the parser with the existing warning-as-error
+  settings; run ronsql_orderby, ronsql_parser_cte and ronsql_agg_drain.
 
-- Leave the reversed T_COMMA representation used by IN lists unchanged until
-  its lowering is reviewed.
+- On 2026-11-02, added two ParseOnly regressions to ronsql_oom_test: GROUP BY
+  and ORDER BY lists of 12,000 columns must parse with zero parser-stack
+  allocation attempts. The first such allocation is armed to fail. CTest's
+  ronsql_parser_list_stack_test runs these cases without a cluster; MTR's
+  ronsql.ronsql_parser_oom now requires all 15 tests and the new suite.
+  Existing nested-NOT tests retain coverage of actual stack growth and
+  depth-limit rejection.
+
+- outputlist, cte_list and join_list now use RonSQLListBuilder instead of manual
+  head/tail append actions. Their existing left recursion, node-construction
+  order and empty-list behavior are preserved. Every node constructor sets
+  next to NULL; triviality assertions cover all three builder types.
+  User validation: ronsql_parser_cte, ronsql_join and ronsql_chained_left_join.
+
+- Keep the reversed T_COMMA representation for IN unchanged. Conditional
+  GREATEST/LEAST also consumes it; changing its order changes the lowered
+  expression tree. Arithmetic GREATEST/LEAST uses a separate ArithExprList.
 
 ### C4 Centralize conditional-expression child access
 
-Status: completed for the helper and three agreed walkers in 45a7568faed.
+Status: original helper and three walkers completed in 45a7568faed.
+Validator and subquery-discovery follow-ups implemented; the user reported
+all tests passed on 2026-11-02. These follow-ups remain uncommitted.
 
-A local, read-only condition_children() returns at most two children in the
-current SELECT scope. Explicit token cases select the active union members.
+A local condition_children() returns at most two children in the current
+SELECT scope. Read-only and mutable views share one dispatch switch and
+preserve input constness. Explicit token cases select the active union members.
 Unknown operators raise an INTERNAL error rather than guessing a layout.
 
 The following walkers now share the helper:
@@ -383,6 +463,12 @@ The following walkers now share the helper:
 
 - classify_ce_table_resolved(), retaining identifier resolution and table-result
   combination rules and accepting a const expression pointer.
+
+- check_no_nested_exists(), retaining EXISTS rejection and subquery stops.
+
+- check_cte_body_col_vs_col(), retaining comparison checks and subquery stops.
+
+- analyze_subqueries_ce(), retaining registration order and subquery stops.
 
 Layout and scope contracts:
 
@@ -403,12 +489,32 @@ Layout and scope contracts:
 
 - A childless node is not necessarily a constant.
 
-Further migrations are separate proposals. Keep check_no_nested_exists(),
-polarity-aware result substitution, simplify_ce(), pairwise comparison and
-aggregate-expression traversal specialized until their contracts are reviewed.
-HAVING identifiers change from column indices to aggregate registers after
-resolution; preserve the existing collection phase. Add mutable traversal only
-for a concrete later need.
+Follow-up review on 2026-10-31:
+
+- check_no_nested_exists() and check_cte_body_col_vs_col() now accept const
+  expression pointers and use shared child access. Their explicit subquery
+  stops, the CTE checker's stop at comparisons and existing call sites remain.
+  Unary and aggregate-register nodes no longer fall through to binary-field
+  traversal; unknown operators use the helper's INTERNAL error. No reachable
+  crash was reproduced before this change. User validation: ronsql_subquery,
+  ronsql_cte_colvscol and ronsql_cte.ronsql_cte_dd_d4_colvscol.
+
+- analyze_subqueries_ce() now uses a mutable child view to retain node pointers
+  for later rewriting. The helper deduces const or mutable pointers from its
+  input; existing read-only callers keep const pointers without const_cast.
+  All four subquery cases still return before child traversal, preserving
+  registration order and the stop at IN's outer operand. User validation:
+  ronsql_subquery, ronsql_subquery_agg, ronsql_subquery_agg_ext and
+  ronsql_cte_subquery.
+
+- Keep result substitution specialized: NOT changes polarity, while several
+  operators reset it. simplify_ce() replaces nodes and applies depth limits;
+  same_inner_filter() has operator-specific equality and conservative fallback
+  rules. Aggregate-expression traversal uses a separate expression type.
+
+- Audit HAVING validation and CTE projection collection separately before
+  widening their operator coverage. HAVING identifiers change from column
+  indices to aggregate registers after resolution; preserve the current phase.
 
 ### C5 Share checked Boolean collection and reconstruction
 

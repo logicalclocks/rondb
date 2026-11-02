@@ -65,7 +65,7 @@ static_assert(std::is_trivial<RonSQLColumnReference>::value,
 
 // Let Bison use the arena and throw std::bad_alloc on allocation failure.
 #define YYMALLOC(SIZE) \
-  ronsql_parser_alloc(context->get_allocator(), (SIZE), alignof(union yyalloc))
+  ronsql_parser_alloc(context, (SIZE), alignof(union yyalloc))
 #define YYFREE(PTR) void()
 
 // Let bison know it's okay to move the stack using memcpy. This could otherwise
@@ -111,9 +111,11 @@ while (0)
 #include "RonSQLLexer.l.hpp"
 
 static void*
-ronsql_parser_alloc(ArenaMalloc* allocator, size_t bytes, size_t alignment)
+ronsql_parser_alloc(RonSQLPreparer::Context* parser_context,
+                    size_t bytes, size_t alignment)
 {
-  void* ptr = allocator->alloc_bytes(bytes, alignment);
+  void* ptr = parser_context->alloc_bytes(
+      RonSQLAllocationTestHook::Site::PARSER_STACK, bytes, alignment);
   if (unlikely(ptr == NULL))
     throw std::bad_alloc();
   return ptr;
@@ -164,24 +166,19 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
   LexString str;
   LexCString str_c;
   RonSQLColumnReference column_ref_value;
-  struct
-  {
-    Outputs* head;
-    Outputs* tail;
-  } outputs_linked_list;
+  RonSQLListBuilder<Outputs> outputs_linked_list;
   Outputs* output;
   struct GroupbyColumns* groupby_cols;
+  RonSQLListBuilder<GroupbyColumns> groupby_list;
   struct OrderbyColumns* orderby_cols;
+  RonSQLListBuilder<OrderbyColumns> orderby_list;
   struct ConditionalExpression* conditional_expression;
   AggregationAPICompiler::Expr* arith_expr;
   struct TableRef* table_ref;
   struct JoinClause* join_clause;
   struct JoinCondition* join_condition;
   RonSQLListBuilder<JoinCondition> join_condition_list;
-  struct {
-    JoinClause* head;
-    JoinClause* tail;
-  } join_list;
+  RonSQLListBuilder<JoinClause> join_list;
   /* Phase I.17h: optional FROM clause at top-level SELECT.  Captures
    * either a populated FROM (root_table + joins) or an empty FROM
    * (NULL / NULL).  RonSQLPreparer fills the empty case by walking
@@ -193,10 +190,7 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
   } from_clause_val;
   struct SelectStatement* subquery_stmt;
   struct CteDefinition* cte_def;
-  struct {
-    CteDefinition* head;
-    CteDefinition* tail;
-  } cte_list;
+  RonSQLListBuilder<CteDefinition> cte_list;
   RonSQLListBuilder<ArithExprList> arith_expr_list;
   /* W1: MySQL-style index hint (FORCE/USE/IGNORE INDEX) on a table ref. */
   struct {
@@ -273,8 +267,10 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %type<str> identifier
 %type<str_c> identifier_c
 %type<column_ref_value> column_ref
-%type<groupby_cols> groupby_opt groupby_cols groupby_col
-%type<orderby_cols> orderby_opt orderby orderby_cols orderby_col
+%type<groupby_cols> groupby_opt groupby_col
+%type<groupby_list> groupby_cols
+%type<orderby_cols> orderby_opt orderby orderby_col
+%type<orderby_list> orderby_cols
 %type<output> output nonaliased_output
 %type<outputs_linked_list> outputlist
 %type<tokenkindval> aggfun interval_type
@@ -351,8 +347,8 @@ from_clause:
 | %empty                                { $$.root_table = NULL; $$.joins = NULL; }
 
 cte_list:
-  cte_def                               { $$.head = $1; $$.tail = $1; }
-| cte_list T_COMMA cte_def             { $$.head = $1.head; $$.tail = $3; $1.tail->next = $3; }
+  cte_def                               { $$ = {$1, $1}; }
+| cte_list T_COMMA cte_def             { $$ = $1; $$.append($3); }
 
 cte_def:
   identifier_c T_AS T_LEFT
@@ -391,14 +387,10 @@ frags_per_worker_opt:
     $$ = $3;
   }
 
-/* The outputlist rule is left-recursive in order to save both memory and cpu
- * cycles. Naively, this would produce a linked list in reverse order, so we use
- * a struct{head,tail} in order to produce a linked list that can be consumed in
- * the same order that it is constructed; left-to-right.
- */
+/* Left recursion bounds parser stack usage; the builder preserves source order. */
 outputlist:
-  output                                { $$.head = $1; $$.tail = $1; }
-| outputlist T_COMMA output             { $$.head = $1.head; $$.tail = $3; $1.tail->next = $3; }
+  output                                { $$ = {$1, $1}; }
+| outputlist T_COMMA output             { $$ = $1; $$.append($3); }
 
 output:
   nonaliased_output
@@ -591,14 +583,8 @@ index_name_list:
   }
 
 join_list:
-  %empty                                { $$.head = NULL; $$.tail = NULL; }
-| join_list join_clause                 { if ($1.head == NULL) {
-                                            $$.head = $2; $$.tail = $2;
-                                          } else {
-                                            $$.head = $1.head; $$.tail = $2;
-                                            $1.tail->next = $2;
-                                          }
-                                        }
+  %empty                                { $$ = {NULL, NULL}; }
+| join_list join_clause                 { $$ = $1; $$.append($2); }
 
 join_clause:
   T_JOIN table_ref T_ON join_condition_list
@@ -839,11 +825,12 @@ having_opt:
 
 groupby_opt:
   %empty                                { $$ = NULL; }
-| T_GROUP T_BY groupby_cols             { $$ = $3; }
+| T_GROUP T_BY groupby_cols             { $$ = $3.head; }
 
+/* Left recursion keeps parser stack usage bounded for flat column lists. */
 groupby_cols:
-  groupby_col                           { $$ = $1; }
-| groupby_col T_COMMA groupby_cols      { $$ = $1; $$->next = $3; }
+  groupby_col                           { $$ = {$1, $1}; }
+| groupby_cols T_COMMA groupby_col      { $$ = $1; $$.append($3); }
 
 groupby_col:
   column_ref                            { initptr($$); $$->col_idx = $1.column_idx(context); $$->next = NULL; }
@@ -853,11 +840,11 @@ orderby_opt:
 | orderby                               { $$ = $1; }
 
 orderby:
-  T_ORDER T_BY orderby_cols             { $$ = $3; }
+  T_ORDER T_BY orderby_cols             { $$ = $3.head; }
 
 orderby_cols:
-  orderby_col                           { $$ = $1; }
-| orderby_col T_COMMA orderby_cols      { $$ = $1; $$->next = $3; }
+  orderby_col                           { $$ = {$1, $1}; }
+| orderby_cols T_COMMA orderby_col      { $$ = $1; $$.append($3); }
 
 orderby_col:
   column_ref sort_direction_opt

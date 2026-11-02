@@ -588,8 +588,9 @@ union rsqlp_alloc_align
 void*
 rsqlp_alloc(size_t bytes, void * scanner)
 {
-  void* ret = rsqlp_get_extra(scanner)->get_allocator()->
-    alloc_bytes(bytes, alignof(union rsqlp_alloc_align));
+  void* ret = rsqlp_get_extra(scanner)->alloc_bytes(
+      RonSQLAllocationTestHook::Site::LEXER,
+      bytes, alignof(union rsqlp_alloc_align));
   if(likely(ret)) {
     return ret;
   }

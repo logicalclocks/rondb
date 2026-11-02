@@ -592,17 +592,23 @@ require_run(bool condition, const char* msg)
 }
 
 namespace {
-struct ConditionChildren
+template <typename Expression>
+struct ConditionChildPointers
 {
-  const ConditionalExpression* first;
-  const ConditionalExpression* second;
+  Expression* first;
+  Expression* second;
 };
+
+using ConditionChildren = ConditionChildPointers<const ConditionalExpression>;
+using MutableConditionChildren = ConditionChildPointers<ConditionalExpression>;
 
 // Return only children in the current SELECT scope. Subquery statements
 // and aggregation-program expressions are traversed separately. A node
 // without children is not necessarily a constant.
-ConditionChildren
-condition_children(const ConditionalExpression& ce)
+// Preserve input constness without duplicating the node-layout switch.
+template <typename Expression>
+ConditionChildPointers<Expression>
+condition_children(Expression& ce)
 {
   switch (ce.op)
   {
@@ -6034,7 +6040,7 @@ RonSQLPreparer::root_pk_equality_covered(QueryScope& scope)
  * Used after decorrelation to catch EXISTS inside OR (unsupported).
  */
 static void
-check_no_nested_exists(struct ConditionalExpression* ce)
+check_no_nested_exists(const ConditionalExpression* ce)
 {
   if (ce == NULL) return;
   if (ce->op == T_EXISTS)
@@ -6043,30 +6049,17 @@ check_no_nested_exists(struct ConditionalExpression* ce)
         "EXISTS must be a top-level AND conjunct in WHERE.");
   switch (ce->op)
   {
-  case T_IS:
-    check_no_nested_exists(ce->is.arg);
-    return;
-  case T_INTERVAL:
-    check_no_nested_exists(ce->interval.arg);
-    return;
-  case T_EXTRACT:
-    check_no_nested_exists(ce->extract.arg);
-    return;
-  case T_IDENTIFIER:
-  case T_INT:
-  case T_FLOAT:
-  case T_STRING:
-  case I_MYSQL_TIME:
-  case T_NULL:
   case I_SUBQUERY:
   case I_IN_SUBQUERY:
   case I_CORR_SCALAR:
+    // Preserve this check's boundary, including outer subquery operands.
     return;
   default:
-    check_no_nested_exists(ce->args.left);
-    check_no_nested_exists(ce->args.right);
-    return;
+    break;
   }
+  const ConditionChildren children = condition_children(*ce);
+  check_no_nested_exists(children.first);
+  check_no_nested_exists(children.second);
 }
 
 /*
@@ -6091,8 +6084,8 @@ check_no_nested_exists(struct ConditionalExpression* ce)
  * col-vs-col does not flow through build_cte_scopes and is unaffected.
  */
 void
-RonSQLPreparer::check_cte_body_col_vs_col(const QueryScope& scope,
-                                          ConditionalExpression* ce) const
+RonSQLPreparer::check_cte_body_col_vs_col(
+    const QueryScope& scope, const ConditionalExpression* ce) const
 {
   if (ce == NULL) return;
   switch (ce->op)
@@ -6140,30 +6133,17 @@ RonSQLPreparer::check_cte_body_col_vs_col(const QueryScope& scope,
     // A comparison's operands are scalar expressions, not boolean
     // connectives, so there is no nested comparison to recurse into.
     return;
-  case T_IS:
-    check_cte_body_col_vs_col(scope, ce->is.arg);
-    return;
-  case T_INTERVAL:
-    check_cte_body_col_vs_col(scope, ce->interval.arg);
-    return;
-  case T_EXTRACT:
-    check_cte_body_col_vs_col(scope, ce->extract.arg);
-    return;
-  case T_IDENTIFIER:
-  case T_INT:
-  case T_FLOAT:
-  case T_STRING:
-  case I_MYSQL_TIME:
-  case T_NULL:
   case I_SUBQUERY:
   case I_IN_SUBQUERY:
   case I_CORR_SCALAR:
+    // Preserve this check's boundary, including outer subquery operands.
     return;
   default:
-    check_cte_body_col_vs_col(scope, ce->args.left);
-    check_cte_body_col_vs_col(scope, ce->args.right);
-    return;
+    break;
   }
+  const ConditionChildren children = condition_children(*ce);
+  check_cte_body_col_vs_col(scope, children.first);
+  check_cte_body_col_vs_col(scope, children.second);
 }
 
 namespace {
@@ -7868,11 +7848,6 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
     reject_ignored_orderby_limit(ce->subquery.stmt, "an EXISTS subquery",
                                  NULL);
     return;
-  case T_NOT:
-  case T_EXCLAMATION:
-    // NOT EXISTS handled in decorrelate_exists() — T_NOT wraps I_IN_SUBQUERY.
-    analyze_subqueries_ce(ce->args.left);
-    return;
   case I_IN_SUBQUERY:
   {
     reject_ignored_orderby_limit(ce->in_subquery.stmt, "an IN subquery",
@@ -7893,33 +7868,12 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
   case I_CORR_SCALAR:
     // Registered in decorrelate_scalar(). No further action.
     return;
-  case T_IS:
-    analyze_subqueries_ce(ce->is.arg);
-    return;
-  case T_INTERVAL:
-    analyze_subqueries_ce(ce->interval.arg);
-    return;
-  case T_EXTRACT:
-    analyze_subqueries_ce(ce->extract.arg);
-    return;
-  case T_IDENTIFIER:
-  case T_INT:
-  case T_FLOAT:
-  case T_STRING:
-  case I_MYSQL_TIME:
-  case T_SUM:
-  case T_MIN:
-  case T_MAX:
-  case T_COUNT:
-  case T_AVG:
-  case T_NULL:
-    return;
   default:
-    // Binary/unary operators: recurse into both sides
-    analyze_subqueries_ce(ce->args.left);
-    analyze_subqueries_ce(ce->args.right);
-    return;
+    break;
   }
+  const MutableConditionChildren children = condition_children(*ce);
+  analyze_subqueries_ce(children.first);
+  analyze_subqueries_ce(children.second);
 }
 
 /*
@@ -16363,7 +16317,8 @@ RonSQLPreparer::encode_constant(struct ConditionalExpression *ce,
     int prec = col->getPrecision();
     int scale = col->getScale();
     size_t bin_len = decimal_bin_size(prec, scale);
-    void* bin = m_amalloc->alloc_bytes(bin_len, 4);
+    void* bin = m_context.alloc_bytes(
+        RonSQLAllocationTestHook::Site::DECIMAL_BUFFER, bin_len, 4);
     if (unlikely(bin == NULL))
       throw std::bad_alloc();
     int err;
@@ -20178,6 +20133,16 @@ ArenaMalloc*
 RonSQLPreparer::Context::get_allocator()
 {
   return m_parser.m_amalloc;
+}
+
+void*
+RonSQLPreparer::Context::alloc_bytes(RonSQLAllocationTestHook::Site site,
+                                    size_t bytes, size_t alignment) noexcept
+{
+  RonSQLAllocationTestHook* hook = m_parser.m_conf.allocation_test_hook;
+  if (hook != NULL && hook->should_fail(site))
+    return NULL;
+  return m_parser.m_amalloc->alloc_bytes(bytes, alignment);
 }
 
 SelectStatement*

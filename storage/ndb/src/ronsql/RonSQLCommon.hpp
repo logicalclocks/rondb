@@ -145,12 +145,38 @@ public:
                       std::string& json) = 0;
 };
 
+// Request-local allocation fault injection for C++ tests. A zero fail_on only
+// counts allocations; otherwise exactly that matching allocation returns NULL.
+// Keep counting after the failure so tests can detect an unexpected retry.
+struct RonSQLAllocationTestHook
+{
+  enum class Site
+  {
+    DECIMAL_BUFFER,
+    PARSER_STACK,
+    LEXER,
+  };
+  Site site;
+  size_t fail_on = 0;
+  size_t attempts = 0;
+
+  bool should_fail(Site allocation_site) noexcept
+  {
+    if (allocation_site != site) return false;
+    ++attempts;
+    return fail_on != 0 && attempts == fail_on;
+  }
+};
+
 struct RonSQLExecParams
 {
   char* sql_buffer = NULL;
   size_t sql_len = 0;
   ArenaMalloc* amalloc = NULL;
   Ndb* ndb = NULL;
+  // Optional C++ test hook; not exposed through SQL or HTTP. The caller owns
+  // the hook and keeps it alive throughout preparation, execution and retries.
+  RonSQLAllocationTestHook* allocation_test_hook = NULL;
   enum class ExplainMode
   {
              // SELECT causes: | EXPLAIN SELECT causes: | Ndb connection required:

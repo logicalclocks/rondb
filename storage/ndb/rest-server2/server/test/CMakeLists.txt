@@ -25,6 +25,17 @@ NDB_ADD_EXECUTABLE(api_key_test api_key_test.cpp
 NDB_ADD_EXECUTABLE(error_handling_test error_handling_test.cpp
                    STATIC_NDBCLIENT)
 
+# RonSQL allocation-failure regression driver. It provides its own main()
+# to initialize and shut down the NDB client library.
+NDB_ADD_EXECUTABLE(ronsql_oom_test ronsql_oom_test.cpp
+                   STATIC_NDBCLIENT)
+TARGET_LINK_LIBRARIES(
+  ronsql_oom_test
+  ndbgeneral
+  rdrs2_lib
+  ${GTEST_LIBRARIES}
+)
+
 NDB_ADD_EXECUTABLE(reconnect_test reconnect_test.cpp
                    STATIC_NDBCLIENT)
 
@@ -141,10 +152,10 @@ TARGET_LINK_LIBRARIES(
   ${GTEST_LIBRARIES}
 )
 
-# The C++ tests do not seed the cluster and embed no SQL fixtures. The test
-# databases are created by the Go test suite from
-# test_go/resources/testdbs (the single source of truth) - run any Go
-# integration test package before running these binaries.
+# The C++ tests do not seed the cluster. Most cluster tests use databases
+# created by the Go suite in test_go/resources/testdbs; run a Go integration
+# package first. ronsql_oom_test uses the fixture from ronsql_parser_oom.test,
+# which also runs the full driver. Its CTest entry needs no cluster.
 
 add_test(NAME process_setup_test COMMAND process_setup_test)
 add_test(NAME buffer_manager_test COMMAND buffer_manager_test)
@@ -153,6 +164,12 @@ add_test(NAME buffer_chain_test COMMAND buffer_chain_test)
 add_test(NAME api_key_test COMMAND api_key_test)
 add_test(NAME feature_store_test COMMAND feature_store_test)
 add_test(NAME error_handling_test COMMAND error_handling_test)
+# DECIMAL ParseOnly remains cluster-free; execution cases run through MTR.
+add_test(NAME ronsql_parser_oom_test COMMAND ronsql_oom_test
+         --gtest_filter=EntryPoints/RonSQLParserAllocationFailure.*:RonSQLDecimalParseOnly.*)
+# Flat GROUP/ORDER lists must fit the parser's initial stack.
+add_test(NAME ronsql_parser_list_stack_test COMMAND ronsql_oom_test
+         --gtest_filter=RonSQLParserListStack.*)
 add_test(NAME reconnect_test COMMAND reconnect_test)
 add_test(NAME probe_server_http_test COMMAND probe_server_http_test)
 add_test(NAME probe_server_cluster_test COMMAND probe_server_cluster_test)

@@ -90,6 +90,16 @@ static_assert(std::is_trivial<RonSQLListBuilder<IndexHintList>>::value,
               "Bison semantic values must remain trivial.");
 static_assert(std::is_trivial<RonSQLListBuilder<JoinCondition>>::value,
               "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<GroupbyColumns>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<OrderbyColumns>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<Outputs>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<CteDefinition>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<JoinClause>>::value,
+              "Bison semantic values must remain trivial.");
 
 // Phase I.5 v2b: linked list of operands for an n-ary GREATEST / LEAST.
 // Built bottom-up by the parser via mk_arg_list / append_arg_list.
@@ -178,6 +188,10 @@ public:
     void set_err_state(ErrState state, char* err_pos, size_t err_len);
     AggregationAPICompiler* get_agg();
     ArenaMalloc* get_allocator();
+    // Nonthrowing allocation at the sites covered by fault-injection tests.
+    // The caller retains its NULL check and exception translation.
+    void* alloc_bytes(RonSQLAllocationTestHook::Site site,
+                      size_t bytes, size_t alignment) noexcept;
     // Allocate an arena-owned statement with its default member initializers.
     SelectStatement* make_select_statement();
     // Callers attach index hints and record authorization after construction.
@@ -725,7 +739,7 @@ private:
   // stored columns on the body root op; refined permanent errors
   // otherwise.
   void check_cte_body_col_vs_col(const QueryScope& scope,
-                                 ConditionalExpression* ce) const;
+                                 const ConditionalExpression* ce) const;
   bool is_anti_join_promotable(const QueryScope& scope,
                                Uint32 op_idx,
                                const ConditionalExpression* ce) const;
