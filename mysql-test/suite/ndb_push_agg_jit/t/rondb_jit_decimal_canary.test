@@ -13,6 +13,12 @@
 # delta. The scale-2 values are exact quarters so the double-track
 # sums print the same digits as server-side DECIMAL math.
 #
+# mysqld pushes no SUM or AVG over a DECIMAL with scale > 0, as the
+# DOUBLE track is not exact (Q-6 / E-16, is_exact_aggregate_arg), only
+# MIN and MAX over one of at most 15 digits. So the scale-2 queries use
+# MIN and MAX; rondb_jit_ronsql_canary covers SUM over scale-2 DECIMAL
+# arithmetic through RonSQL (Q7, Q7b).
+#
 # Requires regenerated stencils (regen-stencils) in the build.
 
 --echo ############################################################
@@ -51,7 +57,7 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --echo # Q2: scale-2 DECIMAL — DOUBLE track — must JIT.
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_decimal_canary_mgm.log
-SELECT SUM(d92), MIN(d92), MAX(d92) FROM t1;
+SELECT MIN(d92), MAX(d92) FROM t1;
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_decimal_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
@@ -68,7 +74,7 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_decimal_canary_mgm.log
 --sorted_result
-SELECT grp, SUM(d92) FROM t1 GROUP BY grp;
+SELECT grp, MIN(d92), MAX(d92) FROM t1 GROUP BY grp;
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_decimal_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q4_jit_compiled;
 
@@ -76,7 +82,7 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 --echo #     per-row interpreter fallback in this first cut (no
 --echo #     null-branching DECIMAL load yet), so no 4060 here; the
 --echo #     values are the assertion.
-SELECT SUM(dn), COUNT(dn) FROM t1;
+SELECT MIN(dn), MAX(dn), COUNT(dn) FROM t1;
 
 DROP TABLE t1;
 

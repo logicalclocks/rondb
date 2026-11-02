@@ -1,0 +1,239 @@
+#
+# Tables and data
+#
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 5000)
+SELECT n FROM c;
+CREATE TABLE d (
+id INT NOT NULL PRIMARY KEY,
+g INT NOT NULL,
+gn INT NULL,
+a INT NULL,
+b INT NULL,
+k INT NOT NULL,
+x INT NULL,
+nm VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+nm_gen VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+nm_sw VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+dbl DOUBLE NOT NULL,
+KEY ix_g (g),
+KEY ix_k (k),
+KEY ix_x (x)
+) ENGINE=NDB;
+INSERT INTO d
+SELECT n, n % 20, IF(n % 7 = 0, NULL, n % 5),
+IF(n % 9 = 0, NULL, (n * 13) % 1000 + 1),
+IF(n % 11 = 0, NULL, (n * 17) % 900 + 1),
+(n * 7919) % 10007,
+IF(n % 6 = 0, NULL, n % 25),
+w, w, w,
+IF(n % 3 = 0, -0e0, IF(n % 3 = 1, 0e0, 1.5e0))
+FROM (SELECT n, ELT(1 + n % 5,
+CONCAT('grav', LPAD(n % 30, 3, '0')),
+CONCAT('GRAV', LPAD(n % 30, 3, '0')),
+CONCAT('gr', _utf8mb4 x'C3A1', 'v', LPAD(n % 30, 3, '0')),
+CONCAT('GR', _utf8mb4 x'C381', 'V', LPAD(n % 30, 3, '0')),
+CONCAT('grav', LPAD(n % 30, 3, '0'), '  ')) AS w
+FROM seq WHERE n <= 2000) AS dt;
+CREATE TABLE l1 (
+pk INT NOT NULL PRIMARY KEY,
+v INT NOT NULL,
+c INT NOT NULL,
+s VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+b INT NULL
+) ENGINE=NDB;
+INSERT INTO l1
+SELECT n, n % 10, n % 100,
+ELT(1 + n % 6, 'Bob', 'alice', 'Carl',
+CONCAT(_utf8mb4 x'C3A9', 'clair'), 'dough', 'Fudge'),
+IF(n % 8 = 0, NULL, (n * 11) % 900 + 1)
+FROM seq WHERE n <= 1000 AND n % 3 <> 0;
+CREATE TABLE l2 (
+pk INT NOT NULL PRIMARY KEY,
+v INT NOT NULL,
+c INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO l2 SELECT n, n % 13, (n * 5) % 500 + 1 FROM seq
+WHERE n <= 900 AND n % 4 <> 0;
+CREATE TABLE l3 (
+pk INT NOT NULL PRIMARY KEY,
+v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO l3 SELECT n, n % 7 FROM seq WHERE n <= 500 AND n % 5 <> 0;
+CREATE TABLE f (
+id INT NOT NULL PRIMARY KEY,
+did INT NOT NULL,
+qty INT NOT NULL,
+price DECIMAL(10,2) NOT NULL,
+disc DECIMAL(4,2) NOT NULL,
+r DOUBLE NOT NULL,
+big BIGINT NOT NULL,
+ubig BIGINT UNSIGNED NOT NULL,
+dec38 DECIMAL(38,6) NOT NULL,
+y INT NULL,
+s VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
+fdbl DOUBLE NOT NULL,
+KEY ix_did (did),
+KEY ix_y (y)
+) ENGINE=NDB;
+INSERT INTO f
+SELECT s1.n * 10 + s2.n, s1.n,
+(s1.n * 7 + s2.n * 3) % 50,
+((s1.n * 37 + s2.n * 11) % 400) * 0.25 + 1,
+ELT(1 + (s1.n + s2.n) % 3, 0.00, 0.25, 0.50),
+((s1.n + s2.n) % 40) * 0.25,
+IF(s1.n % 20 = 3, 4611686018427387904 + s1.n * 10 + s2.n, s1.n),
+IF(s1.n % 20 = 4, 9223372036854775808 + s1.n * 10 + s2.n, s1.n),
+CAST(12345678901234567890123456.123456 AS DECIMAL(38,6)) * (1 + s2.n % 3)
++ s1.n / 1000,
+IF((s1.n + s2.n) % 5 = 0, NULL, (s1.n + s2.n) % 25),
+ELT(1 + (s1.n + s2.n) % 5,
+CONCAT('grav', LPAD(s1.n % 30, 3, '0')),
+CONCAT('GRAV', LPAD(s1.n % 30, 3, '0')),
+CONCAT('gr', _utf8mb4 x'C3A1', 'v', LPAD(s1.n % 30, 3, '0')),
+CONCAT('GR', _utf8mb4 x'C381', 'V', LPAD(s1.n % 30, 3, '0')),
+CONCAT('grav', LPAD(s1.n % 30, 3, '0'), '  ')),
+IF(s2.n % 3 = 0, -0e0, IF(s2.n % 3 = 1, 0e0, 2.5e0))
+FROM seq s1, seq s2
+WHERE s1.n <= 2000 AND s2.n <= 5 AND s2.n <= s1.n % 6;
+CREATE TABLE reg (
+id INT NOT NULL PRIMARY KEY,
+region VARCHAR(10) NOT NULL
+) ENGINE=NDB;
+INSERT INTO reg SELECT n - 1, ELT(1 + n % 4, 'north', 'south', 'east', 'west')
+FROM seq WHERE n <= 20;
+ANALYZE TABLE d, l1, l2, l3, f, reg;
+Table	Op	Msg_type	Msg_text
+test.d	analyze	status	OK
+test.l1	analyze	status	OK
+test.l2	analyze	status	OK
+test.l3	analyze	status	OK
+test.f	analyze	status	OK
+test.reg	analyze	status	OK
+SELECT COUNT(*) FROM f;
+COUNT(*)
+4998
+SET SESSION ndb_use_transactions = 0;
+CREATE TABLE e2_t1 (
+id INT NOT NULL PRIMARY KEY,
+a INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO e2_t1
+SELECT (s1.n - 1) * 1000 + s2.n, (s1.n - 1) * 1000 + s2.n
+FROM seq s1, seq s2 WHERE s1.n <= 60 AND s2.n <= 1000;
+CREATE TABLE e2_t2 (
+id INT NOT NULL PRIMARY KEY,
+a INT NOT NULL,
+c INT NOT NULL,
+KEY ix_a (a)
+) ENGINE=NDB;
+INSERT INTO e2_t2
+SELECT ((s1.n - 1) * 1000 + s2.n) * 3 + s3.n - 1,
+(s1.n - 1) * 1000 + s2.n,
+(((s1.n - 1) * 1000 + s2.n) * 7 + s3.n * 13) % 1000
+FROM seq s1, seq s2, seq s3
+WHERE s1.n <= 60 AND s2.n <= 1000 AND s3.n <= 3;
+CREATE TABLE e2_t3 (
+c INT NOT NULL PRIMARY KEY,
+g INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO e2_t3 SELECT n - 1, n % 17 FROM seq WHERE n <= 1000;
+SET SESSION ndb_use_transactions = DEFAULT;
+ANALYZE TABLE e2_t1, e2_t2, e2_t3;
+Table	Op	Msg_type	Msg_text
+test.e2_t1	analyze	status	OK
+test.e2_t2	analyze	status	OK
+test.e2_t3	analyze	status	OK
+SELECT COUNT(*) FROM e2_t2;
+COUNT(*)
+180000
+#
+# Baseline: inner join, GROUP BY a root column
+#
+# G0-baseline: rows=20 pushed=2 exec=1 agg=1
+#
+# E-1: double constants in an aggregate expression
+#
+# E-1a-max-slot0-decimal-expr: rows=20 pushed=2 exec=1 agg=0
+# E-1b-min-slot0-real-const-scalar: rows=1 pushed=2 exec=1 agg=1
+# E-1c-sum-slot0-const-two: rows=20 pushed=2 exec=1 agg=0
+# E-1d-count-slot0-real-const: rows=20 pushed=2 exec=1 agg=1
+# E-1f-max-slot0-decimal-expr-scalar: rows=1 pushed=2 exec=1 agg=0
+# E-1e-control-int-const: rows=20 pushed=2 exec=1 agg=1
+#
+# E-5 / Q-3: GROUP BY strings whose equal values differ in bytes
+#
+# E-5a-group-by-root-ai-ci: rows=25 pushed=2 exec=1 agg=1
+# E-5b-group-by-root-general-ci-pad: rows=25 pushed=2 exec=1 agg=1
+# E-5c-group-by-root-latin1-swedish: rows=25 pushed=2 exec=1 agg=1
+# E-5d-group-by-leaf-ai-ci: rows=39 pushed=2 exec=1 agg=1
+# E-5e-single-table-group-by-ai-ci: rows=30 pushed=0 exec=0 agg=1
+# E-5f-single-table-group-by-latin1-pad: rows=30 pushed=0 exec=0 agg=1
+#
+# Q-7: DOUBLE group key with -0.0 and 0.0
+#
+# Q-7a-group-by-double-zero-leaf: rows=2 pushed=2 exec=1 agg=1
+# Q-7b-group-by-double-zero-root: rows=2 pushed=2 exec=1 agg=1
+#
+# MIN / MAX of strings under utf8mb4_0900_ai_ci
+#
+# M1-min-max-string-collation: rows=20 pushed=2 exec=1 agg=1
+# M2-min-max-string-collation-scalar: rows=1 pushed=2 exec=1 agg=1
+#
+# NULL group keys and empty input
+#
+# N1-null-group-key-root: rows=6 pushed=2 exec=1 agg=1
+# N2-null-group-key-leaf: rows=21 pushed=2 exec=1 agg=1
+# N3-group-by-outer-child-column: rows=21 pushed=2 exec=1 agg=1
+# N4-empty-input-scalar: rows=1 pushed=2 exec=1 agg=1
+# N5-empty-input-grouped: rows=0 pushed=2 exec=1 agg=1
+# N6-empty-input-outer-scalar: rows=1 pushed=2 exec=1 agg=1
+#
+# Q-6: wide DECIMAL sums
+#
+# Q-6c-sum-decimal38: rows=20 pushed=2 exec=1 agg=0
+# Q-6d-avg-int: rows=20 pushed=2 exec=1 agg=1
+#
+# Outer joins
+#
+# E-4a-case-over-left-lookup: rows=20 pushed=2 exec=1 agg=1
+# E-4b-case-over-left-scan: rows=20 pushed=2 exec=1 agg=1
+# E-6b-left-scan-on-filter: rows=20 pushed=2 exec=1 agg=1
+# E-9b-inner-left-siblings: rows=20 pushed=3 exec=1 agg=1
+# Q-5-inner-scan-then-left-scan: rows=4 pushed=3 exec=1 agg=1
+#
+# E-11: IN-list filters on a lookup leaf
+#
+# E-11a-in-list-5: rows=4 pushed=2 exec=1 agg=1
+# E-11b-in-list-20: rows=20 pushed=2 exec=1 agg=0
+# E-11c-in-list-40: rows=10 pushed=2 exec=1 agg=0
+#
+# E-12: range and multi-range roots
+#
+# E-12a-range-root: rows=20 pushed=2 exec=1 agg=1
+# E-12b-in-list-root: rows=17 pushed=2 exec=1 agg=0
+# E-12c-in-list-root-scalar: rows=1 pushed=2 exec=1 agg=0
+#
+# E-15: NULL-safe equality ref child
+#
+# E-15-nullsafe-ref-child: rows=18 pushed=0 exec=0 agg=0
+#
+# E-10: a root condition that cannot be pushed must stop the
+# aggregation pushdown (agg=0 is fine; a wrong result is not)
+#
+# E-10a-unpushable-root-cond-join: rows=20 pushed=2 exec=1 agg=0
+# E-10b-unpushable-cond-single-table: rows=20 pushed=0 exec=0 agg=0
+#
+# Not pushed today, results must still match
+#
+# X1-count-distinct: rows=20 pushed=0 exec=0 agg=0
+# E-30-having: rows=20 pushed=2 exec=1 agg=0
+#
+# E-2: scan -> index scan -> lookup leaf over a 60000-row root
+#
+# E-2a-p1-scan-scan-lookup-large-root: rows=17 pushed=3 exec=1 agg=1
+# E-2b-p1-scan-scan-large-root-scalar: rows=1 pushed=2 exec=1 agg=1
+# E-2a-p2-scan-scan-lookup-large-root: rows=17 pushed=3 exec=1 agg=1
+# E-2b-p2-scan-scan-large-root-scalar: rows=1 pushed=2 exec=1 agg=1
+DROP TABLE seq, d, l1, l2, l3, f, reg, e2_t1, e2_t2, e2_t3;

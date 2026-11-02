@@ -74,6 +74,11 @@ ndb.ndb_database_lctn @darwin: Bug#30455400 INCORRECT SCHEMA NAME PASSED TO HA_B
 
 ndb.ndb_transaction_max_size @solaris: Bug#35392266 ndb_transaction_max_size fails in PB2 Solaris due to content mismatch
 
+# Pushed join aggregation shapes that still give wrong results, split out
+# of ndb_push_agg_dist.ndb_spj_shapes_agg until they are fixed
+ndb_push_agg_dist.ndb_spj_shapes_agg_outer : RONDB-1124 E-3 E-6 E-8 E-9 outer-join aggregation
+ndb_push_agg_dist.ndb_spj_shapes_agg_exact : RONDB-1124 Q-6 SUM(BIGINT) overflow fails with 1860
+
 @import ../suite/rdrs2-golang/disabled.def
 @import ../suite/rdrs2/disabled.def
 @import ../suite/ronsql/disabled.def

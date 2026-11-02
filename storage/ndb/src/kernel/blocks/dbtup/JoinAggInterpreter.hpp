@@ -380,6 +380,19 @@ class JoinAggInterpreter : public AggInterpreterBase {
                    Uint32 xfrm_buf_len,
                    Uint32* attr_read_buf = nullptr);
 
+  /* E-4: kOpEmbeddedInterp for a NULL-extended row, which has no tuple
+   * for Dbtup::interpreterAggEmbedded.  Evaluates the embedded program
+   * with the local columns NULL, see the definition. */
+  enum EmbeddedNullRowResult {
+    EMB_NULL_ROW_OUTPUT,       // *skip_offset holds interpreter output 0
+    EMB_NULL_ROW_REJECT,       // EXIT_REFUSE: stop the row's program
+    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (linked columns, ...)
+    EMB_NULL_ROW_ERROR         // fails as in DBTUP
+  };
+  static EmbeddedNullRowResult evalEmbeddedForNullRow(const Uint32* emb_prog,
+                                                      Uint32 emb_len,
+                                                      Uint32* skip_offset);
+
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /
   // processNullExtendedRow and consumed by MaxString / MinString

@@ -58,10 +58,12 @@ SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q1_jit_compiled;
 
 --echo # Q2: double +,* and the all-double generic '/'.
-SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;
+# The aliases are a1, a2, a3: RonSQL rejects S3, a MySQL keyword, as an
+# unquoted identifier.
+SELECT SUM(d + e) AS a1, SUM(d * e) AS a2, SUM(d / e) AS a3 FROM t1;
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
---exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;"
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(d + e) AS a1, SUM(d * e) AS a2, SUM(d / e) AS a3 FROM t1;"
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 
@@ -122,6 +124,17 @@ SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(p * q) AS s FROM td;"
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
+
+--echo # Q7b: the TPC-H Q9 shape — integer constant minus a scaled
+--echo #      DECIMAL, times another DECIMAL.
+# From rondb_jit_mixed_canary: mysqld no longer pushes an aggregate over
+# an expression with a DECIMAL result (Q-6 / E-16), RonSQL does.
+SELECT SUM(p * (1 - q)) AS s FROM td;
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+--exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+--exec $RONSQL_CLI --connect-string "$NDB_CONNECTSTRING" -D test -e "SELECT SUM(p * (1 - q)) AS s FROM td;"
+--exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_ronsql_canary_mgm.log
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7b_jit_compiled;
 
 --echo # Q8: scale-0 DECIMAL arithmetic lands in the checked signed
 --echo #     integer track.

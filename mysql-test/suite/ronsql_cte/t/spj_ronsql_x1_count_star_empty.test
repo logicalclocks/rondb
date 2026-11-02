@@ -1,0 +1,181 @@
+# spj_ronsql_x1_count_star_empty
+#
+# Finding X-1 (storage/ndb/claude_files/dbspj/README.md, "Next round:
+# RonSQL"): a SELECT-list COUNT(*) subquery with no matching inner rows
+# must give 0, as in MySQL.
+#
+# RonSQL makes each SELECT-list subquery a LEFT JOIN aggregate leaf.  An
+# entity without inner rows gets a NULL-extended row for that leaf, and
+# RonSQL compiles COUNT(*) as "load the constant 1, Count"
+# (RonSQLPreparer.cpp, the SELECT-list subquery program), so it counts
+# the NULL row itself and gives 1.  COUNT(col) loads the NULL column and
+# is right.  Unlike E-7 this is in RonSQL, not in the kernel.  The fix
+# counts the correlation column, or a primary key column, which is NULL
+# only on the NULL-extended row; integer columns first, then strings.
+#
+# Data: x1_e.id = 1..4.  x1_b rows (id, eid): (1,1) (2,1) (3,2) (4,3),
+# so entity 4 has none.  x1_p.id = 1, 2.  x1_se and x1_sb are x1_e and
+# x1_b with VARCHAR keys 'e1'..'e4' and 'b1'..'b4'.
+#
+#   x1-1  correlated on the indexed eid (INDEX_SCAN leaf, DBSPJ sends the
+#         NULL row for entity 4).
+#         Expected (MySQL): (1,2) (2,1) (3,1) (4,0).
+#   x1-2  correlated on the primary key (PK_LOOKUP leaf, DBLQH sends the
+#         NULL rows for the misses of entities 3 and 4).
+#         Expected (MySQL): (1,1) (2,1) (3,0) (4,0).
+#   x1-3  control: COUNT(col) instead of COUNT(*) gives the same values.
+#   x1-4  x1-1 with VARCHAR keys (the fix counts a string column).
+#         Expected (MySQL): (e1,2) (e2,1) (e3,1) (e4,0).
+#   x1-5  x1-1 with a filter that compares inner and outer columns
+#         (b.id > e.id, an embedded condition before the count).
+#         Expected (MySQL): (1,1) (2,1) (3,1) (4,0).
+# Expected before a fix: 1 instead of 0 in x1-1, x1-2, x1-4 and x1-5.
+#
+# A failing grep at x1-0 means RonSQL chose another plan: adjust the test.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_ronsql_x1_count_star_empty
+# Record: ./mtr --suite=ronsql_cte --record spj_ronsql_x1_count_star_empty
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-ronsql-x1-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE x1_e (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE x1_b (
+  id  INT NOT NULL,
+  eid INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_x1_b_eid (eid)
+) ENGINE=NDB;
+
+CREATE TABLE x1_p (
+  id INT NOT NULL,
+  v  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE x1_se (
+  id VARCHAR(8) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE x1_sb (
+  id  VARCHAR(8) CHARACTER SET latin1 NOT NULL,
+  eid VARCHAR(8) CHARACTER SET latin1 NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_x1_sb_eid (eid)
+) ENGINE=NDB;
+
+INSERT INTO x1_e VALUES (1), (2), (3), (4);
+INSERT INTO x1_b VALUES (1, 1), (2, 1), (3, 2), (4, 3);
+INSERT INTO x1_p VALUES (1, 10), (2, 20);
+INSERT INTO x1_se VALUES ('e1'), ('e2'), ('e3'), ('e4');
+INSERT INTO x1_sb VALUES ('b1', 'e1'), ('b2', 'e1'), ('b3', 'e2'), ('b4', 'e3');
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === x1-0: the leaves are a LEFT JOIN INDEX_SCAN (x1-1), PK_LOOKUP (x1-2) ===
+let $QUERY=
+SELECT e.id, (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id) AS cb
+FROM x1_e AS e;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[LEFT JOIN] INDEX_SCAN x1_b AS b  <- e' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+let $QUERY=
+SELECT e.id, (SELECT COUNT(*) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[LEFT JOIN] PK_LOOKUP x1_p AS p  <- e' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === x1-1: COUNT(*) subquery, index scan leaf, entity 4 has no rows ===
+let $QUERY=
+SELECT e.id, (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id) AS cb
+FROM x1_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id, (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id) AS cb
+FROM x1_e AS e|
+
+--echo
+--echo === x1-2: COUNT(*) subquery, lookup leaf, entities 3 and 4 miss ===
+let $QUERY=
+SELECT e.id, (SELECT COUNT(*) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id, (SELECT COUNT(*) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e|
+
+--echo
+--echo === x1-3: control, COUNT(col) in both forms ===
+let $QUERY=
+SELECT e.id, (SELECT COUNT(b.id) FROM x1_b AS b WHERE b.eid = e.id) AS cb,
+             (SELECT COUNT(p.v) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id, (SELECT COUNT(b.id) FROM x1_b AS b WHERE b.eid = e.id) AS cb,
+             (SELECT COUNT(p.v) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e|
+
+--echo
+--echo === x1-4: COUNT(*) subquery with VARCHAR keys, e4 has no rows ===
+let $QUERY=
+SELECT e.id, (SELECT COUNT(*) FROM x1_sb AS b WHERE b.eid = e.id) AS cb
+FROM x1_se AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id, (SELECT COUNT(*) FROM x1_sb AS b WHERE b.eid = e.id) AS cb
+FROM x1_se AS e|
+
+--echo
+--echo === x1-5: COUNT(*) subquery with an inner-outer filter ===
+let $QUERY=
+SELECT e.id,
+       (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id AND b.id > e.id) AS cb
+FROM x1_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+       (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id AND b.id > e.id) AS cb
+FROM x1_e AS e|
+
+DELIMITER ;|
+
+--echo
+--echo === x1-6: no DBSPJ request left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--disable_query_log
+DROP TABLE x1_e;
+DROP TABLE x1_b;
+DROP TABLE x1_p;
+DROP TABLE x1_se;
+DROP TABLE x1_sb;
+--enable_query_log

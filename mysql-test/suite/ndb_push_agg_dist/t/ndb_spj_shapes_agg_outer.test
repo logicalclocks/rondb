@@ -1,0 +1,149 @@
+#
+# ndb_spj_shapes_agg_outer: the outer-join shapes of ndb_spj_shapes_agg
+# whose pushed join aggregation still returns wrong results.  Disabled in
+# collections/disabled_ndb.def until they are fixed; run it with
+# --enable-disabled.  Move a shape back to ndb_spj_shapes_agg once it
+# passes.
+#
+# Same method as ndb_spj_shapes_agg: a reference run without any pushdown,
+# and a checked run with ndb_join_pushdown, ndb_join_pushdown_aggregate
+# and ndb_join_pushdown_aggregate_outer_join ON (the last two default to
+# OFF, so mysqld does not push these shapes by default).
+#
+# Findings (storage/ndb/claude_files/dbspj/README.md):
+#  E-6  LEFT JOIN lookup leaf with a pushed ON filter: a row the filter
+#       rejects gives no NULL-extended row (DBLQH answers 899, which
+#       DBSPJ ignores).  E-6c is the same over a 60000-row root, where
+#       the whole NULL group is lost.  RonSQL reaches it too.
+#  E-3  LEFT JOIN chain of lookups: the NULL-extended rows of earlier root
+#       batches are lost.  RonSQL reaches it too.
+#  E-9  two outer-joined lookups that both hang off the root: mysqld
+#       re-parents them into a chain for the aggregation
+#  E-8  inner join nest inside an outer join, and an inner join after an
+#       outer join: the join nests are not sent to the data nodes
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+--let $join_pushdown = `SELECT @@ndb_join_pushdown`
+if (!$join_pushdown)
+{
+  --skip ndb_join_pushdown must be enabled
+}
+
+--echo #
+--echo # Tables and data
+--echo #
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_tables.inc
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_e3_tables.inc
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_e2_tables.inc
+
+--echo #
+--echo # E-6: LEFT JOIN lookup leaf with a pushed ON filter
+--echo #
+let $spj_label= E-6a-left-lookup-on-filter;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), SUM(l1.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a AND l1.c > 5 GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-3: LEFT JOIN chain of lookups
+--echo #
+# Chain of LEFT JOIN lookups, NULL and dangling keys at both levels
+let $spj_label= E-3a-left-left-lookup-chain;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), COUNT(l2.pk), SUM(l2.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a
+         LEFT JOIN l2 ON l2.pk = l1.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Same over a 20000-row root, half of the first links dangle
+let $spj_label= E-3b-left-left-lookup-chain-large-root;
+let $spj_query= SELECT r3.g, COUNT(*), COUNT(m2.pk), COUNT(m3.pk), SUM(m3.v)
+  FROM r3 LEFT JOIN m2 ON m2.pk = r3.a
+          LEFT JOIN m3 ON m3.pk = m2.b
+  GROUP BY r3.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-3c-left-left-lookup-chain-large-root-scalar;
+let $spj_query= SELECT COUNT(*), COUNT(m2.pk), COUNT(m3.pk), SUM(m3.v)
+  FROM r3 LEFT JOIN m2 ON m2.pk = r3.a
+          LEFT JOIN m3 ON m3.pk = m2.b;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-9: two outer-joined lookups that both hang off the root
+--echo #
+let $spj_label= E-9a-left-left-siblings;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), COUNT(l2.pk), SUM(l2.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a
+         LEFT JOIN l2 ON l2.pk = d.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-8: join nests
+--echo #
+# Inner join nest inside the outer join: (l1, l2, l3) is NULL-extended as a
+# whole when any of its inner joins has no match
+let $spj_label= E-8a-left-nest-inner-chain;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), COUNT(l3.pk), SUM(l3.v)
+  FROM d LEFT JOIN (l1 JOIN l2 ON l2.pk = l1.b JOIN l3 ON l3.pk = l2.c)
+         ON l1.pk = d.a
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Inner join after an outer join, referring to the root
+let $spj_label= E-8b-left-then-inner-on-root;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), SUM(l2.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a
+         JOIN l2 ON l2.pk = d.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-6c: scan -> index scan -> LEFT JOIN lookup leaf with a pushed ON
+--echo # filter over a 60000-row root
+--echo #
+# Every root row matches 3 child rows; the leaf's ON filter rejects the
+# lookups with g >= 10, so MySQL returns a NULL group.
+let $e6_pass= 1;
+while ($e6_pass <= 2)
+{
+  if ($e6_pass == 2)
+  {
+    # Debug builds: at most 4 rows per scan batch, many more
+    # self-continued batches.  Release builds ignore the keyword.
+    --disable_query_log
+    --disable_result_log
+    --error 0,ER_UNKNOWN_SYSTEM_VARIABLE
+    SET SESSION debug = '+d,max_4rows_in_spj_batches';
+    --enable_result_log
+    --enable_query_log
+  }
+  let $spj_label= E-6c-p$e6_pass-left-lookup-on-filter-large-root;
+  let $spj_query= SELECT e2_t3.g, COUNT(*), COUNT(e2_t3.c)
+    FROM e2_t1 STRAIGHT_JOIN e2_t2 FORCE INDEX (ix_a) ON e2_t2.a = e2_t1.a
+               LEFT JOIN e2_t3 ON e2_t3.c = e2_t2.c AND e2_t3.g < 10
+    GROUP BY e2_t3.g;
+  let $spj_agg= 1;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+  inc $e6_pass;
+}
+--disable_query_log
+--disable_result_log
+--error 0,ER_UNKNOWN_SYSTEM_VARIABLE
+SET SESSION debug = '-d,max_4rows_in_spj_batches';
+--enable_result_log
+--enable_query_log
+
+DROP TABLE seq, d, l1, l2, l3, f, reg, r3, m2, m3, e2_t1, e2_t2, e2_t3;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

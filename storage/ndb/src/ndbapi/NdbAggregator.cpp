@@ -30,6 +30,7 @@
 #include <util/rondb_hash.hpp>
 #include "mysql/strings/m_ctype.h"
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 #if (defined(VM_TRACE) || defined(ERROR_INSERT))
@@ -79,8 +80,9 @@ bool
 GBHashEntryCmp::operator()(const GBHashEntry &n1,
                            const GBHashEntry &n2) const {
   if (ctx == nullptr || ctx->n_cols == 0 || ctx->all_binary_cmp) {
-    /* Binary comparison: safe when all group-by columns are
-       non-charset-aware, since binary identity equals semantic identity. */
+    /* Binary comparison: safe when no group-by column has a charset or
+       is a FLOAT / DOUBLE, since binary identity then equals semantic
+       identity. */
     Uint32 len = n1.len < n2.len ? n1.len : n2.len;
     int ret = memcmp(n1.ptr, n2.ptr, len);
     if (ret == 0) {
@@ -143,6 +145,7 @@ GBHashEntryCmp::operator()(const GBHashEntry &n1,
 NdbAggregator::NdbAggregator(const NdbDictionary::Table* table) :
   table_impl_(nullptr), n_gb_cols_(0), n_agg_results_(0),
   agg_results_(nullptr), result_pos_(0), gb_cmp_(nullptr),
+  gb_float_keys_(false),
   finalized_(false), finished_(false),
   reusable_program_(false),
   curr_prog_pos_(PROGRAM_HEADER_SIZE),
@@ -206,9 +209,6 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
   n_gb_cols_ = programBuffer[1] >> 16;
   n_agg_results_ = programBuffer[1] & 0xFFFF;
 
-  // GROUP BY groups merge into groups_; with gb_cmp_ still nullptr
-  // (not built by Finalize) keys compare as bytes.
-
   // Allocate agg_results for non-GROUP-BY case
   if (n_gb_cols_ == 0 && agg_results_ == nullptr && n_agg_results_ > 0) {
     agg_results_ = new AggResItem[n_agg_results_];
@@ -236,20 +236,28 @@ void NdbAggregator::initForResults(const Uint32 *programBuffer,
     }
   }
 
-  // Parse instructions to extract agg_ops for COUNT null→0 fixup.
-  // Instructions start at PROGRAM_HEADER_SIZE + n_gb_cols_.
-  Uint32 instrStart = PROGRAM_HEADER_SIZE + n_gb_cols_;
-  for (Uint32 i = instrStart; i < programLen; i++) {
-    Uint32 op = (programBuffer[i] >> 26) & 0x3F;
-    if (op == kOpSum || op == kOpMax || op == kOpMin || op == kOpCount ||
-        op == kOpSumBigint || op == kOpSumDouble ||
-        op == kOpMaxBigint || op == kOpMaxDouble ||
-        op == kOpMinBigint || op == kOpMinDouble) {
-      Uint32 agg_id = programBuffer[i] & 0xFFFF;
+  // Partial groups merge under the GROUP BY columns' comparison, as for
+  // an aggregator built by Finalize.
+  if (n_gb_cols_ > 0 && n_gb_cols_ <= MAX_AGG_N_GROUPBY_COLS) {
+    setupGroupByCompare();
+  }
+
+  // Record the aggregate function of each slot, which the merge of the
+  // partial results and the COUNT NULL->0 fixup use.  Instructions start
+  // at PROGRAM_HEADER_SIZE + n_gb_cols_.  Step over the operand words of
+  // each instruction: a constant's data word can look like any
+  // aggregate opcode (E-1).
+  Uint32 pos = PROGRAM_HEADER_SIZE + n_gb_cols_;
+  while (pos < programLen) {
+    const Uint32 word = programBuffer[pos];
+    const Uint32 op = aggProgramOp(word);
+    if (aggIsSlotOp(op)) {
+      Uint32 agg_id = word & 0xFFFF;
       if (agg_id < MAX_AGG_N_RESULTS) {
         agg_ops_[agg_id] = (InterpreterOp)op;
       }
     }
+    pos += aggInstructionWords(word);
   }
 
   finalized_ = true;
@@ -562,6 +570,82 @@ static inline void placeGroupSlot(std::vector<Uint64>& slots, Uint64 hash,
   slots[i] = (hash & 0xFFFFFFFF00000000ULL) | (Uint64(g) + 1);
 }
 
+void NdbAggregator::setupGroupByCompare() {
+  /* GROUP BY keys compare and hash as bytes unless a column needs the
+   * comparison of its type: a string with a collation, whose values that
+   * are equal under it are one group although their bytes and lengths
+   * differ (E-5), or a FLOAT or DOUBLE, whose -0.0 and 0.0 are one group
+   * (Q-7).  A linked column without metadata compares as bytes. */
+  gb_cmp_ctx_.n_cols = n_gb_cols_;
+  bool all_binary = true;
+  gb_float_keys_ = false;
+  for (Uint32 i = 0; i < n_gb_cols_; i++) {
+    const NdbDictionary::Column* col = gb_columns_[i];
+    if (col == nullptr) {
+      gb_cmp_ctx_.col_meta[i].typeId = NDB_TYPE_UNDEFINED;
+      gb_cmp_ctx_.col_meta[i].cs = nullptr;
+      continue;
+    }
+    const Uint32 type_id = (Uint32)col->getType();
+    gb_cmp_ctx_.col_meta[i].typeId = type_id;
+    gb_cmp_ctx_.col_meta[i].cs = col->getCharset();
+    if (type_id == NDB_TYPE_FLOAT || type_id == NDB_TYPE_DOUBLE) {
+      gb_float_keys_ = true;
+      all_binary = false;
+    } else if (col->getCharset() != nullptr) {
+      all_binary = false;
+    }
+  }
+  gb_cmp_ctx_.all_binary_cmp = all_binary;
+  gb_cmp_ = &gb_cmp_ctx_;
+}
+
+void NdbAggregator::preferPositiveZero(char* group_key,
+                                       const char* key) const {
+  /* -0.0 and 0.0 are one FLOAT / DOUBLE group, which keeps the value of
+   * the partial that created it.  MySQL shows a group's value from one
+   * of its rows: show 0.0 once any partial has it, -0.0 only when all
+   * have -0.0.  The two keys are equal under GBHashEntryCmp, so their
+   * columns line up and differ here only in the sign of a zero. */
+  if (!gb_float_keys_) {
+    return;
+  }
+  char* p1 = group_key;
+  const char* p2 = key;
+  for (Uint32 i = 0; i < gb_cmp_->n_cols; i++) {
+    const AttributeHeader ah1(*reinterpret_cast<const Uint32*>(p1));
+    const AttributeHeader ah2(*reinterpret_cast<const Uint32*>(p2));
+    char* data1 = p1 + sizeof(Uint32);
+    const char* data2 = p2 + sizeof(Uint32);
+    if (!ah1.isNULL() && !ah2.isNULL()) {
+      switch (gb_cmp_->col_meta[i].typeId) {
+        case NdbSqlUtil::Type::Float: {
+          float v1, v2;
+          memcpy(&v1, data1, sizeof(v1));
+          memcpy(&v2, data2, sizeof(v2));
+          if (std::signbit(v1) && !std::signbit(v2)) {
+            memcpy(data1, &v2, sizeof(v2));
+          }
+          break;
+        }
+        case NdbSqlUtil::Type::Double: {
+          double v1, v2;
+          memcpy(&v1, data1, sizeof(v1));
+          memcpy(&v2, data2, sizeof(v2));
+          if (std::signbit(v1) && !std::signbit(v2)) {
+            memcpy(data1, &v2, sizeof(v2));
+          }
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    p1 += sizeof(Uint32) + ah1.getDataSize() * sizeof(Uint32);
+    p2 += sizeof(Uint32) + ah2.getDataSize() * sizeof(Uint32);
+  }
+}
+
 Uint64 NdbAggregator::hashGroupKey(const char* key, Uint32 key_len) const {
   if (gb_cmp_ == nullptr || gb_cmp_->n_cols == 0 || gb_cmp_->all_binary_cmp) {
     return rondb_xxhash_std(key, key_len);
@@ -654,7 +738,7 @@ bool NdbAggregator::groupKeysEqual(const char* k1, Uint32 len1,
 }
 
 AggResItem* NdbAggregator::findGroup(const char* key, Uint32 key_len,
-                                     Uint64 hash) const {
+                                     Uint64 hash, char** group_key) const {
   if (group_slots_.empty()) {
     return nullptr;
   }
@@ -668,6 +752,9 @@ AggResItem* NdbAggregator::findGroup(const char* key, Uint32 key_len,
     if ((slot >> 32) == tag) {
       const MergeGroup& g = groups_[static_cast<Uint32>(slot) - 1];
       if (groupKeysEqual(key, key_len, g.rec, g.key_len)) {
+        if (group_key != nullptr) {
+          *group_key = g.rec;
+        }
         return reinterpret_cast<AggResItem*>(g.rec + g.key_len);
       }
     }
@@ -710,8 +797,10 @@ Int32 NdbAggregator::MergeLocalGroup(const char* gb_key, Uint32 gb_len,
     return mergeScalarSlots(local, local);
   }
   const Uint64 hash = hashGroupKey(gb_key, gb_len);
-  AggResItem* slots = findGroup(gb_key, gb_len, hash);
+  char* group_key = nullptr;
+  AggResItem* slots = findGroup(gb_key, gb_len, hash, &group_key);
   if (slots != nullptr) {
+    preferPositiveZero(group_key, gb_key);
     return mergeGroupSlots(slots, local, local);
   }
   // A new group: one block holding the key and the slots, as ProcessRes
@@ -793,7 +882,8 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
       const char* gb_key =
           reinterpret_cast<const char*>(&data_buf[parse_pos]);
       const Uint64 gb_hash = hashGroupKey(gb_key, gb_cols_len);
-      AggResItem* found = findGroup(gb_key, gb_cols_len, gb_hash);
+      char* found_key = nullptr;
+      AggResItem* found = findGroup(gb_key, gb_cols_len, gb_hash, &found_key);
 #ifdef DEBUG_JOIN_AGG_API
       const Uint32 key_words = (gb_cols_len + 3) >> 2;
       const Uint32 key0 = key_words > 0 ? data_buf[parse_pos] : 0;
@@ -816,6 +906,7 @@ Int32 NdbAggregator::ProcessRes(char* buf) {
                        groups_.size());
 #endif
       if (found != nullptr) {
+        preferPositiveZero(found_key, gb_key);
         agg_res_ptr = found;
         need_merge = true;
 #ifdef DEBUG_JOIN_AGG_API
@@ -1670,23 +1761,7 @@ bool NdbAggregator::Finalize() {
       SetError(kErrTooManyGroupbyCols);
       return false;
     }
-    gb_cmp_ctx_.n_cols = n_gb_cols_;
-    bool all_binary = true;
-    for (Uint32 i = 0; i < n_gb_cols_; i++) {
-      const NdbDictionary::Column* col = gb_columns_[i];
-      if (col == nullptr) {
-        // Linked column without metadata — skip charset check,
-        // kernel handles collation for linked columns.
-        continue;
-      }
-      gb_cmp_ctx_.col_meta[i].typeId = (Uint32)col->getType();
-      gb_cmp_ctx_.col_meta[i].cs = col->getCharset();
-      if (col->getCharset() != nullptr) {
-        all_binary = false;
-      }
-    }
-    gb_cmp_ctx_.all_binary_cmp = all_binary;
-    gb_cmp_ = &gb_cmp_ctx_;
+    setupGroupByCompare();
   }
   if (single_row_mode_ && (n_agg_results_ != 0 || n_gb_cols_ == 0)) {
     /* The single-row CTE projection contract is GROUP BY columns only:

@@ -913,6 +913,9 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_batch_chunks;    // #SCAN_FRAGREQ + #SCAN_NEXTREQ to retrieve batch
     Uint32 m_scanCookie;
     Uint32 m_schema_version_scanCookie;
+    // DBDIH registered the scan (DIH_SCAN_TAB_CONF): scanFrag_complete
+    // must report its completion
+    bool m_dihScanRegistered;
     Uint32 m_fragCount;
     // The number of fragments that we scan in parallel.
     Uint32 m_parallelism;
@@ -992,6 +995,7 @@ class Dbspj : public SimulatedBlock {
           m_rows_expecting(0),
           m_batch_chunks(0),
           m_scanCookie(0),
+          m_dihScanRegistered(false),
           m_fragCount(0),
           m_parallelism(0),
           m_corrIdStart(0),
@@ -1857,8 +1861,9 @@ class Dbspj : public SimulatedBlock {
   /**
    * Misc
    */
-  Uint32 buildRowHeader(RowPtr::Header *, LinearSectionPtr);
-  Uint32 buildRowHeader(RowPtr::Header *, const Uint32 *&src, Uint32 cnt);
+  Uint32 buildRowHeader(RowPtr::Header *, LinearSectionPtr, Uint32 maxCnt);
+  Uint32 buildParamRowHeader(RowPtr::Header *, const Uint32 *&src,
+                             const Uint32 *end, Uint32 cnt);
   void getCorrelationData(const RowPtr::Row &row, Uint32 col,
                           Uint32 &correlationNumber);
   Uint32 appendToPattern(Local_pattern_store &, DABuffer &tree, Uint32);
@@ -1972,6 +1977,7 @@ class Dbspj : public SimulatedBlock {
   Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   Uint32 handleScanAggAncestorComplete(Signal *, Ptr<Request>,
                                        Ptr<TreeNode>, ScanFragData &);
+  Uint32 handleAggScanBatchComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   Uint32 mergeAggMatchBitmask(Ptr<TreeNode>, ScanFragData &,
                                SegmentedSectionPtr &);
   Uint32 handleAggLeafScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
@@ -2127,7 +2133,7 @@ class Dbspj : public SimulatedBlock {
   void scanFrag_send(Signal *, Ptr<Request>, Ptr<TreeNode>);
   Uint32 scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
                        Ptr<TreeNode> treeNodePtr, Uint32 noOfFrags,
-                       Uint32 bs_bytes, Uint32 bs_rows);
+                       Uint32 bs_bytes, Uint32 bs_rows, Uint32 &err);
   Uint32 scanFrag_send_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
                                Ptr<TreeNode> treeNodePtr, Uint32 noOfFrags,
                                Uint32 bs_bytes, Uint32 bs_rows);

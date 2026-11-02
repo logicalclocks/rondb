@@ -1,0 +1,10 @@
+!include suite/ndb_push_agg_dist/my.cnf
+
+[cluster_config.1]
+# Room for the 60k-row root / 180k-row child tables of the
+# self-continuation shapes (E-2).
+DataMemory=400M
+# Smaller API scan batches than the default, so that the pushed
+# aggregation scans need many batches and DBSPJ continues them itself
+# (handleJoinAggNextBatch).
+BatchSize=64

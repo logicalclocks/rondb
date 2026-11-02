@@ -482,13 +482,20 @@ class NdbAggregator {
 
   /* GROUP BY merge (F24).  A hash index over groups_, with the equality
    * of the GBHashEntryCmp the groups are later sorted by: gb_cmp_ is
-   * nullptr (binary comparison) for an aggregator set up by
-   * initForResults, &gb_cmp_ctx_ after Finalize. */
+   * &gb_cmp_ctx_ once Finalize or initForResults has set it up from the
+   * GROUP BY columns (setupGroupByCompare), nullptr (binary comparison)
+   * without GROUP BY. */
+  void setupGroupByCompare();
   Uint64 hashGroupKey(const char* key, Uint32 key_len) const;
   bool groupKeysEqual(const char* k1, Uint32 len1,
                       const char* k2, Uint32 len2) const;
-  // The group's AggResItem array, or nullptr when the key is new.
-  AggResItem* findGroup(const char* key, Uint32 key_len, Uint64 hash) const;
+  // The group's AggResItem array, or nullptr when the key is new.  When
+  // found, *group_key (if given) is the group's stored key.
+  AggResItem* findGroup(const char* key, Uint32 key_len, Uint64 hash,
+                        char** group_key = nullptr) const;
+  // A partial with key `key` merges into the group whose stored key is
+  // `group_key`: a FLOAT / DOUBLE -0.0 there becomes the partial's 0.0.
+  void preferPositiveZero(char* group_key, const char* key) const;
   // Adds a group whose record `rec` (key, then slots) this aggregator owns.
   void insertGroup(char* rec, Uint32 key_len, Uint32 aggs_len, Uint64 hash);
   void growGroupIndex();
@@ -534,6 +541,7 @@ class NdbAggregator {
   std::vector<Uint32> result_order_;
   Uint32 result_pos_;
   GBCmpContext* gb_cmp_;
+  bool gb_float_keys_;  // a GROUP BY column is FLOAT or DOUBLE
 
   // Phase I.6 (F.2-K.5d): for AGG_CHAR_RESULT wire results, walk the
   // appended string-payload region and replace each string slot's

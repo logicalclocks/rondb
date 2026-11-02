@@ -28,11 +28,11 @@ SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0
 q1_jit_compiled
 1
 # Q2: double +,* and the all-double generic '/'.
-SELECT SUM(d + e) AS s1, SUM(d * e) AS s2, SUM(d / e) AS s3 FROM t1;
-s1	s2	s3
+SELECT SUM(d + e) AS a1, SUM(d * e) AS a2, SUM(d / e) AS a3 FROM t1;
+a1	a2	a3
 21	34	11.5
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
-s1	s2	s3
+a1	a2	a3
 21	34	11.5
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q2_jit_compiled;
 q2_jit_compiled
@@ -103,6 +103,17 @@ s
 13
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
 q7_jit_compiled
+1
+# Q7b: the TPC-H Q9 shape — integer constant minus a scaled
+#      DECIMAL, times another DECIMAL.
+SELECT SUM(p * (1 - q)) AS s FROM td;
+s
+-9.0000
+SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
+s
+-9
+SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7b_jit_compiled;
+q7b_jit_compiled
 1
 # Q8: scale-0 DECIMAL arithmetic lands in the checked signed
 #     integer track.

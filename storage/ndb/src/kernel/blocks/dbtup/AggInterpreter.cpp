@@ -214,7 +214,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
     char* found = m_gb_map->findInBucket(
         gb_bucket, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
     if (found != nullptr) {
-      agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
+      /* E-5: the stored key is collation-equal to this row's key, not
+       * always of the same length. */
+      agg_res_ptr = reinterpret_cast<AggResItem*>(
+          found + m_gb_map->dataKeyLen(found));
       PA_INTERP_TRACE(m_frag_id,
                       "Found group, len: %u", len_in_char);
     } else {

@@ -1641,17 +1641,22 @@ int NdbReceiver::execTRANSID_AI(const Uint32 *aDataPtr,
   require(calc_total_len == totalLen);
 
   /**
-   * For SPJ query operations, the reassembled row data may contain a
-   * trailing CORR_FACTOR64 (3 words) that was already extracted from the
-   * signal header. Strip it before buffering/unpacking to prevent it from
-   * leaking through to handle_rec_attrs().
+   * A row of an SPJ scan query ends with the CORR_FACTOR64 (3 words) its
+   * projection requested (NdbQueryOperationImpl::serializeProject); the
+   * correlation was already extracted from the signal header. Strip it
+   * before buffering/unpacking to prevent it from leaking through to
+   * handle_rec_attrs(). A lookup query requests no correlation, so its
+   * row is all column data, whatever its last words look like.
    * This mirrors the len adjustment in
    * NdbQueryOperationImpl::execTRANSID_AI() for non-fragmented signals.
    */
-  if (getType() == NDB_QUERY_OPERATION && totalLen >= 3) {
-    const Uint32 *endPtr = row_ref->m_row_release_ptr + totalLen;
-    const AttributeHeader ah(*(endPtr - 3));
-    if (ah.getAttributeId() == AttributeHeader::CORR_FACTOR64) {
+  if (getType() == NDB_QUERY_OPERATION) {
+    const NdbQueryOperationImpl *op =
+        static_cast<const NdbQueryOperationImpl *>(getOwner());
+    if (op->getQueryDef().isScanQuery()) {
+      require(totalLen >= 3);
+      assert(AttributeHeader(row_ref->m_row_release_ptr[totalLen - 3])
+                 .getAttributeId() == AttributeHeader::CORR_FACTOR64);
       totalLen -= 3;
     }
   }

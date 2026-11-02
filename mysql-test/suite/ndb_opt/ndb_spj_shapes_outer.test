@@ -1,0 +1,300 @@
+#
+# ndb_spj_shapes_outer: outer join, semi-join and antijoin shapes of
+# pushed joins (SPJ).
+#
+# DBSPJ and the NDB API produce the NULL-extended rows of outer joins and
+# eliminate rows for semi- and antijoins (NI_INNER_JOIN / MatchNonNull,
+# MatchFirst, MatchNullOnly), including inner joins nested inside outer
+# join nests (setFirstInnerJoin / setUpperJoin).  Each shape runs with
+# ndb_join_pushdown OFF and ON and the two results are compared inside the
+# test (ndb_spj_shapes_check.inc).
+#
+# Every shape runs twice: the second pass sets the debug keyword
+# max_4rows_in_spj_batches, so that in debug builds every scan returns at
+# most 4 rows per batch and the outer-joined children of one parent batch
+# span several child batches.  (Release builds ignore the keyword; both
+# passes then run with the configured batch size.)
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 2000)
+  SELECT n FROM c;
+
+# t1: root.  t1.a has skewed matches in t2.a: a % 10 = 0 -> no match,
+# a % 10 = 1 -> 10 matches, otherwise 1..4 matches.
+CREATE TABLE t1 (
+  id INT NOT NULL PRIMARY KEY,
+  a INT NOT NULL,
+  b INT NULL,
+  c INT NOT NULL,
+  d INT NOT NULL,
+  KEY ix_a (a)
+) ENGINE=NDB;
+INSERT INTO t1
+  SELECT n, n % 200, IF(n % 13 = 0, NULL, n % 90), n % 300 + 1, n % 50 + 1
+  FROM seq WHERE n <= 1000;
+
+CREATE TABLE t2 (
+  id INT NOT NULL PRIMARY KEY,
+  a INT NOT NULL,
+  b INT NOT NULL,
+  x INT NOT NULL,
+  KEY ix_a (a),
+  KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO t2
+  SELECT n, a, (n * 7) % 120, n % 100 FROM (
+    SELECT s.n AS n, s.n % 200 AS a FROM seq s
+    WHERE s.n <= 2000 AND (s.n % 200) % 10 <> 0
+      AND ((s.n % 200) % 10 = 1 OR s.n <= 200 * (1 + (s.n % 200) % 4))
+  ) AS dt;
+
+# t3: matches t2.b for b < 80 only, 0..3 rows per value.
+CREATE TABLE t3 (
+  id INT NOT NULL PRIMARY KEY,
+  b INT NOT NULL,
+  y INT NOT NULL,
+  KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO t3 SELECT n, n % 80, n % 7 FROM seq WHERE n <= 200 AND n % 9 <> 0;
+
+# t4: second scan child of the root, keyed on t1.b
+CREATE TABLE t4 (
+  id INT NOT NULL PRIMARY KEY,
+  k INT NOT NULL,
+  z INT NOT NULL,
+  KEY ix_k (k)
+) ENGINE=NDB;
+INSERT INTO t4 SELECT n, n % 60, n % 11 FROM seq WHERE n <= 300;
+
+# t5: lookup table, ids 1..250 (t1.c up to 300, t2.x up to 99)
+CREATE TABLE t5 (
+  id INT NOT NULL PRIMARY KEY,
+  v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t5 SELECT n, n % 17 FROM seq WHERE n <= 250 AND n % 6 <> 0;
+
+ANALYZE TABLE t1, t2, t3, t4, t5;
+SELECT COUNT(*) FROM t2;
+
+let $pass= 1;
+while ($pass <= 2)
+{
+  if ($pass == 2)
+  {
+    --echo #
+    --echo # Pass 2: debug keyword max_4rows_in_spj_batches (debug builds)
+    --echo #
+    --disable_query_log
+    --disable_result_log
+    --error 0,ER_UNKNOWN_SYSTEM_VARIABLE
+    SET SESSION debug = '+d,max_4rows_in_spj_batches';
+    --enable_result_log
+    --enable_query_log
+  }
+  if ($pass == 1)
+  {
+    --echo #
+    --echo # Pass 1: configured batch size
+    --echo #
+  }
+
+  --echo # Outer-joined scan children
+  let $spj_label= O1-p$pass-left-scan;
+  let $spj_query= SELECT t1.id, t2.id, t2.x
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= O2-p$pass-left-scan-left-scan;
+  let $spj_query= SELECT t1.id, t2.id, t3.id
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+            LEFT JOIN t3 FORCE INDEX (ix_b) ON t3.b = t2.b;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Two outer-joined scan children of the root (bushy)
+  let $spj_label= O3-p$pass-bushy-left-left;
+  let $spj_query= SELECT t1.id, t2.id, t4.id
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+            LEFT JOIN t4 FORCE INDEX (ix_k) ON t4.k = t1.b;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Inner-joined and outer-joined scan children of the same root
+  let $spj_label= O4-p$pass-bushy-inner-left;
+  let $spj_query= SELECT t1.id, t2.id, t4.id
+    FROM t1 JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+            LEFT JOIN t4 FORCE INDEX (ix_k) ON t4.k = t1.b;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  --echo # Nesting of inner and outer joins
+  # Inner join inside an outer-joined nest: (t2,t3) is NULL-extended as a
+  # whole when t2 matches but t3 does not
+  let $spj_label= O5-p$pass-left-nest-inner;
+  let $spj_query= SELECT t1.id, t2.id, t3.id
+    FROM t1 LEFT JOIN (t2 JOIN t3 FORCE INDEX (ix_b) ON t3.b = t2.b)
+         ON t2.a = t1.a;
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Same, with a lookup as the second nest member whose join condition
+  # refers to the root only (t5 is not linked to t2): from the parent-child
+  # links alone (t2 and t5 both children of t1) the nest is invisible
+  let $spj_label= O6-p$pass-left-nest-lookup-on-root;
+  let $spj_query= SELECT t1.id, t2.id, t5.v
+    FROM t1 LEFT JOIN (t2, t5) ON t2.a = t1.a AND t5.id = t1.d;
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Outer join below an inner join
+  let $spj_label= O7-p$pass-inner-then-left;
+  let $spj_query= SELECT t1.id, t2.id, t3.id
+    FROM t1 JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+            LEFT JOIN t3 FORCE INDEX (ix_b) ON t3.b = t2.b;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Outer join nested in an outer join
+  let $spj_label= O8-p$pass-left-nest-left;
+  let $spj_query= SELECT t1.id, t2.id, t3.id
+    FROM t1 LEFT JOIN (t2 LEFT JOIN t3 FORCE INDEX (ix_b) ON t3.b = t2.b)
+         ON t2.a = t1.a;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Inner lookup after an outer join, referring to the root
+  let $spj_label= O9-p$pass-left-then-inner-lookup;
+  let $spj_query= SELECT t1.id, t2.id, t5.v
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+            JOIN t5 ON t5.id = t1.c;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Lookup child of an outer-joined scan child, and scan child of an
+  # outer-joined lookup child
+  let $spj_label= O10-p$pass-left-scan-left-lookup;
+  let $spj_query= SELECT t1.id, t2.id, t5.v
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+            LEFT JOIN t5 ON t5.id = t2.x;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= O11-p$pass-left-lookup-left-scan;
+  let $spj_query= SELECT t1.id, t5.id, t4.id
+    FROM t1 LEFT JOIN t5 ON t5.id = t1.c
+            LEFT JOIN t4 FORCE INDEX (ix_k) ON t4.k = t5.v;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  --echo # Conditions on outer-joined tables
+  let $spj_label= O12-p$pass-left-pushed-cond;
+  let $spj_query= SELECT t1.id, t2.id
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a AND t2.x > 50;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= O13-p$pass-left-where-on-inner;
+  let $spj_query= SELECT t1.id, t2.id
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+    WHERE t2.x IS NULL OR t2.x < 10;
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= O14-p$pass-left-cond-on-root-in-on;
+  let $spj_query= SELECT t1.id, t2.id
+    FROM t1 LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a AND t1.d > 25;
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  --echo # Semi-joins, one per strategy
+  let $spj_label= S1-p$pass-in-firstmatch;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE t1.a IN (SELECT /*+ SEMIJOIN(FIRSTMATCH) */ t2.a FROM t2 WHERE t2.x > 30);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= S2-p$pass-in-loosescan;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE t1.a IN (SELECT /*+ SEMIJOIN(LOOSESCAN) */ t2.a FROM t2 WHERE t2.x > 30);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= S3-p$pass-in-materialization;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE t1.a IN (SELECT /*+ SEMIJOIN(MATERIALIZATION) */ t2.a FROM t2 WHERE t2.x > 30);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= S4-p$pass-in-dupsweedout;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE t1.a IN (SELECT /*+ SEMIJOIN(DUPSWEEDOUT) */ t2.a FROM t2 WHERE t2.x > 30);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Two-table semi-join nest
+  let $spj_label= S5-p$pass-exists-two-tables;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE EXISTS (SELECT 1 FROM t2 JOIN t3 ON t3.b = t2.b WHERE t2.a = t1.a);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Semi-join on a lookup
+  let $spj_label= S6-p$pass-exists-lookup;
+  let $spj_query= SELECT t1.id, t2.id FROM t1
+    JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+    WHERE EXISTS (SELECT 1 FROM t5 WHERE t5.id = t2.x);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Semi-join combined with an outer join
+  let $spj_label= S7-p$pass-in-plus-left;
+  let $spj_query= SELECT t1.id, t2.id FROM t1
+    LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+    WHERE t1.b IN (SELECT t4.k FROM t4 WHERE t4.z > 5);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  --echo # Antijoins
+  let $spj_label= A1-p$pass-not-exists-scan;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE NOT EXISTS (SELECT 1 FROM t2 WHERE t2.a = t1.a AND t2.x > 20);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= A2-p$pass-not-exists-two-tables;
+  let $spj_query= SELECT t1.id FROM t1
+    WHERE NOT EXISTS (SELECT 1 FROM t2 JOIN t3 ON t3.b = t2.b
+                      WHERE t2.a = t1.a);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Antijoin relative to the inner table of an outer join: matches may only
+  # remove the NULL-extension, not the t1 row
+  let $spj_label= A3-p$pass-not-exists-below-left;
+  let $spj_query= SELECT t1.id, t2.id FROM t1
+    LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+    WHERE NOT EXISTS (SELECT 1 FROM t3 WHERE t3.b = t2.b);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= A4-p$pass-not-exists-on-root-with-left;
+  let $spj_query= SELECT t1.id, t2.id FROM t1
+    LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a
+    WHERE NOT EXISTS (SELECT 1 FROM t4 WHERE t4.k = t1.b);
+  let $spj_min_pushed= 0;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= A5-p$pass-left-join-is-null;
+  let $spj_query= SELECT t1.id FROM t1
+    LEFT JOIN t2 FORCE INDEX (ix_a) ON t2.a = t1.a AND t2.x > 20
+    WHERE t2.id IS NULL;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  inc $pass;
+}
+
+--disable_query_log
+--disable_result_log
+--error 0,ER_UNKNOWN_SYSTEM_VARIABLE
+SET SESSION debug = '-d,max_4rows_in_spj_batches';
+--enable_result_log
+--enable_query_log
+
+DROP TABLE seq, t1, t2, t3, t4, t5;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

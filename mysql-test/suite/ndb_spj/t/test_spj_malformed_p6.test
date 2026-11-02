@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-6: NULL constant key reaches ndbabort in parseDA.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P6
+--let $spj_case_title = P-6: NULL constant key reaches ndbabort in parseDA
+--source suite/ndb_spj/include/spj_malformed_case.inc

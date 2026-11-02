@@ -1,0 +1,461 @@
+#
+# ndb_spj_shapes_agg: aggregation pushed on top of pushed joins (DBSPJ ->
+# DBLQH aggregation -> partial groups merged by the NDB API), on two data
+# nodes so that the partial groups of one group come from several nodes.
+#
+# Every shape runs twice: as a reference with ndb_join_pushdown and
+# ndb_join_pushdown_aggregate OFF (plain MySQL execution), and with
+# ndb_join_pushdown, ndb_join_pushdown_aggregate and
+# ndb_join_pushdown_aggregate_outer_join ON (single-table shapes toggle
+# ndb_pushdown_aggregate instead); the results are compared inside the test
+# (suite/ndb_opt/ndb_spj_shapes_check.inc) and EXPLAIN must show
+# 'Using pushed join aggregation' for the ON run unless the shape says
+# otherwise.  The test dies at the end naming every failed shape.
+#
+# Findings targeted (see the weakness report of RONDB-1124):
+#  E-1  API merge (NdbAggregator::initForResults) reads the data words of
+#       the program as opcodes: a double constant (LoadDouble, e.g. the
+#       1 of 1 - disc in a DECIMAL expression, or 2.0, 1.5) turns the
+#       aggregate in slot 0 into SumDouble / MaxBigint for the merge
+#  E-2  self-continued join aggregation (handleJoinAggNextBatch) never
+#       resets the batch / correlation counters of a child scan:
+#       scan -> index scan -> lookup leaf over a large root
+#  E-4  SUM(CASE WHEN outer.v > 5 THEN 1 ELSE 0 END) over NULL-extended rows
+#  E-5  GROUP BY a case/accent/pad-insensitive VARCHAR whose equal values
+#       have different bytes (and word lengths): the kernel group hash
+#       table compares key lengths first (AggHashTable findInBucket) and
+#       the API merges partial groups by bytes
+#  E-6  LEFT JOIN scan leaf with a pushed ON filter: rows the filter
+#       rejects must still produce the NULL-extended row
+#  E-9  an inner and an outer-joined lookup, both children of the root
+#  E-10 condition on the root that cannot be pushed (join and single table)
+#  E-11 IN-list filter of 5, 20 and 40 values on a lookup leaf
+#  E-12 range and IN-list (multi-range) root under join aggregation
+#  E-15 NULL-safe '<=>' ref child under join aggregation
+#  E-30 HAVING: the aggregation is not pushed today (recorded, not failed)
+#  Q-5  inner join followed by a LEFT JOIN, 3 tables (disabled in
+#       ndb_push_agg_dist_extended.test as a known DBSPJ COUNT(*) mismatch)
+#  Q-6  DECIMAL(38,6) sums
+#  Q-7  DOUBLE group key with -0.0 and 0.0
+#  plus: NULL group keys from the root and from an outer-joined child,
+#  empty input (scalar and grouped), MIN/MAX of strings under a
+#  case/accent-insensitive collation, COUNT(DISTINCT) fallback.
+#
+# The shapes that still give wrong results are in two tests that are
+# disabled in collections/disabled_ndb.def until they are fixed:
+#  ndb_spj_shapes_agg_outer  E-3, E-6 (lookup leaf), E-8, E-9 (two outer
+#                            joins): outer-join aggregation
+#  ndb_spj_shapes_agg_exact  Q-6: BIGINT sums beyond 64 bits fail with 1860
+# Move a shape back here once it passes.
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+--let $join_pushdown = `SELECT @@ndb_join_pushdown`
+if (!$join_pushdown)
+{
+  --skip ndb_join_pushdown must be enabled
+}
+
+--echo #
+--echo # Tables and data
+--echo #
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_tables.inc
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_e2_tables.inc
+
+--echo #
+--echo # Baseline: inner join, GROUP BY a root column
+--echo #
+let $spj_label= G0-baseline;
+let $spj_query= SELECT d.g, COUNT(*), SUM(f.qty), MIN(f.qty), MAX(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-1: double constants in an aggregate expression
+--echo #
+# MAX in slot 0, the constant 1 of (1 - disc) is loaded as the double 1.0
+# E-1a, E-1c and E-1f sum a DECIMAL expression, which the data nodes
+# compute as a DOUBLE: no longer pushed (Q-6 / E-16), so only the result
+# is checked.  E-1b and E-1d still push double constants.
+let $spj_label= E-1a-max-slot0-decimal-expr;
+let $spj_query= SELECT d.g, MAX(f.qty), SUM(f.price * (1 - f.disc))
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-1b-min-slot0-real-const-scalar;
+let $spj_query= SELECT MIN(f.qty), SUM(f.r * 1.5E0)
+  FROM d JOIN f ON f.did = d.id;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# SUM in slot 0, the constant 2 (double 2.0, high word 0x40000000)
+let $spj_label= E-1c-sum-slot0-const-two;
+let $spj_query= SELECT d.g, SUM(f.qty), SUM(f.price * 2)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-1d-count-slot0-real-const;
+let $spj_query= SELECT d.g, COUNT(f.qty), MAX(f.r * 0.5E0)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-1f-max-slot0-decimal-expr-scalar;
+let $spj_query= SELECT MAX(f.qty), SUM(f.price * (1 - f.disc))
+  FROM d JOIN f ON f.did = d.id;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Control: integer constants only (loaded as LoadInt64)
+let $spj_label= E-1e-control-int-const;
+let $spj_query= SELECT d.g, MAX(f.qty), SUM(f.qty * 3)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-5 / Q-3: GROUP BY strings whose equal values differ in bytes
+--echo #
+# MIN(d.id) identifies the logical group whatever variant MySQL shows
+let $spj_label= E-5a-group-by-root-ai-ci;
+let $spj_query= SELECT MIN(d.id), COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.nm;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-5b-group-by-root-general-ci-pad;
+let $spj_query= SELECT MIN(d.id), COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.nm_gen;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-5c-group-by-root-latin1-swedish;
+let $spj_query= SELECT MIN(d.id), COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.nm_sw;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-5d-group-by-leaf-ai-ci;
+let $spj_query= SELECT MIN(f.id), COUNT(*), SUM(d.k)
+  FROM d JOIN f ON f.did = d.id GROUP BY f.s;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Same strings, single-table aggregation (ndb_pushdown_aggregate)
+let $spj_label= E-5e-single-table-group-by-ai-ci;
+let $spj_query= SELECT MIN(id), COUNT(*), SUM(k) FROM d GROUP BY nm;
+let $spj_agg= 2;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-5f-single-table-group-by-latin1-pad;
+let $spj_query= SELECT MIN(id), COUNT(*), SUM(k) FROM d GROUP BY nm_sw;
+let $spj_agg= 2;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Q-7: DOUBLE group key with -0.0 and 0.0
+--echo #
+let $spj_label= Q-7a-group-by-double-zero-leaf;
+let $spj_query= SELECT MIN(f.id), COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY f.fdbl;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= Q-7b-group-by-double-zero-root;
+let $spj_query= SELECT MIN(d.id), COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.dbl;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # MIN / MAX of strings under utf8mb4_0900_ai_ci
+--echo #
+let $spj_label= M1-min-max-string-collation;
+let $spj_query= SELECT d.g, MIN(l1.s), MAX(l1.s), COUNT(*)
+  FROM d JOIN l1 ON l1.pk = d.a GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= M2-min-max-string-collation-scalar;
+let $spj_query= SELECT MIN(l1.s), MAX(l1.s), COUNT(*)
+  FROM d JOIN l1 ON l1.pk = d.a;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # NULL group keys and empty input
+--echo #
+let $spj_label= N1-null-group-key-root;
+let $spj_query= SELECT d.gn, COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.gn;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N2-null-group-key-leaf;
+let $spj_query= SELECT f.y, COUNT(*), SUM(d.k)
+  FROM d JOIN f ON f.did = d.id GROUP BY f.y;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# GROUP BY a column of the outer-joined child: NULL-extended rows form
+# the NULL group together with the child's own NULLs
+let $spj_label= N3-group-by-outer-child-column;
+let $spj_query= SELECT f.y, COUNT(*), COUNT(f.id)
+  FROM d LEFT JOIN f ON f.did = d.id GROUP BY f.y;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N4-empty-input-scalar;
+let $spj_query= SELECT COUNT(*), COUNT(f.qty), SUM(f.qty), MAX(f.qty), AVG(f.qty)
+  FROM d JOIN f ON f.did = d.id WHERE d.k > 99999;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N5-empty-input-grouped;
+let $spj_query= SELECT d.g, COUNT(*), SUM(f.qty)
+  FROM d JOIN f ON f.did = d.id WHERE d.k > 99999 GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N6-empty-input-outer-scalar;
+let $spj_query= SELECT COUNT(*), COUNT(l1.pk), SUM(l1.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a WHERE d.k > 99999;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Q-6: wide DECIMAL sums
+--echo #
+# The data nodes compute a DECIMAL with scale > 0 as a DOUBLE: SUM over
+# it, and MIN / MAX over more than 15 digits, are no longer pushed (Q-6c,
+# E-16), so only the result is checked.
+let $spj_label= Q-6c-sum-decimal38;
+let $spj_query= SELECT d.g, SUM(f.dec38), MIN(f.dec38), MAX(f.dec38)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= Q-6d-avg-int;
+let $spj_query= SELECT d.g, AVG(f.qty), AVG(d.k)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Outer joins
+--echo #
+let $spj_label= E-4a-case-over-left-lookup;
+let $spj_query= SELECT d.g, SUM(CASE WHEN l1.v > 5 THEN 1 ELSE 0 END), COUNT(*)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-4b-case-over-left-scan;
+let $spj_query= SELECT d.g, SUM(CASE WHEN f.qty > 20 THEN 1 ELSE 0 END), COUNT(*)
+  FROM d LEFT JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# E-6 with a scan leaf, which passes (the lookup-leaf form is in
+# ndb_spj_shapes_agg_outer)
+let $spj_label= E-6b-left-scan-on-filter;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(f.id), SUM(f.qty)
+  FROM d LEFT JOIN f ON f.did = d.id AND f.qty > 25 GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# An inner and an outer-joined lookup that both hang off the root, which
+# passes (two outer-joined ones, E-9a, are in ndb_spj_shapes_agg_outer)
+let $spj_label= E-9b-inner-left-siblings;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l2.pk), SUM(l2.v)
+  FROM d JOIN l1 ON l1.pk = d.a
+         LEFT JOIN l2 ON l2.pk = d.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Q-5: the shape disabled in ndb_push_agg_dist_extended.test
+let $spj_label= Q-5-inner-scan-then-left-scan;
+let $spj_query= SELECT reg.region, COUNT(*), COUNT(f.id), SUM(f.qty)
+  FROM reg JOIN d ON d.g = reg.id
+           LEFT JOIN f ON f.did = d.id
+  GROUP BY reg.region;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-11: IN-list filters on a lookup leaf
+--echo #
+let $spj_label= E-11a-in-list-5;
+let $spj_query= SELECT d.g, COUNT(*), SUM(l1.v)
+  FROM d JOIN l1 ON l1.pk = d.a
+  WHERE l1.c IN (3, 17, 29, 41, 77)
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# A lookup filter of 64 words or more is not attached to the pushed
+# lookup but left to ha_ndbcluster, which sees no rows when the
+# aggregation is pushed: the aggregation is no longer pushed for E-11b
+# and E-11c (E-11), so only the result is checked.
+let $spj_label= E-11b-in-list-20;
+let $spj_query= SELECT d.g, COUNT(*), SUM(l1.v)
+  FROM d JOIN l1 ON l1.pk = d.a
+  WHERE l1.c IN (1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43,
+                 46, 49, 52, 55, 58)
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-11c-in-list-40;
+let $spj_query= SELECT d.g, COUNT(*), SUM(l1.v)
+  FROM d JOIN l1 ON l1.pk = d.a
+  WHERE l1.c IN (1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29,
+                 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59,
+                 61, 63, 65, 67, 69, 71, 73, 75, 77, 79)
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-12: range and multi-range roots
+--echo #
+let $spj_label= E-12a-range-root;
+let $spj_query= SELECT d.g, COUNT(*), SUM(l1.v)
+  FROM d FORCE INDEX (ix_k) JOIN l1 ON l1.pk = d.a
+  WHERE d.k BETWEEN 1000 AND 6000
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# A root reading several ranges no longer gets the aggregation pushed
+# (E-12): ha_ndbcluster's MRR can't return aggregated rows, and one
+# pushed query per range would aggregate each range separately.  The
+# single range of E-12a is still pushed.
+let $spj_label= E-12b-in-list-root;
+let $spj_query= SELECT d.g, COUNT(*), SUM(f.qty)
+  FROM d FORCE INDEX (ix_k) JOIN f ON f.did = d.id
+  WHERE d.k IN (7919, 5831, 3743, 1655, 9574, 7486, 5398, 3310, 1222, 9141,
+                7053, 4965, 2877, 789, 8708, 6620, 4532, 2444, 356, 8275)
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-12c-in-list-root-scalar;
+let $spj_query= SELECT COUNT(*), SUM(f.qty)
+  FROM d FORCE INDEX (ix_k) JOIN f ON f.did = d.id
+  WHERE d.k IN (7919, 5831, 3743, 1655, 9574, 7486, 5398, 3310, 1222, 9141);
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-15: NULL-safe equality ref child
+--echo #
+# The aggregation is not pushed (first run: agg=0).  The '<=>' child is
+# no longer pushed either: DBSPJ drops NULL keys, while NULL <=> NULL
+# matches (Q-2 / E-15), so only the result is checked.
+let $spj_label= E-15-nullsafe-ref-child;
+let $spj_query= SELECT d.g, COUNT(*), SUM(f.qty)
+  FROM d STRAIGHT_JOIN f FORCE INDEX (ix_y) ON f.y <=> d.x
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-10: a root condition that cannot be pushed must stop the
+--echo # aggregation pushdown (agg=0 is fine; a wrong result is not)
+--echo #
+let $spj_label= E-10a-unpushable-root-cond-join;
+let $spj_query= SELECT d.g, COUNT(*), SUM(l1.v)
+  FROM d JOIN l1 ON l1.pk = d.a
+  WHERE d.k + 0 > 5000
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-10b-unpushable-cond-single-table;
+let $spj_query= SELECT g, COUNT(*), SUM(k) FROM d WHERE k + 0 > 5000 GROUP BY g;
+let $spj_agg= 2;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Not pushed today, results must still match
+--echo #
+# Not even the join is pushed (first run: pushed=0).
+let $spj_label= X1-count-distinct;
+let $spj_query= SELECT d.g, COUNT(DISTINCT f.qty), COUNT(*)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# E-30: queries with HAVING are not pushed (missed optimization, not a
+# wrong result); the recorded agg= value documents the current behaviour.
+let $spj_label= E-30-having;
+let $spj_query= SELECT d.g, COUNT(*) AS c, SUM(f.qty) AS s
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g HAVING c > 120;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # E-2: scan -> index scan -> lookup leaf over a 60000-row root
+--echo #
+let $e2_pass= 1;
+while ($e2_pass <= 2)
+{
+  if ($e2_pass == 2)
+  {
+    # Debug builds: at most 4 rows per scan batch, many more
+    # self-continued batches.  Release builds ignore the keyword.
+    --disable_query_log
+    --disable_result_log
+    --error 0,ER_UNKNOWN_SYSTEM_VARIABLE
+    SET SESSION debug = '+d,max_4rows_in_spj_batches';
+    --enable_result_log
+    --enable_query_log
+  }
+  let $spj_label= E-2a-p$e2_pass-scan-scan-lookup-large-root;
+  let $spj_query= SELECT e2_t3.g, COUNT(*)
+    FROM e2_t1 STRAIGHT_JOIN e2_t2 FORCE INDEX (ix_a) ON e2_t2.a = e2_t1.a
+               STRAIGHT_JOIN e2_t3 ON e2_t3.c = e2_t2.c
+    GROUP BY e2_t3.g;
+  let $spj_agg= 1;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= E-2b-p$e2_pass-scan-scan-large-root-scalar;
+  let $spj_query= SELECT COUNT(*), SUM(e2_t2.c)
+    FROM e2_t1 STRAIGHT_JOIN e2_t2 FORCE INDEX (ix_a) ON e2_t2.a = e2_t1.a;
+  let $spj_agg= 1;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+  inc $e2_pass;
+}
+--disable_query_log
+--disable_result_log
+--error 0,ER_UNKNOWN_SYSTEM_VARIABLE
+SET SESSION debug = '-d,max_4rows_in_spj_batches';
+--enable_result_log
+--enable_query_log
+
+DROP TABLE seq, d, l1, l2, l3, f, reg, e2_t1, e2_t2, e2_t3;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

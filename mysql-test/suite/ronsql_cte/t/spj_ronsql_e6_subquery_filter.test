@@ -1,0 +1,126 @@
+# spj_ronsql_e6_subquery_filter
+#
+# Finding E-6 (storage/ndb/claude_files/dbspj/dbspj_query_execution.html,
+# section 8), reached from RonSQL: an outer-joined LOOKUP aggregate leaf
+# with a pushed filter.  When the filter rejects the row, DBLQH answers
+# with a TUPKEYREF and no NULL-extended row is aggregated, so the parent
+# row's group is lost (or, with other leaves, counted wrong).
+#
+# The RonSQL main query cannot build this shape: ON conditions are
+# equality only, a null-rejecting WHERE turns the LEFT JOIN into an INNER
+# one, and any other WHERE on the right side is refused.  A SELECT-list
+# subquery can: its inner-only conditions become a filter on its LEFT
+# JOIN leaf, and when it is correlated on the inner table's primary key
+# the leaf is a PK_LOOKUP.  The existing subquery tests
+# (ronsql_subquery_agg*) correlate on indexed non-key columns, so their
+# leaves are index scans; e6-2 is that form as the control.
+#
+# Data: e6_o.id = 1..5.  e6_i rows (id, oid, c, v): (1,1,3,10) (2,2,7,20)
+# (3,3,1,30) (4,4,9,40).  The filter c > 5 rejects ids 1 and 3; id 5 has
+# no e6_i row (DBLQH sends the NULL row for that miss).
+#
+#   e6-1  correlated on the primary key (PK_LOOKUP leaf).
+#         Expected (MySQL): (1,NULL) (2,20) (3,NULL) (4,40) (5,NULL).
+#         Expected before a fix: the rows for ids 1 and 3 missing.
+#         Kernel fix (2026-11-02, Dblqh::continueAfterLogAbortWriteLab):
+#         the TUPKEYREF of the filter becomes a NULL-extended row and an
+#         LQHKEYCONF, as a key not found does.  Expected after it: the
+#         MySQL result.
+#   e6-2  correlated on the indexed oid (INDEX_SCAN leaf), control:
+#         the same result.
+#
+# A failing grep at e6-0 means RonSQL chose another plan: adjust the test.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_ronsql_e6_subquery_filter
+# Record: ./mtr --suite=ronsql_cte --record spj_ronsql_e6_subquery_filter
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-ronsql-e6-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE e6_o (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE e6_i (
+  id  INT NOT NULL,
+  oid INT NOT NULL,
+  c   INT NOT NULL,
+  v   INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_e6_i_oid (oid)
+) ENGINE=NDB;
+
+INSERT INTO e6_o VALUES (1), (2), (3), (4), (5);
+INSERT INTO e6_i VALUES (1, 1, 3, 10), (2, 2, 7, 20), (3, 3, 1, 30), (4, 4, 9, 40);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === e6-0: the subquery leaf is a LEFT JOIN PK_LOOKUP (e6-1), INDEX_SCAN (e6-2) ===
+let $QUERY=
+SELECT o.id,
+  (SELECT SUM(i.v) FROM e6_i AS i WHERE i.id = o.id AND i.c > 5) AS s
+FROM e6_o AS o;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[LEFT JOIN] PK_LOOKUP e6_i AS i  <- o' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+let $QUERY=
+SELECT o.id,
+  (SELECT SUM(i.v) FROM e6_i AS i WHERE i.oid = o.id AND i.c > 5) AS s
+FROM e6_o AS o;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[LEFT JOIN] INDEX_SCAN e6_i AS i  <- o' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === e6-1: filtered subquery correlated on the primary key ===
+let $QUERY=
+SELECT o.id,
+  (SELECT SUM(i.v) FROM e6_i AS i WHERE i.id = o.id AND i.c > 5) AS s
+FROM e6_o AS o;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id,
+  (SELECT SUM(i.v) FROM e6_i AS i WHERE i.id = o.id AND i.c > 5) AS s
+FROM e6_o AS o|
+
+--echo
+--echo === e6-2: control, filtered subquery correlated on an indexed column ===
+let $QUERY=
+SELECT o.id,
+  (SELECT SUM(i.v) FROM e6_i AS i WHERE i.oid = o.id AND i.c > 5) AS s
+FROM e6_o AS o;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+SELECT o.id,
+  (SELECT SUM(i.v) FROM e6_i AS i WHERE i.oid = o.id AND i.c > 5) AS s
+FROM e6_o AS o|
+
+DELIMITER ;|
+
+--echo
+--echo === e6-3: no DBSPJ request left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--disable_query_log
+DROP TABLE e6_o;
+DROP TABLE e6_i;
+--enable_query_log

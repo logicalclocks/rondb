@@ -58,10 +58,11 @@ class NdbScanOperation;
  * returns pre-aggregated results, there is no opportunity for MySQL to
  * evaluate per-row filters, so aggregation cannot be pushed.
  *
- * A FILTER whose condition references only the child table's columns is
- * considered pushable (handled by prep_cond_push / build_cond_push) and
- * does not block aggregation.  All other FILTERs (multi-table, subquery)
- * block aggregation pushdown.
+ * A FILTER whose condition references only the child table's columns may
+ * be pushable (handled by prep_cond_push / build_cond_push) and does not
+ * block aggregation here; ndb_push_aggregation() checks that it was
+ * completely pushed.  All other FILTERs (multi-table, subquery) block
+ * aggregation pushdown.
  *
  * @return true if a non-pushable filter was found, false if safe to push
  */
@@ -94,14 +95,20 @@ bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path);
  * a scalar aggregate that spans ranges comes back once per range.  A single
  * range stays pushable.
  *
- * @return true if single-table aggregation must not be pushed
+ * The same holds for a pushed join aggregation having such a root (E-12):
+ * ha_ndbcluster's MRR implementation can't return its aggregated rows, so
+ * the root is read through the default MRR, one pushed query per range.
+ *
+ * @return true if neither single-table nor join aggregation may be pushed
  */
 bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
                                            const AccessPath *path);
 
 /**
  * Entry point for aggregation pushdown.
- * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
+ * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds,
+ * and after the conditions on the tables not pushed as join children were
+ * prepared for being pushed.
  *
  * Checks whether aggregation can be pushed, builds the NdbAggregator
  * program, rebuilds the NdbQueryDef with aggregation attached, and

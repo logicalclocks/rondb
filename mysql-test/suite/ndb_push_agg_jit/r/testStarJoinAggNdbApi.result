@@ -19,6 +19,7 @@ Test 12: Mixed topology — PK lookup leaf + index scan leaf ... OK (3 groups, m
 Test 13: Reject aggregate leaf on root operation ... OK (rejected as expected)
 Test 14: Eviction (ERROR_INSERT 5126) with 2-leaf star ... OK (5 groups, eviction merge verified)
 Test 15: Reject query with 33 tree nodes (> NDB_SPJ_MAX) ... OK (rejected as expected)
+Test 16: 2-leaf LEFT OUTER star, NULL parent key on leaf 1 (E-7) ... OK (2 groups, NULL rows aggregated by leaf 1)
 
 All tests PASSED
 PASSED

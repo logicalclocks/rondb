@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-9: P_UNQ_PK on an INT parent column (parent column not validated).
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P9
+--let $spj_case_title = P-9: P_UNQ_PK on an INT parent column (parent column not validated)
+--source suite/ndb_spj/include/spj_malformed_case.inc

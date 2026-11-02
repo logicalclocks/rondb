@@ -1,0 +1,43 @@
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+KEY ib (b))
+ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t3 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+ENGINE=NDB;
+INSERT INTO t1
+WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 20)
+SELECT n, (n % 10) + 1, n FROM s;
+INSERT INTO t2
+WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 60)
+SELECT n, (n % 20) + 1, (n % 10) + 1 FROM s;
+INSERT INTO t3
+WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 10)
+SELECT n, n, n * 7 FROM s;
+CREATE VIEW spj_robust_dih_scans AS
+SELECT d.node_id, d.table_id,
+d.current_scan_count + d.scan_count_wait AS scans
+FROM ndbinfo.ndb$table_distribution_status_all AS d
+JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+LEFT JOIN ndbinfo.dict_obj_info AS p
+ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+FROM ndbinfo.operations_per_fragment
+WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+#
+# Reference results; every shape is executed as a pushed join
+#
+All four shapes were pushed
+#
+# Run the fault matrix
+#
+#
+# No DBSPJ request, DBTC scan or join-aggregation state was leaked
+#
+structural leak checks acknowledged by all 2 data nodes
+Fault matrix: every run failed as expected or returned the reference result, nothing leaked
+DROP TEMPORARY TABLE spj_faults, spj_fail;
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE t1, t2, t3;

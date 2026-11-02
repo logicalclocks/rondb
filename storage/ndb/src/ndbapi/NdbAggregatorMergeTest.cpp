@@ -22,6 +22,7 @@
 #include <kernel/AttributeHeader.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -618,9 +619,136 @@ static bool runLocalCountCase() {
   return true;
 }
 
+/* E-1: initForResults takes each slot's aggregate function from the
+ * instruction words only.  The data words of a DOUBLE constant (the high
+ * word 0x3FF00000 of 1.0 reads as kOpSumDouble on slot 0, 0x40000000 of
+ * 2.0 as kOpMaxBigint) and of an embedded program must not change it, or
+ * the partials of slot 0 merge with the wrong function. */
+static std::vector<Uint32> makeScalarPacket(const AggResItem *slots,
+                                            Uint32 n) {
+  const Uint32 valueBytes = n * sizeof(AggResItem);
+  std::vector<Uint32> words(4 + valueBytes / 4, 0);
+  words[0] = AttributeHeader(AttributeHeader::AGG_RESULT, 0).m_value;
+  words[1] = n;
+  words[2] = 1;
+  words[3] = valueBytes;
+  memcpy(words.data() + 4, slots, valueBytes);
+  return words;
+}
+
+static bool runProgramDecodeCase(Uint32 variant) {
+  // Slot 0 is MAX in variants 0 and 2 and SUM in variant 1; slot 1 is
+  // the other one.
+  NdbAggregator build(nullptr);
+  switch (variant) {
+    case 0:
+      CHECK(build.Max(0, 0));
+      CHECK(build.LoadDouble(1.0, 1));
+      CHECK(build.Mul(0, 1));
+      CHECK(build.Sum(1, 0));
+      break;
+    case 1:
+      CHECK(build.Sum(0, 0));
+      CHECK(build.LoadDouble(2.0, 1));
+      CHECK(build.Mul(0, 1));
+      CHECK(build.Max(1, 0));
+      break;
+    default:
+      CHECK(build.Max(0, 0));
+      CHECK(build.EmbeddedInterp(2));
+      CHECK(build.EmitEmbeddedWord((Uint32(kOpCount) << 26) | 0));
+      CHECK(build.EmitEmbeddedWord((Uint32(kOpSumBigint) << 26) | 0));
+      CHECK(build.Sum(1, 0));
+      break;
+  }
+  CHECK(build.Finalize());
+  const bool slot0IsMax = variant != 1;
+
+  NdbAggregator agg(nullptr);
+  agg.initForResults(build.buffer(), build.instructions_length());
+  for (Int64 value : {Int64(10), Int64(20)}) {
+    const AggResItem slots[2] = {signedSlot(value), signedSlot(value)};
+    auto packet = makeScalarPacket(slots, 2);
+    CHECK(agg.ProcessRes(reinterpret_cast<char*>(packet.data())) ==
+          static_cast<Int32>(packet.size()));
+  }
+  agg.PrepareResults();
+  auto row = agg.FetchResultRecord();
+  CHECK(!row.end());
+  CHECK(checkValue(row.FetchAggregationResult(),
+                   signedSlot(slot0IsMax ? 20 : 30)));
+  CHECK(checkValue(row.FetchAggregationResult(),
+                   signedSlot(slot0IsMax ? 30 : 20)));
+  CHECK(row.FetchAggregationResult().end());
+  CHECK(agg.FetchResultRecord().end());
+  return true;
+}
+
+/* Q-7: GROUP BY a DOUBLE whose partials have -0.0 and 0.0, on the
+ * Finalize path and on the initForResults path of pushed joins.  They
+ * are one group, which shows 0.0 when any partial has it and -0.0 when
+ * all have -0.0. */
+static std::vector<Uint32> makeDoubleGroupPacket(double key, Uint64 count) {
+  const AggResItem slot = unsignedSlot(count);
+  const Uint32 keyBytes = 3 * sizeof(Uint32);
+  std::vector<Uint32> words(4 + 3 + sizeof(slot) / 4, 0);
+  words[0] = AttributeHeader(AttributeHeader::AGG_RESULT, 0).m_value;
+  words[1] = (1u << 16) | 1;
+  words[2] = 1;
+  words[3] = (keyBytes << 16) | sizeof(slot);
+  words[4] = AttributeHeader(0, sizeof(double)).m_value;
+  memcpy(words.data() + 5, &key, sizeof(key));
+  memcpy(words.data() + 7, &slot, sizeof(slot));
+  return words;
+}
+
+static bool runDoubleZeroCase(bool viaFinalize, bool withPositiveZero) {
+  NdbDictionary::Column column("d");
+  column.setType(NdbDictionary::Column::Double);
+  const NdbDictionary::Column *columns[] = {&column};
+  std::vector<Uint32> program(8 + 1 + 1, 0);
+  program[1] = (1u << 16) | 1;
+  program[8] = (Uint32(AGG_LINKED_COL_FLAG) << 16) | NDB_TYPE_DOUBLE;
+  program[9] = Uint32(kOpCount) << 26;
+
+  NdbAggregator agg(nullptr);
+  if (viaFinalize) {
+    CHECK(agg.GroupByLinked(0, &column));
+    CHECK(agg.LoadInt64(1, 0));
+    CHECK(agg.Count(0, 0));
+    CHECK(agg.Finalize());
+  } else {
+    agg.initForResults(program.data(), program.size(), columns, 1);
+  }
+  const double keys[] = {-0.0, withPositiveZero ? 0.0 : -0.0, 1.5, -0.0};
+  for (double key : keys) {
+    auto packet = makeDoubleGroupPacket(key, 1);
+    CHECK(agg.ProcessRes(reinterpret_cast<char*>(packet.data())) ==
+          static_cast<Int32>(packet.size()));
+  }
+  CHECK(agg.n_groups() == 2);
+  agg.PrepareResults();
+  auto zero = agg.FetchResultRecord();
+  CHECK(!zero.end());
+  auto zeroKey = zero.FetchGroupbyColumn();
+  CHECK(!zeroKey.end() && !zeroKey.is_null());
+  CHECK(zeroKey.data_double() == 0.0);
+  CHECK(std::signbit(zeroKey.data_double()) == !withPositiveZero);
+  CHECK(checkValue(zero.FetchAggregationResult(), unsignedSlot(3)));
+  auto other = agg.FetchResultRecord();
+  CHECK(!other.end());
+  CHECK(other.FetchGroupbyColumn().data_double() == 1.5);
+  CHECK(checkValue(other.FetchAggregationResult(), unsignedSlot(1)));
+  CHECK(agg.FetchResultRecord().end());
+  return true;
+}
+
 /* F24: GROUP BY a latin1_swedish_ci string, COUNT per group, merged
  * through the hash index.  Keys equal under the collation ('a', 'A',
- * 'a ') must reach one group, and the rows come in collation order. */
+ * 'a ', 'A   ') must reach one group, also when their lengths in words
+ * differ, and the rows come in collation order.  E-5: the same on the
+ * initForResults path, which merges the partial groups of a pushed join
+ * aggregation. */
 static std::vector<Uint32> collationKey(Uint32 type, const char *text) {
   const Uint32 kCharLength = 4;
   std::vector<unsigned char> bytes;
@@ -637,16 +765,25 @@ static std::vector<Uint32> collationKey(Uint32 type, const char *text) {
   return key;
 }
 
-static bool runCollationCase(Uint32 type) {
+static bool runCollationCase(Uint32 type, bool viaFinalize) {
   NdbDictionary::Column column("s");
   column.setType(static_cast<NdbDictionary::Column::Type>(type));
   column.setLength(type == NDB_TYPE_CHAR ? 4 : 8);
   column.setCharset(&my_charset_latin1);
   NdbAggregator agg(nullptr);
-  CHECK(agg.GroupByLinked(0, &column));
-  CHECK(agg.LoadInt64(1, 0));
-  CHECK(agg.Count(0, 0));
-  CHECK(agg.Finalize());
+  if (viaFinalize) {
+    CHECK(agg.GroupByLinked(0, &column));
+    CHECK(agg.LoadInt64(1, 0));
+    CHECK(agg.Count(0, 0));
+    CHECK(agg.Finalize());
+  } else {
+    const NdbDictionary::Column *columns[] = {&column};
+    std::vector<Uint32> program(8 + 1 + 1, 0);
+    program[1] = (1u << 16) | 1;
+    program[8] = (Uint32(AGG_LINKED_COL_FLAG) << 16) | type;
+    program[9] = Uint32(kOpCount) << 26;
+    agg.initForResults(program.data(), program.size(), columns, 1);
+  }
 
   const AggResItem one = unsignedSlot(1);
   auto merge = [&](const char *text) {
@@ -654,7 +791,7 @@ static bool runCollationCase(Uint32 type) {
     return agg.MergeLocalGroup(reinterpret_cast<const char *>(key.data()),
                                key.size() * sizeof(Uint32), &one) == 0;
   };
-  for (const char *text : {"b", "a", "A", "B ", "a "}) {
+  for (const char *text : {"b", "a", "A", "B ", "a ", "A   "}) {
     CHECK(merge(text));
   }
   // 300 more groups, each in two cases, grow the index past its first
@@ -672,8 +809,8 @@ static bool runCollationCase(Uint32 type) {
   Uint32 rows = 0;
   for (auto row = agg.FetchResultRecord(); !row.end();
        row = agg.FetchResultRecord()) {
-    // 'a', 'A' and 'a ' first, then 'b' and 'B '.
-    const Uint64 expected = rows == 0 ? 3 : 2;
+    // 'a', 'A', 'a ' and 'A   ' first, then 'b' and 'B '.
+    const Uint64 expected = rows == 0 ? 4 : 2;
     CHECK(checkValue(row.FetchAggregationResult(), unsignedSlot(expected)));
     rows++;
   }
@@ -704,9 +841,25 @@ int main() {
     }
   }
   if (!runLocalCountCase()) passed = false;
-  for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR)}) {
-    if (!runCollationCase(type)) {
-      fprintf(stderr, "collation type=%u\n", type);
+  for (bool viaFinalize : {true, false}) {
+    for (Uint32 type : {Uint32(NDB_TYPE_CHAR), Uint32(NDB_TYPE_VARCHAR)}) {
+      if (!runCollationCase(type, viaFinalize)) {
+        fprintf(stderr, "collation type=%u viaFinalize=%u\n", type,
+                unsigned(viaFinalize));
+        passed = false;
+      }
+    }
+    for (bool withPositiveZero : {true, false}) {
+      if (!runDoubleZeroCase(viaFinalize, withPositiveZero)) {
+        fprintf(stderr, "double zero viaFinalize=%u withPositiveZero=%u\n",
+                unsigned(viaFinalize), unsigned(withPositiveZero));
+        passed = false;
+      }
+    }
+  }
+  for (Uint32 variant = 0; variant < 3; variant++) {
+    if (!runProgramDecodeCase(variant)) {
+      fprintf(stderr, "program decode variant=%u\n", variant);
       passed = false;
     }
   }
@@ -714,7 +867,8 @@ int main() {
   printf("%s\n", passed
       ? "PASSED: result-size boundaries, bounded result batches, "
         "numeric boundaries, 18 string failure/recovery cases, "
-        "19 MergeLocalGroup cases and 2 collation merge cases"
+        "19 MergeLocalGroup cases, 4 collation merge cases, "
+        "4 DOUBLE zero group cases and 3 program decode cases"
       : "FAILED");
   return passed ? 0 : 1;
 }

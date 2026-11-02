@@ -35,6 +35,9 @@
 
 #include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
 
+#include <cfloat>  // DBL_DIG
+
+#include "sql/field.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
 #include "sql/item_sum.h"
@@ -1077,6 +1080,39 @@ static bool is_temporal_field_type(enum_field_types t) {
 }
 
 /**
+ * Check that the data nodes compute SUM / AVG / MIN / MAX over 'arg' as
+ * exactly as MySQL does (Q-6, E-16).  The aggregation program loads a
+ * DECIMAL with scale > 0 as a DOUBLE, and evaluates an expression with a
+ * DECIMAL result in DOUBLE, while MySQL computes both exactly:
+ *
+ * - SUM and AVG accumulate the rounding errors of every row, and silently
+ *   lose digits once the sum needs more digits than a DOUBLE holds.  Only
+ *   a DECIMAL column with scale 0, summed as a BIGINT, is exact.
+ * - MIN and MAX return one of the values: a DECIMAL column of at most
+ *   DBL_DIG digits converts to a DOUBLE and back unchanged, a wider column
+ *   or an expression does not.
+ *
+ * Integers and DECIMALs with scale 0 are BIGINTs on the data nodes: a value
+ * or a sum beyond 64 bits fails the query with an overflow error (1864,
+ * 1860) instead of returning the DECIMAL sum MySQL returns.  That is a
+ * failure, not a wrong result, and SUM over a BIGINT column is common, so
+ * those aggregates are still pushed.
+ */
+static bool is_exact_aggregate_arg(Item_sum::Sumfunctype sum_func,
+                                   const Item *arg) {
+  if (arg->result_type() != DECIMAL_RESULT) return true;
+  // An expression with a DECIMAL result is evaluated as a DOUBLE.
+  if (arg->type() != Item::FIELD_ITEM) return false;
+  const Field *field = down_cast<const Item_field *>(arg)->field;
+  if (field->type() != MYSQL_TYPE_NEWDECIMAL) return false;
+  if (field->decimals() == 0) return true;  // A BIGINT on the data nodes
+  if (sum_func == Item_sum::MIN_FUNC || sum_func == Item_sum::MAX_FUNC) {
+    return down_cast<const Field_new_decimal *>(field)->precision <= DBL_DIG;
+  }
+  return false;
+}
+
+/**
  * Check if the aggregate functions and GROUP BY in a JOIN are pushable.
  *
  * Validates:
@@ -1084,6 +1120,7 @@ static bool is_temporal_field_type(enum_field_types t) {
  * - No ROLLUP
  * - GROUP BY columns are simple field references from pushed tables
  * - Aggregate arguments are field references from pushed tables
+ * - Aggregates are computed as exactly as MySQL does (is_exact_aggregate_arg)
  *
  * @return true if aggregation is pushable
  */
@@ -1128,6 +1165,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
         // table, a pushable CASE expression, or a pushable arithmetic expr.
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
+        if (!is_exact_aggregate_arg((*func)->sum_func(), arg)) return false;
         if (arg->type() == Item::FIELD_ITEM) {
           const auto *field_item = down_cast<const Item_field *>(arg);
           if (field_item->field->table->file->member_of_pushed_join() ==
@@ -1577,6 +1615,35 @@ bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
   return separate;
 }
 
+/**
+ * Check that the condition on 'table' is completely pushed, as code which
+ * the data nodes will evaluate (E-10, E-11).  When NDB returns aggregated
+ * results, a remainder condition would be evaluated by MySQL on the
+ * aggregated rows, and a condition left to ha_ndbcluster would not be
+ * evaluated at all.
+ *
+ * 'cond' must be prepared by prep_cond_push() for the current query plan:
+ * by is_pushable_as_child() for a child of a pushed join, and by
+ * ndbcluster_push_to_engine() for the root or a single table.  The code is
+ * generated here as it will be when executed: create_pushed_join() leaves
+ * the code of a lookup to ha_ndbcluster if MAX_LOOKUP_FILTER_WORDS or larger.
+ */
+static bool is_condition_pushed_for_aggregate(const pushed_table &table,
+                                              ha_ndbcluster_cond &cond,
+                                              bool is_lookup) {
+  if (table.get_condition() == nullptr) return true;
+  // Not prepared (engine_condition_pushdown=off), or with a remainder
+  if (cond.m_pushed_cond == nullptr || cond.m_remainder_cond != nullptr) {
+    return false;
+  }
+  const Uint32 code_size = cond.get_pushed_code_size();
+  if (code_size == 0) return false;  // Failed to generate code
+  if (is_lookup && code_size >= ndb_pushed_join::MAX_LOOKUP_FILTER_WORDS) {
+    return false;
+  }
+  return true;
+}
+
 bool ndb_push_aggregation(THD *, const JOIN *join,
                           ndb_pushed_builder_ctx &builder,
                           bool allow_outer_join) {
@@ -1626,14 +1693,18 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     }
   }
 
-  // Reject if any table has a non-pushable remainder condition.
-  // Such conditions must be evaluated by MySQL on individual rows BEFORE
+  // Reject if the condition on any table is not completely pushed.
+  // Such conditions must be evaluated on individual rows BEFORE
   // aggregation, which is impossible when NDB returns aggregated results.
   for (uint i = 0; i < builder.m_table_count; i++) {
-    const TABLE *tab = builder.m_tables[i].get_table();
-    if (tab == nullptr) continue;
-    const auto *h = down_cast<const ha_ndbcluster *>(tab->file);
-    if (h->m_cond.m_remainder_cond != nullptr) {
+    const pushed_table &table = builder.m_tables[i];
+    auto *h = down_cast<ha_ndbcluster *>(table.get_table()->file);
+    const bool is_lookup = !builder.m_scan_operations.contain(i);
+    if (!is_condition_pushed_for_aggregate(table, h->m_cond, is_lookup)) {
+      DBUG_PRINT("info",
+                 ("ndb_push_aggregation: condition on table %u is not "
+                  "completely pushed — cannot push aggregation",
+                  i));
       return false;
     }
   }
@@ -2019,6 +2090,7 @@ int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
  * - No ROLLUP
  * - GROUP BY columns are simple field references from the single table
  * - Aggregate arguments are field references from the single table
+ * - Aggregates are computed as exactly as MySQL does (is_exact_aggregate_arg)
  *
  * @param join        MySQL JOIN with aggregation info
  * @param table       The single MySQL TABLE involved
@@ -2055,6 +2127,7 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
       case Item_sum::MAX_FUNC: {
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
+        if (!is_exact_aggregate_arg((*func)->sum_func(), arg)) return false;
         if (arg->type() == Item::FIELD_ITEM) {
           const auto *field_item = down_cast<const Item_field *>(arg);
           if (field_item->field->table != table) {
@@ -2280,7 +2353,14 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
     return false;
   }
 
-  const auto *h = down_cast<const ha_ndbcluster *>(table->file);
+  // The condition on the table must be completely pushed (E-10): MySQL
+  // would evaluate a remainder on the aggregated rows.
+  auto *h = down_cast<ha_ndbcluster *>(table->file);
+  if (!is_condition_pushed_for_aggregate(builder.m_tables[0], h->m_cond,
+                                         /*is_lookup=*/false)) {
+    return false;
+  }
+
   const NdbDictionary::Table *ndb_table = h->m_table;
   if (ndb_table == nullptr) {
     return false;
@@ -2290,8 +2370,7 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
   if (agg == nullptr) {
     return false;
   }
-  auto *handler = down_cast<ha_ndbcluster *>(table->file);
-  handler->m_stm_aggregator = agg;
+  h->m_stm_aggregator = agg;
 
   DBUG_PRINT("info",
              ("ndb_push_single_table_aggregation: aggregation pushed "

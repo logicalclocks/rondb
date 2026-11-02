@@ -179,6 +179,12 @@ class ndb_pushed_join {
    */
   static constexpr uint MAX_LINKED_PARAMS = 16;
   /**
+   * The code of a pushed condition is attached to a lookup operation only if
+   * it is smaller than this number of words. A larger condition is evaluated
+   * by ha_ndbcluster. (See ha_ndbcluster::create_pushed_join())
+   */
+  static constexpr uint MAX_LOOKUP_FILTER_WORDS = 64;
+  /**
    * This is the maximal number of table access operations there can be in a
    * single pushed join.
    */
@@ -851,6 +857,11 @@ class ndb_pushed_builder_ctx {
 
   // Number of internal operations used so far (unique lookups count as two).
   uint m_internal_op_count;
+
+  // Number of key parts of the pushed children so far that refer to a
+  // table before the root. build_key() sends each as a paramValue(), and
+  // at most MAX_REFERRED_FIELDS fit in m_referred_fields[].
+  uint m_param_refs;
 
   uint m_fld_refs;
   Field *m_referred_fields[ndb_pushed_join::MAX_REFERRED_FIELDS];

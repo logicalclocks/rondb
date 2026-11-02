@@ -1,0 +1,186 @@
+#
+# DBSPJ robustness R-4 / R-5: abort while the first batch of a child scan
+# is being sent.
+#
+# scanFrag_send() (the batch starter) is entered with the tree node
+# TN_INACTIVE and sets it TN_ACTIVE only after the inner scanFrag_send()
+# returned. When the inner function fails after it already sent some
+# SCAN_FRAGREQs (section memory exhausted on a later fragment) it calls
+# abort() while the node is still TN_INACTIVE, so scanFrag_abort()
+# returns without closing the fragments just started (R-4). A started
+# fragment that returns SCAN_FRAGCONF with more rows to come stays
+# SFH_WAIT_NEXTREQ and is never closed: its scan record stays open in
+# DBLQH (conc_frag_scans in ndbinfo.operations_per_fragment) after DBSPJ
+# released the request.
+#
+# batchComplete() then finds the tree node still TN_ACTIVE while nothing is
+# outstanding, marks it inactive and calls sendConf() + cleanup() on the
+# path for "not complete", which skips the complete() phase
+# (RT_NEED_COMPLETE). scanFrag_complete() never sends
+# DIH_SCAN_TAB_COMPLETE_REP, so the DIH scan registered for every child
+# scan of the request leaks (R-5).
+#
+# Error insert 17535 fails with OutOfSectionMemory before the second
+# SCAN_FRAGREQ of the first batch of a child scan. The child scan matches
+# 1000 rows in each of its 8 fragments, more than one batch, so a started
+# fragment answers with more rows to come. The query must fail with NDB
+# error 20006 and leave no fragment scan and no DIH scan behind.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_first_batch_abort_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_query_log
+
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+                 KEY ib (b))
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+
+--disable_query_log
+CREATE TABLE spj_seq (n INT NOT NULL PRIMARY KEY) ENGINE=InnoDB;
+SET SESSION cte_max_recursion_depth = 10000;
+INSERT INTO spj_seq
+  WITH RECURSIVE seq (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 8000)
+  SELECT n FROM seq;
+SET SESSION cte_max_recursion_depth = DEFAULT;
+--enable_query_log
+INSERT INTO t1 VALUES (1, 1, 1);
+INSERT INTO t2 SELECT n, 1, n FROM spj_seq WHERE n <= 4000;
+INSERT INTO t2 SELECT n, 1, n FROM spj_seq WHERE n > 4000;
+DROP TABLE spj_seq;
+
+CREATE VIEW spj_robust_dih_scans AS
+  SELECT d.node_id, d.table_id,
+         d.current_scan_count + d.scan_count_wait AS scans
+  FROM ndbinfo.ndb$table_distribution_status_all AS d
+  JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+  LEFT JOIN ndbinfo.dict_obj_info AS p
+    ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+  WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+  SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+  FROM ndbinfo.operations_per_fragment
+  WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+
+--let $spj_q = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(t2.c) AS chk FROM t1 JOIN t2 FORCE INDEX (ib) ON t2.b = t1.b
+
+--echo #
+--echo # Reference run: the query is pushed, nothing is left open
+--echo #
+--let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+--source suite/ndb_spj/include/spj_run_query.inc
+--let $spj_ref = $spj_res
+--let $spj_pq1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+if ($spj_errno)
+{
+  --echo ERROR $spj_errno: $spj_w
+  --die Test setup: the query failed without an error insert
+}
+if (`SELECT $spj_pq1 <= $spj_pq0`)
+{
+  --die Test setup: the query was not executed as a pushed join
+}
+--echo Reference query was pushed
+
+--let $spj_i = 0
+--let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+while ($spj_open)
+{
+  if (`SELECT $spj_i >= 300`)
+  {
+    SELECT * FROM spj_robust_frag_scans WHERE conc_frag_scans > 0;
+    --die Test setup: fragment scans are open on an idle cluster
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+}
+--let $spj_i = 0
+--let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+while ($spj_scans)
+{
+  if (`SELECT $spj_i >= 100`)
+  {
+    SELECT node_id, table_id, scans FROM spj_robust_dih_scans WHERE scans > 0;
+    --die Test setup: DIH scans are registered on an idle cluster
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+}
+--echo No fragment scan and no DIH scan before the error insert
+
+--echo #
+--echo # 17535: OutOfSectionMemory before the 2nd SCAN_FRAGREQ of the first
+--echo # child batch
+--echo #
+--exec $NDB_MGM -e "all error 17535" >> $spj_mgm_log
+--source suite/ndb_spj/include/spj_run_query.inc
+--exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+
+if (!$spj_errno)
+{
+  --die Test setup: error insert 17535 did not fire (first child batch started fewer than 2 fragments), the query succeeded
+}
+--let $spj_err = `SELECT IF(LOCATE('error ', "$spj_w") > 0, SUBSTRING_INDEX(SUBSTRING("$spj_w", LOCATE('error ', "$spj_w") + 6), ' ', 1), 'none')`
+if (`SELECT '$spj_err' <> '20006'`)
+{
+  --echo Query failed with: $spj_w
+  --die 17535: the query did not fail with NDB error 20006 (OutOfSectionMemory)
+}
+--echo The query failed with NDB error 20006
+
+--let $spj_i = 0
+--let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+while ($spj_open)
+{
+  if (`SELECT $spj_i >= 150`)
+  {
+    --echo Fragment scans still open 30 s after the failed query:
+    SELECT * FROM spj_robust_frag_scans WHERE conc_frag_scans > 0;
+    --die R-4: a child fragment scan started in the aborted first batch was never closed (scanFrag_abort skipped the TN_INACTIVE tree node)
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+}
+--echo No fragment scan is left open
+
+--let $spj_i = 0
+--let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+while ($spj_scans)
+{
+  if (`SELECT $spj_i >= 100`)
+  {
+    --echo DIH scans still registered 20 s after the failed query:
+    SELECT node_id, table_id, scans FROM spj_robust_dih_scans WHERE scans > 0;
+    --die R-5: a DIH scan leaked: batchComplete() completed the aborted request without its complete() phase, so DIH_SCAN_TAB_COMPLETE_REP was never sent
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+}
+--echo No DIH scan is left registered
+
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+
+--source suite/ndb_spj/include/spj_run_query.inc
+if (`SELECT $spj_errno <> 0 OR "$spj_res" <> "$spj_ref"`)
+{
+  --echo Got: $spj_res (error $spj_errno: $spj_w), expected: $spj_ref
+  --die The query returned a wrong result after the error insert was cleared
+}
+--echo The query returns the reference result
+
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE t1, t2;
+--remove_file $spj_mgm_log

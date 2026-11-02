@@ -16972,6 +16972,8 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
 
   Uint32 errCode;
   ScanRecordPtr scanptr;
+  /* Reported to the security system after the SCAN_TABREF */
+  bool malformedJoinAgg = false;
 
   /* Short SCANTABREQ has 1 section, Long has 2 or 3.
    * Section 0 : NDBAPI receiver ids (Mandatory)
@@ -17102,6 +17104,22 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
                    getNodeVersionInfo().m_type[NodeInfo::DB].m_min_version))) {
     jam();
     errCode = 4003;  // Function not implemented
+    goto SCAN_TAB_error;
+  }
+  /**
+   * A join aggregation is a pushed join (ViaSPJ) whose KeyInfo section
+   * carries the aggregation programs, parsed by parseJoinAggKeyInfo.
+   * Without that section DBSPJ would take the AttrInfo as its aggKeys
+   * section (the JoinAgg flag is still passed on in SCAN_FRAGREQ), and
+   * without receiver ids initScanrec would divide by zero, as
+   * scanParallelism does not come from section 0 here.
+   */
+  if (unlikely(ScanTabReq::getJoinAggFlag(ri) &&
+               (!ScanTabReq::getViaSPJFlag(ri) || numSections != 3 ||
+                keyLen == 0 || numReceiverIds == 0))) {
+    jam();
+    errCode = ZINVALID_KEY;
+    malformedJoinAgg = true;
     goto SCAN_TAB_error;
   }
 
@@ -17443,12 +17461,14 @@ void Dbtc::execSCAN_TABREQ(Signal *signal) {
     if (ScanTabReq::getJoinAggFlag(ri) && keyLen) {
       jam();
       /* parseJoinAggKeyInfo handles errors internally via
-       * abortScanLab (sends SCAN_TABREF and releases the scan).
+       * abortScanLab (sends SCAN_TABREF and releases the scan and
+       * the KeyInfo section).
        * Returns -1 on error — caller must not access scanptr
        * after that since the scan record is freed. */
       scanptr.p->scanState = ScanRecord::WAIT_JOIN_AGG_SETUP;
       transP->apiScanRec = scanptr.i;
-      if (parseJoinAggKeyInfo(signal, scanptr, handle, keyLen) != 0) {
+      if (parseJoinAggKeyInfo(signal, scanptr, handle, keyLen,
+                              refToNode(apiBlockRef)) != 0) {
         jam();
         handle.clear();
         return;
@@ -17637,6 +17657,11 @@ SCAN_TAB_error_no_state_change:
    * API-node. We want to detect that if it should happen.
    */
   ndbassert(transP->apiConnectstate != CS_DISCONNECTED);
+  if (unlikely(malformedJoinAgg)) {
+    jam();
+    reportMaliciousSignal(signal, refToNode(apiBlockRef),
+                          VT_JOINAGG_KEYINFO_MALFORMED);
+  }
   return;
 }  // Dbtc::execSCAN_TABREQ()
 
@@ -17685,8 +17710,11 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
      * scans using OrderBy flag. In this case the impact might be very
      * significant since we avoid becoming single-threaded in this case.
      */
+    /* The receiver ids are read from section 0 below.  A JoinAgg scan
+     * takes scanParallel from the signal instead, so it may claim more
+     * than section 0 has. */
     if (unlikely((scanParallel & 3) != 0 ||
-        scanParallel == 0)) {
+        scanParallel == 0 || scanParallel > numReceiverIds)) {
       jam();
       return ZSCAN_PAR_RECEIVER_ID_ERROR;
     }
@@ -17752,6 +17780,7 @@ Uint32 Dbtc::initScanrec(ScanRecordPtr scanptr, const ScanTabReq *scanTabReq,
   scanptr.p->m_aggSetupOutstanding = 0;
   scanptr.p->m_aggSetupState = ScanRecord::AGG_SETUP_NOT_STARTED;
   scanptr.p->m_cteScanReportsExpected = 0;
+  scanptr.p->m_cteFragScansSent = false;
   scanptr.p->m_cteInfos = nullptr;
   scanptr.p->m_cteAggNodeState = nullptr;
   /* Phase L (C): per-aggregation completion bookkeeping. */
@@ -19188,6 +19217,10 @@ void Dbtc::sendFragScansLab(Signal *signal, ScanRecordPtr scanptr,
       ndbassert(scanptr.p->m_booked_fragments_count > 0);
       scanptr.p->m_booked_fragments_count--;
     }
+  }
+  if (scanptr.p->m_numCtes > 0) {
+    jam();
+    cteFragScansSent(signal, scanptr);
   }
   /*********************************************
    * WE HAVE NOW STARTED A FRAGMENT SCAN. NOW
@@ -30867,14 +30900,45 @@ void Dbtc::debug_db_no_queue(DatabaseRecordPtr databaseRecordPtr,
  *   Word boundsLen+1:    aggReceiverId (API receiver for results)
  *   Remaining words:     aggregation program
  * Splits bounds from agg program into separate scan record fields.
+ *
+ * Every length and count in the section comes from the API. They are
+ * checked against the words that remain, never by adding to them, as an
+ * addition can wrap. A malformed section is answered with
+ * SCAN_TABREF(ZINVALID_KEY) and reported for apiNodeId.
  */
 int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
-                              SectionHandle &handle, Uint32 keyLen) {
+                              SectionHandle &handle, Uint32 keyLen,
+                              NodeId apiNodeId) {
   scanptr.p->m_joinAgg = true;
   scanptr.p->scanKeyInfoPtr = RNIL;
   scanptr.p->m_aggProgramPtrI = RNIL;
   scanptr.p->m_aggColumnMeta = nullptr;
   scanptr.p->m_aggColumnMetaLen = 0;
+
+  /* Error exits.  abortScanLab sends SCAN_TABREF and releases the scan
+   * record together with all that was parsed into it so far.  The
+   * combined KeyInfo section is still in the caller's handle, so it is
+   * released here.  A malformed section is reported last, as the report
+   * reuses the signal. */
+  auto abortJoinAgg = [&](Uint32 errCode) -> int {
+    ApiConnectRecordPtr apiConnectptr;
+    apiConnectptr.i = scanptr.p->scanApiRec;
+    c_apiConnectRecordPool.getPtr(apiConnectptr);
+    releaseSection(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i);
+    handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i = RNIL;
+    abortScanLab(signal, scanptr, errCode, true, apiConnectptr);
+    return -1;
+  };
+  auto abortInvalidJoinAggKey = [&]() -> int {
+    jam();
+    abortJoinAgg(ZINVALID_KEY);
+    reportMaliciousSignal(signal, apiNodeId, VT_JOINAGG_KEYINFO_MALFORMED);
+    return -1;
+  };
+  auto abortJoinAggMemory = [&]() -> int {
+    jam();
+    return abortJoinAgg(ZGET_ATTRBUF_ERROR);
+  };
 
   /* Allocate per-node join agg state sized to MAX_NDB_NODES.
    * Phase L (E.1): tail buffer holds two parallel arrays —
@@ -30888,13 +30952,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       lc_ndbd_pool_malloc(allocSize, RG_QUERY_MEMORY,
                           getThreadId(), true);
   if (unlikely(aggNodes == nullptr)) {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = scanptr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiConnectptr);
-    abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true,
-                 apiConnectptr);
-    return -1;
+    return abortJoinAggMemory();
   }
   aggNodes->m_aggOwnerInstances = &aggNodes->m_aggStateKeys[maxNodes];
   /* RONDB-1120 P2c: RNIL = "SETUP_CONF not yet arrived".  Every
@@ -30909,9 +30967,12 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
 
   SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
                        getSectionSegmentPool());
+  /* boundsLen word + bounds + aggReceiverId must fit in the section */
   Uint32 boundsLen;
-  ndbrequire(reader.getWord(&boundsLen));
-  ndbrequire(2 + boundsLen <= keyLen);  // +2 for boundsLen word + receiverId
+  if (unlikely(keyLen < 2 || !reader.getWord(&boundsLen) ||
+               boundsLen > keyLen - 2)) {
+    return abortInvalidJoinAggKey();
+  }
 
   if (boundsLen > 0) {
     jam();
@@ -30921,14 +30982,20 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       const Uint32 *readPtr;
       Uint32 actualLen;
       ndbrequire(reader.getWordsPtr(remaining, readPtr, actualLen));
-      ndbrequire(appendToSection(scanptr.p->scanKeyInfoPtr,
-                                   readPtr, actualLen));
+      if (unlikely(!appendToSection(scanptr.p->scanKeyInfoPtr,
+                                    readPtr, actualLen))) {
+        return abortJoinAggMemory();
+      }
       remaining -= actualLen;
     }
   }
 
-  /* Extract aggReceiverId */
+  /* Extract aggReceiverId.  RNIL marks it unset, sendJoinAggSetupReqs
+   * requires it to be set. */
   ndbrequire(reader.getWord(&scanptr.p->m_aggReceiverId));
+  if (unlikely(scanptr.p->m_aggReceiverId == RNIL)) {
+    return abortInvalidJoinAggKey();
+  }
 
   /* Remaining words = aggregation program + optional CTE definitions.
    * The main agg program is self-describing: word[0] = (magic << 16) | progLen.
@@ -30937,23 +31004,8 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
    *   For each CTE: [tableId] [schemaVersion] [cteAggProgramLen] [cteAggProg...]
    */
   const Uint32 totalRemaining = keyLen - 2 - boundsLen;
+  /* Words of linBuf parsed so far, never above totalRemaining */
   Uint32 consumed = 0;
-  auto abortInvalidJoinAggKey = [&]() -> int {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = scanptr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiConnectptr);
-    abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
-    return -1;
-  };
-  auto abortJoinAggMemory = [&]() -> int {
-    jam();
-    ApiConnectRecordPtr apiConnectptr;
-    apiConnectptr.i = scanptr.p->scanApiRec;
-    c_apiConnectRecordPool.getPtr(apiConnectptr);
-    abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
-    return -1;
-  };
 
   /* Linearize remaining KeyInfo data into a stack buffer for
    * easier parsing of agg program + optional CTE definitions. */
@@ -30961,12 +31013,8 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   if (totalRemaining > 0) {
     if (unlikely(totalRemaining > MAX_AGG_SECTION_WORDS)) {
       jam();
-      ApiConnectRecordPtr apiConnectptr;
-      apiConnectptr.i = scanptr.p->scanApiRec;
-      c_apiConnectRecordPool.getPtr(apiConnectptr);
-      abortScanLab(signal, scanptr, ZINVALID_KEY, true,
-                   apiConnectptr);
-      return -1;
+      /* A limit of this parser, not a malformed section: not reported */
+      return abortJoinAgg(ZINVALID_KEY);
     }
     Uint32 linBuf[MAX_AGG_SECTION_WORDS];
     {
@@ -30993,7 +31041,12 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       Uint32 numLeaves = linBuf[0] & 0xFFFF;
       mainAggLen = 1; // wrapper word
       for (Uint32 i = 0; i < numLeaves; i++) {
-        if (unlikely(mainAggLen >= totalRemaining)) break;
+        /* Each leaf is [leafLen][leafLen words] within the section */
+        if (unlikely(mainAggLen >= totalRemaining ||
+                     linBuf[mainAggLen] >
+                         totalRemaining - mainAggLen - 1)) {
+          return abortInvalidJoinAggKey();
+        }
         Uint32 leafLen = linBuf[mainAggLen];
         mainAggLen += 1 + leafLen;
       }
@@ -31001,8 +31054,10 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       mainAggLen = linBuf[0] & 0xFFFF;
     }
     if (mainAggLen > 0 && mainAggLen <= totalRemaining) {
-      ndbrequire(appendToSection(scanptr.p->m_aggProgramPtrI,
-                                 linBuf, mainAggLen));
+      if (unlikely(!appendToSection(scanptr.p->m_aggProgramPtrI,
+                                    linBuf, mainAggLen))) {
+        return abortJoinAggMemory();
+      }
       scanptr.p->m_hasMainAggProgram = true;
       consumed = mainAggLen;
     }
@@ -31013,15 +31068,15 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     if (consumed < totalRemaining &&
         linBuf[consumed] == CTE_DEFS_MARKER) {
       consumed++; // skip marker
+      if (unlikely(consumed == totalRemaining)) {
+        return abortInvalidJoinAggKey();
+      }
       Uint32 numCtes = linBuf[consumed];
       consumed++;
     if (unlikely(numCtes > 64)) {
       jam();
-      ApiConnectRecordPtr apiConnectptr;
-      apiConnectptr.i = scanptr.p->scanApiRec;
-      c_apiConnectRecordPool.getPtr(apiConnectptr);
-      abortScanLab(signal, scanptr, ZINVALID_KEY, true, apiConnectptr);
-      return -1;
+      /* A limit of this parser (64-bit depMask): not reported */
+      return abortJoinAgg(ZINVALID_KEY);
     }
     scanptr.p->m_numCtes = numCtes;
 
@@ -31036,11 +31091,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       if (unlikely(mem == nullptr)) {
         jam();
         scanptr.p->m_numCtes = 0;
-        ApiConnectRecordPtr apiConnectptr;
-        apiConnectptr.i = scanptr.p->scanApiRec;
-        c_apiConnectRecordPool.getPtr(apiConnectptr);
-        abortScanLab(signal, scanptr, ZGET_ATTRBUF_ERROR, true, apiConnectptr);
-        return -1;
+        return abortJoinAggMemory();
       }
       scanptr.p->m_cteInfos = (ScanRecord::CteInfo *)mem;
       scanptr.p->m_cteAggNodeState =
@@ -31057,7 +31108,10 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
     } // if (numCtes > 0)
 
     for (Uint32 c = 0; c < numCtes; c++) {
-      ndbrequire(consumed + 6 <= totalRemaining);
+      /* tableId, schemaVersion, depMask (2), flags, cteProgLen */
+      if (unlikely(totalRemaining - consumed < 6)) {
+        return abortInvalidJoinAggKey();
+      }
       scanptr.p->m_cteInfos[c].tableId = linBuf[consumed++];
       scanptr.p->m_cteInfos[c].schemaVersion = linBuf[consumed++];
       {
@@ -31071,13 +31125,18 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
       scanptr.p->m_cteInfos[c].aggProgramPtrI = RNIL;
       scanptr.p->m_cteInfos[c].columnMeta = nullptr;
       scanptr.p->m_cteInfos[c].columnMetaLen = 0;
-      if (cteProgLen > 0) {
-        ndbrequire(consumed + cteProgLen <= totalRemaining);
-        ndbrequire(appendToSection(
-            scanptr.p->m_cteInfos[c].aggProgramPtrI,
-            linBuf + consumed, cteProgLen));
-        consumed += cteProgLen;
+      /* sendJoinAggSetupReqs sends the program of every CTE, so it must
+       * have one. */
+      if (unlikely(cteProgLen == 0 ||
+                   cteProgLen > totalRemaining - consumed)) {
+        return abortInvalidJoinAggKey();
       }
+      if (unlikely(!appendToSection(
+              scanptr.p->m_cteInfos[c].aggProgramPtrI,
+              linBuf + consumed, cteProgLen))) {
+        return abortJoinAggMemory();
+      }
+      consumed += cteProgLen;
     }
 
     /* DAG scheduler: scheduling is purely depMask-driven.  Every
@@ -31114,7 +31173,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
         Uint32 cteIndex = linBuf[consumed++];
         Uint32 blockLen = linBuf[consumed++];
         if (unlikely(blockLen == 0 ||
-                     consumed + blockLen > totalRemaining)) {
+                     blockLen > totalRemaining - consumed)) {
           return abortInvalidJoinAggKey();
         }
 
@@ -32968,6 +33027,17 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
   if (scanptr.p->m_cteInfos[cteId].scanReports ==
       scanptr.p->m_cteScanReportsExpected) {
     jam();
+    if (unlikely(!scanptr.p->m_cteFragScansSent)) {
+      /**
+       * E-17: sendFragScansLab paused with CONTINUEB before sending
+       * every SCAN_FRAGREQ, and the workers already started have all
+       * reported.  The workers still to be sent are not counted in
+       * m_cteScanReportsExpected yet, so this CTE is not complete;
+       * cteFragScansSent starts it once the last SCAN_FRAGREQ is out.
+       */
+      jam();
+      return;
+    }
     AGGT(("AGGT(%u) CTE cteId=%u scans complete scanPtr=%u",
           instance(), cteId, scanptr.i));
 
@@ -32986,6 +33056,46 @@ void Dbtc::execCTE_PHASE_COMPLETE_REP(Signal *signal) {
      * not arrived get the identity-addressed form (per-node hybrid in
      * sendCteCompleteReqsForCte). */
     sendCteCompleteReqsForCte(signal, scanptr, cteId);
+  }
+}
+
+/**
+ * E-17: sendFragScansLab has sent every SCAN_FRAGREQ of a CTE compound
+ * query, so m_cteScanReportsExpected is final.  execCTE_PHASE_COMPLETE_REP
+ * held back the CTEs whose reports reached the threshold while
+ * SCAN_FRAGREQs were still unsent; start those now.  Before this,
+ * execCTE_PHASE_COMPLETE_REP could start a CTE's redistribution on the
+ * reports of the first workers only and, when the later workers
+ * reported, start it a second time (a duplicate JOIN_AGG_COMPLETE_REQ).
+ */
+void Dbtc::cteFragScansSent(Signal *signal, ScanRecordPtr scanptr) {
+  if (scanptr.p->m_cteFragScansSent) {
+    jam();
+    return;
+  }
+  scanptr.p->m_cteFragScansSent = true;
+  if (scanptr.p->m_cteScanReportsExpected == 0) {
+    jam();
+    return;
+  }
+  for (Uint32 c = 0; c < scanptr.p->m_numCtes; c++) {
+    if ((scanptr.p->m_cteStartedMask & (Uint64(1) << c)) == 0 ||
+        scanptr.p->m_cteInfos[c].scanReports !=
+            scanptr.p->m_cteScanReportsExpected) {
+      jamDebug();
+      continue;
+    }
+    jam();
+    if (scanptr.p->m_aggErrorCode != 0) {
+      jam();
+      tryAbortJoinAgg(signal, scanptr);
+      return;
+    }
+    sendCteCompleteReqsForCte(signal, scanptr, c);
+    if (scanptr.p->scanState != ScanRecord::RUNNING) {
+      jam();
+      return;
+    }
   }
 }
 

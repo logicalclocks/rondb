@@ -209,7 +209,7 @@ Next DBTUX 12011
 Next SUMA 13063
 Next LGMAN 15002
 Next TSMAN 16002
-Next DBSPJ 17535 (17530-17534 RonDB)
+Next DBSPJ 17542 (17530-17541 RonDB)
 Next TRIX 18004
 Next DBUTIL 19002
 
@@ -713,6 +713,10 @@ DBTC Api failure testing
 8120: Api disconnect during SCAN ZSTART_FRAG_SCANS CONTINUEB
 8121: Api disconnect early during SCAN ZSEND_FRAG_SCANS CONTINUEB
 8122: Api disconnect later during SCAN ZSEND_FRAG_SCANS CONTINUEB
+8128: Slow scan start: send one SCAN_FRAGREQ per ZSTART_FRAG_SCANS /
+      ZSEND_FRAG_SCANS CONTINUEB, delayed 10 ms (testScan). A CTE
+      compound query must not start a CTE's redistribution before
+      every SCAN_FRAGREQ is sent (E-17, spj_ronsql_e17_cte_scan_start)
 
 
 DBTC node failure take over testing
@@ -1231,3 +1235,30 @@ DBSPJ (RonDB CTE / join aggregation)
        (query memory exhausted; cleared after use): the LQHKEYREQ /
        SCAN_FRAGREQ is refused with OutOfQueryMemory instead of stopping
        the node (F27)
+
+DBSPJ (RonDB robustness tests, ndb_spj_robust_*.test)
+-----------------------------------------------------
+17535: scanFrag_send: OutOfSectionMemory before the second (or later)
+       SCAN_FRAGREQ of the first batch of a non-root scan, the tree node
+       still TN_INACTIVE and at least one fragment already started by
+       the same call (cleared when it fires)
+17536: mergeAggMatchBitmask: OutOfQueryMemory when merging the matched
+       bitmask of the last outstanding fragment of an outer-join
+       aggregation leaf scan, as if the bitmask could not be allocated
+       (cleared when it fires)
+17537: sendJoinAggNullRow: OutOfSectionMemory before a
+       JOIN_AGG_NULL_ROW_REQ is sent (cleared when it fires)
+17538: scanFrag_sendDihGetNodesReq: the DIGETNODESREQ of the first
+       fragment of a child scan (first round, from execDIH_SCAN_TAB_CONF)
+       fails as DBDIH reports it: zero = 1, error 311 in theData[1]
+       (cleared when it fires)
+17539: scanFrag_sendDihGetNodesReq: as 17131 (one fragment per round,
+       the next round via CONTINUEB), and the DIGETNODESREQ of the first
+       fragment of the first CONTINUEB round fails as for 17538
+       (cleared when it fires)
+17540: planParallelExec / appendTreeNode: appending a tree node to the
+       execution plan fails with OutOfQueryMemory, as if the request
+       arena was exhausted (cleared when it fires)
+17541: scanFrag_prepare: DIH_SCAN_TAB_REQ is refused as by DBDIH for a
+       table not in TS_ACTIVE (senderData = 1, ErroneousTableState), no
+       scan registered in DBDIH (cleared when it fires)

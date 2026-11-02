@@ -115,8 +115,20 @@ enum ViolationType : Uint32 {
   // ---- DBTC SCAN_NEXTREQ (see DbtcMain.cpp execSCAN_NEXTREQ) ----
   VT_SCAN_NEXTREQ_OWNERSHIP = 34,  // A: SCAN_NEXTREQ apiConnectPtr not owned by sender
 
-  VT_UNKNOWN = 35,                      // fallback for out-of-range/rolling-upgrade values
-  NUM_VIOLATION_TYPES = 36              // sentinel — keep last
+  // ---- Signal dispatch (SimulatedBlock::handle_execute_error) ----
+  VT_SIGNAL_NO_HANDLER = 35,       // B: signal from a non-data node to a block
+                                   //    instance without a handler for it
+
+  // ---- DBSPJ request validation (RONDB-1124) ----
+  VT_SPJ_MALFORMED_REQUEST = 36,   // B: query tree, parameters or sections that
+                                   //    DBSPJ rejects, not covered by a type above
+
+  // ---- DBTC join aggregation (see DbtcMain.cpp parseJoinAggKeyInfo) ----
+  VT_JOINAGG_KEYINFO_MALFORMED = 37, // B: join-aggregation KeyInfo block with
+                                     //    lengths or counts outside its section
+
+  VT_UNKNOWN = 38,                      // fallback for out-of-range/rolling-upgrade values
+  NUM_VIOLATION_TYPES = 39              // sentinel — keep last
 };
 
 struct ViolationInfo {
@@ -182,6 +194,9 @@ inline constexpr ViolationInfo g_violation_info[NUM_VIOLATION_TYPES] = {
     {VT_SIGNAL_SCOPE_REMOTE,       TIER_A, "signal_scope_remote_violation"},
     {VT_SIGNAL_SCOPE_MANAGEMENT,   TIER_A, "signal_scope_management_violation"},
     {VT_SCAN_NEXTREQ_OWNERSHIP,    TIER_A, "scan_nextreq_ownership"},
+    {VT_SIGNAL_NO_HANDLER,         TIER_B, "signal_no_handler"},
+    {VT_SPJ_MALFORMED_REQUEST,     TIER_B, "spj_malformed_request"},
+    {VT_JOINAGG_KEYINFO_MALFORMED, TIER_B, "joinagg_keyinfo_malformed"},
     {VT_UNKNOWN,                   TIER_A, "unknown_violation_type"},
 };
 

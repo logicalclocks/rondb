@@ -1,0 +1,62 @@
+CREATE TABLE c (cust_id INT NOT NULL PRIMARY KEY, segment INT NOT NULL,
+fk INT NULL) ENGINE=NDB;
+CREATE TABLE o (order_id INT NOT NULL PRIMARY KEY, cust_id INT NOT NULL,
+total INT NOT NULL, KEY ic (cust_id)) ENGINE=NDB;
+CREATE TABLE p (pk INT NOT NULL PRIMARY KEY, val INT NOT NULL) ENGINE=NDB;
+INSERT INTO c
+WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 40)
+SELECT n, n % 4, IF(n % 5 = 0, NULL, n) FROM s;
+INSERT INTO o
+WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 60)
+SELECT n, (n % 30) + 1, n * 10 FROM s;
+INSERT INTO p
+WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 40)
+SELECT n, n * 3 FROM s;
+CREATE VIEW spj_robust_dih_scans AS
+SELECT d.node_id, d.table_id,
+d.current_scan_count + d.scan_count_wait AS scans
+FROM ndbinfo.ndb$table_distribution_status_all AS d
+JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+LEFT JOIN ndbinfo.dict_obj_info AS p
+ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+FROM ndbinfo.operations_per_fragment
+WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+#
+# Reference results, aggregation not pushed
+#
+SET ndb_join_pushdown_aggregate = OFF;
+SET ndb_join_pushdown_aggregate_outer_join = OFF;
+SET ndb_join_pushdown_aggregate = ON;
+SET ndb_join_pushdown_aggregate_outer_join = ON;
+Both queries use pushed join aggregation, the scan query has a scan leaf
+#
+# Pushed results match before any error insert
+#
+SET ndb_join_pushdown_aggregate = ON;
+SET ndb_join_pushdown_aggregate_outer_join = ON;
+#
+# Control: 17537 on the lookup-leaf query (NULL join key)
+#
+SELECT c.segment, COUNT(*) AS n, COUNT(p.val) AS m, SUM(p.val) AS s FROM c LEFT JOIN p ON p.pk = c.fk GROUP BY c.segment;
+The lookup-leaf query failed with NDB error 20006
+#
+# 17537 on the scan-leaf query (null rows from handleAggLeafScanComplete)
+#
+SELECT c.segment, COUNT(*) AS n, COUNT(o.order_id) AS m, SUM(o.total) AS s FROM c LEFT JOIN o FORCE INDEX (ic) ON o.cust_id = c.cust_id GROUP BY c.segment;
+The scan-leaf query failed with NDB error 20006
+#
+# Nothing is left behind
+#
+No fragment scan is open and no DIH scan is registered
+structural leak checks acknowledged by all 2 data nodes
+#
+# The pushed queries return the reference results again
+#
+Both queries return the reference results
+SET ndb_join_pushdown_aggregate = DEFAULT;
+SET ndb_join_pushdown_aggregate_outer_join = DEFAULT;
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE c, o, p;

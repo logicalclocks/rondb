@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-3: QN_LOOKUP root of a scan request with an over-long KeyInfo.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P3
+--let $spj_case_title = P-3: QN_LOOKUP root of a scan request with an over-long KeyInfo
+--source suite/ndb_spj/include/spj_malformed_case.inc

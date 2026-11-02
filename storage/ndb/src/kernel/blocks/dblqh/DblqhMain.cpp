@@ -16631,6 +16631,33 @@ void Dblqh::handleOuterJoinAggKeyNotFound(Signal *signal,
   signal->theData[0] = regTcPtr->tupConnectrec;
   c_tup->do_tup_abortreq(signal, 0);
 
+  /* 3.-6. */
+  if (unlikely(!feedOuterJoinAggNullRow(signal, tcConnectptr))) {
+    jam();
+    /* ACC and TUP are already aborted, so continue at the tail of the
+     * abort path, which sends the LQHKEYREF and cleans up. */
+    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
+    continueAfterLogAbortWriteLab(signal, tcConnectptr);
+  }
+}
+
+/*
+ * feedOuterJoinAggNullRow
+ *
+ * The outer-joined aggregate lookup leaf of tcConnectptr has no row
+ * (key not found, or found and rejected by the pushed filter); ACC and
+ * TUP are aborted.  Extracts linked attribute data from ATTRINFO, feeds
+ * a null-extended row to the AggInterpreter (local columns return NULL),
+ * then sends LQHKEYCONF and cleans up the operation.  Returns false,
+ * with errorCode set and nothing sent, if the row fails.
+ */
+bool Dblqh::feedOuterJoinAggNullRow(Signal *signal,
+                                    TcConnectionrecPtr tcConnectptr) {
+  TcConnectionrec *const regTcPtr = tcConnectptr.p;
+  /* Once only: the LQHKEYREF tail of a failure must not come back here
+   * (continueAfterLogAbortWriteLab). */
+  regTcPtr->m_outer_join_agg = 0;
+
   /* 3. Extract linked attribute data from ATTRINFO section.
    *
    * Layout: [5-word header] [interpreter program...] [subroutine section]
@@ -16693,13 +16720,9 @@ retry:
     jam();
     /* The null-extended row failed (1860 overflow, 1870 out of query
      * memory, ...): fail this operation with the interpreter's code
-     * instead of stopping the node.  ACC and TUP are already aborted,
-     * so continue at the tail of the abort path, which sends the
-     * LQHKEYREF and cleans up. */
+     * instead of stopping the node. */
     regTcPtr->errorCode = joinAggFeedError(ret, ZJOIN_AGG_INTERPRETER_ERROR);
-    regTcPtr->abortState = TcConnectionrec::ABORT_FROM_LQH;
-    continueAfterLogAbortWriteLab(signal, tcConnectptr);
-    return;
+    return false;
   }
 
   /* 5. Send LQHKEYCONF (no data, readlenAi = 0) */
@@ -16709,6 +16732,7 @@ retry:
 
   /* 6. Clean up operation */
   cleanUp(signal, tcConnectptr);
+  return true;
 }
 
 void Dblqh::abortStateHandlerLab(Signal *signal,
@@ -17158,6 +17182,28 @@ void Dblqh::continueAfterLogAbortWriteLab(
       (regTcPtr->m_flags & TcConnectionrec::OP_NORMAL_PROTOCOL);
 
   remove_commit_marker(regTcPtr);
+
+  /**
+   * E-6: the row of an outer-joined aggregate lookup leaf was found but
+   * TUP refused it: the pushed ON-condition filter rejected it
+   * (interpret_exit_nok, 626 by default, 899 from NdbScanFilter), or the
+   * row was gone (626).  To the outer join that is no match, as a key
+   * not found in ACC (handleOuterJoinAggKeyNotFound), so the parent row
+   * gets its null-extended row.  The LQHKEYREF that this sent before
+   * was taken by DBSPJ as no match and the parent row was lost from the
+   * aggregation.  ACC and TUP are aborted by now.
+   */
+  if (unlikely(regTcPtr->m_outer_join_agg) &&
+      regTcPtr->abortState == TcConnectionrec::ABORT_FROM_LQH &&
+      regTcPtr->operation == ZREAD &&
+      (regTcPtr->errorCode == ZNO_TUPLE_FOUND ||
+       regTcPtr->errorCode == 899)) {
+    jam();
+    if (likely(feedOuterJoinAggNullRow(signal, tcConnectptr))) {
+      return;
+    }
+    jam();  // errorCode is now the interpreter's: send the LQHKEYREF
+  }
 
   if (regTcPtr->operation == ZREAD && regTcPtr->dirtyOp && !normalProtocol) {
     jam();
@@ -20687,14 +20733,39 @@ void Dblqh::joinAggNullRowReqImpl(Signal *signal) {
    * Use instance 1 (thread 0) since this signal is routed to instance 1. */
   JoinAggInterpreter *interp = getJoinAggInterpreter(state);
 
+  /* E-7: a multi-leaf (star) aggregation runs the NULL-extended row
+   * through the program of the leaf that DBSPJ names in the identity
+   * word, as the LQHKEYREQ 626 path does with the leaf index of its key.
+   * Without it the row ran through whichever leaf program was installed
+   * last and updated that leaf's accumulators.  A request without an
+   * identity word names leaf 0. */
+  const Uint32 leafIdx = (identWord != RNIL)
+      ? JoinAggregationState::identWordLeafIdx(identWord)
+      : 0;
+  const LeafProgram *leaf = nullptr;
+  Int32 leafErr = 0;
+  if (state->m_num_leaves > 1) {
+    jam();
+    if (likely(leafIdx < state->m_num_leaves)) {
+      leaf = &state->m_leaf_programs[leafIdx];
+    } else {
+      jam();
+      leafErr = ZJOIN_AGG_OP_COUNT_MISMATCH;
+    }
+  }
+
+  Int32 ret = leafErr;
 retry:
-  Int32 ret = interp->processNullExtendedRow(c_tup->getAggAttrReadBuf(),
-                                             cattrInfoBuffer,
-                                             linked_len,
-                                             getThreadId(),
-                                             jamBuffer(),
-                                             c_tup->getAggXfrmBuf(),  // D26
-                                             c_tup->getAggXfrmBufLen());
+  if (likely(leafErr == 0)) {
+    ret = interp->processNullExtendedRow(c_tup->getAggAttrReadBuf(),
+                                         cattrInfoBuffer,
+                                         linked_len,
+                                         getThreadId(),
+                                         jamBuffer(),
+                                         c_tup->getAggXfrmBuf(),  // D26
+                                         c_tup->getAggXfrmBufLen(),
+                                         leaf);
+  }
   if (ret == AGG_EVICT_NEEDED) {
     jam();
     /* No eviction from a CTE materialization or an empty table: out of
@@ -22508,6 +22579,13 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
     groupData = interp->lookupGroup(
         reinterpret_cast<const char *>(keyBuf), req.keyLen,
         c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
+    if (groupData != nullptr) {
+      /* E-5: the stored key matches under the collation and can differ
+       * in length from the probe key; the accumulators and the emitted
+       * GROUP BY columns follow the stored key. */
+      const_cast<CteLookupReq &>(req).keyLen =
+          JoinGBHashTable::dataKeyLen(groupData);
+    }
   }
 
 #ifdef DEBUG_JOIN_AGG
@@ -24314,6 +24392,17 @@ void Dblqh::continueJoinAggRedistribute(Signal *signal, Uint32 aggStateKey) {
 #endif
       }
 
+      /* E-23: a receiver takes group keys of at most
+       * MAX_KEY_SIZE_IN_WORDS words (execJOIN_AGG_REDISTRIBUTE_REQ), as
+       * does a CTE_LOOKUP (cte_lookup_send).  Checked before the owner
+       * test, so that the outcome does not depend on where the group
+       * hashes. */
+      if (unlikely(keyLen > MAX_KEY_SIZE_IN_WORDS * sizeof(Uint32))) {
+        jam();
+        abortCteRedistribution(signal, state, DbspjErr::CteKeyTooLong);
+        return;
+      }
+
       if (ownerNode == ownNodeId) {
         jam();
         gb_map->next(iter);
@@ -24462,6 +24551,32 @@ redistribution_done:
     state->m_cte_redist_batch_bytes = 0;
     checkCteReady(signal, state);
   }
+}
+
+/**
+ * E-23: a JOIN_AGG_REDISTRIBUTE_REQ carried a group key over
+ * MAX_KEY_SIZE_IN_WORDS words.  Abort this CTE and REF the sender so it
+ * aborts too, as for a failed merge.
+ */
+void Dblqh::redistributeKeyTooLong(Signal *signal,
+                                   JoinAggregationState *state,
+                                   Uint32 aggStateKey,
+                                   Uint32 senderAggStateKey,
+                                   Uint32 identWord, const Uint32 transid[2],
+                                   BlockReference replyRef) {
+  jam();
+  abortCteRedistribution(signal, state, DbspjErr::CteKeyTooLong);
+  JoinAggRedistributeRef *ref =
+    (JoinAggRedistributeRef *)signal->getDataPtrSend();
+  ref->aggStateKey = aggStateKey;
+  ref->senderNodeId = getOwnNodeId();
+  ref->errorCode = DbspjErr::CteKeyTooLong;
+  ref->senderAggStateKey = senderAggStateKey;
+  ref->identWord = identWord;
+  ref->transid[0] = transid[0];
+  ref->transid[1] = transid[1];
+  sendSignal(replyRef, GSN_JOIN_AGG_REDISTRIBUTE_REF,
+             signal, JoinAggRedistributeRef::SignalLength, JBB);
 }
 
 /**
@@ -24718,8 +24833,16 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
                                  JoinAggRedistributeReq::KeySectionNum));
     ndbrequire(handle.getSection(valueSection,
                                  JoinAggRedistributeReq::ValueSectionNum));
-    ndbrequire(keySection.sz <= MAX_KEY_SIZE_IN_WORDS);
     ndbrequire(valueSection.sz <= ZATTR_BUFFER_SIZE);
+    if (unlikely(keySection.sz > MAX_KEY_SIZE_IN_WORDS)) {
+      /* E-23: the sender checks the key length (continueJoinAggRedistribute);
+       * a sender without that check gets an error, not a stop. */
+      jam();
+      releaseSections(handle);
+      redistributeKeyTooLong(signal, state, aggStateKey, senderAggStateKey,
+                             reqIdentWord, reqTransid, replyRef);
+      return;
+    }
     copy(keyBuf, keySection);
     copy(buf, valueSection);
   }
@@ -24802,8 +24925,16 @@ void Dblqh::execJOIN_AGG_REDISTRIBUTE_REQ(Signal *signal) {
       const Uint32 keyWords = (groupKeyLen + 3) >> 2;
       const Uint32 valueWords = (groupValueLen + 3) >> 2;
       pos += JoinAggRedistributeReq::BatchRecordHeaderWords;
-      ndbrequire(keyWords <= MAX_KEY_SIZE_IN_WORDS);
       ndbrequire(keyWords + valueWords <= bufWords - pos);
+      if (unlikely(keyWords > MAX_KEY_SIZE_IN_WORDS)) {
+        /* E-23: as for the single-group form above.  The groups before
+         * this one are merged or queued; the abort discards them. */
+        jam();
+        redistributeKeyTooLong(signal, state, aggStateKey,
+                               senderAggStateKey, reqIdentWord, reqTransid,
+                               replyRef);
+        return;
+      }
       groupKey = buf + pos;
       groupValue = groupKey + keyWords;
       pos += keyWords + valueWords;

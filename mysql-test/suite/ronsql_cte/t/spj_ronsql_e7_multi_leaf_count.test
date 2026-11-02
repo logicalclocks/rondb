@@ -1,0 +1,155 @@
+# spj_ronsql_e7_multi_leaf_count
+#
+# Finding E-7 (storage/ndb/claude_files/dbspj/dbspj_query_execution.html,
+# section 8), reached from RonSQL: several outer-joined aggregate leaves
+# under one root.  Each SELECT-list subquery becomes a LEFT JOIN leaf of
+# the root, with its own aggregate program.  A NULL-extended row must be
+# aggregated by the program of the leaf that missed.  The NULL rows that
+# DBLQH sends for a lookup miss (626) carry the right leaf, but the ones
+# DBSPJ sends itself (unmatched parents of scan leaves, NULL keys;
+# sendJoinAggNullRow) carry leaf 0.
+#
+# SUM, MIN, MAX and COUNT(col) load the inner column, which is NULL on
+# such a row, so a NULL row given to the wrong leaf changes nothing (this
+# is why ronsql_subquery_agg Tests 8, 9 and 13 pass).  COUNT(*) loads the
+# constant 1, so it counts the misdirected row.
+#
+# The X-1 fix in RonSQL makes COUNT(*) load the correlation column (or a
+# primary key column) instead, which is NULL on a NULL-extended row.
+# From then on the misdirected rows change nothing here either and this
+# test passes without the kernel fix: it guards the multi-leaf COUNT(*)
+# from RonSQL, and E-7 itself needs an NDB API test in the kernel round.
+#
+# Data: e7_e.id = 1..2000.  e7_a has one row for every entity and a
+# second one for every third, so a COUNT(*) subquery over e7_a has no
+# empty entity (that is finding X-1, see spj_ronsql_x1_count_star_empty).
+# e7_b has rows for the even entities only, so the e7_b leaf (an index
+# scan) has 1000 unmatched parents and DBSPJ sends their NULL rows.
+#
+#   e7-1  COUNT(*) over e7_a first, SUM over e7_b second.
+#   e7-2  the same subqueries in the other order.
+# Whichever leaf is leaf 0, one of the two puts the e7_b NULL rows into
+# the COUNT(*) of e7_a: ca is 1 too high for odd entities (before the
+# X-1 fix).
+# Expected (MySQL): 2000 rows; ca = 2 for every third entity, 1 for the
+# others; sb is NULL for odd entities.  The full results are compared;
+# the .result file only shows the summary of the MySQL result.
+#
+# A failing grep at e7-0 means RonSQL chose another plan: adjust the test.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_ronsql_e7_multi_leaf_count
+# Record: ./mtr --suite=ronsql_cte --record spj_ronsql_e7_multi_leaf_count
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-ronsql-e7-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE e7_e (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE e7_a (
+  id  INT NOT NULL,
+  eid INT NOT NULL,
+  v   INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_e7_a_eid (eid)
+) ENGINE=NDB;
+
+CREATE TABLE e7_b (
+  id  INT NOT NULL,
+  eid INT NOT NULL,
+  v   INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_e7_b_eid (eid)
+) ENGINE=NDB;
+
+CREATE TABLE e7_d (d INT) ENGINE=MEMORY;
+INSERT INTO e7_d VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+CREATE TABLE e7_seq (n INT NOT NULL PRIMARY KEY) ENGINE=MEMORY;
+INSERT INTO e7_seq
+  SELECT a.d*1000 + b.d*100 + c.d*10 + e.d + 1
+  FROM e7_d a, e7_d b, e7_d c, e7_d e
+  WHERE a.d <= 1;
+
+SET SESSION ndb_use_transactions = 0;
+INSERT INTO e7_e SELECT n FROM e7_seq;
+INSERT INTO e7_a SELECT n, n, n % 7 FROM e7_seq;
+INSERT INTO e7_a SELECT 2000 + n, n, n % 11 FROM e7_seq WHERE n % 3 = 0;
+INSERT INTO e7_b SELECT n, n, n % 5 FROM e7_seq WHERE n % 2 = 0;
+SET SESSION ndb_use_transactions = DEFAULT;
+
+DROP TABLE e7_seq;
+DROP TABLE e7_d;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === e7-0: both subquery leaves are LEFT JOIN index scans of the root ===
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca,
+  (SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb
+FROM e7_e AS e;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[LEFT JOIN] INDEX_SCAN e7_a AS a  <- e' $EXPLAIN_FILE
+--exec grep -qF '[LEFT JOIN] INDEX_SCAN e7_b AS b  <- e' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === e7-1: COUNT(*) leaf first, the leaf with unmatched parents second ===
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca,
+  (SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb
+FROM e7_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (summary of the MySQL result) ==
+SELECT COUNT(*) AS n, SUM(ca) AS sum_ca, SUM(ca = 2) AS ca2,
+       COUNT(sb) AS nb, SUM(sb) AS sum_sb
+FROM (SELECT e.id,
+        (SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca,
+        (SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb
+      FROM e7_e AS e) AS q|
+
+--echo
+--echo === e7-2: the same subqueries in the other order ===
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb,
+  (SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca
+FROM e7_e AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result (summary of the MySQL result) ==
+SELECT COUNT(*) AS n, COUNT(sb) AS nb, SUM(sb) AS sum_sb,
+       SUM(ca) AS sum_ca, SUM(ca = 2) AS ca2
+FROM (SELECT e.id,
+        (SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb,
+        (SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca
+      FROM e7_e AS e) AS q|
+
+DELIMITER ;|
+
+--echo
+--echo === e7-3: no DBSPJ request left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--disable_query_log
+DROP TABLE e7_e;
+DROP TABLE e7_a;
+DROP TABLE e7_b;
+--enable_query_log

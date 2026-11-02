@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-24: SCAN_TABREQ to DBTC instance 0 (the DbtcProxy).
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P24
+--let $spj_case_title = P-24: SCAN_TABREQ to DBTC instance 0 (the DbtcProxy)
+--source suite/ndb_spj/include/spj_malformed_case.inc

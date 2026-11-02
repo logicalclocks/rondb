@@ -1,0 +1,274 @@
+#
+# ndb_spj_shapes_fanout: pushed joins (SPJ) whose child results span many
+# batches.
+#
+# ndb_spj_shapes_fanout.cnf sets BatchSize=3 and BatchByteSize=1024 for the
+# API nodes, so every scan returns a few rows (or about 1KB) per fragment
+# and batch.  This exercises SCAN_NEXTREQ on child scans, repeated sibling
+# scan results of bushy joins (NI_REPEAT_SCAN_RESULT), skewed fan-out (one
+# parent with hundreds of children next to parents with none), rows wider
+# than the batch byte limit, and sorted root scans that DBSPJ fetches one
+# row at a time.  Each shape runs with ndb_join_pushdown OFF and ON and
+# the two results are compared inside the test (ndb_spj_shapes_check.inc).
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000)
+  SELECT n FROM c;
+
+# Root: 300 rows, g = id % 30, s unique sort key, w a wide payload.
+CREATE TABLE r (
+  id INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  s INT NOT NULL,
+  w VARCHAR(2000) NOT NULL,
+  KEY ix_g (g),
+  KEY ix_s (s)
+) ENGINE=NDB;
+INSERT INTO r
+  SELECT n, n % 30, (n * 7919) % 3001, REPEAT(CHAR(65 + n % 26), 100 + (n * 37) % 1900)
+  FROM seq WHERE n <= 300;
+
+# Skewed child: g = 0 has no rows, g = 1 has 600 rows, other g values
+# have (g * 3) % 17 rows.  pad makes rows of 200..1000 bytes.
+CREATE TABLE ch (
+  id INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  h INT NOT NULL,
+  pad VARCHAR(1000) NOT NULL,
+  KEY ix_g (g),
+  KEY ix_h (h)
+) ENGINE=NDB;
+INSERT INTO ch
+  SELECT n, 1, n % 50, REPEAT(CHAR(97 + n % 26), 200 + (n * 13) % 800)
+  FROM seq WHERE n <= 600;
+INSERT INTO ch
+  SELECT 1000 + s1.n * 100 + s2.n, s1.n, (s1.n * 100 + s2.n) % 50,
+         REPEAT('x', 50 + s2.n * 40)
+  FROM seq s1, seq s2
+  WHERE s1.n BETWEEN 2 AND 29 AND s2.n <= (s1.n * 3) % 17;
+
+# Grandchild on ch.h: 0..5 rows per h
+CREATE TABLE gc (
+  id INT NOT NULL PRIMARY KEY,
+  h INT NOT NULL,
+  z INT NOT NULL,
+  KEY ix_h (h)
+) ENGINE=NDB;
+INSERT INTO gc SELECT n, n % 50, n % 9 FROM seq WHERE n <= 300 AND (n % 50) % 6 <> 0;
+INSERT INTO gc SELECT 1000 + n, n % 50, n % 5 FROM seq WHERE n <= 100 AND n % 50 < 10;
+
+# Three siblings for bushy joins on r.g, with different skews
+CREATE TABLE b1 (id INT NOT NULL PRIMARY KEY, g INT NOT NULL, v INT NOT NULL,
+                 KEY ix_g (g)) ENGINE=NDB;
+CREATE TABLE b2 (id INT NOT NULL PRIMARY KEY, g INT NOT NULL, v INT NOT NULL,
+                 KEY ix_g (g)) ENGINE=NDB;
+CREATE TABLE b3 (id INT NOT NULL PRIMARY KEY, g INT NOT NULL, v INT NOT NULL,
+                 KEY ix_g (g)) ENGINE=NDB;
+INSERT INTO b1 SELECT n, n % 30, n FROM seq WHERE n <= 150;
+INSERT INTO b2 SELECT n, n % 30, n FROM seq WHERE n <= 400 AND (n % 30) % 3 = 0;
+INSERT INTO b3 SELECT n, n % 7, n FROM seq WHERE n <= 35;
+
+# Lookup table on g
+CREATE TABLE lk (id INT NOT NULL PRIMARY KEY, v INT NOT NULL) ENGINE=NDB;
+INSERT INTO lk SELECT n - 1, n FROM seq WHERE n <= 25;
+
+ANALYZE TABLE r, ch, gc, b1, b2, b3, lk;
+SELECT COUNT(*) FROM ch;
+
+--echo #
+--echo # Skewed fan-out of a scan child
+--echo #
+let $spj_label= F1-scan-skewed;
+let $spj_query= SELECT r.id, ch.id, ch.h
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F2-scan-skewed-left;
+let $spj_query= SELECT r.id, ch.id
+  FROM r LEFT JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# One root row only (a range scan, not a lookup), its 600 children span
+# many batches
+let $spj_label= F3-one-parent-many-children;
+let $spj_query= SELECT r.id, ch.id, LENGTH(ch.pad)
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  WHERE r.id >= 31 AND r.id < 32;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Root range that selects no row at all
+let $spj_label= F4-empty-root;
+let $spj_query= SELECT r.id, ch.id
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  WHERE r.s > 5000;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Chains of scans
+--echo #
+let $spj_label= F5-scan-scan-scan;
+let $spj_query= SELECT r.id, ch.id, gc.id
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+         STRAIGHT_JOIN gc FORCE INDEX (ix_h) ON gc.h = ch.h;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F6-scan-left-scan-left-scan;
+let $spj_query= SELECT r.id, ch.id, gc.id
+  FROM r LEFT JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+         LEFT JOIN gc FORCE INDEX (ix_h) ON gc.h = ch.h AND gc.z < 3;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F7-scan-lookup-scan;
+let $spj_query= SELECT r.id, lk.v, ch.id
+  FROM r STRAIGHT_JOIN lk ON lk.id = r.g
+         STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = lk.v;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Bushy scans: siblings must be repeated for every batch of the others
+--echo #
+let $spj_label= F8-bushy-3;
+let $spj_query= SELECT r.id, b1.id, b2.id, b3.id
+  FROM r STRAIGHT_JOIN b1 FORCE INDEX (ix_g) ON b1.g = r.g
+         STRAIGHT_JOIN b2 FORCE INDEX (ix_g) ON b2.g = r.g
+         STRAIGHT_JOIN b3 FORCE INDEX (ix_g) ON b3.g = r.g;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F9-bushy-3-left;
+let $spj_query= SELECT r.id, b1.id, b2.id, b3.id
+  FROM r LEFT JOIN b1 FORCE INDEX (ix_g) ON b1.g = r.g
+         LEFT JOIN b2 FORCE INDEX (ix_g) ON b2.g = r.g
+         LEFT JOIN b3 FORCE INDEX (ix_g) ON b3.g = r.g;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Bushy with a skewed sibling and a grandchild below one sibling
+let $spj_label= F10-bushy-skewed-with-grandchild;
+let $spj_query= SELECT r.id, ch.id, gc.id, b1.id
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+         STRAIGHT_JOIN gc FORCE INDEX (ix_h) ON gc.h = ch.h
+         STRAIGHT_JOIN b1 FORCE INDEX (ix_g) ON b1.g = r.g
+  WHERE r.g IN (1, 2, 3, 6, 9);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F11-bushy-inner-and-left;
+let $spj_query= SELECT r.id, b2.id, ch.id
+  FROM r STRAIGHT_JOIN b2 FORCE INDEX (ix_g) ON b2.g = r.g
+         LEFT JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g AND ch.h < 10;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Semi- and antijoin with a scan child that spans many batches
+let $spj_label= F12-exists-skewed;
+let $spj_query= SELECT r.id FROM r
+  WHERE EXISTS (SELECT 1 FROM ch WHERE ch.g = r.g AND ch.h = 49);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F13-not-exists-skewed;
+let $spj_query= SELECT r.id FROM r
+  WHERE NOT EXISTS (SELECT 1 FROM ch WHERE ch.g = r.g AND ch.h = 49);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Rows wider than the batch byte limit
+--echo #
+let $spj_label= F14-wide-root-and-child;
+let $spj_query= SELECT r.id, r.w, ch.id, ch.pad
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  WHERE r.g BETWEEN 2 AND 12;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F15-wide-left-bushy;
+let $spj_query= SELECT r.id, r.w, ch.pad, b2.id
+  FROM r LEFT JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g AND ch.h > 40
+         LEFT JOIN b2 FORCE INDEX (ix_g) ON b2.g = r.g;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Sorted root scans (ORDER BY the root's index), with and without LIMIT
+--echo #
+# Lookup child: the root rows come one at a time in index order
+let $spj_label= F16-sorted-lookup-child;
+let $spj_query= SELECT r.s, r.id, lk.v
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN lk ON lk.id = r.g
+  WHERE r.s < 2000 ORDER BY r.s;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F17-sorted-lookup-child-limit;
+let $spj_query= SELECT r.s, r.id, lk.v
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN lk ON lk.id = r.g
+  ORDER BY r.s LIMIT 37;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F18-sorted-desc-lookup-child-limit;
+let $spj_query= SELECT r.s, r.id, lk.v
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN lk ON lk.id = r.g
+  ORDER BY r.s DESC LIMIT 41;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Scan child below a sorted root ('MULTI_SCAN'): only the root column is
+# projected, so the expected output (sorted, with multiplicities) is unique
+let $spj_label= F19-sorted-scan-child;
+let $spj_query= SELECT r.s
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  WHERE r.s < 1500 ORDER BY r.s;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F20-sorted-scan-child-limit;
+let $spj_query= SELECT r.s
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  ORDER BY r.s LIMIT 777;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F21-sorted-desc-left-scan-child-limit;
+let $spj_query= SELECT r.s
+  FROM r FORCE INDEX (ix_s) LEFT JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  ORDER BY r.s DESC LIMIT 333;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Same rows as F19, compared as multisets with the child columns
+let $spj_label= F22-sorted-scan-child-all-columns;
+let $spj_query= SELECT r.s, r.id, ch.id
+  FROM r FORCE INDEX (ix_s) STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+  WHERE r.s < 1500 ORDER BY r.s;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # MySQL aggregation and DISTINCT on top of a pushed join
+--echo #
+let $spj_label= F23-group-by-over-pushed-join;
+let $spj_query= SELECT r.g, COUNT(*), SUM(gc.z), COUNT(DISTINCT ch.h)
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+         STRAIGHT_JOIN gc FORCE INDEX (ix_h) ON gc.h = ch.h
+  GROUP BY r.g;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= F24-distinct-over-pushed-join;
+let $spj_query= SELECT DISTINCT r.g, gc.z
+  FROM r STRAIGHT_JOIN ch FORCE INDEX (ix_g) ON ch.g = r.g
+         STRAIGHT_JOIN gc FORCE INDEX (ix_h) ON gc.h = ch.h;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+DROP TABLE seq, r, ch, gc, b1, b2, b3, lk;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

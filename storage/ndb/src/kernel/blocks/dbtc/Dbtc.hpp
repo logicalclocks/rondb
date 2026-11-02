@@ -2277,6 +2277,9 @@ class Dbtc : public SimulatedBlock {
     CteScanFragHandle_list::Head m_cteScanFragHandles;
     Uint32 m_cteScanReportsExpected;  // Live DBSPJ workers (report threshold
                                       // for every CTE's CteInfo::scanReports)
+    // E-17: every SCAN_FRAGREQ is sent, so m_cteScanReportsExpected is
+    // final.  Until then no CTE starts its redistribution.
+    bool m_cteFragScansSent;
 
     // Phase L (C): per-aggregation completion records.  Singly-linked
     // list of AggCompleteRecord owned by this scan.  Records cover both
@@ -2470,7 +2473,8 @@ class Dbtc : public SimulatedBlock {
   void execTAB_COMMITREQ(Signal *signal);
   void execSCAN_TABREQ(Signal *signal);
   int parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
-                          SectionHandle &handle, Uint32 keyLen);
+                          SectionHandle &handle, Uint32 keyLen,
+                          NodeId apiNodeId);
   void releaseJoinAggResources(Signal *signal, ScanRecordPtr scanPtr);
   void execSCAN_TABINFO(Signal *signal);
   void execSCAN_FRAGCONF(Signal *signal);
@@ -2485,6 +2489,7 @@ class Dbtc : public SimulatedBlock {
   void execCTE_PHASE_COMPLETE_REP(Signal *signal);
   void sendCteCompleteReqsForCte(Signal *signal, ScanRecordPtr scanptr,
                                  Uint32 cteId);
+  void cteFragScansSent(Signal *signal, ScanRecordPtr scanptr);
 
   /* RONDB-1062 proactive deadlock discovery (DBACC wait-for edge). */
   void execDBACC_WAITFOR_REP(Signal *signal);
