@@ -40,6 +40,7 @@
 #include "storage/ndb/include/ndbapi/NdbError.hpp"    // NdbError
 #include "storage/ndb/plugin/ha_ndbcluster_binlog.h"  // ndb_binlog_is_read_only
 #include "storage/ndb/plugin/ha_ndbcluster_connection.h"  // ndbcluster_is_ready
+#include "storage/ndb/plugin/ndb_dd.h"                    // ndb_dd_fs_name_case
 #include "storage/ndb/plugin/ndb_dd_client.h"             // Ndb_dd_client
 #include "storage/ndb/plugin/ndb_ndbapi_util.h"           // ndb_get_*_names
 #include "storage/ndb/plugin/ndb_sleep.h"                 // ndb_milli_sleep
@@ -274,9 +275,12 @@ bool Ndb_metadata_change_monitor::detect_table_changes_in_schema(
     return false;
   }
 
-  // Lock the schema in DD
+  // Lock the schema in DD. A schema just found in NDB comes with its name
+  // in NDB, which may be upper case; the MDL key is in lower case on
+  // platforms that have lower_case_table_names set to 2
+  const std::string dd_schema_name = ndb_dd_fs_name_case(schema_name.c_str());
   Ndb_dd_client dd_client(thd);
-  if (!dd_client.mdl_lock_schema(schema_name.c_str())) {
+  if (!dd_client.mdl_lock_schema(dd_schema_name.c_str())) {
     log_and_clear_thd_conditions(thd, condition_logging_level::INFO);
     log_info("Failed to MDL lock schema '%s'", schema_name.c_str());
     return false;
@@ -286,7 +290,7 @@ bool Ndb_metadata_change_monitor::detect_table_changes_in_schema(
   std::unordered_set<std::string> ndb_tables_in_DD;
   std::unordered_set<std::string> local_tables_in_DD;
   if (!dd_client.get_table_names_in_schema(
-          schema_name.c_str(), &ndb_tables_in_DD, &local_tables_in_DD)) {
+          dd_schema_name.c_str(), &ndb_tables_in_DD, &local_tables_in_DD)) {
     log_and_clear_thd_conditions(thd, condition_logging_level::INFO);
     log_info("Failed to get list of tables in schema '%s' from DD",
              schema_name.c_str());
