@@ -37,7 +37,6 @@
 #include "sql/current_thd.h"
 #include "sql/sql_class.h"
 #include "sql/sql_lex.h"
-#include "sql/sql_opt_exec_shared.h"  // Index_lookup
 #include "storage/ndb/include/ndb_version.h"
 #include "storage/ndb/include/ndbapi/NdbApi.hpp"
 #include "storage/ndb/include/ndbapi/NdbInterpretedCode.hpp"
@@ -1029,7 +1028,6 @@ bool ndb_pushed_builder_ctx::is_pushable_as_child(pushed_table *table) {
   ndb_table_map *key_parents =
       new (m_thd->mem_root) ndb_table_map[no_of_key_fields];
   table->m_key_parents = key_parents;
-  uint param_refs = 0;
 
   for (uint key_part_no = 0; key_part_no < no_of_key_fields; key_part_no++) {
     const Item *const key_item = table->get_key_field(key_part_no);
@@ -1068,9 +1066,6 @@ bool ndb_pushed_builder_ctx::is_pushable_as_child(pushed_table *table) {
 #endif
         const uint first = field_parents.first_table();
         depend_parents.add(first);
-      } else {
-        // Refers a table before the root: a paramValue() in build_key()
-        param_refs++;
       }
     } else {
       EXPLAIN_NO_PUSH(
@@ -1085,59 +1080,8 @@ bool ndb_pushed_builder_ctx::is_pushable_as_child(pushed_table *table) {
     }
   }  // for (uint key_part_no= 0 ...
 
-  /**
-   * build_key() has room for MAX_REFERRED_FIELDS parameter references in
-   * all of the pushed join, and failed the statement past that (E-26).
-   * Counted like m_internal_op_count above: a child rejected or removed
-   * later still counts, which can only leave a later child unpushed.
-   */
-  if (unlikely(m_param_refs + param_refs >
-               ndb_pushed_join::MAX_REFERRED_FIELDS)) {
-    EXPLAIN_NO_PUSH(
-        "Can't push table '%s' as child of '%s', since the pushed join "
-        "would refer more than %u columns of tables before its root.",
-        table->get_table()->alias, m_join_root->get_table()->alias,
-        ndb_pushed_join::MAX_REFERRED_FIELDS);
+  if (!is_param_refs_pushable(table) || !is_null_safe_key_pushable(table)) {
     return false;
-  }
-  m_param_refs += param_refs;
-
-  /**
-   * SPJ drops a child request having a NULL value in its key or bound,
-   * as an EQ-match is impossible. That is only right if the key part is
-   * 'null_rejecting', which a null-safe '<=>' is not: NULL <=> NULL is
-   * TRUE. (The optimizer sets 'null_rejecting' only if either side of the
-   * comparison is nullable. Thus, check that the referred value is.)
-   * A const_item() was checked to not be NULL by is_const_item_pushable().
-   * It is still fine if the same value is also referred by a
-   * null_rejecting key part: A NULL value can then never match.
-   */
-  const Index_lookup *const ref = table->get_table_ref();
-  for (uint key_part_no = 0; key_part_no < no_of_key_fields; key_part_no++) {
-    const Item *const key_item = table->get_key_field(key_part_no);
-    if ((ref->null_rejecting & ((key_part_map)1 << key_part_no)) ||
-        !key_item->is_nullable() || key_item->const_item()) {
-      continue;
-    }
-    bool null_rejected = false;
-    for (uint i = 0; i < no_of_key_fields; i++) {
-      if ((ref->null_rejecting & ((key_part_map)1 << i)) &&
-          table->get_key_field(i)->eq(key_item, false)) {
-        null_rejected = true;
-        break;
-      }
-    }
-    if (!null_rejected) {
-      EXPLAIN_NO_PUSH(
-          "Can't push table '%s' as child, column '%s' is compared "
-          "null-safe to a value which may be NULL",
-          table->get_table()->alias,
-          table->get_key_part_info(key_part_no)->field->field_name);
-      table->set_table_properties(
-          table->get_table_properties() &
-          ~PUSHABLE_AS_CHILD);  // Permanently disable as child
-      return false;
-    }
   }
 
   // If no parent candidates within current m_join_scope, table is unpushable.

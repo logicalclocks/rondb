@@ -267,9 +267,9 @@ grows to 39 rows, so `ndb/r/ndbinfo_plans.result` now says 78 rows for
 | E-5 | Pushed-join results merge string keys with the collation (as `Finalize` already did) | `NdbAggregator::initForResults` |
 | Q-10 | `get_read_set(!isLookup, ...)` per pushed member | `create_pushed_join` |
 | Q-8 | Unordered scan without aggregation: bundle the root fragments per node only when they divide evenly over the nodes, otherwise one fragment per worker (as the aggregation path does). Added 2026-10-30, missed in the first round | `NdbQueryImpl::prepareSend` |
-| E-26 | `is_pushable_as_child` counts the key parts that refer to a table before the root (they become `paramValue()`s in `build_key()`) and does not push a child that would take the total over `MAX_REFERRED_FIELDS` (16); it was a statement error before. Added 2026-10-30 | `ha_ndbcluster_push.cc` (`m_param_refs`) |
-| E-15 | A REF child on a nullable non-null-rejecting `<=>` key part is not pushed | `is_pushable_as_child` |
-| E-10 | Root conditions prepared before the aggregation decision; aggregation pushed only when every table condition is fully pushed (join and single table) | `ndbcluster_push_to_engine`, `ha_ndbcluster_push_agg.cc` |
+| E-26 | `is_pushable_as_child` counts the key parts that refer to a table before the root (they become `paramValue()`s in `build_key()`) and does not push a child that would take the total over `MAX_REFERRED_FIELDS` (16); it was a statement error before. Added 2026-10-30 | `is_param_refs_pushable` (`ha_ndbcluster_push_agg.cc`), `m_param_refs` |
+| E-15 | A REF child on a nullable non-null-rejecting `<=>` key part is not pushed | `is_null_safe_key_pushable` (`ha_ndbcluster_push_agg.cc`) |
+| E-10 | Root conditions prepared before the aggregation decision; aggregation pushed only when every table condition is fully pushed (join and single table) | `ndbcluster_push_to_engine`, `ndb_push_aggregation_to_engine` |
 | E-11 | Aggregation not pushed when a lookup filter is 64 words or more; runtime guard | same |
 | E-12 | Single-range root goes through the default MRR; multi-range roots are not pushed with join aggregation | `multi_range_read_init`, `ndb_aggregate_reads_ranges_separately` |
 | E-8, E-9 | Added 2026-11-03. Join aggregation is not pushed for a table inner joined within an outer join nest (E-8a), nor when the forced chain would put a table after an outer-joined table that is not its parent (E-9a, E-8b); the join stays pushed | `ndb_push_aggregation` |

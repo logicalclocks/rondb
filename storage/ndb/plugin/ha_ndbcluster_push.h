@@ -179,12 +179,6 @@ class ndb_pushed_join {
    */
   static constexpr uint MAX_LINKED_PARAMS = 16;
   /**
-   * The code of a pushed condition is attached to a lookup operation only if
-   * it is smaller than this number of words. A larger condition is evaluated
-   * by ha_ndbcluster. (See ha_ndbcluster::create_pushed_join())
-   */
-  static constexpr uint MAX_LOOKUP_FILTER_WORDS = 64;
-  /**
    * This is the maximal number of table access operations there can be in a
    * single pushed join.
    */
@@ -736,7 +730,10 @@ class ndb_pushed_builder_ctx {
   friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    ndb_pushed_builder_ctx &builder,
                                    bool allow_outer_join);
-  friend void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
+  friend bool ndb_push_aggregation_to_engine(
+      THD *thd, const AccessPath *root_path, const JOIN *join,
+      ndb_pushed_builder_ctx &builder, bool push_join_aggregate,
+      bool allow_outer_join, bool push_table_aggregate);
   friend void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
                                             uint tab_no,
                                             NdbQueryOptions *options);
@@ -798,6 +795,10 @@ class ndb_pushed_builder_ctx {
   bool is_field_item_pushable(pushed_table *table, const Item *key_item,
                               const KEY_PART_INFO *key_part,
                               ndb_table_map &parents);
+
+  // Defined in ha_ndbcluster_push_agg.cc
+  bool is_param_refs_pushable(const pushed_table *table);
+  bool is_null_safe_key_pushable(pushed_table *table);
 
   void validate_join_nest(ndb_table_map nest, uint first, uint last,
                           const char *nest_type);
