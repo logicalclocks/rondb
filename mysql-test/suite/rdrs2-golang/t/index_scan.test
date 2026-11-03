@@ -1,0 +1,5 @@
+# RONDB-1152: the "index_scan" group of the RDRS2 Go tests. The groups, what each
+# one runs and seeds, and how to run a single package are described in
+# suite/rdrs2-golang/include/run_gotest.inc.
+let RDRS_GO_GROUP=index_scan;
+--source suite/rdrs2-golang/include/run_gotest.inc

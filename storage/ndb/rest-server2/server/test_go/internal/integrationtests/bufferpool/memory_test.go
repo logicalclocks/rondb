@@ -40,7 +40,7 @@ import (
 // with a 500 MiB limit was OOM-killed within seconds of a wide-row batch
 // load, because every in-flight HTTP request held 12 MiB of pool buffers
 // that were never returned to the OS. This test drives the dedicated
-// rdrs2 of rdrs2-golang_memory_regression (MaxBuffers=256,
+// rdrs2 of rdrs2-golang.memory_regression (MaxBuffers=256,
 // PreAllocatedBuffers=8, BufferShrinkAfterS=30, NumThreads=8) with
 // widest-row batches from two workers for a minute, samples RssAnon from
 // /proc/<pid>/status every few seconds, and asserts two things:
@@ -138,7 +138,7 @@ func wideBatchOps(limits testutils.Limits, prealloc int64) int {
 
 func TestMemoryBoundedUnderWideRowBatchLoad(t *testing.T) {
 	if os.Getenv("RDRS_MEM_TEST") != "1" {
-		t.Skip("set RDRS_MEM_TEST=1 (driven by rdrs2-golang_memory_regression.test)")
+		t.Skip("set RDRS_MEM_TEST=1 (driven by rdrs2-golang.memory_regression)")
 	}
 	if runtime.GOOS != "linux" {
 		t.Skip("needs /proc/<pid>/status")

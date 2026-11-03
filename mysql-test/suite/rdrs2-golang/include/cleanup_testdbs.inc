@@ -1,6 +1,6 @@
 # Drop everything the RDRS2 test-database seed (InitialiseTesting in the
 # Go test module) creates, so check-testcase sees no leftover state. Shared
-# by rdrs2-golang_gotest and rdrs2-golang_cpptest: both seed the databases
+# by the per-group Go tests of this suite and cpptest: all seed the databases
 # (whichever Go test runs first creates the sentinel DB and seeds the rest)
 # and both must therefore clean them up.
 #
