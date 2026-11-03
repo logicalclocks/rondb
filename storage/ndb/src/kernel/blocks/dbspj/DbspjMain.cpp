@@ -1248,17 +1248,10 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
   SegmentedSectionPtr attrPtr;
   SectionHandle handle(this, signal);
   if (unlikely(handle.m_cnt <= LqhKeyReq::AttrInfoSectionNum)) {
-    /**
-     * DBTC forwards a ViaSPJ TCKEYREQ without AttrInfo (no query tree)
-     * as it came from the API (P-11).
-     */
+    // DBTC forwards a ViaSPJ TCKEYREQ without AttrInfo as it came (P-11)
     jam();
-    const Uint32 apiNodeId = refToNode(
-        req->variableData[LqhKeyReq::getUserIdFlag(req->requestInfo)]);
-    releaseSections(handle);
-    handle_early_lqhkey_ref(signal, req, DbspjErr::ZeroLengthQueryTree);
-    // Reported after the REF, since reportMaliciousSignal reuses 'signal'.
-    reportMaliciousSignal(signal, apiNodeId, VT_SPJ_MALFORMED_REQUEST);
+    rejectMalformedLqhKeyReq(signal, req, handle,
+                             DbspjErr::ZeroLengthQueryTree);
     return;
   }
   ndbrequire(handle.getSection(attrPtr, LqhKeyReq::AttrInfoSectionNum));
@@ -1341,12 +1334,7 @@ void Dbspj::execLQHKEYREQ(Signal *signal) {
        * section when build has completed.
        * We are done with attrPtr which are now released.
        */
-      Ptr<TreeNode> rootNodePtr = ctx.m_node_list[0];
-      if (unlikely(rootNodePtr.p->m_send.m_keyInfoPtrI != RNIL)) {
-        jam();  // parseDA built a key too (NI_KEY_CONSTS/PARAMS), P-12
-        releaseSection(rootNodePtr.p->m_send.m_keyInfoPtrI);
-      }
-      rootNodePtr.p->m_send.m_keyInfoPtrI = keyPtrI;
+      setRootKeyInfo(ctx.m_node_list[0], keyPtrI);
       release(attrPtr);
       handle.clear();
     }
@@ -1556,6 +1544,20 @@ void Dbspj::handle_early_lqhkey_ref(Signal *signal, const LqhKeyReq *lqhKeyReq,
   }
 }
 
+/**
+ * Refuse a LQHKEYREQ that DBSPJ can't parse at all, and report the API
+ * node that sent it.
+ */
+void Dbspj::rejectMalformedLqhKeyReq(Signal *signal, const LqhKeyReq *req,
+                                     SectionHandle &handle, Uint32 err) {
+  const Uint32 apiNodeId = refToNode(
+      req->variableData[LqhKeyReq::getUserIdFlag(req->requestInfo)]);
+  releaseSections(handle);
+  handle_early_lqhkey_ref(signal, req, err);
+  // Reported after the REF, since reportMaliciousSignal reuses 'signal'.
+  reportMaliciousSignal(signal, apiNodeId, VT_SPJ_MALFORMED_REQUEST);
+}
+
 void Dbspj::sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef) {
   const Uint32 nodeId = refToNode(ref);
   const bool connectedToNode = getNodeInfo(nodeId).m_connected;
@@ -1642,24 +1644,16 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
   SegmentedSectionPtr attrPtr;
   const bool multiFragReq = ScanFragReq::getMultiFragFlag(req->requestInfo);
   const bool joinAggReq = ScanFragReq::getJoinAggFlag(req->requestInfo);
-  {
-    /**
-     * The MultiFrag list and the aggKeys (JoinAgg) are trailing sections
-     * after AttrInfo and the optional KeyInfo; with both flags they share
-     * one. A request without them would read AttrInfo as the aggKeys and
-     * release it twice (P-10).
-     */
-    const Uint32 minSections =
-        1 + ((multiFragReq || joinAggReq) ? 1 : 0);
-    if (unlikely(handle.m_cnt < minSections)) {
-      jam();
-      const Uint32 apiNodeId = refToNode(req->resultRef);
-      releaseSections(handle);
-      handle_early_scanfrag_ref(signal, req, DbspjErr::InvalidRequest);
-      // Reported after the REF, since reportMaliciousSignal reuses 'signal'.
-      reportMaliciousSignal(signal, apiNodeId, VT_SPJ_MALFORMED_REQUEST);
-      return;
-    }
+  /**
+   * The MultiFrag list and the aggKeys (JoinAgg) are trailing sections
+   * after AttrInfo and the optional KeyInfo; with both flags they share
+   * one. A request without them would read AttrInfo as the aggKeys and
+   * release it twice (P-10).
+   */
+  if (unlikely(handle.m_cnt < 1 + ((multiFragReq || joinAggReq) ? 1 : 0))) {
+    jam();
+    rejectMalformedScanFragReq(signal, req, handle, DbspjErr::InvalidRequest);
+    return;
   }
   ndbrequire(handle.getSection(attrPtr, ScanFragReq::AttrInfoSectionNum));
 
@@ -1756,12 +1750,7 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
      * sequencing between e.g. CTE 1 and CTE 0 in a CTE-to-CTE lookup
      * query.
      */
-    struct ParsedCteMeta {
-      Uint32 cteId;
-      Uint64 depMask;
-      Uint32 flags;
-    };
-    ParsedCteMeta parsedCteMeta[64];
+    ParsedCteMeta parsedCteMeta[MaxCteKeyBlocks];
     Uint32 parsedCteMetaCount = 0;
 
     Uint32 aggKeysPtrI = RNIL;
@@ -1779,174 +1768,10 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
         aggKeysPtrI = handle.m_ptr[sectionCnt].i;
         aggReadPtrI = aggKeysPtrI;
       }
-      SectionReader reader(aggReadPtrI, getSectionSegmentPool());
-      err = DbspjErr::InvalidRequest;
-      if (aggKeysReadOffset > 0 &&
-          unlikely(!reader.step(aggKeysReadOffset))) {
+      err = parseJoinAggKeys(requestPtr, aggReadPtrI, aggKeysReadOffset,
+                             parsedCteMeta, parsedCteMetaCount);
+      if (unlikely(err != 0)) {
         jam();
-        break;
-      }
-
-      /**
-       * RONDB-1120 P1: optional leading [QUERY_TAG_MARKER, queryTag]
-       * block — DBTC's per-query discriminator for identity-based
-       * JoinAggregationState resolution in DBLQH.
-       */
-      static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
-      static constexpr Uint32 QUERY_TAG_MARKER = 0xCCEE0001;
-      Uint32 totalWords = reader.getSize() - aggKeysReadOffset;
-      {
-        Uint32 peekTag;
-        if (totalWords >= 2 && reader.peekWord(&peekTag) &&
-            peekTag == QUERY_TAG_MARKER) {
-          jam();
-          Uint32 marker, tag;
-          if (unlikely(!reader.getWord(&marker) || !reader.getWord(&tag))) {
-            jam();
-            break;
-          }
-          requestPtr.p->m_joinAggQueryTag = tag;
-          totalWords -= 2;
-          DEB_CTE(("(%u) JoinAgg queryTag=%u", instance(), tag));
-        }
-      }
-
-      /**
-       * Read main aggregation [nodeId, aggStateKey] pairs until we hit
-       * CTE_KEYS_MARKER or exhaust the section.
-       *
-       * The words are checked rather than required: a malformed section
-       * is a REF of this request, not a node stop. 'badKeys' carries a
-       * failure out of the loops to the 'break' of the enclosing
-       * do-while.
-       */
-      bool badKeys = false;
-      Uint32 wordsRead = 0;
-      while (wordsRead + 2 <= totalWords) {
-        Uint32 word0;
-        if (unlikely(!reader.peekWord(&word0))) {
-          badKeys = true;
-          break;
-        }
-        if (word0 == CTE_KEYS_MARKER) break;  // CTE section follows
-        Uint32 nodeId, aggKey;
-        if (unlikely(!reader.getWord(&nodeId) || !reader.getWord(&aggKey) ||
-                     nodeId >= MAX_NDB_NODES)) {
-          badKeys = true;
-          break;
-        }
-        requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
-        requestPtr.p->m_aggNodes.set(nodeId);
-        DEB_CTE(("(%u) MAIN aggStateKey: node=%u key=%u",
-                 instance(), nodeId, aggKey));
-        wordsRead += 2;
-      }
-
-      /**
-       * Parse CTE aggStateKeys if CTE_KEYS_MARKER is present.
-       * Format: MARKER | numCtes | flags |
-       *         { cteId, depMask, flags, phase, numNodes,
-       *           [nodeId, key, ownerInstance]... }...
-       */
-      if (unlikely(badKeys)) {
-        jam();
-        break;
-      }
-      Uint32 peekWord;
-      if (wordsRead < totalWords &&
-          reader.peekWord(&peekWord) && peekWord == CTE_KEYS_MARKER) {
-        jam();
-        reader.step(1);  // skip marker
-        Uint32 numCtes;
-        if (unlikely(!reader.getWord(&numCtes))) {
-          jam();
-          break;
-        }
-        if (unlikely(numCtes > 64)) {
-          jam();
-          err = DbspjErr::InvalidTreeNodeSpecification;
-          break;
-        }
-
-        Uint32 cteFlags;
-        if (unlikely(!reader.getWord(&cteFlags))) {
-          jam();
-          break;
-        }
-        requestPtr.p->m_cteScanAllNodes = (cteFlags & 0x1) != 0;
-
-        const Uint32 max_nodes = MAX_NDB_NODES;
-        /* keys | owner instances | owner node lists | owner counts */
-        const size_t alloc_size =
-            (3 * numCtes * max_nodes + numCtes) * sizeof(Uint32);
-        void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
-                                        getThreadId(), true);
-        if (unlikely(mem == nullptr)) {
-          jam();
-          err = DbspjErr::OutOfQueryMemory;
-          break;
-        }
-        requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
-        requestPtr.p->m_cteAggOwnerInstances =
-            requestPtr.p->m_cteAggStateKeys + numCtes * max_nodes;
-        requestPtr.p->m_cteOwnerNodes =
-            requestPtr.p->m_cteAggOwnerInstances + numCtes * max_nodes;
-        requestPtr.p->m_cteOwnerCount =
-            requestPtr.p->m_cteOwnerNodes + numCtes * max_nodes;
-        requestPtr.p->m_numCteKeyBlocks = numCtes;
-
-        for (Uint32 c = 0; c < numCtes && !badKeys; c++) {
-          Uint32 cteId, perCteFlags, cteNodeCount;
-          Uint32 depLo, depHi;
-          if (unlikely(!reader.getWord(&cteId) || !reader.getWord(&depLo) ||
-                       !reader.getWord(&depHi) ||
-                       !reader.getWord(&perCteFlags) ||
-                       !reader.getWord(&cteNodeCount) ||
-                       cteNodeCount > max_nodes)) {
-            jam();
-            badKeys = true;
-            break;
-          }
-          Uint64 depMask = (Uint64(depHi) << 32) | depLo;
-
-          /* Stash per-CTE metadata until build() has created the
-           * CteContexts; we apply it in a second pass below. */
-          ndbrequire(parsedCteMetaCount < NDB_ARRAY_SIZE(parsedCteMeta));
-          ParsedCteMeta &m = parsedCteMeta[parsedCteMetaCount++];
-          m.cteId = cteId;
-          m.depMask = depMask;
-          m.flags = perCteFlags;
-
-          /* The per-CTE node list is DBTC's SETUP target set for this
-           * CTE (m_aggNodes), written in ascending node order: the owner
-           * list, indexed by the CTE's position c (== its cteId, DBTC
-           * writes the blocks in cteId order). */
-          requestPtr.p->m_cteOwnerCount[c] = cteNodeCount;
-          for (Uint32 n = 0; n < cteNodeCount; n++) {
-            Uint32 nodeId, cteAggKey, ownerInstance;
-            if (unlikely(!reader.getWord(&nodeId) ||
-                         !reader.getWord(&cteAggKey) ||
-                         !reader.getWord(&ownerInstance) ||
-                         nodeId >= max_nodes ||
-                         (n > 0 &&
-                          nodeId <= requestPtr.p->m_cteOwnerNodes[
-                                        c * max_nodes + n - 1]))) {
-              jam();
-              badKeys = true;
-              break;
-            }
-            requestPtr.p->m_cteOwnerNodes[c * max_nodes + n] = nodeId;
-            requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
-            requestPtr.p->m_cteAggOwnerInstances[c * max_nodes + nodeId] =
-                ownerInstance;
-            DEB_CTE(("(%u) CTE aggStateKey: cte[%u] node=%u key=%u",
-                     instance(), c, nodeId, cteAggKey));
-          }
-        }
-      }
-      if (unlikely(badKeys)) {
-        jam();
-        err = DbspjErr::InvalidRequest;
         break;
       }
     }
@@ -2007,16 +1832,11 @@ void Dbspj::execSCAN_FRAGREQ(Signal *signal) {
        * We are done with attrPtr and MultiFrag-list which are
        * now released.
        */
-      Ptr<TreeNode> rootNodePtr = ctx.m_node_list[0];
       if (sectionCnt > ScanFragReq::KeyInfoSectionNum) {
         jam();
         sectionCnt--;
-        const Uint32 keyPtrI = handle.m_ptr[ScanFragReq::KeyInfoSectionNum].i;
-        if (unlikely(rootNodePtr.p->m_send.m_keyInfoPtrI != RNIL)) {
-          jam();  // parseDA built a key too (NI_KEY_CONSTS/PARAMS), P-12
-          releaseSection(rootNodePtr.p->m_send.m_keyInfoPtrI);
-        }
-        rootNodePtr.p->m_send.m_keyInfoPtrI = keyPtrI;
+        setRootKeyInfo(ctx.m_node_list[0],
+                       handle.m_ptr[ScanFragReq::KeyInfoSectionNum].i);
       }
       release(attrPtr);
       releaseSection(fragIdsPtrI);  // MultiFrag list
@@ -2127,6 +1947,179 @@ void Dbspj::handle_early_scanfrag_ref(Signal *signal, const ScanFragReq *_req,
   ref->errorCode = err;
   sendSignal(senderRef, GSN_SCAN_FRAGREF, signal, ScanFragRef::SignalLength,
              JBB);
+}
+
+/**
+ * Refuse a SCAN_FRAGREQ that DBSPJ can't parse at all, and report the API
+ * node that sent it.
+ */
+void Dbspj::rejectMalformedScanFragReq(Signal *signal, const ScanFragReq *req,
+                                       SectionHandle &handle, Uint32 err) {
+  const Uint32 apiNodeId = refToNode(req->resultRef);
+  releaseSections(handle);
+  handle_early_scanfrag_ref(signal, req, err);
+  // Reported after the REF, since reportMaliciousSignal reuses 'signal'.
+  reportMaliciousSignal(signal, apiNodeId, VT_SPJ_MALFORMED_REQUEST);
+}
+
+/**
+ * Parse the aggregation keys that DBTC sends with a join-aggregation
+ * SCAN_FRAGREQ, from word 'offset' of section 'ptrI':
+ *
+ *   [QUERY_TAG_MARKER, queryTag]               optional
+ *   [nodeId, aggStateKey]...                   the main aggregation
+ *   [CTE_KEYS_MARKER, numCtes, flags,          optional
+ *    {cteId, depLo, depHi, flags, numNodes,
+ *     [nodeId, key, ownerInstance]...}...]
+ *
+ * The query tag (RONDB-1120 P1) is DBTC's per-query discriminator for
+ * identity-based JoinAggregationState resolution in DBLQH. The per-CTE
+ * metadata goes to 'cteMeta' (at most MaxCteKeyBlocks entries) until
+ * build() has created the CteContexts.
+ *
+ * The words are checked rather than required: a malformed section is a
+ * REF of this request, not a node stop.
+ *
+ * @return 0, or the error code
+ */
+Uint32 Dbspj::parseJoinAggKeys(Ptr<Request> requestPtr, Uint32 ptrI,
+                               Uint32 offset, ParsedCteMeta *cteMeta,
+                               Uint32 &cteMetaCount) {
+  static constexpr Uint32 CTE_KEYS_MARKER = 0xCCEE0000;
+  static constexpr Uint32 QUERY_TAG_MARKER = 0xCCEE0001;
+  SectionReader reader(ptrI, getSectionSegmentPool());
+  if (offset > 0 && unlikely(!reader.step(offset))) {
+    jam();
+    return DbspjErr::InvalidRequest;
+  }
+  Uint32 totalWords = reader.getSize() - offset;
+  Uint32 peekWord;
+  if (totalWords >= 2 && reader.peekWord(&peekWord) &&
+      peekWord == QUERY_TAG_MARKER) {
+    jam();
+    Uint32 marker, tag;
+    if (unlikely(!reader.getWord(&marker) || !reader.getWord(&tag))) {
+      jam();
+      return DbspjErr::InvalidRequest;
+    }
+    requestPtr.p->m_joinAggQueryTag = tag;
+    totalWords -= 2;
+    DEB_CTE(("(%u) JoinAgg queryTag=%u", instance(), tag));
+  }
+
+  // The main aggregation keys, until CTE_KEYS_MARKER or the section end
+  Uint32 wordsRead = 0;
+  while (wordsRead + 2 <= totalWords) {
+    if (unlikely(!reader.peekWord(&peekWord))) {
+      jam();
+      return DbspjErr::InvalidRequest;
+    }
+    if (peekWord == CTE_KEYS_MARKER) break;  // CTE section follows
+    Uint32 nodeId, aggKey;
+    if (unlikely(!reader.getWord(&nodeId) || !reader.getWord(&aggKey) ||
+                 nodeId >= MAX_NDB_NODES)) {
+      jam();
+      return DbspjErr::InvalidRequest;
+    }
+    requestPtr.p->m_aggStateKeys[nodeId] = aggKey;
+    requestPtr.p->m_aggNodes.set(nodeId);
+    DEB_CTE(("(%u) MAIN aggStateKey: node=%u key=%u",
+             instance(), nodeId, aggKey));
+    wordsRead += 2;
+  }
+
+  if (wordsRead >= totalWords || !reader.peekWord(&peekWord) ||
+      peekWord != CTE_KEYS_MARKER) {
+    return 0;
+  }
+  jam();
+  reader.step(1);  // skip marker
+  Uint32 numCtes, cteFlags;
+  if (unlikely(!reader.getWord(&numCtes))) {
+    jam();
+    return DbspjErr::InvalidRequest;
+  }
+  if (unlikely(numCtes > MaxCteKeyBlocks)) {
+    jam();
+    return DbspjErr::InvalidTreeNodeSpecification;
+  }
+  if (unlikely(!reader.getWord(&cteFlags))) {
+    jam();
+    return DbspjErr::InvalidRequest;
+  }
+  requestPtr.p->m_cteScanAllNodes = (cteFlags & 0x1) != 0;
+
+  const Uint32 max_nodes = MAX_NDB_NODES;
+  /* keys | owner instances | owner node lists | owner counts */
+  const size_t alloc_size =
+      (3 * numCtes * max_nodes + numCtes) * sizeof(Uint32);
+  void *mem = lc_ndbd_pool_malloc(alloc_size, RG_QUERY_MEMORY,
+                                  getThreadId(), true);
+  if (unlikely(mem == nullptr)) {
+    jam();
+    return DbspjErr::OutOfQueryMemory;
+  }
+  requestPtr.p->m_cteAggStateKeys = static_cast<Uint32 *>(mem);
+  requestPtr.p->m_cteAggOwnerInstances =
+      requestPtr.p->m_cteAggStateKeys + numCtes * max_nodes;
+  requestPtr.p->m_cteOwnerNodes =
+      requestPtr.p->m_cteAggOwnerInstances + numCtes * max_nodes;
+  requestPtr.p->m_cteOwnerCount =
+      requestPtr.p->m_cteOwnerNodes + numCtes * max_nodes;
+  requestPtr.p->m_numCteKeyBlocks = numCtes;
+
+  for (Uint32 c = 0; c < numCtes; c++) {
+    Uint32 cteId, perCteFlags, cteNodeCount;
+    Uint32 depLo, depHi;
+    if (unlikely(!reader.getWord(&cteId) || !reader.getWord(&depLo) ||
+                 !reader.getWord(&depHi) || !reader.getWord(&perCteFlags) ||
+                 !reader.getWord(&cteNodeCount) ||
+                 cteNodeCount > max_nodes)) {
+      jam();
+      return DbspjErr::InvalidRequest;
+    }
+    ndbrequire(cteMetaCount < MaxCteKeyBlocks);
+    ParsedCteMeta &m = cteMeta[cteMetaCount++];
+    m.cteId = cteId;
+    m.depMask = (Uint64(depHi) << 32) | depLo;
+    m.flags = perCteFlags;
+
+    /* The per-CTE node list is DBTC's SETUP target set for this
+     * CTE (m_aggNodes), written in ascending node order: the owner
+     * list, indexed by the CTE's position c (== its cteId, DBTC
+     * writes the blocks in cteId order). */
+    requestPtr.p->m_cteOwnerCount[c] = cteNodeCount;
+    const Uint32 *const ownerNodes =
+        requestPtr.p->m_cteOwnerNodes + c * max_nodes;
+    for (Uint32 n = 0; n < cteNodeCount; n++) {
+      Uint32 nodeId, cteAggKey, ownerInstance;
+      if (unlikely(!reader.getWord(&nodeId) || !reader.getWord(&cteAggKey) ||
+                   !reader.getWord(&ownerInstance) || nodeId >= max_nodes ||
+                   (n > 0 && nodeId <= ownerNodes[n - 1]))) {
+        jam();
+        return DbspjErr::InvalidRequest;
+      }
+      requestPtr.p->m_cteOwnerNodes[c * max_nodes + n] = nodeId;
+      requestPtr.p->m_cteAggStateKeys[c * max_nodes + nodeId] = cteAggKey;
+      requestPtr.p->m_cteAggOwnerInstances[c * max_nodes + nodeId] =
+          ownerInstance;
+      DEB_CTE(("(%u) CTE aggStateKey: cte[%u] node=%u key=%u",
+               instance(), c, nodeId, cteAggKey));
+    }
+  }
+  return 0;
+}
+
+/**
+ * The root TreeNode takes ownership of the KeyInfo section of the request.
+ * A key that parseDA built too (NI_KEY_CONSTS/PARAMS) is released (P-12).
+ */
+void Dbspj::setRootKeyInfo(Ptr<TreeNode> rootNodePtr, Uint32 keyPtrI) {
+  if (unlikely(rootNodePtr.p->m_send.m_keyInfoPtrI != RNIL)) {
+    jam();
+    releaseSection(rootNodePtr.p->m_send.m_keyInfoPtrI);
+  }
+  rootNodePtr.p->m_send.m_keyInfoPtrI = keyPtrI;
 }
 
 /**
@@ -2325,16 +2318,9 @@ Dbspj::build(Build_context& ctx,
       const Uint32 requestInfo = param_old->requestInfo;
       const Uint32 resultData = param_old->resultData;
 
-      if (unlikely(param_len + 5 >= NDB_ARRAY_SIZE(m_buffer1))) {
+      err = checkV1ScanParameters(ctx, param_len, param_old->NodeSize, 5);
+      if (unlikely(err != 0)) {
         jam();
-        err = DbspjErr::QueryNodeParametersTooBig;
-        goto error;
-      }
-      if (unlikely(param_len < param_old->NodeSize)) {
-        jam();  // (param_len - NodeSize) below would wrap (P-1)
-        err = flagMaliciousTreeNode(
-            ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-            DbspjErr::InvalidTreeParametersSpecification);
         goto error;
       }
       QN_ScanFragParameters *param = (QN_ScanFragParameters *)m_buffer1;
@@ -2381,16 +2367,9 @@ Dbspj::build(Build_context& ctx,
       const Uint32 batchSize = param_old->batchSize;
       const Uint32 resultData = param_old->resultData;
 
-      if (unlikely(param_len + 4 >= NDB_ARRAY_SIZE(m_buffer1))) {
+      err = checkV1ScanParameters(ctx, param_len, param_old->NodeSize, 4);
+      if (unlikely(err != 0)) {
         jam();
-        err = DbspjErr::QueryNodeParametersTooBig;
-        goto error;
-      }
-      if (unlikely(param_len < param_old->NodeSize)) {
-        jam();  // (param_len - NodeSize) below would wrap (P-1)
-        err = flagMaliciousTreeNode(
-            ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-            DbspjErr::InvalidTreeParametersSpecification);
         goto error;
       }
       QN_ScanFragParameters *param = (QN_ScanFragParameters *)m_buffer1;
@@ -12526,6 +12505,52 @@ Uint32 Dbspj::flagMaliciousTreeNode(Build_context &ctx, Uint32 violationType,
   return errCode;
 }
 
+/**
+ * Read the header word of a key or prune pattern in 'tree': the length of
+ * the pattern in words and its number of parameters. The header word and
+ * the pattern must be inside the tree node (P-5).
+ *
+ * @return 0, or the error code
+ */
+Uint32 Dbspj::readPatternHeader(Build_context &ctx, DABuffer &tree,
+                                Uint32 &len, Uint32 &cnt) {
+  if (unlikely(tree.ptr >= tree.end)) {
+    jam();
+    return flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                 DbspjErr::InvalidTreeNodeSpecification);
+  }
+  const Uint32 len_cnt = *tree.ptr++;
+  len = len_cnt & 0xFFFF;
+  cnt = len_cnt >> 16;
+  if (unlikely(len > (Uint32)(tree.end - tree.ptr))) {
+    jam();
+    return flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                 DbspjErr::InvalidTreeNodeSpecification);
+  }
+  return 0;
+}
+
+/**
+ * build() converts the 'param_len' words of the parameters of a deprecated
+ * v1 scan node in m_buffer1, a fixed part of 'nodeSize' words followed by
+ * the optional part, to the current format, 'extra' words longer.
+ *
+ * @return 0, or the error code
+ */
+Uint32 Dbspj::checkV1ScanParameters(Build_context &ctx, Uint32 param_len,
+                                    Uint32 nodeSize, Uint32 extra) {
+  if (unlikely(param_len + extra >= NDB_ARRAY_SIZE(m_buffer1))) {
+    jam();
+    return DbspjErr::QueryNodeParametersTooBig;
+  }
+  if (unlikely(param_len < nodeSize)) {
+    jam();  // The optional part, (param_len - nodeSize), would wrap (P-1)
+    return flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
+                                 DbspjErr::InvalidTreeParametersSpecification);
+  }
+  return 0;
+}
+
 Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
                             Ptr<TreeNode> treeNodePtr, DABuffer tree,
                             Uint32 treeBits, DABuffer param, Uint32 paramBits) {
@@ -12551,21 +12576,11 @@ Uint32 Dbspj::parseScanFrag(Build_context &ctx, Ptr<Request> requestPtr,
     if (unlikely(err != 0)) break;
 
     if (treeBits & Node::SF_PRUNE_PATTERN) {
-      // The header word and the pattern must be inside the node (P-5),
-      // as parseDA checks for the key pattern.
-      if (unlikely(tree.ptr >= tree.end)) {
+      Uint32 len;  // length of pattern in words
+      Uint32 cnt;  // no of parameters
+      err = readPatternHeader(ctx, tree, len, cnt);
+      if (unlikely(err != 0)) {
         jam();
-        err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-                                    DbspjErr::InvalidTreeNodeSpecification);
-        break;
-      }
-      Uint32 len_cnt = *tree.ptr++;
-      Uint32 len = len_cnt & 0xFFFF;  // length of pattern in words
-      Uint32 cnt = len_cnt >> 16;     // no of parameters
-      if (unlikely(len > (Uint32)(tree.end - tree.ptr))) {
-        jam();
-        err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-                                    DbspjErr::InvalidTreeNodeSpecification);
         break;
       }
 
@@ -17025,22 +17040,11 @@ Uint32 Dbspj::parseDA(Build_context &ctx, Ptr<Request> requestPtr,
        * If keys are parametrized or linked
        *   DATA0[LO/HI] - Length of key pattern/#parameters to key
        */
-      // The length header word itself must be inside the tree section.
-      if (unlikely(tree.ptr >= tree.end)) {
+      Uint32 len;  // length of pattern in words
+      Uint32 cnt;  // no of parameters
+      err = readPatternHeader(ctx, tree, len, cnt);
+      if (unlikely(err != 0)) {
         jam();
-        err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-                                    DbspjErr::InvalidTreeNodeSpecification);
-        break;
-      }
-      Uint32 len_cnt = *tree.ptr++;
-      Uint32 len = len_cnt & 0xFFFF;  // length of pattern in words
-      Uint32 cnt = len_cnt >> 16;     // no of parameters
-
-      // Declared key-pattern length must not exceed the tree section.
-      if (unlikely(len > (Uint32)(tree.end - tree.ptr))) {
-        jam();
-        err = flagMaliciousTreeNode(ctx, VT_SPJ_SECTION_LENGTH_MISMATCH,
-                                    DbspjErr::InvalidTreeNodeSpecification);
         break;
       }
 

@@ -1755,6 +1755,8 @@ class Dbspj : public SimulatedBlock {
   bool do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
   void handle_early_lqhkey_ref(Signal *, const LqhKeyReq *, Uint32 err);
+  void rejectMalformedLqhKeyReq(Signal *, const LqhKeyReq *, SectionHandle &,
+                                Uint32 err) __attribute__((cold, noinline));
   void sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef);
   void sendTCKEYCONF(Signal *signal, Uint32 len, Uint32 ref, Uint32 routeRef);
 
@@ -1762,6 +1764,21 @@ class Dbspj : public SimulatedBlock {
   bool alloc_request_node_arrays(Request *);
   void store_scan(Ptr<Request>);
   void handle_early_scanfrag_ref(Signal *, const ScanFragReq *, Uint32 err);
+  void rejectMalformedScanFragReq(Signal *, const ScanFragReq *,
+                                  SectionHandle &, Uint32 err)
+      __attribute__((cold, noinline));
+
+  // The per-CTE metadata of the aggregation keys of a SCAN_FRAGREQ, kept
+  // until build() has created the CteContexts
+  struct ParsedCteMeta {
+    Uint32 cteId;
+    Uint64 depMask;
+    Uint32 flags;
+  };
+  static constexpr Uint32 MaxCteKeyBlocks = 64;
+  Uint32 parseJoinAggKeys(Ptr<Request>, Uint32 ptrI, Uint32 offset,
+                          ParsedCteMeta *cteMeta, Uint32 &cteMetaCount);
+  void setRootKeyInfo(Ptr<TreeNode> rootNodePtr, Uint32 keyPtrI);
 
   bool checkRequest(const Ptr<Request>);
 
@@ -1942,6 +1959,10 @@ class Dbspj : public SimulatedBlock {
    */
   Uint32 flagMaliciousTreeNode(Build_context &ctx, Uint32 violationType,
                                Uint32 errCode);
+  Uint32 readPatternHeader(Build_context &ctx, DABuffer &tree, Uint32 &len,
+                           Uint32 &cnt);
+  Uint32 checkV1ScanParameters(Build_context &ctx, Uint32 param_len,
+                               Uint32 nodeSize, Uint32 extra);
 
   Uint32 getResultRef(Ptr<Request> requestPtr);
 
