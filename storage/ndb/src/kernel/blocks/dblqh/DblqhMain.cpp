@@ -16706,6 +16706,7 @@ retry:
                                              jamBuffer(),
                                              c_tup->getAggXfrmBuf(),  // D26
                                              c_tup->getAggXfrmBufLen(),
+                                             c_tup,  // E-4
                                              leaf);
   if (ret == AGG_EVICT_NEEDED) {
     /* A CTE materialization keeps every group (no eviction), and an
@@ -20764,6 +20765,7 @@ retry:
                                          jamBuffer(),
                                          c_tup->getAggXfrmBuf(),  // D26
                                          c_tup->getAggXfrmBufLen(),
+                                         c_tup,  // E-4
                                          leaf);
   }
   if (ret == AGG_EVICT_NEEDED) {

@@ -1209,6 +1209,38 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
  * by both source extent and destination capacity. Any failure
  * writes a NULL AttributeHeader and returns — same observable
  * behavior as a missing entry. */
+Uint32 Dbtup::getBranchMemColumnType(Uint32 tableId, Uint32 schemaVersion,
+                                     Uint32 attrId, Uint32 &typeId,
+                                     Uint32 &sizeInBytes,
+                                     const CHARSET_INFO *&cs) const {
+  /* As handleBranchMemOpArg: the table must exist, be DEFINED and have
+   * the schema version of the program, and attrId must be a column. */
+  if (unlikely(tablerec == nullptr || tableId >= cnoOfTablerec)) {
+    return 40;
+  }
+  const Tablerec *tabPtrP = &tablerec[tableId];
+  if (unlikely(tabPtrP->tableStatus != DEFINED)) {
+    return 40;
+  }
+  if (unlikely(c_lqh->tablerec == nullptr ||
+               tableId >= c_lqh->ctabrecFileSize ||
+               c_lqh->tablerec[tableId].schemaVersion != schemaVersion)) {
+    return 40;
+  }
+  if (unlikely(attrId >= tabPtrP->m_no_of_attributes)) {
+    return ZATTRIBUTE_ID_ERROR;
+  }
+  const Uint32 *attrDescriptor = tabPtrP->tabDescriptor + (attrId * ZAD_SIZE);
+  typeId = AttributeDescriptor::getType(attrDescriptor[0]);
+  sizeInBytes = AttributeDescriptor::getSizeInBytes(attrDescriptor[0]);
+  cs = nullptr;
+  if (AttributeOffset::getCharsetFlag(attrDescriptor[1])) {
+    cs = tabPtrP->charsetArray[AttributeOffset::getCharsetPos(
+        attrDescriptor[1])];
+  }
+  return 0;
+}
+
 void Dbtup::readLinkedToMemBuffer(const Uint32 *linked,
                                     Uint32 linked_len,
                                     Uint32 position,

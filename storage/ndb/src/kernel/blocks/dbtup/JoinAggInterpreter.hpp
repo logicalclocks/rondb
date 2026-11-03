@@ -57,6 +57,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
     m_acc_offset(0),
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
+    m_null_row_meta_tup(nullptr),
     m_use_mutex(false), m_max_groups(0), m_cte_mode(false),
     /* Chunk allocator state + GB type metadata lifted to
      * AggInterpreterBase in Step 2a; base ctor initializes them. */
@@ -185,6 +186,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
       // D26: per-LDM strnxfrm scratch (required) for the group-key hash.
       uchar* xfrm_buf,
       Uint32 xfrm_buf_len,
+      // E-4: the parent-column types of CASE conditions, nullptr for none
+      const Dbtup* meta_tup,
       const struct LeafProgram* leaf = nullptr);
 
   // Returns 0 on success or a positive NDB error code on failure.
@@ -386,12 +389,13 @@ class JoinAggInterpreter : public AggInterpreterBase {
   enum EmbeddedNullRowResult {
     EMB_NULL_ROW_OUTPUT,       // *skip_offset holds interpreter output 0
     EMB_NULL_ROW_REJECT,       // EXIT_REFUSE: stop the row's program
-    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (linked columns, ...)
+    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (aggregation registers, ...)
     EMB_NULL_ROW_ERROR         // fails as in DBTUP
   };
-  static EmbeddedNullRowResult evalEmbeddedForNullRow(const Uint32* emb_prog,
-                                                      Uint32 emb_len,
-                                                      Uint32* skip_offset);
+  static EmbeddedNullRowResult evalEmbeddedForNullRow(
+      const Uint32* emb_prog, Uint32 emb_len,
+      const Uint32* linked_attr_data, Uint32 linked_attr_len,
+      const Dbtup* meta_tup, Uint32* skip_offset);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /
@@ -431,6 +435,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
   const Uint32* m_linked_attr_data;// Points to current row's linked attrs
   Uint32 m_linked_attr_len;        // Current length in words
   bool m_null_local_columns;       // When true, local column read NULL
+  // E-4: set with m_null_local_columns, see processNullExtendedRow
+  const Dbtup* m_null_row_meta_tup;
 
   // MUTEX_BASED locking: protects m_gb_map and accumulators during
   // concurrent access from multiple LDM threads.

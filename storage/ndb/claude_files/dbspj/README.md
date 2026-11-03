@@ -295,10 +295,10 @@ the S-6b scan sibling (kernel), and the RonSQL side of E-4 and E-8: see
   that DBLQH cannot turn into a NULL row in place (E-6), and NULL rows carry no
   leaf index (E-7). mysqld only pushes these with
   `ndb_join_pushdown_aggregate_outer_join` ON (default OFF).
-- **E-4** for conditions on parent columns: needs a NULL-row entry in
-  `DbtupExecQuery.cpp` and the API lowering to treat inner-side columns of an
-  outer join as nullable (mysqld and RonSQL, which also compares with
-  `NULL_CMP_EQUAL`).
+- **E-4** for conditions on parent columns: fixed 2026-11-02 in
+  `evalEmbeddedForNullRow` (see the RonSQL round below); RonSQL's
+  `NULL_CMP_EQUAL` was fixed in the RonSQL round. mysqld's lowering is not
+  checked.
 - **E-5** in the kernel: CTE and CTE_LOOKUP consumers never reach the API
   merge, so `findInBucket` (length first) still splits their groups.
 - **Q-6a/b, E-16**: exact integer/DECIMAL accumulation in the kernel and API.
@@ -496,11 +496,22 @@ Steps:
    | E-6 | DBLQH `continueAfterLogAbortWriteLab`: a 626 or 899 from TUP (the pushed filter rejected the row) on an outer-joined aggregate lookup leaf feeds the NULL-extended row and sends `LQHKEYCONF`, as a key not found in ACC does (`feedOuterJoinAggNullRow`, shared with `handleOuterJoinAggKeyNotFound`) | `spj_ronsql_e6_subquery_filter` e6-1 has (1, NULL) and (3, NULL) |
    | E-3 | DBSPJ `handleAggAncestorComplete` sweeps a lookup intermediate as soon as it and its predecessors have completed the batch, not only after the scan ancestor's last fragment; `handleAggScanBatchComplete` sweeps when the scan ancestor completes the batch last; a row that got its NULL row is marked (`m_matched |= m_coverage`), so no later sweep sends it again | `spj_ronsql_e3_left_chain` matches MySQL |
 
-   Not done: E-4 for parent columns. `evalEmbeddedForNullRow` returns
-   EMB_NULL_ROW_UNSUPPORTED for `READ_LINKED_*` / `BRANCH_MEM_OP_ARG*`, so
-   a CASE on a parent column takes THEN on a NULL-extended row
-   (`spj_ronsql_e4_case_null` e4-3). It needs the typed compare of DBTUP
-   on the linked data, or a NULL-tuple entry into DBTUP's interpreter.
+   E-4 for parent columns, written 2026-11-02 after the round above was
+   committed: `JoinAggInterpreter::evalEmbeddedForNullRow` evaluates
+   `READ_LINKED_TO_MEM`, `READ_LINKED_COLUMN_TO_REG`,
+   `BRANCH_LINKED_EQ/NE_NULL`, `BRANCH_MEM_OP_ARG`,
+   `BRANCH_MEM_OP_ARG_INLINE_TYPE`, `BRANCH_LINKED_OP_LINKED` and register
+   compares of two non-NULL registers on the row's linked data, mirroring
+   the DBTUP handlers. `BRANCH_MEM_OP_ARG` takes the parent column's type
+   from the table descriptor through the new
+   `Dbtup::getBranchMemColumnType` (the checks of `handleBranchMemOpArg`);
+   DBLQH passes `c_tup` to `processNullExtendedRow` (the query-thread
+   NULL-row path already borrows the table records). Programs with
+   aggregation registers or arithmetic still take THEN. Tests:
+   `spj_ronsql_e4_case_null` e4-3 (memory compare, both NULL-row paths),
+   e4-4 (DOUBLE parent column, register path) and e4-5 (two parent
+   columns). Recorded 2026-11-03: all five steps match MySQL. The
+   regression run after E-4 (2026-11-03) passed.
 
    First run, 2026-11-02 (a regression run that stopped after 10
    failures, so e5, e6, e7, e8, s6b and x1 were not reached):
@@ -557,7 +568,7 @@ Build everything (data nodes with error-insert support, mysqld, `testSpj`,
 ```
 
 The `test_spj_malformed_*` tests, the five `spj_state_*` tests above and
-`spj_ronsql_e3_left_chain`, `e5_cte_collation`, `e6_subquery_filter`,
+`spj_ronsql_e3_left_chain`, `e4_case_null`, `e5_cte_collation`, `e6_subquery_filter`,
 `e7_multi_leaf_count`, `e17_cte_scan_start`, `e23_wide_group_key`,
 `e23_wide_lookup_key` and `x1_count_star_empty` have `.result` files. Record each of the others with
 `--record` once it passes. A test that hits a weakness dies before recording.
