@@ -3206,14 +3206,9 @@ Uint32 Dbspj::planParallelExec(Ptr<Request> requestPtr,
   for (child.first(it); !it.isNull(); child.next(it)) {
     Ptr<TreeNode> childPtr;
     ndbrequire(m_treenode_pool.getPtr(childPtr, *it.data));
-    /* 17540: as in appendTreeNode() */
-    if (ERROR_INSERTED(17540)) {
+    if (ERROR_INSERTED(17540)) {  // See ERROR_codes.txt
       jam();
-      CLEAR_ERROR_INSERT_VALUE;
-      g_eventLogger->info(
-          "DBSPJ %u: error insert 17540, OutOfQueryMemory appending tree "
-          "node %u to the execution plan",
-          instance(), childPtr.p->m_node_no);
+      errorInsertFired(childPtr, "OutOfQueryMemory appending to the plan");
       return DbspjErr::OutOfQueryMemory;
     }
     if (unlikely(!execList.append(&childPtr.i, 1))) {
@@ -3449,17 +3444,9 @@ Uint32 Dbspj::appendTreeNode(Ptr<Request> requestPtr, Ptr<TreeNode> treeNodePtr,
 
     // Add treeNode to the execution plan:
     Local_dependency_map execList(pool, prevExecPtr.p->m_next_nodes);
-    /**
-     * 17540: The append fails (OutOfQueryMemory), as if the request arena
-     * was exhausted. Cleared when it fires.
-     */
-    if (ERROR_INSERTED(17540)) {
+    if (ERROR_INSERTED(17540)) {  // See ERROR_codes.txt
       jam();
-      CLEAR_ERROR_INSERT_VALUE;
-      g_eventLogger->info(
-          "DBSPJ %u: error insert 17540, OutOfQueryMemory appending tree "
-          "node %u to the execution plan",
-          instance(), treeNodePtr.p->m_node_no);
+      errorInsertFired(treeNodePtr, "OutOfQueryMemory appending to the plan");
       return DbspjErr::OutOfQueryMemory;
     }
     if (unlikely(!execList.append(&treeNodePtr.i, 1))) {
@@ -4249,8 +4236,7 @@ Dbspj::handleJoinAggNextBatch(Signal *signal, Ptr<Request> requestPtr) {
      * after this call, as the request may be released here.
      */
     jam();
-    abort(signal, requestPtr, DbspjErr::InternalError);
-    checkBatchComplete(signal, requestPtr);
+    abortAndCheckBatchComplete(signal, requestPtr, DbspjErr::InternalError);
   }
 }
 
@@ -4769,6 +4755,25 @@ void Dbspj::reportAncestorsComplete(Signal *signal, Ptr<Request> requestPtr,
       }
     }
   }
+}
+
+/**
+ * Abort the request, from an ::exec<FOO> method whose signal may have
+ * been the last outstanding one: then the batch is complete, and the REF
+ * is sent now.
+ */
+void Dbspj::abortAndCheckBatchComplete(Signal *signal, Ptr<Request> requestPtr,
+                                       Uint32 errCode) {
+  jam();
+  abort(signal, requestPtr, errCode);
+  checkBatchComplete(signal, requestPtr);
+}
+
+void Dbspj::errorInsertFired(Ptr<TreeNode> treeNodePtr, const char *what) {
+  g_eventLogger->info("DBSPJ %u: error insert %u, %s (tree node %u)",
+                      instance(), Uint32(ERROR_INSERT_VALUE), what,
+                      treeNodePtr.p->m_node_no);
+  CLEAR_ERROR_INSERT_VALUE;
 }
 
 /**
@@ -5766,20 +5771,19 @@ void Dbspj::execTRANSID_AI(Signal *signal) {
       Uint32 err = handleAggAncestorComplete(
           signal, requestPtr, treeNodePtr);
       if (unlikely(err != 0)) {
-        abort(signal, requestPtr, err);
         // This TRANSID_AI may have been the last outstanding signal (R-8)
-        checkBatchComplete(signal, requestPtr);
+        abortAndCheckBatchComplete(signal, requestPtr, err);
         return;
       }
     }
     handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
-    if (treeNodePtr.p->isScan()) {
+    if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
+        treeNodePtr.p->isScan()) {
       // The last row of a scan batch arrived after its SCAN_FRAGCONF (E-3)
       Uint32 err = handleAggScanBatchComplete(signal, requestPtr,
                                               treeNodePtr);
       if (unlikely(err != 0)) {
-        abort(signal, requestPtr, err);
-        checkBatchComplete(signal, requestPtr);
+        abortAndCheckBatchComplete(signal, requestPtr, err);
         return;
       }
     }
@@ -10803,19 +10807,13 @@ Uint32 Dbspj::mergeAggMatchBitmask(Ptr<TreeNode> treeNodePtr,
   copy(buf, secPtr);
 
   /**
-   * 17536: Fail with OutOfQueryMemory, as if the bitmask could not be
-   * allocated, when merging the bitmask of the last outstanding fragment
-   * of the batch (in the first batch of a join-aggregation query, with
-   * one fragment in flight, that is where the allocation happens).
-   * Cleared when it fires.
+   * 17536 (ERROR_codes.txt) fires at the last outstanding fragment of the
+   * batch: in the first batch of a join-aggregation query, with one
+   * fragment in flight, that is where the allocation happens.
    */
   if (ERROR_INSERTED(17536) && data.m_frags_outstanding == 0) {
     jam();
-    CLEAR_ERROR_INSERT_VALUE;
-    g_eventLogger->info(
-        "DBSPJ %u: error insert 17536, OutOfQueryMemory merging the "
-        "matched bitmask of tree node %u",
-        instance(), treeNodePtr.p->m_node_no);
+    errorInsertFired(treeNodePtr, "OutOfQueryMemory merging the bitmask");
     return DbspjErr::OutOfQueryMemory;
   }
 
@@ -11080,16 +11078,17 @@ skip_null_row_injection:
  * now for the lookup descendants that have completed the batch
  * (handleAggAncestorComplete defers the others until they complete).
  * Call it after handleTreeNodeComplete, which may start lookups held
- * back until this batch was complete.
+ * back until this batch was complete, for a T_AGGREGATE_ANCESTOR scan.
  *
  * @return 0 on success, error code on failure
  */
 Uint32 Dbspj::handleAggScanBatchComplete(Signal *signal,
                                           Ptr<Request> requestPtr,
                                           Ptr<TreeNode> treeNodePtr) {
+  ndbassert(treeNodePtr.p->isScan() &&
+            (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR));
   const ScanFragData &data = treeNodePtr.p->m_scanFrag_data;
-  if ((treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) == 0 ||
-      (requestPtr.p->m_state & Request::RS_ABORTING) != 0 ||
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) != 0 ||
       data.m_frags_complete == data.m_fragCount ||
       !requestPtr.p->m_completed_tree_nodes.get(treeNodePtr.p->m_node_no)) {
     jam();
@@ -11397,18 +11396,9 @@ Uint32 Dbspj::sendJoinAggNullRow(Signal *signal, Ptr<Request> requestPtr,
              nodeId,
              rowRef.m_src_correlation));
 
-  /**
-   * 17537: Fail with OutOfSectionMemory, as if expanding the linked
-   * attributes ran out of section memory, before any
-   * JOIN_AGG_NULL_ROW_REQ is sent. Cleared when it fires.
-   */
-  if (ERROR_INSERTED(17537)) {
+  if (ERROR_INSERTED(17537)) {  // See ERROR_codes.txt
     jam();
-    CLEAR_ERROR_INSERT_VALUE;
-    g_eventLogger->info(
-        "DBSPJ %u: error insert 17537, OutOfSectionMemory building the "
-        "JOIN_AGG_NULL_ROW_REQ of tree node %u",
-        instance(), treeNodePtr.p->m_node_no);
+    errorInsertFired(treeNodePtr, "OutOfSectionMemory before the NULL row");
     return DbspjErr::OutOfSectionMemory;
   }
 
@@ -12768,18 +12758,9 @@ void Dbspj::scanFrag_prepare(Signal *signal, Ptr<Request> requestPtr,
   req->schemaTransId = 0;
   req->jamBufferPtr = jamBuffer();
 
-  /**
-   * 17541: DBDIH refuses the scan as for a table not in TS_ACTIVE
-   * (senderData = 1, ErroneousTableState) without registering it.
-   * Cleared when it fires.
-   */
-  if (ERROR_INSERTED(17541)) {
+  if (ERROR_INSERTED(17541)) {  // See ERROR_codes.txt
     jam();
-    CLEAR_ERROR_INSERT_VALUE;
-    g_eventLogger->info(
-        "DBSPJ %u: error insert 17541, DIH_SCAN_TAB_REQ of tree node %u "
-        "refused",
-        instance(), treeNodePtr.p->m_node_no);
+    errorInsertFired(treeNodePtr, "DIH_SCAN_TAB_REQ refused");
     DihScanTabRef *ref = (DihScanTabRef *)signal->getDataPtrSend();
     ref->tableId = treeNodePtr.p->m_tableOrIndexId;
     ref->senderData = 1;  // 1 indicates failure, as from DBDIH
@@ -13015,6 +12996,26 @@ error:
 }
 
 /**
+ * Error inserts 17538 and 17539 (ERROR_codes.txt): whether the
+ * DIGETNODESREQ of 'fragPtr' in 'list' fails. 'fragCnt' is the number of
+ * DIGETNODESREQs sent by this call before it, always 0 with 17539 (one
+ * per call). The call is a CONTINUEB round if a fragment before 'fragPtr'
+ * was resolved by an earlier call.
+ */
+bool Dbspj::fiDiGetNodesFails(Local_ScanFragHandle_list &list,
+                              Ptr<ScanFragHandle> fragPtr, Uint32 fragCnt) {
+  bool continuedRound = false;
+  Ptr<ScanFragHandle> prevPtr;
+  for (list.first(prevPtr); prevPtr.i != fragPtr.i; list.next(prevPtr)) {
+    if (prevPtr.p->m_ref != 0) continuedRound = true;
+  }
+  if (ERROR_INSERTED(17538)) {
+    return fragCnt == 0 && !continuedRound;
+  }
+  return continuedRound;  // 17539
+}
+
+/**
  * Will check the fragment list for fragments which need to
  * get node info to construct 'fragPtr.p->m_ref' from DIH.
  *
@@ -13041,7 +13042,6 @@ Uint32 Dbspj::scanFrag_sendDihGetNodesReq(Signal *signal,
   ndbassert(data.m_frags_outstanding > 0);
 
   Uint32 fragCnt = 0;
-  bool fiContinuedRound = false;  // Error inserts 17538/17539 only
   for (list.first(fragPtr); !fragPtr.isNull(); list.next(fragPtr)) {
     jam();
     ndbassert(requestPtr.p->m_outstanding > 0);
@@ -13055,9 +13055,6 @@ Uint32 Dbspj::scanFrag_sendDihGetNodesReq(Signal *signal,
       sendSignal(reference(), GSN_CONTINUEB, signal, 2, JBB);
       break;  // to exit
     }
-
-    // A fragment resolved by an earlier call: this call is a CONTINUEB round
-    if (fragPtr.p->m_ref != 0) fiContinuedRound = true;
 
     if (fragPtr.p->m_ref == 0)  // Need GSN_DIGETNODRESREQ
     {
@@ -13075,25 +13072,12 @@ Uint32 Dbspj::scanFrag_sendDihGetNodesReq(Signal *signal,
       EXECUTE_DIRECT_MT(DBDIH, GSN_DIGETNODESREQ, signal,
                         DiGetNodesReq::SignalLength, 0);
 
-      /**
-       * Fake a DIGETNODESREQ failure the way DBDIH reports one
-       * (DiGetNodesConf::zero = 1, error code 311
-       * (ZUNDEFINED_FRAGMENT_ERROR) in theData[1]). Cleared when it fires.
-       * - 17538: on the first fragment of the first round, called from
-       *          execDIH_SCAN_TAB_CONF.
-       * - 17539: as 17131 (one fragment per round, the next round sent
-       *          as CONTINUEB), failing the first fragment of the first
-       *          CONTINUEB round.
-       */
-      if ((ERROR_INSERTED(17538) && fragCnt == 0 && !fiContinuedRound) ||
-          (ERROR_INSERTED(17539) && fiContinuedRound)) {
+      if ((ERROR_INSERTED(17538) || ERROR_INSERTED(17539)) &&
+          fiDiGetNodesFails(list, fragPtr, fragCnt)) {
         jam();
-        g_eventLogger->info(
-            "DBSPJ %u: error insert %u, DIGETNODESREQ of fragment %u of "
-            "tree node %u fails with 311",
-            instance(), ERROR_INSERT_VALUE, fragPtr.p->m_fragId,
-            treeNodePtr.p->m_node_no);
-        CLEAR_ERROR_INSERT_VALUE;
+        errorInsertFired(treeNodePtr, "DIGETNODESREQ fails with 311");
+        // As DBDIH reports a failure: DiGetNodesConf::zero = 1, and error
+        // code 311 (ZUNDEFINED_FRAGMENT_ERROR) in theData[1]
         signal->theData[0] = 1;
         signal->theData[1] = 311;
       }
@@ -14174,21 +14158,11 @@ Uint32 Dbspj::scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
         continue;
       }
 
-      /**
-       * 17535: Fail with OutOfSectionMemory before sending the second
-       * (or later) SCAN_FRAGREQ of the first batch of a non-root scan,
-       * i.e. while the TreeNode is still TN_INACTIVE and this call has
-       * already started some fragments. Cleared when it fires.
-       */
-      if (ERROR_INSERTED(17535) && requestsSent > 0 &&
+      if (ERROR_INSERTED(17535) && requestsSent > 0 &&  // ERROR_codes.txt
           treeNodePtr.p->m_parentPtrI != RNIL &&
           treeNodePtr.p->m_state == TreeNode::TN_INACTIVE) {
         jam();
-        CLEAR_ERROR_INSERT_VALUE;
-        g_eventLogger->info(
-            "DBSPJ %u: error insert 17535, OutOfSectionMemory before "
-            "SCAN_FRAGREQ %u of the first batch (tree node %u)",
-            instance(), requestsSent + 1, treeNodePtr.p->m_node_no);
+        errorInsertFired(treeNodePtr, "OutOfSectionMemory in the first batch");
         err = DbspjErr::OutOfSectionMemory;
         break;
       }
@@ -15233,33 +15207,11 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
       }
     }
 
-    /**
-     * Outer join aggregation: when child scan is fully complete,
-     * inject null rows for unmatched parent rows and handle deferred
-     * intermediate ancestors.
-     */
-    if (pendingErr == 0 &&
-        (requestPtr.p->m_state & Request::RS_ABORTING) == 0 &&
-        (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
-        !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
-        treeNodePtr.p->m_scanAncestorPtrI != RNIL &&
-        data.m_frags_complete == data.m_fragCount) {
+    if ((treeNodePtr.p->m_bits &
+         (TreeNode::T_AGGREGATE_LEAF | TreeNode::T_AGGREGATE_ANCESTOR)) &&
+        data.m_frags_complete == data.m_fragCount && pendingErr == 0) {
       jam();
-      pendingErr = handleAggLeafScanComplete(signal, requestPtr,
-                                             treeNodePtr);
-    }
-
-    /**
-     * Intermediate outer join scan ancestor: when fully complete,
-     * inject null rows for parent rows that this scan never matched,
-     * then run deferred handleAggAncestorComplete for lookup descendants.
-     */
-    if (pendingErr == 0 &&
-        (requestPtr.p->m_state & Request::RS_ABORTING) == 0 &&
-        (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) &&
-        data.m_frags_complete == data.m_fragCount) {
-      pendingErr = handleScanAggAncestorComplete(signal, requestPtr,
-                                                 treeNodePtr, data);
+      pendingErr = scanFrag_aggScanComplete(signal, requestPtr, treeNodePtr);
     }
 
     if (data.m_rows_received == data.m_rows_expecting ||
@@ -15274,8 +15226,11 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
         pendingErr = 0;
       }
       handleTreeNodeComplete(signal, requestPtr, treeNodePtr);
-      pendingErr = handleAggScanBatchComplete(signal, requestPtr,
-                                              treeNodePtr);
+      if (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR) {
+        jam();
+        pendingErr = handleAggScanBatchComplete(signal, requestPtr,
+                                                treeNodePtr);
+      }
     }
   }  // if (data.m_frags_outstanding == 0)
 
@@ -15283,6 +15238,47 @@ void Dbspj::scanFrag_execSCAN_FRAGCONF(Signal *signal, Ptr<Request> requestPtr,
     jam();
     abort(signal, requestPtr, pendingErr);
   }
+}
+
+/**
+ * The aggregation scan 'treeNodePtr' (T_AGGREGATE_LEAF or
+ * T_AGGREGATE_ANCESTOR) has completed all its fragments.
+ *
+ * @return 0 on success, error code on failure
+ */
+Uint32 Dbspj::scanFrag_aggScanComplete(Signal *signal,
+                                       Ptr<Request> requestPtr,
+                                       Ptr<TreeNode> treeNodePtr) {
+  /**
+   * Outer join aggregation: when child scan is fully complete,
+   * inject null rows for unmatched parent rows and handle deferred
+   * intermediate ancestors.
+   */
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) == 0 &&
+      (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_LEAF) &&
+      !(treeNodePtr.p->m_bits & TreeNode::T_INNER_JOIN) &&
+      treeNodePtr.p->m_scanAncestorPtrI != RNIL) {
+    jam();
+    const Uint32 err =
+        handleAggLeafScanComplete(signal, requestPtr, treeNodePtr);
+    if (unlikely(err != 0)) {
+      jam();
+      return err;
+    }
+  }
+
+  /**
+   * Intermediate outer join scan ancestor: when fully complete,
+   * inject null rows for parent rows that this scan never matched,
+   * then run deferred handleAggAncestorComplete for lookup descendants.
+   */
+  if ((requestPtr.p->m_state & Request::RS_ABORTING) == 0 &&
+      (treeNodePtr.p->m_bits & TreeNode::T_AGGREGATE_ANCESTOR)) {
+    jam();
+    return handleScanAggAncestorComplete(signal, requestPtr, treeNodePtr,
+                                         treeNodePtr.p->m_scanFrag_data);
+  }
+  return 0;
 }
 
 void Dbspj::scanFrag_execSCAN_FRAGREF(Signal *signal, Ptr<Request> requestPtr,
@@ -16042,11 +16038,30 @@ error:
 }
 
 /**
+ * A row has at most a header per column and the correlation id; a longer
+ * one would overwrite the caller's stack array of 'maxCnt' offsets (P-17).
+ * Every column takes at least a word, so only a row of more than 'maxCnt'
+ * words can have more columns: buildRowHeader() has those counted here.
+ */
+void Dbspj::requireRowColumnCount(LinearSectionPtr ptr, Uint32 maxCnt) {
+  Uint32 cnt = 0;
+  Uint32 offset = 0;
+  do {
+    cnt++;
+    offset += 1 + AttributeHeader::getDataSize(ptr.p[offset]);
+  } while (offset < ptr.sz);
+  ndbrequire(cnt <= maxCnt);
+}
+
+/**
  * This function takes an array of attrinfo, and builds "header"
  *   which can be used to do random access inside the row
  */
 Uint32 Dbspj::buildRowHeader(RowPtr::Header *header, LinearSectionPtr ptr,
                              Uint32 maxCnt) {
+  if (unlikely(ptr.sz > maxCnt)) {
+    requireRowColumnCount(ptr, maxCnt);
+  }
   const Uint32 *src = ptr.p;
   const Uint32 len = ptr.sz;
   Uint32 *dst = header->m_offset;
@@ -16055,11 +16070,6 @@ Uint32 Dbspj::buildRowHeader(RowPtr::Header *header, LinearSectionPtr ptr,
   jamDebug();
   do {
     jamDataDebug(offset);
-    /**
-     * A row has at most a header per column and the correlation id;
-     * a longer one would overwrite the caller's stack array (P-17).
-     */
-    ndbrequire(Uint32(dst - save) < maxCnt);
     *dst++ = offset;
     const Uint32 tmp = *src++;
     const Uint32 tmp_len = AttributeHeader::getDataSize(tmp);

@@ -1811,6 +1811,8 @@ class Dbspj : public SimulatedBlock {
   void cleanup(Ptr<Request>, bool in_hash);
   void cleanupBatch(Ptr<Request>, bool done);
   void abort(Signal *, Ptr<Request>, Uint32 errCode);
+  void abortAndCheckBatchComplete(Signal *, Ptr<Request>, Uint32 errCode)
+      __attribute__((cold, noinline));
   Uint32 nodeFail(Signal *, Ptr<Request>, NdbNodeBitmask mask);
 
   Uint32 createNode(Build_context &, Ptr<Request>, Ptr<TreeNode> &);
@@ -1862,6 +1864,8 @@ class Dbspj : public SimulatedBlock {
    * Misc
    */
   Uint32 buildRowHeader(RowPtr::Header *, LinearSectionPtr, Uint32 maxCnt);
+  void requireRowColumnCount(LinearSectionPtr, Uint32 maxCnt)
+      __attribute__((cold, noinline));
   Uint32 buildParamRowHeader(RowPtr::Header *, const Uint32 *&src,
                              const Uint32 *end, Uint32 cnt);
   void getCorrelationData(const RowPtr::Row &row, Uint32 col,
@@ -1981,7 +1985,15 @@ class Dbspj : public SimulatedBlock {
   Uint32 mergeAggMatchBitmask(Ptr<TreeNode>, ScanFragData &,
                                SegmentedSectionPtr &);
   Uint32 handleAggLeafScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 scanFrag_aggScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
+
+  // Log that the error insert fired at tree node 'treeNodePtr', and clear it
+  void errorInsertFired(Ptr<TreeNode> treeNodePtr, const char *what)
+      __attribute__((cold, noinline));
+  bool fiDiGetNodesFails(Local_ScanFragHandle_list &list,
+                         Ptr<ScanFragHandle> fragPtr, Uint32 fragCnt)
+      __attribute__((cold, noinline));
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
                              const Uint32* src,
