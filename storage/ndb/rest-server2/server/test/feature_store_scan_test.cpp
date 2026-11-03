@@ -31,6 +31,7 @@
 
 #include <NdbMutex.h>
 #include <gtest/gtest.h>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -39,19 +40,19 @@
 NdbMutex *globalConfigsMutex = nullptr;
 
 using feature_store_scan::PkBranch;
-using feature_store_scan::DedupPkBranches;
+using feature_store_scan::DedupPkReads;
 using feature_store_scan::FilterValueToJson;
 using feature_store_scan::IsTableScan;
 using feature_store_scan::TableScanAllowed;
 using feature_store_scan::ResolveScanColumns;
-using feature_store_scan::TryRewriteToPkBranches;
+using feature_store_scan::TryRewriteToPkReads;
 
 namespace {
 
 std::shared_ptr<FilterNode> cmp(const std::string &column,
                                 NdbScanFilter::BinaryCondition cond,
                                 int64_t value) {
-  auto node = std::make_shared<FilterNode>();
+  std::shared_ptr<FilterNode> node = std::make_shared<FilterNode>();
   node->type = FilterNode::Type::COMPARE;
   node->cond = cond;
   node->column = column;
@@ -62,7 +63,7 @@ std::shared_ptr<FilterNode> cmp(const std::string &column,
 
 std::shared_ptr<FilterNode> cmpStr(const std::string &column,
                                    const std::string &value) {
-  auto node = std::make_shared<FilterNode>();
+  std::shared_ptr<FilterNode> node = std::make_shared<FilterNode>();
   node->type = FilterNode::Type::COMPARE;
   node->cond = NdbScanFilter::COND_EQ;
   node->column = column;
@@ -72,7 +73,7 @@ std::shared_ptr<FilterNode> cmpStr(const std::string &column,
 }
 
 std::shared_ptr<FilterNode> cmpDbl(const std::string &column, double value) {
-  auto node = std::make_shared<FilterNode>();
+  std::shared_ptr<FilterNode> node = std::make_shared<FilterNode>();
   node->type = FilterNode::Type::COMPARE;
   node->cond = NdbScanFilter::COND_EQ;
   node->column = column;
@@ -82,7 +83,7 @@ std::shared_ptr<FilterNode> cmpDbl(const std::string &column, double value) {
 }
 
 std::shared_ptr<FilterNode> isNotNull(const std::string &column) {
-  auto node = std::make_shared<FilterNode>();
+  std::shared_ptr<FilterNode> node = std::make_shared<FilterNode>();
   node->type = FilterNode::Type::IS_NOT_NULL;
   node->column = column;
   return node;
@@ -91,7 +92,7 @@ std::shared_ptr<FilterNode> isNotNull(const std::string &column) {
 std::shared_ptr<FilterNode> logic(NdbScanFilter::Group group,
                                   std::shared_ptr<FilterNode> a,
                                   std::shared_ptr<FilterNode> b) {
-  auto node = std::make_shared<FilterNode>();
+  std::shared_ptr<FilterNode> node = std::make_shared<FilterNode>();
   node->type = FilterNode::Type::LOGIC;
   node->group = group;
   node->children = {a, b};
@@ -112,8 +113,10 @@ metadata::FeatureViewMetadata makeMetadata(
   metadata::FeatureGroupFeatures &root = md.featureGroupFeatures[0];
   root.joinIndex = 0;
   root.featureGroupId = 1;
-  auto feature = [](int joinIndex, int fgId, const std::string &name,
-                    const std::string &prefix, const std::string &type) {
+  std::function<metadata::FeatureMetadata(
+    int, int, const std::string &, const std::string &, const std::string &)>
+    feature = [](int joinIndex, int fgId, const std::string &name,
+                 const std::string &prefix, const std::string &type) {
     metadata::FeatureMetadata f;
     f.joinIndex = joinIndex;
     f.featureGroupId = fgId;
@@ -122,7 +125,7 @@ metadata::FeatureViewMetadata makeMetadata(
     f.type = type;
     return f;
   };
-  for (const auto &pk : pkColumns) {
+  for (const std::string &pk : pkColumns) {
     ServingKey sk;
     sk.featureName = pk;
     root.primaryKeyMap.push_back(sk);
@@ -141,9 +144,9 @@ std::string str(const std::vector<char> &v) {
 }  // namespace
 
 TEST(FeatureStoreScanFastPath, SinglePkEquality) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(cmp("id", NdbScanFilter::COND_EQ, 42),
+  ASSERT_TRUE(TryRewriteToPkReads(cmp("id", NdbScanFilter::COND_EQ, 42),
                                      md, branches));
   ASSERT_EQ(branches.size(), 1u);
   EXPECT_EQ(branches[0].residual, nullptr);
@@ -153,31 +156,31 @@ TEST(FeatureStoreScanFastPath, SinglePkEquality) {
 }
 
 TEST(FeatureStoreScanFastPath, NonEqualityOnPkIsNotFastPath) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   std::vector<PkBranch> branches;
-  EXPECT_FALSE(TryRewriteToPkBranches(cmp("id", NdbScanFilter::COND_GE, 42),
+  EXPECT_FALSE(TryRewriteToPkReads(cmp("id", NdbScanFilter::COND_GE, 42),
                                       md, branches));
-  EXPECT_FALSE(TryRewriteToPkBranches(isNotNull("id"), md, branches));
-  EXPECT_FALSE(TryRewriteToPkBranches(cmp("data", NdbScanFilter::COND_EQ, 1),
+  EXPECT_FALSE(TryRewriteToPkReads(isNotNull("id"), md, branches));
+  EXPECT_FALSE(TryRewriteToPkReads(cmp("data", NdbScanFilter::COND_EQ, 1),
                                       md, branches));
-  EXPECT_FALSE(TryRewriteToPkBranches(nullptr, md, branches));
+  EXPECT_FALSE(TryRewriteToPkReads(nullptr, md, branches));
 }
 
 TEST(FeatureStoreScanFastPath, NullValueIsNotFastPath) {
-  auto md = makeMetadata({"id"});
-  auto node = cmp("id", NdbScanFilter::COND_EQ, 0);
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> node = cmp("id", NdbScanFilter::COND_EQ, 0);
   node->value.kind = Node::ParsedValue::Kind::NULLVAL;
   std::vector<PkBranch> branches;
-  EXPECT_FALSE(TryRewriteToPkBranches(node, md, branches));
+  EXPECT_FALSE(TryRewriteToPkReads(node, md, branches));
 }
 
 TEST(FeatureStoreScanFastPath, AndWithResidual) {
-  auto md = makeMetadata({"id"});
-  auto root = logic(NdbScanFilter::AND,
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::AND,
                     cmp("data", NdbScanFilter::COND_GE, 5),
                     cmp("id", NdbScanFilter::COND_EQ, 7));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
   ASSERT_EQ(branches.size(), 1u);
   EXPECT_EQ(str(branches[0].entries["id"]), "7");
   ASSERT_NE(branches[0].residual, nullptr);
@@ -186,9 +189,9 @@ TEST(FeatureStoreScanFastPath, AndWithResidual) {
 }
 
 TEST(FeatureStoreScanFastPath, NestedAndIsFlattened) {
-  auto md = makeMetadata({"id1", "id2"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id1", "id2"});
   /* AND(AND(id1 = 1, id2 = "x"), AND(data >= 5, data IS NOT NULL)) */
-  auto root = logic(NdbScanFilter::AND,
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::AND,
                     logic(NdbScanFilter::AND,
                           cmp("id1", NdbScanFilter::COND_EQ, 1),
                           cmpStr("id2", "x")),
@@ -196,7 +199,7 @@ TEST(FeatureStoreScanFastPath, NestedAndIsFlattened) {
                           cmp("data", NdbScanFilter::COND_GE, 5),
                           isNotNull("data")));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
   ASSERT_EQ(branches.size(), 1u);
   EXPECT_EQ(str(branches[0].entries["id1"]), "1");
   EXPECT_EQ(str(branches[0].entries["id2"]), "\"x\"");
@@ -207,23 +210,23 @@ TEST(FeatureStoreScanFastPath, NestedAndIsFlattened) {
 }
 
 TEST(FeatureStoreScanFastPath, PartialCompositeKeyIsNotFastPath) {
-  auto md = makeMetadata({"id1", "id2"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id1", "id2"});
   std::vector<PkBranch> branches;
-  EXPECT_FALSE(TryRewriteToPkBranches(cmp("id1", NdbScanFilter::COND_EQ, 1),
+  EXPECT_FALSE(TryRewriteToPkReads(cmp("id1", NdbScanFilter::COND_EQ, 1),
                                       md, branches));
-  auto root = logic(NdbScanFilter::AND,
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::AND,
                     cmp("id1", NdbScanFilter::COND_EQ, 1),
                     cmp("data", NdbScanFilter::COND_EQ, 1));
-  EXPECT_FALSE(TryRewriteToPkBranches(root, md, branches));
+  EXPECT_FALSE(TryRewriteToPkReads(root, md, branches));
 }
 
 TEST(FeatureStoreScanFastPath, RepeatedPkEqualityBecomesResidual) {
-  auto md = makeMetadata({"id"});
-  auto root = logic(NdbScanFilter::AND,
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::AND,
                     cmp("id", NdbScanFilter::COND_EQ, 1),
                     cmp("id", NdbScanFilter::COND_EQ, 2));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
   ASSERT_EQ(branches.size(), 1u);
   EXPECT_EQ(str(branches[0].entries["id"]), "1");
   ASSERT_NE(branches[0].residual, nullptr);
@@ -231,8 +234,8 @@ TEST(FeatureStoreScanFastPath, RepeatedPkEqualityBecomesResidual) {
 }
 
 TEST(FeatureStoreScanFastPath, NestedOrGivesOneBranchPerLeaf) {
-  auto md = makeMetadata({"id"});
-  auto root = logic(NdbScanFilter::OR,
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::OR,
                     cmp("id", NdbScanFilter::COND_EQ, 1),
                     logic(NdbScanFilter::OR,
                           logic(NdbScanFilter::AND,
@@ -240,7 +243,7 @@ TEST(FeatureStoreScanFastPath, NestedOrGivesOneBranchPerLeaf) {
                                 cmp("data", NdbScanFilter::COND_LT, 9)),
                           cmp("id", NdbScanFilter::COND_EQ, 3)));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
   ASSERT_EQ(branches.size(), 3u);
   EXPECT_EQ(str(branches[0].entries["id"]), "1");
   EXPECT_EQ(str(branches[1].entries["id"]), "2");
@@ -251,22 +254,22 @@ TEST(FeatureStoreScanFastPath, NestedOrGivesOneBranchPerLeaf) {
 }
 
 TEST(FeatureStoreScanFastPath, OrWithNonKeyLeafIsNotFastPath) {
-  auto md = makeMetadata({"id"});
-  auto root = logic(NdbScanFilter::OR,
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::OR,
                     cmp("id", NdbScanFilter::COND_EQ, 1),
                     cmp("data", NdbScanFilter::COND_GE, 18));
   std::vector<PkBranch> branches;
-  EXPECT_FALSE(TryRewriteToPkBranches(root, md, branches));
+  EXPECT_FALSE(TryRewriteToPkReads(root, md, branches));
   EXPECT_TRUE(branches.empty());
 }
 
 TEST(FeatureStoreScanFastPath, NandIsNotFastPath) {
-  auto md = makeMetadata({"id"});
-  auto root = logic(NdbScanFilter::NAND,
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::NAND,
                     cmp("id", NdbScanFilter::COND_EQ, 1),
                     cmp("data", NdbScanFilter::COND_GE, 18));
   std::vector<PkBranch> branches;
-  EXPECT_FALSE(TryRewriteToPkBranches(root, md, branches));
+  EXPECT_FALSE(TryRewriteToPkReads(root, md, branches));
 }
 
 TEST(FeatureStoreScanFastPath, ValueToJson) {
@@ -283,25 +286,25 @@ TEST(FeatureStoreScanFastPath, ValueToJson) {
 }
 
 TEST(FeatureStoreScanDedup, ExactDuplicatesCollapseKeepingOrder) {
-  auto md = makeMetadata({"id"});
-  auto root = logic(NdbScanFilter::OR,
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::OR,
                     cmp("id", NdbScanFilter::COND_EQ, 1),
                     logic(NdbScanFilter::OR,
                           cmp("id", NdbScanFilter::COND_EQ, 2),
                           cmp("id", NdbScanFilter::COND_EQ, 1)));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
   ASSERT_EQ(branches.size(), 3u);
-  ASSERT_TRUE(DedupPkBranches(branches));
+  ASSERT_TRUE(DedupPkReads(branches));
   ASSERT_EQ(branches.size(), 2u);
   EXPECT_EQ(str(branches[0].entries["id"]), "1");
   EXPECT_EQ(str(branches[1].entries["id"]), "2");
 }
 
 TEST(FeatureStoreScanDedup, SpellingsOfOneKeyCollapse) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   /* 1, "1" and 1.0 select the same row: one branch, first spelling kept */
-  auto root = logic(NdbScanFilter::OR,
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::OR,
                     cmp("id", NdbScanFilter::COND_EQ, 1),
                     logic(NdbScanFilter::OR,
                           cmpStr("id", "1"),
@@ -309,19 +312,19 @@ TEST(FeatureStoreScanDedup, SpellingsOfOneKeyCollapse) {
                                 cmpDbl("id", 1.0),
                                 cmpDbl("id", 1.5))));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
   ASSERT_EQ(branches.size(), 4u);
-  ASSERT_TRUE(DedupPkBranches(branches));
+  ASSERT_TRUE(DedupPkReads(branches));
   ASSERT_EQ(branches.size(), 2u);
   EXPECT_EQ(str(branches[0].entries["id"]), "1");
   EXPECT_EQ(str(branches[1].entries["id"]), "1.5");
 }
 
 TEST(FeatureStoreScanDedup, SameKeyWithResidualIsNotFastPath) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   /* (id = 1 AND data > 5) OR (id = 1 AND data < 3): the row qualifies if
    * either residual holds, which a single pk read cannot express */
-  auto root = logic(NdbScanFilter::OR,
+  std::shared_ptr<FilterNode> root = logic(NdbScanFilter::OR,
                     logic(NdbScanFilter::AND,
                           cmp("id", NdbScanFilter::COND_EQ, 1),
                           cmp("data", NdbScanFilter::COND_GT, 5)),
@@ -329,8 +332,8 @@ TEST(FeatureStoreScanDedup, SameKeyWithResidualIsNotFastPath) {
                           cmp("id", NdbScanFilter::COND_EQ, 1),
                           cmp("data", NdbScanFilter::COND_LT, 3)));
   std::vector<PkBranch> branches;
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
-  EXPECT_FALSE(DedupPkBranches(branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
+  EXPECT_FALSE(DedupPkReads(branches));
 
   /* bare key OR (same key AND residual): the residual would be dropped */
   root = logic(NdbScanFilter::OR,
@@ -338,8 +341,8 @@ TEST(FeatureStoreScanDedup, SameKeyWithResidualIsNotFastPath) {
                logic(NdbScanFilter::AND,
                      cmp("id", NdbScanFilter::COND_EQ, 1),
                      cmp("data", NdbScanFilter::COND_LT, 3)));
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
-  EXPECT_FALSE(DedupPkBranches(branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
+  EXPECT_FALSE(DedupPkReads(branches));
 
   /* different keys with residuals are fine */
   root = logic(NdbScanFilter::OR,
@@ -349,13 +352,13 @@ TEST(FeatureStoreScanDedup, SameKeyWithResidualIsNotFastPath) {
                logic(NdbScanFilter::AND,
                      cmp("id", NdbScanFilter::COND_EQ, 2),
                      cmp("data", NdbScanFilter::COND_LT, 3)));
-  ASSERT_TRUE(TryRewriteToPkBranches(root, md, branches));
-  EXPECT_TRUE(DedupPkBranches(branches));
+  ASSERT_TRUE(TryRewriteToPkReads(root, md, branches));
+  EXPECT_TRUE(DedupPkReads(branches));
   EXPECT_EQ(branches.size(), 2u);
 }
 
 TEST(FeatureStoreScanResolve, PrefixedAndBareNamesResolveToPhysicalColumn) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   ScanReadParams scan("", "");
   scan.filterRoot = logic(NdbScanFilter::AND,
                           cmp("root_data", NdbScanFilter::COND_GE, 1),
@@ -371,10 +374,10 @@ TEST(FeatureStoreScanResolve, PrefixedAndBareNamesResolveToPhysicalColumn) {
 }
 
 TEST(FeatureStoreScanResolve, JoinedAndUnknownColumnsAreRejected) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   ScanReadParams scan("", "");
   scan.filterRoot = cmp("fg2_data", NdbScanFilter::COND_EQ, 1);
-  auto err = ResolveScanColumns(scan, md);
+  std::shared_ptr<RestErrorCode> err = ResolveScanColumns(scan, md);
   ASSERT_NE(err, nullptr);
   EXPECT_EQ(err->GetCode(), FEATURE_NOT_IN_ROOT_FG->GetCode());
   EXPECT_NE(err->GetMessage().find("joined feature group"), std::string::npos);
@@ -449,10 +452,10 @@ TEST(FeatureStoreScanTableScan, PolicySpellingIsCaseInsensitive) {
 }
 
 TEST(FeatureStoreScanResolve, ComplexColumnsAreRejected) {
-  auto md = makeMetadata({"id"});
+  metadata::FeatureViewMetadata md = makeMetadata({"id"});
   ScanReadParams scan("", "");
   scan.filterRoot = isNotNull("tags");
-  auto err = ResolveScanColumns(scan, md);
+  std::shared_ptr<RestErrorCode> err = ResolveScanColumns(scan, md);
   ASSERT_NE(err, nullptr);
   EXPECT_EQ(err->GetCode(), FILTER_ON_COMPLEX_FEATURE->GetCode());
 }

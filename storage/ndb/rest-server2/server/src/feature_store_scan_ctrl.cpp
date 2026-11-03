@@ -51,8 +51,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -135,7 +137,9 @@ static std::shared_ptr<RestErrorCode>
 resolveColumn(std::string &column, const metadata::FeatureViewMetadata &md) {
   const metadata::FeatureGroupFeatures &root =
     md.featureGroupFeatures[md.rootFgIndex];
-  auto features = md.prefixFeaturesLookup.find(column);
+  std::unordered_map<std::string,
+                     std::vector<metadata::FeatureMetadata>>::const_iterator
+    features = md.prefixFeaturesLookup.find(column);
   if (features != md.prefixFeaturesLookup.end()) {
     for (const metadata::FeatureMetadata &f : features->second) {
       if (f.joinIndex == root.joinIndex &&
@@ -172,8 +176,8 @@ resolveFilterColumns(const std::shared_ptr<FilterNode> &node,
   if (node->type != FilterNode::Type::LOGIC) {
     return resolveColumn(node->column, md);
   }
-  for (const auto &child : node->children) {
-    auto err = resolveFilterColumns(child, md);
+  for (const std::shared_ptr<FilterNode> &child : node->children) {
+    std::shared_ptr<RestErrorCode> err = resolveFilterColumns(child, md);
     if (err != nullptr) {
       return err;
     }
@@ -184,7 +188,7 @@ resolveFilterColumns(const std::shared_ptr<FilterNode> &node,
 std::shared_ptr<RestErrorCode>
 ResolveScanColumns(ScanReadParams &scan,
                    const metadata::FeatureViewMetadata &md) {
-  auto err = resolveFilterColumns(scan.filterRoot, md);
+  std::shared_ptr<RestErrorCode> err = resolveFilterColumns(scan.filterRoot, md);
   if (err != nullptr) {
     return err;
   }
@@ -249,7 +253,7 @@ static void flattenGroup(const std::shared_ptr<FilterNode> &node,
     return;
   }
   if (node->type == FilterNode::Type::LOGIC && node->group == group) {
-    for (const auto &child : node->children) {
+    for (const std::shared_ptr<FilterNode> &child : node->children) {
       flattenGroup(child, group, leaves);
     }
   } else {
@@ -274,7 +278,7 @@ static bool collectBranch(const std::shared_ptr<FilterNode> &node,
     std::vector<std::shared_ptr<FilterNode>> leaves;
     flattenGroup(node, NdbScanFilter::AND, leaves);
     std::vector<std::shared_ptr<FilterNode>> residualChildren;
-    for (const auto &child : leaves) {
+    for (const std::shared_ptr<FilterNode> &child : leaves) {
       if (isPkEquality(*child, pkColumns, column) &&
           pkValues.find(column) == pkValues.end()) {
         pkValues[column] = child->value;
@@ -290,7 +294,7 @@ static bool collectBranch(const std::shared_ptr<FilterNode> &node,
     } else if (residualChildren.size() == 1) {
       branch.residual = residualChildren[0];
     } else {
-      auto residual = std::make_shared<FilterNode>();
+      std::shared_ptr<FilterNode> residual = std::make_shared<FilterNode>();
       residual->type = FilterNode::Type::LOGIC;
       residual->group = NdbScanFilter::AND;
       residual->children = residualChildren;
@@ -303,7 +307,7 @@ static bool collectBranch(const std::shared_ptr<FilterNode> &node,
   return true;
 }
 
-bool TryRewriteToPkBranches(const std::shared_ptr<FilterNode> &root,
+bool TryRewriteToPkReads(const std::shared_ptr<FilterNode> &root,
                             const metadata::FeatureViewMetadata &md,
                             std::vector<PkBranch> &out) {
   out.clear();
@@ -322,7 +326,7 @@ bool TryRewriteToPkBranches(const std::shared_ptr<FilterNode> &root,
     if (leaves.empty()) {
       return false;
     }
-    for (const auto &child : leaves) {
+    for (const std::shared_ptr<FilterNode> &child : leaves) {
       PkBranch branch;
       if (!collectBranch(child, md, pkColumns, branch)) {
         out.clear();
@@ -340,12 +344,12 @@ bool TryRewriteToPkBranches(const std::shared_ptr<FilterNode> &root,
   return true;
 }
 
-bool DedupPkBranches(std::vector<PkBranch> &branches) {
+bool DedupPkReads(std::vector<PkBranch> &branches) {
   std::unordered_map<std::string, size_t> seen;
   std::vector<PkBranch> unique;
   unique.reserve(branches.size());
-  for (auto &branch : branches) {
-    auto it = seen.find(branch.dedupKey);
+  for (PkBranch &branch : branches) {
+    std::unordered_map<std::string, size_t>::iterator it = seen.find(branch.dedupKey);
     if (it == seen.end()) {
       seen[branch.dedupKey] = unique.size();
       unique.push_back(std::move(branch));
@@ -449,7 +453,8 @@ class RootRowSink : public ScanRowSink {
         if (plan.decoder != nullptr) {
           std::vector<Uint8> raw;
           if (ScanColumnRawBytes(table_rec, row, column, raw)) {
-            auto decoded = DeserialiseComplexFeature(raw, *plan.decoder);
+            std::tuple<std::shared_ptr<RestErrorCode>, std::vector<char>>
+              decoded = DeserialiseComplexFeature(raw, *plan.decoder);
             if (std::get<0>(decoded) != nullptr) {
               out.decodeError = true;
             } else {
@@ -499,7 +504,7 @@ class PkBatchRun {
                 size_t threadIndex,
                 const std::string &rl_identity) {
     require(readParams.size() == m_noOps);
-    for (auto &readParam : readParams) {
+    for (PKReadParams &readParam : readParams) {
       RS_Status status = readParam.validate();
       if (unlikely(status.http_code != SUCCESS)) {
         return status;
@@ -530,7 +535,7 @@ class PkBatchRun {
       m_reqChain.advance(consumed);
     }
     bool anyFilter = false;
-    for (const auto &f : opFilters) {
+    for (const std::shared_ptr<FilterNode> &f : opFilters) {
       if (f != nullptr) {
         anyFilter = true;
         break;
@@ -572,7 +577,7 @@ static RS_Status groupBySequence(
   size_t numEntries,
   std::vector<std::vector<PKReadResponseWithCodeJSON>> &grouped) {
   grouped.assign(numEntries, {});
-  for (auto &response : batchResponse.getResult()) {
+  for (PKReadResponseWithCodeJSON &response : batchResponse.getResult()) {
     std::string_view operationId = response.getBody().getOperationID();
     if (operationId.empty()) {
       continue;
@@ -619,7 +624,8 @@ static void sendRestError(const drogon::HttpResponsePtr &resp,
 static void sendDalError(const drogon::HttpResponsePtr &resp,
                          std::function<void(const drogon::HttpResponsePtr &)> &callback,
                          const RS_Status &status) {
-  auto fsError = TranslateRonDbError(status.http_code, status.message);
+  std::shared_ptr<RestErrorCode> fsError =
+    TranslateRonDbError(status.http_code, status.message);
   if (fsError == nullptr) {
     fsError = READ_FROM_DB_FAIL->NewMessage(status.message);
   }
@@ -636,7 +642,7 @@ static std::string buildResponseBody(
   for (size_t r = 0; r < rows.size(); r++) {
     if (r > 0) res += ",";
     res += "[";
-    const auto &features = rows[r].features;
+    const std::vector<std::vector<char>> &features = rows[r].features;
     for (size_t i = 0; i < features.size(); i++) {
       if (i > 0) res += ",";
       if (features[i].empty()) {
@@ -682,7 +688,7 @@ static std::string buildResponseBody(
     res += ",\"detailedStatus\":[";
     for (size_t r = 0; r < rows.size(); r++) {
       if (r > 0) res += ",";
-      const auto &detailed = rows[r].detailedStatus;
+      const std::vector<fsds::DetailedStatus> &detailed = rows[r].detailedStatus;
       if (detailed.empty()) {
         res += "null";
         continue;
@@ -711,10 +717,10 @@ static std::string buildResponseBody(
  * feature group for a chunk of root rows, then assembly of the vectors.
  * Root values come from the scan; joined values from the batch.
  */
-static RS_Status assembleScanChunk(
+static RS_Status assembleScanBatch(
   std::vector<RootRow> &rootRows,
-  size_t begin,
-  size_t end,
+  size_t beginIndex,
+  size_t endIndex,
   const metadata::FeatureViewMetadata &md,
   const std::string &rootFgKey,
   bool includeDetailedStatus,
@@ -723,10 +729,11 @@ static RS_Status assembleScanChunk(
   bool &use_compressed,
   Uint32 &keyRequests,
   std::vector<RowResult> &out) {
-  size_t numEntries = end - begin;
+  size_t numEntries = endIndex - beginIndex;
   std::vector<PKReadParams> readParams;
   for (size_t i = 0; i < numEntries; i++) {
-    for (auto &param : GetBatchPkReadParams(md, rootRows[begin + i].entries)) {
+    for (PKReadParams &param :
+         GetBatchPkReadParams(md, rootRows[beginIndex + i].entries)) {
       if (param.operationId == rootFgKey) {
         continue;  // root values already come from the scan
       }
@@ -753,8 +760,13 @@ static RS_Status assembleScanChunk(
   }
   for (size_t i = 0; i < numEntries; i++) {
     RootRow &rootRow = rootRows[begin + i];
-    auto result = GetFeatureValues(grouped[i], rootRow.entries, md,
-                                   includeDetailedStatus, use_compressed);
+    std::tuple<
+      std::vector<std::vector<char>>,
+      fsds::FeatureStatus,
+      std::vector<fsds::DetailedStatus>,
+      std::shared_ptr<RestErrorCode>
+    > result = GetFeatureValues(grouped[i], rootRow.entries, md,
+                                includeDetailedStatus, use_compressed);
     RowResult row;
     row.features = std::move(std::get<0>(result));
     row.status = std::get<1>(result);
@@ -762,7 +774,7 @@ static RS_Status assembleScanChunk(
     if (row.features.size() != static_cast<size_t>(md.numOfFeatures)) {
       row.features.resize(md.numOfFeatures);
     }
-    for (auto &value : rootRow.values) {
+    for (std::pair<int, std::vector<char>> &value : rootRow.values) {
       if (value.first >= 0 &&
           static_cast<size_t>(value.first) < row.features.size()) {
         row.features[value.first] = std::move(value.second);
@@ -795,10 +807,10 @@ static RS_Status assembleScanChunk(
  * one batch, the residual predicate attached to the root read. Branches
  * whose root row is absent or rejected produce no output row.
  */
-static RS_Status assemblePkChunk(
+static RS_Status assemblePkBatch(
   std::vector<PkBranch> &branches,
-  size_t begin,
-  size_t end,
+  size_t beginIndex,
+  size_t endIndex,
   const metadata::FeatureViewMetadata &md,
   const std::string &rootFgKey,
   bool includeDetailedStatus,
@@ -808,12 +820,12 @@ static RS_Status assemblePkChunk(
   bool &use_compressed,
   Uint32 &keyRequests,
   std::vector<RowResult> &out) {
-  size_t numEntries = end - begin;
+  size_t numEntries = endIndex - beginIndex;
   std::vector<PKReadParams> readParams;
   std::vector<std::shared_ptr<FilterNode>> opFilters;
   for (size_t i = 0; i < numEntries; i++) {
-    PkBranch &branch = branches[begin + i];
-    for (auto &param : GetBatchPkReadParams(md, branch.entries)) {
+    PkBranch &branch = branches[beginIndex + i];
+    for (PKReadParams &param : GetBatchPkReadParams(md, branch.entries)) {
       opFilters.push_back(param.operationId == rootFgKey
                           ? branch.residual : nullptr);
       param.operationId =
@@ -838,7 +850,7 @@ static RS_Status assemblePkChunk(
   }
   for (size_t i = 0; i < numEntries && out.size() < limit; i++) {
     bool rootAbsent = true;
-    for (const auto &response : grouped[i]) {
+    for (const PKReadResponseWithCodeJSON &response : grouped[i]) {
       if (response.getBody().getOperationIdString() == rootFgKey) {
         rootAbsent =
           (response.getBody().getStatusCode() == drogon::k404NotFound);
@@ -848,8 +860,11 @@ static RS_Status assemblePkChunk(
     if (rootAbsent) {
       continue;
     }
-    auto result = GetFeatureValues(grouped[i], branches[begin + i].entries,
-                                   md, includeDetailedStatus, use_compressed);
+    std::tuple<std::vector<std::vector<char>>, fsds::FeatureStatus,
+               std::vector<fsds::DetailedStatus>,
+               std::shared_ptr<RestErrorCode>>
+      result = GetFeatureValues(grouped[i], branches[begin + i].entries,
+                                md, includeDetailedStatus, use_compressed);
     RowResult row;
     row.features = std::move(std::get<0>(result));
     row.status = std::get<1>(result);
@@ -909,7 +924,9 @@ void FeatureStoreScanCtrl::featureStoreScan(
 
   // 2. Metadata
   char *metadata_cache_entry = nullptr;
-  auto [metadata, err] =
+  metadata::FeatureViewMetadata *metadata = nullptr;
+  std::shared_ptr<RestErrorCode> err;
+  std::tie(metadata, err) =
     metadata::FeatureViewMetadataCache_Get(
       reqStruct.featureStoreName,
       reqStruct.featureViewName,
@@ -976,7 +993,7 @@ void FeatureStoreScanCtrl::featureStoreScan(
   // 5. Authenticate
   std::string rl_identity;
   if (likely(globalConfigs.security.apiKey.useHopsworksAPIKeys)) {
-    auto api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
+    const std::string &api_key = req->getHeader(API_KEY_NAME_LOWER_CASE);
     status = authenticate(api_key, *metadata);
     if (unlikely(status.http_code != SUCCESS)) {
       sendError(resp, callback,
@@ -997,10 +1014,10 @@ void FeatureStoreScanCtrl::featureStoreScan(
   // 6. Primary-key fast path
   std::vector<PkBranch> branches;
   bool fastPath = (reqStruct.scan.index == std::nullopt) &&
-    feature_store_scan::TryRewriteToPkBranches(reqStruct.scan.filterRoot,
+    feature_store_scan::TryRewriteToPkReads(reqStruct.scan.filterRoot,
                                                *metadata, branches) &&
-    feature_store_scan::DedupPkBranches(branches);
-  if (fastPath) {
+    feature_store_scan::DedupPkReads(branches);
+  if (unlikely(fastPath)) {
     metricsUpdater.set_fast_path(true);
     if (unlikely(branches.size() > maxLimit)) {
       sendRestError(resp, callback, LIMIT_EXCEEDED->NewMessage(
@@ -1012,7 +1029,7 @@ void FeatureStoreScanCtrl::featureStoreScan(
     for (size_t begin = 0; begin < branches.size() && rows.size() < limit;
          begin += chunkSize) {
       size_t end = std::min(branches.size(), begin + chunkSize);
-      status = assemblePkChunk(branches, begin, end, *metadata, rootFgKey,
+      status = assemblePkBatch(branches, begin, end, *metadata, rootFgKey,
                                options.includeDetailedStatus,
                                currentThreadIndex, rl_identity, limit,
                                use_compressed, keyRequests, rows);
@@ -1049,8 +1066,10 @@ void FeatureStoreScanCtrl::featureStoreScan(
     /* Read columns: every root feature plus every root primary-key column */
     std::vector<ColumnPlan> plan;
     std::unordered_map<std::string, size_t> planIndex;
-    auto planFor = [&](const std::string &column) -> ColumnPlan& {
-      auto it = planIndex.find(column);
+    std::function<ColumnPlan &(const std::string &)> planFor =
+      [&](const std::string &column) -> ColumnPlan& {
+      std::unordered_map<std::string, size_t>::iterator it =
+        planIndex.find(column);
       if (it != planIndex.end()) {
         return plan[it->second];
       }
@@ -1065,11 +1084,13 @@ void FeatureStoreScanCtrl::featureStoreScan(
     for (const metadata::FeatureMetadata &feature : rootFg.features) {
       ColumnPlan &cp = planFor(feature.name);
       std::string featureIndexKey = metadata::GetFeatureIndexKeyByFeature(feature);
-      auto idx = metadata->featureIndexLookup.find(featureIndexKey);
+      std::unordered_map<std::string, int>::const_iterator idx =
+        metadata->featureIndexLookup.find(featureIndexKey);
       if (idx != metadata->featureIndexLookup.end()) {
         cp.featureIndex = idx->second;
       }
-      auto decoder = metadata->complexFeatures.find(featureIndexKey);
+      std::unordered_map<std::string, metadata::AvroDecoder>::const_iterator
+        decoder = metadata->complexFeatures.find(featureIndexKey);
       if (decoder != metadata->complexFeatures.end()) {
         cp.decoder = &decoder->second;
       }
@@ -1125,7 +1146,7 @@ void FeatureStoreScanCtrl::featureStoreScan(
     std::vector<RootRow> &rootRows = sink.rows();
     for (size_t begin = 0; begin < rootRows.size(); begin += chunkSize) {
       size_t end = std::min(rootRows.size(), begin + chunkSize);
-      status = assembleScanChunk(rootRows, begin, end, *metadata, rootFgKey,
+      status = assembleScanBatch(rootRows, begin, end, *metadata, rootFgKey,
                                  options.includeDetailedStatus,
                                  currentThreadIndex, rl_identity,
                                  use_compressed, keyRequests, rows);
@@ -1139,7 +1160,7 @@ void FeatureStoreScanCtrl::featureStoreScan(
   /* Spine feature groups are external: as in /batch_feature_store every
    * row of a view with a spine FG reports MISSING unless in error. */
   if (metadata->hasSpine) {
-    for (auto &row : rows) {
+    for (RowResult &row : rows) {
       if (row.status != fsds::FeatureStatus::Error) {
         row.status = fsds::FeatureStatus::Missing;
       }

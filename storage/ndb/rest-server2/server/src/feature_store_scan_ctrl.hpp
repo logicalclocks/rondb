@@ -87,7 +87,7 @@ ResolveScanColumns(ScanReadParams &scan,
  * primary-key reads instead of a scan, and if so produce its branches.
  */
 bool
-TryRewriteToPkBranches(const std::shared_ptr<FilterNode> &root,
+TryRewriteToPkReads(const std::shared_ptr<FilterNode> &root,
                        const metadata::FeatureViewMetadata &md,
                        std::vector<PkBranch> &out);
 
@@ -97,7 +97,7 @@ TryRewriteToPkBranches(const std::shared_ptr<FilterNode> &root,
  * the caller then uses the scan path.
  */
 bool
-DedupPkBranches(std::vector<PkBranch> &branches);
+DedupPkReads(std::vector<PkBranch> &branches);
 
 std::vector<char>
 FilterValueToJson(const Node::ParsedValue &value);
