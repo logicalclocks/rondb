@@ -5559,9 +5559,20 @@ void Ndbcntr::execSTOP_PERM_CONF(Signal *signal) {
   if (c_stopRec.stopReq.senderRef == 0) {
     jam();
     /**
-     * The stop was abandoned while the request was in flight. The
-     * permission has already been handed back with STOP_PERM_REL.
+     * The stop was abandoned while the request was in flight. If the
+     * request was a retry from execSTOP_PERM_REF() waiting in the delay
+     * queue, it reached DIH after the STOP_PERM_REL, so the permission
+     * granted now has not been handed back. Release it again; a second
+     * release of a permission already given back changes nothing.
      */
+    if (use_early_stop_permission()) {
+      jam();
+      StopPermRel *rel = (StopPermRel *)&signal->theData[0];
+      rel->senderRef = reference();
+      rel->senderData = 12;
+      sendSignal(DBDIH_REF, GSN_STOP_PERM_REL, signal,
+                 StopPermRel::SignalLength, JBB);
+    }
     return;
   }
 
