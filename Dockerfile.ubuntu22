@@ -159,6 +159,10 @@ ENV IS_PUBLIC_RELEASE_ARG=${IS_PUBLIC_RELEASE:+-p}
 ARG IGNORE_TEST_FAILURES
 ENV IGNORE_TEST_FAILURES_ARG=${IGNORE_TEST_FAILURES:+-i}
 
+# MTR workers (mtr --parallel) for the test runs of a release build; unset
+# means build_all.sh's default of BUILD_THREADS / 8, at least 1.
+ARG MTR_PARALLEL
+
 RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
     --mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin \
     --mount=type=cache,target=/root/.cache/go-build,id=ubuntu22-rondb2210-golang \
@@ -167,6 +171,7 @@ RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
     -b rondb-bin \
     -o rondb-tarball \
     -j $THREADS_ARG \
+    ${MTR_PARALLEL:+-m $MTR_PARALLEL} \
     $DEPLOY_ARG $RELEASE_ARG \
     $RELEASE_FINAL_CLUSTERJ_ARG \
     $IS_PUBLIC_RELEASE_ARG \
