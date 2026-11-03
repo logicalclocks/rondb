@@ -13,10 +13,10 @@
 # test of its packages.
 #
 # The groups (%groups below):
-#   pkread_batchpkread, index_scan,
-#   feature_store_batchfeaturestore_sharing, ronsql
+#   pkread_batchpkread_batchwrite_batchdelete_batchcomprehensive,
+#   index_scan, feature_store_batchfeaturestore_sharing, ronsql
 #                the packages of that name;
-#   ping_health_stat_smoke
+#   ping_health_stat_jsonerrors_smoke
 #                the remaining integration packages, the unit packages, and
 #                the plain-HTTP smoke pass (see %smoke_test).
 #
@@ -43,7 +43,7 @@
 # name (or a space-separated list) and run ONE of the group tests, e.g.:
 #
 #   RDRS_GO_PACKAGE=hopsworks.ai/rdrs2/internal/integrationtests/pkread \
-#     ./mtr rdrs2-golang.pkread_batchpkread
+#     ./mtr rdrs2-golang.pkread_batchpkread_batchwrite_batchdelete_batchcomprehensive
 #
 # The override replaces the group's packages. The package names are exactly
 # what `go list ./...` prints from the test_go module directory
@@ -98,8 +98,9 @@ my $it = 'hopsworks.ai/rdrs2/internal/integrationtests';
 
 # group name => its packages, and whether the plain-HTTP smoke pass runs.
 my %groups = (
-    'pkread_batchpkread' => {
-        packages => [ map { "$it/$_" } qw(pkread batchpkread) ],
+    'pkread_batchpkread_batchwrite_batchdelete_batchcomprehensive' => {
+        packages => [ map { "$it/$_" } qw(pkread batchpkread batchwrite
+                                           batchdelete batchcomprehensive) ],
         smoke    => 0,
     },
     'index_scan' => {
@@ -119,9 +120,9 @@ my %groups = (
     # buffer_pool, memory_regression and ping_starvation tests);
     # spillfixture and testclient are helper packages without tests. All
     # are listed so the coverage check below can stay strict.
-    'ping_health_stat_smoke' => {
-        packages => [ map { "$it/$_" } qw(ping health stat bufferpool
-                                           starvation spillfixture
+    'ping_health_stat_jsonerrors_smoke' => {
+        packages => [ map { "$it/$_" } qw(ping health stat jsonerrors
+                                           bufferpool starvation spillfixture
                                            testclient) ],
         smoke    => 1,
     },
@@ -151,7 +152,7 @@ my %exists = map { $_ => 1 } @all_packages;
 # an integration package nobody claims is an error, see the header.
 foreach my $pkg (@all_packages) {
     if ($pkg !~ m{^\Q$it\E/}) {
-        push @{ $groups{'ping_health_stat_smoke'}{packages} }, $pkg;
+        push @{ $groups{'ping_health_stat_jsonerrors_smoke'}{packages} }, $pkg;
     } elsif (!exists $claimed{$pkg}) {
         die "Go package $pkg belongs to no group: add it to \%groups in " .
             "suite/rdrs2-golang/include/run_gotest.inc\n";
