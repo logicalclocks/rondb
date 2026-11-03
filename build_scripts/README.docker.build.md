@@ -18,8 +18,11 @@ BUILDKIT_ENABLED=1 docker build . \
     --target get-package-all \
     --output <local-path-to-place-tarball> \
     --build-arg BUILD_THREADS=$(nproc) \
+    --build-arg MTR_PARALLEL=3 \
     --build-arg RELEASE_TARBALL=1
 ```
+
+`MTR_PARALLEL` is the number of MTR workers (`mtr --parallel`) for the test runs of a release build, each running its own cluster; omit it for the default of `BUILD_THREADS / 8`, at least 1.
 
 This will create the RonDB tarball as part of the Docker build process. It will also use Docker's mounted build caches to save the intermediate binaries. See the statements such as `--mount=type=cache,target=rondb-bin,id=ubuntu22-rondb2210-bin` in the Dockerfile. These will largely accelerate consecutive builds. To clear the cache, run `docker builder prune`. You can also add the flag `--no-cache` to the Docker build command to create an absolutely clean build.
 

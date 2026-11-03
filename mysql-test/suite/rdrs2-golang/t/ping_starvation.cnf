@@ -1,4 +1,4 @@
-# Config for rdrs2-golang_ping_starvation: same cluster and rdrs servers as
+# Config for ping_starvation: same cluster and rdrs servers as
 # the rest of the suite, plus:
 # - pinned data-node ids, exported to the test so it can restart ONE node,
 # - the no-auth rdrs.3.1 runs with a deliberately tiny Drogon thread pool and
