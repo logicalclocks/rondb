@@ -1,7 +1,0 @@
-!include suite/ndb_push_agg_dist/my.cnf
-
-[cluster_config.1]
-# Smaller API scan batches than the default, so that the pushed
-# aggregation scans need many batches and DBSPJ continues them itself
-# (handleJoinAggNextBatch).
-BatchSize=64

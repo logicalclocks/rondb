@@ -76,7 +76,6 @@ ndb.ndb_transaction_max_size @solaris: Bug#35392266 ndb_transaction_max_size fai
 
 # Pushed join aggregation shapes that still give wrong results, split out
 # of ndb_push_agg_dist.ndb_spj_shapes_agg until they are fixed
-ndb_push_agg_dist.ndb_spj_shapes_agg_outer : RONDB-1124 E-8 E-9 outer-join aggregation
 ndb_push_agg_dist.ndb_spj_shapes_agg_exact : RONDB-1124 Q-6 SUM(BIGINT) overflow fails with 1860
 
 @import ../suite/rdrs2-golang/disabled.def

@@ -237,6 +237,9 @@ COUNT(*)
 # E-3b-left-left-lookup-chain-large-root: rows=10 pushed=3 exec=1 agg=1
 # E-3c-left-left-lookup-chain-large-root-scalar: rows=1 pushed=3 exec=1 agg=1
 # E-9b-inner-left-siblings: rows=20 pushed=3 exec=1 agg=1
+# E-9a-left-left-siblings: rows=20 pushed=3 exec=1 agg=0
+# E-8a-left-nest-inner-chain: rows=20 pushed=4 exec=1 agg=0
+# E-8b-left-then-inner-on-root: rows=15 pushed=3 exec=1 agg=0
 # Q-5-inner-scan-then-left-scan: rows=4 pushed=3 exec=1 agg=1
 #
 # E-11: IN-list filters on a lookup leaf

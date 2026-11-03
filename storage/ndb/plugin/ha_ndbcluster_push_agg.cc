@@ -1693,6 +1693,46 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     }
   }
 
+  // The data nodes know only whether a table is inner or outer joined with
+  // its parent in the query tree (NI_INNER_JOIN); the join nests stay in
+  // the NDB API.  Reject the outer joins they would evaluate differently
+  // from MySQL:
+  //  1) E-8: a table inner joined within an outer join nest, as l2 in
+  //     't1 LEFT JOIN (l1 JOIN l2 ON l2.pk = l1.b) ON l1.pk = t1.a'.  An l1
+  //     row without an l2 match must NULL-extend the whole nest for its t1
+  //     row; the data nodes drop the t1 row instead.
+  //  2) E-9, E-8: the chain forced below puts a table under the preceding
+  //     table instead of its parent, so it is joined only with the rows of
+  //     the tables in between.  When one of them is outer joined and has no
+  //     match, the table is not joined at all, while MySQL joins it with
+  //     its parent anyway: l2 in
+  //     't1 LEFT JOIN l1 ON l1.pk = t1.a LEFT JOIN l2 ON l2.pk = t1.b', and
+  //     the same with an inner joined l2.
+  {
+    const pushed_table &root = *builder.m_join_root;
+    const uint root_no = root.get_table_no();
+    for (uint t = root_no + 1; t < builder.m_table_count; t++) {
+      if (!builder.m_join_scope.contain(t)) continue;
+      const pushed_table &tab = builder.m_tables[t];
+      if (tab.isOuterJoined(root) && tab.m_first_inner < t) {  // 1)
+        DBUG_PRINT("info", ("ndb_push_aggregation: table %u is inner joined "
+                            "within an outer join nest — cannot push",
+                            t));
+        return false;
+      }
+      for (uint i = tab.m_parent + 1; i < t; i++) {  // 2)
+        if (builder.m_join_scope.contain(i) &&
+            builder.m_tables[i].isOuterJoined(root)) {
+          DBUG_PRINT("info", ("ndb_push_aggregation: table %u would be "
+                              "chained after outer joined table %u "
+                              "— cannot push",
+                              t, i));
+          return false;
+        }
+      }
+    }
+  }
+
   // Reject if the condition on any table is not completely pushed.
   // Such conditions must be evaluated on individual rows BEFORE
   // aggregation, which is impossible when NDB returns aggregated results.

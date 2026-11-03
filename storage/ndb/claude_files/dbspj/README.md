@@ -67,7 +67,7 @@ confidence the reviewer gave.
 | `testSpj` `SpjFaultLeakCheck`, `SpjNewFaultLeakCheck`, `NF_JoinLeakCheck` | ATR | Same as above through the NDB API |
 | `ndb_spj_shapes_{nulls,keys,outer,fanout,wide,variants,multi_dml}` | `ndb_opt` | Q-1, Q-2, Q-7, Q-8, Q-9, Q-10, E-15, E-26, NULL/outer/fan-out/key-type shapes (pushdown ON vs OFF) |
 | `ndb_spj_shapes_agg` | `ndb_push_agg_dist` | E-1..E-6, E-8..E-12, E-30, Q-3, Q-5, Q-6 (aggregation ON vs OFF) |
-| `ndb_spj_shapes_agg_outer`, `ndb_spj_shapes_agg_exact` (disabled) | `ndb_push_agg_dist` | The shapes of `ndb_spj_shapes_agg` that still fail, split out on 2026-10-31: E-8, E-9; Q-6a/b (E-3 and E-6 moved back on 2026-11-03) |
+| `ndb_spj_shapes_agg_exact` (disabled) | `ndb_push_agg_dist` | Q-6a/b, the shapes of `ndb_spj_shapes_agg` that still fail. `ndb_spj_shapes_agg_outer` (E-3, E-6, E-8, E-9, split out on 2026-10-31) is gone: its shapes moved back on 2026-11-03 |
 | `spj_state_*` (5 tests) | `ronsql_cte` | S-1, S-5, S-6, S-15 (with and without CTE) |
 | `spj_ronsql_*` (12 tests, `spj_ronsql_q6_decimal_sum` disabled) | `ronsql_cte` | The open findings RonSQL reaches: E-3, E-4, E-5, E-6, E-7, E-8, E-17, E-23 (two tests), S-6b scan leaf, X-1; Q-6/E-16 |
 
@@ -272,6 +272,7 @@ grows to 39 rows, so `ndb/r/ndbinfo_plans.result` now says 78 rows for
 | E-10 | Root conditions prepared before the aggregation decision; aggregation pushed only when every table condition is fully pushed (join and single table) | `ndbcluster_push_to_engine`, `ha_ndbcluster_push_agg.cc` |
 | E-11 | Aggregation not pushed when a lookup filter is 64 words or more; runtime guard | same |
 | E-12 | Single-range root goes through the default MRR; multi-range roots are not pushed with join aggregation | `multi_range_read_init`, `ndb_aggregate_reads_ranges_separately` |
+| E-8, E-9 | Added 2026-11-03. Join aggregation is not pushed for a table inner joined within an outer join nest (E-8a), nor when the forced chain would put a table after an outer-joined table that is not its parent (E-9a, E-8b); the join stays pushed | `ndb_push_aggregation` |
 | Q-6 | SUM/AVG of DECIMAL with scale > 0, wide MIN/MAX and DECIMAL expressions are not pushed. SUM(BIGINT) overflow is still pushed and fails with 1860, on purpose | `is_exact_aggregate_arg` |
 | E-20 | A `computeHash`/`getNodes` error for a CTE query's main-root lookup aborts the request instead of failing an `ndbrequire` (made with the P-18 change; noticed 2026-10-31) | `lookup_start` |
 
@@ -289,8 +290,10 @@ the S-6b scan sibling (kernel), and the RonSQL side of E-4 and E-8: see
 "Next round: RonSQL", steps 4 and later.
 
 - **E-3, E-6, E-7, E-8, E-9** (outer-join aggregation): need design work.
-  The join-nest structure is not sent to the kernel (E-8), the forced chain
-  re-parents siblings (E-9), buffered root rows are released before deferred
+  E-3, E-6 and E-7 were fixed later; E-8 and E-9 are no longer pushed
+  (2026-11-03, see step 5 of the RonSQL round), pushing them needs design
+  work. The join-nest structure is not sent to the kernel (E-8), the forced
+  chain re-parents siblings (E-9), buffered root rows are released before deferred
   NULL injection (E-3), a filter-rejected outer lookup leaf gives a TUPKEYREF
   that DBLQH cannot turn into a NULL row in place (E-6), and NULL rows carry no
   leaf index (E-7). mysqld only pushes these with
@@ -575,6 +578,21 @@ Steps:
    matched, as under the forced chain of E-9.
    Regression run after the mysqld fix (2026-11-03, suites ndb_push_agg,
    ndb_push_agg_dist, ndb_push_agg_jit, ndb_spj): all tests pass.
+
+   E-8 and E-9, 2026-11-03: DBSPJ only learns whether a node is inner or
+   outer joined to its parent (`NI_INNER_JOIN`); `setFirstInnerJoin` /
+   `setUpperJoin` stay in the NDB API. So the data nodes cannot evaluate
+   an inner join inside an outer join nest (E-8a: a nest row without a
+   match drops the root row), nor a table that the forced chain puts
+   after an outer-joined table that is not its parent (E-9a, E-8b: the
+   table is not joined when that table has no match). Pushing them needs
+   the nests in the DBSPJ protocol and, for E-9, aggregation over sibling
+   leaves in mysqld. Until then `ndb_push_aggregation` refuses them
+   before forcing the chain: 1) a table outer joined to the root that is
+   not the first table of its join nest, 2) a table with an outer-joined
+   table between its parent and itself. E-9a, E-8a and E-8b moved back to
+   `ndb_spj_shapes_agg` with `$spj_expect_agg= 0`, and
+   `ndb_spj_shapes_agg_outer` is removed.
 
 ## How to run
 

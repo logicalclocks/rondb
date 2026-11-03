@@ -30,7 +30,12 @@
 #  E-6  LEFT JOIN scan or lookup leaf with a pushed ON filter: rows the
 #       filter rejects must still produce the NULL-extended row (E-6c:
 #       the whole NULL group over a 60000-row root)
+#  E-8  an inner join nest inside an outer join, and an inner join after
+#       an outer join: the data nodes do not know the join nests, so the
+#       aggregation is not pushed (agg=0), the result must match
 #  E-9  an inner and an outer-joined lookup, both children of the root
+#       (pushed); two outer-joined ones (not pushed: the forced chain
+#       would put the second under the first)
 #  E-10 condition on the root that cannot be pushed (join and single table)
 #  E-11 IN-list filter of 5, 20 and 40 values on a lookup leaf
 #  E-12 range and IN-list (multi-range) root under join aggregation
@@ -46,11 +51,8 @@
 #  grouped), MIN/MAX of strings under a case/accent-insensitive
 #  collation, COUNT(DISTINCT) fallback.
 #
-# The shapes that still give wrong results are in two tests that are
-# disabled in collections/disabled_ndb.def until they are fixed:
-#  ndb_spj_shapes_agg_outer  E-8, E-9 (two outer joins): outer-join
-#                            aggregation that mysqld does not describe
-#                            to the data nodes
+# The shapes that still give wrong results are in a test that is disabled
+# in collections/disabled_ndb.def until they are fixed:
 #  ndb_spj_shapes_agg_exact  Q-6: BIGINT sums beyond 64 bits fail with 1860
 # Move a shape back here once it passes.
 #
@@ -348,14 +350,52 @@ let $spj_query= SELECT COUNT(*), COUNT(m2.pk), COUNT(m3.pk), SUM(m3.v)
 let $spj_agg= 1;
 --source suite/ndb_opt/ndb_spj_shapes_check.inc
 
-# An inner and an outer-joined lookup that both hang off the root, which
-# passes (two outer-joined ones, E-9a, are in ndb_spj_shapes_agg_outer)
+# An inner and an outer-joined lookup that both hang off the root: the
+# forced chain puts l2 under l1, which is right because a row without an
+# l1 match is dropped anyway
 let $spj_label= E-9b-inner-left-siblings;
 let $spj_query= SELECT d.g, COUNT(*), COUNT(l2.pk), SUM(l2.v)
   FROM d JOIN l1 ON l1.pk = d.a
          LEFT JOIN l2 ON l2.pk = d.b
   GROUP BY d.g;
 let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# E-9, E-8: shapes whose aggregation mysqld must not push, as the data
+# nodes would evaluate them differently (wrong results before the fix);
+# the joins stay pushed.  Two outer-joined lookups that both hang off the
+# root: the forced chain would put l2 under l1, and l2 would not be looked
+# up for a d row without an l1 match
+let $spj_label= E-9a-left-left-siblings;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), COUNT(l2.pk), SUM(l2.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a
+         LEFT JOIN l2 ON l2.pk = d.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Inner join nest inside the outer join: (l1, l2, l3) is NULL-extended as a
+# whole when any of its inner joins has no match; the data nodes only know
+# that l2 is inner joined with l1, and drop the d row
+let $spj_label= E-8a-left-nest-inner-chain;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), COUNT(l3.pk), SUM(l3.v)
+  FROM d LEFT JOIN (l1 JOIN l2 ON l2.pk = l1.b JOIN l3 ON l3.pk = l2.c)
+         ON l1.pk = d.a
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Inner join after an outer join, referring to the root: the forced chain
+# would put l2 under the outer-joined l1
+let $spj_label= E-8b-left-then-inner-on-root;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), SUM(l2.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a
+         JOIN l2 ON l2.pk = d.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+let $spj_expect_agg= 0;
 --source suite/ndb_opt/ndb_spj_shapes_check.inc
 
 # Q-5: the shape disabled in ndb_push_agg_dist_extended.test

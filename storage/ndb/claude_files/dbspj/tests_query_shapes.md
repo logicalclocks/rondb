@@ -17,8 +17,7 @@ No C++ code was changed. No build or test was run. Every test is new; no existin
 | `mysql-test/suite/ndb_opt/ndb_spj_shapes_fanout.test` + `.cnf` | ndb_opt with BatchSize=3, BatchByteSize=1024 | Multi-batch, bushy, skewed fan-out, wide rows, sorted roots with and without LIMIT (24 shapes) |
 | `mysql-test/suite/ndb_opt/ndb_spj_shapes_wide.test` | ndb_opt | Fragmented TRANSID_AI (Q-1) |
 | `mysql-test/suite/ndb_opt/ndb_spj_shapes_variants.test` | ndb_opt | Covers:<br>- table variants: FR, RB, hidden PK, PARTITION BY KEY on a PK subset, PARTITION_HASH, PARTITION_BALANCE, TTL<br>- locking reads, including a second connection that must time out<br>- DML<br>- E-26<br>- odd partition counts (Q-8, last) |
-| `mysql-test/suite/ndb_push_agg_dist/t/ndb_spj_shapes_agg.test` + `.cnf` | ndb_push_agg_dist (2 data nodes), DataMemory=400M, BatchSize=64 | Join aggregation:<br>- E-1 … E-30 from the coordinator<br>- Q-3, Q-5, Q-6, Q-7<br>- NULL groups, empty input, string MIN/MAX<br>(54 checks) |
-| `mysql-test/suite/ndb_push_agg_dist/t/ndb_spj_shapes_agg_outer.test` + `.cnf` | ndb_push_agg_dist, same settings; **disabled** in `collections/disabled_ndb.def` | The outer-join shapes that still fail (E-3a-c, E-6a, E-6c = the former E-2c, E-8a/b, E-9a), split out on 2026-10-31 |
+| `mysql-test/suite/ndb_push_agg_dist/t/ndb_spj_shapes_agg.test` + `.cnf` | ndb_push_agg_dist (2 data nodes), DataMemory=400M, BatchSize=64 | Join aggregation:<br>- E-1 … E-30 from the coordinator<br>- Q-3, Q-5, Q-6, Q-7<br>- NULL groups (also of NOT NULL outer-joined columns), empty input, string MIN/MAX<br>(59 checks) |
 | `mysql-test/suite/ndb_push_agg_dist/t/ndb_spj_shapes_agg_exact.test` | ndb_push_agg_dist; **disabled** in `collections/disabled_ndb.def` | Q-6a/b: SUM(BIGINT) beyond 64 bits fails with 1860 |
 
 Aggregation checks use a pure MySQL reference run, with `ndb_join_pushdown=OFF` and `ndb_join_pushdown_aggregate=OFF`. The checked run sets `ndb_join_pushdown`, `ndb_join_pushdown_aggregate` and `ndb_join_pushdown_aggregate_outer_join` ON. Single-table shapes toggle `ndb_pushdown_aggregate` instead.
@@ -234,8 +233,8 @@ The analysis behind these is the coordinator's; each test requires the aggregati
 | E-3 | E-3a-c (lookup chain; 20k-row root, half the links dangling) |
 | E-4 | E-4a/b (CASE over a NULL-extended row) |
 | E-6 | E-6a/b (ON filter on the leaf) |
-| E-8 | E-8a (4-table inner nest inside an outer join), E-8b (inner after outer, on the root) |
-| E-9 | E-9a/b (sibling LEFT lookups re-parented into a chain) |
+| E-8 | E-8a (4-table inner nest inside an outer join), E-8b (inner after outer, on the root); not pushed since 2026-11-03, the result must match |
+| E-9 | E-9a/b (sibling lookups re-parented into a chain); E-9a not pushed since 2026-11-03, the result must match |
 | E-10 | E-10a/b, not required to push |
 | E-11 | E-11a-c (IN lists of 5, 20 and 40 values) |
 | E-12 | E-12a-c (BETWEEN and IN-list root) |
@@ -262,10 +261,10 @@ Run from `mysql-test/` in the worktree. Run first **without** `--record`. A fail
       ndb_spj_shapes_fanout ndb_spj_shapes_wide ndb_spj_shapes_variants
 ./mtr --suite=ndb_push_agg_dist ndb_spj_shapes_agg
 # the disabled tests, to check a fix:
-./mtr --suite=ndb_push_agg_dist --enable-disabled ndb_spj_shapes_agg_outer ndb_spj_shapes_agg_exact
+./mtr --suite=ndb_push_agg_dist --enable-disabled ndb_spj_shapes_agg_exact
 ```
 
-The tables of the three `ndb_spj_shapes_agg*` tests are created by
+The tables of the two `ndb_spj_shapes_agg*` tests are created by
 `suite/ndb_push_agg_dist/include/spj_shapes_agg_{tables,e3_tables,e2_tables}.inc`.
 
 To record, once a test passes:
