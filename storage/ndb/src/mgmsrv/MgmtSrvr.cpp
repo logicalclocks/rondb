@@ -3316,6 +3316,15 @@ int MgmtSrvr::insertError(int nodeId, int errorNo, Uint32 *extra) {
   ss.lock(); /* lock will be released on exit */
 
   if (getNodeType(nodeId) == NDB_MGM_NODE_TYPE_NDB) {
+    /**
+     * As in INIT_SIGNAL_SENDER: a data node that has just connected, e.g.
+     * after a restart, takes no signal but API_REGREQ until it has
+     * confirmed the connection.
+     */
+    const int result = okToSendTo(nodeId, true);
+    if (result != 0) {
+      return result;
+    }
     block = CMVMI;
   } else if (nodeId == _ownNodeId) {
     g_errorInsert = errorNo;
