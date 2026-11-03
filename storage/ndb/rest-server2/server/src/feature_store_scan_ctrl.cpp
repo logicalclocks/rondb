@@ -759,7 +759,7 @@ static RS_Status assembleScanBatch(
     }
   }
   for (size_t i = 0; i < numEntries; i++) {
-    RootRow &rootRow = rootRows[begin + i];
+    RootRow &rootRow = rootRows[beginIndex + i];
     std::tuple<
       std::vector<std::vector<char>>,
       fsds::FeatureStatus,
@@ -863,7 +863,7 @@ static RS_Status assemblePkBatch(
     std::tuple<std::vector<std::vector<char>>, fsds::FeatureStatus,
                std::vector<fsds::DetailedStatus>,
                std::shared_ptr<RestErrorCode>>
-      result = GetFeatureValues(grouped[i], branches[begin + i].entries,
+      result = GetFeatureValues(grouped[i], branches[beginIndex + i].entries,
                                 md, includeDetailedStatus, use_compressed);
     RowResult row;
     row.features = std::move(std::get<0>(result));
