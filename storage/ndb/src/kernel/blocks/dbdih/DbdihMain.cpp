@@ -10713,12 +10713,16 @@ void Dbdih::checkStopPermProxy(Signal *signal, NodeId failedNodeId) {
      * The master has failed report to proxy-client
      */
     jam();
-    StopPermRef *const ref = (StopPermRef *)&signal->theData[0];
+    if (!c_stopPermProxy.released) {
+      jam();
+      StopPermRef *const ref = (StopPermRef *)&signal->theData[0];
 
-    ref->senderData = c_stopPermProxy.clientData;
-    ref->errorCode = StopPermRef::NF_CausedAbortOfStopProcedure;
-    sendSignal(c_stopPermProxy.clientRef, GSN_STOP_PERM_REF, signal, 2, JBB);
+      ref->senderData = c_stopPermProxy.clientData;
+      ref->errorCode = StopPermRef::NF_CausedAbortOfStopProcedure;
+      sendSignal(c_stopPermProxy.clientRef, GSN_STOP_PERM_REF, signal, 2, JBB);
+    }
     c_stopPermProxy.clientRef = 0;
+    c_stopPermProxy.released = false;
   }  // if
 }  // Dbdih::checkStopPermProxy()
 
@@ -29014,6 +29018,7 @@ void Dbdih::execSTOP_PERM_REQ(Signal *signal) {
     c_stopPermProxy.clientRef = senderRef;
     c_stopPermProxy.masterRef = cmasterdihref;
     c_stopPermProxy.clientData = senderData;
+    c_stopPermProxy.released = false;
 
     req->senderRef = reference();
     req->senderData = senderData;
@@ -29036,6 +29041,12 @@ void Dbdih::execSTOP_PERM_REF(Signal *signal) {
   jamEntry();
   ndbrequire(c_stopPermProxy.clientRef != 0);
   ndbrequire(c_stopPermProxy.masterRef == signal->senderBlockRef());
+  if (c_stopPermProxy.released) {
+    jam();
+    c_stopPermProxy.clientRef = 0;
+    c_stopPermProxy.released = false;
+    return;
+  }
   sendSignal(c_stopPermProxy.clientRef, GSN_STOP_PERM_REF, signal, 2, JBB);
   c_stopPermProxy.clientRef = 0;
 }  // Dbdih::execSTOP_PERM_REF()
@@ -29044,6 +29055,16 @@ void Dbdih::execSTOP_PERM_CONF(Signal *signal) {
   jamEntry();
   ndbrequire(c_stopPermProxy.clientRef != 0);
   ndbrequire(c_stopPermProxy.masterRef == signal->senderBlockRef());
+  if (c_stopPermProxy.released) {
+    jam();
+    /**
+     * The master got the STOP_PERM_REL after this request and has
+     * already given the permission back.
+     */
+    c_stopPermProxy.clientRef = 0;
+    c_stopPermProxy.released = false;
+    return;
+  }
   sendSignal(c_stopPermProxy.clientRef, GSN_STOP_PERM_CONF, signal, 1, JBB);
   c_stopPermProxy.clientRef = 0;
 }  // Dbdih::execSTOP_PERM_CONF()
@@ -29071,14 +29092,17 @@ void Dbdih::execSTOP_PERM_REL(Signal *signal) {
   }
 
   /**
-   * Proxy part. Stop proxying for the abandoned request and pass the
-   * release on to the master, which holds the permission.
+   * Proxy part. Pass the release on to the master, which holds the
+   * permission. A request still at the master stays outstanding here:
+   * the master answers it after the release, and that answer is dropped
+   * instead of reaching the client. A new request is refused until then,
+   * so each answer from the master matches the request it was sent for.
    */
   jam();
   if (c_stopPermProxy.clientRef != 0 &&
       refToNode(c_stopPermProxy.clientRef) == nodeId) {
     jam();
-    c_stopPermProxy.clientRef = 0;
+    c_stopPermProxy.released = true;
   }
 
   StopPermRel *req = (StopPermRel *)&signal->theData[0];
@@ -29089,34 +29113,26 @@ void Dbdih::execSTOP_PERM_REL(Signal *signal) {
 }  // Dbdih::execSTOP_PERM_REL()
 
 /**
- * Give up the master side stop permission held for nodeId. Mirrors the
- * refusal teardown at the end of switchReplica().
+ * Give up the master side stop permission held for nodeId.
  */
-void Dbdih::releaseStopPermMaster(Signal *signal, NodeId nodeId) {
+void Dbdih::releaseStopPermMaster(Signal *, NodeId nodeId) {
   if (c_stopPermMaster.clientRef != 0 &&
       refToNode(c_stopPermMaster.clientRef) == nodeId) {
     jam();
-    if (c_DIH_SWITCH_REPLICA_REQ_Counter.done() == false) {
-      jam();
-      /**
-       * Switching primary replicas away from the node is still running.
-       * Fail the round instead of tearing its state down underneath it;
-       * switchReplica() then unlocks and clears everything as it does
-       * for any other refusal, and the STOP_PERM_REF it sends is
-       * discarded by an NDBCNTR that has already given up.
-       */
-      c_stopPermMaster.returnValue = StopPermRef::NF_CausedAbortOfStopProcedure;
-      return;
-    }
-
-    c_nodeStartMaster.activeState = false;
-    c_stopPermMaster.clientRef = 0;
-    c_stopPermMaster.clientData = 0;
-    c_stopPermMaster.returnValue = 0;
-    c_stopPermMaster.stoppingNodes.clear(nodeId);
-
-    Mutex mutex(signal, c_mutexMgr, c_switchPrimaryMutexHandle);
-    mutex.unlock();  // ignore result
+    /**
+     * clientRef is only cleared at the end of switchReplica(), so the
+     * switch replica round for the node is still running: the lock of
+     * the switch primary mutex may still be waiting in DBUTIL, a
+     * SwitchReplica CONTINUEB may be in flight, or DIH_SWITCH_REPLICA_REQs
+     * may be outstanding. None of these can be torn down from here;
+     * unlocking a mutex whose lock is still waiting crashes in
+     * MutexManager::execUTIL_LOCK_CONF. Fail the round instead.
+     * switchReplica() stops at its next step and then unlocks and clears
+     * everything as for any other refusal. The STOP_PERM_REF it sends is
+     * dropped by the DIH proxy, or ignored by an NDBCNTR that has given
+     * up the stop.
+     */
+    c_stopPermMaster.returnValue = StopPermRef::NF_CausedAbortOfStopProcedure;
     return;
   }
 
@@ -29231,6 +29247,15 @@ void Dbdih::switchReplica(Signal *signal, Uint32 nodeId, Uint32 tableId,
                           Uint32 fragNo) {
   jam();
   DihSwitchReplicaReq *const req = (DihSwitchReplicaReq *)&signal->theData[0];
+
+  if (c_stopPermMaster.returnValue != 0) {
+    jam();
+    /**
+     * The round was failed by STOP_PERM_REL while the mutex lock or a
+     * SwitchReplica CONTINUEB was in flight. Switch no more replicas.
+     */
+    tableId = ctabFileSize;
+  }
 
   const Uint32 RT_BREAK = 64;
 
