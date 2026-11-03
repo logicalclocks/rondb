@@ -20,13 +20,16 @@
 #  E-2  self-continued join aggregation (handleJoinAggNextBatch) never
 #       resets the batch / correlation counters of a child scan:
 #       scan -> index scan -> lookup leaf over a large root
+#  E-3  LEFT JOIN chain of lookups: the NULL-extended rows of earlier root
+#       batches were lost
 #  E-4  SUM(CASE WHEN outer.v > 5 THEN 1 ELSE 0 END) over NULL-extended rows
 #  E-5  GROUP BY a case/accent/pad-insensitive VARCHAR whose equal values
 #       have different bytes (and word lengths): the kernel group hash
 #       table compares key lengths first (AggHashTable findInBucket) and
 #       the API merges partial groups by bytes
-#  E-6  LEFT JOIN scan leaf with a pushed ON filter: rows the filter
-#       rejects must still produce the NULL-extended row
+#  E-6  LEFT JOIN scan or lookup leaf with a pushed ON filter: rows the
+#       filter rejects must still produce the NULL-extended row (E-6c:
+#       the whole NULL group over a 60000-row root)
 #  E-9  an inner and an outer-joined lookup, both children of the root
 #  E-10 condition on the root that cannot be pushed (join and single table)
 #  E-11 IN-list filter of 5, 20 and 40 values on a lookup leaf
@@ -38,13 +41,16 @@
 #  Q-6  DECIMAL(38,6) sums
 #  Q-7  DOUBLE group key with -0.0 and 0.0
 #  plus: NULL group keys from the root and from an outer-joined child,
-#  empty input (scalar and grouped), MIN/MAX of strings under a
-#  case/accent-insensitive collation, COUNT(DISTINCT) fallback.
+#  also of a NOT NULL column (N7-N10: mysqld must mark the NULL row on the
+#  table, Field::set_null() does nothing there), empty input (scalar and
+#  grouped), MIN/MAX of strings under a case/accent-insensitive
+#  collation, COUNT(DISTINCT) fallback.
 #
 # The shapes that still give wrong results are in two tests that are
 # disabled in collections/disabled_ndb.def until they are fixed:
-#  ndb_spj_shapes_agg_outer  E-3, E-6 (lookup leaf), E-8, E-9 (two outer
-#                            joins): outer-join aggregation
+#  ndb_spj_shapes_agg_outer  E-8, E-9 (two outer joins): outer-join
+#                            aggregation that mysqld does not describe
+#                            to the data nodes
 #  ndb_spj_shapes_agg_exact  Q-6: BIGINT sums beyond 64 bits fail with 1860
 # Move a shape back here once it passes.
 #
@@ -62,6 +68,7 @@ if (!$join_pushdown)
 --echo # Tables and data
 --echo #
 --source suite/ndb_push_agg_dist/include/spj_shapes_agg_tables.inc
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_e3_tables.inc
 --source suite/ndb_push_agg_dist/include/spj_shapes_agg_e2_tables.inc
 
 --echo #
@@ -231,6 +238,35 @@ let $spj_query= SELECT COUNT(*), COUNT(l1.pk), SUM(l1.v)
 let $spj_agg= 1;
 --source suite/ndb_opt/ndb_spj_shapes_check.inc
 
+# GROUP BY a NOT NULL column of the outer-joined child: it is NULL only in
+# the NULL-extended rows, which mysqld must mark on the table
+# (TABLE::set_null_row), as Field::set_null() does nothing on a NOT NULL
+# field.  Lookup leaf (missing keys and NULL d.a), scan leaf, a nullable
+# and a NOT NULL column of the same table, a root and a leaf column.
+let $spj_label= N7-group-by-not-null-left-lookup-column;
+let $spj_query= SELECT l1.v, COUNT(*), COUNT(l1.pk)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a GROUP BY l1.v;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N8-group-by-not-null-left-scan-column;
+let $spj_query= SELECT f.qty, COUNT(*), COUNT(f.id)
+  FROM d LEFT JOIN f ON f.did = d.id GROUP BY f.qty;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N9-group-by-nullable-then-not-null-left-scan;
+let $spj_query= SELECT f.y, f.qty, COUNT(*), COUNT(f.id)
+  FROM d LEFT JOIN f ON f.did = d.id GROUP BY f.y, f.qty;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N10-group-by-root-and-not-null-left-lookup;
+let $spj_query= SELECT d.g, l1.v, COUNT(*), COUNT(l1.pk)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a GROUP BY d.g, l1.v;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
 --echo #
 --echo # Q-6: wide DECIMAL sums
 --echo #
@@ -265,11 +301,50 @@ let $spj_query= SELECT d.g, SUM(CASE WHEN f.qty > 20 THEN 1 ELSE 0 END), COUNT(*
 let $spj_agg= 1;
 --source suite/ndb_opt/ndb_spj_shapes_check.inc
 
-# E-6 with a scan leaf, which passes (the lookup-leaf form is in
-# ndb_spj_shapes_agg_outer)
+# E-6: LEFT JOIN leaf with a pushed ON filter.  A lookup leaf whose
+# filter rejects the row answers 626 or 899, which now gives the
+# NULL-extended row (E-6a, and E-6d grouped by the leaf's NOT NULL
+# column); the scan leaf (E-6b) always passed
+let $spj_label= E-6a-left-lookup-on-filter;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), SUM(l1.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a AND l1.c > 5 GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
 let $spj_label= E-6b-left-scan-on-filter;
 let $spj_query= SELECT d.g, COUNT(*), COUNT(f.id), SUM(f.qty)
   FROM d LEFT JOIN f ON f.did = d.id AND f.qty > 25 GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-6d-left-lookup-on-filter-group-by-leaf;
+let $spj_query= SELECT l1.v, COUNT(*), COUNT(l1.pk)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a AND l1.c > 5 GROUP BY l1.v;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# E-3: LEFT JOIN chain of lookups, NULL and dangling keys at both levels;
+# then over a 20000-row root, half of the first links dangle
+let $spj_label= E-3a-left-left-lookup-chain;
+let $spj_query= SELECT d.g, COUNT(*), COUNT(l1.pk), COUNT(l2.pk), SUM(l2.v)
+  FROM d LEFT JOIN l1 ON l1.pk = d.a
+         LEFT JOIN l2 ON l2.pk = l1.b
+  GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-3b-left-left-lookup-chain-large-root;
+let $spj_query= SELECT r3.g, COUNT(*), COUNT(m2.pk), COUNT(m3.pk), SUM(m3.v)
+  FROM r3 LEFT JOIN m2 ON m2.pk = r3.a
+          LEFT JOIN m3 ON m3.pk = m2.b
+  GROUP BY r3.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= E-3c-left-left-lookup-chain-large-root-scalar;
+let $spj_query= SELECT COUNT(*), COUNT(m2.pk), COUNT(m3.pk), SUM(m3.v)
+  FROM r3 LEFT JOIN m2 ON m2.pk = r3.a
+          LEFT JOIN m3 ON m3.pk = m2.b;
 let $spj_agg= 1;
 --source suite/ndb_opt/ndb_spj_shapes_check.inc
 
@@ -419,7 +494,7 @@ let $spj_expect_agg= 0;
 --source suite/ndb_opt/ndb_spj_shapes_check.inc
 
 --echo #
---echo # E-2: scan -> index scan -> lookup leaf over a 60000-row root
+--echo # E-2, E-6c: scan -> index scan -> lookup leaf over a 60000-row root
 --echo #
 let $e2_pass= 1;
 while ($e2_pass <= 2)
@@ -448,6 +523,16 @@ while ($e2_pass <= 2)
     FROM e2_t1 STRAIGHT_JOIN e2_t2 FORCE INDEX (ix_a) ON e2_t2.a = e2_t1.a;
   let $spj_agg= 1;
   --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Every root row matches 3 child rows; the leaf's ON filter rejects the
+  # lookups with g >= 10, which form the NULL group of 73980 rows
+  let $spj_label= E-6c-p$e2_pass-left-lookup-on-filter-large-root;
+  let $spj_query= SELECT e2_t3.g, COUNT(*), COUNT(e2_t3.c)
+    FROM e2_t1 STRAIGHT_JOIN e2_t2 FORCE INDEX (ix_a) ON e2_t2.a = e2_t1.a
+               LEFT JOIN e2_t3 ON e2_t3.c = e2_t2.c AND e2_t3.g < 10
+    GROUP BY e2_t3.g;
+  let $spj_agg= 1;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
   inc $e2_pass;
 }
 --disable_query_log
@@ -457,5 +542,5 @@ SET SESSION debug = '-d,max_4rows_in_spj_batches';
 --enable_result_log
 --enable_query_log
 
-DROP TABLE seq, d, l1, l2, l3, f, reg, e2_t1, e2_t2, e2_t3;
+DROP TABLE seq, d, l1, l2, l3, f, reg, r3, m2, m3, e2_t1, e2_t2, e2_t3;
 --source suite/ndb_opt/ndb_spj_shapes_end.inc

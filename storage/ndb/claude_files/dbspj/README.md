@@ -67,7 +67,7 @@ confidence the reviewer gave.
 | `testSpj` `SpjFaultLeakCheck`, `SpjNewFaultLeakCheck`, `NF_JoinLeakCheck` | ATR | Same as above through the NDB API |
 | `ndb_spj_shapes_{nulls,keys,outer,fanout,wide,variants,multi_dml}` | `ndb_opt` | Q-1, Q-2, Q-7, Q-8, Q-9, Q-10, E-15, E-26, NULL/outer/fan-out/key-type shapes (pushdown ON vs OFF) |
 | `ndb_spj_shapes_agg` | `ndb_push_agg_dist` | E-1..E-6, E-8..E-12, E-30, Q-3, Q-5, Q-6 (aggregation ON vs OFF) |
-| `ndb_spj_shapes_agg_outer`, `ndb_spj_shapes_agg_exact` (disabled) | `ndb_push_agg_dist` | The shapes of `ndb_spj_shapes_agg` that still fail, split out on 2026-10-31: E-3, E-6, E-8, E-9; Q-6a/b |
+| `ndb_spj_shapes_agg_outer`, `ndb_spj_shapes_agg_exact` (disabled) | `ndb_push_agg_dist` | The shapes of `ndb_spj_shapes_agg` that still fail, split out on 2026-10-31: E-8, E-9; Q-6a/b (E-3 and E-6 moved back on 2026-11-03) |
 | `spj_state_*` (5 tests) | `ronsql_cte` | S-1, S-5, S-6, S-15 (with and without CTE) |
 | `spj_ronsql_*` (12 tests, `spj_ronsql_q6_decimal_sum` disabled) | `ronsql_cte` | The open findings RonSQL reaches: E-3, E-4, E-5, E-6, E-7, E-8, E-17, E-23 (two tests), S-6b scan leaf, X-1; Q-6/E-16 |
 
@@ -549,6 +549,32 @@ Steps:
    `ndb_spj_shapes_agg`. E-8 (no nest information from mysqld), E-9 (the
    forced chain in `ha_ndbcluster_push_agg.cc`) and Q-6a/b stay for the
    storage-engine round.
+
+   Run 2026-11-03: E-6a and E-3a-c pass; E-9a, E-8a and E-8b fail as
+   before. E-6c-p1/p2 now have the NULL group with the right counts
+   (73980, 0), but its key showed 10 instead of NULL: a mysqld bug (N-1),
+   found now because the kernel used to lose the group. `e2_t3.g` is
+   NOT NULL, and `store_group_column` called `Field::set_null()`, which
+   does nothing on a NOT NULL field; MySQL marks the NULL-complemented
+   row of an outer-joined table with `TABLE::set_null_row()`, which
+   `Field::is_null()` reads, so the field kept a stale value. N3 groups
+   by the nullable `f.y` and did not show it. Fix: `store_group_column`
+   sets the table's NULL row for a NULL value of a NOT NULL field (an
+   error if the table is not nullable), and `ndb_fetch_next_aggregate_row`
+   clears the mark on every group column's table before storing the next
+   group. E-6a, E-3a-c and E-6c moved back to `ndb_spj_shapes_agg`, with
+   new shapes N7-N10 (GROUP BY a NOT NULL column of an outer-joined
+   lookup or scan leaf, a nullable and a NOT NULL column of one table, a
+   root and a leaf column) and E-6d (E-6a grouped by the leaf's NOT NULL
+   column). `ndb_spj_shapes_agg_outer` keeps E-9a, E-8a and E-8b.
+   Recorded 2026-11-03: all 56 shapes of `ndb_spj_shapes_agg` pass
+   (N9's two-column GROUP BY is pushed too); `ndb_spj_shapes_agg_outer`
+   fails on E-9a, E-8a and E-8b only, with the numbers of the first run.
+   E-8b's SUM(l2.v) with pushdown equals E-9a's (315, 354, 328 for
+   groups 0, 1, 10): in both, l2 is only looked up for rows where l1
+   matched, as under the forced chain of E-9.
+   Regression run after the mysqld fix (2026-11-03, suites ndb_push_agg,
+   ndb_push_agg_dist, ndb_push_agg_jit, ndb_spj): all tests pass.
 
 ## How to run
 

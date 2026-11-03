@@ -2,7 +2,7 @@
 
 [cluster_config.1]
 # Room for the 60k-row root / 180k-row child tables of the
-# self-continuation shapes (E-2).
+# self-continuation shapes (E-2, E-6c) and the 20k-row root of E-3b/c.
 DataMemory=400M
 # Smaller API scan batches than the default, so that the pushed
 # aggregation scans need many batches and DBSPJ continues them itself

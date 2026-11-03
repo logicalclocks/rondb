@@ -1833,6 +1833,16 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
  */
 static int store_group_column(NdbAggregator::Column &col, Field *field) {
   if (col.is_null()) {
+    if (!field->is_nullable() && !field->is_tmp_nullable()) {
+      // A NOT NULL column is NULL only in the NULL-complemented row of an
+      // outer-joined table.  set_null() does nothing on such a field;
+      // Field::is_null() reads TABLE::has_null_row() instead.
+      if (unlikely(!field->table->is_nullable())) {
+        return HA_ERR_INTERNAL_ERROR;
+      }
+      field->table->set_null_row();
+      return 0;
+    }
     field->set_null();
     return 0;
   }
@@ -1962,6 +1972,15 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   NdbAggregator::ResultRecord rec = agg->FetchResultRecord();
   if (rec.end()) {
     return NdbQuery::NextResult_scanComplete;
+  }
+
+  // Clear the NULL-complemented row mark that store_group_column() set for
+  // the previous group, for every table first: a later column of the same
+  // table must not clear a mark set by an earlier one.
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
+       group = group->next) {
+    TABLE *table = down_cast<const Item_field *>(*(group->item))->field->table;
+    table->reset_null_row();
   }
 
   // Populate GROUP BY columns in MySQL's row buffer.

@@ -115,6 +115,33 @@ SELECT COUNT(*) FROM f;
 COUNT(*)
 4998
 SET SESSION ndb_use_transactions = 0;
+CREATE TABLE r3 (
+id INT NOT NULL PRIMARY KEY,
+a INT NOT NULL,
+g INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO r3
+SELECT (s1.n - 1) * 1000 + s2.n, ((s1.n - 1) * 1000 + s2.n) % 4000 + 1, s2.n % 10
+FROM seq s1, seq s2 WHERE s1.n <= 20 AND s2.n <= 1000;
+CREATE TABLE m2 (
+pk INT NOT NULL PRIMARY KEY,
+b INT NULL,
+v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO m2 SELECT n, IF(n % 10 = 1, NULL, (n * 3) % 3000 + 1), n % 9
+FROM seq WHERE n <= 4000 AND n % 2 = 1;
+CREATE TABLE m3 (
+pk INT NOT NULL PRIMARY KEY,
+v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO m3 SELECT n, n % 5 FROM seq WHERE n <= 3000 AND n % 3 <> 0;
+SET SESSION ndb_use_transactions = DEFAULT;
+ANALYZE TABLE r3, m2, m3;
+Table	Op	Msg_type	Msg_text
+test.r3	analyze	status	OK
+test.m2	analyze	status	OK
+test.m3	analyze	status	OK
+SET SESSION ndb_use_transactions = 0;
 CREATE TABLE e2_t1 (
 id INT NOT NULL PRIMARY KEY,
 a INT NOT NULL
@@ -189,6 +216,10 @@ COUNT(*)
 # N4-empty-input-scalar: rows=1 pushed=2 exec=1 agg=1
 # N5-empty-input-grouped: rows=0 pushed=2 exec=1 agg=1
 # N6-empty-input-outer-scalar: rows=1 pushed=2 exec=1 agg=1
+# N7-group-by-not-null-left-lookup-column: rows=11 pushed=2 exec=1 agg=1
+# N8-group-by-not-null-left-scan-column: rows=51 pushed=2 exec=1 agg=1
+# N9-group-by-nullable-then-not-null-left-scan: rows=226 pushed=2 exec=1 agg=1
+# N10-group-by-root-and-not-null-left-lookup: rows=40 pushed=2 exec=1 agg=1
 #
 # Q-6: wide DECIMAL sums
 #
@@ -199,7 +230,12 @@ COUNT(*)
 #
 # E-4a-case-over-left-lookup: rows=20 pushed=2 exec=1 agg=1
 # E-4b-case-over-left-scan: rows=20 pushed=2 exec=1 agg=1
+# E-6a-left-lookup-on-filter: rows=20 pushed=2 exec=1 agg=1
 # E-6b-left-scan-on-filter: rows=20 pushed=2 exec=1 agg=1
+# E-6d-left-lookup-on-filter-group-by-leaf: rows=11 pushed=2 exec=1 agg=1
+# E-3a-left-left-lookup-chain: rows=20 pushed=3 exec=1 agg=1
+# E-3b-left-left-lookup-chain-large-root: rows=10 pushed=3 exec=1 agg=1
+# E-3c-left-left-lookup-chain-large-root-scalar: rows=1 pushed=3 exec=1 agg=1
 # E-9b-inner-left-siblings: rows=20 pushed=3 exec=1 agg=1
 # Q-5-inner-scan-then-left-scan: rows=4 pushed=3 exec=1 agg=1
 #
@@ -230,10 +266,12 @@ COUNT(*)
 # X1-count-distinct: rows=20 pushed=0 exec=0 agg=0
 # E-30-having: rows=20 pushed=2 exec=1 agg=0
 #
-# E-2: scan -> index scan -> lookup leaf over a 60000-row root
+# E-2, E-6c: scan -> index scan -> lookup leaf over a 60000-row root
 #
 # E-2a-p1-scan-scan-lookup-large-root: rows=17 pushed=3 exec=1 agg=1
 # E-2b-p1-scan-scan-large-root-scalar: rows=1 pushed=2 exec=1 agg=1
+# E-6c-p1-left-lookup-on-filter-large-root: rows=11 pushed=3 exec=1 agg=1
 # E-2a-p2-scan-scan-lookup-large-root: rows=17 pushed=3 exec=1 agg=1
 # E-2b-p2-scan-scan-large-root-scalar: rows=1 pushed=2 exec=1 agg=1
-DROP TABLE seq, d, l1, l2, l3, f, reg, e2_t1, e2_t2, e2_t3;
+# E-6c-p2-left-lookup-on-filter-large-root: rows=11 pushed=3 exec=1 agg=1
+DROP TABLE seq, d, l1, l2, l3, f, reg, r3, m2, m3, e2_t1, e2_t2, e2_t3;
