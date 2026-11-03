@@ -1,4 +1,4 @@
-# Idle-server variant of rdrs2-golang_node_outage.test.
+# Idle-server variant of node_outage.test.
 #
 # The sibling test drives every phase with pk-read pokes, so the failing
 # request is what calls Reconnect(). This test removes the pokes from the
@@ -11,7 +11,7 @@
 # becomes Ready, and the liveness probe (0.1.0/ping) still answers, so
 # nothing restarts it either.
 #
-# Sorts after rdrs2-golang_node_outage and keeps the suite's single sort
+# Sorts after node_outage and keeps the suite's single sort
 # criteria (no .opt file), so it still runs last. It creates and drops its
 # own database and does not depend on the seeded test databases.
 

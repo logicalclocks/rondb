@@ -4,7 +4,7 @@
 #
 # They connect to the cluster directly through the NDB API and reuse the
 # test databases the Go test module seeds. They used to run at the end of
-# rdrs2-golang_gotest, but that pushed the whole test to 14-15 minutes on
+# the Go tests (now the per-group tests of this suite), but that pushed it to 14-15 minutes on
 # a fast idle machine - within seconds of MTR's default 15 minute testcase
 # timeout, and well past it on a loaded machine - so they run as their own
 # MTR test instead.
@@ -13,7 +13,7 @@
 # integration package's TestMain (InitialiseTesting) creates ALL test
 # databases when the "sentinel" database is absent, and its readiness
 # barrier only returns once the seed is actually usable. This test cleans
-# the databases up again at the end (as rdrs2-golang_gotest also does), so
+# the databases up again at the end (as the Go group tests also do), so
 # each of the two tests seeds afresh and they can run in either order.
 #
 # The same constant-output convention as run_gotest.inc applies: on

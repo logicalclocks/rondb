@@ -7,8 +7,13 @@
 # Fails early and loud: the first suite with a failing test stops the run
 # with a non-zero exit status. That suite itself runs to its end, so all of
 # its failures are listed. A test that fails and then passes on mtr's retry
-# counts as failing (mtr's default). MTR_EXTRA_ARGS is passed to every mtr
-# invocation.
+# counts as failing (mtr's default).
+#
+# MTR_PARALLEL is the number of mtr workers (--parallel), default 1; each
+# worker runs its own cluster, so a suite of independent tests (the
+# rdrs2-golang groups above all) finishes in the time of its longest test
+# instead of the sum. build_all.sh sets it from its -m option. MTR_EXTRA_ARGS
+# is passed to every mtr invocation as well.
 set -e
 
 mysql_connector=mysql-connector-java-8.0.21-bin.jar
@@ -16,10 +21,14 @@ wget -N https://repo.hops.works/master/$mysql_connector
 full_path=$(readlink -f $mysql_connector)
 export MTR_CLASSPATH=$full_path
 
+MTR_PARALLEL=${MTR_PARALLEL:-1}
+echo "MTR: running with --parallel=$MTR_PARALLEL ${MTR_EXTRA_ARGS:-}"
+
 # --max-test-fail=0: with --force alone mtr still aborts a suite after 10
 # failed tests, cutting the list of failures short.
 run_mtr() {
-  if ! ./mtr --force --max-test-fail=0 ${MTR_EXTRA_ARGS:-} "$@"; then
+  if ! ./mtr --force --max-test-fail=0 --parallel=$MTR_PARALLEL \
+       ${MTR_EXTRA_ARGS:-} "$@"; then
     echo "################################################################"
     echo "## MTR FAILED: $*"
     echo "## Stopping; the remaining suites were not run."
