@@ -1,4 +1,4 @@
-# Config for rdrs2-golang_memory_regression (RONDB-1144): the no-auth
+# Config for memory_regression (RONDB-1144): the no-auth
 # rdrs.3.1 runs with the pool settings a production pod would get on a
 # small memory limit (a cap of 256 buffers of each kind, 8 preallocated,
 # a 30 second idle shrink) and 8 worker threads, so a sustained wide-row

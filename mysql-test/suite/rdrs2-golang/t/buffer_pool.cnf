@@ -1,4 +1,4 @@
-# Config for rdrs2-golang_buffer_pool (RONDB-1144): same cluster and rdrs
+# Config for buffer_pool (RONDB-1144): same cluster and rdrs
 # servers as the rest of the suite, but the no-auth rdrs.3.1 runs with a
 # tiny, explicitly capped buffer pool and a short idle-shrink period so the
 # Go driver can exhaust the pool, watch it shrink, and check memory from

@@ -30,7 +30,7 @@
 // STARV_ASSERT=0 to demote everything to reporting. Findings go to
 // $STARV_REPORT.
 //
-// It is driven by mysql-test/suite/rdrs2-golang/t/rdrs2-golang_ping_starvation.test
+// It is driven by mysql-test/suite/rdrs2-golang/t/ping_starvation.test
 // and self-skips unless RDRS_STARVATION=1, so the normal `go test ./...`
 // pass over all packages does not run it.
 package starvation
@@ -297,7 +297,7 @@ func TestPingDuringNodeRestart(t *testing.T) {
 	nodeID := os.Getenv("NDB_NDBD_2_NODEID")
 	if mgm == "" || waiter == "" || nodeID == "" {
 		t.Fatalf("NDB_MGM, NDB_WAITER and NDB_NDBD_2_NODEID must be set " +
-			"(run via mtr --suite=rdrs2-golang rdrs2-golang_ping_starvation)")
+			"(run via mtr rdrs2-golang.ping_starvation)")
 	}
 
 	pingURL := testutils.NewPingURL()
