@@ -37,7 +37,7 @@ Example: ./docker-build.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20
       Optional number of MTR workers (mtr --parallel) for the test runs of a
       release build (-r); each worker runs its own cluster, so this is
       bounded by memory, not by cores, and is independent of -j.
-      Defaults to 2. See build_all.sh
+      Defaults to 1. See build_all.sh
 
 -r    Create release builds. This takes longer
 -d    Deploy to remote repo.hops.works. Hopsworks AB specific
@@ -178,7 +178,7 @@ echo "Build Params:
   Dockerfile: $DOCKERFILE
   Docker image: $DOCKER_IMAGE_NAME
   No of build threads: $CORES
-  MTR workers (--parallel): ${MTR_PARALLEL:-2 (default)}
+  MTR workers (--parallel): ${MTR_PARALLEL:-1 (default)}
   Release: $RELEASE_BUILD
   Deploy: $DEPLOY"
 

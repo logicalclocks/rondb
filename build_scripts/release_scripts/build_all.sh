@@ -33,7 +33,7 @@ build-all.sh {-s path} [-b path] {-o path} {-r}
         No of MTR workers (mtr --parallel) for the test runs of a release
         build (-r), on the PGO training build and on the final build. Each
         worker runs its own cluster, so this is bounded by memory, not by
-        cores, and is independent of -j. Default: 2.
+        cores, and is independent of -j. Default: 1.
 -d      Deploy to remote repo.hops.works
 -r      Make release tarballs. Takes longer
 -f      Make final realse for clusterj artifacts with out -SNAPSHOT in the artifact name.
@@ -147,7 +147,7 @@ fi
 # number is bounded by memory, not by cores: it is independent of -j and
 # has a fixed default. Override with -m.
 if [[ "$MTR_PARALLEL" == "" ]]; then
-  MTR_PARALLEL=2
+  MTR_PARALLEL=1
 fi
 
 echo "Build Params:

@@ -161,7 +161,7 @@ ENV IGNORE_TEST_FAILURES_ARG=${IGNORE_TEST_FAILURES:+-i}
 
 # MTR workers (mtr --parallel) for the test runs of a release build. One
 # cluster per worker, so bounded by memory, not by cores; independent of
-# BUILD_THREADS. Unset means build_all.sh's default of 2.
+# BUILD_THREADS. Unset means build_all.sh's default of 1.
 ARG MTR_PARALLEL
 
 RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
