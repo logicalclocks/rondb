@@ -324,7 +324,15 @@ runScanWithFilter(Ndb *ndb,
     return -1;
   }
 
-  if (scan->readTuples(NdbOperation::LM_CommittedRead) != 0) {
+  /**
+   * A scan expected to fail reads one fragment at a time. The program
+   * fails at its first row, and the failure closes the scan: in parallel,
+   * the fragments whose scans had started when the close arrived varied
+   * from run to run, and with them the JIT compile attempts counted in
+   * ndbinfo.jit.programs_fallback (pinned by ndb_push_agg_jit).
+   */
+  const Uint32 parallel = expectExecuteError ? 1 : 0;
+  if (scan->readTuples(NdbOperation::LM_CommittedRead, 0, parallel) != 0) {
     printf("(readTuples: %s) ", scan->getNdbError().message);
     trans->close();
     return -1;
