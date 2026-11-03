@@ -14,7 +14,7 @@ fi
 
 help() {
   cat <<EOF
-build-all.sh {-s path} {-b path} {-o path} {-j build_threads} {-r} {-d} {-f} {-p} {-i}
+build-all.sh {-s path} {-b path} {-o path} {-j build_threads} [-m mtr_workers] {-r} {-d} {-f} {-p} {-i}
 
 USAGE
 =====
@@ -29,6 +29,10 @@ build-all.sh {-s path} [-b path] {-o path} {-r}
         Path to output directory where the build process will copy the final tarball
 -j=build_threads
         No of build threads. This is passed to $(make -j$build_threads)
+-m=mtr_workers
+        No of MTR workers (mtr --parallel) for the test runs of a release
+        build (-r), on the PGO training build and on the final build. Each
+        worker runs its own cluster. Default: build_threads / 8, at least 1.
 -d      Deploy to remote repo.hops.works
 -r      Make release tarballs. Takes longer
 -f      Make final realse for clusterj artifacts with out -SNAPSHOT in the artifact name.
@@ -50,7 +54,7 @@ IGNORE_TEST_FAILURES=false
 
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:j:rdfpi" opt; do
+while getopts ":n:s:b:o:j:m:rdfpi" opt; do
   case "$opt" in
   s)
     SRC_DIR=$OPTARG
@@ -63,6 +67,9 @@ while getopts ":n:s:b:o:j:rdfpi" opt; do
     ;;
   j)
     CORES=$OPTARG
+    ;;
+  m)
+    MTR_PARALLEL=$OPTARG
     ;;
   r)
     RELEASE_BUILD=true
@@ -135,6 +142,15 @@ if [[ "$CORES" == "" ]]; then
   exit 1
 fi
 
+# MTR workers for the release test runs: one cluster per worker, so the
+# default keeps a cluster per 8 build threads. Override with -m.
+if [[ "$MTR_PARALLEL" == "" ]]; then
+  MTR_PARALLEL=$((CORES / 8))
+  if [ $MTR_PARALLEL -lt 1 ]; then
+    MTR_PARALLEL=1
+  fi
+fi
+
 echo "Build Params:
   Src dir:                  $SRC_DIR_ABS
   Build dir:                $TEMP_BUILD_DIR_ABS
@@ -145,6 +161,7 @@ echo "Build Params:
   Is public release         $IS_PUBLIC_RELEASE
   Ignore test failures      $IGNORE_TEST_FAILURES
   Number of build threads:  $CORES
+  MTR workers (--parallel): $MTR_PARALLEL
   RonDB version:            $RONDB_VERSION
   RonDB version Extra:      $RONDB_VERSION_EXTRA" 
    
@@ -173,7 +190,8 @@ if [ "$RELEASE_BUILD" = true ]; then
   make -j$CORES
   cd mysql-test
   echo "_____________ TESTING PGO TRAINING BUILD _____________"
-  $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
+  MTR_PARALLEL=$MTR_PARALLEL \
+    $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
     test_failures "PGO training"
 
   cd $TEMP_BUILD_DIR_ABS
@@ -185,11 +203,7 @@ if [ "$RELEASE_BUILD" = true ]; then
 
   echo "_____________ TESTING RELEASE BUILD _____________"
   cd $TEMP_BUILD_DIR_ABS/use_build/mysql-test
-  MTR_PARALLEL=$((CORES / 8))
-  if [ $MTR_PARALLEL -lt 1 ]; then
-    MTR_PARALLEL=1
-  fi
-  MTR_EXTRA_ARGS="--parallel=$MTR_PARALLEL" \
+  MTR_PARALLEL=$MTR_PARALLEL \
     $SRC_DIR_ABS/build_scripts/release_scripts/run_training.sh ||
     test_failures "release"
 else

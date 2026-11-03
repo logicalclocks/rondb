@@ -9,6 +9,7 @@ pipeline {
       string(name: 'BRANCH', defaultValue: '22.10.1', description: 'RonDB branch to build.')
       choice(name: 'DOCKER_BASE_IMAGE', choices: ['oraclelinux9', 'oraclelinux8', 'ubuntu22'],  description: 'Base image for docker build container')
       choice(name: 'BUILD_CORES', choices: ['16', '1', '8', '24', '32'],  description: 'No of build threads. This is passed to make -j. Note jenkins machine is shared with other build process.')
+      choice(name: 'MTR_PARALLEL', choices: ['3', '1', '2', '4', '8'],  description: 'No of MTR workers (mtr --parallel) for the test runs of a release build, on the PGO training build and on the final build. Each worker runs its own cluster.')
       booleanParam(name: 'RELEASE_BUILD', defaultValue: true, description: 'Enable this for release build. It uses PGO (profile guided optimization) and it take ~ 3 hrs to build.')
       booleanParam(name: 'RELEASE_FINAL_CLUSTERJ', defaultValue: false, description: "By default clusterj jar is uploaded as a 'SNAPSHOT' version. Enable this parameter to release final JARs. NOTE: for non public releases cluster is not uploaded.")
       booleanParam(name: 'IS_PUBLIC_RELEASE', defaultValue: true, description: 'Public releases are copied to /master and non public releases are copied to /dev on the repo server.')
@@ -97,6 +98,7 @@ pipeline {
                   --no-cache \
                   --security-opt seccomp=unconfined \
                   --build-arg BUILD_THREADS=$BUILD_CORES \
+                  --build-arg MTR_PARALLEL=$MTR_PARALLEL \
                   --build-arg DEPLOY_TO_REPO=1 \
                   $RELEASE_TARBALL_ARG \
                   $RELEASE_FINAL_CLUSTERJ_ARG \
