@@ -1,4 +1,4 @@
-# HTTP helpers for rdrs2-golang_node_outage.test (RONDB-1104).
+# HTTP helpers for node_outage.test (RONDB-1104).
 #
 # Talks to two REST servers started by MTR:
 #   rdrs.1.1 - API keys enabled; used for /health and for pokes whose key
