@@ -12,7 +12,7 @@
 #    before column resolution with one message.  The output alias of a
 #    SELECT-list subquery aggregate stays supported (ronsql_subquery_agg).
 #
-# No NDB connection is needed: both checks run before the dictionary load.
+# No NDB connection is needed: these checks run before the dictionary load.
 
 --source include/have_ndb.inc
 --disable_warnings
@@ -48,6 +48,76 @@ call mtr.add_suppression("Participant timeout");
 --echo ===== Alias in HAVING with ORDER BY on it and LIMIT (F17) =====
 --error 1
 --exec $PARSE_TEST 'select a, count(*) as n from tbl group by a having n > 2 order by n desc, a asc limit 9;'
+
+# Apply the same reference checks inside IN's outer operand. These fail
+# before dictionary access, including references under arithmetic and NOT.
+
+--echo ===== GROUP BY column under HAVING IN =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having a in (select max(b) from tbl2);'
+
+--echo ===== Qualified column under HAVING IN =====
+--error 1
+--exec $PARSE_TEST 'select t.a, count(*) from tbl as t group by t.a having t.a in (select max(u.b) from tbl2 as u);'
+
+--echo ===== Ordinary aggregate alias under HAVING IN =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) as n from tbl group by a having n in (select count(*) from tbl2);'
+
+--echo ===== Column under arithmetic and negated HAVING IN =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having not ((a + 1) in (select max(b) from tbl2));'
+
+# Supported operators depend on position. Reject unsupported shapes before
+# dictionary access, including branches that data or short-circuiting can hide.
+
+--echo ===== Unsupported DIV in a short-circuited HAVING OR =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having count(*) >= 0 or 1 div 2 > 0;'
+
+--echo ===== Unsupported modulo in a short-circuited HAVING AND =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having count(*) < 0 and 1 % 2 > 0;'
+
+--echo ===== Unsupported HAVING XOR =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having count(*) > 1 xor count(*) < 3;'
+
+--echo ===== Aggregate used as a HAVING predicate =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having count(*);'
+
+--echo ===== Comparison used as a HAVING numeric value =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having (count(*) > 1) + 1 > 0;'
+
+--echo ===== Arithmetic under HAVING IS NULL =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having (sum(b) + 1) is null;'
+
+--echo ===== Scalar subquery under HAVING IS NULL =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having (select max(b) from tbl2) is null;'
+
+--echo ===== Scalar subquery used as a HAVING predicate =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having (select count(*) from tbl2);'
+
+--echo ===== IN subquery used as a HAVING numeric value =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having (count(*) in (select max(b) from tbl2)) = 1;'
+
+--echo ===== Arithmetic operand of negated HAVING IN =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having not ((count(*) + 1) in (select max(b) from tbl2));'
+
+--echo ===== EXISTS used as a HAVING predicate =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl group by a having exists (select b from tbl2);'
+
+--echo ===== Unsupported HAVING with an empty-input WHERE condition =====
+--error 1
+--exec $PARSE_TEST 'select a, count(*) from tbl where 1 = 0 group by a having 1 div 2 > 0;'
 
 --echo ===== HAVING inside a CTE body =====
 --error 1

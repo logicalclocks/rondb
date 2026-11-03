@@ -1,9 +1,10 @@
 # RonSQL parser review and cleanup plan
 
 Review started: 2026-10-27
-Updated: 2026-10-31
+Updated: 2026-11-03
 Original baseline: 7128c75dca405f5e0fff6be19ae2b584beb1566d
 Cleanup review baseline: 45a7568faed6fe58aca99170be3a50c03a4495c9
+Follow-up review baseline: 6b0b7da91c5dacf5d6401b2ec65135fa7d254ecb
 
 ## Scope and working agreement
 
@@ -29,28 +30,29 @@ Function names identify the durable locations.
 | Items | Status | Commit |
 | --- | --- | --- |
 | I1, I2, I3 | Completed, tested by the user, committed and pushed | 09176e0a3ed |
-| I4 | I4a-I4c committed and pushed; full RonSQL suite passed; original I4d fault-injection MTR test passed | cac1d1bf650 (fixes) |
+| I4 | Fixes and fault-injection tests committed and pushed; user reported tests passed | cac1d1bf650 (fixes), 6b0b7da91c5 (tests) |
 | C1 | Completed for statement construction and synthetic table defaults | 45a7568faed |
-| C3 | Original three list families completed; GROUP/ORDER and output/CTE/join follow-ups applied; user reported all tests passed | 45a7568faed (original work) |
-| C4 | Original helper and three walkers completed; validator and subquery-discovery follow-ups applied; user reported all tests passed | 45a7568faed (original work) |
+| C3 | Original work and list-construction follow-ups committed and pushed; user reported tests passed | 45a7568faed, 6b0b7da91c5 |
+| C4 | Projection/HAVING follow-ups and regression coverage applied; user validation pending | 45a7568faed, 6b0b7da91c5; current follow-ups uncommitted |
 | C2 | C2a-C2e approved and applied; validation is user-owned | cfcc91bc44e |
-| C5 | C5a-C5d approved and applied; validation is user-owned | cfcc91bc44e |
+| C5 | C5a-C5d committed; remaining collector/overflow changes and regressions applied; user validation pending | cfcc91bc44e; current follow-ups uncommitted |
 | C6 | C6a-C6b approved and applied; validation is user-owned | cfcc91bc44e |
 | C7 | C7a-C7d approved and applied; validation is user-owned | cfcc91bc44e |
 | C8 | C8a-C8c approved and applied; validation is user-owned | cfcc91bc44e |
 | C9 | C9a approved and applied; validation is user-owned | cfcc91bc44e |
-| Feature candidates | Pending individual evaluation and approval | - |
-| Training module | Pending; original draft has not been saved | - |
+| Unary minus | Precedence and cross-table diagnostic changes plus eight regression cases applied; user validation pending | Uncommitted |
+| Feature candidates | Remaining candidates require individual evaluation and approval | - |
+| Training module | Completed, reviewed by the user, committed and pushed in hops_slideware | 387c866 |
 
-Both commits are pushed to origin/RONDB-1124-fixes:
+The first two commits were pushed to origin/RONDB-1124-fixes:
 
 - 09176e0a3ed: RONDB-1124: Fix RonSQL subquery parsing and COUNT semantics.
 
 - 45a7568faed: RONDB-1124: Simplify RonSQL AST construction and traversal.
 
 The user reported all tests passed before each commit. The assistant did not
-build or run tests; git diff --check passed for both changesets. No new test
-cases were added for C1/C3/C4. Further cleanup described below remains open.
+build or run tests; git diff --check passed for both changesets. Those initial
+C1/C3/C4 changes added no test cases. Subsequent work is recorded below.
 
 ### Cleanup batch: C2 and C5-C9
 
@@ -75,8 +77,160 @@ track for review. Output-registration extraction follows the C6 helpers.
 Worker capacity determined when independent drafts started; it did not create
 a source-code dependency between them. All patches in this selected cleanup
 sequence are included in cfcc91bc44e; validation remains user-owned.
-I4 OOM corrections are recorded below. Deferred review items and the training
-module remain separately planned.
+I4 OOM corrections and subsequent follow-ups are recorded below.
+
+### Follow-up review of C4/C5 and unary minus (2026-11-03)
+
+Baseline: 6b0b7da91c5. All source and test changes below were reviewed and
+approved individually and are applied locally, uncommitted. git diff --check
+passed. The assistant has not built, regenerated the parser or run tests;
+no user test result has yet been reported for this follow-up batch.
+The findings describe source paths, not reproduced runtime failures.
+
+Applied changes:
+
+- classify_where_by_table() now rejects more than 32 OR atoms before consuming
+  a partial validation result. The previous code retained the original tree;
+  predicate loss was not established. Later projection discovery could inspect
+  operands beyond the validated prefix.
+
+- register_condition_linked_projections() shares safe, same-scope child access
+  across main and CTE cross-table filters and CASE conditions. Complete CASE
+  discovery includes literal-left and right-hand column references before CTE
+  projection offsets are calculated. GROUP BY projections remain first.
+  Aggregate programs and inner SELECT bodies retain separate traversal.
+
+- Cross-table Boolean emission uses the checked 32-term collector. CASE
+  emission uses a dynamic collector. Both flatten all terms of the same
+  connective, including right-associated and balanced trees, and preserve the
+  former emission order for previously supported left-associated trees.
+  Mixed-connective expression support and downstream limits remain separate.
+
+- Main and CTE/root scan planning share dynamic AND collection. The CTE
+  planner's 64-entry pending-work stack and its early return were removed.
+  Simplification can expand an expression after raw-conjunct checks. The old
+  fallback retained the complete filter but could skip FORCE INDEX validation;
+  predicate loss was not established. Existing raw-conjunct limits remain.
+
+- Both expression grammars use explicit T_UNARY_MINUS precedence. Unary minus
+  in cross-table WHERE arithmetic now raises UNSUPPORTED before register-depth
+  calculation can follow its absent left operand. Binary subtraction retains
+  its existing handling.
+
+- having_reference_children() shares the operand policy between reference
+  validation and alias resolution. Validation still reads column indices
+  before compile() replaces supported aliases with aggregate-register indices.
+  Recursive callables use descriptive names, as requested by the user.
+
+- HAVING IN now exposes its outer operand to both walks and to
+  ResultPrinter::scan_having_max_agg(). Register allocation happens before
+  execution substitutes subquery results. Inner SELECT bodies contribute no
+  registers to the outer result printer.
+
+Fourteen regression cases are applied, awaiting user execution:
+
+- ronsql_subquery: seven strict MySQL/CLI/RDRS comparisons covering SUM and AVG
+  absent from SELECT, arithmetic around an aggregate, nullable operands,
+  NULL-containing inner results, and empty positive/negated IN results.
+- ronsql_having_refs: four disconnected preparation-time rejection cases for
+  grouped columns, qualified columns, ordinary aggregate aliases and columns
+  under arithmetic/NOT inside IN.
+- ronsql_subquery_agg: three strict MySQL/RDRS comparisons covering nullable SUM
+  aliases, COUNT aliases under NOT IN and aliases inside arithmetic.
+  Expected-result files were drafted from the fixtures, not recorded by a run.
+
+Eight unary-minus regression cases are also applied, awaiting user execution:
+ronsql_constants adds five strict MySQL/CLI/RDRS comparisons for folded and
+column arithmetic, repeated minus, and HAVING with explicit grouping controls.
+Its existing negative-overflow diagnostic now reflects negation before
+multiplication. ronsql_join_agg adds two CLI rejection cases and a strict
+MySQL/RDRS binary-subtraction control. Expected results have not been recorded
+by a test run.
+
+Eight cross-table OR regressions are applied in ronsql_join_where_classify,
+awaiting user execution. Strict MySQL/RDRS comparisons cover 31/32 terms and
+left-associated, right-associated and balanced trees; only the final term
+matches rows. CLI cases require the limit diagnostic at 33 terms, including
+late IS NULL/EXTRACT operands, and retain rejection of an AND branch under OR.
+The query files are removed after each successful comparison or expected error.
+
+Five CASE regression queries are applied in ronsql_cte_case, awaiting user
+execution. Strict MySQL/RDRS comparisons cover left-associated, right-associated
+and balanced AND/OR trees and 33-term AND/OR conditions whose final atom changes
+the result. CLI cases retain rejection of mixed connectives in both directions
+and check clean rejection of a literal condition. Expected results were drafted
+from the fixtures and source diagnostics, not recorded by a run.
+
+Two CASE projection-ordering comparisons are applied in ronsql_cte_case
+(Tests 17 and 18). They cover a literal-left comparison and a
+column-versus-column comparison with a parent column used only on the RHS,
+with parent GROUP BY columns and a CTE aggregate in the main query's CASE arm.
+The fixtures distinguish CTE keys, aggregate values and parent-column values,
+exposing shifted output offsets.
+
+The user's 2026-11-03 run failed at Test 19: its SUM(CASE ...) output inside
+a chained CTE hits the pre-existing "CTE aggregate over complex expression
+not yet supported" restriction in build_cte_virtual_tables(). Test 20 uses
+the same unsupported aggregate shape. Both tests now require that rejection
+through the CLI instead of incorrectly expecting successful comparisons.
+The revised expectations await user execution.
+
+Positive CTE-body CASE projection-ordering coverage remains an open follow-up.
+It needs a supported, result-sensitive aggregate shape, or separately reviewed
+expression-result type inference for SUM(CASE ...) CTE outputs. Tests 19 and
+20 do not validate chained projection offsets.
+
+Eleven CTE Boolean-collection regressions are applied in ronsql_cte_index_body,
+awaiting user execution. Two raw conjuncts expand to 63/64/65 AND terms;
+left-associated trees exercise the former 64-entry pending-stack boundary,
+with right-associated and balanced controls. Seven strict MySQL/RDRS
+comparisons check the bound and final residual predicate, and EXPLAIN checks
+require idx_grp or the intended USE INDEX table-scan fallback. Four CLI cases
+require FORCE INDEX errors for unusable/missing indexes, including the
+65-term overflow shape. All generated SQL and EXPLAIN files are removed.
+Expected results were drafted from fixtures and source, not recorded by a run.
+
+Scalar-subquery NULL handling in HAVING numeric expressions is applied,
+awaiting user validation. An empty scalar result or SQL NULL is substituted as
+T_NULL; evaluate_having_value() now returns the same NaN marker used for NULL
+aggregate results. Six strict MySQL/CLI/RDRS comparisons in ronsql_subquery cover
+empty aggregate input, zero returned rows, an all-NULL inner value, NOT,
+arithmetic with OR/AND, and a non-NULL control. Expected results were drafted
+from fixtures, not recorded by a run.
+
+Subqueries inside an IN subquery's left operand are now explicitly rejected
+during preparation with UNSUPPORTED classification. The shared registration
+and substitution walks stop at the enclosing IN, so nested nodes in that
+operand would remain unprocessed. The guard uses ce_has_subquery() and covers
+WHERE and HAVING. Six disconnected CLI regressions in ronsql_subquery cover
+scalar subqueries, arithmetic, negation, EXISTS and nested IN; user execution
+is pending. Supporting these shapes needs coordinated registration and
+substitution traversal.
+
+Preparation-time HAVING support validation is applied. Separate helpers check
+predicate and numeric-value positions, sharing the aggregate-reference test
+used for IS NULL and negated IN. Validation runs after reference/subquery
+checks and before dictionary access or alias-register mutation. Both Boolean
+branches are checked, scalar numeric placeholders remain supported, and
+NOT/! polarity matches later IN substitution. Unsupported shapes now fail
+with UNSUPPORTED classification independently of empty results or
+short-circuiting. Aggregate-program arguments and inner SELECT bodies keep
+their separate validation.
+
+Twelve disconnected rejection cases in ronsql_having_refs cover unsupported
+operators, invalid expression positions, subquery positions, negated IN and
+an empty-input WHERE condition. Two strict MySQL/CLI/RDRS controls in
+ronsql_subquery cover double-NOT arithmetic IN and supported numeric/IS NULL
+expressions, including DIV inside an aggregate argument. Existing scalar,
+nullable IN and SELECT-subquery-alias tests remain relevant. All await user
+execution; expected results were drafted from fixtures and diagnostics.
+
+Remaining work:
+
+1. The user builds and runs the relevant suites, including Bison generation
+   with the existing warning-as-error settings.
+2. Address any reported failures; commit/push follows a separate user request.
+   The training module remains pinned to the baseline below.
 
 ## Correctness investigations
 
@@ -313,8 +467,9 @@ in MYSQL_TMP_DIR. The test now writes them under MYSQLTEST_VARDIR/log, which
 MTR excludes from its directory-content comparison. The user subsequently
 reported that the MTR test passed. On 2026-11-02, after the C3 list-stack
 regressions were added, the user reported that all tests passed.
-The assistant inspected the existing logs but has not built, regenerated the
-parser/lexer, run tests or recorded MTR results.
+The driver, MTR integration and list-stack regressions were committed and
+pushed in 6b0b7da91c5. The assistant inspected the existing logs but has not
+built, regenerated the parser/lexer, run tests or recorded MTR results.
 
 Implementation sequence:
 
@@ -404,8 +559,8 @@ Preserved boundaries for validation and future changes:
 ### C3 Make list construction consistent
 
 Status: original three list families completed in 45a7568faed. GROUP/ORDER
-and output/CTE/join follow-ups implemented; the user reported all tests passed
-on 2026-11-02. These follow-ups remain uncommitted.
+and output/CTE/join follow-ups were committed and pushed in 6b0b7da91c5 after
+the user reported all tests passed on 2026-11-02.
 
 RonSQLListBuilder stores head/tail pointers and provides constant-time append.
 Separate approved patches converted index-name lists, ON-condition lists and
@@ -447,8 +602,9 @@ Follow-up review on 2026-10-31:
 ### C4 Centralize conditional-expression child access
 
 Status: original helper and three walkers completed in 45a7568faed.
-Validator and subquery-discovery follow-ups implemented; the user reported
-all tests passed on 2026-11-02. These follow-ups remain uncommitted.
+Validator and subquery-discovery follow-ups were committed and pushed in
+6b0b7da91c5 after the user reported all tests passed on 2026-11-02. Current
+projection/HAVING follow-ups are recorded above and await user validation.
 
 A local condition_children() returns at most two children in the current
 SELECT scope. Read-only and mutable views share one dispatch switch and
@@ -512,9 +668,10 @@ Follow-up review on 2026-10-31:
   same_inner_filter() has operator-specific equality and conservative fallback
   rules. Aggregate-expression traversal uses a separate expression type.
 
-- Audit HAVING validation and CTE projection collection separately before
-  widening their operator coverage. HAVING identifiers change from column
-  indices to aggregate registers after resolution; preserve the current phase.
+- The current follow-up batch adds shared main/CTE projection discovery and
+  HAVING reference traversal, including IN's outer operand. HAVING identifiers
+  still change from column indices to aggregate registers in compile(); the
+  validation and resolution phases retain their order.
 
 ### C5 Share checked Boolean collection and reconstruction
 
@@ -523,8 +680,8 @@ All eight throwing AND callers and the single OR caller now
 use the shared collector through their existing wrappers. Their 64-term limits,
 messages, source order and original leaf pointers are preserved. git diff
 --check passed and the source matches the approved patches; building and tests
-remain user-owned and have not been run by the assistant. Deferred collector
-audits below remain open.
+remain user-owned and have not been run by the assistant. The current
+collector follow-ups and their pending regression coverage are recorded above.
 
 The original review found these different contracts:
 
@@ -564,10 +721,10 @@ residuals. A NULL pointer means no tree or term, not a SQL NULL node. Left
 association, original leaf pointers and allocation order are preserved;
 synthetic connective nodes retain the existing source-span contract.
 
-Further investigation: the 32-term OR validation prefix at :3533 retains the
-original expression, so predicate loss is not established there. Audit later
-validation before changing it. Review left-spine collectors at :4490, :17590
-and :18707 and CTE stack-overflow behavior as separate semantic questions.
+The follow-up audit led to checked OR validation, safe projection discovery,
+shared cross-table/CASE collectors and dynamic CTE scan-planning collection.
+These changes are applied locally; details and remaining tests are recorded
+in the follow-up review section above.
 
 ### C6 Share aggregate construction and registration
 
@@ -608,9 +765,9 @@ NULL-compiler guard and aggregate-limit accounting.
 
 ### C7 Extract preparation phases without reordering them
 
-Status: C7a-C7d approved and applied locally. Both source files
-match the approved patches and git diff --check passed. Building and tests
-remain user-owned and have not been run by the assistant. Included in cfcc91bc44e.
+Status: C7a-C7d committed and pushed in cfcc91bc44e. Both source files matched
+the approved patches and git diff --check passed. Building and tests remain
+user-owned and have not been run by the assistant.
 
 C7a extracted throw_parse_error(parse_result), moving the error rendering
 originally at RonSQLPreparer.cpp:1267 unchanged. All four diagnostic blocks in
@@ -662,10 +819,10 @@ operation. Moving its schema-dependent work is a separate design change.
 
 ### C8 Share name lookup while preserving scope policies
 
-Status: C8a-C8c approved and applied locally. Both source files match the approved
-patches and git diff --check passed. Builds and tests remain user-owned and have
-not been run by the assistant. Included in cfcc91bc44e. Public Context interfaces
-remain stable, preserving the applied C2 grammar changes.
+Status: C8a-C8c committed and pushed in cfcc91bc44e. Both source files matched
+the approved patches and git diff --check passed. Builds and tests remain
+user-owned and have not been run by the assistant. Public Context interfaces
+remain stable, preserving the C2 grammar changes.
 
 Unify column interning behind the existing Context methods
 (RonSQLPreparer.cpp:20161). Record every syntactic occurrence for authorization,
@@ -714,9 +871,9 @@ Retain QueryScope and the pre-rewrite authorization inventory as foundations.
 
 ### C9 Deduplicate lexer lookup and improve current contracts
 
-Status: C9a approved and applied locally. The lexer source matches the approved
-patch and git diff --check passed. Generated files, builds and tests remain
-user-owned and have not been run by the assistant. Included in cfcc91bc44e.
+Status: C9a committed and pushed in cfcc91bc44e. The lexer source matched the
+approved patch and git diff --check passed. Generated files, builds and tests
+remain user-owned and have not been run by the assistant.
 
 Extract the normalized MySQL-keyword binary search shared by RonSQLLexer.l:127
 and :404. Keep normalization at callers and leave the implemented-keyword table
@@ -750,11 +907,17 @@ Completed sequence:
    one at a time after approval; commit and push them and this plan in
    cfcc91bc44e at the user's request. Validation remains user-owned.
 8. Review and apply I4a-I4c individually, record the allocation audit, and
-   include them in this OOM commit at the user's request. Validation remains
-   user-owned.
+   commit/push cac1d1bf650 at the user's request.
+9. Add fault-injection tests and deferred C3/C4 cleanup; commit/push
+   6b0b7da91c5 after the user reported all tests passed.
+10. Finish the 30-slide training module; commit/push 387c866 in hops_slideware
+    after the user reviewed it.
+11. Investigate the selected C4/C5 and unary-minus candidates. Apply the
+    individually approved follow-up fixes and fourteen HAVING IN tests locally.
+    Remaining work and validation are listed in the follow-up review above.
 
-The user has selected C2 and C5-C9 for parallel work. Implementation proceeds
-one approved patch at a time within these boundaries:
+The earlier C2 and C5-C9 work used parallel investigations and individual patch
+approval within these boundaries:
 
 - C2: factor inner SELECT construction, then column/sort and table/join actions.
 
@@ -772,10 +935,8 @@ one approved patch at a time within these boundaries:
   then lexer consistency and the remaining raw-allocation audit. Keep these
   corrections separate from cleanup patches and coordinate I4b with C7.
 
-- Review deferred C3/C4 work separately; avoid treating it as already applied.
-
-- Recover and refresh the training-module draft as a separate documentation
-  change.
+Deferred C3/C4 list/traversal cleanup is included in 6b0b7da91c5; the current
+projection/HAVING/collector work is a separate, uncommitted follow-up batch.
 
 Validation for future patches should cover the relevant existing suites and
 contracts below; this is proposed coverage, not a claim that new cases exist:
@@ -811,9 +972,10 @@ Ordinary aggregate aliases in HAVING need explicit register and AVG handling.
 NOT LIKE and BETWEEN need lowering, precedence and NULL-semantics review.
 Do not classify general NOT IN subqueries as a syntax-only addition.
 
-Before changing unary syntax, investigate the missing unary-minus precedence
-override in RonSQLParser.y:490 and :693. This is a grammar finding, not an
-established executable wrong-result case.
+Explicit unary-minus precedence is now applied locally to both expression
+grammars using T_UNARY_MINUS. The source-level precedence discrepancy led to
+this correction. Eight regression cases are applied; executable validation
+remains pending. Unary plus is still a separate feature candidate.
 
 General SELECT expressions, richer CASE, nested subqueries, DISTINCT, UNION,
 window functions and OFFSET require broader semantic/execution design.
@@ -824,14 +986,12 @@ lowering, compilation. Avoid undertaking that redesign as one cleanup patch.
 
 Target: /Users/mikael/github/hops_slideware/2026-10/ronsql_parser_training/index.html
 
-Status: pending. A 24-slide HTML draft was prepared during the original review
-for the repository's existing engine and RonDB theme. It has not been written
-to disk, rendered or published.
+Status: completed. The 30-slide HTML module uses the existing slideshow engine
+and RonDB theme. The user reviewed it and requested commit/push. It is saved
+and committed as 387c86655e32c81b19f6dc599dbadf8ff696e8d6 on rondb26-edits in
+https://github.com/mronstro/hops-slideware; that commit was pushed.
 
-Recover and refresh that draft against the current parser before proposing it
-as a separate patch. Cover syntax, expression restrictions, joins, CTE families,
-subqueries, grouping/order/limits, hints, ASTs, scopes, rewrites and executor
-interfaces, including the completed corrections and helper extractions.
-
-Distinguish grammar acceptance from semantic and execution support.
-Pin examples and source references to the commit used for the refreshed module.
+Examples and source references are pinned to parser commit
+6b0b7da91c5dacf5d6401b2ec65135fa7d254ecb. Grammar acceptance is distinguished
+from preparation and execution support. The current parser follow-up changes
+postdate that baseline. The assistant did not render or deploy the module.

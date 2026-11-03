@@ -275,6 +275,7 @@ RonSQLPreparer::RonSQLPreparer(RonSQLExecParams conf):
     analyze_ctes();
     validate_having_references();
     analyze_subqueries();
+    validate_having_support();
     analyze_select_subqueries();
     PERF_TS(t_load_start);
     STAT_TS(m_conf.phase_stats, s_load_start);
@@ -679,6 +680,37 @@ condition_children(Expression& ce)
         "Unknown conditional-expression operator. Please report a bug.");
   }
 }
+
+// HAVING reference validation and alias resolution must traverse the same
+// operands in their separate preparation phases. IN contributes its outer
+// operand; its subquery body belongs to a separate SELECT scope.
+template <typename Expression>
+ConditionChildPointers<Expression>
+having_reference_children(Expression& ce)
+{
+  switch (ce.op)
+  {
+  case I_IN_SUBQUERY:
+  case T_IS:
+  case T_AND:
+  case T_OR:
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GT:
+  case T_GE:
+  case T_LT:
+  case T_LE:
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+  case T_NOT:
+  case T_EXCLAMATION:
+    return condition_children(ce);
+  default:
+    return {NULL, NULL};
+  }
+}
 }  // namespace
 
 /*
@@ -734,6 +766,23 @@ struct BooleanTermCollection
   Uint32 count;
 };
 
+// Visit terms of one connective in source order. Returning false from visit
+// stops traversal; terms under a different connective remain whole subtrees.
+template <typename Visitor>
+static bool
+visit_boolean_terms(ConditionalExpression* root, TokenKind connective,
+                    Visitor visit)
+{
+  ndbrequire(connective == T_AND || connective == T_OR);
+  auto walk = [&](auto& self, ConditionalExpression* ce) -> bool {
+    if (ce == NULL) return true;
+    if (ce->op == connective)
+      return self(self, ce->args.left) && self(self, ce->args.right);
+    return visit(ce);
+  };
+  return walk(walk, root);
+}
+
 /*
  * Flatten only the requested connective, preserving left-to-right order and
  * the original leaf pointers. A NULL subtree contributes no terms; T_NULL is
@@ -745,18 +794,27 @@ static BooleanTermCollection
 collect_boolean_terms(ConditionalExpression* root, TokenKind connective,
                        ConditionalExpression** output, Uint32 capacity)
 {
-  ndbrequire(connective == T_AND || connective == T_OR);
   Uint32 count = 0;
-  auto collect = [&](auto& self, ConditionalExpression* ce) -> bool {
-    if (ce == NULL) return true;
-    if (ce->op == connective)
-      return self(self, ce->args.left) && self(self, ce->args.right);
-    if (count == capacity) return false;
-    output[count++] = ce;
-    return true;
-  };
-  if (!collect(collect, root)) return {false, 0};
+  const bool complete = visit_boolean_terms(
+      root, connective, [&](ConditionalExpression* ce) -> bool {
+        if (count == capacity) return false;
+        output[count++] = ce;
+        return true;
+      });
+  if (!complete) return {false, 0};
   return {true, count};
+}
+
+// Append without a fixed term limit. DynamicArray allocation failures
+// propagate to the query's existing resource-error handling.
+static void
+collect_boolean_terms(ConditionalExpression* root, TokenKind connective,
+                       DynamicArray<ConditionalExpression*>& output)
+{
+  visit_boolean_terms(root, connective, [&](ConditionalExpression* ce) -> bool {
+    output.push(ce);
+    return true;
+  });
 }
 
 /*
@@ -3593,19 +3651,14 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
       // (OR branches, arithmetic involving multiple tables) are rejected.
       ConditionalExpression* ce = conjuncts[i];
 
-      // Flatten OR into atoms (single comparison = 1 atom).
+      // Flatten OR into atoms (single comparison = 1 atom). Reject overflow
+      // before validation and routing can consume an incomplete list.
       ConditionalExpression* or_atoms[32];
-      Uint32 num_atoms = 0;
-      auto flatten_or =
-          [&](auto& self, ConditionalExpression* node) -> void {
-        if (node->op == T_OR) {
-          self(self, node->args.left);
-          self(self, node->args.right);
-        } else if (num_atoms < 32) {
-          or_atoms[num_atoms++] = node;
-        }
-      };
-      flatten_or(flatten_or, ce);
+      const BooleanTermCollection terms = collect_boolean_terms(
+          ce, T_OR, or_atoms, ARRAY_LEN(or_atoms));
+      require_prm(terms.complete,
+                  "Cross-table WHERE filter has too many OR/AND atoms.");
+      const Uint32 num_atoms = terms.count;
 
       // Validate each atom: must be a comparison where each side
       // references at most one table, expression depth within limits,
@@ -4444,6 +4497,28 @@ find_or_add_linked_proj(JoinPlan& plan, Uint32 op_idx, const char* col_name)
   return plan.num_linked_projs++;
 }
 
+// Register column references in this SELECT scope using each node's active
+// union member. Subquery bodies and aggregate-program expressions are skipped.
+void
+RonSQLPreparer::register_condition_linked_projections(
+    QueryScope& scope, const ConditionalExpression* ce)
+{
+  if (ce == NULL) return;
+  if (ce->op == T_IDENTIFIER) {
+    const Uint32 col_idx = ce->col_idx;
+    const QueryScope::ResolvedColumnRef& ref =
+        scope.resolved_columns[col_idx];
+    if (ref.join_op_idx != scope.join_plan.agg_leaf_idx) {
+      find_or_add_linked_proj(scope.join_plan, ref.join_op_idx,
+                              m_columns[col_idx].c_str());
+    }
+    return;
+  }
+  const ConditionChildren children = condition_children(*ce);
+  register_condition_linked_projections(scope, children.first);
+  register_condition_linked_projections(scope, children.second);
+}
+
 void
 RonSQLPreparer::build_agg_linked_projections()
 {
@@ -4500,70 +4575,18 @@ RonSQLPreparer::build_agg_linked_projections()
   // Add linked projections for cross-table WHERE filter columns that are
   // not on the leaf table.  Walk expression trees to find all column refs
   // (supports arithmetic expressions like col + 1 > other_col * 2).
-  auto register_linked_projs =
-      [&](auto& self, ConditionalExpression* ce) -> void {
-    if (ce == NULL) return;
-    if (ce->op == T_IDENTIFIER) {
-      Uint32 cidx = ce->col_idx;
-      const QueryScope::ResolvedColumnRef& ref =
-          m_main_scope.resolved_columns[cidx];
-      if (ref.join_op_idx != leaf_idx) {
-        find_or_add_linked_proj(m_main_scope.join_plan,
-                                ref.join_op_idx,
-                                m_columns[cidx].c_str());
-      }
-      return;
-    }
-    // Constants use different union members — don't access args
-    if (ce->op == T_INT || ce->op == T_FLOAT ||
-        ce->op == T_STRING || ce->op == T_NULL)
-      return;
-    // Binary ops (T_PLUS, T_MINUS, T_MULTIPLY, comparisons, etc.)
-    if (ce->args.left != NULL) self(self, ce->args.left);
-    if (ce->args.right != NULL) self(self, ce->args.right);
-  };
   for (Uint32 f = 0; f < m_main_scope.cross_table_where_filters.size(); f++)
   {
     CrossTableFilter& ctf = m_main_scope.cross_table_where_filters[f];
     if (ctf.ce == NULL) continue;  // Consumed (converted to index bound)
-    register_linked_projs(register_linked_projs, ctf.ce->args.left);
-    register_linked_projs(register_linked_projs, ctf.ce->args.right);
+    register_condition_linked_projections(m_main_scope, ctf.ce);
   }
 
-  // Add linked projections for CASE condition columns on parent tables.
-  // Walk the aggregation program looking for CASE instructions whose
-  // condition column is not on the leaf table.
-  if (m_main_scope.agg != NULL) {
-    for (Uint32 c = 0; c < m_main_scope.agg->m_cases.size(); c++) {
-      auto& ci = m_main_scope.agg->m_cases[c];
-      if (ci.condition == NULL) continue;
-      // Flatten AND/OR to find all atom conditions
-      DynamicArray<ConditionalExpression*> atoms(m_amalloc);
-      ConditionalExpression* ce = ci.condition;
-      if (ce->op == T_AND || ce->op == T_OR) {
-        TokenKind flatten_op = ce->op;
-        while (ce->op == flatten_op) {
-          atoms.push(ce->args.right);
-          ce = ce->args.left;
-        }
-        atoms.push(ce);
-      } else {
-        atoms.push(ce);
-      }
-      for (Uint32 a = 0; a < atoms.size(); a++) {
-        ConditionalExpression* atom = atoms[a];
-        if (atom->args.left != NULL && atom->args.left->op == T_IDENTIFIER) {
-          Uint32 col_idx = atom->args.left->col_idx;
-          const QueryScope::ResolvedColumnRef& col_ref =
-              m_main_scope.resolved_columns[col_idx];
-          if (col_ref.join_op_idx != leaf_idx) {
-            find_or_add_linked_proj(m_main_scope.join_plan,
-                                    col_ref.join_op_idx,
-                                    m_columns[col_idx].c_str());
-          }
-        }
-      }
-    }
+  // Register CASE-condition projections before emission calculates CTE output
+  // offsets. GROUP BY projections have already been registered first.
+  for (Uint32 c = 0; c < m_main_scope.agg->m_cases.size(); c++) {
+    register_condition_linked_projections(
+        m_main_scope, m_main_scope.agg->m_cases[c].condition);
   }
 }
 
@@ -4572,9 +4595,9 @@ RonSQLPreparer::build_agg_linked_projections()
 // the GB pre-registration block in analyze_columns (line ~1147).
 //
 // A CTE body aggregator can reference parent-table columns (from tables
-// above its own agg leaf) in its GROUP BY, Load, and cross-table WHERE
-// filters. Those parent columns must be registered as linked projections
-// in scope.join_plan.linked_projs so the NDB API includes them in the
+// above its own agg leaf) in its GROUP BY, Load, CASE conditions, and
+// cross-table WHERE filters. Register these as linked projections in
+// scope.join_plan.linked_projs so the NDB API includes them in the
 // leaf op's inbound linked buffer. Without this, GroupByLinked/LoadLinkedColumn
 // walks into undefined buffer positions and DBLQH crashes.
 void
@@ -4626,31 +4649,17 @@ RonSQLPreparer::build_cte_linked_projections()
     }
 
     // Cross-table WHERE filter columns on non-leaf tables
-    auto register_from_ce =
-        [&](auto& self, ConditionalExpression* ce) -> void {
-      if (ce == NULL) return;
-      if (ce->op == T_IDENTIFIER) {
-        Uint32 cidx = ce->col_idx;
-        const QueryScope::ResolvedColumnRef& ref =
-            scope.resolved_columns[cidx];
-        if (ref.join_op_idx != leaf_idx) {
-          find_or_add_linked_proj(scope.join_plan,
-                                  ref.join_op_idx,
-                                  m_columns[cidx].c_str());
-        }
-        return;
-      }
-      if (ce->op == T_INT || ce->op == T_FLOAT ||
-          ce->op == T_STRING || ce->op == T_NULL)
-        return;
-      if (ce->args.left != NULL) self(self, ce->args.left);
-      if (ce->args.right != NULL) self(self, ce->args.right);
-    };
     for (Uint32 f = 0; f < scope.cross_table_where_filters.size(); f++) {
       CrossTableFilter& ctf = scope.cross_table_where_filters[f];
       if (ctf.ce == NULL) continue;
-      register_from_ce(register_from_ce, ctf.ce->args.left);
-      register_from_ce(register_from_ce, ctf.ce->args.right);
+      register_condition_linked_projections(scope, ctf.ce);
+    }
+
+    // CASE conditions need the same complete inventory as the main scope,
+    // before a CTE leaf's output offsets are calculated during emission.
+    for (Uint32 i = 0; i < scope.agg->m_cases.size(); i++) {
+      register_condition_linked_projections(
+          scope, scope.agg->m_cases[i].condition);
     }
   }
 }
@@ -4721,15 +4730,7 @@ RonSQLPreparer::plan_index_and_filter()
 void
 RonSQLPreparer::collect_toplevel_conditions(ConditionalExpression* ce)
 {
-  if (ce == NULL) {
-    return;
-  }
-  if (ce->op == T_AND) {
-    collect_toplevel_conditions(ce->args.left);
-    collect_toplevel_conditions(ce->args.right);
-  } else {
-    m_toplevel_conditions.push(ce);
-  }
+  collect_boolean_terms(ce, T_AND, m_toplevel_conditions);
 }
 
 void
@@ -5864,30 +5865,14 @@ RonSQLPreparer::select_root_scan_config(QueryScope& scope,
   if (!load_cte_body_indexes(scope, tab)) return;
   if (scope.body_indexes.size() == 0 && !hint_force) return;
 
-  // 2. Flatten WHERE to top-level AND conjuncts.  Mirror
-  //    `collect_toplevel_conditions` but write to scope state.
+  // 2. Flatten the simplified WHERE with the shared dynamic collector.
+  //    Rewrites can produce more terms than the original WHERE contained.
   //    (With FORCE INDEX and no WHERE the conjunct list stays empty
   //    and the generator throws the standard FORCE error.)
   if (where_ce != NULL) {
     ConditionalExpression* simplified = simplify_ce(where_ce, -1);
-    // Inline AND-flatten — the existing helper writes to
-    // m_toplevel_conditions; the per-scope shape uses local logic.
-    // Stack of nodes to expand; cap on top-level conjuncts is the
-    // same as the rest of RonSQL's WHERE flattening.
-    ConditionalExpression* stack[MAX_WHERE_CONJUNCTS];
-    Uint32 stack_top = 0;
-    stack[stack_top++] = simplified;
-    while (stack_top > 0) {
-      ConditionalExpression* node = stack[--stack_top];
-      if (node == NULL) continue;
-      if (node->op == T_AND) {
-        if (stack_top + 2 > MAX_WHERE_CONJUNCTS) return;
-        stack[stack_top++] = node->args.right;
-        stack[stack_top++] = node->args.left;
-      } else {
-        scope.body_toplevel_conditions.push(node);
-      }
-    }
+    collect_boolean_terms(simplified, T_AND,
+                          scope.body_toplevel_conditions);
   }
 
   // 3. Generate candidate scan configs via the shared generator.  It
@@ -7189,12 +7174,11 @@ RonSQLPreparer::validate_having_references()
     return;
   const Outputs* outputs = m_context.ast_root.outputs;
   std::basic_ostream<char>& err = *m_conf.err_stream;
-  auto check = [&](auto& self, const ConditionalExpression* ce) -> void {
+  auto check_having_references =
+      [&](auto& check_having_subtree, const ConditionalExpression* ce) -> void {
     if (ce == NULL)
       return;
-    switch (ce->op)
-    {
-    case T_IDENTIFIER:
+    if (ce->op == T_IDENTIFIER)
     {
       const Uint32 c = ce->col_idx;
       ndbrequire(c < m_columns.size());
@@ -7218,35 +7202,107 @@ RonSQLPreparer::validate_having_references()
           RonSQLErrorClass::UNSUPPORTED,
           "HAVING can only reference aggregate functions.");
     }
-    case T_IS:
-      self(self, ce->is.arg);
-      return;
-    case T_AND:
-    case T_OR:
-    case T_EQUALS:
-    case T_NOT_EQUALS:
-    case T_GT:
-    case T_GE:
-    case T_LT:
-    case T_LE:
-    case T_PLUS:
-    case T_MINUS:
-    case T_MULTIPLY:
-    case T_SLASH:
-      self(self, ce->args.left);
-      self(self, ce->args.right);
-      return;
-    case T_NOT:
-    case T_EXCLAMATION:
-      self(self, ce->args.left);
-      return;
-    default:
-      // Aggregates (having_agg), constants and subqueries have no
-      // column operand to check here.
-      return;
-    }
+    const ConditionChildren children = having_reference_children(*ce);
+    check_having_subtree(check_having_subtree, children.first);
+    check_having_subtree(check_having_subtree, children.second);
   };
-  check(check, having);
+  check_having_references(check_having_references, having);
+}
+
+/*
+ * Mirror ResultPrinter's positional HAVING rules before data access. An
+ * aggregate argument is checked by the aggregation compiler; scalar and IN
+ * subquery bodies are prepared separately. Reference validation has already
+ * restricted identifiers to supported SELECT-subquery aggregate aliases.
+ */
+static bool
+is_having_aggregate_reference(const ConditionalExpression* ce)
+{
+  return ce != NULL &&
+      (ce->op == T_SUM || ce->op == T_COUNT || ce->op == T_MIN ||
+       ce->op == T_MAX || ce->op == T_AVG || ce->op == T_IDENTIFIER);
+}
+
+static void
+validate_having_numeric_expression(const ConditionalExpression* ce)
+{
+  if (ce == NULL || is_having_aggregate_reference(ce)) return;
+  switch (ce->op)
+  {
+  case T_INT:
+  case T_FLOAT:
+  case T_NULL:
+  case I_SUBQUERY:
+    // Scalar subqueries become numeric literals or T_NULL at execution.
+    return;
+  case T_PLUS:
+  case T_MINUS:
+  case T_MULTIPLY:
+  case T_SLASH:
+    break;
+  default:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "Unsupported expression type in HAVING clause.");
+  }
+  const ConditionChildren children = condition_children(*ce);
+  validate_having_numeric_expression(children.first);
+  validate_having_numeric_expression(children.second);
+}
+
+static void
+validate_having_predicate(const ConditionalExpression* ce, bool negated)
+{
+  if (ce == NULL) return;
+  switch (ce->op)
+  {
+  case T_NOT:
+  case T_EXCLAMATION:
+    negated = !negated;
+    [[fallthrough]];
+  case T_AND:
+  case T_OR:
+  {
+    // Check both branches even when evaluation would short-circuit.
+    const ConditionChildren children = condition_children(*ce);
+    validate_having_predicate(children.first, negated);
+    validate_having_predicate(children.second, negated);
+    return;
+  }
+  case T_EQUALS:
+  case T_NOT_EQUALS:
+  case T_GT:
+  case T_GE:
+  case T_LT:
+  case T_LE:
+    validate_having_numeric_expression(ce->args.left);
+    validate_having_numeric_expression(ce->args.right);
+    return;
+  case T_IS:
+    require_unsupported(
+        is_having_aggregate_reference(ce->is.arg),
+        "Unsupported expression in HAVING IS [NOT] NULL.");
+    return;
+  case I_IN_SUBQUERY:
+    // Match substitution's polarity: NOT/! flips it, AND/OR preserves it.
+    // A negated IN may generate IS NULL tests of the outer operand.
+    require_unsupported(
+        !negated || is_having_aggregate_reference(ce->in_subquery.expr),
+        "A negated IN or NOT EXISTS subquery needs a column "
+        "or an aggregate on the left of IN.");
+    validate_having_numeric_expression(ce->in_subquery.expr);
+    return;
+  default:
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "Unsupported operator in HAVING clause.");
+  }
+}
+
+void
+RonSQLPreparer::validate_having_support()
+{
+  validate_having_predicate(m_context.ast_root.having_expression, false);
 }
 
 /* Single-row CTE bodies: the parse-time candidacy
@@ -7850,6 +7906,11 @@ RonSQLPreparer::analyze_subqueries_ce(ConditionalExpression* ce)
     return;
   case I_IN_SUBQUERY:
   {
+    // Registration and substitution both stop at this IN node. Its left
+    // operand must not contain another subquery that would remain unprocessed.
+    require_unsupported(
+        !ce_has_subquery(ce->in_subquery.expr),
+        "A subquery is not supported in the left operand of IN.");
     reject_ignored_orderby_limit(ce->in_subquery.stmt, "an IN subquery",
                                  NULL);
     require_one_subquery_column(ce->in_subquery.stmt, true,
@@ -8473,7 +8534,7 @@ RonSQLPreparer::compile()
     // wins).
     const Outputs* outputs = m_context.ast_root.outputs;
     auto resolve_having_aliases =
-        [&](auto& self, ConditionalExpression* ce) -> void {
+        [&](auto& resolve_having_subtree, ConditionalExpression* ce) -> void {
       if (ce == NULL) return;
       if (ce->op == T_IDENTIFIER) {
         Uint32 col_idx = ce->col_idx;
@@ -8487,19 +8548,9 @@ RonSQLPreparer::compile()
           }
         }
       }
-      if (ce->op == T_IS) {
-        self(self, ce->is.arg);
-      } else if (ce->op == T_AND || ce->op == T_OR ||
-                 ce->op == T_EQUALS || ce->op == T_NOT_EQUALS ||
-                 ce->op == T_GT || ce->op == T_GE ||
-                 ce->op == T_LT || ce->op == T_LE ||
-                 ce->op == T_PLUS || ce->op == T_MINUS ||
-                 ce->op == T_MULTIPLY || ce->op == T_SLASH) {
-        self(self, ce->args.left);
-        self(self, ce->args.right);
-      } else if (ce->op == T_NOT || ce->op == T_EXCLAMATION) {
-        self(self, ce->args.left);
-      }
+      const MutableConditionChildren children = having_reference_children(*ce);
+      resolve_having_subtree(resolve_having_subtree, children.first);
+      resolve_having_subtree(resolve_having_subtree, children.second);
     };
     resolve_having_aliases(resolve_having_aliases,
                            m_context.ast_root.having_expression);
@@ -17129,8 +17180,12 @@ filter_expr_reg_depth(ConditionalExpression* ce)
   case T_INT:
   case T_FLOAT:
     return 1;
-  case T_PLUS:
   case T_MINUS:
+    // Unary minus has no left operand; the emitter requires binary arithmetic.
+    require_unsupported(ce->args.left != NULL,
+        "Unary minus in cross-table WHERE filters is not supported.");
+    [[fallthrough]];
+  case T_PLUS:
   case T_MULTIPLY:
   {
     Uint32 ld = filter_expr_reg_depth(ce->args.left);
@@ -17324,26 +17379,19 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
                                                    Uint32 false_output,
                                                    Uint32 leaf_idx)
 {
-  DynamicArray<ConditionalExpression*> atoms(m_amalloc);
-  bool is_and = false;
-  if (ce->op == T_AND || ce->op == T_OR) {
-    is_and = (ce->op == T_AND);
-    TokenKind flatten_op = ce->op;
-    ConditionalExpression* node = ce;
-    while (node->op == flatten_op) {
-      atoms.push(node->args.right);
-      node = node->args.left;
-    }
-    atoms.push(node);
-  } else {
-    atoms.push(ce);
-  }
-
-  Uint32 atom_words[32];
-  require_prm(atoms.size() <= 32,
+  const bool is_and = (ce->op == T_AND);
+  ConditionalExpression* atoms[32];
+  const BooleanTermCollection terms = collect_boolean_terms(
+      ce, is_and ? T_AND : T_OR, atoms, ARRAY_LEN(atoms));
+  require_prm(terms.complete,
               "Cross-table WHERE filter has too many OR/AND atoms.");
+  const Uint32 num_atoms = terms.count;
+  // Preserve right-to-left emission for previously supported left-deep trees.
+  std::reverse(atoms, atoms + num_atoms);
+
+  Uint32 atom_words[ARRAY_LEN(atoms)];
   Uint32 total_atom_words = 0;
-  for (Uint32 a = 0; a < atoms.size(); a++) {
+  for (Uint32 a = 0; a < num_atoms; a++) {
     ConditionalExpression* atom = atoms[a];
     require_unsupported(atom->op == T_EQUALS || atom->op == T_NOT_EQUALS ||
                 atom->op == T_LT || atom->op == T_LE ||
@@ -17386,7 +17434,7 @@ RonSQLPreparer::generate_embedded_filter_condition(NdbAggregator* aggregator,
   };
 
   Uint32 pos = 0;
-  for (Uint32 a = 0; a < atoms.size(); a++) {
+  for (Uint32 a = 0; a < num_atoms; a++) {
     ConditionalExpression* atom = atoms[a];
     const Uint32 R1 = 1;
     const Uint32 R2 = 2;
@@ -18442,23 +18490,12 @@ RonSQLPreparer::generate_embedded_condition(
   // Each atom emits a SELF-CONTAINED sequence so multiple atoms can
   // reference different LHS columns without aliasing on heap[0].
   DynamicArray<ConditionalExpression*> atoms(m_amalloc);
-  bool is_and = false;
-
-  if (ce->op == T_AND || ce->op == T_OR)
-  {
-    is_and = (ce->op == T_AND);
-    TokenKind flatten_op = ce->op;
-    ConditionalExpression* node = ce;
-    while (node->op == flatten_op)
-    {
-      atoms.push(node->args.right);
-      node = node->args.left;
-    }
-    atoms.push(node);
-  }
-  else
-  {
-    atoms.push(ce);
+  const bool is_and = (ce->op == T_AND);
+  collect_boolean_terms(ce, is_and ? T_AND : T_OR, atoms);
+  // Preserve right-to-left emission for previously supported left-deep trees.
+  const Uint32 num_atoms = atoms.size();
+  for (Uint32 a = 0; a < num_atoms / 2; a++) {
+    std::swap(atoms[a], atoms[num_atoms - 1 - a]);
   }
   for (Uint32 a = 0; a < atoms.size(); a++)
   {

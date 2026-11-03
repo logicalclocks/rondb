@@ -2951,6 +2951,11 @@ ResultPrinter::scan_having_max_agg(const ConditionalExpression* expr,
   case T_IS:
     scan_having_max_agg(expr->is.arg, max_idx);
     break;
+  case I_IN_SUBQUERY:
+    // Subquery substitution runs after register allocation. Only the outer
+    // operand contributes aggregate registers to this SELECT.
+    scan_having_max_agg(expr->in_subquery.expr, max_idx);
+    break;
   case T_IDENTIFIER:
     // Output alias mapped to agg_index during compile()
     max_idx = max(max_idx, expr->having_agg.agg_index + 1);
@@ -2982,6 +2987,9 @@ ResultPrinter::evaluate_having_value(const ConditionalExpression* expr)
     return static_cast<double>(expr->constant_integer);
   case T_FLOAT:
     return expr->constant_float.dbl;
+  case T_NULL:
+    // Scalar-subquery NULL uses the same marker as NULL aggregate results.
+    return std::numeric_limits<double>::quiet_NaN();
   case T_IDENTIFIER:
     // Output alias mapped to agg_index — same as aggregate result
     return convert_result_to_double(m_regs_a[expr->having_agg.agg_index]);

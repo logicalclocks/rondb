@@ -1219,6 +1219,33 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_id, l.l_quantity FROM orders AS o LEFT JOIN lineitem AS l ON l.l_orderkey = o.o_id AND o.o_custkey = o.o_id;' 2>&1
 
+# Unary cross-table arithmetic must report an unsupported expression.
+# Binary subtraction must retain its existing supported path.
+
+--echo
+--echo === Test 64: Error - unary minus on the left of a cross-table filter ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_id, SUM(l.l_quantity) AS total FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE -o.o_id > l.l_quantity GROUP BY o.o_id;' 2>&1
+
+--echo
+--echo === Test 65: Error - unary minus on the right of a cross-table filter ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT o.o_id, SUM(l.l_quantity) AS total FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id WHERE o.o_id > -l.l_quantity GROUP BY o.o_id;' 2>&1
+
+--echo
+--echo === Test 66: Binary subtraction in cross-table filters ===
+--echo Expected: o_id=1, total=10
+--let $QUERY=
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-unary-join.sql
+--write_file $QUERY_FILE
+SELECT o.o_id, SUM(l.l_quantity) AS total
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id - 1 = l.l_quantity - 10
+GROUP BY o.o_id;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+--let $QUERY_FILE=
+
 --echo
 --echo === Cleanup ===
 

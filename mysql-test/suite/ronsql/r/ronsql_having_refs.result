@@ -47,6 +47,58 @@ ronsql_cli caught exception: HAVING can only reference aggregate functions.
 HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'n' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
 Error handling: RPE
 ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== GROUP BY column under HAVING IN =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Qualified column under HAVING IN =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 't.a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Ordinary aggregate alias under HAVING IN =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'n' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Column under arithmetic and negated HAVING IN =====
+HAVING can only reference aggregate functions, such as COUNT(*) or SUM(col), and constants; 'a' is not an aggregate. Filter GROUP BY columns in WHERE, and repeat an aggregate instead of using its output alias.
+Error handling: RPE
+ronsql_cli caught exception: HAVING can only reference aggregate functions.
+===== Unsupported DIV in a short-circuited HAVING OR =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression type in HAVING clause.
+===== Unsupported modulo in a short-circuited HAVING AND =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression type in HAVING clause.
+===== Unsupported HAVING XOR =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported operator in HAVING clause.
+===== Aggregate used as a HAVING predicate =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported operator in HAVING clause.
+===== Comparison used as a HAVING numeric value =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression type in HAVING clause.
+===== Arithmetic under HAVING IS NULL =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression in HAVING IS [NOT] NULL.
+===== Scalar subquery under HAVING IS NULL =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression in HAVING IS [NOT] NULL.
+===== Scalar subquery used as a HAVING predicate =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported operator in HAVING clause.
+===== IN subquery used as a HAVING numeric value =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression type in HAVING clause.
+===== Arithmetic operand of negated HAVING IN =====
+Error handling: RPE
+ronsql_cli caught exception: A negated IN or NOT EXISTS subquery needs a column or an aggregate on the left of IN.
+===== EXISTS used as a HAVING predicate =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported operator in HAVING clause.
+===== Unsupported HAVING with an empty-input WHERE condition =====
+Error handling: RPE
+ronsql_cli caught exception: Unsupported expression type in HAVING clause.
 ===== HAVING inside a CTE body =====
 HAVING inside CTE 'c' is not supported. It is only supported at the main SELECT level; accepting it here would silently ignore it, changing results compared to MySQL.
 Error handling: RPE

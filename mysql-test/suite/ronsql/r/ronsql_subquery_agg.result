@@ -560,4 +560,58 @@ SELECT-list subquery aggregate argument must be a simple column reference, COUNT
 400
 SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
 
+=== HAVING IN resolves a nullable SUM subquery alias ===
+Expected: id=1, total=5
+== Query ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS total
+FROM sq_count_entity AS e
+HAVING total IN
+  (SELECT MAX(v.val) FROM sq_count_values AS v GROUP BY v.entity_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== HAVING NOT IN resolves a COUNT subquery alias ===
+Expected: id=3, n=0
+== Query ==
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING NOT (n IN
+  (SELECT MIN(v.entity_id) FROM sq_count_values AS v GROUP BY v.entity_id));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== HAVING IN resolves a subquery alias inside arithmetic ===
+Expected: id=2, n=1; id=3, n=0
+== Query ==
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING (n + 1) IN
+  (SELECT MAX(v.ts) FROM sq_count_values AS v GROUP BY v.entity_id);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===

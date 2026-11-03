@@ -1255,6 +1255,30 @@ Expected error: ON left side is not the joined table
 Error handling: RPE
 ronsql_cli caught exception: The ON condition o.o_custkey = o.o_id does not have a column of the joined table l on the left. Write each ON equality as <joined table>.<column> = <earlier table>.<column>.
 
+=== Test 64: Error - unary minus on the left of a cross-table filter ===
+Error handling: RPE
+ronsql_cli caught exception: Unary minus in cross-table WHERE filters is not supported.
+
+=== Test 65: Error - unary minus on the right of a cross-table filter ===
+Error handling: RPE
+ronsql_cli caught exception: Unary minus in cross-table WHERE filters is not supported.
+
+=== Test 66: Binary subtraction in cross-table filters ===
+Expected: o_id=1, total=10
+== Query ==
+SELECT o.o_id, SUM(l.l_quantity) AS total
+FROM orders AS o JOIN lineitem AS l ON l.l_orderkey = o.o_id
+WHERE o.o_id - 1 = l.l_quantity - 10
+GROUP BY o.o_id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===
 DROP TABLE line_details;
 DROP TABLE big_lineitem;

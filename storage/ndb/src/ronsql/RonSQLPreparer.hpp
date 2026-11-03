@@ -979,6 +979,7 @@ private:
                                      const CteDefinition* cte);
   void analyze_ctes();
   void validate_having_references();
+  void validate_having_support();
   void build_cte_scopes();
   // Re-checks the main query's ANTI_JOIN promotions once the CTE body
   // scopes exist, and rejects a SUM output whose argument can be NULL.
@@ -1066,6 +1067,8 @@ private:
   void decorrelate_exists();
   void decorrelate_scalar();
   void compile();
+  void register_condition_linked_projections(
+      QueryScope& scope, const ConditionalExpression* ce);
   void build_agg_linked_projections();
   void build_cte_linked_projections();
   void determine_explain();

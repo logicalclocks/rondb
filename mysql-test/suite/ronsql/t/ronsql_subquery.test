@@ -682,6 +682,236 @@ GROUP BY o.id;
 EOF
 --source suite/ronsql/include/ronsql_compare.inc
 
+# Aggregates used only by HAVING IN need registers before subquery
+# substitution. AVG needs both SUM and COUNT registers. These queries
+# retain the existing strict comparison for both CLI and RDRS.
+# nq_outer includes a NULL outer value; nq_inner contains 10, NULL and 30.
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-having-in.sql
+
+--echo
+--echo === Test 48: HAVING IN with SUM absent from SELECT ===
+--echo Expected: o_id=1, n=1
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 49: HAVING IN with AVG absent from SELECT ===
+--echo Expected: o_custkey=100, first_id=1; o_custkey=300, first_id=5
+--write_file $QUERY_FILE
+SELECT o_custkey, MIN(o_id) AS first_id
+FROM orders
+GROUP BY o_custkey
+HAVING AVG(o_total) IN
+  (SELECT MAX(l_price) FROM lineitem GROUP BY l_orderkey);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 50: HAVING NOT IN without NULL inner values ===
+--echo Expected: o_id=2,4; the group with NULL SUM is excluded
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id != 2 GROUP BY i_id));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 51: HAVING NOT IN with a NULL inner value ===
+--echo Expected: no rows
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 52: HAVING IN with an empty inner result ===
+--echo Expected: no rows
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 53: HAVING NOT IN with an empty inner result ===
+--echo Expected: o_id=1,2,3,4; the group with NULL SUM is included
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 54: HAVING IN traverses arithmetic around an aggregate ===
+--echo Expected: o_id=1, n=1
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING (-SUM(o_k) + 40) IN
+  (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+# Scalar subqueries substitute T_NULL for both an empty result and SQL
+# NULL. Every query has outer groups, so the HAVING operand is evaluated.
+# Put NULL comparisons before OR/AND to exercise SQL UNKNOWN propagation.
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-having-scalar-null.sql
+
+--echo
+--echo === Test 55: HAVING scalar aggregate over an empty input ===
+--echo Expected: no rows
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) > (SELECT MAX(e_val) FROM empty_table);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 56: HAVING scalar subquery returning no rows ===
+--echo Expected: no rows
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) !=
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 57: HAVING NOT preserves UNKNOWN from a scalar NULL ===
+--echo Expected: no rows
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) =
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id = 2));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 58: HAVING scalar NULL arithmetic before OR ===
+--echo Expected: o_id=1,2,3,4; UNKNOWN OR TRUE keeps every group
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) > ((SELECT MAX(e_val) FROM empty_table) + 1)
+  OR COUNT(*) = 1;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 59: HAVING scalar NULL on the left before AND ===
+--echo Expected: no rows; UNKNOWN AND TRUE remains UNKNOWN
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING ((SELECT MAX(e_val) FROM empty_table) - 1) < SUM(o_k)
+  AND COUNT(*) = 1;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 60: HAVING non-NULL scalar comparison control ===
+--echo Expected: o_id=1,2; n=1 for each
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING (SELECT MAX(i_k) FROM nq_inner) > SUM(o_k);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+# An IN subquery's left operand is reused during substitution. Subqueries
+# inside that operand are not registered or substituted, so reject them
+# before dictionary access. These CLI checks deliberately use no connection.
+--let $IN_OPERAND_TEST=$RONSQL_CLI_EXE --output-format TEXT --explain-mode=FORCE 2>&1 -e
+
+--echo
+--echo === Test 61: Scalar subquery as the left operand of IN (rejected) ===
+--error 1
+--exec $IN_OPERAND_TEST 'SELECT COUNT(*) FROM nq_outer WHERE (SELECT MAX(i_k) FROM nq_inner) IN (SELECT MIN(l_price) FROM lineitem);'
+
+--echo
+--echo === Test 62: Scalar subquery under arithmetic in IN's left operand (rejected) ===
+--error 1
+--exec $IN_OPERAND_TEST 'SELECT COUNT(*) FROM nq_outer WHERE (o_k + (SELECT MAX(i_k) FROM nq_inner)) IN (SELECT MIN(l_price) FROM lineitem);'
+
+--echo
+--echo === Test 63: Scalar subquery in a negated IN's left operand (rejected) ===
+--error 1
+--exec $IN_OPERAND_TEST 'SELECT COUNT(*) FROM nq_outer WHERE NOT ((o_k + (SELECT MAX(i_k) FROM nq_inner)) IN (SELECT MIN(l_price) FROM lineitem));'
+
+--echo
+--echo === Test 64: EXISTS in the left operand of IN (rejected) ===
+--error 1
+--exec $IN_OPERAND_TEST 'SELECT COUNT(*) FROM nq_outer WHERE (EXISTS (SELECT i_id FROM nq_inner)) IN (SELECT MIN(l_quantity) FROM lineitem);'
+
+--echo
+--echo === Test 65: Scalar subquery inside HAVING IN's left operand (rejected) ===
+--error 1
+--exec $IN_OPERAND_TEST 'SELECT o_id, COUNT(*) FROM nq_outer GROUP BY o_id HAVING (SUM(o_k) + (SELECT MAX(i_k) FROM nq_inner)) IN (SELECT MIN(l_price) FROM lineitem);'
+
+--echo
+--echo === Test 66: Nested IN in HAVING IN's left operand (rejected) ===
+--error 1
+--exec $IN_OPERAND_TEST 'SELECT o_id, COUNT(*) FROM nq_outer GROUP BY o_id HAVING (SUM(o_k) IN (SELECT MIN(i_k) FROM nq_inner)) IN (SELECT MAX(l_quantity) FROM lineitem);'
+
+--let $IN_OPERAND_TEST=
+
+# The support check distinguishes aggregate-program arguments from HAVING
+# arithmetic, and preserves IN polarity through an even number of NOTs.
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-having-support.sql
+
+--echo
+--echo === Test 67: Double NOT preserves arithmetic HAVING IN support ===
+--echo Expected: o_id=1, n=1
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (NOT ((-SUM(o_k) + 40) IN
+  (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id)));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Test 68: HAVING validation preserves numeric and aggregate expressions ===
+--echo Expected: o_id=1,2,3,4; n=1 for each
+--write_file $QUERY_FILE
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_amt DIV 100) > 0 AND
+  (MIN(o_k) IS NULL OR
+   (-SUM(o_k) + MAX(o_k) * 2) / COUNT(*) >= AVG(o_k) + 0.0);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
 --let $QUERY_FILE=
 --let $strict_diff=
 

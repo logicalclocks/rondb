@@ -253,6 +253,8 @@ extern void rsqlp_error(RSQLP_LTYPE* yylloc, yyscan_t yyscanner, const char* s);
 %left T_PLUS T_MINUS
 %left T_MULTIPLY T_SLASH T_DIV T_MODULO
 %left T_BITWISE_XOR
+/* Precedence marker for unary minus in both expression grammars. */
+%precedence T_UNARY_MINUS
 %precedence T_EXCLAMATION
  // %left T_INTERVAL per spec, but bison claims it's useless.
 
@@ -480,7 +482,8 @@ arith_expr:
 | T_INT                                 { $$ = context->get_agg()->ConstantInteger($1); }
 /* A CASE is compiled only as the whole argument of an aggregate function, so
  * non_case_operand() rejects it as an operand of arithmetic or another CASE. */
-| T_MINUS arith_expr                    { $$ = context->get_agg()->Minus(context->get_agg()->ConstantInteger(0),
+| T_MINUS arith_expr %prec T_UNARY_MINUS
+                                        { $$ = context->get_agg()->Minus(context->get_agg()->ConstantInteger(0),
                                                                          context->non_case_operand($2)); }
 | T_LEFT arith_expr T_RIGHT             { $$ = $2; }
 | arith_expr T_PLUS arith_expr          { $$ = context->get_agg()->Add(context->non_case_operand($1),
@@ -653,7 +656,8 @@ cond_expr:
 | T_STRING                              { initptr($$); $$->op = T_STRING; $$->string = $1; }
 | T_INT                                 { initptr($$); $$->op = T_INT; $$->constant_integer = $1; }
 | T_FLOAT                               { initptr($$); $$->op = T_FLOAT; $$->constant_float.dbl = $1.dbl; $$->constant_float.ls = $1.ls; }
-| T_MINUS cond_expr                     { init_cond($$, NULL, T_MINUS, $2); }
+| T_MINUS cond_expr %prec T_UNARY_MINUS
+                                        { init_cond($$, NULL, T_MINUS, $2); }
 | T_LEFT cond_expr T_RIGHT              { $$ = $2; }
 | cond_expr T_OR cond_expr              { init_cond($$, $1, T_OR, $3); }
 | cond_expr T_XOR cond_expr             { init_cond($$, $1, T_XOR, $3); }

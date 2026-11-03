@@ -147,6 +147,132 @@ SELECT k, total FROM stats|
 
 DELIMITER ;|
 
+# C5 follow-up: only two raw AND conjuncts, but De Morgan expansion
+# produces 63/64/65. The old pending-node stack could hold 64 entries:
+# the left-associated shape reaches that boundary; right/balanced controls
+# have the same term count with much less pending work.
+#
+# Cases 1-3: 63/64/65 terms, left-associated, FORCE idx_grp.
+# Cases 4-5: 65 terms, right-associated / balanced, FORCE idx_grp.
+# Case 6:   65 terms, left-associated, no hint.
+# Case 7:   65 terms, left-associated, USE idx_amt (table-scan fallback).
+# Cases 8-10: 63/64/65 terms, left-associated, FORCE idx_amt (unusable).
+# Case 11:  65 terms, left-associated, FORCE a missing index.
+#
+# Prefix OR atoms cannot match any fixture row. The final OR atom excludes
+# order 8, while the separate index bound excludes group 100.
+# Every successful case must return (200,100), (300,130), (400,10).
+--let RONSQL_CTE_BOOLEAN_DIR=$MYSQL_TMP_DIR
+--perl
+use strict;
+use warnings;
+use File::Spec;
+
+sub build_balanced_or {
+  my (@terms) = @_;
+  return $terms[0] if @terms == 1;
+  my $mid = int(@terms / 2);
+  return '(' . build_balanced_or(@terms[0 .. $mid - 1]) . ' OR ' .
+         build_balanced_or(@terms[$mid .. $#terms]) . ')';
+}
+
+sub build_or_predicate {
+  my ($shape, @terms) = @_;
+  return join(' OR ', @terms) if $shape eq 'left';
+  return build_balanced_or(@terms) if $shape eq 'balanced';
+  die "Unknown OR shape: $shape\n" unless $shape eq 'right';
+  my $predicate = pop @terms;
+  while (@terms) {
+    my $term = pop @terms;
+    $predicate = "$term OR ($predicate)";
+  }
+  return $predicate;
+}
+
+my @cases = (
+  [63, 'left',     'FORCE INDEX (idx_grp)'],
+  [64, 'left',     'FORCE INDEX (idx_grp)'],
+  [65, 'left',     'FORCE INDEX (idx_grp)'],
+  [65, 'right',    'FORCE INDEX (idx_grp)'],
+  [65, 'balanced', 'FORCE INDEX (idx_grp)'],
+  [65, 'left',     ''],
+  [65, 'left',     'USE INDEX (idx_amt)'],
+  [63, 'left',     'FORCE INDEX (idx_amt)'],
+  [64, 'left',     'FORCE INDEX (idx_amt)'],
+  [65, 'left',     'FORCE INDEX (idx_amt)'],
+  [65, 'left',     'FORCE INDEX (no_such_idx)']
+);
+for my $case_index (0 .. $#cases) {
+  my ($conjunct_count, $shape, $hint) = @{$cases[$case_index]};
+  my @terms = map { "o_id = $_" } (101 .. (98 + $conjunct_count));
+  push @terms, 'o_id = 8';
+  my $predicate = build_or_predicate($shape, @terms);
+  my $or_count = 0;
+  $predicate =~ s/ OR /++$or_count % 4 == 0 ? " OR\n      " : " OR "/ge;
+  my $from = 'ix_orders';
+  $from .= " $hint" if length $hint;
+  my $case_number = $case_index + 1;
+  my $path = File::Spec->catfile($ENV{RONSQL_CTE_BOOLEAN_DIR},
+                                "ronsql-cte-boolean-$case_number.sql");
+  open my $out, '>', $path or die "Cannot write $path: $!\n";
+  print {$out} "WITH stats AS (\n",
+              "  SELECT o_grp AS k, SUM(o_amt) AS total\n",
+              "  FROM $from\n",
+              "  WHERE NOT ($predicate)\n",
+              "    AND o_grp >= 200\n",
+              "  GROUP BY o_grp)\n",
+              "SELECT k, total FROM stats;\n"
+    or die "Cannot write $path: $!\n";
+  close $out or die "Cannot close $path: $!\n";
+}
+EOF
+--let RONSQL_CTE_BOOLEAN_DIR=
+--let $QUERY=
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-cte-boolean-explain.out
+
+# Check the access path as well as the rows: an unintended table scan can
+# still return the correct result. Each include removes its input SQL file.
+--let $cte_boolean_case=1
+while ($cte_boolean_case <= 7)
+{
+  --echo
+  --echo === CTE Boolean collection case $cte_boolean_case ===
+  --let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-cte-boolean-$cte_boolean_case.sql
+  --copy_file $QUERY_FILE $MYSQL_TMP_DIR/ronsql-cte-boolean-compare.sql
+  --source suite/ronsql/include/ronsql_explain.inc
+  if ($cte_boolean_case < 7)
+  {
+    --exec grep -qF 'Body root: INDEX_SCAN using idx_grp' $EXPLAIN_FILE
+  }
+  if ($cte_boolean_case == 7)
+  {
+    --exec grep -qF 'Body root: TABLE_SCAN' $EXPLAIN_FILE
+  }
+  --remove_file $EXPLAIN_FILE
+  --let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-cte-boolean-compare.sql
+  --source suite/ronsql/include/ronsql_compare.inc
+  inc $cte_boolean_case;
+}
+
+# An unusable FORCE hint must fail on both sides of the old boundary.
+while ($cte_boolean_case <= 10)
+{
+  --echo
+  --echo === CTE Boolean collection case $cte_boolean_case: unusable FORCE INDEX ===
+  --error 1
+  --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-cte-boolean-$cte_boolean_case.sql' 2>&1
+  --remove_file $MYSQL_TMP_DIR/ronsql-cte-boolean-$cte_boolean_case.sql
+  inc $cte_boolean_case;
+}
+
+--echo
+--echo === CTE Boolean collection case 11: missing FORCE INDEX ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-cte-boolean-11.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-cte-boolean-11.sql
+--let $QUERY_FILE=
+--let $EXPLAIN_FILE=
+
 --disable_query_log
 DROP TABLE ix_orders;
 --enable_query_log

@@ -632,6 +632,53 @@ DELIMITER ;|
 --remove_file $MYSQL_TMP_DIR/ronsql-i3-count-body
 --remove_file $MYSQL_TMP_DIR/ronsql-i3-count.out
 
+# The HAVING alias is parsed after the outer and inner column references,
+# so its column index differs from the aggregate slot assigned by compile().
+# SUM is NULL for ids 2 and 3; COUNT(*) is 2, 1 and 0 for ids 1, 2 and 3.
+--let $QUERY=
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-having-in-alias.sql
+
+--echo
+--echo === HAVING IN resolves a nullable SUM subquery alias ===
+--echo Expected: id=1, total=5
+--write_file $QUERY_FILE
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS total
+FROM sq_count_entity AS e
+HAVING total IN
+  (SELECT MAX(v.val) FROM sq_count_values AS v GROUP BY v.entity_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === HAVING NOT IN resolves a COUNT subquery alias ===
+--echo Expected: id=3, n=0
+--write_file $QUERY_FILE
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING NOT (n IN
+  (SELECT MIN(v.entity_id) FROM sq_count_values AS v GROUP BY v.entity_id));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === HAVING IN resolves a subquery alias inside arithmetic ===
+--echo Expected: id=2, n=1; id=3, n=0
+--write_file $QUERY_FILE
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING (n + 1) IN
+  (SELECT MAX(v.ts) FROM sq_count_values AS v GROUP BY v.entity_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--let $QUERY_FILE=
+
 --disable_query_log
 DROP TABLE sq_count_values;
 DROP TABLE sq_count_entity;
