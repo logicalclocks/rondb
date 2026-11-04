@@ -21970,6 +21970,15 @@ void Dbtc::releaseApiConnectFail(ApiConnectRecordPtr const apiConnectptr)
 {
   apiConnectptr.p->apiConnectstate = CS_RESTART;
   apiConnectptr.p->takeOverRec = RNIL;
+  /**
+   * Fail records stay seized from the pool, so ndb$transactions_full
+   * lists them also when free. Reset the fields it shows to what an
+   * unused fail record has, so that a free record does not appear to
+   * belong to the API node and transaction it last handled.
+   */
+  apiConnectptr.p->ndbapiBlockref = 0xFFFFFFFF;  // Invalid ref
+  apiConnectptr.p->transid[0] = 0;
+  apiConnectptr.p->transid[1] = 0;
   setApiConTimer(apiConnectptr, 0, __LINE__);
   LocalApiConnectRecord_api_list apiConList(c_apiConnectRecordPool,
                                             c_apiConnectFailList);
