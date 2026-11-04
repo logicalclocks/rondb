@@ -28,11 +28,11 @@
         {
             "type": "application",
             "name": "mysql_server",
-            "version": "8.4.11",
+            "version": "8.4.13",
             "supplier": {
                 "name": "Oracle"
             },
-            "cpe": "cpe:2.3:a:oracle:mysql_server:8.4.11:*:*:*:*:*:*:*"
+            "cpe": "cpe:2.3:a:oracle:mysql_server:8.4.13:*:*:*:*:*:*:*"
         }
     ]
 }
