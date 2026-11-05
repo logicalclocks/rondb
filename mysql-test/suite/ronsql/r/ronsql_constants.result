@@ -86,7 +86,7 @@ ronsql_cli caught exception: Overflow in integer constant folding.
 Overflow when attempting to fold constant expression (922337203685477580 * 11).
 Error handling: RPE
 ronsql_cli caught exception: Overflow in integer constant folding.
-Overflow when attempting to fold constant expression (922337203685477580 * 11).
+Overflow when attempting to fold constant expression (-922337203685477580 * 11).
 Error handling: RPE
 ronsql_cli caught exception: Overflow in integer constant folding.
 Overflow when attempting to fold constant expression (-9223372036854775808 DIV -1).
@@ -136,6 +136,92 @@ SELECT sum( 9223372036854775807)
 FROM tbl;
 
 Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Unary minus before DIV and multiplication ===
+Expected: DIV: -12,-12,-1; repeated minus: 12,12,1
+== Query ==
+SELECT SUM(8 DIV -2 * 3) AS div_parsed,
+       SUM((8 DIV (-2)) * 3) AS div_grouped,
+       SUM(8 DIV -(2 * 3)) AS div_product,
+       SUM(8 DIV - -2 * 3) AS double_parsed,
+       SUM((8 DIV (-(-2))) * 3) AS double_grouped,
+       SUM(8 DIV -(-(2 * 3))) AS double_product
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Unary minus with column DIV and modulo ===
+Expected: DIV: -9,-9,-1; modulo: 3,3,1
+== Query ==
+SELECT SUM(sint8 DIV -2 * 3) AS div_parsed,
+       SUM((sint8 DIV (-2)) * 3) AS div_grouped,
+       SUM(sint8 DIV -(2 * 3)) AS div_product,
+       SUM(sint8 % -2 * 3) AS mod_parsed,
+       SUM((sint8 % (-2)) * 3) AS mod_grouped,
+       SUM(sint8 % -(2 * 3)) AS mod_product
+FROM tbl;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Unary minus precedence in HAVING ===
+Expected: n=1
+== Query ==
+SELECT COUNT(*) AS n
+FROM tbl
+HAVING (SUM(sint8) + 1) / -2 * 3 = -12
+   AND (SUM(sint8) + 1) / - -2 * 3 = 12;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Explicit unary-minus grouping in HAVING ===
+Expected: n=1
+== Query ==
+SELECT COUNT(*) AS n
+FROM tbl
+HAVING ((SUM(sint8) + 1) / (-2)) * 3 = -12
+   AND ((SUM(sint8) + 1) / (-(-2))) * 3 = 12;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Negated-product grouping in HAVING ===
+Expected: no rows
+== Query ==
+SELECT COUNT(*) AS n
+FROM tbl
+HAVING (SUM(sint8) + 1) / -(2 * 3) = -12
+    OR (SUM(sint8) + 1) / -(-(2 * 3)) = 12;
+
+Number of output lines, including header: 0
 
 == Diff ==
 ==========

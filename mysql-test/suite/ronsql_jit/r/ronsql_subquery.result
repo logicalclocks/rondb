@@ -635,12 +635,157 @@ ronsql_cli caught exception: An IN subquery must select exactly one column.
 Error handling: RPE
 ronsql_cli caught exception: A scalar subquery returned more than one row.
 
+=== Test 41: EXISTS retains a filter on a same-named correlation key ===
+Expected: id=7, total=70
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE EXISTS (
+  SELECT i.val FROM i1_inner AS i
+  WHERE i.id = o.id AND i.id = 7
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 42: NOT EXISTS retains a filter on a same-named correlation key ===
+Expected: ids=8,9,10, totals=80,90,100
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE NOT EXISTS (
+  SELECT i.val FROM i1_inner AS i
+  WHERE i.id = o.id AND i.id = 7
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+=== Test 43: Scalar subquery retains a filter on a same-named correlation key ===
+Expected: id=7, total=70
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE o.amount > (
+  SELECT SUM(i.val) FROM i1_inner AS i
+  WHERE i.id = o.id AND i.id = 7
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 44: EXISTS preserves nested predicates and SQL-looking string text ===
+Expected: id=7, total=70
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE EXISTS (
+  SELECT i.val FROM i1_inner AS i
+  WHERE (i.val = 10 OR i.val = 20)
+    AND (i.id = o.id
+      AND i.tag = 'A AND B WHERE GROUP BY ORDER BY LIMIT'
+      AND i.val > 15)
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 45: Scalar subquery preserves SELECT and predicate source spans ===
+Expected: id=7, total=70
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE o.amount > (
+  SELECT
+	SUM(i.val) AS `sum FROM value`
+  FROM i1_inner AS i
+  WHERE
+	(i.val = 10 OR i.val = 20)
+    AND (i.id = o.id
+      AND i.tag = 'A AND B WHERE GROUP BY ORDER BY LIMIT'
+      AND i.val > 15)
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 46: EXISTS escapes generated table, column and alias identifiers ===
+Expected: id=7, total=70
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE EXISTS (
+  SELECT `i``alias`.val FROM `i1``inner` AS `i``alias`
+  WHERE `i``alias`.`i``key` = o.id AND `i``alias`.val < 100
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 47: Scalar subquery escapes generated table, column and alias identifiers ===
+Expected: id=7, total=70
+== Query ==
+SELECT o.id, SUM(o.amount) AS total
+FROM i1_outer AS o
+WHERE o.amount > (
+  SELECT SUM(`i``alias`.val) FROM `i1``inner` AS `i``alias`
+  WHERE `i``alias`.`i``key` = o.id AND `i``alias`.val < 100
+)
+GROUP BY o.id;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===
 DROP TABLE empty_table;
 DROP TABLE lineitem;
 DROP TABLE orders;
 DROP TABLE nq_inner;
 DROP TABLE nq_outer;
+DROP TABLE `i1``inner`;
+DROP TABLE i1_inner;
+DROP TABLE i1_outer;
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_subquery_jit_fallback_delta;
 ronsql_subquery_jit_fallback_delta

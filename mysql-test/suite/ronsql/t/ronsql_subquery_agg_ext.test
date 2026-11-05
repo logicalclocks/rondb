@@ -323,6 +323,34 @@ SELECT e.id,
 FROM sq_entity AS e|
 
 # =========================================================================
+
+--echo
+--echo
+--echo === B4: 32 inner WHERE conjuncts retain the final filter ===
+
+# The correlation counts toward the 32-conjunct limit: 1 + 30 + 1.
+# Values 1001..1030 are absent; only the final m.ts = 1 filters fixture rows.
+let $QUERY=
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m
+   WHERE m.entity_id = e.id
+     AND m.val != 1001 AND m.val != 1002 AND m.val != 1003 AND m.val != 1004 AND m.val != 1005
+     AND m.val != 1006 AND m.val != 1007 AND m.val != 1008 AND m.val != 1009 AND m.val != 1010
+     AND m.val != 1011 AND m.val != 1012 AND m.val != 1013 AND m.val != 1014 AND m.val != 1015
+     AND m.val != 1016 AND m.val != 1017 AND m.val != 1018 AND m.val != 1019 AND m.val != 1020
+     AND m.val != 1021 AND m.val != 1022 AND m.val != 1023 AND m.val != 1024 AND m.val != 1025
+     AND m.val != 1026 AND m.val != 1027 AND m.val != 1028 AND m.val != 1029 AND m.val != 1030
+     AND m.ts = 1) AS sum_first
+FROM sq_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo == Expected result ==
+--sorted_result
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts = 1) AS sum_first
+FROM sq_entity AS e|
+
+# =========================================================================
 # Category E: Large dataset stress with filters
 # =========================================================================
 
@@ -482,6 +510,34 @@ DELIMITER ;|
 --exec curl -s -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
 --echo H5 response:
 --exec grep -o 'GROUP BY are not yet supported' $MYSQL_TMP_DIR/ronsql-rdrs.out || echo "UNEXPECTED: expected rejection for outer GROUP BY"
+
+--echo
+--echo === H6: 33 inner WHERE conjuncts reject instead of dropping the last filter ===
+
+# 1 correlation + 31 harmless predicates + restrictive final predicate.
+# The previous truncation kept the correlation but silently lost m.ts = 1.
+--exec printf '%s' '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.val != 1001 AND m.val != 1002 AND m.val != 1003 AND m.val != 1004 AND m.val != 1005 AND m.val != 1006 AND m.val != 1007 AND m.val != 1008 AND m.val != 1009 AND m.val != 1010 AND m.val != 1011 AND m.val != 1012 AND m.val != 1013 AND m.val != 1014 AND m.val != 1015 AND m.val != 1016 AND m.val != 1017 AND m.val != 1018 AND m.val != 1019 AND m.val != 1020 AND m.val != 1021 AND m.val != 1022 AND m.val != 1023 AND m.val != 1024 AND m.val != 1025 AND m.val != 1026 AND m.val != 1027 AND m.val != 1028 AND m.val != 1029 AND m.val != 1030 AND m.val != 1031 AND m.ts = 1) AS sum_first FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -sS -D $MYSQL_TMP_DIR/ronsql-i2-headers -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -qE '^HTTP/[0-9.]+ 400' $MYSQL_TMP_DIR/ronsql-i2-headers
+--exec grep -qiE '^X-RonSQL-Error-Class: limit' $MYSQL_TMP_DIR/ronsql-i2-headers
+--exec grep -qF 'Too many conditions in the WHERE clause of a SELECT-list subquery.' $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H6 response:
+--echo Too many conditions in the WHERE clause of a SELECT-list subquery.
+--remove_file $MYSQL_TMP_DIR/ronsql-i2-headers
+
+--echo
+--echo === H7: Correlation at conjunct 33 in nested AND is rejected ===
+
+# Four groups of eight harmless predicates precede the correlation.
+# Nested parentheses must not change the count or produce a missing-correlation error.
+--exec printf '%s' '{"query":"SELECT e.id, (SELECT SUM(m.val) FROM sq_measures AS m WHERE ((m.val != 1001 AND m.val != 1002 AND m.val != 1003 AND m.val != 1004 AND m.val != 1005 AND m.val != 1006 AND m.val != 1007 AND m.val != 1008) AND ((m.val != 1009 AND m.val != 1010 AND m.val != 1011 AND m.val != 1012 AND m.val != 1013 AND m.val != 1014 AND m.val != 1015 AND m.val != 1016) AND ((m.val != 1017 AND m.val != 1018 AND m.val != 1019 AND m.val != 1020 AND m.val != 1021 AND m.val != 1022 AND m.val != 1023 AND m.val != 1024) AND ((m.val != 1025 AND m.val != 1026 AND m.val != 1027 AND m.val != 1028 AND m.val != 1029 AND m.val != 1030 AND m.val != 1031 AND m.val != 1032) AND m.entity_id = e.id))))) AS sum_val FROM sq_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-rdrs-body
+--exec curl -sS -D $MYSQL_TMP_DIR/ronsql-i2-headers -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-rdrs-body > $MYSQL_TMP_DIR/ronsql-rdrs.out
+--exec grep -qE '^HTTP/[0-9.]+ 400' $MYSQL_TMP_DIR/ronsql-i2-headers
+--exec grep -qiE '^X-RonSQL-Error-Class: limit' $MYSQL_TMP_DIR/ronsql-i2-headers
+--exec grep -qF 'Too many conditions in the WHERE clause of a SELECT-list subquery.' $MYSQL_TMP_DIR/ronsql-rdrs.out
+--echo H7 response:
+--echo Too many conditions in the WHERE clause of a SELECT-list subquery.
+--remove_file $MYSQL_TMP_DIR/ronsql-i2-headers
 
 # =========================================================================
 

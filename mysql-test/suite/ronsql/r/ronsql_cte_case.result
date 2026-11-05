@@ -226,3 +226,177 @@ ronsql_cli caught exception: CASE is supported only as the whole argument of an 
 Expected error: CASE only as the whole aggregate argument
 Error handling: RPE
 ronsql_cli caught exception: CASE is supported only as the whole argument of an aggregate function, as in SUM(CASE WHEN ... THEN ... ELSE ... END). It cannot be used in arithmetic or in a THEN or ELSE of another CASE.
+
+
+=== Test 12: CASE AND/OR association preserves every atom ===
+== Query ==
+SELECT o_custkey,
+SUM(CASE WHEN o_id = 1 OR o_id = 2 OR o_id = 3 OR o_id = 4
+THEN o_amt ELSE 0 END) AS or_left,
+SUM(CASE WHEN o_id = 1 OR (o_id = 2 OR (o_id = 3 OR o_id = 4))
+THEN o_amt ELSE 0 END) AS or_right,
+SUM(CASE WHEN (o_id = 1 OR o_id = 2) OR (o_id = 3 OR o_id = 4)
+THEN o_amt ELSE 0 END) AS or_balanced,
+SUM(CASE WHEN o_id != 1 AND o_id != 2 AND o_id != 3 AND o_id != 4
+THEN o_amt ELSE 0 END) AS and_left,
+SUM(CASE WHEN o_id != 1 AND (o_id != 2 AND (o_id != 3 AND o_id != 4))
+THEN o_amt ELSE 0 END) AS and_right,
+SUM(CASE WHEN (o_id != 1 AND o_id != 2) AND (o_id != 3 AND o_id != 4)
+THEN o_amt ELSE 0 END) AS and_balanced
+FROM cte_orders
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 13: CASE AND/OR conditions are not limited to 32 terms ===
+== Query ==
+SELECT o_custkey,
+SUM(CASE WHEN o_id = 101 OR o_id = 102 OR o_id = 103 OR o_id = 104
+OR o_id = 105 OR o_id = 106 OR o_id = 107 OR o_id = 108
+OR o_id = 109 OR o_id = 110 OR o_id = 111 OR o_id = 112
+OR o_id = 113 OR o_id = 114 OR o_id = 115 OR o_id = 116
+OR o_id = 117 OR o_id = 118 OR o_id = 119 OR o_id = 120
+OR o_id = 121 OR o_id = 122 OR o_id = 123 OR o_id = 124
+OR o_id = 125 OR o_id = 126 OR o_id = 127 OR o_id = 128
+OR o_id = 129 OR o_id = 130 OR o_id = 131 OR o_id = 132
+OR o_id = 5
+THEN o_amt ELSE 0 END) AS or_33,
+SUM(CASE WHEN o_id != 101 AND o_id != 102 AND o_id != 103 AND o_id != 104
+AND o_id != 105 AND o_id != 106 AND o_id != 107 AND o_id != 108
+AND o_id != 109 AND o_id != 110 AND o_id != 111 AND o_id != 112
+AND o_id != 113 AND o_id != 114 AND o_id != 115 AND o_id != 116
+AND o_id != 117 AND o_id != 118 AND o_id != 119 AND o_id != 120
+AND o_id != 121 AND o_id != 122 AND o_id != 123 AND o_id != 124
+AND o_id != 125 AND o_id != 126 AND o_id != 127 AND o_id != 128
+AND o_id != 129 AND o_id != 130 AND o_id != 131 AND o_id != 132
+AND o_id != 5
+THEN o_amt ELSE 0 END) AS and_33
+FROM cte_orders
+GROUP BY o_custkey;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 14: rejection - AND branch inside CASE OR ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+
+=== Test 15: rejection - OR branch inside CASE AND ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+
+=== Test 16: rejection - literal CASE condition ===
+Error handling: RPE
+ronsql_cli caught exception: CASE condition atom: only =, !=, <, <=, >, >= supported.
+
+
+=== Test 17: Main CASE literal-left comparison preserves CTE output offsets ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN 1 = c.c_region THEN sums.t ELSE 0 END) AS case_sum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 18: Main CASE column RHS preserves CTE output offsets ===
+== Query ==
+WITH sums AS (
+SELECT o_custkey AS k, SUM(o_amt) AS t
+FROM cte_orders GROUP BY o_custkey)
+SELECT c.c_id, SUM(CASE WHEN c.c_id > c.c_region THEN sums.t ELSE 0 END) AS case_sum
+FROM cte_customer AS c
+JOIN sums ON sums.k = c.c_id
+GROUP BY c.c_id;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 19: rejection - CTE-body SUM(CASE) with literal-left comparison ===
+Error handling: RPE
+ronsql_cli caught exception: CTE aggregate over complex expression not yet supported.
+
+
+=== Test 20: rejection - CTE-body SUM(CASE) with column RHS ===
+Error handling: RPE
+ronsql_cli caught exception: CTE aggregate over complex expression not yet supported.
+
+
+=== Test 21: CTE-body COUNT(CASE) literal-left comparison preserves offsets ===
+== Query ==
+WITH nullable_sums AS (
+SELECT v_custkey AS k, SUM(v_amt) AS t
+FROM cte_case_nullable GROUP BY v_custkey),
+case_counts AS (
+SELECT c.c_id AS k,
+COUNT(CASE WHEN 1 = c.c_region THEN nullable_sums.t ELSE 0 END) AS n
+FROM cte_customer AS c
+JOIN nullable_sums ON nullable_sums.k = c.c_id
+GROUP BY c.c_id)
+SELECT k, SUM(n) AS case_count
+FROM case_counts
+GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 22: CTE-body COUNT(CASE) column RHS preserves offsets ===
+== Query ==
+WITH nullable_sums AS (
+SELECT v_custkey AS k, SUM(v_amt) AS t
+FROM cte_case_nullable GROUP BY v_custkey),
+case_counts AS (
+SELECT c.c_id AS k,
+COUNT(CASE WHEN c.c_id > c.c_region THEN nullable_sums.t ELSE 0 END) AS n
+FROM cte_customer AS c
+JOIN nullable_sums ON nullable_sums.k = c.c_id
+GROUP BY c.c_id)
+SELECT k, SUM(n) AS case_count
+FROM case_counts
+GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+=== Cleanup ===

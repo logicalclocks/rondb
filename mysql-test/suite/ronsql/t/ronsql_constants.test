@@ -72,6 +72,77 @@ SELECT sum( 9223372036854775807)
 FROM tbl;|
 --source suite/ronsql/include/ronsql_compare.inc
 
+# Compare both expression grammars against MySQL. The one-row fixture
+# contains sint8=7. Explicit parentheses distinguish unary negation from
+# negating a complete product; column operands also exercise runtime arithmetic.
+--let $strict_diff=yes
+--let $QUERY=
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-unary-minus.sql
+
+--echo
+--echo === Unary minus before DIV and multiplication ===
+--echo Expected: DIV: -12,-12,-1; repeated minus: 12,12,1
+--write_file $QUERY_FILE
+SELECT SUM(8 DIV -2 * 3) AS div_parsed,
+       SUM((8 DIV (-2)) * 3) AS div_grouped,
+       SUM(8 DIV -(2 * 3)) AS div_product,
+       SUM(8 DIV - -2 * 3) AS double_parsed,
+       SUM((8 DIV (-(-2))) * 3) AS double_grouped,
+       SUM(8 DIV -(-(2 * 3))) AS double_product
+FROM tbl;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Unary minus with column DIV and modulo ===
+--echo Expected: DIV: -9,-9,-1; modulo: 3,3,1
+--write_file $QUERY_FILE
+SELECT SUM(sint8 DIV -2 * 3) AS div_parsed,
+       SUM((sint8 DIV (-2)) * 3) AS div_grouped,
+       SUM(sint8 DIV -(2 * 3)) AS div_product,
+       SUM(sint8 % -2 * 3) AS mod_parsed,
+       SUM((sint8 % (-2)) * 3) AS mod_grouped,
+       SUM(sint8 % -(2 * 3)) AS mod_product
+FROM tbl;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Unary minus precedence in HAVING ===
+--echo Expected: n=1
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n
+FROM tbl
+HAVING (SUM(sint8) + 1) / -2 * 3 = -12
+   AND (SUM(sint8) + 1) / - -2 * 3 = 12;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Explicit unary-minus grouping in HAVING ===
+--echo Expected: n=1
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n
+FROM tbl
+HAVING ((SUM(sint8) + 1) / (-2)) * 3 = -12
+   AND ((SUM(sint8) + 1) / (-(-2))) * 3 = 12;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === Negated-product grouping in HAVING ===
+--echo Expected: no rows
+--write_file $QUERY_FILE
+SELECT COUNT(*) AS n
+FROM tbl
+HAVING (SUM(sint8) + 1) / -(2 * 3) = -12
+    OR (SUM(sint8) + 1) / -(-(2 * 3)) = 12;
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--let $QUERY_FILE=
+--let $strict_diff=
+
 --echo Cleanup
 DELIMITER ;|
 DROP TABLE tbl;

@@ -27,6 +27,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include <NdbApi.hpp>
 
@@ -64,6 +65,42 @@ struct raw_value
   size_t len = 0;
 };
 
+// Parser-only construction state; the nodes remain owned by the arena.
+// Keep this trivial so Bison can copy semantic values with memcpy. Initialize
+// both pointers before use; append accepts one node whose next pointer is NULL.
+template <typename Node>
+struct RonSQLListBuilder
+{
+  Node* head;
+  Node* tail;
+
+  void append(Node* node)
+  {
+    ndbrequire((head == NULL) == (tail == NULL));
+    ndbrequire(node != NULL && node->next == NULL);
+    if (tail == NULL)
+      head = node;
+    else
+      tail->next = node;
+    tail = node;
+  }
+};
+
+static_assert(std::is_trivial<RonSQLListBuilder<IndexHintList>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<JoinCondition>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<GroupbyColumns>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<OrderbyColumns>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<Outputs>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<CteDefinition>>::value,
+              "Bison semantic values must remain trivial.");
+static_assert(std::is_trivial<RonSQLListBuilder<JoinClause>>::value,
+              "Bison semantic values must remain trivial.");
+
 // Phase I.5 v2b: linked list of operands for an n-ary GREATEST / LEAST.
 // Built bottom-up by the parser via mk_arg_list / append_arg_list.
 struct ArithExprList
@@ -71,6 +108,9 @@ struct ArithExprList
   AggregationAPICompiler::Expr* head;
   ArithExprList* next;
 };
+
+static_assert(std::is_trivial<RonSQLListBuilder<ArithExprList>>::value,
+              "Bison semantic values must remain trivial.");
 
 /*
   NdbAPI is not consistent wrt to the datatype used for attrId. For example,
@@ -136,6 +176,11 @@ public:
     bool m_collect_access = false;
     Uint32 m_access_scope = 0;       // scope being parsed
     Uint32 m_access_ctes_done = 0;   // CTE bodies parsed so far
+    // Registry lookup only; the public wrappers record every reference.
+    // Unqualified lookup requires a NULL qualifier; qualified lookup uses
+    // LexCString equality, including its empty-string semantics.
+    Uint32 intern_column(LexCString table_qualifier, LexCString col_name,
+                         bool qualified);
   public:
     Context(RonSQLPreparer& parser):
       m_parser(parser)
@@ -143,6 +188,19 @@ public:
     void set_err_state(ErrState state, char* err_pos, size_t err_len);
     AggregationAPICompiler* get_agg();
     ArenaMalloc* get_allocator();
+    // Nonthrowing allocation at the sites covered by fault-injection tests.
+    // The caller retains its NULL check and exception translation.
+    void* alloc_bytes(RonSQLAllocationTestHook::Site site,
+                      size_t bytes, size_t alignment) noexcept;
+    // Allocate an arena-owned statement with its default member initializers.
+    SelectStatement* make_select_statement();
+    // Callers attach index hints and record authorization after construction.
+    TableRef* make_table_ref(
+        LexCString database, LexCString name, LexCString alias);
+    // ON-condition validation remains with the caller.
+    JoinClause* make_join_clause(
+        JoinClause::JoinType join_type, const TableRef& table,
+        JoinCondition* conditions);
     Uint32 column_name_to_idx(LexCString);
     Uint32 qualified_column_name_to_idx(LexCString table, LexCString column);
     // Returns `e` for use as an operand of arithmetic or as an arm of a
@@ -169,13 +227,12 @@ public:
         bool is_greatest);
     // Build a two-element list (the smallest the n-ary grammar
     // accepts).
-    struct ArithExprList* mk_arg_list(
+    RonSQLListBuilder<ArithExprList> mk_arg_list(
         AggregationAPICompiler::Expr* a,
         AggregationAPICompiler::Expr* b);
-    // Append one operand at the end of an existing list, in source
-    // order.  Returns the same list head.
-    struct ArithExprList* append_arg_list(
-        struct ArithExprList* list,
+    // Append one operand in source order and return the updated head/tail.
+    RonSQLListBuilder<ArithExprList> append_arg_list(
+        RonSQLListBuilder<ArithExprList> list,
         AggregationAPICompiler::Expr* x);
     // RONDB-1135: `output` was parsed from `function_name(column)` in a
     // SELECT list.  Records it as an AVRO() output and returns true, or sets
@@ -586,7 +643,12 @@ private:
   bool access_is_cte(const LexCString& name, Uint32 scope) const;
   void add_accessed_column(Uint32 table_idx, const LexCString& column);
   void configure();
+  AggregationAPICompiler* make_aggregation_compiler();
   void parse();
+  bool register_main_outputs();
+  void register_cte_outputs();
+  void prepare_projection_only_query();
+  [[noreturn]] void throw_parse_error(int parse_result);
   void resolve_orderby_aliases();
   void canonicalize_orderby_columns();
   static bool same_resolved_column(const QueryScope::ResolvedColumnRef& a,
@@ -661,7 +723,7 @@ private:
       const CteKeyCoverageResult& r);
   void normalize_cte_join_key_order();
   Int32 classify_ce_table_resolved(const QueryScope& scope,
-                                   ConditionalExpression* ce) const;
+                                   const ConditionalExpression* ce) const;
   void classify_where_by_table(QueryScope& scope,
                                 ConditionalExpression* where_ce);
   // Phase i26: register linked projections for ancestor columns in
@@ -677,7 +739,7 @@ private:
   // stored columns on the body root op; refined permanent errors
   // otherwise.
   void check_cte_body_col_vs_col(const QueryScope& scope,
-                                 ConditionalExpression* ce) const;
+                                 const ConditionalExpression* ce) const;
   bool is_anti_join_promotable(const QueryScope& scope,
                                Uint32 op_idx,
                                const ConditionalExpression* ce) const;
@@ -917,6 +979,7 @@ private:
                                      const CteDefinition* cte);
   void analyze_ctes();
   void validate_having_references();
+  void validate_having_support();
   void build_cte_scopes();
   // Re-checks the main query's ANTI_JOIN promotions once the CTE body
   // scopes exist, and rejects a SUM output whose argument can be NULL.
@@ -928,6 +991,8 @@ private:
   void mark_scope_column_refs_expr(
       bool* refs,
       const AggregationAPICompiler::Expr* expr) const;
+  static QueryScope::ResolvedColumnRef lookup_relation_column(
+      const JoinOp& op, Uint32 join_op_idx, const char* col_name);
   void resolve_columns_for_scope(QueryScope& scope,
                                  const SelectStatement& stmt,
                                  bool main_scope);
@@ -1002,6 +1067,8 @@ private:
   void decorrelate_exists();
   void decorrelate_scalar();
   void compile();
+  void register_condition_linked_projections(
+      QueryScope& scope, const ConditionalExpression* ce);
   void build_agg_linked_projections();
   void build_cte_linked_projections();
   void determine_explain();

@@ -545,6 +545,221 @@ LIMIT 5|
 
 DELIMITER ;|
 
+# I3: COUNT(expr) in a SELECT-list subquery must preserve NULL semantics.
+# For ids 1, 2, 3: COUNT(*) / integer constants give 2, 1, 0;
+# COUNT(m.val) gives 1, 0, 0. Use separate queries to avoid leaf merging.
+--disable_query_log
+CREATE TABLE sq_count_entity (
+  id INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE sq_count_values (
+  entity_id INT NOT NULL,
+  ts INT NOT NULL,
+  val INT NULL,
+  PRIMARY KEY USING HASH (entity_id, ts),
+  INDEX idx_count_entity (entity_id)
+) ENGINE=NDB;
+INSERT INTO sq_count_entity VALUES (1), (2), (3);
+INSERT INTO sq_count_values VALUES (1, 1, NULL), (1, 2, 5), (2, 1, NULL);
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === I3: COUNT arguments and nullable inner rows ===
+
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(0) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(-1) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(1 + 2) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(m.val) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+# A failed cross-table filter must skip only its own COUNT update.
+# Put COUNT before e.id so the input cannot depend on column index 0.
+# For ids 1, 2, 3: n_filtered is 1, 0, 0 and n_all is 2, 1, 0.
+--echo === I3: COUNT(*) handles missing rows and merged filters ===
+let $QUERY=
+SELECT
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id AND m.ts > e.id) AS n_filtered,
+  e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m2 WHERE m2.entity_id = e.id) AS n_all
+FROM sq_count_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--echo === I3: reject COUNT(m.val + 1) ===
+--exec printf '%s' '{"query":"SELECT e.id, (SELECT COUNT(m.val + 1) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n FROM sq_count_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-i3-count-body
+--exec curl -s -o $MYSQL_TMP_DIR/ronsql-i3-count.out -w '%{http_code}\n' -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-i3-count-body
+--exec grep -F -o 'SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.' $MYSQL_TMP_DIR/ronsql-i3-count.out
+
+--echo === I3: reject COUNT(CASE WHEN m.val IS NULL THEN m.val ELSE 1 END) ===
+--exec printf '%s' '{"query":"SELECT e.id, (SELECT COUNT(CASE WHEN m.val IS NULL THEN m.val ELSE 1 END) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n FROM sq_count_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-i3-count-body
+--exec curl -s -o $MYSQL_TMP_DIR/ronsql-i3-count.out -w '%{http_code}\n' -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-i3-count-body
+--exec grep -F -o 'SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.' $MYSQL_TMP_DIR/ronsql-i3-count.out
+
+--echo === I3: reject COUNT(1 / 2) ===
+--exec printf '%s' '{"query":"SELECT e.id, (SELECT COUNT(1 / 2) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n FROM sq_count_entity AS e;","database":"test","outputFormat":"TEXT"}' > $MYSQL_TMP_DIR/ronsql-i3-count-body
+--exec curl -s -o $MYSQL_TMP_DIR/ronsql-i3-count.out -w '%{http_code}\n' -X POST -H "Content-Type: application/json" http://$RDRS_NOKEY_HOST:$RDRS_NOKEY_PORT/0.1.0/ronsql --data-binary @$MYSQL_TMP_DIR/ronsql-i3-count-body
+--exec grep -F -o 'SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.' $MYSQL_TMP_DIR/ronsql-i3-count.out
+
+--remove_file $MYSQL_TMP_DIR/ronsql-i3-count-body
+--remove_file $MYSQL_TMP_DIR/ronsql-i3-count.out
+
+# The HAVING alias is parsed after the outer and inner column references,
+# so its column index differs from the aggregate slot assigned by compile().
+# SUM is NULL for ids 2 and 3; COUNT(*) is 2, 1 and 0 for ids 1, 2 and 3.
+--let $QUERY=
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-having-in-alias.sql
+
+--echo
+--echo === HAVING IN resolves a nullable SUM subquery alias ===
+--echo Expected: id=1, total=5
+--write_file $QUERY_FILE
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS total
+FROM sq_count_entity AS e
+HAVING total IN
+  (SELECT MAX(v.val) FROM sq_count_values AS v GROUP BY v.entity_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === HAVING NOT IN resolves a COUNT subquery alias ===
+--echo Expected: id=3, n=0
+--write_file $QUERY_FILE
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING NOT (n IN
+  (SELECT MIN(v.entity_id) FROM sq_count_values AS v GROUP BY v.entity_id));
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === HAVING IN resolves a subquery alias inside arithmetic ===
+--echo Expected: id=2, n=1; id=3, n=0
+--write_file $QUERY_FILE
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING (n + 1) IN
+  (SELECT MAX(v.ts) FROM sq_count_values AS v GROUP BY v.entity_id);
+EOF
+--source suite/ronsql/include/ronsql_compare.inc
+
+--let $QUERY_FILE=
+
+--disable_query_log
+DROP TABLE sq_count_values;
+DROP TABLE sq_count_entity;
+--enable_query_log
+
+# Binary correlation and primary keys force the COUNT row-guard fallback:
+# neither key can be selected by the integer/string column-counting path.
+# Use actual 80-byte keys to catch guards that read a whole key into the
+# embedded interpreter's small scratch buffer. The NULL inner key must
+# not match the NULL outer key. val is nullable and is not a key column.
+--disable_query_log
+CREATE TABLE sq_count_binary_entity (
+  id INT NOT NULL,
+  entity_key VARBINARY(80) NULL,
+  min_score INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE sq_count_binary_values (
+  row_key VARBINARY(80) NOT NULL,
+  entity_key VARBINARY(80) NULL,
+  score INT NOT NULL,
+  val INT NULL,
+  PRIMARY KEY USING HASH (row_key),
+  INDEX idx_count_binary_entity (entity_key)
+) ENGINE=NDB;
+INSERT INTO sq_count_binary_entity VALUES
+  (1, REPEAT('a', 80), 10),
+  (2, REPEAT('b', 80), 20),
+  (3, REPEAT('c', 80), 30),
+  (4, NULL, 0);
+INSERT INTO sq_count_binary_values VALUES
+  (REPEAT('a', 80), REPEAT('a', 80), 5, NULL),
+  (REPEAT('b', 80), REPEAT('a', 80), 15, 7),
+  (REPEAT('d', 80), REPEAT('b', 80), 10, NULL),
+  (REPEAT('x', 80), NULL, 99, 9);
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === COUNT row guard: binary index scan and missing rows ===
+--echo Expected counts for ids 1,2,3,4: 2,1,0,0
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_binary_values AS m
+   WHERE m.entity_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === COUNT row guard: binary primary-key lookup ===
+--echo Expected counts for ids 1,2,3,4: 1,1,0,0
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(0) FROM sq_count_binary_values AS m
+   WHERE m.row_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === COUNT row guard: merged filtered and unfiltered aggregates ===
+--echo Expected (n_filtered,id,n_all,n_present): (1,1,2,1), (0,2,1,0), (0,3,0,0), (0,4,0,0)
+let $QUERY=
+SELECT
+  (SELECT COUNT(*) FROM sq_count_binary_values AS m
+   WHERE m.entity_key = e.entity_key AND m.score > e.min_score) AS n_filtered,
+  e.id,
+  (SELECT COUNT(0) FROM sq_count_binary_values AS m2
+   WHERE m2.entity_key = e.entity_key) AS n_all,
+  (SELECT COUNT(m3.val) FROM sq_count_binary_values AS m3
+   WHERE m3.entity_key = e.entity_key) AS n_present
+FROM sq_count_binary_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE sq_count_binary_values;
+DROP TABLE sq_count_binary_entity;
+--enable_query_log
+
 --echo
 --echo === Cleanup ===
 

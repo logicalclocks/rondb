@@ -324,6 +324,40 @@ id	sum_big
 5	1300
 6	NULL
 
+
+=== B4: 32 inner WHERE conjuncts retain the final filter ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m
+WHERE m.entity_id = e.id
+AND m.val != 1001 AND m.val != 1002 AND m.val != 1003 AND m.val != 1004 AND m.val != 1005
+AND m.val != 1006 AND m.val != 1007 AND m.val != 1008 AND m.val != 1009 AND m.val != 1010
+AND m.val != 1011 AND m.val != 1012 AND m.val != 1013 AND m.val != 1014 AND m.val != 1015
+AND m.val != 1016 AND m.val != 1017 AND m.val != 1018 AND m.val != 1019 AND m.val != 1020
+AND m.val != 1021 AND m.val != 1022 AND m.val != 1023 AND m.val != 1024 AND m.val != 1025
+AND m.val != 1026 AND m.val != 1027 AND m.val != 1028 AND m.val != 1029 AND m.val != 1030
+AND m.ts = 1) AS sum_first
+FROM sq_entity AS e;
+
+Number of output lines, including header: 7
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT SUM(m.val) FROM sq_measures AS m WHERE m.entity_id = e.id AND m.ts = 1) AS sum_first
+FROM sq_entity AS e|
+id	sum_first
+1	10
+2	40
+3	70
+4	100
+5	500
+6	NULL
+
 === Create large tables for stress tests ===
 Warnings:
 Note	1051	Unknown table 'test.lg_events'
@@ -414,6 +448,14 @@ output must be an aggregate function
 === H5: Outer query with GROUP BY + subqueries (unsupported) ===
 H5 response:
 GROUP BY are not yet supported
+
+=== H6: 33 inner WHERE conjuncts reject instead of dropping the last filter ===
+H6 response:
+Too many conditions in the WHERE clause of a SELECT-list subquery.
+
+=== H7: Correlation at conjunct 33 in nested AND is rejected ===
+H7 response:
+Too many conditions in the WHERE clause of a SELECT-list subquery.
 
 === Create tables for join + subquery tests ===
 Warnings:

@@ -474,6 +474,93 @@ id	grp	sum_val	max_evt
 4	4	215	4
 5	5	265	5
 
+=== I3: COUNT arguments and nullable inner rows ===
+== Query ==
+SELECT e.id,
+(SELECT COUNT(*) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(0) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(-1) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(1 + 2) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+== Query ==
+SELECT e.id,
+(SELECT COUNT(m.val) FROM sq_count_values AS m WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+=== I3: COUNT(*) handles missing rows and merged filters ===
+== Query ==
+SELECT
+(SELECT COUNT(*) FROM sq_count_values AS m
+WHERE m.entity_id = e.id AND m.ts > e.id) AS n_filtered,
+e.id,
+(SELECT COUNT(*) FROM sq_count_values AS m2 WHERE m2.entity_id = e.id) AS n_all
+FROM sq_count_entity AS e;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+=== I3: reject COUNT(m.val + 1) ===
+400
+SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
+=== I3: reject COUNT(CASE WHEN m.val IS NULL THEN m.val ELSE 1 END) ===
+400
+SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
+=== I3: reject COUNT(1 / 2) ===
+400
+SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
+
 === Cleanup ===
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_subquery_agg_jit_fallback_delta;

@@ -166,6 +166,112 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.grp, COUNT(*) FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id WHERE EXISTS (SELECT k.k FROM jw_keys AS k WHERE k.k = c.a) GROUP BY p.grp;' 2>&1
 
+# All prefix terms are false because the join equates p.id with c.id.
+# Only the final accepted term matches: ids 1, 3 and 5 with totals 9, 6 and 3.
+# Generate tree shapes explicitly while reusing the strict comparison helper.
+--let RONSQL_OR_TEST_DIR=$MYSQL_TMP_DIR
+--perl
+use strict;
+use warnings;
+use File::Spec;
+
+sub balanced_or {
+  my (@terms) = @_;
+  return $terms[0] if @terms == 1;
+  my $mid = int(@terms / 2);
+  return '(' . balanced_or(@terms[0 .. $mid - 1]) . " OR\n  " .
+         balanced_or(@terms[$mid .. $#terms]) . ')';
+}
+
+sub or_predicate {
+  my ($shape, @terms) = @_;
+  return join(" OR\n  ", @terms) if $shape eq 'left';
+  return balanced_or(@terms) if $shape eq 'balanced';
+  die "Unknown OR shape: $shape\n" unless $shape eq 'right';
+  my $predicate = pop @terms;
+  while (@terms) {
+    my $term = pop @terms;
+    $predicate = "$term OR\n  ($predicate)";
+  }
+  return $predicate;
+}
+
+my @cases = (
+  ['31-left', 31, 'left', 'p.a < c.a'],
+  ['32-left', 32, 'left', 'p.a < c.a'],
+  ['32-right', 32, 'right', 'p.a < c.a'],
+  ['32-balanced', 32, 'balanced', 'p.a < c.a'],
+  ['33-left', 33, 'left', 'p.a < c.a'],
+  ['33-is-right', 33, 'right', 'p.a IS NULL'],
+  ['33-extract-balanced', 33, 'balanced', 'EXTRACT(DAY FROM p.id) = 1']
+);
+for my $case (@cases) {
+  my ($name, $count, $shape, $tail) = @$case;
+  my @terms = map { "p.id + $_ = c.id" } 1 .. $count - 1;
+  push @terms, $tail;
+  my $predicate = or_predicate($shape, @terms);
+  my $path = File::Spec->catfile($ENV{RONSQL_OR_TEST_DIR},
+                                "ronsql-or-$name.sql");
+  open my $out, '>', $path or die "Cannot write $path: $!\n";
+  print {$out} "SELECT p.id, SUM(c.a) AS total\n",
+              "FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id\n",
+              "WHERE $predicate\nGROUP BY p.id;\n"
+    or die "Cannot write $path: $!\n";
+  close $out or die "Cannot close $path: $!\n";
+}
+EOF
+--let RONSQL_OR_TEST_DIR=
+--let $QUERY=
+
+--echo
+--echo === jw-or-31-left: 31 OR terms, left-associated ===
+--echo Expected: ids=1,3,5; totals=9,6,3
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-or-31-left.sql
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === jw-or-32-left: 32 OR terms, left-associated ===
+--echo Expected: ids=1,3,5; totals=9,6,3
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-or-32-left.sql
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === jw-or-32-right: 32 OR terms, right-associated ===
+--echo Expected: ids=1,3,5; totals=9,6,3
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-or-32-right.sql
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === jw-or-32-balanced: 32 OR terms, balanced ===
+--echo Expected: ids=1,3,5; totals=9,6,3
+--let $QUERY_FILE=$MYSQL_TMP_DIR/ronsql-or-32-balanced.sql
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === jw-or-33-left: 33 OR terms are rejected ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-or-33-left.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-or-33-left.sql
+
+--echo
+--echo === jw-or-33-is-right: IS NULL at OR term 33 is rejected before atom validation ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-or-33-is-right.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-or-33-is-right.sql
+
+--echo
+--echo === jw-or-33-extract-balanced: EXTRACT at OR term 33 is rejected before atom validation ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test --execute-file '$MYSQL_TMP_DIR/ronsql-or-33-extract-balanced.sql' 2>&1
+--remove_file $MYSQL_TMP_DIR/ronsql-or-33-extract-balanced.sql
+
+--echo
+--echo === jw-or-mixed: an AND branch inside OR remains unsupported ===
+--error 1
+--exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'SELECT p.id, SUM(c.a) AS total FROM jw_parent AS p JOIN jw_child AS c ON c.id = p.id WHERE p.a < c.a OR (p.b = c.b AND p.id = c.id) GROUP BY p.id;' 2>&1
+
+--let $QUERY_FILE=
+
 --disable_query_log
 --disable_warnings
 DROP TABLE jw_keys;
