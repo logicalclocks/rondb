@@ -85,7 +85,7 @@ void PKReadCtrl::pkRead(const drogon::HttpRequestPtr &req,
     return;
   }
 
-  memcpy(jsonParser.get_buffer().get(), json_str, length);
+  jsonParser.copy_request(json_str, length);
 
   PKReadParams reqStruct(db, table);
 

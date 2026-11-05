@@ -75,7 +75,7 @@ void RonSQLCtrl::ronsql(
     DEB_TRACE();
     return;
   }
-  memcpy(jsonParser.get_buffer().get(), json_str, length);
+  jsonParser.copy_request(json_str, length);
 
   RonSQLParams reqStruct;
 
