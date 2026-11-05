@@ -1,0 +1,908 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBSPJ State Machine</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --surface: #f1f2f4; --surface2: #e4e7ec; --text: #1d2228; --dim: #5d6670;
+    --border: #cfd4db; --accent: #1f6feb; --accent2: #8250df; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --code-bg: #f3f4f6; --code-text: #24292f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --surface: #1c2027; --surface2: #262c35; --text: #e6e9ed; --dim: #9aa4af;
+      --border: #333b46; --accent: #58a6ff; --accent2: #bc8cff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+      --code-bg: #0f1216; --code-text: #e6e9ed;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --surface: #1c2027; --surface2: #262c35; --text: #e6e9ed; --dim: #9aa4af;
+    --border: #333b46; --accent: #58a6ff; --accent2: #bc8cff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --code-bg: #0f1216; --code-text: #e6e9ed;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1100px; padding: 2rem 16px 4rem; background: var(--bg); color: var(--text);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.3rem; margin: 2.2rem 0 .6rem; padding-bottom: .25rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.4rem 0 .4rem; color: var(--accent); }
+  .subtitle { color: var(--dim); margin-bottom: 1.5rem; }
+  code { font: .88em ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); color: var(--code-text);
+         padding: .1em .35em; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-text); border: 1px solid var(--border); border-radius: 6px;
+        padding: .9rem 1rem; overflow-x: auto; font: .82rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: .8rem 0; font-size: .88rem; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--surface2); }
+  .note, .warn, .weak { border-left: 4px solid var(--accent); background: var(--surface); padding: .7rem 1rem;
+         margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .warn { border-left-color: var(--warn); }
+  .weak { border-left-color: var(--bad); }
+  .src { color: var(--dim); font-size: .82rem; }
+  nav.toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1.2rem; }
+  nav.toc ol { margin: .3rem 0; padding-left: 1.2rem; }
+  svg { max-width: 100%; height: auto; }
+  svg text { fill: var(--text); font: 12px system-ui, sans-serif; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>DBSPJ State Machine</h1>
+<p class="subtitle">The request, tree-node and fragment-scan state machines of the DBSPJ pushed-join block, and the DBTC and DBLQH behaviour they rely on. Source tree: RonDB 26.10 (branch RONDB-1124-spj-fixes). Every statement is checked against the code; line numbers are approximate and drift, so the function name is always given too.</p>
+
+<nav class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#scope">Scope, conventions and the blocks involved</a></li>
+  <li><a href="#inventory">State inventory</a>
+    <ol>
+      <li><a href="#inv-request">Request</a></li>
+      <li><a href="#inv-treenode">TreeNode</a></li>
+      <li><a href="#inv-sfh">ScanFragHandle</a></li>
+      <li><a href="#inv-cte">Join aggregation and CTE state</a></li>
+      <li><a href="#inv-counters">Counter accounting rules</a></li>
+    </ol>
+  </li>
+  <li><a href="#req-sm">Request lifecycle</a></li>
+  <li><a href="#tn-sm">TreeNode lifecycle</a></li>
+  <li><a href="#sfh-sm">ScanFragHandle lifecycle</a></li>
+  <li><a href="#seq">Signal sequences</a>
+    <ol>
+      <li><a href="#seq-a">(a) Lookup-only join</a></li>
+      <li><a href="#seq-b">(b) Scan root with lookup children</a></li>
+      <li><a href="#seq-c">(c) Scan-scan: batches, repeat, NEXTREQ</a></li>
+      <li><a href="#seq-d">(d) Close in the middle of a batch</a></li>
+      <li><a href="#seq-e">(e) Errors from DBLQH: root vs child</a></li>
+      <li><a href="#seq-f">(f) Node, API and TC failure</a></li>
+      <li><a href="#seq-g">(g) Time-out handling</a></li>
+      <li><a href="#seq-h">(h) Join aggregation and CTEs with DBTC</a></li>
+    </ol>
+  </li>
+  <li><a href="#conc">Concurrency and ordering assumptions</a></li>
+  <li><a href="#res">Resource lifecycle</a></li>
+  <li><a href="#contract">What DBSPJ relies on from DBTC and DBLQH</a></li>
+  <li><a href="#weak">Suspected weaknesses (summary)</a></li>
+</ol>
+</nav>
+
+<h2 id="scope">1. Scope, conventions and the blocks involved</h2>
+
+<p>DBSPJ executes a pushed join (a <em>query tree</em> of lookup and scan operations) on behalf of DBTC. One DBSPJ instance exists per TC instance and runs in the same thread as that DBTC instance (<span class="src">mt.cpp:7304 getInstanceNo / 7400 thread map: <code>case DBTC: case DBSPJ:</code></span>; <span class="src">DbspjMain.cpp:822 execSTTOR: <code>c_tc = globalData.getBlock(DBTC, instance())</code></span>). DBSPJ issues the per-table operations to DBLQH (or to the query-thread block DBQLQH through the virtual block <code>V_QUERY</code>) on any data node and gets the result rows it needs for the join back as <code>TRANSID_AI</code>; rows that only the client needs go from DBTUP straight to the API.</p>
+
+<p>The document follows a request from its start signal to its release. A <strong>Request</strong> is one SPJ query instance (one <code>LQHKEYREQ</code> or one <code>SCAN_FRAGREQ</code> from DBTC). It owns a list of <strong>TreeNodes</strong> (one per query operation, of type lookup, scanFrag, CTE lookup, CTE scan or CTE subtree container). A scanFrag TreeNode owns a list of <strong>ScanFragHandles</strong>, one per fragment it scans.</p>
+
+<div class="note">Conventions. "LQH" means DBLQH or DBQLQH. A code reference reads <span class="src">DbspjMain.cpp:4583 Dbspj::abort()</span>; references without a file name are to <code>storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp</code>. Line numbers are those of the committed tree (HEAD 6598f4a65e3); while this was written the working tree had uncommitted edits to <code>DbspjMain.cpp</code> (new error inserts 17535-17539) that shift lines after ~10500 by up to 80. Finding IDs (S-n) are explained in <a href="#weak">section 10</a>, with trigger, test and confidence.</div>
+
+<svg viewBox="0 0 980 300" role="img" aria-label="Blocks and threads involved in a pushed join">
+  <defs>
+    <marker id="ar0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--dim)"/></marker>
+  </defs>
+  <rect x="10" y="20" width="150" height="250" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="85" y="42" text-anchor="middle" style="font-weight:600">API node</text>
+  <text x="85" y="66" text-anchor="middle">NdbQuery / NdbTransaction</text>
+  <rect x="210" y="20" width="330" height="250" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="375" y="42" text-anchor="middle" style="font-weight:600">Data node A: TC thread i</text>
+  <rect x="230" y="60" width="130" height="60" rx="6" style="fill:var(--surface2);stroke:var(--accent)"/>
+  <text x="295" y="85" text-anchor="middle">DBTC (instance i)</text>
+  <text x="295" y="103" text-anchor="middle" style="fill:var(--dim)">timers, API protocol</text>
+  <rect x="390" y="60" width="130" height="60" rx="6" style="fill:var(--surface2);stroke:var(--accent2)"/>
+  <text x="455" y="85" text-anchor="middle">DBSPJ (instance i)</text>
+  <text x="455" y="103" text-anchor="middle" style="fill:var(--dim)">Request/TreeNode</text>
+  <text x="375" y="160" text-anchor="middle" style="fill:var(--dim)">same thread: TC-&gt;SPJ signals are FIFO,</text>
+  <text x="375" y="178" text-anchor="middle" style="fill:var(--dim)">SPJ can EXECUTE_DIRECT into DIH</text>
+  <text x="375" y="196" text-anchor="middle" style="fill:var(--dim)">and read c_tc-&gt;m_distribution_handle</text>
+  <rect x="590" y="20" width="380" height="250" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="780" y="42" text-anchor="middle" style="font-weight:600">Data nodes A, B, ...: LDM / query threads</text>
+  <rect x="610" y="60" width="160" height="60" rx="6" style="fill:var(--surface2);stroke:var(--ok)"/>
+  <text x="690" y="85" text-anchor="middle">DBLQH / DBQLQH</text>
+  <text x="690" y="103" text-anchor="middle" style="fill:var(--dim)">+ join-agg engine</text>
+  <rect x="790" y="60" width="160" height="60" rx="6" style="fill:var(--surface2);stroke:var(--ok)"/>
+  <text x="870" y="85" text-anchor="middle">DBTUP / DBACC / DBTUX</text>
+  <text x="870" y="103" text-anchor="middle" style="fill:var(--dim)">sends TRANSID_AI</text>
+  <line x1="160" y1="80" x2="228" y2="80" style="stroke:var(--dim)" marker-end="url(#ar0)"/>
+  <text x="194" y="73" text-anchor="middle" style="font-size:10px">SCAN_TABREQ</text>
+  <line x1="360" y1="90" x2="388" y2="90" style="stroke:var(--dim)" marker-end="url(#ar0)"/>
+  <line x1="520" y1="80" x2="608" y2="80" style="stroke:var(--dim)" marker-end="url(#ar0)"/>
+  <text x="564" y="73" text-anchor="middle" style="font-size:10px">LQHKEYREQ / SCAN_FRAGREQ</text>
+  <line x1="608" y1="108" x2="522" y2="108" style="stroke:var(--dim)" marker-end="url(#ar0)"/>
+  <text x="564" y="125" text-anchor="middle" style="font-size:10px">CONF / REF / TRANSID_AI</text>
+  <path d="M870,120 C870,250 120,260 100,120" style="fill:none;stroke:var(--dim);stroke-dasharray:4 3" marker-end="url(#ar0)"/>
+  <text x="520" y="250" text-anchor="middle" style="font-size:11px">user-projection rows: TRANSID_AI straight to the API (FLUSH_AI in the read program)</text>
+</svg>
+
+<h2 id="inventory">2. State inventory</h2>
+
+<h3 id="inv-request">2.1 Request (<span class="src">Dbspj.hpp:1482 struct Request</span>)</h3>
+
+<table>
+<tr><th>Field / value</th><th>Meaning</th></tr>
+<tr><td><code>RS_BUILDING</code> 0x1</td><td>Set by <code>do_init()</code> (<span class="src">:1399 lookup, :1968 scan</span>) while the query tree is parsed by <code>build()</code>.</td></tr>
+<tr><td><code>RS_PREPARING</code> 0x2</td><td>Set by <code>prepare()</code> (<span class="src">:3558</span>) only when <code>RT_NEED_PREPARE</code> is set, i.e. the tree has a non-root scan that must ask DIH for its fragments.</td></tr>
+<tr><td><code>RS_RUNNING</code> 0x3</td><td>Set by <code>checkPrepareComplete()</code> (<span class="src">:3636</span>) when the prepare phase has nothing outstanding. Assignment, not OR: any earlier flag is dropped (it is only reached when <code>RS_ABORTING</code> is clear).</td></tr>
+<tr><td><code>RS_COMPLETING</code> 0x4</td><td>Set by <code>complete()</code> (<span class="src">:4671</span>), keeping <code>RS_ABORTING</code>/<code>RS_WAITING</code>; runs the <code>m_complete</code> hooks (DIH_SCAN_TAB_COMPLETE_REP).</td></tr>
+<tr><td><code>RS_ABORTING</code> 0x1000</td><td>OR-ed flag set by <code>abort()</code> (<span class="src">:4590</span>). No new work is started; outstanding replies drain.</td></tr>
+<tr><td><code>RS_WAITING</code> 0x2000</td><td>OR-ed flag: a non-final <code>SCAN_FRAGCONF</code> was sent and the request waits for <code>SCAN_NEXTREQ</code> (<span class="src">:4363 sendConf</span>); cleared on <code>SCAN_NEXTREQ</code> (<span class="src">:5168</span>).</td></tr>
+<tr><td><code>RS_ABORTED</code> 0x2008</td><td>Tombstone: a request aborted while <code>RS_WAITING</code> whose TC is alive. Tree nodes are released, the Request stays in the scan hash until DBTC's next <code>SCAN_NEXTREQ</code> (<span class="src">:4740 cleanup</span>). It does <em>not</em> include the <code>RS_ABORTING</code> bit.</td></tr>
+<tr><td><code>RT_SCAN</code></td><td>Started by <code>SCAN_FRAGREQ</code>; unbounded result set. Absent: lookup request.</td></tr>
+<tr><td><code>RT_MULTI_SCAN</code></td><td>More than one scan TreeNode (<span class="src">:2499 build</span>). Enables match bits in scan ancestors and sorted-order prefetch.</td></tr>
+<tr><td><code>RT_NEED_PREPARE</code> / <code>RT_NEED_COMPLETE</code></td><td>Some node needs <code>m_prepare</code>/<code>m_complete</code>; set together for every non-root scan (<span class="src">:11996 scanFrag_build</span>). <code>RT_NEED_COMPLETE</code> is cleared by <code>complete()</code> so the next <code>batchComplete()</code> finishes.</td></tr>
+<tr><td><code>RT_REPEAT_SCAN_RESULT</code></td><td>API asked for repeated (bushy) scan results (<span class="src">:16115 parseDA, NI_REPEAT_SCAN_RESULT</span>).</td></tr>
+<tr><td><code>RT_AGGREGATE</code>, <code>RT_AGG_ANCESTOR_MATCH</code></td><td>Join aggregation: only aggregate leaves feed the DBLQH aggregator; ancestors keep match bits for outer-join NULL rows (<span class="src">:2757 validateAggregateFlags</span>).</td></tr>
+<tr><td><code>RT_CTE_PHASE</code></td><td>CTE materialisation stage in progress (<span class="src">:3647 checkPrepareComplete</span>); cleared by <code>CTE_START_MAIN_REQ</code> (<span class="src">:9051</span>). Changes <code>batchComplete()</code> completely (section 3).</td></tr>
+<tr><td><code>RT_REQUESTER_FAILED</code></td><td>The requesting DBTC's node failed (<span class="src">:4623 nodeFail</span>): no <code>SCAN_NEXTREQ</code> can arrive, so <code>cleanup()</code> frees instead of leaving a tombstone.</td></tr>
+<tr><td><code>m_outstanding</code></td><td>Number of awaited reply units. When it reaches 0 the current batch is complete (<span class="src">:3746 checkBatchComplete</span>). Rules in <a href="#inv-counters">2.5</a>.</td></tr>
+<tr><td><code>m_cnt_active</code></td><td>Number of TreeNodes in <code>TN_ACTIVE</code>, i.e. that will return more rows on a later batch. 0 at a batch boundary means the request is complete. Changed only through <code>INC_CNT_ACTIVE</code>/<code>DEC_CNT_ACTIVE</code> (<span class="src">:170</span>).</td></tr>
+<tr><td><code>m_completed_tree_nodes</code></td><td>Bit per node: no signals outstanding for the node in this batch. Starts all-set (<span class="src">:1415/:1984</span>); cleared when a request is sent for the node, set by the count functions.</td></tr>
+<tr><td><code>m_active_tree_nodes</code></td><td>Nodes the next <code>SCAN_NEXTREQ</code> returns new rows for; computed by <code>prepareNextBatch()</code> (<span class="src">:4100</span>), reported to DBTC/API in <code>SCAN_FRAGCONF.total_len</code> (legacy) and <code>activeMask</code> (<span class="src">:4300-4333 sendConf</span>).</td></tr>
+<tr><td><code>m_suspended_tree_nodes</code></td><td>Scan nodes whose child operations are deferred by congestion control (<code>m_outstanding &ge; 256</code>, resumed when &le; 128; <span class="src">:298-300, :5493, :9772</span>).</td></tr>
+<tr><td><code>m_cursor_nodes</code></td><td>List of nodes the next <code>SCAN_NEXTREQ</code> (or SPJ's own continuation) must advance (<span class="src">:4241 registerActiveCursor</span>).</td></tr>
+<tr><td><code>m_rows</code></td><td>Rows reported to the API in the current batch (<code>SCAN_FRAGCONF.completedOps</code>). For join aggregation: only evicted groups (<span class="src">:9982, :14375</span>).</td></tr>
+<tr><td><code>m_lookup_node_data[node]</code></td><td>Per destination node: outstanding lookup reply units (and null-row replies). Used to retire replies on node failure (<span class="src">:11206 lookup_execNODE_FAILREP</span>).</td></tr>
+<tr><td><code>m_aggStateKeys[]</code>, <code>m_aggNodes</code>, <code>m_joinAggQueryTag</code></td><td>Join-aggregation keys per node from DBTC's aggKeys section (<span class="src">:1716-1862 execSCAN_FRAGREQ</span>); a non-empty <code>m_aggNodes</code> enables self-continued batches.</td></tr>
+<tr><td><code>m_cteContexts[]</code>, <code>m_numCtes</code>, <code>m_ctesReady</code>, <code>m_cteScansComplete</code>, <code>m_cteAggStateKeys</code>, owner lists</td><td>CTE state, see <a href="#inv-cte">2.4</a>.</td></tr>
+<tr><td><code>m_lastHbrepTicks</code></td><td>Last <code>SCAN_HBREP</code> sent by SPJ itself during self-continued join-aggregation batches (<span class="src">:4013</span>).</td></tr>
+</table>
+
+<h3 id="inv-treenode">2.2 TreeNode (<span class="src">Dbspj.hpp:1036 struct TreeNode</span>)</h3>
+
+<table>
+<tr><th>State</th><th>Meaning and who uses it</th></tr>
+<tr><td><code>TN_BUILDING</code></td><td>Created by <code>createNode()</code> (<span class="src">:3534</span>). Ordinary lookup nodes stay in this state for their whole life: lookups have no prepare/start state of their own and are tracked by <code>m_lookup_data.m_outstanding</code> and the completed bit only (comment at <span class="src">:9744</span>).</td></tr>
+<tr><td><code>TN_PREPARING</code></td><td>Non-root scan waiting for <code>DIH_SCAN_TAB_CONF</code>/<code>DIGETNODESREQ</code> (<span class="src">:12261 scanFrag_prepare</span>).</td></tr>
+<tr><td><code>TN_INACTIVE</code></td><td>Built and prepared, no fragment scan running and none pending a NEXTREQ. Also the state after all fragments completed.</td></tr>
+<tr><td><code>TN_ACTIVE</code></td><td>Has fragment scans that are running or will return more rows on a later NEXTREQ. Counted in <code>m_cnt_active</code>.</td></tr>
+<tr><td><code>TN_COMPLETING</code></td><td>Declared but never assigned anywhere (only appears in <code>switch</code> statements, <span class="src">:14865, :14965</span>). Dead state.</td></tr>
+<tr><td><code>TN_END</code> (0)</td><td>Default-constructor value; never a live state.</td></tr>
+</table>
+
+<p>Important <code>m_bits</code> (<span class="src">Dbspj.hpp:1138</span>):</p>
+<table>
+<tr><th>Bit</th><th>Meaning</th></tr>
+<tr><td><code>T_LEAF</code></td><td>No children. In a <em>lookup</em> request a leaf's LQHKEYCONF/REF goes to the API, not to SPJ.</td></tr>
+<tr><td><code>T_ONE_SHOT</code></td><td>Executed once (the root, CTE roots): key/attr sections are handed over at send.</td></tr>
+<tr><td><code>T_EXPECT_TRANSID_AI</code></td><td>Rows come back to SPJ as TRANSID_AI (linked columns and/or CORR_FACTOR read; <span class="src">:16737, :16771 parseDA</span>). Never set on aggregate leaves. A TRANSID_AI for a node without it is dropped (<span class="src">:5311 execTRANSID_AI</span>).</td></tr>
+<tr><td><code>T_BUFFER_ROW</code>, <code>T_BUFFER_MATCH</code>, <code>T_BUFFER_MAP</code></td><td>Keep the node's rows / per-row match bitmask in the node's <code>RowBuffer</code> for later use by children, sibling resume or NULL injection.</td></tr>
+<tr><td><code>T_NEED_PREPARE</code>, <code>T_NEED_COMPLETE</code>, <code>T_NEED_REPORT_BATCH_COMPLETED</code></td><td>Non-root scan: DIH scan-tab prepare, DIH complete report, and "start my scan when the parent batch is complete" (<span class="src">:11999</span>).</td></tr>
+<tr><td><code>T_SCAN_REPEATABLE</code></td><td>Results may be repeated for bushy scans (<span class="src">:11722</span>).</td></tr>
+<tr><td><code>T_CHK_CONGESTION</code></td><td>Scan whose lookup children may be deferred when congested (<span class="src">:3327</span>).</td></tr>
+<tr><td><code>T_SORTED_ORDER</code>, <code>T_FIRST_MATCH</code>, <code>T_REDUCE_KEYS</code>, <code>T_INNER_JOIN</code></td><td>Execution optimisations; <code>T_REDUCE_KEYS</code> may complete fragments without scanning them (<span class="src">:14500</span>).</td></tr>
+<tr><td><code>T_AGGREGATE_LEAF</code>, <code>T_AGGREGATE_ANCESTOR</code></td><td>Join aggregation: the leaf's rows go to the DBLQH aggregator (JoinAgg flag on the REQ), not to SPJ or the API.</td></tr>
+<tr><td><code>T_NULL_ROW_DEFERRED_RESTART</code></td><td>A scan aggregate leaf whose restart (<code>scanFrag_parent_batch_complete</code>) waits for <code>JOIN_AGG_NULL_ROW_CONF</code>s (<span class="src">:13067</span>).</td></tr>
+<tr><td><code>T_CTE_SCAN</code>, <code>T_CTE_INDIRECT_FEED</code></td><td>Node belongs to a CTE materialisation subtree; rows feed the CTE's aggregator (<span class="src">:2334 build</span>).</td></tr>
+</table>
+
+<p>Per-type counters (union, <span class="src">Dbspj.hpp:1429</span>):</p>
+<table>
+<tr><th>Type</th><th>Counter</th><th>Meaning</th></tr>
+<tr><td>Lookup</td><td><code>m_lookup_data.m_outstanding</code></td><td>Reply units outstanding for this node (CONF/REF and TRANSID_AI). Reaching 0 sets the completed bit (<span class="src">:9736 lookup_countSignal</span>).</td></tr>
+<tr><td rowspan="8">ScanFrag</td><td><code>m_frags_outstanding</code></td><td>Fragments with a REQ/NEXTREQ/close in flight.</td></tr>
+<tr><td><code>m_frags_complete</code></td><td>Fragments finished (CONF done, REF, node failure, pruned). Equals <code>m_fragCount</code> while the node is inactive between batches (<span class="src">:12448</span>).</td></tr>
+<tr><td><code>m_frags_not_started</code></td><td>Fragments still to be sent a SCAN_FRAGREQ for this parent batch.</td></tr>
+<tr><td><code>m_rows_received</code> / <code>m_rows_expecting</code></td><td>TRANSID_AIs counted vs. <code>completedOps</code> sum of the CONFs (only when <code>T_EXPECT_TRANSID_AI</code>). Completion needs both <code>m_frags_outstanding==0</code> and equality (<span class="src">:14275, :14623</span>).</td></tr>
+<tr><td><code>m_batch_chunks</code></td><td>Number of SCAN_FRAGREQ/NEXTREQ rounds for the current parent batch; &gt;1 means the child result has to be repeated for bushy scans (<span class="src">:14101</span>).</td></tr>
+<tr><td><code>m_null_row_outstanding</code></td><td>Outstanding <code>JOIN_AGG_NULL_ROW_REQ</code>s for this scan aggregate leaf.</td></tr>
+<tr><td><code>m_corrIdStart</code>, <code>m_totalRows</code>, <code>m_totalBytes</code></td><td>Correlation-id space (12 bits, <code>MaxCorrelationId</code>=4096, <span class="src">:274</span>) and batch-buffer use of the current client batch.</td></tr>
+<tr><td><code>m_maxRows</code></td><td>Per-fragment row limit; reaching it closes the fragment early (<span class="src">:14402</span>). See S-1.</td></tr>
+</table>
+
+<h3 id="inv-sfh">2.3 ScanFragHandle (<span class="src">Dbspj.hpp:810 struct ScanFragHandle</span>)</h3>
+<table>
+<tr><th>State</th><th>Meaning</th></tr>
+<tr><td><code>SFH_NOT_STARTED</code> 0</td><td>No SCAN_FRAGREQ sent for the current parent batch.</td></tr>
+<tr><td><code>SFH_SCANNING</code> 1</td><td>SCAN_FRAGREQ or SCAN_NEXTREQ outstanding at LQH.</td></tr>
+<tr><td><code>SFH_WAIT_NEXTREQ</code> 2</td><td>LQH returned a non-final CONF and holds the scan open, waiting for SPJ's SCAN_NEXTREQ.</td></tr>
+<tr><td><code>SFH_COMPLETE</code> 3</td><td>Fragment finished for this parent batch (or failed / pruned / lost on node failure).</td></tr>
+<tr><td><code>SFH_WAIT_CLOSE</code> 4</td><td>SPJ sent SCAN_NEXTREQ(close); waiting for the final CONF/REF.</td></tr>
+<tr><td><code>SFH_SCANNING_WAIT_CLOSE</code> 5</td><td>Close wanted, but the executing LQH/DBQLQH instance is not known yet (<code>m_next_ref</code> is the <code>V_QUERY</code> placeholder of a remote query-thread scan), so the close is sent when the first CONF or <code>SCAN_HBREP</code> reveals it (<span class="src">:14320, :5016</span>).</td></tr>
+</table>
+<p>Other fields: <code>m_ref</code> (where SCAN_FRAGREQ goes, from DIGETNODES or the root fragment list), <code>m_next_ref</code> (where SCAN_NEXTREQ/close go; updated from <code>ScanFragConf/Ref.senderRef</code>, <span class="src">:5118, :4985</span>), <code>m_rangePtrI</code>/<code>m_paramPtrI</code> (range keys and parameters collected from parent rows), <code>m_keysSent</code>, <code>m_totalRows</code>.</p>
+
+<h3 id="inv-cte">2.4 Join aggregation and CTE state</h3>
+<p><strong>CteContext</strong> (<span class="src">Dbspj.hpp:758</span>), one per CTE in <code>Request::m_cteContexts</code>, created as <code>CTE_NOT_STARTED</code> by <code>cte_lookup_build</code>/<code>cte_subtree_build</code> (<span class="src">:6481, :7927</span>); <code>m_depMask</code>/<code>m_flags</code> are applied from the aggKeys section after <code>build()</code> (<span class="src">:1894-1907</span>).</p>
+<table>
+<tr><th>From &rarr; To</th><th>Trigger</th><th>Guard</th><th>Action</th><th>Code</th></tr>
+<tr><td>NOT_STARTED &rarr; MATERIALIZING</td><td>prepare complete</td><td>CTE root (T_CTE_SCAN, no parent), <code>m_depMask==0</code></td><td>set <code>RT_CTE_PHASE</code>, call root <code>m_start</code></td><td><span class="src">:3647-3687 checkPrepareComplete</span></td></tr>
+<tr><td>NOT_STARTED &rarr; MATERIALIZING</td><td><code>CTE_PHASE_START_REQ</code>{cteId} (per-CTE READY broadcast)</td><td>request found, not aborting/aborted; all dependencies READY</td><td>start root, <code>checkBatchComplete</code></td><td><span class="src">:8975-9001</span></td></tr>
+<tr><td>MATERIALIZING &rarr; LOCAL_DONE</td><td><code>batchComplete</code> at quiescence</td><td><code>RT_CTE_PHASE</code>, not aborting, no <code>TN_ACTIVE</code> node with this <code>m_cteId</code></td><td><code>CTE_PHASE_COMPLETE_REP</code>{cteId} to DBTC</td><td><span class="src">:3801-3821, :8826 sendCteScanDoneRep</span></td></tr>
+<tr><td>any but READY/FAILED &rarr; READY</td><td><code>CTE_PHASE_START_REQ</code>{cteId}</td><td>as above</td><td><code>m_ctesReady++</code>; key/owner section installed first</td><td><span class="src">:8942, :8956-8969</span></td></tr>
+<tr><td>all &rarr; READY</td><td><code>CTE_START_MAIN_REQ</code></td><td>not aborting/aborted</td><td>install keys, <code>m_ctesReady=m_numCtes</code>, force <code>m_outstanding=m_cnt_active=0</code>, clear <code>RT_CTE_PHASE</code>, start first node with <code>m_cteId==RNIL</code></td><td><span class="src">:9004-9085</span></td></tr>
+<tr><td>&rarr; FAILED</td><td colspan="4">Never assigned; only tested. Abort and node failure do not change <code>m_state</code>; the contexts are freed by <code>cleanup()</code>.</td></tr>
+</table>
+<p><strong>Probe cache</strong> (<code>CacheKind</code>, single-row/single-group CTEs): <code>NONE&rarr;FILLING</code> when an eligible probe is sent (<span class="src">cte_lookup_send ~:7333</span>); <code>FILLING&rarr;ROW</code> on a CONF for the fill probe carrying the API payload section, <code>&rarr;ROW_EXISTS</code> (terminal) on a CONF without it (<span class="src">~:7604-7625</span>); <code>FILLING&rarr;MISS</code> on GROUP_NOT_FOUND for the fill probe (<span class="src">~:7750</span>). MISS/ROW serve later probes locally with no outstanding count. A fill reply arriving while aborting leaves the slot FILLING (harmless).</p>
+<p><strong>CteScanData::NodeSlot</strong> (one per source DBLQH node of a CTE scan, <span class="src">Dbspj.hpp:727</span>): a REQ or close sets <code>m_confPending</code> and <code>m_batchPending</code> and increments both the node's and the request's <code>m_outstanding</code> (<span class="src">:8190 cte_scan_sendReq, :8691 cte_scan_sendCloseReq</span>). <code>CTE_SCAN_CONF</code> clears <code>m_confPending</code>, adds <code>numRowsToSpj</code> to <code>m_rowsOutstanding</code> and records <code>m_scanIterI</code>/<code>m_endOfData</code>; each TRANSID_AI subtracts one (it may go negative before the CONF). The batch obligation is retired in <code>cte_scan_finishBatch</code> only when the CONF has arrived <em>and</em> all rows are in (<span class="src">:8476</span>). A <code>m_close_pending</code> close is sent once the batch drains. The node completes (<code>TN_INACTIVE</code>) when every slot has reached end-of-data and nothing is outstanding (<span class="src">:8495 cte_scan_checkComplete</span>). Abort closes paused slots and marks busy ones close-pending (<span class="src">:8739</span>); node failure retires the failed node's slot and returns 1 if any node of the query's topology failed, so the request aborts (<span class="src">:8763</span>).</p>
+<p><strong>CteLookupData</strong>: per-node <code>m_nodeOutstanding[]</code> plus <code>m_outstanding</code>, charged in <code>cte_lookup_send</code> (CONF, plus TRANSID_AI if <code>T_EXPECT_TRANSID_AI</code>), retired by <code>cte_lookup_countReplies</code> with <code>ndbrequire</code> on all three counters (<span class="src">:6707</span>). A NULL key or a cache hit sends and charges nothing. <code>m_pendingCount</code> ("parked while the CTE materialises") is only incremented; nothing ever flushes it. With the DAG scheduler a lookup cannot run before its CTE is READY, so the branch is dead code, but a parked parent row would be dropped silently.</p>
+<p><strong>Null rows</strong>: <code>sendJoinAggNullRow</code> always targets a local DBLQH (round robin) with the <em>main</em> aggregation key and identity word, charges <code>m_outstanding</code>, <code>m_lookup_node_data[own]</code> and the node's lookup outstanding or <code>m_null_row_outstanding</code> (<span class="src">:10966-11083</span>). A scan leaf with null rows in flight defers its restart (<code>T_NULL_ROW_DEFERRED_RESTART</code>, <span class="src">:13067</span>); the last CONF restarts it unless aborting (<span class="src">:11129-11138</span>). Since the REQs only go to the own node, node failure never strands them, and DBLQH REFs parked or orphaned ones, so they always drain.</p>
+
+<div class="weak"><strong>S-5</strong> <span class="src">:7566 execCTE_LOOKUP_CONF() / :7687 execCTE_LOOKUP_REF()</span> retire the node's last reply (normally the CONF, which DBLQH sends after the TRANSID_AI) and set the completed bit in <code>cte_lookup_checkComplete</code>, but never call <code>handleTreeNodeComplete()</code>. Every other lookup path does (<span class="src">:9862, :10003, :5573</span>). <code>planSequentialExec</code> places an inner-joined scan branch after the last inner-joined lookup (<span class="src">:3186, :3217</span>), so for <code>scan A -&gt; inner CTE_LOOKUP L, inner scan B (child of A)</code> B is only in <code>L.m_next_nodes</code>. When A's last CONF arrives before L's last CONF, B's <code>parent_batch_complete</code> is never called and B's rows are missing from the result without an error.</div>
+
+<div class="weak"><strong>S-6</strong> <span class="src">:10966 sendJoinAggNullRow()</span> always addresses the main aggregation (main key, identity word with cteId RNIL, <code>ndbrequire(m_aggNodes.get(own))</code>). It is also reached from inside a CTE body (outer-joined CTE_LOOKUP leaf with NULL key or GROUP_NOT_FOUND, <span class="src">:6993, :7797</span>; outer scan leaf completion). If the main SELECT does not aggregate, <code>m_aggNodes</code> is empty and the <code>ndbrequire</code> stops the node; otherwise a CTE-shaped NULL row is fed into the main aggregator.</div>
+
+<h3 id="inv-counters">2.5 Counter accounting rules</h3>
+<p>The single most important invariant: <strong>every signal SPJ expects back is represented exactly once in <code>Request::m_outstanding</code>, and every handler that retires one calls <code>checkBatchComplete()</code> (or <code>checkPrepareComplete()</code>) before returning</strong> (comment at <span class="src">:3716-3721</span>). A missing increment gives a premature batch completion; a missing decrement or a missing <code>checkBatchComplete()</code> gives a request that never replies.</p>
+<table>
+<tr><th>Unit</th><th>Incremented</th><th>Decremented</th></tr>
+<tr><td>Prepare of a non-root scan</td><td>+1 <span class="src">:12263 scanFrag_prepare</span> (self-sent DIH_SCAN_TAB_CONF/REF)</td><td>-1 <span class="src">:12355 execDIH_SCAN_TAB_CONF</span>, <span class="src">:12311 execDIH_SCAN_TAB_REF</span></td></tr>
+<tr><td>DIGETNODES round</td><td>+1 <span class="src">:12460</span></td><td>-1 when the last fragment has a node <span class="src">:12607 scanFrag_sendDihGetNodesReq</span> (continued by CONTINUEB 3, <span class="src">:1075</span>)</td></tr>
+<tr><td>Lookup REQ</td><td>+cnt, cnt = (CONF/REF expected: scan request or non-leaf) + (T_EXPECT_TRANSID_AI) <span class="src">:9377-9383, :9675 lookup_send</span>; same into <code>m_lookup_node_data[node]</code> and the node's <code>m_outstanding</code></td><td>LQHKEYCONF -1, LQHKEYREF -1 or -2 (REF also retires the TRANSID_AI that will never come), TRANSID_AI -1, all via <span class="src">:9723 lookup_countSignal</span>; node failure: -sum of the failed nodes <span class="src">:11222</span></td></tr>
+<tr><td>Scan node batch</td><td>+1 per node per round: <span class="src">:13427 scanFrag_send</span>, <span class="src">:14768 scanFrag_execSCAN_NEXTREQ</span>, <span class="src">:3949 sorted prefetch</span>, <span class="src">:14938 scanFrag_abort</span> (only if all open fragments were idle)</td><td>-1 once <code>m_frags_outstanding==0</code> and all rows arrived: <span class="src">:14627 SCAN_FRAGCONF</span> or <span class="src">:14279 scanFrag_countSignal</span>; <span class="src">:14669 SCAN_FRAGREF</span>; <span class="src">:15030 NODE_FAILREP</span></td></tr>
+<tr><td>Null-row REQ</td><td>+1 <span class="src">:11071 sendJoinAggNullRow</span></td><td>-1 <span class="src">:11114 CONF</span> / <span class="src">:11194 REF</span> (lookup nodes through <code>lookup_countSignal</code>)</td></tr>
+<tr><td>CTE scan / lookup</td><td colspan="2">See <a href="#inv-cte">2.4</a>.</td></tr>
+<tr><td>Forced resets</td><td colspan="2"><code>complete()</code> sets 0 (<span class="src">:4678</span>, asserted 0 before); <code>execCTE_START_MAIN_REQ</code> sets <code>m_outstanding</code> and <code>m_cnt_active</code> to 0 (<span class="src">:9047</span>, only <code>ndbassert</code>ed). See S-9.</td></tr>
+</table>
+<p><code>m_cnt_active</code>: incremented when a scan node goes <code>TN_ACTIVE</code> (<span class="src">:13426 scanFrag_send</span>) and by the CTE scan/lookup starts and the CTE root-lookup start (<span class="src">:8315, :6659, :9326</span>); decremented at every <code>TN_ACTIVE</code>&rarr;<code>TN_INACTIVE</code> transition (section 4).</p>
+
+<h2 id="req-sm">3. Request lifecycle</h2>
+
+<p>The request state is a base value (<code>BUILDING</code>, <code>PREPARING</code>, <code>RUNNING</code>, <code>COMPLETING</code>) plus the two OR-ed flags <code>RS_ABORTING</code> and <code>RS_WAITING</code>. The diagram shows the combinations that occur. Labels T1..T15 refer to the table below.</p>
+
+<svg viewBox="0 0 1000 470" role="img" aria-label="Request state diagram">
+  <defs>
+    <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--dim)"/></marker>
+    <marker id="ar1b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--bad)"/></marker>
+  </defs>
+  <!-- start -->
+  <circle cx="22" cy="72" r="8" style="fill:var(--text)"/>
+  <line x1="30" y1="72" x2="68" y2="72" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="48" y="64" text-anchor="middle" style="font-size:10px">T1</text>
+  <!-- states -->
+  <rect x="70" y="50" width="150" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="145" y="77" text-anchor="middle">RS_BUILDING</text>
+  <rect x="290" y="50" width="150" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="365" y="77" text-anchor="middle">RS_PREPARING</text>
+  <rect x="520" y="50" width="160" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="600" y="77" text-anchor="middle">RS_RUNNING</text>
+  <rect x="790" y="50" width="190" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="885" y="70" text-anchor="middle">RUNNING | RS_WAITING</text>
+  <text x="885" y="86" text-anchor="middle" style="fill:var(--dim);font-size:10px">waits for SCAN_NEXTREQ</text>
+  <rect x="520" y="200" width="160" height="44" rx="8" style="fill:var(--surface);stroke:var(--bad)"/>
+  <text x="600" y="220" text-anchor="middle">x | RS_ABORTING</text>
+  <text x="600" y="236" text-anchor="middle" style="fill:var(--dim);font-size:10px">draining m_outstanding</text>
+  <rect x="790" y="200" width="190" height="44" rx="8" style="fill:var(--surface);stroke:var(--bad)"/>
+  <text x="885" y="220" text-anchor="middle">WAITING | ABORTING</text>
+  <text x="885" y="236" text-anchor="middle" style="fill:var(--dim);font-size:10px">aborted while waiting</text>
+  <rect x="290" y="200" width="150" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent2)"/>
+  <text x="365" y="220" text-anchor="middle">RS_COMPLETING</text>
+  <text x="365" y="236" text-anchor="middle" style="fill:var(--dim);font-size:10px">(| ABORTING | WAITING)</text>
+  <rect x="790" y="350" width="190" height="44" rx="8" style="fill:var(--surface2);stroke:var(--bad);stroke-dasharray:5 3"/>
+  <text x="885" y="370" text-anchor="middle">RS_ABORTED (0x2008)</text>
+  <text x="885" y="386" text-anchor="middle" style="fill:var(--dim);font-size:10px">tombstone, nodes freed</text>
+  <rect x="290" y="350" width="150" height="44" rx="8" style="fill:var(--surface2);stroke:var(--ok)"/>
+  <text x="365" y="377" text-anchor="middle">released</text>
+  <!-- RT_CTE_PHASE self loop on RUNNING -->
+  <path d="M560,50 C540,5 660,5 640,50" style="fill:none;stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="600" y="14" text-anchor="middle" style="font-size:10px">T6 self-continue (join-agg, CTE, sorted)</text>
+  <!-- transitions -->
+  <line x1="220" y1="72" x2="288" y2="72" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="254" y="64" text-anchor="middle" style="font-size:10px">T3</text>
+  <line x1="440" y1="72" x2="518" y2="72" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="479" y="64" text-anchor="middle" style="font-size:10px">T5</text>
+  <path d="M145,50 C200,0 480,0 525,50" style="fill:none;stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="330" y="20" text-anchor="middle" style="font-size:10px">T4 nothing to prepare</text>
+  <line x1="680" y1="64" x2="788" y2="64" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="734" y="57" text-anchor="middle" style="font-size:10px">T7 CONF(more)</text>
+  <line x1="788" y1="84" x2="682" y2="84" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="734" y="100" text-anchor="middle" style="font-size:10px">T8 NEXTREQ</text>
+  <line x1="600" y1="94" x2="600" y2="198" style="stroke:var(--bad)" marker-end="url(#ar1b)"/>
+  <text x="608" y="150" style="font-size:10px">T9 abort()</text>
+  <line x1="365" y1="94" x2="525" y2="200" style="stroke:var(--bad)" marker-end="url(#ar1b)"/>
+  <text x="455" y="140" style="font-size:10px">T9</text>
+  <line x1="885" y1="94" x2="885" y2="198" style="stroke:var(--bad)" marker-end="url(#ar1b)"/>
+  <text x="893" y="150" style="font-size:10px">T9 (node failure)</text>
+  <line x1="518" y1="222" x2="442" y2="222" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="480" y="214" text-anchor="middle" style="font-size:10px">T10</text>
+  <path d="M560,94 C520,140 460,170 430,198" style="fill:none;stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="500" y="182" style="font-size:10px">T10</text>
+  <line x1="365" y1="244" x2="365" y2="348" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="372" y="300" style="font-size:10px">T11</text>
+  <path d="M560,244 C530,320 470,360 442,368" style="fill:none;stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="520" y="330" style="font-size:10px">T12 final CONF/REF</text>
+  <path d="M520,72 C480,160 470,300 440,358" style="fill:none;stroke:var(--dim);stroke-dasharray:3 3" marker-end="url(#ar1)"/>
+  <text x="456" y="270" style="font-size:10px">T12</text>
+  <line x1="885" y1="244" x2="885" y2="348" style="stroke:var(--bad)" marker-end="url(#ar1b)"/>
+  <text x="893" y="300" style="font-size:10px">T13 drained, TC alive</text>
+  <line x1="788" y1="380" x2="442" y2="380" style="stroke:var(--dim)" marker-end="url(#ar1)"/>
+  <text x="615" y="372" text-anchor="middle" style="font-size:10px">T14 SCAN_NEXTREQ -&gt; SCAN_FRAGREF, or TC node fails</text>
+  <path d="M790,236 C700,300 500,330 442,362" style="fill:none;stroke:var(--bad);stroke-dasharray:4 3" marker-end="url(#ar1b)"/>
+  <text x="580" y="290" style="font-size:10px">T15 TC failed (RT_REQUESTER_FAILED)</text>
+  <path d="M145,94 C150,300 220,370 288,376" style="fill:none;stroke:var(--bad)" marker-end="url(#ar1b)"/>
+  <text x="120" y="300" style="font-size:10px">T2 build error:</text>
+  <text x="120" y="314" style="font-size:10px">early REF + cleanup</text>
+</svg>
+
+<table>
+<tr><th>#</th><th>From &rarr; To</th><th>Trigger</th><th>Guard</th><th>Action</th><th>Code</th></tr>
+<tr><td>T1</td><td>&ndash; &rarr; BUILDING</td><td><code>LQHKEYREQ</code> (lookup) or <code>SCAN_FRAGREQ</code> (scan) from DBTC</td><td>arena, Request and per-node arrays allocated</td><td><code>do_init()</code>, parse aggKeys section, <code>build()</code> creates TreeNodes, then insert in lookup/scan hash keyed by (transId, senderData)</td><td><span class="src">:1216 execLQHKEYREQ, :1580 execSCAN_FRAGREQ, :1396/:1964 do_init, :1467/:2011 store_*</span></td></tr>
+<tr><td>T2</td><td>BUILDING &rarr; released</td><td>any error in the above, or tree does not match the request type (<code>InvalidRequest</code>, error insert 17013)</td><td>&ndash;</td><td><code>cleanup(in_hash)</code>, then <code>LQHKEYREF</code> to TC (or <code>TCKEYREF</code> to the API for dirty reads) / <code>SCAN_FRAGREF</code> to TC; malicious-tree report afterwards</td><td><span class="src">:1349-1359, :1951-1961, :1475 handle_early_lqhkey_ref, :2019 handle_early_scanfrag_ref</span></td></tr>
+<tr><td>T3</td><td>BUILDING &rarr; PREPARING</td><td><code>prepare()</code></td><td><code>RT_NEED_PREPARE</code></td><td>check every table, call <code>scanFrag_prepare</code> for each non-root scan: EXECUTE_DIRECT DIH_SCAN_TAB_REQ, send result to self, <code>m_outstanding++</code></td><td><span class="src">:3553 prepare, :12251 scanFrag_prepare</span></td></tr>
+<tr><td>T4</td><td>BUILDING &rarr; RUNNING</td><td><code>checkPrepareComplete()</code> directly after <code>prepare()</code></td><td><code>m_outstanding==0</code>, not aborting, root table OK</td><td>start root (<code>m_start</code>) or, for a CTE query, start every dependency-free CTE root and set <code>RT_CTE_PHASE</code>; then <code>checkBatchComplete()</code></td><td><span class="src">:3608-3714</span></td></tr>
+<tr><td>T5</td><td>PREPARING &rarr; RUNNING</td><td>last <code>DIH_SCAN_TAB_CONF</code> / DIGETNODES continuation</td><td>as T4</td><td>as T4</td><td><span class="src">:12316 execDIH_SCAN_TAB_CONF &rarr; :12473 checkPrepareComplete; :1075 CONTINUEB(3)</span></td></tr>
+<tr><td>T6</td><td>RUNNING &rarr; RUNNING</td><td><code>batchComplete()</code> at <code>m_outstanding==0</code> without replying to TC</td><td>(a) <code>RT_CTE_PHASE</code> and not aborting; (b) not complete, no error, <code>m_aggNodes</code> non-empty and <code>m_rows==0</code>; (c) sorted-order root prefetch</td><td>(a) report locally finished CTEs (<code>CTE_PHASE_COMPLETE_REP</code>), restart active CTE scans via <code>handleCtePhaseNextBatch</code>, or idle until DBTC's <code>CTE_PHASE_START_REQ</code>/<code>CTE_START_MAIN_REQ</code>; (b) <code>handleJoinAggNextBatch</code>: SPJ sends the NEXTREQs itself and a <code>SCAN_HBREP</code> to TC at most every 20 ms; (c) one-row NEXTREQ to the root</td><td><span class="src">:3777-3850, :3956-3962, :3904-3953, :3998, :4074</span></td></tr>
+<tr><td>T7</td><td>RUNNING &rarr; RUNNING|WAITING</td><td><code>batchComplete()</code> &rarr; <code>sendConf(is_complete=false)</code></td><td>scan request, <code>m_errCode==0</code>, <code>m_cnt_active&gt;0</code></td><td><code>SCAN_FRAGCONF</code>(completedOps=<code>m_rows</code>, fragmentCompleted=0, activeMask) to TC; <code>cleanupBatch(done=true)</code> releases row buffers of nodes getting new rows</td><td><span class="src">:4259-4371 sendConf, :3986 cleanupBatch</span></td></tr>
+<tr><td>T8</td><td>WAITING &rarr; RUNNING</td><td><code>SCAN_NEXTREQ</code> (no close)</td><td><code>ndbrequire(RS_WAITING)</code>, <code>ndbrequire(m_outstanding==0)</code></td><td>run <code>m_execSCAN_NEXTREQ</code> for every TN_ACTIVE cursor node, <code>m_parent_batch_complete</code> for repeat-restart cursors</td><td><span class="src">:5134-5269</span></td></tr>
+<tr><td>T9</td><td>any &rarr; |ABORTING</td><td><code>abort(errCode)</code>: hard LQHKEYREF; SCAN_FRAGREF; local error (memory, sections, table); <code>SCAN_NEXTREQ</code>(close) with errCode 0; NODE_FAILREP; DIH_SCAN_TAB_REF; JOIN_AGG_NULL_ROW_REF; CTE REFs</td><td>idempotent (returns if already aborting)</td><td>set flag and errCode, clear suspended nodes, call every node's <code>m_abort</code> (scanFrag: close open fragments)</td><td><span class="src">:4583 abort, :14853 scanFrag_abort</span></td></tr>
+<tr><td>T10</td><td>RUNNING(|ABORTING) &rarr; COMPLETING</td><td><code>batchComplete()</code></td><td><code>m_cnt_active==0</code> (forced to 0 when aborting) and <code>RT_NEED_COMPLETE</code></td><td><code>complete()</code>: clear <code>RT_NEED_COMPLETE</code>, <code>scanFrag_complete</code> sends DIH_SCAN_TAB_COMPLETE_REP for every non-root scan that got fragments, then <code>checkBatchComplete()</code></td><td><span class="src">:3964-3970, :4664, :14835</span></td></tr>
+<tr><td>T11, T12</td><td>COMPLETING / RUNNING / ABORTING &rarr; released</td><td><code>batchComplete()</code> with <code>m_cnt_active==0</code></td><td>no complete phase pending</td><td><code>sendConf(true)</code>: scan: <code>SCAN_FRAGCONF</code>(fragmentCompleted=1) if <code>m_errCode==0</code> (also after a clean close), else <code>SCAN_FRAGREF</code>; lookup: nothing on success (the API got its TCKEYCONFs directly), <code>TCKEYREF</code> to the API on error. Then <code>cleanup()</code></td><td><span class="src">:3963, :3973-3979, :4259, :4703</span></td></tr>
+<tr><td>T13</td><td>WAITING|ABORTING &rarr; ABORTED</td><td>outstanding closes drained</td><td>RS_WAITING still set (TC has not sent anything) and TC alive</td><td><code>sendConf</code> sends nothing (<span class="src">:4262</span>); <code>cleanup()</code> releases TreeNodes but keeps the Request (and its arena and per-node arrays) in the hash as <code>RS_ABORTED</code></td><td><span class="src">:4736-4742</span></td></tr>
+<tr><td>T14</td><td>ABORTED &rarr; released</td><td>next <code>SCAN_NEXTREQ</code> from TC (fetch or close)</td><td><code>state==RS_ABORTED</code></td><td>clears WAITING &rarr; <code>batchComplete</code> &rarr; <code>SCAN_FRAGREF</code>(saved errCode) &rarr; full <code>cleanup()</code></td><td><span class="src">:5179, :4372-4383</span></td></tr>
+<tr><td>T15</td><td>WAITING|ABORTING or ABORTED &rarr; released</td><td>NODE_FAILREP naming the TC's node</td><td>scan request whose <code>m_senderRef</code> is DBTC on a failed node</td><td><code>RT_REQUESTER_FAILED</code>, abort, cleanup frees at once; an info event <code>[SPJ_ORPHANED_SCANS ...]</code> reports such requests</td><td><span class="src">:4613-4624 nodeFail, :1129-1146 nodeFail_checkRequests, :4736</span></td></tr>
+</table>
+
+<div class="warn">A scan request only replies to DBTC from <code>batchComplete()</code>. Any reply handler that retires the last outstanding unit but returns without <code>checkBatchComplete()</code> leaves the request silent: DBTC sees a fragment that is still running. <code>execDIH_SCAN_TAB_REF</code> is such a handler (S-2). The request is then only cleaned up if DBTC closes it (section 6g).</div>
+
+<div class="weak"><strong>S-2</strong> <span class="src">:12300 Dbspj::execDIH_SCAN_TAB_REF()</span> retires the prepare unit and calls <code>abort()</code>, but neither <code>checkPrepareComplete()</code> nor <code>checkBatchComplete()</code>. If it is the last outstanding reply (one non-root scan, or the last scan node's reply), the request stays in <code>RS_PREPARING|RS_ABORTING</code> with <code>m_outstanding==0</code> and never sends <code>SCAN_FRAGREF</code>. It also passes DIH's internal code <code>ErroneousTableState</code> (=1) as the NDB error code.</div>
+
+<h2 id="tn-sm">4. TreeNode lifecycle</h2>
+
+<svg viewBox="0 0 1000 400" role="img" aria-label="TreeNode state diagram">
+  <defs>
+    <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--dim)"/></marker>
+  </defs>
+  <circle cx="22" cy="82" r="8" style="fill:var(--text)"/>
+  <line x1="30" y1="82" x2="68" y2="82" style="stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="48" y="74" text-anchor="middle" style="font-size:10px">N1</text>
+  <rect x="70" y="60" width="160" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="150" y="80" text-anchor="middle">TN_BUILDING</text>
+  <text x="150" y="96" text-anchor="middle" style="fill:var(--dim);font-size:10px">(lookups stay here)</text>
+  <rect x="330" y="60" width="160" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="410" y="87" text-anchor="middle">TN_PREPARING</text>
+  <rect x="600" y="60" width="160" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="680" y="87" text-anchor="middle">TN_INACTIVE</text>
+  <rect x="600" y="250" width="160" height="44" rx="8" style="fill:var(--surface);stroke:var(--ok)"/>
+  <text x="680" y="270" text-anchor="middle">TN_ACTIVE</text>
+  <text x="680" y="286" text-anchor="middle" style="fill:var(--dim);font-size:10px">counted in m_cnt_active</text>
+  <rect x="830" y="60" width="150" height="44" rx="8" style="fill:none;stroke:var(--border);stroke-dasharray:4 3"/>
+  <text x="905" y="80" text-anchor="middle" style="fill:var(--dim)">TN_COMPLETING</text>
+  <text x="905" y="96" text-anchor="middle" style="fill:var(--dim);font-size:10px">never assigned</text>
+  <rect x="330" y="330" width="160" height="44" rx="8" style="fill:var(--surface2);stroke:var(--ok)"/>
+  <text x="410" y="357" text-anchor="middle">released</text>
+  <line x1="230" y1="82" x2="328" y2="82" style="stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="279" y="74" text-anchor="middle" style="font-size:10px">N2 prepare</text>
+  <line x1="490" y1="82" x2="598" y2="82" style="stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="544" y="74" text-anchor="middle" style="font-size:10px">N3 DIGETNODES done</text>
+  <path d="M150,60 C220,10 560,10 640,60" style="fill:none;stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="395" y="24" text-anchor="middle" style="font-size:10px">N4 root scan start / CTE subtree / skipped start</text>
+  <line x1="660" y1="104" x2="660" y2="248" style="stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="560" y="180" style="font-size:10px">N5 scanFrag_send</text>
+  <line x1="700" y1="248" x2="700" y2="106" style="stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="708" y="180" style="font-size:10px">N7 all fragments done / REF / NF / abort</text>
+  <path d="M150,104 C180,240 450,280 598,272" style="fill:none;stroke:var(--dim)" marker-end="url(#ar2)"/>
+  <text x="250" y="230" style="font-size:10px">N6 CTE scan/lookup start, CTE root lookup</text>
+  <path d="M150,104 C140,250 250,350 328,352" style="fill:none;stroke:var(--dim);stroke-dasharray:4 3" marker-end="url(#ar2)"/>
+  <path d="M600,90 C540,200 500,300 470,330" style="fill:none;stroke:var(--dim);stroke-dasharray:4 3" marker-end="url(#ar2)"/>
+  <text x="470" y="250" style="font-size:10px">N8 cleanup()</text>
+</svg>
+
+<table>
+<tr><th>#</th><th>From &rarr; To</th><th>Trigger / guard</th><th>Code</th></tr>
+<tr><td>N1</td><td>&ndash; &rarr; BUILDING</td><td><code>createNode()</code> from the type's <code>m_build</code>; inserted into the guarded-pointer hash so incoming i-pointers can be validated</td><td><span class="src">:3518 createNode, :337 insertGuardedPtr</span></td></tr>
+<tr><td>N2</td><td>BUILDING &rarr; PREPARING</td><td><code>scanFrag_prepare</code>, non-root scan only (<code>T_NEED_PREPARE</code>)</td><td><span class="src">:12261</span></td></tr>
+<tr><td>N3</td><td>PREPARING &rarr; INACTIVE</td><td><code>DIH_SCAN_TAB_CONF</code> allocated all ScanFragHandles and DIGETNODES resolved every fragment (or the scan is pruned and resolves later)</td><td><span class="src">:12606, :12469</span></td></tr>
+<tr><td>N4</td><td>BUILDING &rarr; INACTIVE</td><td>root scan <code>scanFrag_start</code> (then N5 in the same call); <code>cte_subtree_start</code>; a CTE/root lookup start that is skipped on a non-zero root fragment</td><td><span class="src">:12629, :7961, :9319, :6668, :8376</span></td></tr>
+<tr><td>N5</td><td>INACTIVE &rarr; ACTIVE</td><td><code>scanFrag_send()</code> sent at least one SCAN_FRAGREQ; <code>m_cnt_active++</code>, <code>m_outstanding++</code>, completed bit cleared. Called from <code>scanFrag_start</code> (root), <code>scanFrag_parent_batch_complete</code> (child; also for repeats on NEXTREQ and on null-row CONF), <code>scanFrag_parent_row</code> of a <code>T_ONE_SHOT</code> child</td><td><span class="src">:13331-13430, :13045, :12958</span></td></tr>
+<tr><td>N6</td><td>BUILDING &rarr; ACTIVE</td><td><code>cte_scan_start</code>, <code>cte_lookup_start</code>, <code>lookup_start</code> of a CTE query's lookup root</td><td><span class="src">:8314, :6658, :9325</span></td></tr>
+<tr><td>N7</td><td>ACTIVE &rarr; INACTIVE</td><td>last fragment completes in <code>SCAN_FRAGCONF</code> (or aborting and all started ones complete); <code>SCAN_FRAGREF</code> when all started fragments are done; NODE_FAILREP; <code>scanFrag_abort</code> with nothing to close; <code>batchComplete</code> forcing inactive after an abort drained; <code>T_REDUCE_KEYS</code> found all keys matched; lookup / CTE completion</td><td><span class="src">:14457, :14663, :15039, :14949, :3883, :14538, :9747, :8508, :6728</span></td></tr>
+<tr><td>N8</td><td>any &rarr; released</td><td><code>cleanup()</code> removes every node: type cleanup (<code>scanFrag_cleanup</code> removes the fragments' guarded pointers), guarded-pointer removal, pool release. Requires <code>m_cnt_active==0</code></td><td><span class="src">:4703-4716, :15127</span></td></tr>
+</table>
+
+<p>Within a batch every node also has a <em>batch sub-state</em> held in the request bitmasks: <strong>completed</strong> (bit set in <code>m_completed_tree_nodes</code>: nothing outstanding), <strong>running</strong> (bit clear) and <strong>suspended</strong> (in <code>m_suspended_tree_nodes</code>). When a node becomes completed, <code>handleTreeNodeComplete()</code> checks whether all predecessors of later nodes in the execution plan (<code>m_next_nodes</code>) are complete and not suspended, and then calls <code>resumeBufferedNode()</code> and/or <code>m_parent_batch_complete()</code> on them (<span class="src">:4506, :4532 reportAncestorsComplete</span>). This is skipped once the request is aborting.</p>
+
+<div class="note">Lookup nodes never leave <code>TN_BUILDING</code> (except the CTE-query root lookup). Their "state" is the pair (<code>m_lookup_data.m_outstanding</code>, completed bit). <code>lookup_abort()</code> is empty (<span class="src">:10336</span>): an aborted request just waits for its outstanding LQHKEYCONF/REF/TRANSID_AI, or for node failure to retire them.</div>
+
+<h2 id="sfh-sm">5. ScanFragHandle lifecycle</h2>
+
+<svg viewBox="0 0 1000 430" role="img" aria-label="ScanFragHandle state diagram">
+  <defs>
+    <marker id="ar3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--dim)"/></marker>
+    <marker id="ar3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--bad)"/></marker>
+  </defs>
+  <circle cx="22" cy="82" r="8" style="fill:var(--text)"/>
+  <line x1="30" y1="82" x2="68" y2="82" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="48" y="74" text-anchor="middle" style="font-size:10px">F1</text>
+  <rect x="70" y="60" width="170" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="155" y="87" text-anchor="middle">SFH_NOT_STARTED</text>
+  <rect x="400" y="60" width="170" height="44" rx="8" style="fill:var(--surface);stroke:var(--ok)"/>
+  <text x="485" y="87" text-anchor="middle">SFH_SCANNING</text>
+  <rect x="780" y="60" width="200" height="44" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="880" y="87" text-anchor="middle">SFH_WAIT_NEXTREQ</text>
+  <rect x="70" y="300" width="170" height="44" rx="8" style="fill:var(--surface2);stroke:var(--accent2)"/>
+  <text x="155" y="327" text-anchor="middle">SFH_COMPLETE</text>
+  <rect x="400" y="220" width="200" height="44" rx="8" style="fill:var(--surface);stroke:var(--bad)"/>
+  <text x="500" y="240" text-anchor="middle">SFH_SCANNING_WAIT_CLOSE</text>
+  <text x="500" y="256" text-anchor="middle" style="fill:var(--dim);font-size:10px">executor unknown (V_QUERY)</text>
+  <rect x="780" y="300" width="200" height="44" rx="8" style="fill:var(--surface);stroke:var(--bad)"/>
+  <text x="880" y="327" text-anchor="middle">SFH_WAIT_CLOSE</text>
+  <line x1="240" y1="76" x2="398" y2="76" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="319" y="69" text-anchor="middle" style="font-size:10px">F2 SCAN_FRAGREQ</text>
+  <line x1="570" y1="72" x2="778" y2="72" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="674" y="65" text-anchor="middle" style="font-size:10px">F3 CONF(done=0)</text>
+  <line x1="778" y1="94" x2="572" y2="94" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="674" y="110" text-anchor="middle" style="font-size:10px">F4 SCAN_NEXTREQ</text>
+  <path d="M430,104 C360,200 280,290 242,312" style="fill:none;stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="250" y="200" style="font-size:10px">F5 CONF(done=1) / REF / NF</text>
+  <path d="M570,100 C700,180 760,260 800,298" style="fill:none;stroke:var(--bad)" marker-end="url(#ar3b)"/>
+  <text x="640" y="170" style="font-size:10px">F6 abort, ref known</text>
+  <line x1="485" y1="104" x2="485" y2="218" style="stroke:var(--bad)" marker-end="url(#ar3b)"/>
+  <text x="380" y="150" style="font-size:10px">F7 abort, V_QUERY</text>
+  <line x1="600" y1="250" x2="778" y2="312" style="stroke:var(--bad)" marker-end="url(#ar3b)"/>
+  <text x="610" y="284" style="font-size:10px">F8 CONF(0) or HBREP: send close</text>
+  <path d="M400,250 C330,280 280,310 242,320" style="fill:none;stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="270" y="270" style="font-size:10px">F9 CONF(1) / REF</text>
+  <line x1="900" y1="104" x2="900" y2="298" style="stroke:var(--bad)" marker-end="url(#ar3b)"/>
+  <text x="908" y="200" style="font-size:10px">F10 abort / maxRows</text>
+  <path d="M960,344 C990,390 900,410 900,346" style="fill:none;stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="790" y="404" style="font-size:10px">F11 CONF(0) ignored</text>
+  <line x1="778" y1="330" x2="242" y2="330" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="510" y="345" text-anchor="middle" style="font-size:10px">F12 CONF(done=1) / REF / NF</text>
+  <line x1="130" y1="298" x2="130" y2="106" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="20" y="200" style="font-size:10px">F13 parent batch</text>
+  <text x="20" y="214" style="font-size:10px">restart</text>
+  <line x1="180" y1="106" x2="180" y2="298" style="stroke:var(--dim)" marker-end="url(#ar3)"/>
+  <text x="188" y="250" style="font-size:10px">F14 pruned /</text>
+  <text x="188" y="264" style="font-size:10px">keys reduced / NF</text>
+  <path d="M830,104 C700,140 320,180 230,300" style="fill:none;stroke:var(--dim);stroke-dasharray:3 3" marker-end="url(#ar3)"/>
+  <text x="650" y="138" style="font-size:10px">F15 NF</text>
+</svg>
+
+<table>
+<tr><th>#</th><th>From &rarr; To</th><th>Trigger</th><th>Guard / action</th><th>Code</th></tr>
+<tr><td>F1</td><td>&ndash; &rarr; NOT_STARTED</td><td>root: <code>scanFrag_build</code> (fragment list from the SCAN_FRAGREQ, MultiFrag list or single fragment; CTE roots copy it); child: <code>execDIH_SCAN_TAB_CONF</code></td><td>seized from the request arena, inserted into the guarded hash</td><td><span class="src">:11806, :11831, :11918, :12382</span></td></tr>
+<tr><td>F2</td><td>NOT_STARTED &rarr; SCANNING</td><td><code>scanFrag_send(noOfFrags)</code></td><td><code>m_frags_outstanding++</code>, <code>m_frags_not_started--</code>; routing decides <code>m_next_ref</code> (local query thread, remote <code>V_QUERY</code>, or DBLQH)</td><td><span class="src">:13439-14080</span></td></tr>
+<tr><td>F3</td><td>SCANNING &rarr; WAIT_NEXTREQ</td><td><code>SCAN_FRAGCONF</code>(fragmentCompleted=0)</td><td>adds completedOps to <code>m_rows_expecting</code>; <code>m_frags_outstanding--</code></td><td><span class="src">:14395</span></td></tr>
+<tr><td>F4</td><td>WAIT_NEXTREQ &rarr; SCANNING</td><td><code>scanFrag_send_NEXTREQ</code> (on DBTC's NEXTREQ or SPJ self-continue)</td><td><code>ndbrequire(m_next_ref != V_QUERY)</code></td><td><span class="src">:14809-14826</span></td></tr>
+<tr><td>F5</td><td>SCANNING &rarr; COMPLETE</td><td>CONF(done=1); <code>SCAN_FRAGREF</code> (then <code>abort()</code>); NODE_FAILREP for its node</td><td>CONF: <code>m_frags_complete++</code>, merge outer-join match bitmap section</td><td><span class="src">:14411-14465, :14634-14673, :15022</span></td></tr>
+<tr><td>F6</td><td>SCANNING &rarr; WAIT_CLOSE</td><td><code>scanFrag_abort</code></td><td>executing instance known: SCAN_NEXTREQ(close) sent now</td><td><span class="src">:14913-14917</span></td></tr>
+<tr><td>F7</td><td>SCANNING &rarr; SCANNING_WAIT_CLOSE</td><td><code>scanFrag_abort</code></td><td><code>m_next_ref</code> still <code>V_QUERY</code>: close deferred</td><td><span class="src">:14918-14927</span></td></tr>
+<tr><td>F8</td><td>SCANNING_WAIT_CLOSE &rarr; WAIT_CLOSE</td><td>CONF(done=0) or <code>SCAN_HBREP</code> carrying the real sender</td><td><code>send_close_scan()</code>; the CONF's rows are ignored</td><td><span class="src">:14320-14351, :5016-5028</span></td></tr>
+<tr><td>F9</td><td>SCANNING_WAIT_CLOSE &rarr; COMPLETE</td><td>CONF(done=1) (treated as WAIT_CLOSE) or REF</td><td>&ndash;</td><td><span class="src">:14354, :14646</span></td></tr>
+<tr><td>F10</td><td>WAIT_NEXTREQ &rarr; WAIT_CLOSE</td><td><code>scanFrag_abort</code> (counts it in <code>m_frags_outstanding</code>), or the <code>maxRows</code> limit (does <em>not</em> count it, S-1)</td><td>close sent</td><td><span class="src">:14902-14917, :14402-14409</span></td></tr>
+<tr><td>F11</td><td>WAIT_CLOSE &rarr; WAIT_CLOSE</td><td>CONF(done=0) that crossed the close</td><td>ignored, the close's own CONF follows</td><td><span class="src">:14313-14319</span></td></tr>
+<tr><td>F12</td><td>WAIT_CLOSE &rarr; COMPLETE</td><td>CONF(done=1), REF, NODE_FAILREP</td><td>completion uses "state was WAIT_CLOSE" instead of row equality (<span class="src">:14623</span>)</td><td><span class="src">:14413, :14650, :15024</span></td></tr>
+<tr><td>F13</td><td>COMPLETE &rarr; NOT_STARTED</td><td><code>scanFrag_parent_batch_complete</code> for a new parent batch</td><td>pruned scans: rangeless fragments go straight back to COMPLETE</td><td><span class="src">:13098-13127</span></td></tr>
+<tr><td>F14</td><td>NOT_STARTED &rarr; COMPLETE</td><td>pruned out; <code>T_REDUCE_KEYS</code> leaves no keys; NODE_FAILREP</td><td>&ndash;</td><td><span class="src">:13121, :14526, :14992</span></td></tr>
+<tr><td>F15</td><td>WAIT_NEXTREQ &rarr; COMPLETE</td><td>NODE_FAILREP</td><td>&ndash;</td><td><span class="src">:15015-15024</span></td></tr>
+</table>
+
+<div class="weak"><strong>S-1</strong> <span class="src">:14402 Dbspj::scanFrag_execSCAN_FRAGCONF()</span>: when a fragment reaches <code>m_maxRows</code> without being done, SPJ sends the close <em>after</em> having decremented <code>m_frags_outstanding</code> for the CONF, and never counts the close. With nothing else outstanding the node is marked complete and the batch proceeds; the close's own CONF(done=1) then hits <code>ndbrequire(data.m_frags_outstanding)</code> (<span class="src">:14390</span>) and stops the node. With several fragments the count goes one too low and completion fires early. Compare <code>scanFrag_abort</code>, which increments <code>m_frags_outstanding</code> for every closed idle fragment (<span class="src">:14905</span>).</div>
+
+<div class="weak"><strong>S-19</strong> <span class="src">:13331-13430 scanFrag_send(), :14861-14876 scanFrag_abort()</span>: the wrapper sets the node <code>TN_ACTIVE</code> only <em>after</em> the inner send returns. If the inner send fails part-way (some fragments already SCANNING) it calls <code>abort()</code>, and <code>scanFrag_abort</code> returns at once for a <code>TN_INACTIVE</code> node, so no close is sent for those fragments. Their CONF(done=0) leaves them in WAIT_NEXTREQ, the request completes with a REF, and the DBLQH scans are never closed.</div>
+
+<h2 id="seq">6. Signal sequences</h2>
+
+<p>The diagrams are ASCII so that they can be diffed and copied. Arrows show signals; text in brackets is the state change in DBSPJ. Only the signals that matter for DBSPJ's state are shown.</p>
+
+<h3 id="seq-a">6a. Lookup-only join (LQHKEYREQ root)</h3>
+<p>Query <code>lookup(t1 by pk) -&gt; lookup(t2 by t1.x)</code>, sent by the API as a TCKEYREQ with the ViaSPJ, dirty and simple flags (<span class="src">NdbQueryOperation.cpp:4853-4865</span>). DBTC treats it as a dirty read whose "LQH" is a DBSPJ: the SPJ instance on the chosen replica's node (the same instance if local, otherwise round robin; <span class="src">DbtcMain.cpp:5726-5741</span>), and releases its own operation immediately, queueing a TCKEYCONF entry <code>DirtyReadBit | spjNode</code> (<span class="src">DbtcMain.cpp:6344-6411 releaseDirtyRead</span>). From then on DBTC is not involved except as a <code>ROUTE_ORD</code> relay when the API is not connected to the sending node.</p>
+<pre>
+ API            DBTC           DBSPJ(node N)                     LQH(t1, N)        LQH(t2, node X)
+  |--TCKEYREQ(ViaSPJ)-&gt;|           |                                  |                 |
+  |             |--LQHKEYREQ-----&gt;| T1 build, T4 RUNNING             |                 |
+  |&lt;-TCKEYCONF(DirtyReadBit|N) ---| (sent by DBTC, which forgets the op)                 |
+  |             |                 | lookup_start(root, non-leaf):    |                 |
+  |             |                 |--LQHKEYREQ(NormalProtocol=1, ---&gt;|                 |
+  |             |                 |  appl=SPJ, cnt=2)                 |                 |
+  |&lt;------------------- TRANSID_AI (t1 user projection, FLUSH_AI) ---|                 |
+  |             |                 |&lt;-TRANSID_AI(linked cols, CORR)---|                 |
+  |             |                 |  startNextNodes -&gt; lookup_parent_row(t2):          |
+  |             |                 |  hash, DIH getNodes, lookup_send(leaf):            |
+  |             |                 |--LQHKEYREQ(NormalProtocol=0, appl=API, -----------&gt;|
+  |             |                 |  tcBlockref faked = DBTC, cnt=0)                   |
+  |&lt;-TCKEYCONF(DirtyReadBit|X) ---| lookup_sendLeafCONF                                |
+  |             |                 |&lt;-LQHKEYCONF---------------------|                 |
+  |             |                 | m_outstanding==0: batchComplete  |                 |
+  |             |                 | sendConf: nothing on success; cleanup() (released) |
+  |&lt;----------------------------------------------------------- TRANSID_AI (t2 row) ---|
+  |  API counts 1 + #ops + #leaves results and checks the nodes named by DirtyReadBit   |
+</pre>
+<ul>
+<li>The request lives only until the last <em>non-leaf</em> reply: a leaf in a lookup request replies to the API directly (LQH sends no LQHKEYCONF for NormalProtocol 0, <span class="src">DblqhMain.cpp:15498</span>), so DBSPJ sends the extra TCKEYCONF naming the leaf's node, which lets the API detect that node's failure (<span class="src">:9937-9967</span>).</li>
+<li>Errors: a soft error (626, 899) on a non-leaf stops the branch with an extra leaf TCKEYCONF and a TCKEYREF (<span class="src">:9875</span>); a key containing NULL is short-circuited the same way without an LQHKEYREQ (<span class="src">:10067-10131</span>); a leaf's own error goes from LQH to the API as TCKEYREF (via DBTC's <code>ROUTE_ORD</code> if needed). A hard error aborts; the final TCKEYREF carries the request's error code (<span class="src">:4385-4398</span>). An error before the request is built is an early TCKEYREF to the API (dirty) or LQHKEYREF to DBTC (<span class="src">:1475-1524</span>).</li>
+<li>Only dirty reads work. A non-dirty ViaSPJ op (crafted client) is accepted by <code>do_init</code>, never answered on success, and DBTC's later <code>ABORT</code> goes to DBSPJ, which has no ABORT handler (S-16).</li>
+</ul>
+
+<h3 id="seq-b">6b. Scan root with lookup children</h3>
+<p>Query <code>scan(t1) -&gt; lookup(t2 on t1.x)</code>. The root fragment set comes from DBTC (one fragment, or a MultiFrag list of node-local fragments), so the root scan is always local (<span class="src">:11792-11847 scanFrag_build</span>); the lookups go to whichever node owns the key.</p>
+<pre>
+ API        DBTC              DBSPJ(i)                          LQH(local)          LQH(node X)
+  |SCAN_TABREQ|                  |                                  |                    |
+  |----------&gt;|  SCAN_FRAGREQ    |                                  |                    |
+  |           |----------------&gt;| [BUILDING-&gt;RUNNING, no prepare:   |                    |
+  |           |                  |  root has no DIH step]            |                    |
+  |           |                  | scanFrag_start: root TN_ACTIVE    |                    |
+  |           |                  |--SCAN_FRAGREQ(corr, resultRef=SPJ)&gt;|                    |
+  |           |                  |   frag SFH_SCANNING, outstanding=1 |                    |
+  |&lt;------------------- TRANSID_AI (user projection, FLUSH_AI) ----|                    |
+  |           |                  |&lt;-TRANSID_AI(linked cols + CORR)---|  (one per row)     |
+  |           |                  | countSignal; startNextNodes:       |                    |
+  |           |                  |  lookup_parent_row -&gt; computeHash, |                    |
+  |           |                  |  getNodes (DIH), lookup_send       |                    |
+  |           |                  |--LQHKEYREQ(reply to SPJ, cnt=1 or 2)------------------&gt;|
+  |           |                  |   outstanding += cnt               |                    |
+  |           |                  |&lt;-SCAN_FRAGCONF(rows, done=0/1)----|                    |
+  |           |                  |   frag WAIT_NEXTREQ or COMPLETE    |                    |
+  |&lt;------------------------------------------- TRANSID_AI (user projection of t2) ------|
+  |           |                  |&lt;---------------------------- LQHKEYCONF / LQHKEYREF ---|
+  |           |                  | lookup_countSignal, m_rows++ if projection             |
+  |           |                  | ... m_outstanding == 0 -&gt; batchComplete               |
+  |           |&lt;-SCAN_FRAGCONF--| sendConf(completedOps=m_rows, fragmentCompleted,       |
+  |           |  (activeMask)    |          activeMask) [RS_WAITING if more]              |
+  |&lt;-SCAN_TABCONF|               |                                                         |
+  |SCAN_NEXTREQ&gt;|                 |                                                         |
+  |           |--SCAN_NEXTREQ--&gt;| [clear RS_WAITING] scanFrag_execSCAN_NEXTREQ            |
+  |           |                  |--SCAN_NEXTREQ(m_next_ref)-------&gt;| ...                |
+</pre>
+<ul>
+<li>A lookup child in a <em>scan</em> request always replies to SPJ (NormalProtocol flag, application address = SPJ ref + TreeNode i-pointer; <span class="src">:9396-9400 lookup_send</span>). Soft errors 626 (row not found) and 899 (interpreter exit-nok) are swallowed: no TCKEYREF is needed in the scan protocol, the API notices the missing child row through the correlation id (<span class="src">:9829-9841</span>).</li>
+<li>Congestion: when <code>m_outstanding &ge; 256</code> and the scan has <code>T_CHK_CONGESTION</code>, an arriving parent row is buffered and its correlation id queued instead of starting lookups; the node is marked suspended (<span class="src">:5493-5551</span>). Every lookup reply calls <code>maybeResumeCongestedNodes()</code>, which resumes up to 32 deferred rows once <code>m_outstanding &le; 128</code> (<span class="src">:9772, :6165</span>). A suspended node holds back <code>reportAncestorsComplete()</code> (<span class="src">:4518-4524</span>).</li>
+<li>DBTC side: one ScanFragRec per SCAN_FRAGREQ to a DBSPJ (per fragment, or per node-local bundle with MultiFrag), <code>senderData = ScanFragRec.i</code>, <code>resultRef</code> = the API receiver (DBSPJ uses it for FLUSH_AI). The record is <code>LQH_ACTIVE</code> with a fragment timer until the CONF/REF; because SPJ scans set PassAllConfs every CONF is forwarded to the API as SCAN_TABCONF, carrying the active-node mask (<span class="src">DbtcMain.cpp:17765-17806, 19475-19556, 20827-20845, 21006</span>).</li>
+<li>Row counting is order-independent: TRANSID_AI and SCAN_FRAGCONF may arrive in any order. For the scan node, completion needs <code>m_frags_outstanding==0</code> <em>and</em> <code>m_rows_received==m_rows_expecting</code>, checked both in the CONF handler and in <code>scanFrag_countSignal</code> (<span class="src">:14623, :14275</span>).</li>
+</ul>
+
+<h3 id="seq-c">6c. Scan-scan joins: batches, incremental batching, repeated results</h3>
+<p>Nested: <code>scan(A) -&gt; scan(B on A)</code>. Bushy: <code>scan(A) -&gt; {scan(B on A), scan(C on A)}</code>. A child scan is a range scan over <em>all</em> fragments of B (or a pruned subset) with one bound per parent row; it is started only when the parent batch is complete.</p>
+<pre>
+ DBTC        DBSPJ                                                 LQH(B frags, any node)
+  |SCAN_FRAGREQ&gt;| prepare: B TN_PREPARING, DIH_SCAN_TAB(self) +1   |
+  |             | DIH CONF -&gt; allocate SFHs, DIGETNODES -&gt; B INACTIVE
+  |             | [RUNNING] root A scans (as in 6b)                  |
+  |             | per A row: scanFrag_parent_row(B): append bound    |
+  |             |   (corr id in bound) to SFH range keys             |
+  |             | A batch complete (all A CONFs + rows):             |
+  |             |   reportAncestorsComplete -&gt; scanFrag_parent_batch_complete(B)
+  |             |   F13: SFHs -&gt; NOT_STARTED; scanFrag_send:         |
+  |             |   parallelism p from batch size and recs/key stats |
+  |             |--SCAN_FRAGREQ x p (bs_rows/p, bs_bytes/p)---------&gt;| B TN_ACTIVE, +1
+  |             |&lt;-TRANSID_AI rows (rows_received++) ----------------|
+  |             |&lt;-SCAN_FRAGCONF(done) for frag k -------------------|
+  |             |   all started done, frags not started, batch left: |
+  |             |--SCAN_FRAGREQ to more fragments (incremental) -----&gt;|  :14543-14588
+  |             |&lt;-SCAN_FRAGCONF(done=0) (batch buffer full) --------|
+  |             | B frags outstanding=0, rows complete -&gt; -1          |
+  |             | m_outstanding==0 -&gt; batchComplete:                 |
+  |             |   is_complete=false (B active, maybe A active)      |
+  |             |   prepareNextBatch: cursor = B (A is B's predecessor)
+  |&lt;SCAN_FRAGCONF(activeMask={B}) [RS_WAITING]                       |
+  |SCAN_NEXTREQ&gt;| scanFrag_execSCAN_NEXTREQ(B): NEXTREQ to WAIT_NEXTREQ
+  |             |   frags, then start NOT_STARTED ones up to p       |
+  |             | ... when B has no more rows for this A batch:      |
+  |             |   B TN_INACTIVE; next batch: cursor = A            |
+  |&lt;SCAN_FRAGCONF(activeMask={A}) ... NEXTREQ -&gt; A continues, new A rows
+  |             |   -&gt; new B round (cleanupBatch released B's buffers
+  |             |      and range keys: scanFrag_parent_batch_cleanup)
+</pre>
+<ul>
+<li><strong>Without <code>RT_REPEAT_SCAN_RESULT</code></strong> (<span class="src">:4204-4235 prepareNextBatch</span>) every <code>TN_ACTIVE</code> node that is not a predecessor of another active node becomes a cursor; several branches may return new rows in the same batch and the API builds the cross product itself.</li>
+<li><strong>With <code>RT_REPEAT_SCAN_RESULT</code></strong> (bushy, <span class="src">:4113-4203</span>) only the <em>last</em> active node gets new rows; other repeatable child scans after it whose previous result needed more than one round (<code>m_batch_chunks &gt; 1</code>) are registered by <code>scanFrag_parent_batch_repeat</code> and re-run from scratch on the next NEXTREQ through <code>m_parent_batch_complete</code> (<span class="src">:14083, :5240-5253</span>), restoring range keys saved before <code>removeMatchedKeys</code>. <code>execSCAN_NEXTREQ</code> requires exactly one active cursor in this mode (<span class="src">:5262</span>).</li>
+<li><strong>Sorted root</strong> (<code>T_SORTED_ORDER</code> with several scans): each root fragment returns one row per round; <code>batchComplete</code> may fetch one more root row itself before replying, if the estimated child fan-out still fits (<span class="src">:3904-3953, :13286 estmMaxKeys</span>).</li>
+<li>Correlation ids are 12 bits per batch; <code>scanFrag_getBatchSize</code> also limits rows by the remaining id space (<span class="src">:13159</span>), and an outer-join aggregate ancestor caps its batch so that all parents fit (<span class="src">:2760-2780</span>).</li>
+<li>If <code>scanFrag_send</code> cannot send (no batch space, parallelism 0) the node stays <code>TN_INACTIVE</code> with fragments not started (<span class="src">:13379-13395</span>); the batch then completes without the child's rows. This relies on the batch-size computation always leaving room after the reset in <code>scanFrag_execSCAN_NEXTREQ</code> (<span class="src">:14689-14694</span>).</li>
+</ul>
+
+<h3 id="seq-d">6d. DBTC closes the scan in the middle of a batch</h3>
+<p>DBTC's close reaches DBSPJ as <code>SCAN_NEXTREQ</code> with the close flag. DBSPJ handles it the same way in every state: <code>abort(errCode=0)</code> (<span class="src">:5191-5213</span>). Because the error code stays 0, the final reply is a <code>SCAN_FRAGCONF(fragmentCompleted=1)</code>, not a REF.</p>
+<pre>
+ DBTC                 DBSPJ                                           LQH frag 1      LQH frag 2
+  |                     | case 1: [RUNNING|WAITING], frags idle          |                |
+  |--SCAN_NEXTREQ(close)&gt;| clear WAITING; abort(0)                       |                |
+  |                     | scanFrag_abort: WAIT_NEXTREQ -&gt; WAIT_CLOSE,   |                |
+  |                     |   m_frags_outstanding++, m_outstanding+1        |                |
+  |                     |--SCAN_NEXTREQ(close)-------------------------&gt;|                |
+  |                     |&lt;-SCAN_FRAGCONF(done=2, maybe rows)-------------|                |
+  |                     | batchComplete: is_complete (forced) ...         |                |
+  |&lt;-SCAN_FRAGCONF(fragmentCompleted=1)  cleanup()                        |                |
+  |                     |                                                  |                |
+  |                     | case 2: [RUNNING] batch in progress              |                |
+  |--SCAN_NEXTREQ(close)&gt;| abort(0): SCANNING frags -&gt; WAIT_CLOSE (or     |                |
+  |                     |   SCANNING_WAIT_CLOSE if executor unknown)       |                |
+  |                     |--close-----------------------------------------&gt;|                |
+  |                     |&lt;-SCAN_FRAGCONF(done=0) crossing: ignored (F11)  |                |
+  |                     |&lt;-SCAN_FRAGCONF(done=2) ------------------------|                |
+  |                     |&lt;-SCAN_FRAGCONF(done=0) from frag 2 (remote, V_QUERY): close now (F8)
+  |                     |--close---------------------------------------------------------&gt;|
+  |                     |&lt;-SCAN_FRAGCONF(done=2) ----------------------------------------|
+  |                     | outstanding lookups of the batch drain normally  |                |
+  |&lt;-SCAN_FRAGCONF(fragmentCompleted=1)                                   |                |
+  |                     |                                                  |                |
+  |                     | case 3: request already replied final / freed    |                |
+  |--SCAN_NEXTREQ(close)&gt;| not in hash: ignored (ndbrequire close flag)    |                |
+</pre>
+<ul>
+<li>While aborting, arriving TRANSID_AI rows are still counted (they retire units) but not processed (<span class="src">:5454-5457</span>); buffered rows are dropped with the TreeNodes.</li>
+<li>A close arriving when DBSPJ is already aborting for another reason (e.g. a REF) only clears <code>RS_WAITING</code>; the reply is the REF with the original error (<span class="src">:5183-5190</span>).</li>
+<li>Error insert 17533 swallows one close (test hook for "close reply owed by a node that then dies", <span class="src">:5195-5210</span>).</li>
+</ul>
+<p><strong>DBTC side</strong> (<span class="src">DbtcMain.cpp:20041-20271 close_scan_req</span>): triggers are the API's close, <code>scanError</code> (including DBTC's own time-out) and API failure. DBTC goes to <code>CLOSING_SCAN</code> and sends SCAN_NEXTREQ(close) at once to every fragment, including <code>LQH_ACTIVE</code> ones whose CONF is still outstanding (it only defers when the ref is <code>V_QUERY</code>, which never applies to DBSPJ). A status-0 CONF that crosses the close is ignored; a final CONF that crosses it releases the fragment, and DBSPJ then ignores the close because the request is gone (case 3). DBTC never re-sends a close and has no give-up: it relies on DBSPJ sending exactly one final CONF/REF for each fragment.</p>
+
+<div class="weak"><strong>S-17</strong> DBSPJ in turn relies on DBLQH answering every close it sends. A close for a join-aggregation SCAN_FRAGREQ that DBLQH has parked (waiting for the local SETUP) is dropped, because the parked request is not in DBLQH's transaction hash (<span class="src">DblqhMain.cpp:25776-25810, 18833-18843</span>). The replayed scan's CONF(done=0) is ignored in <code>SFH_WAIT_CLOSE</code> (<span class="src">:14313</span>), so DBSPJ, and DBTC behind it, wait for ever.</div>
+
+<h3 id="seq-e">6e. Errors from DBLQH: root vs child, abort propagation</h3>
+<p>DBSPJ distinguishes hard and soft errors only for lookups (<span class="src">:9828-9847 lookup_execLQHKEYREF</span>): 626 and 899 are soft, everything else aborts. Every <code>SCAN_FRAGREF</code> aborts (<span class="src">:14672</span>). Whether the failing operation is the root or a child makes no difference to the abort itself; it only decides which fragments are still open.</p>
+<pre>
+ DBTC          DBSPJ                                       LQH (root frag)     LQH (child X)
+  |              | [RUNNING] root scanning, child lookups/scans in flight          |
+  |              |&lt;-------------------------------------------------- LQHKEYREF(err=hard)
+  |              | lookup_countSignal(2 if TRANSID_AI expected)                     |
+  |              | abort(err): [|ABORTING], suspended cleared                       |
+  |              |  scanFrag_abort(root): WAIT_NEXTREQ frags -&gt; close, outstanding+1 |
+  |              |                        SCANNING frags  -&gt; close (WAIT_CLOSE)     |
+  |              |--SCAN_NEXTREQ(close)--------------------&gt;|                       |
+  |              |&lt;-TRANSID_AI (rows of the crossing batch: counted, not used)      |
+  |              |&lt;-SCAN_FRAGCONF(done=0) (crossed the close: ignored, F11)          |
+  |              |&lt;-SCAN_FRAGCONF(done=1) -&gt; frag COMPLETE, root TN_INACTIVE         |
+  |              |&lt;------------------------------------------ outstanding child replies
+  |              | m_outstanding==0 -&gt; batchComplete: aborting, force nodes          |
+  |              |   INACTIVE, is_complete=true; complete() if non-root scans        |
+  |              |   (DIH_SCAN_TAB_COMPLETE_REP)                                      |
+  |&lt;-SCAN_FRAGREF(err) (or TCKEYREF to the API for a lookup request) -- cleanup()   |
+</pre>
+<ul>
+<li><strong>Root fragment REF</strong> (<code>SCAN_FRAGREF</code> on the root): the fragment goes to COMPLETE, <code>m_frags_complete++</code>; the node becomes inactive once every started fragment is done; the request aborts and the other root fragments of a MultiFrag request are closed.</li>
+<li><strong>Child scan REF</strong>: same, for the child's fragments on any node. The parent keeps running only until its outstanding replies drain; no new child work is started because <code>startNextNodes</code> and <code>handleTreeNodeComplete</code> check <code>RS_ABORTING</code> (<span class="src">:6303, :4508, :5454</span>).</li>
+<li><strong>Lookup request</strong> (6a): a soft error stops only the branch (<code>lookup_stop_branch</code>: extra leaf TCKEYCONF + TCKEYREF to the API, <span class="src">:9875</span>); a hard error aborts and the final <code>sendConf</code> sends one TCKEYREF with the error to the result ref of the first lookup node (<span class="src">:4385-4398, :4413 getResultRef</span>). Operations already sent to leaves still complete towards the API.</li>
+<li>DBSPJ requires that a fragment never gets two REFs, or a CONF after its REF or after its final CONF: the state checks at <span class="src">:14646</span> and <span class="src">:14391</span> are <code>ndbrequire</code>s, so a violation stops the node.</li>
+<li>Local errors (out of section memory, row memory, query memory, table dropped) take the same path with a DBSPJ error code 20000-20022 (<span class="src">DbspjErr.hpp</span>). <code>NodeFailure</code> is 20016.</li>
+</ul>
+
+<div class="weak"><strong>S-4</strong> <span class="src">:3998 Dbspj::handleJoinAggNextBatch()</span> (also used by the CTE stage) calls the cursors' NEXTREQ handlers but never re-checks completion. If every handler fails without sending (<code>scanFrag_execSCAN_NEXTREQ</code> with a table error, <span class="src">:14678-14683</span>; <code>cte_scan_sendReq</code> to a disconnected node, <span class="src">:8197-8201</span>; a send-time section-memory failure), the request is aborting with <code>m_outstanding==0</code> and nobody calls <code>checkBatchComplete()</code>: only an <code>ndbassert</code> (<span class="src">:4053</span>) notices. The DBTC-driven path does call it (<span class="src">:5268</span>).</div>
+
+<h3 id="seq-f">6f. Data node, API and TC failure</h3>
+<p><strong>DBSPJ side.</strong> <code>execNODE_FAILREP</code> clears the failed nodes from <code>c_alive_nodes</code>, cleans up partly received fragmented signals, and starts a CONTINUEB sweep (<span class="src">:1003-1039</span>). <code>nodeFail_checkRequests</code> walks the lookup hash and then the scan hash, at least 64 requests per real-time slice and always finishing the bucket it started in, resuming at the next bucket (<span class="src">:1090-1173</span>). For each request <code>nodeFail()</code> (<span class="src">:4608</span>):</p>
+<ol>
+<li>marks <code>RT_REQUESTER_FAILED</code> if it is a scan whose DBTC is on a failed node;</li>
+<li>calls every node's <code>m_execNODE_FAILREP</code>:
+  <ul>
+  <li>lookup: zero <code>m_lookup_node_data[n]</code> for the failed nodes and subtract the sum from <code>m_outstanding</code> (<span class="src">:11206</span>). Per-node lookup counters and completed bits are not touched; the abort makes them irrelevant;</li>
+  <li>scanFrag: a node in <code>TN_PREPARING</code> or <code>TN_INACTIVE</code> returns 1 unconditionally (its fragment list may point at the failed node); an active node retires every fragment on a failed node (F5, F12, F14, F15) and returns the number affected (<span class="src">:14954</span>);</li>
+  <li>CTE scan / CTE lookup: retire the failed node's slot or replies; return 1 if any node of the topology captured at build time failed (<span class="src">:8763, :6743</span>);</li>
+  </ul></li>
+<li>if anything was affected, or it is a scan whose TC died: <code>abort(NodeFailure=20016)</code> and <code>checkBatchComplete()</code>.</li>
+</ol>
+<pre>
+ DBTC(A)      DBSPJ(A)                            LQH(A)            LQH(B, fails)
+   |            | [RUNNING|WAITING] child scan frags on A and B, idle    |
+   |            |                                                        X  node B dies
+   |            |&lt;== NODE_FAILREP(B) -&gt; CONTINUEB sweep                  |
+   |            | nodeFail: B's frags -&gt; COMPLETE; abort(20016)          |
+   |            | scanFrag_abort: A's WAIT_NEXTREQ frags                 |
+   |            |--SCAN_NEXTREQ(close)-----------------&gt;|                 |
+   |            |&lt;-SCAN_FRAGCONF(done)-----------------|                 |
+   |            | batchComplete: RS_WAITING still set -&gt; no reply;       |
+   |            | cleanup() -&gt; RS_ABORTED tombstone (T13)                |
+   |--SCAN_NEXTREQ (API asks for more, or closes)                        |
+   |-----------&gt;| T14: SCAN_FRAGREF(20016), request released             |
+</pre>
+<ul>
+<li><strong>Running request</strong> (not waiting): the same abort, then the normal reply <code>SCAN_FRAGREF(20016)</code> when the closes drain.</li>
+<li><strong>The requesting DBTC's node failed</strong>: the request is aborted and freed without a reply (T15), because DBTC take-over does not handle scans and no NEXTREQ can come. Such requests are reported by the info event <code>[SPJ_ORPHANED_SCANS node= instance= failed= count=]</code> (<span class="src">:1140-1146</span>). Lookup requests ignore the TC's failure: they finish towards the API on their own (<span class="src">:4648-4650</span>).</li>
+<li><strong>API failure</strong>: <code>execAPI_FAILREQ</code> only confirms (<span class="src">:1041-1061</span>); scans are aborted through DBTC's close, lookups run to completion and their replies to the dead API are dropped (TCKEYREF/TCKEYCONF fall back to <code>ROUTE_ORD</code> via DBTC when the API is not connected, <span class="src">:1526, :1549</span>). The comment "We only need to care about lookups" has no code behind it.</li>
+<li><strong>A lookup to a node already known dead</strong> is not sent: <code>lookup_send</code> checks <code>c_alive_nodes</code> and aborts with <code>NodeFailure</code> (<span class="src">:9665-9669</span>). <code>scanFrag_send</code> has no such check (S-12).</li>
+<li>Any data-node failure aborts every scan request that has a scan node in <code>TN_INACTIVE</code>/<code>TN_PREPARING</code> or any CTE node, whether or not the request uses the failed node (S-11).</li>
+</ul>
+<p><strong>DBTC and DBLQH side.</strong></p>
+<table>
+<tr><th>Who fails</th><th>DBTC</th><th>DBLQH</th><th>DBSPJ</th></tr>
+<tr><td>Node hosting the DBSPJ worker</td><td><code>checkScanActiveInFailedLqh</code>: releases LQH_ACTIVE fragments on it, then <code>scanError(270)</code> (<span class="src">DbtcMain.cpp:13291-13394</span>). QUEUED_FOR_DELIVERY fragments are not checked; a later NEXTREQ to the dead worker is caught by the fragment timer (274).</td><td>closes the scans that worker started (requester = <code>tcBlockref</code> = SPJ ref), no reply (<span class="src">DblqhMain.cpp:17745, 17430</span>)</td><td>gone</td></tr>
+<tr><td>Node hosting only LQH fragments the worker reads</td><td>invisible to DBTC</td><td>gone</td><td>must report it: SCAN_FRAGREF 20016, or the tombstone REF on the next NEXTREQ</td></tr>
+<tr><td>DBTC's node (scan)</td><td>gone</td><td>scans of the live DBSPJ continue (join-aggregation scans whose coordinator died are supposed to be closed: S-14)</td><td>T15: abort, close its LQH scans, free without reply</td></tr>
+<tr><td>DBTC's node (lookup)</td><td>gone; the op was already released</td><td>&ndash;</td><td>runs to completion</td></tr>
+<tr><td>API node</td><td><code>close_scan_req</code>; API_FAILCONF waits until every worker answered the close (<span class="src">DbtcMain.cpp:2097-2112, 20335-20340</span>)</td><td>&ndash;</td><td>answers the close (6d); lookups finish, replies dropped</td></tr>
+</table>
+
+<h3 id="seq-g">6g. Time-out handling</h3>
+<p>DBSPJ has no timer of its own and no supervision of its requests. DBLQH has none for SPJ work either (<span class="src">DblqhMain.cpp:5747 timer_handling</span>). All time-out handling is in DBTC (scans) and in the API (lookups).</p>
+<pre>
+ DBTC (fragment timer, TransactionDeadlockDetectionTimeout)   DBSPJ                      LQH
+  | SCAN_FRAGREQ/NEXTREQ sent: LQH_ACTIVE, timer started       |                          |
+  |                                                            |&lt;--SCAN_HBREP (long scan,
+  |&lt;--SCAN_HBREP (forwarded, senderData=ScanFragRec.i) --------|    every timeout/16)    |
+  |  timer restarted (TC_HBREP to the API at most every 30 s)  |                          |
+  |                                                            | join-agg / CTE self-continue:
+  |&lt;--SCAN_HBREP (SPJ's own, at most every 20 ms of batches) --|                          |
+  |  ... no CONF and no HBREP for longer than the limit:       |                          |
+  |  timeOutFoundFragLab -&gt; scanError(274) -&gt; close_scan_req   |                          |
+  |--SCAN_NEXTREQ(close)-------------------------------------&gt;| abort(0), 6d             |
+  |&lt;--SCAN_FRAGCONF(done) / SCAN_FRAGREF ---------------------|                          |
+</pre>
+<ul>
+<li>DBSPJ forwards every LQH <code>SCAN_HBREP</code> to its DBTC with its own <code>senderData</code> (<span class="src">:4997-5042</span>) and, during self-continued join-aggregation/CTE batches, sends its own at most every 20 ms (<span class="src">:4011-4040</span>). DBTC restarts the fragment timer on each (<span class="src">DbtcMain.cpp:12567-12584</span>). Consequence: a DBSPJ request that is stuck but still receives HBREPs keeps the scan alive for ever; a request that is stuck <em>silently</em> (S-2, S-4) is rescued after one time-out period by DBTC's close, and the query fails with 274 instead of the real error.</li>
+<li>DBTC crashes (<code>systemErrorLab</code>) on a SCAN_HBREP for a fragment that is not <code>LQH_ACTIVE</code> (<span class="src">DbtcMain.cpp:12485-12503</span>). DBSPJ forwards HBREPs regardless of its own request state (S-18).</li>
+<li>During the idle part of the CTE stage DBTC stops the worker's fragment timer once it has reported every started CTE (<span class="src">DbtcMain.cpp:32769-32846</span>), so no HBREP is needed there.</li>
+<li>Once DBTC is closing it never re-sends or abandons the close: if DBSPJ never answers (e.g. S-17), the scan record stays in <code>CLOSING_SCAN</code>, and on API failure API_FAILCONF is never sent.</li>
+<li>Lookups: no time-out anywhere in the data nodes; the API times out (4012) or learns of a node failure through the DirtyReadBit node list.</li>
+</ul>
+
+<h3 id="seq-h">6h. Join aggregation and CTEs with DBTC</h3>
+<p>DBTC is the coordinator of a join aggregation; DBSPJ only routes rows into DBLQH's aggregators and controls batching. DBSPJ never sends SETUP, COMPLETE or RELEASE and never owns aggregation state.</p>
+<pre>
+ API      DBTC (coordinator)                  DBSPJ worker(s)                  DBLQH (all nodes)
+  |SCAN_TABREQ(JoinAgg key info)|               |                                 |
+  |-------&gt;| parseJoinAggKeyInfo; then at once:  |                                 |
+  |        |--JOIN_AGG_SETUP_REQ (main, per CTE) to the DBLQH proxy of each node ----&gt;|
+  |        |--SCAN_FRAGREQ(JoinAgg flag, aggKeys section: queryTag, main pairs        |
+  |        |   with RNIL keys, CTE blocks: depMask, owners)-&gt;|                        |
+  |        |                                     | parse keys, m_aggNodes = main nodes|
+  |        |                                     | agg leaf REQ: JoinAgg flag +       |
+  |        |                                     |  identity word (queryTag,cte,leaf) |
+  |        |                                     |--LQHKEYREQ / SCAN_FRAGREQ---------&gt;| parked until the
+  |        |&lt;------------------------------------------------- SETUP_CONF ----------| local SETUP ran
+  |        |                                     |&lt;-LQHKEYCONF(readLen=evictions) /   | rows fed to the
+  |        |                                     |  SCAN_FRAGCONF(completedOps=0)     | aggregator, no
+  |        |                                     | m_rows==0 at batch end:            | TRANSID_AI
+  |        |&lt;-SCAN_HBREP (&lt;= every 20 ms)--------| handleJoinAggNextBatch: NEXTREQ    |
+  |        |                                     |  sent by SPJ itself ---------------&gt;|
+  |        |                                     | outer join miss:                   |
+  |        |                                     |--JOIN_AGG_NULL_ROW_REQ (local)----&gt;|
+  |        |                                     |&lt;-JOIN_AGG_NULL_ROW_CONF/REF--------|
+  |        |&lt;-SCAN_FRAGCONF(fragmentCompleted=1)-| last batch: normal final reply      |
+  |        | all workers done: WAIT_JOIN_AGG_COMPLETE                                 |
+  |        |--JOIN_AGG_COMPLETE_REQ (owner LDM per node) ----------------------------&gt;|
+  |&lt;------------------------------------------------------- result rows (TRANSID_AI)|
+  |        |&lt;------------------------------------------------- COMPLETE_CONF --------|
+  |&lt;SCAN_TABCONF(EndOfData)| releaseJoinAggResources: RELEASE_REQ (no reply) ------&gt;|
+</pre>
+<p>What changes in DBSPJ's normal completion path:</p>
+<ul>
+<li><strong>Silent batch boundaries.</strong> In <code>batchComplete()</code> a not-complete batch of a request with a main aggregation (<code>m_aggNodes</code> non-empty, which DBTC only fills when a main aggregation program exists, <span class="src">DbtcMain.cpp:32040-32047, 31553</span>) and <code>m_rows==0</code> is continued by DBSPJ itself; DBTC's fragment stays <code>LQH_ACTIVE</code> and only sees HBREPs (<span class="src">:3956-3962, :3998</span>). A non-zero <code>m_rows</code> (evicted groups reported in LQHKEYCONF.readLen) produces a mid-fragment SCAN_FRAGCONF instead; DBTC turns that into error 1270 when the query has CTEs (<span class="src">DbtcMain.cpp:19577-19592</span>), and forwards it to the API otherwise, where it is never consumed (S-15).</li>
+<li><strong>The final reply is unchanged</strong> (SCAN_FRAGCONF done=1, or REF). On error DBTC does a waited RELEASE of the main states and then aborts the scan (<span class="src">DbtcMain.cpp:33629-33716</span>); DBSPJ is not involved. DBLQH never frees aggregation state because a DBSPJ request aborted.</li>
+<li><strong>CTE stage</strong> (<code>RT_CTE_PHASE</code>): no SCAN_FRAGCONF at all. Each quiescence point reports locally finished CTEs with <code>CTE_PHASE_COMPLETE_REP</code>; when every live worker has reported a CTE, DBTC completes it on the owners and either broadcasts <code>CTE_PHASE_START_REQ</code>{cteId}+keys (CTEs with dependents) or sends <code>CTE_START_MAIN_REQ</code>+keys, which starts the main root (<span class="src">DbtcMain.cpp:32858-32985, 33036-33182, 33336-33472</span>). Until then the worker idles with nothing outstanding. An abort during the CTE stage takes the normal path to SCAN_FRAGREF.</li>
+<li><strong>Keys</strong>: the SCAN_FRAGREQ section carries RNIL keys (SETUP overlaps the scan); the real keys reach DBSPJ only with the READY/START_MAIN carriers (<span class="src">:8856 parseJoinAggKeySection</span>). Feeds are addressed by identity word, which DBLQH resolves (and parks on) by (transId, queryTag, cteId).</li>
+</ul>
+<div class="weak"><strong>S-15</strong> <span class="src">:9982 lookup_execLQHKEYCONF, :3956 batchComplete</span>: evicted groups of a <em>lookup</em> aggregate leaf count in <code>m_rows</code>, so a batch with an eviction is reported to DBTC mid-fragment. With CTEs DBTC fails the query with 1270; without CTEs the CONF reaches the API worker receiver while the evicted rows went to the aggregate receiver, and the scan hangs. Scan aggregate leaves never report evictions at all (<code>completedOps</code> is 0).</div>
+
+<div class="warn">DBTC assumes exactly one <code>CTE_PHASE_COMPLETE_REP</code> per (worker, CTE): a duplicate is an <code>ndbrequire</code> in DBTC (<span class="src">DbtcMain.cpp:32929-32938</span>). DBSPJ sends it only on the <code>MATERIALIZING &rarr; LOCAL_DONE</code> transition, which happens once per CTE, so the contract holds.</div>
+
+<h2 id="conc">7. Concurrency and ordering assumptions</h2>
+
+<h3>7.1 Thread placement</h3>
+<ul>
+<li>DBSPJ instance i runs in the thread of DBTC instance i (a TC thread, or a receive thread when there are none). DBTC-&gt;DBSPJ signals of one query are therefore delivered in send order, and DBSPJ may read <code>c_tc-&gt;m_distribution_handle</code> directly to pick query-thread instances (<span class="src">:9687, :13932</span>).</li>
+<li>DIH is called synchronously with <code>EXECUTE_DIRECT_MT</code> (DIH_SCAN_TAB_REQ, DIGETNODESREQ, DIH_SCAN_TAB_COMPLETE_REP); DIH protects that data with a per-table mutex (<span class="src">DbdihMain.cpp:17181 start_scan_on_table</span>). The results are posted back to DBSPJ as self-signals to get a real-time break (<span class="src">:12276-12297</span>).</li>
+<li>Root fragments are always on the own node (<span class="src">:11800, :11827</span>); child scans and lookups go to any node. Local reads go to a query thread chosen per request (<code>get_lqhkeyreq_ref</code>/<code>get_scan_fragreq_ref</code>), disk reads always to the owning LDM (<span class="src">:9680-9696, :13891-13981</span>). For a remote node with query threads, the REQ goes to <code>V_QUERY</code> and the receiving node picks the thread; DBSPJ learns the executing instance from <code>senderRef</code> in the first CONF/REF/HBREP and must not send a NEXTREQ before that (<code>ndbrequire</code> at <span class="src">:5055, :14824</span>).</li>
+</ul>
+
+<h3>7.2 Ordering DBSPJ relies on, and ordering it does not need</h3>
+<table>
+<tr><th>Pair of signals</th><th>DBSPJ's assumption</th><th>Where</th></tr>
+<tr><td>TRANSID_AI vs. LQHKEYCONF / SCAN_FRAGCONF of the same operation</td><td>None for counting: lookups count units, scans compare <code>m_rows_received</code> with <code>m_rows_expecting</code> from either side. The CTE-lookup completion gap (S-5) only bites because the CONF normally comes last.</td><td><span class="src">:9723, :14270, :14623</span></td></tr>
+<tr><td>LQHKEYREF vs. TRANSID_AI</td><td>No TRANSID_AI to DBSPJ is sent for an operation that is REFed: the REF retires both units (<span class="src">:9813-9819</span>). Reads run after the interpreted program (<span class="src">:16781 parseDA "final read"</span>), so an interpreter exit-nok produces no row.</td><td><span class="src">:9813</span></td></tr>
+<tr><td>SPJ close vs. LQH's batch CONF</td><td>Close may cross a CONF(done=0); that CONF is ignored and the close's own CONF(done=1) follows (F11). A close sent to a fragment whose final CONF is already in flight must be silently ignored by LQH: DBSPJ never expects a second reply.</td><td><span class="src">:14313</span></td></tr>
+<tr><td>DBTC close vs. DBSPJ's final CONF/REF</td><td>A close for a released request is ignored; a non-close NEXTREQ for an unknown request stops the node (<code>ndbrequire</code>).</td><td><span class="src">:5150-5153</span></td></tr>
+<tr><td>DBTC NEXTREQ vs. DBSPJ state</td><td>A non-close NEXTREQ is only legal when DBSPJ is <code>RS_WAITING</code> with nothing outstanding (<code>ndbrequire</code>). DBTC must never send one while DBSPJ is self-continuing a join-aggregation or CTE batch.</td><td><span class="src">:5215-5216</span></td></tr>
+<tr><td>LQH SCAN_HBREP vs. final CONF</td><td>An HBREP must not arrive after the ScanFragHandle is released: <code>execSCAN_HBREP</code> does <code>ndbrequire(getGuardedPtr(...))</code>.</td><td><span class="src">:5006</span></td></tr>
+<tr><td>NODE_FAILREP vs. replies from the failed node</td><td>No reply from a failed node is processed after its NODE_FAILREP has retired the outstanding units (a late one would underflow counters or hit the SFH state <code>ndbrequire</code>s). This is the usual NDB assumption: the failure protocol takes several inter-node rounds after the transporter closed.</td><td><span class="src">:11206, :14954</span></td></tr>
+<tr><td>CTE_PHASE_START_REQ vs. CTE_START_MAIN_REQ</td><td>Same sender DBTC and same receiver, JBB: cannot overtake. A late READY for an aborting or released worker is ignored.</td><td><span class="src">:8928-8938, :9016-9026</span></td></tr>
+<tr><td>Self-sent DIH_SCAN_TAB_CONF/REF vs. abort</td><td>The prepare unit stays counted until the self-signal arrives, so an abort during prepare still waits for it.</td><td><span class="src">:12263</span></td></tr>
+</table>
+
+<h3>7.3 Crossing scenarios checked</h3>
+<ul>
+<li><strong>Close vs. CONF in flight</strong> (F11, F8): handled.</li>
+<li><strong>SCAN_NEXTREQ vs. abort in progress</strong>: the NEXTREQ clears <code>RS_WAITING</code>, sees <code>RS_ABORTING</code> and only re-checks completion; the reply is the REF when the abort drains (<span class="src">:5183-5190</span>).</li>
+<li><strong>NEXTREQ after node failure while waiting</strong>: tombstone (T13, T14).</li>
+<li><strong>Node failure during the NODE_FAILREP sweep</strong>: a second sweep can visit a request twice; the handlers are idempotent (failed fragments get <code>m_ref=0</code>, lookups zero their per-node count), and <code>abort()</code> returns early when already aborting.</li>
+<li><strong>Null-row REQ in flight during abort</strong>: always local; the CONF or REF retires it and the deferred restart is not performed while aborting (<span class="src">:11134</span>).</li>
+</ul>
+<h3>7.4 Where the two neighbours' assumptions meet</h3>
+<ul>
+<li><strong>Close from DBTC while DBSPJ's CONF is in flight</strong>: DBTC ignores the crossing status-0 CONF and keeps waiting (<span class="src">DbtcMain.cpp:19438-19455</span>); DBSPJ then replies to the close with the final CONF. If DBSPJ's crossing CONF was final, DBTC releases the fragment and DBSPJ ignores the close. Both sides agree.</li>
+<li><strong>Close from DBSPJ to a DBLQH scan that is parked</strong> waiting for a join-aggregation SETUP: the parked request is not in DBLQH's transaction hash, so the close is dropped (<span class="src">DblqhMain.cpp:25776-25810, 18833-18843</span>); the replayed scan then answers with a normal CONF that DBSPJ ignores while it waits for a close reply that never comes (S-17).</li>
+<li><strong>HBREP after the final reply</strong>: both DBSPJ (<code>ndbrequire(getGuardedPtr)</code>) and DBTC (<code>systemErrorLab</code> outside <code>LQH_ACTIVE</code>) stop the node on it. DBLQH sends HBREPs only while scanning, in the same thread as the CONF; DBSPJ forwards them without checking its own state (S-18).</li>
+<li><strong>Abort while a node is still <code>TN_INACTIVE</code></strong>: <code>scanFrag_abort</code> treats an inactive node as having nothing open, but during the first <code>scanFrag_send</code> of a batch the node is <code>TN_INACTIVE</code> while some SCAN_FRAGREQs are already out (S-19).</li>
+</ul>
+
+<h2 id="res">8. Resource lifecycle</h2>
+
+<table>
+<tr><th>Resource</th><th>Allocated</th><th>Released</th><th>Guarantee on terminal paths</th></tr>
+<tr><td>Arena (<code>m_arenaAllocator</code>, RT_SPJ_ARENA_BLOCK)</td><td>start of <code>execLQHKEYREQ</code>/<code>execSCAN_FRAGREQ</code> (<span class="src">:1251, :1620</span>)</td><td>end of <code>cleanup()</code> (<span class="src">:4781</span>)</td><td>All TreeNodes, ScanFragHandles, dependency maps and patterns live in it, so a released arena cannot leak them. A tombstone (<code>RS_ABORTED</code>) keeps the arena until DBTC's next NEXTREQ or DBTC's node failure.</td></tr>
+<tr><td>Request (<code>m_request_pool</code>)</td><td>same place, <code>Request(ah)</code> placement-new, then <code>do_init()</code></td><td><code>m_request_pool.release</code> in <code>cleanup()</code> (<span class="src">:4780</span>)</td><td>Reached from T2, T11/T12, T14, T15. Not reached while <code>m_outstanding&gt;0</code> or while a tombstone waits. DUMP 2650 (<code>SpjDumpRequests</code>, <span class="src">:1178</span>) aborts the node if any request is left in either hash, which is how autotest detects leaks.</td></tr>
+<tr><td>Per-node arrays <code>m_aggStateKeys</code> + <code>m_lookup_node_data</code> (one block, RG_QUERY_MEMORY)</td><td><code>alloc_request_node_arrays()</code> at the end of <code>do_init()</code> (<span class="src">:1370</span>); failure gives <code>OutOfQueryMemory</code> (error insert 17534)</td><td><code>cleanup()</code> (<span class="src">:4751</span>)</td><td>Not freed for a tombstone (returns before <span class="src">:4741</span>).</td></tr>
+<tr><td>CTE key / owner arrays</td><td>aggKeys section parse in <code>execSCAN_FRAGREQ</code> (<span class="src">:1804</span>)</td><td><code>cleanup()</code> (<span class="src">:4756</span>)</td><td>As above.</td></tr>
+<tr><td><code>m_cteContexts</code> and their cached key/row sections</td><td><code>cte_lookup_build</code>/<code>cte_subtree_build</code> (<span class="src">:6464, :7910</span>); cache sections in the CTE lookup path</td><td><code>cleanup()</code> (<span class="src">:4764-4778</span>)</td><td>As above.</td></tr>
+<tr><td>TreeNode (<code>m_treenode_pool</code>)</td><td><code>createNode()</code> (<span class="src">:3532</span>)</td><td><code>cleanup()</code> loop (<span class="src">:4708-4715</span>), after the type's <code>m_cleanup</code> and <code>removeGuardedPtr</code></td><td>Released also for tombstones, so a late signal naming the node fails <code>getGuardedPtr</code> and hits <code>ndbrequire</code> (deliberate: a protocol violation stops the node rather than corrupting memory).</td></tr>
+<tr><td>ScanFragHandle (<code>m_scanfraghandle_pool</code>, arena)</td><td>F1 above</td><td>never released individually; guarded pointer removed in <code>scanFrag_cleanup</code> (<span class="src">:15145</span>), memory goes with the arena</td><td>Same late-signal rule as TreeNodes.</td></tr>
+<tr><td>Row buffer pages (<code>RowPage</code>, RT_SPJ_DATABUFFER)</td><td><code>stackAlloc()</code>/<code>allocPage()</code> while buffering rows (<span class="src">:5853, :5879</span>); failure gives <code>OutOfRowMemory</code> (17003, 17120-17122)</td><td>to the block-local free list by <code>releasePages()</code>: per batch in <code>cleanupBatch()</code> for nodes getting new rows (<span class="src">:4453</span>), at node cleanup (<span class="src">:4850</span>); free list trimmed back to the global pool by the <code>releaseGlobal()</code> CONTINUEB loop (<span class="src">:5914</span>)</td><td>Freed with the node on every path.</td></tr>
+<tr><td>Batch arena (<code>m_batchArena</code>: deferred correlation lists)</td><td>congestion deferral in <code>execTRANSID_AI</code> (<span class="src">:5538</span>)</td><td><code>cleanupBatch</code> (<span class="src">:4488</span>), <code>resumeCongestedNode</code> (<span class="src">:6243</span>), <code>scanFrag_abort</code> (<span class="src">:14858</span>), <code>cleanup_common</code> (<span class="src">:4808</span>)</td><td>Freed on abort and cleanup.</td></tr>
+<tr><td>Long-signal sections (key info, attr info, range keys, parameters)</td><td>build (<code>parseDA</code>), <code>lookup_parent_row</code>/<code>scanFrag_parent_row</code> (<code>expand</code>), <code>dupSection</code> in <code>lookup_send</code></td><td>handed to <code>sendSignal</code> (ONE_SHOT / constructed / last fragment), or released by <code>scanFrag_release_rangekeys</code> (<span class="src">:15045</span>, per parent batch and at cleanup) and <code>cleanup_common</code> (<span class="src">:4810-4818</span>)</td><td>Error paths release their temporary sections before <code>abort()</code> (e.g. <span class="src">:9573, :9581, :10063</span>).</td></tr>
+<tr><td>Outer-join match bitmaps <code>m_agg_match_bitmask</code>, <code>m_agg_range_corrs</code></td><td>lc_ndbd_pool_malloc (<span class="src">:10507, :12861</span>)</td><td><code>cleanup_common</code> (<span class="src">:4820-4835</span>)</td><td>Freed at node cleanup.</td></tr>
+<tr><td>DIH scan registration of a non-root scan table</td><td><code>DIH_SCAN_TAB_REQ</code> (<code>m_scan_count[0]++</code> in DIH) in <code>scanFrag_prepare</code></td><td><code>DIH_SCAN_TAB_COMPLETE_REP</code> in <code>scanFrag_complete</code> (<span class="src">:14835</span>), only if the node has fragment handles</td><td>Not released if <code>execDIH_SCAN_TAB_CONF</code> fails before allocating the handles (S-3).</td></tr>
+<tr><td>Join-aggregation state in DBLQH, CTE iterators in DBLQH</td><td colspan="3">Owned by DBTC/DBLQH, not by DBSPJ. See <a href="#seq-h">6h</a>.</td></tr>
+</table>
+
+<div class="weak"><strong>S-3</strong> <span class="src">:12371 Dbspj::execDIH_SCAN_TAB_CONF()</span>: DIH has already counted the scan (<span class="src">DbdihMain.cpp:17190 start_scan_on_table</span>) when <code>checkTableError()</code> fails before any ScanFragHandle is allocated. <code>scanFrag_complete()</code> sends <code>DIH_SCAN_TAB_COMPLETE_REP</code> only when <code>m_fragments</code> is non-empty (<span class="src">:14839</span>), so DIH's <code>m_scan_count[0]</code> is never decremented. A concurrent drop or reorganisation of the child table then waits for a scan that does not exist.</div>
+
+<h2 id="contract">9. What DBSPJ relies on from DBTC and DBLQH</h2>
+
+<h3>9.1 DBTC contract</h3>
+<table>
+<tr><th>#</th><th>Behaviour DBSPJ relies on</th><th>Guaranteed?</th><th>Code</th></tr>
+<tr><td>T1</td><td>Lookups via SPJ are dirty ZREADs; DBTC forgets the operation after sending LQHKEYREQ and expects nothing back.</td><td>The NDB API always sends dirty+simple; DBTC does not check it. A crafted non-dirty request is accepted by DBSPJ and later gets an ABORT it cannot handle (S-16).</td><td><span class="src">DbtcMain.cpp:4658, 6344-6411; DbspjMain.cpp:1445</span></td></tr>
+<tr><td>T2</td><td>One SPJ request per SCAN_FRAGREQ; (transId, senderData=ScanFragRec.i) is unique per DBSPJ instance while the request lives.</td><td>Yes; a duplicate would hit <code>ndbrequire(!found)</code> in <code>store_scan</code>.</td><td><span class="src">DbtcMain.cpp:20827; DbspjMain.cpp:2011</span></td></tr>
+<tr><td>T3</td><td>A non-close SCAN_NEXTREQ only after a non-final SCAN_FRAGCONF (DBSPJ <code>RS_WAITING</code>).</td><td>Yes: DBTC continues only DELIVERED fragments on the API's NEXTREQ; never during self-continued join-agg/CTE batches (the fragment is <code>LQH_ACTIVE</code>). CTE+main-agg scans ignore the API's non-close NEXTREQ.</td><td><span class="src">DbtcMain.cpp:19899-19989</span></td></tr>
+<tr><td>T4</td><td>A close may come at any time, also while DBSPJ is running a batch; DBSPJ answers with exactly one final reply.</td><td>DBTC closes LQH_ACTIVE fragments immediately and never re-sends.</td><td><span class="src">DbtcMain.cpp:20176-20207</span></td></tr>
+<tr><td>T5</td><td>A close for a request DBSPJ already released expects no reply.</td><td>Yes (crossing final CONF releases the fragment in DBTC).</td><td><span class="src">DbtcMain.cpp:19456-19470</span></td></tr>
+<tr><td>T6</td><td>DBTC tolerates SCAN_HBREP at any time while the fragment is <code>LQH_ACTIVE</code> and restarts its timer.</td><td>Yes; outside <code>LQH_ACTIVE</code> it crashes.</td><td><span class="src">DbtcMain.cpp:12485-12584</span></td></tr>
+<tr><td>T7</td><td>DBTC handles the failure of DBSPJ's own node; DBSPJ reports every other node failure (REF 20016 or tombstone REF).</td><td>Yes.</td><td><span class="src">DbtcMain.cpp:13291-13394</span></td></tr>
+<tr><td>T8</td><td>A completed fragment reports an empty active mask (<code>total_len==0</code>).</td><td>DBTC <code>ndbrequire</code>s it; DBSPJ's <code>prepareNextBatch</code> clears the mask when nothing is active.</td><td><span class="src">DbtcMain.cpp:19537-19544; DbspjMain.cpp:4102-4109</span></td></tr>
+<tr><td>T9</td><td>Join aggregation: DBTC fills main <code>[node, key]</code> pairs only when the main SELECT aggregates; it owns SETUP/COMPLETE/RELEASE and the CTE barrier; no SCAN_FRAGCONF is expected during the CTE stage; exactly one <code>CTE_PHASE_COMPLETE_REP</code> per worker and CTE; no mid-fragment CONF for CTE+main-agg (1270).</td><td>Yes as described in 6h.</td><td><span class="src">DbtcMain.cpp:32040-32047, 32929, 19577</span></td></tr>
+<tr><td>T10</td><td>DBTC sends <code>CTE_START_MAIN_REQ</code> only when this worker is idle (DBSPJ zeroes its counters on receipt).</td><td>By protocol: only after every worker reported every CTE, which DBSPJ does at quiescence. Only asserted in DBSPJ (S-9).</td><td><span class="src">DbspjMain.cpp:9045-9048</span></td></tr>
+</table>
+
+<h3>9.2 DBLQH (and DBTUP) contract</h3>
+<table>
+<tr><th>#</th><th>Behaviour DBSPJ relies on</th><th>Guaranteed?</th><th>Code</th></tr>
+<tr><td>L1</td><td>Exactly one LQHKEYCONF or LQHKEYREF per LQHKEYREQ sent with NormalProtocol (non-leaf ops, every op of a scan request), to <code>tcBlockref</code>=SPJ.</td><td>Yes; a request parked for a join-aggregation SETUP gets its reply after replay or from the 10 ms sweeper (1274). Leaf ops of a lookup request (NormalProtocol 0) give DBSPJ nothing: TRANSID_AI goes to the API, errors become TCKEYREF to the API.</td><td><span class="src">DblqhMain.cpp:13720 packLqhkeyreqLab, :15498-15509, :9585 joinAggParkSweep</span></td></tr>
+<tr><td>L2</td><td>A filter reject or missing row answers with LQHKEYREF 899/626 and no TRANSID_AI to DBSPJ.</td><td>Yes. Exception that DBSPJ already handles: an outer join-aggregation lookup that misses replies LQHKEYCONF with readLen 0 and no TRANSID_AI.</td><td><span class="src">DblqhMain.cpp:6786 execTUPKEYREF, :16615 handleOuterJoinAggKeyNotFound</span></td></tr>
+<tr><td>L3</td><td>TRANSID_AI to DBSPJ precedes the CONF of the same operation/batch.</td><td>In production yes (same thread, JBB, same destination; fragmented sends go out at once). Not under TUP error insert 4038, which delays long TRANSID_AI past the CONF. DBSPJ's counting does not need it (7.2), but S-5 is only hit because the CONF normally comes last.</td><td><span class="src">DbtupBuffer.cpp:349-437</span></td></tr>
+<tr><td>L4</td><td>A close (SCAN_NEXTREQ close) of a live scan gets exactly one final reply: SCAN_FRAGCONF(fragmentCompleted=2) or SCAN_FRAGREF if the scan had an error. A close that crosses a close already in progress gets no second reply.</td><td>Yes.</td><td><span class="src">DblqhMain.cpp:19439 closeScanRequestLab, :27537-27559 tupScanCloseConfLab</span></td></tr>
+<tr><td>L5</td><td>A close for a scan LQH no longer knows (its final CONF/REF already sent) is ignored silently.</td><td>Yes; a non-close NEXTREQ for an unknown scan gets SCAN_FRAGREF 2206.</td><td><span class="src">DblqhMain.cpp:18833-18843 execSCAN_NEXTREQ</span></td></tr>
+<tr><td>L6</td><td>The final CONF may carry rows; the outer-join match bitmap section only comes on the closing CONF.</td><td>Yes; DBSPJ merges it only when done (<span class="src">:14431</span>).</td><td><span class="src">DblqhMain.cpp:29176-29199</span></td></tr>
+<tr><td>L7</td><td>A mid-scan error ends the scan with SCAN_FRAGREF after rows of the batch may already have been sent; REF can also answer a SCAN_NEXTREQ (1230, 1225/1226).</td><td>Yes; DBSPJ counts those rows and aborts.</td><td><span class="src">DblqhMain.cpp:27326 scanTupkeyRefLab, :18963, :18994</span></td></tr>
+<tr><td>L8</td><td><code>senderRef</code> in SCAN_FRAGCONF/REF names the executing instance, so SCAN_NEXTREQ reaches the right query thread.</td><td>CONF: yes (lengths &ge; SignalLength_query). REF is sent with length 4, so DBSPJ never learns <code>senderRef</code> from a REF (<span class="src">:4985</span> only reads it at length 5); harmless because a REF ends the fragment.</td><td><span class="src">DblqhMain.cpp:19911, :27546</span></td></tr>
+<tr><td>L9</td><td>SCAN_HBREP is only sent while the scan runs in LQH and before its final reply, to the header sender (DBSPJ), early for query-thread scans so DBSPJ can learn the executor.</td><td>Yes (same thread as the CONF).</td><td><span class="src">DblqhMain.cpp:26237-26313 check_send_scan_hb_rep</span></td></tr>
+<tr><td>L10</td><td>LQH never times out an SPJ scan or lookup on its own; time-outs are DBTC's job.</td><td>Yes.</td><td><span class="src">DblqhMain.cpp:5747 timer_handling</span></td></tr>
+<tr><td>L11</td><td>When DBSPJ's node fails, LQH closes the scans DBSPJ started (requester = <code>tcBlockref</code> = SPJ ref) without replying.</td><td>Yes on LDM threads (LQH_TRANSREQ take-over path) and query threads (<code>handle_tc_failed_scans</code>). The join-aggregation extension "TC dead, SPJ alive" does not work on LDM threads (S-14).</td><td><span class="src">DblqhMain.cpp:17745 lqhTransNextLab, :17430 handle_tc_failed_scans</span></td></tr>
+<tr><td>L12</td><td>DBSPJ never reuses (transId, senderData) for a live scan on one LQH instance: senderData is the ScanFragHandle i-pointer.</td><td>LQH <code>ndbrequire</code>s it.</td><td><span class="src">DblqhMain.cpp:25838</span></td></tr>
+<tr><td>L13</td><td>For join-aggregation scans the evicted groups are not counted in <code>completedOps</code> (always 0); for lookups the eviction count comes in <code>LQHKEYCONF.readLen</code>.</td><td>Code behaves so; DBSPJ adds both to <code>m_rows</code>, so scan evictions never reach <code>m_rows</code> (S-15).</td><td><span class="src">DblqhMain.cpp:27132-27167, DbspjMain.cpp:9982, :14375</span></td></tr>
+</table>
+
+<div class="weak"><strong>S-14</strong> (DBLQH, affects the "DBTC dead, DBSPJ alive" path) <span class="src">DblqhMain.cpp:17467-17503 handle_tc_failed_scans()</span> closes a join-aggregation scan whose coordinator TC failed by sending SCAN_NEXTREQ(close) to itself with the requester in <code>variableData[0]</code>, but <code>execSCAN_NEXTREQ</code> substitutes that word only when the sender is DBQLQH (<span class="src">:18825-18829</span>). On an LDM thread the lookup uses DBLQH's own ref, finds nothing, and the close is dropped silently. The scan keeps feeding a state marked NODE_FAIL_ABORT until DBSPJ's own abort (T15) closes it; if DIH's JOIN_AGG_NODE_FAIL_REP releases the state first, the feed touches a released state.</div>
+
+<h2 id="weak">10. Suspected weaknesses</h2>
+
+<p>Found by reading code only; nothing was built or run. "Code" confidence says how sure the described behaviour is; "reach" how likely the trigger is in practice. Ordered by the expected consequence.</p>
+
+<div class="note">RonSQL-level MTR tests that should fail until the finding is fixed (suite <code>ronsql_cte</code>): S-1 <code>spj_state_s1_minmax_maxrows</code>, S-5 <code>spj_state_s5_cte_lookup_successor</code>, S-6 <code>spj_state_s6_cte_body_null_row</code>, S-15 <code>spj_state_s15_eviction_cte</code> (error 1270) and <code>spj_state_s15_eviction_join</code> (hang, bounded to 120 s). Each header states the expected (MySQL) result and the suspected failure.</div>
+
+<table>
+<tr><th>ID</th><th>Where</th><th>What</th><th>Trigger and test</th><th>Confidence</th></tr>
+<tr><td>S-1</td><td><span class="src">:14402 scanFrag_execSCAN_FRAGCONF</span></td><td><code>maxRows</code> early close is not counted in <code>m_frags_outstanding</code>/<code>m_outstanding</code> (the CONF already decremented it). The node completes before the close reply; the close's CONF(done) then fails <code>ndbrequire(m_frags_outstanding)</code> (<span class="src">:14390</span>), or with several fragments completion fires one CONF early. Debug builds also trip <code>ndbassert(!completed)</code> at <span class="src">:5093</span>.</td><td>Any scan with <code>NdbQueryOptions::setMaxRows(n)</code> on a fragment that returns <code>&ge; n</code> rows in a batch that is not the last one (more rows than one batch, or a small <code>batch_size_rows</code>). Test: <code>testCteNdbApi</code> Test 19 (DESC scanIndex, maxRows=1) on a source table with a few thousand rows per fragment; expect a node stop today. Fix idea: <code>data.m_frags_outstanding++</code> (and keep the node outstanding) like <code>scanFrag_abort</code> does.</td><td>Code high; reach medium (feature used by the MIN/MAX CTE optimisation).</td></tr>
+<tr><td>S-19</td><td><span class="src">:13439-14080 scanFrag_send (inner) + :14853 scanFrag_abort</span></td><td>An error inside the first <code>scanFrag_send</code> of a batch (after some SCAN_FRAGREQs went out) calls <code>abort()</code> while the node is still <code>TN_INACTIVE</code>; <code>scanFrag_abort</code> returns early for inactive nodes, so the fragments already sent are never closed. The wrapper then marks the node active, their CONF(done=0) parks them in WAIT_NEXTREQ, the request completes with SCAN_FRAGREF and the DBLQH scans stay open for ever (DBLQH has no time-out). Also, a CONF(done) of such an un-closed fragment can start further fragments while aborting (<span class="src">:14547</span> has no <code>RS_ABORTING</code> check).</td><td>Existing error insert 17091 (fail after sending to &gt;1 fragments), or 17093, on a child scan with parallelism &gt;1 (or a root with fragsPerWorker &gt;1) over fragments bigger than one batch; then check DBLQH scan records (repeat until 488/489 "out of scan records", or <code>ndbinfo.cluster_operations</code>/LQH dump). The working tree's new 17535 targets exactly this window.</td><td>Code high; reach low in production (needs section-memory exhaustion mid-send), deterministic with 17091.</td></tr>
+<tr><td>S-5</td><td><span class="src">:7566 execCTE_LOOKUP_CONF, :7687 execCTE_LOOKUP_REF</span></td><td>CTE-lookup completion (normally on the CONF, which DBLQH sends after the TRANSID_AI) sets the completed bit but never calls <code>handleTreeNodeComplete()</code> (nor <code>handleAggAncestorComplete()</code>). A node planned after it (<code>m_next_nodes</code>) is not started if the CTE lookup completes last.</td><td>Shape <code>scan A &rarr; inner lookupCte L, inner scanIndex B (child of A)</code>: <code>planSequentialExec</code> puts B after L (<span class="src">:3186, :3217</span>). Arm DBLQH 5131 (delay one CTE lookup 50 ms) so L completes after A; compare the result with MySQL: B's rows are missing, no error. Also an outer-joined intermediate CTE lookup inside a CTE body never runs its NULL sweep.</td><td>Code high; reach medium.</td></tr>
+<tr><td>S-6</td><td><span class="src">:10966 sendJoinAggNullRow</span></td><td>NULL-extended rows always go to the <em>main</em> aggregator (main key, identity with cteId RNIL, <code>ndbrequire(m_aggNodes.get(own))</code>), also when issued from inside a CTE body (<span class="src">:6993, :7797</span>, outer scan leaf completion). Main SELECT not aggregating: node stop; otherwise wrong aggregate input.</td><td>CTE body <code>scanTable(t) &rarr; lookupCte(0, linked key)</code> as outer join with the CTE's aggregation, main <code>scanCte(1)</code> without aggregation; rows of t without a match. <code>testCteNdbApiOuterJoin</code> Test 5 builds the outer join in the main query, so this is uncovered.</td><td>Code high; reach medium.</td></tr>
+<tr><td>S-15</td><td><span class="src">:9973-9982 lookup_execLQHKEYCONF, :14375 scanFrag_execSCAN_FRAGCONF, :3956 batchComplete</span></td><td>Evicted groups from a lookup aggregate leaf (<code>LQHKEYCONF.readLen</code>) are added to <code>m_rows</code>; for scan leaves DBLQH reports 0 (<span class="src">DblqhMain.cpp:27132-27167</span>). A non-zero <code>m_rows</code> disables the self-continue and sends a mid-fragment SCAN_FRAGCONF. DBTC answers with 1270 when the query has CTEs; for a main-only join aggregation it forwards the CONF to the API worker receiver, while the evicted rows went to the aggregate receiver, so the worker never completes and the query hangs (4008 / 296).</td><td>DBLQH 5126 (3 groups per interpreter) or TUP 4041 (force eviction) with a lookup aggregate leaf and a root that needs more than one SPJ batch; once with and once without CTEs.</td><td>Code high (DBSPJ/DBTC), end-to-end hang medium (traced, not run).</td></tr>
+<tr><td>S-17</td><td>DBLQH park (<span class="src">DblqhMain.cpp:25776-25810</span>) + DBSPJ <span class="src">:14313</span></td><td>A close sent by DBSPJ to a join-aggregation SCAN_FRAGREQ that DBLQH has parked (SETUP not yet processed) is dropped (no transaction record). The replayed scan's CONF(done=0) is ignored by DBSPJ (WAIT_CLOSE) and the close reply never comes: DBSPJ waits for ever, DBTC stays in CLOSING_SCAN (it never re-sends), API failure handling then stalls.</td><td>DBLQH 5151 (hold one SETUP_REQ 20 ms) + an abort in that window (DBSPJ 17110 on another fragment, or an immediate API close) + a local fragment large enough that the join-agg scan returns a partial batch (&gt;100 ms). Watch for a scan that never finishes.</td><td>Code medium; reach low.</td></tr>
+<tr><td>S-2</td><td><span class="src">:12300 execDIH_SCAN_TAB_REF</span></td><td>Retires the prepare unit and aborts, but calls neither <code>checkPrepareComplete</code> nor <code>checkBatchComplete</code>. If it was the last outstanding unit the request never replies; DBTC's fragment timer eventually closes it (274). It also uses DIH's internal value 1 (<code>ErroneousTableState</code>) as NDB error code.</td><td>Child-scan table not <code>TS_ACTIVE</code> in DIH while still enabled in DBSPJ: a pushed scan-scan join racing <code>DROP TABLE</code> of the child table. Test: loop the join while dropping/recreating the child table; expect 274 after a deadlock-timeout delay instead of a table error.</td><td>Code high; reach low.</td></tr>
+<tr><td>S-4</td><td><span class="src">:3998 handleJoinAggNextBatch (:4074 handleCtePhaseNextBatch)</span></td><td>No <code>checkBatchComplete()</code> after the cursors' NEXTREQ handlers. If none sends (table error <span class="src">:14678</span>, CTE source disconnected <span class="src">:8197</span>, send-time section-memory error) the aborting request stalls with <code>m_outstanding==0</code> until DBTC's time-out (274); debug builds hit <code>ndbassert</code> at <span class="src">:4053</span>.</td><td>DBSPJ 17521 (random <code>checkTableError</code> failure) during a multi-batch join aggregation; or kill a CTE source node between batches (DBLQH 5143 pause). Fix: re-check <code>m_outstanding==0</code> at the end.</td><td>Code high; reach medium (with error inserts).</td></tr>
+<tr><td>S-3</td><td><span class="src">:12371 execDIH_SCAN_TAB_CONF, :14839 scanFrag_complete</span></td><td>DIH's scan count is taken by DIH_SCAN_TAB_REQ, but if <code>checkTableError</code> fails before any ScanFragHandle is allocated, <code>scanFrag_complete</code> skips DIH_SCAN_TAB_COMPLETE_REP. A later <code>ALTER TABLE ... REORGANIZE</code> moves the count to <code>m_scan_count[1]</code> and waits for ever ("Waiting Ns for 1 scans", <span class="src">DbdihMain.cpp:16033 wait_old_scan</span>).</td><td>DBSPJ 17521 in a loop of scan-scan joins (hits the DIH CONF check now and then), then reorganize the child table.</td><td>Code high; reach low.</td></tr>
+<tr><td>S-14</td><td><span class="src">DblqhMain.cpp:17467-17503 handle_tc_failed_scans, :18825 execSCAN_NEXTREQ</span></td><td>DBLQH's self-close of a join-aggregation scan whose coordinator TC died is dropped on LDM threads (sender substitution only for DBQLQH). The scan keeps feeding a NODE_FAIL_ABORT state until DBSPJ's own abort closes it; if JOIN_AGG_NODE_FAIL_REP releases the state first, the feed uses a released state.</td><td>Join aggregation with TC on node A, DBSPJ/LDM scan on node B (disk columns, or no query threads, so the scan runs on an LDM); kill A mid-scan with a slow fragment.</td><td>Code high (dropped close); crash medium.</td></tr>
+<tr><td>S-16</td><td><span class="src">:1396 do_init; DbspjInit.cpp:50-103</span></td><td>A non-dirty ViaSPJ LQHKEYREQ is accepted; it is never answered on success, and DBTC's later ABORT (time-out / rollback) goes to DBSPJ, which registers no ABORT handler: node stop.</td><td>Crafted client only (NDB API always sends dirty). Fix: reject non-dirty ViaSPJ in DBTC or DBSPJ.</td><td>Code high; reach low (data-node security).</td></tr>
+<tr><td>S-8</td><td><span class="src">:7578, :7696, :8592, :8643, :11096-11102, :11177-11183</span></td><td>CTE_LOOKUP/CTE_SCAN CONF/REF and JOIN_AGG_NULL_ROW CONF/REF resolve the TreeNode with plain <code>getPtr</code> (null-row: unchecked, no transid), bypassing the guarded-pointer table that every other reply uses. A stray or late reply corrupts whatever object now holds that i-value instead of stopping the node.</td><td>Only after an accounting bug (e.g. S-9's forced reset) or a duplicate reply; hardening item.</td><td>Code high; reach low.</td></tr>
+<tr><td>S-7</td><td><span class="src">:3999-4003 handleJoinAggNextBatch</span></td><td>Unconditional <code>g_eventLogger-&gt;info("AGGT ... self-continue")</code> on every self-continued batch (marked TEMPORARY; the other AGGT probes were disabled by 70c623c5f44).</td><td>Any long join aggregation or CTE query: one log line per batch per worker.</td><td>High.</td></tr>
+<tr><td>S-10</td><td><span class="src">:11148-11158 execJOIN_AGG_NULL_ROW_CONF</span></td><td>Each null-row CONF of a scan leaf calls <code>handleTreeNodeComplete()</code> again (the bit was already set again at <span class="src">:14628</span>), and uses <code>m_lookup_node_data[own]</code> (shared with ordinary local lookups) as "no null rows left". Harmless while aggregate leaves have empty <code>m_next_nodes</code>; an inner scan leaf below an outer intermediate followed by a sibling scan would get <code>parent_batch_complete</code> twice.</td><td>Outer-join aggregation with a sibling scan branch after the leaf in the plan.</td><td>Medium (benign case), low (harmful shape).</td></tr>
+<tr><td>S-9</td><td><span class="src">:9045-9048 execCTE_START_MAIN_REQ; :4360 sendConf</span></td><td><code>m_outstanding</code>/<code>m_cnt_active</code> are forced to 0 (only <code>ndbassert</code>ed), hiding an accounting error until a late reply underflows; <code>m_rows</code> is not reset and can leak from the CTE stage into the first main batch.</td><td>Needs a protocol or accounting violation; add <code>ndbrequire</code> or a reset.</td><td>Low.</td></tr>
+<tr><td>S-18</td><td><span class="src">:4997-5042 execSCAN_HBREP</span></td><td>DBSPJ forwards LQH heartbeats without checking that it owes DBTC a reply; DBTC stops the node on an HBREP for a fragment not <code>LQH_ACTIVE</code>. Safe only because DBLQH sends HBREPs only while scanning, i.e. while DBSPJ has work outstanding.</td><td>An HBREP from a close processed while DBSPJ is <code>RS_WAITING|RS_ABORTING</code> (node-failure abort of a waiting request with slow closes).</td><td>Low.</td></tr>
+<tr><td>S-11</td><td><span class="src">:14959-14967 scanFrag_execNODE_FAILREP; :8763, :6743</span></td><td>Any data-node failure aborts every scan request with a scan node in <code>TN_INACTIVE</code>/<code>TN_PREPARING</code> or any CTE node, even if it never touches the failed node (conservative by design, comment at <span class="src">:15002-15006</span>).</td><td>Kill an unrelated node during long pushed joins: all fail with 20016.</td><td>High (behaviour); low as a bug.</td></tr>
+<tr><td>S-12</td><td><span class="src">:13439 scanFrag_send</span></td><td>No <code>c_alive_nodes</code> check (unlike <code>lookup_send</code>, <span class="src">:9665</span>); relies on the NODE_FAILREP sweep visiting the request later.</td><td>A child scan started between NODE_FAILREP and the sweep slice for that request.</td><td>Low.</td></tr>
+<tr><td>S-13</td><td><span class="src">:10627 handleAggLeafScanComplete</span></td><td><code>CorrRow corr_rows[MaxCorrelationId]</code>: 4096 entries, about 64 KiB, on the block thread's stack in a signal handler.</td><td>Outer-join aggregation leaf scan completion; risk depends on the configured thread stack.</td><td>Low-medium.</td></tr>
+<tr><td>S-20</td><td><span class="src">:6809-6827 cte_lookup_parent_row</span></td><td>Parent rows for a CTE that is not READY are counted in <code>m_pendingCount</code> and dropped; nothing flushes them. Unreachable with the DAG scheduler, but a wrong <code>depMask</code> would silently lose rows.</td><td>Not reachable with the standard API.</td><td>Low.</td></tr>
+</table>
+
+<p>Dead state worth removing or asserting on: <code>TN_COMPLETING</code>, <code>CTE_FAILED</code>, <code>Request::m_cteScansComplete</code>, <code>CteContext::m_scanTreeNodeNo</code>, <code>CteLookupData::m_pendingCount</code>; <code>execAPI_FAILREQ</code>'s comment promises lookup handling that does not exist.</p>
+
+<p>Outside DBSPJ but seen on the way (DBTC): DBTC never re-sends or gives up a close while the worker's node is alive (a worker that never answers keeps the scan in <code>CLOSING_SCAN</code>); a worker that keeps forwarding SCAN_HBREP keeps a scan alive for ever; JOIN_AGG_SEND flow control falls to one round trip per row after 256 rows (<span class="src">DbtcMain.cpp:32764, DblqhMain.cpp:21178</span>); DUMP 2560 aborts a node with live join-aggregation scans.</p>
+
+</body>
+</html>

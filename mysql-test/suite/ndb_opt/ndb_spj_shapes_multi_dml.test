@@ -1,0 +1,89 @@
+#
+# ndb_spj_shapes_multi_dml: multi-table DELETE and UPDATE whose read side
+# is a pushed join (SPJ).  Each statement runs with ndb_join_pushdown OFF
+# into one table and ON into another, and the two tables are compared
+# (ndb_spj_shapes_dmlcmp.inc).
+#
+# Split out of ndb_spj_shapes_variants because the UPDATE stopped a debug
+# mysqld (Q-10): create_pushed_join() called get_read_set(false, idx) for
+# every member of the pushed join, and in a multi-table UPDATE get_read_set
+# asserts that a non-cursor read uses the primary key or a unique index,
+# also for the tables that are only read.  The scan child dc, read through
+# its ordered index ix_b, failed
+#   assert(use_cursor || idx == MAX_KEY || idx == primary_key || HA_NOSAME)
+# Fixed 2026-10-29: a pushed scan member passes use_cursor = true.
+# The DELETE reads dc through its primary key and runs first; the UPDATE
+# is last.
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 400)
+  SELECT n FROM c;
+
+CREATE TABLE dp (id INT NOT NULL PRIMARY KEY, cid INT NOT NULL, b INT NOT NULL,
+                 KEY ix_b (b)) ENGINE=NDB;
+CREATE TABLE dc (id INT NOT NULL PRIMARY KEY, b INT NOT NULL, v INT NOT NULL,
+                 KEY ix_b (b)) ENGINE=NDB;
+INSERT INTO dp SELECT n, n % 120 + 1, n % 25 FROM seq WHERE n <= 400;
+INSERT INTO dc SELECT n, n % 25, n % 17 FROM seq WHERE n <= 100;
+CREATE TABLE upd_off (id INT NOT NULL PRIMARY KEY, v INT NOT NULL) ENGINE=NDB;
+INSERT INTO upd_off SELECT n, 0 FROM seq WHERE n <= 400;
+CREATE TABLE upd_on LIKE upd_off;
+INSERT INTO upd_on SELECT * FROM upd_off;
+CREATE TABLE del_off LIKE upd_off;
+INSERT INTO del_off SELECT * FROM upd_off;
+CREATE TABLE del_on LIKE upd_off;
+INSERT INTO del_on SELECT * FROM upd_off;
+ANALYZE TABLE dp, dc;
+
+--disable_query_log
+# Multi-table DELETE: dc is a lookup child (PK)
+SET SESSION ndb_join_pushdown = OFF;
+DELETE del_off FROM dp STRAIGHT_JOIN dc ON dc.id = dp.cid
+                       STRAIGHT_JOIN del_off ON del_off.id = dp.id
+  WHERE dc.v > 8;
+SET SESSION ndb_join_pushdown = ON;
+let $e0= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+DELETE del_on FROM dp STRAIGHT_JOIN dc ON dc.id = dp.cid
+                      STRAIGHT_JOIN del_on ON del_on.id = dp.id
+  WHERE dc.v > 8;
+let $e1= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+let $dml_exec= `SELECT $e1 > $e0`;
+--enable_query_log
+let $dml_label= D4-multi-table-delete;
+let $dml_off= del_off;
+let $dml_on= del_on;
+--source suite/ndb_opt/ndb_spj_shapes_dmlcmp.inc
+
+--disable_query_log
+# Multi-table UPDATE: dp and dc are only read, dc is a scan child (ix_b).
+# A multi-table UPDATE changes each target row once, with the first
+# joined row that matches, and the pushed join returns the dc rows in
+# another order. So the new value must be the same for every matching dc
+# row: dc.b (= dp.b), not dc.v. dc.v > 10 leaves 80 of the 400 rows
+# without a match.
+SET SESSION ndb_join_pushdown = OFF;
+UPDATE dp STRAIGHT_JOIN dc FORCE INDEX (ix_b) ON dc.b = dp.b
+          STRAIGHT_JOIN upd_off ON upd_off.id = dp.id
+  SET upd_off.v = upd_off.v + dc.b + 1
+  WHERE dc.v > 10;
+SET SESSION ndb_join_pushdown = ON;
+let $e0= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+UPDATE dp STRAIGHT_JOIN dc FORCE INDEX (ix_b) ON dc.b = dp.b
+          STRAIGHT_JOIN upd_on ON upd_on.id = dp.id
+  SET upd_on.v = upd_on.v + dc.b + 1
+  WHERE dc.v > 10;
+let $e1= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+let $dml_exec= `SELECT $e1 > $e0`;
+--enable_query_log
+let $dml_label= D3-multi-table-update;
+let $dml_off= upd_off;
+let $dml_on= upd_on;
+--source suite/ndb_opt/ndb_spj_shapes_dmlcmp.inc
+
+DROP TABLE seq, dp, dc, upd_off, upd_on, del_off, del_on;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

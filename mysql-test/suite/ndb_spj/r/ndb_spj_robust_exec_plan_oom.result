@@ -1,0 +1,23 @@
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+ENGINE=NDB;
+CREATE TABLE t3 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1,10),(2,2,20),(3,3,30),(4,4,40),
+(5,5,50),(6,6,60),(7,7,70),(8,8,80);
+INSERT INTO t3 VALUES (1,1,7),(2,2,14),(3,3,21),(4,4,28),
+(5,5,35),(6,6,42),(7,7,49),(8,8,56);
+Both reference queries were pushed
+#
+# 17540 on the scan request
+#
+SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t3 AS y ON y.a = x.b;
+The scan request failed with NDB error 20008
+The scan request returns the reference result
+#
+# 17540 on the lookup request
+#
+SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t3 AS y ON y.a = x.b WHERE x.a = 3;
+The lookup request failed with NDB error 20008
+The lookup request returns the reference result
+structural leak checks acknowledged by all 2 data nodes
+DROP TABLE t1, t3;

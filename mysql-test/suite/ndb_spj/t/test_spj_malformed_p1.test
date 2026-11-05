@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-1: deprecated v1 scan-parameter widening underflow.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P1
+--let $spj_case_title = P-1: deprecated v1 scan-parameter widening underflow
+--source suite/ndb_spj/include/spj_malformed_case.inc

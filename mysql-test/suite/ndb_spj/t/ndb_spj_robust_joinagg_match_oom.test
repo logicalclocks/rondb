@@ -1,0 +1,185 @@
+#
+# DBSPJ robustness R-1: failure while merging the matched-ranges bitmask
+# of an outer-join aggregation leaf scan.
+#
+# Each final SCAN_FRAGCONF of an outer-join aggregation leaf scan carries
+# the fragment's matched-ranges bitmask. scanFrag_execSCAN_FRAGCONF()
+# merges it with mergeAggMatchBitmask(), which allocates the combined
+# bitmask from query memory the first time. If that fails it calls
+# abort() and returns: the fragment was already counted as no longer
+# outstanding, and when it was the last outstanding fragment of the batch
+# Request::m_outstanding is never decremented. Nothing can complete the
+# request: the query hangs until DBTC's scan time-out (error 274) or
+# longer, and the DBSPJ request (DUMP 2650), the DBTC scan (DUMP 2560)
+# and the join-aggregation state (DUMP 2361, debug builds) stay allocated.
+# In debug builds scanFrag_abort() may also hit
+# ndbassert(m_frags_not_started > 0).
+#
+# Error insert 17536 fails the merge of the bitmask of the last
+# outstanding fragment of a batch with OutOfQueryMemory (in the first
+# leaf batch of a join aggregation, with one fragment in flight, this is
+# where the bitmask is allocated). The query must fail promptly with NDB
+# error 20008 and leave nothing behind.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_joinagg_match_oom_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_query_log
+
+CREATE TABLE c (cust_id INT NOT NULL PRIMARY KEY, segment INT NOT NULL)
+  ENGINE=NDB;
+CREATE TABLE o (order_id INT NOT NULL PRIMARY KEY, cust_id INT NOT NULL,
+                total INT NOT NULL, KEY ic (cust_id)) ENGINE=NDB;
+INSERT INTO c
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 40)
+  SELECT n, n % 4 FROM s;
+INSERT INTO o
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 60)
+  SELECT n, (n % 30) + 1, n * 10 FROM s;
+
+CREATE VIEW spj_robust_dih_scans AS
+  SELECT d.node_id, d.table_id,
+         d.current_scan_count + d.scan_count_wait AS scans
+  FROM ndbinfo.ndb$table_distribution_status_all AS d
+  JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+  LEFT JOIN ndbinfo.dict_obj_info AS p
+    ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+  WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+  SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+  FROM ndbinfo.operations_per_fragment
+  WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+
+--let $spj_q_scan = SELECT c.segment, COUNT(*) AS n, COUNT(o.order_id) AS m, SUM(o.total) AS s FROM c LEFT JOIN o FORCE INDEX (ic) ON o.cust_id = c.cust_id GROUP BY c.segment
+--let $spj_dir = $MYSQLTEST_VARDIR/tmp
+
+--echo #
+--echo # Reference result, aggregation not pushed
+--echo #
+SET ndb_join_pushdown_aggregate = OFF;
+SET ndb_join_pushdown_aggregate_outer_join = OFF;
+--sorted_result
+--output $spj_dir/spj_robust_jm_scan_ref.txt
+--eval $spj_q_scan
+
+SET ndb_join_pushdown_aggregate = ON;
+SET ndb_join_pushdown_aggregate_outer_join = ON;
+--let $spj_ex = query_get_value("EXPLAIN $spj_q_scan", Extra, 1)
+if (!`SELECT LOCATE('pushed join aggregation', "$spj_ex")`)
+{
+  --echo EXPLAIN: $spj_ex
+  --die Test setup: the query does not use pushed join aggregation
+}
+--let $spj_ex = query_get_value("EXPLAIN $spj_q_scan", type, 2)
+if (`SELECT '$spj_ex' <> 'ref'`)
+{
+  --die Test setup: the aggregation leaf o is not a ref access (scan)
+}
+--echo The query uses pushed join aggregation with a scan leaf
+--sorted_result
+--output $spj_dir/spj_robust_jm_scan_chk.txt
+--eval $spj_q_scan
+--diff_files $spj_dir/spj_robust_jm_scan_ref.txt $spj_dir/spj_robust_jm_scan_chk.txt
+--remove_file $spj_dir/spj_robust_jm_scan_chk.txt
+
+connect (con1,localhost,root,,test);
+SET ndb_join_pushdown_aggregate = ON;
+SET ndb_join_pushdown_aggregate_outer_join = ON;
+--let $spj_con1_id = `SELECT CONNECTION_ID()`
+connection default;
+
+--echo #
+--echo # 17536: OutOfQueryMemory merging the matched bitmask of the last
+--echo # outstanding leaf fragment
+--echo #
+--exec $NDB_MGM -e "all error 17536" >> $spj_mgm_log
+connection con1;
+--send_eval $spj_q_scan
+connection default;
+--sleep 0.5
+--let $spj_i = 0
+--let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+while ($spj_busy)
+{
+  if (`SELECT $spj_i >= 300`)
+  {
+    --exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+    --die R-1: the join aggregation query hung after the matched bitmask merge failed (scanFrag_execSCAN_FRAGCONF returned before decrementing m_outstanding)
+  }
+  --sleep 0.1
+  --inc $spj_i
+  --let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+}
+--exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+connection con1;
+--disable_result_log
+--disable_abort_on_error
+--reap
+--let $spj_errno = $mysql_errno
+--let $spj_w = query_get_value(SHOW WARNINGS, Message, 1)
+--enable_abort_on_error
+--enable_result_log
+connection default;
+if (!$spj_errno)
+{
+  --die Test setup: error insert 17536 did not fire, the query succeeded
+}
+--let $spj_err = `SELECT IF(LOCATE('error ', "$spj_w") > 0, SUBSTRING_INDEX(SUBSTRING("$spj_w", LOCATE('error ', "$spj_w") + 6), ' ', 1), 'none')`
+if (`SELECT '$spj_err' <> '20008'`)
+{
+  --echo Query failed with: $spj_w
+  --die R-1: the query did not fail with NDB error 20008 (a time-out error means the DBSPJ request stalled)
+}
+--echo The query failed with NDB error 20008
+
+--let $spj_i = 0
+--let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+while ($spj_open)
+{
+  if (`SELECT $spj_i >= 150`)
+  {
+    SELECT * FROM spj_robust_frag_scans WHERE conc_frag_scans > 0;
+    --die Fragment scans are still open 30 s after the failed query
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+}
+--let $spj_i = 0
+--let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+while ($spj_scans)
+{
+  if (`SELECT $spj_i >= 100`)
+  {
+    SELECT node_id, table_id, scans FROM spj_robust_dih_scans WHERE scans > 0;
+    --die DIH scans are still registered 20 s after the failed query
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+}
+--echo No fragment scan is open and no DIH scan is registered
+
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+
+--sorted_result
+--output $spj_dir/spj_robust_jm_scan_chk.txt
+--eval $spj_q_scan
+--diff_files $spj_dir/spj_robust_jm_scan_ref.txt $spj_dir/spj_robust_jm_scan_chk.txt
+--echo The query returns the reference result
+
+disconnect con1;
+--remove_files_wildcard $spj_dir spj_robust_jm_*.txt
+SET ndb_join_pushdown_aggregate = DEFAULT;
+SET ndb_join_pushdown_aggregate_outer_join = DEFAULT;
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE c, o;
+--remove_file $spj_mgm_log

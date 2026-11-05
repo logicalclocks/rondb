@@ -12,6 +12,7 @@ Detailed documentation is organized by topic in `claude_files/`. Read the releva
 | Compiled Interpreter | `claude_files/compiled_interpreter/` | RONDB-1056 copy-and-patch JIT for pushed-down interpreted programs (aggregation + scan filters); start at `STATUS_AND_NEXT_STEPS.md` |
 | TTL on Ring Buffer Tables | `claude_files/ttl_ring_buffer/` | Design (`design.md`), user view (`user_view.md`) and test coverage map (`test_plan.md`) of TTL + MAX_ROWS_PER_PK tables: meta row never expires (DBTUP), purge deletes pass the ring guard, deleteOldest rejected (4358), TTL is a creation-time property, version gate |
 | QMGR Join Protocol | `claude_files/qmgr_join_protocol/` | Slides (`qmgr_join_protocol.html`, open in a browser) on how a data node gets its node id from ndb_mgmd before it may join, how the QMGR president includes it, signal by signal, the CM_ADD(Abort) of an inclusion that a missing transporter link stalls, and how a node that has not joined may fail without failing the others. `testing.md`: the tests to run and how to set up the firewall for the firewall tests |
+| DBSPJ analysis | `claude_files/dbspj/` | RONDB-1124: HTML documents (open in a browser) on the attribute-information protocol into DBSPJ, the DBSPJ state machine with DBTC/DBLQH, and query execution including DBTC join aggregation; the weaknesses found and the tests that target them. Start at `README.md` |
 
 ### set_config_param
 

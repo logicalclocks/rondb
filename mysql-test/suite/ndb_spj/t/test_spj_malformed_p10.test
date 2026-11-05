@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-10: JoinAgg flag without an aggKeys/KeyInfo section.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P10
+--let $spj_case_title = P-10: JoinAgg flag without an aggKeys/KeyInfo section
+--source suite/ndb_spj/include/spj_malformed_case.inc

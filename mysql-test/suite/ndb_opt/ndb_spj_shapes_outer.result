@@ -1,0 +1,127 @@
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 2000)
+SELECT n FROM c;
+CREATE TABLE t1 (
+id INT NOT NULL PRIMARY KEY,
+a INT NOT NULL,
+b INT NULL,
+c INT NOT NULL,
+d INT NOT NULL,
+KEY ix_a (a)
+) ENGINE=NDB;
+INSERT INTO t1
+SELECT n, n % 200, IF(n % 13 = 0, NULL, n % 90), n % 300 + 1, n % 50 + 1
+FROM seq WHERE n <= 1000;
+CREATE TABLE t2 (
+id INT NOT NULL PRIMARY KEY,
+a INT NOT NULL,
+b INT NOT NULL,
+x INT NOT NULL,
+KEY ix_a (a),
+KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO t2
+SELECT n, a, (n * 7) % 120, n % 100 FROM (
+SELECT s.n AS n, s.n % 200 AS a FROM seq s
+WHERE s.n <= 2000 AND (s.n % 200) % 10 <> 0
+AND ((s.n % 200) % 10 = 1 OR s.n <= 200 * (1 + (s.n % 200) % 4))
+) AS dt;
+CREATE TABLE t3 (
+id INT NOT NULL PRIMARY KEY,
+b INT NOT NULL,
+y INT NOT NULL,
+KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO t3 SELECT n, n % 80, n % 7 FROM seq WHERE n <= 200 AND n % 9 <> 0;
+CREATE TABLE t4 (
+id INT NOT NULL PRIMARY KEY,
+k INT NOT NULL,
+z INT NOT NULL,
+KEY ix_k (k)
+) ENGINE=NDB;
+INSERT INTO t4 SELECT n, n % 60, n % 11 FROM seq WHERE n <= 300;
+CREATE TABLE t5 (
+id INT NOT NULL PRIMARY KEY,
+v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t5 SELECT n, n % 17 FROM seq WHERE n <= 250 AND n % 6 <> 0;
+ANALYZE TABLE t1, t2, t3, t4, t5;
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	OK
+test.t2	analyze	status	OK
+test.t3	analyze	status	OK
+test.t4	analyze	status	OK
+test.t5	analyze	status	OK
+SELECT COUNT(*) FROM t2;
+COUNT(*)
+600
+#
+# Pass 1: configured batch size
+#
+# Outer-joined scan children
+# O1-p1-left-scan: rows=3100 pushed=2 exec=1
+# O2-p1-left-scan-left-scan: rows=5545 pushed=3 exec=1
+# O3-p1-bushy-left-left: rows=10804 pushed=3 exec=1
+# O4-p1-bushy-inner-left: rows=10452 pushed=3 exec=1
+# Nesting of inner and outer joins
+# O5-p1-left-nest-inner: rows=4615 pushed=3 exec=1
+# O6-p1-left-nest-lookup-on-root: rows=2500 pushed=3 exec=1
+# O7-p1-inner-then-left: rows=5445 pushed=3 exec=1
+# O8-p1-left-nest-left: rows=5545 pushed=3 exec=1
+# O9-p1-left-then-inner-lookup: rows=2033 pushed=3 exec=1
+# O10-p1-left-scan-left-lookup: rows=3100 pushed=3 exec=1
+# O11-p1-left-lookup-left-scan: rows=3844 pushed=3 exec=1
+# Conditions on outer-joined tables
+# O12-p1-left-pushed-cond: rows=2050 pushed=2 exec=1
+# O13-p1-left-where-on-inner: rows=400 pushed=2 exec=1
+# O14-p1-left-cond-on-root-in-on: rows=2000 pushed=0 exec=0
+# Semi-joins, one per strategy
+# S1-p1-in-firstmatch: rows=630 pushed=2 exec=1
+# S2-p1-in-loosescan: rows=630 pushed=2 exec=1
+# S3-p1-in-materialization: rows=630 pushed=0 exec=0
+# S4-p1-in-dupsweedout: rows=630 pushed=2 exec=1
+# S5-p1-exists-two-tables: rows=830 pushed=2 exec=1
+# S6-p1-exists-lookup: rows=2750 pushed=3 exec=1
+# S7-p1-in-plus-left: rows=1926 pushed=3 exec=1
+# Antijoins
+# A1-p1-not-exists-scan: rows=280 pushed=2 exec=1
+# A2-p1-not-exists-two-tables: rows=170 pushed=3 exec=1
+# A3-p1-not-exists-below-left: rows=1100 pushed=3 exec=1
+# A4-p1-not-exists-on-root-with-left: rows=1174 pushed=3 exec=1
+# A5-p1-left-join-is-null: rows=280 pushed=2 exec=1
+#
+# Pass 2: debug keyword max_4rows_in_spj_batches (debug builds)
+#
+# Outer-joined scan children
+# O1-p2-left-scan: rows=3100 pushed=2 exec=1
+# O2-p2-left-scan-left-scan: rows=5545 pushed=3 exec=1
+# O3-p2-bushy-left-left: rows=10804 pushed=3 exec=1
+# O4-p2-bushy-inner-left: rows=10452 pushed=3 exec=1
+# Nesting of inner and outer joins
+# O5-p2-left-nest-inner: rows=4615 pushed=3 exec=1
+# O6-p2-left-nest-lookup-on-root: rows=2500 pushed=3 exec=1
+# O7-p2-inner-then-left: rows=5445 pushed=3 exec=1
+# O8-p2-left-nest-left: rows=5545 pushed=3 exec=1
+# O9-p2-left-then-inner-lookup: rows=2033 pushed=3 exec=1
+# O10-p2-left-scan-left-lookup: rows=3100 pushed=3 exec=1
+# O11-p2-left-lookup-left-scan: rows=3844 pushed=3 exec=1
+# Conditions on outer-joined tables
+# O12-p2-left-pushed-cond: rows=2050 pushed=2 exec=1
+# O13-p2-left-where-on-inner: rows=400 pushed=2 exec=1
+# O14-p2-left-cond-on-root-in-on: rows=2000 pushed=0 exec=0
+# Semi-joins, one per strategy
+# S1-p2-in-firstmatch: rows=630 pushed=2 exec=1
+# S2-p2-in-loosescan: rows=630 pushed=2 exec=1
+# S3-p2-in-materialization: rows=630 pushed=0 exec=0
+# S4-p2-in-dupsweedout: rows=630 pushed=2 exec=1
+# S5-p2-exists-two-tables: rows=830 pushed=2 exec=1
+# S6-p2-exists-lookup: rows=2750 pushed=3 exec=1
+# S7-p2-in-plus-left: rows=1926 pushed=3 exec=1
+# Antijoins
+# A1-p2-not-exists-scan: rows=280 pushed=2 exec=1
+# A2-p2-not-exists-two-tables: rows=170 pushed=3 exec=1
+# A3-p2-not-exists-below-left: rows=1100 pushed=3 exec=1
+# A4-p2-not-exists-on-root-with-left: rows=1174 pushed=3 exec=1
+# A5-p2-left-join-is-null: rows=280 pushed=2 exec=1
+DROP TABLE seq, t1, t2, t3, t4, t5;

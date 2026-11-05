@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBSPJ AttrInfo Protocol</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --surface: #f1f2f4; --surface2: #e4e7ec; --text: #1d2228; --dim: #5d6670;
+    --border: #cfd4db; --accent: #1f6feb; --accent2: #8250df; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --code-bg: #f3f4f6; --code-text: #24292f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --surface: #1c2027; --surface2: #262c35; --text: #e6e9ed; --dim: #9aa4af;
+      --border: #333b46; --accent: #58a6ff; --accent2: #bc8cff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+      --code-bg: #0f1216; --code-text: #e6e9ed;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --surface: #1c2027; --surface2: #262c35; --text: #e6e9ed; --dim: #9aa4af;
+    --border: #333b46; --accent: #58a6ff; --accent2: #bc8cff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --code-bg: #0f1216; --code-text: #e6e9ed;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1100px; padding: 2rem 16px 4rem; background: var(--bg); color: var(--text);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.3rem; margin: 2.2rem 0 .6rem; padding-bottom: .25rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.4rem 0 .4rem; color: var(--accent); }
+  .subtitle { color: var(--dim); margin-bottom: 1.5rem; }
+  code { font: .88em ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); color: var(--code-text);
+         padding: .1em .35em; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-text); border: 1px solid var(--border); border-radius: 6px;
+        padding: .9rem 1rem; overflow-x: auto; font: .82rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: .8rem 0; font-size: .88rem; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--surface2); }
+  .note, .warn, .weak { border-left: 4px solid var(--accent); background: var(--surface); padding: .7rem 1rem;
+         margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .warn { border-left-color: var(--warn); }
+  .weak { border-left-color: var(--bad); }
+  .src { color: var(--dim); font-size: .82rem; }
+  nav.toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1.2rem; }
+  nav.toc ol { margin: .3rem 0; padding-left: 1.2rem; }
+  svg { max-width: 100%; height: auto; }
+  svg text { fill: var(--text); font: 12px system-ui, sans-serif; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>DBSPJ attribute-information protocol</h1>
+<p class="subtitle">How a pushed join is serialized by NdbQueryBuilder, carried by DBTC, parsed and validated by DBSPJ, and turned into the KeyInfo and AttrInfo of each LQHKEYREQ and SCAN_FRAGREQ that DBSPJ sends to DBLQH. Covers RonDB's join aggregation and CTE extensions, a word-level worked example, and suspected weaknesses. Source tree: RonDB 26.10 (branch RONDB-1124-spj-fixes). Everything here was checked against the code on 2026-10-28; line numbers are approximate, so each citation also names the function.</p>
+
+<nav class="toc">
+<strong>Contents</strong>
+<ol>
+<li><a href="#overview">Overview: the path and the sections at each hop</a></li>
+<li><a href="#tree">QueryTree serialization</a></li>
+<li><a href="#params">QueryParameters serialization</a></li>
+<li><a href="#parse">How DBSPJ parses and validates; error codes and limits</a></li>
+<li><a href="#build">How DBSPJ builds child KeyInfo/AttrInfo from parent rows</a></li>
+<li><a href="#corr">Correlation ids and result delivery</a></li>
+<li><a href="#agg">Join aggregation and CTE extensions</a></li>
+<li><a href="#example">Worked example: scan t1 &rarr; lookup t2 &rarr; index scan t3</a></li>
+<li><a href="#compat">Compatibility and versioning</a></li>
+<li><a href="#weak">Suspected weaknesses (P-1 &hellip; P-24)</a></li>
+</ol>
+</nav>
+
+<!-- ===================================================================== -->
+<h2 id="overview">1. Overview: the path and the sections at each hop</h2>
+
+<p>The NDB API serializes a pushed join (<code>NdbQueryDef</code>) as a <b>QueryTree</b>, with one QueryNode per operation. When the query is executed it adds a <b>QueryParameters</b> block with one parameter node per QueryNode. Tree and parameters are concatenated into a single AttrInfo section. This one section is the entire "program" that DBSPJ receives. DBTC never looks inside it: it forwards the section verbatim to a DBSPJ instance on the node that holds the root fragment.</p>
+
+<svg viewBox="0 0 1000 610" role="img" aria-label="Sequence of signals from NDB API through DBTC and DBSPJ to DBLQH and back">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--accent)"/>
+    </marker>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--accent2)"/>
+    </marker>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--ok)"/>
+    </marker>
+  </defs>
+  <!-- lifelines -->
+  <g style="stroke: var(--border); stroke-width: 2">
+    <line x1="80" y1="40" x2="80" y2="600"/>
+    <line x1="330" y1="40" x2="330" y2="600"/>
+    <line x1="590" y1="40" x2="590" y2="600"/>
+    <line x1="900" y1="40" x2="900" y2="600"/>
+  </g>
+  <g>
+    <rect x="20" y="8" width="120" height="28" rx="5" style="fill: var(--surface2); stroke: var(--border)"/>
+    <text x="80" y="27" text-anchor="middle" style="font-weight:600">NDB API</text>
+    <rect x="270" y="8" width="120" height="28" rx="5" style="fill: var(--surface2); stroke: var(--border)"/>
+    <text x="330" y="27" text-anchor="middle" style="font-weight:600">DBTC</text>
+    <rect x="530" y="8" width="120" height="28" rx="5" style="fill: var(--surface2); stroke: var(--border)"/>
+    <text x="590" y="27" text-anchor="middle" style="font-weight:600">DBSPJ</text>
+    <rect x="830" y="8" width="140" height="28" rx="5" style="fill: var(--surface2); stroke: var(--border)"/>
+    <text x="900" y="27" text-anchor="middle" style="font-weight:600">DBLQH / DBTUP</text>
+  </g>
+  <!-- 1 SCAN_TABREQ -->
+  <line x1="80" y1="70" x2="328" y2="70" style="stroke: var(--accent); stroke-width:1.6" marker-end="url(#ah)"/>
+  <text x="90" y="64">SCAN_TABREQ (ViaSPJ)</text>
+  <text x="90" y="86" style="font-size:10.5px">S0 receiverIds · S1 AttrInfo=[Tree|Params]</text>
+  <text x="90" y="99" style="font-size:10.5px">S2 KeyInfo: bounds, or JoinAgg combined</text>
+  <!-- 2 TCKEYREQ -->
+  <line x1="80" y1="125" x2="328" y2="125" style="stroke: var(--accent); stroke-width:1.6; stroke-dasharray: 5 3" marker-end="url(#ah)"/>
+  <text x="90" y="119">or TCKEYREQ (ViaSPJ, dirty read)</text>
+  <text x="90" y="140" style="font-size:10.5px">S0 KeyInfo=root key · S1 AttrInfo</text>
+  <!-- 3 JOIN_AGG_SETUP -->
+  <line x1="330" y1="165" x2="898" y2="165" style="stroke: var(--accent2); stroke-width:1.4; stroke-dasharray: 4 3" marker-end="url(#ah2)"/>
+  <text x="600" y="159">JOIN_AGG_SETUP_REQ (JoinAgg only): S0 agg program · S1 rcvIds · S2 column meta</text>
+  <!-- 4 SCAN_FRAGREQ to SPJ -->
+  <line x1="330" y1="200" x2="588" y2="200" style="stroke: var(--accent); stroke-width:1.6" marker-end="url(#ah)"/>
+  <text x="340" y="194">SCAN_FRAGREQ</text>
+  <text x="340" y="215" style="font-size:10.5px">S0 AttrInfo (verbatim)</text>
+  <text x="340" y="228" style="font-size:10.5px">S1 KeyInfo (root bounds, optional)</text>
+  <text x="340" y="241" style="font-size:10.5px">last: aggKeys | fragIds | [n,fragIds,aggKeys]</text>
+  <!-- 5 LQHKEYREQ to SPJ -->
+  <line x1="330" y1="265" x2="588" y2="265" style="stroke: var(--accent); stroke-width:1.6; stroke-dasharray: 5 3" marker-end="url(#ah)"/>
+  <text x="340" y="259">or LQHKEYREQ: S0 KeyInfo · S1 AttrInfo</text>
+  <!-- 6 DBSPJ to LQH lookups -->
+  <line x1="590" y1="300" x2="898" y2="300" style="stroke: var(--accent); stroke-width:1.6" marker-end="url(#ah)"/>
+  <text x="600" y="294">LQHKEYREQ per parent row / root</text>
+  <text x="600" y="315" style="font-size:10.5px">S0 KeyInfo = expand(keyPattern,row)</text>
+  <text x="600" y="328" style="font-size:10.5px">S1 AttrInfo = built [+ linked param block]</text>
+  <text x="600" y="341" style="font-size:10.5px">var: spjRef, node.i, corrLo, corrHi [,agg]</text>
+  <!-- 7 DBSPJ to LQH scans -->
+  <line x1="590" y1="370" x2="898" y2="370" style="stroke: var(--accent); stroke-width:1.6" marker-end="url(#ah)"/>
+  <text x="600" y="364">SCAN_FRAGREQ per fragment</text>
+  <text x="600" y="385" style="font-size:10.5px">S0 AttrInfo (5-word hdr+prog+reads [+params])</text>
+  <text x="600" y="398" style="font-size:10.5px">S1 KeyInfo = ranges (range_no in word 0)</text>
+  <text x="600" y="411" style="font-size:10.5px">var: corrIdStart, rootRcvId [,agg [,rangeCnt]]</text>
+  <!-- 8 TRANSID_AI to API -->
+  <line x1="898" y1="445" x2="82" y2="445" style="stroke: var(--ok); stroke-width:1.6" marker-end="url(#ah3)"/>
+  <text x="110" y="439">TRANSID_AI (part before FLUSH_AI): user columns + CORR_FACTOR64 {corrLo, rootRcvId}</text>
+  <!-- 9 TRANSID_AI to SPJ -->
+  <line x1="898" y1="485" x2="592" y2="485" style="stroke: var(--ok); stroke-width:1.6" marker-end="url(#ah3)"/>
+  <text x="604" y="479">TRANSID_AI (tail): linked cols + CORR_FACTOR32</text>
+  <text x="604" y="500" style="font-size:10.5px">LQHKEYCONF/REF · SCAN_FRAGCONF/REF</text>
+  <!-- 10 SPJ to TC -->
+  <line x1="588" y1="540" x2="332" y2="540" style="stroke: var(--ok); stroke-width:1.6" marker-end="url(#ah3)"/>
+  <text x="340" y="534">SCAN_FRAGCONF/REF · LQHKEYCONF/REF</text>
+  <line x1="588" y1="575" x2="82" y2="575" style="stroke: var(--ok); stroke-width:1.4; stroke-dasharray: 5 3" marker-end="url(#ah3)"/>
+  <text x="110" y="569">TCKEYCONF/TCKEYREF from DBSPJ (lookup-query leaves; dirty-read REF)</text>
+</svg>
+
+<table>
+<tr><th>Hop</th><th>Signal</th><th>Sections and key words</th><th>Code</th></tr>
+<tr><td>API &rarr; DBTC (scan query)</td><td>SCAN_TABREQ with ViaSPJ, PassAllConfs, ExtendedConf, optional MultiFrag and JoinAgg</td>
+<td>S0: one receiver id per SPJ worker. S1: AttrInfo = QueryTree &#8214; QueryParams. S2 (optional): root KeyInfo (index bounds). For JoinAgg, S2 is always present and holds <code>[boundsLen, bounds&hellip;, aggReceiverId, aggProgram&hellip;, CTE defs, column meta]</code> (<a href="#agg">&sect;7.1</a>). With JoinAgg, <code>scanParallelism</code> = worker count, and log2(fragsPerWorker) goes in <code>storedProcId</code> bits 16-17.</td>
+<td class="src">NdbQueryOperation.cpp:4598-4826 NdbQueryImpl::doSend()</td></tr>
+<tr><td>API &rarr; DBTC (lookup query)</td><td>TCKEYREQ with ViaSPJ, Dirty, Simple, ReadRequest, AbortOption=IgnoreError</td>
+<td>S0: KeyInfo = root PK or unique-index key (<code>prepareKeyInfo</code>). S1: AttrInfo = QueryTree &#8214; QueryParams. Sent fragmented if larger than NDB_MAX_LONG_SECTIONS_SIZE.</td>
+<td class="src">NdbQueryOperation.cpp:4828-4927 doSend()</td></tr>
+<tr><td>DBTC &rarr; DBSPJ</td><td>SCAN_FRAGREQ (block DBSPJ, round-robin instance)</td>
+<td>S0: AttrInfo (verbatim). S1: KeyInfo (bounds) if present. Last section: aggKeys (JoinAgg), or fragId list (MultiFrag), or the combined <code>[fragCnt, fragIds&hellip;, aggKeys&hellip;]</code> when both are set. <code>resultRef</code> = API block, <code>resultData</code> = worker receiver id (<code>m_apiPtr[0]</code>); CorrFactor is not set.</td>
+<td class="src">DbtcMain.cpp:20648-20842 (send of SCAN_FRAGREQ), 17774-17786</td></tr>
+<tr><td>DBTC &rarr; DBSPJ</td><td>LQHKEYREQ to <code>DBSPJ</code> (own instance if local, else RR among 120 virtual instances)</td>
+<td>S0: KeyInfo. S1: AttrInfo, only when <code>attrlength &ne; 0</code> (see <a href="#P-11">P-11</a>). variableData holds the dirty-read ApplicationAddress (API ref, API op ptr).</td>
+<td class="src">DbtcMain.cpp:5726-5746, 6013-6033 sendlqhkeyreq()</td></tr>
+<tr><td>DBTC &rarr; DBLQH</td><td>JOIN_AGG_SETUP_REQ (one per data node)</td><td>S0: aggregation program. S1: receiver ids. S2: column metadata. DBSPJ never sees the aggregation program.</td><td class="src">JoinAgg.hpp:34-97</td></tr>
+<tr><td>DBSPJ &rarr; DBLQH</td><td>LQHKEYREQ, SCAN_FRAGREQ, CTE_LOOKUP_REQ, CTE_SCAN_REQ, JOIN_AGG_NULL_ROW_REQ</td><td>Built per TreeNode, see <a href="#build">&sect;5</a> and <a href="#agg">&sect;7</a>.</td><td class="src">lookup_send() 9359, scanFrag_send() 13439, cte_lookup_send() 6918, sendJoinAggNullRow() 10966</td></tr>
+<tr><td>DBLQH &rarr; API</td><td>TRANSID_AI (via FLUSH_AI)</td><td>User projection followed by CORR_FACTOR64 (scan queries only). For long rows DBTUP moves the last 3 words into <code>TransIdAILong::correlationData</code>.</td><td class="src">DbtupRoutines.cpp:3670 flush_read_buffer()</td></tr>
+<tr><td>DBLQH &rarr; DBSPJ</td><td>TRANSID_AI</td><td>Linked attributes followed by CORR_FACTOR32, delivered to <code>connectPtr = treeNode.i</code>.</td><td class="src">DbspjMain.cpp:5271 execTRANSID_AI()</td></tr>
+</table>
+
+<div class="note"><b>AttrInfo layout received by DBSPJ</b>
+<pre><code>word 0          QueryTree header  (treeLen &lt;&lt; 16) | nodeCnt
+word 1..        QueryNode[0] .. QueryNode[nodeCnt-1]         (treeLen words in total, including word 0)
+word treeLen..  QueryNodeParameters[0] .. [nodeCnt-1]        (same order and op type as the nodes)</code></pre>
+DBSPJ uses two <code>SectionReader</code>s on this one section: <code>treeReader</code> starts at word 0, and <code>paramReader</code> is stepped forward by <code>treeLen</code> (<span class="src">DbspjMain.cpp:1284-1286 execLQHKEYREQ(), 1865-1867 execSCAN_FRAGREQ()</span>). Parameter block <i>i</i> belongs to node <i>i</i> purely by position. The only check is that the op types are equal (<span class="src">build() 2162</span>, error 20003).</div>
+
+<!-- ===================================================================== -->
+<h2 id="tree">2. QueryTree serialization</h2>
+
+<h3>2.1 Tree header and node header</h3>
+<table>
+<tr><th>Word</th><th>Field</th><th>Encoding</th><th>Producer / consumer</th></tr>
+<tr><td>T0</td><td><code>QueryTree::cnt_len</code></td><td>bits 31-16: total tree length in words, including T0. Bits 15-0: node count = internal op number of the last op + 1. A unique-index access counts as 2 nodes.</td><td><span class="src">NdbQueryBuilder.cpp:1887-1911</span>; <span class="src">DbspjMain.cpp:1280-1281, build() 2053-2061</span></td></tr>
+<tr><td>N0</td><td><code>QueryNode::len</code></td><td>bits 31-16: node length in words, including the 4 header words. Bits 15-0: <code>OpType</code>.</td><td><code>QueryNode::setOpLen()</code>; build() overwrites it with the plain length before calling the builder (2297)</td></tr>
+<tr><td>N1</td><td><code>requestInfo</code></td><td>DABits::NodeInfoBits (low 16 bits) plus type-specific bits (high 16 bits)</td><td>see 2.3</td></tr>
+<tr><td>N2</td><td><code>tableId</code></td><td>table or index-table id (16 bits). For CTE nodes this word is <code>cteId</code>.</td><td></td></tr>
+<tr><td>N3</td><td><code>tableVersion</code></td><td>schema version. CTE_SUBTREE: <code>numNodes</code>. CTE_LOOKUP and CTE_SCAN: <code>numResultCols</code>.</td><td></td></tr>
+<tr><td>N4..</td><td><code>optional[]</code></td><td>fixed-order optional parts (2.4)</td><td></td></tr>
+</table>
+
+<h3>2.2 Node types</h3>
+<table>
+<tr><th>OpType</th><th>Value</th><th>NodeSize / ParamSize</th><th>DBSPJ builder</th><th>Notes</th></tr>
+<tr><td>QN_LOOKUP</td><td>1</td><td>4 / 3</td><td>lookup_build() <span class="src">9087</span></td><td>PK lookup. Also the index half of a unique-index lookup (<code>L_UNIQUE_INDEX</code>).</td></tr>
+<tr><td>QN_SCAN_FRAG_v1</td><td>2</td><td>4 / 3</td><td>converted in build() <span class="src">2197-2242</span></td><td>Deprecated root scan. Its params are widened to the new 8-word layout and SFP_PARALLEL is forced.</td></tr>
+<tr><td>QN_SCAN_INDEX_v1</td><td>3</td><td>4 / 4</td><td>converted in build() <span class="src">2243-2286</span></td><td>Deprecated. <code>batchSize = (bytes&lt;&lt;11)|rows</code> is split into the two new fields.</td></tr>
+<tr><td>QN_SCAN_FRAG</td><td>4</td><td>4 / 8</td><td>scanFrag_build() <span class="src">11642</span> + parseScanFrag() <span class="src">12060</span></td><td>Table or ordered-index scan, root or child.</td></tr>
+<tr><td>QN_CTE_SUBTREE [RonDB]</td><td>6</td><td>4 / 3</td><td>cte_subtree_build() <span class="src">7860</span></td><td>Container. The next <code>numNodes</code> nodes form the CTE body. No parseDA, no params read.</td></tr>
+<tr><td>QN_CTE_LOOKUP [RonDB]</td><td>7</td><td>4 / 3</td><td>cte_lookup_build() <span class="src">6362</span></td><td>Probe of a materialized CTE hash table (CTE_LOOKUP_REQ).</td></tr>
+<tr><td>QN_CTE_SCAN [RonDB]</td><td>8</td><td>4 / 3</td><td>cte_scan_build() <span class="src">8007</span></td><td>Iterates all groups of a CTE (CTE_SCAN_REQ).</td></tr>
+</table>
+
+<h3>2.3 requestInfo bits</h3>
+<table>
+<tr><th>Bit</th><th>Value</th><th>Meaning</th><th>DBSPJ effect (parseDA unless stated)</th></tr>
+<tr><td>NI_HAS_PARENT</td><td>0x0001</td><td>Optional part 1 (parent list) is present</td><td>Parent index &lt; nodes built so far (Tier A violation otherwise). Exactly one parent. Appended to <code>parent.m_child_nodes</code>.</td></tr>
+<tr><td>NI_KEY_LINKED</td><td>0x0002</td><td>Key/bound pattern references parent columns</td><td>The pattern is stored in <code>m_keyPattern</code> and <code>T_KEYINFO_CONSTRUCTED</code> is set. KeyInfo is built per parent row.</td></tr>
+<tr><td>NI_KEY_PARAMS</td><td>0x0004</td><td>Pattern contains P_PARAM / P_PARAM_HEADER</td><td>Must match PI_KEY_PARAMS (20012). <code>cnt</code>&ne;0 if and only if set (20013).</td></tr>
+<tr><td>NI_KEY_CONSTS</td><td>0x0008</td><td>Pattern contains P_DATA</td><td>If not linked, the key is expanded once into <code>m_send.m_keyInfoPtrI</code> (fixed key).</td></tr>
+<tr><td>NI_LINKED_ATTR</td><td>0x0010</td><td>Optional part 4: columns that children need</td><td>Read list = these ids + CORR_FACTOR32. Clears T_LEAF and sets T_EXPECT_TRANSID_AI (unless the node is an aggregate leaf).</td></tr>
+<tr><td>NI_ATTR_INTERPRET</td><td>0x0020</td><td>Interpreted program in the tree</td><td>"Never used, nor tested" (16406). Mutually exclusive with PI_ATTR_INTERPRET (20011).</td></tr>
+<tr><td><i>NI_ATTR_PARAMS</i></td><td>0x0040</td><td>commented out</td><td>&mdash;</td></tr>
+<tr><td>NI_ATTR_LINKED</td><td>0x0080</td><td>Optional part 3: pattern that builds interpreter parameters from parent rows</td><td>Stored in <code>m_attrParamPattern</code>, sets T_ATTRINFO_CONSTRUCTED, and forces interpreted AttrInfo.</td></tr>
+<tr><td>NI_LINKED_DISK</td><td>0x0100</td><td>A child links on a disk column of this node</td><td>NoDiskFlag is cleared on LQHKEYREQ and SCAN_FRAGREQ.</td></tr>
+<tr><td>NI_REPEAT_SCAN_RESULT</td><td>0x0200</td><td>X-scan results repeated per batch</td><td>Sets Request::RT_REPEAT_SCAN_RESULT. The API sets it on every non-root QN_SCAN_FRAG.</td></tr>
+<tr><td>NI_INNER_JOIN</td><td>0x0400</td><td>Rows only on match</td><td>Sets T_INNER_JOIN. In scan requests a CORR_FACTOR32-only read is added when there are no linked attrs.</td></tr>
+<tr><td>NI_FIRST_MATCH</td><td>0x0800</td><td>Semi-join</td><td>Sets T_FIRST_MATCH. On a leaf scan, ScanFragReq FirstMatchFlag is set.</td></tr>
+<tr><td>NI_ANTI_JOIN</td><td>0x1000</td><td>Anti-join</td><td>Sets T_FIRST_MATCH, same as above.</td></tr>
+<tr><td>NI_AGGREGATE [RonDB]</td><td>0x2000</td><td>Request aggregates</td><td>Outside a CTE subtree: sets RT_AGGREGATE and increments <code>m_aggregate_node_count</code>.</td></tr>
+<tr><td>NI_AGGREGATE_LEAF [RonDB]</td><td>0x4000</td><td>Node feeds the aggregation engine</td><td>Sets T_AGGREGATE_LEAF. Only honoured together with NI_AGGREGATE.</td></tr>
+<tr><td>L_UNIQUE_INDEX</td><td>0x10000</td><td>QN_LOOKUP on a unique-index table</td><td>Sets T_UNIQUE_INDEX_LOOKUP (lookup_build 9176)</td></tr>
+<tr><td>SF_PRUNE_PATTERN</td><td>0x10000</td><td>QN_SCAN_FRAG: optional part 5 (prune key pattern) is present</td><td>parseScanFrag 12084</td></tr>
+<tr><td>SF_PRUNE_PARAMS</td><td>0x20000</td><td>Prune pattern uses params</td><td>Must agree with <code>cnt</code> and SFP_PRUNE_PARAMS (Tier B)</td></tr>
+<tr><td>SF_PRUNE_LINKED</td><td>0x40000</td><td>Prune key depends on the parent row</td><td>The pattern is stored (T_PRUNE_PATTERN). Otherwise it is a const prune (T_CONST_PRUNE).</td></tr>
+<tr><td>SF_PARALLEL</td><td>0x80000</td><td>Scan all fragments in parallel</td><td>Sets T_SCAN_PARALLEL unless the scan is const-pruned</td></tr>
+</table>
+<div class="note">Unknown bits are silently ignored. Nothing in the wire format lets a newer API detect that an older DBSPJ ignored one of its bits. The <code>QN_CteSubtreeNode::RequestInfoBits</code> (CTE_SINGLE_ROW 0x1, CTE_LIMIT 0x2, CTE_SINGLE_GROUP 0x4) are defined, but the API writes <code>requestInfo = 0</code> (<span class="src">NdbQueryBuilder.cpp:3070</span>) and DBSPJ never reads them. The per-CTE flags travel in DBTC's aggKeys CTE block instead (<a href="#agg">&sect;7.2</a>).</div>
+
+<h3>2.4 Optional parts: fixed order</h3>
+<p>The serializers append the parts in a fixed order, and parseDA (<span class="src">DbspjMain.cpp:16082</span>) consumes them in the same order. A part is present only when its bit is set.</p>
+<table>
+<tr><th>#</th><th>Part</th><th>Present if</th><th>Format</th><th>API writer</th></tr>
+<tr><td>0</td><td>CTE type info [RonDB]</td><td>always on QN_CTE_LOOKUP / QN_CTE_SCAN</td><td><code>numResultCols &times; {CteLinkedAttr word0, word1}</code>. QN_CTE_LOOKUP then has <code>numKeyPositions</code> words (bits 16-23 of N3, &le;16)</td><td>appendCteVirtTypeInfo() <span class="src">3532</span></td></tr>
+<tr><td>1</td><td>Parent list</td><td>NI_HAS_PARENT</td><td>Uint16 list (2.5) of earlier internal node numbers. Only 1 entry is supported.</td><td>appendParentList() <span class="src">2802</span></td></tr>
+<tr><td>2</td><td>Key or bound pattern</td><td>any NI_KEY_*</td><td><code>[(paramCnt&lt;&lt;16)|patternLen]</code> followed by <code>patternLen</code> pattern words (2.6)</td><td>appendKeyPattern() <span class="src">2897</span>, appendBoundPattern() <span class="src">3274</span></td></tr>
+<tr><td>3</td><td>Attr param constructor</td><td>NI_ATTR_INTERPRET or NI_ATTR_LINKED</td><td><code>[(patternLen&lt;&lt;16)|progLen]</code>, then <code>progLen</code> program words (NI_ATTR_INTERPRET only), then <code>patternLen</code> words of P_PARENT?/P_ATTRINFO pattern</td><td>appendParamConstructor() <span class="src">3376</span> (progLen=0 always)</td></tr>
+<tr><td>4</td><td>Linked attribute list</td><td>NI_LINKED_ATTR</td><td>Uint16 list of attribute ids</td><td>appendChildProjection() <span class="src">2817</span></td></tr>
+<tr><td>5</td><td>Prune pattern (scan only)</td><td>SF_PRUNE_PATTERN</td><td><code>[(paramCnt&lt;&lt;16)|len]</code> followed by the pattern over distribution-key columns</td><td>appendPrunePattern() <span class="src">3078</span></td></tr>
+</table>
+<div class="warn">In the header word of part 2 and part 5 the count is in the <b>high</b> half and the length in the <b>low</b> half. Part 3 is the reverse: pattern length high, program length low (<span class="src">parseDA 16402-16404</span>). In the PI_ATTR_INTERPRET parameter word, the subroutine length is high and the program length is low.</div>
+
+<h3>2.5 Uint16 list encoding (parent list, linked attributes)</h3>
+<pre><code>w0 = cnt | item0 &lt;&lt; 16
+w1 = item1 | item2 &lt;&lt; 16
+w2 = item3 | item4 &lt;&lt; 16  ...      total 1 + cnt/2 words; when cnt is even the last high half is 0xBABE</code></pre>
+<p>Writer: <code>Uint16Sequence</code> <span class="src">NdbQueryBuilder.cpp:2755-2800</span>. Reader: <code>unpackList()</code> <span class="src">DbspjMain.cpp:15299</span>. It returns <code>dstLen+1</code> on error if <code>cnt &ge; dstLen</code> or the words run past <code>buffer.end</code>. The parent list uses <code>dst[63]</code> and must have cnt == 1. The linked list uses <code>dstLen = MAX_ATTRIBUTES_IN_TABLE</code> (4096 in RonDB).</p>
+
+<h3>2.6 QueryPattern tokens</h3>
+<p>Each token word is <code>(type &lt;&lt; 16) | val</code> (<span class="src">QueryTree.hpp:604-657</span>).</p>
+<table>
+<tr><th>Token</th><th>Type</th><th>val</th><th>At build (from API)</th><th>At run time (per parent row)</th></tr>
+<tr><td>P_DATA</td><td>1</td><td>words of data that follow</td><td>Fixed key: data copied into the KeyInfo. Linked: <code>1+val</code> words copied into the pattern store. <code>val==0</code> means NULL (sets hasNull).</td><td>Data copied verbatim (appendDataToSection 15777)</td></tr>
+<tr><td>P_COL</td><td>2</td><td>index into the parent's linked list</td><td>Copied to the pattern</td><td>Column data <b>without</b> AttributeHeader (lookup keys, prune keys). A length of 0 means NULL.</td></tr>
+<tr><td>P_UNQ_PK</td><td>3</td><td>index of NDB$PK in the parent row</td><td>Copied</td><td>Data minus header and the first word (fragment id) (appendPkColToSection 15561). <code>ndbrequire(len&gt;1)</code>.</td></tr>
+<tr><td>P_PARAM</td><td>4</td><td>parameter number</td><td>Replaced by <code>P_DATA(len)</code> + value data, header stripped (appendParamToPattern 15400)</td><td>Never seen at run time (InvalidPattern)</td></tr>
+<tr><td>P_PARENT</td><td>5</td><td>levels above the immediate parent (0 = parent)</td><td>Copied. The ancestor gets T_BUFFER_ROW and T_BUFFER_MAP.</td><td>Prefix: the next token is read from that ancestor's buffered row (appendFromParent 15631)</td></tr>
+<tr><td>P_PARAM_HEADER</td><td>6</td><td>parameter number</td><td>Replaced by <code>P_DATA(len+1)</code> + [AttributeHeader + data] (15438)</td><td>&mdash;</td></tr>
+<tr><td>P_ATTRINFO</td><td>7</td><td>index into the parent's linked list</td><td>Copied</td><td>Column <b>with</b> AttributeHeader (bounds, CTE keys). With <code>addTableMeta</code> (linked interpreter params) two meta words come first (&sect;7.6).</td></tr>
+</table>
+
+<h3>2.7 What each pattern produces</h3>
+<table>
+<tr><th>Use</th><th>Typical tokens (API)</th><th>Resulting KeyInfo words</th></tr>
+<tr><td>Lookup key (QN_LOOKUP)</td><td>per key column: <code>[P_PARENT(n)] P_COL(ix)</code> | <code>P_DATA(w) data</code> | <code>P_PARAM(i)</code></td><td>Concatenated key column data, no headers (the normal LQHKEYREQ KeyInfo)</td></tr>
+<tr><td>Unique index &rarr; base table</td><td>The base-table node gets NI_HAS_PARENT(index node), NI_KEY_LINKED, header <code>0x00000001</code>, <code>P_UNQ_PK(0)</code>. The index node's linked list is <code>[noOfIndexColumns]</code> (the hidden NDB$PK column).</td><td>The PK words of the base row</td></tr>
+<tr><td>Index bound (QN_SCAN_FRAG child)</td><td>per bound: <code>P_DATA(1), BoundType</code> then <code>[P_PARENT(n)] P_ATTRINFO(ix)</code> | <code>P_DATA(1+w), AH(keyNo,bytes), data</code> | <code>P_PARAM_HEADER(i)</code>. EQ collapses low==high into one <code>BoundEQ</code>.</td><td>Standard index-bound KeyInfo: <code>[type][AH][data]&hellip;</code>. DBSPJ then rewrites word 0 and renumbers the AH ids (<a href="#build">&sect;5.4</a>).</td></tr>
+<tr><td>Multi-range constant bound [RonDB]</td><td>One <code>P_DATA</code> block per range holding the full range KEYINFO, with the range length and number already stamped in its first word. NI_KEY_CONSTS only, never linked.</td><td>Verbatim multi-range KeyInfo (<span class="src">appendBoundPattern 3284-3312</span>)</td></tr>
+<tr><td>Prune key</td><td>distribution-key columns: <code>P_COL</code> / <code>P_DATA</code> / <code>P_PARAM</code></td><td>Packed distribution key, hashed by computePartitionHash()</td></tr>
+<tr><td>CTE lookup key [RonDB]</td><td><code>[P_PARENT(n)] P_ATTRINFO(ix)</code>, or <code>P_DATA(1+w) AH data</code>. P_COL is rejected at build (20004, <span class="src">cte_lookup_build 6566-6588</span>).</td><td>AH+data, compared byte-for-byte with the hash-table key</td></tr>
+<tr><td>Interpreter params (NI_ATTR_LINKED)</td><td><code>[P_PARENT(n)] P_ATTRINFO(ix)</code> per interpreted param, then per RonDB "linked projection" column (GROUP BY on parent columns)</td><td>Appended to the AttrInfo subroutine area per parent row (&sect;5.5)</td></tr>
+</table>
+<div class="note">How <code>levels</code> is computed in P_PARENT: the API walks from the node's parent up to the referenced operation and adds 1 per hop, or 2 when a hop is a UniqueIndexAccess (two QueryNodes) (<span class="src">NdbQueryBuilder.cpp:2920-2935</span>). In the param constructor a node that is itself a UniqueIndexAccess starts at <code>levels=1</code> (<span class="src">3405</span>).</div>
+
+<h3>2.8 CTE node layouts [RonDB]</h3>
+<table>
+<tr><th>Node</th><th>N2</th><th>N3</th><th>optional[]</th></tr>
+<tr><td>QN_CTE_SUBTREE</td><td>cteId (must equal the number of CTEs seen so far, &lt;64)</td><td>numNodes (&gt;0): the next numNodes nodes belong to this CTE</td><td>none</td></tr>
+<tr><td>QN_CTE_LOOKUP</td><td>cteId</td><td>bits 0-15 numResultCols, bits 16-23 numKeyPositions (&le;16)</td><td>type info (2&times;cols), key positions (each &lt; numResultCols), then parts 1-4</td></tr>
+<tr><td>QN_CTE_SCAN</td><td>cteId</td><td>numResultCols (all 32 bits are used, see <a href="#P-15">P-15</a>)</td><td>type info (2&times;cols), then parts 1, 3, 4</td></tr>
+</table>
+<p>Both CTE readers require <code>m_cteOwnerNodes</code> (from DBTC's aggKeys CTE block) and <code>cteId &lt; m_numCteKeyBlocks</code> (<span class="src">6420-6425, 8057-8062</span>). The subtree container does not check this (<a href="#P-13">P-13</a>).</p>
+
+<!-- ===================================================================== -->
+<h2 id="params">3. QueryParameters serialization</h2>
+
+<h3>3.1 Parameter node headers</h3>
+<table>
+<tr><th>Word</th><th>Lookup / CTE (NodeSize 3)</th><th>QN_SCAN_FRAG (NodeSize 8)</th><th>QN_SCAN_INDEX_v1 (4)</th></tr>
+<tr><td>P0</td><td colspan="3"><code>(len&lt;&lt;16)|opType</code>. The length includes the header, and opType must equal the node's opType.</td></tr>
+<tr><td>P1</td><td colspan="3"><code>requestInfo</code>: PI_* bits in the low half, SFP_* / SIP_* bits in the high half</td></tr>
+<tr><td>P2</td><td>resultData = API receiver id of this op</td><td>resultData</td><td>batchSize = (bytes&lt;&lt;11)|rows</td></tr>
+<tr><td>P3</td><td>optional&hellip;</td><td>batch_size_rows</td><td>resultData</td></tr>
+<tr><td>P4</td><td></td><td>batch_size_bytes</td><td>optional&hellip;</td></tr>
+<tr><td>P5, P6</td><td></td><td>unused0, unused1 (0)</td><td></td></tr>
+<tr><td>P7</td><td></td><td>maxRows [RonDB] (per-fragment row limit, 0 = unlimited) &rarr; <code>ScanFragData::m_maxRows</code></td><td></td></tr>
+</table>
+<p class="src">QueryTree.hpp:249-459. API writer: NdbQueryOperationImpl::prepareAttrInfo() NdbQueryOperation.cpp:6113-6540.</p>
+
+<h3>3.2 Parameter bits</h3>
+<table>
+<tr><th>Bit</th><th>Value</th><th>Meaning / DBSPJ use</th></tr>
+<tr><td>PI_ATTR_LIST</td><td>0x01</td><td>User projection <code>[n][n AttributeHeaders]</code>. Copied verbatim into AttrInfo and followed by FLUSH_AI to the API (scan requests, or when NI_LINKED_ATTR is set). Suppressed on non-leaf nodes of aggregate requests and inside CTE subtrees.</td></tr>
+<tr><td><i>PI_ATTR_PARAMS</i></td><td>0x02</td><td>commented out</td></tr>
+<tr><td>PI_KEY_PARAMS</td><td>0x04</td><td>Key parameter values follow the header. Must match NI_KEY_PARAMS (20012).</td></tr>
+<tr><td>PI_ATTR_INTERPRET</td><td>0x08</td><td><code>[(subLen&lt;&lt;16)|progLen][program][subroutines]</code>. The scan filter or WHERE program; also the ExitOK stub for aggregate leaves and CTE readers.</td></tr>
+<tr><td>PI_DISK_ATTR</td><td>0x10</td><td>The user projection has disk columns, so NoDiskFlag is cleared</td></tr>
+<tr><td>PI_ATTR_AGGREGATE [RonDB]</td><td>0x20</td><td><b>Defined but not used</b> by the API or DBSPJ. The aggregation program travels in the SCAN_TABREQ KeyInfo (&sect;7.1).</td></tr>
+<tr><td>SFP_PRUNE_PARAMS</td><td>0x10000</td><td>Prune pattern uses params. Must agree with SF_PRUNE_PARAMS and cnt.</td></tr>
+<tr><td>SFP_PARALLEL</td><td>0x20000</td><td>Parallel scan (the API sets it when parallelism = max)</td></tr>
+<tr><td>SFP_SORTED_ORDER</td><td>0x40000</td><td>Root only. T_SORTED_ORDER; with RT_MULTI_SCAN the batch is 1 row</td></tr>
+<tr><td>SFP_DESCENDING [RonDB]</td><td>0x80000</td><td>CTE-body scans: DescendingFlag on the SCAN_FRAGREQ</td></tr>
+</table>
+
+<h3>3.3 Optional part of a parameter node (order is fixed)</h3>
+<ol>
+<li><b>Key parameter values</b> (PI_KEY_PARAMS): for each parameter of the op, in <code>addParamRef</code> order: <code>[byteLen][value words, zero padded]</code> (<span class="src">serializeParams() 5972-6005</span>). DBSPJ treats each length word as an AttributeHeader with attrId 0 (<code>getDataSize</code> = words). NULL values are refused by the API (<code>Err_KeyIsNULL</code>), but nothing in DBSPJ refuses them (<a href="#P-6">P-6</a>).</li>
+<li><b>Interpreted program</b> (PI_ATTR_INTERPRET).</li>
+<li><b>User projection</b> (PI_ATTR_LIST): <code>[n]</code> followed by n AttributeHeaders (size 0). The API appends <code>RANGE_NO</code> when needed and <b>CORR_FACTOR64</b> as the last entry for every op of a scan query (<span class="src">serializeProject() 5953-5968</span>). For CTE readers it adds virtual column ids 0..n-1 + CORR_FACTOR64 (<span class="src">6420-6515</span>).</li>
+</ol>
+<div class="note"><b>How parameter values are matched to patterns.</b> The parameter numbers in P_PARAM / P_PARAM_HEADER are indices into the op's own parameter list, the values serialized in part 1. DBSPJ builds a row header over the first <code>cnt</code> values (cnt comes from the pattern header) and indexes it by <code>val</code> (<span class="src">expand() 15925, 15995</span>). The prune pattern re-walks the same list from the start (<code>origParam</code>, <span class="src">parseScanFrag 12079</span>). The root op never has parameter values: its key or bounds are already in KeyInfo (<span class="src">assignParameters() starts at i=1, NdbQueryOperation.cpp:2915-2924</span>). For a unique-index access the values go in the index node's parameter block.</div>
+<div class="warn">The parameter walk is <code>buildRowHeader(hdr, param.ptr, cnt)</code>. It advances <code>param.ptr</code> by the declared sizes and never checks <code>param.end</code>. See <a href="#P-4">P-4</a>.</div>
+
+<!-- ===================================================================== -->
+<h2 id="parse">4. How DBSPJ parses and validates; error codes and limits</h2>
+
+<h3>4.1 Entry</h3>
+<table>
+<tr><th>Step</th><th>execLQHKEYREQ <span class="src">1216</span></th><th>execSCAN_FRAGREQ <span class="src">1580</span></th></tr>
+<tr><td>Reassemble</td><td colspan="2"><code>assembleFragments()</code></td></tr>
+<tr><td>AttrInfo</td><td><code>ndbrequire(getSection(attrPtr, 1))</code> (<a href="#P-11">P-11</a>)</td><td><code>ndbrequire(getSection(attrPtr, 0))</code></td></tr>
+<tr><td>Allocate</td><td colspan="2">Arena + Request; <code>do_init()</code> then <code>alloc_request_node_arrays()</code> (aggStateKeys[MAX_NDB_NODES] + lookup_node_data). Failure gives 20008.</td></tr>
+<tr><td>Header</td><td colspan="2">First word missing gives 20001 ZeroLengthQueryTree.</td></tr>
+<tr><td>RonDB sections</td><td>&mdash;</td><td>MultiFrag list (last section) is unpacked into <code>signal-&gt;theData[25..]</code>. For JoinAgg the aggKeys section is parsed before build (&sect;7.2), with <code>ndbrequire</code> on its contents.</td></tr>
+<tr><td>Build</td><td colspan="2"><code>build(ctx, req, treeReader, paramReader)</code>. Afterwards node 0 receives the KeyInfo section (<a href="#P-12">P-12</a>), and the AttrInfo section is released.</td></tr>
+<tr><td>Final checks</td><td><code>isLookup() &amp;&amp; m_node_cnt == cnt</code>, otherwise 20002</td><td><code>isScan() &amp;&amp; m_node_cnt == cnt</code>, otherwise 20002</td></tr>
+<tr><td>On error</td><td>cleanup; LQHKEYREF to TC, or TCKEYREF straight to the API for a dirty read</td><td>cleanup; SCAN_FRAGREF</td></tr>
+<tr><td>Security</td><td colspan="2">If <code>ctx.m_maliciousViolationType</code> was set (flagMaliciousTreeNode, <span class="src">12050</span>), <code>reportMaliciousSignal()</code> runs <b>after</b> the REF (it reuses <code>signal</code>).</td></tr>
+</table>
+
+<h3>4.2 The build loop (build() <span class="src">2040-2538</span>)</h3>
+<ol>
+<li><code>loop = getNodeCnt(word0)</code>; 0 or &gt; <code>NDB_SPJ_MAX_TREE_NODES</code> (32) gives 20017.</li>
+<li>For each node: peek one word from each reader (the results are ignored, see <a href="#P-20">P-20</a>), then check <code>node_len &lt; 32768</code> (20009, the size of <code>m_buffer0</code>) and <code>param_len &lt; 32768</code> (20010, <code>m_buffer1</code>).</li>
+<li><code>getWords</code> the node into <code>m_buffer0</code> (20004 if short) and the params into <code>m_buffer1</code> (20005 if short).</li>
+<li>Op types must be equal (20003). Deprecated v1 params are widened in place (<a href="#P-1">P-1</a>). <code>getOpInfo()</code>; unknown type gives 20003.</li>
+<li>Call <code>OpInfo::m_build(ctx, req, qn, qp)</code> with <code>qn-&gt;len</code> and <code>qp-&gt;len</code> set to the plain lengths.</li>
+<li>CTE bookkeeping: inside a subtree, record m_cteId and set T_CTE_SCAN or T_CTE_INDIRECT_FEED (<span class="src">2314-2420</span>).</li>
+<li>After the loop: <code>validateAggregateFlags()</code> (20022), <code>buildExecPlan()</code> (its return value is ignored, <a href="#P-19">P-19</a>), and <code>initRowBuffers()</code> (MAP or LIST with capacity MaxCorrelationId).</li>
+</ol>
+<p>Each builder sets up a <code>DABuffer {ptr, end}</code> for the node and one for the params: <code>ptr = optional</code>, <code>end = optional + (len - NodeSize)</code>. It also checks that <code>len &ge; NodeSize</code> (20004 / 20005). CTE readers move <code>nodeDA.ptr</code> past the type info first.</p>
+
+<h3>4.3 parseDA() checks (<span class="src">16082-16843</span>)</h3>
+<table>
+<tr><th>Part</th><th>Check</th><th>Result</th></tr>
+<tr><td>1 parents</td><td>unpackList bounds; cnt == 1; parent index &lt; ctx.m_cnt</td><td>20004; index out of range is VT_SPJ_PARENT_INDEX_OUT_OF_BOUNDS (Tier A)</td></tr>
+<tr><td>2 key</td><td>NI_KEY_PARAMS vs PI_KEY_PARAMS</td><td>20012</td></tr>
+<tr><td></td><td>header word inside the node; <code>len &le; end-ptr</code></td><td>20004 + VT_SPJ_SECTION_LENGTH_MISMATCH (Tier B)</td></tr>
+<tr><td></td><td><code>(cnt==0) == !NI_KEY_PARAMS == !PI_KEY_PARAMS</code></td><td>20013</td></tr>
+<tr><td></td><td><code>cnt &le; MAX_ATTRIBUTES_IN_TABLE</code></td><td>20004 + VT_SPJ_KEY_PARAM_COUNT_OUT_OF_BOUNDS (Tier A)</td></tr>
+<tr><td></td><td>Token types (P_DATA/P_COL/P_UNQ_PK/P_ATTRINFO/P_PARAM*/P_PARENT); fixed key may only hold P_DATA/P_PARAM*</td><td>20007</td></tr>
+<tr><td></td><td>Fixed key containing NULL</td><td><b>ndbabort()</b> (<a href="#P-6">P-6</a>)</td></tr>
+<tr><td>3 attr</td><td>NI_ATTR_INTERPRET together with PI_ATTR_INTERPRET</td><td>20011</td></tr>
+<tr><td></td><td>len2 word inside the node; <code>progLen</code> and <code>patternLen</code> &le; remaining</td><td>20004 + Tier B</td></tr>
+<tr><td>param interp</td><td>len word inside params; <code>program_len</code> and <code>subroutine_len</code> &le; remaining</td><td>20005 + Tier B</td></tr>
+<tr><td>param list</td><td>len word inside params; <code>len &le; end-ptr</code></td><td>20005 + VT_SPJ_ATTR_LIST_LENGTH_MISMATCH (Tier B)</td></tr>
+<tr><td>4 linked</td><td>unpackList bounds, cnt &lt; 4096</td><td>20004</td></tr>
+<tr><td>5 prune (parseScanFrag)</td><td>cnt vs SF_PRUNE_PARAMS / SFP_PRUNE_PARAMS; cnt &le; 4096. The header word and the length are <b>not</b> bounded (<a href="#P-5">P-5</a>).</td><td>20013 (Tier B) / 20004 (Tier A)</td></tr>
+</table>
+<p>Not checked anywhere at build: P_PARAM index &lt; cnt (<a href="#P-4">P-4</a>), P_DATA length against the pattern end (<a href="#P-5">P-5</a>), P_PARENT depth (crashes, <a href="#P-7">P-7</a>), P_COL / P_ATTRINFO index against the parent's linked-list length (<a href="#P-9">P-9</a>), that a child op has a key or bound (<a href="#P-8">P-8</a>), the value of an attribute id (<a href="#P-16">P-16</a>), or the table id before scanFrag_build uses it (<a href="#P-2">P-2</a>).</p>
+
+<h3>4.4 Error codes (DbspjErr.hpp)</h3>
+<table>
+<tr><th>Code</th><th>Name</th><th>Returned from (protocol parse)</th></tr>
+<tr><td>20000</td><td>OutOfOperations</td><td>createNode() pool exhausted</td></tr>
+<tr><td>20001</td><td>ZeroLengthQueryTree</td><td>no first word in AttrInfo</td></tr>
+<tr><td>20002</td><td>InvalidRequest</td><td>request kind vs node types or count; MultiFrag+JoinAgg fragCnt &gt; MAX_NDB_PARTITIONS; bad fragId list</td></tr>
+<tr><td>20003</td><td>UnknowQueryOperation</td><td>node and param op types differ; unknown op type</td></tr>
+<tr><td>20004</td><td>InvalidTreeNodeSpecification</td><td>short node, length violations, parent list, linked list, CTE checks, numCtes &gt; 64</td></tr>
+<tr><td>20005</td><td>InvalidTreeParametersSpecification</td><td>short params, param-length violations</td></tr>
+<tr><td>20006</td><td>OutOfSectionMemory</td><td>appendToSection / dupSection failure</td></tr>
+<tr><td>20007</td><td>InvalidPattern</td><td>illegal token in expand / appendFromParent</td></tr>
+<tr><td>20008</td><td>OutOfQueryMemory</td><td>arena, pattern store, CTE arrays</td></tr>
+<tr><td>20009 / 20010</td><td>QueryNodeTooBig / QueryNodeParametersTooBig</td><td>len &ge; 32768 words</td></tr>
+<tr><td>20011</td><td>BothTreeAndParametersContainInterpretedProgram</td><td>NI_ATTR_INTERPRET + PI_ATTR_INTERPRET</td></tr>
+<tr><td>20012</td><td>&hellip;KeyParamBitsMissmatch</td><td>NI_KEY_PARAMS vs PI_KEY_PARAMS</td></tr>
+<tr><td>20013</td><td>&hellip;IncorrectKeyParamCount</td><td>cnt vs flag disagreement (key and prune)</td></tr>
+<tr><td>20017</td><td>InvalidTreeNodeCount</td><td>0 or &gt; 32 nodes</td></tr>
+<tr><td>20019-20021</td><td>NoSuchTable / DropTableInProgress / WrongSchemaVersion</td><td>checkTableError(), called later (prepare, checkPrepareComplete, parent_row, scanFrag_send)</td></tr>
+<tr><td>20022</td><td>InvalidAggregateFlags [RonDB]</td><td>validateAggregateFlags(): NI_AGGREGATE without RT_AGGREGATE, unbalanced flags, no leaf, leaf that is not a leaf, empty m_aggNodes, leaves with different parents</td></tr>
+</table>
+
+<h3>4.5 Limits</h3>
+<table>
+<tr><th>Limit</th><th>Value</th><th>Where enforced</th></tr>
+<tr><td>Nodes per tree</td><td>32 (NDB_SPJ_MAX_TREE_NODES). CTE containers and bodies count.</td><td>build() 2058</td></tr>
+<tr><td>Node / param block length</td><td>&lt; 32768 words (API: &le; 0xFFFF)</td><td>build() 2083-2092</td></tr>
+<tr><td>Tree length</td><td>&le; 0xFFFF words (16-bit field)</td><td>API only (QRY_DEFINITION_TOO_LARGE, NdbQueryBuilder.cpp:1901)</td></tr>
+<tr><td>Total AttrInfo / KeyInfo</td><td>&le; ScanTabReq::MaxTotalAttrInfo = 0x3FFFF</td><td>API only (NdbQueryOperation.cpp:3962)</td></tr>
+<tr><td>Parents per node</td><td>1</td><td>parseDA</td></tr>
+<tr><td>Key params / linked attrs</td><td>&le; 4096 / &lt; 4096</td><td>parseDA</td></tr>
+<tr><td>Key length for hashing</td><td><b>assumed</b> &le; MAX_KEY_SIZE_IN_WORDS = 1023</td><td>ndbassert only (<a href="#P-3">P-3</a>)</td></tr>
+<tr><td>Parent correlation id</td><td>12 bits (MaxCorrelationId = 4096)</td><td>scanFrag_getBatchSize() caps non-leaf batches</td></tr>
+<tr><td>CTEs</td><td>&lt; 64 cteIds; numCtes &le; 64; key positions &le; 16</td><td>cte_*_build, execSCAN_FRAGREQ</td></tr>
+<tr><td>Rows per SCAN_FRAGREQ</td><td>&le; MAX_PARALLEL_OP_PER_SCAN_SPJ = 4000</td><td>scanFrag_send</td></tr>
+</table>
+
+<!-- ===================================================================== -->
+<h2 id="build">5. How DBSPJ builds child KeyInfo/AttrInfo from parent rows</h2>
+
+<h3>5.1 Storing parent rows</h3>
+<p><code>execTRANSID_AI()</code> (<span class="src">5271</span>) copies the row into <code>m_buffer1</code>. It builds a <code>RowPtr::Header {m_len, m_offset[]}</code> on the stack (<code>tmp[2+MAX_ATTRIBUTES_IN_TABLE]</code>) by walking the AttributeHeaders (<code>buildRowHeader</code> 15340). It requires the last column to be CORR_FACTOR32 (<code>getCorrelationData</code>, ndbrequire 15484-15486) and then calls <code>startNextNodes()</code>, which in turn calls each child's <code>m_parent_row</code>.</p>
+<p>A node keeps its rows when it has T_BUFFER_ROW or T_BUFFER_MAP. These flags are set by a child's P_PARENT, by the execution plan, by aggregate match tracking, or by congestion. <code>storeRow()</code> (<span class="src">5598</span>) writes:</p>
+<pre><code>[list link (2 words, COLLECTION_LIST only)] [match mask (1 word, T_BUFFER_MATCH)]
+[Header.m_len][m_offset[0..m_len-1]]   last offset always points at the CORR column
+[row words]   or only [AH(CORR32), corr] when the node is not T_BUFFER_ROW</code></pre>
+<p><b>RowMap</b>: one array of <code>MaxCorrelationId</code> &times; 3 Uint16 RowRefs (page id lo/hi, page pos; 0xFFFF means empty), indexed by <code>corr &amp; 0xFFFF</code> (the node's own tuple id), <code>ndbrequire(pos &lt; m_size)</code> (<span class="src">add_to_map 5750</span>). <b>RowList</b>: a FIFO linked through the first 2 words. <code>appendFromParent()</code> and <code>getBufferedRow()</code> find a parent row in the parent's map via <code>corr &gt;&gt; 16</code>.</p>
+
+<h3>5.2 Runtime expand() (<span class="src">15833</span>)</h3>
+<p>The stored pattern holds only P_DATA, P_COL, P_UNQ_PK, P_ATTRINFO and P_PARENT, because params were converted to P_DATA at build. Each token appends to a new segmented section. <code>hasNull</code> is set by a 0-length column or P_DATA(0). A NULL key skips the child request: lookups in lookup requests send KEYREF 626, and outer aggregate leaves get JOIN_AGG_NULL_ROW_REQ. <code>addTableMeta</code> (interpreter params only) adds 2 words before each P_ATTRINFO entry (&sect;7.6). <code>parentLevelAdjust/nullNodes</code> are used only for chained outer-join NULL propagation.</p>
+
+<h3>5.3 Lookup child: LQHKEYREQ (lookup_build 9087, lookup_parent_row 10007, lookup_send 9359)</h3>
+<table>
+<tr><th>Field</th><th>Value</th></tr>
+<tr><td>clientConnectPtr / tcBlockref</td><td>treeNode.i / DBSPJ. For leaves of a lookup request tcBlockref = TC, so that LQH sends REF to TC.</td></tr>
+<tr><td>requestInfo</td><td>ZREAD, Dirty, Simple, ApplicationAddress, CorrFactor; NoDisk from NI_LINKED_DISK/PI_DISK_ATTR; Interpreted iff T_ATTR_INTERPRETED; NormalProtocol when non-leaf or scan request; UserId when set</td></tr>
+<tr><td>hashValue, fragmentData, attrLen</td><td>from <code>computeHash()</code> + <code>getNodes()</code> (DIGETNODESREQ) over the expanded key; distribution key in attrLen. RonDB adds JoinAgg flags in attrLen (&sect;7.4).</td></tr>
+<tr><td>variableData</td><td><code>[userId?] [appRef] [appData] [corrLo] [corrHi] [aggWord?]</code>: appRef/appData = DBSPJ/treeNode.i (non-leaf or scan request) or API ref/receiver id (leaf of a lookup request). corrLo = <code>m_send.m_correlation</code>, corrHi = <code>m_rootResultData</code>.</td></tr>
+<tr><td>Sections</td><td>S0 KeyInfo: the expanded key, or the fixed key (dupSection), or the original root KeyInfo for T_ONE_SHOT. S1 AttrInfo: built at parse (dup per send) or rebuilt per row (T_ATTRINFO_CONSTRUCTED).</td></tr>
+</table>
+
+<h3>5.4 Scan child: SCAN_FRAGREQ (scanFrag_parent_row 12649, fixupBound 12975, scanFrag_send 13439)</h3>
+<ul>
+<li>For each parent row the bound pattern is expanded into one <b>range</b>. <code>scanFrag_fixupBound()</code> ORs <code>(rangeLen &lt;&lt; 16) | ((corr &amp; 0xFFF) &lt;&lt; 4)</code> into the first word (whose low 4 bits hold the BoundType). It then renumbers every AttributeHeader to the index column position: 0,1,&hellip;, with the upper half of a low/high pair keeping the id of its lower half. The ranges are appended to <code>fragPtr.m_rangePtrI</code>; with T_PRUNE_PATTERN they go to the fragment computed from the prune key.</li>
+<li>For an outer-joined aggregate leaf, the range number is a running index (<code>m_agg_range_cnt</code>) and not the parent tuple id. The parent corrs are kept in <code>m_agg_range_corrs[]</code>.</li>
+<li>T_ATTRINFO_CONSTRUCTED: one block <code>[blockLen][expanded params]</code> per range is appended to <code>fragPtr.m_paramPtrI</code>. At send the whole parameter section is appended to the AttrInfo and <code>sectionptrs[4]</code> (subroutine length) is set to its total length. DBTUP moves to the next block per range (<span class="src">Dbtup::nextAttrInfoParam 1280</span>).</li>
+<li>Header: copy of the template built at parse. RangeScan, ReadCommitted, CorrFactor; FirstMatch on leaf semi/anti joins; batch rows/bytes from params, divided by parallelism and capped at 4000; <code>variableData = [userId?][corrIdStart][rootRcvId][aggWord?][rangeCnt?]</code>; senderData = fragPtr.i; resultRef/resultData = DBSPJ/treeNode.i.</li>
+</ul>
+
+<h3>5.5 AttrInfo built by parseDA</h3>
+<p><b>Plain (non-interpreted) lookups</b>, with no NI_ATTR_* bits and no PI_ATTR_INTERPRET:</p>
+<pre><code>[user projection words]                  (PI_ATTR_LIST, unless suppressed)
+[FLUSH_AI&lt;&lt;16][apiRef][rcvId][tcRef]    (when NI_LINKED_ATTR, or scan request)
+[AH(linkedAttr)...][AH(CORR_FACTOR32)]   (NI_LINKED_ATTR), or [AH(CORR32)] only (scan + INNER/FIRST_MATCH)</code></pre>
+<p><b>Interpreted</b> (all scans, since scanFrag_build presets T_ATTR_INTERPRETED; NI_ATTR_*; PI_ATTR_INTERPRET; CTE outer intermediates):</p>
+<pre><code>w0 initReadLen   = 0
+w1 interpretLen  = len(program) or 1 (auto ExitOK = 0x12)
+w2 finalUpdLen   = 0
+w3 finalReadLen  = sum of the read/flush words below
+w4 subroutineLen = 0 at parse; patched per send/row when T_ATTRINFO_CONSTRUCTED
+[program]  [user projection][FLUSH_AI x4][linked AHs][CORR32]
+[subroutine/param area: [paramLen][meta0][meta1][AH][data]...]   (lookup: 1 block; scan: 1 block per range)</code></pre>
+<p>If nothing was produced at all, a 6-word fallback <code>{0,1,0,0,0,ExitOK}</code> is used ("Empty attrinfo would cause node crash", <span class="src">16807-16827</span>). See <a href="#P-22">P-22</a> for lookups.</p>
+<div class="note">The comment in lookup_parent_row (<span class="src">10170-10188</span>) shows <code>cinBuffer[7] = AttributeHeader</code>. In practice <code>expand(…, addTableMeta=true)</code> places two meta words before every AttributeHeader, so the header is at <code>cinBuffer[9]</code> for the first entry. DBTUP skips only the leading paramLen word and passes the rest as <code>linked_data</code> (<span class="src">DbtupExecQuery.cpp:5638-5683</span>).</div>
+
+<!-- ===================================================================== -->
+<h2 id="corr">6. Correlation ids and result delivery</h2>
+<p>DBTUP serves the pseudo-columns. CORR_FACTOR32 (0xFFE9) returns 1 word and CORR_FACTOR64 (0xFFE8) returns 2. Both read DBLQH's <code>execREAD_PSEUDO_REQ(CORR_FACTOR64)</code>, which yields <code>{m_corrFactorLo + rowsInBatch, m_corrFactorHi}</code> for scans and <code>{m_corrFactorLo, m_corrFactorHi}</code> for key ops (<span class="src">DblqhMain.cpp:6625-6637; DbtupRoutines.cpp:3421-3441</span>). For index scans DBLQH replaces the high 16 bits of corrLo with the 12-bit range number from the bound's first word (<span class="src">DblqhMain.cpp:26340-26353</span>).</p>
+<table>
+<tr><th>Rows of</th><th>corrLo high 16</th><th>corrLo low 16 (tuple id)</th><th>corrHi</th><th>Set by</th></tr>
+<tr><td>root scan</td><td>0, or the root MRR range_no</td><td><code>m_corrIdStart</code> + row index in the batch</td><td>m_rootResultData = DBTC's resultData (worker's root receiver id)</td><td>scanFrag_send 13597, 13530</td></tr>
+<tr><td>child lookup</td><td>parent tuple id</td><td>parent tuple id (reused)</td><td>same</td><td>lookup_parent_row 10309-10310: <code>(corr&lt;&lt;16)+(corr&amp;0xFFFF)</code></td></tr>
+<tr><td>child scan</td><td>parent tuple id (12 bits from the range)</td><td>corrIdStart + row index</td><td>same</td><td>fixupBound + DBLQH range handling</td></tr>
+<tr><td>lookup query (TCKEYREQ)</td><td colspan="3">m_correlation is 0 and the API ignores it: there is one row per op, matched by operation</td><td></td></tr>
+</table>
+<p>The API (<span class="src">NdbQueryOperation.cpp:588-610 CorrelationData, 6795-6845 execTRANSID_AI</span>) reads the last 3 words <code>[AH CORR64][corrLo][rootRcvId]</code>. It finds the worker by <code>rootRcvId</code> (<code>receiverIdLookup</code>) and stores <code>TupleCorrelation{parentTupleId = corrLo&gt;&gt;16, tupleId = corrLo&amp;0xFFFF}</code>. Child rows are joined to parents by tuple id within one worker's batch. Because a lookup reuses its parent's tuple id, a grandchild can find its grandparent even when the lookup returned no projection.</p>
+
+<!-- ===================================================================== -->
+<h2 id="agg">7. Join aggregation and CTE extensions [RonDB]</h2>
+
+<h3>7.1 API &rarr; DBTC: JoinAgg KeyInfo (SCAN_TABREQ section 2)</h3>
+<pre><code>[boundsLen][bounds x boundsLen][aggReceiverId]
+[main agg program]          word0 = (0x0721&lt;&lt;16)|progLen   or (0x0722&lt;&lt;16)|numLeaves, then {leafLen, leaf...}
+[CTE_DEFS_MARKER 0xCDE00000][numCtes&le;64]{tableId, schemaVersion, depLo, depHi, flags, progLen, prog...}
+[JOIN_AGG_META_MARKER 0xA66D0000][version=1][blockCount]{kind, cteIndex, len, meta...}</code></pre>
+<p>Writer: <span class="src">NdbQueryOperation.cpp:4770-4788</span>. Parser: <code>Dbtc::parseJoinAggKeyInfo()</code> <span class="src">DbtcMain.cpp:30871</span>. It moves the bounds into the ordinary root KeyInfo and keeps the programs for JOIN_AGG_SETUP_REQ. Several of its checks are <code>ndbrequire</code> on API words (<a href="#P-14">P-14</a>). DBTC copies the JoinAgg flag to the SCAN_FRAGREQ even when there is no KeyInfo (<a href="#P-10">P-10</a>).</p>
+
+<h3>7.2 DBTC &rarr; DBSPJ: the aggKeys section</h3>
+<pre><code>[QUERY_TAG_MARKER 0xCCEE0001][queryTag]            optional; queryTag &le; 0xFFFF selects the identity protocol
+{nodeId, aggStateKey} ...                           main aggregation node set (keys RNIL since RONDB-1120 P2c)
+[CTE_KEYS_MARKER 0xCCEE0000][numCtes][cteFlags]     cteFlags bit0 = CTE_SCAN_ALL_NODES
+  {cteId, depLo, depHi, perCteFlags, nodeCnt, {nodeId, aggKey, ownerInstance} x nodeCnt} x numCtes</code></pre>
+<p>Writer: <code>Dbtc::buildAggKeysSection()</code> <span class="src">32010</span>. Parser: <span class="src">DbspjMain.cpp:1716-1862</span>. It fills <code>m_aggStateKeys[]</code> and <code>m_aggNodes</code>, and allocates <code>m_cteAggStateKeys</code>, owner instances and owner node lists (three arrays of numCtes &times; MAX_NDB_NODES) plus <code>m_cteOwnerCount[numCtes]</code>. It stashes depMask and flags and applies them after build, once the CteContexts exist. Node lists must be ascending and &lt; MAX_NDB_NODES; these are ndbrequire checks. With MultiFrag+JoinAgg the section is <code>[fragCnt &le; MAX_NDB_PARTITIONS][fragIds][aggKeys&hellip;]</code> (<span class="src">1653-1693; DbtcMain.cpp:20659-20800</span>).</p>
+
+<h3>7.3 Aggregation-specific changes to parseDA output</h3>
+<ul>
+<li><code>suppressFlushAI</code>: in aggregate requests and CTE subtrees, nodes that are not aggregate leaves drop PI_ATTR_LIST and FLUSH_AI, because their rows only drive children (<span class="src">16627-16667</span>).</li>
+<li>Aggregate leaves do not set T_EXPECT_TRANSID_AI. Their rows are consumed by DBTUP's JoinAggInterpreter and never reach DBSPJ.</li>
+<li>Outer-joined CTE_LOOKUP intermediates (<code>cteAggOuterIntermediate</code>) always get the interpreted header and a CORR_FACTOR32 read (<span class="src">16330-16340, 16753-16773</span>).</li>
+<li>validateAggregateFlags() marks ancestors T_AGGREGATE_ANCESTOR. For outer joins it enables match tracking (T_BUFFER_MATCH on the nearest scan ancestor) and caps the ancestor batch to <code>MaxCorrelationId / fragCount</code> (<span class="src">2553-2862</span>).</li>
+</ul>
+
+<h3>7.4 JoinAgg words in the DBSPJ &rarr; DBLQH requests</h3>
+<table>
+<tr><th>Signal</th><th>Flags</th><th>Extra variableData</th></tr>
+<tr><td>LQHKEYREQ</td><td>In <code>attrLen</code>: JoinAgg; OuterJoinAgg (agg leaf that is not inner); JoinAggIdentity (when queryTag &le; 0xFFFF)</td><td>One word at <code>var_index+4</code> (after ApplicationAddress and CorrFactor): the identity word, or the legacy key <code>encodeAggStateKey(base, leafIdx) = leaf&lt;&lt;24 | base</code> (<span class="src">lookup_send 9420-9517</span>)</td></tr>
+<tr><td>SCAN_FRAGREQ</td><td>In <code>requestInfo</code>: JoinAgg, OuterJoinAgg, JoinAggIdentity. DBSPJ clears the JoinAgg flag DBTC set on the root scan.</td><td>At <code>var_index+2</code>: identity word or key. When OuterJoinAgg: + <code>m_agg_range_cnt</code> (<span class="src">13479-13522, 13792-13864</span>)</td></tr>
+</table>
+<p>Identity word: <code>packIdentWord(queryTag, cteId, leafIdx) = queryTag&amp;0xFFFF | cte7&lt;&lt;16 | (leafIdx&amp;0xFF)&lt;&lt;23</code>, where cte7 = 0x7F for the main aggregation (<span class="src">JoinAggregationState.hpp:511-540</span>). DBLQH resolves (transid, queryTag, cteId) to the local state and parks the request if SETUP has not arrived yet (<span class="src">DblqhMain.cpp:10336-10372</span>).</p>
+
+<h3>7.5 Other DBSPJ &rarr; DBLQH requests</h3>
+<table>
+<tr><th>Signal</th><th>Sections</th><th>Notes</th></tr>
+<tr><td>CTE_LOOKUP_REQ</td><td>S0 key (AH-encoded, from the CTE key pattern), S1 AttrInfo, S2 linked</td><td>10 header words incl. correlation, joinAggStateKey (RNIL = to API), flags ROUTE / ANTI_JOIN / OUTER_CHAIN / CACHE_FILL (<span class="src">CteLookup.hpp:39-86</span>)</td></tr>
+<tr><td>CTE_SCAN_REQ</td><td>AttrInfo</td><td>aggStateKey, batchSize (&le;256), FLUSH_AI target, scanIterI (<span class="src">CteScan.hpp:150-175</span>)</td></tr>
+<tr><td>JOIN_AGG_NULL_ROW_REQ</td><td>S0 linked_attr_data = expand(attrParamPattern, parent row, addTableMeta) [+ nCols NULL entries for CTE_LOOKUP]</td><td>Synthetic NULL-extended row for an outer aggregate leaf; identWord (<span class="src">sendJoinAggNullRow 10966</span>)</td></tr>
+</table>
+
+<h3>7.6 Linked-attribute metadata prefix</h3>
+<p>Every P_ATTRINFO expanded with <code>addTableMeta</code> (interpreter params, null rows) produces <code>[w0][w1][AH][data]</code>. For a real table w0 = primaryTableId and w1 = <i>current</i> schema version from DBSPJ's table record (not the index version). For a CTE parent w0 = <code>0x80000000|typeId&lt;&lt;16|maxBytes</code> and w1 = <code>csNumber&lt;&lt;16|flags</code>, taken from the node's type info (<span class="src">CteLinkedAttr.hpp; appendFromParent 15729-15753</span>). A synthetic NULL uses the BIGINT CTE marker (<span class="src">emitNullAttrinfo 15581</span>).</p>
+
+<div class="warn"><b>Stale design note.</b> <code>pushdown_join_aggregation/coordinator.md</code> (around lines 258, 298, 419, 512) says the aggregation program is carried in QueryParameters under <code>PI_ATTR_AGGREGATE</code> and placed in the leaf's AttrInfo. The code does neither: the program goes API &rarr; SCAN_TABREQ KeyInfo &rarr; DBTC &rarr; JOIN_AGG_SETUP_REQ section 0, and PI_ATTR_AGGREGATE is never set.</div>
+
+<!-- ===================================================================== -->
+<h2 id="example">8. Worked example: scan t1 &rarr; lookup t2 &rarr; index scan t3</h2>
+<p>Schema (attribute ids in brackets): <code>t1(a[0] INT PK, b[1] INT)</code>, <code>t2(b[0] INT PK, c[1] INT)</code>, <code>t3(x[0] INT PK, c[1] INT, d[2] INT, ordered index ix_c(c))</code>. Query: <code>SELECT t1.a, t2.c, t3.d FROM t1 JOIN t2 ON t2.b=t1.b JOIN t3 ON t3.c=t2.c</code>. It is pushed as <code>scanTable(t1)</code>, <code>readTuple(t2, {linkedValue(op0,"b")})</code>, <code>scanIndex(ix_c, t3, bound low=high=linkedValue(op1,"c"))</code>, with the inner joins (MatchNonNull) that ha_ndbcluster sets. There is no prune pattern because ix_c does not contain t3's distribution key (<span class="src">appendPrunePattern 3110-3113</span>).</p>
+<p><i>Illustrative values</i> (not derivable from code): table ids t1=10, t2=11, ix_c index table=13, all versions 1; receiver ids R0/R1/R2; batch sizes; refs; the row values. Everything else follows from the serializer code.</p>
+
+<h3>8.1 QueryTree (23 words)</h3>
+<table>
+<tr><th>#</th><th>Word</th><th>Meaning</th></tr>
+<tr><td>0</td><td>0x00170003</td><td>tree length 23, 3 nodes</td></tr>
+<tr><td>1</td><td>0x00050004</td><td>node 0: length 5, QN_SCAN_FRAG</td></tr>
+<tr><td>2</td><td>0x00000010</td><td>NI_LINKED_ATTR (root: no parent, no key pattern; prepareKeyInfo puts any bounds in KeyInfo)</td></tr>
+<tr><td>3</td><td>0x0000000A</td><td>tableId t1 (illustr.)</td></tr>
+<tr><td>4</td><td>0x00000001</td><td>tableVersion (illustr.)</td></tr>
+<tr><td>5</td><td>0x00010001</td><td>linked list: cnt=1, item0=attr 1 (t1.b)</td></tr>
+<tr><td>6</td><td>0x00080001</td><td>node 1: length 8, QN_LOOKUP</td></tr>
+<tr><td>7</td><td>0x00000413</td><td>NI_HAS_PARENT | NI_KEY_LINKED | NI_LINKED_ATTR | NI_INNER_JOIN</td></tr>
+<tr><td>8</td><td>0x0000000B</td><td>tableId t2</td></tr>
+<tr><td>9</td><td>0x00000001</td><td>version</td></tr>
+<tr><td>10</td><td>0x00000001</td><td>parent list: cnt=1, parent 0</td></tr>
+<tr><td>11</td><td>0x00000001</td><td>key pattern header: 0 params, length 1</td></tr>
+<tr><td>12</td><td>0x00020000</td><td>P_COL(0) = parent's linked col 0 (t1.b), no header</td></tr>
+<tr><td>13</td><td>0x00010001</td><td>linked list: cnt=1, attr 1 (t2.c)</td></tr>
+<tr><td>14</td><td>0x00090004</td><td>node 2: length 9, QN_SCAN_FRAG</td></tr>
+<tr><td>15</td><td>0x00000603</td><td>NI_HAS_PARENT | NI_KEY_LINKED | NI_REPEAT_SCAN_RESULT | NI_INNER_JOIN</td></tr>
+<tr><td>16</td><td>0x0000000D</td><td>index table id ix_c</td></tr>
+<tr><td>17</td><td>0x00000001</td><td>version</td></tr>
+<tr><td>18</td><td>0x00010001</td><td>parent list: cnt=1, parent 1</td></tr>
+<tr><td>19</td><td>0x00000003</td><td>bound pattern header: 0 params, length 3</td></tr>
+<tr><td>20</td><td>0x00010001</td><td>P_DATA(1)</td></tr>
+<tr><td>21</td><td>0x00000004</td><td>&hellip; BoundEQ</td></tr>
+<tr><td>22</td><td>0x00070000</td><td>P_ATTRINFO(0) = parent's linked col 0 (t2.c), with header</td></tr>
+</table>
+
+<h3>8.2 QueryParameters (28 words; AttrInfo total 51)</h3>
+<table>
+<tr><th>#</th><th>Word</th><th>Meaning</th></tr>
+<tr><td>23</td><td>0x000B0004</td><td>params 0: length 11, QN_SCAN_FRAG</td></tr>
+<tr><td>24</td><td>0x00000001</td><td>PI_ATTR_LIST (+0x20000 SFP_PARALLEL when parallelism = max)</td></tr>
+<tr><td>25</td><td>R0</td><td>resultData: receiver id of op0 (illustr.)</td></tr>
+<tr><td>26-27</td><td>rows, bytes</td><td>batch_size_rows (&le;0x1000/fragsPerWorker for a parent), batch_size_bytes (illustr.)</td></tr>
+<tr><td>28-30</td><td>0, 0, 0</td><td>unused0, unused1, maxRows</td></tr>
+<tr><td>31</td><td>0x00000002</td><td>projection: 2 headers</td></tr>
+<tr><td>32</td><td>0x00000000</td><td>AH(t1.a)</td></tr>
+<tr><td>33</td><td>0xFFE80000</td><td>AH(CORR_FACTOR64)</td></tr>
+<tr><td>34</td><td>0x00060001</td><td>params 1: length 6, QN_LOOKUP</td></tr>
+<tr><td>35</td><td>0x00000001</td><td>PI_ATTR_LIST</td></tr>
+<tr><td>36</td><td>R1</td><td>receiver id of op1</td></tr>
+<tr><td>37-39</td><td>0x00000002, 0x00010000, 0xFFE80000</td><td>projection: AH(t2.c), AH(CORR64)</td></tr>
+<tr><td>40</td><td>0x000B0004</td><td>params 2: length 11, QN_SCAN_FRAG</td></tr>
+<tr><td>41</td><td>0x00000001</td><td>PI_ATTR_LIST</td></tr>
+<tr><td>42-47</td><td>R2, rows, bytes, 0, 0, 0</td><td>&nbsp;</td></tr>
+<tr><td>48-50</td><td>0x00000002, 0x00020000, 0xFFE80000</td><td>projection: AH(t3.d), AH(CORR64)</td></tr>
+</table>
+<p>Transport: SCAN_TABREQ{S0 = worker receiver ids, S1 = these 51 words, no S2}. DBTC sends one SCAN_FRAGREQ per root fragment (or chunk) to DBSPJ, with S0 = the same 51 words, resultRef = API, resultData = R0<sub>w</sub> (worker's root receiver).</p>
+
+<h3>8.3 What DBSPJ builds</h3>
+<p><b>Node 0 (root scan).</b> T_ATTR_INTERPRETED is preset, so the AttrInfo is interpreted (14 words):</p>
+<pre><code>0x00000000 0x00000001 0x00000000 0x00000008 0x00000000   5-word header (interpret 1, finalRead 8)
+0x00000012                                               ExitOK (auto, no program)
+0x00000000 0xFFE80000                                    user projection: AH(a), AH(CORR64)
+0xFFEA0000 apiRef R0 tcRef                               FLUSH_AI to the API, route via DBTC
+0x00010000 0xFFE90000                                    linked AH(b), AH(CORR32) -&gt; DBSPJ</code></pre>
+<p>SCAN_FRAGREQ to the local DBLQH or query thread: DBTC's header plus CorrFactor=1, MultiFrag=0, resultRef=DBSPJ, resultData=node0.i, <code>variableData=[corrIdStart=0][R0<sub>w</sub>]</code>. No KeyInfo (table scan).</p>
+<p>Row 5 of the batch (a=100, b=7) produces two TRANSID_AIs:</p>
+<pre><code>to API  : 0x00000004 100 | 0xFFE80008 0x00000005 R0w
+to DBSPJ: 0x00010004 7   | 0xFFE90004 0x00000005</code></pre>
+<p><b>Node 1 (lookup t2).</b> <code>m_keyPattern = [0x00020000]</code>, T_KEYINFO_CONSTRUCTED. The AttrInfo is not interpreted (8 words):</p>
+<pre><code>0x00010000 0xFFE80000                user projection AH(c), AH(CORR64)
+0xFFEA0000 apiRef R1 tcRef           FLUSH_AI (NI_LINKED_ATTR is set)
+0x00010000 0xFFE90000                linked AH(c), AH(CORR32)</code></pre>
+<p>For the parent row with corr 5: KeyInfo = <code>[0x00000007]</code>. computeHash/getNodes pick the fragment. <code>m_correlation = (5&lt;&lt;16)+5 = 0x00050005</code>. LQHKEYREQ <code>variableData = [DBSPJ ref][node1.i][0x00050005][R0<sub>w</sub>]</code>, flags ZREAD | Dirty | Simple | AppAddr | CorrFactor | NormalProtocol | NoDisk. For the row t2(b=7, c=42):</p>
+<pre><code>to API  : 0x00010004 42 | 0xFFE80008 0x00050005 R0w
+to DBSPJ: 0x00010004 42 | 0xFFE90004 0x00050005</code></pre>
+<p><b>Node 2 (index scan t3).</b> <code>m_keyPattern = [0x00010001, 0x00000004, 0x00070000]</code>. AttrInfo (13 words):</p>
+<pre><code>0 1 0 7 0 | 0x00000012 | 0x00020000 0xFFE80000 | 0xFFEA0000 apiRef R2 tcRef | 0xFFE90000
+          (INNER_JOIN scan without linked attrs: CORR32-only read for match tracking)</code></pre>
+<p>For the parent corr 0x00050005 the bound is expanded to <code>[0x00000004][0x00010004][42]</code>. <code>scanFrag_fixupBound</code> rewrites it to <code>[0x00030054][0x00000004][42]</code>: length 3, range_no 5, BoundEQ, and the header renumbered to index attribute 0. After the parent batch completes, SCAN_FRAGREQ goes to every ix_c fragment (no prune) with RangeScan | CorrFactor, <code>variableData=[corrIdStart][R0<sub>w</sub>]</code>, S0=AttrInfo, S1=all collected ranges. The first matching row t3(d=77):</p>
+<pre><code>to API  : 0x00020004 77 | 0xFFE80008 0x00050000 R0w     parentTupleId 5, tupleId 0
+to DBSPJ: 0xFFE90004 0x00050000</code></pre>
+<p>The API joins t3 tuple 0 to parent tuple 5 in op1's stream. That row (tuple 5, parent 5) joins to op0's tuple 5. Two scans set RT_MULTI_SCAN and NI_REPEAT_SCAN_RESULT sets RT_REPEAT_SCAN_RESULT, so the plan is built by planSequentialExec and some ancestors buffer rows. The exact buffering flags depend on buildExecPlan() and are not shown.</p>
+
+<!-- ===================================================================== -->
+<h2 id="compat">9. Compatibility and versioning</h2>
+<table>
+<tr><th>Aspect</th><th>Mechanism</th><th>Code</th></tr>
+<tr><td>QueryTree format</td><td>No version word. Op types and bits are additive. Unknown bits are ignored and unknown op types give 20003.</td><td>build(), getOpInfo() 15270</td></tr>
+<tr><td>v1 scan nodes</td><td>The API emits QN_SCAN_FRAG_v1 (root) / QN_SCAN_INDEX_v1 when <code>!ndbd_spj_multifrag_scan(minDbVer)</code> (&lt; 7.6.4). DBSPJ converts them.</td><td>NdbQueryBuilder.cpp:3913, 3968-4005; DbspjMain.cpp:2197-2286</td></tr>
+<tr><td>Outer-joined child scans</td><td>The API refuses them unless <code>ndbd_send_active_bitmask</code> (8.0.20)</td><td>NdbQueryBuilder.cpp:3924-3928</td></tr>
+<tr><td>Large batches</td><td><code>ndbd_support_large_batch_size</code> gates ScanBatch=0</td><td>NdbQueryOperation.cpp:4666-4675</td></tr>
+<tr><td>Join aggregation</td><td><code>ndbd_support_pushdown_join_agg</code> (&ge; 26.10) is checked by the API (doSend) and by DBTC (SCAN_TABREQ, 4003). <code>ndbd_support_agg_wide_type</code> covers DATETIME2/TIMESTAMP2 loads.</td><td>NdbQueryOperation.cpp:4714-4729; DbtcMain.cpp:17100-17106</td></tr>
+<tr><td>fragsPerWorker</td><td>log2 in storedProcId bits 16-17; 0 decodes to 1 (the pre-feature wire image). The combined MultiFrag+JoinAgg section is used only when the API passed <code>ndbd_support_joinagg_frags_per_worker</code>. That function's comment says "first shipped in 26.04.2" but the predicate requires 26.10.</td><td>ndb_version.h.in:1441; DbtcMain.cpp:17741-17747</td></tr>
+<tr><td>queryTag identity</td><td>The QUERY_TAG_MARKER block is optional. Without it DBSPJ falls back to the legacy keyed form ("unreachable from same-version DBTC").</td><td>DbspjMain.cpp:1740-1755, 9450-9466</td></tr>
+<tr><td>CteLookup key positions</td><td>numResultCols bits 16-23 = 0 keeps the old wire image</td><td>QueryTree.hpp:527-539</td></tr>
+<tr><td>JOIN_AGG_SETUP_REQ</td><td>SignalLength_v1 = 13 without setupNodes (block tests only)</td><td>JoinAgg.hpp:39</td></tr>
+<tr><td>FLUSH_AI for scans</td><td>The comment says it must be "under API-version control"; no version check exists</td><td>parseDA 16686-16689</td></tr>
+</table>
+
+<!-- ===================================================================== -->
+<h2 id="weak">10. Suspected weaknesses</h2>
+<p>P-1 to P-23 were found by reading the code; of these, P-1, P-2, P-3, P-6, P-7, P-8, P-9, P-10, P-11 and P-14 have since been reproduced, each stopping a data node at the site named below (<code>test_spj_malformed_&lt;case&gt;</code>, see README.md). P-24 was found by a test run. Confidence is my own estimate. "Crafted request" means an NDB API client that writes its own SCAN_TABREQ or TCKEYREQ words. DBTC forwards the AttrInfo unchanged, so the whole QueryTree and QueryParameters are controlled by the client. Many of the issues are inherited from upstream MySQL NDB; RonDB-specific ones are marked.</p>
+
+<table>
+<tr><th>ID</th><th>Summary</th><th>Where</th><th>Conf.</th></tr>
+<tr><td><a href="#P-1">P-1</a></td><td>v1 parameter widening: <code>param_len - NodeSize</code> underflows, wild memmove</td><td>build() 2222, 2271</td><td>reproduced</td></tr>
+<tr><td><a href="#P-2">P-2</a></td><td>Scan node tableId indexes the key-descriptor array and table records before validation, stopping the node</td><td>scanFrag_build() 11681, 11777, 11885; parseScanFrag 12189</td><td>high</td></tr>
+<tr><td><a href="#P-3">P-3</a></td><td>Keys longer than 1023 words overflow the stack buffer in computeHash / computePartitionHash</td><td>11379-11381, 11428-11434</td><td>high</td></tr>
+<tr><td><a href="#P-4">P-4</a></td><td>P_PARAM index unchecked; parameter walk ignores the end of the parameter block (OOB read into the key)</td><td>expand() 15925-16080</td><td>high</td></tr>
+<tr><td><a href="#P-5">P-5</a></td><td>P_DATA length and the prune header can read past the node</td><td>15958-15969, 12084-12087</td><td>high</td></tr>
+<tr><td><a href="#P-6">P-6</a></td><td>ndbabort / ndbrequire on a NULL constant key or empty prune pattern</td><td>16301-16309, 12151-12160</td><td>high</td></tr>
+<tr><td><a href="#P-7">P-7</a></td><td>P_PARENT depth checked with ndbrequire at build</td><td>16043-16067</td><td>high</td></tr>
+<tr><td><a href="#P-8">P-8</a></td><td>Child op without a usable key crashes on the first parent row (RNIL section, or ndbabort "fix later")</td><td>10140, 12915, 12981</td><td>high</td></tr>
+<tr><td><a href="#P-9">P-9</a></td><td>Parent column index never checked against the parent row; P_UNQ_PK ndbrequire</td><td>15490-15571</td><td>high</td></tr>
+<tr><td><a href="#P-10">P-10</a></td><td>[RonDB] JoinAgg flag without KeyInfo: DBSPJ parses the AttrInfo as aggKeys (ndbrequire, or double release)</td><td>DbtcMain 17780/17443/20674; DbspjMain 1716-1924</td><td>high</td></tr>
+<tr><td><a href="#P-11">P-11</a></td><td>ViaSPJ TCKEYREQ without AttrInfo hits ndbrequire in DBSPJ</td><td>execLQHKEYREQ 1240</td><td>high</td></tr>
+<tr><td><a href="#P-12">P-12</a></td><td>Root KeyInfo overwrites the key parseDA built, leaking one section per request</td><td>1316, 1920</td><td>med-high</td></tr>
+<tr><td><a href="#P-13">P-13</a></td><td>[RonDB] CTE subtree without the CTE aggKeys block: ndbrequire in the legacy keyed path</td><td>cte_subtree_build 7860; scanFrag_send 13809-13810</td><td>medium</td></tr>
+<tr><td><a href="#P-14">P-14</a></td><td>[RonDB] DBTC parseJoinAggKeyInfo: ndbrequire and wrapping additions on API words; stack over-read</td><td>DbtcMain 30913-31080</td><td>high</td></tr>
+<tr><td><a href="#P-15">P-15</a></td><td>[RonDB] cte_scan_build: numResultCols&times;2 overflow, NULL start signal, NULL m_parent_row</td><td>8073-8114, 6297</td><td>medium</td></tr>
+<tr><td><a href="#P-16">P-16</a></td><td>FLUSH_AI and other pseudo-columns in API read lists are not filtered (TRANSID_AI to any block; breaks the row-layout ndbrequire)</td><td>parseDA 16655, 16714; DbtupRoutines 3413</td><td>medium</td></tr>
+<tr><td><a href="#P-17">P-17</a></td><td>execTRANSID_AI row header count is unbounded (stack array)</td><td>5423-5427, 15340</td><td>med-low</td></tr>
+<tr><td><a href="#P-18">P-18</a></td><td>[RonDB] Lookup root of a scan request: ndbrequire after computeHash/getNodes; table not checked first</td><td>lookup_start 9309-9355; checkPrepareComplete 3622-3633</td><td>medium</td></tr>
+<tr><td><a href="#P-19">P-19</a></td><td>buildExecPlan() return value ignored</td><td>build() 2520</td><td>med-low</td></tr>
+<tr><td><a href="#P-20">P-20</a></td><td>Tree header length never validated; peek results ignored</td><td>1286, 1867, 2065-2068</td><td>low</td></tr>
+<tr><td><a href="#P-21">P-21</a></td><td>A node with children but no NI_LINKED_ATTR stays T_LEAF, so its batch is not capped by the correlation-id limit</td><td>16741, 13173-13176, 5775</td><td>low</td></tr>
+<tr><td><a href="#P-22">P-22</a></td><td>Interpreted-format empty-AttrInfo fallback sent to non-interpreted lookups</td><td>16807-16827, 9207</td><td>low</td></tr>
+<tr><td><a href="#P-23">P-23</a></td><td>Scan node in a lookup request is built from a misread LqhKeyReq before being rejected</td><td>11736-11852, 1331</td><td>low</td></tr>
+<tr><td><a href="#P-24">P-24</a></td><td>An API signal to a block instance without a handler for it (SCAN_TABREQ to the DbtcProxy) stops the data node</td><td>SimulatedBlock.hpp 2563, SimulatedBlock.cpp 2850</td><td>reproduced</td></tr>
+</table>
+
+<h3 id="P-1">P-1 &mdash; v1 parameter widening underflows (high)</h3>
+<div class="weak"><b>P-1.</b> <span class="src">DbspjMain.cpp:2215-2225, 2264-2274 build()</span>. The deprecated QN_SCAN_FRAG_v1 / QN_SCAN_INDEX_v1 parameter block is widened in place <i>before</i> scanFrag_build checks <code>param-&gt;len</code>. <code>memmove(…, (param_len - param_old-&gt;NodeSize) * sizeof(Uint32))</code> wraps when param_len &lt; 3 (FRAG_v1) or &lt; 4 (INDEX_v1). A length of 0 is accepted by <code>getWords(m_buffer1, 0)</code>, which leaves stale buffer content in place. <b>Trigger:</b> node <code>0x00040003</code>+3 words (INDEX_v1), params <code>0x00030003</code>+2 words. <b>Effect:</b> a memmove of about 16 GB stops the data node. <b>Test:</b> a raw SCAN_TABREQ (ViaSPJ) test expecting 20005. <b>Fix:</b> require <code>param_len &ge; param_old-&gt;NodeSize</code>.</div>
+
+<h3 id="P-2">P-2 &mdash; scan tableId used before validation (high)</h3>
+<div class="weak"><b>P-2.</b> <span class="src">scanFrag_build() 11681</span> calls <code>g_key_descriptor_pool.getPtr(node-&gt;tableId)</code> for every scan node. <code>CArray::getPtr</code> calls <code>handleAssert</code> (node shutdown) when the index is out of range. The root and CTE-root branches then call <code>ptrCheckGuard(…, c_tabrecFilesize)</code>, which calls <code>progError</code> (<span class="src">11777, 11885</span>; also <span class="src">parseScanFrag 12189</span>). <code>checkTableError()</code> runs only later. The root node's tableId is compared with DBTC's validated tableId only by an ndbassert (<span class="src">11768</span>). <b>Trigger:</b> any QN_SCAN_FRAG with tableId 0xFFFF0000. <b>Test:</b> expect 20019. <b>Fix:</b> bound or check the table before the descriptor lookup.</div>
+
+<h3 id="P-3">P-3 &mdash; computeHash stack overflow (high)</h3>
+<div class="weak"><b>P-3.</b> <span class="src">computeHash() 11379-11381; computePartitionHash() 11428-11434</span>: <code>Uint32 tmp32[MAX_KEY_SIZE_IN_WORDS]</code> (1023 words), <code>ndbassert(ptr.sz &le; 1023)</code>, then <code>copy(tmp32, ptr)</code>. Keys are expanded from API P_DATA tokens (up to 0xFFFF words each) or from parent column values (up to 18000 words), and their length is never limited. <b>Trigger:</b> a lookup child with NI_KEY_CONSTS and <code>P_DATA(4000)</code> under a scan root. Also a linked key from a long parent column, or a prune key. <b>Test:</b> expect a REF. <b>Fix:</b> make the size check an error return.</div>
+
+<h3 id="P-4">P-4 &mdash; unchecked P_PARAM index and parameter walk (high)</h3>
+<div class="weak"><b>P-4.</b> <span class="src">expand() 15925-15992 and 15995-16080; buildRowHeader(…, src, cnt) 15363</span>. <code>val &lt; paramCnt</code> is only an ndbassert. A larger val indexes the stack array <code>tmp[1+4096]</code> out of range or reads uninitialised entries, and the resulting offset is used to copy <code>getDataSize(*ptr)</code> words into the key. The parameter walk advances by the declared sizes (up to 16383 words each) without checking <code>param.end</code>. Data read out of bounds (from <code>m_buffer1</code>, which may hold another query's last TRANSID_AI row, or beyond) ends up in KeyInfo sent to DBLQH. <b>Trigger:</b> NI_KEY_PARAMS, header <code>0x00010001</code>, <code>P_PARAM(0x400)</code>; or one parameter whose length word is 0xFFFC. <b>Test:</b> expect 20007 or 20005.</div>
+
+<h3 id="P-5">P-5 &mdash; pattern tokens read past the node (high)</h3>
+<div class="weak"><b>P-5.</b> <span class="src">expand() 15958-15969</span>: P_DATA copies <code>val</code> words after checking only <code>ptr &lt; end</code>. <span class="src">16027-16034</span>: P_PARAM advances <code>pattern.ptr</code> without a tree-end check. <span class="src">parseScanFrag 12084-12087</span>: the SF_PRUNE_PATTERN header is read without <code>tree.ptr &lt; tree.end</code>, and <code>len</code> is never checked against the remaining node words (parseDA has both checks). <b>Trigger:</b> a fixed key whose last word is <code>P_DATA(0xFFFF)</code>; or SF_PRUNE_PATTERN set with no prune words. <b>Test:</b> expect 20004.</div>
+
+<h3 id="P-6">P-6 &mdash; NULL constant key aborts the node (high)</h3>
+<div class="weak"><b>P-6.</b> <span class="src">parseDA 16301-16309</span> and <span class="src">parseScanFrag 12151-12160</span>: when a fixed key or constant prune key has <code>hasNull</code>, the code calls <code>ndbabort()</code> ("API should have eliminated…"). An empty constant prune pattern hits <code>ndbrequire(prunePtrI != RNIL)</code>. <code>P_DATA(0)</code> alone sets hasNull. <b>Trigger:</b> NI_KEY_CONSTS key <code>[0x00000001][0x00010000]</code>. <b>Test:</b> expect 20007.</div>
+
+<h3 id="P-7">P-7 &mdash; P_PARENT depth checked with ndbrequire (high)</h3>
+<div class="weak"><b>P-7.</b> <span class="src">expand(Local_pattern_store&amp;) 16043-16067</span>: <code>ndbrequire(m_treenode_pool.getPtr(parentPtr, m_parentPtrI))</code> plus one more per level. <code>getPtr(…, RNIL)</code> returns false, so the node stops. The runtime path (<span class="src">appendFromParent 15674</span>) handles the same case with InvalidPattern. <b>Trigger:</b> <code>[P_PARENT(5), P_COL(0)]</code> at depth 1, or any P_PARENT in a node without NI_HAS_PARENT. <b>Test:</b> expect 20007.</div>
+
+<h3 id="P-8">P-8 &mdash; child op without a key (high)</h3>
+<div class="weak"><b>P-8.</b> A lookup child with no NI_KEY_* bits, or with an empty NI_KEY_LINKED pattern, reaches <span class="src">lookup_parent_row 10140</span> <code>computeHash(…, RNIL)</code>. That calls <code>getSection(RNIL)</code> and crashes (only <code>ndbassert(ptrI != RNIL)</code> guards it). A scan child without NI_KEY_LINKED hits <code>ndbabort()</code> ("Fixed key...fix later", <span class="src">12915</span>). With an empty linked pattern it reaches <code>SectionReader(RNIL)</code> in <span class="src">scanFrag_fixupBound 12981</span>. <b>Trigger:</b> <code>[scan t1 NI_LINKED_ATTR][lookup t2 NI_HAS_PARENT only]</code>. <b>Test:</b> expect a build-time 20004.</div>
+
+<h3 id="P-9">P-9 &mdash; parent column index not validated (high)</h3>
+<div class="weak"><b>P-9.</b> <span class="src">appendColToSection / appendAttrinfoToSection / appendPkColToSection 15490-15571</span> read <code>row.m_header-&gt;m_offset[col]</code> for <code>col</code> up to 0xFFFF and never compare it with <code>m_header-&gt;m_len</code>, which is the parent's linked count + 1. Fresh rows keep the header on the stack of execTRANSID_AI (<code>tmp[2+4096]</code>, <span class="src">5423</span>), so an out-of-range col reads a garbage offset and then out-of-bounds row data, which is copied into the child's KeyInfo or AttrInfo. <code>appendPkColToSection</code> also does <code>ndbrequire(len &gt; 1)</code>, so P_UNQ_PK on an INT or NULL column stops the node. <b>Trigger:</b> child key <code>[P_COL(300)]</code>, or <code>[P_UNQ_PK(0)]</code> on an INT parent column. <b>Fix:</b> record each node's linked count at parse and validate every P_COL / P_ATTRINFO / P_UNQ_PK (including P_PARENT targets).</div>
+
+<h3 id="P-10">P-10 &mdash; JoinAgg flag without an aggKeys section [RonDB] (high)</h3>
+<div class="weak"><b>P-10.</b> DBTC copies the JoinAgg flag to the SCAN_FRAGREQ (<span class="src">DbtcMain.cpp:17780</span>). It only parses the KeyInfo, builds aggKeys and attaches them when <code>keyLen != 0</code> (<span class="src">17443, 18500, 20674</span>). A SCAN_TABREQ with ViaSPJ and JoinAgg and only 2 sections therefore makes DBSPJ take the AttrInfo as the aggKeys section (<span class="src">1726-1728</span>). Tree word 0 is then read as a nodeId and <code>ndbrequire(nodeId &lt; MAX_NDB_NODES)</code> fires (<span class="src">1769</span>). If the tree is crafted so the parse passes, the same section is released twice (<span class="src">1922-1924</span>). With MultiFrag, a fragId is read as fragCnt and <code>ndbrequire(reader.step(offset))</code> fires (<span class="src">1732</span>). The aggKeys parser is otherwise all ndbrequire, and it assumes CTE block <i>c</i> has <code>cteId == c</code> without checking. <b>Test:</b> raw SCAN_TABREQ(JoinAgg, 2 sections); expect a REF.</div>
+
+<h3 id="P-11">P-11 &mdash; ViaSPJ TCKEYREQ without AttrInfo (high)</h3>
+<div class="weak"><b>P-11.</b> <span class="src">execLQHKEYREQ 1240</span> <code>ndbrequire(handle.getSection(attrPtr, LqhKeyReq::AttrInfoSectionNum))</code>. DBTC accepts a long TCKEYREQ with attrlength 0 and forwards only KeyInfo (<span class="src">DbtcMain.cpp:4771-4787, 6025-6033</span>). Nothing else checks viaSPJFlag. <b>Trigger:</b> TCKEYREQ with ViaSPJ, READ, dirty, KeyInfo only. <b>Test:</b> expect TCKEYREF 20001.</div>
+
+<h3 id="P-12">P-12 &mdash; root KeyInfo overwrite leaks a section (medium-high)</h3>
+<div class="weak"><b>P-12.</b> <span class="src">execLQHKEYREQ 1315-1316; execSCAN_FRAGREQ 1915-1921</span>: <code>rootNodePtr.p-&gt;m_send.m_keyInfoPtrI = keyPtrI</code> overwrites the section that parseDA stored for a root with NI_KEY_CONSTS or NI_KEY_PARAMS (<span class="src">16310</span>). One SectionSegment chain leaks per request. In addition, for CTE compound queries <code>m_node_list[0]</code> is the CTE_SUBTREE container, so a root KeyInfo would be attached to the container. <b>Test:</b> 100k requests while watching SectionSegment use.</div>
+
+<h3 id="P-13">P-13 &mdash; CTE subtree without CTE keys [RonDB] (medium)</h3>
+<div class="weak"><b>P-13.</b> cte_subtree_build (<span class="src">7860-7952</span>) does not require <code>m_cteOwnerNodes</code>/<code>m_cteAggStateKeys</code>, while cte_lookup_build and cte_scan_build do. checkPrepareComplete starts the embedded T_CTE_SCAN scan (<span class="src">3646-3689</span>). With no queryTag, scanFrag_send takes the legacy keyed branch and fires <code>ndbrequire(m_cteAggStateKeys != nullptr)</code> (<span class="src">13809-13810</span>); lookup_send does the same (<span class="src">9462-9463</span>). <b>Trigger:</b> a SCAN_TABREQ without JoinAgg and tree <code>[CTE_SUBTREE 0,1][SCAN t1][SCAN t1]</code>. <b>Test:</b> expect 20004.</div>
+
+<h3 id="P-14">P-14 &mdash; DBTC JoinAgg KeyInfo parser [RonDB] (high)</h3>
+<div class="weak"><b>P-14.</b> <span class="src">Dbtc::parseJoinAggKeyInfo 30913-31080</span>: <code>ndbrequire(2 + boundsLen &lt;= keyLen)</code> wraps for boundsLen &ge; 0xFFFFFFFE, and any oversize boundsLen is a node stop rather than an abort. <code>ndbrequire(consumed + 6 &lt;= totalRemaining)</code> stops the node on a truncated CTE definition. <code>ndbrequire(consumed + cteProgLen &lt;= totalRemaining)</code> wraps for a huge cteProgLen, and <code>appendToSection(linBuf + consumed, cteProgLen)</code> then reads far beyond the 8192-word stack buffer. In the 0x0722 walk, <code>mainAggLen += 1 + leafLen</code> can wrap. <b>Test:</b> expect SCAN_TABREF ZINVALID_KEY.</div>
+
+<h3 id="P-15">P-15 &mdash; cte_scan_build [RonDB] (medium)</h3>
+<div class="weak"><b>P-15.</b> (1) <span class="src">8109-8114</span>: <code>typeInfoWords = numResultCols * 2</code> uses the unmasked 32-bit value. 0x80000001 gives 2, which passes the length check; later <code>ndbrequire(col &lt; numCols)</code> passes and reads <code>virtInfo[col*2]</code> out of bounds on the heap (<span class="src">15550</span>). (2) <span class="src">8073-8077</span>: <code>ctx.m_start_signal</code> is dereferenced with only an ndbassert, and it is NULL once the main root has been built. (3) <code>g_CteScanOpInfo.m_parent_row == 0</code> but parseDA accepts NI_HAS_PARENT, so when the parent produces a row, startNextNodes calls through a null member pointer (<span class="src">6297-6300</span>).</div>
+
+<h3 id="P-16">P-16 &mdash; pseudo-columns in API read lists (medium)</h3>
+<div class="weak"><b>P-16.</b> PI_ATTR_LIST is copied verbatim (<span class="src">16655-16663</span>), and NI_LINKED_ATTR ids are shifted into headers without filtering (<span class="src">16714-16723</span>). DBTUP honours <code>FLUSH_AI</code> with the next 3 words used as resultRef/resultData/routeRef (<span class="src">DbtupRoutines.cpp:3413-3419</span>). A client can therefore make DBTUP send TRANSID_AI to any block. Sent to a DBSPJ with an unknown connectPtr, it stops the node at <code>ndbrequire(getGuardedPtr)</code> (<span class="src">5281</span>). Injected pseudo-columns also break the <code>[cols&hellip;, CORR32]</code> layout that getCorrelationData enforces with ndbrequire. The PI_ATTR_LIST vector is not specific to SPJ. Confidence is medium because whether signal-scope filtering intercepts this was not checked.</div>
+
+<h3 id="P-17">P-17 &mdash; unbounded row header (medium-low)</h3>
+<div class="weak"><b>P-17.</b> <span class="src">execTRANSID_AI 5423-5427; buildRowHeader 15340-15357</span>: offsets are written into <code>tmp[2+4096]</code> until the section ends, and the bound is checked by an ndbassert only afterwards. A normal row has at most 4097 headers, but a TRANSID_AI forged through P-16 can have far more. The do/while loop also writes one offset for an empty row.</div>
+
+<h3 id="P-18">P-18 &mdash; lookup root of a scan request [RonDB] (medium)</h3>
+<div class="weak"><b>P-18.</b> <span class="src">lookup_start 9309-9355</span>: <code>ndbrequire(err == 0)</code> after computeHash() and after getNodes(). A malformed character key (xfrm failure, 290), a missing key (RNIL), or a DIH error stops the node. checkPrepareComplete checks only the first node's table and skips table id 0 (<span class="src">3622-3633</span>). Scan requests accept a QN_LOOKUP root even without CTEs.</div>
+
+<h3 id="P-19">P-19 &mdash; buildExecPlan error ignored (medium-low)</h3>
+<div class="weak"><b>P-19.</b> <span class="src">build() 2520</span> discards the OutOfQueryMemory that <span class="src">planParallelExec 3055 / appendTreeNode 3288</span> can return. A partial <code>m_next_nodes</code> can leave children unstarted, so the request hangs or returns incomplete joins instead of failing with 20008. <b>Test:</b> an error insert in appendTreeNode.</div>
+
+<h3 id="P-20">P-20 &mdash; tree header length (low)</h3>
+<div class="weak"><b>P-20.</b> The tree length only positions <code>paramReader</code>, and the result of <code>step()</code> is ignored (<span class="src">1286, 1867</span>). The sum of node lengths is never compared with it, and peekWord results are ignored, so stale values are reused (<span class="src">2065-2068</span>). Both readers are bounded by the section, so memory stays safe, but malformed input gets inconsistent error codes (20003 instead of 20004/20005).</div>
+
+<h3 id="P-21">P-21 &mdash; T_LEAF with children (low)</h3>
+<div class="weak"><b>P-21.</b> T_LEAF is cleared only by NI_LINKED_ATTR (<span class="src">16741</span>). An INNER_JOIN scan that has children but no linked attrs gets an uncapped batch (<span class="src">13173-13176</span>), and correlation ids above 4095 can then hit <code>ndbrequire(pos &lt; m_size)</code> in add_to_map (<span class="src">5775</span>) if the node is buffered as a MAP. scanFrag_fixupBound also keeps only 12 bits of the correlation (<span class="src">12993</span>). This chain has not been traced end to end.</div>
+
+<h3 id="P-22">P-22 &mdash; empty-AttrInfo fallback (low)</h3>
+<div class="weak"><b>P-22.</b> <span class="src">parseDA 16807-16827</span> appends <code>{0,1,0,0,0,ExitOK}</code> without setting T_ATTR_INTERPRETED, and lookup_build sets the LQHKEYREQ InterpretedFlag only from that bit (<span class="src">9207-9210</span>). A lookup with no projection, no linked attrs and no program would send the six words as a plain read list. One example is an aggregate-leaf lookup for COUNT(*) without a linked projection, because the API only adds PI_ATTR_INTERPRET when a linked projection exists (<span class="src">NdbQueryOperation.cpp:6230-6243</span>). <b>Test:</b> run a pushed <code>COUNT(*)</code> join with a lookup leaf and inspect the signal log.</div>
+
+<h3 id="P-23">P-23 &mdash; scan node in a lookup request (low)</h3>
+<div class="weak"><b>P-23.</b> <span class="src">scanFrag_build 11736-11852</span> reinterprets the LqhKeyReq as a ScanFragReq, including the MultiFrag flag and a fragment count taken from stale <code>theData[25]</code>, before <span class="src">1331-1337</span> rejects the request as not a lookup. Scan nodes in lookup requests should be rejected at the start of scanFrag_build.</div>
+
+<h3 id="P-24">P-24 &mdash; API signal to a block instance without a handler (reproduced)</h3>
+<div class="weak"><b>P-24.</b> The sender check in <span class="src">SimulatedBlock.hpp 2558-2563</span> (<code>checkSignalSender</code>) uses the scope of the GSN from the central table, not whether the receiving block instance handles it. SCAN_TABREQ is <code>External</code>, so it passes for any block. Sent to DBTC instance 0, which on ndbmtd is the DbtcProxy with no SCAN_TABREQ handler, it reaches <code>handle_execute_error</code> (<span class="src">SimulatedBlock.cpp 2850-2856</span>), and the node stops with "Illegal signal received (GSN 32 not added), block: 245, instance: 0". Any API node can do this with any External GSN sent to a block or instance that does not register it. Not specific to DBSPJ; found because an early version of <code>testSpjMalformed</code> sent its requests to plain <code>DBTC</code>. A signal from another node to a missing handler should be dropped and reported (<code>reportMaliciousSignal</code>), and only a local one should stop the node. <b>Test:</b> <code>testSpjMalformed -n P24</code> (the control request sent to DBTC instance 0).</div>
+
+<div class="note"><b>Other documentation discrepancies found while reading.</b> (1) The PI_ATTR_AGGREGATE flow in coordinator.md is stale (&sect;7.6). (2) The comment on the cinBuffer layout in lookup_parent_row ignores the 2-word metadata prefix (&sect;5.5). (3) The "26.04.2" comment on <code>ndbd_support_joinagg_frags_per_worker</code> does not match the 26.10 predicate. (4) The comment about FLUSH_AI needing a version check refers to a check that does not exist. (5) The CTE_SUBTREE requestInfo bits are never read.</div>
+
+</body>
+</html>

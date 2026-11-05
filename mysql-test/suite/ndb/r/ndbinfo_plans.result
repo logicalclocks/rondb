@@ -94,7 +94,7 @@ ndb$rdma_transporters	32	120
 ndb$resources	26	28
 ndb$restart_info	2	100
 ndb$security_violation_counts	2	16
-ndb$security_violations	72	24
+ndb$security_violations	78	24
 ndb$stored_tables	100	80
 ndb$table_distribution_status	100	52
 ndb$table_distribution_status_all	200	52

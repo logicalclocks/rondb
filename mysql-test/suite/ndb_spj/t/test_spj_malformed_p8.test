@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-8: child lookup with a parent but no key.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P8
+--let $spj_case_title = P-8: child lookup with a parent but no key
+--source suite/ndb_spj/include/spj_malformed_case.inc

@@ -1,0 +1,9 @@
+!include suite/ndb_opt/my.cnf
+
+[cluster_config]
+# Tiny scan batches for the NDB API (mysqld) side: at most 3 rows, or
+# about 1KB, per fragment and batch.  The scan children of one parent
+# batch then span many child batches, and bushy scans must repeat the
+# results of their sibling scans (NI_REPEAT_SCAN_RESULT).
+BatchSize=3
+BatchByteSize=1024

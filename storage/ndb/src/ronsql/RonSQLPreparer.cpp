@@ -54,6 +54,7 @@
 #include <decimal_utils.hpp>
 #include <AggColumnLoad.hpp>
 #include <kernel/Interpreter.hpp>
+#include <kernel/ndb_limits.h>
 #include <ndb_version.h>
 #include <kernel/signaldata/QueryTree.hpp>
 
@@ -208,6 +209,35 @@ finalize_aggregator(NdbAggregator* agg, const char* msg)
                                " columns.");
   default:
     throw RonSQLPermanentError(msg);
+  }
+}
+
+/*
+ * E-23: the kernel takes a CTE group key of at most MAX_KEY_SIZE_IN_WORDS
+ * words.  A wider key stops the data nodes, when the group is sent to its
+ * owner node and on a CTE_LOOKUP into it.  The key holds an
+ * AttributeHeader and the padded value of each GROUP BY column; check it
+ * at the declared column sizes, as finalize_aggregator checks the group
+ * record.  A CTE_LOOKUP key is made of the CTE's GROUP BY columns, and
+ * the parent's key columns are declared alike
+ * (check_cte_join_key_types), so this bounds that key too.
+ */
+static void
+check_cte_group_key_size(const NdbAggregator* agg)
+{
+  const NdbDictionary::Column* const* cols = agg->gb_columns();
+  Uint32 bytes = 0;
+  for (Uint32 i = 0; i < agg->n_gb_cols(); i++)
+  {
+    bytes += sizeof(Uint32) + ((cols[i]->getSizeInBytes() + 3) & ~3U);
+  }
+  if (bytes > MAX_KEY_SIZE_IN_WORDS * sizeof(Uint32))
+  {
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::LIMIT,
+        "The GROUP BY columns of a CTE can need more than " +
+        std::to_string(MAX_KEY_SIZE_IN_WORDS * sizeof(Uint32)) +
+        " bytes, counted at the declared column sizes.");
   }
 }
 
@@ -940,7 +970,7 @@ RonSQLPreparer::parse()
     // `(t LEFT b) INNER c`, with verified wrong results on both the
     // aggregate path (ns-1: COUNT(*) 30 vs 10) and the pass-through
     // row path (sn-15).
-    promote_left_joins();
+    promote_left_joins(m_context.ast_root.joins);
     m_is_aggregate_query = (has_aggregate_outputs || has_having_aggregates ||
                             has_subquery_agg_outputs);
     // Single-row key-lookup CTE bodies (cte_single_row_kernel_plan.md):
@@ -3920,6 +3950,28 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
         is_null_rejecting(ctf.ce))
     {
       op.match_type = JoinOp::INNER;
+    }
+  }
+
+  // An op that must match takes its join key from its key-source ops,
+  // and an equality on a NULL key never matches, so those must match
+  // too: promote the LEFT JOINs on the key chain of every INNER op, as
+  // promote_left_joins does for the ON conditions.  Without this
+  // "t LEFT c LEFT n WHERE n.r >= 0" promoted only n, and the tree
+  // meant "t LEFT (c INNER n)", keeping the t rows without a c match
+  // (E-8).  Key sources precede their op, so one backward pass is
+  // exact.
+  for (Uint32 t = scope.join_plan.num_ops; t-- > 1; )
+  {
+    const JoinOp& op = scope.join_plan.ops[t];
+    if (op.match_type != JoinOp::INNER) continue;
+    for (Uint32 k = 0; k < op.num_key_cols; k++)
+    {
+      const Uint32 p = op.key_parent_op_idx[k];
+      if (p == 0 || p >= t) continue;
+      JoinOp& parent = scope.join_plan.ops[p];
+      if (parent.match_type == JoinOp::LEFT_OUTER)
+        parent.match_type = JoinOp::INNER;
     }
   }
 
@@ -7469,6 +7521,10 @@ RonSQLPreparer::build_cte_scopes()
 
     QueryScope* scope = m_amalloc->alloc_exc<QueryScope>(1);
     new (scope) QueryScope(m_amalloc);
+    // The body's "t LEFT JOIN c ... JOIN n ON n.k = c.k" is
+    // "(t LEFT c) INNER n", as in the main query (E-8): without the
+    // promotion the tree means "t LEFT (c INNER n)".
+    promote_left_joins(cte->stmt->joins);
     QueryPlanner::plan(cte->stmt->root_table, cte->stmt->joins, m_dict,
                        err, scope->join_plan, m_conf.schema_cache, db,
                        visible_head);
@@ -11255,9 +11311,8 @@ RonSQLPreparer::cleanup_trans() {
 }
 
 void
-RonSQLPreparer::promote_left_joins()
+RonSQLPreparer::promote_left_joins(JoinClause* joins)
 {
-  JoinClause* joins = m_context.ast_root.joins;
   if (joins == NULL) return;
   JoinClause* list[MAX_SPJ_TREE_NODES];
   Uint32 num_joins = 0;
@@ -11537,13 +11592,65 @@ RonSQLPreparer::execute_join()
         SelectSubqueryLeaf &sl = m_select_subquery_leaves[si];
         if (sl.merged_leaf_idx != ml) continue;
 
-        Uint32 col_idx = sl.inner_agg_col_idx;
-        const QueryScope::ResolvedColumnRef& agg_ref =
-            m_main_scope.resolved_columns[col_idx];
-        require_prm(
-            agg_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
-            "Subquery aggregate input is not a stored-table column.");
-        NdbAttrId attr_id = agg_ref.attr_id;
+        // COUNT(*) counts the leaf's rows.  An outer row without a match
+        // gets one NULL-extended leaf row, which LoadUint64(1) counted,
+        // so an empty subquery gave 1 instead of 0 (X-1).  Count a
+        // column that is never NULL in a real leaf row instead, and NULL
+        // in the NULL-extended one: the inner correlation column (it
+        // equals a non-NULL outer value) or else a primary key column.
+        // COUNT only tests the register for NULL, so any type LoadColumn
+        // takes will do; integers first, as for COUNT(col).  Without
+        // one, fall back to LoadUint64(1).
+        const NdbDictionary::Column* count_col = NULL;
+        if (sl.is_count_star) {
+          auto pick = [&](bool int_only) {
+            const Uint32 n_pk = (Uint32)leaf_table->getNoOfPrimaryKeys();
+            for (Uint32 k = 0; count_col == NULL && k <= n_pk; k++) {
+              const NdbDictionary::Column* c =
+                  (k == 0)
+                      ? leaf_table->getColumn(sl.inner_join_col.c_str())
+                      : leaf_table->getColumn(
+                            leaf_table->getPrimaryKey((int)k - 1));
+              if (c == NULL) continue;
+              switch (c->getType()) {
+              case NdbDictionary::Column::Tinyint:
+              case NdbDictionary::Column::Tinyunsigned:
+              case NdbDictionary::Column::Smallint:
+              case NdbDictionary::Column::Smallunsigned:
+              case NdbDictionary::Column::Mediumint:
+              case NdbDictionary::Column::Mediumunsigned:
+              case NdbDictionary::Column::Int:
+              case NdbDictionary::Column::Unsigned:
+              case NdbDictionary::Column::Bigint:
+              case NdbDictionary::Column::Bigunsigned:
+                count_col = c;
+                break;
+              case NdbDictionary::Column::Char:
+              case NdbDictionary::Column::Varchar:
+              case NdbDictionary::Column::Longvarchar:
+                if (!int_only) count_col = c;
+                break;
+              default:
+                break;
+              }
+            }
+          };
+          pick(/*int_only=*/true);
+          pick(/*int_only=*/false);
+        }
+        NdbAttrId attr_id = 0;
+        if (count_col != NULL) {
+          attr_id = count_col->getAttrId();
+        } else if (!sl.is_count_star) {
+          Uint32 col_idx = sl.inner_agg_col_idx;
+          const QueryScope::ResolvedColumnRef& agg_ref =
+              m_main_scope.resolved_columns[col_idx];
+          require_prm(
+              agg_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
+              "Subquery aggregate input is not a stored-table column.");
+          attr_id = agg_ref.attr_id;
+        }
+        const bool count_star_const = sl.is_count_star && count_col == NULL;
         Uint32 reg = 0;  // use register 0 for loads
         Uint32 agg_slot = leaf_local_slot++;
 
@@ -11563,7 +11670,7 @@ RonSQLPreparer::execute_join()
                       cf->op == T_GT || cf->op == T_GE ||
                       cf->op == T_EQUALS || cf->op == T_NOT_EQUALS,
                       "Cross-table filter must use <, <=, >, >=, = or !=.");
-          Uint32 aggregate_update_raw_size = sl.is_count_star ? 4 : 2;
+          Uint32 aggregate_update_raw_size = count_star_const ? 4 : 2;
           generate_embedded_condition(
               agg, m_main_scope, cf, 0, /*cteVirtualTables=*/NULL,
               /*use_custom_outputs=*/true,
@@ -11572,7 +11679,7 @@ RonSQLPreparer::execute_join()
               /*agg_leaf_idx_override=*/op_idx);
         }
 
-        if (sl.is_count_star) {
+        if (count_star_const) {
           require_prm(agg->LoadUint64(1, reg),
                       "Failed to load immediate for COUNT(*).");
         } else {
@@ -11710,6 +11817,9 @@ RonSQLPreparer::execute_join()
       /* ORDER BY / LIMIT trailer (cte_orderby_limit_plan.md L4) — must
        * precede Finalize.  True = pass CTE_LIMIT to defineCte below. */
       const bool cteHasLimit = emit_cte_orderby_limit(cs, cte, cteAgg);
+      // Single-row bodies too: their outputs are the GROUP BY columns
+      // and their row is sent to the DBTC node like any group.
+      check_cte_group_key_size(cteAgg);
       finalize_aggregator(cteAgg, "Failed to finalize CTE aggregator.");
 
       qb->beginCteSubtree(c);
@@ -18945,8 +19055,9 @@ RonSQLPreparer::generate_embedded_condition(
       // READ_LINKED_COLUMN_TO_REG):
       //   LeafTable side       → 1 word (READ_ATTR_INTO_REG)
       //   LinkedParent / Cte   → 1 word (READ_LINKED_COLUMN_TO_REG)
+      // + 2 words for the NULL guards (BRANCH_REG_EQ_NULL R1, R2)
       // + 1 word for the BRANCH_*_REG_REG.
-      info.word_count = 1u + 1u + 1u;
+      info.word_count = 1u + 1u + 2u + 1u;
     }
     else
     {
@@ -18974,8 +19085,9 @@ RonSQLPreparer::generate_embedded_condition(
         }
         // 1 word: read LHS into R1
         // 3 words: LOAD_DOUBLE_CONST(R2) + 2 data words
+        // 1 word: NULL guard (BRANCH_REG_EQ_NULL R1)
         // 1 word: BRANCH_*_REG_REG R2, R1
-        info.word_count = 1u + 3u + 1u;
+        info.word_count = 1u + 3u + 1u + 1u;
       } else {
         // col-vs-const path (v1): resolve the constant against the LHS
         // column descriptor.  Use the simplified node so negative
@@ -19016,6 +19128,15 @@ RonSQLPreparer::generate_embedded_condition(
   }
 
   programAggregator_do_or_fail(aggregator->EmbeddedInterp(emb_len));
+
+  // SQL semantics (E-4): an atom with a NULL operand is UNKNOWN, which
+  // is not true.  OR branches to THEN when an atom holds, so a NULL
+  // operand falls through to the next atom; AND branches to ELSE when
+  // an atom fails, so a NULL operand takes that branch.  NULL_CMP_EQUAL
+  // (NULL equals NULL and is less than any value) made e.g.
+  // "v < 15" and "v <> 10" true for a NULL v.
+  const Interpreter::NullSemantics arg_nulls =
+      is_and ? Interpreter::IF_NULL_BREAK_OUT : Interpreter::IF_NULL_CONTINUE;
 
   Uint32 pos = 0;
   for (Uint32 a = 0; a < atoms.size(); a++)
@@ -19130,6 +19251,19 @@ RonSQLPreparer::generate_embedded_condition(
                       (Uint32)s.col->getType())));
             }
           };
+      // The register compares have no NULL mode; DBTUP compares the
+      // value bits of a NULL register.  Guard each column operand:
+      // AND goes to ELSE, OR skips to the next atom (UNKNOWN).
+      auto emit_null_guard =
+          [&](Uint32 reg, Uint32 guard_pos)
+          {
+            const Uint32 target =
+                is_and ? second_exit_label : pos + info.word_count;
+            programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
+                Interpreter::Branch(Interpreter::BRANCH_REG_EQ_NULL,
+                                    /*Reg1=*/0, /*Reg2=*/reg) |
+                ((target - guard_pos) << 16)));
+          };
       emit_load_into_reg(info.lhs, R1);
       if (info.is_float_const) {
         // Phase I.5 v3b: load the literal as a double immediate.
@@ -19142,8 +19276,11 @@ RonSQLPreparer::generate_embedded_condition(
             Interpreter::LoadDoubleConst(R2)));
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(pun.w[0]));
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(pun.w[1]));
+        emit_null_guard(R1, pos + 4);
       } else {
         emit_load_into_reg(info.rhs, R2);
+        emit_null_guard(R1, pos + 2);
+        emit_null_guard(R2, pos + 3);
       }
 
       // Encoding: Branch(opcode, RegRvalue=R2, RegLvalue=R1) per
@@ -19169,7 +19306,7 @@ RonSQLPreparer::generate_embedded_condition(
           csNumber = (Uint32)lhs.col->getCharsetNumber();
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
             Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE |
-            (Interpreter::NULL_CMP_EQUAL << 6) | (cond << 12) |
+            (arg_nulls << 6) | (cond << 12) |
             ((branch_offset - 0) << 16)));
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
             Interpreter::BranchMem_2((Uint32)lhs.col->getType(),
@@ -19185,7 +19322,7 @@ RonSQLPreparer::generate_embedded_condition(
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
             Interpreter::BranchMem(
                 static_cast<Interpreter::BinaryCondition>(cond),
-                Interpreter::NULL_CMP_EQUAL) |
+                arg_nulls) |
             ((branch_offset - 0) << 16)));
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
             Interpreter::BranchMem_2(lhs.attr_id, info.rhs.byte_len)));
@@ -19198,7 +19335,7 @@ RonSQLPreparer::generate_embedded_condition(
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
             Interpreter::BranchCol(
                 static_cast<Interpreter::BinaryCondition>(cond),
-                Interpreter::NULL_CMP_EQUAL) |
+                arg_nulls) |
             (branch_offset << 16)));
         programAggregator_do_or_fail(aggregator->EmitEmbeddedWord(
             Interpreter::BranchCol_2(lhs.attr_id, info.rhs.byte_len)));
@@ -19614,6 +19751,46 @@ RonSQLPreparer::print()
     {
     case Outputs::Type::AGGREGATE:
       {
+        /* compile() rewrote each SELECT-list subquery into an AGGREGATE
+         * output with arg == NULL.  It is computed by its join leaf's own
+         * aggregator, not by m_main_scope.agg, which is NULL when the
+         * subqueries are the only aggregates. */
+        const SelectSubqueryLeaf* sl = NULL;
+        for (Uint32 i = 0; i < m_select_subquery_leaves.size(); i++)
+        {
+          if (m_select_subquery_leaves[i].output_node == outputs)
+          {
+            sl = &m_select_subquery_leaves[i];
+            break;
+          }
+        }
+        if (sl != NULL)
+        {
+          const char* fn = "MAX";
+          switch (sl->agg_fun)
+          {
+          case T_COUNT: fn = "COUNT"; break;
+          case T_SUM:   fn = "SUM";   break;
+          case T_MIN:   fn = "MIN";   break;
+          default:                    break;
+          }
+          const LexCString& tab = sl->inner_table_alias.len > 0
+                                      ? sl->inner_table_alias
+                                      : sl->inner_table_name;
+          out << "SUBQUERY LEAF op "
+              << m_merged_leaves[sl->merged_leaf_idx].plan_op_idx
+              << " slot " << sl->combined_agg_slot << ": " << fn << "(";
+          if (sl->is_count_star)
+            out << "*";
+          else
+            out << quoted_identifier(tab.c_str()) << "."
+                << quoted_identifier(sl->inner_agg_col.c_str());
+          out << ")\n";
+          break;
+        }
+        require_run(m_main_scope.agg != NULL,
+                    "EXPLAIN: aggregate output without an aggregation "
+                    "program.  Please report a bug.");
         Uint32 pr;
         switch (outputs->aggregate.fun)
         {

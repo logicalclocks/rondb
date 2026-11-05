@@ -2859,6 +2859,52 @@ void SimulatedBlock::handle_execute_error(GlobalSignalNumber gsn) {
 }
 
 ATTRIBUTE_NOINLINE
+void SimulatedBlock::handle_execute_error(GlobalSignalNumber gsn,
+                                          Signal *signal) {
+  /**
+   * This block instance has no handler for gsn, or gsn is out of range.
+   * checkSignalSender() checks the scope of the GSN, not whether this
+   * instance handles it, so an API or MGM node can send an External GSN
+   * to any block instance, e.g. SCAN_TABREQ to DBTC instance 0, which is
+   * the DbtcProxy on ndbmtd. Such a signal is dropped and reported. From
+   * the own node or another data node a missing handler is an internal
+   * inconsistency and stops the node as before.
+   *
+   * The sender node id is the transporter's remote node id (the API only
+   * supplies the block number), so it cannot be forged.
+   */
+  const BlockReference ref = signal->senderBlockRef();
+  const Uint32 nodeId = refToNode(ref);
+  if (nodeId == 0 || nodeId >= MAX_NODES || nodeId == theNodeId) {
+    handle_execute_error(gsn);
+    return;
+  }
+  const NodeInfo::NodeType nodeType = getNodeInfo(nodeId).getType();
+  if (nodeType != NodeInfo::API && nodeType != NodeInfo::MGM) {
+    handle_execute_error(gsn);
+    return;
+  }
+
+  g_eventLogger->warning(
+      "Block 0x%X instance %u: signal %s (GSN %u) received from node %u "
+      "(block 0x%X) has no handler; dropping and reporting to security "
+      "system",
+      refToMain(reference()), theInstance, getSignalName(gsn), gsn, nodeId,
+      refToMain(ref));
+
+  // Drop the signal as handle_sender_error does. No handler runs, so no
+  // fragment assembly state exists (assembleFragments() is called by the
+  // handler): each fragment of a fragmented signal arrives here with its
+  // own sections, which are released. The fragment info is cleared as
+  // the report is sent as a short signal. reportMaliciousSignal reuses
+  // the signal buffer, so it is the last action.
+  SectionHandle handle(this, signal);
+  releaseSections(handle);
+  signal->header.m_fragmentInfo = 0;
+  reportMaliciousSignal(signal, nodeId, VT_SIGNAL_NO_HANDLER);
+}
+
+ATTRIBUTE_NOINLINE
 void SimulatedBlock::handle_sender_error(GlobalSignalNumber gsn, Signal *signal,
                                          SignalScope scope) {
   const BlockReference ref = (signal->senderBlockRef());
@@ -2904,9 +2950,12 @@ void SimulatedBlock::handle_sender_error(GlobalSignalNumber gsn, Signal *signal,
   // consume them will not run. reportMaliciousSignal reuses the signal buffer
   // and requires an immediate return, so it must be the last action (mirrors
   // assembleFragmentsSlow). The SectionHandle ctor also zeroes the signal's
-  // section count, leaving the buffer clean for the report send.
+  // section count, leaving the buffer clean for the report send. The
+  // fragment info of a fragment must be cleared too: sendSignal() stops the
+  // node on a short signal whose fragment info is 1 or 2.
   SectionHandle handle(this, signal);
   releaseSections(handle);
+  signal->header.m_fragmentInfo = 0;
   reportMaliciousSignal(signal, nodeId, violationType);
 }
 
@@ -3113,9 +3162,15 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
             "Block %u: Invalid sectionNo %u in fragment from node %u",
             theNumber, sectionNo, refToNode(senderRef));
         for (Uint32 j = 0; j < secs; j++) releaseSection(sectionPtr[j]);
-        fragPtr.p->m_sectionPtrI[0] = RNIL;
-        fragPtr.p->m_sectionPtrI[1] = RNIL;
-        fragPtr.p->m_sectionPtrI[2] = RNIL;
+        // Forget the train rather than keep it as dropped: a dropped train
+        // ends in SIGNAL_DROPPED_REP, which stops the node in a block that
+        // does not handle it. The later fragments are now dropped as not
+        // found.
+        c_fragmentInfoHash.release(fragPtr);
+        // The report is a short signal: sendSignal() requires no sections
+        // and a fragment info other than 1 or 2.
+        signal->header.m_noOfSections = 0;
+        signal->header.m_fragmentInfo = 0;
         reportMaliciousSignal(signal, refToNode(senderRef),
                               VT_FRAGMENT_INVALID_SECTION_NO);
         return false;
@@ -3152,17 +3207,25 @@ bool SimulatedBlock::assembleFragmentsSlow(Signal *signal) {
            * reportMaliciousSignal reuses the signal buffer and requires an
            * immediate return, so no further header writes are performed after
            * the report.
+           *
+           * The incoming sections before i are already linked into or
+           * stored in the accumulated ones, so only those from i on are
+           * released on their own.
            */
           g_eventLogger->warning(
               "Block %u: Invalid sectionNo %u in fragment from node %u",
               theNumber, sectionNo, refToNode(senderRef));
-          for (Uint32 j = 0; j < secs; j++) releaseSection(sectionPtr[j]);
+          for (Uint32 j = i; j < secs; j++) releaseSection(sectionPtr[j]);
           for (Uint32 s = 0; s < 3; s++) {
             if (fragPtr.p->m_sectionPtrI[s] != RNIL) {
               releaseSection(fragPtr.p->m_sectionPtrI[s]);
               fragPtr.p->m_sectionPtrI[s] = RNIL;
             }
           }
+          // Forget the train, as for an invalid first fragment
+          c_fragmentInfoHash.release(fragPtr);
+          signal->header.m_noOfSections = 0;
+          signal->header.m_fragmentInfo = 0;
           reportMaliciousSignal(signal, refToNode(senderRef),
                                 VT_FRAGMENT_INVALID_SECTION_NO);
           return false;

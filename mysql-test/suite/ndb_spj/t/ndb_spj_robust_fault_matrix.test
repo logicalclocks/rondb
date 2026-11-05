@@ -1,0 +1,323 @@
+#
+# DBSPJ robustness: the DBSPJ error inserts (17xxx) against four pushed
+# join shapes, with an explicit check of the outcome and of leaks after
+# each run.
+#
+# Shapes:
+#   0  lookup root -> lookup child           (LQHKEYREQ request)
+#   1  scan root   -> lookup child           (SCAN_FRAGREQ request)
+#   2  scan root   -> scan child (ref)
+#   3  scan root   -> scan child -> lookup grandchild
+#
+# For each error insert and shape the insert is set on all data nodes, the
+# query is run once and the insert is cleared. Then:
+#  - a query that failed must have failed with one of the NDB errors listed
+#    for the insert (an insert that does not fire in a shape lets the query
+#    succeed);
+#  - a query that succeeded must return the reference result;
+#  - the DIH scan registrations (ndb$table_distribution_status_all) must
+#    come back to their level before the query within 5 s;
+#  - the open fragment scans (ndbinfo.operations_per_fragment) must come
+#    back to their level before the query within 15 s.
+# Failures are collected and listed at the end; then DUMP 2650 / 2560 /
+# 2361-2364 (mem_leak_dumps.inc) check that no DBSPJ request, DBTC scan or
+# join-aggregation state was leaked by any of the runs, and the test fails
+# if anything was found.
+#
+# The ATR test cases testSpj -n LookupJoinError / ScanJoinError run the
+# same inserts but accept any outcome and check nothing afterwards.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_fault_matrix_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_query_log
+
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+                 KEY ib (b))
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t3 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB;
+INSERT INTO t1
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 20)
+  SELECT n, (n % 10) + 1, n FROM s;
+INSERT INTO t2
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 60)
+  SELECT n, (n % 20) + 1, (n % 10) + 1 FROM s;
+INSERT INTO t3
+  WITH RECURSIVE s (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM s WHERE n < 10)
+  SELECT n, n, n * 7 FROM s;
+
+CREATE VIEW spj_robust_dih_scans AS
+  SELECT d.node_id, d.table_id,
+         d.current_scan_count + d.scan_count_wait AS scans
+  FROM ndbinfo.ndb$table_distribution_status_all AS d
+  JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+  LEFT JOIN ndbinfo.dict_obj_info AS p
+    ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+  WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+  SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+  FROM ndbinfo.operations_per_fragment
+  WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+
+--let $spj_q0 = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t3 AS y ON y.a = x.b WHERE x.a = 7
+--let $spj_q1 = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t3 AS y ON y.a = x.b
+--let $spj_q2 = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t2 AS y FORCE INDEX (ib) ON y.b = x.a
+--let $spj_q3 = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 10000 + y.c * 100 + z.c) AS chk FROM t1 AS x JOIN t2 AS y FORCE INDEX (ib) ON y.b = x.a JOIN t3 AS z ON z.a = y.c
+
+--echo #
+--echo # Reference results; every shape is executed as a pushed join
+--echo #
+--let $spj_s = 0
+while (`SELECT $spj_s < 4`)
+{
+  if (`SELECT $spj_s = 0`)
+  {
+    --let $spj_q = $spj_q0
+  }
+  if (`SELECT $spj_s = 1`)
+  {
+    --let $spj_q = $spj_q1
+  }
+  if (`SELECT $spj_s = 2`)
+  {
+    --let $spj_q = $spj_q2
+  }
+  if (`SELECT $spj_s = 3`)
+  {
+    --let $spj_q = $spj_q3
+  }
+  --let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+  --source suite/ndb_spj/include/spj_run_query.inc
+  --let $spj_pq1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+  if ($spj_errno)
+  {
+    --echo Shape $spj_s: $spj_q
+    --echo ERROR $spj_errno: $spj_w
+    --die Test setup: a shape failed without an error insert
+  }
+  if (`SELECT $spj_pq1 <= $spj_pq0`)
+  {
+    --echo Shape $spj_s: $spj_q
+    --die Test setup: a shape was not executed as a pushed join
+  }
+  if (`SELECT $spj_s = 0`)
+  {
+    --let $spj_ref0 = $spj_res
+  }
+  if (`SELECT $spj_s = 1`)
+  {
+    --let $spj_ref1 = $spj_res
+  }
+  if (`SELECT $spj_s = 2`)
+  {
+    --let $spj_ref2 = $spj_res
+  }
+  if (`SELECT $spj_s = 3`)
+  {
+    --let $spj_ref3 = $spj_res
+  }
+  --inc $spj_s
+}
+--echo All four shapes were pushed
+
+# Settled levels before the matrix (nothing registered, nothing open)
+--let $spj_i = 0
+--let $spj_dih_base = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+while ($spj_dih_base)
+{
+  if (`SELECT $spj_i >= 100`)
+  {
+    SELECT node_id, table_id, scans FROM spj_robust_dih_scans WHERE scans > 0;
+    --die Test setup: DIH scans are registered on an idle cluster
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_dih_base = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+}
+--let $spj_i = 0
+--let $spj_frag_base = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+while ($spj_frag_base)
+{
+  if (`SELECT $spj_i >= 300`)
+  {
+    SELECT * FROM spj_robust_frag_scans WHERE conc_frag_scans > 0;
+    --die Test setup: fragment scans are open on an idle cluster
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_frag_base = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+}
+
+--disable_query_log
+CREATE TEMPORARY TABLE spj_faults (seq INT NOT NULL PRIMARY KEY,
+                                   code INT NOT NULL,
+                                   allowed VARCHAR(64) NOT NULL)
+  ENGINE=MEMORY;
+# NDB errors the query may fail with when the insert fires:
+# 20000 OutOfOperations, 20002 InvalidRequest, 20003 UnknowQueryOperation,
+# 20006 OutOfSectionMemory, 20008 OutOfQueryMemory, 20015 OutOfRowMemory,
+# 20016 NodeFailure, 20019 NoSuchTable ('nosuchtable': mysqld reports
+# ER_NO_SUCH_TABLE without the NDB warning), 1227/241/20021 schema version.
+# '' (17131): the insert only spreads DIGETNODESREQ over CONTINUEB rounds,
+# the query must succeed.
+INSERT INTO spj_faults VALUES
+  ( 1, 17001, '20008'), ( 2, 17002, '20008'), ( 3, 17003, '20015'),
+  ( 4, 17004, '20008'), ( 5, 17005, '20000'), ( 6, 17006, '20003'),
+  ( 7, 17008, '20008'), ( 8, 17009, '20008'), ( 9, 17010, '20008'),
+  (10, 17012, '20008'), (11, 17013, '20002'),
+  (12, 17020, '20016'), (13, 17021, '20016'), (14, 17022, '20016'),
+  (15, 17030, '1227,241,20021'), (16, 17031, '1227,241,20021'),
+  (17, 17032, '1227,241,20021'),
+  (18, 17040, '20008'), (19, 17041, '20008'), (20, 17042, '20008'),
+  (21, 17043, '20008'),
+  (22, 17050, '20006'), (23, 17051, '20006'), (24, 17052, '20006'),
+  (25, 17053, '20006'),
+  (26, 17060, '20006'), (27, 17061, '20006'), (28, 17062, '20006'),
+  (29, 17063, '20006'),
+  (30, 17070, '20006'), (31, 17071, '20006'), (32, 17072, '20006'),
+  (33, 17080, '20006'), (34, 17081, '20006'), (35, 17082, '20006'),
+  (36, 17090, '20006'), (37, 17091, '20006'), (38, 17092, '20006'),
+  (39, 17093, '20006'),
+  (40, 17110, '1227,241,20021'), (41, 17111, '1227,241,20021'),
+  (42, 17112, '1227,241,20021'),
+  (43, 17120, '20015'), (44, 17121, '20015'), (45, 17122, '20015'),
+  (46, 17130, '20006'), (47, 17131, ''),
+  (48, 17510, '20006,20008,20015'),
+  (49, 17520, '20019,nosuchtable'), (50, 17521, '20019,nosuchtable'),
+  (51, 17534, '20008');
+CREATE TEMPORARY TABLE spj_fail (code INT NOT NULL, shape INT NOT NULL,
+                                 what VARCHAR(512) NOT NULL) ENGINE=MEMORY;
+--enable_query_log
+
+--echo #
+--echo # Run the fault matrix
+--echo #
+--let $spj_nfaults = `SELECT COUNT(*) FROM spj_faults`
+--let $spj_f = 1
+while (`SELECT $spj_f <= $spj_nfaults`)
+{
+  --let $spj_code = `SELECT code FROM spj_faults WHERE seq = $spj_f`
+  --let $spj_allowed = `SELECT allowed FROM spj_faults WHERE seq = $spj_f`
+  --let $spj_s = 0
+  while (`SELECT $spj_s < 4`)
+  {
+    if (`SELECT $spj_s = 0`)
+    {
+      --let $spj_q = $spj_q0
+      --let $spj_ref = $spj_ref0
+    }
+    if (`SELECT $spj_s = 1`)
+    {
+      --let $spj_q = $spj_q1
+      --let $spj_ref = $spj_ref1
+    }
+    if (`SELECT $spj_s = 2`)
+    {
+      --let $spj_q = $spj_q2
+      --let $spj_ref = $spj_ref2
+    }
+    if (`SELECT $spj_s = 3`)
+    {
+      --let $spj_q = $spj_q3
+      --let $spj_ref = $spj_ref3
+    }
+
+    --exec $NDB_MGM -e "all error $spj_code" >> $spj_mgm_log
+    --source suite/ndb_spj/include/spj_run_query.inc
+    --disable_query_log
+    --exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+
+    if (!$spj_errno)
+    {
+      if (`SELECT "$spj_res" <> "$spj_ref"`)
+      {
+        --eval INSERT INTO spj_fail VALUES ($spj_code, $spj_s, CONCAT('wrong result: ', "$spj_res", ' expected: ', "$spj_ref"))
+      }
+    }
+    if ($spj_errno)
+    {
+      --let $spj_err = `SELECT CASE WHEN LOCATE('error ', "$spj_w") > 0 THEN SUBSTRING_INDEX(SUBSTRING("$spj_w", LOCATE('error ', "$spj_w") + 6), ' ', 1) WHEN LOCATE("doesn't exist", "$spj_w") > 0 THEN 'nosuchtable' ELSE 'none' END`
+      if (`SELECT FIND_IN_SET('$spj_err', '$spj_allowed') = 0`)
+      {
+        --eval INSERT INTO spj_fail VALUES ($spj_code, $spj_s, CONCAT('unexpected failure: ERROR $spj_errno: ', "$spj_w"))
+      }
+    }
+
+    # DIH scan registrations back to their level within 5 s
+    --let $spj_i = 0
+    --let $spj_now = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+    --let $spj_more = `SELECT $spj_now > $spj_dih_base`
+    while ($spj_more)
+    {
+      --inc $spj_i
+      if (`SELECT $spj_i > 25`)
+      {
+        --eval INSERT INTO spj_fail VALUES ($spj_code, $spj_s, 'DIH scans leaked: $spj_dih_base -> $spj_now registered')
+        --let $spj_dih_base = $spj_now
+      }
+      if (`SELECT $spj_i <= 25`)
+      {
+        --sleep 0.2
+        --let $spj_now = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+      }
+      --let $spj_more = `SELECT $spj_now > $spj_dih_base`
+    }
+    --let $spj_dih_base = $spj_now
+
+    # Open fragment scans back to their level within 15 s
+    --let $spj_i = 0
+    --let $spj_now = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+    --let $spj_more = `SELECT $spj_now > $spj_frag_base`
+    while ($spj_more)
+    {
+      --inc $spj_i
+      if (`SELECT $spj_i > 75`)
+      {
+        --eval INSERT INTO spj_fail VALUES ($spj_code, $spj_s, 'fragment scans left open: $spj_frag_base -> $spj_now')
+        --let $spj_frag_base = $spj_now
+      }
+      if (`SELECT $spj_i <= 75`)
+      {
+        --sleep 0.2
+        --let $spj_now = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+      }
+      --let $spj_more = `SELECT $spj_now > $spj_frag_base`
+    }
+    --let $spj_frag_base = $spj_now
+    --enable_query_log
+    --inc $spj_s
+  }
+  --inc $spj_f
+}
+
+--let $spj_nfail = `SELECT COUNT(*) FROM spj_fail`
+if ($spj_nfail)
+{
+  --echo Fault matrix failures (error insert, shape, what):
+  SELECT code, shape, what FROM spj_fail ORDER BY code, shape;
+}
+--echo #
+--echo # No DBSPJ request, DBTC scan or join-aggregation state was leaked
+--echo #
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+if ($spj_nfail)
+{
+  --die Fault matrix: some error insert / shape combinations failed, see the list above
+}
+--echo Fault matrix: every run failed as expected or returned the reference result, nothing leaked
+
+DROP TEMPORARY TABLE spj_faults, spj_fail;
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE t1, t2, t3;
+--remove_file $spj_mgm_log

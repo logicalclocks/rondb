@@ -758,18 +758,27 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
     return nullptr;
   }
 
-  // Type-aware comparison path: compare column-by-column using cmpFn
+  /* Type-aware comparison path: compare column-by-column using cmpFn.
+   * E-5: two keys that are equal under a column's collation can differ
+   * in byte length ('abc' and 'ábc' in an accent-insensitive collation,
+   * PAD SPACE variants), so the key lengths and the data sizes of
+   * string columns are not compared; hashKeyFull already hashes such
+   * keys alike.  Requiring equal lengths made them separate groups. */
   for (char* raw = bucketHead(b); raw != nullptr;
        raw = hashNext(raw)) {
     char* d = raw + OVERHEAD;
     Uint32 kl = *reinterpret_cast<Uint32*>(raw + KEY_LEN_OFFSET);
-    if (kl != key_len) continue;
 
     const Uint32* p1 = reinterpret_cast<const Uint32*>(key);
     const Uint32* p2 = reinterpret_cast<const Uint32*>(d);
     const Uint32* p1_end = reinterpret_cast<const Uint32*>(key + key_len);
+    const Uint32* p2_end = reinterpret_cast<const Uint32*>(d + kl);
     bool match = true;
     for (Uint32 i = 0; i < m_n_gb_cols && p1 < p1_end; i++) {
+      if (p2 >= p2_end) {
+        match = false;
+        break;
+      }
       AttributeHeader ah1(*p1);
       AttributeHeader ah2(*p2);
       Uint32 ds1 = ah1.getDataSize();
@@ -780,7 +789,9 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
         p2 += 1;
         continue;
       }
-      if (ds1 != ds2) {
+      if (ds1 == 0 || ds2 == 0 ||
+          p1 + 1 + ds1 > p1_end || p2 + 1 + ds2 > p2_end) {
+        // One NULL, or a truncated key
         match = false;
         break;
       }
@@ -795,7 +806,8 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
         }
       } else {
         // Raw comparison for non-string types
-        if (memcmp(p1 + 1, p2 + 1, ds1 * sizeof(Uint32)) != 0) {
+        if (ds1 != ds2 ||
+            memcmp(p1 + 1, p2 + 1, ds1 * sizeof(Uint32)) != 0) {
           match = false;
           break;
         }
@@ -803,7 +815,8 @@ char* GBHashTable<BUCKET_COUNT>::findInBucket(Uint32 b, const char* key,
       p1 += 1 + ds1;
       p2 += 1 + ds2;
     }
-    if (match) return d;
+    // Both keys must be used up: no column left over on either side.
+    if (match && p1 == p1_end && p2 == p2_end) return d;
   }
   return nullptr;
 }

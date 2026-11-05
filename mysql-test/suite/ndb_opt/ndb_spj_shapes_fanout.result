@@ -1,0 +1,105 @@
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000)
+SELECT n FROM c;
+CREATE TABLE r (
+id INT NOT NULL PRIMARY KEY,
+g INT NOT NULL,
+s INT NOT NULL,
+w VARCHAR(2000) NOT NULL,
+KEY ix_g (g),
+KEY ix_s (s)
+) ENGINE=NDB;
+INSERT INTO r
+SELECT n, n % 30, (n * 7919) % 3001, REPEAT(CHAR(65 + n % 26), 100 + (n * 37) % 1900)
+FROM seq WHERE n <= 300;
+CREATE TABLE ch (
+id INT NOT NULL PRIMARY KEY,
+g INT NOT NULL,
+h INT NOT NULL,
+pad VARCHAR(1000) NOT NULL,
+KEY ix_g (g),
+KEY ix_h (h)
+) ENGINE=NDB;
+INSERT INTO ch
+SELECT n, 1, n % 50, REPEAT(CHAR(97 + n % 26), 200 + (n * 13) % 800)
+FROM seq WHERE n <= 600;
+INSERT INTO ch
+SELECT 1000 + s1.n * 100 + s2.n, s1.n, (s1.n * 100 + s2.n) % 50,
+REPEAT('x', 50 + s2.n * 40)
+FROM seq s1, seq s2
+WHERE s1.n BETWEEN 2 AND 29 AND s2.n <= (s1.n * 3) % 17;
+CREATE TABLE gc (
+id INT NOT NULL PRIMARY KEY,
+h INT NOT NULL,
+z INT NOT NULL,
+KEY ix_h (h)
+) ENGINE=NDB;
+INSERT INTO gc SELECT n, n % 50, n % 9 FROM seq WHERE n <= 300 AND (n % 50) % 6 <> 0;
+INSERT INTO gc SELECT 1000 + n, n % 50, n % 5 FROM seq WHERE n <= 100 AND n % 50 < 10;
+CREATE TABLE b1 (id INT NOT NULL PRIMARY KEY, g INT NOT NULL, v INT NOT NULL,
+KEY ix_g (g)) ENGINE=NDB;
+CREATE TABLE b2 (id INT NOT NULL PRIMARY KEY, g INT NOT NULL, v INT NOT NULL,
+KEY ix_g (g)) ENGINE=NDB;
+CREATE TABLE b3 (id INT NOT NULL PRIMARY KEY, g INT NOT NULL, v INT NOT NULL,
+KEY ix_g (g)) ENGINE=NDB;
+INSERT INTO b1 SELECT n, n % 30, n FROM seq WHERE n <= 150;
+INSERT INTO b2 SELECT n, n % 30, n FROM seq WHERE n <= 400 AND (n % 30) % 3 = 0;
+INSERT INTO b3 SELECT n, n % 7, n FROM seq WHERE n <= 35;
+CREATE TABLE lk (id INT NOT NULL PRIMARY KEY, v INT NOT NULL) ENGINE=NDB;
+INSERT INTO lk SELECT n - 1, n FROM seq WHERE n <= 25;
+ANALYZE TABLE r, ch, gc, b1, b2, b3, lk;
+Table	Op	Msg_type	Msg_text
+test.r	analyze	status	OK
+test.ch	analyze	status	OK
+test.gc	analyze	status	OK
+test.b1	analyze	status	OK
+test.b2	analyze	status	OK
+test.b3	analyze	status	OK
+test.lk	analyze	status	OK
+SELECT COUNT(*) FROM ch;
+COUNT(*)
+831
+#
+# Skewed fan-out of a scan child
+#
+# F1-scan-skewed: rows=8310 pushed=2 exec=1
+# F2-scan-skewed-left: rows=8330 pushed=2 exec=1
+# F3-one-parent-many-children: rows=600 pushed=2 exec=1
+# F4-empty-root: rows=0 pushed=2 exec=1
+#
+# Chains of scans
+#
+# F5-scan-scan-scan: rows=47740 pushed=3 exec=1
+# F6-scan-left-scan-left-scan: rows=18890 pushed=3 exec=1
+# F7-scan-lookup-scan: rows=7900 pushed=3 exec=1
+#
+# Bushy scans: siblings must be repeated for every batch of the others
+#
+# F8-bushy-3: rows=10250 pushed=4 exec=1
+# F9-bushy-3-left: rows=16650 pushed=4 exec=1
+# F10-bushy-skewed-with-grandchild: rows=169000 pushed=4 exec=1
+# F11-bushy-inner-and-left: rows=7470 pushed=3 exec=1
+# F12-exists-skewed: rows=10 pushed=0 exec=0
+# F13-not-exists-skewed: rows=290 pushed=0 exec=0
+#
+# Rows wider than the batch byte limit
+#
+# F14-wide-root-and-child: rows=950 pushed=2 exec=1
+# F15-wide-left-bushy: rows=2600 pushed=3 exec=1
+#
+# Sorted root scans (ORDER BY the root's index), with and without LIMIT
+#
+# F16-sorted-lookup-child: rows=168 pushed=2 exec=1
+# F17-sorted-lookup-child-limit: rows=37 pushed=2 exec=1
+# F18-sorted-desc-lookup-child-limit: rows=41 pushed=2 exec=1
+# F19-sorted-scan-child: rows=3584 pushed=2 exec=1
+# F20-sorted-scan-child-limit: rows=777 pushed=2 exec=1
+# F21-sorted-desc-left-scan-child-limit: rows=333 pushed=2 exec=1
+# F22-sorted-scan-child-all-columns: rows=3584 pushed=2 exec=1
+#
+# MySQL aggregation and DISTINCT on top of a pushed join
+#
+# F23-group-by-over-pushed-join: rows=28 pushed=2 exec=1
+# F24-distinct-over-pushed-join: rows=244 pushed=3 exec=1
+DROP TABLE seq, r, ch, gc, b1, b2, b3, lk;

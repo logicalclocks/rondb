@@ -374,7 +374,10 @@ class ha_ndbcluster : public handler, public Partition_handler {
                                    ndb_pushed_builder_ctx &builder,
                                    bool allow_outer_join);
   friend int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
-  friend void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
+  friend bool ndb_push_aggregation_to_engine(
+      THD *thd, const AccessPath *root_path, const JOIN *join,
+      ndb_pushed_builder_ctx &builder, bool push_join_aggregate,
+      bool allow_outer_join, bool push_table_aggregate);
   friend bool ndb_push_single_table_aggregation(
       THD *thd, const JOIN *join, const ndb_pushed_builder_ctx &builder);
   friend int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,

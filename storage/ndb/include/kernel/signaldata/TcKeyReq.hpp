@@ -73,6 +73,11 @@ class TcKeyReq {
   friend class Trix;
 
   /**
+   * Test programs
+   */
+  friend struct SpjMalformedSignals;  // testSpjMalformed
+
+  /**
    * For printing
    */
   friend bool printTCKEYREQ(FILE *, const Uint32 *, Uint32, Uint16);

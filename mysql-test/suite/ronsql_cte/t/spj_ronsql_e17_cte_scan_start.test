@@ -1,0 +1,106 @@
+# spj_ronsql_e17_cte_scan_start
+#
+# Finding E-17 (storage/ndb/claude_files/dbspj/dbspj_query_execution.html,
+# section 8), reached from every RonSQL CTE query.  DBTC counts the CTE
+# reports it expects per SCAN_FRAGREQ sent (registerCteScanFragHandle),
+# and execCTE_PHASE_COMPLETE_REP starts the redistribution of a CTE when
+# the reports received equal the reports expected.  sendFragScansLab can
+# pause with a CONTINUEB before it has sent all fragment scans, so if the
+# workers already started report before the rest are sent, the
+# redistribution starts on partial data, and the later reports reach the
+# threshold again.
+#
+# DBTC error insert 8128 (not yet in ERROR_codes.txt) forces the pause:
+# it delays every SCAN_FRAGREQ after the first by 10 ms through
+# CONTINUEB.  Without it the window needs more than 4 local sends and
+# early reports that overtake the CONTINUEB, which is rare.
+#
+# Data: e17_t has 4000 rows over all fragments, g = id % 40.
+#   CTE = SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g
+#
+#   e17-1  control, no error insert.
+#          Expected (MySQL): (ng, s) = (40, 4000).
+#   e17-2  the same query under error insert 8128.
+#          Expected before a fix: smaller counts, an error, or a hang.
+#          Observed before a fix (2026-10-31, debug build): both data
+#          nodes stop on ndbassert(false) in execJOIN_AGG_COMPLETE_REQ
+#          (DblqhMain.cpp, the duplicate-REQ guard): DBTC reached the
+#          report threshold twice and sent JOIN_AGG_COMPLETE_REQ twice.
+#          A release build drops the second REQ, so the redistribution
+#          runs on the reports received before the first.
+#          Kernel fix (2026-11-02, Dbtc::cteFragScansSent): no CTE starts
+#          its redistribution before every SCAN_FRAGREQ is sent.
+#          Expected after it: (40, 4000), as e17-1.
+# The RonSQL request is bounded to 120 s
+# (include/spj_state_compare_bounded.inc), so a hang fails with curl exit
+# code 28.  Needs a data node binary with error inserts.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_ronsql_e17_cte_scan_start
+# Record: ./mtr --suite=ronsql_cte --record spj_ronsql_e17_cte_scan_start
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE e17_t (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE e17_d (d INT) ENGINE=MEMORY;
+INSERT INTO e17_d VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+INSERT INTO e17_t
+  SELECT a.d*1000 + b.d*100 + c.d*10 + e.d + 1,
+         (a.d*1000 + b.d*100 + c.d*10 + e.d + 1) % 40
+  FROM e17_d a, e17_d b, e17_d c, e17_d e
+  WHERE a.d <= 3;
+DROP TABLE e17_d;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === e17-1: control, no error insert ===
+let $QUERY=
+WITH e17_c AS (SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g)
+SELECT COUNT(*) AS ng, SUM(n) AS s FROM e17_c;|
+--source suite/ronsql_cte/include/spj_state_compare_bounded.inc
+--echo == Expected result ==
+WITH e17_c AS (SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g)
+SELECT COUNT(*) AS ng, SUM(n) AS s FROM e17_c|
+
+--echo
+--echo === e17-2: fragment scans sent 10 ms apart (DBTC 8128) ===
+--exec $NDB_MGM -e "ALL ERROR 8128" > /dev/null
+let $QUERY=
+WITH e17_c AS (SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g)
+SELECT COUNT(*) AS ng, SUM(n) AS s FROM e17_c;|
+--source suite/ronsql_cte/include/spj_state_compare_bounded.inc
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === e17-3: no DBSPJ request or join-aggregation state left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+
+--disable_query_log
+DROP TABLE e17_t;
+--enable_query_log

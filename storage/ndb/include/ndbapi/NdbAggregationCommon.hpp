@@ -185,6 +185,55 @@ enum InterpreterOp {
   kOpTotal
 };
 
+/*
+ * Decoding of an aggregation program for the walks over it in the NDB API
+ * (NdbAggregator::initForResults, the multi-leaf result program of
+ * NdbQueryImpl::prepareAggregation).  The opcode is in bits 26-31 of an
+ * instruction word.  Three instructions are followed by operand words
+ * holding arbitrary data, which a walk must step over and never decode
+ * as instructions (the high word 0x3FF00000 of the DOUBLE 1.0 reads as
+ * kOpSumDouble on slot 0):
+ *   kOpLoadConst       the 64-bit constant, two words
+ *   kOpLoadCol         the precision/scale word of a DECIMAL column
+ *   kOpEmbeddedInterp  the embedded interpreter program, (word & 0xFFFF)
+ *                      words
+ * Every other instruction is one word.  The kernel interpreters
+ * (AggInterpreterBase, JoinAggInterpreter extractAggOps) use the same
+ * lengths.
+ */
+static inline Uint32 aggProgramOp(Uint32 word) {
+  return (word >> 26) & 0x3F;
+}
+
+/* The column type of a kOpLoadCol word: the low 5 bits at bits 21-25 and
+ * the 6th bit at bit 20 (NdbAggregator encodeLoadColType). */
+static inline Uint32 aggLoadColType(Uint32 word) {
+  return ((word >> 21) & 0x1F) | (((word >> 20) & 0x1) << 5);
+}
+
+/* The number of program words of the instruction starting with `word`. */
+static inline Uint32 aggInstructionWords(Uint32 word) {
+  switch (aggProgramOp(word)) {
+    case kOpLoadConst:
+      return 3;
+    case kOpLoadCol: {
+      const Uint32 type = aggLoadColType(word);
+      return (type == NDB_TYPE_DECIMAL ||
+              type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
+    }
+    case kOpEmbeddedInterp:
+      return 1 + (word & 0xFFFF);
+    default:
+      return 1;
+  }
+}
+
+/* True for COUNT, SUM, MIN and MAX in all their typed forms: the
+ * instructions that update the aggregate slot (word & 0xFFFF). */
+static inline bool aggIsSlotOp(Uint32 op) {
+  return op >= kOpSum && op <= kOpMinDouble;
+}
+
 enum InterpreterRegisters {
   kReg1 = 0,
   kReg2,

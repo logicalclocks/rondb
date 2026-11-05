@@ -1,0 +1,25 @@
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 400)
+SELECT n FROM c;
+CREATE TABLE dp (id INT NOT NULL PRIMARY KEY, cid INT NOT NULL, b INT NOT NULL,
+KEY ix_b (b)) ENGINE=NDB;
+CREATE TABLE dc (id INT NOT NULL PRIMARY KEY, b INT NOT NULL, v INT NOT NULL,
+KEY ix_b (b)) ENGINE=NDB;
+INSERT INTO dp SELECT n, n % 120 + 1, n % 25 FROM seq WHERE n <= 400;
+INSERT INTO dc SELECT n, n % 25, n % 17 FROM seq WHERE n <= 100;
+CREATE TABLE upd_off (id INT NOT NULL PRIMARY KEY, v INT NOT NULL) ENGINE=NDB;
+INSERT INTO upd_off SELECT n, 0 FROM seq WHERE n <= 400;
+CREATE TABLE upd_on LIKE upd_off;
+INSERT INTO upd_on SELECT * FROM upd_off;
+CREATE TABLE del_off LIKE upd_off;
+INSERT INTO del_off SELECT * FROM upd_off;
+CREATE TABLE del_on LIKE upd_off;
+INSERT INTO del_on SELECT * FROM upd_off;
+ANALYZE TABLE dp, dc;
+Table	Op	Msg_type	Msg_text
+test.dp	analyze	status	OK
+test.dc	analyze	status	OK
+# D4-multi-table-delete: rows=243 exec=1
+# D3-multi-table-update: rows=400 exec=1
+DROP TABLE seq, dp, dc, upd_off, upd_on, del_off, del_on;

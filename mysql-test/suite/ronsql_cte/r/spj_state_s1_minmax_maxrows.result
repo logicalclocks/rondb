@@ -1,0 +1,65 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+SELECT COUNT(*) AS s1_rows FROM s1_big;
+s1_rows
+64000
+
+=== s1-1: scalar MAX CTE body -> descending scanIndex, maxRows=1 ===
+== Explain Query ==
+== Query ==
+WITH mx AS (SELECT MAX(v) AS m FROM s1_big)
+SELECT m FROM mx;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH mx AS (SELECT MAX(v) AS m FROM s1_big)
+SELECT m FROM mx|
+m
+100002
+
+=== s1-2: scalar MIN CTE body -> ascending scanIndex, maxRows=1 ===
+== Explain Query ==
+== Query ==
+WITH mn AS (SELECT MIN(v) AS m FROM s1_big)
+SELECT m FROM mn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH mn AS (SELECT MIN(v) AS m FROM s1_big)
+SELECT m FROM mn|
+m
+1
+
+=== s1-3: MAX and MIN bodies in one query (both scan directions) ===
+== Query ==
+WITH mx AS (SELECT MAX(v) AS max_v FROM s1_big),
+mn AS (SELECT MIN(v) AS min_v FROM s1_big)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH mx AS (SELECT MAX(v) AS max_v FROM s1_big),
+mn AS (SELECT MIN(v) AS min_v FROM s1_big)
+SELECT SUM(max_v) AS max_v, SUM(min_v) AS min_v FROM mx, mn|
+max_v	min_v
+100002	1
+
+=== s1-4: no DBSPJ request left behind (DUMP 2650 stops a node on a leak) ===

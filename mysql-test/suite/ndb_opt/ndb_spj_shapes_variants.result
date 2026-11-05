@@ -1,0 +1,174 @@
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 2000)
+SELECT n FROM c;
+CREATE TABLE p (
+id INT NOT NULL PRIMARY KEY,
+a INT NOT NULL,
+ab INT NOT NULL,
+pu INT NOT NULL,
+b INT NOT NULL,
+KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO p
+SELECT n, n % 320 + 1, (n % 320 + 1) % 40, n % 320 + 1001, n % 45
+FROM seq WHERE n <= 600;
+ANALYZE TABLE p;
+Table	Op	Msg_type	Msg_text
+test.p	analyze	status	OK
+#
+# Table variants
+#
+# V-plain-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-plain-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-plain-index-scan: rows=3457 pushed=2 exec=1
+# V-plain-root-lookup-child: rows=238 pushed=2 exec=1
+# V-plain-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-fr-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-fr-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-fr-index-scan: rows=3457 pushed=2 exec=1
+# V-fr-root-lookup-child: rows=238 pushed=2 exec=1
+# V-fr-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-rb-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-rb-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-rb-index-scan: rows=3457 pushed=2 exec=1
+# V-rb-root-lookup-child: rows=238 pushed=2 exec=1
+# V-rb-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-hidden-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-hidden-index-scan: rows=3457 pushed=2 exec=1
+# V-hidden-root-lookup-child: rows=238 pushed=2 exec=1
+# V-hidden-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-pkey_sub-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-pkey_sub-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-pkey_sub-index-scan: rows=3457 pushed=2 exec=1
+# V-pkey_sub-root-lookup-child: rows=238 pushed=2 exec=1
+# V-pkey_sub-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-fanout-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-fanout-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-fanout-index-scan: rows=3457 pushed=2 exec=1
+# V-fanout-root-lookup-child: rows=238 pushed=2 exec=1
+# V-fanout-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-pbal16-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-pbal16-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-pbal16-index-scan: rows=3457 pushed=2 exec=1
+# V-pbal16-root-lookup-child: rows=238 pushed=2 exec=1
+# V-pbal16-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-pbal1-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-pbal1-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-pbal1-index-scan: rows=3457 pushed=2 exec=1
+# V-pbal1-root-lookup-child: rows=238 pushed=2 exec=1
+# V-pbal1-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-ttl-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-ttl-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-ttl-index-scan: rows=3457 pushed=2 exec=1
+# V-ttl-root-lookup-child: rows=238 pushed=2 exec=1
+# V-ttl-root-scan-child-left: rows=3457 pushed=2 exec=1
+# V-ttl_rb-pk-lookup-left: rows=600 pushed=2 exec=1
+# V-ttl_rb-unique-lookup-left: rows=600 pushed=2 exec=1
+# V-ttl_rb-index-scan: rows=3457 pushed=2 exec=1
+# V-ttl_rb-root-lookup-child: rows=238 pushed=2 exec=1
+# V-ttl_rb-root-scan-child-left: rows=3457 pushed=2 exec=1
+#
+# Locking reads
+#
+CREATE TABLE lp (
+id INT NOT NULL PRIMARY KEY,
+cid INT NOT NULL,
+b INT NOT NULL
+) ENGINE=NDB;
+CREATE TABLE lc (
+id INT NOT NULL PRIMARY KEY,
+b INT NOT NULL,
+v INT NOT NULL,
+KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO lp SELECT n, n % 120 + 1, n % 30 FROM seq WHERE n <= 200;
+INSERT INTO lc SELECT n, n % 30, n FROM seq WHERE n <= 100;
+ANALYZE TABLE lp, lc;
+Table	Op	Msg_type	Msg_text
+test.lp	analyze	status	OK
+test.lc	analyze	status	OK
+# L1-for-update-lookup-child: rows=50 pushed=2 exec=0
+# L2-for-share-scan-child: rows=170 pushed=2 exec=0
+# L3-lock-in-share-mode-left: rows=150 pushed=2 exec=0
+# L4-for-update-locks-child-rows: lookup child row lock wait=1205, scan child row lock wait=1205
+# L5-for-share-locks-child-rows: lookup child row lock wait=1205, scan child row lock wait=1205
+DROP TABLE lp, lc;
+#
+# DML whose read side is a pushed join
+#
+CREATE TABLE dp (id INT NOT NULL PRIMARY KEY, cid INT NOT NULL, b INT NOT NULL,
+KEY ix_b (b)) ENGINE=NDB;
+CREATE TABLE dc (id INT NOT NULL PRIMARY KEY, b INT NOT NULL, v INT NOT NULL,
+KEY ix_b (b)) ENGINE=NDB;
+INSERT INTO dp SELECT n, n % 120 + 1, n % 25 FROM seq WHERE n <= 400;
+INSERT INTO dc SELECT n, n % 25, n % 17 FROM seq WHERE n <= 100;
+CREATE TABLE ins_off (pid INT NOT NULL, cid INT NULL, v INT NULL) ENGINE=NDB;
+CREATE TABLE ins_on LIKE ins_off;
+ANALYZE TABLE dp, dc;
+Table	Op	Msg_type	Msg_text
+test.dp	analyze	status	OK
+test.dc	analyze	status	OK
+# D1-insert-select-left-scan: rows=1600 exec=1
+# D2-create-table-select-lookup: rows=340 exec=1
+DROP TABLE dp, dc, ins_off, ins_on, cts_off, cts_on;
+#
+# E-26: 18 key fields of two children refer to a table before the
+# root (an InnoDB table, so it cannot be part of the pushed join).
+# Expected: the right rows; r26 and c26a pushed, c26b not (it would
+# take the references to 18). The control with 16 pushes all three.
+#
+CREATE TABLE drv18 (
+id INT NOT NULL PRIMARY KEY,
+d1 INT, d2 INT, d3 INT, d4 INT, d5 INT, d6 INT, d7 INT, d8 INT, d9 INT,
+d10 INT, d11 INT, d12 INT, d13 INT, d14 INT, d15 INT, d16 INT, d17 INT,
+d18 INT
+) ENGINE=InnoDB;
+INSERT INTO drv18 VALUES
+(1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+(2, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36);
+CREATE TABLE r26 (id INT NOT NULL PRIMARY KEY, x INT NOT NULL) ENGINE=NDB;
+INSERT INTO r26 SELECT n, n % 8 FROM seq WHERE n <= 40;
+CREATE TABLE c26a (
+k0 INT NOT NULL, k1 INT NOT NULL, k2 INT NOT NULL, k3 INT NOT NULL,
+k4 INT NOT NULL, k5 INT NOT NULL, k6 INT NOT NULL, k7 INT NOT NULL,
+k8 INT NOT NULL, k9 INT NOT NULL, v INT NOT NULL,
+PRIMARY KEY (k0, k1, k2, k3, k4, k5, k6, k7, k8, k9)
+) ENGINE=NDB;
+CREATE TABLE c26b LIKE c26a;
+INSERT INTO c26a SELECT n - 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, n FROM seq WHERE n <= 6;
+INSERT INTO c26b SELECT n - 1, 10, 11, 12, 13, 14, 15, 16, 17, 18, n * 10
+FROM seq WHERE n <= 6;
+CREATE TABLE c26c LIKE c26a;
+INSERT INTO c26c SELECT n - 1, 10, 11, 12, 13, 14, 15, 16, n - 1, n - 1, n * 100
+FROM seq WHERE n <= 6;
+ANALYZE TABLE drv18, r26, c26a, c26b, c26c;
+Table	Op	Msg_type	Msg_text
+test.drv18	analyze	status	OK
+test.r26	analyze	status	OK
+test.c26a	analyze	status	OK
+test.c26b	analyze	status	OK
+test.c26c	analyze	status	OK
+# E-26-many-refs-before-root: rows=30 pushed=2 exec=1
+# E-26-control-16-refs: rows=30 pushed=3 exec=1
+DROP TABLE drv18, r26, c26a, c26b, c26c;
+#
+# Q-8: odd numbers of partitions on 2 data nodes (kept last: a debug
+# mysqld may assert in NdbQueryImpl::prepareSend())
+#
+CREATE TABLE po5 (id INT NOT NULL PRIMARY KEY, a INT NOT NULL, b INT NOT NULL)
+ENGINE=NDB PARTITION BY KEY () PARTITIONS 5;
+CREATE TABLE po7 (id INT NOT NULL PRIMARY KEY, a INT NOT NULL, b INT NOT NULL,
+KEY ix_b (b))
+ENGINE=NDB PARTITION BY KEY () PARTITIONS 7;
+INSERT INTO po5 SELECT n, n % 300 + 1, n % 45 FROM seq WHERE n <= 700;
+INSERT INTO po7 SELECT n, n % 250 + 1, n % 45 FROM seq WHERE n <= 700;
+ANALYZE TABLE po5, po7;
+Table	Op	Msg_type	Msg_text
+test.po5	analyze	status	OK
+test.po7	analyze	status	OK
+# Q-8a-root-5-partitions-lookup-child: rows=700 pushed=2 exec=1
+# Q-8b-root-7-partitions-scan-child: rows=9340 pushed=2 exec=1
+# Q-8c-child-7-partitions-scan: rows=9340 pushed=2 exec=1
+# Q-8d-root-7-partitions-sorted: rows=159 pushed=0 exec=0
+DROP TABLE po5, po7, p, seq;

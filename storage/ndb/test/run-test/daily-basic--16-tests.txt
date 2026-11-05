@@ -42,6 +42,10 @@ cmd: testSpj
 args: -n NF_Join T6 T13
 max-time: 3780
 
+cmd: testSpj
+args: -n NF_JoinLeakCheck T6
+max-time: 2400
+
 cmd: test_event_merge
 args: --no-implicit-nulls --separate-events
 max-time: 180

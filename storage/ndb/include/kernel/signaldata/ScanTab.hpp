@@ -55,6 +55,7 @@ class ScanTabReq {
    * Test programs
    */
   friend Uint32 buildScanTabReqInfo();
+  friend struct SpjMalformedSignals;  // testSpjMalformed
 
   /**
    * For printing

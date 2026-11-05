@@ -1,0 +1,38 @@
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+KEY ib (b))
+ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+INSERT INTO t1 VALUES (1,1,10),(2,2,20),(3,3,30),(4,4,40),
+(5,5,50),(6,6,60),(7,7,70),(8,8,80);
+INSERT INTO t2 SELECT a, b, c + 1 FROM t1;
+INSERT INTO t2 SELECT a + 100, b, c + 2 FROM t1;
+INSERT INTO t2 SELECT a + 200, b, c + 3 FROM t1;
+CREATE VIEW spj_robust_dih_scans AS
+SELECT d.node_id, d.table_id,
+d.current_scan_count + d.scan_count_wait AS scans
+FROM ndbinfo.ndb$table_distribution_status_all AS d
+JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+LEFT JOIN ndbinfo.dict_obj_info AS p
+ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+#
+# Reference run: the query is pushed and leaves no DIH scan behind
+#
+Reference query was pushed
+No DIH scan is registered before the error insert
+#
+# 17012: the first ScanFragHandle of the child scan cannot be allocated
+#
+The query failed with NDB error 20008
+No DIH scan is left registered after the failed query
+#
+# No DBSPJ request, DBTC scan or join-aggregation state is left
+#
+structural leak checks acknowledged by all 2 data nodes
+#
+# The same query succeeds again with the reference result
+#
+The query returns the reference result
+DROP VIEW spj_robust_dih_scans;
+DROP TABLE t1, t2;

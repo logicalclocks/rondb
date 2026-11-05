@@ -114,9 +114,11 @@ DROP TABLE t2;
 --echo #     DECIMAL load + generic-aggregate lowering compile it now
 --echo #     (this was the 5C-2-era negative control; the durable
 --echo #     negative examples live in rondb_jit_fallback_census).
+# MIN and MAX: mysqld pushes no SUM over a DECIMAL with scale > 0, as the
+# DOUBLE track is not exact (Q-6 / E-16, is_exact_aggregate_arg).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
 --exec $NDB_MGM -e "all error 4060" >> $MYSQL_TMP_DIR/rondb_jit_double_canary_mgm.log
-SELECT SUM(dec9) FROM t1;
+SELECT MIN(dec9), MAX(dec9) FROM t1;
 --exec $NDB_MGM -e "all error 0" >> $MYSQL_TMP_DIR/rondb_jit_double_canary_mgm.log
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
 

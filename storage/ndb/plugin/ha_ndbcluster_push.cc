@@ -337,6 +337,7 @@ ndb_pushed_builder_ctx::ndb_pushed_builder_ctx(const THD *thd,
       m_has_pending_cond(),
       m_skip_reads(),
       m_internal_op_count(0),
+      m_param_refs(0),
       m_fld_refs(0),
       m_builder(nullptr),
       m_table_count(0) {
@@ -432,6 +433,7 @@ void ndb_pushed_builder_ctx::prepare(pushed_table *join_root) {
     m_has_pending_cond.clear_all();
     m_skip_reads.clear_all();
     m_internal_op_count = 0;
+    m_param_refs = 0;
     m_fld_refs = 0;
 
     for (uint tab_no = 0; tab_no < m_table_count; tab_no++) {
@@ -813,6 +815,7 @@ bool ndb_pushed_builder_ctx::is_pushable_with_root() {
   const uint root_no = m_join_root->get_table_no();
 
   m_fld_refs = 0;
+  m_param_refs = 0;
   m_join_scope.add(root_no);
   m_internal_op_count = internal_operation_count(access_type);
 
@@ -1076,6 +1079,10 @@ bool ndb_pushed_builder_ctx::is_pushable_as_child(pushed_table *table) {
       return false;
     }
   }  // for (uint key_part_no= 0 ...
+
+  if (!is_param_refs_pushable(table) || !is_null_safe_key_pushable(table)) {
+    return false;
+  }
 
   // If no parent candidates within current m_join_scope, table is unpushable.
   if (all_parents.is_clear_all()) {

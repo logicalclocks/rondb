@@ -1,0 +1,55 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e7-0: both subquery leaves are LEFT JOIN index scans of the root ===
+== Explain Query ==
+
+=== e7-1: COUNT(*) leaf first, the leaf with unmatched parents second ===
+== Query ==
+SELECT e.id,
+(SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca,
+(SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb
+FROM e7_e AS e;
+
+Number of output lines, including header: 2001
+
+== Diff ==
+==========
+
+
+
+== Expected result (summary of the MySQL result) ==
+SELECT COUNT(*) AS n, SUM(ca) AS sum_ca, SUM(ca = 2) AS ca2,
+COUNT(sb) AS nb, SUM(sb) AS sum_sb
+FROM (SELECT e.id,
+(SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca,
+(SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb
+FROM e7_e AS e) AS q|
+n	sum_ca	ca2	nb	sum_sb
+2000	2666	666	1000	2000
+
+=== e7-2: the same subqueries in the other order ===
+== Query ==
+SELECT e.id,
+(SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb,
+(SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca
+FROM e7_e AS e;
+
+Number of output lines, including header: 2001
+
+== Diff ==
+==========
+
+
+
+== Expected result (summary of the MySQL result) ==
+SELECT COUNT(*) AS n, COUNT(sb) AS nb, SUM(sb) AS sum_sb,
+SUM(ca) AS sum_ca, SUM(ca = 2) AS ca2
+FROM (SELECT e.id,
+(SELECT SUM(b.v) FROM e7_b AS b WHERE b.eid = e.id) AS sb,
+(SELECT COUNT(*) FROM e7_a AS a WHERE a.eid = e.id) AS ca
+FROM e7_e AS e) AS q|
+n	nb	sum_sb	sum_ca	ca2
+2000	1000	2000	2666	666
+
+=== e7-3: no DBSPJ request left behind ===

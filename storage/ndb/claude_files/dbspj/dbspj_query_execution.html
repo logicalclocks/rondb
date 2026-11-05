@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DBSPJ Query Execution</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --surface: #f1f2f4; --surface2: #e4e7ec; --text: #1d2228; --dim: #5d6670;
+    --border: #cfd4db; --accent: #1f6feb; --accent2: #8250df; --ok: #1a7f37; --warn: #9a6700; --bad: #cf222e;
+    --code-bg: #f3f4f6; --code-text: #24292f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171c; --surface: #1c2027; --surface2: #262c35; --text: #e6e9ed; --dim: #9aa4af;
+      --border: #333b46; --accent: #58a6ff; --accent2: #bc8cff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+      --code-bg: #0f1216; --code-text: #e6e9ed;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171c; --surface: #1c2027; --surface2: #262c35; --text: #e6e9ed; --dim: #9aa4af;
+    --border: #333b46; --accent: #58a6ff; --accent2: #bc8cff; --ok: #3fb950; --warn: #d29922; --bad: #f85149;
+    --code-bg: #0f1216; --code-text: #e6e9ed;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 1100px; padding: 2rem 16px 4rem; background: var(--bg); color: var(--text);
+         font: 15px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  h1 { font-size: 1.7rem; margin: 0 0 .3rem; }
+  h2 { font-size: 1.3rem; margin: 2.2rem 0 .6rem; padding-bottom: .25rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.08rem; margin: 1.4rem 0 .4rem; color: var(--accent); }
+  .subtitle { color: var(--dim); margin-bottom: 1.5rem; }
+  code { font: .88em ui-monospace, "SF Mono", Menlo, monospace; background: var(--code-bg); color: var(--code-text);
+         padding: .1em .35em; border-radius: 4px; }
+  pre { background: var(--code-bg); color: var(--code-text); border: 1px solid var(--border); border-radius: 6px;
+        padding: .9rem 1rem; overflow-x: auto; font: .82rem/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: .8rem 0; font-size: .88rem; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: .4rem .6rem; text-align: left; vertical-align: top; }
+  th { background: var(--surface2); }
+  .note, .warn, .weak { border-left: 4px solid var(--accent); background: var(--surface); padding: .7rem 1rem;
+         margin: 1rem 0; border-radius: 0 6px 6px 0; }
+  .warn { border-left-color: var(--warn); }
+  .weak { border-left-color: var(--bad); }
+  .src { color: var(--dim); font-size: .82rem; }
+  nav.toc { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: .8rem 1.2rem; }
+  nav.toc ol { margin: .3rem 0; padding-left: 1.2rem; }
+  svg { max-width: 100%; height: auto; }
+  svg text { fill: var(--text); font: 12px system-ui, sans-serif; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<h1>DBSPJ query execution</h1>
+<p class="subtitle">How pushed joins and pushed join aggregation execute in the RonDB data nodes: DBSPJ, its interplay with DBTC, DBLQH and the NDB API, which query shapes can be pushed, and where the weak spots are. Source tree: RonDB 26.10 (branch RONDB-1124-spj-fixes). Every statement was checked against the code; line numbers are approximate and drift, so function names are given too.</p>
+
+<nav class="toc">
+<strong>Contents</strong>
+<ol>
+  <li><a href="#summary">Summary</a></li>
+  <li><a href="#arch">Architecture overview</a></li>
+  <li><a href="#exec">Execution model</a></li>
+  <li><a href="#catalogue">Query catalogue and pushability rules</a></li>
+  <li><a href="#joinagg">Join aggregation (RONDB-733 and successors)</a></li>
+  <li><a href="#perf">Performance characteristics and limitations</a></li>
+  <li><a href="#tests">Testing landscape</a></li>
+  <li><a href="#findings">Findings index</a></li>
+</ol>
+</nav>
+
+<h2 id="summary">1. Summary</h2>
+<ul>
+  <li><strong>What DBSPJ is.</strong> A per-TC-thread block that executes a tree of up to 32 key lookups and ordered-index/table scans (a "pushed join") on behalf of one API query. It does no row reading itself: it turns each parent row into child <code>LQHKEYREQ</code>s or range bounds for child <code>SCAN_FRAGREQ</code>s, sends them to LDM or query threads anywhere in the cluster, and correlates results with 32-bit correlation ids. Rows for the application go directly from the LDM to the API; only columns needed to drive children come back to DBSPJ.</li>
+  <li><strong>Who decides what.</strong> mysqld (<code>ha_ndbcluster_push.cc</code>) or RonSQL decide which tables form a tree and which join semantics apply; the NDB API serializes the tree and assembles joined rows (and finishes outer/semi/anti join semantics, which are only hints to the kernel); DBTC splits the root over fragments and DBSPJ workers; DBSPJ plans the execution order and batches.</li>
+  <li><strong>What can be pushed.</strong> Scan or lookup roots; lookup children and ordered-index REF children with exact-type linked keys; inner, outer, semi and anti joins with nest-completeness rules for scan children; sorted results only from the root; committed reads only; no BLOB/TEXT in the select list; no user-defined partitioning; no LIMIT.</li>
+  <li><strong>Join aggregation.</strong> RonDB extends SPJ so that an aggregate leaf feeds rows into per-node aggregation state in DBLQH instead of the API, coordinated by DBTC (SETUP / COMPLETE / RELEASE), with outer-join NULL-row injection by DBSPJ, star (multi-leaf) and CTE extensions. From mysqld it is off by default (<code>ndb_join_pushdown_aggregate</code>).</li>
+  <li><strong>Top concerns</strong> (section 8): the API merges partial aggregates with operations decoded from data words (E-1); join-aggregation self-continuation never resets child-scan batch accounting and can silently skip child scans (E-2); outer-join aggregation loses or mis-evaluates NULL-extended rows in several cases (E-3, E-4, E-6, E-8); mysqld's join-aggregation pushdown can return wrong results for some shapes (E-9 to E-12); string grouping is not collation-consistent (E-5); and a debugging log line runs for every self-continued batch in production (E-27).</li>
+</ul>
+<div class="note">Line numbers refer to the committed tree (HEAD 6598f4a65e3). While this document was written, an uncommitted change in the working tree added error inserts 17535-17539 to DbspjMain.cpp, which shifts lines after ~10500 by up to ~80. Function names are given for every citation.</div>
+
+<h2 id="arch">2. Architecture overview</h2>
+
+<h3>2.1 Where DBSPJ runs</h3>
+<ul>
+  <li><strong>One DBSPJ worker per TC thread.</strong> DBSPJ is a multi-instance block whose instance count equals the TC worker count, and instance <em>n</em> is mapped onto the same thread as DBTC instance <em>n</em> (with no TC threads, both live in the receive threads). <span class="src">mt.cpp ~7303 (getNumBlockInstances: <code>case DBTC: case DBSPJ: return ndbMtTcWorkers</code>), mt.cpp ~7400 (thread mapping)</span>. A DBSPJ worker keeps a pointer to its co-located DBTC (<code>Dbtc *c_tc</code>, Dbspj.hpp) and uses it for the query-thread distribution handle (<code>get_scan_fragreq_ref(&amp;c_tc-&gt;m_distribution_handle, ...)</code> in <code>scanFrag_send</code>).</li>
+  <li><strong>DbspjProxy</strong> (a <code>DbgdmProxy</code>) only creates the workers and fans out <code>SET_DOMAIN_ID_REQ</code> (location-domain updates) to them. Query signals go straight to workers. <span class="src">DbspjProxy.cpp</span></li>
+  <li><strong>Which DBSPJ gets a request.</strong> The API sends <code>TCKEYREQ</code>/<code>SCAN_TABREQ</code> with the <em>viaSPJ</em> flag to DBTC. DBTC forwards to DBSPJ instead of DBLQH:
+    <ul>
+      <li>Lookup-rooted query: to DBSPJ on the node that DIH chose for the root key; the own instance (own thread) when that node is the TC's own node, otherwise a round-robin instance <code>(cspjInstanceRR++ % 120) + 1</code> that the receiver folds onto its existing instances. <span class="src">DbtcMain.cpp ~5726 (tckeyreq routing)</span></li>
+      <li>Scan-rooted query: one <code>SCAN_FRAGREQ</code> per <em>worker</em>. Fragment locations are sorted by node and bundled into "MultiFrag" requests (fragId list in a trailing section) so that a worker scans node-local fragments. Without bundling, a scan pruned to a single own-node fragment uses the own instance, otherwise round robin. <span class="src">DbtcMain.cpp ~18340 (sendDihGetNodesLab), ~18890 (sendDihGetNodeReq), ~20690 (sendScanFragReq MultiFrag)</span></li>
+      <li>How many fragments per worker is decided by the API: unordered non-aggregate scans use <code>rootFragments / #dataNodes</code> (one worker per data node); ordered (merge-sorted) scans, pruned scans and, by default, aggregate scans use one fragment per worker; aggregate scans can opt in to <code>setFragsPerWorker(K)</code> bundling. <span class="src">NdbQueryOperation.cpp ~3760 (NdbQueryImpl::prepareSend)</span></li>
+    </ul>
+  </li>
+  <li><strong>Where the work runs.</strong> DBSPJ only plans, routes and correlates. Rows are read by LDM threads (DBLQH/DBTUP/DBTUX) or, for committed reads, by query threads: lookups are addressed to <code>get_query_block_no(node)</code> (the virtual <code>V_QUERY</code> block if the target node has query threads), and local scans are distributed via the TC's distribution handle. <span class="src">SimulatedBlock.hpp ~2313; DbspjMain.cpp ~13890 (scanFrag_send)</span></li>
+  <li><strong>Replica choice.</strong> DBSPJ only does committed reads, so for READ_BACKUP tables it prefers a replica on its own node, then one in its own location domain (simple round robin among them). Fully replicated tables pass <code>anyNode</code> to DIH. User-defined partitioning is not supported (<code>distr_key_indicator = 0</code>). <span class="src">DbspjMain.cpp ~11519 (getNodes), ~11487 (check_own_location_domain)</span></li>
+</ul>
+
+<svg viewBox="0 0 1000 600" role="img" aria-label="DBSPJ architecture: API, TC thread with DBTC and DBSPJ, LDM and query threads, and the signals between them">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--text)"/>
+    </marker>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent2)"/>
+    </marker>
+    <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+    </marker>
+  </defs>
+  <!-- API node -->
+  <rect x="20" y="20" width="250" height="150" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="35" y="42" style="font-weight:600">API node (mysqld / RDRS / NDB API app)</text>
+  <text x="35" y="64">NdbQueryBuilder → NdbQueryDef</text>
+  <text x="35" y="82">NdbQuery: one NdbWorker per SPJ worker</text>
+  <text x="35" y="100">NdbResultStream per (worker, operation)</text>
+  <text x="35" y="118">tuple correlation, merge sort (ordered)</text>
+  <text x="35" y="136">NdbAggregator: final merge of groups</text>
+  <text x="35" y="154" style="fill:var(--dim)">sends SCAN_NEXTREQ per batch</text>
+
+  <!-- Data node A -->
+  <rect x="320" y="20" width="660" height="250" rx="10" style="fill:none;stroke:var(--border);stroke-dasharray:5 4"/>
+  <text x="335" y="40" style="font-weight:600">Data node A (TC node)</text>
+  <rect x="340" y="55" width="300" height="200" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="355" y="76" style="font-weight:600">TC thread n</text>
+  <rect x="355" y="86" width="270" height="62" rx="6" style="fill:var(--surface2);stroke:var(--border)"/>
+  <text x="365" y="106" style="font-weight:600">DBTC instance n</text>
+  <text x="365" y="124">viaSPJ routing, fragment bundling,</text>
+  <text x="365" y="140">join-agg coordinator (SETUP/COMPLETE)</text>
+  <rect x="355" y="158" width="270" height="88" rx="6" style="fill:var(--surface2);stroke:var(--border)"/>
+  <text x="365" y="178" style="font-weight:600">DBSPJ instance n</text>
+  <text x="365" y="196">Request = tree of TreeNodes</text>
+  <text x="365" y="214">exec plan, row buffers, correlation,</text>
+  <text x="365" y="232">batch control, congestion control</text>
+  <rect x="670" y="55" width="290" height="95" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="685" y="76" style="font-weight:600">LDM / query threads (node A)</text>
+  <text x="685" y="96">DBLQH / DBQLQH → DBTUP, DBTUX</text>
+  <text x="685" y="114">interpreter: filters, linked params</text>
+  <text x="685" y="132">join-agg state (JoinAggInterpreter)</text>
+  <rect x="670" y="165" width="290" height="90" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="685" y="186" style="font-weight:600">DBDIH (EXECUTE_DIRECT)</text>
+  <text x="685" y="206">DIH_SCAN_TAB_REQ: fragment count</text>
+  <text x="685" y="224">DIGETNODESREQ: fragment → node,</text>
+  <text x="685" y="242">replica choice (READ_BACKUP)</text>
+
+  <!-- Data node B -->
+  <rect x="320" y="330" width="660" height="250" rx="10" style="fill:none;stroke:var(--border);stroke-dasharray:5 4"/>
+  <text x="335" y="350" style="font-weight:600">Data node B</text>
+  <rect x="340" y="365" width="300" height="120" rx="8" style="fill:var(--surface);stroke:var(--accent)"/>
+  <text x="355" y="386" style="font-weight:600">TC thread m: DBSPJ instance m</text>
+  <text x="355" y="406">second worker of the same query</text>
+  <text x="355" y="424">(scans fragments whose primary is B,</text>
+  <text x="355" y="442">children may go to any node)</text>
+  <rect x="670" y="365" width="290" height="120" rx="8" style="fill:var(--surface);stroke:var(--border)"/>
+  <text x="685" y="386" style="font-weight:600">LDM / query threads (node B)</text>
+  <text x="685" y="406">fragment scans, PK lookups</text>
+  <text x="685" y="424">TRANSID_AI to API (user projection)</text>
+  <text x="685" y="442">TRANSID_AI to DBSPJ (linked attrs)</text>
+  <text x="685" y="460">per-node join-agg hash tables</text>
+
+  <!-- arrows -->
+  <line x1="270" y1="70" x2="352" y2="105" style="stroke:var(--text)" marker-end="url(#arr)"/>
+  <text x="196" y="190" style="fill:var(--dim)">1 SCAN_TABREQ / TCKEYREQ (viaSPJ)</text>
+  <line x1="490" y1="148" x2="490" y2="158" style="stroke:var(--text)" marker-end="url(#arr)"/>
+  <text x="498" y="156" style="fill:var(--dim);font-size:11px">2</text>
+  <path d="M355,120 C300,250 300,360 340,400" style="fill:none;stroke:var(--text)" marker-end="url(#arr)"/>
+  <text x="200" y="300" style="fill:var(--dim)">2 SCAN_FRAGREQ (MultiFrag)</text>
+  <line x1="625" y1="200" x2="668" y2="205" style="stroke:var(--text)" marker-end="url(#arr)"/>
+  <line x1="625" y1="185" x2="668" y2="110" style="stroke:var(--accent)" marker-end="url(#arr3)"/>
+  <path d="M625,230 C700,300 760,330 790,363" style="fill:none;stroke:var(--accent)" marker-end="url(#arr3)"/>
+  <text x="630" y="300" style="fill:var(--accent)">3 child LQHKEYREQ / SCAN_FRAGREQ</text>
+  <path d="M740,365 C700,320 640,290 610,248" style="fill:none;stroke:var(--accent);stroke-dasharray:4 3" marker-end="url(#arr3)"/>
+  <text x="560" y="320" style="fill:var(--accent)">4 TRANSID_AI(corr) / CONF</text>
+  <path d="M670,485 C450,560 150,560 120,172" style="fill:none;stroke:var(--ok)" marker-end="url(#arr)"/>
+  <text x="70" y="520" style="fill:var(--ok)">5 TRANSID_AI rows straight to the API</text>
+  <path d="M355,140 C330,170 300,160 272,150" style="fill:none;stroke:var(--text);stroke-dasharray:4 3" marker-end="url(#arr)"/>
+  <text x="20" y="215" style="fill:var(--dim)">6 SCAN_TABCONF(activeMask) ← SCAN_FRAGCONF</text>
+  <path d="M520,86 C560,40 640,40 690,56" style="fill:none;stroke:var(--accent2);stroke-dasharray:6 3" marker-end="url(#arr2)"/>
+  <text x="530" y="34" style="fill:var(--accent2)">7 JOIN_AGG_SETUP / COMPLETE / RELEASE</text>
+</svg>
+<p class="src">Figure 1. Request routing. (1) API to DBTC, (2) DBTC to one DBSPJ worker per bundle of root fragments, (3) DBSPJ to LDM/query threads on any node, (4) rows that carry linked values come back to DBSPJ with a correlation id, (5) user-projection rows go directly from the LDM to the API (via <code>FLUSH_AI</code>; routed through TC as <code>TRANSID_AI_R</code> if there is no direct connection, <span class="src">DbtupBuffer.cpp ~495</span>), (6) per-batch completion via DBTC, (7) join aggregation control between DBTC and DBLQH.</p>
+
+<h3>2.2 From an NdbQueryDef to a tree of TreeNodes</h3>
+<p>The API serializes the query into the ATTRINFO section of the request: a <em>QueryTree</em> (one <code>QueryNode</code> per operation) followed by <em>QueryParameters</em> (one <code>QueryNodeParameters</code> per operation). Each request (one per worker) is a <code>Request</code> record; each operation becomes a <code>TreeNode</code>.</p>
+<ul>
+  <li>Entry points: <code>execLQHKEYREQ</code> (lookup-rooted, <span class="src">DbspjMain.cpp ~1216</span>) and <code>execSCAN_FRAGREQ</code> (scan-rooted, <span class="src">~1580</span>). Both allocate a Request from the query-memory arena, call <code>build()</code>, store the request in a hash keyed by (transid, senderData), then <code>prepare()</code> and <code>checkPrepareComplete()</code>. A scan request also unpacks the MultiFrag fragId list and the join-aggregation key section (<code>[nodeId, aggStateKey]</code> pairs, optional query tag, optional CTE key/owner blocks) before the build.</li>
+  <li><code>build()</code> <span class="src">~2041</span> loops over at most <code>NDB_SPJ_MAX_TREE_NODES</code> (= 32, ndb_limits.h:434) nodes, checks that node and parameter op types agree, converts the deprecated <code>QN_SCAN_FRAG_v1</code>/<code>QN_SCAN_INDEX_v1</code> formats, and dispatches to the node type's <code>m_build</code>. After the loop: <code>validateAggregateFlags()</code>, <code>buildExecPlan()</code>, <code>initRowBuffers()</code>.</li>
+  <li><code>parseDA()</code> <span class="src">~16082</span> is shared by all node types. It decodes the <code>DABits</code> (<span class="src">QueryTree.hpp ~96</span>): the parent list (exactly one parent: only trees, no DAGs), key patterns (<code>NI_KEY_LINKED</code>/<code>NI_KEY_PARAMS</code>/<code>NI_KEY_CONSTS</code>), interpreted code (<code>PI_ATTR_INTERPRET</code> scan filter; <code>NI_ATTR_LINKED</code> for parent values used as filter parameters), the user projection (<code>PI_ATTR_LIST</code>) and the linked-attribute projection for children (<code>NI_LINKED_ATTR</code>, always followed by a <code>CORR_FACTOR32</code> read). Join semantics come from <code>NI_INNER_JOIN</code>, <code>NI_FIRST_MATCH</code>, <code>NI_ANTI_JOIN</code>; aggregation from <code>NI_AGGREGATE</code>/<code>NI_AGGREGATE_LEAF</code>.</li>
+  <li>Linked keys and parameters are kept as <em>patterns</em> (<code>P_COL</code>, <code>P_UNQ_PK</code>, <code>P_PARAM</code>, <code>P_PARAM_HEADER</code>, <code>P_PARENT</code>, <code>P_ATTRINFO</code>, <code>P_DATA</code>, <span class="src">QueryTree.hpp ~607</span>) and are <code>expand()</code>ed against each parent row at run time. Constant keys are expanded once at build time.</li>
+  <li>A node becomes non-leaf when it projects linked attributes (<code>T_LEAF</code> is cleared in <code>parseDA</code> when <code>NI_LINKED_ATTR</code> is present), so leaf-ness is a property of the node's own projection, available already while it is being built.</li>
+</ul>
+
+<h3>2.3 OpInfo: the per-node-type "virtual function" table</h3>
+<p>Each TreeNode points to a static <code>OpInfo</code> (<span class="src">Dbspj.hpp ~528</span>) of member-function pointers. The generic request code drives every node through these hooks; a null entry means "not applicable".</p>
+<table>
+<tr><th>Hook</th><th>Lookup (<code>QN_LOOKUP</code>)</th><th>ScanFrag (<code>QN_SCAN_FRAG</code>, table and index scans)</th><th>CTE lookup</th><th>CTE scan</th><th>CTE subtree</th><th>Called when</th></tr>
+<tr><td>m_build</td><td>lookup_build</td><td>scanFrag_build</td><td>cte_lookup_build</td><td>cte_scan_build</td><td>cte_subtree_build</td><td>request arrives</td></tr>
+<tr><td>m_prepare</td><td>-</td><td>scanFrag_prepare (DIH_SCAN_TAB_REQ)</td><td>-</td><td>-</td><td>-</td><td>after build, may block</td></tr>
+<tr><td>m_start</td><td>lookup_start</td><td>scanFrag_start</td><td>cte_lookup_start</td><td>cte_scan_start</td><td>cte_subtree_start</td><td>root (or CTE root) starts</td></tr>
+<tr><td>m_countSignal</td><td>yes</td><td>yes</td><td>yes</td><td>yes</td><td>-</td><td>each awaited reply</td></tr>
+<tr><td>m_execLQHKEYREF/CONF</td><td>yes</td><td>-</td><td>-</td><td>-</td><td>-</td><td>lookup reply</td></tr>
+<tr><td>m_execSCAN_FRAGREF/CONF</td><td>-</td><td>yes</td><td>-</td><td>-</td><td>-</td><td>fragment batch reply</td></tr>
+<tr><td>m_parent_row</td><td>lookup_parent_row</td><td>scanFrag_parent_row</td><td>cte_lookup_parent_row</td><td>-</td><td>-</td><td>a parent row arrives</td></tr>
+<tr><td>m_parent_batch_complete</td><td>-</td><td>yes (sends the child scan)</td><td>-</td><td>-</td><td>-</td><td>parent batch fully received</td></tr>
+<tr><td>m_parent_batch_repeat</td><td>-</td><td>yes</td><td>-</td><td>-</td><td>-</td><td>bushy-scan repeat</td></tr>
+<tr><td>m_parent_batch_cleanup</td><td>-</td><td>yes</td><td>-</td><td>-</td><td>-</td><td>before next parent batch</td></tr>
+<tr><td>m_execSCAN_NEXTREQ</td><td>-</td><td>yes</td><td>-</td><td>yes</td><td>-</td><td>cursor continues</td></tr>
+<tr><td>m_complete / m_abort / m_execNODE_FAILREP / m_cleanup</td><td>-/yes/yes/yes</td><td>yes/yes/yes/yes</td><td>-/yes/yes/yes</td><td>-/yes/yes/yes</td><td>-/-/-/yes</td><td>end of request, errors, node failure</td></tr>
+</table>
+<p class="src">OpInfo tables: g_LookupOpInfo DbspjMain.cpp ~6314, g_CteLookupOpInfo ~6341, g_CteSubtreeOpInfo ~7839, g_CteScanOpInfo ~7986, g_ScanFragOpInfo ~11621; getOpInfo ~15270. <code>TreeNode::isLookup()</code> treats lookup, CTE lookup and CTE subtree as lookups and everything else as scans (Dbspj.hpp, struct TreeNode).</p>
+
+<h3>2.4 Request lifecycle</h3>
+<ol>
+  <li><strong>Build</strong> (above). Errors before the request is stored produce an early <code>LQHKEYREF</code>/<code>SCAN_FRAGREF</code>; malformed trees are additionally reported to the data-node security layer (<code>flagMaliciousTreeNode</code>).</li>
+  <li><strong>Prepare.</strong> Every non-root scan node (<code>T_NEED_PREPARE</code>) asks DIH for the table's fragment count and a scan cookie (<code>DIH_SCAN_TAB_REQ</code>, executed directly, answered to itself via a signal to get a real-time break), then allocates one <code>ScanFragHandle</code> per fragment. A const-pruned child resolves its single fragment here. <span class="src">scanFrag_prepare ~12251, execDIH_SCAN_TAB_CONF ~12316</span></li>
+  <li><strong>Start</strong> the root (and for compound CTE queries, the CTE subtrees whose dependencies are met).</li>
+  <li><strong>Batches.</strong> Every signal sent increments <code>Request::m_outstanding</code>; replies decrement it. When it reaches zero, <code>batchComplete()</code> runs <span class="src">~3767</span>: it computes the cursor nodes for the next batch (<code>prepareNextBatch</code>), possibly continues internally (sorted root, join aggregation, CTE phase), otherwise sends <code>SCAN_FRAGCONF</code> to DBTC with <code>completedOps = m_rows</code> and an <code>activeMask</code> of nodes that still have rows (<code>sendConf</code> ~4259), then waits (<code>RS_WAITING</code>) for <code>SCAN_NEXTREQ</code>.</li>
+  <li><strong>Complete / cleanup.</strong> When no node is active, an optional complete phase runs (<code>T_NEED_COMPLETE</code>), the final CONF is sent and all TreeNodes, row pages and arena memory are released.</li>
+</ol>
+
+<h3>2.5 Distribution over fragments and nodes</h3>
+<ul>
+  <li><strong>Root scan</strong>: the fragments to scan are given by DBTC in the request (one fragId, or the MultiFrag list). The root is <code>T_ONE_SHOT</code>: its key info (bounds) is used once. <span class="src">scanFrag_build ~11735</span></li>
+  <li><strong>Child scan</strong>: scans <em>all</em> fragments of its table from <em>every</em> worker, unless pruned. A linked prune pattern (<code>SF_PRUNE_LINKED</code>) computes the partition per parent row and only that fragment receives the range; a constant prune key (<code>T_CONST_PRUNE</code>) reduces the scan to one fragment; a single-fragment table is treated as const-pruned. Pruning is dropped for tables with partition hash fanout &gt; 1. <span class="src">parseScanFrag ~12060, scanFrag_parent_row ~12649</span></li>
+  <li><strong>Lookup child</strong>: per parent row DBSPJ computes the hash itself (<code>computeHash</code>, <code>computePartitionHash</code>) and asks DIH for the node (<code>getNodes</code>, <code>DIGETNODESREQ</code> direct). <span class="src">lookup_parent_row ~10007</span></li>
+  <li><strong>Parallelism.</strong> A child scan does not necessarily send to all its fragments at once. <code>scanFrag_parallelism()</code> <span class="src">~13203</span> returns all remaining fragments when the API asked for <code>Parallelism_max</code> (<code>SFP_PARALLEL</code> → <code>T_SCAN_PARALLEL</code>), otherwise it is <em>adaptive</em>: it uses a moving average plus two standard deviations of the observed rows-per-key fanout (<code>m_recsPrKeyStat</code>) and record size (<code>m_recSizeStat</code>) to choose how many fragments fit in the remaining batch, with a floor of the root fragment count, rounding to even rounds and raising parallelism if per-fragment batches would exceed <code>MAX_PARALLEL_OP_PER_SCAN_SPJ</code> (4000). Local fragments are sent first. A skew offset <code>(rootFragId * rootFragCnt) % fragCount</code> spreads different workers over different fragment subsets.</li>
+</ul>
+
+
+<h2 id="exec">3. Execution model</h2>
+
+<h3>3.1 Lookup nodes</h3>
+<ul>
+  <li>Each parent row produces one <code>LQHKEYREQ</code>: a <em>dirty, simple</em> (committed) read, interpreted if the node has a filter or linked parameters. <span class="src">lookup_build ~9087 (setDirtyFlag/setSimpleFlag), lookup_parent_row ~10007, lookup_send ~9359</span></li>
+  <li>If the key expands to NULL the request is not sent: an equality match is impossible. A lookup-rooted request still emits the <code>TCKEYREF(626)</code> the protocol requires; a scan request simply skips it (outer-joined aggregate leaves inject a NULL row instead, see section 5).</li>
+  <li>Replies: in a lookup-rooted request a leaf replies directly to the API (SPJ "fakes" being TC so LQH can route a REF), and SPJ sends an extra <code>TCKEYCONF</code> naming the node so the API can detect node failure (<code>lookup_sendLeafCONF</code>). In a scan request every lookup replies to DBSPJ.</li>
+  <li>Errors 626 (not found) and 899 (interpreter exit-nok, i.e. the pushed filter rejected the row) are <em>soft</em>: the branch just produces no row. Any other error aborts the whole request. <span class="src">lookup_execLQHKEYREF ~9803</span></li>
+  <li>A unique-index lookup is two TreeNodes: an index lookup (<code>T_UNIQUE_INDEX_LOOKUP</code>) that projects <code>NDB$PK</code>, then a base-table lookup. The API addresses the table's operation number (index node number + 1) in the active mask. <span class="src">prepareNextBatch ~4180</span></li>
+</ul>
+
+<h3>3.2 Scan nodes (table and ordered-index scans)</h3>
+<ul>
+  <li><code>QN_SCAN_FRAG</code> covers full table scans and ordered index scans (the table id is the index id; <code>RangeScanFlag</code>). Full-table scans are always TUP scans (never ACC) so they can run in query threads. <span class="src">scanFrag_send ~14000</span></li>
+  <li>All SPJ fragment scans are committed reads without locks; the root <code>SCAN_FRAGREQ</code> is asserted to have lock mode 0, no hold-lock, read-committed (debug asserts only). <span class="src">scanFrag_build ~11745</span></li>
+  <li>A child scan is always a range scan on an ordered index: each parent row contributes one bound set to the fragment's range list, tagged with the parent's row id in the 12-bit <code>range_no</code> field (<code>scanFrag_fixupBound</code>). The child's batch is only sent when the parent's batch is complete (<code>scanFrag_parent_batch_complete</code>), so one <code>SCAN_FRAGREQ</code> carries a multi-range scan for up to a whole parent batch.</li>
+  <li>Pushed filters and linked filter parameters: if the child has <code>NI_ATTR_LINKED</code>, a parameter section is built per parent row and appended per range; DBLQH/DBTUP selects the parameter set by range number. <span class="src">scanFrag_parent_row (T_ATTRINFO_CONSTRUCTED)</span></li>
+  <li>For a leaf scan with <code>NI_FIRST_MATCH</code> or <code>NI_ANTI_JOIN</code>, the <code>FirstMatch</code> flag is passed to LQH, which then returns at most one row per range. <span class="src">scanFrag_build ~12018</span></li>
+</ul>
+
+<h3>3.3 Correlation ids</h3>
+<p>Every row a non-leaf returns carries a 32-bit correlation (<code>CORR_FACTOR32</code>): the parent's row id in the upper 16 bits and the row's own id in the lower 16. Ids are only unique within one batch of one worker.</p>
+<ul>
+  <li>Scan child rows: <code>(range_no &lt;&lt; 16) | (corrIdStart + n)</code>, where <code>range_no</code> is the parent row id from the bound and <code>corrIdStart</code> is assigned by DBSPJ per <code>SCAN_FRAGREQ</code> (<code>data.m_corrIdStart += bs_rows</code>). <span class="src">DblqhMain.cpp ~26350, ~6635; DbspjMain.cpp ~14060</span></li>
+  <li>Lookup child rows: <code>(parentCorr &lt;&lt; 16) + (parentCorr &amp; 0xffff)</code>, i.e. a lookup reuses its parent's id so that a grandchild can be correlated even when the lookup has no projection. <span class="src">lookup_parent_row ~10290</span></li>
+  <li>The 12-bit bound field limits a parent batch to <code>MaxCorrelationId</code> = 4096 rows (DbspjMain.cpp ~274). <code>scanFrag_getBatchSize</code> caps non-leaf scans by the remaining ids; the API caps the batch rows of any scan that has children at <code>0x1000 / fragsPerWorker</code> (NdbQueryOperation.cpp ~6076).</li>
+</ul>
+
+<h3>3.4 Row buffering</h3>
+<ul>
+  <li>Rows are only buffered where the plan needs them: <code>T_BUFFER_ROW</code> (the row), <code>T_BUFFER_MATCH</code> (a TreeNode bitmask of which descendants matched), <code>T_BUFFER_MAP</code> (random access by row id instead of a FIFO list). <code>storeRow</code> lays out <em>[match mask][row header][row or only its correlation]</em>. <span class="src">storeRow ~5598, initRowBuffers ~2868</span></li>
+  <li>Memory: each TreeNode has a <code>RowBuffer</code> of 32 KB pages taken from the global memory manager (<code>RT_SPJ_DATABUFFER</code>, <code>NDB_ZONE_LE_32</code>) via a block-local free list; <code>releaseGlobal</code> returns pages above the 95th percentile of recent use every 10-100 ms. There is no per-request row-memory quota: a request fails with <code>OutOfRowMemory</code>/<code>OutOfQueryMemory</code> only when global pages run out. <span class="src">allocPage ~5879, releaseGlobal ~5914</span></li>
+  <li>Requests, TreeNodes, fragment handles and pattern buffers come from an arena allocator in query memory (<code>RT_SPJ_ARENA_BLOCK</code>); per-node arrays and CTE metadata use <code>lc_ndbd_pool_malloc(RG_QUERY_MEMORY)</code>.</li>
+  <li>Rows are released per batch in <code>cleanupBatch</code> for all nodes that get new rows in the next batch.</li>
+</ul>
+
+<h3>3.5 Execution plans: parallel vs sequential</h3>
+<p><code>buildExecPlan()</code> <span class="src">~2966</span> derives an execution order (<code>m_next_nodes</code>) from the query topology (<code>m_child_nodes</code>):</p>
+<ul>
+  <li><strong>Lookup-rooted requests and multi-leaf aggregation</strong> use <code>planParallelExec</code>: every child starts as soon as its parent row arrives.</li>
+  <li><strong>Scan requests</strong> use <code>planSequentialExec</code> <span class="src">~3128</span>: inner-joined lookups are chained (greedily, possibly before a scan that precedes them in the API's order), then one inner-joined scan branch is appended recursively, then outer-joined branches are started in parallel after the inner sequence. A non-match early in the chain avoids issuing the later operations for that row.</li>
+  <li>When an operation is planned after a node that is not its parent, the parent's rows are buffered (<code>T_BUFFER_MAP|T_BUFFER_ROW</code>) and looked up by correlation id. When an intermediate scan executes between a node and its scan ancestor, the node gets <code>TN_EXEC_WAIT | TN_RESUME_NODE</code>: it is not driven row by row but resumed by <code>resumeBufferedNode</code> after its dependencies complete, iterating the buffered parent rows and skipping those whose required inner-join matches are missing in the scan ancestors' match bitmasks. <span class="src">appendTreeNode ~3270, resumeBufferedNode ~6087</span></li>
+  <li><strong>Congestion control</strong>: a scan with lookup children gets <code>T_CHK_CONGESTION</code>. When the request has 256 or more outstanding signals, parent rows are buffered and their correlation ids queued instead of sending <code>LQHKEYREQ</code>s; they are resumed (at most 32 at a time) when outstanding signals drop to 128. <span class="src">DbspjMain.cpp ~298, execTRANSID_AI ~5490, resumeCongestedNode ~6165</span></li>
+</ul>
+
+<svg viewBox="0 0 1000 250" role="img" aria-label="Example of a sequential execution plan for a scan query">
+  <defs>
+    <marker id="arrB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--text)"/>
+    </marker>
+    <marker id="arrC" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/>
+    </marker>
+  </defs>
+  <text x="20" y="22" style="font-weight:600">Query topology (m_child_nodes)</text>
+  <rect x="120" y="35" width="110" height="34" rx="6" style="fill:var(--surface2);stroke:var(--border)"/><text x="132" y="57">t1 scan (root)</text>
+  <rect x="20" y="120" width="120" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="28" y="142">t2 lookup inner</text>
+  <rect x="160" y="120" width="110" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="170" y="142">t3 scan inner</text>
+  <rect x="290" y="120" width="120" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="298" y="142">t4 lookup outer</text>
+  <rect x="160" y="195" width="120" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="168" y="217">t5 lookup inner</text>
+  <line x1="160" y1="69" x2="85" y2="118" style="stroke:var(--text)" marker-end="url(#arrB)"/>
+  <line x1="175" y1="69" x2="210" y2="118" style="stroke:var(--text)" marker-end="url(#arrB)"/>
+  <line x1="200" y1="69" x2="345" y2="118" style="stroke:var(--text)" marker-end="url(#arrB)"/>
+  <line x1="215" y1="154" x2="218" y2="193" style="stroke:var(--text)" marker-end="url(#arrB)"/>
+  <text x="520" y="22" style="font-weight:600">Execution plan (m_next_nodes)</text>
+  <rect x="520" y="55" width="70" height="34" rx="6" style="fill:var(--surface2);stroke:var(--border)"/><text x="535" y="77">t1</text>
+  <rect x="620" y="55" width="70" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="635" y="77">t2</text>
+  <rect x="720" y="55" width="70" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="735" y="77">t3</text>
+  <rect x="820" y="55" width="70" height="34" rx="6" style="fill:var(--surface);stroke:var(--border)"/><text x="835" y="77">t5</text>
+  <rect x="720" y="140" width="110" height="34" rx="6" style="fill:var(--surface);stroke:var(--warn)"/><text x="728" y="162">t4 (resumed)</text>
+  <line x1="590" y1="72" x2="618" y2="72" style="stroke:var(--accent)" marker-end="url(#arrC)"/>
+  <line x1="690" y1="72" x2="718" y2="72" style="stroke:var(--accent)" marker-end="url(#arrC)"/>
+  <line x1="790" y1="72" x2="818" y2="72" style="stroke:var(--accent)" marker-end="url(#arrC)"/>
+  <line x1="660" y1="89" x2="740" y2="138" style="stroke:var(--accent);stroke-dasharray:4 3" marker-end="url(#arrC)"/>
+  <text x="520" y="205" style="fill:var(--dim)">t2 runs before t3 (cheap inner lookup can eliminate t1 rows); t3 runs only for t1 rows that matched t2;</text>
+  <text x="520" y="222" style="fill:var(--dim)">t4 (outer) follows the inner sequence; it waits for t3 (TN_EXEC_WAIT) and is resumed from</text>
+  <text x="520" y="239" style="fill:var(--dim)">buffered t1 rows whose t2/t3 match bits are set (resumeBufferedNode).</text>
+</svg>
+
+<h3>3.6 Batching and who drives the next batch</h3>
+<ul>
+  <li>The API sets <code>batch_size_rows</code>/<code>batch_size_bytes</code> per scan operation (root: per worker; children: <code>getMaxBatchRows() * fragsPerWorker</code>). Lookups inherit the batch size of their closest scan ancestor. <span class="src">NdbQueryOperation.cpp ~6007 (calculateBatchedRows), ~6315 (QN_SCAN_FRAG params)</span></li>
+  <li>DBSPJ splits a node's remaining batch budget over the fragments it scans in parallel (<code>bs_rows = availableBatchRows / parallelism</code>, capped at 4000) and keeps sending to not-yet-started fragments while budget remains (<code>m_batch_chunks</code>). When a MultiFrag request carries more fragments than the API planned for, the batch is <em>not</em> enlarged; it is divided over more fragments. <span class="src">scanFrag_send ~13331; DbtcMain.cpp ~20700</span></li>
+  <li>A batch ends when <code>m_outstanding</code> reaches zero. DBSPJ then reports <code>SCAN_FRAGCONF</code> with <code>activeMask</code>. DBTC forwards the result as <code>SCAN_TABCONF</code>; the API consumes the rows and sends <code>SCAN_NEXTREQ</code>, which DBSPJ applies to the cursor nodes chosen by <code>prepareNextBatch</code>: the deepest active scans, and (with <code>RT_REPEAT_SCAN_RESULT</code>) only the last active one. <span class="src">batchComplete ~3767, prepareNextBatch ~4100, execSCAN_NEXTREQ ~5134</span></li>
+  <li>Exceptions where DBSPJ continues by itself without an API round trip: the sorted root (below), join aggregation when no row was produced for the API (<code>handleJoinAggNextBatch</code>, which sends <code>SCAN_HBREP</code> to DBTC at most every 20 ms to keep the scan timers alive), and CTE materialization phases (<code>handleCtePhaseNextBatch</code>). <span class="src">~3957, ~3998, ~4058</span></li>
+  <li>Row counting: <code>completedOps</code> counts only rows the API will receive through its per-operation receivers (nodes with a user projection), so the API can tell when all TRANSID_AI of a batch have arrived. Aggregate scan leaves always report 0 from DBLQH; aggregate lookup leaves report their evicted groups in <code>LQHKEYCONF.readLen</code> (see <a href="#e-14">E-14</a>). <span class="src">scanFrag_execSCAN_FRAGCONF ~14360, lookup_execLQHKEYCONF ~9969</span></li>
+</ul>
+
+<h3>3.7 Bushy scans and NI_REPEAT_SCAN_RESULT</h3>
+<p>Two sibling scans under one parent (a "bushy" or X-scan) produce a cross product per parent row. With <code>NI_REPEAT_SCAN_RESULT</code> set by the API, only one active scan is advanced per batch; the other scans that are not ancestors of it are marked <code>T_SCAN_REPEATABLE</code>, keep their range keys, and are re-executed (<code>scanFrag_parent_batch_repeat</code>) so that the API never has to buffer more than the current batch. Without it, all active scans advance together and the API must buffer and iterate the cross product itself. <span class="src">scanFrag_build ~11710, prepareNextBatch ~4113, scanFrag_parent_batch_repeat ~14083</span></p>
+<div class="warn">Repeated scans re-read data from LDM: for a parent row with <em>m</em> rows in scan A and <em>n</em> in scan B where B needs <em>k</em> batches, A's result for that parent batch is fetched up to <em>k</em> times.</div>
+
+<h3>3.8 Sorted (ordered index) root</h3>
+<p>Only the root can return rows in index order (<code>SFP_SORTED_ORDER</code> → <code>T_SORTED_ORDER</code>; the API asserts it is the root). Ordered queries always use one fragment per worker, and the API merge-sorts the per-worker streams. If the query also has scan children (<code>RT_MULTI_SCAN</code>), DBSPJ fetches <em>one root row per round</em> (<code>batch_size_rows = 1</code>, parallelism 1) so that child rows of later root rows cannot be interleaved out of order; as an optimization <code>batchComplete</code> immediately fetches the next root row while <code>estmMaxKeys()</code> predicts that the children's results still fit in the batch. <span class="src">parseScanFrag ~12210, scanFrag_send ~13520, batchComplete ~3880</span></p>
+
+<h3>3.9 Join types</h3>
+<table>
+<tr><th>API match type</th><th>QueryTree bits</th><th>What the kernel does</th><th>What the API / mysqld must still do</th></tr>
+<tr><td><code>MatchAll</code> (outer join, default)</td><td>none</td><td>Returns all child rows; the parent row is returned regardless. Outer branches are scheduled after the inner sequence.</td><td>NULL-extend parents without child rows.</td></tr>
+<tr><td><code>MatchNonNull</code> (inner join)</td><td><code>NI_INNER_JOIN</code></td><td>Sequential plan; buffered match bitmasks let resumed nodes skip parents without required matches.</td><td>Discard parents without matches (the kernel does not suppress the already sent parent rows).</td></tr>
+<tr><td><code>MatchFirst</code> (semi-join, FirstMatch)</td><td><code>NI_FIRST_MATCH</code> (inherited by descendants)</td><td>Leaf scans pass FirstMatch to LQH (one row per range); non-pruned leaf scans also remove already-matched ranges before sending to the next fragments (<code>T_REDUCE_KEYS</code>, <code>removeMatchedKeys</code>, used by TPC-H Q4, Q21, Q22).</td><td>Still filter duplicates: FirstMatch is per range and per fragment, so a parent can get one match from each fragment scanned in the same round, and non-leaf firstMatch nodes are not reduced at all.</td></tr>
+<tr><td><code>MatchNullOnly</code> (anti join)</td><td><code>NI_ANTI_JOIN</code> (sets <code>T_FIRST_MATCH</code>)</td><td>Treated as an outer join with FirstMatch on the leaf.</td><td>Emit only parents without a match.</td></tr>
+</table>
+<p class="src">NdbQueryBuilder.hpp ~120 ("These are hints only ... the receiver should be prepared to filter away unwanted rows"), NdbQueryBuilder.cpp ~3453; DbspjMain.cpp parseDA ~16118, appendTreeNode ~3400, removeMatchedKeys ~14147.</p>
+
+<h3>3.10 Filters and conditions</h3>
+<ul>
+  <li>A per-operation scan filter is interpreted code in the parameter section (<code>PI_ATTR_INTERPRET</code>); it runs in DBTUP before the projection and sends nothing for rejected rows (lookups: soft error 899).</li>
+  <li>Conditions that compare against an ancestor's column are pushed as a filter whose parameters come from the parent row (<code>NI_ATTR_LINKED</code> + pattern of <code>P_ATTRINFO</code> entries expanded per parent row into the interpreter's subroutine/parameter area). <span class="src">lookup_parent_row ~10150 (layout comment), scanFrag_parent_row</span></li>
+  <li><code>NI_ATTR_INTERPRET</code> (a program in the tree part) is supported by the parser but, per the code comment, "seems to never have been used, nor tested"; attribute parameter patterns without <code>NI_ATTR_LINKED</code> and subroutines in <code>PI_ATTR_INTERPRET</code> are guarded by <code>ndbassert(false)</code> "never been tested". <span class="src">parseDA ~16408, ~16478, ~16545</span></li>
+</ul>
+
+<h3>3.11 Where results flow</h3>
+<ul>
+  <li>The user projection of each operation (<code>PI_ATTR_LIST</code>) is read first and flushed by <code>FLUSH_AI</code> straight from the LDM/query thread to the API receiver; linked attributes plus the correlation are read next and sent to DBSPJ. For scan requests a <code>FLUSH_AI</code> is always inserted so that the route reference is TC (for <code>TRANSID_AI_R</code>). <span class="src">parseDA ~16590</span></li>
+  <li>DBSPJ itself never forwards row data to the API (except cached CTE rows). This is why the API, not DBSPJ, must assemble the joined rows from per-operation result streams by correlation id.</li>
+  <li>In aggregating requests only the aggregate leaf sends results; user projections of other nodes are suppressed (<code>suppressFlushAI</code>). <span class="src">parseDA ~16560</span></li>
+</ul>
+
+<h3>3.12 Errors, aborts and node failures</h3>
+<ul>
+  <li><code>abort()</code> marks the request <code>RS_ABORTING</code>, calls each node's <code>m_abort</code> (closing open fragment scans) and lets outstanding replies drain; the final reply is a <code>SCAN_FRAGREF</code>/<code>TCKEYREF</code> with the first error.</li>
+  <li><code>NODE_FAILREP</code> walks all requests in real-time slices; a request that depends on a failed node, or whose requesting TC died (<code>RT_REQUESTER_FAILED</code>), is aborted with <code>NodeFailure</code>. A waiting request whose TC is alive is left as an <code>RS_ABORTED</code> tombstone until its <code>SCAN_NEXTREQ</code> arrives. <span class="src">execNODE_FAILREP ~1003, nodeFail_checkRequests ~1090, nodeFail ~4608</span></li>
+  <li>Schema changes: each node checks its table's schema version (<code>checkTableError</code>) before sending; a dropped or altered table aborts the query.</li>
+</ul>
+<div class="weak"><strong><a href="#e-19">E-19</a></strong> (medium-high on the code; needs a non-standard client): the build path still has crash or overflow points on request data that the data-node security work otherwise validates: <code>ndbabort()</code> on a constant key or constant prune key containing NULL (<code>parseDA</code> ~16308, <code>parseScanFrag</code> ~12158) and on a child scan with a fixed key (<code>scanFrag_parent_row</code> ~12915); <code>expand()</code> copies a <code>P_DATA</code> block of up to 0xFFFF words without checking it against the pattern end, and checks <code>P_PARAM</code> indexes only with <code>ndbassert</code> (~15925-15970); <code>computeHash</code> copies the key into <code>tmp32[MAX_KEY_SIZE_IN_WORDS]</code> with only an <code>ndbassert</code> on its size (~11380). On the DBTC side, <code>parseJoinAggKeyInfo</code> uses <code>ndbrequire</code> on API-supplied lengths (~30914, ~31060). The standard NDB API never produces these (it rejects NULL keys with 4316).</div>
+<div class="weak"><strong><a href="#e-20">E-20</a></strong> (low-medium): a CTE query whose main root is a lookup computes the root's hash and node in <code>lookup_start</code> with <code>ndbrequire(err == 0)</code> after <code>computeHash</code> and <code>getNodes</code> (~9337, ~9339). Both can fail on ordinary data or DIH errors (e.g. a key that cannot be transformed in its collation, error 290); <code>lookup_parent_row</code> handles the same errors with <code>abort()</code>.</div>
+
+
+<h2 id="catalogue">4. Query catalogue and pushability rules</h2>
+
+<h3>4.1 What the kernel and NDB API can execute</h3>
+<table>
+<tr><th>Rule</th><th>Enforced where</th></tr>
+<tr><td>At most 32 TreeNodes; a unique-index lookup uses two, a CTE container one.</td><td><code>NDB_SPJ_MAX_TREE_NODES</code> (ndb_limits.h:434); NdbQueryBuilder.cpp ~2642; DbspjMain.cpp build ~2058</td></tr>
+<tr><td>Trees only: every non-root node has exactly one parent (<code>QRY_MULTIPLE_PARENTS</code>; DBSPJ rejects <code>cnt != 1</code>).</td><td>NdbQueryBuilder.cpp ~2716; parseDA ~16180</td></tr>
+<tr><td>Root: PK/unique lookup (<code>LQHKEYREQ</code> protocol) or a table/ordered-index scan (<code>SCAN_FRAGREQ</code>). A query with any scan must have a scan root (no scan under a lookup root).</td><td>NdbQueryBuilder.cpp ~1584 (<code>QRY_WRONG_OPERATION_TYPE</code>); execLQHKEYREQ rejects non-lookup trees</td></tr>
+<tr><td>Children: PK lookups, unique-index lookups, ordered-index scans whose bound contains at least one linked value. A child cannot be a full table scan.</td><td>NdbQueryBuilder.cpp ~1493, ~1574 (<code>QRY_UNKNOWN_PARENT</code>)</td></tr>
+<tr><td>Linked values must have exactly the same type, precision, scale, length and character set as the column they are compared with; no BLOB/TEXT; no conversion.</td><td>NdbQueryBuilder.cpp ~2195</td></tr>
+<tr><td>Sorted results only from the root (<code>QRY_MULTIPLE_SCAN_SORTED</code> for a sorted child); sorted root requires maximum parallelism.</td><td>NdbQueryBuilder.cpp ~1594; NdbQueryOperation.cpp ~7067</td></tr>
+<tr><td>Multi-range scans: constant ranges only, at the root (or a CTE body root), not combined with a parent.</td><td>NdbQueryBuilder.cpp ~1537 (<code>QRY_MULTI_RANGE_BOUND</code>)</td></tr>
+<tr><td>No locking reads: every pushed operation is a committed read; the lock mode argument of <code>createQuery()</code> is ignored.</td><td>NdbQueryOperation.cpp ~4691; NdbTransaction.cpp ~3571; DbspjMain.cpp lookup_build, scanFrag_build</td></tr>
+<tr><td>Pruning: a child scan is pruned per parent row only when its single range binds the whole distribution key by equality; never for multi-range scans or partition-fanout tables. A root scan is pruned only when its bound is supplied at execution time with <code>setBound()</code>.</td><td>NdbQueryBuilder.cpp ~3093, ~3102; NdbQueryOperation.cpp ~2965, ~5170 (see E-29)</td></tr>
+<tr><td>User-defined partitioning is not supported by DBSPJ's own hashing (<code>distr_key_indicator = 0</code>). Fully replicated tables read any replica; READ_BACKUP tables read the local or same-domain replica.</td><td>DbspjMain.cpp getNodes ~11519</td></tr>
+<tr><td>Aggregation: the aggregate leaf must be a leaf; multiple leaves must share one parent; a non-CTE aggregate must have a scan root and the leaf cannot be the root.</td><td>validateAggregateFlags ~2554; NdbQueryBuilder.cpp ~1822, ~1845</td></tr>
+<tr><td>Join semantics expressible: inner, left outer (with join-nest hints used only by the API), semi (FirstMatch), anti. Join-nest structure is <em>not</em> transmitted to the kernel.</td><td>QueryTree.hpp DABits; NdbQueryBuilder.hpp ~186-211 (<code>setParent</code>, <code>setFirstInnerJoin</code>, <code>setUpperJoin</code>)</td></tr>
+</table>
+
+<h3>4.2 Query shapes that run through DBSPJ (from mysqld)</h3>
+<p>EXPLAIN marks pushed tables with <code>Parent of N pushed join@k</code> / <code>Child of 'X' in pushed join@k</code>, and pushed join aggregation with <code>Using pushed join aggregation</code>. The examples below follow <code>mysql-test/suite/ndb_opt/join_pushdown_default.result</code> and <code>ndb_push_agg/r/ndb_join_pushdown_agg.result</code>.</p>
+<table>
+<tr><th>Shape</th><th>Example</th><th>SPJ tree</th></tr>
+<tr><td>Scan root, lookup children (snowflake / FK chain)</td><td><pre><code>SELECT * FROM orders o
+  JOIN customer c ON c.c_custkey = o.o_custkey
+  JOIN nation n   ON n.n_nationkey = c.c_nationkey;</code></pre></td><td>scan(o) → lookup(c) → lookup(n); one LQHKEYREQ per row per level, chained if inner</td></tr>
+<tr><td>Scan root, index-scan child (one-to-many)</td><td><pre><code>SELECT * FROM orders o
+  JOIN lineitem l ON l.l_orderkey = o.o_orderkey
+WHERE o.o_orderdate &gt;= '1995-01-01';</code></pre></td><td>scan(o, pushed filter) → scanIndex(l, bound l_orderkey = o.o_orderkey); pruned if the bound covers l's distribution key</td></tr>
+<tr><td>Lookup root</td><td><pre><code>SELECT * FROM t0               -- not NDB, or not pushable
+  JOIN t1 ON t1.pk = t0.x      -- pushed root (eq_ref)
+  JOIN t2 ON t2.pk = t1.b;     -- child lookup</code></pre></td><td>LQHKEYREQ protocol; lookups only (a scan child under a lookup root is refused)</td></tr>
+<tr><td>Outer joins</td><td><pre><code>SELECT * FROM t1 LEFT JOIN t1 AS t2
+  ON t2.a = t1.b AND t2.b = t1.c;</code></pre></td><td>MatchAll child; outer-joined scan children allowed with conditions on the whole nest pushed</td></tr>
+<tr><td>Semi join (EXISTS / IN, FirstMatch, LooseScan, <code>LIMIT 1</code> subtree)</td><td><pre><code>SELECT * FROM orders o WHERE EXISTS
+  (SELECT * FROM lineitem l
+    WHERE l.l_orderkey = o.o_orderkey
+      AND l.l_commitdate &lt; l.l_receiptdate);</code></pre></td><td>MatchFirst children; leaf scan uses LQH FirstMatch and <code>removeMatchedKeys</code> (TPC-H Q4)</td></tr>
+<tr><td>Anti join (NOT EXISTS)</td><td><pre><code>SELECT * FROM t1 WHERE NOT EXISTS
+  (SELECT * FROM t2 WHERE t2.pk = t1.b);</code></pre></td><td>MatchNullOnly when the anti nest is fully pushed, else MatchFirst; mysqld removes the rows that survive</td></tr>
+<tr><td>Ordered root</td><td><pre><code>SELECT * FROM t1 JOIN t2 ON t2.pk = t1.b
+ORDER BY t1.idx_col LIMIT 10;</code></pre></td><td>Sorted root, merge-sorted in the API; LIMIT stays in mysqld</td></tr>
+<tr><td>Bushy (star) scans</td><td><pre><code>SELECT * FROM t1
+  JOIN t2 ON t2.ref_col = t1.a
+  JOIN t3 ON t3.ref_col = t1.a;</code></pre></td><td>scan(t1) with two scan children; <code>NI_REPEAT_SCAN_RESULT</code> set on every non-root scan by the API</td></tr>
+<tr><td>Join aggregation (switch <code>ndb_join_pushdown_aggregate</code>, default OFF)</td><td><pre><code>SELECT t1.grp, SUM(t3.amount), COUNT(*)
+FROM t1 JOIN t2 ON t2.pk = t1.pk
+        JOIN t3 ON t3.pk = t2.pk
+GROUP BY t1.grp;</code></pre></td><td>Forced chain scan(t1) → t2 → t3 (aggregate leaf); groups returned instead of rows (section 5)</td></tr>
+</table>
+
+<h3>4.3 mysqld pushability rules</h3>
+<p>Most of the logic is in <code>ndb_pushed_builder_ctx</code> (<code>storage/ndb/plugin/ha_ndbcluster_push.cc</code>) and the AccessPath/join-nest model in <code>ha_query_plan.cc</code>. <code>JOIN::push_to_engines()</code> calls <code>ndbcluster_push_to_engine()</code> (ha_ndbcluster.cc ~15724), which, if <code>ndb_join_pushdown</code> is ON (default), runs <code>make_pushed_join()</code> (push.cc ~646): every table is tried as a root in plan order; for each, candidate children are accepted (<code>is_pushable_with_root</code>, <code>accept_query_plan</code>), the parent of each child is chosen as the earliest valid ancestor to get a bushy tree (<code>optimize_query_plan</code>), and the NdbQueryDef is built (<code>build_query</code>). Then join aggregation, then single-table aggregation are considered, then conditions of non-children are prepared, and <code>fixup_pushed_access_paths()</code> rewrites the plan.</p>
+<ul>
+  <li><strong>Root access types</strong>: PK or unique-key lookup (EQ_REF, also REF on a unique hash index), ordered-index REF/INDEX_SCAN (bound supplied at run time with <code>setBound</code>, ordering with <code>setOrdering</code> when the plan uses index order), table scan, and MRR/range: a range on an ordered index is a multi-range <code>scanIndex</code> with one bound per range; a range on a PK/unique hash key is a lookup root driven per key. A root needs at least one pushed child.</li>
+  <li><strong>Child access types</strong>: PK/unique lookups and ordered-index REF (equality on a key prefix). Range, MRR, index-merge, full scans and INDEX_SCAN children are refused. Dynamic range and REF_OR_NULL are never pushed (undecided at prepare time).</li>
+  <li><strong>Key values</strong>: constants (copied with <code>save_in_field</code>; NULL constants are not pushed), columns of pushed ancestors (<code>linkedValue</code>, possibly a grandparent, Item_equal substitution to find a common parent), and columns of tables before the root in the same scope (<code>paramValue</code>, scan roots only, at most 16; a NULL value cancels the push at execution with Warning 1296). Linked columns must have identical definitions (<code>Field::eq_def</code>) and must not be virtual generated columns.</li>
+  <li><strong>Plan scopes</strong>: the pushed join must lie in one Query_scope. BKA inner (MRR), hash-join build sides, non-inner hash probes, SORT (filesort), and the separate query blocks for aggregation, materialization, weedout, window functions etc. split scopes. Upper scopes can only supply parameters.</li>
+  <li><strong>Outer, semi and anti joins</strong>: lookups have no extra restrictions. An outer- or anti-joined <em>scan</em> child requires that every table in the embedding nests (below the root's nest) is pushed, has no remainder condition, and that no FILTER sits between the table and the root (<code>is_pushable_within_nest</code>, <code>is_pushable_as_child_scan</code>, <code>validate_join_nest</code>). Semi-joined tables get MatchFirst; semi-join scan children need the whole semi-join nest pushed; scans outside the nest may not depend on skip-read semi-join tables. Outer-joined tables get <code>setFirstInnerJoin</code>/<code>setUpperJoin</code> nest hints.</li>
+  <li><strong>Conditions</strong>: a child's condition is prepared with const tables (scan roots only) and pushed ancestors as parameters (<code>Ndb_param</code> → <code>cmp_param</code>, at most 16 parameters); each referenced parent becomes a forced ancestor. A remainder condition stays in a FILTER and restricts outer/semi scan children. The root's own condition is prepared after the join is built. Interpreted code is generated at execution; for lookup children code of 64 words or more is not attached and mysqld evaluates it instead (ha_ndbcluster.cc ~15986).</li>
+  <li><strong>Table and statement restrictions</strong>: only <code>LM_CommittedRead</code> (no <code>FOR UPDATE</code>, <code>FOR SHARE</code>, <code>LOCK IN SHARE MODE</code>, no UPDATE/DELETE targets), no BLOB/TEXT in the read set, no user-defined partitioning (ha_ndbcluster.cc ~15854). No checks for fully replicated, READ_BACKUP, triggers, foreign keys or hidden PK. <code>HA_EXTRA_KEYREAD</code> disables push at execution.</li>
+  <li><strong>Limits and switches</strong>: 32 SPJ operations (unique lookups count 2); 16 pre-root key fields; 16 condition parameters; <code>ndb_join_pushdown</code> (ON), <code>ndb_join_pushdown_aggregate</code> (OFF), <code>ndb_join_pushdown_aggregate_outer_join</code> (OFF), <code>ndb_pushdown_aggregate</code> (single table, OFF). LIMIT is never pushed (<code>LIMIT 1</code> is modelled as a semi-join nest); ORDER BY is pushed only as a sorted root.</li>
+</ul>
+
+<h3>4.4 "Can't push" reasons</h3>
+<p>All refusals are reported with <code>EXPLAIN_NO_PUSH</code> (push.cc ~54) as an EXPLAIN Note (1003). 31 call sites; the main ones:</p>
+<table>
+<tr><th>Reason (EXPLAIN Note)</th><th>Condition</th><th>Where (push.cc unless noted)</th></tr>
+<tr><td>Table 'X' is not pushable: select list can't contain BLOB columns / has user defined partioning / lock modes other than 'read committed' not implemented / This table access method can not be pushed. / Access type was not chosen at 'prepare' time</td><td>Table-level checks; const tables, fulltext, skip scan, dynamic range, REF_OR_NULL</td><td>ha_ndbcluster.cc ~15854; maybe_pushable ~521; ha_query_plan.cc ~817-939</td></tr>
+<tr><td>Didn't push table 'X' as root, too few rows to enable full parallelism</td><td>Small scan root (&lt; 3/4 × fragments rows) and a 4× larger pushed scan next, with at least 2 other pushed tables</td><td>accept_query_plan ~776</td></tr>
+<tr><td>Can't push table 'X' as child, access type 'Index-merge|Range-scan|Multi-range|Batched-key' not implemented</td><td>Multi-key access as child (incl. BKA)</td><td>is_pushable_as_child ~931</td></tr>
+<tr><td>Can't push table 'X' as child, 'type' must be a 'ref' access</td><td>Table scan child</td><td>~942</td></tr>
+<tr><td>Push of table 'X' as scan-child with lookup-root 'Y' not implemented</td><td>Index-scan child under lookup root</td><td>~953</td></tr>
+<tr><td>Can't push table 'X' as child, can't provide rows in index order</td><td>Child needs index order (and is not first in its semi-join nest)</td><td>~974</td></tr>
+<tr><td>... it is in a &lt;scope&gt;-branch which can't be referred</td><td>Root not in the child's query scope</td><td>~986</td></tr>
+<tr><td>Max number of pushable tables exceeded</td><td>&gt; 32 SPJ operations</td><td>~997</td></tr>
+<tr><td>column 'c' does neither 'ref' a column nor a constant</td><td>Key part is an expression</td><td>~1068</td></tr>
+<tr><td>no parent-child dependency exists between these tables</td><td>No key part refers to a pushed table</td><td>~1082</td></tr>
+<tr><td>Can't push table 'X' as scan-child of 'Y', depends on tables being 'skip-read'</td><td>Scan outside a semi-join nest depending on semi-join scans</td><td>~1116</td></tr>
+<tr><td>Can't push &lt;outer|anti|semi&gt; joined table ... table condition can not be fully evaluated / condition on its dependant table is not pushed down / join-nest containing the table has FILTER conditions / table in its dependant join-nest(s) is not part of the pushed join</td><td>Nest completeness rules for outer/semi/anti scan children</td><td>is_pushable_within_nest ~1425-1485</td></tr>
+<tr><td>exists unpushed condition in join-nests it depends on / table depends on join-nests with unpushed tables</td><td>Rules 3a/3b for references outside the embedding nests</td><td>is_pushable_as_child_scan ~1547, ~1575</td></tr>
+<tr><td>... as it would make the parent table 'Z' depend on table(s) outside of its join-nest</td><td>Required dependencies outside the parent's ancestor nests</td><td>set_ancestor_nests ~1700</td></tr>
+<tr><td>some tables in embedding join-nest(s) are not part of pushed join / join-nest containing the table has pending unpushed_conditions</td><td>Re-check when a nest closes; violators are removed with their dependants</td><td>validate_join_nest ~1801, ~1809</td></tr>
+<tr><td>column 'c' does not have same datatype as ref'ed column 'T.c'</td><td><code>!Field::eq_def</code></td><td>is_field_item_pushable ~1906</td></tr>
+<tr><td>Can't push condition on virtual generated column 'T.c'</td><td>Key refers to a virtual generated column (the wording says "condition" but it is a key reference)</td><td>~1919</td></tr>
+<tr><td>... referes to column 'T.c' prior to a potential 'const' root</td><td>Lookup root and key refers to a table before the root</td><td>~2014</td></tr>
+<tr><td>... column 'T.c' refers a table which was not pushed / is in a &lt;scope&gt;-branch which can't be referred</td><td>Referenced table not pushed or outside allowed scopes</td><td>~2046, ~2054</td></tr>
+<tr><td>(Warning 1296 at execution) Prepared pushed join could not be executed, ...</td><td>Incompatible access type / other index / paramValue NULL / unique-key MRR</td><td>match_definition ~139-213; ha_ndbcluster.cc ~15078, ~15909</td></tr>
+</table>
+<p>Silent refusals (no Note): non-NDB tables, NULL or non-storable constants, more than 16 condition parameters, and tables removed by the nest cascade.</p>
+
+<div class="weak"><strong><a href="#e-15">E-15</a></strong> (medium-low): the push code never consults <code>null_rejecting</code> for REF key parts, while DBSPJ drops any child request whose key or bound contains NULL ("an EQ-match is impossible", <code>lookup_parent_row</code>, <code>scanFrag_parent_row</code>). An ordered-index REF child on a null-safe <code>&lt;=&gt;</code> join condition would lose the NULL = NULL matches.</div>
+<div class="weak"><strong><a href="#e-26">E-26</a></strong> (medium): more than 16 pre-root key fields make <code>build_key</code> return -1 (a TODO, push.cc ~2439), which surfaces as a statement error instead of "not pushed".</div>
+
+<h3>4.5 Query shapes from RonSQL</h3>
+<p>RDRS does not build NdbQuery trees itself; RonSQL (<code>storage/ndb/src/ronsql/RonSQLPreparer.cpp</code>) does. Only joins and queries reading a CTE go through DBSPJ (<code>execute_join</code>); single-table aggregates, <code>COUNT(*)</code> shortcuts, PK IN-list aggregates and single-table pass-through use plain NDB scans or key reads.</p>
+<ul>
+  <li><strong>CTE subtrees first</strong>, each with a body root (table scan or index scan with the aggregator attached, scalar MIN/MAX as an ordered scan with <code>setMaxRows(1)</code> plus a self-join leaf, <code>scanCte</code> for chained CTEs, or a multi-operation body), then <code>defineCte()</code>.</li>
+  <li><strong>Main root</strong>: <code>scanCte</code>, <code>lookupCte</code> (all virtual PK columns bound), an index scan (IN lists become a multi-range <code>scanIndex</code>), <code>readTuple</code> for full-PK roots without scan children, a PK-equality ordered index scan when there are scan children, or a filtered table scan; <code>setFragsPerWorker</code> from a hint.</li>
+  <li><strong>Children</strong>: <code>readTuple</code> (PK/unique), <code>scanIndex</code> with linked equality bounds and constant or linked range bounds, <code>lookupCte</code>, <code>scanCte</code>; INNER → MatchNonNull, LEFT → MatchAll, SEMI → MatchNonNull|MatchFirst, ANTI → MatchNullOnly. LEFT joins whose inner side is later referenced by a null-rejecting INNER join are promoted to INNER (<code>promote_left_joins()</code>).</li>
+  <li>RonSQL never asks for a sorted root in joins; ORDER BY and LIMIT on join results are done in RonSQL. Limits: 32 operations, 8 join-key columns.</li>
+</ul>
+<div class="weak"><strong><a href="#e-29">E-29</a></strong> (high on mechanism, performance): the NDB API only checks a root scan for pruning when its bound is supplied with <code>NdbQuery::setBound()</code> at execution (<code>m_prunability</code> starts as <code>Prune_No</code>, NdbQueryOperation.cpp ~2781, ~2965, <code>isPrunable</code> ~5170). RonSQL and CTE roots put their bounds in the definition, so e.g. a PK-equality root scan with scan children is sent to all fragments.</div>
+
+<h2 id="joinagg">5. Join aggregation (RONDB-733 and successors)</h2>
+
+<h3>5.1 Who does what</h3>
+<table>
+<tr><th>Component</th><th>Role</th><th>Code</th></tr>
+<tr><td>mysqld / RonSQL / NDB API application</td><td>Builds the NdbQueryDef and an <code>NdbAggregator</code> program, attached to the leaf operation(s) with <code>NdbQueryOptions::setAggregation</code>; the program, bounds, API aggregate-receiver id, CTE definitions and column metadata travel in the <code>SCAN_TABREQ</code> KEYINFO.</td><td>NdbQueryBuilder.cpp ~593; NdbQueryOperation.cpp prepareAggregation ~4018-4370</td></tr>
+<tr><td>DBTC</td><td>Orchestrates; aggregates nothing. Parses the program, sends <code>JOIN_AGG_SETUP_REQ</code> to every connected, alive data node (plus its own), passes per-node keys to DBSPJ, sends <code>JOIN_AGG_COMPLETE_REQ</code> when all fragments are done, sends the final <code>SCAN_TABCONF</code>, releases state, and schedules CTEs.</td><td>DbtcMain.cpp parseJoinAggKeyInfo ~30871, sendJoinAggSetupReqs ~31460, sendJoinAggCompleteReqs ~33474, sendJoinAggScanTabConf ~33584</td></tr>
+<tr><td>DBSPJ</td><td>Runs the join tree; never aggregates. Marks leaf requests with the JoinAgg flag and a one-word identity, suppresses all other projections, injects NULL-extended rows for outer joins, and continues batches itself.</td><td>lookup_send ~9467, scanFrag_send ~13467/~13826, sendJoinAggNullRow ~10966, handleJoinAggNextBatch ~3998</td></tr>
+<tr><td>DBLQH / DBTUP</td><td>Leaf rows pass the table's pushed filter, then <code>Dbtup::handleJoinAggRow</code> feeds them into the node-local <code>JoinAggregationState</code> (one <code>JoinAggInterpreter</code> hash table per LDM/query thread, <code>STRATEGY_MUTEX_FREE</code>). At COMPLETE the owner LDM merges the per-thread tables and streams the groups to the API (main aggregation) or redistributes them to owner nodes (CTE).</td><td>DbtupExecQuery.cpp ~5699; JoinAggInterpreter.cpp; DblqhMain.cpp continueJoinAggSend ~21056</td></tr>
+<tr><td>NDB API <code>NdbAggregator</code></td><td>Receives one partial group per node (plus early-evicted partial groups), merges them by group key, sorts, and serves the final groups.</td><td>NdbQueryOperation.cpp execAggTRANSID_AI ~2318, processAggResults ~2384; NdbAggregator.cpp ProcessRes ~728</td></tr>
+</table>
+<div class="note">Several design notes are stale on this point: <code>coordinator.md</code> (~924-1027) still describes a mutex-shared node state, DBSPJ sending SETUP/COMPLETE and DBSPJ merging results; <code>coordinator_research.md</code> still has SETUP gating the scans; <code>JoinAgg.hpp</code> describes <code>JOIN_AGG_SEND_REQ/CONF</code> as DBLQH↔DBSPJ, but they are DBLQH↔DBTC; <code>cte_architecture.html</code> predates the DAG scheduler.</div>
+
+<h3>5.2 Main (non-CTE) aggregation, signal by signal</h3>
+<svg viewBox="0 0 1000 560" role="img" aria-label="Sequence diagram of a pushed join aggregation">
+  <defs>
+    <marker id="arrS" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--text)"/>
+    </marker>
+    <marker id="arrS2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent2)"/>
+    </marker>
+    <marker id="arrS3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--ok)"/>
+    </marker>
+  </defs>
+  <rect x="40" y="15" width="120" height="30" rx="5" style="fill:var(--surface2);stroke:var(--border)"/><text x="62" y="35">API (NdbQuery)</text>
+  <rect x="250" y="15" width="120" height="30" rx="5" style="fill:var(--surface2);stroke:var(--border)"/><text x="292" y="35">DBTC</text>
+  <rect x="460" y="15" width="140" height="30" rx="5" style="fill:var(--surface2);stroke:var(--border)"/><text x="470" y="35">DBSPJ workers</text>
+  <rect x="680" y="15" width="130" height="30" rx="5" style="fill:var(--surface2);stroke:var(--border)"/><text x="690" y="35">LDM (leaf rows)</text>
+  <rect x="850" y="15" width="130" height="30" rx="5" style="fill:var(--surface2);stroke:var(--border)"/><text x="862" y="35">owner LDM/node</text>
+  <line x1="100" y1="45" x2="100" y2="545" style="stroke:var(--border);stroke-dasharray:3 3"/>
+  <line x1="310" y1="45" x2="310" y2="545" style="stroke:var(--border);stroke-dasharray:3 3"/>
+  <line x1="530" y1="45" x2="530" y2="545" style="stroke:var(--border);stroke-dasharray:3 3"/>
+  <line x1="745" y1="45" x2="745" y2="545" style="stroke:var(--border);stroke-dasharray:3 3"/>
+  <line x1="915" y1="45" x2="915" y2="545" style="stroke:var(--border);stroke-dasharray:3 3"/>
+
+  <line x1="100" y1="70" x2="308" y2="70" style="stroke:var(--text)" marker-end="url(#arrS)"/><text x="110" y="64">1 SCAN_TABREQ (JoinAgg, program)</text>
+  <line x1="310" y1="95" x2="913" y2="95" style="stroke:var(--accent2)" marker-end="url(#arrS2)"/><text x="560" y="89" style="fill:var(--accent2)">2 JOIN_AGG_SETUP_REQ to every alive node</text>
+  <line x1="310" y1="120" x2="528" y2="120" style="stroke:var(--text)" marker-end="url(#arrS)"/><text x="318" y="114">3 SCAN_FRAGREQ + aggKeys</text>
+  <line x1="913" y1="140" x2="312" y2="140" style="stroke:var(--accent2);stroke-dasharray:4 3" marker-end="url(#arrS2)"/><text x="560" y="155" style="fill:var(--accent2)">SETUP_CONF (async; scans do not wait)</text>
+  <line x1="530" y1="180" x2="743" y2="180" style="stroke:var(--text)" marker-end="url(#arrS)"/><text x="540" y="174">4 root SCAN_FRAGREQ (no agg flag)</text>
+  <line x1="743" y1="200" x2="532" y2="200" style="stroke:var(--text);stroke-dasharray:4 3" marker-end="url(#arrS)"/><text x="560" y="215">TRANSID_AI (linked attrs)</text>
+  <line x1="530" y1="240" x2="743" y2="240" style="stroke:var(--text)" marker-end="url(#arrS)"/><text x="540" y="234">5 leaf LQHKEYREQ / SCAN_FRAGREQ</text>
+  <text x="560" y="256" style="fill:var(--dim)">JoinAgg flag + identity word</text>
+  <rect x="752" y="230" width="90" height="40" rx="4" style="fill:var(--surface);stroke:var(--warn)"/><text x="757" y="248" style="font-size:11px">aggregate in</text><text x="757" y="263" style="font-size:11px">thread-local hash</text>
+  <line x1="743" y1="285" x2="532" y2="285" style="stroke:var(--text);stroke-dasharray:4 3" marker-end="url(#arrS)"/><text x="560" y="300">CONF, no rows</text>
+  <line x1="530" y1="320" x2="312" y2="320" style="stroke:var(--text);stroke-dasharray:4 3" marker-end="url(#arrS)"/><text x="330" y="314">6 SCAN_HBREP (self-continue)</text>
+  <line x1="530" y1="350" x2="312" y2="350" style="stroke:var(--text)" marker-end="url(#arrS)"/><text x="330" y="344">7 final SCAN_FRAGCONF</text>
+  <line x1="310" y1="380" x2="913" y2="380" style="stroke:var(--accent2)" marker-end="url(#arrS2)"/><text x="560" y="374" style="fill:var(--accent2)">8 JOIN_AGG_COMPLETE_REQ (owner LDM per node)</text>
+  <rect x="860" y="390" width="110" height="34" rx="4" style="fill:var(--surface);stroke:var(--warn)"/><text x="866" y="411" style="font-size:11px">merge thread tables</text>
+  <line x1="913" y1="440" x2="102" y2="440" style="stroke:var(--ok)" marker-end="url(#arrS3)"/><text x="360" y="434" style="fill:var(--ok)">9 TRANSID_AI, one per partial group (paced by SEND_REQ/CONF with DBTC)</text>
+  <line x1="913" y1="470" x2="312" y2="470" style="stroke:var(--accent2);stroke-dasharray:4 3" marker-end="url(#arrS2)"/><text x="560" y="485" style="fill:var(--accent2)">10 COMPLETE_CONF(numResultRows)</text>
+  <line x1="310" y1="505" x2="102" y2="505" style="stroke:var(--text)" marker-end="url(#arrS)"/><text x="110" y="499">11 SCAN_TABCONF(EndOfData, expected rows)</text>
+  <line x1="310" y1="530" x2="913" y2="530" style="stroke:var(--accent2);stroke-dasharray:2 3" marker-end="url(#arrS2)"/><text x="560" y="524" style="fill:var(--accent2)">12 RELEASE (fire-and-forget)</text>
+  <text x="20" y="555" style="fill:var(--dim)">API: merge partial groups from all nodes in NdbAggregator, then sort.</text>
+</svg>
+<ol>
+  <li><code>SCAN_TABREQ</code> with the JoinAgg flag; KEYINFO = <em>[boundsLen, bounds, aggReceiverId, program(s), CTE block, column meta]</em>.</li>
+  <li>After DIH fragment locations are known, DBTC sends <code>JOIN_AGG_SETUP_REQ</code> to every connected node in <code>c_alive_nodes</code> plus its own node (independent of fragment placement) and starts the fragment scans <em>without waiting</em> for SETUP_CONF (RONDB-1120 P2c). <span class="src">sendDihGetNodesLab ~18498, sendJoinAggSetupReqs ~31495</span></li>
+  <li>Each DBSPJ worker gets a trailing aggKeys section: <code>[0xCCEE0001, queryTag]</code>, <code>[nodeId, key]</code> pairs, optional CTE block. DBSPJ requires it for any aggregate request (<code>validateAggregateFlags</code> rejects an empty <code>m_aggNodes</code>, so lookup-rooted aggregation is impossible).</li>
+  <li>DBSPJ runs the tree. Only the aggregate leaf's requests carry the JoinAgg flag and an identity word <code>packIdentWord(queryTag, cteId|RNIL, leafIdx)</code>; DBLQH resolves the state by (transid, queryTag, cteId). A request that arrives before the local SETUP is <em>parked</em>; a 10 ms sweeper fails it with temporary error 1274 (<code>Dblqh::joinAggParkSweep</code> ~9585).</li>
+  <li>Leaf scans report <code>completedOps = 0</code> and <code>total_len = 0</code> (aggregated rows are not counted, DblqhMain.cpp ~27132-27166), so a leaf batch ends only at fragment end or on transporter slowdown. With <code>m_rows == 0</code>, DBSPJ fetches the next root batch itself and keeps DBTC's timers alive with <code>SCAN_HBREP</code>.</li>
+  <li>When all fragments are done, DBTC sends <code>JOIN_AGG_COMPLETE_REQ</code> to the owner LDM instance of each node (<code>aggStateKey % lqhWorkers + 1</code>). The owner merges the per-thread tables in CONTINUEB slices and sends one <code>TRANSID_AI</code> per group directly to the API's aggregate receiver; <code>COMPLETE_CONF</code> reports the number of rows sent (including evicted groups), and DBTC sends <code>SCAN_TABCONF</code> with the expected total. The API merges all partial groups.</li>
+</ol>
+<div class="weak"><strong><a href="#e-1">E-1</a></strong> (high on the mechanism, medium-high end to end): <code>NdbAggregator::initForResults</code> (NdbAggregator.cpp ~239-252), which builds the API-side merger, decodes <em>every</em> program word as an instruction, including the data words of <code>LoadConst</code>/<code>LoadDouble</code>, DECIMAL metadata and embedded CASE bodies. A data word whose top 6 bits happen to equal an aggregate opcode overwrites <code>agg_ops_[slot]</code>, and the merge then uses the wrong function (e.g. MAX partials summed across nodes, COUNT over empty input returned as NULL). The multi-leaf combiner (NdbQueryOperation.cpp ~4340) has the same flaw.</div>
+<div class="weak"><strong><a href="#e-24">E-24</a></strong> (high on the code, low-medium likelihood): API-side robustness of the aggregate path. <code>execAggTRANSID_AI</code> (NdbQueryOperation.cpp ~2323) records the row offset before allocating, and on allocation failure neither counts the row nor sets an error, so the query waits until the 4008 timeout; all groups are buffered without a limit until end of data. <code>prepareAggregation</code> (~4246) allocates <code>m_aggReceivers</code> without initializing it, and a partial <code>getNdbScanRec()</code> failure leaves garbage entries that <code>postFetchRelease</code> (~2854) releases.</div>
+<div class="weak"><strong><a href="#e-27">E-27</a></strong> (high): <code>handleJoinAggNextBatch</code> (DbspjMain.cpp ~4000) calls <code>g_eventLogger-&gt;info("AGGT(%u) SPJ agg self-continue ...")</code> unconditionally, marked "TEMPORARY fs_batch phase-timing probe", although the <code>AGGT</code> macro that should wrap it is disabled. Every self-continued batch of every join aggregation writes a cluster-log line in production builds.</div>
+<div class="weak"><strong><a href="#e-28">E-28</a></strong> (medium-high): <code>continueJoinAggSend</code> (DblqhMain.cpp ~21178) compares the <em>cumulative</em> number of groups sent with <code>m_max_batch_rows</code> (256), so after the first 256 groups every further group costs a <code>JOIN_AGG_SEND_REQ</code>/<code>CONF</code> round trip with DBTC, which always grants 256 more.</div>
+
+<h3>5.3 DBSPJ's part in detail</h3>
+<ul>
+  <li><strong>Validation</strong> (<code>validateAggregateFlags</code> ~2554): all main-query nodes carry <code>NI_AGGREGATE</code>; at least one <code>NI_AGGREGATE_LEAF</code>; every aggregate leaf is a tree leaf; several leaves must share one parent; ancestors of leaves get <code>T_AGGREGATE_ANCESTOR</code>. Outer-joined ancestors and outer-joined scan leaves switch on row/match buffering in their scan ancestor (<code>RT_AGG_ANCESTOR_MATCH</code>).</li>
+  <li><strong>Projections</strong>: non-leaf nodes have their user projection and <code>FLUSH_AI</code> suppressed, so their rows only reach DBSPJ (linked columns) and are not counted in <code>m_rows</code>.</li>
+  <li><strong>Execution plan</strong>: single-leaf trees use the sequential plan; multi-leaf (star) trees use the parallel plan.</li>
+  <li><strong>Outer joins</strong> (switch <code>ndb_join_pushdown_aggregate_outer_join</code> in mysqld):
+    <ul>
+      <li>Lookup leaf, key not found: DBLQH itself aggregates a NULL-extended row (<code>handleOuterJoinAggKeyNotFound</code>, DblqhMain.cpp ~16615) and answers CONF.</li>
+      <li>NULL join key: DBSPJ sends <code>JOIN_AGG_NULL_ROW_REQ</code> with the parent's linked columns to a local LDM instance (<code>sendJoinAggNullRow</code>).</li>
+      <li>Scan leaf: the LQH scan sets a bit per matched range; the bitmask comes back on the closing <code>SCAN_FRAGCONF</code>, DBSPJ ORs it over fragments (<code>mergeAggMatchBitmask</code>) and, when the leaf scan completes, sends NULL rows for parent rows whose range never matched (<code>handleAggLeafScanComplete</code> ~10555, using <code>m_agg_range_corrs</code> to map range numbers back to parent rows).</li>
+      <li>Outer-joined intermediate node without a match: the scan ancestor's match bitmask identifies the parent rows, and <code>propagateNullToAggLeaf</code> walks down to the leaf, NULL-ing every node in between (<code>handleAggAncestorComplete</code> ~10817, <code>handleScanAggAncestorComplete</code> ~10764).</li>
+    </ul>
+  </li>
+</ul>
+<div class="weak"><strong><a href="#e-2">E-2</a></strong> (medium): when DBSPJ continues a join aggregation by itself (<code>handleJoinAggNextBatch</code>, also used for CTE phases), it calls <code>cleanupBatch(requestPtr, done=false)</code> (~4004). With <code>done=false</code>, <code>scanFrag_parent_batch_cleanup</code> (~15102) does not reset a child scan's <code>m_corrIdStart</code>, <code>m_totalRows</code> and <code>m_totalBytes</code>; those are reset only when the child itself gets a NEXTREQ or after a CONF to the API. For a non-leaf child scan (scan → scan → leaf) that completes within each root batch, the budget in <code>scanFrag_getBatchSize</code> therefore shrinks with every self-continued root batch. When it reaches 0 (byte budget below one estimated row, or the 4096 correlation ids used up), <code>scanFrag_send</code> returns without sending ("No batch buffer left", ~13378) and without activating the node: that parent batch's child rows are never aggregated (release builds), and the next <code>scanFrag_parent_batch_complete</code> hits <code>ndbassert(m_frags_complete == m_fragCount)</code> (~13080, debug builds). Upstream uses <code>done=false</code> only in the sorted-root path, guarded by <code>estmMaxKeys()</code>.</div>
+<div class="weak"><strong><a href="#e-3">E-3</a></strong> (medium-high): <code>handleAggAncestorComplete</code> defers NULL injection for an outer-joined lookup ancestor until its scan ancestor has completed <em>all</em> fragments (~10860), but <code>cleanupBatch</code> releases the buffered root rows of every earlier root batch. Unmatched intermediate parents from earlier batches never get their NULL row, so <code>COUNT(*)</code> over a 3-table LEFT JOIN chain undercounts once the root needs several batches. Two cases in <code>ndb_push_agg_dist/t/ndb_push_agg_dist_extended.test</code> (~233, ~348) are disabled with "COUNT(*) mismatch when inner JOIN + LEFT JOIN are pushed together".</div>
+<div class="weak"><strong><a href="#e-4">E-4</a></strong> (high on the code): for a NULL-extended row, <code>JoinAggInterpreter::ProcessRec</code> skips <code>kOpEmbeddedInterp</code> (the CASE condition) and falls into the THEN arm (JoinAggInterpreter.cpp ~1273). <code>SUM(CASE WHEN oj2.v &gt; 5 THEN 1 ELSE 0 END)</code> or <code>COUNT(CASE ...)</code> over a LEFT JOIN counts every unmatched row as 1; conditions on parent (linked) columns are also ignored for those rows.</div>
+<div class="weak"><strong><a href="#e-6">E-6</a></strong> (medium): for an outer-joined <em>lookup</em> leaf, only "key not found" (626) produces a NULL row in DBLQH. If the row exists but the pushed ON-condition filter rejects it, DBLQH answers <code>LQHKEYREF(899)</code>, which DBSPJ treats as a soft error and ignores (<code>lookup_execLQHKEYREF</code> ~9830); <code>handleAggAncestorComplete</code> only handles ancestors, not leaves. The parent row then contributes nothing, e.g. <code>COUNT(*) ... t1 LEFT JOIN t2 ON t2.pk = t1.a AND t2.c &gt; 5</code> undercounts. Scan leaves are not affected (filtered rows do not set the match bit).</div>
+<div class="weak"><strong><a href="#e-7">E-7</a></strong> (high on the code, medium impact): <code>processNullExtendedRow</code> runs without a leaf index (JoinAggInterpreter.cpp ~2157; called from DblqhMain.cpp ~16675 and ~20691), and <code>JOIN_AGG_NULL_ROW_REQ</code> carries leaf 0, so in a multi-leaf query the NULL row is processed by whichever leaf program was installed last. RonSQL's LEFT OUTER multi-leaf subqueries reach this.</div>
+<div class="weak"><strong><a href="#e-8">E-8</a></strong> (medium): join-nest structure is not sent to the kernel (only <code>NI_INNER_JOIN</code> per node), so <code>t1 LEFT JOIN (t2 JOIN t3 ...)</code> and <code>(t1 LEFT JOIN t2) JOIN t3</code> look the same to DBSPJ. NULL injection is then inconsistent: <code>propagateNullToAggLeaf</code> stops at an inner-joined <em>intermediate</em> node (~10465) but injects into an inner-joined <em>leaf</em>. Each behaviour is right for one of the two SQL readings and wrong for the other. RonSQL now promotes LEFT→INNER where the INNER condition is null-rejecting (<code>promote_left_joins()</code>), and the analysis in <code>join_nest_semantics_plan.md</code> notes the leaf-position dependence; mysqld genuine nests are not restricted.</div>
+<div class="weak"><strong><a href="#e-13">E-13</a></strong> (low-medium): in a star (multi-leaf) query with two scan leaves, every non-root scan has <code>NI_REPEAT_SCAN_RESULT</code>, so a scan leaf that needed several rounds is re-registered for repetition (<code>scanFrag_parent_batch_repeat</code> ~14083). <code>handleJoinAggNextBatch</code> skips non-active cursor nodes, but if the batch also produced evicted groups (<code>m_rows &gt; 0</code>), the API-driven <code>execSCAN_NEXTREQ</code> restarts the repeated leaf (~5245) and feeds the same rows into the aggregation a second time.</div>
+<div class="weak"><strong><a href="#e-18">E-18</a></strong> (high that it crashes, low likelihood): DBTC snapshots the SETUP node set once per query; DBSPJ resolves nodes lazily for every lookup and child-scan fragment. A node included (INCL_NODEREQ) after the snapshot that becomes readable while a long aggregate query runs can be chosen by <code>getNodes</code> (READ_BACKUP/location domain or primary), and <code>ndbrequire(m_aggNodes.get(nodeId))</code> in <code>lookup_send</code> (~9484) or <code>scanFrag_send</code> (~13830) stops the data node. CTE feeds instead park and fail with 1274.</div>
+
+<h3>5.4 DBTC state machine</h3>
+<ul>
+  <li><code>ScanRecord::scanState</code> (Dbtc.hpp ~2064): <code>WAIT_JOIN_AGG_SETUP</code> (briefly, while SETUPs are sent) → <code>RUNNING</code> (fragment scans, and the whole CTE stage) → <code>WAIT_JOIN_AGG_COMPLETE</code> → <code>CLOSING_SCAN</code> with fire-and-forget RELEASE on success, or <code>WAIT_JOIN_AGG_RELEASE</code> → <code>abortScanLab</code> on failure. <code>WAIT_CTE_COMPLETE</code> is retired.</li>
+  <li>Sub-machines: <code>m_aggSetupState</code> (NOT_STARTED → IN_FLIGHT → DONE | CANCELLED) and one <code>AggCompleteRecord</code> per COMPLETE round (main and each CTE): IDLE → WAIT_COMPLETE → COMPLETE | FAILED. Stale and duplicate CONFs are dropped by record validity, state and a per-node pending bit.</li>
+  <li><strong>Data-node failure</strong>: <code>handleJoinAggNodeFailure</code> (~31388) fakes the missing SETUP_REF/COMPLETE_REF/RELEASE_CONF and fails the query with 286. Nothing is retried, so partial aggregates are never fed twice. <strong>TC failure</strong>: DBDIH sends <code>JOIN_AGG_NODE_FAIL_REP</code> to the local DblqhProxy, which releases states coordinated by the dead TC. <strong>API failure</strong>: the close is deferred until outstanding replies drain.</li>
+  <li><strong>Timers</strong>: fragment timers are kept alive by SCAN_HBREP from DBLQH and DBSPJ; there is no DBTC timer for the main COMPLETE or a waited RELEASE, and <code>ZJOIN_AGG_TIMEOUT</code> (1257) is never raised.</li>
+  <li><strong>Error codes the API can see</strong>: 286 node failure; 270 close during an aggregation wait; 274 fragment timeout; 217 query memory/section allocation; 218 no SETUP sent; 290 malformed KEYINFO; 1270 CTE main scan got a mid-fragment batch; 1274/1275 park timeout / park pool exhausted (temporary); DBLQH 1250-1275 and DBTUP 1860-1872 (1860 overflow, 1861 unsupported type, 1864 DECIMAL precision, 1870 out of aggregation memory, temporary).</li>
+</ul>
+
+<h3>5.5 Group routing and CTE owner lists</h3>
+<ul>
+  <li><strong>Main aggregation</strong>: no routing between nodes. Every node aggregates the leaf rows it executes into one state; DBTC gives exactly one API receiver, so all partial groups are merged in one API thread.</li>
+  <li><strong>CTEs</strong>: DBTC's SETUP node set (ascending node ids) is the <em>owner list</em>, sent in every SETUP and in DBSPJ's aggKeys section. Groups are redistributed to <code>owner = list[hash % count]</code> (<code>GBHashTable::hashKeyFull</code>: collation-aware via <code>strnxfrm</code>, NULL hashes to a sentinel and equals NULL); DBSPJ's <code>cte_lookup_send</code> uses the same formula to route a <code>CTE_LOOKUP_REQ</code> (~7147). Scalar, single-row, LIMIT and single-group CTEs use the DBTC node as constant owner. A <code>CTE_SCAN</code> maps virtual fragment K to the K-th owner.</li>
+  <li>Any node failure since SETUP aborts a CTE query (conservative: also unrelated failures); <code>cte_lookup_send</code> aborts if a node in its topology died.</li>
+</ul>
+<div class="weak"><strong><a href="#e-23">E-23</a></strong> (medium): the redistribution receiver requires <code>keyWords &lt;= 1023</code> with <code>ndbrequire</code> (DblqhMain.cpp ~24721, ~24805) but the sender does not check, so a CTE grouped on a very wide key in a multi-node cluster can stop the receiving node.</div>
+<div class="weak"><strong><a href="#e-5">E-5</a></strong> (medium-high): grouping by strings is not collation-consistent. The API merger compares group keys as raw bytes on the join path (<code>gb_cmp_</code> is only set in <code>NdbAggregator::Finalize</code>, not in <code>initForResults</code>), while each node stores the first-seen raw key of a collation-equal group, so 'abc' on one node and 'ABC' on another become two output rows. In the kernel, <code>GBHashTable::findInBucket</code> (AggHashTable.hpp ~763) requires equal key byte length before the collation compare, so 'a'/'á' or PAD SPACE variants become separate groups even on one node.</div>
+
+<h3>5.6 CTEs (compound queries) inside DBSPJ</h3>
+<p>A compound query carries CTE subtrees before the main tree. <code>QN_CTE_SUBTREE</code> is a container that announces how many of the following nodes belong to CTE <em>c</em>; those nodes get <code>m_cteId = c</code>, and the subtree's root scan (or CTE reader) is marked <code>T_CTE_SCAN</code> and feeds the CTE's aggregation state instead of the API. <code>QN_CTE_LOOKUP</code> probes a materialized CTE by group key (point lookup routed to the owner node); <code>QN_CTE_SCAN</code> scans all groups of a materialized CTE from DBLQH. Each CTE has a <code>CteContext</code> (NOT_STARTED → MATERIALIZING → LOCAL_DONE → READY, or FAILED) and a dependency mask; a DAG scheduler in DBTC broadcasts <code>CTE_PHASE_START_REQ</code> per ready CTE and finally <code>CTE_START_MAIN_REQ</code>. Single-row CTEs have a per-request probe cache (miss or full row) in DBSPJ. <span class="src">cte_subtree_build ~7860, cte_lookup_send ~6918, cte_scan_start ~8265, execCTE_PHASE_START_REQ ~8916, execCTE_START_MAIN_REQ ~9004; Dbspj.hpp CteContext</span></p>
+<div class="weak"><strong><a href="#e-17">E-17</a></strong> (high on the accounting, low likelihood without error inserts): DBTC counts expected CTE reports per <code>SCAN_FRAGREQ</code> sent (<code>registerCteScanFragHandle</code> ~20438), but <code>sendFragScansLab</code> may pause with CONTINUEB after more than 4 local sends. If all early workers report a CTE before the rest are sent, <code>execCTE_PHASE_COMPLETE_REP</code> (~32968) starts redistribution on partial data.</div>
+
+<h3>5.7 Memory and eviction</h3>
+<ul>
+  <li>All aggregation memory comes from <code>RG_QUERY_MEMORY</code> (programs, per-thread interpreters, 32 KB group chunks, string MIN/MAX buffers, redistribution pages). There is no spill to disk.</li>
+  <li>State records: a per-node pool of <code>JoinAggStatePoolSize</code> (default 256, range 1-4096); exhaustion gives SETUP_REF 20008. Identity hash and park pool: 16384 entries each (1275 when exhausted).</li>
+  <li>Budget: initial <code>max(available/100, 4)</code> pages split over threads, growing in steps up to all pages available at SETUP, per interpreter. There is no per-query or node-wide cap.</li>
+  <li>At the limit: main aggregation <em>evicts</em> a group early to the API as a partial row (<code>JoinAggInterpreter::evictOneGroup</code>, picks the chunk with fewest live groups among the 10 newest) and continues; the API merges evicted partials with later ones. CTE mode fails with 1870.</li>
+</ul>
+<div class="weak"><strong><a href="#e-21">E-21</a></strong> (medium-high): one large GROUP BY can take all free query memory (no cap), and <code>AggInterpreterBase::initChunkAllocator</code> (~1893) computes <code>available_pages * 32768</code> in 32 bits, which wraps at 4 GiB of free query memory and can give spurious evictions or 1870.</div>
+<div class="weak"><strong><a href="#e-14">E-14</a></strong> (medium): eviction accounting. For lookup leaves DBSPJ adds the eviction count from <code>LQHKEYCONF.readLen</code> to <code>m_rows</code> (<code>lookup_execLQHKEYCONF</code> ~9982), which disables self-continuation and sends a mid-fragment <code>SCAN_FRAGCONF</code> whose <code>completedOps</code> the API adds to the worker receiver's outstanding count, while the rows went to the aggregate receiver (and are counted again in <code>numResultRows</code>); expected symptom a stall or 4117, and 1270 for CTE main scans. Separately, <code>Dblqh::sendEvictedAggGroup</code> (~16603) increments the shared <code>m_rows_sent</code> without atomics from any LDM/query thread.</div>
+<div class="weak"><strong><a href="#e-22">E-22</a></strong> (medium): the 10 ms park deadline (<code>joinAggParkSweep</code>) turns a SETUP that is processed late on a busy node into temporary error 1274; RonSQL retries, but mysqld returns the error to the client.</div>
+
+<h3>5.8 Aggregate functions and types</h3>
+<table>
+<tr><th>Item</th><th>Supported</th></tr>
+<tr><td>Functions</td><td>COUNT, SUM, MIN, MAX (typed BIGINT/DOUBLE variants), arithmetic, constants, CASE via an embedded interpreter program; AVG, ORDER BY and LIMIT only inside CTEs. mysqld pushes COUNT(*), COUNT(col), COUNT(CASE), SUM/MIN/MAX/AVG (AVG as SUM+COUNT) over a field, CASE or arithmetic. No DISTINCT, no ROLLUP, no HAVING, no ORDER BY/LIMIT in the kernel for main aggregation.</td></tr>
+<tr><td>Limits</td><td>256 aggregate slots, 128 GROUP BY columns, 1024 program words, 8 registers, 16 KB per group on the wire.</td></tr>
+<tr><td>Integers</td><td>BIGINT (signed/unsigned); overflow per row or at kernel merge gives 1860.</td></tr>
+<tr><td>FLOAT/DOUBLE</td><td>DOUBLE; non-finite per-row result gives 1860, the merge is not checked.</td></tr>
+<tr><td>DECIMAL</td><td>Scale 0: BIGINT (precision &gt; 18 gives 1864). Scale &gt; 0: accumulated as DOUBLE.</td></tr>
+<tr><td>Temporal</td><td>DATE, YEAR, DATETIME2, TIME2, TIMESTAMP2 as unsigned BIGINT, MIN/MAX only (mysqld refuses temporal SUM/MIN/MAX).</td></tr>
+<tr><td>Strings</td><td>CHAR/VARCHAR/LONGVARCHAR MIN/MAX, collation-aware.</td></tr>
+<tr><td>NULL / empty input</td><td>SUM/MIN/MAX of all-NULL input is NULL, COUNT(col) is 0. No GROUP BY and no rows anywhere: the API synthesizes one row (COUNT 0, others NULL).</td></tr>
+</table>
+<div class="weak"><strong><a href="#e-16">E-16</a></strong> (high on the code, a semantic difference): DECIMAL with scale &gt; 0 is summed as DOUBLE, so SUM and large MIN/MAX lose exactness compared with MySQL; SUM(BIGINT) overflow returns 1860 where MySQL widens to DECIMAL, and whether it happens depends on how rows are split over threads and nodes. mysqld pushes DECIMAL aggregates anyway.</div>
+
+<h3>5.9 What mysqld pushes, and fallback</h3>
+<ul>
+  <li>Attempted after a pushed join was built, if <code>ndb_join_pushdown_aggregate</code> is ON, the output order is not taken from index order, and no unpushable FILTER is found (<code>ndb_has_unpushable_filter_for_aggregate</code>). <code>ndb_push_aggregation</code> (ha_ndbcluster_push_agg.cc ~1580) then requires every table of the query block in the one pushed join, supported aggregates, plain GROUP BY fields, no semi/anti join, outer joins only with <code>ndb_join_pushdown_aggregate_outer_join</code>, and no table with a remainder condition.</li>
+  <li>It builds the NdbAggregator program, <strong>forces a chain</strong> by re-parenting each table to the previous one (~1664), rebuilds the query, rejects it if any operation still has more than one child, and replaces the pushed join. <code>fixup_pushed_access_paths</code> removes the AGGREGATE path (or keeps TEMPTABLE_AGGREGATE) and the NLJs to pushed children. EXPLAIN shows <code>Using pushed join aggregation</code>.</li>
+  <li>Single-table aggregation (<code>ndb_pushdown_aggregate</code>) is a separate path through <code>NdbScanOperation</code> aggregation, not DBSPJ.</li>
+  <li><strong>Fallback</strong> only happens at plan time. There is no runtime retry without pushdown; errors while draining the aggregate become <code>HA_ERR_INTERNAL_ERROR</code> (<code>ndb_init_aggregate_results</code> ~1870), even though draining finishes before the first row is returned.</li>
+</ul>
+<div class="weak"><strong><a href="#e-9">E-9</a></strong> (medium-high): the forced chain re-parents a table under the previous table even when that table is outer-joined and unrelated. For <code>t1 LEFT JOIN t2 ON t2.pk = t1.a LEFT JOIN t3 ON t3.pk = t1.b</code>, t3 becomes a child of t2: when t2 does not match, t3 is never looked up and the NULL injection NULL-extends t3 too, so <code>COUNT(t3.x)</code>/<code>SUM(t3.x)</code> undercount. With <code>(t1 LEFT JOIN t2) JOIN t3 ON t3.pk = t1.c</code>, a t2 miss injects a row with t3 NULL instead of looking t3 up. Requires both aggregate switches ON.</div>
+<div class="weak"><strong><a href="#e-10">E-10</a></strong> (medium-high): the remainder check in <code>ndb_push_aggregation</code> reads <code>m_cond.m_remainder_cond</code>, but the root's condition is only prepared after the aggregation decision (ha_ndbcluster.cc ~15789), and <code>ndb_has_unpushable_filter_for_aggregate</code> assumes every single-table FILTER is pushable. An unpushable condition on the root (e.g. <code>WHERE t1.a+0 &gt; 5</code>) is then evaluated by mysqld on aggregate rows instead of input rows.</div>
+<div class="weak"><strong><a href="#e-11">E-11</a></strong> (high on the mechanism): <code>create_pushed_join</code> does not attach a lookup child's filter of 64 words or more and leaves it to the handler (ha_ndbcluster.cc ~15993), but in aggregate mode no child rows reach the handler and the FILTER path was already removed at plan time. The filter is silently ignored, e.g. <code>... JOIN t2 ON t2.pk = t1.fk WHERE t2.c IN (1, ..., 30) GROUP BY ...</code>. The same applies when <code>setInterpretedCode</code> fails.</div>
+<div class="weak"><strong><a href="#e-12">E-12</a></strong> (medium): nothing on the join-aggregation path rejects an INDEX_RANGE_SCAN/MRR root; in aggregate mode <code>m_next_row</code> stays null, so <code>multi_range_read_next</code> treats the first aggregate row as end of scan (ha_ndbcluster.cc ~15255). The single-table path guards this with <code>ndb_aggregate_reads_ranges_separately</code>, the join path does not.</div>
+<div class="weak"><strong><a href="#e-30">E-30</a></strong> (medium-high, too strict): a HAVING clause blocks join-aggregation pushdown, because the HAVING FILTER's child is the AGGREGATE path, for which <code>GetBasicTable</code> returns null and the walk reports "blocking" (ha_ndbcluster_push_agg.cc ~1477). The tests compare results only, not whether the plan was pushed.</div>
+<div class="weak"><strong><a href="#e-25">E-25</a></strong> (medium-low): join-aggregation drain errors are reported as <code>HA_ERR_INTERNAL_ERROR</code>, losing the NDB error code and its temporary classification (1274, 1870, 286 are retryable), and nothing re-runs the query unpushed although no row has been returned yet.</div>
+
+<h2 id="perf">6. Performance characteristics and known limitations</h2>
+
+<h3>6.1 What pushing saves</h3>
+<ul>
+  <li><strong>Round trips.</strong> Without pushdown a join over <em>n</em> tables costs at least one API-to-data-node round trip per table per batch (with BKA/MRR) or per row (nested loop with eq_ref). A pushed join costs one round trip per <em>batch of the whole tree</em>; the per-row child operations are issued inside the cluster, mostly node-locally (READ_BACKUP and location-domain preference, local fragments first).</li>
+  <li><strong>Data not shipped.</strong> Linked columns travel LDM → DBSPJ only; rows eliminated by pushed filters never leave the LDM; inner-join sequencing avoids issuing operations for rows that already failed an inner match. With join aggregation the API receives groups instead of joined rows.</li>
+  <li><strong>CPU placement.</strong> Committed reads run in query threads when available, spreading lookups over more cores than the owning LDM thread.</li>
+</ul>
+
+<h3>6.2 Fan-out and amplification risks</h3>
+<table>
+<tr><th>Risk</th><th>Mechanism</th><th>Bound / mitigation</th></tr>
+<tr><td>Child-scan fan-out</td><td>Each worker (one per data node, or one per root fragment for ordered and aggregate queries) sends a <code>SCAN_FRAGREQ</code> to <em>every</em> fragment of an unpruned child table, per parent batch. With W workers and F child fragments that is up to W×F fragment scans per round, most returning few rows.</td><td>Prune on the child's distribution key; adaptive parallelism; <code>setFragsPerWorker</code> for aggregates.</td></tr>
+<tr><td>Bushy scans</td><td>Without <code>NI_REPEAT_SCAN_RESULT</code> the API buffers cross products; with it, sibling scans are re-executed once per batch of the advancing scan.</td><td>Repeat flag set by the API; MySQL limits which scan-children are pushed (section 4).</td></tr>
+<tr><td>Sorted root with scan children</td><td>One root row per internal round (<code>batch_size_rows = 1</code>), extra rounds only while <code>estmMaxKeys()</code> thinks the children fit.</td><td>Prefer sorting in mysqld or lookup-only children for ORDER BY ... LIMIT.</td></tr>
+<tr><td>Small effective child batches</td><td>The 12-bit correlation limit (4096 parent rows per batch) and the per-node batch budget divided over fragments (<code>bs_rows = avail / parallelism</code>) give small per-fragment batches when parallelism is high.</td><td>Parallelism estimate from rows-per-key statistics; first execution has no statistics and uses the minimum parallelism.</td></tr>
+<tr><td>Signal congestion</td><td>A scan batch of up to 4096 rows can trigger as many <code>LQHKEYREQ</code>s per lookup child.</td><td>Congestion control defers above 256 outstanding signals per request, resumes at 128 in quanta of 32.</td></tr>
+<tr><td>Row memory</td><td>Buffered rows (for non-parent execution order, congestion, match tracking, outer-join aggregation) are held per batch in global pages; there is no per-request quota.</td><td>Released per batch; global pool shrinks to the 95th percentile of recent use.</td></tr>
+</table>
+
+<p>Related findings: the per-group result round trips after 256 groups (<a href="#e-28">E-28</a>), root scans with definition-time bounds that are never pruned (<a href="#e-29">E-29</a>), HAVING blocking aggregation pushdown (<a href="#e-30">E-30</a>), and the per-batch log line (<a href="#e-27">E-27</a>).</p>
+
+<h3>6.3 Per-request memory</h3>
+<ul>
+  <li>Fixed: a Request plus up to 32 TreeNodes (each with a <code>m_scanFragReq</code> copy, bitmasks, pattern heads) and one <code>ScanFragHandle</code> per fragment per scan node, all from the query-memory arena. A child scan over a table with F fragments allocates F handles in every worker.</li>
+  <li>Variable: range-key sections per fragment (one bound per parent row), constructed attrinfo per parent row (linked filter parameters), buffered rows, deferred correlation lists, and for aggregation the match bitmasks (<code>m_agg_range_corrs</code>: 4096 words per outer-joined aggregate leaf) and CTE metadata (3 × <code>MAX_NDB_NODES</code> words per CTE).</li>
+  <li>Exhaustion produces <code>OutOfQueryMemory</code>, <code>OutOfRowMemory</code> or <code>OutOfSectionMemory</code> (DbspjErr), which aborts the query (error-insert tests 17001-17122 exercise these paths).</li>
+</ul>
+
+<h3>6.4 Worst-case shapes</h3>
+<ul>
+  <li>Unpruned scan child of a scan root over many fragments with low selectivity per key: W×F fragment scans per batch, mostly empty.</li>
+  <li>Two or more bushy scan children with large fan-out per parent row: repeated re-reads.</li>
+  <li>ORDER BY via index on the root with scan children: one root row per internal round.</li>
+  <li>Deep chains of outer-joined scans: every outer branch waits for the inner sequence and buffers parent rows with match bitmasks.</li>
+  <li>Join aggregation with an outer-joined scan leaf under a multi-fragment root: per-batch match bitmasks merged across fragments, plus <code>JOIN_AGG_NULL_ROW_REQ</code> per unmatched parent row.</li>
+</ul>
+
+
+<h2 id="tests">7. Testing landscape</h2>
+
+<table>
+<tr><th>Area</th><th>Where</th><th>What it covers</th><th>Notes</th></tr>
+<tr><td>SPJ protocol, random trees</td><td><code>storage/ndb/test/ndbapi/testSpj.cpp</code> (+ <code>test/src/HugoQueryBuilder.cpp</code>, <code>HugoQueries.cpp</code>)</td><td>NegativeJoin, FeatureDisabled, LookupJoin, ScanJoin, MixedJoin, MultiFrag_OOM(_rand), NF_Join, LookupJoinError / ScanJoinError (loop over 17xxx error inserts), bug#23049170</td><td>Scheduled in daily-basic--07/12/13/14/16 and daily-devel--07. Random queries are self-joins of one table with lookups, unique lookups, root table scans and index scans with linked bounds (50% inner). <strong>No result oracle</strong>: rows are only checked for internal consistency, so missing or duplicated join rows are not detected. No ordering, semi/anti join, filters, multi-range, aggregation or CTE. bug#23048816 is commented out; MixedJoin17131 and MixedJoinDiskWait are not scheduled.</td></tr>
+<tr><td>SQL pushdown</td><td><code>mysql-test/suite/ndb_opt/</code> (flat layout): <code>join_pushdown.inc</code> (~6.1k lines) via <code>join_pushdown_default</code>/<code>join_pushdown_bka</code>, <code>spj_rqg</code>, <code>spj_rqg_hypergraph</code>, <code>bushy_joins</code>, <code>spj_skew</code>, <code>subquery</code></td><td>EXPLAIN pushability, results for outer joins, semi joins, ORDER BY, bushy scans; <code>join_pushdown.inc</code> also forces tiny batches (<code>max_4rows_in_spj_batches</code>, <code>max_64rows_in_spj_batches</code>)</td><td>Strongest result coverage for non-aggregate pushdown; mirrored in <code>myrouter_ndb</code>.</td></tr>
+<tr><td>Join aggregation from mysqld</td><td><code>mysql-test/suite/ndb_push_agg</code> (~36), <code>ndb_push_agg_jit</code> (~56), <code>ndb_push_agg_dist</code> (10)</td><td>ndb_join_pushdown_agg* (eviction, linked, types), ndb_pushdown_agg*, wrappers for the block-unit tests, distributed coordinator cases</td><td>The small-batch debug knobs are not used in these suites.</td></tr>
+<tr><td>Join aggregation NDB API tests</td><td><code>storage/ndb/block_unit_test/</code>: testJoinAggNdbApi, testJoinAggScanScan, testStarJoinAggNdbApi, testOuterJoinAggNdbApi, testMultiOuterJoinAggNdbApi, testCte*, testJoinAggIdempotency, ...</td><td>Eviction (error inserts 4041/5126), SETUP/COMPLETE REF, fragsPerWorker, scan-scan, star, outer joins with the match-bitmask protocol</td><td>Data sets are small hand-written INSERT lists (e.g. testJoinAggScanScan), so a root usually completes in one batch.</td></tr>
+<tr><td>Node restarts during join aggregation</td><td><code>testNodeRestart.cpp</code>: JoinAggNodeRestart, JoinAggErrorInsert, JoinAggCoordinatorDiesAtOwner; <code>mysql-test/suite/ndb_cte*</code></td><td>One shape (scan → PK lookup, GROUP BY + SUM); CTE node-failure scenarios</td><td>No node-failure test for multi-leaf, outer join, scan-scan or <code>fragsPerWorker &gt; 1</code>.</td></tr>
+<tr><td>RonSQL</td><td><code>mysql-test/suite/ronsql*</code> (ronsql, ronsql_jit, ronsql_cte + node-group mirrors, ronsql_fs, ronsql_large)</td><td>Joins, join aggregation, left/chained-left joins, IN lists (multi-range), semi/anti subqueries, CTEs</td><td>Main coverage for CTEs and multi-range SPJ scans.</td></tr>
+<tr><td>Fault injection in DBSPJ</td><td>64 <code>ERROR_INSERTED</code> sites in DbspjMain.cpp (17xxx)</td><td>Out of query/section/row memory at many points, invalid schema version, dropped signals</td><td>Untested codes: 17003 (allocPage), 17009, 17010, 17532 (crash in <code>cte_scan_sendReq</code>); 17100 is in testSpj's list but has no injection site. Aggregation and CTE paths in DBSPJ have almost no injection points; aggregation faults are injected in DBTC (5124/5125) and DBLQH (4041/5126).</td></tr>
+</table>
+
+<h3>7.1 Gaps</h3>
+<ul>
+  <li>Join aggregation with an intermediate (non-leaf) child scan over a root that needs many batches (see E-2). Running the <code>ndb_push_agg</code> join tests with <code>SET debug='+d,max_4rows_in_spj_batches'</code> and comparing to <code>ndb_join_pushdown=OFF</code> results would cover it cheaply.</li>
+  <li>Semi and anti joins have no NDB API test (no use of <code>MatchFirst</code>/<code>MatchNullOnly</code> in testSpj/Hugo); covered only through mysqld and RonSQL.</li>
+  <li>Sorted root with child scans: only mysqld MTR; no NDB API or node-failure variant.</li>
+  <li>Join nests below outer joins in aggregation (see E-8), outer-join aggregation over roots that need many batches (E-3), CASE over NULL-extended rows (E-4), and multi-node string grouping (E-5).</li>
+  <li>The random query generator has no result oracle and only self-joins one table, so differing fragment counts between root and children, filters, ordering and aggregation are never exercised randomly.</li>
+  <li><code>storage/ndb/test/tools/spj_sanity_test.cpp</code> and <code>test_spj.cpp</code> are not in any CMakeLists (dead code).</li>
+</ul>
+
+
+<h2 id="findings">8. Findings index</h2>
+<p>Suspected weaknesses found while writing this document. Confidence is about whether the problem exists as described, not about its impact. Each entry has a trigger and a suggested test. The same list is in <code>findings_exec.md</code>.</p>
+
+<table>
+<tr><th>ID / confidence</th><th>Area</th><th>Description and location</th><th>Trigger</th><th>Suggested test</th></tr>
+<tr id="e-1"><td><strong>E-1</strong><br>high (mechanism), medium-high (end to end)</td><td>API join-agg merge<br><span class="src">wrong results</span></td><td>The API-side merger of per-node partial groups decodes every program word as an instruction, including the data words of LoadConst/LoadDouble, DECIMAL metadata and embedded CASE bodies. A data word whose top 6 bits equal an aggregate opcode overwrites agg_ops_[slot], and mergeNumericResult then merges that slot with the wrong function (MAX partials summed across nodes, COUNT over empty input returned as NULL, string MIN merged as MAX). The kernel&#x27;s extractAggOps decodes by instruction length; the API does not.<br><span class="src">storage/ndb/src/ndbapi/NdbAggregator.cpp NdbAggregator::initForResults ~239-252; NdbQueryOperation.cpp multi-leaf combiner ~4340</span></td><td>SET ndb_join_pushdown_aggregate=ON; SELECT MAX(l.qty), SUM(l.price*(1-l.disc)) FROM orders o JOIN lineitem l ON l.l_orderkey=o.o_orderkey; on 2 or more data nodes (the constant 1 is emitted as LoadDouble whose high word 0x3FF00000 decodes as an aggregate opcode on slot 0).</td><td>NdbAggregator unit test: program [Max(0), LoadDouble(1.5), Sum(1)] merged from two partials; MTR comparison ON vs OFF on 2+ nodes with REAL/DECIMAL constants in the select list.</td></tr>
+<tr id="e-2"><td><strong>E-2</strong><br>medium</td><td>DBSPJ join-agg self-continuation<br><span class="src">wrong results / assert</span></td><td>When DBSPJ continues a join aggregation (or a CTE phase) itself, it cleans up with done=false, so a child scan&#x27;s m_corrIdStart, m_totalRows and m_totalBytes are not reset. They are only reset when that node gets its own NEXTREQ or after a CONF to the API. For a non-leaf child scan that completes within each root batch (scan -&gt; scan -&gt; leaf), the batch budget shrinks with every self-continued root batch; when scanFrag_getBatchSize returns 0 (byte budget below one estimated row, or correlation ids used up), scanFrag_send returns without sending and without activating the node. That parent batch&#x27;s child rows are never aggregated (release builds); the next parent batch hits ndbassert(m_frags_complete == m_fragCount) (debug builds). Upstream only uses done=false in the sorted-root path, guarded by estmMaxKeys().<br><span class="src">storage/ndb/src/kernel/blocks/dbspj/DbspjMain.cpp handleJoinAggNextBatch ~3998 (cleanupBatch(done=false) ~4004), scanFrag_parent_batch_cleanup ~15102, scanFrag_getBatchSize ~13159, scanFrag_send ~13378, scanFrag_parent_batch_complete ~13080</span></td><td>t1(a PK) with ~200k rows, t2(k PK, a, c, KEY(a)) with 3 rows per t1.a, t3(c PK, g); SET ndb_join_pushdown_aggregate=ON; SELECT t3.g, COUNT(*) FROM t1 JOIN t2 ON t2.a=t1.a JOIN t3 ON t3.c=t2.c GROUP BY t3.g (chain: t1 scan -&gt; t2 index scan -&gt; t3 lookup leaf). The same shape from RonSQL (scanIndex child, aggregate on a lookup leaf).</td><td>Run the query with SET debug=&#x27;+d,max_4rows_in_spj_batches&#x27; and with max_64rows, compare with ndb_join_pushdown_aggregate=OFF; a debug build should hit the ndbassert. Add a large-root variant of testJoinAggScanScan test 6 (scan -&gt; scan -&gt; lookup).</td></tr>
+<tr id="e-3"><td><strong>E-3</strong><br>medium-high (mechanism read, not executed)</td><td>DBSPJ outer-join aggregation<br><span class="src">wrong results</span></td><td>NULL injection for an outer-joined intermediate lookup is deferred until its scan ancestor has completed all fragments, but cleanupBatch releases the buffered root rows of every earlier root batch. Unmatched intermediate parents from earlier batches never get a NULL row.<br><span class="src">DbspjMain.cpp handleAggAncestorComplete ~10817-10880 (deferral), cleanupBatch ~4433</span></td><td>SET ndb_join_pushdown_aggregate=ON, ndb_join_pushdown_aggregate_outer_join=ON; SELECT COUNT(*) FROM t1 LEFT JOIN t2 ON t2.pk=t1.a LEFT JOIN t3 ON t3.pk=t2.b with t1 large enough for several root batches (~20k rows) and half of t1.a missing in t2.</td><td>Compare ON vs OFF; re-enable mysql-test/suite/ndb_push_agg_dist/t/ndb_push_agg_dist_extended.test cases at ~233 and ~348 (disabled: &#x27;COUNT(*) mismatch when inner JOIN + LEFT JOIN are pushed together&#x27;) once fixed.</td></tr>
+<tr id="e-4"><td><strong>E-4</strong><br>high (code)</td><td>DBTUP join-agg interpreter<br><span class="src">wrong results</span></td><td>For a NULL-extended row the embedded CASE condition is skipped and execution falls into the THEN arm. A THEN arm with a constant (SUM(CASE WHEN ... THEN 1 ELSE 0 END), COUNT(CASE ...)) then counts every unmatched row; conditions on parent (linked) columns are also ignored for those rows.<br><span class="src">storage/ndb/src/kernel/blocks/dbtup/JoinAggInterpreter.cpp JoinAggInterpreter::ProcessRec, kOpEmbeddedInterp ~1268-1281</span></td><td>SET ndb_join_pushdown_aggregate=ON, ndb_join_pushdown_aggregate_outer_join=ON; SELECT oj1.grp, SUM(CASE WHEN oj2.v &gt; 5 THEN 1 ELSE 0 END) FROM oj1 LEFT JOIN oj2 ON oj2.pk=oj1.pk GROUP BY oj1.grp with unmatched oj1 rows.</td><td>MTR comparison ON vs OFF; testOuterJoinAggNdbApi case with a CASE aggregate and unmatched parents; also a CASE condition on a parent column.</td></tr>
+<tr id="e-5"><td><strong>E-5</strong><br>medium-high</td><td>Grouping by strings<br><span class="src">wrong results</span></td><td>The API merger compares group keys as raw bytes on the join path, while each node keeps the first-seen raw key of a collation-equal group: &#x27;abc&#x27; from one node and &#x27;ABC&#x27; from another become two output rows. In the kernel, findInBucket requires equal key byte length before the collation compare, so &#x27;a&#x27; and &#x27;á&#x27; (ai_ci) or PAD SPACE variants become separate groups even on one node; a CTE_LOOKUP then finds only one of them.<br><span class="src">NdbAggregator.cpp Finalize ~1673-1689 (gb_cmp_ only set there, not in initForResults); dbtup/AggHashTable.hpp GBHashTable::findInBucket ~763-783; JoinAggInterpreter.cpp ~1065</span></td><td>t2.s VARCHAR(20) COLLATE utf8mb4_0900_ai_ci with &#x27;abc&#x27; and &#x27;ABC&#x27; on fragments of different nodes; SELECT t2.s, COUNT(*) FROM t1 JOIN t2 ON ... GROUP BY t2.s (2 rows instead of 1). Kernel variant: RonSQL WITH c AS (SELECT v, COUNT(*) n FROM t GROUP BY v) with &#x27;a&#x27; and &#x27;á&#x27;.</td><td>MTR comparison ON vs OFF for case/accent/trailing-space variants on a multi-node cluster.</td></tr>
+<tr id="e-6"><td><strong>E-6</strong><br>medium</td><td>Outer-join lookup leaf<br><span class="src">wrong results</span></td><td>For an outer-joined lookup aggregate leaf only &#x27;key not found&#x27; (626) yields a NULL-extended row. If the row exists but the pushed ON-condition filter rejects it, the reply is LQHKEYREF(899), which DBSPJ treats as a soft error and ignores; handleAggAncestorComplete only covers ancestors. The parent row contributes nothing. Scan leaves are not affected (rejected rows do not set the match bit).<br><span class="src">DblqhMain.cpp continueACCKEYREF ~16486 (only ZNO_TUPLE_FOUND -&gt; handleOuterJoinAggKeyNotFound); DbspjMain.cpp lookup_execLQHKEYREF ~9830</span></td><td>SET ndb_join_pushdown_aggregate=ON, ndb_join_pushdown_aggregate_outer_join=ON; SELECT t1.g, COUNT(*), COUNT(t2.c) FROM t1 LEFT JOIN t2 ON t2.pk=t1.a AND t2.c &gt; 5 GROUP BY t1.g with t2 rows having c &lt;= 5.</td><td>MTR comparison ON vs OFF; NDB API test with an interpreted filter on an outer-joined lookup leaf.</td></tr>
+<tr id="e-7"><td><strong>E-7</strong><br>high (code), medium (impact)</td><td>Multi-leaf outer aggregation<br><span class="src">wrong results</span></td><td>NULL-extended rows are processed without a leaf index, by whichever leaf program was installed last, so in a star (multi-leaf) query a NULL row can update the wrong leaf&#x27;s accumulators.<br><span class="src">JoinAggInterpreter.cpp processNullExtendedRow ~2157; DblqhMain.cpp ~16675, ~20691; DbspjMain.cpp sendJoinAggNullRow (identity word with leaf 0) ~11041</span></td><td>RonSQL query with two SELECT-list scalar subqueries over different tables (merged as LEFT OUTER multi-leaf), where some parent rows match only one leaf.</td><td>testStarJoinAggNdbApi outer variant with unmatched parents on leaf 1 only.</td></tr>
+<tr id="e-8"><td><strong>E-8</strong><br>medium</td><td>Join nests in the kernel<br><span class="src">wrong results</span></td><td>Join-nest structure is not transmitted to DBSPJ (only NI_INNER_JOIN per node), so &#x27;t1 LEFT JOIN (t2 JOIN t3 ...)&#x27; and &#x27;(t1 LEFT JOIN t2) JOIN t3&#x27; look identical. NULL propagation stops at an inner-joined intermediate node but injects into an inner-joined leaf; each is right for one reading and wrong for the other. RonSQL promotes LEFT to INNER where possible (promote_left_joins); mysqld genuine nests are not restricted.<br><span class="src">DbspjMain.cpp propagateNullToAggLeaf ~10363-10480 (stops at an inner intermediate ~10465, injects into an inner leaf); QueryTree.hpp DABits (no nest information)</span></td><td>With both aggregate switches ON: SELECT COUNT(*) FROM t1 LEFT JOIN (t2 JOIN t3 ON t3.pk=t2.b JOIN t4 ON t4.pk=t3.c) ON t2.pk=t1.a GROUP BY ... with t1 rows lacking t2 matches.</td><td>Both nest shapes ON vs OFF; testMultiOuterJoinAggNdbApi cases with an INNER node as leaf and as intermediate.</td></tr>
+<tr id="e-9"><td><strong>E-9</strong><br>medium-high</td><td>mysqld join-agg pushdown<br><span class="src">wrong results</span></td><td>The forced chain re-parents each table under the previous table, regardless of join type. For t1 LEFT JOIN t2 ON t2.pk=t1.a LEFT JOIN t3 ON t3.pk=t1.b, t3 becomes a child of t2: on a t2 miss t3 is never looked up and is NULL-extended too. For (t1 LEFT JOIN t2) JOIN t3 ON t3.pk=t1.c a t2 miss injects a row with t3 NULL instead of looking t3 up.<br><span class="src">storage/ndb/plugin/ha_ndbcluster_push_agg.cc ndb_push_aggregation ~1664-1687 (forced chain); ha_ndbcluster_push.cc build_key setParent ~2455</span></td><td>SET ndb_join_pushdown_aggregate=ON, ndb_join_pushdown_aggregate_outer_join=ON; SELECT t1.g, COUNT(t3.x), SUM(t3.x) FROM t1 LEFT JOIN t2 ON t2.pk=t1.a LEFT JOIN t3 ON t3.pk=t1.b GROUP BY t1.g with rows where t2 misses and t3 matches.</td><td>MTR comparison ON vs OFF for both shapes; current MySQL-path coverage is 2-table LEFT JOINs only.</td></tr>
+<tr id="e-10"><td><strong>E-10</strong><br>medium-high</td><td>mysqld join-agg pushdown<br><span class="src">wrong results</span></td><td>The remainder check reads m_cond.m_remainder_cond, but the root&#x27;s condition is prepared only after the aggregation decision, and the FILTER walk assumes any single-table FILTER is pushable. An unpushable condition on the root (or on the single table for ndb_pushdown_aggregate) is then evaluated by mysqld on aggregate rows instead of input rows.<br><span class="src">ha_ndbcluster_push_agg.cc ndb_has_unpushable_filter_for_aggregate ~1468-1489, ndb_push_aggregation remainder check ~1632; ha_ndbcluster.cc ndbcluster_push_to_engine ~15789 (root condition prepared after the decision)</span></td><td>SET ndb_join_pushdown_aggregate=ON; SELECT t1.grp, SUM(t2.v) FROM t1 JOIN t2 ON t2.pk=t1.fk WHERE &lt;condition on t1 NDB cannot push, e.g. t1.a+0 &gt; 5&gt; GROUP BY t1.grp; and SET ndb_pushdown_aggregate=ON; SELECT grp, SUM(val) FROM t WHERE val+0 &gt; 50 GROUP BY grp. Confirm with EXPLAIN that a remainder exists.</td><td>Compare ON vs OFF, plus a scalar COUNT(*) variant.</td></tr>
+<tr id="e-11"><td><strong>E-11</strong><br>high (mechanism)</td><td>mysqld join-agg pushdown<br><span class="src">wrong results</span></td><td>Lookup-child filters of 64 words or more (and filters whose setInterpretedCode fails) are not attached and are left for the handler to evaluate, but in aggregate mode no child rows reach the handler and the FILTER path was already removed at plan time. The condition is silently ignored.<br><span class="src">storage/ndb/plugin/ha_ndbcluster.cc create_pushed_join ~15986-15999 (and ~16010 setResultRowRef skipped in aggregate mode)</span></td><td>SET ndb_join_pushdown_aggregate=ON; SELECT t1.grp, COUNT(*) FROM t1 JOIN t2 ON t2.pk=t1.fk WHERE t2.c IN (1,...,30) GROUP BY t1.grp.</td><td>Compare ON vs OFF with IN lists of 5, 20 and 40 values on a lookup child.</td></tr>
+<tr id="e-12"><td><strong>E-12</strong><br>medium</td><td>mysqld join-agg pushdown<br><span class="src">wrong results</span></td><td>Nothing on the join-aggregation path rejects an INDEX_RANGE_SCAN/MRR root. In aggregate mode m_next_row stays null, so multi_range_read_next treats the first aggregate row as end of scan; with more than 4095 ranges each MRR round would also build its own aggregator.<br><span class="src">ha_ndbcluster.cc multi_range_read_next ~15255 (&#x27;if (!m_next_row) break&#x27;), ~16010-16018; ha_ndbcluster_push_agg.cc (no ndb_aggregate_reads_ranges_separately check on the join path)</span></td><td>SET ndb_join_pushdown_aggregate=ON; SELECT t1.grp, SUM(t2.v) FROM t1 JOIN t2 ON t2.pk=t1.fk WHERE t1.k BETWEEN 10 AND 20 GROUP BY t1.grp with a range plan on t1.k (also an IN list on t1.k).</td><td>Compare ON vs OFF; EXPLAIN must show the range root and &#x27;Using pushed join aggregation&#x27;.</td></tr>
+<tr id="e-13"><td><strong>E-13</strong><br>low-medium</td><td>DBSPJ star aggregation<br><span class="src">wrong results</span></td><td>Every non-root scan has NI_REPEAT_SCAN_RESULT, so in a star query with two scan leaves the second leaf is T_SCAN_REPEATABLE and, if it needed several rounds, is re-registered for repetition. handleJoinAggNextBatch skips non-active cursors, but when the batch also produced evicted groups (m_rows &gt; 0) the API-driven execSCAN_NEXTREQ restarts the repeated leaf and feeds the same rows into the aggregation again.<br><span class="src">DbspjMain.cpp scanFrag_build ~11716 (T_SCAN_REPEATABLE), prepareNextBatch ~4113, scanFrag_parent_batch_repeat ~14083, execSCAN_NEXTREQ ~5245, handleJoinAggNextBatch ~4045</span></td><td>NDB API star aggregation with two scan leaves under one parent, one leaf needing several rounds per parent batch, with forced eviction (error insert 4041/5126).</td><td>testStarJoinAggNdbApi variant with scan leaves, a large fan-out and forced eviction, checked against SQL.</td></tr>
+<tr id="e-14"><td><strong>E-14</strong><br>medium</td><td>Eviction accounting<br><span class="src">hang / API error</span></td><td>For lookup leaves DBSPJ adds the eviction count (LQHKEYCONF.readLen) to m_rows, which disables self-continuation and produces a mid-fragment SCAN_FRAGCONF whose completedOps the API adds to the worker receiver&#x27;s outstanding count, while the rows went to the aggregate receiver and are counted again in numResultRows (expected: stall or 4117; 1270 for CTE main scans). Separately, sendEvictedAggGroup increments the shared m_rows_sent without atomics from any LDM/query thread.<br><span class="src">DbspjMain.cpp lookup_execLQHKEYCONF ~9973-9982; NdbQueryOperation.cpp execSCAN_TABCONF ~7037; DblqhMain.cpp sendEvictedAggGroup ~16603</span></td><td>Main aggregation with a lookup leaf and a GROUP BY large enough to exhaust query memory (or error insert 5126) on a node with several LDM threads.</td><td>testJoinAggNdbApi eviction case with a lookup leaf and many LDM threads; check the API&#x27;s received vs expected row counts.</td></tr>
+<tr id="e-15"><td><strong>E-15</strong><br>medium-low</td><td>mysqld pushability / DBSPJ NULL keys<br><span class="src">wrong results</span></td><td>DBSPJ drops child requests whose key or bound contains NULL (&#x27;an EQ-match is impossible&#x27;), but the pushability code never checks whether a REF key part is null-rejecting. An ordered-index REF child on a null-safe &lt;=&gt; join would lose NULL = NULL matches. Inherited from upstream; untested.<br><span class="src">storage/ndb/plugin/ha_ndbcluster_push.cc (no null_rejecting check for key parts); DbspjMain.cpp lookup_parent_row ~10067, scanFrag_parent_row ~12775</span></td><td>t1(x INT NULL), t2(y INT NULL, KEY(y)); SELECT * FROM t1 JOIN t2 ON t2.y &lt;=&gt; t1.x with NULLs on both sides; check EXPLAIN shows t2 as a pushed ref child.</td><td>Compare row counts with ndb_join_pushdown ON and OFF.</td></tr>
+<tr id="e-16"><td><strong>E-16</strong><br>high (code)</td><td>Aggregate types<br><span class="src">semantic difference</span></td><td>DECIMAL with scale &gt; 0 is accumulated as DOUBLE (inexact SUM, large MIN/MAX), DECIMAL scale 0 with precision &gt; 18 fails with 1864, and SUM(BIGINT) overflow returns 1860 where MySQL widens to DECIMAL; whether the overflow happens depends on how rows are split over threads and nodes.<br><span class="src">JoinAggInterpreter / AggInterpreterBase type mapping (decimal2double for scale &gt; 0; 1860 on BIGINT overflow); ha_ndbcluster_push_agg.cc pushes DECIMAL aggregates</span></td><td>SUM over DECIMAL(30,10) values of large magnitude; SUM(BIGINT) of values near 2^62 split over several fragments.</td><td>Exact-value comparisons ON vs OFF; decide whether to refuse such pushes in ndb_can_push_aggregation.</td></tr>
+<tr id="e-17"><td><strong>E-17</strong><br>high (accounting), low (timing without error inserts)</td><td>DBTC CTE scheduling<br><span class="src">wrong results</span></td><td>The expected number of CTE reports is incremented per SCAN_FRAGREQ sent, but sendFragScansLab can pause with CONTINUEB after more than 4 local sends. If all early workers report before the rest are sent, redistribution starts on partial data and later reports cross the threshold again.<br><span class="src">storage/ndb/src/kernel/blocks/dbtc/DbtcMain.cpp registerCteScanFragHandle ~20438, sendFragScansLab ~19075, execCTE_PHASE_COMPLETE_REP ~32968</span></td><td>Error insert 8128 (or 8121/8122) plus a RonSQL CTE over a multi-fragment table.</td><td>RonSQL CTE test under EI 8128 comparing results with the unpushed query.</td></tr>
+<tr id="e-18"><td><strong>E-18</strong><br>high that it crashes, low likelihood</td><td>DBSPJ / DBTC node set<br><span class="src">data node crash</span></td><td>DBTC snapshots the SETUP node set once per query; DBSPJ resolves nodes lazily for every lookup and child-scan fragment. A node included after the snapshot that becomes readable during a long aggregate query can be chosen (primary, or own/same-domain replica for READ_BACKUP), and the ndbrequire stops the data node running the DBSPJ worker.<br><span class="src">DbspjMain.cpp lookup_send ~9484, scanFrag_send ~13830 (ndbrequire(m_aggNodes.get(nodeId))); DbtcMain.cpp sendJoinAggSetupReqs ~31495</span></td><td>Long pushed aggregate (scan root plus lookup or child-scan leaf) on a READ_BACKUP table with location domains, while a node restarts from before INCL_NODEREQ to started.</td><td>testNodeRestart variant of JoinAggNodeRestart that starts the query before the restarting node is included. Fix: return an error, or restrict replica choice to m_aggNodes.</td></tr>
+<tr id="e-19"><td><strong>E-19</strong><br>medium-high (code); needs a non-standard client</td><td>Request validation (security)<br><span class="src">data node crash / memory safety</span></td><td>QueryTree and aggregate KEYINFO come from the API. These sites crash the node, over-read the tree buffer, or overflow a stack buffer on malformed input instead of returning an error, contrary to the tiered data-node security policy. The standard NDB API never produces them (it rejects NULL keys with 4316).<br><span class="src">DbspjMain.cpp parseDA ~16308 and parseScanFrag ~12158 (ndbabort on constant NULL key / prune key), scanFrag_parent_row ~12915 (ndbabort on fixed-key child scan), expand(DABuffer...) ~15925-15970 (P_DATA length not checked against the pattern end, P_PARAM index only ndbassert), computeHash ~11380 (ndbassert on key size before copying into tmp32[MAX_KEY_SIZE_IN_WORDS]); DbtcMain.cpp parseJoinAggKeyInfo ~30914, ~31060 (ndbrequire on API lengths)</span></td><td>A modified client sending a child lookup with a 2000-word constant P_DATA key, a P_DATA block longer than the node, or a NULL constant key.</td><td>Add these shapes to the data-node security fuzzing of SCAN_TABREQ/TCKEYREQ ATTRINFO.</td></tr>
+<tr id="e-20"><td><strong>E-20</strong><br>low-medium</td><td>DBSPJ CTE root lookup<br><span class="src">data node crash</span></td><td>A CTE query whose main root is a lookup computes hash and node with ndbrequire(err == 0) after computeHash and getNodes. Both can fail on data or DIH errors (e.g. error 290 when a key cannot be transformed in its collation); lookup_parent_row aborts the query for the same errors.<br><span class="src">DbspjMain.cpp lookup_start ~9330-9339</span></td><td>RonSQL CTE query with a readTuple main root on a VARCHAR PK whose literal is not valid in the column charset, or a DIH fragment error at start.</td><td>RonSQL test with an invalid-charset literal as main-root key; error insert in getNodes.</td></tr>
+<tr id="e-21"><td><strong>E-21</strong><br>medium-high</td><td>Aggregation memory<br><span class="src">resource / spurious errors</span></td><td>Each per-thread interpreter can grow up to all query memory free at SETUP (no per-query or node-wide cap), and available_pages * 32768 is computed in 32 bits, wrapping at 4 GiB of free query memory (spurious eviction in main aggregation, 1870 in CTEs).<br><span class="src">AggInterpreterBase.cpp initChunkAllocator ~1893, bookMoreMemory ~1906; DblqhProxy.cpp ~3372-3387</span></td><td>Data node with &gt;= 4 GiB free query memory and a high-cardinality GROUP BY; or two concurrent large GROUP BYs.</td><td>Unit test of the budget arithmetic; MTR with a large QueryMemory setting.</td></tr>
+<tr id="e-22"><td><strong>E-22</strong><br>medium</td><td>SETUP parking<br><span class="src">spurious errors</span></td><td>Leaf requests that arrive before the local SETUP are parked for at most 10 ms, then fail with temporary 1274. RonSQL retries; mysqld returns the error to the client.<br><span class="src">DblqhMain.cpp joinAggParkSweep ~9585</span></td><td>Busy DblqhProxy thread or a slow SETUP (JIT compile) during a mysqld join-aggregation query.</td><td>Error insert that delays SETUP processing by 20 ms, run from mysqld.</td></tr>
+<tr id="e-23"><td><strong>E-23</strong><br>medium</td><td>CTE redistribution<br><span class="src">data node crash</span></td><td>The redistribution receiver requires the group key to fit in 1023 words; the sender does not check.<br><span class="src">DblqhMain.cpp ~24721, ~24805 (ndbrequire(keyWords &lt;= 1023) on the receiver)</span></td><td>RonSQL CTE grouped on very wide VARBINARY/VARCHAR columns on a multi-node cluster.</td><td>RonSQL CTE with a GROUP BY key above 4 KB.</td></tr>
+<tr id="e-24"><td><strong>E-24</strong><br>high (code), low-medium likelihood</td><td>NDB API aggregate path<br><span class="src">hang / crash</span></td><td>On allocation failure execAggTRANSID_AI has already appended the offset and neither counts the row nor sets an error, so the query waits for the 4008 timeout; all groups are buffered without a limit until end of data. m_aggReceivers is allocated uninitialized; a partial getNdbScanRec() failure leaves garbage entries that postFetchRelease releases.<br><span class="src">storage/ndb/src/ndbapi/NdbQueryOperation.cpp execAggTRANSID_AI ~2323-2348, prepareAggregation ~4246-4260, postFetchRelease ~2854</span></td><td>API memory exhaustion while receiving many groups; failure of getNdbScanRec() in prepareAggregation.</td><td>Needs API-side fault injection (none exists); at least value-initialize the array and set an error on allocation failure.</td></tr>
+<tr id="e-25"><td><strong>E-25</strong><br>medium-low</td><td>mysqld error handling<br><span class="src">error reporting</span></td><td>Errors while draining a pushed join aggregation become HA_ERR_INTERNAL_ERROR, losing the NDB code and its temporary classification (1274, 1870, 286 are retryable); there is no runtime fallback to the unpushed plan although no row has been returned yet.<br><span class="src">ha_ndbcluster_push_agg.cc ndb_init_aggregate_results ~1862-1872</span></td><td>Any temporary kernel error during a pushed join aggregation (e.g. node failure, 1870).</td><td>Error-insert driven MTR expecting the original NDB error code.</td></tr>
+<tr id="e-26"><td><strong>E-26</strong><br>medium</td><td>mysqld pushability<br><span class="src">statement error</span></td><td>More than 16 pre-root key fields (paramValues) make build_key return -1 (TODO), which fails the statement instead of not pushing.<br><span class="src">ha_ndbcluster_push.cc build_key ~2439-2443, make_pushed_join error path ~660-670</span></td><td>A non-NDB (or non-pushable) first table t0, NDB root t1, and children with multi-part keys referencing t0 columns 17 or more times in total.</td><td>MTR with 17 pre-root references; expect a normal result and an EXPLAIN Note.</td></tr>
+<tr id="e-27"><td><strong>E-27</strong><br>high</td><td>DBSPJ logging<br><span class="src">operations / performance</span></td><td>handleJoinAggNextBatch logs &#x27;AGGT(%u) SPJ agg self-continue ...&#x27; with g_eventLogger-&gt;info unconditionally (&#x27;TEMPORARY fs_batch phase-timing probe&#x27;), although the AGGT macro meant to gate it is disabled. Every self-continued batch of every join aggregation writes a cluster-log line in production. Debug builds additionally log every forwarded SCAN_HBREP.<br><span class="src">DbspjMain.cpp handleJoinAggNextBatch ~3999-4003; also DEBUG_TRANSID_AI and DEBUG_SCAN_HB_SEND defined in VM_TRACE/ERROR_INSERT builds (~36-50)</span></td><td>Any join aggregation whose root needs more than one batch.</td><td>grep &#x27;AGGT(&#x27; in the data-node logs after the ndb_push_agg suite; replace with AGGT((...)).</td></tr>
+<tr id="e-28"><td><strong>E-28</strong><br>medium-high</td><td>Result streaming<br><span class="src">performance</span></td><td>The send loop compares the cumulative number of groups sent with m_max_batch_rows (256), so after the first 256 groups every further group costs a JOIN_AGG_SEND_REQ/CONF round trip with DBTC, which always grants 256 more; the close of an API cannot stop the stream.<br><span class="src">DblqhMain.cpp continueJoinAggSend ~21178; DbtcMain.cpp execJOIN_AGG_SEND_REQ ~32751</span></td><td>GROUP BY with tens of thousands of groups per node.</td><td>Count JOIN_AGG_SEND_REQ signals (signal log or a counter) for a 100k-group query.</td></tr>
+<tr id="e-29"><td><strong>E-29</strong><br>high (mechanism)</td><td>NDB API pruning<br><span class="src">performance</span></td><td>A root scan is only checked for pruning when its bound is given with setBound() at execution; m_prunability starts as Prune_No. RonSQL and CTE roots put bounds in the definition, so e.g. a PK-equality root index scan with scan children goes to all fragments.<br><span class="src">NdbQueryOperation.cpp m_prunability init ~2781, NdbQuery::setBound ~2965, isPrunable ~5170</span></td><td>RonSQL join with a root PK equality and a child scan (emit_pk_equality_index_scan_root).</td><td>Compare ndbinfo/DBSPJ pruned-scan counters and SCAN_FRAGREQ counts for such a query.</td></tr>
+<tr id="e-30"><td><strong>E-30</strong><br>medium-high</td><td>mysqld join-agg pushdown<br><span class="src">missed optimization</span></td><td>A HAVING FILTER has the AGGREGATE path as child, GetBasicTable returns null, and the walk reports a blocking filter, so any query with HAVING is not pushed. Existing tests compare results only, not whether the plan was pushed.<br><span class="src">ha_ndbcluster_push_agg.cc ndb_has_unpushable_filter_for_aggregate ~1477-1489</span></td><td>EXPLAIN SELECT t1.grp, SUM(t2.v) FROM t1 JOIN t2 ON t2.pk=t1.fk GROUP BY t1.grp HAVING SUM(t2.v) &gt; 10.</td><td>EXPLAIN-based MTR assertions that &#x27;Using pushed join aggregation&#x27; appears with HAVING.</td></tr>
+</table>
+
+</body>
+</html>

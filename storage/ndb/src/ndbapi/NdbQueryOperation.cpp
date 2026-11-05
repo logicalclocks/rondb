@@ -3837,8 +3837,20 @@ int NdbQueryImpl::prepareSend() {
         return -1;
       }
       require(cnt > 0);
-      assert((rootFragments % cnt) == 0);
-      m_fragsPerWorker = rootFragments / cnt;
+      /**
+       * DBTC puts all fragments of a node into one SCAN_FRAGREQ. With
+       * the same number of root fragments on every node that is
+       * rootFragments / cnt per worker. A table with, say,
+       * PARTITION BY KEY() PARTITIONS 7 has 4 fragments on one of 2
+       * nodes and 3 on the other, so no worker size divides
+       * rootFragments; such a table is scanned with one fragment per
+       * worker, as the aggregation path above does (Q-8).
+       */
+      if ((rootFragments % cnt) == 0) {
+        m_fragsPerWorker = rootFragments / cnt;
+      } else {
+        m_fragsPerWorker = 1;
+      }
     }
 
     /** Scan operations need a own sub-transaction object associated with each
@@ -4337,14 +4349,20 @@ int NdbQueryImpl::prepareAggregation() {
     Uint32 pos = HEADER_SIZE + nGbCols;
     Uint32 accOffset = 0;
     for (Uint32 leaf = 0; leaf < numLeaves; leaf++) {
+      // Only instruction words are decoded; the operand words after an
+      // instruction (constants, DECIMAL precision/scale, embedded CASE
+      // programs) are copied as they are, whatever opcode they look like.
+      Uint32 nextInstr = 0;
       for (Uint32 j = 0; j < leafInstrs[leaf].len; j++) {
         Uint32 word = leafInstrs[leaf].buf[j];
-        Uint32 op = (word >> 26) & 0x3F;
-        // Agg ops (Sum, Count, Min, Max and their typed variants) have
-        // the agg slot index in bits 0-15. Adjust by accOffset.
-        if (op >= kOpSum && op <= kOpMinDouble) {
-          Uint32 slot = word & 0xFFFF;
-          word = (word & 0xFFFF0000) | (slot + accOffset);
+        if (j == nextInstr) {
+          nextInstr += aggInstructionWords(word);
+          // Agg ops (Sum, Count, Min, Max and their typed variants) have
+          // the agg slot index in bits 0-15. Adjust by accOffset.
+          if (aggIsSlotOp(aggProgramOp(word))) {
+            Uint32 slot = word & 0xFFFF;
+            word = (word & 0xFFFF0000) | (slot + accOffset);
+          }
         }
         combinedProg[pos++] = word;
       }

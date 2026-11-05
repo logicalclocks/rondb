@@ -35,11 +35,18 @@
 
 #include "storage/ndb/plugin/ha_ndbcluster_push_agg.h"
 
+#include <cfloat>  // DBL_DIG
+
+#include "sql/current_thd.h"
+#include "sql/field.h"
 #include "sql/item.h"
 #include "sql/item_cmpfunc.h"
 #include "sql/item_sum.h"
 #include "sql/join_optimizer/access_path.h"
 #include "sql/join_optimizer/walk_access_paths.h"
+#include "sql/sql_class.h"
+#include "sql/sql_lex.h"
+#include "sql/sql_opt_exec_shared.h"  // Index_lookup
 #include "sql/sql_optimizer.h"
 #include "sql/table.h"
 #include "storage/ndb/include/ndbapi/NdbAggregator.hpp"
@@ -56,6 +63,18 @@
 #include "storage/ndb/src/ndbapi/NdbQueryOperation.hpp"
 
 // AggBuildContext is defined in ha_ndbcluster_push.h
+
+/*
+  Explain why an operation could not be pushed, as in ha_ndbcluster_push.cc
+  @param[in] msgfmt printf style format string.
+*/
+#define EXPLAIN_NO_PUSH(msgfmt, ...)                                   \
+  do {                                                                 \
+    if (unlikely(current_thd->lex->is_explain())) {                    \
+      push_warning_printf(current_thd, Sql_condition::SL_NOTE, ER_YES, \
+                          (msgfmt), __VA_ARGS__);                      \
+    }                                                                  \
+  } while (0)
 
 // Forward declaration — defined further down, but needed by emit_expr().
 static uint find_table_index(const pushed_table *tables, uint table_count,
@@ -1077,6 +1096,39 @@ static bool is_temporal_field_type(enum_field_types t) {
 }
 
 /**
+ * Check that the data nodes compute SUM / AVG / MIN / MAX over 'arg' as
+ * exactly as MySQL does (Q-6, E-16).  The aggregation program loads a
+ * DECIMAL with scale > 0 as a DOUBLE, and evaluates an expression with a
+ * DECIMAL result in DOUBLE, while MySQL computes both exactly:
+ *
+ * - SUM and AVG accumulate the rounding errors of every row, and silently
+ *   lose digits once the sum needs more digits than a DOUBLE holds.  Only
+ *   a DECIMAL column with scale 0, summed as a BIGINT, is exact.
+ * - MIN and MAX return one of the values: a DECIMAL column of at most
+ *   DBL_DIG digits converts to a DOUBLE and back unchanged, a wider column
+ *   or an expression does not.
+ *
+ * Integers and DECIMALs with scale 0 are BIGINTs on the data nodes: a value
+ * or a sum beyond 64 bits fails the query with an overflow error (1864,
+ * 1860) instead of returning the DECIMAL sum MySQL returns.  That is a
+ * failure, not a wrong result, and SUM over a BIGINT column is common, so
+ * those aggregates are still pushed.
+ */
+static bool is_exact_aggregate_arg(Item_sum::Sumfunctype sum_func,
+                                   const Item *arg) {
+  if (arg->result_type() != DECIMAL_RESULT) return true;
+  // An expression with a DECIMAL result is evaluated as a DOUBLE.
+  if (arg->type() != Item::FIELD_ITEM) return false;
+  const Field *field = down_cast<const Item_field *>(arg)->field;
+  if (field->type() != MYSQL_TYPE_NEWDECIMAL) return false;
+  if (field->decimals() == 0) return true;  // A BIGINT on the data nodes
+  if (sum_func == Item_sum::MIN_FUNC || sum_func == Item_sum::MAX_FUNC) {
+    return down_cast<const Field_new_decimal *>(field)->precision <= DBL_DIG;
+  }
+  return false;
+}
+
+/**
  * Check if the aggregate functions and GROUP BY in a JOIN are pushable.
  *
  * Validates:
@@ -1084,6 +1136,7 @@ static bool is_temporal_field_type(enum_field_types t) {
  * - No ROLLUP
  * - GROUP BY columns are simple field references from pushed tables
  * - Aggregate arguments are field references from pushed tables
+ * - Aggregates are computed as exactly as MySQL does (is_exact_aggregate_arg)
  *
  * @return true if aggregation is pushable
  */
@@ -1128,6 +1181,7 @@ static bool ndb_can_push_aggregation(const JOIN *join) {
         // table, a pushable CASE expression, or a pushable arithmetic expr.
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
+        if (!is_exact_aggregate_arg((*func)->sum_func(), arg)) return false;
         if (arg->type() == Item::FIELD_ITEM) {
           const auto *field_item = down_cast<const Item_field *>(arg);
           if (field_item->field->table->file->member_of_pushed_join() ==
@@ -1465,7 +1519,22 @@ void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
   }
 }
 
-bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path) {
+/**
+ * Check whether there is a non-pushable FILTER between the root AccessPath
+ * and the table-scan / index-lookup leaf nodes.  Such a filter applies a
+ * per-row condition that must be evaluated BEFORE aggregation.  When NDB
+ * returns pre-aggregated results, there is no opportunity for MySQL to
+ * evaluate per-row filters, so aggregation cannot be pushed.
+ *
+ * A FILTER whose condition references only the child table's columns may
+ * be pushable (handled by prep_cond_push / build_cond_push) and does not
+ * block aggregation here; ndb_push_aggregation() checks that it was
+ * completely pushed.  All other FILTERs (multi-table, subquery) block
+ * aggregation pushdown.
+ *
+ * @return true if a non-pushable filter was found, false if safe to push
+ */
+static bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path) {
   while (path != nullptr) {
     switch (path->type) {
       case AccessPath::FILTER: {
@@ -1518,7 +1587,23 @@ bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path) {
   return false;
 }
 
-bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path) {
+/**
+ * Check whether the query block takes its output order from the order in
+ * which the table access delivers rows (F30 in
+ * mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md).  A pushed aggregation
+ * returns its groups in NdbAggregator's own order (its group map compares
+ * the key bytes), not in index order, so it must not replace such a scan:
+ * an ascending plan would keep the wrong rows under LIMIT, and a descending
+ * one reads the next group with index_prev().
+ *
+ * True when the block groups (so it returns more than one row), the
+ * statement has an ORDER BY, and no SORT lies on the path from the root
+ * down to the table access.
+ *
+ * @return true if aggregation must not be pushed
+ */
+static bool ndb_aggregate_order_from_index(const JOIN *join,
+                                           const AccessPath *path) {
   // An implicitly grouped block (no GROUP BY left after remove_const())
   // returns one row, which has no order.
   if (join->group_list.empty()) return false;
@@ -1553,8 +1638,24 @@ bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path) {
   return true;
 }
 
-bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
-                                           const AccessPath *path) {
+/**
+ * Check whether the table access reads several ranges or key sets in one
+ * execution (F10 in mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md): an
+ * INDEX_RANGE_SCAN with more than one range (an IN list), REF_OR_NULL, or
+ * an index merge.  With the aggregation pushed the handler reads them
+ * without MRR, one aggregating scan per range into the same NdbAggregator,
+ * so later ranges return the groups of earlier ones again, and a group or
+ * a scalar aggregate that spans ranges comes back once per range.  A single
+ * range stays pushable.
+ *
+ * The same holds for a pushed join aggregation having such a root (E-12):
+ * ha_ndbcluster's MRR implementation can't return its aggregated rows, so
+ * the root is read through the default MRR, one pushed query per range.
+ *
+ * @return true if neither single-table nor join aggregation may be pushed
+ */
+static bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
+                                                  const AccessPath *path) {
   bool separate = false;
   WalkAccessPaths(path, join, WalkAccessPathPolicy::ENTIRE_QUERY_BLOCK,
                   [&separate](const AccessPath *p, const JOIN *) {
@@ -1575,6 +1676,36 @@ bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
                     return separate;
                   });
   return separate;
+}
+
+/**
+ * Check that the condition on 'table' is completely pushed, as code which
+ * the data nodes will evaluate (E-10, E-11).  When NDB returns aggregated
+ * results, a remainder condition would be evaluated by MySQL on the
+ * aggregated rows, and a condition left to ha_ndbcluster would not be
+ * evaluated at all.
+ *
+ * 'cond' must be prepared by prep_cond_push() for the current query plan:
+ * by is_pushable_as_child() for a child of a pushed join, and by
+ * ndbcluster_push_to_engine() for the root or a single table.  The code is
+ * generated here as it will be when executed: create_pushed_join() leaves
+ * the code of a lookup to ha_ndbcluster if NDB_MAX_LOOKUP_FILTER_WORDS or
+ * larger.
+ */
+static bool is_condition_pushed_for_aggregate(const pushed_table &table,
+                                              ha_ndbcluster_cond &cond,
+                                              bool is_lookup) {
+  if (table.get_condition() == nullptr) return true;
+  // Not prepared (engine_condition_pushdown=off), or with a remainder
+  if (cond.m_pushed_cond == nullptr || cond.m_remainder_cond != nullptr) {
+    return false;
+  }
+  const Uint32 code_size = cond.get_pushed_code_size();
+  if (code_size == 0) return false;  // Failed to generate code
+  if (is_lookup && code_size >= NDB_MAX_LOOKUP_FILTER_WORDS) {
+    return false;
+  }
+  return true;
 }
 
 bool ndb_push_aggregation(THD *, const JOIN *join,
@@ -1626,14 +1757,58 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
     }
   }
 
-  // Reject if any table has a non-pushable remainder condition.
-  // Such conditions must be evaluated by MySQL on individual rows BEFORE
+  // The data nodes know only whether a table is inner or outer joined with
+  // its parent in the query tree (NI_INNER_JOIN); the join nests stay in
+  // the NDB API.  Reject the outer joins they would evaluate differently
+  // from MySQL:
+  //  1) E-8: a table inner joined within an outer join nest, as l2 in
+  //     't1 LEFT JOIN (l1 JOIN l2 ON l2.pk = l1.b) ON l1.pk = t1.a'.  An l1
+  //     row without an l2 match must NULL-extend the whole nest for its t1
+  //     row; the data nodes drop the t1 row instead.
+  //  2) E-9, E-8: the chain forced below puts a table under the preceding
+  //     table instead of its parent, so it is joined only with the rows of
+  //     the tables in between.  When one of them is outer joined and has no
+  //     match, the table is not joined at all, while MySQL joins it with
+  //     its parent anyway: l2 in
+  //     't1 LEFT JOIN l1 ON l1.pk = t1.a LEFT JOIN l2 ON l2.pk = t1.b', and
+  //     the same with an inner joined l2.
+  {
+    const pushed_table &root = *builder.m_join_root;
+    const uint root_no = root.get_table_no();
+    for (uint t = root_no + 1; t < builder.m_table_count; t++) {
+      if (!builder.m_join_scope.contain(t)) continue;
+      const pushed_table &tab = builder.m_tables[t];
+      if (tab.isOuterJoined(root) && tab.m_first_inner < t) {  // 1)
+        DBUG_PRINT("info", ("ndb_push_aggregation: table %u is inner joined "
+                            "within an outer join nest — cannot push",
+                            t));
+        return false;
+      }
+      for (uint i = tab.m_parent + 1; i < t; i++) {  // 2)
+        if (builder.m_join_scope.contain(i) &&
+            builder.m_tables[i].isOuterJoined(root)) {
+          DBUG_PRINT("info", ("ndb_push_aggregation: table %u would be "
+                              "chained after outer joined table %u "
+                              "— cannot push",
+                              t, i));
+          return false;
+        }
+      }
+    }
+  }
+
+  // Reject if the condition on any table is not completely pushed.
+  // Such conditions must be evaluated on individual rows BEFORE
   // aggregation, which is impossible when NDB returns aggregated results.
   for (uint i = 0; i < builder.m_table_count; i++) {
-    const TABLE *tab = builder.m_tables[i].get_table();
-    if (tab == nullptr) continue;
-    const auto *h = down_cast<const ha_ndbcluster *>(tab->file);
-    if (h->m_cond.m_remainder_cond != nullptr) {
+    const pushed_table &table = builder.m_tables[i];
+    auto *h = down_cast<ha_ndbcluster *>(table.get_table()->file);
+    const bool is_lookup = !builder.m_scan_operations.contain(i);
+    if (!is_condition_pushed_for_aggregate(table, h->m_cond, is_lookup)) {
+      DBUG_PRINT("info",
+                 ("ndb_push_aggregation: condition on table %u is not "
+                  "completely pushed — cannot push aggregation",
+                  i));
       return false;
     }
   }
@@ -1762,6 +1937,16 @@ bool ndb_push_aggregation(THD *, const JOIN *join,
  */
 static int store_group_column(NdbAggregator::Column &col, Field *field) {
   if (col.is_null()) {
+    if (!field->is_nullable() && !field->is_tmp_nullable()) {
+      // A NOT NULL column is NULL only in the NULL-complemented row of an
+      // outer-joined table.  set_null() does nothing on such a field;
+      // Field::is_null() reads TABLE::has_null_row() instead.
+      if (unlikely(!field->table->is_nullable())) {
+        return HA_ERR_INTERNAL_ERROR;
+      }
+      field->table->set_null_row();
+      return 0;
+    }
     field->set_null();
     return 0;
   }
@@ -1893,6 +2078,15 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
     return NdbQuery::NextResult_scanComplete;
   }
 
+  // Clear the NULL-complemented row mark that store_group_column() set for
+  // the previous group, for every table first: a later column of the same
+  // table must not clear a mark set by an earlier one.
+  for (ORDER *group = join->query_block->group_list.first; group != nullptr;
+       group = group->next) {
+    TABLE *table = down_cast<const Item_field *>(*(group->item))->field->table;
+    table->reset_null_row();
+  }
+
   // Populate GROUP BY columns in MySQL's row buffer.
   // Temporarily mark all columns writable — the aggregate pushdown path
   // writes GROUP BY columns that may not be in the normal write_set.
@@ -1978,17 +2172,6 @@ static int ndb_fetch_next_aggregate_row(NdbAggregator *agg,
   return NdbQuery::NextResult_gotRow;
 }
 
-void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder) {
-  for (uint i = 0; i < builder.m_table_count; i++) {
-    const TABLE *tab = builder.m_tables[i].get_table();
-    if (tab == nullptr) continue;
-    auto *h = dynamic_cast<ha_ndbcluster *>(tab->file);
-    if (h == nullptr) continue;
-    h->m_pushed_agg_mode = false;
-    h->m_agg_join = nullptr;
-  }
-}
-
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
   if (handler->m_active_query == nullptr) {
     // Safety: should not reach here on a child handler (m_pushed_agg_mode
@@ -2019,6 +2202,7 @@ int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler) {
  * - No ROLLUP
  * - GROUP BY columns are simple field references from the single table
  * - Aggregate arguments are field references from the single table
+ * - Aggregates are computed as exactly as MySQL does (is_exact_aggregate_arg)
  *
  * @param join        MySQL JOIN with aggregation info
  * @param table       The single MySQL TABLE involved
@@ -2055,6 +2239,7 @@ static bool ndb_can_push_single_table_aggregation(const JOIN *join,
       case Item_sum::MAX_FUNC: {
         if ((*func)->argument_count() != 1) return false;
         Item *arg = (*func)->arguments()[0];
+        if (!is_exact_aggregate_arg((*func)->sum_func(), arg)) return false;
         if (arg->type() == Item::FIELD_ITEM) {
           const auto *field_item = down_cast<const Item_field *>(arg);
           if (field_item->field->table != table) {
@@ -2280,7 +2465,14 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
     return false;
   }
 
-  const auto *h = down_cast<const ha_ndbcluster *>(table->file);
+  // The condition on the table must be completely pushed (E-10): MySQL
+  // would evaluate a remainder on the aggregated rows.
+  auto *h = down_cast<ha_ndbcluster *>(table->file);
+  if (!is_condition_pushed_for_aggregate(builder.m_tables[0], h->m_cond,
+                                         /*is_lookup=*/false)) {
+    return false;
+  }
+
   const NdbDictionary::Table *ndb_table = h->m_table;
   if (ndb_table == nullptr) {
     return false;
@@ -2290,14 +2482,49 @@ bool ndb_push_single_table_aggregation(THD *, const JOIN *join,
   if (agg == nullptr) {
     return false;
   }
-  auto *handler = down_cast<ha_ndbcluster *>(table->file);
-  handler->m_stm_aggregator = agg;
+  h->m_stm_aggregator = agg;
 
   DBUG_PRINT("info",
              ("ndb_push_single_table_aggregation: aggregation pushed "
               "on table %s",
               table->s->table_name.str));
   return true;
+}
+
+bool ndb_push_aggregation_to_engine(THD *thd, const AccessPath *root_path,
+                                    const JOIN *join,
+                                    ndb_pushed_builder_ctx &builder,
+                                    bool push_join_aggregate,
+                                    bool allow_outer_join,
+                                    bool push_table_aggregate) {
+  bool pushed = false;
+  if (!ndb_aggregate_order_from_index(join, root_path) &&
+      !ndb_aggregate_reads_ranges_separately(join, root_path)) {
+    if (push_join_aggregate &&
+        !ndb_has_unpushable_filter_for_aggregate(root_path)) {
+      pushed = ndb_push_aggregation(thd, join, builder, allow_outer_join);
+    }
+    if (!pushed && push_table_aggregate) {
+      pushed = ndb_push_single_table_aggregation(thd, join, builder);
+    }
+  }
+
+  for (uint i = 0; i < builder.m_table_count; i++) {
+    const TABLE *tab = builder.m_tables[i].get_table();
+    if (tab == nullptr) continue;
+    auto *h = dynamic_cast<ha_ndbcluster *>(tab->file);
+    if (h == nullptr) continue;
+    h->m_pushed_agg_mode = false;
+    h->m_agg_join = nullptr;
+  }
+  if (pushed) {
+    auto *root_handler =
+        down_cast<ha_ndbcluster *>(builder.m_tables[0].get_table()->file);
+    root_handler->m_pushed_agg_mode = true;
+    root_handler->m_agg_results_initialized = false;
+    root_handler->m_agg_join = join;
+  }
+  return pushed;
 }
 
 int ndb_start_stm_aggregate_scan(ha_ndbcluster *handler,
@@ -2323,4 +2550,83 @@ int ndb_fetch_stm_aggregate(ha_ndbcluster *handler) {
     return HA_ERR_END_OF_FILE;
   }
   return res;
+}
+
+/*
+  Checks of ndb_pushed_builder_ctx::is_pushable_as_child() on the key of a
+  child of a pushed join. They are not about aggregation, but are kept
+  here, apart from the code taken from MySQL in ha_ndbcluster_push.cc.
+*/
+
+/**
+ * build_key() has room for MAX_REFERRED_FIELDS parameter references in
+ * all of the pushed join, and failed the statement past that (E-26). A key
+ * part that is not constant and refers no parent in the join scope refers
+ * a table before the root: a paramValue() in build_key().
+ * Counted like m_internal_op_count: a child rejected or removed later still
+ * counts, which can only leave a later child unpushed.
+ */
+bool ndb_pushed_builder_ctx::is_param_refs_pushable(
+    const pushed_table *table) {
+  uint param_refs = 0;
+  const uint no_of_key_fields = table->get_no_of_key_fields();
+  for (uint key_part_no = 0; key_part_no < no_of_key_fields; key_part_no++) {
+    if (!table->get_key_field(key_part_no)->const_for_execution() &&
+        table->m_key_parents[key_part_no].is_clear_all()) {
+      param_refs++;
+    }
+  }
+  if (unlikely(m_param_refs + param_refs >
+               ndb_pushed_join::MAX_REFERRED_FIELDS)) {
+    EXPLAIN_NO_PUSH(
+        "Can't push table '%s' as child of '%s', since the pushed join "
+        "would refer more than %u columns of tables before its root.",
+        table->get_table()->alias, m_join_root->get_table()->alias,
+        ndb_pushed_join::MAX_REFERRED_FIELDS);
+    return false;
+  }
+  m_param_refs += param_refs;
+  return true;
+}
+
+/**
+ * SPJ drops a child request having a NULL value in its key or bound,
+ * as an EQ-match is impossible. That is only right if the key part is
+ * 'null_rejecting', which a null-safe '<=>' is not: NULL <=> NULL is
+ * TRUE. (The optimizer sets 'null_rejecting' only if either side of the
+ * comparison is nullable. Thus, check that the referred value is.)
+ * A const_item() was checked to not be NULL by is_const_item_pushable().
+ * It is still fine if the same value is also referred by a
+ * null_rejecting key part: A NULL value can then never match.
+ */
+bool ndb_pushed_builder_ctx::is_null_safe_key_pushable(pushed_table *table) {
+  const Index_lookup *const ref = table->get_table_ref();
+  const uint no_of_key_fields = table->get_no_of_key_fields();
+  for (uint key_part_no = 0; key_part_no < no_of_key_fields; key_part_no++) {
+    const Item *const key_item = table->get_key_field(key_part_no);
+    if ((ref->null_rejecting & ((key_part_map)1 << key_part_no)) ||
+        !key_item->is_nullable() || key_item->const_item()) {
+      continue;
+    }
+    bool null_rejected = false;
+    for (uint i = 0; i < no_of_key_fields; i++) {
+      if ((ref->null_rejecting & ((key_part_map)1 << i)) &&
+          table->get_key_field(i)->eq(key_item, false)) {
+        null_rejected = true;
+        break;
+      }
+    }
+    if (!null_rejected) {
+      EXPLAIN_NO_PUSH(
+          "Can't push table '%s' as child, column '%s' is compared "
+          "null-safe to a value which may be NULL",
+          table->get_table()->alias,
+          table->get_key_part_info(key_part_no)->field->field_name);
+      table->set_table_properties(
+          table->get_table_properties() &
+          ~PUSHABLE_AS_CHILD);  // Permanently disable as child
+      return false;
+    }
+  }
+  return true;
 }

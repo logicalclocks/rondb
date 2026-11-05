@@ -3603,6 +3603,16 @@ private:
                                      Uint32 *dest,
                                      Uint32 dest_words);
 
+  /* E-4: the type, declared size in bytes and charset of column attrId of
+   * table tableId with schema version schemaVersion, with the checks of
+   * the BRANCH_MEM_OP_ARG handler, for JoinAggInterpreter's evaluation
+   * of a CASE condition on a NULL-extended row.  Returns 0, or the error
+   * code the handler fails the program with. */
+  Uint32 getBranchMemColumnType(Uint32 tableId, Uint32 schemaVersion,
+                                Uint32 attrId, Uint32 &typeId,
+                                Uint32 &sizeInBytes,
+                                const CHARSET_INFO *&cs) const;
+
 #ifdef ERROR_INSERT
   /* Wrapper around ERROR_INSERTED so external collaborators
    * (notably JoinAggInterpreter, which is friend but not a

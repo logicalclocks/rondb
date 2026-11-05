@@ -1,0 +1,135 @@
+#
+# DBSPJ robustness P-19: failure while building the execution plan.
+#
+# Dbspj::build() calls buildExecPlan() and ignores its return value.
+# planParallelExec() / planSequentialExec() fail with OutOfQueryMemory when
+# appendTreeNode() cannot append a tree node to its predecessor's
+# m_next_nodes list (request arena exhausted). The request then runs with
+# an incomplete plan: the tree node that was not appended is never
+# started, so the join silently returns too few rows, or the API waits
+# for results that never come.
+#
+# Error insert 17540 fails the first appendTreeNode() of a request. The
+# query must fail promptly with NDB error 20008 (OutOfQueryMemory). Both a
+# scan request (scan root, lookup child) and a lookup request (lookup
+# root, lookup child) are tested.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_exec_plan_oom_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_query_log
+
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB;
+CREATE TABLE t3 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB;
+INSERT INTO t1 VALUES (1,1,10),(2,2,20),(3,3,30),(4,4,40),
+                      (5,5,50),(6,6,60),(7,7,70),(8,8,80);
+INSERT INTO t3 VALUES (1,1,7),(2,2,14),(3,3,21),(4,4,28),
+                      (5,5,35),(6,6,42),(7,7,49),(8,8,56);
+
+--let $spj_q_scan = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t3 AS y ON y.a = x.b
+--let $spj_q_lookup = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(x.c * 100 + y.c) AS chk FROM t1 AS x JOIN t3 AS y ON y.a = x.b WHERE x.a = 3
+
+--let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+--let $spj_ref_scan = `$spj_q_scan`
+--let $spj_pq1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+if (`SELECT $spj_pq1 <= $spj_pq0`)
+{
+  --die Test setup: the scan query was not executed as a pushed join
+}
+--let $spj_ref_lookup = `$spj_q_lookup`
+--let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+if (`SELECT $spj_pq0 <= $spj_pq1`)
+{
+  --die Test setup: the lookup query was not executed as a pushed join
+}
+--echo Both reference queries were pushed
+
+connect (con1,localhost,root,,test);
+--let $spj_con1_id = `SELECT CONNECTION_ID()`
+connection default;
+
+--let $spj_shape = 0
+while (`SELECT $spj_shape < 2`)
+{
+  if (!$spj_shape)
+  {
+    --let $spj_q = $spj_q_scan
+    --let $spj_ref = $spj_ref_scan
+    --let $spj_name = scan request
+  }
+  if ($spj_shape)
+  {
+    --let $spj_q = $spj_q_lookup
+    --let $spj_ref = $spj_ref_lookup
+    --let $spj_name = lookup request
+  }
+  --echo #
+  --echo # 17540 on the $spj_name
+  --echo #
+  --exec $NDB_MGM -e "all error 17540" >> $spj_mgm_log
+  connection con1;
+  --send_eval $spj_q
+  connection default;
+  --sleep 0.5
+  --let $spj_i = 0
+  --let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+  while ($spj_busy)
+  {
+    if (`SELECT $spj_i >= 300`)
+    {
+      --exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+      --echo Shape: $spj_name
+      --die P-19: the query hung for 30 s after the execution plan could not be built
+    }
+    --sleep 0.1
+    --inc $spj_i
+    --let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+  }
+  --exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+  connection con1;
+  --disable_result_log
+  --disable_abort_on_error
+  --reap
+  --let $spj_errno = $mysql_errno
+  --let $spj_w = query_get_value(SHOW WARNINGS, Message, 1)
+  --enable_abort_on_error
+  --enable_result_log
+  connection default;
+  if (!$spj_errno)
+  {
+    --echo Shape: $spj_name
+    --die P-19: the query succeeded although the execution plan could not be built (buildExecPlan() error ignored by build())
+  }
+  --let $spj_err = `SELECT IF(LOCATE('error ', "$spj_w") > 0, SUBSTRING_INDEX(SUBSTRING("$spj_w", LOCATE('error ', "$spj_w") + 6), ' ', 1), 'none')`
+  if (`SELECT '$spj_err' <> '20008'`)
+  {
+    --echo Shape: $spj_name, query failed with: $spj_w
+    --die P-19: the query did not fail with NDB error 20008 (OutOfQueryMemory) when the execution plan could not be built
+  }
+  --echo The $spj_name failed with NDB error 20008
+
+  --let $spj_res = `$spj_q`
+  if (`SELECT "$spj_res" <> "$spj_ref"`)
+  {
+    --echo Got: $spj_res, expected: $spj_ref
+    --die The query returned a wrong result after the error insert was cleared
+  }
+  --echo The $spj_name returns the reference result
+  --inc $spj_shape
+}
+
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+
+disconnect con1;
+DROP TABLE t1, t3;
+--remove_file $spj_mgm_log

@@ -1,0 +1,63 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== s15j-0: the plan is root TABLE_SCAN -> PK_LOOKUP aggregate leaf ===
+== Explain Query ==
+
+=== s15j-1: control, no forced eviction ===
+== Query ==
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g;
+
+Number of output lines, including header: 26
+RonSQL request bounded to 120 s
+
+== Diff ==
+==========
+
+== Expected result ==
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g|
+g	COUNT(*)	SUM(f.q)
+0	960	6240
+1	960	2400
+10	960	6240
+11	960	2400
+12	960	3360
+13	960	4320
+14	960	5280
+15	960	6240
+16	960	2400
+17	960	3360
+18	960	4320
+19	960	5280
+2	960	3360
+20	960	6240
+21	960	2400
+22	960	3360
+23	960	4320
+24	960	5280
+3	960	4320
+4	960	5280
+5	960	6240
+6	960	2400
+7	960	3360
+8	960	4320
+9	960	5280
+
+=== s15j-2: lookup-leaf evictions forced (DBTUP 4041) ===
+== Query ==
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g;
+
+Number of output lines, including header: 26
+RonSQL request bounded to 120 s
+
+== Diff ==
+==========
+
+
+=== s15j-3: no DBSPJ request or join-aggregation state left behind ===

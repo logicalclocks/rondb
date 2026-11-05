@@ -1809,6 +1809,24 @@ int ha_ndbcluster_cond::build_cond_push() {
   return 0;
 }
 
+/*
+  Generate, and discard, the code for the condition prepared with
+  prep_cond_push(), as use_cond_push() / build_cond_push() will do
+  later. Lets the caller decide, while still optimizing, whether
+  the condition code can be attached to the operation evaluating it.
+  Returns the size of the code in words, 0 if there was no pushed
+  condition, or if no code could be generated.
+*/
+Uint32 ha_ndbcluster_cond::get_pushed_code_size() {
+  DBUG_TRACE;
+  if (m_pushed_cond == nullptr) return 0;
+
+  NdbInterpretedCode code(m_handler->m_table);
+  SqlScanFilter filter(&code);
+  if (generate_scan_filter_from_cond(filter) != 0) return 0;
+  return code.getWordsUsed();
+}
+
 int ha_ndbcluster_cond::build_scan_filter_predicate(
     List_iterator<const Ndb_item> &cond, SqlScanFilter *filter,
     const bool negated, const bool param_is_const) const {

@@ -1,0 +1,326 @@
+#
+# ndb_spj_shapes_nulls: pushed joins (SPJ) over NULL values in the
+# columns that link a child to its parent.
+#
+# Each shape runs with ndb_join_pushdown OFF and ON; the two results are
+# compared inside the test (ndb_spj_shapes_check.inc), and EXPLAIN must
+# show the ON run as a pushed join.  The test dies at the end naming every
+# shape that failed.
+#
+# Covered:
+#  - NULL linked keys into PK lookups, unique-index lookups, composite PK
+#    lookups (partial NULL), ordered-index (ref) scans, composite index
+#    scans (partial NULL), pruned scans; inner and outer joined
+#  - NULL keys taken from an intermediate (lookup) parent and from a
+#    grandparent
+#  - the NULL-safe equality '<=>' as ref key: NULL must match NULL
+#    (Q-2 / E-15: no code in ha_ndbcluster_push.cc looks at the ref's
+#    null_rejecting bits, and DBSPJ drops every parent row whose linked
+#    key is NULL)
+#  - NULL bounds and NULL-first ordering in the ordered index of the root
+#  - IN / EXISTS / NOT EXISTS / NOT IN over nullable linked columns
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+--echo #
+--echo # Tables and data
+--echo #
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000)
+  SELECT n FROM c;
+
+# Root table: every linking column is nullable and NULL in some rows.
+CREATE TABLE p (
+  id INT NOT NULL PRIMARY KEY,
+  a INT NULL,
+  b INT NULL,
+  c INT NULL,
+  u INT NULL,
+  v VARCHAR(10) NULL,
+  KEY ix_pb (b, id)
+) ENGINE=NDB;
+INSERT INTO p
+  SELECT n,
+         IF(n % 5 = 0, NULL, (n * 7) % 700 + 1),
+         IF(n % 7 = 0, NULL, n % 50),
+         IF(n % 3 = 0, NULL, n % 4),
+         IF(n % 4 = 0, NULL, n),
+         IF(n % 9 = 0, NULL, CONCAT('k', n % 80))
+  FROM seq WHERE n <= 1000;
+
+# PK lookup child; ids 601..701 referenced from p.a do not exist.
+CREATE TABLE c1 (
+  id INT NOT NULL PRIMARY KEY,
+  x INT NOT NULL,
+  y INT NULL
+) ENGINE=NDB;
+INSERT INTO c1
+  SELECT n, n % 13, IF(n % 6 = 0, NULL, n % 45) FROM seq WHERE n <= 600;
+
+# Ordered-index (ref) child with NULLs in the indexed columns.
+CREATE TABLE c2 (
+  id INT NOT NULL PRIMARY KEY,
+  b INT NULL,
+  c INT NULL,
+  w INT NOT NULL,
+  KEY ix_b (b),
+  KEY ix_bc (b, c)
+) ENGINE=NDB;
+INSERT INTO c2
+  SELECT n, IF(n % 11 = 0, NULL, n % 60), IF(n % 5 = 0, NULL, n % 4), n
+  FROM seq WHERE n <= 1500;
+
+# Unique-index child; NULL in the unique column of every 10th row.
+CREATE TABLE cu (
+  id INT NOT NULL PRIMARY KEY,
+  u INT NULL,
+  z INT NOT NULL,
+  UNIQUE KEY uk_u (u)
+) ENGINE=NDB;
+INSERT INTO cu SELECT n, IF(n % 10 = 0, NULL, n), n % 17 FROM seq WHERE n <= 800;
+
+# Composite PK child.
+CREATE TABLE cpk2 (
+  k1 INT NOT NULL,
+  k2 INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY (k1, k2)
+) ENGINE=NDB;
+INSERT INTO cpk2
+  SELECT s1.n, s2.n - 1, s1.n * 10 + s2.n
+  FROM seq s1, seq s2 WHERE s1.n <= 700 AND s2.n <= 4;
+
+# VARCHAR PK child; keys 'k70'..'k79' are missing.
+CREATE TABLE cv (
+  k VARCHAR(10) NOT NULL PRIMARY KEY,
+  z INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO cv SELECT CONCAT('k', n - 1), n FROM seq WHERE n <= 70;
+
+# Child partitioned on the first PK column: a scan on the PK prefix
+# (b) is pruned to one fragment, the prune key comes from the parent.
+CREATE TABLE c3 (
+  b INT NOT NULL,
+  id INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY (b, id)
+) ENGINE=NDB PARTITION BY KEY (b);
+INSERT INTO c3 SELECT n % 60, n, n % 23 FROM seq WHERE n <= 1200;
+
+ANALYZE TABLE p, c1, c2, cu, cpk2, cv, c3;
+
+--echo #
+--echo # NULL linked key into a PK lookup child
+--echo #
+let $spj_label= N1_lookup_inner;
+let $spj_query= SELECT p.id, c1.id, c1.x, c1.y
+  FROM p STRAIGHT_JOIN c1 ON c1.id = p.a;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N2_lookup_left;
+let $spj_query= SELECT p.id, c1.id, c1.x, c1.y
+  FROM p LEFT JOIN c1 ON c1.id = p.a;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Lookup root (eq_ref on a constant) with a NULL linked key in the child
+let $spj_label= N3_lookup_root_null_child_key;
+let $spj_query= SELECT p.id, c1.x FROM p LEFT JOIN c1 ON c1.id = p.a
+  WHERE p.id = 10;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # NULL linked key into an ordered-index (ref) scan child
+--echo #
+let $spj_label= N4_scan_inner;
+let $spj_query= SELECT p.id, c2.id, c2.w
+  FROM p STRAIGHT_JOIN c2 FORCE INDEX (ix_b) ON c2.b = p.b;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N5_scan_left;
+let $spj_query= SELECT p.id, c2.id, c2.w
+  FROM p LEFT JOIN c2 FORCE INDEX (ix_b) ON c2.b = p.b;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Composite keys where one part of the linked key is NULL
+--echo #
+let $spj_label= N6_scan_composite_partial_null;
+let $spj_query= SELECT p.id, c2.id, c2.c
+  FROM p STRAIGHT_JOIN c2 FORCE INDEX (ix_bc) ON c2.b = p.b AND c2.c = p.c;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N7_scan_composite_partial_null_left;
+let $spj_query= SELECT p.id, c2.id, c2.c
+  FROM p LEFT JOIN c2 FORCE INDEX (ix_bc) ON c2.b = p.b AND c2.c = p.c;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N8_lookup_composite_pk_partial_null;
+let $spj_query= SELECT p.id, cpk2.val
+  FROM p LEFT JOIN cpk2 ON cpk2.k1 = p.a AND cpk2.k2 = p.c;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Composite ref key: linked column plus a constant
+let $spj_label= N9_scan_linked_and_const;
+let $spj_query= SELECT p.id, c2.id
+  FROM p LEFT JOIN c2 FORCE INDEX (ix_bc) ON c2.b = p.b AND c2.c = 3;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # NULL in a nullable unique index and in a VARCHAR PK link
+--echo #
+let $spj_label= N10_unique_lookup_left;
+let $spj_query= SELECT p.id, cu.id, cu.z
+  FROM p LEFT JOIN cu ON cu.u = p.u;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N11_varchar_pk_lookup_left;
+let $spj_query= SELECT p.id, p.v, cv.z
+  FROM p LEFT JOIN cv ON cv.k = p.v;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # NULL linked keys taken from an intermediate lookup and from a
+--echo # grandparent
+--echo #
+let $spj_label= N12_chain_lookup_then_scan;
+let $spj_query= SELECT p.id, c1.id, c2.id
+  FROM p STRAIGHT_JOIN c1 ON c1.id = p.a
+         STRAIGHT_JOIN c2 FORCE INDEX (ix_b) ON c2.b = c1.y;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N13_chain_left_left;
+let $spj_query= SELECT p.id, c1.id, c2.id
+  FROM p LEFT JOIN c1 ON c1.id = p.a
+         LEFT JOIN c2 FORCE INDEX (ix_b) ON c2.b = c1.y;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# The key of c2 combines a column of the parent (c1) and of the
+# grandparent (p); either may be NULL.
+let $spj_label= N14_key_from_parent_and_grandparent;
+let $spj_query= SELECT p.id, c1.id, c2.id
+  FROM p STRAIGHT_JOIN c1 ON c1.id = p.a
+         STRAIGHT_JOIN c2 FORCE INDEX (ix_bc) ON c2.b = p.b AND c2.c = c1.y;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N15_key_from_parent_and_grandparent_left;
+let $spj_query= SELECT p.id, c1.id, cpk2.val
+  FROM p LEFT JOIN c1 ON c1.id = p.a
+         LEFT JOIN cpk2 ON cpk2.k1 = p.u AND cpk2.k2 = c1.y;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Pruned scan child, NULL prune key
+--echo #
+let $spj_label= N16_pruned_scan_child_left;
+let $spj_query= SELECT p.id, c3.id, c3.val
+  FROM p LEFT JOIN c3 ON c3.b = p.b;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # NULL-safe equality '<=>' as ref key: NULL <=> NULL is TRUE, so
+--echo # the rows with p.b IS NULL must match the rows with c2.b IS NULL.
+--echo #
+# Q-2 / E-15: a child whose ref key part is compared with '<=>' to a
+# nullable value is no longer pushed (DBSPJ drops NULL keys), so N17 and
+# N19 check only the result.
+let $spj_label= N17_nullsafe_ref_inner;
+let $spj_query= SELECT p.id, c2.id
+  FROM p STRAIGHT_JOIN c2 FORCE INDEX (ix_b) ON c2.b <=> p.b;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# mysqld does not push the outer-joined '<=>' child (first run: pushed=0),
+# so only the result is checked.
+let $spj_label= N18_nullsafe_ref_left;
+let $spj_query= SELECT p.id, c2.id
+  FROM p LEFT JOIN c2 FORCE INDEX (ix_b) ON c2.b <=> p.b;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N19_nullsafe_composite;
+let $spj_query= SELECT p.id, c2.id
+  FROM p STRAIGHT_JOIN c2 FORCE INDEX (ix_bc) ON c2.b <=> p.b AND c2.c = p.c;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N20_nullsafe_unique;
+let $spj_query= SELECT p.id, cu.id
+  FROM p STRAIGHT_JOIN cu ON cu.u <=> p.u;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # NULL bounds and NULL-first ordering in the root's ordered index
+--echo #
+let $spj_label= N21_root_is_null_bound;
+let $spj_query= SELECT p.id, c1.x
+  FROM p FORCE INDEX (ix_pb) STRAIGHT_JOIN c1 ON c1.id = p.a
+  WHERE p.b IS NULL;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N22_root_range_excludes_null;
+let $spj_query= SELECT p.id, c2.id
+  FROM p FORCE INDEX (ix_pb) STRAIGHT_JOIN c2 FORCE INDEX (ix_b) ON c2.b = p.b
+  WHERE p.b < 5;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N23_root_range_or_null;
+let $spj_query= SELECT p.id, c1.x
+  FROM p FORCE INDEX (ix_pb) STRAIGHT_JOIN c1 ON c1.id = p.a
+  WHERE p.b <= 3 OR p.b IS NULL;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Sorted root scan on a nullable index: NULLs come first
+let $spj_label= N24_root_sorted_nulls_first;
+let $spj_query= SELECT p.b, p.id, c1.x
+  FROM p FORCE INDEX (ix_pb) STRAIGHT_JOIN c1 ON c1.id = p.a
+  WHERE p.b <= 2 OR p.b IS NULL
+  ORDER BY p.b, p.id;
+let $spj_ordered= 1;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Semi-join and antijoin over nullable linked columns
+--echo #
+let $spj_label= N25_in_subquery_nullable;
+let $spj_query= SELECT p.id, p.b FROM p
+  WHERE p.b IN (SELECT c2.b FROM c2 WHERE c2.w < 400);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N26_not_exists_nullable;
+let $spj_query= SELECT p.id, p.b FROM p
+  WHERE NOT EXISTS (SELECT 1 FROM c2 WHERE c2.b = p.b AND c2.w > 1000);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# NOT IN with a NULL produced by the subquery: no row qualifies
+let $spj_label= N27_not_in_subquery_with_null;
+let $spj_query= SELECT p.id FROM p
+  WHERE p.b NOT IN (SELECT c2.b FROM c2 WHERE c2.w > 1300);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# NOT IN without NULLs on either side
+let $spj_label= N28_not_in_subquery_not_null;
+let $spj_query= SELECT p.id FROM p
+  WHERE p.b IS NOT NULL
+    AND p.b NOT IN (SELECT c2.b FROM c2 WHERE c2.w > 1300 AND c2.b IS NOT NULL);
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= N29_left_join_is_null_antijoin;
+let $spj_query= SELECT p.id, p.b FROM p
+  LEFT JOIN c2 FORCE INDEX (ix_b) ON c2.b = p.b
+  WHERE c2.id IS NULL;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Cleanup
+--echo #
+DROP TABLE seq, p, c1, c2, cu, cpk2, cv, c3;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

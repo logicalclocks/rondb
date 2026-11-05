@@ -1,0 +1,176 @@
+#
+# DBSPJ robustness: data node failure while a pushed scan join is running,
+# followed by leak checks on the surviving and the restarted data node.
+#
+# DBLQH error insert 5112 makes range scans repeat their range for ever.
+# The child scan of the pushed join (ref access on index ib) matches no
+# rows, so the query keeps running, with SCAN_HBREP from DBLQH through
+# DBSPJ to DBTC, and DBTC error insert 8317 sending TC_HBREP to the API.
+# Data node 2 is then killed. On the surviving node DBSPJ must abort the
+# request in NODE_FAILREP handling (child fragments on the failed node,
+# or the requesting DBTC gone: RT_REQUESTER_FAILED), close its fragment
+# scans on the surviving node and release everything.
+#
+# Checked afterwards, with node 2 restarted:
+#  - the query terminated (with an error) within 60 s of the failure;
+#  - no fragment scan is left open (ndbinfo.operations_per_fragment);
+#  - no DIH scan is left registered (ndb$table_distribution_status_all);
+#  - no DBSPJ request, DBTC scan or join-aggregation state is left
+#    (DUMP 2650 / 2560 / 2361-2364 through mem_leak_dumps.inc);
+#  - the pushed join returns the reference result.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_nodefail_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+call mtr.add_suppression("Node failure caused abort of transaction");
+call mtr.add_suppression("Got NDB error");
+call mtr.add_suppression("Failed to send result for schema operation");
+call mtr.add_suppression("Could not acquire global schema lock");
+call mtr.add_suppression("cluster disconnect An incident event has been written");
+--enable_query_log
+
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+                 KEY ib (b))
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+INSERT INTO t1 VALUES (1,1,1001),(2,2,1002),(3,3,1003),(4,4,1004),
+                      (5,5,1005),(6,6,1006),(7,7,1007),(8,8,1008);
+INSERT INTO t2 SELECT a, b, a FROM t1;
+INSERT INTO t2 SELECT a + 100, b, a + 100 FROM t1;
+INSERT INTO t2 SELECT a + 200, b, a + 200 FROM t1;
+
+CREATE VIEW spj_robust_dih_scans AS
+  SELECT d.node_id, d.table_id,
+         d.current_scan_count + d.scan_count_wait AS scans
+  FROM ndbinfo.ndb$table_distribution_status_all AS d
+  JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+  LEFT JOIN ndbinfo.dict_obj_info AS p
+    ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+  WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+  SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+  FROM ndbinfo.operations_per_fragment
+  WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+
+# Child range t2.b = t1.c (1001-1008) matches no row
+--let $spj_q_nomatch = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(t2.c) AS chk FROM t1 JOIN t2 FORCE INDEX (ib) ON t2.b = t1.c
+--let $spj_q = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(t1.c * 1000 + t2.c) AS chk FROM t1 JOIN t2 FORCE INDEX (ib) ON t2.b = t1.b
+
+--let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+--let $spj_ref = `$spj_q`
+--let $spj_res = `$spj_q_nomatch`
+--let $spj_pq1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+if (`SELECT $spj_pq1 < $spj_pq0 + 2`)
+{
+  --die Test setup: the queries were not executed as pushed joins
+}
+--echo Reference queries were pushed
+
+connect (con1,localhost,root,,test);
+--let $spj_con1_id = `SELECT CONNECTION_ID()`
+connection default;
+
+--echo #
+--echo # Pushed scan join running (5112, 8317), then node 2 is killed
+--echo #
+--exec $NDB_MGM -e "all error 5112" >> $spj_mgm_log
+--exec $NDB_MGM -e "all error 8317" >> $spj_mgm_log
+connection con1;
+--send_eval $spj_q_nomatch
+connection default;
+--sleep 3
+--let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+if (!$spj_busy)
+{
+  --exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+  --die Test setup: the pushed query was not running after 3 s with error insert 5112
+}
+--echo The pushed query is running, killing data node 2
+--exec $NDB_MGM -e "2 restart -a -n" >> $spj_mgm_log
+--exec $NDB_WAITER --wait-nodes=2 --not-started --timeout=60 >> $spj_mgm_log
+--exec $NDB_MGM -e "1 error 0" >> $spj_mgm_log
+
+--let $spj_i = 0
+--let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+while ($spj_busy)
+{
+  if (`SELECT $spj_i >= 600`)
+  {
+    --die The pushed query did not terminate within 60 s of the failure of data node 2
+  }
+  --sleep 0.1
+  --inc $spj_i
+  --let $spj_busy = `SELECT COUNT(*) FROM performance_schema.threads WHERE PROCESSLIST_ID = $spj_con1_id AND PROCESSLIST_COMMAND = 'Query'`
+}
+connection con1;
+--disable_result_log
+--disable_abort_on_error
+--reap
+--enable_abort_on_error
+--enable_result_log
+connection default;
+--echo The pushed query terminated after the node failure
+
+--echo #
+--echo # Restart data node 2
+--echo #
+--exec $NDB_MGM -e "2 start" >> $spj_mgm_log
+--exec $NDB_WAITER --timeout=300 >> $spj_mgm_log
+--source include/ndb_not_readonly.inc
+--exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+--echo Data node 2 is started again
+
+--echo #
+--echo # Nothing is left behind
+--echo #
+--let $spj_i = 0
+--let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+while ($spj_open)
+{
+  if (`SELECT $spj_i >= 300`)
+  {
+    SELECT * FROM spj_robust_frag_scans WHERE conc_frag_scans > 0;
+    --die Fragment scans of the pushed query are still open 60 s after the node failure
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_open = `SELECT IFNULL(SUM(conc_frag_scans), 0) FROM spj_robust_frag_scans`
+}
+--let $spj_i = 0
+--let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+while ($spj_scans)
+{
+  if (`SELECT $spj_i >= 150`)
+  {
+    SELECT node_id, table_id, scans FROM spj_robust_dih_scans WHERE scans > 0;
+    --die DIH scans are still registered 30 s after the node failure
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+}
+--echo No fragment scan is open and no DIH scan is registered
+
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+
+--let $spj_res = `$spj_q`
+if (`SELECT "$spj_res" <> "$spj_ref"`)
+{
+  --echo Got: $spj_res, expected: $spj_ref
+  --die The pushed join returned a wrong result after the node restart
+}
+--echo The pushed join returns the reference result
+
+disconnect con1;
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE t1, t2;
+--remove_file $spj_mgm_log

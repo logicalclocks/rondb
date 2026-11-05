@@ -53,7 +53,10 @@ struct DbspjErr {
     NoSuchTable = 20019,
     DropTableInProgress = 20020,
     WrongSchemaVersion = 20021,
-    InvalidAggregateFlags = 20022
+    InvalidAggregateFlags = 20022,
+    // A CTE group key or CTE_LOOKUP key over MAX_KEY_SIZE_IN_WORDS words
+    // (E-23); also sent by DBLQH's CTE redistribution.
+    CteKeyTooLong = 20023
   };
 };
 
