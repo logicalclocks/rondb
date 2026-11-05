@@ -189,12 +189,16 @@ struct FeatureViewMetadata {
   // the key. Used for filling in pk value.
   std::unordered_map<std::string, std::vector<std::string>>
     requiredJoinKeyMap;
-  std::unordered_map<std::string, AvroDecoder>
-      complexFeatures;
   // key: joinIndex + fgId + fName, label are excluded. joinIndex is needed
   // because of self-join
-  bool hasSpine;
+  std::unordered_map<std::string, AvroDecoder> complexFeatures;
   // Does this FV contains spine FGs
+  bool hasSpine;
+  // Position in featureGroupFeatures of the root feature group. The vector
+  // is built from an unordered_map, so this is not necessarily 0.
+  int rootFgIndex = -1;
+  bool isStarSchema = false;
+
   std::string to_string() const {
     std::ostringstream oss;
     oss << "FeatureViewMetadata {"
@@ -279,6 +283,10 @@ std::string GetFeatureIndexKeyByFgIndexKey(const std::string &fgKey,
                                            const std::string &featureName);
 std::string getFeatureIndexKey(int joinIndex, int fgId, const std::string &f);
 std::string GetFeatureIndexKeyByFeature(const FeatureMetadata &feature);
+/* Names under which a client may pass the value of a serving key in an
+ * entries map (requiredEntry, prefix + name, name; non-empty, deduplicated).
+ * GetBatchPkReadParams resolves a serving key through these in that order. */
+std::vector<std::string> ServingKeyEntryNames(const ServingKey &key);
 
 std::tuple<FeatureViewMetadata*, RS_Status>
 newFeatureViewMetadata(const std::string &featureStoreName,

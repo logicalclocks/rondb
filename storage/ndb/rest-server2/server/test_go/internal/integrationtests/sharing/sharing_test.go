@@ -66,6 +66,7 @@ import (
 
 	"hopsworks.ai/rdrs2/internal/integrationtests/batchfeaturestore"
 	"hopsworks.ai/rdrs2/internal/integrationtests/feature_store"
+	"hopsworks.ai/rdrs2/internal/integrationtests/featurestorescan"
 	"hopsworks.ai/rdrs2/internal/integrationtests/testclient"
 	"hopsworks.ai/rdrs2/pkg/api"
 	"hopsworks.ai/rdrs2/resources/testdbs"
@@ -452,6 +453,40 @@ func Test_Sharing_GetFeatureVector(t *testing.T) {
 					expectedVector(t, customerID, tt.customersCols, tt.transactionsCols))
 			}
 		})
+	}
+}
+
+func Test_Sharing_FeatureStoreScan(t *testing.T) {
+	const customerID = 1
+	paths := []struct {
+		name   string
+		filter map[string]interface{}
+	}{
+		{"fast_path", featurestorescan.Cmp("customer_id", "EQ", customerID)},
+		{"scan_path", featurestorescan.AndOf(
+			featurestorescan.Cmp("customer_id", "GE", customerID),
+			featurestorescan.Cmp("customer_id", "LE", customerID))},
+	}
+	for _, tt := range fvReadTests {
+		for _, path := range paths {
+			t.Run(tt.scenario+"/"+path.name, func(t *testing.T) {
+				req := featurestorescan.NewScanRequest(tt.fsName, tt.fvName, 1).
+					With("filters", path.filter)
+				resp := featureStoreScanWithKey(t, tt.apiKey, req,
+					tt.errMsgContains, tt.httpCode)
+				if tt.httpCode != http.StatusOK {
+					return
+				}
+				if resp.Rows != 1 || len(resp.Features) != 1 || len(resp.Status) != 1 {
+					t.Fatalf("expected one row for customer %d, got %s", customerID, resp.Features)
+				}
+				if resp.Status[0] != api.FEATURE_STATUS_COMPLETE {
+					t.Errorf("Got status %s but expect %s", resp.Status[0], api.FEATURE_STATUS_COMPLETE)
+				}
+				validateFeaturesWithMySQL(t, resp.Features[0],
+					expectedVector(t, customerID, tt.customersCols, tt.transactionsCols))
+			})
+		}
 	}
 }
 
