@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-14: DBTC JoinAgg KeyInfo boundsLen overflow.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P14
+--let $spj_case_title = P-14: DBTC JoinAgg KeyInfo boundsLen overflow
+--source suite/ndb_spj/include/spj_malformed_case.inc

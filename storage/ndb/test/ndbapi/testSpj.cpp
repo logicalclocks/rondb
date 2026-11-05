@@ -36,11 +36,13 @@
 #include <UtilTransactions.hpp>
 #include <signaldata/DbspjErr.hpp>
 #include <signaldata/DictTabInfo.hpp>
+#include <signaldata/DumpStateOrd.hpp>
+#include "../../src/ndbapi/NdbInfo.hpp"
 #include "util/require.h"
 
 static int faultToInject = 0;
 
-enum faultsToInject { FI_START = 17001, FI_END = 17534 };
+enum faultsToInject { FI_START = 17001, FI_END = 17541 };
 
 int runLoadTable(NDBT_Context *ctx, NDBT_Step *step) {
   int records = ctx->getNumRecords();
@@ -1386,6 +1388,455 @@ static int dropNegativeSchema(NDBT_Context *ctx, NDBT_Step *step) {
   return NDBT_OK;
 }
 
+/**
+ * Robustness tests: DBSPJ error inserts with a checked outcome, followed by
+ * leak checks.
+ *
+ * LookupJoinError and ScanJoinError accept any outcome of an error insert
+ * and check nothing afterwards. The tests below require that the query
+ * either succeeds with the row counts it has without the insert, or fails
+ * with one of the NDB errors expected for the insert, and that nothing is
+ * left behind afterwards:
+ *  - the DIH scan registrations of the test table and its indexes
+ *    (ndbinfo table_distribution_status_all, current_scan_count +
+ *    scan_count_wait) return to their level before the query,
+ *  - the open fragment scans on them (ndbinfo frag_operations,
+ *    conc_frag_scans) return to their level before the query,
+ *  - DUMP 2650 (DBSPJ requests) and DUMP 2560 (DBTC join-aggregation
+ *    records and closing scans) stop no data node: they abort the node on
+ *    a leak.
+ */
+class SpjLeakCheck {
+ public:
+  SpjLeakCheck(NDBT_Context *ctx, NDBT_Step *step)
+      : m_ndbinfo(&ctx->m_cluster_connection, "ndbinfo/"),
+        m_ndb(GETNDB(step)),
+        m_tab(ctx->getTab()) {}
+
+  bool init() {
+    if (!m_ndbinfo.init()) {
+      g_err << "SpjLeakCheck: NdbInfo::init() failed" << endl;
+      return false;
+    }
+    m_tableIds.clear();
+    m_tableIds.push_back(m_tab->getObjectId());
+    NdbDictionary::Dictionary::List list;
+    if (m_ndb->getDictionary()->listIndexes(list, m_tab->getName()) != 0) {
+      g_err << "SpjLeakCheck: listIndexes(" << m_tab->getName()
+            << ") failed: " << m_ndb->getDictionary()->getNdbError() << endl;
+      return false;
+    }
+    for (unsigned i = 0; i < list.count; i++) {
+      m_tableIds.push_back(list.elements[i].id);
+    }
+    return true;
+  }
+
+  /* DIH scans registered on the test table and its indexes, all nodes */
+  bool dihScans(Uint64 &sum) {
+    return sumColumns("ndbinfo/table_distribution_status_all",
+                      "current_scan_count", "scan_count_wait", sum);
+  }
+
+  /* Fragment scans open on the test table and its indexes, all nodes */
+  bool fragScans(Uint64 &sum) {
+    return sumColumns("ndbinfo/frag_operations", "conc_frag_scans", nullptr,
+                      sum);
+  }
+
+  /**
+   * Wait at most 'maxMillis' for the DIH scans (dih == true) or the open
+   * fragment scans to come back to 'base' or below. 'last' is the last
+   * value read. Returns false if ndbinfo could not be read.
+   */
+  bool waitBack(bool dih, Uint64 base, Uint32 maxMillis, Uint64 &last) {
+    Uint32 waited = 0;
+    while (true) {
+      if (!(dih ? dihScans(last) : fragScans(last))) return false;
+      if (last <= base || waited >= maxMillis) return true;
+      NdbSleep_MilliSleep(200);
+      waited += 200;
+    }
+  }
+
+ private:
+  bool isTestTable(Uint32 tableId) const {
+    for (unsigned i = 0; i < m_tableIds.size(); i++) {
+      if (m_tableIds[i] == tableId) return true;
+    }
+    return false;
+  }
+
+  bool sumColumns(const char *tableName, const char *col1, const char *col2,
+                  Uint64 &sum) {
+    sum = 0;
+    const NdbInfo::Table *table = nullptr;
+    if (m_ndbinfo.openTable(tableName, &table) != 0) {
+      g_err << "SpjLeakCheck: openTable(" << tableName << ") failed" << endl;
+      return false;
+    }
+    NdbInfoScanOperation *scanOp = nullptr;
+    if (m_ndbinfo.createScanOperation(table, &scanOp) != 0) {
+      g_err << "SpjLeakCheck: createScanOperation(" << tableName
+            << ") failed" << endl;
+      m_ndbinfo.closeTable(table);
+      return false;
+    }
+    bool ok = false;
+    do {
+      if (scanOp->readTuples() != 0) break;
+      const NdbInfoRecAttr *tableId = scanOp->getValue("table_id");
+      const NdbInfoRecAttr *val1 = scanOp->getValue(col1);
+      const NdbInfoRecAttr *val2 =
+          (col2 != nullptr) ? scanOp->getValue(col2) : nullptr;
+      if (tableId == nullptr || val1 == nullptr ||
+          (col2 != nullptr && val2 == nullptr))
+        break;
+      if (scanOp->execute() != 0) break;
+      int ret;
+      while ((ret = scanOp->nextResult()) == 1) {
+        if (tableId->isNULL() || !isTestTable(tableId->u_32_value())) continue;
+        if (!val1->isNULL()) sum += val1->u_32_value();
+        if (val2 != nullptr && !val2->isNULL()) sum += val2->u_32_value();
+      }
+      ok = (ret == 0);
+    } while (0);
+    if (!ok) {
+      g_err << "SpjLeakCheck: scan of " << tableName << " failed" << endl;
+    }
+    m_ndbinfo.releaseScanOperation(scanOp);
+    m_ndbinfo.closeTable(table);
+    return ok;
+  }
+
+  NdbInfo m_ndbinfo;
+  Ndb *m_ndb;
+  const NdbDictionary::Table *m_tab;
+  Vector<Uint32> m_tableIds;
+};
+
+static void spjGetConnectCounts(NdbRestarter &restarter, Vector<int> &counts) {
+  counts.clear();
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    counts.push_back(restarter.getNodeConnectCount(restarter.getDbNodeId(i)));
+  }
+}
+
+/* True if every data node is still started and has not reconnected */
+static bool spjNodesUnchanged(NdbRestarter &restarter,
+                              const Vector<int> &connectCounts) {
+  for (int i = 0; i < restarter.getNumDbNodes(); i++) {
+    const int nodeId = restarter.getDbNodeId(i);
+    if (restarter.getNodeStatus(nodeId) != NDB_MGM_NODE_STATUS_STARTED ||
+        restarter.getNodeConnectCount(nodeId) != connectCounts[i]) {
+      g_err << "Data node " << nodeId << " has stopped or restarted" << endl;
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * DUMP 2650 (DBSPJ: no scan or lookup request left) and DUMP 2560 (DBTC:
+ * no join-aggregation record, no scan closing) abort a data node that
+ * finds a leak. Only valid on an idle cluster.
+ */
+static bool spjDumpLeakCheck(NdbRestarter &restarter,
+                             const Vector<int> &connectCounts) {
+  const int dumpSpj[] = {DumpStateOrd::SpjDumpRequests};
+  const int dumpTc[] = {DumpStateOrd::TcDumpJoinAggRecords};
+  if (restarter.dumpStateAllNodes(dumpSpj, 1) != 0 ||
+      restarter.dumpStateAllNodes(dumpTc, 1) != 0) {
+    g_err << "DUMP 2650 / 2560 could not be sent" << endl;
+    return false;
+  }
+  NdbSleep_MilliSleep(2000);
+  if (!spjNodesUnchanged(restarter, connectCounts)) {
+    g_err << "A data node stopped on DUMP 2650 / 2560: a DBSPJ request or a "
+             "DBTC scan was leaked (see the node's out log)"
+          << endl;
+    return false;
+  }
+  return true;
+}
+
+struct SpjFaultSpec {
+  int code;
+  /**
+   * NDB errors the query may fail with when the insert fires, 0 terminated.
+   * {0}: the query must not fail. {-1}: any error but a time-out or a node
+   * failure. An insert that does not fire lets the query succeed.
+   */
+  int accepted[4];
+};
+
+/* Existing DBSPJ error inserts (as in LookupJoinError / ScanJoinError) */
+static const SpjFaultSpec spjExistingFaults[] = {
+    {17001, {20008}},
+    {17002, {20008}},
+    {17003, {20015}},
+    {17004, {20008}},
+    {17005, {20000}},
+    {17006, {20003}},
+    {17008, {20008}},
+    {17009, {20008}},
+    {17010, {20008}},
+    {17012, {20008}},  // R-2: DIH scan count leaked
+    {17013, {20002}},
+    {17020, {20016}},
+    {17021, {20016}},
+    {17022, {20016}},
+    {17030, {1227, 241, 20021}},
+    {17031, {1227, 241, 20021}},
+    {17032, {1227, 241, 20021}},
+    {17040, {20008}},
+    {17041, {20008}},
+    {17042, {20008}},
+    {17043, {20008}},
+    {17050, {20006}},
+    {17051, {20006}},
+    {17052, {20006}},
+    {17053, {20006}},
+    {17060, {20006}},
+    {17061, {20006}},
+    {17062, {20006}},
+    {17063, {20006}},
+    {17070, {20006}},
+    {17071, {20006}},
+    {17072, {20006}},
+    {17080, {20006}},
+    {17081, {20006}},
+    {17082, {20006}},
+    {17090, {20006}},
+    {17091, {20006}},  // S-19: may leave DBLQH fragment scans open
+    {17092, {20006}},
+    {17093, {20006}},
+    {17110, {1227, 241, 20021}},
+    {17111, {1227, 241, 20021}},
+    {17112, {1227, 241, 20021}},
+    {17120, {20015}},
+    {17121, {20015}},
+    {17122, {20015}},
+    {17130, {20006}},
+    {17131, {0}},  // Only spreads DIGETNODESREQ over CONTINUEB rounds
+    {17510, {20006, 20008, 20015}},
+    {17520, {20019}},
+    {17521, {20019}},
+    {17534, {20008}}};
+
+/* Error inserts added for the robustness tests (R-n / S-n / P-n) */
+static const SpjFaultSpec spjNewFaults[] = {
+    {17535, {20006}},  // R-4/R-5/R-4b: abort in the first child batch
+    {17538, {311}},    // R-6: DIGETNODESREQ error code
+    {17539, {311}},    // R-3: DIGETNODESREQ error in a CONTINUEB round
+    {17540, {20008}},  // P-19: buildExecPlan() error ignored
+    {17541, {-1}}};    // S-2: DIH_SCAN_TAB_REF stalls until time-out
+
+static bool spjErrorAccepted(const SpjFaultSpec &fault, int code) {
+  if (fault.accepted[0] == -1) {
+    static const int notAccepted[] = {266,  274,  296,  297,  4008,
+                                      4010, 4012, 4025, 4028, 20016};
+    for (unsigned i = 0; i < NDB_ARRAY_SIZE(notAccepted); i++) {
+      if (code == notAccepted[i]) return false;
+    }
+    return true;
+  }
+  for (unsigned i = 0; i < NDB_ARRAY_SIZE(fault.accepted); i++) {
+    if (fault.accepted[i] == 0) break;
+    if (fault.accepted[i] == code) return true;
+  }
+  return false;
+}
+
+static int runSpjFaultLeakCheckList(NDBT_Context *ctx, NDBT_Step *step,
+                                    const SpjFaultSpec *faults,
+                                    Uint32 faultCount) {
+  Ndb *ndb = GETNDB(step);
+  NdbRestarter restarter;
+  if (restarter.waitClusterStarted() != 0) {
+    g_err << "Cluster is not started" << endl;
+    return NDBT_FAILED;
+  }
+  SpjLeakCheck leaks(ctx, step);
+  if (!leaks.init()) return NDBT_FAILED;
+
+  HugoQueryBuilder qbScan(ndb, ctx->getTab(), HugoQueryBuilder::O_SCAN);
+  HugoQueryBuilder qbLookup(ndb, ctx->getTab(), HugoQueryBuilder::O_LOOKUP);
+  qbScan.setJoinLevel(3);
+  qbLookup.setJoinLevel(3);
+  const NdbQueryDef *queryScan = qbScan.createQuery();
+  const NdbQueryDef *queryLookup = qbLookup.createQuery();
+  if (queryScan == nullptr || queryLookup == nullptr) {
+    g_err << "Failed to create NdbQueryDefs" << endl;
+    return NDBT_FAILED;
+  }
+  // No retries: the first error is the outcome of the error insert
+  HugoQueries hugoScan(*queryScan, 1);
+  HugoQueries hugoLookup(*queryLookup, 1);
+  const int lookups = 16;
+
+  // Reference row counts without error inserts, no random close
+  if (hugoScan.runScanQuery(ndb, 0) != NDBT_OK ||
+      hugoLookup.runLookupQuery(ndb, lookups) != NDBT_OK) {
+    g_err << "Reference queries failed" << endl;
+    return NDBT_FAILED;
+  }
+  const Vector<Uint32> refScan(hugoScan.m_rows_found);
+  const Vector<Uint32> refLookup(hugoLookup.m_rows_found);
+
+  Uint64 dihBase = 0;
+  Uint64 fragBase = 0;
+  if (!leaks.waitBack(true, 0, 20000, dihBase) ||
+      !leaks.waitBack(false, 0, 60000, fragBase)) {
+    return NDBT_FAILED;
+  }
+  if (dihBase != 0 || fragBase != 0) {
+    g_err << "Idle cluster has " << dihBase << " DIH scans and " << fragBase
+          << " open fragment scans on the test table" << endl;
+    return NDBT_FAILED;
+  }
+  Vector<int> connectCounts;
+  spjGetConnectCounts(restarter, connectCounts);
+
+  int result = NDBT_OK;
+  for (Uint32 f = 0; f < faultCount && !ctx->isTestStopped(); f++) {
+    const SpjFaultSpec &fault = faults[f];
+    if (faultToInject != 0 && fault.code != faultToInject) continue;
+
+    for (int queryType = 0; queryType < 2; queryType++) {
+      const bool isScan = (queryType == 0);
+      const char *what = isScan ? "scan" : "lookup";
+      HugoQueries &hugo = isScan ? hugoScan : hugoLookup;
+      const Vector<Uint32> &ref = isScan ? refScan : refLookup;
+
+      ndbout << "SpjFaultLeakCheck: error " << fault.code << ", " << what
+             << " query" << endl;
+      if (restarter.insertErrorInAllNodes(fault.code) != 0) {
+        g_err << "Could not insert error " << fault.code << endl;
+        return NDBT_FAILED;
+      }
+      const int res = isScan ? hugo.runScanQuery(ndb, 0)
+                             : hugo.runLookupQuery(ndb, lookups);
+      const int errCode = hugo.getNdbError().code;
+      if (restarter.insertErrorInAllNodes(0) != 0) {
+        g_err << "Could not clear error " << fault.code << endl;
+        return NDBT_FAILED;
+      }
+
+      if (res != NDBT_OK) {
+        if (!spjErrorAccepted(fault, errCode)) {
+          g_err << "Error " << fault.code << ", " << what
+                << " query: unexpected error " << hugo.getNdbError() << endl;
+          result = NDBT_FAILED;
+        }
+      } else if (!hugo.m_rows_found.equal(ref)) {
+        g_err << "Error " << fault.code << ", " << what
+              << " query: succeeded with wrong row counts" << endl;
+        result = NDBT_FAILED;
+      }
+
+      if (!spjNodesUnchanged(restarter, connectCounts)) {
+        g_err << "Error " << fault.code << ", " << what
+              << " query: a data node failed" << endl;
+        return NDBT_FAILED;
+      }
+
+      Uint64 last = 0;
+      if (!leaks.waitBack(true, dihBase, 5000, last)) return NDBT_FAILED;
+      if (last > dihBase) {
+        g_err << "Error " << fault.code << ", " << what
+              << " query: DIH scans leaked, " << dihBase << " -> " << last
+              << endl;
+        result = NDBT_FAILED;
+      }
+      dihBase = last;
+      if (!leaks.waitBack(false, fragBase, 15000, last)) return NDBT_FAILED;
+      if (last > fragBase) {
+        g_err << "Error " << fault.code << ", " << what
+              << " query: fragment scans left open, " << fragBase << " -> "
+              << last << endl;
+        result = NDBT_FAILED;
+      }
+      fragBase = last;
+    }
+
+    if (!spjDumpLeakCheck(restarter, connectCounts)) {
+      g_err << "Leak found by DUMP after error " << fault.code << endl;
+      return NDBT_FAILED;
+    }
+  }
+  restarter.insertErrorInAllNodes(0);
+  return result;
+}
+
+int runSpjFaultLeakCheck(NDBT_Context *ctx, NDBT_Step *step) {
+  return runSpjFaultLeakCheckList(ctx, step, spjExistingFaults,
+                                  NDB_ARRAY_SIZE(spjExistingFaults));
+}
+
+int runSpjNewFaultLeakCheck(NDBT_Context *ctx, NDBT_Step *step) {
+  return runSpjFaultLeakCheckList(ctx, step, spjNewFaults,
+                                  NDB_ARRAY_SIZE(spjNewFaults));
+}
+
+/**
+ * Leak checks on an idle cluster after a test, e.g. after node restarts
+ * during pushed joins (NF_JoinLeakCheck): no DIH scan registered and no
+ * fragment scan open on the test table, no DBSPJ request / DBTC scan left
+ * (DUMP 2650 / 2560), and pushed joins work.
+ */
+int runSpjIdleLeakCheck(NDBT_Context *ctx, NDBT_Step *step) {
+  NdbRestarter restarter;
+  if (restarter.waitClusterStarted() != 0) {
+    g_err << "Cluster is not started" << endl;
+    return NDBT_FAILED;
+  }
+  SpjLeakCheck leaks(ctx, step);
+  if (!leaks.init()) return NDBT_FAILED;
+
+  Uint64 dih = 0;
+  Uint64 frag = 0;
+  if (!leaks.waitBack(true, 0, 30000, dih) ||
+      !leaks.waitBack(false, 0, 60000, frag)) {
+    return NDBT_FAILED;
+  }
+  int result = NDBT_OK;
+  if (dih != 0) {
+    g_err << dih << " DIH scans are still registered on the test table"
+          << endl;
+    result = NDBT_FAILED;
+  }
+  if (frag != 0) {
+    g_err << frag << " fragment scans are still open on the test table"
+          << endl;
+    result = NDBT_FAILED;
+  }
+
+  Vector<int> connectCounts;
+  spjGetConnectCounts(restarter, connectCounts);
+  if (!spjDumpLeakCheck(restarter, connectCounts)) return NDBT_FAILED;
+
+  Ndb *ndb = GETNDB(step);
+  HugoQueryBuilder qbScan(ndb, ctx->getTab(), HugoQueryBuilder::O_SCAN);
+  HugoQueryBuilder qbLookup(ndb, ctx->getTab(), HugoQueryBuilder::O_LOOKUP);
+  qbScan.setJoinLevel(3);
+  qbLookup.setJoinLevel(3);
+  const NdbQueryDef *queryScan = qbScan.createQuery();
+  const NdbQueryDef *queryLookup = qbLookup.createQuery();
+  if (queryScan == nullptr || queryLookup == nullptr) {
+    g_err << "Failed to create NdbQueryDefs" << endl;
+    return NDBT_FAILED;
+  }
+  HugoQueries hugoScan(*queryScan);
+  HugoQueries hugoLookup(*queryLookup);
+  if (hugoScan.runScanQuery(ndb, 0) != NDBT_OK ||
+      hugoLookup.runLookupQuery(ndb, 16) != NDBT_OK) {
+    g_err << "Pushed joins fail after the test" << endl;
+    result = NDBT_FAILED;
+  }
+  return result;
+}
+
 NDBT_TESTSUITE(testSpj);
 TESTCASE("NegativeJoin", "") {
   INITIALIZER(createNegativeSchema);
@@ -1484,6 +1935,33 @@ TESTCASE("ScanJoinError", "") {
   INITIALIZER(runLoadTable);
   TC_PROPERTY("NodeNumber", 2);
   STEP(runScanJoinError);
+  FINALIZER(runClearTable);
+}
+TESTCASE("SpjFaultLeakCheck",
+         "Existing DBSPJ error inserts in all data nodes, a scan and a lookup "
+         "join each: the query succeeds with the reference row counts or "
+         "fails with an expected error, and leaves no DIH scan, no open "
+         "fragment scan and no DBSPJ request / DBTC scan (DUMP 2650 / 2560)") {
+  INITIALIZER(runLoadTable);
+  STEP(runSpjFaultLeakCheck);
+  FINALIZER(runClearTable);
+}
+TESTCASE("SpjNewFaultLeakCheck",
+         "As SpjFaultLeakCheck for the robustness error inserts 17535 and "
+         "17538-17541 (R-3, R-4, R-5, R-6, S-2, P-19)") {
+  INITIALIZER(runLoadTable);
+  STEP(runSpjNewFaultLeakCheck);
+  FINALIZER(runClearTable);
+}
+TESTCASE("NF_JoinLeakCheck",
+         "NF_Join, then no DIH scan, no open fragment scan and no DBSPJ "
+         "request / DBTC scan may be left on the idle cluster") {
+  TC_PROPERTY("UntilStopped", 1);
+  TC_PROPERTY("WaitProgress", 20);
+  INITIALIZER(runLoadTable);
+  STEPS(runJoin, 6);
+  STEP(runRestarter);
+  FINALIZER(runSpjIdleLeakCheck);
   FINALIZER(runClearTable);
 }
 NDBT_TESTSUITE_END(testSpj)

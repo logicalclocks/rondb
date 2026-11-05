@@ -497,6 +497,9 @@ class alignas(NDB_CL) SimulatedBlock
   void addRecSignalImpl(GlobalSignalNumber g, ExecFunction fun, bool f = false);
   void installSimulatedBlockFunctions();
   void handle_execute_error(GlobalSignalNumber gsn);
+  // As above, but a signal from an API or MGM node is dropped and reported
+  // instead of stopping the node.
+  void handle_execute_error(GlobalSignalNumber gsn, Signal *signal);
 
   void initCommon();
 
@@ -2534,7 +2537,7 @@ inline void SimulatedBlock::executeFunction_async(GlobalSignalNumber gsn,
                                                   Signal *signal) {
   FunctionAndScope &fas = theSignalHandlerArray[gsn];
   if (unlikely(gsn > MAX_GSN)) {
-    handle_execute_error(gsn);
+    handle_execute_error(gsn, signal);
     return;
   }
   if (unlikely(!checkSignalSender(gsn, signal, fas.m_signalScope))) return;
@@ -2621,7 +2624,7 @@ inline void SimulatedBlock::executeFunction(GlobalSignalNumber gsn,
   /**
    * This point only passed if an error has occurred
    */
-  handle_execute_error(gsn);
+  handle_execute_error(gsn, signal);
 }
 
 inline void SimulatedBlock::block_require(void) { ndbabort(); }

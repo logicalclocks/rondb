@@ -1,0 +1,380 @@
+#
+# ndb_spj_shapes_variants: pushed joins (SPJ) over table variants, locking
+# reads, DML, and limits of the pushed join builder.
+#
+# Each SELECT shape runs with ndb_join_pushdown OFF and ON and the two
+# results are compared inside the test (ndb_spj_shapes_check.inc); DML
+# shapes fill one table per run and compare the tables.
+#
+# Covered:
+#  - FULLY_REPLICATED, READ_BACKUP, hidden primary key, PARTITION BY KEY on
+#    a PK subset, PARTITION_HASH fanout, PARTITION_BALANCE with 16 and 1
+#    fragments, TTL tables with expired rows: as PK lookup child, unique
+#    index lookup child (two DBSPJ tree nodes), ordered-index scan child
+#    and as the root
+#  - SELECT ... FOR UPDATE / FOR SHARE: same rows, and the rows read through
+#    a join really are locked (another connection must time out)
+#  - INSERT ... SELECT and CREATE TABLE ... SELECT whose read side is a
+#    pushed join (multi-table UPDATE and DELETE: ndb_spj_shapes_multi_dml)
+#  - E-26: more than 16 key fields referring to a table before the pushed
+#    join's root (MAX_REFERRED_FIELDS): build_key() returned -1, which
+#    failed the statement instead of just not pushing the child
+#  - Q-8 (last, may crash a debug mysqld): roots and children with an odd
+#    number of partitions on 2 data nodes; NdbQueryImpl::prepareSend()
+#    asserts rootFragments % (data nodes) == 0 and sizes
+#    m_fragsPerWorker = rootFragments / nodes for MultiFrag workers
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 2000)
+  SELECT n FROM c;
+
+# Plain parent: a links to the variants' id (301..320 dangle), ab = a % 40
+# completes a (id, b) key, pu = a + 1000 the unique key, b their index.
+CREATE TABLE p (
+  id INT NOT NULL PRIMARY KEY,
+  a INT NOT NULL,
+  ab INT NOT NULL,
+  pu INT NOT NULL,
+  b INT NOT NULL,
+  KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO p
+  SELECT n, n % 320 + 1, (n % 320 + 1) % 40, n % 320 + 1001, n % 45
+  FROM seq WHERE n <= 600;
+ANALYZE TABLE p;
+
+--echo #
+--echo # Table variants
+--echo #
+let $vt_name= plain;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= ;
+let $vt_on= cv_plain.id = p.a;
+let $vt_expire= 0;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= fr;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= COMMENT='NDB_TABLE=FULLY_REPLICATED=1';
+let $vt_on= cv_fr.id = p.a;
+let $vt_expire= 0;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= rb;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= COMMENT='NDB_TABLE=READ_BACKUP=1';
+let $vt_on= cv_rb.id = p.a;
+let $vt_expire= 0;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= hidden;
+let $vt_pk= ;
+let $vt_opts= ;
+let $vt_on= ;
+let $vt_expire= 0;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= pkey_sub;
+let $vt_pk= , PRIMARY KEY (id, b);
+let $vt_opts= PARTITION BY KEY (b);
+let $vt_on= cv_pkey_sub.id = p.a AND cv_pkey_sub.b = p.ab;
+let $vt_expire= 0;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= fanout;
+let $vt_pk= , PRIMARY KEY (b, id);
+let $vt_opts= COMMENT='NDB_TABLE=PARTITION_HASH=1:1:2';
+let $vt_on= cv_fanout.id = p.a AND cv_fanout.b = p.ab;
+let $vt_expire= 0;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+# 2 data nodes with 4 LDM threads each (include/default_ndbd.cnf): two
+# fragments per LDM thread instead of the default one. (RP has no X_3, so
+# 24 fragments are not possible here.)
+let $vt_name= pbal16;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RP_BY_LDM_X_2';
+let $vt_on= cv_pbal16.id = p.a;
+let $vt_expire= 0;
+let $vt_frags= 16;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= pbal1;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= COMMENT='NDB_TABLE=PARTITION_BALANCE=FOR_RA_BY_NODE';
+let $vt_on= cv_pbal1.id = p.a;
+let $vt_expire= 0;
+let $vt_frags= 1;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+# TTL: the even ids expired two hours ago and must be invisible to both
+# the pushed and the non-pushed reads (also through the unique index)
+let $vt_name= ttl;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= COMMENT='NDB_TABLE=TTL=3600@ts';
+let $vt_on= cv_ttl.id = p.a;
+let $vt_expire= 1;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+let $vt_name= ttl_rb;
+let $vt_pk= , PRIMARY KEY (id);
+let $vt_opts= COMMENT='NDB_TABLE=TTL=3600@ts,READ_BACKUP=1';
+let $vt_on= cv_ttl_rb.id = p.a;
+let $vt_expire= 1;
+--source suite/ndb_opt/ndb_spj_shapes_variant.inc
+
+--echo #
+--echo # Locking reads
+--echo #
+CREATE TABLE lp (
+  id INT NOT NULL PRIMARY KEY,
+  cid INT NOT NULL,
+  b INT NOT NULL
+) ENGINE=NDB;
+CREATE TABLE lc (
+  id INT NOT NULL PRIMARY KEY,
+  b INT NOT NULL,
+  v INT NOT NULL,
+  KEY ix_b (b)
+) ENGINE=NDB;
+INSERT INTO lp SELECT n, n % 120 + 1, n % 30 FROM seq WHERE n <= 200;
+INSERT INTO lc SELECT n, n % 30, n FROM seq WHERE n <= 100;
+ANALYZE TABLE lp, lc;
+
+let $spj_label= L1-for-update-lookup-child;
+let $spj_query= SELECT lp.id, lc.v FROM lp STRAIGHT_JOIN lc ON lc.id = lp.cid
+  WHERE lp.id <= 50 FOR UPDATE;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= L2-for-share-scan-child;
+let $spj_query= SELECT lp.id, lc.id FROM lp STRAIGHT_JOIN lc FORCE INDEX (ix_b)
+  ON lc.b = lp.b WHERE lp.id <= 50 FOR SHARE;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= L3-lock-in-share-mode-left;
+let $spj_query= SELECT lp.id, lc.v FROM lp LEFT JOIN lc ON lc.id = lp.cid
+  WHERE lp.id <= 150 LOCK IN SHARE MODE;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# The child rows read by a locking join must stay locked until commit:
+# another connection's UPDATE of such a row has to time out.
+connect (con2, localhost, root,,test);
+connection default;
+let $lk_i= 1;
+while ($lk_i <= 2)
+{
+  if ($lk_i == 1)
+  {
+    let $lk_label= L4-for-update-locks-child-rows;
+    let $lk_mode= FOR UPDATE;
+  }
+  if ($lk_i == 2)
+  {
+    let $lk_label= L5-for-share-locks-child-rows;
+    let $lk_mode= FOR SHARE;
+  }
+  connection default;
+  --disable_query_log
+  --disable_result_log
+  SET SESSION ndb_join_pushdown = ON;
+  BEGIN;
+  # lp.id 10 -> lc.id 11, lp.id 20 -> lc.id 21 (via a scan child: b = 20)
+  eval SELECT lp.id, lc.v FROM lp STRAIGHT_JOIN lc ON lc.id = lp.cid
+    WHERE lp.id IN (10, 20) $lk_mode;
+  eval SELECT lp.id, lc.id FROM lp STRAIGHT_JOIN lc FORCE INDEX (ix_b)
+    ON lc.b = lp.b WHERE lp.id = 20 $lk_mode;
+  --enable_result_log
+  connection con2;
+  --error 0,ER_LOCK_WAIT_TIMEOUT
+  UPDATE lc SET v = v + 1 WHERE id = 11;
+  let $lk_err1= $mysql_errno;
+  --error 0,ER_LOCK_WAIT_TIMEOUT
+  UPDATE lc SET v = v + 1 WHERE id = 50;
+  let $lk_err2= $mysql_errno;
+  connection default;
+  ROLLBACK;
+  --enable_query_log
+  --echo # $lk_label: lookup child row lock wait=$lk_err1, scan child row lock wait=$lk_err2
+  if ($lk_err1 != 1205)
+  {
+    --echo #   FAILED: the lookup child row was not locked
+    inc $spj_nfail;
+    let $spj_fail_list= $spj_fail_list $lk_label;
+  }
+  if ($lk_err2 != 1205)
+  {
+    --echo #   FAILED: the scan child row was not locked
+    inc $spj_nfail;
+    let $spj_fail_list= $spj_fail_list $lk_label;
+  }
+  inc $lk_i;
+}
+disconnect con2;
+connection default;
+DROP TABLE lp, lc;
+
+--echo #
+--echo # DML whose read side is a pushed join
+--echo #
+CREATE TABLE dp (id INT NOT NULL PRIMARY KEY, cid INT NOT NULL, b INT NOT NULL,
+                 KEY ix_b (b)) ENGINE=NDB;
+CREATE TABLE dc (id INT NOT NULL PRIMARY KEY, b INT NOT NULL, v INT NOT NULL,
+                 KEY ix_b (b)) ENGINE=NDB;
+INSERT INTO dp SELECT n, n % 120 + 1, n % 25 FROM seq WHERE n <= 400;
+INSERT INTO dc SELECT n, n % 25, n % 17 FROM seq WHERE n <= 100;
+CREATE TABLE ins_off (pid INT NOT NULL, cid INT NULL, v INT NULL) ENGINE=NDB;
+CREATE TABLE ins_on LIKE ins_off;
+ANALYZE TABLE dp, dc;
+
+--disable_query_log
+# INSERT ... SELECT
+SET SESSION ndb_join_pushdown = OFF;
+INSERT INTO ins_off SELECT dp.id, dc.id, dc.v
+  FROM dp LEFT JOIN dc FORCE INDEX (ix_b) ON dc.b = dp.b;
+SET SESSION ndb_join_pushdown = ON;
+let $e0= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+INSERT INTO ins_on SELECT dp.id, dc.id, dc.v
+  FROM dp LEFT JOIN dc FORCE INDEX (ix_b) ON dc.b = dp.b;
+let $e1= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+let $dml_exec= `SELECT $e1 > $e0`;
+--enable_query_log
+let $dml_label= D1-insert-select-left-scan;
+let $dml_off= ins_off;
+let $dml_on= ins_on;
+--source suite/ndb_opt/ndb_spj_shapes_dmlcmp.inc
+
+--disable_query_log
+# CREATE TABLE ... SELECT
+SET SESSION ndb_join_pushdown = OFF;
+CREATE TABLE cts_off ENGINE=NDB
+  SELECT dp.id AS pid, dc.id AS cid, dc.v AS v
+  FROM dp STRAIGHT_JOIN dc ON dc.id = dp.cid;
+SET SESSION ndb_join_pushdown = ON;
+let $e0= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+CREATE TABLE cts_on ENGINE=NDB
+  SELECT dp.id AS pid, dc.id AS cid, dc.v AS v
+  FROM dp STRAIGHT_JOIN dc ON dc.id = dp.cid;
+let $e1= query_get_value(SHOW SESSION STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1);
+let $dml_exec= `SELECT $e1 > $e0`;
+--enable_query_log
+let $dml_label= D2-create-table-select-lookup;
+let $dml_off= cts_off;
+let $dml_on= cts_on;
+--source suite/ndb_opt/ndb_spj_shapes_dmlcmp.inc
+
+# Multi-table UPDATE and DELETE: ndb_spj_shapes_multi_dml (the UPDATE
+# stops a debug mysqld, Q-10, and would hide the checks below).
+
+DROP TABLE dp, dc, ins_off, ins_on, cts_off, cts_on;
+
+--echo #
+--echo # E-26: 18 key fields of two children refer to a table before the
+--echo # root (an InnoDB table, so it cannot be part of the pushed join).
+--echo # Expected: the right rows; r26 and c26a pushed, c26b not (it would
+--echo # take the references to 18). The control with 16 pushes all three.
+--echo #
+CREATE TABLE drv18 (
+  id INT NOT NULL PRIMARY KEY,
+  d1 INT, d2 INT, d3 INT, d4 INT, d5 INT, d6 INT, d7 INT, d8 INT, d9 INT,
+  d10 INT, d11 INT, d12 INT, d13 INT, d14 INT, d15 INT, d16 INT, d17 INT,
+  d18 INT
+) ENGINE=InnoDB;
+INSERT INTO drv18 VALUES
+  (1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+  (2, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36);
+CREATE TABLE r26 (id INT NOT NULL PRIMARY KEY, x INT NOT NULL) ENGINE=NDB;
+INSERT INTO r26 SELECT n, n % 8 FROM seq WHERE n <= 40;
+CREATE TABLE c26a (
+  k0 INT NOT NULL, k1 INT NOT NULL, k2 INT NOT NULL, k3 INT NOT NULL,
+  k4 INT NOT NULL, k5 INT NOT NULL, k6 INT NOT NULL, k7 INT NOT NULL,
+  k8 INT NOT NULL, k9 INT NOT NULL, v INT NOT NULL,
+  PRIMARY KEY (k0, k1, k2, k3, k4, k5, k6, k7, k8, k9)
+) ENGINE=NDB;
+CREATE TABLE c26b LIKE c26a;
+INSERT INTO c26a SELECT n - 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, n FROM seq WHERE n <= 6;
+INSERT INTO c26b SELECT n - 1, 10, 11, 12, 13, 14, 15, 16, 17, 18, n * 10
+  FROM seq WHERE n <= 6;
+CREATE TABLE c26c LIKE c26a;
+INSERT INTO c26c SELECT n - 1, 10, 11, 12, 13, 14, 15, 16, n - 1, n - 1, n * 100
+  FROM seq WHERE n <= 6;
+ANALYZE TABLE drv18, r26, c26a, c26b, c26c;
+
+# NO_BNL(r26): without a join condition r26 would be the build side of a
+# hash join, which has its own query scope: drv18 is then not before the
+# root in its scope, and nothing is pushed (the references never become
+# parameters). With a nested loop r26 is read once per drv18 row.
+let $spj_label= E-26-many-refs-before-root;
+let $spj_query= SELECT /*+ NO_BNL(r26) */ drv18.id, r26.id, c26a.v, c26b.v
+  FROM drv18 STRAIGHT_JOIN r26
+    STRAIGHT_JOIN c26a ON c26a.k0 = r26.x AND c26a.k1 = drv18.d1
+      AND c26a.k2 = drv18.d2 AND c26a.k3 = drv18.d3 AND c26a.k4 = drv18.d4
+      AND c26a.k5 = drv18.d5 AND c26a.k6 = drv18.d6 AND c26a.k7 = drv18.d7
+      AND c26a.k8 = drv18.d8 AND c26a.k9 = drv18.d9
+    STRAIGHT_JOIN c26b ON c26b.k0 = r26.x AND c26b.k1 = drv18.d10
+      AND c26b.k2 = drv18.d11 AND c26b.k3 = drv18.d12 AND c26b.k4 = drv18.d13
+      AND c26b.k5 = drv18.d14 AND c26b.k6 = drv18.d15 AND c26b.k7 = drv18.d16
+      AND c26b.k8 = drv18.d17 AND c26b.k9 = drv18.d18;
+let $spj_min_pushed= 2;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Control: exactly 16 references (c26c binds k8 and k9 to the root)
+let $spj_label= E-26-control-16-refs;
+let $spj_query= SELECT /*+ NO_BNL(r26) */ drv18.id, r26.id, c26a.v, c26c.v
+  FROM drv18 STRAIGHT_JOIN r26
+    STRAIGHT_JOIN c26a ON c26a.k0 = r26.x AND c26a.k1 = drv18.d1
+      AND c26a.k2 = drv18.d2 AND c26a.k3 = drv18.d3 AND c26a.k4 = drv18.d4
+      AND c26a.k5 = drv18.d5 AND c26a.k6 = drv18.d6 AND c26a.k7 = drv18.d7
+      AND c26a.k8 = drv18.d8 AND c26a.k9 = drv18.d9
+    STRAIGHT_JOIN c26c ON c26c.k0 = r26.x AND c26c.k1 = drv18.d10
+      AND c26c.k2 = drv18.d11 AND c26c.k3 = drv18.d12 AND c26c.k4 = drv18.d13
+      AND c26c.k5 = drv18.d14 AND c26c.k6 = drv18.d15 AND c26c.k7 = drv18.d16
+      AND c26c.k8 = r26.x AND c26c.k9 = r26.x;
+let $spj_min_pushed= 3;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+DROP TABLE drv18, r26, c26a, c26b, c26c;
+
+--echo #
+--echo # Q-8: odd numbers of partitions on 2 data nodes (kept last: a debug
+--echo # mysqld may assert in NdbQueryImpl::prepareSend())
+--echo #
+CREATE TABLE po5 (id INT NOT NULL PRIMARY KEY, a INT NOT NULL, b INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY () PARTITIONS 5;
+CREATE TABLE po7 (id INT NOT NULL PRIMARY KEY, a INT NOT NULL, b INT NOT NULL,
+                  KEY ix_b (b))
+  ENGINE=NDB PARTITION BY KEY () PARTITIONS 7;
+INSERT INTO po5 SELECT n, n % 300 + 1, n % 45 FROM seq WHERE n <= 700;
+INSERT INTO po7 SELECT n, n % 250 + 1, n % 45 FROM seq WHERE n <= 700;
+ANALYZE TABLE po5, po7;
+
+let $spj_label= Q-8a-root-5-partitions-lookup-child;
+let $spj_query= SELECT po5.id, p.id FROM po5 STRAIGHT_JOIN p ON p.id = po5.a;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= Q-8b-root-7-partitions-scan-child;
+let $spj_query= SELECT po7.id, p.id
+  FROM po7 STRAIGHT_JOIN p FORCE INDEX (ix_b) ON p.b = po7.b;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= Q-8c-child-7-partitions-scan;
+let $spj_query= SELECT p.id, po7.id
+  FROM p STRAIGHT_JOIN po7 FORCE INDEX (ix_b) ON po7.b = p.b;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= Q-8d-root-7-partitions-sorted;
+let $spj_query= SELECT po7.b, po7.id, p.id
+  FROM po7 FORCE INDEX (ix_b) STRAIGHT_JOIN p ON p.id = po7.a
+  WHERE po7.b < 10 ORDER BY po7.b, po7.id;
+let $spj_min_pushed= 0;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+DROP TABLE po5, po7, p, seq;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

@@ -39,6 +39,7 @@ Name:          Ndb.cpp
 #include <BaseString.hpp>
 #include <NdbOut.hpp>
 #include <NdbSqlUtil.hpp>
+#include <memory>
 #include <random>
 #include <rondb_hash.hpp>
 #include "API.hpp"
@@ -48,12 +49,20 @@ Name:          Ndb.cpp
  * A release id for TCSEIZEREQ and TCRELEASEREQ: random and never 0,
  * which stands for none.  A TC connect record is seized rarely, as
  * transactions reuse idle ones.
+ *
+ * Only a pointer is thread-local; the 5000-byte generator state is on the
+ * heap. libndbclient.so uses static TLS, and a library loaded with dlopen()
+ * (ClusterJ, other language bindings) must fit glibc's small static TLS
+ * surplus, else it fails with "cannot allocate memory in static TLS block".
  */
 static Uint32 new_tc_release_id() {
-  thread_local std::mt19937 generator(std::random_device{}());
+  thread_local std::unique_ptr<std::mt19937> generator;
+  if (unlikely(!generator)) {
+    generator.reset(new std::mt19937(std::random_device{}()));
+  }
   Uint32 releaseId;
   do {
-    releaseId = Uint32(generator());
+    releaseId = Uint32((*generator)());
   } while (releaseId == 0);
   return releaseId;
 }

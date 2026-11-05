@@ -171,6 +171,14 @@ ENV RELEASE_FINAL_CLUSTERJ_ARG=${RELEASE_FINAL_CLUSTERJ:+-f}
 ARG IS_PUBLIC_RELEASE
 ENV IS_PUBLIC_RELEASE_ARG=${IS_PUBLIC_RELEASE:+-p}
 
+ARG IGNORE_TEST_FAILURES
+ENV IGNORE_TEST_FAILURES_ARG=${IGNORE_TEST_FAILURES:+-i}
+
+# MTR workers (mtr --parallel) for the test runs of a release build. One
+# cluster per worker, so bounded by memory, not by cores; independent of
+# BUILD_THREADS. Unset means build_all.sh's default of 1.
+ARG MTR_PARALLEL
+
 RUN mkdir rondb-src rondb-bin rondb-tarball
 RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
     --mount=type=cache,target=rondb-bin,id=oracle9-rondb2210-bin \
@@ -180,9 +188,11 @@ RUN --mount=type=bind,source=.,target=rondb-src,readonly=false \
     -b rondb-bin \
     -o rondb-tarball \
     -j $THREADS_ARG \
+    ${MTR_PARALLEL:+-m $MTR_PARALLEL} \
     $DEPLOY_ARG $RELEASE_ARG \
     $RELEASE_FINAL_CLUSTERJ_ARG \
-    $IS_PUBLIC_RELEASE_ARG
+    $IS_PUBLIC_RELEASE_ARG \
+    $IGNORE_TEST_FAILURES_ARG
 
 
 # run with --output <output-folder>

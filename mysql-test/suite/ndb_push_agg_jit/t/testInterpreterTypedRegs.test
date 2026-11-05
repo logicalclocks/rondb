@@ -9,7 +9,10 @@
 # investigate, then re-record deliberately. Deltas are deterministic:
 # compile attempts are per setup / per storedProc, background stat
 # scans are ineligible (not fallbacks) since 6-0, and per-row
-# fallbacks never touch this counter.
+# fallbacks never touch this counter. The scans expected to fail at
+# runtime read one fragment at a time: in parallel, the fragments that
+# started (and attempted a compile) before the failure closed the scan
+# varied from run to run.
 SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
 --source suite/ndb_push_agg/t/testInterpreterTypedRegs.test
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)

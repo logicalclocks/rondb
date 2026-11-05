@@ -36,6 +36,11 @@
  *   star_leaf_b(root_id INT PK, val_b BIGINT)
  *   star_leaf_c(root_id INT PK, val_c BIGINT)
  *
+ * Test 16 (E-7, LEFT OUTER leaves with NULL parent keys) has its own:
+ *   star_oj_root(id INT PK, grp INT, fk_a INT NULL, fk_b INT NULL)
+ *   star_oj_leaf_a(id INT PK, val_a BIGINT)
+ *   star_oj_leaf_b(id INT PK, val_b BIGINT)
+ *
  * Usage: testStarJoinAggNdbApi -c <connect_string> -m <mysql_port> [-v]
  */
 
@@ -2922,6 +2927,396 @@ testRejectTooManyNodes(Ndb *ndb, MYSQL * /*conn*/)
   return 0;
 }
 
+/* ================================================================== */
+/* Outer-joined star test (Test 16): E-7, NULL parent keys             */
+/* ================================================================== */
+/*
+ * Finding E-7 (storage/ndb/claude_files/dbspj/dbspj_query_execution.html,
+ * section 8): in a multi-leaf (star) aggregation each aggregate leaf has
+ * its own aggregation program (leaf index 0, 1, ...).  When a parent row
+ * has no match in an outer-joined leaf, a NULL-extended row is aggregated
+ * for that leaf.  Two paths feed such rows:
+ *   (a) DBLQH, when the key of an outer lookup leaf is not found (626).
+ *       It takes the leaf program from the leaf index of the agg state
+ *       key, so it picks the right leaf.
+ *   (b) DBSPJ itself, with JOIN_AGG_NULL_ROW_REQ (sendJoinAggNullRow):
+ *       for an outer lookup leaf whose key from the parent row is NULL
+ *       (lookup_parent_row, keyIsNull branch: no LQHKEYREQ is sent), and
+ *       for outer scan leaves (handleAggLeafScanComplete).
+ * Before the fix, path (b) put leaf 0 into the identity word, and DBLQH
+ * (joinAggNullRowReqImpl) called processNullExtendedRow without a leaf
+ * program.  The NULL row then ran through whichever leaf program the
+ * interpreter had run last (leaf 0's after SETUP) and updated that
+ * leaf's accumulators.  The fix puts the leaf index (m_agg_leaf_index)
+ * into the identity word, and DBLQH runs the row through
+ * m_leaf_programs[leafIdx].
+ *
+ * This test drives path (b) with NULL parent keys:
+ *   star_oj_root(id INT PK, grp INT NOT NULL, fk_a INT NULL, fk_b INT NULL)
+ *   star_oj_leaf_a(id INT PK, val_a BIGINT NOT NULL)
+ *   star_oj_leaf_b(id INT PK, val_b BIGINT NOT NULL)
+ *
+ *   root ids 1..5 have grp=1, ids 6..12 have grp=2.
+ *   fk_a = 100+id on every row; leaf_a has (100+i, 10*i) for i=1..12,
+ *     so every root row matches leaf A.
+ *   fk_b = 200+id, except NULL for ids 2,4 (grp 1) and 7,9,11,12 (grp 2);
+ *     leaf_b has (200+i, 1000*i) for i = 1,3,5,6,8,10, so every non-NULL
+ *     fk_b matches.  No lookup misses, so path (a) is not used.
+ *
+ * Query, both leaves LEFT OUTER (default MatchAll), PK lookups:
+ *   SELECT r.grp, COUNT(*), SUM(a.val_a), COUNT(*), SUM(b.val_b)
+ *   FROM star_oj_root r
+ *   LEFT JOIN star_oj_leaf_a a ON a.id = r.fk_a
+ *   LEFT JOIN star_oj_leaf_b b ON b.id = r.fk_b
+ *   GROUP BY r.grp
+ * Operation 1 (leaf A) is aggregate leaf 0 and operation 2 (leaf B) is
+ * aggregate leaf 1: DBSPJ numbers the aggregate leaves in tree-node order
+ * (validateAggregateFlags), and the API returns the results in the same
+ * order (A's COUNT and SUM, then B's COUNT and SUM).  The NULL rows all
+ * belong to leaf 1.  COUNT(*) is LoadUint64(1) + Count, so a NULL row
+ * counts 1 in whichever program runs it; the SUMs skip the NULL column.
+ *
+ * Expected (count_a, sum_a, count_b, sum_b):
+ *   grp 1: (5, 150, 5,  9000)   leaf B: 3 matched rows + 2 NULL rows
+ *   grp 2: (7, 630, 7, 24000)   leaf B: 3 matched rows + 4 NULL rows
+ *
+ * Before the fix the NULL rows of leaf B are counted by leaf A's
+ * COUNT(*): with all 6 misdirected, grp 1 gives (7, 150, 3, 9000) and
+ * grp 2 gives (11, 630, 3, 24000).  Which program a NULL row ran through
+ * depended on the last row its interpreter had run, so a run could also
+ * misdirect only some of them; count_a + count_b stays 10 and 14, and
+ * the SUMs are right.  Half of the root rows have a NULL fk_b, so leaf B
+ * has few real rows that switch an interpreter to its program.
+ */
+
+static const char *OJ_STAR_ROOT   = "star_oj_root";
+static const char *OJ_STAR_LEAF_A = "star_oj_leaf_a";
+static const char *OJ_STAR_LEAF_B = "star_oj_leaf_b";
+
+static int
+dropOjStarTables(MYSQL *conn)
+{
+  sqlExec(conn, "DROP TABLE IF EXISTS star_oj_leaf_b");
+  sqlExec(conn, "DROP TABLE IF EXISTS star_oj_leaf_a");
+  sqlExec(conn, "DROP TABLE IF EXISTS star_oj_root");
+  V("Dropped star_oj tables\n");
+  return 0;
+}
+
+static int
+createOjStarTables(MYSQL *conn)
+{
+  dropOjStarTables(conn);
+
+  if (sqlExec(conn,
+        "CREATE TABLE star_oj_root ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  grp INT NOT NULL,"
+        "  fk_a INT NULL,"
+        "  fk_b INT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ_STAR_ROOT);
+
+  if (sqlExec(conn,
+        "CREATE TABLE star_oj_leaf_a ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  val_a BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ_STAR_LEAF_A);
+
+  if (sqlExec(conn,
+        "CREATE TABLE star_oj_leaf_b ("
+        "  id INT NOT NULL PRIMARY KEY,"
+        "  val_b BIGINT NOT NULL"
+        ") ENGINE=NDB") != 0) return -1;
+  V("Created table %s\n", OJ_STAR_LEAF_B);
+
+  return 0;
+}
+
+static int
+insertOjStarData(MYSQL *conn)
+{
+  /* (id, grp, fk_a, fk_b): fk_b is NULL for ids 2,4,7,9,11,12 */
+  if (sqlExec(conn,
+        "INSERT INTO star_oj_root VALUES "
+        "(1,1,101,201),(2,1,102,NULL),(3,1,103,203),"
+        "(4,1,104,NULL),(5,1,105,205),"
+        "(6,2,106,206),(7,2,107,NULL),(8,2,108,208),"
+        "(9,2,109,NULL),(10,2,110,210),(11,2,111,NULL),"
+        "(12,2,112,NULL)") != 0) return -1;
+  V("Inserted 12 star_oj_root rows\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO star_oj_leaf_a VALUES "
+        "(101,10),(102,20),(103,30),(104,40),(105,50),(106,60),"
+        "(107,70),(108,80),(109,90),(110,100),(111,110),(112,120)")
+      != 0) return -1;
+  V("Inserted 12 star_oj_leaf_a rows\n");
+
+  if (sqlExec(conn,
+        "INSERT INTO star_oj_leaf_b VALUES "
+        "(201,1000),(203,3000),(205,5000),"
+        "(206,6000),(208,8000),(210,10000)") != 0) return -1;
+  V("Inserted 6 star_oj_leaf_b rows\n");
+
+  return 0;
+}
+
+/* Verify a query returning (grp, v1, ..., vN); a NULL value reads as 0 */
+static int
+verifyGroupRowsWithMysql(
+    MYSQL *conn, const char *testName, const char *query,
+    const std::map<Int32, std::vector<Int64>> &expected)
+{
+  V("  MySQL verify: %s\n", query);
+  if (mysql_query(conn, query) != 0) {
+    fprintf(stderr, "MySQL verify failed: %s\n  query: %s\n",
+            mysql_error(conn), query);
+    return -1;
+  }
+
+  MYSQL_RES *result = mysql_store_result(conn);
+  if (result == nullptr) {
+    fprintf(stderr, "mysql_store_result failed: %s\n", mysql_error(conn));
+    return -1;
+  }
+
+  const unsigned int numFields = mysql_num_fields(result);
+  std::map<Int32, std::vector<Int64>> mysqlResults;
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(result)) != nullptr) {
+    std::vector<Int64> vals;
+    for (unsigned int i = 1; i < numFields; i++) {
+      vals.push_back(row[i] != nullptr ? atoll(row[i]) : 0);
+    }
+    mysqlResults[atoi(row[0])] = vals;
+  }
+  mysql_free_result(result);
+
+  if (mysqlResults != expected) {
+    fprintf(stderr, "  %s: MySQL result differs from the expected values\n",
+            testName);
+    for (const auto &m : mysqlResults) {
+      fprintf(stderr, "    MySQL grp=%d:", m.first);
+      for (Int64 v : m.second) fprintf(stderr, " %lld", (long long)v);
+      fprintf(stderr, "\n");
+    }
+    return -1;
+  }
+  V("  MySQL verification OK\n");
+  return 0;
+}
+
+static int
+testOuterStarNullParentKey(Ndb *ndb, MYSQL *conn)
+{
+  printf("Test 16: 2-leaf LEFT OUTER star, NULL parent key on leaf 1 "
+         "(E-7) ... ");
+  fflush(stdout);
+
+  /* grp -> {count_a, sum_a, count_b, sum_b} */
+  const std::map<Int32, std::vector<Int64>> expected = {
+    {1, {5, 150, 5, 9000}},
+    {2, {7, 630, 7, 24000}}
+  };
+
+  if (verifyGroupRowsWithMysql(conn, "Test 16",
+        "SELECT r.grp, COUNT(*), SUM(a.val_a), COUNT(*), SUM(b.val_b) "
+        "FROM star_oj_root r "
+        "LEFT JOIN star_oj_leaf_a a ON a.id = r.fk_a "
+        "LEFT JOIN star_oj_leaf_b b ON b.id = r.fk_b "
+        "GROUP BY r.grp ORDER BY r.grp", expected) != 0) {
+    printf("FAILED (MySQL verification)\n");
+    return -1;
+  }
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(OJ_STAR_ROOT);
+  dict->invalidateTable(OJ_STAR_LEAF_A);
+  dict->invalidateTable(OJ_STAR_LEAF_B);
+  const NdbDictionary::Table *rootTab = dict->getTable(OJ_STAR_ROOT);
+  const NdbDictionary::Table *leafATab = dict->getTable(OJ_STAR_LEAF_A);
+  const NdbDictionary::Table *leafBTab = dict->getTable(OJ_STAR_LEAF_B);
+  if (rootTab == nullptr || leafATab == nullptr || leafBTab == nullptr) {
+    printf("FAILED (table lookup: %s)\n", dict->getNdbError().message);
+    return -1;
+  }
+
+  /* Leaf A (aggregate leaf 0): GROUP BY grp, COUNT(*), SUM(val_a) */
+  NdbAggregator aggA(leafATab);
+  if (!aggA.GroupByLinked(0, rootTab->getColumn("grp")) ||
+      !aggA.LoadUint64(1, 0) ||        /* reg 0 = 1, never NULL: COUNT(*) */
+      !aggA.LoadColumn("val_a", 1) ||  /* reg 1 = val_a, NULL on a NULL row */
+      !aggA.Count(0, 0) ||             /* agg[0] = COUNT(*) */
+      !aggA.Sum(1, 1) ||               /* agg[1] = SUM(val_a) */
+      !aggA.Finalize()) {
+    printf("FAILED (aggA: %s)\n", aggA.GetError().err_msg_);
+    return -1;
+  }
+
+  /* Leaf B (aggregate leaf 1): GROUP BY grp, COUNT(*), SUM(val_b) */
+  NdbAggregator aggB(leafBTab);
+  if (!aggB.GroupByLinked(0, rootTab->getColumn("grp")) ||
+      !aggB.LoadUint64(1, 0) ||
+      !aggB.LoadColumn("val_b", 1) ||
+      !aggB.Count(0, 0) ||
+      !aggB.Sum(1, 1) ||
+      !aggB.Finalize()) {
+    printf("FAILED (aggB: %s)\n", aggB.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) {
+    printf("FAILED (NdbQueryBuilder::create)\n");
+    return -1;
+  }
+
+  const NdbQueryTableScanOperationDef *rootOp = qb->scanTable(rootTab);
+  if (rootOp == nullptr) {
+    printf("FAILED (scanTable: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Operation 1, leaf A: LEFT JOIN on a.id = r.fk_a.  No setMatchType():
+   * the default MatchAll is the outer join. */
+  const NdbQueryOperand *keyA[] = {qb->linkedValue(rootOp, "fk_a"), nullptr};
+  NdbQueryOptions optsA;
+  optsA.setAggregation(aggA);
+  optsA.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  if (qb->readTuple(leafATab, keyA, &optsA) == nullptr) {
+    printf("FAILED (readTuple leaf_a: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  /* Operation 2, leaf B: LEFT JOIN on b.id = r.fk_b.  For a NULL fk_b
+   * DBSPJ sends no LQHKEYREQ but a JOIN_AGG_NULL_ROW_REQ (path (b)). */
+  const NdbQueryOperand *keyB[] = {qb->linkedValue(rootOp, "fk_b"), nullptr};
+  NdbQueryOptions optsB;
+  optsB.setAggregation(aggB);
+  optsB.addLinkedProjection(qb->linkedValue(rootOp, "grp"));
+  if (qb->readTuple(leafBTab, keyB, &optsB) == nullptr) {
+    printf("FAILED (readTuple leaf_b: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (prepare: %s)\n", qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  V("\n  Query prepared: %u operations\n", queryDef->getNoOfOperations());
+  dumpQueryTree(queryDef);
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (startTransaction: %s)\n", ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (createQuery: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    printf("FAILED (execute: %s)\n", trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbQuery::NextResultOutcome outcome;
+  while ((outcome = query->nextResult(true)) == NdbQuery::NextResult_gotRow) {}
+  if (outcome == NdbQuery::NextResult_error) {
+    printf("FAILED (nextResult: error %d: %s)\n",
+           query->getNdbError().code, query->getNdbError().message);
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  NdbAggregator *resultAgg = query->getAggregator();
+  if (resultAgg == nullptr) {
+    printf("FAILED (getAggregator returned nullptr)\n");
+    query->close();
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  /* Results come in leaf order: A's COUNT(*), SUM(val_a), then B's */
+  std::map<Int32, std::vector<Int64>> actual;
+  for (;;) {
+    NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+    if (rec.end()) break;
+
+    NdbAggregator::Column grpCol = rec.FetchGroupbyColumn();
+    Int32 grpVal = grpCol.data_int32();
+    std::vector<Int64> vals;
+    for (int i = 0; i < 4; i++) {
+      NdbAggregator::Result res = rec.FetchAggregationResult();
+      vals.push_back(res.is_null() ? 0 : res.data_int64());
+    }
+    V("  grp=%d count_a=%lld sum_a=%lld count_b=%lld sum_b=%lld\n",
+      grpVal, (long long)vals[0], (long long)vals[1],
+      (long long)vals[2], (long long)vals[3]);
+    actual[grpVal] = vals;
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (actual.size() != expected.size()) {
+    printf("FAILED (expected %zu groups, got %zu)\n",
+           expected.size(), actual.size());
+    return -1;
+  }
+
+  for (const auto &e : expected) {
+    auto it = actual.find(e.first);
+    if (it == actual.end()) {
+      printf("FAILED (missing group %d)\n", e.first);
+      return -1;
+    }
+    const std::vector<Int64> &want = e.second;
+    const std::vector<Int64> &got = it->second;
+    if (got != want) {
+      /* E-7 signature: the SUMs are right, and leaf A's COUNT(*) has
+       * gained exactly what leaf B's has lost. */
+      const bool e7 = got[1] == want[1] && got[3] == want[3] &&
+                      got[0] > want[0] &&
+                      got[0] + got[2] == want[0] + want[2];
+      printf("FAILED (group %d: expected count_a=%lld sum_a=%lld "
+             "count_b=%lld sum_b=%lld, got count_a=%lld sum_a=%lld "
+             "count_b=%lld sum_b=%lld%s)\n",
+             e.first,
+             (long long)want[0], (long long)want[1],
+             (long long)want[2], (long long)want[3],
+             (long long)got[0], (long long)got[1],
+             (long long)got[2], (long long)got[3],
+             e7 ? "; NULL rows of leaf 1 aggregated by leaf 0, E-7" : "");
+      return -1;
+    }
+  }
+
+  printf("OK (2 groups, NULL rows aggregated by leaf 1)\n");
+  return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
@@ -3240,6 +3635,16 @@ int main(int argc, char **argv)
             exitCode = 1;
           }
           dropTestTables(conn);
+        }
+
+        /* Test 16: LEFT OUTER star, NULL parent keys for leaf 1 (E-7) */
+        if (shouldRun(16)) {
+          if (createOjStarTables(conn) == 0 && insertOjStarData(conn) == 0) {
+            if (testOuterStarNullParentKey(&ndb, conn) != 0) exitCode = 1;
+          } else {
+            exitCode = 1;
+          }
+          dropOjStarTables(conn);
         }
 
         mysql_close(conn);

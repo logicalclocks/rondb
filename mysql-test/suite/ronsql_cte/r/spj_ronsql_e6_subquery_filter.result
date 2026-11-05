@@ -1,0 +1,56 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e6-0: the subquery leaf is a LEFT JOIN PK_LOOKUP (e6-1), INDEX_SCAN (e6-2) ===
+== Explain Query ==
+== Explain Query ==
+
+=== e6-1: filtered subquery correlated on the primary key ===
+== Query ==
+SELECT o.id,
+(SELECT SUM(i.v) FROM e6_i AS i WHERE i.id = o.id AND i.c > 5) AS s
+FROM e6_o AS o;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id,
+(SELECT SUM(i.v) FROM e6_i AS i WHERE i.id = o.id AND i.c > 5) AS s
+FROM e6_o AS o|
+id	s
+1	NULL
+2	20
+3	NULL
+4	40
+5	NULL
+
+=== e6-2: control, filtered subquery correlated on an indexed column ===
+== Query ==
+SELECT o.id,
+(SELECT SUM(i.v) FROM e6_i AS i WHERE i.oid = o.id AND i.c > 5) AS s
+FROM e6_o AS o;
+
+Number of output lines, including header: 6
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.id,
+(SELECT SUM(i.v) FROM e6_i AS i WHERE i.oid = o.id AND i.c > 5) AS s
+FROM e6_o AS o|
+id	s
+1	NULL
+2	20
+3	NULL
+4	40
+5	NULL
+
+=== e6-3: no DBSPJ request left behind ===

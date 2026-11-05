@@ -1,0 +1,35 @@
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+KEY ib (b))
+ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+INSERT INTO t1 VALUES (1, 1, 1);
+INSERT INTO t2 VALUES (1,1,1),(2,1,2),(3,1,3),(4,1,4),(5,1,5),(6,1,6),
+(7,1,7),(8,1,8),(9,1,9),(10,1,10),(11,1,11),(12,1,12),
+(13,1,13),(14,1,14),(15,1,15),(16,1,16);
+CREATE VIEW spj_robust_dih_scans AS
+SELECT d.node_id, d.table_id,
+d.current_scan_count + d.scan_count_wait AS scans
+FROM ndbinfo.ndb$table_distribution_status_all AS d
+JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+LEFT JOIN ndbinfo.dict_obj_info AS p
+ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+CREATE VIEW spj_robust_frag_scans AS
+SELECT node_id, block_instance, fq_name, fragment_num, conc_frag_scans
+FROM ndbinfo.operations_per_fragment
+WHERE fq_name LIKE 'test/def/%' OR parent_fq_name LIKE 'test/def/%';
+#
+# Reference run: the query is pushed
+#
+Reference query was pushed
+#
+# 17535 with small child fragments
+#
+The query failed with NDB error 20006, all data nodes are still started
+No fragment scan is left open
+No DIH scan is left registered
+structural leak checks acknowledged by all 2 data nodes
+The query returns the reference result
+DROP VIEW spj_robust_dih_scans, spj_robust_frag_scans;
+DROP TABLE t1, t2;

@@ -1,0 +1,117 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== x1-0: the leaves are a LEFT JOIN INDEX_SCAN (x1-1), PK_LOOKUP (x1-2) ===
+== Explain Query ==
+== Explain Query ==
+
+=== x1-1: COUNT(*) subquery, index scan leaf, entity 4 has no rows ===
+== Query ==
+SELECT e.id, (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id) AS cb
+FROM x1_e AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, (SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id) AS cb
+FROM x1_e AS e|
+id	cb
+1	2
+2	1
+3	1
+4	0
+
+=== x1-2: COUNT(*) subquery, lookup leaf, entities 3 and 4 miss ===
+== Query ==
+SELECT e.id, (SELECT COUNT(*) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, (SELECT COUNT(*) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e|
+id	cp
+1	1
+2	1
+3	0
+4	0
+
+=== x1-3: control, COUNT(col) in both forms ===
+== Query ==
+SELECT e.id, (SELECT COUNT(b.id) FROM x1_b AS b WHERE b.eid = e.id) AS cb,
+(SELECT COUNT(p.v) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, (SELECT COUNT(b.id) FROM x1_b AS b WHERE b.eid = e.id) AS cb,
+(SELECT COUNT(p.v) FROM x1_p AS p WHERE p.id = e.id) AS cp
+FROM x1_e AS e|
+id	cb	cp
+1	2	1
+2	1	1
+3	1	0
+4	0	0
+
+=== x1-4: COUNT(*) subquery with VARCHAR keys, e4 has no rows ===
+== Query ==
+SELECT e.id, (SELECT COUNT(*) FROM x1_sb AS b WHERE b.eid = e.id) AS cb
+FROM x1_se AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id, (SELECT COUNT(*) FROM x1_sb AS b WHERE b.eid = e.id) AS cb
+FROM x1_se AS e|
+id	cb
+e1	2
+e2	1
+e3	1
+e4	0
+
+=== x1-5: COUNT(*) subquery with an inner-outer filter ===
+== Query ==
+SELECT e.id,
+(SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id AND b.id > e.id) AS cb
+FROM x1_e AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT e.id,
+(SELECT COUNT(*) FROM x1_b AS b WHERE b.eid = e.id AND b.id > e.id) AS cb
+FROM x1_e AS e|
+id	cb
+1	1
+2	1
+3	1
+4	0
+
+=== x1-6: no DBSPJ request left behind ===

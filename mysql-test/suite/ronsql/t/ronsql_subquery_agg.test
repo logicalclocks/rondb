@@ -684,6 +684,82 @@ DROP TABLE sq_count_values;
 DROP TABLE sq_count_entity;
 --enable_query_log
 
+# Binary correlation and primary keys force the COUNT row-guard fallback:
+# neither key can be selected by the integer/string column-counting path.
+# Use actual 80-byte keys to catch guards that read a whole key into the
+# embedded interpreter's small scratch buffer. The NULL inner key must
+# not match the NULL outer key. val is nullable and is not a key column.
+--disable_query_log
+CREATE TABLE sq_count_binary_entity (
+  id INT NOT NULL,
+  entity_key VARBINARY(80) NULL,
+  min_score INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+CREATE TABLE sq_count_binary_values (
+  row_key VARBINARY(80) NOT NULL,
+  entity_key VARBINARY(80) NULL,
+  score INT NOT NULL,
+  val INT NULL,
+  PRIMARY KEY USING HASH (row_key),
+  INDEX idx_count_binary_entity (entity_key)
+) ENGINE=NDB;
+INSERT INTO sq_count_binary_entity VALUES
+  (1, REPEAT('a', 80), 10),
+  (2, REPEAT('b', 80), 20),
+  (3, REPEAT('c', 80), 30),
+  (4, NULL, 0);
+INSERT INTO sq_count_binary_values VALUES
+  (REPEAT('a', 80), REPEAT('a', 80), 5, NULL),
+  (REPEAT('b', 80), REPEAT('a', 80), 15, 7),
+  (REPEAT('d', 80), REPEAT('b', 80), 10, NULL),
+  (REPEAT('x', 80), NULL, 99, 9);
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === COUNT row guard: binary index scan and missing rows ===
+--echo Expected counts for ids 1,2,3,4: 2,1,0,0
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_binary_values AS m
+   WHERE m.entity_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === COUNT row guard: binary primary-key lookup ===
+--echo Expected counts for ids 1,2,3,4: 1,1,0,0
+let $QUERY=
+SELECT e.id,
+  (SELECT COUNT(0) FROM sq_count_binary_values AS m
+   WHERE m.row_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo === COUNT row guard: merged filtered and unfiltered aggregates ===
+--echo Expected (n_filtered,id,n_all,n_present): (1,1,2,1), (0,2,1,0), (0,3,0,0), (0,4,0,0)
+let $QUERY=
+SELECT
+  (SELECT COUNT(*) FROM sq_count_binary_values AS m
+   WHERE m.entity_key = e.entity_key AND m.score > e.min_score) AS n_filtered,
+  e.id,
+  (SELECT COUNT(0) FROM sq_count_binary_values AS m2
+   WHERE m2.entity_key = e.entity_key) AS n_all,
+  (SELECT COUNT(m3.val) FROM sq_count_binary_values AS m3
+   WHERE m3.entity_key = e.entity_key) AS n_present
+FROM sq_count_binary_entity AS e;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
+--disable_query_log
+DROP TABLE sq_count_binary_values;
+DROP TABLE sq_count_binary_entity;
+--enable_query_log
+
 --echo
 --echo === Cleanup ===
 

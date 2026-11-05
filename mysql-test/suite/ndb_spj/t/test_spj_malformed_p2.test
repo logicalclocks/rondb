@@ -1,0 +1,9 @@
+--source include/have_ndb.inc
+
+# P-2: scan tableId used as an array index before validation.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P2
+--let $spj_case_title = P-2: scan tableId used as an array index before validation
+--source suite/ndb_spj/include/spj_malformed_case.inc

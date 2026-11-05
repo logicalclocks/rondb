@@ -111,6 +111,7 @@ NDB_ADD_EXECUTABLE(testAsynchMultiwait testAsynchMultiwait.cpp
 NDB_ADD_EXECUTABLE(testDebugger testDebugger.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testCollationInfo testCollationInfo.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testTcReleaseId testTcReleaseId.cpp NDBTEST NDBCLIENT)
+NDB_ADD_EXECUTABLE(testSpjMalformed testSpjMalformed.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testFK testFK.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testLoad testLoad.cpp NDBTEST NDBCLIENT)
 NDB_ADD_EXECUTABLE(testReconnect testReconnect.cpp NDBTEST NDBCLIENT MYSQLCLIENT)

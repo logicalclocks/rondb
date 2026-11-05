@@ -16,7 +16,7 @@
  */
 
 // Package bufferpool drives the RONDB-1144 buffer pool tests against the
-// dedicated rdrs2 of mysql-test/suite/rdrs2-golang/t/rdrs2-golang_buffer_pool
+// dedicated rdrs2 of mysql-test/suite/rdrs2-golang/t/buffer_pool
 // (MaxBuffers=8, PreAllocatedBuffers=2, BufferShrinkAfterS=5, no auth).
 // It has no TestMain and skips unless that test sets RDRS_POOL_TEST=1, so
 // the generic gotest pass never runs it against the wrong server.
@@ -54,7 +54,7 @@ func envInt(t *testing.T, name string) int64 {
 func requirePoolServer(t *testing.T) testutils.Limits {
 	t.Helper()
 	if os.Getenv("RDRS_POOL_TEST") != "1" {
-		t.Skip("set RDRS_POOL_TEST=1 (driven by rdrs2-golang_buffer_pool.test)")
+		t.Skip("set RDRS_POOL_TEST=1 (driven by rdrs2-golang.buffer_pool)")
 	}
 	limits := testutils.GetLimits(t)
 	if want := envInt(t, "RDRS_POOL_MAX_BUFFERS"); limits.MaxBuffers != want {

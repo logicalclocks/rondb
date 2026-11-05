@@ -52,56 +52,51 @@ class NdbQueryOptions;
 class NdbScanOperation;
 
 /**
- * Check whether there is a non-pushable FILTER between the root AccessPath
- * and the table-scan / index-lookup leaf nodes.  Such a filter applies a
- * per-row condition that must be evaluated BEFORE aggregation.  When NDB
- * returns pre-aggregated results, there is no opportunity for MySQL to
- * evaluate per-row filters, so aggregation cannot be pushed.
- *
- * A FILTER whose condition references only the child table's columns is
- * considered pushable (handled by prep_cond_push / build_cond_push) and
- * does not block aggregation.  All other FILTERs (multi-table, subquery)
- * block aggregation pushdown.
- *
- * @return true if a non-pushable filter was found, false if safe to push
+ * The code of a pushed condition is attached to a lookup operation of a
+ * pushed join only if it is smaller than this number of words.  A larger
+ * condition is evaluated by ha_ndbcluster (create_pushed_join()), which
+ * can't be done when the aggregation is pushed.
  */
-bool ndb_has_unpushable_filter_for_aggregate(const AccessPath *path);
+constexpr unsigned int NDB_MAX_LOOKUP_FILTER_WORDS = 64;
 
 /**
- * Check whether the query block takes its output order from the order in
- * which the table access delivers rows (F30 in
- * mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md).  A pushed aggregation
- * returns its groups in NdbAggregator's own order (its group map compares
- * the key bytes), not in index order, so it must not replace such a scan:
- * an ascending plan would keep the wrong rows under LIMIT, and a descending
- * one reads the next group with index_prev().
+ * Entry point for aggregation pushdown, called from
+ * ndbcluster_push_to_engine() after make_pushed_join(), and after the
+ * conditions on the tables not pushed as join children were prepared for
+ * being pushed: an aggregation is pushed only if every condition is
+ * completely pushed.
  *
- * True when the block groups (so it returns more than one row), the
- * statement has an ORDER BY, and no SORT lies on the path from the root
- * down to the table access.
+ * Pushes the aggregation of the pushed join (ndb_push_aggregation()) if
+ * 'push_join_aggregate', else that of a single table
+ * (ndb_push_single_table_aggregation()) if 'push_table_aggregate'.
+ * Neither is pushed when the plan takes its output order from the index
+ * order of the table access (F30), or when the access reads several ranges
+ * in one execution (F10, E-12).
  *
- * @return true if aggregation must not be pushed
+ * Marks the root handler as reading a pushed aggregation, and clears
+ * the mark on the other handlers of the builder: push_to_engine() is called
+ * several times while the optimizer explores plans, and an earlier call may
+ * have marked a handler that is now a child in a wider pushed join.
+ *
+ * ha_ndbcluster reads a pushed aggregation unordered: its groups come back
+ * in NdbAggregator's order, and there are no root rows to merge sort (and
+ * no index rows for the sorted merge to compare).  It reads it through the
+ * default MRR implementation, as its own multi_range_read_next() expects
+ * table rows: the aggregation is pushed only for a single range, read by
+ * read_range_first() / read_range_next().
+ *
+ * @return true if an aggregation was pushed
  */
-bool ndb_aggregate_order_from_index(const JOIN *join, const AccessPath *path);
+bool ndb_push_aggregation_to_engine(THD *thd, const AccessPath *root_path,
+                                    const JOIN *join,
+                                    ndb_pushed_builder_ctx &builder,
+                                    bool push_join_aggregate,
+                                    bool allow_outer_join,
+                                    bool push_table_aggregate);
 
 /**
- * Check whether the table access reads several ranges or key sets in one
- * execution (F10 in mysql-test/suite/ronsql_fs/findings/BUGS_TODO.md): an
- * INDEX_RANGE_SCAN with more than one range (an IN list), REF_OR_NULL, or
- * an index merge.  With the aggregation pushed the handler reads them
- * without MRR, one aggregating scan per range into the same NdbAggregator,
- * so later ranges return the groups of earlier ones again, and a group or
- * a scalar aggregate that spans ranges comes back once per range.  A single
- * range stays pushable.
- *
- * @return true if single-table aggregation must not be pushed
- */
-bool ndb_aggregate_reads_ranges_separately(const JOIN *join,
-                                           const AccessPath *path);
-
-/**
- * Entry point for aggregation pushdown.
- * Called from ndbcluster_push_to_engine() after make_pushed_join() succeeds.
+ * Aggregation pushdown for a pushed join.
+ * Called from ndb_push_aggregation_to_engine().
  *
  * Checks whether aggregation can be pushed, builds the NdbAggregator
  * program, rebuilds the NdbQueryDef with aggregation attached, and
@@ -154,17 +149,8 @@ AccessPath *strip_pushed_child_nljs(AccessPath *path);
 int ndb_fetch_pushed_aggregate(ha_ndbcluster *handler);
 
 /**
- * Clear m_pushed_agg_mode on all handlers in the builder.
- * Called before (re-)setting aggregation mode to ensure that
- * previous push_to_engine() calls (which may have set
- * m_pushed_agg_mode on a handler that is now a child in a
- * wider pushed join) do not leave stale state.
- */
-void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
-
-/**
  * Detect whether a single-table aggregate query can be pushed.
- * Called from ndbcluster_push_to_engine() when no join aggregation
+ * Called from ndb_push_aggregation_to_engine() when no join aggregation
  * was pushed.
  *
  * Validates that the query has pushable aggregate functions and

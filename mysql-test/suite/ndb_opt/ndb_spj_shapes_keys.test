@@ -1,0 +1,262 @@
+#
+# ndb_spj_shapes_keys: pushed joins (SPJ) linked on keys of many data
+# types and character set collations.
+#
+# DBSPJ builds the key of a child from the raw column bytes of its parent
+# row and computes the hash of PK / unique keys (and the partition of
+# pruned scans) from them; strings must be normalized by their collation
+# first.  Each shape runs with ndb_join_pushdown OFF and ON and the two
+# results are compared inside the test (ndb_spj_shapes_check.inc).
+#
+# Covered:
+#  - linked keys of integer types at their limits, DECIMAL (small and
+#    multi-word), DATE, DATETIME, DATETIME(6), TIME(3), TIMESTAMP(2),
+#    YEAR, ENUM, SET, CHAR, BINARY (zero padded), VARBINARY with
+#    trailing 0x00 bytes; PK lookup, ordered-index scan, two levels
+#  - case-, accent- and trailing-space-insensitive collations (PAD SPACE
+#    and NO PAD) for PK lookups, ordered-index scans and pruned scans
+#  - constant DATETIME(6) and VARCHAR key parts next to linked ones
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 1000)
+  SELECT n FROM c;
+
+--echo #
+--echo # Linked keys of different data types
+--echo #
+let $kt_name= tinyint;
+let $kt_type= TINYINT;
+let $kt_expr= (n % 50) - 25;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= smallint_u;
+let $kt_type= SMALLINT UNSIGNED;
+let $kt_expr= (n % 50) * 1301;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= mediumint;
+let $kt_type= MEDIUMINT;
+let $kt_expr= (n % 50) * 160001 - 4000000;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= bigint;
+let $kt_type= BIGINT;
+let $kt_expr= (n % 50) * 184467440737095 - 4611686018427387904;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= bigint_u;
+let $kt_type= BIGINT UNSIGNED;
+let $kt_expr= 18446744073709551615 - (n % 50) * 1000000007;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= dec_small;
+let $kt_type= DECIMAL(10,3);
+let $kt_expr= (n % 50) * 1.125 - 20;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= dec_big;
+let $kt_type= DECIMAL(40,12);
+let $kt_expr= (n % 50) * 123456789012345678.123456789012 - 3000000000000000000;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= date;
+let $kt_type= DATE;
+let $kt_expr= DATE('2019-12-31') + INTERVAL (n % 50) * 37 DAY;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= datetime;
+let $kt_type= DATETIME;
+let $kt_expr= TIMESTAMP('2020-01-01 00:00:00') + INTERVAL (n % 50) * 3671 SECOND;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= datetime6;
+let $kt_type= DATETIME(6);
+let $kt_expr= TIMESTAMP('2020-01-01 00:00:00') + INTERVAL (n % 50) * 1234567 MICROSECOND;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= time3;
+let $kt_type= TIME(3);
+let $kt_expr= SEC_TO_TIME((n % 50) * 997.125 - 20000);
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= timestamp2;
+let $kt_type= TIMESTAMP(2);
+let $kt_expr= TIMESTAMP('2021-06-01 12:00:00') + INTERVAL (n % 50) * 3600010 MICROSECOND;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= year;
+let $kt_type= YEAR;
+let $kt_expr= 1901 + (n % 50) * 3;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= enum;
+let $kt_type= ENUM('e00','e01','e02','e03','e04','e05','e06','e07','e08','e09','e10','e11','e12','e13','e14','e15','e16','e17','e18','e19','e20','e21','e22','e23','e24','e25','e26','e27','e28','e29','e30','e31','e32','e33','e34','e35','e36','e37','e38','e39','e40','e41','e42','e43','e44','e45','e46','e47','e48','e49');
+let $kt_expr= (n % 50) + 1;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= set;
+let $kt_type= SET('a','b','c','d','e','f','g');
+let $kt_expr= (n % 50) * 2 + 1;
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+let $kt_name= char_latin1;
+let $kt_type= CHAR(6) CHARACTER SET latin1;
+let $kt_expr= CONCAT('c', LPAD(n % 50, 2, '0'));
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+# BINARY pads with 0x00; values differ only in their leading bytes
+let $kt_name= binary;
+let $kt_type= BINARY(5);
+let $kt_expr= UNHEX(LPAD(HEX((n % 50) * 5003), 6, '0'));
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+# VARBINARY keys that differ only in trailing 0x00 bytes: 'x', 'x\0', ...
+let $kt_name= varbinary;
+let $kt_type= VARBINARY(12);
+let $kt_expr= CONCAT(CHAR(97 + (n % 50) DIV 5 USING binary), REPEAT(x'00', (n % 50) % 5));
+--source suite/ndb_opt/ndb_spj_shapes_keytype.inc
+
+--echo #
+--echo # Constant DATETIME(6) and VARCHAR key parts next to a linked one
+--echo #
+CREATE TABLE pc (id INT NOT NULL PRIMARY KEY, r INT NOT NULL) ENGINE=NDB;
+INSERT INTO pc SELECT n, n % 40 FROM seq WHERE n <= 200;
+CREATE TABLE cc (
+  dt DATETIME(6) NOT NULL,
+  vc VARCHAR(10) NOT NULL,
+  r INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY (dt, vc, r),
+  KEY ix_vc_r (vc, r)
+) ENGINE=NDB;
+INSERT INTO cc
+  SELECT TIMESTAMP('2020-02-02 10:00:00.123456') + INTERVAL (n % 2) SECOND,
+         ELT(1 + (n DIV 2) % 3, 'aa', 'bb', 'cc'), n DIV 6, n
+  FROM seq WHERE n <= 240;
+ANALYZE TABLE pc, cc;
+
+let $spj_label= C1_const_datetime6_varchar_and_linked_pk;
+let $spj_query= SELECT pc.id, cc.val FROM pc STRAIGHT_JOIN cc
+  ON cc.dt = '2020-02-02 10:00:01.123456' AND cc.vc = 'bb' AND cc.r = pc.r;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= C2_const_varchar_and_linked_scan;
+let $spj_query= SELECT pc.id, cc.val FROM pc STRAIGHT_JOIN cc FORCE INDEX (ix_vc_r)
+  ON cc.vc = 'cc' AND cc.r = pc.r;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+DROP TABLE pc, cc;
+
+--echo #
+--echo # Collations: the parent holds case, accent and trailing-space
+--echo # variants of the child's key values.
+--echo #
+# Base words 'e0'..'e39'; the child PK tables hold 'e0'..'e29' only.
+CREATE TABLE pcoll (
+  id INT NOT NULL PRIMARY KEY,
+  k_ai VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+  k_gen VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+  k_sw VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci NULL,
+  k_bin VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+  k_nopadbin VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL,
+  k_char CHAR(10) CHARACTER SET latin1 COLLATE latin1_swedish_ci NULL
+) ENGINE=NDB;
+# Variant v = id % 6: 0 'e7', 1 'E7', 2 'é7', 3 'e7 ', 4 'É7  ', 5 NULL
+INSERT INTO pcoll
+  SELECT n, w, w, w, w, w, w FROM (
+    SELECT n, ELT(1 + n % 6,
+                  CONCAT('e', n % 40),
+                  CONCAT('E', n % 40),
+                  CONCAT(_utf8mb4 x'C3A9', n % 40),
+                  CONCAT('e', n % 40, ' '),
+                  CONCAT(_utf8mb4 x'C389', n % 40, '  '),
+                  NULL) AS w
+    FROM seq WHERE n <= 480) AS dt;
+
+let $coll_i= 0;
+while ($coll_i < 6)
+{
+  if ($coll_i == 0)
+  {
+    let $coll_col= k_ai;
+    let $coll_def= VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+  }
+  if ($coll_i == 1)
+  {
+    let $coll_col= k_gen;
+    let $coll_def= VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
+  }
+  if ($coll_i == 2)
+  {
+    let $coll_col= k_sw;
+    let $coll_def= VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+  }
+  if ($coll_i == 3)
+  {
+    let $coll_col= k_bin;
+    let $coll_def= VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+  }
+  if ($coll_i == 4)
+  {
+    let $coll_col= k_nopadbin;
+    let $coll_def= VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin;
+  }
+  if ($coll_i == 5)
+  {
+    let $coll_col= k_char;
+    let $coll_def= CHAR(10) CHARACTER SET latin1 COLLATE latin1_swedish_ci;
+  }
+
+  --disable_query_log
+  # PK lookup child, ordered-index scan child, and a child partitioned on
+  # the string so that a scan on the PK prefix is pruned by its hash.
+  eval CREATE TABLE ck (k $coll_def NOT NULL PRIMARY KEY, val INT NOT NULL) ENGINE=NDB;
+  eval CREATE TABLE cs (id INT NOT NULL PRIMARY KEY, k $coll_def NULL, KEY ix_k (k)) ENGINE=NDB;
+  eval CREATE TABLE cp (k $coll_def NOT NULL, id INT NOT NULL, PRIMARY KEY (k, id))
+    ENGINE=NDB PARTITION BY KEY (k);
+  INSERT INTO ck SELECT CONCAT('e', n - 1), n FROM seq WHERE n <= 30;
+  # cs and cp hold the variants too (the stored bytes differ from the
+  # parent's variant for the same id)
+  eval INSERT INTO cs SELECT id, $coll_col FROM pcoll WHERE id <= 300 AND (id % 40) < 30;
+  eval INSERT INTO cp SELECT k, id FROM cs WHERE k IS NOT NULL;
+  --disable_result_log
+  ANALYZE TABLE ck, cs, cp;
+  --enable_result_log
+  --enable_query_log
+
+  let $spj_label= L-$coll_col-pk-lookup-left;
+  let $spj_query= SELECT pcoll.id, ck.val
+    FROM pcoll LEFT JOIN ck ON ck.k = pcoll.$coll_col;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= L-$coll_col-index-scan;
+  let $spj_query= SELECT pcoll.id, cs.id
+    FROM pcoll STRAIGHT_JOIN cs FORCE INDEX (ix_k) ON cs.k = pcoll.$coll_col;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  let $spj_label= L-$coll_col-pruned-scan-left;
+  let $spj_query= SELECT pcoll.id, cp.id
+    FROM pcoll LEFT JOIN cp ON cp.k = pcoll.$coll_col;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  # Lookup child of a scan child: the stored (not the parent's) variant
+  # is the key of the lookup
+  let $spj_label= L-$coll_col-scan-then-lookup;
+  let $spj_query= SELECT pcoll.id, cs.id, ck.val
+    FROM pcoll STRAIGHT_JOIN cs FORCE INDEX (ix_k) ON cs.k = pcoll.$coll_col
+               STRAIGHT_JOIN ck ON ck.k = cs.k;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+  --disable_query_log
+  DROP TABLE ck, cs, cp;
+  --enable_query_log
+  inc $coll_i;
+}
+
+DROP TABLE pcoll, seq;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

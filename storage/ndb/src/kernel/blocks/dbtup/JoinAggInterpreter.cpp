@@ -882,6 +882,522 @@ Int32 JoinAggInterpreter::jitMinMaxStringLinked(
   return minMaxString(kScratchReg, agg_index, agg_res_ptr, is_max);
 }
 
+/*
+ * E-4: the AttributeHeader word of entry `position` of a linked attribute
+ * buffer ([tableId, schemaVersion, AttributeHeader, data] per entry), or
+ * nullptr when the buffer has no such complete entry.  The callers read
+ * nullptr as NULL, as Dbtup::readLinkedToMemBuffer does.
+ */
+static const Uint32* nullRowLinkedEntry(const Uint32* linked,
+                                        Uint32 linked_len,
+                                        Uint32 position) {
+  if (linked == nullptr) return nullptr;
+  const Uint32* p = linked;
+  const Uint32* const p_end = linked + linked_len;
+  for (Uint32 pos = 0;; pos++) {
+    if (p_end - p < 3) return nullptr;
+    const Uint32 data_words = AttributeHeader::getDataSize(p[2]);
+    if (Uint32(p_end - p - 3) < data_words) return nullptr;
+    if (pos == position) return p + 2;
+    p += 3 + data_words;
+  }
+}
+
+/* E-4: whether a BRANCH_*_OP_ARG style compare branches, from res1 as
+ * the DBTUP handlers compute it.  The inequalities are inverted: LT
+ * branches when the argument is less than the column. */
+static bool nullRowCondHolds(Uint32 cond, int res1) {
+  switch (cond) {
+    case Interpreter::EQ: return res1 == 0;
+    case Interpreter::NE: return res1 != 0;
+    case Interpreter::LT: return res1 > 0;
+    case Interpreter::LE: return res1 >= 0;
+    case Interpreter::GT: return res1 < 0;
+    case Interpreter::GE: return res1 <= 0;
+    default: return false;
+  }
+}
+
+/* E-4: Dbtup's compareTypedRegs for two non-NULL registers: as doubles
+ * when one is a DOUBLE, else exactly as signed / unsigned 64-bit
+ * integers. */
+static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
+                              Uint32 right_type, Int64 right_value) {
+  const bool left_float = (left_type & 0x00010000) != 0;
+  const bool right_float = (right_type & 0x00010000) != 0;
+  const bool left_unsigned = (left_type & 0x00000100) != 0;
+  const bool right_unsigned = (right_type & 0x00000100) != 0;
+  const Uint64 left_bits = Uint64(left_value);
+  const Uint64 right_bits = Uint64(right_value);
+  if (left_float || right_float) {
+    double l;
+    double r;
+    if (left_float) {
+      memcpy(&l, &left_bits, 8);
+    } else {
+      l = left_unsigned ? double(left_bits) : double(left_value);
+    }
+    if (right_float) {
+      memcpy(&r, &right_bits, 8);
+    } else {
+      r = right_unsigned ? double(right_bits) : double(right_value);
+    }
+    return (l < r) ? -1 : (l > r) ? 1 : 0;
+  }
+  if (left_unsigned == right_unsigned) {
+    if (left_unsigned) {
+      return (left_bits < right_bits) ? -1 : (left_bits > right_bits) ? 1 : 0;
+    }
+    return (left_value < right_value) ? -1 : (left_value > right_value) ? 1 : 0;
+  }
+  /* A negative signed value is less than any unsigned one */
+  if (left_unsigned) {
+    if (right_value < 0) return 1;
+  } else if (left_value < 0) {
+    return -1;
+  }
+  return (left_bits < right_bits) ? -1 : (left_bits > right_bits) ? 1 : 0;
+}
+
+/*
+ * E-4: evaluate the embedded program of a kOpEmbeddedInterp (a CASE
+ * condition) for a NULL-extended row of an outer join.  The row has no
+ * tuple, so Dbtup::interpreterAggEmbedded cannot run; every column of
+ * the outer-joined (local) table is NULL instead.  The instructions a
+ * condition on those columns uses are evaluated as DBTUP evaluates them
+ * for a NULL column value: READ_ATTR_INTO_REG loads NULL, BRANCH_ATTR_*
+ * take their NULL path, and output and exit work as in DBTUP.
+ *
+ * The parent (linked) columns of the row are not NULL: they are in
+ * linked_attr_data as for any row of the leaf, and READ_LINKED_TO_MEM,
+ * READ_LINKED_COLUMN_TO_REG, BRANCH_LINKED_*_NULL, BRANCH_MEM_OP_ARG,
+ * BRANCH_MEM_OP_ARG_INLINE_TYPE and BRANCH_LINKED_OP_LINKED read and
+ * compare them as the DBTUP handlers do.  BRANCH_MEM_OP_ARG takes the
+ * column type from the parent table's descriptor through meta_tup;
+ * without it the program is EMB_NULL_ROW_UNSUPPORTED.  Init has
+ * validated the opcodes, the instruction lengths and that every branch
+ * goes forward within the program; the operand words are still bounded
+ * here.
+ *
+ * One difference: a register compare with a NULL operand is not taken,
+ * where DBTUP fails the row with ZREGISTER_INIT_ERROR.  The API guards a
+ * nullable column with BRANCH_REG_EQ_NULL before such a compare, so only
+ * a NOT NULL column of the outer-joined table reaches it unguarded.  For
+ * a compare that branches to the THEN arm when it holds, as mysqld's
+ * CASE lowering emits, not taking it gives the SQL result: NULL > 5 is
+ * not true, so the ELSE arm is taken.
+ *
+ * Aggregation registers and arithmetic need DBTUP; such a program
+ * returns EMB_NULL_ROW_UNSUPPORTED.
+ */
+JoinAggInterpreter::EmbeddedNullRowResult
+JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
+                                           Uint32 emb_len,
+                                           const Uint32* linked_attr_data,
+                                           Uint32 linked_attr_len,
+                                           const Dbtup* meta_tup,
+                                           Uint32* skip_offset) {
+  /* The 8 registers start NULL, as in Dbtup::interpreterJumpTable */
+  Uint32 reg_type[8];
+  Int64 reg_value[8];
+  for (Uint32 i = 0; i < 8; i++) {
+    reg_type[i] = Interpreter::REG_TYPE_NULL;
+    reg_value[i] = 0;
+  }
+  /* The entry the last READ_LINKED_TO_MEM staged, nullptr for NULL */
+  const Uint32* mem_entry = nullptr;
+  bool output_defined = false;
+  Uint32 output = 0;
+  Uint32 pc = 0;
+  while (pc < emb_len) {
+    const Uint32 instr_pos = pc;
+    const Uint32 instr = emb_prog[pc++];
+    const Uint32 opcode = Interpreter::getOpCode(instr);
+    const Uint32 reg = Interpreter::getReg1(instr);
+    bool take_branch = false;
+    switch (opcode) {
+      case Interpreter::READ_ATTR_INTO_REG:  // a column of the local table
+      case Interpreter::LOAD_CONST_NULL:
+        reg_type[reg] = Interpreter::REG_TYPE_NULL;
+        break;
+      case Interpreter::LOAD_CONST16:
+        reg_type[reg] = Interpreter::REG_TYPE_INT;
+        reg_value[reg] = instr >> 16;
+        break;
+      case Interpreter::LOAD_CONST32:
+        if (unlikely(emb_len - pc < 1)) return EMB_NULL_ROW_ERROR;
+        reg_type[reg] = Interpreter::REG_TYPE_INT;
+        reg_value[reg] = emb_prog[pc++];
+        break;
+      case Interpreter::LOAD_CONST64:
+      case Interpreter::LOAD_DOUBLE_CONST:
+        if (unlikely(emb_len - pc < 2)) return EMB_NULL_ROW_ERROR;
+        reg_type[reg] = (opcode == Interpreter::LOAD_CONST64)
+                            ? Interpreter::REG_TYPE_INT
+                            : Interpreter::REG_TYPE_DOUBLE;
+        memcpy(&reg_value[reg], &emb_prog[pc], sizeof(Int64));
+        pc += 2;
+        break;
+      case Interpreter::READ_LINKED_TO_MEM:
+        mem_entry = nullRowLinkedEntry(linked_attr_data, linked_attr_len,
+                                       (instr >> 16) & 0xFF);
+        break;
+      case Interpreter::READ_LINKED_COLUMN_TO_REG: {
+        /* As Dbtup's handleReadLinkedColumnToReg */
+        const Uint32* entry = nullRowLinkedEntry(
+            linked_attr_data, linked_attr_len, (instr >> 16) & 0xFF);
+        if (entry == nullptr || AttributeHeader(*entry).isNULL()) {
+          reg_type[reg] = Interpreter::REG_TYPE_NULL;
+          break;
+        }
+        const Uint32 byte_size = AttributeHeader(*entry).getByteSize();
+        const char* data = reinterpret_cast<const char*>(entry + 1);
+        Uint32 type = Interpreter::REG_TYPE_INT;
+        Int64 value = 0;
+        Uint32 need = 0;
+        switch ((instr >> 24) & 0xFF) {
+          case NDB_TYPE_TINYINT:
+            need = 1;
+            if (byte_size >= need) value = *reinterpret_cast<const Int8*>(data);
+            break;
+          case NDB_TYPE_TINYUNSIGNED:
+            need = 1;
+            type = Interpreter::REG_TYPE_UINT;
+            if (byte_size >= need) value = *reinterpret_cast<const Uint8*>(data);
+            break;
+          case NDB_TYPE_SMALLINT:
+            need = 2;
+            if (byte_size >= need) value = sint2korr(data);
+            break;
+          case NDB_TYPE_SMALLUNSIGNED:
+            need = 2;
+            type = Interpreter::REG_TYPE_UINT;
+            if (byte_size >= need) value = uint2korr(data);
+            break;
+          case NDB_TYPE_MEDIUMINT:
+            need = 3;
+            if (byte_size >= need) value = sint3korr(data);
+            break;
+          case NDB_TYPE_MEDIUMUNSIGNED:
+          case NDB_TYPE_DATE:
+            need = 3;
+            type = Interpreter::REG_TYPE_UINT;
+            if (byte_size >= need) value = uint3korr(data);
+            break;
+          case NDB_TYPE_INT:
+            need = 4;
+            if (byte_size >= need) value = sint4korr(data);
+            break;
+          case NDB_TYPE_UNSIGNED:
+            need = 4;
+            type = Interpreter::REG_TYPE_UINT;
+            if (byte_size >= need) value = uint4korr(data);
+            break;
+          case NDB_TYPE_BIGINT:
+          case NDB_TYPE_BIGUNSIGNED:
+          case NDB_TYPE_DOUBLE:
+            need = 8;
+            if (((instr >> 24) & 0xFF) == NDB_TYPE_BIGUNSIGNED) {
+              type = Interpreter::REG_TYPE_UINT;
+            } else if (((instr >> 24) & 0xFF) == NDB_TYPE_DOUBLE) {
+              type = Interpreter::REG_TYPE_DOUBLE;
+            }
+            if (byte_size >= need) memcpy(&value, data, 8);
+            break;
+          case NDB_TYPE_FLOAT: {
+            need = 4;
+            type = Interpreter::REG_TYPE_DOUBLE;
+            if (byte_size >= need) {
+              float f;
+              memcpy(&f, data, 4);
+              const double d = static_cast<double>(f);
+              memcpy(&value, &d, 8);
+            }
+            break;
+          }
+          default:
+            /* ZNO_INSTRUCTION_ERROR in DBTUP */
+            return EMB_NULL_ROW_ERROR;
+        }
+        if (unlikely(byte_size < need)) return EMB_NULL_ROW_ERROR;
+        reg_type[reg] = type;
+        reg_value[reg] = value;
+        break;
+      }
+      case Interpreter::BRANCH:
+        take_branch = true;
+        break;
+      case Interpreter::BRANCH_REG_EQ_NULL:
+        take_branch = (reg_type[reg] == Interpreter::REG_TYPE_NULL);
+        break;
+      case Interpreter::BRANCH_REG_NE_NULL:
+        take_branch = (reg_type[reg] != Interpreter::REG_TYPE_NULL);
+        break;
+      case Interpreter::BRANCH_EQ_REG_REG:
+      case Interpreter::BRANCH_NE_REG_REG:
+      case Interpreter::BRANCH_LT_REG_REG:
+      case Interpreter::BRANCH_LE_REG_REG:
+      case Interpreter::BRANCH_GT_REG_REG:
+      case Interpreter::BRANCH_GE_REG_REG: {
+        /* A NULL operand is not taken, see above */
+        const Uint32 reg2 = Interpreter::getReg2(instr);
+        if (reg_type[reg] == Interpreter::REG_TYPE_NULL ||
+            reg_type[reg2] == Interpreter::REG_TYPE_NULL) {
+          break;
+        }
+        const int cmp = nullRowCompareRegs(reg_type[reg], reg_value[reg],
+                                           reg_type[reg2], reg_value[reg2]);
+        switch (opcode) {
+          case Interpreter::BRANCH_EQ_REG_REG: take_branch = (cmp == 0); break;
+          case Interpreter::BRANCH_NE_REG_REG: take_branch = (cmp != 0); break;
+          case Interpreter::BRANCH_LT_REG_REG: take_branch = (cmp < 0); break;
+          case Interpreter::BRANCH_LE_REG_REG: take_branch = (cmp <= 0); break;
+          case Interpreter::BRANCH_GT_REG_REG: take_branch = (cmp > 0); break;
+          default: take_branch = (cmp >= 0); break;
+        }
+        break;
+      }
+      case Interpreter::BRANCH_ATTR_OP_ARG: {
+        /* [instr][attrId << 16 | argLen][argLen bytes]: the column is
+         * NULL, the result follows the instruction's null semantics as
+         * in Dbtup's handleBranchAttrOp. */
+        if (unlikely(emb_len - pc < 1)) return EMB_NULL_ROW_ERROR;
+        const Uint32 arg_len = Interpreter::getBranchCol_Len(emb_prog[pc]);
+        const Uint32 nulls = Interpreter::getNullSemantics(instr);
+        if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+          take_branch = true;
+        } else if (nulls != Interpreter::IF_NULL_CONTINUE) {
+          /* NULL_CMP_EQUAL: NULL equals NULL and is less than a value.
+           * res1 and the conditions as Dbtup computes them for a NULL
+           * column. */
+          const Uint32 cond = Interpreter::getBinaryCondition(instr);
+          int res1 = (arg_len == 0) ? 0 : -1;
+          if (cond > Interpreter::NOT_LIKE) res1 = 1;
+          switch (cond) {
+            case Interpreter::EQ:
+            case Interpreter::LIKE:
+            case Interpreter::AND_EQ_MASK:
+            case Interpreter::AND_EQ_ZERO:
+              take_branch = (res1 == 0);
+              break;
+            case Interpreter::NE:
+            case Interpreter::AND_NE_MASK:
+            case Interpreter::AND_NE_ZERO:
+              take_branch = (res1 != 0);
+              break;
+            case Interpreter::LT:
+              take_branch = (res1 > 0);
+              break;
+            case Interpreter::LE:
+              take_branch = (res1 >= 0);
+              break;
+            case Interpreter::GT:
+              take_branch = (res1 < 0);
+              break;
+            case Interpreter::GE:
+              take_branch = (res1 <= 0);
+              break;
+            case Interpreter::NOT_LIKE:
+              take_branch = (res1 == 1);
+              break;
+            default:
+              break;
+          }
+        }
+        if (!take_branch) pc += 1 + ((arg_len + 3) >> 2);
+        break;
+      }
+      case Interpreter::BRANCH_MEM_OP_ARG:
+      case Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE: {
+        /* The column staged by READ_LINKED_TO_MEM against an inline
+         * argument, as Dbtup's handleBranchMemOpArg (type from the
+         * parent table: [instr][attrId << 16 | argLen][tableId]
+         * [schemaVersion][arg]) and handleBranchMemOpArgInlineType
+         * ([instr][typeId << 16 | argLen][size << 16 | csNumber][arg]). */
+        const bool inline_type =
+            (opcode == Interpreter::BRANCH_MEM_OP_ARG_INLINE_TYPE);
+        const Uint32 meta_words = inline_type ? 2 : 3;
+        if (unlikely(emb_len - pc < meta_words)) return EMB_NULL_ROW_ERROR;
+        const Uint32 ins2 = emb_prog[pc];
+        const Uint32 arg_len = Interpreter::getBranchCol_Len(ins2);
+        const Uint32 operand_words = meta_words + ((arg_len + 3) >> 2);
+        if (unlikely(emb_len - pc < operand_words)) return EMB_NULL_ROW_ERROR;
+        Uint32 type_id = 0;
+        Uint32 attr_len = 0;
+        const CHARSET_INFO* cs = nullptr;
+        if (inline_type) {
+          type_id = Interpreter::getBranchCol_AttrId(ins2);
+          attr_len = emb_prog[pc + 1] >> 16;
+          const Uint32 cs_number = emb_prog[pc + 1] & 0xFFFF;
+          if (cs_number != 0) {
+            cs = NdbSqlUtil::get_collation(cs_number);
+            if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
+          }
+        } else {
+          if (meta_tup == nullptr) return EMB_NULL_ROW_UNSUPPORTED;
+          if (unlikely(meta_tup->getBranchMemColumnType(
+                           emb_prog[pc + 1], emb_prog[pc + 2],
+                           Interpreter::getBranchCol_AttrId(ins2), type_id,
+                           attr_len, cs) != 0)) {
+            return EMB_NULL_ROW_ERROR;
+          }
+        }
+        /* The inline form needs a compare function also for NULL, as in
+         * DBTUP */
+        const NdbSqlUtil::Type& sql_type = NdbSqlUtil::getType(type_id);
+        if (unlikely(inline_type && sql_type.m_cmp == nullptr)) {
+          return EMB_NULL_ROW_ERROR;
+        }
+        const bool l_null =
+            (mem_entry == nullptr) || AttributeHeader(*mem_entry).isNULL();
+        const bool r_null = (arg_len == 0);
+        bool done = false;
+        if (l_null || r_null) {
+          const Uint32 nulls = Interpreter::getNullSemantics(instr);
+          if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+            take_branch = true;
+            done = true;
+          } else if (nulls == Interpreter::IF_NULL_CONTINUE) {
+            done = true;
+          }
+        }
+        if (!done) {
+          int res1;
+          if (l_null || r_null) {
+            res1 = (l_null && r_null) ? 0 : l_null ? -1 : 1;
+          } else {
+            if (unlikely(sql_type.m_cmp == nullptr)) return EMB_NULL_ROW_ERROR;
+            /* The entry holds the column as stored; do not read past it */
+            const Uint32 byte_size = AttributeHeader(*mem_entry).getByteSize();
+            if (attr_len > byte_size) attr_len = byte_size;
+            res1 = (*sql_type.m_cmp)(
+                cs, reinterpret_cast<const char*>(mem_entry + 1), attr_len,
+                reinterpret_cast<const char*>(&emb_prog[pc + meta_words]),
+                arg_len);
+          }
+          take_branch =
+              nullRowCondHolds(Interpreter::getBinaryCondition(instr), res1);
+        }
+        if (!take_branch) pc += operand_words;
+        break;
+      }
+      case Interpreter::BRANCH_LINKED_OP_LINKED: {
+        /* Two linked entries, as Dbtup's handleBranchLinkedOpLinked:
+         * [instr][posL << 16 | posR][typeId << 16 | csNumber]
+         * [sizeL << 16 | sizeR] */
+        if (unlikely(emb_len - pc < 3)) return EMB_NULL_ROW_ERROR;
+        const Uint32 pos_word = emb_prog[pc];
+        const Uint32 type_word = emb_prog[pc + 1];
+        const Uint32 size_word = emb_prog[pc + 2];
+        const NdbSqlUtil::Type& sql_type =
+            NdbSqlUtil::getType(type_word >> 16);
+        if (unlikely(sql_type.m_cmp == nullptr)) return EMB_NULL_ROW_ERROR;
+        const CHARSET_INFO* cs = nullptr;
+        if ((type_word & 0xFFFF) != 0) {
+          cs = NdbSqlUtil::get_collation(type_word & 0xFFFF);
+          if (unlikely(cs == nullptr)) return EMB_NULL_ROW_ERROR;
+        }
+        const Uint32* left = nullRowLinkedEntry(
+            linked_attr_data, linked_attr_len, pos_word >> 16);
+        const Uint32* right = nullRowLinkedEntry(
+            linked_attr_data, linked_attr_len, pos_word & 0xFFFF);
+        const bool l_null = (left == nullptr) || AttributeHeader(*left).isNULL();
+        const bool r_null =
+            (right == nullptr) || AttributeHeader(*right).isNULL();
+        bool done = false;
+        if (l_null || r_null) {
+          const Uint32 nulls = Interpreter::getNullSemantics(instr);
+          if (nulls == Interpreter::IF_NULL_BREAK_OUT) {
+            take_branch = true;
+            done = true;
+          } else if (nulls == Interpreter::IF_NULL_CONTINUE) {
+            done = true;
+          }
+        }
+        if (!done) {
+          int res1;
+          if (l_null || r_null) {
+            res1 = (l_null && r_null) ? 0 : l_null ? -1 : 1;
+          } else {
+            Uint32 size_l = size_word >> 16;
+            Uint32 size_r = size_word & 0xFFFF;
+            if (size_l > AttributeHeader(*left).getByteSize()) {
+              size_l = AttributeHeader(*left).getByteSize();
+            }
+            if (size_r > AttributeHeader(*right).getByteSize()) {
+              size_r = AttributeHeader(*right).getByteSize();
+            }
+            res1 = (*sql_type.m_cmp)(
+                cs, reinterpret_cast<const char*>(left + 1), size_l,
+                reinterpret_cast<const char*>(right + 1), size_r);
+          }
+          take_branch =
+              nullRowCondHolds(Interpreter::getBinaryCondition(instr), res1);
+        }
+        if (!take_branch) pc += 3;
+        break;
+      }
+      case Interpreter::BRANCH_ATTR_EQ_NULL:
+        take_branch = true;
+        break;
+      case Interpreter::BRANCH_ATTR_NE_NULL:
+        pc++;  // the attribute id word
+        break;
+      case Interpreter::BRANCH_LINKED_EQ_NULL:
+        take_branch =
+            (mem_entry == nullptr) || AttributeHeader(*mem_entry).isNULL();
+        break;
+      case Interpreter::BRANCH_LINKED_NE_NULL:
+        take_branch =
+            (mem_entry != nullptr) && !AttributeHeader(*mem_entry).isNULL();
+        break;
+      case Interpreter::WRITE_INTERPRETER_OUTPUT: {
+        const Uint32 output_inx = instr >> 16;
+        if (unlikely(reg_type[reg] != Interpreter::REG_TYPE_INT ||
+                     output_inx >=
+                         AttributeHeader::MaxInterpreterOutputIndex)) {
+          return EMB_NULL_ROW_ERROR;
+        }
+        if (output_inx == 0) {
+          /* ProcessRec uses the first word of output 0 */
+          Uint32 words[2];
+          memcpy(words, &reg_value[reg], sizeof(words));
+          output = words[0];
+          output_defined = true;
+        }
+        break;
+      }
+      case Interpreter::EXIT_OK:
+        if (unlikely(!output_defined)) return EMB_NULL_ROW_ERROR;
+        *skip_offset = output;
+        return EMB_NULL_ROW_OUTPUT;
+      case Interpreter::EXIT_REFUSE: {
+        /* The filter codes of Dbtup's handleExitRefuseAgg */
+        const Uint32 code = instr >> 16;
+        if (code == 0 || code == 626 || code == 899 ||
+            (code >= 6000 && code <= 6999)) {
+          return EMB_NULL_ROW_REJECT;
+        }
+        return EMB_NULL_ROW_ERROR;
+      }
+      default:
+        /* Aggregation registers, arithmetic */
+        return EMB_NULL_ROW_UNSUPPORTED;
+    }
+    if (take_branch) {
+      /* Relative to the branch instruction; Init allows forward only.
+       * A zero offset would not move. */
+      const Uint32 offset = (instr >> 16) & 0x7FFF;
+      if (unlikely((instr >> 31) != 0 || offset == 0)) {
+        return EMB_NULL_ROW_ERROR;
+      }
+      pc = instr_pos + offset;
+    }
+  }
+  /* Ran past the end without EXIT_OK (ZOUTSIDE_OF_PROGRAM_ERROR) */
+  return EMB_NULL_ROW_ERROR;
+}
+
 Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Dbtup::KeyReqStruct* req_struct,
         Uint32 thread_id,
@@ -1041,7 +1557,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         gb_bucket, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
     if (found != nullptr) {
       header = reinterpret_cast<AttributeHeader*>(found);
-      agg_res_ptr = reinterpret_cast<AggResItem*>(found + len_in_char);
+      /* E-5: a collation-equal stored key can be longer or shorter than
+       * this row's key; the accumulators follow the stored key. */
+      agg_res_ptr = reinterpret_cast<AggResItem*>(
+          found + m_gb_map->dataKeyLen(found));
       agg_res_ptr += m_acc_offset;
     } else {
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
@@ -1272,12 +1791,33 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
         if (m_null_local_columns) {
           /*
-           * Null-extended row: can't run embedded interpreter without
-           * req_struct. Skip the embedded program (take THEN path).
-           * All local column reads return NULL, so THEN-path aggregations
-           * will correctly handle NULL inputs (SUM/MIN/MAX skip NULLs).
+           * Null-extended row: there is no tuple to run the embedded
+           * interpreter on.  Evaluate the condition with the local
+           * columns NULL, so that e.g. CASE WHEN oj.v > 5 takes the ELSE
+           * arm (E-4).
            */
-          exec_pos += emb_len;
+          thrjam(jamBuf);
+          Uint32 skip_offset = 0;
+          const EmbeddedNullRowResult res = evalEmbeddedForNullRow(
+              &m_prog[exec_pos], emb_len, m_linked_attr_data,
+              m_linked_attr_len, m_null_row_meta_tup, &skip_offset);
+          if (unlikely(res == EMB_NULL_ROW_ERROR)) {
+            return ZAGG_EMBEDDED_INTERP_ERROR;
+          }
+          if (res == EMB_NULL_ROW_UNSUPPORTED) {
+            /*
+             * The condition needs DBTUP (aggregation registers,
+             * arithmetic).  Skip the embedded program and take the THEN
+             * path as before; local column reads return NULL there.
+             */
+            thrjam(jamBuf);
+            exec_pos += emb_len;
+          } else if (res == EMB_NULL_ROW_REJECT ||
+                     skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
+            exec_pos = m_prog_len;
+          } else {
+            exec_pos += emb_len + skip_offset;
+          }
           break;
         }
 
@@ -1819,8 +2359,10 @@ Int32 JoinAggInterpreter::mergeFrom(JoinAggInterpreter* other,
     if (my_data != nullptr) {
       AggResItem *other_items =
         reinterpret_cast<AggResItem *>(other_data + other_key_len);
+      /* E-5: the keys are collation-equal, not always of equal length. */
       AggResItem *my_items =
-        reinterpret_cast<AggResItem *>(my_data + other_key_len);
+        reinterpret_cast<AggResItem *>(my_data +
+                                       m_gb_map->dataKeyLen(my_data));
       Int32 ret = mergeAccumulators(my_items, other_items, m_n_agg_results,
                                     m_cached_agg_ops, m_string_results,
                                     m_thread_id, true);
@@ -1930,9 +2472,10 @@ Int32 JoinAggInterpreter::mergeOneGroup(const char* key, Uint32 keyLen,
   char* found = m_gb_map->findInBucket(gb_bucket, key, keyLen);
 
   if (found != nullptr) {
-    /* Key exists — merge accumulators */
+    /* Key exists — merge accumulators.  E-5: the stored key is
+     * collation-equal to this one, not always of the same length. */
     AggResItem *my_items =
-      reinterpret_cast<AggResItem *>(found + keyLen);
+      reinterpret_cast<AggResItem *>(found + m_gb_map->dataKeyLen(found));
     AggResItem *src_items = const_cast<AggResItem*>(src_const_items);
     Int32 ret = mergeAccumulators(my_items, src_items, m_n_agg_results,
                                   m_cached_agg_ops, m_string_results,
@@ -2162,6 +2705,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     EmulatedJamBuffer *jamBuf,
     uchar* xfrm_buf,
     Uint32 xfrm_buf_len,
+    const Dbtup* meta_tup,
     const LeafProgram* leaf) {
   std::unique_lock<std::mutex> lock(m_mutex, std::defer_lock);
   if (m_use_mutex) lock.lock();
@@ -2183,6 +2727,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
   m_linked_attr_data = linked_attr_data;
   m_linked_attr_len = linked_attr_len;
   m_null_local_columns = true;
+  m_null_row_meta_tup = meta_tup;
 
   /*
    * Null-extended rows have no local tuple to read.  m_null_local_columns
@@ -2192,6 +2737,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
                          xfrm_buf, xfrm_buf_len, attr_read_buf);
 
   m_null_local_columns = false;
+  m_null_row_meta_tup = nullptr;
   m_linked_attr_data = nullptr;
   m_linked_attr_len = 0;
   return ret;

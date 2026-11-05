@@ -3904,7 +3904,8 @@ int ha_ndbcluster::ordered_index_scan(const key_range *start_key,
     if (unlikely(error)) return error;
 
     NdbQuery *const query = m_active_query;
-    if (sorted &&
+    // A pushed aggregation is read unordered, see ha_ndbcluster_push_agg.h
+    if (sorted && !m_pushed_agg_mode &&
         query->getQueryOperation((uint)PUSHED_ROOT)
             ->setOrdering(descending
                               ? NdbQueryOptions::ScanOrdering_descending
@@ -14713,6 +14714,8 @@ int ha_ndbcluster::multi_range_read_init(RANGE_SEQ_IF *seq_funcs,
   /*
     If supplied buffer is smaller than needed for just one range, we cannot do
     multi_range_read.
+    A pushed aggregation is read by the default MRR, see
+    ha_ndbcluster_push_agg.h.
   */
   const ulong bufsize = multi_range_buffer_size(buffer);
 
@@ -14722,6 +14725,7 @@ int ha_ndbcluster::multi_range_read_init(RANGE_SEQ_IF *seq_funcs,
                                           table_share->reclength) ||
       (m_pushed_join_operation == PUSHED_ROOT && !m_disable_pushed_join &&
        !m_pushed_join_member->get_query_def().isScanQuery()) ||
+      (m_pushed_join_operation == PUSHED_ROOT && m_agg_join != nullptr) ||
       m_delete_cannot_batch || m_update_cannot_batch ||
       m_stm_aggregator != nullptr) {
     m_disable_multi_read = true;
@@ -15738,49 +15742,6 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
     }
   }
 
-  // Check if aggregation can also be pushed for a fully-pushed join.
-  // Reject if there's a non-pushable FILTER anywhere between the root
-  // AccessPath and the leaf table accesses.  Such filters apply per-row
-  // conditions that must be evaluated before aggregation — impossible when
-  // NDB returns pre-aggregated results.  Fully-pushed filters (which will
-  // be eliminated by fixup_pushed_access_paths) are safe and allowed.
-  //
-  // Neither aggregation is pushed when the plan takes the output order
-  // from the scan's index order (F30): the pushed groups come back in
-  // NdbAggregator's own order.
-  const bool order_from_index =
-      ndb_aggregate_order_from_index(join, root_path);
-  bool has_pushed_aggregation = false;
-  if (THDVAR(thd, join_pushdown_aggregate) && !order_from_index &&
-      !ndb_has_unpushable_filter_for_aggregate(root_path)) {
-    const bool allow_outer_join =
-        THDVAR(thd, join_pushdown_aggregate_outer_join);
-    has_pushed_aggregation =
-        ndb_push_aggregation(thd, join, pushed_builder, allow_outer_join);
-  }
-
-  // Check if single-table aggregation can be pushed.  Not when the access
-  // reads several ranges in one execution (F10): without MRR each range is
-  // its own aggregating scan into the same NdbAggregator.
-  if (!has_pushed_aggregation && !order_from_index &&
-      THDVAR(thd, pushdown_aggregate) &&
-      !ndb_aggregate_reads_ranges_separately(join, root_path)) {
-    has_pushed_aggregation =
-        ndb_push_single_table_aggregation(thd, join, pushed_builder);
-  }
-  // Clear m_pushed_agg_mode on all builder tables — a previous
-  // push_to_engine call may have set it on a handler that is now a
-  // child in a wider pushed join (push_to_engine is called multiple
-  // times with different table subsets as the optimizer explores plans).
-  ndb_clear_pushed_agg_state(pushed_builder);
-  if (has_pushed_aggregation) {
-    auto *root_handler = down_cast<ha_ndbcluster *>(
-        pushed_builder.m_tables[0].get_table()->file);
-    root_handler->m_pushed_agg_mode = true;
-    root_handler->m_agg_results_initialized = false;
-    root_handler->m_agg_join = join;
-  }
-
   /**
    * For those tables not being join-pushed we may still be able to
    * push any conditions on the table. (There are less restrictions on whether
@@ -15837,6 +15798,14 @@ int ndbcluster_push_to_engine(THD *thd, AccessPath *root_path, JOIN *join) {
       ndb_handler->m_cond.prep_cond_push(cond, const_expr_tables, table_map(0));
     }
   }
+
+  // Push the aggregation, which requires the conditions prepared above.
+  const bool has_pushed_aggregation = ndb_push_aggregation_to_engine(
+      thd, root_path, join, pushed_builder,
+      THDVAR(thd, join_pushdown_aggregate),
+      THDVAR(thd, join_pushdown_aggregate_outer_join),
+      THDVAR(thd, pushdown_aggregate));
+
   // Modify the AccessPath structure to reflect pushed execution.
   fixup_pushed_access_paths(thd, root_path, join, /*filter=*/nullptr,
                             has_pushed_aggregation);
@@ -15959,7 +15928,14 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
     assert(handler->m_pushed_join_operation == (int)i);
     NdbQueryOperation *const op = query->getQueryOperation(i);
     handler->m_pushed_operation = op;
-    handler->get_read_set(false, handler->active_index);
+
+    // A pushed lookup reads without a cursor, as the non-pushed access does
+    // (in a multi table UPDATE / DELETE that requires a unique key)
+    const NdbQueryOperationDef::Type type =
+        op->getQueryOperationDef().getType();
+    const bool isLookup = (type == NdbQueryOperationDef::PrimaryKeyAccess ||
+                           type == NdbQueryOperationDef::UniqueIndexAccess);
+    handler->get_read_set(!isLookup, handler->active_index);
 
     /**
      * Fetch the generated (above) 'pushed condition' code:
@@ -15985,18 +15961,23 @@ int ha_ndbcluster::create_pushed_join(const NdbQueryParamValue *keyFieldParams,
      */
     const NdbInterpretedCode &code = handler->m_cond.get_interpreter_code();
     const uint codeSize = code.getWordsUsed();
+    bool codeAttached = false;
     if (codeSize > 0) {
-      const NdbQueryOperationDef::Type type =
-          op->getQueryOperationDef().getType();
-      const bool isLookup = (type == NdbQueryOperationDef::PrimaryKeyAccess ||
-                             type == NdbQueryOperationDef::UniqueIndexAccess);
-      if (isLookup && codeSize >= 64) {
+      if (isLookup && codeSize >= NDB_MAX_LOOKUP_FILTER_WORDS) {
         // Too large, not pushed. Let ha_ndbcluster evaluate the condition
         handler->m_cond.set_condition(handler->pushed_cond);
       } else if (op->setInterpretedCode(code)) {
         // Failed to set generated code, let ha_ndbcluster evaluate
         handler->m_cond.set_condition(handler->pushed_cond);
+      } else {
+        codeAttached = true;
       }
+    }
+    // A pushed aggregation returns no rows to evaluate the condition on
+    // (checked by ndb_push_aggregation()): fail rather than ignore it.
+    if (m_pushed_agg_mode && handler->m_cond.m_pushed_cond != nullptr &&
+        !codeAttached) {
+      return HA_ERR_INTERNAL_ERROR;
     }
 
     // Bind to result buffers.

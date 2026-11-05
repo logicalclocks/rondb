@@ -1,0 +1,141 @@
+#
+# ndb_spj_shapes_wide: pushed joins (SPJ) returning rows that are sent as
+# fragmented TRANSID_AI signals.
+#
+# A row longer than MAX_TRANSID_AI_SIZE (7400 words, 240 words in VM_TRACE
+# builds) is sent to the API, and to DBSPJ, as a fragmented signal.  When
+# the API reassembles such a row for a pushed query it strips a trailing
+# correlation (CORR_FACTOR64, 3 words) if the word three words from the
+# end looks like its AttributeHeader (NdbReceiver::execTRANSID_AI, the
+# variant taking the signal).  Rows of a pushed *lookup* query carry no
+# correlation, so a row whose own data has 0xFFE8 in the upper half of
+# that word loses its last 12 bytes.  The VARBINARY payloads below repeat
+# the bytes 00 00 E8 FF in all four rotations, so for one rotation that
+# word holds such a value whatever the column's offset in the row.
+#
+# Each shape runs with ndb_join_pushdown OFF and ON and the two results
+# are compared inside the test (ndb_spj_shapes_check.inc).  The lookup
+# queries that hit Q-1 run last.
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+  WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 100)
+  SELECT n FROM c;
+
+# Rows 1..4: about 1.2KB (fragmented in VM_TRACE builds only),
+# rows 5..8: about 29.8KB (fragmented in all builds); rotation (id-1) % 4.
+CREATE TABLE wp (
+  id INT NOT NULL PRIMARY KEY,
+  fk INT NOT NULL,
+  vb VARBINARY(29900) NOT NULL
+) ENGINE=NDB;
+CREATE TABLE wc (
+  id INT NOT NULL PRIMARY KEY,
+  vb VARBINARY(29900) NOT NULL
+) ENGINE=NDB;
+INSERT INTO wp
+  SELECT n, 9 - n,
+         REPEAT(ELT(1 + (n - 1) % 4, x'0000E8FF', x'00E8FF00', x'E8FF0000', x'FF0000E8'),
+                IF(n <= 4, 300, 7450))
+  FROM seq WHERE n <= 8;
+INSERT INTO wc
+  SELECT n,
+         REPEAT(ELT(1 + (n - 1) % 4, x'0000E8FF', x'00E8FF00', x'E8FF0000', x'FF0000E8'),
+                IF(n <= 4, 301, 7449))
+  FROM seq WHERE n <= 8;
+
+# Driving table outside NDB: wp (eq_ref on drv.x) becomes the root of a
+# pushed lookup query, executed once per drv row.
+CREATE TABLE drv (x INT NOT NULL) ENGINE=InnoDB;
+INSERT INTO drv SELECT n FROM seq WHERE n <= 8;
+ANALYZE TABLE wp, wc, drv;
+
+SELECT id, LENGTH(vb), HEX(RIGHT(vb, 4)) FROM wc ORDER BY id;
+
+--echo #
+--echo # Pushed scan queries (rows carry a correlation)
+--echo #
+let $spj_label= W5-scan-query-wide-child;
+let $spj_query= SELECT wp.id, wc.id, LENGTH(wc.vb), MD5(wc.vb)
+  FROM wp STRAIGHT_JOIN wc ON wc.id = wp.fk;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= W6-scan-query-wide-root-left;
+let $spj_query= SELECT wp.id, MD5(wp.vb), wc.id
+  FROM wp LEFT JOIN wc ON wc.id = wp.fk;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Wide linked keys: the parent row sent to DBSPJ is fragmented too
+--echo # (VM_TRACE builds)
+--echo #
+CREATE TABLE kp (
+  id INT NOT NULL PRIMARY KEY,
+  k VARBINARY(1300) NOT NULL
+) ENGINE=NDB;
+CREATE TABLE kc (
+  k VARBINARY(1300) NOT NULL PRIMARY KEY,
+  k2 VARBINARY(1300) NOT NULL,
+  val INT NOT NULL,
+  KEY ix_k2 (k2)
+) ENGINE=NDB;
+INSERT INTO kp SELECT n, CONCAT(REPEAT(x'00E8FF00', 300), LPAD(n % 20, 4, '0'))
+  FROM seq WHERE n <= 60;
+INSERT INTO kc SELECT CONCAT(REPEAT(x'00E8FF00', 300), LPAD(n, 4, '0')),
+                      CONCAT(REPEAT(x'00E8FF00', 300), LPAD(n, 4, '0')), n
+  FROM seq WHERE n <= 15;
+ANALYZE TABLE kp, kc;
+
+let $spj_label= W7-wide-linked-pk-lookup;
+let $spj_query= SELECT kp.id, kc.val, MD5(kc.k)
+  FROM kp LEFT JOIN kc ON kc.k = kp.k;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= W8-wide-linked-index-scan;
+let $spj_query= SELECT kp.id, kc.val
+  FROM kp STRAIGHT_JOIN kc FORCE INDEX (ix_k2) ON kc.k2 = kp.k;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+--echo #
+--echo # Pushed lookup queries (no correlation in the rows)
+--echo #
+# Last: these hit Q-1, which stops a debug mysqld (assertion in
+# NdbReceiver::unpackRow) and would hide the shapes above.
+# Wide child row
+let $spj_label= W1-lookup-query-wide-child;
+let $spj_query= SELECT drv.x, wp.id, wc.id, LENGTH(wc.vb), MD5(wc.vb)
+  FROM drv STRAIGHT_JOIN wp ON wp.id = drv.x
+           STRAIGHT_JOIN wc ON wc.id = wp.fk;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# Wide root row
+let $spj_label= W2-lookup-query-wide-root;
+let $spj_query= SELECT drv.x, wp.id, LENGTH(wp.vb), MD5(wp.vb), wc.id
+  FROM drv STRAIGHT_JOIN wp ON wp.id = drv.x
+           STRAIGHT_JOIN wc ON wc.id = wp.fk;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# The raw bytes, compared as they are
+let $spj_label= W3-lookup-query-wide-raw;
+let $spj_query= SELECT drv.x, wp.vb, wc.vb
+  FROM drv STRAIGHT_JOIN wp ON wp.id = drv.x
+           STRAIGHT_JOIN wc ON wc.id = wp.fk;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+# One row at a time, each with a constant root key
+let $w= 1;
+while ($w <= 8)
+{
+  let $spj_label= W4-lookup-root-const-$w;
+  let $spj_query= SELECT wp.id, LENGTH(wp.vb), MD5(wp.vb), LENGTH(wc.vb), MD5(wc.vb)
+    FROM wp STRAIGHT_JOIN wc ON wc.id = wp.fk WHERE wp.id = $w;
+  --source suite/ndb_opt/ndb_spj_shapes_check.inc
+  inc $w;
+}
+
+DROP TABLE seq, wp, wc, drv, kp, kc;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

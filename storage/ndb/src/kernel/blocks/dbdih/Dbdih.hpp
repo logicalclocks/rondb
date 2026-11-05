@@ -2676,11 +2676,19 @@ class Dbdih : public SimulatedBlock {
   SwitchReplicaRecord c_switchReplicas;
 
   struct StopPermProxyRecord {
-    StopPermProxyRecord() { clientRef = 0; }
+    StopPermProxyRecord() {
+      clientRef = 0;
+      released = false;
+    }
 
     Uint32 clientData;
     BlockReference clientRef;
     BlockReference masterRef;
+    /**
+     * The client released the request with STOP_PERM_REL while the master
+     * still had it. The master answers it anyway; the answer is dropped.
+     */
+    bool released;
   };
 
   struct StopPermMasterRecord {

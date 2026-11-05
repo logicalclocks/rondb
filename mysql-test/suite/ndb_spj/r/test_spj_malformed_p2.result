@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-2: scan tableId used as an array index before validation
+Running command
+Result of command: 0
+Test program success!

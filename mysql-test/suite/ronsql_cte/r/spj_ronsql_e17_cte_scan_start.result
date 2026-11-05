@@ -1,0 +1,33 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e17-1: control, no error insert ===
+== Query ==
+WITH e17_c AS (SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g)
+SELECT COUNT(*) AS ng, SUM(n) AS s FROM e17_c;
+
+Number of output lines, including header: 2
+RonSQL request bounded to 120 s
+
+== Diff ==
+==========
+
+== Expected result ==
+WITH e17_c AS (SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g)
+SELECT COUNT(*) AS ng, SUM(n) AS s FROM e17_c|
+ng	s
+40	4000
+
+=== e17-2: fragment scans sent 10 ms apart (DBTC 8128) ===
+== Query ==
+WITH e17_c AS (SELECT g, COUNT(*) AS n FROM e17_t GROUP BY g)
+SELECT COUNT(*) AS ng, SUM(n) AS s FROM e17_c;
+
+Number of output lines, including header: 2
+RonSQL request bounded to 120 s
+
+== Diff ==
+==========
+
+
+=== e17-3: no DBSPJ request or join-aggregation state left behind ===

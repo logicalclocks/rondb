@@ -3741,6 +3741,10 @@ private:
   void checkCteReady(Signal* signal, JoinAggregationState* state);
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
                                Uint32 errorCode, bool notifyPeers = true);
+  void redistributeKeyTooLong(Signal* signal, JoinAggregationState* state,
+                              Uint32 aggStateKey, Uint32 senderAggStateKey,
+                              Uint32 identWord, const Uint32 transid[2],
+                              BlockReference replyRef);
   bool isJoinAggCoordinatorFailed(Uint32 coordinatorRef);
   bool joinAggParkCapReached();
   bool checkJoinAggNodeFailed(Signal* signal, Uint32 aggStateKey,
@@ -4033,6 +4037,7 @@ private:
   bool getFragmentrec(Uint32 fragId);
   void handlePendingAbort(Signal*, TcConnectionrec*);
   void handleOuterJoinAggKeyNotFound(Signal*, TcConnectionrecPtr);
+  bool feedOuterJoinAggNullRow(Signal*, TcConnectionrecPtr);
 public:
   /* False when no group could be evicted (the table is empty: a single
    * group could not be allocated, query memory is exhausted); the caller

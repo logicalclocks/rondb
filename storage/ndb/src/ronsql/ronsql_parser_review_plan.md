@@ -5,12 +5,16 @@ Updated: 2026-11-03
 Original baseline: 7128c75dca405f5e0fff6be19ae2b584beb1566d
 Cleanup review baseline: 45a7568faed6fe58aca99170be3a50c03a4495c9
 Follow-up review baseline: 6b0b7da91c5dacf5d6401b2ec65135fa7d254ecb
+Latest tested and pushed parser batch: 735863c9086c19c58d00d9bc95a9056d6ee74d4e
 
 ## Scope and working agreement
 
 Review the lexer, grammar, AST, semantic analysis and preparation passes.
 Read executor interfaces where needed to understand frontend contracts.
 Data-node implementation changes are outside this review.
+The current selection covers ParseOnly inventory tests, positive CTE-body CASE
+coverage, EXPLAIN cleanup and documentation. Optional syntax features are
+deferred at the user's request; DECIMAL exactness is outside this selection.
 
 Three parallel source investigations covered grammar and AST construction,
 condition traversal and collection, and preparation phases and registration.
@@ -33,16 +37,19 @@ Function names identify the durable locations.
 | I4 | Fixes and fault-injection tests committed and pushed; user reported tests passed | cac1d1bf650 (fixes), 6b0b7da91c5 (tests) |
 | C1 | Completed for statement construction and synthetic table defaults | 45a7568faed |
 | C3 | Original work and list-construction follow-ups committed and pushed; user reported tests passed | 45a7568faed, 6b0b7da91c5 |
-| C4 | Projection/HAVING follow-ups and regression coverage applied; user validation pending | 45a7568faed, 6b0b7da91c5; current follow-ups uncommitted |
-| C2 | C2a-C2e approved and applied; validation is user-owned | cfcc91bc44e |
-| C5 | C5a-C5d committed; remaining collector/overflow changes and regressions applied; user validation pending | cfcc91bc44e; current follow-ups uncommitted |
-| C6 | C6a-C6b approved and applied; validation is user-owned | cfcc91bc44e |
-| C7 | C7a-C7d approved and applied; validation is user-owned | cfcc91bc44e |
-| C8 | C8a-C8c approved and applied; validation is user-owned | cfcc91bc44e |
-| C9 | C9a approved and applied; validation is user-owned | cfcc91bc44e |
-| Unary minus | Precedence and cross-table diagnostic changes plus eight regression cases applied; user validation pending | Uncommitted |
-| Feature candidates | Remaining candidates require individual evaluation and approval | - |
-| Training module | Completed, reviewed by the user, committed and pushed in hops_slideware | 387c866 |
+| C4 | Projection/HAVING fixes and regressions committed and pushed; user reported all tests passed | 45a7568faed, 6b0b7da91c5, 735863c9086 |
+| C2 | C2a-C2e complete; subsequent user tests passed | cfcc91bc44e |
+| C5 | Collector/overflow cleanup and regressions committed and pushed; user reported all tests passed | cfcc91bc44e, 735863c9086 |
+| C6 | C6a-C6b complete; subsequent user tests passed; EXPLAIN follow-up below | cfcc91bc44e |
+| C7 | C7a-C7d complete; subsequent user tests passed | cfcc91bc44e |
+| C8 | C8a-C8c complete; subsequent user tests passed | cfcc91bc44e |
+| C9 | C9a complete; subsequent user tests passed | cfcc91bc44e |
+| Unary minus | Precedence fix, cross-table guard and eight regressions committed and pushed; user reported all tests passed | 735863c9086 |
+| ParseOnly inventory | 25 cases and CTest/MTR wiring approved and applied; user validation pending | Uncommitted |
+| CTE-body CASE coverage | Two positive COUNT(CASE) comparisons approved and applied; user validation pending | Uncommitted |
+| EXPLAIN dispatch | Shared aggregate helper approved and applied; user validation pending | Uncommitted |
+| Feature candidates | Deferred at the user's request | - |
+| Training module | Original module pushed; 33-slide baseline refresh approved and applied locally | 387c866 + uncommitted refresh |
 
 The first two commits were pushed to origin/RONDB-1124-fixes:
 
@@ -60,9 +67,10 @@ The user selected these six items on 2026-10-29. Independent investigations
 ran in parallel, with each source patch reviewed and approved before application.
 C2a-C2e, C5a-C5d, C6a-C6b, C7a-C7d, C8a-C8c and C9a are approved and applied
 and were committed and pushed in cfcc91bc44e. The user requested
-commit and push on 2026-10-30. No test result was reported for this batch in the
-conversation. The assistant did not build, test or regenerate lexer/parser
-files; git diff --check passed.
+commit and push on 2026-10-30. No test result was reported at that commit
+point; the user subsequently reported all tests passing, most recently for
+735863c9086 on 2026-11-03. The assistant did not build, test or regenerate
+lexer/parser files; git diff --check passed.
 
 | Track | First patch and sequence | Dependencies |
 | --- | --- | --- |
@@ -81,11 +89,12 @@ I4 OOM corrections and subsequent follow-ups are recorded below.
 
 ### Follow-up review of C4/C5 and unary minus (2026-11-03)
 
-Baseline: 6b0b7da91c5. All source and test changes below were reviewed and
-approved individually and are applied locally, uncommitted. git diff --check
-passed. The assistant has not built, regenerated the parser or run tests;
-no user test result has yet been reported for this follow-up batch.
-The findings describe source paths, not reproduced runtime failures.
+Baseline: 6b0b7da91c5. The source changes and regressions in this section were
+reviewed individually, committed and pushed in 735863c9086. After the CTE CASE
+test correction described below, the user reported all tests passed on
+2026-11-03. git diff --check passed. The assistant did not build, regenerate
+the parser or run tests. The initial findings were source-derived; the user
+supplied the runtime validation. Later local changes are listed separately.
 
 Applied changes:
 
@@ -127,7 +136,7 @@ Applied changes:
   execution substitutes subquery results. Inner SELECT bodies contribute no
   registers to the outer result printer.
 
-Fourteen regression cases are applied, awaiting user execution:
+Fourteen HAVING IN regression cases are included in 735863c9086:
 
 - ronsql_subquery: seven strict MySQL/CLI/RDRS comparisons covering SUM and AVG
   absent from SELECT, arithmetic around an aggregate, nullable operands,
@@ -139,7 +148,7 @@ Fourteen regression cases are applied, awaiting user execution:
   aliases, COUNT aliases under NOT IN and aliases inside arithmetic.
   Expected-result files were drafted from the fixtures, not recorded by a run.
 
-Eight unary-minus regression cases are also applied, awaiting user execution:
+Eight unary-minus regression cases are also included in 735863c9086:
 ronsql_constants adds five strict MySQL/CLI/RDRS comparisons for folded and
 column arithmetic, repeated minus, and HAVING with explicit grouping controls.
 Its existing negative-overflow diagnostic now reflects negation before
@@ -147,15 +156,15 @@ multiplication. ronsql_join_agg adds two CLI rejection cases and a strict
 MySQL/RDRS binary-subtraction control. Expected results have not been recorded
 by a test run.
 
-Eight cross-table OR regressions are applied in ronsql_join_where_classify,
-awaiting user execution. Strict MySQL/RDRS comparisons cover 31/32 terms and
+Eight cross-table OR regressions in ronsql_join_where_classify are included
+in 735863c9086. Strict MySQL/RDRS comparisons cover 31/32 terms and
 left-associated, right-associated and balanced trees; only the final term
 matches rows. CLI cases require the limit diagnostic at 33 terms, including
 late IS NULL/EXTRACT operands, and retain rejection of an AND branch under OR.
 The query files are removed after each successful comparison or expected error.
 
-Five CASE regression queries are applied in ronsql_cte_case, awaiting user
-execution. Strict MySQL/RDRS comparisons cover left-associated, right-associated
+Five CASE regression queries in ronsql_cte_case are included in 735863c9086.
+Strict MySQL/RDRS comparisons cover left-associated, right-associated
 and balanced AND/OR trees and 33-term AND/OR conditions whose final atom changes
 the result. CLI cases retain rejection of mixed connectives in both directions
 and check clean rejection of a literal condition. Expected results were drafted
@@ -173,15 +182,16 @@ a chained CTE hits the pre-existing "CTE aggregate over complex expression
 not yet supported" restriction in build_cte_virtual_tables(). Test 20 uses
 the same unsupported aggregate shape. Both tests now require that rejection
 through the CLI instead of incorrectly expecting successful comparisons.
-The revised expectations await user execution.
+The user reported all tests passed after this correction.
 
-Positive CTE-body CASE projection-ordering coverage remains an open follow-up.
-It needs a supported, result-sensitive aggregate shape, or separately reviewed
-expression-result type inference for SUM(CASE ...) CTE outputs. Tests 19 and
-20 do not validate chained projection offsets.
+Positive CTE-body CASE projection-ordering coverage was still missing from
+735863c9086: Tests 19 and 20 check rejection, not chained projection offsets.
+The new COUNT(CASE) comparisons are described in the local follow-ups below.
+SUM(CASE ...) CTE output support would require separate expression-result
+type work and is not part of the current selection.
 
-Eleven CTE Boolean-collection regressions are applied in ronsql_cte_index_body,
-awaiting user execution. Two raw conjuncts expand to 63/64/65 AND terms;
+Eleven CTE Boolean-collection regressions in ronsql_cte_index_body are included
+in 735863c9086. Two raw conjuncts expand to 63/64/65 AND terms;
 left-associated trees exercise the former 64-entry pending-stack boundary,
 with right-associated and balanced controls. Seven strict MySQL/RDRS
 comparisons check the bound and final residual predicate, and EXPLAIN checks
@@ -190,8 +200,8 @@ require FORCE INDEX errors for unusable/missing indexes, including the
 65-term overflow shape. All generated SQL and EXPLAIN files are removed.
 Expected results were drafted from fixtures and source, not recorded by a run.
 
-Scalar-subquery NULL handling in HAVING numeric expressions is applied,
-awaiting user validation. An empty scalar result or SQL NULL is substituted as
+Scalar-subquery NULL handling in HAVING numeric expressions is included in
+735863c9086. An empty scalar result or SQL NULL is substituted as
 T_NULL; evaluate_having_value() now returns the same NaN marker used for NULL
 aggregate results. Six strict MySQL/CLI/RDRS comparisons in ronsql_subquery cover
 empty aggregate input, zero returned rows, an all-NULL inner value, NOT,
@@ -203,9 +213,9 @@ during preparation with UNSUPPORTED classification. The shared registration
 and substitution walks stop at the enclosing IN, so nested nodes in that
 operand would remain unprocessed. The guard uses ce_has_subquery() and covers
 WHERE and HAVING. Six disconnected CLI regressions in ronsql_subquery cover
-scalar subqueries, arithmetic, negation, EXISTS and nested IN; user execution
-is pending. Supporting these shapes needs coordinated registration and
-substitution traversal.
+scalar subqueries, arithmetic, negation, EXISTS and nested IN. These tests
+are included in the user-reported passing batch. Supporting these shapes
+needs coordinated registration and substitution traversal.
 
 Preparation-time HAVING support validation is applied. Separate helpers check
 predicate and numeric-value positions, sharing the aggregate-reference test
@@ -222,15 +232,54 @@ operators, invalid expression positions, subquery positions, negated IN and
 an empty-input WHERE condition. Two strict MySQL/CLI/RDRS controls in
 ronsql_subquery cover double-NOT arithmetic IN and supported numeric/IS NULL
 expressions, including DIV inside an aggregate argument. Existing scalar,
-nullable IN and SELECT-subquery-alias tests remain relevant. All await user
-execution; expected results were drafted from fixtures and diagnostics.
+nullable IN and SELECT-subquery-alias tests remain relevant. These tests are
+included in 735863c9086 and the user-reported passing results. Expected files
+were drafted from fixtures and diagnostics rather than recorded by the assistant.
 
-Remaining work:
+### Remaining coverage and maintenance selected on 2026-11-03
 
-1. The user builds and runs the relevant suites, including Bison generation
-   with the existing warning-as-error settings.
-2. Address any reported failures; commit/push follows a separate user request.
-   The training module remains pinned to the baseline below.
+The user selected items 1-4 below and deferred optional feature work. Items
+1-3 are approved and applied locally after 735863c9086. They are uncommitted
+and have not yet been reported tested. Exact reviewed-content checks and
+git diff --check passed; the assistant has not built or run tests.
+
+1. ParseOnly authorization inventory: ronsql_parse_only_test.cpp adds 18
+   exact-inventory cases and seven rejection cases. Coverage includes aliases,
+   deduplication, both ON operands, CASE/HAVING/ORDER references, nested and
+   correlated subqueries, conservative unqualified/alias attribution, CTE
+   visibility, unused CTEs, quoted names and database/CTE/join guards.
+   The tests share ronsql_oom_test's initialized client entry point.
+   ronsql_parser_access_test is a cluster-free CTest entry; MTR's
+   ronsql_parser_oom requires both new suites and at least 40 completed cases.
+
+2. Positive CTE-body CASE coverage: ronsql_cte_case Tests 21-22 compare
+   COUNT(CASE ...) in a chained CTE against MySQL. COUNT's output type is
+   known without deriving the CASE argument type. A separate nullable fixture
+   yields sums NULL/100/NULL for keys 100/200/300. Literal-left and column-RHS
+   conditions expect counts 0/1/1 and 0/1/0 respectively. Loading a non-NULL
+   key instead of the NULL aggregate would change the result. The fixture is
+   removed during cleanup; these source-derived expectations await execution.
+
+3. EXPLAIN cleanup: parse-tree rendering now calls register_simple_aggregate()
+   for COUNT/MIN/MAX/SUM. This removes a duplicate switch while preserving
+   the compiler calls and printed aggregate indices. AVG retains its separate
+   representation.
+
+4. Documentation: this plan and the training module now distinguish the
+   tested/pushed 735863c9086 baseline from the new untested changes above.
+   The approved training refresh adds unary-minus, HAVING-support and Boolean
+   collector slides, updates traversal/ParseOnly coverage and pins source links
+   to that baseline. The documentation changes remain uncommitted.
+
+Remaining validation and delivery:
+
+- The user rebuilds the regression driver and runs ronsql_parser_access_test,
+  ronsql.ronsql_parser_oom, ronsql.ronsql_cte_case and the relevant existing
+  EXPLAIN coverage, or the full ronsql suite.
+- Address any reported failures; a passing earlier batch does not validate
+  these new tests or the EXPLAIN cleanup.
+- The user checks the refreshed training module's presentation. Commit/push
+  of this new batch follows a separate user request.
 
 ## Correctness investigations
 
@@ -518,7 +567,8 @@ and JoinClause, including the embedded table's hint_kind and hint_indexes.
 The allocation helper does not record authorization references or validate ON
 conditions.
 
-General table/join construction helpers are now applied locally in C2d/C2e.
+General table/join construction helpers were committed in cfcc91bc44e
+as C2d/C2e.
 Existing ronsql_cte_scalar Test 8 exercises the synthesized-FROM shape.
 
 ### C2 Share inner SELECT construction and grammar components
@@ -584,8 +634,9 @@ Follow-up review on 2026-10-31:
 - On 2026-11-02, added two ParseOnly regressions to ronsql_oom_test: GROUP BY
   and ORDER BY lists of 12,000 columns must parse with zero parser-stack
   allocation attempts. The first such allocation is armed to fail. CTest's
-  ronsql_parser_list_stack_test runs these cases without a cluster; MTR's
-  ronsql.ronsql_parser_oom now requires all 15 tests and the new suite.
+  ronsql_parser_list_stack_test runs these cases without a cluster. At that
+  point, MTR's ronsql.ronsql_parser_oom required at least 15 cases and the
+  new suite.
   Existing nested-NOT tests retain coverage of actual stack growth and
   depth-limit rejection.
 
@@ -603,8 +654,9 @@ Follow-up review on 2026-10-31:
 
 Status: original helper and three walkers completed in 45a7568faed.
 Validator and subquery-discovery follow-ups were committed and pushed in
-6b0b7da91c5 after the user reported all tests passed on 2026-11-02. Current
-projection/HAVING follow-ups are recorded above and await user validation.
+6b0b7da91c5 after the user reported all tests passed on 2026-11-02.
+Projection/HAVING follow-ups were committed in 735863c9086 after the user
+reported all tests passed on 2026-11-03. New coverage is recorded separately.
 
 A local condition_children() returns at most two children in the current
 SELECT scope. Read-only and mutable views share one dispatch switch and
@@ -668,7 +720,7 @@ Follow-up review on 2026-10-31:
   same_inner_filter() has operator-specific equality and conservative fallback
   rules. Aggregate-expression traversal uses a separate expression type.
 
-- The current follow-up batch adds shared main/CTE projection discovery and
+- The 735863c9086 batch added shared main/CTE projection discovery and
   HAVING reference traversal, including IN's outer operand. HAVING identifiers
   still change from column indices to aggregate registers in compile(); the
   validation and resolution phases retain their order.
@@ -680,8 +732,9 @@ All eight throwing AND callers and the single OR caller now
 use the shared collector through their existing wrappers. Their 64-term limits,
 messages, source order and original leaf pointers are preserved. git diff
 --check passed and the source matches the approved patches; building and tests
-remain user-owned and have not been run by the assistant. The current
-collector follow-ups and their pending regression coverage are recorded above.
+remain user-owned and have not been run by the assistant. Collector
+follow-ups and their regressions were committed in 735863c9086 after the
+user reported all tests passed.
 
 The original review found these different contracts:
 
@@ -723,15 +776,15 @@ synthetic connective nodes retain the existing source-span contract.
 
 The follow-up audit led to checked OR validation, safe projection discovery,
 shared cross-table/CASE collectors and dynamic CTE scan-planning collection.
-These changes are applied locally; details and remaining tests are recorded
-in the follow-up review section above.
+These changes and their regression coverage were committed and pushed in
+735863c9086 after the user reported all tests passed.
 
 ### C6 Share aggregate construction and registration
 
 Status: agreed C6a-C6b implementation complete in cfcc91bc44e.
 The source matches the approved patches and git diff --check
 passed. Building and tests remain user-owned and have not been run by the
-assistant. C7 output-phase extraction can now use the aggregate helpers.
+assistant. C7 output-phase extraction uses the aggregate helpers.
 
 C6a extracted make_aggregation_compiler() from the four constructions originally
 at RonSQLPreparer.cpp:2778, :2935, :20338 and :20356. It returns a fresh compiler
@@ -747,9 +800,10 @@ output indices, while unselected flattened-CTE expressions still register usage
 even though their returned index is discarded. Registration order, compiler
 ownership, existing guards and AVG cases remain unchanged in the callers.
 
-Additional follow-up candidate: EXPLAIN parse-tree rendering also repeats the
-COUNT/MIN/MAX/SUM dispatch. Review a separate migration after the helper exists;
-it is outside the three preparation paths in C6b.
+The EXPLAIN follow-up is now approved and applied locally: parse-tree
+rendering uses register_simple_aggregate() for COUNT/MIN/MAX/SUM instead of
+repeating the switch. Compiler calls and printed indices are preserved.
+This change is uncommitted and awaits user validation.
 
 AVG needs an explicit representation:
 
@@ -912,9 +966,13 @@ Completed sequence:
    6b0b7da91c5 after the user reported all tests passed.
 10. Finish the 30-slide training module; commit/push 387c866 in hops_slideware
     after the user reviewed it.
-11. Investigate the selected C4/C5 and unary-minus candidates. Apply the
-    individually approved follow-up fixes and fourteen HAVING IN tests locally.
-    Remaining work and validation are listed in the follow-up review above.
+11. Investigate the selected C4/C5 and unary-minus candidates; apply the
+    individually approved fixes and regression coverage. Correct the two
+    unsupported CTE SUM(CASE) test expectations, then commit/push 735863c9086
+    after the user reported all tests passed on 2026-11-03.
+
+The new items 1-4 are tracked in the coverage and maintenance section above;
+their validation and delivery are separate from this completed sequence.
 
 The earlier C2 and C5-C9 work used parallel investigations and individual patch
 approval within these boundaries:
@@ -935,8 +993,9 @@ approval within these boundaries:
   then lexer consistency and the remaining raw-allocation audit. Keep these
   corrections separate from cleanup patches and coordinate I4b with C7.
 
-Deferred C3/C4 list/traversal cleanup is included in 6b0b7da91c5; the current
-projection/HAVING/collector work is a separate, uncommitted follow-up batch.
+Deferred C3/C4 list/traversal cleanup is included in 6b0b7da91c5.
+Projection/HAVING/collector and unary-minus follow-ups are included in
+735863c9086. The new ParseOnly/CTE coverage and EXPLAIN cleanup remain local.
 
 Validation for future patches should cover the relevant existing suites and
 contracts below; this is proposed coverage, not a claim that new cases exist:
@@ -955,14 +1014,15 @@ contracts below; this is proposed coverage, not a claim that new cases exist:
 
 - Bison generation with the repository's warning-as-error configuration.
 
-Dedicated ParseOnly inventory coverage was not established during the review.
-Check that coverage before relying on execution tests for authorization safety.
+Dedicated ParseOnly inventory cases are now applied locally, as described
+above; they still need user execution. They assert the returned tables and
+columns directly, separately from execution and allocation-failure coverage.
 The user continues to own all building and testing.
 
 ## Feature candidates after cleanup
 
-Status: pending evaluation and separate approval. No feature candidate below
-was implemented by the I1-I3 or C1/C3/C4 patches.
+Status: deferred at the user's request while items 1-4 are completed.
+These remain candidates for separate evaluation and approval.
 
 Small frontend candidates: explicit INNER JOIN, optional AS, unary plus,
 ordinary SQL comments and broader floating-literal spellings.
@@ -972,10 +1032,10 @@ Ordinary aggregate aliases in HAVING need explicit register and AVG handling.
 NOT LIKE and BETWEEN need lowering, precedence and NULL-semantics review.
 Do not classify general NOT IN subqueries as a syntax-only addition.
 
-Explicit unary-minus precedence is now applied locally to both expression
-grammars using T_UNARY_MINUS. The source-level precedence discrepancy led to
-this correction. Eight regression cases are applied; executable validation
-remains pending. Unary plus is still a separate feature candidate.
+Explicit unary-minus precedence in both expression grammars, using
+T_UNARY_MINUS, and its eight regression cases are committed in 735863c9086.
+The user reported all tests passed. Unary plus remains a separate, deferred
+feature candidate.
 
 General SELECT expressions, richer CASE, nested subqueries, DISTINCT, UNION,
 window functions and OFFSET require broader semantic/execution design.
@@ -986,12 +1046,17 @@ lowering, compilation. Avoid undertaking that redesign as one cleanup patch.
 
 Target: /Users/mikael/github/hops_slideware/2026-10/ronsql_parser_training/index.html
 
-Status: completed. The 30-slide HTML module uses the existing slideshow engine
+Status: the original 30-slide HTML module uses the existing slideshow engine
 and RonDB theme. The user reviewed it and requested commit/push. It is saved
 and committed as 387c86655e32c81b19f6dc599dbadf8ff696e8d6 on rondb26-edits in
 https://github.com/mronstro/hops-slideware; that commit was pushed.
 
-Examples and source references are pinned to parser commit
-6b0b7da91c5dacf5d6401b2ec65135fa7d254ecb. Grammar acceptance is distinguished
-from preparation and execution support. The current parser follow-up changes
-postdate that baseline. The assistant did not render or deploy the module.
+The approved local refresh expands the module to 33 slides and pins examples
+and source references to parser commit
+735863c9086c19c58d00d9bc95a9056d6ee74d4e. It covers Boolean collector limits,
+HAVING validation, unary-minus precedence and projection/reference traversal.
+Grammar acceptance remains distinguished from preparation and execution
+support. Newer local tests and EXPLAIN cleanup are explicitly marked as
+awaiting validation and outside that baseline. The refresh is uncommitted;
+visual review remains with the user. The assistant did not render or deploy
+this update.

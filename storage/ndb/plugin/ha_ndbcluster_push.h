@@ -730,7 +730,10 @@ class ndb_pushed_builder_ctx {
   friend bool ndb_push_aggregation(THD *thd, const JOIN *join,
                                    ndb_pushed_builder_ctx &builder,
                                    bool allow_outer_join);
-  friend void ndb_clear_pushed_agg_state(ndb_pushed_builder_ctx &builder);
+  friend bool ndb_push_aggregation_to_engine(
+      THD *thd, const AccessPath *root_path, const JOIN *join,
+      ndb_pushed_builder_ctx &builder, bool push_join_aggregate,
+      bool allow_outer_join, bool push_table_aggregate);
   friend void ndb_apply_aggregation_options(ndb_pushed_builder_ctx &builder,
                                             uint tab_no,
                                             NdbQueryOptions *options);
@@ -793,6 +796,10 @@ class ndb_pushed_builder_ctx {
                               const KEY_PART_INFO *key_part,
                               ndb_table_map &parents);
 
+  // Defined in ha_ndbcluster_push_agg.cc
+  bool is_param_refs_pushable(const pushed_table *table);
+  bool is_null_safe_key_pushable(pushed_table *table);
+
   void validate_join_nest(ndb_table_map nest, uint first, uint last,
                           const char *nest_type);
 
@@ -851,6 +858,11 @@ class ndb_pushed_builder_ctx {
 
   // Number of internal operations used so far (unique lookups count as two).
   uint m_internal_op_count;
+
+  // Number of key parts of the pushed children so far that refer to a
+  // table before the root. build_key() sends each as a paramValue(), and
+  // at most MAX_REFERRED_FIELDS fit in m_referred_fields[].
+  uint m_param_refs;
 
   uint m_fld_refs;
   Field *m_referred_fields[ndb_pushed_join::MAX_REFERRED_FIELDS];

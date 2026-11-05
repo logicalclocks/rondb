@@ -1,0 +1,141 @@
+#
+# Tables and data
+#
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 3000)
+SELECT n FROM c;
+CREATE TABLE p (
+id INT NOT NULL PRIMARY KEY,
+a INT NULL,
+b INT NULL,
+c INT NULL,
+u INT NULL,
+v VARCHAR(10) NULL,
+KEY ix_pb (b, id)
+) ENGINE=NDB;
+INSERT INTO p
+SELECT n,
+IF(n % 5 = 0, NULL, (n * 7) % 700 + 1),
+IF(n % 7 = 0, NULL, n % 50),
+IF(n % 3 = 0, NULL, n % 4),
+IF(n % 4 = 0, NULL, n),
+IF(n % 9 = 0, NULL, CONCAT('k', n % 80))
+FROM seq WHERE n <= 1000;
+CREATE TABLE c1 (
+id INT NOT NULL PRIMARY KEY,
+x INT NOT NULL,
+y INT NULL
+) ENGINE=NDB;
+INSERT INTO c1
+SELECT n, n % 13, IF(n % 6 = 0, NULL, n % 45) FROM seq WHERE n <= 600;
+CREATE TABLE c2 (
+id INT NOT NULL PRIMARY KEY,
+b INT NULL,
+c INT NULL,
+w INT NOT NULL,
+KEY ix_b (b),
+KEY ix_bc (b, c)
+) ENGINE=NDB;
+INSERT INTO c2
+SELECT n, IF(n % 11 = 0, NULL, n % 60), IF(n % 5 = 0, NULL, n % 4), n
+FROM seq WHERE n <= 1500;
+CREATE TABLE cu (
+id INT NOT NULL PRIMARY KEY,
+u INT NULL,
+z INT NOT NULL,
+UNIQUE KEY uk_u (u)
+) ENGINE=NDB;
+INSERT INTO cu SELECT n, IF(n % 10 = 0, NULL, n), n % 17 FROM seq WHERE n <= 800;
+CREATE TABLE cpk2 (
+k1 INT NOT NULL,
+k2 INT NOT NULL,
+val INT NOT NULL,
+PRIMARY KEY (k1, k2)
+) ENGINE=NDB;
+INSERT INTO cpk2
+SELECT s1.n, s2.n - 1, s1.n * 10 + s2.n
+FROM seq s1, seq s2 WHERE s1.n <= 700 AND s2.n <= 4;
+CREATE TABLE cv (
+k VARCHAR(10) NOT NULL PRIMARY KEY,
+z INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO cv SELECT CONCAT('k', n - 1), n FROM seq WHERE n <= 70;
+CREATE TABLE c3 (
+b INT NOT NULL,
+id INT NOT NULL,
+val INT NOT NULL,
+PRIMARY KEY (b, id)
+) ENGINE=NDB PARTITION BY KEY (b);
+INSERT INTO c3 SELECT n % 60, n, n % 23 FROM seq WHERE n <= 1200;
+ANALYZE TABLE p, c1, c2, cu, cpk2, cv, c3;
+Table	Op	Msg_type	Msg_text
+test.p	analyze	status	OK
+test.c1	analyze	status	OK
+test.c2	analyze	status	OK
+test.cu	analyze	status	OK
+test.cpk2	analyze	status	OK
+test.cv	analyze	status	OK
+test.c3	analyze	status	OK
+#
+# NULL linked key into a PK lookup child
+#
+# N1_lookup_inner: rows=680 pushed=2 exec=1
+# N2_lookup_left: rows=1000 pushed=2 exec=1
+# N3_lookup_root_null_child_key: rows=1 pushed=2 exec=1
+#
+# NULL linked key into an ordered-index (ref) scan child
+#
+# N4_scan_inner: rows=19511 pushed=2 exec=1
+# N5_scan_left: rows=19653 pushed=2 exec=1
+#
+# Composite keys where one part of the linked key is NULL
+#
+# N6_scan_composite_partial_null: rows=5111 pushed=2 exec=1
+# N7_scan_composite_partial_null_left: rows=5886 pushed=2 exec=1
+# N8_lookup_composite_pk_partial_null: rows=1000 pushed=2 exec=1
+# N9_scan_linked_and_const: rows=4711 pushed=2 exec=1
+#
+# NULL in a nullable unique index and in a VARCHAR PK link
+#
+# N10_unique_lookup_left: rows=1000 pushed=2 exec=1
+# N11_varchar_pk_lookup_left: rows=1000 pushed=2 exec=1
+#
+# NULL linked keys taken from an intermediate lookup and from a
+# grandparent
+#
+# N12_chain_lookup_then_scan: rows=12960 pushed=3 exec=1
+# N13_chain_left_left: rows=13390 pushed=3 exec=1
+# N14_key_from_parent_and_grandparent: rows=207 pushed=3 exec=1
+# N15_key_from_parent_and_grandparent_left: rows=1000 pushed=3 exec=1
+#
+# Pruned scan child, NULL prune key
+#
+# N16_pruned_scan_child_left: rows=17302 pushed=2 exec=1
+#
+# NULL-safe equality '<=>' as ref key: NULL <=> NULL is TRUE, so
+# the rows with p.b IS NULL must match the rows with c2.b IS NULL.
+#
+# N17_nullsafe_ref_inner: rows=38823 pushed=0 exec=0
+# N18_nullsafe_ref_left: rows=38823 pushed=0 exec=0
+# N19_nullsafe_composite: rows=7700 pushed=0 exec=0
+# N20_nullsafe_unique: rows=20560 pushed=0 exec=0
+#
+# NULL bounds and NULL-first ordering in the root's ordered index
+#
+# N21_root_is_null_bound: rows=96 pushed=2 exec=1
+# N22_root_range_excludes_null: rows=1983 pushed=2 exec=1
+# N23_root_range_or_null: rows=148 pushed=2 exec=1
+# N24_root_sorted_nulls_first: rows=131 pushed=2 exec=1
+#
+# Semi-join and antijoin over nullable linked columns
+#
+# N25_in_subquery_nullable: rows=858 pushed=2 exec=1
+# N26_not_exists_nullable: rows=142 pushed=2 exec=1
+# N27_not_in_subquery_with_null: rows=0 pushed=0 exec=0
+# N28_not_in_subquery_not_null: rows=0 pushed=0 exec=0
+# N29_left_join_is_null_antijoin: rows=142 pushed=2 exec=1
+#
+# Cleanup
+#
+DROP TABLE seq, p, c1, c2, cu, cpk2, cv, c3;

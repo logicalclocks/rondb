@@ -351,4 +351,52 @@ ronsql_cli caught exception: CTE aggregate over complex expression not yet suppo
 === Test 20: rejection - CTE-body SUM(CASE) with column RHS ===
 Error handling: RPE
 ronsql_cli caught exception: CTE aggregate over complex expression not yet supported.
+
+
+=== Test 21: CTE-body COUNT(CASE) literal-left comparison preserves offsets ===
+== Query ==
+WITH nullable_sums AS (
+SELECT v_custkey AS k, SUM(v_amt) AS t
+FROM cte_case_nullable GROUP BY v_custkey),
+case_counts AS (
+SELECT c.c_id AS k,
+COUNT(CASE WHEN 1 = c.c_region THEN nullable_sums.t ELSE 0 END) AS n
+FROM cte_customer AS c
+JOIN nullable_sums ON nullable_sums.k = c.c_id
+GROUP BY c.c_id)
+SELECT k, SUM(n) AS case_count
+FROM case_counts
+GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
+
+
+=== Test 22: CTE-body COUNT(CASE) column RHS preserves offsets ===
+== Query ==
+WITH nullable_sums AS (
+SELECT v_custkey AS k, SUM(v_amt) AS t
+FROM cte_case_nullable GROUP BY v_custkey),
+case_counts AS (
+SELECT c.c_id AS k,
+COUNT(CASE WHEN c.c_id > c.c_region THEN nullable_sums.t ELSE 0 END) AS n
+FROM cte_customer AS c
+JOIN nullable_sums ON nullable_sums.k = c.c_id
+GROUP BY c.c_id)
+SELECT k, SUM(n) AS case_count
+FROM case_counts
+GROUP BY k;
+
+Number of output lines, including header: 4
+
+== Diff ==
+==========
+
+
+
 === Cleanup ===

@@ -91,9 +91,9 @@ DROP TABLE t2;
 #     (this was the 5C-2-era negative control; the durable
 #     negative examples live in rondb_jit_fallback_census).
 SET @c0 = (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit);
-SELECT SUM(dec9) FROM t1;
-SUM(dec9)
-85.80
+SELECT MIN(dec9), MAX(dec9) FROM t1;
+MIN(dec9)	MAX(dec9)
+1.10	13.20
 SELECT (SELECT SUM(programs_compiled + programs_reused) FROM ndbinfo.jit) >= @c0 + 1 AS q7_jit_compiled;
 q7_jit_compiled
 1

@@ -1145,8 +1145,9 @@ private:
   // alias's NULL-extended rows (join conditions are null-rejecting
   // equalities), making the LEFT equivalent to INNER — MySQL's
   // simplify_joins rewrite.  One backward pass is exact: ON conditions
-  // only reference earlier aliases.
-  void promote_left_joins();
+  // only reference earlier aliases.  Runs on the main query's joins and
+  // on every CTE body's joins (build_cte_scopes, E-8).
+  void promote_left_joins(JoinClause* joins);
   void collect_pk_equalities(struct ConditionalExpression* ce,
                              const NdbDictionary::Table* table,
                              struct ConditionalExpression* pk_const[],

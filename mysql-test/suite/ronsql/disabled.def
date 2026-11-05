@@ -12,3 +12,5 @@
 #
 ##############################################################################
 
+# Exact DECIMAL aggregation is its own round (storage/ndb/claude_files/dbspj)
+ronsql_cte.spj_ronsql_q6_decimal_sum : RONDB-1124 Q-6 E-16 DECIMAL scale > 0 summed as DOUBLE

@@ -1,0 +1,49 @@
+# We are using some debug-only features in this test
+call mtr.add_suppression("Receive from NDB failed");
+create table test.t1 (a int primary key, b int, key(b)) engine=ndb;
+create table test.t2 (a int primary key, b int, key(b)) engine=ndb;
+insert into test.t1 values (0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7);
+insert into test.t2 select * from test.t1;
+set @save_debug = @@session.debug;
+SET SESSION debug="+d,ndb_reduced_api_protocol_timeout";
+
+-----------------------------------------
+No TC_HBREP within the API timeout
+-----------------------------------------
+The scan times out
+select * from test.t1 where a > 70 order by b;
+ERROR HY000: Got error 4008 'Receive from NDB failed' from NDBCLUSTER
+
+-----------------------------------------
+Unordered scan, ordered in MySQL Server
+-----------------------------------------
+select * from test.t1 where a > 70 order by b;
+Scan for 10 s, longer than the API timeout
+The scan ends without error
+a	b
+
+-----------------------------------------
+Ordered scan, ordered by API
+-----------------------------------------
+select * from test.t1 where a > 70 order by a;
+Scan for 10 s, longer than the API timeout
+The scan ends without error
+a	b
+
+-----------------------------------------
+SPJ scan
+-----------------------------------------
+select t1.b, t2.b from test.t1 join test.t2 on t2.a = t1.b where t1.a > 70;
+Scan for 10 s, longer than the API timeout
+The scan ends without error
+b	b
+
+Check that all is well
+select count(*) from test.t1;
+count(*)
+8
+select count(*) from test.t1 join test.t2 on t2.a = t1.b;
+count(*)
+8
+drop table test.t1, test.t2;
+SET SESSION debug=@save_debug;

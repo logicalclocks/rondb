@@ -1,0 +1,115 @@
+#
+# DBSPJ robustness R-6: error code of a failed DIGETNODESREQ.
+#
+# DBSPJ resolves the fragments of a child scan with DIGETNODESREQ
+# (scanFrag_sendDihGetNodesReq). DBDIH reports a failure with
+# DiGetNodesConf::zero = 1 and the error code in theData[1], which is how
+# DBTC and Dbspj::getNodes() read it. scanFrag_sendDihGetNodesReq() uses
+# theData[0] itself as the error code, so the query is aborted with
+# error 1 instead of the DBDIH error.
+#
+# Error insert 17538 makes the DIGETNODESREQ of the first fragment of the
+# child scan fail exactly the way DBDIH reports it, with error 311
+# (ZUNDEFINED_FRAGMENT_ERROR). The query must fail with NDB error 311,
+# and leave nothing behind.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_getnodes_errcode_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_query_log
+
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+                 KEY ib (b))
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+INSERT INTO t1 VALUES (1,1,10),(2,2,20),(3,3,30),(4,4,40),
+                      (5,5,50),(6,6,60),(7,7,70),(8,8,80);
+INSERT INTO t2 SELECT a, b, c + 1 FROM t1;
+INSERT INTO t2 SELECT a + 100, b, c + 2 FROM t1;
+INSERT INTO t2 SELECT a + 200, b, c + 3 FROM t1;
+
+CREATE VIEW spj_robust_dih_scans AS
+  SELECT d.node_id, d.table_id,
+         d.current_scan_count + d.scan_count_wait AS scans
+  FROM ndbinfo.ndb$table_distribution_status_all AS d
+  JOIN ndbinfo.dict_obj_info AS o ON o.id = d.table_id AND o.type <= 6
+  LEFT JOIN ndbinfo.dict_obj_info AS p
+    ON p.id = o.parent_obj_id AND p.type = o.parent_obj_type
+  WHERE o.fq_name LIKE 'test/def/%' OR p.fq_name LIKE 'test/def/%';
+
+--let $spj_q = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(t1.c * 1000 + t2.c) AS chk FROM t1 JOIN t2 FORCE INDEX (ib) ON t2.b = t1.a
+
+--echo #
+--echo # Reference run: the query is pushed
+--echo #
+--let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+--source suite/ndb_spj/include/spj_run_query.inc
+--let $spj_ref = $spj_res
+--let $spj_pq1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+if ($spj_errno)
+{
+  --echo ERROR $spj_errno: $spj_w
+  --die Test setup: the query failed without an error insert
+}
+if (`SELECT $spj_pq1 <= $spj_pq0`)
+{
+  --die Test setup: the query was not executed as a pushed join
+}
+--echo Reference query was pushed
+
+--echo #
+--echo # 17538: DIGETNODESREQ of the first child fragment fails with 311
+--echo #
+--exec $NDB_MGM -e "all error 17538" >> $spj_mgm_log
+--source suite/ndb_spj/include/spj_run_query.inc
+--exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+
+if (!$spj_errno)
+{
+  --die Test setup: error insert 17538 did not fire, the query succeeded
+}
+--let $spj_err = `SELECT IF(LOCATE('error ', "$spj_w") > 0, SUBSTRING_INDEX(SUBSTRING("$spj_w", LOCATE('error ', "$spj_w") + 6), ' ', 1), 'none')`
+if (`SELECT '$spj_err' <> '311'`)
+{
+  --echo Query failed with: $spj_w
+  --die R-6: the DIGETNODESREQ failure did not reach the API as NDB error 311 (scanFrag_sendDihGetNodesReq uses DiGetNodesConf::zero as the error code)
+}
+--echo The query failed with NDB error 311
+
+--let $spj_i = 0
+--let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+while ($spj_scans)
+{
+  if (`SELECT $spj_i >= 100`)
+  {
+    SELECT node_id, table_id, scans FROM spj_robust_dih_scans WHERE scans > 0;
+    --die A DIH scan is still registered 20 s after the failed query
+  }
+  --sleep 0.2
+  --inc $spj_i
+  --let $spj_scans = `SELECT IFNULL(SUM(scans), 0) FROM spj_robust_dih_scans`
+}
+--echo No DIH scan is left registered after the failed query
+
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+
+--source suite/ndb_spj/include/spj_run_query.inc
+if (`SELECT $spj_errno <> 0 OR "$spj_res" <> "$spj_ref"`)
+{
+  --echo Got: $spj_res (error $spj_errno: $spj_w), expected: $spj_ref
+  --die The query returned a wrong result after the error insert was cleared
+}
+--echo The query returns the reference result
+
+DROP VIEW spj_robust_dih_scans;
+DROP TABLE t1, t2;
+--remove_file $spj_mgm_log

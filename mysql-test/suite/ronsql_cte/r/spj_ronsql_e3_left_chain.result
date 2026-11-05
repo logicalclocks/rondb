@@ -1,0 +1,64 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== e3-0: the plan is root scan -> LEFT lookup -> LEFT lookup ===
+== Explain Query ==
+
+=== e3-1: LEFT-LEFT lookup chain over a 20000-row root, grouped ===
+== Query ==
+SELECT r.g, COUNT(*) AS n, COUNT(m.pk) AS nm, COUNT(l.pk) AS nl,
+SUM(l.v) AS s
+FROM e3_r AS r
+LEFT JOIN e3_m AS m ON m.pk = r.a
+LEFT JOIN e3_l AS l ON l.pk = m.b
+GROUP BY r.g;
+
+Number of output lines, including header: 11
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT r.g, COUNT(*) AS n, COUNT(m.pk) AS nm, COUNT(l.pk) AS nl,
+SUM(l.v) AS s
+FROM e3_r AS r
+LEFT JOIN e3_m AS m ON m.pk = r.a
+LEFT JOIN e3_l AS l ON l.pk = m.b
+GROUP BY r.g|
+g	n	nm	nl	s
+0	2000	2000	0	NULL
+1	2000	0	0	NULL
+2	2000	2000	2000	0
+3	2000	0	0	NULL
+4	2000	2000	2000	2000
+5	2000	0	0	NULL
+6	2000	2000	2000	4000
+7	2000	0	0	NULL
+8	2000	2000	2000	6000
+9	2000	0	0	NULL
+
+=== e3-2: the same chain without GROUP BY ===
+== Query ==
+SELECT COUNT(*) AS n, COUNT(m.pk) AS nm, COUNT(l.pk) AS nl, SUM(l.v) AS s
+FROM e3_r AS r
+LEFT JOIN e3_m AS m ON m.pk = r.a
+LEFT JOIN e3_l AS l ON l.pk = m.b;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT COUNT(*) AS n, COUNT(m.pk) AS nm, COUNT(l.pk) AS nl, SUM(l.v) AS s
+FROM e3_r AS r
+LEFT JOIN e3_m AS m ON m.pk = r.a
+LEFT JOIN e3_l AS l ON l.pk = m.b|
+n	nm	nl	s
+20000	10000	8000	12000
+
+=== e3-3: no DBSPJ request left behind ===

@@ -1,0 +1,142 @@
+# spj_state_s15_eviction_join
+#
+# Finding S-15 (storage/ndb/claude_files/dbspj/dbspj_state_machine.html,
+# section 10), main-only join aggregation (no CTE).
+#
+# Fixed 2026-10-29: lookup_execLQHKEYCONF() no longer adds readLen (the
+# evicted groups) to Request::m_rows.  The description below is of the
+# code before the fix.
+#
+# For a LOOKUP aggregate leaf Dbspj::lookup_execLQHKEYCONF() adds
+# LQHKEYCONF.readLen, the number of groups DBTUP evicted for that row,
+# to Request::m_rows.  A non-zero m_rows disables the self-continued
+# batch (Dbspj::batchComplete -> handleJoinAggNextBatch needs m_rows == 0),
+# so DBSPJ sends a mid-fragment SCAN_FRAGCONF with completedOps =
+# #evictions.  Without CTEs DBTC has no protocol check and forwards it as
+# a normal SCAN_TABCONF to the API's WORKER receiver, which then waits
+# for that many TRANSID_AI rows.  The evicted groups, however, were sent
+# by DBLQH to the AGGREGATE receiver (sendEvictedAggGroup), so the worker
+# never completes, the API never sends SCAN_NEXTREQ, the DBTC fragment
+# stays DELIVERED and JOIN_AGG_COMPLETE is never sent: the query hangs
+# (until the API's receive time-out, error 4008, or longer).
+#
+# Shape: root scan of s15_fact (24000 rows, at least ~3000 per fragment
+# with the base suite's at most 8 fragments, so every root fragment needs
+# several SPJ batches: the root batch is at most BatchSize = 384 rows by
+# default, ndb_limits.h DEF_BATCH_SIZE) and a PK lookup of s15_dim as the
+# aggregate leaf, grouped by s15_dim.g (25 groups).  DBTUP error insert
+# 4041 evicts a group every ~7th fed row per LDM thread while more than 2
+# groups are resident.  The scan-leaf eviction case in ronsql_join_agg
+# (Test 44) is green only because scan leaves report completedOps = 0.
+#
+# Expected (MySQL): 25 rows, e.g. g=0 -> COUNT(*) 960, SUM(q) 6240;
+# g=1 -> 960, 2400.  s15j-1 (no error insert) must match.
+# Before the fix s15j-2 hung.  The request is bounded to 120 s here
+# (include/spj_state_compare_bounded.inc), so a hang fails the test with
+# curl exit code 28 instead of hitting the MTR timeout.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_state_s15_eviction_join
+# Record: ./mtr --suite=ronsql_cte --record spj_state_s15_eviction_join
+
+--source include/have_ndb.inc
+--source include/have_debug.inc
+--source include/have_ndb_debug.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-state-s15j-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE s15_fact (
+  id INT NOT NULL,
+  ck INT NOT NULL,
+  q  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE s15_dim (
+  k INT NOT NULL,
+  g INT NOT NULL,
+  PRIMARY KEY USING HASH (k)
+) ENGINE=NDB;
+
+CREATE TABLE s15_d (d INT) ENGINE=MEMORY;
+INSERT INTO s15_d VALUES (0),(1),(2),(3),(4),(5),(6),(7),(8),(9);
+CREATE TABLE s15_seq (n INT NOT NULL PRIMARY KEY) ENGINE=MEMORY;
+INSERT INTO s15_seq
+  SELECT a.d*10000 + b.d*1000 + c.d*100 + e.d*10 + f.d + 1
+  FROM s15_d a, s15_d b, s15_d c, s15_d e, s15_d f;
+
+INSERT INTO s15_dim SELECT n, MOD(n, 25) FROM s15_seq WHERE n <= 300;
+
+# 24000 fact rows, 4000 per transaction.
+--let $s15_lo=1
+while ($s15_lo <= 24000)
+{
+  --let $s15_hi=`SELECT $s15_lo + 3999`
+  eval INSERT INTO s15_fact
+    SELECT n, MOD(n, 300) + 1, MOD(n, 10) FROM s15_seq
+    WHERE n BETWEEN $s15_lo AND $s15_hi;
+  --let $s15_lo=`SELECT $s15_lo + 4000`
+}
+DROP TABLE s15_seq;
+DROP TABLE s15_d;
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === s15j-0: the plan is root TABLE_SCAN -> PK_LOOKUP aggregate leaf ===
+let $QUERY=
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF '[INNER] PK_LOOKUP s15_dim AS d' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === s15j-1: control, no forced eviction ===
+let $QUERY=
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g;|
+--source suite/ronsql_cte/include/spj_state_compare_bounded.inc
+--echo == Expected result ==
+--sorted_result
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g|
+
+--echo
+--echo === s15j-2: lookup-leaf evictions forced (DBTUP 4041) ===
+--exec $NDB_MGM -e "ALL ERROR 4041" > /dev/null
+let $QUERY=
+SELECT d.g, COUNT(*), SUM(f.q)
+FROM s15_fact AS f JOIN s15_dim AS d ON d.k = f.ck
+GROUP BY d.g;|
+--source suite/ronsql_cte/include/spj_state_compare_bounded.inc
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+DELIMITER ;|
+
+--exec $NDB_MGM -e "ALL ERROR 0" > /dev/null
+
+--echo
+--echo === s15j-3: no DBSPJ request or join-aggregation state left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+--exec $NDB_MGM -e "ALL DUMP 2361" > /dev/null
+
+--disable_query_log
+DROP TABLE s15_fact;
+DROP TABLE s15_dim;
+--enable_query_log

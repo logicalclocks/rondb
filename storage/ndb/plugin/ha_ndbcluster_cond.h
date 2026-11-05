@@ -63,6 +63,10 @@ class ha_ndbcluster_cond {
 
   int build_cond_push();
 
+  // Size in words of the code which will be generated for the prepared
+  // pushed condition, 0 if there is none or if it can't be generated.
+  Uint32 get_pushed_code_size();
+
   int generate_scan_filter_from_cond(SqlScanFilter &filter,
                                      bool param_is_const = false);
 

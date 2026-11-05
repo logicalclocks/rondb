@@ -1,0 +1,64 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== s6-0: the CTE body really is s6_rhs LEFT JOIN CTE_LOOKUP(cte0) ===
+== Explain Query ==
+
+=== s6-1: aggregating main over a CTE whose body LEFT JOINs a CTE ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s6_src GROUP BY grp),
+cte1 AS (SELECT r.g AS g, COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM s6_rhs AS r
+LEFT JOIN cte0 ON cte0.k = r.ref
+GROUP BY r.g)
+SELECT COUNT(*), SUM(cnt), SUM(s) FROM cte1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s6_src GROUP BY grp),
+cte1 AS (SELECT r.g AS g, COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM s6_rhs AS r
+LEFT JOIN cte0 ON cte0.k = r.ref
+GROUP BY r.g)
+SELECT COUNT(*), SUM(cnt), SUM(s) FROM cte1|
+COUNT(*)	SUM(cnt)	SUM(s)
+2	6	150
+
+=== s6-2: projection-only main over the same CTE (no main aggregation) ===
+== Query ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s6_src GROUP BY grp),
+cte1 AS (SELECT r.g AS g, COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM s6_rhs AS r
+LEFT JOIN cte0 ON cte0.k = r.ref
+GROUP BY r.g)
+SELECT g, cnt, s FROM cte1;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH cte0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s6_src GROUP BY grp),
+cte1 AS (SELECT r.g AS g, COUNT(*) AS cnt, SUM(cte0.total) AS s
+FROM s6_rhs AS r
+LEFT JOIN cte0 ON cte0.k = r.ref
+GROUP BY r.g)
+SELECT g, cnt, s FROM cte1|
+g	cnt	s
+1	3	80
+2	3	70
+
+=== s6-3: no DBSPJ request left behind ===

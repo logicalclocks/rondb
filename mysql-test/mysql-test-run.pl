@@ -300,6 +300,7 @@ our @RONDB_SUITES = qw(
   ndb_quota
   ndb_ring_buffer
   ndb_rpl
+  ndb_spj
   ndb_tls
   ndb_ttl
   ndb_ttl_rpl

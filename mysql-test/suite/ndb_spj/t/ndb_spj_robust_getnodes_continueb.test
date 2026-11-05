@@ -1,0 +1,137 @@
+#
+# DBSPJ robustness R-3: DIGETNODESREQ failure in a CONTINUEB round.
+#
+# scanFrag_sendDihGetNodesReq() resolves at most MAX_DIGETNODESREQS
+# fragments of a child scan per call and continues with CONTINUEB (case 3
+# in Dbspj::execCONTINUEB). When a DIGETNODESREQ fails it sets
+# m_frags_outstanding = 0, marks the tree node TN_INACTIVE, decrements
+# m_outstanding and returns the error. execDIH_SCAN_TAB_CONF() aborts the
+# request on that error, but execCONTINUEB ignores the return value and
+# calls checkPrepareComplete(): the query starts with child fragments
+# whose m_ref is still 0. The first child batch then sends SCAN_FRAGREQ
+# for such a fragment; in scanFrag_send() refToNode(0) = 0 reaches
+# getNodeInfo(0), which stops the data node (ndbrequire), or the scan
+# silently misses fragments.
+#
+# Error insert 17539 behaves as 17131 (one DIGETNODESREQ per round, the
+# next round via CONTINUEB) and fails the first DIGETNODESREQ of the
+# first CONTINUEB round the way DBDIH reports a failure (error 311).
+# The query must fail with an error, no data node may stop, and the query
+# must work again afterwards.
+#
+--source include/have_ndb.inc
+--source suite/ndb/t/have_ndb_error_insert.inc
+
+# The ndb_mgm and ndb_waiter output goes to a file of this test, removed
+# at the end. Appending to the shared $NDB_TOOLS_OUTPUT fails MTR's
+# check-testcase for the first test that creates it.
+--let $spj_mgm_log = $MYSQLTEST_VARDIR/tmp/ndb_spj_robust_getnodes_continueb_mgm.log
+
+--disable_query_log
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+call mtr.add_suppression("Node failure caused abort of transaction");
+call mtr.add_suppression("Got NDB error");
+--enable_query_log
+
+CREATE TABLE t1 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL)
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+CREATE TABLE t2 (a INT NOT NULL PRIMARY KEY, b INT NOT NULL, c INT NOT NULL,
+                 KEY ib (b))
+  ENGINE=NDB PARTITION BY KEY(a) PARTITIONS 8;
+INSERT INTO t1 VALUES (1,1,10),(2,2,20),(3,3,30),(4,4,40),
+                      (5,5,50),(6,6,60),(7,7,70),(8,8,80);
+INSERT INTO t2 SELECT a, b, c + 1 FROM t1;
+INSERT INTO t2 SELECT a + 100, b, c + 2 FROM t1;
+INSERT INTO t2 SELECT a + 200, b, c + 3 FROM t1;
+
+--let $spj_q = SELECT STRAIGHT_JOIN COUNT(*) AS cnt, SUM(t1.c * 1000 + t2.c) AS chk FROM t1 JOIN t2 FORCE INDEX (ib) ON t2.b = t1.a
+
+--echo #
+--echo # Reference run: the query is pushed
+--echo #
+--let $spj_pq0 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+--source suite/ndb_spj/include/spj_run_query.inc
+--let $spj_ref = $spj_res
+--let $spj_pq1 = query_get_value(SHOW GLOBAL STATUS LIKE 'Ndb_pushed_queries_executed', Value, 1)
+if ($spj_errno)
+{
+  --echo ERROR $spj_errno: $spj_w
+  --die Test setup: the query failed without an error insert
+}
+if (`SELECT $spj_pq1 <= $spj_pq0`)
+{
+  --die Test setup: the query was not executed as a pushed join
+}
+--echo Reference query was pushed
+
+--echo #
+--echo # 17131 alone (control): chunked fragment resolution, no error
+--echo #
+--exec $NDB_MGM -e "all error 17131" >> $spj_mgm_log
+--source suite/ndb_spj/include/spj_run_query.inc
+--exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+if (`SELECT $spj_errno <> 0 OR "$spj_res" <> "$spj_ref"`)
+{
+  --echo Got: $spj_res (error $spj_errno: $spj_w), expected: $spj_ref
+  --die 17131: chunked DIGETNODESREQ (CONTINUEB) gave a wrong result
+}
+--echo 17131: the query returns the reference result
+
+--let $spj_nodes = `SELECT COUNT(*) FROM ndbinfo.nodes WHERE status = 'STARTED'`
+
+--echo #
+--echo # 17539: DIGETNODESREQ fails in the first CONTINUEB round
+--echo #
+--exec $NDB_MGM -e "all error 17539" >> $spj_mgm_log
+--source suite/ndb_spj/include/spj_run_query.inc
+
+# Let a data node failure, if any, be seen before checking. The count is
+# read with SELECT ... INTO, an ndbinfo scan that fails must not stop the
+# test (see spj_run_query.inc).
+--sleep 2
+--disable_query_log
+--disable_result_log
+--disable_abort_on_error
+SET @spj_nodes_after = NULL;
+SELECT COUNT(*) INTO @spj_nodes_after FROM ndbinfo.nodes WHERE status = 'STARTED';
+--enable_abort_on_error
+--enable_result_log
+--let $spj_nodes_after = `SELECT IFNULL(@spj_nodes_after, '')`
+--enable_query_log
+if (`SELECT LENGTH("$spj_nodes_after") = 0 OR "$spj_nodes_after" < $spj_nodes`)
+{
+  --echo Query result: $spj_res, error $spj_errno, warning: $spj_w
+  --die R-3: a data node stopped after a DIGETNODESREQ failure in a CONTINUEB round (execCONTINUEB ignores the error of scanFrag_sendDihGetNodesReq, fragments with m_ref == 0 are scanned)
+}
+--exec $NDB_MGM -e "all error 0" >> $spj_mgm_log
+
+if (!$spj_errno)
+{
+  if (`SELECT "$spj_res" <> "$spj_ref"`)
+  {
+    --echo Got: $spj_res, expected: $spj_ref
+    --die R-3: the query returned a wrong result after a DIGETNODESREQ failure in a CONTINUEB round
+  }
+  --die R-3: the DIGETNODESREQ failure in a CONTINUEB round was ignored, the query succeeded
+}
+--let $spj_err = `SELECT IF(LOCATE('error ', "$spj_w") > 0, SUBSTRING_INDEX(SUBSTRING("$spj_w", LOCATE('error ', "$spj_w") + 6), ' ', 1), 'none')`
+if (`SELECT '$spj_err' <> '311'`)
+{
+  --echo Query failed with: $spj_w
+  --die The DIGETNODESREQ failure in a CONTINUEB round did not reach the API as NDB error 311
+}
+--echo The query failed with NDB error 311, all data nodes are still started
+
+--source suite/ronsql_large/include/mem_leak_dumps.inc
+
+--source suite/ndb_spj/include/spj_run_query.inc
+if (`SELECT $spj_errno <> 0 OR "$spj_res" <> "$spj_ref"`)
+{
+  --echo Got: $spj_res (error $spj_errno: $spj_w), expected: $spj_ref
+  --die The query returned a wrong result after the error insert was cleared
+}
+--echo The query returns the reference result
+
+DROP TABLE t1, t2;
+--remove_file $spj_mgm_log

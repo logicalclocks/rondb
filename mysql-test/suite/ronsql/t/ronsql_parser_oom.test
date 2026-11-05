@@ -71,10 +71,11 @@ fail_run("Missing gtest XML report") unless -f $xml;
 my $report = read_file($xml);
 my @cases = $report =~ /<testcase\b[^>]*>/g;
 my $completed = grep { /\bstatus="run"/ && /\bresult="completed"/ } @cases;
-fail_run("Expected all 15 or more regression tests to complete")
-    unless @cases >= 15 && $completed == @cases;
+fail_run("Expected all 40 or more regression tests to complete")
+    unless @cases >= 40 && $completed == @cases;
 for my $suite ('EntryPoints/RonSQLParserAllocationFailure',
                'RonSQLParserListStack',
+               'RonSQLParseOnlyInventory', 'RonSQLParseOnlyRejection',
                'RonSQLDecimalParseOnly', 'RonSQLDecimalAllocationFailure') {
   fail_run("Missing test suite $suite")
       unless $report =~ /<testsuite\b[^>]*\bname="\Q$suite\E"/;

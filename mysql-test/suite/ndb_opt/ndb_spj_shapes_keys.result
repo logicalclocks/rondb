@@ -1,0 +1,133 @@
+CREATE TABLE seq (n INT NOT NULL PRIMARY KEY) ENGINE=NDB;
+INSERT INTO seq
+WITH RECURSIVE c(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM c WHERE n < 1000)
+SELECT n FROM c;
+#
+# Linked keys of different data types
+#
+# K-tinyint-lookup-left: rows=300 pushed=2 exec=1
+# K-tinyint-scan-inner: rows=230 pushed=2 exec=1
+# K-tinyint-two-levels: rows=230 pushed=3 exec=1
+# K-smallint_u-lookup-left: rows=300 pushed=2 exec=1
+# K-smallint_u-scan-inner: rows=230 pushed=2 exec=1
+# K-smallint_u-two-levels: rows=230 pushed=3 exec=1
+# K-mediumint-lookup-left: rows=300 pushed=2 exec=1
+# K-mediumint-scan-inner: rows=230 pushed=2 exec=1
+# K-mediumint-two-levels: rows=230 pushed=3 exec=1
+# K-bigint-lookup-left: rows=300 pushed=2 exec=1
+# K-bigint-scan-inner: rows=230 pushed=2 exec=1
+# K-bigint-two-levels: rows=230 pushed=3 exec=1
+# K-bigint_u-lookup-left: rows=300 pushed=2 exec=1
+# K-bigint_u-scan-inner: rows=230 pushed=2 exec=1
+# K-bigint_u-two-levels: rows=230 pushed=3 exec=1
+# K-dec_small-lookup-left: rows=300 pushed=2 exec=1
+# K-dec_small-scan-inner: rows=230 pushed=2 exec=1
+# K-dec_small-two-levels: rows=230 pushed=3 exec=1
+# K-dec_big-lookup-left: rows=300 pushed=2 exec=1
+# K-dec_big-scan-inner: rows=230 pushed=2 exec=1
+# K-dec_big-two-levels: rows=230 pushed=3 exec=1
+# K-date-lookup-left: rows=300 pushed=2 exec=1
+# K-date-scan-inner: rows=230 pushed=2 exec=1
+# K-date-two-levels: rows=230 pushed=3 exec=1
+# K-datetime-lookup-left: rows=300 pushed=2 exec=1
+# K-datetime-scan-inner: rows=230 pushed=2 exec=1
+# K-datetime-two-levels: rows=230 pushed=3 exec=1
+# K-datetime6-lookup-left: rows=300 pushed=2 exec=1
+# K-datetime6-scan-inner: rows=230 pushed=2 exec=1
+# K-datetime6-two-levels: rows=230 pushed=3 exec=1
+# K-time3-lookup-left: rows=300 pushed=2 exec=1
+# K-time3-scan-inner: rows=230 pushed=2 exec=1
+# K-time3-two-levels: rows=230 pushed=3 exec=1
+# K-timestamp2-lookup-left: rows=300 pushed=2 exec=1
+# K-timestamp2-scan-inner: rows=230 pushed=2 exec=1
+# K-timestamp2-two-levels: rows=230 pushed=3 exec=1
+# K-year-lookup-left: rows=300 pushed=2 exec=1
+# K-year-scan-inner: rows=230 pushed=2 exec=1
+# K-year-two-levels: rows=230 pushed=3 exec=1
+# K-enum-lookup-left: rows=300 pushed=2 exec=1
+# K-enum-scan-inner: rows=230 pushed=2 exec=1
+# K-enum-two-levels: rows=230 pushed=3 exec=1
+# K-set-lookup-left: rows=300 pushed=2 exec=1
+# K-set-scan-inner: rows=230 pushed=2 exec=1
+# K-set-two-levels: rows=230 pushed=3 exec=1
+# K-char_latin1-lookup-left: rows=300 pushed=2 exec=1
+# K-char_latin1-scan-inner: rows=230 pushed=2 exec=1
+# K-char_latin1-two-levels: rows=230 pushed=3 exec=1
+# K-binary-lookup-left: rows=300 pushed=2 exec=1
+# K-binary-scan-inner: rows=230 pushed=2 exec=1
+# K-binary-two-levels: rows=230 pushed=3 exec=1
+# K-varbinary-lookup-left: rows=300 pushed=2 exec=1
+# K-varbinary-scan-inner: rows=230 pushed=2 exec=1
+# K-varbinary-two-levels: rows=230 pushed=3 exec=1
+#
+# Constant DATETIME(6) and VARCHAR key parts next to a linked one
+#
+CREATE TABLE pc (id INT NOT NULL PRIMARY KEY, r INT NOT NULL) ENGINE=NDB;
+INSERT INTO pc SELECT n, n % 40 FROM seq WHERE n <= 200;
+CREATE TABLE cc (
+dt DATETIME(6) NOT NULL,
+vc VARCHAR(10) NOT NULL,
+r INT NOT NULL,
+val INT NOT NULL,
+PRIMARY KEY (dt, vc, r),
+KEY ix_vc_r (vc, r)
+) ENGINE=NDB;
+INSERT INTO cc
+SELECT TIMESTAMP('2020-02-02 10:00:00.123456') + INTERVAL (n % 2) SECOND,
+ELT(1 + (n DIV 2) % 3, 'aa', 'bb', 'cc'), n DIV 6, n
+FROM seq WHERE n <= 240;
+ANALYZE TABLE pc, cc;
+Table	Op	Msg_type	Msg_text
+test.pc	analyze	status	OK
+test.cc	analyze	status	OK
+# C1_const_datetime6_varchar_and_linked_pk: rows=200 pushed=2 exec=1
+# C2_const_varchar_and_linked_scan: rows=400 pushed=2 exec=1
+DROP TABLE pc, cc;
+#
+# Collations: the parent holds case, accent and trailing-space
+# variants of the child's key values.
+#
+CREATE TABLE pcoll (
+id INT NOT NULL PRIMARY KEY,
+k_ai VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NULL,
+k_gen VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NULL,
+k_sw VARCHAR(20) CHARACTER SET latin1 COLLATE latin1_swedish_ci NULL,
+k_bin VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+k_nopadbin VARCHAR(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_bin NULL,
+k_char CHAR(10) CHARACTER SET latin1 COLLATE latin1_swedish_ci NULL
+) ENGINE=NDB;
+INSERT INTO pcoll
+SELECT n, w, w, w, w, w, w FROM (
+SELECT n, ELT(1 + n % 6,
+CONCAT('e', n % 40),
+CONCAT('E', n % 40),
+CONCAT(_utf8mb4 x'C3A9', n % 40),
+CONCAT('e', n % 40, ' '),
+CONCAT(_utf8mb4 x'C389', n % 40, '  '),
+NULL) AS w
+FROM seq WHERE n <= 480) AS dt;
+# L-k_ai-pk-lookup-left: rows=480 pushed=2 exec=1
+# L-k_ai-index-scan: rows=1068 pushed=2 exec=1
+# L-k_ai-pruned-scan-left: rows=1248 pushed=2 exec=1
+# L-k_ai-scan-then-lookup: rows=760 pushed=3 exec=1
+# L-k_gen-pk-lookup-left: rows=480 pushed=2 exec=1
+# L-k_gen-index-scan: rows=1068 pushed=2 exec=1
+# L-k_gen-pruned-scan-left: rows=1248 pushed=2 exec=1
+# L-k_gen-scan-then-lookup: rows=760 pushed=3 exec=1
+# L-k_sw-pk-lookup-left: rows=480 pushed=2 exec=1
+# L-k_sw-index-scan: rows=1068 pushed=2 exec=1
+# L-k_sw-pruned-scan-left: rows=1248 pushed=2 exec=1
+# L-k_sw-scan-then-lookup: rows=760 pushed=3 exec=1
+# L-k_bin-pk-lookup-left: rows=480 pushed=2 exec=1
+# L-k_bin-index-scan: rows=1068 pushed=2 exec=1
+# L-k_bin-pruned-scan-left: rows=1248 pushed=2 exec=1
+# L-k_bin-scan-then-lookup: rows=760 pushed=3 exec=1
+# L-k_nopadbin-pk-lookup-left: rows=480 pushed=2 exec=1
+# L-k_nopadbin-index-scan: rows=1068 pushed=2 exec=1
+# L-k_nopadbin-pruned-scan-left: rows=1248 pushed=2 exec=1
+# L-k_nopadbin-scan-then-lookup: rows=760 pushed=3 exec=1
+# L-k_char-pk-lookup-left: rows=480 pushed=2 exec=1
+# L-k_char-index-scan: rows=1068 pushed=2 exec=1
+# L-k_char-pruned-scan-left: rows=1248 pushed=2 exec=1
+# L-k_char-scan-then-lookup: rows=760 pushed=3 exec=1
+DROP TABLE pcoll, seq;

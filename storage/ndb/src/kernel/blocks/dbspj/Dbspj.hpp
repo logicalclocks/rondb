@@ -913,6 +913,9 @@ class Dbspj : public SimulatedBlock {
     Uint32 m_batch_chunks;    // #SCAN_FRAGREQ + #SCAN_NEXTREQ to retrieve batch
     Uint32 m_scanCookie;
     Uint32 m_schema_version_scanCookie;
+    // DBDIH registered the scan (DIH_SCAN_TAB_CONF): scanFrag_complete
+    // must report its completion
+    bool m_dihScanRegistered;
     Uint32 m_fragCount;
     // The number of fragments that we scan in parallel.
     Uint32 m_parallelism;
@@ -992,6 +995,7 @@ class Dbspj : public SimulatedBlock {
           m_rows_expecting(0),
           m_batch_chunks(0),
           m_scanCookie(0),
+          m_dihScanRegistered(false),
           m_fragCount(0),
           m_parallelism(0),
           m_corrIdStart(0),
@@ -1751,6 +1755,8 @@ class Dbspj : public SimulatedBlock {
   bool do_init(Request *, const LqhKeyReq *, Uint32 senderRef);
   void store_lookup(Ptr<Request>);
   void handle_early_lqhkey_ref(Signal *, const LqhKeyReq *, Uint32 err);
+  void rejectMalformedLqhKeyReq(Signal *, const LqhKeyReq *, SectionHandle &,
+                                Uint32 err) __attribute__((cold, noinline));
   void sendTCKEYREF(Signal *signal, Uint32 ref, Uint32 routeRef);
   void sendTCKEYCONF(Signal *signal, Uint32 len, Uint32 ref, Uint32 routeRef);
 
@@ -1758,6 +1764,21 @@ class Dbspj : public SimulatedBlock {
   bool alloc_request_node_arrays(Request *);
   void store_scan(Ptr<Request>);
   void handle_early_scanfrag_ref(Signal *, const ScanFragReq *, Uint32 err);
+  void rejectMalformedScanFragReq(Signal *, const ScanFragReq *,
+                                  SectionHandle &, Uint32 err)
+      __attribute__((cold, noinline));
+
+  // The per-CTE metadata of the aggregation keys of a SCAN_FRAGREQ, kept
+  // until build() has created the CteContexts
+  struct ParsedCteMeta {
+    Uint32 cteId;
+    Uint64 depMask;
+    Uint32 flags;
+  };
+  static constexpr Uint32 MaxCteKeyBlocks = 64;
+  Uint32 parseJoinAggKeys(Ptr<Request>, Uint32 ptrI, Uint32 offset,
+                          ParsedCteMeta *cteMeta, Uint32 &cteMetaCount);
+  void setRootKeyInfo(Ptr<TreeNode> rootNodePtr, Uint32 keyPtrI);
 
   bool checkRequest(const Ptr<Request>);
 
@@ -1807,6 +1828,8 @@ class Dbspj : public SimulatedBlock {
   void cleanup(Ptr<Request>, bool in_hash);
   void cleanupBatch(Ptr<Request>, bool done);
   void abort(Signal *, Ptr<Request>, Uint32 errCode);
+  void abortAndCheckBatchComplete(Signal *, Ptr<Request>, Uint32 errCode)
+      __attribute__((cold, noinline));
   Uint32 nodeFail(Signal *, Ptr<Request>, NdbNodeBitmask mask);
 
   Uint32 createNode(Build_context &, Ptr<Request>, Ptr<TreeNode> &);
@@ -1857,8 +1880,11 @@ class Dbspj : public SimulatedBlock {
   /**
    * Misc
    */
-  Uint32 buildRowHeader(RowPtr::Header *, LinearSectionPtr);
-  Uint32 buildRowHeader(RowPtr::Header *, const Uint32 *&src, Uint32 cnt);
+  Uint32 buildRowHeader(RowPtr::Header *, LinearSectionPtr, Uint32 maxCnt);
+  void requireRowColumnCount(LinearSectionPtr, Uint32 maxCnt)
+      __attribute__((cold, noinline));
+  Uint32 buildParamRowHeader(RowPtr::Header *, const Uint32 *&src,
+                             const Uint32 *end, Uint32 cnt);
   void getCorrelationData(const RowPtr::Row &row, Uint32 col,
                           Uint32 &correlationNumber);
   Uint32 appendToPattern(Local_pattern_store &, DABuffer &tree, Uint32);
@@ -1933,6 +1959,10 @@ class Dbspj : public SimulatedBlock {
    */
   Uint32 flagMaliciousTreeNode(Build_context &ctx, Uint32 violationType,
                                Uint32 errCode);
+  Uint32 readPatternHeader(Build_context &ctx, DABuffer &tree, Uint32 &len,
+                           Uint32 &cnt);
+  Uint32 checkV1ScanParameters(Build_context &ctx, Uint32 param_len,
+                               Uint32 nodeSize, Uint32 extra);
 
   Uint32 getResultRef(Ptr<Request> requestPtr);
 
@@ -1972,10 +2002,19 @@ class Dbspj : public SimulatedBlock {
   Uint32 handleAggAncestorComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   Uint32 handleScanAggAncestorComplete(Signal *, Ptr<Request>,
                                        Ptr<TreeNode>, ScanFragData &);
+  Uint32 handleAggScanBatchComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   Uint32 mergeAggMatchBitmask(Ptr<TreeNode>, ScanFragData &,
                                SegmentedSectionPtr &);
   Uint32 handleAggLeafScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
+  Uint32 scanFrag_aggScanComplete(Signal *, Ptr<Request>, Ptr<TreeNode>);
   void lookup_cleanup(Ptr<Request>, Ptr<TreeNode>);
+
+  // Log that the error insert fired at tree node 'treeNodePtr', and clear it
+  void errorInsertFired(Ptr<TreeNode> treeNodePtr, const char *what)
+      __attribute__((cold, noinline));
+  bool fiDiGetNodesFails(Local_ScanFragHandle_list &list,
+                         Ptr<ScanFragHandle> fragPtr, Uint32 fragCnt)
+      __attribute__((cold, noinline));
 
   Uint32 handle_special_hash(Uint32 tableId, Uint32 dstHash[4],
                              const Uint32* src,
@@ -2127,7 +2166,7 @@ class Dbspj : public SimulatedBlock {
   void scanFrag_send(Signal *, Ptr<Request>, Ptr<TreeNode>);
   Uint32 scanFrag_send(Signal *signal, Ptr<Request> requestPtr,
                        Ptr<TreeNode> treeNodePtr, Uint32 noOfFrags,
-                       Uint32 bs_bytes, Uint32 bs_rows);
+                       Uint32 bs_bytes, Uint32 bs_rows, Uint32 &err);
   Uint32 scanFrag_send_NEXTREQ(Signal *signal, Ptr<Request> requestPtr,
                                Ptr<TreeNode> treeNodePtr, Uint32 noOfFrags,
                                Uint32 bs_bytes, Uint32 bs_rows);

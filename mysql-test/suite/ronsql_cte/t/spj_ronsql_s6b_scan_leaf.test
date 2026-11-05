@@ -1,0 +1,137 @@
+# spj_ronsql_s6b_scan_leaf
+#
+# Finding S-6b (storage/ndb/claude_files/dbspj/dbspj_state_machine.html,
+# section 10), the scan-leaf sibling of the case that
+# spj_state_s6_cte_body_null_row tests.  A CTE body that LEFT JOINs a
+# table through an index scan and aggregates on that scan leaf needs
+# match tracking on the scan's parent (T_BUFFER_ROW | T_BUFFER_MAP |
+# T_BUFFER_MATCH), so that handleAggLeafScanComplete can send a
+# NULL-extended row for every parent row without a match.
+#
+# The S-6b fix moved the buffering for outer-joined CTE_LOOKUP leaves out
+# of the RT_AGGREGATE branch of validateAggregateFlags (DbspjMain.cpp),
+# but the loop for outer-joined scan leaves is still inside it.
+# RT_AGGREGATE is set only by main-query aggregation, so a main query
+# that only projects the CTE leaves the scan leaf of the body without
+# match tracking, and the parents without children get no NULL row.
+#
+# Data: s6b_p.id = 1..7; s6b_c rows (id, pid, val): parents 1..5 have
+# children, parents 6 and 7 have none.
+#   pc = SELECT p.id, COUNT(*), SUM(c.val) FROM s6b_p p
+#        LEFT JOIN s6b_c c ON c.pid = p.id GROUP BY p.id
+#
+#   s6b-1  aggregating main over pc (RT_AGGREGATE set).
+#          Expected (MySQL): (7, 12, 165).  Observed 2026-11-02:
+#          (5, 10, 165), so this was not a control: scanFrag_send set
+#          OuterJoinAggFlag only on main-query leaves, so DBLQH sent no
+#          match bitmask for the CTE body's scan leaf, m_agg_num_ranges
+#          stayed 0 and handleAggLeafScanComplete sent no NULL row.
+#          Kernel fix (2026-11-02): an outer-joined aggregate leaf of a
+#          CTE body with a parent sends OuterJoinAggFlag and the range
+#          count.  Expected after it: the MySQL result.
+#   s6b-2  projection-only main over pc.
+#          Expected (MySQL): seven rows, among them (6, 1, NULL) and
+#          (7, 1, NULL).  Expected before a fix: those two rows missing.
+#          Kernel fix (2026-11-02): the match tracking for outer-joined
+#          scan leaves is set up without RT_AGGREGATE too.  Expected
+#          after it: the MySQL result.
+#
+# A failing grep at s6b-0 means RonSQL chose another plan: adjust the test.
+#
+# Run:    ./mtr --suite=ronsql_cte spj_ronsql_s6b_scan_leaf
+# Record: ./mtr --suite=ronsql_cte --record spj_ronsql_s6b_scan_leaf
+
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/spj-ronsql-s6b-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE s6b_p (
+  id INT NOT NULL,
+  g  INT NOT NULL,
+  PRIMARY KEY USING HASH (id)
+) ENGINE=NDB;
+
+CREATE TABLE s6b_c (
+  id  INT NOT NULL,
+  pid INT NOT NULL,
+  val INT NOT NULL,
+  PRIMARY KEY USING HASH (id),
+  INDEX ix_s6b_c_pid (pid)
+) ENGINE=NDB;
+
+INSERT INTO s6b_p VALUES (1,1), (2,1), (3,2), (4,2), (5,3), (6,3), (7,4);
+INSERT INTO s6b_c VALUES
+  (1,1,10), (2,1,20), (3,2,30), (4,3,5), (5,3,15), (6,3,25),
+  (7,4,40), (8,5,7), (9,5,13), (10,5,0);
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === s6b-0: the CTE body is s6b_p LEFT JOIN INDEX_SCAN s6b_c ===
+let $QUERY=
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+            FROM s6b_p AS p
+            LEFT JOIN s6b_c AS c ON c.pid = p.id
+            GROUP BY p.id)
+SELECT k, n, s FROM pc;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'Body join plan (2 operations):' $EXPLAIN_FILE
+--exec grep -qF '[LEFT JOIN] INDEX_SCAN s6b_c AS c  <- p' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === s6b-1: control, aggregating main over the CTE ===
+let $QUERY=
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+            FROM s6b_p AS p
+            LEFT JOIN s6b_c AS c ON c.pid = p.id
+            GROUP BY p.id)
+SELECT COUNT(*), SUM(n), SUM(s) FROM pc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+            FROM s6b_p AS p
+            LEFT JOIN s6b_c AS c ON c.pid = p.id
+            GROUP BY p.id)
+SELECT COUNT(*), SUM(n), SUM(s) FROM pc|
+
+--echo
+--echo === s6b-2: projection-only main over the same CTE ===
+let $QUERY=
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+            FROM s6b_p AS p
+            LEFT JOIN s6b_c AS c ON c.pid = p.id
+            GROUP BY p.id)
+SELECT k, n, s FROM pc;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH pc AS (SELECT p.id AS k, COUNT(*) AS n, SUM(c.val) AS s
+            FROM s6b_p AS p
+            LEFT JOIN s6b_c AS c ON c.pid = p.id
+            GROUP BY p.id)
+SELECT k, n, s FROM pc|
+
+DELIMITER ;|
+
+--echo
+--echo === s6b-3: no DBSPJ request left behind ===
+--exec $NDB_MGM -e "ALL DUMP 2650" > /dev/null
+
+--disable_query_log
+DROP TABLE s6b_c;
+DROP TABLE s6b_p;
+--enable_query_log

@@ -38,6 +38,13 @@ CREATE TABLE cte_customer (
   PRIMARY KEY USING HASH (c_id)
 ) ENGINE=NDB;
 
+CREATE TABLE cte_case_nullable (
+  v_id INT NOT NULL,
+  v_custkey INT NOT NULL,
+  v_amt INT,
+  PRIMARY KEY USING HASH (v_id)
+) ENGINE=NDB;
+
 INSERT INTO cte_customer VALUES
   (100, 'Alice',   1),
   (200, 'Bob',     1),
@@ -50,6 +57,11 @@ INSERT INTO cte_orders VALUES
   (3, 200, 40),
   (4, 200, 60),
   (5, 300, 90);
+
+# The CTE sums are NULL/100/NULL for keys 100/200/300. COUNT(CASE ...)
+# must distinguish those nullable values from the non-NULL group keys.
+INSERT INTO cte_case_nullable VALUES
+  (1, 100, NULL), (2, 200, 40), (3, 200, 60), (4, 300, NULL);
 
 --enable_warnings
 --enable_query_log
@@ -401,8 +413,62 @@ DELIMITER ;|
 --error 1
 --exec $RONSQL_CLI_EXE --connect-string $NDB_CONNECTSTRING -D test -e 'WITH sums AS (SELECT o_custkey AS k, SUM(o_amt) AS t FROM cte_orders GROUP BY o_custkey), case_totals AS (SELECT c.c_id AS k, SUM(CASE WHEN c.c_id > c.c_region THEN sums.t ELSE 0 END) AS t FROM cte_customer AS c JOIN sums ON sums.k = c.c_id GROUP BY c.c_id) SELECT k, SUM(t) AS case_sum FROM case_totals GROUP BY k;' 2>&1
 
+DELIMITER |;
+
+--echo
+--echo
+--echo === Test 21: CTE-body COUNT(CASE) literal-left comparison preserves offsets ===
+
+# COUNT has a known output type even with a CASE argument. c_region occurs
+# only in the condition, so it must be projected before nullable_sums.t
+# receives its linked-load offset. Loading the non-NULL key instead of the
+# NULL sum would count customer 100 incorrectly. Customer 300 takes ELSE 0.
+# Expected case_count for keys 100/200/300: 0/1/1.
+
+let $QUERY=
+WITH nullable_sums AS (
+  SELECT v_custkey AS k, SUM(v_amt) AS t
+  FROM cte_case_nullable GROUP BY v_custkey),
+case_counts AS (
+  SELECT c.c_id AS k,
+    COUNT(CASE WHEN 1 = c.c_region THEN nullable_sums.t ELSE 0 END) AS n
+  FROM cte_customer AS c
+  JOIN nullable_sums ON nullable_sums.k = c.c_id
+  GROUP BY c.c_id)
+SELECT k, SUM(n) AS case_count
+FROM case_counts
+GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+--echo
+--echo
+--echo === Test 22: CTE-body COUNT(CASE) column RHS preserves offsets ===
+
+# c_id is already projected by GROUP BY; c_region needs its own slot.
+# All conditions are true, but only customer 200 has a non-NULL sum.
+# Keep this separate so Test 21 cannot register c_region for this query.
+# Expected case_count for keys 100/200/300: 0/1/0.
+
+let $QUERY=
+WITH nullable_sums AS (
+  SELECT v_custkey AS k, SUM(v_amt) AS t
+  FROM cte_case_nullable GROUP BY v_custkey),
+case_counts AS (
+  SELECT c.c_id AS k,
+    COUNT(CASE WHEN c.c_id > c.c_region THEN nullable_sums.t ELSE 0 END) AS n
+  FROM cte_customer AS c
+  JOIN nullable_sums ON nullable_sums.k = c.c_id
+  GROUP BY c.c_id)
+SELECT k, SUM(n) AS case_count
+FROM case_counts
+GROUP BY k;|
+--source suite/ronsql/include/ronsql_compare.inc
+
+DELIMITER ;|
+
 --echo === Cleanup ===
 --disable_query_log
+DROP TABLE cte_case_nullable;
 DROP TABLE cte_orders;
 DROP TABLE cte_customer;
 --enable_query_log

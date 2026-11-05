@@ -1,0 +1,16 @@
+--source include/have_ndb.inc
+--source include/have_ndb_debug.inc
+# RONDB-1152: a transaction of a rate-limited database that DBTC aborts as a
+# read rate overflow while operations of the same transaction, queued in the
+# DBTC rate queue, are being re-sent by the queue handler. DBTC lost the
+# reply (TCROLLBACKREP) and the API waited until its 4012 timeout. The NDB
+# API test case forces the ordering with DBTC error insert 8160 and checks
+# that the reply arrives once the abort completes. The database needs a
+# quota, otherwise its operations are not subject to rate limiting at all.
+CREATE DATABASE TEST_DB;
+--exec $NDB_MGM -e "DATABASE QUOTA SET TEST_DB --rate-per-sec=1000000" > /dev/null
+let NDBAPITEST_NAME=testNdbApi;
+let NDBAPITEST_ARGS=-n RateQueueAbortKeepsExecFlag T1;
+--source suite/ndb/include/run_ndbapitest.inc
+--exec $NDB_MGM -e "DATABASE QUOTA DROP TEST_DB" > /dev/null
+DROP DATABASE TEST_DB;

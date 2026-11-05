@@ -1,0 +1,109 @@
+-- source include/have_ndb.inc
+--echo # We are using some debug-only features in this test
+-- source include/have_debug.inc
+-- source have_ndb_error_insert.inc
+
+#
+# Test of TC_HBREP during a scan that finds no rows
+#
+# A scan that finds no rows sends nothing to the API until it
+# ends. While LQH or SPJ report progress with SCAN_HBREP, DBTC
+# sends TC_HBREP to the API, which restarts the API timeout
+# so that the API continues waiting.
+#
+#   API side :    ndb_reduced_api_protocol_timeout
+#                 The NdbApi times out when it gets no
+#                 signal in 3 * 2 = 6 s
+#
+#   Kernel side : 5112 (LQH)
+#                 Range scans repeat the range for ever. The
+#                 range matches no rows, so the API gets nothing
+#                 while LQH sends SCAN_HBREP to TC.
+#
+#                 8317 (TC)
+#                 TC sends TC_HBREP every second instead of
+#                 every 30 seconds, i.e. within the API timeout
+#
+# Each scan runs for longer than the API timeout and ends when
+# the error inserts are cleared.
+#
+# Unordered and ordered scans and SPJ scans are taken separately
+# as they have separate implementations inside NdbApi.
+
+# STABILISATION_SECS is time taken for error insert
+# cancellation to cause delayed signal loops to end
+# and system to reach a stable state
+#
+let STABILISATION_SECS=4;
+
+call mtr.add_suppression("Receive from NDB failed");
+
+create table test.t1 (a int primary key, b int, key(b)) engine=ndb;
+create table test.t2 (a int primary key, b int, key(b)) engine=ndb;
+insert into test.t1 values (0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7);
+insert into test.t2 select * from test.t1;
+
+set @save_debug = @@session.debug;
+SET SESSION debug="+d,ndb_reduced_api_protocol_timeout";
+
+--echo
+--echo -----------------------------------------
+--echo No TC_HBREP within the API timeout
+--echo -----------------------------------------
+--echo The scan times out
+--exec $NDB_MGM -e "all error 5112" > /dev/null
+--error 1296
+select * from test.t1 where a > 70 order by b;
+--exec $NDB_MGM -e "all error 0" > /dev/null
+--sleep $STABILISATION_SECS
+
+--echo
+--echo -----------------------------------------
+--echo Unordered scan, ordered in MySQL Server
+--echo -----------------------------------------
+--exec $NDB_MGM -e "all error 5112" > /dev/null
+--exec $NDB_MGM -e "all error 8317" > /dev/null
+send select * from test.t1 where a > 70 order by b;
+--echo Scan for 10 s, longer than the API timeout
+--sleep 10
+--exec $NDB_MGM -e "all error 0" > /dev/null
+--echo The scan ends without error
+reap;
+--sleep $STABILISATION_SECS
+
+--echo
+--echo -----------------------------------------
+--echo Ordered scan, ordered by API
+--echo -----------------------------------------
+--exec $NDB_MGM -e "all error 5112" > /dev/null
+--exec $NDB_MGM -e "all error 8317" > /dev/null
+send select * from test.t1 where a > 70 order by a;
+--echo Scan for 10 s, longer than the API timeout
+--sleep 10
+--exec $NDB_MGM -e "all error 0" > /dev/null
+--echo The scan ends without error
+reap;
+--sleep $STABILISATION_SECS
+
+--echo
+--echo -----------------------------------------
+--echo SPJ scan
+--echo -----------------------------------------
+--exec $NDB_MGM -e "all error 5112" > /dev/null
+--exec $NDB_MGM -e "all error 8317" > /dev/null
+send select t1.b, t2.b from test.t1 join test.t2 on t2.a = t1.b where t1.a > 70;
+--echo Scan for 10 s, longer than the API timeout
+--sleep 10
+--exec $NDB_MGM -e "all error 0" > /dev/null
+--echo The scan ends without error
+reap;
+--sleep $STABILISATION_SECS
+
+--echo
+--echo Check that all is well
+select count(*) from test.t1;
+select count(*) from test.t1 join test.t2 on t2.a = t1.b;
+
+drop table test.t1, test.t2;
+
+SET SESSION debug=@save_debug;

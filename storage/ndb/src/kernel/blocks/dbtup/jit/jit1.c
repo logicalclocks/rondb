@@ -591,6 +591,11 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
   }
   uint8_t *blob_rw = (uint8_t *)slot.rw;
 
+  /* Declared before the first 'goto fail' so the jump does not skip
+   * their initialization (-Werror=jump-misses-init). */
+  const void *rx = NULL;
+  Jit1Prog *handle = NULL;
+
   if (out_timing) t_alloc_end = j1_now_ns();
 
   /* Emit the entry preamble. */
@@ -786,11 +791,11 @@ Jit1Prog *jit1_compile(NdbJitCodeMem *mem,
     errno = EFAULT;
     goto fail;
   }
-  const void *rx = slot.rx;
+  rx = slot.rx;
 
   if (out_timing) t_seal_end = j1_now_ns();
 
-  Jit1Prog *handle = (Jit1Prog *)calloc(1, sizeof(*handle));
+  handle = (Jit1Prog *)calloc(1, sizeof(*handle));
   if (!handle) {
     errno = ENOMEM;
     goto fail;

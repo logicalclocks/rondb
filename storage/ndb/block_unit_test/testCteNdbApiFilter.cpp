@@ -35,9 +35,14 @@
  *     test failure would be unrelated to CTE code.
  *   - Tests 6-12 (added in step A.6): filter semantics on CTE_LOOKUP_REQ
  *     via lookupCte() + NdbQueryOptions::setInterpretedCode().
+ *   - Tests 30-31 (finding E-23): CTE group and CTE_LOOKUP keys longer
+ *     than 4092 bytes fail the query with error 20023 and leave the data
+ *     nodes running.  They need two data nodes and are skipped on one.
  *
  * Schema (created via MySQL):
  *   filter_src(pk INT PK, grp INT, val BIGINT, tag CHAR(8))
+ *   e23_g / e23_s / e23_w (id INT PK, v VARCHAR(6000) latin1)
+ *   e23_n (id INT PK, v VARCHAR(4000) latin1)    -- Tests 30-31
  *
  * Test data (6 rows):
  *   (1, 1, 10, 'alpha')
@@ -55,6 +60,7 @@
 #include <ndb_opts.h>
 #include <NdbApi.hpp>
 #include <signaldata/QueryTree.hpp>
+#include <signaldata/DbspjErr.hpp>
 #include <NdbAggregator.hpp>
 #include <NdbSleep.h>
 #include "NdbQueryBuilder.hpp"
@@ -63,19 +69,27 @@
 #include "mysql/strings/m_ctype.h"  /* CHARSET_INFO body for csNumber lookup */
 
 #include <mysql.h>
+#include "JoinAggTestUtil.hpp"
 
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 
 static bool verbose = false;
 #define V(...) do { if (verbose) printf(__VA_ARGS__); } while(0)
 
+static const char *g_connectString = "localhost:1186";
 static const char *TEST_DB = "test";
 static const char *SRC_TABLE = "filter_src";
 static const char *CTE_SRC_TABLE = "cte_src";
 static const char *CTE_VIRTUAL_TABLE = "cte_virtual";
+/* Tests 30-31 (E-23): the CTE source and probe tables. */
+static const char *E23_WIDE_TABLE = "e23_g";    /* VARCHAR(6000), 5000 B */
+static const char *E23_NARROW_TABLE = "e23_n";  /* VARCHAR(4000), 3990 B */
+static const char *E23_SHORT_TABLE = "e23_s";   /* VARCHAR(6000), 'k1'.. */
+static const char *E23_PROBE_TABLE = "e23_w";   /* VARCHAR(6000), probes */
 
 /* ------------------------------------------------------------------ */
 /* MySQL helpers                                                       */
@@ -116,6 +130,10 @@ createTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS filter_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_g");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_n");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_s");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_w");
 
   /* Flat table for the baseline scan-filter tests (Tests 1-5). */
   if (sqlExec(conn,
@@ -139,6 +157,33 @@ createTestTables(MYSQL *conn)
       "CREATE TABLE cte_virtual ("
       "  grp INT NOT NULL PRIMARY KEY,"
       "  total BIGINT NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  /* Tests 30-31 (E-23): wide VARCHAR CTE keys.  The tests seed them.
+   * Their CTE virtual tables are built in memory: MySQL caps a key at
+   * 3072 bytes, so these columns cannot be a primary key. */
+  if (sqlExec(conn,
+      "CREATE TABLE e23_g ("
+      "  id INT NOT NULL PRIMARY KEY,"
+      "  v VARCHAR(6000) CHARACTER SET latin1 NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+      "CREATE TABLE e23_n ("
+      "  id INT NOT NULL PRIMARY KEY,"
+      "  v VARCHAR(4000) CHARACTER SET latin1 NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+      "CREATE TABLE e23_s ("
+      "  id INT NOT NULL PRIMARY KEY,"
+      "  v VARCHAR(6000) CHARACTER SET latin1 NOT NULL"
+      ") ENGINE=NDB") != 0) return -1;
+
+  if (sqlExec(conn,
+      "CREATE TABLE e23_w ("
+      "  id INT NOT NULL PRIMARY KEY,"
+      "  v VARCHAR(6000) CHARACTER SET latin1 NOT NULL"
       ") ENGINE=NDB") != 0) return -1;
 
   return 0;
@@ -167,6 +212,10 @@ dropTestTables(MYSQL *conn)
   sqlExec(conn, "DROP TABLE IF EXISTS filter_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_src");
   sqlExec(conn, "DROP TABLE IF EXISTS cte_virtual");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_g");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_n");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_s");
+  sqlExec(conn, "DROP TABLE IF EXISTS e23_w");
 }
 
 /* ------------------------------------------------------------------ */
@@ -4884,6 +4933,538 @@ testCteLookupRowCache(Ndb *ndb, MYSQL *conn)
 }
 
 /* ------------------------------------------------------------------ */
+/* Tests 30-31: E-23, CTE keys longer than 4092 bytes                  */
+/*                                                                     */
+/* Finding E-23 (claude_files/dbspj/dbspj_query_execution.html,        */
+/* section 8).  A CTE is materialized in the data nodes: each node     */
+/* groups its own rows, then DBLQH continueJoinAggRedistribute sends   */
+/* every group to its owner node (a hash of the group key) in          */
+/* JOIN_AGG_REDISTRIBUTE_REQ, and execJOIN_AGG_REDISTRIBUTE_REQ merges */
+/* it there.  A CTE_LOOKUP into a grouped CTE with more than one owner */
+/* node hashes its probe key in DBSPJ cte_lookup_send and sends        */
+/* CTE_LOOKUP_REQ to the owner.  Both sites take a key of at most      */
+/* MAX_KEY_SIZE_IN_WORDS (1023 words, 4092 bytes), with an ndbrequire, */
+/* and nothing before them checked the length:                         */
+/*   - receiver, DblqhMain.cpp: ndbrequire(keyWords <=                 */
+/*     MAX_KEY_SIZE_IN_WORDS) in execJOIN_AGG_REDISTRIBUTE_REQ (also   */
+/*     on the key section of the single-group form).  The sender did   */
+/*     not check.  A CTE grouped by a VARCHAR(6000) latin1 column      */
+/*     holding 5000-byte values stopped the receiving data nodes.      */
+/*   - cte_lookup_send, DbspjMain.cpp: ndbrequire(keyPtr.sz <=         */
+/*     MAX_KEY_SIZE_IN_WORDS) on the probe key, which comes from the   */
+/*     parent row.  A 5000-byte parent value stopped the data node.    */
+/* A key is one AttributeHeader word plus the column data (2 length    */
+/* bytes and the value), padded to words: a 3990-byte value is 999     */
+/* words and fits, a 5000-byte value is 1252 words.                    */
+/*                                                                     */
+/* The fix: error 20023 (DbspjErr::CteKeyTooLong).  The sender aborts  */
+/* the CTE for any group key over 4092 bytes, checked for every group  */
+/* whether its owner is local or remote; the receiver REFs with 20023  */
+/* instead of stopping; cte_lookup_send fails the query with 20023.    */
+/* RonSQL now refuses such CTEs at prepare time (ronsql_cte tests      */
+/* spj_ronsql_e23_wide_group_key / _wide_lookup_key), so these tests   */
+/* reach the kernel checks through the NDB API, as any other client    */
+/* can.  The receiver check is not reached from here: the sender       */
+/* refuses the group first.                                            */
+/*                                                                     */
+/* Expected now: the query fails with 20023, every data node is still  */
+/* STARTED with its old connection count (no stop, no restart), the    */
+/* DBTC and DBSPJ leak checks (DUMP 2560, 2650) pass, and the control  */
+/* query gives its result again.                                       */
+/*                                                                     */
+/* On one data node neither site runs (no redistribution; one owner,   */
+/* so the probe goes to the local DBLQH, which REFs a long key with    */
+/* 1262 itself), so the tests are skipped there.  ndb_push_agg and     */
+/* ndb_push_agg_jit run one data node, ndb_push_agg_dist runs two.     */
+/*                                                                     */
+/* Query shape (runE23CteLookup):                                      */
+/*   WITH c AS (SELECT v, COUNT(*) AS n FROM <cte table> GROUP BY v)   */
+/*   SELECT COUNT(*) FROM <main table> m JOIN c ON c.v = m.v           */
+/* CTE body: scan + readTuple self-join on id carrying the CTE         */
+/* aggregator, as in the other tests; main: scan + inner CTE_LOOKUP    */
+/* aggregate leaf with COUNT(*).                                       */
+/* ------------------------------------------------------------------ */
+
+static const int E23_ROWS = 40;    /* rows of e23_g and e23_n */
+static const int E23_GROUPS = 20;  /* distinct values, two rows each */
+
+/* The join-aggregation leak checks that exist in every build (DBLQH's
+ * need VM_TRACE or ERROR_INSERT).  Each stops its node on a leak. */
+static const int E23_LEAK_DUMPS[] = {
+    DumpStateOrd::TcDumpJoinAggRecords,
+    DumpStateOrd::SpjDumpRequests};
+
+/* e23_g: E23_ROWS rows, value (id - 1) % E23_GROUPS as 4 digits and
+ * then 4996 'x' (5000 bytes); e23_n: the same values cut to 3990
+ * bytes. */
+static int
+e23SeedGroupTables(MYSQL *conn)
+{
+  if (sqlExec(conn, "DELETE FROM e23_g") != 0 ||
+      sqlExec(conn, "DELETE FROM e23_n") != 0) {
+    return -1;
+  }
+  char sql[4096];
+  int pos = snprintf(sql, sizeof(sql), "INSERT INTO e23_g VALUES ");
+  for (int id = 1; id <= E23_ROWS && pos < (int)sizeof(sql); id++) {
+    pos += snprintf(sql + pos, sizeof(sql) - pos,
+                    "%s(%d,CONCAT(LPAD(%d,4,'0'),REPEAT('x',4996)))",
+                    id == 1 ? "" : ",", id, (id - 1) % E23_GROUPS);
+  }
+  if (pos >= (int)sizeof(sql)) {
+    fprintf(stderr, "e23_g INSERT statement too long\n");
+    return -1;
+  }
+  if (sqlExec(conn, sql) != 0) return -1;
+  return sqlExec(conn,
+                 "INSERT INTO e23_n SELECT id, LEFT(v, 3990) FROM e23_g");
+}
+
+/* e23_s: 'k1'..'k5', two rows each. */
+static int
+e23SeedShortTable(MYSQL *conn)
+{
+  if (sqlExec(conn, "DELETE FROM e23_s") != 0) return -1;
+  return sqlExec(conn,
+                 "INSERT INTO e23_s VALUES "
+                 "(1,'k1'),(2,'k1'),(3,'k2'),(4,'k2'),(5,'k3'),"
+                 "(6,'k3'),(7,'k4'),(8,'k4'),(9,'k5'),(10,'k5')");
+}
+
+/* After a query that failed with 20023: every data node is still
+ * STARTED with the connection count it had in `before` (a stop
+ * changes it, even one followed by an automatic restart), and DBTC
+ * and DBSPJ hold nothing of the query. */
+static int
+e23CheckDataNodes(NdbRestarter &restarter,
+                  const std::map<int, int> &before, const char *label)
+{
+  std::map<int, int> after;
+  if (!readStartedNodeConnections(restarter, after, label)) {
+    printf("FAILED (%s: a data node is not started)\n", label);
+    return -1;
+  }
+  if (after != before) {
+    printf("FAILED (%s: a data node stopped or restarted)\n", label);
+    return -1;
+  }
+  if (joinAggCheckLeaks(nullptr, restarter, label, E23_LEAK_DUMPS,
+                        NDB_ARRAY_SIZE(E23_LEAK_DUMPS),
+                        /*settleMs=*/500, /*timeoutMs=*/30000) != 0) {
+    printf("FAILED (%s: DBTC/DBSPJ leak check)\n", label);
+    return -1;
+  }
+  return 0;
+}
+
+/*
+ * runE23CteLookup — runs
+ *   WITH c AS (SELECT v, COUNT(*) AS n FROM <cteTabName> GROUP BY v)
+ *   SELECT COUNT(*) FROM <mainTabName> m JOIN c ON c.v = m.v
+ * CTE body: scan + readTuple self-join on id with the CTE aggregator;
+ * main: scan of mainTabName + inner CTE_LOOKUP leaf with COUNT(*).
+ *
+ * The CTE virtual table [v PK, n BIGINT UNSIGNED] is built in memory,
+ * as in Test 22: lookupCte binds the key operand to the virtual
+ * primary key, which must have the type, length and charset of the
+ * parent column, and MySQL cannot create a VARCHAR(4000) or
+ * VARCHAR(6000) primary key (3072-byte key limit).
+ *
+ * Returns 0 with *countOut set when the query succeeded, 1 with
+ * *errorOut set when it failed, -1 when it could not be built (the
+ * reason is printed).
+ */
+static int
+runE23CteLookup(Ndb *ndb, const char *cteTabName, const char *mainTabName,
+                const char *label, Int64 *countOut, int *errorOut)
+{
+  *countOut = -1;
+  *errorOut = 0;
+
+  NdbDictionary::Dictionary *dict = ndb->getDictionary();
+  dict->invalidateTable(cteTabName);
+  dict->invalidateTable(mainTabName);
+  const NdbDictionary::Table *cteTab = dict->getTable(cteTabName);
+  const NdbDictionary::Table *mainTab = dict->getTable(mainTabName);
+  if (cteTab == nullptr || mainTab == nullptr) {
+    printf("FAILED (%s table lookup: %s)\n", label,
+           dict->getNdbError().message);
+    return -1;
+  }
+  const NdbDictionary::Column *keySrc = cteTab->getColumn("v");
+  if (keySrc == nullptr || mainTab->getColumn("v") == nullptr) {
+    printf("FAILED (%s column lookup: v)\n", label);
+    return -1;
+  }
+
+  NdbDictionary::Table virtTabSyn("__cte_e23_virt");
+  {
+    NdbDictionary::Column vCol;
+    vCol.setName("v");
+    vCol.setType(keySrc->getType());
+    vCol.setLength(keySrc->getLength());
+    vCol.setPrecision(keySrc->getPrecision());
+    vCol.setScale(keySrc->getScale());
+    vCol.setCharset(keySrc->getCharset());
+    vCol.setPrimaryKey(true);
+    vCol.setNullable(false);
+    virtTabSyn.addColumn(vCol);
+
+    NdbDictionary::Column nCol;
+    nCol.setName("n");
+    nCol.setType(NdbDictionary::Column::Bigunsigned);
+    nCol.setLength(1);
+    nCol.setPrimaryKey(false);
+    nCol.setNullable(true);
+    virtTabSyn.addColumn(nCol);
+  }
+  {
+    NdbError vtErr;
+    if (virtTabSyn.aggregate(vtErr) != 0) {
+      printf("FAILED (%s virtTab aggregate: %d %s)\n", label,
+             vtErr.code, vtErr.message);
+      return -1;
+    }
+  }
+  const NdbDictionary::Table *virtTab = &virtTabSyn;
+
+  NdbAggregator cteAgg(cteTab);
+  if (!cteAgg.GroupBy("v") ||
+      !cteAgg.LoadUint64(1, 0) ||
+      !cteAgg.Count(0, 0) ||
+      !cteAgg.Finalize()) {
+    printf("FAILED (%s cteAgg: %s)\n", label, cteAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbAggregator mainAgg(mainTab);
+  if (!mainAgg.LoadUint64(1, 0) ||
+      !mainAgg.Count(0, 0) ||
+      !mainAgg.Finalize()) {
+    printf("FAILED (%s mainAgg: %s)\n", label,
+           mainAgg.GetError().err_msg_);
+    return -1;
+  }
+
+  NdbQueryBuilder *qb = NdbQueryBuilder::create();
+  if (qb == nullptr) { printf("FAILED (%s create)\n", label); return -1; }
+
+  qb->beginCteSubtree(0);
+  const NdbQueryTableScanOperationDef *cteScanOp = qb->scanTable(cteTab);
+  if (cteScanOp == nullptr) {
+    printf("FAILED (%s CTE scan: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteJoinKey[] = {
+      qb->linkedValue(cteScanOp, "id"), nullptr
+  };
+  NdbQueryOptions cteLeafOpts;
+  cteLeafOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLeafOpts.setAggregation(cteAgg);
+  if (qb->readTuple(cteTab, cteJoinKey, &cteLeafOpts) == nullptr) {
+    printf("FAILED (%s CTE leaf: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->endCteSubtree();
+  if (qb->defineCte(0, cteTab, cteAgg) != 0) {
+    printf("FAILED (%s defineCte: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryTableScanOperationDef *mainScanOp = qb->scanTable(mainTab);
+  if (mainScanOp == nullptr) {
+    printf("FAILED (%s main scan: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  const NdbQueryOperand *cteKey[] = {
+      qb->linkedValue(mainScanOp, "v"), nullptr
+  };
+  NdbQueryOptions cteLookupOpts;
+  cteLookupOpts.setMatchType(NdbQueryOptions::MatchNonNull);
+  cteLookupOpts.setAggregation(mainAgg);
+  if (qb->lookupCte(0, 2, virtTab, cteKey, &cteLookupOpts) == nullptr) {
+    printf("FAILED (%s lookupCte: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+
+  const NdbQueryDef *queryDef = qb->prepare(ndb);
+  if (queryDef == nullptr) {
+    printf("FAILED (%s prepare: %s)\n", label, qb->getNdbError().message);
+    qb->destroy();
+    return -1;
+  }
+  qb->destroy();
+
+  NdbTransaction *trans = ndb->startTransaction();
+  if (trans == nullptr) {
+    printf("FAILED (%s startTransaction: %s)\n", label,
+           ndb->getNdbError().message);
+    queryDef->destroy();
+    return -1;
+  }
+  NdbQuery *query = trans->createQuery(queryDef);
+  if (query == nullptr) {
+    printf("FAILED (%s createQuery: %s)\n", label,
+           trans->getNdbError().message);
+    trans->close();
+    queryDef->destroy();
+    return -1;
+  }
+
+  bool sawError = false;
+  int errorCode = 0;
+  if (trans->execute(NdbTransaction::NoCommit) != 0) {
+    sawError = true;
+    errorCode = trans->getNdbError().code;
+    V("\n  %s execute error: %d: %s", label, errorCode,
+      trans->getNdbError().message);
+  } else {
+    NdbQuery::NextResultOutcome outcome;
+    while ((outcome = query->nextResult(true)) ==
+           NdbQuery::NextResult_gotRow) {
+      /* nothing: the main aggregator carries the count */
+    }
+    if (outcome == NdbQuery::NextResult_error) {
+      sawError = true;
+      errorCode = query->getNdbError().code;
+      V("\n  %s drain error: %d: %s", label, errorCode,
+        query->getNdbError().message);
+    }
+  }
+
+  Int64 count = -1;
+  if (!sawError) {
+    NdbAggregator *resultAgg = query->getAggregator();
+    if (resultAgg != nullptr) {
+      NdbAggregator::ResultRecord rec = resultAgg->FetchResultRecord();
+      if (!rec.end()) {
+        NdbAggregator::Result countRes = rec.FetchAggregationResult();
+        count = countRes.data_int64();
+      }
+    }
+  }
+
+  query->close();
+  trans->close();
+  queryDef->destroy();
+
+  if (sawError) {
+    *errorOut = errorCode;
+    return 1;
+  }
+  *countOut = count;
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 30: E-23 group key, the redistribution sender                  */
+/*                                                                     */
+/* e23_g: ids 1..40, 20 distinct 5000-byte values (the 4-digit number  */
+/* (id - 1) % 20, then 4996 'x'), two rows each, spread over the       */
+/* fragments by id.  e23_n: the same values cut to 3990 bytes, in a    */
+/* VARCHAR(4000).  e23_s: 'k1'..'k5', two rows each.                   */
+/*   (a) control: CTE over e23_n (20 groups of 999-word keys), main    */
+/*       scan e23_n: every row finds its group -> COUNT = 40.          */
+/*   (b) CTE over e23_g, main scan e23_s: the group keys are 1252      */
+/*       words -> the redistribution aborts the CTE with 20023.  The   */
+/*       probe keys are short and match no group (COUNT = 0 had the    */
+/*       CTE been built), so the error cannot come from                */
+/*       cte_lookup_send.                                              */
+/*       Before the fix: both data nodes stopped on                    */
+/*       ndbrequire(keyWords <= MAX_KEY_SIZE_IN_WORDS), DblqhMain.cpp. */
+/*   (c) all data nodes up and not restarted, no DBTC/DBSPJ leak, and  */
+/*       (a) again gives COUNT = 40.                                   */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteE23WideGroupKey(Ndb *ndb, MYSQL *conn)
+{
+  const int keyTooLong = DbspjErr::CteKeyTooLong;  /* 20023 */
+  printf("Test 30: E-23 CTE group key over 4092 bytes ... ");
+  fflush(stdout);
+
+  /* getNumDbNodes() also connects restarter to the management server. */
+  NdbRestarter restarter(g_connectString);
+  const int dataNodes = restarter.getNumDbNodes();
+  if (dataNodes < 0) {
+    printf("FAILED (no data node count from the management server)\n");
+    return -1;
+  }
+  if (dataNodes < 2) {
+    printf("SKIPPED (needs two data nodes, the cluster has %d)\n",
+           dataNodes);
+    return 0;
+  }
+
+  if (e23SeedGroupTables(conn) != 0 || e23SeedShortTable(conn) != 0) {
+    printf("FAILED (seed e23_g, e23_n, e23_s)\n");
+    return -1;
+  }
+  std::map<int, int> nodesBefore;
+  if (!readStartedNodeConnections(restarter, nodesBefore, "Test 30")) {
+    printf("FAILED (data nodes not started before the test)\n");
+    return -1;
+  }
+
+  Int64 count = -1;
+  int error = 0;
+
+  /* (a) control: 999-word group and probe keys fit. */
+  int rc = runE23CteLookup(ndb, E23_NARROW_TABLE, E23_NARROW_TABLE,
+                           "control", &count, &error);
+  if (rc < 0) return -1;
+  if (rc != 0 || count != E23_ROWS) {
+    printf("FAILED (control: error %d, COUNT=%lld, expected COUNT=%d)\n",
+           error, (long long)count, E23_ROWS);
+    return -1;
+  }
+
+  /* (b) 1252-word group keys: the redistribution refuses them. */
+  rc = runE23CteLookup(ndb, E23_WIDE_TABLE, E23_SHORT_TABLE, "wide",
+                       &count, &error);
+  if (rc < 0) return -1;
+  if (rc == 0) {
+    printf("FAILED (wide: the query completed, COUNT=%lld; expected "
+           "error %d)\n", (long long)count, keyTooLong);
+    return -1;
+  }
+  if (error != keyTooLong) {
+    printf("FAILED (wide: expected error %d, got %d)\n",
+           keyTooLong, error);
+    return -1;
+  }
+  V("\n  wide: error %d as expected", error);
+
+  /* (c) no data node stopped, nothing leaked, the control still runs. */
+  if (e23CheckDataNodes(restarter, nodesBefore, "Test 30") != 0) return -1;
+  rc = runE23CteLookup(ndb, E23_NARROW_TABLE, E23_NARROW_TABLE,
+                       "control again", &count, &error);
+  if (rc < 0) return -1;
+  if (rc != 0 || count != E23_ROWS) {
+    printf("FAILED (control again: error %d, COUNT=%lld, expected "
+           "COUNT=%d)\n", error, (long long)count, E23_ROWS);
+    return -1;
+  }
+
+  printf("OK (control COUNT=%d, wide group key error %d, data nodes up)\n",
+         E23_ROWS, keyTooLong);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Test 31: E-23 CTE_LOOKUP probe key, DBSPJ cte_lookup_send           */
+/*                                                                     */
+/* e23_s: 'k1'..'k5', two rows each -> a CTE of 5 short groups, which  */
+/* gets past the redistribution.  e23_w: (1,'k1'), (2,'k2').  Both     */
+/* columns are VARCHAR(6000) latin1, as a CTE_LOOKUP key operand must  */
+/* have the type of the virtual key column.                            */
+/*   (a) control: CTE over e23_s, main scan e23_w -> COUNT = 2.        */
+/*   (b) e23_w gets three 5000-byte values (ids 3..5, 'w3'.. then      */
+/*       4998 'x'): their probe keys are 1252 words -> cte_lookup_send */
+/*       fails the query with 20023.                                   */
+/*       Before the fix: the data node stopped on the                  */
+/*       ndbrequire(keyPtr.sz <= MAX_KEY_SIZE_IN_WORDS) in             */
+/*       DbspjMain.cpp.                                                */
+/*   (c) all data nodes up and not restarted, no DBTC/DBSPJ leak; with */
+/*       the wide rows deleted, (a) again gives COUNT = 2.             */
+/* ------------------------------------------------------------------ */
+
+static int
+testCteE23WideLookupKey(Ndb *ndb, MYSQL *conn)
+{
+  const int keyTooLong = DbspjErr::CteKeyTooLong;  /* 20023 */
+  const Int64 shortHits = 2;  /* e23_w 'k1' and 'k2' */
+  printf("Test 31: E-23 CTE_LOOKUP key over 4092 bytes ... ");
+  fflush(stdout);
+
+  /* getNumDbNodes() also connects restarter to the management server. */
+  NdbRestarter restarter(g_connectString);
+  const int dataNodes = restarter.getNumDbNodes();
+  if (dataNodes < 0) {
+    printf("FAILED (no data node count from the management server)\n");
+    return -1;
+  }
+  if (dataNodes < 2) {
+    printf("SKIPPED (needs two data nodes, the cluster has %d)\n",
+           dataNodes);
+    return 0;
+  }
+
+  if (e23SeedShortTable(conn) != 0 ||
+      sqlExec(conn, "DELETE FROM e23_w") != 0 ||
+      sqlExec(conn, "INSERT INTO e23_w VALUES (1,'k1'),(2,'k2')") != 0) {
+    printf("FAILED (seed e23_s, e23_w)\n");
+    return -1;
+  }
+  std::map<int, int> nodesBefore;
+  if (!readStartedNodeConnections(restarter, nodesBefore, "Test 31")) {
+    printf("FAILED (data nodes not started before the test)\n");
+    return -1;
+  }
+
+  Int64 count = -1;
+  int error = 0;
+
+  /* (a) control: short probe keys. */
+  int rc = runE23CteLookup(ndb, E23_SHORT_TABLE, E23_PROBE_TABLE,
+                           "control", &count, &error);
+  if (rc < 0) return -1;
+  if (rc != 0 || count != shortHits) {
+    printf("FAILED (control: error %d, COUNT=%lld, expected COUNT=%lld)\n",
+           error, (long long)count, (long long)shortHits);
+    return -1;
+  }
+
+  /* (b) three parent rows with 1252-word probe keys. */
+  if (sqlExec(conn,
+              "INSERT INTO e23_w VALUES "
+              "(3,CONCAT('w3',REPEAT('x',4998))),"
+              "(4,CONCAT('w4',REPEAT('x',4998))),"
+              "(5,CONCAT('w5',REPEAT('x',4998)))") != 0) {
+    printf("FAILED (insert the wide e23_w rows)\n");
+    return -1;
+  }
+  rc = runE23CteLookup(ndb, E23_SHORT_TABLE, E23_PROBE_TABLE, "wide",
+                       &count, &error);
+  if (rc < 0) return -1;
+  if (rc == 0) {
+    printf("FAILED (wide: the query completed, COUNT=%lld; expected "
+           "error %d)\n", (long long)count, keyTooLong);
+    return -1;
+  }
+  if (error != keyTooLong) {
+    printf("FAILED (wide: expected error %d, got %d)\n",
+           keyTooLong, error);
+    return -1;
+  }
+  V("\n  wide: error %d as expected", error);
+
+  /* (c) no data node stopped, nothing leaked, the control still runs. */
+  if (e23CheckDataNodes(restarter, nodesBefore, "Test 31") != 0) return -1;
+  if (sqlExec(conn, "DELETE FROM e23_w WHERE id >= 3") != 0) {
+    printf("FAILED (delete the wide e23_w rows)\n");
+    return -1;
+  }
+  rc = runE23CteLookup(ndb, E23_SHORT_TABLE, E23_PROBE_TABLE,
+                       "control again", &count, &error);
+  if (rc < 0) return -1;
+  if (rc != 0 || count != shortHits) {
+    printf("FAILED (control again: error %d, COUNT=%lld, expected "
+           "COUNT=%lld)\n", error, (long long)count, (long long)shortHits);
+    return -1;
+  }
+
+  printf("OK (control COUNT=%lld, wide probe key error %d, data nodes up)\n",
+         (long long)shortHits, keyTooLong);
+  return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -4922,6 +5503,8 @@ static const TestEntry g_tests[] = {
     { 27, testCteOrderByLimit },
     { 28, testCteSingleGroup },
     { 29, testCteLookupRowCache },
+    { 30, testCteE23WideGroupKey },
+    { 31, testCteE23WideLookupKey },
 };
 static const size_t g_test_count = sizeof(g_tests) / sizeof(g_tests[0]);
 
@@ -4947,6 +5530,7 @@ int main(int argc, char **argv)
       return 0;
     }
   }
+  g_connectString = connectString;  /* NdbRestarter in Tests 30-31 */
 
   if (onlyTest != -1) {
     bool found = false;

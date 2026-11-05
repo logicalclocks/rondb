@@ -1,0 +1,44 @@
+#
+# ndb_spj_shapes_agg_exact: SUM over BIGINT and BIGINT UNSIGNED values
+# whose sum does not fit in 64 bits (Q-6a, Q-6b).  MySQL widens the sum to
+# DECIMAL; the data nodes sum in 64 bits and the query fails with error
+# 1860.  mysqld still pushes these sums on purpose: refusing them would
+# stop SUM pushdown for most queries.  Disabled in
+# collections/disabled_ndb.def until the data nodes and the NDB API sum
+# exactly (Q-6 / E-16); run it with --enable-disabled.
+#
+# Same method as ndb_spj_shapes_agg.  f.big / f.ubig are near 2^62 / 2^63
+# for the rows of group d.g = 3 / 4.
+#
+
+--source include/have_ndb.inc
+--source suite/ndb_opt/ndb_spj_shapes_init.inc
+
+--let $join_pushdown = `SELECT @@ndb_join_pushdown`
+if (!$join_pushdown)
+{
+  --skip ndb_join_pushdown must be enabled
+}
+
+--echo #
+--echo # Tables and data
+--echo #
+--source suite/ndb_push_agg_dist/include/spj_shapes_agg_tables.inc
+
+--echo #
+--echo # Q-6: sums beyond 64 bits
+--echo #
+let $spj_label= Q-6a-sum-bigint-overflow;
+let $spj_query= SELECT d.g, SUM(f.big), COUNT(*)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+let $spj_label= Q-6b-sum-bigint-unsigned-overflow;
+let $spj_query= SELECT d.g, SUM(f.ubig), COUNT(*)
+  FROM d JOIN f ON f.did = d.id GROUP BY d.g;
+let $spj_agg= 1;
+--source suite/ndb_opt/ndb_spj_shapes_check.inc
+
+DROP TABLE seq, d, l1, l2, l3, f, reg;
+--source suite/ndb_opt/ndb_spj_shapes_end.inc

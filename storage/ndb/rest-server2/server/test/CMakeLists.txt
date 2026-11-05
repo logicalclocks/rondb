@@ -25,10 +25,10 @@ NDB_ADD_EXECUTABLE(api_key_test api_key_test.cpp
 NDB_ADD_EXECUTABLE(error_handling_test error_handling_test.cpp
                    STATIC_NDBCLIENT)
 
-# RonSQL allocation-failure regression driver. It provides its own main()
+# RonSQL parser regression driver. ronsql_oom_test.cpp provides main()
 # to initialize and shut down the NDB client library.
 NDB_ADD_EXECUTABLE(ronsql_oom_test ronsql_oom_test.cpp
-                   STATIC_NDBCLIENT)
+                   ronsql_parse_only_test.cpp STATIC_NDBCLIENT)
 TARGET_LINK_LIBRARIES(
   ronsql_oom_test
   ndbgeneral
@@ -170,6 +170,9 @@ add_test(NAME ronsql_parser_oom_test COMMAND ronsql_oom_test
 # Flat GROUP/ORDER lists must fit the parser's initial stack.
 add_test(NAME ronsql_parser_list_stack_test COMMAND ronsql_oom_test
          --gtest_filter=RonSQLParserListStack.*)
+# Authorization inventories and scope guards need no cluster.
+add_test(NAME ronsql_parser_access_test COMMAND ronsql_oom_test
+         --gtest_filter=RonSQLParseOnlyInventory.*:RonSQLParseOnlyRejection.*)
 add_test(NAME reconnect_test COMMAND reconnect_test)
 add_test(NAME probe_server_http_test COMMAND probe_server_http_test)
 add_test(NAME probe_server_cluster_test COMMAND probe_server_cluster_test)

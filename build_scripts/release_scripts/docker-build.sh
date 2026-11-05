@@ -4,7 +4,7 @@ set -e
 
 help() {
   cat <<EOF
-docker-build.sh {-s path} {-o path} [-n name] [-b path] [-j build_threads] [-r] [-d]
+docker-build.sh {-s path} {-o path} [-n name] [-b path] [-j build_threads] [-m mtr_workers] [-r] [-d]
 
 This script builds RonDB using Docker and returns tarballs containing the binaries.
 Use this file if access to the RonDB build directory is required. When only using
@@ -33,9 +33,16 @@ Example: ./docker-build.sh -s ../.. -o /tmp/output/ -b /tmp/build/ -r -j 20
       Optional number of build threads
       Defaults to 1
       See "docker info" for how many CPUs Docker has access to
+-m=mtr_workers
+      Optional number of MTR workers (mtr --parallel) for the test runs of a
+      release build (-r); each worker runs its own cluster, so this is
+      bounded by memory, not by cores, and is independent of -j.
+      Defaults to 1. See build_all.sh
 
 -r    Create release builds. This takes longer
 -d    Deploy to remote repo.hops.works. Hopsworks AB specific
+-i    Ignore MTR test failures of a release build (-r); by default they
+      fail the build. See build_all.sh
 EOF
 }
 
@@ -50,10 +57,11 @@ DOCKERFILE="Dockerfile.oraclelinux9"
 CORES=1
 RELEASE_BUILD=
 DEPLOY=
+IGNORE_TEST_FAILURES=
 
 # A POSIX variable
 OPTIND=1 # Reset in case getopts has been used previously in the shell.
-while getopts ":n:s:b:o:f:j:rd" opt; do
+while getopts ":n:s:b:o:f:j:m:rdi" opt; do
   case "$opt" in
   t)
     DOCKER_IMAGE_NAME=$OPTARG
@@ -73,11 +81,17 @@ while getopts ":n:s:b:o:f:j:rd" opt; do
   j)
     CORES=$OPTARG
     ;;
+  m)
+    MTR_PARALLEL=$OPTARG
+    ;;
   r)
     RELEASE_BUILD="-r"
     ;;
   d)
     DEPLOY="-d"
+    ;;
+  i)
+    IGNORE_TEST_FAILURES="-i"
     ;;
   *)
     help
@@ -164,6 +178,7 @@ echo "Build Params:
   Dockerfile: $DOCKERFILE
   Docker image: $DOCKER_IMAGE_NAME
   No of build threads: $CORES
+  MTR workers (--parallel): ${MTR_PARALLEL:-1 (default)}
   Release: $RELEASE_BUILD
   Deploy: $DEPLOY"
 
@@ -183,4 +198,4 @@ docker run --rm \
   --mount type=bind,src=$OUTPUT_DIR_ABS,dst=/rondb-tarball \
   --mount type=bind,src=$BUILD_DIR_ABS,dst=/rondb-bin \
   $DOCKER_IMAGE_NAME \
-  /bin/bash -c "source /root/.bashrc && /rondb-src/build_scripts/release_scripts/build_all.sh -s /rondb-src -b /rondb-bin -o /rondb-tarball -j $CORES $RELEASE_BUILD $DEPLOY"
+  /bin/bash -c "source /root/.bashrc && /rondb-src/build_scripts/release_scripts/build_all.sh -s /rondb-src -b /rondb-bin -o /rondb-tarball -j $CORES ${MTR_PARALLEL:+-m $MTR_PARALLEL} $RELEASE_BUILD $DEPLOY $IGNORE_TEST_FAILURES"

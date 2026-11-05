@@ -1,0 +1,71 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== s15c-0: the plan is CTE_SCAN root -> PK_LOOKUP aggregate leaf ===
+== Explain Query ==
+
+=== s15c-1: control, no forced eviction ===
+== Query ==
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g|
+g	COUNT(*)	SUM(c0.total)
+0	120	9000
+1	120	9240
+10	120	11400
+11	120	11640
+12	120	11880
+13	120	12120
+14	120	12360
+15	120	12600
+16	120	12840
+17	120	13080
+18	120	13320
+19	120	13560
+2	120	9480
+20	120	13800
+21	120	14040
+22	120	14280
+23	120	14520
+24	120	14760
+3	120	9720
+4	120	9960
+5	120	10200
+6	120	10440
+7	120	10680
+8	120	10920
+9	120	11160
+
+=== s15c-2: lookup-leaf evictions forced (DBTUP 4041) ===
+== Query ==
+WITH c0 AS (SELECT grp AS k, SUM(val) AS total
+FROM s15c_src GROUP BY grp)
+SELECT r.g, COUNT(*), SUM(c0.total)
+FROM c0 JOIN s15c_rhs AS r ON r.id = c0.k
+GROUP BY r.g;
+
+Number of output lines, including header: 26
+
+== Diff ==
+==========
+
+
+
+
+=== s15c-3: no DBSPJ request or join-aggregation state left behind ===
