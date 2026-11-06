@@ -2123,6 +2123,14 @@ Dbacc::accIsLockedLab(Signal* signal,
   validate_lock_queue(lockOwnerPtr);
   /*
    * TTL related
+   *
+   * The lock queue is made of operation records of the LDM instance that
+   * owns the fragment, so it must be walked in m_ldm_instance_used's pool,
+   * the pool getElement used to find lockOwnerPtr. m_curr_acc is not that
+   * pool for a dirty read in a query thread: execLQHKEYREQ only switches
+   * m_curr_acc to the owning LDM for locking operations, so for a dirty
+   * read it is the query block's own DBQACC, whose pool holds other records
+   * at these i-values.
    */
   bool ignore_ttl = false;
   if (is_ttl_table) {
@@ -2135,7 +2143,7 @@ Dbacc::accIsLockedLab(Signal* signal,
     }
     else
     {
-      ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastOpPtr));
+      ndbrequire(m_ldm_instance_used->oprec_pool.getValidPtr(lastOpPtr));
     }
 
     ndbassert(validate_parallel_queue(lastOpPtr, lockOwnerPtr.i));
@@ -2151,7 +2159,7 @@ Dbacc::accIsLockedLab(Signal* signal,
       OperationrecPtr loopPtr = lockOwnerPtr;
       do
       {
-        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+        ndbrequire(m_ldm_instance_used->oprec_pool.getValidPtr(loopPtr));
         if (loopPtr.p->is_same_trans(operationRecPtr.p)) {
           ignore_ttl = true;
           break;
@@ -2474,9 +2482,10 @@ bool Dbacc::validate_parallel_queue(OperationrecPtr opPtr,
       return true;
     }
     opPtr.i = opPtr.p->prevParallelQue;
-    ndbrequire(m_curr_acc->oprec_pool.getValidPtr(opPtr));
-  }    
-  
+    /* Owning LDM's pool: also called for dirty reads in query threads. */
+    ndbrequire(m_ldm_instance_used->oprec_pool.getValidPtr(opPtr));
+  }
+
   return (opPtr.i == ownerPtrI);
 }
 
@@ -3655,13 +3664,15 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
       OperationrecPtr lastOpPtr;
       lastOpPtr.i = lockOwnerPtr.p->m_lo_last_parallel_op_ptr_i;
 
+      /* The lock queue belongs to the owning LDM instance, and this can run
+       * in a query thread (read-committed scan), see accIsLockedLab. */
       if (lastOpPtr.i == RNIL)
       {
         lastOpPtr = lockOwnerPtr;
       }
       else
       {
-        ndbrequire(m_curr_acc->oprec_pool.getValidPtr(lastOpPtr));
+        ndbrequire(m_ldm_instance_used->oprec_pool.getValidPtr(lastOpPtr));
       }
 
       ndbassert(validate_parallel_queue(lastOpPtr, lockOwnerPtr.i));
@@ -3677,7 +3688,7 @@ bool Dbacc::WhetherSkipTTL(Signal* signal)
         OperationrecPtr loopPtr = lockOwnerPtr;
         do
         {
-          ndbrequire(m_curr_acc->oprec_pool.getValidPtr(loopPtr));
+          ndbrequire(m_ldm_instance_used->oprec_pool.getValidPtr(loopPtr));
           if (loopPtr.p->is_same_trans(operationRecPtr.p)) {
             skip = true;
             break;
