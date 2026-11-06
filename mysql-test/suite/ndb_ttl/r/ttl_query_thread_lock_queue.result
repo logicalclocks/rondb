@@ -1,0 +1,127 @@
+#
+# Part 1: committed key reads of locked rows that are not expired
+#
+SET time_zone = '+00:00';
+CREATE TABLE t1 (
+a INT PRIMARY KEY,
+b TIMESTAMP NOT NULL,
+c INT
+) ENGINE = NDB COMMENT = 'NDB_TABLE=TTL=3600@b';
+INSERT INTO t1 VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3), (4, SYSDATE(), 4),
+(5, SYSDATE(), 5), (6, SYSDATE(), 6), (7, SYSDATE(), 7), (8, SYSDATE(), 8);
+# lock1 takes shared locks on rows 1-8 and lock2 on rows 5-8, held
+# until commit. They are taken before the error insert is set, so
+# they run in the LDM threads.
+BEGIN;
+SELECT a, c FROM t1 WHERE a IN (1,2,3,4,5,6,7,8) FOR SHARE;
+a	c
+1	1
+2	2
+3	3
+4	4
+5	5
+6	6
+7	7
+8	8
+BEGIN;
+SELECT a, c FROM t1 WHERE a IN (5,6,7,8) FOR SHARE;
+a	c
+5	5
+6	6
+7	7
+8	8
+# Send the reads that may use a query thread to a query block
+# Committed key reads in a query block. Rows 1-4 have one shared
+# locker (lock1), rows 5-8 two (lock1 and lock2).
+SELECT a, c FROM t1 WHERE a = 1;
+a	c
+1	1
+SELECT a, c FROM t1 WHERE a = 2;
+a	c
+2	2
+SELECT a, c FROM t1 WHERE a = 3;
+a	c
+3	3
+SELECT a, c FROM t1 WHERE a = 4;
+a	c
+4	4
+SELECT a, c FROM t1 WHERE a = 5;
+a	c
+5	5
+SELECT a, c FROM t1 WHERE a = 6;
+a	c
+6	6
+SELECT a, c FROM t1 WHERE a = 7;
+a	c
+7	7
+SELECT a, c FROM t1 WHERE a = 8;
+a	c
+8	8
+# The lockers' own committed key reads
+SELECT a, c FROM t1 WHERE a = 3;
+a	c
+3	3
+SELECT a, c FROM t1 WHERE a = 7;
+a	c
+7	7
+SELECT a, c FROM t1 WHERE a = 7;
+a	c
+7	7
+COMMIT;
+COMMIT;
+#
+# Part 2: committed reads of locked rows that expired while locked
+#
+CREATE TABLE t2 (
+a INT PRIMARY KEY,
+b TIMESTAMP NOT NULL,
+c INT
+) ENGINE = NDB COMMENT = 'NDB_TABLE=TTL=5@b';
+INSERT INTO t2 VALUES
+(1, SYSDATE(), 1), (2, SYSDATE(), 2), (3, SYSDATE(), 3),
+(4, SYSDATE(), 4), (5, SYSDATE(), 5), (6, SYSDATE(), 6);
+# lock1 takes shared locks on rows 1-3 and lock2 on row 3
+BEGIN;
+SELECT a, c FROM t2 WHERE a IN (1,2,3) FOR SHARE;
+a	c
+1	1
+2	2
+3	3
+BEGIN;
+SELECT a, c FROM t2 WHERE a = 3 FOR SHARE;
+a	c
+3	3
+# Let all rows expire (TTL=5) while the locks are held
+# Committed index scans in a query block meet the expired rows, rows
+# 1-3 locked. Each transaction sees the expired rows it has locked.
+SELECT a, c FROM t2 FORCE INDEX (PRIMARY) WHERE a BETWEEN 1 AND 6;
+a	c
+1	1
+2	2
+3	3
+SELECT a, c FROM t2 WHERE a = 2;
+a	c
+2	2
+SELECT a, c FROM t2 FORCE INDEX (PRIMARY) WHERE a BETWEEN 1 AND 6;
+a	c
+3	3
+SELECT a, c FROM t2 WHERE a = 3;
+a	c
+3	3
+SELECT COUNT(*) FROM t2 FORCE INDEX (PRIMARY) WHERE a BETWEEN 1 AND 6;
+COUNT(*)
+0
+SELECT COUNT(*) FROM t2 WHERE a = 2;
+COUNT(*)
+0
+SELECT COUNT(*) FROM t2 WHERE a = 3;
+COUNT(*)
+0
+COMMIT;
+COMMIT;
+# With the locks released the rows are expired for everyone
+SELECT COUNT(*) FROM t2;
+COUNT(*)
+0
+DROP TABLE t1, t2;

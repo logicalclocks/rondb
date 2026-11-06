@@ -1,0 +1,9 @@
+# ttl_query_thread_lock_queue needs one data node. Then DBTC on the node
+# that executes each read also picks the block that runs it, which is where
+# ERROR_INSERT 8318 sends the read to a query block. With two data nodes a
+# read can go to the other node, whose receive thread picks the block.
+!include ../my.cnf
+
+[cluster_config.1]
+ndbd=
+NoOfReplicas=1
