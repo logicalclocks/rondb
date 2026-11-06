@@ -31,7 +31,7 @@ Next DBLQH 5120
 Next DBDICT 6228
 Next DBDIH 7251
 Next DBTC 8127
-Next DBTC 8310 (RonDB)
+Next DBTC 8319 (RonDB)
 Next TRPMAN 9007
 Next CMVMI 9993              Note: CMVMI grows downwards
 Next TRPMAN 9007 // Ndb numbers
@@ -547,6 +547,16 @@ DBTC node failure take over testing (RonDB)
       redone take over and duplicate CONF at the other nodes (case 1),
       insert on a non-master survivor to provoke a lost CONF that only
       the master take over rebroadcast can resolve (case 2).
+
+
+DBTC query thread routing (RonDB)
+---------------------------------
+8318: Send every LQHKEYREQ and SCAN_FRAGREQ to the own node that may use
+      a query thread to the query block (DBQLQH) with the LDM instance's
+      number, instead of letting the load decide. At low load all reads
+      otherwise go to the LDM threads, so this is how a test runs reads in
+      query blocks (ndb_ttl.ttl_query_thread_lock_queue). Stays set until
+      cleared with error 0. (8310-8317 are used in 26.10.)
 
 
 TRPMAN

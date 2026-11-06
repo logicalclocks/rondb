@@ -5871,6 +5871,19 @@ void Dbtc::sendlqhkeyreq(Signal *signal, BlockReference TBRef,
         ndbassert(globalData.ndbMtQueryWorkers > 0);
         jam();
         TBRef = get_lqhkeyreq_ref(&m_distribution_handle, instance_no);
+#ifdef ERROR_INSERT
+        if (ERROR_INSERTED(8318)) {
+          /**
+           * At low load get_lqhkeyreq_ref picks the LDM thread for every
+           * read. Use the query block with the LDM instance's number
+           * instead, so that tests can run reads in query blocks
+           * deterministically. Every block thread has a query block, so
+           * that instance always exists.
+           */
+          jam();
+          TBRef = numberToRef(DBQLQH, instance_no, getOwnNodeId());
+        }
+#endif
       }
       else
       {
@@ -18916,6 +18929,13 @@ bool Dbtc::sendScanFragReq(Signal *signal, ScanRecordPtr scanptr,
           jam();
           ndbassert(globalData.ndbMtQueryWorkers > 0);
           ref = get_scan_fragreq_ref(&m_distribution_handle, instance_no);
+#ifdef ERROR_INSERT
+          if (ERROR_INSERTED(8318)) {
+            /* Use a query block, as for LQHKEYREQ above. */
+            jam();
+            ref = numberToRef(DBQLQH, instance_no, getOwnNodeId());
+          }
+#endif
           check_blockref(ref);
           scanFragP.p->lqhBlockref = ref;
         } else {
