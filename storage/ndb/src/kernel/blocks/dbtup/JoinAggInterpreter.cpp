@@ -1566,19 +1566,21 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
       if (m_max_groups > 0 && m_n_groups >= m_max_groups) {
         return AGG_EVICT_NEEDED;
       }
+      agg_rec = allocGroupData(len_in_char +
+                               m_n_agg_results * sizeof(AggResItem),
+                               len_in_char);
+      if (unlikely(agg_rec == nullptr)) {
+        /* Nothing may change before this return: handleJoinAggRow
+         * evicts a group and re-runs ProcessRec, whose entry check
+         * requires read_length == 0. */
+        return AGG_EVICT_NEEDED;
+      }
       if (req_struct != nullptr) {
         req_struct->read_length = (len_in_char +
                          m_n_agg_results * sizeof(AggResItem)) / sizeof(Int32);
       }
-
       m_result_size += len_in_char +
                        m_n_agg_results * sizeof(AggResItem);
-      agg_rec = allocGroupData(len_in_char +
-                               m_n_agg_results * sizeof(AggResItem),
-                               len_in_char);
-      if (agg_rec == nullptr) {
-        return AGG_EVICT_NEEDED;
-      }
       memset(agg_rec, 0, len_in_char +
                         m_n_agg_results * sizeof(AggResItem));
       memcpy(agg_rec, reinterpret_cast<char*>(m_attr_read_buf), len_in_char);
