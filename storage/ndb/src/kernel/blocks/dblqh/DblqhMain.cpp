@@ -22333,7 +22333,8 @@ singleRowCteProbe(JoinAggInterpreter *interp,
 }
 
 void Dblqh::cteLookupReqImpl(Signal *signal) {
-  const CteLookupReq req =
+  /* Not const: keyLen is overridden below with the stored key length. */
+  CteLookupReq req =
       *(const CteLookupReq *)signal->getDataPtr();
 
   DEB_CTE(("(%u) execCTE_LOOKUP_REQ: aggStateKey=%u keyLen=%u "
@@ -22553,7 +22554,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
        * grouped probes, but a subset probe's key is shorter.
        * Override with the stored length (the scalar arm's
        * override-to-0 precedent). */
-      const_cast<CteLookupReq &>(req).keyLen = storedKeyLen;
+      req.keyLen = storedKeyLen;
     }
   } else if (interp->n_gb_cols() == 0) {
     /**
@@ -22576,7 +22577,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
     groupData = reinterpret_cast<const char *>(interp->agg_results());
     /* Override keyLen to 0 so cteLookupEmitResult computes
      * accumulators = groupData + 0 = m_agg_results correctly. */
-    const_cast<CteLookupReq &>(req).keyLen = 0;
+    req.keyLen = 0;
   } else {
     groupData = interp->lookupGroup(
         reinterpret_cast<const char *>(keyBuf), req.keyLen,
@@ -22585,7 +22586,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       /* E-5: the stored key matches under the collation and can differ
        * in length from the probe key; the accumulators and the emitted
        * GROUP BY columns follow the stored key. */
-      const_cast<CteLookupReq &>(req).keyLen =
+      req.keyLen =
           JoinGBHashTable::dataKeyLen(groupData);
     }
   }
