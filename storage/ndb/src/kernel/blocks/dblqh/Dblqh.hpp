@@ -3741,6 +3741,13 @@ private:
   void checkCteReady(Signal* signal, JoinAggregationState* state);
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
                                Uint32 errorCode, bool notifyPeers = true);
+  // Outlined cold COMPLETE_REQ failure; jamLine(callerLine) records the
+  // call site.
+  void failJoinAggComplete(Signal* signal, JoinAggregationState* state,
+                           Uint32 errorCode, Uint32 senderRef,
+                           Uint32 senderData, Uint32 requestId,
+                           Uint16 callerLine)
+      __attribute__((cold, noinline));
   void redistributeKeyTooLong(Signal* signal, JoinAggregationState* state,
                               Uint32 aggStateKey, Uint32 senderAggStateKey,
                               Uint32 identWord, const Uint32 transid[2],

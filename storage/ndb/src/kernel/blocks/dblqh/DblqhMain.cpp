@@ -20878,21 +20878,10 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
             interps[merge_idx], batch, remaining,
             c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
         if (unlikely(ret != 0)) {
-          jam();
-          /* Late peer requests REF with the recorded cause. */
-          if (state->m_error_code == 0) {
-            state->m_error_code = static_cast<Uint32>(ret);
-          }
-          state->m_state.store(JoinAggregationState::ERROR);
-          JoinAggCompleteRef *ref =
-            (JoinAggCompleteRef *)signal->getDataPtrSend();
-          ref->senderRef = reference();
-          ref->senderData = senderData;
-          ref->requestId = requestId;
-          ref->errorCode = static_cast<Uint32>(ret);
-          ref->errorLine = __LINE__;
-          sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
-                     signal, JoinAggCompleteRef::SignalLength, JBB);
+          /* SUM overflow or out of memory: fail the state, not only
+           * this request (failJoinAggComplete). */
+          failJoinAggComplete(signal, state, static_cast<Uint32>(ret),
+                              senderRef, senderData, requestId, __LINE__);
           return;
         }
         if (remaining > 0) {
@@ -23913,6 +23902,42 @@ void Dblqh::continueFreeCteRedistPages(Signal *signal) {
     signal->theData[2] = static_cast<Uint32>(nextPtr);
     sendSignal(reference(), GSN_CONTINUEB, signal, length, JBB);
   }
+}
+
+/**
+ * Fail the JOIN_AGG_COMPLETE_REQ this owner is processing, with exactly
+ * one reply. A CTE state fails like every other CTE failure, through
+ * abortCteRedistribution: peers waiting at the FINAL_REP barrier are
+ * told directly, and m_cte_complete_reply_sent stops a later abort from
+ * sending a second COMPLETE_REF. COMPLETE_REQ stored the sender info.
+ * Non-CTE states have no peers and never read that flag (the proxy
+ * does not reset it for them), so they only record the error and REF.
+ */
+void Dblqh::failJoinAggComplete(Signal *signal, JoinAggregationState *state,
+                                Uint32 errorCode, Uint32 senderRef,
+                                Uint32 senderData, Uint32 requestId,
+                                Uint16 callerLine) {
+  jamLine(callerLine);
+  if (state->m_cte_mode) {
+    ndbassert(state->m_cte_complete_senderRef == senderRef &&
+              state->m_cte_complete_senderData == senderData &&
+              state->m_cte_complete_requestId == requestId);
+    abortCteRedistribution(signal, state, errorCode);
+    return;
+  }
+  if (state->m_error_code == 0) {
+    state->m_error_code = errorCode;
+  }
+  state->m_state.store(JoinAggregationState::ERROR);
+  JoinAggCompleteRef *ref =
+    (JoinAggCompleteRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->requestId = requestId;
+  ref->errorCode = errorCode;
+  ref->errorLine = callerLine;
+  sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+             signal, JoinAggCompleteRef::SignalLength, JBB);
 }
 
 /**
