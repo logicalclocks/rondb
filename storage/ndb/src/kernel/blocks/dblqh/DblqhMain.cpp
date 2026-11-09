@@ -23279,6 +23279,16 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                                           finalR, finalRLen,
                                           n_gb_cols, n_agg_results,
                                           accumulators, outBuf);
+        if (unlikely(outPos < 0)) {
+          jam();
+          /* The row does not fit in the output buffer.  A FLUSH_AI part
+           * of it may already have gone to the API, so fail the scan
+           * instead of dropping the rest of the row. */
+          releaseCteScanIterState(scanIterI);
+          sendCteScanRef(signal, req.senderRef, req.senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
+          return;
+        }
         /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
         if (outPos > 0) {
           TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
@@ -23301,8 +23311,11 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         const Uint32 keyWords = keyLen >> 2;
         if (unlikely(outPos + keyWords > ZATTR_BUFFER_SIZE)) {
           jam();
-          groupIdx++;
-          continue;
+          /* Same as an aggregate overflow below: fail, never skip a group. */
+          releaseCteScanIterState(scanIterI);
+          sendCteScanRef(signal, req.senderRef, req.senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
+          return;
         }
         memcpy(&outBuf[outPos], groupData, keyLen);
         outPos += keyWords;
@@ -23401,6 +23414,14 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                                         finalR, finalRLen,
                                         0, n_agg_results,
                                         accumulators, outBuf);
+      if (unlikely(outPos < 0)) {
+        jam();
+        /* As in the grouped arm: fail the scan, do not drop the row. */
+        releaseCteScanIterState(scanIterI);
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
+        return;
+      }
       if (outPos > 0) {
         TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
         transIdAI->connectPtr = req.senderData;
