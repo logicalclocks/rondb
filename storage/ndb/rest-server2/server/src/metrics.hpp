@@ -102,6 +102,23 @@ class IndexScanEndPointMetricsUpdater {
   ~IndexScanEndPointMetricsUpdater();
 };
 
+class FeatureStoreScanEndPointMetricsUpdater {
+ private:
+  drogon::HttpResponsePtr m_response;
+  NDB_TICKS m_start_time;
+  Uint64 m_rows_fetched;
+  Uint32 m_key_requests;
+  bool m_fast_path;
+
+ public:
+  FeatureStoreScanEndPointMetricsUpdater(drogon::HttpResponsePtr response);
+  void set_rows_fetched(Uint64 rows_fetched);
+  void set_key_requests(Uint32 key_requests);
+  void set_fast_path(bool fast_path);
+
+  ~FeatureStoreScanEndPointMetricsUpdater();
+};
+
 class RondisEndPointMetricsUpdater {
  private:
   NDB_TICKS m_start_time;

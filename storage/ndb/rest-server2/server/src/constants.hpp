@@ -31,6 +31,7 @@
 #define METRICS             "metrics"
 #define FEATURE_STORE       "feature_store"
 #define BATCH_FEATURE_STORE "batch_feature_store"
+#define FEATURE_STORE_SCAN  "feature_store_scan"
 #define SCAN                "scan"
 
 #define MAKE_PATH(version, endpoint) "/" version "/" endpoint
@@ -44,6 +45,7 @@
 #define RONSQL_PATH              "/" API_VERSION "/" RONSQL
 #define FEATURE_STORE_PATH       "/" API_VERSION "/" FEATURE_STORE
 #define BATCH_FEATURE_STORE_PATH "/" API_VERSION "/" BATCH_FEATURE_STORE
+#define FEATURE_STORE_SCAN_PATH  "/" API_VERSION "/" FEATURE_STORE_SCAN
 #define PROMETHEUS_METRICS_PATH  "/" METRICS
 
 // TTL Purge API paths
@@ -83,6 +85,8 @@ constexpr const char *FEATURE_TYPE             = "featureType";
 constexpr const char *OPTIONS                  = "options";
 constexpr const char *VALIDATE_PASSED_FEATURES = "validatePassedFeatures";
 constexpr const char *INCLUDE_DETAILED_STATUS  = "includeDetailedStatus";
+constexpr const char *INCLUDE_STATUS           = "includeStatus";
+constexpr const char *ALLOW_TABLE_SCAN         = "allowTableScan";
 constexpr const char *FEATURE_STORE_OPERATION  = "feature_store";
 constexpr const char *SEQUENCE_SEPARATOR       = "#";
 

@@ -12,6 +12,7 @@
 # under load the schema distribution can time out transiently and mysqld
 # logs a warning that would otherwise fail the test's error log check.
 call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Failed to acquire MDL for db");
 
 DROP DATABASE IF EXISTS hopsworks;
 DROP DATABASE IF EXISTS db000;
@@ -58,6 +59,7 @@ DROP DATABASE IF EXISTS sentinel;
 --connect(cleanup_server2, 127.0.0.1, root, , test, $MASTER_MYPORT1)
 
 call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Failed to acquire MDL for db");
 
 DROP DATABASE IF EXISTS hopsworks;
 DROP DATABASE IF EXISTS db000;

@@ -25,6 +25,7 @@
 #include "rdrs_dal.hpp"
 #include <NdbMutex.h>
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <drogon/HttpAppFramework.h>
@@ -150,6 +151,34 @@ bool TTLPurge::hasActiveWindowProblem() const {
   Int32 start_min = 0;
   Int32 end_min = 0;
   return !parseActiveWindow(activeWindow, &start_min, &end_min);
+}
+
+bool Internal::parseTableScanPolicy(const std::string &spec,
+                                    TableScanPolicy *out) {
+  std::string lower(spec);
+  for (char &c : lower) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  TableScanPolicy parsed = TableScanPolicy::REJECT;
+  if (lower == "reject") {
+    parsed = TableScanPolicy::REJECT;
+  } else if (lower == "request") {
+    parsed = TableScanPolicy::REQUEST;
+  } else if (lower == "allow") {
+    parsed = TableScanPolicy::ALLOW;
+  } else {
+    return false;
+  }
+  if (out != nullptr) {
+    *out = parsed;
+  }
+  return true;
+}
+
+Internal::TableScanPolicy Internal::tableScanPolicy() const {
+  TableScanPolicy policy = TableScanPolicy::REJECT;
+  parseTableScanPolicy(featureStoreScanTableScanPolicy, &policy);
+  return policy;
 }
 
 std::string MySQL::generate_mysqld_connect_string() {

@@ -129,4 +129,18 @@ const std::shared_ptr<RestErrorCode> SERVICE_TEMPORARILY_UNAVAILABLE =
 const std::shared_ptr<RestErrorCode> FEATURE_VALUE_TOO_LARGE =
     std::make_shared<RestErrorCode>(22, "Feature value too large.", 413, "");
 
+/* feature_store_scan */
+const std::shared_ptr<RestErrorCode> FEATURE_VIEW_NOT_STAR_SCHEMA =
+    std::make_shared<RestErrorCode>(23, "Feature view does not have a standard star schema.", 400, "");
+const std::shared_ptr<RestErrorCode> ROOT_FG_NOT_ONLINE =
+    std::make_shared<RestErrorCode>(24, "The root feature group has no online table to scan.", 400, "");
+const std::shared_ptr<RestErrorCode> FEATURE_NOT_IN_ROOT_FG =
+    std::make_shared<RestErrorCode>(25, "Filter and index columns must be features of the root feature group.", 400, "");
+const std::shared_ptr<RestErrorCode> FILTER_ON_COMPLEX_FEATURE =
+    std::make_shared<RestErrorCode>(26, "Filter and index columns cannot be complex features.", 400, "");
+const std::shared_ptr<RestErrorCode> LIMIT_EXCEEDED =
+    std::make_shared<RestErrorCode>(27, "Limit exceeded.", 400, "");
+const std::shared_ptr<RestErrorCode> TABLE_SCAN_NOT_ALLOWED =
+    std::make_shared<RestErrorCode>(28, "Request would scan the whole root feature group table.", 400, "");
+
 #endif  // STORAGE_NDB_REST_SERVER2_SERVER_SRC_FEATURE_STORE_ERROR_CODE_HPP_

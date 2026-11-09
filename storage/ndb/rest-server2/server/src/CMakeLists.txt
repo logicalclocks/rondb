@@ -33,6 +33,7 @@ file(GLOB_RECURSE SRC
         encoding_helper.cpp
         feature_store_ctrl.cpp
         feature_store_data_structs.cpp
+        feature_store_scan_ctrl.cpp
         feature_util.cpp
         feature_store/feature_store.cpp
         fs_cache.cpp
