@@ -107,6 +107,14 @@ class RDRSRonDBConnectionPool {
   void shutdown();
 
   /**
+   * @brief First step of the process shutdown: no connection starts a
+   * reconnection from now on, and one in progress stops connecting. See
+   * RDRSRonDBConnection::StopReconnecting(). Call only on a pool whose
+   * connections have all been added. Idempotent.
+   */
+  void StopReconnecting();
+
+  /**
    * @brief Start the reconnection watchdog.
    *
    * Call once, after every connection has been added. Recovery from a

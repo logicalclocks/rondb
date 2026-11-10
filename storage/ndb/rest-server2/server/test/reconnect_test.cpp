@@ -287,6 +287,75 @@ TEST_F(ReconnectTest, ContendedConnectionMutexStaysHealthy) {
        "contention on connectionMutex must not look like an outage";
 }
 
+/*
+ * A Connect() that is still retrying when the process shutdown starts
+ * must stop at once. A reconnection started just before the shutdown (the
+ * watchdog starts one when the cluster is stopped first, as mtr does) kept
+ * retrying against a management server that was gone, holding
+ * connectionMutex, and the shutdown waited for every attempt until the
+ * process was killed.
+ *
+ * Nothing listens on localhost:1, so every attempt fails at once and this
+ * Connect() would retry for 60 x 1 s.
+ */
+TEST_F(ReconnectTest, StopReconnectingStopsConnectInProgress) {
+  RDRSRonDBConnection *connection =
+    new RDRSRonDBConnection("localhost:1", 0, 60, 1);
+  std::atomic<bool> done{false};
+  RS_Status status = RS_OK;
+  std::thread connector([&]() {
+    status = connection->Connect();
+    done.store(true);
+  });
+  // Into the retries.
+  NdbSleep_MilliSleep(2500);
+  EXPECT_FALSE(done.load()) << "Connect() gave up before its retries ended";
+
+  const NDB_TICKS start = NdbTick_getCurrentTicks();
+  connection->StopReconnecting();
+  connector.join();
+  const Uint64 ms =
+    NdbTick_Elapsed(start, NdbTick_getCurrentTicks()).milliSec();
+  EXPECT_LT(ms, Uint64{2000})
+    << "Connect() kept retrying for " << ms << " ms after StopReconnecting()";
+  EXPECT_NE(status.http_code, SUCCESS);
+  EXPECT_NE(std::string(status.message).find("shutting down"),
+            std::string::npos)
+    << "Unexpected status: " << status.message;
+
+  // A refused Connect() leaves its cluster connection for Shutdown(true),
+  // as when a reconnection's Connect() fails.
+  ASSERT_EQ(connection->Shutdown(true).http_code, SUCCESS);
+  delete connection;
+}
+
+/*
+ * After stop_reconnecting() - the first step of do_exit() - a
+ * cluster-unavailability status must not start a reconnection any more.
+ * This leaves the pool unable to reconnect, so it must stay the last test
+ * in this file.
+ */
+TEST_F(ReconnectTest, StopReconnectingRefusesNewReconnection) {
+  ASSERT_TRUE(waitForRecovery(60 * 1000));
+  Ndb *ndb = nullptr;
+  ASSERT_EQ(rdrsRonDBConnectionPool->GetNdbObject(&ndb, 1).http_code,
+            SUCCESS);
+  const Uint64 generation_before =
+    rdrsRonDBConnectionPool->GetDataConnectionGeneration(0);
+
+  stop_reconnecting();
+  RS_Status down = clusterDownStatus();
+  rdrsRonDBConnectionPool->ReturnNdbObject(ndb, &down, 1);
+
+  EXPECT_EQ(rdrsRonDBConnectionPool->GetDataConnectionGeneration(0),
+            generation_before)
+    << "A reconnection started after stop_reconnecting()";
+  RonDB_Stats stats;
+  get_rondb_stats(&stats);
+  EXPECT_FALSE(stats.is_reconnection_in_progress);
+  EXPECT_EQ(stats.connection_state, CONNECTED);
+}
+
 int main(int argc, char **argv) {
   ndb_init();
   globalConfigsMutex = NdbMutex_Create();
