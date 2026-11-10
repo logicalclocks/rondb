@@ -691,3 +691,12 @@ EOF
 --echo ===== ORDER BY expression =====
 --error 1
 --exec $PARSE_TEST 'select col1, max(b) from tbl group by col1 order by col1 + 1;'
+
+--echo ===== Unaliased output over 64 bytes followed by a lexer error =====
+# The lexer records its error at the lookahead token, then the parser
+# reduces the output to its left and records TOO_LONG_UNALIASED_OUTPUT.
+# This used to abort the process (ndbrequire in set_err_state).
+--error 1
+--exec $PARSE_TEST 'select sum(b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b) union select 1;'
+--error 1
+--exec $PARSE_TEST 'select sum(b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b+b) 99999999999999999999999 from tbl;'

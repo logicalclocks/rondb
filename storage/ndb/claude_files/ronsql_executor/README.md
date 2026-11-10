@@ -299,3 +299,13 @@ Longest executor functions, with the suggested split (D section of `review_dupli
 5. **Refactors, each as its own patch after the fixes it overlaps:**
    - Mechanical first: D-15, D-17, D-13, D-10, D-11, D-9 (which also fixes J-5).
    - Then D-2, D-3, D-6, D-8, D-14, D-16, checking the EXPLAIN baselines.
+
+## Fix status
+
+Branch `RONDB-1124-lqh-fixes`. One commit per fix, each with its regression
+test. Lanes: 1 = parse and aggregate compile, 2 = join planning and
+cross-table filters, 3 = CTE virtual tables and result metadata.
+
+| Lane.step | Finding | Status | Change | Test |
+|-----------|---------|--------|--------|------|
+| 1.1 | X-1 | fixed | `Context::set_err_state` keeps the left-most error instead of requiring it was recorded first | `ronsql_parsing` (+ `ronsql_jit` mirror): two >64-byte unaliased outputs followed by a lexer error |

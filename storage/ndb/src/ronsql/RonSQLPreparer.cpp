@@ -20188,22 +20188,20 @@ RonSQLPreparer::Context::set_err_state(ErrState state,
                                        char* err_pos,
                                        size_t err_len)
 {
-  if (m_err_state == ErrState::NONE)
+  /*
+   * Keep the left-most error or, if two errors have the same position, the
+   * shorter (more low-level) one. Usually that is the first error recorded,
+   * but not always: the lexer records its error at the lookahead token, and
+   * Bison may then reduce a rule to the left of it that records its own
+   * error, e.g. TOO_LONG_UNALIASED_OUTPUT before an unimplemented keyword.
+   */
+  if (m_err_state == ErrState::NONE ||
+      err_pos < m_err_pos ||
+      (err_pos == m_err_pos && err_len < m_err_len))
   {
     m_err_state = state;
     m_err_pos = err_pos;
     m_err_len = err_len;
-  }
-  else
-  {
-    /*
-     * We want to save the error with the left-most position or, if two errors
-     * have the same position, the shorter (more low-level) error. However,
-     * above we actually save the error detected first. Presumably, that's the
-     * same thing, but here we check it.
-     */
-    ndbrequire((m_err_pos < err_pos) ||
-               (m_err_pos == err_pos && m_err_len <= err_len));
   }
 }
 
