@@ -34,3 +34,4 @@ SELECT COUNT(*) AS db_exists FROM information_schema.SCHEMATA
   WHERE LOWER(SCHEMA_NAME) = 'ndb_sync_case_db';
 
 --connection server1
+--remove_file $NDB_TOOLS_OUTPUT
