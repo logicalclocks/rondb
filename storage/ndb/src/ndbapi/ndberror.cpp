@@ -1192,6 +1192,10 @@ ErrorBundle ErrorCodes[] = {
     "Data nodes failed Set Location_Domain_Id Request"},
   { 5070 /* FAILED_SET_CONFIG_PARAM_REQUEST */, DMEC, AE,
     "Data nodes failed Set Config Param Request"},
+  { 5071 /* NODEID_ALLOC_NOT_READY */, DMEC, TO,
+    "Timeout waiting for the data nodes to allow the node id, they still "
+    "handle the failure of its previous start or another node id "
+    "allocation. Retry."},
   { 1120, DMEC, AE,
     "Set Location_Domain_Id Request failed, busy state"}
 };
