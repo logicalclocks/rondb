@@ -8575,7 +8575,15 @@ RonSQLPreparer::compile()
       ndbrequire(out->type == Outputs::Type::SUBQUERY_AGG);
       out->type = Outputs::Type::AGGREGATE;
       out->aggregate.fun = sl.agg_fun;
-      out->aggregate.arg = NULL;  // not used for result fetching
+      // agg_index fetches the result.  MIN / MAX / SUM keep the
+      // subquery's column argument, from which the printer takes the
+      // charset of a string MIN / MAX, the scale of a DECIMAL, the
+      // decoding of a temporal value and the FLOAT display, as for an
+      // aggregate of the main query.  Without it a string MIN / MAX
+      // failed to print ("Could not find charset").  COUNT needs none.
+      out->aggregate.arg = (sl.agg_fun == T_COUNT)
+          ? NULL
+          : sl.inner_stmt->outputs->aggregate.arg;
       out->aggregate.agg_index = sl.combined_agg_slot;
       out->aggregate.implicit_scalar_pair_op = false;
     }

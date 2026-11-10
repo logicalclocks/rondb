@@ -1,0 +1,27 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== rs-1: three 15 KB MAX leaves (45 KB record) -> error 1256 ===
+failed with error 1256
+
+=== rs-2: five 15 KB MAX leaves (75 KB record, over 16 bits) -> error 1256 ===
+failed with error 1256
+
+=== rs-3: same five leaves on the short rows -> rows (cluster still up) ===
+== Query ==
+SELECT e.id,
+(SELECT MAX(a.s) FROM rs_s1 AS a WHERE a.entity_id = e.id) AS m1,
+(SELECT MAX(b.s) FROM rs_s2 AS b WHERE b.entity_id = e.id) AS m2,
+(SELECT MAX(c.s) FROM rs_s3 AS c WHERE c.entity_id = e.id) AS m3,
+(SELECT MAX(d.s) FROM rs_s4 AS d WHERE d.entity_id = e.id) AS m4,
+(SELECT MAX(f.s) FROM rs_s5 AS f WHERE f.entity_id = e.id) AS m5
+FROM rs_entity AS e
+WHERE e.id > 1;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
