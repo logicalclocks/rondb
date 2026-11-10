@@ -12541,13 +12541,27 @@ RonSQLPreparer::emit_pk_equality_index_scan_root(
           m_dict, root_table, pk_col_names, (Uint32)nkeys);
   if (pk_ordered_idx == NULL)
     return NULL;
+  /*
+   * findOrderedIndex accepts an index whose first nkeys columns are the
+   * primary key columns in any order, and the bound gives its k:th
+   * operand to the index's k:th column (J-1). pk_const[] is in primary
+   * key order, so bind each index column to the constant of the primary
+   * key column with the same name.
+   */
   const NdbQueryOperand* pk_keys[NDB_MAX_NO_OF_ATTRIBUTES_IN_KEY + 1];
   for (int k = 0; k < nkeys; k++)
   {
+    const NdbDictionary::Column* idx_col = pk_ordered_idx->getColumn(k);
+    int p = 0;
+    while (idx_col != NULL && p < nkeys &&
+           strcmp(pk_col_names[p], idx_col->getName()) != 0)
+      p++;
+    require_run(idx_col != NULL && p < nkeys,
+                "PK index scan: index column is not a primary key column.");
     const NdbDictionary::Column* pk_col =
-        root_table->getColumn(pk_col_names[k]);
+        root_table->getColumn(pk_col_names[p]);
     ndbrequire(pk_col != NULL);
-    raw_value rv = encode_constant(pk_const[k], pk_col);
+    raw_value rv = encode_constant(pk_const[p], pk_col);
     pk_keys[k] = query_const_value(qb, rv, pk_col);
     require_run(pk_keys[k] != NULL,
                 "Failed to create const value for PK index scan.");

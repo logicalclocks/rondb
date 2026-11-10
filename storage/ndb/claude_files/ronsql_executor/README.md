@@ -309,3 +309,4 @@ cross-table filters, 3 = CTE virtual tables and result metadata.
 | Lane.step | Finding | Status | Change | Test |
 |-----------|---------|--------|--------|------|
 | 1.1 | X-1 | fixed | `Context::set_err_state` keeps the left-most error instead of requiring it was recorded first | `ronsql_parsing` (+ `ronsql_jit` mirror): two >64-byte unaliased outputs followed by a lexer error |
+| 2.1 | J-1 | fixed | `emit_pk_equality_index_scan_root` binds each index column to the constant of the PK column with the same name | new `ronsql_join_root_pk_index`: hash-only and ordered PK with a permuted index, aggregate, pass-through, residual, mixed key types |
