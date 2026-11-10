@@ -1,4 +1,4 @@
---source include/have_ndb.inc
+--source include/have_multi_ndb.inc
 --source have_ndb_error_insert.inc
 
 # Test to verify that when HeartbeatIntervalDbApi is overridden in the API node section,
@@ -15,6 +15,18 @@
 #                            ...
 #                             ALERT    -- Node 10 declared dead due to missed heartbeat
 #                             INFO     -- Node 3 transporter to node 10 (id 3) disconnected
+#
+# The test controls when the heartbeats stop, but not when the node is
+# then disconnected: that depends on the phase of the heartbeat timer.
+# With a 5000ms interval
+# the API node disconnects 15 to 20 sec after the data node stops
+# sending (at its 4th missed check, ClusterMgr), and the data node
+# declares the API node dead 20 to 25 sec after it stops receiving (at
+# its 5th, Qmgr::apiHbHandlingLab), plus scheduling delays. With the
+# global 2000ms interval both would happen within 10 sec. So the test
+# checks after 10 sec that the node is still connected, then waits for
+# the disconnect instead of sleeping for its nominal time, which raced
+# with it (the disconnect was seen 20.2 sec after the block).
 
 let $api_disconnect_target = 12;
 let $db_disconnect_target = 11;
@@ -38,9 +50,13 @@ let $db_disconnect_marker = TRPMAN : Blocking receive on transporter .* from nod
 --let $assert_only_after= $api_disconnect_marker
 --source include/assert_grep.inc
 
---echo sleep 10 sec more (10sec + 10sec > 3 * the API node HeartbeatIntervalDbApi),
---echo the missing of 3 heartbeats will trigger the node to disconnect
---sleep 10
+--echo wait up to 20 sec more for the disconnect, which comes 15 to 20 sec
+--echo after the block with the API node HeartbeatIntervalDbApi
+--let $wait_log_file= $ndbd_log
+--let $wait_log_select= -- Node $api_disconnect_target Disconnected
+--let $wait_log_after= $api_disconnect_marker
+--let $wait_log_timeout= 20
+--source suite/ndb/include/ndb_wait_for_log_line.inc
 
 --let $assert_text= 'Node $api_disconnect_target Disconnected' message in the log
 --let $assert_select= -- Node $api_disconnect_target Disconnected
@@ -68,9 +84,13 @@ let $db_disconnect_marker = TRPMAN : Blocking receive on transporter .* from nod
 --let $assert_only_after= $db_disconnect_marker
 --source include/assert_grep.inc
 
---echo sleep 20 sec more (20sec + 10sec > 4 * the API node HeartbeatIntervalDbApi),
---echo the missing of 4 heartbeats will trigger the node to disconnect
---sleep 20
+--echo wait up to 30 sec more for the node to be declared dead, which happens
+--echo 20 to 25 sec after the block with the API node HeartbeatIntervalDbApi
+--let $wait_log_file= $ndbd_log
+--let $wait_log_select= -- Node $db_disconnect_target declared dead due to missed heartbeat
+--let $wait_log_after= $db_disconnect_marker
+--let $wait_log_timeout= 30
+--source suite/ndb/include/ndb_wait_for_log_line.inc
 
 --let $assert_text= 'Node $db_disconnect_target declared dead due to missed heartbeat' message in the log
 --let $assert_select= -- Node $db_disconnect_target declared dead due to missed heartbeat
@@ -82,5 +102,14 @@ let $db_disconnect_marker = TRPMAN : Blocking receive on transporter .* from nod
 --echo On data node 1, resume receiving signals from API node $db_disconnect_target
 --exec $NDB_MGM -e "1 DUMP 9993 $db_disconnect_target" > $NDB_TOOLS_OUTPUT
 
+# Both mysqld servers must be connected to the cluster again before the
+# test ends: mtr's check-testcase queries ndbinfo on each of them, and
+# failed with "Got error 157 'Connection to NDB failed' from NDBINFO"
+# when only the current one was waited for.
+--disable_query_log
+--connection server2
+--source include/ndb_wait_connected.inc
+--disable_query_log
+--connection server1
 --source include/ndb_wait_connected.inc
 --remove_file $NDB_TOOLS_OUTPUT
