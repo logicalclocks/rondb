@@ -116,6 +116,8 @@ static void test_class_selection(void) {
   struct { size_t req; uint32_t cap; } cases[] = {
     {1, 256}, {256, 256}, {257, 512}, {512, 512},
     {1000, 1024}, {2048, 2048}, {4097, 8192}, {8192, 8192},
+    {8193, 16384}, {32769, NDB_JIT_CODEMEM_MAX_BLOB},
+    {NDB_JIT_CODEMEM_MAX_BLOB, NDB_JIT_CODEMEM_MAX_BLOB},
   };
   int ok = 1;
   for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {

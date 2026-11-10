@@ -482,8 +482,13 @@ typedef struct {
  * newly lowered arithmetic/compare ops) hit 64 both in the bridge
  * (JIT_BRIDGE_PROG_TOO_LARGE) and via blob size. Op indices are
  * stored in uint8_t with 0xFF as "none" in the bridge's
- * emb_pc_to_op_idx — the cap must stay ≤ 254. */
-#define BC_MAX_OPS   128
+ * emb_pc_to_op_idx — the cap must stay ≤ 254.
+ * 128 → 254: an AND / OR list from NdbScanFilter costs two ops per
+ * term (compare-branch + jump to the shared exit), so 128 stopped at
+ * about 62 terms (ronsql_cte_index_body's 63-65-term CTE bodies fell
+ * back). The largest stencil is under 150 B, so 254 ops stay inside
+ * the code memory's top size class (NDB_JIT_CODEMEM_MAX_BLOB). */
+#define BC_MAX_OPS   254
 /* ronsql_jit slice 2 item 2 (2026-08-27): 8 -> 16. The INTERPRETER
  * has two disjoint 8-register files — the outer aggregation
  * interpreter's m_registers and the embedded normal-interpreter's

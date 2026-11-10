@@ -355,4 +355,4 @@ ronsql_cli caught exception: FORCE INDEX names 'no_such_idx', which is not an av
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_cte_index_body_jit_fallback_delta;
 ronsql_cte_index_body_jit_fallback_delta
-28
+0
