@@ -628,9 +628,16 @@ typedef struct {
  * admitted outer op can read the stale register). Reading `reg`,
  * a backward branch, or an opcode this scan doesn't know → unsafe
  * (conservative: pass 1 rejects such programs anyway).
- * Returns 1 = safe to fuse, 0 = not. */
+ *
+ * null_test_reads: whether a BRANCH_REG_EQ/NE_NULL of `reg` counts as
+ * a read. It does for the fusion (the register is UNDEFINED, not
+ * null-tagged, on the taken edge). It does not for the ROWID read,
+ * which only needs its value unread: the completing-row invariant
+ * fixes the outcome of its null tests.
+ * Returns 1 = safe, 0 = not. */
 static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
-                                  uint32_t start_pc, uint32_t reg) {
+                                  uint32_t start_pc, uint32_t reg,
+                                  int null_test_reads) {
   uint8_t  visited[BR_EMB_MAX_LEN];
   uint32_t stack[BR_EMB_MAX_LEN];
   uint32_t sp = 0;
@@ -702,7 +709,8 @@ static int emb_null_path_reg_safe(const uint32_t *emb_prog, uint32_t emb_len,
           break;
         case BR_EMB_BRANCH_REG_EQ_NULL:
         case BR_EMB_BRANCH_REG_NE_NULL:
-          if (((inst >> 6) & 0x7u) == reg) return 0;   /* reads reg */
+          if (null_test_reads && ((inst >> 6) & 0x7u) == reg)
+            return 0;                                  /* reads reg */
           if ((inst >> 31) != 0) return 0;             /* backward */
           if (sp >= BR_EMB_MAX_LEN) return 0;
           stack[sp++] = pc + ((inst >> 16) & 0x7FFFu);
@@ -970,8 +978,30 @@ static JitBridgeReason translate_embedded_block(
         }
         uint32_t dst_reg = (inst >> 6) & 0x7u;
         uint32_t attr_id = inst >> 16;
+        if (attr_id == NDB_JIT_ATTR_ROWID &&
+            emb_null_path_reg_safe(emb_prog, emb_len, emb_pc + 1, dst_reg,
+                                   /*null_test_reads=*/0)) {
+          /* RonSQL's COUNT(*) row guard (a SELECT-list COUNT(*)
+           * subquery whose table has no column COUNT can use): READ_ATTR
+           * ROWID + BRANCH_REG_EQ_NULL tells a real row from a
+           * NULL-extended one. NULL-extended rows never run JIT code
+           * (JoinAggInterpreter::ProcessRec), and a real row's ROWID is
+           * never NULL, so the completing-row invariant fixes the
+           * register's null tests: EQ_NULL folds, NE_NULL is a jump.
+           * The JIT has no ROWID value, so the read emits nothing and
+           * is admitted only when no path reads the value before the
+           * register is overwritten (scan above). */
+          const16_valid[dst_reg] = 0;
+          emb_reg_f64[dst_reg] = 0;
+          emb_reg_u64[dst_reg] = 0;
+          emb_reg_read_attr[dst_reg] = -1;
+          emb_pc += 1;
+          break;
+        }
         if (attr_id > BR_MAX_LOCAL_ATTR_ID) {
-          /* Local table columns only — linked/pseudo out of scope. */
+          /* Local table columns only — linked columns, other pseudo
+           * columns, and a ROWID whose value is read, are out of
+           * scope. */
           if (out_err) {
             out_err->reason         = JIT_BRIDGE_REG_OUT_OF_RANGE;
             out_err->offending_word = outer_word_pos + 1 + emb_pc;
@@ -1099,7 +1129,7 @@ static JitBridgeReason translate_embedded_block(
         uint32_t guard_reg = (inst >> 6) & 0x7u;
         if (!prev_read_attr_pending || prev_read_attr_dst != guard_reg ||
             !emb_null_path_reg_safe(emb_prog, emb_len, target_emb_pc,
-                                    guard_reg)) {
+                                    guard_reg, /*null_test_reads=*/1)) {
           /* ronsql_jit slice 2 item 2: NOT the 5D-3 fusion pattern —
            * FOLD the guard to nothing instead of rejecting. On any
            * row the JIT completes, no register ever holds SQL-NULL:

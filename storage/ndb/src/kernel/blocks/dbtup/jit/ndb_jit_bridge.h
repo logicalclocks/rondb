@@ -83,6 +83,12 @@ typedef struct {
  * then gives COUNT(str_col) its null-skip. */
 #define NDB_JIT_COL_PRESENCE_FLAG 0x4000u
 
+/* AttributeHeader::ROWID (checked in DbtupJitGlue.cpp). An embedded
+ * READ_ATTR_INTO_REG of it is RonSQL's COUNT(*) row guard; the bridge
+ * admits it when the register is only null-tested (see the READ_ATTR
+ * case in translate_embedded_block). */
+#define NDB_JIT_ATTR_ROWID 0xFFF6u
+
 /* Translate `ndb_prog[0..n_words)` into `out_prog`.
  *
  *   On JIT_BRIDGE_OK: out_prog->n_ops is set, out_prog->ops[] is

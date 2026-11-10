@@ -5275,6 +5275,158 @@ static void test_str_register_redefined(void) {
   mark_pass(name);
 }
 
+/* ------------------------------------------------------------------ */
+/* ROWID row guard: RonSQL's COUNT(*) of a SELECT-list subquery whose */
+/* table has no column COUNT can use reads ROWID in an embedded       */
+/* program and null-tests it. A real row's ROWID is never NULL and    */
+/* NULL-extended rows never run JIT code, so the read emits nothing   */
+/* while the register's value stays unread.                           */
+/* ------------------------------------------------------------------ */
+#define EMB_ROWID_ATTR 0xFFF6u
+
+/* Translate and require OK, without pinning the op count. */
+static int translate_ok(const char *name, const uint32_t *prog,
+                        uint32_t n_words, Program *p) {
+  JitBridgeError err;
+  JitBridgeReason r = ndb_jit_bridge_translate(prog, n_words, p, &err);
+  if (r != JIT_BRIDGE_OK) {
+    mark_fail(name, "expected OK, got reason=%d (offending_word=%u op=%u)",
+              r, err.offending_word, err.offending_op);
+    return 0;
+  }
+  return 1;
+}
+
+static int count_op_kind(const Program *p, unsigned kind) {
+  int n = 0;
+  for (uint16_t i = 0; i < p->n_ops; i++) {
+    if (p->ops[i].kind == kind) n++;
+  }
+  return n;
+}
+
+/* T60g: the guard exactly as RonSQLPreparer emits it:
+ *   outer: 0-2 LoadConst BIGUNSIGNED 1 -> r0
+ *          3   EmbeddedInterp(6)
+ *            emb 0 LC16 r2, 0
+ *                1 READ_ATTR ROWID -> r1
+ *                2 BRANCH_REG_EQ_NULL r1, +2   (-> 4)
+ *                3 LC16 r2, 1
+ *                4 WRITE_INTERPRETER_OUTPUT r2, 0
+ *                5 EXIT_OK
+ *          10  SetRegNull r0
+ *          11  Count r0, agg0
+ * The read emits no load, the guard folds, and the output block's
+ * jump (skip 1) passes SetRegNull to land on COUNT. */
+static void test_rowid_guard_accept(void) {
+  const char *name = "T60g rowid_guard_accept";
+  uint32_t prog[12] = {
+    enc_load_const(NDB_TYPE_BIGUNSIGNED, /*reg=*/0),
+    0x00000001u, 0x00000000u,
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_read_attr(EMB_ROWID_ATTR, /*reg=*/1),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/2),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/1),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+    enc_op(kOpSetRegNull, 0),
+    enc_count(/*reg=*/0, /*agg=*/0),
+  };
+  Program p;
+  if (!translate_ok(name, prog, 12, &p)) return;
+  if (count_op_kind(&p, OP_LOAD_COL_NDB) != 0 ||
+      count_op_kind(&p, OP_LOAD_COL_NDB_NB) != 0) {
+    mark_fail(name, "the ROWID read emitted a column load");
+    return;
+  }
+  if (count_op_kind(&p, OP_JUMP) != 1) {
+    mark_fail(name, "%d OP_JUMPs, want 1 (the output block's)",
+              count_op_kind(&p, OP_JUMP));
+    return;
+  }
+  uint16_t j = 0;
+  while (p.ops[j].kind != OP_JUMP) j++;
+  if (p.ops[j].c >= p.n_ops) {
+    mark_fail(name, "jump target %u past %u ops", (unsigned)p.ops[j].c,
+              (unsigned)p.n_ops);
+    return;
+  }
+  if (!expect_op_field(name, &p, p.ops[j].c, "kind",
+                       p.ops[p.ops[j].c].kind, OP_COUNT_BIGINT)) return;
+  if (count_op_kind(&p, OP_SET_REG_NULL_FB) != 1) {
+    mark_fail(name, "SetRegNull did not lower to OP_SET_REG_NULL_FB");
+    return;
+  }
+  mark_pass(name);
+}
+
+/* T60h: the guard with BRANCH_REG_NE_NULL: always taken on a JIT row,
+ * so it lowers to a jump to its target. */
+static void test_rowid_ne_null_jump(void) {
+  const char *name = "T60h rowid_ne_null_jump";
+  uint32_t prog[7] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/6),
+    enc_emb_read_attr(EMB_ROWID_ATTR, /*reg=*/1),
+    enc_emb_branch_reg_ne_null(/*reg=*/1, /*offset=*/2),   /* -> 3 */
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+    enc_emb_load_const16(/*reg=*/2, /*val=*/0),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  Program p;
+  if (!translate_ok(name, prog, 7, &p)) return;
+  if (!expect_op_field(name, &p, 0, "kind", p.ops[0].kind, OP_JUMP))
+    return;
+  if (p.ops[0].c >= p.n_ops) {
+    mark_fail(name, "jump target %u past %u ops", (unsigned)p.ops[0].c,
+              (unsigned)p.n_ops);
+    return;
+  }
+  if (!expect_op_field(name, &p, p.ops[0].c, "kind",
+                       p.ops[p.ops[0].c].kind, OP_LOAD_CONST_UINT16))
+    return;
+  mark_pass(name);
+}
+
+/* T60i: a ROWID whose VALUE is read (by a compare) has no lowering:
+ * rejected at the READ_ATTR as before. */
+static void test_rowid_value_read_reject(void) {
+  uint32_t prog[5] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/4),
+    enc_emb_read_attr(EMB_ROWID_ATTR, /*reg=*/0),
+    enc_emb_load_const16(/*reg=*/1, /*val=*/5),
+    enc_emb_branch_reg_reg(EMB_BRANCH_EQ_REG_REG, 0, 1, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T60i rowid_value_read_reject", prog, 5,
+                  JIT_BRIDGE_REG_OUT_OF_RANGE, 1, EMB_READ_ATTR);
+}
+
+/* T60j: the ROWID value reaches the output block's WRITE: rejected. */
+static void test_rowid_value_written_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_read_attr(EMB_ROWID_ATTR, /*reg=*/2),
+    enc_emb_write_output(/*reg=*/2, /*out_idx=*/0),
+    enc_emb_op_word(EMB_EXIT_OK, 0),
+  };
+  assert_rejected("T60j rowid_value_written_reject", prog, 4,
+                  JIT_BRIDGE_REG_OUT_OF_RANGE, 1, EMB_READ_ATTR);
+}
+
+/* T60k: other pseudo columns stay rejected, guarded or not. */
+static void test_other_pseudo_read_reject(void) {
+  uint32_t prog[4] = {
+    enc_op(kOpEmbeddedInterp, /*emb_len=*/3),
+    enc_emb_read_attr(EMB_PSEUDO_ATTR_FIRST, /*reg=*/1),
+    enc_emb_branch_reg_eq_null(/*reg=*/1, /*offset=*/1),
+    enc_emb_op_word(EMB_EXIT_REFUSE, 0),
+  };
+  assert_rejected("T60k other_pseudo_read_reject", prog, 4,
+                  JIT_BRIDGE_REG_OUT_OF_RANGE, 1, EMB_READ_ATTR);
+}
+
 int main(void) {
   printf("RONDB-1056 Phase 4 — bridge_tests\n");
   printf("=================================\n");
@@ -5384,6 +5536,11 @@ int main(void) {
   test_nb_case_guard_reg_mismatch_fold();
   test_nb_case_guard_null_path_reads_fold();
   test_nb_case_guard_two_conditions();
+  test_rowid_guard_accept();
+  test_rowid_ne_null_jump();
+  test_rowid_value_read_reject();
+  test_rowid_value_written_reject();
+  test_other_pseudo_read_reject();
   test_narrow_int_sum();
   test_narrow_unsigned_aggregates();
   test_narrow_signed_min_max();
