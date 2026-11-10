@@ -1285,11 +1285,11 @@ private:
                              bool is_greatest,
                              bool needs_null_check);
   // Phase I.5 v4 fast path: walk a Greatest2 / Least2 Expr tree and
-  // return true iff any leaf Load reaches a nullable column or an
-  // unresolved CTE virtual column (where nullability isn't known at
-  // compile time).  Used by `prepare_pair_op_null_check_cache` to
-  // populate the AggregationAPICompiler's per-program-index decision
-  // cache.
+  // return true iff any leaf Load reaches a nullable column, a column
+  // of an outer-joined table, or an unresolved CTE virtual column
+  // (where nullability isn't known at compile time).  Used by
+  // `prepare_pair_op_null_check_cache` to populate the
+  // AggregationAPICompiler's per-program-index decision cache.
   bool compute_pair_op_needs_null_check(
       const QueryScope& scope,
       AggregationAPICompiler::Expr* expr) const;

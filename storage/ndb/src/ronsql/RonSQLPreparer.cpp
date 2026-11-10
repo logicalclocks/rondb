@@ -18380,9 +18380,10 @@ RonSQLPreparer::emit_pair_op_embedded(NdbAggregator* aggregator,
 }
 
 // Phase I.5 v4 fast path — recursively walk a Greatest2 / Least2
-// Expr tree to determine whether any leaf Load reaches a nullable
-// column.  Returns true (conservative) when a leaf can't be resolved
-// to a non-nullable column descriptor.
+// Expr tree to determine whether any leaf Load can be NULL: a
+// nullable column, or any column of an outer-joined table.  Returns
+// true (conservative) when a leaf can't be resolved to a
+// non-nullable column descriptor.
 bool
 RonSQLPreparer::compute_pair_op_needs_null_check(
     const QueryScope& scope,
@@ -18398,7 +18399,16 @@ RonSQLPreparer::compute_pair_op_needs_null_check(
     if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
       return true;  // CTE virt — descriptor not yet built here.
     if (ref.dict_column == NULL) return true;
-    return ref.dict_column->getNullable();
+    if (ref.dict_column->getNullable()) return true;
+    // A column of a table the scope LEFT JOINs is NULL in its
+    // NULL-extended rows even when declared NOT NULL; the root table's
+    // columns never are (the rule of cte_sum_arg_never_null).  Without
+    // the guard such a row runs the unguarded compare with a NULL
+    // operand, and the pair-op yields its right operand instead of
+    // NULL.
+    if (ref.join_op_idx == 0) return false;
+    return ref.join_op_idx >= scope.join_plan.num_ops ||
+           scope.join_plan.ops[ref.join_op_idx].match_type != JoinOp::INNER;
   }
   if (expr->isGreatest2() || expr->isLeast2())
   {

@@ -389,13 +389,14 @@ class JoinAggInterpreter : public AggInterpreterBase {
   enum EmbeddedNullRowResult {
     EMB_NULL_ROW_OUTPUT,       // *skip_offset holds interpreter output 0
     EMB_NULL_ROW_REJECT,       // EXIT_REFUSE: stop the row's program
-    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (aggregation registers, ...)
+    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (arithmetic, ...)
     EMB_NULL_ROW_ERROR         // fails as in DBTUP
   };
   static EmbeddedNullRowResult evalEmbeddedForNullRow(
       const Uint32* emb_prog, Uint32 emb_len,
       const Uint32* linked_attr_data, Uint32 linked_attr_len,
-      const Dbtup* meta_tup, Uint32* skip_offset);
+      const Dbtup* meta_tup, const Register* agg_regs,
+      Uint32* skip_offset);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /

@@ -979,16 +979,24 @@ static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
  * goes forward within the program; the operand words are still bounded
  * here.
  *
+ * READ_AGG_REG_TO_REG copies one of agg_regs, the aggregation registers,
+ * as Dbtup's handleReadAggRegToReg does.  RonSQL's GREATEST / LEAST
+ * pair-op reads its two operands this way; one that kOpLoadCol loaded
+ * from a column of the outer-joined table is NULL, so the pair-op's
+ * BRANCH_REG_EQ_NULL guard makes the result NULL, as in SQL.
+ *
  * One difference: a register compare with a NULL operand is not taken,
  * where DBTUP fails the row with ZREGISTER_INIT_ERROR.  The API guards a
  * nullable column with BRANCH_REG_EQ_NULL before such a compare, so only
  * a NOT NULL column of the outer-joined table reaches it unguarded.  For
  * a compare that branches to the THEN arm when it holds, as mysqld's
  * CASE lowering emits, not taking it gives the SQL result: NULL > 5 is
- * not true, so the ELSE arm is taken.
+ * not true, so the ELSE arm is taken.  The pair-op has no such arm, so
+ * RonSQL guards its operands also for a NOT NULL column of an
+ * outer-joined table.
  *
- * Aggregation registers and arithmetic need DBTUP; such a program
- * returns EMB_NULL_ROW_UNSUPPORTED.
+ * Arithmetic needs DBTUP; such a program returns
+ * EMB_NULL_ROW_UNSUPPORTED.
  */
 JoinAggInterpreter::EmbeddedNullRowResult
 JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
@@ -996,6 +1004,7 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
                                            const Uint32* linked_attr_data,
                                            Uint32 linked_attr_len,
                                            const Dbtup* meta_tup,
+                                           const Register* agg_regs,
                                            Uint32* skip_offset) {
   /* The 8 registers start NULL, as in Dbtup::interpreterJumpTable */
   Uint32 reg_type[8];
@@ -1122,6 +1131,26 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         if (unlikely(byte_size < need)) return EMB_NULL_ROW_ERROR;
         reg_type[reg] = type;
         reg_value[reg] = value;
+        break;
+      }
+      case Interpreter::READ_AGG_REG_TO_REG: {
+        /* As Dbtup's handleReadAggRegToReg */
+        const Uint32 agg_reg = instr >> 16;
+        if (unlikely(agg_reg >= kRegTotal)) return EMB_NULL_ROW_ERROR;
+        const Register& src = agg_regs[agg_reg];
+        if (src.is_null) {
+          reg_type[reg] = Interpreter::REG_TYPE_NULL;
+        } else if (src.type == NDB_TYPE_DOUBLE) {
+          reg_type[reg] = Interpreter::REG_TYPE_DOUBLE;
+          memcpy(&reg_value[reg], &src.value.val_double, 8);
+        } else if (src.type == NDB_TYPE_BIGINT) {
+          reg_type[reg] = src.is_unsigned ? Interpreter::REG_TYPE_UINT
+                                          : Interpreter::REG_TYPE_INT;
+          reg_value[reg] = src.value.val_int64;
+        } else {
+          /* ZREGISTER_INIT_ERROR in DBTUP */
+          return EMB_NULL_ROW_ERROR;
+        }
         break;
       }
       case Interpreter::BRANCH:
@@ -1381,7 +1410,7 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         return EMB_NULL_ROW_ERROR;
       }
       default:
-        /* Aggregation registers, arithmetic */
+        /* Arithmetic, READ_*_MEM_TO_REG */
         return EMB_NULL_ROW_UNSUPPORTED;
     }
     if (take_branch) {
@@ -1802,15 +1831,16 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           Uint32 skip_offset = 0;
           const EmbeddedNullRowResult res = evalEmbeddedForNullRow(
               &m_prog[exec_pos], emb_len, m_linked_attr_data,
-              m_linked_attr_len, m_null_row_meta_tup, &skip_offset);
+              m_linked_attr_len, m_null_row_meta_tup, m_registers,
+              &skip_offset);
           if (unlikely(res == EMB_NULL_ROW_ERROR)) {
             return ZAGG_EMBEDDED_INTERP_ERROR;
           }
           if (res == EMB_NULL_ROW_UNSUPPORTED) {
             /*
-             * The condition needs DBTUP (aggregation registers,
-             * arithmetic).  Skip the embedded program and take the THEN
-             * path as before; local column reads return NULL there.
+             * The condition needs DBTUP (arithmetic).  Skip the
+             * embedded program and take the THEN path as before; local
+             * column reads return NULL there.
              */
             thrjam(jamBuf);
             exec_pos += emb_len;
