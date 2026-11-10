@@ -1997,7 +1997,7 @@ Uint32 Dbspj::parseJoinAggKeys(Ptr<Request> requestPtr, Uint32 ptrI,
   if (totalWords >= 2 && reader.peekWord(&peekWord) &&
       peekWord == QUERY_TAG_MARKER) {
     jam();
-    Uint32 marker, tag;
+    Uint32 marker = 0, tag = 0;
     if (unlikely(!reader.getWord(&marker) || !reader.getWord(&tag))) {
       jam();
       return DbspjErr::InvalidRequest;
@@ -2015,7 +2015,7 @@ Uint32 Dbspj::parseJoinAggKeys(Ptr<Request> requestPtr, Uint32 ptrI,
       return DbspjErr::InvalidRequest;
     }
     if (peekWord == CTE_KEYS_MARKER) break;  // CTE section follows
-    Uint32 nodeId, aggKey;
+    Uint32 nodeId = 0, aggKey = 0;
     if (unlikely(!reader.getWord(&nodeId) || !reader.getWord(&aggKey) ||
                  nodeId >= MAX_NDB_NODES)) {
       jam();
@@ -2069,8 +2069,8 @@ Uint32 Dbspj::parseJoinAggKeys(Ptr<Request> requestPtr, Uint32 ptrI,
   requestPtr.p->m_numCteKeyBlocks = numCtes;
 
   for (Uint32 c = 0; c < numCtes; c++) {
-    Uint32 cteId, perCteFlags, cteNodeCount;
-    Uint32 depLo, depHi;
+    Uint32 cteId = 0, perCteFlags = 0, cteNodeCount = 0;
+    Uint32 depLo = 0, depHi = 0;
     if (unlikely(!reader.getWord(&cteId) || !reader.getWord(&depLo) ||
                  !reader.getWord(&depHi) || !reader.getWord(&perCteFlags) ||
                  !reader.getWord(&cteNodeCount) ||
@@ -2092,7 +2092,7 @@ Uint32 Dbspj::parseJoinAggKeys(Ptr<Request> requestPtr, Uint32 ptrI,
     const Uint32 *const ownerNodes =
         requestPtr.p->m_cteOwnerNodes + c * max_nodes;
     for (Uint32 n = 0; n < cteNodeCount; n++) {
-      Uint32 nodeId, cteAggKey, ownerInstance;
+      Uint32 nodeId = 0, cteAggKey = 0, ownerInstance = 0;
       if (unlikely(!reader.getWord(&nodeId) || !reader.getWord(&cteAggKey) ||
                    !reader.getWord(&ownerInstance) || nodeId >= max_nodes ||
                    (n > 0 && nodeId <= ownerNodes[n - 1]))) {
