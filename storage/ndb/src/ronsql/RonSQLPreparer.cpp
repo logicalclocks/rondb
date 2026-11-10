@@ -14003,8 +14003,9 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
         // The Phase I.7 lookupCte path goes through packed_rowsize
         // → getColumn()->getSizeInBytes() instead, and a 0 there
         // makes NdbReceiverBuffer::allocRow's assertion fire when
-        // the actual row arrives.  Populate the attr-size fields
-        // for the numeric types build_cte_virtual_tables can emit.
+        // the actual row arrives.  Populate the attr-size fields for
+        // every type a virtual column can have, with the sizes the
+        // dictionary gives a real column of that type (C-3).
         switch (mut_col->getType()) {
         case NdbDictionary::Column::Tinyint:
         case NdbDictionary::Column::Tinyunsigned:
@@ -14039,16 +14040,19 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           mut_impl.m_arraySize = 1;
           break;
         case NdbDictionary::Column::Char:
+        case NdbDictionary::Column::Binary:
           mut_impl.m_attrSize = 1;
           mut_impl.m_orgAttrSize = 3;
           mut_impl.m_arraySize = mut_col->getLength();
           break;
         case NdbDictionary::Column::Varchar:
+        case NdbDictionary::Column::Varbinary:
           mut_impl.m_attrSize = 1;
           mut_impl.m_orgAttrSize = 3;
           mut_impl.m_arraySize = 1 + mut_col->getLength();
           break;
         case NdbDictionary::Column::Longvarchar:
+        case NdbDictionary::Column::Longvarbinary:
           mut_impl.m_attrSize = 1;
           mut_impl.m_orgAttrSize = 3;
           mut_impl.m_arraySize = 2 + mut_col->getLength();
@@ -14081,12 +14085,44 @@ RonSQLPreparer::build_cte_virtual_tables(const JoinPlan& plan,
           mut_impl.m_orgAttrSize = 5;
           mut_impl.m_arraySize = 1;
           break;
-        default:
-          // DECIMAL, fractional-second temporals (Datetime2 / Time2 /
-          // Timestamp2) etc.: existing scanCte path tolerated 0; the
-          // lookupCte path with such virt column types is not
-          // exercised yet by RonSQL.
+        // Fractional-second temporals (the formats MySQL 8 tables use),
+        // fsp in the precision, and DECIMAL: the sizes
+        // DictTabInfo::Attribute::translateExtType gives a real column.
+        case NdbDictionary::Column::Time2:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 3 + (1 + mut_col->getPrecision()) / 2;
           break;
+        case NdbDictionary::Column::Datetime2:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 5 + (1 + mut_col->getPrecision()) / 2;
+          break;
+        case NdbDictionary::Column::Timestamp2:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize = 4 + (1 + mut_col->getPrecision()) / 2;
+          break;
+        case NdbDictionary::Column::Decimal:
+        case NdbDictionary::Column::Decimalunsigned:
+          mut_impl.m_attrSize = 1;
+          mut_impl.m_orgAttrSize = 3;
+          mut_impl.m_arraySize =
+              decimal_bin_size(mut_col->getPrecision(), mut_col->getScale());
+          break;
+        case NdbDictionary::Column::Bit:
+          // As the dictionary stores BIT(n): n bits in 32-bit words.
+          mut_impl.m_attrSize = 4;
+          mut_impl.m_orgAttrSize = 0;
+          mut_impl.m_arraySize = (mut_col->getLength() + 31) >> 5;
+          break;
+        default:
+          // A size of 0 undersizes the receive buffer and breaks key
+          // operands (C-3), so refuse the type instead.
+          throw RonSQLPermanentError(
+              RonSQLErrorClass::UNSUPPORTED,
+              std::string("CTE output column `") + mut_col->getName() +
+              "` has a column type that CTEs do not support.");
         }
       }
     }
