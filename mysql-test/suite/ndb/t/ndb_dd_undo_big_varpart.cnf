@@ -1,0 +1,7 @@
+!include suite/ndb/my.cnf
+
+[cluster_config.1]
+# Maxed so that only the two LCPs the test starts with "all dump 7099" run,
+# the UNDO records the test writes are then all after the start of the LCP
+# that node 1 restores.
+TimeBetweenLocalCheckpoints=31

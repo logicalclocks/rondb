@@ -5079,28 +5079,40 @@ private:
                          Uint32 len);
 
   void verify_undo_log_execution();
+  /**
+   * One UNDO record executed during restart, the record itself is in
+   * m_data. f_undo holds the record just received, a record that waits for
+   * its page to be read is a copy of f_undo in c_apply_undo_pool. An RWPool
+   * record must fit in one page, so this holds only what a waiting record
+   * needs; disk_restart_undo_callback() finds the table, fragment and page
+   * and passes them in an Apply_undo_target.
+   */
   struct Apply_undo {
-    bool m_in_intermediate_log_record;
+    Uint64 m_lsn;
+    Local_key m_key;
     Uint32 m_type;
     Uint32 m_len;
     Uint32 m_offset;
     Uint32 m_tot_len;
-    const Uint32* m_ptr;
-    Uint32 m_data[MAX_UNDO_DATA];
-    Uint64 m_lsn;
-    Ptr<Tablerec> m_table_ptr;
-    FragrecordPtr m_fragment_ptr;
-    Ptr<Page> m_page_ptr;
-    Ptr<Extent_info> m_extent_ptr;
-    Local_key m_key;
+    bool m_in_intermediate_log_record;
     Uint32 nextList;
     union {
       Uint32 nextPool;
       Uint32 prevList;
     };
     Uint32 m_magic;
+    Uint32 m_data[MAX_UNDO_DATA];
 
     Apply_undo();
+  };
+  static_assert(sizeof(Apply_undo) <= RWPage::RWPAGE_WORDS * sizeof(Uint32),
+                "An Apply_undo record must fit in one RWPool page");
+
+  /* Table, fragment and page of the UNDO record being applied */
+  struct Apply_undo_target {
+    Ptr<Tablerec> m_table_ptr;
+    FragrecordPtr m_fragment_ptr;
+    PagePtr m_page_ptr;
   };
   typedef RecordPool<RWPool<Apply_undo>> Apply_undo_pool;
   typedef DLCFifoList<Apply_undo_pool> Apply_undo_list;
@@ -5182,12 +5194,15 @@ private:
   Uint32* prepare_undo_varpage(Var_page*, Uint32, Uint32);
 
   void disk_restart_undo_callback(Signal* signal, Uint32, Uint32);
-  void disk_restart_undo_alloc(Apply_undo*);
-  void disk_restart_undo_update(Apply_undo*);
-  void disk_restart_undo_update_first_part(Apply_undo*);
-  void disk_restart_undo_update_part(Apply_undo*);
-  void disk_restart_undo_free(Apply_undo*, bool, bool);
-  void disk_restart_undo_page_bits(Signal*, Apply_undo*);
+  void disk_restart_undo_alloc(Apply_undo*, const Apply_undo_target&);
+  void disk_restart_undo_update(Apply_undo*, const Apply_undo_target&);
+  void disk_restart_undo_update_first_part(Apply_undo*,
+                                           const Apply_undo_target&);
+  void disk_restart_undo_update_part(Apply_undo*, const Apply_undo_target&);
+  void disk_restart_undo_free(Apply_undo*, const Apply_undo_target&, bool,
+                              bool);
+  void disk_restart_undo_page_bits(Signal*, Apply_undo*,
+                                   const Apply_undo_target&);
 
 #ifdef VM_TRACE
   void verify_page_lists(Disk_alloc_info &);

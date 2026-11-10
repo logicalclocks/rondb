@@ -304,12 +304,7 @@ Dbtup::Apply_undo::Apply_undo() {
   m_in_intermediate_log_record = false;
   m_type = 0;
   m_len = 0;
-  m_ptr = 0;
   m_lsn = (Uint64)0;
-  m_table_ptr.setNull();
-  m_fragment_ptr.setNull();
-  m_page_ptr.setNull();
-  m_extent_ptr.setNull();
   m_key.setNull();
 }
 

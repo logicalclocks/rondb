@@ -1,0 +1,110 @@
+#
+# UNDO log records of the largest size are applied at restart
+#
+# A disk part of MAX_DISK_VAR_SIZE_IN_WORDS (8158 words, a
+# VARCHAR(32610)) fills an empty disk page, the UNDO record of an
+# update or delete of such a row holds the full disk part. At restart
+# DBTUP queues the UNDO records of a page until the page is read, each
+# queued record is a copy in an RWPool record that must fit in one
+# 32 kB page. Node 1 restarts from an LCP that is older than these
+# UNDO records, so it applies all of them.
+#
+CREATE LOGFILE GROUP lg1
+ADD UNDOFILE 'undofile.dat'
+INITIAL_SIZE 32M
+UNDO_BUFFER_SIZE = 16M
+ENGINE = NDB;
+CREATE TABLESPACE ts1
+ADD DATAFILE 'datafile.dat'
+USE LOGFILE GROUP lg1
+INITIAL_SIZE 64M
+ENGINE = NDB;
+CREATE TABLE t1 (
+pk INT NOT NULL PRIMARY KEY,
+d VARCHAR(32610) CHARACTER SET latin1 NOT NULL STORAGE DISK
+) TABLESPACE ts1 ENGINE = NDB;
+# Full rows, each fills a disk page, and small rows
+INSERT INTO t1 VALUES (1, REPEAT('A', 32610)), (2, REPEAT('B', 32610)),
+(3, REPEAT('C', 32610)), (4, REPEAT('D', 32610));
+INSERT INTO t1 VALUES (5, REPEAT('E', 32610)), (6, REPEAT('F', 32610));
+INSERT INTO t1 VALUES (11, 'k'), (12, 'l'), (13, 'm'), (14, 'n');
+# LCP 1, node 1 restarts from it
+# Update the full rows twice, each of their disk pages gets two UNDO
+# records with a full disk part. The small updates in between move
+# the full records within the UNDO pages, LGMAN splits a record over
+# two UNDO pages when it does not fit in the rest of a page.
+UPDATE t1 SET d = REPEAT('a', 32610) WHERE pk = 1;
+UPDATE t1 SET d = 'x' WHERE pk = 11;
+UPDATE t1 SET d = REPEAT('b', 32610) WHERE pk = 2;
+UPDATE t1 SET d = REPEAT('c', 32610) WHERE pk = 3;
+UPDATE t1 SET d = 'y' WHERE pk = 12;
+UPDATE t1 SET d = REPEAT('d', 32610) WHERE pk = 4;
+UPDATE t1 SET d = REPEAT('g', 32610) WHERE pk = 1;
+UPDATE t1 SET d = REPEAT('h', 32610) WHERE pk = 2;
+UPDATE t1 SET d = 'z' WHERE pk = 13;
+UPDATE t1 SET d = REPEAT('i', 32610) WHERE pk = 3;
+UPDATE t1 SET d = REPEAT('j', 32610) WHERE pk = 4;
+# Shrink a full row and grow it again
+UPDATE t1 SET d = 'e' WHERE pk = 5;
+UPDATE t1 SET d = REPEAT('e', 32610) WHERE pk = 5;
+# Delete a full row and insert new full rows
+DELETE FROM t1 WHERE pk = 6;
+INSERT INTO t1 VALUES (7, REPEAT('G', 32610)), (8, REPEAT('H', 32610));
+# LCP 2 writes the changed disk pages, and before them the UNDO log
+SELECT pk, LENGTH(d) AS d_len, LEFT(d, 1) AS d_char,
+MD5(d) = MD5(REPEAT(LEFT(d, 1), LENGTH(d))) AS d_ok
+FROM t1 ORDER BY pk;
+pk	d_len	d_char	d_ok
+1	32610	g	1
+2	32610	h	1
+3	32610	i	1
+4	32610	j	1
+5	32610	e	1
+7	32610	G	1
+8	32610	H	1
+11	1	x	1
+12	1	y	1
+13	1	z	1
+14	1	n	1
+# Restart node 1 from LCP 1, error 7248 skips the most recent LCP
+# Stop node 2, node 1 alone reads the rows
+SELECT pk, LENGTH(d) AS d_len, LEFT(d, 1) AS d_char,
+MD5(d) = MD5(REPEAT(LEFT(d, 1), LENGTH(d))) AS d_ok
+FROM t1 ORDER BY pk;
+pk	d_len	d_char	d_ok
+1	32610	g	1
+2	32610	h	1
+3	32610	i	1
+4	32610	j	1
+5	32610	e	1
+7	32610	G	1
+8	32610	H	1
+11	1	x	1
+12	1	y	1
+13	1	z	1
+14	1	n	1
+# Change the disk pages on node 1 alone
+UPDATE t1 SET d = REPEAT('k', 32610) WHERE pk = 11;
+UPDATE t1 SET d = 'f' WHERE pk = 7;
+DELETE FROM t1 WHERE pk = 8;
+INSERT INTO t1 VALUES (6, REPEAT('F', 32610));
+SELECT pk, LENGTH(d) AS d_len, LEFT(d, 1) AS d_char,
+MD5(d) = MD5(REPEAT(LEFT(d, 1), LENGTH(d))) AS d_ok
+FROM t1 ORDER BY pk;
+pk	d_len	d_char	d_ok
+1	32610	g	1
+2	32610	h	1
+3	32610	i	1
+4	32610	j	1
+5	32610	e	1
+6	32610	F	1
+7	1	f	1
+11	32610	k	1
+12	1	y	1
+13	1	z	1
+14	1	n	1
+DROP TABLE t1;
+ALTER TABLESPACE ts1
+DROP DATAFILE 'datafile.dat';
+DROP TABLESPACE ts1;
+DROP LOGFILE GROUP lg1 ENGINE = NDB;
