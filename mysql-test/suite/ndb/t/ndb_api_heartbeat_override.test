@@ -102,11 +102,41 @@ let $db_disconnect_marker = TRPMAN : Blocking receive on transporter .* from nod
 --echo On data node 1, resume receiving signals from API node $db_disconnect_target
 --exec $NDB_MGM -e "1 DUMP 9993 $db_disconnect_target" > $NDB_TOOLS_OUTPUT
 
-# Both mysqld servers must be connected to the cluster again before the
-# test ends: mtr's check-testcase queries ndbinfo on each of them, and
-# failed with "Got error 157 'Connection to NDB failed' from NDBINFO"
-# when only the current one was waited for.
+# The mysqld must be connected to the cluster again on both of its NDB
+# connections before the test ends. mtr's check-testcase queries
+# ndbinfo, which always uses the first connection (API node 11), and
+# other sessions may get the second one (API node 12), while
+# ndb_wait_connected.inc only checks the connection of the current
+# session. So wait until both API nodes are connected to both data
+# nodes. The ndbinfo query goes through node 11 itself and fails with
+# "Got error 157 'Connection to NDB failed' from NDBINFO" until that
+# node is connected again. The error comes from the scan, after the
+# result set has started, which a `query` in a let cannot accept as an
+# expected error, so the count goes through a user variable.
 --disable_query_log
+--disable_result_log
+--let $_hb_connected= 0
+--let $_hb_attempts= 600
+while (!$_hb_connected)
+{
+  SET @hb_connected = 0;
+  --error 0,ER_GET_ERRMSG,ER_GET_ERRNO
+  eval SELECT COUNT(*) = 4 FROM ndbinfo.transporters WHERE remote_node_id IN ($db_disconnect_target, $api_disconnect_target) AND status = 'CONNECTED' INTO @hb_connected;
+  --let $_hb_connected= `SELECT @hb_connected`
+  if (!$_hb_connected)
+  {
+    dec $_hb_attempts;
+    if (!$_hb_attempts)
+    {
+      --die Timed out waiting for API nodes $db_disconnect_target and $api_disconnect_target to connect to both data nodes
+    }
+    --sleep 0.1
+  }
+}
+--enable_result_log
+
+# The other mysqld is not blocked, check that it can also use the
+# cluster, since check-testcase queries ndbinfo on it too.
 --connection server2
 --source include/ndb_wait_connected.inc
 --disable_query_log
