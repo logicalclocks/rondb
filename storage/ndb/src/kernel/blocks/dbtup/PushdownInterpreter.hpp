@@ -90,8 +90,11 @@ class PushdownInterpreter {
    * OptimizeProgramBuffer — static type analysis on an aggregation program.
    *
    * Replaces generic opcodes (kOpSum, kOpPlus, etc.) with type-specific
-   * variants (kOpSumBigint, kOpSumDouble, etc.) based on a single-pass
-   * analysis of register types.  Modifies the program buffer in-place.
+   * variants (kOpSumBigint, kOpSumDouble, etc.) based on an analysis of
+   * register types that follows the CASE and GREATEST / LEAST jumps
+   * (kOpEmbeddedInterp, kOpSkip).  A SUM / MAX / MIN is typed only when
+   * every instruction updating its aggregate slot reads a register of the
+   * same type.  Modifies the program buffer in-place.
    *
    * Can be called on any writable program buffer — does not require an
    * interpreter instance.  Used by DblqhProxy to optimize leaf programs

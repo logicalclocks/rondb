@@ -1724,6 +1724,36 @@ bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
     SetError(kErrInvalidRegNo);
     return false;
   }
+  /* A later CASE arm updates the slot of the first arm with the same
+   * aggregate, so it gets the type checks of that aggregate: SUM and AVG
+   * refuse a string or temporal value, as Sum() and Avg() do.  A string
+   * MIN / MAX slot holds a pointer to the data node's copy of the value,
+   * compared in the type and collation of the column, so the arms must
+   * all be strings of one type and collation, or none of them a string. */
+  const Uint32 op = agg_ops_[agg_id];
+  const Uint32 type = reg_types_[reg_id];
+  if (op == kOpSum || op == kOpAvg) {
+    if (isStringType(type)) {
+      SetError(kErrUnsupportedStringOperation);
+      return false;
+    }
+    if (isTemporalType(type)) {
+      SetError(kErrUnsupportedTemporalOperation);
+      return false;
+    }
+  } else if (op == kOpMin || op == kOpMax) {
+    const NdbDictionary::Column* first = agg_columns_[agg_id];
+    const NdbDictionary::Column* col = reg_columns_[reg_id];
+    const bool first_is_string =
+        first != nullptr && isStringType(first->getType());
+    if (first_is_string != isStringType(type) ||
+        (first_is_string &&
+         (col == nullptr || col->getType() != first->getType() ||
+          col->getCharset() != first->getCharset()))) {
+      SetError(kErrMixedStringCaseArms);
+      return false;
+    }
+  }
   if (!HasRoom(1)) return false;
   buffer_[curr_prog_pos_++] =
       (agg_ops_[agg_id]) << 26 | (reg_id & 0x0F) << 16 | agg_id;

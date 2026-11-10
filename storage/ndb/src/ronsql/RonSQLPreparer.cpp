@@ -17127,14 +17127,23 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 // That is an unsupported construct, not a bug: name it, as
 // build_cte_virtual_tables does for a CTE output.  The main query splits
 // AVG into Sum + Count, so the failed slot `agg_id` being an AVG output's
-// sum slot makes the message say AVG.  Any other failure keeps the
-// generic bug message.
+// sum slot makes the message say AVG.  The ELSE arm of a CASE goes
+// through NdbAggregator::RepeatAgg, which makes the same checks for SUM
+// and AVG, and refuses MIN / MAX arms that mix strings with other values
+// or strings of different types or collations (kErrMixedStringCaseArms;
+// the data node keeps a string MIN / MAX as a pointer).  Any other
+// failure keeps the generic bug message.
 void
 RonSQLPreparer::throw_sum_avg_emit_error(NdbAggregator* aggregator,
                                          const SelectStatement& stmt,
                                          Uint32 agg_id, bool is_avg)
 {
   const Uint32 errnum = aggregator->GetError().errno_;
+  if (errnum == kErrMixedStringCaseArms)
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "MIN / MAX over a CASE that mixes string and non-string values, or "
+        "strings of different types or collations, is not supported.");
   if (errnum != kErrUnsupportedStringOperation &&
       errnum != kErrUnsupportedTemporalOperation)
     throw RonSQLPermanentError(
@@ -17261,7 +17270,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
           m_main_scope.agg->m_pair_op_needs_null_check[i]);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
-      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      if (!aggregator->RepeatAgg(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
@@ -18150,7 +18160,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
           scope.agg->m_pair_op_needs_null_check[i]);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
-      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      if (!aggregator->RepeatAgg(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {

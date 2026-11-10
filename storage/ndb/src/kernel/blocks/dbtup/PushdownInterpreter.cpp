@@ -28,6 +28,7 @@
 #include "../record_types.hpp"
 #include "NdbAggregationCommon.hpp"
 #include "util/require.h"
+#include <Interpreter.hpp>
 
 /* Phase 8 RONDB-1056: standalone agg compiles go through the reuse cache
  * (DbtupJitGlue), which owns the bridge-translate + jit1_compile path. */
@@ -41,17 +42,200 @@ void PushdownInterpreter::Destruct(PushdownInterpreter* ptr) {
   lc_ndbd_pool_free(ptr);
 }
 
-void
-PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
-                                           Uint32 start_pos) {
+namespace {
+
+/* No SUM / MAX / MIN of the aggregate slot seen yet. */
+constexpr Uint32 kNoAggSlotWriter = ~0U;
+
+/* The type of a register, or of a slot, on two paths. */
+inline Uint32 joinRegType(Uint32 a, Uint32 b) {
+  return (a == b) ? a : NDB_TYPE_UNDEFINED;
+}
+
+/*
+ * The register types follow the jumps of the program.  kOpSkip jumps
+ * forward over its count of words.  The rows leaving kOpEmbeddedInterp
+ * continue after the embedded program, skipping the number of words the
+ * embedded program wrote to interpreter output 0 (ProcessRec of
+ * AggInterpreter and JoinAggInterpreter).  Neither falls through to the
+ * next word.  A join point keeps the register types of the rows that
+ * jump to the words first..last, where last is ~0U when they may land on
+ * any later word.  A word reached on several paths gets the register
+ * types the paths agree on.
+ */
+struct AggJoinPoints {
+  static constexpr Uint32 kMaxPoints = 16;
+  struct Point {
+    Uint32 first;
+    Uint32 last;
+    Uint32 reg_types[kRegTotal];
+  };
+  Point m_points[kMaxPoints];
+  Uint32 m_count = 0;
+
+  void add(Uint32 first, Uint32 last, const Uint32* reg_types) {
+    Point* p = nullptr;
+    for (Uint32 i = 0; i < m_count && p == nullptr; i++) {
+      if (m_points[i].first == first && m_points[i].last == last) {
+        p = &m_points[i];
+      }
+    }
+    if (p == nullptr && m_count == kMaxPoints) {
+      /* No room: the last point covers this jump too. */
+      p = &m_points[kMaxPoints - 1];
+      if (first < p->first) {
+        p->first = first;
+      }
+      p->last = ~0U;
+    }
+    if (p == nullptr) {
+      p = &m_points[m_count++];
+      p->first = first;
+      p->last = last;
+      for (Uint32 r = 0; r < kRegTotal; r++) {
+        p->reg_types[r] = reg_types[r];
+      }
+      return;
+    }
+    for (Uint32 r = 0; r < kRegTotal; r++) {
+      p->reg_types[r] = joinRegType(p->reg_types[r], reg_types[r]);
+    }
+  }
+
+  /* Set reg_types to the types at the word pos: those of the path from
+   * the word before, when `reached`, joined with those of every jump
+   * that may land on pos.  They are unknown at a word no path reaches. */
+  void enter(Uint32 pos, Uint32* reg_types, bool reached) {
+    for (Uint32 i = 0; i < m_count;) {
+      Point& p = m_points[i];
+      if (p.first <= pos && pos <= p.last) {
+        for (Uint32 r = 0; r < kRegTotal; r++) {
+          reg_types[r] = reached ? joinRegType(reg_types[r], p.reg_types[r])
+                                 : p.reg_types[r];
+        }
+        reached = true;
+      }
+      if (p.last <= pos) {
+        p = m_points[--m_count];  // No later word to land on
+      } else {
+        i++;
+      }
+    }
+    if (!reached) {
+      for (Uint32 r = 0; r < kRegTotal; r++) {
+        reg_types[r] = NDB_TYPE_UNDEFINED;
+      }
+    }
+  }
+};
+
+/* True if a branch of the embedded program emb lands on emb[target]. */
+bool embeddedBranchTo(const Uint32* emb, Uint32 target) {
+  Uint32 pc = 0;
+  while (pc < target) {
+    Interpreter::InstructionPreProcessing processing;
+    const Uint32* next = Interpreter::getInstructionPreProcessingInfo(
+        const_cast<Uint32*>(&emb[pc]), processing);
+    if (next == nullptr) {
+      return true;
+    }
+    /* Forward offset from the branch word, as validateEmbeddedProgram. */
+    if (processing == Interpreter::LABEL_ADDRESS_REPLACEMENT &&
+        pc + ((emb[pc] >> 16) & 0x7FFF) == target) {
+      return true;
+    }
+    pc = Uint32(next - emb);
+  }
+  return false;
+}
+
+/*
+ * Add a join point for each skip the embedded program emb[0..emb_len)
+ * writes to interpreter output 0; emb_end is the word after it.  Every
+ * emitter (CASE and GREATEST / LEAST of RonSQL, CASE of
+ * ha_ndbcluster_push_agg) writes the skip with a LOAD_CONST16 directly
+ * followed by WRITE_INTERPRETER_OUTPUT.  Return false, the skips being
+ * unknown, when output 0 is written in another way or a branch lands on
+ * the write, so that the register may hold another value.
+ * AGG_EMBEDDED_INTERP_STOP_PROGRAM ends the row: it is no jump.
+ */
+bool addEmbeddedJoinPoints(AggJoinPoints& joins, const Uint32* emb,
+                           Uint32 emb_len, Uint32 emb_end,
+                           const Uint32* reg_types) {
+  Uint32 pc = 0;
+  Uint32 prev_pc = ~0U;
+  while (pc < emb_len) {
+    const Uint32 instr = emb[pc];
+    Interpreter::InstructionPreProcessing processing;
+    const Uint32* next = Interpreter::getInstructionPreProcessingInfo(
+        const_cast<Uint32*>(&emb[pc]), processing);
+    if (next == nullptr) {
+      return false;
+    }
+    if (Interpreter::getOpCode(instr) ==
+            Interpreter::WRITE_INTERPRETER_OUTPUT &&
+        (instr >> 16) == 0) {
+      if (prev_pc == ~0U ||
+          Interpreter::getOpCode(emb[prev_pc]) != Interpreter::LOAD_CONST16 ||
+          Interpreter::getReg1(emb[prev_pc]) != Interpreter::getReg1(instr) ||
+          embeddedBranchTo(emb, pc)) {
+        return false;
+      }
+      const Uint32 skip = emb[prev_pc] >> 16;
+      if (skip != AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
+        joins.add(emb_end + skip, emb_end + skip, reg_types);
+      }
+    }
+    prev_pc = pc;
+    pc = Uint32(next - emb);
+  }
+  return true;
+}
+
+/*
+ * A CASE updates its aggregate slot from every arm (each later arm
+ * through NdbAggregator::RepeatAgg), and one arm runs per row.  The typed
+ * SUM / MAX / MIN kernels never convert the slot: SumDouble adds to
+ * val_double also of a BIGINT slot, SumBigint adds to the bits of a
+ * DOUBLE slot.  So a slot is typed only when every SUM / MAX / MIN of it
+ * reads a register of one proven type.  The first walk collects that
+ * type of each slot in slot_types, the second walk returns it.
+ */
+Uint32 aggSlotType(Uint32* slot_types, Uint32 value, Uint32 reg_type,
+                   bool rewrite) {
+  const Uint32 agg_index = value & 0xFFFF;
+  if (agg_index >= MAX_AGG_N_RESULTS) {
+    return NDB_TYPE_UNDEFINED;
+  }
+  if (rewrite) {
+    return slot_types[agg_index];
+  }
+  slot_types[agg_index] = (slot_types[agg_index] == kNoAggSlotWriter)
+                              ? reg_type
+                              : joinRegType(slot_types[agg_index], reg_type);
+  return NDB_TYPE_UNDEFINED;
+}
+
+/*
+ * One walk of OptimizeProgramBuffer over the program.  The first walk
+ * (rewrite == false) only fills slot_types, the second rewrites the
+ * program.  Both see the same register types.
+ */
+void optimizeAggProgramWalk(Uint32* prog, Uint32 prog_len, Uint32 start_pos,
+                            Uint32* slot_types, bool rewrite) {
   using DataType = Uint32;
   DataType reg_types[kRegTotal];
   for (Uint32 i = 0; i < kRegTotal; i++) {
     reg_types[i] = NDB_TYPE_UNDEFINED;
   }
+  AggJoinPoints joins;
+  bool reached = true;
 
   Uint32 exec_pos = start_pos;
   while (exec_pos < prog_len) {
+    joins.enter(exec_pos, reg_types, reached);
+    reached = true;
+    const Uint32 op_pos = exec_pos;
     Uint32 value = prog[exec_pos];
     Uint8 op = (value & 0xFC000000) >> 26;
     Uint32 reg_index, reg_index2;
@@ -112,7 +296,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         if (reg_types[reg_index] == NDB_TYPE_DOUBLE &&
             reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
           new_op = kOpPlusDouble;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
           reg_types[reg_index] = NDB_TYPE_DOUBLE;
         } else if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
                    reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
@@ -120,7 +303,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         } else if (reg_types[reg_index] == NDB_TYPE_BIGINT &&
                    reg_types[reg_index2] == NDB_TYPE_BIGINT) {
           new_op = kOpPlusBigint;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
           reg_types[reg_index] = NDB_TYPE_BIGINT;
         } else {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
@@ -133,7 +315,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         if (reg_types[reg_index] == NDB_TYPE_DOUBLE &&
             reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
           new_op = kOpMinusDouble;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
           reg_types[reg_index] = NDB_TYPE_DOUBLE;
         } else if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
                    reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
@@ -141,7 +322,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         } else if (reg_types[reg_index] == NDB_TYPE_BIGINT &&
                    reg_types[reg_index2] == NDB_TYPE_BIGINT) {
           new_op = kOpMinusBigint;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
           reg_types[reg_index] = NDB_TYPE_BIGINT;
         } else {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
@@ -154,7 +334,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         if (reg_types[reg_index] == NDB_TYPE_DOUBLE &&
             reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
           new_op = kOpMulDouble;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
           reg_types[reg_index] = NDB_TYPE_DOUBLE;
         } else if (reg_types[reg_index] == NDB_TYPE_DOUBLE ||
                    reg_types[reg_index2] == NDB_TYPE_DOUBLE) {
@@ -162,7 +341,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         } else if (reg_types[reg_index] == NDB_TYPE_BIGINT &&
                    reg_types[reg_index2] == NDB_TYPE_BIGINT) {
           new_op = kOpMulBigint;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
           reg_types[reg_index] = NDB_TYPE_BIGINT;
         } else {
           reg_types[reg_index] = NDB_TYPE_UNDEFINED;
@@ -179,7 +357,6 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
         if (reg_types[reg_index] == NDB_TYPE_BIGINT &&
             reg_types[reg_index2] == NDB_TYPE_BIGINT) {
           new_op = kOpDivIntBigint;
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
         }
         reg_types[reg_index] = NDB_TYPE_BIGINT;
         break;
@@ -200,26 +377,23 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
 
       case kOpSum:
         reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) new_op = kOpSumDouble;
-        else if (reg_types[reg_index] == NDB_TYPE_BIGINT) new_op = kOpSumBigint;
-        if (new_op != op)
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        type = aggSlotType(slot_types, value, reg_types[reg_index], rewrite);
+        if (type == NDB_TYPE_DOUBLE) new_op = kOpSumDouble;
+        else if (type == NDB_TYPE_BIGINT) new_op = kOpSumBigint;
         break;
 
       case kOpMax:
         reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) new_op = kOpMaxDouble;
-        else if (reg_types[reg_index] == NDB_TYPE_BIGINT) new_op = kOpMaxBigint;
-        if (new_op != op)
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        type = aggSlotType(slot_types, value, reg_types[reg_index], rewrite);
+        if (type == NDB_TYPE_DOUBLE) new_op = kOpMaxDouble;
+        else if (type == NDB_TYPE_BIGINT) new_op = kOpMaxBigint;
         break;
 
       case kOpMin:
         reg_index = (value & 0x000F0000) >> 16;
-        if (reg_types[reg_index] == NDB_TYPE_DOUBLE) new_op = kOpMinDouble;
-        else if (reg_types[reg_index] == NDB_TYPE_BIGINT) new_op = kOpMinBigint;
-        if (new_op != op)
-          prog[exec_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+        type = aggSlotType(slot_types, value, reg_types[reg_index], rewrite);
+        if (type == NDB_TYPE_DOUBLE) new_op = kOpMinDouble;
+        else if (type == NDB_TYPE_BIGINT) new_op = kOpMinBigint;
         break;
 
       case kOpCount:
@@ -228,19 +402,50 @@ PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
       case kOpEmbeddedInterp:
       {
         Uint32 emb_len = value & 0xFFFF;
+        const Uint32 emb_end = exec_pos + 1 + emb_len;
+        /* A NULL-extended row whose condition JoinAggInterpreter cannot
+         * evaluate continues right after the embedded program. */
+        joins.add(emb_end, emb_end, reg_types);
+        if (emb_end > prog_len ||
+            !addEmbeddedJoinPoints(joins, &prog[exec_pos + 1], emb_len,
+                                   emb_end, reg_types)) {
+          joins.add(emb_end, ~0U, reg_types);
+        }
+        reached = false;
         exec_pos += emb_len;
         break;
       }
 
       case kOpSkip:
+        joins.add(exec_pos + 1 + (value & 0xFFFF),
+                  exec_pos + 1 + (value & 0xFFFF), reg_types);
+        reached = false;
+        break;
+
       case kOpSetRegNull:
         break;
 
       default:
         break;
     }
+    if (rewrite && new_op != op) {
+      prog[op_pos] = (new_op << 26) | (value & 0x03FFFFFF);
+    }
     exec_pos++;
   }
+}
+
+}  // namespace
+
+void
+PushdownInterpreter::OptimizeProgramBuffer(Uint32* prog, Uint32 prog_len,
+                                           Uint32 start_pos) {
+  Uint32 slot_types[MAX_AGG_N_RESULTS];
+  for (Uint32 i = 0; i < MAX_AGG_N_RESULTS; i++) {
+    slot_types[i] = kNoAggSlotWriter;
+  }
+  optimizeAggProgramWalk(prog, prog_len, start_pos, slot_types, false);
+  optimizeAggProgramWalk(prog, prog_len, start_pos, slot_types, true);
 }
 
 PushdownType

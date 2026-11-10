@@ -2868,8 +2868,8 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
      * ORIGINAL type. Same-class pairs were always sound; Part A's F64
      * admission made a DOUBLE-vs-BIGINT pair compilable, for which
      * `SumDouble(dest)` would add int bits as a double on output=1
-     * rows (the interpreter's linear OptimizeProgramBuffer has the
-     * same blind spot — the JIT must not add a second wrong answer).
+     * rows (OptimizeProgramBuffer joins the register types at these
+     * jump targets too, and leaves such an aggregate generic).
      * Same-class disagreements (I64 / U64 / NNC) keep the linear value
      * exactly as before; the u63 proof ANDs. A DEAD linear predecessor
      * (previous word was kOpSkip) is not compared: the first arriving
