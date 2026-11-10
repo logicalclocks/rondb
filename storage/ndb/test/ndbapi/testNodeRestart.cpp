@@ -12908,11 +12908,11 @@ struct CteNfEventListener {
     socket = ndb_mgm_listen_event_internal(restarter.handle, filter, 0, true);
     return socket.is_valid();
   }
-  /* Wait for needle, ignoring lines that also contain ignoredMarker.
-   * Ignored events do not reset the deadline. */
-  bool waitFor(NDBT_Context *ctx, const char *needle, Uint32 timeoutMs,
-               BaseString *matchedLine = nullptr,
-               const char *ignoredMarker = nullptr) {
+  /* Wait for an event line that match(line) accepts. Rejected events do
+   * not reset the deadline. */
+  template <typename Match>
+  bool waitForMatch(NDBT_Context *ctx, Uint32 timeoutMs, Match match,
+                    BaseString *matchedLine = nullptr) {
     SocketInputStream input(socket, 100);
     const Uint64 start = NdbTick_CurrentMillisecond();
     char line[1024] = {};
@@ -12923,13 +12923,26 @@ struct CteNfEventListener {
         g_err << "Failed to read management events" << endl;
         return false;
       }
-      if (strstr(line, needle) != nullptr &&
-          (ignoredMarker == nullptr || strstr(line, ignoredMarker) == nullptr)) {
+      if (match((const char *)line)) {
         if (matchedLine != nullptr) matchedLine->assign(line);
         return true;
       }
     }
     return false;
+  }
+  /* Wait for needle, ignoring lines that also contain ignoredMarker.
+   * Ignored events do not reset the deadline. */
+  bool waitFor(NDBT_Context *ctx, const char *needle, Uint32 timeoutMs,
+               BaseString *matchedLine = nullptr,
+               const char *ignoredMarker = nullptr) {
+    return waitForMatch(
+        ctx, timeoutMs,
+        [needle, ignoredMarker](const char *line) {
+          return strstr(line, needle) != nullptr &&
+                 (ignoredMarker == nullptr ||
+                  strstr(line, ignoredMarker) == nullptr);
+        },
+        matchedLine);
   }
 };
 
@@ -12987,7 +13000,18 @@ struct CteNfHoldCase {
    * other than the coordinator, so that requester survives. Set when
    * the coordinator's own requests may be the parked ones (NF-12). */
   bool allowCoordinatorRequester;
+  /* Arm the insert on every data node but the coordinator, not only on
+   * the picked node, and take the hold event from whichever of them
+   * reports one first; that node is then the armed node for the rest of
+   * the iteration (NF-9). Use it when the requests to hold go to a node
+   * the test cannot choose. Needs CTE_NF_KILL_COORDINATOR and
+   * eventNamesRequester. */
+  bool armAllButCoordinator;
 };
+
+/* armAllButCoordinator keeps its armed nodes as a bitmask of node ids in
+ * the "CteNfArmedMask" property; this is the largest node id it holds. */
+static const Uint32 CTE_NF_MAX_MASK_NODE_ID = 31;
 
 /* The errors a query may end with after the kill: node-failure reports
  * from DBTC / DBLQH (286) and DBSPJ (20016) and, when the coordinator
@@ -13013,6 +13037,53 @@ static bool cteNfClearSurvivingInsert(NdbRestarter &restarter,
   return true;
 }
 
+/* Clear every armed node: the picked one, or with armAllButCoordinator
+ * each node in armedMask. Tries them all even when one fails. */
+static bool cteNfClearArmedInserts(NdbRestarter &restarter,
+                                   const CteNfHoldCase &hold, int victim,
+                                   Uint32 armedMask) {
+  if (!hold.armAllButCoordinator) {
+    return cteNfClearSurvivingInsert(restarter, hold, victim);
+  }
+  bool ok = true;
+  for (Uint32 node = 1; node <= CTE_NF_MAX_MASK_NODE_ID; node++) {
+    if ((armedMask & (1u << node)) != 0 &&
+        !cteNfClearSurvivingInsert(restarter, hold, (int)node)) {
+      ok = false;
+    }
+  }
+  return ok;
+}
+
+/* Arm the picked node, or with armAllButCoordinator each node in
+ * armedMask, with extra = the iteration. On a failure, clear what may
+ * have been armed: a failed management call may still have delivered
+ * the insert. */
+static bool cteNfArmInserts(NdbRestarter &restarter,
+                            const CteNfHoldCase &hold, int victim,
+                            Uint32 armedMask, Uint32 extra) {
+  if (!hold.armAllButCoordinator) {
+    if (restarter.insertError2InNode(victim, hold.insert, extra) == 0)
+      return true;
+    g_err << "insertError2InNode(" << victim << ", " << hold.insert
+          << ") failed" << endl;
+    cteNfClearSurvivingInsert(restarter, hold, victim);
+    return false;
+  }
+  Uint32 tried = 0;
+  for (Uint32 node = 1; node <= CTE_NF_MAX_MASK_NODE_ID; node++) {
+    if ((armedMask & (1u << node)) == 0) continue;
+    tried |= 1u << node;
+    if (restarter.insertError2InNode((int)node, hold.insert, extra) != 0) {
+      g_err << "insertError2InNode(" << node << ", " << hold.insert
+            << ") failed" << endl;
+      cteNfClearArmedInserts(restarter, hold, victim, tried);
+      return false;
+    }
+  }
+  return true;
+}
+
 struct CteNfSurvivingInsertGuard {
   NDBT_Context *ctx;
   NdbRestarter *restarter;
@@ -13026,7 +13097,8 @@ struct CteNfSurvivingInsertGuard {
         ctx->getProperty("CteNfSkip", (Uint32)0) == iteration)
       return true;
     const int node = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
-    if (!cteNfClearSurvivingInsert(*restarter, *hold, node)) return false;
+    const Uint32 mask = ctx->getProperty("CteNfArmedMask", (Uint32)0);
+    if (!cteNfClearArmedInserts(*restarter, *hold, node, mask)) return false;
     cleared = true;
     return true;
   }
@@ -13066,22 +13138,34 @@ static bool cteNfHoldBeforeExecute(void *arg, Uint32 tcNodeId) {
     g_err << "Hold event listener was not ready within 30 s" << endl;
     return false;
   }
-  if (a->restarter->insertError2InNode(victim, a->hold->insert,
-                                       a->iter + 1) != 0) {
-    g_err << "insertError2InNode(" << victim << ", " << a->hold->insert
-          << ") failed" << endl;
-    /* A failed management call may still have delivered the insert. */
-    cteNfClearSurvivingInsert(*a->restarter, *a->hold, victim);
+  /* The nodes to arm: the picked one, or every data node but the
+   * coordinator (the picked one among them). */
+  Uint32 armedMask = 0;
+  if (a->hold->armAllButCoordinator) {
+    for (int i = 0; i < a->restarter->getNumDbNodes(); i++) {
+      const int node = a->restarter->getDbNodeId(i);
+      if (node <= 0 || (Uint32)node == tcNodeId) continue;
+      if ((Uint32)node > CTE_NF_MAX_MASK_NODE_ID) {
+        g_err << "Data node id " << node << " does not fit the armed-node "
+              << "mask (at most " << CTE_NF_MAX_MASK_NODE_ID << ")" << endl;
+        return false;
+      }
+      armedMask |= 1u << node;
+    }
+  }
+  if (!cteNfArmInserts(*a->restarter, *a->hold, victim, armedMask,
+                       a->iter + 1)) {
     return false;
   }
   a->ctx->setProperty("CteNfTc", tcNodeId);
   a->ctx->setProperty("CteNfVictim", (Uint32)victim);
+  a->ctx->setProperty("CteNfArmedMask", armedMask);
   a->ctx->setProperty("CteNfArmed", a->iter + 1);
   /* If the killer exited while we were arming, its guard may have seen
    * no insert for this iteration. Finish that handoff by clearing here.
    * Otherwise the killer's guard now owns cleanup of the published insert. */
   if (a->ctx->isTestStopped()) {
-    cteNfClearSurvivingInsert(*a->restarter, *a->hold, victim);
+    cteNfClearArmedInserts(*a->restarter, *a->hold, victim, armedMask);
     return false;
   }
   return true;
@@ -13198,7 +13282,9 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       /* The query step reports the skip and ends the case. */
       return NDBT_OK;
     }
-    const int armed = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
+    /* With armAllButCoordinator, replaced below by the node whose hold
+     * event is taken. */
+    int armed = (int)ctx->getProperty("CteNfVictim", (Uint32)0);
     int victim = armed;
     /* Match the complete marker, including node and iteration; a
      * requester-naming marker is matched up to the requester field. */
@@ -13226,12 +13312,58 @@ static int runCteNfHoldKiller(NDBT_Context *ctx, NDBT_Step *step,
       ignored.assfmt("%s%u]", expected.c_str(),
                      ctx->getProperty("CteNfTc", (Uint32)0));
     }
-    const bool held = events.waitFor(
-        ctx, expected.c_str(), 30000, &line,
-        skipCoordinator ? ignored.c_str() : nullptr);
+    bool held;
+    if (hold.armAllButCoordinator) {
+      /* Every node but the coordinator is armed. Take the first event
+       * from one of them that names a requester other than the
+       * coordinator and itself; that node is the armed one from here on,
+       * and the existing checks below run against it. */
+      require(hold.eventNamesRequester &&
+              hold.killTarget == CTE_NF_KILL_COORDINATOR);
+      const Uint32 armedMask = ctx->getProperty("CteNfArmedMask", (Uint32)0);
+      const Uint32 tc = ctx->getProperty("CteNfTc", (Uint32)0);
+      BaseString prefix;
+      prefix.assfmt("[%s node=", hold.eventTag);
+      Uint32 heldNode = 0;
+      held = events.waitForMatch(
+          ctx, 30000,
+          [&](const char *l) {
+            const char *marker = strstr(l, prefix.c_str());
+            Uint32 node = 0, iteration = 0, requester = 0;
+            if (marker == nullptr ||
+                sscanf(marker + prefix.length(),
+                       "%u iteration=%u requester=%u]", &node, &iteration,
+                       &requester) != 3)
+              return false;
+            if (iteration != iter + 1 || node > CTE_NF_MAX_MASK_NODE_ID ||
+                (armedMask & (1u << node)) == 0 || requester == tc ||
+                requester == node)
+              return false;
+            heldNode = node;
+            return true;
+          },
+          &line);
+      if (held) {
+        armed = (int)heldNode;
+        expected.assfmt("[%s node=%u iteration=%u requester=", hold.eventTag,
+                        heldNode, iter + 1);
+      }
+    } else {
+      held = events.waitFor(ctx, expected.c_str(), 30000, &line,
+                            skipCoordinator ? ignored.c_str() : nullptr);
+    }
     if (!held || ctx->isTestStopped()) {
-      g_err << "No " << hold.eventTag << " event from node " << armed
-            << " for iteration " << iter << endl;
+      if (hold.armAllButCoordinator) {
+        BaseString mask;
+        mask.assfmt("0x%x", ctx->getProperty("CteNfArmedMask", (Uint32)0));
+        g_err << "No " << hold.eventTag << " event naming a requester other "
+              << "than coordinator " << ctx->getProperty("CteNfTc", (Uint32)0)
+              << " from the armed nodes (mask " << mask.c_str()
+              << ") for iteration " << iter << endl;
+      } else {
+        g_err << "No " << hold.eventTag << " event from node " << armed
+              << " for iteration " << iter << endl;
+      }
       ctx->stopTest();
       return NDBT_FAILED;
     }
@@ -13381,7 +13513,7 @@ static const CteNfHoldCase CTE_NF2_HOLD = {
     "the survivors' CTE states never answered COMPLETE (regression of "
     "55e99285ebb)",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_ARMED, nullptr,
-    nullptr, true, false, false};
+    nullptr, true, false, false, false};
 
 static int runCtePeerRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF2_HOLD);
@@ -13410,7 +13542,7 @@ static const CteNfHoldCase CTE_NF3_HOLD = {
     "DBSPJ never drained the probes outstanding to the failed node "
     "(regression of 6c7fa88dcaa)",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_ARMED, nullptr,
-    nullptr, false, false, false};
+    nullptr, false, false, false, false};
 
 static int runCteLookupTargetQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF3_HOLD);
@@ -13498,7 +13630,7 @@ static const CteNfHoldCase CTE_NF4_HOLD = {
     "DBSPJ never retired the CTE scan slot of the failed source "
     "(regression of f718b5be5d6)",
     CteQueryUtil::ScanRoot, cteNfPickRemoteScanSource, CTE_NF_KILL_ARMED,
-    nullptr, nullptr, false, false, false};
+    nullptr, nullptr, false, false, false, false};
 
 static int runCteScanSourceQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF4_HOLD);
@@ -13768,7 +13900,7 @@ static const CteNfHoldCase CTE_NF6_HOLD = {
     "DBTC never failed the query after its requester node died",
     CteQueryUtil::FeedChain, cteNfPickFeedSource,
     CTE_NF_KILL_EVENT_REQUESTER, "CTE_AGG_FEED_ABANDONED", nullptr, true,
-    false, false};
+    false, false, false};
 
 static int runCteRequesterFeedQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF6_HOLD);
@@ -13819,7 +13951,7 @@ static const CteNfHoldCase CTE_NF7_HOLD = {
     "the API never learned that its coordinator died",
     CteQueryUtil::FeedChain, cteNfPickFeedSourceNotTc,
     CTE_NF_KILL_COORDINATOR, "CTE_AGG_FEED_REFUSED",
-    cteNfChooseTcForFeedCoordinator, true, false, false};
+    cteNfChooseTcForFeedCoordinator, true, false, false, false};
 
 static int runCteCoordinatorFeedQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF7_HOLD);
@@ -13847,7 +13979,7 @@ static const CteNfHoldCase CTE_NF8_HOLD = {
     "CteCoordinatorDiesReady", 5141, "CTE_NF3_LOOKUP_HELD",
     "the API never learned that its coordinator died",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
-    "JOIN_AGG_RELEASES_QUEUED", nullptr, false, false, false};
+    "JOIN_AGG_RELEASES_QUEUED", nullptr, false, false, false, false};
 
 static int runCteCoordinatorReadyQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF8_HOLD);
@@ -13861,21 +13993,32 @@ static int runCteCoordinatorReadyKiller(NDBT_Context *ctx, NDBT_Step *step) {
  * NF-9 CteCoordinatorDiesPausedRedist (commit 0f983279eb6).
  *
  * The coordinator dies while the CTE redistribution is paused: error
- * insert 5140 on a peer holds inbound requests with RI_NEED_CONF, so
- * their senders sit in CTE_REDISTRIBUTING waiting for its CONF (one
- * group per row makes the redistribution need a CONF). Other rows
- * proceed normally without consuming timer entries.
+ * insert 5140 holds inbound requests with RI_NEED_CONF, so their senders
+ * sit in CTE_REDISTRIBUTING waiting for the CONF (one group per row makes
+ * the redistribution need a CONF). Other rows proceed normally without
+ * consuming timer entries.
  * Wait for a held request naming a sender other than the coordinator,
  * proving that a surviving owner is paused before issuing the kill.
  * Killing the coordinator there must make the owner sweep mark the
  * paused states NODE_FAIL_ABORT and the proxy queue releases (the
- * armed peer logs JOIN_AGG_RELEASES_QUEUED for the coordinator). The API
- * must see its coordinator's failure; leak checks after the restart
+ * holding peer logs JOIN_AGG_RELEASES_QUEUED for the coordinator). The
+ * API must see its coordinator's failure; leak checks after the restart
  * verify that reclamation completed. Before the fix a paused
  * redistribution was never marked and its state leaked. On 4 nodes the
  * paused states live on surviving peers as well as on the coordinator,
  * which is why the wrapper runs there.
+ *
+ * The insert is armed on every node but the coordinator
+ * (armAllButCoordinator). A sender sets RI_NEED_CONF only on the batch
+ * that takes it over REDIST_MAX_BATCH_BYTES, and sends that batch to the
+ * owner of the group that tipped it, so with a single armed peer the
+ * surviving senders could all miss it: a run saw only the coordinator's
+ * request held there, and the case timed out waiting for another. With
+ * every other node armed, a surviving sender is held unless its request
+ * goes to the coordinator.
  */
+/* Topology check only: with armAllButCoordinator every node but the
+ * coordinator is armed, the picked peer among them. */
 static int cteNfPickRedistPeerForCoordinator(Ndb *ndb,
                                              NdbRestarter &restarter,
                                              Uint32 tcNodeId) {
@@ -13892,7 +14035,7 @@ static const CteNfHoldCase CTE_NF9_HOLD = {
     "the API never learned that its coordinator died",
     CteQueryUtil::LookupMain, cteNfPickRedistPeerForCoordinator,
     CTE_NF_KILL_COORDINATOR, "JOIN_AGG_RELEASES_QUEUED", nullptr, true,
-    false, false};
+    false, false, true};
 
 static int runCteCoordinatorRedistQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF9_HOLD);
@@ -14238,7 +14381,7 @@ static const CteNfHoldCase CTE_NF11_HOLD = {
     "DBTC never failed the query after its requester node died",
     CteQueryUtil::LookupMain, cteNfPickPeerNeedingThird,
     CTE_NF_KILL_EVENT_REQUESTER, "JOIN_AGG_PARK_SWEPT", nullptr, true,
-    true, false};
+    true, false, false};
 
 static int runCteRequesterParkedQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF11_HOLD,
@@ -14253,7 +14396,7 @@ static const CteNfHoldCase CTE_NF12_HOLD = {
     "CteCoordinatorDiesParked", 5145, "CTE_NF11_PARKED",
     "the API never learned that its coordinator died",
     CteQueryUtil::LookupMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
-    "JOIN_AGG_SETUP_REJECTED", nullptr, true, true, true};
+    "JOIN_AGG_SETUP_REJECTED", nullptr, true, true, true, false};
 
 static int runCteCoordinatorParkedQuery(NDBT_Context *ctx, NDBT_Step *step) {
   return runCteNfHoldQuery(ctx, step, CTE_NF12_HOLD);
@@ -14269,7 +14412,7 @@ static const CteNfHoldCase CTE_PK8_HOLD = {
     "the API never learned that its coordinator died while parked replays "
     "were held",
     CteQueryUtil::OuterAggMain, cteNfPickPeer, CTE_NF_KILL_COORDINATOR,
-    "JOIN_AGG_NULL_ROW_REJECTED", nullptr, false, false, true};
+    "JOIN_AGG_NULL_ROW_REJECTED", nullptr, false, false, true, false};
 
 static int runCteCoordinatorParkedReplayQuery(NDBT_Context *ctx,
                                               NDBT_Step *step) {
