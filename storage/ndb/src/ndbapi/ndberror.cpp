@@ -638,6 +638,8 @@ ErrorBundle ErrorCodes[] = {
   { 308,  DMEC, IE, "Out of Schema Memory" },
   { 311,  DMEC, AE, "Undefined partition used in setPartitionId" },
   { 460,  DMEC, SE, "Out of SchemaMemory, please modify SchemaMemory config parameter" },
+  { 604,  DMEC, SE, "Out of SchemaMemory for ACC fragment records, please modify SchemaMemory config parameter" },
+  { 817,  DMEC, SE, "Out of SchemaMemory for TUP fragment records, please modify SchemaMemory config parameter" },
   { 703,  DMEC, SE, "Invalid table format" },
   { 704,  DMEC, SE, "Attribute name too long" },
   { 705,  DMEC, SE, "Table name too long" },
