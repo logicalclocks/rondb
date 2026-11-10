@@ -326,11 +326,15 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
     assert(m_pruneState == SPS_UNKNOWN);
 
     /* Only allowed to set partition id for PK ops on UserDefined
-     * partitioned tables
+     * partitioned tables, and for the TTL purge scan. scan_flags is
+     * only set when SO_SCANFLAGS is present.
      */
+    const bool only_expired_scan =
+        (options->optionsPresent & ScanOptions::SO_SCANFLAGS) &&
+        (options->scan_flags & SF_OnlyExpiredScan);
     if (unlikely(!(m_attribute_record->flags &
                    NdbRecord::RecHasUserDefinedPartitioning))) {
-      if (!(options->scan_flags & SF_OnlyExpiredScan)) {
+      if (!only_expired_scan) {
         /* Explicit partitioning info not allowed for table and operation*/
         setErrorCodeAbort(4546);
         return -1;
@@ -346,7 +350,7 @@ int NdbScanOperation::handleScanOptions(const ScanOptions *options) {
     theDistrKeyIndicator_ = 1;
     assert(((m_attribute_record->flags &
             NdbRecord::RecHasUserDefinedPartitioning) != 0) ||
-            (options->scan_flags & SF_OnlyExpiredScan));
+            only_expired_scan);
     DBUG_PRINT("info", ("NdbScanOperation::handleScanOptions(dist key): %u",
                         theDistributionKey));
   }
