@@ -17172,6 +17172,11 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   // Program groupby columns
   require_run(m_main_scope.resolved_columns != NULL,
               "Aggregation emit: missing resolved columns.");
+  // The Load arm below loads the stored column of src.
+  prepare_load_width_cache(
+      m_main_scope, [&](Uint32 src) -> const NdbDictionary::Column* {
+        return m_main_scope.resolved_columns[src].dict_column;
+      });
   check_groupby_limit(ast_root.groupby_columns);
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
@@ -17916,6 +17921,30 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
   // GroupBy(attrId).
   require_run(scope.resolved_columns != NULL,
               "Aggregation emit: missing resolved columns.");
+  // The column the Load arm below loads for src: a CTE result from its
+  // virtual table, else the stored column.  A CTE MIN / MAX / SUM of a
+  // DECIMAL is a DOUBLE virtual column whose dict_column is the DECIMAL
+  // source, so the virtual table decides.
+  prepare_load_width_cache(
+      scope, [&](Uint32 src) -> const NdbDictionary::Column* {
+        const QueryScope::ResolvedColumnRef& ref =
+            scope.resolved_columns[src];
+        const NdbDictionary::Table* virt = NULL;
+        if (ref.join_op_idx != leaf_idx)
+        {
+          if (ref.kind ==
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+              cteVirtualTables != NULL)
+            virt = cteVirtualTables[ref.join_op_idx];
+        }
+        else if (leafIsCte)
+        {
+          virt = cteLeafVirtTab;
+        }
+        if (virt != NULL)
+          return virt->getColumn((int)ref.cte_result_idx);
+        return ref.dict_column;
+      });
   const Uint32 cte_base_pos = leafIsCte ? scope.join_plan.num_linked_projs : 0;
   Uint32 linked_proj_pos = 0;
   check_groupby_limit(ast_root.groupby_columns);
@@ -18458,6 +18487,28 @@ RonSQLPreparer::prepare_pair_op_null_check_cache(QueryScope& scope)
     {
       agg->m_pair_op_needs_null_check.push(false);
     }
+  }
+}
+
+void
+RonSQLPreparer::prepare_load_width_cache(
+    QueryScope& scope,
+    const std::function<const NdbDictionary::Column*(Uint32)>& load_column)
+{
+  if (scope.agg == NULL) return;
+  AggregationAPICompiler* agg = scope.agg;
+  agg->m_load_is_decimal.truncate();
+  for (Uint32 i = 0; i < agg->m_program.size(); i++)
+  {
+    bool is_decimal = false;
+    if (agg->m_program[i].type == AggregationAPICompiler::SVMInstrType::Load)
+    {
+      const NdbDictionary::Column* col = load_column(agg->m_program[i].src);
+      is_decimal = col != NULL &&
+          (col->getType() == NdbDictionary::Column::Decimal ||
+           col->getType() == NdbDictionary::Column::Decimalunsigned);
+    }
+    agg->m_load_is_decimal.push(is_decimal);
   }
 }
 

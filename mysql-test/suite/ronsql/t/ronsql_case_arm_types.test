@@ -17,7 +17,15 @@
 # first), group 3 only the THEN arm and group 4 only the ELSE arm.
 #
 #   ca-1  DOUBLE THEN arm, integer ELSE arms, per group
-#   ca-2  DECIMAL(10,2) THEN arm, integer ELSE arms, per group
+#   ca-2  DECIMAL(10,2) THEN arm, integer ELSE arms, per group, and a
+#         DECIMAL ELSE arm.  A DECIMAL column load is two words, which
+#         RonSQL's CASE skips counted as one: the ELSE rows of a DECIMAL
+#         THEN arm landed on its Skip and were dropped (sum1 17.5 / -10.5,
+#         group 4 NULL), and the THEN rows of a DECIMAL ELSE arm landed on
+#         its RepeatAgg and were counted twice (sum_ep 9 / 6.75 / 8).
+#         Expected (MySQL): (g, sum1, min999, maxm, sum_ep) =
+#         (1, 21.5, 1.25, 10, 5) (2, -7.5, -7.75, -0.5, 3.75)
+#         (3, 2.5, 0.25, 1, 4) (4, 3, 999, -100, 0.75).
 #   ca-3  ca-1 without GROUP BY (the partials of all fragments merge)
 #   ca-4  ca-1 over a join (join aggregation in DBLQH)
 #   ca-5  SUM of GREATEST / LEAST over a DOUBLE CTE output and 5
@@ -107,7 +115,7 @@ SELECT g,
 FROM cat GROUP BY g|
 
 --echo
---echo === ca-2: DECIMAL THEN arm, integer ELSE arms ===
+--echo === ca-2: DECIMAL THEN arm, integer ELSE arms, DECIMAL ELSE arm ===
 # MySQL shows the DECIMAL results with two decimals and RonSQL its
 # DOUBLE results without trailing zeros: drop trailing fraction zeros
 # on both sides.  A wrong DOUBLE (e.g. 21.500000000000004) still differs.
@@ -116,7 +124,8 @@ let $QUERY=
 SELECT g,
        SUM(CASE WHEN k > 5 THEN p ELSE 1 END) AS sum1,
        MIN(CASE WHEN k > 5 THEN p ELSE 999 END) AS min999,
-       MAX(CASE WHEN k > 5 THEN p ELSE -100 END) AS maxm
+       MAX(CASE WHEN k > 5 THEN p ELSE -100 END) AS maxm,
+       SUM(CASE WHEN k > 5 THEN 1 ELSE p END) AS sum_ep
 FROM cat GROUP BY g;|
 --source suite/ronsql/include/ronsql_compare.inc
 
@@ -125,7 +134,8 @@ FROM cat GROUP BY g;|
 SELECT g,
        SUM(CASE WHEN k > 5 THEN p ELSE 1 END) AS sum1,
        MIN(CASE WHEN k > 5 THEN p ELSE 999 END) AS min999,
-       MAX(CASE WHEN k > 5 THEN p ELSE -100 END) AS maxm
+       MAX(CASE WHEN k > 5 THEN p ELSE -100 END) AS maxm,
+       SUM(CASE WHEN k > 5 THEN 1 ELSE p END) AS sum_ep
 FROM cat GROUP BY g|
 
 --echo

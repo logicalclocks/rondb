@@ -44,7 +44,8 @@ AggregationAPICompiler::AggregationAPICompiler
   m_cases(amalloc),
   m_program(amalloc),
   m_pair_op_program_exprs(amalloc),
-  m_pair_op_needs_null_check(amalloc)
+  m_pair_op_needs_null_check(amalloc),
+  m_load_is_decimal(amalloc)
 {}
 
 AggregationAPICompiler::Status
@@ -1321,6 +1322,15 @@ AggregationAPICompiler::raw_word_size(Uint32 start, Uint32 end)
     SVMInstrType t = m_program[i].type;
     if (t == SVMInstrType::LoadConstantInteger)
       count += 3;
+    else if (t == SVMInstrType::Load)
+    {
+      // A CASE arm's skip counts words: a DECIMAL load has a second word
+      // for its precision and scale.  Counted as one, the rows of the
+      // skipped-to arm landed one word early (on the THEN arm's Skip, or
+      // on the ELSE arm's RepeatAgg), dropping or double-counting them.
+      ndbrequire(m_load_is_decimal.size() == m_program.size());
+      count += m_load_is_decimal[i] ? 2 : 1;
+    }
     else if (t == SVMInstrType::Greatest2 || t == SVMInstrType::Least2)
     {
       // Phase I.5 v7: pair-op expands to EmbeddedInterp(N-word

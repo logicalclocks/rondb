@@ -1297,6 +1297,13 @@ private:
   // m_program slot; only meaningful at pair-op slots) before any
   // raw_word_size or pair-op emission consumes it.  Idempotent.
   void prepare_pair_op_null_check_cache(QueryScope& scope);
+  // Fill scope.agg->m_load_is_decimal (one entry per m_program slot)
+  // before any raw_word_size query.  load_column(src) returns the
+  // column the emitter loads for a Load of source src, NULL if unknown.
+  void prepare_load_width_cache(
+      QueryScope& scope,
+      const std::function<const NdbDictionary::Column*(Uint32)>&
+          load_column);
   void require_cte_case_condition_column_output(QueryScope& scope,
                                                 Uint32 op_idx,
                                                 Uint32 cidx);
