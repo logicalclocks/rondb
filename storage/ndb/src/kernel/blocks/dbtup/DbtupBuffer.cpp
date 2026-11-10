@@ -540,7 +540,7 @@ void Dbtup::sendReadAttrinfoRouted(Signal *signal, KeyReqStruct *req_struct,
 }
 
 bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
-                            void* lqhScanRecord) {
+                            void* lqhScanRecord, Uint32* errorCode) {
   const Dblqh::TcConnectionrec* lqhOpPtrP =
                               (Dblqh::TcConnectionrec*)lqhTcConnectrec;
   // PA related
@@ -548,7 +548,11 @@ bool Dbtup::SendAggResToAPI(Signal* signal, const void* lqhTcConnectrec,
   // m_agg_interpreter != nullptr implies m_has_pushdown == true
   ndbrequire(lqhScanPtrP->m_agg_interpreter != nullptr);
   AggInterpreter* interp = lqhScanPtrP->m_agg_interpreter;
-  Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
+  Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true, errorCode);
+  if (unlikely(*errorCode != 0)) {
+    jam();
+    return false;
+  }
   const JoinGBHashTable *gb_map = interp->gb_map();
   const bool all_sent = (gb_map == nullptr || gb_map->empty());
   const bool final_drain =

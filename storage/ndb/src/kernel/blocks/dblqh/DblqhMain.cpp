@@ -16553,6 +16553,19 @@ Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
 }
 
 /*
+ * A join-aggregation result record goes to the API in one TRANSID_AI
+ * (sendSignal, not fragmented), so it must fit one transporter message
+ * with the protocol and signal headers; 32 words cover those.  A larger
+ * record would stop the node ("Message too big in sendSignal").  The
+ * bound also keeps the record's key_len and val_len inside the 16-bit
+ * fields of its length word (AggInterpreterBase::resultLensFit).
+ */
+static constexpr Uint32 JOIN_AGG_MAX_RESULT_WORDS =
+    (MAX_SEND_MESSAGE_BYTESIZE >> 2) - 32;
+static_assert(JOIN_AGG_MAX_RESULT_WORDS * sizeof(Uint32) <= 0xFFFF,
+              "join-agg result lengths must fit 16 bits");
+
+/*
  * sendEvictedAggGroup
  *
  * Evicts one group from the AggInterpreter's group map and sends it
@@ -16569,16 +16582,19 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
                                  JoinAggregationState *state) {
   jamDebug();
   Uint32 words_written = 0;
+  static_assert(JOIN_AGG_MAX_RESULT_WORDS <=
+                sizeof(cevictBuffer) / sizeof(Uint32));
   Int32 evict_ret = interp->evictOneGroup(
       cevictBuffer,
-      sizeof(cevictBuffer) / sizeof(Uint32),
+      JOIN_AGG_MAX_RESULT_WORDS,
       &words_written,
       c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   if (unlikely(evict_ret != 0)) {
     jam();
     /* Nothing to evict: the interpreter could not allocate a group even
      * with an empty table (query memory exhausted), or the group does not
-     * fit the eviction buffer.  Fail the operation, not the node. */
+     * fit one result record (JOIN_AGG_MAX_RESULT_WORDS).  Fail the
+     * operation, not the node. */
     return false;
   }
 
@@ -19162,7 +19178,16 @@ void Dblqh::continueScanNextReqLab(Signal *signal,
     ndbrequire(scanPtr->m_agg_interpreter != nullptr);
     const bool final_drain =
         scanPtr->m_agg_drain_state == ScanRecord::AGG_DRAIN_FINAL;
-    const bool all_sent = c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr);
+    Uint32 aggError = 0;
+    const bool all_sent =
+        c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr, &aggError);
+    if (unlikely(aggError != 0)) {
+      jam();
+      scanPtr->scanCompletedStatus = ZTRUE;
+      regTcPtr->errorCode = aggError;
+      closeScanLab(signal, regTcPtr);
+      return;
+    }
     if (all_sent) {
       scanPtr->m_agg_drain_state = ScanRecord::AGG_SCAN;
       if (final_drain) {
@@ -21064,6 +21089,23 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         has_strings ? interp->stringPayloadSize(scalar_slots) : 0;
     const Uint32 v_len_total = agg_bytes + payload_bytes;
     const Uint32 v_words_total = v_len_total >> 2;
+    if (unlikely(4 + v_words_total > JOIN_AGG_MAX_RESULT_WORDS)) {
+      jam();
+      if (state->m_error_code == 0) {
+        state->m_error_code = ZJOIN_AGG_RESULT_TOO_LARGE;
+      }
+      state->m_state.store(JoinAggregationState::ERROR);
+      JoinAggCompleteRef *ref =
+        (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->requestId = requestId;
+      ref->errorCode = ZJOIN_AGG_RESULT_TOO_LARGE;
+      ref->errorLine = __LINE__;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      return;
+    }
     Uint32 *buf = &cevictBuffer[0];
     ndbrequire(4 + v_words_total <= sizeof(cevictBuffer) / sizeof(Uint32));
     Uint32 pos = 0;
@@ -21161,6 +21203,25 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
           has_strings ? interp->stringPayloadSize(slots) : 0;
       const Uint32 v_len_total = v_len_base + payload_bytes;
       const Uint32 data_words = (key_len + v_len_total) >> 2;
+      if (unlikely(4 + data_words > JOIN_AGG_MAX_RESULT_WORDS)) {
+        jam();
+        /* Groups sent so far are dropped with the query; this one stays
+         * in the table, which the state's release frees. */
+        if (state->m_error_code == 0) {
+          state->m_error_code = ZJOIN_AGG_RESULT_TOO_LARGE;
+        }
+        state->m_state.store(JoinAggregationState::ERROR);
+        JoinAggCompleteRef *ref =
+          (JoinAggCompleteRef *)signal->getDataPtrSend();
+        ref->senderRef = reference();
+        ref->senderData = senderData;
+        ref->requestId = requestId;
+        ref->errorCode = ZJOIN_AGG_RESULT_TOO_LARGE;
+        ref->errorLine = __LINE__;
+        sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                   signal, JoinAggCompleteRef::SignalLength, JBB);
+        return;
+      }
       Uint32 *buf = &cevictBuffer[0];
       ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
       Uint32 pos = 0;
@@ -26908,10 +26969,19 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       // m_agg_interpreter != nullptr implies m_has_pushdown == true
       if (scanPtr->m_agg_interpreter != nullptr && !more_ranges) {
         scanPtr->m_agg_drain_state = ScanRecord::AGG_DRAIN_FINAL;
-        if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
-          jam();
-          sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
-          return;
+        Uint32 aggError = 0;
+        if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr,
+                                    &aggError)) {
+          if (unlikely(aggError != 0)) {
+            jam();
+            /* Close below; tupScanCloseConfLab sends SCAN_FRAGREF. */
+            scanPtr->scanCompletedStatus = ZTRUE;
+            tcConnectptr.p->errorCode = aggError;
+          } else {
+            jam();
+            sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
+            return;
+          }
         }
       }
       if (scanPtr->m_continous_scan_state ==

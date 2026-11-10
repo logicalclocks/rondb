@@ -4028,7 +4028,10 @@ public:
   void nextAttrInfoParam(Uint32 storedProcId);
   bool cacheFromCinBuffer(storedProc* sp, Uint32 len);
 
-  bool SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord);
+  /* Sets *errorCode (non-zero) when the result cannot be sent; the
+   * caller then fails the scan with it. */
+  bool SendAggResToAPI(Signal*, const void* lqhTcConnectrec, void* lqhScanRecord,
+                       Uint32* errorCode);
   /**
    * Used by Restore...
    */

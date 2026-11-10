@@ -6517,8 +6517,12 @@ int Dbtup::interpreterStartLab(Signal *signal, KeyReqStruct *req_struct) {
         }
         if (scan_rec_ptr->m_agg_interpreter != nullptr) {
           /* PA path */
+          Uint32 agg_error = 0;
           Uint32 res_len = scan_rec_ptr->m_agg_interpreter->
-            PrepareAggResIfNeeded(signal, false);
+            PrepareAggResIfNeeded(signal, false, &agg_error);
+          if (unlikely(agg_error != 0)) {
+            return TUPKEY_abort(req_struct, agg_error);
+          }
           if (res_len != 0) {
             const JoinGBHashTable *groups =
                 scan_rec_ptr->m_agg_interpreter->gb_map();
@@ -6652,8 +6656,14 @@ int Dbtup::handleAggReadRow(Signal *signal, KeyReqStruct *req_struct,
     destroy(interp);
     return TUPKEY_abort(req_struct, ret);
   }
-  const Uint32 res_len = interp->PrepareAggResIfNeeded(signal, true);
+  Uint32 agg_error = 0;
+  const Uint32 res_len =
+      interp->PrepareAggResIfNeeded(signal, true, &agg_error);
   destroy(interp);
+  if (unlikely(agg_error != 0)) {
+    jam();
+    return TUPKEY_abort(req_struct, agg_error);
+  }
   if (unlikely(res_len == 0)) {
     /* An accepted row always yields a record (its group is inserted
      * before the program runs); defensive. */

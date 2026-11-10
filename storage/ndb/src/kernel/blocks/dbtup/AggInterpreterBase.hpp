@@ -339,6 +339,13 @@ class AggInterpreterBase : public PushdownInterpreter {
   Uint32 encodeStringPayload(const AggResItem* slots, char* dst) const;
   bool hasStringSlots() const { return m_string_results != nullptr; }
   const StringResult* string_results() const { return m_string_results; }
+  /* A result record's length word is key_len << 16 | val_len, and its
+   * readers (NdbAggregator::ProcessRes, Dblqh::sendEvictedAggGroup) take
+   * each as a 16-bit field.  String MIN/MAX payloads can make val_len
+   * larger: such a group fails the query, it is never packed. */
+  static bool resultLensFit(Uint32 key_len, Uint32 val_len) {
+    return key_len <= 0xFFFF && val_len <= 0xFFFF;
+  }
 
   /* Phase 6.5 RONDB-1056: shared JIT hooks for both aggregation
    * interpreters. Join aggregation and standalone pushed aggregation

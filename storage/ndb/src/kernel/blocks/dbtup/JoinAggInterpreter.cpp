@@ -1992,7 +1992,8 @@ Int32 JoinAggInterpreter::evictOneGroup(Uint32* buf, Uint32 buf_words,
   const Uint32 data_words = (key_len + v_len_total) >> 2;
   const Uint32 total_words = 4 + data_words;
 
-  if (total_words > buf_words) {
+  if (total_words > buf_words ||
+      unlikely(!resultLensFit(key_len, v_len_total))) {
     return -1;
   }
 
