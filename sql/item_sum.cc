@@ -2017,6 +2017,9 @@ longlong Item_sum_sum::val_int() {
   assert(fixed);
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
+    // A DOUBLE-pushed value read as int rounds, as in Item_sum_hybrid.
+    if (m_pushed_is_double)
+      return llrint_with_overflow_check(m_pushed_value_double);
     return m_pushed_value_int;
   }
   if (m_window != nullptr) {
@@ -2046,7 +2049,15 @@ double Item_sum_sum::val_real() {
   assert(fixed);
   if (m_pushed_aggregate) {
     null_value = m_pushed_null;
-    return m_pushed_value_double;
+    if (m_pushed_is_double) return m_pushed_value_double;
+    // The data node types each group's SUM from the values it added: a
+    // REAL SUM over a CASE whose DOUBLE arm no row of the group took
+    // comes back as an integer.  m_pushed_value_double then holds the
+    // previous group's value.
+    return m_pushed_value_is_unsigned
+               ? static_cast<double>(
+                     static_cast<uint64_t>(m_pushed_value_int))
+               : static_cast<double>(m_pushed_value_int);
   }
   if (m_is_window_function) {
     if (wf_common_init()) return 0.0;
@@ -3550,7 +3561,8 @@ void Item_sum_sum::reset_field() {
         }
         result_field->store_decimal(&dec);
       } else {
-        float8store(result_field->field_ptr(), m_pushed_value_double);
+        // REAL_RESULT: also an integer-pushed value (see val_real()).
+        float8store(result_field->field_ptr(), Item_sum_sum::val_real());
       }
     }
     return;

@@ -1,0 +1,147 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+CREATE TABLE ct (
+g  INT NOT NULL,
+id INT NOT NULL,
+k  INT NOT NULL,
+d  DOUBLE NOT NULL,
+PRIMARY KEY (g, id)
+) ENGINE=NDB PARTITION BY KEY (g);
+INSERT INTO ct VALUES
+(1, 1,  1,  0.5),  (1, 2,  8,  2.5),  (1, 3,  2,  0.5),  (1, 4,  9,  9.25),
+(1, 5,  3,  0.5),  (1, 6, 10,  4.75), (1, 7,  4,  0.5),  (1, 8, 11, 12.5);
+INSERT INTO ct VALUES
+(2, 1,  7, -1.5),  (2, 2,  0,  0.5),  (2, 3,  8, -8.25), (2, 4,  1,  0.5),
+(2, 5,  9, -3.75), (2, 6,  2,  0.5);
+INSERT INTO ct VALUES
+(3, 1,  6,  1.25), (3, 2,  7,  2.5),  (3, 3,  8,  3.75), (3, 4,  9,  5);
+INSERT INTO ct VALUES
+(4, 1,  0,  0.5),  (4, 2,  1,  0.5),  (4, 3,  2,  0.5);
+CREATE TABLE ctd (
+pk INT PRIMARY KEY,
+g  INT NOT NULL,
+id INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO ctd SELECT g * 100 + id, g, id FROM ct;
+############################################################
+# Test 1: SUM / MIN / MAX over a DOUBLE THEN arm, per group
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT g,
+SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE 0 - 100 END) AS maxm
+FROM ct GROUP BY g;
+g	sum0	sum1	min7	maxm
+1	29	33	2.5	12.5
+2	-13.5	-10.5	-8.25	-1.5
+3	12.5	12.5	1.25	5
+4	0	3	7	-100
+SET ndb_pushdown_aggregate=ON;
+SELECT g,
+SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE 0 - 100 END) AS maxm
+FROM ct GROUP BY g;
+g	sum0	sum1	min7	maxm
+1	29	33	2.5	12.5
+2	-13.5	-10.5	-8.25	-1.5
+3	12.5	12.5	1.25	5
+4	0	3	7	-100
+EXPLAIN SELECT g,
+SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE 0 - 100 END) AS maxm
+FROM ct GROUP BY g;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	ct	#	index	PRIMARY	#	#	#	#	#	Using pushed aggregation
+Warnings:
+Note	1003	/* select#1 */ select `test`.`ct`.`g` AS `g`,sum((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else 0 end)) AS `sum0`,sum((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else 1 end)) AS `sum1`,min((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else 7 end)) AS `min7`,max((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else (0 - 100) end)) AS `maxm` from `test`.`ct` group by `test`.`ct`.`g`
+############################################################
+# Test 2: three arms, DOUBLE then integers
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT g, SUM(CASE WHEN k > 9 THEN d WHEN k > 5 THEN 2 ELSE 0 END) AS s
+FROM ct GROUP BY g;
+g	s
+1	21.25
+2	6
+3	8
+4	0
+SET ndb_pushdown_aggregate=ON;
+SELECT g, SUM(CASE WHEN k > 9 THEN d WHEN k > 5 THEN 2 ELSE 0 END) AS s
+FROM ct GROUP BY g;
+g	s
+1	21.25
+2	6
+3	8
+4	0
+############################################################
+# Test 3: Test 1 without GROUP BY
+############################################################
+SET ndb_pushdown_aggregate=OFF;
+SELECT SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE 0 - 100 END) AS maxm
+FROM ct;
+sum0	sum1	min7	maxm
+28	38	-8.25	12.5
+SET ndb_pushdown_aggregate=ON;
+SELECT SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE 0 - 100 END) AS maxm
+FROM ct;
+sum0	sum1	min7	maxm
+28	38	-8.25	12.5
+############################################################
+# Test 4: Test 1 over a pushed join
+############################################################
+SET ndb_join_pushdown_aggregate=OFF;
+SELECT ctd.g,
+SUM(CASE WHEN ct.k > 5 THEN ct.d ELSE 0 END) AS sum0,
+SUM(CASE WHEN ct.k > 5 THEN ct.d ELSE 1 END) AS sum1,
+MIN(CASE WHEN ct.k > 5 THEN ct.d ELSE 7 END) AS min7,
+MAX(CASE WHEN ct.k > 5 THEN ct.d ELSE 0 - 100 END) AS maxm
+FROM ctd JOIN ct ON ct.g = ctd.g AND ct.id = ctd.id
+GROUP BY ctd.g;
+g	sum0	sum1	min7	maxm
+1	29	33	2.5	12.5
+2	-13.5	-10.5	-8.25	-1.5
+3	12.5	12.5	1.25	5
+4	0	3	7	-100
+SET ndb_join_pushdown_aggregate=ON;
+SELECT ctd.g,
+SUM(CASE WHEN ct.k > 5 THEN ct.d ELSE 0 END) AS sum0,
+SUM(CASE WHEN ct.k > 5 THEN ct.d ELSE 1 END) AS sum1,
+MIN(CASE WHEN ct.k > 5 THEN ct.d ELSE 7 END) AS min7,
+MAX(CASE WHEN ct.k > 5 THEN ct.d ELSE 0 - 100 END) AS maxm
+FROM ctd JOIN ct ON ct.g = ctd.g AND ct.id = ctd.id
+GROUP BY ctd.g;
+g	sum0	sum1	min7	maxm
+1	29	33	2.5	12.5
+2	-13.5	-10.5	-8.25	-1.5
+3	12.5	12.5	1.25	5
+4	0	3	7	-100
+EXPLAIN SELECT ctd.g,
+SUM(CASE WHEN ct.k > 5 THEN ct.d ELSE 0 END) AS sum0,
+SUM(CASE WHEN ct.k > 5 THEN ct.d ELSE 1 END) AS sum1,
+MIN(CASE WHEN ct.k > 5 THEN ct.d ELSE 7 END) AS min7,
+MAX(CASE WHEN ct.k > 5 THEN ct.d ELSE 0 - 100 END) AS maxm
+FROM ctd JOIN ct ON ct.g = ctd.g AND ct.id = ctd.id
+GROUP BY ctd.g;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	ctd	#	ALL	NULL	#	#	#	#	#	Parent of 2 pushed join@1; Using pushed join aggregation; Using temporary
+1	SIMPLE	ct	#	eq_ref	PRIMARY	#	#	#	#	#	Child of 'ctd' in pushed join@1
+Warnings:
+Note	1003	/* select#1 */ select `test`.`ctd`.`g` AS `g`,sum((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else 0 end)) AS `sum0`,sum((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else 1 end)) AS `sum1`,min((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else 7 end)) AS `min7`,max((case when (`test`.`ct`.`k` > 5) then `test`.`ct`.`d` else (0 - 100) end)) AS `maxm` from `test`.`ctd` join `test`.`ct` where ((`test`.`ct`.`id` = `test`.`ctd`.`id`) and (`test`.`ct`.`g` = `test`.`ctd`.`g`)) group by `test`.`ctd`.`g`
+SET ndb_pushdown_aggregate=DEFAULT;
+SET ndb_join_pushdown_aggregate=DEFAULT;
+DROP TABLE ctd, ct;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_push_agg_case_arm_types_jit_fallback_delta;
+ndb_push_agg_case_arm_types_jit_fallback_delta
+17
