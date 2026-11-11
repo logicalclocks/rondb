@@ -53,8 +53,8 @@ class JoinAggInterpreter : public AggInterpreterBase {
                        table_id, frag_id, thread_id),
     /* m_cur_pos / m_attr_read_pos / m_processed_rows / m_result_size lifted
      * to base in Step 3a-A; m_n_gb_cols / m_gb_cols / m_gb_map / m_n_groups
-     * lifted in Step 2b; m_attr_read_buf lifted in Step 3a-B. */
-    m_acc_offset(0),
+     * lifted in Step 2b; m_attr_read_buf lifted in Step 3a-B;
+     * m_acc_offset lifted with the string MIN/MAX side-table fix. */
     m_linked_attr_data(nullptr), m_linked_attr_len(0),
     m_null_local_columns(false),
     m_null_row_meta_tup(nullptr),
@@ -415,10 +415,9 @@ class JoinAggInterpreter : public AggInterpreterBase {
   // static wire-header constants all lifted to AggInterpreterBase in
   // Steps 1.3 / 2b / 3a-A / 3a-B.
 
-  // Multi-leaf: accumulator offset applied after group lookup/creation.
-  // agg_res_ptr is shifted by m_acc_offset so the leaf's 0-based program
-  // indices map to the correct physical slots in the combined row.
-  Uint32 m_acc_offset;
+  // m_acc_offset (multi-leaf accumulator offset, applied after group
+  // lookup/creation) lifted to AggInterpreterBase: minMaxString indexes
+  // m_string_results by the combined slot, m_acc_offset + agg_index.
 
   // m_decimal, m_decimal_buf lifted to AggInterpreterBase in Step 1.3.
 

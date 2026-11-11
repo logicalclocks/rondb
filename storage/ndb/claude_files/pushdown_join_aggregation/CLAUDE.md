@@ -181,12 +181,15 @@ gate for any such change.
   fallback, counted in `ndbinfo.jit.programs_fallback` and pinned by
   the per-test fallback-delta baselines in `ndb_push_agg_jit`).
   Census probes should be added when they land.
-- **Known interpreter-side hazard flagged by the JIT work**: the
-  string sidecar `m_string_results[]` is indexed by the instruction's
-  leaf-LOCAL `agg_index` while accumulator slots use the
-  `m_acc_offset` base — a multi-leaf program with string MIN/MAX on
-  leaf > 0 would collide sidecar slots between leaves (interpreter
-  and JIT alike; the JIT shares the kernels).
+- **Fixed interpreter-side hazard flagged by the JIT work**: the
+  string sidecar `m_string_results[]` is indexed like the combined row
+  (setup metadata, payload encoding, merges), but `minMaxString` looked
+  it up with the instruction's leaf-LOCAL `agg_index`, so string
+  MIN/MAX on leaf > 0 compared with another leaf's charset and length
+  prefix (interpreter and JIT alike; the JIT shares the kernels).
+  `m_acc_offset` now lives in `AggInterpreterBase` and `minMaxString`
+  uses `m_acc_offset + agg_index`; MTR `ronsql_minmax_string_leaves`
+  (+ the `ronsql_jit` mirror).
 
 ### Key Source Files
 - `DblqhMain.cpp` — Signal handlers for JOIN_AGG_SETUP/COMPLETE/RELEASE, scan processing, sendScanFragConf

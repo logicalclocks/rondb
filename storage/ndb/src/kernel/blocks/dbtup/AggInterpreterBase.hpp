@@ -142,7 +142,7 @@ class AggInterpreterBase : public PushdownInterpreter {
                      Int64 table_id, Int64 frag_id, Uint32 thread_id)
     : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
       m_prog(nullptr), m_agg_prog_start_pos(0),
-      m_n_agg_results(0), m_agg_results(nullptr),
+      m_n_agg_results(0), m_agg_results(nullptr), m_acc_offset(0),
       m_n_visible_results(0), m_n_hidden_slots(0),
       m_avg_hidden_map(nullptr), m_avg_finalized(false),
       m_string_results(nullptr), m_current_thread_id(0),
@@ -540,6 +540,14 @@ class AggInterpreterBase : public PushdownInterpreter {
    * Init / ProcessRec decimal paths.  Same total sizeof as before. */
   Uint32 m_n_agg_results;
   AggResItem* m_agg_results;
+
+  /* Multi-leaf join aggregation: the current leaf's first slot in the
+   * combined row.  The opcode handlers get agg_res_ptr already shifted
+   * by it and leaf-local agg_index values, so a per-slot table indexed
+   * like the combined row (m_string_results) needs m_acc_offset +
+   * agg_index.  JoinAggInterpreter sets it with the per-row leaf
+   * switch; it stays 0 for a single leaf and for AggInterpreter. */
+  Uint32 m_acc_offset;
 
   /* kOpAvg support (cte_avg_plan.md).  m_n_agg_results counts the
    * TOTAL slots (visible + hidden AVG-count companions) so the group

@@ -1386,7 +1386,12 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
     }
   }
   const StringResult& src = m_register_string_data[reg_index];
-  StringResult& slot = m_string_results[agg_index];
+  /* agg_res_ptr is the current leaf's slice of the row and agg_index is
+   * leaf-local, but m_string_results is indexed like the combined row
+   * (setup metadata, stringPayloadSize, encodeStringPayload, merges):
+   * on a later leaf the leaf-local index named another leaf's slot,
+   * whose charset and length prefix then decided the compare. */
+  StringResult& slot = m_string_results[m_acc_offset + agg_index];
   if (slot.declared_size == 0) {
     slot.charset = src.charset;
     slot.prefix_bytes = src.prefix_bytes;
