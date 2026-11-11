@@ -21807,6 +21807,74 @@ retry_agg:
              signal, CteLookupConf::SignalLength, JBB);
 }
 
+void Dblqh::sendCteTransIdAI(Signal *signal, Uint32 ref, Uint32 connectPtr,
+                             const Uint32 transId[2], const Uint32 *data,
+                             Uint32 len, bool corrAtEnd, Uint32 routeRef) {
+  LinearSectionPtr lsp[3];
+  lsp[0].p = data;
+  lsp[0].sz = len;
+  if (likely(len <= MAX_TRANSID_AI_SIZE)) {
+    jamDebug();
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = connectPtr;
+    transIdAI->transId[0] = transId[0];
+    transIdAI->transId[1] = transId[1];
+    if (routeRef == 0) {
+      sendSignal(ref, GSN_TRANSID_AI, signal, TransIdAI::HeaderLength,
+                 JBB, lsp, 1);
+    } else {
+      ndbrequire(refToMain(routeRef) == DBTC);
+      transIdAI->attrData[0] = ref;
+      sendSignal(routeRef, GSN_TRANSID_AI_R, signal,
+                 TransIdAI::HeaderLength + 1, JBB, lsp, 1);
+    }
+    return;
+  }
+
+  const Uint32 nodeType = getNodeInfo(refToNode(ref)).m_type;
+  const bool toApi = nodeType >= NodeInfo::API && nodeType <= NodeInfo::MGM;
+  if (!toApi) {
+    /* A data node block (DBSPJ) reassembles the fragments. */
+    jam();
+    ndbrequire(routeRef == 0);
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = connectPtr;
+    transIdAI->transId[0] = transId[0];
+    transIdAI->transId[1] = transId[1];
+    sendBatchedFragmentedSignal(ref, GSN_TRANSID_AI, signal,
+                                TransIdAI::HeaderLength, JBB, lsp, 1);
+    return;
+  }
+
+  /* The API: TransIdAILong with totalLen, and the CORR_FACTOR64 words
+   * that end the row, which a pushed-join scan reads from the header
+   * of the first fragment (NdbQueryOperationImpl::execTRANSID_AI). */
+  jam();
+  ndbrequire(!corrAtEnd || len >= 3);
+  TransIdAILong *transIdAILong = (TransIdAILong *)signal->getDataPtrSend();
+  transIdAILong->connectPtr = connectPtr;
+  transIdAILong->transId[0] = transId[0];
+  transIdAILong->transId[1] = transId[1];
+  transIdAILong->totalLen = len;
+  Uint32 sigLen = TransIdAILong::HeaderLength;
+  if (corrAtEnd) {
+    std::memcpy(&transIdAILong->correlationData[0], &data[len - 3],
+                3 * sizeof(Uint32));
+    sigLen = TransIdAILong::HeaderWithCorrelationLength;
+  }
+  if (routeRef == 0) {
+    sendBatchedFragmentedSignal(ref, GSN_TRANSID_AI, signal, sigLen, JBB,
+                                lsp, 1);
+    return;
+  }
+  /* Dbtc::execTRANSID_AI_R takes the destination from the word after
+   * the header and forwards the header without it. */
+  ndbrequire(refToMain(routeRef) == DBTC);
+  signal->theData[sigLen] = ref;
+  sendBatchedFragmentedSignal(routeRef, GSN_TRANSID_AI_R, signal,
+                              sigLen + 1, JBB, lsp, 1);
+}
+
 /**
  * emitCteGroupOutput — walk the final-read section for one CTE group,
  * writing virtual columns (GROUP BY keys, aggregates, CORR_FACTOR) into
@@ -21822,6 +21890,10 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                                  const AggResItem *accumulators,
                                  Uint32 *outBuf) {
   Uint32 outPos = 0;
+  /* outPos just after the last CORR_FACTOR64 written, 0 if none since
+   * the last FLUSH_AI: a chunk that ends there carries the row's
+   * correlation in its fragmented header (sendCteTransIdAI). */
+  Uint32 corr64End = 0;
   Uint32 pos = 0;
   while (pos < finalRLen) {
     const Uint32 word = finalR[pos];
@@ -21844,11 +21916,17 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
          * on append failure, or on a SECOND flush (the served replay
          * re-sends the capture as ONE TRANSID_AI, so only a
          * single-flush payload is replayable), drop the capture and
-         * keep serving the probe normally. */
+         * keep serving the probe normally.  A payload over one
+         * transporter message is not captured either: CTE_LOOKUP_CONF
+         * carries the copy, and DBSPJ replays it, in one unfragmented
+         * signal each. */
         if (params.captureSectionPtrI != nullptr) {
           jam();
           bool capOk = true;
-          if (*params.captureSectionPtrI == RNIL) {
+          if (unlikely(2 + outPos > JOIN_AGG_MAX_RESULT_WORDS)) {
+            jam();
+            capOk = false;
+          } else if (*params.captureSectionPtrI == RNIL) {
             Uint32 dest[2] = { fRef, fData };
             capOk = appendToSection(*params.captureSectionPtrI, dest, 2);
             if (capOk) {
@@ -21870,18 +21948,12 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                 nullptr;
           }
         }
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = fData;
-        transIdAI->transId[0] = params.transId[0];
-        transIdAI->transId[1] = params.transId[1];
-
-        LinearSectionPtr lsp[3];
-        lsp[0].p = outBuf;
-        lsp[0].sz = outPos;
+        /* A pushed-join scan's API row ends with its CORR_FACTOR64. */
+        const bool corrAtEnd = (corr64End == outPos);
         if (likely(getNodeInfo(refToNode(fRef)).m_connected)) {
           jam();
-          sendSignal(fRef, GSN_TRANSID_AI, signal,
-                     TransIdAI::HeaderLength, JBB, lsp, 1);
+          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+                           outPos, corrAtEnd);
         } else {
           jam();
           /* The API can start a query before all data nodes have
@@ -21895,11 +21967,11 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                         "words=%u transid=(0x%x,0x%x)",
                         instance(), fRef, routeRef, outPos,
                         params.transId[0], params.transId[1]));
-          transIdAI->attrData[0] = fRef;
-          sendSignal(routeRef, GSN_TRANSID_AI_R, signal,
-                     TransIdAI::HeaderLength + 1, JBB, lsp, 1);
+          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+                           outPos, corrAtEnd, routeRef);
         }
         outPos = 0;
+        corr64End = 0;
       }
       pos += 4;
       continue;
@@ -21927,6 +21999,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
       outBuf[outPos + 1] = params.correlation;
       outBuf[outPos + 2] = params.corrRootRcvr;
       outPos += 3;
+      corr64End = outPos;
       pos += 1;
       continue;
     }
@@ -22096,16 +22169,9 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
     DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%d → senderRef=0x%x "
              "connectPtr=0x%x",
              instance(), outPos, req.senderRef, req.senderData));
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = req.senderData;
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr lsp[3];
-    lsp[0].p = outBuf;
-    lsp[0].sz = (Uint32)outPos;
-    sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, lsp, 1);
+    sendCteTransIdAI(signal, req.senderRef, req.senderData,
+                     state->m_transid, outBuf, (Uint32)outPos,
+                     /*corrAtEnd=*/false);
   }
 
   DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x "
@@ -23341,16 +23407,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         }
         /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
         if (outPos > 0) {
-          TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-          transIdAI->connectPtr = req.senderData;
-          transIdAI->transId[0] = req.transId1;
-          transIdAI->transId[1] = req.transId2;
-
-          LinearSectionPtr lsp[3];
-          lsp[0].p = outBuf;
-          lsp[0].sz = (Uint32)outPos;
-          sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                     TransIdAI::HeaderLength, JBB, lsp, 1);
+          const Uint32 transId[2] = {req.transId1, req.transId2};
+          sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                           outBuf, (Uint32)outPos,
+                           /*corrAtEnd=*/false);
           numRowsToSpj++;
         }
       } else {
@@ -23393,16 +23453,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
           return;
         }
 
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = req.senderData;
-        transIdAI->transId[0] = req.transId1;
-        transIdAI->transId[1] = req.transId2;
-
-        LinearSectionPtr lsp[3];
-        lsp[0].p = outBuf;
-        lsp[0].sz = outPos;
-        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        const Uint32 transId[2] = {req.transId1, req.transId2};
+        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                         outBuf, outPos,
+                         /*corrAtEnd=*/false);
         numRowsToSpj++;
       }
 
@@ -23473,16 +23527,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         return;
       }
       if (outPos > 0) {
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = req.senderData;
-        transIdAI->transId[0] = req.transId1;
-        transIdAI->transId[1] = req.transId2;
-
-        LinearSectionPtr lsp[3];
-        lsp[0].p = outBuf;
-        lsp[0].sz = (Uint32)outPos;
-        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        const Uint32 transId[2] = {req.transId1, req.transId2};
+        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                         outBuf, (Uint32)outPos,
+                         /*corrAtEnd=*/false);
         numRowsToSpj++;
       }
     } else {
@@ -23509,16 +23557,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       outBuf[outPos + 1] = 0;
       outPos += 2;
 
-      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      transIdAI->connectPtr = req.senderData;
-      transIdAI->transId[0] = req.transId1;
-      transIdAI->transId[1] = req.transId2;
-
-      LinearSectionPtr lsp[3];
-      lsp[0].p = outBuf;
-      lsp[0].sz = outPos;
-      sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength, JBB, lsp, 1);
+      const Uint32 transId[2] = {req.transId1, req.transId2};
+      sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                       outBuf, outPos,
+                       /*corrAtEnd=*/false);
       numRowsToSpj++;
     }
     numRowsSent = 1;
