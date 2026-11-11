@@ -3316,6 +3316,11 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
      * through checksum verification and treat it as a hole. Error
      * insert 15003 then crashes the node when this write (including
      * its fsync) has completed.
+     *
+     * The checksum is an XOR over the page, so an even number of words
+     * changed by the same mask leaves it valid: change an odd number,
+     * one word in each 2 kB of the second half and the last word, and
+     * check that the page no longer verifies.
      */
     jam();
     Uint32 torn_idx = pages - 2;
@@ -3324,6 +3329,9 @@ Uint32 Lgman::write_log_pages(Signal *signal, Ptr<Logfile_group> ptr,
          i += 512) {
       words[i] ^= 0x5A5A5A5A;
     }
+    words[GLOBAL_PAGE_SIZE_WORDS - 1] ^= 0x5A5A5A5A;
+    ndbrequire(!verify_undo_page_checksum(
+        (const File_formats::Undofile::Undo_page_v2 *)words));
     g_eventLogger->info("LGMAN: ERROR_INSERT 15004: tearing page %u in write"
                         " of %u pages starting at file page %u, crash at"
                         " write completion",
