@@ -21757,6 +21757,13 @@ retry_agg:
                        DbspjErr::OutOfQueryMemory, req.correlation);
       return;
     }
+    /* sendEvictedAggGroup built the evicted record in cevictBuffer,
+     * over linkedBuf: build the row again for the retry.  Its inputs,
+     * the source CTE's group and cinBuf, are not the target's. */
+    linkedPos = 0;
+    buildCteLinkedBuffer(interp, groupData, req.keyLen,
+                         attrInfoBuf, attrInfoLen,
+                         linkedBuf, &linkedPos);
     goto retry_agg;
   }
   if (unlikely(aggRet != 0)) {
@@ -23055,6 +23062,12 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                          DbspjErr::OutOfQueryMemory);
           return;
         }
+        /* The evicted record went through cevictBuffer, over linkedBuf:
+         * build the row again (see cteLookupAggFeed). */
+        linkedPos = 0;
+        buildCteLinkedBuffer(interp, groupData, keyLen,
+                             nullptr, 0,
+                             linkedBuf, &linkedPos);
         goto retry_agg_scan;
       }
       if (unlikely(aggRet != 0)) {
@@ -23195,7 +23208,14 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
                          DbspjErr::OutOfQueryMemory);
           return;
         }
-        /* Retry after eviction */
+        /* Retry after eviction, with the row built again: the evicted
+         * record went through cevictBuffer, over linkedBuf (see
+         * cteLookupAggFeed). */
+        linkedPos = 0;
+        buildCteLinkedBuffer(interp,
+                             reinterpret_cast<const char *>(accumulators),
+                             /*keyLen=*/0, nullptr, 0,
+                             linkedBuf, &linkedPos);
         aggReq.no_exec_instructions = 0;
         aggRet = targetInterp->processRecWithLinkedAttrs(
             c_tup,
