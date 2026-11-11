@@ -1,10 +1,23 @@
 !include include/default_mysqld.cnf
 !include include/default_ndbd.cnf
 
+# Every NDB connection of the two mysqld servers has a fixed node id.
+# The test blocks API nodes 11 and 12, and these must both be
+# connections of mysqld.1.1. A mysqld without fixed node ids gets any
+# free API slot, and when both servers wait for the cluster to start,
+# mysqld.2.1 gets node 12 before mysqld.1.1 asks for it for its second
+# connection. The test then blocked the heartbeats of mysqld.2.1's
+# first connection, and mysqld.1.1's second connection never got a
+# node id.
+#   mysqld.1.1: API nodes 11, 12 (HeartbeatIntervalDbApi=5000)
+#   mysqld.2.1: API nodes 13, 14 (global HeartbeatIntervalDbApi=2000)
+# The third ndbapi slot is free for NDB API tools.
+
 [cluster_config.1]
 ndbd=,
 ndb_mgmd=
 mysqld=,
+ndbapi=,,
 HeartbeatIntervalDbApi=2000
 MaxBufferedEpochs=800
 
@@ -17,6 +30,12 @@ HeartbeatIntervalDbApi=5000
 NodeId=12
 HeartbeatIntervalDbApi=5000
 
+[cluster_config.ndbapi.1.1]
+NodeId=13
+
+[cluster_config.ndbapi.2.1]
+NodeId=14
+
 [mysqld]
 ndbcluster
 ndb-cluster-connection-pool=2
@@ -24,5 +43,10 @@ ndb-cluster-connection-pool=2
 [mysqld.1.1]
 ndb-cluster-connection-pool-nodeids=11,12
 
+[mysqld.2.1]
+ndb-cluster-connection-pool-nodeids=13,14
+
 [ENV]
 NDB_CONNECTSTRING=             @mysql_cluster.1.ndb_connectstring
+MASTER_MYPORT=                 @mysqld.1.1.port
+MASTER_MYPORT1=                @mysqld.2.1.port
