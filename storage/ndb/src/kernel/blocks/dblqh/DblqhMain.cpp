@@ -16553,17 +16553,20 @@ Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
 }
 
 /*
- * A join-aggregation result record goes to the API in one TRANSID_AI
- * (sendSignal, not fragmented), so it must fit one transporter message
- * with the protocol and signal headers; 32 words cover those.  A larger
- * record would stop the node ("Message too big in sendSignal").  The
- * bound also keeps the record's key_len and val_len inside the 16-bit
- * fields of its length word (AggInterpreterBase::resultLensFit).
+ * The largest join-aggregation result record: 4 header words, then the
+ * key and the values, whose byte lengths are the 16-bit fields of the
+ * length word (AggInterpreterBase::resultLensFit).  sendTransIdAIRow
+ * sends a record over MAX_TRANSID_AI_SIZE fragmented, so it may be
+ * several transporter messages long.
  */
-static constexpr Uint32 JOIN_AGG_MAX_RESULT_WORDS =
+static constexpr Uint32 JOIN_AGG_MAX_RESULT_WORDS = 4 + ((2 * 0xFFFF) >> 2);
+
+/*
+ * The most a TRANSID_AI can carry unfragmented: one transporter message
+ * less the protocol and signal headers, which 32 words cover.
+ */
+static constexpr Uint32 MAX_UNFRAGMENTED_ROW_WORDS =
     (MAX_SEND_MESSAGE_BYTESIZE >> 2) - 32;
-static_assert(JOIN_AGG_MAX_RESULT_WORDS * sizeof(Uint32) <= 0xFFFF,
-              "join-agg result lengths must fit 16 bits");
 
 /*
  * sendEvictedAggGroup
@@ -16592,29 +16595,21 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
   if (unlikely(evict_ret != 0)) {
     jam();
     /* Nothing to evict: the interpreter could not allocate a group even
-     * with an empty table (query memory exhausted), or the group does not
-     * fit one result record (JOIN_AGG_MAX_RESULT_WORDS).  Fail the
-     * operation, not the node. */
+     * with an empty table (query memory exhausted), or the group's key
+     * or values are too long for the 16-bit lengths of a result record
+     * (resultLensFit).  Fail the operation, not the node. */
     return false;
   }
 
-  TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-  {
-    Uint32 key_len = cevictBuffer[3] >> 16;
-    const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
-    transIdAI->connectPtr =
-        state->selectReceiverData(interp->hashGroupKey(
-            key_data, key_len,
-            c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
-  }
-  transIdAI->transId[0] = state->m_transid[0];
-  transIdAI->transId[1] = state->m_transid[1];
-
-  LinearSectionPtr ptr[3];
-  ptr[0].p = cevictBuffer;
-  ptr[0].sz = words_written;
-  sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-             TransIdAI::HeaderLength, JBB, ptr, 1);
+  const Uint32 key_len = cevictBuffer[3] >> 16;
+  const char *key_data = reinterpret_cast<const char*>(&cevictBuffer[4]);
+  const Uint32 receiverData =
+      state->selectReceiverData(interp->hashGroupKey(
+          key_data, key_len,
+          c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
+  sendTransIdAIRow(signal, state->m_resultRef, receiverData,
+                   state->m_transid, cevictBuffer, words_written,
+                   /*corrAtEnd=*/false);
 
   state->m_rows_sent++;
   return true;
@@ -21089,7 +21084,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         has_strings ? interp->stringPayloadSize(scalar_slots) : 0;
     const Uint32 v_len_total = agg_bytes + payload_bytes;
     const Uint32 v_words_total = v_len_total >> 2;
-    if (unlikely(4 + v_words_total > JOIN_AGG_MAX_RESULT_WORDS)) {
+    if (unlikely(!JoinAggInterpreter::resultLensFit(0, v_len_total))) {
       jam();
       if (state->m_error_code == 0) {
         state->m_error_code = ZJOIN_AGG_RESULT_TOO_LARGE;
@@ -21107,7 +21102,7 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
       return;
     }
     Uint32 *buf = &cevictBuffer[0];
-    ndbrequire(4 + v_words_total <= sizeof(cevictBuffer) / sizeof(Uint32));
+    ndbrequire(4 + v_words_total <= JOIN_AGG_MAX_RESULT_WORDS);
     Uint32 pos = 0;
     buf[pos++] = marker << 16 | 0x0721;
     buf[pos++] = 0 << 16 | n_agg_results;
@@ -21120,24 +21115,15 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
     }
     pos += v_words_total;
 
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = state->m_receiverIds[0];
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr ptr[3];
-    ptr[0].p = buf;
-    ptr[0].sz = pos;
-
     DEB_JOIN_AGG(("(%u)DBLQH 1:Sending TRANSID_AI to 0x%x, receiverId:"
                   " %u, size: %u",
       getThreadId(),
       state->m_resultRef,
-      transIdAI->connectPtr,
+      state->m_receiverIds[0],
       pos));
 
-    sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, ptr, 1);
+    sendTransIdAIRow(signal, state->m_resultRef, state->m_receiverIds[0],
+                     state->m_transid, buf, pos, /*corrAtEnd=*/false);
 
     state->m_state.store(JoinAggregationState::COMPLETED);
 
@@ -21203,7 +21189,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
           has_strings ? interp->stringPayloadSize(slots) : 0;
       const Uint32 v_len_total = v_len_base + payload_bytes;
       const Uint32 data_words = (key_len + v_len_total) >> 2;
-      if (unlikely(4 + data_words > JOIN_AGG_MAX_RESULT_WORDS)) {
+      if (unlikely(!JoinAggInterpreter::resultLensFit(key_len,
+                                                      v_len_total))) {
         jam();
         /* Groups sent so far are dropped with the query; this one stays
          * in the table, which the state's release frees. */
@@ -21223,7 +21210,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         return;
       }
       Uint32 *buf = &cevictBuffer[0];
-      ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
+      ndbrequire(4 + data_words <= JOIN_AGG_MAX_RESULT_WORDS);
       Uint32 pos = 0;
       buf[pos++] = marker << 16 | 0x0721;
       buf[pos++] = n_gb_cols << 16 | n_agg_results;
@@ -21236,20 +21223,10 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
       }
       pos += data_words;
 
-      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      {
-        const char *key_data = reinterpret_cast<const char*>(iter.data());
-        transIdAI->connectPtr =
-            state->selectReceiverData(interp->hashGroupKey(
-                key_data, key_len,
-                c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
-      }
-      transIdAI->transId[0] = state->m_transid[0];
-      transIdAI->transId[1] = state->m_transid[1];
-
-      LinearSectionPtr ptr[3];
-      ptr[0].p = buf;
-      ptr[0].sz = pos;
+      const Uint32 receiverData =
+          state->selectReceiverData(interp->hashGroupKey(
+              reinterpret_cast<const char*>(iter.data()), key_len,
+              c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen()));  // D26
 
 #ifdef DEBUG_JOIN_AGG
       const Uint32 keyWordsForDebug = (key_len + 3) >> 2;
@@ -21267,7 +21244,7 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
                     " processed_rows=%llu gb_map_size=%u",
         getThreadId(),
         state->m_resultRef,
-        transIdAI->connectPtr,
+        receiverData,
         pos,
         aggStateKey,
         key_len,
@@ -21279,8 +21256,8 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
         interp->processed_rows(),
         gb_map->size()));
 
-      sendSignal(state->m_resultRef, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength, JBB, ptr, 1);
+      sendTransIdAIRow(signal, state->m_resultRef, receiverData,
+                       state->m_transid, buf, pos, /*corrAtEnd=*/false);
 
       num_result_rows++;
       total_bytes += pos * sizeof(Uint32);
@@ -21807,7 +21784,7 @@ retry_agg:
              signal, CteLookupConf::SignalLength, JBB);
 }
 
-void Dblqh::sendCteTransIdAI(Signal *signal, Uint32 ref, Uint32 connectPtr,
+void Dblqh::sendTransIdAIRow(Signal *signal, Uint32 ref, Uint32 connectPtr,
                              const Uint32 transId[2], const Uint32 *data,
                              Uint32 len, bool corrAtEnd, Uint32 routeRef) {
   LinearSectionPtr lsp[3];
@@ -21892,7 +21869,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
   Uint32 outPos = 0;
   /* outPos just after the last CORR_FACTOR64 written, 0 if none since
    * the last FLUSH_AI: a chunk that ends there carries the row's
-   * correlation in its fragmented header (sendCteTransIdAI). */
+   * correlation in its fragmented header (sendTransIdAIRow). */
   Uint32 corr64End = 0;
   Uint32 pos = 0;
   while (pos < finalRLen) {
@@ -21923,7 +21900,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
         if (params.captureSectionPtrI != nullptr) {
           jam();
           bool capOk = true;
-          if (unlikely(2 + outPos > JOIN_AGG_MAX_RESULT_WORDS)) {
+          if (unlikely(2 + outPos > MAX_UNFRAGMENTED_ROW_WORDS)) {
             jam();
             capOk = false;
           } else if (*params.captureSectionPtrI == RNIL) {
@@ -21952,7 +21929,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
         const bool corrAtEnd = (corr64End == outPos);
         if (likely(getNodeInfo(refToNode(fRef)).m_connected)) {
           jam();
-          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+          sendTransIdAIRow(signal, fRef, fData, params.transId, outBuf,
                            outPos, corrAtEnd);
         } else {
           jam();
@@ -21967,7 +21944,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                         "words=%u transid=(0x%x,0x%x)",
                         instance(), fRef, routeRef, outPos,
                         params.transId[0], params.transId[1]));
-          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+          sendTransIdAIRow(signal, fRef, fData, params.transId, outBuf,
                            outPos, corrAtEnd, routeRef);
         }
         outPos = 0;
@@ -22169,7 +22146,7 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
     DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%d → senderRef=0x%x "
              "connectPtr=0x%x",
              instance(), outPos, req.senderRef, req.senderData));
-    sendCteTransIdAI(signal, req.senderRef, req.senderData,
+    sendTransIdAIRow(signal, req.senderRef, req.senderData,
                      state->m_transid, outBuf, (Uint32)outPos,
                      /*corrAtEnd=*/false);
   }
@@ -23408,7 +23385,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
         if (outPos > 0) {
           const Uint32 transId[2] = {req.transId1, req.transId2};
-          sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+          sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                            outBuf, (Uint32)outPos,
                            /*corrAtEnd=*/false);
           numRowsToSpj++;
@@ -23454,7 +23431,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         }
 
         const Uint32 transId[2] = {req.transId1, req.transId2};
-        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+        sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                          outBuf, outPos,
                          /*corrAtEnd=*/false);
         numRowsToSpj++;
@@ -23528,7 +23505,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       }
       if (outPos > 0) {
         const Uint32 transId[2] = {req.transId1, req.transId2};
-        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+        sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                          outBuf, (Uint32)outPos,
                          /*corrAtEnd=*/false);
         numRowsToSpj++;
@@ -23558,7 +23535,7 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       outPos += 2;
 
       const Uint32 transId[2] = {req.transId1, req.transId2};
-      sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+      sendTransIdAIRow(signal, req.senderRef, req.senderData, transId,
                        outBuf, outPos,
                        /*corrAtEnd=*/false);
       numRowsToSpj++;
