@@ -31053,7 +31053,7 @@ int Dbtc::parseJoinAggKeyInfo(Signal *signal, ScanRecordPtr scanptr,
   SectionReader reader(handle.m_ptr[ScanTabReq::KeyInfoSectionNum].i,
                        getSectionSegmentPool());
   /* boundsLen word + bounds + aggReceiverId must fit in the section */
-  Uint32 boundsLen;
+  Uint32 boundsLen = 0;
   if (unlikely(keyLen < 2 || !reader.getWord(&boundsLen) ||
                boundsLen > keyLen - 2)) {
     return abortInvalidJoinAggKey();

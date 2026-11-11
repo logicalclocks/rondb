@@ -1,0 +1,171 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== ca-1: DOUBLE THEN arm, integer ELSE arms ===
+== Query ==
+SELECT g,
+SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE -100 END) AS maxm
+FROM cat GROUP BY g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g,
+SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE -100 END) AS maxm
+FROM cat GROUP BY g|
+g	sum0	sum1	min7	maxm
+1	29	33	2.5	12.5
+2	-13.5	-10.5	-8.25	-1.5
+3	12.5	12.5	1.25	5
+4	0	3	7	-100
+
+=== ca-2: DECIMAL THEN arm, integer ELSE arms, DECIMAL ELSE arm ===
+== Query ==
+SELECT g,
+SUM(CASE WHEN k > 5 THEN p ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN p ELSE 999 END) AS min999,
+MAX(CASE WHEN k > 5 THEN p ELSE -100 END) AS maxm,
+SUM(CASE WHEN k > 5 THEN 1 ELSE p END) AS sum_ep
+FROM cat GROUP BY g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT g,
+SUM(CASE WHEN k > 5 THEN p ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN p ELSE 999 END) AS min999,
+MAX(CASE WHEN k > 5 THEN p ELSE -100 END) AS maxm,
+SUM(CASE WHEN k > 5 THEN 1 ELSE p END) AS sum_ep
+FROM cat GROUP BY g|
+g	sum1	min999	maxm	sum_ep
+1	21.50	1.25	10.00	5.00
+2	-7.50	-7.75	-0.50	3.75
+3	2.50	0.25	1.00	4.00
+4	3.00	999.00	-100.00	0.75
+
+=== ca-3: ca-1 without GROUP BY ===
+== Query ==
+SELECT SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE -100 END) AS maxm
+FROM cat;
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT SUM(CASE WHEN k > 5 THEN d ELSE 0 END) AS sum0,
+SUM(CASE WHEN k > 5 THEN d ELSE 1 END) AS sum1,
+MIN(CASE WHEN k > 5 THEN d ELSE 7 END) AS min7,
+MAX(CASE WHEN k > 5 THEN d ELSE -100 END) AS maxm
+FROM cat|
+sum0	sum1	min7	maxm
+28	38	-8.25	12.5
+
+=== ca-4: ca-1 over a join ===
+== Query ==
+SELECT x.g,
+SUM(CASE WHEN a.k > 5 THEN a.d ELSE 0 END) AS sum0,
+SUM(CASE WHEN a.k > 5 THEN a.d ELSE 1 END) AS sum1,
+MIN(CASE WHEN a.k > 5 THEN a.d ELSE 7 END) AS min7,
+MAX(CASE WHEN a.k > 5 THEN a.d ELSE -100 END) AS maxm
+FROM cat_drv AS x
+JOIN cat AS a ON a.g = x.g AND a.id = x.id
+GROUP BY x.g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT x.g,
+SUM(CASE WHEN a.k > 5 THEN a.d ELSE 0 END) AS sum0,
+SUM(CASE WHEN a.k > 5 THEN a.d ELSE 1 END) AS sum1,
+MIN(CASE WHEN a.k > 5 THEN a.d ELSE 7 END) AS min7,
+MAX(CASE WHEN a.k > 5 THEN a.d ELSE -100 END) AS maxm
+FROM cat_drv AS x
+JOIN cat AS a ON a.g = x.g AND a.id = x.id
+GROUP BY x.g|
+g	sum0	sum1	min7	maxm
+1	29	33	2.5	12.5
+2	-13.5	-10.5	-8.25	-1.5
+3	12.5	12.5	1.25	5
+4	0	3	7	-100
+
+=== ca-5: SUM of GREATEST / LEAST over a DOUBLE CTE output ===
+== Query ==
+WITH s AS (SELECT g, id, MAX(d) AS m FROM cat GROUP BY g, id)
+SELECT g,
+SUM(GREATEST(m, 5)) AS g_m5,
+SUM(GREATEST(5, m)) AS g_5m,
+SUM(LEAST(m, 5)) AS l_m5,
+SUM(LEAST(5, m)) AS l_5m
+FROM s GROUP BY g;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH s AS (SELECT g, id, MAX(d) AS m FROM cat GROUP BY g, id)
+SELECT g,
+SUM(GREATEST(m, 5)) AS g_m5,
+SUM(GREATEST(5, m)) AS g_5m,
+SUM(LEAST(m, 5)) AS l_m5,
+SUM(LEAST(5, m)) AS l_5m
+FROM s GROUP BY g|
+g	g_m5	g_5m	l_m5	l_5m
+1	51.75	51.75	19.25	19.25
+2	30	30	-12	-12
+3	20	20	12.5	12.5
+4	15	15	1.5	1.5
+
+=== ca-6a: MIN over a VARCHAR THEN arm and an integer ELSE arm ===
+Error handling: RPE
+ronsql_cli caught exception: MIN / MAX over a CASE that mixes string and non-string values, or strings of different types or collations, is not supported.
+
+=== ca-6b: MAX over an integer THEN arm and a VARCHAR ELSE arm ===
+Error handling: RPE
+ronsql_cli caught exception: MIN / MAX over a CASE that mixes string and non-string values, or strings of different types or collations, is not supported.
+
+=== ca-6c: MIN over a VARCHAR THEN arm and a CHAR ELSE arm ===
+Error handling: RPE
+ronsql_cli caught exception: MIN / MAX over a CASE that mixes string and non-string values, or strings of different types or collations, is not supported.
+
+=== ca-6d: SUM over an integer THEN arm and a VARCHAR ELSE arm ===
+Error handling: RPE
+ronsql_cli caught exception: SUM over string columns is not supported.
+
+=== Cleanup ===
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ronsql_case_arm_types_jit_fallback_delta;
+ronsql_case_arm_types_jit_fallback_delta
+28

@@ -16553,6 +16553,19 @@ Dblqh::getJoinAggResultInterpreter(JoinAggregationState *state) {
 }
 
 /*
+ * A join-aggregation result record goes to the API in one TRANSID_AI
+ * (sendSignal, not fragmented), so it must fit one transporter message
+ * with the protocol and signal headers; 32 words cover those.  A larger
+ * record would stop the node ("Message too big in sendSignal").  The
+ * bound also keeps the record's key_len and val_len inside the 16-bit
+ * fields of its length word (AggInterpreterBase::resultLensFit).
+ */
+static constexpr Uint32 JOIN_AGG_MAX_RESULT_WORDS =
+    (MAX_SEND_MESSAGE_BYTESIZE >> 2) - 32;
+static_assert(JOIN_AGG_MAX_RESULT_WORDS * sizeof(Uint32) <= 0xFFFF,
+              "join-agg result lengths must fit 16 bits");
+
+/*
  * sendEvictedAggGroup
  *
  * Evicts one group from the AggInterpreter's group map and sends it
@@ -16569,16 +16582,19 @@ bool Dblqh::sendEvictedAggGroup(Signal *signal,
                                  JoinAggregationState *state) {
   jamDebug();
   Uint32 words_written = 0;
+  static_assert(JOIN_AGG_MAX_RESULT_WORDS <=
+                sizeof(cevictBuffer) / sizeof(Uint32));
   Int32 evict_ret = interp->evictOneGroup(
       cevictBuffer,
-      sizeof(cevictBuffer) / sizeof(Uint32),
+      JOIN_AGG_MAX_RESULT_WORDS,
       &words_written,
       c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26: per-thread buf
   if (unlikely(evict_ret != 0)) {
     jam();
     /* Nothing to evict: the interpreter could not allocate a group even
      * with an empty table (query memory exhausted), or the group does not
-     * fit the eviction buffer.  Fail the operation, not the node. */
+     * fit one result record (JOIN_AGG_MAX_RESULT_WORDS).  Fail the
+     * operation, not the node. */
     return false;
   }
 
@@ -19162,7 +19178,16 @@ void Dblqh::continueScanNextReqLab(Signal *signal,
     ndbrequire(scanPtr->m_agg_interpreter != nullptr);
     const bool final_drain =
         scanPtr->m_agg_drain_state == ScanRecord::AGG_DRAIN_FINAL;
-    const bool all_sent = c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr);
+    Uint32 aggError = 0;
+    const bool all_sent =
+        c_tup->SendAggResToAPI(signal, regTcPtr, scanPtr, &aggError);
+    if (unlikely(aggError != 0)) {
+      jam();
+      scanPtr->scanCompletedStatus = ZTRUE;
+      regTcPtr->errorCode = aggError;
+      closeScanLab(signal, regTcPtr);
+      return;
+    }
     if (all_sent) {
       scanPtr->m_agg_drain_state = ScanRecord::AGG_SCAN;
       if (final_drain) {
@@ -20878,21 +20903,10 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
             interps[merge_idx], batch, remaining,
             c_tup->getAggXfrmBuf(), c_tup->getAggXfrmBufLen());  // D26
         if (unlikely(ret != 0)) {
-          jam();
-          /* Late peer requests REF with the recorded cause. */
-          if (state->m_error_code == 0) {
-            state->m_error_code = static_cast<Uint32>(ret);
-          }
-          state->m_state.store(JoinAggregationState::ERROR);
-          JoinAggCompleteRef *ref =
-            (JoinAggCompleteRef *)signal->getDataPtrSend();
-          ref->senderRef = reference();
-          ref->senderData = senderData;
-          ref->requestId = requestId;
-          ref->errorCode = static_cast<Uint32>(ret);
-          ref->errorLine = __LINE__;
-          sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
-                     signal, JoinAggCompleteRef::SignalLength, JBB);
+          /* SUM overflow or out of memory: fail the state, not only
+           * this request (failJoinAggComplete). */
+          failJoinAggComplete(signal, state, static_cast<Uint32>(ret),
+                              senderRef, senderData, requestId, __LINE__);
           return;
         }
         if (remaining > 0) {
@@ -21075,6 +21089,23 @@ void Dblqh::continueJoinAggMerge(Signal* signal, Uint32 aggStateKey,
         has_strings ? interp->stringPayloadSize(scalar_slots) : 0;
     const Uint32 v_len_total = agg_bytes + payload_bytes;
     const Uint32 v_words_total = v_len_total >> 2;
+    if (unlikely(4 + v_words_total > JOIN_AGG_MAX_RESULT_WORDS)) {
+      jam();
+      if (state->m_error_code == 0) {
+        state->m_error_code = ZJOIN_AGG_RESULT_TOO_LARGE;
+      }
+      state->m_state.store(JoinAggregationState::ERROR);
+      JoinAggCompleteRef *ref =
+        (JoinAggCompleteRef *)signal->getDataPtrSend();
+      ref->senderRef = reference();
+      ref->senderData = senderData;
+      ref->requestId = requestId;
+      ref->errorCode = ZJOIN_AGG_RESULT_TOO_LARGE;
+      ref->errorLine = __LINE__;
+      sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                 signal, JoinAggCompleteRef::SignalLength, JBB);
+      return;
+    }
     Uint32 *buf = &cevictBuffer[0];
     ndbrequire(4 + v_words_total <= sizeof(cevictBuffer) / sizeof(Uint32));
     Uint32 pos = 0;
@@ -21172,6 +21203,25 @@ void Dblqh::continueJoinAggSend(Signal* signal, Uint32 aggStateKey,
           has_strings ? interp->stringPayloadSize(slots) : 0;
       const Uint32 v_len_total = v_len_base + payload_bytes;
       const Uint32 data_words = (key_len + v_len_total) >> 2;
+      if (unlikely(4 + data_words > JOIN_AGG_MAX_RESULT_WORDS)) {
+        jam();
+        /* Groups sent so far are dropped with the query; this one stays
+         * in the table, which the state's release frees. */
+        if (state->m_error_code == 0) {
+          state->m_error_code = ZJOIN_AGG_RESULT_TOO_LARGE;
+        }
+        state->m_state.store(JoinAggregationState::ERROR);
+        JoinAggCompleteRef *ref =
+          (JoinAggCompleteRef *)signal->getDataPtrSend();
+        ref->senderRef = reference();
+        ref->senderData = senderData;
+        ref->requestId = requestId;
+        ref->errorCode = ZJOIN_AGG_RESULT_TOO_LARGE;
+        ref->errorLine = __LINE__;
+        sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+                   signal, JoinAggCompleteRef::SignalLength, JBB);
+        return;
+      }
       Uint32 *buf = &cevictBuffer[0];
       ndbrequire(4 + data_words <= sizeof(cevictBuffer) / sizeof(Uint32));
       Uint32 pos = 0;
@@ -21757,6 +21807,74 @@ retry_agg:
              signal, CteLookupConf::SignalLength, JBB);
 }
 
+void Dblqh::sendCteTransIdAI(Signal *signal, Uint32 ref, Uint32 connectPtr,
+                             const Uint32 transId[2], const Uint32 *data,
+                             Uint32 len, bool corrAtEnd, Uint32 routeRef) {
+  LinearSectionPtr lsp[3];
+  lsp[0].p = data;
+  lsp[0].sz = len;
+  if (likely(len <= MAX_TRANSID_AI_SIZE)) {
+    jamDebug();
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = connectPtr;
+    transIdAI->transId[0] = transId[0];
+    transIdAI->transId[1] = transId[1];
+    if (routeRef == 0) {
+      sendSignal(ref, GSN_TRANSID_AI, signal, TransIdAI::HeaderLength,
+                 JBB, lsp, 1);
+    } else {
+      ndbrequire(refToMain(routeRef) == DBTC);
+      transIdAI->attrData[0] = ref;
+      sendSignal(routeRef, GSN_TRANSID_AI_R, signal,
+                 TransIdAI::HeaderLength + 1, JBB, lsp, 1);
+    }
+    return;
+  }
+
+  const Uint32 nodeType = getNodeInfo(refToNode(ref)).m_type;
+  const bool toApi = nodeType >= NodeInfo::API && nodeType <= NodeInfo::MGM;
+  if (!toApi) {
+    /* A data node block (DBSPJ) reassembles the fragments. */
+    jam();
+    ndbrequire(routeRef == 0);
+    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
+    transIdAI->connectPtr = connectPtr;
+    transIdAI->transId[0] = transId[0];
+    transIdAI->transId[1] = transId[1];
+    sendBatchedFragmentedSignal(ref, GSN_TRANSID_AI, signal,
+                                TransIdAI::HeaderLength, JBB, lsp, 1);
+    return;
+  }
+
+  /* The API: TransIdAILong with totalLen, and the CORR_FACTOR64 words
+   * that end the row, which a pushed-join scan reads from the header
+   * of the first fragment (NdbQueryOperationImpl::execTRANSID_AI). */
+  jam();
+  ndbrequire(!corrAtEnd || len >= 3);
+  TransIdAILong *transIdAILong = (TransIdAILong *)signal->getDataPtrSend();
+  transIdAILong->connectPtr = connectPtr;
+  transIdAILong->transId[0] = transId[0];
+  transIdAILong->transId[1] = transId[1];
+  transIdAILong->totalLen = len;
+  Uint32 sigLen = TransIdAILong::HeaderLength;
+  if (corrAtEnd) {
+    std::memcpy(&transIdAILong->correlationData[0], &data[len - 3],
+                3 * sizeof(Uint32));
+    sigLen = TransIdAILong::HeaderWithCorrelationLength;
+  }
+  if (routeRef == 0) {
+    sendBatchedFragmentedSignal(ref, GSN_TRANSID_AI, signal, sigLen, JBB,
+                                lsp, 1);
+    return;
+  }
+  /* Dbtc::execTRANSID_AI_R takes the destination from the word after
+   * the header and forwards the header without it. */
+  ndbrequire(refToMain(routeRef) == DBTC);
+  signal->theData[sigLen] = ref;
+  sendBatchedFragmentedSignal(routeRef, GSN_TRANSID_AI_R, signal,
+                              sigLen + 1, JBB, lsp, 1);
+}
+
 /**
  * emitCteGroupOutput — walk the final-read section for one CTE group,
  * writing virtual columns (GROUP BY keys, aggregates, CORR_FACTOR) into
@@ -21772,6 +21890,10 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                                  const AggResItem *accumulators,
                                  Uint32 *outBuf) {
   Uint32 outPos = 0;
+  /* outPos just after the last CORR_FACTOR64 written, 0 if none since
+   * the last FLUSH_AI: a chunk that ends there carries the row's
+   * correlation in its fragmented header (sendCteTransIdAI). */
+  Uint32 corr64End = 0;
   Uint32 pos = 0;
   while (pos < finalRLen) {
     const Uint32 word = finalR[pos];
@@ -21794,11 +21916,17 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
          * on append failure, or on a SECOND flush (the served replay
          * re-sends the capture as ONE TRANSID_AI, so only a
          * single-flush payload is replayable), drop the capture and
-         * keep serving the probe normally. */
+         * keep serving the probe normally.  A payload over one
+         * transporter message is not captured either: CTE_LOOKUP_CONF
+         * carries the copy, and DBSPJ replays it, in one unfragmented
+         * signal each. */
         if (params.captureSectionPtrI != nullptr) {
           jam();
           bool capOk = true;
-          if (*params.captureSectionPtrI == RNIL) {
+          if (unlikely(2 + outPos > JOIN_AGG_MAX_RESULT_WORDS)) {
+            jam();
+            capOk = false;
+          } else if (*params.captureSectionPtrI == RNIL) {
             Uint32 dest[2] = { fRef, fData };
             capOk = appendToSection(*params.captureSectionPtrI, dest, 2);
             if (capOk) {
@@ -21820,18 +21948,12 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                 nullptr;
           }
         }
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = fData;
-        transIdAI->transId[0] = params.transId[0];
-        transIdAI->transId[1] = params.transId[1];
-
-        LinearSectionPtr lsp[3];
-        lsp[0].p = outBuf;
-        lsp[0].sz = outPos;
+        /* A pushed-join scan's API row ends with its CORR_FACTOR64. */
+        const bool corrAtEnd = (corr64End == outPos);
         if (likely(getNodeInfo(refToNode(fRef)).m_connected)) {
           jam();
-          sendSignal(fRef, GSN_TRANSID_AI, signal,
-                     TransIdAI::HeaderLength, JBB, lsp, 1);
+          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+                           outPos, corrAtEnd);
         } else {
           jam();
           /* The API can start a query before all data nodes have
@@ -21845,11 +21967,11 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
                         "words=%u transid=(0x%x,0x%x)",
                         instance(), fRef, routeRef, outPos,
                         params.transId[0], params.transId[1]));
-          transIdAI->attrData[0] = fRef;
-          sendSignal(routeRef, GSN_TRANSID_AI_R, signal,
-                     TransIdAI::HeaderLength + 1, JBB, lsp, 1);
+          sendCteTransIdAI(signal, fRef, fData, params.transId, outBuf,
+                           outPos, corrAtEnd, routeRef);
         }
         outPos = 0;
+        corr64End = 0;
       }
       pos += 4;
       continue;
@@ -21877,6 +21999,7 @@ Int32 Dblqh::emitCteGroupOutput(Signal *signal,
       outBuf[outPos + 1] = params.correlation;
       outBuf[outPos + 2] = params.corrRootRcvr;
       outPos += 3;
+      corr64End = outPos;
       pos += 1;
       continue;
     }
@@ -22046,16 +22169,9 @@ void Dblqh::cteLookupEmitResult(Signal *signal, const CteLookupReq &req,
     DEB_CTE(("(%u) CTE_LOOKUP residual: outPos=%d → senderRef=0x%x "
              "connectPtr=0x%x",
              instance(), outPos, req.senderRef, req.senderData));
-    TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-    transIdAI->connectPtr = req.senderData;
-    transIdAI->transId[0] = state->m_transid[0];
-    transIdAI->transId[1] = state->m_transid[1];
-
-    LinearSectionPtr lsp[3];
-    lsp[0].p = outBuf;
-    lsp[0].sz = (Uint32)outPos;
-    sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-               TransIdAI::HeaderLength, JBB, lsp, 1);
+    sendCteTransIdAI(signal, req.senderRef, req.senderData,
+                     state->m_transid, outBuf, (Uint32)outPos,
+                     /*corrAtEnd=*/false);
   }
 
   DEB_CTE(("(%u) CTE_LOOKUP_CONF → senderRef=0x%x senderData=0x%x "
@@ -22333,7 +22449,8 @@ singleRowCteProbe(JoinAggInterpreter *interp,
 }
 
 void Dblqh::cteLookupReqImpl(Signal *signal) {
-  const CteLookupReq req =
+  /* Not const: keyLen is overridden below with the stored key length. */
+  CteLookupReq req =
       *(const CteLookupReq *)signal->getDataPtr();
 
   DEB_CTE(("(%u) execCTE_LOOKUP_REQ: aggStateKey=%u keyLen=%u "
@@ -22553,7 +22670,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
        * grouped probes, but a subset probe's key is shorter.
        * Override with the stored length (the scalar arm's
        * override-to-0 precedent). */
-      const_cast<CteLookupReq &>(req).keyLen = storedKeyLen;
+      req.keyLen = storedKeyLen;
     }
   } else if (interp->n_gb_cols() == 0) {
     /**
@@ -22576,7 +22693,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
     groupData = reinterpret_cast<const char *>(interp->agg_results());
     /* Override keyLen to 0 so cteLookupEmitResult computes
      * accumulators = groupData + 0 = m_agg_results correctly. */
-    const_cast<CteLookupReq &>(req).keyLen = 0;
+    req.keyLen = 0;
   } else {
     groupData = interp->lookupGroup(
         reinterpret_cast<const char *>(keyBuf), req.keyLen,
@@ -22585,7 +22702,7 @@ void Dblqh::cteLookupReqImpl(Signal *signal) {
       /* E-5: the stored key matches under the collation and can differ
        * in length from the probe key; the accumulators and the emitted
        * GROUP BY columns follow the stored key. */
-      const_cast<CteLookupReq &>(req).keyLen =
+      req.keyLen =
           JoinGBHashTable::dataKeyLen(groupData);
     }
   }
@@ -23278,18 +23395,22 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                                           finalR, finalRLen,
                                           n_gb_cols, n_agg_results,
                                           accumulators, outBuf);
+        if (unlikely(outPos < 0)) {
+          jam();
+          /* The row does not fit in the output buffer.  A FLUSH_AI part
+           * of it may already have gone to the API, so fail the scan
+           * instead of dropping the rest of the row. */
+          releaseCteScanIterState(scanIterI);
+          sendCteScanRef(signal, req.senderRef, req.senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
+          return;
+        }
         /* Residual (e.g. CORR_FACTOR after FLUSH_AI) goes to DBSPJ */
         if (outPos > 0) {
-          TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-          transIdAI->connectPtr = req.senderData;
-          transIdAI->transId[0] = req.transId1;
-          transIdAI->transId[1] = req.transId2;
-
-          LinearSectionPtr lsp[3];
-          lsp[0].p = outBuf;
-          lsp[0].sz = (Uint32)outPos;
-          sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                     TransIdAI::HeaderLength, JBB, lsp, 1);
+          const Uint32 transId[2] = {req.transId1, req.transId2};
+          sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                           outBuf, (Uint32)outPos,
+                           /*corrAtEnd=*/false);
           numRowsToSpj++;
         }
       } else {
@@ -23300,8 +23421,11 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
         const Uint32 keyWords = keyLen >> 2;
         if (unlikely(outPos + keyWords > ZATTR_BUFFER_SIZE)) {
           jam();
-          groupIdx++;
-          continue;
+          /* Same as an aggregate overflow below: fail, never skip a group. */
+          releaseCteScanIterState(scanIterI);
+          sendCteScanRef(signal, req.senderRef, req.senderData,
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
+          return;
         }
         memcpy(&outBuf[outPos], groupData, keyLen);
         outPos += keyWords;
@@ -23329,16 +23453,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
           return;
         }
 
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = req.senderData;
-        transIdAI->transId[0] = req.transId1;
-        transIdAI->transId[1] = req.transId2;
-
-        LinearSectionPtr lsp[3];
-        lsp[0].p = outBuf;
-        lsp[0].sz = outPos;
-        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        const Uint32 transId[2] = {req.transId1, req.transId2};
+        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                         outBuf, outPos,
+                         /*corrAtEnd=*/false);
         numRowsToSpj++;
       }
 
@@ -23400,17 +23518,19 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
                                         finalR, finalRLen,
                                         0, n_agg_results,
                                         accumulators, outBuf);
+      if (unlikely(outPos < 0)) {
+        jam();
+        /* As in the grouped arm: fail the scan, do not drop the row. */
+        releaseCteScanIterState(scanIterI);
+        sendCteScanRef(signal, req.senderRef, req.senderData,
+                       ZCTE_LOOKUP_OUTPUT_OVERFLOW, nullptr, numRowsToSpj);
+        return;
+      }
       if (outPos > 0) {
-        TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-        transIdAI->connectPtr = req.senderData;
-        transIdAI->transId[0] = req.transId1;
-        transIdAI->transId[1] = req.transId2;
-
-        LinearSectionPtr lsp[3];
-        lsp[0].p = outBuf;
-        lsp[0].sz = (Uint32)outPos;
-        sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                   TransIdAI::HeaderLength, JBB, lsp, 1);
+        const Uint32 transId[2] = {req.transId1, req.transId2};
+        sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                         outBuf, (Uint32)outPos,
+                         /*corrAtEnd=*/false);
         numRowsToSpj++;
       }
     } else {
@@ -23437,16 +23557,10 @@ void Dblqh::cteScanEmitResults(Signal *signal, const CteScanReq &req,
       outBuf[outPos + 1] = 0;
       outPos += 2;
 
-      TransIdAI *transIdAI = (TransIdAI *)signal->getDataPtrSend();
-      transIdAI->connectPtr = req.senderData;
-      transIdAI->transId[0] = req.transId1;
-      transIdAI->transId[1] = req.transId2;
-
-      LinearSectionPtr lsp[3];
-      lsp[0].p = outBuf;
-      lsp[0].sz = outPos;
-      sendSignal(req.senderRef, GSN_TRANSID_AI, signal,
-                 TransIdAI::HeaderLength, JBB, lsp, 1);
+      const Uint32 transId[2] = {req.transId1, req.transId2};
+      sendCteTransIdAI(signal, req.senderRef, req.senderData, transId,
+                       outBuf, outPos,
+                       /*corrAtEnd=*/false);
       numRowsToSpj++;
     }
     numRowsSent = 1;
@@ -23891,6 +24005,42 @@ void Dblqh::continueFreeCteRedistPages(Signal *signal) {
     signal->theData[2] = static_cast<Uint32>(nextPtr);
     sendSignal(reference(), GSN_CONTINUEB, signal, length, JBB);
   }
+}
+
+/**
+ * Fail the JOIN_AGG_COMPLETE_REQ this owner is processing, with exactly
+ * one reply. A CTE state fails like every other CTE failure, through
+ * abortCteRedistribution: peers waiting at the FINAL_REP barrier are
+ * told directly, and m_cte_complete_reply_sent stops a later abort from
+ * sending a second COMPLETE_REF. COMPLETE_REQ stored the sender info.
+ * Non-CTE states have no peers and never read that flag (the proxy
+ * does not reset it for them), so they only record the error and REF.
+ */
+void Dblqh::failJoinAggComplete(Signal *signal, JoinAggregationState *state,
+                                Uint32 errorCode, Uint32 senderRef,
+                                Uint32 senderData, Uint32 requestId,
+                                Uint16 callerLine) {
+  jamLine(callerLine);
+  if (state->m_cte_mode) {
+    ndbassert(state->m_cte_complete_senderRef == senderRef &&
+              state->m_cte_complete_senderData == senderData &&
+              state->m_cte_complete_requestId == requestId);
+    abortCteRedistribution(signal, state, errorCode);
+    return;
+  }
+  if (state->m_error_code == 0) {
+    state->m_error_code = errorCode;
+  }
+  state->m_state.store(JoinAggregationState::ERROR);
+  JoinAggCompleteRef *ref =
+    (JoinAggCompleteRef *)signal->getDataPtrSend();
+  ref->senderRef = reference();
+  ref->senderData = senderData;
+  ref->requestId = requestId;
+  ref->errorCode = errorCode;
+  ref->errorLine = callerLine;
+  sendSignal(senderRef, GSN_JOIN_AGG_COMPLETE_REF,
+             signal, JoinAggCompleteRef::SignalLength, JBB);
 }
 
 /**
@@ -26861,10 +27011,19 @@ void Dblqh::nextScanConfScanLab(Signal *signal, ScanRecord *const scanPtr,
       // m_agg_interpreter != nullptr implies m_has_pushdown == true
       if (scanPtr->m_agg_interpreter != nullptr && !more_ranges) {
         scanPtr->m_agg_drain_state = ScanRecord::AGG_DRAIN_FINAL;
-        if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr)) {
-          jam();
-          sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
-          return;
+        Uint32 aggError = 0;
+        if (!c_tup->SendAggResToAPI(signal, tcConnectptr.p, scanPtr,
+                                    &aggError)) {
+          if (unlikely(aggError != 0)) {
+            jam();
+            /* Close below; tupScanCloseConfLab sends SCAN_FRAGREF. */
+            scanPtr->scanCompletedStatus = ZTRUE;
+            tcConnectptr.p->errorCode = aggError;
+          } else {
+            jam();
+            sendScanFragConf(signal, ZFALSE, tcConnectptr.p);
+            return;
+          }
         }
       }
       if (scanPtr->m_continous_scan_state ==

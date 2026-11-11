@@ -3662,6 +3662,19 @@ private:
                            Uint32 n_gb_cols, Uint32 n_agg_results,
                            const AggResItem *accumulators,
                            Uint32 *outBuf);
+  /* Send one CTE output row of len words as TRANSID_AI to ref, or with
+   * routeRef != 0 as TRANSID_AI_R through that DBTC.  A row over
+   * MAX_TRANSID_AI_SIZE goes as a batched fragmented signal (a CTE row
+   * can be up to ZATTR_BUFFER_SIZE words, four times one transporter
+   * message), with the header its receiver needs: a data node block
+   * reassembles fragments (Dbtup::sendReadAttrinfoLong), while the API
+   * reads TransIdAILong::totalLen and, for a pushed-join scan, the
+   * row's correlation from the header (Dbtup::flush_read_buffer).
+   * corrAtEnd: the row ends with a CORR_FACTOR64 (3 words).  data must
+   * not point into signal. */
+  void sendCteTransIdAI(Signal* signal, Uint32 ref, Uint32 connectPtr,
+                        const Uint32 transId[2], const Uint32 *data,
+                        Uint32 len, bool corrAtEnd, Uint32 routeRef = 0);
 
   void sendCteLookupRef(Signal* signal, Uint32 senderRef, Uint32 senderData,
                         Uint32 errorCode, Uint32 correlation,
@@ -3741,6 +3754,13 @@ private:
   void checkCteReady(Signal* signal, JoinAggregationState* state);
   void abortCteRedistribution(Signal* signal, JoinAggregationState* state,
                                Uint32 errorCode, bool notifyPeers = true);
+  // Outlined cold COMPLETE_REQ failure; jamLine(callerLine) records the
+  // call site.
+  void failJoinAggComplete(Signal* signal, JoinAggregationState* state,
+                           Uint32 errorCode, Uint32 senderRef,
+                           Uint32 senderData, Uint32 requestId,
+                           Uint16 callerLine)
+      __attribute__((cold, noinline));
   void redistributeKeyTooLong(Signal* signal, JoinAggregationState* state,
                               Uint32 aggStateKey, Uint32 senderAggStateKey,
                               Uint32 identWord, const Uint32 transid[2],

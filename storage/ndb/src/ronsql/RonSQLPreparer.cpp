@@ -8575,7 +8575,15 @@ RonSQLPreparer::compile()
       ndbrequire(out->type == Outputs::Type::SUBQUERY_AGG);
       out->type = Outputs::Type::AGGREGATE;
       out->aggregate.fun = sl.agg_fun;
-      out->aggregate.arg = NULL;  // not used for result fetching
+      // agg_index fetches the result.  MIN / MAX / SUM keep the
+      // subquery's column argument, from which the printer takes the
+      // charset of a string MIN / MAX, the scale of a DECIMAL, the
+      // decoding of a temporal value and the FLOAT display, as for an
+      // aggregate of the main query.  Without it a string MIN / MAX
+      // failed to print ("Could not find charset").  COUNT needs none.
+      out->aggregate.arg = (sl.agg_fun == T_COUNT)
+          ? NULL
+          : sl.inner_stmt->outputs->aggregate.arg;
       out->aggregate.agg_index = sl.combined_agg_slot;
       out->aggregate.implicit_scalar_pair_op = false;
     }
@@ -17119,14 +17127,23 @@ RonSQLPreparer::rewrite_minmax_comparison(TokenKind cmp_op,
 // That is an unsupported construct, not a bug: name it, as
 // build_cte_virtual_tables does for a CTE output.  The main query splits
 // AVG into Sum + Count, so the failed slot `agg_id` being an AVG output's
-// sum slot makes the message say AVG.  Any other failure keeps the
-// generic bug message.
+// sum slot makes the message say AVG.  The ELSE arm of a CASE goes
+// through NdbAggregator::RepeatAgg, which makes the same checks for SUM
+// and AVG, and refuses MIN / MAX arms that mix strings with other values
+// or strings of different types or collations (kErrMixedStringCaseArms;
+// the data node keeps a string MIN / MAX as a pointer).  Any other
+// failure keeps the generic bug message.
 void
 RonSQLPreparer::throw_sum_avg_emit_error(NdbAggregator* aggregator,
                                          const SelectStatement& stmt,
                                          Uint32 agg_id, bool is_avg)
 {
   const Uint32 errnum = aggregator->GetError().errno_;
+  if (errnum == kErrMixedStringCaseArms)
+    throw RonSQLPermanentError(
+        RonSQLErrorClass::UNSUPPORTED,
+        "MIN / MAX over a CASE that mixes string and non-string values, or "
+        "strings of different types or collations, is not supported.");
   if (errnum != kErrUnsupportedStringOperation &&
       errnum != kErrUnsupportedTemporalOperation)
     throw RonSQLPermanentError(
@@ -17155,6 +17172,11 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
   // Program groupby columns
   require_run(m_main_scope.resolved_columns != NULL,
               "Aggregation emit: missing resolved columns.");
+  // The Load arm below loads the stored column of src.
+  prepare_load_width_cache(
+      m_main_scope, [&](Uint32 src) -> const NdbDictionary::Column* {
+        return m_main_scope.resolved_columns[src].dict_column;
+      });
   check_groupby_limit(ast_root.groupby_columns);
   struct GroupbyColumns* groupby = ast_root.groupby_columns;
   while (groupby != NULL)
@@ -17253,7 +17275,8 @@ RonSQLPreparer::programAggregator(NdbAggregator* aggregator)
           m_main_scope.agg->m_pair_op_needs_null_check[i]);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
-      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      if (!aggregator->RepeatAgg(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
@@ -17898,6 +17921,30 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
   // GroupBy(attrId).
   require_run(scope.resolved_columns != NULL,
               "Aggregation emit: missing resolved columns.");
+  // The column the Load arm below loads for src: a CTE result from its
+  // virtual table, else the stored column.  A CTE MIN / MAX / SUM of a
+  // DECIMAL is a DOUBLE virtual column whose dict_column is the DECIMAL
+  // source, so the virtual table decides.
+  prepare_load_width_cache(
+      scope, [&](Uint32 src) -> const NdbDictionary::Column* {
+        const QueryScope::ResolvedColumnRef& ref =
+            scope.resolved_columns[src];
+        const NdbDictionary::Table* virt = NULL;
+        if (ref.join_op_idx != leaf_idx)
+        {
+          if (ref.kind ==
+                  QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
+              cteVirtualTables != NULL)
+            virt = cteVirtualTables[ref.join_op_idx];
+        }
+        else if (leafIsCte)
+        {
+          virt = cteLeafVirtTab;
+        }
+        if (virt != NULL)
+          return virt->getColumn((int)ref.cte_result_idx);
+        return ref.dict_column;
+      });
   const Uint32 cte_base_pos = leafIsCte ? scope.join_plan.num_linked_projs : 0;
   Uint32 linked_proj_pos = 0;
   check_groupby_limit(ast_root.groupby_columns);
@@ -18142,7 +18189,8 @@ RonSQLPreparer::programAggregator_join(QueryScope& scope,
           scope.agg->m_pair_op_needs_null_check[i]);
       break;
     case AggregationAPICompiler::SVMInstrType::AggRepeat:
-      programAggregator_do_or_fail(aggregator->RepeatAgg(dest, src));
+      if (!aggregator->RepeatAgg(dest, src))
+        throw_sum_avg_emit_error(aggregator, ast_root, dest, false);
       break;
     case AggregationAPICompiler::SVMInstrType::EmbeddedInterp:
     {
@@ -18372,9 +18420,10 @@ RonSQLPreparer::emit_pair_op_embedded(NdbAggregator* aggregator,
 }
 
 // Phase I.5 v4 fast path — recursively walk a Greatest2 / Least2
-// Expr tree to determine whether any leaf Load reaches a nullable
-// column.  Returns true (conservative) when a leaf can't be resolved
-// to a non-nullable column descriptor.
+// Expr tree to determine whether any leaf Load can be NULL: a
+// nullable column, or any column of an outer-joined table.  Returns
+// true (conservative) when a leaf can't be resolved to a
+// non-nullable column descriptor.
 bool
 RonSQLPreparer::compute_pair_op_needs_null_check(
     const QueryScope& scope,
@@ -18390,7 +18439,16 @@ RonSQLPreparer::compute_pair_op_needs_null_check(
     if (ref.kind != QueryScope::ResolvedColumnRef::Kind::StoredColumn)
       return true;  // CTE virt — descriptor not yet built here.
     if (ref.dict_column == NULL) return true;
-    return ref.dict_column->getNullable();
+    if (ref.dict_column->getNullable()) return true;
+    // A column of a table the scope LEFT JOINs is NULL in its
+    // NULL-extended rows even when declared NOT NULL; the root table's
+    // columns never are (the rule of cte_sum_arg_never_null).  Without
+    // the guard such a row runs the unguarded compare with a NULL
+    // operand, and the pair-op yields its right operand instead of
+    // NULL.
+    if (ref.join_op_idx == 0) return false;
+    return ref.join_op_idx >= scope.join_plan.num_ops ||
+           scope.join_plan.ops[ref.join_op_idx].match_type != JoinOp::INNER;
   }
   if (expr->isGreatest2() || expr->isLeast2())
   {
@@ -18429,6 +18487,28 @@ RonSQLPreparer::prepare_pair_op_null_check_cache(QueryScope& scope)
     {
       agg->m_pair_op_needs_null_check.push(false);
     }
+  }
+}
+
+void
+RonSQLPreparer::prepare_load_width_cache(
+    QueryScope& scope,
+    const std::function<const NdbDictionary::Column*(Uint32)>& load_column)
+{
+  if (scope.agg == NULL) return;
+  AggregationAPICompiler* agg = scope.agg;
+  agg->m_load_is_decimal.truncate();
+  for (Uint32 i = 0; i < agg->m_program.size(); i++)
+  {
+    bool is_decimal = false;
+    if (agg->m_program[i].type == AggregationAPICompiler::SVMInstrType::Load)
+    {
+      const NdbDictionary::Column* col = load_column(agg->m_program[i].src);
+      is_decimal = col != NULL &&
+          (col->getType() == NdbDictionary::Column::Decimal ||
+           col->getType() == NdbDictionary::Column::Decimalunsigned);
+    }
+    agg->m_load_is_decimal.push(is_decimal);
   }
 }
 

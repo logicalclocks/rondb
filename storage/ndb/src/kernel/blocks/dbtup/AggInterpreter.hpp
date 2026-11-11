@@ -69,7 +69,11 @@ class AggInterpreter : public AggInterpreterBase {
   Int32 ProcessRec(Dbtup* block_tup, Dbtup::KeyReqStruct* req_struct,
                    Uint32 thread_id, EmulatedJamBuffer *jamBuf);
 
-  Uint32 PrepareAggResIfNeeded(Signal* signal, bool force);
+  /* Returns the record's length in words, 0 when there is nothing to
+   * send.  Sets *error_code (and returns 0) when a group does not fit
+   * the record's 16-bit length fields; the scan must then fail. */
+  Uint32 PrepareAggResIfNeeded(Signal* signal, bool force,
+                               Uint32* error_code);
   Uint32 NumOfResRecords(bool last_time = false);
   /* gb_map / val_len / n_gb_cols / n_agg_results / agg_results /
    * processed_rows accessors lifted to AggInterpreterBase in Step 3b. */

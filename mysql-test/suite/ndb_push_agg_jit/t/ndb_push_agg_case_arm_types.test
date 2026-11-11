@@ -1,0 +1,14 @@
+# Mirror of suite/ndb_push_agg/t/ndb_push_agg_case_arm_types.test with the
+# JIT active (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056
+# differential. Test logic lives ONLY in the sourced original.
+#
+# The recorded fallback delta below is the coverage pin for this test.
+# A CASE slot updated from a DOUBLE arm and from an integer arm has no
+# single accumulator family, so the bridge rejects those programs
+# (BR_CLAIM_ACC_FAMILY) and the interpreter runs them: the delta is
+# expected to be non-zero. A change in EITHER direction is a coverage
+# change: investigate, then re-record deliberately.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ndb_push_agg/t/ndb_push_agg_case_arm_types.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ndb_push_agg_case_arm_types_jit_fallback_delta;

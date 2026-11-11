@@ -57,6 +57,7 @@ enum NdbAggregatorError {
   kErrTooManyAggResult,
   kErrUnsupportedStringOperation,
   kErrUnsupportedTemporalOperation,
+  kErrMixedStringCaseArms,
   kErrMaxErrno
 };
 
@@ -76,6 +77,7 @@ static AggregationError g_errors_[] = {
   {kErrTooManyAggResult, "Number of aggregation results should be less than 256"},
   {kErrUnsupportedStringOperation, "String columns are only supported for MIN/MAX"},
   {kErrUnsupportedTemporalOperation, "Temporal (DATE/YEAR/DATETIME/TIME) columns are only supported for MIN/MAX/COUNT"},
+  {kErrMixedStringCaseArms, "MIN/MAX over CASE arms needs strings of one type and collation in all arms, or in none"},
   {kErrMaxErrno, ""}
 };
 

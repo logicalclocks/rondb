@@ -1285,11 +1285,11 @@ private:
                              bool is_greatest,
                              bool needs_null_check);
   // Phase I.5 v4 fast path: walk a Greatest2 / Least2 Expr tree and
-  // return true iff any leaf Load reaches a nullable column or an
-  // unresolved CTE virtual column (where nullability isn't known at
-  // compile time).  Used by `prepare_pair_op_null_check_cache` to
-  // populate the AggregationAPICompiler's per-program-index decision
-  // cache.
+  // return true iff any leaf Load reaches a nullable column, a column
+  // of an outer-joined table, or an unresolved CTE virtual column
+  // (where nullability isn't known at compile time).  Used by
+  // `prepare_pair_op_null_check_cache` to populate the
+  // AggregationAPICompiler's per-program-index decision cache.
   bool compute_pair_op_needs_null_check(
       const QueryScope& scope,
       AggregationAPICompiler::Expr* expr) const;
@@ -1297,6 +1297,13 @@ private:
   // m_program slot; only meaningful at pair-op slots) before any
   // raw_word_size or pair-op emission consumes it.  Idempotent.
   void prepare_pair_op_null_check_cache(QueryScope& scope);
+  // Fill scope.agg->m_load_is_decimal (one entry per m_program slot)
+  // before any raw_word_size query.  load_column(src) returns the
+  // column the emitter loads for a Load of source src, NULL if unknown.
+  void prepare_load_width_cache(
+      QueryScope& scope,
+      const std::function<const NdbDictionary::Column*(Uint32)>&
+          load_column);
   void require_cte_case_condition_column_output(QueryScope& scope,
                                                 Uint32 op_idx,
                                                 Uint32 cidx);

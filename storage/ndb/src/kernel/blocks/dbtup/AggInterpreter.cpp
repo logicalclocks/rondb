@@ -484,7 +484,9 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
   return 0;
 }
 
-Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
+Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force,
+                                              Uint32* error_code) {
+  *error_code = 0;
   if (!force && !m_drain_memory) {
     return 0;
   }
@@ -530,6 +532,11 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
           reinterpret_cast<AggResItem*>(iter.data() + key_len);
       Uint32 payload_bytes = has_strings ? stringPayloadSize(slots) : 0;
       Uint32 v_len_total = v_len_base + payload_bytes;
+      if (unlikely(!resultLensFit(key_len, v_len_total))) {
+        /* The group stays in the table, which teardown frees. */
+        *error_code = ZAGG_OTHER_ERROR;
+        break;
+      }
       assert(key_len % 4 == 0 && key_len < 0xFFFF);
       assert(v_len_total % 4 == 0 && v_len_total < 0xFFFF);
       const Uint32 group_bytes =
@@ -565,11 +572,18 @@ Uint32 AggInterpreter::PrepareAggResIfNeeded(Signal* signal, bool force) {
     data_buf[n_groups_pos] = n_groups;
     m_n_groups = m_gb_map->size();
     assert(!m_gb_map->empty() || m_result_size == 0);
+    if (unlikely(*error_code != 0)) {
+      return 0;
+    }
   } else {
     const Uint32 v_len_base = m_n_agg_results * sizeof(AggResItem);
     const Uint32 payload_bytes =
         has_strings ? stringPayloadSize(m_agg_results) : 0;
     const Uint32 v_len_total = v_len_base + payload_bytes;
+    if (unlikely(!resultLensFit(0, v_len_total))) {
+      *error_code = ZAGG_OTHER_ERROR;
+      return 0;
+    }
     data_buf[pos++] = marker << 16 | 0x0721;
     data_buf[pos++] = m_n_gb_cols << 16 | m_n_agg_results;
     data_buf[pos++] = 0;

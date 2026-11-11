@@ -1,0 +1,15 @@
+# Mirror of suite/ronsql/t/ronsql_case_arm_types.test with the JIT active
+# (CompiledInterpreter=ON) — the JIT arm of the RONDB-1056 RonSQL
+# differential. Test logic lives ONLY in the sourced original.
+#
+# Not strict-armed: a CASE slot updated from a DOUBLE arm and from an
+# integer arm, or a GREATEST / LEAST register that is DOUBLE on one path
+# and BIGINT on the other, has no single type, so the bridge rejects
+# those programs and the interpreter runs them.  The recorded fallback
+# delta below is the coverage pin for this test.  A change in EITHER
+# direction is a coverage change: investigate, then re-record
+# deliberately.
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+--source suite/ronsql/t/ronsql_case_arm_types.test
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+       AS ronsql_case_arm_types_jit_fallback_delta;

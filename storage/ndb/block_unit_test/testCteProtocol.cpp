@@ -91,6 +91,12 @@
  *         1251, and the state fails with it (ERROR, peers told), so a
  *         late REDISTRIBUTE_REQ with the correct identity answers
  *         REDISTRIBUTE_REF 1251 instead of a CONF and a queued group.
+ *   OV-1  CTE_SCAN_REQ whose final-read section asks for more than
+ *         ZATTR_BUFFER_SIZE words per group: CTE_SCAN_REF 1266 with no
+ *         rows, on a first request and on a continuation; the
+ *         continuation's token is released (a reuse answers 1251), and
+ *         a normal scan afterwards still returns every group.  Before
+ *         the fix DBLQH dropped every row of the batch and answered CONF.
  *
  * Section 6, parking.  A consumer signal that arrives before its SETUP
  * parks on an identity placeholder; the SETUP's flush replays it, the 10
@@ -196,6 +202,7 @@ static const Uint32 AGG_MAGIC = 0x0721;
 static const Uint32 AGG_RESULT_ATTR = 0xFF00;
 static const Uint32 ZNODEFAIL_BEFORE_COMMIT = 286;
 static const Uint32 ZJOIN_AGG_STATE_NOT_FOUND = 1251;
+static const Uint32 ZCTE_LOOKUP_OUTPUT_OVERFLOW = 1266;
 /* Temporary (TR): a race or a resource shortage a retry survives. */
 static const Uint32 ZJOIN_AGG_SETUP_NOT_RECEIVED = 1274;
 static const Uint32 ZJOIN_AGG_PARK_POOL_EXHAUSTED = 1275;
@@ -1028,7 +1035,8 @@ cteReleaseAll(Ctx &c, const std::vector<CteNode> &nodes)
  * TRANSID_AI to senderRef, the nested-CTE feed form, so the rows are
  * counted without parsing.  The first request has no token; a
  * continuation carries the token of the CONF that paused; a close
- * request carries CloseFlag. */
+ * request carries CloseFlag.  OV-1 adds an AttrInfo section, sent
+ * fragmented as it is larger than one transporter message. */
 struct CteScanParams {
   Uint32 node;
   Uint32 instance;       /* DBLQH instance: the owner LDM */
@@ -1038,10 +1046,12 @@ struct CteScanParams {
   Uint32 flags;
   Uint32 coordinatorRef;
   Uint32 senderRef;
+  const std::vector<Uint32> *attrInfo;   /* null: no AttrInfo section */
   CteScanParams(const CteNode &n, SignalSender &ss)
       : node(n.node), instance(n.owner), key(n.key),
         batchSize(CTE_SCAN_BATCH), scanIterI(RNIL), flags(0),
-        coordinatorRef(ss.getOwnRef()), senderRef(ss.getOwnRef()) {}
+        coordinatorRef(ss.getOwnRef()), senderRef(ss.getOwnRef()),
+        attrInfo(nullptr) {}
 };
 
 static int
@@ -1066,6 +1076,17 @@ sendCteScanReq(SignalSender &ss, const CteScanParams &p)
     len = CteScanReq::SignalLengthClose;
   } else if (p.scanIterI != RNIL) {
     len = CteScanReq::SignalLengthContinue;
+  }
+  if (p.attrInfo != nullptr) {
+    ssig.header.m_noOfSections = 1;
+    ssig.ptr[CteScanReq::AttrInfoSectionNum].p = p.attrInfo->data();
+    ssig.ptr[CteScanReq::AttrInfoSectionNum].sz = (Uint32)p.attrInfo->size();
+    if (ss.sendFragmentedSignal(p.node, ssig, numberToBlock(DBLQH, p.instance),
+                                GSN_CTE_SCAN_REQ, len) != SEND_OK) {
+      fprintf(stderr, "sendFragmentedSignal CTE_SCAN_REQ failed\n");
+      return -1;
+    }
+    return 0;
   }
   ssig.set(ss, 0, numberToBlock(DBLQH, p.instance), GSN_CTE_SCAN_REQ, len);
   if (ss.sendSignal(p.node, &ssig) != SEND_OK) {
@@ -1948,6 +1969,90 @@ id8(Ctx &c)
   return checkLeaks(c.ss, c.restarter, "ID-8");
 }
 
+/* OV-1: DBLQH builds one CTE row in a buffer of ZATTR_BUFFER_SIZE (32768)
+ * words.  The final-read section below reads the BIGINT GROUP BY key
+ * (virtual column 0) and the BIGINT SUM (column 1) alternately; each read
+ * emits 3 words, so one row needs more than the buffer holds.  No
+ * FLUSH_AI: nothing is sent before the overflow is detected.  SQL cannot
+ * build this: one CTE group is at most 16 KB at declared sizes
+ * (MAX_AGG_RESULT_BATCH_BYTES) and RonSQL reads each column once. */
+static const Uint32 OV_ROW_BUFFER_WORDS = 32768;
+static const Uint32 OV_READS = OV_ROW_BUFFER_WORDS / 3 + 64;
+
+static std::vector<Uint32>
+buildOverflowAttrInfo()
+{
+  std::vector<Uint32> ai;
+  ai.push_back(0);         /* initReadLen */
+  ai.push_back(0);         /* interpretLen: no filter */
+  ai.push_back(0);         /* finalUpdateLen */
+  ai.push_back(OV_READS);  /* finalReadLen */
+  ai.push_back(0);         /* subLen */
+  for (Uint32 i = 0; i < OV_READS; i++) {
+    Uint32 word = 0;
+    AttributeHeader::init(&word, i & 1, 0);
+    ai.push_back(word);
+  }
+  return ai;
+}
+
+/* OV-1: a row wider than DBLQH's output buffer fails the scan with
+ * CTE_SCAN_REF 1266 and no rows, on a first request and on a
+ * continuation, and frees the continuation's iterator record.  Before
+ * the fix cteScanEmitResults dropped every row of the batch and still
+ * answered CTE_SCAN_CONF with numRows counting them. */
+static int
+ov1(Ctx &c)
+{
+  std::vector<CteNode> nodes;
+  Uint32 rows = 0;
+  if (cteSetupAndScan(c, nodes, rows) != 0) return -1;
+  if (cteCompleteAll(c, nodes, 0, 0) != 0) return -1;
+  const CteNode &src = nodes[0];
+  const std::vector<Uint32> wide = buildOverflowAttrInfo();
+
+  /* A paused scan, continued below with the wide final-read section. */
+  CteScanParams live(src, c.ss);
+  live.batchSize = 1;
+  bool endOfData = false;
+  Uint32 batchRows = 0;
+  if (cteScanBatch(c.ss, live, "OV-1 first batch", batchRows, endOfData) != 0)
+    return -1;
+  if (endOfData) {
+    fprintf(stderr, "OV-1: node %u holds too few groups to pause a scan\n",
+            src.node);
+    return -1;
+  }
+  {
+    CteScanParams p(src, c.ss);
+    p.attrInfo = &wide;
+    if (cteScanExpectRef(c.ss, p, "OV-1 first request, row too wide",
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW) != 0)
+      return -1;
+  }
+  {
+    CteScanParams p = live;
+    p.attrInfo = &wide;
+    if (cteScanExpectRef(c.ss, p, "OV-1 continuation, row too wide",
+                         ZCTE_LOOKUP_OUTPUT_OVERFLOW) != 0)
+      return -1;
+    /* The REF freed the iterator record: the token is gone. */
+    p.attrInfo = nullptr;
+    if (cteScanExpectRef(c.ss, p, "OV-1 token released by the overflow",
+                         ZJOIN_AGG_STATE_NOT_FOUND) != 0)
+      return -1;
+  }
+  /* The CTE itself is unharmed. */
+  Uint32 groups = 0;
+  if (cteScanGroups(c, nodes, groups) != 0) return -1;
+  if (groups != rows) {
+    fprintf(stderr, "OV-1: %u groups scanned, expected %u\n", groups, rows);
+    return -1;
+  }
+  if (cteReleaseAll(c, nodes) != 0) return -1;
+  return checkLeaks(c.ss, c.restarter, "OV-1");
+}
+
 /* ------------------------------------------------------------------ */
 /* Section 6: parking                                                  */
 /* ------------------------------------------------------------------ */
@@ -2785,6 +2890,7 @@ int main(int argc, char **argv)
           {"ID-5 CTE scan continuation tokens", id5},
           {"ID-6 consumer requests of a failed coordinator", id6},
           {"ID-8 late group after a refused COMPLETE", id8},
+          {"OV-1 CTE scan row wider than the output buffer", ov1},
           {"PK-1a owner-plane signals parked and replayed", pk1OwnerPlane},
           {"PK-1b consumer feeds parked and replayed", pk1Feeds},
           {"PK-2 identity-addressed COMPLETE", pk2},

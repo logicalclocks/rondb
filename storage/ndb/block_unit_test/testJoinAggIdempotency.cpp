@@ -673,24 +673,70 @@ runCancellationBarriers(Ndb *ndb, const char *connectString)
   return 0;
 }
 
-/* Pick keys whose primary replicas are on different data nodes.
- * READ_BACKUP=0 forces the self-join lookup feeding SUM to those owners,
- * so each node receives exactly one value and only redistribution can
- * overflow. Re-fetch metadata after each query invalidates its cache. */
+/* Where the summed rows of group 1 are placed. READ_BACKUP=0 forces
+ * the self-join lookup feeding SUM to each row's primary replica, which
+ * an idle node runs on the LDM thread owning the fragment; each thread
+ * sums into its own table (MUTEX_FREE).
+ *   TwoNodes: one row per node, so only redistribution can overflow.
+ *   OneNode:  both rows on one node, in fragments of two LDMs, so the
+ *             node's COMPLETE merge of its per-thread tables overflows
+ *             (continueJoinAggMerge) while its peer waits at the
+ *             FINAL_REP barrier.
+ *   EachNode: OneNode on both nodes, so both merges fail.
+ * A busy node may run both lookups on one thread; that thread's own SUM
+ * then overflows with the same error. */
+enum class SumPlacement { TwoNodes, OneNode, EachNode };
+
+/* LDM instance of each (node, fragment) replica of the source table. */
 static int
-insertDistributedPair(Ndb *ndb, Int64 left, Int64 right)
+getFragmentLdms(MYSQL *conn,
+                std::map<std::pair<Uint32, Uint32>, Uint32> &ldms)
+{
+  if (runSql(conn,
+             "SELECT node_id, fragment_num, block_instance"
+             " FROM ndbinfo.memory_per_fragment"
+             " WHERE fq_name = 'test/def/jagidem_src'") != 0)
+    return -1;
+  MYSQL_RES *res = mysql_store_result(conn);
+  if (res == nullptr) {
+    fprintf(stderr, "FAILED (reading fragment LDMs: %s)\n",
+            mysql_error(conn));
+    return -1;
+  }
+  MYSQL_ROW row;
+  while ((row = mysql_fetch_row(res)) != nullptr) {
+    ldms[{Uint32(atoi(row[0])), Uint32(atoi(row[1]))}] =
+        Uint32(atoi(row[2]));
+  }
+  mysql_free_result(res);
+  return 0;
+}
+
+/* Insert left and right into group 1 at the given placement (EachNode
+ * inserts them on both nodes). Re-fetch metadata after each query
+ * invalidates its cache. */
+static int
+insertPlacedRows(Ndb *ndb, MYSQL *conn, SumPlacement placement,
+                 Int64 left, Int64 right)
 {
   auto *dict = ndb->getDictionary();
   dict->invalidateTable(SRC_TABLE);
   const auto *tab = dict->getTable(SRC_TABLE);
   if (tab == nullptr || tab->getReadBackupFlag() || tab->getFullyReplicated()) {
-    fprintf(stderr, "FAILED (distributed SUM requires primary-only reads)\n");
+    fprintf(stderr, "FAILED (placed SUM requires primary-only reads)\n");
     return -1;
   }
-  Int32 keys[2] = {};
-  Uint32 nodes[2] = {};
+  std::map<std::pair<Uint32, Uint32>, Uint32> ldms;
+  if (placement != SumPlacement::TwoNodes &&
+      getFragmentLdms(conn, ldms) != 0)
+    return -1;
+  const Uint32 wanted = placement == SumPlacement::EachNode ? 4 : 2;
+  Int32 keys[4] = {};
+  Uint32 nodes[4] = {};
+  Uint32 ldmOf[4] = {};
   Uint32 found = 0;
-  for (Int32 candidate = 1; candidate <= 10000 && found < 2; candidate++) {
+  for (Int32 candidate = 1; candidate <= 10000 && found < wanted;
+       candidate++) {
     Ndb::Key_part_ptr parts[] = {
       {&candidate, sizeof(candidate)}, {nullptr, 0}
     };
@@ -705,19 +751,45 @@ insertDistributedPair(Ndb *ndb, Int64 left, Int64 right)
       fprintf(stderr, "FAILED (finding primary replica)\n");
       return -1;
     }
-    if (found == 0 || node != nodes[0]) {
+    Uint32 ldm = 0;
+    if (placement != SumPlacement::TwoNodes) {
+      const auto it = ldms.find({node, fragment});
+      if (it == ldms.end()) {
+        fprintf(stderr, "FAILED (no LDM for node %u fragment %u)\n",
+                node, fragment);
+        return -1;
+      }
+      ldm = it->second;
+    }
+    /* Odd rows pair with the row before them: TwoNodes on another
+     * node, otherwise on the same node and another LDM. EachNode's
+     * second pair goes to another node than the first. */
+    bool take;
+    if (found % 2 == 1) {
+      take = placement == SumPlacement::TwoNodes
+                 ? node != nodes[found - 1]
+                 : node == nodes[found - 1] && ldm != ldmOf[found - 1];
+    } else {
+      take = found == 0 || node != nodes[0];
+    }
+    if (take) {
       keys[found] = candidate;
-      nodes[found++] = node;
+      nodes[found] = node;
+      ldmOf[found++] = ldm;
     }
   }
-  if (found != 2) {
-    fprintf(stderr, "FAILED (SUM test requires keys on two data nodes)\n");
+  if (found != wanted) {
+    fprintf(stderr, "FAILED (SUM test requires keys on two data nodes%s)\n",
+            placement == SumPlacement::TwoNodes ? ""
+                                                : ", two LDMs each");
     return -1;
   }
-  V("  keys %d/%d on primary nodes %u/%u\n",
-    keys[0], keys[1], nodes[0], nodes[1]);
-  if (insertOneRow(ndb, tab, keys[0], 1, left) != 0) return -1;
-  return insertOneRow(ndb, tab, keys[1], 1, right);
+  for (Uint32 i = 0; i < found; i++) {
+    V("  key %d on primary node %u LDM %u\n", keys[i], nodes[i], ldmOf[i]);
+    if (insertOneRow(ndb, tab, keys[i], 1, i % 2 == 0 ? left : right) != 0)
+      return -1;
+  }
+  return 0;
 }
 
 static int
@@ -735,33 +807,47 @@ runSumMergeOverflows(Ndb *ndb, MYSQL *conn)
     {"minimum in range", INT64_MIN + 1, -1, INT64_MIN, 0},
     {"opposite signs", INT64_MIN, INT64_MAX, -1, 0},
   };
+  const struct {
+    SumPlacement placement;
+    const char *name;
+  } placements[] = {
+    {SumPlacement::TwoNodes, "Distributed"},
+    {SumPlacement::OneNode, "Intra-node"},
+    {SumPlacement::EachNode, "Intra-node on each node"},
+  };
   Uint32 iteration = 0;
-  for (const auto& c : cases) {
-    for (bool independent : {false, true}) {
-      for (bool reverse : {false, true}) {
-        printf("Distributed SUM: %s independent=%u reverse=%u ... ",
-               c.name, unsigned(independent), unsigned(reverse));
-        fflush(stdout);
-        if (runSql(conn, "DELETE FROM jagidem_src") != 0) return -1;
-        if (insertDistributedPair(ndb, reverse ? c.right : c.left,
-                                   reverse ? c.left : c.right) != 0)
-          return -1;
-        const CteMergeProbe probe = {c.total};
-        const int result = runChainedCteOnce(
-            ndb, iteration, c.error, independent, nullptr, &probe);
+  for (const auto& p : placements) {
+    for (const auto& c : cases) {
+      // The nodes' in-range totals would also add up across nodes.
+      if (p.placement == SumPlacement::EachNode && c.error == 0) continue;
+      for (bool independent : {false, true}) {
+        for (bool reverse : {false, true}) {
+          printf("%s SUM: %s independent=%u reverse=%u ... ",
+                 p.name, c.name, unsigned(independent), unsigned(reverse));
+          fflush(stdout);
+          if (runSql(conn, "DELETE FROM jagidem_src") != 0) return -1;
+          if (insertPlacedRows(ndb, conn, p.placement,
+                               reverse ? c.right : c.left,
+                               reverse ? c.left : c.right) != 0)
+            return -1;
+          const CteMergeProbe probe = {c.total};
+          const int result = runChainedCteOnce(
+              ndb, iteration, c.error, independent, nullptr, &probe);
 
-        // Restore the normal data even when the result check fails.
-        if (runSql(conn, "DELETE FROM jagidem_src") != 0 ||
-            insertTestData(ndb) != 0)
-          return -1;
-        if (result != 0) return -1;
-        printf("OK (result/error and close verified)\n");
-        printf("Recovery after %s independent=%u reverse=%u ... ",
-               c.name, unsigned(independent), unsigned(reverse));
-        fflush(stdout);
-        if (runChainedCteOnce(ndb, iteration, 0, independent) != 0) return -1;
-        printf("OK (five rows verified)\n");
-        iteration++;
+          // Restore the normal data even when the result check fails.
+          if (runSql(conn, "DELETE FROM jagidem_src") != 0 ||
+              insertTestData(ndb) != 0)
+            return -1;
+          if (result != 0) return -1;
+          printf("OK (result/error and close verified)\n");
+          printf("Recovery after %s %s independent=%u reverse=%u ... ",
+                 p.name, c.name, unsigned(independent), unsigned(reverse));
+          fflush(stdout);
+          if (runChainedCteOnce(ndb, iteration, 0, independent) != 0)
+            return -1;
+          printf("OK (five rows verified)\n");
+          iteration++;
+        }
       }
     }
   }

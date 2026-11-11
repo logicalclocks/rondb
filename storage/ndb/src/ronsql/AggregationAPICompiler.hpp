@@ -260,6 +260,11 @@ public:
   // expansion, false = emit the 9-word embedded body + Mov fast path.
   // Only meaningful at indices where m_program[i] is a pair-op.
   DynamicArray<bool> m_pair_op_needs_null_check;
+  // Per-program-index: true when m_program[i] is a Load of a DECIMAL
+  // column, which NdbAggregator emits as two words (kOpLoadCol and its
+  // precision / scale word).  Filled by RonSQLPreparer from the column
+  // each emitter loads, before any raw_word_size query.
+  DynamicArray<bool> m_load_is_decimal;
 private:
   Uint32 m_locked[REGS];
 public:

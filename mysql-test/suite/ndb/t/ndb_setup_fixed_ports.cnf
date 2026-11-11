@@ -14,7 +14,7 @@
 PortNumber=1186
 
 [cluster_config.1]
-DataMemory=100M
+DataMemory=400M
 [cluster_config.ndbd.1.1]
 ServerPort=11861
 

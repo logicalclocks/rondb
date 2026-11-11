@@ -79,9 +79,10 @@ typedef struct {
   void       *_slot;     /* opaque: owning NjcSlot* */
 } NdbJitCodeSlot;
 
-/* Largest blob the manager can place. Requests above this fail alloc
+/* Largest blob the manager can place: the top size class in
+ * jit_codemem.c, which is this value. Requests above this fail alloc
  * (the program stays on the interpreter). */
-#define NDB_JIT_CODEMEM_MAX_BLOB 8192u
+#define NDB_JIT_CODEMEM_MAX_BLOB 65536u
 
 /**
  * Create a manager whose slabs may reserve at most @p cap_bytes of
