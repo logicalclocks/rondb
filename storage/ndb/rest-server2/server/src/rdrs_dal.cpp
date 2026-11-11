@@ -171,6 +171,18 @@ RS_Status set_metadata_cluster_op_retry_props(
   return RS_OK;
 }
 
+RS_Status stop_reconnecting() {
+  /* The probe path's pointer: published only once every connection has
+   * been added, so a startup failure that reaches do_exit() with a
+   * partly built pool finds nullptr here. */
+  RDRSRonDBConnectionPool *pool =
+    probeVisiblePool.load(std::memory_order_acquire);
+  if (pool != nullptr) {
+    pool->StopReconnecting();
+  }
+  return RS_OK;
+}
+
 RS_Status shutdown_connection() {
   /* Unpublish from the probe path first; the probe server itself is joined
    * before this runs (do_exit ordering), so this is a backstop, not the
