@@ -4392,16 +4392,38 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
    * already handle: data nodes fall back to a local node id
    * reservation (same as the existing leaderless NotMaster-0xFFFF
    * path) and API allocation returns a bounded retry/error.
+   *
+   * When the master does answer, only not yet, report
+   * NODEID_ALLOC_NOT_READY instead and the client retries: the master
+   * still handles the failure of the previous start of the node id, or
+   * another node id allocation (NodeFailureHandlingNotCompleted, Busy).
+   * A data node given its node id locally then would connect to us
+   * before NF_COMPLETEREP of its previous failure arrives, see
+   * ClusterMgr::execNF_COMPLETEREP().
    */
   const NDB_TICKS alloc_start = NdbTick_getCurrentTicks();
   const Uint32 alloc_deadline_ms = (timeout_ms != 0) ? timeout_ms : 20000;
   Uint32 consecutive_not_master = 0;
   Uint32 consecutive_busy = 0;
+  /* Error code of the last ALLOC_NODEID_REF, 0 when there is none */
+  Uint32 last_ref_error = 0;
   while (1)
   {
     if (NdbTick_Elapsed(alloc_start, NdbTick_getCurrentTicks()).milliSec() >
         alloc_deadline_ms)
     {
+      if (last_ref_error == AllocNodeIdRef::NodeFailureHandlingNotCompleted ||
+          last_ref_error == AllocNodeIdRef::Busy) {
+        g_eventLogger->info(
+            "Alloc node id %u abandoned after %u ms, the data nodes still "
+            "answer: %s (%u)",
+            free_node_id, alloc_deadline_ms,
+            (last_ref_error == AllocNodeIdRef::Busy
+                 ? "System busy with another nodeid allocation"
+                 : "Node id not yet ready for use"),
+            last_ref_error);
+        return NODEID_ALLOC_NOT_READY;
+      }
       g_eventLogger->info(
           "Alloc node id %u abandoned after %u ms without a conclusive "
           "answer from the data nodes",
@@ -4456,6 +4478,7 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
       case GSN_ALLOC_NODEID_REF: {
         const AllocNodeIdRef *const ref =
             CAST_CONSTPTR(AllocNodeIdRef, signal->getDataPtr());
+        last_ref_error = ref->errorCode;
         if (ref->errorCode == AllocNodeIdRef::NotMaster &&
             refToNode(ref->masterRef) == 0xFFFF) {
           /*
@@ -4584,6 +4607,8 @@ int MgmtSrvr::alloc_node_id_req(NodeId free_node_id,
         if (BitmaskImpl::safe_get(len, nbm, nodeId)) {
           do_send = 1;
           nodeId = 0;
+          /* Its answer is no longer an answer of the cluster */
+          last_ref_error = 0;
         }
         continue;
       }
@@ -4823,6 +4848,18 @@ int MgmtSrvr::try_alloc(NodeId id, ndb_mgm_node_type type, Uint32 timeout_ms,
       g_eventLogger->debug("Retrying allocation of nodeid %u...", id);
       NdbSleep_MilliSleep(1000);
       continue;
+    }
+
+    if (res == NODEID_ALLOC_NOT_READY) {
+      /*
+        The data nodes answer but do not allow the node id yet, see
+        alloc_node_id_req(). Do not reserve it locally as below, the
+        client retries.
+      */
+      g_eventLogger->debug("Nodeid %u is not ready for use yet", id);
+      error_string.appfmt("Node id %u is not ready for use yet, retry", id);
+      error_code = NDB_MGM_ALLOCID_ERROR;
+      return -1;
     }
 
     if (res == NO_CONTACT_WITH_DB_NODES && type == NDB_MGM_NODE_TYPE_NDB) {

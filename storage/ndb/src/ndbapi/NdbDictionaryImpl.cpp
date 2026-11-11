@@ -1055,6 +1055,7 @@ void NdbTableImpl::init() {
   m_base_partition_key_count = 0;
   m_detail_partition_key_count = 0;
   m_base_partition_fanout = 1;
+  m_partition_hash_derived = false;
   m_index = nullptr;
   m_indexType = NdbDictionary::Object::TypeUndefined;
   m_noOfKeys = 0;
@@ -1398,6 +1399,7 @@ int NdbTableImpl::assign(const NdbTableImpl &org) {
   m_base_partition_key_count = org.m_base_partition_key_count;
   m_detail_partition_key_count = org.m_detail_partition_key_count;
   m_base_partition_fanout = org.m_base_partition_fanout;
+  m_partition_hash_derived = org.m_partition_hash_derived;
   m_partitionBalance = org.m_partitionBalance;
   m_single_user_mode = org.m_single_user_mode;
   m_extra_row_gci_bits = org.m_extra_row_gci_bits;
@@ -1580,13 +1582,23 @@ void NdbTableImpl::computeAggregates() {
     }
   }
 
-  if (m_base_partition_key_count == 0 &&
-      m_detail_partition_key_count == 0 &&
-      m_base_partition_fanout == 1) {
+  /**
+   * Without partition hash metadata the base keys are the distribution
+   * keys and the detail keys the other primary keys, fanout 1. Derive
+   * them on every call until setPartitionHash() sets them: a table
+   * definition can still get primary key or distribution key changes after
+   * an aggregate, e.g. NDBT_Table aggregates in its constructor and a test
+   * adds primary key columns to a copy before it creates the table.
+   */
+  if (m_partition_hash_derived ||
+      (m_base_partition_key_count == 0 &&
+       m_detail_partition_key_count == 0 &&
+       m_base_partition_fanout == 1)) {
     const Uint32 base_key_count =
         (m_noOfDistributionKeys == 0) ? m_noOfKeys : m_noOfDistributionKeys;
     m_base_partition_key_count = base_key_count;
     m_detail_partition_key_count = m_noOfKeys - base_key_count;
+    m_partition_hash_derived = true;
   }
 }
 
@@ -1612,6 +1624,7 @@ void NdbTableImpl::setPartitionHash(Uint32 base_key_count,
   m_base_partition_key_count = base_key_count;
   m_detail_partition_key_count = detail_key_count;
   m_base_partition_fanout = fanout;
+  m_partition_hash_derived = false;
 }
 
 Uint32 NdbTableImpl::getPartitionHashBaseKeyCount() const {

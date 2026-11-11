@@ -638,6 +638,8 @@ ErrorBundle ErrorCodes[] = {
   { 308,  DMEC, IE, "Out of Schema Memory" },
   { 311,  DMEC, AE, "Undefined partition used in setPartitionId" },
   { 460,  DMEC, SE, "Out of SchemaMemory, please modify SchemaMemory config parameter" },
+  { 604,  DMEC, SE, "Out of SchemaMemory for ACC fragment records, please modify SchemaMemory config parameter" },
+  { 817,  DMEC, SE, "Out of SchemaMemory for TUP fragment records, please modify SchemaMemory config parameter" },
   { 703,  DMEC, SE, "Invalid table format" },
   { 704,  DMEC, SE, "Attribute name too long" },
   { 705,  DMEC, SE, "Table name too long" },
@@ -1192,6 +1194,10 @@ ErrorBundle ErrorCodes[] = {
     "Data nodes failed Set Location_Domain_Id Request"},
   { 5070 /* FAILED_SET_CONFIG_PARAM_REQUEST */, DMEC, AE,
     "Data nodes failed Set Config Param Request"},
+  { 5071 /* NODEID_ALLOC_NOT_READY */, DMEC, TO,
+    "Timeout waiting for the data nodes to allow the node id, they still "
+    "handle the failure of its previous start or another node id "
+    "allocation. Retry."},
   { 1120, DMEC, AE,
     "Set Location_Domain_Id Request failed, busy state"}
 };

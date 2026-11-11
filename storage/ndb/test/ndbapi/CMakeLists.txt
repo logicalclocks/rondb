@@ -122,12 +122,23 @@ TARGET_LINK_LIBRARIES(testSRBank ndbbank ndbNDBT ndbclient_so)
 
 # Some tests can run independently and are also built as CTest unit tests
 #
-IF(NOT WITH_UNIT_TESTS)
-  NDB_ADD_EXECUTABLE(testMgmd testMgmd.cpp NDBTEST NDBCLIENT)
-  NDB_ADD_EXECUTABLE(testTls  testTls.cpp NDBTEST NDBCLIENT)
-ELSE()
-  NDB_ADD_TEST(testMgmd testMgmd.cpp LIBS ndbNDBT ndbclient_so)
-  NDB_ADD_TEST(testTls  testTls.cpp LIBS ndbNDBT ndbclient_so)
+# They are installed also then, unlike NDB_ADD_TEST: Autotest runs testMgmd
+# test cases with atrt from the install (daily-basic--01-tests.txt). The
+# CTest registration is the one of MYSQL_ADD_EXECUTABLE(... ADD_TEST ...).
+NDB_ADD_EXECUTABLE(testMgmd testMgmd.cpp NDBTEST NDBCLIENT)
+NDB_ADD_EXECUTABLE(testTls  testTls.cpp NDBTEST NDBCLIENT)
+IF(WITH_UNIT_TESTS)
+  FOREACH(unit_test testMgmd testTls)
+    ADD_DEPENDENCIES(unittest_all ${unit_test})
+    ADD_TEST(NAME ${unit_test} COMMAND ${unit_test})
+    SET_TESTS_PROPERTIES(${unit_test} PROPERTIES LABELS "NDB")
+    IF(UNIX AND WITH_SOME_SANITIZER)
+      SET_PROPERTY(TEST ${unit_test} APPEND PROPERTY ENVIRONMENT
+        "ASAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/mysql-test/asan.supp"
+        "LSAN_OPTIONS=suppressions=${CMAKE_SOURCE_DIR}/mysql-test/lsan.supp,exitcode=42"
+        "UBSAN_OPTIONS=print_stacktrace=1,halt_on_error=1")
+    ENDIF()
+  ENDFOREACH()
 ENDIF()
 
 IF(WITH_NDB_JAVA)

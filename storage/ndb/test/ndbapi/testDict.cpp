@@ -1137,9 +1137,16 @@ int runCreateMaxTables(NDBT_Context *ctx, NDBT_Step *step) {
     if (newTab.createTableInDb(pNdb) != 0) {
       ndbout << tabName << " could not be created: " << pDic->getNdbError()
              << endl;
-      if (pDic->getNdbError().code == 625 || pDic->getNdbError().code == 707 ||
-          pDic->getNdbError().code == 708 || pDic->getNdbError().code == 826 ||
-          pDic->getNdbError().code == 827 || pDic->getNdbError().code == 921)
+      /*
+        The cluster is full. The table records of DICT and the fragment
+        records of all blocks come from SchemaMemory, so the block that
+        runs out of it first decides the error: DIH 308, LQH 460, ACC 604,
+        TUP 817, TUX 904, or DICT.
+      */
+      const int code = pDic->getNdbError().code;
+      if (code == 625 || code == 707 || code == 708 || code == 826 ||
+          code == 827 || code == 921 || code == 308 || code == 460 ||
+          code == 604 || code == 817 || code == 904)
         break;
       return NDBT_FAILED;
     }

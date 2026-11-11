@@ -322,6 +322,8 @@ class NdbTableImpl : public NdbDictionary::Table, public NdbDictObjectImpl {
   Uint32 m_base_partition_key_count;
   Uint32 m_detail_partition_key_count;
   Uint32 m_base_partition_fanout;
+  // The partition hash above is derived by computeAggregates(), not set
+  bool m_partition_hash_derived;
   NdbDictionary::Object::PartitionBalance m_partitionBalance;
   Uint8 m_single_user_mode;
   Uint8 m_storageType;  // NDB_STORAGETYPE_MEMORY or _DISK or DEFAULT

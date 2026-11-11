@@ -467,7 +467,16 @@
  */
 #define MAX_EVENT_REP_SIZE_WORDS 1024
 
-#define MAX_UNDO_DATA 20 + MAX_DISK_VAR_SIZE_IN_WORDS
+/**
+ * Largest UNDO record executed by DBTUP during restart, in words. A record
+ * holds at most a full disk part and a header of at most 6 words
+ * (Dbtup::Disk_undo::Update_Free_FirstVarPart), and LGMAN never splits a
+ * record into a part larger than the record. Dbtup::Apply_undo keeps a
+ * waiting record in an RWPool record, which must fit in one page, so keep
+ * this bound tight. static_asserts in Dbtup.hpp and DbtupDiskAlloc.cpp
+ * check both sides.
+ */
+#define MAX_UNDO_DATA (MAX_DISK_VAR_SIZE_IN_WORDS + 8)
 // Max. number of pending undo records allowed per LDM
 #define MAX_PENDING_UNDO_RECORDS 1000
 
