@@ -385,6 +385,21 @@ static void ndbcluster_binlog_index_purge_wait(THD *thd) {
      -- privilege tables have been modified
 */
 
+/*
+  The name a database is distributed under in mysql.ndb_schema, which is
+  its key there. DROP DATABASE takes the name from the path, which the
+  server lowercases when lower_case_table_names is 2, and
+  Ndb_dd_sync::synchronize_databases() compares names in that case too.
+  CREATE and ALTER DATABASE are given the name as typed, so a database
+  with upper case letters got one ndb_schema row for its CREATE and
+  another for its DROP, and the synchronization after a cluster restart
+  replayed the CREATE: the dropped database came back. The query text
+  keeps the name as typed.
+*/
+static std::string ndb_schema_dist_db_name(const char *db) {
+  return ndb_dd_fs_name_case(db);
+}
+
 static void ndbcluster_binlog_log_query(handlerton *, THD *thd,
                                         enum_binlog_command binlog_command,
                                         const char *query, uint query_length,
@@ -397,9 +412,10 @@ static void ndbcluster_binlog_log_query(handlerton *, THD *thd,
     case LOGCOM_CREATE_DB: {
       DBUG_PRINT("info", ("New database '%s' created", db));
 
+      const std::string dist_db = ndb_schema_dist_db_name(db);
       Ndb_schema_dist_client schema_dist_client(thd);
 
-      if (!schema_dist_client.prepare(db, "")) {
+      if (!schema_dist_client.prepare(dist_db.c_str(), "")) {
         // Could not prepare the schema distribution client
         // NOTE! As there is no way return error, this may have to be
         // revisited, the prepare should be done
@@ -411,8 +427,8 @@ static void ndbcluster_binlog_log_query(handlerton *, THD *thd,
       unsigned int id = schema_dist_client.unique_id();
       unsigned int version = schema_dist_client.unique_version();
 
-      const bool result =
-          schema_dist_client.create_db(query, query_length, db, id, version);
+      const bool result = schema_dist_client.create_db(
+          query, query_length, dist_db.c_str(), id, version);
       if (result) {
         // Update the schema with the generated id and version but skip
         // committing the change in DD. Commit will be done by the caller.
@@ -428,9 +444,10 @@ static void ndbcluster_binlog_log_query(handlerton *, THD *thd,
     case LOGCOM_ALTER_DB: {
       DBUG_PRINT("info", ("The database '%s' was altered", db));
 
+      const std::string dist_db = ndb_schema_dist_db_name(db);
       Ndb_schema_dist_client schema_dist_client(thd);
 
-      if (!schema_dist_client.prepare(db, "")) {
+      if (!schema_dist_client.prepare(dist_db.c_str(), "")) {
         // Could not prepare the schema distribution client
         // NOTE! As there is no way return error, this may have to be
         // revisited, the prepare should be done
@@ -442,8 +459,8 @@ static void ndbcluster_binlog_log_query(handlerton *, THD *thd,
       unsigned int id = schema_dist_client.unique_id();
       unsigned int version = schema_dist_client.unique_version();
 
-      const bool result =
-          schema_dist_client.alter_db(query, query_length, db, id, version);
+      const bool result = schema_dist_client.alter_db(
+          query, query_length, dist_db.c_str(), id, version);
       if (result) {
         // Update the schema with the generated id and version but skip
         // committing the change in DD. Commit will be done by the caller.

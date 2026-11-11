@@ -1,0 +1,12 @@
+CREATE DATABASE Ndb_Sync_Case_Db;
+DROP DATABASE Ndb_Sync_Case_Db;
+# Normal restart of all data nodes
+# The database must not come back on either MySQL Server
+SELECT COUNT(*) AS db_exists FROM information_schema.SCHEMATA
+WHERE LOWER(SCHEMA_NAME) = 'ndb_sync_case_db';
+db_exists
+0
+SELECT COUNT(*) AS db_exists FROM information_schema.SCHEMATA
+WHERE LOWER(SCHEMA_NAME) = 'ndb_sync_case_db';
+db_exists
+0
