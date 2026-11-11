@@ -777,6 +777,283 @@ Number of output lines, including header: 2
 
 
 
+=== Test 48: HAVING IN with SUM absent from SELECT ===
+Expected: o_id=1, n=1
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) IN (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 49: HAVING IN with AVG absent from SELECT ===
+Expected: o_custkey=100, first_id=1; o_custkey=300, first_id=5
+== Query ==
+SELECT o_custkey, MIN(o_id) AS first_id
+FROM orders
+GROUP BY o_custkey
+HAVING AVG(o_total) IN
+  (SELECT MAX(l_price) FROM lineitem GROUP BY l_orderkey);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 50: HAVING NOT IN without NULL inner values ===
+Expected: o_id=2,4; the group with NULL SUM is excluded
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id != 2 GROUP BY i_id));
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 51: HAVING NOT IN with a NULL inner value ===
+Expected: no rows
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id));
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 52: HAVING IN with an empty inner result ===
+Expected: no rows
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 53: HAVING NOT IN with an empty inner result ===
+Expected: o_id=1,2,3,4; the group with NULL SUM is included
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) IN
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id));
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Test 54: HAVING IN traverses arithmetic around an aggregate ===
+Expected: o_id=1, n=1
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING (-SUM(o_k) + 40) IN
+  (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 55: HAVING scalar aggregate over an empty input ===
+Expected: no rows
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) > (SELECT MAX(e_val) FROM empty_table);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 56: HAVING scalar subquery returning no rows ===
+Expected: no rows
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) !=
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id > 100 GROUP BY i_id);
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 57: HAVING NOT preserves UNKNOWN from a scalar NULL ===
+Expected: no rows
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (SUM(o_k) =
+  (SELECT MIN(i_k) FROM nq_inner WHERE i_id = 2));
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 58: HAVING scalar NULL arithmetic before OR ===
+Expected: o_id=1,2,3,4; UNKNOWN OR TRUE keeps every group
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_k) > ((SELECT MAX(e_val) FROM empty_table) + 1)
+  OR COUNT(*) = 1;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== Test 59: HAVING scalar NULL on the left before AND ===
+Expected: no rows; UNKNOWN AND TRUE remains UNKNOWN
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING ((SELECT MAX(e_val) FROM empty_table) - 1) < SUM(o_k)
+  AND COUNT(*) = 1;
+
+Number of output lines, including header: 0
+
+== Diff ==
+==========
+
+
+
+
+=== Test 60: HAVING non-NULL scalar comparison control ===
+Expected: o_id=1,2; n=1 for each
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING (SELECT MAX(i_k) FROM nq_inner) > SUM(o_k);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== Test 61: Scalar subquery as the left operand of IN (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in the left operand of IN.
+
+=== Test 62: Scalar subquery under arithmetic in IN's left operand (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in the left operand of IN.
+
+=== Test 63: Scalar subquery in a negated IN's left operand (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in the left operand of IN.
+
+=== Test 64: EXISTS in the left operand of IN (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in the left operand of IN.
+
+=== Test 65: Scalar subquery inside HAVING IN's left operand (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in the left operand of IN.
+
+=== Test 66: Nested IN in HAVING IN's left operand (rejected) ===
+Error handling: RPE
+ronsql_cli caught exception: A subquery is not supported in the left operand of IN.
+
+=== Test 67: Double NOT preserves arithmetic HAVING IN support ===
+Expected: o_id=1, n=1
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING NOT (NOT ((-SUM(o_k) + 40) IN
+  (SELECT MIN(i_k) FROM nq_inner GROUP BY i_id)));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== Test 68: HAVING validation preserves numeric and aggregate expressions ===
+Expected: o_id=1,2,3,4; n=1 for each
+== Query ==
+SELECT o_id, COUNT(*) AS n
+FROM nq_outer
+GROUP BY o_id
+HAVING SUM(o_amt DIV 100) > 0 AND
+  (MIN(o_k) IS NULL OR
+   (-SUM(o_k) + MAX(o_k) * 2) / COUNT(*) >= AVG(o_k) + 0.0);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===
 DROP TABLE empty_table;
 DROP TABLE lineitem;

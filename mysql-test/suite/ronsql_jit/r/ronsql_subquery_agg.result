@@ -561,6 +561,113 @@ SELECT-list subquery aggregate argument must be a simple column reference, COUNT
 400
 SELECT-list subquery aggregate argument must be a simple column reference, COUNT(*), or COUNT of an integer constant.
 
+=== HAVING IN resolves a nullable SUM subquery alias ===
+Expected: id=1, total=5
+== Query ==
+SELECT e.id,
+  (SELECT SUM(m.val) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS total
+FROM sq_count_entity AS e
+HAVING total IN
+  (SELECT MAX(v.val) FROM sq_count_values AS v GROUP BY v.entity_id);
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== HAVING NOT IN resolves a COUNT subquery alias ===
+Expected: id=3, n=0
+== Query ==
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING NOT (n IN
+  (SELECT MIN(v.entity_id) FROM sq_count_values AS v GROUP BY v.entity_id));
+
+Number of output lines, including header: 2
+
+== Diff ==
+==========
+
+
+
+
+=== HAVING IN resolves a subquery alias inside arithmetic ===
+Expected: id=2, n=1; id=3, n=0
+== Query ==
+SELECT e.id,
+  (SELECT COUNT(*) FROM sq_count_values AS m
+   WHERE m.entity_id = e.id) AS n
+FROM sq_count_entity AS e
+HAVING (n + 1) IN
+  (SELECT MAX(v.ts) FROM sq_count_values AS v GROUP BY v.entity_id);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+
+=== COUNT row guard: binary index scan and missing rows ===
+Expected counts for ids 1,2,3,4: 2,1,0,0
+== Query ==
+SELECT e.id,
+(SELECT COUNT(*) FROM sq_count_binary_values AS m
+WHERE m.entity_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== COUNT row guard: binary primary-key lookup ===
+Expected counts for ids 1,2,3,4: 1,1,0,0
+== Query ==
+SELECT e.id,
+(SELECT COUNT(0) FROM sq_count_binary_values AS m
+WHERE m.row_key = e.entity_key) AS n
+FROM sq_count_binary_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
+=== COUNT row guard: merged filtered and unfiltered aggregates ===
+Expected (n_filtered,id,n_all,n_present): (1,1,2,1), (0,2,1,0), (0,3,0,0), (0,4,0,0)
+== Query ==
+SELECT
+(SELECT COUNT(*) FROM sq_count_binary_values AS m
+WHERE m.entity_key = e.entity_key AND m.score > e.min_score) AS n_filtered,
+e.id,
+(SELECT COUNT(0) FROM sq_count_binary_values AS m2
+WHERE m2.entity_key = e.entity_key) AS n_all,
+(SELECT COUNT(m3.val) FROM sq_count_binary_values AS m3
+WHERE m3.entity_key = e.entity_key) AS n_present
+FROM sq_count_binary_entity AS e;
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+
 === Cleanup ===
 SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
 AS ronsql_subquery_agg_jit_fallback_delta;
