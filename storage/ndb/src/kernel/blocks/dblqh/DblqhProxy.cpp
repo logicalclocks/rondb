@@ -3140,14 +3140,21 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     }
     SectionHandle handle(this, signal);
 
-    // Copy entire section 0 into a single buffer
+    // Copy entire section 0 into a single buffer, followed by room for
+    // the instruction-start bitmap of each leaf (checkProgram below):
+    // insnStartWords of each leaf length, at most one word per leaf
+    // more than insnStartWords of their sum.
     SegmentedSectionPtr ptr;
     ndbrequire(handle.getSection(ptr,
                                  JoinAggSetupReq::AggProgramSectionNum));
     Uint32 totalWords = ptr.sz;
+    const Uint32 insnStartsWords =
+        AggInterpreterBase::insnStartWords(totalWords) +
+        NDB_SPJ_MAX_TREE_NODES;
     Uint32 *allProgsBuf =
-      (Uint32 *)lc_ndbd_pool_malloc(totalWords * sizeof(Uint32),
-                                     RG_QUERY_MEMORY, getThreadId(), false);
+      (Uint32 *)lc_ndbd_pool_malloc(
+          (totalWords + insnStartsWords) * sizeof(Uint32),
+          RG_QUERY_MEMORY, getThreadId(), false);
     if (unlikely(allProgsBuf == nullptr)) {
       jam();
       releaseSections(handle);
@@ -3162,7 +3169,9 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
     //   New: Word 0 = (0x0722 << 16) | numLeaves, then per leaf [progLen, prog...]
     //   Old: Flat single program starting with (0x0721 << 16) | progLen
     Uint32 pos = 0;
-    Uint32 word0 = allProgsBuf[0];
+    /* An empty section is an unrecognized format: the words after it
+     * are the bitmap room, never copied into. */
+    Uint32 word0 = (totalWords > 0) ? allProgsBuf[0] : 0;
     Uint32 numLeaves;
     if ((word0 >> 16) == 0x0722) {
       jam();
@@ -3215,6 +3224,7 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
 
     // Fill each LeafProgram — pointers into allProgsBuf, no extra copies
     Uint32 accOffset = 0;
+    Uint32 *insnStarts = allProgsBuf + totalWords;
     for (Uint32 i = 0; i < numLeaves; i++) {
       Uint32 progLen;
       Uint32 *progStart;
@@ -3244,7 +3254,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
         progStart = allProgsBuf;
         pos = totalWords;
       } else {
-        progLen = allProgsBuf[pos++];
+        /* A section that ends before this leaf's length word gives
+         * length 0, rejected below. */
+        progLen = (pos < totalWords) ? allProgsBuf[pos] : 0;
+        pos++;
         /* New format: per-leaf lengths are explicit — bound them to
          * the section so a malformed frame can never walk out of the
          * copied buffer (same hardening rationale as above). */
@@ -3271,6 +3284,34 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
          * the bridge (BR_CASE_JUMP_STOP). */
       }
 
+      /* The program comes from the API.  Check every leaf here, once:
+       * below, every leaf is optimized and compiled, and the per-row
+       * leaf switch runs leaves 1..N without the interpreter's Init,
+       * which only sees leaf 0.  kOpAvg needs slots after the
+       * program's own (JoinAggInterpreter::Init), which a multi-leaf
+       * layout does not have (setTotalAggResults). */
+      {
+        bool usesAvg = false;
+        const char *reason = AggInterpreterBase::checkProgram(
+            progStart, progLen, insnStarts, &usesAvg);
+        if (reason == nullptr && usesAvg && numLeaves > 1) {
+          reason = "AVG in a multi-leaf program";
+        }
+        if (unlikely(reason != nullptr)) {
+          jam();
+          g_eventLogger->warning(
+              "DblqhProxy: JOIN_AGG_SETUP_REQ leaf %u of %u rejected: %s",
+              i, numLeaves, reason);
+          lc_ndbd_pool_free(allProgsBuf);
+          state->m_all_programs_buf = nullptr;
+          releaseSections(handle);
+          sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                              DbspjErr::InvalidRequest, __LINE__, key,
+                              cteIndex);
+          return;
+        }
+      }
+
       // Read n_agg_results and n_gb_cols from program header word 1
       Uint32 headerWord1 = progStart[1];
       Uint32 leafNAggResults = headerWord1 & 0xFFFF;
@@ -3281,6 +3322,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       state->m_leaf_programs[i].m_acc_offset = accOffset;
       state->m_leaf_programs[i].m_n_agg_results = leafNAggResults;
       state->m_leaf_programs[i].m_agg_prog_start_pos = 8 + leafNGBCols;
+      state->m_leaf_programs[i].m_insn_starts = insnStarts;
+      insnStarts += AggInterpreterBase::insnStartWords(progLen);
       /* JIT result fields default to nullptr; the actual
        * compile attempt happens further down, after
        * OptimizeProgramBuffer has type-specialised the bytecode. */
@@ -3291,6 +3334,22 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
                     i, progLen, leafNGBCols, leafNAggResults,
                     accOffset, 8 + leafNGBCols));
       accOffset += leafNAggResults;
+    }
+    /* Each leaf has at most MAX_AGG_N_RESULTS slots (checkProgram); the
+     * combined row, from which every leaf takes its slots at its
+     * offset, must have no more either (setTotalAggResults, the
+     * interpreters' slot buffers). */
+    if (unlikely(accOffset > MAX_AGG_N_RESULTS)) {
+      jam();
+      g_eventLogger->warning(
+          "DblqhProxy: JOIN_AGG_SETUP_REQ rejected: %u leaves with %u "
+          "aggregate results in all", numLeaves, accOffset);
+      lc_ndbd_pool_free(allProgsBuf);
+      state->m_all_programs_buf = nullptr;
+      releaseSections(handle);
+      sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
+                          DbspjErr::InvalidRequest, __LINE__, key, cteIndex);
+      return;
     }
     state->m_total_agg_results = accOffset;
 

@@ -141,7 +141,7 @@ class AggInterpreterBase : public PushdownInterpreter {
   AggInterpreterBase(PushdownType type, Uint32 prog_len,
                      Int64 table_id, Int64 frag_id, Uint32 thread_id)
     : PushdownInterpreter(type, prog_len, table_id, frag_id, thread_id),
-      m_prog(nullptr), m_agg_prog_start_pos(0),
+      m_prog(nullptr), m_agg_prog_start_pos(0), m_insn_starts(nullptr),
       m_n_agg_results(0), m_agg_results(nullptr), m_acc_offset(0),
       m_n_visible_results(0), m_n_hidden_slots(0),
       m_avg_hidden_map(nullptr), m_avg_finalized(false),
@@ -247,6 +247,46 @@ class AggInterpreterBase : public PushdownInterpreter {
    * across executions (RonSQL); the JIT compile pins its blob in the
    * reuse cache (Phase 8 Slice 4). */
   bool prog_reusable() const { return m_prog_reusable; }
+
+  /* The largest DECIMAL precision and scale of a column, as MySQL's
+   * DECIMAL_MAX_PRECISION and DECIMAL_MAX_SCALE. */
+  static constexpr Int32 AGG_DECIMAL_MAX_PRECISION = 65;
+  static constexpr Int32 AGG_DECIMAL_MAX_SCALE = 30;
+
+  /* Words of the instruction-start bitmap of a prog_len word program. */
+  static Uint32 insnStartWords(Uint32 prog_len) { return (prog_len + 31) >> 5; }
+
+  /**
+   * checkProgram — validate an aggregation program once, before any row
+   * runs it.  The program comes from the API, and the per-row loops
+   * (ProcessRec, executeStandardOpcode, loadColumnTypedFromBuf) index
+   * the register file, the aggregate slots and the DECIMAL decoder with
+   * fields of its words without checking them, so every such field is
+   * checked here:
+   *   - the header: at most MAX_AGG_N_RESULTS aggregate slots and
+   *     MAX_AGG_N_GROUPBY_COLS GROUP BY columns, which fit in the
+   *     program, and a supported version;
+   *   - the operand words of every instruction lie inside the program;
+   *   - register fields are below kRegTotal (the fields are 4 bits);
+   *   - aggregate slot fields are below the header's slot count.  These
+   *     are all the slots the program's rows may touch: a leaf of a
+   *     multi-leaf join aggregation sees its own slots only, from its
+   *     offset in the combined row;
+   *   - DECIMAL precision and scale are those of a possible column
+   *     (bin2decimal trusts them);
+   *   - constants have a type executeStandardOpcode loads;
+   *   - embedded programs pass validateEmbeddedProgram;
+   *   - a kOpSkip lands on an instruction or at the end.
+   * insn_starts (insnStartWords(prog_len) words) gets a bit set for
+   * every word where an instruction starts, for embeddedSkipTarget.
+   * *uses_avg, unless nullptr, tells whether the program has kOpAvg.
+   * Returns nullptr for a valid program, else the reason for the log.
+   * Static: DblqhProxy checks every leaf of a join aggregation with it
+   * at JOIN_AGG_SETUP_REQ, before any of them is optimized, compiled or
+   * run.
+   */
+  static const char* checkProgram(const Uint32* prog, Uint32 prog_len,
+                                  Uint32* insn_starts, bool* uses_avg);
 
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
@@ -395,12 +435,49 @@ class AggInterpreterBase : public PushdownInterpreter {
    * Step 3 Candidate A — peek the program header from the input prog
    * pointer before any m_buf_block allocation, so the subclass can
    * pass right-sized counts to initBufBlock.  Sets m_n_gb_cols /
-   * m_n_agg_results from the header.  Asserts magic / prog_len /
-   * reserved slots match.  On version mismatch logs a warning and
-   * sets *compatible = false; the caller is expected to `return true`
-   * (m_inited stays false; ProcessRec rejects on entry).
+   * m_n_agg_results from the header, unchecked: the subclass bounds
+   * them for the allocation and checkProgram rejects them if too large.
+   * Asserts magic / prog_len / reserved slots match.  On version
+   * mismatch logs a warning and sets *compatible = false; the caller is
+   * expected to `return true` (m_inited stays false; ProcessRec rejects
+   * on entry).
    */
   void peekProgramHeader(const Uint32* prog, bool* compatible);
+
+  /**
+   * Init's checkProgram call, after initBufBlock (so that an Init that
+   * fails with the block allocated means a rejected program, see
+   * has_buf_block) and before initSharedAfterAlloc.  The subclass
+   * allocates insnStartWords(m_prog_len) words after the program copy
+   * for the instruction-start bitmap.  Returns false, logging why, if
+   * the program is rejected.
+   */
+  bool checkInitProgram(const Uint32* prog, const char* class_name);
+
+  /**
+   * Where a row continues after a kOpEmbeddedInterp.  after_emb is the
+   * word after the embedded program (at most m_prog_len), skip_offset
+   * what the embedded program wrote to interpreter output 0, other than
+   * AGG_EMBEDDED_INTERP_STOP_PROGRAM.  A skip to or past the end ends
+   * the row.  The embedded program computes the skip per row, from
+   * registers that may hold column values, so this is the one jump
+   * checkProgram cannot check: returns false when the skip lands on an
+   * operand word (a constant, a DECIMAL precision word, an embedded
+   * program), which the loop would run as an unchecked instruction.
+   */
+  bool embeddedSkipTarget(Uint32 after_emb, Uint32 skip_offset,
+                          Uint32* exec_pos) const {
+    if (skip_offset >= m_prog_len - after_emb) {
+      *exec_pos = m_prog_len;
+      return true;
+    }
+    const Uint32 target = after_emb + skip_offset;
+    if (unlikely(((m_insn_starts[target >> 5] >> (target & 31)) & 1) == 0)) {
+      return false;
+    }
+    *exec_pos = target;
+    return true;
+  }
 
   /**
    * Step 3 Candidate A — common post-allocation Init steps that were
@@ -414,8 +491,8 @@ class AggInterpreterBase : public PushdownInterpreter {
    * m_agg_results slots to NULL_BIGINT, then sets m_inited / m_agg_prog_start_pos
    * and zeroes the register file.  After this returns, the subclass
    * does any class-specific tail work (AggInterpreter: chunk-allocator
-   * budget; JoinAgg: Phase I.17 COUNT-slot pre-init) and finishes with
-   * scanAndValidateEmbeddedPrograms.
+   * budget; JoinAgg: Phase I.17 COUNT-slot pre-init).  The program must
+   * have passed checkInitProgram.
    */
   void initSharedAfterAlloc(const Uint32* prog);
 
@@ -454,16 +531,6 @@ class AggInterpreterBase : public PushdownInterpreter {
                                 Dbtup::KeyReqStruct* req_struct,
                                 Uint32& exec_pos,
                                 const char* class_name);
-
-  /**
-   * scanAndValidateEmbeddedPrograms — walk m_prog from
-   * m_agg_prog_start_pos to m_prog_len and invoke
-   * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Both
-   * subclass Inits call this just before returning; lifted to the
-   * base in Step 3b.  Returns true on success, false if any
-   * embedded program fails validation.
-   */
-  bool scanAndValidateEmbeddedPrograms(const char* class_name);
 
   /**
    * validateEmbeddedProgram — sanity-check an embedded program at
@@ -533,6 +600,11 @@ class AggInterpreterBase : public PushdownInterpreter {
    * 32 KB chunk.) */
   Uint32* m_prog;
   Uint32 m_agg_prog_start_pos;
+  /* m_prog's instruction-start bitmap from checkProgram, read by
+   * embeddedSkipTarget.  Init's own lies after the program copy in
+   * m_buf_block; the multi-leaf leaf switch installs the leaf's
+   * (LeafProgram::m_insn_starts) with its program. */
+  const Uint32* m_insn_starts;
 
   /* Fields lifted in Step 1.3 to support the shared string MIN/MAX
    * helpers (minMaxString / freeGroupStringSlots / stringPayloadSize /

@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-27: join aggregation leaves with too many aggregate slots in all
+Running command
+Result of command: 0
+Test program success!

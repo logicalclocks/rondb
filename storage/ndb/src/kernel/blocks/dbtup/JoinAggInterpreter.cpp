@@ -21,6 +21,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
  */
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -113,14 +114,18 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
    * upward after Init for multi-leaf queries, and the buffers must
    * still fit.  m_gb_map_buf is always allocated (JoinAgg needs
    * scalar-CTE redistribute paths to land entries even with
-   * n_gb_cols == 0). */
+   * n_gb_cols == 0).  The program words are followed by its
+   * instruction-start bitmap.  The header counts are not checked yet:
+   * n_gb_cols is bounded here, a program with larger counts is rejected
+   * right below. */
   if (m_buf_block == nullptr) {
     /* Tail layout: [Uint16 avg-hidden map, MAX entries] then
      * [Uint8 cached-agg-ops, MAX entries].  The Uint16 array comes
      * first so its 2-byte alignment is inherited from the block. */
     char* tail = initBufBlock(
-        /*prog_words=*/m_prog_len,
-        /*n_gb_cols_alloc=*/m_n_gb_cols,
+        /*prog_words=*/m_prog_len + insnStartWords(m_prog_len),
+        /*n_gb_cols_alloc=*/
+        std::min(m_n_gb_cols, Uint32(MAX_AGG_N_GROUPBY_COLS)),
         /*n_agg_results_alloc=*/MAX_AGG_N_RESULTS,
         /*alloc_gb_map=*/true,
         /*extra_tail_bytes=*/MAX_AGG_N_RESULTS *
@@ -133,6 +138,9 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
     m_avg_hidden_map = reinterpret_cast<Uint16*>(tail);
     m_cached_agg_ops = reinterpret_cast<Uint8*>(
         tail + MAX_AGG_N_RESULTS * sizeof(Uint16));
+  }
+  if (!checkInitProgram(prog, "JoinAggInterpreter")) {
+    return false;
   }
 
   /* Common post-allocation steps. */
@@ -312,11 +320,6 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
     extractAggOps(m_prog, m_prog_len, m_agg_prog_start_pos,
                   m_cached_agg_ops, m_n_agg_results,
                   m_avg_hidden_map, m_n_visible_results);
-  }
-
-  /* Validate embedded interpreter blocks (Step 3b — shared helper). */
-  if (!scanAndValidateEmbeddedPrograms("JoinAggInterpreter")) {
-    return false;
   }
   return true;
 }
@@ -1847,8 +1850,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           } else if (res == EMB_NULL_ROW_REJECT ||
                      skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
             exec_pos = m_prog_len;
-          } else {
-            exec_pos += emb_len + skip_offset;
+          } else if (unlikely(!embeddedSkipTarget(exec_pos + emb_len,
+                                                  skip_offset, &exec_pos))) {
+            return ZAGG_EMBEDDED_INTERP_ERROR;
           }
           break;
         }
@@ -1892,8 +1896,9 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
         Uint32 skip_offset = block_tup->c_interpreter_output[0];
         if (skip_offset == AGG_EMBEDDED_INTERP_STOP_PROGRAM) {
           exec_pos = m_prog_len;
-        } else {
-          exec_pos += emb_len + skip_offset;
+        } else if (unlikely(!embeddedSkipTarget(exec_pos + emb_len,
+                                                skip_offset, &exec_pos))) {
+          return ZAGG_EMBEDDED_INTERP_ERROR;
         }
         break;
       }
@@ -1949,6 +1954,7 @@ Int32 JoinAggInterpreter::processRecWithLinkedAttrs(
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_insn_starts = leaf->m_insn_starts;
     m_acc_offset = leaf->m_acc_offset;
     m_jit_entry = leaf->m_jit_entry;
     /* ronsql_jit item 15: a single-leaf program's JIT'd kOpAvg writes
@@ -2756,6 +2762,7 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
     m_prog = const_cast<Uint32*>(leaf->m_agg_program);
     m_prog_len = leaf->m_agg_program_len;
     m_agg_prog_start_pos = leaf->m_agg_prog_start_pos;
+    m_insn_starts = leaf->m_insn_starts;
     m_acc_offset = leaf->m_acc_offset;
     /* Phase 6-3: keep the JIT fields in sync with the program even
      * here — this row never dispatches (m_null_local_columns), but a

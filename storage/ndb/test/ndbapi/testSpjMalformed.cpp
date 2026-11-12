@@ -36,6 +36,8 @@
  *
  * The cases target the suspected weaknesses documented in
  * storage/ndb/claude_files/dbspj/dbspj_attrinfo_protocol.html (P-1 ..).
+ * P-25 .. P-29 send malformed join aggregation programs, which DBLQH
+ * must reject at JOIN_AGG_SETUP_REQ (AggInterpreterBase::checkProgram).
  * Each malformed request is built by taking a known-good, word-for-word
  * SPJ encoding (the POSITIVE CONTROL below, encoded exactly as
  * NdbQueryBuilder would) and perturbing it as little as possible, so a
@@ -69,6 +71,7 @@
 #include <signaldata/TcKeyReq.hpp>
 #include <signaldata/QueryTree.hpp>
 #include <signaldata/DbspjErr.hpp>
+#include <ndbapi/NdbAggregationCommon.hpp>
 #include <cstring>
 #include <vector>
 #include "../../src/ndbapi/SignalSender.hpp"
@@ -167,6 +170,9 @@ struct SpjReq {
   bool joinAgg{false};
   bool withAttrInfo{true};      /* TCKEYREQ: attach the AttrInfo section */
   bool toTcProxy{false};        /* send to DBTC instance 0, not the seized one */
+  /* Skip the SCAN_TABCONF of each completed fragment, wait for the
+   * SCAN_TABREF or the EndOfData SCAN_TABCONF. */
+  bool waitForEnd{false};
   Uint32 scanParallelism{1};
 };
 
@@ -175,7 +181,8 @@ class SpjMalformedChecker {
   SpjMalformedChecker(SignalSender *ss, NdbRestarter *restarter,
                       const NdbDictionary::Table *tab)
       : m_ss(ss), m_restarter(restarter), m_tableId(tab->getObjectId()),
-        m_schemaVersion(tab->getObjectVersion()) {}
+        m_schemaVersion(tab->getObjectVersion()),
+        m_fragmentCount(tab->getFragmentCount()) {}
 
   /* ---- the AttrInfo of a well-formed single-node leaf scan ------------ *
    * Root QN_SCAN_FRAG, no parent, no key, user projection {col0,
@@ -297,6 +304,70 @@ class SpjMalformedChecker {
     }
     r.rcvIds.assign(1, kReceiverId);
     r.scanParallelism = 1;
+  }
+
+  /* ---- join aggregation programs (P-25 .. P-29) ------------------------ *
+   * A JoinAgg SCAN_TABREQ carries the aggregation program in its KeyInfo
+   * section, laid out as NdbQueryImpl::prepareAggregation and
+   * NdbQueryImpl::doSend do: [boundsLen 0][aggReceiverId]
+   * [(0x0722 << 16) | numLeaves] and per leaf [length][program].  DBTC
+   * sends the programs to every data node in JOIN_AGG_SETUP_REQ, where
+   * DblqhProxy checks every leaf and answers a malformed one with
+   * JOIN_AGG_SETUP_REF(DbspjErr::InvalidRequest); DBTC then fails the
+   * scan with SCAN_TABREF.
+   *
+   * The scan is the one-node scan of the control, made the aggregation
+   * leaf, with one receiver per fragment (aggregation scans start every
+   * fragment at once).  The program has two leaves.  Only leaf 0 runs,
+   * on the table's rows: leaf 1 is checked at SETUP or never. */
+
+  /* One leaf's program, as NdbAggregator::Finalize lays it out: the
+   * 8-word header with no GROUP BY column, then body. */
+  static std::vector<Uint32> aggProgram(Uint32 nAggResults,
+                                        const std::vector<Uint32> &body) {
+    std::vector<Uint32> p(8, 0);
+    p.insert(p.end(), body.begin(), body.end());
+    p[0] = (0x0721u << 16) | Uint32(p.size());
+    p[1] = nAggResults;  /* (n_gb_cols << 16) | n_agg_results */
+    p[2] = PUSHDOWN_AGGREGATION_VERSION;
+    return p;
+  }
+
+  static Uint32 aggOp(Uint32 op) { return op << 26; }
+
+  /* COUNT of the BIGINT constant 1: kOpLoadConst into reg (the constant
+   * in two words, little-endian as int8store writes it), then kOpCount
+   * of reg into slot. */
+  static std::vector<Uint32> countBody(Uint32 reg, Uint32 slot) {
+    return {aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) | (reg << 16),
+            1, 0, aggOp(kOpCount) | (reg << 16) | slot};
+  }
+
+  /* A well-formed leaf: one slot, COUNT(1). */
+  static std::vector<Uint32> countLeaf() {
+    return aggProgram(1, countBody(0, 0));
+  }
+
+  void makeJoinAggScan(SpjReq &r,
+                       const std::vector<std::vector<Uint32>> &leaves) {
+    makeWellFormedScan(r);
+    ((QueryNode *)&r.tree[1])->requestInfo = DABits::NI_INNER_JOIN |
+                                             DABits::NI_AGGREGATE |
+                                             DABits::NI_AGGREGATE_LEAF;
+    r.joinAgg = true;
+    r.scanParallelism = m_fragmentCount;
+    r.rcvIds.clear();
+    for (Uint32 i = 0; i < m_fragmentCount; i++) {
+      r.rcvIds.push_back(kReceiverId + i);
+    }
+    r.keyInfo.clear();
+    r.keyInfo.push_back(0);  /* boundsLen */
+    r.keyInfo.push_back(kAggReceiverId);
+    r.keyInfo.push_back((0x0722u << 16) | Uint32(leaves.size()));
+    for (const std::vector<Uint32> &leaf : leaves) {
+      r.keyInfo.push_back(Uint32(leaf.size()));
+      r.keyInfo.insert(r.keyInfo.end(), leaf.begin(), leaf.end());
+    }
   }
 
   /* ---------------------- the cases ----------------------------------- */
@@ -471,15 +542,59 @@ class SpjMalformedChecker {
     return expectSurvive("P-24 SCAN_TABREQ to the DbtcProxy", r);
   }
 
+  int runP25() {  /* leaf 1 aggregate slot out of range */
+    /* Only leaf 0 went through JoinAggInterpreter::Init; leaf 1 ran per
+     * row unchecked, its slot indexing the combined row. */
+    return expectAggRejected(
+        "P-25 join aggregation leaf 1 slot out of range",
+        {countLeaf(), aggProgram(1, countBody(0, 0xFFFF))});
+  }
+
+  int runP26() {  /* n_agg_results above MAX_AGG_N_RESULTS */
+    /* The header's count sized the slot initialisation of a
+     * MAX_AGG_N_RESULTS buffer (a debug build asserted). */
+    return expectAggRejected(
+        "P-26 join aggregation n_agg_results 65535",
+        {aggProgram(0xFFFF, countBody(0, 0)), countLeaf()});
+  }
+
+  int runP27() {  /* leaves with more than MAX_AGG_N_RESULTS slots in all */
+    /* 200 + 100 slots: each leaf is within the limit, the combined row
+     * is not (ndbrequire in setTotalAggResults). */
+    return expectAggRejected(
+        "P-27 join aggregation leaves with 300 slots in all",
+        {aggProgram(200, countBody(0, 0)), aggProgram(100, countBody(0, 0))});
+  }
+
+  int runP28() {  /* register index 15, the register file has 8 */
+    return expectAggRejected(
+        "P-28 join aggregation register 15",
+        {aggProgram(1, countBody(15, 0)), countLeaf()});
+  }
+
+  int runP29() {  /* DECIMAL scale above precision */
+    /* kOpLoadCol of column 0 as DECIMAL(10,40): precision << 16 | scale
+     * in the word after it, then COUNT of the register.  bin2decimal
+     * sizes its read from them (the checks were asserts only). */
+    const std::vector<Uint32> body = {
+        aggOp(kOpLoadCol) | (NDB_TYPE_DECIMAL << 21) | (0u << 16) | 0u,
+        (10u << 16) | 40u, aggOp(kOpCount) | (0u << 16) | 0u};
+    return expectAggRejected("P-29 join aggregation DECIMAL(10,40)",
+                             {aggProgram(1, body), countLeaf()});
+  }
+
  private:
   SignalSender *const m_ss;
   NdbRestarter *const m_restarter;
   const Uint32 m_tableId;
   const Uint32 m_schemaVersion;
+  const Uint32 m_fragmentCount;
   Uint32 m_userPointer{0};
   Uint32 m_childNodeTreeOffset{0};
 
   static constexpr Uint32 kReceiverId = 0x00000001u;
+  /* Above the per-fragment receiver ids of a join aggregation scan */
+  static constexpr Uint32 kAggReceiverId = 0x00010000u;
   static constexpr Uint32 kBatchRows = 16;
   static constexpr Uint32 kBatchBytes = 32768;
 
@@ -589,6 +704,12 @@ class SpjMalformedChecker {
       if (sent == SEND_OK) {
         rep.gsn = waitReplyLocked(GSN_SCAN_TABCONF, GSN_SCAN_TABREF,
                                   seizeUp, nodeId, ReplyMillis, reply);
+        /* reply[1] is ScanTabConf::requestInfo */
+        while (r.waitForEnd && rep.gsn == GSN_SCAN_TABCONF &&
+               (reply[1] & ScanTabConf::EndOfData) == 0) {
+          rep.gsn = waitReplyLocked(GSN_SCAN_TABCONF, GSN_SCAN_TABREF,
+                                    seizeUp, nodeId, ReplyMillis, reply);
+        }
         if (rep.gsn == GSN_SCAN_TABREF) rep.errorCode = reply[3];
       } else {
         rep.disconnected = true;
@@ -676,7 +797,10 @@ class SpjMalformedChecker {
              << gsnName(rep.gsn) << ")" << endl;
       return NDBT_OK;
     }
+    return failNodeDown(findingId);
+  }
 
+  int failNodeDown(const char *findingId) {
     g_err << findingId
           << ": FAIL -- a data node went down on the malformed request. "
              "Attempting recovery for later cases." << endl;
@@ -685,6 +809,53 @@ class SpjMalformedChecker {
       m_restarter->waitClusterStarted(120);
     }
     return NDBT_FAILED;
+  }
+
+  /* A join aggregation case: first the well-formed two-leaf request,
+   * which must get SCAN_TABCONF (without it a harness that never reaches
+   * the aggregation setup would pass every case), then the request with
+   * the malformed leaves, which must get SCAN_TABREF and leave every data
+   * node started.  The REF comes from JOIN_AGG_SETUP_REF with
+   * DbspjErr::InvalidRequest; the error code is printed, not required,
+   * as an error of a fragment scan reaching DBTC first would win. */
+  int expectAggRejected(const char *findingId,
+                        const std::vector<std::vector<Uint32>> &leaves) {
+    SpjReq good;
+    makeJoinAggScan(good, {countLeaf(), countLeaf()});
+    const Reply control = sendScanTabReq(good);
+    printReply("CONTROL (well-formed join aggregation)", control);
+    if (control.gsn != GSN_SCAN_TABCONF) {
+      g_err << "JOIN AGGREGATION CONTROL did not get SCAN_TABCONF (got "
+            << gsnName(control.gsn) << ", err " << control.errorCode
+            << ").  The raw join aggregation encoding is wrong; fix this "
+               "before trusting the result of "
+            << findingId << "." << endl;
+      return clusterHealthy() ? NDBT_FAILED : failNodeDown(findingId);
+    }
+
+    SpjReq r;
+    makeJoinAggScan(r, leaves);
+    r.waitForEnd = true;
+    const Reply rep = sendScanTabReq(r);
+    printReply(findingId, rep);
+
+    /* Give a crash time to surface, then check status. */
+    NdbSleep_MilliSleep(SettleMillis);
+
+    if (!clusterHealthy()) {
+      return failNodeDown(findingId);
+    }
+    if (rep.gsn != GSN_SCAN_TABREF) {
+      g_err << findingId << ": FAIL -- expected SCAN_TABREF, got "
+            << gsnName(rep.gsn)
+            << ": the malformed aggregation program was not rejected"
+            << endl;
+      return NDBT_FAILED;
+    }
+    g_info << findingId << ": PASS (all data nodes started; SCAN_TABREF "
+           << rep.errorCode << ", JOIN_AGG_SETUP_REF sends "
+           << Uint32(DbspjErr::InvalidRequest) << ")" << endl;
+    return NDBT_OK;
   }
 
   /* Patch the tree header count/length and the child node length after an
@@ -740,6 +911,11 @@ CASE_STEP(runP10, runP10)
 CASE_STEP(runP11, runP11)
 CASE_STEP(runP14, runP14)
 CASE_STEP(runP24, runP24)
+CASE_STEP(runP25, runP25)
+CASE_STEP(runP26, runP26)
+CASE_STEP(runP27, runP27)
+CASE_STEP(runP28, runP28)
+CASE_STEP(runP29, runP29)
 
 }  // namespace
 
@@ -783,6 +959,25 @@ TESTCASE("P14", "DBTC JoinAgg KeyInfo boundsLen overflow") {
 }
 TESTCASE("P24", "SCAN_TABREQ to DBTC instance 0 (the DbtcProxy)") {
   STEP(runP24);
+}
+TESTCASE("P25",
+         "join aggregation: leaf 1 of 2 with an aggregate slot out of "
+         "range") {
+  STEP(runP25);
+}
+TESTCASE("P26", "join aggregation: n_agg_results above MAX_AGG_N_RESULTS") {
+  STEP(runP26);
+}
+TESTCASE("P27",
+         "join aggregation: leaves with more than MAX_AGG_N_RESULTS "
+         "aggregate slots in all") {
+  STEP(runP27);
+}
+TESTCASE("P28", "join aggregation: register index 15 (8 registers)") {
+  STEP(runP28);
+}
+TESTCASE("P29", "join aggregation: DECIMAL scale above precision") {
+  STEP(runP29);
 }
 NDBT_TESTSUITE_END(testSpjMalformed)
 

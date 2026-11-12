@@ -182,6 +182,18 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
         sint4korr(reinterpret_cast<char*>(&m_prog[exec_pos++]));
     precision = decimal_info >> 16;
     scale = decimal_info & 0xFFFF;
+    /* checkProgram bounded precision and scale.  Whether they describe
+     * this value can only be checked per row, as the stored size comes
+     * with the row: bin2decimal reads decimal_bin_size(precision,
+     * scale) bytes whatever the value's size. */
+    if (unlikely(!header->isNULL() &&
+                 static_cast<Uint32>(decimal_bin_size(precision, scale)) !=
+                     header->getByteSize())) {
+      g_eventLogger->debug("%s::ProcessRec ZAGG_DECIMAL_PARSE_ERROR: "
+          "DECIMAL(%d,%d) for a value of %u bytes",
+          class_name, precision, scale, header->getByteSize());
+      return ZAGG_DECIMAL_PARSE_ERROR;
+    }
   }
 
   /* The value decode is shared with aggregation in the RonSQL layer
@@ -343,8 +355,22 @@ void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
   assert((prog[3] & ~(Uint32)AGG_PROG_FLAG_REUSABLE) == 0);
 
   assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
-  assert(m_n_gb_cols <= MAX_AGG_N_GROUPBY_COLS);
-  assert(m_n_agg_results <= MAX_AGG_N_RESULTS);
+  /* m_n_gb_cols and m_n_agg_results come from the API: checkProgram
+   * rejects them when too large, an assert here would stop a debug
+   * build first. */
+}
+
+bool AggInterpreterBase::checkInitProgram(const Uint32* prog,
+                                          const char* class_name) {
+  Uint32* insn_starts = m_prog_buf + m_prog_len;
+  const char* reason = checkProgram(prog, m_prog_len, insn_starts, nullptr);
+  if (reason != nullptr) {
+    g_eventLogger->warning("%s::Init: aggregation program rejected: %s",
+                           class_name, reason);
+    return false;
+  }
+  m_insn_starts = insn_starts;
+  return true;
 }
 
 /**
@@ -406,39 +432,150 @@ void AggInterpreterBase::initSharedAfterAlloc(const Uint32* prog) {
 }
 
 /**
- * Step 3b — shared validate-embedded-programs scan.  Both subclass
- * Inits used to walk m_prog from m_agg_prog_start_pos and invoke
- * validateEmbeddedProgram on every kOpEmbeddedInterp arm.  Bodies
- * were byte-identical except for the class name in the warning.
+ * checkProgram — see AggInterpreterBase.hpp.  Instruction lengths are
+ * those of the interpreters (aggInstructionWords).  The opcode fields
+ * checked are those executeStandardOpcode and the subclasses' kOpLoadCol
+ * arms decode; an opcode without a handler fails its row with
+ * ZAGG_WRONG_OPERATION and is left alone here.
  */
-bool AggInterpreterBase::scanAndValidateEmbeddedPrograms(
-    const char* class_name) {
-  Uint32 scan_pos = m_agg_prog_start_pos;
-  while (scan_pos < m_prog_len) {
-    Uint32 w = m_prog[scan_pos];
-    Uint8 op = (w & 0xFC000000) >> 26;
-    if (op == kOpEmbeddedInterp) {
-      Uint32 emb_len = w & 0xFFFF;
-      if (scan_pos + 1 + emb_len > m_prog_len ||
-          !validateEmbeddedProgram(&m_prog[scan_pos + 1], emb_len)) {
-        g_eventLogger->warning(
-            "%s::Init: embedded program validation failed "
-            "at scan_pos=%u", class_name, scan_pos);
-        m_inited = false;
-        return false;
+const char* AggInterpreterBase::checkProgram(const Uint32* prog,
+                                             Uint32 prog_len,
+                                             Uint32* insn_starts,
+                                             bool* uses_avg) {
+  if (uses_avg != nullptr) {
+    *uses_avg = false;
+  }
+  /* Header: 8 words, then the GROUP BY column ids. */
+  if (prog_len < 8) {
+    return "shorter than its header";
+  }
+  const Uint32 n_gb_cols = (prog[1] >> 16) & 0xFFFF;
+  const Uint32 n_slots = prog[1] & 0xFFFF;
+  if (prog[2] > PUSHDOWN_AGGREGATION_VERSION) {
+    return "unsupported version";
+  }
+  if (n_slots > MAX_AGG_N_RESULTS) {
+    return "too many aggregate results";
+  }
+  if (n_gb_cols > MAX_AGG_N_GROUPBY_COLS || n_gb_cols > prog_len - 8) {
+    return "too many GROUP BY columns";
+  }
+  memset(insn_starts, 0, insnStartWords(prog_len) * sizeof(Uint32));
+
+  const Uint32 start = 8 + n_gb_cols;
+  for (Uint32 pos = start; pos < prog_len;) {
+    const Uint32 word = prog[pos];
+    const Uint32 op = aggProgramOp(word);
+    const Uint32 words = aggInstructionWords(word);
+    if (words > prog_len - pos) {
+      return "operand words past the end";
+    }
+    insn_starts[pos >> 5] |= 1U << (pos & 31);
+    /* Register fields: bits 12-15 and 8-11 of two-register
+     * instructions, bits 16-19 of the others. */
+    const Uint32 reg_a = (word >> 12) & 0xF;
+    const Uint32 reg_b = (word >> 8) & 0xF;
+    const Uint32 reg = (word >> 16) & 0xF;
+    switch (op) {
+      case kOpPlus:
+      case kOpMinus:
+      case kOpMul:
+      case kOpDiv:
+      case kOpDivInt:
+      case kOpMod:
+      case kOpMov:
+      case kOpPlusBigint:
+      case kOpPlusDouble:
+      case kOpMinusBigint:
+      case kOpMinusDouble:
+      case kOpMulBigint:
+      case kOpMulDouble:
+      case kOpDivDouble:
+      case kOpDivIntBigint:
+        if (reg_a >= kRegTotal || reg_b >= kRegTotal) {
+          return "register out of range";
+        }
+        break;
+      case kOpLoadCol: {
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        const Uint32 type = decodeLoadColType(word);
+        if (type == NDB_TYPE_DECIMAL || type == NDB_TYPE_DECIMALUNSIGNED) {
+          /* Decoded as loadColumnTypedFromBuf does. */
+          const Int32 decimal_info =
+              sint4korr(reinterpret_cast<const char*>(&prog[pos + 1]));
+          const Int32 precision = decimal_info >> 16;
+          const Int32 scale = decimal_info & 0xFFFF;
+          if (precision < 1 || precision > AGG_DECIMAL_MAX_PRECISION ||
+              scale > AGG_DECIMAL_MAX_SCALE || scale > precision) {
+            return "DECIMAL precision or scale out of range";
+          }
+        }
+        break;
       }
-      scan_pos += 1 + emb_len;  /* header + embedded words */
-    } else if (op == kOpLoadConst) {
-      scan_pos += 3;  /* header + 2 constant value words */
-    } else if (op == kOpLoadCol) {
-      Uint32 type = decodeLoadColType(w);
-      scan_pos += (type == NDB_TYPE_DECIMAL ||
-                   type == NDB_TYPE_DECIMALUNSIGNED) ? 2 : 1;
-    } else {
-      scan_pos++;
+      case kOpLoadConst: {
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        const Uint32 type = (word >> 21) & 0x1F;
+        if (type != NDB_TYPE_BIGINT && type != NDB_TYPE_BIGUNSIGNED &&
+            type != NDB_TYPE_DOUBLE) {
+          return "constant of an unsupported type";
+        }
+        break;
+      }
+      case kOpSetRegNull:
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        break;
+      case kOpAvg:
+        if (uses_avg != nullptr) {
+          *uses_avg = true;
+        }
+        [[fallthrough]];
+      case kOpSum:
+      case kOpMax:
+      case kOpMin:
+      case kOpCount:
+      case kOpSumBigint:
+      case kOpSumDouble:
+      case kOpMaxBigint:
+      case kOpMaxDouble:
+      case kOpMinBigint:
+      case kOpMinDouble:
+        if (reg >= kRegTotal) {
+          return "register out of range";
+        }
+        if ((word & 0xFFFF) >= n_slots) {
+          return "aggregate slot out of range";
+        }
+        break;
+      case kOpEmbeddedInterp:
+        if (!validateEmbeddedProgram(&prog[pos + 1], words - 1)) {
+          return "invalid embedded program";
+        }
+        break;
+      default:
+        break;
+    }
+    pos += words;
+  }
+
+  /* Skips are forward, so each target is known once every instruction
+   * start is. */
+  for (Uint32 pos = start; pos < prog_len;
+       pos += aggInstructionWords(prog[pos])) {
+    if (aggProgramOp(prog[pos]) == kOpSkip) {
+      const Uint32 target = pos + 1 + (prog[pos] & 0xFFFF);
+      if (target < prog_len &&
+          ((insn_starts[target >> 5] >> (target & 31)) & 1) == 0) {
+        return "kOpSkip into an instruction";
+      }
     }
   }
-  return true;
+  return nullptr;
 }
 
 /**

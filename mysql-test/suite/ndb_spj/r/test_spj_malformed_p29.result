@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-29: join aggregation DECIMAL scale above precision
+Running command
+Result of command: 0
+Test program success!

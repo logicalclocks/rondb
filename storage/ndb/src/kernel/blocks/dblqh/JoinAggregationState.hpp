@@ -69,6 +69,11 @@ struct LeafProgram {
   Uint32  m_acc_offset;         // First accumulator index for this leaf
   Uint32  m_n_agg_results;      // Number of accumulators for this leaf
   Uint32  m_agg_prog_start_pos; // Instruction start offset within program
+  /* The program's instruction-start bitmap from
+   * AggInterpreterBase::checkProgram, in m_all_programs_buf after the
+   * programs (NOT owned).  The per-row leaf switch installs it with the
+   * program, for the check of where an embedded program's skip lands. */
+  const Uint32* m_insn_starts;
 
   /* RONDB-1056: per-leaf JIT compile result.
    *

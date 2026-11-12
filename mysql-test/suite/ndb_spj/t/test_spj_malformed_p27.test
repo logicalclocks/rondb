@@ -1,0 +1,12 @@
+--source include/have_ndb.inc
+
+# P-27: join aggregation leaves with more than MAX_AGG_N_RESULTS
+# aggregate slots in all.
+# The case runs a well-formed join aggregation first, then the malformed
+# one, which must get SCAN_TABREF with every data node still started.
+# One testSpjMalformed case per MTR test, see
+# suite/ndb_spj/include/spj_malformed_case.inc.
+
+--let $spj_case = P27
+--let $spj_case_title = P-27: join aggregation leaves with too many aggregate slots in all
+--source suite/ndb_spj/include/spj_malformed_case.inc
