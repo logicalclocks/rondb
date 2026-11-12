@@ -613,7 +613,10 @@ AggregationAPICompiler::compile(AggExpr* agg, Uint32 idx)
     m_cases[case_idx].else_start = m_program.size();
     Uint32 else_reg;
     if (!compile(case_expr->right, &else_reg)) return false;
-    pushInstr(SVMInstrType::AggRepeat, idx, else_reg, true);
+    // Count the use of the ELSE value only on the first compilation of
+    // this CASE, as the THEN arm does: AVG compiles the same CASE twice,
+    // once for SUM and once for COUNT (F-1).
+    pushInstr(SVMInstrType::AggRepeat, idx, else_reg, is_first);
     m_cases[case_idx].else_end = m_program.size();
 
     // Values loaded inside CASE arms are conditional — they may not have
