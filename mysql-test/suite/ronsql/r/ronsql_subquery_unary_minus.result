@@ -1,0 +1,180 @@
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+
+=== um-1: join, minus over a DECIMAL MIN (the F-2 trigger) ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c|
+c	cnt
+2	3
+3	1
+
+=== um-2: join, two minuses over a DECIMAL MIN ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total >= -(-(SELECT MIN(price) FROM um_p))
+GROUP BY o.c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.total >= -(-(SELECT MIN(price) FROM um_p))
+GROUP BY o.c|
+c	cnt
+2	1
+3	1
+
+=== um-3: join, minus over an INT MAX ===
+== Query ==
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY o.c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT o.c, COUNT(*) AS cnt
+FROM um_o AS o JOIN um_l AS l ON l.ok = o.id
+WHERE o.v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY o.c|
+c	cnt
+1	3
+3	1
+
+=== um-4: single-table aggregate, minus over a DECIMAL MIN ===
+== Query ==
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE total > -(SELECT MIN(price) FROM um_p)
+GROUP BY c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE total > -(SELECT MIN(price) FROM um_p)
+GROUP BY c|
+c	cnt
+2	3
+3	1
+
+=== um-5: single-table aggregate, minus over an INT MAX ===
+== Query ==
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c, COUNT(*) AS cnt FROM um_o
+WHERE v <= -(SELECT MAX(qty) FROM um_p)
+GROUP BY c|
+c	cnt
+1	2
+3	1
+
+=== um-6: single-table pass-through, minus over a DECIMAL MIN ===
+== Query ==
+SELECT id, total FROM um_o
+WHERE total <= -(SELECT MIN(price) FROM um_p);
+
+Number of output lines, including header: 5
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT id, total FROM um_o
+WHERE total <= -(SELECT MIN(price) FROM um_p)|
+id	total
+1	-10.00
+2	-8.25
+3	-5.25
+7	-12.00
+
+=== um-7: HAVING, minus over a DECIMAL MAX ===
+== Query ==
+SELECT c, COUNT(*) AS cnt FROM um_o
+GROUP BY c
+HAVING SUM(total) > -(SELECT MAX(price) FROM um_p);
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+SELECT c, COUNT(*) AS cnt FROM um_o
+GROUP BY c
+HAVING SUM(total) > -(SELECT MAX(price) FROM um_p)|
+c	cnt
+2	3
+3	2
+
+=== um-8: WITH query joined to its CTE, minus over a DECIMAL MIN ===
+== Query ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM um_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM um_o AS o JOIN ls ON ls.k = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c;
+
+Number of output lines, including header: 3
+
+== Diff ==
+==========
+
+
+
+== Expected result ==
+WITH ls AS (SELECT ok AS k, COUNT(*) AS m FROM um_l GROUP BY ok)
+SELECT o.c, SUM(ls.m) AS m_sum
+FROM um_o AS o JOIN ls ON ls.k = o.id
+WHERE o.total > -(SELECT MIN(price) FROM um_p)
+GROUP BY o.c|
+c	m_sum
+2	3
+3	1

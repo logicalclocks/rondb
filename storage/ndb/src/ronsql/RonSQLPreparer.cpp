@@ -9604,6 +9604,30 @@ RonSQLPreparer::substitute_subquery_results_ce(ConditionalExpression** ce_ptr,
     substitute_subquery_results_ce(&ce->args.left, polarity);
     substitute_subquery_results_ce(&ce->args.right, polarity);
     return;
+  case T_MINUS:
+    substitute_subquery_results_ce(&ce->args.left, 0);
+    substitute_subquery_results_ce(&ce->args.right, 0);
+    if (ce->args.left == NULL && ce->args.right != NULL)
+    {
+      // F-2: a unary minus over a scalar subquery becomes the negated
+      // constant here, in place, so every path sees a constant.  The
+      // single-table path simplified its WHERE before substitution and
+      // left the minus to the filter, which refused it; the join path
+      // simplifies after substitution, and simplify_ce read the source
+      // text that a substituted T_FLOAT does not have.  A minus over a
+      // literal folds the same way simplify_ce folds it, and -NULL is
+      // NULL.
+      const ConditionalExpression* n = ce->args.right;
+      if (n->op == T_NULL)
+      {
+        ce->op = T_NULL;
+      }
+      else
+      {
+        negate_numeric_constant(n, ce);
+      }
+    }
+    return;
   case T_IDENTIFIER:
   case T_INT:
   case T_FLOAT:
@@ -17052,20 +17076,7 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
       if (n->op == T_INT || n->op == T_FLOAT) {
         ConditionalExpression* r =
           m_amalloc->alloc_exc<ConditionalExpression>(1);
-        r->op = n->op;
-        if (n->op == T_INT) {
-          r->constant_integer = -n->constant_integer;
-        } else {
-          r->constant_float.dbl = -n->constant_float.dbl;
-          assert(n->constant_float.ls.len > 0);
-          if (n->constant_float.ls.str[0] == '-') {
-            r->constant_float.ls.str = &n->constant_float.ls.str[1];
-            r->constant_float.ls.len = n->constant_float.ls.len - 1;
-          } else {
-            r->constant_float.ls = (LexString{"-", 1})
-              .concat(n->constant_float.ls, m_amalloc);
-          }
-        }
+        negate_numeric_constant(n, r);
         return r;
       }
       return ce;
@@ -17074,6 +17085,43 @@ RonSQLPreparer::simplify_ce(struct ConditionalExpression* ce, int maxdepth)
     // No simplification to do
     return ce;
   }
+}
+
+bool
+RonSQLPreparer::negate_numeric_constant(const ConditionalExpression* n,
+                                        ConditionalExpression* out)
+{
+  if (n->op == T_INT)
+  {
+    // MySQL fails the statement with "BIGINT value is out of range".
+    require_prm(n->constant_integer != INT64_MIN,
+                "BIGINT value is out of range in a negation.");
+    out->op = T_INT;
+    out->constant_integer = -n->constant_integer;
+    return true;
+  }
+  if (n->op != T_FLOAT)
+  {
+    return false;
+  }
+  const LexString ls = n->constant_float.ls;
+  out->op = T_FLOAT;
+  out->constant_float.dbl = -n->constant_float.dbl;
+  if (ls.str == NULL || ls.len == 0)
+  {
+    // A scalar subquery result substituted at execution has no source
+    // text; encode_constant and the printers then use .dbl.
+    out->constant_float.ls = LexString{NULL, 0};
+  }
+  else if (ls.str[0] == '-')
+  {
+    out->constant_float.ls = LexString{&ls.str[1], ls.len - 1};
+  }
+  else
+  {
+    out->constant_float.ls = (LexString{"-", 1}).concat(ls, m_amalloc);
+  }
+  return true;
 }
 
 // D11 helper: evaluate a constant-integer comparison arm at prepare time.

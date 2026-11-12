@@ -313,7 +313,7 @@ Longest executor functions, with the suggested split (D section of `review_dupli
 ## Fix status
 
 Branches `RONDB-1124-lqh-fixes` (1.1-3.1, merged in #1230) and
-`RONDB-1124-lqh-fix2` (from 1.2, rebased onto `RONDB-1124-exec-fixes`). One commit per fix, each with its regression
+`RONDB-1124-lqh-fix2` (from 1.2, rebased onto `RONDB-1124-exec-fixes` and pushed there, #1231). One commit per fix, each with its regression
 test. Lanes: 1 = parse and aggregate compile, 2 = join planning and
 cross-table filters, 3 = CTE virtual tables and result metadata.
 
@@ -326,3 +326,4 @@ cross-table filters, 3 = CTE virtual tables and result metadata.
 | 2.2 | C-2 | fixed | `is_null_rejecting` counts only the LEFT-joined table's columns as NULL; a WHERE condition or cross-table filter still on a LEFT-joined op (CTE_LOOKUP included) is rejected instead of being applied as a join condition | `ronsql_left_join_where`: lj-5/lj-6 (OR on the right side still promotes, real table and CTE), lj-r5/lj-r6 (two-table OR rejected), lj-r7 (CTE IS NULL in OR) |
 | 1.3 | D-1 | fixed | The SELECT-list subquery path skips a failed cross-table filter past a DECIMAL column load as 3 words (the load has a precision / scale word), not 2; the CASE-arm part of D-1 was fixed upstream in `c57d796fafa` | new `ronsql_subquery_filter_decimal` (+ `ronsql_jit` mirror): SUM, MIN/MAX, COUNT and merged filtered/unfiltered subqueries over DECIMAL and DECIMAL UNSIGNED |
 | 3.2 | O-1 | fixed | `build_result_column_metadata` keeps the charset of a string and the precision of a DECIMAL (scale 0 included) for a chained CTE output; the GROUP BY arm of `compare_rows` requires a charset for string keys, as the aggregate arm does | new `ronsql_cte_dd_chained_keys` (+ `ronsql_cte_jit` and the four ng mirrors): VARCHAR key through two and three CTEs with and without ORDER BY, DECIMAL(10,0) key with and without ORDER BY, DECIMAL(10,2) control |
+| 1.4 | F-2 | fixed | `substitute_subquery_results_ce` folds a unary minus over a scalar subquery into the substituted constant (-NULL is NULL), so the single-table path no longer refuses it and the join and CTE paths no longer negate a T_FLOAT through its missing source text; `negate_numeric_constant`, shared with `simplify_ce`, keeps a T_FLOAT without text and refuses -INT64_MIN as MySQL does | new `ronsql_subquery_unary_minus` (+ `ronsql_jit` mirror): join, double minus, INT result, single-table aggregate and pass-through, HAVING, WITH query joined to its CTE |
