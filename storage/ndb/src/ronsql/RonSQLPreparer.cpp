@@ -3844,31 +3844,38 @@ RonSQLPreparer::classify_where_by_table(QueryScope& scope,
   }
 }
 
-// True when the expression is certainly NULL once its column references
-// are NULL (the NULL-extended row of a LEFT JOIN's right side): a column,
-// and every operator that propagates a NULL operand — arithmetic,
-// comparison, LIKE, NOT, XOR, GREATEST / LEAST, date arithmetic; AND and
-// OR only when both operands are NULL (NULL AND FALSE is FALSE, NULL OR
-// TRUE is TRUE).  IS [NOT] NULL is never NULL; constants and subqueries
-// are not known to be.
+// The table (join op index) of a column reference, or -1 when it is not
+// a column of the scope's tables: classify_ce_table_resolved on a
+// T_IDENTIFIER.  Given to the NULL-rejection checks below, which only
+// count the columns of the LEFT-joined table as NULL (C-2).
+typedef std::function<Int32(const ConditionalExpression*)> ColumnTable;
+
+// True when the expression is certainly NULL in the NULL-extended row of
+// the LEFT-joined table t, whose columns are then NULL (the columns of
+// the other tables are not; C-2): a column of t, and every operator that
+// propagates a NULL operand — arithmetic, comparison, LIKE, NOT, XOR,
+// GREATEST / LEAST, date arithmetic; AND and OR only when both operands
+// are NULL (NULL AND FALSE is FALSE, NULL OR TRUE is TRUE).  IS [NOT]
+// NULL is never NULL; constants and subqueries are not known to be.
 static bool
-is_null_for_null_columns(const ConditionalExpression* ce)
+is_null_for_null_columns(const ColumnTable& table_of, Uint32 t,
+                         const ConditionalExpression* ce)
 {
   if (ce == NULL) return false;
   switch (ce->op) {
   case T_IDENTIFIER:
-    return true;
+    return table_of(ce) == (Int32)t;
   case T_NOT:
   case T_EXCLAMATION:
-    return is_null_for_null_columns(ce->args.left);
+    return is_null_for_null_columns(table_of, t, ce->args.left);
   case T_INTERVAL:
-    return is_null_for_null_columns(ce->interval.arg);
+    return is_null_for_null_columns(table_of, t, ce->interval.arg);
   case T_EXTRACT:
-    return is_null_for_null_columns(ce->extract.arg);
+    return is_null_for_null_columns(table_of, t, ce->extract.arg);
   case T_AND:
   case T_OR:
-    return is_null_for_null_columns(ce->args.left) &&
-           is_null_for_null_columns(ce->args.right);
+    return is_null_for_null_columns(table_of, t, ce->args.left) &&
+           is_null_for_null_columns(table_of, t, ce->args.right);
   case T_XOR:
   case T_EQUALS: case T_NOT_EQUALS:
   case T_LT: case T_LE: case T_GT: case T_GE:
@@ -3879,37 +3886,42 @@ is_null_for_null_columns(const ConditionalExpression* ce)
   case T_BITWISE_OR: case T_BITWISE_AND: case T_BITWISE_XOR:
   case T_BITSHIFT_LEFT: case T_BITSHIFT_RIGHT:
   case T_DATE_ADD: case T_DATE_SUB:
-    return is_null_for_null_columns(ce->args.left) ||
-           is_null_for_null_columns(ce->args.right);
+    return is_null_for_null_columns(table_of, t, ce->args.left) ||
+           is_null_for_null_columns(table_of, t, ce->args.right);
   default:
     return false;
   }
 }
 
-// Predicate is null-rejecting if it evaluates to FALSE/NULL whenever
-// any of its column references is NULL.  Used by Phase J's LEFT-to-
-// INNER promotion: a LEFT JOIN with a null-rejecting WHERE conjunct
-// over the RHS is equivalent to INNER JOIN.  See cte_filter_phase_j.md
-// and cte_filter_phase_i1.md.
+// Predicate is null-rejecting for the LEFT-joined table t if it is FALSE
+// or NULL in t's NULL-extended row.  Used by Phase J's LEFT-to-INNER
+// promotion: a LEFT JOIN with a WHERE conjunct that rejects its
+// NULL-extended row is equivalent to INNER JOIN.  See
+// cte_filter_phase_j.md and cte_filter_phase_i1.md.
+//
+// A test rejects that row only through an operand that is NULL in it,
+// i.e. one over t's columns: in `c.n > 4 OR cu.x = 3` the second branch
+// holds for a NULL-extended c, so the OR does not reject it (C-2).
 static bool
-is_null_rejecting(const ConditionalExpression* ce)
+is_null_rejecting(const ColumnTable& table_of, Uint32 t,
+                  const ConditionalExpression* ce)
 {
   if (ce == NULL) return false;
   switch (ce->op) {
   case T_EQUALS: case T_NOT_EQUALS:
   case T_LT: case T_LE: case T_GT: case T_GE:
-    return true;
+  case T_LIKE:
+    // A comparison or LIKE with a NULL operand is NULL.
+    return is_null_for_null_columns(table_of, t, ce->args.left) ||
+           is_null_for_null_columns(table_of, t, ce->args.right);
   case T_IS:
     // IS NOT NULL rejects NULL; IS NULL preserves NULL.
-    return !ce->is.null;
-  case T_LIKE:
-    // LIKE with a NULL operand is NULL.
-    return true;
+    return !ce->is.null && is_null_for_null_columns(table_of, t, ce->is.arg);
   case T_XOR:
     // XOR is NULL when either operand is NULL, so it rejects the
     // NULL-extended row when one operand is certainly NULL for it.
-    return is_null_for_null_columns(ce->args.left) ||
-           is_null_for_null_columns(ce->args.right);
+    return is_null_for_null_columns(table_of, t, ce->args.left) ||
+           is_null_for_null_columns(table_of, t, ce->args.right);
   case T_NOT:
   case T_EXCLAMATION:
   {
@@ -3921,11 +3933,10 @@ is_null_rejecting(const ConditionalExpression* ce)
     case T_EQUALS: case T_NOT_EQUALS:
     case T_LT: case T_LE: case T_GT: case T_GE:
     case T_LIKE:
-      return true;
-    case T_IS:
-      return arg->is.null;
     case T_XOR:
-      return is_null_for_null_columns(arg);
+      return is_null_for_null_columns(table_of, t, arg);
+    case T_IS:
+      return arg->is.null && is_null_for_null_columns(table_of, t, arg->is.arg);
     default:
       return false;
     }
@@ -3933,12 +3944,12 @@ is_null_rejecting(const ConditionalExpression* ce)
   case T_AND:
     // AND is null-rejecting if at least one branch is — the whole
     // AND evaluates to FALSE/NULL when that branch does.
-    return is_null_rejecting(ce->args.left) ||
-           is_null_rejecting(ce->args.right);
+    return is_null_rejecting(table_of, t, ce->args.left) ||
+           is_null_rejecting(table_of, t, ce->args.right);
   case T_OR:
     // OR is null-rejecting only if every branch rejects NULL.
-    return is_null_rejecting(ce->args.left) &&
-           is_null_rejecting(ce->args.right);
+    return is_null_rejecting(table_of, t, ce->args.left) &&
+           is_null_rejecting(table_of, t, ce->args.right);
   default:
     return false;
   }
@@ -4038,12 +4049,16 @@ RonSQLPreparer::cte_sum_arg_never_null(
 void
 RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
 {
+  const ColumnTable table_of =
+      [this, &scope](const ConditionalExpression* col) -> Int32 {
+        return classify_ce_table_resolved(scope, col);
+      };
   for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
   {
     JoinOp& op = scope.join_plan.ops[t];
     if (op.match_type != JoinOp::LEFT_OUTER) continue;
 
-    if (is_null_rejecting(scope.join_where_ce[t]))
+    if (is_null_rejecting(table_of, t, scope.join_where_ce[t]))
     {
       op.match_type = JoinOp::INNER;
     }
@@ -4064,7 +4079,7 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
     if (ctf.child_table_idx >= scope.join_plan.num_ops) continue;
     JoinOp& op = scope.join_plan.ops[ctf.child_table_idx];
     if (op.match_type == JoinOp::LEFT_OUTER &&
-        is_null_rejecting(ctf.ce))
+        is_null_rejecting(table_of, ctf.child_table_idx, ctf.ce))
     {
       op.match_type = JoinOp::INNER;
     }
@@ -4093,17 +4108,25 @@ RonSQLPreparer::promote_left_to_inner_for_where(QueryScope& scope)
   }
 
   // A WHERE conjunct still on a LEFT-joined table here can hold for its
-  // NULL-extended row (e.g. col IS NULL).  The table's op can only apply
-  // it as its own filter, i.e. as part of the join condition: a match
-  // that fails it is NULL-extended and kept, where WHERE removes the
-  // parent row.  emit_cte_lookup_filter rejects this for a CTE_LOOKUP;
-  // reject it for every other op until post-join filtering exists.
+  // NULL-extended row (e.g. col IS NULL, or an OR with a branch on
+  // another table, C-2).  The table's op can only apply it as its own
+  // filter, i.e. as part of the join condition: a match that fails it is
+  // NULL-extended and kept, where WHERE removes the parent row.  Reject
+  // it until post-join filtering exists.  This includes a CTE_LOOKUP:
+  // emit_cte_lookup_filter rejects only IS NULL atoms, not a routed
+  // two-table OR.  A cross-table filter whose child is still LEFT-joined
+  // is such a conjunct too; before C-2 every one of them promoted its
+  // child to INNER, so none has run on a NULL-extended row.
   for (Uint32 t = 1; t < scope.join_plan.num_ops; t++)
   {
     const JoinOp& op = scope.join_plan.ops[t];
-    if (op.match_type != JoinOp::LEFT_OUTER ||
-        op.type == JoinOp::CTE_LOOKUP ||
-        scope.join_where_ce[t] == NULL)
+    if (op.match_type != JoinOp::LEFT_OUTER)
+      continue;
+    bool has_where = (scope.join_where_ce[t] != NULL);
+    for (Uint32 i = 0;
+         !has_where && i < scope.cross_table_where_filters.size(); i++)
+      has_where = (scope.cross_table_where_filters[i].child_table_idx == t);
+    if (!has_where)
       continue;
     std::basic_ostream<char>& err = *m_conf.err_stream;
     err << "WHERE condition on '" << op.alias.c_str()
