@@ -120,23 +120,32 @@ struct PushdownCreateResult {
 class PushdownInterpreterFactory {
  public:
   static PushdownType DetectType(const Uint32* prog, Uint32 prog_len);
+  /*
+   * The interpreter of an aggregation or vector search pushed down with
+   * a fragment scan.  The caller has checked the program's magic and
+   * that prog_len words of it are present.  An allocation failure, or a
+   * program that fails Init / OptimizeProgram, returns both pointers
+   * nullptr (the scan fails with an error) instead of stopping the node;
+   * *out_of_memory tells the allocation failure (a temporary error) from
+   * a rejected program.  fail_init makes Init fail as when query memory
+   * runs out (error insert 4044).
+   */
   static PushdownCreateResult Create(const Uint32* prog, Uint32 prog_len,
                                      Int64 table_id, Int64 frag_id,
-                                     Uint32 thread_id);
+                                     Uint32 thread_id, bool fail_init,
+                                     bool* out_of_memory);
   /*
    * Aggregation on a primary-key read (RONDB-1124 WP-F F1b): an
-   * aggregation interpreter for one looked-up tuple.  Unlike Create, a
-   * program that is not an aggregation, fails Init / OptimizeProgram, or
-   * an allocation failure returns nullptr (the read fails with an error)
-   * instead of stopping the node; *out_of_memory tells the allocation
-   * failure (a temporary error) from a rejected program.  The program is
-   * JIT-compiled only when it is marked reusable — a cache hit after the
-   * first compile — since a one-row interpreter has nothing to amortize
-   * a compile over.
+   * aggregation interpreter for one looked-up tuple.  A program that is
+   * not an aggregation, fails Init / OptimizeProgram, or an allocation
+   * failure returns nullptr (the read fails with an error), with
+   * *out_of_memory set as by Create.  The program is JIT-compiled only
+   * when it is marked reusable — a cache hit after the first compile —
+   * since a one-row interpreter has nothing to amortize a compile over.
    */
   static AggInterpreter* CreateAggForRead(const Uint32* prog, Uint32 prog_len,
                                           Int64 table_id, Int64 frag_id,
-                                          Uint32 thread_id,
+                                          Uint32 thread_id, bool fail_init,
                                           bool* out_of_memory);
 };
 

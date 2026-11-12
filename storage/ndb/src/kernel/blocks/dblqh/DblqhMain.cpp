@@ -26238,13 +26238,25 @@ void Dblqh::accScanConfScanLab(Signal *signal,
       jamEntryDebug();
       Uint32 storedProcId = signal->theData[1];
       scanPtr->scanStoredProcId = storedProcId;
+      Uint32 pushdownError = 0;
       if (unlikely(c_tup->scanCopyAttrinfo(storedProcId,
                                            bool(regTcPtr->opExec),
                                            true,
-                                           scanPtr) == 0)) {
+                                           scanPtr,
+                                           &pushdownError) == 0)) {
         jam();
         scanPtr->scanCompletedStatus = ZTRUE;
         tcConnectptr.p->errorCode = ZMEM_NOMEM_ERROR;
+        closeScanLab(signal, tcConnectptr.p);
+        return;
+      }
+      if (unlikely(pushdownError != 0)) {
+        /* The interpreter of the pushed aggregation or vector search
+         * could not be created; the scan has no interpreter and has not
+         * read a row.  tupScanCloseConfLab sends SCAN_FRAGREF. */
+        jam();
+        scanPtr->scanCompletedStatus = ZTRUE;
+        tcConnectptr.p->errorCode = pushdownError;
         closeScanLab(signal, tcConnectptr.p);
         return;
       }
@@ -27622,10 +27634,14 @@ void Dblqh::closeScanLab(Signal *signal, TcConnectionrec *regTcPtr) {
   /*
    * PA related
    * statemach
+   * WAIT_ACC_SCAN: accScanConfScanLab closes a scan that failed to
+   * start (its stored procedure, attrinfo cache or pushdown interpreter
+   * could not be created) before it read a row.
    */
   ndbrequire(!scanPtr->m_has_pushdown ||
              (scanPtr->scanState == ScanRecord::WAIT_SCAN_NEXTREQ ||
-             scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN));
+             scanPtr->scanState == ScanRecord::WAIT_NEXT_SCAN ||
+             scanPtr->scanState == ScanRecord::WAIT_ACC_SCAN));
   scanPtr->scanState = ScanRecord::WAIT_CLOSE_SCAN;
   scanPtr->scan_lastSeen = __LINE__;
   scanPtr->scan_check_lcp_stop = 0;

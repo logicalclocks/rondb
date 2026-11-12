@@ -977,10 +977,28 @@ Uint32 Dbtup::keyCopyAttrinfo(Uint32 expectedLen, Uint32 attrInfoIVal) {
   return 0;
 }
 
+/*
+ * Error insert 4044: the interpreter of a pushed aggregation or vector
+ * search fails Init as when query memory runs out.  ALL ERROR reaches the
+ * DBTUP instances of the LDM threads only, so a scan or key read running
+ * in a query thread checks the LDM instance whose fragment it accesses.
+ */
+bool Dbtup::pushdownInitErrorInserted() const {
+#ifdef ERROR_INSERT
+  const Dbtup* ldm = (m_ldm_instance_used != nullptr)
+                         ? m_ldm_instance_used
+                         : this;
+  return ldm->jit_error_inserted(4044);
+#else
+  return false;
+#endif
+}
+
 Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
                                bool interpretedFlag,
                                bool first_call,
-                               void* scan_rec)
+                               void* scan_rec,
+                               Uint32* pushdownError)
 {
   /* Get stored procedure */
   StoredProcPtr storedPtr;
@@ -1071,16 +1089,43 @@ Uint32 Dbtup::scanCopyAttrinfo(Uint32 storedProcId,
           scan_rec_ptr->m_agg_interpreter == nullptr &&
           scan_rec_ptr->m_vs_interpreter == nullptr) {
         jam();
-        Uint32 proc_start = paramAreaStart + paramLen;
-        ndbrequire((cinBuffer[proc_start] >> 16) == 0x0721);
-        Uint32 proc_len = cinBuffer[proc_start] & 0xFFFF;
+        /* The program follows the parameters.  As for an aggregation on a
+         * key read (handleAggReadRow), a malformed or rejected program, or
+         * an interpreter that cannot be allocated, fails the scan instead
+         * of the node: DBLQH closes the scan with *pushdownError before it
+         * reads a row. */
+        const Uint32 proc_start = paramAreaStart + paramLen;
+        Uint32 proc_len = 0;
+        if (likely(proc_start < totalLen &&
+                   (cinBuffer[proc_start] >> 16) == 0x0721)) {
+          proc_len = cinBuffer[proc_start] & 0xFFFF;
+        }
+        if (unlikely(proc_len < 8 || proc_len > totalLen - proc_start)) {
+          jam();
+          if (pushdownError != nullptr) {
+            *pushdownError = ZAGG_WRONG_OPERATION;
+          }
+          return totalLen;
+        }
 
+        bool out_of_memory = false;
         PushdownCreateResult result = PushdownInterpreterFactory::Create(
             &cinBuffer[proc_start], proc_len,
             prepare_fragptr.p->fragTableId,
             prepare_fragptr.p->fragmentId,
-            getThreadId());
-        ndbrequire(result.agg != nullptr || result.vs != nullptr);
+            getThreadId(),
+            pushdownInitErrorInserted(),
+            &out_of_memory);
+        if (unlikely(result.agg == nullptr && result.vs == nullptr)) {
+          jam();
+          /* 1870 is temporary (out of query memory); a rejected program
+           * is the statement's own error. */
+          if (pushdownError != nullptr) {
+            *pushdownError = out_of_memory ? ZAGG_ALLOC_MEM_FAILED
+                                           : ZAGG_WRONG_OPERATION;
+          }
+          return totalLen;
+        }
 #ifdef ERROR_INSERT
         /* ronsql_jit slice 3 — ERROR_INSERT 4064 "strict JIT compile":
          * a PROGRAM-LEVEL compile reject (bridge reject or engine
@@ -6631,7 +6676,8 @@ int Dbtup::handleAggReadRow(Signal *signal, KeyReqStruct *req_struct,
   bool out_of_memory = false;
   AggInterpreter *interp = PushdownInterpreterFactory::CreateAggForRead(
       &cinBuffer[proc_start], proc_len, req_struct->fragPtrP->fragTableId,
-      req_struct->fragPtrP->fragmentId, getThreadId(), &out_of_memory);
+      req_struct->fragPtrP->fragmentId, getThreadId(),
+      pushdownInitErrorInserted(), &out_of_memory);
   if (unlikely(interp == nullptr)) {
     jam();
     /* 1870 is temporary (out of query memory); a rejected program is

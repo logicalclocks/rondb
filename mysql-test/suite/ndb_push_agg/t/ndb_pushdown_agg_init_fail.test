@@ -1,0 +1,73 @@
+--source include/have_ndb.inc
+--source have_ndb_error_insert.inc
+
+--echo ############################################################
+--echo # RONDB-1124: a pushed aggregation that cannot create its
+--echo # interpreter fails the scan, not the data node
+--echo ############################################################
+--echo #
+--echo # DBTUP creates the aggregation interpreter of a pushed single-table
+--echo # aggregation when a fragment scan starts. ERROR_INSERT 4044 makes
+--echo # its Init fail as if QueryMemory had run out. The query must fail
+--echo # with the temporary error 1870, the data node must stay up, and the
+--echo # same queries must succeed once the error insert is cleared.
+--echo #
+
+CREATE TABLE t1 (
+  pk INT NOT NULL PRIMARY KEY,
+  g INT NOT NULL,
+  v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+  (1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50),
+  (6, 3, 60), (7, 3, 70), (8, 4, 80), (9, 4, 90), (10, 5, 100);
+
+--let $q_group = SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1 GROUP BY g
+--let $q_scalar = SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1
+
+SET ndb_pushdown_aggregate = ON;
+--disable_query_log
+--let $extra = query_get_value("EXPLAIN $q_group", Extra, 1)
+--let $pushed = `SELECT LOCATE('Using pushed aggregation', "$extra") > 0`
+--echo # GROUP BY aggregate: pushed=$pushed
+--let $extra = query_get_value("EXPLAIN $q_scalar", Extra, 1)
+--let $pushed = `SELECT LOCATE('Using pushed aggregation', "$extra") > 0`
+--echo # scalar aggregate: pushed=$pushed
+--enable_query_log
+
+--echo ############################################################
+--echo # A: control run
+--echo ############################################################
+--sorted_result
+--eval $q_group
+--eval $q_scalar
+
+--echo ############################################################
+--echo # B: ERROR_INSERT 4044, the interpreter's Init fails
+--echo ############################################################
+--exec $NDB_MGM -e "all error 4044" >> $NDB_TOOLS_OUTPUT
+--error ER_GET_TEMPORARY_ERRMSG
+--eval $q_group
+--error ER_GET_TEMPORARY_ERRMSG
+--eval $q_scalar
+
+--echo # Without pushdown no interpreter is created and the scans succeed.
+SET ndb_pushdown_aggregate = OFF;
+--sorted_result
+--eval $q_group
+--eval $q_scalar
+SET ndb_pushdown_aggregate = ON;
+--exec $NDB_MGM -e "all error 0" >> $NDB_TOOLS_OUTPUT
+
+--echo ############################################################
+--echo # C: the data node is still up and the pushed queries succeed
+--echo ############################################################
+SELECT COUNT(*) AS started_data_nodes FROM ndbinfo.nodes
+  WHERE status = 'STARTED';
+--sorted_result
+--eval $q_group
+--eval $q_scalar
+
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t1;
+--remove_file $NDB_TOOLS_OUTPUT

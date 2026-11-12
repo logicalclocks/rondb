@@ -1,0 +1,79 @@
+SET @jit_c0 = (SELECT SUM(programs_fallback) FROM ndbinfo.jit);
+############################################################
+# RONDB-1124: a pushed aggregation that cannot create its
+# interpreter fails the scan, not the data node
+############################################################
+#
+# DBTUP creates the aggregation interpreter of a pushed single-table
+# aggregation when a fragment scan starts. ERROR_INSERT 4044 makes
+# its Init fail as if QueryMemory had run out. The query must fail
+# with the temporary error 1870, the data node must stay up, and the
+# same queries must succeed once the error insert is cleared.
+#
+CREATE TABLE t1 (
+pk INT NOT NULL PRIMARY KEY,
+g INT NOT NULL,
+v INT NOT NULL
+) ENGINE=NDB;
+INSERT INTO t1 VALUES
+(1, 1, 10), (2, 1, 20), (3, 2, 30), (4, 2, 40), (5, 3, 50),
+(6, 3, 60), (7, 3, 70), (8, 4, 80), (9, 4, 90), (10, 5, 100);
+SET ndb_pushdown_aggregate = ON;
+# GROUP BY aggregate: pushed=1
+# scalar aggregate: pushed=1
+############################################################
+# A: control run
+############################################################
+SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1 GROUP BY g;
+g	COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+1	2	30	10	20
+2	2	70	30	40
+3	3	180	50	70
+4	2	170	80	90
+5	1	100	100	100
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1;
+COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+10	550	10	100
+############################################################
+# B: ERROR_INSERT 4044, the interpreter's Init fails
+############################################################
+SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1 GROUP BY g;
+ERROR HY000: Got temporary error 1870 'Failed to allocate memory, check error log on data node for more details' from NDBCLUSTER
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1;
+ERROR HY000: Got temporary error 1870 'Failed to allocate memory, check error log on data node for more details' from NDBCLUSTER
+# Without pushdown no interpreter is created and the scans succeed.
+SET ndb_pushdown_aggregate = OFF;
+SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1 GROUP BY g;
+g	COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+1	2	30	10	20
+2	2	70	30	40
+3	3	180	50	70
+4	2	170	80	90
+5	1	100	100	100
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1;
+COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+10	550	10	100
+SET ndb_pushdown_aggregate = ON;
+############################################################
+# C: the data node is still up and the pushed queries succeed
+############################################################
+SELECT COUNT(*) AS started_data_nodes FROM ndbinfo.nodes
+WHERE status = 'STARTED';
+started_data_nodes
+1
+SELECT g, COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1 GROUP BY g;
+g	COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+1	2	30	10	20
+2	2	70	30	40
+3	3	180	50	70
+4	2	170	80	90
+5	1	100	100	100
+SELECT COUNT(*), SUM(v), MIN(v), MAX(v) FROM t1;
+COUNT(*)	SUM(v)	MIN(v)	MAX(v)
+10	550	10	100
+SET ndb_pushdown_aggregate = DEFAULT;
+DROP TABLE t1;
+SELECT CAST((SELECT SUM(programs_fallback) FROM ndbinfo.jit) - @jit_c0 AS SIGNED)
+AS ndb_pushdown_agg_init_fail_jit_fallback_delta;
+ndb_pushdown_agg_init_fail_jit_fallback_delta
+0
