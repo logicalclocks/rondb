@@ -59,6 +59,16 @@ T-1 contains O-7; C-15 overlaps T-3. J-2 has the same root cause as C-1.
   - The size switch is at 13994-14075.
   - A pass-through CTE_LOOKUP child undersizes its receive buffer: a debug assert, or a heap overflow in a release RDRS.
 - **F-2 (likely): unary minus over a float scalar subquery dereferences NULL** (`simplify_ce` T_MINUS, 16950). Trigger: `WHERE o.total > -(SELECT MIN(dec_col) FROM p)`.
+- **K-1 (reproduced): the data node runs an aggregation program that reads a register no instruction has loaded.**
+  - Found while fixing D-1; it is described here only, not in a review file.
+  - `AggInterpreterBase::Sum` checks its input register only with `assert(a.type != NDB_TYPE_UNDEFINED)` (`AggInterpreterBase.cpp:610`). Max, Min, Count and the typed variants do the same.
+  - The registers are zeroed once in Init (`AggInterpreterBase.cpp:405`), not per row. If a skip lands past a load, the aggregate reads an UNDEFINED register on the first row and the previous row's value after that.
+  - In a debug build the assert aborts the data node. The program runs on every fragment, so both data nodes of the test cluster aborted (`ronsql_subquery_filter_decimal` sd-1 before the D-1 fix). In a release build the aggregate silently uses the undefined or stale value.
+  - The program comes from the client: any NDB API application, including RonSQL through RDRS. Fixing the RonSQL side (D-1) removes one trigger, not the class.
+  - `peekProgramHeader` (`AggInterpreterBase.cpp:319-347`) checks the magic word, length, flags and GROUP BY and result counts with `assert` only, so release builds do not check them.
+  - The `kOpSum`, `kOpMax`, `kOpMin` and `kOpCount` arms take the 16-bit result index from the instruction without a bound check; `kOpAvg` has one. Not yet verified whether an earlier check covers it.
+  - Fix: extend the Init pre-scan `scanAndValidateEmbeddedPrograms` into a verifier that rejects the program with an error. It checks that every skip lands on an instruction boundary inside the program, that every result index is below the result count, and that every register an aggregate reads is loaded on every path to it. Branches only go forward, so one pass is enough. Turn the header asserts into rejections. The JIT (`../compiled_interpreter/`) compiles the same programs and must reject the same set.
+  - Test: send a program whose skip lands past its load, and a header with too many results, and check for an error instead of a crash.
 - **X-14 = J-10 = O-17: invariant checks in the executor and printer abort RDRS on API-side conditions.**
   - There are about 108 `ndbrequire` and 26 `abort()` calls, including `ndbrequire(qb != NULL)` when out of memory.
   - In a long-running server they should throw an internal error instead.
@@ -87,6 +97,7 @@ T-1 contains O-7; C-15 overlaps T-3. J-2 has the same root cause as C-1.
   - ELSE arm: THEN rows land on `AggRepeat` and add a stale register.
   - The multi-leaf join aggregator hard-codes the same size (11451).
   - Every existing SUM(CASE) test uses INT or BIGINT columns.
+  - Reproduced by `ronsql_subquery_filter_decimal` on the multi-leaf path: in a debug build both data nodes aborted (K-1).
 - **F-4 (verified): right-nested arithmetic in a cross-table filter overwrites the left operand.**
   - `emit_embedded_filter_expr` (17466) has two registers and swaps them for the right subtree.
   - `WHERE o.x < l.y * (l.z + 1)` is evaluated with `l.y` overwritten.
@@ -287,6 +298,7 @@ Longest executor functions, with the suggested split (D section of `review_dupli
    - O-1: carry the chained charset and guard the GROUP BY comparator.
    - C-3: complete the virtual column size switch.
    - F-2.
+   - K-1: verify aggregation programs in the data node (a kernel change, on its own branch).
 3. **Wrong-result fixes:**
    - C-1: a design decision, either kernel-order virtual tables with a map or rejecting other layouts.
    - J-1: bind constants in index column order.
@@ -302,7 +314,8 @@ Longest executor functions, with the suggested split (D section of `review_dupli
 
 ## Fix status
 
-Branch `RONDB-1124-lqh-fixes`. One commit per fix, each with its regression
+Branches `RONDB-1124-lqh-fixes` (1.1-3.1, merged in #1230) and
+`RONDB-1124-lqh-fix2` (from 1.2). One commit per fix, each with its regression
 test. Lanes: 1 = parse and aggregate compile, 2 = join planning and
 cross-table filters, 3 = CTE virtual tables and result metadata.
 
