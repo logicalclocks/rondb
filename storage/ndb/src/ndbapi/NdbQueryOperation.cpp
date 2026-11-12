@@ -158,6 +158,12 @@ static bool isDecimalAggMetaType(NdbDictionary::Column::Type type) {
          type == NdbDictionary::Column::Decimalunsigned;
 }
 
+static bool isStringAggMetaType(NdbDictionary::Column::Type type) {
+  return type == NdbDictionary::Column::Char ||
+         type == NdbDictionary::Column::Varchar ||
+         type == NdbDictionary::Column::Longvarchar;
+}
+
 static void appendJoinAggColumnMetaEntry(
     Uint32Buffer &dst,
     const NdbDictionary::Column *col,
@@ -336,7 +342,6 @@ static bool appendJoinAggLoadColumnMetaEntries(
     Uint32 schemaVersion,
     const Vector<const NdbLinkedOperandImpl *> *linkedProjection,
     Uint32 &entryCount) {
-  (void)aggColumns;
   if (program == nullptr || programLen < 8) {
     return true;
   }
@@ -442,10 +447,30 @@ static bool appendJoinAggLoadColumnMetaEntries(
     if (op >= kOpSum && op <= kOpMinDouble) {
       const Uint32 aggSlot = word & 0xFFFF;
       if (aggSlot >= nAggColumns || aggSlot >= MAX_AGG_N_RESULTS ||
-          regId >= kRegTotal || regSources[regId].m_column == nullptr) {
+          regId >= kRegTotal) {
         continue;
       }
       JoinAggLoadMetaSource source = regSources[regId];
+      if (source.m_column == nullptr) {
+        /* The result of a CTE read by a CTE_LOOKUP / CTE_SCAN aggregation
+         * leaf follows the parent projections in the linked buffer, so the
+         * linked projection does not describe it; its type comes with
+         * each row.  A string MIN/MAX over it must still have its slot
+         * described here: a data node that gets the group only by CTE
+         * redistribution has no row to take the collation from.  Use the
+         * column the aggregator recorded for the slot, unless it is a
+         * synthetic column without sizes. */
+        const NdbDictionary::Column *aggColumn =
+            (aggColumns != nullptr) ? aggColumns[aggSlot] : nullptr;
+        if ((op != kOpMin && op != kOpMax) || aggColumn == nullptr ||
+            source.m_source_kind != JOIN_AGG_META_SOURCE_LINKED_COLUMN ||
+            source.m_program_offset == RNIL ||
+            !isStringAggMetaType(aggColumn->getType()) ||
+            aggColumn->getSizeInBytes() == 0) {
+          continue;
+        }
+        source.m_column = aggColumn;
+      }
       if (source.m_source_id == RNIL) {
         source.m_source_id = source.m_column->getAttrId();
       }

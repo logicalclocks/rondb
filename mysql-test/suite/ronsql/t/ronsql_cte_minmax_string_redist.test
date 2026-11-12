@@ -1,0 +1,192 @@
+--source include/have_ndb.inc
+
+--disable_warnings
+call mtr.add_suppression("Schema dist coordinator detected timeout");
+call mtr.add_suppression("Participant timeout");
+--enable_warnings
+
+# String MIN/MAX over a CTE result, on a data node that holds groups of
+# the CTE only from CTE redistribution.
+#
+# An aggregation whose leaf is a CTE (CTE_SCAN / CTE_LOOKUP) reads the
+# CTE's results from the linked buffer, with their type in each row.
+# The NDB API sent no setup metadata for a string MIN/MAX over such a
+# read, so the slot's collation and length-prefix size came from the
+# first value an interpreter saw.  A redistributed value carries no
+# collation: a data node that got its groups of a chained CTE only
+# through redistribution described the slot without one, fed rows
+# without one to the next aggregation, and that aggregation's second
+# compare called the collation compare with a null charset (data node
+# crash).
+#
+# c1 has ORDER BY ... LIMIT, so all its groups go to one data node, the
+# DBTC node of the query.  c2 re-groups c1, so only that node feeds c2,
+# and c2 redistributes its 32 groups by hash over both data nodes: the
+# other node holds c2 groups only from redistribution.  32 groups make
+# sure that each node owns several, whichever node is the DBTC node.
+#
+# Values of v (VARCHAR) and c (CHAR), latin1_swedish_ci:
+#   odd g:  'a' (k = 1), 'C' (k = 2)
+#   even g: 'B' (k = 1), 'd' (k = 2)
+# The collation orders a < B < C < d, binary order is B < C < a < d.
+#
+#   rr-0  EXPLAIN: c1 has the LIMIT, c2's body root is a CTE_SCAN.
+#   rr-1  Scalar main over c2.  Expected (MySQL): 32, a, d, a, d.
+#         Expected before the fix: the data node without c1 groups
+#         crashes on its second c2 row.
+#   rr-2  Main GROUP BY p over c2, 16 c2 rows per main group.
+#         Expected (MySQL): (1, 16, a, d, a, d) (2, 16, a, d, a, d).
+#         Expected before the fix: as rr-1.
+#   rr-3  Main GROUP BY p, g: one c2 row per main group, so c2's own
+#         values.  Expected (MySQL): odd g (a, C, a, C), even g
+#         (B, d, B, d).
+#
+# Fix: the NDB API describes the slot at setup from the CTE's virtual
+# column (NdbQueryOperation.cpp, appendJoinAggLoadColumnMetaEntries).
+# A request without that metadata fails the query with error 1869 where
+# a compare needs the collation, instead of crashing the data node.
+#
+# Run:    ./mtr --suite=ronsql ronsql_cte_minmax_string_redist
+# Record: ./mtr --suite=ronsql --record ronsql_cte_minmax_string_redist
+
+# ronsql_cli does not refresh its dictionary cache for join queries
+# (ronsql_cte_basic.test): compare RDRS against MySQL only.
+--let $suppress_ronsql_cli=yes
+--let $strict_diff=yes
+--let $EXPLAIN_FILE=$MYSQL_TMP_DIR/ronsql-cte-minmax-string-redist-explain.out
+
+--disable_query_log
+--disable_warnings
+
+CREATE TABLE rr_t (
+  p INT NOT NULL,
+  g INT NOT NULL,
+  k INT NOT NULL,
+  v VARCHAR(10) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  c CHAR(10) CHARACTER SET latin1 COLLATE latin1_swedish_ci NOT NULL,
+  PRIMARY KEY USING HASH (p, g, k)
+) ENGINE=NDB;
+
+let $p = 1;
+while ($p <= 2)
+{
+  let $g = 1;
+  while ($g <= 16)
+  {
+    --eval INSERT INTO rr_t VALUES ($p, $g, 1, IF($g % 2 = 1, 'a', 'B'), IF($g % 2 = 1, 'a', 'B')), ($p, $g, 2, IF($g % 2 = 1, 'C', 'd'), IF($g % 2 = 1, 'C', 'd'))
+    inc $g;
+  }
+  inc $p;
+}
+
+--enable_warnings
+--enable_query_log
+
+DELIMITER |;
+
+--echo
+--echo === rr-0: c1 has the LIMIT, c2 re-groups it from a CTE_SCAN ===
+let $QUERY=
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT COUNT(*) AS ng, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2;|
+--source suite/ronsql/include/ronsql_explain.inc
+--exec grep -qF 'LIMIT 1000' $EXPLAIN_FILE
+--exec grep -qF 'Body root: CTE_SCAN' $EXPLAIN_FILE
+--remove_file $EXPLAIN_FILE
+
+--echo
+--echo === rr-1: scalar main over c2 ===
+let $QUERY=
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT COUNT(*) AS ng, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT COUNT(*) AS ng, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2|
+
+--echo
+--echo === rr-2: main GROUP BY p over c2 ===
+let $QUERY=
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT p, COUNT(*) AS ng, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2 GROUP BY p;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT p, COUNT(*) AS ng, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2 GROUP BY p|
+
+--echo
+--echo === rr-3: main GROUP BY p, g, one c2 row per main group ===
+let $QUERY=
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT p, g, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2 GROUP BY p, g;|
+--source suite/ronsql/include/ronsql_compare.inc
+--echo == Expected result ==
+--sorted_result
+WITH c1 AS (
+  SELECT p, g, k, MIN(v) AS mnv, MAX(v) AS mxv, MIN(c) AS mnc, MAX(c) AS mxc
+  FROM rr_t GROUP BY p, g, k ORDER BY p, g, k LIMIT 1000),
+     c2 AS (
+  SELECT p, g, MIN(mnv) AS mnv2, MAX(mxv) AS mxv2,
+         MIN(mnc) AS mnc2, MAX(mxc) AS mxc2
+  FROM c1 GROUP BY p, g)
+SELECT p, g, MIN(mnv2) AS lov, MAX(mxv2) AS hiv,
+       MIN(mnc2) AS loc, MAX(mxc2) AS hic
+FROM c2 GROUP BY p, g|
+
+DELIMITER ;|
+
+--disable_query_log
+--disable_warnings
+DROP TABLE rr_t;
+--enable_warnings
+--enable_query_log

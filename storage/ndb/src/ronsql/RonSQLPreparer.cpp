@@ -8830,6 +8830,14 @@ RonSQLPreparer::build_result_column_metadata()
             column_metadata[col_idx].has_metadata = true;
             column_metadata[col_idx].avg_scale = std::min(rscale + 4, 30);
           }
+          // A chained MIN/MAX over a CHAR/VARCHAR keeps the source
+          // charset through every CTE layer; the printer needs it to
+          // print and sort the result.
+          if (rcs != NULL) {
+            column_metadata[col_idx].charset = const_cast<CHARSET_INFO*>(
+                static_cast<const CHARSET_INFO*>(rcs));
+            column_metadata[col_idx].has_metadata = true;
+          }
         }
       }
       continue;

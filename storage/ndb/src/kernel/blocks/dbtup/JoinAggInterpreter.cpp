@@ -2158,6 +2158,14 @@ static Int32 mergeStringAccumulator(AggResItem* dst,
   const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(src->type);
   const CHARSET_INFO* charset = (string_results != nullptr) ?
       string_results[agg_index].charset : nullptr;
+  if (unlikely(charset == nullptr)) {
+    /* The collation compare dereferences the charset.  A string slot
+     * gets its collation from the setup metadata or from a local row; a
+     * slot first described by a redistributed value has none, since the
+     * collation is not sent.  That takes a request without the metadata,
+     * which is API input: fail the query rather than the node. */
+    return ZAGG_OTHER_ERROR;
+  }
   const int cmp = (*sqlType.m_cmp)(charset,
                                    src_buf + 4, src_len,
                                    dst_buf + 4, dst_len);
@@ -2780,24 +2788,44 @@ Int32 JoinAggInterpreter::processNullExtendedRow(
 
 Int32 JoinAggInterpreter::ensureStringResultsFrom(
     const StringResult* source) {
-  if (m_string_results != nullptr || source == nullptr) {
+  if (source == nullptr) {
     return 0;
   }
-  const Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
-  m_string_results = static_cast<StringResult*>(
-      lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
   if (m_string_results == nullptr) {
-    return ZAGG_ALLOC_MEM_FAILED;
+    const Uint32 nbytes = m_n_agg_results * sizeof(StringResult);
+    m_string_results = static_cast<StringResult*>(
+        lc_ndbd_pool_malloc(nbytes, RG_QUERY_MEMORY, m_thread_id, true));
+    if (m_string_results == nullptr) {
+      return ZAGG_ALLOC_MEM_FAILED;
+    }
   }
-  memcpy(m_string_results, source, nbytes);
+  /* Slot by slot: this interpreter may have described some string slots
+   * from its own rows but not a slot that only `source` saw values for.
+   * The values moved in from `source` would then be merged and emitted
+   * with no collation and a length-prefix size of 0.  A slot described
+   * here keeps its description; both come from the same column. */
   for (Uint32 i = 0; i < m_n_agg_results; i++) {
-    m_string_results[i].ptr = nullptr;
-    m_string_results[i].length = 0;
-    m_string_results[i].size = 0;
+    StringResult& slot = m_string_results[i];
+    const StringResult& src = source[i];
+    if (slot.declared_size != 0 || slot.charset != nullptr ||
+        (src.declared_size == 0 && src.charset == nullptr)) {
+      continue;
+    }
+    slot.prefix_bytes = src.prefix_bytes;
+    slot.declared_size = src.declared_size;
+    slot.charset = src.charset;
   }
   return 0;
 }
 
+/* Describes the string slots of a redistributed group when this
+ * interpreter has no string slot yet.  The setup metadata the NDB API
+ * sends describes every string MIN/MAX slot, on every interpreter of the
+ * state, and a local row describes the slots it updates, so this runs
+ * only for a request without that metadata.  The length-prefix size
+ * follows from the type, but the collation is not sent: the slot gets
+ * none, and a merge that must compare two of its values fails the query
+ * (mergeStringAccumulator). */
 Int32 JoinAggInterpreter::ensureStringResultsFromRedistribution(
     const AggResItem* slots,
     const char* appended,

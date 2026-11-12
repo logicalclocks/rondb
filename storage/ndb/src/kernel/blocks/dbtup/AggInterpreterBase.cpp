@@ -1434,6 +1434,14 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
       (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
       (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
   const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
+  if (unlikely(slot.charset == nullptr)) {
+    /* The collation compare dereferences the charset.  A string column
+     * always has one; a slot without it was described from a value that
+     * came without it (a CTE row built from a slot first described by a
+     * redistributed value, or API metadata with no charset).  Fail the
+     * query rather than the node. */
+    return ZAGG_OTHER_ERROR;
+  }
   int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
   const bool replace = is_max ? (cmp > 0) : (cmp < 0);
   if (!replace) return 0;
