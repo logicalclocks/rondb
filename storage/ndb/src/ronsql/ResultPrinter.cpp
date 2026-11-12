@@ -1089,6 +1089,19 @@ ResultPrinter::compare_rows(StoredRow& a, StoredRow& b)
       if (col_a.is_null() && col_b.is_null()) continue;
       if (col_a.is_null()) return spec.ascending ? -1 : 1;
       if (col_b.is_null()) return spec.ascending ? 1 : -1;
+      switch (col_a.type())
+      {
+      case NdbDictionary::Column::Char:
+      case NdbDictionary::Column::Varchar:
+      case NdbDictionary::Column::Longvarchar:
+        // As in the AGGREGATE arm: the string comparators dereference
+        // the charset (O-1).
+        require_sch(spec.charset != nullptr,
+                    "Could not find charset for string GROUP BY column");
+        break;
+      default:
+        break;
+      }
       const NdbSqlUtil::Type& sqlType =
           NdbSqlUtil::getType(static_cast<Uint32>(col_a.type()));
       int cmp = (*sqlType.m_cmp)(spec.charset,

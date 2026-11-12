@@ -8831,9 +8831,16 @@ RonSQLPreparer::build_result_column_metadata()
       // (found by obc-11): a CHAINED aggregate output — e.g. b's
       // SUM(s) over a's s = SUM(DECIMAL) — plumbs no stored column
       // either, and resolve_chained_column_type now carries the D15
-      // scale/precision through aggregate layers.  rscale == 0 leaves
-      // has_metadata false; AVG formatting independently distinguishes
-      // floating CTE results from integer results.
+      // scale/precision through aggregate layers.  AVG formatting
+      // independently distinguishes floating CTE results from integer
+      // results.
+      //
+      // O-1: a chained output of a string or DECIMAL source column (a
+      // GROUP BY key passed up a CTE chain) has no plumbed dict_column
+      // either, so keep its charset and DECIMAL precision here.  Without
+      // them a string key was compared under ORDER BY with a NULL
+      // CHARSET_INFO and printed with "Could not find charset", and a
+      // DECIMAL(p,0) key was printed with precision 0.
       if (ref.kind ==
               QueryScope::ResolvedColumnRef::Kind::CteResultColumn &&
           ref.cte_output != NULL) {
@@ -8847,15 +8854,18 @@ RonSQLPreparer::build_result_column_metadata()
           if (rt == NdbDictionary::Column::Float ||
               rt == NdbDictionary::Column::Double)
             column_metadata[col_idx].avg_scale = -1;
-          if (rscale > 0) {
+          const bool is_decimal =
+              (rt == NdbDictionary::Column::Decimal ||
+               rt == NdbDictionary::Column::Decimalunsigned);
+          if (rscale > 0 || is_decimal) {
             column_metadata[col_idx].precision = rprecision;
             column_metadata[col_idx].scale = rscale;
             column_metadata[col_idx].has_metadata = true;
             column_metadata[col_idx].avg_scale = std::min(rscale + 4, 30);
           }
-          // A chained MIN/MAX over a CHAR/VARCHAR keeps the source
-          // charset through every CTE layer; the printer needs it to
-          // print and sort the result.
+          // A chained MIN/MAX or GROUP BY key over a CHAR/VARCHAR keeps
+          // the source charset through every CTE layer; the printer
+          // needs it to print and sort the result.
           if (rcs != NULL) {
             column_metadata[col_idx].charset = const_cast<CHARSET_INFO*>(
                 static_cast<const CHARSET_INFO*>(rcs));
