@@ -36,7 +36,7 @@
  *
  * The cases target the suspected weaknesses documented in
  * storage/ndb/claude_files/dbspj/dbspj_attrinfo_protocol.html (P-1 ..).
- * P-25 .. P-29 send malformed join aggregation programs, which DBLQH
+ * P-25 .. P-31 send malformed join aggregation programs, which DBLQH
  * must reject at JOIN_AGG_SETUP_REQ (AggInterpreterBase::checkProgram).
  * Each malformed request is built by taking a known-good, word-for-word
  * SPJ encoding (the POSITIVE CONTROL below, encoded exactly as
@@ -306,7 +306,7 @@ class SpjMalformedChecker {
     r.scanParallelism = 1;
   }
 
-  /* ---- join aggregation programs (P-25 .. P-29) ------------------------ *
+  /* ---- join aggregation programs (P-25 .. P-31) ------------------------ *
    * A JoinAgg SCAN_TABREQ carries the aggregation program in its KeyInfo
    * section, laid out as NdbQueryImpl::prepareAggregation and
    * NdbQueryImpl::doSend do: [boundsLen 0][aggReceiverId]
@@ -581,6 +581,24 @@ class SpjMalformedChecker {
         (10u << 16) | 40u, aggOp(kOpCount) | (0u << 16) | 0u};
     return expectAggRejected("P-29 join aggregation DECIMAL(10,40)",
                              {aggProgram(1, body), countLeaf()});
+  }
+
+  int runP30() {  /* leaf 0 with a bad magic word */
+    /* checkProgram did not check the header word 0, and
+     * JoinAggInterpreter::Init of leaf 0 asserted it (K-1). */
+    std::vector<Uint32> leaf = countLeaf();
+    leaf[0] = (0x0722u << 16) | Uint32(leaf.size());
+    return expectAggRejected("P-30 join aggregation bad magic word",
+                             {leaf, countLeaf()});
+  }
+
+  int runP31() {  /* leaf 0 with a reserved flag bit */
+    /* Only bit 0 (AGG_PROG_FLAG_REUSABLE) of prog[3] is defined;
+     * JoinAggInterpreter::Init of leaf 0 asserted the others (K-1). */
+    std::vector<Uint32> leaf = countLeaf();
+    leaf[3] = 0x2;
+    return expectAggRejected("P-31 join aggregation reserved flag bit",
+                             {leaf, countLeaf()});
   }
 
  private:
@@ -916,6 +934,8 @@ CASE_STEP(runP26, runP26)
 CASE_STEP(runP27, runP27)
 CASE_STEP(runP28, runP28)
 CASE_STEP(runP29, runP29)
+CASE_STEP(runP30, runP30)
+CASE_STEP(runP31, runP31)
 
 }  // namespace
 
@@ -978,6 +998,12 @@ TESTCASE("P28", "join aggregation: register index 15 (8 registers)") {
 }
 TESTCASE("P29", "join aggregation: DECIMAL scale above precision") {
   STEP(runP29);
+}
+TESTCASE("P30", "join aggregation: leaf 0 with a bad magic word") {
+  STEP(runP30);
+}
+TESTCASE("P31", "join aggregation: leaf 0 with a reserved flag bit") {
+  STEP(runP31);
 }
 NDBT_TESTSUITE_END(testSpjMalformed)
 

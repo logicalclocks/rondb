@@ -102,10 +102,11 @@ bool JoinAggInterpreter::Init(const Uint32* prog) {
   }
   require(prog != nullptr);
 
-  /* Step 3 Cand-A: peek the program header.  Version mismatch returns
-   * true without setting m_inited so ProcessRec rejects on entry. */
+  /* Step 3 Cand-A: peek the program header.  A malformed header fails
+   * Init.  Version mismatch returns true without setting m_inited so
+   * ProcessRec rejects on entry. */
   bool compatible = true;
-  peekProgramHeader(prog, &compatible);
+  if (!peekProgramHeader(prog, &compatible)) return false;
   if (!compatible) return true;
 
   /* m_buf_block carve.  m_prog_buf right-sized to m_prog_len,

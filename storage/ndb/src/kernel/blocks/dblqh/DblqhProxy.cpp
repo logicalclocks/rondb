@@ -3698,9 +3698,10 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       jam();
       /* Without its buffer block the interpreter would fail every row
        * with 1869: out of query memory (temporary) unless the block was
-       * allocated and the program itself was rejected. */
+       * allocated or the program itself was rejected. */
       sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                          interp->has_buf_block()
+                          (interp->has_buf_block() ||
+                           interp->program_rejected())
                               ? DbspjErr::InvalidRequest
                               : DbspjErr::OutOfQueryMemory,
                           __LINE__, key, cteIndex);
@@ -3771,7 +3772,8 @@ DblqhProxy::execJOIN_AGG_SETUP_REQ(Signal *signal) {
       if (unlikely(!interp->Init(leaf0.m_agg_program))) {
         jam();
         sendJoinAggSetupRef(signal, senderRef, senderData, requestId,
-                            interp->has_buf_block()
+                            (interp->has_buf_block() ||
+                             interp->program_rejected())
                                 ? DbspjErr::InvalidRequest
                                 : DbspjErr::OutOfQueryMemory,
                             __LINE__, key, cteIndex);

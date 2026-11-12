@@ -240,9 +240,14 @@ re-verified against the current code. Re-read the code first.
     aggregate on a register that is not in the mask fails the row with an
     error. The JIT must do
     the same, or refuse such programs.
-  - Also: `peekProgramHeader` still checks the magic word, `prog_len` and
-    the reserved flag bits with `assert` only. A raw NDB API client can
-    abort a debug data node with a bad header word.
+  - Fixed (K-1a): `peekProgramHeader` checked the magic word, `prog_len`,
+    the reserved flag bits and the 1024-word limit with `assert` only, so
+    a raw NDB API client could abort a debug data node with a bad header
+    word. `AggInterpreterBase::checkProgramHeader` now refuses them, in
+    `checkProgram` (JOIN_AGG_SETUP_REF 20002) and in `peekProgramHeader`,
+    which fails Init and sets `program_rejected()` so the callers report a
+    rejected program, not a lack of query memory. Tests: testSpjMalformed
+    P30 / P31.
 - **Bug 13 leftovers:**
   - `ndbrequire(regTcPtr->opExec)` in `execSCAN_FRAGREQ` (DblqhMain.cpp:25882)
     still stops the node when SCAN_FRAGREQ has the aggregation flag but no

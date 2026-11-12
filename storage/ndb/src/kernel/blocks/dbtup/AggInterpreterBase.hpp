@@ -154,6 +154,7 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_gb_cols_buf(nullptr), m_agg_results_buf(nullptr),
       m_gb_map_buf(nullptr), m_buf_block(nullptr),
       m_tearing_down(false), m_prog_reusable(false),
+      m_program_rejected(false),
       m_size_hint_key(0), m_size_hint_rows_peak(0),
       m_size_hint_from_rows(true),
       m_chunks(nullptr), m_chunks_tail(nullptr),
@@ -240,9 +241,13 @@ class AggInterpreterBase : public PushdownInterpreter {
   Uint64 processed_rows() const { return m_processed_rows; }
   /* Query memory in this interpreter's group-record chunks. */
   Uint32 chunk_bytes() const { return m_total_chunk_bytes; }
-  /* Init() failed for want of query memory when this is still false;
-   * with the block allocated the program itself was rejected. */
+  /* Init() failed for want of query memory when this is still false
+   * and program_rejected() is false; with the block allocated the
+   * program itself was rejected. */
   bool has_buf_block() const { return m_buf_block != nullptr; }
+  /* Init() rejected the program, also before it allocated the block
+   * (a malformed header, peekProgramHeader). */
+  bool program_rejected() const { return m_program_rejected; }
   /* prog[3] AGG_PROG_FLAG_REUSABLE — the client re-sends this program
    * across executions (RonSQL); the JIT compile pins its blob in the
    * reuse cache (Phase 8 Slice 4). */
@@ -263,9 +268,11 @@ class AggInterpreterBase : public PushdownInterpreter {
    * the register file, the aggregate slots and the DECIMAL decoder with
    * fields of its words without checking them, so every such field is
    * checked here:
-   *   - the header: at most MAX_AGG_N_RESULTS aggregate slots and
+   *   - the header: the magic word, at most MAX_AGG_PROGRAM_WORD_SIZE
+   *     words, at most MAX_AGG_N_RESULTS aggregate slots and
    *     MAX_AGG_N_GROUPBY_COLS GROUP BY columns, which fit in the
-   *     program, and a supported version;
+   *     program, a supported version and no flag bit other than
+   *     AGG_PROG_FLAG_REUSABLE (checkProgramHeader);
    *   - the operand words of every instruction lie inside the program;
    *   - register fields are below kRegTotal (the fields are 4 bits);
    *   - aggregate slot fields are below the header's slot count.  These
@@ -287,6 +294,19 @@ class AggInterpreterBase : public PushdownInterpreter {
    */
   static const char* checkProgram(const Uint32* prog, Uint32 prog_len,
                                   Uint32* insn_starts, bool* uses_avg);
+
+  /**
+   * The header words of a program of at least 8 words, as
+   * NdbAggregator::Finalize writes them, for checkProgram and
+   * peekProgramHeader: the magic word in prog[0], the version in prog[2]
+   * and the flag bits in prog[3], and at most MAX_AGG_PROGRAM_WORD_SIZE
+   * words.  Returns nullptr when they are valid, else the reason.
+   * *newer_version (not a reason) tells the caller the version is above
+   * PUSHDOWN_AGGREGATION_VERSION; the flag bits are then not checked, a
+   * newer version may define them.
+   */
+  static const char* checkProgramHeader(const Uint32* prog, Uint32 prog_len,
+                                        bool* newer_version);
 
   /**
    * OptimizeProgram — guard + delegate to OptimizeProgramBuffer.
@@ -437,12 +457,14 @@ class AggInterpreterBase : public PushdownInterpreter {
    * pass right-sized counts to initBufBlock.  Sets m_n_gb_cols /
    * m_n_agg_results from the header, unchecked: the subclass bounds
    * them for the allocation and checkProgram rejects them if too large.
-   * Asserts magic / prog_len / reserved slots match.  On version
-   * mismatch logs a warning and sets *compatible = false; the caller is
-   * expected to `return true` (m_inited stays false; ProcessRec rejects
-   * on entry).
+   * The header comes from the API: when it is malformed
+   * (checkProgramHeader, or a length word that differs from m_prog_len)
+   * logs why, sets program_rejected() and returns false, and the caller
+   * fails Init.  On version mismatch logs a warning and sets
+   * *compatible = false; the caller is expected to `return true`
+   * (m_inited stays false; ProcessRec rejects on entry).
    */
-  void peekProgramHeader(const Uint32* prog, bool* compatible);
+  bool peekProgramHeader(const Uint32* prog, bool* compatible);
 
   /**
    * Init's checkProgram call, after initBufBlock (so that an Init that
@@ -780,6 +802,8 @@ class AggInterpreterBase : public PushdownInterpreter {
   /* prog[3] bit 0 (AGG_PROG_FLAG_REUSABLE), parsed in
    * peekProgramHeader — see prog_reusable(). */
   bool m_prog_reusable;
+  /* See program_rejected(). */
+  bool m_program_rejected;
   /* m3_run6_plan.md D1a: key of this program's group-table size hint
    * (a hash of the program words and the table id), set with the
    * GROUP BY table in initSharedAfterAlloc; tearDownChunk records the

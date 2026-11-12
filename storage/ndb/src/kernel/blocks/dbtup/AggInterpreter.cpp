@@ -101,10 +101,11 @@ bool AggInterpreter::Init(const Uint32* prog) {
   require(prog != nullptr);
 
   /* Step 3 Cand-A: peek the program header (sets m_n_gb_cols /
-   * m_n_agg_results + asserts).  Version mismatch returns true without
-   * setting m_inited so ProcessRec rejects on entry. */
+   * m_n_agg_results).  A malformed header fails Init.  Version mismatch
+   * returns true without setting m_inited so ProcessRec rejects on
+   * entry. */
   bool compatible = true;
-  peekProgramHeader(prog, &compatible);
+  if (!peekProgramHeader(prog, &compatible)) return false;
   if (!compatible) return true;
 
   /* Right-sized buffer-block carve.  Skip the m_gb_map_buf slot when

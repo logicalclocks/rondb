@@ -324,40 +324,72 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
  * subclasses' Inits used to do this identically (after sed-collapsing
  * trivial comment differences).
  */
-void AggInterpreterBase::peekProgramHeader(const Uint32* prog,
+bool AggInterpreterBase::peekProgramHeader(const Uint32* prog,
                                             bool* compatible) {
   *compatible = true;
-  Uint32 hdr0 = prog[0];
-  assert(((hdr0 & 0xFFFF0000) >> 16) == 0x0721);
-  assert((hdr0 & 0xFFFF) == m_prog_len);
-  (void)hdr0;
+  /* K-1: the header comes from the API, so a malformed one fails Init
+   * instead of an assert.  The callers pass at least 8 words; the
+   * length check guards the reads below all the same. */
+  const char* reason = nullptr;
+  bool newer_version = false;
+  if (m_prog_len < 8) {
+    reason = "shorter than its header";
+  } else if ((prog[0] & 0xFFFF) != m_prog_len) {
+    reason = "header length differs from the program length";
+  } else {
+    reason = checkProgramHeader(prog, m_prog_len, &newer_version);
+  }
+  if (reason != nullptr) {
+    g_eventLogger->warning("Aggregation program rejected: %s", reason);
+    m_program_rejected = true;
+    return false;
+  }
 
   Uint32 hdr1 = prog[1];
   m_n_gb_cols = (hdr1 >> 16) & 0xFFFF;
   m_n_agg_results = hdr1 & 0xFFFF;
 
-  Uint32 version = prog[2];
-  if (version > PUSHDOWN_AGGREGATION_VERSION) {
+  if (newer_version) {
     g_eventLogger->warning("Pushdown aggregation program version(%u) is "
                            "not compatible with "
                            "the version (%u) on data node",
-                           version, PUSHDOWN_AGGREGATION_VERSION);
+                           prog[2], PUSHDOWN_AGGREGATION_VERSION);
     *compatible = false;
-    return;
+    return true;
   }
   /* prog[3]: flags word. Bit 0 (AGG_PROG_FLAG_REUSABLE) marks a program
    * the client re-sends across executions (RonSQL / prepared
    * statements) — the JIT compile then pins the blob in the reuse
-   * cache (Phase 8 Slice 4). Bit 31 is the vector-search type marker
-   * and never set here (DetectType routes those before Init). All
-   * other bits reserved-zero. */
+   * cache (Phase 8 Slice 4).  checkProgramHeader refused the other
+   * bits. */
   m_prog_reusable = (prog[3] & AGG_PROG_FLAG_REUSABLE) != 0;
-  assert((prog[3] & ~(Uint32)AGG_PROG_FLAG_REUSABLE) == 0);
-
-  assert(m_prog_len <= MAX_AGG_PROGRAM_WORD_SIZE);
   /* m_n_gb_cols and m_n_agg_results come from the API: checkProgram
    * rejects them when too large, an assert here would stop a debug
    * build first. */
+  return true;
+}
+
+const char* AggInterpreterBase::checkProgramHeader(const Uint32* prog,
+                                                   Uint32 prog_len,
+                                                   bool* newer_version) {
+  *newer_version = false;
+  if (((prog[0] >> 16) & 0xFFFF) != 0x0721) {
+    return "bad magic word";
+  }
+  if (prog_len > MAX_AGG_PROGRAM_WORD_SIZE) {
+    return "longer than MAX_AGG_PROGRAM_WORD_SIZE words";
+  }
+  if (prog[2] > PUSHDOWN_AGGREGATION_VERSION) {
+    *newer_version = true;
+    return nullptr;
+  }
+  /* Bit 31 marks a vector search program, which
+   * PushdownInterpreterFactory::DetectType routes elsewhere; the other
+   * bits are reserved. */
+  if ((prog[3] & ~Uint32(AGG_PROG_FLAG_REUSABLE)) != 0) {
+    return "reserved flag bits set";
+  }
+  return nullptr;
 }
 
 bool AggInterpreterBase::checkInitProgram(const Uint32* prog,
@@ -367,6 +399,7 @@ bool AggInterpreterBase::checkInitProgram(const Uint32* prog,
   if (reason != nullptr) {
     g_eventLogger->warning("%s::Init: aggregation program rejected: %s",
                            class_name, reason);
+    m_program_rejected = true;
     return false;
   }
   m_insn_starts = insn_starts;
@@ -451,7 +484,13 @@ const char* AggInterpreterBase::checkProgram(const Uint32* prog,
   }
   const Uint32 n_gb_cols = (prog[1] >> 16) & 0xFFFF;
   const Uint32 n_slots = prog[1] & 0xFFFF;
-  if (prog[2] > PUSHDOWN_AGGREGATION_VERSION) {
+  bool newer_version = false;
+  const char* header_reason =
+      checkProgramHeader(prog, prog_len, &newer_version);
+  if (header_reason != nullptr) {
+    return header_reason;
+  }
+  if (newer_version) {
     return "unsupported version";
   }
   if (n_slots > MAX_AGG_N_RESULTS) {
