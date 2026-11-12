@@ -127,6 +127,14 @@ class NdbSqlUtil {
   static const Type &getType(Uint32 typeId);
 
   /**
+   * The comparison method for string MIN/MAX results of type typeId.  As
+   * getType(typeId).m_cmp, except that two CHAR values may have different
+   * lengths: a MIN/MAX over a CASE takes its values from CHAR columns of
+   * different sizes, and cmpChar requires one length.
+   */
+  static Cmp *getStringResultCmp(Uint32 typeId);
+
+  /**
    * Check character set.
    */
   static uint check_column_for_pk(Uint32 typeId, const void *info);
@@ -246,6 +254,7 @@ class NdbSqlUtil {
   static Cmp cmpDouble;
   static Cmp cmpOlddecimal;
   static Cmp cmpChar;
+  static Cmp cmpCharAnyLength;
   static Cmp cmpVarchar;
   static Cmp cmpBinary;
   static Cmp cmpVarbinary;

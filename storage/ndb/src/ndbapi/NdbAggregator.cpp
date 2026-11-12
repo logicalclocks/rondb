@@ -346,10 +346,11 @@ int NdbAggregator::compareStringSlots(const AggResItem *lhs,
                         (lhs->type == NDB_TYPE_VARCHAR) ? 1 : 2;
   const Uint32 lhs_len = prefix + lhs_payload_len;
   const Uint32 rhs_len = prefix + rhs_payload_len;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(lhs->type);
-  return (*sqlType.m_cmp)(col->getCharset(),
-                          lhs_buf + 4, lhs_len,
-                          rhs_buf + 4, rhs_len);
+  /* A CASE's arms can be CHAR columns of different sizes */
+  NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(lhs->type);
+  return (*cmp_fn)(col->getCharset(),
+                   lhs_buf + 4, lhs_len,
+                   rhs_buf + 4, rhs_len);
 }
 
 void NdbAggregator::mergeStringSlot(AggResItem *dst,
@@ -1729,7 +1730,9 @@ bool NdbAggregator::RepeatAgg(Uint32 agg_id, Uint32 reg_id) {
    * refuse a string or temporal value, as Sum() and Avg() do.  A string
    * MIN / MAX slot holds a pointer to the data node's copy of the value,
    * compared in the type and collation of the column, so the arms must
-   * all be strings of one type and collation, or none of them a string. */
+   * all be strings of one type and collation, or none of them a string.
+   * CHAR arms may differ in size: string results compare with
+   * NdbSqlUtil::getStringResultCmp, which takes two CHAR lengths. */
   const Uint32 op = agg_ops_[agg_id];
   const Uint32 type = reg_types_[reg_id];
   if (op == kOpSum || op == kOpAvg) {

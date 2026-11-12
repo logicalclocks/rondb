@@ -267,6 +267,9 @@ private:
                               int temporal_fsp);
   bool aggregate_uses_float_display(const Outputs* out) const;
   CHARSET_INFO* aggregate_arg_charset(const Outputs* out) const;
+  // The charset of a column Load's metadata; NULL for any other Expr or
+  // a column without metadata.
+  CHARSET_INFO* load_arg_charset(const AggregationAPICompiler_Expr* e) const;
   int aggregate_arg_scale(const Outputs* out) const;
   int aggregate_arg_precision(const Outputs* out) const;
   // Returns the temporal decode for a MIN/MAX aggregate's source column

@@ -117,6 +117,13 @@ const NdbSqlUtil::Type &NdbSqlUtil::getType(Uint32 typeId) {
   return m_typeList[Type::Undefined];
 }
 
+NdbSqlUtil::Cmp *NdbSqlUtil::getStringResultCmp(Uint32 typeId) {
+  if (typeId == Type::Char) {
+    return cmpCharAnyLength;
+  }
+  return getType(typeId).m_cmp;
+}
+
 /*
  * Comparison functions.
  */
@@ -325,6 +332,17 @@ int NdbSqlUtil::cmpChar(const void *info, const void *p1, unsigned n1,
                         const void *p2, unsigned n2) {
   // Require same lengths
   assert(info != nullptr && n1 == n2);
+  return cmpCharAnyLength(info, p1, n1, p2, n2);
+}
+
+/*
+ * Two CHAR values of different lengths compare as in SQL: a PAD SPACE
+ * collation pads the shorter one with spaces (strnncollsp), and a NO_PAD
+ * collation compares both without their trailing spaces.
+ */
+int NdbSqlUtil::cmpCharAnyLength(const void *info, const void *p1,
+                                 unsigned n1, const void *p2, unsigned n2) {
+  assert(info != nullptr);
   const uchar *v1 = (const uchar *)p1;
   const uchar *v2 = (const uchar *)p2;
   const CHARSET_INFO *cs = (const CHARSET_INFO *)info;

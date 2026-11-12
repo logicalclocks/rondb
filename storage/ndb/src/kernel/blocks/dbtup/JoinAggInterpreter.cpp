@@ -2161,7 +2161,8 @@ static Int32 mergeStringAccumulator(AggResItem* dst,
       string_results[agg_index].prefix_bytes : stringPrefixBytes(src->type);
   const Uint32 src_len = prefix + src_payload_len;
   const Uint32 dst_len = prefix + dst_payload_len;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(src->type);
+  /* A CASE's arms can be CHAR columns of different sizes */
+  NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(src->type);
   const CHARSET_INFO* charset = (string_results != nullptr) ?
       string_results[agg_index].charset : nullptr;
   if (unlikely(charset == nullptr)) {
@@ -2172,9 +2173,9 @@ static Int32 mergeStringAccumulator(AggResItem* dst,
      * which is API input: fail the query rather than the node. */
     return ZAGG_OTHER_ERROR;
   }
-  const int cmp = (*sqlType.m_cmp)(charset,
-                                   src_buf + 4, src_len,
-                                   dst_buf + 4, dst_len);
+  const int cmp = (*cmp_fn)(charset,
+                            src_buf + 4, src_len,
+                            dst_buf + 4, dst_len);
   const bool replace = isMaxAggOp(op) ? (cmp > 0) : (cmp < 0);
   if (!replace) {
     return 0;

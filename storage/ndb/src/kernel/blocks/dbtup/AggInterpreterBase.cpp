@@ -1570,7 +1570,8 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
   const Uint32 type_id =
       (slot.prefix_bytes == 0) ? NDB_TYPE_CHAR :
       (slot.prefix_bytes == 1) ? NDB_TYPE_VARCHAR : NDB_TYPE_LONGVARCHAR;
-  const NdbSqlUtil::Type& sqlType = NdbSqlUtil::getType(type_id);
+  /* A CASE's arms can be CHAR columns of different sizes */
+  NdbSqlUtil::Cmp* const cmp_fn = NdbSqlUtil::getStringResultCmp(type_id);
   if (unlikely(slot.charset == nullptr)) {
     /* The collation compare dereferences the charset.  A string column
      * always has one; a slot without it was described from a value that
@@ -1579,7 +1580,7 @@ Int32 AggInterpreterBase::minMaxString(Uint32 reg_index, Uint32 agg_index,
      * query rather than the node. */
     return ZAGG_OTHER_ERROR;
   }
-  int cmp = (*sqlType.m_cmp)(slot.charset, v_new, n_new, v_old, n_old);
+  int cmp = (*cmp_fn)(slot.charset, v_new, n_new, v_old, n_old);
   const bool replace = is_max ? (cmp > 0) : (cmp < 0);
   if (!replace) return 0;
 

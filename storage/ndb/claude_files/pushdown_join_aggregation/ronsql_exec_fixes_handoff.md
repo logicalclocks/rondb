@@ -184,16 +184,28 @@ re-verified against the current code. Re-read the code first.
   WHERE conjunct that stays on a LEFT-joined op is refused ("WHERE on a LEFT
   JOIN's right side that holds for NULL is not supported") until post-join
   filtering exists. Test: `ronsql_left_join_where` lj-5, lj-6, lj-r5..r7.
-- **CASE MIN/MAX whose arms are all strings fails to print.** RonSQL refuses
-  mixed arms (bug 1). All-string arms pass, but
-  `ResultPrinter::aggregate_arg_charset` (ResultPrinter.cpp:2685) only follows
-  a direct column Load, so printing fails with "Could not find charset for
-  string aggregation result". Fix: take the charset of the arms, which
-  `RepeatAgg` already requires to be one collation.
-  - Related: `NdbAggregator::Finalize` sizes string results from the first
-    arm only.
-  - The `9a0fffe7475` printer fix covers chained CTE columns
-    (`build_result_column_metadata`), not CASE.
+- **CASE MIN/MAX whose arms are all strings fails to print: fixed.** RonSQL
+  refuses mixed arms (bug 1). All-string arms passed, but
+  `ResultPrinter::aggregate_arg_charset` only followed a direct column Load,
+  so printing and ORDER BY on the aggregate failed with "Could not find
+  charset for string aggregation result". It now takes the charset of the
+  THEN arm's column, or the ELSE arm's, which `RepeatAgg` requires to be one
+  collation. CHAR arms of different sizes then stopped a debug RDRS:
+  `NdbSqlUtil::cmpChar` asserts that both CHAR values have one length, and
+  the merge compared a CHAR(4) and a CHAR(6) partial result. String MIN/MAX
+  results now compare with `NdbSqlUtil::getStringResultCmp`, which for CHAR
+  is `cmpCharAnyLength` (cmpChar without the length check; strnncollsp
+  pads, NO_PAD strips trailing spaces): `AggInterpreterBase::minMaxString`,
+  `JoinAggInterpreter`'s string slot merge, `NdbAggregator::compareStringSlots`
+  and `ResultPrinter`'s ORDER BY. Test: `ronsql_case_minmax_string`
+  (+ `ronsql_jit` mirror) cm-1..cm-6: VARCHAR(10)/VARCHAR(20) and
+  CHAR(4)/CHAR(6) arms, no GROUP BY, ORDER BY the MIN, join aggregation,
+  ORDER BY the MAX of the CHAR arms. A CTE output over a CASE aggregate is
+  still refused ("CTE aggregate over complex expression").
+  - Still open: `NdbAggregator::Finalize` estimates string results from the
+    first arm's column only. The estimate only guards
+    `MAX_AGG_RESULT_BATCH_BYTES`, and each value is copied at its own
+    length, so a longer ELSE arm under-estimates and is not an overflow.
 - **The data node has no guard against bug 1c.** A program that mixes string
   and numeric MIN/MAX arms on one slot is refused by `NdbAggregator::RepeatAgg`
   and by mysqld, but not by the data node. Bug 14's `checkProgram` checks
