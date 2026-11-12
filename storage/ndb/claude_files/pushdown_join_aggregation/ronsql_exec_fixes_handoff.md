@@ -225,8 +225,8 @@ re-verified against the current code. Re-read the code first.
 
 ### 4.2 Kernel
 - **An aggregate can read a register the row never loaded (K-1 in
-  `../ronsql_executor/README.md`).** Bug 14's `checkProgram` covers the
-  rest of K-1, but not this. The skip after an embedded program is
+  `../ronsql_executor/README.md`): fixed (K-1b).** Bug 14's
+  `checkProgram` covers the rest of K-1, but not this. The skip after an embedded program is
   computed per row, so no check before the program runs can see it. Sum,
   Max, Min, Count and the typed variants only
   `assert(a.type != NDB_TYPE_UNDEFINED)`. Registers are zeroed once in
@@ -234,12 +234,19 @@ re-verified against the current code. Re-read the code first.
   the previous row's value. RonSQL reached it through D-1 (fixed in
   `b0371bb91ef`). Before that fix, `ronsql_subquery_filter_decimal`
   aborted both data nodes in a debug build.
-  - Fix: a per-row bitmask of loaded registers, cleared at row start. A
-    load, a constant or kOpSetRegNull sets its register's bit; kOpMov and
-    the arithmetic ops set it only when their inputs are set. An
-    aggregate on a register that is not in the mask fails the row with an
-    error. The JIT must do
-    the same, or refuse such programs.
+  - Fix: `AggInterpreterBase::m_loaded_regs`, a per-row bitmask of
+    loaded registers cleared at row start. A load, a constant or
+    kOpSetRegNull sets its register's bit; kOpMov and the arithmetic ops
+    need their inputs set and set their result's. An aggregate, kOpMov or
+    arithmetic op on a register not in the mask fails the row with 1868;
+    READ_AGG_REG_TO_REG fails with 878 in DBTUP
+    (`InterpreterContext::aggRegistersLoaded`) and in
+    `evalEmbeddedForNullRow`. The JIT zeroes its registers per row and
+    would have aggregated 0, so `ndb_jit_bridge.c` tracks the registers
+    loaded on every path (AND-merged where CASE jumps land) and refuses a
+    program that may read another (`JIT_BRIDGE_REG_NOT_LOADED`); it runs
+    on the interpreter. Tests: testSpjMalformed P32 (also with the JIT,
+    `test_spj_malformed_p32_jit`), bridge_tests T85a-e.
   - Fixed (K-1a): `peekProgramHeader` checked the magic word, `prog_len`,
     the reserved flag bits and the 1024-word limit with `assert` only, so
     a raw NDB API client could abort a debug data node with a bad header

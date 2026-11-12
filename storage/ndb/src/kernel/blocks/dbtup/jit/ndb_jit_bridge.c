@@ -270,6 +270,8 @@ const char *ndb_jit_bridge_reason_name(JitBridgeReason reason) {
       return "embedded_backward";
     case JIT_BRIDGE_TYPE_MISMATCH:
       return "type_mismatch";
+    case JIT_BRIDGE_REG_NOT_LOADED:
+      return "reg_not_loaded";
     default:
       return "unknown";
   }
@@ -585,6 +587,9 @@ typedef struct {
   uint8_t  reg_type_snap[BC_EMB_REG_BASE];
   uint8_t  reg_u63_snap[BC_EMB_REG_BASE];
   uint8_t  reg_pack_snap[BC_EMB_REG_BASE];   /* GL Part B */
+  /* K-1: the outer registers loaded on every path to the jump's source
+   * (bit r = register r), see reg_loaded in ndb_jit_bridge_translate_ex. */
+  uint32_t reg_loaded_snap;
 } PendingCaseJump;
 
 /* ronsql_jit slice 2 item 9: WRITE_INTERPRETER_OUTPUT's skip value
@@ -814,18 +819,80 @@ static uint8_t br_track_class(uint8_t track) {
   }
 }
 
+/* K-1: the outer registers an aggregation instruction reads and writes,
+ * bit r = register r, as the interpreter tracks them per row
+ * (AggInterpreterBase m_loaded_regs).  kOpLoadCol, kOpLoadConst and
+ * kOpSetRegNull write the register in bits 16-19; the two-register
+ * instructions read the one in bits 8-11 and, except kOpMov, the one in
+ * bits 12-15, and write the latter; the aggregates read the one in bits
+ * 16-19.  kOpEmbeddedInterp reads outer registers with
+ * READ_AGG_REG_TO_REG, which translate_embedded_block checks. */
+static void br_reg_use(uint8_t op, uint32_t word, uint32_t *reads,
+                       uint32_t *writes) {
+  const uint32_t reg16 = 1u << ((word >> 16) & 0x0Fu);
+  const uint32_t reg12 = 1u << ((word >> 12) & 0x0Fu);
+  const uint32_t reg8 = 1u << ((word >> 8) & 0x0Fu);
+  *reads = 0;
+  *writes = 0;
+  switch (op) {
+    case BR_kOpLoadCol:
+    case BR_kOpLoadConst:
+    case BR_kOpSetRegNull:
+      *writes = reg16;
+      break;
+    case BR_kOpMov:
+      *reads = reg8;
+      *writes = reg12;
+      break;
+    case BR_kOpPlus:
+    case BR_kOpMinus:
+    case BR_kOpMul:
+    case BR_kOpDiv:
+    case BR_kOpDivInt:
+    case BR_kOpMod:
+    case BR_kOpPlusBigint:
+    case BR_kOpPlusDouble:
+    case BR_kOpMinusBigint:
+    case BR_kOpMinusDouble:
+    case BR_kOpMulBigint:
+    case BR_kOpMulDouble:
+    case BR_kOpDivDouble:
+    case BR_kOpDivIntBigint:
+      *reads = reg8 | reg12;
+      *writes = reg12;
+      break;
+    case BR_kOpSum:
+    case BR_kOpMax:
+    case BR_kOpMin:
+    case BR_kOpCount:
+    case BR_kOpSumBigint:
+    case BR_kOpSumDouble:
+    case BR_kOpMaxBigint:
+    case BR_kOpMaxDouble:
+    case BR_kOpMinBigint:
+    case BR_kOpMinDouble:
+    case BR_kOpAvg:
+      *reads = reg16;
+      break;
+    default:
+      break;
+  }
+}
+
 /* Records the outer tracker at a CASE-disposition jump's source into
  * its PendingCaseJump (see the struct). reg_type == NULL = no outer
  * register file on this path → the entry opts out of the guard. */
 static void br_snapshot_outer_tracker(PendingCaseJump *j,
                                       const uint8_t *reg_type,
                                       const uint8_t *reg_u63,
-                                      const uint8_t *reg_pack) {
+                                      const uint8_t *reg_pack,
+                                      uint32_t reg_loaded) {
   if (reg_type == NULL) {
     j->has_snap = 0;
     return;
   }
   j->has_snap = 1;
+  j->reg_loaded_snap = reg_loaded;
   memcpy(j->reg_type_snap, reg_type, BC_EMB_REG_BASE);
   if (reg_u63 != NULL) {
     memcpy(j->reg_u63_snap, reg_u63, BC_EMB_REG_BASE);
@@ -863,7 +930,11 @@ static JitBridgeReason translate_embedded_block(
     /* GL Part B: per-outer-register "packed temporal" flag (DATETIME2 /
      * TIMESTAMP2 loads) — such U64 registers are never imported. NULL
      * wherever outer_reg_type is NULL. */
-    const uint8_t *outer_reg_pack) {
+    const uint8_t *outer_reg_pack,
+    /* K-1: the outer registers loaded on every path to this block (bit
+     * r = register r); the import of another one rejects. 0 wherever
+     * outer_reg_type is NULL. */
+    uint32_t outer_reg_loaded) {
 
   if (emb_len == 0) {
     /* Empty embedded block — equivalent to "always pass". */
@@ -1238,6 +1309,17 @@ static JitBridgeReason translate_embedded_block(
             out_err->offending_op   = emb_op;
           }
           return JIT_BRIDGE_REG_OUT_OF_RANGE;
+        }
+        /* K-1: the interpreter fails the row when the register was not
+         * loaded by it (Dbtup's handleReadAggRegToReg); a path that skips
+         * the load keeps the program off the JIT. */
+        if (((outer_reg_loaded >> src_outer) & 1u) == 0) {
+          if (out_err) {
+            out_err->reason         = JIT_BRIDGE_REG_NOT_LOADED;
+            out_err->offending_word = outer_word_pos + 1 + emb_pc;
+            out_err->offending_op   = emb_op;
+          }
+          return JIT_BRIDGE_REG_NOT_LOADED;
         }
         uint8_t track = outer_reg_type[src_outer];
         /* GL Part A (2026-09-01): F64 outer sources are ADMITTED —
@@ -2235,7 +2317,8 @@ static JitBridgeReason translate_embedded_block(
            * block cannot write outer registers). */
           br_snapshot_outer_tracker(
               &pending_case_jumps[*n_pending_case_jumps],
-              outer_reg_type, outer_reg_u63, outer_reg_pack);
+              outer_reg_type, outer_reg_u63, outer_reg_pack,
+              outer_reg_loaded);
           (*n_pending_case_jumps)++;
         }
         emb_pc += 1;
@@ -2413,7 +2496,8 @@ JitBridgeReason ndb_jit_bridge_translate_embedded_for_test(
                                   /*out_exit_refuse_code=*/NULL,
                                   /*outer_reg_type=*/NULL,
                                   /*outer_reg_u63=*/NULL,
-                                  /*outer_reg_pack=*/NULL);
+                                  /*outer_reg_pack=*/NULL,
+                                  /*outer_reg_loaded=*/0);
 }
 
 JitBridgeReason ndb_jit_bridge_translate_scan_filter(
@@ -2450,7 +2534,8 @@ JitBridgeReason ndb_jit_bridge_translate_scan_filter(
                                &refuse_code,
                                /*outer_reg_type=*/NULL,
                                /*outer_reg_u63=*/NULL,
-                                  /*outer_reg_pack=*/NULL);
+                               /*outer_reg_pack=*/NULL,
+                               /*outer_reg_loaded=*/0);
   if (rc != JIT_BRIDGE_OK) {
     return rc;
   }
@@ -2808,6 +2893,14 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
    * the dst's previous flag (conservative). */
   uint8_t reg_u64_pack[BC_MAX_REGS];
   memset(reg_u64_pack, 0, sizeof(reg_u64_pack));
+  /* K-1: the outer registers loaded on every path to the current word,
+   * bit r = register r (br_reg_use).  Set by the loads, constants,
+   * kOpSetRegNull and the results of kOpMov and arithmetic; AND-merged
+   * where CASE-disposition jumps land.  An instruction that reads a
+   * register outside it rejects the program (JIT_BRIDGE_REG_NOT_LOADED):
+   * the interpreter fails such a row (AggInterpreterBase m_loaded_regs),
+   * where the JIT's register file, zeroed per row, would give 0. */
+  uint32_t reg_loaded = 0;
   /* ronsql_jit item 16 (2026-09-09): the column a BR_REG_STR register
    * was loaded from (0xFFFF = none), so a kOpMin / kOpMax / kOpCount
    * that reads the register LATER in the program — after other loads
@@ -2914,7 +3007,9 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
           memcpy(reg_type, pj->reg_type_snap, BC_EMB_REG_BASE);
           memcpy(reg_u63_safe, pj->reg_u63_snap, BC_EMB_REG_BASE);
           memcpy(reg_u64_pack, pj->reg_pack_snap, BC_EMB_REG_BASE);
+          reg_loaded = pj->reg_loaded_snap;
         } else {
+          reg_loaded &= pj->reg_loaded_snap;
           for (uint8_t r = 0; r < BC_EMB_REG_BASE; r++) {
             uint8_t lc = br_track_class(reg_type[r]);
             uint8_t jc = br_track_class(pj->reg_type_snap[r]);
@@ -2933,6 +3028,20 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
         landed = 1;
       }
       if (landed) linear_dead = 0;
+    }
+
+    /* K-1: an instruction reads only registers every path here loaded
+     * (reg_loaded).  A word no path reaches (linear_dead, no jump
+     * landed) runs on neither path and is not checked. */
+    {
+      uint32_t reads = 0;
+      uint32_t writes = 0;
+      br_reg_use(op, word, &reads, &writes);
+      if (!linear_dead && (reads & ~reg_loaded) != 0) {
+        set_err(out_err, JIT_BRIDGE_REG_NOT_LOADED, this_pos, op);
+        return JIT_BRIDGE_REG_NOT_LOADED;
+      }
+      reg_loaded |= writes;
     }
 
     switch (op) {
@@ -4029,7 +4138,8 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
           .target_word_pos = this_pos + 1u + skip_count,
         };
         br_snapshot_outer_tracker(&pending_case_jumps[n_pending_case_jumps],
-                                  reg_type, reg_u63_safe, reg_u64_pack);
+                                  reg_type, reg_u63_safe, reg_u64_pack,
+                                  reg_loaded);
         n_pending_case_jumps++;
         /* The linear walk past an unconditional jump is DEAD until the
          * next word some pending jump lands on (the merge guard at the
@@ -4062,7 +4172,7 @@ JitBridgeReason ndb_jit_bridge_translate_ex(const uint32_t *ndb_prog,
             /*allow_reg_ops=*/1,
             pending_case_jumps,
             &n_pending_case_jumps, /*out_exit_refuse_code=*/NULL,
-            reg_type, reg_u63_safe, reg_u64_pack);
+            reg_type, reg_u63_safe, reg_u64_pack, reg_loaded);
         if (rc != JIT_BRIDGE_OK) return rc;
         for (uint16_t m = emb_first_op; m < out_prog->n_ops; m++) {
           op_from_emb[m] = 1;

@@ -38,6 +38,8 @@
  * storage/ndb/claude_files/dbspj/dbspj_attrinfo_protocol.html (P-1 ..).
  * P-25 .. P-31 send malformed join aggregation programs, which DBLQH
  * must reject at JOIN_AGG_SETUP_REQ (AggInterpreterBase::checkProgram).
+ * P-32 sends one whose rows read a register they did not load, which
+ * fails each row (K-1, AggInterpreterBase m_loaded_regs).
  * Each malformed request is built by taking a known-good, word-for-word
  * SPJ encoding (the POSITIVE CONTROL below, encoded exactly as
  * NdbQueryBuilder would) and perturbing it as little as possible, so a
@@ -306,7 +308,7 @@ class SpjMalformedChecker {
     r.scanParallelism = 1;
   }
 
-  /* ---- join aggregation programs (P-25 .. P-31) ------------------------ *
+  /* ---- join aggregation programs (P-25 .. P-32) ------------------------ *
    * A JoinAgg SCAN_TABREQ carries the aggregation program in its KeyInfo
    * section, laid out as NdbQueryImpl::prepareAggregation and
    * NdbQueryImpl::doSend do: [boundsLen 0][aggReceiverId]
@@ -601,6 +603,25 @@ class SpjMalformedChecker {
                              {leaf, countLeaf()});
   }
 
+  int runP32() {  /* SUM of a register the row skipped the load of */
+    /* kOpSkip over the 3-word kOpLoadConst lands on kOpSumBigint of the
+     * same register, which every row reads without loading it.  The
+     * program is well formed, so checkProgram accepts it; each row
+     * fails with 1868 instead (K-1).  The interpreter's SumBigint
+     * asserted the register's type, so a debug data node stopped; a
+     * release node summed an undefined register.  With the JIT on
+     * (test_spj_malformed_p32_jit) the compiler accepted the program
+     * and summed 0 for each row; it now refuses the program, which then
+     * runs on the interpreter. */
+    const std::vector<Uint32> body = {
+        aggOp(kOpSkip) | 3u,
+        aggOp(kOpLoadConst) | (NDB_TYPE_BIGINT << 21) | (0u << 16), 1, 0,
+        aggOp(kOpSumBigint) | (0u << 16) | 0u};
+    return expectAggRejected("P-32 join aggregation SUM of an unloaded "
+                             "register",
+                             {aggProgram(1, body), countLeaf()});
+  }
+
  private:
   SignalSender *const m_ss;
   NdbRestarter *const m_restarter;
@@ -834,8 +855,9 @@ class SpjMalformedChecker {
    * the aggregation setup would pass every case), then the request with
    * the malformed leaves, which must get SCAN_TABREF and leave every data
    * node started.  The REF comes from JOIN_AGG_SETUP_REF with
-   * DbspjErr::InvalidRequest; the error code is printed, not required,
-   * as an error of a fragment scan reaching DBTC first would win. */
+   * DbspjErr::InvalidRequest, for P-32 from the failed row (1868); the
+   * error code is printed, not required, as an error of a fragment scan
+   * reaching DBTC first would win. */
   int expectAggRejected(const char *findingId,
                         const std::vector<std::vector<Uint32>> &leaves) {
     SpjReq good;
@@ -936,6 +958,7 @@ CASE_STEP(runP28, runP28)
 CASE_STEP(runP29, runP29)
 CASE_STEP(runP30, runP30)
 CASE_STEP(runP31, runP31)
+CASE_STEP(runP32, runP32)
 
 }  // namespace
 
@@ -1004,6 +1027,11 @@ TESTCASE("P30", "join aggregation: leaf 0 with a bad magic word") {
 }
 TESTCASE("P31", "join aggregation: leaf 0 with a reserved flag bit") {
   STEP(runP31);
+}
+TESTCASE("P32",
+         "join aggregation: rows read a register they skipped the load "
+         "of") {
+  STEP(runP32);
 }
 NDBT_TESTSUITE_END(testSpjMalformed)
 

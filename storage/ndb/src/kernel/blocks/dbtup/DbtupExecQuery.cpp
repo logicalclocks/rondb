@@ -6980,6 +6980,10 @@ struct Dbtup::InterpreterContext {
   // Aggregation register import source.  Only set for aggregation
   // embedded interpreter calls; normal interpreter and CTE filters keep NULL.
   const Register* aggRegisters;
+  // K-1: bit r is set when the current row of the aggregation program
+  // loaded aggRegisters[r] (AggInterpreterBase::m_loaded_regs); the
+  // other registers hold an undefined value or one of an earlier row.
+  Uint32 aggRegistersLoaded;
 
   /* ============================================================
    * Phase A handlers — extracted case bodies
@@ -8520,6 +8524,11 @@ struct Dbtup::InterpreterContext {
     }
     Uint32 aggReg = ctx.theInstruction >> 16;
     if (unlikely(aggReg >= kRegTotal)) {
+      return -ZREGISTER_INIT_ERROR;
+    }
+    /* K-1: a register this row of the aggregation program did not load
+     * holds an undefined value or one of an earlier row. */
+    if (unlikely(((ctx.aggRegistersLoaded >> aggReg) & 1) == 0)) {
       return -ZREGISTER_INIT_ERROR;
     }
     const Register& src = ctx.aggRegisters[aggReg];
@@ -11136,6 +11145,7 @@ int Dbtup::interpreterNextLab(Signal* signal,
     tmpArea,             /* Uint32*                                      */
     tmpAreaSz,           /* Uint32                                       */
     nullptr,             /* const Register*                              */
+    0,                   /* Uint32   — aggRegistersLoaded                */
   };
 
   /* Macro to dispatch a switch case to an extracted handler function.
@@ -11597,7 +11607,8 @@ int Dbtup::interpreterJumpTable(Signal* signal,
                                 Uint32 tmpAreaSz,
                                 const InterpreterHandler *handlerTable,
                                 Uint32 flags,
-                                const Register *aggRegisters)
+                                const Register *aggRegisters,
+                                Uint32 aggRegistersLoaded)
 {
   Uint32 theRegister;
   Uint32 theInstruction;
@@ -11650,6 +11661,7 @@ int Dbtup::interpreterJumpTable(Signal* signal,
     tmpArea,             /* Uint32*                                      */
     tmpAreaSz,           /* Uint32                                       */
     aggRegisters,        /* const Register*                              */
+    aggRegistersLoaded,  /* Uint32                                       */
   };
 
   const bool noBackJumps = (flags & IFLAG_DISALLOW_BACKWARD_JUMPS) != 0;
@@ -11740,7 +11752,7 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                                   Uint32 tmpAreaSz)
 {
   return interpreterAggEmbedded(signal, req_struct, mainProgram, TmainProgLen,
-                                tmpArea, tmpAreaSz, nullptr);
+                                tmpArea, tmpAreaSz, nullptr, 0);
 }
 
 int Dbtup::interpreterAggEmbedded(Signal* signal,
@@ -11749,7 +11761,8 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                                   Uint32 TmainProgLen,
                                   Uint32* tmpArea,
                                   Uint32 tmpAreaSz,
-                                  const Register *aggRegisters)
+                                  const Register *aggRegisters,
+                                  Uint32 aggRegistersLoaded)
 {
   return interpreterJumpTable(signal, req_struct,
                               mainProgram, TmainProgLen,
@@ -11757,7 +11770,7 @@ int Dbtup::interpreterAggEmbedded(Signal* signal,
                               tmpArea, tmpAreaSz,
                               s_agg_interp_handlers,
                               IFLAG_DISALLOW_BACKWARD_JUMPS,
-                              aggRegisters);
+                              aggRegisters, aggRegistersLoaded);
 }
 
 /**

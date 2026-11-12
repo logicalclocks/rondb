@@ -168,6 +168,11 @@ gate for any such change.
     (`emitCteLinkedAggSlot` promotes BIGINT + is_unsigned to
     BIGUNSIGNED — the Phase 6-2 fix; RonSQL's virt-table widening is
     the contract).
+  - A register is read only where every path loaded it (RONDB-1124
+    K-1): the interpreter fails a row that reads one it did not load
+    (`AggInterpreterBase::m_loaded_regs`, 1868), and the bridge refuses
+    a program with such a path (`JIT_BRIDGE_REG_NOT_LOADED`), since the
+    JIT's per-row zeroed registers would give 0.
   - A per-row fallback (row re-run on the interpreter) is normal and
     invisible to counters; ERROR_INSERT 4060 makes ANY interpreter-
     loop entry fatal, 5127/5120 are the compile-time dump/fatal

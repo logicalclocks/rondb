@@ -360,8 +360,10 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
-  /* New row: no string register points into m_attr_read_buf yet. */
+  /* New row: no string register points into m_attr_read_buf yet, and
+   * no register is loaded (K-1, m_loaded_regs). */
   m_attr_read_hwm = 0;
+  m_loaded_regs = 0;
   while (exec_pos < m_prog_len) {
     value = m_prog[exec_pos++];
     Uint8 op = (value & 0xFC000000) >> 26;
@@ -436,7 +438,7 @@ Int32 AggInterpreter::ProcessRec(Dbtup* block_tup,
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,   /* main program = embedded portion */
             local_tmpArea, 16,
-            m_registers);
+            m_registers, m_loaded_regs);
 
         req_struct->no_exec_instructions = saved_instr_count;
 

@@ -207,6 +207,7 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
       header->isNULL(), &m_decimal, &m_registers[reg_index]);
   switch (load_status) {
     case AggLoadStatus::Ok:
+      m_loaded_regs |= 1U << reg_index;
       PA_INTERP_TRACE(m_frag_id,
                       "Load type %u null %u value 0x%llx",
                       type, (Uint32)m_registers[reg_index].is_null,
@@ -311,6 +312,7 @@ Int32 AggInterpreterBase::loadColumnTypedFromBuf(
       }
       m_attr_read_pos += words_consumed;
       m_attr_read_hwm = m_attr_read_pos;
+      m_loaded_regs |= 1U << reg_index;
       return 0;
     }
     default:
@@ -1695,6 +1697,15 @@ Int32 AggInterpreterBase::jitMinMaxStringCol(
  * divergent opcodes (kOpLoadCol, kOpEmbeddedInterp) are still handled
  * in each subclass's own switch.
  */
+Int32 AggInterpreterBase::unloadedRegisterError(Uint8 op,
+                                                Uint32 exec_pos) const {
+  g_eventLogger->debug("AggInterpreterBase::executeStandardOpcode "
+                       "ZAGG_WRONG_OPERATION: opcode %u at %u reads a "
+                       "register this row did not load (loaded 0x%x)",
+                       op, exec_pos - 1, m_loaded_regs);
+  return ZAGG_WRONG_OPERATION;
+}
+
 Int32 AggInterpreterBase::executeStandardOpcode(
     Uint8 op, Uint32 value, Uint32& exec_pos,
     AggResItem* agg_res_ptr, bool debug_print,
@@ -1705,6 +1716,32 @@ Int32 AggInterpreterBase::executeStandardOpcode(
   Uint32 agg_index;
   Uint32 type;
   int ret;
+
+  /* K-1: an instruction reads only registers this row loaded
+   * (m_loaded_regs).  The skip after an embedded program is computed per
+   * row, so checkProgram cannot see a row that skips a load; the read
+   * would take an undefined register (an assert in a debug build) or a
+   * value of an earlier row.  Two-register instructions read the
+   * register in bits 8-11 and, except kOpMov, the one in bits 12-15,
+   * and write the latter; the aggregates read the one in bits 16-19. */
+  if ((op >= kOpPlus && op <= kOpMod) ||
+      (op >= kOpPlusBigint && op <= kOpDivIntBigint) || op == kOpMov) {
+    const Uint32 dst = (value >> 12) & 0x0F;
+    Uint32 reads = 1U << ((value >> 8) & 0x0F);
+    if (op != kOpMov) {
+      reads |= 1U << dst;
+    }
+    if (unlikely((reads & ~m_loaded_regs) != 0)) {
+      return unloadedRegisterError(op, exec_pos);
+    }
+    m_loaded_regs |= 1U << dst;
+  } else if (aggIsSlotOp(op) || op == kOpAvg) {
+    if (unlikely(((m_loaded_regs >> ((value >> 16) & 0x0F)) & 1) == 0)) {
+      return unloadedRegisterError(op, exec_pos);
+    }
+  } else if (op == kOpLoadConst || op == kOpSetRegNull) {
+    m_loaded_regs |= 1U << ((value >> 16) & 0x0F);
+  }
 
   switch (op) {
     case kOpPlus:

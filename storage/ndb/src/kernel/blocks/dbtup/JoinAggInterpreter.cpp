@@ -945,10 +945,12 @@ static bool nullRowCondHolds(Uint32 cond, int res1) {
  * here.
  *
  * READ_AGG_REG_TO_REG copies one of agg_regs, the aggregation registers,
- * as Dbtup's handleReadAggRegToReg does.  RonSQL's GREATEST / LEAST
- * pair-op reads its two operands this way; one that kOpLoadCol loaded
- * from a column of the outer-joined table is NULL, so the pair-op's
- * BRANCH_REG_EQ_NULL guard makes the result NULL, as in SQL.
+ * as Dbtup's handleReadAggRegToReg does, and fails as it does for a
+ * register not in agg_regs_loaded, those this row loaded (K-1).
+ * RonSQL's GREATEST / LEAST pair-op reads its two operands this way;
+ * one that kOpLoadCol loaded from a column of the outer-joined table is
+ * NULL, so the pair-op's BRANCH_REG_EQ_NULL guard makes the result
+ * NULL, as in SQL.
  *
  * One difference: a register compare with a NULL operand is not taken,
  * where DBTUP fails the row with ZREGISTER_INIT_ERROR.  The API guards a
@@ -976,6 +978,7 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
                                            Uint32 linked_attr_len,
                                            const Dbtup* meta_tup,
                                            const Register* agg_regs,
+                                           Uint32 agg_regs_loaded,
                                            Uint32* skip_offset) {
   /* The 8 registers start NULL, as in Dbtup::interpreterJumpTable */
   Uint32 reg_type[8];
@@ -1108,6 +1111,10 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         /* As Dbtup's handleReadAggRegToReg */
         const Uint32 agg_reg = instr >> 16;
         if (unlikely(agg_reg >= kRegTotal)) return EMB_NULL_ROW_ERROR;
+        /* Not loaded by this row (K-1): ZREGISTER_INIT_ERROR in DBTUP */
+        if (unlikely(((agg_regs_loaded >> agg_reg) & 1) == 0)) {
+          return EMB_NULL_ROW_ERROR;
+        }
         const Register& src = agg_regs[agg_reg];
         if (src.is_null) {
           reg_type[reg] = Interpreter::REG_TYPE_NULL;
@@ -1746,8 +1753,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
 
   Uint32 exec_pos = m_agg_prog_start_pos;
   bool debug_print = (m_frag_id == DEBUG_PA_INTERP_PART_ID);
-  /* New row: no string register points into m_attr_read_buf yet. */
+  /* New row: no string register points into m_attr_read_buf yet, and
+   * no register is loaded (K-1, m_loaded_regs). */
   m_attr_read_hwm = 0;
+  m_loaded_regs = 0;
   while (exec_pos < m_prog_len) {
     const Uint32 load_program_offset =
         ((m_acc_offset & 0xFFFF) << 16) | (exec_pos & 0xFFFF);
@@ -1838,7 +1847,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           const EmbeddedNullRowResult res = evalEmbeddedForNullRow(
               &m_prog[exec_pos], emb_len, m_linked_attr_data,
               m_linked_attr_len, m_null_row_meta_tup, m_registers,
-              &skip_offset);
+              m_loaded_regs, &skip_offset);
           if (unlikely(res == EMB_NULL_ROW_ERROR)) {
             return ZAGG_EMBEDDED_INTERP_ERROR;
           }
@@ -1877,7 +1886,7 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
             req_struct->signal, req_struct,
             &m_prog[exec_pos], emb_len,
             local_tmpArea, 16,
-            m_registers);
+            m_registers, m_loaded_regs);
 
         req_struct->no_exec_instructions = saved_instr_count;
         req_struct->m_linked_attr_data = nullptr;

@@ -3363,7 +3363,8 @@ public:
                            Uint32 *tmpArea, Uint32 tmpAreaSz,
                            const InterpreterHandler *handlerTable,
                            Uint32 flags,
-                           const Register *aggRegisters = nullptr);
+                           const Register *aggRegisters = nullptr,
+                           Uint32 aggRegistersLoaded = 0);
 
   /* Thin wrapper preserved for the CTE filter call sites from
    * Phase A/B.  Calls interpreterJumpTable with s_cte_filter_handlers
@@ -3383,10 +3384,14 @@ public:
   int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
                              Uint32 *mainProgram, Uint32 TmainProgLen,
                              Uint32 *tmpArea, Uint32 tmpAreaSz);
+  /* aggRegistersLoaded: bit r set when the aggregation program's row
+   * loaded aggRegisters[r]; READ_AGG_REG_TO_REG of another register
+   * fails with ZREGISTER_INIT_ERROR (K-1). */
   int interpreterAggEmbedded(Signal *signal, KeyReqStruct *req_struct,
                              Uint32 *mainProgram, Uint32 TmainProgLen,
                              Uint32 *tmpArea, Uint32 tmpAreaSz,
-                             const Register *aggRegisters);
+                             const Register *aggRegisters,
+                             Uint32 aggRegistersLoaded);
 
   /* RONDB-1056 Phase 7: public forwarder to the private
    * readSingleAttribute fast path, callable from the DbtupJitGlue

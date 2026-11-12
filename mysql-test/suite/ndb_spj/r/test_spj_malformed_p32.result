@@ -1,0 +1,8 @@
+# Positive control: well-formed raw SPJ scan, expect SCAN_TABCONF
+Running command
+Result of command: 0
+Test program success!
+# P-32: join aggregation SUM of a register the row did not load
+Running command
+Result of command: 0
+Test program success!

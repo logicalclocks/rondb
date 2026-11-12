@@ -396,7 +396,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
       const Uint32* emb_prog, Uint32 emb_len,
       const Uint32* linked_attr_data, Uint32 linked_attr_len,
       const Dbtup* meta_tup, const Register* agg_regs,
-      Uint32* skip_offset);
+      Uint32 agg_regs_loaded, Uint32* skip_offset);
 
   // Phase I.6 (F.2-K.4): running thread id for the in-flight ProcessRec
   // call.  Set on entry to processRecWithLinkedAttrs /

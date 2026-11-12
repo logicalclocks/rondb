@@ -145,6 +145,7 @@ class AggInterpreterBase : public PushdownInterpreter {
       m_n_agg_results(0), m_agg_results(nullptr), m_acc_offset(0),
       m_n_visible_results(0), m_n_hidden_slots(0),
       m_avg_hidden_map(nullptr), m_avg_finalized(false),
+      m_loaded_regs(0),
       m_string_results(nullptr), m_current_thread_id(0),
       m_cur_pos(0), m_attr_read_pos(0), m_attr_read_hwm(0),
       m_processed_rows(0), m_result_size(0),
@@ -359,6 +360,11 @@ class AggInterpreterBase : public PushdownInterpreter {
   Int32 executeStandardOpcode(Uint8 op, Uint32 value, Uint32& exec_pos,
                                AggResItem* agg_res_ptr, bool debug_print,
                                bool* handled);
+
+  /* K-1: the row's error when instruction op (ending at exec_pos) reads
+   * a register not in m_loaded_regs: ZAGG_WRONG_OPERATION, as for a
+   * program Init rejects. */
+  Int32 unloadedRegisterError(Uint8 op, Uint32 exec_pos) const;
 
   /* Phase I.6 (F.2-K.5) string MIN/MAX helpers — bodies in
    * AggInterpreterBase.cpp.  Step 1.3 of the interpreter unification.
@@ -660,6 +666,15 @@ class AggInterpreterBase : public PushdownInterpreter {
   bool m_avg_finalized;
 
   Register m_registers[kRegTotal];
+  /* K-1: the registers the current row has loaded, bit r for register
+   * r.  The ProcessRec loops clear it at the start of each row;
+   * loadColumnTypedFromBuf, kOpLoadConst and kOpSetRegNull set a bit,
+   * and kOpMov and the arithmetic ops set the bit of their result.
+   * executeStandardOpcode fails the row when an instruction reads a
+   * register without its bit: the registers keep their values from row
+   * to row, so the program would read an undefined register or one of
+   * an earlier row. */
+  Uint32 m_loaded_regs;
 
   // Phase I.6 (F.2-K.4a): per-register string scratch.  When a
   // kOpLoadCol arm reads a CHAR / VARCHAR / Longvarchar column, it

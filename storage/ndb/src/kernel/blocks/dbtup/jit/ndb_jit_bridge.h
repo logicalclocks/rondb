@@ -65,6 +65,8 @@ typedef enum {
   JIT_BRIDGE_EMBEDDED_BACKWARD = 7, /* embedded block has a backward branch */
   JIT_BRIDGE_TYPE_MISMATCH   = 8,   /* operand register type does not match
                                      * the typed opcode (Phase 5C tracker) */
+  JIT_BRIDGE_REG_NOT_LOADED  = 9,   /* an instruction reads a register that
+                                     * a path to it does not load (K-1) */
 } JitBridgeReason;
 
 typedef struct {
