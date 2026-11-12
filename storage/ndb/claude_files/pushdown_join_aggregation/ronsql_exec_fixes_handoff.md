@@ -14,6 +14,10 @@ That report's line numbers are from `50eb491eb3f` and have moved; use the
 locations given here. The status column of its table is not updated; the
 table in §2 below is the current status.
 
+Since then the RonSQL executor review fixes (F-1, C-2, D-1 and O-1, branch
+`RONDB-1124-lqh-fix2`) have been rebased onto this branch, and one session
+continues both lists. Their status is in `../ronsql_executor/README.md`.
+
 ## 1. How to work on this
 
 - **Builds and tests.** The maintainer runs every build and test. Do not run
@@ -173,13 +177,13 @@ re-verified against the current code. Re-read the code first.
   when the WHERE is false. Fixes:
   - teach the NULL-row evaluator the arithmetic opcodes;
   - or, for these shapes, have RonSQL emit a NULL guard, or refuse the shape.
-- **`is_null_rejecting` and OR (wrong results).** In `RonSQLPreparer.cpp:3895`,
-  OR counts as null-rejecting when both branches are comparisons, but not
-  every branch has to reference the LEFT-joined table. For example,
-  `c LEFT JOIN o ... WHERE o.amt > 5 OR c.fl = 30` is promoted to INNER and
-  drops rows that MySQL keeps. Fix: each OR branch must reject NULL for a
-  column of the RHS table. That needs the table identity, so it does not fit
-  the current context-free function.
+- **`is_null_rejecting` and OR: fixed** by C-2 (`6c52f4ee9b0`, RonSQL
+  executor review, `../ronsql_executor/README.md`). `is_null_rejecting` now
+  takes the LEFT-joined table and counts only its columns as NULL, so
+  `c LEFT JOIN o ... WHERE o.amt > 5 OR c.fl = 30` is no longer promoted. A
+  WHERE conjunct that stays on a LEFT-joined op is refused ("WHERE on a LEFT
+  JOIN's right side that holds for NULL is not supported") until post-join
+  filtering exists. Test: `ronsql_left_join_where` lj-5, lj-6, lj-r5..r7.
 - **CASE MIN/MAX whose arms are all strings fails to print.** RonSQL refuses
   mixed arms (bug 1). All-string arms pass, but
   `ResultPrinter::aggregate_arg_charset` (ResultPrinter.cpp:2685) only follows
@@ -200,6 +204,25 @@ re-verified against the current code. Re-read the code first.
   non-string. Add a testSpjMalformed case.
 
 ### 4.2 Kernel
+- **An aggregate can read a register the row never loaded (K-1 in
+  `../ronsql_executor/README.md`).** Bug 14's `checkProgram` covers the
+  rest of K-1, but not this. The skip after an embedded program is
+  computed per row, so no check before the program runs can see it. Sum,
+  Max, Min, Count and the typed variants only
+  `assert(a.type != NDB_TYPE_UNDEFINED)`. Registers are zeroed once in
+  Init, so in a release build the aggregate reads an UNDEFINED register or
+  the previous row's value. RonSQL reached it through D-1 (fixed in
+  `b0371bb91ef`). Before that fix, `ronsql_subquery_filter_decimal`
+  aborted both data nodes in a debug build.
+  - Fix: a per-row bitmask of loaded registers, cleared at row start. A
+    load, a constant or kOpSetRegNull sets its register's bit; kOpMov and
+    the arithmetic ops set it only when their inputs are set. An
+    aggregate on a register that is not in the mask fails the row with an
+    error. The JIT must do
+    the same, or refuse such programs.
+  - Also: `peekProgramHeader` still checks the magic word, `prog_len` and
+    the reserved flag bits with `assert` only. A raw NDB API client can
+    abort a debug data node with a bad header word.
 - **Bug 13 leftovers:**
   - `ndbrequire(regTcPtr->opExec)` in `execSCAN_FRAGREQ` (DblqhMain.cpp:25882)
     still stops the node when SCAN_FRAGREQ has the aggregation flag but no
