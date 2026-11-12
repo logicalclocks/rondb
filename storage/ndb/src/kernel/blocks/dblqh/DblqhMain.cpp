@@ -21658,6 +21658,86 @@ Dblqh::runCteFilter(Signal *signal,
 }
 
 /**
+ * feedCteLinkedRow — feed one CTE group (its GROUP BY key and
+ * accumulators) as a linked row into a leaf of another aggregation.
+ * Shared by cteLookupAggFeed and both cteScanAggFeed feeds (grouped and
+ * scalar), so that they handle evictions and errors the same way.
+ *
+ * The target asks for room with AGG_EVICT_NEEDED: evict a target group
+ * and try again until the row goes in.  One eviction is often not
+ * enough: freeGroupData returns memory only when the group's 32 KB chunk
+ * empties, so once the query memory has run out it can take several.
+ * The row is built again before every try, because sendEvictedAggGroup
+ * assembles the evicted record in cevictBuffer, which also holds the
+ * row.  An empty target table, or a CTE materialization target (which
+ * must keep every group), cannot make room: out of query memory.
+ *
+ * Returns 0, or the error code for the caller's REF.
+ */
+Uint32 Dblqh::feedCteLinkedRow(Signal *signal,
+                               const JoinAggInterpreter *interp,
+                               const char *groupData, Uint32 keyLen,
+                               const Uint32 *attrInfoBuf,
+                               Uint32 attrInfoLen,
+                               JoinAggregationState *targetState,
+                               JoinAggInterpreter *targetInterp,
+                               const LeafProgram *leaf) {
+  Dbtup::KeyReqStruct aggReq(c_tup);
+  /* A CTE agg feed has no scanned table row: the aggregator's input
+   * comes entirely from the linked buffer (CTE virtual columns).  c_tup's
+   * tablePtrP is NOT valid here — there is no fragment/table set up for
+   * this request, and under DBQLQH the table would have to come from the
+   * fragment owner.  Set tablePtrP to a deterministic nullptr so that if
+   * the aggregation program ever references a normal (non-linked) column,
+   * the interpreter aborts the query cleanly instead of dereferencing the
+   * uninitialised (poisoned) tablePtrP. */
+  aggReq.tablePtrP = nullptr;
+  aggReq.signal = signal;
+  aggReq.read_length = 0;
+  aggReq.log_size = 0;
+  aggReq.last_row = false;
+
+  Uint32 *const linkedBuf = cevictBuffer;
+  for (;;) {
+    Uint32 linkedPos = 0;
+    buildCteLinkedBuffer(interp, groupData, keyLen,
+                         attrInfoBuf, attrInfoLen,
+                         linkedBuf, &linkedPos);
+    aggReq.no_exec_instructions = 0;
+    const Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
+        c_tup,
+        &aggReq,
+        linkedBuf,
+        linkedPos,
+        getThreadId(),
+        jamBuffer(),
+        leaf);
+    if (likely(aggRet == 0)) {
+      return 0;
+    }
+    if (unlikely(aggRet != AGG_EVICT_NEEDED)) {
+      jam();
+      g_eventLogger->info("(%u) CTE agg feed FAILED: aggRet=%d "
+          "linkedWords=%u n_gb=%u n_agg=%u processed_rows=%llu inited=%d",
+          instance(), aggRet, linkedPos, targetInterp->n_gb_cols(),
+          targetInterp->n_agg_results(),
+          (unsigned long long)targetInterp->processed_rows(),
+          targetInterp->inited() ? 1 : 0);
+      return joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR);
+    }
+    jam();
+    /* Outside error insert 5126 an eviction request means a group could
+     * not be allocated.  When no group can be evicted that is out of
+     * query memory, a temporary error. */
+    if (unlikely(targetState->m_cte_mode ||
+                 !sendEvictedAggGroup(signal, targetInterp, targetState))) {
+      jam();
+      return DbspjErr::OutOfQueryMemory;
+    }
+  }
+}
+
+/**
  * cteLookupAggFeed — CTE_LOOKUP result feeds into another JoinAggInterpreter
  * (CTE-to-CTE dependency or CTE_LOOKUP as main aggregate leaf).
  * Builds linked_attr_data from the group's key + accumulators and inserts
@@ -21694,15 +21774,6 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
   JoinAggInterpreter *targetInterp = getJoinAggInterpreter(targetState);
   ndbrequire(targetInterp != nullptr);
 
-  Uint32 *linkedBuf = cevictBuffer;
-  Uint32 linkedPos = 0;
-  buildCteLinkedBuffer(interp, groupData, req.keyLen,
-                       attrInfoBuf, attrInfoLen,
-                       linkedBuf, &linkedPos);
-
-  DEB_CTE(("(%u) cteLookupAggFeed: built linked buffer (%u words)",
-           instance(), linkedPos));
-
   const LeafProgram *leaf = nullptr;
   if (targetState->m_num_leaves > 1) {
     jam();
@@ -21710,74 +21781,15 @@ void Dblqh::cteLookupAggFeed(Signal *signal, const CteLookupReq &req,
     leaf = &targetState->m_leaf_programs[targetLeafIndex];
   }
 
-  DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u "
-           "linkedWords=%u",
-           instance(), targetBaseKey, targetLeafIndex, linkedPos));
+  DEB_CTE(("(%u) CTE_LOOKUP agg feed: targetKey=%u leafIdx=%u",
+           instance(), targetBaseKey, targetLeafIndex));
 
-  Dbtup::KeyReqStruct aggReq(c_tup);
-  /* A CTE_LOOKUP agg feed has no scanned table row: the aggregator's input
-   * comes entirely from the linked buffer (CTE virtual columns).  c_tup's
-   * tablePtrP is NOT valid here — there is no fragment/table set up for this
-   * request, and under DBQLQH the table would have to come from the fragment
-   * owner.  Set tablePtrP to a deterministic nullptr so that if the
-   * aggregation program ever references a normal (non-linked) column, the
-   * interpreter aborts the query cleanly instead of dereferencing the
-   * uninitialised (poisoned) tablePtrP. */
-  aggReq.tablePtrP = nullptr;
-  aggReq.signal = signal;
-  aggReq.read_length = 0;
-  aggReq.log_size = 0;
-  aggReq.last_row = false;
-
-retry_agg:
-  aggReq.no_exec_instructions = 0;
-  Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-      c_tup,
-      &aggReq,
-      linkedBuf,
-      linkedPos,
-      getThreadId(),
-      jamBuffer(),
-      leaf);
-  if (aggRet == AGG_EVICT_NEEDED) {
+  const Uint32 err = feedCteLinkedRow(signal, interp, groupData, req.keyLen,
+                                      attrInfoBuf, attrInfoLen,
+                                      targetState, targetInterp, leaf);
+  if (unlikely(err != 0)) {
     jam();
-    if (unlikely(targetState->m_cte_mode)) {
-      /* Eviction is not supported for CTE materialization targets —
-       * the CTE hash table must hold all groups.  Outside error insert
-       * 5126 an eviction request means a group could not be allocated:
-       * out of query memory, a temporary error. */
-      jam();
-      sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       DbspjErr::OutOfQueryMemory, req.correlation);
-      return;
-    }
-    if (unlikely(!sendEvictedAggGroup(signal, targetInterp, targetState))) {
-      jam();
-      sendCteLookupRef(signal, req.senderRef, req.senderData,
-                       DbspjErr::OutOfQueryMemory, req.correlation);
-      return;
-    }
-    /* sendEvictedAggGroup built the evicted record in cevictBuffer,
-     * over linkedBuf: build the row again for the retry.  Its inputs,
-     * the source CTE's group and cinBuf, are not the target's. */
-    linkedPos = 0;
-    buildCteLinkedBuffer(interp, groupData, req.keyLen,
-                         attrInfoBuf, attrInfoLen,
-                         linkedBuf, &linkedPos);
-    goto retry_agg;
-  }
-  if (unlikely(aggRet != 0)) {
-    jam();
-    g_eventLogger->info("(%u) CTE_LOOKUP agg feed FAILED: aggRet=%d "
-        "targetKey=%u leafIdx=%u linkedWords=%u n_gb=%u n_agg=%u "
-        "processed_rows=%llu inited=%d",
-        instance(), aggRet, targetBaseKey, targetLeafIndex,
-        linkedPos, targetInterp->n_gb_cols(),
-        targetInterp->n_agg_results(),
-        (unsigned long long)targetInterp->processed_rows(),
-        targetInterp->inited() ? 1 : 0);
-    sendCteLookupRef(signal, req.senderRef, req.senderData,
-                     joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR),
+    sendCteLookupRef(signal, req.senderRef, req.senderData, err,
                      req.correlation);
     return;
   }
@@ -23013,72 +23025,16 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
         return;
       }
 
-      /* Build linked_attr_data via the shared CTE writer so the
-       * inline CTE virt-column encoding (CteLinkedAttr.hpp) stays
-       * consistent with cteLookupAggFeed.  No parent linked columns
-       * for cteScanAggFeed (it's a hash-walk feed, not a per-row
-       * CTE_LOOKUP), so the attrInfoBuf args are nullptr/0. */
-      Uint32 *linkedBuf = cevictBuffer;
-      Uint32 linkedPos = 0;
-      buildCteLinkedBuffer(interp, groupData, keyLen,
-                            nullptr, 0,
-                            linkedBuf, &linkedPos);
-
-      Dbtup::KeyReqStruct aggReq(c_tup);
-      /* No scanned table row in a CTE_SCAN agg feed — see cteLookupAggFeed.
-       * Deterministic nullptr so normal-column reads abort, not crash. */
-      aggReq.tablePtrP = nullptr;
-      aggReq.signal = signal;
-      aggReq.read_length = 0;
-      aggReq.log_size = 0;
-      aggReq.last_row = false;
-
-    retry_agg_scan:
-      aggReq.no_exec_instructions = 0;
-      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup,
-          &aggReq,
-          linkedBuf,
-          linkedPos,
-          getThreadId(),
-          jamBuffer(),
-          leaf);
-      if (aggRet == AGG_EVICT_NEEDED) {
+      /* No parent linked columns for cteScanAggFeed (it's a hash-walk
+       * feed, not a per-row CTE_LOOKUP), so the attrInfoBuf args are
+       * nullptr/0. */
+      const Uint32 err = feedCteLinkedRow(signal, interp, groupData, keyLen,
+                                          nullptr, 0,
+                                          targetState, targetInterp, leaf);
+      if (unlikely(err != 0)) {
         jam();
-        if (unlikely(targetState->m_cte_mode)) {
-          /* Eviction is not supported for CTE materialization targets;
-           * the group could not be allocated (see the CTE_LOOKUP feed). */
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        if (unlikely(!sendEvictedAggGroup(signal, targetInterp,
-                                          targetState))) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        /* The evicted record went through cevictBuffer, over linkedBuf:
-         * build the row again (see cteLookupAggFeed). */
-        linkedPos = 0;
-        buildCteLinkedBuffer(interp, groupData, keyLen,
-                             nullptr, 0,
-                             linkedBuf, &linkedPos);
-        goto retry_agg_scan;
-      }
-      if (unlikely(aggRet != 0)) {
-        jam();
-        g_eventLogger->info("(%u) CTE_SCAN agg feed FAILED: aggRet=%d "
-            "targetKey=%u leafIdx=%u linkedWords=%u",
-            instance(), aggRet, targetBaseKey, targetLeafIndex,
-            linkedPos);
         releaseCteScanIterState(aggFeedStateI);
-        sendCteScanRef(signal, senderRef, senderData,
-                       joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR));
+        sendCteScanRef(signal, senderRef, senderData, err);
         return;
       }
       rowsThisBatch++;
@@ -23151,88 +23107,14 @@ void Dblqh::cteScanAggFeed(Signal *signal, Uint32 aggStateKey,
       /* Single scalar group rejected — groupsSent stays 0, fall
        * through to CTE_SCAN_CONF with EndOfData + numRows=0. */
     } else {
-      Uint32 *linkedBuf = cevictBuffer;
-      Uint32 linkedPos = 0;
-
-      buildCteLinkedBuffer(interp,
-                           reinterpret_cast<const char *>(accumulators),
-                           /*keyLen=*/0, nullptr, 0,
-                           linkedBuf, &linkedPos);
-
-      const LeafProgram *leaf = nullptr;
-      if (targetState->m_num_leaves > 1) {
-        ndbrequire(targetLeafIndex < targetState->m_num_leaves);
-        leaf = &targetState->m_leaf_programs[targetLeafIndex];
-      }
-
-      Dbtup::KeyReqStruct aggReq(c_tup);
-      /* No scanned table row in a scalar CTE_SCAN agg feed — see
-       * cteLookupAggFeed.  Deterministic nullptr so normal-column reads
-       * abort, not crash. */
-      aggReq.tablePtrP = nullptr;
-      aggReq.signal = signal;
-      aggReq.read_length = 0;
-      aggReq.no_exec_instructions = 0;
-      aggReq.log_size = 0;
-      aggReq.last_row = false;
-
-      Int32 aggRet = targetInterp->processRecWithLinkedAttrs(
-          c_tup,
-          &aggReq,
-          linkedBuf,
-          linkedPos,
-          getThreadId(),
-          jamBuffer(),
-          leaf);
-      if (unlikely(aggRet != 0 && aggRet != AGG_EVICT_NEEDED)) {
+      const Uint32 err = feedCteLinkedRow(
+          signal, interp, reinterpret_cast<const char *>(accumulators),
+          /*keyLen=*/0, nullptr, 0, targetState, targetInterp, leaf);
+      if (unlikely(err != 0)) {
         jam();
         releaseCteScanIterState(aggFeedStateI);
-        sendCteScanRef(signal, senderRef, senderData,
-                       joinAggFeedError(aggRet, ZJOIN_AGG_INTERPRETER_ERROR));
+        sendCteScanRef(signal, senderRef, senderData, err);
         return;
-      }
-      if (aggRet == AGG_EVICT_NEEDED) {
-        jam();
-        if (unlikely(targetState->m_cte_mode)) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        if (unlikely(!sendEvictedAggGroup(signal, targetInterp,
-                                          targetState))) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         DbspjErr::OutOfQueryMemory);
-          return;
-        }
-        /* Retry after eviction, with the row built again: the evicted
-         * record went through cevictBuffer, over linkedBuf (see
-         * cteLookupAggFeed). */
-        linkedPos = 0;
-        buildCteLinkedBuffer(interp,
-                             reinterpret_cast<const char *>(accumulators),
-                             /*keyLen=*/0, nullptr, 0,
-                             linkedBuf, &linkedPos);
-        aggReq.no_exec_instructions = 0;
-        aggRet = targetInterp->processRecWithLinkedAttrs(
-            c_tup,
-            &aggReq,
-            linkedBuf,
-            linkedPos,
-            getThreadId(),
-            jamBuffer(),
-            leaf);
-        if (unlikely(aggRet != 0)) {
-          jam();
-          releaseCteScanIterState(aggFeedStateI);
-          sendCteScanRef(signal, senderRef, senderData,
-                         joinAggFeedError(aggRet,
-                                          ZJOIN_AGG_INTERPRETER_ERROR));
-          return;
-        }
       }
       groupsSent = 1;
     }  /* else branch of scalar filter gate */

@@ -3622,6 +3622,19 @@ private:
                                const char *groupData, Uint32 keyLen,
                                const Uint32 *cinBuf, Uint32 attrInfoLen);
 
+  /* Feed one CTE group (GROUP BY key and accumulators) as a linked row
+   * into a leaf of the target aggregation, evicting target groups for as
+   * long as the target asks for room.  Shared by cteLookupAggFeed and
+   * both cteScanAggFeed feeds (grouped and scalar).  Returns 0, or the
+   * error code for the caller's REF. */
+  Uint32 feedCteLinkedRow(Signal *signal,
+                          const JoinAggInterpreter *interp,
+                          const char *groupData, Uint32 keyLen,
+                          const Uint32 *attrInfoBuf, Uint32 attrInfoLen,
+                          JoinAggregationState *targetState,
+                          JoinAggInterpreter *targetInterp,
+                          const struct LeafProgram *leaf);
+
   void cteLookupAggFeed(Signal* signal, const CteLookupReq &req,
                         const JoinAggInterpreter *interp,
                         const char *groupData,
