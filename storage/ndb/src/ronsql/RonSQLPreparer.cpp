@@ -11454,6 +11454,7 @@ RonSQLPreparer::execute_join()
           select_count_column(/*int_only=*/false);
         }
         NdbAttrId attr_id = 0;
+        const NdbDictionary::Column* load_column = count_column;
         if (count_column != NULL) {
           attr_id = count_column->getAttrId();
         } else if (!sl.is_count_star) {
@@ -11464,6 +11465,7 @@ RonSQLPreparer::execute_join()
               agg_ref.kind == QueryScope::ResolvedColumnRef::Kind::StoredColumn,
               "Subquery aggregate input is not a stored-table column.");
           attr_id = agg_ref.attr_id;
+          load_column = agg_ref.dict_column;
         }
         const bool count_star_needs_row_guard =
             sl.is_count_star && count_column == NULL;
@@ -11485,9 +11487,18 @@ RonSQLPreparer::execute_join()
                       cf->op == T_EQUALS || cf->op == T_NOT_EQUALS,
                       "Cross-table filter must use <, <=, >, >=, = or !=.");
           // Guarded COUNT(*): LoadUint64 (3), embedded program (7),
-          // SetRegNull (1), and Count (1). Column load + aggregate: 2.
+          // SetRegNull (1), and Count (1). Column load + aggregate: 2,
+          // or 3 for a DECIMAL column, which LoadColumn emits as two
+          // words (kOpLoadCol and its precision / scale word).  Counted
+          // as 2, a failed filter skipped onto the aggregate, which then
+          // added the register's previous value (D-1).
+          const bool load_is_decimal =
+              load_column != NULL &&
+              (load_column->getType() == NdbDictionary::Column::Decimal ||
+               load_column->getType() ==
+                   NdbDictionary::Column::Decimalunsigned);
           Uint32 aggregate_update_raw_size =
-              count_star_needs_row_guard ? 12 : 2;
+              count_star_needs_row_guard ? 12 : (load_is_decimal ? 3 : 2);
           generate_embedded_condition(
               agg, m_main_scope, cf, 0, /*cteVirtualTables=*/NULL,
               /*use_custom_outputs=*/true,
