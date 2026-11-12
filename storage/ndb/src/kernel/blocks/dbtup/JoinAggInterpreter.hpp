@@ -389,7 +389,7 @@ class JoinAggInterpreter : public AggInterpreterBase {
   enum EmbeddedNullRowResult {
     EMB_NULL_ROW_OUTPUT,       // *skip_offset holds interpreter output 0
     EMB_NULL_ROW_REJECT,       // EXIT_REFUSE: stop the row's program
-    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (arithmetic, ...)
+    EMB_NULL_ROW_UNSUPPORTED,  // needs DBTUP (READ_*_MEM_TO_REG, ...)
     EMB_NULL_ROW_ERROR         // fails as in DBTUP
   };
   static EmbeddedNullRowResult evalEmbeddedForNullRow(

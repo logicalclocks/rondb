@@ -169,14 +169,22 @@ re-verified against the current code. Re-read the code first.
 ## 4. Gaps left by the fixes
 
 ### 4.1 RonSQL (the next session's area)
-- **WHERE arithmetic on LEFT JOIN NULL-extended rows (wrong results).**
-  Take a filter that compares columns of two tables above a LEFT-joined table,
-  e.g. `WHERE b.x + c.y > 5`. On a NULL-extended row, `evalEmbeddedForNullRow`
-  returns `EMB_NULL_ROW_UNSUPPORTED` for arithmetic, and `ProcessRec` then
-  takes the THEN path (JoinAggInterpreter.cpp:1842). The row is counted even
-  when the WHERE is false. Fixes:
-  - teach the NULL-row evaluator the arithmetic opcodes;
-  - or, for these shapes, have RonSQL emit a NULL guard, or refuse the shape.
+- **WHERE arithmetic on LEFT JOIN NULL-extended rows: fixed.** A filter
+  over two INNER-joined tables above a LEFT-joined leaf, e.g.
+  `WHERE a.x + 1 > b.y` (each side reads one table), runs as an embedded
+  program in the leaf's aggregation program. On a NULL-extended row,
+  `evalEmbeddedForNullRow` returned `EMB_NULL_ROW_UNSUPPORTED` for
+  ADD/SUB/MUL_REG_REG, and `ProcessRec` took the THEN path, so the row was
+  counted even when the WHERE was false. The evaluator now computes them as
+  DBTUP's handlers do: `compareTypedRegs` and `applyTypedArith` moved from
+  `Dbtup::InterpreterContext` to the new `dbtup/TypedRegisterOps.hpp`,
+  shared by both (the evaluator's copy `nullRowCompareRegs` is gone). Test:
+  `ronsql_left_join_cross_arith` (+ `ronsql_jit` mirror) ar-0..ar-7: ADD,
+  MUL, SUB, a nullable operand, OR, unsigned, no GROUP BY, an index-scan
+  LEFT child.
+  - Still `EMB_NULL_ROW_UNSUPPORTED` (THEN path): READ_*_MEM_TO_REG, which
+    no API emits in an embedded program, and BRANCH_MEM_OP_ARG without
+    `meta_tup`.
 - **`is_null_rejecting` and OR: fixed** by C-2 (`6c52f4ee9b0`, RonSQL
   executor review, `../ronsql_executor/README.md`). `is_null_rejecting` now
   takes the LEFT-joined table and counts only its columns as NULL, so
@@ -243,7 +251,7 @@ re-verified against the current code. Re-read the code first.
     because RonSQL retries temporary errors. A block or NDB API test is needed.
   - The next-range path needs no change: the interpreter exists by then.
 - **Bug 16 leftover.** In the NULL-row evaluator,
-  `evalEmbeddedForNullRow`'s inline-type compare (JoinAggInterpreter.cpp:1263)
+  `evalEmbeddedForNullRow`'s inline-type compare (JoinAggInterpreter.cpp:1266)
   leaves `cs = nullptr` when `csNumber == 0`, even for a string type. Check
   whether a CHAR/VARCHAR compare can then reach `m_cmp` with a null charset,
   here and in DBTUP's `BRANCH_*_INLINE_TYPE` handlers. If it can, refuse

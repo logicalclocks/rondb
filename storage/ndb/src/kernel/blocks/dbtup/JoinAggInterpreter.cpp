@@ -33,6 +33,7 @@
 #include "JoinAggInterpreter.hpp"
 #include "DbtupJitGlue.hpp"
 #include "InterpreterCommonOp.hpp"
+#include "TypedRegisterOps.hpp"
 #include "util/require.h"
 #include "decimal.h"
 #include "Dbtup.hpp"
@@ -921,52 +922,12 @@ static bool nullRowCondHolds(Uint32 cond, int res1) {
   }
 }
 
-/* E-4: Dbtup's compareTypedRegs for two non-NULL registers: as doubles
- * when one is a DOUBLE, else exactly as signed / unsigned 64-bit
- * integers. */
-static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
-                              Uint32 right_type, Int64 right_value) {
-  const bool left_float = (left_type & 0x00010000) != 0;
-  const bool right_float = (right_type & 0x00010000) != 0;
-  const bool left_unsigned = (left_type & 0x00000100) != 0;
-  const bool right_unsigned = (right_type & 0x00000100) != 0;
-  const Uint64 left_bits = Uint64(left_value);
-  const Uint64 right_bits = Uint64(right_value);
-  if (left_float || right_float) {
-    double l;
-    double r;
-    if (left_float) {
-      memcpy(&l, &left_bits, 8);
-    } else {
-      l = left_unsigned ? double(left_bits) : double(left_value);
-    }
-    if (right_float) {
-      memcpy(&r, &right_bits, 8);
-    } else {
-      r = right_unsigned ? double(right_bits) : double(right_value);
-    }
-    return (l < r) ? -1 : (l > r) ? 1 : 0;
-  }
-  if (left_unsigned == right_unsigned) {
-    if (left_unsigned) {
-      return (left_bits < right_bits) ? -1 : (left_bits > right_bits) ? 1 : 0;
-    }
-    return (left_value < right_value) ? -1 : (left_value > right_value) ? 1 : 0;
-  }
-  /* A negative signed value is less than any unsigned one */
-  if (left_unsigned) {
-    if (right_value < 0) return 1;
-  } else if (left_value < 0) {
-    return -1;
-  }
-  return (left_bits < right_bits) ? -1 : (left_bits > right_bits) ? 1 : 0;
-}
-
 /*
  * E-4: evaluate the embedded program of a kOpEmbeddedInterp (a CASE
- * condition) for a NULL-extended row of an outer join.  The row has no
- * tuple, so Dbtup::interpreterAggEmbedded cannot run; every column of
- * the outer-joined (local) table is NULL instead.  The instructions a
+ * condition or a WHERE filter over two tables) for a NULL-extended row
+ * of an outer join.  The row has no tuple, so
+ * Dbtup::interpreterAggEmbedded cannot run; every column of the
+ * outer-joined (local) table is NULL instead.  The instructions a
  * condition on those columns uses are evaluated as DBTUP evaluates them
  * for a NULL column value: READ_ATTR_INTO_REG loads NULL, BRANCH_ATTR_*
  * take their NULL path, and output and exit work as in DBTUP.
@@ -998,8 +959,14 @@ static int nullRowCompareRegs(Uint32 left_type, Int64 left_value,
  * RonSQL guards its operands also for a NOT NULL column of an
  * outer-joined table.
  *
- * Arithmetic needs DBTUP; such a program returns
- * EMB_NULL_ROW_UNSUPPORTED.
+ * ADD_REG_REG, SUB_REG_REG and MUL_REG_REG compute as Dbtup's handlers
+ * do, through the shared applyTypedArith (TypedRegisterOps.hpp): a NULL
+ * operand gives NULL and overflow fails the row.  RonSQL emits them in
+ * a WHERE filter over two INNER-joined tables above the outer-joined
+ * one, such as a.x + 1 > b.y, whose columns are all linked.
+ *
+ * READ_*_MEM_TO_REG need DBTUP's memory; a program with one returns
+ * EMB_NULL_ROW_UNSUPPORTED.  No API emits them in an embedded program.
  */
 JoinAggInterpreter::EmbeddedNullRowResult
 JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
@@ -1156,6 +1123,40 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         }
         break;
       }
+      case Interpreter::ADD_REG_REG:
+      case Interpreter::SUB_REG_REG:
+      case Interpreter::MUL_REG_REG: {
+        /* As Dbtup's handleAddRegReg, handleSubRegReg and handleMulRegReg:
+         * ADD and SUB write Reg4, MUL writes Reg3.  A NULL operand gives
+         * NULL; overflow fails the row as in DBTUP. */
+        const Uint32 reg2 = Interpreter::getReg2(instr);
+        const Uint32 dest = (opcode == Interpreter::MUL_REG_REG)
+                                ? Interpreter::getReg3(instr)
+                                : Interpreter::getReg4(instr);
+        if (reg_type[reg] == Interpreter::REG_TYPE_NULL ||
+            reg_type[reg2] == Interpreter::REG_TYPE_NULL) {
+          reg_type[dest] = Interpreter::REG_TYPE_NULL;
+          reg_value[dest] = 0;
+          break;
+        }
+        char op = '*';
+        if (opcode == Interpreter::ADD_REG_REG) {
+          op = '+';
+        } else if (opcode == Interpreter::SUB_REG_REG) {
+          op = '-';
+        }
+        Uint32 result_type = Interpreter::REG_TYPE_NULL;
+        Uint64 result_bits = 0;
+        if (unlikely(applyTypedArith(
+                         op, reg_type[reg], static_cast<Uint64>(reg_value[reg]),
+                         reg_type[reg2], static_cast<Uint64>(reg_value[reg2]),
+                         &result_type, &result_bits) != 0)) {
+          return EMB_NULL_ROW_ERROR;
+        }
+        reg_type[dest] = result_type;
+        reg_value[dest] = static_cast<Int64>(result_bits);
+        break;
+      }
       case Interpreter::BRANCH:
         take_branch = true;
         break;
@@ -1177,8 +1178,9 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
             reg_type[reg2] == Interpreter::REG_TYPE_NULL) {
           break;
         }
-        const int cmp = nullRowCompareRegs(reg_type[reg], reg_value[reg],
-                                           reg_type[reg2], reg_value[reg2]);
+        const int cmp = compareTypedRegs(
+            reg_type[reg], static_cast<Uint64>(reg_value[reg]),
+            reg_type[reg2], static_cast<Uint64>(reg_value[reg2]));
         switch (opcode) {
           case Interpreter::BRANCH_EQ_REG_REG: take_branch = (cmp == 0); break;
           case Interpreter::BRANCH_NE_REG_REG: take_branch = (cmp != 0); break;
@@ -1413,7 +1415,7 @@ JoinAggInterpreter::evalEmbeddedForNullRow(const Uint32* emb_prog,
         return EMB_NULL_ROW_ERROR;
       }
       default:
-        /* Arithmetic, READ_*_MEM_TO_REG */
+        /* READ_*_MEM_TO_REG */
         return EMB_NULL_ROW_UNSUPPORTED;
     }
     if (take_branch) {
@@ -1841,9 +1843,10 @@ Int32 JoinAggInterpreter::ProcessRec(Dbtup* block_tup,
           }
           if (res == EMB_NULL_ROW_UNSUPPORTED) {
             /*
-             * The condition needs DBTUP (arithmetic).  Skip the
-             * embedded program and take the THEN path as before; local
-             * column reads return NULL there.
+             * The condition needs DBTUP (READ_*_MEM_TO_REG, or
+             * BRANCH_MEM_OP_ARG without meta_tup).  Skip the embedded
+             * program and take the THEN path as before; local column
+             * reads return NULL there.
              */
             thrjam(jamBuf);
             exec_pos += emb_len;
